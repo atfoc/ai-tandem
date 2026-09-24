@@ -58,5 +58,30 @@ agent session starts the server. Here, **the server is the host**, and it starts
 
 ## Research
 
-- `docs/research/claude-rpc.md` — driving Claude Code CLI as a long-lived streaming subprocess.
-- `docs/research/cursor-rpc.md` — driving Cursor agent CLI the same way.
+- `docs/research/claude-rpc.md` — driving Claude Code CLI as a long-lived streaming subprocess
+  (code on branch `claude-rpc`).
+- `docs/research/cursor-rpc.md` — driving Cursor agent CLI the same way (code on branch `cursor-rpc`).
+
+Findings so far (2026-09-24):
+
+- **Both CLIs work as one long-lived process per chat**, with streaming, interrupt, resume and
+  concurrent chats.
+  - Claude: `claude -p --input-format stream-json --output-format stream-json --verbose
+    --include-partial-messages`.
+  - Cursor: `cursor-agent acp` (hidden subcommand, ACP = JSON-RPC 2.0 over stdio).
+- **System prompt**
+  - Claude takes `--system-prompt`.
+  - Cursor has no flag; it reads `AGENTS.md` / `.cursor/rules` in the session cwd, so each chat
+    gets a server-written workspace dir.
+- **Board API**
+  - Claude: an HTTP MCP server inside the Go binary (preferred).
+  - Cursor: MCP is blocked by team policy on the current account, so it uses local HTTP + curl for
+    now, with MCP also passed for accounts that allow it.
+- **Approvals can be routed to the browser UI**
+  - Claude: `--permission-prompt-tool stdio`.
+  - Cursor: ACP `session/request_permission`.
+- **Page context** is sent as a `<ui-context>` block before each user message.
+- **Isolation.** Each spawned agent inherits the user's global CLI config unless isolated.
+  - Claude: `--strict-mcp-config`, `--disable-slash-commands`, `--setting-sources ""`.
+  - Cursor: a server-owned `CURSOR_CONFIG_DIR`, because model changes are saved as the user's
+    global default.
