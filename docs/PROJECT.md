@@ -1,7 +1,8 @@
 # AI Whiteboard — what this project is
 
-A single Go binary you run locally. It starts an HTTP/WebSocket server, opens a browser tab, and gives
-you a whiteboard editor (Excalidraw) with **AI chats that can read and edit the boards** you have open.
+A local Go **server** and a separately built **client** (a web app in a browser tab for now, a React
+Native macOS app later) that talks to the server only through its HTTP API. Together they give you
+coding-agent chats and whiteboards (Excalidraw) with **AI chats that can read and edit their board**.
 
 It is the big sibling of the `excalidraw-live` skill
 (`~/Documents/projects/agents/claude/skills/excalidraw-live`): same idea of a local server + an
@@ -10,15 +11,13 @@ agent session starts the server. Here, **the server is the host**, and it starts
 
 ## Core ideas
 
-- **Server-first.** `ai-whiteboard [files or dir...]` starts the server and opens the browser. The
-  server owns the files on disk, the editor state, and the agent processes.
-- **Pages (boards) in tabs.** The editor holds several pages — `.excalidraw` files — shown as tabs.
-  You can open, create and switch between them.
-- **Chats sit on top of pages.** A chat is a conversation with an agent. It is not tied to one
-  page; it floats above the editor and can work on any of them.
-  - You can **reference** one or more pages explicitly in a message (e.g. `@arch.excalidraw`).
-  - If you reference **none**, the agent is told which page you are **currently looking at**
-    (active tab, and ideally viewport/selection) and treats that as the context.
+- **Server-first.** `ai-whiteboard` starts the server (or finds the running one) and opens the
+  client. Its data lives in `~/.ai-whiteboard`. The server owns the files on disk, the chats and
+  the agent processes.
+- **Chats in groups.** The app is a list of chats in user-made groups. A chat is a full
+  coding-agent session.
+- **Whiteboards live in groups.** A whiteboard lives in a group and has its own chats, which see
+  and draw on it. Other chats know nothing of whiteboards.
 - **New chat = new agent process.** Starting a chat spawns a coding agent CLI in its
   machine-readable / RPC-like streaming mode:
   - **Claude Code** (`claude` CLI, stream-json in/out), or
@@ -32,29 +31,42 @@ agent session starts the server. Here, **the server is the host**, and it starts
 - **Human and agent edit together.** Like the skill's shared mode: the user draws in the tab while
   the agent edits through the engine; conflicts mean the user wins.
 
-## Rough architecture (to be refined)
+## Rough architecture
 
 ```
- browser tab (Excalidraw editor, page tabs, chat panel(s))
-        │  WebSocket / HTTP
- Go server ── page store (.excalidraw files on disk, locks, revisions)
-        │   ── chat manager: one agent subprocess per chat
-        │        stdin  ← user messages (+ context: referenced / active page)
-        │        stdout → streamed events → UI
-        │   ── board API the agents call to read/edit pages
-        ▼
- claude / cursor-agent subprocesses
+ web client (web/, built with esbuild, opened in a browser tab)
+   │  HTTP JSON  (commands)         ▲ SSE /api/events (state, chat items, rpc calls)
+   ▼                                │
+ Go server (cmd/ai-whiteboard + internal/…)
+   ├─ store      ~/.ai-whiteboard: state.json, boards/<id>/{board.json,drawing.excalidraw}, chats/<id>/{chat.json,items.jsonl}
+   ├─ editorbridge  the one active client; takeover; rpc calls into the client's board engine
+   ├─ chats      one agent per chat; transcript → items; persistence; sticky defaults
+   │    ├─ claude adapter   claude -p stream-json (one process per chat)
+   │    └─ cursor adapter   agent acp (JSON-RPC over stdio, one process per chat)
+   ├─ boardtools the board tool list and the Cursor command parser (no dependencies; shared by adapters, prompts, boardapi)
+   ├─ boardapi   MCP at /mcp/{token} (Claude), command endpoint /agent/{token}/{tool} (Cursor)
+   └─ app        groups, archive/unarchive/delete cascades, moves
 ```
+
+The full design is in `docs/features/app.md` (what the app is) and `docs/features/app.impl.md`
+(the implementation spec).
 
 ## Open questions
 
-- Exact RPC/streaming protocol for each CLI: how to start a session, send follow-up messages,
+All answered by the research in `docs/research/` and the app feature (`docs/features/app.md`, with
+its implementation spec `docs/features/app.impl.md`):
+
+- ~~Exact RPC/streaming protocol for each CLI: how to start a session, send follow-up messages,
   stream partial output, inject a system prompt, resume, interrupt, and handle permissions/tool
-  approvals. → Being answered by prototypes, reports in `docs/research/`.
-- How agents edit boards: shell scripts against a local HTTP API (like the skill), an MCP server
-  exposed by the Go binary, or custom tools.
-- How "current page" context is delivered: prepended to each user message vs. a tool the agent calls.
-- Where the Excalidraw engine lives (browser tab only, or a headless one for renders).
+  approvals.~~ → Answered: `docs/research/claude-rpc.md`, `docs/research/cursor-rpc.md`.
+- ~~How agents edit boards: shell scripts against a local HTTP API (like the skill), an MCP server
+  exposed by the Go binary, or custom tools.~~ → Answered: board tools served by the server, as MCP
+  for Claude and as a command endpoint for Cursor (`docs/features/app.impl.md`).
+- ~~How "current page" context is delivered: prepended to each user message vs. a tool the agent
+  calls.~~ → Answered: a `<ui-context>` block before each user message (`docs/features/app.impl.md`).
+- ~~Where the Excalidraw engine lives (browser tab only, or a headless one for renders).~~ →
+  Answered: in the client only; every board tool call goes to the active client
+  (`docs/features/app.impl.md`).
 
 ## Research
 
@@ -72,7 +84,8 @@ Findings so far (2026-09-24):
 - **System prompt**
   - Claude takes `--system-prompt`.
   - Cursor has no flag; it reads `AGENTS.md` / `.cursor/rules` in the session cwd, so each chat
-    gets a server-written workspace dir.
+    gets a server-written workspace dir. *(Now: instructions travel in the conversation;
+    no files are written into the chat's folder.)*
 - **Board API**
   - Claude: an HTTP MCP server inside the Go binary (preferred).
   - Cursor: MCP is blocked by team policy on the current account, so it uses local HTTP + curl for
@@ -82,6 +95,7 @@ Findings so far (2026-09-24):
   - Cursor: ACP `session/request_permission`.
 - **Page context** is sent as a `<ui-context>` block before each user message.
 - **Isolation.** Each spawned agent inherits the user's global CLI config unless isolated.
+  *(Isolation is no longer used: every chat runs with the user's own settings.)*
   - Claude: `--strict-mcp-config`, `--disable-slash-commands`, `--setting-sources ""`.
   - Cursor: a server-owned `CURSOR_CONFIG_DIR`, because model changes are saved as the user's
     global default.

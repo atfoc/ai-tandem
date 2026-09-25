@@ -89,8 +89,12 @@ internal/server/server.go            new: HTTP routes (from prototype main.go's 
 internal/server/guard.go             new: Host check and active-client check
 
 web/package.json                     from prototype, unchanged except a "test" script
-web/build.mjs                        from prototype, unchanged
-web/index.html                       from prototype, unchanged
+web/build.mjs                        from prototype; also copies web/public into dist
+web/index.html                       from prototype; adds the favicon links
+web/public/                          favicon.ico, favicon.png, apple-touch-icon.png (made by make-icons.py)
+assets/icon/artwork.png              icon artwork (full-bleed, generated)
+assets/icon/make-icons.py            builds AppIcon.png/.icns and web/public from the artwork
+assets/icon/AppIcon.icns             macOS app icon for the .app bundle (Contents/Resources)
 web/src/main.tsx                     changed
 web/src/api.ts                       new (from prototype conn.ts's `api` object)
 web/src/conn.ts                      changed: SSE, active-client handling, rpc answers
@@ -141,7 +145,7 @@ bin/ai-whiteboard                              # starts the server (or finds the
 ```
 
 - `.gitignore` gets `bin/`, `web/node_modules/`, `web/dist/`.
-- `web/package.json` gets `"test": "node --test --experimental-strip-types test/"`.
+- `web/package.json` gets `"test": "node --test --experimental-strip-types 'test/*.test.ts'"`.
 
 ---
 
@@ -324,8 +328,6 @@ type CatalogModel struct {
 }
 
 type Usage struct {
-	CostUSD      float64 `json:"costUsd"`      // total over the chat's life (Claude only)
-	LastTurnCost float64 `json:"lastTurnCost"` // Claude only
 	CtxIn        int     `json:"ctxIn"`        // Claude: last model call's input + cache tokens; Cursor: the session store's used_tokens
 	CtxOut       int     `json:"ctxOut"`       // Claude only
 	CtxWindow    int     `json:"ctxWindow"`    // Claude: from modelUsage; Cursor: the session store's max_tokens
@@ -552,7 +554,7 @@ Resolve:
   gd, ok := d.Groups[g]
   cwd = first non-empty of gd.Cwd, d.Last.Cwd, fallbackCwd
   if cwd no longer exists on disk: cwd = fallbackCwd
-  mc = gd.ByAgent[a] if set, else d.Last.ByAgent[a] if set, else cat.Default (Claude: sonnet/high)
+  mc = gd.ByAgent[a] if its Model is set, else d.Last.ByAgent[a] if its Model is set, else cat.Default (Claude: sonnet/high)
   if cat != nil and mc.Model not in cat.Models: mc = cat.Default
   if mc.Model's CatalogModel has no Efforts: mc.Effort = ""
 
@@ -562,7 +564,7 @@ RecordChange:
      cur := target.ByAgent[a]
      if change.Model != "": cur.Model = change.Model
      if change.Effort != "": cur.Effort = change.Effort
-     target.ByAgent[a] = cur
+     if cur.Model != "": target.ByAgent[a] = cur      // never store an empty choice: it would hide "last"
 
 SeedGroup:   d.Groups[g] = deep copy of d.Last
 ```
@@ -571,7 +573,9 @@ SeedGroup:   d.Groups[g] = deep copy of d.Last
   defaults*).
 - Board chats use the board's group (the caller passes the board's group).
 - Nothing here touches existing chats; moving a chat never calls these.
-- When a new chat is created, the resolved values are **not** recorded (only user changes are).
+- When a new chat is created, the resolved values are **not** recorded. They are recorded when the
+  chat's first message is sent (`Send` calls `RecordChange` with the chat's folder, model and effort),
+  so sending confirms them as chosen even if the user changed nothing.
 - The agent order in menus is fixed (Claude, then Cursor); nothing records which agent was used
   last.
 
@@ -627,7 +631,7 @@ const (
 	EvToolDenied                  // ToolID
 	EvPermRequest                 // PermID, ToolName, ToolID, Input
 	EvUsage                       // CtxIn/CtxOut/CtxWindow (any may be 0 = unchanged), or CtxError
-	EvTurnEnd                     // CostDelta, Aborted, Error
+	EvTurnEnd                     // Aborted, Error
 	EvExit                        // ExitErr
 )
 
@@ -645,7 +649,6 @@ type Event struct {
 	PermID    string
 	CtxIn, CtxOut, CtxWindow int
 	CtxError  string // EvUsage: context usage could not be read (the numbers are then all 0)
-	CostDelta float64
 	Aborted   bool
 	Error     string
 	ExitErr   string
@@ -737,7 +740,7 @@ close open text: if open >= 0 { set(open, done=true); dirty[open]=true; open = -
 Flush(all): lines for each dirty index (and, if all, every item not settled) → append to file; clear dirty
 ```
 
-Usage (`EvUsage`, `EvTurnEnd.CostDelta`) is not kept here; the chat manager applies it to
+Usage (`EvUsage`, and the turn count from `EvTurnEnd`) is not kept here; the chat manager applies it to
 `ChatMeta.Usage`.
 
 ### 4.5 Claude adapter: `internal/claude/`
@@ -761,7 +764,6 @@ type proc struct {
 	writeMu   sync.Mutex
 	events    chan agent.Event   // buffered 1024
 	perms     sync.Map           // request id → struct{} (pending)
-	lastTotal float64            // cumulative total_cost_usd of this process
 	stderr    *bytes.Buffer
 	s         *Spawner
 }
@@ -857,9 +859,8 @@ switch type:
       text and message id not in streamed → EvText{MsgID, Text}
  "user": for each tool_result b → EvToolResult{ToolID: b.tool_use_id, Result: text of b.content, IsError: b.is_error}
  "result":
-      total := total_cost_usd; delta := max(0, total - p.lastTotal); p.lastTotal = total
       win := max(modelUsage[*].contextWindow)
-      events: [EvUsage{CtxWindow: win}, EvTurnEnd{CostDelta: delta,
+      events: [EvUsage{CtxWindow: win}, EvTurnEnd{
                Aborted: terminal_reason == "aborted_streaming",
                Error: is_error && not aborted ? (result or "Error: "+terminal_reason) : ""}]
 ```
@@ -992,7 +993,7 @@ return p
 ```
 conn.Call("initialize", {protocolVersion: 1,
     clientCapabilities: {fs: {readTextFile: false, writeTextFile: false}, terminal: false},
-    clientInfo: {name: "ai-whiteboard", version: Version}})
+    clientInfo: {name: "ai-whiteboard", version: version.Version}})
 conn.Call("authenticate", {methodId: "cursor_login"})
 if o.Resume:
    p.loading = true
@@ -1096,9 +1097,8 @@ command, no request arrives and nothing is needed.
 
 `Close`: close stdin, kill after 3 s.
 
-Usage: ACP reports no tokens and no cost (research: every `session/prompt` result is only
-`{stopReason}`, and Cursor never sends `usage_update`). `CostDelta` stays 0 and the turn cost is
-hidden for Cursor chats. The context meter reads Cursor's own session store instead
+Usage: ACP reports no tokens (research: every `session/prompt` result is only
+`{stopReason}`, and Cursor never sends `usage_update`). The context meter reads Cursor's own session store instead
 (`internal/cursor/ctxusage.go`, below).
 
 **Resolved (context meter):** the Cursor context meter comes **only** from Cursor's session store,
@@ -1189,11 +1189,13 @@ ParseCatalog:
   opt := configOptions[*] where id == "model"; values := opt.options[*].value (fallback: models.availableModels[*].modelId)
   names := models.availableModels: modelId → name
   for v in values: base, params := split(v); add base once (Label: names[v] or names[base] or base,
-                   stripping a trailing reasoning word from the label); if params.reasoning: add to base.Efforts
-  Default: split(opt.currentValue or models.currentModelId) → {Model: base, Effort: params.reasoning}
+                   stripping a trailing reasoning word from the label); e := effortOf(params): the first non-empty of
+                   params.reasoning, params.reasoning_effort, params.effort (Cursor's name varies by model;
+                   `thinking` is not an effort); if e: add to base.Efforts
+  Default: split(opt.currentValue or models.currentModelId) → {Model: base, Effort: effortOf(params)}
   Values = values
 ValueFor:
-  first v in c.Values with split(v).base == base and params.reasoning == effort
+  first v in c.Values with split(v).base == base and effortOf(params) == effort
   else first v with that base; else ""
 ```
 
@@ -1412,7 +1414,7 @@ for ev := range ag.Events():
    EvCatalog: Store.Update(s.Cursor = ev.Catalog); Bridge.Broadcast({type:"catalog", agent:"cursor", catalog})
    EvUsage:   if ev.CtxError != "": c.meta.Usage.CtxError = ev.CtxError       // numbers keep their last good values
               else: apply non-zero fields to c.meta.Usage (CtxIn/CtxOut/CtxWindow); c.meta.Usage.CtxError = ""
-   EvTurnEnd: u := &c.meta.Usage; u.CostUSD += ev.CostDelta; u.LastTurnCost = ev.CostDelta; u.Turns++
+   EvTurnEnd: c.meta.Usage.Turns++
               c.meta.TurnActive = false
    EvExit:    c.ag = nil
   ups := c.tr.Apply(ev)
@@ -1440,6 +1442,7 @@ if Archived → ErrArchived
 if busy(c) → ErrBusy                                      // one turn at a time; nothing is queued or written
 if err := spawn(c); err != nil → return err            // resume if needed; 409 for folder missing
 first := !c.meta.Locked
+if first: Store.Update(defaults.RecordChange(&s.Defaults, GroupOf(meta), agent, meta.Cwd, {meta.Model, meta.Effort})); queue {type:"defaults"}
 c.meta.Locked = true; c.meta.TurnActive = true
 blocks := []
 if c.meta.Board != "":
@@ -2519,8 +2522,7 @@ export async function newGroup(): Promise<string>              // the header ope
 - `ChatHeader` (v2): glyph, name (click to rename), and the second line: `▭ board ·` for board
   chats, *Claude Code* or *Cursor*, the folder (`tildify`), the status. Actions: `×` for board
   chats (hides the panel).
-- `Thread` (prototype) renders `items[chat].items` with `ItemView`; the turn-cost line shows only
-  for Claude (`usage.lastTurnCost > 0`).
+- `Thread` (prototype) renders `items[chat].items` with `ItemView`.
 - `EmptyThread` (prototype): plain chats "The same session you get in a terminal, started in
   <folder>"; board chats "Ask about or change <board>. Type @ to point at other boards." The mock
   notes are gone.
@@ -2710,7 +2712,7 @@ environment variable) that plays a scripted list of stdout lines and records std
   always present; none of the isolation flags.
 - `AppDirRules` for a root under home (`~/…`) and outside it (`//…`).
 - `translate` over the research's sample lines (claude-rpc report, section 2) gives the expected
-  events; a `result` after an earlier result gives the cost difference; subagent lines give none.
+  events; a `result` gives the largest `modelUsage` context window; subagent lines give none.
 - Fake process: a `can_use_tool` for `touch ~/.ai-whiteboard/x` is denied without an
   `EvPermRequest`; a `can_use_tool` for `touch a.txt` yields `EvPermRequest`, and `Decide(true)`
   writes an allow `control_response` with `updatedInput`.
@@ -2790,7 +2792,7 @@ environment variable) that plays a scripted list of stdout lines and records std
 - `Stop` denies a pending permission (the fake records `Decide(false)`), closes the agent, clears
   `turnActive`.
 - `Delete` removes the chat folder and broadcasts `chat_removed`.
-- Usage: two turn ends with cost deltas add up in `usage.costUsd`; `lastTurnCost` is the last delta.
+- Usage: two turn ends give `usage.turns` 2 and clear `turnActive`.
 - `EvUsage{CtxError}` sets `usage.ctxError` and keeps `ctxIn`/`ctxWindow`; the next `EvUsage` with
   numbers clears it.
 - An event from a replaced process (old gen) is ignored.

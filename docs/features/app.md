@@ -215,7 +215,8 @@ Boards default to a clean, technical look instead of Excalidraw's hand-drawn one
 ## Sticky defaults
 
 When the user changes the folder, model or effort in a chat's composer, that becomes the default
-for the **next new chat in the same group**.
+for the **next new chat in the same group**. Sending a chat's first message also counts: the
+chat's folder, model and effort become the defaults, even the ones the user did not change.
 
 - **The folder** is remembered **per group**, for all agents.
 - **Model and effort** are remembered **per group and per agent**. A group remembers Claude's last
@@ -232,8 +233,7 @@ for the **next new chat in the same group**.
 
 ## Persistence
 
-- Chats are kept on disk: their names, groups, settings, whole history, and cost and context
-  usage.
+- Chats are kept on disk: their names, groups, settings, whole history, and context usage.
 - After the server or app restarts, every chat is in the sidebar where it was. Opening one shows
   its history and does not start its agent, so old chats can be read without starting anything.
 - Sending a message **resumes the same agent session**, so the agent remembers the conversation.

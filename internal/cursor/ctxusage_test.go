@@ -1,0 +1,172 @@
+package cursor
+
+import (
+	"encoding/hex"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+)
+
+const testSessionID = "0f4c2d9e-1a2b-4c3d-8e9f-001122334455"
+
+var testBlobID = "3b1f0c9a7e5d2b4f6a8c0e1d3f5b7a9c2e4d6f8a0b1c3d5e7f9a1b2c3d4e5f60"
+
+func pbVarint(v uint64) []byte {
+	var b []byte
+	for v >= 0x80 {
+		b = append(b, byte(v)|0x80)
+		v >>= 7
+	}
+	return append(b, byte(v))
+}
+
+func pbKey(num, wt int) []byte { return pbVarint(uint64(num<<3 | wt)) }
+
+func pbUint(num int, v uint64) []byte { return append(pbKey(num, wireVarint), pbVarint(v)...) }
+
+func pbBytes(num int, b []byte) []byte {
+	out := append(pbKey(num, wireBytes), pbVarint(uint64(len(b)))...)
+	return append(out, b...)
+}
+
+func cat(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+// sampleRoot is a ConversationStateStructure-like root blob: other fields around a field 5
+// token_details {used_tokens, max_tokens}.
+func sampleRoot(used, max uint64) []byte {
+	details := cat(pbUint(1, used), pbUint(2, max))
+	return cat(
+		pbBytes(1, []byte("some turn data")),
+		pbUint(3, 42),
+		pbKey(4, wireFixed64), []byte{1, 2, 3, 4, 5, 6, 7, 8},
+		pbBytes(5, details),
+		pbBytes(5, cat(pbUint(1, 1), pbUint(2, 2))), // a later field 5 is ignored
+		pbBytes(8, []byte("tail")),
+	)
+}
+
+func needSQLite(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not found")
+	}
+}
+
+// makeStore creates <home>/.cursor/acp-sessions/<id>/store.db and runs sql in it.
+func makeStore(t *testing.T, home, sql string) {
+	t.Helper()
+	db := StorePath(home, testSessionID)
+	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema := "PRAGMA journal_mode=WAL; CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT); CREATE TABLE blobs(id TEXT PRIMARY KEY, data BLOB);"
+	if out, err := exec.Command("sqlite3", db, schema+sql).CombinedOutput(); err != nil {
+		t.Fatalf("sqlite3: %v: %s", err, out)
+	}
+}
+
+func metaRow(json string) string {
+	return "INSERT INTO meta VALUES('0', '" + hex.EncodeToString([]byte(json)) + "');"
+}
+
+func blobRow(id string, data []byte) string {
+	return "INSERT INTO blobs VALUES('" + id + "', X'" + hex.EncodeToString(data) + "');"
+}
+
+func goodMeta() string { return metaRow(`{"latestRootBlobId":"` + testBlobID + `","other":1}`) }
+
+func TestReadContextUsage(t *testing.T) {
+	needSQLite(t)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	home := t.TempDir()
+	makeStore(t, home, goodMeta()+blobRow(testBlobID, sampleRoot(15989, 272000)))
+
+	u, err := ReadContextUsage("sqlite3", home, testSessionID)
+	if err != nil {
+		t.Fatalf("ReadContextUsage: %v", err)
+	}
+	if u != (ContextUsage{Used: 15989, Max: 272000}) {
+		t.Fatalf("got %+v, want {15989 272000}", u)
+	}
+}
+
+func TestReadContextUsageErrors(t *testing.T) {
+	needSQLite(t)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	const format = "Cursor session store has an unexpected format"
+	good := sampleRoot(15989, 272000)
+
+	cases := []struct {
+		name    string
+		sql     string // "" = no store.db at all
+		sqlite  string
+		wantErr string
+	}{
+		{"no store.db", "", "sqlite3", "Cursor session store not found"},
+		{"sqlite3 missing", goodMeta() + blobRow(testBlobID, good), "/nonexistent", "sqlite3 not found; the context meter needs it"},
+		{"no meta row", blobRow(testBlobID, good), "sqlite3", format},
+		{"meta not hex", "INSERT INTO meta VALUES('0', 'not hex at all');" + blobRow(testBlobID, good), "sqlite3", format},
+		{"meta not json", metaRow("not json") + blobRow(testBlobID, good), "sqlite3", format},
+		{"blob id with quote", metaRow(`{"latestRootBlobId":"x' OR '1'='1"}`) + blobRow(testBlobID, good), "sqlite3", format},
+		{"no blob row", goodMeta(), "sqlite3", format},
+		{"blob without field 5", goodMeta() + blobRow(testBlobID, cat(pbBytes(1, []byte("x")), pbUint(3, 7))), "sqlite3", format},
+		{"used_tokens 0", goodMeta() + blobRow(testBlobID, cat(pbBytes(5, cat(pbUint(1, 0), pbUint(2, 272000))))), "sqlite3", format},
+		{"max_tokens 0", goodMeta() + blobRow(testBlobID, cat(pbBytes(5, pbUint(1, 15989)))), "sqlite3", format},
+		{"truncated blob", goodMeta() + blobRow(testBlobID, cat(pbKey(1, wireBytes), pbVarint(100), []byte("short"))), "sqlite3", format},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			if c.sql != "" {
+				makeStore(t, home, c.sql)
+			}
+			_, err := ReadContextUsage(c.sqlite, home, testSessionID)
+			if err == nil {
+				t.Fatalf("got no error, want %q", c.wantErr)
+			}
+			if err.Error() != c.wantErr {
+				t.Fatalf("got %q, want %q", err.Error(), c.wantErr)
+			}
+		})
+	}
+}
+
+func TestReadContextUsageSQLiteFails(t *testing.T) {
+	needSQLite(t)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	home := t.TempDir()
+	db := StorePath(home, testSessionID)
+	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Not a database: sqlite3 exits non-zero.
+	if err := os.WriteFile(db, []byte("this is not a sqlite database, just some bytes to fail on"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ReadContextUsage("sqlite3", home, testSessionID)
+	if err == nil {
+		t.Fatal("got no error")
+	}
+	const prefix = "Cannot read Cursor session store: "
+	if len(err.Error()) <= len(prefix) || err.Error()[:len(prefix)] != prefix {
+		t.Fatalf("got %q, want prefix %q", err.Error(), prefix)
+	}
+}
+
+func TestStorePath(t *testing.T) {
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	if got, want := StorePath("/home/u", "abc"), "/home/u/.cursor/acp-sessions/abc/store.db"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	t.Setenv("CURSOR_CONFIG_DIR", "/cfg/cursor")
+	if got, want := StorePath("/home/u", "abc"), "/cfg/cursor/acp-sessions/abc/store.db"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
