@@ -110,3 +110,49 @@ func TestExpand(t *testing.T) {
 		}
 	}
 }
+
+func TestCommand(t *testing.T) {
+	for _, c := range []struct {
+		args      []string
+		resources string
+		cmd       string
+		rest      int
+	}{
+		{nil, "", "serve", 0},
+		{nil, "/A.app/Contents/Resources", "launch", 0}, // Spotlight or Finder
+		{[]string{"-port", "1"}, "/A.app/Contents/Resources", "serve", 2},
+		{[]string{"serve", "-no-open"}, "", "serve", 1},
+		{[]string{"launch"}, "", "launch", 0},
+		{[]string{"stop", "-home", "/x"}, "", "stop", 2},
+	} {
+		cmd, rest := command(c.args, c.resources)
+		if cmd != c.cmd || len(rest) != c.rest {
+			t.Errorf("command(%q, %q) = %q, %q; want %q with %d args", c.args, c.resources, cmd, rest, c.cmd, c.rest)
+		}
+	}
+}
+
+func TestResourcesFor(t *testing.T) {
+	for exe, want := range map[string]string{
+		"/Applications/AI Whiteboard.app/Contents/MacOS/ai-whiteboard": "/Applications/AI Whiteboard.app/Contents/Resources",
+		"/repo/bin/ai-whiteboard":                                      "",
+		"/x/Contents/MacOS/ai-whiteboard":                              "", // not inside a .app
+		"/x/A.app/Contents/bin/ai-whiteboard":                          "",
+	} {
+		if got := resourcesFor(exe); got != want {
+			t.Errorf("resourcesFor(%q) = %q, want %q", exe, got, want)
+		}
+	}
+}
+
+func TestUsePath(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin:/extra")
+	usePath("/opt/homebrew/bin:/usr/bin")
+	if got, want := os.Getenv("PATH"), "/opt/homebrew/bin:/usr/bin:/bin:/extra"; got != want {
+		t.Errorf("PATH = %q, want %q", got, want)
+	}
+	usePath("")
+	if got, want := os.Getenv("PATH"), "/opt/homebrew/bin:/usr/bin:/bin:/extra"; got != want {
+		t.Errorf("empty login PATH changed PATH to %q", got)
+	}
+}

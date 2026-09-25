@@ -1,6 +1,14 @@
 // ai-whiteboard: a local server that keeps Excalidraw boards and chats with coding agents
 // (Claude Code, Cursor) that read and edit them. The web client is a separate program; the
 // server serves its built folder for convenience.
+//
+// Commands:
+//
+//	ai-whiteboard [serve] [flags]  run the server in the foreground (or open the running one)
+//	ai-whiteboard launch [flags]   start the server in the background if needed, open it, exit
+//	ai-whiteboard stop [flags]     stop the running server
+//
+// Inside AI Whiteboard.app, running with no arguments means launch (spec 4.14).
 package main
 
 import (
@@ -32,35 +40,85 @@ import (
 	"ai-whiteboard/internal/store"
 )
 
+// options are the flags every command takes.
+type options struct {
+	port                 int
+	home, client, cwd    string
+	noOpen               bool
+	claudeBin, cursorBin string
+	paths                store.Paths
+}
+
 func main() {
+	cmd, args := command(os.Args[1:], bundleResources())
+	o := parseFlags(cmd, args)
+	switch cmd {
+	case "serve":
+		serve(o)
+	case "launch":
+		launch(o, args)
+	case "stop":
+		stop(o)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q (serve, launch, stop)\n", cmd)
+		os.Exit(2)
+	}
+}
+
+// command splits the arguments into a command and its flags. With no command it is serve, except
+// with no arguments at all inside an app bundle (a Spotlight or Finder launch), where it is launch.
+func command(args []string, resources string) (string, []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	if len(args) == 0 && resources != "" {
+		return "launch", nil
+	}
+	return "serve", args
+}
+
+func parseFlags(cmd string, args []string) options {
 	here, _ := os.Getwd()
-	portFlag := flag.Int("port", 4747, "listen port")
-	homeFlag := flag.String("home", "~/.ai-whiteboard", "data folder")
-	client := flag.String("client", "web/dist", `built web client to serve ("" = serve none)`)
-	noOpen := flag.Bool("no-open", false, "don't open the browser")
-	cwd := flag.String("cwd", here, "default working folder for new chats")
-	claudeBin := flag.String("claude", "claude", "Claude Code binary")
-	cursorBin := flag.String("cursor", "agent", "Cursor agent binary")
-	flag.Parse()
+	client := "web/dist"
+	if res := bundleResources(); res != "" {
+		client = filepath.Join(res, "web")
+	}
+	var o options
+	fs := flag.NewFlagSet("ai-whiteboard "+cmd, flag.ExitOnError)
+	fs.IntVar(&o.port, "port", 4747, "listen port")
+	fs.StringVar(&o.home, "home", "~/.ai-whiteboard", "data folder")
+	fs.StringVar(&o.client, "client", client, `built web client to serve ("" = serve none)`)
+	fs.BoolVar(&o.noOpen, "no-open", false, "don't open the browser")
+	fs.StringVar(&o.cwd, "cwd", here, "default working folder for new chats")
+	fs.StringVar(&o.claudeBin, "claude", "claude", "Claude Code binary")
+	fs.StringVar(&o.cursorBin, "cursor", "agent", "Cursor agent binary")
+	fs.Parse(args)
 
 	home, _ := os.UserHomeDir()
-	root, err := filepath.Abs(expand(*homeFlag, home))
+	root, err := filepath.Abs(expand(o.home, home))
 	if err != nil {
 		log.Fatalf("data folder: %v", err)
 	}
-	p := store.NewPaths(root)
+	o.paths = store.NewPaths(root)
+	return o
+}
 
-	if url, ok := findRunning(p, *portFlag); ok {
+// serve runs the server in the foreground until SIGINT or SIGTERM.
+func serve(o options) {
+	home, _ := os.UserHomeDir()
+	p := o.paths
+
+	if url, ok := findRunning(p, o.port); ok {
 		fmt.Println("AI Whiteboard is already running at", url)
-		if !*noOpen {
+		if !o.noOpen {
 			openBrowser(url)
 		}
 		return
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *portFlag))
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", o.port))
 	if err != nil {
-		log.Fatalf("cannot listen on port %d (port in use by another program?): %v", *portFlag, err)
+		log.Fatalf("cannot listen on port %d (port in use by another program?): %v", o.port, err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 
@@ -72,11 +130,11 @@ func main() {
 	br := editorbridge.New(func() any { return a.Snapshot() })
 	bs := boards.New(st, br)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	cursorSpawner := &cursor.Spawner{Bin: *cursorBin, AppRoot: p.Root, Home: home}
-	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: *cwd, BaseURL: base,
-		Namer: chats.ClaudeNamer{Bin: *claudeBin},
+	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
+	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd, BaseURL: base,
+		Namer: chats.ClaudeNamer{Bin: o.claudeBin},
 		Spawners: map[model.AgentKind]agent.Spawner{
-			model.Claude: &claude.Spawner{Bin: *claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()},
+			model.Claude: &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()},
 			model.Cursor: cursorSpawner,
 		}})
 	if err := bs.Load(); err != nil { // before chats: board chats look up their board
@@ -86,12 +144,12 @@ func main() {
 		log.Fatalf("loading chats: %v", err)
 	}
 	go refreshCursorCatalog(cursorSpawner, st, br)
-	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Home: home, DefaultCwd: *cwd, DataDir: p.Root}
+	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
 	}
 	srv := &server.Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}, Bridge: br,
-		Client: *client, Port: port}
+		Client: o.client, Port: port}
 	if err := store.WriteServerFile(p, port); err != nil {
 		log.Printf("server.json: %v", err)
 	}
@@ -102,7 +160,7 @@ func main() {
 		os.Exit(0)
 	}, syscall.SIGINT, syscall.SIGTERM)
 
-	if *client != "" && !*noOpen {
+	if o.client != "" && !o.noOpen {
 		openBrowser(base + "/")
 	}
 	log.Printf("AI Whiteboard: %s  (data in %s)", base, p.Root)
@@ -139,7 +197,7 @@ func findRunning(p store.Paths, port int) (string, bool) {
 	if port > 0 && (len(ports) == 0 || ports[0] != port) {
 		ports = append(ports, port)
 	}
-	c := &http.Client{Timeout: time.Second}
+	c := httpClient()
 	for _, pt := range ports {
 		base := fmt.Sprintf("http://127.0.0.1:%d", pt)
 		if isOurs(c, base) {
@@ -148,6 +206,9 @@ func findRunning(p store.Paths, port int) (string, bool) {
 	}
 	return "", false
 }
+
+// httpClient is for asking a local server /api/hello: it must answer within 1 s.
+func httpClient() *http.Client { return &http.Client{Timeout: time.Second} }
 
 func isOurs(c *http.Client, base string) bool {
 	resp, err := c.Get(base + "/api/hello")

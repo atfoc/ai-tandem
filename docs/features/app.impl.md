@@ -57,7 +57,8 @@ Two programs:
 ### 2.1 Files after this feature
 
 ```
-cmd/ai-whiteboard/main.go            new (replaces the prototype's main.go)
+cmd/ai-whiteboard/main.go            new (replaces the prototype's main.go): commands serve, launch, stop
+cmd/ai-whiteboard/launch.go          new: launch and stop, app bundle detection, login-shell PATH (4.14)
 internal/model/model.go              new: shared types (groups, boards, chats, items, defaults, catalog)
 internal/store/paths.go              new: the data folder layout
 internal/store/store.go              new: state.json load/save, atomic JSON writes, server.json
@@ -95,6 +96,8 @@ web/public/                          favicon.ico, favicon.png, apple-touch-icon.
 assets/icon/artwork.png              icon artwork (full-bleed, generated)
 scripts/make-icons.py                builds AppIcon.png/.icns and web/public from the artwork
 assets/icon/AppIcon.icns             macOS app icon for the .app bundle (Contents/Resources)
+scripts/build-app.sh                 builds bin/AI Whiteboard.app (4.14)
+scripts/install-app.sh               copies it into ~/Applications (4.14)
 web/src/main.tsx                     changed
 web/src/api.ts                       new (from prototype conn.ts's `api` object)
 web/src/conn.ts                      changed: SSE, active-client handling, rpc answers
@@ -142,6 +145,9 @@ docs/PROJECT.md                      changed (section 9)
 cd web && npm install && node build.mjs        # builds web/dist
 go build -o bin/ai-whiteboard ./cmd/ai-whiteboard
 bin/ai-whiteboard                              # starts the server (or finds the running one) and opens the client
+
+scripts/build-app.sh                           # or: builds bin/AI Whiteboard.app (section 4.14)
+scripts/install-app.sh                         # copies it into ~/Applications; then start it from Spotlight
 ```
 
 - `.gitignore` gets `bin/`, `web/node_modules/`, `web/dist/`.
@@ -2021,10 +2027,17 @@ active or pending client.
 ### 4.13 Entry point: `cmd/ai-whiteboard/main.go`
 
 ```
-flags:
+commands:
+  ai-whiteboard [serve] [flags]  run the server in the foreground (or open the running one)
+  ai-whiteboard launch [flags]   start the server in the background if needed, open it, exit (4.14)
+  ai-whiteboard stop [flags]     SIGTERM the running server (pid from server.json), wait up to 10 s
+  no arguments inside an app bundle = launch
+
+flags (every command):
   -port 4747            listen port
   -home ~/.ai-whiteboard data folder
-  -client web/dist      built web client to serve ("" = serve none)
+  -client web/dist      built web client to serve ("" = serve none); inside an app bundle the
+                        default is Contents/Resources/web
   -no-open              don't open the browser
   -cwd <start folder>   default working folder for new chats (the prototype's -cwd)
   -claude claude        Claude Code binary
@@ -2089,6 +2102,44 @@ func openBrowser(url string) { exec.Command("open", url).Start() } // prototype
   separately. The server still serves the client's built folder as static files, so one command
   starts everything; the client uses only the API above, and `-client ""` runs the server on its
   own.
+
+### 4.14 Packaging for macOS: `scripts/build-app.sh`, `scripts/install-app.sh`
+
+The app starts from Spotlight like any Mac app. The bundle wraps the same binary; there is no
+native window (the client still opens in the browser).
+
+```
+bin/AI Whiteboard.app/            built by scripts/build-app.sh (bin/ is ignored by git)
+  Contents/
+    Info.plist                    CFBundleExecutable=ai-whiteboard, CFBundleIconFile=AppIcon,
+                                  CFBundleIdentifier=local.ai-whiteboard, LSUIElement=true
+    MacOS/ai-whiteboard           the Go binary, version set with -ldflags from `git describe`
+    Resources/web/                copy of web/dist
+    Resources/AppIcon.icns        from assets/icon (scripts/make-icons.py)
+```
+
+- `build-app.sh` builds the client (`npm ci` if needed, `node build.mjs`), then the binary, writes
+  `Info.plist`, and signs the bundle ad hoc (`codesign -s -`), which is enough on this Mac.
+- `install-app.sh` replaces `~/Applications/AI Whiteboard.app` with the built one (`ditto`),
+  registers it with Launch Services (`lsregister -f`, so the icon updates) and indexes it for
+  Spotlight (`mdimport`). If `server.json` exists, it says a server from the previous build is
+  still running and how to stop it.
+- **The client is not embedded in the binary.** `//go:embed` would need `web/dist` (ignored by
+  git) before any `go build` or `go test`. The binary finds `Contents/Resources/web` from
+  `os.Executable()` instead; outside a bundle the default stays `web/dist`.
+- **Launch always exits.** macOS runs one copy of an app: opening it again only sends the running
+  copy a reopen event, which a plain Go program never sees. So the bundle's program is a launcher:
+  - server answering `/api/hello` (`findRunning`) → open its URL, exit;
+  - otherwise read the login shell's `PATH` (`$SHELL -ilc`, 5 s limit; apps from Spotlight get only
+    `/usr/bin:/bin:/usr/sbin:/sbin`, so `claude`, `agent` and the agents' own tools would not be
+    found) and put it first; start `ai-whiteboard serve -no-open <launch's flags>` in its own
+    session (`Setsid`), working folder `~` (the default for new chats), output appended to
+    `<data>/server.log`; poll `findRunning` every 100 ms; open the URL, exit.
+  - the server exits while starting, or does not answer in 30 s → an alert (`osascript display
+    alert`) with the last lines of the log, since a Spotlight launch has no terminal.
+- `LSUIElement` keeps it out of the Dock: the launcher never checks in with the window server, so
+  a Dock icon would bounce and stay. Quitting is `ai-whiteboard stop` (the bundle's binary works
+  from a terminal too); closing the tab leaves the server running, as before.
 
 ---
 
