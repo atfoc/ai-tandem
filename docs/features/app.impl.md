@@ -31,11 +31,12 @@ Two programs:
    │  HTTP JSON  (commands)         ▲ SSE /api/events (state, chat items, rpc calls)
    ▼                                │
  Go server (cmd/ai-whiteboard + internal/…)
-   ├─ store      ~/.ai-whiteboard: state.json, boards/*.excalidraw, chats/<id>/{chat.json,items.jsonl}
-   ├─ hub        the one active client; takeover; rpc calls into the client's board engine
+   ├─ store      ~/.ai-whiteboard: state.json, boards/<id>/{board.json,drawing.excalidraw}, chats/<id>/{chat.json,items.jsonl}
+   ├─ editorbridge  the one active client; takeover; rpc calls into the client's board engine
    ├─ chats      one agent per chat; transcript → items; persistence; sticky defaults
    │    ├─ claude adapter   claude -p stream-json (one process per chat)
    │    └─ cursor adapter   agent acp (JSON-RPC over stdio, one process per chat)
+   ├─ boardtools the board tool list and the Cursor command parser (no dependencies; shared by adapters, prompts, boardapi)
    ├─ boardapi   MCP at /mcp/{token} (Claude), command endpoint /agent/{token}/{tool} (Cursor)
    └─ app        groups, archive/unarchive/delete cascades, moves
 ```
@@ -76,10 +77,11 @@ internal/cursor/config.go            new: deny rules in the user's Cursor config
 internal/cursor/ctxusage.go          new: context usage read from Cursor's session store (sqlite3)
 internal/chats/manager.go            new (from prototype chats.go's Chats/Chat)
 internal/chats/namer.go              new (from prototype autoName)
-internal/hub/hub.go                  new (from prototype hub.go)
-internal/boardapi/tools.go           new (from prototype mcp.go's tool list)
+internal/editorbridge/bridge.go      new (from prototype hub.go)
+internal/boardtools/tools.go         new (from prototype mcp.go's tool list)
+internal/boardtools/command.go       new: Cursor command parser
 internal/boardapi/mcp.go             new (from prototype mcp.go)
-internal/boardapi/command.go         new: Cursor command endpoint + command parser
+internal/boardapi/command.go         new: Cursor command endpoint
 internal/prompts/prompts.go          new
 internal/prompts/whiteboard.md       new (replaces prototype prompt.md and prompt-append.md)
 internal/app/app.go                  new: groups, moves, archive, unarchive, delete
@@ -150,15 +152,20 @@ bin/ai-whiteboard                              # starts the server (or finds the
 ```
 ~/.ai-whiteboard/
   server.json                 {"pid": 1234, "port": 4747, "started": "..."}  (only while running)
-  state.json                  groups, boards, defaults, catalogs
-  boards/<name>.excalidraw    one file per board (active and archived)
+  state.json                  groups, defaults, catalogs
+  boards/<id>/board.json      board metadata
+  boards/<id>/drawing.excalidraw  the drawing
   chats/<chatId>/chat.json    chat metadata
   chats/<chatId>/items.jsonl  chat history
 ```
 
 - Created on first start with mode 0700 (the folder) and 0600/0644 (files as below).
-- Board files are plain `.excalidraw` files named after the board, so Reveal in Finder shows a
-  normal file.
+- Boards and chats follow one pattern: one folder per item, named by its id, holding a small
+  metadata file and the content. `state.json` only indexes groups and defaults; the lists of boards
+  and chats are the folders themselves.
+- The drawing is a plain `.excalidraw` file. The folder is named by the board's id
+  (`boards/b_x7k2m9qa/`), so names need not be unique and a rename never touches the disk layout.
+  Reveal in Finder shows `drawing.excalidraw` inside the board's folder.
 - Nothing is imported from the prototype's `boards/` folder (**feature: nothing is carried over**).
 
 ### 3.2 `internal/store/paths.go`
@@ -180,7 +187,8 @@ func NewPaths(root string) Paths {
 		State: filepath.Join(root, "state.json"), Server: filepath.Join(root, "server.json")}
 }
 
-func (p Paths) BoardFile(name string) string { return filepath.Join(p.Boards, name+".excalidraw") }
+func (p Paths) BoardDir(id string) string   { return filepath.Join(p.Boards, id) }
+func (p Paths) BoardFile(id string) string  { return filepath.Join(p.Boards, id, "drawing.excalidraw") }
 func (p Paths) ChatDir(id string) string    { return filepath.Join(p.Chats, id) }
 
 // Contains reports whether path is Root or inside it, after resolving ~, symlinks and "..".
@@ -262,9 +270,10 @@ type Group struct {
 	Archive          // embedded, see below
 }
 
+// Board is board.json.
 type Board struct {
-	ID      string    `json:"id"`    // "b_" + 8 random base36 chars; stable across renames
-	Name    string    `json:"name"`  // file stem; unique across all boards
+	ID      string    `json:"id"`    // "b_" + 8 random base36 chars; stable across renames; the folder name
+	Name    string    `json:"name"`  // label only; not unique, not on disk
 	Group   string    `json:"group"` // group id or Ungrouped
 	Created time.Time `json:"created"`
 	New     bool      `json:"new,omitempty"` // made by an agent and not opened by the user yet
@@ -281,7 +290,6 @@ type Archive struct {
 type State struct {
 	Version  int        `json:"version"`
 	Groups   []Group    `json:"groups"` // in the user's order
-	Boards   []Board    `json:"boards"`
 	Defaults Defaults   `json:"defaults"`
 	Cursor   *Catalog   `json:"cursorCatalog,omitempty"` // last model list Cursor reported
 }
@@ -403,8 +411,10 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 `web/src/types.ts` mirrors every type above field for field (json names), as TypeScript `type`s.
 It also exports `UNGROUPED = "__ungrouped__"` and `AGENT_ORDER = ["claude", "cursor"]`.
 
-### 3.5 `chat.json` and `items.jsonl`
+### 3.5 `board.json`, `chat.json` and `items.jsonl`
 
+- `board.json` is `Board`, written with `WriteJSONAtomic(…, 0644)` after every change to it.
+  `drawing.excalidraw` is written only by `Save` (and once by `Create`).
 - `chat.json` is `ChatMeta`, written with `WriteJSONAtomic(…, 0600)` after every change to it.
 - `items.jsonl` is append-only. Each line is `{"i": <index>, "item": <Item>}`. Loading applies the
   lines in order; a later line for the same index replaces the earlier one.
@@ -422,32 +432,34 @@ It also exports `UNGROUPED = "__ungrouped__"` and `AGENT_ORDER = ["claude", "cur
 ### 4.1 Boards: `internal/boards/boards.go`
 
 From the prototype's `pages.go` (`cleanName`, `Create`, `Rename`, `Put`, `emptyScene`), keyed by
-board id and backed by `state.json`.
+board id and backed by one folder per board (`boards/<id>/`), the same pattern as the chat manager.
+All boards' metadata is held in memory, loaded at boot.
 
 ```go
 type Emitter interface{ Broadcast(ev any) }
 
 type Service struct {
-	st  *store.Store
-	hub Emitter
-	mu  sync.Mutex // serializes file operations
+	st     *store.Store // for P and the group list
+	bridge Emitter
+	mu     sync.Mutex // guards boards and serializes file operations
+	boards map[string]*model.Board
 }
 
-func New(st *store.Store, hub Emitter) *Service
+func New(st *store.Store, bridge Emitter) *Service
 
 const EmptyScene = `{"type":"excalidraw","version":2,"source":"ai-whiteboard","elements":[],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}`
 
-var ErrExists = errors.New("a board with that name already exists")
 var ErrArchived = errors.New("the board is archived")
 var ErrNotFound = errors.New("no such board")
 
-// CleanName turns user input into a board name (the file stem).
+// CleanName turns user input into a board name (a label; duplicates allowed).
 func CleanName(s string) (string, error)
 
+// Load reads every boards/<id>/board.json at boot.
+func (b *Service) Load() error
+func (b *Service) List() []model.Board
 func (b *Service) Get(id string) (model.Board, bool)
-func (b *Service) ByName(name string) (model.Board, bool) // name with or without ".excalidraw"
 func (b *Service) Create(name, group string, isNew bool) (model.Board, error)
-func (b *Service) Import(name, group string, content []byte) (model.Board, error)
 func (b *Service) Scene(id string) ([]byte, error)
 func (b *Service) Save(id string, body []byte) error
 func (b *Service) Rename(id, name string) (model.Board, error)
@@ -467,46 +479,54 @@ CleanName(s):
   reject if s == "" or starts with "." or contains "/" or "\\" or any control char, or len > 80
   return s
 
-uniqueName(base) (under b.mu):                              // prototype Create's loop
-  for i := 1..: cand := base (i==1) else base+"-"+i
-     if no board in state has Name == cand and the file does not exist: return cand
+save(bd):     WriteJSONAtomic(BoardDir(bd.ID)/board.json, bd, 0644)
+
+Load():
+  for dir in P.Boards: bd := read board.json; register
+  a folder without a readable board.json is logged and skipped (never deleted)
+
+List(): every registered board (the client sorts)
 
 Create(name, group, isNew):
   if name == "" { name = "whiteboard" }                     // prototype v4 default
   base := CleanName(name); lock
   check group exists (or Ungrouped), else error
-  n := uniqueName(base)
-  WriteFileAtomic(P.BoardFile(n), EmptyScene, 0644)          // saved the moment it is created
-  bd := Board{ID: newID("b_"), Name: n, Group: group, Created: now, New: isNew}
-  st.Update(append bd)
-  hub.Broadcast({type:"board", board: bd}); return bd
+  bd := Board{ID: newID("b_"), Name: base, Group: group, Created: now, New: isNew}
+  mkdir BoardDir(bd.ID)
+  WriteFileAtomic(P.BoardFile(bd.ID), EmptyScene, 0644)      // saved the moment it is created
+  save(bd); register                                         // board.json last: a folder without it is not a board
+  bridge.Broadcast({type:"board", board: bd}); return bd
 
-Import(name, group, content):
-  var sc struct{ Type string `json:"type"` }; json.Unmarshal(content) must succeed and Type == "excalidraw"
-  bd := Create(name, group, false) but write content instead of EmptyScene
-
-Scene(id): return os.ReadFile(P.BoardFile(board.Name)); missing file → EmptyScene
+Scene(id):
+  board must be registered, else ErrNotFound                // never an empty scene for an unknown id
+  return os.ReadFile(P.BoardFile(id)); a known board with a missing file → EmptyScene
 
 Save(id, body):
   board must exist and not be archived (ErrArchived)
   json.Valid(body) else error
-  WriteFileAtomic(P.BoardFile(board.Name), body, 0644)
+  WriteFileAtomic(P.BoardFile(id), body, 0644)
 
 Rename(id, name):
   n := CleanName(name); if n == board.Name return board
-  if ByName(n) exists or file exists → ErrExists
-  os.Rename(old file, new file); st.Update(board.Name = n); broadcast board
+  board.Name = n; save; broadcast board                      // the folder keeps its id name
 
-Move(id, group): check group; st.Update(board.Group = group); broadcast board
-Seen(id): st.Update(board.New = false); broadcast board
-SetArchive(id, a): st.Update(board.Archive = a); broadcast board
-Delete(id): os.Remove(file) (ignore not-exist); st.Update(remove board); broadcast {type:"board_removed", id}
-Reveal(id): exec.Command("open", "-R", P.BoardFile(board.Name)).Run()
+Move(id, group): check group; board.Group = group; save; broadcast board
+Seen(id): board.New = false; save; broadcast board
+SetArchive(id, a): board.Archive = a; save; broadcast board
+Delete(id): os.RemoveAll(BoardDir(id)); unregister; broadcast {type:"board_removed", id}
+Reveal(id): exec.Command("open", "-R", P.BoardFile(id)).Run()
 ```
 
-**Resolved:** board names are unique across all groups, because agents refer to other boards by
-`@name`. A name clash on create gets `-2`, `-3` (the prototype's rule); a clash on rename is an
-error shown in the sidebar.
+**Resolved:** there is no import. Boards are only made by `Create`; an existing `.excalidraw`
+file can't be brought into the app. Nothing needed it: the prototype's boards are not carried over,
+and Reveal in Finder is enough to reach a board's file.
+
+**Resolved (updated):** board names are **not** unique. Two boards may share a name, in the same
+group or not; create and rename never add `-2`, `-3` and never fail on a clash. The id is the
+board's identity everywhere: the folder is `boards/<id>/`, the `@` picker records the id,
+`<ui-context>` shows `name (id)`, and the board tools take **only ids**. When the user names a
+board the agent has no id for, it calls `list_boards` first; if several boards share that name, it
+picks by group or asks the user. There is no name lookup anywhere in the board tools.
 
 ### 4.2 Sticky defaults: `internal/defaults/defaults.go`
 
@@ -760,7 +780,7 @@ func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	if o.Board != nil {
 		mcp := fmt.Sprintf(`{"mcpServers":{"board":{"type":"http","url":%q}}}`, o.Board.MCPURL)
 		allowed := []string{}
-		for _, t := range boardapi.Tools { allowed = append(allowed, "mcp__board__"+t.Name) }
+		for _, t := range boardtools.Tools { allowed = append(allowed, "mcp__board__"+t.Name) }
 		args = append(args, "--append-system-prompt", s.Prompt, "--mcp-config", mcp,
 			"--allowedTools", strings.Join(allowed, ","))
 	}
@@ -1035,7 +1055,7 @@ switch u.sessionUpdate:
 normalizeTool(u):
   cmd := u.rawInput.command (string) if kind == "execute", else from u.title with backticks trimmed
   if kind == "execute":
-     if tok, tool, args, ok := boardapi.ParseCommand(cmd); ok && tok == p.o.Board.Token:
+     if tok, tool, args, ok := boardtools.ParseCommand(cmd); ok && tok == p.o.Board.Token:
          return "mcp__board__"+tool, args                      // shows as a board card
      return "Bash", {"command": cmd}                            // same card as Claude's shell
   kind "read":   return "Read",  {"file_path": u.locations[0].path}
@@ -1057,7 +1077,7 @@ tc := params.toolCall
 cmd := tc.rawInput.command or title without backticks
 allowOpt := option with kind "allow_once"; rejectOpt := option with kind "reject_once"
 if p.o.Board != nil:
-   if tok, _, _, ok := boardapi.ParseCommand(cmd); ok && tok == p.o.Board.Token:
+   if tok, _, _, ok := boardtools.ParseCommand(cmd); ok && tok == p.o.Board.Token:
        conn.Reply(id, {outcome:{outcome:"selected", optionId: allowOpt}}); return     // board commands never ask
 if agent.TouchesAppDir(raw params, s.AppRoot, s.Home):
    conn.Reply(id, {outcome:{outcome:"selected", optionId: rejectOpt}}); return
@@ -1197,7 +1217,7 @@ whole call bounded by timeout (20 s)
 ```
 
 `main` runs it in the background after `cm.Load()`; on success `Store.Update(s.Cursor = cat)` and
-`Hub.Broadcast({type:"catalog", agent:"cursor", catalog})`; on failure (Cursor missing, not logged
+`Bridge.Broadcast({type:"catalog", agent:"cursor", catalog})`; on failure (Cursor missing, not logged
 in, timeout) it logs and the last stored catalog stays. Until a catalog exists (first run, fetch not
 done) the Cursor pickers show "Loading models…".
 
@@ -1236,7 +1256,7 @@ From the prototype's `Chats` and `Chat` (`chats.go`).
 ```go
 type Deps struct {
 	Store      *store.Store
-	Hub        *hub.Hub
+	Bridge     *editorbridge.Bridge
 	Boards     *boards.Service
 	Spawners   map[model.AgentKind]agent.Spawner
 	Namer      Namer
@@ -1253,11 +1273,12 @@ type Manager struct {
 type Chat struct {
 	mu      sync.Mutex
 	meta    model.ChatMeta
-	tr      *transcript.Transcript
+	tr      *transcript.Transcript // nil until first needed (see "Loading transcripts lazily")
 	ag      agent.Agent // nil when no process
 	gen     int         // bumped on every spawn; events of an older process are dropped
 	errText string
 	folderMissing bool
+	interrupted   bool // TurnActive was true at boot; the "Stopped" note is added when tr loads
 }
 
 var (
@@ -1266,6 +1287,7 @@ var (
 	ErrLocked        = errors.New("folder, model and effort are fixed once the chat has started")
 	ErrFolderMissing = agent.ErrFolderMissing
 	ErrAppFolder     = errors.New("the app's own folder can't be used as a working folder")
+	ErrBusy          = errors.New("the agent is still working; wait for it to finish or stop it")
 )
 
 func New(d Deps) *Manager
@@ -1298,20 +1320,53 @@ type ConfigReq struct {
 Emitting: every change calls
 
 ```
-emitChat(c):  hub.Broadcast({type:"chat", chat: view(c)})
-emitItems(c, ups): if len(ups) > 0 { hub.Broadcast({type:"chat_items", chat: id, version: tr.Version(), updates: ups}) }
+emitChat(c):  bridge.Broadcast({type:"chat", chat: view(c)})
+emitItems(c, ups): if len(ups) > 0 { bridge.Broadcast({type:"chat_items", chat: id, version: tr.Version(), updates: ups}) }
 save(c):      WriteJSONAtomic(ChatDir/chat.json, c.meta, 0600)
 ```
 
 `Load` (server start):
 
 ```
-for dir in P.Chats: meta := read chat.json; tr := transcript.Load(items.jsonl)
-  if meta.TurnActive:                                       // mid-turn when the server stopped
-     meta.TurnActive = false; tr.AddNote("error", "Stopped: the app was closed while the agent was working.")
-     tr.SetStatus(stopped); tr.Flush(false); save
+for dir in P.Chats: meta := read chat.json                   // items.jsonl is not read here
+  c := &Chat{meta: meta, tr: nil, interrupted: meta.TurnActive}   // mid-turn when the server stopped
   register
 ```
+
+**Loading transcripts lazily.** Boot reads only `chat.json` for every chat; `items.jsonl` is read
+the first time a chat's history is needed, and the transcript then stays in memory until the server
+stops. Every place below that uses `c.tr` goes through one helper (with `c.mu` held):
+
+```
+trOf(c):
+  if c.tr != nil → return c.tr
+  c.tr, err = transcript.Load(ChatDir/items.jsonl); if err → return
+  if c.interrupted:
+     c.interrupted = false; c.meta.TurnActive = false
+     c.tr.AddNote("error", "Stopped: the app was closed while the agent was working.")
+     c.tr.SetStatus(stopped); c.tr.Flush(false); save; emitItems; emitChat
+  return c.tr
+```
+
+- Callers that load: `Items`, `Open`, `Send` (through `spawn`), `Configure` (folder fix), `Decide`,
+  and `pump` (always already loaded, since only `Send` spawns). A load error is returned to the
+  caller (HTTP 500) and the chat shows status error with the message.
+- Callers that skip an unloaded chat: `Shutdown` touches `tr` only when it is non-nil, and `Stop`
+  too unless `c.interrupted` (then it calls `trOf`, so archiving or deleting such a chat still
+  records the note). An unloaded chat has no agent, no open items and nothing unflushed, so there is
+  nothing to stop, decide or write. An interrupted chat never opened keeps `TurnActive = true` on
+  disk through shutdown and is found again on the next boot.
+- `view(c)` for an unloaded chat uses no tool and status `stopped` if `c.interrupted`, else `ready`
+  (without an agent it cannot be busy). The sidebar shows Stopped before the history is read.
+- Chats created in this run start with an empty in-memory transcript (`Create`), so they never load.
+
+**Resolved (lazy load):** the first draft loaded every transcript at boot and kept all of them in
+memory, including archived chats. Start time and memory then grow with the total history, although
+the user reads one chat at a time. Metadata stays eager, because the sidebar, grouping, `ByToken` and
+`ChatsOfBoard` need every chat's `ChatMeta`. Transcripts are never unloaded: one opened chat costs
+what it did before, and unloading would need to be coordinated with running agents. A chat stopped
+mid-turn is only marked at boot (`interrupted`, from `TurnActive` in `chat.json`); its note is
+written when its history first loads, so boot never reads `items.jsonl`.
 
 `Create(a, group, board)`:
 
@@ -1354,7 +1409,7 @@ for ev := range ag.Events():
   if gen != c.gen { c.mu.Unlock(); continue }          // replaced by Stop
   switch ev.Kind:
    EvSession: c.meta.SessionID = ev.SessionID; save
-   EvCatalog: Store.Update(s.Cursor = ev.Catalog); Hub.Broadcast({type:"catalog", agent:"cursor", catalog})
+   EvCatalog: Store.Update(s.Cursor = ev.Catalog); Bridge.Broadcast({type:"catalog", agent:"cursor", catalog})
    EvUsage:   if ev.CtxError != "": c.meta.Usage.CtxError = ev.CtxError       // numbers keep their last good values
               else: apply non-zero fields to c.meta.Usage (CtxIn/CtxOut/CtxWindow); c.meta.Usage.CtxError = ""
    EvTurnEnd: u := &c.meta.Usage; u.CostUSD += ev.CostDelta; u.LastTurnCost = ev.CostDelta; u.Turns++
@@ -1382,6 +1437,7 @@ exchange, picker changes cost nothing, no unused sessions are created, and openi
 ```
 c.mu.Lock()
 if Archived → ErrArchived
+if busy(c) → ErrBusy                                      // one turn at a time; nothing is queued or written
 if err := spawn(c); err != nil → return err            // resume if needed; 409 for folder missing
 first := !c.meta.Locked
 c.meta.Locked = true; c.meta.TurnActive = true
@@ -1419,7 +1475,7 @@ if c.Effort != "": validate; c.meta.Effort = c.Effort
 if c.Cwd != "" && c.folderMissing: c.folderMissing = false; c.errText = ""; tr.SetStatus(ready)
 save                                                    // no agent runs before the first Send: nothing to restart
 Store.Update(defaults.RecordChange(&s.Defaults, GroupOf(meta), agent, c.Cwd, {c.Model, c.Effort}))
-unlock; emitChat; Hub.Broadcast({type:"defaults", defaults})
+unlock; emitChat; Bridge.Broadcast({type:"defaults", defaults})
 ```
 
 `Rename(id, name, byUser)` — the prototype's `Rename`: an auto name never overwrites a user's name;
@@ -1451,11 +1507,18 @@ group`; save; emit. Settings are unchanged (feature: *moving a chat doesn't chan
 `~/.cursor/acp-sessions/…`) belong to the agent CLIs and are left alone; the chat and its history in
 the app are gone.
 
-`Busy(id)`: status is thinking, writing, tool or approval.
+`Busy(id)`: status is thinking, writing, tool or approval. `busy(c)` is the same check with `c.mu`
+held; an unloaded chat is never busy (it has no agent).
+
+**Resolved (no send while busy):** a message sent while the agent is still working is refused with
+`ErrBusy` (409); it is not queued. Claude's CLI and Cursor's ACP would each handle a second turn
+mid-turn differently (Cursor's is undefined), and the first `EvTurnEnd` would clear `TurnActive`
+while the second turn still runs. The client greys out send while the chat is busy (section 5.7);
+the server check covers a stale client. To send now, the user stops the agent first.
 
 `GroupOf(meta)`: the board's group for board chats, else `meta.Group`.
 
-`Shutdown()`: for every chat: lock; `tr.Flush(true)`; save (a running turn keeps `TurnActive =
+`Shutdown()`: for every chat: lock; if `tr != nil`: `tr.Flush(true)`; save (a running turn keeps `TurnActive =
 true`, so it shows as Stopped next time); `ag.Close()` without waiting.
 
 `internal/chats/namer.go` (the prototype's `autoName`, unchanged in behaviour):
@@ -1491,13 +1554,15 @@ narrow panel beside the board, so keep them short and plain.
 
 Every user message starts with a `<ui-context>` block written by the app, not by the user. It names
 `active_board` (this chat's board), `referenced_boards` (boards the user pointed at with @name),
+each as `name (id)`,
 what the user has selected, and the visible area. "The board", "this", "here" and "the diagram" mean
 the active board. Work on it unless the user points at another board with @name. Never quote the
 block back.
 
 Don't create boards or switch the user's view (`show_board`) unless the user asks. A board you
 create goes into the same group as your board, with no chats of its own; keep working on it with its
-name.
+id. The board tools take board ids only. Board names are not unique: when the user names a board
+you have no id for, call `list_boards` first; if several share the name, pick by group or ask.
 
 ## Working on a board
 
@@ -1548,7 +1613,7 @@ func CursorInstructions() string // "<whiteboard-instructions>\n" + text + "\n</
                                  // ACCESS = "by running board commands", TOOLS = cursorTools()
 ```
 
-`cursorTools()` renders a section from `boardapi.Tools` (so both agents get the same tool list):
+`cursorTools()` renders a section from `boardtools.Tools` (so both agents get the same tool list):
 
 ```markdown
 ## How to call the board tools
@@ -1557,24 +1622,24 @@ You have no board MCP server. Call a board tool by running exactly this shell co
 tool's arguments as JSON between the markers, and nothing else in the command:
 
     curl -s --data-binary @- <BOARD_API>/<tool> <<'JSON'
-    {"board": "arch", "create": [ … ]}
+    {"board": "b_x7k2m9qa", "create": [ … ]}
     JSON
 
 `<BOARD_API>` is the URL in the `<board-api>` block of the latest message. Run one tool per command.
 Never chain commands with `;`, `&&` or `|`, and never add flags. The command prints the result.
 
 Tools (name — arguments — what it does):
-- list_boards — {} — …                    (one line per boardapi.Tools entry: name, schema summary, description)
+- list_boards — {} — …                    (one line per boardtools.Tools entry: name, schema summary, description)
 - …
 ```
 
-### 4.9 The client link: `internal/hub/hub.go`
+### 4.9 The editor bridge: `internal/editorbridge/bridge.go`
 
 From the prototype's `hub.go`, changed to one active client with takeover (feature: *One client at
 a time*). This fixes the prototype bug where every open tab answered board calls.
 
 ```go
-type Hub struct {
+type Bridge struct {
 	mu       sync.Mutex
 	active   *client
 	pending  *client
@@ -1603,15 +1668,15 @@ type RPCReply struct {
 
 var ErrNoClient = errors.New("the board isn't open: the AI Whiteboard window is closed")
 
-func New(snapshot func() any) *Hub
-func (h *Hub) ServeSSE(w http.ResponseWriter, r *http.Request) // GET /api/events?client=<id>
-func (h *Hub) Release(clientID string)                          // POST /api/client/release
-func (h *Hub) IsActive(clientID string) bool
-func (h *Hub) Broadcast(ev any)                                 // to the active client only
-func (h *Hub) Call(method string, params any, timeout time.Duration) (json.RawMessage, error)
-func (h *Hub) Reply(id string, r RPCReply)
-func (h *Hub) StopAndFlush(timeout time.Duration)               // server shutdown
-func (h *Hub) Flushed()                                          // POST /api/client/flushed
+func New(snapshot func() any) *Bridge
+func (b *Bridge) ServeSSE(w http.ResponseWriter, r *http.Request) // GET /api/events?client=<id>
+func (b *Bridge) Release(clientID string)                          // POST /api/client/release
+func (b *Bridge) IsActive(clientID string) bool
+func (b *Bridge) Broadcast(ev any)                                 // to the active client only
+func (b *Bridge) Call(method string, params any, timeout time.Duration) (json.RawMessage, error)
+func (b *Bridge) Reply(id string, r RPCReply)
+func (b *Bridge) StopAndFlush(timeout time.Duration)               // server shutdown
+func (b *Bridge) Flushed()                                          // POST /api/client/flushed
 ```
 
 `ServeSSE`:
@@ -1619,41 +1684,41 @@ func (h *Hub) Flushed()                                          // POST /api/cl
 ```
 id := r.URL.Query().Get("client"); require non-empty
 c := &client{id, make(chan []byte, 4096), make(chan struct{})}
-h.mu.Lock()
+b.mu.Lock()
 switch:
- h.active == nil:
-    h.active = c; send(c, {type:"hello", active:true}); send(c, {type:"snapshot", ...h.snapshot()})
- h.active.id == id:                                     // the same tab reconnecting
-    close(h.active.done); h.active = c; hello(active) + snapshot
+ b.active == nil:
+    b.active = c; send(c, {type:"hello", active:true}); send(c, {type:"snapshot", ...b.snapshot()})
+ b.active.id == id:                                     // the same tab reconnecting
+    close(b.active.done); b.active = c; hello(active) + snapshot
  default:                                               // another tab: take over
-    if h.pending != nil { send(h.pending, {type:"superseded"}); close(h.pending.done) }
-    h.pending = c; send(c, {type:"hello", active:false, waiting:true})
-    send(h.active, {type:"release_request"})
-    h.handover = time.AfterFunc(3s, h.promote)
-h.mu.Unlock()
+    if b.pending != nil { send(b.pending, {type:"superseded"}); close(b.pending.done) }
+    b.pending = c; send(c, {type:"hello", active:false, waiting:true})
+    send(b.active, {type:"release_request"})
+    b.handover = time.AfterFunc(3s, b.promote)
+b.mu.Unlock()
 stream loop (prototype): write "data: …\n\n" for each message; ": ping" every 20 s;
   return on r.Context().Done() or c.done
 on return (under lock):
-  if h.active == c: h.active = nil; failCalls(c.id); if h.pending != nil { promoteLocked() }
-  if h.pending == c: h.pending = nil
+  if b.active == c: b.active = nil; failCalls(c.id); if b.pending != nil { promoteLocked() }
+  if b.pending == c: b.pending = nil
 ```
 
-`promote` (under lock): if `h.pending == nil` return; `old := h.active`; if `old != nil { send(old,
-{type:"superseded"}); failCalls(old.id); close(old.done) }`; `h.active = h.pending; h.pending = nil`;
+`promote` (under lock): if `b.pending == nil` return; `old := b.active`; if `old != nil { send(old,
+{type:"superseded"}); failCalls(old.id); close(old.done) }`; `b.active = b.pending; b.pending = nil`;
 hello(active) + snapshot to the new one.
 
-`Release(id)`: under lock, if `h.active != nil && h.active.id == id && h.pending != nil` → stop the
+`Release(id)`: under lock, if `b.active != nil && b.active.id == id && b.pending != nil` → stop the
 timer and promote.
 
-`Broadcast(ev)`: marshal once; send to `h.active` only; never block (a full buffer drops the message
+`Broadcast(ev)`: marshal once; send to `b.active` only; never block (a full buffer drops the message
 and closes the stream, so the client reconnects and gets a fresh snapshot).
 
 `Call` (prototype `Call`, to the active client only):
 
 ```
-h.mu.Lock(); c := h.active; h.mu.Unlock()
+b.mu.Lock(); c := b.active; b.mu.Unlock()
 if c == nil → ErrNoClient
-id := "rpc_" + seq; k := &call{client: c.id, reply: make(chan, 1)}; h.rpcs.Store(id, k); defer Delete
+id := "rpc_" + seq; k := &call{client: c.id, reply: make(chan, 1)}; b.rpcs.Store(id, k); defer Delete
 send(c, {type:"rpc", id, method, params})
 select reply → error string → errors.New; result → result
        timeout → fmt.Errorf("the board did not answer %s in %s", method, timeout)
@@ -1667,9 +1732,15 @@ the newest tab always takes over. The old tab gets `release_request`, writes its
 calls `POST /api/client/release`; if it does not answer within 3 s it is cut off anyway. "Take it
 back" in the old tab simply reconnects, which is a takeover the other way.
 
-### 4.10 The board API for agents: `internal/boardapi/`
+### 4.10 The board API for agents: `internal/boardtools/` and `internal/boardapi/`
 
-`tools.go` — the prototype's `mcpTools`, renamed from pages to boards (feature: *read a board, look
+**Resolved (package split):** the tool list and the command parser live in their own package,
+`internal/boardtools`, which imports nothing from this project. The Claude and Cursor adapters and
+`prompts` import `boardtools`; `boardapi` imports `boardtools`, `chats`, `boards` and
+`editorbridge`. This keeps the import graph acyclic (`chats` → `claude`/`cursor`/`prompts` →
+`boardtools`, never back to `boardapi`).
+
+`boardtools/tools.go` — the prototype's `mcpTools`, renamed from pages to boards (feature: *read a board, look
 at the user's view and selection, edit, delete, and show a board*; *boards an agent creates*):
 
 ```go
@@ -1681,16 +1752,16 @@ type Tool struct {
 }
 
 var Tools = []Tool{
-	{Name: "list_boards", Description: "List the whiteboards: name, group, which one is this chat's board and which one is on screen."},
+	{Name: "list_boards", Description: "List the whiteboards: name, id, group, which one is this chat's board and which one is on screen. Names are not unique; the other tools take the id."},
 	{Name: "read_board", Description: "Read a board as text: one line per element with type, key, id, label, position/size, and for arrows what they connect.",
-		Schema: obj(props{"board": str("board name; omit for this chat's board")})},
+		Schema: obj(props{"board": str("board id (from list_boards or <ui-context>); omit for this chat's board")})},
 	{Name: "get_view", Description: "What the user sees right now: the board on screen, the visible area and the selected elements."},
 	{Name: "apply", Description: <prototype apply text> + " New elements default to sharp corners, roughness 0 and the normal font.",
 		Schema: obj(props{"board": str(...), "create": arr(object), "update": arr(refObj)}) // create items also take roughness and fontFamily: hand|normal|code
 	},
 	{Name: "delete_elements", Description: "Delete elements from a board. cascade: also delete arrows bound to them.",
 		Schema: obj(props{"board", "refs" (required), "cascade", "reason"})},
-	{Name: "create_board", Description: "Create a new empty board in the same group as this chat's board. Only when the user asks for a new board. Returns its name.",
+	{Name: "create_board", Description: "Create a new empty board in the same group as this chat's board. Only when the user asks for a new board. Returns its name and id.",
 		Schema: obj(props{"name": str}, required "name")},
 	{Name: "show_board", Description: "Bring a board to the user's screen and scroll to some elements. Only when the user asked to see something.",
 		Schema: obj(props{"board", "refs"})},
@@ -1699,13 +1770,13 @@ var Tools = []Tool{
 
 **Resolved:** the prototype's tools took a required `page`. `board` is optional now and defaults to
 the chat's own board, which fits "a board chat works on its own board unless the user points at
-another".
+another". It is always a board id, never a name (names are not unique; see 4.1).
 
 `Relay` — the one path from an agent to the client, shared by MCP and commands:
 
 ```go
 type Relay struct {
-	Hub    *hub.Hub
+	Bridge *editorbridge.Bridge
 	Chats  *chats.Manager
 	Boards *boards.Service
 }
@@ -1718,10 +1789,10 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 ```
 meta, ok := Chats.ByToken(token); if !ok → ("unknown board token", true)
 if meta.Archived → ("this chat is archived", true)
-if tool not in Tools → ("unknown tool "+tool, true)
+if tool not in boardtools.Tools → ("unknown tool "+tool, true)
 bd, _ := Boards.Get(meta.Board)
-out, err := Hub.Call("tool", {chat: meta.ID, board: bd.ID, name: tool, args}, 30s)
-if errors.Is(err, hub.ErrNoClient) → ("The board isn't open: the AI Whiteboard window is closed. " +
+out, err := Bridge.Call("tool", {chat: meta.ID, board: bd.ID, name: tool, args}, 30s)
+if errors.Is(err, editorbridge.ErrNoClient) → ("The board isn't open: the AI Whiteboard window is closed. " +
       "Board work needs the window open. Tell the user, and don't retry until they ask again.", true)
 if err → (err.Error(), true)
 text := out as JSON string, else raw out
@@ -1733,13 +1804,18 @@ echoes `protocolVersion`, `tools/list`, `tools/call`, `ping`, 202 for notificati
 -32601 for anything else), with `tools/call` going through `Relay.Call` and `isError` set from it.
 `serverInfo.name` stays `"board"` so tool names stay `mcp__board__<tool>`.
 
-`command.go` — the Cursor command endpoint and its parser:
+`boardapi/command.go` — the Cursor command endpoint:
 
 ```go
 // POST /agent/{token}/{tool}: the body is the JSON arguments. Always 200 with a text/plain body;
 // errors start with "ERROR: " so the agent sees them in the command output.
 func (r *Relay) ServeCommand(w http.ResponseWriter, req *http.Request)
+```
 
+`boardtools/command.go` — the Cursor command parser, used by the Cursor adapter (to show board
+commands as board cards and allow them without asking) and by tests:
+
+```go
 // ParseCommand accepts exactly the form the instructions teach:
 //   curl -s --data-binary @- http://127.0.0.1:<port>/agent/<token>/<tool> <<'JSON'
 //   <json>
@@ -1766,7 +1842,7 @@ type App struct {
 	St     *store.Store
 	Boards *boards.Service
 	Chats  *chats.Manager
-	Hub    *hub.Hub
+	Bridge *editorbridge.Bridge
 }
 
 type Snapshot struct {
@@ -1780,6 +1856,7 @@ type Snapshot struct {
 	DataDir    string                   `json:"dataDir"`
 }
 
+// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats from Chats.
 func (a *App) Snapshot() Snapshot
 
 func (a *App) CreateGroup(name string) (model.Group, error)
@@ -1801,7 +1878,7 @@ func (a *App) DeleteGroup(id string, deleteContents bool) error
 CreateGroup(name):
   g := Group{ID: newID("g_"), Name: name or "New group"}
   St.Update(append g; defaults.SeedGroup(&s.Defaults, g.ID))
-  Hub.Broadcast({type:"groups", groups}); Hub.Broadcast({type:"defaults", ...}); return g
+  Bridge.Broadcast({type:"groups", groups}); Bridge.Broadcast({type:"defaults", ...}); return g
 
 UpdateGroup: rename (trimmed, non-empty) / collapse; broadcast groups
 ReorderGroups(ids): ids must be a permutation of the group ids; reorder; broadcast groups
@@ -1867,10 +1944,9 @@ group id. A `group` field in a body is a group id or `"__ungrouped__"` for the u
 | `POST /api/groups/{id}/archive` / `unarchive` | | |
 | `DELETE /api/groups/{id}?contents=delete\|ungroup` | | |
 | `POST /api/boards` | `{name?, group, new?}` → `Board` | file written before the answer; `new` from `create_board` |
-| `POST /api/boards/import` | `{name, group, content}` → `Board` | `content` is the file text |
-| `GET /api/boards/{id}/scene` | → the `.excalidraw` JSON | |
+| `GET /api/boards/{id}/scene` | → the `.excalidraw` JSON | 404 when the board is unknown |
 | `PUT /api/boards/{id}/scene` | the `.excalidraw` JSON | 409 when archived |
-| `POST /api/boards/{id}/rename` | `{name}` → `Board` | 409 on a name clash |
+| `POST /api/boards/{id}/rename` | `{name}` → `Board` | names are not unique; never a clash |
 | `PATCH /api/boards/{id}` | `{group}` | move |
 | `POST /api/boards/{id}/seen` | | clears "new" |
 | `POST /api/boards/{id}/archive` / `unarchive` | | |
@@ -1879,7 +1955,8 @@ group id. A `group` field in a body is a group id or `"__ungrouped__"` for the u
 | `POST /api/chats` | `{agent, group?, board?}` → `ChatView` | sticky defaults applied |
 | `GET /api/chats/{id}/items` | → `{version, items}` | |
 | `POST /api/chats/{id}/open` | | checks the folder; never starts the agent |
-| `POST /api/chats/{id}/messages` | `{text, context}` | 409 archived or folder missing |
+| `GET /api/chats/{id}` | → `ChatView` | |
+| `POST /api/chats/{id}/messages` | `{text, context}` | 409 archived, busy or folder missing |
 | `PATCH /api/chats/{id}` | `{name?, model?, effort?, cwd?, group?}` | 409 locked; 400 bad folder |
 | `POST /api/chats/{id}/interrupt` | | |
 | `POST /api/chats/{id}/permission` | `{requestId, allow}` | |
@@ -1911,7 +1988,7 @@ Server → client SSE events (`{type, …}`):
 type Server struct {
 	App    *app.App
 	Relay  *boardapi.Relay
-	Hub    *hub.Hub
+	Bridge *editorbridge.Bridge
 	Client string // static client folder, "" = none
 	Port   int
 }
@@ -1921,7 +1998,7 @@ func (s *Server) Handler() http.Handler // builds the mux above, wrapped in guar
 
 Handlers are thin: decode (the prototype's `readJSON`), call `App` / `Chats` / `Boards`, encode
 (the prototype's `writeJSON`). Error mapping: `ErrNotFound` → 404; `ErrArchived`, `ErrLocked`,
-`ErrFolderMissing`, `boards.ErrExists` → 409; validation → 400; others → 500.
+`ErrFolderMissing`, `ErrBusy` → 409; validation → 400; others → 500.
 
 `guard.go`:
 
@@ -1932,7 +2009,7 @@ Handlers are thin: decode (the prototype's `readJSON`), call `App` / `Chats` / `
 //   X-AIWB-Client equal to the active client's id (409 {"error":"not_active"} otherwise).
 //   A custom header also forces a CORS preflight, which the server never answers.
 // /mcp and /agent are guarded by their token instead.
-func guard(h *hub.Hub, port int, next http.Handler) http.Handler
+func guard(b *editorbridge.Bridge, port int, next http.Handler) http.Handler
 ```
 
 `/api/client/*` and `/api/rpc-reply` check that the `client` in the body (or the header) is the
@@ -1964,24 +2041,25 @@ func main() {
 	port := actual port
 	st := store.Open(p)
 	var a *app.App
-	h := hub.New(func() any { return a.Snapshot() })
-	bs := boards.New(st, h)
+	br := editorbridge.New(func() any { return a.Snapshot() })
+	bs := boards.New(st, br)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: *cursorBin, AppRoot: p.Root, Home: home}
-	cm := chats.New(chats.Deps{Store: st, Hub: h, Boards: bs, DefaultCwd: *cwd, BaseURL: base,
+	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: *cwd, BaseURL: base,
 		Namer: chats.ClaudeNamer{Bin: *claudeBin},
 		Spawners: map[model.AgentKind]agent.Spawner{
 			model.Claude: &claude.Spawner{Bin: *claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()},
 			model.Cursor: cursorSpawner,
 		}})
+	bs.Load()                                                  // before chats: board chats look up their board
 	cm.Load()
-	go refreshCursorCatalog(cursorSpawner, st, h)             // Cursor model list for the pickers (4.6)
-	a = &app.App{St: st, Boards: bs, Chats: cm, Hub: h}
+	go refreshCursorCatalog(cursorSpawner, st, br)             // Cursor model list for the pickers (4.6)
+	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil { log.Printf("cursor deny rules: %v", err) }
-	srv := &server.Server{App: a, Relay: &boardapi.Relay{Hub: h, Chats: cm, Boards: bs}, Hub: h, Client: *client, Port: port}
+	srv := &server.Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}, Bridge: br, Client: *client, Port: port}
 	store.WriteServerFile(p, port)
 	go onSignal(SIGINT, SIGTERM, func() {
-		h.StopAndFlush(2 * time.Second)                        // the client writes pending board changes
+		br.StopAndFlush(2 * time.Second)                        // the client writes pending board changes
 		cm.Shutdown()                                          // history written; agents end
 		store.RemoveServerFile(p)
 		os.Exit(0)
@@ -1996,8 +2074,8 @@ func main() {
 func findRunning(p store.Paths, port int) (string, bool)
 
 // refreshCursorCatalog: cat, err := sp.Catalog(20 s); err → log only (the stored catalog stays);
-// else st.Update(s.Cursor = cat) and h.Broadcast({type:"catalog", agent:"cursor", catalog: cat}).
-func refreshCursorCatalog(sp *cursor.Spawner, st *store.Store, h *hub.Hub)
+// else st.Update(s.Cursor = cat) and br.Broadcast({type:"catalog", agent:"cursor", catalog: cat}).
+func refreshCursorCatalog(sp *cursor.Spawner, st *store.Store, br *editorbridge.Bridge)
 
 func openBrowser(url string) { exec.Command("open", url).Start() } // prototype
 ```
@@ -2028,9 +2106,9 @@ func openBrowser(url string) { exec.Command("open", url).Start() } // prototype
 | `logic/labels.ts` | `ui.tsx` `genericTool`/`toolVerb`/`toolDone`/`statusText` | board wording |
 | `logic/context.ts` | `board.ts` `buildContext` | DOM-free |
 | `logic/tree.ts` | `v4.tsx` sidebar grouping | archived filtering |
-| `logic/mentions.ts` | `ui.tsx` `resolvePage` and mention regex | board names |
+| `logic/mentions.ts` | `ui.tsx` `resolvePage` and mention regex | board ids; picked mentions keep the id |
 | `App.tsx` | `v4.tsx` `Grouped`, `BoardBar`, `Home` | |
-| `Sidebar.tsx` | `v4.tsx` `Sidebar`, `GroupNode`, `BoardNode`, `ChatRow`, `DropZone`, `InlineName`, `AgentItems` | menus, archived view, import |
+| `Sidebar.tsx` | `v4.tsx` `Sidebar`, `GroupNode`, `BoardNode`, `ChatRow`, `DropZone`, `InlineName`, `AgentItems` | menus, archived view |
 | `Canvas.tsx` | prototype `Canvas.tsx` | one board, style defaults, read-only |
 | `ChatView.tsx` | `ui.tsx` `Thread`/`EmptyThread`/`ItemView`/`ToolCard`/`PermCard`/`Rich`, `v2.tsx` `ChatHeader`/`NameInput` | items from the server |
 | `Composer.tsx` | `ui.tsx` `Composer`/`sendMessage`, `v2.tsx` `Toolbar`/`Picker`/`DirPicker`/`DirBrowser`/`ContextMeter` | catalogs from the server |
@@ -2062,7 +2140,6 @@ export const api = {
   unarchive: (k: "groups" | "boards" | "chats", id: string) => call("POST", `/api/${k}/${id}/unarchive`),
   deleteGroup: (id: string, contents: "delete" | "ungroup") => call("DELETE", `/api/groups/${id}?contents=${contents}`),
   newBoard: (group: string, name?: string, isNew = false) => call<Board>("POST", "/api/boards", { name, group, new: isNew }),
-  importBoard: (group: string, name: string, content: string) => call<Board>("POST", "/api/boards/import", { group, name, content }),
   scene: (id: string) => call<any>("GET", `/api/boards/${id}/scene`),
   saveScene: (id: string, scene: unknown) => call("PUT", `/api/boards/${id}/scene`, scene),
   renameBoard: (id: string, name: string) => call<Board>("POST", `/api/boards/${id}/rename`, { name }),
@@ -2072,6 +2149,7 @@ export const api = {
   reveal: (id: string) => call("POST", `/api/boards/${id}/reveal`),
   newChat: (agent: AgentKind, where: { group: string } | { board: string }) => call<ChatView>("POST", "/api/chats", { agent, ...where }),
   items: (id: string) => call<{ version: number; items: Item[] }>("GET", `/api/chats/${id}/items`),
+  chat: (id: string) => call<ChatView>("GET", `/api/chats/${id}`),
   openChat: (id: string) => call("POST", `/api/chats/${id}/open`),
   send: (id: string, text: string, context: string) => call("POST", `/api/chats/${id}/messages`, { text, context }),
   configure: (id: string, p: { model?: string; effort?: string; cwd?: string }) => call("PATCH", `/api/chats/${id}`, p),
@@ -2241,9 +2319,10 @@ The board tools (`runTool`, the prototype's, renamed):
 type ToolCall = { chat: string; board: string; name: string; args: any }; // board = the chat's own board id
 
 function resolveBoard(call: ToolCall): string {        // → board id
-  const name = call.args?.board;
-  const id = name ? boardByName(String(name))?.id : call.board;   // boardByName strips ".excalidraw"
-  if (!id) throw new RpcError("NO_BOARD", `no board named ${name}; call list_boards`);
+  const ref = call.args?.board;
+  if (!ref) return call.board;
+  const id = String(ref);                               // ids only, no name lookup
+  if (!getState().boards[id]) throw new RpcError("NO_BOARD", `no board with id ${id}; call list_boards to find ids`);
   if (getState().boards[id].archived) throw new RpcError("ARCHIVED", `${getState().boards[id].name} is archived`);
   return id;
 }
@@ -2253,7 +2332,7 @@ export async function runTool(call: ToolCall): Promise<string> {
   switch (call.name) {
     case "list_boards":
       return Object.values(s.boards).filter((b) => !b.archived).sort(byName).map((b) =>
-        `${b.name}  [${groupName(b.group)}]${b.id === call.board ? "  (this chat's board)" : ""}${b.id === s.sel.board ? "  (on screen)" : ""}`).join("\n") || "(no boards)";
+        `${b.name}  (${b.id})  [${groupName(b.group)}]${b.id === call.board ? "  (this chat's board)" : ""}${b.id === s.sel.board ? "  (on screen)" : ""}`).join("\n") || "(no boards)";
     case "read_board": { const id = resolveBoard(call); await loadScene(id); markBusy(id, call.chat); /* prototype read_page body */ }
     case "get_view": { /* prototype, with: */ const on = s.sel.board;
       if (on !== call.board) return `The user is looking at ${on ? s.boards[on].name : "no board"}, not ${s.boards[call.board].name}.`;
@@ -2262,13 +2341,13 @@ export async function runTool(call: ToolCall): Promise<string> {
       const args = expandIds(id, call.args);
       const res = applyChanges(engineFor(id), { create: args.create, update: args.update }, hooks(id));
       afterEdit(id, call.chat, [...Object.values(res.created), ...res.updated]);
-      return JSON.stringify({ board: s.boards[id].name, ...res }); }
+      return JSON.stringify({ board: s.boards[id].name, id, ...res }); }
     case "delete_elements": { /* prototype body keyed by id; the red "Removed" flash is always shown
                                  (no approval any more); cascade label removal kept */ }
     case "create_board": {
       const own = s.boards[call.board];
       const b = await api.newBoard(own.group, call.args?.name, true); // marked new, see below
-      return `created ${b.name} in ${groupName(b.group)} (the user is still on ${s.sel.board ? s.boards[s.sel.board].name : "no board"})`; }
+      return `created ${b.name} (${b.id}) in ${groupName(b.group)} (the user is still on ${s.sel.board ? s.boards[s.sel.board].name : "no board"})`; }
     case "show_board": { const id = resolveBoard(call);
       select(id === call.board ? { board: id, chat: s.sel.chat } : { board: id, chat: null });
       /* prototype: scroll to refs after 150 ms */ return `showing ${s.boards[id].name}`; }
@@ -2302,8 +2381,9 @@ export function contextBlock(o: { board: string; referenced: string[]; selection
 }
 ```
 
-`board.ts` `buildContext(chat)` fills it from the store: the chat's board name, `@` references
-resolved by `logic/mentions.ts`, and the selection and viewport only when the chat's board is the
+`board.ts` `buildContext(chat)` fills it from the store: the chat's board as `name (id)`, `@`
+references resolved by `logic/mentions.ts` also as `name (id)` (a mention picked from the `@` list
+carries its board's id; a typed `@name` matching several boards lists all of them), and the selection and viewport only when the chat's board is the
 one on screen (else `selection: none` and the last viewport saved in the scene's appState).
 
 ### 5.5 `Canvas.tsx`
@@ -2315,9 +2395,13 @@ export function Canvas({ board }: { board: string }) {
   const b = useStore((s) => s.boards[board]);
   // load (prototype effect) keyed by board id; on unmount: flush(board); setLive(null, null)
   return (
-    <div className="canvas">
+    <div className="canvas" onDropCapture={blockSceneDrop}>
       <Excalidraw key={board}
         viewModeEnabled={!!b.archived}
+        UIOptions={{ canvasActions: {
+          loadScene: false,                      // no Open / ⌘O
+          saveToActiveFile: false,               // no Save / ⌘S
+          export: { saveFileToDisk: false } } }} // no Save to disk / ⌘⇧S; image export stays
         initialData={{ elements: scene.elements, files: scene.files,
           appState: { viewBackgroundColor: …, scrollX: …, scrollY: …, zoom: …, ...styleMemory } }}
         excalidrawAPI={(api) => setLive(board, api)}
@@ -2332,6 +2416,21 @@ export function Canvas({ board }: { board: string }) {
 }
 ```
 
+The board's file is owned by the app, so Excalidraw's own file actions are off: Open would
+replace the board and autosave would write it over the file, and Save / Save to disk only make a
+copy that is never linked back. Export image stays. Excalidraw also loads a scene when a
+`.excalidraw` file is dropped on the canvas, which the options above don't cover, so the wrapper
+blocks that drop before Excalidraw sees it:
+
+```ts
+function blockSceneDrop(e: React.DragEvent) {
+  const f = e.dataTransfer.files[0];
+  if (f && (/\.(excalidraw|json)$/i.test(f.name) || f.type === "application/vnd.excalidraw+json")) {
+    e.preventDefault(); e.stopPropagation();   // image and library drops still go through
+  }
+}
+```
+
 `styleMemory` and `rememberStyle` are section 6. `Presence` shows "<Agent> is working on <board>"
 while any of the board's own chats is busy, or `busyOn[board]` is fresh (an `@name` edit from
 another chat), with the agent's glyph and colour (prototype `Presence`).
@@ -2342,7 +2441,7 @@ The variant 4 sidebar (264px), with these changes.
 
 - **Header:** brand, "Reconnecting…" when disconnected, and a `+` menu:
   *Claude Code chat*, *Cursor chat* (always this order), *New whiteboard*,
-  separator, *New group*, *Import board…*.
+  separator, *New group*.
 - **Tree** (built by `logic/tree.ts`):
 
   ```ts
@@ -2362,7 +2461,7 @@ The variant 4 sidebar (264px), with these changes.
 - **Groups** (`GroupNode`): click toggles `collapsed` (`api.updateGroup`); double-click renames
   inline; collapsed shows the count and a live dot when any chat inside (or on a board inside) is
   busy. Hover shows `+` (*Claude Code chat*, *Cursor chat*, always in this order,
-  *Whiteboard*, *Import board…*) and `⋯` (*Rename*, *Archive*, *Delete*). The prototype's `×` is
+  *Whiteboard*) and `⋯` (*Rename*, *Archive*, *Delete*). The prototype's `×` is
   gone. A group created with *New group* opens with its name in edit mode.
 - **Group order:** group headers are draggable (`text/x-aiwb-group`). Dropping on another group's
   header moves the dragged group before it; the new order goes to `api.reorderGroups`.
@@ -2381,9 +2480,6 @@ The variant 4 sidebar (264px), with these changes.
   renames. Hover `⋯`: *Rename*, *Archive*, *Delete*.
 - **Archived items** (when shown): their `⋯` has only *Unarchive* and *Delete*. They open read-only.
 - **Footer:** a *Show archived* switch (`showArchived`, persisted).
-- **Import board…:** a hidden `<input type="file" accept=".excalidraw,application/json">`; the
-  chosen file's text and name (without extension) go to `api.importBoard(group, name, text)`; the
-  new board is selected.
 
 Selection helpers (from `v4.tsx`):
 
@@ -2445,10 +2541,17 @@ from the `board` argument or "this board". `statusText` adds `stopped` → "Stop
 `Composer.tsx`:
 
 - `Composer` (prototype) with: the context chip and `@` mentions only for board chats (plain chats
-  have neither, variant 4); mentions list non-archived board names; the placeholder no longer says
+  have neither, variant 4); mentions list non-archived boards by name with their group, and a picked mention keeps the board's id; the placeholder no longer says
   the agent has stopped — a stopped chat takes a new message and resumes.
 - `sendMessage(chat, text)`: plain → `api.send(chat, text, "")`; board → `api.send(chat, text,
   buildContext(chat, text))`. A 409 "folder" error is shown under the composer.
+- **No send while busy:** while the chat's status is thinking, writing, tool or approval, the send
+  button is greyed out and Enter does not send (it does nothing; Shift+Enter still adds a line).
+  The text box stays editable, so the user can write the next message while the agent works; the
+  Stop button stays available. Send comes back when the status leaves busy.
+- If the server still answers 409 busy (the tab's status was stale): the composer shows the error
+  under it, refreshes the chat (`api.chat(id)` → `upsertChat`, `api.items(id)` → replace its items)
+  and puts the text back in the box, so nothing typed is lost.
 - `Toolbar` (v2), driven by `catalogs[chat.agent]`:
   - Folder chip (`DirPicker`/`DirBrowser`, v2) first; unlocked until the first message, and again
     while `chat.folderMissing`.
@@ -2459,7 +2562,8 @@ from the `board` argument or "this board". `statusText` adds `stopped` → "Stop
     empty. When `chat.usage.ctxError` is set, the meter is replaced in the same spot by an error
     state: a warning glyph and "Context unavailable", with `ctxError` as its tooltip. It never shows
     a number then.
-  - Each change calls `api.configure`, which restarts the waiting agent on the server.
+  - Each change calls `api.configure`, which only saves the settings on the server (no agent runs
+    before the first message). Once the first message is sent, folder, model and effort are locked.
 - `recentDirs` stays in localStorage (prototype); the default folder now comes from the server's
   sticky defaults.
 
@@ -2543,7 +2647,7 @@ const s: any = { ...CLEAN_CREATE, ...styleOf(rest), ...rest, id: _id ?? rid() };
 
 - `styleOf` gains `roughness` passthrough (it already maps `fontFamily` hand/normal/code and
   `roundness`).
-- Updates never get these defaults, so existing and imported elements keep their style (feature).
+- Updates never get these defaults, so existing elements keep their style (feature).
 - **Resolved:** `apply.ts`'s header says it is "moved across unchanged in behaviour". The feature's
   "new elements are clean unless the user says otherwise" needs this one change; the header comment
   is updated to say so.
@@ -2567,13 +2671,15 @@ environment variable) that plays a scripted list of stdout lines and records std
 
 `internal/boards`
 - `CleanName`: spaces → `-`; `.excalidraw` stripped; `""`, `.x`, `a/b`, 81 chars rejected.
-- `Create("", g)` → `whiteboard`, again → `whiteboard-2`; the file exists with `EmptyScene`
-  **before** `Create` returns.
+- `Create("", g)` → `whiteboard`, again → a second `whiteboard` with another id; each has its own
+  `boards/<id>/` with `board.json` and `drawing.excalidraw` (`EmptyScene`) **before** `Create` returns.
 - `Create` in an unknown group fails.
-- `Rename` moves the file and keeps the id; renaming onto an existing name → `ErrExists`, nothing moved.
-- `Import` rejects non-JSON and JSON whose `type` isn't `excalidraw`; accepts a real file and keeps its content byte for byte.
-- `Save` on an archived board → `ErrArchived`; invalid JSON rejected.
-- `Delete` removes the file and the record; `ByName` works with and without `.excalidraw`.
+- `Rename` keeps the id and the folder and rewrites `board.json`; renaming onto an existing name is allowed.
+- `Scene` of an unknown id → `ErrNotFound`; of a known board whose drawing file is gone → `EmptyScene`.
+- `Save` on an archived board → `ErrArchived`; invalid JSON rejected; `board.json` untouched.
+- `Delete` removes the board's folder and the record.
+- `Load` after `Create`, `Rename`, `Move`, `SetArchive` in a fresh `Service` returns the same boards;
+  a folder with no `board.json` is skipped and left on disk.
 
 `internal/defaults`
 - `Resolve` with nothing recorded → fallback folder and the catalog default.
@@ -2638,16 +2744,18 @@ environment variable) that plays a scripted list of stdout lines and records std
   `EvUsage{CtxIn, CtxWindow}` from the store; with the store removed it emits
   `EvUsage{CtxError: "Cursor session store not found"}` and no numbers.
 
-`internal/boardapi`
+`internal/boardtools`
 - `ParseCommand` accepts the exact form; rejects: another host, a missing heredoc, extra flags,
   `; rm`, `&&`, `|`, `$(…)` in the first line, invalid JSON, an unknown tool.
+
+`internal/boardapi`
 - MCP: `initialize` echoes the protocol version; `tools/list` returns the 7 board tools;
   `tools/call` with an unknown token → `isError`; with no active client → the "board isn't open"
   text and `isError`.
 - `ServeCommand` returns `ERROR: …` bodies with 200.
 - `Relay.Call` for an archived chat → error text.
 
-`internal/hub`
+`internal/editorbridge`
 - First client gets `hello{active}` and `snapshot`.
 - A second client gets `hello{waiting}`; the first gets `release_request`; `Release` from the first
   → first gets `superseded` and its stream ends; second gets `hello{active}` + `snapshot`.
@@ -2670,7 +2778,13 @@ environment variable) that plays a scripted list of stdout lines and records std
   Cursor board chat sends `[instructions, board-api, context, text]` the first time and
   `[board-api, context, text]` after; the first send starts naming.
 - `Send` after the process exited spawns with `Resume: true` and the same session id.
-- `Load` with `turnActive: true` → status stopped and a note; the next `Send` resumes.
+- `Send` while the chat is busy → `ErrBusy`; no user item is added, `chat.json` is unchanged and
+  the agent gets nothing. After `EvTurnEnd` the next `Send` goes through.
+- `Load` does not read `items.jsonl` (a corrupt one doesn't fail boot); `Items` reads it once, then
+  serves from memory.
+- `Load` with `turnActive: true` → view status stopped before `Items`; the first `Items` adds the
+  note once, clears `turnActive` on disk; a restart before `Items` still finds it; the next `Send`
+  resumes.
 - Missing folder: status error, `folderMissing`; `Configure{Cwd}` on the locked chat is allowed,
   clears it, and the next spawn resumes in the new folder.
 - `Stop` denies a pending permission (the fake records `Decide(false)`), closes the agent, clears
@@ -2710,7 +2824,7 @@ Only DOM-free modules are unit-tested (`node --test --experimental-strip-types`)
 - `logic/context.ts`: the block for a board with and without selection and references matches the
   expected text exactly.
 - `logic/mentions.ts`: `@arch`, `@arch.`, `@arch.excalidraw`, unknown names, archived boards
-  excluded.
+  excluded, a picked mention resolving by id, a typed name shared by two boards giving both.
 - `logic/labels.ts`: every board tool's running and done label; `apply` result `+3 ~1`; Claude's
   own tools (Bash with and without description, Read, Edit, Grep, WebFetch, Task); other MCP servers.
 - `logic/tree.ts`: grouping; unknown groups fall into loose; archived items hidden and shown in
@@ -2720,20 +2834,22 @@ Only DOM-free modules are unit-tested (`node --test --experimental-strip-types`)
 
 As the prototype was verified: a headless Chrome (Playwright) script against a server started with
 `-home <temp dir> -port 4749 -no-open`, real Claude on Haiku, and real Cursor on its cheapest
-model. It is kept as `web/e2e/app.e2e.mjs` and run by hand (`node web/e2e/app.e2e.mjs`); it is not
-part of `npm test`, since it spends money and needs logins.
+model. It is kept as `web/e2e/app.e2e.mjs` and run with `node web/e2e/app.e2e.mjs`, by an agent
+or by hand, using the Claude and Cursor logins already on the machine. It is not part of `npm test`,
+since it spends money and needs those logins.
 
 1. Start the server; running it a second time prints "already running" and exits 0.
 2. New group "Research" opens in rename mode; rename it. New plain Claude chat in it: pickers
-   change (one `claude` process left, checked with `pgrep -f`), first message locks them; asking
+   change (no `claude` process runs yet, checked with `pgrep -f`), first message starts one and
+   locks them; asking
    "Do you have any tools containing board?" → "No". The chat gets a name.
 3. Change folder to another folder in a second chat of the group; a third new chat in the group
    starts in that folder with the same model and effort. A new chat in ungrouped does not.
-4. New whiteboard in Research: `boards/whiteboard.excalidraw` exists at once. Rename it to `arch`
-   → the file is `arch.excalidraw`.
+4. New whiteboard in Research: `boards/<id>/board.json` and `drawing.excalidraw` exist at once.
+   Rename it to `arch` → same folder, `board.json` has the new name.
 5. Claude board chat on `arch`: "Draw client → server → database". The canvas shows sharp,
-   non-rough rectangles in the normal font; the agent outline and working pill show; `arch.excalidraw`
-   on disk contains the elements within about a second.
+   non-rough rectangles in the normal font; the agent outline and working pill show; its
+   `drawing.excalidraw` on disk contains the elements within about a second.
 6. Draw a rectangle by hand: it is sharp, roughness 0, normal font. Change the stroke style by hand,
    open another board, draw again: the change is kept.
 7. Cursor board chat on `arch`: "Add a cache next to the server". The edit lands, the tool card
@@ -2741,7 +2857,7 @@ part of `npm test`, since it spends money and needs logins.
    context meter shows a non-zero share of the model's window after the turn. Restart the
    server with `sqlite3` off the `PATH` and send again: the meter shows "Context unavailable"
    with "sqlite3 not found; the context meter needs it" and no number.
-8. Ask the Claude board chat to "read ~/.ai-whiteboard/boards/arch.excalidraw with cat" → refused
+8. Ask the Claude board chat to "read ~/.ai-whiteboard/boards/<arch id>/drawing.excalidraw with cat" → refused
    or denied; no approval card for it.
 9. Open a second tab: the first shows "Opened in another window"; pending edits from the first are
    in the file. *Use here* takes it back.
@@ -2756,9 +2872,11 @@ part of `npm test`, since it spends money and needs logins.
     archived.
 14. Delete the group with *Move contents to ungrouped*, then delete a board with confirmation: its
     file and chats are gone.
-15. Import a `.excalidraw` file into a group; *Reveal in Finder* opens Finder at the file.
+15. *Reveal in Finder* on a board opens Finder at its file.
 16. `~/.cursor/cli-config.json` (of the test machine) contains the two deny rules once after two
     server starts.
+17. While an agent is working, send is greyed out and Enter does nothing, but the box still takes
+    text; once the turn ends, that text sends. A `curl` to `/messages` mid-turn gets 409.
 
 ---
 
@@ -2768,7 +2886,7 @@ Not a task split; the order in which the parts depend on each other:
 
 1. `model`, `store`, `boards`, `defaults`, `transcript`, `agent` (no processes).
 2. `claude`, `cursor` adapters with their fake-process tests.
-3. `hub`, `boardapi`, `chats`, `app`, `server`, `main`.
+3. `boardtools`, `editorbridge`, `chats`, `boardapi`, `app`, `server`, `main`.
 4. Client: move the prototype files as in 5.1, then the changes.
 5. Remove the prototype-only code listed in 2.2; update `docs/PROJECT.md`.
 

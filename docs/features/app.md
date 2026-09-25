@@ -62,10 +62,10 @@ from agents without fighting the style.
   - Boards are plain `.excalidraw` files there.
   - Chats (history, names, settings), groups, the sidebar layout and the per-group defaults are
     kept next to them.
-- The folder is hidden. Two actions keep the files reachable:
-  - **Reveal in Finder** on a board (the server opens Finder at the file);
-  - **Import board…**, which copies an existing `.excalidraw` file into a group.
-- Nothing is carried over from the prototype. Its boards can be brought in with Import.
+- The folder is hidden. **Reveal in Finder** on a board (the server opens Finder at the file)
+  keeps the files reachable.
+- Nothing is carried over from the prototype, and there is no import: boards are only made in
+  the app.
 
 ## The sidebar
 
@@ -73,7 +73,7 @@ As in variant 4:
 
 - A sidebar on the left is the whole navigation. There is no top bar and there are no page tabs.
 - From the top, it shows:
-  - the app name and a **+** menu: *New chat*, *New whiteboard*, *New group*, *Import board…*;
+  - the app name and a **+** menu: *New chat*, *New whiteboard*, *New group*;
   - ungrouped chats and boards;
   - the user's **groups**, in the order the user puts them;
   - a **New group** button.
@@ -107,7 +107,10 @@ As in variant 4:
   status), the thread in a centred column, and the composer.
 - The composer toolbar has **folder**, **model** and **effort** pickers and a **context meter**.
   - The pickers can be changed until the first message is sent; then they lock.
-  - Changing one restarts the waiting agent, so the first reply never waits for a boot.
+  - No agent runs until the first message is sent, so changing a picker only changes the setting.
+    The first reply waits for the agent to start.
+  - Cursor's model list is fetched when the server starts, so its model picker is filled before
+    any Cursor chat has run. Until the fetch finishes, the last known list is shown.
 
 ## Whiteboards
 
@@ -117,14 +120,19 @@ As in variant 4:
 - **Opening a board with no chat open** shows only the board, to the right of the sidebar.
   - A thin bar above the canvas shows `Group / board name` and a **+ Chat on this board** button.
   - When the board has chats and none is open, the bar also shows **Chats (n)**.
-- **Renaming** a board (double-click) renames its file. Its chats follow, and they know the board
-  by its new name from the next message on.
+- **Names need not be unique.** Two boards may have the same name, in the same group or not. A
+  board's file is named by its id, so renaming never touches the file.
+- **Renaming** a board (double-click) changes only its name. Its chats follow, and they know the
+  board by its new name from the next message on.
 - **Autosave**
   - Every change is saved to the board's file: the user's own drawing, and every agent edit.
   - Saving is debounced: a burst of changes becomes one write, shortly after the last change
     (around half a second).
   - Pending changes are always written before the board is closed, renamed, archived, or the app
     quits. The user never needs a Save action, and never loses more than that short window.
+  - Excalidraw's own Open, Save and Save to disk are turned off, and dropping a `.excalidraw`
+    file on the canvas does nothing: they would replace the board or save a copy that isn't the
+    board. Export image stays.
 - **Undo.** Each agent edit is one undo step for the user, as in the prototype.
 - **Only the app edits board files.** Every change to a board goes through the app, whether it
   comes from the user or from an agent.
@@ -149,10 +157,13 @@ As in variant 4:
   - With every message, **context naming their board**: its name, what the user has selected, and
     the visible area.
 - **Scope.** A board chat works on its own board unless the user points at another board with
-  `@name`. It does not create boards or switch the user's view unless asked.
+  `@name`. A board picked from the `@` list is sent with its id, so a shared name is never
+  ambiguous; the board tools
+  take only ids. When the user names a board by hand, the agent lists the boards first to find
+  its id, and asks if several share the name. It does not create boards or switch the user's view unless asked.
 - **Boards an agent creates.** When the user asks a board chat for a new board, the board is
   added to the same group as the chat's board, with no chats of its own. The chat can keep
-  working on it with `@name`, and the sidebar marks it as new until the user opens it.
+  working on it by its id, and the sidebar marks it as new until the user opens it.
 - **While the user draws.** The user and the agent edit the same board at the same time:
   - an outline in the agent's colour shows what the agent just changed;
   - a pill at the bottom of the canvas says the agent is working;
@@ -176,7 +187,7 @@ Boards default to a clean, technical look instead of Excalidraw's hand-drawn one
 - **The editor's own defaults** for new shapes, arrows and text match, so what the user draws fits
   with what agents draw. The user can still change any style by hand, and Excalidraw remembers
   their choice for the rest of the session.
-- Existing and imported boards keep the style they were drawn in. The defaults only apply to new
+- Existing boards keep the style they were drawn in. The defaults only apply to new
   elements.
 
 ## Agents
@@ -208,8 +219,9 @@ for the **next new chat in the same group**.
 
 - **The folder** is remembered **per group**, for all agents.
 - **Model and effort** are remembered **per group and per agent**. A group remembers Claude's last
-  model and effort separately from Cursor's. The new-chat menu also offers the agent last used in
-  that group first.
+  model and effort separately from Cursor's.
+- **Agent order** is always Claude Code, then Cursor, in every menu. It never changes with what
+  was used last.
 - **Ungrouped** counts as a group of its own.
 - **A new group** starts with the defaults the user used most recently anywhere. From then on it
   keeps its own.
@@ -223,7 +235,7 @@ for the **next new chat in the same group**.
 - Chats are kept on disk: their names, groups, settings, whole history, and cost and context
   usage.
 - After the server or app restarts, every chat is in the sidebar where it was. Opening one shows
-  its history.
+  its history and does not start its agent, so old chats can be read without starting anything.
 - Sending a message **resumes the same agent session**, so the agent remembers the conversation.
 - An agent that was mid-turn when the server stopped shows as *Stopped*, and the user can continue
   it with a new message.
@@ -279,7 +291,7 @@ for the **next new chat in the same group**.
 - Resumable chats that survive restarts.
 - The clean drawing style.
 - Real Cursor.
-- Import and Reveal in Finder.
+- Reveal in Finder.
 
 **Removes**
 
@@ -309,8 +321,8 @@ for the **next new chat in the same group**.
 - Moving a chat to another group keeps the settings it was created with. Only where it's listed
   changes. Accepted.
 - Renaming a board: replies written before a rename still mention the old name. Accepted.
-- Hidden storage: boards in `~/.ai-whiteboard` aren't linked to any project. Accepted, with Import
-  and Reveal in Finder.
+- Hidden storage: boards in `~/.ai-whiteboard` aren't linked to any project. Accepted, with Reveal in
+  Finder.
 - Excalidraw in a web view inside a native app: avoided for now by keeping the client on the web.
   This is the main risk for the later React Native client.
 
