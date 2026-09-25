@@ -118,6 +118,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	}
 	cmd := exec.Command(bin, s.Args(o)...)
 	cmd.Dir = o.Cwd
+	cmd.Env = append(os.Environ(), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1") // chats neither read nor write auto-memory
 	cmd.Stderr = &cappedWriter{buf: p.stderr, max: stderrCap}
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()

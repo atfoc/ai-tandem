@@ -812,6 +812,9 @@ func AppDirRules(root, home string) []string {
   set. Auto mode's classifier approves routine tool calls; what it escalates still arrives as
   `can_use_tool` over `--permission-prompt-tool stdio` and shows as an approval card. The
   app-folder guard (`--disallowedTools`, `TouchesAppDir`) applies in every mode.
+- Every chat process gets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` on top of the user's environment:
+  chats neither load nor write auto-memory (`~/.claude/projects/<cwd>/memory/`). CLAUDE.md files
+  still load.
 - Plain chats get none of `--append-system-prompt`, `--mcp-config`, `--allowedTools`.
 - **Resolved:** Claude snapshots the system prompt per session. A resumed chat keeps the
   whiteboard instructions it started with; `--system-prompt-snapshot` is left at its default.

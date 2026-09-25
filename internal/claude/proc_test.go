@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 // stdin until it is closed, then exits. It only runs as a child of the tests.
 func helperProcess() {
 	cwd, _ := os.Getwd()
-	rec, _ := json.Marshal(map[string]any{"cwd": cwd, "args": os.Args[1:]})
+	rec, _ := json.Marshal(map[string]any{"cwd": cwd, "args": os.Args[1:], "noMemory": os.Getenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY")})
 	os.WriteFile(os.Getenv(envArgs), rec, 0o644)
 	script, err := os.ReadFile(os.Getenv(envScript))
 	if err != nil {
@@ -183,8 +183,9 @@ func TestPermissionFlow(t *testing.T) {
 	}
 
 	var rec struct {
-		Cwd  string
-		Args []string
+		Cwd      string
+		Args     []string
+		NoMemory string
 	}
 	b, _ := os.ReadFile(f.args)
 	json.Unmarshal(b, &rec)
@@ -194,6 +195,9 @@ func TestPermissionFlow(t *testing.T) {
 	}
 	if v, _ := flag(rec.Args, "--session-id"); v != "s1" {
 		t.Errorf("process args %q", rec.Args)
+	}
+	if rec.NoMemory != "1" {
+		t.Errorf("CLAUDE_CODE_DISABLE_AUTO_MEMORY = %q, want 1", rec.NoMemory)
 	}
 }
 
