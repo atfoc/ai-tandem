@@ -95,6 +95,14 @@ As in variant 4:
   - Chats are named automatically from the first message by a small model, as in the prototype.
   - Double-click a chat to rename it. A name the user sets is never overwritten.
 - **Show archived.** A switch at the bottom of the sidebar. See *Archive and delete*.
+- **Theme.** Beside it, a three-way switch: *Light*, *Dark*, or *System* (the default), which
+  follows the OS appearance and changes with it live. The choice is kept in the browser and
+  survives reloads; the page opens in the right theme with no flash of the other one. The whole
+  window follows it, the whiteboard canvas included (Excalidraw's own dark mode; its own theme
+  toggle is hidden). Only the look changes: boards are stored the same in both themes.
+- **Width.** Dragging the sidebar's right edge resizes it (200–480px, 264px by default), in every
+  view. Double-clicking the edge puts it back to the default. The width is kept in the browser and
+  survives reloads.
 
 ## Plain chats
 
@@ -148,14 +156,27 @@ As in variant 4:
   chat panel, moved from the right side to the left.
   - Clicking a board reopens the chat that was last open on it.
   - The panel's **×** or **⌘J** hides it, and **Chats (n)** in the board bar brings it back.
+  - Dragging the panel's right edge resizes it (300–760px, 400px by default), always leaving the
+    canvas at least 320px; double-clicking the edge resets it. Like the sidebar's, the width is
+    kept in the browser, and it is one width for every board.
 - **What they get**
   - Everything a plain chat has, including its own folder, model and effort, picked the same way.
     The board doesn't change where the agent runs; it only adds the board's context.
   - The **board tools**: read a board, look at the user's view and selection, edit, delete, and
     show a board.
   - The **whiteboard instructions**.
-  - With every message, **context naming their board**: its name, what the user has selected, and
-    the visible area.
+  - With every message, **context naming their board** (its name and id) and the boards the user
+    `@`-mentioned. What the user has selected is not sent on its own; the agent can look at the
+    user's view and selection with the board tools when asked about "the selection".
+- **Pointing at the board.** While a board chat is open beside its board, the user can put parts
+  of the board into the message, where they are typing, as many as they like, between words:
+  - **⌘L** puts what is selected on the board into the message, shown as a chip (e.g.
+    *rectangle “API”*, *3 rectangles*).
+  - **⌘⇧L** asks for a point: the canvas shows a crosshair and a hint, and a click puts that spot
+    (board coordinates) into the message as a chip. **Esc** cancels.
+  - A chip is deleted as a whole with Backspace. The sent message shows the same chips in the
+    thread; the agent gets, in the same place in the sentence, the elements' ids and details, or
+    the point and the elements near it.
 - **Scope.** A board chat works on its own board unless the user points at another board with
   `@name`. A board picked from the `@` list is sent with its id, so a shared name is never
   ambiguous; the board tools
@@ -211,6 +232,19 @@ Boards default to a clean, technical look instead of Excalidraw's hand-drawn one
     the user's global Cursor default model. That is accepted.
 - Both agents show in the **+** menus as *Claude Code chat* and *Cursor chat*. Each chat shows its
   agent's glyph and colour.
+- **Messages render Markdown**, in both themes: headings, bold and italic, strikethrough, lists
+  (nested, and task lists with their boxes), links, inline code, code blocks, quotes, tables and
+  rules.
+  - Code blocks are monospace, scroll sideways instead of wrapping, name their language, colour the
+    common languages, and have a **Copy** button.
+  - Links open in a new tab. Images are shown as links; nothing is fetched from a message.
+  - Raw HTML in a message is shown as text, never run or drawn.
+  - The user's own messages render Markdown too, and keep their line breaks as typed.
+  - References to the board (⌘L, ⌘⇧L) show as chips where they stand in the sentence, in the user's
+    messages and in the agent's when it quotes them; `@board` names in the user's messages link to
+    their boards. Inside code they stay as typed.
+  - While the agent writes, the text is formatted as it arrives, with the caret after the last
+    line; a long reply stays smooth.
 
 ## Sticky defaults
 

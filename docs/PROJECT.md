@@ -73,6 +73,10 @@ its implementation spec `docs/features/app.impl.md`):
 - `docs/research/claude-rpc.md` — driving Claude Code CLI as a long-lived streaming subprocess
   (code on branch `claude-rpc`).
 - `docs/research/cursor-rpc.md` — driving Cursor agent CLI the same way (code on branch `cursor-rpc`).
+- `docs/research/cursor-effort.md` — setting Cursor's effort, thinking and context per model over
+  ACP with the parameterized model picker (code on branch `cursor-effort`).
+- `docs/research/cursor-effort-load.md` — `session/load` restores the shared last-used model and
+  params, so the policy is re-applied after every load (code on branch `cursor-effort-load`).
 
 Findings so far (2026-09-24):
 
@@ -93,7 +97,9 @@ Findings so far (2026-09-24):
 - **Approvals can be routed to the browser UI**
   - Claude: `--permission-prompt-tool stdio`.
   - Cursor: ACP `session/request_permission`.
-- **Page context** is sent as a `<ui-context>` block before each user message.
+- **Page context** is sent as a `<ui-context>` block before each user message: the chat's board
+  and the `@`-mentioned boards. The selection and points on the board go inside the message only
+  when the user puts them there (⌘L, ⌘⇧L), as inline `<selection>` / `<point>` tags.
 - **Isolation.** Each spawned agent inherits the user's global CLI config unless isolated.
   *(Isolation is no longer used: every chat runs with the user's own settings.)*
   - Claude: `--strict-mcp-config`, `--disable-slash-commands`, `--setting-sources ""`.

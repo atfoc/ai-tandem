@@ -73,6 +73,7 @@ internal/claude/catalog.go           new: Claude's static model list
 internal/cursor/acp.go               new: JSON-RPC 2.0 stdio client (from cursor-rpc branch acp.go)
 internal/cursor/cursor.go            new: the Cursor adapter
 internal/cursor/catalog.go           new: Cursor model list parsing
+internal/cursor/params.go            new: model params policy (thinking, largest context, effort)
 internal/cursor/probe.go             new: fetch the Cursor model list at server start
 internal/cursor/config.go            new: deny rules in the user's Cursor config
 internal/cursor/ctxusage.go          new: context usage read from Cursor's session store (sqlite3)
@@ -89,9 +90,9 @@ internal/app/app.go                  new: groups, moves, archive, unarchive, del
 internal/server/server.go            new: HTTP routes (from prototype main.go's handlers)
 internal/server/guard.go             new: Host check and active-client check
 
-web/package.json                     from prototype, unchanged except a "test" script
+web/package.json                     from prototype, plus a "test" script and the Markdown packages (5.7)
 web/build.mjs                        from prototype; also copies web/public into dist
-web/index.html                       from prototype; adds the favicon links
+web/index.html                       from prototype; adds the favicon links and the theme before first paint (5.9)
 web/public/                          favicon.ico, favicon.png, apple-touch-icon.png (made by make-icons.py)
 assets/icon/artwork.png              icon artwork (full-bleed, generated)
 scripts/make-icons.py                builds AppIcon.png/.icns and web/public from the artwork
@@ -108,13 +109,19 @@ web/src/apply.ts                     changed: clean defaults for new elements (s
 web/src/format.ts                    unchanged
 web/src/logic/labels.ts              new: tool card labels (moved out of ui.tsx, DOM-free)
 web/src/logic/context.ts             new: the <ui-context> text (moved out of board.ts, DOM-free)
+web/src/logic/refs.ts                new: selection and point references inside a message (⌘L, ⌘⇧L; DOM-free)
+web/src/logic/markdown.ts            new: Markdown blocks, reference and mention slots (DOM-free)
 web/src/logic/tree.ts                new: sidebar tree building (moved out of v4.tsx, DOM-free)
 web/src/logic/mentions.ts            new: @name parsing (moved out of ui.tsx, DOM-free)
+web/src/logic/theme.ts               new: the theme choice and the theme it resolves to (DOM-free)
+web/src/theme.ts                     new: applies the theme to the page, follows the system (5.9)
 web/src/App.tsx                      new (from prototype v4.tsx's Grouped)
 web/src/Sidebar.tsx                  new (from prototype v4.tsx's sidebar parts)
 web/src/Canvas.tsx                   changed
 web/src/ChatView.tsx                 new (from prototype ui.tsx Thread/ItemView/ToolCard/PermCard/Rich and v2.tsx ChatHeader)
 web/src/Composer.tsx                 new (from prototype ui.tsx Composer and v2.tsx Toolbar/Picker/DirPicker/DirBrowser/ContextMeter)
+web/src/RefInput.tsx                 new: the composer's text box, with reference chips
+web/src/Markdown.tsx                 new: a message's Markdown (react-markdown, GFM, code colours)
 web/src/Dialogs.tsx                  new: confirm dialog, takeover screen
 web/src/icons.tsx                    new (glyphs and icons from ui.tsx, v2.tsx, v4.tsx)
 web/src/styles.css                   changed
@@ -322,15 +329,16 @@ type Defaults struct {
 type Catalog struct {
 	Models  []CatalogModel `json:"models"`
 	Default ModelChoice    `json:"default"`
-	Values  []string       `json:"values,omitempty"` // Cursor only: exact ACP option values
 }
 
 type CatalogModel struct {
-	ID            string   `json:"id"`              // "sonnet", or Cursor's base id "gpt-5.4-mini"
-	Label         string   `json:"label"`
-	Note          string   `json:"note,omitempty"`
-	Efforts       []string `json:"efforts,omitempty"` // empty: no effort picker
-	ContextWindow int      `json:"contextWindow,omitempty"`
+	ID            string            `json:"id"` // "sonnet", or Cursor's bare model id "gpt-5.4-mini"
+	Label         string            `json:"label"`
+	Note          string            `json:"note,omitempty"`
+	Efforts       []string          `json:"efforts,omitempty"` // empty: no effort picker
+	ContextWindow int               `json:"contextWindow,omitempty"`
+	DefaultEffort string            `json:"defaultEffort,omitempty"` // the effort value the model uses by default
+	EffortLabels  map[string]string `json:"effortLabels,omitempty"`  // effort value -> Cursor's display name, e.g. "xhigh" -> "Extra High"
 }
 
 type Usage struct {
@@ -997,30 +1005,62 @@ go func(){ err := conn.Wait(); p.events <- EvExit{ExitErr}; close(p.events) }()
 return p
 ```
 
-`handshake` (research: initialize → authenticate → session/new or session/load):
+`handshake` (research: initialize → authenticate → session/new or session/load; then the model
+list and the params policy, `docs/research/cursor-effort.md` and `cursor-effort-load.md`):
 
 ```
 conn.Call("initialize", {protocolVersion: 1,
-    clientCapabilities: {fs: {readTextFile: false, writeTextFile: false}, terminal: false},
+    clientCapabilities: {fs: {readTextFile: false, writeTextFile: false}, terminal: false,
+                         _meta: {parameterizedModelPicker: true}},
     clientInfo: {name: "ai-whiteboard", version: version.Version}})
 conn.Call("authenticate", {methodId: "cursor_login"})
 if o.Resume:
    p.loading = true
-   conn.Call("session/load", {sessionId: o.SessionID, cwd: o.Cwd, mcpServers: []})
+   res := conn.Call("session/load", {sessionId: o.SessionID, cwd: o.Cwd, mcpServers: []})
    p.loading = false; p.sessionID = o.SessionID
-   p.readCtx()                        // a resumed chat shows its meter before the next turn
 else:
    res := conn.Call("session/new", {cwd: o.Cwd, mcpServers: []})
    p.sessionID = res.sessionId
-   cat := ParseCatalog(res)
-   p.events <- EvSession{SessionID}; if cat != nil { p.events <- EvCatalog{Catalog: cat} }
-if o.Model != "":
-   v := ValueFor(catalog (from res, or the last known), o.Model, o.Effort)
-   if v != "": conn.Call("session/set_config_option", {sessionId, configId: "model", value: v})
-               (on error: conn.Call("session/set_model", {sessionId, modelId: v}))
-on any error: p.readyErr = err
+   p.events <- EvSession{SessionID}
+reported := res.configOptions["model"].currentValue     // a bare model id
+cat := ParseModelList(conn.Call("cursor/list_available_models", {})); nil → error "Cursor reported no models"
+cat.Default: new → reported; resume → the Spawner's last remembered catalog's Default model
+             (from this process's probe or last new session) when still listed; else the first
+             model; effort = that model's DefaultEffort
+s.remember(cat); p.events <- EvCatalog{Catalog: cat}
+applyChoice(o.Model or reported, o.Effort)            // always, even on resume and when the
+                                                      // reported model is already right
+if o.Resume: p.readCtx()              // a resumed chat shows its meter before the next turn
+on any error (list, set included): p.readyErr = err  // Send waits on ready: no prompt runs first
 close(p.ready)
 ```
+
+`applyChoice` (`internal/cursor/params.go`) is the params policy. It runs after every
+`session/new` and `session/load`, from the chat's own saved model and effort, never from what
+Cursor reports: Cursor keeps one shared last-used model and per-model params in
+`~/.cursor/cli-config.json`, a model set restores that model's last-used params (not its
+defaults), and `session/load` restores the shared last-used selection, not the session's.
+
+```
+setOption(id, value) = conn.Call("session/set_config_option", {sessionId, configId: id, value})
+                       → the response's configOptions
+opts := setOption("model", model)                     // bare id
+"thinking" in opts        → setOption("thinking", "true")   // never shown to the user
+"context" in opts         → setOption("context", the value with the largest parsed size
+                                      ("272k", "1m"), never by list order)
+the thought_level option whose id != "thinking" (id "effort", "reasoning" or "reasoning_effort")
+                          → setOption(id, effort if it is one of its values, else the model's
+                                      DefaultEffort from the model list)
+```
+
+Options that are absent are not set (a model without `context` has a fixed window; one without
+an effort option gets no effort). `fast` (left off) and every other option (`optimize_for`, ...)
+are never set. There is no fallback for `cursor-agent` versions without the flag, and no
+`session/set_model` call.
+
+**Accepted:** the policy writes into the user's `~/.cursor/cli-config.json`, so the user's own
+Cursor CLI model params (thinking, context, effort) get overwritten by the app's choices. Isolating
+this with a server-owned `CURSOR_CONFIG_DIR` is a separate follow-up.
 
 `Send(blocks)`:
 
@@ -1182,31 +1222,25 @@ shows the format error until this reader is updated.
 `internal/cursor/catalog.go`:
 
 ```go
-// ParseCatalog reads session/new's result. The "model" config option's values look like
-// "gpt-5.4-mini[reasoning=medium]"; models.availableModels gives display names.
-func ParseCatalog(res json.RawMessage) *model.Catalog
+// ParseModelList reads cursor/list_available_models' result
+// ({models: [{value, name, configOptions}]}) into a catalog, in the list's order.
+// Default is left empty (see setDefault). Returns nil when unparseable or empty.
+func ParseModelList(res json.RawMessage) *model.Catalog
 
-// ValueFor picks the exact option value for a base model and effort.
-func ValueFor(c *model.Catalog, base, effort string) string
-
-// split("gpt-5.4-mini[reasoning=medium]") → ("gpt-5.4-mini", map{"reasoning":"medium"})
-func split(v string) (string, map[string]string)
+// setDefault sets c.Default to model id with its DefaultEffort when id is in the list,
+// else to the first model in the list with its DefaultEffort.
+func setDefault(c *model.Catalog, id string)
 ```
 
 ```
-ParseCatalog:
-  opt := configOptions[*] where id == "model"; values := opt.options[*].value (fallback: models.availableModels[*].modelId)
-  names := models.availableModels: modelId → name
-  for v in values: base, params := split(v); add base once (Label: names[v] or names[base] or base,
-                   stripping a trailing reasoning word from the label); e := effortOf(params): the first non-empty of
-                   params.reasoning, params.reasoning_effort, params.effort (Cursor's name varies by model;
-                   `thinking` is not an effort); if e: add to base.Efforts
-  Default: split(opt.currentValue or models.currentModelId) → {Model: base, Effort: effortOf(params)}
-  Values = values
-ValueFor:
-  first v in c.Values with split(v).base == base and effortOf(params) == effort
-  else first v with that base; else ""
+ParseModelList: for m in models:
+  ID = m.value (a bare id); Label = m.name with a trailing reasoning word stripped
+  the first thought_level option whose id != "thinking" → Efforts = its values,
+      EffortLabels = value → name, DefaultEffort = its currentValue (the model's default)
+  "context" option → ContextWindow = the largest parsed value
 ```
+
+The old `cursorCatalog` in `state.json` (with `values`) is replaced at the next probe or spawn.
 
 Catalogs are stored in `state.json` (`cursorCatalog`) whenever a new one arrives, and sent to the
 client (`catalog` event), so the pickers can list Cursor's models without a running agent.
@@ -1221,9 +1255,11 @@ func (s *Spawner) Catalog(timeout time.Duration) (*model.Catalog, error)
 
 ```
 conn := Start(s.Bin, ["acp"], os.TempDir()); defer close stdin, kill after 3 s
-initialize (as in handshake); authenticate {methodId: "cursor_login"}
+initialize (as in handshake, with the flag); authenticate {methodId: "cursor_login"}
 res := session/new {cwd: os.TempDir(), mcpServers: []}   // no prompt is sent
-cat := ParseCatalog(res); nil → error "Cursor reported no models"
+cat := ParseModelList(cursor/list_available_models {}); empty or unparseable → error "Cursor reported no models"
+setDefault(cat, res's "model" currentValue)             // just a starting point
+s.remember(cat)
 whole call bounded by timeout (20 s)
 ```
 
@@ -1232,10 +1268,11 @@ whole call bounded by timeout (20 s)
 in, timeout) it logs and the last stored catalog stays. Until a catalog exists (first run, fetch not
 done) the Cursor pickers show "Loading models…".
 
-**Resolved:** `session/new` is the only way to get the model values ACP accepts (`agent models`
-uses a different id syntax, research *Model*). The fetch leaves one unused session in
-`~/.cursor/acp-sessions` per server start; that is accepted. It never calls `set_config_option`,
-so it does not change the user's default Cursor model.
+**Resolved:** `cursor/list_available_models` gives every model with all of its params and their
+defaults in one call; `session/new` gives the starting model for `Default` (`agent models` uses a
+different id syntax, research *Model*). The fetch leaves one unused session in
+`~/.cursor/acp-sessions` per server start; that is accepted. It never calls
+`session/set_config_option`, so it does not change the user's Cursor model or params.
 
 `internal/cursor/config.go`:
 
@@ -1565,11 +1602,21 @@ narrow panel beside the board, so keep them short and plain.
 ## Your board
 
 Every user message starts with a `<ui-context>` block written by the app, not by the user. It names
-`active_board` (this chat's board), `referenced_boards` (boards the user pointed at with @name),
-each as `name (id)`,
-what the user has selected, and the visible area. "The board", "this", "here" and "the diagram" mean
-the active board. Work on it unless the user points at another board with @name. Never quote the
-block back.
+`active_board` (this chat's board) and `referenced_boards` (boards the user pointed at with @name),
+each as `name (id)`. "The board", "this", "here" and "the diagram" mean the active board. Work on it
+unless the user points at another board with @name. Never quote the block back.
+
+The user can point at things on the active board inside the message, where they belong in the
+sentence. The app writes these tags; read them as part of the sentence and never quote them back:
+
+- `<selection ids="…" label="…">…</selection>`: elements the user had selected, one entry per
+  element (type, key, id, label, position and size), as they were when the message was sent.
+  Words like "this", "these" or "it" next to one mean those elements; refer to them by their ids.
+- `<point x="…" y="…">near: …</point>`: a spot on the board in board coordinates, with the elements
+  nearest to it. Use it for where to put or move things.
+
+Nothing else about the selection is sent. If the user speaks of "the selection" or "what I selected"
+without a `<selection>` tag, call `get_view`.
 
 Don't create boards or switch the user's view (`show_board`) unless the user asks. A board you
 create goes into the same group as your board, with no chats of its own; keep working on it with its
@@ -1578,8 +1625,8 @@ you have no id for, call `list_boards` first; if several share the name, pick by
 
 ## Working on a board
 
-1. Read before you write: `read_board` for each board you will touch; `get_view` for a fresher
-   selection and viewport.
+1. Read before you write: `read_board` for each board you will touch; `get_view` for what the user
+   has selected and is looking at right now.
 2. One `apply` call per coherent change: it is one undo step for the user. Give every element you
    create a short, stable `key` (e.g. `api`, `db`, `api-db`) and refer to your own elements by key.
    Refer to the user's elements by their full `id`.
@@ -2161,7 +2208,15 @@ bin/AI Whiteboard.app/            built by scripts/build-app.sh (bin/ is ignored
 | `apply.ts` | prototype | clean defaults (section 6) |
 | `format.ts` | prototype | unchanged |
 | `logic/labels.ts` | `ui.tsx` `genericTool`/`toolVerb`/`toolDone`/`statusText` | board wording |
-| `logic/context.ts` | `board.ts` `buildContext` | DOM-free |
+| `logic/context.ts` | `board.ts` `buildContext` | DOM-free; the board and @-mentioned boards only |
+| `logic/refs.ts` | new | selection and point references: build, inline tags, parse |
+| `RefInput.tsx` | new | the composer's contenteditable box with reference chips; `RefChip` for the thread |
+| `logic/markdown.ts` | new | `splitBlocks`, `trimPartialRef`, `stashRefs`/`unstash`, `rehypeSlots` |
+| `Markdown.tsx` | new (replaces `ChatView.tsx`'s tiny `Rich`) | messages' Markdown, chips and mentions in it, code blocks |
+| `logic/layout.ts` | new | pane widths: defaults, min/max, clamping, reading the saved widths |
+| `Resizer.tsx` | new | the drag handle that resizes the sidebar and the board chat panel |
+| `logic/theme.ts` | new | `ThemePref` (light, dark, system), reading the saved choice, resolving it against the system |
+| `theme.ts` | new | `initTheme`, `setThemePref`: `data-theme` on `<html>`, the store's `theme`, the system listener |
 | `logic/tree.ts` | `v4.tsx` sidebar grouping | archived filtering |
 | `logic/mentions.ts` | `ui.tsx` `resolvePage` and mention regex | board ids; picked mentions keep the id |
 | `App.tsx` | `v4.tsx` `Grouped`, `BoardBar`, `Home` | |
@@ -2286,7 +2341,10 @@ export type State = {
   catalogs: Partial<Record<AgentKind, Catalog>>;
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
   panel: boolean;                 // board chat panel shown (⌘J)
+  widths: Widths;                 // sidebar and board chat panel, persisted in localStorage "aiwb.widths"
   showArchived: boolean;          // persisted in localStorage "aiwb.archived"
+  themePref: ThemePref;           // light, dark or system; persisted in localStorage "aiwb.theme"
+  theme: Theme;                   // the theme shown (theme.ts keeps it current)
   selection: Selection;           // prototype
   view: View;                     // prototype
   flashes: Flash[];               // prototype, keyed by board id
@@ -2428,20 +2486,51 @@ export async function runTool(call: ToolCall): Promise<string> {
 `logic/context.ts` (from `buildContext`):
 
 ```ts
-export function contextBlock(o: { board: string; referenced: string[]; selection: string[]; viewport: FmtViewport }): string {
+export function contextBlock(o: { board: string; referenced: string[] }): string {
   const lines = [`active_board: ${o.board}`];
   if (o.referenced.length) lines.push(`referenced_boards: ${o.referenced.join(", ")}`);
-  if (o.selection.length) { lines.push(`selection (${o.selection.length}):`); for (const l of o.selection) lines.push("  " + l); }
-  else lines.push("selection: none");
-  lines.push(formatViewport(o.viewport));
   return `<ui-context>\n${lines.join("\n")}\n</ui-context>`;
 }
 ```
 
-`board.ts` `buildContext(chat)` fills it from the store: the chat's board as `name (id)`, `@`
+`board.ts` `buildContext(chat, text)` fills it from the store: the chat's board as `name (id)` and `@`
 references resolved by `logic/mentions.ts` also as `name (id)` (a mention picked from the `@` list
-carries its board's id; a typed `@name` matching several boards lists all of them), and the selection and viewport only when the chat's board is the
-one on screen (else `selection: none` and the last viewport saved in the scene's appState).
+carries its board's id; a typed `@name` matching several boards lists all of them). The selection
+and viewport are **not** sent with the message: the agent gets the selection only where the user
+puts it into the message (below), and can still call `get_view` for the live selection and viewport.
+When a board chat's message arrives with no context, `chats.Manager.Send` puts in
+`prompts.BoardContext(name, id)`, so every board chat message names its board.
+
+**References (⌘L, ⌘⇧L).** While a board chat's panel is open on its board:
+
+- **⌘L** (Ctrl+L elsewhere) puts the elements selected on the board into the message at the caret,
+  as a chip (`rectangle “API”`, `3 rectangles`, `4 elements`). With nothing selected, the composer
+  says so. The key is caught on `window` in the capture phase, before Excalidraw.
+- **⌘⇧L** starts picking a point: a crosshair layer over the canvas with a hint (*Click a point to
+  add it to the chat · Esc to cancel*) and the board coordinates beside the cursor; the wheel still
+  pans and zooms. A click puts the point, in board coordinates, into the message as a chip
+  `(x, y)`; **Esc** (or ⌘⇧L again) cancels. While the panel is open, this replaces Excalidraw's own
+  ⌘⇧L (lock).
+- The context row above the box has the same two actions as buttons (`+ n selected ⌘L`,
+  `+ Point ⌘⇧L`).
+- A message can hold any number of references, anywhere in the text. Backspace and Delete next to a
+  chip remove the whole chip. Copying and pasting inside the box keeps chips.
+
+In the message text a reference is one inline tag (`logic/refs.ts`), so the server stores and sends
+the text as is, and the agent reads the reference where the user put it:
+
+```
+<selection ids="a1,b2" label="2 elements">rectangle id=a1 "API" (10,20 160×70); ellipse id=b2 (0,0 160×70)</selection>
+<point x="120" y="-40">near: rectangle id=a1 "API" (10,20 160×70) 20px left</point>
+```
+
+A selection lists up to 30 elements with `formatElement` (bound text shows as its container's
+label), then `… and n more`; `ids` has them all. A point lists up to 3 elements within 300px
+(`nearest`). Labels are escaped (`&amp;`, `&lt;`, `&gt;`, `&quot;`) and newlines dropped, so a tag
+is always one line. The thread draws the tags back as the same chips (`RefChip`, through
+`Markdown.tsx`, in user messages and in the agent's when it quotes a tag); a chip
+clicked while its board is on screen selects its elements (or marks its point). Chat titles and the
+namer see each reference as `[label]` (`plainText`, and `chats.PlainText` on the server).
 
 ### 5.5 `Canvas.tsx`
 
@@ -2454,6 +2543,7 @@ export function Canvas({ board }: { board: string }) {
   return (
     <div className="canvas" onDropCapture={blockSceneDrop}>
       <Excalidraw key={board}
+        theme={theme}                            // the store's theme (5.9)
         viewModeEnabled={!!b.archived}
         UIOptions={{ canvasActions: {
           loadScene: false,                      // no Open / ⌘O
@@ -2494,7 +2584,7 @@ another chat), with the agent's glyph and colour (prototype `Presence`).
 
 ### 5.6 `Sidebar.tsx`
 
-The variant 4 sidebar (264px), with these changes.
+The variant 4 sidebar (264px by default, resizable: see 5.7), with these changes.
 
 - **Header:** brand, "Reconnecting…" when disconnected, and a `+` menu:
   *Claude Code chat*, *Cursor chat* (always this order), *New whiteboard*,
@@ -2536,7 +2626,9 @@ The variant 4 sidebar (264px), with these changes.
   status while busy, "Stopped" when stopped, the error when `status === "error"`. Double-click
   renames. Hover `⋯`: *Rename*, *Archive*, *Delete*.
 - **Archived items** (when shown): their `⋯` has only *Unarchive* and *Delete*. They open read-only.
-- **Footer:** a *Show archived* switch (`showArchived`, persisted).
+- **Footer:** a *Show archived* switch (`showArchived`, persisted), and the theme switch
+  (`ThemeSwitch`): three icon buttons, *Light*, *Dark*, *System*, as a radio group; a click calls
+  `setThemePref` (5.9).
 
 Selection helpers (from `v4.tsx`):
 
@@ -2563,13 +2655,27 @@ export async function newGroup(): Promise<string>              // the header ope
 - `role === "superseded"` → `TakeoverScreen` ("Opened in another window" + *Use here* → `takeBack()`).
 - `role === "waiting"` → a quiet "Taking over from the other window…" screen.
 - Otherwise the sidebar plus:
-  - a board selected → `[chat panel (400px, if a board chat is selected and panel)] + [board bar +
-    canvas]`. The board bar shows `Group / ▭ board`, *Chats (n)* when the board has chats and the
+  - a board selected → `[chat panel (400px by default, if a board chat is selected and panel)] +
+    [board bar + canvas]`. The board bar shows `Group / ▭ board`, *Chats (n)* when the board has chats and the
     panel is hidden or no chat is open, and *+ Chat on this board* (agent menu). An archived board
     shows "Archived — read-only" in the bar and no *+ Chat*.
   - a plain chat selected → the centred column (max 780px): header, thread, composer.
   - nothing → `Home` (prototype, with *New chat* and *New whiteboard*).
 - Keys (from `VariantHost`): ⌘J toggles `panel`. ⌥V is gone.
+- **Resizable panes.** The sidebar and the board chat panel are each wrapped in `Pane`, a
+  `<section>` whose width is `widths[pane]` and which ends in a `Resizer` (`Resizer.tsx`): an 8px
+  handle straddling the pane's right border, `col-resize` cursor, an accent line on hover and while
+  dragging. Only `Pane` subscribes to the width, so a drag does not re-render the sidebar tree or
+  the thread. `logic/layout.ts` holds the limits: sidebar 200–480 (264), panel 300–760 (400), and
+  `MIN_STAGE` 320px always left for what is right of the pane (`.app > main`), measured when the
+  drag starts.
+  - Pointer down captures the pointer (`setPointerCapture`), so moving over the Excalidraw canvas or
+    an iframe keeps the drag; `body.resizing` forces the cursor, stops text selection and turns off
+    iframe pointer events meanwhile. Moves set `widths` in the store; pointer up (or cancel, or
+    losing the capture) saves them to localStorage `"aiwb.widths"`. Double-click resets the pane to
+    its default and saves.
+  - The canvas follows by itself: Excalidraw watches its container with a `ResizeObserver` and
+    updates its size and offsets, and `onChange` passes the new width to `view`.
 
 `ChatView.tsx`:
 
@@ -2585,6 +2691,39 @@ export async function newGroup(): Promise<string>              // the header ope
 - `PermCard` (prototype) without the delete branch: "Allow <tool>?", the description, the command,
   file or URL, and *Allow* / *Don't*.
 - A `note` item renders as in the prototype.
+- User and text items render through `Markdown` (`Markdown.tsx`); a text item still being written
+  (`!done` and status `writing`) gets `.streaming` and `streaming`.
+
+`Markdown.tsx` — `Markdown({ text, user?, board?, agent?, streaming? })`:
+
+- **Library.** `react-markdown` with `remark-gfm` (tables, task lists, strikethrough, autolinks);
+  user messages also get `remark-breaks`, so a typed line break stays one. No `rehype-raw`: raw
+  HTML reaches the page as text, and react-markdown's default `urlTransform` empties `javascript:`
+  and other unsafe links. Components: `a` opens in a new tab with `rel="noopener noreferrer"` (no
+  href → plain text); `img` becomes a link to its source (nothing is fetched); `table` is wrapped in
+  `.md-table`, which scrolls sideways; `pre` becomes `CodeBlock`: a head with the fence's language
+  and *Copy* (`navigator.clipboard.writeText` of the block's text, "Copied" for 1.4s), then the
+  `<pre>`, which scrolls sideways.
+- **Code colours.** `rehypeCode`, a small rehype plugin over `lowlight` (highlight.js as a syntax
+  tree, no HTML strings) with 14 grammars: bash, css, diff, go, javascript, json, markdown, python,
+  rust, shell, sql, typescript, xml (html), yaml, and their aliases. Only a fence that names a
+  known language is coloured; nothing is guessed. The colours are `.hljs-*` rules on tokens.
+- **Streaming.** `splitBlocks` (`logic/markdown.ts`) cuts the text into top-level blocks at blank
+  lines, never inside a fence nor before an indented line (a list item's continuation); with a
+  `[label]: url` definition anywhere the text stays one block. Each block is a memoized `Block`
+  keyed by its index, so while the agent streams only the last block is parsed again (a 16 KB reply
+  in 1,350 deltas gives no long task). While `streaming`, `trimPartialRef` holds back a reference
+  tag cut off at the end, so it never flashes as raw text. The caret is a `::after` on the last
+  paragraph, heading, quote paragraph or list item (`.msg.streaming`); an empty text shows
+  `.caret-blink`.
+- **Chips and mentions.** Before parsing, `stashRefs` swaps each valid reference tag for a
+  private-use placeholder (`U+E000 n U+E001`), so Markdown never reads inside a tag. The rehype
+  plugin `rehypeSlots` turns each placeholder into `<span data-ref=tag>` (with the punctuation
+  right after it, so a line never starts with it) and, for user messages, each `@name` not inside a
+  word into `<span data-mention>`. Inside `code`, `pre` and `a` the placeholders go back to the tags
+  as text and mentions stay text. The `span` component draws `data-ref` as `RefChip`, clickable
+  when the chat has a board (`showRef`, through a context holding the chat's board and agent), and
+  `data-mention` as the `.mention` button when `resolveName` finds a board, else as text.
 - An archived chat shows its history with a bar "Archived — unarchive to continue" instead of the
   composer.
 
@@ -2596,9 +2735,17 @@ from the `board` argument or "this board". `statusText` adds `stopped` → "Stop
 
 `Composer.tsx`:
 
-- `Composer` (prototype) with: the context chip and `@` mentions only for board chats (plain chats
-  have neither, variant 4); mentions list non-archived boards by name with their group, and a picked mention keeps the board's id; the placeholder no longer says
+- `Composer` (prototype) with: the context chip (the board's name, and `@`-referenced boards) and
+  `@` mentions only for board chats (plain chats have neither, variant 4); the text box is
+  `RefInput` (a contenteditable box, so references show as chips; see 5.4); mentions list non-archived boards by name with their group, and a picked mention keeps the board's id; the placeholder no longer says
   the agent has stopped — a stopped chat takes a new message and resumes.
+- **Text box height:** three lines tall when empty; it grows with its content (typed and soft-wrapped
+  lines, pastes, chips, rewrapping when the panel is resized) up to 40% of the window (at least six
+  lines), then scrolls inside, keeping the caret in view (`RefInput` scrolls to it after chips are
+  put in; the browser does it for typing). Sending clears it back to three lines. Plain CSS
+  (`min-height`/`max-height` on `.composer-input`), no measuring. The thread above keeps to the
+  bottom while it gets shorter or taller, if it was at the bottom (`Thread` watches its size with
+  a `ResizeObserver`; its own scroll to the bottom does not count as the user scrolling away).
 - `sendMessage(chat, text)`: plain → `api.send(chat, text, "")`; board → `api.send(chat, text,
   buildContext(chat, text))`. A 409 "folder" error is shown under the composer.
 - **No send while busy:** while the chat's status is thinking, writing, tool or approval, the send
@@ -2655,7 +2802,36 @@ Delete asks every time (feature).
 `.menu*`, `.v4-*` renamed to `.side-*`/`.board-*`, `.thread`, `.tool*`, `.perm*`, `.composer*`,
 `.tchip`, `.ctx-meter`, `.flash*`, `.presence`), drops `.topbar`, `.tabs`, `.tab*`, `.sessions`,
 `.session*`, `.chatlist*`, `.vswitch*`, `.v-docked`, `.v-rail`, `.side2`, and adds `.archived`
-(opacity .55, italic tag), `.new-dot`, `.dialog*`, `.takeover`.
+(opacity .55, italic tag), `.new-dot`, `.dialog*`, `.takeover`, `.side-pane`, `.resizer`,
+`body.resizing`, `.side-archived`, `.seg` (the theme switch), and `.md*` for messages' Markdown
+(headings, lists, task lists, quotes, tables, `.md-code` blocks with `.md-code-head` and
+`.md-copy`, the streaming caret) with `.hljs-*` code colours. A user bubble's Markdown keeps
+`--user-text`; its inline code is a lighter chip on the bubble.
+
+**Themes.** Every colour in `styles.css` is a token on `:root` (`--bg`, `--panel`, `--line*`,
+`--text`, `--muted`, `--faint`, `--accent*`, `--on-accent`, `--user-text`, the agent colours,
+`--warn*`, `--danger*`, `--ok`, `--hover*`, `--knob`, `--backdrop`, `--shadow-sm/md/lg`, and the
+code colours `--syn-keyword/string/number/title/type/attr`); no rule
+has a colour of its own except white text on a filled accent, danger or Claude colour. `:root[data-theme="dark"]`
+redefines the tokens, close to Excalidraw's own dark UI, and each theme sets `color-scheme`, so
+scrollbars and form controls follow. `--accent` is for text, borders and rings and is lighter in
+dark (`#a8a5ff`, Excalidraw's dark primary); `--accent-fill` is the violet behind white text in
+both. `.agent-*` also sets `--on-agent`, the text on the agent's colour (the flash tag): white on
+Claude, `--bg` on Cursor, whose colour is near-black in light and near-white in dark.
+
+- The choice is `themePref` in the store (localStorage `"aiwb.theme"`: `light`, `dark`, anything
+  else is `system`). `resolveTheme(pref, systemDark)` (`logic/theme.ts`) gives the theme shown.
+- `theme.ts`: `initTheme()` (from `main.tsx`, before `connect()`) sets `data-theme` on `<html>`
+  and the store's `theme`, and listens to `matchMedia("(prefers-color-scheme: dark)")` changes,
+  so *System* follows the OS live. `setThemePref(p)` saves the choice and applies it.
+- No flash: `index.html` has a small inline script before the stylesheet that does the same
+  resolution from localStorage and sets `data-theme` before the first paint, and
+  `<meta name="color-scheme" content="light dark">`.
+- The canvas: `Canvas.tsx` passes `theme` to Excalidraw, which darkens the canvas itself (its
+  filter) and its UI; with the prop set, Excalidraw's own theme toggle is hidden. The theme is not
+  in `appState` saved to the board, so a board file is the same whatever theme it was drawn in.
+- The macOS bundle (4.14) opens the page in the browser, so the browser's and the OS's
+  appearance apply as anywhere else; there is no web view to configure.
 
 ---
 
@@ -2773,21 +2949,33 @@ environment variable) that plays a scripted list of stdout lines and records std
 - A missing folder → `ErrFolderMissing` without starting a process.
 
 `internal/cursor`
-- Fake ACP process: the handshake sends `initialize`, `authenticate`, `session/new` in order with
-  `mcpServers: []` and the chat's cwd; emits `EvSession` and `EvCatalog`; with a model set, sends
-  `session/set_config_option` with the exact value.
-- Resume sends `session/load`; its replayed `session/update`s produce no events.
-- `Catalog` sends `initialize`, `authenticate`, `session/new` in a temp folder, returns the parsed
-  catalog, sends no prompt and no `set_config_option`, and ends the process; no models or a timeout
-  → error.
+- Fake ACP process (a stateful fake Cursor: parameterized model picker flag, model list,
+  `set_config_option` returning configOptions and rejecting bad values with `-32602`, shared
+  last-used params per model; without the flag it behaves like the old variants picker): the
+  handshake sends `initialize` (with `_meta.parameterizedModelPicker: true`), `authenticate`,
+  `session/new` with `mcpServers: []` and the chat's cwd, `cursor/list_available_models`, then the
+  policy's `set_config_option` calls; emits `EvSession` and `EvCatalog`.
+- `applyChoice` for each effort option id (`effort`, `reasoning`, `reasoning_effort`), thinking-only
+  and no-option models; `thinking` set to `"true"` even when last used `false`; `context` set to the
+  largest value; an effort not in the model's values falls back to its list default; an empty chat
+  model gets the policy on the reported model; `fast` / `optimize_for` never set; no
+  `session/set_model`.
+- Resume after another process changed the shared params sends `session/load`,
+  `cursor/list_available_models`, the full policy, then reads the meter, then `session/prompt`; its
+  replayed `session/update`s produce no events. Its catalog `Default` is the last remembered one
+  when still listed, else the first model.
+- A `list_available_models` or `set_config_option` error makes `Send` return it; no prompt is sent.
+- `Catalog` sends `initialize` (with the flag), `authenticate`, `session/new` in a temp folder and
+  `cursor/list_available_models`, returns the catalog with `Default` from `session/new`, sends no
+  prompt and no `set_config_option`, and ends the process; no models or a timeout → error.
 - `agent_message_chunk`s → one text item per stretch between tool calls.
 - A `tool_call` whose command is this chat's board command → `EvToolStart{ToolName: "mcp__board__apply", Input: <args>}`; its completed update → `EvToolResult` with stdout.
 - `session/request_permission` for this chat's board command → answered `allow-once` with no event;
   for another chat's token → an `EvPermRequest`; for a command with `.ai-whiteboard` → answered
   `reject-once` with no event.
 - `Interrupt` sends `session/cancel`; a prompt response `stopReason: "cancelled"` → `EvTurnEnd{Aborted}`.
-- `ParseCatalog` over a sample `session/new` result; `ValueFor("gpt-5.4-mini", "low")` picks the
-  exact value or falls back to the first with that base.
+- `ParseModelList` over the real `list_available_models` fixture (`testdata/models.json`);
+  `contextSize` / `largestContext` pick by parsed size.
 - `EnsureDenyRules`: adds both rules once (idempotent), keeps unrelated keys, creates `deny` when
   missing, leaves a missing config file alone, refuses to touch invalid JSON.
 - `ReadContextUsage` over a temp `store.db` built in the test with `sqlite3` (the test is skipped
@@ -2833,6 +3021,9 @@ environment variable) that plays a scripted list of stdout lines and records std
 - `Send` on a plain chat drops the context; on a Claude board chat sends `[context, text]`; on a
   Cursor board chat sends `[instructions, board-api, context, text]` the first time and
   `[board-api, context, text]` after; the first send starts naming.
+- `Send` on a board chat with no context sends `prompts.BoardContext(board name, id)` in its place
+  and stores it on the user item; the namer gets the text with each reference as `[label]`
+  (`PlainText`).
 - `Send` after the process exited spawns with `Resume: true` and the same session id.
 - `Send` while the chat is busy → `ErrBusy`; no user item is added, `chat.json` is unchanged and
   the agent gets nothing. After `EvTurnEnd` the next `Send` goes through.
@@ -2877,12 +3068,25 @@ environment variable) that plays a scripted list of stdout lines and records std
 
 Only DOM-free modules are unit-tested (`node --test --experimental-strip-types`):
 
-- `logic/context.ts`: the block for a board with and without selection and references matches the
-  expected text exactly.
+- `logic/context.ts`: the block for a board with and without references matches the expected text
+  exactly.
+- `logic/refs.ts`: selection labels; a selection's and a point's tag; long selections counted past
+  the limit; labels with markup, quotes and newlines staying one line; several references
+  interleaved with text round-tripping through `serialize`/`parseRefs`; `plainText`.
 - `logic/mentions.ts`: `@arch`, `@arch.`, `@arch.excalidraw`, unknown names, archived boards
   excluded, a picked mention resolving by id, a typed name shared by two boards giving both.
 - `logic/labels.ts`: every board tool's running and done label; `apply` result `+3 ~1`; Claude's
   own tools (Bash with and without description, Read, Edit, Grep, WebFetch, Task); other MCP servers.
+- `logic/theme.ts`: saved choices read back, anything unknown as *System*; the theme shown for
+  each choice with the system light and dark.
+- `logic/markdown.ts`: blocks split at blank lines but not inside fences (backtick and tilde,
+  closing fence at least as long), not before indented continuation lines, and not at all with a
+  reference definition; an unclosed fence runs to the end; the blocks joined give the text back;
+  tags stashed and restored; slots for references (with trailing punctuation) and, only for user
+  messages, mentions (not inside e-mail addresses); `rehypeSlots` leaving code and links as text;
+  `trimPartialRef` holding back only a cut-off `<selection`/`<point` tag.
+- `logic/layout.ts`: widths clamped to each pane's min and max and to the room left; saved widths
+  missing, unreadable or out of range.
 - `logic/tree.ts`: grouping; unknown groups fall into loose; archived items hidden and shown in
   place; board chats only under their board; order of boards and chats.
 
@@ -2980,8 +3184,6 @@ verification run in section 7 cover each one.
 - Cursor's `Read(<path>/**)` / `Write(<path>/**)` deny syntax in `cli-config.json`.
 - Cursor `session/load` with a different `cwd` (the folder-moved case). If Cursor refuses, the chat
   shows the error and the user can start a new chat in the new folder.
-- The exact shape of Cursor's `session/new` result (`configOptions` vs `models`); `ParseCatalog`
-  reads both.
 - Cursor's session store format (`meta` key `'0'`, `latestRootBlobId`, token_details as field 5) is
   undocumented and was seen in CLI v2026.09.23. A change shows as the meter's format error, not as
   a wrong number. The `CURSOR_CONFIG_DIR` store path and `max_tokens` after a model change are not
