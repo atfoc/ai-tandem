@@ -14,36 +14,6 @@ import (
 	"ai-whiteboard/internal/version"
 )
 
-// sampleNew is a session/new result in the shape `agent acp` returns (trimmed), with the test
-// session id.
-var sampleNew = raw(`{
- "sessionId": "` + testSessionID + `",
- "modes": {"currentModeId": "agent", "availableModes": [{"id": "agent", "name": "Agent"}]},
- "models": {
-  "currentModelId": "gpt-5.4-mini[reasoning=medium]",
-  "availableModels": [
-   {"modelId": "composer-2.5[fast=false]", "name": "Composer 2.5"},
-   {"modelId": "gpt-5.4-mini[reasoning=medium]", "name": "GPT-5.4 Mini"},
-   {"modelId": "gpt-5.4-mini[reasoning=high]", "name": "GPT-5.4 Mini High"},
-   {"modelId": "gemini-3.8-flash[reasoning=high]", "name": "Gemini 3.8 Flash High"},
-   {"modelId": "gemini-3.1-pro[]", "name": "Gemini 3.1 Pro"}
-  ]
- },
- "configOptions": [
-  {"id": "mode", "name": "Mode", "type": "select", "currentValue": "agent",
-   "options": [{"value": "agent", "name": "Agent"}, {"value": "plan", "name": "Plan"}]},
-  {"id": "model", "name": "Model", "category": "model", "type": "select",
-   "currentValue": "gpt-5.4-mini[reasoning=medium]",
-   "options": [
-    {"value": "composer-2.5[fast=false]", "name": "Composer 2.5"},
-    {"value": "gpt-5.4-mini[reasoning=medium]", "name": "GPT-5.4 Mini"},
-    {"value": "gpt-5.4-mini[reasoning=high]", "name": "GPT-5.4 Mini High"},
-    {"value": "gemini-3.8-flash[reasoning=high]", "name": "Gemini 3.8 Flash High"},
-    {"value": "gemini-3.1-pro[]", "name": "Gemini 3.1 Pro"}
-   ]}
- ]
-}`)
-
 const (
 	boardToken = "0123456789abcdef0123456789abcdef"
 	otherToken = "fedcba9876543210fedcba9876543210"
@@ -66,9 +36,9 @@ func step(kind string, v any) fakeStep {
 	panic(kind)
 }
 
-// baseScript answers the handshake with sampleNew.
+// baseScript leaves the handshake to the stateful fake Cursor (fakeCursor).
 func baseScript() fakeScript {
-	return fakeScript{"session/new": {{Result: sampleNew}}}
+	return fakeScript{}
 }
 
 type env struct {
@@ -181,58 +151,229 @@ func jsonEq(t *testing.T, got json.RawMessage, want string) {
 	}
 }
 
+// seed writes the fake Cursor's shared config (as another process would have left it).
+func seed(t *testing.T, cfg fakeConfig) {
+	t.Helper()
+	b, _ := json.Marshal(cfg)
+	if err := os.WriteFile(os.Getenv("FAKE_ACP_STATE"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sharedConfig reads the fake Cursor's shared config.
+func sharedConfig(t *testing.T) fakeConfig {
+	t.Helper()
+	var cfg fakeConfig
+	if b, err := os.ReadFile(os.Getenv("FAKE_ACP_STATE")); err == nil {
+		json.Unmarshal(b, &cfg)
+	}
+	return cfg
+}
+
+// sets lists the session/set_config_option calls as "configId=value", in order.
+func sets(rs []recorded) []string {
+	var out []string
+	for _, r := range rs {
+		if r.Method != "session/set_config_option" {
+			continue
+		}
+		var p struct {
+			ConfigID string `json:"configId"`
+			Value    string `json:"value"`
+		}
+		json.Unmarshal(r.Params, &p)
+		out = append(out, p.ConfigID+"="+p.Value)
+	}
+	return out
+}
+
+// onlyHandshakeMethods fails when a method other than the handshake's (or extra) was sent: the
+// model is only ever set with session/set_config_option.
+func onlyHandshakeMethods(t *testing.T, rs []recorded, extra ...string) {
+	t.Helper()
+	ok := map[string]bool{"initialize": true, "authenticate": true, "session/new": true,
+		"cursor/list_available_models": true, "session/set_config_option": true}
+	for _, m := range extra {
+		ok[m] = true
+	}
+	for _, m := range methods(rs) {
+		if !ok[m] {
+			t.Fatalf("unexpected method %s in %v", m, methods(rs))
+		}
+	}
+}
+
+const ctxReadMethod = "<context read>"
+
+// recordCtxReads makes every context meter read show up in the record as ctxReadMethod: the store
+// exists, and the sqlite3 binary is a script that records its call and fails.
+func (e *env) recordCtxReads(t *testing.T) {
+	t.Helper()
+	db := StorePath(e.home, testSessionID)
+	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(db, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh := filepath.Join(t.TempDir(), "sqlite3")
+	script := "#!/bin/sh\necho '{\"method\":\"" + ctxReadMethod + "\"}' >> '" + e.record + "'\nexit 1\n"
+	if err := os.WriteFile(sh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.s.SQLite = sh
+}
+
 func TestHandshakeNewSession(t *testing.T) {
 	e := newEnv(t, baseScript())
-	a := e.spawn(t, agent.SpawnOptions{ChatID: "c1", Model: "gpt-5.4-mini", Effort: "high"})
+	a := e.spawn(t, agent.SpawnOptions{ChatID: "c1", Model: "claude-sonnet-5", Effort: "low"})
 
 	evs := until(t, a, isKind(agent.EvCatalog))
 	if evs[0].Kind != agent.EvSession || evs[0].SessionID != testSessionID {
 		t.Fatalf("first event %+v, want EvSession %s", evs[0], testSessionID)
 	}
-	if c := evs[len(evs)-1].Catalog; c == nil || len(c.Models) != 4 {
-		t.Fatalf("catalog %+v", c)
+	want := ParseModelList(fakeModels)
+	want.Default = model.ModelChoice{Model: "gpt-5.4-mini", Effort: "medium"} // session/new's model
+	if c := evs[len(evs)-1].Catalog; !reflect.DeepEqual(c, want) {
+		t.Fatalf("catalog %+v, want %+v", c, want)
 	}
 	send(t, a, "hi")
 	until(t, a, isKind(agent.EvTurnEnd))
 
 	rs := readRecord(t, e.record)
-	want := []string{"initialize", "authenticate", "session/new", "session/set_config_option", "session/prompt"}
-	if got := methods(rs); !reflect.DeepEqual(got, want) {
-		t.Fatalf("methods %v, want %v", got, want)
+	wantM := []string{"initialize", "authenticate", "session/new", "cursor/list_available_models",
+		"session/set_config_option", "session/set_config_option", "session/set_config_option", "session/set_config_option",
+		"session/prompt"}
+	if got := methods(rs); !reflect.DeepEqual(got, wantM) {
+		t.Fatalf("methods %v, want %v", got, wantM)
 	}
 	init, _ := find(rs, "initialize")
-	jsonEq(t, init.Params, `{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"ai-whiteboard","version":"`+version.Version+`"}}`)
+	jsonEq(t, init.Params, `{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false,"_meta":{"parameterizedModelPicker":true}},"clientInfo":{"name":"ai-whiteboard","version":"`+version.Version+`"}}`)
 	auth, _ := find(rs, "authenticate")
 	jsonEq(t, auth.Params, `{"methodId":"cursor_login"}`)
 	nw, _ := find(rs, "session/new")
 	jsonEq(t, nw.Params, `{"cwd":`+string(mustMarshal(e.cwd))+`,"mcpServers":[]}`)
 	set, _ := find(rs, "session/set_config_option")
-	jsonEq(t, set.Params, `{"sessionId":"`+testSessionID+`","configId":"model","value":"gpt-5.4-mini[reasoning=high]"}`)
+	jsonEq(t, set.Params, `{"sessionId":"`+testSessionID+`","configId":"model","value":"claude-sonnet-5"}`)
+	if got := sets(rs); !reflect.DeepEqual(got, []string{"model=claude-sonnet-5", "thinking=true", "context=1m", "effort=low"}) {
+		t.Fatalf("sets %v", got)
+	}
 	pr, _ := find(rs, "session/prompt")
 	jsonEq(t, pr.Params, `{"sessionId":"`+testSessionID+`","prompt":[{"type":"text","text":"hi"}]}`)
 }
 
-func TestSetModelFallback(t *testing.T) {
-	s := baseScript()
-	s["session/set_config_option"] = []fakeStep{{Error: raw(`{"code":-32602,"message":"bad"}`)}}
-	e := newEnv(t, s)
-	a := e.spawn(t, agent.SpawnOptions{Model: "gemini-3.1-pro"})
-	send(t, a, "hi")
-	until(t, a, isKind(agent.EvTurnEnd))
-	set, ok := find(readRecord(t, e.record), "session/set_model")
-	if !ok {
-		t.Fatal("no session/set_model")
+// The policy for each option shape: thinking → true, context → largest, the thought_level option
+// (whatever its id) → the chat's effort or the model's list default; fast / optimize_for never.
+func TestApplyChoice(t *testing.T) {
+	cases := []struct {
+		name, model, effort string
+		seed                map[string]map[string]string // last-used params left by another process
+		want                []string
+	}{
+		{"effort", "claude-opus-5-5", "max", nil, []string{"model=claude-opus-5-5", "context=1m", "effort=max"}},
+		{"reasoning with context listed largest first", "gpt-5.4", "extra-high", nil, []string{"model=gpt-5.4", "context=1m", "reasoning=extra-high"}},
+		{"reasoning_effort", "grok-4.7", "low", nil, []string{"model=grok-4.7", "reasoning_effort=low"}},
+		{"reasoning without context", "gpt-5.4-mini", "none", nil, []string{"model=gpt-5.4-mini", "reasoning=none"}},
+		{"thinking only", "claude-haiku-4-5", "high", nil, []string{"model=claude-haiku-4-5", "thinking=true"}},
+		{"no options", "gemini-3.1-pro", "", nil, []string{"model=gemini-3.1-pro"}},
+		{"optimize_for untouched", "auto-smart", "", nil, []string{"model=auto-smart"}},
+		{"thinking set although last-used false", "claude-sonnet-5", "medium",
+			map[string]map[string]string{"claude-sonnet-5": {"thinking": "false", "context": "1m", "effort": "medium"}},
+			[]string{"model=claude-sonnet-5", "thinking=true", "context=1m", "effort=medium"}},
+		{"unknown effort falls back to the list default", "gpt-5.4-mini", "max",
+			map[string]map[string]string{"gpt-5.4-mini": {"reasoning": "high"}},
+			[]string{"model=gpt-5.4-mini", "reasoning=medium"}},
 	}
-	jsonEq(t, set.Params, `{"sessionId":"`+testSessionID+`","modelId":"gemini-3.1-pro[]"}`)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, baseScript())
+			if tc.seed != nil {
+				seed(t, fakeConfig{SelectedModel: "gpt-5.4-mini", ModelParameters: tc.seed})
+			}
+			a := e.spawn(t, agent.SpawnOptions{Model: tc.model, Effort: tc.effort})
+			send(t, a, "hi")
+			until(t, a, isKind(agent.EvTurnEnd))
+			rs := readRecord(t, e.record)
+			if got := sets(rs); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("sets %v, want %v", got, tc.want)
+			}
+			onlyHandshakeMethods(t, rs, "session/prompt")
+			if cfg := sharedConfig(t); cfg.SelectedModel != tc.model {
+				t.Fatalf("selected model %q", cfg.SelectedModel)
+			}
+		})
+	}
 }
 
-func TestNoModelNoSetConfig(t *testing.T) {
+func TestEmptyModelUsesReportedModel(t *testing.T) {
 	e := newEnv(t, baseScript())
+	seed(t, fakeConfig{SelectedModel: "claude-opus-5-5",
+		ModelParameters: map[string]map[string]string{"claude-opus-5-5": {"context": "300k", "effort": "max"}}})
 	a := e.spawn(t, agent.SpawnOptions{})
 	send(t, a, "hi")
 	until(t, a, isKind(agent.EvTurnEnd))
-	if _, ok := find(readRecord(t, e.record), "session/set_config_option"); ok {
-		t.Fatal("set_config_option sent without a model")
+	if got := sets(readRecord(t, e.record)); !reflect.DeepEqual(got, []string{"model=claude-opus-5-5", "context=1m", "effort=medium"}) {
+		t.Fatalf("sets %v", got)
+	}
+}
+
+func TestPolicyErrorFailsSend(t *testing.T) {
+	cases := []struct {
+		name   string
+		script fakeScript
+		model  string
+		want   string
+	}{
+		{"list_available_models", fakeScript{"cursor/list_available_models": {{Error: raw(`{"code":-32603,"message":"list broke"}`)}}}, "gpt-5.4", "list broke"},
+		{"set_config_option", baseScript(), "no-such-model", "Invalid value for model: no-such-model"},
+		{"set_config_option scripted error", fakeScript{"session/set_config_option": {{Error: raw(`{"code":-32602,"message":"Invalid params"}`)}}}, "gpt-5.4", "Invalid params"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, tc.script)
+			a := e.spawn(t, agent.SpawnOptions{Model: tc.model, Effort: "low"})
+			err := a.Send([]agent.ContentBlock{{Text: "hi"}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Send error %v, want %q", err, tc.want)
+			}
+			a.Close()
+			rs := readRecord(t, e.record)
+			onlyHandshakeMethods(t, rs) // no prompt, and no other way to set the model
+		})
+	}
+}
+
+// Without the flag the fake is the old agent: the model option lists pre-built variants and a bare
+// id is rejected, so the policy only works because initialize carries the flag.
+func TestFakeWithoutFlagRejectsBareModel(t *testing.T) {
+	e := newEnv(t, baseScript())
+	conn, err := Start(e.s.bin(), []string{"acp"}, e.cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Call("initialize", map[string]any{"protocolVersion": 1}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := conn.Call("session/new", map[string]any{"cwd": e.cwd, "mcpServers": []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r sessionResult
+	json.Unmarshal(res, &r)
+	if got := reportedModel(res); got != "gpt-5.4-mini[reasoning=medium]" {
+		t.Fatalf("reported model %q", got)
+	}
+	for _, o := range r.ConfigOptions {
+		if o.ID != "mode" && o.ID != "model" {
+			t.Fatalf("per-parameter option %q without the flag", o.ID)
+		}
+	}
+	if _, err := conn.Call("session/set_config_option", map[string]any{"sessionId": testSessionID, "configId": "model", "value": "gpt-5.4"}); err == nil {
+		t.Fatal("bare model id accepted without the flag")
+	}
+	if _, err := conn.Call("session/set_config_option", map[string]any{"sessionId": testSessionID, "configId": "reasoning", "value": "low"}); err == nil {
+		t.Fatal("effort option accepted without the flag")
 	}
 }
 
@@ -252,25 +393,35 @@ func TestSpawnMissingFolder(t *testing.T) {
 	}
 }
 
-func TestResumeDropsReplay(t *testing.T) {
+// Resume after another process changed the shared params: load reports the wrong model, the full
+// policy is re-applied from the chat's own settings before the first prompt, and the meter is read
+// after it. The history replay is dropped.
+func TestResumeReappliesPolicy(t *testing.T) {
 	e := newEnv(t, fakeScript{
 		"session/load": {
 			step("update", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "old"}}),
 			step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t0", "title": "`ls`", "kind": "execute", "status": "completed", "rawInput": map[string]any{"command": "ls"}}),
 			step("update", map[string]any{"sessionUpdate": "agent_thought_chunk", "content": map[string]any{"type": "text", "text": "hm"}}),
-			{Result: raw(`{}`)},
+			{Cursor: true},
 		},
 		"session/prompt": {
 			step("update", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "new"}}),
 			{Result: raw(`{"stopReason":"end_turn"}`)},
 		},
 	})
-	a := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true})
+	e.recordCtxReads(t)
+	seed(t, fakeConfig{SelectedModel: "gpt-5.4-mini", ModelParameters: map[string]map[string]string{
+		"claude-sonnet-5": {"thinking": "false", "context": "300k", "effort": "max"},
+	}})
+	a := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, Model: "claude-sonnet-5", Effort: "low"})
 
-	// The meter is read right after session/load (no store here: an error).
 	first := until(t, a, isKind(agent.EvUsage))
-	if len(first) != 1 || first[0].CtxError != "Cursor session store not found" {
-		t.Fatalf("events after load %s %+v", kinds(first), first)
+	if kinds(first) != "Catalog,Usage" {
+		t.Fatalf("events after load %s", kinds(first))
+	}
+	// No remembered catalog: the first model in the list, with its default effort.
+	if d := first[0].Catalog.Default; d != (model.ModelChoice{Model: "claude-opus-5-5", Effort: "medium"}) {
+		t.Fatalf("resume catalog default %+v", d)
 	}
 	send(t, a, "hi")
 	evs := without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvUsage)
@@ -282,11 +433,45 @@ func TestResumeDropsReplay(t *testing.T) {
 	}
 
 	rs := readRecord(t, e.record)
-	if got := methods(rs); !reflect.DeepEqual(got, []string{"initialize", "authenticate", "session/load", "session/prompt"}) {
-		t.Fatalf("methods %v", got)
+	got := methods(rs)
+	want := []string{"initialize", "authenticate", "session/load", "cursor/list_available_models",
+		"session/set_config_option", "session/set_config_option", "session/set_config_option", "session/set_config_option",
+		ctxReadMethod, "session/prompt"}
+	if len(got) < len(want) || !reflect.DeepEqual(got[:len(want)], want) {
+		t.Fatalf("methods %v, want prefix %v", got, want)
+	}
+	if got := sets(rs); !reflect.DeepEqual(got, []string{"model=claude-sonnet-5", "thinking=true", "context=1m", "effort=low"}) {
+		t.Fatalf("sets %v", got)
 	}
 	ld, _ := find(rs, "session/load")
 	jsonEq(t, ld.Params, `{"sessionId":"`+testSessionID+`","cwd":`+string(mustMarshal(e.cwd))+`,"mcpServers":[]}`)
+	cfg := sharedConfig(t)
+	if cfg.SelectedModel != "claude-sonnet-5" || !reflect.DeepEqual(cfg.ModelParameters["claude-sonnet-5"],
+		map[string]string{"thinking": "true", "context": "1m", "effort": "low"}) {
+		t.Fatalf("shared config after resume %+v", cfg)
+	}
+}
+
+// On resume the catalog Default is the last remembered one when its model is still listed, never
+// what session/load reports; otherwise the first model in the list.
+func TestResumeCatalogDefault(t *testing.T) {
+	e := newEnv(t, baseScript())
+	if _, err := e.s.Catalog(10 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	seed(t, fakeConfig{SelectedModel: "grok-4.7"})
+	a := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, Model: "gpt-5.4"})
+	evs := until(t, a, isKind(agent.EvCatalog))
+	if d := evs[len(evs)-1].Catalog.Default; d != (model.ModelChoice{Model: "gpt-5.4-mini", Effort: "medium"}) {
+		t.Fatalf("default %+v, want the probe's", d)
+	}
+
+	e.s.remember(&model.Catalog{Default: model.ModelChoice{Model: "gone"}})
+	b := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, Model: "gpt-5.4"})
+	evs = until(t, b, isKind(agent.EvCatalog))
+	if d := evs[len(evs)-1].Catalog.Default; d != (model.ModelChoice{Model: "claude-opus-5-5", Effort: "medium"}) {
+		t.Fatalf("default %+v, want the first model", d)
+	}
 }
 
 func TestTextItemsBetweenToolCalls(t *testing.T) {
@@ -593,30 +778,46 @@ func TestContextUsagePollsWhileTurnRuns(t *testing.T) {
 
 func TestCatalogProbe(t *testing.T) {
 	e := newEnv(t, baseScript())
+	seed(t, fakeConfig{SelectedModel: "claude-sonnet-5"})
 	cat, err := e.s.Catalog(10 * time.Second)
 	if err != nil {
 		t.Fatalf("Catalog: %v", err)
 	}
-	if want := ParseCatalog(sampleNew); !reflect.DeepEqual(cat, want) {
+	want := ParseModelList(fakeModels)
+	want.Default = model.ModelChoice{Model: "claude-sonnet-5", Effort: "high"}
+	if !reflect.DeepEqual(cat, want) {
 		t.Fatalf("catalog %+v, want %+v", cat, want)
 	}
 	rs := readRecord(t, e.record)
-	if got := methods(rs); !reflect.DeepEqual(got, []string{"initialize", "authenticate", "session/new"}) {
+	if got := methods(rs); !reflect.DeepEqual(got, []string{"initialize", "authenticate", "session/new", "cursor/list_available_models"}) {
 		t.Fatalf("methods %v", got)
+	}
+	init, _ := find(rs, "initialize")
+	var ip struct {
+		ClientCapabilities struct {
+			Meta map[string]any `json:"_meta"`
+		} `json:"clientCapabilities"`
+	}
+	json.Unmarshal(init.Params, &ip)
+	if ip.ClientCapabilities.Meta["parameterizedModelPicker"] != true {
+		t.Fatalf("initialize %s", init.Params)
 	}
 	nw, _ := find(rs, "session/new")
 	jsonEq(t, nw.Params, `{"cwd":`+string(mustMarshal(os.TempDir()))+`,"mcpServers":[]}`)
 	if !rs[len(rs)-1].EOF {
 		t.Fatal("stdin not closed: the process was not ended")
 	}
-	// The probe's catalog is what a resumed chat's model choice uses.
+	if cfg := sharedConfig(t); cfg.SelectedModel != "claude-sonnet-5" || len(cfg.ModelParameters) != 0 {
+		t.Fatalf("probe changed the shared config: %+v", cfg)
+	}
+	// The probe's catalog is what a resumed chat's catalog Default uses.
 	if e.s.lastCatalog() != cat {
 		t.Fatal("catalog not remembered")
 	}
 }
 
 func TestCatalogProbeNoModels(t *testing.T) {
-	e := newEnv(t, fakeScript{"session/new": {{Result: raw(`{"sessionId":"x","models":{"availableModels":[]}}`)}}})
+	e := newEnv(t, fakeScript{"cursor/list_available_models": {{Result: raw(`{"models":[]}`)}}})
 	if _, err := e.s.Catalog(10 * time.Second); err == nil || err.Error() != "Cursor reported no models" {
 		t.Fatalf("got %v", err)
 	}
@@ -633,101 +834,5 @@ func TestCatalogProbeTimeout(t *testing.T) {
 	}
 	if rs := readRecord(t, e.record); !rs[len(rs)-1].EOF {
 		t.Fatal("process not ended")
-	}
-}
-
-func TestParseCatalog(t *testing.T) {
-	got := ParseCatalog(sampleNew)
-	want := &model.Catalog{
-		Models: []model.CatalogModel{
-			{ID: "composer-2.5", Label: "Composer 2.5"},
-			{ID: "gpt-5.4-mini", Label: "GPT-5.4 Mini", Efforts: []string{"medium", "high"}},
-			{ID: "gemini-3.8-flash", Label: "Gemini 3.8 Flash", Efforts: []string{"high"}},
-			{ID: "gemini-3.1-pro", Label: "Gemini 3.1 Pro"},
-		},
-		Default: model.ModelChoice{Model: "gpt-5.4-mini", Effort: "medium"},
-		Values: []string{"composer-2.5[fast=false]", "gpt-5.4-mini[reasoning=medium]", "gpt-5.4-mini[reasoning=high]",
-			"gemini-3.8-flash[reasoning=high]", "gemini-3.1-pro[]"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got  %+v\nwant %+v", got, want)
-	}
-}
-
-func TestParseCatalogModelsOnly(t *testing.T) {
-	got := ParseCatalog(raw(`{"sessionId":"s","models":{"currentModelId":"gpt-5.4-nano[reasoning=medium]",
-		"availableModels":[{"modelId":"gpt-5.4-nano[reasoning=medium]","name":"GPT-5.4 Nano"},{"modelId":"auto","name":"Auto"}]}}`))
-	if got == nil || len(got.Models) != 2 || got.Models[0].ID != "gpt-5.4-nano" || got.Models[1].Label != "Auto" ||
-		got.Default != (model.ModelChoice{Model: "gpt-5.4-nano", Effort: "medium"}) || len(got.Values) != 2 {
-		t.Fatalf("got %+v", got)
-	}
-	for _, in := range []string{`{}`, `{"configOptions":[{"id":"model","options":[]}]}`, `not json`} {
-		if c := ParseCatalog(raw(in)); c != nil {
-			t.Errorf("ParseCatalog(%s) = %+v, want nil", in, c)
-		}
-	}
-}
-
-// Real values from Cursor: the effort is under "reasoning", "reasoning_effort" or "effort"
-// depending on the model; "thinking" is not an effort.
-func TestParseCatalogEffortKeys(t *testing.T) {
-	got := ParseCatalog(raw(`{"configOptions":[{"id":"model","currentValue":"claude-opus-5-5[context=300k,effort=medium,fast=false]","options":[
-		{"value":"gpt-5.4[context=272k,reasoning=medium,fast=false]"},
-		{"value":"grok-4.7[context=256k,reasoning_effort=xhigh,fast=false]"},
-		{"value":"claude-opus-5-5[context=300k,effort=medium,fast=false]"},
-		{"value":"claude-haiku-4-5[thinking=true]"}]}]}`))
-	want := map[string][]string{"gpt-5.4": {"medium"}, "grok-4.7": {"xhigh"}, "claude-opus-5-5": {"medium"}, "claude-haiku-4-5": nil}
-	if got == nil || len(got.Models) != len(want) {
-		t.Fatalf("got %+v", got)
-	}
-	for _, m := range got.Models {
-		if !reflect.DeepEqual(m.Efforts, want[m.ID]) {
-			t.Errorf("%s efforts %v, want %v", m.ID, m.Efforts, want[m.ID])
-		}
-	}
-	if got.Default != (model.ModelChoice{Model: "claude-opus-5-5", Effort: "medium"}) {
-		t.Errorf("default %+v", got.Default)
-	}
-	if v := ValueFor(got, "grok-4.7", "xhigh"); v != "grok-4.7[context=256k,reasoning_effort=xhigh,fast=false]" {
-		t.Errorf("ValueFor grok = %q", v)
-	}
-}
-
-func TestValueFor(t *testing.T) {
-	c := &model.Catalog{Values: []string{"gpt-5.4-mini[reasoning=medium]", "gpt-5.4-mini[reasoning=low]", "gpt-5.4-nano[reasoning=medium]", "auto"}}
-	cases := []struct{ base, effort, want string }{
-		{"gpt-5.4-mini", "low", "gpt-5.4-mini[reasoning=low]"},
-		{"gpt-5.4-mini", "medium", "gpt-5.4-mini[reasoning=medium]"},
-		{"gpt-5.4-mini", "xhigh", "gpt-5.4-mini[reasoning=medium]"}, // first with that base
-		{"gpt-5.4-nano", "low", "gpt-5.4-nano[reasoning=medium]"},
-		{"auto", "", "auto"},
-		{"missing", "low", ""},
-	}
-	for _, k := range cases {
-		if got := ValueFor(c, k.base, k.effort); got != k.want {
-			t.Errorf("ValueFor(%q, %q) = %q, want %q", k.base, k.effort, got, k.want)
-		}
-	}
-	if ValueFor(nil, "x", "") != "" {
-		t.Error("nil catalog")
-	}
-}
-
-func TestSplit(t *testing.T) {
-	cases := []struct {
-		in   string
-		base string
-		p    map[string]string
-	}{
-		{"gpt-5.4-mini[reasoning=medium]", "gpt-5.4-mini", map[string]string{"reasoning": "medium"}},
-		{"grok-4.7[context=256k,reasoning_effort=xhigh,fast=false]", "grok-4.7", map[string]string{"context": "256k", "reasoning_effort": "xhigh", "fast": "false"}},
-		{"gemini-3.1-pro[]", "gemini-3.1-pro", map[string]string{}},
-		{"auto", "auto", map[string]string{}},
-	}
-	for _, c := range cases {
-		base, p := split(c.in)
-		if base != c.base || !reflect.DeepEqual(p, c.p) {
-			t.Errorf("split(%q) = %q %v", c.in, base, p)
-		}
 	}
 }

@@ -4,7 +4,15 @@
 // left out). The label names the board through `nameOf` (id → name, from the
 // store), or says "this board" when the argument is left out.
 
-import type { ChatView } from "../types.ts";
+import type { CatalogModel, ChatView } from "../types.ts";
+
+const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+
+/** An effort's name: the model's own (Cursor's) when it has one, else ours, else the id capitalised. */
+export function effortLabel(id?: string, model?: CatalogModel): string {
+  if (!id) return "";
+  return model?.effortLabels?.[id] ?? EFFORT_LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+}
 
 /** Looks a board's name up by id; undefined when unknown. */
 export type BoardNames = (id: string) => string | undefined;

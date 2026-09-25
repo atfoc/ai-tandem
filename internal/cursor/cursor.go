@@ -29,7 +29,7 @@ type Spawner struct {
 	ctxInterval time.Duration // context poll interval; 0 = 1 s (tests shorten it)
 
 	mu   sync.Mutex
-	last *model.Catalog // the last catalog Cursor reported, for ValueFor on a resumed session
+	last *model.Catalog // the last catalog Cursor reported, for a resumed session's catalog Default
 }
 
 func (s *Spawner) bin() string {
@@ -144,6 +144,9 @@ func initializeParams() map[string]any {
 		"clientCapabilities": map[string]any{
 			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
 			"terminal": false,
+			// Cursor's parameterized model picker: "model" takes a bare id and each model
+			// parameter (effort, thinking, context, ...) is its own config option.
+			"_meta": map[string]any{"parameterizedModelPicker": true},
 		},
 		"clientInfo": map[string]any{"name": "ai-whiteboard", "version": version.Version},
 	}
@@ -157,6 +160,9 @@ func (p *proc) handshake() {
 	}
 }
 
+// doHandshake: initialize → authenticate → session/new | session/load →
+// cursor/list_available_models → EvCatalog → applyChoice (always, even on resume) → on resume, the
+// context meter read. Errors become readyErr, so no prompt runs before the policy is applied.
 func (p *proc) doHandshake() error {
 	c := p.conn
 	if _, err := c.Call("initialize", initializeParams()); err != nil {
@@ -165,7 +171,7 @@ func (p *proc) doHandshake() error {
 	if _, err := c.Call("authenticate", map[string]any{"methodId": "cursor_login"}); err != nil {
 		return err
 	}
-	var cat *model.Catalog
+	var reported string // the model Cursor reports for the session
 	if p.o.Resume {
 		p.loading.Store(true)
 		res, err := c.Call("session/load", map[string]any{"sessionId": p.o.SessionID, "cwd": p.o.Cwd, "mcpServers": []any{}})
@@ -174,11 +180,7 @@ func (p *proc) doHandshake() error {
 			return err
 		}
 		p.sessionID = p.o.SessionID
-		if cat = ParseCatalog(res); cat != nil {
-			p.s.remember(cat)
-			p.emit(agent.Event{Kind: agent.EvCatalog, Catalog: cat})
-		}
-		p.readCtx() // a resumed chat shows its meter before the next turn
+		reported = reportedModel(res)
 	} else {
 		res, err := c.Call("session/new", map[string]any{"cwd": p.o.Cwd, "mcpServers": []any{}})
 		if err != nil {
@@ -191,25 +193,44 @@ func (p *proc) doHandshake() error {
 			return errors.New("session/new: Cursor returned no sessionId")
 		}
 		p.sessionID = r.SessionID
-		cat = ParseCatalog(res)
-		p.s.remember(cat)
+		reported = reportedModel(res)
 		p.emit(agent.Event{Kind: agent.EvSession, SessionID: r.SessionID})
-		if cat != nil {
-			p.emit(agent.Event{Kind: agent.EvCatalog, Catalog: cat})
-		}
 	}
-	if p.o.Model != "" {
-		if cat == nil {
-			cat = p.s.lastCatalog()
+
+	res, err := c.Call("cursor/list_available_models", map[string]any{})
+	if err != nil {
+		return err
+	}
+	cat := ParseModelList(res)
+	if cat == nil {
+		return errors.New("Cursor reported no models")
+	}
+	if p.o.Resume {
+		// session/load reports the shared last-used model, not a starting point: keep the last
+		// known Default when that model is still offered.
+		def := ""
+		if last := p.s.lastCatalog(); last != nil {
+			def = last.Default.Model
 		}
-		if v := ValueFor(cat, p.o.Model, p.o.Effort); v != "" {
-			_, err := c.Call("session/set_config_option", map[string]any{"sessionId": p.sessionID, "configId": "model", "value": v})
-			if err != nil {
-				if _, err2 := c.Call("session/set_model", map[string]any{"sessionId": p.sessionID, "modelId": v}); err2 != nil {
-					return err
-				}
-			}
-		}
+		setDefault(cat, def)
+	} else {
+		setDefault(cat, reported)
+	}
+	p.s.remember(cat)
+	p.emit(agent.Event{Kind: agent.EvCatalog, Catalog: cat})
+
+	m := p.o.Model
+	if m == "" {
+		m = reported
+	}
+	if m == "" {
+		m = cat.Default.Model
+	}
+	if err := applyChoice(c, p.sessionID, cat, m, p.o.Effort); err != nil {
+		return err
+	}
+	if p.o.Resume {
+		p.readCtx() // a resumed chat shows its meter before the next turn
 	}
 	return nil
 }

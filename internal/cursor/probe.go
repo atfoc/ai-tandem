@@ -9,8 +9,10 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// Catalog runs a short-lived `agent acp` in os.TempDir() only to read the model list.
-// It sends no prompt and never changes the model, so the user's default model stays as it is.
+// Catalog runs a short-lived `agent acp` in os.TempDir() only to read the model list:
+// initialize (with the parameterized model picker flag) → authenticate → session/new →
+// cursor/list_available_models. Default is session/new's model with its DefaultEffort.
+// It sends no prompt and never calls session/set_config_option, so the user's model stays as it is.
 func (s *Spawner) Catalog(timeout time.Duration) (*model.Catalog, error) {
 	dir := os.TempDir()
 	conn, err := Start(s.bin(), []string{"acp"}, dir)
@@ -38,11 +40,18 @@ func (s *Spawner) Catalog(timeout time.Duration) (*model.Catalog, error) {
 			ch <- result{err: err}
 			return
 		}
-		cat := ParseCatalog(res)
+		reported := reportedModel(res)
+		res, err = conn.Call("cursor/list_available_models", map[string]any{})
+		if err != nil {
+			ch <- result{err: err}
+			return
+		}
+		cat := ParseModelList(res)
 		if cat == nil {
 			ch <- result{err: errors.New("Cursor reported no models")}
 			return
 		}
+		setDefault(cat, reported)
 		ch <- result{cat: cat}
 	}()
 

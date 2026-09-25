@@ -264,6 +264,10 @@ func newEnv(t *testing.T) *env {
 // boot starts a fresh manager on the data folder, as a server restart does.
 func (e *env) boot() {
 	e.t.Helper()
+	if e.m != nil {
+		// The previous manager's auto namer must not write chat.json alongside the new one.
+		e.m.naming.Wait()
+	}
 	st, err := store.Open(store.NewPaths(e.root))
 	if err != nil {
 		e.t.Fatal(err)
@@ -287,6 +291,10 @@ func (e *env) boot() {
 	if err := e.m.Load(); err != nil {
 		e.t.Fatal(err)
 	}
+	// Runs before the temp folders are removed (cleanups run last-registered first), so a late
+	// Rename from the auto namer never writes into a folder being removed.
+	m := e.m
+	e.t.Cleanup(m.naming.Wait)
 }
 
 func (e *env) create(a model.AgentKind, group, board string) model.ChatView {
@@ -494,6 +502,50 @@ func TestConfigureBeforeFirstMessage(t *testing.T) {
 	}
 	if err := e.m.Configure(v.ID, ConfigReq{Effort: "high"}); err == nil {
 		t.Fatal("effort accepted for a model without efforts")
+	}
+}
+
+func TestConfigureModelChangeFitsEffort(t *testing.T) {
+	e := newEnv(t)
+	if err := e.st.Update(func(s *model.State) error {
+		s.Cursor = &model.Catalog{
+			Models: []model.CatalogModel{
+				{ID: "claude-opus-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium"},
+				{ID: "glm-5.2", Efforts: []string{"high", "max"}, DefaultEffort: "high"},
+				{ID: "gpt-5.4-mini", Efforts: []string{"none", "low", "medium", "high", "xhigh"}, DefaultEffort: "medium"},
+				{ID: "plain"},
+			},
+			Default: model.ModelChoice{Model: "claude-opus-5-5", Effort: "medium"},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v := e.create(model.Cursor, gOne, "")
+	configure := func(req ConfigReq, wantModel, wantEffort string) {
+		t.Helper()
+		if err := e.m.Configure(v.ID, req); err != nil {
+			t.Fatalf("Configure %+v: %v", req, err)
+		}
+		if m := e.meta(v.ID); m.Model != wantModel || m.Effort != wantEffort {
+			t.Fatalf("after %+v: model %q effort %q, want %q %q", req, m.Model, m.Effort, wantModel, wantEffort)
+		}
+	}
+	configure(ConfigReq{Model: "claude-opus-5-5", Effort: "max"}, "claude-opus-5-5", "max")
+	// The new model has the current effort: unchanged.
+	configure(ConfigReq{Model: "glm-5.2"}, "glm-5.2", "max")
+	// The new model lacks "max": its default effort.
+	configure(ConfigReq{Model: "gpt-5.4-mini"}, "gpt-5.4-mini", "medium")
+	// A model with no efforts: cleared.
+	configure(ConfigReq{Model: "plain"}, "plain", "")
+	// Model and effort together: the requested effort.
+	configure(ConfigReq{Model: "gpt-5.4-mini", Effort: "none"}, "gpt-5.4-mini", "none")
+	// A requested effort the model lacks is an error, and nothing changes.
+	if err := e.m.Configure(v.ID, ConfigReq{Model: "glm-5.2", Effort: "low"}); err == nil {
+		t.Fatal("effort the model lacks accepted")
+	}
+	if m := e.meta(v.ID); m.Model != "gpt-5.4-mini" || m.Effort != "none" {
+		t.Fatalf("after rejected Configure: %+v", m)
 	}
 }
 

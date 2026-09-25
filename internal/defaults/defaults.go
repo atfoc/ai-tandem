@@ -4,6 +4,7 @@ package defaults
 
 import (
 	"os"
+	"slices"
 
 	"ai-whiteboard/internal/model"
 )
@@ -37,8 +38,12 @@ func Resolve(d model.Defaults, g string, a model.AgentKind, fallbackCwd string, 
 			mc = cat.Default
 			m = findModel(cat, mc.Model)
 		}
-		if m != nil && len(m.Efforts) == 0 {
+		if m != nil && !slices.Contains(m.Efforts, mc.Effort) {
+			// Never hand out an effort the model lacks: use its default effort, or none.
 			mc.Effort = ""
+			if len(m.Efforts) > 0 {
+				mc.Effort = m.DefaultEffort
+			}
 		}
 	}
 	return cwd, mc

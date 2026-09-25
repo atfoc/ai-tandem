@@ -55,7 +55,6 @@ export type Defaults = {
 export type Catalog = {
   models: CatalogModel[];
   default: ModelChoice;
-  values?: string[];
 };
 
 export type CatalogModel = {
@@ -64,6 +63,8 @@ export type CatalogModel = {
   note?: string;
   efforts?: string[];
   contextWindow?: number;
+  defaultEffort?: string;
+  effortLabels?: Record<string, string>;
 };
 
 export type Usage = {

@@ -41,8 +41,9 @@ type Deps struct {
 
 type Manager struct {
 	Deps
-	mu    sync.Mutex
-	chats map[string]*Chat
+	mu     sync.Mutex
+	chats  map[string]*Chat
+	naming sync.WaitGroup // the auto namer goroutines Send starts
 }
 
 type Chat struct {
@@ -570,7 +571,9 @@ func (m *Manager) Send(id, text, context string) error {
 	c.mu.Unlock()
 	m.send(out)
 	if first && name == "" && !userNamed && m.Namer != nil {
+		m.naming.Add(1)
 		go func() {
+			defer m.naming.Done()
 			if t, err := m.Namer.Name(PlainText(text)); err == nil {
 				m.Rename(id, t, false)
 			}
@@ -619,8 +622,13 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 			return err
 		}
 		next.Model = req.Model
-		if cm != nil && len(cm.Efforts) == 0 {
+		if cm != nil && !slices.Contains(cm.Efforts, next.Effort) {
+			// The chat must never hold an effort its model lacks: fall back to the model's
+			// default effort, or none when the model has no efforts.
 			next.Effort = ""
+			if len(cm.Efforts) > 0 {
+				next.Effort = cm.DefaultEffort
+			}
 		}
 	}
 	if req.Effort != "" {

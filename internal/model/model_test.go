@@ -56,3 +56,41 @@ func TestNewID(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+func TestCatalogModelEffortFieldsJSON(t *testing.T) {
+	full := CatalogModel{
+		ID:            "gpt-5.4",
+		Label:         "GPT-5.4",
+		DefaultEffort: "medium",
+		EffortLabels:  map[string]string{"xhigh": "Extra High"},
+	}
+	b, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["defaultEffort"] != "medium" {
+		t.Errorf("defaultEffort = %v, want medium; json %s", got["defaultEffort"], b)
+	}
+	labels, ok := got["effortLabels"].(map[string]any)
+	if !ok || labels["xhigh"] != "Extra High" {
+		t.Errorf("effortLabels = %v, want {xhigh: Extra High}; json %s", got["effortLabels"], b)
+	}
+
+	b, err = json.Marshal(CatalogModel{ID: "sonnet", Label: "Sonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"defaultEffort", "effortLabels"} {
+		if _, present := got[k]; present {
+			t.Errorf("key %q present in %s, want absent", k, b)
+		}
+	}
+}

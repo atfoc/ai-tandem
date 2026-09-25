@@ -162,3 +162,54 @@ func TestAgentOrder(t *testing.T) {
 		t.Fatalf("AgentOrder after using Cursor = %v, want %v", AgentOrder, want)
 	}
 }
+
+func effortCat() *model.Catalog {
+	return &model.Catalog{
+		Models: []model.CatalogModel{
+			{ID: "claude-opus-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium"},
+			{ID: "glm-5.2", Efforts: []string{"high", "max"}, DefaultEffort: "high"},
+			{ID: "gpt-5.4-mini", Efforts: []string{"none", "low", "medium", "high", "xhigh"}, DefaultEffort: "medium"},
+			{ID: "plain"},
+		},
+		Default: model.ModelChoice{Model: "glm-5.2", Effort: "max"},
+	}
+}
+
+func TestResolveEffortFitsModel(t *testing.T) {
+	ds := mkdirs(t)
+	cases := []struct {
+		what   string
+		stored model.ModelChoice
+		want   model.ModelChoice
+	}{
+		{"effort not in model's efforts -> its default", model.ModelChoice{Model: "gpt-5.4-mini", Effort: "max"}, model.ModelChoice{Model: "gpt-5.4-mini", Effort: "medium"}},
+		{"effort in model's efforts -> unchanged", model.ModelChoice{Model: "claude-opus-5-5", Effort: "xhigh"}, model.ModelChoice{Model: "claude-opus-5-5", Effort: "xhigh"}},
+		{"model with no efforts -> cleared", model.ModelChoice{Model: "plain", Effort: "high"}, model.ModelChoice{Model: "plain"}},
+		{"no effort stored -> model's default", model.ModelChoice{Model: "glm-5.2"}, model.ModelChoice{Model: "glm-5.2", Effort: "high"}},
+		{"model missing from catalog -> cat.Default, effort kept when valid", model.ModelChoice{Model: "gone", Effort: "low"}, model.ModelChoice{Model: "glm-5.2", Effort: "max"}},
+	}
+	for _, c := range cases {
+		var d model.Defaults
+		RecordChange(&d, "g1", model.Cursor, ds.a, c.stored)
+		_, mc := Resolve(d, "g1", model.Cursor, ds.fallback, effortCat())
+		if mc != c.want {
+			t.Errorf("%s: got %+v, want %+v", c.what, mc, c.want)
+		}
+	}
+
+	// A catalog default whose effort its model lacks is checked the same way.
+	cat := effortCat()
+	cat.Default = model.ModelChoice{Model: "glm-5.2", Effort: "low"}
+	var d model.Defaults
+	RecordChange(&d, "g1", model.Cursor, ds.a, model.ModelChoice{Model: "gone", Effort: "low"})
+	if _, mc := Resolve(d, "g1", model.Cursor, ds.fallback, cat); mc != (model.ModelChoice{Model: "glm-5.2", Effort: "high"}) {
+		t.Errorf("missing model, bad default effort: got %+v", mc)
+	}
+
+	// With no catalog, the stored choice is returned as is.
+	d = model.Defaults{}
+	RecordChange(&d, "g1", model.Cursor, ds.a, model.ModelChoice{Model: "gpt-5.4-mini", Effort: "max"})
+	if _, mc := Resolve(d, "g1", model.Cursor, ds.fallback, nil); mc != (model.ModelChoice{Model: "gpt-5.4-mini", Effort: "max"}) {
+		t.Errorf("no catalog: got %+v", mc)
+	}
+}

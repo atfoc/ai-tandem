@@ -8,6 +8,7 @@ import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
+import { effortLabel } from "./logic/labels.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { BoardIcon, Folder, Lock, WarnIcon } from "./icons.tsx";
 import type { Catalog, CatalogModel, ChatView } from "./types.ts";
@@ -23,8 +24,7 @@ const base = (p?: string) => String(p ?? "").split("/").filter(Boolean).pop() ??
 
 // ---- model and effort labels
 
-const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
-export const effortLabel = (id?: string) => (id ? EFFORT_LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1) : "");
+export { effortLabel };
 const modelOf = (c: Pick<ChatView, "model">, cat?: Catalog): CatalogModel | undefined => cat?.models.find((m) => m.id === c.model);
 export const modelLabel = (c: Pick<ChatView, "model">, cat?: Catalog) => modelOf(c, cat)?.label ?? c.model;
 
@@ -32,7 +32,7 @@ export const modelLabel = (c: Pick<ChatView, "model">, cat?: Catalog) => modelOf
 export function subline(c: ChatView, cat?: Catalog): string {
   const m = modelOf(c, cat);
   const withEffort = c.effort && (m ? !!m.efforts?.length : true);
-  return `${modelLabel(c, cat)}${withEffort ? " · " + effortLabel(c.effort) : ""}`;
+  return `${modelLabel(c, cat)}${withEffort ? " · " + effortLabel(c.effort, m) : ""}`;
 }
 
 // ---- sending
@@ -233,8 +233,8 @@ export function Toolbar({ chatId, onError }: { chatId: string; onError: (msg: st
             options={cat.models.map((x) => ({ id: x.id, label: x.label, note: x.note }))}
             onPick={(id) => configure({ model: id })} />
           {!!m?.efforts?.length && (
-            <Picker label={effortLabel(c.effort)} title="Effort" prefix="Effort" value={c.effort ?? ""}
-              options={m.efforts.map((e) => ({ id: e, label: effortLabel(e) }))}
+            <Picker label={effortLabel(c.effort, m)} title="Effort" prefix="Effort" value={c.effort ?? ""}
+              options={m.efforts.map((e) => ({ id: e, label: effortLabel(e, m) }))}
               onPick={(id) => configure({ effort: id })} />
           )}
         </>

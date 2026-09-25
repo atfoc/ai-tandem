@@ -85,15 +85,16 @@ type Defaults struct {
 type Catalog struct {
 	Models  []CatalogModel `json:"models"`
 	Default ModelChoice    `json:"default"`
-	Values  []string       `json:"values,omitempty"` // Cursor only: exact ACP option values
 }
 
 type CatalogModel struct {
-	ID            string   `json:"id"` // "sonnet", or Cursor's base id "gpt-5.4-mini"
-	Label         string   `json:"label"`
-	Note          string   `json:"note,omitempty"`
-	Efforts       []string `json:"efforts,omitempty"` // empty: no effort picker
-	ContextWindow int      `json:"contextWindow,omitempty"`
+	ID            string            `json:"id"` // "sonnet", or Cursor's base id "gpt-5.4-mini"
+	Label         string            `json:"label"`
+	Note          string            `json:"note,omitempty"`
+	Efforts       []string          `json:"efforts,omitempty"` // empty: no effort picker
+	ContextWindow int               `json:"contextWindow,omitempty"`
+	DefaultEffort string            `json:"defaultEffort,omitempty"` // the effort value the model uses by default
+	EffortLabels  map[string]string `json:"effortLabels,omitempty"`  // effort value -> Cursor's display name, e.g. "xhigh" -> "Extra High"
 }
 
 type Usage struct {
