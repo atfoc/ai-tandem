@@ -6,6 +6,9 @@ import type { AgentKind, Board, Catalog, ChatView, Defaults, Group, Item, Status
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
 import { forgetBoard } from "./board.ts";
+import { plainText } from "./logic/refs.ts";
+import { parseWidths, type Widths } from "./logic/layout.ts";
+import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
 export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind; tone: "edit" | "danger"; until: number };
@@ -26,16 +29,23 @@ export type State = {
   catalogs: Partial<Record<AgentKind, Catalog>>;
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
   panel: boolean;                 // board chat panel shown (⌘J)
+  widths: Widths;                 // sidebar and board chat panel, persisted in localStorage "aiwb.widths"
   showArchived: boolean;          // persisted in localStorage "aiwb.archived"
+  themePref: ThemePref;           // light, dark or system; persisted in localStorage "aiwb.theme"
+  theme: Theme;                   // the theme shown (theme.ts keeps it current)
   selection: Selection;
   view: View;
   flashes: Flash[];               // keyed by board id
   busyOn: Record<string, { chat: string; agent: AgentKind; until: number }>; // by board id
   confirm: ConfirmRequest | null; // Dialogs.tsx
+  picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L)
 };
 
 export function safeGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
 export function safeSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch {} }
+
+const systemDark = () => { try { return matchMedia("(prefers-color-scheme: dark)").matches; } catch { return false; } };
+const savedTheme = parseThemePref(safeGet("aiwb.theme"));
 
 const savedSel = (): Sel => {
   try {
@@ -50,9 +60,10 @@ let state: State = {
   home: "", defaultCwd: "", dataDir: "",
   groups: [], boards: {}, chats: {}, items: {},
   defaults: { last: {}, groups: {} }, catalogs: {},
-  sel: savedSel(), panel: true, showArchived: safeGet("aiwb.archived") === "1",
+  sel: savedSel(), panel: true, widths: parseWidths(safeGet("aiwb.widths")), showArchived: safeGet("aiwb.archived") === "1",
+  themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
   selection: { count: 0, lines: [] }, view: { scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 },
-  flashes: [], busyOn: {}, confirm: null,
+  flashes: [], busyOn: {}, confirm: null, picking: null,
 };
 const subs = new Set<() => void>();
 
@@ -147,7 +158,7 @@ export function chatTitle(c: ChatView, items?: Item[]): string {
   if (c.name) return c.name;
   const first = items?.find((i) => i.kind === "user");
   if (!first?.text) return "New chat";
-  const t = first.text.replace(/\s+/g, " ").trim();
+  const t = plainText(first.text).replace(/\s+/g, " ").trim();
   return t.length > 42 ? t.slice(0, 40) + "…" : t;
 }
 

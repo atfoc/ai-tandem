@@ -2,8 +2,10 @@ package chats
 
 import (
 	"errors"
+	"html"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -51,4 +53,19 @@ func CleanTitle(out string) string {
 		title = title[:i] // the model sometimes keeps going after the title
 	}
 	return strings.Trim(strings.TrimSpace(strings.TrimPrefix(title, "Title:")), `"'.*#`)
+}
+
+// refTag is a reference the page puts inside a board chat's message (web/src/logic/refs.ts):
+// a selection (its label attribute) or a point (its x and y attributes).
+var refTag = regexp.MustCompile(`<selection\s[^<>]*?label="([^"]*)"[^<>]*>[^<]*</selection>|<point\s[^<>]*?x="([^"]*)"\s+y="([^"]*)"[^<>]*?(?:/>|>[^<]*</point>)`)
+
+// PlainText is a message with each reference shortened to [label], for naming the chat.
+func PlainText(text string) string {
+	return refTag.ReplaceAllStringFunc(text, func(tag string) string {
+		m := refTag.FindStringSubmatch(tag)
+		if strings.HasPrefix(tag, "<selection") {
+			return "[" + html.UnescapeString(m[1]) + "]"
+		}
+		return "[point (" + m[2] + ", " + m[3] + ")]"
+	})
 }

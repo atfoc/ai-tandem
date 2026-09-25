@@ -30,6 +30,12 @@ func CursorInstructions() string {
 		"\n</whiteboard-instructions>"
 }
 
+// BoardContext is the <ui-context> block that names a board chat's board. The page sends a
+// fuller one (with @-mentioned boards); the server falls back to this when it sends none.
+func BoardContext(name, id string) string {
+	return "<ui-context>\nactive_board: " + name + " (" + id + ")\n</ui-context>"
+}
+
 // cursorTools renders how Cursor calls the board tools, listing every
 // boardtools.Tools entry so both agents get the same tool list.
 func cursorTools() string {

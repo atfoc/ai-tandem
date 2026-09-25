@@ -1,9 +1,12 @@
 // The canvas: one Excalidraw for the selected board, plus the layers that show
-// where an agent just worked and who is working on the board.
-import React, { useEffect, useState } from "react";
+// where an agent just worked, who is working on the board, and the point being
+// picked for a chat (⌘⇧L).
+import React, { useEffect, useRef, useState } from "react";
 import { Excalidraw, FONT_FAMILY } from "@excalidraw/excalidraw";
-import { useStore, setState, getState, isBusy } from "./store.ts";
-import { loadScene, sceneChanged, setLive, flush, liveBoard, type Scene } from "./board.ts";
+import { useStore, setState, getState, isBusy, flash } from "./store.ts";
+import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, type Scene } from "./board.ts";
+import { insertRef, pickPoint } from "./Composer.tsx";
+import { pointLabel } from "./logic/refs.ts";
 import { AgentGlyph } from "./icons.tsx";
 import type { ChatView } from "./types.ts";
 
@@ -34,6 +37,7 @@ function blockSceneDrop(e: React.DragEvent) {
 
 export function Canvas({ board }: { board: string }) {
   const b = useStore((s) => s.boards[board]);
+  const theme = useStore((s) => s.theme);
   const [loaded, setLoaded] = useState<{ board: string; scene: Scene } | null>(null);
   const [err, setErr] = useState("");
 
@@ -55,6 +59,7 @@ export function Canvas({ board }: { board: string }) {
     <div className="canvas" onDropCapture={blockSceneDrop}>
       <Excalidraw
         key={board}
+        theme={theme}                            // the app's theme; Excalidraw's own toggle is hidden
         viewModeEnabled={!!b.archived}
         UIOptions={{ canvasActions: {
           loadScene: false,                      // no Open / ⌘O
@@ -83,6 +88,7 @@ export function Canvas({ board }: { board: string }) {
       />
       <FlashLayer board={board} />
       <Presence board={board} />
+      <PickLayer board={board} />
     </div>
   );
 }
@@ -118,6 +124,61 @@ function Presence({ board }: { board: string }) {
       <AgentGlyph agent={agent} size={12} />
       <span>{agent === "cursor" ? "Cursor" : "Claude"} is working on {name}</span>
       <span className="dots"><i /><i /><i /></span>
+    </div>
+  );
+}
+
+/**
+ * While a chat of this board waits for a point (⌘⇧L): a crosshair over the
+ * canvas; a click puts the point, in board coordinates, into the chat's message.
+ * Esc cancels. The wheel still pans and zooms the board underneath.
+ */
+function PickLayer({ board }: { board: string }) {
+  const chat = useStore((s) => (s.picking && s.chats[s.picking]?.board === board ? s.chats[s.picking] : undefined));
+  const v = useStore((s) => s.view);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!chat) return;
+    const k = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); pickPoint(null); } };
+    const el = ref.current;
+    const wheel = (e: WheelEvent) => { // hand the wheel to the canvas below
+      e.preventDefault();
+      if (!el) return;
+      el.style.pointerEvents = "none";
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      el.style.pointerEvents = "";
+      under?.dispatchEvent(new WheelEvent("wheel", e));
+    };
+    window.addEventListener("keydown", k, true);
+    el?.addEventListener("wheel", wheel, { passive: false });
+    return () => { window.removeEventListener("keydown", k, true); el?.removeEventListener("wheel", wheel); };
+  }, [chat?.id]);
+  if (!chat) return null;
+
+  const toBoard = (e: React.PointerEvent) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / v.zoom - v.scrollX, y: (e.clientY - r.top) / v.zoom - v.scrollY, sx: e.clientX - r.left, sy: e.clientY - r.top };
+  };
+  return (
+    <div ref={ref} className="pick-layer"
+      onPointerMove={(e) => { const p = toBoard(e); setAt({ x: p.sx, y: p.sy }); }}
+      onPointerLeave={() => setAt(null)}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault(); e.stopPropagation();
+        const p = toBoard(e);
+        const r = pointRefOn(board, p.x, p.y);
+        pickPoint(null);
+        insertRef(chat.id, r);
+        if (r.kind === "point") flash({ board, box: { x: r.x - 6, y: r.y - 6, width: 12, height: 12 }, agent: chat.agent, label: r.label, tone: "edit" }, 1600);
+      }}>
+      <div className="pick-hint">Click a point to add it to the chat <kbd>Esc</kbd> to cancel</div>
+      {at && (() => {
+        const bx = at.x / v.zoom - v.scrollX, by = at.y / v.zoom - v.scrollY;
+        return <span className="pick-coord" style={{ left: at.x + 14, top: at.y + 14 }}>{pointLabel(bx, by)}</span>;
+      })()}
     </div>
   );
 }

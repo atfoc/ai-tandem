@@ -11,7 +11,9 @@ import { NameInput } from "./ChatView.tsx";
 import { Menu, confirm, reportError } from "./Dialogs.tsx";
 import { buildTree, boardChats } from "./logic/tree.ts";
 import { statusText } from "./logic/labels.ts";
-import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoreIcon } from "./icons.tsx";
+import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, SunIcon, SystemIcon } from "./icons.tsx";
+import { setThemePref } from "./theme.ts";
+import { THEME_PREFS, type ThemePref } from "./logic/theme.ts";
 import { AGENT_ORDER, UNGROUPED, type AgentKind, type Board, type ChatView, type Group } from "./types.ts";
 
 // ---------------------------------------------------------------- selection
@@ -180,12 +182,35 @@ export function Sidebar() {
         ))}
         <button className="side-addgroup" onClick={addGroup}><GroupIcon /> New group</button>
       </div>
-      <label className="side-foot">
-        <input type="checkbox" className="switch" checked={showArchived}
-          onChange={(e) => { setState({ showArchived: e.target.checked }); safeSet("aiwb.archived", e.target.checked ? "1" : "0"); }} />
-        Show archived
-      </label>
+      <div className="side-foot">
+        <label className="side-archived">
+          <input type="checkbox" className="switch" checked={showArchived}
+            onChange={(e) => { setState({ showArchived: e.target.checked }); safeSet("aiwb.archived", e.target.checked ? "1" : "0"); }} />
+          Show archived
+        </label>
+        <ThemeSwitch />
+      </div>
     </nav>
+  );
+}
+
+const THEME_LABELS: Record<ThemePref, string> = { light: "Light", dark: "Dark", system: "System" };
+const THEME_ICONS: Record<ThemePref, () => React.JSX.Element> = { light: SunIcon, dark: MoonIcon, system: SystemIcon };
+
+/** Light, dark, or the system's theme (theme.ts). */
+function ThemeSwitch() {
+  const pref = useStore((s) => s.themePref);
+  return (
+    <div className="seg" role="radiogroup" aria-label="Theme">
+      {THEME_PREFS.map((p) => {
+        const Icon = THEME_ICONS[p];
+        return (
+          <button key={p} role="radio" aria-checked={pref === p} className={pref === p ? "on" : ""}
+            title={p === "system" ? "Theme: System (follows the OS)" : `Theme: ${THEME_LABELS[p]}`}
+            onClick={() => setThemePref(p)}><Icon /></button>
+        );
+      })}
+    </div>
   );
 }
 

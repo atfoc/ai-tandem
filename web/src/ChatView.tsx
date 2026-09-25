@@ -1,12 +1,12 @@
 // A chat's header and thread. Items come from the server (chat_items); this
 // file only renders them.
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore, setState, isBusy, chatTitle, boardName } from "./store.ts";
 import { api } from "./api.ts";
-import { select, openBoard } from "./Sidebar.tsx";
+import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
 import { toolVerb, toolDone, statusText } from "./logic/labels.ts";
-import { resolveName } from "./logic/mentions.ts";
+import { Markdown } from "./Markdown.tsx";
 import { AgentGlyph, BoardIcon, Pencil, agentName } from "./icons.tsx";
 import type { ChatView, Item } from "./types.ts";
 
@@ -70,11 +70,22 @@ export function Thread({ chatId }: { chatId: string }) {
   const items = loaded?.items ?? EMPTY;
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  useLayoutEffect(() => { if (stick.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight; });
+  const pinnedAt = useRef(-1); // the scrollTop set by pin, whose scroll event is not the user's
+  const pin = (el: HTMLDivElement) => { el.scrollTop = el.scrollHeight; pinnedAt.current = el.scrollTop; };
+  useLayoutEffect(() => { if (stick.current && ref.current) pin(ref.current); });
+  // The thread gets shorter when the composer grows (or the panel is resized): stay at the bottom.
+  const shown = !!c;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => { if (stick.current) pin(el); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [shown]);
   if (!c) return null;
   const busy = isBusy(c.status);
   return (
-    <div className="thread" ref={ref} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+    <div className="thread" ref={ref} onScroll={(e) => { const el = e.currentTarget; if (el.scrollTop === pinnedAt.current) { pinnedAt.current = -1; return; } stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
       {loaded && !items.length && <EmptyThread c={c} />}
       {items.map((it, i) => it ? <ItemView key={i} item={it} chat={c} /> : null)}
       {busy && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
@@ -108,8 +119,16 @@ function EmptyThread({ c }: { c: ChatView }) {
 
 function ItemView({ item, chat }: { item: Item; chat: ChatView }) {
   switch (item.kind) {
-    case "user": return <div className="msg user"><Rich text={item.text ?? ""} mentions /></div>;
-    case "text": return <div className="msg assistant"><Rich text={item.text ?? ""} />{!item.done && chat.status === "writing" && <span className="caret-blink" />}</div>;
+    case "user": return <div className="msg user"><Markdown text={item.text ?? ""} user board={chat.board} agent={chat.agent} /></div>;
+    case "text": {
+      const streaming = !item.done && chat.status === "writing";
+      return (
+        <div className={`msg assistant${streaming ? " streaming" : ""}`}>
+          <Markdown text={item.text ?? ""} board={chat.board} agent={chat.agent} streaming={streaming} />
+          {streaming && !item.text?.trim() && <span className="caret-blink" />}
+        </div>
+      );
+    }
     case "tool": return <ToolCard item={item} chat={chat} />;
     case "perm": return <PermCard item={item} chat={chat} />;
     case "note": return item.text ? <div className={`note ${item.tone ?? ""}`}>{item.text}</div> : null;
@@ -181,32 +200,3 @@ function PermCard({ item, chat }: { item: Item; chat: ChatView }) {
   );
 }
 
-// ---- tiny markdown
-
-export function Rich({ text, mentions = false }: { text: string; mentions?: boolean }) {
-  const boards = useStore((s) => s.boards);
-  const blocks = useMemo(() => text.split(/\n{2,}/), [text]);
-  const inline = (s: string, k: number) => {
-    const parts = s.split(/(\*\*[^*]+\*\*|`[^`]+`|@[\w.\-]+)/g);
-    return parts.map((p, i) => {
-      if (p.startsWith("**") && p.endsWith("**") && p.length > 4) return <b key={`${k}-${i}`}>{p.slice(2, -2)}</b>;
-      if (p.startsWith("`") && p.endsWith("`") && p.length > 2) return <code key={`${k}-${i}`}>{p.slice(1, -1)}</code>;
-      if (mentions && p.startsWith("@")) {
-        const b = resolveName(p.slice(1), boards)[0];
-        if (b) return <button key={`${k}-${i}`} className="mention" onClick={() => openBoard(b.id)}>@{b.name}</button>;
-      }
-      return <React.Fragment key={`${k}-${i}`}>{p}</React.Fragment>;
-    });
-  };
-  return (
-    <>
-      {blocks.map((b, i) => {
-        const lines = b.split("\n");
-        if (lines.every((l) => /^\s*([-*]|\d+\.)\s/.test(l))) {
-          return <ul key={i}>{lines.map((l, j) => <li key={j}>{inline(l.replace(/^\s*([-*]|\d+\.)\s/, ""), j)}</li>)}</ul>;
-        }
-        return <p key={i}>{lines.map((l, j) => <React.Fragment key={j}>{j > 0 && <br />}{inline(l, j)}</React.Fragment>)}</p>;
-      })}
-    </>
-  );
-}

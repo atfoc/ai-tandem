@@ -9,6 +9,8 @@ import { Canvas } from "./Canvas.tsx";
 import { ConfirmDialog, TakeoverScreen, WaitingScreen, Menu, reportError } from "./Dialogs.tsx";
 import { boardChats } from "./logic/tree.ts";
 import { AgentGlyph, BoardIcon } from "./icons.tsx";
+import { Resizer } from "./Resizer.tsx";
+import type { Pane as PaneKind } from "./logic/layout.ts";
 import { UNGROUPED } from "./types.ts";
 
 export function App() {
@@ -38,11 +40,11 @@ function Grouped() {
     main = (
       <>
         {boardChat && panel && (
-          <section className="board-panel">
+          <Pane pane="panel" className="board-panel">
             <ChatHeader chatId={boardChat.id} />
             <Thread chatId={boardChat.id} />
             <Composer key={boardChat.id} chatId={boardChat.id} />
-          </section>
+          </Pane>
         )}
         <main className="board-stage">
           <BoardBar board={board.id} chatOpen={!!boardChat && panel} />
@@ -66,10 +68,17 @@ function Grouped() {
 
   return (
     <div className="app">
-      <Sidebar />
+      <Pane pane="side" className="side-pane"><Sidebar /></Pane>
       {main}
     </div>
   );
+}
+
+/** A pane with its width from the store and a resize handle on its right edge. Only the pane
+ *  re-renders while it is dragged; its children are made by the parent. */
+function Pane({ pane, className, children }: { pane: PaneKind; className: string; children: React.ReactNode }) {
+  const w = useStore((s) => s.widths[pane]);
+  return <section className={className} style={{ width: w }}>{children}<Resizer pane={pane} /></section>;
 }
 
 function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {

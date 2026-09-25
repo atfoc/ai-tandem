@@ -49,3 +49,22 @@ func TestCursorInstructions(t *testing.T) {
 		}
 	}
 }
+
+func TestBoardContext(t *testing.T) {
+	want := "<ui-context>\nactive_board: arch (b_aaaaaaaa)\n</ui-context>"
+	if got := BoardContext("arch", "b_aaaaaaaa"); got != want {
+		t.Errorf("BoardContext = %q, want %q", got, want)
+	}
+}
+
+func TestInstructionsDescribeReferences(t *testing.T) {
+	s := Claude()
+	for _, want := range []string{"active_board", "<selection ids=", "<point x=", "get_view"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("instructions lack %q", want)
+		}
+	}
+	if strings.Contains(s, "what the user has selected, and the visible area") {
+		t.Error("instructions still say the selection is sent with every message")
+	}
+}

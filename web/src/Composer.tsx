@@ -1,16 +1,18 @@
 // The message box under a chat, and its toolbar: folder, model, effort and
 // context usage. The pickers come from the server's catalogs and can be
 // changed until the first message is sent.
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useStore, getState, safeGet, safeSet, isBusy } from "./store.ts";
+import React, { useEffect, useRef, useState } from "react";
+import { useStore, getState, setState, safeGet, safeSet, isBusy } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
-import { buildContext } from "./board.ts";
+import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
-import { EyeIcon, Folder, Lock, WarnIcon } from "./icons.tsx";
+import { plainText, type Ref } from "./logic/refs.ts";
+import { RefInput, type RefInputHandle } from "./RefInput.tsx";
+import { BoardIcon, Folder, Lock, WarnIcon } from "./icons.tsx";
 import type { Catalog, CatalogModel, ChatView } from "./types.ts";
 
-export function focusComposer() { setTimeout(() => (document.querySelector(".composer textarea") as HTMLTextAreaElement | null)?.focus(), 30); }
+export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
 
 // ---- folders
 
@@ -42,19 +44,64 @@ export async function sendMessage(chat: string, text: string, picked: Picked[] =
   return api.send(chat, text, buildContext(chat, text, picked));
 }
 
+// ---- references (⌘L, ⌘⇧L)
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+export const KEY_REF = isMac ? "⌘L" : "Ctrl+L";
+export const KEY_POINT = isMac ? "⌘⇧L" : "Ctrl+Shift+L";
+
+/** The open board chat composers, by chat id: where a picked point goes. */
+const inserters = new Map<string, (r: Ref) => void>();
+
+/** Puts a reference into a chat's composer at its caret. */
+export function insertRef(chat: string, r: Ref) { inserters.get(chat)?.(r); }
+
+/** Starts (or stops) waiting for a point clicked on the chat's board. */
+export function pickPoint(chat: string | null) { setState({ picking: chat }); }
+
 export function Composer({ chatId }: { chatId: string }) {
   const c = useStore((s) => s.chats[chatId]);
   const boards = useStore((s) => s.boards);
   const groups = useStore((s) => s.groups);
   const selection = useStore((s) => s.selection);
   const onScreen = useStore((s) => s.sel.board);
+  const picking = useStore((s) => s.picking === chatId);
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<Picked[]>([]);
   const [mention, setMention] = useState<{ q: string; at: number; i: number } | null>(null);
   const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
-  const ta = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => { const t = ta.current; if (t) { t.style.height = "auto"; t.style.height = Math.min(160, t.scrollHeight) + "px"; } }, [text]);
+  const input = useRef<RefInputHandle>(null);
+  const current = useRef(""); // the text now, for a failed send
+  const board = c?.board;
+  const canRef = !!board && !c?.archived && onScreen === board;
+
+  // ⌘L puts the selection on the board into the message; ⌘⇧L waits for a point clicked on it.
+  const addSelection = () => {
+    if (!board) return;
+    const r = selectionRefOn(board);
+    if (!r) { setNote("Select something on the board first"); return; }
+    setNote("");
+    input.current?.insertRef(r);
+  };
+  useEffect(() => {
+    if (!canRef) return;
+    inserters.set(chatId, (r) => { setNote(""); input.current?.insertRef(r); });
+    const k = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.code !== "KeyL") return;
+      e.preventDefault(); e.stopPropagation(); // before Excalidraw, whose ⌘⇧L locks shapes
+      if (e.shiftKey) pickPoint(getState().picking === chatId ? null : chatId);
+      else addSelection();
+    };
+    window.addEventListener("keydown", k, true);
+    return () => {
+      window.removeEventListener("keydown", k, true);
+      inserters.delete(chatId);
+      if (getState().picking === chatId) pickPoint(null);
+    };
+  }, [canRef, chatId]);
+  useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(""), 2500); return () => clearTimeout(t); }, [note]);
 
   if (!c) return null;
   if (c.archived) return (
@@ -68,38 +115,36 @@ export function Composer({ chatId }: { chatId: string }) {
   );
 
   const running = isBusy(c.status);
-  const board = c.board ? boards[c.board] : undefined;
-  const refs = c.board ? resolveMentions(text, boards, picked).filter((b) => b.id !== c.board) : [];
+  const own = c.board ? boards[c.board] : undefined;
+  const refs = c.board ? resolveMentions(plainText(text), boards, picked).filter((b) => b.id !== c.board) : [];
   const matches = mention && c.board ? mentionOptions(mention.q, boards, groups) : [];
+  const selected = canRef ? selection.count : 0;
 
   const submit = async () => {
     const t = text.trim();
     if (!t || running || sending) return; // no send while busy
     setSending(true); setErr("");
-    setText(""); setMention(null);
+    input.current?.set(""); setMention(null);
     const p = picked;
     try {
       await sendMessage(chatId, t, p);
       setPicked([]);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
-      setText((cur) => (cur ? cur : t)); // nothing typed is lost
+      if (!current.current.trim()) input.current?.set(t); // nothing typed is lost
       if (e instanceof ApiError && e.status === 409) void refreshChat(chatId);
     } finally { setSending(false); }
   };
   const pick = (o: { board: { id: string; name: string } }) => {
     if (!mention) return;
-    const before = text.slice(0, mention.at), after = text.slice(mention.at + 1 + mention.q.length);
-    const ins = `@${o.board.name} `;
-    setText(before + ins + after);
+    input.current?.replaceBeforeCaret(mention.q.length + 1, `@${o.board.name} `);
     setPicked((ps) => [...ps.filter((x) => x.name !== o.board.name), { name: o.board.name, id: o.board.id }]);
     setMention(null);
-    setTimeout(() => { ta.current?.focus(); const pos = (before + ins).length; ta.current?.setSelectionRange(pos, pos); });
   };
-  const onChange = (v: string, caret: number) => {
-    setText(v);
+  const onChange = (v: string, beforeCaret: string) => {
+    setText(v); current.current = v;
     if (!c.board) return; // plain chats have no mentions
-    const m = openMention(v.slice(0, caret));
+    const m = openMention(beforeCaret);
     setMention(m ? { ...m, i: 0 } : null);
   };
 
@@ -108,13 +153,21 @@ export function Composer({ chatId }: { chatId: string }) {
     <div className="composer">
       {c.board && (
         <div className="context-row">
-          {refs.length ? (
-            refs.map((r) => <span key={r.id} className="ctx-chip ref" title={`Referenced board (${r.id})`}>@{r.name}</span>)
-          ) : (
-            <span className="ctx-chip" title="Sent with your message so the agent knows what you mean by “this”">
-              <EyeIcon /> {board?.name ?? "board"}{selection.count && onScreen === c.board ? ` · ${selection.count} selected` : ""}
-            </span>
-          )}
+          <span className="ctx-chip" title={`Every message names this board to the agent (${c.board})`}>
+            <BoardIcon /> {own?.name ?? "board"}
+          </span>
+          {refs.map((r) => <span key={r.id} className="ctx-chip ref" title={`Referenced board (${r.id})`}>@{r.name}</span>)}
+          <span className="grow" />
+          {note ? <span className="ctx-note">{note}</span> : canRef && <>
+            <button className="ctx-act" disabled={!selected} onMouseDown={(e) => e.preventDefault()} onClick={addSelection}
+              title={`Put the selected elements into the message (${KEY_REF})`}>
+              + {selected ? `${selected} selected` : "Selection"} <kbd>{KEY_REF}</kbd>
+            </button>
+            <button className={`ctx-act ${picking ? "on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => pickPoint(picking ? null : chatId)}
+              title={`Click a point on the board to put it into the message (${KEY_POINT})`}>
+              + Point <kbd>{KEY_POINT}</kbd>
+            </button>
+          </>}
         </div>
       )}
       <div className="composer-box with-tools">
@@ -127,12 +180,10 @@ export function Composer({ chatId }: { chatId: string }) {
             ))}
           </div>
         )}
-        <textarea
-          ref={ta}
-          rows={1}
-          value={text}
+        <RefInput
+          ref={input}
           placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
+          onChange={onChange}
           onKeyDown={(e) => {
             e.stopPropagation(); // keep Excalidraw's shortcuts out of the text box
             if (mention && matches.length) {

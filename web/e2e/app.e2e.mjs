@@ -251,7 +251,7 @@ async function newChatVia(page, opener, agentLabel) {
     const s = (await sel(page)).chat;
     return s && !before.has(s) ? s : null;
   });
-  await page.locator(".composer textarea").waitFor();
+  await page.locator(".composer .composer-input").waitFor();
   return id;
 }
 
@@ -276,7 +276,7 @@ async function pickFolder(page, chatId, folder) {
 
 async function send(page, chatId, text) {
   const before = await turnsOf(chatId);
-  const ta = page.locator(".composer textarea");
+  const ta = page.locator(".composer .composer-input");
   await ta.fill(text);
   await ta.press("Enter");
   await waitFor(`the message "${text.slice(0, 40)}" is sent`, async () => (await chatItems(chatId)).some((i) => i.kind === "user" && i.text === text));
@@ -513,7 +513,7 @@ async function run() {
     const which = spawnSync("/bin/sh", ["-c", "command -v sqlite3; command -v claude; command -v agent"], { env, encoding: "utf8" }).stdout.trim().split("\n");
     check(which.length === 2 && !which.some((w) => /sqlite3/.test(w)), "the new PATH has claude and agent but no sqlite3", which);
     await startServer(env);
-    await waitFor("the page reconnects", async () => (await page.locator(".offline").count()) === 0 && (await page.locator(".composer textarea").count()) > 0, { timeout: 30_000 });
+    await waitFor("the page reconnects", async () => (await page.locator(".offline").count()) === 0 && (await page.locator(".composer .composer-input").count()) > 0, { timeout: 30_000 });
     const b2 = await send(page, ids.cursorBoard, "Reply with just OK.");
     await waitTurn(ids.cursorBoard, b2);
     const err = await waitFor("the chat reports the context error", async () => (await chatView(ids.cursorBoard)).usage.ctxError || null, { timeout: 30_000 });
@@ -707,14 +707,14 @@ async function run() {
     await waitFor("the agent is working", async () => BUSY.has((await chatView(ids.chat3)).status), { every: 100 });
     const sendBtn = page.locator(".composer button.send:not(.stop)");
     await waitFor("send is greyed out", async () => await sendBtn.isDisabled());
-    const ta = page.locator(".composer textarea");
+    const ta = page.locator(".composer .composer-input");
     const later = "Reply with just DONE.";
     await ta.fill(later);
     await ta.press("Enter");
     await sleep(500);
     const busyNow = BUSY.has((await chatView(ids.chat3)).status);
     check(busyNow, "the agent is still working during the checks", (await chatView(ids.chat3)).status);
-    check(await ta.inputValue() === later, "the box still holds the text after Enter", await ta.inputValue());
+    check(await ta.innerText() === later, "the box still holds the text after Enter", await ta.innerText());
     check(!(await chatItems(ids.chat3)).some((i) => i.kind === "user" && i.text === later), "Enter did not send", "the text was sent");
     check(await sendBtn.isDisabled(), "send stays greyed out with text in the box", "enabled");
     const r = await fetch(`${BASE}/api/chats/${ids.chat3}/messages`, {

@@ -546,9 +546,14 @@ func (m *Manager) Send(id, text, context string) error {
 			}
 			blocks = append(blocks, agent.ContentBlock{Text: "<board-api>" + m.BaseURL + "/agent/" + c.meta.Token + "</board-api>"})
 		}
-		if context != "" {
-			blocks = append(blocks, agent.ContentBlock{Text: context})
+		if context == "" { // every board chat message names its board
+			name := c.meta.Board
+			if bd, ok := m.Boards.Get(c.meta.Board); ok {
+				name = bd.Name
+			}
+			context = prompts.BoardContext(name, c.meta.Board)
 		}
+		blocks = append(blocks, agent.ContentBlock{Text: context})
 	} else {
 		context = "" // plain chats never get board context
 	}
@@ -566,7 +571,7 @@ func (m *Manager) Send(id, text, context string) error {
 	m.send(out)
 	if first && name == "" && !userNamed && m.Namer != nil {
 		go func() {
-			if t, err := m.Namer.Name(text); err == nil {
+			if t, err := m.Namer.Name(PlainText(text)); err == nil {
 				m.Rename(id, t, false)
 			}
 		}()

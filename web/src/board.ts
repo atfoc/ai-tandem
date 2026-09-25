@@ -1,16 +1,18 @@
 // The page is the only place a scene changes. This file holds every loaded
 // scene (by board id), saves them back to the server (debounced autosave),
 // answers the board tools the agents call (relayed by the server as `rpc`),
-// and gathers the <ui-context> block for a board chat's message.
+// gathers the <ui-context> block for a board chat's message, and turns the
+// live selection or a clicked point into a reference for the composer.
 import { restoreElements, getSceneVersion, newElementWith } from "@excalidraw/excalidraw";
 import { applyChanges, keyOf, RpcError, type El } from "./apply.ts";
 import { formatScene, formatElement, formatViewport, type FmtElement, type FmtViewport } from "./format.ts";
 import { contextBlock, boardRef } from "./logic/context.ts";
 import { resolveMentions, type Picked } from "./logic/mentions.ts";
+import { selectionRef, pointRef, plainText, type Ref } from "./logic/refs.ts";
 import { getState, flash, markBusy, type Box } from "./store.ts";
 import { api, ApiError } from "./api.ts";
 import { select } from "./Sidebar.tsx";
-import { UNGROUPED, type Board } from "./types.ts";
+import { UNGROUPED, type AgentKind, type Board } from "./types.ts";
 
 export type Scene = { elements: El[]; appState: any; files: any; version: number; rev: number };
 export const scenes = new Map<string, Scene>(); // key: board id
@@ -138,40 +140,56 @@ function viewport(): FmtViewport {
   return { x: -v.scrollX, y: -v.scrollY, width: v.width / v.zoom, height: v.height / v.zoom, zoom: v.zoom };
 }
 
-/** The last viewport saved in a board's scene (for a board not on screen). */
-function savedViewport(id: string): FmtViewport {
-  const as = scenes.get(id)?.appState ?? {};
-  const v = getState().view;
-  const zoom = as.zoom?.value ?? 1;
-  return { x: -(as.scrollX ?? 0), y: -(as.scrollY ?? 0), width: v.width / zoom, height: v.height / zoom, zoom };
+/** The selected elements on screen, bound text left out (it shows as its container's label). */
+function selectedFmt(): FmtElement[] {
+  if (!liveApi || !liveBoard) return [];
+  const ids = liveApi.getAppState().selectedElementIds ?? {};
+  return toFmt(liveApi.getSceneElementsIncludingDeleted()).filter((e) => ids[e.id] && !e.isDeleted && !(e.type === "text" && e.containerId));
 }
 
 export function selectionLines(): string[] {
-  if (!liveApi || !liveBoard) return [];
-  const ids = liveApi.getAppState().selectedElementIds ?? {};
-  const els = liveApi.getSceneElementsIncludingDeleted();
-  const fmt = toFmt(els);
-  return fmt.filter((e) => ids[e.id] && !e.isDeleted && !(e.type === "text" && e.containerId)).slice(0, 30).map((e) => formatElement(e));
+  return selectedFmt().slice(0, 30).map((e) => formatElement(e));
+}
+
+/** A reference to what is selected on `board`, if it is the board on screen; null when nothing is. */
+export function selectionRefOn(board: string): Ref | null {
+  if (liveBoard !== board) return null;
+  return selectionRef(selectedFmt());
+}
+
+/** A reference to a point on the board on screen, with the elements near it. */
+export function pointRefOn(board: string, x: number, y: number): Ref {
+  const els = liveBoard === board && liveApi
+    ? toFmt(liveApi.getSceneElementsIncludingDeleted()).filter((e) => !e.isDeleted && !(e.type === "text" && e.containerId))
+    : [];
+  return pointRef(x, y, els);
+}
+
+/** A reference clicked in the thread: select its elements, or mark its point, when its board is on screen. */
+export function showRef(board: string, ref: Ref, agent: AgentKind) {
+  if (liveBoard !== board || !liveApi) return;
+  if (ref.kind === "point") {
+    flash({ board, box: { x: ref.x - 6, y: ref.y - 6, width: 12, height: 12 }, agent, label: ref.label, tone: "edit" }, 1600);
+    return;
+  }
+  const els = liveApi.getSceneElementsIncludingDeleted().filter((e: El) => !e.isDeleted && ref.ids.includes(e.id));
+  if (!els.length) return;
+  liveApi.updateScene({ appState: { selectedElementIds: Object.fromEntries(els.map((e: El) => [e.id, true])) } });
+  liveApi.scrollToContent(els, { animate: true, fitToViewport: false });
 }
 
 /**
- * The block put in front of a board chat's message: the chat's board, the
- * boards @-mentioned in the text, and the selection and viewport when the
- * chat's board is the one on screen.
+ * The block put in front of a board chat's message: the chat's board and the
+ * boards @-mentioned in the text. The selection is not sent unless the user
+ * put it in the message as a reference.
  */
 export function buildContext(chat: string, text: string, picked: Picked[] = []): string {
   const s = getState();
   const c = s.chats[chat];
   const own = c?.board ? s.boards[c.board] : undefined;
   if (!c?.board) return "";
-  const referenced = resolveMentions(text, s.boards, picked).filter((b) => b.id !== c.board).map(boardRef);
-  const onScreen = liveBoard === c.board && s.sel.board === c.board;
-  return contextBlock({
-    board: own ? boardRef(own) : c.board,
-    referenced,
-    selection: onScreen ? selectionLines() : [],
-    viewport: onScreen ? viewport() : savedViewport(c.board),
-  });
+  const referenced = resolveMentions(plainText(text), s.boards, picked).filter((b) => b.id !== c.board).map(boardRef);
+  return contextBlock({ board: own ? boardRef(own) : c.board, referenced });
 }
 
 // ---- the engine for one board: the live canvas when it is on screen, else the stored scene

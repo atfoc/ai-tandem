@@ -626,6 +626,44 @@ func TestSendBlocks(t *testing.T) {
 	}
 }
 
+func TestSendNamesTheBoard(t *testing.T) {
+	e := newEnv(t)
+	bd, err := e.bds.Create("arch", gOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A board chat message sent without a context still names its board.
+	cb := e.create(model.Claude, "", bd.ID)
+	msg := `move <selection ids="a1" label="rectangle “API”">rectangle id=a1 "API" (0,0 160×70)</selection> to <point x="10" y="-20"/>`
+	e.send(cb.ID, msg, "")
+	want := prompts.BoardContext("arch", bd.ID)
+	if got := texts(e.claude.last(t).sent()[0]); !reflect.DeepEqual(got, []string{want, msg}) {
+		t.Fatalf("board chat sent %q", got)
+	}
+	if it := e.items(cb.ID)[0]; it.Text != msg || it.Context != want {
+		t.Fatalf("user item %+v", it)
+	}
+	// The chat is named from the message with its references shortened.
+	waitFor(t, "names", func() bool { return len(e.namer.callList()) == 1 })
+	if got := e.namer.callList()[0]; got != "move [rectangle “API”] to [point (10, -20)]" {
+		t.Fatalf("namer got %q", got)
+	}
+}
+
+func TestPlainText(t *testing.T) {
+	for in, want := range map[string]string{
+		"no refs": "no refs",
+		`a <selection ids="x,y" label="2 elements">…</selection> b`:                     "a [2 elements] b",
+		`<selection ids="x" label="text “a &amp; b”">text id=x "a &amp; b"</selection>`: "[text “a & b”]",
+		`at <point x="1" y="2">near: rectangle id=x (0,0 1×1) 1px left</point>.`:        "at [point (1, 2)].",
+		`<point x="-3" y="4"/><point x="5" y="6"/>`:                                     "[point (-3, 4)][point (5, 6)]",
+	} {
+		if got := PlainText(in); got != want {
+			t.Errorf("PlainText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRenameUserNameWins(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
