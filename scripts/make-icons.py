@@ -7,7 +7,7 @@ Outputs:
   web/public/favicon.png         32
   web/public/apple-touch-icon.png 180, full-bleed (iOS/Safari round it themselves)
 
-Run from the repository root: python3 assets/icon/make-icons.py  (needs Pillow and macOS iconutil)
+Run from anywhere: python3 scripts/make-icons.py  (needs Pillow and macOS iconutil)
 """
 import math
 import os
@@ -17,8 +17,8 @@ import tempfile
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(HERE))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ICON = os.path.join(ROOT, "assets", "icon")
 PUBLIC = os.path.join(ROOT, "web", "public")
 
 CANVAS, BODY = 1024, 824   # Apple macOS icon grid
@@ -44,7 +44,7 @@ def squircle_mask(size, n=5.0):
 
 
 def artwork(size):
-    art = Image.open(os.path.join(HERE, "artwork.png")).convert("RGBA")
+    art = Image.open(os.path.join(ICON, "artwork.png")).convert("RGBA")
     w, h = art.size
     side = int(min(w, h) * CROP)
     left, top = (w - side) // 2, (h - side) // 2
@@ -76,7 +76,7 @@ def master():
 def main():
     os.makedirs(PUBLIC, exist_ok=True)
     m = master()
-    m.save(os.path.join(HERE, "AppIcon.png"))
+    m.save(os.path.join(ICON, "AppIcon.png"))
 
     tmp = tempfile.mkdtemp()
     iconset = os.path.join(tmp, "AppIcon.iconset")
@@ -86,7 +86,7 @@ def main():
             px = pt * scale
             name = f"icon_{pt}x{pt}{'@2x' if scale == 2 else ''}.png"
             m.resize((px, px), Image.LANCZOS).save(os.path.join(iconset, name))
-    subprocess.run(["iconutil", "-c", "icns", iconset, "-o", os.path.join(HERE, "AppIcon.icns")], check=True)
+    subprocess.run(["iconutil", "-c", "icns", iconset, "-o", os.path.join(ICON, "AppIcon.icns")], check=True)
     shutil.rmtree(tmp)
 
     fav = rounded(256)

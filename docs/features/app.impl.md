@@ -93,7 +93,7 @@ web/build.mjs                        from prototype; also copies web/public into
 web/index.html                       from prototype; adds the favicon links
 web/public/                          favicon.ico, favicon.png, apple-touch-icon.png (made by make-icons.py)
 assets/icon/artwork.png              icon artwork (full-bleed, generated)
-assets/icon/make-icons.py            builds AppIcon.png/.icns and web/public from the artwork
+scripts/make-icons.py                builds AppIcon.png/.icns and web/public from the artwork
 assets/icon/AppIcon.icns             macOS app icon for the .app bundle (Contents/Resources)
 web/src/main.tsx                     changed
 web/src/api.ts                       new (from prototype conn.ts's `api` object)

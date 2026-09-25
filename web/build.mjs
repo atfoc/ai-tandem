@@ -5,7 +5,7 @@ import fs from "node:fs";
 const watch = process.argv.includes("--watch");
 fs.mkdirSync("dist", { recursive: true });
 fs.copyFileSync("index.html", "dist/index.html");
-fs.cpSync("public", "dist", { recursive: true }); // favicons (made by assets/icon/make-icons.py)
+fs.cpSync("public", "dist", { recursive: true }); // favicons (made by scripts/make-icons.py)
 fs.cpSync("node_modules/@excalidraw/excalidraw/dist/prod/fonts", "dist/fonts", { recursive: true });
 fs.rmSync("dist/fonts/Xiaolai", { recursive: true, force: true });
 
