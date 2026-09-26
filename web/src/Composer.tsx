@@ -340,14 +340,22 @@ function ContextMeter({ c, cat }: { c: ChatView; cat?: Catalog }) {
   );
   const used = (u.ctxIn ?? 0) + (u.ctxOut ?? 0);
   const win = u.ctxWindow || modelOf(c, cat)?.contextWindow || 0;
+  const title = used
+    ? `${ctxTitle(used, win)}\nSystem prompt, tools, board reads and the conversation so far.`
+    : `${win ? `Context window: ${win.toLocaleString()} tokens. ` : ""}Usage shows after the first reply.`;
+  return <CtxRing used={used} win={win} title={title} />;
+}
+
+export const ctxTitle = (used: number, win: number) =>
+  `Context: ${used.toLocaleString()}${win ? ` of ${win.toLocaleString()}` : ""} tokens${win ? ` (${(Math.min(1, used / win) * 100).toFixed(1)}%)` : ""}`;
+
+/** The ring with "used / window pct%": the composer's meter, and each subagent's. */
+export function CtxRing({ used, win, title, className = "" }: { used: number; win: number; title: string; className?: string }) {
   const pct = win ? Math.min(1, used / win) : 0;
   const r = 6, circ = 2 * Math.PI * r;
   const tone = pct > 0.8 ? "danger" : pct > 0.5 ? "warn" : "ok";
-  const title = used
-    ? `Context: ${used.toLocaleString()}${win ? ` of ${win.toLocaleString()}` : ""} tokens${win ? ` (${(pct * 100).toFixed(1)}%)` : ""}\nSystem prompt, tools, board reads and the conversation so far.`
-    : `${win ? `Context window: ${win.toLocaleString()} tokens. ` : ""}Usage shows after the first reply.`;
   return (
-    <span className={`ctx-meter ${tone}`} title={title}>
+    <span className={`ctx-meter ${tone} ${className}`} title={title}>
       <svg width="16" height="16" viewBox="0 0 16 16">
         <circle cx="8" cy="8" r={r} className="ring-bg" />
         <circle cx="8" cy="8" r={r} className="ring" strokeDasharray={`${circ * pct} ${circ}`} transform="rotate(-90 8 8)" />

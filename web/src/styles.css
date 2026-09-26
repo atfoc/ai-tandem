@@ -248,10 +248,7 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .sub-line { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub-line.live { color: var(--ok); } .sub-line.error { color: var(--danger); }
 .sub-stats { flex: none; display: inline-flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.sub-meter { display: inline-flex; align-items: center; gap: 5px; }
-.sub-bar { width: 36px; height: 4px; border-radius: 2px; background: var(--line-2); overflow: hidden; }
-.sub-bar i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
-.sub-meter.warn .sub-bar i { background: var(--warn); } .sub-meter.danger .sub-bar i { background: var(--danger); }
+.ctx-meter.sub-meter { font-size: inherit; padding: 0; }
 .sub-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(700px, 58vw); z-index: 45; display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--line); box-shadow: var(--shadow-md); }
 .sub-drawer-head { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .sub-drawer-top { display: flex; align-items: center; gap: 8px; }

@@ -4,7 +4,7 @@ import { useStore, setState, getState, boardName, isBusy } from "./store.ts";
 import { loadSubItems } from "./conn.ts";
 import { ItemView, useStickToBottom } from "./ChatView.tsx";
 import { Markdown } from "./Markdown.tsx";
-import { fmtK } from "./Composer.tsx";
+import { CtxRing, ctxTitle } from "./Composer.tsx";
 import { subagentOf, subBadge, subLine, subModelLabel, subToolCount, subDurationMs, fmtDuration,
   subKey, subList, subReport, showReport } from "./logic/subagents.ts";
 import type { AgentKind, Catalog, ChatView, Item, SubStatus, Subagent } from "./types.ts";
@@ -52,15 +52,7 @@ function SubName({ sa }: { sa: Subagent }) {
 export function SubMeter({ sa }: { sa: Subagent }) {
   const used = sa.tokens ?? 0, win = sa.window ?? 0;
   if (!used) return null;
-  const pct = win ? Math.min(1, used / win) : 0;
-  const tone = pct > 0.8 ? "danger" : pct > 0.5 ? "warn" : "ok";
-  const title = `Context: ${used.toLocaleString()}${win ? ` of ${win.toLocaleString()}` : ""} tokens${win ? ` (${(pct * 100).toFixed(1)}%)` : ""}`;
-  return (
-    <span className={`sub-meter ${tone}`} title={title}>
-      {win > 0 && <span className="sub-bar"><i style={{ width: `${pct * 100}%` }} /></span>}
-      {fmtK(used)}{win ? <> / {fmtK(win)} <span className="ctx-pct">{pct < 0.1 ? (pct * 100).toFixed(1) : Math.round(pct * 100)}%</span></> : null}
-    </span>
-  );
+  return <CtxRing used={used} win={win} title={ctxTitle(used, win)} className="sub-meter" />;
 }
 
 export function SubStats({ sa, items, agent, cat, now }: { sa: Subagent; items?: Item[]; agent: AgentKind; cat?: Catalog; now: number }) {
