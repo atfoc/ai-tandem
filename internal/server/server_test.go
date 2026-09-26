@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -53,6 +54,7 @@ type env struct {
 	t   *testing.T
 	st  *store.Store
 	a   *app.App
+	s   *Server
 	url string
 }
 
@@ -81,7 +83,7 @@ func newEnv(t *testing.T) *env {
 	srv.Listener = ln
 	srv.Start()
 	t.Cleanup(srv.Close)
-	e := &env{t: t, st: st, a: a, url: srv.URL}
+	e := &env{t: t, st: st, a: a, s: s, url: srv.URL}
 	e.connect()
 	return e
 }
@@ -386,5 +388,33 @@ func TestNoStaticClientWhenUnset(t *testing.T) {
 	code, _ := e.do("GET", "/", "")
 	if code != 404 {
 		t.Fatalf("GET / status %d, want 404", code)
+	}
+}
+
+// ---- usage ----------------------------------------------------------------
+
+func TestClaudeUsage(t *testing.T) {
+	e := newEnv(t)
+	e.expect(404, "GET", "/api/usage/claude", "") // no Usage set
+
+	var gotFresh []bool
+	var err error
+	e.s.Usage = func(fresh bool) (model.PlanUsage, error) {
+		gotFresh = append(gotFresh, fresh)
+		return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "session", Label: "Current session", Percent: 8}}}, err
+	}
+	u := decode[model.PlanUsage](t, e.expect(200, "GET", "/api/usage/claude", ""))
+	if !u.Plan || len(u.Limits) != 1 || u.Limits[0].Percent != 8 {
+		t.Fatalf("usage %+v", u)
+	}
+	e.expect(200, "GET", "/api/usage/claude?fresh=1", "")
+	if len(gotFresh) != 2 || gotFresh[0] || !gotFresh[1] {
+		t.Fatalf("fresh %v", gotFresh)
+	}
+
+	err = errors.New("claude /usage: not logged in")
+	out := decode[map[string]string](t, e.expect(500, "GET", "/api/usage/claude", ""))
+	if out["error"] != "claude /usage: not logged in" {
+		t.Fatalf("error %v", out)
 	}
 }

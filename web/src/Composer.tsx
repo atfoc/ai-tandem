@@ -1,6 +1,7 @@
 // The message box under a chat, and its toolbar: folder, model, effort and
-// context usage. The pickers come from the server's catalogs and can be
-// changed until the first message is sent.
+// context usage (in Claude chats a click on it also shows the plan's usage
+// limits). The pickers come from the server's catalogs and can be changed
+// until the first message is sent.
 import React, { useEffect, useRef, useState } from "react";
 import { useStore, getState, setState, safeGet, safeSet, isBusy } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
@@ -9,9 +10,10 @@ import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
 import { effortLabel } from "./logic/labels.ts";
+import { limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { BoardIcon, Folder, Lock, WarnIcon } from "./icons.tsx";
-import type { Catalog, CatalogModel, ChatView } from "./types.ts";
+import type { Catalog, CatalogModel, ChatView, PlanUsage, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
 
@@ -334,33 +336,108 @@ function DirBrowser({ start, onPick }: { start: string; onPick: (dir: string) =>
 export const fmtK = (n: number) => n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${+(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
 
 function ContextMeter({ c, cat }: { c: ChatView; cat?: Catalog }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    // Esc closes the popover, before the composer (where it would stop the agent) sees it.
+    const k = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    window.addEventListener("keydown", k, true);
+    return () => window.removeEventListener("keydown", k, true);
+  }, [open]);
   const u = c.usage ?? { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
   if (u.ctxError) return (
     <span className="ctx-meter error" title={u.ctxError}><WarnIcon /> Context unavailable</span>
   );
   const used = (u.ctxIn ?? 0) + (u.ctxOut ?? 0);
   const win = u.ctxWindow || modelOf(c, cat)?.contextWindow || 0;
-  const title = used
-    ? `${ctxTitle(used, win)}\nSystem prompt, tools, board reads and the conversation so far.`
-    : `${win ? `Context window: ${win.toLocaleString()} tokens. ` : ""}Usage shows after the first reply.`;
-  return <CtxRing used={used} win={win} title={title} />;
+  const lines = used
+    ? [ctxTitle(used, win), "System prompt, tools, board reads and the conversation so far."]
+    : [`${win ? `Context window: ${win.toLocaleString()} tokens. ` : ""}Usage shows after the first reply.`];
+  if (c.agent !== "claude") return <CtxRing used={used} win={win} title={lines.join("\n")} />;
+  // Claude chats: a click opens the context and the plan's usage limits.
+  return (
+    <div className="menu-wrap">
+      <CtxRing used={used} win={win} open={open} onClick={() => setOpen(!open)} />
+      {open && <UsagePopover context={lines} />}
+      {open && <div className="menu-backdrop" onMouseDown={() => setOpen(false)} />}
+    </div>
+  );
 }
 
 export const ctxTitle = (used: number, win: number) =>
   `Context: ${used.toLocaleString()}${win ? ` of ${win.toLocaleString()}` : ""} tokens${win ? ` (${(Math.min(1, used / win) * 100).toFixed(1)}%)` : ""}`;
 
-/** The ring with "used / window pct%": the composer's meter, and each subagent's. */
-export function CtxRing({ used, win, title, className = "" }: { used: number; win: number; title: string; className?: string }) {
+/** The ring with "used / window pct%": the composer's meter, and each subagent's. With onClick it
+ * is a button (the composer's, in Claude chats); without, a span with a hover title. */
+export function CtxRing({ used, win, title, className = "", open, onClick }: {
+  used: number; win: number; title?: string; className?: string; open?: boolean; onClick?: () => void;
+}) {
   const pct = win ? Math.min(1, used / win) : 0;
   const r = 6, circ = 2 * Math.PI * r;
   const tone = pct > 0.8 ? "danger" : pct > 0.5 ? "warn" : "ok";
+  const body = <>
+    <svg width="16" height="16" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r={r} className="ring-bg" />
+      <circle cx="8" cy="8" r={r} className="ring" strokeDasharray={`${circ * pct} ${circ}`} transform="rotate(-90 8 8)" />
+    </svg>
+    {used ? <>{fmtK(used)}{win ? <> / {fmtK(win)}<span className="ctx-pct">{pct < 0.1 ? (pct * 100).toFixed(1) : Math.round(pct * 100)}%</span></> : null}</> : null}
+  </>;
+  if (onClick) return (
+    <button type="button" className={`ctx-meter ${tone} ${open ? "on" : ""} ${className}`} aria-expanded={!!open}
+      onMouseDown={(e) => e.preventDefault()} onClick={onClick}>{body}</button>
+  );
+  return <span className={`ctx-meter ${tone} ${className}`} title={title}>{body}</span>;
+}
+
+// ---- plan usage (Claude chats)
+
+/** The last /usage answer, kept while the page is open so the popover opens with numbers. */
+let lastUsage: PlanUsage | null = null;
+
+/** The composer ring's popover: the chat's context, then the plan's limits, fetched on open. */
+function UsagePopover({ context }: { context: string[] }) {
+  const [u, setU] = useState<PlanUsage | null>(lastUsage);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const load = async (fresh: boolean) => {
+    setLoading(true); setErr("");
+    try { const r = await api.claudeUsage(fresh); lastUsage = r; setU(r); }
+    catch (e: any) { setErr(e?.message ?? String(e)); }
+    finally { setLoading(false); setNow(Date.now()); }
+  };
+  useEffect(() => {
+    void load(false);
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
   return (
-    <span className={`ctx-meter ${tone} ${className}`} title={title}>
-      <svg width="16" height="16" viewBox="0 0 16 16">
-        <circle cx="8" cy="8" r={r} className="ring-bg" />
-        <circle cx="8" cy="8" r={r} className="ring" strokeDasharray={`${circ * pct} ${circ}`} transform="rotate(-90 8 8)" />
-      </svg>
-      {used ? <>{fmtK(used)}{win ? <> / {fmtK(win)}<span className="ctx-pct">{pct < 0.1 ? (pct * 100).toFixed(1) : Math.round(pct * 100)}%</span></> : null}</> : null}
-    </span>
+    <div className="menu up usage-pop" onMouseDown={(e) => e.preventDefault()}>
+      <div className="menu-head">Context</div>
+      <div className="usage-ctx">{context.map((l) => <div key={l}>{l}</div>)}</div>
+      <div className="menu-sep" />
+      <div className="menu-head">
+        Plan usage limits<span className="grow" />
+        <button className="icon-btn usage-refresh" title="Check again" disabled={loading} onClick={() => void load(true)}>
+          <span className={loading ? "usage-spin" : ""}>↻</span>
+        </button>
+      </div>
+      {!u && loading && <div className="usage-note">Checking your plan…</div>}
+      {u && !u.plan && <div className="usage-note">{u.note || "Claude reported no plan limits."}</div>}
+      {u?.plan && sortLimits(u.limits).map((l) => <LimitRow key={l.kind + l.label} l={l} now={now} />)}
+      {err && <div className="usage-err"><WarnIcon /> {err}</div>}
+      {u && <div className="usage-foot">{loading ? "Updating…" : `Updated ${updatedAgo(u.fetchedAt, now)}`}</div>}
+    </div>
+  );
+}
+
+function LimitRow({ l, now }: { l: UsageLimit; now: number }) {
+  const when = [resetIn(l.resetsAt, now), resetAt(l.resetsAt, now)].filter(Boolean).join(" · ");
+  return (
+    <div className={`usage-row ${limitTone(l)}`}>
+      <div className="usage-top"><span>{l.label}</span><span className="usage-pct">{Math.round(l.percent)}%</span></div>
+      <div className="usage-bar"><span style={{ width: `${Math.min(100, Math.max(0, l.percent))}%` }} /></div>
+      {when && <div className="usage-reset" title={l.resetsAt && new Date(l.resetsAt).toLocaleString()}>Resets {when}</div>}
+    </div>
   );
 }

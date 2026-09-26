@@ -30,6 +30,8 @@ type Server struct {
 	Bridge *editorbridge.Bridge
 	Client string // static client folder, "" = none
 	Port   int
+	// Usage returns the Claude plan's usage limits (claude.UsageCache.Get); nil = not available.
+	Usage func(fresh bool) (model.PlanUsage, error)
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -498,6 +500,20 @@ func (s *Server) Handler() http.Handler {
 		}
 		_, gitErr := os.Stat(filepath.Join(abs, ".git"))
 		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs, "git": gitErr == nil})
+	})
+
+	// The Claude plan's usage limits, run on request and not stored. ?fresh=1 skips the cache.
+	mux.HandleFunc("GET /api/usage/claude", func(w http.ResponseWriter, r *http.Request) {
+		if s.Usage == nil {
+			writeError(w, http.StatusNotFound, "usage not available")
+			return
+		}
+		u, err := s.Usage(r.URL.Query().Get("fresh") == "1")
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, u)
 	})
 
 	// ---- agents ----

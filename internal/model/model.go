@@ -105,6 +105,24 @@ type Usage struct {
 	Turns     int    `json:"turns"`
 }
 
+// PlanUsage is the Claude subscription's usage limits, as `claude -p /usage` reports them.
+// It is fetched when the client asks and never stored.
+type PlanUsage struct {
+	Plan      bool         `json:"plan"`           // false: no limits were reported (API-key login, logged out)
+	Note      string       `json:"note,omitempty"` // when Plan is false: the first line /usage printed
+	Limits    []UsageLimit `json:"limits"`
+	FetchedAt time.Time    `json:"fetchedAt"`
+}
+
+type UsageLimit struct {
+	Kind     string    `json:"kind"`               // "session", "weekly_all", "weekly_scoped", or as reported
+	Label    string    `json:"label"`              // "Current session", "Current week (all models)", "Current week (Fable)"
+	Percent  float64   `json:"percent"`            // 0–100
+	ResetsAt time.Time `json:"resetsAt,omitzero"`  // zero: not reported
+	Severity string    `json:"severity,omitempty"` // "normal", …
+	Active   bool      `json:"active,omitempty"`   // the limit that binds right now
+}
+
 // ChatMeta is chat.json.
 type ChatMeta struct {
 	ID               string    `json:"id"` // uuid v4

@@ -70,6 +70,7 @@ internal/agent/appdir.go             new: app-folder guard shared by both adapte
 internal/claude/claude.go            new (from prototype chats.go's spawn/readLoop/handleControl)
 internal/claude/translate.go         new (Claude stream-json line → agent.Event)
 internal/claude/catalog.go           new: Claude's static model list
+internal/claude/usage.go             new: the plan's usage limits from `claude -p /usage`, and their cache
 internal/cursor/acp.go               new: JSON-RPC 2.0 stdio client (from cursor-rpc branch acp.go)
 internal/cursor/cursor.go            new: the Cursor adapter
 internal/cursor/catalog.go           new: Cursor model list parsing
@@ -1109,6 +1110,23 @@ var efforts = []string{"low", "medium", "high", "xhigh", "max"}
 ```
 
 (The prototype's `MODELS2` / `EFFORTS`, moved to the server so every client gets the same list.)
+
+**Plan usage** (`usage.go`). `Spawner.Usage` runs `claude -p /usage --output-format stream-json
+--verbose --no-session-persistence --strict-mcp-config` in the temp folder (30 s timeout). `/usage`
+is a local command: no model call, no cost, about 1.5 s. Never `--disable-slash-commands`, which
+would send it to the model as a prompt. `ParseUsage` reads the `assistant` line:
+
+- `usage_report.rate_limits.limits[]` (`kind`, `percent`, `resets_at`, `scope.model.display_name`,
+  `severity`, `is_active`) → `model.PlanUsage{Plan, Limits}`. Labels: `session` → "Current
+  session", `weekly_all` → "Current week (all models)", a scoped weekly → "Current week (<model>)".
+- Without `usage_report` (an older CLI), the text's lines
+  `Current …: N% used · resets Sep 28 at 6:59pm (Europe/Belgrade)` are read instead. The text has
+  no year: a reset is the first such time not more than a day before now.
+- No limits at all (API-key login, logged out) → `Plan: false` and the text's first line as `Note`.
+
+`UsageCache` keeps the last good result in memory for 60 s and makes callers during a run wait for
+that run. A failed run is not cached. Nothing is written to disk and chats are untouched: running
+chats' `rate_limit_event` lines are still dropped by `translate.go`.
 
 ### 4.6 Cursor adapter: `internal/cursor/`
 
@@ -2395,6 +2413,7 @@ group id. A `group` field in a body is a group id or `"__ungrouped__"` for the u
 | `POST /api/chats/{id}/archive` / `unarchive` | | |
 | `DELETE /api/chats/{id}` | | |
 | `GET /api/dirs?path=` | → `{path, parent, dirs, git}` | prototype, unchanged |
+| `GET /api/usage/claude?fresh=1` | → `PlanUsage` | the Claude plan's limits; cached 60 s, `fresh=1` skips it |
 | `POST /mcp/{token}` | MCP JSON-RPC | Claude board tools |
 | `POST /agent/{token}/{tool}` | JSON args → text | Cursor board commands |
 | `GET /` and files | the built client | only when `-client` is set |
@@ -3241,6 +3260,13 @@ from the `board` argument or "this board". `statusText` adds `stopped` → "Stop
     empty. When `chat.usage.ctxError` is set, the meter is replaced in the same spot by an error
     state: a warning glyph and "Context unavailable", with `ctxError` as its tooltip. It never shows
     a number then.
+  - In Claude chats the meter is a button (`CtxRing` with `onClick`); a click opens
+    `UsagePopover` (`menu up usage-pop`, closed by the backdrop or Esc, which the composer then
+    does not see): the context lines that are the tooltip elsewhere, then the plan's limits from
+    `api.claudeUsage()` (`GET /api/usage/claude`), session first. Each limit is a bar coloured like
+    the ring (`logic/usage.ts`), its percent, and "Resets in 4h 4m · Sun 1:09 AM". The last answer
+    is kept in the module while the page is open, so reopening shows it at once while it is
+    fetched again. Cursor chats' meter and the subagent rows' `CtxRing` stay spans with a `title`.
   - Each change calls `api.configure`, which only saves the settings on the server (no agent runs
     before the first message). Once the first message is sent, folder, model and effort are locked.
 - `recentDirs` stays in localStorage (prototype); the default folder now comes from the server's

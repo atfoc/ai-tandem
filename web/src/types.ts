@@ -75,6 +75,23 @@ export type Usage = {
   turns: number;
 };
 
+/** GET /api/usage/claude: the Claude plan's limits, from `claude -p /usage`. Not stored. */
+export type PlanUsage = {
+  plan: boolean; // false: no limits reported (API-key login, logged out)
+  note?: string; // when plan is false: what /usage printed first
+  limits: UsageLimit[];
+  fetchedAt: string;
+};
+
+export type UsageLimit = {
+  kind: string; // "session", "weekly_all", "weekly_scoped", …
+  label: string; // "Current session", "Current week (Fable)"
+  percent: number; // 0–100
+  resetsAt?: string;
+  severity?: string;
+  active?: boolean;
+};
+
 /** chat.json */
 export type ChatMeta = Archive & {
   id: string;

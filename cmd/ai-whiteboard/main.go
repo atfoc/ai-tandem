@@ -131,10 +131,11 @@ func serve(o options) {
 	bs := boards.New(st, br)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
+	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd, BaseURL: base,
 		Namer: chats.ClaudeNamer{Bin: o.claudeBin},
 		Spawners: map[model.AgentKind]agent.Spawner{
-			model.Claude: &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()},
+			model.Claude: claudeSpawner,
 			model.Cursor: cursorSpawner,
 		}})
 	if err := bs.Load(); err != nil { // before chats: board chats look up their board
@@ -149,7 +150,7 @@ func serve(o options) {
 		log.Printf("cursor deny rules: %v", err)
 	}
 	srv := &server.Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}, Bridge: br,
-		Client: o.client, Port: port}
+		Client: o.client, Port: port, Usage: (&claude.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get}
 	if err := store.WriteServerFile(p, port); err != nil {
 		log.Printf("server.json: %v", err)
 	}
