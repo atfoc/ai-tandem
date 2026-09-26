@@ -31,7 +31,7 @@ Two programs:
    │  HTTP JSON  (commands)         ▲ SSE /api/events (state, chat items, rpc calls)
    ▼                                │
  Go server (cmd/ai-whiteboard + internal/…)
-   ├─ store      ~/.ai-whiteboard: state.json, boards/<id>/{board.json,drawing.excalidraw}, chats/<id>/{chat.json,items.jsonl}
+   ├─ store      ~/.ai-whiteboard: state.json, boards/<id>/{board.json,drawing.excalidraw}, chats/<id>/{chat.json,items.jsonl,subagents/<sid>/}
    ├─ editorbridge  the one active client; takeover; rpc calls into the client's board engine
    ├─ chats      one agent per chat; transcript → items; persistence; sticky defaults
    │    ├─ claude adapter   claude -p stream-json (one process per chat)
@@ -79,6 +79,7 @@ internal/cursor/config.go            new: deny rules in the user's Cursor config
 internal/cursor/ctxusage.go          new: context usage read from Cursor's session store (sqlite3)
 internal/chats/manager.go            new (from prototype chats.go's Chats/Chat)
 internal/chats/namer.go              new (from prototype autoName)
+internal/chats/subagents.go          new: a chat's subagents and their files (4.7)
 internal/editorbridge/bridge.go      new (from prototype hub.go)
 internal/boardtools/tools.go         new (from prototype mcp.go's tool list)
 internal/boardtools/command.go       new: Cursor command parser
@@ -123,6 +124,8 @@ web/src/Composer.tsx                 new (from prototype ui.tsx Composer and v2.
 web/src/RefInput.tsx                 new: the composer's text box, with reference chips
 web/src/Markdown.tsx                 new: a message's Markdown (react-markdown, GFM, code colours)
 web/src/Dialogs.tsx                  new: confirm dialog, takeover screen
+web/src/Subagents.tsx                new: the subagent row and drawer (5.7)
+web/src/logic/subagents.ts           new: what the subagent row and drawer show (DOM-free)
 web/src/icons.tsx                    new (glyphs and icons from ui.tsx, v2.tsx, v4.tsx)
 web/src/styles.css                   changed
 web/test/*.test.ts                   new
@@ -174,6 +177,8 @@ scripts/install-app.sh                         # copies it into ~/Applications; 
   boards/<id>/drawing.excalidraw  the drawing
   chats/<chatId>/chat.json    chat metadata
   chats/<chatId>/items.jsonl  chat history
+  chats/<chatId>/subagents/<sid>/subagent.json  a subagent's state (model.Subagent)
+  chats/<chatId>/subagents/<sid>/items.jsonl    the subagent's own thread (same format as a chat's)
 ```
 
 - Created on first start with mode 0700 (the folder) and 0600/0644 (files as below).
@@ -184,6 +189,10 @@ scripts/install-app.sh                         # copies it into ~/Applications; 
   (`boards/b_x7k2m9qa/`), so names need not be unique and a rename never touches the disk layout.
   Reveal in Finder shows `drawing.excalidraw` inside the board's folder.
 - Nothing is imported from the prototype's `boards/` folder (**feature: nothing is carried over**).
+- A subagent a chat starts is kept inside the chat's folder, in a folder of its own named by the
+  app's own sid (`randHex(6)`, not a CLI id: Cursor's tool call ids hold a `\n`, and the CLI's own id
+  arrives only after the call starts). Nested subagents are flat under `subagents/` too; `parent` in
+  `subagent.json` names the outer one. Deleting the chat's folder takes its subagents with it.
 
 ### 3.2 `internal/store/paths.go`
 
@@ -344,7 +353,7 @@ type CatalogModel struct {
 type Usage struct {
 	CtxIn        int     `json:"ctxIn"`        // Claude: last model call's input + cache tokens; Cursor: the session store's used_tokens
 	CtxOut       int     `json:"ctxOut"`       // Claude only
-	CtxWindow    int     `json:"ctxWindow"`    // Claude: from modelUsage; Cursor: the session store's max_tokens
+	CtxWindow    int     `json:"ctxWindow"`    // Claude: the parent model's modelUsage entry; Cursor: the session store's max_tokens
 	CtxError     string  `json:"ctxError,omitempty"` // Cursor only: why the context usage could not be read; cleared by the next good read
 	Turns        int     `json:"turns"`
 }
@@ -415,8 +424,48 @@ type Item struct {
 	Decided   string `json:"decided,omitempty"` // "", "allow", "deny"
 	// note
 	Tone string `json:"tone,omitempty"` // "muted" | "error"
+	// subagents
+	Subagent string `json:"subagent,omitempty"` // tool (Agent/Task): the sid it started; perm: the sid that asked
+}
+
+// SubStatus is a subagent's lifecycle state. Every state but running is final.
+type SubStatus string
+
+const (
+	SubRunning   SubStatus = "running"
+	SubCompleted SubStatus = "completed"
+	SubFailed    SubStatus = "failed"
+	SubStopped   SubStatus = "stopped"
+)
+
+// Subagent is a subagent's state: chats/<chat>/subagents/<ID>/subagent.json. Its own thread is the
+// items.jsonl next to it, in the same format as a chat's. It is not an Item: the parent's thread
+// only links it from the Agent/Task tool item that started it.
+type Subagent struct {
+	ID          string    `json:"id"`                    // the app's id, the folder's name
+	Tool        string    `json:"tool"`                  // the Agent/Task tool call that started it
+	Parent      string    `json:"parent,omitempty"`      // the subagent whose thread holds that call; "" = the chat's
+	AgentID     string    `json:"agentId,omitempty"`     // Claude task_id, Cursor subagentSessionId
+	Type        string    `json:"type,omitempty"`        // as reported: "general-purpose", "generalPurpose", "Explore", a custom name
+	Description string    `json:"description,omitempty"` // the name the parent gave it
+	Prompt      string    `json:"prompt,omitempty"`      // what the parent asked it
+	Model       string    `json:"model,omitempty"`       // as reported: "claude-haiku-4-5-20251001", "gpt-5.4-mini-medium"
+	Background  bool      `json:"background,omitempty"`
+	Status      SubStatus `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	Summary     string    `json:"summary,omitempty"`  // the final report, when the agent reports one (Claude)
+	Progress    string    `json:"progress,omitempty"` // Claude's latest model-written progress line
+	Last        string    `json:"last,omitempty"`     // the last text of its thread, kept when it ends
+	Tokens      int       `json:"tokens,omitempty"`   // context fill
+	Window      int       `json:"window,omitempty"`   // the subagent model's context window
+	ToolUses    int       `json:"toolUses,omitempty"` // Claude's own count
+	Started     int64     `json:"started,omitempty"`  // unix ms, set by the app when it first hears of it
+	Ended       int64     `json:"ended,omitempty"`    // unix ms, set when Status leaves running
 }
 ```
+
+`Subagent` holds only comparable fields, so the chat manager compares it with `==` to know when it
+changed (and when `subagent.json` is due a write).
 
 `ChatView` is written out in full in the code (not embedded), so the token can never leak:
 
@@ -437,6 +486,17 @@ It also exports `UNGROUPED = "__ungrouped__"` and `AGENT_ORDER = ["claude", "cur
 - A line is written when an item is **settled** (user item, finished text, tool with a result or
   denial, decided permission, note) and, for items still open, on shutdown. Stream deltas are never
   written one by one.
+- A subagent's files (section 4.7, `subagents.go`):
+
+  | File | Written |
+  |---|---|
+  | `subagents/<sid>/subagent.json` | `Subagent`, with `WriteJSONAtomic(…, 0600)` (its folder 0700): when it is created (its first event); at its final status; whenever its thread is flushed, if it changed since the last write; when the app marks it stopped (Stop, an aborted turn, a process exit, a load); at shutdown |
+  | `subagents/<sid>/items.jsonl` | the same format and rules as a chat's `items.jsonl`, append-only: `Flush(false)` after a subagent `EvToolResult` / `EvToolDenied`; at its final status, after its open text is closed; `Flush(true)` at shutdown |
+  | the chat's `items.jsonl` | as above, plus the Agent/Task tool item again when it gets its `subagent` link |
+
+  Tokens, tool counts and progress lines change often: they reach clients at once and the disk at
+  the next write. A crash loses at most what came since the last write; the next load marks a
+  subagent still `running` as stopped.
 - **Resolved:** the prototype kept the raw CLI events in memory and replayed them to each tab. The
   feature needs history across restarts and a client-neutral interface, so the server now turns
   agent events into items (section 4.4) and stores items. Clients only render items.
@@ -647,6 +707,7 @@ const (
 	EvUsage                       // CtxIn/CtxOut/CtxWindow (any may be 0 = unchanged), or CtxError
 	EvTurnEnd                     // Aborted, Error
 	EvExit                        // ExitErr
+	EvSub                         // SubInfo: a subagent appeared or changed (a patch; zero fields are unchanged)
 )
 
 type Event struct {
@@ -666,8 +727,36 @@ type Event struct {
 	Aborted   bool
 	Error     string
 	ExitErr   string
+	// Sub is the parent's tool call id (Claude's Agent tool_use, Cursor's Task tool_call) of the
+	// subagent this event belongs to. EvText*, EvTool*, EvThinking and EvSub with Sub set belong to
+	// that subagent's own thread; EvPermRequest with Sub set was asked by it and stays in the
+	// parent's thread.
+	Sub       string
+	SubInfo   *SubInfo // EvSub
+}
+
+// SubInfo is a patch of a subagent's state. Empty strings, zero numbers and a nil Background leave
+// a field unchanged. A Status is applied only while the subagent is running.
+type SubInfo struct {
+	ID          string // the CLI's id (Claude task_id, Cursor subagentSessionId) → Subagent.AgentID
+	Type        string
+	Description string
+	Prompt      string
+	Model       string
+	Background  *bool
+	Status      model.SubStatus
+	Error       string
+	Summary     string
+	Progress    string
+	Tokens      int
+	Window      int
+	ToolUses    int
 }
 ```
+
+`SubInfo` holds only comparable fields (strings, ints, `*bool`), so `info != (agent.SubInfo{})`
+compiles. The adapters only name the subagent by its parent tool call id; the chat manager gives it
+its sid (section 4.7).
 
 `internal/agent/appdir.go`, used by both adapters:
 
@@ -696,6 +785,7 @@ type Transcript struct {
 	dirty   map[int]bool     // settled items not yet written
 	status  model.Status
 	tool    string           // tool name behind StatusTool
+	permPrev model.Status    // the status before the pending approval
 }
 
 type Update struct {
@@ -703,7 +793,8 @@ type Update struct {
 	Item  model.Item `json:"item"`
 }
 
-func Load(path string) (*Transcript, error)
+func New(path string) *Transcript            // empty, kept at path; nothing is written until Flush has something
+func Load(path string) (*Transcript, error)   // New, then the file's lines (a missing file is empty)
 func (t *Transcript) Snapshot() (version int, items []model.Item)
 func (t *Transcript) AddUser(text, context string) []Update
 func (t *Transcript) AddNote(tone, text string) []Update
@@ -713,6 +804,12 @@ func (t *Transcript) Status() (model.Status, string)
 func (t *Transcript) SetStatus(s model.Status)
 func (t *Transcript) Flush(all bool) error // all: also write open items (shutdown)
 func (t *Transcript) Version() int
+
+// For the chat manager's subagents (section 4.7):
+func (t *Transcript) HasTool(id string) bool                // the thread has a tool item with this id
+func (t *Transcript) LinkSubagent(toolID, sid string) []Update // sets Item.Subagent on that tool item; dirty
+func (t *Transcript) CloseOpen() []Update                   // marks the open text item done (a subagent ending)
+func (t *Transcript) LastText() string                      // the text of the last text item; "" if none
 ```
 
 ```
@@ -736,7 +833,9 @@ Apply(ev):
   EvToolInput:  i, ok := tools[id]; if !ok { treat as EvToolStart }; set(i, input = ev.Input, name = ev.ToolName)
   EvToolResult: i := tools[id]; set(i, result=&ev.Result, isError); dirty[i]; status = thinking
   EvToolDenied: i := tools[id]; set(i, denied=true); dirty[i]
-  EvPermRequest: status = approval; i := push({kind:perm, requestId, toolName, toolId, input}); perms[id]=i
+  EvPermRequest: if status != approval { permPrev = status }; status = approval
+                i := push({kind:perm, requestId, toolName, toolId, input, subagent: ev.Sub}); perms[id]=i
+                (the manager has put the asking subagent's sid in ev.Sub, "" for the parent's own requests)
   EvTurnEnd:
      close open text (done=true, dirty)
      if ev.Aborted { push note(muted,"Stopped.") } else if ev.Error != "" { push note(error, ev.Error) }
@@ -747,12 +846,23 @@ Apply(ev):
      for every perm item not decided: set(decided = "deny"), dirty
      else status unchanged (an idle process ending is not shown)
 
-Decided(id, allow): i := perms[id]; set(decided = allow?"allow":"deny"); dirty; if status == approval { status = tool }
+Decided(id, allow): i := perms[id]; set(decided = allow?"allow":"deny"); dirty
+     if status == approval and no perm item is still undecided:
+        status = permPrev; if status is "" or approval { status = tool }
 
 close open text: if open >= 0 { set(open, done=true); dirty[open]=true; open = -1 }
 
 Flush(all): lines for each dirty index (and, if all, every item not settled) → append to file; clear dirty
 ```
+
+`permPrev`: a background Claude subagent can ask for approval while the parent is Idle. Going back
+to a fixed `tool` would make the chat look busy (and refuse sends) until the next turn ended. For
+the parent's own requests `permPrev` is `tool` (the tool call streams before `can_use_tool`), so
+nothing changes for them.
+
+A subagent's thread is a `Transcript` of its own at `subagents/<sid>/items.jsonl`: the same reducer,
+`Flush` rules and `{index, item}` updates. Its `status` is not used; the subagent's state is its
+`model.Subagent`. The transcript keeps no subagent state of its own.
 
 Usage (`EvUsage`, and the turn count from `EvTurnEnd`) is not kept here; the chat manager applies it to
 `ChatMeta.Usage`.
@@ -780,6 +890,15 @@ type proc struct {
 	perms     sync.Map           // request id → struct{} (pending)
 	stderr    *bytes.Buffer
 	s         *Spawner
+	// translate state (only touched by the read loop, so no lock)
+	curMsg    string
+	streamed  map[string]bool
+	blocks    map[int]string    // content block index → "text" or the tool_use id
+	model     string            // the parent's model, from system/init
+	taskTool  map[string]string // subagent task_id → the parent's Agent tool_use id
+	subModel  map[string]string // Agent tool_use id → the subagent's model
+	windows   map[string]int    // model id → context window, from result.modelUsage
+	orphan    bool              // a task_notification came for an agent this process never started
 }
 ```
 
@@ -788,7 +907,8 @@ type proc struct {
 ```go
 func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--include-partial-messages", "--permission-mode", "auto", "--permission-prompt-tool", "stdio"}
+		"--verbose", "--include-partial-messages", "--permission-mode", "auto", "--permission-prompt-tool", "stdio",
+		"--forward-subagent-text"}
 	if o.Resume { args = append(args, "--resume", o.SessionID) } else { args = append(args, "--session-id", o.SessionID) }
 	if o.Model != "" { args = append(args, "--model", o.Model) }
 	if o.Effort != "" && o.Model != "haiku" { args = append(args, "--effort", o.Effort) }
@@ -824,6 +944,8 @@ func AppDirRules(root, home string) []string {
   chats neither load nor write auto-memory (`~/.claude/projects/<cwd>/memory/`). CLAUDE.md files
   still load.
 - Plain chats get none of `--append-system-prompt`, `--mcp-config`, `--allowedTools`.
+- `--forward-subagent-text`: foreground subagents stream their text and thinking into the output
+  (as lines with a `parent_tool_use_id`), the same as background ones do.
 - **Resolved:** Claude snapshots the system prompt per session. A resumed chat keeps the
   whiteboard instructions it started with; `--system-prompt-snapshot` is left at its default.
 
@@ -833,9 +955,17 @@ func AppDirRules(root, home string) []string {
 if _, err := os.Stat(o.Cwd); err != nil → return nil, ErrFolderMissing (agent.ErrFolderMissing)
 cmd := exec.Command(s.Bin, s.Args(o)...); cmd.Dir = o.Cwd; cmd.Stderr = p.stderr (capped 64 KB)
 stdin, stdout pipes; cmd.Start()
+p.write({"type":"control_request","request_id":"init_"+randHex(4),
+         "request":{"subtype":"initialize","agentProgressSummaries":true,"forwardSubagentText":true}})
 go p.readLoop(stdout)
 return p
 ```
+
+The `initialize` control request is the SDK's: with `agentProgressSummaries`, `task_progress.summary`
+carries a model-written progress line per subagent. It is written before the read loop starts, so
+it is always the first stdin line (the loop may answer control requests at once). Its
+`control_response` is ignored by `readLoop`; a write error is ignored too (the process exiting
+reports itself through `EvExit`).
 
 `readLoop` (prototype `readLoop`, with translation):
 
@@ -855,7 +985,11 @@ close(p.events)
 `translate` (`internal/claude/translate.go`), the prototype's `chat.ts` `event()` mapped to events:
 
 ```
-if m["parent_tool_use_id"] != nil → no events (subagent chatter)
+initMaps()                                   // streamed, blocks, taskTool, subModel, windows when nil (tests use &proc{})
+if type == "system":
+   subtype task_started | task_progress | task_updated | task_notification → taskEvent(m)   (below)
+   subtype "init" → p.model = m.model; no events
+if pid := m.parent_tool_use_id; pid != "" → subLine(pid, m)                                (below)
 switch type:
  "system":
    subtype "status", status "requesting" → [EvThinking]
@@ -876,11 +1010,63 @@ switch type:
       text and message id not in streamed → EvText{MsgID, Text}
  "user": for each tool_result b → EvToolResult{ToolID: b.tool_use_id, Result: text of b.content, IsError: b.is_error}
  "result":
-      win := max(modelUsage[*].contextWindow)
+      orphan := p.orphan; p.orphan = false
+      if orphan && num_turns == 0 → no events     // the empty result a resume sends after reporting a lost agent
+      for id, u in modelUsage: if u.contextWindow > 0 { windows[id] = u.contextWindow }
+      win := modelUsage[p.model].contextWindow    // the parent model's entry
+      if win == 0 && len(modelUsage) == 1 { win = that one entry's contextWindow }
       events: [EvUsage{CtxWindow: win}, EvTurnEnd{
                Aborted: terminal_reason == "aborted_streaming",
                Error: is_error && not aborted ? (result or "Error: "+terminal_reason) : ""}]
 ```
+
+- **The chat's context window** comes from the **parent model's** `modelUsage` entry only.
+  `modelUsage` also lists the subagents' models: with a Sonnet subagent under a Haiku chat, taking
+  the biggest window there would wrongly give 1,000,000.
+  `win == 0` means "unchanged" to the manager, so the meter keeps its last value or the catalog's.
+- **The empty `result` after a resume.** A `--resume`d process first reports agents lost with the
+  earlier process (`task_notification` for a task it never started, which sets `orphan`), then sends
+  a `result` with `num_turns: 0`. That result is dropped, so it does not end the real turn early.
+
+**Subagents** (`taskEvent`, `subLine`, `windowFor`, `claudeStatus`):
+
+```
+taskEvent(m):                                // system/task_* lines
+  task_started: only task_type "local_agent" with a task_id and tool_use_id (a subagent's Bash
+                commands are local_bash tasks: nothing)
+                taskTool[task_id] = tool_use_id
+                → [EvSub{Sub: tool_use_id, SubInfo{ID: task_id, Type: subagent_type, Description,
+                   Prompt, Background: &is_backgrounded, Status: running}}]
+  other subtypes: tool, ok := taskTool[task_id]
+                if !ok: a task_notification (task_type absent or local_agent) sets orphan; no events
+                info := SubInfo{Window: windowFor(subModel[tool])}
+                task_progress:     Progress = summary, Tokens = usage.total_tokens, ToolUses = usage.tool_uses
+                task_updated:      Status, Error = claudeStatus(patch.status), patch.error;
+                                   patch.is_backgrounded present → Background
+                task_notification: Status = claudeStatus(status), Summary = summary, Tokens, ToolUses from usage
+                → [EvSub{Sub: tool, SubInfo: info}]
+
+claudeStatus: completed → completed; failed → failed; killed | stopped → stopped; anything else → ""
+
+subLine(tool, m):                            // a line of the subagent's own conversation
+  "assistant": (its messages come whole, never as stream_event)
+      model (not "<synthetic>") → subModel[tool] = model; info.Model
+      usage → info.Tokens = input + cache_creation + cache_read   (output_tokens is a first-chunk snapshot: unused)
+      info.Window = windowFor(subModel[tool])
+      [EvSub{Sub: tool, info}] if info is not empty, then per content block, in order:
+        tool_use → EvToolInput{Sub, ToolID, ToolName, Input}; text → EvText{Sub, MsgID, Text}
+  "user": each tool_result → EvToolResult{Sub, ToolID, Result, IsError}
+          (its first prompt, a user text message, gives nothing: task_started carries it)
+  "system" permission_denied → [EvToolDenied{Sub, ToolID}]; anything else (status, stream_event) → nothing
+
+windowFor(id): windows[id] (from the last result's modelUsage), else the static catalog entry whose
+  alias the id contains ("claude-haiku-4-5-…" contains "-haiku"), else 0
+```
+
+Nested subagents: a nested one's `task_started.tool_use_id` is the nested Agent call's id, and its
+lines carry that id as `parent_tool_use_id`. Both go out with `Sub` = that id; the chat manager
+finds the tool item in the outer subagent's thread (section 4.7). The adapter has no extra code for
+it.
 
 `handleControl` (prototype, plus the app-folder guard):
 
@@ -891,7 +1077,8 @@ input := req.input
 if agent.TouchesAppDir(input, s.AppRoot, s.Home):
    write deny(id, agent.AppDirDenied); return                // no card
 p.perms.Store(id, req)
-p.events <- EvPermRequest{PermID: id, ToolName: req.tool_name, ToolID: req.tool_use_id, Input: input}
+p.events <- EvPermRequest{PermID: id, ToolName: req.tool_name, ToolID: req.tool_use_id, Input: input,
+                         Sub: taskTool[req.agent_id]}   // "" for the parent's own requests (no agent_id)
 ```
 
 `Decide(id, allow)`:
@@ -985,12 +1172,28 @@ type proc struct {
 	readyErr  error
 	sessionID string
 	loading   atomic.Bool    // true during session/load: its replayed updates are dropped
-	inText    bool           // a text item is open
-	msgSeq    int
 	perms     sync.Map       // our request id string → jsonrpc id + options
-	tools     map[string]string // toolCallId → normalized tool name
 	ctx       ctxPoller         // context usage reads (ctxusage.go)
 	s         *Spawner
+	mu        sync.Mutex        // guards main, children and every child's stream and stop
+	main      stream            // the parent session's streaming state
+	children  map[string]*child // subagents by subagentSessionId
+}
+
+// stream is one session's streaming state: the parent's, or a subagent's.
+type stream struct {
+	inText bool                // a text item is open
+	msgSeq int
+	tools  map[string]toolCall // toolCallId → the tool_call as first reported (kind, title, input)
+}
+
+// child is a subagent session (subagentSessionId) and the parent tool call that started it.
+type child struct {
+	id, tool string
+	stream
+	stop, done chan struct{} // the context poller; stop is nil once it has been stopped
+	readMu     sync.Mutex    // held during a read of its store
+	last       ContextUsage  // the last read sent
 }
 ```
 
@@ -1001,7 +1204,7 @@ check o.Cwd exists → ErrFolderMissing
 conn := Start(s.Bin, []string{"acp"}, o.Cwd)
 p.conn.OnNotify = p.onUpdate; p.conn.OnRequest = p.onRequest
 go p.handshake()
-go func(){ err := conn.Wait(); p.events <- EvExit{ExitErr}; close(p.events) }()
+go func(){ err := conn.Wait(); p.ctx.stopPolling(); p.stopChildren(); p.events <- EvExit{ExitErr}; close(p.events) }()
 return p
 ```
 
@@ -1011,7 +1214,7 @@ list and the params policy, `docs/research/cursor-effort.md` and `cursor-effort-
 ```
 conn.Call("initialize", {protocolVersion: 1,
     clientCapabilities: {fs: {readTextFile: false, writeTextFile: false}, terminal: false,
-                         _meta: {parameterizedModelPicker: true}},
+                         _meta: {parameterizedModelPicker: true, subagents: true}},
     clientInfo: {name: "ai-whiteboard", version: version.Version}})
 conn.Call("authenticate", {methodId: "cursor_login"})
 if o.Resume:
@@ -1034,6 +1237,11 @@ if o.Resume: p.readCtx()              // a resumed chat shows its meter before t
 on any error (list, set included): p.readyErr = err  // Send waits on ready: no prompt runs first
 close(p.ready)
 ```
+
+`_meta.subagents` turns on `subagent_spawned` / `subagent_state_update` and each child's own
+`session/update` stream. A plain `clientCapabilities.subagents` is stripped by Cursor's SDK; only
+`_meta` gets through. The probe (`probe.go`) shares `initializeParams`; it never prompts, so the
+flag changes nothing for it.
 
 `applyChoice` (`internal/cursor/params.go`) is the params policy. It runs after every
 `session/new` and `session/load`, from the chat's own saved model and effort, never from what
@@ -1067,30 +1275,39 @@ this with a server-owned `CURSOR_CONFIG_DIR` is a separate follow-up.
 ```
 <-p.ready; if p.readyErr → return it
 prompt := [{type:"text", text: b.Text} for b in blocks]
-p.inText = false; p.events <- EvThinking
+p.main.inText = false; p.events <- EvThinking
 p.ctx.startPolling()                  // re-reads the store every second during the turn
 go func():
    res, err := conn.Call("session/prompt", {sessionId, prompt})
    p.ctx.stopPolling(); p.readCtx()    // one final read after every turn, errors included
    if err: p.events <- EvTurnEnd{Error: err.Error()}; return
-   p.inText = false
+   p.main.inText = false
    p.events <- EvTurnEnd{Aborted: res.stopReason == "cancelled",
                          Error: stopReason not in {end_turn, cancelled, max_tokens}? "Cursor stopped: "+stopReason : ""}
 ```
 
-`Interrupt`: `conn.Notify("session/cancel", {sessionId})`.
+`Interrupt`: `conn.Notify("session/cancel", {sessionId})`. Cancelling the parent cancels every
+subagent too; their `cancelled` states follow as events.
 
 `onUpdate(method, params)` (only `session/update`; dropped while `p.loading`):
 
 ```
 u := params.update
+"subagent_spawned"      → onSpawned(u); return        (below)
+"subagent_state_update" → onSubState(u); return
+st, sub := &p.main, ""                                 // a known subagent session feeds that subagent;
+if c := p.children[params.sessionId]: st, sub = &c.stream, c.tool   // anything else is the parent's
+streamUpdate(st, sub, u)
+
+streamUpdate(st, sub, u):                              // every event it emits carries Sub: sub
 switch u.sessionUpdate:
  "agent_thought_chunk": EvThinking
  "agent_message_chunk":
-     if !p.inText { p.msgSeq++; EvTextStart{MsgID: "c"+msgSeq}; p.inText = true }
+     if !st.inText { st.msgSeq++; EvTextStart{MsgID: id}; st.inText = true }
      EvTextDelta{Text: u.content.text}
+     (id = "c"+msgSeq for the parent, "c"+sub+"-"+msgSeq for a subagent)
  "tool_call":
-     p.inText = false
+     st.inText = false
      name, input := normalizeTool(u)        // below
      EvToolStart{ToolID: u.toolCallId, ToolName: name, Input: input}
      if status in {completed, failed}: emit result as for tool_call_update
@@ -1098,11 +1315,52 @@ switch u.sessionUpdate:
      if u.rawInput present: EvToolInput{ToolID, ToolName: normalizeTool(u).name, Input}
      if u.status == "completed": EvToolResult{ToolID, Result: resultText(u), IsError: exitCode != 0}
      if u.status == "failed":    EvToolResult{ToolID, Result: resultText(u), IsError: true}
- other kinds: ignored (session_info_update, available_commands_update, plan, modes, subagents)
+ parent only: a Task tool completed with rawOutput {"isBackground": true} (a background child's
+     Task completes about 130 ms after launch) → EvSub{Sub: toolCallId, SubInfo{Background: true}}
+ other kinds: ignored (session_info_update, available_commands_update, plan, modes, …)
+```
+
+The parent session is told apart by `params.sessionId` naming a known child, never by comparing
+with `p.sessionID` (the handshake goroutine writes that).
+
+**Subagents.** Cursor runs the parent turn until its subagents finish. A child is its own ACP
+session, whose `session/update`s stream like the parent's (above); these lines tie it to the parent:
+
+```
+onSpawned(u):   subagent_spawned {subagentSessionId, name, task, _meta.cursor.{toolCallId, model}}
+   ignored without a session id or toolCallId, or when that child is known already
+   p.children[id] = child{id, tool: toolCallId}
+   a := taskInput(p.main.tools[toolCallId])            // the parent's Task call
+   → EvSub{Sub: toolCallId, SubInfo{ID: id, Type: a.Type or name, Description: a.Description,
+           Prompt: a.Prompt or task, Model: _meta.cursor.model, Background: a.Background or unchanged,
+           Status: running}}
+   pollChild(c)                                        // its context meter (ctxusage.go)
+
+onSubState(u):  subagent_state_update {subagentSessionId, state, error?}
+   completed → completed; failed | error → failed; cancelled | disconnected (a cancel that timed out) → stopped;
+   any other state is not final: nothing
+   → EvSub{Sub: c.tool, SubInfo{Status, Error}} at once;
+   then, in the background (the read loop never waits on sqlite3): stopChild(c); readChildCtx(c, false)
+
+onCursorTask(params):  the cursor/task request {toolCallId, model}
+   → EvSub{Sub: taskToolID(toolCallId), SubInfo{Model}}
+   (for custom agents this is the subagent's real model; subagent_spawned's _meta.cursor.model names
+   the parent's)
+
+taskToolID(id): an exact match among the children's tools and the parent's tool calls, else a match
+   on the part before the first "\n" (Cursor's ids are "call_…\nfc_…", and cursor/task may give only
+   the first part); "" when none matches
+
+isTaskTool(tc): rawInput._toolName == "task", or, before rawInput arrives, kind "other" titled "Task: …"
+taskInput(tc):  rawInput {description, prompt, subagentType: {custom: {name}} | {unspecified: {}},
+                runInBackground | run_in_background} → {Description (else the title after "Task: "),
+                Prompt, Type: the custom agent's name ("" = general-purpose), Background}
 ```
 
 ```
 normalizeTool(u):
+  if isTaskTool(u): return "Agent", {"description", "prompt", "subagent_type"} from taskInput(u)
+                                                              // both agents' subagent calls look alike
   cmd := u.rawInput.command (string) if kind == "execute", else from u.title with backticks trimmed
   if kind == "execute":
      if tok, tool, args, ok := boardtools.ParseCommand(cmd); ok && tok == p.o.Board.Token:
@@ -1122,6 +1380,7 @@ Claude's (feature: *the results, the tool cards and the edits on the board are t
 `onRequest(id, method, params)`:
 
 ```
+if method == "cursor/task": conn.Reply(id, {}); onCursorTask(params); return
 if method != "session/request_permission": conn.Reply(id, nil, {code:-32601, message:"method not found"}); return
 tc := params.toolCall
 cmd := tc.rawInput.command or title without backticks
@@ -1134,7 +1393,8 @@ if agent.TouchesAppDir(raw params, s.AppRoot, s.Home):
 rid := "p" + counter
 p.perms.Store(rid, {id, allowOpt, rejectOpt})
 name, input := normalizeTool(tc)
-p.events <- EvPermRequest{PermID: rid, ToolName: name, ToolID: tc.toolCallId, Input: input}
+sub := p.children[params.sessionId].tool or ""        // asked by a subagent; the card stays in the parent's thread
+p.events <- EvPermRequest{PermID: rid, ToolName: name, ToolID: tc.toolCallId, Input: input, Sub: sub}
 ```
 
 **Resolved (open problem 3):** Cursor's board commands are allowed for board chats without widening
@@ -1144,7 +1404,8 @@ command, no request arrives and nothing is needed.
 
 `Decide(rid, allow)`: `conn.Reply(jsonrpcID, {outcome:{outcome:"selected", optionId: allow ? allowOpt : rejectOpt}})`.
 
-`Close`: close stdin, kill after 3 s.
+`Close`: stop the context pollers (`p.ctx.stopPolling()`, `p.stopChildren()`), close stdin, kill
+after 3 s.
 
 Usage: ACP reports no tokens (research: every `session/prompt` result is only
 `{stopReason}`, and Cursor never sends `usage_update`). The context meter reads Cursor's own session store instead
@@ -1170,13 +1431,30 @@ func StorePath(home, sessionID string) string
 
 // ReadContextUsage reads the store with the sqlite3 CLI. Every failure is an error whose text is
 // shown in the meter; there is no fallback.
-func ReadContextUsage(sqlite, home, sessionID string) (ContextUsage, error)
+func ReadContextUsage(sqlite, home, sessionID string) (ContextUsage, error) // = readUsageAt(sqlite, StorePath(home, sessionID))
+func readUsageAt(sqlite, db string) (ContextUsage, error)                   // the reads and errors below, for any store
+
+// ChildStorePath is where Cursor keeps a subagent's store:
+// <config dir>/chats/<md5 hex of the real path of cwd>/<subagentSessionId>/store.db, where the
+// config dir is $CURSOR_CONFIG_DIR or <home>/.cursor, as for StorePath.
+func ChildStorePath(home, cwd, childID string) string
 
 type ctxPoller struct{ … } // a 1 s ticker goroutine; at most one read at a time (a tick is skipped while one runs)
 func (p *proc) readCtx()   // ReadContextUsage → p.events <- EvUsage{CtxIn: Used, CtxWindow: Max}
                            //                 or p.events <- EvUsage{CtxError: err text}
                            // during polling, an event is sent only when the result changed
+
+// A subagent's context meter: one poller per child.
+func (p *proc) pollChild(c *child)                      // reads every p.ctx.interval (1 s) until stopChild
+func (p *proc) stopChild(c *child)                      // ends the poller and waits for it; a second call does nothing
+func (p *proc) stopChildren()                           // stopChild for every child (process exit, Close)
+func (p *proc) readChildCtx(c *child, onlyChanged bool) // readUsageAt(ChildStorePath(…)) → EvSub{Sub: c.tool,
+                                                        // SubInfo{Tokens: Used, Window: Max}}; errors dropped
 ```
+
+A child's store appears about 1 s after the spawn and has no usage before its first model step, so
+failed child reads are silent: its meter just shows nothing yet. The last read runs after its final
+state (`onSubState`).
 
 The store is a SQLite database with two tables: `meta(key TEXT PRIMARY KEY, value TEXT)` and
 `blobs(id TEXT PRIMARY KEY, data BLOB)`. It is created by the session's first `session/prompt`.
@@ -1316,6 +1594,7 @@ type Manager struct {
 	Deps
 	mu    sync.Mutex
 	chats map[string]*Chat
+	now   func() time.Time // the clock subagents' times come from (time.Now; tests replace it); nowMs() = now().UnixMilli()
 }
 
 type Chat struct {
@@ -1327,6 +1606,8 @@ type Chat struct {
 	errText string
 	folderMissing bool
 	interrupted   bool // TurnActive was true at boot; the "Stopped" note is added when tr loads
+	subs          map[string]*sub   // sid → subagent; loaded with tr (see trOf)
+	subByTool     map[string]string // Agent/Task tool call id → sid
 }
 
 var (
@@ -1336,13 +1617,15 @@ var (
 	ErrFolderMissing = agent.ErrFolderMissing
 	ErrAppFolder     = errors.New("the app's own folder can't be used as a working folder")
 	ErrBusy          = errors.New("the agent is still working; wait for it to finish or stop it")
+	ErrNoSubagent    = errors.New("no such subagent") // subagents.go
 )
 
 func New(d Deps) *Manager
 func (m *Manager) Load() error
 func (m *Manager) Views() []model.ChatView
 func (m *Manager) View(id string) (model.ChatView, error)
-func (m *Manager) Items(id string) (int, []model.Item, error)
+func (m *Manager) Items(id string) (int, []model.Item, []model.Subagent, error) // + the subagents, by Started, then ID
+func (m *Manager) SubItems(chat, sid string) (int, []model.Item, error)          // a subagent's thread (subagents.go)
 func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView, error)
 func (m *Manager) Open(id string) error
 func (m *Manager) Send(id, text, context string) error
@@ -1370,6 +1653,8 @@ Emitting: every change calls
 ```
 emitChat(c):  bridge.Broadcast({type:"chat", chat: view(c)})
 emitItems(c, ups): if len(ups) > 0 { bridge.Broadcast({type:"chat_items", chat: id, version: tr.Version(), updates: ups}) }
+emitSub(c, sa):    bridge.Broadcast({type:"sub", chat: id, subagent: sa})               // subagents.go
+emitSubItems(c, sid, version, ups): if len(ups) > 0 { bridge.Broadcast({type:"sub_items", chat: id, sub: sid, version, updates: ups}) }
 save(c):      WriteJSONAtomic(ChatDir/chat.json, c.meta, 0600)
 ```
 
@@ -1389,6 +1674,7 @@ stops. Every place below that uses `c.tr` goes through one helper (with `c.mu` h
 trOf(c):
   if c.tr != nil → return c.tr
   c.tr, err = transcript.Load(ChatDir/items.jsonl); if err → return
+  loadSubs(c)                                                  // its subagents' subagent.json files (subagents.go)
   if c.interrupted:
      c.interrupted = false; c.meta.TurnActive = false
      c.tr.AddNote("error", "Stopped: the app was closed while the agent was working.")
@@ -1396,7 +1682,7 @@ trOf(c):
   return c.tr
 ```
 
-- Callers that load: `Items`, `Open`, `Send` (through `spawn`), `Configure` (folder fix), `Decide`,
+- Callers that load: `Items`, `SubItems`, `Open`, `Send` (through `spawn`), `Configure` (folder fix), `Decide`,
   and `pump` (always already loaded, since only `Send` spawns). A load error is returned to the
   caller (HTTP 500) and the chat shows status error with the message.
 - Callers that skip an unloaded chat: `Shutdown` touches `tr` only when it is non-nil, and `Stop`
@@ -1427,7 +1713,7 @@ meta := ChatMeta{ID: uuid(), Agent: a, Group: group (plain only), Board: board, 
                  Model: mc.Model, Effort: mc.Effort, Created: now}
 if board != "": meta.Token = 32 random hex chars
 if a == Claude: meta.SessionID = uuid()
-mkdir ChatDir; save; tr := empty transcript; register
+mkdir ChatDir; save; tr := empty transcript; subs, subByTool := empty maps; register
 emitChat
 return view                         // no agent yet: it starts on the first Send
 ```
@@ -1455,6 +1741,10 @@ c.gen++; c.ag = ag; go m.pump(c, ag, c.gen)
 for ev := range ag.Events():
   c.mu.Lock()
   if gen != c.gen { c.mu.Unlock(); continue }          // replaced by Stop
+  wasBusy := busy(c)
+  if ev.Sub != "" && ev.Kind != EvPermRequest:         // a subagent's own event leaves the parent alone
+     routeSub(c, ev); c.mu.Unlock(); send; continue    // subagents.go
+  if ev.Kind == EvPermRequest && ev.Sub != "": ev.Sub = c.subByTool[ev.Sub]   // the perm item names the sid ("" if unknown)
   switch ev.Kind:
    EvSession: c.meta.SessionID = ev.SessionID; save
    EvCatalog: Store.Update(s.Cursor = ev.Catalog); Bridge.Broadcast({type:"catalog", agent:"cursor", catalog})
@@ -1464,10 +1754,19 @@ for ev := range ag.Events():
               c.meta.TurnActive = false
    EvExit:    c.ag = nil
   ups := c.tr.Apply(ev)
+  if (ev.Kind == EvTurnEnd && ev.Aborted) || ev.Kind == EvExit: stopSubs(c)
+  if !wasBusy && busy(c) && status != approval && !c.meta.TurnActive: c.meta.TurnActive = true; save
   if ev.Kind in {EvTurnEnd, EvToolResult, EvToolDenied, EvExit, EvSession}: c.tr.Flush(false); save
   c.mu.Unlock()
   emitItems(c, ups); emitChat(c) when status, usage or meta changed
 ```
+
+- **Subagents and the turn.** An interrupt or cancel (an aborted `EvTurnEnd`) stops every subagent,
+  and background subagents die with the process (`EvExit`), so both call `stopSubs`. A normal turn
+  end leaves them alone: Claude's background subagents outlive the turn.
+- **Unrequested turns.** Claude starts a turn by itself when a background subagent finishes. When
+  the chat turns busy without a `Send` (and not for an approval), `TurnActive` is set, so crash
+  detection ("Stopped: the app was closed while the agent was working.") holds for such turns too.
 
 `Open(id)` (the client selected the chat) never starts an agent, so the user can read an old
 chat's history without one running. It only checks the folder: if the chat is locked, not
@@ -1539,6 +1838,7 @@ emit.
 lock
 for each undecided perm item: c.ag.Decide(requestID, false) (errors ignored); tr.Decided(requestID, false)
 if c.ag != nil { c.gen++; c.ag.Interrupt(); c.ag.Close(); c.ag = nil }
+stopSubs(c)                            // the process's own stop lines are dropped by pump (gen bumped)
 if busy: tr.AddNote("muted", "Stopped.")
 c.meta.TurnActive = false; tr.SetStatus(ready); tr.Flush(false); save
 unlock; emit
@@ -1546,12 +1846,15 @@ unlock; emit
 
 (Feature: archiving a chat stops its agent, and any approval it was waiting on is answered "no".)
 
+`Interrupt(id)` (the Stop button) is unchanged: the CLI reports its subagents' stops, and the
+aborted `EvTurnEnd` marks whatever it did not report.
+
 `Move(id, group)`: plain chats only (`Board == ""`, else error); group must exist; `meta.Group =
 group`; save; emit. Settings are unchanged (feature: *moving a chat doesn't change its settings*).
 
 `SetArchive(id, a)`: `meta.Archive = a`; save; emit.
 
-`Delete(id)`: `Stop(id)`; remove from the map; `os.RemoveAll(ChatDir(id))`; broadcast
+`Delete(id)`: `Stop(id)`; remove from the map; `os.RemoveAll(ChatDir(id))` (its `subagents/` too); broadcast
 `{type:"chat_removed", id}`. The agent's own session files (`~/.claude/projects/…`,
 `~/.cursor/acp-sessions/…`) belong to the agent CLIs and are left alone; the chat and its history in
 the app are gone.
@@ -1567,8 +1870,77 @@ the server check covers a stale client. To send now, the user stops the agent fi
 
 `GroupOf(meta)`: the board's group for board chats, else `meta.Group`.
 
-`Shutdown()`: for every chat: lock; if `tr != nil`: `tr.Flush(true)`; save (a running turn keeps `TurnActive =
-true`, so it shows as Stopped next time); `ag.Close()` without waiting.
+`Shutdown()`: for every chat: lock; if `tr != nil`: `tr.Flush(true)`, then `flushSub(c, s, true)` for
+every subagent (running ones are written as running; the next load marks them stopped); save (a
+running turn keeps `TurnActive = true`, so it shows as Stopped next time); `ag.Close()` without
+waiting.
+
+**Subagents: `internal/chats/subagents.go`.** A chat's subagents, each in
+`chats/<chat>/subagents/<sid>/` (section 3.5). The manager routes every event whose `Sub` is set
+here (except perm requests, which stay in the parent's thread).
+
+```go
+// sub is one subagent of a chat: its state and, once needed, its thread.
+type sub struct {
+	meta  model.Subagent
+	saved model.Subagent         // what subagent.json holds; meta != saved means a write is due
+	tr    *transcript.Transcript // nil until its thread is needed (an event, or a client's fetch)
+}
+```
+
+All of these run with `c.mu` held:
+
+```
+loadSubs(c):   (from trOf) c.subs, c.subByTool = {}; for each subagents/<sid>/subagent.json:
+                  skip (logged) when unreadable, when its id is not the folder name, or without a tool
+                  register; a subagent still running belongs to a process that is gone (restart,
+                  crash): Status = stopped, Ended = now; saveSub
+
+subTr(c, s):   s.tr, reading subagents/<sid>/items.jsonl (transcript.Load) the first time
+saveSub(c, s): if s.meta != s.saved: mkdir the folder (0700); WriteJSONAtomic(subagent.json, s.meta, 0600);
+               s.saved = s.meta (an error is logged, and the write is tried again next time)
+flushSub(c, s, all): s.tr.Flush(all) when loaded; saveSub
+
+owner(c, id):  the thread holding tool call id: c.tr if c.tr.HasTool(id), else a loaded subagent's
+               thread (a nested subagent; parent = that sid)
+
+routeSub(c, ev):                     // ev.Sub = the Agent/Task tool call that started the subagent
+  sid, known := c.subByTool[ev.Sub]
+  if !known:                         // its first event creates it
+     otr, parent, found := owner(c, ev.Sub); if !found → drop the event
+     sid = randHex(6); s := {meta: {ID: sid, Tool: ev.Sub, Parent: parent, Status: running, Started: now},
+                             tr: transcript.New(subagents/<sid>/items.jsonl)}
+     register; link: otr.LinkSubagent(ev.Sub, sid); otr.Flush(false);
+                     emitItems (parent == "") or emitSubItems(parent, …)
+  EvSub:         if patchSub(&s.meta, ev.SubInfo, now) (it just ended) → endSub; return
+  s not running: drop (late lines of an ended subagent)
+  anything else: ev.Sub = ""; ups := subTr(s).Apply(ev); emitSubItems(sid, …)
+                 EvToolResult / EvToolDenied → flushSub(false)
+  new → saveSub (its folder and subagent.json exist from its first event)
+  new or s.meta changed → emitSub
+
+patchSub(sa, p, now): every non-empty / non-zero field of p is set (ID → AgentID; Background when
+               non-nil). A final Status is taken only while sa is running (Ended = now), so the first
+               final status wins: a later "completed" never overwrites "stopped". Returns whether sa
+               just ended.
+endSub(c, s):  ups := subTr(s).CloseOpen(); s.meta.Last = tr.LastText(); emitSubItems;
+               flushSub(false); emitSub
+stopSubs(c):   every subagent still running (nested ones included: all are in c.subs):
+               Status = stopped, Ended = now; endSub
+```
+
+`SubItems(chat, sid)` locks the chat, loads it (`trOf`, which loads its subagents), and returns the
+subagent's thread (`subTr`, then `Snapshot`), or `ErrNoSubagent`.
+
+- **The sid** is the app's own, not a CLI id: Cursor's tool call ids hold a `\n`, and the CLI's own
+  id arrives only with `task_started` / `subagent_spawned`. `subagent.json` keeps both (`tool`,
+  `agentId`).
+- **Nested subagents** (a subagent that starts one) need no adapter code: `owner` finds the Agent
+  call in the outer subagent's thread, and `Parent` names that subagent.
+- **Frequent state** (tokens, progress) reaches clients at once (`sub`) and `subagent.json` at the
+  next write point.
+- An Agent/Task call the CLI never reported (the process ended first) gets no subagent. The client
+  shows it as running while the chat is busy, else stopped (section 5.7).
 
 `internal/chats/namer.go` (the prototype's `autoName`, unchanged in behaviour):
 
@@ -2012,7 +2384,8 @@ group id. A `group` field in a body is a group id or `"__ungrouped__"` for the u
 | `DELETE /api/boards/{id}` | | file and all its chats |
 | `POST /api/boards/{id}/reveal` | | `open -R` |
 | `POST /api/chats` | `{agent, group?, board?}` → `ChatView` | sticky defaults applied |
-| `GET /api/chats/{id}/items` | → `{version, items}` | |
+| `GET /api/chats/{id}/items` | → `{version, items, subagents}` | `subagents`: the chat's `Subagent`s by start, `[]` when none; their threads are not included |
+| `GET /api/chats/{id}/subagents/{sid}/items` | → `{version, items}` | a subagent's own thread; 404 for an unknown chat or sid (`ErrNoSubagent`) |
 | `POST /api/chats/{id}/open` | | checks the folder; never starts the agent |
 | `GET /api/chats/{id}` | → `ChatView` | |
 | `POST /api/chats/{id}/messages` | `{text, context}` | 409 archived, busy or folder missing |
@@ -2038,8 +2411,14 @@ Server → client SSE events (`{type, …}`):
 | `board` / `board_removed` | `board` / `id` |
 | `chat` / `chat_removed` | `chat` (a `ChatView`) / `id` |
 | `chat_items` | `chat`, `version`, `updates: [{index, item}]` |
+| `sub` | `chat`, `subagent` (the whole `Subagent`): after every change of its state |
+| `sub_items` | `chat`, `sub` (the sid), `version`, `updates: [{index, item}]`: after every change of its thread, as `chat_items` |
 | `defaults` | `defaults` |
 | `catalog` | `agent`, `catalog` |
+
+A `Subagent` is small (no items), so resending it whole is cheap even at Cursor's one context read
+per second. A thread change sends only the changed items. Clients apply `sub_items` only to threads
+they have loaded, the same way as chat items.
 
 `server.go`:
 
@@ -2056,7 +2435,7 @@ func (s *Server) Handler() http.Handler // builds the mux above, wrapped in guar
 ```
 
 Handlers are thin: decode (the prototype's `readJSON`), call `App` / `Chats` / `Boards`, encode
-(the prototype's `writeJSON`). Error mapping: `ErrNotFound` → 404; `ErrArchived`, `ErrLocked`,
+(the prototype's `writeJSON`). Error mapping: `ErrNotFound`, `ErrNoSubagent` → 404; `ErrArchived`, `ErrLocked`,
 `ErrFolderMissing`, `ErrBusy` → 409; validation → 400; others → 500.
 
 `guard.go`:
@@ -2225,6 +2604,8 @@ bin/AI Whiteboard.app/            built by scripts/build-app.sh (bin/ is ignored
 | `ChatView.tsx` | `ui.tsx` `Thread`/`EmptyThread`/`ItemView`/`ToolCard`/`PermCard`/`Rich`, `v2.tsx` `ChatHeader`/`NameInput` | items from the server |
 | `Composer.tsx` | `ui.tsx` `Composer`/`sendMessage`, `v2.tsx` `Toolbar`/`Picker`/`DirPicker`/`DirBrowser`/`ContextMeter` | catalogs from the server |
 | `Dialogs.tsx` | new | `ConfirmDialog`, `TakeoverScreen` |
+| `logic/subagents.ts` | new | subagents, DOM-free: detection, activity line, report, badge, model label, duration, list |
+| `Subagents.tsx` | new | the subagent row in the thread and the drawer on the right (5.7) |
 | `icons.tsx` | `ui.tsx` `AgentGlyph`; `v2.tsx`/`v4.tsx` icons | |
 
 ### 5.2 `api.ts` and `conn.ts`
@@ -2260,7 +2641,8 @@ export const api = {
   deleteBoard: (id: string) => call("DELETE", `/api/boards/${id}`),
   reveal: (id: string) => call("POST", `/api/boards/${id}/reveal`),
   newChat: (agent: AgentKind, where: { group: string } | { board: string }) => call<ChatView>("POST", "/api/chats", { agent, ...where }),
-  items: (id: string) => call<{ version: number; items: Item[] }>("GET", `/api/chats/${id}/items`),
+  items: (id: string) => call<{ version: number; items: Item[]; subagents?: Subagent[] }>("GET", `/api/chats/${id}/items`),
+  subItems: (chat: string, sid: string) => call<{ version: number; items: Item[] }>("GET", `/api/chats/${chat}/subagents/${sid}/items`),
   chat: (id: string) => call<ChatView>("GET", `/api/chats/${id}`),
   openChat: (id: string) => call("POST", `/api/chats/${id}/open`),
   send: (id: string, text: string, context: string) => call("POST", `/api/chats/${id}/messages`, { text, context }),
@@ -2297,6 +2679,8 @@ async function handle(m: any, es: EventSource) {
     case "chat": upsertChat(m.chat); return;
     case "chat_removed": removeChat(m.id); return;
     case "chat_items": applyItems(m.chat, m.version, m.updates); return;
+    case "sub": return applySub(m.chat, m.subagent);           // queued while the chat's items load
+    case "sub_items": applyItems(subKey(m.chat, m.sub), m.version, m.updates); return;
     case "defaults": setState({ defaults: m.defaults }); return;
     case "catalog": setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
   }
@@ -2314,12 +2698,24 @@ async function answer(m: any) {                                    // prototype 
 export function takeBack() { connect(); }                          // "Use here" button
 ```
 
-`applyItems(chat, version, updates)`: if the chat's items are loaded and `version > loaded.version`,
-set `items[u.index] = u.item` for each update and store `version`; otherwise ignore (the chat's items
-are fetched in full when it is opened).
+The thread code works on a **key**, not a chat id: a chat's thread is under its id, a subagent's
+under `subKey(chat, sid)` = `"<chat>/<sid>"` (chat ids hold no `/`). The same functions serve both.
 
-`loadItems(chat)`: `api.items(chat)` → store `{version, items}` (called by `select` when a chat is
-shown). Updates that arrive during the fetch with a higher version are applied after it.
+`applyItems(key, version, updates)`: if the thread is loaded and `version > loaded.version`, set
+`items[u.index] = u.item` for each update and store `version`; otherwise ignore (the thread is
+fetched in full when it is wanted).
+
+`loadThread(key, fetch)`: `fetch()` → store `{version, items}`. What arrives for the key during the
+fetch (item updates, and for a chat its `sub` messages) is queued in `pending` and applied after
+it, so an older response never overwrites a newer state.
+
+- `loadItems(chat) = loadThread(chat, () => api.items(chat))` (called by `select` when a chat is
+  shown). It also stores the response's `subagents` as `subs[chat]` (by id).
+- `loadSubItems(chat, sid) = loadThread(subKey(chat, sid), () => api.subItems(chat, sid))`: a
+  subagent's thread, fetched only when it is needed (its drawer is open, or it is running and its
+  row is on screen).
+- `applySub(chat, sa)`: `upsertSub`, or queued while the chat's items load.
+- `refreshChat(chat)` (after a stale 409) replaces the chat, its items and `subs[chat]`.
 
 ### 5.3 `store.ts`
 
@@ -2336,7 +2732,9 @@ export type State = {
   groups: Group[];
   boards: Record<string, Board>;
   chats: Record<string, ChatView>;
-  items: Record<string, { version: number; items: Item[] }>;
+  items: Record<string, { version: number; items: Item[] }>; // by chat id, and subagent threads by subKey(chat, sid)
+  subs: Record<string, Record<string, Subagent>>; // chat id → sid → the subagent's state (loaded with the chat's items)
+  subDrawer: { chat: string; sub: string } | null; // the subagent open in the drawer (chat id, sid)
   defaults: Defaults;
   catalogs: Partial<Record<AgentKind, Catalog>>;
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
@@ -2357,11 +2755,13 @@ Removed from the prototype state: `dir`, `cwd`, `pages`, `tabs`, `active`, `unse
 `activeChat`, `sidebar`, `variant`, `layout`, `sel4`.
 
 ```ts
-export function applySnapshot(s: Snapshot) // replaces groups, boards, chats, defaults, catalogs, home, …; drops sel entries that no longer exist
+export function applySnapshot(s: Snapshot) // replaces groups, boards, chats, defaults, catalogs, home, …; drops sel entries that no longer exist;
+                                           // clears items and subs (refetched when a chat is shown)
 export function upsertBoard(b: Board)
 export function removeBoard(id: string)      // clears sel.board, scenes, busyOn for it
 export function upsertChat(c: ChatView)
-export function removeChat(id: string)       // clears sel.chat and items
+export function removeChat(id: string)       // clears sel.chat, its items, its subagents and their threads, and the drawer on it
+export function upsertSub(chat: string, sa: Subagent) // sets a subagent's state (the `sub` message)
 export const lastChat: { get(board: string): string | undefined; set(board: string, chat: string): void } // localStorage "aiwb.lastChat"
 ```
 
@@ -2637,6 +3037,7 @@ export function select(sel: Sel) {
   const prev = getState().sel;
   if (prev.board && prev.board !== sel.board) void flush(prev.board);          // closing a board writes it
   setState({ sel }); safeSet("aiwb.sel", JSON.stringify(sel));
+  if (sel.chat !== prev.chat) setState({ subDrawer: null });                   // another chat closes the subagent drawer
   if (sel.board && getState().boards[sel.board]?.new) void api.seenBoard(sel.board);
   if (sel.board && sel.chat) lastChat.set(sel.board, sel.chat);
   if (sel.chat) { setState({ panel: true }); void api.openChat(sel.chat); void loadItems(sel.chat); focusComposer(); }
@@ -2662,6 +3063,7 @@ export async function newGroup(): Promise<string>              // the header ope
   - a plain chat selected → the centred column (max 780px): header, thread, composer.
   - nothing → `Home` (prototype, with *New chat* and *New whiteboard*).
 - Keys (from `VariantHost`): ⌘J toggles `panel`. ⌥V is gone.
+- `<SubagentDrawer />` (`Subagents.tsx`) is rendered last in `.app`, over whatever layout is shown.
 - **Resizable panes.** The sidebar and the board chat panel are each wrapped in `Pane`, a
   `<section>` whose width is `widths[pane]` and which ends in a `Resizer` (`Resizer.tsx`): an 8px
   handle straddling the pane's right border, `col-resize` cursor, an accent line on hover and while
@@ -2682,17 +3084,91 @@ export async function newGroup(): Promise<string>              // the header ope
 - `ChatHeader` (v2): glyph, name (click to rename), and the second line: `▭ board ·` for board
   chats, *Claude Code* or *Cursor*, the folder (`tildify`), the status. Actions: `×` for board
   chats (hides the panel).
-- `Thread` (prototype) renders `items[chat].items` with `ItemView`.
+- `Thread` (prototype) renders `items[chat].items` with `ItemView`. Its stick-to-bottom behaviour
+  is the exported hook `useStickToBottom(ref, follow, resetKey?)`, shared with the subagent drawer:
+  it keeps the scroller pinned to the bottom while the user has not scrolled up (a
+  `ResizeObserver` keeps it there as the scroller changes size) and returns the `onScroll` handler;
+  when `resetKey` changes it pins to the bottom if `follow` is set, else scrolls to the top.
+  `Thread` uses `useStickToBottom(ref, true, chatId)`.
+- `ItemView({ item, chat, sub? })` is exported; `sub` is the subagent whose thread it is in (the
+  drawer). There, a text item streams while the subagent runs (not by the chat's status), and tool
+  cards get `live = sub.status === "running"`. An Agent/Task tool item (`isSubagentTool`) renders
+  as a `SubagentRow` instead of a `ToolCard`, in the chat's thread and in a subagent's alike.
 - `EmptyThread` (prototype): plain chats "The same session you get in a terminal, started in
   <folder>"; board chats "Ask about or change <board>. Type @ to point at other boards." The mock
   notes are gone.
 - `ToolCard` (prototype) uses `logic/labels.ts`; its *Show* link calls `select` for the board it
-  names.
+  names. It takes `live` (default true): with `live` false (a subagent that ended), a call with no
+  result or denial was cut off, and shows "<verb> — stopped" with a ■ icon instead of a spinner.
 - `PermCard` (prototype) without the delete branch: "Allow <tool>?", the description, the command,
-  file or URL, and *Allow* / *Don't*.
+  file or URL, and *Allow* / *Don't*. A request a subagent raised (`item.subagent`) stays in the
+  parent's thread and is labelled above the title: "Asked by subagent · <its description>" (from
+  `subs[chat][item.subagent]`, else "Subagent"), class `.perm-sub`.
 - A `note` item renders as in the prototype.
 - User and text items render through `Markdown` (`Markdown.tsx`); a text item still being written
   (`!done` and status `writing`) gets `.streaming` and `streaming`.
+
+**Subagents: `Subagents.tsx` and `logic/subagents.ts`.** A subagent a chat starts shows in the
+thread as one compact row where its Agent/Task call is; its contents are only in the drawer.
+
+- `SubagentRow({ item, chat })`: the subagent is `subagentOf(item, subs[chat], isBusy(status))`.
+  The row (`.subagent`, `.on` while it is open in the drawer, a button: click, Enter or Space
+  toggles the drawer; an unlinked call opens nothing) shows:
+  - `SubMark`: a pulsing green dot while running, then ✓ completed, ! failed or ■ stopped;
+  - `SubName`: the description (else "Subagent"), a type badge only for a non-default type
+    (`subBadge`: none for general-purpose in any of its spellings), and a `background` tag;
+  - the summary line (`subLine`), in the sidebar's style: green while running with the live
+    activity (`subActivity`: "Running `ls`…" for its open tool call, else Claude's progress line,
+    else "Writing…" / "Thinking…"); after it ends "Done · <first line of the report>", "Stopped",
+    or the error (else "Failed") in red;
+  - `SubStats`: model · effort (`subModelLabel`), the tool count (`subToolCount`: its thread's tool
+    items, or Claude's own count when larger), the duration (`subDurationMs`, live every second
+    through `useNow` while running; `fmtDuration`: "42s", "3m 05s", "1h 02m"), and `SubMeter`
+    (tokens against the subagent model's window as a bar and %, ok / warn over 50% / danger over
+    80%; nothing before the first tokens).
+  - A running row loads its subagent's thread (`useSubThread` → `loadSubItems`), since its live
+    line comes from the latest items. A finished row needs only its state (`summary`, else `last`).
+- `subagentOf`: the linked `Subagent`, with the description, prompt and type from the tool input
+  when the subagent has none. An Agent/Task call the CLI never reported (the process ended first, or
+  a chat saved before subagents were tracked) is built from the call: completed / failed from its
+  result, else running while the chat is busy, else stopped.
+- `subModelLabel(id, agent, cat)`: the catalog label for an exact id; for Cursor, an id that is a
+  model id plus one of its efforts ("gpt-5.4-mini-medium") gives model and effort (effort is shown for
+  Cursor only: Claude reports no effort for subagents); for Claude, the model whose alias the id
+  contains ("claude-haiku-4-5-…" → Haiku 4.5); else the id as it is.
+- `subReport`: the agent's own `summary`, else the Agent call's result (a completed foreground
+  subagent), else its last text (from its thread, else `last`). `showReport`: only when it differs
+  from the last text.
+- **The drawer**, `SubagentDrawer()`, opened by `openSub` / `toggleSub` and closed by `closeSub`
+  (`subDrawer` in the store):
+  - An `<aside class="sub-drawer">` fixed to the window's right edge, `min(700px, 58vw)` wide, with
+    no backdrop: the chat stays readable and the composer usable. It covers the right side of the
+    thread, or of the canvas in a board layout (where the chat panel is on the left); it does not
+    push anything aside. It shows only while its chat is selected and, for a board chat, while the
+    panel is shown. Selecting another chat closes it (`select`), and so does removing the chat.
+  - Header: the status mark, name, type badge, background tag, ‹ n/N › (when the chat has more than
+    one subagent: steps through `subList`, every subagent of the chat, nested ones included, in the
+    order they started) and × (Close); then the activity line and the same stats as the row.
+  - Body: the prompt the parent wrote (`SubPrompt`, clamped to 8 lines with *Show all* when long),
+    then the subagent's own thread through `ItemView` with `sub` (its text, tool cards that expand
+    like the parent's, and nested subagents as rows that open in the drawer), "Loading…" until the
+    thread is fetched, "Starting…" while it runs with no items yet, and then the report
+    (`.sub-report`, Markdown) when `showReport`.
+  - Scrolling: `useStickToBottom(ref, running, sid)`: a running subagent is followed as it streams;
+    a finished one opens at the top.
+  - The Agent/Task call is looked up in the chat's thread, or in the outer subagent's thread for a
+    nested one (`parent`), for the description, prompt and result.
+  - **Esc** closes the drawer only: a capture-phase key handler takes Esc first, so one press never
+    both closes the drawer and stops the agent (the composer's Esc also stops a running chat; a
+    second Esc does that, as before). Open dialogs, point picking and the @-mention popup keep their
+    own Esc. Clicking the open row again, or ×, also closes it.
+- **Not built:** stopping one subagent on its own, and sending a foreground subagent to the
+  background. Stop stops every subagent (section 4.7). A Claude background subagent running while
+  the parent is Idle cannot be stopped from the UI, since the Stop button only shows while the
+  parent is busy.
+- `Composer.tsx` exports `fmtK` for the meter. `ChatView.tsx` and `Subagents.tsx` import each other;
+  the cycle is only between functions used at render time, which esbuild's ES module output
+  handles (as with `Sidebar.tsx` and `Composer.tsx`).
 
 `Markdown.tsx` — `Markdown({ text, user?, board?, agent?, streaming? })`:
 
@@ -2805,7 +3281,10 @@ Delete asks every time (feature).
 (opacity .55, italic tag), `.new-dot`, `.dialog*`, `.takeover`, `.side-pane`, `.resizer`,
 `body.resizing`, `.side-archived`, `.seg` (the theme switch), and `.md*` for messages' Markdown
 (headings, lists, task lists, quotes, tables, `.md-code` blocks with `.md-code-head` and
-`.md-copy`, the streaming caret) with `.hljs-*` code colours. A user bubble's Markdown keeps
+`.md-copy`, the streaming caret) with `.hljs-*` code colours, and the subagent classes: `.subagent`
+(the row; `.on` when open), `.sub-mark` / `.sub-dot` (the pulsing dot), `.sub-name`, `.sub-desc`,
+`.sub-type`, `.sub-bg`, `.sub-line` (`.live` green, `.error` red), `.sub-stats`, `.sub-meter` /
+`.sub-bar`, `.sub-drawer*`, `.sub-nav`, `.sub-prompt*`, `.sub-report` and `.perm-sub`. A user bubble's Markdown keeps
 `--user-text`; its inline code is a lighter chip on the bubble.
 
 **Themes.** Every colour in `styles.css` is a token on `:root` (`--bg`, `--panel`, `--line*`,
@@ -2942,7 +3421,26 @@ environment variable) that plays a scripted list of stdout lines and records std
   always present; none of the isolation flags.
 - `AppDirRules` for a root under home (`~/…`) and outside it (`//…`).
 - `translate` over the research's sample lines (claude-rpc report, section 2) gives the expected
-  events; a `result` gives the largest `modelUsage` context window; subagent lines give none.
+  events (its `system/init` line only sets the parent's model).
+- The chat's context window: after an `init` with model `claude-haiku-4-5`, a `result` whose
+  `modelUsage` has haiku at 200000 and `claude-sonnet-5` at 1000000 gives `CtxWindow` 200000 (the
+  parent model's entry). Without an `init`, two entries give 0 (unchanged) and one entry gives that
+  entry's window.
+- Subagent lines, in order: `task_started` `local_agent` → `EvSub{Sub, ID, Type, Description,
+  Prompt, Background: false, Status: running}`; `task_started` `local_bash` → nothing; an
+  `assistant` line with the parent id (model `claude-haiku-4-5-20251001`, usage 10/200/3000/2, text
+  and a `Read` tool_use) → `EvSub{Model, Tokens: 3210, Window: 200000}` (catalog fallback), then
+  `EvToolInput{Sub}` and `EvText{Sub}` in content order; a `user` tool_result with the parent id →
+  `EvToolResult{Sub}`; a `user` text prompt, a `stream_event` and a `system status` with the parent
+  id → nothing; `task_progress` → `EvSub{Progress, Tokens, ToolUses}`; `task_updated` `killed` →
+  stopped, `is_backgrounded` → `Background: true`, `failed` with an error → failed and `Error`;
+  `task_notification completed` → completed with its `Summary`; a `task_notification` for an unknown
+  task → nothing.
+- After a `result` whose `modelUsage` has the subagent's model at 150000, the next subagent
+  `assistant` line gives `Window: 150000`.
+- Resume: a `task_notification stopped` for an unknown task, then a `result` with `num_turns: 0` →
+  nothing; the next `result` (`num_turns: 1`) → `EvUsage` + `EvTurnEnd`. Without the orphan
+  notification, a `num_turns: 0` result still ends the turn.
 - Fake process: a `can_use_tool` for `touch ~/.ai-whiteboard/x` is denied without an
   `EvPermRequest`; a `can_use_tool` for `touch a.txt` yields `EvPermRequest`, and `Decide(true)`
   writes an allow `control_response` with `updatedInput`.

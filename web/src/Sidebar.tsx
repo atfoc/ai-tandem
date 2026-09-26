@@ -22,6 +22,7 @@ export function select(sel: Sel) {
   const prev = getState().sel;
   if (prev.board && prev.board !== sel.board) void flush(prev.board); // closing a board writes it
   setState({ sel }); safeSet("aiwb.sel", JSON.stringify(sel));
+  if (sel.chat !== prev.chat) setState({ subDrawer: null });
   if (sel.board && getState().boards[sel.board]?.new) void api.seenBoard(sel.board).catch(() => {});
   if (sel.board && sel.chat) lastChat.set(sel.board, sel.chat);
   if (sel.chat) {

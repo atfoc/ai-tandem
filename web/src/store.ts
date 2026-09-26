@@ -2,7 +2,7 @@
 // arrays) live outside it in board.ts `scenes`, because they change on every
 // stroke and nothing but the canvas renders from them.
 import { useSyncExternalStore } from "react";
-import type { AgentKind, Board, Catalog, ChatView, Defaults, Group, Item, Status } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, Defaults, Group, Item, Status, Subagent } from "./types.ts";
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
 import { forgetBoard } from "./board.ts";
@@ -24,7 +24,9 @@ export type State = {
   groups: Group[];
   boards: Record<string, Board>;
   chats: Record<string, ChatView>;
-  items: Record<string, { version: number; items: Item[] }>;
+  items: Record<string, { version: number; items: Item[] }>; // by chat id, and subagent threads by subKey(chat, sid)
+  subs: Record<string, Record<string, Subagent>>; // chat id → sid → the subagent's state (loaded with the chat's items)
+  subDrawer: { chat: string; sub: string } | null; // the subagent open in the drawer (chat id, sid)
   defaults: Defaults;
   catalogs: Partial<Record<AgentKind, Catalog>>;
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
@@ -58,7 +60,7 @@ const savedSel = (): Sel => {
 let state: State = {
   connected: false, role: "connecting",
   home: "", defaultCwd: "", dataDir: "",
-  groups: [], boards: {}, chats: {}, items: {},
+  groups: [], boards: {}, chats: {}, items: {}, subs: {}, subDrawer: null,
   defaults: { last: {}, groups: {} }, catalogs: {},
   sel: savedSel(), panel: true, widths: parseWidths(safeGet("aiwb.widths")), showArchived: safeGet("aiwb.archived") === "1",
   themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
@@ -101,6 +103,7 @@ export function applySnapshot(s: Snapshot) {
       defaults: s.defaults ?? { last: {}, groups: {} },
       home: s.home ?? "", defaultCwd: s.defaultCwd ?? "", dataDir: s.dataDir ?? "",
       items: {}, // refetched when a chat is shown; updates missed while away are not replayed
+      subs: {},  // with them
       sel, busyOn,
     };
   });
@@ -131,15 +134,22 @@ export function upsertChat(c: ChatView) {
   setState((s) => ({ chats: { ...s.chats, [c.id]: c } }));
 }
 
-/** Clears sel.chat and the chat's items. */
+/** Clears sel.chat, the chat's items, its subagents and their threads, and the drawer on it. */
 export function removeChat(id: string) {
   setState((s) => {
     const { [id]: _, ...chats } = s.chats;
-    const { [id]: __, ...items } = s.items;
+    const items = Object.fromEntries(Object.entries(s.items).filter(([k]) => k !== id && !k.startsWith(id + "/")));
+    const { [id]: __, ...subs } = s.subs;
     const sel = s.sel.chat === id ? { board: s.sel.board, chat: null } : s.sel;
     if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
-    return { chats, items, sel };
+    const subDrawer = s.subDrawer?.chat === id ? null : s.subDrawer;
+    return { chats, items, subs, sel, subDrawer };
   });
+}
+
+/** Sets a subagent's state (the `sub` message). */
+export function upsertSub(chat: string, sa: Subagent) {
+  setState((s) => ({ subs: { ...s.subs, [chat]: { ...s.subs[chat], [sa.id]: sa } } }));
 }
 
 /** The chat a board reopens with, per board, in localStorage. */

@@ -3,6 +3,7 @@ package cursor
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -46,10 +47,29 @@ func StorePath(home, sessionID string) string {
 	return filepath.Join(dir, "acp-sessions", sessionID, "store.db")
 }
 
+// ChildStorePath is where Cursor keeps a subagent's store:
+// <config dir>/chats/<md5 hex of the real path of cwd>/<subagentSessionId>/store.db, where the
+// config dir is $CURSOR_CONFIG_DIR or <home>/.cursor, as for StorePath.
+func ChildStorePath(home, cwd, childID string) string {
+	dir := os.Getenv("CURSOR_CONFIG_DIR")
+	if dir == "" {
+		dir = filepath.Join(home, ".cursor")
+	}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
+	}
+	sum := md5.Sum([]byte(cwd))
+	return filepath.Join(dir, "chats", hex.EncodeToString(sum[:]), childID, "store.db")
+}
+
 // ReadContextUsage reads the store with the sqlite3 CLI. Every failure is an error whose text is
 // shown in the meter; there is no fallback.
 func ReadContextUsage(sqlite, home, sessionID string) (ContextUsage, error) {
-	db := StorePath(home, sessionID)
+	return readUsageAt(sqlite, StorePath(home, sessionID))
+}
+
+// readUsageAt reads the store at db; see ReadContextUsage.
+func readUsageAt(sqlite, db string) (ContextUsage, error) {
 	if _, err := os.Stat(db); err != nil {
 		return ContextUsage{}, errors.New(errStoreNotFound)
 	}
@@ -164,6 +184,70 @@ func (p *proc) readCtxLocked(onlyChanged bool) {
 	}
 	p.ctx.last, p.ctx.hasLast = e, true
 	p.emit(e)
+}
+
+// pollChild reads a subagent's store every p.ctx.interval (1 s by default) until stopChild.
+// The store appears about 1 s after the spawn and has no usage before the first model step, so
+// failed reads are silent: the subagent's meter just shows nothing yet.
+func (p *proc) pollChild(c *child) {
+	iv := p.ctx.interval
+	if iv <= 0 {
+		iv = time.Second
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	p.mu.Lock()
+	c.stop, c.done = stop, done
+	p.mu.Unlock()
+	go func() {
+		defer close(done)
+		t := time.NewTicker(iv)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				p.readChildCtx(c, true)
+			}
+		}
+	}()
+}
+
+// stopChild ends a child's poller and waits for it; a second call does nothing.
+func (p *proc) stopChild(c *child) {
+	p.mu.Lock()
+	stop, done := c.stop, c.done
+	c.stop = nil
+	p.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+}
+
+func (p *proc) stopChildren() {
+	p.mu.Lock()
+	cs := make([]*child, 0, len(p.children))
+	for _, c := range p.children {
+		cs = append(cs, c)
+	}
+	p.mu.Unlock()
+	for _, c := range cs {
+		p.stopChild(c)
+	}
+}
+
+// readChildCtx reads a child's store once and sends its usage as EvSub{Tokens, Window}; errors are
+// dropped, and so is a result equal to the last one sent when onlyChanged is set.
+func (p *proc) readChildCtx(c *child, onlyChanged bool) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	u, err := readUsageAt(p.s.sqlite(), ChildStorePath(p.s.Home, p.o.Cwd, c.id))
+	if err != nil || (onlyChanged && u == c.last) {
+		return
+	}
+	c.last = u
+	p.emit(agent.Event{Kind: agent.EvSub, Sub: c.tool, SubInfo: &agent.SubInfo{Tokens: u.Used, Window: u.Max}})
 }
 
 // runSQLite runs one query as its own sqlite3 process (no -readonly: in WAL mode a read-only open

@@ -729,6 +729,132 @@ async function run() {
     await waitFor("the waiting text sends", async () => (await chatItems(ids.chat3)).some((i) => i.kind === "user" && i.text === later));
     await waitTurn(ids.chat3, b2);
   });
+
+  await step(18, "Claude subagents: two rows run then complete; the drawer; Esc closes it only; a reload keeps them", async () => {
+    ids.claudeSubs = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
+    await pickModel(page, CLAUDE_MODEL_LABEL);
+    await pickFolder(page, ids.claudeSubs, folders.B); // it has a README.md
+    const v0 = await chatView(ids.claudeSubs);
+    check(v0.agent === "claude" && v0.model === "haiku" && !v0.board, "a plain Claude chat on Haiku", v0);
+    const before = await send(page, ids.claudeSubs, "Use the Agent tool twice in parallel: one subagent runs `ls`, the other reads README.md. Then summarise.");
+
+    // Rows appear where the Agent calls are; each is watched from its first sight on.
+    const rows = page.locator(".thread .subagent");
+    const seenDot = [];
+    const marks = await waitFor("two subagent rows show ✓", async () => {
+      const now = await rows.evaluateAll((els) => els.map((e) => ({
+        dot: !!e.querySelector(".sub-mark .sub-dot"), mark: e.querySelector(".sub-mark")?.textContent ?? "", cls: e.className,
+        line: e.querySelector(".sub-line")?.textContent ?? "",
+      })));
+      now.forEach((r, i) => { if (r.dot) seenDot[i] = true; });
+      return now.length === 2 && now.every((r) => r.mark === "✓" && /st-completed/.test(r.cls)) ? now : saw(now);
+    }, { timeout: TURN_TIMEOUT, every: 100 });
+    check(await rows.count() === 2, "there are two subagent rows", await rows.count());
+    check(seenDot[0] && seenDot[1], "each row showed a pulsing dot while running", { seenDot, marks });
+    log(`    rows: ${marks.map((m) => m.line).join(" | ")}`);
+    await waitTurn(ids.claudeSubs, before, "the parent's turn ends");
+    const subs = (await get(`/api/chats/${ids.claudeSubs}/items`)).subagents;
+    check(subs.length === 2 && subs.every((s) => s.status === "completed"), "the server has two completed subagents", subs);
+
+    // The drawer.
+    const drawer = page.locator(".sub-drawer");
+    await rows.first().click();
+    await drawer.waitFor({ timeout: 10_000 });
+    check(/\bon\b/.test(await rows.first().getAttribute("class")), "the open row is highlighted", await rows.first().getAttribute("class"));
+    await waitFor("the drawer shows at least one tool card", async () => (await drawer.locator(".tool").count()) > 0 || saw(await drawer.innerText()), { timeout: 15_000 });
+    const prompt = (await drawer.locator(".sub-prompt .sub-prompt-text").innerText().catch(() => "")).trim();
+    check(prompt.length > 0 && subs.some((s) => s.prompt?.trim() === prompt), "the drawer shows the prompt the parent wrote", { prompt, subs: subs.map((s) => s.prompt) });
+    check((await drawer.locator(".sub-nav").innerText()).includes("1/2"), 'the drawer shows "1/2"', await drawer.locator(".sub-drawer-head").innerText());
+    await drawer.locator('.sub-nav button[title="Next subagent"]').click();
+    await waitFor('› shows "2/2"', async () => (await drawer.locator(".sub-nav").innerText()).includes("2/2") || saw(await drawer.locator(".sub-nav").innerText()), { timeout: 5000 });
+
+    // Esc closes the drawer only (the composer has the focus, where Esc would stop a running chat).
+    const notesBefore = await page.locator(".thread .note", { hasText: /^Stopped\.$/ }).count();
+    await page.locator(".composer .composer-input").focus();
+    await page.keyboard.press("Escape");
+    await waitFor("Esc closes the drawer", async () => (await drawer.count()) === 0, { timeout: 5000 });
+    await sleep(1000);
+    const st = (await chatView(ids.claudeSubs)).status;
+    check(st !== "stopped" && (BUSY.has(st) || st === "ready"), "the chat is not stopped (busy, or ready: Idle)", st);
+    const notesAfter = await page.locator(".thread .note", { hasText: /^Stopped\.$/ }).count();
+    check(notesAfter === notesBefore && !(await chatItems(ids.claudeSubs)).some((i) => i.kind === "note" && i.text === "Stopped."), 'no "Stopped." note', { notesBefore, notesAfter });
+
+    // A reload: completed rows; opening one fetches its thread from its own folder.
+    await page.reload();
+    await page.locator(".side").waitFor();
+    await waitFor("the chat is selected after the reload", async () => (await sel(page)).chat === ids.claudeSubs || saw(await sel(page)));
+    const after = await waitFor("two completed rows after the reload", async () => {
+      const now = await rows.evaluateAll((els) => els.map((e) => e.querySelector(".sub-mark")?.textContent ?? ""));
+      return now.length === 2 && now.every((m) => m === "✓") ? now : saw(now);
+    }, { timeout: 15_000 });
+    check(after.length === 2, "the rows show as completed after the reload", after);
+    const fetched = page.waitForResponse((r) => new RegExp(`/api/chats/${ids.claudeSubs}/subagents/[^/]+/items$`).test(new URL(r.url()).pathname), { timeout: 15_000 });
+    await rows.first().click();
+    const res = await fetched;
+    const sid = new URL(res.url()).pathname.split("/").at(-2);
+    const body = await res.json();
+    const folder = path.join(HOME, "chats", ids.claudeSubs, "subagents", sid);
+    check(res.ok() && fs.existsSync(path.join(folder, "subagent.json")) && fs.existsSync(path.join(folder, "items.jsonl")), "opening a row fetches its thread; it is kept in its own folder", { status: res.status(), folder, files: fs.existsSync(folder) ? fs.readdirSync(folder) : [] });
+    check(readJSON(path.join(folder, "subagent.json")).status === "completed", "its subagent.json says completed", readJSON(path.join(folder, "subagent.json")));
+    check((body.items ?? []).some((i) => i?.kind === "tool"), "the fetched thread has its tool calls", body.items);
+    await waitFor("the drawer shows the fetched thread", async () => (await drawer.locator(".tool").count()) > 0 || saw(await drawer.innerText().catch(() => "(no drawer)")), { timeout: 10_000 });
+    await page.keyboard.press("Escape");
+    await waitFor("the drawer closes", async () => (await drawer.count()) === 0, { timeout: 5000 });
+  });
+
+  await step(19, "Cursor subagents: meters while running; Stop stops both; still stopped after a reload", async () => {
+    ids.cursorSubs = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Cursor chat");
+    await waitFor("Cursor's model list is loaded", async () => (await page.locator('.composer button.tchip[title^="Model"]').count()) > 0, { timeout: 60_000 });
+    await pickModel(page, CURSOR_MODEL_LABEL);
+    const v0 = await chatView(ids.cursorSubs);
+    check(v0.agent === "cursor" && v0.model === "gpt-5.4-nano" && !v0.board, `a plain Cursor chat on ${CURSOR_MODEL_LABEL}`, v0);
+    await send(page, ids.cursorSubs, "Use the Task tool to start two subagents in parallel, each runs `sleep 20` then `ls`.");
+
+    const rows = page.locator(".thread .subagent");
+    const running = async () => rows.evaluateAll((els) => els.map((e) => ({
+      running: /st-running/.test(e.className) && !!e.querySelector(".sub-mark .sub-dot"),
+      meter: e.querySelector(".sub-meter")?.textContent ?? "", line: e.querySelector(".sub-line")?.textContent ?? "",
+    })));
+    await waitFor("two subagent rows show running", async () => {
+      const now = await running();
+      return now.length === 2 && now.every((r) => r.running) ? now : saw(now);
+    }, { timeout: 120_000, every: 200 });
+    // Each is linked (the agent reported it), so it is really running, not just an unlinked call.
+    await waitFor("the server has both subagents running", async () => {
+      const s = (await get(`/api/chats/${ids.cursorSubs}/items`)).subagents;
+      return s.length === 2 && s.every((x) => x.status === "running") ? s : saw(s);
+    }, { timeout: 15_000 });
+    const t0 = Date.now();
+    const meters = await waitFor("each running row's meter shows a token count", async () => {
+      const now = await running();
+      if (!now.every((r) => r.running)) throw new Fail("the rows are still running while the meters are read", now);
+      return now.length === 2 && now.every((r) => /\d/.test(r.meter)) ? now : saw(now);
+    }, { timeout: 12_000, every: 200 });
+    log(`    meters after ${((Date.now() - t0) / 1000).toFixed(1)} s: ${meters.map((m) => m.meter).join(" | ")}`);
+
+    await page.locator(".composer button.send.stop").click();
+    const stopped = async () => rows.evaluateAll((els) => els.map((e) => ({
+      mark: e.querySelector(".sub-mark")?.textContent ?? "", cls: e.className, line: e.querySelector(".sub-line")?.textContent ?? "",
+    })));
+    const allStopped = (now) => now.length === 2 && now.every((r) => r.mark === "■" && /st-stopped/.test(r.cls) && r.line === "Stopped");
+    const s1 = await waitFor('both rows show ■ and "Stopped"', async () => { const now = await stopped(); return allStopped(now) ? now : saw(now); }, { timeout: 30_000 });
+    check(allStopped(s1), 'both rows are stopped', s1);
+    await page.locator(".thread .note", { hasText: /^Stopped\.$/ }).first().waitFor({ timeout: 15_000 }).catch(() => {});
+    check(await page.locator(".thread .note", { hasText: /^Stopped\.$/ }).count() > 0, 'the thread gets "Stopped."', await page.locator(".thread").innerText());
+    const subs = (await get(`/api/chats/${ids.cursorSubs}/items`)).subagents;
+    check(subs.length === 2 && subs.every((s) => s.status === "stopped"), "the server has both subagents stopped", subs);
+    await waitFor("the chat is no longer busy", async () => !BUSY.has((await chatView(ids.cursorSubs)).status), { timeout: 30_000 });
+
+    await page.reload();
+    await page.locator(".side").waitFor();
+    await waitFor("the chat is selected after the reload", async () => (await sel(page)).chat === ids.cursorSubs || saw(await sel(page)));
+    const s2 = await waitFor("both rows are still stopped after the reload", async () => { const now = await stopped(); return allStopped(now) ? now : saw(now); }, { timeout: 15_000 });
+    check(allStopped(s2), "both rows show ■ and Stopped after the reload", s2);
+    for (const s of subs) {
+      const f = path.join(HOME, "chats", ids.cursorSubs, "subagents", s.id, "subagent.json");
+      check(fs.existsSync(f) && readJSON(f).status === "stopped", `subagent ${s.id} is saved as stopped in its folder`, fs.existsSync(f) ? readJSON(f) : "(no subagent.json)");
+    }
+  });
 }
 
 // ---------------------------------------------------------------- main

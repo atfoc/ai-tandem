@@ -70,7 +70,7 @@ func ok(w http.ResponseWriter) { writeJSON(w, map[string]any{"ok": true}) }
 func statusOf(err error, fallback int) int {
 	switch {
 	case errors.Is(err, boards.ErrNotFound), errors.Is(err, chats.ErrNotFound),
-		errors.Is(err, app.ErrGroupNotFound):
+		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, app.ErrGroupNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
@@ -373,7 +373,21 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, cv)
 	})
 	mux.HandleFunc("GET /api/chats/{id}/items", func(w http.ResponseWriter, r *http.Request) {
-		v, items, err := a.Chats.Items(r.PathValue("id"))
+		v, items, subs, err := a.Chats.Items(r.PathValue("id"))
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		if items == nil {
+			items = []model.Item{}
+		}
+		if subs == nil {
+			subs = []model.Subagent{}
+		}
+		writeJSON(w, map[string]any{"version": v, "items": items, "subagents": subs})
+	})
+	mux.HandleFunc("GET /api/chats/{id}/subagents/{sid}/items", func(w http.ResponseWriter, r *http.Request) {
+		v, items, err := a.Chats.SubItems(r.PathValue("id"), r.PathValue("sid"))
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return

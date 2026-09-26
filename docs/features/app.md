@@ -246,6 +246,41 @@ Boards default to a clean, technical look instead of Excalidraw's hand-drawn one
   - While the agent writes, the text is formatted as it arrives, with the caret after the last
     line; a long reply stays smooth.
 
+## Subagents
+
+Subagents that a Claude or Cursor chat starts show in the parent thread as **one compact row**
+where the parent's Agent/Task call is. The row never shows what the subagent did, only a summary.
+Everything is streamed live from the agent, kept with the chat (each subagent on its own), and
+still there after a reload.
+
+- **The row** shows a status mark (a pulsing green dot while it runs, then ✓ completed, ! failed or
+  ■ stopped), its name (the description the parent gave it), a type badge only for a non-default
+  agent type, and a `background` tag for a background one. Under the name is a one-line summary
+  in the sidebar's style. While the subagent runs the line is green and shows what it is doing
+  ("Running `ls`…", "Thinking…", or Claude's progress line). After it ends the line reads
+  "Done · <first line of its report>", "Stopped", or the error in red. On the right: model ·
+  effort (effort for Cursor only), the tool count, a live duration, and a context meter (tokens
+  against the subagent model's window, as a bar and %).
+- **The drawer.** Clicking the row opens a drawer on the right, `min(700px, 58vw)` wide, with no
+  backdrop. It covers the right side of the thread, or of the canvas in a board layout, without
+  pushing anything aside, so the chat stays readable and the composer usable. The open row is
+  highlighted. Clicking the row again, the **×** or **Esc** closes it. Esc closes only the drawer;
+  a second Esc stops the chat as usual. The header repeats the row's mark, name, badges, activity
+  line and stats, with ‹ n/N › to step through the chat's subagents. The body shows the prompt
+  the parent wrote, then the subagent's own thread (its text, and tool cards that expand like the
+  parent's), then its report when that differs from its last text. A running subagent is followed
+  as it streams. A finished one opens at the top. Selecting another chat closes the drawer.
+- **Approvals** a subagent asks for stay in the parent thread, labelled "Asked by subagent ·
+  <name>".
+- **How the agents behave.** Claude may start subagents in the background without being asked.
+  The parent then goes Idle while they run, and later starts a follow-up turn by itself. Cursor
+  keeps the parent's turn running until its subagents finish.
+- **Stop stops every subagent.** The app marks subagents stopped itself whenever it can't rely on
+  the agent to report it: Stop, an aborted turn, the agent's process ending, and a server restart.
+  A single subagent can't be stopped on its own, and a foreground subagent can't be sent to the
+  background. A Claude background subagent running while the parent is Idle can't be stopped from
+  the app, because the Stop button only shows while the parent is busy.
+
 ## Sticky defaults
 
 When the user changes the folder, model or effort in a chat's composer, that becomes the default

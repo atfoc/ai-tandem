@@ -1,6 +1,6 @@
 // The server's HTTP API (section 4.12). Every call carries this tab's client id,
 // so the server can tell the active client from a stale one.
-import type { AgentKind, Board, Catalog, ChatView, Defaults, Group, Item } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, Defaults, Group, Item, Subagent } from "./types.ts";
 
 /** GET /api/state and the `snapshot` event. */
 export type Snapshot = {
@@ -58,7 +58,8 @@ export const api = {
   deleteBoard: (id: string) => call("DELETE", `/api/boards/${id}`),
   reveal: (id: string) => call("POST", `/api/boards/${id}/reveal`),
   newChat: (agent: AgentKind, where: { group: string } | { board: string }) => call<ChatView>("POST", "/api/chats", { agent, ...where }),
-  items: (id: string) => call<{ version: number; items: Item[] }>("GET", `/api/chats/${id}/items`),
+  items: (id: string) => call<{ version: number; items: Item[]; subagents?: Subagent[] }>("GET", `/api/chats/${id}/items`),
+  subItems: (chat: string, sid: string) => call<{ version: number; items: Item[] }>("GET", `/api/chats/${chat}/subagents/${sid}/items`),
   chat: (id: string) => call<ChatView>("GET", `/api/chats/${id}`),
   openChat: (id: string) => call("POST", `/api/chats/${id}/open`),
   send: (id: string, text: string, context: string) => call("POST", `/api/chats/${id}/messages`, { text, context }),

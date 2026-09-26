@@ -1,14 +1,16 @@
 // A chat's header and thread. Items come from the server (chat_items); this
 // file only renders them.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject, type UIEvent } from "react";
 import { useStore, setState, isBusy, chatTitle, boardName } from "./store.ts";
 import { api } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
 import { toolVerb, toolDone, statusText } from "./logic/labels.ts";
+import { isSubagentTool } from "./logic/subagents.ts";
 import { Markdown } from "./Markdown.tsx";
+import { SubagentRow } from "./Subagents.tsx";
 import { AgentGlyph, BoardIcon, Pencil, agentName } from "./icons.tsx";
-import type { ChatView, Item } from "./types.ts";
+import type { ChatView, Item, Subagent } from "./types.ts";
 
 const EMPTY: Item[] = [];
 const short = (n: string) => n.replace(/^mcp__board__/, "");
@@ -64,28 +66,43 @@ export function ChatHeader({ chatId }: { chatId: string }) {
 
 // ---- thread
 
+/** Keeps a scroller pinned to the bottom while the user has not scrolled up. When resetKey
+ *  changes, it pins to the bottom if follow is set, else scrolls to the top. Returns the onScroll
+ *  handler. */
+export function useStickToBottom(ref: RefObject<HTMLDivElement | null>, follow: boolean, resetKey?: string) {
+  const stick = useRef(follow);
+  const pinnedAt = useRef(-1); // the scrollTop set by pin, whose scroll event is not the user's
+  const pin = (el: HTMLDivElement) => { el.scrollTop = el.scrollHeight; pinnedAt.current = el.scrollTop; };
+  useLayoutEffect(() => {
+    const el = ref.current; if (!el) return;
+    stick.current = follow;
+    if (follow) pin(el); else el.scrollTop = 0;
+  }, [resetKey]);
+  useLayoutEffect(() => { if (stick.current && ref.current) pin(ref.current); });
+  // The scroller gets shorter when the composer grows (or the panel is resized): stay at the bottom.
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const ro = new ResizeObserver(() => { if (stick.current) pin(el); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref.current]);
+  return (e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollTop === pinnedAt.current) { pinnedAt.current = -1; return; }
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+}
+
 export function Thread({ chatId }: { chatId: string }) {
   const c = useStore((s) => s.chats[chatId]);
   const loaded = useStore((s) => s.items[chatId]);
   const items = loaded?.items ?? EMPTY;
   const ref = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  const pinnedAt = useRef(-1); // the scrollTop set by pin, whose scroll event is not the user's
-  const pin = (el: HTMLDivElement) => { el.scrollTop = el.scrollHeight; pinnedAt.current = el.scrollTop; };
-  useLayoutEffect(() => { if (stick.current && ref.current) pin(ref.current); });
-  // The thread gets shorter when the composer grows (or the panel is resized): stay at the bottom.
-  const shown = !!c;
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => { if (stick.current) pin(el); });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [shown]);
+  const onScroll = useStickToBottom(ref, true, chatId);
   if (!c) return null;
   const busy = isBusy(c.status);
   return (
-    <div className="thread" ref={ref} onScroll={(e) => { const el = e.currentTarget; if (el.scrollTop === pinnedAt.current) { pinnedAt.current = -1; return; } stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+    <div className="thread" ref={ref} onScroll={onScroll}>
       {loaded && !items.length && <EmptyThread c={c} />}
       {items.map((it, i) => it ? <ItemView key={i} item={it} chat={c} /> : null)}
       {busy && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
@@ -117,11 +134,13 @@ function EmptyThread({ c }: { c: ChatView }) {
   );
 }
 
-function ItemView({ item, chat }: { item: Item; chat: ChatView }) {
+/** One item of a thread: the chat's, or a subagent's (sub) in the drawer. */
+export function ItemView({ item, chat, sub }: { item: Item; chat: ChatView; sub?: Subagent }) {
+  const live = sub ? sub.status === "running" : true;
   switch (item.kind) {
     case "user": return <div className="msg user"><Markdown text={item.text ?? ""} user board={chat.board} agent={chat.agent} /></div>;
     case "text": {
-      const streaming = !item.done && chat.status === "writing";
+      const streaming = !item.done && (sub ? live : chat.status === "writing");
       return (
         <div className={`msg assistant${streaming ? " streaming" : ""}`}>
           <Markdown text={item.text ?? ""} board={chat.board} agent={chat.agent} streaming={streaming} />
@@ -129,7 +148,7 @@ function ItemView({ item, chat }: { item: Item; chat: ChatView }) {
         </div>
       );
     }
-    case "tool": return <ToolCard item={item} chat={chat} />;
+    case "tool": return isSubagentTool(item) ? <SubagentRow item={item} chat={chat} /> : <ToolCard item={item} chat={chat} live={live} />;
     case "perm": return <PermCard item={item} chat={chat} />;
     case "note": return item.text ? <div className={`note ${item.tone ?? ""}`}>{item.text}</div> : null;
   }
@@ -140,7 +159,8 @@ function ItemView({ item, chat }: { item: Item; chat: ChatView }) {
 
 const safeParse = (s?: string) => { try { return s ? JSON.parse(s) : {}; } catch { return s ? { "…": s } : {}; } };
 
-function ToolCard({ item, chat }: { item: Item; chat: ChatView }) {
+/** A tool call. live is false in a subagent's thread once it ended: a call with no result was cut. */
+function ToolCard({ item, chat, live = true }: { item: Item; chat: ChatView; live?: boolean }) {
   const [open, setOpen] = useState(false);
   const target = useStore((s) => {
     const id = (item.input as any)?.board;
@@ -150,8 +170,10 @@ function ToolCard({ item, chat }: { item: Item; chat: ChatView }) {
   });
   const name = item.name ?? "";
   const input: any = item.input ?? safeParse(item.partial);
-  const running = item.result === undefined && !item.denied;
+  const running = live && item.result === undefined && !item.denied;
+  const cut = !live && item.result === undefined && !item.denied; // its subagent ended mid-call
   const label = item.denied ? `${toolVerb(name, input, boardName)} — denied`
+    : cut ? `${toolVerb(name, input, boardName)} — stopped`
     : running ? toolVerb(name, input, boardName) + "…"
     : toolDone(name, item.input, item.result, boardName);
   const show = () => {
@@ -161,7 +183,7 @@ function ToolCard({ item, chat }: { item: Item; chat: ChatView }) {
   return (
     <div className={`tool ${running ? "running" : ""} ${item.isError || item.denied ? "err" : ""}`}>
       <div className="tool-row" onClick={() => setOpen(!open)}>
-        <span className="tool-icon">{running ? <span className="spin" /> : item.isError || item.denied ? "!" : "✓"}</span>
+        <span className="tool-icon">{running ? <span className="spin" /> : cut ? "■" : item.isError || item.denied ? "!" : "✓"}</span>
         <span className="tool-label">{label}</span>
         {target && !running && <button className="link" onClick={(e) => { e.stopPropagation(); show(); }}>Show</button>}
         <span className="tool-chev">{open ? "▴" : "▾"}</span>
@@ -179,11 +201,13 @@ function ToolCard({ item, chat }: { item: Item; chat: ChatView }) {
 
 function PermCard({ item, chat }: { item: Item; chat: ChatView }) {
   const [err, setErr] = useState("");
+  const asker = useStore((s) => (item.subagent ? s.subs[chat.id]?.[item.subagent] : undefined));
   const input: any = item.input ?? {};
   const decide = (allow: boolean) => api.decide(chat.id, item.requestId ?? "", allow).then(() => setErr(""), (e) => setErr(e.message));
   const what = input.command ?? input.file_path ?? input.url ?? input.notebook_path ?? null;
   return (
     <div className={`perm ${item.decided || "pending"}`}>
+      {item.subagent && <div className="perm-sub">Asked by subagent · {asker?.description || "Subagent"}</div>}
       <div className="perm-title">Allow {short(item.toolName ?? "")}?</div>
       {input.description && <div className="perm-reason">{String(input.description)}</div>}
       {what && <pre className="perm-what">{String(what)}</pre>}

@@ -1,6 +1,7 @@
 package cursor
 
 import (
+	"crypto/md5"
 	"encoding/hex"
 	"os"
 	"os/exec"
@@ -62,7 +63,12 @@ func needSQLite(t *testing.T) {
 // makeStore creates <home>/.cursor/acp-sessions/<id>/store.db and runs sql in it.
 func makeStore(t *testing.T, home, sql string) {
 	t.Helper()
-	db := StorePath(home, testSessionID)
+	makeStoreAt(t, StorePath(home, testSessionID), sql)
+}
+
+// makeStoreAt creates a store at db and runs sql in it.
+func makeStoreAt(t *testing.T, db, sql string) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +173,42 @@ func TestStorePath(t *testing.T) {
 	}
 	t.Setenv("CURSOR_CONFIG_DIR", "/cfg/cursor")
 	if got, want := StorePath("/home/u", "abc"), "/cfg/cursor/acp-sessions/abc/store.db"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestChildStorePath(t *testing.T) {
+	hash := func(s string) string { sum := md5.Sum([]byte(s)); return hex.EncodeToString(sum[:]) }
+
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	cwd := "/no/such/project"
+	if got, want := ChildStorePath("/home/u", cwd, "S1"), "/home/u/.cursor/chats/"+hash(cwd)+"/S1/store.db"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	t.Setenv("CURSOR_CONFIG_DIR", "/cfg/cursor")
+	if got, want := ChildStorePath("/home/u", cwd, "S1"), "/cfg/cursor/chats/"+hash(cwd)+"/S1/store.db"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+
+	// A symlinked cwd: the hash is of the resolved path.
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(real) // the temp dir itself may sit behind a symlink
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash(resolved) == hash(link) {
+		t.Fatal("test setup: link and target hash the same")
+	}
+	if got, want := ChildStorePath("/home/u", link, "S2"), "/home/u/.cursor/chats/"+hash(resolved)+"/S2/store.db"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }

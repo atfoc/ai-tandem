@@ -134,4 +134,30 @@ export type Item = {
   toolName?: string;
   decided?: "" | "allow" | "deny";
   tone?: "muted" | "error";
+  subagent?: string;
+};
+
+export type SubStatus = "running" | "completed" | "failed" | "stopped";
+
+/** model.Subagent: a subagent's state (subagent.json). Its thread is loaded apart (§7.3). */
+export type Subagent = {
+  id: string;       // the app's sid
+  tool: string;     // the Agent/Task tool call that started it
+  parent?: string;  // the sid whose thread holds that call
+  agentId?: string;
+  type?: string;
+  description?: string;
+  prompt?: string;
+  model?: string;
+  background?: boolean;
+  status: SubStatus;
+  error?: string;
+  summary?: string;
+  progress?: string;
+  last?: string;
+  tokens?: number;
+  window?: number;
+  toolUses?: number;
+  started?: number; // unix ms
+  ended?: number;
 };

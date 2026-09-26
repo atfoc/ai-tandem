@@ -134,6 +134,15 @@ func (f *fake) stdinLines(t *testing.T, a agent.Agent) []map[string]any {
 	return out
 }
 
+// skipInit checks that the first stdin line is the initialize control request and drops it.
+func skipInit(t *testing.T, lines []map[string]any) []map[string]any {
+	t.Helper()
+	if len(lines) == 0 || lines[0]["type"] != "control_request" || obj(lines[0]["request"])["subtype"] != "initialize" {
+		t.Fatalf("stdin = %v, want the initialize request first", lines)
+	}
+	return lines[1:]
+}
+
 func response(m map[string]any) map[string]any {
 	r := obj(obj(m["response"])["response"])
 	return r
@@ -165,7 +174,7 @@ func TestPermissionFlow(t *testing.T) {
 	if err := a.Decide("r1", true); err == nil {
 		t.Error("Decide on the guarded request did not fail")
 	}
-	lines := f.stdinLines(t, a)
+	lines := skipInit(t, f.stdinLines(t, a))
 	if len(lines) != 2 {
 		t.Fatalf("stdin = %v, want 2 lines", lines)
 	}
@@ -216,7 +225,7 @@ func TestDenyAndUnsupportedControl(t *testing.T) {
 	if err := a.Decide("r1", false); err != nil {
 		t.Fatal(err)
 	}
-	lines := f.stdinLines(t, a)
+	lines := skipInit(t, f.stdinLines(t, a))
 	if len(lines) != 2 {
 		t.Fatalf("stdin = %v", lines)
 	}
@@ -255,7 +264,7 @@ func TestStreamSendInterrupt(t *testing.T) {
 	if err := a.Interrupt(); err != nil {
 		t.Fatal(err)
 	}
-	lines := f.stdinLines(t, a)
+	lines := skipInit(t, f.stdinLines(t, a))
 	if len(lines) != 2 {
 		t.Fatalf("stdin = %v", lines)
 	}
@@ -267,6 +276,53 @@ func TestStreamSendInterrupt(t *testing.T) {
 	if lines[1]["type"] != "control_request" || obj(lines[1]["request"])["subtype"] != "interrupt" ||
 		!strings.HasPrefix(str(lines[1]["request_id"]), "int_") {
 		t.Errorf("interrupt line %v", lines[1])
+	}
+}
+
+func TestSpawnSendsInitialize(t *testing.T) {
+	f := newFake(t)
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := f.stdinLines(t, a)
+	if len(lines) != 1 {
+		t.Fatalf("stdin = %v, want the initialize request only", lines)
+	}
+	id := str(lines[0]["request_id"])
+	if !strings.HasPrefix(id, "init_") {
+		t.Errorf("request_id %q, want init_…", id)
+	}
+	b, _ := json.Marshal(lines[0])
+	want := `{"type":"control_request","request_id":"` + id + `","request":{"subtype":"initialize","agentProgressSummaries":true,"forwardSubagentText":true}}`
+	if !jsonEqual(b, json.RawMessage(want)) {
+		t.Errorf("initialize line %s\nwant %s", b, want)
+	}
+}
+
+func TestSubagentPermission(t *testing.T) {
+	f := newFake(t,
+		`{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_T","description":"Look around","task_type":"local_agent","subagent_type":"general-purpose","prompt":"ls"}`,
+		`{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_S","agent_id":"a1"}}`,
+		`{"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"},"tool_use_id":"toolu_P"}}`,
+	)
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvSub || ev.Sub != "toolu_T" {
+		t.Fatalf("event %+v, want EvSub toolu_T", ev)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvPermRequest || ev.PermID != "r1" || ev.Sub != "toolu_T" {
+		t.Fatalf("event %+v, want EvPermRequest r1 with Sub toolu_T", ev)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvPermRequest || ev.PermID != "r2" || ev.Sub != "" {
+		t.Fatalf("event %+v, want EvPermRequest r2 with no Sub", ev)
+	}
+	a.Decide("r1", false)
+	a.Decide("r2", false)
+	if lines := skipInit(t, f.stdinLines(t, a)); len(lines) != 2 {
+		t.Errorf("stdin = %v, want 2 answers", lines)
 	}
 }
 

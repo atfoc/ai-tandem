@@ -61,6 +61,7 @@ const (
 	EvUsage                           // CtxIn/CtxOut/CtxWindow (any may be 0 = unchanged), or CtxError
 	EvTurnEnd                         // Aborted, Error
 	EvExit                            // ExitErr
+	EvSub                             // SubInfo: a subagent appeared or changed (a patch; zero fields are unchanged)
 )
 
 type Event struct {
@@ -80,4 +81,28 @@ type Event struct {
 	Aborted                  bool
 	Error                    string
 	ExitErr                  string
+	// Sub is the parent's tool call id (Claude's Agent tool_use, Cursor's Task tool_call) of the
+	// subagent this event belongs to. EvText*, EvTool*, EvThinking and EvSub with Sub set belong to
+	// that subagent's own thread; EvPermRequest with Sub set was asked by it and stays in the
+	// parent's thread.
+	Sub     string
+	SubInfo *SubInfo // EvSub
+}
+
+// SubInfo is a patch of a subagent's state. Empty strings, zero numbers and a nil Background leave
+// a field unchanged. A Status is applied only while the subagent is running.
+type SubInfo struct {
+	ID          string
+	Type        string
+	Description string
+	Prompt      string
+	Model       string
+	Background  *bool
+	Status      model.SubStatus
+	Error       string
+	Summary     string
+	Progress    string
+	Tokens      int
+	Window      int
+	ToolUses    int
 }

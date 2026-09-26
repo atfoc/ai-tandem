@@ -331,7 +331,7 @@ function DirBrowser({ start, onPick }: { start: string; onPick: (dir: string) =>
 
 // ---- context usage
 
-const fmtK = (n: number) => n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${+(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
+export const fmtK = (n: number) => n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${+(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
 
 function ContextMeter({ c, cat }: { c: ChatView; cat?: Catalog }) {
   const u = c.usage ?? { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };

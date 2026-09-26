@@ -207,4 +207,41 @@ type Item struct {
 	Decided   string `json:"decided,omitempty"` // "", "allow", "deny"
 	// note
 	Tone string `json:"tone,omitempty"` // "muted" | "error"
+	// subagents
+	Subagent string `json:"subagent,omitempty"` // tool (Agent/Task): the sid it started; perm: the sid that asked
+}
+
+// SubStatus is a subagent's lifecycle state. Every state but running is final.
+type SubStatus string
+
+const (
+	SubRunning   SubStatus = "running"
+	SubCompleted SubStatus = "completed"
+	SubFailed    SubStatus = "failed"
+	SubStopped   SubStatus = "stopped"
+)
+
+// Subagent is a subagent's state: chats/<chat>/subagents/<ID>/subagent.json. Its own thread is the
+// items.jsonl next to it, in the same format as a chat's. It is not an Item: the parent's thread
+// only links it from the Agent/Task tool item that started it.
+type Subagent struct {
+	ID          string    `json:"id"`                    // the app's id, the folder's name
+	Tool        string    `json:"tool"`                  // the Agent/Task tool call that started it
+	Parent      string    `json:"parent,omitempty"`      // the subagent whose thread holds that call; "" = the chat's
+	AgentID     string    `json:"agentId,omitempty"`     // Claude task_id, Cursor subagentSessionId
+	Type        string    `json:"type,omitempty"`        // as reported: "general-purpose", "generalPurpose", "Explore", a custom name
+	Description string    `json:"description,omitempty"` // the name the parent gave it
+	Prompt      string    `json:"prompt,omitempty"`      // what the parent asked it
+	Model       string    `json:"model,omitempty"`       // as reported: "claude-haiku-4-5-20251001", "gpt-5.4-mini-medium"
+	Background  bool      `json:"background,omitempty"`
+	Status      SubStatus `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	Summary     string    `json:"summary,omitempty"`  // the final report, when the agent reports one (Claude)
+	Progress    string    `json:"progress,omitempty"` // Claude's latest model-written progress line
+	Last        string    `json:"last,omitempty"`     // the last text of its thread, kept when it ends
+	Tokens      int       `json:"tokens,omitempty"`   // context fill
+	Window      int       `json:"window,omitempty"`   // the subagent model's context window
+	ToolUses    int       `json:"toolUses,omitempty"` // Claude's own count
+	Started     int64     `json:"started,omitempty"`  // unix ms, set by the app when it first hears of it
+	Ended       int64     `json:"ended,omitempty"`    // unix ms, set when Status leaves running
 }

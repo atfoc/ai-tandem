@@ -275,6 +275,7 @@ func TestNotFound(t *testing.T) {
 		{"DELETE", "/api/boards/b_nope", ""},
 		{"GET", "/api/chats/nope", ""},
 		{"GET", "/api/chats/nope/items", ""},
+		{"GET", "/api/chats/nope/subagents/nope/items", ""},
 		{"POST", "/api/chats/nope/messages", `{"text":"hi"}`},
 		{"PATCH", "/api/chats/nope", `{"name":"x"}`},
 		{"DELETE", "/api/chats/nope", ""},
@@ -370,6 +371,13 @@ func TestChatPatchRoutesFields(t *testing.T) {
 	items := decode[map[string]any](t, e.expect(200, "GET", "/api/chats/"+c.ID+"/items", ""))
 	if _, ok := items["items"].([]any); !ok {
 		t.Fatalf("items %v", items)
+	}
+	if subs, ok := items["subagents"].([]any); !ok || len(subs) != 0 {
+		t.Fatalf("subagents %v", items)
+	}
+	out := e.expect(404, "GET", "/api/chats/"+c.ID+"/subagents/nope/items", "")
+	if decode[map[string]string](t, out)["error"] == "" {
+		t.Fatalf("unknown subagent: no error text in %s", out)
 	}
 }
 

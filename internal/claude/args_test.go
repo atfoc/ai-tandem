@@ -97,6 +97,9 @@ func checkCommon(t *testing.T, args []string) {
 	if v, _ := flag(args, "--permission-prompt-tool"); v != "stdio" {
 		t.Errorf("--permission-prompt-tool = %q", v)
 	}
+	if _, ok := flag(args, "--forward-subagent-text"); !ok {
+		t.Errorf("--forward-subagent-text missing: %q", args)
+	}
 	want := "Read(~/.ai-whiteboard/**),Edit(~/.ai-whiteboard/**),Write(~/.ai-whiteboard/**),Bash(*.ai-whiteboard*)"
 	if v, _ := flag(args, "--disallowedTools"); v != want {
 		t.Errorf("--disallowedTools = %q, want %q", v, want)

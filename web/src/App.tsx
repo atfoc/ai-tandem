@@ -10,6 +10,7 @@ import { ConfirmDialog, TakeoverScreen, WaitingScreen, Menu, reportError } from 
 import { boardChats } from "./logic/tree.ts";
 import { AgentGlyph, BoardIcon } from "./icons.tsx";
 import { Resizer } from "./Resizer.tsx";
+import { SubagentDrawer } from "./Subagents.tsx";
 import type { Pane as PaneKind } from "./logic/layout.ts";
 import { UNGROUPED } from "./types.ts";
 
@@ -70,6 +71,7 @@ function Grouped() {
     <div className="app">
       <Pane pane="side" className="side-pane"><Sidebar /></Pane>
       {main}
+      <SubagentDrawer />
     </div>
   );
 }

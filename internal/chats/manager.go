@@ -1,5 +1,5 @@
 // Package chats owns the chats: one agent per chat, the agent's events turned into items,
-// persistence (chat.json, items.jsonl) and the sticky defaults a chat's settings feed.
+// persistence (chat.json, items.jsonl, subagents/<sid>/) and the sticky defaults a chat's settings feed.
 // (The prototype's Chats and Chat in chats.go.)
 package chats
 
@@ -43,7 +43,8 @@ type Manager struct {
 	Deps
 	mu     sync.Mutex
 	chats  map[string]*Chat
-	naming sync.WaitGroup // the auto namer goroutines Send starts
+	naming sync.WaitGroup   // the auto namer goroutines Send starts
+	now    func() time.Time // the clock subagents' times come from; tests replace it
 }
 
 type Chat struct {
@@ -54,8 +55,10 @@ type Chat struct {
 	gen           int                    // bumped on every spawn; events of an older process are dropped
 	errText       string
 	folderMissing bool
-	interrupted   bool // TurnActive was true at boot; the "Stopped" note is added when tr loads
-	deleted       bool // removed by Delete: nothing more is written or emitted for it
+	interrupted   bool              // TurnActive was true at boot; the "Stopped" note is added when tr loads
+	deleted       bool              // removed by Delete: nothing more is written or emitted for it
+	subs          map[string]*sub   // sid → subagent; loaded with tr (see trOf)
+	subByTool     map[string]string // Agent/Task tool call id → sid
 }
 
 var (
@@ -72,8 +75,10 @@ type ConfigReq struct {
 }
 
 func New(d Deps) *Manager {
-	return &Manager{Deps: d, chats: map[string]*Chat{}}
+	return &Manager{Deps: d, chats: map[string]*Chat{}, now: time.Now}
 }
+
+func (m *Manager) nowMs() int64 { return m.now().UnixMilli() }
 
 // ---- emitting -------------------------------------------------------------
 
@@ -144,6 +149,7 @@ func (m *Manager) trOf(c *Chat, out *outbox) (*transcript.Transcript, error) {
 		return nil, err
 	}
 	c.tr = tr
+	m.loadSubs(c)
 	if c.interrupted {
 		c.interrupted = false
 		c.meta.TurnActive = false
@@ -267,22 +273,34 @@ func (m *Manager) View(id string) (model.ChatView, error) {
 	return view(c), nil
 }
 
-// Items returns the chat's history and its version, reading items.jsonl the first time.
-func (m *Manager) Items(id string) (int, []model.Item, error) {
+// Items returns the chat's history and its version, reading items.jsonl the first time, and the
+// chat's subagents, sorted by Started, then ID.
+func (m *Manager) Items(id string) (int, []model.Item, []model.Subagent, error) {
 	var out outbox
 	c, err := m.lock(id)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	tr, err := m.trOf(c, &out)
 	var v int
 	var items []model.Item
+	var subs []model.Subagent
 	if err == nil {
 		v, items = tr.Snapshot()
+		subs = make([]model.Subagent, 0, len(c.subs))
+		for _, s := range c.subs {
+			subs = append(subs, s.meta)
+		}
+		sort.Slice(subs, func(i, j int) bool {
+			if subs[i].Started != subs[j].Started {
+				return subs[i].Started < subs[j].Started
+			}
+			return subs[i].ID < subs[j].ID
+		})
 	}
 	c.mu.Unlock()
 	m.send(out)
-	return v, items, err
+	return v, items, subs, err
 }
 
 // ---- creating and configuring ---------------------------------------------
@@ -352,7 +370,7 @@ func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView
 	if err := os.MkdirAll(m.Store.P.ChatDir(meta.ID), 0o700); err != nil {
 		return model.ChatView{}, err
 	}
-	c := &Chat{meta: meta}
+	c := &Chat{meta: meta, subs: map[string]*sub{}, subByTool: map[string]string{}}
 	tr, err := transcript.Load(m.itemsPath(meta.ID)) // no file yet: empty
 	if err != nil {
 		return model.ChatView{}, err
@@ -460,6 +478,16 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			continue // replaced by Stop
 		}
 		before := view(c)
+		wasBusy := busy(c)
+		if ev.Sub != "" && ev.Kind != agent.EvPermRequest {
+			m.routeSub(c, ev, &out)
+			c.mu.Unlock()
+			m.send(out)
+			continue
+		}
+		if ev.Kind == agent.EvPermRequest && ev.Sub != "" {
+			ev.Sub = c.subByTool[ev.Sub] // the perm item names the sid ("" if unknown)
+		}
 		switch ev.Kind {
 		case agent.EvSession:
 			c.meta.SessionID = ev.SessionID
@@ -495,6 +523,16 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			c.ag = nil
 		}
 		ups := c.tr.Apply(ev)
+		if (ev.Kind == agent.EvTurnEnd && ev.Aborted) || ev.Kind == agent.EvExit {
+			// An interrupt or cancel stops every subagent; background ones die with the process.
+			// A normal turn end leaves them alone: Claude's background subagents outlive it.
+			m.stopSubs(c, &out)
+		}
+		if st, _ := c.tr.Status(); !wasBusy && busy(c) && st != model.StatusApproval && !c.meta.TurnActive {
+			// A turn the agent started by itself (Claude, when a background subagent finishes).
+			c.meta.TurnActive = true
+			m.logSave(c)
+		}
 		switch ev.Kind {
 		case agent.EvTurnEnd, agent.EvToolResult, agent.EvToolDenied, agent.EvExit, agent.EvSession:
 			if err := c.tr.Flush(false); err != nil {
@@ -826,6 +864,7 @@ func (m *Manager) Stop(id string) {
 		c.ag.Close()
 		c.ag = nil
 	}
+	m.stopSubs(c, &out)
 	if wasBusy {
 		ups = append(ups, tr.AddNote("muted", "Stopped.")...)
 	}
@@ -940,6 +979,9 @@ func (m *Manager) Shutdown() {
 		if c.tr != nil {
 			if err := c.tr.Flush(true); err != nil {
 				log.Printf("chats: flush %s: %v", c.meta.ID, err)
+			}
+			for _, s := range c.subs {
+				m.flushSub(c, s, true) // running ones stay running; the next load marks them stopped
 			}
 			m.logSave(c)
 		}

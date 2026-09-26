@@ -66,6 +66,22 @@ type permEntry struct {
 	allow, reject string
 }
 
+// stream is one session's streaming state: the parent's, or a subagent's.
+type stream struct {
+	inText bool // a text item is open
+	msgSeq int
+	tools  map[string]toolCall // toolCallId → the tool_call as first reported (kind, title, input)
+}
+
+// child is a subagent session (subagentSessionId) and the parent tool call that started it.
+type child struct {
+	id, tool string
+	stream
+	stop, done chan struct{} // the context poller; stop is nil once it has been stopped
+	readMu     sync.Mutex    // held during a read of its store
+	last       ContextUsage  // the last read sent
+}
+
 type proc struct {
 	conn      *Conn
 	o         agent.SpawnOptions
@@ -79,10 +95,9 @@ type proc struct {
 	ctx       ctxPoller // context usage reads (ctxusage.go)
 	s         *Spawner
 
-	mu     sync.Mutex // guards inText, msgSeq, tools
-	inText bool       // a text item is open
-	msgSeq int
-	tools  map[string]toolCall // toolCallId → the tool_call as first reported (kind, title, input)
+	mu       sync.Mutex        // guards main, children and every child's stream and stop
+	main     stream            // the parent session's streaming state
+	children map[string]*child // subagents by subagentSessionId
 
 	emu    sync.Mutex // guards closed and sends on events
 	closed bool
@@ -99,12 +114,13 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		return nil, fmt.Errorf("cannot start Cursor (%s): %w", s.bin(), err)
 	}
 	p := &proc{
-		conn:   conn,
-		o:      o,
-		events: make(chan agent.Event, 256),
-		ready:  make(chan struct{}),
-		tools:  map[string]toolCall{},
-		s:      s,
+		conn:     conn,
+		o:        o,
+		events:   make(chan agent.Event, 256),
+		ready:    make(chan struct{}),
+		main:     stream{tools: map[string]toolCall{}},
+		children: map[string]*child{},
+		s:        s,
 	}
 	p.ctx.interval = s.ctxInterval
 	conn.OnNotify = p.onUpdate
@@ -114,6 +130,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	go func() {
 		err := conn.Wait()
 		p.ctx.stopPolling()
+		p.stopChildren()
 		p.gate.Lock() // the handshake and running turns have sent their last events
 		defer p.gate.Unlock()
 		e := agent.Event{Kind: agent.EvExit}
@@ -146,7 +163,10 @@ func initializeParams() map[string]any {
 			"terminal": false,
 			// Cursor's parameterized model picker: "model" takes a bare id and each model
 			// parameter (effort, thinking, context, ...) is its own config option.
-			"_meta": map[string]any{"parameterizedModelPicker": true},
+			// subagents: subagent_spawned / subagent_state_update and each child's own
+			// session/update stream. A plain clientCapabilities.subagents is stripped by Cursor's
+			// SDK; only _meta gets through.
+			"_meta": map[string]any{"parameterizedModelPicker": true, "subagents": true},
 		},
 		"clientInfo": map[string]any{"name": "ai-whiteboard", "version": version.Version},
 	}
@@ -248,7 +268,7 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 		prompt = append(prompt, map[string]any{"type": "text", "text": b.Text})
 	}
 	p.mu.Lock()
-	p.inText = false
+	p.main.inText = false
 	p.mu.Unlock()
 	p.emit(agent.Event{Kind: agent.EvThinking})
 	p.ctx.startPolling(p)
@@ -263,7 +283,7 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 			return
 		}
 		p.mu.Lock()
-		p.inText = false
+		p.main.inText = false
 		p.mu.Unlock()
 		var r struct {
 			StopReason string `json:"stopReason"`
@@ -316,10 +336,11 @@ func present(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "
 
 func (p *proc) onUpdate(method string, params json.RawMessage) {
 	if method != "session/update" || p.loading.Load() {
-		return
+		return // session/load's replay (including its synthetic subagent lines) is dropped
 	}
 	var env struct {
-		Update json.RawMessage `json:"update"`
+		SessionID string          `json:"sessionId"`
+		Update    json.RawMessage `json:"update"`
 	}
 	if json.Unmarshal(params, &env) != nil {
 		return
@@ -329,52 +350,252 @@ func (p *proc) onUpdate(method string, params json.RawMessage) {
 		return
 	}
 	switch u.SessionUpdate {
+	case "subagent_spawned":
+		p.onSpawned(env.Update)
+		return
+	case "subagent_state_update":
+		p.onSubState(env.Update)
+		return
+	}
+	// A known subagent session feeds that subagent; anything else is the parent's. Comparing with
+	// p.sessionID is avoided on purpose: the handshake goroutine writes it.
+	p.mu.Lock()
+	st, sub := &p.main, ""
+	if c, ok := p.children[env.SessionID]; ok {
+		st, sub = &c.stream, c.tool
+	}
+	p.mu.Unlock()
+	p.streamUpdate(st, sub, u)
+}
+
+// streamUpdate turns one session/update into events of the session st streams: the parent's
+// (sub == "") or the subagent started by the parent tool call sub.
+func (p *proc) streamUpdate(st *stream, sub string, u update) {
+	switch u.SessionUpdate {
 	case "agent_thought_chunk":
-		p.emit(agent.Event{Kind: agent.EvThinking})
+		p.emit(agent.Event{Kind: agent.EvThinking, Sub: sub})
 	case "agent_message_chunk":
 		var c struct {
 			Text string `json:"text"`
 		}
 		json.Unmarshal(u.Content, &c)
 		p.mu.Lock()
-		start := !p.inText
+		start := !st.inText
 		if start {
-			p.msgSeq++
-			p.inText = true
+			st.msgSeq++
+			st.inText = true
 		}
-		id := "c" + strconv.Itoa(p.msgSeq)
+		id := "c" + strconv.Itoa(st.msgSeq)
+		if sub != "" {
+			id = "c" + sub + "-" + strconv.Itoa(st.msgSeq)
+		}
 		p.mu.Unlock()
 		if start {
-			p.emit(agent.Event{Kind: agent.EvTextStart, MsgID: id})
+			p.emit(agent.Event{Kind: agent.EvTextStart, MsgID: id, Sub: sub})
 		}
-		p.emit(agent.Event{Kind: agent.EvTextDelta, MsgID: id, Text: c.Text})
+		p.emit(agent.Event{Kind: agent.EvTextDelta, MsgID: id, Text: c.Text, Sub: sub})
 	case "tool_call", "tool_call_update":
 		tc := u.toolCall
 		json.Unmarshal(u.Content, &tc.Content)
 		p.mu.Lock()
 		if u.SessionUpdate == "tool_call" {
-			p.inText = false
-			p.tools[tc.ToolCallID] = tc
+			st.inText = false
+			st.tools[tc.ToolCallID] = tc
 		} else {
-			tc = mergeTool(p.tools[tc.ToolCallID], tc)
-			p.tools[tc.ToolCallID] = tc
+			tc = mergeTool(st.tools[tc.ToolCallID], tc)
+			st.tools[tc.ToolCallID] = tc
 		}
 		p.mu.Unlock()
 		if u.SessionUpdate == "tool_call" {
 			name, input := p.normalizeTool(tc)
-			p.emit(agent.Event{Kind: agent.EvToolStart, ToolID: tc.ToolCallID, ToolName: name, Input: input})
+			p.emit(agent.Event{Kind: agent.EvToolStart, ToolID: tc.ToolCallID, ToolName: name, Input: input, Sub: sub})
 		} else if present(u.RawInput) {
 			name, input := p.normalizeTool(tc)
-			p.emit(agent.Event{Kind: agent.EvToolInput, ToolID: tc.ToolCallID, ToolName: name, Input: input})
+			p.emit(agent.Event{Kind: agent.EvToolInput, ToolID: tc.ToolCallID, ToolName: name, Input: input, Sub: sub})
 		}
 		switch tc.Status {
 		case "completed":
-			p.emit(agent.Event{Kind: agent.EvToolResult, ToolID: tc.ToolCallID, Result: resultText(tc), IsError: exitCode(tc) != 0})
+			p.emit(agent.Event{Kind: agent.EvToolResult, ToolID: tc.ToolCallID, Result: resultText(tc), IsError: exitCode(tc) != 0, Sub: sub})
 		case "failed":
-			p.emit(agent.Event{Kind: agent.EvToolResult, ToolID: tc.ToolCallID, Result: resultText(tc), IsError: true})
+			p.emit(agent.Event{Kind: agent.EvToolResult, ToolID: tc.ToolCallID, Result: resultText(tc), IsError: true, Sub: sub})
+		}
+		// A background child's Task tool completes about 130 ms after launch with
+		// rawOutput {"isBackground":true}.
+		if sub == "" && tc.Status == "completed" && isTaskTool(tc) {
+			var out struct {
+				IsBackground bool `json:"isBackground"`
+			}
+			if present(tc.RawOutput) && json.Unmarshal(tc.RawOutput, &out) == nil && out.IsBackground {
+				p.emit(agent.Event{Kind: agent.EvSub, Sub: tc.ToolCallID, SubInfo: &agent.SubInfo{Background: ptr(true)}})
+			}
 		}
 	}
 	// Other kinds (session_info_update, available_commands_update, plan, modes, …) are ignored.
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// taskArgs is the part of a Task tool call's rawInput the app shows.
+type taskArgs struct {
+	Description, Prompt, Type string // Type: the custom agent's name, "" for the general-purpose one
+	Background                bool
+}
+
+// isTaskTool reports whether a tool call is the Task (subagent) tool: rawInput._toolName "task",
+// or, before rawInput arrives, a kind "other" call titled "Task: …".
+func isTaskTool(tc toolCall) bool {
+	var in struct {
+		ToolName string `json:"_toolName"`
+	}
+	if present(tc.RawInput) && json.Unmarshal(tc.RawInput, &in) == nil && in.ToolName != "" {
+		return in.ToolName == "task"
+	}
+	return tc.Kind == "other" && strings.HasPrefix(tc.Title, "Task: ")
+}
+
+// taskInput reads rawInput {description, prompt, subagentType: {custom: {name}} | {unspecified: {}},
+// runInBackground | run_in_background}. The description falls back to the title after "Task: ".
+func taskInput(tc toolCall) taskArgs {
+	var in struct {
+		Description  string `json:"description"`
+		Prompt       string `json:"prompt"`
+		SubagentType struct {
+			Custom *struct {
+				Name string `json:"name"`
+			} `json:"custom"`
+		} `json:"subagentType"`
+		RunInBackground  bool `json:"runInBackground"`
+		RunInBackground2 bool `json:"run_in_background"`
+	}
+	if present(tc.RawInput) {
+		json.Unmarshal(tc.RawInput, &in)
+	}
+	a := taskArgs{Description: in.Description, Prompt: in.Prompt, Background: in.RunInBackground || in.RunInBackground2}
+	if in.SubagentType.Custom != nil {
+		a.Type = in.SubagentType.Custom.Name
+	}
+	if a.Description == "" {
+		a.Description = strings.TrimPrefix(tc.Title, "Task: ")
+	}
+	return a
+}
+
+// onSpawned opens a subagent: subagent_spawned {subagentSessionId, name, task,
+// _meta.cursor.{toolCallId, model}}. The description comes from the parent's Task tool call.
+func (p *proc) onSpawned(raw json.RawMessage) {
+	var s struct {
+		SubagentSessionID string `json:"subagentSessionId"`
+		Name              string `json:"name"`
+		Task              string `json:"task"`
+		Meta              struct {
+			Cursor struct {
+				ToolCallID string `json:"toolCallId"`
+				Model      string `json:"model"`
+			} `json:"cursor"`
+		} `json:"_meta"`
+	}
+	if json.Unmarshal(raw, &s) != nil || s.SubagentSessionID == "" || s.Meta.Cursor.ToolCallID == "" {
+		return
+	}
+	p.mu.Lock()
+	if _, ok := p.children[s.SubagentSessionID]; ok {
+		p.mu.Unlock()
+		return
+	}
+	c := &child{id: s.SubagentSessionID, tool: s.Meta.Cursor.ToolCallID, stream: stream{tools: map[string]toolCall{}}}
+	p.children[c.id] = c
+	parent := p.main.tools[c.tool]
+	p.mu.Unlock()
+	a := taskInput(parent)
+	// The spawn update's task is a short preview; the Task call carries the full prompt.
+	info := &agent.SubInfo{ID: c.id, Type: s.Name, Description: a.Description, Prompt: a.Prompt,
+		Model: s.Meta.Cursor.Model, Status: model.SubRunning}
+	if a.Type != "" {
+		info.Type = a.Type
+	}
+	if info.Prompt == "" {
+		info.Prompt = s.Task
+	}
+	if a.Background {
+		info.Background = ptr(true)
+	}
+	p.emit(agent.Event{Kind: agent.EvSub, Sub: c.tool, SubInfo: info})
+	p.pollChild(c)
+}
+
+// onSubState ends a subagent: subagent_state_update {subagentSessionId, state, error?}.
+// completed → completed; failed → failed; cancelled and disconnected (a cancel that timed out) →
+// stopped. The final status goes out at once; the poller is stopped and the store read one last
+// time in the background, so the read loop never waits on sqlite3.
+func (p *proc) onSubState(raw json.RawMessage) {
+	var s struct {
+		SubagentSessionID string `json:"subagentSessionId"`
+		State             string `json:"state"`
+		Error             string `json:"error"`
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return
+	}
+	p.mu.Lock()
+	c := p.children[s.SubagentSessionID]
+	p.mu.Unlock()
+	if c == nil {
+		return
+	}
+	var st model.SubStatus
+	switch s.State {
+	case "completed":
+		st = model.SubCompleted
+	case "failed", "error":
+		st = model.SubFailed
+	case "cancelled", "disconnected":
+		st = model.SubStopped
+	default:
+		return // not final
+	}
+	p.emit(agent.Event{Kind: agent.EvSub, Sub: c.tool, SubInfo: &agent.SubInfo{Status: st, Error: s.Error}})
+	go func() {
+		p.stopChild(c)
+		p.readChildCtx(c, false)
+	}()
+}
+
+// onCursorTask takes the subagent's real model from cursor/task {toolCallId, model}: for custom
+// agents it is right where subagent_spawned's _meta.cursor.model names the parent's model.
+func (p *proc) onCursorTask(params json.RawMessage) {
+	var t struct {
+		ToolCallID string `json:"toolCallId"`
+		Model      string `json:"model"`
+	}
+	if json.Unmarshal(params, &t) != nil || t.ToolCallID == "" || t.Model == "" {
+		return
+	}
+	if tool := p.taskToolID(t.ToolCallID); tool != "" {
+		p.emit(agent.Event{Kind: agent.EvSub, Sub: tool, SubInfo: &agent.SubInfo{Model: t.Model}})
+	}
+}
+
+// taskToolID finds the parent tool call id that id names: an exact match among the children's
+// tools and the parent's tool calls, else a match on the part before the first "\n" (Cursor's ids
+// are "call_…\nfc_…", and cursor/task may give only the first part). "" when none matches.
+func (p *proc) taskToolID(id string) string {
+	head := func(s string) string { h, _, _ := strings.Cut(s, "\n"); return h }
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.children {
+		if c.tool == id {
+			return c.tool
+		}
+	}
+	if _, ok := p.main.tools[id]; ok {
+		return id
+	}
+	for tid := range p.main.tools {
+		if head(tid) == head(id) {
+			return tid
+		}
+	}
+	return ""
 }
 
 // mergeTool fills an update's missing fields from the tool_call it updates, and remembers the
@@ -415,6 +636,10 @@ func mustJSON(v any) json.RawMessage {
 // normalizeTool maps a Cursor tool call to the tool name and input the chat shows, so that a
 // board command gets the same card as Claude's board tool and a shell command Claude's Bash card.
 func (p *proc) normalizeTool(tc toolCall) (string, json.RawMessage) {
+	if isTaskTool(tc) {
+		a := taskInput(tc)
+		return "Agent", mustJSON(map[string]string{"description": a.Description, "prompt": a.Prompt, "subagent_type": a.Type})
+	}
 	path := ""
 	if len(tc.Locations) > 0 {
 		path = tc.Locations[0].Path
@@ -498,13 +723,19 @@ func resultText(tc toolCall) string {
 }
 
 func (p *proc) onRequest(id json.RawMessage, method string, params json.RawMessage) {
+	if method == "cursor/task" {
+		p.conn.Reply(id, map[string]any{}, nil) // was "method not found"
+		p.onCursorTask(params)
+		return
+	}
 	if method != "session/request_permission" {
 		p.conn.Reply(id, nil, map[string]any{"code": -32601, "message": "method not found"})
 		return
 	}
 	var req struct {
-		ToolCall toolCall `json:"toolCall"`
-		Options  []struct {
+		SessionID string   `json:"sessionId"`
+		ToolCall  toolCall `json:"toolCall"`
+		Options   []struct {
 			OptionID string `json:"optionId"`
 			Kind     string `json:"kind"`
 		} `json:"options"`
@@ -536,7 +767,13 @@ func (p *proc) onRequest(id json.RawMessage, method string, params json.RawMessa
 	rid := "p" + strconv.FormatInt(p.permSeq.Add(1), 10)
 	p.perms.Store(rid, permEntry{id: id, allow: allow, reject: reject})
 	name, input := p.normalizeTool(tc)
-	p.emit(agent.Event{Kind: agent.EvPermRequest, PermID: rid, ToolName: name, ToolID: tc.ToolCallID, Input: input})
+	sub := ""
+	p.mu.Lock()
+	if c, ok := p.children[req.SessionID]; ok {
+		sub = c.tool // asked by a subagent; the card stays in the parent's thread
+	}
+	p.mu.Unlock()
+	p.emit(agent.Event{Kind: agent.EvPermRequest, PermID: rid, ToolName: name, ToolID: tc.ToolCallID, Input: input, Sub: sub})
 }
 
 // Decide answers a permission request raised as EvPermRequest.
@@ -556,5 +793,6 @@ func (p *proc) Decide(requestID string, allow bool) error {
 // Close ends the process: stdin is closed, and it is killed after 3 s.
 func (p *proc) Close() {
 	p.ctx.stopPolling()
+	p.stopChildren()
 	p.conn.Close()
 }

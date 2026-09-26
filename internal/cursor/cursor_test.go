@@ -1,8 +1,10 @@
 package cursor
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -104,7 +106,7 @@ var kindNames = map[agent.EventKind]string{
 	agent.EvTextStart: "TextStart", agent.EvTextDelta: "TextDelta", agent.EvText: "Text",
 	agent.EvToolStart: "ToolStart", agent.EvToolInputDelta: "ToolInputDelta", agent.EvToolInput: "ToolInput",
 	agent.EvToolResult: "ToolResult", agent.EvToolDenied: "ToolDenied", agent.EvPermRequest: "PermRequest",
-	agent.EvUsage: "Usage", agent.EvTurnEnd: "TurnEnd", agent.EvExit: "Exit",
+	agent.EvUsage: "Usage", agent.EvTurnEnd: "TurnEnd", agent.EvExit: "Exit", agent.EvSub: "Sub",
 }
 
 func kinds(es []agent.Event) string {
@@ -248,7 +250,7 @@ func TestHandshakeNewSession(t *testing.T) {
 		t.Fatalf("methods %v, want %v", got, wantM)
 	}
 	init, _ := find(rs, "initialize")
-	jsonEq(t, init.Params, `{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false,"_meta":{"parameterizedModelPicker":true}},"clientInfo":{"name":"ai-whiteboard","version":"`+version.Version+`"}}`)
+	jsonEq(t, init.Params, `{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false,"_meta":{"parameterizedModelPicker":true,"subagents":true}},"clientInfo":{"name":"ai-whiteboard","version":"`+version.Version+`"}}`)
 	auth, _ := find(rs, "authenticate")
 	jsonEq(t, auth.Params, `{"methodId":"cursor_login"}`)
 	nw, _ := find(rs, "session/new")
@@ -834,5 +836,315 @@ func TestCatalogProbeTimeout(t *testing.T) {
 	}
 	if rs := readRecord(t, e.record); !rs[len(rs)-1].EOF {
 		t.Fatal("process not ended")
+	}
+}
+
+// childUpdate is a session/update of the subagent session sid.
+func childUpdate(sid string, u any) fakeStep {
+	return fakeStep{Send: mustMarshal(map[string]any{"jsonrpc": "2.0", "method": "session/update",
+		"params": map[string]any{"sessionId": sid, "update": u}})}
+}
+
+// taskCall is the parent's Task tool_call for a general-purpose subagent.
+func taskCall(id, desc, prompt string) fakeStep {
+	return step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": id, "title": "Task: " + desc,
+		"kind": "other", "status": "pending", "rawInput": map[string]any{"_toolName": "task", "description": desc,
+			"prompt": prompt, "subagentType": map[string]any{"unspecified": map[string]any{}}}})
+}
+
+func spawned(sid, tool, model string) fakeStep { return spawnedTask(sid, tool, model, "P") }
+
+// spawnedTask is subagent_spawned whose task (Cursor's short prompt preview) is task.
+func spawnedTask(sid, tool, model, task string) fakeStep {
+	return step("update", map[string]any{"sessionUpdate": "subagent_spawned", "subagentSessionId": sid,
+		"name": "generalPurpose", "task": task, "_meta": map[string]any{"cursor": map[string]any{"toolCallId": tool, "model": model}}})
+}
+
+func subState(sid, state, errText string) fakeStep {
+	u := map[string]any{"sessionUpdate": "subagent_state_update", "subagentSessionId": sid, "state": state}
+	if errText != "" {
+		u["error"] = errText
+	}
+	return step("update", u)
+}
+
+var endTurn = fakeStep{Result: raw(`{"stopReason":"end_turn"}`)}
+
+func TestInitializeAdvertisesSubagents(t *testing.T) {
+	e := newEnv(t, baseScript())
+	a := e.spawn(t, agent.SpawnOptions{})
+	until(t, a, isKind(agent.EvCatalog))
+	init, ok := find(readRecord(t, e.record), "initialize")
+	if !ok {
+		t.Fatal("no initialize")
+	}
+	var ip struct {
+		ClientCapabilities struct {
+			Meta map[string]any `json:"_meta"`
+		} `json:"clientCapabilities"`
+	}
+	json.Unmarshal(init.Params, &ip)
+	if ip.ClientCapabilities.Meta["subagents"] != true || ip.ClientCapabilities.Meta["parameterizedModelPicker"] != true {
+		t.Fatalf("initialize %s", init.Params)
+	}
+}
+
+func TestSubagentStream(t *testing.T) {
+	const call = "call_1\nfc_1"
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		taskCall(call, "count files", "P"),
+		spawned("S1", call, "gpt-5.4-mini-medium"),
+		childUpdate("S1", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "hi"}}),
+		childUpdate("S1", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "k1", "title": "`ls`", "kind": "execute", "status": "pending", "rawInput": map[string]any{"command": "ls"}}),
+		childUpdate("S1", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "k1", "status": "completed", "rawOutput": map[string]any{"exitCode": 0, "stdout": "a\nb\n", "stderr": ""}}),
+		subState("S1", "completed", ""),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": call, "status": "completed",
+			"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "2 files"}}}}),
+		endTurn,
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+	evs := without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvUsage, agent.EvSession, agent.EvCatalog, agent.EvThinking)
+
+	want := "ToolStart,Sub,TextStart,TextDelta,ToolStart,ToolResult,Sub,ToolResult,TurnEnd"
+	if got := kinds(evs); got != want {
+		t.Fatalf("events\n got %s\nwant %s", got, want)
+	}
+	if ev := evs[0]; ev.ToolName != "Agent" || ev.ToolID != call || ev.Sub != "" {
+		t.Fatalf("parent tool start %+v", ev)
+	}
+	jsonEq(t, evs[0].Input, `{"description":"count files","prompt":"P","subagent_type":""}`)
+	sp := evs[1]
+	if sp.Sub != call || sp.SubInfo == nil || !reflect.DeepEqual(*sp.SubInfo, agent.SubInfo{ID: "S1", Type: "generalPurpose",
+		Description: "count files", Prompt: "P", Model: "gpt-5.4-mini-medium", Status: model.SubRunning}) {
+		t.Fatalf("spawn event %+v %+v", sp, sp.SubInfo)
+	}
+	for _, ev := range evs[2:6] {
+		if ev.Sub != call {
+			t.Fatalf("child event without Sub: %+v", ev)
+		}
+	}
+	if evs[2].MsgID != evs[3].MsgID || evs[3].Text != "hi" || evs[2].MsgID == "c1" {
+		t.Fatalf("child text %+v %+v", evs[2], evs[3])
+	}
+	if evs[4].ToolName != "Bash" || evs[4].ToolID != "k1" || evs[5].ToolID != "k1" || evs[5].Result != "a\nb\n" {
+		t.Fatalf("child tool %+v %+v", evs[4], evs[5])
+	}
+	if end := evs[6]; end.Sub != call || end.SubInfo == nil || *end.SubInfo != (agent.SubInfo{Status: model.SubCompleted}) {
+		t.Fatalf("end event %+v %+v", end, end.SubInfo)
+	}
+	if r := evs[7]; r.Sub != "" || r.ToolID != call || r.Result != "2 files" {
+		t.Fatalf("parent tool result %+v", r)
+	}
+	if evs[8].Sub != "" {
+		t.Fatalf("turn end %+v", evs[8])
+	}
+}
+
+// TestSubagentPromptSource: the Task call's full prompt wins over subagent_spawned's task, a short
+// preview; the preview is used only when the Task call has no prompt.
+func TestSubagentPromptSource(t *testing.T) {
+	const full = "You are in a coding workspace. Do the following in order:\n1. list the files\n2. count them"
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		taskCall("t1", "full", full),
+		spawnedTask("S1", "t1", "m", "You are in a coding workspace. Do the following in order:"),
+		taskCall("t2", "empty", ""),
+		spawnedTask("S2", "t2", "m", "Task: preview only"),
+		endTurn,
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+	got := map[string]string{}
+	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
+		if ev.Kind == agent.EvSub && ev.SubInfo != nil && ev.SubInfo.ID != "" {
+			got[ev.Sub] = ev.SubInfo.Prompt
+		}
+	}
+	want := map[string]string{"t1": full, "t2": "Task: preview only"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("prompts %q, want %q", got, want)
+	}
+}
+
+func TestSubagentStateMapping(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		spawned("S1", "t1", "m"), spawned("S2", "t2", "m"), spawned("S3", "t3", "m"), spawned("S4", "t4", "m"),
+		subState("S1", "cancelled", ""),
+		subState("S2", "disconnected", ""),
+		subState("S3", "failed", "boom"),
+		subState("S4", "running", ""),
+		subState("S9", "completed", ""), // unknown: ignored
+		endTurn,
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+	got := map[string][]agent.SubInfo{}
+	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
+		if ev.Kind == agent.EvSub && ev.SubInfo.Status != model.SubRunning {
+			got[ev.Sub] = append(got[ev.Sub], *ev.SubInfo)
+		}
+	}
+	want := map[string][]agent.SubInfo{
+		"t1": {{Status: model.SubStopped}},
+		"t2": {{Status: model.SubStopped}},
+		"t3": {{Status: model.SubFailed, Error: "boom"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("states %+v, want %+v", got, want)
+	}
+}
+
+func TestBackgroundTaskTool(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		taskCall("t1", "bg job", "P"),
+		spawned("S1", "t1", "m"),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed", "rawOutput": map[string]any{"isBackground": true}}),
+		endTurn,
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+	var bg []agent.Event
+	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
+		if ev.Kind == agent.EvSub && ev.SubInfo.Background != nil {
+			bg = append(bg, ev)
+		}
+	}
+	if len(bg) != 1 || bg[0].Sub != "t1" || !*bg[0].SubInfo.Background || bg[0].SubInfo.Status != "" {
+		t.Fatalf("background events %+v", bg)
+	}
+}
+
+func TestCursorTaskRequest(t *testing.T) {
+	const call = "call_abc\nfc_def"
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		taskCall(call, "haiku job", "P"),
+		spawned("S1", call, "parent-model"),
+		step("request", map[string]any{"method": "cursor/task", "params": map[string]any{"toolCallId": "call_abc", "model": "claude-4.5-haiku-thinking"}}),
+		endTurn,
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+	var models []agent.Event
+	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
+		if ev.Kind == agent.EvSub && ev.SubInfo.Status == "" && ev.SubInfo.Model != "" {
+			models = append(models, ev)
+		}
+	}
+	if len(models) != 1 || models[0].Sub != call || *models[0].SubInfo != (agent.SubInfo{Model: "claude-4.5-haiku-thinking"}) {
+		t.Fatalf("model events %+v", models)
+	}
+	for _, r := range readRecord(t, e.record) {
+		if string(r.ID) == `"srv-1"` {
+			if len(r.Error) != 0 {
+				t.Fatalf("cursor/task answered with error %s", r.Error)
+			}
+			jsonEq(t, r.Result, `{}`)
+			return
+		}
+	}
+	t.Fatal("no answer recorded")
+}
+
+func TestChildContextUsage(t *testing.T) {
+	needSQLite(t)
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		spawned("S1", "t1", "m"),
+		{Sleep: 500},
+		subState("S1", "completed", ""),
+		{Sleep: 800},
+		endTurn,
+	}
+	e := newEnv(t, s)
+	e.s.ctxInterval = 50 * time.Millisecond
+	db := ChildStorePath(e.home, e.cwd, "S1")
+	makeStoreAt(t, db, goodMeta()+blobRow(testBlobID, sampleRoot(14324, 272000)))
+	a := e.spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+
+	isUsage := func(ev agent.Event) bool { return ev.Kind == agent.EvSub && ev.SubInfo.Tokens != 0 }
+	evs := until(t, a, isUsage)
+	if u := evs[len(evs)-1]; u.Sub != "t1" || *u.SubInfo != (agent.SubInfo{Tokens: 14324, Window: 272000}) {
+		t.Fatalf("usage event %+v %+v", u, u.SubInfo)
+	}
+	// Polling repeats an unchanged result silently; the terminal state is followed by one last read.
+	evs = until(t, a, func(ev agent.Event) bool { return ev.Kind == agent.EvSub && ev.SubInfo.Status == model.SubCompleted })
+	for _, ev := range evs {
+		if isUsage(ev) {
+			t.Fatalf("unchanged usage sent again: %+v", ev.SubInfo)
+		}
+	}
+	until(t, a, isUsage)
+
+	// The poller has stopped: a changed store is no longer read.
+	upd := "UPDATE blobs SET data = X'" + hex.EncodeToString(sampleRoot(20000, 272000)) + "' WHERE id = '" + testBlobID + "';"
+	if out, err := exec.Command("sqlite3", db, upd).CombinedOutput(); err != nil {
+		t.Fatalf("sqlite3: %v: %s", err, out)
+	}
+	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
+		if isUsage(ev) {
+			t.Fatalf("child usage after the terminal state: %+v", ev.SubInfo)
+		}
+	}
+}
+
+func TestLoadDropsSubagentReplay(t *testing.T) {
+	e := newEnv(t, fakeScript{
+		"session/load": {
+			spawned("S1", "t1", "m"),
+			childUpdate("S1", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "old"}}),
+			{Cursor: true},
+		},
+		"session/prompt": {
+			childUpdate("S1", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "new"}}),
+			endTurn,
+		},
+	})
+	a := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true})
+	send(t, a, "hi")
+	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
+		if ev.Kind == agent.EvSub || ev.Sub != "" {
+			t.Fatalf("subagent event from the replay: %+v", ev)
+		}
+	}
+}
+
+func TestChildPermission(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		spawned("S1", "t1", "m"),
+		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
+			"sessionId": "S1",
+			"toolCall":  map[string]any{"toolCallId": "k1", "title": "`rm x`", "kind": "execute"},
+			"options": []any{
+				map[string]any{"optionId": "allow-once", "kind": "allow_once"},
+				map[string]any{"optionId": "reject-once", "kind": "reject_once"},
+			},
+		}}),
+		endTurn,
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+	var perms []agent.Event
+	until(t, a, func(ev agent.Event) bool {
+		if ev.Kind == agent.EvPermRequest {
+			perms = append(perms, ev)
+			a.Decide(ev.PermID, true)
+		}
+		return ev.Kind == agent.EvTurnEnd
+	})
+	if len(perms) != 1 || perms[0].Sub != "t1" || perms[0].ToolName != "Bash" {
+		t.Fatalf("perm events %+v", perms)
 	}
 }

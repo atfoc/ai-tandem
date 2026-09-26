@@ -45,13 +45,19 @@ type proc struct {
 	// translate state (only touched by the read loop)
 	curMsg   string
 	streamed map[string]bool
-	blocks   map[int]string // content block index → "text" or the tool_use id
+	blocks   map[int]string    // content block index → "text" or the tool_use id
+	model    string            // the parent's model, from system/init
+	taskTool map[string]string // subagent task_id → the parent's Agent tool_use id
+	subModel map[string]string // Agent tool_use id → the subagent's model
+	windows  map[string]int    // model id → context window, from result.modelUsage
+	orphan   bool              // a task_notification came for an agent this process never started
 }
 
 // Args are the command-line arguments for one chat process.
 func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--include-partial-messages", "--permission-mode", "auto", "--permission-prompt-tool", "stdio"}
+		"--verbose", "--include-partial-messages", "--permission-mode", "auto", "--permission-prompt-tool", "stdio",
+		"--forward-subagent-text"}
 	if o.Resume {
 		args = append(args, "--resume", o.SessionID)
 	} else {
@@ -115,6 +121,9 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		done:     make(chan struct{}),
 		streamed: map[string]bool{},
 		blocks:   map[int]string{},
+		taskTool: map[string]string{},
+		subModel: map[string]string{},
+		windows:  map[string]int{},
 	}
 	cmd := exec.Command(bin, s.Args(o)...)
 	cmd.Dir = o.Cwd
@@ -130,6 +139,12 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	}
 	p.cmd = cmd
 	p.stdin = stdin
+	// The SDK's initialize request: a model-written progress line per subagent
+	// (task_progress.summary) and forwarded subagent text. It is written before the read loop
+	// starts so it is always the first stdin line (the loop may answer control requests at once).
+	// A write error is ignored: the process exiting reports itself through EvExit.
+	p.write(map[string]any{"type": "control_request", "request_id": "init_" + randHex(4),
+		"request": map[string]any{"subtype": "initialize", "agentProgressSummaries": true, "forwardSubagentText": true}})
 	go p.readLoop(stdout)
 	return p, nil
 }
@@ -200,7 +215,8 @@ func (p *proc) handleControl(m map[string]any) {
 	p.perms.Store(id, req)
 	toolName, _ := req["tool_name"].(string)
 	toolID, _ := req["tool_use_id"].(string)
-	p.events <- agent.Event{Kind: agent.EvPermRequest, PermID: id, ToolName: toolName, ToolID: toolID, Input: input}
+	p.events <- agent.Event{Kind: agent.EvPermRequest, PermID: id, ToolName: toolName, ToolID: toolID, Input: input,
+		Sub: p.taskTool[str(req["agent_id"])]} // "" for the parent's own requests (no agent_id)
 }
 
 func deny(id, message string) map[string]any {

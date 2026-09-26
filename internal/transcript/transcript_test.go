@@ -343,3 +343,136 @@ func TestLoadMissing(t *testing.T) {
 		t.Fatalf("got %d %+v", v, its)
 	}
 }
+
+func TestPermFromSubagent(t *testing.T) {
+	tr := newT(t)
+	if status(tr) != model.StatusReady {
+		t.Fatalf("status %q", status(tr))
+	}
+	ups := tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r1", ToolName: "Bash", ToolID: "x1", Sub: "s1"})
+	if len(ups) != 1 || ups[0].Item.Kind != "perm" || ups[0].Item.Subagent != "s1" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if status(tr) != model.StatusApproval {
+		t.Fatalf("status %q", status(tr))
+	}
+	if ups := tr.Decided("r1", true); len(ups) != 1 || ups[0].Item.Decided != "allow" || ups[0].Item.Subagent != "s1" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if s, tool := tr.Status(); s != model.StatusReady || tool != "" {
+		t.Fatalf("status %q %q, want ready", s, tool)
+	}
+}
+
+func TestTwoPendingPerms(t *testing.T) {
+	tr := newT(t)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r1", ToolName: "Bash", Sub: "s1"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r2", ToolName: "Edit", Sub: "s2"})
+	if status(tr) != model.StatusApproval {
+		t.Fatalf("status %q", status(tr))
+	}
+	tr.Decided("r2", false)
+	if status(tr) != model.StatusApproval {
+		t.Fatalf("status %q after one of two decided", status(tr))
+	}
+	tr.Decided("r1", true)
+	if status(tr) != model.StatusReady {
+		t.Fatalf("status %q after both decided, want ready", status(tr))
+	}
+}
+
+func TestLinkSubagent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c", "items.jsonl")
+	tr := New(path)
+	tr.Apply(agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Agent", Input: json.RawMessage(`{"description":"d"}`)})
+	if !tr.HasTool("t1") || tr.HasTool("nope") {
+		t.Fatal("HasTool")
+	}
+	if tr.dirty[0] {
+		t.Fatal("open tool item dirty before link")
+	}
+	ups := tr.LinkSubagent("t1", "s1")
+	if len(ups) != 1 || ups[0].Index != 0 || ups[0].Item.Subagent != "s1" || ups[0].Item.Name != "Agent" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if !tr.dirty[0] {
+		t.Error("linked item not dirty")
+	}
+	if ups := tr.LinkSubagent("nope", "s1"); ups != nil {
+		t.Errorf("unknown tool id: %+v", ups)
+	}
+	if ups := tr.LinkSubagent("t1", "s1"); ups != nil {
+		t.Errorf("same sid again: %+v", ups)
+	}
+	if err := tr.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if its := items(got); len(its) != 1 || its[0].Subagent != "s1" || its[0].ToolID != "t1" {
+		t.Fatalf("loaded %+v", its)
+	}
+}
+
+func TestCloseOpenAndLastText(t *testing.T) {
+	tr := newT(t)
+	if tr.LastText() != "" {
+		t.Errorf("empty LastText %q", tr.LastText())
+	}
+	if ups := tr.CloseOpen(); ups != nil {
+		t.Errorf("CloseOpen with nothing open: %+v", ups)
+	}
+	tr.Apply(agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Bash"})
+	if tr.LastText() != "" {
+		t.Errorf("LastText with only a tool %q", tr.LastText())
+	}
+	tr.Apply(agent.Event{Kind: agent.EvTextDelta, Text: "the report"})
+	ups := tr.CloseOpen()
+	if len(ups) != 1 || !ups[0].Item.Done || ups[0].Item.Text != "the report" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if !tr.dirty[ups[0].Index] {
+		t.Error("closed text not dirty")
+	}
+	if tr.CloseOpen() != nil {
+		t.Error("second CloseOpen changed something")
+	}
+	tr.Apply(agent.Event{Kind: agent.EvToolStart, ToolID: "t2", ToolName: "Read"})
+	if got := tr.LastText(); got != "the report" {
+		t.Errorf("LastText %q", got)
+	}
+}
+
+func TestNewIsEmpty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "subagents", "s1")
+	path := filepath.Join(dir, "items.jsonl")
+	tr := New(path)
+	if v, its := tr.Snapshot(); v != 0 || len(its) != 0 {
+		t.Fatalf("got %d %+v", v, its)
+	}
+	if status(tr) != model.StatusReady {
+		t.Errorf("status %q", status(tr))
+	}
+	if err := tr.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Flush(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("empty flush touched the disk: %v", err)
+	}
+	tr.Apply(agent.Event{Kind: agent.EvText, Text: "hi"})
+	if err := tr.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if its := items(got); len(its) != 1 || its[0].Text != "hi" {
+		t.Fatalf("loaded %+v", its)
+	}
+}

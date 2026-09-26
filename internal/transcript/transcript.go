@@ -19,15 +19,16 @@ import (
 )
 
 type Transcript struct {
-	path    string // items.jsonl
-	items   []model.Item
-	version int            // bumped on every change
-	open    int            // index of the open text item, -1 if none
-	tools   map[string]int // tool id → item index
-	perms   map[string]int // request id → item index
-	dirty   map[int]bool   // settled items not yet written
-	status  model.Status
-	tool    string // tool name behind StatusTool
+	path     string // items.jsonl
+	items    []model.Item
+	version  int            // bumped on every change
+	open     int            // index of the open text item, -1 if none
+	tools    map[string]int // tool id → item index
+	perms    map[string]int // request id → item index
+	dirty    map[int]bool   // settled items not yet written
+	status   model.Status
+	tool     string       // tool name behind StatusTool
+	permPrev model.Status // the status before the pending approval
 }
 
 // Update is one changed item, sent to clients.
@@ -42,11 +43,10 @@ type line struct {
 	Item model.Item `json:"item"`
 }
 
-// Load reads items.jsonl at path. A missing file is an empty transcript. Lines are applied in
-// order; a later line for the same index replaces the earlier one. A line that does not parse
-// (a write cut short by a crash) is skipped.
-func Load(path string) (*Transcript, error) {
-	t := &Transcript{
+// New returns an empty transcript kept at path. Nothing is written until Flush has something to
+// write.
+func New(path string) *Transcript {
+	return &Transcript{
 		path:   path,
 		open:   -1,
 		tools:  map[string]int{},
@@ -54,6 +54,13 @@ func Load(path string) (*Transcript, error) {
 		dirty:  map[int]bool{},
 		status: model.StatusReady,
 	}
+}
+
+// Load reads items.jsonl at path. A missing file is an empty transcript. Lines are applied in
+// order; a later line for the same index replaces the earlier one. A line that does not parse
+// (a write cut short by a crash) is skipped.
+func Load(path string) (*Transcript, error) {
+	t := New(path)
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return t, nil
@@ -212,8 +219,12 @@ func (t *Transcript) Apply(ev agent.Event) []Update {
 		return []Update{t.set(i, it)}
 
 	case agent.EvPermRequest:
+		if t.status != model.StatusApproval {
+			t.permPrev = t.status
+		}
 		t.status = model.StatusApproval
-		u := t.push(model.Item{Kind: "perm", RequestID: ev.PermID, ToolName: ev.ToolName, ToolID: ev.ToolID, Input: ev.Input})
+		u := t.push(model.Item{Kind: "perm", RequestID: ev.PermID, ToolName: ev.ToolName, ToolID: ev.ToolID,
+			Input: ev.Input, Subagent: ev.Sub})
 		t.perms[ev.PermID] = u.Index
 		return []Update{u}
 
@@ -263,10 +274,55 @@ func (t *Transcript) Decided(requestID string, allow bool) []Update {
 		it.Decided = "allow"
 	}
 	t.dirty[i] = true
-	if t.status == model.StatusApproval {
-		t.status = model.StatusTool
+	ups := []Update{t.set(i, it)}
+	if t.status == model.StatusApproval && !t.pendingPerm() {
+		t.status = t.permPrev
+		if t.status == "" || t.status == model.StatusApproval {
+			t.status = model.StatusTool
+		}
 	}
+	return ups
+}
+
+// pendingPerm reports whether a permission request is still unanswered.
+func (t *Transcript) pendingPerm() bool {
+	for _, i := range t.perms {
+		if t.items[i].Decided == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// HasTool reports whether the thread has a tool item with this id.
+func (t *Transcript) HasTool(id string) bool {
+	_, ok := t.tools[id]
+	return ok
+}
+
+// LinkSubagent sets the subagent started by tool call toolID on its item and marks it dirty.
+func (t *Transcript) LinkSubagent(toolID, sid string) []Update {
+	i, ok := t.tools[toolID]
+	if !ok || t.items[i].Subagent == sid {
+		return nil
+	}
+	it := t.items[i]
+	it.Subagent = sid
+	t.dirty[i] = true
 	return []Update{t.set(i, it)}
+}
+
+// CloseOpen marks the open text item done (a subagent's thread, when it ends).
+func (t *Transcript) CloseOpen() []Update { return t.closeOpen() }
+
+// LastText is the text of the last text item; "" when there is none.
+func (t *Transcript) LastText() string {
+	for i := len(t.items) - 1; i >= 0; i-- {
+		if t.items[i].Kind == "text" {
+			return t.items[i].Text
+		}
+	}
+	return ""
 }
 
 // Flush appends a line for every settled item not yet written and, when all is set (shutdown),
