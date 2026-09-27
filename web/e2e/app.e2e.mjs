@@ -855,6 +855,32 @@ async function run() {
       check(fs.existsSync(f) && readJSON(f).status === "stopped", `subagent ${s.id} is saved as stopped in its folder`, fs.existsSync(f) ? readJSON(f) : "(no subagent.json)");
     }
   });
+
+  await step(20, "A typed message is kept as the chat's draft: across chat switches and a restart; sending clears it", async () => {
+    ids.drafty = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
+    await pickModel(page, CLAUDE_MODEL_LABEL);
+    const text = "Reply with just the word DRAFTED.";
+    const ta = page.locator(".composer .composer-input");
+    await ta.pressSequentially(text);
+    const chatJSON = path.join(HOME, "chats", ids.drafty, "chat.json");
+    await waitFor("chat.json has the draft", async () => readJSON(chatJSON).draft?.text === text || saw(readJSON(chatJSON).draft), { timeout: 5000 });
+
+    await openChat(page, ids.claudeSubs);
+    await waitFor("another chat's composer is empty", async () => (await ta.innerText()).trim() === "" || saw(await ta.innerText()), { timeout: 5000 });
+    // Back to the draft's chat through the saved selection (it has no name to find its row by yet).
+    await page.evaluate((id) => localStorage.setItem("aiwb.sel", JSON.stringify({ board: null, chat: id })), ids.drafty);
+    await stopServer();
+    await startServer();
+    await page.reload();
+    await page.locator(".side").waitFor();
+    await waitFor("the chat is selected after the restart", async () => (await sel(page)).chat === ids.drafty || saw(await sel(page)));
+    await waitFor("the composer shows the draft after the restart", async () => (await ta.innerText()).trim() === text || saw(await ta.innerText()), { timeout: 10_000 });
+
+    await ta.press("Enter");
+    await waitFor("the message is sent", async () => (await chatItems(ids.drafty)).some((i) => i.kind === "user" && i.text === text), { timeout: 30_000 });
+    await waitFor("the draft is gone from chat.json", async () => readJSON(chatJSON).draft === undefined || saw(readJSON(chatJSON).draft), { timeout: 5000 });
+    check((await ta.innerText()).trim() === "", "the composer is empty", await ta.innerText());
+  });
 }
 
 // ---------------------------------------------------------------- main

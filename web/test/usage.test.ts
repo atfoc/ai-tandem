@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resetIn, resetAt, limitTone, updatedAgo, sortLimits } from "../src/logic/usage.ts";
+import { resetIn, resetAt, limitTone, updatedAgo, isStale, sortLimits } from "../src/logic/usage.ts";
 
 const now = Date.parse("2026-09-26T18:54:40Z");
 const at = (ms: number) => new Date(now + ms).toISOString();
@@ -40,6 +40,13 @@ test("updatedAgo", () => {
   assert.equal(updatedAgo(at(-12_000), now), "12s ago");
   assert.equal(updatedAgo(at(-3 * MIN), now), "3m ago");
   assert.equal(updatedAgo(at(-2 * HOUR), now), "2h ago");
+});
+
+test("isStale", () => {
+  assert.equal(isStale(at(-3 * MIN), now), false);
+  assert.equal(isStale(at(-10 * MIN), now), false);
+  assert.equal(isStale(at(-11 * MIN), now), true);
+  assert.equal(isStale("nonsense", now), false);
 });
 
 test("sortLimits: session, week, then the rest in order", () => {

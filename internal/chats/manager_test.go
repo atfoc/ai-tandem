@@ -770,6 +770,57 @@ func TestRenameUserNameWins(t *testing.T) {
 	}
 }
 
+func TestDraft(t *testing.T) {
+	e := newEnv(t)
+	evs := listen(t, e.br)
+	v := e.create(model.Claude, gOne, "")
+	d := model.Draft{Text: "half a thought", Mentions: []model.Mention{{Name: "Plan", ID: "b_1"}}}
+	if err := e.m.SetDraft(v.ID, d); err != nil {
+		t.Fatal(err)
+	}
+	evs.wait(t, func(ev map[string]any) bool {
+		c, _ := ev["chat"].(map[string]any)
+		dr, _ := c["draft"].(map[string]any)
+		return ev["type"] == "chat" && c["id"] == v.ID && dr["text"] == d.Text
+	})
+	if m := e.meta(v.ID); !reflect.DeepEqual(m.Draft, &d) {
+		t.Fatalf("chat.json draft %+v", m.Draft)
+	}
+
+	e.boot() // kept across a restart
+	if got := e.view(v.ID).Draft; !reflect.DeepEqual(got, &d) {
+		t.Fatalf("draft after restart %+v", got)
+	}
+
+	if err := e.m.SetDraft(v.ID, model.Draft{Mentions: d.Mentions}); err != nil { // mentions alone are no draft
+		t.Fatal(err)
+	}
+	if m := e.meta(v.ID); m.Draft != nil {
+		t.Fatalf("empty draft stored %+v", m.Draft)
+	}
+	if err := e.m.SetDraft("nope", d); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetDraft on unknown chat: %v", err)
+	}
+}
+
+func TestSendClearsDraft(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	e.m.SetDraft(v.ID, model.Draft{Text: "one"})
+	e.send(v.ID, "one", "")
+	if m := e.meta(v.ID); m.Draft != nil {
+		t.Fatalf("draft after send %+v", m.Draft)
+	}
+	// A send refused while busy leaves the draft alone.
+	e.m.SetDraft(v.ID, model.Draft{Text: "two"})
+	if err := e.m.Send(v.ID, "two", ""); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Send while busy: %v", err)
+	}
+	if m := e.meta(v.ID); m.Draft == nil || m.Draft.Text != "two" {
+		t.Fatalf("draft after busy send %+v", m.Draft)
+	}
+}
+
 func TestSendAfterExitResumes(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")

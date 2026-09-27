@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -280,6 +281,7 @@ func TestNotFound(t *testing.T) {
 		{"GET", "/api/chats/nope/subagents/nope/items", ""},
 		{"POST", "/api/chats/nope/messages", `{"text":"hi"}`},
 		{"PATCH", "/api/chats/nope", `{"name":"x"}`},
+		{"PUT", "/api/chats/nope/draft", `{"text":"x"}`},
 		{"DELETE", "/api/chats/nope", ""},
 		{"PATCH", "/api/groups/g_nope", `{"name":"x"}`},
 		{"POST", "/api/groups/g_nope/archive", ""},
@@ -344,6 +346,7 @@ func TestBadRequest(t *testing.T) {
 		{"PATCH", "/api/chats/" + c.ID, `{"cwd":"` + notDir + `"}`},
 		{"PATCH", "/api/chats/" + c.ID, `{"cwd":"` + e.st.P.Root + `"}`},
 		{"PATCH", "/api/chats/" + c.ID, `{"model":"no-such-model"}`},
+		{"PUT", "/api/chats/" + c.ID + "/draft", `not json`},
 		{"PUT", "/api/groups/order", `{"ids":["g_nope"]}`},
 		{"DELETE", "/api/groups/g_x?contents=maybe", ""},
 		{"GET", "/api/dirs?path=" + notDir, ""},
@@ -383,6 +386,24 @@ func TestChatPatchRoutesFields(t *testing.T) {
 	}
 }
 
+func TestChatDraft(t *testing.T) {
+	e := newEnv(t)
+	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
+	if code, _ := e.doAs("B", "PUT", "/api/chats/"+c.ID+"/draft", `{"text":"x"}`); code != 409 {
+		t.Fatalf("draft from B: %d", code)
+	}
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft", `{"text":"hi @Plan","mentions":[{"name":"Plan","id":"b_1"}]}`)
+	v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, ""))
+	want := &model.Draft{Text: "hi @Plan", Mentions: []model.Mention{{Name: "Plan", ID: "b_1"}}}
+	if !reflect.DeepEqual(v.Draft, want) {
+		t.Fatalf("draft %+v", v.Draft)
+	}
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft", `{"text":""}`)
+	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft != nil {
+		t.Fatalf("cleared draft %+v", v.Draft)
+	}
+}
+
 func TestNoStaticClientWhenUnset(t *testing.T) {
 	e := newEnv(t)
 	code, _ := e.do("GET", "/", "")
@@ -393,21 +414,31 @@ func TestNoStaticClientWhenUnset(t *testing.T) {
 
 // ---- usage ----------------------------------------------------------------
 
-func TestClaudeUsage(t *testing.T) {
+func TestUsage(t *testing.T) {
 	e := newEnv(t)
 	e.expect(404, "GET", "/api/usage/claude", "") // no Usage set
 
 	var gotFresh []bool
 	var err error
-	e.s.Usage = func(fresh bool) (model.PlanUsage, error) {
-		gotFresh = append(gotFresh, fresh)
-		return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "session", Label: "Current session", Percent: 8}}}, err
+	e.s.Usage = map[model.AgentKind]func(bool) (model.PlanUsage, error){
+		model.Claude: func(fresh bool) (model.PlanUsage, error) {
+			gotFresh = append(gotFresh, fresh)
+			return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "session", Label: "Current session", Percent: 8}}}, err
+		},
+		model.Cursor: func(bool) (model.PlanUsage, error) {
+			return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "individual.overall", Percent: 37.5, Detail: "$413.89 of $1,101"}}}, nil
+		},
 	}
 	u := decode[model.PlanUsage](t, e.expect(200, "GET", "/api/usage/claude", ""))
 	if !u.Plan || len(u.Limits) != 1 || u.Limits[0].Percent != 8 {
 		t.Fatalf("usage %+v", u)
 	}
 	e.expect(200, "GET", "/api/usage/claude?fresh=1", "")
+	c := decode[model.PlanUsage](t, e.expect(200, "GET", "/api/usage/cursor", ""))
+	if len(c.Limits) != 1 || c.Limits[0].Detail != "$413.89 of $1,101" {
+		t.Fatalf("cursor usage %+v", c)
+	}
+	e.expect(404, "GET", "/api/usage/other", "")
 	if len(gotFresh) != 2 || gotFresh[0] || !gotFresh[1] {
 		t.Fatalf("fresh %v", gotFresh)
 	}

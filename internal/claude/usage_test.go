@@ -2,13 +2,10 @@ package claude
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,70 +154,4 @@ func TestSpawnerUsageError(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "claude /usage: ") {
 		t.Fatalf("err %v", err)
 	}
-}
-
-func TestUsageCache(t *testing.T) {
-	var calls atomic.Int32
-	release := make(chan struct{})
-	fail := false
-	clock := usageNow
-	c := &UsageCache{TTL: time.Minute, Now: func() time.Time { return clock },
-		Fetch: func() (model.PlanUsage, error) {
-			calls.Add(1)
-			<-release
-			if fail {
-				return model.PlanUsage{}, errors.New("boom")
-			}
-			return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "session", Percent: float64(calls.Load())}}}, nil
-		}}
-
-	// Callers during a run share it.
-	var wg sync.WaitGroup
-	got := make([]model.PlanUsage, 3)
-	for i := range got {
-		wg.Add(1)
-		go func() { defer wg.Done(); got[i], _ = c.Get(false) }()
-	}
-	for c.running() == nil {
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(20 * time.Millisecond) // let the others join
-	close(release)
-	wg.Wait()
-	if calls.Load() != 1 {
-		t.Fatalf("%d runs, want 1", calls.Load())
-	}
-	for _, u := range got {
-		if !u.Plan || !u.FetchedAt.Equal(usageNow) {
-			t.Fatalf("got %+v", u)
-		}
-	}
-
-	// Fresh within the TTL: no run. fresh: a run.
-	clock = usageNow.Add(59 * time.Second)
-	if u, _ := c.Get(false); calls.Load() != 1 || u.Limits[0].Percent != 1 {
-		t.Fatalf("cached: %d runs, %+v", calls.Load(), u)
-	}
-	if u, _ := c.Get(true); calls.Load() != 2 || u.Limits[0].Percent != 2 {
-		t.Fatalf("fresh: %d runs, %+v", calls.Load(), u)
-	}
-	clock = clock.Add(time.Minute)
-	if c.Get(false); calls.Load() != 3 {
-		t.Fatalf("stale: %d runs", calls.Load())
-	}
-
-	// A failed run is not cached, and keeps the last good result.
-	fail = true
-	if _, err := c.Get(true); err == nil || calls.Load() != 4 {
-		t.Fatalf("fail: %v, %d runs", err, calls.Load())
-	}
-	if u, err := c.Get(false); err != nil || calls.Load() != 4 || u.Limits[0].Percent != 3 {
-		t.Fatalf("after fail: %v, %d runs, %+v", err, calls.Load(), u)
-	}
-}
-
-func (c *UsageCache) running() *usageRun {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.run
 }
