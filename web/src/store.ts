@@ -2,13 +2,14 @@
 // arrays) live outside it in board.ts `scenes`, because they change on every
 // stroke and nothing but the canvas renders from them.
 import { useSyncExternalStore } from "react";
-import type { AgentKind, Board, Catalog, ChatView, Defaults, Group, Item, Status, Subagent } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, Defaults, Draft, Group, Item, Status, Subagent } from "./types.ts";
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
 import { forgetBoard } from "./board.ts";
 import { plainText } from "./logic/refs.ts";
 import { parseWidths, type Widths } from "./logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
+import type { Unsaved } from "./logic/drafts.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
 export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind; tone: "edit" | "danger"; until: number };
@@ -45,6 +46,7 @@ export type State = {
 
 export function safeGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
 export function safeSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch {} }
+export function safeRemove(k: string) { try { localStorage.removeItem(k); } catch {} }
 
 const systemDark = () => { try { return matchMedia("(prefers-color-scheme: dark)").matches; } catch { return false; } };
 const savedTheme = parseThemePref(safeGet("aiwb.theme"));
@@ -134,8 +136,9 @@ export function upsertChat(c: ChatView) {
   setState((s) => ({ chats: { ...s.chats, [c.id]: c } }));
 }
 
-/** Clears sel.chat, the chat's items, its subagents and their threads, and the drawer on it. */
+/** Clears sel.chat, the chat's items, its subagents and their threads, the drawer on it, and its unsaved draft. */
 export function removeChat(id: string) {
+  unsavedDraft(id).write(null);
   setState((s) => {
     const { [id]: _, ...chats } = s.chats;
     const items = Object.fromEntries(Object.entries(s.items).filter(([k]) => k !== id && !k.startsWith(id + "/")));
@@ -150,6 +153,15 @@ export function removeChat(id: string) {
 /** Sets a subagent's state (the `sub` message). */
 export function upsertSub(chat: string, sa: Subagent) {
   setState((s) => ({ subs: { ...s.subs, [chat]: { ...s.subs[chat], [sa.id]: sa } } }));
+}
+
+/** A chat's draft the server may not have yet, in localStorage "aiwb.draft.<chat>" (see logic/drafts.ts). */
+export function unsavedDraft(chat: string): Unsaved {
+  const k = "aiwb.draft." + chat;
+  return {
+    read(): Draft | null { try { const d = JSON.parse(safeGet(k) ?? "null"); return typeof d?.text === "string" ? d : null; } catch { return null; } },
+    write(d: Draft | null) { if (d) safeSet(k, JSON.stringify(d)); else safeRemove(k); },
+  };
 }
 
 /** The chat a board reopens with, per board, in localStorage. */

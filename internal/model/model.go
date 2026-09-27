@@ -142,7 +142,20 @@ type ChatMeta struct {
 	TurnActive       bool      `json:"turnActive,omitempty"`       // a turn was running at the last write
 	InstructionsSent bool      `json:"instructionsSent,omitempty"` // Cursor board chats
 	Usage            Usage     `json:"usage"`
+	Draft            *Draft    `json:"draft,omitempty"` // the unsent message in the composer
 	Archive
+}
+
+// Draft is the message typed in a chat's composer and not sent yet. Cleared when a message is sent.
+type Draft struct {
+	Text     string    `json:"text"`               // the composer's value: the text with its reference tags
+	Mentions []Mention `json:"mentions,omitempty"` // boards picked from the @ menu
+}
+
+// Mention is a board picked from the composer's @ menu, so the name still resolves if boards share it.
+type Mention struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
 }
 
 type Status string
@@ -172,6 +185,7 @@ type ChatView struct {
 	Locked    bool      `json:"locked"`
 	Created   time.Time `json:"created"`
 	Usage     Usage     `json:"usage"`
+	Draft     *Draft    `json:"draft,omitempty"`
 	Archive
 
 	Status        Status `json:"status"`
@@ -196,6 +210,7 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 		Locked:        m.Locked,
 		Created:       m.Created,
 		Usage:         m.Usage,
+		Draft:         m.Draft,
 		Archive:       m.Archive,
 		Status:        status,
 		StatusTool:    tool,

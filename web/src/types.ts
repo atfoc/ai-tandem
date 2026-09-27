@@ -129,10 +129,17 @@ export type ChatView = Archive & {
   locked: boolean;
   created: string;
   usage: Usage;
+  draft?: Draft;
   status: Status;
   statusTool?: string;
   error?: string;
   folderMissing?: boolean;
+};
+
+/** The message typed in a chat's composer and not sent yet; the server clears it on send. */
+export type Draft = {
+  text: string;                               // the composer's value, with its reference tags
+  mentions?: { name: string; id: string }[];  // boards picked from the @ menu
 };
 
 /** One entry of a chat's thread. */

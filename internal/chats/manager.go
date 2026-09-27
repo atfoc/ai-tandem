@@ -576,6 +576,7 @@ func (m *Manager) Send(id, text, context string) error {
 	}
 	c.meta.Locked = true
 	c.meta.TurnActive = true
+	c.meta.Draft = nil // the message is the draft, sent
 	var blocks []agent.ContentBlock
 	if c.meta.Board != "" {
 		if c.meta.Agent == model.Cursor {
@@ -761,6 +762,25 @@ func (m *Manager) Rename(id, name string, byUser bool) error {
 	}
 	c.meta.Name = strings.TrimSpace(name)
 	c.meta.UserNamed = c.meta.UserNamed || byUser
+	err = m.save(c)
+	out.emitChat(c)
+	c.mu.Unlock()
+	m.send(out)
+	return err
+}
+
+// SetDraft stores the message typed in the chat's composer; empty text clears it.
+func (m *Manager) SetDraft(id string, d model.Draft) error {
+	var out outbox
+	c, err := m.lock(id)
+	if err != nil {
+		return err
+	}
+	if d.Text == "" {
+		c.meta.Draft = nil
+	} else {
+		c.meta.Draft = &d
+	}
 	err = m.save(c)
 	out.emitChat(c)
 	c.mu.Unlock()

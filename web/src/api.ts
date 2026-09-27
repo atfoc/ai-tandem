@@ -1,6 +1,6 @@
 // The server's HTTP API (section 4.12). Every call carries this tab's client id,
 // so the server can tell the active client from a stale one.
-import type { AgentKind, Board, Catalog, ChatView, Defaults, Group, Item, PlanUsage, Subagent } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, Defaults, Draft, Group, Item, PlanUsage, Subagent } from "./types.ts";
 
 /** GET /api/state and the `snapshot` event. */
 export type Snapshot = {
@@ -24,9 +24,10 @@ export class ApiError extends Error {
   constructor(status: number, msg: string) { super(msg); this.status = status; }
 }
 
-async function call<T = void>(method: string, path: string, body?: unknown): Promise<T> {
+/** keepalive lets the request finish while the page unloads. */
+async function call<T = void>(method: string, path: string, body?: unknown, keepalive = false): Promise<T> {
   const r = await fetch(path, {
-    method,
+    method, keepalive,
     headers: { "Content-Type": "application/json", "X-AIWB-Client": clientId },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -64,6 +65,7 @@ export const api = {
   openChat: (id: string) => call("POST", `/api/chats/${id}/open`),
   send: (id: string, text: string, context: string) => call("POST", `/api/chats/${id}/messages`, { text, context }),
   configure: (id: string, p: { model?: string; effort?: string; cwd?: string }) => call("PATCH", `/api/chats/${id}`, p),
+  saveDraft: (id: string, d: Draft, keepalive = false) => call("PUT", `/api/chats/${id}/draft`, d, keepalive),
   renameChat: (id: string, name: string) => call("PATCH", `/api/chats/${id}`, { name }),
   moveChat: (id: string, group: string) => call("PATCH", `/api/chats/${id}`, { group }),
   interrupt: (id: string) => call("POST", `/api/chats/${id}/interrupt`),

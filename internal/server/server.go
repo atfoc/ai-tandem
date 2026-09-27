@@ -417,6 +417,17 @@ func (s *Server) Handler() http.Handler {
 		}
 		ok(w)
 	})
+	mux.HandleFunc("PUT /api/chats/{id}/draft", func(w http.ResponseWriter, r *http.Request) {
+		var body model.Draft
+		if !readJSON(w, r, &body) {
+			return
+		}
+		if err := a.Chats.SetDraft(r.PathValue("id"), body); err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		ok(w)
+	})
 	mux.HandleFunc("PATCH /api/chats/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name               *string

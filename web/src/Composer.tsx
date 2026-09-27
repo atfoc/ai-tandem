@@ -2,17 +2,18 @@
 // context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
 // until the first message is sent.
 import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeGet, safeSet, isBusy } from "./store.ts";
+import { useStore, getState, setState, safeGet, safeSet, isBusy, upsertChat, unsavedDraft } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
+import { DraftSaver } from "./logic/drafts.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { BoardIcon, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
-import type { AgentKind, Catalog, CatalogModel, ChatView, PlanUsage, UsageLimit } from "./types.ts";
+import type { AgentKind, Catalog, CatalogModel, ChatView, Draft, PlanUsage, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
 
@@ -45,6 +46,20 @@ export async function sendMessage(chat: string, text: string, picked: Picked[] =
   return api.send(chat, text, buildContext(chat, text, picked));
 }
 
+// ---- drafts
+
+/** Saves a chat's draft on the server, and in the store at once: a composer reopened before
+ * the server's `chat` event comes back starts from it. */
+async function saveDraft(chat: string, d: Draft, keepalive: boolean) {
+  const c = getState().chats[chat];
+  if (!c) return; // deleted
+  upsertChat({ ...c, draft: d.text ? d : undefined });
+  await api.saveDraft(chat, d, keepalive).catch((e) => { console.warn(`draft of ${chat} not saved:`, e); throw e; });
+}
+
+/** The draft a composer opens with: one the server may not have yet, else the server's. */
+const draftToShow = (chat: string) => unsavedDraft(chat).read() ?? getState().chats[chat]?.draft;
+
 // ---- references (⌘L, ⌘⇧L)
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -67,14 +82,16 @@ export function Composer({ chatId }: { chatId: string }) {
   const selection = useStore((s) => s.selection);
   const onScreen = useStore((s) => s.sel.board);
   const picking = useStore((s) => s.picking === chatId);
-  const [text, setText] = useState("");
-  const [picked, setPicked] = useState<Picked[]>([]);
+  const [text, setText] = useState(() => draftToShow(chatId)?.text ?? "");
+  const [picked, setPicked] = useState<Picked[]>(() => draftToShow(chatId)?.mentions ?? []);
   const [mention, setMention] = useState<{ q: string; at: number; i: number } | null>(null);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const input = useRef<RefInputHandle>(null);
-  const current = useRef(""); // the text now, for a failed send
+  const current = useRef(text); // the text now, for a failed send
+  const drafts = useRef<DraftSaver | null>(null);
+  drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(chatId, d, keepalive), getState().chats[chatId]?.draft, unsavedDraft(chatId));
   const board = c?.board;
   const canRef = !!board && !c?.archived && onScreen === board;
 
@@ -104,6 +121,23 @@ export function Composer({ chatId }: { chatId: string }) {
   }, [canRef, chatId]);
   useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(""), 2500); return () => clearTimeout(t); }, [note]);
 
+  // The draft: put into the box when it appears (on open, after unarchiving), saved as it
+  // changes, and saved at once when the composer or the page goes away. Later drafts from the
+  // server (the echo of our own saves) are not put in: they would overwrite the typing.
+  useEffect(() => {
+    const d = draftToShow(chatId);
+    if (c?.archived || !d?.text) return;
+    input.current?.set(d.text);
+    setPicked(d.mentions ?? []);
+  }, [c?.archived]);
+  useEffect(() => drafts.current!.change(text, picked), [text, picked]);
+  useEffect(() => {
+    const d = drafts.current!;
+    const hide = () => d.flush(true);
+    window.addEventListener("pagehide", hide);
+    return () => { window.removeEventListener("pagehide", hide); d.flush(); };
+  }, []);
+
   if (!c) return null;
   if (c.archived) return (
     <div className="composer">
@@ -125,7 +159,7 @@ export function Composer({ chatId }: { chatId: string }) {
     const t = text.trim();
     if (!t || running || sending) return; // no send while busy
     setSending(true); setErr("");
-    input.current?.set(""); setMention(null);
+    input.current?.set(""); setMention(null); // the server clears the draft on send; the empty one saved after it undoes a save still in flight
     const p = picked;
     try {
       await sendMessage(chatId, t, p);
