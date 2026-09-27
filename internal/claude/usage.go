@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"ai-whiteboard/internal/model"
@@ -208,56 +207,4 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	return strings.TrimSpace(s)
-}
-
-// UsageCache keeps the last /usage result in memory for TTL, so clicks close together share
-// one `claude` run. Callers that come while a run is going wait for it. Nothing is stored.
-type UsageCache struct {
-	Fetch func() (model.PlanUsage, error)
-	TTL   time.Duration
-	Now   func() time.Time // nil = time.Now; for tests
-
-	mu   sync.Mutex
-	last *model.PlanUsage // the last good result
-	run  *usageRun        // the run going now
-}
-
-type usageRun struct {
-	done chan struct{}
-	u    model.PlanUsage
-	err  error
-}
-
-// Get returns the cached result while it is fresh, else runs Fetch. fresh skips the cache.
-func (c *UsageCache) Get(fresh bool) (model.PlanUsage, error) {
-	now := c.Now
-	if now == nil {
-		now = time.Now
-	}
-	c.mu.Lock()
-	if !fresh && c.last != nil && now().Sub(c.last.FetchedAt) < c.TTL {
-		u := *c.last
-		c.mu.Unlock()
-		return u, nil
-	}
-	r := c.run
-	if r == nil {
-		r = &usageRun{done: make(chan struct{})}
-		c.run = r
-		go func() {
-			u, err := c.Fetch()
-			c.mu.Lock()
-			if err == nil {
-				u.FetchedAt = now()
-				c.last = &u
-			}
-			r.u, r.err = u, err
-			c.run = nil
-			c.mu.Unlock()
-			close(r.done)
-		}()
-	}
-	c.mu.Unlock()
-	<-r.done
-	return r.u, r.err
 }

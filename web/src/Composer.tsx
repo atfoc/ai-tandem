@@ -1,6 +1,5 @@
 // The message box under a chat, and its toolbar: folder, model, effort and
-// context usage (in Claude chats a click on it also shows the plan's usage
-// limits). The pickers come from the server's catalogs and can be changed
+// context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
 // until the first message is sent.
 import React, { useEffect, useRef, useState } from "react";
 import { useStore, getState, setState, safeGet, safeSet, isBusy } from "./store.ts";
@@ -10,10 +9,10 @@ import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
 import { effortLabel } from "./logic/labels.ts";
-import { limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
+import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
-import { BoardIcon, Folder, Lock, WarnIcon } from "./icons.tsx";
-import type { Catalog, CatalogModel, ChatView, PlanUsage, UsageLimit } from "./types.ts";
+import { BoardIcon, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
+import type { AgentKind, Catalog, CatalogModel, ChatView, PlanUsage, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
 
@@ -353,12 +352,11 @@ function ContextMeter({ c, cat }: { c: ChatView; cat?: Catalog }) {
   const lines = used
     ? [ctxTitle(used, win), "System prompt, tools, board reads and the conversation so far."]
     : [`${win ? `Context window: ${win.toLocaleString()} tokens. ` : ""}Usage shows after the first reply.`];
-  if (c.agent !== "claude") return <CtxRing used={used} win={win} title={lines.join("\n")} />;
-  // Claude chats: a click opens the context and the plan's usage limits.
+  // A click opens the context and the agent's plan usage limits.
   return (
     <div className="menu-wrap">
       <CtxRing used={used} win={win} open={open} onClick={() => setOpen(!open)} />
-      {open && <UsagePopover context={lines} />}
+      {open && <UsagePopover key={c.agent} agent={c.agent} context={lines} />}
       {open && <div className="menu-backdrop" onMouseDown={() => setOpen(false)} />}
     </div>
   );
@@ -368,7 +366,7 @@ export const ctxTitle = (used: number, win: number) =>
   `Context: ${used.toLocaleString()}${win ? ` of ${win.toLocaleString()}` : ""} tokens${win ? ` (${(Math.min(1, used / win) * 100).toFixed(1)}%)` : ""}`;
 
 /** The ring with "used / window pct%": the composer's meter, and each subagent's. With onClick it
- * is a button (the composer's, in Claude chats); without, a span with a hover title. */
+ * is a button (the composer's); without, a span with a hover title (each subagent's). */
 export function CtxRing({ used, win, title, className = "", open, onClick }: {
   used: number; win: number; title?: string; className?: string; open?: boolean; onClick?: () => void;
 }) {
@@ -389,20 +387,21 @@ export function CtxRing({ used, win, title, className = "", open, onClick }: {
   return <span className={`ctx-meter ${tone} ${className}`} title={title}>{body}</span>;
 }
 
-// ---- plan usage (Claude chats)
+// ---- plan usage
 
-/** The last /usage answer, kept while the page is open so the popover opens with numbers. */
-let lastUsage: PlanUsage | null = null;
+/** Each agent's last usage answer, kept while the page is open so the popover opens with numbers. */
+const lastUsage: Partial<Record<AgentKind, PlanUsage>> = {};
 
-/** The composer ring's popover: the chat's context, then the plan's limits, fetched on open. */
-function UsagePopover({ context }: { context: string[] }) {
-  const [u, setU] = useState<PlanUsage | null>(lastUsage);
+/** The composer ring's popover: the chat's context, then the plan's limits, fetched on open.
+ * Claude's come from `claude -p /usage`, Cursor's from `cursor-cost`. */
+function UsagePopover({ agent, context }: { agent: AgentKind; context: string[] }) {
+  const [u, setU] = useState<PlanUsage | null>(lastUsage[agent] ?? null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [now, setNow] = useState(Date.now());
   const load = async (fresh: boolean) => {
     setLoading(true); setErr("");
-    try { const r = await api.claudeUsage(fresh); lastUsage = r; setU(r); }
+    try { const r = await api.usage(agent, fresh); lastUsage[agent] = r; setU(r); }
     catch (e: any) { setErr(e?.message ?? String(e)); }
     finally { setLoading(false); setNow(Date.now()); }
   };
@@ -417,16 +416,19 @@ function UsagePopover({ context }: { context: string[] }) {
       <div className="usage-ctx">{context.map((l) => <div key={l}>{l}</div>)}</div>
       <div className="menu-sep" />
       <div className="menu-head">
-        Plan usage limits<span className="grow" />
+        {agent === "cursor" ? "Cursor usage" : "Plan usage limits"}<span className="grow" />
         <button className="icon-btn usage-refresh" title="Check again" disabled={loading} onClick={() => void load(true)}>
           <span className={loading ? "usage-spin" : ""}>↻</span>
         </button>
       </div>
       {!u && loading && <div className="usage-note">Checking your plan…</div>}
-      {u && !u.plan && <div className="usage-note">{u.note || "Claude reported no plan limits."}</div>}
+      {u && !u.plan && <div className="usage-note">{u.note || `${agentName(agent)} reported no plan limits.`}</div>}
       {u?.plan && sortLimits(u.limits).map((l) => <LimitRow key={l.kind + l.label} l={l} now={now} />)}
+      {u?.plan && u.note && <div className="usage-err"><WarnIcon /> {u.note}</div>}
       {err && <div className="usage-err"><WarnIcon /> {err}</div>}
-      {u && <div className="usage-foot">{loading ? "Updating…" : `Updated ${updatedAgo(u.fetchedAt, now)}`}</div>}
+      {u && <div className={`usage-foot ${!loading && isStale(u.fetchedAt, now) ? "stale" : ""}`}>
+        {loading ? "Updating…" : `Updated ${updatedAgo(u.fetchedAt, now)}`}
+      </div>}
     </div>
   );
 }
@@ -435,7 +437,7 @@ function LimitRow({ l, now }: { l: UsageLimit; now: number }) {
   const when = [resetIn(l.resetsAt, now), resetAt(l.resetsAt, now)].filter(Boolean).join(" · ");
   return (
     <div className={`usage-row ${limitTone(l)}`}>
-      <div className="usage-top"><span>{l.label}</span><span className="usage-pct">{Math.round(l.percent)}%</span></div>
+      <div className="usage-top"><span>{l.label}</span><span className="usage-pct">{l.detail && <span className="usage-detail">{l.detail} · </span>}{Math.round(l.percent)}%</span></div>
       <div className="usage-bar"><span style={{ width: `${Math.min(100, Math.max(0, l.percent))}%` }} /></div>
       {when && <div className="usage-reset" title={l.resetsAt && new Date(l.resetsAt).toLocaleString()}>Resets {when}</div>}
     </div>

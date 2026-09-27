@@ -70,5 +70,5 @@ export const api = {
   decide: (id: string, requestId: string, allow: boolean) => call("POST", `/api/chats/${id}/permission`, { requestId, allow }),
   deleteChat: (id: string) => call("DELETE", `/api/chats/${id}`),
   dirs: (path: string) => call<Dirs>("GET", `/api/dirs?path=${encodeURIComponent(path)}`),
-  claudeUsage: (fresh = false) => call<PlanUsage>("GET", `/api/usage/claude${fresh ? "?fresh=1" : ""}`),
+  usage: (agent: AgentKind, fresh = false) => call<PlanUsage>("GET", `/api/usage/${agent}${fresh ? "?fresh=1" : ""}`),
 };

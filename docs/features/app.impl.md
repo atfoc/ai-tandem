@@ -67,10 +67,11 @@ internal/defaults/defaults.go        new: sticky per-group defaults
 internal/transcript/transcript.go    new (Go port of prototype web/src/chat.ts's reducer)
 internal/agent/agent.go              new: Agent / Spawner interfaces, Event type
 internal/agent/appdir.go             new: app-folder guard shared by both adapters
+internal/agent/usagecache.go         new: the in-memory cache in front of each agent's plan usage
 internal/claude/claude.go            new (from prototype chats.go's spawn/readLoop/handleControl)
 internal/claude/translate.go         new (Claude stream-json line → agent.Event)
 internal/claude/catalog.go           new: Claude's static model list
-internal/claude/usage.go             new: the plan's usage limits from `claude -p /usage`, and their cache
+internal/claude/usage.go             new: the plan's usage limits from `claude -p /usage`
 internal/cursor/acp.go               new: JSON-RPC 2.0 stdio client (from cursor-rpc branch acp.go)
 internal/cursor/cursor.go            new: the Cursor adapter
 internal/cursor/catalog.go           new: Cursor model list parsing
@@ -78,6 +79,7 @@ internal/cursor/params.go            new: model params policy (thinking, largest
 internal/cursor/probe.go             new: fetch the Cursor model list at server start
 internal/cursor/config.go            new: deny rules in the user's Cursor config
 internal/cursor/ctxusage.go          new: context usage read from Cursor's session store (sqlite3)
+internal/cursor/cost.go              new: the plan's usage from `cursor-cost`
 internal/chats/manager.go            new (from prototype chats.go's Chats/Chat)
 internal/chats/namer.go              new (from prototype autoName)
 internal/chats/subagents.go          new: a chat's subagents and their files (4.7)
@@ -1124,9 +1126,11 @@ would send it to the model as a prompt. `ParseUsage` reads the `assistant` line:
   no year: a reset is the first such time not more than a day before now.
 - No limits at all (API-key login, logged out) → `Plan: false` and the text's first line as `Note`.
 
-`UsageCache` keeps the last good result in memory for 60 s and makes callers during a run wait for
-that run. A failed run is not cached. Nothing is written to disk and chats are untouched: running
-chats' `rate_limit_event` lines are still dropped by `translate.go`.
+`agent.UsageCache` (`internal/agent/usagecache.go`, shared with Cursor's plan usage, 4.6) keeps the
+last good result in memory for 60 s and makes callers during a run wait for that run. The 60 s count
+from the run; a `FetchedAt` that `Fetch` set is kept, else it is the run's time. A failed run is not
+cached. Nothing is written to disk and chats are untouched: running chats' `rate_limit_event` lines
+are still dropped by `translate.go`.
 
 ### 4.6 Cursor adapter: `internal/cursor/`
 
@@ -1592,6 +1596,24 @@ chat):** Cursor runs with the user's own settings and nothing may be written int
 so the only place for Cursor deny rules is the user's global Cursor config. The server adds the two
 rules once at start. This only narrows what Cursor may do. Shell access is guarded by the
 permission handler above (`TouchesAppDir`) and by the instructions (feature, open problem 4).
+
+**Plan usage** (`cost.go`). `CostReader.Usage` runs `cursor-cost -compact -max-age 0` (the
+`-cursor-cost` flag, default `cursor-cost`; when that is not on `PATH`, `~/bin/cursor-cost`) in the
+temp folder, 10 s timeout. `cursor-cost` prints what its refresh job (`cursor-cost-refresh`) last
+put in a local cache: no request, no cost. `-max-age 0` turns off its "stale" status; the popover
+shows the numbers' age itself. `ParseCost` reads:
+
+- each of `buckets[]` with a `limit` (dollars) → a `UsageLimit`: `Kind` = the bucket key,
+  `Percent` = used / limit, `Detail` = "$413.89 of $1,101", `ResetsAt` = `reset_at` (the billing
+  cycle's end), `Active` for the top-level `bucket`. Labels: `individual.overall` → "Your usage",
+  `team.onDemand` → "Team on demand".
+- `updated_at` → `FetchedAt`, so "Updated 5m ago" is the cache's age, not the run's.
+- `status` other than `ok`/`stale` (`error`, `not_logged_in`, `no_cache`) → its `error` as `Note`.
+  `cursor-cost` still prints the last good numbers then, so `Plan` can be true with a `Note`.
+- No bucket with a limit → `Plan: false`, `Note` "Your Cursor plan has no usage limit." (`unlimited`)
+  or "Cursor reported no usage limits."
+
+It is behind its own `agent.UsageCache` (60 s), like Claude's.
 
 ### 4.7 The chat manager: `internal/chats/`
 
@@ -2413,7 +2435,7 @@ group id. A `group` field in a body is a group id or `"__ungrouped__"` for the u
 | `POST /api/chats/{id}/archive` / `unarchive` | | |
 | `DELETE /api/chats/{id}` | | |
 | `GET /api/dirs?path=` | → `{path, parent, dirs, git}` | prototype, unchanged |
-| `GET /api/usage/claude?fresh=1` | → `PlanUsage` | the Claude plan's limits; cached 60 s, `fresh=1` skips it |
+| `GET /api/usage/{agent}?fresh=1` | → `PlanUsage` | `claude` or `cursor`: the plan's limits; cached 60 s, `fresh=1` skips it; 404 for another agent |
 | `POST /mcp/{token}` | MCP JSON-RPC | Claude board tools |
 | `POST /agent/{token}/{tool}` | JSON args → text | Cursor board commands |
 | `GET /` and files | the built client | only when `-client` is set |
@@ -3260,13 +3282,16 @@ from the `board` argument or "this board". `statusText` adds `stopped` → "Stop
     empty. When `chat.usage.ctxError` is set, the meter is replaced in the same spot by an error
     state: a warning glyph and "Context unavailable", with `ctxError` as its tooltip. It never shows
     a number then.
-  - In Claude chats the meter is a button (`CtxRing` with `onClick`); a click opens
+  - In both agents' chats the meter is a button (`CtxRing` with `onClick`); a click opens
     `UsagePopover` (`menu up usage-pop`, closed by the backdrop or Esc, which the composer then
     does not see): the context lines that are the tooltip elsewhere, then the plan's limits from
-    `api.claudeUsage()` (`GET /api/usage/claude`), session first. Each limit is a bar coloured like
-    the ring (`logic/usage.ts`), its percent, and "Resets in 4h 4m · Sun 1:09 AM". The last answer
-    is kept in the module while the page is open, so reopening shows it at once while it is
-    fetched again. Cursor chats' meter and the subagent rows' `CtxRing` stay spans with a `title`.
+    `api.usage(agent)` (`GET /api/usage/{agent}`), session first. The section is "Plan usage
+    limits" in Claude chats and "Cursor usage" in Cursor chats. Each limit is a bar coloured like
+    the ring (`logic/usage.ts`), its `detail` if any ("$413.89 of $1,101 · 38%"), its percent, and
+    "Resets in 4h 4m · Sun 1:09 AM". A `note` next to limits is shown as a warning under them.
+    "Updated …" turns the warning colour when the numbers are over 10 minutes old (`isStale`). Each
+    agent's last answer is kept in the module while the page is open, so reopening shows it at once
+    while it is fetched again. The subagent rows' `CtxRing` stay spans with a `title`.
   - Each change calls `api.configure`, which only saves the settings on the server (no agent runs
     before the first message). Once the first message is sent, folder, model and effort are locked.
 - `recentDirs` stays in localStorage (prototype); the default folder now comes from the server's

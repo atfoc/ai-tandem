@@ -75,18 +75,19 @@ export type Usage = {
   turns: number;
 };
 
-/** GET /api/usage/claude: the Claude plan's limits, from `claude -p /usage`. Not stored. */
+/** GET /api/usage/{agent}: the plan's limits, from `claude -p /usage` or `cursor-cost`. Not stored. */
 export type PlanUsage = {
   plan: boolean; // false: no limits reported (API-key login, logged out)
-  note?: string; // when plan is false: what /usage printed first
+  note?: string; // plan false: why; plan true: a warning about the limits (Cursor: its refresh failed)
   limits: UsageLimit[];
-  fetchedAt: string;
+  fetchedAt: string; // when the numbers are from
 };
 
 export type UsageLimit = {
-  kind: string; // "session", "weekly_all", "weekly_scoped", …
+  kind: string; // "session", "weekly_all", "weekly_scoped", Cursor's "individual.overall", …
   label: string; // "Current session", "Current week (Fable)"
   percent: number; // 0–100
+  detail?: string; // Cursor: "$413.89 of $1,101"
   resetsAt?: string;
   severity?: string;
   active?: boolean;

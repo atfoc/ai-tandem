@@ -1,4 +1,4 @@
-// Labels for the Claude plan's usage limits in the context popover. DOM-free.
+// Labels for an agent's plan usage limits in the context popover. DOM-free.
 
 import type { UsageLimit } from "../types.ts";
 
@@ -42,6 +42,11 @@ export function updatedAgo(fetchedAt: string, now: number): string {
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
+}
+
+/** Numbers older than 10 minutes: Cursor's come from a cache that may have stopped refreshing. */
+export function isStale(fetchedAt: string, now: number): boolean {
+  return now - Date.parse(fetchedAt) > 10 * MIN;
 }
 
 const ORDER: Record<string, number> = { session: 0, weekly_all: 1 };

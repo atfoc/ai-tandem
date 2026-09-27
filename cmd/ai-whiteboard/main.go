@@ -46,6 +46,7 @@ type options struct {
 	home, client, cwd    string
 	noOpen               bool
 	claudeBin, cursorBin string
+	cursorCostBin        string
 	paths                store.Paths
 }
 
@@ -92,6 +93,7 @@ func parseFlags(cmd string, args []string) options {
 	fs.StringVar(&o.cwd, "cwd", here, "default working folder for new chats")
 	fs.StringVar(&o.claudeBin, "claude", "claude", "Claude Code binary")
 	fs.StringVar(&o.cursorBin, "cursor", "agent", "Cursor agent binary")
+	fs.StringVar(&o.cursorCostBin, "cursor-cost", "cursor-cost", "cursor-cost binary, for the Cursor plan's usage (~/bin is tried too)")
 	fs.Parse(args)
 
 	home, _ := os.UserHomeDir()
@@ -150,7 +152,10 @@ func serve(o options) {
 		log.Printf("cursor deny rules: %v", err)
 	}
 	srv := &server.Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}, Bridge: br,
-		Client: o.client, Port: port, Usage: (&claude.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get}
+		Client: o.client, Port: port, Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
+			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
+			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
+		}}
 	if err := store.WriteServerFile(p, port); err != nil {
 		log.Printf("server.json: %v", err)
 	}

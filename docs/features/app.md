@@ -119,12 +119,14 @@ As in variant 4:
     The first reply waits for the agent to start.
   - Cursor's model list is fetched when the server starts, so its model picker is filled before
     any Cursor chat has run. Until the fetch finishes, the last known list is shown.
-  - In a Claude chat, clicking the context meter opens a popover with the chat's context and the
-    Claude plan's usage limits: the current session and the current week (all models, and each
-    model with its own weekly limit), each with its share used and when it resets. The limits are
-    checked when the popover opens (at most once a minute; ↻ checks again) and never stored. They
-    are the account's, so every Claude chat shows the same numbers. Cursor chats and subagent
-    meters keep their hover tooltip.
+  - Clicking the context meter opens a popover with the chat's context and the plan's usage
+    limits. In a Claude chat: the current session and the current week (all models, and each
+    model with its own weekly limit). In a Cursor chat: the billing cycle's spend against its
+    limit, in dollars, as `cursor-cost` reports it. Each limit shows its share used and when it
+    resets. The limits are checked when the popover opens (at most once a minute; ↻ checks again)
+    and never stored. They are the account's, so every chat of an agent shows the same numbers.
+    Cursor's come from a cache that `cursor-cost-refresh` keeps, so the popover shows how old they
+    are, in the warning colour after 10 minutes. Subagent meters keep their hover tooltip.
 
 ## Whiteboards
 

@@ -105,19 +105,20 @@ type Usage struct {
 	Turns     int    `json:"turns"`
 }
 
-// PlanUsage is the Claude subscription's usage limits, as `claude -p /usage` reports them.
-// It is fetched when the client asks and never stored.
+// PlanUsage is an agent's plan usage limits: Claude's as `claude -p /usage` reports them,
+// Cursor's as `cursor-cost` does. It is fetched when the client asks and never stored.
 type PlanUsage struct {
 	Plan      bool         `json:"plan"`           // false: no limits were reported (API-key login, logged out)
-	Note      string       `json:"note,omitempty"` // when Plan is false: the first line /usage printed
+	Note      string       `json:"note,omitempty"` // Plan false: why (Claude: the first line /usage printed); true: a warning about the limits
 	Limits    []UsageLimit `json:"limits"`
-	FetchedAt time.Time    `json:"fetchedAt"`
+	FetchedAt time.Time    `json:"fetchedAt"` // when the numbers are from
 }
 
 type UsageLimit struct {
-	Kind     string    `json:"kind"`               // "session", "weekly_all", "weekly_scoped", or as reported
+	Kind     string    `json:"kind"`               // "session", "weekly_all", "weekly_scoped", Cursor's bucket key, or as reported
 	Label    string    `json:"label"`              // "Current session", "Current week (all models)", "Current week (Fable)"
 	Percent  float64   `json:"percent"`            // 0–100
+	Detail   string    `json:"detail,omitempty"`   // Cursor: "$413.89 of $1,101"
 	ResetsAt time.Time `json:"resetsAt,omitzero"`  // zero: not reported
 	Severity string    `json:"severity,omitempty"` // "normal", …
 	Active   bool      `json:"active,omitempty"`   // the limit that binds right now
