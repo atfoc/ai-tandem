@@ -82,10 +82,19 @@ As in variant 4:
   - Double-click a group's name to rename it. Click its header to collapse or expand it.
   - When a group is collapsed, its header shows a count, and a live dot if any of its agents is
     working.
-  - Hovering the header shows **+** (new chat or new whiteboard in that group) and a menu with
-    *Rename*, *Archive*, *Delete*.
+  - Hovering the header shows **+** (new chat, new whiteboard or new group in that group) and a
+    menu with *Rename*, *Archive*, *Delete*.
+- **Subgroups.** A group can hold groups, to any depth. *Group* in a group's **+** menu makes one,
+  opening the parent if it is collapsed.
+  - A subgroup is listed inside its parent, before the parent's boards and chats, one step further
+    right, with a thin line down its contents. Its header is in normal case with a folder icon.
+  - Hovering a group header or a board shows its full path, e.g. `Work / Infra / Schema`.
+  - A collapsed group's count and live dot include its subgroups.
+  - Boards never hold groups.
 - **Moving.** Drag a chat or a board onto a group, or onto the ungrouped area. A board's chats move
-  with it. Dragging a group reorders the groups.
+  with it. Dragging a group onto the top half of another group's header puts it just before that
+  group, as its sibling; onto the lower half or the group's contents puts it inside; onto the
+  ungrouped area makes it top-level. A group can't go into itself or its own subgroups.
 - **Boards are sub-groups.**
   - A board row has a caret, a board icon and its name, with its chats indented beneath it.
   - Hovering a board shows **+** for a new chat on it.
@@ -301,8 +310,8 @@ chat's folder, model and effort become the defaults, even the ones the user did 
 - **Agent order** is always Claude Code, then Cursor, in every menu. It never changes with what
   was used last.
 - **Ungrouped** counts as a group of its own.
-- **A new group** starts with the defaults the user used most recently anywhere. From then on it
-  keeps its own.
+- **A new group** starts with the defaults the user used most recently anywhere; **a new
+  subgroup** starts with its parent's. From then on it keeps its own.
 - Board chats use the defaults of the group the board is in.
 - Defaults only affect new chats. Changing one never changes an existing chat. Moving a chat to
   another group doesn't change its settings.
@@ -325,7 +334,8 @@ chat's folder, model and effort become the defaults, even the ones the user did 
   - Chats, boards and groups can be archived from their menu.
   - Archived items disappear from the sidebar.
   - Archiving a chat **stops its agent**. Any approval it was waiting on is answered "no".
-  - Archiving a board archives its chats. Archiving a group archives everything in it.
+  - Archiving a board archives its chats. Archiving a group archives everything in it, its
+    subgroups too.
 - **Show archived**
   - The sidebar's switch shows archived items **in place**, in their groups, greyed and marked.
   - Each has *Unarchive* and *Delete*.
@@ -333,13 +343,16 @@ chat's folder, model and effort become the defaults, even the ones the user did 
 - **Unarchive** puts the item back where it was. The chat's next message resumes its session.
   - Unarchiving a board chat whose board is archived brings the board back too. The board's
     other archived chats stay archived.
+  - Unarchiving anything inside an archived group brings back that group and the groups above it,
+    but not their other contents.
 - **Delete** is permanent and always asks for confirmation first.
   - Deleting a **chat** removes it and its history, and stops its agent.
   - Deleting a **board** removes its file and **all its chats**.
   - If an agent is working on the board, archiving or deleting it asks first: "An agent is working
     on this board. Stop it and archive/delete?" The agent's last edit stays as it is.
-  - Deleting a **group** asks whether to delete everything in it, or to move its contents to
-    ungrouped and delete only the group.
+  - Deleting a **group** asks whether to delete everything in it (its subgroups too), or to move
+    its contents and subgroups up to its parent (ungrouped for a top-level group) and delete only
+    the group.
 
 ## Impact on the existing project
 

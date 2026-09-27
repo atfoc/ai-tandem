@@ -61,15 +61,20 @@ func RecordChange(d *model.Defaults, g string, a model.AgentKind, cwd string, ch
 	apply(&d.Last, a, cwd, change)
 }
 
-// SeedGroup gives a new group the defaults used most recently anywhere.
-func SeedGroup(d *model.Defaults, g string) {
+// SeedGroup gives a new group the defaults used most recently anywhere, and a new subgroup
+// (parent != "") its parent's defaults.
+func SeedGroup(d *model.Defaults, g, parent string) {
 	if d.Groups == nil {
 		d.Groups = map[string]model.GroupDefaults{}
 	}
-	cp := model.GroupDefaults{Cwd: d.Last.Cwd}
-	if d.Last.ByAgent != nil {
-		cp.ByAgent = make(map[model.AgentKind]model.ModelChoice, len(d.Last.ByAgent))
-		for k, v := range d.Last.ByAgent {
+	src := d.Last
+	if pd, ok := d.Groups[parent]; parent != "" && ok {
+		src = pd
+	}
+	cp := model.GroupDefaults{Cwd: src.Cwd}
+	if src.ByAgent != nil {
+		cp.ByAgent = make(map[model.AgentKind]model.ModelChoice, len(src.ByAgent))
+		for k, v := range src.ByAgent {
 			cp.ByAgent[k] = v
 		}
 	}

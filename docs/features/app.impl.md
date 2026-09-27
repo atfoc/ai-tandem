@@ -295,6 +295,7 @@ const Ungrouped = "__ungrouped__"
 type Group struct {
 	ID        string `json:"id"`   // "g_" + 8 random base36 chars
 	Name      string `json:"name"`
+	Parent    string `json:"parent,omitempty"` // the group it is nested in; "" at the top level
 	Collapsed bool   `json:"collapsed,omitempty"`
 	Archive          // embedded, see below
 }
@@ -2409,11 +2410,12 @@ group id. A `group` field in a body is a group id or `"__ungrouped__"` for the u
 | `POST /api/client/flushed` | `{client}` | answer to `server_stopping` |
 | `POST /api/rpc-reply` | `{id, result?, error?}` | answer to an `rpc` event |
 | `GET /api/state` | → `Snapshot` | same as the `snapshot` event |
-| `POST /api/groups` | `{name?}` → `Group` | |
+| `POST /api/groups` | `{name?, parent?}` → `Group` | parent missing 404, archived 409 |
 | `PATCH /api/groups/{id}` | `{name?, collapsed?}` | |
+| `POST /api/groups/{id}/move` | `{parent, before?}` | `""` parent: top level; `""` before: last. Into itself or a subgroup 400 |
 | `PUT /api/groups/order` | `{ids}` | |
-| `POST /api/groups/{id}/archive` / `unarchive` | | |
-| `DELETE /api/groups/{id}?contents=delete\|ungroup` | | |
+| `POST /api/groups/{id}/archive` / `unarchive` | | the whole subtree |
+| `DELETE /api/groups/{id}?contents=delete\|keep` | | keep: contents and subgroups go to the parent |
 | `POST /api/boards` | `{name?, group, new?}` → `Board` | file written before the answer; `new` from `create_board` |
 | `GET /api/boards/{id}/scene` | → the `.excalidraw` JSON | 404 when the board is unknown |
 | `PUT /api/boards/{id}/scene` | the `.excalidraw` JSON | 409 when archived |
@@ -2667,9 +2669,9 @@ export const api = {
   release: () => call("POST", "/api/client/release", { client: clientId }),
   flushed: () => call("POST", "/api/client/flushed", { client: clientId }),
   rpcReply: (id: string, reply: { result?: unknown; error?: string }) => call("POST", "/api/rpc-reply", { id, ...reply }),
-  newGroup: (name?: string) => call<Group>("POST", "/api/groups", { name }),
+  newGroup: (name?: string, parent?: string) => call<Group>("POST", "/api/groups", { name, parent }),
   updateGroup: (id: string, p: { name?: string; collapsed?: boolean }) => call("PATCH", `/api/groups/${id}`, p),
-  reorderGroups: (ids: string[]) => call("PUT", "/api/groups/order", { ids }),
+  moveGroup: (id: string, parent: string, before = "") => call("POST", `/api/groups/${id}/move`, { parent, before }),
   archive: (k: "groups" | "boards" | "chats", id: string) => call("POST", `/api/${k}/${id}/archive`),
   unarchive: (k: "groups" | "boards" | "chats", id: string) => call("POST", `/api/${k}/${id}/unarchive`),
   deleteGroup: (id: string, contents: "delete" | "ungroup") => call("DELETE", `/api/groups/${id}?contents=${contents}`),

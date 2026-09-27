@@ -72,4 +72,7 @@ test("the @ list names each board's group", () => {
     mentionOptions("fl", boards, groups).map((o) => [o.board.id, o.group]),
     [["b_flow0001", "One"], ["b_flow0002", "Two"]],
   );
+  const nested: Group[] = [...groups, { id: "g_sub", name: "Sub", parent: "g_two" }];
+  const moved = { ...boards, b_flow0002: { ...boards.b_flow0002, group: "g_sub" } };
+  assert.equal(mentionOptions("fl", moved, nested)[1].group, "Two / Sub");
 });

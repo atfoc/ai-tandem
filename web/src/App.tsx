@@ -7,7 +7,7 @@ import { ChatHeader, Thread } from "./ChatView.tsx";
 import { Composer } from "./Composer.tsx";
 import { Canvas } from "./Canvas.tsx";
 import { ConfirmDialog, TakeoverScreen, WaitingScreen, Menu, reportError } from "./Dialogs.tsx";
-import { boardChats } from "./logic/tree.ts";
+import { boardChats, groupPath } from "./logic/tree.ts";
 import { AgentGlyph, BoardIcon } from "./icons.tsx";
 import { Resizer } from "./Resizer.tsx";
 import { SubagentDrawer } from "./Subagents.tsx";
@@ -87,7 +87,7 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
   const b = useStore((s) => s.boards[board]);
   const all = useStore((s) => s.chats);
   const showArchived = useStore((s) => s.showArchived);
-  const group = useStore((s) => s.groups.find((g) => g.id === b?.group));
+  const groups = useStore((s) => s.groups);
   const selChat = useStore((s) => s.sel.chat);
   const [menu, setMenu] = useState(false);
   if (!b) return null;
@@ -98,7 +98,7 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
   };
   return (
     <div className="board-bar">
-      <span className="board-crumb">{group ? <>{group.name} <span className="sep">/</span> </> : null}<BoardIcon /> <b>{b.name}</b></span>
+      <span className="board-crumb">{groupPath(groups, b.group).map((name, i) => <React.Fragment key={i}>{name} <span className="sep">/</span> </React.Fragment>)}<BoardIcon /> <b>{b.name}</b></span>
       {b.archived && <span className="archived-note">Archived — read-only</span>}
       <span className="grow" />
       {!chatOpen && chats.length > 0 && (

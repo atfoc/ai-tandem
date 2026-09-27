@@ -12,7 +12,8 @@ import { selectionRef, pointRef, plainText, type Ref } from "./logic/refs.ts";
 import { getState, flash, markBusy, type Box } from "./store.ts";
 import { api, ApiError } from "./api.ts";
 import { select } from "./Sidebar.tsx";
-import { UNGROUPED, type AgentKind, type Board } from "./types.ts";
+import { groupPath } from "./logic/tree.ts";
+import type { AgentKind, Board } from "./types.ts";
 
 export type Scene = { elements: El[]; appState: any; files: any; version: number; rev: number };
 export const scenes = new Map<string, Scene>(); // key: board id
@@ -267,7 +268,8 @@ function expandIds(board: string, v: any): any {
 
 type ToolCall = { chat: string; board: string; name: string; args: any }; // board = the chat's own board id
 
-const groupName = (g: string) => (g === UNGROUPED ? "Ungrouped" : getState().groups.find((x) => x.id === g)?.name ?? "Ungrouped");
+/** The group's path, "Work / Infra", or "Ungrouped". */
+const groupName = (g: string) => groupPath(getState().groups, g).join(" / ") || "Ungrouped";
 const byName = (a: Board, b: Board) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /** The board a call names (`args.board`, an id), or the chat's own board. */

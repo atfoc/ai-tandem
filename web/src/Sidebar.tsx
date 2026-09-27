@@ -1,5 +1,5 @@
-// The sidebar: groups the user made, each holding whiteboards (with their own
-// chats) and plain chats, plus the ungrouped area. Also the selection helpers
+// The sidebar: groups the user made, each holding subgroups, whiteboards (with
+// their own chats) and plain chats, plus the ungrouped area. Also the selection helpers
 // every part of the app opens boards and chats through.
 import React, { useEffect, useRef, useState } from "react";
 import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, isBusy, chatTitle, boardName, type Sel } from "./store.ts";
@@ -9,7 +9,7 @@ import { flush } from "./board.ts";
 import { focusComposer, subline } from "./Composer.tsx";
 import { NameInput } from "./ChatView.tsx";
 import { Menu, confirm, reportError } from "./Dialogs.tsx";
-import { buildTree, boardChats } from "./logic/tree.ts";
+import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
 import { statusText } from "./logic/labels.ts";
 import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, SunIcon, SystemIcon } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
@@ -62,11 +62,17 @@ export async function newBoard(group: string): Promise<string> {
   return b.id;
 }
 
-/** Returns the new group's id; the header opens in rename mode. */
-export async function newGroup(): Promise<string> {
-  const g = await api.newGroup();
+/** Returns the new group's id; the header opens in rename mode. A subgroup's parent opens to show it. */
+export async function newGroup(parent = ""): Promise<string> {
+  const g = await api.newGroup(undefined, parent || undefined);
   setState((s) => ({ groups: s.groups.some((x) => x.id === g.id) ? s.groups : [...s.groups, g] }));
+  if (parent && getState().groups.find((x) => x.id === parent)?.collapsed) setCollapsed(parent, false);
   return g.id;
+}
+
+function setCollapsed(id: string, collapsed: boolean) {
+  setState((s) => ({ groups: s.groups.map((x) => (x.id === id ? { ...x, collapsed } : x)) }));
+  attempt("Couldn't update the group", () => api.updateGroup(id, { collapsed }));
 }
 
 // ---------------------------------------------------------------- actions (menus)
@@ -104,16 +110,20 @@ function deleteChat(c: ChatView) {
 
 function archiveGroup(g: Group) {
   attempt("Couldn't archive the group", async () => {
-    await Promise.all(Object.values(getState().boards).filter((b) => b.group === g.id).map((b) => flush(b.id)));
+    const s = getState();
+    const inside = subtree(s.groups, g.id);
+    await Promise.all(Object.values(s.boards).filter((b) => inside.has(b.group)).map((b) => flush(b.id)));
     await api.archive("groups", g.id);
   });
 }
 
+/** Keeping the contents moves them, and the subgroups, up to the parent (ungrouped at the top level). */
 function deleteGroup(g: Group) {
+  const parent = g.parent && getState().groups.find((x) => x.id === g.parent);
   confirm({
     title: `Delete ${g.name}?`,
     actions: [
-      { label: "Move contents to ungrouped", run: () => api.deleteGroup(g.id, "ungroup") },
+      { label: `Move contents to ${parent ? parent.name : "ungrouped"}`, run: () => api.deleteGroup(g.id, "keep") },
       { label: "Delete everything in it", tone: "danger", run: () => api.deleteGroup(g.id, "delete") },
     ],
   });
@@ -126,16 +136,28 @@ function moveTo(key: string, group: string) {
   if (kind === "chat" && s.chats[id] && !s.chats[id].board && s.chats[id].group !== group) attempt("Couldn't move the chat", () => api.moveChat(id, group));
 }
 
-function reorder(dragged: string, before: string) {
-  if (dragged === before) return;
+/** The group being dragged, so drop targets can refuse the group itself and its subgroups. */
+let draggingGroup: string | null = null;
+
+/** Whether the dragged group may go into (or before) target: not into an archived group, nor into itself. */
+function canTakeGroup(target: string, into: boolean): boolean {
+  const groups = getState().groups;
+  if (!draggingGroup) return false;
+  if (into && target === UNGROUPED) return true;
+  if (into && groups.find((g) => g.id === target)?.archived) return false;
+  return !subtree(groups, draggingGroup).has(target);
+}
+
+/** Nests a group in parent ("" = top level), before group before ("" = last among all groups). */
+function moveGroup(dragged: string, parent: string, before = "") {
   const groups = getState().groups;
   const moving = groups.find((g) => g.id === dragged);
-  if (!moving) return;
+  if (!moving || dragged === before || (!before && (moving.parent ?? "") === parent)) return;
   const rest = groups.filter((g) => g.id !== dragged);
-  const at = rest.findIndex((g) => g.id === before);
-  const next = at < 0 ? [...rest, moving] : [...rest.slice(0, at), moving, ...rest.slice(at)];
-  setState({ groups: next });
-  attempt("Couldn't reorder the groups", () => api.reorderGroups(next.map((g) => g.id)));
+  const at = before ? rest.findIndex((g) => g.id === before) : -1;
+  const moved = { ...moving, parent: parent || undefined };
+  setState({ groups: at < 0 ? [...rest, moved] : [...rest.slice(0, at), moved, ...rest.slice(at)] });
+  attempt("Couldn't move the group", () => api.moveGroup(dragged, parent, before));
 }
 
 // ---------------------------------------------------------------- sidebar
@@ -152,7 +174,7 @@ export function Sidebar() {
   const [menu, setMenu] = useState(false);
   const tree = buildTree({ groups, boards, chats }, showArchived);
 
-  const addGroup = () => attempt("Couldn't create the group", async () => setEditing("group:" + await newGroup()));
+  const addGroup = (parent = "") => attempt("Couldn't create the group", async () => setEditing("group:" + await newGroup(parent)));
   const addBoard = (g: string) => attempt("Couldn't create the whiteboard", async () => setEditing("board:" + await newBoard(g)));
 
   return (
@@ -178,10 +200,10 @@ export function Sidebar() {
           {tree.loose.chats.map((c) => <ChatRow key={c.id} c={c} editing={editing} setEditing={setEditing} />)}
           {!tree.loose.boards.length && !tree.loose.chats.length && !tree.groups.length && <div className="side-empty">No chats yet.</div>}
         </DropZone>
-        {tree.groups.map((g) => (
-          <GroupNode key={g.group.id} g={g.group} boards={g.boards} chats={g.chats} editing={editing} setEditing={setEditing} addBoard={addBoard} />
+        {tree.groups.map((n) => (
+          <GroupNode key={n.group.id} n={n} depth={0} editing={editing} setEditing={setEditing} addBoard={addBoard} addGroup={addGroup} />
         ))}
-        <button className="side-addgroup" onClick={addGroup}><GroupIcon /> New group</button>
+        <button className="side-addgroup" onClick={() => addGroup()}><GroupIcon /> New group</button>
       </div>
       <div className="side-foot">
         <label className="side-archived">
@@ -227,18 +249,27 @@ export function AgentItems({ onPick, suffix = " chat" }: { onPick: (a: AgentKind
   );
 }
 
+/** Takes boards and chats (moved into group) and groups (nested in it; the ungrouped area: top level). */
 function DropZone({ group, className, children }: { group: string; className?: string; children: React.ReactNode }) {
   const [over, setOver] = useState(false);
   return (
     <div className={`${className ?? ""} ${over ? "drop" : ""}`}
-      onDragOver={(e) => { if (e.dataTransfer.types.includes("text/x-aiwb")) { e.preventDefault(); e.stopPropagation(); setOver(true); } }}
+      onDragOver={(e) => {
+        const types = e.dataTransfer.types;
+        if (!types.includes("text/x-aiwb") && !types.includes("text/x-aiwb-group")) return;
+        e.stopPropagation();
+        if (types.includes("text/x-aiwb-group") && !canTakeGroup(group, true)) { setOver(false); return; }
+        e.preventDefault(); setOver(true);
+      }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); }}
       onDrop={(e) => {
         const k = e.dataTransfer.getData("text/x-aiwb");
+        const gid = e.dataTransfer.getData("text/x-aiwb-group");
         setOver(false);
-        if (!k) return;
+        if (!k && !gid) return;
         e.preventDefault(); e.stopPropagation();
-        moveTo(k, group);
+        if (k) moveTo(k, group);
+        else moveGroup(gid, group === UNGROUPED ? "" : group);
       }}>
       {children}
     </div>
@@ -283,19 +314,20 @@ function AddMenu({ title, head, children }: { title: string; head: string; child
 
 const ArchivedTag = () => <span className="archived-tag">Archived</span>;
 
-function GroupNode({ g, boards, chats, editing, setEditing, addBoard }: Edit & {
-  g: Group; boards: Board[]; chats: ChatView[]; addBoard: (group: string) => void;
+/** A group and, nested inside it, its subgroups (first), boards and plain chats. depth 0 is the top level. */
+function GroupNode({ n, depth, editing, setEditing, addBoard, addGroup }: Edit & {
+  n: GroupTree; depth: number; addBoard: (group: string) => void; addGroup: (parent: string) => void;
 }) {
+  const { group: g, boards, chats, children } = n;
   const all = useStore((s) => s.chats);
+  const groups = useStore((s) => s.groups);
   const showArchived = useStore((s) => s.showArchived);
   const [dropBefore, setDropBefore] = useState(false);
   const collapsed = !!g.collapsed;
-  const count = boards.length + chats.length;
-  const working = chats.some((c) => isBusy(c.status)) || boards.some((b) => boardChats(all, b.id, showArchived).some((c) => isBusy(c.status)));
-  const toggle = () => {
-    setState((s) => ({ groups: s.groups.map((x) => (x.id === g.id ? { ...x, collapsed: !collapsed } : x)) }));
-    attempt("Couldn't update the group", () => api.updateGroup(g.id, { collapsed: !collapsed }));
-  };
+  const inside = contents(n);
+  const count = inside.boards.length + inside.chats.length;
+  const working = inside.chats.some((c) => isBusy(c.status)) || inside.boards.some((b) => boardChats(all, b.id, showArchived).some((c) => isBusy(c.status)));
+  const toggle = () => setCollapsed(g.id, !collapsed);
   const rename = (v: string) => {
     setEditing(null);
     if (!v || v === g.name) return;
@@ -309,22 +341,32 @@ function GroupNode({ g, boards, chats, editing, setEditing, addBoard }: Edit & {
        { label: "Archive", run: () => archiveGroup(g) },
        { label: "Delete", tone: "danger" as const, run: () => deleteGroup(g) }];
   return (
-    <DropZone group={g.id} className={`side-group ${g.archived ? "archived" : ""}`}>
-      <div className={`side-group-head ${dropBefore ? "drop-before" : ""}`}
+    <DropZone group={g.id} className={`side-group ${depth ? "sub" : ""} ${g.archived ? "archived" : ""}`}>
+      {/* a group dropped on the top part of the header goes before this group; lower, into it (the DropZone) */}
+      <div className={`side-group-head ${dropBefore ? "drop-before" : ""}`} title={groupPath(groups, g.id).join(" / ")}
         draggable={editing !== "group:" + g.id}
-        onDragStart={(e) => { e.dataTransfer.setData("text/x-aiwb-group", g.id); e.dataTransfer.effectAllowed = "move"; }}
-        onDragOver={(e) => { if (e.dataTransfer.types.includes("text/x-aiwb-group")) { e.preventDefault(); e.stopPropagation(); setDropBefore(true); } }}
+        onDragStart={(e) => { e.stopPropagation(); draggingGroup = g.id; e.dataTransfer.setData("text/x-aiwb-group", g.id); e.dataTransfer.effectAllowed = "move"; }}
+        onDragEnd={() => { draggingGroup = null; }}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes("text/x-aiwb-group")) return;
+          const r = e.currentTarget.getBoundingClientRect();
+          const before = e.clientY < r.top + r.height / 2 && canTakeGroup(g.id, false);
+          setDropBefore(before);
+          if (before) { e.preventDefault(); e.stopPropagation(); }
+        }}
         onDragLeave={() => setDropBefore(false)}
         onDrop={(e) => {
+          if (!dropBefore) return;
           const id = e.dataTransfer.getData("text/x-aiwb-group");
           setDropBefore(false);
           if (!id) return;
           e.preventDefault(); e.stopPropagation();
-          reorder(id, g.id);
+          moveGroup(id, g.parent ?? "", g.id);
         }}
         onClick={toggle}
         onDoubleClick={(e) => { e.stopPropagation(); if (!g.archived) setEditing("group:" + g.id); }}>
         <span className={`side-caret ${collapsed ? "" : "open"}`}><Chevron /></span>
+        {depth > 0 && <span className="side-group-icon"><GroupIcon /></span>}
         {editing === "group:" + g.id
           ? <InlineName value={g.name} onDone={rename} />
           : <span className="side-group-name">{g.name}</span>}
@@ -337,6 +379,7 @@ function GroupNode({ g, boards, chats, editing, setEditing, addBoard }: Edit & {
             {(close) => <>
               <AgentItems onPick={(a) => { close(); void newChat(a, { group: g.id }); }} />
               <button className="menu-item agent" onClick={() => { close(); addBoard(g.id); }}><BoardIcon /> Whiteboard</button>
+              <button className="menu-item agent" onClick={() => { close(); addGroup(g.id); }}><GroupIcon /> Group</button>
             </>}
           </AddMenu>
         )}
@@ -344,9 +387,12 @@ function GroupNode({ g, boards, chats, editing, setEditing, addBoard }: Edit & {
       </div>
       {!collapsed && (
         <div className="side-group-body">
+          {children.map((c) => (
+            <GroupNode key={c.group.id} n={c} depth={depth + 1} editing={editing} setEditing={setEditing} addBoard={addBoard} addGroup={addGroup} />
+          ))}
           {boards.map((b) => <BoardNode key={b.id} b={b} editing={editing} setEditing={setEditing} />)}
           {chats.map((c) => <ChatRow key={c.id} c={c} editing={editing} setEditing={setEditing} />)}
-          {!count && <div className="side-empty">Empty — use + or drag chats here.</div>}
+          {!children.length && !boards.length && !chats.length && <div className="side-empty">Empty — use + or drag chats here.</div>}
         </div>
       )}
     </DropZone>
@@ -355,6 +401,7 @@ function GroupNode({ g, boards, chats, editing, setEditing, addBoard }: Edit & {
 
 function BoardNode({ b, editing, setEditing }: Edit & { b: Board }) {
   const sel = useStore((s) => s.sel);
+  const groups = useStore((s) => s.groups);
   const all = useStore((s) => s.chats);
   const showArchived = useStore((s) => s.showArchived);
   const other = useStore((s) => s.busyOn[b.id]?.agent);
@@ -380,6 +427,7 @@ function BoardNode({ b, editing, setEditing }: Edit & { b: Board }) {
   return (
     <div className={`side-board ${b.archived ? "archived" : ""}`}>
       <div className={`side-row is-board ${on && !sel.chat ? "on" : on ? "within" : ""}`} {...(b.archived || editing === key ? {} : drag(key))}
+        title={[...groupPath(groups, b.group), b.name].join(" / ")}
         onClick={() => openBoard(b.id)} onDoubleClick={() => { if (!b.archived) setEditing(key); }}>
         <button className={`side-caret ${open ? "open" : ""} ${chats.length ? "" : "none"}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}><Chevron /></button>
         <span className="side-board-icon">{working ? <span className={`agent-${working}`}><AgentGlyph agent={working} size={12} /></span> : <BoardIcon />}</span>

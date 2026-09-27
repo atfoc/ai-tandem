@@ -76,7 +76,7 @@ func statusOf(err error, fallback int) int {
 		return http.StatusNotFound
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
-		errors.Is(err, chats.ErrBusy):
+		errors.Is(err, chats.ErrBusy), errors.Is(err, app.ErrGroupArchived):
 		return http.StatusConflict
 	}
 	var pe *fs.PathError
@@ -189,16 +189,27 @@ func (s *Server) Handler() http.Handler {
 
 	// ---- groups ----
 	mux.HandleFunc("POST /api/groups", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Name string }
+		var body struct{ Name, Parent string }
 		if !readJSON(w, r, &body) {
 			return
 		}
-		g, err := a.CreateGroup(body.Name)
+		g, err := a.CreateGroup(body.Name, body.Parent)
 		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
+			fail(w, err, http.StatusBadRequest)
 			return
 		}
 		writeJSON(w, g)
+	})
+	mux.HandleFunc("POST /api/groups/{id}/move", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Parent, Before string }
+		if !readJSON(w, r, &body) {
+			return
+		}
+		if err := a.MoveGroup(r.PathValue("id"), body.Parent, body.Before); err != nil {
+			fail(w, err, http.StatusBadRequest)
+			return
+		}
+		ok(w)
 	})
 	mux.HandleFunc("PUT /api/groups/order", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ IDs []string }
@@ -230,9 +241,9 @@ func (s *Server) Handler() http.Handler {
 		switch r.URL.Query().Get("contents") {
 		case "delete":
 			del = true
-		case "ungroup":
+		case "keep":
 		default:
-			writeError(w, http.StatusBadRequest, "contents must be delete or ungroup")
+			writeError(w, http.StatusBadRequest, "contents must be delete or keep")
 			return
 		}
 		if err := a.DeleteGroup(r.PathValue("id"), del); err != nil {

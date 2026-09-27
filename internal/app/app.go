@@ -1,10 +1,11 @@
-// Package app ties the stores together: groups, moves, and the archive / unarchive / delete
-// cascades across boards and chats.
+// Package app ties the stores together: groups and their subgroups, moves, and the archive /
+// unarchive / delete cascades across groups, boards and chats.
 package app
 
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"ai-whiteboard/internal/boards"
@@ -39,7 +40,10 @@ type Snapshot struct {
 	DataDir    string                             `json:"dataDir"`
 }
 
-var ErrGroupNotFound = errors.New("no such group")
+var (
+	ErrGroupNotFound = errors.New("no such group")
+	ErrGroupArchived = errors.New("the group is archived")
+)
 
 // Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats from Chats.
 func (a *App) Snapshot() Snapshot {
@@ -127,15 +131,58 @@ func (a *App) updateGroup(id string, f func(g *model.Group) error) error {
 	})
 }
 
-func (a *App) CreateGroup(name string) (model.Group, error) {
+func groupIndex(gs []model.Group, id string) int {
+	return slices.IndexFunc(gs, func(g model.Group) bool { return g.ID == id })
+}
+
+// subtree returns id and the ids of every group nested in it, at any depth.
+func subtree(gs []model.Group, id string) map[string]bool {
+	in := map[string]bool{id: true}
+	for grew := true; grew; {
+		grew = false
+		for _, g := range gs {
+			if !in[g.ID] && g.Parent != "" && in[g.Parent] {
+				in[g.ID], grew = true, true
+			}
+		}
+	}
+	return in
+}
+
+func (a *App) subtreeOf(id string) map[string]bool {
+	var in map[string]bool
+	a.St.Read(func(s *model.State) { in = subtree(s.Groups, id) })
+	return in
+}
+
+// checkParent reports an error unless parent is a group that is not archived.
+func checkParent(s *model.State, parent string) error {
+	i := groupIndex(s.Groups, parent)
+	if i < 0 {
+		return fmt.Errorf("%w %q", ErrGroupNotFound, parent)
+	}
+	if s.Groups[i].Archived {
+		return fmt.Errorf("%w: %s", ErrGroupArchived, s.Groups[i].Name)
+	}
+	return nil
+}
+
+// CreateGroup adds a group at the top level (parent "") or nested in parent. A subgroup starts
+// with its parent's defaults, a top-level group with the ones used most recently anywhere.
+func (a *App) CreateGroup(name, parent string) (model.Group, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "New group"
 	}
-	g := model.Group{ID: model.NewID("g_"), Name: name}
+	g := model.Group{ID: model.NewID("g_"), Name: name, Parent: parent}
 	if err := a.St.Update(func(s *model.State) error {
+		if parent != "" {
+			if err := checkParent(s, parent); err != nil {
+				return err
+			}
+		}
 		s.Groups = append(s.Groups, g)
-		defaults.SeedGroup(&s.Defaults, g.ID)
+		defaults.SeedGroup(&s.Defaults, g.ID, parent)
 		return nil
 	}); err != nil {
 		return model.Group{}, err
@@ -197,6 +244,45 @@ func (a *App) ReorderGroups(ids []string) error {
 	return nil
 }
 
+// MoveGroup nests a group in parent ("" for the top level) and puts it before the group before
+// in the order ("" for last). A group can't go into itself, a group nested in it, or an
+// archived group. Its contents and subgroups go with it.
+func (a *App) MoveGroup(id, parent, before string) error {
+	if err := a.St.Update(func(s *model.State) error {
+		i := groupIndex(s.Groups, id)
+		if i < 0 {
+			return fmt.Errorf("%w %q", ErrGroupNotFound, id)
+		}
+		if parent != "" {
+			if subtree(s.Groups, id)[parent] {
+				return errors.New("a group can't go inside itself")
+			}
+			if err := checkParent(s, parent); err != nil {
+				return err
+			}
+		}
+		g := s.Groups[i]
+		g.Parent = parent
+		rest := slices.Delete(slices.Clone(s.Groups), i, i+1)
+		at := len(rest)
+		switch before {
+		case "":
+		case id:
+			at = i
+		default:
+			if at = groupIndex(rest, before); at < 0 {
+				return fmt.Errorf("%w %q", ErrGroupNotFound, before)
+			}
+		}
+		s.Groups = slices.Insert(rest, at, g)
+		return nil
+	}); err != nil {
+		return err
+	}
+	a.broadcastGroups()
+	return nil
+}
+
 // ---- moves ----------------------------------------------------------------
 
 // MoveBoard moves a board; its chats follow, since their group is the board's.
@@ -234,29 +320,30 @@ func (a *App) archiveBoard(id string, ar model.Archive) error {
 	return a.Boards.SetArchive(id, ar)
 }
 
-// plainChatsOf returns the plain (non-board) chats of a group.
-func (a *App) plainChatsOf(group string) []model.ChatView {
+// plainChatsIn returns the plain (non-board) chats of the groups in.
+func (a *App) plainChatsIn(in map[string]bool) []model.ChatView {
 	var out []model.ChatView
 	for _, c := range a.Chats.Views() {
-		if c.Board == "" && c.Group == group {
+		if c.Board == "" && in[c.Group] {
 			out = append(out, c)
 		}
 	}
 	return out
 }
 
-func (a *App) boardsOf(group string) []model.Board {
+// boardsIn returns the boards of the groups in.
+func (a *App) boardsIn(in map[string]bool) []model.Board {
 	var out []model.Board
 	for _, b := range a.Boards.List() {
-		if b.Group == group {
+		if in[b.Group] {
 			out = append(out, b)
 		}
 	}
 	return out
 }
 
-// Archive archives a chat, a board (with its chats) or a group (with everything in it). Every
-// item archived by this call shares one archive op id.
+// Archive archives a chat, a board (with its chats) or a group (with everything in it, its
+// subgroups too). Every item archived by this call shares one archive op id.
 func (a *App) Archive(k Kind, id string) error {
 	ar := model.Archive{Archived: true, Op: model.NewID("a_")}
 	switch k {
@@ -274,7 +361,8 @@ func (a *App) Archive(k Kind, id string) error {
 		if _, err := a.group(id); err != nil {
 			return err
 		}
-		for _, b := range a.boardsOf(id) {
+		in := a.subtreeOf(id)
+		for _, b := range a.boardsIn(in) {
 			if b.Archived {
 				continue
 			}
@@ -282,7 +370,7 @@ func (a *App) Archive(k Kind, id string) error {
 				return err
 			}
 		}
-		for _, c := range a.plainChatsOf(id) {
+		for _, c := range a.plainChatsIn(in) {
 			if c.Archived {
 				continue
 			}
@@ -290,7 +378,15 @@ func (a *App) Archive(k Kind, id string) error {
 				return err
 			}
 		}
-		if err := a.updateGroup(id, func(g *model.Group) error { g.Archive = ar; return nil }); err != nil {
+		if err := a.St.Update(func(s *model.State) error {
+			for i := range s.Groups {
+				g := &s.Groups[i]
+				if g.ID == id || (in[g.ID] && !g.Archived) {
+					g.Archive = ar
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 		a.broadcastGroups()
@@ -299,21 +395,35 @@ func (a *App) Archive(k Kind, id string) error {
 	return fmt.Errorf("unknown kind %q", k)
 }
 
-// unarchiveGroupRecord clears the group's own archive mark only (not its contents).
+// unarchiveGroupRecord clears the archive mark of the group and of every group it is nested
+// in, so it shows again; not their contents.
 func (a *App) unarchiveGroupRecord(id string) error {
-	g, err := a.group(id)
-	if err != nil || !g.Archived {
-		return nil // Ungrouped, or not archived: nothing to do
-	}
-	if err := a.updateGroup(id, func(g *model.Group) error { g.Archive = model.Archive{}; return nil }); err != nil {
+	changed := false
+	if err := a.St.Update(func(s *model.State) error {
+		for id != "" {
+			i := groupIndex(s.Groups, id)
+			if i < 0 {
+				return nil // Ungrouped, or gone
+			}
+			if s.Groups[i].Archived {
+				s.Groups[i].Archive = model.Archive{}
+				changed = true
+			}
+			id = s.Groups[i].Parent
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	a.broadcastGroups()
+	if changed {
+		a.broadcastGroups()
+	}
 	return nil
 }
 
 // Unarchive puts an item back where it was. A chat brings back its archived board and group
-// record; a board or a group brings back exactly what was archived together with it.
+// records; a board or a group brings back exactly what was archived together with it, and the
+// archived groups it is nested in.
 func (a *App) Unarchive(k Kind, id string) error {
 	clear := model.Archive{}
 	switch k {
@@ -365,11 +475,20 @@ func (a *App) Unarchive(k Kind, id string) error {
 			return err
 		}
 		op := g.Op
-		if err := a.updateGroup(id, func(g *model.Group) error { g.Archive = clear; return nil }); err != nil {
+		in := a.subtreeOf(id)
+		if err := a.St.Update(func(s *model.State) error {
+			for i := range s.Groups {
+				x := &s.Groups[i]
+				if x.ID == id || (op != "" && in[x.ID] && x.Archived && x.Op == op) {
+					x.Archive = clear
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 		if op != "" {
-			for _, b := range a.boardsOf(id) {
+			for _, b := range a.boardsIn(in) {
 				if b.Archived && b.Op == op {
 					if err := a.Boards.SetArchive(b.ID, clear); err != nil {
 						return err
@@ -381,7 +500,7 @@ func (a *App) Unarchive(k Kind, id string) error {
 					continue
 				}
 				meta := model.ChatMeta{Board: cv.Board, Group: cv.Group}
-				if a.Chats.GroupOf(meta) != id {
+				if !in[a.Chats.GroupOf(meta)] {
 					continue
 				}
 				if err := a.Chats.SetArchive(cv.ID, clear); err != nil {
@@ -390,7 +509,7 @@ func (a *App) Unarchive(k Kind, id string) error {
 			}
 		}
 		a.broadcastGroups()
-		return nil
+		return a.unarchiveGroupRecord(g.Parent)
 	}
 	return fmt.Errorf("unknown kind %q", k)
 }
@@ -412,42 +531,54 @@ func (a *App) DeleteBoard(id string) error {
 	return a.Boards.Delete(id)
 }
 
-// DeleteGroup removes a group and its defaults. With deleteContents its boards and plain chats
-// are deleted; without, they move to ungrouped.
+// DeleteGroup removes a group and its defaults. With deleteContents its subgroups, boards and
+// plain chats are deleted too; without, they move up to the group's parent (ungrouped for a
+// top-level group).
 func (a *App) DeleteGroup(id string, deleteContents bool) error {
-	if _, err := a.group(id); err != nil {
+	g, err := a.group(id)
+	if err != nil {
 		return err
 	}
-	for _, b := range a.boardsOf(id) {
+	gone := map[string]bool{id: true}
+	if deleteContents {
+		gone = a.subtreeOf(id)
+	}
+	to := g.Parent
+	if to == "" {
+		to = model.Ungrouped
+	}
+	for _, b := range a.boardsIn(gone) {
 		var err error
 		if deleteContents {
 			err = a.DeleteBoard(b.ID)
 		} else {
-			err = a.Boards.Move(b.ID, model.Ungrouped)
+			err = a.Boards.Move(b.ID, to)
 		}
 		if err != nil {
 			return err
 		}
 	}
-	for _, c := range a.plainChatsOf(id) {
+	for _, c := range a.plainChatsIn(gone) {
 		var err error
 		if deleteContents {
 			err = a.DeleteChat(c.ID)
 		} else {
-			err = a.Chats.Move(c.ID, model.Ungrouped)
+			err = a.Chats.Move(c.ID, to)
 		}
 		if err != nil {
 			return err
 		}
 	}
 	if err := a.St.Update(func(s *model.State) error {
+		s.Groups = slices.DeleteFunc(s.Groups, func(x model.Group) bool { return gone[x.ID] })
 		for i := range s.Groups {
-			if s.Groups[i].ID == id {
-				s.Groups = append(s.Groups[:i:i], s.Groups[i+1:]...)
-				break
+			if s.Groups[i].Parent == id {
+				s.Groups[i].Parent = g.Parent
 			}
 		}
-		delete(s.Defaults.Groups, id)
+		for x := range gone {
+			delete(s.Defaults.Groups, x)
+		}
 		return nil
 	}); err != nil {
 		return err

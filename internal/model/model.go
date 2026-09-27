@@ -39,6 +39,7 @@ func NewID(prefix string) string {
 type Group struct {
 	ID        string `json:"id"` // "g_" + 8 random base36 chars
 	Name      string `json:"name"`
+	Parent    string `json:"parent,omitempty"` // the group it is nested in; "" at the top level
 	Collapsed bool   `json:"collapsed,omitempty"`
 	Archive          // embedded, see below
 }
@@ -62,7 +63,7 @@ type Archive struct {
 
 type State struct {
 	Version  int      `json:"version"`
-	Groups   []Group  `json:"groups"` // in the user's order
+	Groups   []Group  `json:"groups"` // in the user's order; subgroups keep this order among their siblings
 	Defaults Defaults `json:"defaults"`
 	Cursor   *Catalog `json:"cursorCatalog,omitempty"` // last model list Cursor reported
 }

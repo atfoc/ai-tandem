@@ -7,7 +7,7 @@
 // - archived boards are never mentioned.
 
 import type { Board, Group } from "../types.ts";
-import { UNGROUPED } from "../types.ts";
+import { groupPath } from "./tree.ts";
 
 /** A mention picked from the @ list: the name inserted into the text, and its board. */
 export type Picked = { name: string; id: string };
@@ -65,15 +65,14 @@ export function resolveMentions(text: string, boards: Record<string, Board>, pic
   return out;
 }
 
-/** The @ list: non-archived boards whose name contains the query, with their group's name. */
+/** The @ list: non-archived boards whose name contains the query, with their group's path ("A / B"). */
 export function mentionOptions(
   q: string, boards: Record<string, Board>, groups: Group[], limit = 6,
 ): { board: Board; group: string }[] {
   const ql = q.toLowerCase();
-  const groupName = (id: string) => (id === UNGROUPED ? "" : groups.find((g) => g.id === id)?.name ?? "");
   return live(boards)
     .filter((b) => b.name.toLowerCase().includes(ql))
     .sort((a, b) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1))
     .slice(0, limit)
-    .map((board) => ({ board, group: groupName(board.group) }));
+    .map((board) => ({ board, group: groupPath(groups, board.group).join(" / ") }));
 }

@@ -286,6 +286,8 @@ func TestNotFound(t *testing.T) {
 		{"PATCH", "/api/groups/g_nope", `{"name":"x"}`},
 		{"POST", "/api/groups/g_nope/archive", ""},
 		{"DELETE", "/api/groups/g_nope?contents=delete", ""},
+		{"POST", "/api/groups", `{"name":"x","parent":"g_nope"}`},
+		{"POST", "/api/groups/g_nope/move", `{"parent":""}`},
 	} {
 		out := e.expect(404, r[0], r[1], r[2])
 		if decode[map[string]string](t, out)["error"] == "" {
@@ -322,12 +324,20 @@ func TestConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.expect(409, "POST", "/api/chats/"+c.ID+"/messages", `{"text":"hi"}`)
+
+	// archived group: no new or moved subgroups in it
+	g := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"G"}`))
+	h := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"H"}`))
+	e.expect(200, "POST", "/api/groups/"+g.ID+"/archive", "")
+	e.expect(409, "POST", "/api/groups", `{"name":"S","parent":"`+g.ID+`"}`)
+	e.expect(409, "POST", "/api/groups/"+h.ID+"/move", `{"parent":"`+g.ID+`"}`)
 }
 
 func TestBadRequest(t *testing.T) {
 	e := newEnv(t)
 	bd := e.board(model.Ungrouped)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
+	g := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"G"}`))
 	notDir := filepath.Join(t.TempDir(), "file")
 	os.WriteFile(notDir, nil, 0o644)
 	for _, r := range [][3]string{
@@ -349,6 +359,7 @@ func TestBadRequest(t *testing.T) {
 		{"PUT", "/api/chats/" + c.ID + "/draft", `not json`},
 		{"PUT", "/api/groups/order", `{"ids":["g_nope"]}`},
 		{"DELETE", "/api/groups/g_x?contents=maybe", ""},
+		{"POST", "/api/groups/" + g.ID + "/move", `{"parent":"` + g.ID + `"}`},
 		{"GET", "/api/dirs?path=" + notDir, ""},
 	} {
 		code, out := e.do(r[0], r[1], r[2])
@@ -383,6 +394,31 @@ func TestChatPatchRoutesFields(t *testing.T) {
 	out := e.expect(404, "GET", "/api/chats/"+c.ID+"/subagents/nope/items", "")
 	if decode[map[string]string](t, out)["error"] == "" {
 		t.Fatalf("unknown subagent: no error text in %s", out)
+	}
+}
+
+func TestGroupRoutesNestAndMove(t *testing.T) {
+	e := newEnv(t)
+	a := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"A"}`))
+	b := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"B"}`))
+	s := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"S","parent":"`+a.ID+`"}`))
+	if s.Parent != a.ID {
+		t.Fatalf("subgroup %+v", s)
+	}
+	e.expect(200, "POST", "/api/groups/"+s.ID+"/move", `{"parent":"`+b.ID+`"}`)
+	e.expect(200, "POST", "/api/groups/"+b.ID+"/move", `{"parent":"","before":"`+a.ID+`"}`)
+	snap := decode[app.Snapshot](t, e.expect(200, "GET", "/api/state", ""))
+	var got []string
+	for _, g := range snap.Groups {
+		got = append(got, g.Name+"<"+g.Parent)
+	}
+	if want := []string{"B<", "A<", "S<" + b.ID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("groups %v, want %v", got, want)
+	}
+	e.expect(200, "DELETE", "/api/groups/"+b.ID+"?contents=keep", "")
+	snap = decode[app.Snapshot](t, e.expect(200, "GET", "/api/state", ""))
+	if len(snap.Groups) != 2 || snap.Groups[1].ID != s.ID || snap.Groups[1].Parent != "" {
+		t.Fatalf("after deleting B: %+v", snap.Groups)
 	}
 }
 

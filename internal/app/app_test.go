@@ -82,11 +82,26 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) group(name string) string {
 	e.t.Helper()
-	g, err := e.a.CreateGroup(name)
+	return e.subgroup(name, "")
+}
+
+func (e *env) subgroup(name, parent string) string {
+	e.t.Helper()
+	g, err := e.a.CreateGroup(name, parent)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	return g.ID
+}
+
+// groupOf is the group a chat is listed in.
+func (e *env) groupOf(chat string) string {
+	e.t.Helper()
+	v, err := e.a.Chats.View(chat)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return e.a.Chats.GroupOf(model.ChatMeta{Board: v.Board, Group: v.Group})
 }
 
 func (e *env) board(group string) string {
@@ -326,7 +341,7 @@ func TestCreateGroupSeedsDefaultsFromLast(t *testing.T) {
 		model.Claude: {Model: "opus", Effort: "max"}}}
 	e.must(e.st.Update(func(s *model.State) error { s.Defaults.Last = last; return nil }))
 
-	g, err := e.a.CreateGroup("  ")
+	g, err := e.a.CreateGroup("  ", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,6 +402,202 @@ func TestGroupsUpdateAndReorder(t *testing.T) {
 	}
 	if gs[2].Name != "Renamed" || !gs[2].Collapsed {
 		t.Errorf("group %+v", gs[2])
+	}
+}
+
+func TestCreateSubgroup(t *testing.T) {
+	e := newEnv(t)
+	g := e.group("G")
+	cwd := t.TempDir()
+	e.must(e.st.Update(func(s *model.State) error {
+		s.Defaults.Groups[g] = model.GroupDefaults{Cwd: cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus"}}}
+		s.Defaults.Last = model.GroupDefaults{Cwd: t.TempDir()}
+		return nil
+	}))
+	s := e.subgroup("S", g)
+	sg, err := e.a.group(s)
+	if err != nil || sg.Parent != g {
+		t.Fatalf("subgroup %+v, %v", sg, err)
+	}
+	if gd := e.a.Snapshot().Defaults.Groups[s]; gd.Cwd != cwd || gd.ByAgent[model.Claude].Model != "opus" {
+		t.Errorf("subgroup defaults %+v, want the parent's", gd)
+	}
+
+	if _, err := e.a.CreateGroup("X", "g_missing"); !errors.Is(err, ErrGroupNotFound) {
+		t.Errorf("missing parent: %v", err)
+	}
+	if _, err := e.a.CreateGroup("X", e.board(g)); !errors.Is(err, ErrGroupNotFound) {
+		t.Errorf("a board as parent: %v", err)
+	}
+	e.must(e.a.Archive(KindGroup, g))
+	if _, err := e.a.CreateGroup("X", g); !errors.Is(err, ErrGroupArchived) {
+		t.Errorf("archived parent: %v", err)
+	}
+}
+
+func TestMoveGroup(t *testing.T) {
+	e := newEnv(t)
+	a, b := e.group("A"), e.group("B")
+	s := e.subgroup("S", a)
+	ss := e.subgroup("SS", s)
+
+	for _, p := range []string{a, s, ss} {
+		if err := e.a.MoveGroup(a, p, ""); err == nil {
+			t.Errorf("A moved inside %s", p)
+		}
+	}
+	if err := e.a.MoveGroup(b, e.board(a), ""); !errors.Is(err, ErrGroupNotFound) {
+		t.Errorf("a board as parent: %v", err)
+	}
+
+	// S (with SS) goes to the top level, before A
+	e.must(e.a.MoveGroup(s, "", a))
+	gs := e.a.Snapshot().Groups
+	if gs[0].ID != s || gs[0].Parent != "" || gs[1].ID != a {
+		t.Fatalf("order %+v", gs)
+	}
+	if g, _ := e.a.group(ss); g.Parent != s {
+		t.Errorf("SS left its parent: %+v", g)
+	}
+
+	// B into S, last
+	e.must(e.a.MoveGroup(b, s, ""))
+	gs = e.a.Snapshot().Groups
+	if last := gs[len(gs)-1]; last.ID != b || last.Parent != s {
+		t.Errorf("B %+v", last)
+	}
+
+	e.must(e.a.Archive(KindGroup, a))
+	if err := e.a.MoveGroup(b, a, ""); !errors.Is(err, ErrGroupArchived) {
+		t.Errorf("into an archived group: %v", err)
+	}
+}
+
+func TestArchiveGroupArchivesSubgroups(t *testing.T) {
+	e := newEnv(t)
+	g := e.group("G")
+	s := e.subgroup("S", g)
+	ss := e.subgroup("SS", s)
+	early := e.subgroup("Early", g)
+	b := e.board(ss)
+	bc := e.running("", b)
+	pc := e.chat(s, "")
+	ec := e.chat(early, "")
+	e.must(e.a.Archive(KindGroup, early))
+	earlyOp := e.groupArchive(early).Op
+
+	e.must(e.a.Archive(KindGroup, g))
+
+	op := e.groupArchive(g).Op
+	for _, ar := range []model.Archive{e.groupArchive(s), e.groupArchive(ss), e.boardArchive(b), e.chatArchive(bc), e.chatArchive(pc)} {
+		if !ar.Archived || ar.Op != op {
+			t.Errorf("%+v, want archived with op %s", ar, op)
+		}
+	}
+	if !e.sp.of(t, bc).isClosed() {
+		t.Error("agent in a subgroup not stopped")
+	}
+	if e.groupArchive(early).Op != earlyOp || e.chatArchive(ec).Op != earlyOp {
+		t.Error("an already archived subgroup was re-archived")
+	}
+
+	e.must(e.a.Unarchive(KindGroup, g))
+	for _, ar := range []model.Archive{e.groupArchive(g), e.groupArchive(s), e.groupArchive(ss), e.boardArchive(b), e.chatArchive(bc), e.chatArchive(pc)} {
+		if ar.Archived {
+			t.Errorf("%+v still archived", ar)
+		}
+	}
+	if !e.groupArchive(early).Archived || !e.chatArchive(ec).Archived {
+		t.Error("a subgroup archived on its own came back")
+	}
+}
+
+func TestUnarchiveBringsBackParentGroups(t *testing.T) {
+	e := newEnv(t)
+	g := e.group("G")
+	s := e.subgroup("S", g)
+	ss := e.subgroup("SS", s)
+	gc := e.chat(g, "")
+	sc := e.chat(s, "")
+	ssc := e.chat(ss, "")
+	e.must(e.a.Archive(KindGroup, g))
+
+	// a subgroup comes back with its contents and its parents' records, not their contents
+	e.must(e.a.Unarchive(KindGroup, s))
+	if e.groupArchive(g).Archived || e.groupArchive(s).Archived || e.groupArchive(ss).Archived {
+		t.Error("groups on the path still archived")
+	}
+	if e.chatArchive(sc).Archived || e.chatArchive(ssc).Archived {
+		t.Error("the subgroup's contents still archived")
+	}
+	if !e.chatArchive(gc).Archived {
+		t.Error("the parent's own chat came back")
+	}
+
+	// a chat deep inside brings back every group above it
+	e.must(e.a.Archive(KindGroup, g))
+	e.must(e.a.Unarchive(KindChat, ssc))
+	if e.groupArchive(g).Archived || e.groupArchive(s).Archived || e.groupArchive(ss).Archived {
+		t.Error("groups above the chat still archived")
+	}
+	if !e.chatArchive(sc).Archived {
+		t.Error("a sibling chat came back")
+	}
+}
+
+func TestDeleteGroupKeepMovesContentsToParent(t *testing.T) {
+	e := newEnv(t)
+	g := e.group("G")
+	s := e.subgroup("S", g)
+	ss := e.subgroup("SS", s)
+	b := e.board(s)
+	bc := e.chat("", b)
+	pc := e.chat(s, "")
+	ssc := e.chat(ss, "")
+
+	e.must(e.a.DeleteGroup(s, false))
+
+	if bd, _ := e.a.Boards.Get(b); bd.Group != g {
+		t.Errorf("board in %q, want %q", bd.Group, g)
+	}
+	for _, c := range []string{bc, pc} {
+		if got := e.groupOf(c); got != g {
+			t.Errorf("chat %s in %q, want %q", c, got, g)
+		}
+	}
+	if sg, err := e.a.group(ss); err != nil || sg.Parent != g {
+		t.Errorf("SS %+v %v, want it under G", sg, err)
+	}
+	if e.groupOf(ssc) != ss {
+		t.Error("SS's chat moved")
+	}
+	if _, err := e.a.group(s); err == nil {
+		t.Error("S still there")
+	}
+}
+
+func TestDeleteGroupWithContentsDeletesSubgroups(t *testing.T) {
+	e := newEnv(t)
+	g := e.group("G")
+	s := e.subgroup("S", g)
+	b := e.board(s)
+	pc := e.chat(s, "")
+	other := e.group("Other")
+
+	e.must(e.a.DeleteGroup(g, true))
+
+	if _, ok := e.a.Boards.Get(b); ok {
+		t.Error("board in a subgroup still there")
+	}
+	if _, err := e.a.Chats.View(pc); !errors.Is(err, chats.ErrNotFound) {
+		t.Error("chat in a subgroup still there")
+	}
+	snap := e.a.Snapshot()
+	if len(snap.Groups) != 1 || snap.Groups[0].ID != other {
+		t.Errorf("groups %+v, want only Other", snap.Groups)
+	}
+	if _, ok := snap.Defaults.Groups[s]; ok {
+		t.Error("subgroup's defaults left behind")
 	}
 }
 

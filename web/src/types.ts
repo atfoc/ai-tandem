@@ -18,6 +18,7 @@ export type Archive = {
 export type Group = Archive & {
   id: string;
   name: string;
+  parent?: string; // the group it is nested in; absent at the top level
   collapsed?: boolean;
 };
 

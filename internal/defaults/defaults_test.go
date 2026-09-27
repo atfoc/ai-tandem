@@ -97,7 +97,7 @@ func TestSeedGroup(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
 	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	SeedGroup(&d, "g3")
+	SeedGroup(&d, "g3", "")
 	if !reflect.DeepEqual(d.Groups["g3"], d.Last) {
 		t.Fatalf("g3 = %+v, want copy of last %+v", d.Groups["g3"], d.Last)
 	}
@@ -107,6 +107,21 @@ func TestSeedGroup(t *testing.T) {
 	check(t, "g3 claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
 	cwd, mc = Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude", cwd, mc, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
+}
+
+func TestSeedSubgroupFromParent(t *testing.T) {
+	ds := mkdirs(t)
+	var d model.Defaults
+	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordChange(&d, "g2", model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"}) // last is now g2's
+	SeedGroup(&d, "g1a", "g1")
+	cwd, mc := Resolve(d, "g1a", model.Claude, ds.fallback, claudeCat())
+	check(t, "g1a claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+
+	// a deep copy: changing the parent later leaves the subgroup alone
+	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
+	cwd, mc = Resolve(d, "g1a", model.Claude, ds.fallback, claudeCat())
+	check(t, "g1a claude after", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
 }
 
 func TestUngroupedIsItsOwnGroup(t *testing.T) {
