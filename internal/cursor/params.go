@@ -50,7 +50,7 @@ func setOption(conn *Conn, sid, id, value string) ([]configOption, error) {
 // (the thought_level option other than thinking) → effort, or the model's DefaultEffort from cat
 // when effort is not one of its values. Options that are absent are not set; fast and every other
 // option are never touched. It runs on every spawn, because Cursor restores the shared last-used
-// params, not the chat's (docs/research/cursor-effort-load.md).
+// params, not the chat's.
 func applyChoice(conn *Conn, sid string, cat *model.Catalog, modelID, effort string) error {
 	opts, err := setOption(conn, sid, "model", modelID)
 	if err != nil {

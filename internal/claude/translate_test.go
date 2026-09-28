@@ -9,8 +9,7 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// The sample lines of docs/research/claude-rpc.md section 2, in the order they arrive,
-// with the trimmed parts ("…") filled in.
+// Sample stream-json lines of one Claude turn, in the order they arrive.
 var sampleTurn = []struct {
 	line string
 	want []agent.Event
