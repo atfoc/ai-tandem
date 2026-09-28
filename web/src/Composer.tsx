@@ -11,9 +11,10 @@ import { plainText, type Ref } from "./logic/refs.ts";
 import { DraftSaver } from "./logic/drafts.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
+import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensText, width, type Segment } from "./logic/ctxsplit.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
-import { BoardIcon, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
-import type { AgentKind, Catalog, CatalogModel, ChatView, Draft, PlanUsage, UsageLimit } from "./types.ts";
+import { BoardIcon, Chevron, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
+import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, PlanUsage, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
 
@@ -386,11 +387,11 @@ function ContextMeter({ c, cat }: { c: ChatView; cat?: Catalog }) {
   const lines = used
     ? [ctxTitle(used, win), "System prompt, tools, board reads and the conversation so far."]
     : [`${win ? `Context window: ${win.toLocaleString()} tokens. ` : ""}Usage shows after the first reply.`];
-  // A click opens the context and the agent's plan usage limits.
+  // A click opens the context, split by category, and the agent's plan usage limits.
   return (
     <div className="menu-wrap">
       <CtxRing used={used} win={win} open={open} onClick={() => setOpen(!open)} />
-      {open && <UsagePopover key={c.agent} agent={c.agent} context={lines} />}
+      {open && <UsagePopover key={c.agent} agent={c.agent} context={<ContextSection key={c.id} c={c} lines={lines} />} />}
       {open && <div className="menu-backdrop" onMouseDown={() => setOpen(false)} />}
     </div>
   );
@@ -428,7 +429,7 @@ const lastUsage: Partial<Record<AgentKind, PlanUsage>> = {};
 
 /** The composer ring's popover: the chat's context, then the plan's limits, fetched on open.
  * Claude's come from `claude -p /usage`, Cursor's from `cursor-cost`. */
-function UsagePopover({ agent, context }: { agent: AgentKind; context: string[] }) {
+function UsagePopover({ agent, context }: { agent: AgentKind; context: React.ReactNode }) {
   const [u, setU] = useState<PlanUsage | null>(lastUsage[agent] ?? null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -446,8 +447,7 @@ function UsagePopover({ agent, context }: { agent: AgentKind; context: string[] 
   }, []);
   return (
     <div className="menu up usage-pop" onMouseDown={(e) => e.preventDefault()}>
-      <div className="menu-head">Context</div>
-      <div className="usage-ctx">{context.map((l) => <div key={l}>{l}</div>)}</div>
+      {context}
       <div className="menu-sep" />
       <div className="menu-head">
         {agent === "cursor" ? "Cursor usage" : "Plan usage limits"}<span className="grow" />
@@ -476,4 +476,123 @@ function LimitRow({ l, now }: { l: UsageLimit; now: number }) {
       {when && <div className="usage-reset" title={l.resetsAt && new Date(l.resetsAt).toLocaleString()}>Resets {when}</div>}
     </div>
   );
+}
+
+// ---- context split
+
+/** Each chat's last context split, kept while the page is open so the popover opens with it. */
+const lastSplit: Record<string, ContextSplit> = {};
+
+/** The popover's context: the ring's numbers, then what fills the context as the agent splits it,
+ * asked for on open. The server answers Claude's from chat.json while no message or turn has
+ * moved past it, else asks Claude (about 2 s without a running process); Cursor's it reads from
+ * its session store. */
+function ContextSection({ c, lines }: { c: ChatView; lines: string[] }) {
+  const [s, setS] = useState<ContextSplit | null>(lastSplit[c.id] ?? null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const load = async (fresh: boolean) => {
+    setLoading(true); setErr("");
+    try { const r = await api.contextSplit(c.id, fresh); lastSplit[c.id] = r; setS(r); }
+    catch (e: any) { if (!(e instanceof ApiError && e.status === 409)) setErr(e?.message ?? String(e)); } // 409: not started
+    finally { setLoading(false); }
+  };
+  useEffect(() => { if (c.locked) void load(false); }, []);
+  return <>
+    <div className="menu-head">
+      Context<span className="grow" />
+      {c.locked && <button className="icon-btn usage-refresh" title="Count again" disabled={loading} onClick={() => void load(true)}>
+        <span className={loading ? "usage-spin" : ""}>↻</span>
+      </button>}
+    </div>
+    <div className="usage-ctx">{(s ? lines.slice(0, 1) : lines).map((l) => <div key={l}>{l}</div>)}</div>
+    {!s && loading && <div className="usage-note">Counting what fills it…</div>}
+    {s && <SplitView agent={c.agent} s={s} loading={loading} />}
+    {err && <div className="usage-err"><WarnIcon /> {err}</div>}
+  </>;
+}
+
+/** The split: a bar over the whole window, then a row per category (a click opens its parts or
+ * items), what is listed but not loaded, and the agent's facts. Hovering a segment or a row marks
+ * both. */
+function SplitView({ agent, s, loading }: { agent: AgentKind; s: ContextSplit; loading: boolean }) {
+  const [hover, setHover] = useState("");
+  const win = s.window || s.total;
+  const segs = segments(agent, s.categories);
+  const free = freeTokens(s.categories, win);
+  const notLoaded = deferred(s.categories);
+  const row = (g: Segment) => <SplitRow key={g.cat.id} g={g} win={win} hover={hover} setHover={setHover} />;
+  return (
+    <div className="split" onMouseLeave={() => setHover("")}>
+      <SplitBar segs={segs} win={win} hover={hover} setHover={setHover} />
+      {segs.map(row)}
+      {free > 0 && <SplitRow g={{ cat: { id: "free", label: "Free space", tokens: free, kind: "free" }, slot: 0 }} win={win} hover={hover} setHover={setHover} />}
+      {notLoaded.length > 0 && <>
+        <div className="split-sub">Listed, loaded when used</div>
+        {notLoaded.map((cat) => row({ cat, slot: 0 }))}
+      </>}
+      {!!s.facts?.length && <div className="split-facts">
+        {s.facts.map((f) => <React.Fragment key={f.label}><span>{f.label}</span><span>{f.value}</span></React.Fragment>)}
+      </div>}
+      <div className="usage-foot">
+        {loading ? "Updating…" : `As of message ${s.atMessage} · ${tokensText(s.total)} tokens as ${agentName(agent)} counts them`}
+      </div>
+    </div>
+  );
+}
+
+/** Segments side by side over win tokens; the rest of the track is free space. */
+function SplitBar({ segs, win, hover, setHover }: { segs: Segment[]; win: number; hover: string; setHover: (id: string) => void }) {
+  const marked = segs.some((g) => g.cat.id === hover); // a row of another bar leaves this one alone
+  return (
+    <div className="split-bar" role="img" aria-label={segs.map((g) => `${g.cat.label} ${share(g.cat.tokens, win)}`).join(", ")}>
+      {segs.map((g) => <span key={g.cat.id} className={`split-seg ${swatch(g)} ${marked && hover !== g.cat.id ? "dim" : ""}`}
+        style={{ flexBasis: `${width(g.cat.tokens, win)}%` }} onMouseEnter={() => setHover(g.cat.id)}
+        title={`${g.cat.label}: ${tokensText(g.cat.tokens)} tokens (${share(g.cat.tokens, win)})`} />)}
+      <span className="split-free" />
+    </div>
+  );
+}
+
+const swatch = (g: Segment) =>
+  g.cat.kind === "buffer" ? "hatch" : g.cat.kind === "free" ? "free" : g.cat.kind === "deferred" ? "none" : `s${g.slot}`;
+
+/** A category's row: swatch, label, tokens and share of the window. With parts (Claude's
+ * Messages) a click opens their own bar and rows; with items, a list of them, largest first. */
+function SplitRow({ g, win, hover, setHover, depth = 0 }: {
+  g: Segment; win: number; hover: string; setHover: (id: string) => void; depth?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const { cat } = g;
+  const parts = partSegments(cat.parts);
+  const items = byTokens(cat.items);
+  const more = parts.length > 0 || items.length > 0;
+  const body = <>
+    <span className={`split-caret ${open ? "open" : ""}`}>{more && <Chevron />}</span>
+    <i className={`split-sw ${swatch(g)}`} />
+    <span className="split-label">{cat.label}</span>
+    <span className="split-num">{tokensText(cat.tokens)}</span>
+    <span className="split-pct">{share(cat.tokens, win)}</span>
+  </>;
+  const props = {
+    className: `split-row ${hover === cat.id ? "on" : ""} ${cat.kind === "deferred" ? "off" : ""}`,
+    style: { paddingLeft: 4 + depth * 12 },
+    onMouseEnter: () => setHover(cat.id),
+    title: cat.chars ? `${tokensText(cat.chars)} characters` : undefined,
+  };
+  return <>
+    {more ? <button type="button" {...props} aria-expanded={open} onClick={() => setOpen(!open)}>{body}</button> : <div {...props}>{body}</div>}
+    {open && parts.length > 0 && <div className="split-nest" style={{ paddingLeft: 16 + depth * 12 }}>
+      <SplitBar segs={parts} win={cat.tokens} hover={hover} setHover={setHover} />
+    </div>}
+    {open && parts.map((p) => <SplitRow key={p.cat.id} g={p} win={win} hover={hover} setHover={setHover} depth={depth + 1} />)}
+    {open && items.length > 0 && <div className="split-items" style={{ paddingLeft: 30 + depth * 12 }}>
+      {items.map((it, i) => <div key={i} className="split-item">
+        <span className="split-label" title={it.note ? `${it.name} (${it.note})` : it.name}>
+          {it.name}{it.note && <span className="split-note"> · {it.note}</span>}
+        </span>
+        <span className="split-num">{tokensText(it.tokens)}</span>
+      </div>)}
+    </div>}
+  </>;
 }

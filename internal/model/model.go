@@ -106,6 +106,38 @@ type Usage struct {
 	Turns     int    `json:"turns"`
 }
 
+// ContextSplit is what fills a chat's context window, by category, as the agent reports it:
+// Claude's get_context_usage, Cursor's session store. Claude's is kept in chat.json.
+type ContextSplit struct {
+	AtMessage  int               `json:"atMessage"` // messages sent when it was taken
+	AtTurn     int               `json:"atTurn"`    // turns ended when it was taken (Usage.Turns)
+	Total      int               `json:"total"`     // tokens in the context
+	Window     int               `json:"window"`
+	Categories []ContextCategory `json:"categories"`      // in the agent's order
+	Facts      []ContextFact     `json:"facts,omitempty"` // Claude: model, auto-compact, listed skills and commands
+}
+
+type ContextCategory struct {
+	ID     string            `json:"id"` // Cursor's id ("system_prompt"); Claude's name in snake case
+	Label  string            `json:"label"`
+	Tokens int               `json:"tokens"`
+	Kind   string            `json:"kind"`            // "used"; Claude also "deferred" (not in the context), "buffer" (kept free); "free"
+	Chars  int               `json:"chars,omitempty"` // Cursor
+	Parts  []ContextCategory `json:"parts,omitempty"` // Claude's Messages: tool calls, tool results, attachments, …
+	Items  []ContextItem     `json:"items,omitempty"` // per skill, MCP tool, memory file, agent, tool or attachment type
+}
+
+type ContextItem struct {
+	Name   string `json:"name"`
+	Tokens int    `json:"tokens"`
+	Note   string `json:"note,omitempty"` // Claude: a skill's or agent's source, an MCP tool's server, a memory file's type
+}
+
+type ContextFact struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
 // PlanUsage is an agent's plan usage limits: Claude's as `claude -p /usage` reports them,
 // Cursor's as `cursor-cost` does. It is fetched when the client asks and never stored.
 type PlanUsage struct {
@@ -144,6 +176,9 @@ type ChatMeta struct {
 	InstructionsSent bool      `json:"instructionsSent,omitempty"` // Cursor board chats
 	Usage            Usage     `json:"usage"`
 	Draft            *Draft    `json:"draft,omitempty"` // the unsent message in the composer
+	// ContextSplit is Claude's last context split taken between turns; asked for again once
+	// messages or turns have moved past it.
+	ContextSplit *ContextSplit `json:"contextSplit,omitempty"`
 	Archive
 }
 

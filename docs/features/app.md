@@ -136,6 +136,23 @@ As in variant 4:
     and never stored. They are the account's, so every chat of an agent shows the same numbers.
     Cursor's come from a cache that `cursor-cost-refresh` keeps, so the popover shows how old they
     are, in the warning colour after 10 minutes. Subagent meters keep their hover tooltip.
+  - Above the limits, once the chat has started, the popover splits the context the way the
+    agent reports it: a bar over the whole window with a segment per category, and a row per
+    category with its tokens and share of the window. Hovering a segment or a row marks both.
+    Each agent's own categories are shown, with nothing merged:
+    - **Claude:** system prompt, memory files, system tools, MCP tools, skills, custom agents,
+      messages, the autocompact buffer (hatched) and free space. Messages open into tool calls,
+      tool results, attachments, responses, your messages, redirected context and unattributed,
+      with their own bar. Skills, MCP tools, memory files, agents, tools and attachment types open
+      into lists. Tools that are listed but loaded only when used are shown apart, outside the
+      bar. The model, the auto-compact threshold and how many skills and slash commands are
+      listed are shown under the rows.
+    - **Cursor:** system prompt, tool definitions, rules, skills, MCP & dynamic tools, subagent
+      definitions, summarized conversation, conversation and free space.
+  - Claude's split is kept with the chat and asked for again only when the popover opens after a
+    new message or turn (↻ asks at once). With the chat's agent running, it answers at once;
+    without one, a Claude process is started just to answer (about 2 s, no model call, the
+    session untouched) and closed. Cursor's is read from its session files each time.
 
 ## Whiteboards
 

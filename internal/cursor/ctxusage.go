@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/model"
 )
 
 // ContextUsage is ConversationStateStructure.token_details of a session's latest root blob.
@@ -70,41 +71,64 @@ func ReadContextUsage(sqlite, home, sessionID string) (ContextUsage, error) {
 
 // readUsageAt reads the store at db; see ReadContextUsage.
 func readUsageAt(sqlite, db string) (ContextUsage, error) {
-	if _, err := os.Stat(db); err != nil {
-		return ContextUsage{}, errors.New(errStoreNotFound)
-	}
-	if _, err := exec.LookPath(sqlite); err != nil {
-		return ContextUsage{}, errors.New(errSQLiteNotFound)
-	}
-
-	out, err := runSQLite(sqlite, db, "SELECT value FROM meta WHERE key = '0';")
+	blob, err := readRootAt(sqlite, db)
 	if err != nil {
 		return ContextUsage{}, err
-	}
-	metaJSON, err := hex.DecodeString(out)
-	if err != nil || len(metaJSON) == 0 {
-		return ContextUsage{}, errors.New(errStoreFormat)
-	}
-	var meta struct {
-		LatestRootBlobID string `json:"latestRootBlobId"`
-	}
-	if err := json.Unmarshal(metaJSON, &meta); err != nil || !blobIDRe.MatchString(meta.LatestRootBlobID) {
-		return ContextUsage{}, errors.New(errStoreFormat)
-	}
-
-	out, err = runSQLite(sqlite, db, "SELECT hex(data) FROM blobs WHERE id = '"+meta.LatestRootBlobID+"';")
-	if err != nil {
-		return ContextUsage{}, err
-	}
-	blob, err := hex.DecodeString(out)
-	if err != nil || len(blob) == 0 {
-		return ContextUsage{}, errors.New(errStoreFormat)
 	}
 	u, ok := decodeTokenDetails(blob)
 	if !ok {
 		return ContextUsage{}, errors.New(errStoreFormat)
 	}
 	return u, nil
+}
+
+// ReadContextSplit reads the chat's context split from its session store: token_details'
+// categories, in Cursor's order, and the room left as "free". No process is needed.
+func (s *Spawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, error) {
+	blob, err := readRootAt(s.sqlite(), StorePath(s.Home, o.SessionID))
+	if err != nil {
+		return model.ContextSplit{}, err
+	}
+	split, ok := decodeSplit(blob)
+	if !ok {
+		return model.ContextSplit{}, errors.New(errStoreFormat)
+	}
+	return split, nil
+}
+
+// readRootAt returns the latest root blob (a ConversationStateStructure) of the store at db.
+func readRootAt(sqlite, db string) ([]byte, error) {
+	if _, err := os.Stat(db); err != nil {
+		return nil, errors.New(errStoreNotFound)
+	}
+	if _, err := exec.LookPath(sqlite); err != nil {
+		return nil, errors.New(errSQLiteNotFound)
+	}
+
+	out, err := runSQLite(sqlite, db, "SELECT value FROM meta WHERE key = '0';")
+	if err != nil {
+		return nil, err
+	}
+	metaJSON, err := hex.DecodeString(out)
+	if err != nil || len(metaJSON) == 0 {
+		return nil, errors.New(errStoreFormat)
+	}
+	var meta struct {
+		LatestRootBlobID string `json:"latestRootBlobId"`
+	}
+	if err := json.Unmarshal(metaJSON, &meta); err != nil || !blobIDRe.MatchString(meta.LatestRootBlobID) {
+		return nil, errors.New(errStoreFormat)
+	}
+
+	out, err = runSQLite(sqlite, db, "SELECT hex(data) FROM blobs WHERE id = '"+meta.LatestRootBlobID+"';")
+	if err != nil {
+		return nil, err
+	}
+	blob, err := hex.DecodeString(out)
+	if err != nil || len(blob) == 0 {
+		return nil, errors.New(errStoreFormat)
+	}
+	return blob, nil
 }
 
 // ctxPoller re-reads the context usage while a turn runs: a ticker goroutine (1 s by default), at
@@ -276,10 +300,8 @@ func runSQLite(sqlite, db, query string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// decodeTokenDetails takes the first field 5 of wire type 2 in a ConversationStateStructure
-// message and reads used_tokens (field 1) and max_tokens (field 2) from it. It reports false when
-// the message is malformed, field 5 is missing, or either count is 0.
-func decodeTokenDetails(root []byte) (ContextUsage, bool) {
+// tokenDetails returns the first field 5 of wire type 2 in a ConversationStateStructure message.
+func tokenDetails(root []byte) ([]byte, bool) {
 	var details []byte
 	found := false
 	err := walkFields(root, func(num int, wt int, v uint64, b []byte) bool {
@@ -289,11 +311,19 @@ func decodeTokenDetails(root []byte) (ContextUsage, bool) {
 		}
 		return true
 	})
-	if err != nil || !found {
+	return details, err == nil && found
+}
+
+// decodeTokenDetails reads used_tokens (field 1) and max_tokens (field 2) from the root's
+// token_details. It reports false when the message is malformed, field 5 is missing, or either
+// count is 0.
+func decodeTokenDetails(root []byte) (ContextUsage, bool) {
+	details, ok := tokenDetails(root)
+	if !ok {
 		return ContextUsage{}, false
 	}
 	var u ContextUsage
-	err = walkFields(details, func(num int, wt int, v uint64, b []byte) bool {
+	err := walkFields(details, func(num int, wt int, v uint64, b []byte) bool {
 		if wt == wireVarint {
 			switch num {
 			case 1:
@@ -308,6 +338,61 @@ func decodeTokenDetails(root []byte) (ContextUsage, bool) {
 		return ContextUsage{}, false
 	}
 	return u, true
+}
+
+// decodeSplit reads token_details' used and max tokens and its breakdown (field 3), whose
+// categories (field 3, repeated) each hold an id (1), a label (2), tokens (3, absent when 0) and
+// characters (4). The room left is added as a "free" category. It reports false when the counts
+// cannot be read or there is no breakdown.
+func decodeSplit(root []byte) (model.ContextSplit, bool) {
+	u, ok := decodeTokenDetails(root)
+	if !ok {
+		return model.ContextSplit{}, false
+	}
+	details, _ := tokenDetails(root)
+	var breakdown []byte
+	found := false
+	if walkFields(details, func(num int, wt int, v uint64, b []byte) bool {
+		if num == 3 && wt == wireBytes {
+			breakdown, found = b, true
+			return false
+		}
+		return true
+	}) != nil || !found {
+		return model.ContextSplit{}, false
+	}
+	split := model.ContextSplit{Total: u.Used, Window: u.Max, Categories: []model.ContextCategory{}}
+	var bad bool
+	if walkFields(breakdown, func(num int, wt int, v uint64, b []byte) bool {
+		if num != 3 || wt != wireBytes {
+			return true
+		}
+		c := model.ContextCategory{Kind: "used"}
+		bad = walkFields(b, func(num int, wt int, v uint64, b []byte) bool {
+			switch {
+			case num == 1 && wt == wireBytes:
+				c.ID = string(b)
+			case num == 2 && wt == wireBytes:
+				c.Label = string(b)
+			case num == 3 && wt == wireVarint:
+				c.Tokens = int(v)
+			case num == 4 && wt == wireVarint:
+				c.Chars = int(v)
+			}
+			return true
+		}) != nil
+		if c.Label == "" {
+			c.Label = c.ID
+		}
+		split.Categories = append(split.Categories, c)
+		return !bad
+	}) != nil || bad || len(split.Categories) == 0 {
+		return model.ContextSplit{}, false
+	}
+	if free := u.Max - u.Used; free > 0 {
+		split.Categories = append(split.Categories, model.ContextCategory{ID: "free", Label: "Free space", Tokens: free, Kind: "free"})
+	}
+	return split, true
 }
 
 // Protobuf wire types.

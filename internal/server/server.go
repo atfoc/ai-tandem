@@ -76,7 +76,7 @@ func statusOf(err error, fallback int) int {
 		return http.StatusNotFound
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
-		errors.Is(err, chats.ErrBusy), errors.Is(err, app.ErrGroupArchived):
+		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived):
 		return http.StatusConflict
 	}
 	var pe *fs.PathError
@@ -409,6 +409,16 @@ func (s *Server) Handler() http.Handler {
 			items = []model.Item{}
 		}
 		writeJSON(w, map[string]any{"version": v, "items": items})
+	})
+	// What fills the chat's context window, by category. ?fresh=1 asks the agent even when the
+	// kept split is current.
+	mux.HandleFunc("GET /api/chats/{id}/context", func(w http.ResponseWriter, r *http.Request) {
+		split, err := a.Chats.ContextSplit(r.PathValue("id"), r.URL.Query().Get("fresh") == "1")
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, split)
 	})
 	mux.HandleFunc("POST /api/chats/{id}/open", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.Chats.Open(r.PathValue("id")); err != nil {

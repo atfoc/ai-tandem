@@ -6,7 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/model"
 )
 
 const testSessionID = "0f4c2d9e-1a2b-4c3d-8e9f-001122334455"
@@ -210,5 +214,79 @@ func TestChildStorePath(t *testing.T) {
 	}
 	if got, want := ChildStorePath("/home/u", link, "S2"), "/home/u/.cursor/chats/"+hash(resolved)+"/S2/store.db"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// splitCategory is one category of token_details' breakdown: id, label, tokens (left out when
+// 0, as Cursor does), characters.
+func splitCategory(id, label string, tokens, chars uint64) []byte {
+	b := cat(pbBytes(1, []byte(id)), pbBytes(2, []byte(label)))
+	if tokens > 0 {
+		b = cat(b, pbUint(3, tokens))
+	}
+	return pbBytes(3, cat(b, pbUint(4, chars)))
+}
+
+// splitRoot is a root blob whose token_details has a breakdown (field 3) as Cursor writes it.
+func splitRoot() []byte {
+	breakdown := cat(pbUint(1, 3230), pbUint(2, 272000),
+		splitCategory("system_prompt", "System prompt", 3230, 14423),
+		splitCategory("rules", "Rules", 0, 0),
+		splitCategory("conversation", "Conversation", 191, 877))
+	details := cat(pbUint(1, 3421), pbUint(2, 272000), pbBytes(3, breakdown))
+	return cat(pbBytes(1, []byte("turn")), pbBytes(5, details), pbBytes(8, []byte("tail")))
+}
+
+func TestReadContextSplit(t *testing.T) {
+	needSQLite(t)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	home := t.TempDir()
+	makeStore(t, home, goodMeta()+blobRow(testBlobID, splitRoot()))
+
+	s, err := (&Spawner{Home: home}).ReadContextSplit(agent.SpawnOptions{SessionID: testSessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := model.ContextSplit{Total: 3421, Window: 272000, Categories: []model.ContextCategory{
+		{ID: "system_prompt", Label: "System prompt", Tokens: 3230, Kind: "used", Chars: 14423},
+		{ID: "rules", Label: "Rules", Kind: "used"},
+		{ID: "conversation", Label: "Conversation", Tokens: 191, Kind: "used", Chars: 877},
+		{ID: "free", Label: "Free space", Tokens: 272000 - 3421, Kind: "free"},
+	}}
+	if !reflect.DeepEqual(s, want) {
+		t.Fatalf("got %+v\nwant %+v", s, want)
+	}
+}
+
+func TestReadContextSplitErrors(t *testing.T) {
+	needSQLite(t)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	const format = "Cursor session store has an unexpected format"
+	for name, root := range map[string][]byte{
+		"no breakdown":        sampleRoot(15989, 272000),
+		"breakdown not bytes": cat(pbBytes(5, cat(pbUint(1, 10), pbUint(2, 100), pbUint(3, 7)))),
+		"empty breakdown":     cat(pbBytes(5, cat(pbUint(1, 10), pbUint(2, 100), pbBytes(3, pbUint(1, 10))))),
+		"bad category":        cat(pbBytes(5, cat(pbUint(1, 10), pbUint(2, 100), pbBytes(3, pbBytes(3, cat(pbKey(1, wireBytes), pbVarint(50))))))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			makeStore(t, home, goodMeta()+blobRow(testBlobID, root))
+			_, err := (&Spawner{Home: home}).ReadContextSplit(agent.SpawnOptions{SessionID: testSessionID})
+			if err == nil || err.Error() != format {
+				t.Fatalf("err %v, want %q", err, format)
+			}
+		})
+	}
+	if _, err := (&Spawner{Home: t.TempDir()}).ReadContextSplit(agent.SpawnOptions{SessionID: testSessionID}); err == nil ||
+		err.Error() != "Cursor session store not found" {
+		t.Fatalf("no store: err %v", err)
+	}
+}
+
+func TestReadContextUsageWithSplit(t *testing.T) {
+	// The meter's read is unchanged by the breakdown next to the counts.
+	u, ok := decodeTokenDetails(splitRoot())
+	if !ok || u != (ContextUsage{Used: 3421, Max: 272000}) {
+		t.Fatalf("got %+v %v", u, ok)
 	}
 }

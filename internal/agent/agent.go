@@ -33,6 +33,18 @@ type Spawner interface {
 	Spawn(o SpawnOptions) (Agent, error)
 }
 
+// SplitReader is a Spawner that can report a started chat's context split with no process of
+// its own running: Claude starts a process on a fork of the session just to answer, Cursor reads
+// its session store.
+type SplitReader interface {
+	ReadContextSplit(o SpawnOptions) (model.ContextSplit, error)
+}
+
+// ContextSplitter is an Agent that can report its context split while it runs (Claude).
+type ContextSplitter interface {
+	ContextSplit() (model.ContextSplit, error)
+}
+
 type ContentBlock struct{ Text string }
 
 type Agent interface {

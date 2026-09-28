@@ -59,6 +59,7 @@ type Chat struct {
 	deleted       bool              // removed by Delete: nothing more is written or emitted for it
 	subs          map[string]*sub   // sid → subagent; loaded with tr (see trOf)
 	subByTool     map[string]string // Agent/Task tool call id → sid
+	splitRun      *splitRun         // the context split being taken now (see ContextSplit)
 }
 
 var (
@@ -68,6 +69,7 @@ var (
 	ErrFolderMissing = agent.ErrFolderMissing
 	ErrAppFolder     = errors.New("the app's own folder can't be used as a working folder")
 	ErrBusy          = errors.New("the agent is still working; wait for it to finish or stop it")
+	ErrNotStarted    = errors.New("the context split shows after the first message")
 )
 
 type ConfigReq struct {
@@ -433,15 +435,7 @@ func (m *Manager) spawn(c *Chat, out *outbox) error {
 	if c.ag != nil {
 		return nil
 	}
-	opts := agent.SpawnOptions{ChatID: c.meta.ID, SessionID: c.meta.SessionID, Resume: c.meta.Locked,
-		Cwd: c.meta.Cwd, Model: c.meta.Model, Effort: c.meta.Effort}
-	if c.meta.Agent == model.Cursor && !c.meta.Locked {
-		opts.SessionID = ""
-	}
-	if c.meta.Board != "" {
-		opts.Board = &agent.BoardAccess{MCPURL: m.BaseURL + "/mcp/" + c.meta.Token,
-			CommandURL: m.BaseURL + "/agent/" + c.meta.Token, Token: c.meta.Token}
-	}
+	opts := m.spawnOptions(c)
 	sp := m.Spawners[c.meta.Agent]
 	if sp == nil {
 		err = fmt.Errorf("no spawner for agent %q", c.meta.Agent)
@@ -466,6 +460,20 @@ func (m *Manager) spawn(c *Chat, out *outbox) error {
 	tr.SetStatus(model.StatusError)
 	out.emitChat(c)
 	return err
+}
+
+// spawnOptions are the options c's agent starts with. c.mu held.
+func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
+	opts := agent.SpawnOptions{ChatID: c.meta.ID, SessionID: c.meta.SessionID, Resume: c.meta.Locked,
+		Cwd: c.meta.Cwd, Model: c.meta.Model, Effort: c.meta.Effort}
+	if c.meta.Agent == model.Cursor && !c.meta.Locked {
+		opts.SessionID = ""
+	}
+	if c.meta.Board != "" {
+		opts.Board = &agent.BoardAccess{MCPURL: m.BaseURL + "/mcp/" + c.meta.Token,
+			CommandURL: m.BaseURL + "/agent/" + c.meta.Token, Token: c.meta.Token}
+	}
+	return opts
 }
 
 // pump turns one agent process's events into items and chat changes.

@@ -38,6 +38,7 @@ type proc struct {
 	writeMu sync.Mutex
 	events  chan agent.Event // buffered 1024
 	perms   sync.Map         // request id → can_use_tool request (pending)
+	replies sync.Map         // request id → chan controlReply: our control requests waiting for their answer
 	stderr  *bytes.Buffer
 	s       *Spawner
 	done    chan struct{} // closed once the process has been waited for
@@ -107,6 +108,15 @@ func under(dir, path string) (string, bool) {
 
 // Spawn starts the process and returns at once.
 func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
+	p, err := s.start(o)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// start starts a chat process with Args(o) and then extra.
+func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 	if _, err := os.Stat(o.Cwd); err != nil {
 		return nil, agent.ErrFolderMissing
 	}
@@ -125,7 +135,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		subModel: map[string]string{},
 		windows:  map[string]int{},
 	}
-	cmd := exec.Command(bin, s.Args(o)...)
+	cmd := exec.Command(bin, append(s.Args(o), extra...)...)
 	cmd.Dir = o.Cwd
 	cmd.Env = append(os.Environ(), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1") // chats neither read nor write auto-memory
 	cmd.Stderr = &cappedWriter{buf: p.stderr, max: stderrCap}
@@ -181,7 +191,8 @@ func (p *proc) readLoop(stdout io.Reader) {
 			p.handleControl(m)
 			continue
 		case "control_response":
-			continue // answers to our interrupts; the result line tells the rest
+			p.reply(sc.Bytes()) // answers to our interrupts are dropped: the result line tells the rest
+			continue
 		}
 		for _, ev := range p.translate(m) {
 			p.events <- ev

@@ -20,6 +20,8 @@ const (
 	envStdin  = "CLAUDE_FAKE_STDIN"  // file the fake appends every stdin line to
 	envArgs   = "CLAUDE_FAKE_ARGS"   // file the fake writes its cwd and arguments to
 	envStderr = "CLAUDE_FAKE_STDERR" // text the fake prints to stderr before exiting
+	envCtx    = "CLAUDE_FAKE_CTX"    // file of get_context_usage answers, one per line; the last repeats
+	envExit   = "CLAUDE_FAKE_EXIT"   // set: exit at once (status 3) after the script and stderr, without reading stdin
 )
 
 func TestMain(m *testing.M) {
@@ -42,16 +44,38 @@ func helperProcess() {
 		os.Exit(2)
 	}
 	os.Stdout.Write(script)
+	if os.Getenv(envExit) != "" {
+		fmt.Fprintln(os.Stderr, os.Getenv(envStderr))
+		os.Exit(3)
+	}
 	out, err := os.Create(os.Getenv(envStdin))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
+	}
+	var answers []string
+	if f := os.Getenv(envCtx); f != "" {
+		b, _ := os.ReadFile(f)
+		answers = strings.Split(strings.TrimSpace(string(b)), "\n")
 	}
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	for sc.Scan() {
 		out.Write(append(sc.Bytes(), '\n'))
 		out.Sync()
+		var req struct {
+			Type      string `json:"type"`
+			RequestID string `json:"request_id"`
+			Request   struct{ Subtype string }
+		}
+		if json.Unmarshal(sc.Bytes(), &req) == nil && req.Type == "control_request" &&
+			req.Request.Subtype == "get_context_usage" && len(answers) > 0 {
+			fmt.Printf(`{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":%s}}`+"\n",
+				req.RequestID, answers[0])
+			if len(answers) > 1 {
+				answers = answers[1:]
+			}
+		}
 	}
 	out.Close()
 	if msg := os.Getenv(envStderr); msg != "" {

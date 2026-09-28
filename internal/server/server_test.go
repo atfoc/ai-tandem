@@ -47,6 +47,10 @@ func (fakeSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	return &fakeAgent{ch: make(chan agent.Event)}, nil
 }
 
+func (fakeSpawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, error) {
+	return model.ContextSplit{Total: 10, Window: 100, Categories: []model.ContextCategory{{ID: "messages", Label: "Messages", Tokens: 10, Kind: "used"}}}, nil
+}
+
 // ---- environment ----------------------------------------------------------
 
 const clientID = "A"
@@ -278,6 +282,7 @@ func TestNotFound(t *testing.T) {
 		{"DELETE", "/api/boards/b_nope", ""},
 		{"GET", "/api/chats/nope", ""},
 		{"GET", "/api/chats/nope/items", ""},
+		{"GET", "/api/chats/nope/context", ""},
 		{"GET", "/api/chats/nope/subagents/nope/items", ""},
 		{"POST", "/api/chats/nope/messages", `{"text":"hi"}`},
 		{"PATCH", "/api/chats/nope", `{"name":"x"}`},
@@ -437,6 +442,20 @@ func TestChatDraft(t *testing.T) {
 	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft", `{"text":""}`)
 	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft != nil {
 		t.Fatalf("cleared draft %+v", v.Draft)
+	}
+}
+
+func TestChatContext(t *testing.T) {
+	e := newEnv(t)
+	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
+	out := decode[map[string]string](t, e.expect(409, "GET", "/api/chats/"+c.ID+"/context", ""))
+	if out["error"] != chats.ErrNotStarted.Error() {
+		t.Fatalf("error %q", out["error"])
+	}
+	e.expect(200, "POST", "/api/chats/"+c.ID+"/messages", `{"text":"hi"}`)
+	s := decode[model.ContextSplit](t, e.expect(200, "GET", "/api/chats/"+c.ID+"/context?fresh=1", ""))
+	if s.Total != 10 || s.AtMessage != 1 || len(s.Categories) != 1 {
+		t.Fatalf("split %+v", s)
 	}
 }
 

@@ -72,6 +72,7 @@ internal/claude/claude.go            new (from prototype chats.go's spawn/readLo
 internal/claude/translate.go         new (Claude stream-json line → agent.Event)
 internal/claude/catalog.go           new: Claude's static model list
 internal/claude/usage.go             new: the plan's usage limits from `claude -p /usage`
+internal/claude/ctxsplit.go          new: the context split from get_context_usage (live, or a forked one-off process)
 internal/cursor/acp.go               new: JSON-RPC 2.0 stdio client (from cursor-rpc branch acp.go)
 internal/cursor/cursor.go            new: the Cursor adapter
 internal/cursor/catalog.go           new: Cursor model list parsing
@@ -83,6 +84,7 @@ internal/cursor/cost.go              new: the plan's usage from `cursor-cost`
 internal/chats/manager.go            new (from prototype chats.go's Chats/Chat)
 internal/chats/namer.go              new (from prototype autoName)
 internal/chats/subagents.go          new: a chat's subagents and their files (4.7)
+internal/chats/contextsplit.go       new: a chat's context split, kept in chat.json for Claude (4.7)
 internal/editorbridge/bridge.go      new (from prototype hub.go)
 internal/boardtools/tools.go         new (from prototype mcp.go's tool list)
 internal/boardtools/command.go       new: Cursor command parser
@@ -380,7 +382,29 @@ type ChatMeta struct {
 	TurnActive       bool `json:"turnActive,omitempty"`       // a turn was running at the last write
 	InstructionsSent bool `json:"instructionsSent,omitempty"` // Cursor board chats
 	Usage     Usage     `json:"usage"`
+	// Claude's last context split taken between turns (4.7, "Context split"); asked for again once
+	// messages or turns have moved past it.
+	ContextSplit *ContextSplit `json:"contextSplit,omitempty"`
 	Archive
+}
+
+// ContextSplit is what fills a chat's context window, by category, as the agent reports it.
+type ContextSplit struct {
+	AtMessage  int               `json:"atMessage"` // messages sent when it was taken
+	AtTurn     int               `json:"atTurn"`    // Usage.Turns when it was taken
+	Total      int               `json:"total"`
+	Window     int               `json:"window"`
+	Categories []ContextCategory `json:"categories"`      // in the agent's order
+	Facts      []ContextFact     `json:"facts,omitempty"` // {Label, Value}: Claude's model, auto-compact, listed skills and commands
+}
+
+type ContextCategory struct {
+	ID, Label string
+	Tokens    int
+	Kind      string            // "used", "deferred" (not in the context), "buffer" (kept free), "free"
+	Chars     int               // Cursor
+	Parts     []ContextCategory // Claude's Messages broken down
+	Items     []ContextItem     // {Name, Tokens, Note}: per skill, MCP tool, memory file, agent, tool, attachment type
 }
 
 type Status string
@@ -682,6 +706,13 @@ type Spawner interface {
 	// Spawn starts the process and returns at once; a handshake may continue in the background.
 	Spawn(o SpawnOptions) (Agent, error)
 }
+
+// SplitReader: a Spawner that reports a started chat's context split with no process of its own
+// running (Claude: a one-off process on a fork of the session; Cursor: its session store).
+type SplitReader interface{ ReadContextSplit(o SpawnOptions) (model.ContextSplit, error) }
+
+// ContextSplitter: an Agent that reports its context split while it runs (Claude).
+type ContextSplitter interface{ ContextSplit() (model.ContextSplit, error) }
 
 type ContentBlock struct{ Text string }
 
@@ -1133,6 +1164,29 @@ from the run; a `FetchedAt` that `Fetch` set is kept, else it is the run's time.
 cached. Nothing is written to disk and chats are untouched: running chats' `rate_limit_event` lines
 are still dropped by `translate.go`.
 
+**Context split** (`ctxsplit.go`). The `get_context_usage` control request (Claude Code 2.1) is
+answered locally, without a model call: `categories` (`name`, `tokens`, `kind` used / deferred /
+buffer / free, `isDeferred`), `totalTokens`, `maxTokens`, `model`, `memoryFiles`, `mcpTools`
+(`serverName`, `isLoaded`), `agents`, `skills.skillFrontmatter`, `slashCommands`,
+`autoCompactThreshold`, `isAutoCompactEnabled` and `messageBreakdown` (tool call, tool result,
+attachment, assistant, user, redirected and unattributed tokens, `toolCallsByType`,
+`attachmentsByType`). `gridRows`, the terminal's grid, is not read.
+
+- `proc.request` writes a control request with an id and waits for the `control_response` with
+  that id (the read loop hands it over through `replies`), the process's exit or 10 s. Answers to
+  interrupts are still dropped.
+- `proc.ContextSplit` (the running process) asks again every 300 ms, for up to 10 s, while an MCP
+  tool is still at 0 tokens: a process lists its MCP tools at once but counts them about 2 s after
+  it starts.
+- `Spawner.ReadContextSplit` (no process) starts `Args(o)` with `--resume <id> --fork-session`, so
+  the split counts the chat's own prompt, MCP servers and tool rules; nothing is sent, so the
+  session file is not touched and no fork is kept. It asks, closes stdin and waits for the exit
+  (about 2 s in all). When it fails, the process's first stderr line is the error ("No
+  conversation found …").
+- `ParseContextUsage` keeps Claude's categories in order (id: the name in snake case), puts the
+  lists under their category as items (loaded MCP tools under "MCP tools", the rest under "MCP
+  tools (deferred)"), breaks "Messages" into parts, and turns the rest into facts.
+
 ### 4.6 Cursor adapter: `internal/cursor/`
 
 A real integration over ACP (`agent acp`), per `docs/research/cursor-rpc.md`.
@@ -1497,7 +1551,15 @@ decode (protobuf wire format, a small hand-written reader; no .proto files):
    token_details := the first field 5 of wire type 2 (bytes) in the root blob
    Used := token_details field 1 (varint, used_tokens)
    Max  := token_details field 2 (varint, max_tokens: the context window of the session's model)
+   breakdown := token_details field 3 (bytes), whose field 3 (bytes, repeated) is one category:
+     1 id ("system_prompt", "tools", "rules", "skills", "mcp", "subagents",
+       "summarized_conversation", "conversation"), 2 label, 3 tokens (absent when 0), 4 characters
 ```
+
+`Spawner.ReadContextSplit` (the popover's context split, 4.7) reads the same root blob
+(`readRootAt`) and `decodeSplit`s it: the categories in Cursor's order, then `Max - Used` as a
+"free" category. The categories add up to `Used`. Without a breakdown the error is the format one
+below. The meter's own read ignores field 3.
 
 - `sqlite3` is run **without** `-readonly`: in WAL mode a read-only open fails once the agent has
   exited, because SQLite cannot create the `-shm` file. Only `SELECT`s are ever sent.
@@ -1983,6 +2045,24 @@ subagent's thread (`subTr`, then `Snapshot`), or `ErrNoSubagent`.
 - An Agent/Task call the CLI never reported (the process ended first) gets no subagent. The client
   shows it as running while the chat is busy, else stopped (section 5.7).
 
+**Context split: `internal/chats/contextsplit.go`.** `Manager.ContextSplit(id, fresh)` returns
+what fills the chat's context, by category (`GET /api/chats/{id}/context`).
+
+- Before the first message (not `Locked`, or no `SessionID`) → `ErrNotStarted` (409).
+- **Claude**: `ChatMeta.ContextSplit` is returned as it is while nothing could have changed it:
+  not `fresh`, no turn running, `AtMessage` equal to the user items in the transcript
+  (`Transcript.Sent`) and `AtTurn` equal to `Usage.Turns`. Turns count too, because a turn Claude
+  starts by itself (a background subagent finished) adds no user item; messages count too, because
+  a turn cut short by a crash never ends. Otherwise the split is asked for (below) and kept, with
+  those two counts, in `chat.json` when it was taken between turns and the counts have not moved
+  meanwhile. One taken during a turn is returned but not kept.
+- **Cursor**: read from its session store on every call (a local sqlite read); never kept.
+- Asking: the running agent when it is an `agent.ContextSplitter` (Claude's process), else the
+  spawner as an `agent.SplitReader` with `spawnOptions(c)` (the chat's own spawn options, also
+  used by `spawn`). The chat is unlocked meanwhile: Claude's one-off process connects to the
+  board's MCP, which looks the chat up. Calls that come while one is asking wait for it and share
+  its answer (`Chat.splitRun`).
+
 `internal/chats/namer.go` (the prototype's `autoName`, unchanged in behaviour):
 
 ```go
@@ -2437,6 +2517,7 @@ group id. A `group` field in a body is a group id or `"__ungrouped__"` for the u
 | `POST /api/chats/{id}/archive` / `unarchive` | | |
 | `DELETE /api/chats/{id}` | | |
 | `GET /api/dirs?path=` | → `{path, parent, dirs, git}` | prototype, unchanged |
+| `GET /api/chats/{id}/context?fresh=1` | → `ContextSplit` | what fills the context, by category (4.7, "Context split"); `fresh=1` asks even when the kept split is current; 409 before the first message (`ErrNotStarted`) |
 | `GET /api/usage/{agent}?fresh=1` | → `PlanUsage` | `claude` or `cursor`: the plan's limits; cached 60 s, `fresh=1` skips it; 404 for another agent |
 | `POST /mcp/{token}` | MCP JSON-RPC | Claude board tools |
 | `POST /agent/{token}/{tool}` | JSON args → text | Cursor board commands |
@@ -3294,6 +3375,24 @@ from the `board` argument or "this board". `statusText` adds `stopped` → "Stop
     "Updated …" turns the warning colour when the numbers are over 10 minutes old (`isStale`). Each
     agent's last answer is kept in the module while the page is open, so reopening shows it at once
     while it is fetched again. The subagent rows' `CtxRing` stay spans with a `title`.
+  - The popover's "Context" section (`ContextSection`, with its own ↻) asks
+    `api.contextSplit(chat)` on open once the chat is locked (409 is not shown; other errors are,
+    as a warning) and keeps each chat's last split in the module. `SplitView` draws a bar over
+    the window (`SplitBar`: a segment per category, 2 px gaps, at least 3 px wide, the rest of the
+    track free space; hovering a segment or a row dims the bar's other segments), a row per
+    category (swatch, label, tokens, share of the window; a row with parts or items is a button
+    that opens them: Claude's Messages parts get their own bar over the Messages total, items are
+    listed largest first with their note), the deferred categories under "Listed, loaded when
+    used" with a dashed swatch, the facts, and "As of message N · T tokens as <agent> counts
+    them". The ring's own line stays the headline.
+  - `logic/ctxsplit.ts` picks the segments and their colours. Colours are the categorical
+    `--viz-1…8` (the dataviz skill's validated palette, light and dark steps in `styles.css`),
+    fixed per category id so a category keeps its colour. A category with no tokens is not drawn,
+    which puts its neighbours side by side, so the order and slots were validated for every pair
+    that can meet that way; for that, Claude's bar puts memory files after the system prompt, MCP
+    tools after system tools and custom agents after skills, each between two categories that
+    are always there. Unknown categories are drawn neutral after the known ones; the autocompact
+    buffer is hatched.
   - Each change calls `api.configure`, which only saves the settings on the server (no agent runs
     before the first message). Once the first message is sent, folder, model and effort are locked.
 - `recentDirs` stays in localStorage (prototype); the default folder now comes from the server's
@@ -3498,6 +3597,15 @@ environment variable) that plays a scripted list of stdout lines and records std
   `EvPermRequest`; a `can_use_tool` for `touch a.txt` yields `EvPermRequest`, and `Decide(true)`
   writes an allow `control_response` with `updatedInput`.
 - A missing folder → `ErrFolderMissing` without starting a process.
+- `ParseContextUsage` over a real `get_context_usage` answer (`testdata/context_usage.json`):
+  categories in order with ids and kinds, items under their categories (loaded and deferred MCP
+  tools apart), Messages parts adding up to Messages, facts; not counted while an MCP tool is at 0
+  tokens; errors for bad JSON and no categories; auto-compact off.
+- Fake process answering `get_context_usage` (`CLAUDE_FAKE_CTX`): the live `ContextSplit` asks
+  again until the MCP tools are counted; an error answer is returned as an error;
+  `ReadContextSplit` starts with `--resume <id> --fork-session` and the chat's own arguments,
+  asks once and sends no message; a process that exits at once (`CLAUDE_FAKE_EXIT`) gives its
+  stderr line as the error.
 
 `internal/cursor`
 - Fake ACP process (a stateful fake Cursor: parameterized model picker flag, model list,
@@ -3538,6 +3646,9 @@ environment variable) that plays a scripted list of stdout lines and records std
 - Fake ACP process + temp store: after a `session/prompt` response the adapter emits
   `EvUsage{CtxIn, CtxWindow}` from the store; with the store removed it emits
   `EvUsage{CtxError: "Cursor session store not found"}` and no numbers.
+- `ReadContextSplit` over a temp store whose token_details has a breakdown: the categories in
+  order (a 0-token one without its field 3), with characters, then the free space; the format
+  error without a breakdown or with a bad category; the meter's read unchanged by the breakdown.
 
 `internal/boardtools`
 - `ParseCommand` accepts the exact form; rejects: another host, a missing heredoc, extra flags,
@@ -3592,6 +3703,12 @@ environment variable) that plays a scripted list of stdout lines and records std
 - `EvUsage{CtxError}` sets `usage.ctxError` and keeps `ctxIn`/`ctxWindow`; the next `EvUsage` with
   numbers clears it.
 - An event from a replaced process (old gen) is ignored.
+- Context split: `ErrNotStarted` before the first message; Claude's split taken between turns is
+  kept in `chat.json` and returned without asking until a message, a turn Claude started itself,
+  or `fresh`; one taken during a turn is returned but not kept; without a process the spawner is
+  asked with the chat's options (board MCP included), and after a restart the kept split is still
+  current; a turn cut short by a restart makes it stale; Cursor's is read every time and never
+  kept; calls during a run share it, and the chat is not held meanwhile.
 
 `internal/app`
 - Archive board → board and its chats archived with one op; their agents stopped.
@@ -3610,6 +3727,7 @@ environment variable) that plays a scripted list of stdout lines and records std
 - `POST /api/boards` without `X-AIWB-Client`, or from a non-active client → 409 `not_active`.
 - `POST /api/boards` → 200 and the file exists; `PUT` scene then `GET` scene round-trips.
 - Error mapping (404 / 409 / 400) for each error kind.
+- `GET /api/chats/{id}/context`: 409 before the first message, the split after it.
 
 `cmd/ai-whiteboard`
 - `findRunning` returns true for an `httptest` server answering `/api/hello` like ours and false
@@ -3619,6 +3737,9 @@ environment variable) that plays a scripted list of stdout lines and records std
 
 Only DOM-free modules are unit-tested (`node --test --experimental-strip-types`):
 
+- `logic/ctxsplit.ts`: Claude's bar order and slots, a missing category leaving the others'
+  colours alone, Cursor's order with 0-token categories left out and unknown ones last and
+  neutral, Messages parts, free tokens, deferred categories, items largest first, shares and widths.
 - `logic/context.ts`: the block for a board with and without references matches the expected text
   exactly.
 - `logic/refs.ts`: selection labels; a selection's and a point's tag; long selections counted past

@@ -110,6 +110,17 @@ func (t *Transcript) Snapshot() (version int, items []model.Item) {
 
 func (t *Transcript) Version() int { return t.version }
 
+// Sent is the number of user messages in the thread.
+func (t *Transcript) Sent() int {
+	n := 0
+	for _, it := range t.items {
+		if it.Kind == "user" {
+			n++
+		}
+	}
+	return n
+}
+
 // Status returns the chat's status and, when it is StatusTool, the tool's name.
 func (t *Transcript) Status() (model.Status, string) {
 	if t.status == model.StatusTool {

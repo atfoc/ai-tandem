@@ -76,6 +76,29 @@ export type Usage = {
   turns: number;
 };
 
+/** GET /api/chats/{id}/context: what fills the context window, by category, as the agent reports it.
+ * Claude's is kept on the server until messages or turns move past it; Cursor's is read each time. */
+export type ContextSplit = {
+  atMessage: number; // messages sent when it was taken
+  atTurn: number;
+  total: number;
+  window: number;
+  categories: ContextCategory[]; // in the agent's order
+  facts?: { label: string; value: string }[]; // Claude: model, auto-compact, listed skills and commands
+};
+
+export type ContextCategory = {
+  id: string; // Cursor's id; Claude's name in snake case
+  label: string;
+  tokens: number;
+  kind: "used" | "deferred" | "buffer" | "free"; // deferred: not in the context; buffer: kept free
+  chars?: number; // Cursor
+  parts?: ContextCategory[]; // Claude's Messages: tool calls, tool results, attachments, …
+  items?: ContextItem[]; // per skill, MCP tool, memory file, agent, tool or attachment type
+};
+
+export type ContextItem = { name: string; tokens: number; note?: string };
+
 /** GET /api/usage/{agent}: the plan's limits, from `claude -p /usage` or `cursor-cost`. Not stored. */
 export type PlanUsage = {
   plan: boolean; // false: no limits reported (API-key login, logged out)

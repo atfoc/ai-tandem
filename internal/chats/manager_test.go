@@ -104,6 +104,12 @@ func (a *fakeAgent) sent() [][]agent.ContentBlock {
 type fakeSpawner struct {
 	mu     sync.Mutex
 	agents []*fakeAgent
+	live   bool // the agents answer ContextSplit themselves (Claude)
+
+	splitReads []agent.SpawnOptions // ReadContextSplit calls
+	liveSplits int                  // ContextSplit calls on its agents
+	splitTotal int                  // the Total of the next split given
+	splitGate  chan struct{}        // non-nil: every split waits for it to close
 }
 
 func (s *fakeSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
@@ -114,7 +120,50 @@ func (s *fakeSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.agents = append(s.agents, a)
+	if s.live {
+		return &splitAgent{a, s}, nil
+	}
 	return a, nil
+}
+
+// splitAgent is a fakeAgent that answers ContextSplit, as Claude's process does.
+type splitAgent struct {
+	*fakeAgent
+	s *fakeSpawner
+}
+
+func (a *splitAgent) ContextSplit() (model.ContextSplit, error) {
+	a.s.mu.Lock()
+	a.s.liveSplits++
+	a.s.mu.Unlock()
+	return a.s.split(), nil
+}
+
+func (s *fakeSpawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, error) {
+	s.mu.Lock()
+	s.splitReads = append(s.splitReads, o)
+	s.mu.Unlock()
+	return s.split(), nil
+}
+
+func (s *fakeSpawner) split() model.ContextSplit {
+	s.mu.Lock()
+	gate := s.splitGate
+	s.splitTotal++
+	total := s.splitTotal
+	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	return model.ContextSplit{Total: total, Window: 1000,
+		Categories: []model.ContextCategory{{ID: "messages", Label: "Messages", Tokens: total, Kind: "used"}}}
+}
+
+// splitCalls is how many splits were asked of the agents and of the spawner.
+func (s *fakeSpawner) splitCalls() (live, reads int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.liveSplits, len(s.splitReads)
 }
 
 func (s *fakeSpawner) count() int {
@@ -317,7 +366,7 @@ func (e *env) boot() {
 	if err := e.bds.Load(); err != nil {
 		e.t.Fatal(err)
 	}
-	e.claude, e.cursor, e.namer = &fakeSpawner{}, &fakeSpawner{}, &fakeNamer{}
+	e.claude, e.cursor, e.namer = &fakeSpawner{live: true}, &fakeSpawner{}, &fakeNamer{}
 	e.m = New(Deps{
 		Store:      st,
 		Bridge:     e.br,
