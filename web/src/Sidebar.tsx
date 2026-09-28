@@ -313,6 +313,7 @@ function AddMenu({ title, head, children }: { title: string; head: string; child
 }
 
 const ArchivedTag = () => <span className="archived-tag">Archived</span>;
+const DraftTag = () => <span className="draft-tag" title="Unsent message">Draft</span>;
 
 /** A group and, nested inside it, its subgroups (first), boards and plain chats. depth 0 is the top level. */
 function GroupNode({ n, depth, editing, setEditing, addBoard, addGroup }: Edit & {
@@ -472,6 +473,7 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
        { label: "Archive", run: () => attempt("Couldn't archive the chat", () => api.archive("chats", c.id)) },
        { label: "Delete", tone: "danger" as const, run: () => deleteChat(c) }];
   const title = chatTitle(c, items);
+  const draft = !!c.draft?.text && !on && !c.archived; // the open chat shows its draft in the composer
   return (
     <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived ? "archived" : ""} st-${c.status}`}
       {...(nested || c.archived || editing === key ? {} : drag(key))}
@@ -486,6 +488,7 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
           : <div className={`side-name ${c.name ? "" : "unnamed"}`}>{title}</div>}
         <div className="side-sub">{sub}</div>
       </div>
+      {draft && <DraftTag />}
       {c.archived && <ArchivedTag />}
       {editing !== key && <RowMenu label="More" items={menu} />}
     </div>
