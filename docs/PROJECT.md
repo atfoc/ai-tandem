@@ -1,8 +1,9 @@
 # AI Whiteboard — what this project is
 
-A local Go **server** and a separately built **client** (a web app in a browser tab for now, a React
-Native macOS app later) that talks to the server only through its HTTP API. Together they give you
-coding-agent chats and whiteboards (Excalidraw) with **AI chats that can read and edit their board**.
+A local Go **server** and a separately built **client**: the web client, shown in the Electron app
+window (`desktop/`, `AI Whiteboard.app`) or in a browser tab, which talks to the server only
+through its HTTP API. Together they give you coding-agent chats and whiteboards (Excalidraw) with
+**AI chats that can read and edit their board**.
 
 It is the big sibling of the `excalidraw-live` skill
 (`~/Documents/projects/agents/claude/skills/excalidraw-live`): same idea of a local server + an
@@ -11,9 +12,9 @@ agent session starts the server. Here, **the server is the host**, and it starts
 
 ## Core ideas
 
-- **Server-first.** `ai-whiteboard` starts the server (or finds the running one) and opens the
-  client. Its data lives in `~/.ai-whiteboard`. The server owns the files on disk, the chats and
-  the agent processes.
+- **Server-first.** `ai-whiteboard` starts the server (or finds the running one) and prints its
+  URL; the app opens the window on it. Quitting the app leaves the server running. Its data lives
+  in `~/.ai-whiteboard`. The server owns the files on disk, the chats and the agent processes.
 - **Chats in groups.** The app is a list of chats in user-made groups. A chat is a full
   coding-agent session.
 - **Whiteboards live in groups.** A whiteboard lives in a group and has its own chats, which see
@@ -34,7 +35,7 @@ agent session starts the server. Here, **the server is the host**, and it starts
 ## Rough architecture
 
 ```
- web client (web/, built with esbuild, opened in a browser tab)
+ web client (web/, built with esbuild, shown in the Electron window (desktop/) or a browser tab)
    │  HTTP JSON  (commands)         ▲ SSE /api/events (state, chat items, rpc calls)
    ▼                                │
  Go server (cmd/ai-whiteboard + internal/…)

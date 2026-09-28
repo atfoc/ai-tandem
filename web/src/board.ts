@@ -59,7 +59,7 @@ export function sceneChanged(id: string, elements: readonly El[], appState: any,
   saveSoon(id);
 }
 
-/** A removed board: its scene and any pending save are dropped. */
+/** A removed board: its scene, any pending save and a failed write are dropped. */
 export function forgetBoard(id: string) {
   const s = saving.get(id);
   if (s?.timer) clearTimeout(s.timer);
@@ -67,11 +67,16 @@ export function forgetBoard(id: string) {
   scenes.delete(id);
 }
 
-// ---- autosave: debounced, one write in flight per board, in order
+// ---- autosave: debounced, one write in flight per board, in order.
+// A write that fails leaves the board unsaved (`failed`) until a later write of it
+// succeeds; there is no retry timer, the next change or flush writes it again.
 
 const SAVE_DEBOUNCE = 500;
-type SaveState = { timer?: any; running?: Promise<void>; again?: boolean };
+type SaveState = { timer?: any; running?: Promise<void>; again?: boolean; failed?: boolean };
 const saving = new Map<string, SaveState>();
+
+/** A board whose scene can still be written: loaded, and neither removed nor archived. */
+const writableScene = (id: string) => { const b = getState().boards[id]; return scenes.has(id) && !!b && !b.archived; };
 
 export function saveSoon(id: string, ms = SAVE_DEBOUNCE) {
   const s = saving.get(id) ?? {}; saving.set(id, s);
@@ -87,29 +92,32 @@ async function runSave(id: string): Promise<void> {
     do {
       s.again = false;
       const sc = scenes.get(id); const b = getState().boards[id];
-      if (!sc || !b || b.archived) break;
+      if (!sc || !b || b.archived) { s.failed = false; break; }
       sc.rev++;
       try {
         await api.saveScene(id, {
           type: "excalidraw", version: 2, source: "ai-whiteboard", elements: sc.elements,
           appState: { viewBackgroundColor: sc.appState.viewBackgroundColor ?? "#ffffff" }, files: sc.files ?? {},
         });
-      } catch (e) { console.error(`saving board ${id}:`, e); }
+        s.failed = false;
+      } catch (e) { s.failed = true; console.error(`saving board ${id}:`, e); }
     } while (s.again);
   })().finally(() => { s.running = undefined; });
   return s.running;
 }
 
-/** Writes now if anything is pending, and waits. */
+/** Writes now if anything is pending, or the last write failed, and waits. */
 export async function flush(id: string) {
   const s = saving.get(id);
   if (!s) return;
   if (s.timer) { clearTimeout(s.timer); s.timer = undefined; await runSave(id); }
   else if (s.running) await s.running;
+  else if (s.failed) await runSave(id);
 }
 
 export async function flushAll() { await Promise.all([...saving.keys()].map(flush)); }
-export const hasPendingSaves = () => [...saving.values()].some((s) => s.timer || s.running);
+/** True while a board has a write waiting, in flight, or failed (and not yet written since). */
+export const hasPendingSaves = () => [...saving].some(([id, s]) => s.timer || s.running || (s.failed && writableScene(id)));
 
 // ---- reading
 

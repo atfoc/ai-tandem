@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/http"
@@ -111,24 +112,54 @@ func TestExpand(t *testing.T) {
 	}
 }
 
+// No command means serve, inside an app bundle too: the Electron app always passes launch.
 func TestCommand(t *testing.T) {
 	for _, c := range []struct {
-		args      []string
-		resources string
-		cmd       string
-		rest      int
+		args []string
+		cmd  string
+		rest int
 	}{
-		{nil, "", "serve", 0},
-		{nil, "/A.app/Contents/Resources", "launch", 0}, // Spotlight or Finder
-		{[]string{"-port", "1"}, "/A.app/Contents/Resources", "serve", 2},
-		{[]string{"serve", "-no-open"}, "", "serve", 1},
-		{[]string{"launch"}, "", "launch", 0},
-		{[]string{"stop", "-home", "/x"}, "", "stop", 2},
+		{nil, "serve", 0},
+		{[]string{}, "serve", 0},
+		{[]string{"-port", "1"}, "serve", 2},
+		{[]string{"serve", "-port", "1"}, "serve", 2},
+		{[]string{"launch"}, "launch", 0},
+		{[]string{"relaunch", "-port", "1"}, "relaunch", 2},
+		{[]string{"stop", "-home", "/x"}, "stop", 2},
 	} {
-		cmd, rest := command(c.args, c.resources)
+		cmd, rest := command(c.args)
 		if cmd != c.cmd || len(rest) != c.rest {
-			t.Errorf("command(%q, %q) = %q, %q; want %q with %d args", c.args, c.resources, cmd, rest, c.cmd, c.rest)
+			t.Errorf("command(%q) = %q, %q; want %q with %d args", c.args, cmd, rest, c.cmd, c.rest)
 		}
+	}
+}
+
+func TestLaunchPrintsRunningServerURL(t *testing.T) {
+	srv := hello("ai-whiteboard")
+	defer srv.Close()
+	port := portOf(t, srv)
+	var out bytes.Buffer
+	launch(options{port: port, paths: paths(t)}, nil, &out)
+	if got, want := out.String(), fmt.Sprintf("http://127.0.0.1:%d/\n", port); got != want {
+		t.Fatalf("launch wrote %q, want %q", got, want)
+	}
+}
+
+// launch never stops a server, whatever its version: the page offers the restart.
+func TestLaunchKeepsServerOfAnotherVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"app":"ai-whiteboard","version":"v0.0.1-old","webVersion":"v9.9.9-new","pid":%d}`, os.Getpid())
+	}))
+	defer srv.Close()
+	port := portOf(t, srv)
+	var out bytes.Buffer
+	launch(options{port: port, paths: paths(t)}, nil, &out)
+	if got, want := out.String(), fmt.Sprintf("http://127.0.0.1:%d/\n", port); got != want {
+		t.Fatalf("launch wrote %q, want %q", got, want)
+	}
+	if h, ok := helloOf(httpClient(), srv.URL); !ok || h.Version != "v0.0.1-old" {
+		t.Fatalf("server no longer answers: %+v %v", h, ok)
 	}
 }
 

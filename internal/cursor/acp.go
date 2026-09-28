@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ai-whiteboard/internal/agent"
 )
 
 // msg is one JSON-RPC 2.0 message (request, notification or response).
@@ -42,7 +44,8 @@ type Conn struct {
 	waitErr error
 }
 
-// Start runs bin with args in dir, with the server's environment unchanged.
+// Start runs bin with args in dir, with the server's environment unchanged, in a process group of
+// its own (agent.StartGroup).
 func Start(bin string, args []string, dir string) (*Conn, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
@@ -56,7 +59,7 @@ func Start(bin string, args []string, dir string) (*Conn, error) {
 	}
 	c := &Conn{cmd: cmd, w: w, r: r, stderr: &tailBuffer{max: 4096}, done: make(chan struct{})}
 	cmd.Stderr = c.stderr
-	if err := cmd.Start(); err != nil {
+	if err := agent.StartGroup(cmd); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -98,6 +101,7 @@ func (c *Conn) readLoop() {
 	}
 	io.Copy(io.Discard, c.r)
 	err := c.cmd.Wait()
+	agent.Exited(c.cmd)
 	if err != nil {
 		if tail := c.stderr.lastLine(); tail != "" {
 			err = fmt.Errorf("%w: %s", err, tail)

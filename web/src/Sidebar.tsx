@@ -13,6 +13,7 @@ import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } f
 import { statusText } from "./logic/labels.ts";
 import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, SunIcon, SystemIcon } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
+import { inDesktopApp, openServerLog, restartServer } from "./version.ts";
 import { THEME_PREFS, type ThemePref } from "./logic/theme.ts";
 import { AGENT_ORDER, UNGROUPED, type AgentKind, type Board, type ChatView, type Group } from "./types.ts";
 
@@ -205,6 +206,7 @@ export function Sidebar() {
         ))}
         <button className="side-addgroup" onClick={() => addGroup()}><GroupIcon /> New group</button>
       </div>
+      <UpdateBanner />
       <div className="side-foot">
         <label className="side-archived">
           <input type="checkbox" className="switch" checked={showArchived}
@@ -214,6 +216,54 @@ export function Sidebar() {
         <ThemeSwitch />
       </div>
     </nav>
+  );
+}
+
+/** After an update: the server or this page runs an older version (version.ts). */
+function UpdateBanner() {
+  const { banner, hidden } = useStore((s) => s.update);
+  const dataDir = useStore((s) => s.dataDir);
+  if (banner === "none" || hidden) return null;
+  const hide = () => setState((s) => ({ update: { ...s.update, hidden: true } }));
+  let body: React.ReactNode;
+  switch (banner) {
+    case "restart":
+      body = <>
+        <div className="side-update-text">New version installed. The server is still running the old one.</div>
+        <div className="side-update-actions"><button className="btn sm primary" onClick={restartServer}>Restart server</button></div>
+      </>;
+      break;
+    case "reload":
+      body = <>
+        <div className="side-update-text">This page is out of date.</div>
+        <div className="side-update-actions"><button className="btn sm primary" onClick={() => location.reload()}>Reload</button></div>
+      </>;
+      break;
+    case "restarting":
+      body = <div className="side-update-text"><span className="spin" /> Restarting…</div>;
+      break;
+    case "failed":
+      body = <>
+        <div className="side-update-text">Restart failed</div>
+        <div className="side-update-actions">
+          <button className="btn sm" onClick={restartServer}>Retry</button>
+          {inDesktopApp()
+            ? <button className="btn sm" onClick={openServerLog}>Open log</button>
+            : <code className="side-update-path">{`${dataDir.replace(/\/+$/, "")}/server.log`}</code>}
+        </div>
+      </>;
+      break;
+    case "missing":
+      body = <div className="side-update-text">
+        The server's program is gone (the app was moved or deleted). Quit the app and run <code>ai-whiteboard relaunch</code>.
+      </div>;
+      break;
+  }
+  return (
+    <div className="side-update" role="status">
+      <div className="side-update-body">{body}</div>
+      {banner !== "restarting" && <button className="icon-btn side-update-x" title="Hide" aria-label="Hide" onClick={hide}>×</button>}
+    </div>
   );
 }
 

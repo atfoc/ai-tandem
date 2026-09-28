@@ -14,6 +14,9 @@ export type Snapshot = {
   dataDir: string;
 };
 
+/** GET /api/hello: the running server's version and the web client's on disk. */
+export type Hello = { app: string; version: string; pid: number; webVersion: string };
+
 export type Dirs = { path: string; parent: string; dirs: string[]; git: boolean };
 
 export const clientId: string = crypto.randomUUID(); // one per tab load
@@ -41,6 +44,9 @@ type Kind = "groups" | "boards" | "chats";
 
 export const api = {
   state: () => call<Snapshot>("GET", "/api/state"),
+  hello: () => call<Hello>("GET", "/api/hello"),
+  /** Starts `relaunch` (stop + launch) on the server; 409 binary_missing when its program is gone. */
+  restart: () => call("POST", "/api/restart"),
   release: () => call("POST", "/api/client/release", { client: clientId }),
   flushed: () => call("POST", "/api/client/flushed", { client: clientId }),
   rpcReply: (id: string, reply: { result?: unknown; error?: string }) => call("POST", "/api/rpc-reply", { id, ...reply }),

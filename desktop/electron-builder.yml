@@ -1,0 +1,29 @@
+# Packages AI Whiteboard.app (run by scripts/build-app.sh, which builds the web client and the Go
+# binary first). The app is Electron; the Go server binary sits next to it in Contents/MacOS, and
+# the web client it serves is in Contents/Resources/web.
+appId: local.ai-whiteboard
+productName: AI Whiteboard
+directories:
+  output: dist
+# Only the main process and preload go into app.asar; electron-builder adds the runtime
+# dependencies (electron-window-state) from package.json.
+files:
+  - main.js
+  - preload.js
+  - lib.js
+  - package.json
+asar: true
+# Outside app.asar: a binary can't be run from inside an asar.
+extraFiles:
+  - from: build/ai-whiteboard
+    to: MacOS/ai-whiteboard
+extraResources:
+  - from: ../web/dist
+    to: web
+  - from: ../assets/icon/AppIcon.icns
+    to: AppIcon.icns
+mac:
+  target: dir
+  icon: ../assets/icon/AppIcon.icns
+  identity: "-" # ad-hoc: enough to run on this Mac
+  hardenedRuntime: false

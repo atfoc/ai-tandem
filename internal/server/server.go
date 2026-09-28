@@ -32,6 +32,30 @@ type Server struct {
 	Port   int
 	// Usage returns an agent's plan usage limits (agent.UsageCache.Get); a missing agent = not available.
 	Usage map[model.AgentKind]func(fresh bool) (model.PlanUsage, error)
+	// Restart starts `relaunch` of this program detached, for POST /api/restart; it must not stop
+	// this server itself. An error wrapping ErrBinaryMissing means the program is gone (the app was
+	// moved or deleted). nil = restart not available.
+	Restart func() error
+}
+
+// ErrBinaryMissing is what Restart reports when this server's program is no longer on disk.
+var ErrBinaryMissing = errors.New("binary_missing")
+
+// webVersion is the version of the web client on disk: version.json ({"version": "<v>"}) in the
+// client folder, "dev" when there is no client folder or the file is missing or unreadable.
+func (s *Server) webVersion() string {
+	if s.Client == "" {
+		return "dev"
+	}
+	b, err := os.ReadFile(filepath.Join(s.Client, "version.json"))
+	if err != nil {
+		return "dev"
+	}
+	var v struct{ Version string }
+	if json.Unmarshal(b, &v) != nil || v.Version == "" {
+		return "dev"
+	}
+	return v.Version
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -139,7 +163,26 @@ func (s *Server) Handler() http.Handler {
 
 	// ---- client and events ----
 	mux.HandleFunc("GET /api/hello", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"app": "ai-whiteboard", "version": version.Version, "pid": os.Getpid()})
+		writeJSON(w, map[string]any{"app": "ai-whiteboard", "version": version.Version, "pid": os.Getpid(),
+			"webVersion": s.webVersion()})
+	})
+	// The server only starts `relaunch` (stop + launch) and keeps running: relaunch stops it.
+	mux.HandleFunc("POST /api/restart", func(w http.ResponseWriter, r *http.Request) {
+		if s.Restart == nil {
+			writeError(w, http.StatusInternalServerError, "restart not available")
+			return
+		}
+		if err := s.Restart(); err != nil {
+			if errors.Is(err, ErrBinaryMissing) {
+				writeError(w, http.StatusConflict, "binary_missing")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	mux.HandleFunc("GET /api/events", s.Bridge.ServeSSE)
 	mux.HandleFunc("POST /api/client/release", func(w http.ResponseWriter, r *http.Request) {
@@ -554,7 +597,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/agent/{token}/{tool}", s.Relay.ServeCommand)
 
 	if s.Client != "" {
-		mux.Handle("/", http.FileServer(http.Dir(s.Client)))
+		mux.Handle("/", clientFiles(s.Client))
 	}
 	return guard(s.Bridge, s.Port, mux)
 }

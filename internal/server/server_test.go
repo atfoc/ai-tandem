@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -63,7 +64,8 @@ type env struct {
 	url string
 }
 
-func newEnv(t *testing.T) *env {
+// newEnv starts a server; each of with sets up the Server before its handler is built.
+func newEnv(t *testing.T, with ...func(*Server)) *env {
 	t.Helper()
 	root := t.TempDir()
 	st, err := store.Open(store.NewPaths(root))
@@ -83,6 +85,9 @@ func newEnv(t *testing.T) *env {
 		DefaultCwd: t.TempDir(), BaseURL: "http://127.0.0.1:" + itoa(port)})
 	a = &app.App{St: st, Boards: bds, Chats: cm, Bridge: br, DataDir: root, DefaultCwd: cm.DefaultCwd}
 	s := &Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bds}, Bridge: br, Port: port}
+	for _, f := range with {
+		f(s)
+	}
 	srv := httptest.NewUnstartedServer(s.Handler())
 	srv.Listener.Close()
 	srv.Listener = ln
@@ -247,6 +252,59 @@ func TestHello(t *testing.T) {
 	if out["app"] != "ai-whiteboard" || out["version"] != version.Version || out["pid"] != float64(os.Getpid()) {
 		t.Fatalf("hello %v", out)
 	}
+}
+
+func TestHelloWebVersion(t *testing.T) {
+	webVersion := func(e *env) any {
+		return decode[map[string]any](t, e.expect(200, "GET", "/api/hello", ""))["webVersion"]
+	}
+	if got := webVersion(newEnv(t)); got != "dev" {
+		t.Fatalf("no client folder: webVersion %v, want dev", got)
+	}
+	dir := t.TempDir()
+	e := newEnv(t, func(s *Server) { s.Client = dir })
+	if got := webVersion(e); got != "dev" {
+		t.Fatalf("no version.json: webVersion %v, want dev", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "version.json"), []byte(`{"version":"v1.2-3-gabc"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := webVersion(e); got != "v1.2-3-gabc" {
+		t.Fatalf("webVersion %v, want v1.2-3-gabc", got)
+	}
+	// Read on each request: a new install changes it without a restart.
+	if err := os.WriteFile(filepath.Join(dir, "version.json"), []byte(`not json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := webVersion(e); got != "dev" {
+		t.Fatalf("unreadable version.json: webVersion %v, want dev", got)
+	}
+}
+
+func TestRestart(t *testing.T) {
+	calls := 0
+	e := newEnv(t, func(s *Server) { s.Restart = func() error { calls++; return nil } })
+	if code, out := e.doAs("B", "POST", "/api/restart", ""); code != 409 || calls != 0 {
+		t.Fatalf("restart from another client: %d %s, %d calls", code, out, calls)
+	}
+	e.expect(202, "POST", "/api/restart", "")
+	if calls != 1 {
+		t.Fatalf("hook called %d times, want 1", calls)
+	}
+	// The server keeps running.
+	e.expect(200, "GET", "/api/hello", "")
+}
+
+func TestRestartBinaryMissing(t *testing.T) {
+	e := newEnv(t, func(s *Server) {
+		s.Restart = func() error { return fmt.Errorf("%w: stat /x: no such file", ErrBinaryMissing) }
+	})
+	out := e.expect(409, "POST", "/api/restart", "")
+	if got := decode[map[string]string](t, out)["error"]; got != "binary_missing" {
+		t.Fatalf("error %q, want binary_missing", got)
+	}
+	e = newEnv(t, func(s *Server) { s.Restart = func() error { return errors.New("fork failed") } })
+	e.expect(500, "POST", "/api/restart", "")
 }
 
 // ---- boards ---------------------------------------------------------------
@@ -464,6 +522,80 @@ func TestNoStaticClientWhenUnset(t *testing.T) {
 	code, _ := e.do("GET", "/", "")
 	if code != 404 {
 		t.Fatalf("GET / status %d, want 404", code)
+	}
+}
+
+// getClient fetches path with the given extra headers and returns the response and its body.
+func (e *env) getClient(path string, hdr map[string]string) (*http.Response, string) {
+	e.t.Helper()
+	req, _ := http.NewRequest("GET", e.url+path, nil)
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, string(b)
+}
+
+func TestClientFilesRevalidateByContent(t *testing.T) {
+	dir := t.TempDir()
+	js := filepath.Join(dir, "main.js")
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>v1</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(js, []byte("console.log('v1')"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(js, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, func(s *Server) { s.Client = dir })
+
+	for _, p := range []string{"/main.js", "/"} {
+		resp, _ := e.getClient(p, nil)
+		if resp.StatusCode != 200 {
+			t.Fatalf("GET %s: status %d, want 200", p, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("GET %s: Cache-Control %q, want no-cache", p, got)
+		}
+		if tag := resp.Header.Get("ETag"); !strings.HasPrefix(tag, `"`) || len(tag) < 3 {
+			t.Fatalf("GET %s: ETag %q, want a strong ETag", p, tag)
+		}
+	}
+
+	resp, body := e.getClient("/main.js", nil)
+	if body != "console.log('v1')" {
+		t.Fatalf("main.js body %q", body)
+	}
+	tag := resp.Header.Get("ETag")
+	lastMod := resp.Header.Get("Last-Modified")
+	if resp, _ := e.getClient("/main.js", map[string]string{"If-None-Match": tag}); resp.StatusCode != 304 {
+		t.Fatalf("If-None-Match same ETag: status %d, want 304", resp.StatusCode)
+	}
+
+	// A newer build with an older file time: the content decides, not the time.
+	if err := os.WriteFile(js, []byte("console.log('v2 new build')"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	older := oldTime.Add(-time.Hour)
+	if err := os.Chtimes(js, older, older); err != nil {
+		t.Fatal(err)
+	}
+	resp, body = e.getClient("/main.js", map[string]string{"If-None-Match": tag, "If-Modified-Since": lastMod})
+	if resp.StatusCode != 200 {
+		t.Fatalf("changed main.js: status %d, want 200", resp.StatusCode)
+	}
+	if body != "console.log('v2 new build')" {
+		t.Fatalf("changed main.js body %q", body)
+	}
+	if got := resp.Header.Get("ETag"); got == tag || got == "" {
+		t.Fatalf("changed main.js: ETag %q, want a new one (old %q)", got, tag)
 	}
 }
 

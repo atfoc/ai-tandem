@@ -491,6 +491,13 @@ body.resizing iframe { pointer-events: none; }
 .side-row.st-stopped .side-sub, .side-row.st-error .side-sub { color: var(--danger); }
 .side-group-head.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .side-err { color: var(--danger); font-size: 11.5px; padding: 0 8px 4px 44px; }
+/* the version banner after an update (version.ts) */
+.side-update { display: flex; align-items: flex-start; gap: 4px; padding: 8px 6px 8px 14px; border-top: 1px solid var(--line); background: var(--warn-soft); font-size: 12px; color: var(--text); }
+.side-update-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
+.side-update-text { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; line-height: 1.4; }
+.side-update-text code, .side-update-path { font: 11px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; user-select: text; }
+.side-update-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.side-update-x { flex: none; width: 22px; height: 22px; font-size: 15px; }
 .side-foot { display: flex; align-items: center; gap: 8px; padding: 7px 10px 7px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); user-select: none; }
 .side-archived { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; white-space: nowrap; cursor: pointer; }
 /* the theme switch: light, dark, system */

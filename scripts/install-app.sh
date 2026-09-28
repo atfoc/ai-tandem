@@ -17,9 +17,11 @@ ditto "$src" "$dest"
 mdimport "$dest"         # index it for Spotlight now instead of eventually
 echo "Installed $dest"
 
-# A server started by an older build keeps running it until it stops. server.json exists only
-# while a server runs.
+# A server started by an older build keeps running it until it stops: opening the app never
+# restarts it, since that would end the running agent chats. server.json exists only while a
+# server runs.
 if [ -f "$HOME/.ai-whiteboard/server.json" ]; then
-  echo "A server is running from the previous build. To restart on this one:"
-  echo "  \"$dest/Contents/MacOS/ai-whiteboard\" stop   (then launch AI Whiteboard again)"
+  echo "A server is running from the previous build. AI Whiteboard will offer to restart it on"
+  echo "this one (Restart server, at the bottom of the sidebar), or restart it now with:"
+  echo "  \"$dest/Contents/MacOS/ai-whiteboard\" relaunch"
 fi

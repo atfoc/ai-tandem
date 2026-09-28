@@ -10,6 +10,7 @@ import { plainText } from "./logic/refs.ts";
 import { parseWidths, type Widths } from "./logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
 import type { Unsaved } from "./logic/drafts.ts";
+import type { UpdateBanner } from "./logic/version.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
 export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind; tone: "edit" | "danger"; until: number };
@@ -42,6 +43,7 @@ export type State = {
   busyOn: Record<string, { chat: string; agent: AgentKind; until: number }>; // by board id
   confirm: ConfirmRequest | null; // Dialogs.tsx
   picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L)
+  update: { banner: UpdateBanner; hidden: boolean }; // the version banner (version.ts); hidden = ×'d until the next reconnect
 };
 
 export function safeGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
@@ -68,6 +70,7 @@ let state: State = {
   themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
   selection: { count: 0, lines: [] }, view: { scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 },
   flashes: [], busyOn: {}, confirm: null, picking: null,
+  update: { banner: "none", hidden: false },
 };
 const subs = new Set<() => void>();
 

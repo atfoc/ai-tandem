@@ -5,6 +5,7 @@ import { api, clientId } from "./api.ts";
 import { setState, getState, applySnapshot, upsertBoard, removeBoard, upsertChat, removeChat, upsertSub } from "./store.ts";
 import { runTool, flushAll } from "./board.ts";
 import { subKey } from "./logic/subagents.ts";
+import { checkVersion } from "./version.ts";
 import type { Item, Subagent } from "./types.ts";
 
 let es: EventSource | null = null;
@@ -25,7 +26,7 @@ export function connect() {
 async function handle(m: any, src: EventSource) {
   if (es !== src) return;
   switch (m.type) {
-    case "hello": setState({ connected: true, role: m.active ? "active" : "waiting" }); return;
+    case "hello": setState({ connected: true, role: m.active ? "active" : "waiting" }); void checkVersion(); return;
     case "snapshot": applySnapshot(m); afterSnapshot(); return;
     case "release_request": await flushAll(); await api.release().catch(() => {}); return;
     case "superseded": src.close(); es = null; setState({ role: "superseded" }); return; // TakeoverScreen

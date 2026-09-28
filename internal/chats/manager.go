@@ -999,8 +999,9 @@ func (m *Manager) Busy(id string) bool {
 	return busy(c)
 }
 
-// Shutdown writes everything still open and ends every agent without waiting. A running turn
-// keeps TurnActive, so the chat shows as Stopped next time.
+// Shutdown writes everything still open and ends every agent without waiting (the caller then
+// ends what is left with agent.EndAll). A running turn keeps TurnActive, so the chat shows as
+// Stopped next time.
 func (m *Manager) Shutdown() {
 	for _, c := range m.all() {
 		c.mu.Lock()
@@ -1014,7 +1015,7 @@ func (m *Manager) Shutdown() {
 			m.logSave(c)
 		}
 		if c.ag != nil {
-			c.ag.Close()
+			go c.ag.Close() // Cursor's Close waits for the process, forever when its children hold its output
 		}
 		c.mu.Unlock()
 	}

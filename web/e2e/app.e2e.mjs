@@ -89,7 +89,7 @@ async function step(n, title, fn) {
 let server = null;
 let serverEnv = process.env;
 
-function serverArgs() { return ["-home", HOME, "-port", String(PORT), "-client", CLIENT, "-no-open"]; }
+function serverArgs() { return ["-home", HOME, "-port", String(PORT), "-client", CLIENT]; }
 
 async function hello() {
   try {

@@ -144,7 +144,7 @@ func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 	if err := errors.Join(err1, err2); err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	if err := agent.StartGroup(cmd); err != nil {
 		return nil, err
 	}
 	p.cmd = cmd
@@ -201,6 +201,7 @@ func (p *proc) readLoop(stdout io.Reader) {
 	// Drain whatever is left so the process is not blocked writing to a full pipe.
 	io.Copy(io.Discard, stdout)
 	err := p.cmd.Wait()
+	agent.Exited(p.cmd)
 	close(p.done)
 	msg := strings.TrimSpace(p.stderr.String())
 	if msg == "" && err != nil {

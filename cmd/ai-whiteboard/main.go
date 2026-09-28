@@ -4,11 +4,13 @@
 //
 // Commands:
 //
-//	ai-whiteboard [serve] [flags]  run the server in the foreground (or open the running one)
-//	ai-whiteboard launch [flags]   start the server in the background if needed, open it, exit
+//	ai-whiteboard [serve] [flags]  run the server in the foreground (or print the running one's URL)
+//	ai-whiteboard launch [flags]   start the server in the background if needed, print its URL, exit
+//	ai-whiteboard relaunch [flags] stop the running server if any, then launch; prints the URL
 //	ai-whiteboard stop [flags]     stop the running server
 //
-// Inside AI Whiteboard.app, running with no arguments means launch (spec 4.14).
+// The program never opens a browser or a window: the Electron app does that. To use a browser tab,
+// run launch (or serve) and open the printed URL.
 package main
 
 import (
@@ -19,7 +21,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -44,36 +45,33 @@ import (
 type options struct {
 	port                 int
 	home, client, cwd    string
-	noOpen               bool
 	claudeBin, cursorBin string
 	cursorCostBin        string
 	paths                store.Paths
 }
 
 func main() {
-	cmd, args := command(os.Args[1:], bundleResources())
+	cmd, args := command(os.Args[1:])
 	o := parseFlags(cmd, args)
 	switch cmd {
 	case "serve":
-		serve(o)
+		serve(o, args)
 	case "launch":
-		launch(o, args)
+		launch(o, args, os.Stdout)
+	case "relaunch":
+		relaunch(o, args, os.Stdout)
 	case "stop":
 		stop(o)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (serve, launch, stop)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (serve, launch, relaunch, stop)\n", cmd)
 		os.Exit(2)
 	}
 }
 
-// command splits the arguments into a command and its flags. With no command it is serve, except
-// with no arguments at all inside an app bundle (a Spotlight or Finder launch), where it is launch.
-func command(args []string, resources string) (string, []string) {
+// command splits the arguments into a command and its flags. With no command it is serve.
+func command(args []string) (string, []string) {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		return args[0], args[1:]
-	}
-	if len(args) == 0 && resources != "" {
-		return "launch", nil
 	}
 	return "serve", args
 }
@@ -89,7 +87,6 @@ func parseFlags(cmd string, args []string) options {
 	fs.IntVar(&o.port, "port", 4747, "listen port")
 	fs.StringVar(&o.home, "home", "~/.ai-whiteboard", "data folder")
 	fs.StringVar(&o.client, "client", client, `built web client to serve ("" = serve none)`)
-	fs.BoolVar(&o.noOpen, "no-open", false, "don't open the browser")
 	fs.StringVar(&o.cwd, "cwd", here, "default working folder for new chats")
 	fs.StringVar(&o.claudeBin, "claude", "claude", "Claude Code binary")
 	fs.StringVar(&o.cursorBin, "cursor", "agent", "Cursor agent binary")
@@ -105,16 +102,14 @@ func parseFlags(cmd string, args []string) options {
 	return o
 }
 
-// serve runs the server in the foreground until SIGINT or SIGTERM.
-func serve(o options) {
+// serve runs the server in the foreground until SIGINT or SIGTERM. args are its flags, which
+// POST /api/restart passes on to relaunch.
+func serve(o options, args []string) {
 	home, _ := os.UserHomeDir()
 	p := o.paths
 
 	if url, ok := findRunning(p, o.port); ok {
 		fmt.Println("AI Whiteboard is already running at", url)
-		if !o.noOpen {
-			openBrowser(url)
-		}
 		return
 	}
 
@@ -155,20 +150,19 @@ func serve(o options) {
 		Client: o.client, Port: port, Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
 			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
-		}}
+		},
+		Restart: func() error { return startRelaunch(p, args) }}
 	if err := store.WriteServerFile(p, port); err != nil {
 		log.Printf("server.json: %v", err)
 	}
 	go onSignal(func() {
 		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
 		cm.Shutdown()                    // history written; agents end
+		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
 		store.RemoveServerFile(p)
 		os.Exit(0)
 	}, syscall.SIGINT, syscall.SIGTERM)
 
-	if o.client != "" && !o.noOpen {
-		openBrowser(base + "/")
-	}
 	log.Printf("AI Whiteboard: %s  (data in %s)", base, p.Root)
 	log.Fatal(http.Serve(ln, srv.Handler()))
 }
@@ -217,21 +211,32 @@ func findRunning(p store.Paths, port int) (string, bool) {
 func httpClient() *http.Client { return &http.Client{Timeout: time.Second} }
 
 func isOurs(c *http.Client, base string) bool {
+	_, ok := helloOf(c, base)
+	return ok
+}
+
+// helloReply is a server's answer to GET /api/hello.
+type helloReply struct {
+	App     string `json:"app"`
+	Version string `json:"version"`
+	Pid     int    `json:"pid"`
+}
+
+// helloOf asks base for /api/hello; ok only when an AI Whiteboard server answers.
+func helloOf(c *http.Client, base string) (helloReply, bool) {
+	var h helloReply
 	resp, err := c.Get(base + "/api/hello")
 	if err != nil {
-		return false
+		return h, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return h, false
 	}
-	var hello struct {
-		App string `json:"app"`
+	if err := json.NewDecoder(resp.Body).Decode(&h); err != nil {
+		return h, false
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&hello); err != nil {
-		return false
-	}
-	return hello.App == "ai-whiteboard"
+	return h, h.App == "ai-whiteboard"
 }
 
 // refreshCursorCatalog fetches Cursor's model list for the pickers (spec 4.6). On failure the
@@ -247,5 +252,3 @@ func refreshCursorCatalog(sp *cursor.Spawner, st *store.Store, br *editorbridge.
 	}
 	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Cursor), "catalog": cat})
 }
-
-func openBrowser(url string) { exec.Command("open", url).Start() }

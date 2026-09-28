@@ -12,6 +12,9 @@ import { initTheme } from "./theme.ts";
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void flushAll(); });
 window.addEventListener("pagehide", () => { void flushAll(); });
 window.addEventListener("beforeunload", (e) => { if (hasPendingSaves()) { void flushAll(); e.preventDefault(); } });
+// The desktop app calls this and waits for it before it closes or reloads the window: there, a
+// prevented beforeunload cancels the close with no prompt. True once every board is written.
+(window as any).aiwbFlush = () => flushAll().then(() => !hasPendingSaves());
 
 initTheme();
 connect();
