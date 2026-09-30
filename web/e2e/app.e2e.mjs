@@ -14,6 +14,10 @@
 //   AIWB_E2E_HOME    data folder          (default a new temp folder)
 //   AIWB_E2E_PORT    port                 (default 4749)
 //
+// The run gives the server and Cursor a copy of the Cursor CLI config ($CURSOR_CONFIG_DIR or
+// ~/.cursor) in a temp folder, removed at the end, so the deny rules the server adds for the data
+// folder never reach the user's config.
+//
 // Step 15 (Reveal in Finder) is checked by hand, not here. Exit code 0 only when every step passed.
 
 import { chromium } from "playwright";
@@ -37,6 +41,14 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-run-"));
 const WORK = path.join(OUT, "work");
 const LOG = path.join(OUT, "server.log");
 const dir = (...p) => { const d = path.join(WORK, ...p); fs.mkdirSync(d, { recursive: true }); return d; };
+
+// The copy of the user's Cursor CLI config; every process the run starts inherits it.
+const CURSOR_CFG = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-cursor-"));
+{
+  const real = path.join(process.env.CURSOR_CONFIG_DIR || path.join(os.homedir(), ".cursor"), "cli-config.json");
+  if (fs.existsSync(real)) fs.copyFileSync(real, path.join(CURSOR_CFG, "cli-config.json"));
+  process.env.CURSOR_CONFIG_DIR = CURSOR_CFG;
+}
 
 const CLAUDE_MODEL_LABEL = "Haiku 4.5";
 const CURSOR_MODEL_LABEL = "GPT-5.4 Nano"; // the cheapest model in Cursor's list
@@ -904,5 +916,6 @@ try {
 } finally {
   await browser?.close().catch(() => {});
   await stopServer().catch(() => {});
+  fs.rmSync(CURSOR_CFG, { recursive: true, force: true });
 }
 process.exit(code);

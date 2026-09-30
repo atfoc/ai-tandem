@@ -12,6 +12,20 @@ import (
 	"ai-whiteboard/internal/store"
 )
 
+// TestMain points CURSOR_CONFIG_DIR at a temp folder for the whole run: every server a test starts
+// adds deny rules for its data folder to the Cursor CLI config, and must not add them to the user's.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "aiwb-cmd-cursor-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Setenv("CURSOR_CONFIG_DIR", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 func portOf(t *testing.T, srv *httptest.Server) int {
 	t.Helper()
 	return srv.Listener.Addr().(*net.TCPAddr).Port
