@@ -8,13 +8,16 @@ import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
-import { DraftSaver } from "./logic/drafts.ts";
+import { DraftSaver, hasDraft } from "./logic/drafts.ts";
+import { toSend } from "./logic/quotes.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensText, width, type Segment } from "./logic/ctxsplit.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
+import { useComposerQuotes } from "./Quotes.tsx";
+import { quoteSelection } from "./quoteDom.ts";
 import { BoardIcon, Chevron, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
-import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, PlanUsage, UsageLimit } from "./types.ts";
+import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, PlanUsage, Reference, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
 
@@ -40,11 +43,12 @@ export function subline(c: ChatView, cat?: Catalog): string {
 
 // ---- sending
 
-/** Plain chats send the text alone; board chats send the <ui-context> with it. */
-export async function sendMessage(chat: string, text: string, picked: Picked[] = []) {
+/** Plain chats send the text alone; board chats send the <ui-context> with it. Quotes go with
+ *  both. */
+export async function sendMessage(chat: string, text: string, picked: Picked[] = [], references: Reference[] = []) {
   const c = getState().chats[chat];
-  if (!c?.board) return api.send(chat, text, "");
-  return api.send(chat, text, buildContext(chat, text, picked));
+  if (!c?.board) return api.send(chat, text, "", references);
+  return api.send(chat, text, buildContext(chat, text, picked), references);
 }
 
 // ---- drafts
@@ -54,14 +58,14 @@ export async function sendMessage(chat: string, text: string, picked: Picked[] =
 async function saveDraft(chat: string, d: Draft, keepalive: boolean) {
   const c = getState().chats[chat];
   if (!c) return; // deleted
-  upsertChat({ ...c, draft: d.text ? d : undefined });
+  upsertChat({ ...c, draft: hasDraft(d) ? d : undefined });
   await api.saveDraft(chat, d, keepalive).catch((e) => { console.warn(`draft of ${chat} not saved:`, e); throw e; });
 }
 
 /** The draft a composer opens with: one the server may not have yet, else the server's. */
 const draftToShow = (chat: string) => unsavedDraft(chat).read() ?? getState().chats[chat]?.draft;
 
-// ---- references (⌘L, ⌘⇧L)
+// ---- references (⌘L, ⌘⇧L): text selected in a message, or the board's selection
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const KEY_REF = isMac ? "⌘L" : "Ctrl+L";
@@ -85,18 +89,23 @@ export function Composer({ chatId }: { chatId: string }) {
   const picking = useStore((s) => s.picking === chatId);
   const [text, setText] = useState(() => draftToShow(chatId)?.text ?? "");
   const [picked, setPicked] = useState<Picked[]>(() => draftToShow(chatId)?.mentions ?? []);
+  const [quotes, setQuotes] = useState<Reference[]>(() => draftToShow(chatId)?.references ?? []);
   const [mention, setMention] = useState<{ q: string; at: number; i: number } | null>(null);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const input = useRef<RefInputHandle>(null);
+  const box = useRef<HTMLDivElement>(null);
   const current = useRef(text); // the text now, for a failed send
   const drafts = useRef<DraftSaver | null>(null);
   drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(chatId, d, keepalive), getState().chats[chatId]?.draft, unsavedDraft(chatId));
   const board = c?.board;
-  const canRef = !!board && !c?.archived && onScreen === board;
+  const archived = !!c?.archived;
+  const canRef = !!board && !archived && onScreen === board;
+  const q = useComposerQuotes(chatId, quotes, setQuotes, box);
 
-  // ⌘L puts the selection on the board into the message; ⌘⇧L waits for a point clicked on it.
+  // ⌘L quotes the text selected in a message; with none, it puts the selection on the board into
+  // the message. ⌘⇧L waits for a point clicked on the board.
   const addSelection = () => {
     if (!board) return;
     const r = selectionRefOn(board);
@@ -105,10 +114,20 @@ export function Composer({ chatId }: { chatId: string }) {
     input.current?.insertRef(r);
   };
   useEffect(() => {
-    if (!canRef) return;
-    inserters.set(chatId, (r) => { setNote(""); input.current?.insertRef(r); });
+    if (archived) return;
+    if (canRef) inserters.set(chatId, (r) => { setNote(""); input.current?.insertRef(r); });
     const k = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.code !== "KeyL") return;
+      const sel = e.shiftKey ? null : quoteSelection(chatId);
+      if (sel) {
+        e.preventDefault(); e.stopPropagation();
+        if ("error" in sel) setNote(sel.error); else { setNote(""); q.quote(sel.ref, sel.range); }
+        return;
+      }
+      if (!canRef) {
+        if (!board && !e.shiftKey) { e.preventDefault(); setNote("Select text in a message to quote it"); }
+        return;
+      }
       e.preventDefault(); e.stopPropagation(); // before Excalidraw, whose ⌘⇧L locks shapes
       if (e.shiftKey) pickPoint(getState().picking === chatId ? null : chatId);
       else addSelection();
@@ -119,7 +138,7 @@ export function Composer({ chatId }: { chatId: string }) {
       inserters.delete(chatId);
       if (getState().picking === chatId) pickPoint(null);
     };
-  }, [canRef, chatId]);
+  }, [canRef, archived, chatId]);
   useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(""), 2500); return () => clearTimeout(t); }, [note]);
 
   // The draft: put into the box when it appears (on open, after unarchiving), saved as it
@@ -127,11 +146,12 @@ export function Composer({ chatId }: { chatId: string }) {
   // server (the echo of our own saves) are not put in: they would overwrite the typing.
   useEffect(() => {
     const d = draftToShow(chatId);
-    if (c?.archived || !d?.text) return;
+    if (c?.archived || !hasDraft(d)) return;
     input.current?.set(d.text);
     setPicked(d.mentions ?? []);
+    setQuotes(d.references ?? []);
   }, [c?.archived]);
-  useEffect(() => drafts.current!.change(text, picked), [text, picked]);
+  useEffect(() => drafts.current!.change(text, picked, quotes), [text, picked, quotes]);
   useEffect(() => {
     const d = drafts.current!;
     const hide = () => d.flush(true);
@@ -158,15 +178,17 @@ export function Composer({ chatId }: { chatId: string }) {
 
   const submit = async () => {
     const t = text.trim();
-    if (!t || running || sending) return; // no send while busy
+    if ((!t && !quotes.length) || running || sending) return; // no send while busy
     setSending(true); setErr("");
     input.current?.set(""); setMention(null); // the server clears the draft on send; the empty one saved after it undoes a save still in flight
-    const p = picked;
+    const p = picked, qs = quotes;
+    setQuotes([]);
     try {
-      await sendMessage(chatId, t, p);
+      await sendMessage(chatId, t, p, toSend(qs));
       setPicked([]);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
+      setQuotes((now) => (now.length ? now : qs));
       if (!current.current.trim()) input.current?.set(t); // nothing typed is lost
       if (e instanceof ApiError && e.status === 409) void refreshChat(chatId);
     } finally { setSending(false); }
@@ -193,6 +215,7 @@ export function Composer({ chatId }: { chatId: string }) {
             <BoardIcon /> {own?.name ?? "board"}
           </span>
           {refs.map((r) => <span key={r.id} className="ctx-chip ref" title={`Referenced board (${r.id})`}>@{r.name}</span>)}
+          {q.count}
           <span className="grow" />
           {note ? <span className="ctx-note">{note}</span> : canRef && <>
             <button className="ctx-act" disabled={!selected} onMouseDown={(e) => e.preventDefault()} onClick={addSelection}
@@ -206,7 +229,10 @@ export function Composer({ chatId }: { chatId: string }) {
           </>}
         </div>
       )}
-      <div className="composer-box with-tools">
+      {!c.board && (q.count || note) ? (
+        <div className="context-row">{q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}</div>
+      ) : null}
+      <div className="composer-box with-tools" ref={box}>
         {mention && matches.length > 0 && (
           <div className="mention-pop">
             {matches.map((o, i) => (
@@ -236,10 +262,11 @@ export function Composer({ chatId }: { chatId: string }) {
           <Toolbar chatId={chatId} onError={setErr} />
           <span className="grow" />
           {running && <button className="send stop" title="Stop (Esc)" onClick={() => api.interrupt(chatId).catch((e) => setErr(e.message))}><span className="sq" /></button>}
-          <button className="send" title={running ? "The agent is working" : "Send (Enter)"} disabled={running || sending || !text.trim()} onClick={() => void submit()}>↑</button>
+          <button className="send" title={running ? "The agent is working" : "Send (Enter)"} disabled={running || sending || (!text.trim() && !quotes.length)} onClick={() => void submit()}>↑</button>
         </div>
       </div>
       {err ? <div className="composer-err">{err}</div> : c.status === "error" && c.error ? <div className="composer-err">{c.error}</div> : null}
+      {q.float}
     </div>
   );
 }

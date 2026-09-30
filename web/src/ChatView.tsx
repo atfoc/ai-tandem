@@ -9,6 +9,7 @@ import { toolVerb, toolDone, statusText } from "./logic/labels.ts";
 import { isSubagentTool } from "./logic/subagents.ts";
 import { Markdown } from "./Markdown.tsx";
 import { SubagentRow } from "./Subagents.tsx";
+import { SentQuotes } from "./Quotes.tsx";
 import { AgentGlyph, BoardIcon, Pencil, agentName } from "./icons.tsx";
 import type { ChatView, Item, Subagent } from "./types.ts";
 
@@ -102,9 +103,9 @@ export function Thread({ chatId }: { chatId: string }) {
   if (!c) return null;
   const busy = isBusy(c.status);
   return (
-    <div className="thread" ref={ref} onScroll={onScroll}>
+    <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
       {loaded && !items.length && <EmptyThread c={c} />}
-      {items.map((it, i) => it ? <ItemView key={i} item={it} chat={c} /> : null)}
+      {items.map((it, i) => it ? <ItemView key={i} item={it} chat={c} index={i} /> : null)}
       {busy && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
     </div>
   );
@@ -134,15 +135,26 @@ function EmptyThread({ c }: { c: ChatView }) {
   );
 }
 
-/** One item of a thread: the chat's, or a subagent's (sub) in the drawer. */
-export function ItemView({ item, chat, sub }: { item: Item; chat: ChatView; sub?: Subagent }) {
+/** One item of a thread: the chat's (index: its place in the thread), or a subagent's (sub) in
+ *  the drawer. The chat's messages and replies are tagged with their index, which is what makes
+ *  them quotable (⌘L, quoteDom.ts); the drawer's are not. */
+export function ItemView({ item, chat, sub, index }: { item: Item; chat: ChatView; sub?: Subagent; index?: number }) {
   const live = sub ? sub.status === "running" : true;
+  const tag = sub ? undefined : index;
   switch (item.kind) {
-    case "user": return <div className="msg user"><Markdown text={item.text ?? ""} user board={chat.board} agent={chat.agent} /></div>;
+    case "user": {
+      const refs = item.references ?? [];
+      return (
+        <div className="msg user" data-item={tag} data-quotable={tag === undefined ? undefined : "true"}>
+          {refs.length > 0 && <SentQuotes chatId={chat.id} refs={refs} />}
+          {(item.text || !refs.length) && <Markdown text={item.text ?? ""} user board={chat.board} agent={chat.agent} />}
+        </div>
+      );
+    }
     case "text": {
       const streaming = !item.done && (sub ? live : chat.status === "writing");
       return (
-        <div className={`msg assistant${streaming ? " streaming" : ""}`}>
+        <div className={`msg assistant${streaming ? " streaming" : ""}`} data-item={tag} data-quotable={tag === undefined ? undefined : String(!!item.done)}>
           <Markdown text={item.text ?? ""} board={chat.board} agent={chat.agent} streaming={streaming} />
           {streaming && !item.text?.trim() && <span className="caret-blink" />}
         </div>

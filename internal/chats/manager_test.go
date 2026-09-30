@@ -428,7 +428,7 @@ func (e *env) items(id string) []model.Item {
 
 func (e *env) send(id, text, ctx string) {
 	e.t.Helper()
-	if err := e.m.Send(id, text, ctx); err != nil {
+	if err := e.m.Send(id, text, ctx, nil); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -862,7 +862,7 @@ func TestSendClearsDraft(t *testing.T) {
 	}
 	// A send refused while busy leaves the draft alone.
 	e.m.SetDraft(v.ID, model.Draft{Text: "two"})
-	if err := e.m.Send(v.ID, "two", ""); !errors.Is(err, ErrBusy) {
+	if err := e.m.Send(v.ID, "two", "", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("Send while busy: %v", err)
 	}
 	if m := e.meta(v.ID); m.Draft == nil || m.Draft.Text != "two" {
@@ -918,7 +918,7 @@ func TestSendWhileBusy(t *testing.T) {
 	if !e.m.Busy(v.ID) {
 		t.Fatal("not busy after Send")
 	}
-	if err := e.m.Send(v.ID, "two", ""); !errors.Is(err, ErrBusy) {
+	if err := e.m.Send(v.ID, "two", "", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("Send while busy: %v", err)
 	}
 	after, _ := os.ReadFile(filepath.Join(e.st.P.ChatDir(v.ID), "chat.json"))
@@ -1032,7 +1032,7 @@ func TestMissingFolderFix(t *testing.T) {
 	os.RemoveAll(dir)
 
 	e.boot()
-	if err := e.m.Send(v.ID, "two", ""); !errors.Is(err, ErrFolderMissing) {
+	if err := e.m.Send(v.ID, "two", "", nil); !errors.Is(err, ErrFolderMissing) {
 		t.Fatalf("Send with folder gone: %v", err)
 	}
 	got := e.view(v.ID)
@@ -1503,7 +1503,7 @@ func TestSubagentPermissionWhileIdle(t *testing.T) {
 	if st := e.view(id).Status; st != model.StatusReady {
 		t.Fatalf("status after Decide %q", st)
 	}
-	if err := e.m.Send(id, "next", ""); err != nil {
+	if err := e.m.Send(id, "next", "", nil); err != nil {
 		t.Fatalf("Send after Decide: %v", err)
 	}
 }
@@ -1683,5 +1683,75 @@ func TestDeleteRemovesSubagents(t *testing.T) {
 	}
 	if _, err := os.Stat(e.st.P.ChatDir(id)); !os.IsNotExist(err) {
 		t.Fatalf("chat folder still there: %v", err)
+	}
+}
+
+func TestSendReferences(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	e.send(v.ID, "plan please", "")
+	a := e.claude.last(t)
+	a.emit(t, agent.Event{Kind: agent.EvTextStart}, agent.Event{Kind: agent.EvTextDelta, Text: "Own undo in the <ShapeStore>. Retry 3 times."},
+		agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Read"}, agent.Event{Kind: agent.EvToolResult, ToolID: "t1", Result: "x"},
+		agent.Event{Kind: agent.EvTurnEnd})
+
+	refs := []model.Reference{
+		{Quote: "Own undo in the <ShapeStore>", Comment: "Keep it in the canvas & apply.ts.", Item: 1, Start: 0, End: 28},
+		{Quote: "Retry 3 times", Item: 1, Start: 30, End: 43},
+	}
+	if err := e.m.Send(v.ID, "Otherwise go ahead.", "", refs); err != nil {
+		t.Fatal(err)
+	}
+	want := "<reference>\n<quote>Own undo in the &lt;ShapeStore&gt;</quote>\n<comment>Keep it in the canvas &amp; apply.ts.</comment>\n</reference>\n\n" +
+		"<reference>\n<quote>Retry 3 times</quote>\n</reference>\n\nOtherwise go ahead."
+	if got := texts(a.sent()[1]); !reflect.DeepEqual(got, []string{want}) {
+		t.Fatalf("agent got %q", got)
+	}
+	if it := e.items(v.ID)[3]; it.Kind != "user" || it.Text != "Otherwise go ahead." || !reflect.DeepEqual(it.References, refs) {
+		t.Fatalf("user item %+v", it)
+	}
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+
+	// A message can be quotes alone.
+	if err := e.m.Send(v.ID, "", "", refs[1:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := texts(a.sent()[2]); !reflect.DeepEqual(got, []string{"<reference>\n<quote>Retry 3 times</quote>\n</reference>"}) {
+		t.Fatalf("agent got %q", got)
+	}
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+
+	// Empty quotes, missing items and items that aren't a message or a reply (the tool call).
+	for _, bad := range []model.Reference{{Quote: " ", Item: 1}, {Quote: "x", Item: 9}, {Quote: "x", Item: -1}, {Quote: "x", Item: 2}} {
+		if err := e.m.Send(v.ID, "hi", "", []model.Reference{bad}); !errors.Is(err, ErrBadReference) {
+			t.Fatalf("Send(%+v): %v", bad, err)
+		}
+	}
+	if n := len(e.items(v.ID)); n != 5 {
+		t.Fatalf("rejected sends added items: %d", n)
+	}
+
+	e.boot()
+	if it := e.items(v.ID)[3]; !reflect.DeepEqual(it.References, refs) {
+		t.Fatalf("references after restart %+v", it.References)
+	}
+}
+
+func TestDraftReferences(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	d := model.Draft{References: []model.Reference{{Quote: "q", Comment: "c", Item: 0, Start: 1, End: 2}}} // quotes alone are a draft
+	if err := e.m.SetDraft(v.ID, d); err != nil {
+		t.Fatal(err)
+	}
+	e.boot()
+	if got := e.view(v.ID).Draft; !reflect.DeepEqual(got, &d) {
+		t.Fatalf("draft after restart %+v", got)
+	}
+	if err := e.m.SetDraft(v.ID, model.Draft{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.view(v.ID).Draft; got != nil {
+		t.Fatalf("empty draft kept: %+v", got)
 	}
 }

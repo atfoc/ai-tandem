@@ -98,6 +98,8 @@ func statusOf(err error, fallback int) int {
 	case errors.Is(err, boards.ErrNotFound), errors.Is(err, chats.ErrNotFound),
 		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, app.ErrGroupNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, chats.ErrBadReference):
+		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
 		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived):
@@ -471,11 +473,14 @@ func (s *Server) Handler() http.Handler {
 		ok(w)
 	})
 	mux.HandleFunc("POST /api/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Text, Context string }
+		var body struct {
+			Text, Context string
+			References    []model.Reference
+		}
 		if !readJSON(w, r, &body) {
 			return
 		}
-		if err := a.Chats.Send(r.PathValue("id"), body.Text, body.Context); err != nil {
+		if err := a.Chats.Send(r.PathValue("id"), body.Text, body.Context, body.References); err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
 		}

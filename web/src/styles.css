@@ -181,7 +181,7 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line-2);
 .md th { background: var(--panel); font-weight: 600; }
 .md tr:nth-child(2n) td { background: color-mix(in srgb, var(--panel) 60%, transparent); }
 .md-code { margin: 0 0 .6em; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); overflow: hidden; color: var(--text); }
-.md-code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 2px 10px; border-bottom: 1px solid var(--line); font: 11px var(--mono); color: var(--faint); min-height: 24px; }
+.md-code-head { user-select: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 2px 10px; border-bottom: 1px solid var(--line); font: 11px var(--mono); color: var(--faint); min-height: 24px; }
 .md-copy { border: 0; background: none; color: var(--muted); font: 11px var(--font); padding: 2px 6px; border-radius: 5px; }
 .md-copy:hover { background: var(--hover-2); color: var(--text); }
 .md-code pre { margin: 0; padding: 8px 10px; overflow-x: auto; font: 12px/1.5 var(--mono); tab-size: 4; }
@@ -545,3 +545,45 @@ body.resizing iframe { pointer-events: none; }
 .takeover h2 { margin: 4px 0 0; color: var(--text); font-size: 18px; font-weight: 650; }
 .takeover p { max-width: 380px; margin: 0 0 6px; }
 .takeover.quiet p { margin: 0; }
+
+/* ---- quote references (⌘L on text in a message) */
+::highlight(aiwb-pending) { background-color: rgba(255, 214, 10, .2); text-decoration: underline 2px rgba(222, 160, 0, .85); text-underline-offset: 3px; }
+:root[data-theme="dark"] ::highlight(aiwb-pending) { background-color: rgba(255, 204, 0, .14); text-decoration-color: rgba(255, 204, 0, .7); }
+.qmark { font-family: Georgia, serif; font-size: 14px; line-height: 1; color: var(--accent); }
+.composer { container-type: inline-size; }
+.qcount-wrap { position: relative; display: inline-flex; }
+.qcount { display: inline-flex; align-items: center; gap: 5px; height: 22px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.qcount.stack { box-shadow: 2px -2px 0 -1px var(--bg), 2px -2px 0 0 color-mix(in srgb, var(--accent) 30%, transparent); }
+.qcount:hover, .qcount.on { border-color: var(--accent); }
+.qcount-chev { font-size: 9px; opacity: .7; }
+/* the board panel: a short count, and the board buttons without their keys, so the row stays one line */
+@container (max-width: 440px) { .qcount-word, .context-row:has(.qcount) .ctx-act kbd { display: none; } }
+.qlist { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30; width: min(440px, 80vw); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-md); overflow: hidden; }
+.qlist-head { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px 6px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid var(--line); }
+.qlist-head .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.qlist-body { max-height: 40vh; overflow-y: auto; padding: 4px; }
+.qlist-item { display: flex; align-items: flex-start; gap: 6px; padding: 7px 6px 7px 10px; border-radius: 7px; cursor: pointer; border-left: 3px solid transparent; }
+.qlist-item:hover { background: var(--accent-soft); border-left-color: var(--accent); }
+.qlist-text { flex: 1; min-width: 0; }
+.qlist-quote { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qlist-comment { margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+.qlist-comment.none { color: var(--faint); font-style: italic; }
+.qlist-x { border: 0; background: none; width: 20px; height: 20px; flex: none; border-radius: 5px; color: var(--faint); font-size: 14px; line-height: 1; }
+.qlist-x:hover { background: var(--accent-soft); color: var(--accent); }
+/* the float at a quoted passage: the composer box's width and look */
+.qfloat { position: fixed; z-index: 900; box-sizing: border-box; background: var(--bg); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow-lg); padding: 8px 8px 6px 10px; }
+.qfloat:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-lg); }
+.qfloat-quote { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; }
+.qfloat-comment { display: block; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; line-height: 1.45; padding: 3px 0; min-height: calc(3 * 1.45em + 6px); max-height: max(calc(6 * 1.45em), 30vh); overflow-y: auto; }
+.qfloat-comment::placeholder { color: var(--faint); }
+.qfloat-foot { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.qfloat-foot .hint { flex: 1; text-align: right; }
+.qfloat-foot kbd { font-size: 10px; padding: 0 3px; }
+.qfloat-foot .link.danger { color: var(--danger); padding: 0; }
+/* a sent message's quotes */
+.qsent { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 6px; }
+.msg.user .qsent:last-child { margin-bottom: 2px; }
+.qsent-card { border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--bg) 55%, transparent); border-radius: 3px 7px 7px 3px; padding: 4px 9px; }
+.qsent-quote { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; border: 0; background: none; padding: 0; text-align: left; font: inherit; font-size: 12px; color: color-mix(in srgb, var(--user-text) 70%, transparent); white-space: pre-wrap; cursor: pointer; }
+.qsent-quote:hover { color: var(--accent); }
+.qsent-comment { margin-top: 3px; white-space: pre-wrap; }

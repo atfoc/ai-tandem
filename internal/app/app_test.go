@@ -126,7 +126,7 @@ func (e *env) chat(group, board string) string {
 func (e *env) running(group, board string) string {
 	e.t.Helper()
 	id := e.chat(group, board)
-	if err := e.a.Chats.Send(id, "hi", ""); err != nil {
+	if err := e.a.Chats.Send(id, "hi", "", nil); err != nil {
 		e.t.Fatal(err)
 	}
 	return id

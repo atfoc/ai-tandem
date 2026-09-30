@@ -186,6 +186,19 @@ type ChatMeta struct {
 type Draft struct {
 	Text     string    `json:"text"`               // the composer's value: the text with its reference tags
 	Mentions []Mention `json:"mentions,omitempty"` // boards picked from the @ menu
+	// the quotes the message will carry (⌘L on text in a message), with their comments
+	References []Reference `json:"references,omitempty"`
+}
+
+// Reference is part of an earlier message in the chat's thread that the user quoted (⌘L), with
+// their comment on it. The agent gets only the quote and the comment. Positions are in the
+// message's displayed text, not its markdown source.
+type Reference struct {
+	Quote   string `json:"quote"`
+	Comment string `json:"comment,omitempty"`
+	Item    int    `json:"item"`  // index of the quoted item in this chat's thread
+	Start   int    `json:"start"` // selection position in the item's displayed text
+	End     int    `json:"end"`
 }
 
 // Mention is a board picked from the composer's @ menu, so the name still resolves if boards share it.
@@ -261,6 +274,8 @@ type Item struct {
 	// user
 	Text    string `json:"text,omitempty"`    // user, text, note
 	Context string `json:"context,omitempty"` // user: the <ui-context> sent with it (not shown)
+	// user: parts of earlier messages in this chat the user quoted, with a comment on each
+	References []Reference `json:"references,omitempty"`
 	// text
 	Done bool `json:"done,omitempty"`
 	// tool

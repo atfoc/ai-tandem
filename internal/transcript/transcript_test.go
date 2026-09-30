@@ -27,7 +27,7 @@ func items(tr *Transcript) []model.Item { _, it := tr.Snapshot(); return it }
 
 func TestClaudeShapedSequence(t *testing.T) {
 	tr := newT(t)
-	tr.AddUser("hi", "<ui-context/>")
+	tr.AddUser("hi", "<ui-context/>", nil)
 	var seen []model.Status
 	step := func(ev agent.Event) {
 		tr.Apply(ev)
@@ -113,7 +113,7 @@ func TestToolInputWithoutStart(t *testing.T) {
 
 func TestPermission(t *testing.T) {
 	tr := newT(t)
-	tr.AddUser("go", "")
+	tr.AddUser("go", "", nil)
 	tr.Apply(agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Bash"})
 	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r1", ToolName: "Bash", ToolID: "t1", Input: json.RawMessage(`{"command":"ls"}`)})
 	if status(tr) != model.StatusApproval {
@@ -146,7 +146,7 @@ func TestDeniedTool(t *testing.T) {
 
 func TestTurnEndNotes(t *testing.T) {
 	tr := newT(t)
-	tr.AddUser("a", "")
+	tr.AddUser("a", "", nil)
 	tr.Apply(agent.Event{Kind: agent.EvTextStart})
 	tr.Apply(agent.Event{Kind: agent.EvTextDelta, Text: "x"})
 	tr.Apply(agent.Event{Kind: agent.EvTurnEnd, Aborted: true})
@@ -161,7 +161,7 @@ func TestTurnEndNotes(t *testing.T) {
 		t.Errorf("status %q", status(tr))
 	}
 
-	tr.AddUser("b", "")
+	tr.AddUser("b", "", nil)
 	tr.Apply(agent.Event{Kind: agent.EvTurnEnd, Error: "rate limited"})
 	its = items(tr)
 	if n := its[len(its)-1]; n.Kind != "note" || n.Tone != "error" || n.Text != "rate limited" {
@@ -174,7 +174,7 @@ func TestTurnEndNotes(t *testing.T) {
 
 func TestExitWhileBusy(t *testing.T) {
 	tr := newT(t)
-	tr.AddUser("go", "")
+	tr.AddUser("go", "", nil)
 	tr.Apply(agent.Event{Kind: agent.EvTextStart})
 	tr.Apply(agent.Event{Kind: agent.EvTextDelta, Text: "x"})
 	tr.Apply(agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Bash"})
@@ -198,7 +198,7 @@ func TestExitWhileBusy(t *testing.T) {
 	}
 
 	tr2 := newT(t)
-	tr2.AddUser("go", "")
+	tr2.AddUser("go", "", nil)
 	tr2.Apply(agent.Event{Kind: agent.EvExit})
 	its = items(tr2)
 	if n := its[len(its)-1]; n.Text != "The agent stopped: process ended" {
@@ -208,7 +208,7 @@ func TestExitWhileBusy(t *testing.T) {
 
 func TestExitWhileIdle(t *testing.T) {
 	tr := newT(t)
-	tr.AddUser("go", "")
+	tr.AddUser("go", "", nil)
 	tr.Apply(agent.Event{Kind: agent.EvTurnEnd})
 	n := len(items(tr))
 	if ups := tr.Apply(agent.Event{Kind: agent.EvExit}); len(ups) != 0 {
@@ -222,7 +222,7 @@ func TestExitWhileIdle(t *testing.T) {
 func TestVersion(t *testing.T) {
 	tr := newT(t)
 	v := tr.Version()
-	tr.AddUser("x", "")
+	tr.AddUser("x", "", nil)
 	tr.Apply(agent.Event{Kind: agent.EvTextDelta, Text: "a"})
 	if tr.Version() <= v {
 		t.Error("version not bumped")
@@ -238,7 +238,7 @@ func TestFlushLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tr.AddUser("hi", "ctx")
+	tr.AddUser("hi", "ctx", nil)
 	tr.Apply(agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Read", Input: json.RawMessage(`{"a":1}`)})
 	tr.Apply(agent.Event{Kind: agent.EvToolResult, ToolID: "t1", Result: "r", IsError: true})
 	tr.Apply(agent.Event{Kind: agent.EvTextStart})
@@ -473,6 +473,26 @@ func TestNewIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	if its := items(got); len(its) != 1 || its[0].Text != "hi" {
+		t.Fatalf("loaded %+v", its)
+	}
+}
+
+func TestUserReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c", "items.jsonl")
+	tr, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []model.Reference{{Quote: "undo", Comment: "keep it", Item: 1, Start: 4, End: 8}}
+	tr.AddUser("hi", "", refs)
+	if err := tr.Flush(true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if its := items(got); len(its) != 1 || !reflect.DeepEqual(its[0].References, refs) {
 		t.Fatalf("loaded %+v", its)
 	}
 }

@@ -164,6 +164,17 @@ export type ChatView = Archive & {
 export type Draft = {
   text: string;                               // the composer's value, with its reference tags
   mentions?: { name: string; id: string }[];  // boards picked from the @ menu
+  references?: Reference[];                   // the quotes the message will carry (⌘L)
+};
+
+/** model.Reference: part of an earlier message in the chat that the user quoted (⌘L), with a
+ *  comment. Positions are in the message's displayed text, not its markdown (logic/quotes.ts). */
+export type Reference = {
+  quote: string;
+  comment?: string;
+  item: number;  // index of the quoted item in the chat's thread
+  start: number; // selection position in the item's displayed text
+  end: number;
 };
 
 /** One entry of a chat's thread. */
@@ -171,6 +182,7 @@ export type Item = {
   kind: "user" | "text" | "tool" | "perm" | "note";
   text?: string;
   context?: string;
+  references?: Reference[]; // user
   done?: boolean;
   toolId?: string;
   name?: string;

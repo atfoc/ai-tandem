@@ -1,8 +1,8 @@
 # Quote references in chat messages
 
-Select part of an earlier message in a chat, press ⌘L, and it becomes a reference card in the
-composer with a comment field. One message can carry several references, each with its own
-comment, plus general text.
+Select part of an earlier message in a chat, press ⌘L, and comment on it in a float at the
+passage; the quote goes into the message being written. One message can carry several references,
+each with its own comment, plus general text.
 
 Only the chat's own thread can be quoted: your messages and the agent's replies. Quoting from a
 subagent's thread is not supported.
@@ -81,20 +81,42 @@ renumbers them.
 
 ⌘L works in every chat:
 
-- Text selected in a message becomes a reference card.
+- Text selected in a message opens a float to comment on it (below).
 - Otherwise ⌘L takes the board selection, as it does now (board chats only).
 
 This means the key handler in `web/src/Composer.tsx` can no longer be limited to board chats
 (`canRef`).
 
+### Commenting: a float at the passage
+
+Chosen with the `quote-references-ui` prototype (variant 3, "Wide float"). It replaces a card
+per quote in the composer, which made the composer grow.
+
+- ⌘L with text selected opens a float just below the passage, or above it when there's no room
+  below. It never covers the composer and follows the passage as the thread scrolls.
+- It has the composer box's width, left edge and look, with a one-line preview of the quote over a
+  comment field at least 3 lines tall.
+- Enter (or **Add**) adds the quote, with or without a comment; Shift+Enter starts a new line. Esc
+  drops it. A click elsewhere, or ⌘L on another selection, adds it if a comment was typed and drops
+  it if not.
+- After adding, the float closes, the selection is cleared and nothing takes the focus, so the next
+  selection and ⌘L can follow straight away.
+- Quoting a passage that's already in the draft opens its float to edit it, with **Save** and
+  **Remove**.
+- While a quote is in the draft its passage stays marked in the thread (faint yellow, underlined).
+  Clicking a mark opens its float.
+
 ### Composer
 
-- Reference cards sit above the text box. Each shows a short preview of the quote (full text on
-  hover), a comment field, and × to remove it.
-- Clicking the preview jumps to where the quote came from.
+- The composer shows one count, "❝ 3 comments", the same size for any number of quotes, and only
+  when there are some. Board chats put it in the context row next to the board's name; below 440px
+  it shortens to "❝ 3" and the board buttons drop their key hints. Plain chats give it a row above
+  the text box.
+- Clicking the count lists the quotes, each with its comment ("No comment" if there isn't one) and
+  ×. Clicking an entry scrolls to the passage and opens its float.
 - Send is enabled when there's text or at least one reference. `sendMessage` and `api.send` pass
   the references on.
-- The draft saves both the text and the cards.
+- The draft saves both the text and the quotes.
 
 ### Thread (`web/src/ChatView.tsx`)
 
@@ -115,7 +137,14 @@ This means the key handler in `web/src/Composer.tsx` can no longer be limited to
 
 - `web/src/logic/quotes.ts` holds the logic that doesn't touch the DOM, mainly finding a quote in a
   message's text with the fallbacks above.
-- A small DOM helper converts between a selection and positions in the text.
+- `web/src/quoteDom.ts` converts between a selection and positions in the text, and draws the
+  highlights.
+- `web/src/Quotes.tsx` has the float, the count and its list, and a sent message's cards.
+
+A message's displayed text is the text nodes of its `.md`, joined with nothing between them,
+leaving out a code block's header (which can't be selected either). The selection's own text has
+line breaks between blocks that the displayed text doesn't, so quotes are compared with whitespace
+ignored.
 
 ## Tests
 

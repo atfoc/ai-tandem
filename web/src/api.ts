@@ -1,6 +1,6 @@
 // The server's HTTP API (section 4.12). Every call carries this tab's client id,
 // so the server can tell the active client from a stale one.
-import type { AgentKind, Board, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Subagent } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference, Subagent } from "./types.ts";
 
 /** GET /api/state and the `snapshot` event. */
 export type Snapshot = {
@@ -70,7 +70,8 @@ export const api = {
   subItems: (chat: string, sid: string) => call<{ version: number; items: Item[] }>("GET", `/api/chats/${chat}/subagents/${sid}/items`),
   chat: (id: string) => call<ChatView>("GET", `/api/chats/${id}`),
   openChat: (id: string) => call("POST", `/api/chats/${id}/open`),
-  send: (id: string, text: string, context: string) => call("POST", `/api/chats/${id}/messages`, { text, context }),
+  send: (id: string, text: string, context: string, references: Reference[] = []) =>
+    call("POST", `/api/chats/${id}/messages`, references.length ? { text, context, references } : { text, context }),
   configure: (id: string, p: { model?: string; effort?: string; cwd?: string }) => call("PATCH", `/api/chats/${id}`, p),
   saveDraft: (id: string, d: Draft, keepalive = false) => call("PUT", `/api/chats/${id}/draft`, d, keepalive),
   renameChat: (id: string, name: string) => call("PATCH", `/api/chats/${id}`, { name }),

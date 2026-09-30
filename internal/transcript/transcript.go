@@ -131,11 +131,11 @@ func (t *Transcript) Status() (model.Status, string) {
 
 func (t *Transcript) SetStatus(s model.Status) { t.status = s }
 
-// AddUser adds the user's message; the chat starts thinking.
-func (t *Transcript) AddUser(text, context string) []Update {
+// AddUser adds the user's message, with the quotes it carries; the chat starts thinking.
+func (t *Transcript) AddUser(text, context string, refs []model.Reference) []Update {
 	ups := t.closeOpen()
 	t.status = model.StatusThinking
-	u := t.push(model.Item{Kind: "user", Text: text, Context: context})
+	u := t.push(model.Item{Kind: "user", Text: text, Context: context, References: refs})
 	t.dirty[u.Index] = true
 	return append(ups, u)
 }

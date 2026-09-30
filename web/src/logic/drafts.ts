@@ -7,17 +7,23 @@
 // therefore also kept in an Unsaved copy (localStorage) until the server has it;
 // the composer opens with that copy over the server's draft and saves it again.
 
-import type { Draft } from "../types.ts";
+import type { Draft, Reference } from "../types.ts";
 import type { Picked } from "./mentions.ts";
 
 /** How long typing pauses before the draft is saved. */
 export const DRAFT_DELAY = 400;
 
-/** The draft for a composer's value: blank text is no draft, and mentions only go with text. */
-export function draftOf(text: string, picked: Picked[] = []): Draft {
-  if (!text.trim()) return { text: "" };
-  return picked.length ? { text, mentions: picked } : { text };
+/** The draft for a composer's value and quotes: blank text and no quotes is no draft, and
+ *  mentions only go with text. */
+export function draftOf(text: string, picked: Picked[] = [], references: Reference[] = []): Draft {
+  const d: Draft = { text: text.trim() ? text : "" };
+  if (d.text && picked.length) d.mentions = picked;
+  if (references.length) d.references = references;
+  return d;
 }
+
+/** Whether a draft has anything to keep. */
+export const hasDraft = (d?: Draft | null): d is Draft => !!(d?.text || d?.references?.length);
 
 /** A chat's draft that the server may not have yet; null: nothing waiting. */
 export type Unsaved = { read(): Draft | null; write(d: Draft | null): void };
@@ -38,12 +44,12 @@ export class DraftSaver {
     this.put = put;
     this.unsaved = unsaved;
     this.delay = delay;
-    this.saved = key(draftOf(saved?.text ?? "", saved?.mentions));
+    this.saved = key(draftOf(saved?.text ?? "", saved?.mentions, saved?.references));
   }
 
-  change(text: string, picked: Picked[] = []) {
+  change(text: string, picked: Picked[] = [], references: Reference[] = []) {
     clearTimeout(this.timer);
-    const d = draftOf(text, picked);
+    const d = draftOf(text, picked, references);
     if (key(d) === this.saved) {
       this.pending = null;
       this.unsaved?.write(null);

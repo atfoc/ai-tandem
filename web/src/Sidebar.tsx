@@ -11,6 +11,7 @@ import { NameInput } from "./ChatView.tsx";
 import { Menu, confirm, reportError } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
 import { statusText } from "./logic/labels.ts";
+import { hasDraft } from "./logic/drafts.ts";
 import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, SunIcon, SystemIcon } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
 import { inDesktopApp, openServerLog, restartServer } from "./version.ts";
@@ -523,7 +524,7 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
        { label: "Archive", run: () => attempt("Couldn't archive the chat", () => api.archive("chats", c.id)) },
        { label: "Delete", tone: "danger" as const, run: () => deleteChat(c) }];
   const title = chatTitle(c, items);
-  const draft = !!c.draft?.text && !on && !c.archived; // the open chat shows its draft in the composer
+  const draft = hasDraft(c.draft) && !on && !c.archived; // the open chat shows its draft in the composer
   return (
     <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived ? "archived" : ""} st-${c.status}`}
       {...(nested || c.archived || editing === key ? {} : drag(key))}

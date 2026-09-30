@@ -70,6 +70,7 @@ var (
 	ErrAppFolder     = errors.New("the app's own folder can't be used as a working folder")
 	ErrBusy          = errors.New("the agent is still working; wait for it to finish or stop it")
 	ErrNotStarted    = errors.New("the context split shows after the first message")
+	ErrBadReference  = errors.New("a quote must be part of an earlier message or reply in this chat")
 )
 
 type ConfigReq struct {
@@ -557,8 +558,10 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 	}
 }
 
-// Send posts one user turn, starting (or resuming) the agent if it has no process.
-func (m *Manager) Send(id, text, context string) error {
+// Send posts one user turn, starting (or resuming) the agent if it has no process. refs are the
+// parts of earlier messages the user quoted: the agent gets them as <reference> blocks in front of
+// the text, and the user item keeps them.
+func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 	var out outbox
 	c, err := m.lock(id)
 	if err != nil {
@@ -571,6 +574,10 @@ func (m *Manager) Send(id, text, context string) error {
 	if busy(c) {
 		c.mu.Unlock()
 		return ErrBusy
+	}
+	if !validReferences(c.tr, refs) {
+		c.mu.Unlock()
+		return ErrBadReference
 	}
 	if err := m.spawn(c, &out); err != nil {
 		c.mu.Unlock()
@@ -605,8 +612,8 @@ func (m *Manager) Send(id, text, context string) error {
 	} else {
 		context = "" // plain chats never get board context
 	}
-	blocks = append(blocks, agent.ContentBlock{Text: text})
-	ups := c.tr.AddUser(text, context)
+	blocks = append(blocks, agent.ContentBlock{Text: withReferences(refs, text)})
+	ups := c.tr.AddUser(text, context, refs)
 	if err := c.tr.Flush(false); err != nil {
 		log.Printf("chats: flush %s: %v", c.meta.ID, err)
 	}
@@ -777,14 +784,51 @@ func (m *Manager) Rename(id, name string, byUser bool) error {
 	return err
 }
 
-// SetDraft stores the message typed in the chat's composer; empty text clears it.
+// validReferences reports whether every quote is non-empty and points to a user message or an
+// agent reply in the chat's thread.
+func validReferences(tr *transcript.Transcript, refs []model.Reference) bool {
+	if len(refs) == 0 {
+		return true
+	}
+	_, items := tr.Snapshot()
+	for _, r := range refs {
+		if strings.TrimSpace(r.Quote) == "" || r.Item < 0 || r.Item >= len(items) {
+			return false
+		}
+		if k := items[r.Item].Kind; k != "user" && k != "text" {
+			return false
+		}
+	}
+	return true
+}
+
+var xmlEscape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+// withReferences is the message the agent gets: a <reference> block for each quote, in order,
+// then the text. It has no positions, and no <comment> for a quote without one.
+func withReferences(refs []model.Reference, text string) string {
+	var parts []string
+	for _, r := range refs {
+		b := "<reference>\n<quote>" + xmlEscape.Replace(r.Quote) + "</quote>\n"
+		if strings.TrimSpace(r.Comment) != "" {
+			b += "<comment>" + xmlEscape.Replace(r.Comment) + "</comment>\n"
+		}
+		parts = append(parts, b+"</reference>")
+	}
+	if text != "" || len(parts) == 0 {
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// SetDraft stores the message typed in the chat's composer; empty text and no quotes clear it.
 func (m *Manager) SetDraft(id string, d model.Draft) error {
 	var out outbox
 	c, err := m.lock(id)
 	if err != nil {
 		return err
 	}
-	if d.Text == "" {
+	if d.Text == "" && len(d.References) == 0 {
 		c.meta.Draft = nil
 	} else {
 		c.meta.Draft = &d
