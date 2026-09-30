@@ -5,14 +5,14 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import { useStore, getState, isBusy } from "./store.ts";
 import { select, openChat } from "./Sidebar.tsx";
 import { ItemView, EmptyThread, useStickToBottom } from "./ChatView.tsx";
-import { Markdown } from "./Markdown.tsx";
 import { AgentGlyph } from "./icons.tsx";
+import { Menu } from "./Dialogs.tsx";
 import {
-  atFork, branchCount, branchName, FILTERS, landing, leaving, pathTo, preview, rows, sessionText, siblingsOf, thread, tips,
+  atFork, branchable, branchCount, branchName, endsTurn, FILTERS, pathTo, preview, rows, sessionText, siblingsOf, thread,
   type ChatTree, type Entry, type Filter, type Row,
 } from "./logic/forktree.ts";
 import {
-  closeNav, currentNav, forkToChat, goBack, goTo, isDemo, label, openNav, retry, useDemo, useNav, type Nav, type SummaryChoice,
+  closeNav, currentNav, forkToChat, goBack, goTo, isDemo, label, openNav, useDemo, useNav, type Nav,
 } from "./forkDemo.ts";
 import type { ChatView } from "./types.ts";
 
@@ -23,7 +23,6 @@ export const BranchIcon = ({ size = 11 }: { size?: number }) => (
   </svg>
 );
 
-const kindOf = (e: Entry) => (e.summary ? "summary" : e.item.kind);
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const KEY_TREE = isMac ? "⌘⇧B" : "Ctrl+Shift+B";
 
@@ -61,23 +60,30 @@ function ForkedFrom({ from }: { from: NonNullable<ReturnType<typeof useDemo>>["f
 
 function ForkEntry({ c, tree, e, busy }: { c: ChatView; tree: ChatTree; e: Entry; busy: boolean }) {
   const sibs = siblingsOf(tree, e.id);
-  const kind = kindOf(e);
-  const parent = e.parent ? tree.entries[e.parent] : undefined;
+  const kind = e.item.kind;
+  const [labeling, setLabeling] = useState(false);
   const act = (text: React.ReactNode, title: string, run: () => void) => (
     <button className="fk-act" title={title} onClick={run}>{text}</button>
   );
   const fork = () => { const id = forkToChat(c.id, e.id); if (id) select({ board: null, chat: id }); };
+  // Branches start only between turns: after a turn that ended, or (your message) after the turn before it.
+  // Branching always starts a new branch; at the end of this one (the leaf) it stays in the tree, ending there.
   const acts: React.ReactNode[] = [];
   if (!busy && kind === "user") {
-    acts.push(act("✎ Edit", "Put this message back in the composer; sending it starts a new branch", () => goTo(c.id, e.id)));
+    acts.push(act(<><BranchIcon /> Branch and edit</>, "Start a new branch after the turn before this message, with the message back in the composer to edit", () => goTo(c.id, e.id, true)));
   }
-  if (!busy && kind === "text" && e.item.done) {
-    acts.push(act(<><BranchIcon /> Branch</>, "Continue from this reply on a new branch", () => goTo(c.id, e.id)));
-    if (parent?.item.kind === "user") acts.push(act("↻ Retry", "Send the message before it again, as a new branch", () => retry(c.id, e.id)));
+  if (!busy && kind !== "user" && endsTurn(tree, e.id)) {
+    acts.push(act(<><BranchIcon /> Branch</>, e.id === tree.leaf
+      ? "Carry on in a new branch; this one stays in the tree, ending here, to come back to"
+      : "Continue from the end of this turn on a new branch", () => goTo(c.id, e.id, true)));
+  }
+  if (!busy && branchable(tree, e.id)) {
+    acts.push(kind === "user"
+      ? act("⧉ Fork and edit", "Copy the chat up to the turn before this message into a new chat, with the message as its draft", fork)
+      : act("⧉ Fork to new", "Copy the chat up to here into a new chat", fork));
   }
   if (!busy && (kind === "user" || (kind === "text" && e.item.done))) {
-    acts.push(act("⧉ New chat", "Copy the chat up to here into a new chat", fork));
-    acts.push(act(e.label ? "Label ✓" : "Label", "Bookmark this entry in the tree", () => openNav(c.id, e.id, true)));
+    acts.push(act(e.label ? "Label ✓" : "Label", "Bookmark this entry in the tree", () => setLabeling(true)));
   }
   return (
     <>
@@ -89,25 +95,16 @@ function ForkEntry({ c, tree, e, busy }: { c: ChatView; tree: ChatTree; e: Entry
         </button>
       )}
       <div className={`fk-entry k-${kind}`}>
-        {kind === "summary" ? <SummaryCard e={e} c={c} /> : <ItemView item={e.item} chat={c} />}
+        <ItemView item={e.item} chat={c} />
         {e.label && <div className="fk-label-tag" title="Label">{e.label}</div>}
         {acts.length > 0 && <div className="fk-acts">{acts}</div>}
+        {labeling && (
+          <div className="fk-label-float">
+            <LabelInput initial={e.label ?? ""} onDone={(v) => { if (v !== null) label(c.id, e.id, v); setLabeling(false); }} />
+          </div>
+        )}
       </div>
     </>
-  );
-}
-
-function SummaryCard({ e, c }: { e: Entry; c: ChatView }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="fk-summary">
-      <div className="fk-summary-head" onClick={() => setOpen(!open)}>
-        <span className="fk-summary-mark">≡</span>
-        <span className="grow">Summary of the branch you left <span className="hint">· {e.summary!.left} entries</span></span>
-        <span className="tool-chev">{open ? "▴" : "▾"}</span>
-      </div>
-      {open && <div className="fk-summary-body"><Markdown text={e.item.text ?? ""} agent={c.agent} /></div>}
-    </div>
   );
 }
 
@@ -118,7 +115,7 @@ export function BranchBanner({ chatId }: { chatId: string }) {
   const d = useDemo(chatId);
   const busy = useStore((s) => isBusy(s.chats[chatId]?.status));
   if (!d || !d.tree.order.length) return null;
-  const forking = d.tree.leaf === null || atFork(d.tree);
+  const forking = d.tree.leaf === null || atFork(d.tree) || !!d.branching;
   if (!forking && !d.back) return null;
   const at = d.tree.leaf ? d.tree.entries[d.tree.leaf] : null;
   const stays = d.back ? <> “{branchName(d.tree, d.back.leaf)}” stays in the tree.</> : " The other branches stay in the tree.";
@@ -152,7 +149,7 @@ export function TreeButton({ chatId }: { chatId: string }) {
 export function BranchCrumb({ chatId }: { chatId: string }) {
   const d = useDemo(chatId);
   if (!d || branchCount(d.tree) < 2) return null;
-  const name = d.tree.leaf === null || atFork(d.tree) ? "new branch" : branchName(d.tree, d.tree.leaf);
+  const name = d.tree.leaf === null || atFork(d.tree) || d.branching ? "new branch" : branchName(d.tree, d.tree.leaf);
   return <> · <span className="fk-crumb"><BranchIcon /> {name}</span></>;
 }
 
@@ -178,95 +175,63 @@ export function TreeNavigator() {
     return () => window.removeEventListener("keydown", k, true);
   }, []);
   if (!nav) return null;
-  return <Navigator key={`${nav.chat}:${nav.focus ?? ""}:${nav.label ? 1 : 0}`} nav={nav} />;
+  return <Navigator key={`${nav.chat}:${nav.focus ?? ""}`} nav={nav} />;
 }
 
-const tipsUnder = (t: ChatTree, id: string) => tips(t).filter((x) => pathTo(t, x).includes(id));
-const segStart = (r: Row) => r.fork > 0 || /[├└]─ $/.test(r.gutter);
+type Act = { label: string; run?: () => void; note?: boolean };
 
+/** The tree as one list: a click picks a row, a double click opens the chat there, a right click has the rest. */
 function Navigator({ nav }: { nav: Nav }) {
   const d = useDemo(nav.chat);
   const c = useStore((s) => s.chats[nav.chat]);
   const [filter, setFilter] = useState<Filter>("default");
   const [query, setQuery] = useState("");
-  const [folded, setFolded] = useState<Set<string>>(() => new Set());
   const [cur, setCur] = useState<string | null>(nav.focus ?? d?.tree.leaf ?? null);
-  const [asking, setAsking] = useState<{ to: string; left: string[]; custom?: string } | null>(null);
-  const [labeling, setLabeling] = useState<string | null>(nav.label ? nav.focus ?? null : null);
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [labeling, setLabeling] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const tree = d?.tree;
-  const list = useMemo(() => (tree ? rows(tree, { filter, query, folded }) : []), [tree, filter, query, folded]);
-  // the row shown as selected: cur, else the nearest entry above it that has a row
+  const list = useMemo(() => (tree ? rows(tree, { filter, query }) : []), [tree, filter, query]);
+  // the row shown as picked: cur, else the nearest entry above it that has a row
   const selId = useMemo(() => {
     if (!tree) return null;
     const ids = new Set(list.map((r) => r.id));
     if (cur && ids.has(cur)) return cur;
-    return pathTo(tree, cur).reverse().find((id) => ids.has(id)) ?? list[0]?.id ?? null;
+    return pathTo(tree, cur).reverse().find((id) => ids.has(id)) ?? null;
   }, [list, cur, tree]);
   useLayoutEffect(() => { listRef.current?.querySelector(".fk-row.on")?.scrollIntoView({ block: "nearest" }); }, [selId]);
   if (!d || !c || !tree) return null;
 
   const busy = isBusy(c.status);
-  const at = selId ? tree.entries[selId] : null;
-  const i = list.findIndex((r) => r.id === selId);
-  const row = list[i];
-
+  // Opens the chat at an entry; what you send next branches off there (or, at the end of a branch, carries it
+  // on). A message of yours comes back to be edited, as Branch and edit.
   const go = (id: string) => {
-    if (busy) return;
-    const to = landing(tree, id);
-    if (to === tree.leaf && tree.entries[id]?.item.kind !== "user") { closeNav(); return; }
-    const left = leaving(tree, tree.leaf, to);
-    if (left.length) { setAsking({ to: id, left }); return; }
-    goTo(nav.chat, id); closeNav();
+    if (busy || !branchable(tree, id)) return;
+    goTo(nav.chat, id, tree.entries[id].item.kind === "user"); closeNav();
   };
-  const finish = (choice: SummaryChoice) => { if (asking) { goTo(nav.chat, asking.to, choice); closeNav(); } };
-  const fork = (id: string) => { const nid = forkToChat(nav.chat, id); closeNav(); if (nid) select({ board: null, chat: nid }); };
-  const setFold = (id: string, on: boolean) => setFolded((f) => { const n = new Set(f); if (on) n.add(id); else n.delete(id); return n; });
-  const cycle = (dir: number) => setFilter((f) => FILTERS[(FILTERS.findIndex((x) => x.id === f) + dir + FILTERS.length) % FILTERS.length].id);
-  const toggle = (f: Filter) => setFilter((cur) => (cur === f ? "default" : f));
+  const fork = (id: string) => { if (!branchable(tree, id)) return; const nid = forkToChat(nav.chat, id); closeNav(); if (nid) select({ board: null, chat: nid }); };
+
+  const acts = (id: string): Act[] => {
+    const e = tree.entries[id];
+    const label: Act = { label: e.label ? "Relabel" : "Label", run: () => setLabeling(id) };
+    const can = (run: () => void) => (busy ? undefined : run);
+    if (e.item.kind === "user") return [
+      { label: "Branch and edit", run: can(() => go(id)) },
+      { label: "Fork and edit", run: can(() => fork(id)) },
+      label,
+    ];
+    if (!branchable(tree, id)) return [{ label: "Partway through a turn: branch from its last reply", note: true }, label];
+    return [{ label: "Fork to new chat", run: can(() => fork(id)) }, label];
+  };
 
   const onKey = (e: React.KeyboardEvent) => {
     e.stopPropagation();
-    if (labeling) return; // the label field has the keys
-    if (asking) {
-      if (asking.custom !== undefined) { if (e.key === "Escape") { e.preventDefault(); setAsking({ ...asking, custom: undefined }); } return; }
-      if (e.key === "Escape") { e.preventDefault(); setAsking(null); }
-      if (e.key === "1" || e.key === "Enter") { e.preventDefault(); finish(null); }
-      if (e.key === "2") { e.preventDefault(); finish({}); }
-      if (e.key === "3") { e.preventDefault(); setAsking({ ...asking, custom: "" }); }
-      return;
-    }
-    const k = e.key;
-    const arrows = !query || e.altKey;
-    if (k === "Escape") { e.preventDefault(); if (query) setQuery(""); else closeNav(); }
-    else if (k === "ArrowDown") { e.preventDefault(); if (i < list.length - 1) setCur(list[i + 1].id); }
-    else if (k === "ArrowUp") { e.preventDefault(); if (i > 0) setCur(list[i - 1].id); }
-    else if (k === "ArrowLeft" && arrows && row) {
-      e.preventDefault();
-      if (segStart(row) && !row.folded && list.some((r) => r.parentRow === row.id)) setFold(row.id, true);
-      else {
-        let p = row.parentRow ? list.find((r) => r.id === row.parentRow) : undefined;
-        while (p && !segStart(p)) p = p.parentRow ? list.find((r) => r.id === p!.parentRow) : undefined;
-        setCur(p?.id ?? list[0].id);
-      }
-    }
-    else if (k === "ArrowRight" && arrows && row) {
-      e.preventDefault();
-      if (row.folded) setFold(row.id, false);
-      else setCur((list.slice(i + 1).find(segStart) ?? list[list.length - 1]).id);
-    }
-    else if (k === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (selId) fork(selId); }
-    else if (k === "Enter") { e.preventDefault(); if (selId) go(selId); }
-    else if (e.ctrlKey && !e.metaKey) {
-      const key = k.toLowerCase();
-      if (key === "e") { e.preventDefault(); setLabeling(selId); }
-      else if (key === "o") { e.preventDefault(); cycle(e.shiftKey ? -1 : 1); }
-      else if (key === "u") { e.preventDefault(); toggle("user"); }
-      else if (key === "l") { e.preventDefault(); toggle("labeled"); }
-      else if (key === "a") { e.preventDefault(); toggle("all"); }
-      else if (key === "d") { e.preventDefault(); setFilter("default"); }
-    }
+    if (e.key !== "Escape" || labeling) return; // the label field has its own keys
+    e.preventDefault();
+    if (menu) setMenu(null);
+    else if (query) setQuery("");
+    else closeNav();
   };
 
   const doneLabel = (v: string | null) => {
@@ -286,58 +251,54 @@ function Navigator({ nav }: { nav: Nav }) {
           <div className="fk-filters">
             {FILTERS.map((f) => <button key={f.id} className={filter === f.id ? "on" : ""} onClick={() => { setFilter(f.id); search.current?.focus(); }}>{f.label}</button>)}
           </div>
-          <button className="icon-btn" onClick={closeNav} title="Close (Esc)">×</button>
+          <button className="icon-btn" onClick={closeNav} title="Close">×</button>
         </div>
-        <input ref={search} className="fk-search" autoFocus={!labeling} placeholder="Search the tree…" value={query} spellCheck={false}
+        <input ref={search} className="fk-search" autoFocus placeholder="Search the tree…" value={query} spellCheck={false}
           onChange={(e) => setQuery(e.target.value)} />
         <div className="fk-nav-body">
           <div className="fk-rows" ref={listRef}>
             {!list.length && <div className="fk-none">{tree.order.length ? "Nothing matches." : "No messages yet."}</div>}
             {list.map((r) => (
-              <RowView key={r.id} r={r} e={tree.entries[r.id]} on={r.id === selId} agent={c.agent}
+              <RowView key={r.id} r={r} e={tree.entries[r.id]} on={r.id === selId} agent={c.agent} title={sessionText(tree, r.id)}
                 labeling={labeling === r.id} onLabel={doneLabel}
-                onClick={() => { setCur(r.id); search.current?.focus(); }} onOpen={() => go(r.id)} />
+                onClick={() => { setCur(r.id); search.current?.focus(); }} onOpen={() => go(r.id)}
+                onMenu={(x, y) => { setCur(r.id); setMenu({ id: r.id, x, y }); }} />
             ))}
-          </div>
-          <div className="fk-detail">
-            {asking ? (
-              <SummaryAsk tree={tree} asking={asking} setAsking={setAsking} finish={finish} />
-            ) : at ? (
-              <Detail tree={tree} e={at} row={row} busy={busy} agent={c.agent}
-                onGo={() => go(at.id)} onFork={() => fork(at.id)} onLabel={() => setLabeling(at.id)} />
-            ) : null}
           </div>
         </div>
         <div className="fk-nav-foot">
-          {busy ? <span className="fk-busy">The agent is replying. Stop it to move in the tree.</span> : <>
-            <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
-            <span><kbd>←</kbd><kbd>→</kbd> fold · jump</span>
-            <span><kbd>↵</kbd> go there</span>
-            <span><kbd>⌘↵</kbd> fork to new chat</span>
-            <span><kbd>⌃E</kbd> label</span>
-            <span><kbd>⌃O</kbd> filter</span>
-            <span><kbd>esc</kbd> close</span>
-          </>}
+          {busy ? <span className="fk-busy">The agent is replying. Stop it to move in the tree.</span>
+            : <span>Double-click a message to open the chat there; what you send next branches off. Right-click to fork or label.</span>}
         </div>
+        {menu && (
+          <div className="fk-ctx" style={{ left: Math.min(menu.x, innerWidth - 230), top: Math.min(menu.y, innerHeight - 170) }}>
+            <Menu onClose={() => setMenu(null)}>
+              {acts(menu.id).map((a) => a.note
+                ? <div key={a.label} className="menu-note fk-ctx-note">{a.label}</div>
+                : <button key={a.label} className="menu-item plain" disabled={!a.run} onClick={() => { setMenu(null); a.run?.(); }}>{a.label}</button>)}
+            </Menu>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function RowView({ r, e, on, agent, labeling, onLabel, onClick, onOpen }: {
-  r: Row; e: Entry; on: boolean; agent: string; labeling: boolean; onLabel: (v: string | null) => void; onClick: () => void; onOpen: () => void;
+function RowView({ r, e, on, agent, title, labeling, onLabel, onClick, onOpen, onMenu }: {
+  r: Row; e: Entry; on: boolean; agent: string; title: string; labeling: boolean; onLabel: (v: string | null) => void;
+  onClick: () => void; onOpen: () => void; onMenu: (x: number, y: number) => void;
 }) {
-  const kind = kindOf(e);
+  const kind = e.item.kind;
   const glyph = kind === "user" ? <span className="fk-you">you</span>
     : kind === "text" ? <AgentGlyph agent={agent} size={10} />
-    : kind === "summary" ? "≡" : kind === "tool" ? "⚙" : "·";
+    : kind === "tool" ? "⚙" : "·";
   return (
-    <div className={`fk-row k-${kind} ${on ? "on" : ""} ${r.onPath ? "path" : "off"}`} onClick={onClick} onDoubleClick={onOpen}>
+    <div className={`fk-row k-${kind} ${on ? "on" : ""} ${r.onPath ? "path" : "off"}`} title={title} onClick={onClick} onDoubleClick={onOpen}
+      onContextMenu={(ev) => { ev.preventDefault(); onMenu(ev.clientX, ev.clientY); }}>
       <Gutter g={r.gutter} />
       <span className="fk-glyph">{glyph}</span>
       {labeling ? <LabelInput initial={e.label ?? ""} onDone={onLabel} /> : <span className="fk-text">{preview(e, 110)}</span>}
       {!labeling && e.label && <span className="fk-tag">{e.label}</span>}
-      {r.folded > 0 && <span className="fk-fold" title="Folded: → unfolds">+{r.folded}</span>}
       {r.isLeaf ? <span className="fk-here">● here</span> : r.isTip ? <span className="fk-end" title="The end of a branch">end</span> : null}
     </div>
   );
@@ -358,69 +319,5 @@ function LabelInput({ initial, onDone }: { initial: string; onDone: (v: string |
     <input className="fk-label-input" autoFocus value={v} placeholder="Label (empty removes it)" onChange={(e) => setV(e.target.value)}
       onBlur={() => finish(v)} onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") finish(v); if (e.key === "Escape") finish(null); }} />
-  );
-}
-
-function Detail({ tree, e, row, busy, agent, onGo, onFork, onLabel }: {
-  tree: ChatTree; e: Entry; row?: Row; busy: boolean; agent: string; onGo: () => void; onFork: () => void; onLabel: () => void;
-}) {
-  const kind = kindOf(e);
-  const here = !!row?.isLeaf && kind !== "user";
-  const [goText, explain] = here ? ["You're here", "This is where the chat is now."]
-    : kind === "user" ? ["Edit and resend", "Puts this message back in the composer. Sending it starts a new branch from the reply before it; this branch stays as it is."]
-    : row?.isTip ? ["Continue this branch", "Picks this branch up where it ended. Your next message carries on its agent session."]
-    : ["Branch from here", "Your next message starts a new branch after this, in a new agent session forked at this point."];
-  const under = tipsUnder(tree, e.id);
-  const who = kind === "user" ? "You" : kind === "summary" ? "Branch summary" : kind === "tool" ? `Tool · ${e.item.name}` : agent === "cursor" ? "Cursor" : "Claude";
-  return (
-    <>
-      <div className="fk-detail-head">
-        <b>{who}</b>
-        {e.label && <span className="fk-tag">{e.label}</span>}
-        {row?.isLeaf && <span className="fk-here">● here</span>}
-      </div>
-      <div className="fk-detail-body">
-        {kind === "tool"
-          ? <pre className="fk-pre">{JSON.stringify(e.item.input, null, 2)}{e.item.result !== undefined ? "\n\n→ " + e.item.result : ""}</pre>
-          : <Markdown text={e.item.text ?? ""} user={kind === "user"} agent={agent} />}
-      </div>
-      <div className="fk-facts">
-        <div>{under.length > 1 ? <>Shared by <b>{under.length} branches</b></> : <>On branch <b>“{branchName(tree, under[0] ?? e.id)}”</b></>}</div>
-        <div className="mono">{sessionText(tree, e.id)}</div>
-      </div>
-      {!here && <div className="fk-explain">{explain}</div>}
-      <div className="fk-detail-acts">
-        <button className="btn primary sm" disabled={busy || here} onClick={onGo}>{goText} {!here && <kbd>↵</kbd>}</button>
-        <button className="btn sm" disabled={busy} onClick={onFork}>Fork to new chat <kbd>⌘↵</kbd></button>
-        <button className="btn ghost sm" onClick={onLabel}>{e.label ? "Relabel" : "Label"} <kbd>⌃E</kbd></button>
-      </div>
-    </>
-  );
-}
-
-function SummaryAsk({ tree, asking, setAsking, finish }: {
-  tree: ChatTree;
-  asking: { to: string; left: string[]; custom?: string };
-  setAsking: (a: { to: string; left: string[]; custom?: string } | null) => void;
-  finish: (c: SummaryChoice) => void;
-}) {
-  const n = asking.left.filter((id) => !tree.entries[id].summary).length;
-  return (
-    <div className="fk-ask">
-      <div className="fk-ask-title">Leaving “{branchName(tree, tree.leaf)}”</div>
-      <p>Its {n} {n === 1 ? "entry stays" : "entries stay"} in the tree. Bring a summary of {n === 1 ? "it" : "them"} along to where you're going?</p>
-      <button className="fk-choice" onClick={() => finish(null)}><kbd>1</kbd> No summary <span className="hint">↵</span></button>
-      <button className="fk-choice" onClick={() => finish({})}><kbd>2</kbd> Summarize</button>
-      <button className="fk-choice" onClick={() => setAsking({ ...asking, custom: "" })}><kbd>3</kbd> Summarize with instructions…</button>
-      {asking.custom !== undefined && (
-        <div className="fk-custom">
-          <textarea autoFocus rows={3} value={asking.custom} placeholder="What should the summary keep? e.g. the Lua script and why we dropped it"
-            onChange={(e) => setAsking({ ...asking, custom: e.target.value })}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finish({ focus: asking.custom!.trim() || undefined }); } }} />
-          <button className="btn primary sm" onClick={() => finish({ focus: asking.custom!.trim() || undefined })}>Summarize <kbd>↵</kbd></button>
-        </div>
-      )}
-      <div className="hint">The summary goes at the start of the new branch, and the agent gets it with your next message. <kbd>esc</kbd> back to the tree</div>
-    </div>
   );
 }

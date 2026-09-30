@@ -6,24 +6,25 @@ import { useSyncExternalStore } from "react";
 import { api } from "./api.ts";
 import { getState, setState, safeGet, safeSet, setExtraChats, removeChat, isBusy } from "./store.ts";
 import {
-  append, branchName, dropTip, emptyTree, forkOut, landing, leaving, moveTo, preview, setLabel, thread, updateItem,
-  type ChatTree, type Entry,
+  append, branchable, emptyTree, forkOut, landing, moveTo, preview, setLabel, thread, updateItem,
+  type ChatTree,
 } from "./logic/forktree.ts";
 import { UNGROUPED, type ChatView, type Item, type Status } from "./types.ts";
 
 export type Demo = {
   meta: ChatView;
   tree: ChatTree;
-  back?: { leaf: string | null; summary?: string; draft?: string }; // undoes the last move: where it came from, what it added
+  back?: { leaf: string | null; draft?: string }; // undoes the last move: where it came from, the draft it put in the composer
+  branching?: true; // the next message starts a new branch, even where it would carry one on (Branch at the end of a branch)
   forkedFrom?: { chat: string; title: string; entry: string; preview: string };
 };
 
-/** The navigator (Fork.tsx): open on a chat, the row to start on, and whether to label that row. */
-export type Nav = { chat: string; focus?: string | null; label?: boolean };
+/** The navigator (Fork.tsx): open on a chat, and the row to start on. */
+export type Nav = { chat: string; focus?: string | null };
 
 type DemoState = { chats: Record<string, Demo>; nav: Nav | null };
 
-const KEY = "aiwb.proto.fork";
+const KEY = "aiwb.proto.fork.v2"; // v2: branch summaries are gone
 export const isDemo = (id: string | null | undefined) => !!id && id.startsWith("demo-");
 
 let state: DemoState = { chats: {}, nav: null };
@@ -71,52 +72,35 @@ export function registerComposer(chat: string, c: { set: (t: string) => void; ge
 
 // ---- the navigator
 
-export function openNav(chat: string, focus?: string | null, label = false) { state = { ...state, nav: { chat, focus, label } }; emit(); }
+export function openNav(chat: string, focus?: string | null) { state = { ...state, nav: { chat, focus } }; emit(); }
 export function closeNav() { state = { ...state, nav: null }; emit(); }
 
 // ---- moving in the tree
 
-export type SummaryChoice = null | { focus?: string };
-
 /**
- * Moves the chat to an entry (pi's /tree selection). A message of yours goes back to the composer
- * to be edited; anything else is continued from. With a summary choice, and a branch being left,
- * a summary of that branch is put at the start of the new one. "Back" undoes it until you send.
+ * Moves the chat to an entry (pi's /tree selection): the end of a turn, continued from, or a
+ * message of yours, which goes back to the composer to be edited from the end of the turn before
+ * it. With branch, the next message starts a new branch there even at the end of a branch, which
+ * then stays in the tree, ending there. "Back" undoes it until you send.
  */
-export function goTo(chat: string, id: string, summary: SummaryChoice = null) {
+export function goTo(chat: string, id: string, branch = false) {
   const d = state.chats[chat];
-  if (!d || isBusy(d.meta.status)) return;
+  if (!d || isBusy(d.meta.status) || !branchable(d.tree, id)) return;
   const from = d.tree.leaf;
-  const moved = moveTo(d.tree, id);
-  let tree = moved.tree;
-  let summaryId: string | undefined;
-  const left = leaving(d.tree, from, tree.leaf);
-  if (summary && left.length) {
-    [tree, summaryId] = append(tree, { kind: "note", text: fakeSummary(d.tree, left, from, summary.focus) }, { summary: { left: left.filter((x) => !d.tree.entries[x].summary).length, from: from! } });
-  }
-  put({ ...d, tree, back: from === tree.leaf && !summaryId ? d.back : { leaf: from, summary: summaryId, draft: moved.draft } });
-  if (moved.draft !== undefined) setTimeout(() => composers.get(chat)?.set(moved.draft!), 0);
+  const { tree, draft } = moveTo(d.tree, id);
+  const back = from === tree.leaf ? (branch ? d.back ?? { leaf: from } : d.back) : { leaf: from, draft };
+  put({ ...d, tree, back, branching: branch ? true : undefined });
+  if (draft !== undefined) setTimeout(() => composers.get(chat)?.set(draft), 0);
 }
 
-/** Undoes the last move: back to where the chat was, the summary it made removed, the draft taken back. */
+/** Undoes the last move: back to where the chat was, the draft taken back. */
 export function goBack(chat: string) {
   const d = state.chats[chat];
   if (!d?.back || isBusy(d.meta.status)) return;
-  let tree = d.back.summary ? dropTip(d.tree, d.back.summary) : d.tree;
-  tree = { ...tree, leaf: d.back.leaf };
+  const tree = { ...d.tree, leaf: d.back.leaf };
   const c = composers.get(chat);
   if (c && d.back.draft !== undefined && c.get().trim() === d.back.draft.trim()) c.set("");
-  put({ ...d, tree, back: undefined });
-}
-
-/** Asks for another reply to the message a reply answers: the message is sent again from the same place, as a new branch. */
-export function retry(chat: string, reply: string) {
-  const d = state.chats[chat];
-  const r = d?.tree.entries[reply];
-  const u = r?.parent ? d!.tree.entries[r.parent] : undefined;
-  if (!d || !u || u.item.kind !== "user" || isBusy(d.meta.status)) return;
-  put({ ...d, tree: { ...d.tree, leaf: u.parent }, back: undefined });
-  void send(chat, u.item.text ?? "");
+  put({ ...d, tree, back: undefined, branching: undefined });
 }
 
 export function label(chat: string, id: string, text: string) { patch(chat, (d) => ({ tree: setLabel(d.tree, id, text) })); }
@@ -125,7 +109,7 @@ export function label(chat: string, id: string, text: string) { patch(chat, (d) 
 export function forkToChat(chat: string, id: string): string | undefined {
   const d = state.chats[chat];
   const e = d?.tree.entries[id];
-  if (!d || !e) return;
+  if (!d || !e || !branchable(d.tree, id)) return;
   const f = forkOut(d.tree, id, chat);
   const nid = "demo-" + Math.random().toString(36).slice(2, 8);
   const title = d.meta.name ?? "Demo chat";
@@ -150,9 +134,9 @@ async function send(chat: string, text: string) {
   const d = state.chats[chat];
   if (!d) throw new Error("demo chat not found");
   if (isBusy(d.meta.status)) throw new Error("The agent is working");
-  const [tree] = append(d.tree, { kind: "user", text });
-  put({ ...d, tree, back: undefined, meta: { ...d.meta, status: "thinking", locked: true, draft: undefined } });
-  // how many times this text was sent before: a retry gets a different reply
+  const [tree] = append(d.tree, { kind: "user", text }, Date.now(), !!d.branching);
+  put({ ...d, tree, back: undefined, branching: undefined, meta: { ...d.meta, status: "thinking", locked: true, draft: undefined } });
+  // how many times this text was sent before: an edit sent unchanged gets a different reply
   const n = Object.values(d.tree.entries).filter((e) => e.item.kind === "user" && e.item.text === text).length;
   const r = fakeReply(text, n);
   let at = 500;
@@ -239,19 +223,6 @@ function fakeReply(text: string, n: number): { tool?: [string, unknown, string];
   return { tool: i % 3 === 1 ? ["Read", { file_path: "README.md" }, "# AI Whiteboard…"] : undefined, text: generic[i % generic.length] };
 }
 
-function fakeSummary(t: ChatTree, left: string[], end: string | null, focus?: string): string {
-  const es = left.map((id) => t.entries[id]).filter((e) => !e.summary);
-  const asks = es.filter((e) => e.item.kind === "user").map((e) => `- You asked: “${preview(e, 80)}”`);
-  const last = [...es].reverse().find((e) => e.item.kind === "text");
-  return [
-    `**From the branch “${branchName(t, end)}”**`,
-    focus ? `_Summarized with: ${focus}_` : "",
-    ...asks,
-    last ? `- It ended with: ${preview(last, 140)}` : "",
-    "_Demo summary: made up from the branch, not by an agent._",
-  ].filter(Boolean).join("\n");
-}
-
 // ---- seed
 
 function seeded(): Record<string, Demo> {
@@ -261,7 +232,7 @@ function seeded(): Record<string, Demo> {
     locked: true, created: new Date(now - mins * 60000).toISOString(), usage: { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 }, status: "ready",
   });
   let t = emptyTree();
-  const add = (item: Item, extra: Partial<Pick<Entry, "summary" | "label">> = {}) => { let id: string; [t, id] = append(t, item, extra, now); return id; };
+  const add = (item: Item) => { let id: string; [t, id] = append(t, item, now); return id; };
   const u = (text: string) => add({ kind: "user", text });
   const a = (text: string) => add({ kind: "text", text, done: true });
   u("We need rate limiting on the public API. What are our options?");
@@ -274,10 +245,8 @@ function seeded(): Record<string, Demo> {
   u("Add per-API-key limits on top of the global one.");
   const redisEnd = a("Done: each key gets its own bucket (`rl:key:<id>`), and a global one (`rl:all`) guards the whole API. A request needs a token from both; the script takes them together so a refused request never spends one.");
   t = setLabel(t, redisEnd, "redis version");
-  // back to "where should it live", with a summary of the Redis branch
-  const left = [...t.order.slice(t.order.indexOf(where) + 1)];
+  // back to "where should it live"
   t = { ...t, leaf: where };
-  add({ kind: "note", text: fakeSummary(t, left, redisEnd) }, { summary: { left: left.length, from: redisEnd } });
   u("Actually, keep it in memory: we only run one instance.");
   a(REPLIES[2].texts[0]);
   const memEnd = t.leaf;

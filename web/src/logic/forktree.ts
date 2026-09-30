@@ -1,20 +1,24 @@
 // PROTOTYPE ONLY (branch fork-chat-feature): a chat kept as a tree of entries, the way pi keeps a
 // session. Every entry points at its parent; the leaf is where the chat is now, and the thread on
 // screen is the path from the root to it. Going back to an earlier entry and sending from there
-// starts another branch; nothing on the branch you left is lost. DOM-free.
+// starts another branch; nothing on the branch you left is lost. Branches start only between turns:
+// at the end of a turn, or, for a message of yours taken back to be edited, at the end of the turn
+// before it. DOM-free.
 //
 // Each branch runs in its own agent session. A session carries on while you add to the end of it;
 // sending from an entry that already has children forks the entry's session at that entry
 // (Claude: resume the session at that message with fork-session), and the new branch runs there.
+// Branching at the end of a branch does the same, and the branch left keeps ending there (end): it
+// stays a branch of its own, and going back to it carries on its session.
 
 import type { Item } from "../types.ts";
 
 export type Entry = {
   id: string;
   parent: string | null; // null: a root
-  item: Item;            // a message, a reply, a tool call, or (with summary) a branch summary
-  summary?: { left: number; from: string }; // a summary of the branch left: how many entries, and its end
+  item: Item;            // a message, a reply or a tool call
   label?: string;        // a bookmark the user put on the entry
+  end?: true;            // a branch ends here, though another goes on from it (branched off at its end)
   session: string;       // the agent session the entry belongs to
   at: number;            // made at, unix ms
 };
@@ -46,20 +50,37 @@ export function pathTo(t: ChatTree, id: string | null): string[] {
 /** The thread on screen: the entries from the root to the leaf. */
 export const thread = (t: ChatTree): Entry[] => pathTo(t, t.leaf).map((id) => t.entries[id]);
 
-/** The ends of all branches: entries without children. */
-export const tips = (t: ChatTree): string[] => t.order.filter((id) => !t.order.some((x) => t.entries[x].parent === id));
+/** The ends of all branches: entries without children, and those a branch still ends at. */
+export const tips = (t: ChatTree): string[] => t.order.filter((id) => t.entries[id].end || !t.order.some((x) => t.entries[x].parent === id));
 
 /** How many branches the chat has (1 while it has never forked, 0 while it is empty). */
 export const branchCount = (t: ChatTree) => tips(t).length;
 
-/** Whether the next message starts a new branch: the leaf already has children. */
-export const atFork = (t: ChatTree) => childrenOf(t, t.leaf).length > 0;
+/** Whether the next message starts a new branch: the leaf already has children, and no branch ends there. */
+export const atFork = (t: ChatTree) => childrenOf(t, t.leaf).length > 0 && !(t.leaf && t.entries[t.leaf].end);
 
-/** The branch point an entry starts a branch at: its siblings (itself included), when it has any. */
+/** The branches at the point an entry starts one: its siblings (itself included), after the entry
+ *  before them when a branch ends there too; [] when the entry is the only way on. */
 export function siblingsOf(t: ChatTree, id: string): string[] {
-  const kids = childrenOf(t, t.entries[id]?.parent ?? null);
-  return kids.length > 1 ? kids : [];
+  const p = t.entries[id]?.parent ?? null;
+  const kids = childrenOf(t, p);
+  const all = p && t.entries[p].end ? [p, ...kids] : kids;
+  return all.length > 1 ? all : [];
 }
+
+/** A reply or a tool call: part of the agent's turn (not your message). */
+const inTurn = (e: Entry) => e.item.kind !== "user";
+
+/** Whether an entry ends a turn: on every branch, what comes after it is your next message or
+ *  nothing. */
+export function endsTurn(t: ChatTree, id: string): boolean {
+  const e = t.entries[id];
+  return !!e && e.item.kind !== "user" && !childrenOf(t, id).some((c) => inTurn(t.entries[c]));
+}
+
+/** Whether a branch can start at an entry: the end of a turn, or a message of yours (from the end
+ *  of the turn before it, with the message back as a draft). */
+export const branchable = (t: ChatTree, id: string) => t.entries[id]?.item.kind === "user" || endsTurn(t, id);
 
 const newId = (t: ChatTree, prefix: string, n: number) => {
   let i = n + 1;
@@ -68,23 +89,29 @@ const newId = (t: ChatTree, prefix: string, n: number) => {
 };
 
 /**
- * Adds an entry after the leaf and moves the leaf to it. It carries on the parent's session,
- * unless the parent already has children: then the parent's session is forked at the parent and
- * the entry starts the new session. Returns the tree and the new entry's id.
+ * Adds an entry after the leaf and moves the leaf to it. It carries on the parent's session when a
+ * branch ends at the parent (it has no children, or is marked end; the mark goes, as the branch
+ * goes on). Otherwise, or with branch, the parent's session is forked at the parent and the entry
+ * starts the new session; branching at the end of a branch marks it end, so it stays one. Returns
+ * the tree and the new entry's id.
  */
-export function append(t: ChatTree, item: Item, extra: Partial<Pick<Entry, "summary" | "label">> = {}, now = Date.now()): [ChatTree, string] {
+export function append(t: ChatTree, item: Item, now = Date.now(), branch = false): [ChatTree, string] {
   const parent = t.leaf ? t.entries[t.leaf] : null;
   const id = newId(t, "e", t.order.length);
+  const entries = { ...t.entries };
   const sessions = { ...t.sessions };
+  const kids = childrenOf(t, t.leaf).length;
   let session: string;
-  const forking = childrenOf(t, t.leaf).length > 0;
-  if (parent && !forking) session = parent.session;
-  else {
+  if (parent && !branch && (!kids || parent.end)) {
+    session = parent.session;
+    if (parent.end) { const { end: _, ...rest } = parent; entries[parent.id] = rest; }
+  } else {
     session = newId(t, "s", Object.keys(t.sessions).length);
     sessions[session] = parent ? { id: session, from: { session: parent.session, at: parent.id } } : { id: session };
+    if (parent && !kids) entries[parent.id] = { ...parent, end: true };
   }
-  const e: Entry = { id, parent: parent?.id ?? null, item, session, at: now, ...extra };
-  return [{ entries: { ...t.entries, [id]: e }, order: [...t.order, id], leaf: id, sessions }, id];
+  entries[id] = { id, parent: parent?.id ?? null, item, session, at: now };
+  return [{ entries, order: [...t.order, id], leaf: id, sessions }, id];
 }
 
 /** Replaces an entry's item (a reply as it streams in, a tool call when it ends). */
@@ -95,12 +122,13 @@ export function updateItem(t: ChatTree, id: string, item: Item): ChatTree {
 
 /**
  * Moves to an entry, as picking it in the tree does. A message of yours is taken back: the leaf
- * goes to the entry before it and its text comes back for the composer, to edit and send as a new
- * branch. Anything else becomes the leaf, with an empty composer.
+ * goes to the end of the turn before it and its text comes back for the composer, to edit and send
+ * as a new branch. The end of a turn becomes the leaf, with an empty composer. Anything else (a
+ * reply or a tool call partway through a turn) is not a place to branch from: nothing moves.
  */
 export function moveTo(t: ChatTree, id: string): { tree: ChatTree; draft?: string } {
   const e = t.entries[id];
-  if (!e) return { tree: t };
+  if (!e || !branchable(t, id)) return { tree: t };
   if (e.item.kind === "user") return { tree: { ...t, leaf: e.parent }, draft: e.item.text ?? "" };
   return { tree: { ...t, leaf: id } };
 }
@@ -108,13 +136,6 @@ export function moveTo(t: ChatTree, id: string): { tree: ChatTree; draft?: strin
 /** Where moveTo(id) puts the leaf. */
 export const landing = (t: ChatTree, id: string): string | null =>
   t.entries[id]?.item.kind === "user" ? t.entries[id].parent : id;
-
-/** The entries of the branch being left when the leaf goes from `from` to `to`: those on the way to
- *  `from` that are not on the way to `to`. */
-export function leaving(t: ChatTree, from: string | null, to: string | null): string[] {
-  const keep = new Set(pathTo(t, to));
-  return pathTo(t, from).filter((id) => !keep.has(id));
-}
 
 export function setLabel(t: ChatTree, id: string, label: string): ChatTree {
   const e = t.entries[id];
@@ -125,24 +146,17 @@ export function setLabel(t: ChatTree, id: string, label: string): ChatTree {
 
 /**
  * A new chat holding the way to an entry, for "fork to a new chat" (pi's /fork). Like moveTo, a
- * message of yours is left out and comes back as the draft. The copy runs in one new session,
- * forked from the source's session at the last entry copied.
+ * message of yours is left out and comes back as the draft; the entry has to be branchable. The
+ * copy runs in one new session, forked from the source's session at the last entry copied.
  */
 export function forkOut(t: ChatTree, id: string, chat: string): { tree: ChatTree; draft?: string } {
   const to = landing(t, id);
   const ids = pathTo(t, to);
   const last = to ? t.entries[to] : undefined;
   const session: Session = { id: "s1", ...(last ? { from: { session: last.session, at: last.id, chat } } : {}) };
-  const entries = Object.fromEntries(ids.map((x) => [x, { ...t.entries[x], session: "s1" }]));
+  const entries = Object.fromEntries(ids.map((x) => { const { end: _, ...e } = t.entries[x]; return [x, { ...e, session: "s1" }]; }));
   const draft = t.entries[id]?.item.kind === "user" ? t.entries[id].item.text ?? "" : undefined;
   return { tree: { entries, order: ids, leaf: to, sessions: { s1: session } }, draft };
-}
-
-/** Removes an entry that has no children (a summary made for a move that was then undone). */
-export function dropTip(t: ChatTree, id: string): ChatTree {
-  if (!t.entries[id] || childrenOf(t, id).length) return t;
-  const { [id]: _, ...entries } = t.entries;
-  return { ...t, entries, order: t.order.filter((x) => x !== id), leaf: t.leaf === id ? t.entries[id].parent : t.leaf };
 }
 
 // ---- names
@@ -155,20 +169,20 @@ const oneLine = (s: string, n = 60) => {
 /** An entry in one line, for the tree and for crumbs. */
 export function preview(e: Entry, n = 60): string {
   const it = e.item;
-  if (e.summary) return `Summary of a branch left (${e.summary.left} entries)`;
   if (it.kind === "tool") return `${it.name ?? "tool"} ${oneLine(JSON.stringify(it.input ?? {}), n)}`;
   return oneLine(it.text ?? "", n) || "(empty)";
 }
 
 /**
- * A branch's name, by the entry it ends at: the nearest label on the way to it, else your first
- * message after the last fork on the way, else "main" (a chat that never forked has one branch).
+ * A branch's name, by the entry it ends at: the nearest label on the way to it since the last fork
+ * (a label above that is shared with other branches), else your first message after that fork,
+ * else "main" (a chat that never forked has one branch).
  */
 export function branchName(t: ChatTree, end: string | null): string {
   const path = pathTo(t, end);
-  for (let i = path.length - 1; i >= 0; i--) if (t.entries[path[i]].label) return t.entries[path[i]].label!;
   let start = -1;
   for (let i = path.length - 1; i >= 0; i--) if (siblingsOf(t, path[i]).length) { start = i; break; }
+  for (let i = path.length - 1; i >= Math.max(start, 0); i--) if (t.entries[path[i]].label) return t.entries[path[i]].label!;
   if (start < 0) return "main";
   const first = path.slice(start).map((id) => t.entries[id]).find((e) => e.item.kind === "user") ?? t.entries[path[start]];
   return preview(first, 40);
@@ -176,12 +190,10 @@ export function branchName(t: ChatTree, end: string | null): string {
 
 // ---- the tree view (the navigator)
 
-export type Filter = "default" | "user" | "labeled" | "all";
+export type Filter = "default" | "labeled";
 export const FILTERS: { id: Filter; label: string }[] = [
   { id: "default", label: "Messages" },
-  { id: "user", label: "Yours" },
   { id: "labeled", label: "Labeled" },
-  { id: "all", label: "All" },
 ];
 
 export type Row = {
@@ -196,11 +208,8 @@ export type Row = {
 };
 
 function shows(e: Entry, filter: Filter, query: string): boolean {
-  const kind = e.summary ? "summary" : e.item.kind;
-  const byFilter = filter === "all" ? true
-    : filter === "user" ? kind === "user"
-    : filter === "labeled" ? !!e.label
-    : kind === "user" || kind === "text" || kind === "summary";
+  const kind = e.item.kind;
+  const byFilter = filter === "labeled" ? !!e.label : kind === "user" || kind === "text";
   if (!byFilter) return false;
   if (!query) return true;
   const q = query.toLowerCase();
@@ -229,22 +238,24 @@ export function rows(t: ChatTree, opts: { filter: Filter; query?: string; folded
   const emit = (id: string, gutter: string, parentRow: string | undefined) => {
     const under = shown(id);
     const isFolded = folded.has(id) && under.length > 0;
+    const ways = under.length + (t.entries[id].end ? 1 : 0); // a branch ending here is one of the ways
     out.push({
       id, gutter, parentRow,
-      onPath: path.has(id), isLeaf: t.leaf === id, isTip: !(kids.get(id) ?? []).length,
-      fork: under.length > 1 ? under.length : 0,
+      onPath: path.has(id), isLeaf: t.leaf === id, isTip: !(kids.get(id) ?? []).length || !!t.entries[id].end,
+      fork: ways > 1 ? ways : 0,
       folded: isFolded ? count(id) : 0,
     });
     return isFolded ? [] : under;
   };
-  const walk = (ids: string[], prefix: string, parentRow: string | undefined) => {
-    if (ids.length === 1) {
-      walk(emit(ids[0], prefix, parentRow), prefix, ids[0]);
+  // split: a branch ends at the row above, so even a single way on is drawn as a branch off it
+  const walk = (ids: string[], prefix: string, parentRow: string | undefined, split = false) => {
+    if (ids.length === 1 && !split) {
+      walk(emit(ids[0], prefix, parentRow), prefix, ids[0], !!t.entries[ids[0]].end);
       return;
     }
     ids.forEach((id, i) => {
       const last = i === ids.length - 1;
-      walk(emit(id, prefix + (last ? "└─ " : "├─ "), parentRow), prefix + (last ? "   " : "│  "), id);
+      walk(emit(id, prefix + (last ? "└─ " : "├─ "), parentRow), prefix + (last ? "   " : "│  "), id, !!t.entries[id].end);
     });
   };
   walk(shown(null), "", undefined);
