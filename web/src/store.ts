@@ -89,10 +89,14 @@ const byId = <T extends { id: string }>(xs: T[] | null | undefined): Record<stri
 
 // ---- server state
 
+/** PROTOTYPE ONLY (fork-chat-feature): chats kept in the tab (forkDemo.ts), put back after each snapshot. */
+let extraChats: () => ChatView[] = () => [];
+export function setExtraChats(f: () => ChatView[]) { extraChats = f; }
+
 /** Replaces everything the server owns; drops selections that no longer exist. */
 export function applySnapshot(s: Snapshot) {
   const boards = byId(s.boards);
-  const chats = byId(s.chats);
+  const chats = byId([...(s.chats ?? []), ...extraChats()]);
   const catalogs: Partial<Record<AgentKind, Catalog>> = {};
   for (const [k, v] of Object.entries(s.catalogs ?? {})) if (v) catalogs[k as AgentKind] = v;
   setState((st) => {

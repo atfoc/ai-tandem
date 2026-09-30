@@ -13,6 +13,8 @@ import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensText, width, type Segment } from "./logic/ctxsplit.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
+import { BranchBanner } from "./Fork.tsx";
+import { registerComposer } from "./forkDemo.ts";
 import { BoardIcon, Chevron, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, PlanUsage, UsageLimit } from "./types.ts";
 
@@ -121,6 +123,17 @@ export function Composer({ chatId }: { chatId: string }) {
     };
   }, [canRef, chatId]);
   useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(""), 2500); return () => clearTimeout(t); }, [note]);
+  // PROTOTYPE ONLY (fork-chat-feature): the demo chats put a message taken back into the box.
+  useEffect(() => registerComposer(chatId, {
+    set: (t) => {
+      input.current?.set(t); input.current?.focus();
+      const el = document.querySelector(".composer .composer-input");
+      if (!el) return;
+      const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+      const sel = getSelection(); sel?.removeAllRanges(); sel?.addRange(r);
+    },
+    get: () => current.current,
+  }), [chatId]);
 
   // The draft: put into the box when it appears (on open, after unarchiving), saved as it
   // changes, and saved at once when the composer or the page goes away. Later drafts from the
@@ -206,6 +219,7 @@ export function Composer({ chatId }: { chatId: string }) {
           </>}
         </div>
       )}
+      <BranchBanner chatId={chatId} />
       <div className="composer-box with-tools">
         {mention && matches.length > 0 && (
           <div className="mention-pop">

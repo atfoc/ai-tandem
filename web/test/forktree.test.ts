@@ -1,0 +1,105 @@
+// PROTOTYPE ONLY (branch fork-chat-feature)
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  append, atFork, branchCount, branchName, emptyTree, forkOut, leaving, moveTo, pathTo, rows, setLabel, siblingsOf, thread,
+  type ChatTree,
+} from "../src/logic/forktree.ts";
+import type { Item } from "../src/types.ts";
+
+const user = (text: string): Item => ({ kind: "user", text });
+const reply = (text: string): Item => ({ kind: "text", text, done: true });
+const tool = (name: string): Item => ({ kind: "tool", name, input: {}, result: "ok" });
+
+function add(t: ChatTree, ...items: Item[]): ChatTree {
+  for (const it of items) [t] = append(t, it, {}, 0);
+  return t;
+}
+
+// e1 U ask → e2 A options → e3 U redis → e4 A lua ; back to e2, e5 U memory → e6 A map
+function sample() {
+  let t = add(emptyTree(), user("ask"), reply("options"), user("redis"), reply("lua"));
+  t = { ...t, leaf: "e2" };
+  t = add(t, user("memory"), reply("map"));
+  return t;
+}
+
+test("appending carries on the leaf's session until the leaf already has children", () => {
+  const t = sample();
+  assert.deepEqual(thread(t).map((e) => e.item.text), ["ask", "options", "memory", "map"]);
+  assert.equal(t.entries.e3.session, "s1");
+  assert.equal(t.entries.e5.session, "s2");
+  assert.equal(t.entries.e6.session, "s2");
+  assert.deepEqual(t.sessions.s2, { id: "s2", from: { session: "s1", at: "e2" } });
+  assert.equal(branchCount(t), 2);
+});
+
+test("picking your message takes it back to the composer; picking a reply continues after it", () => {
+  const t = sample();
+  const a = moveTo(t, "e3");
+  assert.equal(a.tree.leaf, "e2");
+  assert.equal(a.draft, "redis");
+  assert.ok(atFork(a.tree));
+  const b = moveTo(t, "e4");
+  assert.equal(b.tree.leaf, "e4");
+  assert.equal(b.draft, undefined);
+  assert.ok(!atFork(b.tree)); // the end of a branch: sending carries on its session
+  const [c] = append(b.tree, user("more"), {}, 0);
+  assert.equal(c.entries[c.leaf!].session, "s1");
+});
+
+test("editing the first message starts a new root with a fresh session", () => {
+  const t = moveTo(sample(), "e1").tree;
+  assert.equal(t.leaf, null);
+  const [u] = append(t, user("ask again"), {}, 0);
+  assert.equal(u.entries[u.leaf!].parent, null);
+  assert.deepEqual(u.sessions[u.entries[u.leaf!].session], { id: "s3" });
+});
+
+test("leaving lists the entries of the branch left behind", () => {
+  const t = sample();
+  assert.deepEqual(leaving(t, "e6", "e4"), ["e5", "e6"]);
+  assert.deepEqual(leaving(t, "e6", "e2"), ["e5", "e6"]);
+  assert.deepEqual(leaving(t, "e6", "e6"), []);
+});
+
+test("branch names come from labels, else the first message after the last fork", () => {
+  let t = sample();
+  assert.equal(branchName(t, "e4"), "redis");
+  assert.equal(branchName(t, "e6"), "memory");
+  assert.equal(branchName(t, "e2"), "main");
+  t = setLabel(t, "e3", "shared store");
+  assert.equal(branchName(t, "e4"), "shared store");
+  assert.deepEqual(siblingsOf(t, "e5"), ["e3", "e5"]);
+});
+
+test("rows draw forks with ├─ and └─ and keep runs at one depth", () => {
+  const r = rows(sample(), { filter: "default" });
+  assert.deepEqual(r.map((x) => x.gutter + x.id), ["e1", "e2", "├─ e3", "│  e4", "└─ e5", "   e6"]);
+  assert.equal(r.find((x) => x.id === "e2")!.fork, 2);
+  assert.ok(r.find((x) => x.id === "e6")!.isLeaf);
+  assert.ok(!r.find((x) => x.id === "e4")!.onPath);
+});
+
+test("filters skip entries but keep the shape; folding hides what is under a row", () => {
+  let t = add(emptyTree(), user("ask"), tool("Read"), reply("answer"));
+  assert.deepEqual(rows(t, { filter: "default" }).map((x) => x.id), ["e1", "e3"]);
+  assert.deepEqual(rows(t, { filter: "all" }).map((x) => x.id), ["e1", "e2", "e3"]);
+  assert.deepEqual(rows(sample(), { filter: "user" }).map((x) => x.gutter + x.id), ["e1", "├─ e3", "└─ e5"]);
+  const f = rows(sample(), { filter: "default", folded: new Set(["e2"]) });
+  assert.deepEqual(f.map((x) => x.id), ["e1", "e2"]);
+  assert.equal(f[1].folded, 4);
+  assert.deepEqual(rows(sample(), { filter: "default", query: "lua" }).map((x) => x.id), ["e4"]);
+});
+
+test("fork to a new chat copies the way to the entry into one new session", () => {
+  const t = sample();
+  const a = forkOut(t, "e4", "chatA");
+  assert.deepEqual(a.tree.order, ["e1", "e2", "e3", "e4"]);
+  assert.equal(a.tree.leaf, "e4");
+  assert.deepEqual(a.tree.sessions, { s1: { id: "s1", from: { session: "s1", at: "e4", chat: "chatA" } } });
+  const b = forkOut(t, "e5", "chatA");
+  assert.deepEqual(b.tree.order, ["e1", "e2"]);
+  assert.equal(b.draft, "memory");
+  assert.deepEqual(pathTo(b.tree, b.tree.leaf), ["e1", "e2"]);
+});

@@ -8,6 +8,7 @@ import { loadItems } from "./conn.ts";
 import { flush } from "./board.ts";
 import { focusComposer, subline } from "./Composer.tsx";
 import { NameInput } from "./ChatView.tsx";
+import { ForkBadge } from "./Fork.tsx";
 import { Menu, confirm, reportError } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
 import { statusText } from "./logic/labels.ts";
@@ -538,6 +539,7 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
           : <div className={`side-name ${c.name ? "" : "unnamed"}`}>{title}</div>}
         <div className="side-sub">{sub}</div>
       </div>
+      <ForkBadge chatId={c.id} />
       {draft && <DraftTag />}
       {c.archived && <ArchivedTag />}
       {editing !== key && <RowMenu label="More" items={menu} />}

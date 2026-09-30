@@ -9,6 +9,8 @@ import { toolVerb, toolDone, statusText } from "./logic/labels.ts";
 import { isSubagentTool } from "./logic/subagents.ts";
 import { Markdown } from "./Markdown.tsx";
 import { SubagentRow } from "./Subagents.tsx";
+import { BranchCrumb, ForkThread, TreeButton } from "./Fork.tsx";
+import { isDemo } from "./forkDemo.ts";
 import { AgentGlyph, BoardIcon, Pencil, agentName } from "./icons.tsx";
 import type { ChatView, Item, Subagent } from "./types.ts";
 
@@ -57,8 +59,10 @@ export function ChatHeader({ chatId }: { chatId: string }) {
           {agentName(c.agent)}
           {c.cwd ? <> · <span className="mono">{tildify(c.cwd)}</span></> : null}
           {" · "}{c.archived ? "Archived" : statusText(c, boardName)}
+          <BranchCrumb chatId={c.id} />
         </div>
       </div>
+      <TreeButton chatId={c.id} />
       {c.board && <button className="icon-btn" title="Hide chat (⌘J)" onClick={() => setState({ panel: false })}>×</button>}
     </div>
   );
@@ -93,7 +97,12 @@ export function useStickToBottom(ref: RefObject<HTMLDivElement | null>, follow: 
   };
 }
 
+/** PROTOTYPE ONLY (fork-chat-feature): demo chats show their tree's thread (Fork.tsx). */
 export function Thread({ chatId }: { chatId: string }) {
+  return isDemo(chatId) ? <ForkThread chatId={chatId} /> : <ServerThread chatId={chatId} />;
+}
+
+function ServerThread({ chatId }: { chatId: string }) {
   const c = useStore((s) => s.chats[chatId]);
   const loaded = useStore((s) => s.items[chatId]);
   const items = loaded?.items ?? EMPTY;
@@ -110,7 +119,7 @@ export function Thread({ chatId }: { chatId: string }) {
   );
 }
 
-function EmptyThread({ c }: { c: ChatView }) {
+export function EmptyThread({ c }: { c: ChatView }) {
   const board = useStore((s) => (c.board ? s.boards[c.board] : undefined));
   const suggest = c.board
     ? ["Sketch a 3-tier web architecture here", "Summarize what's on this board", "Tidy up the selected shapes into a row"]
