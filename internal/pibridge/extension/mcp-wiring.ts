@@ -138,6 +138,7 @@ export function subagentDescription(boardActive: boolean): string {
       (boardActive ? ", including the board tools." : "."),
     "description is a short UI label for the task; prompt is the full, self-contained instruction.",
     "The tool runs in the foreground and returns the subagent's final report; set background=true to keep working and receive the report later.",
+    "Call it several times in one message to run subagents in parallel.",
   ].join(" ");
 }
 

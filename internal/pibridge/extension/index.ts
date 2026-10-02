@@ -223,7 +223,9 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
     description: subagentDescription(boardToolsAdvertised),
     promptSnippet: subagentPromptSnippet(boardToolsAdvertised),
     parameters: subagentParameters,
-    executionMode: "sequential",
+    // No executionMode: pi runs sibling subagent calls from one assistant message concurrently
+    // (a "sequential" tool in the batch would serialize the whole batch, leaving every
+    // subagent but the first stuck at "Thinking…" until its turn).
     async execute(toolCallId: string, params: SubagentParams, signal?: AbortSignal) {
       return runSubagent({
         toolCallId,
