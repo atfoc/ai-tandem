@@ -24,16 +24,18 @@ const base = (p: any) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
 const clip = (t: any, n = 48) => { const v = String(t ?? "").replace(/\s+/g, " ").trim(); return v.length > n ? v.slice(0, n - 1) + "…" : v; };
 const host = (u: any) => { try { return new URL(String(u)).host; } catch { return clip(u, 30); } };
 
-/** Claude Code's own tools, and other MCP servers', in the same one-line style. */
+/** Claude Code's and Pi's own tools, and other MCP servers', in the same one-line style. Pi's
+ *  built-ins are lower-case (read, bash, edit, write, grep, find, ls) and take a `path`. */
 export function genericTool(name: string, input: any, done: boolean): string | null {
   const i = input ?? {};
   switch (name) {
-    case "Bash": return i.description ? clip(i.description) : `${done ? "Ran" : "Running"} ${i.command ? "`" + clip(i.command, 40) + "`" : "a command"}`;
-    case "Read": return `${done ? "Read" : "Reading"} ${base(i.file_path) || "a file"}`;
-    case "Write": return `${done ? "Wrote" : "Writing"} ${base(i.file_path) || "a file"}`;
-    case "Edit": case "MultiEdit": case "NotebookEdit": return `${done ? "Edited" : "Editing"} ${base(i.file_path ?? i.notebook_path) || "a file"}`;
-    case "Glob": return `${done ? "Found files" : "Finding files"}${i.pattern ? " " + clip(i.pattern, 30) : ""}`;
-    case "Grep": return `${done ? "Searched" : "Searching"}${i.pattern ? " for " + clip(i.pattern, 30) : ""}`;
+    case "Bash": case "bash": return i.description ? clip(i.description) : `${done ? "Ran" : "Running"} ${i.command ? "`" + clip(i.command, 40) + "`" : "a command"}`;
+    case "Read": case "read": return `${done ? "Read" : "Reading"} ${base(i.file_path ?? i.path) || "a file"}`;
+    case "Write": case "write": return `${done ? "Wrote" : "Writing"} ${base(i.file_path ?? i.path) || "a file"}`;
+    case "Edit": case "MultiEdit": case "NotebookEdit": case "edit": return `${done ? "Edited" : "Editing"} ${base(i.file_path ?? i.notebook_path ?? i.path) || "a file"}`;
+    case "Glob": case "find": return `${done ? "Found files" : "Finding files"}${i.pattern ? " " + clip(i.pattern, 30) : ""}`;
+    case "Grep": case "grep": return `${done ? "Searched" : "Searching"}${i.pattern ? " for " + clip(i.pattern, 30) : ""}`;
+    case "ls": return `${done ? "Listed" : "Listing"} ${base(i.path) || "a directory"}`;
     case "WebSearch": return `${done ? "Searched the web" : "Searching the web"}${i.query ? ": " + clip(i.query, 36) : ""}`;
     case "WebFetch": return `${done ? "Fetched" : "Fetching"} ${host(i.url)}`;
     case "Task": case "Agent": return `${done ? "Subagent finished" : "Subagent working"}${i.description ? ": " + clip(i.description, 36) : ""}`;

@@ -27,7 +27,7 @@ func wantCalls(t *testing.T, sp *fakeSpawner, live, reads int) {
 
 func TestContextSplitNotStarted(t *testing.T) {
 	e := newEnv(t)
-	for _, a := range []model.AgentKind{model.Claude, model.Cursor} {
+	for _, a := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
 		v := e.create(a, gOne, "")
 		if _, err := e.m.ContextSplit(v.ID, false); !errors.Is(err, ErrNotStarted) {
 			t.Errorf("%s: err %v, want ErrNotStarted", a, err)
@@ -79,6 +79,36 @@ func TestContextSplitKeptUntilMessagesOrTurnsMove(t *testing.T) {
 		t.Fatalf("split after an agent's own turn %+v", s)
 	}
 	wantCalls(t, e.claude, 4, 0)
+}
+
+func TestContextSplitPiKept(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Pi, gOne, "")
+	e.send(v.ID, "one", "")
+	a := e.pi.last(t)
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+
+	// Between turns, the running process answers and the split is kept in chat.json.
+	s := e.split(v.ID, false)
+	wantCalls(t, e.pi, 1, 0)
+	if s.AtMessage != 1 || s.AtTurn != 1 || s.Total != 1 {
+		t.Fatalf("split %+v", s)
+	}
+	if got := e.meta(v.ID).ContextSplit; got == nil || got.Total != 1 || got.AtMessage != 1 || got.AtTurn != 1 {
+		t.Fatalf("chat.json split %+v", got)
+	}
+	// Nothing moved: the kept one, without asking.
+	if s := e.split(v.ID, false); s.Total != 1 {
+		t.Fatalf("second split %+v, want the kept one", s)
+	}
+	wantCalls(t, e.pi, 1, 0)
+	// A new message moves it on.
+	e.send(v.ID, "two", "")
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	if s := e.split(v.ID, false); s.Total != 2 || s.AtMessage != 2 || s.AtTurn != 2 {
+		t.Fatalf("split after a message %+v", s)
+	}
+	wantCalls(t, e.pi, 2, 0)
 }
 
 func TestContextSplitDuringTurnNotKept(t *testing.T) {

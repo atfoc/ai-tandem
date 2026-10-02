@@ -13,7 +13,7 @@ import type { Unsaved } from "./logic/drafts.ts";
 import type { UpdateBanner } from "./logic/version.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
-export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind; tone: "edit" | "danger"; until: number };
+export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind | string; tone: "edit" | "danger"; until: number };
 export type Selection = { count: number; lines: string[] };
 export type View = { scrollX: number; scrollY: number; zoom: number; width: number; height: number };
 
@@ -40,7 +40,7 @@ export type State = {
   selection: Selection;
   view: View;
   flashes: Flash[];               // keyed by board id
-  busyOn: Record<string, { chat: string; agent: AgentKind; until: number }>; // by board id
+  busyOn: Record<string, { chat: string; agent: AgentKind | string; until: number }>; // by board id
   confirm: ConfirmRequest | null; // Dialogs.tsx
   picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L)
   update: { banner: UpdateBanner; hidden: boolean }; // the version banner (version.ts); hidden = ×'d until the next reconnect
@@ -202,7 +202,7 @@ export function flash(f: Omit<Flash, "id" | "until">, ms = 2600) {
 export function unflash(id: number) { setState((s) => ({ flashes: s.flashes.filter((x) => x.id !== id) })); }
 
 export function markBusy(board: string, chat: string) {
-  const agent = state.chats[chat]?.agent ?? "claude";
+  const agent = state.chats[chat]?.agent ?? "unknown";
   setState((s) => ({ busyOn: { ...s.busyOn, [board]: { chat, agent, until: Date.now() + 4000 } } }));
   setTimeout(() => setState((s) => {
     const b = s.busyOn[board];

@@ -66,6 +66,26 @@ test("Claude's own tools", () => {
   assert.equal(toolDone("Task", { description: "find the bug" }, "x"), "Subagent finished: find the bug");
 });
 
+test("Pi's own tools", () => {
+  assert.equal(toolVerb("read", { path: "/a/b/main.go" }), "Reading main.go");
+  assert.equal(toolDone("read", { path: "/a/b/main.go" }, "x"), "Read main.go");
+  assert.equal(toolVerb("read", {}), "Reading a file");
+  assert.equal(toolVerb("bash", { command: "ls -la" }), "Running `ls -la`");
+  assert.equal(toolDone("bash", { command: "ls -la" }, "x"), "Ran `ls -la`");
+  assert.equal(toolVerb("bash", {}), "Running a command");
+  assert.equal(toolVerb("edit", { path: "/a/b/c.ts" }), "Editing c.ts");
+  assert.equal(toolDone("edit", { path: "/a/b/c.ts" }, "x"), "Edited c.ts");
+  assert.equal(toolVerb("write", { path: "/a/b/out.txt" }), "Writing out.txt");
+  assert.equal(toolDone("write", { path: "/a/b/out.txt" }, "x"), "Wrote out.txt");
+  assert.equal(toolVerb("grep", { pattern: "TODO" }), "Searching for TODO");
+  assert.equal(toolDone("grep", { pattern: "TODO" }, "x"), "Searched for TODO");
+  assert.equal(toolVerb("find", { pattern: "*.ts" }), "Finding files *.ts");
+  assert.equal(toolDone("find", { pattern: "*.ts" }, "x"), "Found files *.ts");
+  assert.equal(toolVerb("ls", { path: "/a/b" }), "Listing b");
+  assert.equal(toolDone("ls", { path: "/a/b" }, "x"), "Listed b");
+  assert.equal(toolVerb("ls", {}), "Listing a directory");
+});
+
 test("other MCP servers", () => {
   assert.equal(toolVerb("mcp__github__create_issue", {}), "github · create issue");
   assert.equal(toolDone("mcp__github__create_issue", {}, "x"), "github · create issue");

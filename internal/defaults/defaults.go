@@ -9,9 +9,9 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// AgentOrder is the fixed order agents are offered in, everywhere: Claude, then Cursor.
+// AgentOrder is the fixed order agents are offered in, everywhere: Claude, Cursor, then pi.
 // It never depends on what was used last.
-var AgentOrder = []model.AgentKind{model.Claude, model.Cursor}
+var AgentOrder = []model.AgentKind{model.Claude, model.Cursor, model.Pi}
 
 // Resolve returns the folder, model and effort for a new chat of agent a in group g.
 // fallbackCwd is the server's default folder; cat is the agent's catalog (its Default is the last resort).

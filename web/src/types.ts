@@ -1,13 +1,13 @@
 // TypeScript mirror of internal/model (field for field, by json name).
 // Go's omitempty fields are optional here; time.Time is an RFC 3339 string.
 
-export type AgentKind = "claude" | "cursor";
+export type AgentKind = "claude" | "cursor" | "pi";
 
 /** The group id of the ungrouped area (model.Ungrouped). */
 export const UNGROUPED = "__ungrouped__";
 
 /** The order agents are offered in, everywhere. */
-export const AGENT_ORDER: AgentKind[] = ["claude", "cursor"];
+export const AGENT_ORDER: AgentKind[] = ["claude", "cursor", "pi"];
 
 /** model.Archive, embedded in Group, Board and ChatMeta. */
 export type Archive = {
@@ -35,6 +35,9 @@ export type State = {
   version: number;
   groups: Group[];
   defaults: Defaults;
+  /** Per-agent persisted catalogs (model.Pi and future dynamic agents); Cursor's older
+   *  `cursorCatalog` is kept for backward compatibility. */
+  catalogs?: Partial<Record<AgentKind, Catalog | null>>;
   cursorCatalog?: Catalog;
 };
 
@@ -62,6 +65,7 @@ export type CatalogModel = {
   id: string;
   label: string;
   note?: string;
+  provider?: string; // pi only: the provider pi reported; absent/empty when unknown
   efforts?: string[];
   contextWindow?: number;
   defaultEffort?: string;

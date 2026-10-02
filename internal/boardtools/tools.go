@@ -108,3 +108,13 @@ var Tools = []Tool{
 		Summary: `{"board"?: "<board id>", "refs"?: [{"key"|"id": ...}]}`,
 	},
 }
+
+// IsTool reports whether name is one of Tools.
+func IsTool(name string) bool {
+	for _, t := range Tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}

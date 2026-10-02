@@ -1,23 +1,38 @@
 // Glyphs and small icons used across the app.
 import React from "react";
 import type { AgentKind } from "./types.ts";
+import { agentMeta } from "./agents.ts";
+
+// The app draws each agent through the metadata module, so a new kind (pi) and an unknown one
+// both render without touching this file's callers.
+export { agentName, agentClass } from "./agents.ts";
 
 export function AgentGlyph({ agent, size = 14 }: { agent: AgentKind | string; size?: number }) {
-  if (agent === "cursor") return (
-    <svg className="glyph cursor" width={size} height={size} viewBox="0 0 16 16" aria-label="Cursor">
+  const m = agentMeta(agent);
+  if (m.glyph === "cursor") return (
+    <svg className="glyph cursor" width={size} height={size} viewBox="0 0 16 16" aria-label={m.name}>
       <path d="M8 1 14 4.5v7L8 15 2 11.5v-7z" fill="currentColor" opacity=".9" />
       <path d="M8 1v7l6 3.5M8 8 2 11.5" stroke="var(--bg)" strokeWidth="1.1" fill="none" />
     </svg>
   );
-  return (
-    <svg className="glyph claude" width={size} height={size} viewBox="0 0 16 16" aria-label="Claude">
+  if (m.glyph === "pi") return (
+    <svg className="glyph pi" width={size} height={size} viewBox="0 0 16 16" aria-label={m.name}>
+      <rect x="2.5" y="4" width="11" height="2" rx="1" fill="currentColor" />
+      <rect x="4.5" y="4" width="2" height="8" rx="1" fill="currentColor" />
+      <rect x="9.5" y="4" width="2" height="8" rx="1" fill="currentColor" />
+    </svg>
+  );
+  if (m.glyph === "claude") return (
+    <svg className="glyph claude" width={size} height={size} viewBox="0 0 16 16" aria-label={m.name}>
       {[0, 30, 60, 90, 120, 150].map((a) => <rect key={a} x="7.1" y="1" width="1.8" height="14" rx=".9" fill="currentColor" transform={`rotate(${a} 8 8)`} />)}
     </svg>
   );
+  return (
+    <svg className="glyph unknown" width={size} height={size} viewBox="0 0 16 16" aria-label={m.name}>
+      <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.8" opacity=".85" />
+    </svg>
+  );
 }
-
-/** The agent's name as the user sees it. */
-export const agentName = (agent: AgentKind | string) => (agent === "cursor" ? "Cursor" : "Claude Code");
 
 export const BoardIcon = ({ size = 13 }: { size?: number }) => (
   <svg className="board-icon" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">

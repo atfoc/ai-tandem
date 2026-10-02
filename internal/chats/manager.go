@@ -34,7 +34,7 @@ type Deps struct {
 	Bridge     *editorbridge.Bridge
 	Boards     *boards.Service
 	Spawners   map[model.AgentKind]agent.Spawner
-	Namer      Namer
+	Namers     map[model.AgentKind]Namer // per-agent auto namers; a missing entry means chats of that agent are not named
 	DefaultCwd string
 	BaseURL    string // http://127.0.0.1:<port>
 }
@@ -315,8 +315,8 @@ func (m *Manager) catalog(a model.AgentKind) *model.Catalog {
 	}
 	var cat *model.Catalog
 	m.Store.Read(func(s *model.State) {
-		if s.Cursor != nil {
-			cp := *s.Cursor
+		if c := s.Catalog(a); c != nil {
+			cp := *c
 			cat = &cp
 		}
 	})
@@ -341,7 +341,7 @@ func (m *Manager) groupExists(g string) bool {
 
 // Create makes a chat. No agent starts: it starts on the first Send.
 func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView, error) {
-	if a != model.Claude && a != model.Cursor {
+	if a != model.Claude && a != model.Cursor && a != model.Pi {
 		return model.ChatView{}, fmt.Errorf("unknown agent %q", a)
 	}
 	if board != "" {
@@ -367,8 +367,8 @@ func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView
 	} else {
 		meta.Token = randHex(16)
 	}
-	if a == model.Claude {
-		meta.SessionID = uuid()
+	if a == model.Claude || a == model.Pi {
+		meta.SessionID = uuid() // the app assigns it; pi starts/resumes with it
 	}
 	if err := os.MkdirAll(m.Store.P.ChatDir(meta.ID), 0o700); err != nil {
 		return model.ChatView{}, err
@@ -503,10 +503,10 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		case agent.EvCatalog:
 			if ev.Catalog != nil {
 				cat := *ev.Catalog
-				if err := m.Store.Update(func(s *model.State) error { s.Cursor = &cat; return nil }); err != nil {
-					log.Printf("chats: store cursor catalog: %v", err)
+				if err := m.Store.Update(func(s *model.State) error { s.SetCatalog(c.meta.Agent, &cat); return nil }); err != nil {
+					log.Printf("chats: store %s catalog: %v", c.meta.Agent, err)
 				}
-				out = append(out, map[string]any{"type": "catalog", "agent": string(model.Cursor), "catalog": cat})
+				out = append(out, map[string]any{"type": "catalog", "agent": string(c.meta.Agent), "catalog": cat})
 			}
 		case agent.EvUsage:
 			u := &c.meta.Usage
@@ -619,19 +619,22 @@ func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 	}
 	m.logSave(c)
 	name, userNamed := c.meta.Name, c.meta.UserNamed
+	kind := c.meta.Agent
 	ag := c.ag
 	out.emitItems(c, ups)
 	out.emitChat(c)
 	c.mu.Unlock()
 	m.send(out)
-	if first && name == "" && !userNamed && m.Namer != nil {
-		m.naming.Add(1)
-		go func() {
-			defer m.naming.Done()
-			if t, err := m.Namer.Name(PlainText(text)); err == nil {
-				m.Rename(id, t, false)
-			}
-		}()
+	if first && name == "" && !userNamed {
+		if namer := m.Namers[kind]; namer != nil {
+			m.naming.Add(1)
+			go func() {
+				defer m.naming.Done()
+				if t, err := namer.Name(PlainText(text)); err == nil {
+					m.Rename(id, t, false)
+				}
+			}()
+		}
 	}
 	return ag.Send(blocks)
 }

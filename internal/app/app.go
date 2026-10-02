@@ -49,7 +49,11 @@ var (
 func (a *App) Snapshot() Snapshot {
 	cl := claude.Catalog
 	snap := Snapshot{
-		Catalogs:   map[model.AgentKind]*model.Catalog{model.Claude: &cl, model.Cursor: nil},
+		Catalogs: map[model.AgentKind]*model.Catalog{
+			model.Claude: &cl,
+			model.Cursor: nil, // known only after Cursor reports its list
+			model.Pi:     nil, // known only after pi reports its list
+		},
 		Home:       a.Home,
 		DefaultCwd: a.DefaultCwd,
 		DataDir:    a.DataDir,
@@ -57,9 +61,11 @@ func (a *App) Snapshot() Snapshot {
 	a.St.Read(func(s *model.State) {
 		snap.Groups = append([]model.Group{}, s.Groups...)
 		snap.Defaults = copyDefaults(s.Defaults)
-		if s.Cursor != nil {
-			cp := *s.Cursor
-			snap.Catalogs[model.Cursor] = &cp
+		for _, kind := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
+			if c := s.Catalog(kind); c != nil {
+				cp := *c
+				snap.Catalogs[kind] = &cp
+			}
 		}
 	})
 	snap.Boards = a.Boards.List()

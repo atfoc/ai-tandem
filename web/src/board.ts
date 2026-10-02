@@ -13,6 +13,7 @@ import { getState, flash, markBusy, type Box } from "./store.ts";
 import { api, ApiError } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { groupPath } from "./logic/tree.ts";
+import { agentShortName } from "./agents.ts";
 import type { AgentKind, Board } from "./types.ts";
 
 export type Scene = { elements: El[]; appState: any; files: any; version: number; rev: number };
@@ -175,7 +176,7 @@ export function pointRefOn(board: string, x: number, y: number): Ref {
 }
 
 /** A reference clicked in the thread: select its elements, or mark its point, when its board is on screen. */
-export function showRef(board: string, ref: Ref, agent: AgentKind) {
+export function showRef(board: string, ref: Ref, agent: AgentKind | string) {
   if (liveBoard !== board || !liveApi) return;
   if (ref.kind === "point") {
     flash({ board, box: { x: ref.x - 6, y: ref.y - 6, width: 12, height: 12 }, agent, label: ref.label, tone: "edit" }, 1600);
@@ -233,12 +234,12 @@ function syncLive(id: string) {
   s.elements = els; s.version = getSceneVersion(els);
 }
 
-const agentLabel = (agent: string) => (agent === "cursor" ? "Cursor" : "Claude");
+const agentLabel = (agent: string) => agentShortName(agent);
 
 /** After an agent edit: save soon, and show where it happened when the board is on screen. */
 function afterEdit(id: string, chat: string, ids: string[], tone: "edit" | "danger" = "edit") {
   const st = getState();
-  const agent = st.chats[chat]?.agent ?? "claude";
+  const agent = st.chats[chat]?.agent ?? "unknown";
   syncLive(id);
   saveSoon(id, 50);
   if (st.sel.board === id) {
@@ -360,7 +361,7 @@ export async function runTool(call: ToolCall): Promise<string> {
       if (orphans.length) eng.updateScene({ elements: els.map((e) => orphans.includes(e) ? newElementWith(e, { isDeleted: true }) : e) });
       syncLive(id);
       saveSoon(id, 50);
-      const agent = getState().chats[call.chat]?.agent ?? "claude";
+      const agent = getState().chats[call.chat]?.agent ?? "unknown";
       if (doomedBox && getState().sel.board === id) flash({ board: id, box: doomedBox, agent, label: "Removed", tone: "danger" }, 1600);
       return JSON.stringify({ board: getState().boards[id].name, id, deleted: res.deleted });
     }

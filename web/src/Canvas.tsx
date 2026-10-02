@@ -8,6 +8,7 @@ import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, type Sc
 import { insertRef, pickPoint } from "./Composer.tsx";
 import { pointLabel } from "./logic/refs.ts";
 import { AgentGlyph } from "./icons.tsx";
+import { agentClass, agentShortName } from "./agents.ts";
 import type { ChatView } from "./types.ts";
 
 // ---- drawing style (section 6)
@@ -103,7 +104,7 @@ function FlashLayer({ board }: { board: string }) {
         const left = (f.box.x + v.scrollX) * v.zoom - pad, top = (f.box.y + v.scrollY) * v.zoom - pad;
         const w = f.box.width * v.zoom + pad * 2, h = f.box.height * v.zoom + pad * 2;
         return (
-          <div key={f.id} className={`flash ${f.tone} agent-${f.agent}`} style={{ left, top, width: w, height: h }}>
+          <div key={f.id} className={`flash ${f.tone} agent-${agentClass(f.agent)}`} style={{ left, top, width: w, height: h }}>
             <span className="flash-tag"><AgentGlyph agent={f.agent} size={11} /> {f.label}</span>
           </div>
         );
@@ -120,9 +121,9 @@ function Presence({ board }: { board: string }) {
   const agent = own ?? other;
   if (!agent) return null;
   return (
-    <div className={`presence agent-${agent}`}>
+    <div className={`presence agent-${agentClass(agent)}`}>
       <AgentGlyph agent={agent} size={12} />
-      <span>{agent === "cursor" ? "Cursor" : "Claude"} is working on {name}</span>
+      <span>{agentShortName(agent)} is working on {name}</span>
       <span className="dots"><i /><i /><i /></span>
     </div>
   );

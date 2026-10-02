@@ -16,6 +16,7 @@ import (
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/pibridge"
 	"ai-whiteboard/internal/store"
 )
 
@@ -63,6 +64,16 @@ func newEnv(t *testing.T) *env {
 	mux.HandleFunc("GET /api/events", br.ServeSSE)
 	return &env{t: t, relay: r, mux: mux, board: bd, token: metas[0].Token, chat: v.ID}
 }
+
+// fakeRuns is a RunResolver backed by a fixed run-token -> board-token map.
+type fakeRuns map[string]string
+
+func (f fakeRuns) ResolveBoardToken(runToken string) (string, bool) {
+	boardToken, ok := f[runToken]
+	return boardToken, ok
+}
+
+var _ RunResolver = fakeRuns{}
 
 // mcp posts one JSON-RPC message to /mcp/{token} and returns the response.
 func (e *env) mcp(token, body string) (*http.Response, map[string]any) {
@@ -213,6 +224,135 @@ func TestMCPProtocolBits(t *testing.T) {
 func TestToolsCallUnknownToken(t *testing.T) {
 	e := newEnv(t)
 	_, out := e.mcp(strings.Repeat("0", 32), `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
+	text, isErr := callResult(t, out)
+	if !isErr || text != "unknown board token" {
+		t.Fatalf("got %q isError=%v", text, isErr)
+	}
+}
+
+func TestToolsCallRunTokenResolvesToBoardToken(t *testing.T) {
+	e := newEnv(t)
+	got := make(chan map[string]any, 1)
+	e.client(func(p map[string]any) editorbridge.RPCReply {
+		got <- p
+		return editorbridge.RPCReply{Result: json.RawMessage(`"rect r1 at 0,0"`)}
+	})
+	e.relay.Runs = fakeRuns{"run-1": e.token}
+
+	_, out := e.mcp("run-1", `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
+	text, isErr := callResult(t, out)
+	if isErr || text != "rect r1 at 0,0" {
+		t.Fatalf("run token: got %q isError=%v", text, isErr)
+	}
+	p := <-got
+	if p["chat"] != e.chat || p["board"] != e.board.ID || p["name"] != "read_board" {
+		t.Fatalf("rpc params %v", p)
+	}
+
+	// A board token is not a registered run token: the credential passes
+	// through unchanged (Claude/Cursor fallback).
+	_, out = e.mcp(e.token, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
+	text, isErr = callResult(t, out)
+	if isErr || text != "rect r1 at 0,0" {
+		t.Fatalf("board-token fallback: got %q isError=%v", text, isErr)
+	}
+	<-got
+}
+
+func TestToolsCallRunTokenUnknownOrEmpty(t *testing.T) {
+	e := newEnv(t)
+	e.relay.Runs = fakeRuns{"run-plain": ""}
+
+	_, out := e.mcp(strings.Repeat("0", 32), `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
+	text, isErr := callResult(t, out)
+	if !isErr || text != "unknown board token" {
+		t.Fatalf("unknown run token: got %q isError=%v", text, isErr)
+	}
+
+	// A plain-chat run resolves ok with an empty board token; the relay then
+	// reports an unknown board token like any other empty/unknown token.
+	_, out = e.mcp("run-plain", `{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
+	text, isErr = callResult(t, out)
+	if !isErr || text != "unknown board token" {
+		t.Fatalf("empty board token: got %q isError=%v", text, isErr)
+	}
+}
+
+func TestToolsCallRunTokenArchivedChat(t *testing.T) {
+	e := newEnv(t)
+	e.relay.Runs = fakeRuns{"run-arch": e.token}
+	if err := e.relay.Chats.SetArchive(e.chat, model.Archive{Archived: true, Op: "op1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, out := e.mcp("run-arch", `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
+	text, isErr := callResult(t, out)
+	if !isErr || text != "this chat is archived" {
+		t.Fatalf("got %q isError=%v", text, isErr)
+	}
+}
+
+// TestMCPRunTokenRealBridgeArchiveAndDeregister wires a real pibridge.Bridge
+// into the relay's RunResolver: a registered run token resolves to the chat's
+// board token and the call reaches the browser client; an archived chat yields
+// the existing archived text over the run token; and after deregistration the
+// run token stops resolving and is treated as a board token, failing safely
+// (A12).
+func TestMCPRunTokenRealBridgeArchiveAndDeregister(t *testing.T) {
+	e := newEnv(t)
+	got := make(chan map[string]any, 1)
+	e.client(func(p map[string]any) editorbridge.RPCReply {
+		got <- p
+		return editorbridge.RPCReply{Result: json.RawMessage(`"rect r1 at 0,0"`)}
+	})
+
+	pb := pibridge.New(pibridge.SocketPath(t.TempDir()))
+	if err := pb.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pb.Close)
+	_, runToken, err := pb.RegisterRun(e.chat, e.token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.relay.Runs = pb
+
+	// A registered run token resolves through the real bridge and the call
+	// reaches the fake browser client.
+	_, out := e.mcp(runToken, `{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
+	text, isErr := callResult(t, out)
+	if isErr || text != "rect r1 at 0,0" {
+		t.Fatalf("run token call: got %q isError=%v", text, isErr)
+	}
+	if p := <-got; p["chat"] != e.chat || p["board"] != e.board.ID {
+		t.Fatalf("rpc params %v", p)
+	}
+
+	// Archiving the chat yields the existing archived text over the run token.
+	if err := e.relay.Chats.SetArchive(e.chat, model.Archive{Archived: true, Op: "op1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, out = e.mcp(runToken, `{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
+	text, isErr = callResult(t, out)
+	if !isErr || text != "this chat is archived" {
+		t.Fatalf("archived run token: got %q isError=%v", text, isErr)
+	}
+
+	// After deregistration the run token stops resolving; it is treated as a
+	// board token and fails safely as unknown (A12).
+	pb.DeregisterRun(runToken)
+	_, out = e.mcp(runToken, `{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
+	text, isErr = callResult(t, out)
+	if !isErr || text != "unknown board token" {
+		t.Fatalf("deregistered run token: got %q isError=%v", text, isErr)
+	}
+}
+
+func TestToolsCallRunTokenWithoutResolver(t *testing.T) {
+	e := newEnv(t)
+	if e.relay.Runs != nil {
+		t.Fatal("newEnv relay should have a nil RunResolver")
+	}
+	_, out := e.mcp("run-1", `{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
 	text, isErr := callResult(t, out)
 	if !isErr || text != "unknown board token" {
 		t.Fatalf("got %q isError=%v", text, isErr)

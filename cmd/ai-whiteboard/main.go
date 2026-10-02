@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -36,6 +38,8 @@ import (
 	"ai-whiteboard/internal/cursor"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/pi"
+	"ai-whiteboard/internal/pibridge"
 	"ai-whiteboard/internal/prompts"
 	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/store"
@@ -47,6 +51,7 @@ type options struct {
 	home, client, cwd    string
 	claudeBin, cursorBin string
 	cursorCostBin        string
+	piBin, piNamerModel  string
 	paths                store.Paths
 }
 
@@ -91,6 +96,8 @@ func parseFlags(cmd string, args []string) options {
 	fs.StringVar(&o.claudeBin, "claude", "claude", "Claude Code binary")
 	fs.StringVar(&o.cursorBin, "cursor", "agent", "Cursor agent binary")
 	fs.StringVar(&o.cursorCostBin, "cursor-cost", "cursor-cost", "cursor-cost binary, for the Cursor plan's usage (~/bin is tried too)")
+	fs.StringVar(&o.piBin, "pi", "pi", "pi binary")
+	fs.StringVar(&o.piNamerModel, "pi-namer-model", "", "pi model for chat titles (empty = pi's default)")
 	fs.Parse(args)
 
 	home, _ := os.UserHomeDir()
@@ -129,11 +136,18 @@ func serve(o options, args []string) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
+	probePiVersion(o.piBin)
+	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
 	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd, BaseURL: base,
-		Namer: chats.ClaudeNamer{Bin: o.claudeBin},
+		Namers: map[model.AgentKind]chats.Namer{
+			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
+			model.Cursor: chats.ClaudeNamer{Bin: o.claudeBin},
+			model.Pi:     chats.PiNamer{Bin: o.piBin, Model: o.piNamerModel},
+		},
 		Spawners: map[model.AgentKind]agent.Spawner{
 			model.Claude: claudeSpawner,
 			model.Cursor: cursorSpawner,
+			model.Pi:     piSpawner,
 		}})
 	if err := bs.Load(); err != nil { // before chats: board chats look up their board
 		log.Fatalf("loading boards: %v", err)
@@ -141,12 +155,26 @@ func serve(o options, args []string) {
 	if err := cm.Load(); err != nil {
 		log.Fatalf("loading chats: %v", err)
 	}
+	relay := &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}
+	extPath, err := pibridge.MaterializeExtension(filepath.Join(p.Root, "pi-extension"))
+	if err != nil {
+		log.Printf("pi extension: %v", err) // pi chats run without board tools
+		extPath = ""
+	}
+	pb := pibridge.New(pibridge.SocketPath(p.Root))
+	relay.Runs = pb // /mcp/{runToken} resolves to the chat's board token
+	if err := pb.Start(); err != nil {
+		log.Fatalf("pi bridge: %v", err)
+	}
+	piSpawner.Extension = extPath
+	piSpawner.Bridge = pb
 	go refreshCursorCatalog(cursorSpawner, st, br)
+	go refreshPiCatalog(piSpawner, st, br)
 	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
 	}
-	srv := &server.Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}, Bridge: br,
+	srv := &server.Server{App: a, Relay: relay, Bridge: br,
 		Client: o.client, Port: port, Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
 			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
@@ -159,6 +187,7 @@ func serve(o options, args []string) {
 		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
 		cm.Shutdown()                    // history written; agents end
 		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
+		pb.Close()                       // the extension bridge: no more connections, socket removed
 		store.RemoveServerFile(p)
 		os.Exit(0)
 	}, syscall.SIGINT, syscall.SIGTERM)
@@ -239,6 +268,33 @@ func helloOf(c *http.Client, base string) (helloReply, bool) {
 	return h, h.App == "ai-whiteboard"
 }
 
+// probePiVersion logs the pi binary and version at boot. It never fails startup: a missing or
+// broken pi only means pi chats show an error per chat until pi is installed and authenticated.
+func probePiVersion(bin string) {
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		log.Printf("pi: cannot find %q: pi chats will show an error until pi is installed and authenticated", bin)
+		return
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.WaitDelay = 5 * time.Second // a child that leaks its pipes must not keep Output waiting past the bound
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("pi: %s at %s did not answer --version (%v): pi chats will show an error until pi is installed and authenticated", bin, path, err)
+		return
+	}
+	version := strings.TrimSpace(string(out))
+	if version == "" {
+		version = "unknown version"
+	}
+	log.Printf("pi %s at %s", version, path)
+}
+
 // refreshCursorCatalog fetches Cursor's model list for the pickers (spec 4.6). On failure the
 // stored catalog stays.
 func refreshCursorCatalog(sp *cursor.Spawner, st *store.Store, br *editorbridge.Bridge) {
@@ -247,8 +303,22 @@ func refreshCursorCatalog(sp *cursor.Spawner, st *store.Store, br *editorbridge.
 		log.Printf("cursor model list: %v", err)
 		return
 	}
-	if err := st.Update(func(s *model.State) error { s.Cursor = cat; return nil }); err != nil {
+	if err := st.Update(func(s *model.State) error { s.SetCatalog(model.Cursor, cat); return nil }); err != nil {
 		log.Printf("cursor model list: saving: %v", err)
 	}
 	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Cursor), "catalog": cat})
+}
+
+// refreshPiCatalog fetches pi's model list for the pickers, like refreshCursorCatalog. On failure
+// the stored catalog stays.
+func refreshPiCatalog(sp *pi.Spawner, st *store.Store, br *editorbridge.Bridge) {
+	cat, err := sp.Catalog(20 * time.Second)
+	if err != nil {
+		log.Printf("pi model list: %v", err)
+		return
+	}
+	if err := st.Update(func(s *model.State) error { s.SetCatalog(model.Pi, cat); return nil }); err != nil {
+		log.Printf("pi model list: saving: %v", err)
+	}
+	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Pi), "catalog": cat})
 }

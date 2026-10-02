@@ -7,6 +7,7 @@ import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
+import { filterModels, groupModels } from "./logic/models.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
 import { DraftSaver, hasDraft } from "./logic/drafts.ts";
 import { toSend } from "./logic/quotes.ts";
@@ -17,6 +18,7 @@ import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { useComposerQuotes } from "./Quotes.tsx";
 import { quoteSelection } from "./quoteDom.ts";
 import { BoardIcon, Chevron, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
+import { agentMeta } from "./agents.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, PlanUsage, Reference, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
@@ -206,7 +208,7 @@ export function Composer({ chatId }: { chatId: string }) {
     setMention(m ? { ...m, i: 0 } : null);
   };
 
-  const placeholder = !c.board ? `Ask ${c.agent === "cursor" ? "Cursor" : "Claude Code"}…` : "Ask or tell… (@ to mention a board)";
+  const placeholder = !c.board ? `Ask ${agentName(c.agent)}…` : "Ask or tell… (@ to mention a board)";
   return (
     <div className="composer">
       {c.board && (
@@ -276,6 +278,9 @@ export function Composer({ chatId }: { chatId: string }) {
 export function Toolbar({ chatId, onError }: { chatId: string; onError: (msg: string) => void }) {
   const c = useStore((s) => s.chats[chatId]);
   const cat = useStore((s) => (c ? s.catalogs[c.agent] : undefined));
+  // One open menu at a time for Model and Effort; their state used to live inside each Picker,
+  // which let both menus and both backdrops stack. DirPicker and the usage popover keep theirs.
+  const [openPicker, setOpenPicker] = useState<"model" | "effort" | null>(null);
   if (!c) return null;
   const configure = (p: { model?: string; effort?: string; cwd?: string }) => api.configure(chatId, p).then(() => onError(""), (e) => onError(e.message));
   const folderOpen = !c.locked || !!c.folderMissing;
@@ -292,12 +297,14 @@ export function Toolbar({ chatId, onError }: { chatId: string; onError: (msg: st
         <span className="tchip static">Loading models…</span>
       ) : (
         <>
-          <Picker label={modelLabel(c, cat)} title="Model" value={c.model}
-            options={cat.models.map((x) => ({ id: x.id, label: x.label, note: x.note }))}
+          <Picker label={modelLabel(c, cat)} title="Model" value={c.model} searchable
+            options={cat.models}
+            open={openPicker === "model"} onOpenChange={(o) => setOpenPicker(o ? "model" : null)}
             onPick={(id) => configure({ model: id })} />
           {!!m?.efforts?.length && (
-            <Picker label={effortLabel(c.effort, m)} title="Effort" prefix="Effort" value={c.effort ?? ""}
+            <Picker label={effortLabel(c.effort, m)} title="Effort" prefix="Effort" value={c.effort ?? ""} searchable={false}
               options={m.efforts.map((e) => ({ id: e, label: effortLabel(e, m) }))}
+              open={openPicker === "effort"} onOpenChange={(o) => setOpenPicker(o ? "effort" : null)}
               onPick={(id) => configure({ effort: id })} />
           )}
         </>
@@ -307,28 +314,150 @@ export function Toolbar({ chatId, onError }: { chatId: string; onError: (msg: st
   );
 }
 
-function Picker({ label, title, prefix, options, value, onPick }: {
-  label: string; title: string; prefix?: string; options: { id: string; label: string; note?: string }[]; value: string; onPick: (id: string) => void;
+/** One Picker row: a catalog model for Model (id/label/note/provider), or a bare {id, label} for
+ *  Effort. */
+type PickerOption = { id: string; label: string; note?: string; provider?: string };
+
+/** The Model and Effort pickers. `searchable` (Model only) adds the search field and provider
+ *  grouping; both modes share the keyboard highlight, listbox/option ARIA and single-open state. */
+function Picker({ label, title, prefix, options, value, searchable = false, open, onOpenChange, onPick }: {
+  label: string; title: string; prefix?: string; options: PickerOption[]; value: string;
+  searchable?: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPick: (id: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(""); // searchable only; never touched by Effort
+  const [hi, setHi] = useState(-1); // index into the flattened filtered rows; headings excluded
+  const input = useRef<HTMLInputElement>(null);
+  const chip = useRef<HTMLButtonElement>(null);
+  const rows = useRef<(HTMLButtonElement | null)[]>([]);
+  const wasOpen = useRef(false);
+  const listId = React.useId();
+  const rowId = (i: number) => `${listId}-row-${i}`;
+
+  // The flattened rows in render order for a query: grouped by provider when searchable
+  // (provider-less first); the Effort picker stays a flat list. The highlight index, ARIA row ids
+  // and rendered rows all derive from this same sequence so they cannot drift.
+  const ordered = (q: string): PickerOption[] =>
+    searchable ? groupModels(filterModels(options, q)).flatMap((g) => g.models) : options;
+
+  // The rendered rows in order, with the flattened index ARIA and the highlight use. Searchable
+  // pickers group by provider (provider-less first); the Effort picker stays a flat list.
+  const filtered = searchable ? filterModels(options, query) : options;
+  const sections = searchable
+    ? groupModels(filtered).map((g) => ({ provider: g.provider, options: g.models }))
+    : [{ provider: "", options }];
+  const flat: PickerOption[] = [];
+  const rowsOf = sections.map((s) => ({
+    provider: s.provider,
+    rows: s.options.map((o) => { const i = flat.length; flat.push(o); return { o, i }; }),
+  }));
+
+  const move = (d: number) => {
+    const n = flat.length;
+    if (n) setHi((i) => (i < 0 ? (d > 0 ? 0 : n - 1) : (i + d + n) % n));
+  };
+  const pickAt = (i: number) => {
+    const o = flat[i];
+    if (!o) return; // no highlight: Enter does nothing
+    onOpenChange(false);
+    if (o.id !== value) onPick(o.id);
+  };
+  // Typing keeps the selection highlighted when it survives the filter, else highlights the first row.
+  const onQuery = (q: string) => {
+    setQuery(q);
+    const visible = ordered(q);
+    const i = visible.findIndex((o) => o.id === value);
+    setHi(i >= 0 ? i : visible.length ? 0 : -1);
+  };
+
+  // Lifecycle on open/close: start on the selected row (else the first) and focus the field;
+  // closing drops the query and hands focus back to the chip, from any close path.
+  useEffect(() => {
+    if (!open) {
+      if (!wasOpen.current) return;
+      wasOpen.current = false;
+      if (searchable) setQuery("");
+      setHi(-1);
+      chip.current?.focus();
+      return;
+    }
+    wasOpen.current = true;
+    const visible = ordered("");
+    const i = visible.findIndex((o) => o.id === value);
+    setHi(i >= 0 ? i : visible.length ? 0 : -1);
+    if (searchable) { setQuery(""); input.current?.focus(); }
+    else chip.current?.focus(); // Effort keeps its keys on the chip; some browsers don't focus it on click
+  }, [open]);
+  // Keep the highlighted row visible inside the scroll region as it moves or the menu opens.
+  useEffect(() => {
+    if (open && hi >= 0) rows.current[hi]?.scrollIntoView({ block: "nearest" });
+  }, [open, hi]);
+
+  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    e.stopPropagation(); // keep Excalidraw's shortcuts out of the field
+    if (e.key === "ArrowDown") { e.preventDefault(); move(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return; }
+    if (e.key === "Enter") { e.preventDefault(); pickAt(hi); return; }
+    if (e.key === "Escape") { e.preventDefault(); onOpenChange(false); }
+  };
+  // Effort has no field, so focus stays on the chip and the wrapper takes the keys while the
+  // menu is open. Enter is handled here before the chip's default activation can re-toggle it.
+  const onWrapKeyDown = (e: React.KeyboardEvent) => {
+    if (searchable || !open) return;
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter" && e.key !== "Escape") return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === "ArrowDown") move(1);
+    else if (e.key === "ArrowUp") move(-1);
+    else if (e.key === "Enter") pickAt(hi);
+    else onOpenChange(false);
+  };
+
+  const row = ({ o, i }: { o: PickerOption; i: number }) => (
+    <button key={o.id} id={rowId(i)} type="button" role="option" aria-selected={o.id === value}
+      ref={(el) => { rows.current[i] = el; }}
+      className={`menu-item pick ${o.id === value ? "on" : ""} ${i === hi ? "active" : ""}`}
+      onClick={() => pickAt(i)}>
+      <span className="menu-label">{o.label}{o.note && <span className="menu-note">{o.note}</span>}</span>
+      {o.id === value && <span>✓</span>}
+    </button>
+  );
+
   return (
-    <div className="menu-wrap">
-      <button className="tchip" onClick={() => setOpen(!open)} title={`${title} — can be changed until you send the first message`}>
+    <div className="menu-wrap" onKeyDown={onWrapKeyDown}>
+      <button ref={chip} className="tchip" aria-expanded={open} aria-haspopup="listbox"
+        onClick={() => onOpenChange(!open)} title={`${title} — can be changed until you send the first message`}>
         {prefix && <span className="tchip-pre">{prefix}</span>}{label}<span className="caret">▾</span>
       </button>
       {open && (
-        <div className="menu up">
+        <div className="menu up" onMouseDown={(e) => e.stopPropagation()}>
           <div className="menu-head">{title}</div>
-          <div className="menu-scroll">
-            {options.map((o) => (
-              <button key={o.id} className={`menu-item pick ${o.id === value ? "on" : ""}`} onClick={() => { setOpen(false); if (o.id !== value) onPick(o.id); }}>
-                <span>{o.label}{o.note && <span className="menu-note">{o.note}</span>}</span>{o.id === value && <span>✓</span>}
-              </button>
+          {searchable && (
+            <div className="menu-search">
+              <input ref={input} className="menu-search-input" type="text" role="combobox"
+                aria-controls={listId} aria-expanded={true} aria-autocomplete="list"
+                aria-activedescendant={hi >= 0 ? rowId(hi) : undefined}
+                placeholder="Search models" spellCheck={false} autoComplete="off"
+                value={query} onChange={(e) => onQuery(e.target.value)} onKeyDown={onSearchKeyDown} />
+              {query && <button type="button" className="menu-search-clear" title="Clear search" aria-label="Clear search"
+                onMouseDown={(e) => e.preventDefault()} onClick={() => onQuery("")}>×</button>}
+            </div>
+          )}
+          <div className="menu-scroll" role="listbox" id={listId}>
+            {options.length === 0 ? (
+              <div className="menu-empty">No models</div>
+            ) : searchable && flat.length === 0 ? (
+              <div className="menu-empty">No matching models</div>
+            ) : rowsOf.map((s) => s.provider ? (
+              <div key={s.provider} className="menu-group" role="group" aria-label={s.provider}>
+                <div className="menu-group-head" aria-hidden="true">{s.provider}</div>
+                {s.rows.map(row)}
+              </div>
+            ) : (
+              <React.Fragment key="__flat">{s.rows.map(row)}</React.Fragment>
             ))}
           </div>
         </div>
       )}
-      {open && <div className="menu-backdrop" onMouseDown={() => setOpen(false)} />}
+      {open && <div className="menu-backdrop" onMouseDown={() => onOpenChange(false)} />}
     </div>
   );
 }
@@ -477,7 +606,7 @@ function UsagePopover({ agent, context }: { agent: AgentKind; context: React.Rea
       {context}
       <div className="menu-sep" />
       <div className="menu-head">
-        {agent === "cursor" ? "Cursor usage" : "Plan usage limits"}<span className="grow" />
+        {agentMeta(agent).usageTitle}<span className="grow" />
         <button className="icon-btn usage-refresh" title="Check again" disabled={loading} onClick={() => void load(true)}>
           <span className={loading ? "usage-spin" : ""}>↻</span>
         </button>

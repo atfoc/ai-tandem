@@ -125,7 +125,7 @@ function Home() {
     <main className="home">
       <div className="home-glyphs"><AgentGlyph agent="claude" size={26} /><BoardIcon size={26} /></div>
       <h2>Start a chat or a whiteboard</h2>
-      <p>Chats are Claude Code or Cursor sessions, the same as in a terminal. A whiteboard is an Excalidraw board with its own chats that can see and draw on it.</p>
+      <p>Chats are Claude Code, Cursor or pi sessions, the same as in a terminal. A whiteboard is an Excalidraw board with its own chats that can see and draw on it.</p>
       <div className="row-gap">
         <button className="btn primary" onClick={() => void newChat("claude", { group: UNGROUPED })}><AgentGlyph agent="claude" size={12} /> New chat</button>
         <button className="btn" onClick={() => newBoard(UNGROUPED).catch((e) => reportError("Couldn't create the whiteboard", e))}><BoardIcon /> New whiteboard</button>

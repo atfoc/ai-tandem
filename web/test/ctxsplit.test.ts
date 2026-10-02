@@ -26,6 +26,17 @@ test("segments: Cursor's order, zero categories left out, unknown ones last and 
     ["system_prompt", 8], ["tools", 1], ["skills", 5], ["subagents", 7], ["conversation", 3], ["hooks", 0]]);
 });
 
+test("segments: Pi uses messages at slot 3 and leaves free to the free logic", () => {
+  const cats = [cat("messages", 42483), cat("free", 900000, "free"), cat("future", 50)];
+  assert.deepEqual(segments("pi", cats).map((s) => [s.cat.id, s.slot]), [["messages", 3], ["future", 0]]);
+  assert.equal(freeTokens(cats, 1_000_000), 900000);
+});
+
+test("segments: an unknown agent keeps its order with neutral slots", () => {
+  const cats = [cat("messages", 10), cat("future", 20)];
+  assert.deepEqual(segments("mystery" as any, cats).map((s) => [s.cat.id, s.slot]), [["messages", 0], ["future", 0]]);
+});
+
 test("partSegments", () => {
   const parts = [cat("tool_calls", 627), cat("tool_results", 16699), cat("attachments", 21356), cat("assistant", 3619),
     cat("user", 17), cat("redirected", 0), cat("unattributed", 165)];

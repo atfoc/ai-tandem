@@ -81,8 +81,9 @@ export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNa
 
 /** "model · effort" labels from the chat agent's catalog. Cursor puts the effort in the id
  *  ("gpt-5.4-mini-medium" = model gpt-5.4-mini, effort medium). Claude reports no effort for
- *  subagents; its full id is matched by alias ("claude-haiku-4-5-…" → Haiku 4.5). Unknown ids are
- *  shown as they are. */
+ *  subagents; its full id is matched by alias ("claude-haiku-4-5-…" → Haiku 4.5). Pi reports an
+ *  unqualified model ("deepseek-flash") against provider-qualified catalog ids
+ *  ("deepseek/deepseek-flash"), matched by suffix. Unknown ids are shown as they are. */
 export function subModelLabel(id: string | undefined, agent: AgentKind, cat?: Catalog): { model: string; effort?: string } | null {
   if (!id) return null;
   const models = cat?.models ?? [];
@@ -93,6 +94,9 @@ export function subModelLabel(id: string | undefined, agent: AgentKind, cat?: Ca
       const rest = id.startsWith(m.id + "-") ? id.slice(m.id.length + 1) : "";
       if (rest && m.efforts?.includes(rest)) return { model: m.label, effort: effortLabel(rest, m) };
     }
+  } else if (agent === "pi") {
+    const m = models.find((m) => m.id.endsWith("/" + id));
+    if (m) return { model: m.label };
   } else {
     const m = models.find((m) => id.includes("-" + m.id));
     if (m) return { model: m.label };

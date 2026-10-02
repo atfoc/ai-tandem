@@ -24,11 +24,19 @@ const callTimeout = 30 * time.Second
 const NoClientText = "The board isn't open: the AI Whiteboard window is closed. " +
 	"Board work needs the window open. Tell the user, and don't retry until they ask again."
 
+// RunResolver resolves a run-scoped MCP credential to the chat's board token.
+// ok=false means the credential is not a registered run token, so it is
+// treated as a board token.
+type RunResolver interface {
+	ResolveBoardToken(runToken string) (boardToken string, ok bool)
+}
+
 // Relay is the one path from an agent to the client, shared by MCP and commands.
 type Relay struct {
 	Bridge *editorbridge.Bridge
 	Chats  *chats.Manager
 	Boards *boards.Service
+	Runs   RunResolver // optional; nil means /mcp/{token} accepts board tokens only
 }
 
 func isTool(name string) bool {
@@ -116,6 +124,11 @@ func (r *Relay) ServeMCP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	token := req.PathValue("token")
+	if r.Runs != nil {
+		if boardToken, ok := r.Runs.ResolveBoardToken(token); ok {
+			token = boardToken
+		}
+	}
 	body, _ := io.ReadAll(req.Body)
 	var rq rpcReq
 	if err := json.Unmarshal(body, &rq); err != nil {

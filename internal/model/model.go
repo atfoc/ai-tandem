@@ -13,6 +13,7 @@ type AgentKind string
 const (
 	Claude AgentKind = "claude"
 	Cursor AgentKind = "cursor"
+	Pi     AgentKind = "pi"
 )
 
 // Ungrouped is the group id of the ungrouped area. It is a group of its own for defaults.
@@ -62,10 +63,38 @@ type Archive struct {
 }
 
 type State struct {
-	Version  int      `json:"version"`
-	Groups   []Group  `json:"groups"` // in the user's order; subgroups keep this order among their siblings
-	Defaults Defaults `json:"defaults"`
-	Cursor   *Catalog `json:"cursorCatalog,omitempty"` // last model list Cursor reported
+	Version  int                    `json:"version"`
+	Groups   []Group                `json:"groups"` // in the user's order; subgroups keep this order among their siblings
+	Defaults Defaults               `json:"defaults"`
+	Catalogs map[AgentKind]*Catalog `json:"catalogs,omitempty"` // last model list each agent reported (Cursor, pi)
+	// Cursor is the legacy Cursor catalog slot, kept for backward-compatible reads of older
+	// state.json files. It is never written after the generic Catalogs map exists.
+	Cursor *Catalog `json:"cursorCatalog,omitempty"`
+}
+
+// Catalog returns the last model list an agent reported, or nil when none is known. It is nil-receiver
+// safe. For Cursor it falls back to the legacy cursorCatalog field, which is still read but no
+// longer written.
+func (s *State) Catalog(a AgentKind) *Catalog {
+	if s == nil {
+		return nil
+	}
+	if c := s.Catalogs[a]; c != nil {
+		return c
+	}
+	if a == Cursor {
+		return s.Cursor
+	}
+	return nil
+}
+
+// SetCatalog stores c as the last model list an agent reported. It initializes and writes the generic
+// Catalogs map only; the legacy cursorCatalog field is left alone.
+func (s *State) SetCatalog(a AgentKind, c *Catalog) {
+	if s.Catalogs == nil {
+		s.Catalogs = map[AgentKind]*Catalog{}
+	}
+	s.Catalogs[a] = c
 }
 
 type ModelChoice struct {
@@ -92,22 +121,24 @@ type CatalogModel struct {
 	ID            string            `json:"id"` // "sonnet", or Cursor's base id "gpt-5.4-mini"
 	Label         string            `json:"label"`
 	Note          string            `json:"note,omitempty"`
-	Efforts       []string          `json:"efforts,omitempty"` // empty: no effort picker
+	Provider      string            `json:"provider,omitempty"` // pi only: the provider id pi reported; empty when unknown
+	Efforts       []string          `json:"efforts,omitempty"`  // empty: no effort picker
 	ContextWindow int               `json:"contextWindow,omitempty"`
 	DefaultEffort string            `json:"defaultEffort,omitempty"` // the effort value the model uses by default
 	EffortLabels  map[string]string `json:"effortLabels,omitempty"`  // effort value -> Cursor's display name, e.g. "xhigh" -> "Extra High"
 }
 
 type Usage struct {
-	CtxIn     int    `json:"ctxIn"`              // Claude: last model call's input + cache tokens; Cursor: the session store's used_tokens
-	CtxOut    int    `json:"ctxOut"`             // Claude only
-	CtxWindow int    `json:"ctxWindow"`          // Claude: from modelUsage; Cursor: the session store's max_tokens
+	CtxIn     int    `json:"ctxIn"`              // Claude: last model call's input + cache tokens; pi: last message's input tokens; Cursor: the session store's used_tokens
+	CtxOut    int    `json:"ctxOut"`             // Claude and pi: last model call's output tokens
+	CtxWindow int    `json:"ctxWindow"`          // Claude and pi: the model's context window; Cursor: the session store's max_tokens
 	CtxError  string `json:"ctxError,omitempty"` // Cursor only: why the context usage could not be read; cleared by the next good read
 	Turns     int    `json:"turns"`
 }
 
 // ContextSplit is what fills a chat's context window, by category, as the agent reports it:
-// Claude's get_context_usage, Cursor's session store. Claude's is kept in chat.json.
+// Claude's get_context_usage, Cursor's session store, pi's get_session_stats. It is the last
+// context split taken between turns; Claude's and live pi's are kept in chat.json.
 type ContextSplit struct {
 	AtMessage  int               `json:"atMessage"` // messages sent when it was taken
 	AtTurn     int               `json:"atTurn"`    // turns ended when it was taken (Usage.Turns)
@@ -168,7 +199,7 @@ type ChatMeta struct {
 	Cwd              string    `json:"cwd"`
 	Model            string    `json:"model"`
 	Effort           string    `json:"effort,omitempty"`
-	SessionID        string    `json:"sessionId,omitempty"` // Claude: chosen by us; Cursor: from session/new
+	SessionID        string    `json:"sessionId,omitempty"` // Claude and pi: chosen by the app; Cursor: from session/new
 	Locked           bool      `json:"locked"`              // first message sent: folder, model, effort fixed
 	Token            string    `json:"token,omitempty"`     // board chats: secret for /mcp and /agent URLs
 	Created          time.Time `json:"created"`
@@ -176,8 +207,8 @@ type ChatMeta struct {
 	InstructionsSent bool      `json:"instructionsSent,omitempty"` // Cursor board chats
 	Usage            Usage     `json:"usage"`
 	Draft            *Draft    `json:"draft,omitempty"` // the unsent message in the composer
-	// ContextSplit is Claude's last context split taken between turns; asked for again once
-	// messages or turns have moved past it.
+	// ContextSplit is the last context split taken between turns; Claude's and live pi's are kept
+	// in chat.json and asked for again once messages or turns have moved past it.
 	ContextSplit *ContextSplit `json:"contextSplit,omitempty"`
 	Archive
 }

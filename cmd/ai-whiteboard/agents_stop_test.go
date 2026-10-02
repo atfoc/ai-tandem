@@ -109,6 +109,106 @@ func TestStopEndsAgentProcesses(t *testing.T) {
 	}
 }
 
+// fakePi is a stand-in for `pi --mode rpc`: it answers the boot version probe, the one-shot
+// namer (-p) and the RPC handshake/prompt, and — only for a chat run (--session-dir) — starts a
+// long-lived child in its own process group, recording both pids. Stopping the server must reap
+// the group: the pi process and the child.
+const fakePi = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "9.9.9-fake"; exit 0; fi
+for a in "$@"; do
+  if [ "$a" = "-p" ]; then echo "Fake pi title"; exit 0; fi
+done
+case " $* " in
+  *" --session-dir "*)
+    sleep 300 &
+    echo "$$ $!" >> "$PI_FAKE_PIDS"
+    ;;
+esac
+while IFS= read -r line; do
+  type=$(printf '%s' "$line" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  case "$type" in
+    get_state) printf '{"type":"response","id":"%s","command":"get_state","success":true,"data":{"sessionId":"pi-fake","sessionFile":"/tmp/pi-fake.jsonl","model":{"provider":"test","id":"test-model","contextWindow":1000}}}\n' "$id" ;;
+    get_available_models) printf '{"type":"response","id":"%s","command":"get_available_models","success":true,"data":{"models":[{"id":"test-model","name":"Test Model","provider":"test","reasoning":false,"contextWindow":1000}]}}\n' "$id" ;;
+    *) printf '{"type":"response","id":"%s","command":"%s","success":true}\n' "$id" "$type" ;;
+  esac
+done
+`
+
+// Stopping the server ends a pi chat's process group too: the fake pi starts a child that stays
+// in the same group, and both must be gone after `stop`.
+func TestStopEndsPiProcesses(t *testing.T) {
+	in := newInstance(t)
+	fakes := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakes, "pi"), []byte(fakePi), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(fakes, "pi-pids")
+	t.Cleanup(func() { killOurs(t, fakes, readPids(pidFile)) })
+
+	serve := exec.Command(in.bin, append([]string{"serve", "-cwd", t.TempDir(),
+		"-pi", filepath.Join(fakes, "pi"),
+		"-cursor-cost", filepath.Join(fakes, "no-cursor-cost")}, in.flags()...)...)
+	serve.Env = append(os.Environ(), "PI_FAKE_PIDS="+pidFile)
+	serve.Stdout, serve.Stderr = os.Stderr, os.Stderr
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan struct{})
+	go func() { serve.Wait(); close(served) }()
+	for deadline := time.Now().Add(20 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the server did not answer within 20 s")
+		}
+	}
+
+	const client = "stop-pi-test"
+	activate(t, in.url, client)
+	var chat struct{ ID string }
+	postJSON(t, in.url+"api/chats", client, map[string]any{"agent": "pi", "group": "__ungrouped__"}, &chat)
+	postJSON(t, in.url+"api/chats/"+chat.ID+"/messages", client, map[string]any{"text": "hello"}, nil)
+
+	// The fake records its own pid and its child's when the chat run starts.
+	var pids []int
+	for deadline := time.Now().Add(15 * time.Second); len(pids) < 2; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("fake pi recorded pids %v, want the pi process and its child", pids)
+		}
+		pids = readPids(pidFile)
+	}
+	for _, pid := range pids {
+		if !pidAlive(pid) {
+			t.Fatalf("fake pi process %d is not running before the stop", pid)
+		}
+	}
+
+	in.run(t, "stop")
+	select {
+	case <-served:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the server process did not exit within 15 s of the stop")
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var left []int
+		for _, pid := range pids {
+			if pidAlive(pid) {
+				left = append(left, pid)
+			}
+		}
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after the server stopped, pi processes %v of %v are still running (ESRCH expected)", left, pids)
+		}
+	}
+}
+
+// pidAlive reports whether pid still exists (a zombie counts as alive: it is not ESRCH).
+func pidAlive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}
+
 // activate connects to the server's events as client and waits until it is the active client.
 // The connection stays open until the test ends.
 func activate(t *testing.T, base, client string) {

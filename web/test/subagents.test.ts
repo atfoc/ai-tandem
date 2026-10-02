@@ -125,6 +125,22 @@ test("subModelLabel", () => {
   assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", "claude", claude), { model: "Haiku 4.5" });
   assert.deepEqual(subModelLabel("opus", "claude", claude), { model: "Opus 5.5" });
   assert.equal(subModelLabel(undefined, "claude", claude), null);
+  const pi: Catalog = {
+    models: [
+      { id: "deepseek/deepseek-flash", label: "DeepSeek Flash" },
+      { id: "anthropic/claude-sonnet", label: "Claude Sonnet" },
+    ],
+    default: { model: "deepseek/deepseek-flash" } as any,
+  };
+  // exact provider-qualified id
+  assert.deepEqual(subModelLabel("deepseek/deepseek-flash", "pi", pi), { model: "DeepSeek Flash" });
+  // unqualified id against the provider-qualified catalog id
+  assert.deepEqual(subModelLabel("deepseek-flash", "pi", pi), { model: "DeepSeek Flash" });
+  assert.deepEqual(subModelLabel("claude-sonnet", "pi", pi), { model: "Claude Sonnet" });
+  // no suffix match: the raw id
+  assert.deepEqual(subModelLabel("deepseek", "pi", pi), { model: "deepseek" });
+  assert.deepEqual(subModelLabel("openrouter/x/flash", "pi", pi), { model: "openrouter/x/flash" });
+  assert.equal(subModelLabel(undefined, "pi", pi), null);
 });
 
 test("subToolCount: max of toolUses and the thread's tools", () => {

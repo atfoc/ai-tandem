@@ -18,6 +18,12 @@
 // ~/.cursor) in a temp folder, removed at the end, so the deny rules the server adds for the data
 // folder never reach the user's config.
 //
+// pi chats are created from the same "New chat" menu ("Pi chat") and use the same composer, so
+// they would follow the Claude/Cursor steps below; no pi step is wired into this paid run yet.
+// The adapter's own cheap, gated real-pi checks run separately:
+//   AIWB_PI_E2E=1 go test -count=1 -run TestE2E ./internal/pi/
+// This full Playwright run stays manual.
+//
 // Step 15 (Reveal in Finder) is checked by hand, not here. Exit code 0 only when every step passed.
 
 import { chromium } from "playwright";
@@ -269,11 +275,11 @@ async function newChatVia(page, opener, agentLabel) {
 
 async function pickModel(page, label) {
   await page.locator('.composer button.tchip[title^="Model"]').click();
-  await page.locator(".menu .menu-item.pick", { hasText: label }).click();
+  await page.locator(".menu .menu-item.pick .menu-label", { hasText: label }).click();
 }
 async function pickEffort(page, label) {
   await page.locator('.composer button.tchip[title^="Effort"]').click();
-  await page.locator(".menu .menu-item.pick", { hasText: new RegExp(`^${label}`) }).click();
+  await page.locator(".menu .menu-item.pick .menu-label", { hasText: new RegExp(`^${label}`) }).click();
 }
 async function pickFolder(page, chatId, folder) {
   await page.locator('.composer button.tchip[title^="Working directory"], .composer button.tchip[title^="Folder not found"]').click();

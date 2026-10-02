@@ -312,6 +312,7 @@ type env struct {
 	bds    *boards.Service
 	claude *fakeSpawner
 	cursor *fakeSpawner
+	pi     *fakeSpawner
 	namer  *fakeNamer
 	m      *Manager
 	cwd    string       // DefaultCwd
@@ -366,13 +367,21 @@ func (e *env) boot() {
 	if err := e.bds.Load(); err != nil {
 		e.t.Fatal(err)
 	}
-	e.claude, e.cursor, e.namer = &fakeSpawner{live: true}, &fakeSpawner{}, &fakeNamer{}
+	e.claude, e.cursor, e.pi, e.namer = &fakeSpawner{live: true}, &fakeSpawner{}, &fakeSpawner{live: true}, &fakeNamer{}
 	e.m = New(Deps{
-		Store:      st,
-		Bridge:     e.br,
-		Boards:     e.bds,
-		Spawners:   map[model.AgentKind]agent.Spawner{model.Claude: e.claude, model.Cursor: e.cursor},
-		Namer:      e.namer,
+		Store:  st,
+		Bridge: e.br,
+		Boards: e.bds,
+		Spawners: map[model.AgentKind]agent.Spawner{
+			model.Claude: e.claude,
+			model.Cursor: e.cursor,
+			model.Pi:     e.pi,
+		},
+		Namers: map[model.AgentKind]Namer{
+			model.Claude: e.namer,
+			model.Cursor: e.namer,
+			model.Pi:     e.namer,
+		},
 		DefaultCwd: e.cwd,
 		BaseURL:    "http://127.0.0.1:4747",
 	})
@@ -523,6 +532,110 @@ func TestCreateAppliesGroupDefaults(t *testing.T) {
 	if _, err := e.m.Create(model.Claude, "", "b_nope"); !errors.Is(err, boards.ErrNotFound) {
 		t.Fatalf("Create on unknown board: %v", err)
 	}
+}
+
+func TestCreatePiAssignsSessionIDAndResolvesCatalog(t *testing.T) {
+	e := newEnv(t)
+	piCat := &model.Catalog{
+		Models: []model.CatalogModel{
+			{ID: "deepseek-flash", Label: "DeepSeek Flash"},
+			{ID: "glm-5.2", Label: "GLM 5.2", Efforts: []string{"low", "high"}},
+		},
+		Default: model.ModelChoice{Model: "glm-5.2", Effort: "high"},
+	}
+	if err := e.st.Update(func(s *model.State) error { s.SetCatalog(model.Pi, piCat); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	v := e.create(model.Pi, gOne, "")
+	m := e.meta(v.ID)
+	if m.Agent != model.Pi || m.SessionID == "" {
+		t.Fatalf("pi chat.json %+v, want the app-assigned session id", m)
+	}
+	if v.Model != "glm-5.2" || v.Effort != "high" {
+		t.Fatalf("pi defaults %+v, want the stored Pi catalog's default", v)
+	}
+	if e.pi.count() != 0 {
+		t.Fatal("Create spawned a pi agent")
+	}
+}
+
+func TestCreateRejectsUnknownAgent(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.m.Create(model.AgentKind("future"), gOne, ""); err == nil || !strings.Contains(err.Error(), "unknown agent") {
+		t.Fatalf("Create with an unknown kind: %v, want an unknown agent error", err)
+	}
+}
+
+func TestPiResumeKeepsAssignedSessionID(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Pi, gOne, "")
+	sid := e.meta(v.ID).SessionID
+	e.send(v.ID, "one", "")
+	a := e.pi.last(t)
+	if a.opts.SessionID != sid || a.opts.Resume {
+		t.Fatalf("first pi spawn %+v, want the app-assigned session id and no resume", a.opts)
+	}
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	a.exit(t)
+	e.send(v.ID, "two", "")
+	if e.pi.count() != 2 {
+		t.Fatalf("%d spawns", e.pi.count())
+	}
+	if o := e.pi.last(t).opts; !o.Resume || o.SessionID != sid {
+		t.Fatalf("pi resume options %+v, want SessionID %q and Resume", o, sid)
+	}
+}
+
+func TestCatalogLegacyCursorField(t *testing.T) {
+	e := newEnv(t) // newEnv stores cursorCatalog in the legacy cursorCatalog field only
+	if got := e.m.catalog(model.Cursor); got == nil || got.Default != cursorCatalog.Default || len(got.Models) != len(cursorCatalog.Models) {
+		t.Fatalf("legacy cursor catalog not returned: %+v", got)
+	}
+	if got := e.m.catalog(model.Pi); got != nil {
+		t.Fatalf("pi catalog before it is stored: %+v", got)
+	}
+	// A generic stored catalog wins over the legacy field.
+	stored := &model.Catalog{Models: []model.CatalogModel{{ID: "new-cursor"}}, Default: model.ModelChoice{Model: "new-cursor"}}
+	if err := e.st.Update(func(s *model.State) error { s.SetCatalog(model.Cursor, stored); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.m.catalog(model.Cursor); got == nil || got.Default.Model != "new-cursor" {
+		t.Fatalf("stored cursor catalog not returned: %+v", got)
+	}
+}
+
+func TestPiCatalogEventPersistsAndBroadcasts(t *testing.T) {
+	e := newEnv(t)
+	evs := listen(t, e.br)
+	v := e.create(model.Pi, gOne, "")
+	e.send(v.ID, "hello", "")
+	a := e.pi.last(t)
+	cat := model.Catalog{
+		Models:  []model.CatalogModel{{ID: "deepseek-flash", Label: "DeepSeek Flash", Provider: "deepseek"}},
+		Default: model.ModelChoice{Model: "deepseek-flash"},
+	}
+	a.emit(t, agent.Event{Kind: agent.EvCatalog, Catalog: &cat})
+
+	ev := evs.wait(t, func(ev map[string]any) bool { return ev["type"] == "catalog" && ev["agent"] == "pi" })
+	raw, _ := json.Marshal(ev["catalog"])
+	if !strings.Contains(string(raw), `"provider":"deepseek"`) {
+		t.Errorf("broadcast catalog lacks the provider: %s", raw)
+	}
+	var got model.Catalog
+	if err := json.Unmarshal(raw, &got); err != nil || got.Default.Model != "deepseek-flash" || len(got.Models) != 1 || got.Models[0].Provider != "deepseek" {
+		t.Fatalf("catalog event %s (%v)", raw, err)
+	}
+	e.st.Read(func(s *model.State) {
+		if c := s.Catalog(model.Pi); c == nil || c.Default.Model != "deepseek-flash" || len(c.Models) != 1 || c.Models[0].Provider != "deepseek" {
+			t.Fatalf("pi catalog not persisted with its provider under Pi: %+v", c)
+		}
+		if _, ok := s.Catalogs[model.Cursor]; ok {
+			t.Fatalf("the pi catalog event wrote the Cursor slot: %+v", s.Catalogs)
+		}
+		if s.Cursor == nil || s.Cursor.Default != cursorCatalog.Default {
+			t.Fatalf("legacy cursor catalog changed: %+v", s.Cursor)
+		}
+	})
 }
 
 func TestOpenNeverSpawnsAndShowsMissingFolder(t *testing.T) {
@@ -764,6 +877,44 @@ func TestSendBlocks(t *testing.T) {
 	}
 	if m := e.meta(ub.ID); m.Name != "Named title" || m.UserNamed {
 		t.Fatalf("auto name %+v", m)
+	}
+}
+
+func TestSendPiBoardChat(t *testing.T) {
+	e := newEnv(t)
+	bd, err := e.bds.Create("board", gOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := "<ui-context>\nboard: b\n</ui-context>"
+	c := e.create(model.Pi, "", bd.ID)
+	e.send(c.ID, "draw", ctx)
+	a := e.pi.last(t)
+	if got := texts(a.sent()[0]); !reflect.DeepEqual(got, []string{ctx, "draw"}) {
+		t.Fatalf("pi board chat sent %q, want only the context and the text", got)
+	}
+	if e.meta(c.ID).InstructionsSent {
+		t.Fatal("pi got Cursor's instructions")
+	}
+	// The fallback <ui-context> still names the board when the page sends none.
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	e.send(c.ID, "move it", "")
+	want := prompts.BoardContext("board", bd.ID)
+	if got := texts(a.sent()[1]); !reflect.DeepEqual(got, []string{want, "move it"}) {
+		t.Fatalf("pi board chat without a page context sent %q", got)
+	}
+}
+
+func TestNoNamerEntryMeansNoName(t *testing.T) {
+	e := newEnv(t)
+	e.m.Namers = map[model.AgentKind]Namer{model.Claude: e.namer}
+	v := e.create(model.Pi, gOne, "")
+	e.send(v.ID, "hello", "")
+	if calls := e.namer.callList(); len(calls) != 0 {
+		t.Fatalf("pi chat was named without a namer entry: %q", calls)
+	}
+	if name := e.meta(v.ID).Name; name != "" {
+		t.Fatalf("pi chat got name %q", name)
 	}
 }
 

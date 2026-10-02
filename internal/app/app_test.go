@@ -607,12 +607,38 @@ func TestSnapshotCatalogs(t *testing.T) {
 	if snap.Catalogs[model.Claude] == nil || snap.Catalogs[model.Claude].Default.Model != "sonnet" {
 		t.Error("Claude catalog missing")
 	}
+	if snap.Catalogs[model.Claude] != nil && snap.Catalogs[model.Claude].Models[0].Provider != "" {
+		t.Error("Claude catalog gained a provider")
+	}
 	if snap.Catalogs[model.Cursor] != nil {
 		t.Error("Cursor catalog before it is known")
 	}
+	if c, ok := snap.Catalogs[model.Pi]; !ok || c != nil {
+		t.Errorf("pi catalog before it is known: value %v, present %v", c, ok)
+	}
 	cat := &model.Catalog{Models: []model.CatalogModel{{ID: "composer-2"}}, Default: model.ModelChoice{Model: "composer-2"}}
 	e.must(e.st.Update(func(s *model.State) error { s.Cursor = cat; return nil }))
-	if c := e.a.Snapshot().Catalogs[model.Cursor]; c == nil || c.Default.Model != "composer-2" {
+	if c := e.a.Snapshot().Catalogs[model.Cursor]; c == nil || c.Default.Model != "composer-2" || c.Models[0].Provider != "" {
 		t.Error("stored Cursor catalog not reported")
 	}
+	piCat := &model.Catalog{
+		Models:  []model.CatalogModel{{ID: "deepseek-flash", Label: "DeepSeek Flash", Provider: "deepseek"}},
+		Default: model.ModelChoice{Model: "deepseek-flash"},
+	}
+	e.must(e.st.Update(func(s *model.State) error { s.SetCatalog(model.Pi, piCat); return nil }))
+	if c := e.a.Snapshot().Catalogs[model.Pi]; c == nil || c.Default.Model != "deepseek-flash" || c.Models[0].Provider != "deepseek" {
+		t.Error("stored pi catalog not reported with its provider")
+	}
+
+	// Reading the catalog through the snapshot twice must not change what is stored.
+	first := e.a.Snapshot().Catalogs[model.Pi]
+	second := e.a.Snapshot().Catalogs[model.Pi]
+	if first == nil || second == nil || first.Models[0].Provider != "deepseek" || second.Models[0].Provider != "deepseek" {
+		t.Fatalf("snapshot reads lost the provider: first %+v, second %+v", first, second)
+	}
+	e.st.Read(func(s *model.State) {
+		if c := s.Catalog(model.Pi); c == nil || len(c.Models) != 1 || c.Models[0].Provider != "deepseek" {
+			t.Errorf("stored pi catalog changed after two snapshot reads: %+v", c)
+		}
+	})
 }

@@ -92,7 +92,7 @@ const Block = React.memo(function Block({ text, user }: { text: string; user: bo
 function Chip({ tag, after }: { tag: string; after?: React.ReactNode }) {
   const { board, agent } = useContext(Where);
   const r = parseRef(tag);
-  const chip = <RefChip tag={tag} onClick={board && r ? () => showRef(board, r, agent ?? "claude") : undefined} />;
+  const chip = <RefChip tag={tag} onClick={board && r ? () => showRef(board, r, agent ?? "unknown") : undefined} />;
   return after ? <span className="nowrap">{chip}{after}</span> : chip;
 }
 

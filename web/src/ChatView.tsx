@@ -10,7 +10,7 @@ import { isSubagentTool } from "./logic/subagents.ts";
 import { Markdown } from "./Markdown.tsx";
 import { SubagentRow } from "./Subagents.tsx";
 import { SentQuotes } from "./Quotes.tsx";
-import { AgentGlyph, BoardIcon, Pencil, agentName } from "./icons.tsx";
+import { AgentGlyph, BoardIcon, Pencil, agentClass, agentName } from "./icons.tsx";
 import type { ChatView, Item, Subagent } from "./types.ts";
 
 const EMPTY: Item[] = [];
@@ -46,7 +46,7 @@ export function ChatHeader({ chatId }: { chatId: string }) {
   if (!c) return null;
   return (
     <div className="chat-head">
-      <span className={`crow-glyph agent-${c.agent}`}><AgentGlyph agent={c.agent} size={14} /></span>
+      <span className={`crow-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={14} /></span>
       <div className="chat-head-main">
         {editing ? <NameInput chat={c} onDone={() => setEditing(false)} /> : (
           <button className="chat-head-name" onClick={() => !c.archived && setEditing(true)} title={c.archived ? undefined : "Rename"}>
@@ -118,7 +118,7 @@ function EmptyThread({ c }: { c: ChatView }) {
     : ["What is this project?", "What changed in the last few commits?"];
   return (
     <div className="empty-thread">
-      <div className={`big-glyph agent-${c.agent}`}><AgentGlyph agent={c.agent} size={28} /></div>
+      <div className={`big-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={28} /></div>
       <div className="empty-title">{agentName(c.agent)}</div>
       {c.board
         ? <p>Ask about or change <b>{board?.name ?? "this board"}</b>. Type <kbd>@</kbd> to point at other boards.</p>

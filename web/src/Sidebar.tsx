@@ -12,7 +12,7 @@ import { Menu, confirm, reportError } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
 import { statusText } from "./logic/labels.ts";
 import { hasDraft } from "./logic/drafts.ts";
-import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, SunIcon, SystemIcon } from "./icons.tsx";
+import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, SunIcon, SystemIcon, agentClass, agentName } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
 import { inDesktopApp, openServerLog, restartServer } from "./version.ts";
 import { THEME_PREFS, type ThemePref } from "./logic/theme.ts";
@@ -293,7 +293,7 @@ export function AgentItems({ onPick, suffix = " chat" }: { onPick: (a: AgentKind
     <>
       {AGENT_ORDER.map((a) => (
         <button key={a} className="menu-item agent" onClick={() => onPick(a)}>
-          <AgentGlyph agent={a} size={13} /> {a === "cursor" ? "Cursor" : "Claude Code"}{suffix}
+          <AgentGlyph agent={a} size={13} /> {agentName(a)}{suffix}
         </button>
       ))}
     </>
@@ -482,7 +482,7 @@ function BoardNode({ b, editing, setEditing }: Edit & { b: Board }) {
         title={[...groupPath(groups, b.group), b.name].join(" / ")}
         onClick={() => openBoard(b.id)} onDoubleClick={() => { if (!b.archived) setEditing(key); }}>
         <button className={`side-caret ${open ? "open" : ""} ${chats.length ? "" : "none"}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}><Chevron /></button>
-        <span className="side-board-icon">{working ? <span className={`agent-${working}`}><AgentGlyph agent={working} size={12} /></span> : <BoardIcon />}</span>
+        <span className="side-board-icon">{working ? <span className={`agent-${agentClass(working)}`}><AgentGlyph agent={working} size={12} /></span> : <BoardIcon />}</span>
         {editing === key
           ? <InlineName value={b.name} onDone={(v) => void rename(v)} />
           : <span className="side-name">{b.name}</span>}
@@ -529,7 +529,7 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
     <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived ? "archived" : ""} st-${c.status}`}
       {...(nested || c.archived || editing === key ? {} : drag(key))}
       onClick={() => openChat(c)} onDoubleClick={() => { if (!c.archived) setEditing(key); }} title={`${title} — ${sub}`}>
-      <span className={`side-glyph agent-${c.agent}`}>
+      <span className={`side-glyph agent-${agentClass(c.agent)}`}>
         <AgentGlyph agent={c.agent} size={11} />
         <span className={`crow-dot st-${c.status}`} />
       </span>

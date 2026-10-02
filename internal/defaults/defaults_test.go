@@ -58,6 +58,9 @@ func TestResolveNothingRecorded(t *testing.T) {
 	check(t, "claude", cwd, mc, ds.fallback, model.ModelChoice{Model: "sonnet", Effort: "high"})
 	cwd, mc = Resolve(d, "g1", model.Cursor, ds.fallback, cursorCat())
 	check(t, "cursor", cwd, mc, ds.fallback, model.ModelChoice{Model: "auto"})
+	pi := &model.Catalog{Models: []model.CatalogModel{{ID: "deepseek-flash", Label: "DeepSeek Flash"}}, Default: model.ModelChoice{Model: "deepseek-flash"}}
+	cwd, mc = Resolve(d, "g1", model.Pi, ds.fallback, pi)
+	check(t, "pi", cwd, mc, ds.fallback, model.ModelChoice{Model: "deepseek-flash"})
 }
 
 func TestRecordChangeThenResolve(t *testing.T) {
@@ -166,7 +169,7 @@ func TestModelNotInCatalogAndEffortCleared(t *testing.T) {
 }
 
 func TestAgentOrder(t *testing.T) {
-	want := []model.AgentKind{model.Claude, model.Cursor}
+	want := []model.AgentKind{model.Claude, model.Cursor, model.Pi}
 	if !reflect.DeepEqual(AgentOrder, want) {
 		t.Fatalf("AgentOrder = %v, want %v", AgentOrder, want)
 	}
@@ -175,6 +178,11 @@ func TestAgentOrder(t *testing.T) {
 	RecordChange(&d, "g1", model.Cursor, "", model.ModelChoice{Model: "gpt-5.4-mini"})
 	if !reflect.DeepEqual(AgentOrder, want) {
 		t.Fatalf("AgentOrder after using Cursor = %v, want %v", AgentOrder, want)
+	}
+	// Nor does pi.
+	RecordChange(&d, "g1", model.Pi, "", model.ModelChoice{Model: "deepseek-flash"})
+	if !reflect.DeepEqual(AgentOrder, want) {
+		t.Fatalf("AgentOrder after using pi = %v, want %v", AgentOrder, want)
 	}
 }
 

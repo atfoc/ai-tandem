@@ -8,7 +8,7 @@ import (
 )
 
 func TestNoPlaceholdersLeft(t *testing.T) {
-	for name, s := range map[string]string{"Claude": Claude(), "CursorInstructions": CursorInstructions()} {
+	for name, s := range map[string]string{"Claude": Claude(), "Pi": Pi(), "CursorInstructions": CursorInstructions()} {
 		if strings.Contains(s, "{{") {
 			t.Errorf("%s contains an unfilled placeholder", name)
 		}
@@ -46,6 +46,29 @@ func TestCursorInstructions(t *testing.T) {
 		line := "- " + tool.Name + " — " + tool.Summary + " — " + tool.Description
 		if !strings.Contains(s, line) {
 			t.Errorf("lacks the line for tool %s", tool.Name)
+		}
+	}
+}
+
+func TestPi(t *testing.T) {
+	s := Pi()
+	if !strings.Contains(s, "with the `board` MCP tools") {
+		t.Error("Pi() lacks the MCP access phrase")
+	}
+	if strings.Contains(s, "native") {
+		t.Error("Pi() still describes native board tools")
+	}
+	if strings.Contains(s, "curl") {
+		t.Error("Pi() mentions curl")
+	}
+	for _, tool := range boardtools.Tools {
+		name := "mcp__board__" + tool.Name
+		if !strings.Contains(s, name) {
+			t.Errorf("lacks tool %s", name)
+		}
+		line := "- " + name + " — " + tool.Summary + " — " + tool.Description
+		if !strings.Contains(s, line) {
+			t.Errorf("lacks the line for tool %s", name)
 		}
 	}
 }
