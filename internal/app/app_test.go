@@ -75,7 +75,7 @@ func newEnv(t *testing.T) *env {
 	sp := &fakeSpawner{agents: map[string]*fakeAgent{}}
 	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds,
 		Spawners:   map[model.AgentKind]agent.Spawner{model.Claude: sp, model.Cursor: sp},
-		DefaultCwd: t.TempDir(), BaseURL: "http://127.0.0.1:1"})
+		DefaultCwd: t.TempDir()})
 	a := &App{St: st, Boards: bds, Chats: cm, Bridge: br, DataDir: root}
 	return &env{t: t, st: st, sp: sp, a: a}
 }

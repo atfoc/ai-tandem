@@ -174,29 +174,7 @@ type e2eBoardCall struct {
 	chat, board, tool, args string
 }
 
-// e2eRecordingResolver records every MCP credential the relay resolved (the
-// run token for app chats) and delegates to the real bridge.
-type e2eRecordingResolver struct {
-	inner boardapi.RunResolver
-
-	mu     sync.Mutex
-	tokens []string
-}
-
-func (r *e2eRecordingResolver) ResolveBoardToken(token string) (string, bool) {
-	r.mu.Lock()
-	r.tokens = append(r.tokens, token)
-	r.mu.Unlock()
-	return r.inner.ResolveBoardToken(token)
-}
-
-func (r *e2eRecordingResolver) recorded() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.tokens...)
-}
-
-// e2eRecordingRegistry captures the run token the Spawner mints and delegates
+// e2eRecordingRegistry captures the run handle the Spawner mints and delegates
 // to the real bridge.
 type e2eRecordingRegistry struct {
 	agent.BridgeRegistry
@@ -205,8 +183,8 @@ type e2eRecordingRegistry struct {
 	runToken string
 }
 
-func (r *e2eRecordingRegistry) RegisterRun(chatID, boardToken string, h agent.RunHandler) (string, string, error) {
-	socket, token, err := r.BridgeRegistry.RegisterRun(chatID, boardToken, h)
+func (r *e2eRecordingRegistry) RegisterRun(chatID string, h agent.RunHandler) (string, string, error) {
+	socket, token, err := r.BridgeRegistry.RegisterRun(chatID, h)
 	if err == nil {
 		r.mu.Lock()
 		r.runToken = token
@@ -223,18 +201,17 @@ func (r *e2eRecordingRegistry) token() string {
 
 // e2eBoardEnv is a real board API environment for the model e2e: the store ›
 // editor bridge › boards › chats stack, an httptest server serving the real
-// Relay.ServeMCP and the editor SSE endpoint, a fake browser client answering
-// board RPCs with a recognizable text, and a real pibridge.Bridge that owns
-// the run-token registry the relay resolves through.
+// Relay.ServeFixedMCP and the editor SSE endpoint, and a fake browser client
+// answering board RPCs with a recognizable text. pi carries the chat's board
+// token in the Authorization header of the fixed /mcp endpoint.
 type e2eBoardEnv struct {
 	editor *editorbridge.Bridge
 	reg    *e2eRecordingRegistry
-	runs   *e2eRecordingResolver
 	srv    *httptest.Server
 
 	board model.Board
 	chat  string
-	token string // the chat's board token (never used on the MCP wire)
+	token string // the chat's board token: the MCP credential in the header
 
 	mu      sync.Mutex
 	reply   string
@@ -254,8 +231,7 @@ func newE2EBoardEnv(t *testing.T) *e2eBoardEnv {
 	if err := bds.Load(); err != nil {
 		t.Fatal(err)
 	}
-	m := chats.New(chats.Deps{Store: st, Bridge: editor, Boards: bds, DefaultCwd: t.TempDir(),
-		BaseURL: "http://127.0.0.1:4747"})
+	m := chats.New(chats.Deps{Store: st, Bridge: editor, Boards: bds, DefaultCwd: t.TempDir()})
 	if err := m.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -279,17 +255,15 @@ func newE2EBoardEnv(t *testing.T) *e2eBoardEnv {
 	t.Cleanup(pb.Close)
 
 	relay := &boardapi.Relay{Bridge: editor, Chats: m, Boards: bds}
-	runs := &e2eRecordingResolver{inner: pb}
-	relay.Runs = runs
 	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp/{token}", relay.ServeMCP)
+	mux.HandleFunc("POST /mcp", relay.ServeFixedMCP)
 	mux.HandleFunc("GET /api/events", editor.ServeSSE)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	e := &e2eBoardEnv{
 		editor: editor, reg: &e2eRecordingRegistry{BridgeRegistry: pb},
-		runs: runs, srv: srv, board: bd, chat: v.ID, token: metas[0].Token,
+		srv: srv, board: bd, chat: v.ID, token: metas[0].Token,
 		errText: map[string]string{},
 	}
 	e.startBrowser(t)
@@ -379,11 +353,11 @@ func (e *e2eBoardEnv) recorded() []e2eBoardCall {
 	return append([]e2eBoardCall(nil), e.calls...)
 }
 
-// boardAccess is what the app passes to Spawn: the board endpoint URL carrying
-// the board token, exactly like the Claude path (the spawner replaces the path
-// credential with the run token).
+// boardAccess is what the app passes to Spawn: the fixed endpoint URL and the
+// chat's durable board token, exactly like the Claude path. pi puts the token in
+// the Authorization header of AIWB_MCP_CONFIG; it is never a URL segment.
 func (e *e2eBoardEnv) boardAccess() *agent.BoardAccess {
-	return &agent.BoardAccess{MCPURL: e.srv.URL + "/mcp/" + e.token, Token: e.token}
+	return &agent.BoardAccess{MCPURL: e.srv.URL + "/mcp", Token: e.token}
 }
 
 // newSpawner builds the app Spawner over a freshly materialized extension tree
@@ -400,11 +374,11 @@ func (e *e2eBoardEnv) newSpawner(t *testing.T, extra map[string]mcpServerConfig)
 }
 
 // TestE2EBoardTool runs the whole board path with a real model: real pi loads
-// the board tools over MCP, its tools/call reaches HTTP /mcp/<runToken>, the
-// real relay resolves the run token to the chat's board token and dispatches to
-// the fake browser client, and the board's text is returned as the pi tool
-// result. A second turn pins error propagation: a board error comes back as a
-// failed pi tool result carrying the board's text (A5).
+// the board tools over MCP, its tools/call reaches the fixed HTTP /mcp with the
+// chat's board token in the Authorization header, the relay dispatches to the
+// fake browser client, and the board's text is returned as the pi tool result. A
+// second turn pins error propagation: a board error comes back as a failed pi
+// tool result carrying the board's text (A5).
 func TestE2EBoardTool(t *testing.T) {
 	e2eAgentDir(t)
 	env := newE2EBoardEnv(t)
@@ -461,22 +435,13 @@ func TestE2EBoardTool(t *testing.T) {
 		}
 	}
 
-	// The app relay received the call through the run-scoped credential, never
-	// the chat's board token (A5/R3).
+	// The app relay attributed the call to the chat through the board-token
+	// header; the run handle is only the non-secret bridge identifier (D15).
 	wantRun := env.reg.token()
 	if wantRun == "" || wantRun == env.token {
-		t.Fatalf("bridge run token %q (board token %q), want a fresh run token", wantRun, env.token)
+		t.Fatalf("bridge run handle %q (board token %q), want a fresh non-secret handle", wantRun, env.token)
 	}
-	resolved := env.runs.recorded()
-	if len(resolved) == 0 {
-		t.Fatal("the relay never resolved an MCP credential")
-	}
-	for _, token := range resolved {
-		if token != wantRun {
-			t.Fatalf("relay resolved credential %q, want the run token %q", token, wantRun)
-		}
-	}
-	t.Logf("board tool calls: %+v; run token %s; result %q; text %q", calls, wantRun, result.String(), text.String())
+	t.Logf("board tool calls: %+v; run handle %s; result %q; text %q", calls, wantRun, result.String(), text.String())
 
 	// Error propagation: the board's error text must arrive as a failed pi tool
 	// result, not as a successful payload.
@@ -655,7 +620,7 @@ func TestE2ESubagent(t *testing.T) {
 
 	// Scenario 3: a board chat's subagent inherits the board MCP tools (A10):
 	// the child calls the board tool and its call reaches the fake browser
-	// client through the parent's run-scoped MCP URL.
+	// client through the parent's board MCP config.
 	env := newE2EBoardEnv(t)
 	env.setReply("E2E-BOARD-SUB-TEXT-13")
 	s3 := env.newSpawner(t, nil)

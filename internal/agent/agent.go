@@ -1,4 +1,4 @@
-// Package agent defines what the chat manager needs from an agent CLI adapter (Claude, Cursor).
+// Package agent defines what the chat manager needs from an agent CLI adapter (Claude, Cursor, pi).
 package agent
 
 import (
@@ -23,9 +23,8 @@ type SpawnOptions struct {
 }
 
 type BoardAccess struct {
-	MCPURL     string // Claude: http://127.0.0.1:<port>/mcp/<token>
-	CommandURL string // Cursor: http://127.0.0.1:<port>/agent/<token>
-	Token      string
+	MCPURL string // the fixed board MCP endpoint, http://localhost:6006/mcp (Claude, Cursor and pi)
+	Token  string // the chat's durable board token; the MCP credential, never a URL segment
 }
 
 type Spawner interface {

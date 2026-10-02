@@ -178,6 +178,9 @@ export const lastChat = {
 
 export const isBusy = (s: Status | undefined) => s === "thinking" || s === "writing" || s === "tool" || s === "approval";
 
+/** Curl-era Cursor board chats: disabled in the UI, still listed (not archived). */
+export const isLegacy = (c?: { instructionsSent?: boolean } | null) => !!c?.instructionsSent;
+
 /** The chat's name, or its first message until it is named. */
 export function chatTitle(c: ChatView, items?: Item[]): string {
   if (c.name) return c.name;

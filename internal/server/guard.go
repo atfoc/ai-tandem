@@ -17,8 +17,10 @@ const ClientHeader = "X-AIWB-Client"
 //     X-AIWB-Client equal to the active client's id (409 {"error":"not_active"} otherwise).
 //     A custom header also forces a CORS preflight, which the server never answers.
 //
-// /mcp and /agent are guarded by their token instead. /api/client/* and /api/rpc-reply check the
-// client themselves (see clientOf), since the id may be in the body.
+// The MCP listener on 6006 (POST /mcp) gets the same guard for its Host check only: its requests
+// are outside /api, so the active-client rule does not apply, and the caller is identified by the
+// board token in the Authorization header. /api/client/* and /api/rpc-reply check the client
+// themselves (see clientOf), since the id may be in the body.
 func guard(b *editorbridge.Bridge, port int, next http.Handler) http.Handler {
 	p := strconv.Itoa(port)
 	allowed := map[string]bool{"127.0.0.1:" + p: true, "localhost:" + p: true}

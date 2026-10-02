@@ -18,11 +18,15 @@ import (
 
 const (
 	boardToken = "0123456789abcdef0123456789abcdef"
-	otherToken = "fedcba9876543210fedcba9876543210"
 )
 
-func boardCmd(token string) string {
-	return "curl -s --data-binary @- http://127.0.0.1:4321/agent/" + token + "/apply <<'JSON'\n{\"create\":[{\"type\":\"rectangle\"}]}\nJSON"
+// mcpRawInput is the rawInput of a real Cursor board MCP tool call. Captured from a live
+// board round-trip on 2026-10-02 with cursor-agent 2026.10.01-e373342: the first session/update
+// is a tool_call titled "MCP: tool", kind "other", status pending and rawInput {}; a following
+// tool_call_update adds the title "<server>: <tool>" and the rawInput below. This differs from
+// the earlier bundle inference (which expected the provider/tool in the first tool_call).
+func mcpRawInput(server, tool string, args map[string]any) map[string]any {
+	return map[string]any{"providerIdentifier": server, "toolName": tool, "args": args}
 }
 
 func step(kind string, v any) fakeStep {
@@ -524,31 +528,77 @@ func TestTextItemsBetweenToolCalls(t *testing.T) {
 	}
 }
 
-func TestBoardCommandToolCall(t *testing.T) {
+func TestBoardMCPToolCall(t *testing.T) {
+	mcpCall := func(id string) map[string]any {
+		return map[string]any{"sessionUpdate": "tool_call", "toolCallId": id, "title": "MCP: tool", "kind": "other", "status": "pending", "rawInput": map[string]any{}}
+	}
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
-		step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "b1", "title": "`" + boardCmd(boardToken) + "`", "kind": "execute", "status": "pending", "rawInput": map[string]any{"command": boardCmd(boardToken)}}),
-		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "b1", "status": "completed", "rawOutput": map[string]any{"exitCode": 0, "stdout": `{"ok":true,"created":["r1"]}`, "stderr": ""}}),
-		step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "b2", "title": "x", "kind": "execute", "status": "pending", "rawInput": map[string]any{"command": boardCmd(otherToken)}}),
+		step("update", mcpCall("b1")),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "b1", "title": "board: read_board",
+			"rawInput": mcpRawInput("board", "read_board", map[string]any{"board": "b1"})}),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "b1", "status": "completed", "rawOutput": map[string]any{"success": true}}),
+		step("update", mcpCall("b2")),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "b2", "title": "board: apply",
+			"rawInput": mcpRawInput("board", "apply", map[string]any{"board": "b1", "create": []any{map[string]any{"type": "rectangle"}}})}),
+		step("update", mcpCall("b3")),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "b3", "title": "other: thing",
+			"rawInput": mcpRawInput("other", "thing", map[string]any{})}),
 		{Result: raw(`{"stopReason":"end_turn"}`)},
 	}
 	e := newEnv(t, s)
-	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{CommandURL: "http://127.0.0.1:4321/agent/" + boardToken, Token: boardToken}})
+	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
 	send(t, a, "draw")
 	evs := without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvUsage, agent.EvSession, agent.EvCatalog, agent.EvThinking)
-	if got := kinds(evs); got != "ToolStart,ToolResult,ToolStart,TurnEnd" {
-		t.Fatalf("events %s", got)
+
+	var inputs, results []agent.Event
+	for _, ev := range evs {
+		switch ev.Kind {
+		case agent.EvToolInput:
+			inputs = append(inputs, ev)
+		case agent.EvToolResult:
+			results = append(results, ev)
+		}
 	}
-	if evs[0].ToolName != "mcp__board__apply" {
-		t.Fatalf("tool name %q", evs[0].ToolName)
+	if len(inputs) != 3 {
+		t.Fatalf("tool input events %s", kinds(evs))
 	}
-	jsonEq(t, evs[0].Input, `{"create":[{"type":"rectangle"}]}`)
-	if evs[1].Result != `{"ok":true,"created":["r1"]}` || evs[1].IsError {
-		t.Fatalf("result %+v", evs[1])
+	if inputs[0].ToolName != "mcp__board__read_board" {
+		t.Fatalf("read_board tool name %q", inputs[0].ToolName)
 	}
-	if evs[2].ToolName != "Bash" {
-		t.Fatalf("another chat's board command shown as %q", evs[2].ToolName)
+	jsonEq(t, inputs[0].Input, `{"board":"b1"}`)
+	if inputs[1].ToolName != "mcp__board__apply" {
+		t.Fatalf("apply tool name %q", inputs[1].ToolName)
 	}
+	jsonEq(t, inputs[1].Input, `{"board":"b1","create":[{"type":"rectangle"}]}`)
+	// A non-board MCP call keeps its normal presentation.
+	if inputs[2].ToolName != "other: thing" {
+		t.Fatalf("non-board MCP tool name %q", inputs[2].ToolName)
+	}
+	jsonEq(t, inputs[2].Input, `{"providerIdentifier":"other","toolName":"thing","args":{}}`)
+	// The captured completed update carries rawOutput {"success":true} and no text: no error.
+	if len(results) != 1 || results[0].ToolID != "b1" || results[0].IsError || results[0].Result != "" {
+		t.Fatalf("tool results %+v", results)
+	}
+}
+
+// TestBoardMCPSessionHandshake pins the session/new and session/load mcpServers payload for a
+// board chat: HTTP type, the exact fixed URL and the chat's board token in an Authorization
+// bearer header. The shape matches the live capture (experiment A.1 and the P3 trace).
+func TestBoardMCPSessionHandshake(t *testing.T) {
+	board := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}
+
+	e := newEnv(t, baseScript())
+	a := e.spawn(t, agent.SpawnOptions{Board: board})
+	until(t, a, isKind(agent.EvCatalog))
+	nw, _ := find(readRecord(t, e.record), "session/new")
+	jsonEq(t, nw.Params, `{"cwd":`+string(mustMarshal(e.cwd))+`,"mcpServers":[{"type":"http","name":"board","url":"http://localhost:6006/mcp","headers":[{"name":"Authorization","value":"Bearer `+boardToken+`"}]}]}`)
+
+	e2 := newEnv(t, fakeScript{"session/load": {{Cursor: true}}})
+	b := e2.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, Board: board})
+	until(t, b, isKind(agent.EvCatalog))
+	ld, _ := find(readRecord(t, e2.record), "session/load")
+	jsonEq(t, ld.Params, `{"sessionId":"`+testSessionID+`","cwd":`+string(mustMarshal(e2.cwd))+`,"mcpServers":[{"type":"http","name":"board","url":"http://localhost:6006/mcp","headers":[{"name":"Authorization","value":"Bearer `+boardToken+`"}]}]}`)
 }
 
 func TestPermissionRequests(t *testing.T) {
@@ -563,15 +613,29 @@ func TestPermissionRequests(t *testing.T) {
 			},
 		}})
 	}
+	// The P3 live trace showed no permission request at all for a board MCP call (Cursor's agent
+	// mode auto-approves MCP tools), but the adapter keeps a defensive auto-approve branch so a
+	// request for a board MCP call never reaches the user. This one is synthetic.
+	permMCP := func(id, server, tool string, args map[string]any) fakeStep {
+		return step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
+			"sessionId": testSessionID,
+			"toolCall":  map[string]any{"toolCallId": id, "title": server + ": " + tool, "kind": "other", "status": "pending", "rawInput": mcpRawInput(server, tool, args)},
+			"options": []any{
+				map[string]any{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+				map[string]any{"optionId": "allow-always", "name": "Allow always", "kind": "allow_always"},
+				map[string]any{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+			},
+		}})
+	}
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
-		perm(boardCmd(boardToken)),
-		perm(boardCmd(otherToken)),
+		permMCP("call_board", "board", "apply", map[string]any{"board": "b1"}),
+		permMCP("call_other", "other", "thing", map[string]any{}),
 		perm("cat ~/.ai-whiteboard/state.json"),
 		{Result: raw(`{"stopReason":"end_turn"}`)},
 	}
 	e := newEnv(t, s)
-	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{Token: boardToken}})
+	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
 	send(t, a, "go")
 
 	var perms []agent.Event
@@ -585,13 +649,13 @@ func TestPermissionRequests(t *testing.T) {
 		return ev.Kind == agent.EvTurnEnd
 	})
 	if len(perms) != 1 {
-		t.Fatalf("got %d permission events, want 1", len(perms))
+		t.Fatalf("got %d permission events, want 1 (the non-board MCP call)", len(perms))
 	}
 	p := perms[0]
-	if p.ToolName != "Bash" || p.ToolID != "call_curl" {
+	if p.ToolName != "other: thing" || p.ToolID != "call_other" {
 		t.Fatalf("perm event %+v", p)
 	}
-	jsonEq(t, p.Input, string(mustMarshal(map[string]string{"command": boardCmd(otherToken)})))
+	jsonEq(t, p.Input, `{"providerIdentifier":"other","toolName":"thing","args":{}}`)
 	if err := a.Decide(p.PermID, true); err == nil {
 		t.Fatal("second Decide on the same request succeeded")
 	}
@@ -610,6 +674,35 @@ func TestPermissionRequests(t *testing.T) {
 	if !reflect.DeepEqual(answers, want) {
 		t.Fatalf("answers %v, want %v", answers, want)
 	}
+}
+
+// TestBoardMCPPermissionAllowAlways: when Cursor offers only an always-allow option (no
+// allow_once), a board MCP call is still auto-approved with that option id. Synthetic (the live
+// trace produced no permission request).
+func TestBoardMCPPermissionAllowAlways(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
+			"sessionId": testSessionID,
+			"toolCall":  map[string]any{"toolCallId": "call_board", "title": "board: apply", "kind": "other", "rawInput": mcpRawInput("board", "apply", map[string]any{"board": "b1"})},
+			"options": []any{
+				map[string]any{"optionId": "always", "kind": "allow_always"},
+				map[string]any{"optionId": "never", "kind": "reject_once"},
+			},
+		}}),
+		{Result: raw(`{"stopReason":"end_turn"}`)},
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	send(t, a, "go")
+	until(t, a, isKind(agent.EvTurnEnd))
+	for _, r := range readRecord(t, e.record) {
+		if string(r.ID) == `"srv-1"` {
+			jsonEq(t, r.Result, `{"outcome":{"outcome":"selected","optionId":"always"}}`)
+			return
+		}
+	}
+	t.Fatal("no answer recorded")
 }
 
 func TestDecideAllow(t *testing.T) {

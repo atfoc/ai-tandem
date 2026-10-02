@@ -8,11 +8,18 @@
 //   cd web && npm install --no-save playwright && npx playwright install chromium
 //   node web/e2e/app.e2e.mjs
 //
+// Stop any running AI Whiteboard app first: the default run needs port 6006 exclusively for the
+// real-Cursor MCP steps (Cursor's org allowlist approves only http://localhost:6006/mcp). If 6006
+// is taken, the run fails fast with an explicit message instead of timing out.
+//
 // Environment (all optional):
 //   AIWB_E2E_BIN     server binary        (default bin/ai-whiteboard)
 //   AIWB_E2E_CLIENT  built web client     (default web/dist)
 //   AIWB_E2E_HOME    data folder          (default a new temp folder)
-//   AIWB_E2E_PORT    port                 (default 4749)
+//   AIWB_E2E_PORT    app port             (default 4749)
+//   AIWB_E2E_SKIP_CURSOR_MCP=1  skip the real-Cursor-over-MCP steps (reported as skipped, never
+//                               silently dropped) and start the app on the hidden test-only MCP
+//                               port override, so a normal app instance may keep 6006.
 //
 // The run gives the server and Cursor a copy of the Cursor CLI config ($CURSOR_CONFIG_DIR or
 // ~/.cursor) in a temp folder, removed at the end, so the deny rules the server adds for the data
@@ -30,6 +37,7 @@ import { chromium } from "playwright";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +68,25 @@ const CLAUDE_MODEL_LABEL = "Haiku 4.5";
 const CURSOR_MODEL_LABEL = "GPT-5.4 Nano"; // the cheapest model in Cursor's list
 const TURN_TIMEOUT = 300_000;
 const NUNITO = 6; // FONT_FAMILY.Nunito, Excalidraw's normal font
+
+// The fixed, org-policy-approved MCP URL. Cursor's org allowlist matches it exactly, so the
+// default run needs exclusive 6006 (plan D1/D3/D14).
+const MCP_PORT = 6006;
+const SKIP_CURSOR_MCP = process.env.AIWB_E2E_SKIP_CURSOR_MCP === "1";
+// In skip mode the app uses the hidden test-only MCP port override; a normal app instance may keep 6006.
+// The default run must use the approved 6006, so an inherited override is dropped rather than letting
+// the environment move the app off the policy-approved URL.
+if (SKIP_CURSOR_MCP) process.env.AIWB_MCP_PORT = "0";
+else delete process.env.AIWB_MCP_PORT;
+// The adapter's redacted ACP trace (the cursor adapter writes it when AIWB_CURSOR_ACP_LOG is
+// set). It holds only methods and the first prompt text; step 7 reads it. It is enabled only for
+// the real-Cursor MCP steps, and removed at the end of the run. In skip mode an inherited value
+// must go too, so the run never writes a trace it does not read.
+const ACP_LOG = path.join(OUT, "cursor-acp.log");
+if (!SKIP_CURSOR_MCP) process.env.AIWB_CURSOR_ACP_LOG = ACP_LOG;
+else delete process.env.AIWB_CURSOR_ACP_LOG;
+// Cursor's own debug log, where an MCP load failure or a team-policy block would appear (A.2/A.3).
+const CURSOR_DEBUG_LOG = path.join(os.tmpdir(), `cursor-agent-logs-${process.getuid?.() ?? "0"}`, "latest.log");
 
 // ---------------------------------------------------------------- reporting
 
@@ -100,6 +127,13 @@ async function step(n, title, fn) {
   current = `${n}. ${title}`;
   log(`\n== Step ${current}`);
   await fn();
+}
+
+/** Reports a step as skipped (never silently dropped) and continues. */
+async function skipStep(n, title, reason) {
+  current = `${n}. ${title}`;
+  log(`\n== Step ${current}`);
+  log(`    SKIPPED: ${reason}`);
 }
 
 // ---------------------------------------------------------------- server
@@ -146,6 +180,34 @@ async function stopServer() {
 
 function tail(file, n = 30) {
   try { return fs.readFileSync(file, "utf8").trimEnd().split("\n").slice(-n).join("\n"); } catch { return "(no log)"; }
+}
+
+const readIfExists = (f) => { try { return fs.readFileSync(f, "utf8"); } catch { return ""; } };
+const shortId = (id) => id.slice(0, 8);
+
+/**
+ * Binds exactly 127.0.0.1:6006 and releases it. The default e2e run needs that port exclusively
+ * for the real-Cursor MCP steps; a wildcard bind would not be authoritative (the listener and
+ * Cursor both use 127.0.0.1 via the localhost spelling).
+ */
+function acquireMcpPort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen({ host: "127.0.0.1", port: MCP_PORT, exclusive: true }, () => srv.close(() => resolve()));
+  });
+}
+
+/** The first ACP session/prompt text sent to Cursor, from the adapter's redacted trace. */
+function firstCursorPrompt(logText) {
+  for (const line of logText.split("\n")) {
+    if (!line.startsWith("-> ")) continue;
+    let m;
+    try { m = JSON.parse(line.slice(3)); } catch { continue; }
+    if (m.method !== "session/prompt") continue;
+    return (m.params?.prompt ?? []).map((b) => b.text ?? "").join("\n");
+  }
+  return "";
 }
 
 // ---------------------------------------------------------------- HTTP API (functional checks only)
@@ -333,6 +395,19 @@ const folders = {};
 async function run() {
   log(`AI Whiteboard end-to-end run\n  bin    ${BIN}\n  client ${CLIENT}\n  home   ${HOME}\n  port   ${PORT}\n  output ${OUT}`);
   for (const f of [BIN, path.join(CLIENT, "index.html")]) if (!fs.existsSync(f)) throw new Fail(`${f} exists (build first)`, "missing");
+  if (!SKIP_CURSOR_MCP) {
+    try {
+      await acquireMcpPort();
+      log(`    port ${MCP_PORT} is free for the real-Cursor MCP steps`);
+    } catch (e) {
+      throw new Fail(
+        `port ${MCP_PORT} is free: stop the running app or free the port`,
+        `cannot bind 127.0.0.1:${MCP_PORT} (${e.code ?? e.message}). Port ${MCP_PORT} is probably held by a running AI Whiteboard app or another program. ` +
+        `Stop that instance or free port ${MCP_PORT}, then run the e2e again; to skip the real-Cursor MCP steps, set AIWB_E2E_SKIP_CURSOR_MCP=1.`);
+    }
+  } else {
+    log(`    AIWB_E2E_SKIP_CURSOR_MCP=1: the real-Cursor MCP steps will be reported as skipped; the app uses the hidden test-only MCP port override`);
+  }
   if (await hello()) throw new Fail(`nothing is listening on port ${PORT}`, `a server answers at ${BASE}`);
   folders.p1 = dir("p1");
   folders.A = dir("ungrouped-a");
@@ -500,7 +575,12 @@ async function run() {
     check(r2.roughness === 0 && r2.roundness === null, "it is still sharp with roughness 0", brief(r2));
   });
 
-  await step(7, "Cursor board chat adds a cache; context meter; then sqlite3 off the PATH", async () => {
+  const step7Title = "Cursor board chat adds a cache; context meter; then sqlite3 off the PATH";
+  if (SKIP_CURSOR_MCP) {
+    await skipStep(7, step7Title, `real Cursor over the policy-approved MCP URL needs exclusive port ${MCP_PORT} (AIWB_E2E_SKIP_CURSOR_MCP is set)`);
+  } else {
+  await step(7, step7Title, async () => {
+    const debugOffset = fs.existsSync(CURSOR_DEBUG_LOG) ? fs.statSync(CURSOR_DEBUG_LOG).size : 0;
     await boardRow(page, "arch").click();
     await waitFor("arch is open", async () => (await sel(page)).board === ids.arch);
     ids.cursorBoard = await newChatVia(page, () => page.locator(".board-bar button", { hasText: "+ Chat on this board" }).click(), "Cursor chat");
@@ -515,11 +595,36 @@ async function run() {
     const added = liveElements(ids.arch).filter((e) => !elsBefore.has(e.id));
     check(added.length > 0, "the edit lands on arch", { added: added.map(brief), items });
     const labels = await page.locator(".tool .tool-label").allInnerTexts();
-    check(labels.some((l) => /^Edited arch · \+\d+/.test(l)), 'a tool card reads "Edited arch · +N"', labels);
+    check(labels.some((l) => /^Edited arch\b/.test(l)), 'a tool card reads "Edited arch"', labels);
     log(`    tool cards: ${labels.join(" | ")}`);
     check(!items.some((i) => i.kind === "perm") && (await page.locator(".perm").count()) === 0, "no approval card appears", items.filter((i) => i.kind === "perm"));
     const filesAfter = listFiles(view.cwd);
     check(show(filesAfter) === show(filesBefore), "the chat's folder has no new files", { before: filesBefore, after: filesAfter });
+
+    // Transport checks that would have caught the removed command path. The board MCP tool must be
+    // presented as mcp__board__*, the server must have seen Cursor initialize and call it, the
+    // first ACP prompt Cursor received must be the whiteboard body (no MCP how-to, no curl, no
+    // <board-api>), and Cursor's own debug log must show neither a load failure nor a policy block.
+    const chatShort = shortId(ids.cursorBoard);
+    const serverLog = readIfExists(LOG);
+    const mcpLines = serverLog.split("\n").filter((l) => /mcp (initialize|tools\/call)/.test(l)).slice(-10);
+    check(new RegExp(`mcp initialize chat=${chatShort} client="Cursor"`).test(serverLog), "the server log shows a Cursor MCP initialize for the chat", mcpLines.join("\n"));
+    check(new RegExp(`mcp tools/call chat=${chatShort} tool=`).test(serverLog), "the server log shows an MCP tools/call for the chat", mcpLines.join("\n"));
+    check(items.some((i) => i.kind === "tool" && /^mcp__board__/.test(i.name ?? "")), "the tool card is an mcp__board__* tool", items.filter((i) => i.kind === "tool").map((i) => i.name));
+
+    const acpTrace = readIfExists(ACP_LOG);
+    check(acpTrace.length > 0, "the adapter's ACP trace exists and is not empty", `${ACP_LOG} (${acpTrace.length} bytes)`);
+    const acpPrompt = firstCursorPrompt(acpTrace);
+    check(acpPrompt.length > 0, "the ACP trace has an outgoing session/prompt", acpTrace.slice(0, 400));
+    check(acpPrompt.includes("with the `board` MCP tools") && !acpPrompt.includes("How to call the board tools"), "the first ACP prompt is the whiteboard body, with no MCP how-to", acpPrompt.slice(0, 400));
+    check(!acpPrompt.includes("curl") && !acpPrompt.includes("<board-api>"), "the first ACP prompt has no curl or <board-api> block", acpPrompt.slice(0, 400));
+
+    const debugNew = readIfExists(CURSOR_DEBUG_LOG).slice(debugOffset);
+    check(fs.existsSync(CURSOR_DEBUG_LOG), "Cursor's debug log exists", CURSOR_DEBUG_LOG);
+    if (debugNew.length === 0) log(`    note: Cursor's debug log did not grow during the turn; the two negative MCP checks below are inconclusive`);
+    check(!debugNew.includes("Failed to load ACP session MCP server"), "Cursor's debug log has no 'Failed to load ACP session MCP server'", debugNew.split("\n").filter((l) => /MCP server|team policy/.test(l)).slice(-5).join("\n"));
+    check(!debugNew.includes("Blocked by team policy"), "Cursor's debug log has no 'Blocked by team policy'", debugNew);
+
     const u = await waitFor("the context usage is read", async () => { const c = await chatView(ids.cursorBoard); return c.usage.ctxIn > 0 && c.usage.ctxWindow > 0 && !c.usage.ctxError ? c.usage : null; }, { timeout: 30_000 });
     const meter = page.locator(".composer .ctx-meter");
     await waitFor("the meter shows a share of the window", async () => /\d+(\.\d+)?%/.test(await meter.innerText()) || saw(await meter.innerText()));
@@ -543,6 +648,7 @@ async function run() {
     const txt = await m.innerText();
     check(!/\d/.test(txt), "the meter shows no number", txt);
   });
+  }
 
   await step(8, "The Claude board chat can't read the board's file with cat", async () => {
     await openChat(page, ids.claudeBoard);
@@ -661,14 +767,15 @@ async function run() {
     await menuItem(page, "Archive").click();
     await waitFor("the board is archived", async () => (await state()).boards.find((b) => b.id === ids.arch)?.archived);
     const sc = await state();
+    const boardChats = [ids.claudeBoard, ids.cursorBoard].filter(Boolean); // no Cursor board chat when the MCP step is skipped
     const archChats = sc.chats.filter((c) => c.board === ids.arch);
-    check(archChats.length === 2 && archChats.every((c) => c.archived), "its chats are archived", archChats);
+    check(archChats.length === boardChats.length && archChats.every((c) => c.archived), "its chats are archived", archChats);
     await waitFor("the board and its chats disappear from the sidebar", async () => (await boardRow(page, "arch").count()) === 0 || saw(await page.locator(".side-tree").innerText()));
     await page.locator(".side-foot input").check();
     const row = boardRow(page, "arch");
     await row.waitFor();
     const archivedChats = groupBox(page, "Research").locator(".side-board.archived .side-row.is-chat.archived");
-    check(await archivedChats.count() === 2, "Show archived shows the board's chats greyed in place under it", await groupBox(page, "Research").innerHTML());
+    check(await archivedChats.count() === boardChats.length, "Show archived shows the board's chats greyed in place under it", await groupBox(page, "Research").innerHTML());
     await row.click();
     await page.locator(".archived-note", { hasText: "read-only" }).waitFor();
     check(await page.locator('[data-testid="toolbar-rectangle"]').count() === 0, "the archived board opens read-only (no drawing tools)", "the rectangle tool is shown");
@@ -678,7 +785,9 @@ async function run() {
     await waitFor("the board comes back", async () => !(await state()).boards.find((b) => b.id === ids.arch)?.archived);
     const s2 = await state();
     check(!s2.chats.find((c) => c.id === ids.claudeBoard).archived, "the unarchived chat is back", s2.chats.find((c) => c.id === ids.claudeBoard));
-    check(s2.chats.find((c) => c.id === ids.cursorBoard).archived === true, "the other chat stays archived", s2.chats.find((c) => c.id === ids.cursorBoard));
+    if (ids.cursorBoard) {
+      check(s2.chats.find((c) => c.id === ids.cursorBoard).archived === true, "the other chat stays archived", s2.chats.find((c) => c.id === ids.cursorBoard));
+    }
     await page.locator(".side-foot input").uncheck();
     await waitFor("the board shows unarchived", async () => (await boardRow(page, "arch").count()) === 1 && !(await page.locator(".side-board.archived").count()));
   });
@@ -693,6 +802,7 @@ async function run() {
     check(moved.length === 5 && moved.every((g) => g === "__ungrouped__"), "its boards and chats are now ungrouped", moved);
     check(await groupHead(page, "Research").count() === 0, "the group is gone from the sidebar", await page.locator(".side-tree").innerText());
 
+    const expectedBoardChats = [ids.claudeBoard, ids.cursorBoard].filter(Boolean).length;
     const archChats = s.chats.filter((c) => c.board === ids.arch).map((c) => c.id);
     await hoverClick(page, boardRow(page, "arch"), 'button[title="More"]');
     await menuItem(page, "Delete").click();
@@ -703,7 +813,7 @@ async function run() {
     await waitFor("the board is deleted", async () => !(await state()).boards.some((b) => b.id === ids.arch));
     check(!fs.existsSync(boardDir(ids.arch)), "the board's folder and file are gone", fs.existsSync(boardDir(ids.arch)) ? fs.readdirSync(boardDir(ids.arch)) : []);
     const left = archChats.filter((id) => fs.existsSync(path.join(HOME, "chats", id)));
-    check(archChats.length === 2 && left.length === 0, "its chats' folders are gone", { chats: archChats, left });
+    check(archChats.length === expectedBoardChats && left.length === 0, "its chats' folders are gone", { chats: archChats, left });
     check(!(await state()).chats.some((c) => archChats.includes(c.id)), "its chats are gone from the app", archChats);
     check(await boardRow(page, "arch").count() === 0, "the board is gone from the sidebar", await page.locator(".side-tree").innerText());
   });
@@ -923,5 +1033,6 @@ try {
   await browser?.close().catch(() => {});
   await stopServer().catch(() => {});
   fs.rmSync(CURSOR_CFG, { recursive: true, force: true });
+  fs.rmSync(ACP_LOG, { force: true }); // never leave the adapter trace behind
 }
 process.exit(code);

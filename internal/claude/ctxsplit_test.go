@@ -207,7 +207,7 @@ func TestReadContextSplitForks(t *testing.T) {
 	ctxAnswers(t, f, string(readFixture(t)))
 	cwd := t.TempDir()
 	s, err := f.spawner().ReadContextSplit(agent.SpawnOptions{SessionID: "s1", Cwd: cwd, Model: "opus",
-		Board: &agent.BoardAccess{MCPURL: "http://127.0.0.1:1/mcp/t"}})
+		Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "fork-tok"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,8 +223,12 @@ func TestReadContextSplitForks(t *testing.T) {
 	if _, ok := flag(rec.Args, "--fork-session"); !ok {
 		t.Errorf("args %q, want --fork-session", rec.Args)
 	}
-	if _, ok := flag(rec.Args, "--mcp-config"); !ok {
+	// The fork inherits the same board config, header included.
+	cfg, ok := flag(rec.Args, "--mcp-config")
+	if !ok {
 		t.Errorf("args %q, want the chat's own arguments (--mcp-config)", rec.Args)
+	} else if cfg != `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer fork-tok"}}}}` {
+		t.Errorf("--mcp-config = %q, want the fixed URL with the bearer header", cfg)
 	}
 	lines, _ := os.ReadFile(f.stdin) // the fake has exited: stdin was closed
 	if n := strings.Count(string(lines), "get_context_usage"); n != 1 {

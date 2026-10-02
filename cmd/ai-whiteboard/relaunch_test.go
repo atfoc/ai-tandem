@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,22 +19,22 @@ import (
 type instance struct {
 	bin, dir string
 	port     int
+	mcpPort  int
 	url      string // http://127.0.0.1:<port>/
+	mcpURL   string // http://localhost:<mcpPort>/mcp
 }
 
-// newInstance builds the program and picks a temp data folder and a free port. Its servers are
-// stopped in cleanup.
+// newInstance builds the program and picks a temp data folder, a free app port and a free MCP
+// port (through the hidden test-only override). Its servers are stopped in cleanup.
 func newInstance(t *testing.T) *instance {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("builds the binary and starts servers")
 	}
-	bin := filepath.Join(t.TempDir(), "ai-whiteboard")
-	if out, err := exec.Command("go", "build", "-o", bin, "ai-whiteboard/cmd/ai-whiteboard").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
-	in := &instance{bin: bin, dir: t.TempDir(), port: freePort(t)}
+	bin := buildBinary(t)
+	in := &instance{bin: bin, dir: t.TempDir(), port: freePort(t), mcpPort: testMCPPort(t)}
 	in.url = fmt.Sprintf("http://127.0.0.1:%d/", in.port)
+	in.mcpURL = fmt.Sprintf("http://localhost:%d/mcp", in.mcpPort)
 	t.Cleanup(func() {
 		exec.Command(bin, append([]string{"stop"}, in.flags()...)...).Run()
 		exec.Command("pkill", "-KILL", "-f", "--", "-home "+in.dir).Run()

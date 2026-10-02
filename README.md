@@ -13,26 +13,35 @@ agents run with the logins you already have.
 
 - **Server** (`cmd/`, `internal/`): a Go program on `127.0.0.1:4747`. It stores boards and chats,
   runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
-  `apply`, `delete_elements`, `create_board`, `show_board`). Claude and pi get these over MCP (pi
-  through the app's pi extension), and Cursor through a small HTTP command endpoint. For pi the
-  app injects a run-scoped `/mcp/<runToken>` URL and resolves it through the owner-only UDS run
-  registry, so the board token never enters the pi process. The UDS bridge remains for permission
-  asks, subagent activity, abort and MCP failure notices, but pi tool calls are auto-approved:
-  they run with no permission card, and only a tool that touches the app's own folder is refused.
-  Plain (non-board) pi chats get no board tools.
+  `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
+  MCP: one fixed board MCP endpoint, `http://localhost:6006/mcp`, carries the chat's board token in
+  the `Authorization` header. For pi the token travels only inside `AIWB_MCP_CONFIG` (never in argv
+  or a URL) and is inherited by its subagent runs; the owner-only UDS bridge carries a per-run,
+  non-secret handle for permission asks, subagent activity, abort and MCP failure notices. pi tool
+  calls are auto-approved: they run with no permission card, and only a tool that touches the app's
+  own folder is refused. Cursor reaches the same endpoint from its ACP session, keeps one
+  first-message instructions block with the same whiteboard prompt as Claude and pi, and its board calls are
+  auto-approved too (no permission card). Plain (non-board) pi chats get no board tools.
 - **Web client** (`web/`): React + Excalidraw, built with esbuild. The server serves it.
 - **Desktop app** (`desktop/`): an Electron window that starts the server, or finds the one already
   running, and opens it. Quitting the app doesn't stop the server or its running chats.
 
+The **MCP listener** is a second loopback listener on `127.0.0.1:6006` inside the same server
+process. It advertises exactly `http://localhost:6006/mcp` for every agent. That spelling is
+load-bearing: Cursor's org allowlist matches the full URL, so a query string, an extra path
+segment, a trailing slash, or the `127.0.0.1` or `[::1]` spelling is blocked by team policy. There
+is no user-facing MCP port option (see [Troubleshooting the board MCP](#troubleshooting-the-board-mcp)).
+
 The agents' board edits go through the open window, so boards can only be changed while the app
 (or a browser tab) is open. pi runs as a long-lived `pi --mode rpc` process per chat; the UDS
-bridge is one listener per server keyed by a per-run token, and the extension presents only that
-token, never the board token.
+bridge is one listener per server keyed by a per-run, non-secret handle, and the extension presents
+only that handle. The board token is a separate MCP credential and reaches pi only inside the
+`AIWB_MCP_CONFIG` header.
 
 pi's extension also runs standalone, without the app bridge:
 
 ```sh
-pi -e <extension> --mcp-config '{"mcpServers":{"board":{"type":"http","url":"http://…/mcp/…"}}}'
+pi -e <extension> --mcp-config '{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer <board token>"}}}}'
 ```
 
 That mode connects and registers the MCP tools normally, but shows no permission card: the
@@ -101,6 +110,98 @@ ai-whiteboard stop      # stop the running server
 At boot the server logs `pi <version> at <path>` (or a warning when pi is missing), so a broken pi
 install is visible without failing startup: pi chats then show the error in the chat.
 
+There is no MCP port flag. The MCP listener is always on 6006, because Cursor's org allowlist
+approves exactly `http://localhost:6006/mcp`; the only other value is a hidden test-only override.
+Only one AI Whiteboard instance per machine can serve MCP: if 6006 is taken the app refuses to
+start (see [Port 6006 is taken](#port-6006-is-taken)).
+
+## Troubleshooting the board MCP
+
+The board tools reach agents over one fixed MCP endpoint. Cursor hides MCP load failures in its
+ACP layer, so check the app side first.
+
+### Is the listener up and has an agent connected?
+
+```sh
+curl -s http://127.0.0.1:4747/api/mcp/status | python3 -m json.tool
+```
+
+The reply has the listener (`port`, the exact advertised `url`, `up`) and one entry per chat that
+has contacted MCP, most recent first. `chat` is the first 8 characters of the chat's id (a UUID),
+so it is a bare short id with no prefix. It is read-only and exposes no token and no board
+content; an entry with `"chat": "unknown"` means a client connected with a credential that
+resolves to no board chat, and no entry for a chat after a prompt means its agent never loaded the
+MCP server, or never used a board tool.
+
+```json
+{
+  "listener": { "port": 6006, "url": "http://localhost:6006/mcp", "up": true },
+  "chats": [
+    { "chat": "1a2b3c4d", "client": "Cursor", "clientVersion": "...", "method": "tools/call",
+      "tool": "read_board", "outcome": "ok", "at": "2026-01-01T00:00:00Z" }
+  ]
+}
+```
+
+### Probe the endpoint by hand
+
+A board chat's board token is in the chat's `chat.json` in the app's data folder, under `"token"`
+(the app never prints it). POST an MCP `initialize` exactly as an agent would:
+
+```sh
+curl -sS -X POST http://localhost:6006/mcp \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <board token>" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
+A 200 whose result has `serverInfo.name` `board` means the listener is reachable and the Host
+check passed. Replace the method with `tools/list` to see the board tools. `curl` may use either
+the `localhost` or `127.0.0.1` spelling; **agents must never be configured with `127.0.0.1`** (see
+above). The `initialize` and `tools/list` handshakes are permissive, so an unknown token still
+answers them; the `tools/call` then returns `unknown board token`.
+
+### The server log
+
+Each MCP event is one line in the server log (stderr: the foreground `serve` output, or the log
+`launch` writes):
+
+```
+mcp initialize chat=1a2b3c4d client="Cursor" version="..."
+mcp tools/call chat=1a2b3c4d tool="read_board" outcome=ok
+```
+
+An unknown credential logs `chat=unknown`. The token itself is never logged, and tool arguments
+are not logged.
+
+### Cursor shows no board tools (silent ACP failure)
+
+1. `GET /api/mcp/status` (or the `mcp initialize` log line) shows no contact for the chat: the
+   MCP server was never loaded, or the prompt never used a board tool.
+2. Cursor's own debug log is at `$TMPDIR/cursor-agent-logs-<uid>/latest.log`. Search it for
+   `Failed to load ACP session MCP server` and `Blocked by team policy`. A `Blocked by team
+   policy` line means the configured URL does not match the org allowlist exactly.
+3. Functional check: ask the Cursor chat to call `read_board`. Expect an `mcp__board__*` card. A
+   reply that claims it has no board tools, with no server-side contact, is the silent-failure
+   signature.
+4. URL audit: a unit test pins the exact `http://localhost:6006/mcp` string for every spawner, so
+   an accidental query, path, trailing slash or host spelling fails CI.
+
+### Port 6006 is taken
+
+The app binds 6006 before it writes `server.json`. If it cannot, it exits without touching the
+running instance and prints:
+
+```
+cannot serve the MCP endpoint on port 6006: ... address already in use
+Port 6006 is probably held by another AI Whiteboard instance (for a different data folder) or by another program.
+Stop that instance or free port 6006, then start AI Whiteboard again.
+```
+
+`launch`/`relaunch` report the server stopped while starting with that message in the log tail.
+Because the port is fixed, exactly one instance can serve MCP per machine, so stop a running app
+before the default e2e run (see Development).
+
 ## Limitations
 
 - Your own pi extensions are not loaded: pi runs with `--no-extensions` plus the app's extension,
@@ -122,4 +223,9 @@ cd desktop && npm test    # desktop app tests
 ```
 
 `web/e2e/app.e2e.mjs` runs an end-to-end pass in headless Chrome against real agents. It uses
-cheap models but still spends a little money; its header explains how to run it.
+cheap models but still spends a little money; its header explains how to run it. Stop the running
+AI Whiteboard app before a default run: the real-Cursor step needs exclusive port 6006 (Cursor's
+org allowlist approves only `http://localhost:6006/mcp`). If 6006 is taken the suite fails fast
+with an explicit message; set `AIWB_E2E_SKIP_CURSOR_MCP=1` to report the real-Cursor MCP steps as
+skipped and run the rest on the hidden test-only MCP port override, so a normal app instance may
+keep 6006.

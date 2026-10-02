@@ -7,8 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"testing"
 
+	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/store"
 )
 
@@ -41,6 +45,40 @@ func freePort(t *testing.T) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	return port
+}
+
+// buildBinary builds the program into a temp folder for a process-level test.
+func buildBinary(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "ai-whiteboard")
+	if out, err := exec.Command("go", "build", "-o", bin, "ai-whiteboard/cmd/ai-whiteboard").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// testMCPPort returns a free port for the hidden AIWB_MCP_PORT override and sets it in the
+// environment, so every server this test starts (serve/launch/relaunch and the relaunch children)
+// binds there instead of the machine-global 6006. The override is test-only: production is fixed
+// at 6006 (plan D10), so no process test may ever touch it.
+func testMCPPort(t *testing.T) int {
+	t.Helper()
+	p := freePort(t)
+	t.Setenv("AIWB_MCP_PORT", strconv.Itoa(p))
+	return p
+}
+
+// The hidden AIWB_MCP_PORT override defaults to the fixed production port; it is not a flag
+// (plan D10).
+func TestMCPPortSetting(t *testing.T) {
+	t.Setenv("AIWB_MCP_PORT", "")
+	if got := mcpPort(); got != boardapi.MCPPort {
+		t.Fatalf("unset override: got %d, want %d", got, boardapi.MCPPort)
+	}
+	t.Setenv("AIWB_MCP_PORT", " 1234 ")
+	if got := mcpPort(); got != 1234 {
+		t.Fatalf("override: got %d, want 1234", got)
+	}
 }
 
 func paths(t *testing.T) store.Paths {

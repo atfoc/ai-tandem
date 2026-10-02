@@ -51,13 +51,14 @@ func TestArgsPlainChat(t *testing.T) {
 }
 
 func TestArgsBoardChat(t *testing.T) {
-	board := &agent.BoardAccess{MCPURL: "http://127.0.0.1:4000/mcp/tok", Token: "tok"}
+	board := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
 	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s2", Resume: true, Cwd: "/tmp", Model: "opus", Board: board})
 	if v, _ := flag(args, "--append-system-prompt"); v != "WHITEBOARD PROMPT" {
 		t.Errorf("--append-system-prompt = %q", v)
 	}
-	if v, _ := flag(args, "--mcp-config"); v != `{"mcpServers":{"board":{"type":"http","url":"http://127.0.0.1:4000/mcp/tok"}}}` {
-		t.Errorf("--mcp-config = %q", v)
+	want := `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer tok"}}}}`
+	if v, _ := flag(args, "--mcp-config"); v != want {
+		t.Errorf("--mcp-config = %q\n          want %q", v, want)
 	}
 	allowed, _ := flag(args, "--allowedTools")
 	names := strings.Split(allowed, ",")

@@ -82,7 +82,7 @@ func newEnv(t *testing.T, with ...func(*Server)) *env {
 	port := ln.Addr().(*net.TCPAddr).Port
 	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds,
 		Spawners:   map[model.AgentKind]agent.Spawner{model.Claude: fakeSpawner{}, model.Cursor: fakeSpawner{}},
-		DefaultCwd: t.TempDir(), BaseURL: "http://127.0.0.1:" + itoa(port)})
+		DefaultCwd: t.TempDir()})
 	a = &app.App{St: st, Boards: bds, Chats: cm, Bridge: br, DataDir: root, DefaultCwd: cm.DefaultCwd}
 	s := &Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bds}, Bridge: br, Port: port}
 	for _, f := range with {
@@ -213,6 +213,131 @@ func TestBadHostIsForbidden(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("localhost: status %d", resp.StatusCode)
+	}
+}
+
+func TestMCPHandlerRoutesAndHost(t *testing.T) {
+	e := newEnv(t)
+	const mcpPort = 6006
+	h := e.s.MCPHandler(mcpPort)
+	post := func(host, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, strings.NewReader(body))
+		req.Host = host
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	// POST /mcp answers on the MCP listener for the advertised host spelling.
+	for _, host := range []string{"localhost:6006", "127.0.0.1:6006"} {
+		if w := post(host, "/mcp", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`); w.Code != 200 {
+			t.Fatalf("host %s: status %d, want 200 (%s)", host, w.Code, w.Body)
+		}
+	}
+
+	// The DNS-rebinding guard still applies to the MCP listener: only its own port is allowed.
+	if w := post("evil.example", "/mcp", `{}`); w.Code != 403 {
+		t.Fatalf("foreign host: status %d, want 403", w.Code)
+	}
+	if w := post(fmt.Sprintf("localhost:%d", e.s.Port), "/mcp", `{}`); w.Code != 403 {
+		t.Fatalf("app-port host on the MCP listener: status %d, want 403", w.Code)
+	}
+
+	// Non-POST is 405, and the listener serves no /api routes.
+	req := httptest.NewRequest("GET", "/mcp", nil)
+	req.Host = "localhost:6006"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /mcp: status %d, want 405", w.Code)
+	}
+	req = httptest.NewRequest("GET", "/api/hello", nil)
+	req.Host = "localhost:6006"
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/hello on the MCP listener: status %d, want 404", w.Code)
+	}
+}
+
+func TestMCPStatusRoute(t *testing.T) {
+	e := newEnv(t, func(s *Server) {
+		s.MCPPort = 6006
+		s.MCPURL = boardapi.MCPURL
+		s.MCPUp = func() bool { return true }
+	})
+	// Listener shape before any contact; no client header is needed for a GET (guard.go).
+	if code, out := e.doAs("", "GET", "/api/mcp/status", ""); code != 200 {
+		t.Fatalf("GET /api/mcp/status without a client header: status %d (%s), want 200", code, out)
+	}
+	out := decode[mcpStatus](t, e.expect(200, "GET", "/api/mcp/status", ""))
+	if out.Listener.Port != 6006 || out.Listener.URL != boardapi.MCPURL || !out.Listener.Up {
+		t.Fatalf("listener %+v", out.Listener)
+	}
+	if len(out.Chats) != 0 {
+		t.Fatalf("chats before contact %+v", out.Chats)
+	}
+
+	bd := e.board(model.Ungrouped)
+	c := e.chat(`{"agent":"claude","board":"` + bd.ID + `"}`)
+	metas := e.a.Chats.ChatsOfBoard(bd.ID)
+	if len(metas) != 1 || metas[0].Token == "" {
+		t.Fatalf("board chats %+v", metas)
+	}
+	token := metas[0].Token
+
+	// The fixed MCP handler is the observation point; post to it directly, as the 6006 listener
+	// would. Archive the chat first so the tools/call answers without a browser client and the
+	// archived interaction is what gets recorded.
+	post := func(auth, body string) {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		w := httptest.NewRecorder()
+		e.s.Relay.ServeFixedMCP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST /mcp: status %d (%s)", w.Code, w.Body)
+		}
+	}
+	post("Bearer "+token, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Cursor","version":"1.2.3"}}}`)
+	e.expect(200, "POST", "/api/boards/"+bd.ID+"/archive", "")
+	post("Bearer "+token, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
+	// An unresolved credential is logged and reported as unknown, and answered normally (D8).
+	post("Bearer not-a-real-token", `{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"clientInfo":{"name":"probe","version":"0"}}}`)
+
+	body := e.expect(200, "GET", "/api/mcp/status", "")
+	if strings.Contains(body, token) {
+		t.Fatalf("status leaks the board token: %s", body)
+	}
+	if strings.Contains(body, "not-a-real-token") {
+		t.Fatalf("status leaks the unknown credential: %s", body)
+	}
+	st := decode[mcpStatus](t, body)
+	if len(st.Chats) != 2 {
+		t.Fatalf("chats %+v", st.Chats)
+	}
+	// The endpoint's most-recent-first order is pinned deterministically by
+	// boardapi.TestContactLogSnapshotOrdersMostRecentFirst. Here each contact is found by its chat
+	// label, so map iteration order cannot decide the result.
+	var unknown, known *boardapi.Contact
+	for i := range st.Chats {
+		if st.Chats[i].Chat == "unknown" {
+			unknown = &st.Chats[i]
+		} else {
+			known = &st.Chats[i]
+		}
+	}
+	if unknown == nil || known == nil {
+		t.Fatalf("chats %+v, want one unknown and one known contact", st.Chats)
+	}
+	if unknown.Client != "probe" || unknown.Method != "initialize" {
+		t.Fatalf("unknown contact %+v", *unknown)
+	}
+	if known.Chat != c.ID[:8] || known.Client != "Cursor" || known.ClientVersion != "1.2.3" ||
+		known.Method != "tools/call" || known.Tool != "list_boards" || known.Outcome != "error" || known.At.IsZero() {
+		t.Fatalf("known contact %+v", *known)
 	}
 }
 

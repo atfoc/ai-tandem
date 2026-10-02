@@ -36,7 +36,7 @@ type Deps struct {
 	Spawners   map[model.AgentKind]agent.Spawner
 	Namers     map[model.AgentKind]Namer // per-agent auto namers; a missing entry means chats of that agent are not named
 	DefaultCwd string
-	BaseURL    string // http://127.0.0.1:<port>
+	MCPURL     string // the fixed board MCP endpoint handed to every board chat, http://localhost:6006/mcp
 }
 
 type Manager struct {
@@ -65,6 +65,7 @@ type Chat struct {
 var (
 	ErrNotFound      = errors.New("no such chat")
 	ErrArchived      = errors.New("the chat is archived")
+	ErrLegacy        = errors.New("this chat used the old board connection; start a new chat")
 	ErrLocked        = errors.New("folder, model and effort are fixed once the chat has started")
 	ErrFolderMissing = agent.ErrFolderMissing
 	ErrAppFolder     = errors.New("the app's own folder can't be used as a working folder")
@@ -433,6 +434,9 @@ func (m *Manager) spawn(c *Chat, out *outbox) error {
 	if c.meta.Archived {
 		return ErrArchived
 	}
+	if c.meta.InstructionsSent {
+		return ErrLegacy
+	}
 	if c.ag != nil {
 		return nil
 	}
@@ -471,8 +475,7 @@ func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
 		opts.SessionID = ""
 	}
 	if c.meta.Board != "" {
-		opts.Board = &agent.BoardAccess{MCPURL: m.BaseURL + "/mcp/" + c.meta.Token,
-			CommandURL: m.BaseURL + "/agent/" + c.meta.Token, Token: c.meta.Token}
+		opts.Board = &agent.BoardAccess{MCPURL: m.MCPURL, Token: c.meta.Token}
 	}
 	return opts
 }
@@ -571,6 +574,10 @@ func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 		c.mu.Unlock()
 		return ErrArchived
 	}
+	if c.meta.InstructionsSent {
+		c.mu.Unlock()
+		return ErrLegacy
+	}
 	if busy(c) {
 		c.mu.Unlock()
 		return ErrBusy
@@ -594,12 +601,10 @@ func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 	c.meta.Draft = nil // the message is the draft, sent
 	var blocks []agent.ContentBlock
 	if c.meta.Board != "" {
-		if c.meta.Agent == model.Cursor {
-			if !c.meta.InstructionsSent {
-				blocks = append(blocks, agent.ContentBlock{Text: prompts.CursorInstructions()})
-				c.meta.InstructionsSent = true
-			}
-			blocks = append(blocks, agent.ContentBlock{Text: "<board-api>" + m.BaseURL + "/agent/" + c.meta.Token + "</board-api>"})
+		if c.meta.Agent == model.Cursor && !c.meta.McpInstructionsSent && !c.meta.InstructionsSent {
+			// Cursor has no system-prompt slot; inject the same whiteboard body Claude and pi get.
+			blocks = append(blocks, agent.ContentBlock{Text: prompts.Claude()})
+			c.meta.McpInstructionsSent = true
 		}
 		if context == "" { // every board chat message names its board
 			name := c.meta.Board
@@ -651,6 +656,10 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 	if c.meta.Archived {
 		unlock()
 		return ErrArchived
+	}
+	if c.meta.InstructionsSent {
+		unlock()
+		return ErrLegacy
 	}
 	onlyFolderFix := c.meta.Locked && c.folderMissing && req.Model == "" && req.Effort == "" && req.Cwd != ""
 	if c.meta.Locked && !onlyFolderFix {
@@ -995,7 +1004,7 @@ func (m *Manager) Delete(id string) error {
 	return nil
 }
 
-// ByToken finds the board chat a /mcp or /agent token belongs to.
+// ByToken finds the board chat whose MCP credential is token.
 func (m *Manager) ByToken(token string) (model.ChatMeta, bool) {
 	if token == "" {
 		return model.ChatMeta{}, false

@@ -13,8 +13,8 @@ func TestConcurrentRunsRouteIndependently(t *testing.T) {
 	b, path := startBridge(t)
 	h1 := &fakeHandler{allow: true}
 	h2 := &fakeHandler{allow: false, reason: "nope"}
-	tok1 := registerRun(t, b, "chat-1", "board-1", h1)
-	tok2 := registerRun(t, b, "chat-2", "board-2", h2)
+	tok1 := registerRun(t, b, "chat-1", h1)
+	tok2 := registerRun(t, b, "chat-2", h2)
 	if tok1 == tok2 {
 		t.Fatal("the two runs share a token")
 	}

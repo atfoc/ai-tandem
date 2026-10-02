@@ -171,19 +171,20 @@ func TestSpawnBoardChatMCPConfig(t *testing.T) {
 	s.Bridge = reg
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", SessionID: "app-1", Cwd: t.TempDir(),
 		Model: "test/test-model", Board: &agent.BoardAccess{
-			MCPURL: "http://127.0.0.1:45231/mcp/" + boardToken,
+			MCPURL: "http://localhost:6006/mcp",
 			Token:  boardToken,
 		}})
 	waitKind(t, a, agent.EvCatalog)
 	inv := f.invocation(t)
 
 	if inv.BridgeRun != "run-7" {
-		t.Fatalf("AIWB_BRIDGE_RUN = %q, want the minted run token", inv.BridgeRun)
+		t.Fatalf("AIWB_BRIDGE_RUN = %q, want the minted run handle", inv.BridgeRun)
 	}
 	var cfg struct {
 		MCPServers map[string]struct {
-			Type string `json:"type"`
-			URL  string `json:"url"`
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal([]byte(inv.MCPConfig), &cfg); err != nil {
@@ -193,13 +194,15 @@ func TestSpawnBoardChatMCPConfig(t *testing.T) {
 		t.Fatalf("MCP servers %+v, want only the board server", cfg.MCPServers)
 	}
 	srv, ok := cfg.MCPServers["board"]
-	if !ok || srv.Type != "http" || srv.URL != "http://127.0.0.1:45231/mcp/run-7" {
-		t.Fatalf("board server %+v, want type http and the run-scoped URL", srv)
+	if !ok || srv.Type != "http" || srv.URL != "http://localhost:6006/mcp" ||
+		srv.Headers["Authorization"] != "Bearer "+boardToken {
+		t.Fatalf("board server %+v, want the fixed URL and the bearer header", srv)
 	}
-	// R-leak: the board token must not appear anywhere in the child's env or argv.
+	// Contract (D16): the board token appears only inside AIWB_MCP_CONFIG, never
+	// elsewhere in the child env, and never in argv.
 	for _, kv := range inv.Env {
-		if strings.Contains(kv, boardToken) {
-			t.Fatalf("board token leaked into the child env: %q", kv)
+		if strings.Contains(kv, boardToken) && !strings.HasPrefix(kv, "AIWB_MCP_CONFIG=") {
+			t.Fatalf("board token leaked outside AIWB_MCP_CONFIG: %q", kv)
 		}
 	}
 	if strings.Contains(strings.Join(inv.Args, " "), boardToken) {
@@ -222,7 +225,7 @@ func TestSpawnBoardChatMCPConfigExtraSeam(t *testing.T) {
 		"board": {Type: "http", URL: "http://evil.invalid/mcp/hijack"},
 	}
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(), Board: &agent.BoardAccess{
-		MCPURL: "http://127.0.0.1:45231/mcp/" + boardToken, Token: boardToken}})
+		MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
 	waitKind(t, a, agent.EvCatalog)
 	inv := f.invocation(t)
 
@@ -230,15 +233,15 @@ func TestSpawnBoardChatMCPConfigExtraSeam(t *testing.T) {
 	if err := json.Unmarshal([]byte(inv.MCPConfig), &cfg); err != nil {
 		t.Fatalf("AIWB_MCP_CONFIG %q is not JSON: %v", inv.MCPConfig, err)
 	}
-	if got := cfg.MCPServers["board"].URL; got != "http://127.0.0.1:45231/mcp/run-7" {
-		t.Fatalf("board server URL = %q, want the run-scoped app URL", got)
+	if got := cfg.MCPServers["board"].URL; got != "http://localhost:6006/mcp" {
+		t.Fatalf("board server URL = %q, want the fixed app URL", got)
 	}
 	if got := cfg.MCPServers["other"]; got.Type != "http" || got.URL != "http://127.0.0.1:1/mcp/other" {
 		t.Fatalf("extra server = %+v, want the merged test-only entry", got)
 	}
 	for _, kv := range inv.Env {
-		if strings.Contains(kv, boardToken) {
-			t.Fatalf("board token leaked into the child env: %q", kv)
+		if strings.Contains(kv, boardToken) && !strings.HasPrefix(kv, "AIWB_MCP_CONFIG=") {
+			t.Fatalf("board token leaked outside AIWB_MCP_CONFIG: %q", kv)
 		}
 	}
 	f.stdinLines(t, a)
@@ -256,7 +259,7 @@ func TestSpawnPlainChatNoMCPConfig(t *testing.T) {
 		t.Fatalf("plain chat got AIWB_MCP_CONFIG %q", inv.MCPConfig)
 	}
 	if inv.BridgeRun != "run-7" {
-		t.Fatalf("plain chat AIWB_BRIDGE_RUN = %q, want the minted run token", inv.BridgeRun)
+		t.Fatalf("plain chat AIWB_BRIDGE_RUN = %q, want the minted bridge run handle", inv.BridgeRun)
 	}
 	f.stdinLines(t, a)
 }
@@ -332,10 +335,10 @@ type fakeRegistry struct {
 	abortsV []string
 }
 
-func (r *fakeRegistry) RegisterRun(chatID, boardToken string, h agent.RunHandler) (string, string, error) {
+func (r *fakeRegistry) RegisterRun(chatID string, h agent.RunHandler) (string, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.regsV = append(r.regsV, chatID+"|"+boardToken)
+	r.regsV = append(r.regsV, chatID)
 	return "/tmp/pi.sock", "run-7", nil
 }
 
@@ -374,7 +377,7 @@ func TestCloseDeregistersAndAbortPushes(t *testing.T) {
 	s.Bridge = reg
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(), Board: &agent.BoardAccess{Token: "bt"}})
 	waitKind(t, a, agent.EvCatalog)
-	if got := reg.regs(); !equalStrings(got, []string{"c1|bt"}) {
+	if got := reg.regs(); !equalStrings(got, []string{"c1"}) {
 		t.Fatalf("registered %q", got)
 	}
 	if err := a.Interrupt(); err != nil {
@@ -479,15 +482,15 @@ func TestCloseReapsGroupWhenLeaderHoldsStdin(t *testing.T) {
 	waitPidsGone(t, parent, child)
 }
 
-func TestPlainChatRegistersEmptyBoardToken(t *testing.T) {
+func TestPlainChatRegistersRun(t *testing.T) {
 	reg := &fakeRegistry{}
 	f := newFake(t)
 	s := f.spawner()
 	s.Bridge = reg
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
 	waitKind(t, a, agent.EvCatalog)
-	if got := reg.regs(); !equalStrings(got, []string{"c1|"}) {
-		t.Fatalf("registered %q, want the chat with an empty board token", got)
+	if got := reg.regs(); !equalStrings(got, []string{"c1"}) {
+		t.Fatalf("registered %q, want the chat id only", got)
 	}
 	f.stdinLines(t, a)
 }

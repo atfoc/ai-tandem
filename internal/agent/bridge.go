@@ -5,16 +5,19 @@
 // Bridge env (set by the pi adapter on the pi process; child pi processes inherit it):
 //
 //	AIWB_BRIDGE_SOCKET  the app server's Unix socket path
-//	AIWB_BRIDGE_RUN     the run token minted by RegisterRun (the only credential pi sees)
+//	AIWB_BRIDGE_RUN     the per-run bridge handle minted by RegisterRun: an internal, non-secret
+//	                    run identifier for frame routing, permissions/notices, subagent-tree abort
+//	                    and run lifecycle. It is not a credential and is never an MCP credential.
 //	AIWB_CHAT_ID        the chat's id
 //	AIWB_CHAT_DIR       the chat's data folder (chats/<id>)
 //	AIWB_PI_BIN         the absolute pi binary path, for spawning child runs
 //	AIWB_MODEL          the parent run's provider-qualified model id
 //	AIWB_THINKING       the parent run's thinking level
 //	AIWB_APPEND_PROMPT  path of the board system-prompt file (board chats only; children reuse it)
-//	AIWB_MCP_CONFIG     board chats only: a Claude-compatible MCP config object
-//	                    {"mcpServers":{"board":{"type":"http","url":"…/mcp/<run>"}}} whose URL is
-//	                    run-scoped (the board token never appears in it); inherited by subagent runs
+//	AIWB_MCP_CONFIG     board chats only: a Claude-compatible MCP config object naming the fixed
+//	                    endpoint with the chat's board token in the Authorization header;
+//	                    inherited by subagent runs. The board token appears only here, never in
+//	                    argv and never in a URL.
 //	AIWB_SUB_PARENT     child runs only: the parent's subagent tool-call id
 //	AIWB_SUB_DEPTH      child runs only: 0 for a direct child of the chat
 //	AIWB_SUB_CHILD      child runs only: the child run's pi session id
@@ -52,7 +55,7 @@ type SubIdentity struct {
 // BridgeFrame is the NDJSON envelope on the bridge socket, one frame per line.
 type BridgeFrame struct {
 	Kind   string          `json:"kind"`            // FrameAsk | FrameActivity | FrameHello | FrameAbort | FrameNotice
-	Run    string          `json:"run,omitempty"`   // run token on every request
+	Run    string          `json:"run,omitempty"`   // the per-run bridge handle on every request
 	ID     string          `json:"id,omitempty"`    // ask id, or a frame id for activity/hello/notice
 	Name   string          `json:"name,omitempty"`  // built-in tool name (ask)
 	Sub    *SubIdentity    `json:"sub,omitempty"`   // set by child runs
@@ -108,10 +111,10 @@ type RunHandler interface {
 // BridgeRegistry is the app-owned Unix-socket bridge (internal/pibridge) as the pi adapter sees
 // it. main attaches an implementation after construction; nil means no bridge (plain chats only).
 type BridgeRegistry interface {
-	// RegisterRun mints a per-run token for a chat run and returns the socket path the extension
-	// must use. boardToken is "" for plain chats. Registering the same chat id again replaces the
-	// previous registration.
-	RegisterRun(chatID, boardToken string, handler RunHandler) (socketPath, runToken string, err error)
+	// RegisterRun mints a per-run, non-secret bridge handle for a chat run and returns the socket
+	// path the extension must use. Registering the same chat id again replaces the previous
+	// registration and retires its handle.
+	RegisterRun(chatID string, handler RunHandler) (socketPath, runToken string, err error)
 	// DeregisterRun forgets a run and closes its connections.
 	DeregisterRun(runToken string)
 	// AbortRun tells the run's live extension connections to kill their child process trees.

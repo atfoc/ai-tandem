@@ -2,7 +2,7 @@
 // context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
 // until the first message is sent.
 import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeGet, safeSet, isBusy, upsertChat, unsavedDraft } from "./store.ts";
+import { useStore, getState, setState, safeGet, safeSet, isBusy, isLegacy, upsertChat, unsavedDraft } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
@@ -49,6 +49,7 @@ export function subline(c: ChatView, cat?: Catalog): string {
  *  both. */
 export async function sendMessage(chat: string, text: string, picked: Picked[] = [], references: Reference[] = []) {
   const c = getState().chats[chat];
+  if (isLegacy(c)) return;
   if (!c?.board) return api.send(chat, text, "", references);
   return api.send(chat, text, buildContext(chat, text, picked), references);
 }
@@ -103,7 +104,8 @@ export function Composer({ chatId }: { chatId: string }) {
   drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(chatId, d, keepalive), getState().chats[chatId]?.draft, unsavedDraft(chatId));
   const board = c?.board;
   const archived = !!c?.archived;
-  const canRef = !!board && !archived && onScreen === board;
+  const legacy = isLegacy(c);
+  const canRef = !!board && !archived && !legacy && onScreen === board;
   const q = useComposerQuotes(chatId, quotes, setQuotes, box);
 
   // ⌘L quotes the text selected in a message; with none, it puts the selection on the board into
@@ -116,7 +118,7 @@ export function Composer({ chatId }: { chatId: string }) {
     input.current?.insertRef(r);
   };
   useEffect(() => {
-    if (archived) return;
+    if (archived || legacy) return;
     if (canRef) inserters.set(chatId, (r) => { setNote(""); input.current?.insertRef(r); });
     const k = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.code !== "KeyL") return;
@@ -140,7 +142,7 @@ export function Composer({ chatId }: { chatId: string }) {
       inserters.delete(chatId);
       if (getState().picking === chatId) pickPoint(null);
     };
-  }, [canRef, archived, chatId]);
+  }, [canRef, archived, legacy, chatId]);
   useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(""), 2500); return () => clearTimeout(t); }, [note]);
 
   // The draft: put into the box when it appears (on open, after unarchiving), saved as it
@@ -148,11 +150,11 @@ export function Composer({ chatId }: { chatId: string }) {
   // server (the echo of our own saves) are not put in: they would overwrite the typing.
   useEffect(() => {
     const d = draftToShow(chatId);
-    if (c?.archived || !hasDraft(d)) return;
+    if (c?.archived || isLegacy(c) || !hasDraft(d)) return;
     input.current?.set(d.text);
     setPicked(d.mentions ?? []);
     setQuotes(d.references ?? []);
-  }, [c?.archived]);
+  }, [c?.archived, c?.instructionsSent]);
   useEffect(() => drafts.current!.change(text, picked, quotes), [text, picked, quotes]);
   useEffect(() => {
     const d = drafts.current!;
@@ -169,6 +171,13 @@ export function Composer({ chatId }: { chatId: string }) {
         <button className="btn sm" onClick={() => api.unarchive("chats", c.id).catch((e) => setErr(e.message))}>Unarchive</button>
       </div>
       {err && <div className="composer-err">{err}</div>}
+    </div>
+  );
+  if (legacy) return (
+    <div className="composer">
+      <div className="archived-bar">
+        This chat used the old board connection — start a new chat to continue
+      </div>
     </div>
   );
 

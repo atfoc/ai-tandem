@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,16 +19,14 @@ func TestLaunchRace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the binary and starts servers")
 	}
-	bin := filepath.Join(t.TempDir(), "ai-whiteboard")
-	if out, err := exec.Command("go", "build", "-o", bin, "ai-whiteboard/cmd/ai-whiteboard").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	bin := buildBinary(t)
 	for round := 1; round <= 3; round++ {
 		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) { launchRace(t, bin) })
 	}
 }
 
 func launchRace(t *testing.T, bin string) {
+	testMCPPort(t) // every launched serve binds this free port, never the machine-global 6006
 	dir := t.TempDir()
 	port := freePort(t)
 	portArg := strconv.Itoa(port)

@@ -1,7 +1,7 @@
 // A chat's header and thread. Items come from the server (chat_items); this
 // file only renders them.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject, type UIEvent } from "react";
-import { useStore, setState, isBusy, chatTitle, boardName } from "./store.ts";
+import { useStore, setState, isBusy, isLegacy, chatTitle, boardName } from "./store.ts";
 import { api } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
@@ -49,15 +49,15 @@ export function ChatHeader({ chatId }: { chatId: string }) {
       <span className={`crow-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={14} /></span>
       <div className="chat-head-main">
         {editing ? <NameInput chat={c} onDone={() => setEditing(false)} /> : (
-          <button className="chat-head-name" onClick={() => !c.archived && setEditing(true)} title={c.archived ? undefined : "Rename"}>
-            <span className={c.name ? "" : "unnamed"}>{chatTitle(c, items)}</span>{!c.archived && <Pencil />}
+          <button className="chat-head-name" onClick={() => !c.archived && !isLegacy(c) && setEditing(true)} title={c.archived || isLegacy(c) ? undefined : "Rename"}>
+            <span className={c.name ? "" : "unnamed"}>{chatTitle(c, items)}</span>{!c.archived && !isLegacy(c) && <Pencil />}
           </button>
         )}
         <div className="chat-head-sub">
           {c.board && <><BoardIcon /> {board?.name ?? "board"} · </>}
           {agentName(c.agent)}
           {c.cwd ? <> · <span className="mono">{tildify(c.cwd)}</span></> : null}
-          {" · "}{c.archived ? "Archived" : statusText(c, boardName)}
+          {" · "}{c.archived ? "Archived" : isLegacy(c) ? "Disabled" : statusText(c, boardName)}
         </div>
       </div>
       {c.board && <button className="icon-btn" title="Hide chat (⌘J)" onClick={() => setState({ panel: false })}>×</button>}
@@ -123,8 +123,8 @@ function EmptyThread({ c }: { c: ChatView }) {
       {c.board
         ? <p>Ask about or change <b>{board?.name ?? "this board"}</b>. Type <kbd>@</kbd> to point at other boards.</p>
         : <p>The same session you get in a terminal, started in <b className="mono">{base(c.cwd) || "/"}</b>.</p>}
-      {!c.locked && !c.archived && <p className="config-hint">Pick the folder, model and effort below — they lock when you send.</p>}
-      {!c.archived && (
+      {!c.locked && !c.archived && !isLegacy(c) && <p className="config-hint">Pick the folder, model and effort below — they lock when you send.</p>}
+      {!c.archived && !isLegacy(c) && (
         <div className="suggestions">
           {suggest.map((s) => (
             <button key={s} className="chip" onClick={() => void sendMessage(c.id, s).catch((e) => console.error(e))}>{s}</button>
@@ -225,7 +225,7 @@ function PermCard({ item, chat }: { item: Item; chat: ChatView }) {
       {what && <pre className="perm-what">{String(what)}</pre>}
       {item.decided ? (
         <div className="perm-done">{item.decided === "allow" ? "Approved" : "Denied"}</div>
-      ) : chat.archived ? null : (
+      ) : chat.archived || isLegacy(chat) ? null : (
         <div className="perm-actions">
           <button className="btn danger sm" onClick={() => decide(true)}>Allow</button>
           <button className="btn sm" onClick={() => decide(false)}>Don't</button>

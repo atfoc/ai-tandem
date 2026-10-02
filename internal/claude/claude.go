@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -72,7 +71,7 @@ func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	}
 	args = append(args, "--disallowedTools", strings.Join(AppDirRules(s.AppRoot, s.Home), ","))
 	if o.Board != nil {
-		mcp := fmt.Sprintf(`{"mcpServers":{"board":{"type":"http","url":%q}}}`, o.Board.MCPURL)
+		mcp := boardMCPConfig(o.Board)
 		allowed := []string{}
 		for _, t := range boardtools.Tools {
 			allowed = append(allowed, "mcp__board__"+t.Name)
@@ -81,6 +80,31 @@ func (s *Spawner) Args(o agent.SpawnOptions) []string {
 			"--allowedTools", strings.Join(allowed, ","))
 	}
 	return args
+}
+
+// claudeMCPConfig is the --mcp-config value for a board chat: the fixed board endpoint with the
+// chat's durable board token in the Authorization header. The header object is the encoding the
+// installed Claude Code (2.1.284) accepts; only the URL is advertised, never a path token.
+type claudeMCPConfig struct {
+	MCPServers map[string]claudeMCPServer `json:"mcpServers"`
+}
+
+type claudeMCPServer struct {
+	Type    string            `json:"type"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+func boardMCPConfig(board *agent.BoardAccess) string {
+	cfg := claudeMCPConfig{MCPServers: map[string]claudeMCPServer{
+		"board": {Type: "http", URL: board.MCPURL, Headers: map[string]string{
+			"Authorization": "Bearer " + board.Token}},
+	}}
+	b, err := json.Marshal(cfg)
+	if err != nil { // cannot happen with strings and a string map
+		return ""
+	}
+	return string(b)
 }
 
 // AppDirRules are Claude permission rules that deny the app's folder.

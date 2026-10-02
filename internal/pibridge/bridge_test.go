@@ -100,9 +100,9 @@ func startBridge(t *testing.T) (*Bridge, string) {
 	return b, path
 }
 
-func registerRun(t *testing.T, b *Bridge, chatID, boardToken string, h agent.RunHandler) string {
+func registerRun(t *testing.T, b *Bridge, chatID string, h agent.RunHandler) string {
 	t.Helper()
-	_, token, err := b.RegisterRun(chatID, boardToken, h)
+	_, token, err := b.RegisterRun(chatID, h)
 	if err != nil {
 		t.Fatalf("RegisterRun: %v", err)
 	}
@@ -179,56 +179,30 @@ func respondOK(t *testing.T, resp map[string]any, id string) {
 
 // ---- tests -----------------------------------------------------------------
 
-func TestUnknownRunTokenClosesWithoutDispatch(t *testing.T) {
+func TestUnknownBridgeHandleClosesWithoutDispatch(t *testing.T) {
 	h := &fakeHandler{allow: true}
 	b, path := startBridge(t)
-	registerRun(t, b, "chat-1", "board-token-1", h)
+	registerRun(t, b, "chat-1", h)
 
-	// A frame naming an unknown run is closed without dispatch.
+	// A frame naming an unknown bridge handle is closed without dispatch.
 	c := dial(t, path)
 	c.send(map[string]any{"kind": "ask", "run": "0123456789abcdef0123456789abcdef", "id": "x", "name": "bash"})
 	c.expectClosed()
 
-	// A missing token is also unknown.
+	// A missing handle is also unknown.
 	c2 := dial(t, path)
 	c2.send(map[string]any{"kind": "ask", "id": "y", "name": "bash"})
 	c2.expectClosed()
 
 	if asks := h.snapshotAsks(); len(asks) != 0 {
-		t.Fatalf("handler saw asks for an unknown token: %+v", asks)
-	}
-}
-
-func TestResolveBoardToken(t *testing.T) {
-	b, _ := startBridge(t)
-	token := registerRun(t, b, "chat-1", "board-token-1", nil)
-
-	if got, ok := b.ResolveBoardToken(token); !ok || got != "board-token-1" {
-		t.Fatalf("registered = %q, %v; want board-token-1, true", got, ok)
-	}
-	if got, ok := b.ResolveBoardToken("0123456789abcdef0123456789abcdef"); ok || got != "" {
-		t.Fatalf("unknown = %q, %v; want empty, false", got, ok)
-	}
-	if got, ok := b.ResolveBoardToken(""); ok || got != "" {
-		t.Fatalf("empty = %q, %v; want empty, false", got, ok)
-	}
-
-	// A plain chat registers with an empty board token but still resolves.
-	plain := registerRun(t, b, "chat-2", "", nil)
-	if got, ok := b.ResolveBoardToken(plain); !ok || got != "" {
-		t.Fatalf("plain chat = %q, %v; want empty, true", got, ok)
-	}
-
-	b.DeregisterRun(token)
-	if got, ok := b.ResolveBoardToken(token); ok || got != "" {
-		t.Fatalf("after deregister = %q, %v; want empty, false", got, ok)
+		t.Fatalf("handler saw asks for an unknown bridge handle: %+v", asks)
 	}
 }
 
 func TestAskAllowAndDeny(t *testing.T) {
 	h := &fakeHandler{allow: true}
 	b, path := startBridge(t)
-	token := registerRun(t, b, "chat-1", "board-token-1", h)
+	token := registerRun(t, b, "chat-1", h)
 	c := dial(t, path)
 
 	c.send(map[string]any{"kind": "ask", "run": token, "id": "ask1", "name": "bash", "input": map[string]any{"command": "ls"}})
@@ -257,7 +231,7 @@ func TestAskAllowAndDeny(t *testing.T) {
 func TestNoticeRoutedToHandlerAndUnknownKindErrors(t *testing.T) {
 	h := &fakeHandler{}
 	b, path := startBridge(t)
-	token := registerRun(t, b, "chat-1", "board-token-1", h)
+	token := registerRun(t, b, "chat-1", h)
 	c := dial(t, path)
 
 	// A notice frame reaches the handler and answers ok:true.
@@ -298,7 +272,7 @@ func TestNoticeRoutedToHandlerAndUnknownKindErrors(t *testing.T) {
 func TestToolFrameRetired(t *testing.T) {
 	h := &fakeHandler{}
 	b, path := startBridge(t)
-	token := registerRun(t, b, "chat-1", "board-token-1", h)
+	token := registerRun(t, b, "chat-1", h)
 	c := dial(t, path)
 
 	c.send(map[string]any{"kind": "tool", "run": token, "id": "tool-1", "name": "list_boards", "input": map[string]any{}})
@@ -318,7 +292,7 @@ func TestToolFrameRetired(t *testing.T) {
 func TestActivityRoutedWithSubIdentity(t *testing.T) {
 	h := &fakeHandler{}
 	b, path := startBridge(t)
-	token := registerRun(t, b, "chat-1", "board-token-1", h)
+	token := registerRun(t, b, "chat-1", h)
 	c := dial(t, path)
 
 	sub := map[string]any{"parent": "tool-9", "depth": 2, "child": "child-9"}
@@ -349,7 +323,7 @@ func TestActivityRoutedWithSubIdentity(t *testing.T) {
 func TestHelloAbortAndDeregister(t *testing.T) {
 	h := &fakeHandler{}
 	b, path := startBridge(t)
-	token := registerRun(t, b, "chat-1", "board-token-1", h)
+	token := registerRun(t, b, "chat-1", h)
 
 	c1 := dial(t, path)
 	c1.send(map[string]any{"kind": "hello", "run": token, "id": "hello"})
@@ -379,13 +353,13 @@ func TestHelloAbortAndDeregister(t *testing.T) {
 func TestReRegisterReplacesPreviousRun(t *testing.T) {
 	h := &fakeHandler{}
 	b, path := startBridge(t)
-	old := registerRun(t, b, "chat-1", "board-token-old", h)
+	old := registerRun(t, b, "chat-1", h)
 
 	c := dial(t, path)
 	c.send(map[string]any{"kind": "hello", "run": old, "id": "hello"})
 	respondOK(t, c.recv(), "hello")
 
-	fresh := registerRun(t, b, "chat-1", "board-token-new", h)
+	fresh := registerRun(t, b, "chat-1", h)
 	if fresh == old {
 		t.Fatal("re-registration reused the old token")
 	}
@@ -453,7 +427,7 @@ func TestStaleSocketFileIsReplaced(t *testing.T) {
 		t.Fatalf("Start over stale file: %v", err)
 	}
 	t.Cleanup(b.Close)
-	token := registerRun(t, b, "chat-1", "bt", nil)
+	token := registerRun(t, b, "chat-1", nil)
 
 	c := dial(t, path)
 	c.send(map[string]any{"kind": "hello", "run": token, "id": "h"})

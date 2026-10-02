@@ -24,7 +24,7 @@ type Spawner struct {
 	AppRoot   string // data folder
 	Home      string
 	Extension string // absolute path of the materialized app extension ("" = none)
-	Prompt    string // prompts.Pi(); written to a file for board chats
+	Prompt    string // prompts.Pi() (same whiteboard body as Claude); written to a file for board chats
 	Bridge    agent.BridgeRegistry
 
 	// mcpConfigExtra is a test-only seam: extra non-board MCP servers merged into the
@@ -158,11 +158,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		announced:   map[string]bool{},
 	}
 	if s.Bridge != nil {
-		boardToken := ""
-		if o.Board != nil {
-			boardToken = o.Board.Token
-		}
-		socketPath, runToken, err := s.Bridge.RegisterRun(o.ChatID, boardToken, p)
+		socketPath, runToken, err := s.Bridge.RegisterRun(o.ChatID, p)
 		if err != nil {
 			return nil, fmt.Errorf("pi bridge: %w", err)
 		}

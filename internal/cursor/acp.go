@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -73,6 +74,7 @@ func (c *Conn) readLoop() {
 	sc := bufio.NewScanner(c.r)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
+		recordACP("<-", sc.Bytes())
 		var m msg
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			continue
@@ -118,6 +120,7 @@ func (c *Conn) write(m map[string]any) error {
 	if err != nil {
 		return err
 	}
+	recordACP("->", b)
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	_, err = c.w.Write(append(b, '\n'))
@@ -180,6 +183,63 @@ func (c *Conn) Close() {
 		c.cmd.Process.Kill()
 		<-c.done
 	}
+}
+
+// recordACP appends one redacted ACP line ("->" sent, "<-" received) to the file named by
+// AIWB_CURSOR_ACP_LOG, when that variable is set. It is a debug/trace aid used by the e2e suite
+// to prove what the adapter sent Cursor; it is off in normal runs and never records anything by
+// default.
+//
+// Only a safe projection is written: the method of each frame (so method order is provable) and,
+// for an outgoing session/prompt, its prompt text. A frame's raw params are never written, so the
+// board token in a session/new or session/load mcpServers Authorization header cannot reach the
+// file. The file is opened and closed per write, keyed by the path in the environment, so a later
+// path (as tests change it) can never be served by a stale handle.
+var acpLogMu sync.Mutex
+
+func recordACP(direction string, line []byte) {
+	path := os.Getenv("AIWB_CURSOR_ACP_LOG")
+	if path == "" {
+		return
+	}
+	out, ok := redactACP(direction, line)
+	if !ok {
+		return
+	}
+	acpLogMu.Lock()
+	defer acpLogMu.Unlock()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_ = f.Chmod(0o600) // OpenFile's mode only applies on creation
+	_, _ = f.Write(out)
+}
+
+// redactACP projects one ACP frame to the safe trace line "direction {json}". It keeps the
+// frame's method and, for an outgoing prompt, the prompt text; the raw params (which carry the
+// Authorization header on a board handshake) are dropped. It reports false for a frame that is
+// not JSON, has no method, or cannot be projected.
+func redactACP(direction string, line []byte) ([]byte, bool) {
+	var m msg
+	if err := json.Unmarshal(line, &m); err != nil || m.Method == "" {
+		return nil, false
+	}
+	out := map[string]any{"method": m.Method}
+	if m.Method == "session/prompt" {
+		var p struct {
+			Prompt json.RawMessage `json:"prompt"`
+		}
+		if json.Unmarshal(m.Params, &p) == nil && len(p.Prompt) > 0 {
+			out["params"] = map[string]any{"prompt": p.Prompt}
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	return append(append([]byte(direction+" "), b...), '\n'), true
 }
 
 // rpcErrorText turns a JSON-RPC error object into its message (plus data when present).

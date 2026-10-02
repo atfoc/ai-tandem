@@ -120,40 +120,41 @@ func TestEnv(t *testing.T) {
 	}
 }
 
-// TestEnvBoardMCPConfig pins the run-scoped AIWB_MCP_CONFIG contract (A1/A2,
-// R3, R-leak): only a board chat with a minted run token and a usable MCP URL
-// gets the config, the URL keeps the board endpoint's scheme+host with the run
-// token as the path credential, and the board token appears nowhere in the env.
+// TestEnvBoardMCPConfig pins the shared board-access contract (plan D5/D16): a
+// board chat gets the fixed endpoint URL plus the chat's durable board token in
+// the Authorization header inside AIWB_MCP_CONFIG; the board token appears only
+// there, never elsewhere in the env and never in argv.
 func TestEnvBoardMCPConfig(t *testing.T) {
 	const boardToken = "board-secret-token"
 	s := &Spawner{AppRoot: "/app"}
 	board := &agent.BoardAccess{
-		MCPURL: "http://127.0.0.1:45231/mcp/" + boardToken,
+		MCPURL: "http://localhost:6006/mcp",
 		Token:  boardToken,
 	}
 
 	env := s.env(agent.SpawnOptions{ChatID: "c1", Board: board}, "/bin/pi", "/sock", "run-9", "")
 	m := envMap(env)
-	want := `{"mcpServers":{"board":{"type":"http","url":"http://127.0.0.1:45231/mcp/run-9"}}}`
+	want := `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer board-secret-token"}}}}`
 	if got := m["AIWB_MCP_CONFIG"]; got != want {
 		t.Fatalf("AIWB_MCP_CONFIG = %q\nwant %q", got, want)
 	}
 	for _, kv := range env {
-		if strings.Contains(kv, boardToken) {
-			t.Fatalf("board token leaked into the env: %q", kv)
+		if strings.Contains(kv, boardToken) && !strings.HasPrefix(kv, "AIWB_MCP_CONFIG=") {
+			t.Fatalf("board token leaked outside AIWB_MCP_CONFIG: %q", kv)
 		}
 	}
 
-	// A plain chat gets no config even with a run token.
+	// A plain chat gets no config even with a run handle.
 	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1"}, "/bin/pi", "/sock", "run-9", ""))
 	if _, ok := m["AIWB_MCP_CONFIG"]; ok {
 		t.Errorf("plain chat got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
 	}
 
-	// A board chat without a minted run token gets no config.
+	// The config no longer depends on a minted run handle: a board chat with a URL gets
+	// it even without one.
 	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1", Board: board}, "/bin/pi", "/sock", "", ""))
-	if _, ok := m["AIWB_MCP_CONFIG"]; ok {
-		t.Errorf("board chat without a run token got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
+	if got := m["AIWB_MCP_CONFIG"]; got != want {
+		t.Errorf("board chat without a run handle: AIWB_MCP_CONFIG = %q, want %q", got, want)
 	}
 
 	// A board chat with no MCP URL gets no config.
@@ -161,14 +162,6 @@ func TestEnvBoardMCPConfig(t *testing.T) {
 		"/bin/pi", "/sock", "run-9", ""))
 	if _, ok := m["AIWB_MCP_CONFIG"]; ok {
 		t.Errorf("board chat without an MCP URL got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
-	}
-
-	// An unparseable MCP URL is skipped instead of injecting a broken config.
-	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1", Board: &agent.BoardAccess{
-		MCPURL: "http://[::1]:namedport/mcp/" + boardToken, Token: boardToken}},
-		"/bin/pi", "/sock", "run-9", ""))
-	if _, ok := m["AIWB_MCP_CONFIG"]; ok {
-		t.Errorf("board chat with an unparseable MCP URL got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
 	}
 }
 

@@ -1,12 +1,14 @@
 // Package pibridge is the app-owned board bridge: one owner-only Unix-socket
-// listener per app server, a run registry keyed by random per-run tokens, and
-// routing of extension frames to the owning run handler.
+// listener per app server, a run registry keyed by random per-run bridge
+// handles, and routing of extension frames to the owning run handler.
 //
 // The wire contract is frozen in internal/agent/bridge.go; the pi extension
 // asset lives in internal/pibridge/extension and is embedded by embed.go. The
-// extension presents only the run token, never the board token: the bridge
-// resolves run -> chat's board token for the app's MCP surface, and routes
-// ask/activity/hello/notice frames to the owning run handler.
+// per-run handle is an internal, non-secret identifier for frame routing,
+// permissions/notices, subagent-tree abort and run lifecycle; it is not an MCP
+// credential and is not mapped to the board token. Board tool calls carry the
+// chat's durable board token in the Authorization header of the HTTP MCP
+// endpoint.
 package pibridge
 
 import (
@@ -40,9 +42,8 @@ type Bridge struct {
 // run is one registered chat run. Its connections (ask/activity calls and live
 // control connections) are tracked for abort pushes and deregistration.
 type run struct {
-	chatID     string
-	boardToken string
-	handler    agent.RunHandler
+	chatID  string
+	handler agent.RunHandler
 
 	mu    sync.Mutex
 	conns map[*bridgeConn]struct{}
@@ -181,27 +182,15 @@ func (b *Bridge) lookup(token string) *run {
 	return b.runs[token]
 }
 
-// ResolveBoardToken resolves a run-scoped MCP credential to the chat's board
-// token. Unregistered tokens report ok=false so the caller can treat the
-// credential as a board token; a registered plain-chat run reports ok=true with
-// an empty board token.
-func (b *Bridge) ResolveBoardToken(runToken string) (string, bool) {
-	r := b.lookup(runToken)
-	if r == nil {
-		return "", false
-	}
-	return r.boardToken, true
-}
-
-// RegisterRun mints a random 32-hex run token, records the run and returns the
-// socket path and token. Registering the same chat id again deregisters the
-// previous run and closes its connections.
-func (b *Bridge) RegisterRun(chatID, boardToken string, handler agent.RunHandler) (socketPath, runToken string, err error) {
+// RegisterRun mints a random 32-hex per-run bridge handle, records the run and
+// returns the socket path and handle. Registering the same chat id again
+// deregisters the previous run and closes its connections.
+func (b *Bridge) RegisterRun(chatID string, handler agent.RunHandler) (socketPath, runToken string, err error) {
 	token, err := newRunToken()
 	if err != nil {
 		return "", "", err
 	}
-	r := &run{chatID: chatID, boardToken: boardToken, handler: handler, conns: map[*bridgeConn]struct{}{}}
+	r := &run{chatID: chatID, handler: handler, conns: map[*bridgeConn]struct{}{}}
 
 	b.mu.Lock()
 	var old *run
@@ -325,8 +314,8 @@ func (c *bridgeConn) writeJSON(v any) error {
 }
 
 // serveConn reads LF-delimited frames until the peer closes, a frame is too
-// large, or a frame carries an unknown run token (then the connection is closed
-// without dispatch). Every frame must name a registered run.
+// large, or a frame carries an unknown bridge handle (then the connection is
+// closed without dispatch). Every frame must name a registered run.
 func (b *Bridge) serveConn(conn net.Conn) {
 	c := &bridgeConn{Conn: conn}
 	defer func() {

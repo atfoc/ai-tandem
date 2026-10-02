@@ -383,7 +383,7 @@ func (e *env) boot() {
 			model.Pi:     e.namer,
 		},
 		DefaultCwd: e.cwd,
-		BaseURL:    "http://127.0.0.1:4747",
+		MCPURL:     "http://localhost:6006/mcp",
 	})
 	e.m.now = func() time.Time { return time.UnixMilli(e.clock.Load()) }
 	if err := e.m.Load(); err != nil {
@@ -838,27 +838,37 @@ func TestSendBlocks(t *testing.T) {
 		t.Fatalf("claude board chat sent %q", got)
 	}
 	tok := e.meta(cb.ID).Token
-	if ca.opts.Board == nil || ca.opts.Board.MCPURL != "http://127.0.0.1:4747/mcp/"+tok || ca.opts.Board.Token != tok {
+	if ca.opts.Board == nil || ca.opts.Board.MCPURL != "http://localhost:6006/mcp" || ca.opts.Board.Token != tok {
 		t.Fatalf("board access %+v", ca.opts.Board)
 	}
 	if it := e.items(cb.ID)[0]; it.Context != ctx {
 		t.Fatalf("board user item context %q", it.Context)
 	}
 
-	// Cursor board chat: instructions only the first time.
+	// Cursor board chat: the whiteboard body only the first time, then context + text.
 	ub := e.create(model.Cursor, "", bd.ID)
 	e.send(ub.ID, "one", ctx)
 	ua := e.cursor.last(t)
-	api := "<board-api>http://127.0.0.1:4747/agent/" + e.meta(ub.ID).Token + "</board-api>"
-	if got := texts(ua.sent()[0]); !reflect.DeepEqual(got, []string{prompts.CursorInstructions(), api, ctx, "one"}) {
+	if ua.opts.Board == nil || ua.opts.Board.MCPURL != "http://localhost:6006/mcp" || ua.opts.Board.Token != e.meta(ub.ID).Token {
+		t.Fatalf("cursor board access %+v", ua.opts.Board)
+	}
+	if got := texts(ua.sent()[0]); !reflect.DeepEqual(got, []string{prompts.Claude(), ctx, "one"}) {
 		t.Fatalf("cursor first send %q", got)
 	}
-	if !e.meta(ub.ID).InstructionsSent {
-		t.Fatal("instructionsSent not saved")
+	for _, s := range texts(ua.sent()[0]) {
+		if strings.Contains(s, "<board-api>") || strings.Contains(s, "curl") {
+			t.Fatalf("cursor first send still carries the command path: %q", s)
+		}
+	}
+	if !e.meta(ub.ID).McpInstructionsSent {
+		t.Fatal("mcpInstructionsSent not saved")
+	}
+	if e.meta(ub.ID).InstructionsSent {
+		t.Fatal("instructionsSent set on a new Cursor board send")
 	}
 	ua.emit(t, agent.Event{Kind: agent.EvTurnEnd})
 	e.send(ub.ID, "two", ctx)
-	if got := texts(ua.sent()[1]); !reflect.DeepEqual(got, []string{api, ctx, "two"}) {
+	if got := texts(ua.sent()[1]); !reflect.DeepEqual(got, []string{ctx, "two"}) {
 		t.Fatalf("cursor second send %q", got)
 	}
 
@@ -893,7 +903,17 @@ func TestSendPiBoardChat(t *testing.T) {
 	if got := texts(a.sent()[0]); !reflect.DeepEqual(got, []string{ctx, "draw"}) {
 		t.Fatalf("pi board chat sent %q, want only the context and the text", got)
 	}
-	if e.meta(c.ID).InstructionsSent {
+	// The pi spawner gets the same shared board-access value as Claude: the fixed endpoint URL
+	// and the chat's durable board token (not a run-scoped URL). pi's own unit tests construct
+	// their own BoardAccess, so this manager-level assertion is what catches a split there.
+	if a.opts.Board == nil || a.opts.Board.MCPURL != "http://localhost:6006/mcp" ||
+		a.opts.Board.Token != e.meta(c.ID).Token || a.opts.Board.Token == "" {
+		t.Fatalf("pi board access %+v, want the fixed URL and the chat's board token", a.opts.Board)
+	}
+	if strings.Contains(a.opts.Board.MCPURL, a.opts.Board.Token) {
+		t.Fatalf("pi board MCP URL carries the board token: %q", a.opts.Board.MCPURL)
+	}
+	if m := e.meta(c.ID); m.InstructionsSent || m.McpInstructionsSent {
 		t.Fatal("pi got Cursor's instructions")
 	}
 	// The fallback <ui-context> still names the board when the page sends none.
@@ -902,6 +922,41 @@ func TestSendPiBoardChat(t *testing.T) {
 	want := prompts.BoardContext("board", bd.ID)
 	if got := texts(a.sent()[1]); !reflect.DeepEqual(got, []string{want, "move it"}) {
 		t.Fatalf("pi board chat without a page context sent %q", got)
+	}
+}
+
+func TestLegacyCursorBoardChatDisabled(t *testing.T) {
+	e := newEnv(t)
+	bd, err := e.bds.Create("board", gOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := e.create(model.Cursor, "", bd.ID)
+	path := filepath.Join(e.st.P.ChatDir(v.ID), "chat.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta model.ChatMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	meta.InstructionsSent = true
+	if err := store.WriteJSONAtomic(path, meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.boot()
+	if err := e.m.Send(v.ID, "hi", "", nil); !errors.Is(err, ErrLegacy) {
+		t.Fatalf("Send: %v", err)
+	}
+	if e.cursor.count() != 0 {
+		t.Fatal("agent spawned")
+	}
+	if err := e.m.Configure(v.ID, ConfigReq{Model: "gpt-5.4-mini"}); !errors.Is(err, ErrLegacy) {
+		t.Fatalf("Configure: %v", err)
+	}
+	if !e.view(v.ID).InstructionsSent {
+		t.Fatal("View missing InstructionsSent")
 	}
 }
 

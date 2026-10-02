@@ -2,8 +2,6 @@ package pi
 
 import (
 	"encoding/json"
-	"log"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,28 +76,22 @@ type mcpConfig struct {
 }
 
 type mcpServerConfig struct {
-	Type string `json:"type"`
-	URL  string `json:"url"`
+	Type    string            `json:"type"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// boardMCPConfig builds the AIWB_MCP_CONFIG value for a board chat: the board endpoint's
-// scheme+host with the board-token path segment replaced by the run token, so the URL is
-// run-scoped and the board token never reaches the pi process (R3, R-leak). It returns "" when
-// the chat has no board access, no run token was minted, or the base URL is empty; an
-// unparseable non-empty URL is skipped with a server-side log rather than silently hiding the
-// misconfiguration. extra is the test-only non-board server seam (see Spawner.mcpConfigExtra);
-// it can never replace the app-owned "board" key.
-func boardMCPConfig(board *agent.BoardAccess, runToken, chatID string, extra map[string]mcpServerConfig) string {
-	if board == nil || runToken == "" || board.MCPURL == "" {
-		return ""
-	}
-	u, err := url.Parse(board.MCPURL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		log.Printf("pi: chat %s has an unusable board MCP URL %q; AIWB_MCP_CONFIG not injected", chatID, board.MCPURL)
+// boardMCPConfig builds the AIWB_MCP_CONFIG value for a board chat: the fixed board MCP endpoint
+// with the chat's durable board token in the Authorization header (plan D5/D16). It returns ""
+// when the chat has no board access or no MCP URL. extra is the test-only non-board server seam
+// (see Spawner.mcpConfigExtra); it can never replace the app-owned "board" key.
+func boardMCPConfig(board *agent.BoardAccess, extra map[string]mcpServerConfig) string {
+	if board == nil || board.MCPURL == "" {
 		return ""
 	}
 	servers := map[string]mcpServerConfig{
-		"board": {Type: "http", URL: u.Scheme + "://" + u.Host + "/mcp/" + url.PathEscape(runToken)},
+		"board": {Type: "http", URL: board.MCPURL, Headers: map[string]string{
+			"Authorization": "Bearer " + board.Token}},
 	}
 	for key, spec := range extra {
 		if key == "board" {
@@ -108,18 +100,17 @@ func boardMCPConfig(board *agent.BoardAccess, runToken, chatID string, extra map
 		servers[key] = spec
 	}
 	raw, err := json.Marshal(mcpConfig{MCPServers: servers})
-	if err != nil {
-		log.Printf("pi: chat %s: cannot encode the board MCP config: %v", chatID, err)
+	if err != nil { // cannot happen with the string fields this config holds
 		return ""
 	}
 	return string(raw)
 }
 
 // env is the environment one chat process starts with: the server's environment without the pi
-// markers or any inherited AIWB_* value, plus the per-run bridge and chat variables. bin is the
-// resolved absolute pi path (children need it to spawn their own runs). Board chats whose run was
-// registered also get the run-scoped AIWB_MCP_CONFIG; plain chats (and board chats without a run
-// token or a usable MCP URL) get none (plan D/R3).
+// markers or any inherited AIWB_* value, plus the per-run bridge handle and chat variables. bin is
+// the resolved absolute pi path (children need it to spawn their own runs). Board chats get the
+// fixed endpoint and the board-token header inside AIWB_MCP_CONFIG; the board token appears only
+// there, never in argv or a URL. Plain chats get no board config (plan D5/D16).
 func (s *Spawner) env(o agent.SpawnOptions, bin, socketPath, runToken, appendPromptFile string) []string {
 	out := s.cleanEnv()
 	out = append(out,
@@ -133,7 +124,7 @@ func (s *Spawner) env(o agent.SpawnOptions, bin, socketPath, runToken, appendPro
 	if runToken != "" {
 		out = append(out, "AIWB_BRIDGE_RUN="+runToken)
 	}
-	if cfg := boardMCPConfig(o.Board, runToken, o.ChatID, s.mcpConfigExtra); cfg != "" {
+	if cfg := boardMCPConfig(o.Board, s.mcpConfigExtra); cfg != "" {
 		out = append(out, "AIWB_MCP_CONFIG="+cfg)
 	}
 	if o.Model != "" {

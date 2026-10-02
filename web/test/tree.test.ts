@@ -67,6 +67,15 @@ test("archived items are shown in place", () => {
   assert.deepEqual(ids(t.loose.boards), ["b_loose", "b_lost"]);
 });
 
+test("a board chat with instructionsSent still appears when archived are hidden", () => {
+  const chats = byId([
+    chat("c_live", "2026-09-05T00:00:00Z", { board: "b_zeta" }),
+    { ...chat("c_legacy", "2026-09-04T00:00:00Z", { board: "b_zeta" }), instructionsSent: true },
+    chat("c_arch", "2026-09-03T00:00:00Z", { board: "b_zeta" }, true),
+  ]);
+  assert.deepEqual(ids(boardChats(chats, "b_zeta", false)), ["c_live", "c_legacy"]);
+});
+
 test("board chats only under their board, newest first", () => {
   for (const show of [false, true]) {
     const t = buildTree(s, show);

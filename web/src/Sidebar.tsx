@@ -2,7 +2,7 @@
 // their own chats) and plain chats, plus the ungrouped area. Also the selection helpers
 // every part of the app opens boards and chats through.
 import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, isBusy, chatTitle, boardName, type Sel } from "./store.ts";
+import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, isBusy, isLegacy, chatTitle, boardName, type Sel } from "./store.ts";
 import { api } from "./api.ts";
 import { loadItems } from "./conn.ts";
 import { flush } from "./board.ts";
@@ -517,18 +517,22 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
     : c.status === "stopped" ? "Stopped"
     : c.status === "error" ? c.error || statusText(c, boardName)
     : subline(c, cat);
+  const legacy = isLegacy(c);
   const menu = c.archived
     ? [{ label: "Unarchive", run: () => attempt("Couldn't unarchive the chat", () => api.unarchive("chats", c.id)) },
+       { label: "Delete", tone: "danger" as const, run: () => deleteChat(c) }]
+    : legacy
+    ? [{ label: "Archive", run: () => attempt("Couldn't archive the chat", () => api.archive("chats", c.id)) },
        { label: "Delete", tone: "danger" as const, run: () => deleteChat(c) }]
     : [{ label: "Rename", run: () => setEditing(key) },
        { label: "Archive", run: () => attempt("Couldn't archive the chat", () => api.archive("chats", c.id)) },
        { label: "Delete", tone: "danger" as const, run: () => deleteChat(c) }];
   const title = chatTitle(c, items);
-  const draft = hasDraft(c.draft) && !on && !c.archived; // the open chat shows its draft in the composer
+  const draft = hasDraft(c.draft) && !on && !c.archived && !legacy; // the open chat shows its draft in the composer
   return (
-    <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived ? "archived" : ""} st-${c.status}`}
+    <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived || legacy ? "archived" : ""} st-${c.status}`}
       {...(nested || c.archived || editing === key ? {} : drag(key))}
-      onClick={() => openChat(c)} onDoubleClick={() => { if (!c.archived) setEditing(key); }} title={`${title} — ${sub}`}>
+      onClick={() => openChat(c)} onDoubleClick={() => { if (!c.archived && !legacy) setEditing(key); }} title={`${title} — ${sub}`}>
       <span className={`side-glyph agent-${agentClass(c.agent)}`}>
         <AgentGlyph agent={c.agent} size={11} />
         <span className={`crow-dot st-${c.status}`} />
@@ -541,6 +545,7 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
       </div>
       {draft && <DraftTag />}
       {c.archived && <ArchivedTag />}
+      {!c.archived && legacy && <span className="archived-tag">Disabled</span>}
       {editing !== key && <RowMenu label="More" items={menu} />}
     </div>
   );

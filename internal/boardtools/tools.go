@@ -1,6 +1,5 @@
 // Package boardtools holds the board tool list shared by the agent adapters,
-// the prompts and the board API, and the parser for the Cursor board command.
-// It imports nothing from this project.
+// the prompts and the board API. It imports nothing from this project.
 package boardtools
 
 // Tool is one board tool an agent can call.

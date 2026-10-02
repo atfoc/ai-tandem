@@ -15,8 +15,10 @@
 //      MCP failures are per-server, non-fatal, and reported as one one-shot
 //      `notice` frame (bridge) or a prefixed stderr line (standalone).
 //
-// The extension presents only the per-run token (AIWB_BRIDGE_RUN); the board
-// token never enters the pi process. Protocol/mcp/mcp-wiring are dependency-free
+// The extension presents only the per-run bridge handle (AIWB_BRIDGE_RUN), an
+// internal, non-secret identifier; the board token reaches pi only inside the
+// MCP config's Authorization header (AIWB_MCP_CONFIG), never in argv or a URL.
+// Protocol/mcp/mcp-wiring are dependency-free
 // modules so they stay testable without pi or typebox.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

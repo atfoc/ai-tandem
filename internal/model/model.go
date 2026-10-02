@@ -190,23 +190,24 @@ type UsageLimit struct {
 
 // ChatMeta is chat.json.
 type ChatMeta struct {
-	ID               string    `json:"id"` // uuid v4
-	Agent            AgentKind `json:"agent"`
-	Name             string    `json:"name,omitempty"`
-	UserNamed        bool      `json:"userNamed,omitempty"`
-	Group            string    `json:"group,omitempty"` // plain chats (a group id or Ungrouped); empty for board chats, which use the board's group
-	Board            string    `json:"board,omitempty"` // board id for board chats
-	Cwd              string    `json:"cwd"`
-	Model            string    `json:"model"`
-	Effort           string    `json:"effort,omitempty"`
-	SessionID        string    `json:"sessionId,omitempty"` // Claude and pi: chosen by the app; Cursor: from session/new
-	Locked           bool      `json:"locked"`              // first message sent: folder, model, effort fixed
-	Token            string    `json:"token,omitempty"`     // board chats: secret for /mcp and /agent URLs
-	Created          time.Time `json:"created"`
-	TurnActive       bool      `json:"turnActive,omitempty"`       // a turn was running at the last write
-	InstructionsSent bool      `json:"instructionsSent,omitempty"` // Cursor board chats
-	Usage            Usage     `json:"usage"`
-	Draft            *Draft    `json:"draft,omitempty"` // the unsent message in the composer
+	ID                  string    `json:"id"` // uuid v4
+	Agent               AgentKind `json:"agent"`
+	Name                string    `json:"name,omitempty"`
+	UserNamed           bool      `json:"userNamed,omitempty"`
+	Group               string    `json:"group,omitempty"` // plain chats (a group id or Ungrouped); empty for board chats, which use the board's group
+	Board               string    `json:"board,omitempty"` // board id for board chats
+	Cwd                 string    `json:"cwd"`
+	Model               string    `json:"model"`
+	Effort              string    `json:"effort,omitempty"`
+	SessionID           string    `json:"sessionId,omitempty"` // Claude and pi: chosen by the app; Cursor: from session/new
+	Locked              bool      `json:"locked"`              // first message sent: folder, model, effort fixed
+	Token               string    `json:"token,omitempty"`     // board chats: the durable MCP credential, sent in the Authorization header
+	Created             time.Time `json:"created"`
+	TurnActive          bool      `json:"turnActive,omitempty"`          // a turn was running at the last write
+	InstructionsSent    bool      `json:"instructionsSent,omitempty"`    // curl-era Cursor board chats; those chats are disabled
+	McpInstructionsSent bool      `json:"mcpInstructionsSent,omitempty"` // Cursor board chats — whiteboard MCP instructions already injected
+	Usage               Usage     `json:"usage"`
+	Draft               *Draft    `json:"draft,omitempty"` // the unsent message in the composer
 	// ContextSplit is the last context split taken between turns; Claude's and live pi's are kept
 	// in chat.json and asked for again once messages or turns have moved past it.
 	ContextSplit *ContextSplit `json:"contextSplit,omitempty"`
@@ -253,19 +254,20 @@ const (
 // ChatView is what clients see: the metadata without the token, plus live state.
 // It is written out field by field (not embedded) so the token can never leak.
 type ChatView struct {
-	ID        string    `json:"id"`
-	Agent     AgentKind `json:"agent"`
-	Name      string    `json:"name,omitempty"`
-	UserNamed bool      `json:"userNamed,omitempty"`
-	Group     string    `json:"group,omitempty"`
-	Board     string    `json:"board,omitempty"`
-	Cwd       string    `json:"cwd"`
-	Model     string    `json:"model"`
-	Effort    string    `json:"effort,omitempty"`
-	Locked    bool      `json:"locked"`
-	Created   time.Time `json:"created"`
-	Usage     Usage     `json:"usage"`
-	Draft     *Draft    `json:"draft,omitempty"`
+	ID               string    `json:"id"`
+	Agent            AgentKind `json:"agent"`
+	Name             string    `json:"name,omitempty"`
+	UserNamed        bool      `json:"userNamed,omitempty"`
+	Group            string    `json:"group,omitempty"`
+	Board            string    `json:"board,omitempty"`
+	Cwd              string    `json:"cwd"`
+	Model            string    `json:"model"`
+	Effort           string    `json:"effort,omitempty"`
+	Locked           bool      `json:"locked"`
+	InstructionsSent bool      `json:"instructionsSent,omitempty"` // curl-era Cursor board chats; those chats are disabled
+	Created          time.Time `json:"created"`
+	Usage            Usage     `json:"usage"`
+	Draft            *Draft    `json:"draft,omitempty"`
 	Archive
 
 	Status        Status `json:"status"`
@@ -274,28 +276,29 @@ type ChatView struct {
 	FolderMissing bool   `json:"folderMissing,omitempty"`
 }
 
-// ViewOf builds the client view of a chat. Token, SessionID, TurnActive and InstructionsSent
-// are left out.
+// ViewOf builds the client view of a chat. Token, SessionID, TurnActive and McpInstructionsSent
+// are left out; InstructionsSent is included because it is the curl-era disable marker.
 func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool) ChatView {
 	return ChatView{
-		ID:            m.ID,
-		Agent:         m.Agent,
-		Name:          m.Name,
-		UserNamed:     m.UserNamed,
-		Group:         m.Group,
-		Board:         m.Board,
-		Cwd:           m.Cwd,
-		Model:         m.Model,
-		Effort:        m.Effort,
-		Locked:        m.Locked,
-		Created:       m.Created,
-		Usage:         m.Usage,
-		Draft:         m.Draft,
-		Archive:       m.Archive,
-		Status:        status,
-		StatusTool:    tool,
-		Error:         errText,
-		FolderMissing: folderMissing,
+		ID:               m.ID,
+		Agent:            m.Agent,
+		Name:             m.Name,
+		UserNamed:        m.UserNamed,
+		Group:            m.Group,
+		Board:            m.Board,
+		Cwd:              m.Cwd,
+		Model:            m.Model,
+		Effort:           m.Effort,
+		Locked:           m.Locked,
+		InstructionsSent: m.InstructionsSent,
+		Created:          m.Created,
+		Usage:            m.Usage,
+		Draft:            m.Draft,
+		Archive:          m.Archive,
+		Status:           status,
+		StatusTool:       tool,
+		Error:            errText,
+		FolderMissing:    folderMissing,
 	}
 }
 

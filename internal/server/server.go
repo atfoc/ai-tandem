@@ -30,6 +30,11 @@ type Server struct {
 	Bridge *editorbridge.Bridge
 	Client string // static client folder, "" = none
 	Port   int
+	// MCP listener identity for GET /api/mcp/status. MCPPort/MCPURL are zero when this server
+	// has no MCP listener; MCPUp reports whether it is serving (nil = down).
+	MCPPort int
+	MCPURL  string
+	MCPUp   func() bool
 	// Usage returns an agent's plan usage limits (agent.UsageCache.Get); a missing agent = not available.
 	Usage map[model.AgentKind]func(fresh bool) (model.PlanUsage, error)
 	// Restart starts `relaunch` of this program detached, for POST /api/restart; it must not stop
@@ -101,7 +106,7 @@ func statusOf(err error, fallback int) int {
 	case errors.Is(err, chats.ErrBadReference):
 		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
-		errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
+		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
 		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived):
 		return http.StatusConflict
 	}
@@ -157,6 +162,29 @@ func expandDir(p string) (string, error) {
 }
 
 // ---- routes ---------------------------------------------------------------
+
+// mcpStatus is GET /api/mcp/status: the MCP listener identity and the last MCP contact per
+// chat (chat id, client, method/tool, outcome, time). It carries no token and no board content.
+type mcpStatus struct {
+	Listener mcpListener        `json:"listener"`
+	Chats    []boardapi.Contact `json:"chats"`
+}
+
+type mcpListener struct {
+	Port int    `json:"port"`
+	URL  string `json:"url"`
+	Up   bool   `json:"up"`
+}
+
+// MCPHandler is the handler of the second, MCP-only listener: it serves exactly POST /mcp,
+// guarded by the loopback Host check for mcpPort. The credential travels in the Authorization
+// header, so no active-client check applies and no CORS headers are added. This listener serves
+// no client files and no /api/* routes (plan D2/D4).
+func (s *Server) MCPHandler(mcpPort int) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /mcp", s.Relay.ServeFixedMCP)
+	return guard(s.Bridge, mcpPort, mux)
+}
 
 // Handler builds the mux of the HTTP API, wrapped in guard().
 func (s *Server) Handler() http.Handler {
@@ -230,6 +258,22 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, a.Snapshot())
+	})
+	// Read-only MCP diagnostics. GET is exempt from the active-client check (guard.go), so this
+	// is readable from the page and with curl; it exposes no token and no board content.
+	mux.HandleFunc("GET /api/mcp/status", func(w http.ResponseWriter, r *http.Request) {
+		up := false
+		if s.MCPUp != nil {
+			up = s.MCPUp()
+		}
+		chats := []boardapi.Contact{}
+		if s.Relay != nil {
+			chats = s.Relay.Contacts.Snapshot()
+		}
+		writeJSON(w, mcpStatus{
+			Listener: mcpListener{Port: s.MCPPort, URL: s.MCPURL, Up: up},
+			Chats:    chats,
+		})
 	})
 
 	// ---- groups ----
@@ -596,10 +640,6 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, u)
 	})
-
-	// ---- agents ----
-	mux.HandleFunc("/mcp/{token}", s.Relay.ServeMCP)
-	mux.HandleFunc("/agent/{token}/{tool}", s.Relay.ServeCommand)
 
 	if s.Client != "" {
 		mux.Handle("/", clientFiles(s.Client))

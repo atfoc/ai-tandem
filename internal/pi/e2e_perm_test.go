@@ -183,7 +183,8 @@ func TestE2EMCPToolsAutoApproved(t *testing.T) {
 	env := newE2EBoardEnv(t)
 	env.setReply("E2E-MCP-TEXT-77")
 	s := env.newSpawner(t, map[string]mcpServerConfig{
-		"other": {Type: "http", URL: env.srv.URL + "/mcp/" + env.token},
+		"other": {Type: "http", URL: env.srv.URL + "/mcp", Headers: map[string]string{
+			"Authorization": "Bearer " + env.token}},
 	})
 	a, err := s.Spawn(agent.SpawnOptions{ChatID: "e2e-perm-mcp", Cwd: t.TempDir(), Model: e2eModel(),
 		Board: env.boardAccess()})

@@ -138,12 +138,14 @@ export type ChatMeta = Archive & {
   created: string;
   turnActive?: boolean;
   instructionsSent?: boolean;
+  mcpInstructionsSent?: boolean;
   usage: Usage;
 };
 
 export type Status = "ready" | "thinking" | "writing" | "tool" | "approval" | "stopped" | "error";
 
-/** What clients see: ChatMeta without token, sessionId, turnActive, instructionsSent, plus live state. */
+/** What clients see: ChatMeta without token, sessionId, turnActive (and mcpInstructionsSent), plus live state.
+ *  instructionsSent is the curl-era disable marker. */
 export type ChatView = Archive & {
   id: string;
   agent: AgentKind;
@@ -156,6 +158,7 @@ export type ChatView = Archive & {
   effort?: string;
   locked: boolean;
   created: string;
+  instructionsSent?: boolean;
   usage: Usage;
   draft?: Draft;
   status: Status;

@@ -194,7 +194,7 @@ func (p *proc) doHandshake() error {
 	var reported string // the model Cursor reports for the session
 	if p.o.Resume {
 		p.loading.Store(true)
-		res, err := c.Call("session/load", map[string]any{"sessionId": p.o.SessionID, "cwd": p.o.Cwd, "mcpServers": []any{}})
+		res, err := c.Call("session/load", map[string]any{"sessionId": p.o.SessionID, "cwd": p.o.Cwd, "mcpServers": mcpServers(p.o)})
 		p.loading.Store(false)
 		if err != nil {
 			return err
@@ -202,7 +202,7 @@ func (p *proc) doHandshake() error {
 		p.sessionID = p.o.SessionID
 		reported = reportedModel(res)
 	} else {
-		res, err := c.Call("session/new", map[string]any{"cwd": p.o.Cwd, "mcpServers": []any{}})
+		res, err := c.Call("session/new", map[string]any{"cwd": p.o.Cwd, "mcpServers": mcpServers(p.o)})
 		if err != nil {
 			return err
 		}
@@ -256,6 +256,24 @@ func (p *proc) doHandshake() error {
 }
 
 func (p *proc) Events() <-chan agent.Event { return p.events }
+
+// mcpServers is the ACP mcpServers value for a chat. A board chat gets the board server: HTTP
+// type, the exact fixed URL (an org policy matches the full URL, plan D1/D3) and the chat's board
+// token in an Authorization bearer header. Plain chats get an empty array. The headers array must
+// exist even when empty: Cursor's ACP schema requires it for an HTTP entry (experiment A.1).
+func mcpServers(o agent.SpawnOptions) []any {
+	if o.Board == nil || o.Board.MCPURL == "" {
+		return []any{}
+	}
+	return []any{map[string]any{
+		"type": "http",
+		"name": "board",
+		"url":  o.Board.MCPURL,
+		"headers": []any{
+			map[string]any{"name": "Authorization", "value": "Bearer " + o.Board.Token},
+		},
+	}}
+}
 
 // Send runs one user turn; it waits for the handshake.
 func (p *proc) Send(blocks []agent.ContentBlock) error {
@@ -633,12 +651,48 @@ func mustJSON(v any) json.RawMessage {
 	return b
 }
 
+// mcpCallInput is the rawInput of a Cursor MCP tool call. The real shape was captured from a
+// live board round-trip on 2026-10-02 (cursor-agent 2026.10.01-e373342): the first tool_call
+// carries title "MCP: tool", kind "other" and an empty rawInput, and a following
+// tool_call_update adds title "board: <tool>" and this rawInput. The server name is the MCP
+// server's `name` ("board"), the tool name is the MCP tool name and args are its arguments.
+type mcpCallInput struct {
+	ProviderIdentifier string          `json:"providerIdentifier"`
+	ToolName           string          `json:"toolName"`
+	Args               json.RawMessage `json:"args"`
+}
+
+// boardMCPCall reports whether tc is a call of one of this app's board MCP tools, and returns the
+// tool name and its arguments. Only calls whose provider is this app's "board" server and whose
+// tool is a known board tool qualify; every other MCP call (another server, an unknown tool)
+// keeps its normal tool presentation.
+func boardMCPCall(tc toolCall) (string, json.RawMessage, bool) {
+	if !present(tc.RawInput) {
+		return "", nil, false
+	}
+	var in mcpCallInput
+	if json.Unmarshal(tc.RawInput, &in) != nil || in.ProviderIdentifier != "board" || !boardtools.IsTool(in.ToolName) {
+		return "", nil, false
+	}
+	args := in.Args
+	if !present(args) {
+		args = json.RawMessage("{}")
+	}
+	return in.ToolName, args, true
+}
+
 // normalizeTool maps a Cursor tool call to the tool name and input the chat shows, so that a
-// board command gets the same card as Claude's board tool and a shell command Claude's Bash card.
+// board MCP call gets the same card as Claude's and pi's board tools and a shell command Claude's
+// Bash card.
 func (p *proc) normalizeTool(tc toolCall) (string, json.RawMessage) {
 	if isTaskTool(tc) {
 		a := taskInput(tc)
 		return "Agent", mustJSON(map[string]string{"description": a.Description, "prompt": a.Prompt, "subagent_type": a.Type})
+	}
+	if p.o.Board != nil {
+		if tool, args, ok := boardMCPCall(tc); ok {
+			return "mcp__board__" + tool, args
+		}
 	}
 	path := ""
 	if len(tc.Locations) > 0 {
@@ -646,13 +700,7 @@ func (p *proc) normalizeTool(tc toolCall) (string, json.RawMessage) {
 	}
 	switch tc.Kind {
 	case "execute":
-		cmd := command(tc)
-		if p.o.Board != nil {
-			if tok, tool, args, ok := boardtools.ParseCommand(cmd); ok && tok == p.o.Board.Token {
-				return "mcp__board__" + tool, args
-			}
-		}
-		return "Bash", mustJSON(map[string]string{"command": cmd})
+		return "Bash", mustJSON(map[string]string{"command": command(tc)})
 	case "read":
 		return "Read", mustJSON(map[string]string{"file_path": path})
 	case "edit":
@@ -743,20 +791,32 @@ func (p *proc) onRequest(id json.RawMessage, method string, params json.RawMessa
 	json.Unmarshal(params, &req)
 	tc := req.ToolCall
 	allow, reject := "allow-once", "reject-once"
+	allowOnce, allowAlways := "", ""
 	for _, o := range req.Options {
 		switch o.Kind {
 		case "allow_once":
-			allow = o.OptionID
+			allowOnce = o.OptionID
+		case "allow_always":
+			allowAlways = o.OptionID
 		case "reject_once":
 			reject = o.OptionID
+		case "reject_always":
+			reject = o.OptionID
 		}
+	}
+	// Prefer allow_once so an auto-approved board call writes nothing to the user's config; fall
+	// back to an always-allow option when Cursor offers only that.
+	if allowOnce != "" {
+		allow = allowOnce
+	} else if allowAlways != "" {
+		allow = allowAlways
 	}
 	selected := func(opt string) any {
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": opt}}
 	}
 	if p.o.Board != nil {
-		if tok, _, _, ok := boardtools.ParseCommand(command(tc)); ok && tok == p.o.Board.Token {
-			p.conn.Reply(id, selected(allow), nil) // board commands never ask
+		if _, _, ok := boardMCPCall(tc); ok {
+			p.conn.Reply(id, selected(allow), nil) // board MCP calls never ask
 			return
 		}
 	}

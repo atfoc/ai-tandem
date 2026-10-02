@@ -40,7 +40,7 @@ export type ToolCallDecision = ToolCallBlock | undefined;
 
 /** Dependencies of the gate; everything the pure module touches is injected. */
 export interface PermissionDeps {
-  /** The run token sent on every ask frame (AIWB_BRIDGE_RUN). */
+  /** The per-run, non-secret bridge handle sent on every ask frame (AIWB_BRIDGE_RUN). */
   run: string;
   /** The process environment used for the child subagent identity. */
   env: Record<string, string | undefined>;

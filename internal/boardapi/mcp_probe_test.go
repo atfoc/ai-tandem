@@ -2,14 +2,15 @@ package boardapi
 
 // Real-handler + real-pi probe for the Phase 2 MCP client module.
 //
-// The probe runs the REAL ServeMCP handler behind an httptest server, loads
+// The probe runs the REAL ServeFixedMCP handler behind an httptest server, loads
 // the materialized extension tree and a throwaway probe extension into a REAL
 // `pi --mode rpc` process, and the probe drives the hand-rolled mcp.ts client
 // directly (no model call). It asserts the server observed the full handshake,
 // that all 7 board tools were discovered, that tools/call returns the fake
 // client's text (and isError text for an unknown tool), and that ping works.
 // It also asserts the child got no AIWB_BRIDGE_*/AIWB_MCP_CONFIG environment,
-// which is the standalone (no app bridge) goal.
+// which is the standalone (no app bridge) goal: AIWB_BRIDGE_RUN is a per-run,
+// non-secret bridge handle, not a credential.
 //
 // The test skips, with a clear reason and captured output, when node or pi is
 // unavailable or the pi process does not start/complete in this environment.
@@ -132,13 +133,14 @@ type probeResult struct {
 
 // observedMCP is one request the MCP httptest server saw.
 type observedMCP struct {
-	httpMethod string
-	method     string
-	path       string
-	protocol   string
-	accept     string
-	content    string
-	probe      string
+	httpMethod    string
+	method        string
+	path          string
+	protocol      string
+	accept        string
+	content       string
+	probe         string
+	authorization string
 }
 
 // syncBuffer is a goroutine-safe writer for the child's stdout/stderr.
@@ -215,13 +217,14 @@ func TestMCPRealPiProbe(t *testing.T) {
 		_ = json.Unmarshal(body, &rq)
 		mu.Lock()
 		observed = append(observed, observedMCP{
-			httpMethod: r.Method,
-			method:     rq.Method,
-			path:       r.URL.Path,
-			protocol:   r.Header.Get("mcp-protocol-version"),
-			accept:     r.Header.Get("accept"),
-			content:    r.Header.Get("content-type"),
-			probe:      r.Header.Get("x-aiwb-probe"),
+			httpMethod:    r.Method,
+			method:        rq.Method,
+			path:          r.URL.Path,
+			protocol:      r.Header.Get("mcp-protocol-version"),
+			accept:        r.Header.Get("accept"),
+			content:       r.Header.Get("content-type"),
+			probe:         r.Header.Get("x-aiwb-probe"),
+			authorization: r.Header.Get("Authorization"),
 		})
 		mu.Unlock()
 		e.mux.ServeHTTP(w, r)
@@ -230,7 +233,8 @@ func TestMCPRealPiProbe(t *testing.T) {
 
 	configJSON, err := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{
-			"board": map[string]any{"type": "http", "url": mcpServer.URL + "/mcp/" + e.token},
+			"board": map[string]any{"type": "http", "url": mcpServer.URL + "/mcp",
+				"headers": map[string]any{"Authorization": "Bearer " + e.token}},
 		},
 	})
 	if err != nil {
@@ -375,7 +379,9 @@ func TestMCPRealPiProbe(t *testing.T) {
 		t.Fatalf("probe ping = %q, want ok", result.Ping)
 	}
 
-	// Standalone goal: the child had no bridge environment.
+	// Standalone goal: the child had no bridge environment. AIWB_BRIDGE_RUN is a
+	// per-run bridge handle, not a credential; its absence here only shows the
+	// standalone boot wired no bridge.
 	for name, value := range result.BridgeEnv {
 		if value != nil {
 			t.Fatalf("probe child env %s = %v, want unset", name, value)
@@ -411,8 +417,11 @@ func TestMCPRealPiProbe(t *testing.T) {
 		if got[i].httpMethod != http.MethodPost {
 			t.Fatalf("handler request %d used %s, want POST", i, got[i].httpMethod)
 		}
-		if got[i].path != "/mcp/"+e.token {
-			t.Fatalf("handler request %d path = %q, want /mcp/<board token>", i, got[i].path)
+		if got[i].path != "/mcp" {
+			t.Fatalf("handler request %d path = %q, want /mcp (fixed endpoint)", i, got[i].path)
+		}
+		if got[i].authorization != "Bearer "+e.token {
+			t.Fatalf("handler request %d Authorization = %q, want the chat's board token in the header", i, got[i].authorization)
 		}
 	}
 	if got[0].protocol != "" {

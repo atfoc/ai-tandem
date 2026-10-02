@@ -10,19 +10,20 @@ import (
 
 func TestViewOfHidesSecrets(t *testing.T) {
 	m := ChatMeta{
-		ID:               "c1",
-		Agent:            Cursor,
-		Name:             "My chat",
-		Board:            "b_abc",
-		Cwd:              "/tmp",
-		Model:            "sonnet",
-		SessionID:        "sess-SECRET-1",
-		Locked:           true,
-		Token:            "tok-SECRET-2",
-		Created:          time.Unix(0, 0).UTC(),
-		TurnActive:       true,
-		InstructionsSent: true,
-		Usage:            Usage{Turns: 3},
+		ID:                  "c1",
+		Agent:               Cursor,
+		Name:                "My chat",
+		Board:               "b_abc",
+		Cwd:                 "/tmp",
+		Model:               "sonnet",
+		SessionID:           "sess-SECRET-1",
+		Locked:              true,
+		Token:               "tok-SECRET-2",
+		Created:             time.Unix(0, 0).UTC(),
+		TurnActive:          true,
+		InstructionsSent:    true,
+		McpInstructionsSent: true,
+		Usage:               Usage{Turns: 3},
 	}
 	v := ViewOf(m, StatusTool, "Bash", "", true)
 	b, err := json.Marshal(v)
@@ -30,12 +31,12 @@ func TestViewOfHidesSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, bad := range []string{"tok-SECRET-2", "sess-SECRET-1", "token", "sessionId", "turnActive", "instructionsSent"} {
+	for _, bad := range []string{"tok-SECRET-2", "sess-SECRET-1", "token", "sessionId", "turnActive", "mcpInstructionsSent"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("view JSON contains %q: %s", bad, s)
 		}
 	}
-	for _, want := range []string{`"id":"c1"`, `"agent":"cursor"`, `"board":"b_abc"`, `"locked":true`, `"status":"tool"`, `"statusTool":"Bash"`, `"folderMissing":true`, `"turns":3`} {
+	for _, want := range []string{`"id":"c1"`, `"agent":"cursor"`, `"board":"b_abc"`, `"locked":true`, `"status":"tool"`, `"statusTool":"Bash"`, `"folderMissing":true`, `"turns":3`, `"instructionsSent":true`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("view JSON missing %s: %s", want, s)
 		}

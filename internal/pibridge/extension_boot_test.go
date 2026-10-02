@@ -143,6 +143,7 @@ type bootObserved struct {
 	Method   string
 	Protocol string
 	Path     string
+	Auth     string
 }
 
 // bootStub is a minimal JSON-only Streamable HTTP MCP server: initialize echo,
@@ -186,6 +187,7 @@ func (s *bootStub) handle(w http.ResponseWriter, r *http.Request) {
 		Method:   rq.Method,
 		Protocol: r.Header.Get("mcp-protocol-version"),
 		Path:     r.URL.Path,
+		Auth:     r.Header.Get("Authorization"),
 	})
 	s.mu.Unlock()
 
@@ -299,6 +301,7 @@ func (s *bootStallStub) handle(w http.ResponseWriter, r *http.Request) {
 		Method:   rq.Method,
 		Protocol: r.Header.Get("mcp-protocol-version"),
 		Path:     r.URL.Path,
+		Auth:     r.Header.Get("Authorization"),
 	})
 	s.mu.Unlock()
 
@@ -626,7 +629,8 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 		stub := newBootStub(t)
 		configJSON, err := json.Marshal(map[string]any{
 			"mcpServers": map[string]any{
-				"board": map[string]any{"type": "http", "url": stub.server.URL + "/mcp/TESTTOKEN"},
+				"board": map[string]any{"type": "http", "url": stub.server.URL + "/mcp",
+					"headers": map[string]any{"Authorization": "Bearer TESTTOKEN"}},
 			},
 		})
 		if err != nil {
@@ -677,8 +681,11 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 			t.Fatalf("stub saw %v, want %v", methods, wantMethods)
 		}
 		for _, req := range observed {
-			if req.Path != "/mcp/TESTTOKEN" {
-				t.Fatalf("stub request path = %q, want /mcp/TESTTOKEN", req.Path)
+			if req.Path != "/mcp" {
+				t.Fatalf("stub request path = %q, want /mcp", req.Path)
+			}
+			if req.Auth != "Bearer TESTTOKEN" {
+				t.Fatalf("stub request Authorization = %q, want the board token in the header", req.Auth)
 			}
 		}
 		if observed[0].Protocol != "" {
@@ -695,7 +702,7 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 
 	t.Run("connect failure", func(t *testing.T) {
 		deadPort := freeTCPPort(t)
-		configJSON := fmt.Sprintf(`{"mcpServers":{"board":{"url":"http://127.0.0.1:%d/mcp/x"}}}`, deadPort)
+		configJSON := fmt.Sprintf(`{"mcpServers":{"board":{"url":"http://127.0.0.1:%d/mcp"}}}`, deadPort)
 		run := startBootPi(t, pi, probePath, configJSON)
 		report := decodeBootReport(t, run.waitReport(t, 90*time.Second))
 
@@ -732,7 +739,7 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 	} {
 		t.Run("stalling server/"+tc.name, func(t *testing.T) {
 			stub := newBootStallStub(t, tc.stallMethod)
-			configJSON := fmt.Sprintf(`{"mcpServers":{"board":{"url":%q}}}`, stub.server.URL+"/mcp/x")
+			configJSON := fmt.Sprintf(`{"mcpServers":{"board":{"url":%q}}}`, stub.server.URL+"/mcp")
 			run := startBootPi(t, pi, probePath, configJSON, "AIWB_MCP_HANDSHAKE_TIMEOUT_MS=1000")
 			report := decodeBootReport(t, run.waitReport(t, 90*time.Second))
 
@@ -794,9 +801,9 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 // AIWB_MCP_CONFIG (env source) and bridge-like AIWB_BRIDGE_* variables must
 // register exactly the board MCP tools plus the app's subagent tool, and no raw
 // native board tool name — the native registration is gone and app board chats
-// carry the run-scoped config instead.
+// carry the board-token header config instead.
 //
-// The bridge is simulated with a nonexistent socket path and a fake run token:
+// The bridge is simulated with a nonexistent socket path and a fake run handle:
 // the extension uses the bridge only for the permission gate, subagent activity
 // and the best-effort control channel, all of which tolerate an unreachable
 // socket; the probe drives the MCP tools directly, so no UDS server is needed.
@@ -806,7 +813,8 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 	stub := newBootStub(t)
 	configJSON, err := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{
-			"board": map[string]any{"type": "http", "url": stub.server.URL + "/mcp/RUNTOKEN"},
+			"board": map[string]any{"type": "http", "url": stub.server.URL + "/mcp",
+				"headers": map[string]any{"Authorization": "Bearer APPBTOKEN"}},
 		},
 	})
 	if err != nil {
@@ -864,13 +872,16 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 		}
 	}
 
-	// The env-sourced config reached the stub through its run-scoped path, and
-	// the MCP call path works from the env source.
+	// The env-sourced config reached the stub through the fixed path with the
+	// board-token header, and the MCP call path works from the env source.
 	methods := make([]string, 0, len(stub.methods()))
 	for _, req := range stub.methods() {
 		methods = append(methods, req.Method)
-		if req.Path != "/mcp/RUNTOKEN" {
-			t.Fatalf("stub request path = %q, want /mcp/RUNTOKEN", req.Path)
+		if req.Path != "/mcp" {
+			t.Fatalf("stub request path = %q, want /mcp", req.Path)
+		}
+		if req.Auth != "Bearer APPBTOKEN" {
+			t.Fatalf("stub request Authorization = %q, want the board token in the header", req.Auth)
 		}
 	}
 	if len(methods) == 0 || methods[0] != "initialize" {

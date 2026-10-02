@@ -25,7 +25,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -126,6 +128,15 @@ func serve(o options, args []string) {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 
+	// The MCP listener is bound here, before server.json is written: a 6006 conflict is fatal
+	// and must not leave a server.json behind (plan D11).
+	wantMCPPort := mcpPort()
+	mcpLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", wantMCPPort))
+	if err != nil {
+		log.Fatalf("%s", mcpListenError(wantMCPPort, err))
+	}
+	mcpBoundPort := mcpLn.Addr().(*net.TCPAddr).Port
+
 	st, err := store.Open(p)
 	if err != nil {
 		log.Fatalf("data folder %s: %v", p.Root, err)
@@ -138,7 +149,8 @@ func serve(o options, args []string) {
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
-	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd, BaseURL: base,
+	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd,
+		MCPURL: boardapi.Endpoint(mcpBoundPort),
 		Namers: map[model.AgentKind]chats.Namer{
 			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
 			model.Cursor: chats.ClaudeNamer{Bin: o.claudeBin},
@@ -162,7 +174,6 @@ func serve(o options, args []string) {
 		extPath = ""
 	}
 	pb := pibridge.New(pibridge.SocketPath(p.Root))
-	relay.Runs = pb // /mcp/{runToken} resolves to the chat's board token
 	if err := pb.Start(); err != nil {
 		log.Fatalf("pi bridge: %v", err)
 	}
@@ -174,12 +185,22 @@ func serve(o options, args []string) {
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
 	}
+	var mcpUp atomic.Bool // read by GET /api/mcp/status
 	srv := &server.Server{App: a, Relay: relay, Bridge: br,
 		Client: o.client, Port: port, Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
 			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
 		},
+		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load,
 		Restart: func() error { return startRelaunch(p, args) }}
+	mcpHandler := srv.MCPHandler(mcpBoundPort)
+	mcpUp.Store(true)
+	go func() {
+		if err := http.Serve(mcpLn, mcpHandler); err != nil && err != http.ErrServerClosed {
+			log.Printf("MCP listener: %v", err)
+			mcpUp.Store(false)
+		}
+	}()
 	if err := store.WriteServerFile(p, port); err != nil {
 		log.Printf("server.json: %v", err)
 	}
@@ -193,7 +214,33 @@ func serve(o options, args []string) {
 	}, syscall.SIGINT, syscall.SIGTERM)
 
 	log.Printf("AI Whiteboard: %s  (data in %s)", base, p.Root)
+	log.Printf("MCP endpoint: %s", boardapi.Endpoint(mcpBoundPort))
 	log.Fatal(http.Serve(ln, srv.Handler()))
+}
+
+// mcpPort returns the MCP listener port: the fixed production port, or the hidden test-only
+// AIWB_MCP_PORT override. It is deliberately not a flag: changing the port would break Cursor's
+// exact-URL allowlist (plan D10). Port 0 asks the OS for an ephemeral port.
+func mcpPort() int {
+	v := strings.TrimSpace(os.Getenv("AIWB_MCP_PORT"))
+	if v == "" {
+		return boardapi.MCPPort
+	}
+	p, err := strconv.Atoi(v)
+	if err != nil || p < 0 || p > 65535 {
+		log.Fatalf("AIWB_MCP_PORT %q is not a valid port (0-65535)", v)
+	}
+	return p
+}
+
+// mcpListenError is the fail-fast message when the MCP listener cannot bind (plan D11): it names
+// the effective port, the likely holder and the remedy.
+func mcpListenError(port int, err error) string {
+	return fmt.Sprintf(
+		"cannot serve the MCP endpoint on port %d: %v\n"+
+			"Port %d is probably held by another AI Whiteboard instance (for a different data folder) or by another program.\n"+
+			"Stop that instance or free port %d, then start AI Whiteboard again.",
+		port, err, port, port)
 }
 
 // expand turns a leading "~" into the user's home folder.

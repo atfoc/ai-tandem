@@ -28,7 +28,7 @@ func TestNoticeLogsWithRunContext(t *testing.T) {
 		t.Fatalf("notice log line %q lacks the chat id", line)
 	}
 	if !strings.Contains(line, "run=run-abc") {
-		t.Fatalf("notice log line %q lacks the run token", line)
+		t.Fatalf("notice log line %q lacks the bridge run handle", line)
 	}
 	if !strings.Contains(line, `server "board" failed`) {
 		t.Fatalf("notice log line %q lacks the message", line)

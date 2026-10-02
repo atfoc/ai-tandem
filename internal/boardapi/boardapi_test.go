@@ -4,9 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/pibridge"
 	"ai-whiteboard/internal/store"
 )
 
@@ -40,8 +40,7 @@ func newEnv(t *testing.T) *env {
 	if err := bds.Load(); err != nil {
 		t.Fatal(err)
 	}
-	m := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds, DefaultCwd: t.TempDir(),
-		BaseURL: "http://127.0.0.1:4747"})
+	m := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds, DefaultCwd: t.TempDir()})
 	if err := m.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -59,26 +58,19 @@ func newEnv(t *testing.T) *env {
 	}
 	r := &Relay{Bridge: br, Chats: m, Boards: bds}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp/{token}", r.ServeMCP)
-	mux.HandleFunc("/agent/{token}/{tool}", r.ServeCommand)
+	mux.HandleFunc("POST /mcp", r.ServeFixedMCP) // the only MCP route (header credential)
 	mux.HandleFunc("GET /api/events", br.ServeSSE)
 	return &env{t: t, relay: r, mux: mux, board: bd, token: metas[0].Token, chat: v.ID}
 }
 
-// fakeRuns is a RunResolver backed by a fixed run-token -> board-token map.
-type fakeRuns map[string]string
-
-func (f fakeRuns) ResolveBoardToken(runToken string) (string, bool) {
-	boardToken, ok := f[runToken]
-	return boardToken, ok
-}
-
-var _ RunResolver = fakeRuns{}
-
-// mcp posts one JSON-RPC message to /mcp/{token} and returns the response.
+// mcp posts one JSON-RPC message to the fixed /mcp route with the token as the bearer
+// credential and returns the response.
 func (e *env) mcp(token, body string) (*http.Response, map[string]any) {
 	e.t.Helper()
-	req := httptest.NewRequest("POST", "/mcp/"+token, strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	w := httptest.NewRecorder()
 	e.mux.ServeHTTP(w, req)
 	resp := w.Result()
@@ -89,16 +81,6 @@ func (e *env) mcp(token, body string) (*http.Response, map[string]any) {
 		}
 	}
 	return resp, out
-}
-
-func (e *env) command(token, tool, body string) (*http.Response, string) {
-	e.t.Helper()
-	req := httptest.NewRequest("POST", "/agent/"+token+"/"+tool, strings.NewReader(body))
-	w := httptest.NewRecorder()
-	e.mux.ServeHTTP(w, req)
-	resp := w.Result()
-	b, _ := io.ReadAll(resp.Body)
-	return resp, string(b)
 }
 
 // callResult checks a tools/call response and returns its text and isError.
@@ -209,7 +191,7 @@ func TestMCPProtocolBits(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("notification status %d", resp.StatusCode)
 	}
-	req := httptest.NewRequest("GET", "/mcp/"+e.token, nil)
+	req := httptest.NewRequest("GET", "/mcp", nil)
 	w := httptest.NewRecorder()
 	e.mux.ServeHTTP(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -224,135 +206,6 @@ func TestMCPProtocolBits(t *testing.T) {
 func TestToolsCallUnknownToken(t *testing.T) {
 	e := newEnv(t)
 	_, out := e.mcp(strings.Repeat("0", 32), `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
-	text, isErr := callResult(t, out)
-	if !isErr || text != "unknown board token" {
-		t.Fatalf("got %q isError=%v", text, isErr)
-	}
-}
-
-func TestToolsCallRunTokenResolvesToBoardToken(t *testing.T) {
-	e := newEnv(t)
-	got := make(chan map[string]any, 1)
-	e.client(func(p map[string]any) editorbridge.RPCReply {
-		got <- p
-		return editorbridge.RPCReply{Result: json.RawMessage(`"rect r1 at 0,0"`)}
-	})
-	e.relay.Runs = fakeRuns{"run-1": e.token}
-
-	_, out := e.mcp("run-1", `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
-	text, isErr := callResult(t, out)
-	if isErr || text != "rect r1 at 0,0" {
-		t.Fatalf("run token: got %q isError=%v", text, isErr)
-	}
-	p := <-got
-	if p["chat"] != e.chat || p["board"] != e.board.ID || p["name"] != "read_board" {
-		t.Fatalf("rpc params %v", p)
-	}
-
-	// A board token is not a registered run token: the credential passes
-	// through unchanged (Claude/Cursor fallback).
-	_, out = e.mcp(e.token, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
-	text, isErr = callResult(t, out)
-	if isErr || text != "rect r1 at 0,0" {
-		t.Fatalf("board-token fallback: got %q isError=%v", text, isErr)
-	}
-	<-got
-}
-
-func TestToolsCallRunTokenUnknownOrEmpty(t *testing.T) {
-	e := newEnv(t)
-	e.relay.Runs = fakeRuns{"run-plain": ""}
-
-	_, out := e.mcp(strings.Repeat("0", 32), `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
-	text, isErr := callResult(t, out)
-	if !isErr || text != "unknown board token" {
-		t.Fatalf("unknown run token: got %q isError=%v", text, isErr)
-	}
-
-	// A plain-chat run resolves ok with an empty board token; the relay then
-	// reports an unknown board token like any other empty/unknown token.
-	_, out = e.mcp("run-plain", `{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
-	text, isErr = callResult(t, out)
-	if !isErr || text != "unknown board token" {
-		t.Fatalf("empty board token: got %q isError=%v", text, isErr)
-	}
-}
-
-func TestToolsCallRunTokenArchivedChat(t *testing.T) {
-	e := newEnv(t)
-	e.relay.Runs = fakeRuns{"run-arch": e.token}
-	if err := e.relay.Chats.SetArchive(e.chat, model.Archive{Archived: true, Op: "op1"}); err != nil {
-		t.Fatal(err)
-	}
-	_, out := e.mcp("run-arch", `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
-	text, isErr := callResult(t, out)
-	if !isErr || text != "this chat is archived" {
-		t.Fatalf("got %q isError=%v", text, isErr)
-	}
-}
-
-// TestMCPRunTokenRealBridgeArchiveAndDeregister wires a real pibridge.Bridge
-// into the relay's RunResolver: a registered run token resolves to the chat's
-// board token and the call reaches the browser client; an archived chat yields
-// the existing archived text over the run token; and after deregistration the
-// run token stops resolving and is treated as a board token, failing safely
-// (A12).
-func TestMCPRunTokenRealBridgeArchiveAndDeregister(t *testing.T) {
-	e := newEnv(t)
-	got := make(chan map[string]any, 1)
-	e.client(func(p map[string]any) editorbridge.RPCReply {
-		got <- p
-		return editorbridge.RPCReply{Result: json.RawMessage(`"rect r1 at 0,0"`)}
-	})
-
-	pb := pibridge.New(pibridge.SocketPath(t.TempDir()))
-	if err := pb.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pb.Close)
-	_, runToken, err := pb.RegisterRun(e.chat, e.token, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.relay.Runs = pb
-
-	// A registered run token resolves through the real bridge and the call
-	// reaches the fake browser client.
-	_, out := e.mcp(runToken, `{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
-	text, isErr := callResult(t, out)
-	if isErr || text != "rect r1 at 0,0" {
-		t.Fatalf("run token call: got %q isError=%v", text, isErr)
-	}
-	if p := <-got; p["chat"] != e.chat || p["board"] != e.board.ID {
-		t.Fatalf("rpc params %v", p)
-	}
-
-	// Archiving the chat yields the existing archived text over the run token.
-	if err := e.relay.Chats.SetArchive(e.chat, model.Archive{Archived: true, Op: "op1"}); err != nil {
-		t.Fatal(err)
-	}
-	_, out = e.mcp(runToken, `{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
-	text, isErr = callResult(t, out)
-	if !isErr || text != "this chat is archived" {
-		t.Fatalf("archived run token: got %q isError=%v", text, isErr)
-	}
-
-	// After deregistration the run token stops resolving; it is treated as a
-	// board token and fails safely as unknown (A12).
-	pb.DeregisterRun(runToken)
-	_, out = e.mcp(runToken, `{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
-	text, isErr = callResult(t, out)
-	if !isErr || text != "unknown board token" {
-		t.Fatalf("deregistered run token: got %q isError=%v", text, isErr)
-	}
-}
-
-func TestToolsCallRunTokenWithoutResolver(t *testing.T) {
-	e := newEnv(t)
-	if e.relay.Runs != nil {
-		t.Fatal("newEnv relay should have a nil RunResolver")
-	}
-	_, out := e.mcp("run-1", `{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
 	text, isErr := callResult(t, out)
 	if !isErr || text != "unknown board token" {
 		t.Fatalf("got %q isError=%v", text, isErr)
@@ -421,51 +274,44 @@ func TestRelayCallArchivedChat(t *testing.T) {
 	}
 }
 
+func TestRelayCallLegacyChat(t *testing.T) {
+	e := newEnv(t)
+	markLegacyAndReload(t, e)
+	text, isErr := e.relay.Call(e.token, "list_boards", nil)
+	if !isErr || text != "this chat used the old board connection" {
+		t.Fatalf("got %q isErr=%v", text, isErr)
+	}
+}
+
+// markLegacyAndReload persists instructionsSent on the test chat and reloads the chats manager,
+// matching a restart of a curl-era Cursor board chat (there is no setter).
+func markLegacyAndReload(t *testing.T, e *env) {
+	t.Helper()
+	m := e.relay.Chats
+	path := filepath.Join(m.Store.P.ChatDir(e.chat), "chat.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta model.ChatMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	meta.InstructionsSent = true
+	if err := store.WriteJSONAtomic(path, meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nm := chats.New(chats.Deps{Store: m.Store, Bridge: e.relay.Bridge, Boards: e.relay.Boards, DefaultCwd: m.DefaultCwd})
+	if err := nm.Load(); err != nil {
+		t.Fatal(err)
+	}
+	e.relay.Chats = nm
+}
+
 func TestRelayCallUnknownTool(t *testing.T) {
 	e := newEnv(t)
 	text, isErr := e.relay.Call(e.token, "rm_rf", nil)
 	if !isErr || text != "unknown tool rm_rf" {
 		t.Fatalf("got %q isErr=%v", text, isErr)
-	}
-}
-
-func TestServeCommandErrors(t *testing.T) {
-	e := newEnv(t)
-	cases := []struct {
-		name, token, tool, body, want string
-	}{
-		{"unknown token", strings.Repeat("0", 32), "list_boards", `{}`, "ERROR: unknown board token"},
-		{"unknown tool", e.token, "nope", `{}`, "ERROR: unknown tool nope"},
-		{"bad json", e.token, "read_board", `{nope`, "ERROR: the arguments are not valid JSON"},
-		{"no client", e.token, "read_board", `{}`, "ERROR: " + NoClientText},
-	}
-	for _, c := range cases {
-		resp, body := e.command(c.token, c.tool, c.body)
-		if resp.StatusCode != 200 {
-			t.Errorf("%s: status %d", c.name, resp.StatusCode)
-		}
-		if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain") {
-			t.Errorf("%s: content type %q", c.name, resp.Header.Get("Content-Type"))
-		}
-		if strings.TrimSuffix(body, "\n") != c.want {
-			t.Errorf("%s: body %q, want %q", c.name, body, c.want)
-		}
-	}
-}
-
-func TestServeCommandSuccess(t *testing.T) {
-	e := newEnv(t)
-	got := make(chan map[string]any, 1)
-	e.client(func(p map[string]any) editorbridge.RPCReply {
-		got <- p
-		return editorbridge.RPCReply{Result: json.RawMessage(`"created db"`)}
-	})
-	resp, body := e.command(e.token, "apply", "{\"create\":[{\"type\":\"rectangle\",\"key\":\"db\"}]}\n")
-	if resp.StatusCode != 200 || body != "created db\n" {
-		t.Fatalf("status %d body %q", resp.StatusCode, body)
-	}
-	p := <-got
-	if p["name"] != "apply" || p["args"].(map[string]any)["create"] == nil {
-		t.Fatalf("rpc params %v", p)
 	}
 }
