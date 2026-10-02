@@ -24,14 +24,29 @@ export function groupModels(models: CatalogModel[]): ModelGroup[] {
   return out;
 }
 
-const has = (s: string | undefined, q: string) => (s ?? "").toLowerCase().includes(q);
+/** The lowercased haystack. A model with a provider is searched by exactly "provider - label" (the
+ *  user-facing name): its id repeats the provider/model key, so including the id would let a later
+ *  term re-match inside it and break strictly left-to-right matching (e.g. "deep open" would find
+ *  openrouter's DeepSeek V3 again). Provider-less models keep label, id and note searchable; empty
+ *  values are skipped so an absent note leaves no gap. */
+const searchText = (m: CatalogModel): string =>
+  m.provider
+    ? `${m.provider} - ${m.label}`.toLowerCase()
+    : [m.label, m.id, m.note].filter((s): s is string => !!s).join(" - ").toLowerCase();
 
-/** True when the trimmed, case-insensitive query is empty, or is a substring of the model's
- *  label, id, provider or note. An empty provider never matches a non-empty query. */
+/** True when every whitespace-separated query term appears in the model's search text in order
+ *  and without overlap; an empty or whitespace-only query matches everything. Case-insensitive
+ *  because both sides are lowercased. */
 export function modelMatches(m: CatalogModel, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return has(m.label, q) || has(m.id, q) || has(m.provider, q) || has(m.note, q);
+  const text = searchText(m);
+  let cursor = 0;
+  for (const term of query.toLowerCase().split(/\s+/)) {
+    if (!term) continue;
+    const at = text.indexOf(term, cursor);
+    if (at < 0) return false;
+    cursor = at + term.length;
+  }
+  return true;
 }
 
 /** The models matching the query, in catalog order. Empty/whitespace-only query keeps everything. */
