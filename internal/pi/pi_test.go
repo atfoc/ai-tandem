@@ -126,7 +126,7 @@ func TestSpawnBoardPromptEnvAndSessionDir(t *testing.T) {
 	s := f.spawner()
 	s.Prompt = "BOARD-PROMPT"
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", SessionID: "app-1", Cwd: t.TempDir(),
-		Model: "test/test-model", Board: &agent.BoardAccess{Token: "bt"}})
+		Model: "test/test-model", BoardID: "board"})
 	waitKind(t, a, agent.EvCatalog)
 	inv := f.invocation(t)
 
@@ -170,7 +170,7 @@ func TestSpawnBoardChatMCPConfig(t *testing.T) {
 	s := f.spawner()
 	s.Bridge = reg
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", SessionID: "app-1", Cwd: t.TempDir(),
-		Model: "test/test-model", Board: &agent.BoardAccess{
+		Model: "test/test-model", MCP: &agent.BoardAccess{
 			MCPURL: "http://localhost:6006/mcp",
 			Token:  boardToken,
 		}})
@@ -224,7 +224,7 @@ func TestSpawnBoardChatMCPConfigExtraSeam(t *testing.T) {
 		"other": {Type: "http", URL: "http://127.0.0.1:1/mcp/other"},
 		"board": {Type: "http", URL: "http://evil.invalid/mcp/hijack"},
 	}
-	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(), Board: &agent.BoardAccess{
+	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(), MCP: &agent.BoardAccess{
 		MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
 	waitKind(t, a, agent.EvCatalog)
 	inv := f.invocation(t)
@@ -256,10 +256,27 @@ func TestSpawnPlainChatNoMCPConfig(t *testing.T) {
 	waitKind(t, a, agent.EvCatalog)
 	inv := f.invocation(t)
 	if inv.MCPConfig != "" {
-		t.Fatalf("plain chat got AIWB_MCP_CONFIG %q", inv.MCPConfig)
+		t.Fatalf("MCP unset got AIWB_MCP_CONFIG %q", inv.MCPConfig)
 	}
 	if inv.BridgeRun != "run-7" {
 		t.Fatalf("plain chat AIWB_BRIDGE_RUN = %q, want the minted bridge run handle", inv.BridgeRun)
+	}
+	f.stdinLines(t, a)
+}
+
+func TestSpawnPlainChatWithMCPConfig(t *testing.T) {
+	const tok = "plain-mcp-token"
+	reg := &fakeRegistry{}
+	f := newFake(t)
+	s := f.spawner()
+	s.Bridge = reg
+	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(),
+		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: tok}})
+	waitKind(t, a, agent.EvCatalog)
+	inv := f.invocation(t)
+	want := `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer plain-mcp-token"}}}}`
+	if inv.MCPConfig != want {
+		t.Fatalf("MCP set: AIWB_MCP_CONFIG = %q\nwant %q", inv.MCPConfig, want)
 	}
 	f.stdinLines(t, a)
 }
@@ -375,7 +392,7 @@ func TestCloseDeregistersAndAbortPushes(t *testing.T) {
 	f := newFake(t)
 	s := f.spawner()
 	s.Bridge = reg
-	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(), Board: &agent.BoardAccess{Token: "bt"}})
+	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
 	waitKind(t, a, agent.EvCatalog)
 	if got := reg.regs(); !equalStrings(got, []string{"c1"}) {
 		t.Fatalf("registered %q", got)

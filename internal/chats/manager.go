@@ -36,7 +36,7 @@ type Deps struct {
 	Spawners   map[model.AgentKind]agent.Spawner
 	Namers     map[model.AgentKind]Namer // per-agent auto namers; a missing entry means chats of that agent are not named
 	DefaultCwd string
-	MCPURL     string // the fixed board MCP endpoint handed to every board chat, http://localhost:6006/mcp
+	MCPURL     string // the fixed MCP endpoint handed to every chat, http://localhost:6006/mcp
 }
 
 type Manager struct {
@@ -45,6 +45,13 @@ type Manager struct {
 	chats  map[string]*Chat
 	naming sync.WaitGroup   // the auto namer goroutines Send starts
 	now    func() time.Time // the clock subagents' times come from; tests replace it
+
+	// extrasMu protects extras, extraBySID and used. Never take Chat.mu while holding extrasMu
+	// (issue/revoke run with Chat.mu then extrasMu).
+	extrasMu   sync.Mutex
+	extras     map[string]extraCaller // extra token → caller (in memory only)
+	extraBySID map[string]string      // chatID+"/"+sid → extra token
+	used       map[string]struct{}    // live chat tokens and extra tokens, for uniqueness
 }
 
 type Chat struct {
@@ -55,11 +62,12 @@ type Chat struct {
 	gen           int                    // bumped on every spawn; events of an older process are dropped
 	errText       string
 	folderMissing bool
-	interrupted   bool              // TurnActive was true at boot; the "Stopped" note is added when tr loads
-	deleted       bool              // removed by Delete: nothing more is written or emitted for it
-	subs          map[string]*sub   // sid → subagent; loaded with tr (see trOf)
-	subByTool     map[string]string // Agent/Task tool call id → sid
-	splitRun      *splitRun         // the context split being taken now (see ContextSplit)
+	interrupted   bool               // TurnActive was true at boot; the "Stopped" note is added when tr loads
+	deleted       bool               // removed by Delete: nothing more is written or emitted for it
+	subs          map[string]*sub    // sid → subagent; loaded with tr (see trOf)
+	subByTool     map[string]string  // Agent/Task tool call id → sid
+	pendingLinks  []pendingSpawnLink // unlinked app-spawned subs waiting for a matching spawn tool item
+	splitRun      *splitRun          // the context split being taken now (see ContextSplit)
 }
 
 var (
@@ -79,7 +87,14 @@ type ConfigReq struct {
 }
 
 func New(d Deps) *Manager {
-	return &Manager{Deps: d, chats: map[string]*Chat{}, now: time.Now}
+	return &Manager{
+		Deps:       d,
+		chats:      map[string]*Chat{},
+		extras:     map[string]extraCaller{},
+		extraBySID: map[string]string{},
+		used:       map[string]struct{}{},
+		now:        time.Now,
+	}
 }
 
 func (m *Manager) nowMs() int64 { return m.now().UnixMilli() }
@@ -246,6 +261,7 @@ func (m *Manager) Load() error {
 			continue
 		}
 		m.chats[meta.ID] = &Chat{meta: meta, interrupted: meta.TurnActive}
+		m.registerChatToken(meta.Token)
 	}
 	return nil
 }
@@ -365,9 +381,10 @@ func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView
 		Model: mc.Model, Effort: mc.Effort, Created: time.Now()}
 	if board == "" {
 		meta.Group = group
-	} else {
-		meta.Token = randHex(16)
 	}
+	m.extrasMu.Lock()
+	meta.Token = m.uniqueTokenLocked()
+	m.extrasMu.Unlock()
 	if a == model.Claude || a == model.Pi {
 		meta.SessionID = uuid() // the app assigns it; pi starts/resumes with it
 	}
@@ -468,14 +485,14 @@ func (m *Manager) spawn(c *Chat, out *outbox) error {
 }
 
 // spawnOptions are the options c's agent starts with. c.mu held.
+// MCP URL+token is set for every chat; board extras only when the chat belongs to a board.
 func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
+	m.ensureToken(c)
 	opts := agent.SpawnOptions{ChatID: c.meta.ID, SessionID: c.meta.SessionID, Resume: c.meta.Locked,
-		Cwd: c.meta.Cwd, Model: c.meta.Model, Effort: c.meta.Effort}
+		Cwd: c.meta.Cwd, Model: c.meta.Model, Effort: c.meta.Effort,
+		MCP: &agent.BoardAccess{MCPURL: m.MCPURL, Token: c.meta.Token}, BoardID: c.meta.Board}
 	if c.meta.Agent == model.Cursor && !c.meta.Locked {
 		opts.SessionID = ""
-	}
-	if c.meta.Board != "" {
-		opts.Board = &agent.BoardAccess{MCPURL: m.MCPURL, Token: c.meta.Token}
 	}
 	return opts
 }
@@ -535,10 +552,14 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			c.ag = nil
 		}
 		ups := c.tr.Apply(ev)
+		if len(c.pendingLinks) > 0 {
+			m.reconcileSpawnLinks(c, &out)
+		}
+		var toClose []agent.Agent
 		if (ev.Kind == agent.EvTurnEnd && ev.Aborted) || ev.Kind == agent.EvExit {
 			// An interrupt or cancel stops every subagent; background ones die with the process.
 			// A normal turn end leaves them alone: Claude's background subagents outlive it.
-			m.stopSubs(c, &out)
+			toClose = m.stopSubs(c, &out)
 		}
 		if st, _ := c.tr.Status(); !wasBusy && busy(c) && st != model.StatusApproval && !c.meta.TurnActive {
 			// A turn the agent started by itself (Claude, when a background subagent finishes).
@@ -558,6 +579,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		}
 		c.mu.Unlock()
 		m.send(out)
+		closeAgents(toClose)
 	}
 }
 
@@ -852,14 +874,24 @@ func (m *Manager) SetDraft(id string, d model.Draft) error {
 	return err
 }
 
-// Interrupt asks the running agent to stop its turn.
+// Interrupt asks the running agent to stop its turn. App-spawned subagents are terminated
+// immediately; native ones wait for the aborted turn end, as they always have.
 func (m *Manager) Interrupt(id string) error {
+	var out outbox
 	c, err := m.lock(id)
 	if err != nil {
 		return err
 	}
 	ag := c.ag
+	toClose := m.stopAppSubs(c, &out)
+	if len(toClose) > 0 && c.tr != nil {
+		if err := c.tr.Flush(false); err != nil {
+			log.Printf("chats: flush %s: %v", c.meta.ID, err)
+		}
+	}
 	c.mu.Unlock()
+	m.send(out)
+	closeAgents(toClose)
 	if ag == nil {
 		return nil
 	}
@@ -878,10 +910,20 @@ func (m *Manager) Decide(id, requestID string, allow bool) error {
 	if err != nil {
 		return err
 	}
-	if c.ag == nil {
+	ag := c.ag
+	_, items := tr.Snapshot()
+	for _, it := range items {
+		if it.Kind == "perm" && it.RequestID == requestID && it.Subagent != "" {
+			if s, ok := c.subs[it.Subagent]; ok && s.ag != nil {
+				ag = s.ag // app-spawned: the child asked; native still uses c.ag
+			}
+			break
+		}
+	}
+	if ag == nil {
 		return errors.New("the agent is not running")
 	}
-	if err := c.ag.Decide(requestID, allow); err != nil {
+	if err := ag.Decide(requestID, allow); err != nil {
 		return err
 	}
 	ups := tr.Decided(requestID, allow)
@@ -923,7 +965,8 @@ func (m *Manager) Stop(id string) {
 	if err != nil {
 		return
 	}
-	defer func() { c.mu.Unlock(); m.send(out) }()
+	var toClose []agent.Agent
+	defer func() { c.mu.Unlock(); m.send(out); closeAgents(toClose) }()
 	if c.tr == nil && !c.interrupted {
 		return // unloaded: no agent, nothing open
 	}
@@ -936,6 +979,11 @@ func (m *Manager) Stop(id string) {
 	_, items := tr.Snapshot()
 	for _, it := range items {
 		if it.Kind == "perm" && it.Decided == "" {
+			if it.Subagent != "" {
+				if s, ok := c.subs[it.Subagent]; ok && s.ag != nil {
+					continue // stopSubs denies these on the child process
+				}
+			}
 			if c.ag != nil {
 				_ = c.ag.Decide(it.RequestID, false)
 			}
@@ -948,7 +996,8 @@ func (m *Manager) Stop(id string) {
 		c.ag.Close()
 		c.ag = nil
 	}
-	m.stopSubs(c, &out)
+	toClose = m.stopSubs(c, &out)
+	m.revokeChatExtras(c.meta.ID)
 	if wasBusy {
 		ups = append(ups, tr.AddNote("muted", "Stopped.")...)
 	}
@@ -988,12 +1037,15 @@ func (m *Manager) Delete(id string) error {
 		return err
 	}
 	c.deleted = true
+	tok := c.meta.Token
 	if c.ag != nil { // a Send that came in after Stop
 		c.gen++
 		c.ag.Close()
 		c.ag = nil
 	}
 	c.mu.Unlock()
+	m.revokeChatExtras(id)
+	m.unregisterChatToken(tok)
 	m.mu.Lock()
 	delete(m.chats, id)
 	m.mu.Unlock()
@@ -1002,22 +1054,6 @@ func (m *Manager) Delete(id string) error {
 	}
 	m.Bridge.Broadcast(map[string]any{"type": "chat_removed", "id": id})
 	return nil
-}
-
-// ByToken finds the board chat whose MCP credential is token.
-func (m *Manager) ByToken(token string) (model.ChatMeta, bool) {
-	if token == "" {
-		return model.ChatMeta{}, false
-	}
-	for _, c := range m.all() {
-		c.mu.Lock()
-		meta := c.meta
-		c.mu.Unlock()
-		if meta.Token == token {
-			return meta, true
-		}
-	}
-	return model.ChatMeta{}, false
 }
 
 func (m *Manager) ChatsOfBoard(boardID string) []model.ChatMeta {
@@ -1060,20 +1096,25 @@ func (m *Manager) Busy(id string) bool {
 // Stopped next time.
 func (m *Manager) Shutdown() {
 	for _, c := range m.all() {
+		var out outbox
 		c.mu.Lock()
 		if c.tr != nil {
 			if err := c.tr.Flush(true); err != nil {
 				log.Printf("chats: flush %s: %v", c.meta.ID, err)
 			}
 			for _, s := range c.subs {
-				m.flushSub(c, s, true) // running ones stay running; the next load marks them stopped
+				m.flushSub(c, s, true) // native running ones stay running; the next load marks them stopped
 			}
 			m.logSave(c)
 		}
+		toClose := m.stopAppSubs(c, &out) // app-spawned processes must not outlive the server
+		m.revokeChatExtras(c.meta.ID)
 		if c.ag != nil {
 			go c.ag.Close() // Cursor's Close waits for the process, forever when its children hold its output
 		}
 		c.mu.Unlock()
+		m.send(out)
+		closeAgents(toClose)
 	}
 }
 

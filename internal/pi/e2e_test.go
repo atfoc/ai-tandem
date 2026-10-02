@@ -5,8 +5,10 @@ package pi
 //
 //	AIWB_PI_E2E=1 go test -count=1 -run TestE2E ./internal/pi/
 //
-// AIWB_PI_E2E_MODEL overrides the model (default deepseek/deepseek-flash). The third test (the
-// subagent and abort cleanup) is additionally gated behind AIWB_PI_E2E_SUBAGENT=1.
+// AIWB_PI_E2E_MODEL overrides the model (default deepseek/deepseek-flash). The subagent test
+// (app-managed MCP spawn family via Manager.SpawnSubagent, wait/stop, abort cleanup) is
+// additionally gated behind AIWB_PI_E2E_SUBAGENT=1. Native Agent/Task/subagent is not registered
+// on app chats and is not an escape hatch.
 //
 // Isolation: every session/state path is a temp dir, and pi's config directory is a temp copy of
 // the user's auth.json/models (read-only on the user's side), so the tests never write to
@@ -202,16 +204,17 @@ func (r *e2eRecordingRegistry) token() string {
 // e2eBoardEnv is a real board API environment for the model e2e: the store ›
 // editor bridge › boards › chats stack, an httptest server serving the real
 // Relay.ServeFixedMCP and the editor SSE endpoint, and a fake browser client
-// answering board RPCs with a recognizable text. pi carries the chat's board
+// answering board RPCs with a recognizable text. pi carries the chat's MCP
 // token in the Authorization header of the fixed /mcp endpoint.
 type e2eBoardEnv struct {
 	editor *editorbridge.Bridge
 	reg    *e2eRecordingRegistry
 	srv    *httptest.Server
+	m      *chats.Manager
 
 	board model.Board
 	chat  string
-	token string // the chat's board token: the MCP credential in the header
+	token string // the chat's MCP token: the credential in the Authorization header
 
 	mu      sync.Mutex
 	reply   string
@@ -260,12 +263,14 @@ func newE2EBoardEnv(t *testing.T) *e2eBoardEnv {
 	mux.HandleFunc("GET /api/events", editor.ServeSSE)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	m.MCPURL = srv.URL + "/mcp"
 
 	e := &e2eBoardEnv{
 		editor: editor, reg: &e2eRecordingRegistry{BridgeRegistry: pb},
-		srv: srv, board: bd, chat: v.ID, token: metas[0].Token,
+		srv: srv, m: m, board: bd, chat: v.ID, token: metas[0].Token,
 		errText: map[string]string{},
 	}
+	t.Cleanup(m.Shutdown)
 	e.startBrowser(t)
 	return e
 }
@@ -354,7 +359,7 @@ func (e *e2eBoardEnv) recorded() []e2eBoardCall {
 }
 
 // boardAccess is what the app passes to Spawn: the fixed endpoint URL and the
-// chat's durable board token, exactly like the Claude path. pi puts the token in
+// chat's durable MCP token, exactly like the Claude path. pi puts the token in
 // the Authorization header of AIWB_MCP_CONFIG; it is never a URL segment.
 func (e *e2eBoardEnv) boardAccess() *agent.BoardAccess {
 	return &agent.BoardAccess{MCPURL: e.srv.URL + "/mcp", Token: e.token}
@@ -386,7 +391,7 @@ func TestE2EBoardTool(t *testing.T) {
 	env.setError("read_board", "E2E-BOARD-ERROR-99")
 	s := env.newSpawner(t, nil)
 	a, err := s.Spawn(agent.SpawnOptions{ChatID: "e2e-board", Cwd: t.TempDir(), Model: e2eModel(),
-		Board: env.boardAccess()})
+		MCP: env.boardAccess(), BoardID: "e2e-board"})
 	if err != nil {
 		t.Skipf("pi could not start: %v", err)
 	}
@@ -526,7 +531,81 @@ func waitNoProcesses(t *testing.T, marker string) {
 	}
 }
 
-// TestE2ESubagent runs the app subagent tool end to end and then aborts a second child mid-run.
+// newE2EPiManager builds a chats.Manager that spawns real Pi processes through s.
+func newE2EPiManager(t *testing.T, s *Spawner, cwd string) *chats.Manager {
+	t.Helper()
+	st, err := store.Open(store.NewPaths(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor := editorbridge.New(nil)
+	bds := boards.New(st, editor)
+	if err := bds.Load(); err != nil {
+		t.Fatal(err)
+	}
+	m := chats.New(chats.Deps{
+		Store: st, Bridge: editor, Boards: bds,
+		Spawners:   map[model.AgentKind]agent.Spawner{model.Pi: s},
+		DefaultCwd: cwd,
+	})
+	if err := m.Load(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Shutdown)
+	return m
+}
+
+func e2eCreatePi(t *testing.T, m *chats.Manager) model.ChatView {
+	t.Helper()
+	v, err := m.Create(model.Pi, model.Ungrouped, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func e2eSpawnPi(t *testing.T, m *chats.Manager, chatID string, req chats.SpawnSubRequest) model.Subagent {
+	t.Helper()
+	if req.Model == "" {
+		req.Model = e2eModel()
+	}
+	sa, err := m.SpawnSubagent(chatID, req)
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	if sa.Kind != model.Pi || !sa.Background {
+		t.Fatalf("receipt %+v, want kind=pi background", sa)
+	}
+	return sa
+}
+
+func e2eWaitSub(t *testing.T, m *chats.Manager, chatID, sid string) chats.SubWaitResult {
+	t.Helper()
+	got, err := m.WaitSubagents(chatID, []string{sid}, 3*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("wait returned %d results: %+v", len(got), got)
+	}
+	return got[0]
+}
+
+func skipIfSubUnavailable(t *testing.T, r chats.SubWaitResult) {
+	t.Helper()
+	if r.Status == model.SubCompleted {
+		return
+	}
+	msg := strings.ToLower(r.Error + " " + r.Last)
+	for _, needle := range []string{"unavailable", "not authenticated", "handshake", "could not start"} {
+		if strings.Contains(msg, needle) {
+			t.Skipf("pi subagent did not run: status=%s error=%q last=%q", r.Status, r.Error, r.Last)
+		}
+	}
+}
+
+// TestE2ESubagent drives app-spawned Pi subagents through chats.Manager.SpawnSubagent (the MCP
+// spawn family), not the extension's native subagent tool, which is not registered on app chats.
 // Gated behind AIWB_PI_E2E_SUBAGENT=1 because it is the most timing-sensitive test.
 func TestE2ESubagent(t *testing.T) {
 	e2eAgentDir(t)
@@ -544,119 +623,116 @@ func TestE2ESubagent(t *testing.T) {
 	}
 	defer br.Close()
 	s := &Spawner{Bin: "pi", AppRoot: root, Home: home, Extension: ext, Prompt: prompts.Pi(), Bridge: br}
+	m := newE2EPiManager(t, s, cwd)
 
-	// Scenario 1: a foreground child completes and leaves no process behind.
-	a, err := s.Spawn(agent.SpawnOptions{ChatID: "e2e-sub", Cwd: cwd, Model: e2eModel()})
+	// Scenario 1: an app-spawned child completes; kind/background persist; no leftover process.
+	v := e2eCreatePi(t, m)
+	sa := e2eSpawnPi(t, m, v.ID, chats.SpawnSubRequest{Prompt: "Reply with exactly: ping", Description: "ping test"})
+	childDir := filepath.Join(root, "chats", v.ID, "subagents")
+	parentDir := filepath.Join(root, "chats", v.ID, "pi")
+	if childDir == parentDir {
+		t.Fatalf("child session dir %q reuses the parent", childDir)
+	}
+	got := e2eWaitSub(t, m, v.ID, sa.ID)
+	skipIfSubUnavailable(t, got)
+	if got.Status != model.SubCompleted {
+		t.Fatalf("subagent status %s error %q last %q, want completed", got.Status, got.Error, got.Last)
+	}
+	if !strings.Contains(strings.ToLower(got.Last), "ping") {
+		t.Fatalf("completed last %q does not contain ping", got.Last)
+	}
+	_, _, subs, err := m.Items(v.ID)
 	if err != nil {
-		t.Skipf("pi could not start: %v", err)
+		t.Fatal(err)
 	}
-	defer a.Close()
-	if err := a.Send([]agent.ContentBlock{{Text: "Call the subagent tool once with description \"ping test\" " +
-		"and prompt \"Reply with exactly: ping\". Then reply with the child's report."}}); err != nil {
-		t.Skipf("model %s is unavailable (not authenticated?): %v", e2eModel(), err)
+	if len(subs) != 1 || subs[0].ID != sa.ID || subs[0].Kind != model.Pi || !subs[0].Background {
+		t.Fatalf("items subagents %+v", subs)
 	}
-	agentCard := false
-	terminal := false
-	if !e2eTurn(t, a, func(ev agent.Event) {
-		switch ev.Kind {
-		case agent.EvToolStart:
-			if ev.ToolName == "Agent" {
-				agentCard = true
-			}
-		case agent.EvSub:
-			if ev.SubInfo != nil && subTerminal(ev.SubInfo.Status) {
-				terminal = true
-			}
-		}
-	}) {
-		t.Skip("pi exited before the turn ended (model or auth unavailable?)")
+	raw, err := os.ReadFile(filepath.Join(m.Store.P.ChatDir(v.ID), "subagents", sa.ID, "subagent.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !agentCard {
-		t.Fatal("no Agent tool card was emitted for the subagent call")
+	var disk model.Subagent
+	if err := json.Unmarshal(raw, &disk); err != nil {
+		t.Fatal(err)
 	}
-	if !terminal {
-		t.Fatal("no EvSub reached a terminal status")
+	if disk.Kind != model.Pi || !disk.Background || disk.Status != model.SubCompleted {
+		t.Fatalf("subagent.json %+v", disk)
 	}
-	closeAndWaitExit(t, a)
-	waitNoProcesses(t, filepath.Join(root, "chats", "e2e-sub", "subagents"))
+	waitNoProcesses(t, childDir)
 
-	// Scenario 2: abort a running child and check its process tree is gone.
-	a2, err := s.Spawn(agent.SpawnOptions{ChatID: "e2e-sub-abort", Cwd: cwd, Model: e2eModel()})
-	if err != nil {
-		t.Skipf("pi could not start: %v", err)
-	}
-	defer a2.Close()
-	if err := a2.Send([]agent.ContentBlock{{Text: "Call the subagent tool once with description \"blocked\" " +
-		"and prompt \"Run the shell command sleep 120, then reply done.\" Wait for the child to finish, " +
-		"then reply with its report."}}); err != nil {
-		t.Skipf("model %s is unavailable (not authenticated?): %v", e2eModel(), err)
-	}
-	subDir := filepath.Join(root, "chats", "e2e-sub-abort", "subagents")
-	started, parentDone := false, false
+	// Scenario 2: StopSubagent kills a running child; no leftover process.
+	v2 := e2eCreatePi(t, m)
+	sa2 := e2eSpawnPi(t, m, v2.ID, chats.SpawnSubRequest{
+		Prompt: "Run the shell command sleep 120, then reply done.", Description: "blocked",
+	})
+	subDir := filepath.Join(root, "chats", v2.ID, "subagents")
+	started := false
 	deadline := time.Now().Add(3 * time.Minute)
-	for !started && !parentDone {
+	for !started {
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for the subagent process")
 		}
-		select {
-		case ev, ok := <-a2.Events():
-			if !ok || ev.Kind == agent.EvTurnEnd || ev.Kind == agent.EvExit {
-				parentDone = true
-			}
-		case <-time.After(200 * time.Millisecond):
+		poll, err := m.WaitSubagents(v2.ID, []string{sa2.ID}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(poll) == 1 && subTerminal(poll[0].Status) {
+			t.Skip("the subagent finished before it could be aborted")
 		}
 		if len(processArgsContaining(t, subDir)) > 0 {
 			started = true
+			break
 		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	if !started {
-		t.Skip("the subagent finished before it could be aborted")
-	}
-	if err := a2.Interrupt(); err != nil {
+	if err := m.StopSubagent(v2.ID, sa2.ID); err != nil {
 		t.Fatal(err)
 	}
+	stopped := e2eWaitSub(t, m, v2.ID, sa2.ID)
+	if stopped.Status != model.SubStopped {
+		t.Fatalf("after StopSubagent status %s error %q, want stopped", stopped.Status, stopped.Error)
+	}
 	waitNoProcesses(t, subDir)
-	closeAndWaitExit(t, a2)
 
-	// Scenario 3: a board chat's subagent inherits the board MCP tools (A10):
-	// the child calls the board tool and its call reaches the fake browser
-	// client through the parent's board MCP config.
+	// Scenario 3: a board-parent app-spawned Pi child inherits board tools; the call reaches
+	// the fake browser client. Distinct ChatID so the parent bridge is not retired.
 	env := newE2EBoardEnv(t)
 	env.setReply("E2E-BOARD-SUB-TEXT-13")
 	s3 := env.newSpawner(t, nil)
-	a3, err := s3.Spawn(agent.SpawnOptions{ChatID: "e2e-sub-board", Cwd: cwd, Model: e2eModel(),
-		Board: env.boardAccess()})
+	if env.m.Spawners == nil {
+		env.m.Spawners = map[model.AgentKind]agent.Spawner{}
+	}
+	env.m.Spawners[model.Pi] = s3
+	pv, err := env.m.Create(model.Pi, "", env.board.ID)
 	if err != nil {
-		t.Skipf("pi could not start: %v", err)
+		t.Fatal(err)
 	}
-	defer a3.Close()
-	if err := a3.Send([]agent.ContentBlock{{Text: "Call the subagent tool once with description \"board check\" " +
-		"and prompt \"Call the tool named mcp__board__list_boards with an empty object argument, then reply " +
-		"with exactly the text it returned.\" Then reply with the child's report."}}); err != nil {
-		t.Skipf("model %s is unavailable (not authenticated?): %v", e2eModel(), err)
-	}
-	childCalledBoard := false
-	if !e2eTurn(t, a3, func(ev agent.Event) {
-		if ev.Kind == agent.EvToolStart && ev.Sub != "" && ev.ToolName == "mcp__board__list_boards" {
-			childCalledBoard = true
-		}
-	}) {
-		t.Skip("pi exited before the board-subagent turn ended (model or auth unavailable?)")
-	}
-	if !childCalledBoard {
-		t.Fatalf("the board-chat subagent never called the board tool; browser calls %+v", env.recorded())
+	sa3 := e2eSpawnPi(t, env.m, pv.ID, chats.SpawnSubRequest{
+		Prompt: "Call the tool named mcp__board__list_boards with an empty object argument. Then " +
+			"reply with exactly the text the tool returned, and nothing else.",
+		Description: "board check",
+	})
+	boardChildDir := filepath.Join(s3.AppRoot, "chats", pv.ID, "subagents")
+	boardGot := e2eWaitSub(t, env.m, pv.ID, sa3.ID)
+	skipIfSubUnavailable(t, boardGot)
+	if boardGot.Status != model.SubCompleted {
+		t.Fatalf("board subagent status %s error %q last %q, want completed", boardGot.Status, boardGot.Error, boardGot.Last)
 	}
 	childCalls := env.recorded()
 	if len(childCalls) == 0 {
-		t.Fatal("the fake browser client was never invoked by the child")
+		t.Fatalf("the fake browser client was never invoked by the child; last %q", boardGot.Last)
 	}
 	for _, call := range childCalls {
 		if call.tool != "list_boards" {
 			t.Fatalf("child board call %+v, want list_boards", call)
 		}
 	}
+	if !strings.Contains(boardGot.Last, "E2E-BOARD-SUB-TEXT-13") {
+		t.Fatalf("child last %q does not contain the board text", boardGot.Last)
+	}
 	t.Logf("board-chat subagent calls: %+v", childCalls)
-	closeAndWaitExit(t, a3)
+	waitNoProcesses(t, boardChildDir)
 }
 
 // subTerminal reports whether a subagent status is final.

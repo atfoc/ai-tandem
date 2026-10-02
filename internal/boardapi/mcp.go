@@ -1,11 +1,13 @@
 // Package boardapi is the board API for agents: the fixed MCP endpoint /mcp on the dedicated
-// listener (identity in the Authorization header). It goes through Relay.Call, the one path from
-// an agent to the client, which owns the board engine.
+// listener (identity in the Authorization header). Authorized board tools go through Relay.Call,
+// the one path from an agent to the client, which owns the board engine. Spawn-family tools go
+// to chats.Manager and never through the board-tool bridge.
 package boardapi
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -18,10 +20,18 @@ import (
 	"ai-whiteboard/internal/boardtools"
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
+	"ai-whiteboard/internal/model"
 )
 
 // callTimeout is how long a board tool call waits for the client's answer.
 const callTimeout = 30 * time.Second
+
+// WaitInterval is the server's blocking budget for one wait_subagents call:
+// CLI MCP tool-call timeout with margin. Phase 2 Q1 will measure live CLI
+// timeouts; 20s is the v1 stand-in.
+// TODO: if an adapter override env is found, set it on app-chat processes so
+// this interval fits inside the CLI limit.
+const WaitInterval = 20 * time.Second
 
 // NoClientText is what an agent is told when no client is active.
 const NoClientText = "The board isn't open: the AI Whiteboard window is closed. " +
@@ -37,17 +47,9 @@ type Relay struct {
 	Contacts ContactLog
 }
 
-func isTool(name string) bool {
-	for _, t := range boardtools.Tools {
-		if t.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 // Call runs a board tool for the chat with this token and returns the text for the agent.
 // Errors come back as text too (isErr = true), so the agent can tell the user.
+// Spawn-family tools must not go through Call (that path is the 30s board-tool bridge).
 func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isErr bool) {
 	meta, ok := r.Chats.ByToken(token)
 	if !ok {
@@ -59,7 +61,7 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 	if meta.InstructionsSent {
 		return "this chat used the old board connection", true
 	}
-	if !isTool(tool) {
+	if !boardtools.IsTool(tool) {
 		return "unknown tool " + tool, true
 	}
 	bd, _ := r.Boards.Get(meta.Board)
@@ -161,10 +163,10 @@ type rpcReq struct {
 	Params  json.RawMessage `json:"params"`
 }
 
-// mcpTools is boardtools.Tools in MCP's tools/list shape.
-func mcpTools() []map[string]any {
-	out := make([]map[string]any, 0, len(boardtools.Tools))
-	for _, t := range boardtools.Tools {
+// mcpToolsOf is tools in MCP's tools/list shape. An empty input yields an empty list, not null.
+func mcpToolsOf(tools []boardtools.Tool) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
 		schema := t.Schema
 		if schema == nil {
 			schema = map[string]any{"type": "object", "properties": map[string]any{}}
@@ -172,6 +174,29 @@ func mcpTools() []map[string]any {
 		out = append(out, map[string]any{"name": t.Name, "description": t.Description, "inputSchema": schema})
 	}
 	return out
+}
+
+// listedTools is the per-chat, per-caller tools/list. Missing, unknown, or revoked tokens
+// get an empty list (handshake still succeeds). Live tokens follow the §2 matrix.
+func (r *Relay) listedTools(token string) []map[string]any {
+	caller, ok := r.Chats.ResolveToken(token)
+	if !ok {
+		return mcpToolsOf(nil)
+	}
+	hasBoard := caller.Meta.Board != ""
+	switch {
+	case caller.Subagent && hasBoard:
+		return mcpToolsOf(boardtools.Tools)
+	case caller.Subagent:
+		return mcpToolsOf(nil)
+	case hasBoard:
+		tools := make([]boardtools.Tool, 0, len(boardtools.Tools)+len(boardtools.SpawnFamily))
+		tools = append(tools, boardtools.Tools...)
+		tools = append(tools, boardtools.SpawnFamily...)
+		return mcpToolsOf(tools)
+	default:
+		return mcpToolsOf(boardtools.SpawnFamily)
+	}
 }
 
 // ServeFixedMCP serves the fixed POST /mcp on the dedicated listener. The credential is the
@@ -224,14 +249,14 @@ func (r *Relay) serveRPC(w http.ResponseWriter, req *http.Request, token string)
 			"serverInfo":      map[string]any{"name": "board", "version": "0.0.1"},
 		}
 	case "tools/list":
-		result = map[string]any{"tools": mcpTools()}
+		result = map[string]any{"tools": r.listedTools(token)}
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
 		}
 		json.Unmarshal(rq.Params, &p)
-		text, isErr := r.Call(token, p.Name, p.Arguments)
+		text, isErr := r.dispatch(token, p.Name, p.Arguments)
 		r.logToolCall(token, p.Name, isErr)
 		res := map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
 		if isErr {
@@ -251,6 +276,166 @@ func (r *Relay) serveRPC(w http.ResponseWriter, req *http.Request, token string)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// dispatch authorizes and routes one tools/call. Spawn-family never goes through Relay.Call.
+func (r *Relay) dispatch(token, name string, args json.RawMessage) (text string, isErr bool) {
+	caller, ok := r.Chats.ResolveToken(token)
+	if !ok {
+		return "unknown board token", true
+	}
+	if caller.Meta.Archived {
+		return "this chat is archived", true
+	}
+	if caller.Meta.InstructionsSent {
+		return "this chat used the old board connection", true
+	}
+	hasBoard := caller.Meta.Board != ""
+	if boardtools.IsSpawnFamily(name) {
+		if caller.Subagent {
+			return name + " is not available to subagents", true
+		}
+		return r.callSpawnFamily(caller, name, args)
+	}
+	if boardtools.IsTool(name) {
+		if !hasBoard {
+			return name + " is not available on this chat", true
+		}
+		return r.Call(token, name, args)
+	}
+	return "unknown tool " + name, true
+}
+
+func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawMessage) (string, bool) {
+	switch name {
+	case "spawn_subagent":
+		req, err := parseSpawnArgs(args)
+		if err != nil {
+			return err.Error(), true
+		}
+		sa, err := r.Chats.SpawnSubagent(caller.Meta.ID, req)
+		if err != nil {
+			return err.Error(), true
+		}
+		return fmt.Sprintf("spawned subagent %s (%s)", sa.ID, sa.Status), false
+	case "wait_subagents":
+		sids, timeout, err := parseWaitArgs(args)
+		if err != nil {
+			return err.Error(), true
+		}
+		results, err := r.Chats.WaitSubagents(caller.Meta.ID, sids, timeout)
+		if err != nil {
+			return err.Error(), true
+		}
+		return formatWaitResults(results), false
+	case "stop_subagent":
+		sid, err := parseStopArgs(args)
+		if err != nil {
+			return err.Error(), true
+		}
+		if err := r.Chats.StopSubagent(caller.Meta.ID, sid); err != nil {
+			return err.Error(), true
+		}
+		return "stopped subagent " + sid, false
+	default:
+		return "unknown tool " + name, true
+	}
+}
+
+func parseSpawnArgs(args json.RawMessage) (chats.SpawnSubRequest, error) {
+	var p struct {
+		Prompt      string `json:"prompt"`
+		Description string `json:"description"`
+		Agent       string `json:"agent"`
+		Model       string `json:"model"`
+		Effort      string `json:"effort"`
+	}
+	if len(args) > 0 && string(args) != "null" {
+		if err := json.Unmarshal(args, &p); err != nil {
+			return chats.SpawnSubRequest{}, errors.New("invalid spawn_subagent arguments")
+		}
+	}
+	if strings.TrimSpace(p.Prompt) == "" {
+		return chats.SpawnSubRequest{}, errors.New("prompt is required")
+	}
+	var kind model.AgentKind
+	if p.Agent != "" {
+		switch model.AgentKind(p.Agent) {
+		case model.Claude, model.Cursor, model.Pi:
+			kind = model.AgentKind(p.Agent)
+		default:
+			return chats.SpawnSubRequest{}, fmt.Errorf("unknown agent %q", p.Agent)
+		}
+	}
+	return chats.SpawnSubRequest{
+		Prompt: p.Prompt, Description: p.Description, Kind: kind, Model: p.Model, Effort: p.Effort,
+	}, nil
+}
+
+func parseWaitArgs(args json.RawMessage) ([]string, time.Duration, error) {
+	var p struct {
+		Sids    []string `json:"sids"`
+		Timeout *float64 `json:"timeout"`
+	}
+	if len(args) > 0 && string(args) != "null" {
+		if err := json.Unmarshal(args, &p); err != nil {
+			return nil, 0, errors.New("invalid wait_subagents arguments")
+		}
+	}
+	if p.Sids == nil {
+		return nil, 0, errors.New("sids is required")
+	}
+	var timeout time.Duration
+	if p.Timeout == nil {
+		timeout = WaitInterval
+	} else if *p.Timeout <= 0 {
+		timeout = 0
+	} else {
+		timeout = time.Duration(*p.Timeout * float64(time.Second))
+		if timeout > WaitInterval {
+			timeout = WaitInterval
+		}
+	}
+	return p.Sids, timeout, nil
+}
+
+func parseStopArgs(args json.RawMessage) (string, error) {
+	var p struct {
+		SID string `json:"sid"`
+	}
+	if len(args) > 0 && string(args) != "null" {
+		if err := json.Unmarshal(args, &p); err != nil {
+			return "", errors.New("invalid stop_subagent arguments")
+		}
+	}
+	if strings.TrimSpace(p.SID) == "" {
+		return "", errors.New("sid is required")
+	}
+	return p.SID, nil
+}
+
+func formatWaitResults(results []chats.SubWaitResult) string {
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		st := string(r.Status)
+		if st == "" {
+			st = "unknown"
+		}
+		fmt.Fprintf(&b, "%s: %s", r.ID, st)
+		if r.Error != "" {
+			fmt.Fprintf(&b, "\nerror: %s", r.Error)
+		}
+		if r.Summary != "" {
+			fmt.Fprintf(&b, "\nsummary: %s", r.Summary)
+		}
+		if r.Last != "" {
+			fmt.Fprintf(&b, "\nlast: %s", r.Last)
+		}
+	}
+	return b.String()
 }
 
 // chatKey resolves a credential to its short chat id and tracker key. An unknown or empty

@@ -1,13 +1,13 @@
-// Subagents: what the row and the drawer show, from an Agent/Task tool item, the subagent's state
-// and, when loaded, its own thread. DOM-free.
+// Subagents: what the row and the drawer show, from an Agent/Task/spawn_subagent tool item, the
+// subagent's state and, when loaded, its own thread. DOM-free.
 import type { AgentKind, Catalog, Item, Subagent } from "../types.ts";
 import { effortLabel, toolVerb, type BoardNames } from "./labels.ts";
 
 const DEFAULT_TYPES = new Set(["", "general-purpose", "generalPurpose", "general_purpose", "unspecified"]);
 
-/** An Agent/Task tool call: it started a subagent. */
+/** An Agent/Task/spawn_subagent tool call: it started a subagent. */
 export const isSubagentTool = (it: Item | undefined): boolean =>
-  !!it && it.kind === "tool" && (it.name === "Agent" || it.name === "Task");
+  !!it && it.kind === "tool" && (it.name === "Agent" || it.name === "Task" || it.name === "mcp__board__spawn_subagent");
 
 /** The key of a subagent's thread in store.items: "<chat>/<sid>". Chat ids hold no "/". */
 export const subKey = (chat: string, sid: string) => `${chat}/${sid}`;
@@ -79,16 +79,21 @@ export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNa
   }
 }
 
-/** "model · effort" labels from the chat agent's catalog. Cursor puts the effort in the id
- *  ("gpt-5.4-mini-medium" = model gpt-5.4-mini, effort medium). Claude reports no effort for
- *  subagents; its full id is matched by alias ("claude-haiku-4-5-…" → Haiku 4.5). Pi reports an
- *  unqualified model ("deepseek-flash") against provider-qualified catalog ids
- *  ("deepseek/deepseek-flash"), matched by suffix. Unknown ids are shown as they are. */
-export function subModelLabel(id: string | undefined, agent: AgentKind, cat?: Catalog): { model: string; effort?: string } | null {
+/** "model · effort" labels from the subagent's own kind and catalog, not the parent chat.
+ *  Cursor puts the effort in the id ("gpt-5.4-mini-medium" = model gpt-5.4-mini, effort medium).
+ *  Claude reports no effort for subagents; its full id is matched by alias ("claude-haiku-4-5-…"
+ *  → Haiku 4.5). Pi reports an unqualified model ("deepseek-flash") against provider-qualified
+ *  catalog ids ("deepseek/deepseek-flash"), matched by suffix. Unknown ids, a missing catalog, or
+ *  an absent kind are shown as the raw id — never the parent kind. `effort` is used when the
+ *  catalog match did not already produce one (Claude/Pi often won't parse it from the model id). */
+export function subModelLabel(id: string | undefined, agent?: AgentKind, cat?: Catalog, effort?: string): { model: string; effort?: string } | null {
   if (!id) return null;
+  const withEffort = (m: { model: string; effort?: string }) =>
+    m.effort || !effort ? m : { ...m, effort: effortLabel(effort) };
+  if (!agent) return withEffort({ model: id });
   const models = cat?.models ?? [];
   const exact = models.find((m) => m.id === id);
-  if (exact) return { model: exact.label };
+  if (exact) return withEffort({ model: exact.label });
   if (agent === "cursor") {
     for (const m of models) {
       const rest = id.startsWith(m.id + "-") ? id.slice(m.id.length + 1) : "";
@@ -96,12 +101,12 @@ export function subModelLabel(id: string | undefined, agent: AgentKind, cat?: Ca
     }
   } else if (agent === "pi") {
     const m = models.find((m) => m.id.endsWith("/" + id));
-    if (m) return { model: m.label };
-  } else {
+    if (m) return withEffort({ model: m.label });
+  } else if (agent === "claude") {
     const m = models.find((m) => id.includes("-" + m.id));
-    if (m) return { model: m.label };
+    if (m) return withEffort({ model: m.label });
   }
-  return { model: id };
+  return withEffort({ model: id });
 }
 
 /** Tool calls in its thread; Claude's own count when larger (it counts before the lines arrive,

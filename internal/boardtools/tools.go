@@ -108,9 +108,62 @@ var Tools = []Tool{
 	},
 }
 
-// IsTool reports whether name is one of Tools.
+// SpawnFamily is the MCP spawn-family list. These are MCP tools on the server named
+// "board", not board-engine operations: they must not go through Relay.Call / IsTool.
+// Listing is filtered per chat and caller at the MCP handler; Claude --allowedTools
+// reads the same names (mcp__board__<name>).
+var SpawnFamily = []Tool{
+	{
+		Name: "spawn_subagent",
+		Description: "Start one subagent run and return immediately with a receipt naming its sid. " +
+			"The run continues in the background; call wait_subagents to collect results. " +
+			"Parallel spawn_subagent calls need distinct descriptions so their arguments differ. " +
+			"Every spawn is asynchronous: there is no background parameter.",
+		Schema: obj(props{
+			"prompt":      str("the task for the subagent"),
+			"description": str("short label for the subagent row; give parallel spawns distinct descriptions"),
+			"agent": map[string]any{
+				"type":        "string",
+				"description": "claude, cursor, or pi; omit for this chat's agent",
+				"enum":        []any{"claude", "cursor", "pi"},
+			},
+			"model":  str("model id for the requested agent; omit for this chat's current model"),
+			"effort": str("effort/thinking level; omit for this chat's current effort"),
+		}, "prompt"),
+		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`,
+	},
+	{
+		Name: "wait_subagents",
+		Description: "Wait for one or more subagents started by spawn_subagent. Blocks up to timeout seconds " +
+			"(omit for the server default wait interval; 0 polls). Returns per-subagent status and report; " +
+			"on timeout returns current status so it can be called again.",
+		Schema: obj(props{
+			"sids":    arr(str("subagent id from spawn_subagent")),
+			"timeout": map[string]any{"type": "number", "description": "seconds to wait; omit for the server default; 0 polls"},
+		}, "sids"),
+		Summary: `{"sids": ["<sid>"], "timeout"?: number}`,
+	},
+	{
+		Name:        "stop_subagent",
+		Description: "Cancel one running subagent by sid.",
+		Schema:      obj(props{"sid": str("subagent id from spawn_subagent")}, "sid"),
+		Summary:     `{"sid": "<sid>"}`,
+	},
+}
+
+// IsTool reports whether name is one of Tools (board-engine operations only).
 func IsTool(name string) bool {
 	for _, t := range Tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSpawnFamily reports whether name is one of SpawnFamily.
+func IsSpawnFamily(name string) bool {
+	for _, t := range SpawnFamily {
 		if t.Name == name {
 			return true
 		}

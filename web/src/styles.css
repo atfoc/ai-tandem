@@ -266,6 +266,7 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .sub-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: pulse 1s infinite; }
 .sub-main { flex: 1; min-width: 0; }
 .sub-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; color: var(--text); }
+.sub-agent { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--agent); }
 .sub-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub-type, .sub-bg { flex: none; font: 600 9.5px var(--font); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
 .sub-type { color: var(--accent); } .sub-bg { color: var(--muted); }

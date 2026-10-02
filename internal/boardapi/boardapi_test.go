@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/boardtools"
 	"ai-whiteboard/internal/chats"
@@ -21,12 +22,13 @@ import (
 )
 
 type env struct {
-	t     *testing.T
-	relay *Relay
-	mux   *http.ServeMux
-	board model.Board
-	token string
-	chat  string
+	t      *testing.T
+	relay  *Relay
+	mux    *http.ServeMux
+	board  model.Board
+	token  string
+	chat   string
+	claude *fakeSpawner
 }
 
 func newEnv(t *testing.T) *env {
@@ -40,7 +42,12 @@ func newEnv(t *testing.T) *env {
 	if err := bds.Load(); err != nil {
 		t.Fatal(err)
 	}
-	m := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds, DefaultCwd: t.TempDir()})
+	claude := &fakeSpawner{}
+	m := chats.New(chats.Deps{
+		Store: st, Bridge: br, Boards: bds, DefaultCwd: t.TempDir(),
+		MCPURL:   "http://localhost:6006/mcp",
+		Spawners: map[model.AgentKind]agent.Spawner{model.Claude: claude},
+	})
 	if err := m.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +67,7 @@ func newEnv(t *testing.T) *env {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mcp", r.ServeFixedMCP) // the only MCP route (header credential)
 	mux.HandleFunc("GET /api/events", br.ServeSSE)
-	return &env{t: t, relay: r, mux: mux, board: bd, token: metas[0].Token, chat: v.ID}
+	return &env{t: t, relay: r, mux: mux, board: bd, token: metas[0].Token, chat: v.ID, claude: claude}
 }
 
 // mcp posts one JSON-RPC message to the fixed /mcp route with the token as the bearer
@@ -163,13 +170,14 @@ func TestToolsList(t *testing.T) {
 	e := newEnv(t)
 	_, out := e.mcp(e.token, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	tools := out["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 7 || len(boardtools.Tools) != 7 {
-		t.Fatalf("%d tools", len(tools))
+	want := append(append([]boardtools.Tool{}, boardtools.Tools...), boardtools.SpawnFamily...)
+	if len(tools) != len(want) || len(boardtools.Tools) != 7 {
+		t.Fatalf("%d tools, boardtools.Tools=%d", len(tools), len(boardtools.Tools))
 	}
 	for i, x := range tools {
 		tl := x.(map[string]any)
-		if tl["name"] != boardtools.Tools[i].Name || tl["description"] != boardtools.Tools[i].Description {
-			t.Fatalf("tool %d = %v", i, tl["name"])
+		if tl["name"] != want[i].Name || tl["description"] != want[i].Description {
+			t.Fatalf("tool %d = %v, want %v", i, tl["name"], want[i].Name)
 		}
 		if s, ok := tl["inputSchema"].(map[string]any); !ok || s["type"] != "object" {
 			t.Fatalf("tool %v inputSchema %v", tl["name"], tl["inputSchema"])

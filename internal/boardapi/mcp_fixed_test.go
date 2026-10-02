@@ -56,8 +56,8 @@ func TestFixedMCPInitializeAndToolsListPermissive(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tools/list status %d", resp.StatusCode)
 	}
-	if n := len(out["result"].(map[string]any)["tools"].([]any)); n != len(mcpTools()) {
-		t.Fatalf("tools/list returned %d tools", n)
+	if n := len(out["result"].(map[string]any)["tools"].([]any)); n != 0 {
+		t.Fatalf("tools/list returned %d tools, want empty", n)
 	}
 }
 

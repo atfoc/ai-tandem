@@ -31,6 +31,10 @@ type Spawner struct {
 
 const stderrCap = 64 * 1024
 
+// spawnSteering is on every Claude app chat so native Task/Agent are not the spawn path.
+// The whiteboard body stays board-only and is concatenated after this when BoardID is set.
+const spawnSteering = "Subagents are asynchronous. Call spawn_subagent to start one; it returns a receipt immediately. Collect results with wait_subagents when you need them. Do not use native Task or Agent."
+
 type proc struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
@@ -69,22 +73,41 @@ func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	if o.Effort != "" && o.Model != "haiku" {
 		args = append(args, "--effort", o.Effort)
 	}
-	args = append(args, "--disallowedTools", strings.Join(AppDirRules(s.AppRoot, s.Home), ","))
-	if o.Board != nil {
-		mcp := boardMCPConfig(o.Board)
-		allowed := []string{}
-		for _, t := range boardtools.Tools {
-			allowed = append(allowed, "mcp__board__"+t.Name)
+	args = append(args, "--disallowedTools", strings.Join(append(AppDirRules(s.AppRoot, s.Home), "Task", "Agent"), ","))
+	if o.MCP != nil {
+		args = append(args, "--mcp-config", boardMCPConfig(o.MCP))
+		if allowed := allowedMCPTools(o); len(allowed) > 0 {
+			args = append(args, "--allowedTools", strings.Join(allowed, ","))
 		}
-		args = append(args, "--append-system-prompt", s.Prompt, "--mcp-config", mcp,
-			"--allowedTools", strings.Join(allowed, ","))
 	}
+	prompt := spawnSteering
+	if o.BoardID != "" {
+		prompt = spawnSteering + "\n\n" + s.Prompt
+	}
+	args = append(args, "--append-system-prompt", prompt)
 	return args
 }
 
-// claudeMCPConfig is the --mcp-config value for a board chat: the fixed board endpoint with the
-// chat's durable board token in the Authorization header. The header object is the encoding the
-// installed Claude Code (2.1.284) accepts; only the URL is advertised, never a path token.
+// allowedMCPTools is the Claude --allowedTools list for this process: board tools when board
+// extras are on, spawn family when this is the chat agent (not an app-spawned child).
+func allowedMCPTools(o agent.SpawnOptions) []string {
+	var names []string
+	if o.BoardID != "" {
+		for _, t := range boardtools.Tools {
+			names = append(names, "mcp__board__"+t.Name)
+		}
+	}
+	if !o.Subagent {
+		for _, t := range boardtools.SpawnFamily {
+			names = append(names, "mcp__board__"+t.Name)
+		}
+	}
+	return names
+}
+
+// claudeMCPConfig is the --mcp-config value: the fixed MCP endpoint with this process's token in
+// the Authorization header. The header object is the encoding the installed Claude Code (2.1.284)
+// accepts; only the URL is advertised, never a path token.
 type claudeMCPConfig struct {
 	MCPServers map[string]claudeMCPServer `json:"mcpServers"`
 }

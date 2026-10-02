@@ -13,10 +13,13 @@ const call = (extra: Partial<Item> = {}): Item => ({
 });
 const sub = (extra: Partial<Subagent> = {}): Subagent => ({ id: "s1", tool: "t1", status: "running", ...extra });
 
-test("isSubagentTool: Agent and Task tools only", () => {
+test("isSubagentTool: Agent, Task, and mcp__board__spawn_subagent", () => {
   assert.equal(isSubagentTool({ kind: "tool", name: "Agent" }), true);
   assert.equal(isSubagentTool({ kind: "tool", name: "Task" }), true);
+  assert.equal(isSubagentTool({ kind: "tool", name: "mcp__board__spawn_subagent" }), true);
   assert.equal(isSubagentTool({ kind: "tool", name: "Bash" }), false);
+  assert.equal(isSubagentTool({ kind: "tool", name: "mcp__board__wait_subagents" }), false);
+  assert.equal(isSubagentTool({ kind: "tool", name: "mcp__board__stop_subagent" }), false);
   assert.equal(isSubagentTool({ kind: "perm", name: "Agent" }), false);
   assert.equal(isSubagentTool(undefined), false);
 });
@@ -27,9 +30,11 @@ test("subKey", () => {
 
 test("subagentOf: linked uses the state, falling back to the input", () => {
   const it = call({ subagent: "s1" });
-  const sa = subagentOf(it, { s1: sub({ status: "completed", model: "m" }) }, false);
+  const sa = subagentOf(it, { s1: sub({ status: "completed", model: "m", kind: "cursor", effort: "medium" }) }, false);
   assert.equal(sa.status, "completed");
   assert.equal(sa.model, "m");
+  assert.equal(sa.kind, "cursor");
+  assert.equal(sa.effort, "medium");
   assert.equal(sa.description, "Count files");
   assert.equal(sa.prompt, "Count the files");
   assert.equal(sa.type, "general-purpose");
@@ -46,6 +51,9 @@ test("subagentOf: linked without its state, or unlinked, is built from the call"
     assert.equal(done.error, undefined);
     assert.equal(done.tool, "t1");
     assert.equal(done.description, "Count files");
+    assert.equal(done.kind, undefined);
+    assert.equal(done.effort, undefined);
+    assert.equal(done.model, undefined);
     const failed = subagentOf(call({ ...extra, result: "boom", isError: true }), undefined, true);
     assert.equal(failed.status, "failed");
     assert.equal(failed.error, "boom");
@@ -141,6 +149,18 @@ test("subModelLabel", () => {
   assert.deepEqual(subModelLabel("deepseek", "pi", pi), { model: "deepseek" });
   assert.deepEqual(subModelLabel("openrouter/x/flash", "pi", pi), { model: "openrouter/x/flash" });
   assert.equal(subModelLabel(undefined, "pi", pi), null);
+  // cross-kind: parent would be claude; the sub's cursor catalog labels the id
+  assert.deepEqual(subModelLabel("gpt-5.4-mini-medium", "cursor", cursor), { model: "GPT-5.4 Mini", effort: "Medium" });
+  assert.deepEqual(subModelLabel("gpt-5.4-mini-medium", "claude", claude), { model: "gpt-5.4-mini-medium" });
+  // no catalog / absent kind: raw id, never the parent kind's matching rules
+  assert.deepEqual(subModelLabel("gpt-5.4-mini-medium", "cursor"), { model: "gpt-5.4-mini-medium" });
+  assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", undefined, claude), { model: "claude-haiku-4-5-20251001" });
+  assert.deepEqual(subModelLabel("opus", undefined, claude), { model: "opus" });
+  // sa.effort when the catalog match did not already produce one
+  assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", "claude", claude, "high"), { model: "Haiku 4.5", effort: "High" });
+  assert.deepEqual(subModelLabel("deepseek-flash", "pi", pi, "low"), { model: "DeepSeek Flash", effort: "Low" });
+  // catalog-parsed effort wins over sa.effort
+  assert.deepEqual(subModelLabel("gpt-5.4-mini-medium", "cursor", cursor, "high"), { model: "GPT-5.4 Mini", effort: "Medium" });
 });
 
 test("subToolCount: max of toolUses and the thread's tools", () => {

@@ -8,7 +8,6 @@ import (
 )
 
 func TestArgs(t *testing.T) {
-	board := &agent.BoardAccess{Token: "tok"}
 	ext := &Spawner{Extension: "/ext/index.ts", Prompt: "BOARD"}
 	cases := []struct {
 		name        string
@@ -35,7 +34,7 @@ func TestArgs(t *testing.T) {
 		},
 		{
 			name: "board chat with prompt file", s: ext,
-			o:   agent.SpawnOptions{SessionID: "s", Board: board},
+			o:   agent.SpawnOptions{SessionID: "s", BoardID: "board"},
 			dir: "d", prompt: "d/append-prompt.md",
 			want: []string{"--mode", "rpc", "--no-extensions", "-e", "/ext/index.ts",
 				"--session-dir", "d", "--session-id", "s", "--append-system-prompt", "d/append-prompt.md",
@@ -43,7 +42,7 @@ func TestArgs(t *testing.T) {
 		},
 		{
 			name: "flash model with a board prompt gets the reminder too", s: ext,
-			o:   agent.SpawnOptions{SessionID: "s", Board: board, Model: "openrouter/deepseek/deepseek-v4.1-flash"},
+			o:   agent.SpawnOptions{SessionID: "s", BoardID: "board", Model: "openrouter/deepseek/deepseek-v4.1-flash"},
 			dir: "d", prompt: "d/append-prompt.md",
 			want: []string{"--mode", "rpc", "--no-extensions", "-e", "/ext/index.ts",
 				"--session-dir", "d", "--session-id", "s", "--model", "openrouter/deepseek/deepseek-v4.1-flash",
@@ -61,7 +60,7 @@ func TestArgs(t *testing.T) {
 		},
 		{
 			name: "board chat without a prompt", s: ext,
-			o:   agent.SpawnOptions{Board: board},
+			o:   agent.SpawnOptions{BoardID: "board"},
 			dir: "d", prompt: "",
 			want: []string{"--mode", "rpc", "--no-extensions", "-e", "/ext/index.ts",
 				"--session-dir", "d", "--no-approve"},
@@ -163,19 +162,18 @@ func TestEnv(t *testing.T) {
 	}
 }
 
-// TestEnvBoardMCPConfig pins the shared board-access contract (plan D5/D16): a
-// board chat gets the fixed endpoint URL plus the chat's durable board token in
-// the Authorization header inside AIWB_MCP_CONFIG; the board token appears only
-// there, never elsewhere in the env and never in argv.
+// TestEnvBoardMCPConfig pins the shared MCP contract: whenever MCP is set the process
+// gets the fixed endpoint URL plus its token in the Authorization header inside
+// AIWB_MCP_CONFIG; the token appears only there, never elsewhere in the env and never in argv.
 func TestEnvBoardMCPConfig(t *testing.T) {
 	const boardToken = "board-secret-token"
 	s := &Spawner{AppRoot: "/app"}
-	board := &agent.BoardAccess{
+	mcp := &agent.BoardAccess{
 		MCPURL: "http://localhost:6006/mcp",
 		Token:  boardToken,
 	}
 
-	env := s.env(agent.SpawnOptions{ChatID: "c1", Board: board}, "/bin/pi", "/sock", "run-9", "")
+	env := s.env(agent.SpawnOptions{ChatID: "c1", MCP: mcp, BoardID: "board"}, "/bin/pi", "/sock", "run-9", "")
 	m := envMap(env)
 	want := `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer board-secret-token"}}}}`
 	if got := m["AIWB_MCP_CONFIG"]; got != want {
@@ -187,24 +185,30 @@ func TestEnvBoardMCPConfig(t *testing.T) {
 		}
 	}
 
-	// A plain chat gets no config even with a run handle.
+	// MCP unset → no config even with a run handle.
 	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1"}, "/bin/pi", "/sock", "run-9", ""))
 	if _, ok := m["AIWB_MCP_CONFIG"]; ok {
-		t.Errorf("plain chat got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
+		t.Errorf("MCP unset got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
 	}
 
-	// The config no longer depends on a minted run handle: a board chat with a URL gets
-	// it even without one.
-	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1", Board: board}, "/bin/pi", "/sock", "", ""))
+	// MCP set, no board extras → config present.
+	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1", MCP: mcp}, "/bin/pi", "/sock", "run-9", ""))
 	if got := m["AIWB_MCP_CONFIG"]; got != want {
-		t.Errorf("board chat without a run handle: AIWB_MCP_CONFIG = %q, want %q", got, want)
+		t.Errorf("MCP set without board extras: AIWB_MCP_CONFIG = %q, want %q", got, want)
 	}
 
-	// A board chat with no MCP URL gets no config.
-	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1", Board: &agent.BoardAccess{Token: boardToken}},
+	// The config no longer depends on a minted run handle: MCP with a URL gets
+	// it even without one.
+	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1", MCP: mcp}, "/bin/pi", "/sock", "", ""))
+	if got := m["AIWB_MCP_CONFIG"]; got != want {
+		t.Errorf("MCP without a run handle: AIWB_MCP_CONFIG = %q, want %q", got, want)
+	}
+
+	// MCP with no URL gets no config.
+	m = envMap(s.env(agent.SpawnOptions{ChatID: "c1", MCP: &agent.BoardAccess{Token: boardToken}},
 		"/bin/pi", "/sock", "run-9", ""))
 	if _, ok := m["AIWB_MCP_CONFIG"]; ok {
-		t.Errorf("board chat without an MCP URL got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
+		t.Errorf("MCP without a URL got AIWB_MCP_CONFIG %q", m["AIWB_MCP_CONFIG"])
 	}
 }
 

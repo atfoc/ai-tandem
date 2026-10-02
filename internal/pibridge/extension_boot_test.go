@@ -21,8 +21,9 @@ package pibridge
 // notice and pi still answers get_state.
 // No-config leg: plain boot registers no MCP tools and pi stays alive.
 // App-env leg (Phase 4/A3): an app-style AIWB_MCP_CONFIG plus a bridge-like
-// AIWB_BRIDGE_* environment registers exactly the mcp__board__* tools and the
-// subagent tool — never a raw native board tool name.
+// AIWB_BRIDGE_* environment registers the board MCP tools plus the spawn-family
+// mcp__board__* tools — never a raw native board tool name and never the native
+// subagent tool (the MCP spawn family replaces it).
 //
 // The test follows the Phase 2 probe's isolation: HOME/PI_CODING_AGENT_DIR
 // overrides, --no-session, PI_OFFLINE=1, stdin kept open, the process group
@@ -148,16 +149,25 @@ type bootObserved struct {
 
 // bootStub is a minimal JSON-only Streamable HTTP MCP server: initialize echo,
 // 202 notifications, a two-page tools/list, tools/call echo/isError, 405 GET.
+// extraTools are appended to the first tools/list page (after echo/bad).
+// listOverride, if non-nil, replaces the paginated list with a single page.
 type bootStub struct {
 	server *httptest.Server
 
-	mu       sync.Mutex
-	observed []bootObserved
+	mu           sync.Mutex
+	observed     []bootObserved
+	extraTools   []map[string]any
+	listOverride []map[string]any
 }
 
 func newBootStub(t *testing.T) *bootStub {
 	t.Helper()
-	s := &bootStub{}
+	return newBootStubTools(t, nil, nil)
+}
+
+func newBootStubTools(t *testing.T, extra, override []map[string]any) *bootStub {
+	t.Helper()
+	s := &bootStub{extraTools: extra, listOverride: override}
 	s.server = httptest.NewServer(http.HandlerFunc(s.handle))
 	t.Cleanup(s.server.Close)
 	return s
@@ -207,23 +217,29 @@ func (s *bootStub) handle(w http.ResponseWriter, r *http.Request) {
 			"serverInfo":      map[string]any{"name": "board", "version": "0.0.1"},
 		})
 	case "tools/list":
+		if s.listOverride != nil {
+			reply(map[string]any{"tools": s.listOverride})
+			return
+		}
 		if rq.Params.Cursor == "" {
-			reply(map[string]any{
-				"tools": []map[string]any{
-					{
-						"name":        "echo",
-						"description": "Echo a value",
-						"inputSchema": map[string]any{
-							"type":       "object",
-							"properties": map[string]any{"q": map[string]any{"type": "string"}},
-						},
-					},
-					{
-						"name":        "bad",
-						"description": "Always fails",
-						"inputSchema": map[string]any{"type": "object"},
+			tools := []map[string]any{
+				{
+					"name":        "echo",
+					"description": "Echo a value",
+					"inputSchema": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"q": map[string]any{"type": "string"}},
 					},
 				},
+				{
+					"name":        "bad",
+					"description": "Always fails",
+					"inputSchema": map[string]any{"type": "object"},
+				},
+			}
+			tools = append(tools, s.extraTools...)
+			reply(map[string]any{
+				"tools":      tools,
 				"nextCursor": "p2",
 			})
 			return
@@ -588,6 +604,68 @@ func checkNoNativeBoardTools(t *testing.T, allTools []string) {
 	}
 }
 
+func spawnFamilyToolDefs() []map[string]any {
+	return []map[string]any{
+		{"name": "spawn_subagent", "description": "Spawn a subagent", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "wait_subagents", "description": "Wait for subagents", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "stop_subagent", "description": "Stop a subagent", "inputSchema": map[string]any{"type": "object"}},
+	}
+}
+
+func spawnFamilyRegisteredNames() []string {
+	return []string{
+		"mcp__board__spawn_subagent",
+		"mcp__board__wait_subagents",
+		"mcp__board__stop_subagent",
+	}
+}
+
+func isSpawnFamilyName(name string) bool {
+	switch name {
+	case "spawn_subagent", "wait_subagents", "stop_subagent":
+		return true
+	}
+	return strings.HasSuffix(name, "__spawn_subagent") ||
+		strings.HasSuffix(name, "__wait_subagents") ||
+		strings.HasSuffix(name, "__stop_subagent")
+}
+
+func checkNoNativeSubagent(t *testing.T, captured []bootCaptured, allTools []string) {
+	t.Helper()
+	for _, tool := range captured {
+		if tool.Name == "subagent" {
+			t.Fatalf("registered native subagent: %+v", captured)
+		}
+	}
+	for _, name := range allTools {
+		if name == "subagent" {
+			t.Fatalf("getAllTools includes native subagent: %v", allTools)
+		}
+	}
+}
+
+func checkNoBoardWording(t *testing.T, captured []bootCaptured) {
+	t.Helper()
+	for _, tool := range captured {
+		if strings.Contains(tool.Description, "including the board tools") ||
+			strings.Contains(tool.PromptSnippet, "including the board tools") {
+			t.Fatalf("tool %s promises board tools: desc=%q snippet=%q", tool.Name, tool.Description, tool.PromptSnippet)
+		}
+	}
+}
+
+func checkSpawnFamilyNotSequential(t *testing.T, captured []bootCaptured) {
+	t.Helper()
+	for _, tool := range captured {
+		if !isSpawnFamilyName(tool.Name) {
+			continue
+		}
+		if tool.ExecutionMode == "sequential" {
+			t.Fatalf("spawn-family tool %s executionMode = %q, want omitted/empty (not sequential)", tool.Name, tool.ExecutionMode)
+		}
+	}
+}
+
 // bootProbeSetup resolves node/pi, materializes the real extension tree and
 // writes the probe beside it. It skips (never fails) when the environment
 // cannot run a real-pi boot.
@@ -799,18 +877,18 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 
 // TestMCPRealPiAppEnvBoot is the Phase 4 half of A3: an app-style boot with
 // AIWB_MCP_CONFIG (env source) and bridge-like AIWB_BRIDGE_* variables must
-// register exactly the board MCP tools plus the app's subagent tool, and no raw
-// native board tool name — the native registration is gone and app board chats
-// carry the board-token header config instead.
+// register the board MCP tools plus the spawn-family mcp__board__* tools, and
+// no raw native board tool name and no native subagent tool — the native
+// registration is gone and the MCP spawn family replaces it.
 //
 // The bridge is simulated with a nonexistent socket path and a fake run handle:
-// the extension uses the bridge only for the permission gate, subagent activity
-// and the best-effort control channel, all of which tolerate an unreachable
+// the extension uses the bridge only for the permission gate, hello/abort and
+// the best-effort control channel, all of which tolerate an unreachable
 // socket; the probe drives the MCP tools directly, so no UDS server is needed.
 func TestMCPRealPiAppEnvBoot(t *testing.T) {
 	pi, probePath := bootProbeSetup(t)
 
-	stub := newBootStub(t)
+	stub := newBootStubTools(t, spawnFamilyToolDefs(), nil)
 	configJSON, err := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{
 			"board": map[string]any{"type": "http", "url": stub.server.URL + "/mcp",
@@ -828,13 +906,14 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 	}})
 	report := decodeBootReport(t, run.waitReport(t, 90*time.Second))
 
-	// Exactly the discovered board MCP tools plus the app's subagent tool; the
-	// raw native board names must be gone (the Phase 4 switchover).
+	// Board-engine MCP tools plus the spawn family; native subagent is gone.
 	want := map[string]bool{
-		"mcp__board__echo":  true,
-		"mcp__board__bad":   true,
-		"mcp__board__third": true,
-		"subagent":          true,
+		"mcp__board__echo":           true,
+		"mcp__board__bad":            true,
+		"mcp__board__third":          true,
+		"mcp__board__spawn_subagent": true,
+		"mcp__board__wait_subagents": true,
+		"mcp__board__stop_subagent":  true,
 	}
 	got := map[string]bool{}
 	for _, tool := range report.Captured {
@@ -842,6 +921,13 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 			t.Fatalf("app boot registered the raw native board tool %q: %+v", tool.Name, report.Captured)
 		}
 		got[tool.Name] = true
+		if isSpawnFamilyName(tool.Name) {
+			if tool.ExecutionMode == "sequential" {
+				t.Fatalf("spawn-family tool %s executionMode = %q, want omitted/empty", tool.Name, tool.ExecutionMode)
+			}
+		} else if tool.ExecutionMode != "sequential" {
+			t.Fatalf("board MCP tool %s executionMode = %q, want sequential", tool.Name, tool.ExecutionMode)
+		}
 	}
 	if len(got) != len(want) {
 		t.Fatalf("app boot registered %d tools, want %d: %+v", len(got), len(want), report.Captured)
@@ -851,7 +937,9 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 			t.Fatalf("tool %q missing from the registered set: %+v", name, report.Captured)
 		}
 	}
+	checkNoNativeSubagent(t, report.Captured, report.AllTools)
 	checkNoNativeBoardTools(t, report.AllTools)
+	checkSpawnFamilyNotSequential(t, report.Captured)
 	for name := range want {
 		found := false
 		for _, all := range report.AllTools {
@@ -862,13 +950,6 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("tool %q missing from getAllTools: %v", name, report.AllTools)
-		}
-	}
-
-	// The subagent wording only promises board tools for an app board server.
-	for _, tool := range report.Captured {
-		if tool.Name == "subagent" && !strings.Contains(tool.Description, "including the board tools") {
-			t.Fatalf("subagent description does not advertise the board tools: %q", tool.Description)
 		}
 	}
 
@@ -894,30 +975,58 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 }
 
 // TestMCPRealPiAppPlainChatBoot is the A4 app-run leg: a plain chat's boot has
-// the bridge environment (so the permission gate and subagent tool are wired)
-// but no AIWB_MCP_CONFIG, so the extension registers no mcp__* tools and no
-// native board tools — only the subagent tool, whose wording must not promise
-// board tools.
+// the bridge environment (permission gate, hello/abort) and AIWB_MCP_CONFIG
+// pointing at a spawn-family MCP server. It must register the spawn-family
+// mcp__board__* tools without sequential execution, never native subagent, and
+// never promise board-engine tools in wording.
 func TestMCPRealPiAppPlainChatBoot(t *testing.T) {
 	pi, probePath := bootProbeSetup(t)
 
+	stub := newBootStubTools(t, nil, spawnFamilyToolDefs())
+	configJSON, err := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"board": map[string]any{"type": "http", "url": stub.server.URL + "/mcp",
+				"headers": map[string]any{"Authorization": "Bearer PLAINTOKEN"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	run := startBootPiWith(t, pi, probePath, bootPiOptions{extraEnv: []string{
+		"AIWB_MCP_CONFIG=" + string(configJSON),
 		"AIWB_BRIDGE_SOCKET=" + filepath.Join(t.TempDir(), "missing.sock"),
 		"AIWB_BRIDGE_RUN=run-plain-1",
 	}})
 	report := decodeBootReport(t, run.waitReport(t, 90*time.Second))
 
-	if len(report.Captured) != 1 || report.Captured[0].Name != "subagent" {
-		t.Fatalf("plain app boot registered %+v, want exactly subagent", report.Captured)
+	want := map[string]bool{}
+	for _, name := range spawnFamilyRegisteredNames() {
+		want[name] = true
 	}
-	for _, name := range report.AllTools {
-		if strings.HasPrefix(name, "mcp__") {
-			t.Fatalf("plain app boot registered MCP tool %q: %v", name, report.AllTools)
+	got := map[string]bool{}
+	for _, tool := range report.Captured {
+		got[tool.Name] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("plain app boot registered %+v, want exactly %v", report.Captured, spawnFamilyRegisteredNames())
+	}
+	for name := range want {
+		if !got[name] {
+			t.Fatalf("tool %q missing from the registered set: %+v", name, report.Captured)
 		}
 	}
+	checkNoNativeSubagent(t, report.Captured, report.AllTools)
 	checkNoNativeBoardTools(t, report.AllTools)
-	if desc := report.Captured[0].Description; strings.Contains(desc, "including the board tools") {
-		t.Fatalf("plain app subagent description promises board tools: %q", desc)
+	checkNoBoardWording(t, report.Captured)
+	checkSpawnFamilyNotSequential(t, report.Captured)
+	for _, tool := range report.Captured {
+		if !isSpawnFamilyName(tool.Name) {
+			t.Fatalf("plain app boot registered non-spawn-family tool %q: %+v", tool.Name, report.Captured)
+		}
+		if tool.ExecutionMode != "" {
+			t.Fatalf("spawn-family tool %s executionMode = %q, want empty/omitted", tool.Name, tool.ExecutionMode)
+		}
 	}
 	run.assertRPCAlive(t)
 }

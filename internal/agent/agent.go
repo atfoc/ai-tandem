@@ -19,12 +19,14 @@ type SpawnOptions struct {
 	Cwd       string
 	Model     string // Claude alias or Cursor base id
 	Effort    string
-	Board     *BoardAccess // nil for plain chats
+	MCP       *BoardAccess // URL+token; set whenever the process should speak MCP (plain chats included)
+	BoardID   string       // non-empty → board extras on (whiteboard prompt, board-tool allow/auto-approve)
+	Subagent  bool         // app-spawned child: Claude --allowedTools omits the spawn family
 }
 
 type BoardAccess struct {
-	MCPURL string // the fixed board MCP endpoint, http://localhost:6006/mcp (Claude, Cursor and pi)
-	Token  string // the chat's durable board token; the MCP credential, never a URL segment
+	MCPURL string // the fixed MCP endpoint, http://localhost:6006/mcp (Claude, Cursor and pi)
+	Token  string // the MCP credential, never a URL segment
 }
 
 type Spawner interface {
