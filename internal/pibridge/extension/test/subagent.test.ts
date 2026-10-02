@@ -697,6 +697,44 @@ test("nested child env carries depth+1 and the child's own tool-call id", async 
   assert.equal(argv[argv.indexOf("--append-system-prompt") + 1], "/tmp/board-prompt.md");
 });
 
+test("a DeepSeek Flash child gets the bash-timeout reminder", async (t) => {
+  const bridge = await startBridge();
+  const fx = makeFixture({ AIWB_APPEND_PROMPT: "/tmp/board-prompt.md" });
+  fx.env.FAKE_PI_DUMP = path.join(fx.dir, "dump.json");
+  t.after(async () => {
+    await bridge.close();
+    fx.cleanup();
+  });
+
+  const { promise } = startRun(bridge, fx, { model: "openrouter/deepseek/deepseek-v4.1-flash" });
+  await promise;
+  await waitFor(() => eventsOf(bridge.frames).some((event) => event.type === "done"), "done frame");
+
+  const dump = await readDump(fx);
+  const argv: string[] = dump.argv;
+  assert.equal(argv[argv.indexOf("--model") + 1], "openrouter/deepseek/deepseek-v4.1-flash");
+  const appends = argv.filter((_arg, i) => i > 0 && argv[i - 1] === "--append-system-prompt");
+  assert.deepEqual(appends, ["/tmp/board-prompt.md", "Never run bash commands without timeout"]);
+});
+
+test("a non-flash child gets no bash-timeout reminder", async (t) => {
+  const bridge = await startBridge();
+  const fx = makeFixture();
+  fx.env.FAKE_PI_DUMP = path.join(fx.dir, "dump.json");
+  t.after(async () => {
+    await bridge.close();
+    fx.cleanup();
+  });
+
+  const { promise } = startRun(bridge, fx, { model: "deepseek/deepseek-v4-pro" });
+  await promise;
+  await waitFor(() => eventsOf(bridge.frames).some((event) => event.type === "done"), "done frame");
+
+  const dump = await readDump(fx);
+  const argv: string[] = dump.argv;
+  assert.ok(!argv.includes("Never run bash commands without timeout"));
+});
+
 test("a board-chat child inherits AIWB_MCP_CONFIG (A10)", async (t) => {
   const boardConfig = '{"mcpServers":{"board":{"type":"http","url":"http://127.0.0.1:45231/mcp/run-7"}}}';
   const bridge = await startBridge();

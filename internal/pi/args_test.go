@@ -30,7 +30,8 @@ func TestArgs(t *testing.T) {
 			dir: "d", prompt: "",
 			want: []string{"--mode", "rpc", "--no-extensions", "-e", "/ext/index.ts",
 				"--session-dir", "d", "--session-id", "s", "--model", "deepseek/flash",
-				"--thinking", "high", "--no-approve"},
+				"--thinking", "high", "--append-system-prompt", "Never run bash commands without timeout",
+				"--no-approve"},
 		},
 		{
 			name: "board chat with prompt file", s: ext,
@@ -38,6 +39,24 @@ func TestArgs(t *testing.T) {
 			dir: "d", prompt: "d/append-prompt.md",
 			want: []string{"--mode", "rpc", "--no-extensions", "-e", "/ext/index.ts",
 				"--session-dir", "d", "--session-id", "s", "--append-system-prompt", "d/append-prompt.md",
+				"--no-approve"},
+		},
+		{
+			name: "flash model with a board prompt gets the reminder too", s: ext,
+			o:   agent.SpawnOptions{SessionID: "s", Board: board, Model: "openrouter/deepseek/deepseek-v4.1-flash"},
+			dir: "d", prompt: "d/append-prompt.md",
+			want: []string{"--mode", "rpc", "--no-extensions", "-e", "/ext/index.ts",
+				"--session-dir", "d", "--session-id", "s", "--model", "openrouter/deepseek/deepseek-v4.1-flash",
+				"--append-system-prompt", "d/append-prompt.md",
+				"--append-system-prompt", "Never run bash commands without timeout",
+				"--no-approve"},
+		},
+		{
+			name: "non-flash model gets no reminder", s: ext,
+			o:   agent.SpawnOptions{SessionID: "s", Model: "deepseek/deepseek-v4-pro"},
+			dir: "d", prompt: "",
+			want: []string{"--mode", "rpc", "--no-extensions", "-e", "/ext/index.ts",
+				"--session-dir", "d", "--session-id", "s", "--model", "deepseek/deepseek-v4-pro",
 				"--no-approve"},
 		},
 		{
@@ -66,6 +85,30 @@ func TestArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIsDeepSeekFlash(t *testing.T) {
+	for _, model := range []string{
+		"deepseek/deepseek-v4-flash",
+		"openrouter/deepseek/deepseek-v4.1-flash",
+		"openrouter/deepseek/deepseek-v4-flash-0731:batch",
+		"deepseek/deepseek-flash",
+		"deepseek-v4-flash-vision-exp",
+	} {
+		if !isDeepSeekFlash(model) {
+			t.Errorf("isDeepSeekFlash(%q) = false, want true", model)
+		}
+	}
+	for _, model := range []string{
+		"",
+		"deepseek/deepseek-v4-pro",
+		"anthropic/claude-sonnet-4",
+		"google/gemini-3-flash",
+	} {
+		if isDeepSeekFlash(model) {
+			t.Errorf("isDeepSeekFlash(%q) = true, want false", model)
+		}
 	}
 }
 

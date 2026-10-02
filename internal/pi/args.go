@@ -34,6 +34,11 @@ var piMarkerEnv = map[string]bool{
 // hook still routes them through the bridge, where the adapter auto-approves them and refuses
 // only inputs touching the app's own folder. --no-extensions keeps user extensions out; the explicit
 // -e loads only the app's extension.
+//
+// A DeepSeek Flash model gets a second --append-system-prompt with the bash-timeout reminder:
+// those models tend to run bash commands without a timeout and can hang a run. pi accepts the
+// flag multiple times and joins the values with blank lines, so the reminder follows the board
+// prompt.
 func (s *Spawner) args(o agent.SpawnOptions, sessionDir, appendPromptFile string) []string {
 	args := []string{"--mode", "rpc", "--no-extensions"}
 	if s.Extension != "" {
@@ -52,7 +57,22 @@ func (s *Spawner) args(o agent.SpawnOptions, sessionDir, appendPromptFile string
 	if o.Board != nil && s.Prompt != "" && appendPromptFile != "" {
 		args = append(args, "--append-system-prompt", appendPromptFile)
 	}
+	if isDeepSeekFlash(o.Model) {
+		args = append(args, "--append-system-prompt", bashTimeoutReminder)
+	}
 	return append(args, "--no-approve")
+}
+
+// bashTimeoutReminder is the extra system-prompt line DeepSeek Flash models get (see args).
+const bashTimeoutReminder = "Never run bash commands without timeout"
+
+// isDeepSeekFlash reports whether a model choice names a DeepSeek Flash model: V4 Flash, V4.1
+// Flash, their aliases and dated variants, and provider-qualified catalog ids such as
+// "openrouter/deepseek/deepseek-v4.1-flash". The match is deliberately broad so a new DeepSeek
+// Flash release keeps the reminder.
+func isDeepSeekFlash(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "deepseek") && strings.Contains(m, "flash")
 }
 
 // cleanEnv is the server's environment without the pi markers or any inherited AIWB_* value: a

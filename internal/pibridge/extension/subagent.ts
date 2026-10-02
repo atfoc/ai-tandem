@@ -147,6 +147,17 @@ function randomChildId(): string {
   return `s${uuid.replace(/-/g, "").slice(0, 12)}`;
 }
 
+/** The bash-timeout reminder appended to a DeepSeek Flash child's system prompt (see childArgs). */
+const BASH_TIMEOUT_REMINDER = "Never run bash commands without timeout";
+
+/** isDeepSeekFlash reports whether a child model choice names a DeepSeek Flash model: V4 Flash,
+ * V4.1 Flash, their aliases and dated variants, and provider-qualified catalog ids. Broad on
+ * purpose so a new DeepSeek Flash release keeps the reminder. */
+function isDeepSeekFlash(model: string): boolean {
+  const id = model.toLowerCase();
+  return id.includes("deepseek") && id.includes("flash");
+}
+
 /** childEnv copies env (dropping undefined) and applies the subagent identity. */
 function childEnv(
   env: Record<string, string | undefined>,
@@ -329,6 +340,9 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentToo
   if (model) args.push("--model", model);
   if (thinking) args.push("--thinking", thinking);
   if (env.AIWB_APPEND_PROMPT) args.push("--append-system-prompt", env.AIWB_APPEND_PROMPT);
+  // DeepSeek Flash children also get the bash-timeout reminder; pi joins repeated
+  // --append-system-prompt values with blank lines.
+  if (isDeepSeekFlash(model)) args.push("--append-system-prompt", BASH_TIMEOUT_REMINDER);
 
   let child: ChildProcess | undefined;
   let stdoutBuffer = "";
