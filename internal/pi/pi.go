@@ -103,8 +103,6 @@ type proc struct {
 	abortMu      sync.Mutex
 	abortPending bool
 
-	perms sync.Map // tool call id → chan permDecision (a pending ask)
-
 	// translate state (only touched by the read loop)
 	msgSeq      int
 	toolByIndex map[int]string // content index → tool call id
@@ -340,7 +338,6 @@ func (p *proc) waitExit() {
 	if p.runToken != "" && p.s.Bridge != nil {
 		p.s.Bridge.DeregisterRun(p.runToken)
 	}
-	p.denyPending()
 	close(p.done)
 	msg := strings.TrimSpace(p.stderr.String())
 	if msg == "" && err != nil {

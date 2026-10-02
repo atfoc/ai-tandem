@@ -33,7 +33,8 @@ var piMarkerEnv = map[string]bool{
 // what keeps that fallback open.
 //
 // Built-in tools are deliberately not excluded (no --no-builtin-tools): the extension's tool_call
-// hook gates them with permission cards. --no-extensions keeps user extensions out; the explicit
+// hook still routes them through the bridge, where the adapter auto-approves them and refuses
+// only inputs touching the app's own folder. --no-extensions keeps user extensions out; the explicit
 // -e loads only the app's extension.
 func (s *Spawner) args(o agent.SpawnOptions, sessionDir, appendPromptFile string) []string {
 	args := []string{"--mode", "rpc", "--no-extensions"}

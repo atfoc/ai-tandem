@@ -291,96 +291,36 @@ func TestMissingFolderAndBinary(t *testing.T) {
 	}
 }
 
-func TestPermissionFlow(t *testing.T) {
+func TestPermissionAlwaysApproved(t *testing.T) {
 	f := newFake(t)
 	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
 	waitKind(t, a, agent.EvCatalog)
 	p := a.(*proc)
 
-	// allow, with a subagent identity
+	// Every tool is approved at once — a subagent identity changes nothing — and no card is
+	// emitted.
 	sub := &agent.SubIdentity{Parent: "tool-9", Depth: 0, Child: "child-1"}
-	type answer struct {
-		allow  bool
-		reason string
-	}
-	done := make(chan answer, 1)
-	go func() {
-		allow, reason := p.Permission("call-1", "bash", json.RawMessage(`{"command":"ls"}`), sub)
-		done <- answer{allow, reason}
-	}()
-	ev := waitKind(t, a, agent.EvPermRequest)
-	if ev.PermID != "call-1" || ev.ToolID != "call-1" || ev.ToolName != "bash" || ev.Sub != "tool-9" {
-		t.Fatalf("perm request %+v", ev)
-	}
-	if err := p.Decide("call-1", true); err != nil {
-		t.Fatal(err)
-	}
-	if got := <-done; !got.allow || got.reason != "" {
-		t.Fatalf("allow answer %+v", got)
-	}
-	for _, ev := range drainEvents(p) {
-		if ev.Kind == agent.EvToolDenied {
-			t.Fatalf("allow emitted %+v; want no EvToolDenied", ev)
-		}
+	allow, reason := p.Permission("call-1", "bash", json.RawMessage(`{"command":"ls"}`), sub)
+	if !allow || reason != "" {
+		t.Fatalf("Permission = %v, %q; want true with no reason", allow, reason)
 	}
 
-	// deny emits EvToolDenied and a reason
-	done = make(chan answer, 1)
-	go func() {
-		allow, reason := p.Permission("call-2", "write", json.RawMessage(`{"file_path":"a"}`), nil)
-		done <- answer{allow, reason}
-	}()
-	waitKind(t, a, agent.EvPermRequest)
-	if err := p.Decide("call-2", false); err != nil {
-		t.Fatal(err)
-	}
-	if ev := waitKind(t, a, agent.EvToolDenied); ev.ToolID != "call-2" {
-		t.Fatalf("denied event %+v", ev)
-	}
-	if got := <-done; got.allow || !strings.Contains(got.reason, "said no") {
-		t.Fatalf("deny answer %+v", got)
-	}
-
-	// the app's own folder is denied with no card
-	allow, reason := p.Permission("call-3", "bash", json.RawMessage(`{"command":"cat `+f.root+`/state.json"}`), nil)
+	// The app's own folder is still denied, also without a card.
+	allow, reason = p.Permission("call-2", "bash", json.RawMessage(`{"command":"cat `+f.root+`/state.json"}`), nil)
 	if allow || reason != agent.AppDirDenied {
 		t.Fatalf("app-dir answer %v %q", allow, reason)
 	}
 	for _, ev := range drainEvents(p) {
 		if ev.Kind == agent.EvPermRequest || ev.Kind == agent.EvToolDenied {
-			t.Fatalf("app-dir denial produced an event: %+v", ev)
+			t.Fatalf("permission handling produced an event: %+v", ev)
 		}
 	}
 
-	// an unknown decision is an error
-	if err := p.Decide("nope", true); err == nil {
+	// No asks are pending anymore, so every decision is unknown.
+	if err := p.Decide("call-1", true); err == nil {
 		t.Error("Decide on an unknown request did not fail")
 	}
 
-	f.stdinLines(t, a)
-}
-
-func TestPermissionTimeout(t *testing.T) {
-	old := permTimeout
-	permTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { permTimeout = old })
-
-	f := newFake(t)
-	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
-	waitKind(t, a, agent.EvCatalog)
-	p := a.(*proc)
-	done := make(chan bool, 1)
-	go func() {
-		allow, _ := p.Permission("slow", "bash", json.RawMessage(`{}`), nil)
-		done <- allow
-	}()
-	waitKind(t, a, agent.EvPermRequest)
-	if <-done {
-		t.Fatal("timed-out ask was allowed")
-	}
-	if ev := waitKind(t, a, agent.EvToolDenied); ev.ToolID != "slow" {
-		t.Fatalf("timeout event %+v", ev)
-	}
 	f.stdinLines(t, a)
 }
 
@@ -537,34 +477,6 @@ func TestCloseReapsGroupWhenLeaderHoldsStdin(t *testing.T) {
 		t.Fatalf("event %+v, want EvExit", ev)
 	}
 	waitPidsGone(t, parent, child)
-}
-
-func TestPermissionDeniedOnExit(t *testing.T) {
-	f := newFake(t)
-	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
-	waitKind(t, a, agent.EvCatalog)
-	p := a.(*proc)
-	type answer struct {
-		allow  bool
-		reason string
-	}
-	done := make(chan answer, 1)
-	go func() {
-		allow, reason := p.Permission("call-exit", "bash", json.RawMessage(`{"command":"ls"}`), nil)
-		done <- answer{allow, reason}
-	}()
-	waitKind(t, a, agent.EvPermRequest)
-	a.Close()
-	if ev := waitKind(t, a, agent.EvToolDenied); ev.ToolID != "call-exit" {
-		t.Fatalf("denied event %+v, want EvToolDenied for the pending ask", ev)
-	}
-	got := <-done
-	if got.allow || got.reason == "" {
-		t.Fatalf("pending ask answered %+v at process end, want a denial with a reason", got)
-	}
-	if ev := waitKind(t, a, agent.EvExit); ev.Kind != agent.EvExit {
-		t.Fatalf("event %+v, want EvExit", ev)
-	}
 }
 
 func TestPlainChatRegistersEmptyBoardToken(t *testing.T) {

@@ -17,8 +17,9 @@ agents run with the logins you already have.
   through the app's pi extension), and Cursor through a small HTTP command endpoint. For pi the
   app injects a run-scoped `/mcp/<runToken>` URL and resolves it through the owner-only UDS run
   registry, so the board token never enters the pi process. The UDS bridge remains for permission
-  asks, subagent activity, abort and MCP failure notices. Plain (non-board) pi chats get no board
-  tools.
+  asks, subagent activity, abort and MCP failure notices, but pi tool calls are auto-approved:
+  they run with no permission card, and only a tool that touches the app's own folder is refused.
+  Plain (non-board) pi chats get no board tools.
 - **Web client** (`web/`): React + Excalidraw, built with esbuild. The server serves it.
 - **Desktop app** (`desktop/`): an Electron window that starts the server, or finds the one already
   running, and opens it. Quitting the app doesn't stop the server or its running chats.

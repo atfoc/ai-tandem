@@ -1,11 +1,12 @@
 package pi
 
-// Real-pi end-to-end tests for the permission path: the app extension's tool_call hook → the
-// app bridge's ask frame → the adapter's EvPermRequest/Decide round trip, plus the app-folder
-// auto-deny. Like e2e_test.go these only run when the caller opts in (AIWB_PI_E2E=1, real pi on
-// PATH); see that file for the gate, model override and isolation notes.
+// Real-pi end-to-end tests for the permission path: the app extension's tool_call hook → the app
+// bridge's ask frame → the adapter's auto-allow, plus the app-folder auto-deny. pi tool calls are
+// always approved, so no EvPermRequest must ever arrive and the gated tools must run. Like
+// e2e_test.go these only run when the caller opts in (AIWB_PI_E2E=1, real pi on PATH); see that
+// file for the gate, model override and isolation notes.
 //
-//	AIWB_PI_E2E=1 go test -count=1 -run 'TestE2EPermissionAllowDeny|TestE2EAppDirDenied' -v ./internal/pi/
+//	AIWB_PI_E2E=1 go test -count=1 -run 'TestE2EPermissionAutoApproved|TestE2EAppDirDenied|TestE2EMCPToolsAutoApproved' -v ./internal/pi/
 
 import (
 	"fmt"
@@ -13,91 +14,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/pibridge"
 )
 
-// e2ePermWait bounds how long a permission turn waits for the model's first permission ask. A
-// model that decides not to call the gated tool skips instead of hanging or burning budget;
-// after the first ask arrives the ordinary 3-minute turn bound takes over.
-const e2ePermWait = 90 * time.Second
-
-// e2ePermTurn collects the pieces of one permission turn: the asks the extension raised, the
-// tool results (IsError decides truthfulness) and the streamed text.
-type e2ePermTurn struct {
-	asks    []agent.Event
-	results []agent.Event
-	text    strings.Builder
-}
-
-func (r *e2ePermTurn) handle(ev agent.Event) {
-	switch ev.Kind {
-	case agent.EvPermRequest:
-		r.asks = append(r.asks, ev)
-	case agent.EvToolResult:
-		r.results = append(r.results, ev)
-	case agent.EvText, agent.EvTextDelta:
-		r.text.WriteString(ev.Text)
-	}
-}
-
-// resultsFor returns the results of the tool calls whose ids are in ids.
-func (r *e2ePermTurn) resultsFor(ids map[string]bool) []agent.Event {
-	var out []agent.Event
-	for _, ev := range r.results {
-		if ids[ev.ToolID] {
-			out = append(out, ev)
-		}
-	}
-	return out
-}
-
-// e2ePermLoop drives one turn until it ends, calling answer for every permission ask so the
-// extension is never left blocked. It returns false when pi exited before the turn ended, and
-// skips when no ask arrives within e2ePermWait (the model chose not to call a gated tool).
-func e2ePermLoop(t *testing.T, a agent.Agent, run *e2ePermTurn, answer func(agent.Event)) bool {
-	t.Helper()
-	askTimer := time.After(e2ePermWait)
-	turnTimer := time.After(3 * time.Minute)
-	for {
-		select {
-		case ev, open := <-a.Events():
-			if !open {
-				t.Fatal("events closed before the turn ended")
-			}
-			switch ev.Kind {
-			case agent.EvTurnEnd:
-				if ev.Error != "" {
-					t.Fatalf("turn ended with error %q", ev.Error)
-				}
-				if ev.Aborted {
-					t.Fatal("turn ended aborted")
-				}
-				return true
-			case agent.EvExit:
-				return false
-			}
-			run.handle(ev)
-			if ev.Kind == agent.EvPermRequest {
-				if len(run.asks) == 1 {
-					askTimer = nil // the model cooperated; drop the no-ask bound
-				}
-				answer(ev)
-			}
-		case <-askTimer:
-			t.Skipf("no tool permission ask arrived within %s: the model did not attempt a gated tool", e2ePermWait)
-		case <-turnTimer:
-			t.Fatal("timed out after 3 minutes waiting for the turn to end")
-		}
-	}
-}
-
-// TestE2EPermissionAllowDeny runs the whole permission round trip against real pi twice: the
-// first bash ask is denied and must not return a successful PERM-MARKER result, the second is
-// allowed and must. Both turns use the same short prompt so the model spend stays tiny.
-func TestE2EPermissionAllowDeny(t *testing.T) {
+// TestE2EPermissionAutoApproved runs a gated bash call against real pi: the call must run with no
+// permission ask and return the marker.
+func TestE2EPermissionAutoApproved(t *testing.T) {
 	e2eAgentDir(t)
 	root, home, cwd := t.TempDir(), t.TempDir(), t.TempDir()
 	ext, err := pibridge.MaterializeExtension(filepath.Join(t.TempDir(), "ext"))
@@ -122,75 +46,42 @@ func TestE2EPermissionAllowDeny(t *testing.T) {
 		t.Skipf("model %s is unavailable (not authenticated?): %v", e2eModel(), err)
 	}
 
-	// Turn 1: deny. The turn must continue and no successful result may carry the marker.
-	deny := &e2ePermTurn{}
-	denied := map[string]bool{}
-	if !e2ePermLoop(t, a, deny, func(ev agent.Event) {
-		if ev.ToolName != "bash" {
-			_ = a.Decide(ev.PermID, false) // keep a stray ask from blocking the turn
-			return
-		}
-		if ev.PermID == "" || ev.ToolID == "" || len(ev.Input) == 0 {
-			t.Errorf("permission ask %+v: want a bash tool-call id and input", ev)
-		}
-		denied[ev.PermID] = true
-		if err := a.Decide(ev.PermID, false); err != nil {
-			t.Errorf("Decide(%q, false): %v", ev.PermID, err)
-		}
-	}) {
-		t.Skip("pi exited before the deny turn ended (model or auth unavailable?)")
-	}
-	if len(denied) == 0 {
-		t.Skipf("the model did not attempt the bash tool on the deny turn; asks %+v text %q", deny.asks, deny.text.String())
-	}
-	sawErrorResult := false
-	for _, ev := range deny.resultsFor(denied) {
-		if ev.IsError {
-			sawErrorResult = true
-		}
-		if !ev.IsError && strings.Contains(ev.Result, "PERM-MARKER") {
-			t.Fatalf("denied bash call produced a successful result %q", ev.Result)
-		}
-	}
-	if !sawErrorResult {
-		t.Errorf("denied bash asks %v produced no error tool result; results %+v", denied, deny.results)
-	}
-	t.Logf("deny turn: asks %+v; results %+v; text %q", deny.asks, deny.results, deny.text.String())
-
-	// Turn 2: allow. The same command must now return the marker in a successful result.
-	if err := a.Send([]agent.ContentBlock{{Text: permPrompt}}); err != nil {
-		t.Fatalf("second Send: %v", err)
-	}
-	allow := &e2ePermTurn{}
-	allowed := map[string]bool{}
-	if !e2ePermLoop(t, a, allow, func(ev agent.Event) {
-		if ev.ToolName != "bash" {
-			_ = a.Decide(ev.PermID, false)
-			return
-		}
-		if ev.PermID == "" || ev.ToolID == "" || len(ev.Input) == 0 {
-			t.Errorf("permission ask %+v: want a bash tool-call id and input", ev)
-		}
-		allowed[ev.PermID] = true
-		if err := a.Decide(ev.PermID, true); err != nil {
-			t.Errorf("Decide(%q, true): %v", ev.PermID, err)
+	var asks, results []agent.Event
+	bashIDs := map[string]bool{}
+	var text strings.Builder
+	if !e2eTurn(t, a, func(ev agent.Event) {
+		switch ev.Kind {
+		case agent.EvPermRequest:
+			asks = append(asks, ev)
+			_ = a.Decide(ev.PermID, true) // must never happen; unblock anyway
+		case agent.EvToolStart, agent.EvToolInput:
+			if ev.ToolName == "bash" {
+				bashIDs[ev.ToolID] = true
+			}
+		case agent.EvToolResult:
+			results = append(results, ev)
+		case agent.EvText, agent.EvTextDelta:
+			text.WriteString(ev.Text)
 		}
 	}) {
-		t.Skip("pi exited before the allow turn ended (model or auth unavailable?)")
+		t.Skip("pi exited before the turn ended (model or auth unavailable?)")
 	}
-	if len(allowed) == 0 {
-		t.Skipf("the model did not attempt the bash tool on the allow turn; asks %+v text %q", allow.asks, allow.text.String())
+	if len(bashIDs) == 0 {
+		t.Skipf("the model did not attempt the bash tool; asks %+v text %q", asks, text.String())
+	}
+	if len(asks) != 0 {
+		t.Fatalf("tool calls raised permission asks: %+v", asks)
 	}
 	found := false
-	for _, ev := range allow.resultsFor(allowed) {
-		if !ev.IsError && strings.Contains(ev.Result, "PERM-MARKER") {
+	for _, ev := range results {
+		if bashIDs[ev.ToolID] && !ev.IsError && strings.Contains(ev.Result, "PERM-MARKER") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("allowed bash asks %v produced no successful result with PERM-MARKER; results %+v", allowed, allow.results)
+		t.Fatalf("the auto-approved bash call produced no successful result with PERM-MARKER; results %+v", results)
 	}
-	t.Logf("allow turn: asks %+v; results %+v; text %q", allow.asks, allow.results, allow.text.String())
+	t.Logf("auto-approve turn: bash ids %v; results %+v; text %q", bashIDs, results, text.String())
 	closeAndWaitExit(t, a)
 }
 
@@ -233,7 +124,7 @@ func TestE2EAppDirDenied(t *testing.T) {
 		switch ev.Kind {
 		case agent.EvPermRequest:
 			asks = append(asks, ev)
-			_ = a.Decide(ev.PermID, false) // the guard must answer before this; unblock anyway
+			_ = a.Decide(ev.PermID, true) // the guard must answer before this; unblock anyway
 		case agent.EvToolStart, agent.EvToolInput:
 			if strings.Contains(string(ev.Input), statePath) {
 				pathIDs[ev.ToolID] = true
@@ -283,12 +174,11 @@ func TestE2EAppDirDenied(t *testing.T) {
 	closeAndWaitExit(t, a)
 }
 
-// TestE2EMCPNonBoardPermission is the A6 real-pi leg: an app board chat whose
-// AIWB_MCP_CONFIG also carries a test-only non-board server (config key
-// "other") served by the same board MCP endpoint whose serverInfo.name is
-// also "board". The board tool is auto-allowed (no ask); the non-board tool
-// asks exactly once and runs after the user allows it.
-func TestE2EMCPNonBoardPermission(t *testing.T) {
+// TestE2EMCPToolsAutoApproved is the A6 real-pi leg: an app board chat whose AIWB_MCP_CONFIG also
+// carries a test-only non-board server (config key "other") served by the same board MCP endpoint
+// whose serverInfo.name is also "board". Both the app-sourced board tool and the non-board tool
+// must run with no permission ask.
+func TestE2EMCPToolsAutoApproved(t *testing.T) {
 	e2eAgentDir(t)
 	env := newE2EBoardEnv(t)
 	env.setReply("E2E-MCP-TEXT-77")
@@ -302,7 +192,7 @@ func TestE2EMCPNonBoardPermission(t *testing.T) {
 	}
 	defer a.Close()
 
-	// Turn 1: the app-sourced board tool is auto-allowed and must not ask.
+	// Turn 1: the app-sourced board tool runs with no ask.
 	if err := a.Send([]agent.ContentBlock{{Text: "Call the tool named mcp__board__list_boards with an empty " +
 		"object argument. Then reply with the text it returned."}}); err != nil {
 		t.Skipf("model %s is unavailable (not authenticated?): %v", e2eModel(), err)
@@ -313,7 +203,7 @@ func TestE2EMCPNonBoardPermission(t *testing.T) {
 		switch ev.Kind {
 		case agent.EvPermRequest:
 			boardAsks = append(boardAsks, ev)
-			_ = a.Decide(ev.PermID, false) // keep an unexpected ask from blocking the turn
+			_ = a.Decide(ev.PermID, true) // unblock an unexpected ask
 		case agent.EvToolStart:
 			if ev.ToolName == "mcp__board__list_boards" {
 				boardCalled = true
@@ -326,52 +216,46 @@ func TestE2EMCPNonBoardPermission(t *testing.T) {
 		t.Fatalf("the model never called mcp__board__list_boards; board asks %+v", boardAsks)
 	}
 	if len(boardAsks) != 0 {
-		t.Fatalf("the auto-allowed board tool raised permission asks: %+v", boardAsks)
+		t.Fatalf("the board tool raised permission asks: %+v", boardAsks)
 	}
 
-	// Turn 2: the non-board server's tool asks exactly once and runs after the
-	// allow decision.
+	// Turn 2: the non-board server's tool also runs with no ask.
 	if err := a.Send([]agent.ContentBlock{{Text: "Call the tool named mcp__other__list_boards with an empty " +
 		"object argument. Then reply with the text it returned."}}); err != nil {
 		t.Fatalf("second Send: %v", err)
 	}
-	other := &e2ePermTurn{}
-	allowed := map[string]bool{}
-	if !e2ePermLoop(t, a, other, func(ev agent.Event) {
-		if ev.ToolName != "mcp__other__list_boards" {
-			_ = a.Decide(ev.PermID, false)
-			return
-		}
-		allowed[ev.PermID] = true
-		if err := a.Decide(ev.PermID, true); err != nil {
-			t.Errorf("Decide(%q, true): %v", ev.PermID, err)
+	var otherAsks, otherResults []agent.Event
+	otherCalled := false
+	if !e2eTurn(t, a, func(ev agent.Event) {
+		switch ev.Kind {
+		case agent.EvPermRequest:
+			otherAsks = append(otherAsks, ev)
+			_ = a.Decide(ev.PermID, true) // unblock an unexpected ask
+		case agent.EvToolStart:
+			if ev.ToolName == "mcp__other__list_boards" {
+				otherCalled = true
+			}
+		case agent.EvToolResult:
+			otherResults = append(otherResults, ev)
 		}
 	}) {
 		t.Skip("pi exited before the non-board turn ended (model or auth unavailable?)")
 	}
-	if len(other.asks) == 0 {
-		t.Skipf("the model did not attempt mcp__other__list_boards; text %q", other.text.String())
+	if !otherCalled {
+		t.Skipf("the model did not attempt mcp__other__list_boards; asks %+v", otherAsks)
 	}
-	if len(allowed) != 1 {
-		t.Fatalf("non-board tool asks = %d %+v, want exactly one", len(allowed), other.asks)
-	}
-	for _, ev := range other.asks {
-		if strings.HasPrefix(ev.ToolName, "mcp__board__") {
-			t.Fatalf("the board tool raised a permission ask: %+v", ev)
-		}
-		if ev.ToolName != "mcp__other__list_boards" {
-			t.Fatalf("unexpected permission ask %+v", ev)
-		}
+	if len(otherAsks) != 0 {
+		t.Fatalf("the non-board tool raised permission asks: %+v", otherAsks)
 	}
 	found := false
-	for _, ev := range other.resultsFor(allowed) {
+	for _, ev := range otherResults {
 		if !ev.IsError && strings.Contains(ev.Result, "E2E-MCP-TEXT-77") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("allowed non-board call produced no successful result with the MCP text; results %+v", other.results)
+		t.Fatalf("the non-board call produced no successful result with the MCP text; results %+v", otherResults)
 	}
-	t.Logf("non-board turn: asks %+v; results %+v; text %q", other.asks, other.results, other.text.String())
+	t.Logf("non-board turn: asks %+v; results %+v", otherAsks, otherResults)
 	closeAndWaitExit(t, a)
 }

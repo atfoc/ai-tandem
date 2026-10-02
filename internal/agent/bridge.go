@@ -93,8 +93,9 @@ type SubActivity struct {
 // RunHandler is implemented by the pi adapter to serve one registered chat run. pibridge calls it
 // from its per-connection goroutines; it must never block forever.
 type RunHandler interface {
-	// Permission blocks until the user decided, the run ended, or the ask timed out; reason is
-	// shown to the model when allow is false. sub is nil when the chat's own model asked.
+	// Permission answers the extension's tool_call ask. It may block until a decision arrives
+	// or answer at once (the pi adapter always approves) and must never block forever; reason
+	// is shown to the model when allow is false. sub is nil when the chat's own model asked.
 	Permission(toolCallID, toolName string, input json.RawMessage, sub *SubIdentity) (allow bool, reason string)
 	// Activity delivers one child-activity event for the run.
 	Activity(sub *SubIdentity, activity SubActivity)
