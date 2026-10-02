@@ -150,7 +150,7 @@ func TestContextSplitWithoutProcess(t *testing.T) {
 	}
 	wantCalls(t, e.claude, 0, 1)
 	o := e.claude.splitReads[0]
-	if o.SessionID != e.meta(v.ID).SessionID || !o.Resume || o.Board == nil || o.Board.MCPURL == "" || o.Cwd != v.Cwd {
+	if o.SessionID != e.meta(v.ID).SessionID || !o.Resume || o.MCP == nil || o.MCP.MCPURL == "" || o.Cwd != v.Cwd {
 		t.Errorf("options %+v", o)
 	}
 	if e.claude.count() != 1 {

@@ -201,7 +201,7 @@ type ChatMeta struct {
 	Effort              string    `json:"effort,omitempty"`
 	SessionID           string    `json:"sessionId,omitempty"` // Claude and pi: chosen by the app; Cursor: from session/new
 	Locked              bool      `json:"locked"`              // first message sent: folder, model, effort fixed
-	Token               string    `json:"token,omitempty"`     // board chats: the durable MCP credential, sent in the Authorization header
+	Token               string    `json:"token,omitempty"`     // durable MCP credential, sent in the Authorization header (every chat)
 	Created             time.Time `json:"created"`
 	TurnActive          bool      `json:"turnActive,omitempty"`          // a turn was running at the last write
 	InstructionsSent    bool      `json:"instructionsSent,omitempty"`    // curl-era Cursor board chats; those chats are disabled
@@ -352,6 +352,8 @@ type Subagent struct {
 	Description string    `json:"description,omitempty"` // the name the parent gave it
 	Prompt      string    `json:"prompt,omitempty"`      // what the parent asked it
 	Model       string    `json:"model,omitempty"`       // as reported: "claude-haiku-4-5-20251001", "gpt-5.4-mini-medium"
+	Kind        AgentKind `json:"kind,omitempty"`        // "claude" | "cursor" | "pi"; app-spawned only
+	Effort      string    `json:"effort,omitempty"`
 	Background  bool      `json:"background,omitempty"`
 	Status      SubStatus `json:"status"`
 	Error       string    `json:"error,omitempty"`

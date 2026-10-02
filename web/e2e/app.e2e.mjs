@@ -25,9 +25,11 @@
 // ~/.cursor) in a temp folder, removed at the end, so the deny rules the server adds for the data
 // folder never reach the user's config.
 //
-// pi chats are created from the same "New chat" menu ("Pi chat") and use the same composer, so
-// they would follow the Claude/Cursor steps below; no pi step is wired into this paid run yet.
-// The adapter's own cheap, gated real-pi checks run separately:
+// Subagents on app chats go through the MCP spawn family (`spawn_subagent` / `wait_subagents` /
+// `stop_subagent`), not native Agent / Task / subagent. Steps 18 and 19 drive that path on plain
+// Claude and plain Cursor. pi chats are created from the same "New chat" menu ("Pi chat") and use
+// the same composer, so they would follow the Claude/Cursor steps below; no pi step is wired into
+// this paid run yet. The adapter's own cheap, gated real-pi checks run separately:
 //   AIWB_PI_E2E=1 go test -count=1 -run TestE2E ./internal/pi/
 // This full Playwright run stays manual.
 //
@@ -451,16 +453,16 @@ async function run() {
     check(!!ids.sid1, "chat.json has a session id", readJSON(path.join(HOME, "chats", ids.chat1, "chat.json")));
     check(claudeProcs(ids.sid1).length === 0, "no claude process runs for the chat yet", claudeProcs(ids.sid1));
 
-    const q = "Do you have any tools containing board?";
+    const q = "Do you have any whiteboard tools named list_boards, read_board, or apply? Reply with just yes or no.";
     const before = await send(page, ids.chat1, q);
     const procs = await waitFor("a claude process runs with the chat's session id", async () => { const p = claudeProcs(ids.sid1); return p.length ? p : null; }, { timeout: 15_000 });
-    check(!procs.some((p) => /mcp-config/.test(p.args)), "the plain chat's process has no board MCP server", procs);
+    check(procs.some((p) => /mcp-config/.test(p.args)), "the plain chat's process has MCP config (spawn family)", procs);
     await waitFor("the pickers are locked", async () => (await page.locator('.composer button.tchip[title^="Model"]').count()) === 0 && (await chatView(ids.chat1)).locked);
     check(await page.locator(".composer .tchip.static", { hasText: CLAUDE_MODEL_LABEL }).isVisible(), "the composer shows the model as fixed", await page.locator(".composer-tools").innerText());
     const { items } = await waitTurn(ids.chat1, before);
     const reply = lastReply(items);
     check(/^\W*no\b/i.test(reply) || /\b(no|don't|do not|none)\b/i.test(reply.split("\n")[0]), 'the reply is "No"', reply);
-    check(!items.some((i) => i.kind === "tool" && /^mcp__board__/.test(i.name ?? "")), "no board tool was called", items);
+    check(!items.some((i) => i.kind === "tool" && /^mcp__board__(list_boards|read_board|get_view|apply|delete_elements|create_board|show_board)$/.test(i.name ?? "")), "no board tool was called", items);
     const named = await waitFor("the chat gets a name", async () => (await chatView(ids.chat1)).name || null, { timeout: 60_000 });
     await (await chatRow(page, ids.chat1)).waitFor();
     log(`    chat named "${named}"`);
@@ -864,7 +866,9 @@ async function run() {
     await pickFolder(page, ids.claudeSubs, folders.B); // it has a README.md
     const v0 = await chatView(ids.claudeSubs);
     check(v0.agent === "claude" && v0.model === "haiku" && !v0.board, "a plain Claude chat on Haiku", v0);
-    const before = await send(page, ids.claudeSubs, "Use the Agent tool twice in parallel: one subagent runs `ls`, the other reads README.md. Then summarise.");
+    const cj0 = readJSON(path.join(HOME, "chats", ids.claudeSubs, "chat.json"));
+    check(!!cj0.token, "plain chat.json has a token", cj0);
+    const before = await send(page, ids.claudeSubs, "Spawn two subagents in parallel via spawn_subagent. Give them distinct descriptions. One runs `ls`; the other reads README.md. Then call wait_subagents for their results, then summarise.");
 
     // Rows appear where the Agent calls are; each is watched from its first sight on.
     const rows = page.locator(".thread .subagent");
@@ -883,6 +887,14 @@ async function run() {
     await waitTurn(ids.claudeSubs, before, "the parent's turn ends");
     const subs = (await get(`/api/chats/${ids.claudeSubs}/items`)).subagents;
     check(subs.length === 2 && subs.every((s) => s.status === "completed"), "the server has two completed subagents", subs);
+    check(subs.every((s) => s.kind === "claude"), "server subagents have kind claude", subs.map((s) => ({ id: s.id, kind: s.kind })));
+    const spawnCalls = (await chatItems(ids.claudeSubs)).filter((i) => i.kind === "tool" && i.name === "mcp__board__spawn_subagent");
+    check(spawnCalls.length >= 2, "spawn rows are mcp__board__spawn_subagent", (await chatItems(ids.claudeSubs)).filter((i) => i.kind === "tool").map((i) => i.name));
+    const chrome = await rows.evaluateAll((els) => els.map((e) => ({
+      agent: (e.querySelector(".sub-agent")?.textContent ?? "").trim(),
+      cls: e.querySelector(".sub-agent")?.className ?? "",
+    })));
+    check(chrome.length === 2 && chrome.every((r) => r.agent === "Claude" && /\bagent-claude\b/.test(r.cls)), "linked cards show Claude identity chrome", chrome);
 
     // The drawer.
     const drawer = page.locator(".sub-drawer");
@@ -923,20 +935,25 @@ async function run() {
     const body = await res.json();
     const folder = path.join(HOME, "chats", ids.claudeSubs, "subagents", sid);
     check(res.ok() && fs.existsSync(path.join(folder, "subagent.json")) && fs.existsSync(path.join(folder, "items.jsonl")), "opening a row fetches its thread; it is kept in its own folder", { status: res.status(), folder, files: fs.existsSync(folder) ? fs.readdirSync(folder) : [] });
-    check(readJSON(path.join(folder, "subagent.json")).status === "completed", "its subagent.json says completed", readJSON(path.join(folder, "subagent.json")));
+    const sj = readJSON(path.join(folder, "subagent.json"));
+    check(sj.status === "completed" && sj.kind === "claude", "its subagent.json says completed and includes kind", sj);
     check((body.items ?? []).some((i) => i?.kind === "tool"), "the fetched thread has its tool calls", body.items);
     await waitFor("the drawer shows the fetched thread", async () => (await drawer.locator(".tool").count()) > 0 || saw(await drawer.innerText().catch(() => "(no drawer)")), { timeout: 10_000 });
     await page.keyboard.press("Escape");
     await waitFor("the drawer closes", async () => (await drawer.count()) === 0, { timeout: 5000 });
   });
 
-  await step(19, "Cursor subagents: meters while running; Stop stops both; still stopped after a reload", async () => {
+  const step19Title = "Cursor subagents: meters while running; Stop stops both; still stopped after a reload";
+  if (SKIP_CURSOR_MCP) {
+    await skipStep(19, step19Title, `real Cursor over MCP spawn_subagent needs exclusive port ${MCP_PORT} (AIWB_E2E_SKIP_CURSOR_MCP is set)`);
+  } else {
+  await step(19, step19Title, async () => {
     ids.cursorSubs = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Cursor chat");
     await waitFor("Cursor's model list is loaded", async () => (await page.locator('.composer button.tchip[title^="Model"]').count()) > 0, { timeout: 60_000 });
     await pickModel(page, CURSOR_MODEL_LABEL);
     const v0 = await chatView(ids.cursorSubs);
     check(v0.agent === "cursor" && v0.model === "gpt-5.4-nano" && !v0.board, `a plain Cursor chat on ${CURSOR_MODEL_LABEL}`, v0);
-    await send(page, ids.cursorSubs, "Use the Task tool to start two subagents in parallel, each runs `sleep 20` then `ls`.");
+    await send(page, ids.cursorSubs, "Spawn two subagents in parallel via spawn_subagent. Give them distinct descriptions. Each should run `sleep 20` then `ls`. Collect their results with wait_subagents.");
 
     const rows = page.locator(".thread .subagent");
     const running = async () => rows.evaluateAll((els) => els.map((e) => ({
@@ -948,10 +965,20 @@ async function run() {
       return now.length === 2 && now.every((r) => r.running) ? now : saw(now);
     }, { timeout: 120_000, every: 200 });
     // Each is linked (the agent reported it), so it is really running, not just an unlinked call.
-    await waitFor("the server has both subagents running", async () => {
+    const runningSubs = await waitFor("the server has both subagents running", async () => {
       const s = (await get(`/api/chats/${ids.cursorSubs}/items`)).subagents;
       return s.length === 2 && s.every((x) => x.status === "running") ? s : saw(s);
     }, { timeout: 15_000 });
+    check(runningSubs.every((s) => s.kind === "cursor"), "server subagents have kind cursor", runningSubs.map((s) => ({ id: s.id, kind: s.kind })));
+    const spawnCalls = (await chatItems(ids.cursorSubs)).filter((i) => i.kind === "tool" && i.name === "mcp__board__spawn_subagent");
+    const taskCalls = (await chatItems(ids.cursorSubs)).filter((i) => i.kind === "tool" && i.name === "Task");
+    check(spawnCalls.length >= 2, "spawn rows are mcp__board__spawn_subagent", (await chatItems(ids.cursorSubs)).filter((i) => i.kind === "tool").map((i) => i.name));
+    check(!taskCalls.some((i) => !i.isError && !i.denied), "no native Task succeeded", taskCalls.map((i) => ({ name: i.name, isError: i.isError, denied: i.denied })));
+    const chrome = await rows.evaluateAll((els) => els.map((e) => ({
+      agent: (e.querySelector(".sub-agent")?.textContent ?? "").trim(),
+      cls: e.querySelector(".sub-agent")?.className ?? "",
+    })));
+    check(chrome.length === 2 && chrome.every((r) => r.agent === "Cursor" && /\bagent-cursor\b/.test(r.cls)), "linked cards show Cursor identity chrome", chrome);
     const t0 = Date.now();
     const meters = await waitFor("each running row's meter shows a token count", async () => {
       const now = await running();
@@ -972,6 +999,11 @@ async function run() {
     const subs = (await get(`/api/chats/${ids.cursorSubs}/items`)).subagents;
     check(subs.length === 2 && subs.every((s) => s.status === "stopped"), "the server has both subagents stopped", subs);
     await waitFor("the chat is no longer busy", async () => !BUSY.has((await chatView(ids.cursorSubs)).status), { timeout: 30_000 });
+    const subDir = path.join(HOME, "chats", ids.cursorSubs, "subagents");
+    await waitFor("no leftover subagent processes", async () => {
+      const left = pgrep(subDir);
+      return left.length === 0 || saw(left);
+    }, { timeout: 15_000 });
 
     await page.reload();
     await page.locator(".side").waitFor();
@@ -980,9 +1012,11 @@ async function run() {
     check(allStopped(s2), "both rows show ■ and Stopped after the reload", s2);
     for (const s of subs) {
       const f = path.join(HOME, "chats", ids.cursorSubs, "subagents", s.id, "subagent.json");
-      check(fs.existsSync(f) && readJSON(f).status === "stopped", `subagent ${s.id} is saved as stopped in its folder`, fs.existsSync(f) ? readJSON(f) : "(no subagent.json)");
+      const disk = fs.existsSync(f) ? readJSON(f) : null;
+      check(disk && disk.status === "stopped" && disk.kind === "cursor", `subagent ${s.id} is saved as stopped with kind cursor`, disk ?? "(no subagent.json)");
     }
   });
+  }
 
   await step(20, "A typed message is kept as the chat's draft: across chat switches and a restart; sending clears it", async () => {
     ids.drafty = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");

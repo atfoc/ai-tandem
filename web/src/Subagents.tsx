@@ -7,7 +7,9 @@ import { Markdown } from "./Markdown.tsx";
 import { CtxRing, ctxTitle } from "./Composer.tsx";
 import { subagentOf, subBadge, subLine, subModelLabel, subToolCount, subDurationMs, fmtDuration,
   subKey, subList, subReport, showReport } from "./logic/subagents.ts";
-import type { AgentKind, Catalog, ChatView, Item, SubStatus, Subagent } from "./types.ts";
+import { AgentGlyph } from "./icons.tsx";
+import { agentClass, agentShortName } from "./agents.ts";
+import type { ChatView, Item, SubStatus, Subagent } from "./types.ts";
 
 export const openSub = (chat: string, sub: string) => setState({ subDrawer: { chat, sub } });
 export const closeSub = () => setState({ subDrawer: null });
@@ -42,6 +44,12 @@ function SubName({ sa }: { sa: Subagent }) {
   const badge = subBadge(sa.type);
   return (
     <span className="sub-name">
+      {sa.kind && (
+        <span className={`sub-agent agent-${agentClass(sa.kind)}`}>
+          <AgentGlyph agent={sa.kind} size={11} />
+          {agentShortName(sa.kind)}
+        </span>
+      )}
       <span className="sub-desc">{sa.description || "Subagent"}</span>
       {badge && <span className="sub-type">{badge}</span>}
       {sa.background && <span className="sub-bg">background</span>}
@@ -55,8 +63,9 @@ export function SubMeter({ sa }: { sa: Subagent }) {
   return <CtxRing used={used} win={win} title={ctxTitle(used, win)} className="sub-meter" />;
 }
 
-export function SubStats({ sa, items, agent, cat, now }: { sa: Subagent; items?: Item[]; agent: AgentKind; cat?: Catalog; now: number }) {
-  const m = subModelLabel(sa.model, agent, cat);
+export function SubStats({ sa, items, now }: { sa: Subagent; items?: Item[]; now: number }) {
+  const cat = useStore((s) => (sa.kind ? s.catalogs[sa.kind] : undefined));
+  const m = subModelLabel(sa.model, sa.kind, cat, sa.effort);
   const tools = subToolCount(sa, items);
   const ms = subDurationMs(sa, now);
   return (
@@ -75,7 +84,6 @@ export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
   const subs = useStore((s) => s.subs[chat.id]);
   const sa = subagentOf(item, subs, isBusy(chat.status));
   const on = useStore((s) => !!sa.id && s.subDrawer?.chat === chat.id && s.subDrawer.sub === sa.id);
-  const cat = useStore((s) => s.catalogs[chat.agent]);
   const items = useSubThread(chat.id, sa.id, sa.status === "running");
   const now = useNow(sa.status === "running");
   const line = subLine(item, sa, items, boardName);
@@ -88,7 +96,7 @@ export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
         <SubName sa={sa} />
         <div className={`sub-line ${line.tone}`}>{line.text}</div>
       </div>
-      <SubStats sa={sa} items={items} agent={chat.agent} cat={cat} now={now} />
+      <SubStats sa={sa} items={items} now={now} />
     </div>
   );
 }
@@ -115,7 +123,6 @@ export function SubagentDrawer() {
   });
   const chat = useStore((s) => (d ? s.chats[d.chat] : undefined));
   const subs = useStore((s) => (d ? s.subs[d.chat] : undefined));
-  const cat = useStore((s) => (chat ? s.catalogs[chat.agent] : undefined));
   const raw = d ? subs?.[d.sub] : undefined;
   // The Agent/Task call that started it: in the chat's thread, or in the outer subagent's.
   const call = useStore((s) => (d && raw ? (s.items[raw.parent ? subKey(d.chat, raw.parent) : d.chat]?.items ?? []).find((it) => it?.toolId === raw.tool) : undefined));
@@ -161,7 +168,7 @@ export function SubagentDrawer() {
           <button className="icon-btn" title="Close (Esc)" onClick={closeSub}>×</button>
         </div>
         <div className={`sub-line ${line.tone}`}>{line.text}</div>
-        <SubStats sa={sa} items={items} agent={chat.agent} cat={cat} now={now} />
+        <SubStats sa={sa} items={items} now={now} />
       </header>
       <div className="sub-drawer-body" ref={ref} onScroll={onScroll}>
         {sa.prompt && <SubPrompt text={sa.prompt} />}

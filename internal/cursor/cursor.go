@@ -109,7 +109,13 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	if fi, err := os.Stat(o.Cwd); err != nil || !fi.IsDir() {
 		return nil, agent.ErrFolderMissing
 	}
-	conn, err := Start(s.bin(), []string{"acp"}, o.Cwd)
+	// Hook file is read once when session/new or session/load builds session resources, so write
+	// it before Start. Isolate this process with an app-owned CURSOR_DATA_DIR (not ~/.cursor).
+	dataDir := s.cursorDataDir()
+	if err := writeTaskHook(dataDir, o.Cwd); err != nil {
+		return nil, fmt.Errorf("cannot write Cursor Task deny hook: %w", err)
+	}
+	conn, err := Start(s.bin(), []string{"acp"}, o.Cwd, "CURSOR_DATA_DIR="+dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("cannot start Cursor (%s): %w", s.bin(), err)
 	}
@@ -257,20 +263,21 @@ func (p *proc) doHandshake() error {
 
 func (p *proc) Events() <-chan agent.Event { return p.events }
 
-// mcpServers is the ACP mcpServers value for a chat. A board chat gets the board server: HTTP
-// type, the exact fixed URL (an org policy matches the full URL, plan D1/D3) and the chat's board
-// token in an Authorization bearer header. Plain chats get an empty array. The headers array must
-// exist even when empty: Cursor's ACP schema requires it for an HTTP entry (experiment A.1).
+// mcpServers is the ACP mcpServers value for a chat. Whenever MCP is set the process gets the
+// board server: HTTP type, the exact fixed URL (an org policy matches the full URL, plan D1/D3)
+// and this process's token in an Authorization bearer header. SpawnOptions without MCP get an
+// empty array. The headers array must exist even when empty: Cursor's ACP schema requires it for
+// an HTTP entry (experiment A.1).
 func mcpServers(o agent.SpawnOptions) []any {
-	if o.Board == nil || o.Board.MCPURL == "" {
+	if o.MCP == nil || o.MCP.MCPURL == "" {
 		return []any{}
 	}
 	return []any{map[string]any{
 		"type": "http",
 		"name": "board",
-		"url":  o.Board.MCPURL,
+		"url":  o.MCP.MCPURL,
 		"headers": []any{
-			map[string]any{"name": "Authorization", "value": "Bearer " + o.Board.Token},
+			map[string]any{"name": "Authorization", "value": "Bearer " + o.MCP.Token},
 		},
 	}}
 }
@@ -662,16 +669,17 @@ type mcpCallInput struct {
 	Args               json.RawMessage `json:"args"`
 }
 
-// boardMCPCall reports whether tc is a call of one of this app's board MCP tools, and returns the
-// tool name and its arguments. Only calls whose provider is this app's "board" server and whose
-// tool is a known board tool qualify; every other MCP call (another server, an unknown tool)
-// keeps its normal tool presentation.
+// boardMCPCall reports whether tc is a call of this app's "board" MCP server, and returns the
+// tool name and its arguments. Board-engine tools and the spawn family both qualify so a spawn
+// row normalizes to mcp__board__spawn_subagent whenever the server is attached. Every other MCP
+// call (another server, an unknown tool) keeps its normal tool presentation.
 func boardMCPCall(tc toolCall) (string, json.RawMessage, bool) {
 	if !present(tc.RawInput) {
 		return "", nil, false
 	}
 	var in mcpCallInput
-	if json.Unmarshal(tc.RawInput, &in) != nil || in.ProviderIdentifier != "board" || !boardtools.IsTool(in.ToolName) {
+	if json.Unmarshal(tc.RawInput, &in) != nil || in.ProviderIdentifier != "board" ||
+		!(boardtools.IsTool(in.ToolName) || boardtools.IsSpawnFamily(in.ToolName)) {
 		return "", nil, false
 	}
 	args := in.Args
@@ -689,7 +697,7 @@ func (p *proc) normalizeTool(tc toolCall) (string, json.RawMessage) {
 		a := taskInput(tc)
 		return "Agent", mustJSON(map[string]string{"description": a.Description, "prompt": a.Prompt, "subagent_type": a.Type})
 	}
-	if p.o.Board != nil {
+	if p.o.MCP != nil {
 		if tool, args, ok := boardMCPCall(tc); ok {
 			return "mcp__board__" + tool, args
 		}
@@ -814,9 +822,11 @@ func (p *proc) onRequest(id json.RawMessage, method string, params json.RawMessa
 	selected := func(opt string) any {
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": opt}}
 	}
-	if p.o.Board != nil {
-		if _, _, ok := boardMCPCall(tc); ok {
-			p.conn.Reply(id, selected(allow), nil) // board MCP calls never ask
+	if tool, _, ok := boardMCPCall(tc); ok {
+		spawnOK := boardtools.IsSpawnFamily(tool) && p.o.MCP != nil
+		boardOK := boardtools.IsTool(tool) && p.o.BoardID != ""
+		if spawnOK || boardOK {
+			p.conn.Reply(id, selected(allow), nil) // spawn-family whenever MCP is attached; board tools only with board extras
 			return
 		}
 	}

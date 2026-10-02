@@ -207,7 +207,7 @@ func TestReadContextSplitForks(t *testing.T) {
 	ctxAnswers(t, f, string(readFixture(t)))
 	cwd := t.TempDir()
 	s, err := f.spawner().ReadContextSplit(agent.SpawnOptions{SessionID: "s1", Cwd: cwd, Model: "opus",
-		Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "fork-tok"}})
+		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "fork-tok"}})
 	if err != nil {
 		t.Fatal(err)
 	}

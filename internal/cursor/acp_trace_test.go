@@ -24,7 +24,7 @@ func TestACPTraceRedactsBoardToken(t *testing.T) {
 		endTurn,
 	}
 	e := newEnv(t, s)
-	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}, BoardID: "board"})
 	const prompt = "add a cache next to the server"
 	send(t, a, prompt)
 	until(t, a, isKind(agent.EvTurnEnd))

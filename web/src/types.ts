@@ -217,6 +217,8 @@ export type Subagent = {
   description?: string;
   prompt?: string;
   model?: string;
+  kind?: AgentKind; // json "kind": "claude" | "cursor" | "pi"; absent on unlinked rows
+  effort?: string;  // json "effort"
   background?: boolean;
   status: SubStatus;
   error?: string;

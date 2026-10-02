@@ -20,6 +20,10 @@ type sub struct {
 	meta  model.Subagent
 	saved model.Subagent         // what subagent.json holds; meta != saved means a write is due
 	tr    *transcript.Transcript // nil until its thread is needed (an event, or a client's fetch)
+	ag    agent.Agent            // app-spawned process; nil for native
+	done  chan struct{}          // closed when the sub reaches a final status; WaitSubagents
+	stop  chan struct{}          // closed so the runner exits even if Events() stays open
+	app   bool                   // started by SpawnSubagent (has its own process)
 }
 
 var ErrNoSubagent = errors.New("no such subagent")
@@ -47,12 +51,15 @@ func (m *Manager) loadSubs(c *Chat) {
 		if err == nil {
 			err = json.Unmarshal(raw, &sa)
 		}
-		if err != nil || sa.ID != e.Name() || sa.Tool == "" {
+		if err != nil || sa.ID != e.Name() {
 			log.Printf("chats: skipping subagent %s/%s: %v", c.meta.ID, e.Name(), err)
 			continue
 		}
 		s := &sub{meta: sa, saved: sa}
-		c.subs[sa.ID], c.subByTool[sa.Tool] = s, sa.ID
+		c.subs[sa.ID] = s
+		if sa.Tool != "" {
+			c.subByTool[sa.Tool] = sa.ID
+		}
 		if sa.Status == model.SubRunning {
 			s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
 			m.saveSub(c, s)
@@ -186,12 +193,77 @@ func (m *Manager) endSub(c *Chat, s *sub, out *outbox) {
 }
 
 // stopSubs marks every subagent still running as stopped (nested ones included: they are all in
-// c.subs). c.mu held.
-func (m *Manager) stopSubs(c *Chat, out *outbox) {
+// c.subs). App-spawned processes are detached and returned so the caller can Close them after
+// unlock. c.mu held.
+func (m *Manager) stopSubs(c *Chat, out *outbox) []agent.Agent {
+	return m.stopRunningSubs(c, out, false)
+}
+
+// stopAppSubs is Shutdown/Interrupt: only app-spawned running subs, so native rows stay as they are.
+// c.mu held.
+func (m *Manager) stopAppSubs(c *Chat, out *outbox) []agent.Agent {
+	return m.stopRunningSubs(c, out, true)
+}
+
+func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool) []agent.Agent {
+	var ags []agent.Agent
 	for _, s := range c.subs {
-		if s.meta.Status == model.SubRunning {
-			s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
-			m.endSub(c, s, out)
+		if s.meta.Status != model.SubRunning {
+			continue
+		}
+		if appOnly && !s.app {
+			continue
+		}
+		if s.ag != nil {
+			m.denySubPerms(c, s, out)
+			ags = append(ags, s.ag)
+			s.ag = nil
+		}
+		s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
+		m.endSub(c, s, out)
+		if s.app {
+			m.revokeExtra(c.meta.ID, s.meta.ID)
+		}
+		closeDone(s)
+		closeStop(s)
+	}
+	return ags
+}
+
+// denySubPerms answers no to unanswered parent-transcript perms asked by s. c.mu held.
+func (m *Manager) denySubPerms(c *Chat, s *sub, out *outbox) {
+	if c.tr == nil || s.ag == nil {
+		return
+	}
+	_, items := c.tr.Snapshot()
+	for _, it := range items {
+		if it.Kind == "perm" && it.Decided == "" && it.Subagent == s.meta.ID {
+			_ = s.ag.Decide(it.RequestID, false)
+			out.emitItems(c, c.tr.Decided(it.RequestID, false))
+		}
+	}
+}
+
+func closeDone(s *sub) {
+	if s.done == nil {
+		return
+	}
+	close(s.done)
+	s.done = nil
+}
+
+func closeStop(s *sub) {
+	if s.stop == nil {
+		return
+	}
+	close(s.stop)
+	s.stop = nil
+}
+
+func closeAgents(ags []agent.Agent) {
+	for _, ag := range ags {
+		if ag != nil {
+			go ag.Close()
 		}
 	}
 }

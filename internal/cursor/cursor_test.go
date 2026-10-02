@@ -547,7 +547,7 @@ func TestBoardMCPToolCall(t *testing.T) {
 		{Result: raw(`{"stopReason":"end_turn"}`)},
 	}
 	e := newEnv(t, s)
-	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}, BoardID: "board"})
 	send(t, a, "draw")
 	evs := without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvUsage, agent.EvSession, agent.EvCatalog, agent.EvThinking)
 
@@ -586,19 +586,28 @@ func TestBoardMCPToolCall(t *testing.T) {
 // board chat: HTTP type, the exact fixed URL and the chat's board token in an Authorization
 // bearer header. The shape matches the live capture (experiment A.1 and the P3 trace).
 func TestBoardMCPSessionHandshake(t *testing.T) {
-	board := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}
 
 	e := newEnv(t, baseScript())
-	a := e.spawn(t, agent.SpawnOptions{Board: board})
+	a := e.spawn(t, agent.SpawnOptions{MCP: mcp, BoardID: "board"})
 	until(t, a, isKind(agent.EvCatalog))
 	nw, _ := find(readRecord(t, e.record), "session/new")
 	jsonEq(t, nw.Params, `{"cwd":`+string(mustMarshal(e.cwd))+`,"mcpServers":[{"type":"http","name":"board","url":"http://localhost:6006/mcp","headers":[{"name":"Authorization","value":"Bearer `+boardToken+`"}]}]}`)
 
 	e2 := newEnv(t, fakeScript{"session/load": {{Cursor: true}}})
-	b := e2.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, Board: board})
+	b := e2.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, MCP: mcp, BoardID: "board"})
 	until(t, b, isKind(agent.EvCatalog))
 	ld, _ := find(readRecord(t, e2.record), "session/load")
 	jsonEq(t, ld.Params, `{"sessionId":"`+testSessionID+`","cwd":`+string(mustMarshal(e2.cwd))+`,"mcpServers":[{"type":"http","name":"board","url":"http://localhost:6006/mcp","headers":[{"name":"Authorization","value":"Bearer `+boardToken+`"}]}]}`)
+}
+
+func TestPlainMCPSessionHandshake(t *testing.T) {
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}
+	e := newEnv(t, baseScript())
+	a := e.spawn(t, agent.SpawnOptions{MCP: mcp})
+	until(t, a, isKind(agent.EvCatalog))
+	nw, _ := find(readRecord(t, e.record), "session/new")
+	jsonEq(t, nw.Params, `{"cwd":`+string(mustMarshal(e.cwd))+`,"mcpServers":[{"type":"http","name":"board","url":"http://localhost:6006/mcp","headers":[{"name":"Authorization","value":"Bearer `+boardToken+`"}]}]}`)
 }
 
 func TestPermissionRequests(t *testing.T) {
@@ -635,7 +644,7 @@ func TestPermissionRequests(t *testing.T) {
 		{Result: raw(`{"stopReason":"end_turn"}`)},
 	}
 	e := newEnv(t, s)
-	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}, BoardID: "board"})
 	send(t, a, "go")
 
 	var perms []agent.Event
@@ -693,7 +702,7 @@ func TestBoardMCPPermissionAllowAlways(t *testing.T) {
 		{Result: raw(`{"stopReason":"end_turn"}`)},
 	}
 	e := newEnv(t, s)
-	a := e.spawn(t, agent.SpawnOptions{Board: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}, BoardID: "board"})
 	send(t, a, "go")
 	until(t, a, isKind(agent.EvTurnEnd))
 	for _, r := range readRecord(t, e.record) {
@@ -703,6 +712,66 @@ func TestBoardMCPPermissionAllowAlways(t *testing.T) {
 		}
 	}
 	t.Fatal("no answer recorded")
+}
+
+func TestSpawnFamilyMCPAutoApproved(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
+			"sessionId": testSessionID,
+			"toolCall":  map[string]any{"toolCallId": "call_spawn", "title": "board: spawn_subagent", "kind": "other", "rawInput": mcpRawInput("board", "spawn_subagent", map[string]any{"prompt": "go"})},
+			"options": []any{
+				map[string]any{"optionId": "allow-once", "kind": "allow_once"},
+				map[string]any{"optionId": "never", "kind": "reject_once"},
+			},
+		}}),
+		{Result: raw(`{"stopReason":"end_turn"}`)},
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	send(t, a, "go")
+	var perms int
+	until(t, a, func(ev agent.Event) bool {
+		if ev.Kind == agent.EvPermRequest {
+			perms++
+		}
+		return ev.Kind == agent.EvTurnEnd
+	})
+	if perms != 0 {
+		t.Fatalf("spawn-family raised %d permission cards", perms)
+	}
+	for _, r := range readRecord(t, e.record) {
+		if string(r.ID) == `"srv-1"` {
+			jsonEq(t, r.Result, `{"outcome":{"outcome":"selected","optionId":"allow-once"}}`)
+			return
+		}
+	}
+	t.Fatal("no answer recorded")
+}
+
+func TestSpawnFamilyToolNormalize(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "s1", "title": "MCP: tool", "kind": "other", "status": "pending", "rawInput": map[string]any{}}),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "s1", "title": "board: spawn_subagent",
+			"rawInput": mcpRawInput("board", "spawn_subagent", map[string]any{"prompt": "go", "description": "files"})}),
+		{Result: raw(`{"stopReason":"end_turn"}`)},
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	send(t, a, "go")
+	evs := without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvUsage, agent.EvSession, agent.EvCatalog, agent.EvThinking)
+	var input agent.Event
+	for _, ev := range evs {
+		if ev.Kind == agent.EvToolInput {
+			input = ev
+			break
+		}
+	}
+	if input.ToolName != "mcp__board__spawn_subagent" {
+		t.Fatalf("spawn tool name %q", input.ToolName)
+	}
+	jsonEq(t, input.Input, `{"description":"files","prompt":"go"}`)
 }
 
 func TestDecideAllow(t *testing.T) {

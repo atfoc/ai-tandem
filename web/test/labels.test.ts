@@ -18,6 +18,8 @@ test("board tools: running labels", () => {
     ["create_board", { name: "ideas" }, "Creating ideas"],
     ["show_board", on, "Showing flows"],
     ["show_board", { board: "b_unknown" }, "Showing b_unknown"],
+    ["wait_subagents", {}, "Waiting for subagents"],
+    ["stop_subagent", {}, "Stopping subagent"],
   ];
   for (const [tool, input, want] of cases) {
     assert.equal(toolVerb("mcp__board__" + tool, input, names), want, tool);
@@ -35,6 +37,8 @@ test("board tools: done labels", () => {
     ["create_board", { name: "ideas" }, "created ideas (b_x)", "Created ideas"],
     ["show_board", on, "showing flows", "Showed flows"],
     ["show_board", {}, "showing arch", "Showed this board"],
+    ["wait_subagents", {}, undefined, "Waited for subagents"],
+    ["stop_subagent", {}, undefined, "Stopped subagent"],
   ];
   for (const [tool, input, result, want] of cases) {
     assert.equal(toolDone("mcp__board__" + tool, input, result, names), want, tool);

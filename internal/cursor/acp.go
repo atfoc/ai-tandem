@@ -45,11 +45,17 @@ type Conn struct {
 	waitErr error
 }
 
-// Start runs bin with args in dir, with the server's environment unchanged, in a process group of
-// its own (agent.StartGroup).
-func Start(bin string, args []string, dir string) (*Conn, error) {
+// Start runs bin with args in dir, in a process group of its own (agent.StartGroup).
+// extraEnv is "KEY=value" entries appended to os.Environ() so the rest of the environment is
+// kept; pass none to inherit the server environment unchanged (Catalog/probe). App-spawned chats
+// pass CURSOR_DATA_DIR. Do not pass HOME (redirection breaks login) or CURSOR_CONFIG_DIR (it does
+// not move the ACP hook path).
+func Start(bin string, args []string, dir string, extraEnv ...string) (*Conn, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	w, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

@@ -41,6 +41,10 @@ func TestMain(m *testing.M) {
 }
 
 func runFakeACP(scriptPath, recordPath, statePath string) {
+	// Side file: FAKE_ACP_RECORD is JSON-unmarshaled per line, so CURSOR_DATA_DIR cannot go there.
+	if dump := os.Getenv("FAKE_ACP_CURSOR_DATA_DIR"); dump != "" {
+		_ = os.WriteFile(dump, []byte(os.Getenv("CURSOR_DATA_DIR")), 0o644)
+	}
 	b, err := os.ReadFile(scriptPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake: ", err)
@@ -193,6 +197,7 @@ func fake(t *testing.T, script fakeScript) string {
 	t.Setenv("FAKE_ACP_STATE", filepath.Join(dir, "cli-config.json"))
 	t.Setenv("FAKE_ACP_SCRIPT", sp)
 	t.Setenv("FAKE_ACP_RECORD", rp)
+	t.Setenv("FAKE_ACP_CURSOR_DATA_DIR", filepath.Join(dir, "cursor-data-dir"))
 	t.Setenv("GORACE", "atexit_sleep_ms=0") // a -race fake would otherwise wait 1 s before exiting
 	return rp
 }

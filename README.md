@@ -14,14 +14,16 @@ agents run with the logins you already have.
 - **Server** (`cmd/`, `internal/`): a Go program on `127.0.0.1:4747`. It stores boards and chats,
   runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
   `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
-  MCP: one fixed board MCP endpoint, `http://localhost:6006/mcp`, carries the chat's board token in
-  the `Authorization` header. For pi the token travels only inside `AIWB_MCP_CONFIG` (never in argv
-  or a URL) and is inherited by its subagent runs; the owner-only UDS bridge carries a per-run,
-  non-secret handle for permission asks, subagent activity, abort and MCP failure notices. pi tool
+  MCP: one fixed MCP endpoint, `http://localhost:6006/mcp`, carries the chat's token in
+  the `Authorization` header (every chat). The spawn family (`spawn_subagent`, `wait_subagents`,
+  `stop_subagent`) is on every chat and replaces native Agent / Task / subagent on app chats. For pi
+  the token travels only inside `AIWB_MCP_CONFIG` (never in argv or a URL); app-spawned subagents get
+  their own extra token. The owner-only UDS bridge carries a per-run, non-secret handle for permission
+  asks, subagent activity, abort and MCP failure notices. pi tool
   calls are auto-approved: they run with no permission card, and only a tool that touches the app's
   own folder is refused. Cursor reaches the same endpoint from its ACP session, keeps one
   first-message instructions block with the same whiteboard prompt as Claude and pi, and its board calls are
-  auto-approved too (no permission card). Plain (non-board) pi chats get no board tools.
+  auto-approved too (no permission card). Plain (non-board) chats get no board tools.
 - **Web client** (`web/`): React + Excalidraw, built with esbuild. The server serves it.
 - **Desktop app** (`desktop/`): an Electron window that starts the server, or finds the one already
   running, and opens it. Quitting the app doesn't stop the server or its running chats.
@@ -35,7 +37,7 @@ is no user-facing MCP port option (see [Troubleshooting the board MCP](#troubles
 The agents' board edits go through the open window, so boards can only be changed while the app
 (or a browser tab) is open. pi runs as a long-lived `pi --mode rpc` process per chat; the UDS
 bridge is one listener per server keyed by a per-run, non-secret handle, and the extension presents
-only that handle. The board token is a separate MCP credential and reaches pi only inside the
+only that handle. The chat token is a separate MCP credential and reaches pi only inside the
 `AIWB_MCP_CONFIG` header.
 
 pi's extension also runs standalone, without the app bridge:
@@ -145,21 +147,22 @@ MCP server, or never used a board tool.
 
 ### Probe the endpoint by hand
 
-A board chat's board token is in the chat's `chat.json` in the app's data folder, under `"token"`
+A chat's token is in the chat's `chat.json` in the app's data folder, under `"token"`
 (the app never prints it). POST an MCP `initialize` exactly as an agent would:
 
 ```sh
 curl -sS -X POST http://localhost:6006/mcp \
   -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer <board token>" \
+  -H "Authorization: Bearer <chat token>" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
 A 200 whose result has `serverInfo.name` `board` means the listener is reachable and the Host
-check passed. Replace the method with `tools/list` to see the board tools. `curl` may use either
+check passed. Replace the method with `tools/list` to see the tools for that chat (spawn family on
+every chat; board tools only on board chats). `curl` may use either
 the `localhost` or `127.0.0.1` spelling; **agents must never be configured with `127.0.0.1`** (see
 above). The `initialize` and `tools/list` handshakes are permissive, so an unknown token still
-answers them; the `tools/call` then returns `unknown board token`.
+answers them with an empty list; the `tools/call` then returns tool text (`isError`), never HTTP 401.
 
 ### The server log
 
@@ -209,8 +212,9 @@ before the default e2e run (see Development).
 - `/api/usage/pi` is not offered (pi has no plan-limit reporter).
 - The pi context split is computed live from the running process and cached; it is not recomputed
   offline once the process exits.
-- pi subagents are app-managed: the app's extension spawns child `pi --mode rpc` processes and
-  reports them as subagent threads; pi's own spawn-subagent extension is not used.
+- pi subagents are app-managed via the MCP spawn family: the app spawns child `pi --mode rpc`
+  processes and reports them as subagent threads; the extension's native `subagent` tool is not
+  registered on app chats.
 
 ## Development
 

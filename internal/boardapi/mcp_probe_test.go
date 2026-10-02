@@ -357,8 +357,11 @@ func TestMCPRealPiProbe(t *testing.T) {
 	for _, tool := range boardtools.Tools {
 		wantTools = append(wantTools, tool.Name)
 	}
-	if len(wantTools) != 7 {
-		t.Fatalf("boardtools.Tools has %d tools, want 7", len(wantTools))
+	for _, tool := range boardtools.SpawnFamily {
+		wantTools = append(wantTools, tool.Name)
+	}
+	if len(boardtools.Tools) != 7 {
+		t.Fatalf("boardtools.Tools has %d tools, want 7", len(boardtools.Tools))
 	}
 	if len(result.Tools) != len(wantTools) {
 		t.Fatalf("probe discovered %d tools %v, want %d %v", len(result.Tools), result.Tools, len(wantTools), wantTools)

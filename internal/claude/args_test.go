@@ -29,12 +29,18 @@ func flag(args []string, name string) (string, bool) {
 }
 
 func TestArgsPlainChat(t *testing.T) {
-	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s1", Cwd: "/tmp", Model: "sonnet", Effort: "high"})
-	for _, f := range []string{"--append-system-prompt", "--mcp-config", "--allowedTools"} {
-		if _, ok := flag(args, f); ok {
-			t.Errorf("plain chat has %s: %q", f, args)
-		}
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s1", Cwd: "/tmp", Model: "sonnet", Effort: "high", MCP: mcp})
+	if v, ok := flag(args, "--append-system-prompt"); !ok {
+		t.Errorf("plain chat missing --append-system-prompt: %q", args)
+	} else if strings.Contains(v, "WHITEBOARD PROMPT") {
+		t.Errorf("plain chat has whiteboard body: %q", v)
 	}
+	want := `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer tok"}}}}`
+	if v, _ := flag(args, "--mcp-config"); v != want {
+		t.Errorf("--mcp-config = %q\n          want %q", v, want)
+	}
+	checkAllowed(t, args, boardtools.SpawnFamily, boardtools.Tools)
 	if v, _ := flag(args, "--session-id"); v != "s1" {
 		t.Errorf("--session-id = %q", v)
 	}
@@ -51,25 +57,16 @@ func TestArgsPlainChat(t *testing.T) {
 }
 
 func TestArgsBoardChat(t *testing.T) {
-	board := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
-	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s2", Resume: true, Cwd: "/tmp", Model: "opus", Board: board})
-	if v, _ := flag(args, "--append-system-prompt"); v != "WHITEBOARD PROMPT" {
-		t.Errorf("--append-system-prompt = %q", v)
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s2", Resume: true, Cwd: "/tmp", Model: "opus", MCP: mcp, BoardID: "b"})
+	if v, _ := flag(args, "--append-system-prompt"); !strings.Contains(v, "WHITEBOARD PROMPT") {
+		t.Errorf("--append-system-prompt missing whiteboard: %q", v)
 	}
 	want := `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer tok"}}}}`
 	if v, _ := flag(args, "--mcp-config"); v != want {
 		t.Errorf("--mcp-config = %q\n          want %q", v, want)
 	}
-	allowed, _ := flag(args, "--allowedTools")
-	names := strings.Split(allowed, ",")
-	if len(names) != len(boardtools.Tools) {
-		t.Errorf("--allowedTools has %d tools, want %d: %q", len(names), len(boardtools.Tools), allowed)
-	}
-	for _, tool := range boardtools.Tools {
-		if !slices.Contains(names, "mcp__board__"+tool.Name) {
-			t.Errorf("--allowedTools misses %s", tool.Name)
-		}
-	}
+	checkAllowed(t, args, append(append([]boardtools.Tool{}, boardtools.Tools...), boardtools.SpawnFamily...), nil)
 	if v, _ := flag(args, "--resume"); v != "s2" {
 		t.Errorf("--resume = %q", v)
 	}
@@ -80,6 +77,73 @@ func TestArgsBoardChat(t *testing.T) {
 		t.Errorf("no effort chosen, but --effort is there")
 	}
 	checkCommon(t, args)
+}
+
+func TestArgsSubProcessBoardParent(t *testing.T) {
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "sub-tok"}
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s4", Cwd: "/tmp", Model: "sonnet", MCP: mcp, BoardID: "b", Subagent: true})
+	if _, ok := flag(args, "--mcp-config"); !ok {
+		t.Errorf("sub process missing --mcp-config: %q", args)
+	}
+	if v, _ := flag(args, "--append-system-prompt"); !strings.Contains(v, "WHITEBOARD PROMPT") {
+		t.Errorf("--append-system-prompt missing whiteboard: %q", v)
+	}
+	checkAllowed(t, args, boardtools.Tools, boardtools.SpawnFamily)
+	checkCommon(t, args)
+}
+
+func TestArgsSubProcessPlainParent(t *testing.T) {
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "sub-tok"}
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s5", Cwd: "/tmp", Model: "sonnet", MCP: mcp, Subagent: true})
+	if _, ok := flag(args, "--mcp-config"); !ok {
+		t.Errorf("sub process missing --mcp-config: %q", args)
+	}
+	if v, ok := flag(args, "--append-system-prompt"); !ok {
+		t.Errorf("plain-parent sub missing --append-system-prompt: %q", args)
+	} else if strings.Contains(v, "WHITEBOARD PROMPT") {
+		t.Errorf("plain-parent sub has whiteboard body: %q", v)
+	}
+	if _, ok := flag(args, "--allowedTools"); ok {
+		t.Errorf("plain-parent sub has --allowedTools: %q", args)
+	}
+	checkCommon(t, args)
+}
+
+func TestArgsNoMCPOmitsConfig(t *testing.T) {
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s6", Cwd: "/tmp", Model: "sonnet"})
+	for _, f := range []string{"--mcp-config", "--allowedTools"} {
+		if _, ok := flag(args, f); ok {
+			t.Errorf("MCP unset has %s: %q", f, args)
+		}
+	}
+	if v, ok := flag(args, "--append-system-prompt"); !ok {
+		t.Errorf("MCP unset missing --append-system-prompt: %q", args)
+	} else if strings.Contains(v, "WHITEBOARD PROMPT") {
+		t.Errorf("MCP unset has whiteboard body: %q", v)
+	}
+	checkCommon(t, args)
+}
+
+func checkAllowed(t *testing.T, args []string, want []boardtools.Tool, refuse []boardtools.Tool) {
+	t.Helper()
+	allowed, ok := flag(args, "--allowedTools")
+	if !ok {
+		t.Fatalf("--allowedTools missing: %q", args)
+	}
+	names := strings.Split(allowed, ",")
+	if len(names) != len(want) {
+		t.Errorf("--allowedTools has %d tools, want %d: %q", len(names), len(want), allowed)
+	}
+	for _, tool := range want {
+		if !slices.Contains(names, "mcp__board__"+tool.Name) {
+			t.Errorf("--allowedTools misses %s", tool.Name)
+		}
+	}
+	for _, tool := range refuse {
+		if slices.Contains(names, "mcp__board__"+tool.Name) {
+			t.Errorf("--allowedTools has %s", tool.Name)
+		}
+	}
 }
 
 func TestArgsHaikuHasNoEffort(t *testing.T) {
@@ -102,8 +166,19 @@ func checkCommon(t *testing.T, args []string) {
 		t.Errorf("--forward-subagent-text missing: %q", args)
 	}
 	want := "Read(~/.ai-whiteboard/**),Edit(~/.ai-whiteboard/**),Write(~/.ai-whiteboard/**),Bash(*.ai-whiteboard*)"
-	if v, _ := flag(args, "--disallowedTools"); v != want {
-		t.Errorf("--disallowedTools = %q, want %q", v, want)
+	if v, _ := flag(args, "--disallowedTools"); v != want+",Task,Agent" {
+		t.Errorf("--disallowedTools = %q, want %q", v, want+",Task,Agent")
+	}
+	v, ok := flag(args, "--append-system-prompt")
+	if !ok {
+		t.Errorf("--append-system-prompt missing: %q", args)
+	} else {
+		if !strings.Contains(v, "spawn_subagent") {
+			t.Errorf("steering paragraph missing spawn_subagent: %q", v)
+		}
+		if !strings.Contains(v, "wait_subagents") {
+			t.Errorf("steering paragraph missing wait_subagents: %q", v)
+		}
 	}
 	for _, f := range []string{"--strict-mcp-config", "--setting-sources", "--disable-slash-commands", "--system-prompt", "--tools"} {
 		if _, ok := flag(args, f); ok {

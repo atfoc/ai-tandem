@@ -486,8 +486,11 @@ func TestCreateAppliesGroupDefaults(t *testing.T) {
 		t.Fatalf("status %q", v.Status)
 	}
 	m := e.meta(v.ID)
-	if m.Agent != model.Claude || m.SessionID == "" || m.Token != "" {
+	if m.Agent != model.Claude || m.SessionID == "" {
 		t.Fatalf("plain chat.json %+v", m)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(m.Token) {
+		t.Fatalf("plain token %q", m.Token)
 	}
 
 	bd, err := e.bds.Create("board", gTwo, false)
@@ -751,6 +754,37 @@ func TestConfigureModelChangeFitsEffort(t *testing.T) {
 	}
 }
 
+func TestSpawnMintsTokenlessChat(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	meta := e.meta(v.ID)
+	meta.Token = ""
+	path := filepath.Join(e.st.P.ChatDir(v.ID), "chat.json")
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.boot()
+	if e.meta(v.ID).Token != "" {
+		t.Fatalf("Load minted a token: %q", e.meta(v.ID).Token)
+	}
+	e.send(v.ID, "hello", "")
+	tok := e.meta(v.ID).Token
+	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(tok) {
+		t.Fatalf("spawn token %q", tok)
+	}
+	a := e.claude.last(t)
+	if a.opts.MCP == nil || a.opts.MCP.Token != tok || a.opts.BoardID != "" {
+		t.Fatalf("spawn options MCP %+v BoardID %q", a.opts.MCP, a.opts.BoardID)
+	}
+	if _, ok := e.m.ByToken(tok); !ok {
+		t.Fatal("minted token not resolved")
+	}
+}
+
 func TestFirstSendSpawnsOnce(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
@@ -760,7 +794,8 @@ func TestFirstSendSpawnsOnce(t *testing.T) {
 		t.Fatalf("%d spawns", e.claude.count())
 	}
 	o := e.claude.last(t).opts
-	want := agent.SpawnOptions{ChatID: v.ID, SessionID: sid, Resume: false, Cwd: v.Cwd, Model: v.Model, Effort: v.Effort}
+	want := agent.SpawnOptions{ChatID: v.ID, SessionID: sid, Resume: false, Cwd: v.Cwd, Model: v.Model, Effort: v.Effort,
+		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: e.meta(v.ID).Token}}
 	if !reflect.DeepEqual(o, want) {
 		t.Fatalf("spawn options %+v, want %+v", o, want)
 	}
@@ -820,11 +855,15 @@ func TestSendBlocks(t *testing.T) {
 	}
 	ctx := "<ui-context>\nboard: b\n</ui-context>"
 
-	// Plain chat: the context is dropped.
+	// Plain chat: the context is dropped. MCP is still set; board extras are not.
 	p := e.create(model.Claude, gOne, "")
 	e.send(p.ID, "plain", ctx)
-	if got := texts(e.claude.last(t).sent()[0]); !reflect.DeepEqual(got, []string{"plain"}) {
+	pa := e.claude.last(t)
+	if got := texts(pa.sent()[0]); !reflect.DeepEqual(got, []string{"plain"}) {
 		t.Fatalf("plain chat sent %q", got)
+	}
+	if pa.opts.MCP == nil || pa.opts.MCP.MCPURL != "http://localhost:6006/mcp" || pa.opts.MCP.Token != e.meta(p.ID).Token || pa.opts.BoardID != "" || pa.opts.Subagent {
+		t.Fatalf("plain spawn options MCP %+v BoardID %q Subagent %v", pa.opts.MCP, pa.opts.BoardID, pa.opts.Subagent)
 	}
 	if it := e.items(p.ID)[0]; it.Kind != "user" || it.Text != "plain" || it.Context != "" {
 		t.Fatalf("plain user item %+v", it)
@@ -838,8 +877,8 @@ func TestSendBlocks(t *testing.T) {
 		t.Fatalf("claude board chat sent %q", got)
 	}
 	tok := e.meta(cb.ID).Token
-	if ca.opts.Board == nil || ca.opts.Board.MCPURL != "http://localhost:6006/mcp" || ca.opts.Board.Token != tok {
-		t.Fatalf("board access %+v", ca.opts.Board)
+	if ca.opts.MCP == nil || ca.opts.MCP.MCPURL != "http://localhost:6006/mcp" || ca.opts.MCP.Token != tok || ca.opts.BoardID != bd.ID || ca.opts.Subagent {
+		t.Fatalf("board spawn options MCP %+v BoardID %q", ca.opts.MCP, ca.opts.BoardID)
 	}
 	if it := e.items(cb.ID)[0]; it.Context != ctx {
 		t.Fatalf("board user item context %q", it.Context)
@@ -849,8 +888,8 @@ func TestSendBlocks(t *testing.T) {
 	ub := e.create(model.Cursor, "", bd.ID)
 	e.send(ub.ID, "one", ctx)
 	ua := e.cursor.last(t)
-	if ua.opts.Board == nil || ua.opts.Board.MCPURL != "http://localhost:6006/mcp" || ua.opts.Board.Token != e.meta(ub.ID).Token {
-		t.Fatalf("cursor board access %+v", ua.opts.Board)
+	if ua.opts.MCP == nil || ua.opts.MCP.MCPURL != "http://localhost:6006/mcp" || ua.opts.MCP.Token != e.meta(ub.ID).Token || ua.opts.BoardID != bd.ID {
+		t.Fatalf("cursor board access MCP %+v BoardID %q", ua.opts.MCP, ua.opts.BoardID)
 	}
 	if got := texts(ua.sent()[0]); !reflect.DeepEqual(got, []string{prompts.Claude(), ctx, "one"}) {
 		t.Fatalf("cursor first send %q", got)
@@ -903,15 +942,15 @@ func TestSendPiBoardChat(t *testing.T) {
 	if got := texts(a.sent()[0]); !reflect.DeepEqual(got, []string{ctx, "draw"}) {
 		t.Fatalf("pi board chat sent %q, want only the context and the text", got)
 	}
-	// The pi spawner gets the same shared board-access value as Claude: the fixed endpoint URL
-	// and the chat's durable board token (not a run-scoped URL). pi's own unit tests construct
+	// The pi spawner gets the same shared MCP value as Claude: the fixed endpoint URL
+	// and the chat's durable token (not a run-scoped URL). pi's own unit tests construct
 	// their own BoardAccess, so this manager-level assertion is what catches a split there.
-	if a.opts.Board == nil || a.opts.Board.MCPURL != "http://localhost:6006/mcp" ||
-		a.opts.Board.Token != e.meta(c.ID).Token || a.opts.Board.Token == "" {
-		t.Fatalf("pi board access %+v, want the fixed URL and the chat's board token", a.opts.Board)
+	if a.opts.MCP == nil || a.opts.MCP.MCPURL != "http://localhost:6006/mcp" ||
+		a.opts.MCP.Token != e.meta(c.ID).Token || a.opts.MCP.Token == "" || a.opts.BoardID != bd.ID {
+		t.Fatalf("pi board access MCP %+v BoardID %q, want the fixed URL and the chat's token", a.opts.MCP, a.opts.BoardID)
 	}
-	if strings.Contains(a.opts.Board.MCPURL, a.opts.Board.Token) {
-		t.Fatalf("pi board MCP URL carries the board token: %q", a.opts.Board.MCPURL)
+	if strings.Contains(a.opts.MCP.MCPURL, a.opts.MCP.Token) {
+		t.Fatalf("pi board MCP URL carries the token: %q", a.opts.MCP.MCPURL)
 	}
 	if m := e.meta(c.ID); m.InstructionsSent || m.McpInstructionsSent {
 		t.Fatal("pi got Cursor's instructions")

@@ -21,6 +21,9 @@ func TestClaude(t *testing.T) {
 	if strings.Contains(s, "How to call the board tools") {
 		t.Error("Claude() contains the tools section")
 	}
+	if !strings.Contains(s, "MCP spawn tools") {
+		t.Error("Claude() lacks MCP spawn steering")
+	}
 }
 
 func TestPiIsClaude(t *testing.T) {

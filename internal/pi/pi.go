@@ -175,7 +175,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		return fail(err)
 	}
 	appendPrompt := ""
-	if o.Board != nil && s.Prompt != "" {
+	if o.BoardID != "" && s.Prompt != "" {
 		appendPrompt = filepath.Join(sessionDir, "append-prompt.md")
 		if err := os.WriteFile(appendPrompt, []byte(s.Prompt), 0o600); err != nil {
 			return fail(err)

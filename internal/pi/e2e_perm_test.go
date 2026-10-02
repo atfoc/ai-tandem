@@ -187,7 +187,7 @@ func TestE2EMCPToolsAutoApproved(t *testing.T) {
 			"Authorization": "Bearer " + env.token}},
 	})
 	a, err := s.Spawn(agent.SpawnOptions{ChatID: "e2e-perm-mcp", Cwd: t.TempDir(), Model: e2eModel(),
-		Board: env.boardAccess()})
+		MCP: env.boardAccess(), BoardID: "e2e-board"})
 	if err != nil {
 		t.Skipf("pi could not start: %v", err)
 	}

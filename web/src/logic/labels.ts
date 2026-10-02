@@ -68,6 +68,8 @@ export function toolVerb(name: string, input: any, nameOf: BoardNames = noNames)
     case "delete_elements": return `Deleting on ${board}`;
     case "create_board": return input?.name ? `Creating ${input.name}` : "Creating a board";
     case "show_board": return `Showing ${board}`;
+    case "wait_subagents": return "Waiting for subagents";
+    case "stop_subagent": return "Stopping subagent";
     default: return short(name);
   }
 }
@@ -95,6 +97,8 @@ export function toolDone(name: string, input: any, result: string | undefined, n
     case "delete_elements": return r && typeof r === "object" ? `Deleted ${r.deleted?.length ?? 0} on ${board}` : `Deleted on ${board}`;
     case "create_board": return `Created ${input?.name ?? "a board"}`;
     case "show_board": return `Showed ${board}`;
+    case "wait_subagents": return "Waited for subagents";
+    case "stop_subagent": return "Stopped subagent";
     default: return short(name);
   }
 }

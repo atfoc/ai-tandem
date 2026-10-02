@@ -1,15 +1,17 @@
 // The app's pi extension. It wires the MCP lifecycle from --mcp-config /
 // AIWB_MCP_CONFIG independently of the app bridge, so standalone
 // `pi -e index.ts --mcp-config '<json>'` works; the app-facing wiring
-// (subagent, the UDS permission gate, hello/abort) is gated on AIWB_BRIDGE_*.
+// (the UDS permission gate, hello/abort) is gated on AIWB_BRIDGE_*. App chats
+// do not register the native `subagent` tool: the MCP spawn family replaces it.
 //
 // Wiring order (plan R1):
 //   1. `--mcp-config` is registered unconditionally as the literal first factory
 //      action, before any environment read: pi exits non-zero on an unknown or
 //      valueless flag.
 //   2. AIWB_BRIDGE_SOCKET/AIWB_BRIDGE_RUN are then read only to decide the
-//      app-facing wiring (the subagent tool, the UDS permission gate,
-//      hello/abort). Bridge absence does NOT gate the MCP lifecycle.
+//      app-facing wiring (the UDS permission gate, hello/abort). Bridge absence
+//      does NOT gate the MCP lifecycle. Native `subagent` is not registered on
+//      app chats (or standalone).
 //   3. session_start resolves the config flag-over-env, connects, discovers and
 //      registers tools; session_shutdown closes every client from either source.
 //      MCP failures are per-server, non-fatal, and reported as one one-shot
@@ -23,19 +25,13 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { fileURLToPath } from "node:url";
 import { callBridge, openControl } from "./protocol.ts";
 import { handleToolCall } from "./permissions.ts";
-import { runSubagent, type SubagentParams } from "./subagent.ts";
-import { parseMCPConfig } from "./mcp.ts";
 import {
   autoAllowedToolNames,
-  boardServerActive,
   makeNoticeSink,
   selectMCPConfig,
   startMCP,
-  subagentDescription,
-  subagentPromptSnippet,
   type MCPBootstrap,
 } from "./mcp-wiring.ts";
 
@@ -76,6 +72,25 @@ function killChildren(): void {
   childKillers.clear();
 }
 
+const SPAWN_FAMILY_BARE = new Set(["spawn_subagent", "wait_subagents", "stop_subagent"]);
+
+/** Spawn-family MCP tools must not run sequentially so sibling spawns in one
+ *  assistant message can proceed in parallel (plan D2). Board-engine MCP tools
+ *  stay sequential. Detect by the registered name: the three bare names, a
+ *  namespaced form ending in `__<bare>`, or `mcp__<server>__<bare>`. */
+function isSpawnFamilyTool(name: string): boolean {
+  if (SPAWN_FAMILY_BARE.has(name)) return true;
+  if (
+    name.endsWith("__spawn_subagent") ||
+    name.endsWith("__wait_subagents") ||
+    name.endsWith("__stop_subagent")
+  ) {
+    return true;
+  }
+  const parts = name.split("__");
+  return parts.length >= 3 && parts[0] === "mcp" && SPAWN_FAMILY_BARE.has(parts.slice(2).join("__"));
+}
+
 export default function boardToolsExtension(pi: ExtensionAPI): void {
   // 1. Load-bearing registration order (plan R1): the flag is registered
   // unconditionally as the first action of the factory, before any
@@ -94,18 +109,6 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
   const socketPath = process.env.AIWB_BRIDGE_SOCKET ?? "";
   const run = process.env.AIWB_BRIDGE_RUN ?? "";
   const bridgePresent = socketPath !== "" && run !== "";
-
-  // The subagent tool's description may promise board tools only when the
-  // app-owned env config contains the board server (plan R4, §3.6). This is
-  // decided at factory scope with no network IO; the flag value is only
-  // readable later (pi applies CLI flag values after factory scope) and a
-  // flag-sourced board-key server is never the app-owned board server anyway.
-  const envSelection = selectMCPConfig(undefined, process.env.AIWB_MCP_CONFIG);
-  const boardToolsAdvertised = boardServerActive({
-    bridgePresent,
-    selection: envSelection,
-    parsed: parseMCPConfig(envSelection.raw),
-  });
 
   // 3. MCP lifecycle: connect/discover/register/close regardless of the bridge
   // guard. Every failure is isolated per server and surfaced through `notice`.
@@ -161,7 +164,10 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
           description: tool.description,
           promptSnippet: tool.promptSnippet,
           parameters: Type.Unsafe(tool.parameters as never),
-          executionMode: "sequential",
+          // Spawn-family tools omit executionMode so sibling spawns in one
+          // assistant message run in parallel (native `subagent` did the same).
+          // Board-engine MCP tools stay sequential.
+          ...(isSpawnFamilyTool(tool.name) ? {} : { executionMode: "sequential" as const }),
           async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
             return tool.execute(params ?? {}, signal);
           },
@@ -185,66 +191,13 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
 
   // Standalone run (no bridge): the servers are explicitly user-supplied, there
   // is no app permission card and no UDS channel, so the gate is deliberately
-  // not wired at all here — these tools run un-gated (plan R4/§3.5). The
-  // subagent tool is app-only.
+  // not wired at all here — these tools run un-gated (plan R4/§3.5). Native
+  // `subagent` is not registered on standalone either.
   if (!bridgePresent) return;
 
-  // The app's subagent tool: children are app-spawned `pi --mode rpc` processes
-  // whose activity is forwarded over this same bridge connection, tagged with
-  // the parent tool-call id and the child session id. Subagents inherit
-  // AIWB_MCP_CONFIG, so a board chat's children keep the board MCP tools and a
-  // plain chat's children get none (plan R8/§3.6).
-  const subagentParameters = Type.Object({
-    description: Type.String({
-      description: "Short UI label for this subagent (a few words, not a sentence).",
-    }),
-    prompt: Type.String({
-      description:
-        "The full, self-contained task for the subagent. It sees nothing from this conversation, so include everything it needs.",
-    }),
-    subagent_type: Type.Optional(
-      Type.String({ description: 'Optional agent type label, e.g. "researcher" or "reviewer". Default: general-purpose.' }),
-    ),
-    model: Type.Optional(
-      Type.String({ description: "Optional provider-qualified model id for the child. Default: this chat's model." }),
-    ),
-    thinking: Type.Optional(
-      Type.String({ description: "Optional thinking level for the child (off, minimal, low, medium, high, ...)." }),
-    ),
-    background: Type.Optional(
-      Type.Boolean({
-        description:
-          "Run the subagent without waiting: the tool returns immediately and the subagent reports when it finishes. Default false.",
-      }),
-    ),
-  });
-
-  pi.registerTool({
-    name: "subagent",
-    label: "Subagent",
-    description: subagentDescription(boardToolsAdvertised),
-    promptSnippet: subagentPromptSnippet(boardToolsAdvertised),
-    parameters: subagentParameters,
-    // No executionMode: pi runs sibling subagent calls from one assistant message concurrently
-    // (a "sequential" tool in the batch would serialize the whole batch, leaving every
-    // subagent but the first stuck at "Thinking…" until its turn).
-    async execute(toolCallId: string, params: SubagentParams, signal?: AbortSignal) {
-      return runSubagent({
-        toolCallId,
-        params,
-        env: process.env,
-        signal,
-        cwd: process.cwd(),
-        selfPath: fileURLToPath(import.meta.url),
-        registerKiller: registerChildKiller,
-        activity: (sub, event) => {
-          void callBridge(socketPath, { kind: "activity", run, sub, event }).catch(() => {
-            // Fire and forget: child activity must never block the child.
-          });
-        },
-      });
-    },
-  });
+  // App chats keep the permission gate, hello/abort, and child-killer wiring.
+  // They do not register the native `subagent` tool: the MCP spawn family
+  // (spawn_subagent / wait_subagents / stop_subagent) replaces it.
 
   // Permission gate: exactly one rule (plan R4). The auto-allowed set is the
   // app-sourced mcp__board__* names (the native raw board tools were removed in
