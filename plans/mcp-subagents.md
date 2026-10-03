@@ -356,6 +356,8 @@ an error; a model change resolves a stale effort the same way. Invalid input ret
 with no process started. A nil Cursor catalog accepts values unvalidated, exactly like
 `Configure`; a wrong model then shows up as a subagent handshake failure in its status/error.
 
+> Note (2026-10-03): "model vocabularies are not interchangeable" stopped being true — the stored Claude list shares ids with Cursor's; the fallback described here for cross-agent spawns now holds by rule (D22), no longer because the lists are disjoint; see `plans/claude-model-picker-plan.md`.
+
 ### D5. Steering away from native spawning
 
 Steering is deterministic on **all app chats** for all three agents. Plain chats are not an

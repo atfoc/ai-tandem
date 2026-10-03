@@ -46,6 +46,10 @@ type proc struct {
 	s       *Spawner
 	done    chan struct{} // closed once the process has been waited for
 
+	// initID is the id of the initialize request this process wrote, until its answer has been
+	// taken (only touched by the read loop after start).
+	initID string
+
 	// translate state (only touched by the read loop)
 	curMsg   string
 	streamed map[string]bool
@@ -70,7 +74,7 @@ func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
-	if o.Effort != "" && o.Model != "haiku" {
+	if o.Effort != "" {
 		args = append(args, "--effort", o.Effort)
 	}
 	args = append(args, "--disallowedTools", strings.Join(append(AppDirRules(s.AppRoot, s.Home), "Task", "Agent"), ","))
@@ -200,7 +204,9 @@ func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 	// (task_progress.summary) and forwarded subagent text. It is written before the read loop
 	// starts so it is always the first stdin line (the loop may answer control requests at once).
 	// A write error is ignored: the process exiting reports itself through EvExit.
-	p.write(map[string]any{"type": "control_request", "request_id": "init_" + randHex(4),
+	// Its answer, if one comes, carries the model list: the read loop reports it as a catalog event.
+	p.initID = "init_" + randHex(4)
+	p.write(map[string]any{"type": "control_request", "request_id": p.initID,
 		"request": map[string]any{"subtype": "initialize", "agentProgressSummaries": true, "forwardSubagentText": true}})
 	go p.readLoop(stdout)
 	return p, nil
@@ -238,6 +244,14 @@ func (p *proc) readLoop(stdout io.Reader) {
 			p.handleControl(m)
 			continue
 		case "control_response":
+			if resp, _ := m["response"].(map[string]any); p.initID != "" && resp["request_id"] == p.initID {
+				p.initID = "" // one catalog event per process
+				// An error answer or an unusable list is no event: the chat does not depend on it.
+				if cat, err := CatalogFromInitialize(sc.Bytes()); err == nil {
+					p.events <- agent.Event{Kind: agent.EvCatalog, Catalog: cat}
+				}
+				continue
+			}
 			p.reply(sc.Bytes()) // answers to our interrupts are dropped: the result line tells the rest
 			continue
 		}

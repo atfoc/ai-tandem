@@ -30,6 +30,7 @@ func launchRace(t *testing.T, bin string) {
 	dir := t.TempDir()
 	port := freePort(t)
 	portArg := strconv.Itoa(port)
+	claude := noClaude(t)
 	t.Cleanup(func() {
 		exec.Command(bin, "stop", "-home", dir, "-port", portArg).Run()
 		exec.Command("pkill", "-KILL", "-f", "--", "-home "+dir).Run()
@@ -49,7 +50,7 @@ func launchRace(t *testing.T, bin string) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, bin, "launch", "-home", dir, "-port", portArg, "-client", "")
+			cmd := exec.CommandContext(ctx, bin, "launch", "-home", dir, "-port", portArg, "-client", "", "-claude", claude)
 			<-start
 			out, err := cmd.Output()
 			r := result{out: string(out), err: err}

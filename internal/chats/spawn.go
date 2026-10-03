@@ -247,8 +247,10 @@ func (m *Manager) subWaitSnapshot(chatID string, sids []string) ([]SubWaitResult
 }
 
 // resolveSubSpawn picks kind/model/effort. Explicit values are validated like Configure against
-// the requested kind's catalog; inherited values that do not fit fall back to new-chat defaults.
-// c.mu held.
+// the requested kind's catalog. Inherited values fall back to new-chat defaults when they do not
+// fit, and always when the requested kind is not the chat's and no model was named: a model
+// is inherited only by a subagent of the chat's own kind, even if the other kind lists the same id;
+// a named effort there is validated against the model the rebase yields. c.mu held.
 func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.AgentKind, modelID, effort string, err error) {
 	kind = req.Kind
 	if kind == "" {
@@ -280,7 +282,10 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 			}
 		}
 	}
-	if explicitEffort {
+	// With no model named on a cross-kind spawn the chat's model is not used (below), so a named
+	// effort is checked only against the rebased model.
+	rebased := !explicitModel && cat != nil && kind != c.meta.Agent
+	if explicitEffort && !rebased {
 		cm, err := findModel(cat, modelID)
 		if err != nil && explicitModel {
 			return "", "", "", err
@@ -293,7 +298,7 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 	unfit := false
 	if cat != nil {
 		cm, mErr := findModel(cat, modelID)
-		if !explicitModel && mErr != nil {
+		if !explicitModel && (mErr != nil || kind != c.meta.Agent) {
 			unfit = true
 		}
 		if !explicitEffort && cm != nil && effort != "" && !slices.Contains(cm.Efforts, effort) {
@@ -330,7 +335,7 @@ func (m *Manager) subSpawnOptions(c *Chat, sid string, kind model.AgentKind, mod
 		Resume:   false,
 		Cwd:      c.meta.Cwd,
 		Model:    modelID,
-		Effort:   effort,
+		Effort:   m.effortFor(kind, modelID, effort),
 		MCP:      &agent.BoardAccess{MCPURL: m.MCPURL, Token: m.issueExtraToken(c, sid, kind, modelID, effort)},
 		BoardID:  c.meta.Board,
 		Subagent: true,

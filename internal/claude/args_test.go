@@ -146,10 +146,15 @@ func checkAllowed(t *testing.T, args []string, want []boardtools.Tool, refuse []
 	}
 }
 
-func TestArgsHaikuHasNoEffort(t *testing.T) {
+func TestArgsPassesTheEffortItIsGiven(t *testing.T) {
+	// The adapter has no model list: leaving an effort out is the manager's call.
 	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s3", Cwd: "/tmp", Model: "haiku", Effort: "high"})
+	if v, ok := flag(args, "--effort"); !ok || v != "high" {
+		t.Errorf("--effort = %q, %v", v, ok)
+	}
+	args = testSpawner.Args(agent.SpawnOptions{SessionID: "s3", Cwd: "/tmp", Model: "haiku"})
 	if _, ok := flag(args, "--effort"); ok {
-		t.Errorf("haiku has --effort: %q", args)
+		t.Errorf("--effort without an effort: %q", args)
 	}
 	checkCommon(t, args)
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 // instance is one data folder and port for the process-level tests, and the flags that select them.
 type instance struct {
 	bin, dir string
+	claude   string // the -claude flag: a program that does not exist, unless a test swaps in a fake
 	port     int
 	mcpPort  int
 	url      string // http://127.0.0.1:<port>/
@@ -32,7 +34,7 @@ func newInstance(t *testing.T) *instance {
 		t.Skip("builds the binary and starts servers")
 	}
 	bin := buildBinary(t)
-	in := &instance{bin: bin, dir: t.TempDir(), port: freePort(t), mcpPort: testMCPPort(t)}
+	in := &instance{bin: bin, dir: t.TempDir(), claude: noClaude(t), port: freePort(t), mcpPort: testMCPPort(t)}
 	in.url = fmt.Sprintf("http://127.0.0.1:%d/", in.port)
 	in.mcpURL = fmt.Sprintf("http://localhost:%d/mcp", in.mcpPort)
 	t.Cleanup(func() {
@@ -43,7 +45,14 @@ func newInstance(t *testing.T) *instance {
 }
 
 func (in *instance) flags() []string {
-	return []string{"-home", in.dir, "-port", strconv.Itoa(in.port), "-client", ""}
+	return []string{"-home", in.dir, "-port", strconv.Itoa(in.port), "-client", "", "-claude", in.claude}
+}
+
+// noClaude returns the path of a Claude binary that does not exist, for the -claude flag of every
+// server a test starts: no test may run the owner's installed `claude`.
+func noClaude(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "no-claude")
 }
 
 // run runs `ai-whiteboard <command> <flags>` and returns its stdout; it must exit 0.

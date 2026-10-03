@@ -20,8 +20,8 @@ import (
 
 // fakeAgent is a stand-in for `claude` and `agent` that records its pid and its child's pid in
 // $AIWB_FAKE_PIDS, then waits on a child that runs until it is killed. A one-shot `claude -p` (the
-// chat namer, /usage) answers at once, like the real one. The child's command line names this test's folder,
-// so the test can tell its processes from any other.
+// chat namer, /usage) answers at once, like the real one. The child's command line names this
+// test's folder, so the test can tell its processes from any other.
 const fakeAgent = `#!/bin/sh
 if [ "$1" = "-p" ] && [ "$2" != "--input-format" ]; then echo "Fake title"; exit 0; fi
 "$(dirname "$0")/fake-child" &
@@ -34,10 +34,12 @@ while :; do sleep 1; done
 `
 
 // Stopping the server ends every agent process it started, with the agent's own children: a
-// Claude chat, a Cursor chat and the Cursor model-list probe the server starts at startup.
+// Claude chat, a Cursor chat, the Claude sign-in check (`auth status`, the first step of its
+// model-list probe) and the Cursor model-list probe the server starts at startup.
 func TestStopEndsAgentProcesses(t *testing.T) {
 	in := newInstance(t)
 	fakes := t.TempDir()
+	in.claude = filepath.Join(fakes, "claude")
 	for name, body := range map[string]string{"claude": fakeAgent, "agent": fakeAgent, "fake-child": fakeChild} {
 		if err := os.WriteFile(filepath.Join(fakes, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
@@ -74,10 +76,11 @@ func TestStopEndsAgentProcesses(t *testing.T) {
 		}()
 	}
 	var pids []int
-	for deadline := time.Now().Add(10 * time.Second); len(pids) < 6; time.Sleep(100 * time.Millisecond) {
-		// Two chats and the model-list probe, each an agent and its child.
+	for deadline := time.Now().Add(10 * time.Second); len(pids) < 8; time.Sleep(100 * time.Millisecond) {
+		// Two chats, the Claude sign-in check and the Cursor probe, each an agent and its child.
+		// The fakes never answer, so the check and the probe run until the stop.
 		if time.Now().After(deadline) {
-			t.Fatalf("fake agents recorded pids %v, want 3 agents and their children", pids)
+			t.Fatalf("fake agents recorded pids %v, want 4 agents and their children", pids)
 		}
 		pids = readPids(pidFile)
 	}

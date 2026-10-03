@@ -71,10 +71,12 @@ func TestMCPPortConflictFailsFast(t *testing.T) {
 	portA, portB := freePort(t), freePort(t)
 	dirA, dirB := t.TempDir(), t.TempDir()
 	mcpEnv := "AIWB_MCP_PORT=" + strconv.Itoa(mcpPort)
+	claude := noClaude(t)
 
 	start := func(dir string, port int) (*exec.Cmd, *bytes.Buffer) {
 		t.Helper()
-		cmd := exec.Command(bin, "serve", "-home", dir, "-port", strconv.Itoa(port), "-client", "")
+		cmd := exec.Command(bin, "serve", "-home", dir, "-port", strconv.Itoa(port), "-client", "",
+			"-claude", claude)
 		cmd.Env = append(os.Environ(), mcpEnv)
 		var stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stderr, &stderr

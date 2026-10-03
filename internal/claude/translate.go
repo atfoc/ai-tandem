@@ -211,8 +211,8 @@ func (p *proc) subLine(tool string, m map[string]any) []agent.Event {
 	return nil
 }
 
-// windowFor is a model's context window: from the last result's modelUsage, else from the static
-// catalog by alias ("claude-haiku-4-5-…" contains "-haiku"), else 0.
+// windowFor is a model's context window: from the last result's modelUsage, else from the built-in
+// list by alias ("claude-haiku-4-5-…" contains "-haiku"), else 0.
 func (p *proc) windowFor(id string) int {
 	if id == "" {
 		return 0

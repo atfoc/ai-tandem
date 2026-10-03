@@ -421,7 +421,7 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
   };
 
   const row = ({ o, i }: { o: PickerOption; i: number }) => (
-    <button key={o.id} id={rowId(i)} type="button" role="option" aria-selected={o.id === value}
+    <button key={o.id} id={rowId(i)} type="button" role="option" aria-selected={o.id === value} data-model-id={searchable ? o.id : undefined}
       ref={(el) => { rows.current[i] = el; }}
       className={`menu-item pick ${o.id === value ? "on" : ""} ${i === hi ? "active" : ""}`}
       onClick={() => pickAt(i)}>

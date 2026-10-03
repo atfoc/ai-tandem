@@ -79,6 +79,8 @@ Matching, keyed by the **parent** `agent` argument:
 | else (Claude) | catalog id contained as `"-" + m.id` in the full id (`"claude-haiku-4-5-…" → Haiku 4.5`) |
 | no match | `{ model: id }` raw |
 
+> Note (2026-10-03): the "else (Claude)" substring row no longer exists — a Claude subagent's model is matched by exact catalog id only, else shown raw (D16); see `plans/claude-model-picker-plan.md`.
+
 Comment at `80–85`: Cursor effort lives in the model id; Claude reports no effort for subagents; Pi reports an unqualified model against provider-qualified catalog ids.
 
 `SubStats` renders `m.model` plus ` · ${m.effort}` when the matcher returned effort (`Subagents.tsx:63`). Both row and drawer pass `agent={chat.agent}` and `cat={s.catalogs[chat.agent]}` (`78`, `90`, `118`, `164`).

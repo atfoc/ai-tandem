@@ -17,7 +17,7 @@ type SpawnOptions struct {
 	SessionID string // Claude: the id to create or resume; Cursor: the id to load ("" = new session)
 	Resume    bool
 	Cwd       string
-	Model     string // Claude alias or Cursor base id
+	Model     string // the model id from the agent's catalog (Claude: the id passed to --model)
 	Effort    string
 	MCP       *BoardAccess // URL+token; set whenever the process should speak MCP (plain chats included)
 	BoardID   string       // non-empty → board extras on (whiteboard prompt, board-tool allow/auto-approve)
@@ -60,7 +60,7 @@ type EventKind int
 
 const (
 	EvSession        EventKind = iota // SessionID known (Cursor after session/new)
-	EvCatalog                         // Cursor reported its models (Catalog)
+	EvCatalog                         // the agent reported its models (Catalog)
 	EvThinking                        // model is thinking / request started
 	EvTextStart                       // a new text item begins (MsgID)
 	EvTextDelta                       // Text appended to the open text item

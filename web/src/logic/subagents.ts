@@ -81,11 +81,11 @@ export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNa
 
 /** "model · effort" labels from the subagent's own kind and catalog, not the parent chat.
  *  Cursor puts the effort in the id ("gpt-5.4-mini-medium" = model gpt-5.4-mini, effort medium).
- *  Claude reports no effort for subagents; its full id is matched by alias ("claude-haiku-4-5-…"
- *  → Haiku 4.5). Pi reports an unqualified model ("deepseek-flash") against provider-qualified
- *  catalog ids ("deepseek/deepseek-flash"), matched by suffix. Unknown ids, a missing catalog, or
- *  an absent kind are shown as the raw id — never the parent kind. `effort` is used when the
- *  catalog match did not already produce one (Claude/Pi often won't parse it from the model id). */
+ *  Claude reports no effort for subagents; its model is matched by exact catalog id only. Pi
+ *  reports an unqualified model ("deepseek-flash") against provider-qualified catalog ids
+ *  ("deepseek/deepseek-flash"), matched by suffix. Unknown ids, a missing catalog, or an absent
+ *  kind are shown as the raw id — never the parent kind. `effort` is used when the catalog match
+ *  did not already produce one (Claude/Pi often won't parse it from the model id). */
 export function subModelLabel(id: string | undefined, agent?: AgentKind, cat?: Catalog, effort?: string): { model: string; effort?: string } | null {
   if (!id) return null;
   const withEffort = (m: { model: string; effort?: string }) =>
@@ -101,9 +101,6 @@ export function subModelLabel(id: string | undefined, agent?: AgentKind, cat?: C
     }
   } else if (agent === "pi") {
     const m = models.find((m) => m.id.endsWith("/" + id));
-    if (m) return withEffort({ model: m.label });
-  } else if (agent === "claude") {
-    const m = models.find((m) => id.includes("-" + m.id));
     if (m) return withEffort({ model: m.label });
   }
   return withEffort({ model: id });

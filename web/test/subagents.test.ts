@@ -124,13 +124,14 @@ test("subModelLabel", () => {
   assert.deepEqual(subModelLabel("gpt-5.4-mini", "cursor", cursor), { model: "GPT-5.4 Mini" });
   const claude: Catalog = {
     models: [
-      { id: "sonnet", label: "Sonnet 5" },
+      { id: "sonnet", label: "Sonnet 5.5" },
       { id: "opus", label: "Opus 5.5" },
       { id: "haiku", label: "Haiku 4.5" },
     ],
     default: { model: "sonnet" } as any,
   };
-  assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", "claude", claude), { model: "Haiku 4.5" });
+  // a full id is not matched by family: only an exact catalog id is labelled, else the raw id
+  assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", "claude", claude), { model: "claude-haiku-4-5-20251001" });
   assert.deepEqual(subModelLabel("opus", "claude", claude), { model: "Opus 5.5" });
   assert.equal(subModelLabel(undefined, "claude", claude), null);
   const pi: Catalog = {
@@ -157,7 +158,8 @@ test("subModelLabel", () => {
   assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", undefined, claude), { model: "claude-haiku-4-5-20251001" });
   assert.deepEqual(subModelLabel("opus", undefined, claude), { model: "opus" });
   // sa.effort when the catalog match did not already produce one
-  assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", "claude", claude, "high"), { model: "Haiku 4.5", effort: "High" });
+  assert.deepEqual(subModelLabel("haiku", "claude", claude, "high"), { model: "Haiku 4.5", effort: "High" });
+  assert.deepEqual(subModelLabel("claude-haiku-4-5-20251001", "claude", claude, "high"), { model: "claude-haiku-4-5-20251001", effort: "High" });
   assert.deepEqual(subModelLabel("deepseek-flash", "pi", pi, "low"), { model: "DeepSeek Flash", effort: "Low" });
   // catalog-parsed effort wins over sa.effort
   assert.deepEqual(subModelLabel("gpt-5.4-mini-medium", "cursor", cursor, "high"), { model: "GPT-5.4 Mini", effort: "Medium" });

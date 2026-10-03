@@ -66,7 +66,7 @@ type State struct {
 	Version  int                    `json:"version"`
 	Groups   []Group                `json:"groups"` // in the user's order; subgroups keep this order among their siblings
 	Defaults Defaults               `json:"defaults"`
-	Catalogs map[AgentKind]*Catalog `json:"catalogs,omitempty"` // last model list each agent reported (Cursor, pi)
+	Catalogs map[AgentKind]*Catalog `json:"catalogs,omitempty"` // last model list each agent reported (Claude, Cursor, pi); Claude falls back to the built-in list when none
 	// Cursor is the legacy Cursor catalog slot, kept for backward-compatible reads of older
 	// state.json files. It is never written after the generic Catalogs map exists.
 	Cursor *Catalog `json:"cursorCatalog,omitempty"`
@@ -118,7 +118,7 @@ type Catalog struct {
 }
 
 type CatalogModel struct {
-	ID            string            `json:"id"` // "sonnet", or Cursor's base id "gpt-5.4-mini"
+	ID            string            `json:"id"` // Claude's id as passed to --model, or Cursor's base id "gpt-5.4-mini"
 	Label         string            `json:"label"`
 	Note          string            `json:"note,omitempty"`
 	Provider      string            `json:"provider,omitempty"` // pi only: the provider id pi reported; empty when unknown

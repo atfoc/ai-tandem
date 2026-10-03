@@ -35,7 +35,7 @@ export type State = {
   version: number;
   groups: Group[];
   defaults: Defaults;
-  /** Per-agent persisted catalogs (model.Pi and future dynamic agents); Cursor's older
+  /** Per-agent persisted catalogs (the model lists each agent reported); Cursor's older
    *  `cursorCatalog` is kept for backward compatibility. */
   catalogs?: Partial<Record<AgentKind, Catalog | null>>;
   cursorCatalog?: Catalog;

@@ -384,7 +384,11 @@ No prompt text today tells the model to avoid native Task/Agent/subagent.
 | Cursor | Live `cursor/list_available_models` after handshake (`cursor.go:170-177`). Also boot probe `Spawner.Catalog`. IDs are Cursor’s bare values. Efforts from `thought_level`. | `s.SetCatalog` on `EvCatalog` |
 | Pi | Live `get_available_models` (`internal/pi/catalog.go:41-70`). IDs `provider/id`. Reasoning models: `off/minimal/low/medium/high` plus `xhigh`/`max` when mapped. Default effort `medium` if present. Boot `Spawner.Catalog` with `--no-session --no-extensions`. | same |
 
+> Note (2026-10-03): the Claude row is outdated — the list is now fetched from the CLI (built-in four-row list only as fallback); see `plans/claude-model-picker-plan.md`.
+
 `Manager.catalog` (`manager.go:312-325`): Claude always static; Cursor/Pi from store (nil until first catalog event / boot refresh).
+
+> Note (2026-10-03): no longer true — `Manager.catalog` now reads the stored Claude list, else the built-in one (D9); see `plans/claude-model-picker-plan.md`.
 
 `defaults.AgentOrder` = Claude, Cursor, Pi (`internal/defaults/defaults.go:12-13`). `defaults.Resolve` falls back to catalog default and strips unsupported effort (`defaults.go:17-47`).
 
@@ -404,6 +408,8 @@ Rules:
 - Does not spawn a process.
 
 Pi/Cursor catalogs can change under the user (boot refresh + `EvCatalog`). Claude cannot.
+
+> Note (2026-10-03): no longer true — the Claude list is now fetched from the CLI and stored, and refreshed on server start and on each top-level chat process start; see `plans/claude-model-picker-plan.md`.
 
 ---
 
@@ -426,6 +432,8 @@ These are differences in **today’s adapters**, not proposals.
 7. **Session identity.** Claude/Pi: app UUID in `--session-id`. Cursor: empty until `session/new`; resume needs Cursor’s id. A spawned Cursor process with `Resume: false` always creates a new ACP session.
 
 8. **Model/effort vocabularies are not interchangeable.** Claude aliases vs Cursor bare ids vs Pi `provider/id`. `Configure`/`findModel` is the existing validator; nil Cursor catalog is a hole. Spawn-tool “model” cannot be one enum.
+
+> Note (2026-10-03): no longer true for Claude and Cursor — the stored Claude list now shares ids with Cursor's; a cross-agent spawn without a model still takes the requested kind's new-chat defaults, now by rule (D22) and no longer because the lists are disjoint; see `plans/claude-model-picker-plan.md`.
 
 9. **`ChatID` required for Pi** (session dir + bridge). Claude/Cursor ignore it.
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -641,4 +642,41 @@ func TestSnapshotCatalogs(t *testing.T) {
 			t.Errorf("stored pi catalog changed after two snapshot reads: %+v", c)
 		}
 	})
+
+	// The snapshot's Claude list is the list validation uses, with nothing stored and with a list stored.
+	sameAsManager := func(state string) {
+		t.Helper()
+		cat := e.a.Snapshot().Catalogs[model.Claude]
+		if cat == nil || len(cat.Models) == 0 {
+			t.Fatalf("%s: no Claude catalog in the snapshot", state)
+		}
+		v, err := e.a.Chats.Create(model.Claude, model.Ungrouped, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Model != cat.Default.Model || v.Effort != cat.Default.Effort {
+			t.Errorf("%s: a new chat starts on %s/%s, the snapshot default is %+v", state, v.Model, v.Effort, cat.Default)
+		}
+		for _, m := range cat.Models {
+			if err := e.a.Chats.Configure(v.ID, chats.ConfigReq{Model: m.ID}); err != nil {
+				t.Errorf("%s: the snapshot lists %s but Configure rejects it: %v", state, m.ID, err)
+			}
+		}
+		if err := e.a.Chats.Configure(v.ID, chats.ConfigReq{Model: "not-listed"}); err == nil {
+			t.Errorf("%s: Configure accepted an id the snapshot lacks", state)
+		}
+	}
+	sameAsManager("nothing stored")
+	claudeCat := &model.Catalog{
+		Models:  []model.CatalogModel{{ID: "fetched-a", Label: "Fetched A", Efforts: []string{"low", "high"}, DefaultEffort: "low"}, {ID: "fetched-b", Label: "Fetched B"}},
+		Default: model.ModelChoice{Model: "fetched-a", Effort: "low"},
+	}
+	e.must(e.st.Update(func(s *model.State) error { s.SetCatalog(model.Claude, claudeCat); return nil }))
+	if c := e.a.Snapshot().Catalogs[model.Claude]; c == nil || !reflect.DeepEqual(*c, *claudeCat) {
+		t.Errorf("stored Claude catalog not reported: %+v", c)
+	}
+	sameAsManager("a Claude list stored")
+	if err := e.a.Chats.Configure(e.chat(model.Ungrouped, ""), chats.ConfigReq{Model: "opus"}); err == nil {
+		t.Error("an id only the built-in list has was accepted with a Claude list stored")
+	}
 }

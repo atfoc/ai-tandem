@@ -181,6 +181,7 @@ func serve(o options, args []string) {
 	piSpawner.Bridge = pb
 	go refreshCursorCatalog(cursorSpawner, st, br)
 	go refreshPiCatalog(piSpawner, st, br)
+	go refreshClaudeCatalog(claudeSpawner, st, br)
 	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
@@ -368,4 +369,18 @@ func refreshPiCatalog(sp *pi.Spawner, st *store.Store, br *editorbridge.Bridge) 
 		log.Printf("pi model list: saving: %v", err)
 	}
 	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Pi), "catalog": cat})
+}
+
+// refreshClaudeCatalog fetches Claude's model list for the pickers, like refreshCursorCatalog. On
+// failure the stored catalog stays.
+func refreshClaudeCatalog(sp *claude.Spawner, st *store.Store, br *editorbridge.Bridge) {
+	cat, err := sp.Catalog(20 * time.Second)
+	if err != nil {
+		log.Printf("claude model list: %v", err)
+		return
+	}
+	if err := st.Update(func(s *model.State) error { s.SetCatalog(model.Claude, cat); return nil }); err != nil {
+		log.Printf("claude model list: saving: %v", err)
+	}
+	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Claude), "catalog": cat})
 }

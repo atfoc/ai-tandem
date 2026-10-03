@@ -325,11 +325,10 @@ func (m *Manager) Items(id string) (int, []model.Item, []model.Subagent, error) 
 
 // ---- creating and configuring ---------------------------------------------
 
+// catalog is the model list for a: the stored one, else (Claude only) the built-in one. Claude's
+// is never nil; Cursor's and pi's are nil until the agent has reported its list. The result is
+// a shallow copy; callers must not modify its slices.
 func (m *Manager) catalog(a model.AgentKind) *model.Catalog {
-	if a == model.Claude {
-		cat := claude.Catalog
-		return &cat
-	}
 	var cat *model.Catalog
 	m.Store.Read(func(s *model.State) {
 		if c := s.Catalog(a); c != nil {
@@ -337,7 +336,24 @@ func (m *Manager) catalog(a model.AgentKind) *model.Catalog {
 			cat = &cp
 		}
 	})
+	if cat == nil && a == model.Claude {
+		cp := claude.Catalog
+		cat = &cp
+	}
 	return cat
+}
+
+// effortFor is the effort a process of model modelID starts with: for Claude, none when the
+// catalog lists the model without efforts; else the stored effort (also for a model the catalog
+// does not know, and always for Cursor and pi).
+func (m *Manager) effortFor(a model.AgentKind, modelID, effort string) string {
+	if a != model.Claude {
+		return effort
+	}
+	if cm, _ := findModel(m.catalog(a), modelID); cm != nil && len(cm.Efforts) == 0 {
+		return ""
+	}
+	return effort
 }
 
 func (m *Manager) groupExists(g string) bool {
@@ -489,7 +505,7 @@ func (m *Manager) spawn(c *Chat, out *outbox) error {
 func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
 	m.ensureToken(c)
 	opts := agent.SpawnOptions{ChatID: c.meta.ID, SessionID: c.meta.SessionID, Resume: c.meta.Locked,
-		Cwd: c.meta.Cwd, Model: c.meta.Model, Effort: c.meta.Effort,
+		Cwd: c.meta.Cwd, Model: c.meta.Model, Effort: m.effortFor(c.meta.Agent, c.meta.Model, c.meta.Effort),
 		MCP: &agent.BoardAccess{MCPURL: m.MCPURL, Token: c.meta.Token}, BoardID: c.meta.Board}
 	if c.meta.Agent == model.Cursor && !c.meta.Locked {
 		opts.SessionID = ""
@@ -766,7 +782,8 @@ func (m *Manager) recordDefaults(c *Chat, cwd string, mc model.ModelChoice, out 
 	}
 }
 
-// findModel looks id up in cat. A nil catalog (Cursor's list not known yet) accepts any model.
+// findModel looks id up in cat. A nil catalog (Cursor's or pi's list not known yet) accepts any
+// model.
 func findModel(cat *model.Catalog, id string) (*model.CatalogModel, error) {
 	if cat == nil {
 		return nil, nil

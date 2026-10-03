@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,15 +18,27 @@ import (
 
 // Environment variables that turn the test binary into a fake `claude`.
 const (
-	envScript = "CLAUDE_FAKE_SCRIPT" // file whose lines the fake prints to stdout
-	envStdin  = "CLAUDE_FAKE_STDIN"  // file the fake appends every stdin line to
-	envArgs   = "CLAUDE_FAKE_ARGS"   // file the fake writes its cwd and arguments to
-	envStderr = "CLAUDE_FAKE_STDERR" // text the fake prints to stderr before exiting
-	envCtx    = "CLAUDE_FAKE_CTX"    // file of get_context_usage answers, one per line; the last repeats
-	envExit   = "CLAUDE_FAKE_EXIT"   // set: exit at once (status 3) after the script and stderr, without reading stdin
+	envScript = "CLAUDE_FAKE_SCRIPT"  // file whose lines the fake prints to stdout
+	envStdin  = "CLAUDE_FAKE_STDIN"   // file the fake appends every stdin line to
+	envArgs   = "CLAUDE_FAKE_ARGS"    // file the fake writes its cwd and arguments to
+	envStderr = "CLAUDE_FAKE_STDERR"  // text the fake prints to stderr before exiting
+	envCtx    = "CLAUDE_FAKE_CTX"     // file of get_context_usage answers, one per line; the last repeats
+	envExit   = "CLAUDE_FAKE_EXIT"    // set: exit at once (status 3) after the script and stderr, without reading stdin
+	envInit   = "CLAUDE_FAKE_INIT"    // file of an initialize answer: the fake answers every initialize request with it (id echoed, one line); unset: no answer
+	envAuth   = "CLAUDE_FAKE_AUTH"    // exit status of the `auth status` invocation (default 0); non-zero also prints CLAUDE_FAKE_STDERR
+	envHold   = "CLAUDE_FAKE_HOLD"    // file: the fake starts a child that holds its stdout and stderr open for 30 s and writes the child's pid there; an `auth status` run then hangs, any other run exits at once
+	envWrong  = "CLAUDE_FAKE_WRONGID" // set: the initialize answer carries another request id than the request's
+	envDup    = "CLAUDE_FAKE_DUP"     // set: the initialize answer is printed twice (same id)
+	envPad    = "CLAUDE_FAKE_PAD"     // bytes of padding added to the initialize answer
+	envSleep  = "CLAUDE_FAKE_SLEEP"   // set: the test binary only sleeps 30 s (the child of envHold)
+	envRuns   = "CLAUDE_FAKE_RUNS"    // file the fake appends one line per invocation to: its pid and arguments
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv(envSleep) != "" {
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
 	if os.Getenv(envScript) != "" {
 		helperProcess()
 		os.Exit(0)
@@ -35,6 +49,32 @@ func TestMain(m *testing.M) {
 // helperProcess is the fake `claude`: it prints the scripted lines, records
 // stdin until it is closed, then exits. It only runs as a child of the tests.
 func helperProcess() {
+	if f := os.Getenv(envRuns); f != "" {
+		rec, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "args": os.Args[1:]})
+		if w, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			w.Write(append(rec, '\n'))
+			w.Close()
+		}
+	}
+	if f := os.Getenv(envHold); f != "" {
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), envSleep+"=1")
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Start(); err == nil {
+			os.WriteFile(f, []byte(strconv.Itoa(child.Process.Pid)), 0o644)
+		}
+		if len(os.Args) > 1 && os.Args[1] == "auth" {
+			time.Sleep(30 * time.Second) // the sign-in check does not answer either
+		}
+		os.Exit(0)
+	}
+	if len(os.Args) > 2 && os.Args[1] == "auth" && os.Args[2] == "status" { // the sign-in check
+		code, _ := strconv.Atoi(os.Getenv(envAuth))
+		if code != 0 {
+			fmt.Fprintln(os.Stderr, os.Getenv(envStderr))
+		}
+		os.Exit(code)
+	}
 	cwd, _ := os.Getwd()
 	rec, _ := json.Marshal(map[string]any{"cwd": cwd, "args": os.Args[1:], "noMemory": os.Getenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY")})
 	os.WriteFile(os.Getenv(envArgs), rec, 0o644)
@@ -58,6 +98,11 @@ func helperProcess() {
 		b, _ := os.ReadFile(f)
 		answers = strings.Split(strings.TrimSpace(string(b)), "\n")
 	}
+	var initAnswer map[string]any
+	if f := os.Getenv(envInit); f != "" {
+		b, _ := os.ReadFile(f)
+		json.Unmarshal(b, &initAnswer)
+	}
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	for sc.Scan() {
@@ -74,6 +119,25 @@ func helperProcess() {
 				req.RequestID, answers[0])
 			if len(answers) > 1 {
 				answers = answers[1:]
+			}
+		}
+		if initAnswer != nil && json.Unmarshal(sc.Bytes(), &req) == nil && req.Type == "control_request" &&
+			req.Request.Subtype == "initialize" {
+			if resp, ok := initAnswer["response"].(map[string]any); ok {
+				resp["request_id"] = req.RequestID
+				if os.Getenv(envWrong) != "" {
+					resp["request_id"] = "not-" + req.RequestID
+				}
+				if n, _ := strconv.Atoi(os.Getenv(envPad)); n > 0 {
+					if body, ok := resp["response"].(map[string]any); ok {
+						body["padding"] = strings.Repeat("x", n)
+					}
+				}
+			}
+			b, _ := json.Marshal(initAnswer)
+			fmt.Printf("%s\n", b)
+			if os.Getenv(envDup) != "" {
+				fmt.Printf("%s\n", b)
 			}
 		}
 	}

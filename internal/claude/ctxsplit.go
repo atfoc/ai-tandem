@@ -95,7 +95,7 @@ func (s *Spawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, er
 		return model.ContextSplit{}, err
 	}
 	go func() {
-		for range p.events { // nothing is sent, so nothing comes but the exit
+		for range p.events { // nothing is sent: only the exit and the catalog event the initialize answer yields, both drained
 		}
 	}()
 	split, err := p.ContextSplit()

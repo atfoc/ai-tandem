@@ -66,7 +66,7 @@ const CURSOR_CFG = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-cursor-"));
   process.env.CURSOR_CONFIG_DIR = CURSOR_CFG;
 }
 
-const CLAUDE_MODEL_LABEL = "Haiku 4.5";
+const CLAUDE_MODEL_ID = "haiku"; // Claude models are picked by id; the label comes from the server's catalog
 const CURSOR_MODEL_LABEL = "GPT-5.4 Nano"; // the cheapest model in Cursor's list
 const TURN_TIMEOUT = 300_000;
 const NUNITO = 6; // FONT_FAMILY.Nunito, Excalidraw's normal font
@@ -341,6 +341,16 @@ async function pickModel(page, label) {
   await page.locator('.composer button.tchip[title^="Model"]').click();
   await page.locator(".menu .menu-item.pick .menu-label", { hasText: label }).click();
 }
+async function pickModelId(page, id) {
+  await page.locator('.composer button.tchip[title^="Model"]').click();
+  await page.locator(`.menu .menu-item.pick[data-model-id="${id}"]`).click();
+}
+/** The label the server's snapshot gives a Claude model id. */
+async function claudeLabel(id) {
+  const m = (await state()).catalogs.claude?.models.find((x) => x.id === id);
+  if (!m) throw new Error(`Claude catalog has no model ${id}`);
+  return m.label;
+}
 async function pickEffort(page, label) {
   await page.locator('.composer button.tchip[title^="Effort"]').click();
   await page.locator(".menu .menu-item.pick .menu-label", { hasText: new RegExp(`^${label}`) }).click();
@@ -444,11 +454,12 @@ async function run() {
     const c0 = await chatView(ids.chat1);
     check(c0.group === ids.research && !c0.locked, "the chat is in Research and not locked", c0);
     await pickEffort(page, "Low");
-    await pickModel(page, CLAUDE_MODEL_LABEL);
+    await pickModelId(page, CLAUDE_MODEL_ID);
     await pickFolder(page, ids.chat1, folders.p1);
     const c1 = await chatView(ids.chat1);
     check(c1.model === "haiku" && !c1.effort && c1.cwd === folders.p1, "the pickers changed the chat (haiku, no effort, folder p1)", c1);
-    check(await page.locator('.composer button.tchip[title^="Model"]', { hasText: CLAUDE_MODEL_LABEL }).isVisible(), `the model picker shows ${CLAUDE_MODEL_LABEL}`, await page.locator(".composer-tools").innerText());
+    const claudeModelLabel = await claudeLabel(CLAUDE_MODEL_ID);
+    check(await page.locator('.composer button.tchip[title^="Model"]', { hasText: claudeModelLabel }).isVisible(), `the model picker shows ${claudeModelLabel}`, await page.locator(".composer-tools").innerText());
     ids.sid1 = readJSON(path.join(HOME, "chats", ids.chat1, "chat.json")).sessionId;
     check(!!ids.sid1, "chat.json has a session id", readJSON(path.join(HOME, "chats", ids.chat1, "chat.json")));
     check(claudeProcs(ids.sid1).length === 0, "no claude process runs for the chat yet", claudeProcs(ids.sid1));
@@ -458,7 +469,7 @@ async function run() {
     const procs = await waitFor("a claude process runs with the chat's session id", async () => { const p = claudeProcs(ids.sid1); return p.length ? p : null; }, { timeout: 15_000 });
     check(procs.some((p) => /mcp-config/.test(p.args)), "the plain chat's process has MCP config (spawn family)", procs);
     await waitFor("the pickers are locked", async () => (await page.locator('.composer button.tchip[title^="Model"]').count()) === 0 && (await chatView(ids.chat1)).locked);
-    check(await page.locator(".composer .tchip.static", { hasText: CLAUDE_MODEL_LABEL }).isVisible(), "the composer shows the model as fixed", await page.locator(".composer-tools").innerText());
+    check(await page.locator(".composer .tchip.static", { hasText: claudeModelLabel }).isVisible(), "the composer shows the model as fixed", await page.locator(".composer-tools").innerText());
     const { items } = await waitTurn(ids.chat1, before);
     const reply = lastReply(items);
     check(/^\W*no\b/i.test(reply) || /\b(no|don't|do not|none)\b/i.test(reply.split("\n")[0]), 'the reply is "No"', reply);
@@ -471,7 +482,7 @@ async function run() {
   await step(3, "A folder change in Research carries to the next chat there, not to ungrouped", async () => {
     // Ungrouped keeps its own defaults: give it some first, so the Research change can't leak into it.
     ids.u1 = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
-    await pickModel(page, "Sonnet 5");
+    await pickModelId(page, "sonnet");
     await pickEffort(page, "Medium");
     await pickFolder(page, ids.u1, folders.A);
 
@@ -862,7 +873,7 @@ async function run() {
 
   await step(18, "Claude subagents: two rows run then complete; the drawer; Esc closes it only; a reload keeps them", async () => {
     ids.claudeSubs = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
-    await pickModel(page, CLAUDE_MODEL_LABEL);
+    await pickModelId(page, CLAUDE_MODEL_ID);
     await pickFolder(page, ids.claudeSubs, folders.B); // it has a README.md
     const v0 = await chatView(ids.claudeSubs);
     check(v0.agent === "claude" && v0.model === "haiku" && !v0.board, "a plain Claude chat on Haiku", v0);
@@ -1020,7 +1031,7 @@ async function run() {
 
   await step(20, "A typed message is kept as the chat's draft: across chat switches and a restart; sending clears it", async () => {
     ids.drafty = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
-    await pickModel(page, CLAUDE_MODEL_LABEL);
+    await pickModelId(page, CLAUDE_MODEL_ID);
     const text = "Reply with just the word DRAFTED.";
     const ta = page.locator(".composer .composer-input");
     await ta.pressSequentially(text);
