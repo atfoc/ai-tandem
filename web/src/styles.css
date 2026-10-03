@@ -350,6 +350,8 @@ button.tchip:hover { border-color: var(--line-2); }
 .menu.up { top: auto; bottom: calc(100% + 6px); left: 0; min-width: 220px; }
 .menu-item.pick { padding-left: 10px; gap: 6px; }
 .menu-item.pick > span:last-child { flex: none; }
+.menu.up { max-width: min(320px, calc(100vw - 24px)); }
+.menu-item.pick .menu-label { max-width: none; white-space: normal; overflow-wrap: anywhere; }
 .menu-note { display: block; min-width: 0; white-space: normal; overflow-wrap: anywhere; font-size: 11px; color: var(--faint); }
 .menu-backdrop { position: fixed; inset: 0; z-index: 40; }
 .ctx-meter { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); padding: 0 6px; white-space: nowrap; cursor: default; font-variant-numeric: tabular-nums; }
@@ -534,7 +536,7 @@ body.resizing iframe { pointer-events: none; }
 .home-glyphs { display: flex; gap: 10px; }
 .menu-item.plain { padding-left: 10px; }
 .menu-item.danger { color: var(--danger); }
-.menu-scroll { max-height: min(320px, 40vh); overflow-y: auto; }
+.menu-scroll { max-height: min(320px, 40vh); overflow-y: auto; overflow-x: hidden; }
 
 /* ---------------------------------------------------------------- archived and new */
 .archived { opacity: .55; }
