@@ -156,7 +156,7 @@ export function SubagentDrawer() {
     const k = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       const s = getState();
-      if (s.confirm || s.picking || document.querySelector(".mention-pop")) return; // theirs first
+      if (s.confirm || s.picking || s.treeNav || document.querySelector(".mention-pop")) return; // theirs first
       e.preventDefault(); e.stopPropagation(); // so the composer's Esc does not also stop the chat
       closeSub();
     };

@@ -232,6 +232,70 @@ func TestTranslateResumeOrphanResult(t *testing.T) {
 	}
 }
 
+// The fork point of a turn is the uuid of its last own assistant or user line (lines shaped like
+// testdata/usage.jsonl), never message.id or the result line's uuid.
+func TestTranslateForkPoint(t *testing.T) {
+	const (
+		result  = `{"type":"result","subtype":"success","is_error":false,"num_turns":1,"terminal_reason":"completed","session_id":"s","uuid":"uuid-result"}`
+		aborted = `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","session_id":"s","uuid":"uuid-result"}`
+		failed  = `{"type":"result","subtype":"success","is_error":true,"result":"model not found","terminal_reason":"api_error","num_turns":1,"uuid":"uuid-result"}`
+		phantom = `{"type":"result","subtype":"success","is_error":false,"num_turns":0,"terminal_reason":"completed","uuid":"uuid-result"}`
+		think   = `{"type":"assistant","message":{"id":"msg_1","content":[{"type":"thinking","thinking":"hm"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-think"}`
+		toolUse = `{"type":"assistant","message":{"id":"msg_1","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}]},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-tool-use"}`
+		toolRes = `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-tool-result"}`
+		text    = `{"type":"assistant","message":{"id":"msg_2","content":[{"type":"text","text":"ok"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-text"}`
+		partial = `{"type":"assistant","message":{"id":"msg_3","content":[{"type":"text","text":"I"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-partial"}`
+		stopped = `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-interrupt"}`
+		apiErr  = `{"type":"assistant","message":{"id":"e1","model":"<synthetic>","content":[{"type":"text","text":"model not found"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-error","error":"model_not_found"}`
+		subText = `{"type":"assistant","message":{"id":"msg_s","content":[{"type":"text","text":"sub"}]},"parent_tool_use_id":"toolu_T","session_id":"s","uuid":"uuid-sub-assistant"}`
+		subRes  = `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_R","type":"tool_result","content":"x"}]},"parent_tool_use_id":"toolu_T","session_id":"s","uuid":"uuid-sub-user"}`
+		stream  = `{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":4}},"parent_tool_use_id":null,"session_id":"s","uuid":"uuid-stream"}`
+		status  = `{"type":"system","subtype":"status","status":"requesting","session_id":"s","uuid":"uuid-status"}`
+		lost    = `{"type":"system","subtype":"task_notification","task_id":"lost","status":"stopped","summary":"x","uuid":"uuid-lost"}`
+	)
+	// The turns of one process, in order: each ends with its result line.
+	turns := []struct {
+		name  string
+		lines []string
+		want  string // the Point of the turn's EvTurnEnd
+		none  bool   // the result line gives no event
+	}{
+		{"last assistant line", []string{status, think, text, stream, result}, "uuid-text", false},
+		{"no assistant or user line: nothing leaks from the turn before", []string{status, result}, "", false},
+		{"tool result, then an assistant line", []string{toolUse, toolRes, text, result}, "uuid-text", false},
+		{"a tool result last", []string{toolUse, toolRes, result}, "uuid-tool-result", false},
+		{"subagent lines never count", []string{text, subText, subRes, result}, "uuid-text", false},
+		{"only subagent lines", []string{subText, subRes, result}, "", false},
+		{"interrupted", []string{partial, stopped, aborted}, "uuid-interrupt", false},
+		{"failed", []string{apiErr, failed}, "uuid-error", false},
+		{"the swallowed result of a lost agent", []string{lost, text, phantom}, "", true},
+		{"nothing leaks from the swallowed result", []string{result}, "", false},
+		{"a line without a uuid", []string{text, `{"type":"assistant","message":{"id":"msg_4","content":[]},"parent_tool_use_id":null}`, result}, "", false},
+	}
+	p := &proc{}
+	for _, c := range turns {
+		var evs []agent.Event
+		for _, l := range c.lines {
+			evs = translateLine(t, p, l)
+		}
+		if c.none {
+			if len(evs) != 0 {
+				t.Errorf("%s: the result line gave %s, want nothing", c.name, dump(evs))
+			}
+			continue
+		}
+		if len(evs) != 2 || evs[1].Kind != agent.EvTurnEnd {
+			t.Fatalf("%s: the result line gave %s, want EvUsage + EvTurnEnd", c.name, dump(evs))
+		}
+		if evs[1].Point != c.want {
+			t.Errorf("%s: Point %q, want %q", c.name, evs[1].Point, c.want)
+		}
+		if evs[0].Point != "" {
+			t.Errorf("%s: EvUsage carries Point %q", c.name, evs[0].Point)
+		}
+	}
+}
+
 // dump prints events with their SubInfo spelled out.
 func dump(evs []agent.Event) string {
 	b, _ := json.Marshal(evs)

@@ -21,6 +21,9 @@ const (
 // Real group ids start with "g_", so it can't clash.
 const Ungrouped = "__ungrouped__"
 
+// MainBranch is the id of a chat's first branch, the one that is not listed in tree.json.
+const MainBranch = "main"
+
 const base36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 // NewID returns prefix followed by 8 random base36 characters ("b_", "g_", "a_").
@@ -211,7 +214,21 @@ type ChatMeta struct {
 	// ContextSplit is the last context split taken between turns; Claude's and live pi's are kept
 	// in chat.json and asked for again once messages or turns have moved past it.
 	ContextSplit *ContextSplit `json:"contextSplit,omitempty"`
+	// ForkSource is set while the forked session may still have to be made again.
+	ForkSource      *ForkSource `json:"forkSource,omitempty"`
+	ForkedFrom      string      `json:"forkedFrom,omitempty"`      // a fork: the id of the chat it was forked from
+	ForkedFromTitle string      `json:"forkedFromTitle,omitempty"` // and that chat's title at the time
 	Archive
+}
+
+// ForkSource is the session a chat or branch was forked from. It is kept in chat.json while the
+// forked session may still have to be made again (Claude, until its first turn ended).
+type ForkSource struct {
+	Chat    string `json:"chat"`            // server id of the chat or branch whose session is forked
+	Session string `json:"session"`         // that session's id
+	Point   string `json:"point,omitempty"` // the id on the end mark at the fork point; "" = the end of the session
+	Next    string `json:"next,omitempty"`  // the id on the first end mark after the fork point; "" = none
+	Items   int    `json:"items"`           // the item count of the copied prefix
 }
 
 // Draft is the message typed in a chat's composer and not sent yet. Cleared when a message is sent.
@@ -279,10 +296,16 @@ type ChatView struct {
 	// thread has not been read since the server started. They say what an idle chat waits on.
 	SubsRunning int `json:"subsRunning,omitempty"` // app-spawned subagents still running
 	SubsOwed    int `json:"subsOwed,omitempty"`    // finished ones whose result the agent has not received (SubDelivery.Owed)
+	// Scalars only: ChatView stays comparable with ==.
+	Branches        int    `json:"branches,omitempty"` // the number of branches once the chat has split (>= 2); 0 = one branch
+	Branch          string `json:"branch,omitempty"`   // the current branch's id; "" = main
+	ForkedFrom      string `json:"forkedFrom,omitempty"`
+	ForkedFromTitle string `json:"forkedFromTitle,omitempty"`
 }
 
-// ViewOf builds the client view of a chat. Token, SessionID, TurnActive and McpInstructionsSent
-// are left out; InstructionsSent is included because it is the curl-era disable marker.
+// ViewOf builds the client view of a chat. Token, SessionID, TurnActive, McpInstructionsSent and
+// ForkSource are left out; InstructionsSent is included because it is the curl-era disable marker.
+// Branches and Branch stay zero: the chat manager sets them.
 func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool) ChatView {
 	return ChatView{
 		ID:               m.ID,
@@ -304,12 +327,15 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 		StatusTool:       tool,
 		Error:            errText,
 		FolderMissing:    folderMissing,
+		ForkedFrom:       m.ForkedFrom,
+		ForkedFromTitle:  m.ForkedFromTitle,
 	}
 }
 
 // Item is one entry of a chat's thread (the prototype's chat.ts Item, moved to the server).
 type Item struct {
-	Kind string `json:"kind"` // "user" | "text" | "tool" | "perm" | "note" | "subresult"
+	// "end" is the end mark of a turn, in a chat's own thread only, never in a subagent's.
+	Kind string `json:"kind"` // "user" | "text" | "tool" | "perm" | "note" | "subresult" | "end"
 	// user
 	Text    string `json:"text,omitempty"`    // user, text, note
 	Context string `json:"context,omitempty"` // user: the <ui-context> sent with it (not shown)
@@ -331,10 +357,56 @@ type Item struct {
 	Decided   string `json:"decided,omitempty"` // "", "allow", "deny"
 	// note
 	Tone string `json:"tone,omitempty"` // "muted" | "error"
+	// end
+	Point string `json:"point,omitempty"` // the provider's fork-point id for the end of this turn; "" = none recorded
 	// subagents
 	// tool (Agent/Task): the sid it started; perm: the sid that asked; subresult: the sid whose
 	// result the app carried to the agent (its delivery state and report stay on the subagent)
 	Subagent string `json:"subagent,omitempty"`
+}
+
+// Tree is chats/<chat id>/tree.json. No file = one branch, no labels.
+type Tree struct {
+	Branches []TreeBranch `json:"branches"` // in creation order; main is not listed
+	Labels   []TreeLabel  `json:"labels,omitempty"`
+	Current  string       `json:"current,omitempty"` // the current branch's id; "" or "main" = main
+}
+
+type TreeBranch struct {
+	ID   string `json:"id"`
+	From string `json:"from"` // the branch it split from: "main" or a branch id
+	At   int    `json:"at"`   // the item count at the split: items 0..At-1 are shared with From
+}
+
+type TreeLabel struct {
+	Branch string `json:"branch"` // the branch that owns the item
+	Item   int    `json:"item"`   // the item's index
+	Text   string `json:"text"`
+}
+
+// TreeView is the answer of GET /api/chats/{id}/tree.
+type TreeView struct {
+	Current  string           `json:"current"`  // "main" or a branch id
+	Branches []TreeBranchView `json:"branches"` // main first, then creation order
+	Labels   []TreeLabel      `json:"labels"`   // never null
+}
+
+type TreeBranchView struct {
+	ID    string     `json:"id"`
+	From  string     `json:"from,omitempty"` // "" for main
+	At    int        `json:"at"`             // 0 for main
+	Len   int        `json:"len"`            // the branch's item count
+	Items []TreeItem `json:"items"`          // its own part (index >= At): user and text items only; never null
+}
+
+type TreeItem struct {
+	I      int    `json:"i"`
+	Kind   string `json:"kind"` // "user" | "text"
+	Text   string `json:"text"`
+	Done   bool   `json:"done,omitempty"`   // text
+	End    int    `json:"end,omitempty"`    // text: turnEnd(items, I); 0 = not its turn's last reply
+	Before *int   `json:"before,omitempty"` // user: cutBefore(items, I); absent = none
+	OK     bool   `json:"ok,omitempty"`     // pointOK at End (text) or at Before (user)
 }
 
 // SubStatus is a subagent's lifecycle state. Every state but running is final.

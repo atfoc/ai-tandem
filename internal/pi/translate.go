@@ -27,9 +27,10 @@ import (
 //	tool_execution_end                       EvToolResult
 //	message_end (role assistant)             EvUsage (input + cache read/write, output, window);
 //	                                         its error state is kept for the turn end
-//	agent_settled                            get_session_stats → EvUsage + EvTurnEnd (the idle signal),
-//	                                         with pi's error text when the turn's last assistant
-//	                                         message ended in pi's error state
+//	agent_settled                            get_session_stats + get_fork_messages → EvUsage +
+//	                                         EvTurnEnd with Point (the idle signal), with pi's
+//	                                         error text when the turn's last assistant message
+//	                                         ended in pi's error state
 //	extension_error                          logged once
 //	compaction_*, auto_retry_*,              ignored, like every unknown type, so a newer pi
 //	summarization_retry_*, queue_update,     cannot break the stream
@@ -184,9 +185,10 @@ func (p *proc) toolExecutionUpdate(m map[string]any) []agent.Event {
 	return []agent.Event{{Kind: agent.EvSub, Sub: id, SubInfo: &agent.SubInfo{Progress: boundProgress(text)}}}
 }
 
-// onSettled is pi's idle signal. It asks for the session stats without blocking the read loop;
-// the response emits the context numbers and the turn end. The turn ends with an error when its
-// last assistant message did; a turn the user stopped is aborted, whatever pi said last.
+// onSettled is pi's idle signal. It asks for the session stats and the session's user messages
+// without blocking the read loop; the answers emit the context numbers and then, once both are
+// in, the turn end with its fork-point id. The turn ends with an error when its last assistant
+// message did; a turn the user stopped is aborted, whatever pi said last.
 func (p *proc) onSettled() {
 	end := agent.Event{Kind: agent.EvTurnEnd, Aborted: p.takeAbort(), Error: p.turnErr}
 	p.turnErr = ""
@@ -197,32 +199,72 @@ func (p *proc) onSettled() {
 		p.emit(end)
 		return
 	}
+	// This call and both answers run in the read loop, so the two variables need no lock.
+	open, point := 2, ""
+	finish := func() {
+		if open--; open == 0 {
+			end.Point = point
+			p.emit(end)
+		}
+	}
 	err := p.rpc.expect("get_session_stats", nil, func(resp rpcResponse) {
-		p.emitStatsTurnEnd(resp, end)
+		p.emitStats(resp)
+		finish()
 	})
 	if err != nil { // the command could not even be written: the turn still ends
-		p.emit(end)
+		finish()
+	}
+	err = p.rpc.expect("get_fork_messages", nil, func(resp rpcResponse) {
+		point = p.turnPoint(resp)
+		finish()
+	})
+	if err != nil { // likewise: the turn ends without a fork point
+		finish()
 	}
 }
 
-// emitStatsTurnEnd emits the context usage get_session_stats reported (when it has numbers) and
-// then, always, the turn end.
-func (p *proc) emitStatsTurnEnd(resp rpcResponse, end agent.Event) {
-	if resp.Success {
-		var stats struct {
-			ContextUsage *struct {
-				Tokens        *int `json:"tokens"`
-				ContextWindow int  `json:"contextWindow"`
-			} `json:"contextUsage"`
-		}
-		if json.Unmarshal(resp.Data, &stats) == nil && stats.ContextUsage != nil && stats.ContextUsage.Tokens != nil {
-			ev := agent.Event{Kind: agent.EvUsage, CtxIn: *stats.ContextUsage.Tokens, CtxWindow: stats.ContextUsage.ContextWindow}
-			if ev.CtxIn != 0 || ev.CtxWindow != 0 {
-				p.emit(ev)
-			}
+// emitStats emits the context usage get_session_stats reported, when it has numbers.
+func (p *proc) emitStats(resp rpcResponse) {
+	if !resp.Success {
+		return
+	}
+	var stats struct {
+		ContextUsage *struct {
+			Tokens        *int `json:"tokens"`
+			ContextWindow int  `json:"contextWindow"`
+		} `json:"contextUsage"`
+	}
+	if json.Unmarshal(resp.Data, &stats) == nil && stats.ContextUsage != nil && stats.ContextUsage.Tokens != nil {
+		ev := agent.Event{Kind: agent.EvUsage, CtxIn: *stats.ContextUsage.Tokens, CtxWindow: stats.ContextUsage.ContextWindow}
+		if ev.CtxIn != 0 || ev.CtxWindow != 0 {
+			p.emit(ev)
 		}
 	}
-	p.emit(end)
+}
+
+// turnPoint is the fork-point id of the turn that just ended, from get_fork_messages' answer (the
+// session's user messages in order): the entry id of the last one, this turn's own user message.
+// pi forks to just before a user message, so the end of turn N is forked with the id on turn
+// N+1's mark. It is "" when the request failed, the session has no user message, or the id is
+// the one seen at this process's previous turn end (the turn added no user message).
+func (p *proc) turnPoint(resp rpcResponse) string {
+	if !resp.Success {
+		return ""
+	}
+	var data struct {
+		Messages []struct {
+			EntryID string `json:"entryId"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(resp.Data, &data) != nil || len(data.Messages) == 0 {
+		return ""
+	}
+	id := data.Messages[len(data.Messages)-1].EntryID
+	if id == p.lastEntry {
+		return ""
+	}
+	p.lastEntry = id
+	return id
 }
 
 // translateLine is the RPC read loop's event callback: it decodes one wire line, translates it

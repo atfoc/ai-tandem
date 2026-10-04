@@ -32,6 +32,9 @@ type Spawner struct {
 	// non-board MCP tool asks; the board tool does not). Production code never sets it,
 	// and it can never replace the app-owned "board" key.
 	mcpConfigExtra map[string]mcpServerConfig
+
+	// forkTimeout is a test-only override of agent.ForkTimeout (0 = agent.ForkTimeout).
+	forkTimeout time.Duration
 }
 
 const (
@@ -94,6 +97,7 @@ type proc struct {
 	runToken    string
 	sessionID   string
 	sessionFile string
+	fork        *forkStart // non-nil: the handshake forks the opened session first (fork.go)
 	modelWindow atomic.Int64
 
 	closing atomic.Bool
@@ -109,6 +113,7 @@ type proc struct {
 	toolByIndex map[int]string // content index → tool call id
 	toolEmit    map[string]*toolEmit
 	extErrOnce  sync.Once
+	lastEntry   string // the last user-message entry id seen at a turn end
 
 	// subagent activity ordering (see subagent.go)
 	subMu     sync.Mutex
@@ -140,6 +145,16 @@ func (w *cappedBuffer) String() string { return w.buf.String() }
 // Spawn starts pi in the chat's folder and returns at once; the handshake continues in the
 // background and Send waits for it.
 func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
+	p, err := s.start(o, nil)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// start registers the run, starts the pi process and its handshake. fork is nil for an ordinary
+// start; otherwise the process opens the fork's source file and the handshake forks it.
+func (s *Spawner) start(o agent.SpawnOptions, fork *forkStart) (*proc, error) {
 	if fi, err := os.Stat(o.Cwd); err != nil || !fi.IsDir() {
 		return nil, agent.ErrFolderMissing
 	}
@@ -153,6 +168,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		done:        make(chan struct{}),
 		s:           s,
 		o:           o,
+		fork:        fork,
 		stderr:      &cappedBuffer{max: stderrCap},
 		toolByIndex: map[int]string{},
 		toolEmit:    map[string]*toolEmit{},
@@ -165,7 +181,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		}
 		p.socketPath, p.runToken = socketPath, runToken
 	}
-	fail := func(err error) (agent.Agent, error) {
+	fail := func(err error) (*proc, error) {
 		if p.runToken != "" {
 			s.Bridge.DeregisterRun(p.runToken)
 		}
@@ -182,7 +198,11 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 			return fail(err)
 		}
 	}
-	cmd := exec.Command(bin, s.args(o, sessionDir, appendPrompt)...)
+	forkFile := ""
+	if fork != nil {
+		forkFile = fork.file
+	}
+	cmd := exec.Command(bin, s.sessionArgs(o, sessionDir, appendPrompt, forkFile)...)
 	cmd.Dir = o.Cwd
 	cmd.Env = s.env(o, bin, p.socketPath, p.runToken, appendPrompt)
 	cmd.Stderr = p.stderr
@@ -233,7 +253,8 @@ func (p *proc) handshake() {
 }
 
 // doHandshake: get_state (readiness + session) → get_available_models → set_model →
-// set_thinking_level → EvSession (when the reconciled id differs) + one EvCatalog.
+// set_thinking_level → EvSession (when the reconciled id differs) + one EvCatalog. A fork start
+// forks right after get_state (forkSession) and always reports the new session's id.
 func (p *proc) doHandshake() error {
 	deadline := time.Now().Add(handshakeTimeout)
 	call := func(command string, fields map[string]any) (rpcResponse, error) {
@@ -250,6 +271,11 @@ func (p *proc) doHandshake() error {
 	}
 	if !state.Success {
 		return fmt.Errorf("pi get_state: %s", state.Error)
+	}
+	if p.fork != nil {
+		if state, err = p.forkSession(call, state); err != nil {
+			return err
+		}
 	}
 	models, err := call("get_available_models", nil)
 	if err != nil {
@@ -288,20 +314,23 @@ func (p *proc) doHandshake() error {
 		}
 	}
 
-	if p.sessionID != "" && p.o.SessionID != "" && p.sessionID != p.o.SessionID {
+	if p.sessionID != "" && (p.fork != nil || (p.o.SessionID != "" && p.sessionID != p.o.SessionID)) {
 		p.emit(agent.Event{Kind: agent.EvSession, SessionID: p.sessionID})
 	}
 	p.emit(agent.Event{Kind: agent.EvCatalog, Catalog: cat})
 	return nil
 }
 
+// piState is the part of get_state's data the adapter reads.
+type piState struct {
+	SessionID   string          `json:"sessionId"`
+	SessionFile string          `json:"sessionFile"`
+	Model       json.RawMessage `json:"model"`
+}
+
 // applyState records the session and current model from get_state's data.
 func (p *proc) applyState(raw []byte) {
-	var st struct {
-		SessionID   string          `json:"sessionId"`
-		SessionFile string          `json:"sessionFile"`
-		Model       json.RawMessage `json:"model"`
-	}
+	var st piState
 	if json.Unmarshal(raw, &st) != nil {
 		return
 	}

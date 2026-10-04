@@ -58,6 +58,13 @@ export const WarnIcon = () => (
   <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M8 1.8 15 14H1z" /><path d="M8 6.2v3.6M8 11.6v.4" strokeLinecap="round" /></svg>
 );
 
+export const BranchIcon = ({ size = 11 }: { size?: number }) => (
+  <svg className="branch-icon" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+    <circle cx="4" cy="3.5" r="1.7" /><circle cx="4" cy="12.5" r="1.7" /><circle cx="12" cy="5" r="1.7" />
+    <path d="M4 5.2v5.6M12 6.7c0 3.2-8 1.8-8 4.1" />
+  </svg>
+);
+
 export const MoreIcon = () => (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="13" cy="8" r="1.4" /></svg>
 );

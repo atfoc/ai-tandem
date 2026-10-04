@@ -2,7 +2,7 @@
 // context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
 // until the first message is sent.
 import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeGet, safeSet, isLegacy, upsertChat, unsavedDraft } from "./store.ts";
+import { useStore, getState, setState, safeGet, safeSet, isLegacy, upsertChat, unsavedDraft, currentBranch } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
@@ -20,7 +20,9 @@ import { useComposerQuotes } from "./Quotes.tsx";
 import { quoteSelection } from "./quoteDom.ts";
 import { BoardIcon, Chevron, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
-import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, PlanUsage, Reference, UsageLimit } from "./types.ts";
+import { BranchBanner } from "./fork/Chrome.tsx";
+import { registerComposer, sendAt } from "./fork/actions.ts";
+import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
 
@@ -47,12 +49,13 @@ export function subline(c: ChatView, cat?: Catalog): string {
 // ---- sending
 
 /** Plain chats send the text alone; board chats send the <ui-context> with it. Quotes go with
- *  both. */
+ *  both. With a pending move the message goes to its point (the target), and a Send that
+ *  succeeded ends the move. */
 export async function sendMessage(chat: string, text: string, picked: Picked[] = [], references: Reference[] = []) {
   const c = getState().chats[chat];
   if (isLegacy(c)) return;
-  if (!c?.board) return api.send(chat, text, "", references);
-  return api.send(chat, text, buildContext(chat, text, picked), references);
+  const context = c?.board ? buildContext(chat, text, picked) : "";
+  return sendAt(chat, (target) => api.send(chat, text, context, references, target));
 }
 
 // ---- drafts
@@ -101,6 +104,8 @@ export function Composer({ chatId }: { chatId: string }) {
   const input = useRef<RefInputHandle>(null);
   const box = useRef<HTMLDivElement>(null);
   const current = useRef(text); // the text now, for a failed send
+  const now = useRef({ picked, quotes }); // with it, what the composer holds (for a move)
+  now.current = { picked, quotes };
   const drafts = useRef<DraftSaver | null>(null);
   drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(chatId, d, keepalive), getState().chats[chatId]?.draft, unsavedDraft(chatId));
   const board = c?.board;
@@ -156,7 +161,23 @@ export function Composer({ chatId }: { chatId: string }) {
     setPicked(d.mentions ?? []);
     setQuotes(d.references ?? []);
   }, [c?.archived, c?.instructionsSent]);
-  useEffect(() => drafts.current!.change(text, picked, quotes), [text, picked, quotes]);
+  // A move reads what the composer holds and puts into it what it takes back or restores. set
+  // gives fresh lists, so the draft is looked at again also when nothing else changed.
+  useEffect(() => {
+    registerComposer(chatId, {
+      get: (): Held => ({ text: current.current, mentions: now.current.picked, references: now.current.quotes }),
+      set: (h) => {
+        if (h.text !== current.current) input.current?.set(h.text);
+        setPicked([...h.mentions]);
+        setQuotes([...h.references]);
+      },
+    });
+    return () => registerComposer(chatId, null);
+  }, []);
+  // While a move is pending nothing is saved, on the server or here: a reload equals Back.
+  useEffect(() => {
+    if (!getState().moves[chatId]) drafts.current!.change(text, picked, quotes);
+  }, [text, picked, quotes]);
   useEffect(() => {
     const d = drafts.current!;
     const hide = () => d.flush(true);
@@ -244,6 +265,7 @@ export function Composer({ chatId }: { chatId: string }) {
       {!c.board && (q.count || note) ? (
         <div className="context-row">{q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}</div>
       ) : null}
+      <BranchBanner chatId={chatId} />
       <div className="composer-box with-tools" ref={box}>
         {mention && matches.length > 0 && (
           <div className="mention-pop">
@@ -646,24 +668,36 @@ function LimitRow({ l, now }: { l: UsageLimit; now: number }) {
 
 // ---- context split
 
-/** Each chat's last context split, kept while the page is open so the popover opens with it. */
-const lastSplit: Record<string, ContextSplit> = {};
+/** Each chat's last context split, kept while the page is open so the popover opens with it. It
+ * is its current branch's: one of another branch is cleared. */
+const lastSplit: Record<string, { branch: string; split: ContextSplit }> = {};
+function splitOf(c: ChatView): ContextSplit | null {
+  if (lastSplit[c.id] && lastSplit[c.id].branch !== currentBranch(c)) delete lastSplit[c.id];
+  return lastSplit[c.id]?.split ?? null;
+}
 
 /** The popover's context: the ring's numbers, then what fills the context as the agent splits it,
  * asked for on open. The server answers Claude's from chat.json while no message or turn has
  * moved past it, else asks Claude (about 2 s without a running process); Cursor's it reads from
  * its session store. */
 function ContextSection({ c, lines }: { c: ChatView; lines: string[] }) {
-  const [s, setS] = useState<ContextSplit | null>(lastSplit[c.id] ?? null);
+  const [s, setS] = useState<ContextSplit | null>(() => splitOf(c));
+  const branch = currentBranch(c);
+  const on = useRef(branch); // the branch now, for an answer that comes after it changed
+  on.current = branch;
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const load = async (fresh: boolean) => {
     setLoading(true); setErr("");
-    try { const r = await api.contextSplit(c.id, fresh); lastSplit[c.id] = r; setS(r); }
+    try {
+      const r = await api.contextSplit(c.id, fresh);
+      if (on.current !== branch) return;
+      lastSplit[c.id] = { branch, split: r }; setS(r);
+    }
     catch (e: any) { if (!(e instanceof ApiError && e.status === 409)) setErr(e?.message ?? String(e)); } // 409: not started
     finally { setLoading(false); }
   };
-  useEffect(() => { if (c.locked) void load(false); }, []);
+  useEffect(() => { setS(splitOf(c)); if (c.locked) void load(false); }, [branch]);
   return <>
     <div className="menu-head">
       Context<span className="grow" />

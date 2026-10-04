@@ -30,9 +30,11 @@ type splitRun struct {
 //
 // Cursor's is read from its session store on every call, as it costs no process; it is never
 // persisted.
+//
+// It is the split of the chat's current branch.
 func (m *Manager) ContextSplit(id string, fresh bool) (model.ContextSplit, error) {
 	var out outbox
-	c, err := m.lock(id)
+	c, err := m.lockCur(id)
 	if err != nil {
 		return model.ContextSplit{}, err
 	}

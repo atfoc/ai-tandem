@@ -54,7 +54,9 @@ func noEffortError(kind model.AgentKind, cm *model.CatalogModel, effort string) 
 }
 
 // SpawnSubagent starts one independent agent process and returns a receipt without waiting for it
-// to finish. Validation and lifecycle errors start nothing.
+// to finish. Validation and lifecycle errors start nothing. chatID is the server id of the
+// caller's own chat object (a branch's for a branch), here and in WaitSubagents and StopSubagent:
+// they are never re-routed to the current branch.
 func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subagent, error) {
 	var out outbox
 	c, err := m.lock(chatID)
@@ -66,11 +68,10 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		unlock()
 		return model.Subagent{}, err
 	}
-	if c.meta.Archived {
+	if p := m.parentOf(c); p.Archived {
 		unlock()
 		return model.Subagent{}, ErrArchived
-	}
-	if c.meta.InstructionsSent {
+	} else if p.InstructionsSent {
 		unlock()
 		return model.Subagent{}, ErrLegacy
 	}

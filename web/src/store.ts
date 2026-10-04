@@ -2,7 +2,7 @@
 // arrays) live outside it in board.ts `scenes`, because they change on every
 // stroke and nothing but the canvas renders from them.
 import { useSyncExternalStore } from "react";
-import type { AgentKind, Board, Catalog, ChatView, Defaults, Draft, Group, Item, Subagent } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, Defaults, Draft, Group, Item, PendingMove, Subagent, TreeView } from "./types.ts";
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
 import { forgetBoard } from "./board.ts";
@@ -10,6 +10,7 @@ import { parseWidths, type Widths } from "./logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
 import type { Unsaved } from "./logic/drafts.ts";
 import type { UpdateBanner } from "./logic/version.ts";
+import { branchCount, currentBranch, shownBranchOf } from "./logic/branches.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
 export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind | string; tone: "edit" | "danger"; until: number };
@@ -28,6 +29,9 @@ export type State = {
   items: Record<string, { version: number; items: Item[] }>; // by chat id, and subagent threads by subKey(chat, sid)
   subs: Record<string, Record<string, Subagent>>; // chat id → sid → the subagent's state (loaded with the chat's items)
   subDrawer: { chat: string; sub: string } | null; // the subagent open in the drawer (chat id, sid)
+  trees: Record<string, TreeView>;    // by chat id; absent until loaded
+  moves: Record<string, PendingMove>; // by chat id; in memory only
+  treeNav: { chat: string; focus?: { branch: string; item: number } } | null; // the open tree popup
   defaults: Defaults;
   catalogs: Partial<Record<AgentKind, Catalog>>;
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
@@ -64,6 +68,7 @@ let state: State = {
   connected: false, role: "connecting",
   home: "", defaultCwd: "", dataDir: "",
   groups: [], boards: {}, chats: {}, items: {}, subs: {}, subDrawer: null,
+  trees: {}, moves: {}, treeNav: null,
   defaults: { last: {}, groups: {} }, catalogs: {},
   sel: savedSel(), panel: true, widths: parseWidths(safeGet("aiwb.widths")), showArchived: safeGet("aiwb.archived") === "1",
   themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
@@ -108,6 +113,8 @@ export function applySnapshot(s: Snapshot) {
       home: s.home ?? "", defaultCwd: s.defaultCwd ?? "", dataDir: s.dataDir ?? "",
       items: {}, // refetched when a chat is shown; updates missed while away are not replayed
       subs: {},  // with them
+      trees: {}, moves: {},
+      treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
       sel, busyOn,
     };
   });
@@ -138,7 +145,8 @@ export function upsertChat(c: ChatView) {
   setState((s) => ({ chats: { ...s.chats, [c.id]: c } }));
 }
 
-/** Clears sel.chat, the chat's items, its subagents and their threads, the drawer on it, and its unsaved draft. */
+/** Clears sel.chat, the chat's items, its subagents and their threads, its tree and pending move, the drawer
+ *  and the tree popup on it, and its unsaved draft. */
 export function removeChat(id: string) {
   unsavedDraft(id).write(null);
   setState((s) => {
@@ -148,7 +156,20 @@ export function removeChat(id: string) {
     const sel = s.sel.chat === id ? { board: s.sel.board, chat: null } : s.sel;
     if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
     const subDrawer = s.subDrawer?.chat === id ? null : s.subDrawer;
-    return { chats, items, subs, sel, subDrawer };
+    const { [id]: ___, ...trees } = s.trees;
+    const { [id]: ____, ...moves } = s.moves;
+    const treeNav = s.treeNav?.chat === id ? null : s.treeNav;
+    return { chats, items, subs, sel, subDrawer, trees, moves, treeNav };
+  });
+}
+
+/** Drops what a chat shows of a branch, when it shows another: its items, its subagents and their
+ *  threads, and the drawer on it. */
+export function dropThread(id: string) {
+  setState((s) => {
+    const items = Object.fromEntries(Object.entries(s.items).filter(([k]) => k !== id && !k.startsWith(id + "/")));
+    const { [id]: _, ...subs } = s.subs;
+    return { items, subs, subDrawer: s.subDrawer?.chat === id ? null : s.subDrawer };
   });
 }
 
@@ -181,6 +202,21 @@ export { isBusy } from "./logic/status.ts";
 export const isLegacy = (c?: { instructionsSent?: boolean } | null) => !!c?.instructionsSent;
 
 export { chatTitle } from "./logic/labels.ts";
+
+export { branchCount, currentBranch };
+
+/** The branch whose items a chat shows: the pending move's, else the current one. */
+export const shownBranch = (s: State, chat: string) => shownBranchOf(s.moves[chat], s.chats[chat]);
+
+/** Sets a chat's pending move, or with null clears it. */
+export function setMove(chat: string, move: PendingMove | null) {
+  setState((s) => {
+    if (move) return { moves: { ...s.moves, [chat]: move } };
+    if (!s.moves[chat]) return {};
+    const { [chat]: _, ...moves } = s.moves;
+    return { moves };
+  });
+}
 
 /** Board id → name, for tool labels. */
 export const boardName = (id: string) => state.boards[id]?.name;

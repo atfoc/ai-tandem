@@ -1,6 +1,6 @@
 // The server's HTTP API (section 4.12). Every call carries this tab's client id,
 // so the server can tell the active client from a stale one.
-import type { AgentKind, Board, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference, Subagent } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference, Subagent, Target, TreeLabel, TreeView } from "./types.ts";
 import type { PermAnswer } from "./logic/perms.ts";
 
 /** GET /api/state and the `snapshot` event. */
@@ -43,6 +43,9 @@ async function call<T = void>(method: string, path: string, body?: unknown, keep
 
 type Kind = "groups" | "boards" | "chats";
 
+/** The query that asks for a branch of a chat; none asks for its current branch. */
+const onBranch = (branch?: string) => (branch ? `?branch=${encodeURIComponent(branch)}` : "");
+
 export const api = {
   state: () => call<Snapshot>("GET", "/api/state"),
   hello: () => call<Hello>("GET", "/api/hello"),
@@ -67,12 +70,20 @@ export const api = {
   deleteBoard: (id: string) => call("DELETE", `/api/boards/${id}`),
   reveal: (id: string) => call("POST", `/api/boards/${id}/reveal`),
   newChat: (agent: AgentKind, where: { group: string } | { board: string }) => call<ChatView>("POST", "/api/chats", { agent, ...where }),
-  items: (id: string) => call<{ version: number; items: Item[]; subagents?: Subagent[] }>("GET", `/api/chats/${id}/items`),
-  subItems: (chat: string, sid: string) => call<{ version: number; items: Item[] }>("GET", `/api/chats/${chat}/subagents/${sid}/items`),
+  /** A branch's items and subagents; without branch the current one's. The answer names the branch served. */
+  items: (id: string, branch?: string) =>
+    call<{ version: number; items: Item[]; subagents?: Subagent[]; branch?: string }>("GET", `/api/chats/${id}/items${onBranch(branch)}`),
+  subItems: (chat: string, sid: string, branch?: string) =>
+    call<{ version: number; items: Item[] }>("GET", `/api/chats/${chat}/subagents/${sid}/items${onBranch(branch)}`),
   chat: (id: string) => call<ChatView>("GET", `/api/chats/${id}`),
   openChat: (id: string) => call("POST", `/api/chats/${id}/open`),
-  send: (id: string, text: string, context: string, references: Reference[] = []) =>
-    call("POST", `/api/chats/${id}/messages`, references.length ? { text, context, references } : { text, context }),
+  /** target: the point the message goes to; without it, the end of the current branch. */
+  send: (id: string, text: string, context: string, references: Reference[] = [], target?: Target) =>
+    call("POST", `/api/chats/${id}/messages`, {
+      text, context,
+      ...(references.length ? { references } : {}),
+      ...(target ? { target: { branch: target.branch, at: target.at, new: target.new } } : {}),
+    }),
   configure: (id: string, p: { model?: string; effort?: string; cwd?: string }) => call("PATCH", `/api/chats/${id}`, p),
   saveDraft: (id: string, d: Draft, keepalive = false) => call("PUT", `/api/chats/${id}/draft`, d, keepalive),
   renameChat: (id: string, name: string) => call("PATCH", `/api/chats/${id}`, { name }),
@@ -80,6 +91,11 @@ export const api = {
   interrupt: (id: string) => call("POST", `/api/chats/${id}/interrupt`),
   decide: (id: string, answer: PermAnswer) => call("POST", `/api/chats/${id}/permission`, answer),
   deleteChat: (id: string) => call("DELETE", `/api/chats/${id}`),
+  tree: (id: string) => call<TreeView>("GET", `/api/chats/${id}/tree`),
+  /** Blank text removes the label. Answers all the chat's labels. */
+  setLabel: (id: string, branch: string, item: number, text: string) => call<{ labels: TreeLabel[] }>("PUT", `/api/chats/${id}/label`, { branch, item, text }),
+  /** Forks branch at item count `at` to a new chat; message: the user message that becomes its draft. */
+  fork: (id: string, branch: string, at: number, message?: number) => call<ChatView>("POST", `/api/chats/${id}/fork`, { branch, at, message }),
   dirs: (path: string) => call<Dirs>("GET", `/api/dirs?path=${encodeURIComponent(path)}`),
   contextSplit: (id: string, fresh = false) => call<ContextSplit>("GET", `/api/chats/${id}/context${fresh ? "?fresh=1" : ""}`),
   usage: (agent: AgentKind, fresh = false) => call<PlanUsage>("GET", `/api/usage/${agent}${fresh ? "?fresh=1" : ""}`),

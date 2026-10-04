@@ -46,6 +46,16 @@ func (e *env) delivering(kind model.AgentKind) (id string, parent *fakeAgent, ca
 }
 
 // holding reports whether the chat's hold is set.
+// lastNote is the text of the thread's last note; an errored turn's end mark comes after its note.
+func lastNote(items []model.Item) string {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Kind == "note" {
+			return items[i].Text
+		}
+	}
+	return ""
+}
+
 func (e *env) holding(id string) bool {
 	e.t.Helper()
 	c, err := e.m.lock(id)
@@ -105,7 +115,7 @@ func TestCarryingTurnNotReceived(t *testing.T) {
 			if errs := notes(items, "error"); len(errs) != 1 || errs[0] != tc.note {
 				t.Fatalf("error notes %q, want %q", errs, tc.note)
 			}
-			if got := diskItems(t, e.m.itemsPath(id)); len(got) != len(items) || got[len(got)-1].Text != tc.note {
+			if got := diskItems(t, e.m.itemsPath(id)); len(got) != len(items) || lastNote(got) != tc.note {
 				t.Fatalf("the note was not written: %+v", got)
 			}
 			if rows := resultRows(items); len(rows) != 1 || rows[0] != carried.ID {

@@ -1,0 +1,3 @@
+/* Chat forking: what its components share. */
+.branch-icon { flex: none; vertical-align: -1px; }
+.fk-label-input { flex: 1; min-width: 0; font: inherit; border: 1px solid var(--accent); border-radius: 5px; padding: 1px 6px; outline: 0; background: var(--bg); color: var(--text); }

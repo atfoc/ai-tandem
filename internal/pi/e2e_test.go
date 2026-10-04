@@ -20,6 +20,7 @@ package pi
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -173,6 +174,298 @@ func TestE2EPlainChat(t *testing.T) {
 	}
 	t.Logf("plain chat streamed %q", text.String())
 	closeAndWaitExit(t, a)
+}
+
+// e2eReply is what one turn of a real pi chat produced.
+type e2eReply struct {
+	text    string
+	tools   []string
+	results []string
+	end     agent.Event // the turn end
+}
+
+// e2eSay sends one prompt and collects the turn up to its end. onEvent, when set, sees every
+// event before the turn end.
+func e2eSay(t *testing.T, a agent.Agent, prompt string, onEvent func(agent.Event)) e2eReply {
+	t.Helper()
+	if err := a.Send([]agent.ContentBlock{{Text: prompt}}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	var r e2eReply
+	var sb strings.Builder
+	timeout := time.After(3 * time.Minute)
+	for {
+		select {
+		case ev, ok := <-a.Events():
+			if !ok || ev.Kind == agent.EvExit {
+				t.Fatalf("pi exited before the turn ended: %+v", ev)
+			}
+			switch ev.Kind {
+			case agent.EvTurnEnd:
+				if ev.Error != "" {
+					t.Fatalf("turn ended with error %q", ev.Error)
+				}
+				r.text, r.end = sb.String(), ev
+				return r
+			case agent.EvTextDelta:
+				sb.WriteString(ev.Text)
+			case agent.EvToolStart:
+				r.tools = append(r.tools, ev.ToolName)
+			case agent.EvToolResult:
+				r.results = append(r.results, ev.Result)
+			}
+			if onEvent != nil {
+				onEvent(ev)
+			}
+		case <-timeout:
+			t.Fatal("timed out after 3 minutes waiting for the turn to end")
+		}
+	}
+}
+
+// e2eReady waits for the handshake and skips the test when it failed (model or auth unavailable).
+func e2eReady(t *testing.T, a agent.Agent) {
+	t.Helper()
+	p := a.(*proc)
+	select {
+	case <-p.ready:
+	case <-p.done:
+		t.Skip("pi exited before the chat was ready (model or auth unavailable?)")
+	}
+	if p.readyErr != nil {
+		t.Skipf("model %s is unavailable (not authenticated?): %v", e2eModel(), p.readyErr)
+	}
+}
+
+// e2eFileSum is a short hash of a file's content.
+func e2eFileSum(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(b))[:16]
+}
+
+// e2eRecalls fails the test unless the text holds every wanted secret word and none of the
+// others.
+func e2eRecalls(t *testing.T, what, text string, want, not []string) {
+	t.Helper()
+	t.Logf("%s recall: %q", what, text)
+	for _, w := range want {
+		if !strings.Contains(text, w) {
+			t.Fatalf("%s recall %q lacks %s", what, text, w)
+		}
+	}
+	for _, w := range not {
+		if strings.Contains(text, w) {
+			t.Fatalf("%s recall %q holds %s", what, text, w)
+		}
+	}
+}
+
+const (
+	e2eRemember = "Remember the secret word %s. Reply with only: ok"
+	e2eRecall   = "List every secret word I asked you to remember in this conversation, comma separated, nothing else. Use no tools."
+)
+
+// TestE2EFork forks a real pi session through the app's own launch path (Spawner, bridge,
+// materialized extension, board MCP), into branches with path-shaped server ids: a fork at the
+// end of turn 1 of a three-turn source that recalls only turn 1, a fork at the source's end
+// (clone), the source untouched and still answering with all three turns, and the fork resumed
+// by a plain Spawn.
+//
+//	AIWB_PI_E2E=1 go test ./internal/pi -run Fork -count=1 -v
+func TestE2EFork(t *testing.T) {
+	e2eAgentDir(t)
+	env := newE2EBoardEnv(t)
+	env.setReply("E2E-BOARD-TEXT-42")
+	s := env.newSpawner(t, nil)
+	cwd := t.TempDir()
+	opts := func(chatID, sessionID string) agent.SpawnOptions {
+		return agent.SpawnOptions{ChatID: chatID, SessionID: sessionID, Resume: sessionID != "", Cwd: cwd,
+			Model: e2eModel(), MCP: env.boardAccess(), BoardID: "b"}
+	}
+
+	// The source chat, started the way the app starts a pi chat (app-chosen --session-id).
+	const srcChat, srcSession = "A", "11111111-1111-4111-8111-111111111111"
+	srcA, err := s.Spawn(opts(srcChat, srcSession))
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	defer srcA.Close()
+	e2eReady(t, srcA)
+	var points []string
+	for _, word := range []string{"ALPHA7", "BRAVO3", "CHARLIE9"} {
+		r := e2eSay(t, srcA, fmt.Sprintf(e2eRemember, word), nil)
+		if r.end.Point == "" || contains(points, r.end.Point) {
+			t.Fatalf("turn %s ended with Point %q after %q, want a new id", word, r.end.Point, points)
+		}
+		points = append(points, r.end.Point)
+	}
+	srcFile, err := s.findSessionFile(srcChat, srcSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("source session %s file %s points %q", srcSession, srcFile, points)
+	before := e2eFileSum(t, srcFile)
+
+	// A branch forked at the end of turn 1, while the source's process is alive: the end of turn 1
+	// is named by the id on turn 2's mark.
+	const b1 = srcChat + "/branches/b1"
+	brA, forkID, err := s.SpawnFork(opts(b1, "ignored"), agent.ForkSource{ChatID: srcChat, SessionID: srcSession,
+		Point: points[0], Next: points[1]})
+	if err != nil {
+		t.Fatalf("SpawnFork at the end of turn 1: %v", err)
+	}
+	defer brA.Close()
+	br := brA.(*proc)
+	t.Logf("branch %s: session %s file %s", b1, forkID, br.sessionFile)
+	if ev := next(t, brA); ev.Kind != agent.EvSession || ev.SessionID != forkID || forkID == "" || forkID == srcSession {
+		t.Fatalf("first event %+v, fork id %q; want EvSession with a new id", ev, forkID)
+	}
+	if want := filepath.Join(s.AppRoot, "chats", b1, "pi"); !samePath(filepath.Dir(br.sessionFile), want) {
+		t.Fatalf("the fork's file %s is not in the branch's folder %s", br.sessionFile, want)
+	}
+	r := e2eSay(t, brA, e2eRecall, nil)
+	e2eRecalls(t, "fork at turn 1", r.text, []string{"ALPHA7"}, []string{"BRAVO3", "CHARLIE9"})
+	if r.end.Point == "" || contains(points, r.end.Point) {
+		t.Fatalf("the fork's turn ended with Point %q, want an id of its own (source %q)", r.end.Point, points)
+	}
+	if after := e2eFileSum(t, srcFile); after != before {
+		t.Fatalf("the fork changed the source file: %s -> %s", before, after)
+	}
+	// The fork rebinds the session inside pi: the extension must have its board MCP tools and the
+	// bridge permission gate back, under the path-shaped run.
+	r = e2eSay(t, brA, "Call the tool named mcp__board__list_boards with an empty object argument. Then "+
+		"reply with exactly the text the tool returned, and nothing else.", nil)
+	t.Logf("branch board tool turn: tools %v results %q text %q", r.tools, r.results, r.text)
+	if len(r.tools) == 0 || r.tools[0] != "mcp__board__list_boards" || !strings.Contains(strings.Join(r.results, " "), "E2E-BOARD-TEXT-42") {
+		t.Fatalf("the board tool did not work after the fork: tools %v results %q", r.tools, r.results)
+	}
+	e2eSay(t, brA, fmt.Sprintf(e2eRemember, "DELTA5"), nil)
+	closeAndWaitExit(t, brA)
+
+	// The fork resumes the ordinary way, with the id SpawnFork returned.
+	reA, err := s.Spawn(opts(b1, forkID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reA.Close()
+	r = e2eSay(t, reA, e2eRecall, func(ev agent.Event) {
+		if ev.Kind == agent.EvSession {
+			t.Errorf("the resumed fork reported another session id: %q", ev.SessionID)
+		}
+	})
+	e2eRecalls(t, "resumed fork", r.text, []string{"ALPHA7", "DELTA5"}, []string{"BRAVO3", "CHARLIE9"})
+	if re := reA.(*proc); !samePath(re.sessionFile, br.sessionFile) {
+		t.Fatalf("the resume opened %s, not the fork's file %s", re.sessionFile, br.sessionFile)
+	}
+	closeAndWaitExit(t, reA)
+
+	// A branch forked at the source's end: a whole-session copy.
+	const b2 = srcChat + "/branches/b2"
+	endA, endID, err := s.SpawnFork(opts(b2, ""), agent.ForkSource{ChatID: srcChat, SessionID: srcSession,
+		Point: points[2], End: true})
+	if err != nil {
+		t.Fatalf("SpawnFork at the end: %v", err)
+	}
+	defer endA.Close()
+	end := endA.(*proc)
+	t.Logf("branch %s: session %s file %s", b2, endID, end.sessionFile)
+	if endID == "" || endID == srcSession || endID == forkID {
+		t.Fatalf("clone id %q", endID)
+	}
+	if want := filepath.Join(s.AppRoot, "chats", b2, "pi"); !samePath(filepath.Dir(end.sessionFile), want) {
+		t.Fatalf("the clone's file %s is not in the branch's folder %s", end.sessionFile, want)
+	}
+	r = e2eSay(t, endA, e2eRecall, nil)
+	e2eRecalls(t, "fork at the end", r.text, []string{"ALPHA7", "BRAVO3", "CHARLIE9"}, []string{"DELTA5"})
+	if after := e2eFileSum(t, srcFile); after != before {
+		t.Fatalf("the forks changed the source file: %s -> %s", before, after)
+	}
+	closeAndWaitExit(t, endA)
+
+	// A fork point pi does not know fails the start and leaves no process.
+	if a, id, err := s.SpawnFork(opts(srcChat+"/branches/bad", ""), agent.ForkSource{ChatID: srcChat,
+		SessionID: srcSession, Next: "deadbeef"}); err == nil || a != nil || id != "" || !strings.Contains(err.Error(), "pi fork: ") {
+		t.Fatalf("unknown fork point: SpawnFork = %v, %q, %v", a, id, err)
+	} else {
+		t.Logf("unknown fork point: %v", err)
+	}
+	if after := e2eFileSum(t, srcFile); after != before {
+		t.Fatalf("the failed fork changed the source file: %s -> %s", before, after)
+	}
+
+	// The source, alive the whole time, carries on with its own three turns.
+	r = e2eSay(t, srcA, e2eRecall, nil)
+	e2eRecalls(t, "source", r.text, []string{"ALPHA7", "BRAVO3", "CHARLIE9"}, []string{"DELTA5"})
+	closeAndWaitExit(t, srcA)
+}
+
+// TestE2EForkAtStoppedTurn covers a turn the user stopped: its end still gets a fork-point id,
+// and forks at its end work, both as the session's end (clone) and once a later turn exists.
+func TestE2EForkAtStoppedTurn(t *testing.T) {
+	e2eAgentDir(t)
+	s := &Spawner{Bin: "pi", AppRoot: t.TempDir(), Home: t.TempDir()}
+	cwd := t.TempDir()
+	const srcChat, srcSession = "A", "22222222-2222-4222-8222-222222222222"
+	srcA, err := s.Spawn(agent.SpawnOptions{ChatID: srcChat, SessionID: srcSession, Cwd: cwd, Model: e2eModel()})
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	defer srcA.Close()
+	e2eReady(t, srcA)
+	first := e2eSay(t, srcA, fmt.Sprintf(e2eRemember, "ALPHA7"), nil)
+
+	// Turn 2 is stopped while its bash tool runs.
+	stopped := false
+	second := e2eSay(t, srcA, "Remember the secret word BRAVO3. Then run the bash command `sleep 120` with a "+
+		"timeout of 150 seconds and reply with only: done", func(ev agent.Event) {
+		if ev.Kind == agent.EvToolStart && !stopped {
+			stopped = true
+			time.Sleep(time.Second)
+			if err := srcA.Interrupt(); err != nil {
+				t.Errorf("Interrupt: %v", err)
+			}
+		}
+	})
+	t.Logf("stopped turn: tools %v end %+v (turn 1 point %q)", second.tools, second.end, first.end.Point)
+	if !stopped || !second.end.Aborted {
+		t.Skipf("the model did not run the tool to be stopped (tools %v, end %+v)", second.tools, second.end)
+	}
+	if second.end.Point == "" || second.end.Point == first.end.Point {
+		t.Fatalf("the stopped turn ended with Point %q (turn 1: %q), want its own id", second.end.Point, first.end.Point)
+	}
+
+	fork := func(branch string, src agent.ForkSource) agent.Agent {
+		t.Helper()
+		src.ChatID, src.SessionID = srcChat, srcSession
+		a, id, err := s.SpawnFork(agent.SpawnOptions{ChatID: srcChat + "/branches/" + branch, Cwd: cwd, Model: e2eModel()}, src)
+		if err != nil {
+			t.Fatalf("SpawnFork %s: %v", branch, err)
+		}
+		t.Logf("branch %s: session %s", branch, id)
+		return a
+	}
+	// The stopped turn is the session's last: a clone.
+	endA := fork("end", agent.ForkSource{Point: second.end.Point, End: true})
+	defer endA.Close()
+	r := e2eSay(t, endA, e2eRecall, nil)
+	e2eRecalls(t, "fork at the stopped end", r.text, []string{"ALPHA7", "BRAVO3"}, nil)
+	closeAndWaitExit(t, endA)
+
+	// A later turn exists: the stopped turn's end is forked with that turn's id.
+	third := e2eSay(t, srcA, fmt.Sprintf(e2eRemember, "CHARLIE9"), nil)
+	if third.end.Aborted || third.end.Point == "" || third.end.Point == second.end.Point {
+		t.Fatalf("turn 3 ended %+v after the stopped turn's %q", third.end, second.end.Point)
+	}
+	midA := fork("mid", agent.ForkSource{Point: second.end.Point, Next: third.end.Point})
+	defer midA.Close()
+	r = e2eSay(t, midA, e2eRecall, nil)
+	e2eRecalls(t, "fork at the stopped turn", r.text, []string{"ALPHA7", "BRAVO3"}, []string{"CHARLIE9"})
+	closeAndWaitExit(t, midA)
+	closeAndWaitExit(t, srcA)
 }
 
 // e2eBoardCall is one board RPC the fake browser client answered.

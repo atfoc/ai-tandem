@@ -2,6 +2,7 @@ package pi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -150,17 +151,59 @@ func TestTranslateMessageEndUsage(t *testing.T) {
 	}
 }
 
+// answer feeds the read loop the response to the n-th command a unit proc wrote; body is the
+// rest of the response object (`"success":true,"data":{…}`).
+func answer(t *testing.T, p *proc, w *memWriteCloser, n int, body string) {
+	t.Helper()
+	cmds := w.commands(t)
+	if n >= len(cmds) {
+		t.Fatalf("no command %d in %v", n, cmds)
+	}
+	p.rpc.handleLine([]byte(fmt.Sprintf(`{"type":"response","id":%q,"command":%q,%s}`,
+		str(cmds[n]["id"]), str(cmds[n]["type"]), body)))
+}
+
+// forkMessages is a get_fork_messages answer body listing user messages with these entry ids.
+func forkMessages(ids ...string) string {
+	msgs := make([]map[string]string, 0, len(ids))
+	for _, id := range ids {
+		msgs = append(msgs, map[string]string{"entryId": id, "text": "prompt " + id})
+	}
+	return `"success":true,"data":` + string(mustJSON(map[string]any{"messages": msgs}))
+}
+
+const statsOK = `"success":true,"data":{"contextUsage":{"tokens":300,"contextWindow":1000}}`
+
 func TestSettledStatsTurnEnd(t *testing.T) {
 	p, w := unitProc()
 	p.translateLine([]byte(`{"type":"agent_settled"}`))
 	cmds := w.commands(t)
-	if len(cmds) != 1 || cmds[0]["type"] != "get_session_stats" {
-		t.Fatalf("commands %v, want one get_session_stats", cmds)
+	if got := commandTypes(cmds); !equalStrings(got, []string{"get_session_stats", "get_fork_messages"}) {
+		t.Fatalf("commands %q, want get_session_stats then get_fork_messages", got)
 	}
-	id := str(cmds[0]["id"])
-	p.rpc.handleLine([]byte(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":300,"contextWindow":1000}}}`, id)))
+	answer(t, p, w, 0, statsOK)
+	if got := drainEvents(p); !eventsEqual(got, []agent.Event{{Kind: agent.EvUsage, CtxIn: 300, CtxWindow: 1000}}) {
+		t.Fatalf("after the stats alone: %s, want only the usage", dump(got))
+	}
+	answer(t, p, w, 1, forkMessages("0efdb07e", "b85ebc6a"))
 	got := drainEvents(p)
-	want := []agent.Event{{Kind: agent.EvUsage, CtxIn: 300, CtxWindow: 1000}, {Kind: agent.EvTurnEnd}}
+	want := []agent.Event{{Kind: agent.EvTurnEnd, Point: "b85ebc6a"}}
+	if !eventsEqual(got, want) {
+		t.Fatalf("settled events %s\nwant %s", dump(got), dump(want))
+	}
+}
+
+// The usage event stays ahead of the turn end even if the answers arrive the other way round.
+func TestSettledAnswersOutOfOrder(t *testing.T) {
+	p, w := unitProc()
+	p.translateLine([]byte(`{"type":"agent_settled"}`))
+	answer(t, p, w, 1, forkMessages("0efdb07e"))
+	if got := drainEvents(p); len(got) != 0 {
+		t.Fatalf("turn ended before the stats answered: %s", dump(got))
+	}
+	answer(t, p, w, 0, statsOK)
+	got := drainEvents(p)
+	want := []agent.Event{{Kind: agent.EvUsage, CtxIn: 300, CtxWindow: 1000}, {Kind: agent.EvTurnEnd, Point: "0efdb07e"}}
 	if !eventsEqual(got, want) {
 		t.Fatalf("settled events %s\nwant %s", dump(got), dump(want))
 	}
@@ -169,20 +212,96 @@ func TestSettledStatsTurnEnd(t *testing.T) {
 func TestSettledStatsFailureStillEndsTurn(t *testing.T) {
 	p, w := unitProc()
 	p.translateLine([]byte(`{"type":"agent_settled"}`))
-	id := str(w.commands(t)[0]["id"])
-	p.rpc.handleLine([]byte(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_session_stats","success":false,"error":"nope"}`, id)))
+	answer(t, p, w, 0, `"success":false,"error":"nope"`)
+	answer(t, p, w, 1, forkMessages("0efdb07e"))
 	got := drainEvents(p)
-	if !eventsEqual(got, []agent.Event{{Kind: agent.EvTurnEnd}}) {
+	if !eventsEqual(got, []agent.Event{{Kind: agent.EvTurnEnd, Point: "0efdb07e"}}) {
 		t.Fatalf("failed stats gave %s, want only the turn end", dump(got))
 	}
 
 	// A null usage (right after compaction) also ends the turn without a usage event.
 	p, w = unitProc()
 	p.translateLine([]byte(`{"type":"agent_settled"}`))
-	id = str(w.commands(t)[0]["id"])
-	p.rpc.handleLine([]byte(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":null,"contextWindow":1000}}}`, id)))
-	if got := drainEvents(p); !eventsEqual(got, []agent.Event{{Kind: agent.EvTurnEnd}}) {
+	answer(t, p, w, 0, `"success":true,"data":{"contextUsage":{"tokens":null,"contextWindow":1000}}`)
+	answer(t, p, w, 1, forkMessages("0efdb07e"))
+	if got := drainEvents(p); !eventsEqual(got, []agent.Event{{Kind: agent.EvTurnEnd, Point: "0efdb07e"}}) {
 		t.Fatalf("null usage gave %s", dump(got))
+	}
+}
+
+// settleTurn runs one agent_settled on a unit proc, answers both requests and returns the events.
+func settleTurn(t *testing.T, p *proc, w *memWriteCloser, forkAnswer string) []agent.Event {
+	t.Helper()
+	n := len(w.commands(t))
+	p.translateLine([]byte(`{"type":"agent_settled"}`))
+	answer(t, p, w, n, statsOK)
+	answer(t, p, w, n+1, forkAnswer)
+	return drainEvents(p)
+}
+
+func TestSettledPoint(t *testing.T) {
+	usage := agent.Event{Kind: agent.EvUsage, CtxIn: 300, CtxWindow: 1000}
+	turn := func(point string) []agent.Event {
+		return []agent.Event{usage, {Kind: agent.EvTurnEnd, Point: point}}
+	}
+	p, w := unitProc()
+	steps := []struct {
+		name, answer, want string
+	}{
+		{"the turn's own user message", forkMessages("0efdb07e"), "0efdb07e"},
+		{"the next turn's", forkMessages("0efdb07e", "b85ebc6a"), "b85ebc6a"},
+		{"a turn that added no user message", forkMessages("0efdb07e", "b85ebc6a"), ""},
+		{"and another", forkMessages("0efdb07e", "b85ebc6a"), ""},
+		{"a failed request", `"success":false,"error":"nope"`, ""},
+		{"no messages", `"success":true,"data":{"messages":[]}`, ""},
+		{"no data", `"success":true`, ""},
+		{"an unreadable answer", `"success":true,"data":{"messages":"x"}`, ""},
+		{"still the id seen before the failures", forkMessages("0efdb07e", "b85ebc6a"), ""},
+		{"a new user message", forkMessages("0efdb07e", "b85ebc6a", "59b265f9"), "59b265f9"},
+	}
+	for _, s := range steps {
+		if got := settleTurn(t, p, w, s.answer); !eventsEqual(got, turn(s.want)) {
+			t.Fatalf("%s: events %s\nwant %s", s.name, dump(got), dump(turn(s.want)))
+		}
+	}
+}
+
+// failingWriter is a unit proc's stdin that fails every write after the first ok ones.
+type failingWriter struct {
+	memWriteCloser
+	ok int
+}
+
+func (w *failingWriter) Write(b []byte) (int, error) {
+	if w.ok <= 0 {
+		return 0, errors.New("stdin closed")
+	}
+	w.ok--
+	return w.memWriteCloser.Write(b)
+}
+
+// A request that cannot even be written still ends the turn, exactly once.
+func TestSettledWriteFailureEndsTurnOnce(t *testing.T) {
+	// Neither request can be written: the turn ends at once, without a point.
+	p, _ := unitProc()
+	p.rpc = newRPC(&failingWriter{}, p.translateLine)
+	p.translateLine([]byte(`{"type":"agent_settled"}`))
+	if got := drainEvents(p); !eventsEqual(got, []agent.Event{{Kind: agent.EvTurnEnd}}) {
+		t.Fatalf("no request written: %s, want one turn end", dump(got))
+	}
+
+	// Only the stats request is written: the turn ends when it answers.
+	p, _ = unitProc()
+	w := &failingWriter{ok: 1}
+	p.rpc = newRPC(w, p.translateLine)
+	p.translateLine([]byte(`{"type":"agent_settled"}`))
+	if got := drainEvents(p); len(got) != 0 {
+		t.Fatalf("turn ended before the stats answered: %s", dump(got))
+	}
+	answer(t, p, &w.memWriteCloser, 0, statsOK)
+	want := []agent.Event{{Kind: agent.EvUsage, CtxIn: 300, CtxWindow: 1000}, {Kind: agent.EvTurnEnd}}
+	if got := drainEvents(p); !eventsEqual(got, want) {
+		t.Fatalf("stats only: %s\nwant %s", dump(got), dump(want))
 	}
 }
 
@@ -192,10 +311,11 @@ func TestSettledAfterUserAbort(t *testing.T) {
 	p.abortPending = true
 	p.abortMu.Unlock()
 	p.translateLine([]byte(`{"type":"agent_settled"}`))
-	id := str(w.commands(t)[0]["id"])
-	p.rpc.handleLine([]byte(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":10,"contextWindow":100}}}`, id)))
+	answer(t, p, w, 0, `"success":true,"data":{"contextUsage":{"tokens":10,"contextWindow":100}}`)
+	// A stopped turn gets its fork-point id like any other.
+	answer(t, p, w, 1, forkMessages("0efdb07e"))
 	got := drainEvents(p)
-	want := []agent.Event{{Kind: agent.EvUsage, CtxIn: 10, CtxWindow: 100}, {Kind: agent.EvTurnEnd, Aborted: true}}
+	want := []agent.Event{{Kind: agent.EvUsage, CtxIn: 10, CtxWindow: 100}, {Kind: agent.EvTurnEnd, Aborted: true, Point: "0efdb07e"}}
 	if !eventsEqual(got, want) {
 		t.Fatalf("aborted settled events %s\nwant %s", dump(got), dump(want))
 	}
@@ -215,10 +335,11 @@ func settle(t *testing.T, p *proc, w *memWriteCloser) []agent.Event {
 	before := len(w.commands(t))
 	p.translateLine([]byte(`{"type":"agent_settled"}`))
 	cmds := w.commands(t)
-	if len(cmds) != before+1 || cmds[before]["type"] != "get_session_stats" {
-		t.Fatalf("commands %v, want one more get_session_stats", cmds)
+	if got := commandTypes(cmds[before:]); !equalStrings(got, []string{"get_session_stats", "get_fork_messages"}) {
+		t.Fatalf("commands %q, want one more get_session_stats and get_fork_messages", got)
 	}
-	p.rpc.handleLine([]byte(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_session_stats","success":false,"error":"no stats"}`, str(cmds[before]["id"]))))
+	answer(t, p, w, before, `"success":false,"error":"no stats"`)
+	answer(t, p, w, before+1, `"success":false,"error":"no messages"`)
 	return drainEvents(p)
 }
 
@@ -374,13 +495,15 @@ func TestFailedTurnFixtures(t *testing.T) {
 				if m["command"] != "get_session_stats" {
 					continue
 				}
-				// the stats answer, under the id this proc asked with
+				// the stats answer, under the id this proc asked with; the fixtures have no
+				// get_fork_messages answer, so that one fails
 				cmds := w.commands(t)
-				if len(cmds) != 1 || cmds[0]["type"] != "get_session_stats" {
-					t.Fatalf("commands %v, want one get_session_stats", cmds)
+				if got := commandTypes(cmds); !equalStrings(got, []string{"get_session_stats", "get_fork_messages"}) {
+					t.Fatalf("commands %q, want get_session_stats then get_fork_messages", got)
 				}
 				m["id"] = cmds[0]["id"]
 				p.rpc.handleLine(mustJSON(m))
+				answer(t, p, w, 1, `"success":false,"error":"no messages"`)
 			}
 			evs := drainEvents(p)
 			if end := turnEnd(t, evs); end.Error != c.err || end.Aborted {

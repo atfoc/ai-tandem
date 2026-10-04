@@ -25,11 +25,12 @@ const (
 	envArgs       = "PI_FAKE_ARGS"               // file the fake writes its cwd, arguments and env to
 	envStderr     = "PI_FAKE_STDERR"             // text the fake prints to stderr when it exits
 	envExit       = "PI_FAKE_EXIT"               // set: exit at once (status 3) after the stderr, without reading stdin
-	envReplies    = "PI_FAKE_REPLIES"            // JSON map command → {fail, error, data} reply overrides
+	envReplies    = "PI_FAKE_REPLIES"            // JSON map command → {fail, error, data, silent} reply overrides; "command#2" overrides the second call only
 	envSession    = "PI_FAKE_SESSION"            // default get_state sessionId
 	envChildPid   = "PI_FAKE_CHILD_PID"          // set: start a long-lived child in the fake's group and record both pids
 	envHold       = "PI_FAKE_HOLD"               // set: keep running after stdin closes (until killed)
 	envPromptOnly = "PI_FAKE_SCRIPT_PROMPT_ONLY" // set: print the script on prompts only, never on aborts
+	envEvery      = "PI_FAKE_SCRIPT_EVERY"       // set: print the script on every prompt, not only the first (never on aborts)
 )
 
 func TestMain(m *testing.M) {
@@ -40,11 +41,13 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// fakeReply is one scripted RPC answer; a zero reply is success with no data.
+// fakeReply is one scripted RPC answer; a zero reply is success with no data. Silent: the fake
+// never answers the command.
 type fakeReply struct {
-	Fail  bool            `json:"fail"`
-	Error string          `json:"error"`
-	Data  json.RawMessage `json:"data"`
+	Fail   bool            `json:"fail"`
+	Error  string          `json:"error"`
+	Data   json.RawMessage `json:"data"`
+	Silent bool            `json:"silent"`
 }
 
 // helperProcess is the fake pi: it records its invocation, prints the scripted event lines the
@@ -107,6 +110,7 @@ func helperProcess() {
 		}
 	}
 	printed := false
+	calls := map[string]int{}
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
@@ -117,15 +121,23 @@ func helperProcess() {
 		if json.Unmarshal(line, &cmd) != nil {
 			continue
 		}
-		if (cmd.Type == "prompt" || (cmd.Type == "abort" && os.Getenv(envPromptOnly) == "")) && !printed {
+		every := os.Getenv(envEvery) != ""
+		if (cmd.Type == "prompt" || (cmd.Type == "abort" && os.Getenv(envPromptOnly) == "" && !every)) && (!printed || every) {
 			printed = true
 			for _, l := range script {
 				fmt.Fprintln(os.Stdout, l)
 			}
 		}
-		reply, ok := replies[cmd.Type]
+		calls[cmd.Type]++
+		reply, ok := replies[fmt.Sprintf("%s#%d", cmd.Type, calls[cmd.Type])]
+		if !ok {
+			reply, ok = replies[cmd.Type]
+		}
 		if !ok {
 			reply = defaultFakeReply(cmd.Type)
+		}
+		if reply.Silent {
+			continue
 		}
 		resp := map[string]any{"type": "response", "id": cmd.ID, "command": cmd.Type, "success": !reply.Fail}
 		if reply.Error != "" {
@@ -295,6 +307,12 @@ func (f *fake) stdinLines(t *testing.T, a agent.Agent) []map[string]any {
 	if _, ok := <-a.Events(); ok {
 		t.Error("events not closed after EvExit")
 	}
+	return f.recorded(t)
+}
+
+// recorded returns the commands the fake has read so far (all of them once it has exited).
+func (f *fake) recorded(t *testing.T) []map[string]any {
+	t.Helper()
 	b, err := os.ReadFile(f.stdin)
 	if err != nil {
 		t.Fatal(err)

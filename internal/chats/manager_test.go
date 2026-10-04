@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -207,6 +208,19 @@ type fakeSpawner struct {
 	liveSplits int                  // ContextSplit calls on its agents
 	splitTotal int                  // the Total of the next split given
 	splitGate  chan struct{}        // non-nil: every split waits for it to close
+
+	// The fork capability (agent.Forker).
+	forks    []forkCall               // SpawnFork calls, failed ones included
+	forked   []*fakeAgent             // the agents SpawnFork started (never in agents)
+	discards []string                 // DiscardFork calls
+	forkErr  error                    // non-nil: SpawnFork fails with it (read when the start ends)
+	forkGate chan struct{}            // non-nil: SpawnFork waits for it to close
+	onFork   func(agent.SpawnOptions) // called during the start, before the gate
+}
+
+type forkCall struct {
+	opts agent.SpawnOptions
+	src  agent.ForkSource
 }
 
 func (s *fakeSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
@@ -221,6 +235,78 @@ func (s *fakeSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		return &splitAgent{a, s}, nil
 	}
 	return a, nil
+}
+
+// SpawnFork starts an agent as Spawn does, once the gate (if any) is open. The session id is the
+// app's (Claude, pi) or, when it gave none, one made here (Cursor).
+func (s *fakeSpawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.Agent, string, error) {
+	s.mu.Lock()
+	s.forks = append(s.forks, forkCall{o, src})
+	n, gate, hook := len(s.forks), s.forkGate, s.onFork
+	s.mu.Unlock()
+	if hook != nil {
+		hook(o)
+	}
+	if gate != nil {
+		<-gate
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.forkErr != nil {
+		return nil, "", s.forkErr
+	}
+	sid := o.SessionID
+	if sid == "" {
+		sid = "forked-" + strconv.Itoa(n)
+	}
+	a := &fakeAgent{opts: o, ch: make(chan agent.Event)}
+	s.forked = append(s.forked, a)
+	if s.live {
+		return &splitAgent{a, s}, sid, nil
+	}
+	return a, sid, nil
+}
+
+func (s *fakeSpawner) DiscardFork(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discards = append(s.discards, sessionID)
+}
+
+func (s *fakeSpawner) forkCalls() []forkCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]forkCall(nil), s.forks...)
+}
+
+func (s *fakeSpawner) discarded() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.discards...)
+}
+
+// lastFork is the agent the last successful SpawnFork started.
+func (s *fakeSpawner) lastFork(t *testing.T) *fakeAgent {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.forked) == 0 {
+		t.Fatal("nothing forked")
+	}
+	return s.forked[len(s.forked)-1]
+}
+
+// set changes the fork switches under the spawner's lock.
+func (s *fakeSpawner) set(f func(s *fakeSpawner)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f(s)
+}
+
+func (a *fakeAgent) isClosed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
 }
 
 // splitAgent is a fakeAgent that answers ContextSplit, as Claude's process does.
@@ -1300,7 +1386,7 @@ func TestLoadIsLazy(t *testing.T) {
 	}
 
 	items := e.items(good.ID)
-	if len(items) != 2 || items[0].Text != "hello" || items[1].Text != "hi there" {
+	if len(items) != 3 || items[0].Text != "hello" || items[1].Text != "hi there" || items[2].Kind != "end" {
 		t.Fatalf("items %+v", items)
 	}
 	if err := os.Remove(filepath.Join(e.st.P.ChatDir(good.ID), "items.jsonl")); err != nil {
@@ -2017,9 +2103,17 @@ func TestUnrequestedTurnSetsTurnActive(t *testing.T) {
 	if !e.meta(v.ID).TurnActive {
 		t.Fatal("an unrequested turn did not set turnActive")
 	}
-	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	a.emit(t, agent.Event{Kind: agent.EvText, Text: "the subagent is done"}, agent.Event{Kind: agent.EvTurnEnd, Point: "p2"})
 	if e.meta(v.ID).TurnActive {
 		t.Fatal("turnActive after the unrequested turn ended")
+	}
+	// The unrequested turn ends with its own mark, separate from the mark of the turn before.
+	items := e.items(v.ID)
+	if got := kinds(items); !reflect.DeepEqual(got, []string{"user", "end", "text", "end"}) {
+		t.Fatalf("items %+v", items)
+	}
+	if items[1].Point != "" || items[3].Point != "p2" {
+		t.Fatalf("marks %+v, %+v", items[1], items[3])
 	}
 }
 
@@ -2060,7 +2154,8 @@ func TestSendReferences(t *testing.T) {
 	if got := texts(a.sent()[1]); !reflect.DeepEqual(got, []string{want}) {
 		t.Fatalf("agent got %q", got)
 	}
-	if it := e.items(v.ID)[3]; it.Kind != "user" || it.Text != "Otherwise go ahead." || !reflect.DeepEqual(it.References, refs) {
+	// Item 3 is the first turn's end mark.
+	if it := e.items(v.ID)[4]; it.Kind != "user" || it.Text != "Otherwise go ahead." || !reflect.DeepEqual(it.References, refs) {
 		t.Fatalf("user item %+v", it)
 	}
 	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
@@ -2074,18 +2169,19 @@ func TestSendReferences(t *testing.T) {
 	}
 	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
 
-	// Empty quotes, missing items and items that aren't a message or a reply (the tool call).
-	for _, bad := range []model.Reference{{Quote: " ", Item: 1}, {Quote: "x", Item: 9}, {Quote: "x", Item: -1}, {Quote: "x", Item: 2}} {
+	// Empty quotes, missing items and items that aren't a message or a reply (the tool call, an
+	// end mark).
+	for _, bad := range []model.Reference{{Quote: " ", Item: 1}, {Quote: "x", Item: 9}, {Quote: "x", Item: -1}, {Quote: "x", Item: 2}, {Quote: "x", Item: 3}} {
 		if err := e.m.Send(v.ID, "hi", "", []model.Reference{bad}); !errors.Is(err, ErrBadReference) {
 			t.Fatalf("Send(%+v): %v", bad, err)
 		}
 	}
-	if n := len(e.items(v.ID)); n != 5 {
+	if n := len(e.items(v.ID)); n != 8 { // three turns, each with its end mark
 		t.Fatalf("rejected sends added items: %d", n)
 	}
 
 	e.boot()
-	if it := e.items(v.ID)[3]; !reflect.DeepEqual(it.References, refs) {
+	if it := e.items(v.ID)[4]; !reflect.DeepEqual(it.References, refs) {
 		t.Fatalf("references after restart %+v", it.References)
 	}
 }
@@ -2106,5 +2202,195 @@ func TestDraftReferences(t *testing.T) {
 	}
 	if got := e.view(v.ID).Draft; got != nil {
 		t.Fatalf("empty draft kept: %+v", got)
+	}
+}
+
+// ---- end marks ------------------------------------------------------------
+
+func kinds(items []model.Item) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Kind
+	}
+	return out
+}
+
+// lastItems returns the updates of the last chat_items message among evs.
+func lastItems(t *testing.T, evs []map[string]any, chat string) []transcript.Update {
+	t.Helper()
+	ci := ofType(evs, "chat_items")
+	if len(ci) == 0 || ci[len(ci)-1]["chat"] != chat {
+		t.Fatalf("chat_items %v", ci)
+	}
+	return updatesOf(t, ci[len(ci)-1])
+}
+
+func TestTurnEndAddsEndMark(t *testing.T) {
+	e := newEnv(t)
+	evs := listen(t, e.br)
+	v := e.create(model.Claude, gOne, "")
+	path := filepath.Join(e.st.P.ChatDir(v.ID), "items.jsonl")
+	e.send(v.ID, "one", "")
+	a := e.claude.last(t)
+	a.emit(t, agent.Event{Kind: agent.EvText, Text: "first"})
+	evs.drain(t, e.br)
+
+	// No id from the agent: a bare mark.
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	items := e.items(v.ID)
+	if got := kinds(items); !reflect.DeepEqual(got, []string{"user", "text", "end"}) {
+		t.Fatalf("items %+v", items)
+	}
+	if raw, _ := json.Marshal(items[2]); string(raw) != `{"kind":"end"}` {
+		t.Fatalf("mark %s", raw)
+	}
+	// The turn end's chat_items message carries the mark.
+	if ups := lastItems(t, evs.drain(t, e.br), v.ID); len(ups) != 1 || ups[0].Index != 2 || ups[0].Item.Kind != "end" {
+		t.Fatalf("turn end updates %+v", ups)
+	}
+	if st := e.view(v.ID).Status; st != model.StatusReady {
+		t.Fatalf("status %q", st)
+	}
+
+	// The agent's id is kept on the mark.
+	e.send(v.ID, "two", "")
+	a.emit(t, agent.Event{Kind: agent.EvTextStart}, agent.Event{Kind: agent.EvTextDelta, Text: "second"})
+	evs.drain(t, e.br)
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd, Point: "p1"})
+	items = e.items(v.ID)
+	if got := kinds(items); !reflect.DeepEqual(got, []string{"user", "text", "end", "user", "text", "end"}) {
+		t.Fatalf("items %+v", items)
+	}
+	if raw, _ := json.Marshal(items[5]); string(raw) != `{"kind":"end","point":"p1"}` {
+		t.Fatalf("mark %s", raw)
+	}
+	// The closed text, then the mark, in one message.
+	want := []transcript.Update{{Index: 4, Item: model.Item{Kind: "text", Text: "second", Done: true}},
+		{Index: 5, Item: model.Item{Kind: "end", Point: "p1"}}}
+	if ups := lastItems(t, evs.drain(t, e.br), v.ID); !reflect.DeepEqual(ups, want) {
+		t.Fatalf("turn end updates %+v", ups)
+	}
+
+	// Written with the event, and read back after a restart.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `{"i":2,"item":{"kind":"end"}}`) || !strings.Contains(string(raw), `{"i":5,"item":{"kind":"end","point":"p1"}}`) {
+		t.Fatalf("items.jsonl:\n%s", raw)
+	}
+	e.boot()
+	if again := e.items(v.ID); !reflect.DeepEqual(again, items) {
+		t.Fatalf("items after restart %+v", again)
+	}
+}
+
+func TestEndMarkFollowsTurnEndNote(t *testing.T) {
+	e := newEnv(t)
+	evs := listen(t, e.br)
+	v := e.create(model.Claude, gOne, "")
+	e.send(v.ID, "one", "")
+	a := e.claude.last(t)
+	evs.drain(t, e.br)
+
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd, Aborted: true, Point: "p1"})
+	want := []transcript.Update{{Index: 1, Item: model.Item{Kind: "note", Tone: "muted", Text: "Stopped."}},
+		{Index: 2, Item: model.Item{Kind: "end", Point: "p1"}}}
+	if ups := lastItems(t, evs.drain(t, e.br), v.ID); !reflect.DeepEqual(ups, want) {
+		t.Fatalf("aborted turn end updates %+v", ups)
+	}
+
+	e.send(v.ID, "two", "")
+	evs.drain(t, e.br)
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd, Error: "rate limited"})
+	want = []transcript.Update{{Index: 4, Item: model.Item{Kind: "note", Tone: "error", Text: "rate limited"}},
+		{Index: 5, Item: model.Item{Kind: "end"}}}
+	if ups := lastItems(t, evs.drain(t, e.br), v.ID); !reflect.DeepEqual(ups, want) {
+		t.Fatalf("failed turn end updates %+v", ups)
+	}
+
+	items := e.items(v.ID)
+	if got := kinds(items); !reflect.DeepEqual(got, []string{"user", "note", "end", "user", "note", "end"}) {
+		t.Fatalf("items %+v", items)
+	}
+	if disk := diskItems(t, filepath.Join(e.st.P.ChatDir(v.ID), "items.jsonl")); !reflect.DeepEqual(disk, items) {
+		t.Fatalf("items.jsonl %+v", disk)
+	}
+}
+
+// Only a turn-end event of the chat's own thread writes a mark.
+func TestNoEndMarkWithoutTurnEnd(t *testing.T) {
+	e := newEnv(t)
+	noMark := func(what, id string, want ...string) {
+		t.Helper()
+		items := e.items(id)
+		if got := kinds(items); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: items %+v", what, items)
+		}
+		if disk := diskItems(t, filepath.Join(e.st.P.ChatDir(id), "items.jsonl")); !reflect.DeepEqual(kinds(disk), want) {
+			t.Fatalf("%s: items.jsonl %+v", what, disk)
+		}
+	}
+
+	stopped := e.create(model.Claude, gOne, "")
+	e.send(stopped.ID, "one", "")
+	e.m.Stop(stopped.ID)
+	noMark("Stop", stopped.ID, "user", "note")
+
+	exited := e.create(model.Claude, gOne, "")
+	e.send(exited.ID, "one", "")
+	e.claude.last(t).exit(t)
+	noMark("exit mid-turn", exited.ID, "user", "note")
+
+	closed := e.create(model.Claude, gOne, "")
+	e.send(closed.ID, "one", "")
+	e.m.Shutdown() // mid-turn
+	if disk := diskItems(t, filepath.Join(e.st.P.ChatDir(closed.ID), "items.jsonl")); !reflect.DeepEqual(kinds(disk), []string{"user"}) {
+		t.Fatalf("Shutdown: items.jsonl %+v", disk)
+	}
+	e.boot()
+	noMark("boot note", closed.ID, "user", "note")
+}
+
+func TestSubagentThreadsHaveNoEndMark(t *testing.T) {
+	e := newEnv(t)
+
+	// Native: the subagent's events come through the chat's own process.
+	id, a := e.subStart()
+	subRun(t, a, "t1")
+	native := e.onlySub(id)
+	n := len(e.items(id))
+	a.emit(t, agent.Event{Kind: agent.EvText, Sub: "t1", Text: "42 files"},
+		agent.Event{Kind: agent.EvTurnEnd, Sub: "t1", Point: "sub-point"},
+		agent.Event{Kind: agent.EvSub, Sub: "t1", SubInfo: &agent.SubInfo{Status: model.SubCompleted}})
+	if got := len(e.items(id)); got != n {
+		t.Fatalf("a subagent's turn end changed the chat's thread: %d → %d items", n, got)
+	}
+	a.emit(t, agent.Event{Kind: agent.EvTurnEnd, Point: "p1"})
+	items := e.items(id)
+	if got := kinds(items); !reflect.DeepEqual(got, []string{"user", "tool", "end"}) || items[2].Point != "p1" {
+		t.Fatalf("chat items %+v", items)
+	}
+	if _, subItems, err := e.m.SubItems(id, native); err != nil || !reflect.DeepEqual(kinds(subItems), []string{"text"}) {
+		t.Fatalf("native thread %+v %v", subItems, err)
+	}
+	if disk := diskItems(t, filepath.Join(e.subDir(id, native), "items.jsonl")); !reflect.DeepEqual(kinds(disk), []string{"text"}) {
+		t.Fatalf("native items.jsonl %+v", disk)
+	}
+
+	// App-spawned: a process of its own, whose turn end completes it.
+	v := e.create(model.Claude, gOne, "")
+	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "go"})
+	child := waitChild(t, e.claude, e.claude.count())
+	child.emit(t, agent.Event{Kind: agent.EvText, Text: "done"}, agent.Event{Kind: agent.EvTurnEnd, Point: "child-point"})
+	waitFor(t, "the subagent completed", func() bool { return e.sub(v.ID, sa.ID).Status == model.SubCompleted })
+	if _, subItems, err := e.m.SubItems(v.ID, sa.ID); err != nil || !reflect.DeepEqual(kinds(subItems), []string{"text"}) {
+		t.Fatalf("app-spawned thread %+v %v", subItems, err)
+	}
+	if disk := diskItems(t, filepath.Join(e.subDir(v.ID, sa.ID), "items.jsonl")); !reflect.DeepEqual(kinds(disk), []string{"text"}) {
+		t.Fatalf("app-spawned items.jsonl %+v", disk)
+	}
+	if items := e.items(v.ID); len(items) != 0 {
+		t.Fatalf("the parent of an app-spawned subagent got items %+v", items)
 	}
 }

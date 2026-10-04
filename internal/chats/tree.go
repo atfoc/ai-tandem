@@ -1,0 +1,339 @@
+package chats
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/transcript"
+)
+
+// The tree record: chats/<chat id>/tree.json holds where each branch split off, the labels and
+// the current branch. Each branch's whole path is in its own items.jsonl, so nothing else of the
+// tree is stored. No file = one branch, no labels. A file that cannot be read is never written
+// over: the chat shows as one branch until the file is fixed.
+
+var (
+	ErrNoBranch = errors.New("no such branch")
+	ErrBadLabel = errors.New("only a message or a reply can be labeled")
+
+	errTreeUnreadable = errors.New("the chat's tree record can't be read")
+	// errTreeSame is what an updateTree function returns when it changed nothing, so that nothing
+	// is written.
+	errTreeSame = errors.New("tree record unchanged")
+)
+
+func (m *Manager) treePath(chat string) string {
+	return filepath.Join(m.Store.P.ChatDir(chat), "tree.json")
+}
+
+// readTree reads the tree record of the top-level chat. No file is the zero Tree and no error; a
+// file that cannot be read or parsed is errTreeUnreadable.
+func (m *Manager) readTree(chat string) (model.Tree, error) {
+	raw, err := os.ReadFile(m.treePath(chat))
+	if errors.Is(err, fs.ErrNotExist) {
+		return model.Tree{}, nil
+	}
+	var t model.Tree
+	if err == nil {
+		err = json.Unmarshal(raw, &t)
+	}
+	if err != nil {
+		return model.Tree{}, fmt.Errorf("%w: %w", errTreeUnreadable, err)
+	}
+	return t, nil
+}
+
+// updateTree reads the tree record of the top-level chat, applies f and writes the result. Calls
+// for one chat run one after the other. When f returns an error, or the file exists but cannot be
+// read, nothing is written and the error is returned. The caller must not hold the chat's mu (the
+// tree lock is taken first); f runs with only the tree lock held.
+func (m *Manager) updateTree(chat string, f func(*model.Tree) error) error {
+	c, err := m.get(chat)
+	if err != nil {
+		return err
+	}
+	c.treeMu.Lock()
+	defer c.treeMu.Unlock()
+	t, err := m.readTree(chat)
+	if err != nil {
+		return err
+	}
+	if err := f(&t); err != nil {
+		return err
+	}
+	if t.Branches == nil {
+		t.Branches = []model.TreeBranch{} // "branches": [] in the file, never null
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.deleted {
+		return ErrNotFound
+	}
+	return store.WriteJSONAtomic(m.treePath(chat), t, 0o600)
+}
+
+// branchChatID is the server id of a branch's chat object: the chat itself for "main", else
+// <chat id>/branches/<branch id>. It is also the branch's folder under chats/.
+func branchChatID(chat, branch string) string {
+	if branch == model.MainBranch {
+		return chat
+	}
+	return chat + "/branches/" + branch
+}
+
+// branchOf finds a branch in the record. "main" is always there, as {ID: "main"}.
+func branchOf(t model.Tree, id string) (model.TreeBranch, bool) {
+	if id == model.MainBranch {
+		return model.TreeBranch{ID: model.MainBranch}, true
+	}
+	for _, b := range t.Branches {
+		if b.ID == id {
+			return b, true
+		}
+	}
+	return model.TreeBranch{}, false
+}
+
+// ownerOf is the branch whose own part (split to end) holds the item at index item, seen from
+// branch: branch itself when the index is at or past its split, else the owner seen from the
+// branch it split from. main owns everything it is asked for, and stands in for a branch the
+// record does not know.
+func ownerOf(t model.Tree, branch string, item int) string {
+	for range len(t.Branches) + 1 { // a record whose branches form a loop ends here
+		b, ok := branchOf(t, branch)
+		if !ok || b.ID == model.MainBranch {
+			break
+		}
+		if item >= b.At {
+			return b.ID
+		}
+		branch = b.From
+	}
+	return model.MainBranch
+}
+
+// labelsOnPath returns the labels visible on branch's items 0..count-1, each re-keyed to branch
+// "main" with its index unchanged, sorted by index: what a fork of that prefix starts with. nil =
+// none.
+func labelsOnPath(t model.Tree, branch string, count int) []model.TreeLabel {
+	var out []model.TreeLabel
+	for _, l := range t.Labels {
+		if l.Item >= 0 && l.Item < count && ownerOf(t, branch, l.Item) == l.Branch {
+			out = append(out, model.TreeLabel{Branch: model.MainBranch, Item: l.Item, Text: l.Text})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Item < out[j].Item })
+	return out
+}
+
+// sortLabels orders the record's labels by branch (main first, then creation order), then item.
+func sortLabels(t *model.Tree) {
+	order := func(id string) int {
+		if id == model.MainBranch {
+			return -1
+		}
+		for i, b := range t.Branches {
+			if b.ID == id {
+				return i
+			}
+		}
+		return len(t.Branches)
+	}
+	sort.SliceStable(t.Labels, func(i, j int) bool {
+		a, b := t.Labels[i], t.Labels[j]
+		if oa, ob := order(a.Branch), order(b.Branch); oa != ob {
+			return oa < ob
+		}
+		return a.Item < b.Item
+	})
+}
+
+// labelable reports whether it can carry a label: a user message or a reply.
+func labelable(it model.Item) bool {
+	return it.Kind == "user" || it.Kind == "text"
+}
+
+// treeChat returns the agent of the top-level chat id, or ErrNotFound: also for a deleted chat
+// and for a branch's server id, which never names a tree.
+func (m *Manager) treeChat(id string) (model.AgentKind, error) {
+	if strings.Contains(id, "/") {
+		return "", ErrNotFound
+	}
+	c, err := m.lock(id)
+	if err != nil {
+		return "", err
+	}
+	defer c.mu.Unlock()
+	return c.meta.Agent, nil
+}
+
+// branchItems returns a branch's whole item list without loading anything into the manager (a
+// chat's first load has side effects, see trOf and loadSubs): the live list when the branch's
+// transcript is already loaded, as it is ahead of the file (a reply is done before the pump has
+// flushed it), else items.jsonl read directly. A branch other than main must have its folder.
+// The tree lock must not be held.
+func (m *Manager) branchItems(chat, branch string) ([]model.Item, error) {
+	id := branchChatID(chat, branch)
+	if c, err := m.get(id); err == nil {
+		c.mu.Lock()
+		if c.tr != nil {
+			_, items := c.tr.Snapshot()
+			c.mu.Unlock()
+			return items, nil
+		}
+		c.mu.Unlock()
+	}
+	if branch != model.MainBranch {
+		if _, err := os.Stat(m.Store.P.ChatDir(id)); err != nil {
+			return nil, err
+		}
+	}
+	tr, err := transcript.Load(m.itemsPath(id))
+	if err != nil {
+		return nil, err
+	}
+	_, items := tr.Snapshot()
+	return items, nil
+}
+
+// treeItems is a branch's own part (index >= at) as the tree shows it: the user and text items,
+// with the point rules applied to the branch's whole list.
+func treeItems(a model.AgentKind, items []model.Item, at int) []model.TreeItem {
+	out := []model.TreeItem{}
+	for i := max(at, 0); i < len(items); i++ {
+		it := items[i]
+		ti := model.TreeItem{I: i, Kind: it.Kind, Text: it.Text}
+		switch it.Kind {
+		case "user":
+			if count, ok := cutBefore(items, i); ok {
+				ti.Before = &count
+				ti.OK = pointOK(a, items, count)
+			}
+		case "text":
+			ti.Done = it.Done
+			if ti.End = turnEnd(items, i); ti.End > 0 {
+				ti.OK = pointOK(a, items, ti.End)
+			}
+		default:
+			continue
+		}
+		out = append(out, ti)
+	}
+	return out
+}
+
+// Tree is the whole tree of the top-level chat id: main, then the recorded branches whose folder
+// can be read, each with the messages and replies of its own part, and the labels. Nothing is
+// loaded into the manager and no event is sent. An unreadable record gives one branch.
+func (m *Manager) Tree(id string) (model.TreeView, error) {
+	a, err := m.treeChat(id)
+	if err != nil {
+		return model.TreeView{}, err
+	}
+	t, err := m.readTree(id)
+	if err != nil {
+		log.Printf("chats: tree %s: %v", id, err)
+		t = model.Tree{}
+	}
+	main, err := m.branchItems(id, model.MainBranch)
+	if err != nil {
+		return model.TreeView{}, err
+	}
+	tv := model.TreeView{Current: model.MainBranch, Labels: []model.TreeLabel{}}
+	tv.Branches = append(tv.Branches, model.TreeBranchView{ID: model.MainBranch, Len: len(main),
+		Items: treeItems(a, main, 0)})
+	lists := map[string][]model.Item{model.MainBranch: main} // the branches in the view
+	for _, b := range t.Branches {
+		if _, dup := lists[b.ID]; dup || b.ID == "" || b.At < 0 {
+			continue
+		}
+		if _, known := lists[b.From]; !known {
+			continue
+		}
+		items, err := m.branchItems(id, b.ID)
+		if err != nil {
+			log.Printf("chats: tree %s: branch %s left out: %v", id, b.ID, err)
+			continue
+		}
+		lists[b.ID] = items
+		tv.Branches = append(tv.Branches, model.TreeBranchView{ID: b.ID, From: b.From, At: b.At,
+			Len: len(items), Items: treeItems(a, items, b.At)})
+	}
+	if _, ok := lists[t.Current]; ok {
+		tv.Current = t.Current
+	}
+	for _, l := range t.Labels {
+		items, ok := lists[l.Branch]
+		if ok && l.Item >= 0 && l.Item < len(items) && labelable(items[l.Item]) {
+			tv.Labels = append(tv.Labels, l)
+		}
+	}
+	return tv, nil
+}
+
+// SetLabel names the user message or reply at index item of branch; blank text removes the name.
+// The label is kept under the branch that owns the item, so every branch passing through it
+// shows it. It is allowed while the chat is busy, archived or legacy, and sends no event: the
+// answer is all the chat's labels after the change (never nil).
+func (m *Manager) SetLabel(id, branch string, item int, text string) ([]model.TreeLabel, error) {
+	if _, err := m.treeChat(id); err != nil {
+		return nil, err
+	}
+	t, err := m.readTree(id)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := branchOf(t, branch); !ok {
+		return nil, ErrNoBranch
+	}
+	items, err := m.branchItems(id, branch)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrNoBranch // recorded, but its folder is gone: Tree leaves it out too
+	}
+	if err != nil {
+		return nil, err
+	}
+	if item < 0 || item >= len(items) || !labelable(items[item]) {
+		return nil, ErrBadLabel
+	}
+	text = strings.TrimSpace(text)
+	labels := []model.TreeLabel{}
+	err = m.updateTree(id, func(t *model.Tree) error {
+		if _, ok := branchOf(*t, branch); !ok {
+			return ErrNoBranch
+		}
+		owner := ownerOf(*t, branch, item)
+		same := text == ""
+		kept := t.Labels[:0:0]
+		for _, l := range t.Labels {
+			if l.Branch != owner || l.Item != item {
+				kept = append(kept, l)
+				continue
+			}
+			same = l.Text == text
+		}
+		if text != "" {
+			kept = append(kept, model.TreeLabel{Branch: owner, Item: item, Text: text})
+		}
+		t.Labels = kept
+		sortLabels(t)
+		labels = append(labels, t.Labels...)
+		if same {
+			return errTreeSame
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errTreeSame) {
+		return nil, err
+	}
+	return labels, nil
+}

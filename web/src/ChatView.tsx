@@ -1,7 +1,7 @@
 // A chat's header and thread. Items come from the server (chat_items); this
 // file only renders them.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject, type UIEvent } from "react";
-import { useStore, setState, isBusy, isLegacy, chatTitle, boardName } from "./store.ts";
+import { useStore, setState, isBusy, isLegacy, chatTitle, boardName, shownBranch } from "./store.ts";
 import { api } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
@@ -13,6 +13,9 @@ import { Markdown } from "./Markdown.tsx";
 import { SubagentRow, SubResultRow } from "./Subagents.tsx";
 import { SentQuotes } from "./Quotes.tsx";
 import { AgentGlyph, BoardIcon, Pencil, agentClass, agentName } from "./icons.tsx";
+import { MessageExtras, ForkedFrom } from "./fork/Message.tsx";
+import { TreeButton } from "./fork/TreeButton.tsx";
+import { BranchCrumb } from "./fork/Chrome.tsx";
 import type { ChatView, Item, Subagent } from "./types.ts";
 
 const EMPTY: Item[] = [];
@@ -60,8 +63,10 @@ export function ChatHeader({ chatId }: { chatId: string }) {
           {agentName(c.agent)}
           {c.cwd ? <> · <span className="mono">{tildify(c.cwd)}</span></> : null}
           {" · "}{c.archived ? "Archived" : isLegacy(c) ? "Disabled" : statusText(c, boardName)}
+          <BranchCrumb chatId={chatId} />
         </div>
       </div>
+      <TreeButton chatId={chatId} />
       {c.board && <button className="icon-btn" title="Hide chat (⌘J)" onClick={() => setState({ panel: false })}>×</button>}
     </div>
   );
@@ -96,19 +101,25 @@ export function useStickToBottom(ref: RefObject<HTMLDivElement | null>, follow: 
   };
 }
 
+/** A chat's thread: the items of the branch it shows, cut at the point of a pending move. */
 export function Thread({ chatId }: { chatId: string }) {
   const c = useStore((s) => s.chats[chatId]);
   const loaded = useStore((s) => s.items[chatId]);
-  const items = loaded?.items ?? EMPTY;
+  const branch = useStore((s) => shownBranch(s, chatId));
+  const cut = useStore((s) => s.moves[chatId]?.at);
+  const all = loaded?.items ?? EMPTY;
+  const items = useMemo(() => (cut === undefined ? all : all.slice(0, cut)), [all, cut]);
   const ref = useRef<HTMLDivElement>(null);
-  const onScroll = useStickToBottom(ref, true, chatId);
+  const onScroll = useStickToBottom(ref, true, `${chatId}:${branch}`);
   if (!c) return null;
   const busy = isBusy(c.status);
   const waiting = waitingText(c); // "" while busy
   return (
     <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
+      <ForkedFrom chat={c} />
       {loaded && !items.length && <EmptyThread c={c} />}
-      {items.map((it, i) => it ? <ItemView key={i} item={it} chat={c} index={i} /> : null)}
+      {/* keyed by the branch: a message's own state does not carry over to another branch's */}
+      {items.map((it, i) => it ? <ItemView key={`${branch}:${i}`} item={it} chat={c} index={i} /> : null)}
       {busy && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
       {!!waiting && <div className="typing waiting">{waiting}</div>}
     </div>
@@ -152,6 +163,7 @@ export function ItemView({ item, chat, sub, index }: { item: Item; chat: ChatVie
         <div className="msg user" data-item={tag} data-quotable={tag === undefined ? undefined : String(quotable(item))}>
           {refs.length > 0 && <SentQuotes chatId={chat.id} refs={refs} />}
           {(item.text || !refs.length) && <Markdown text={item.text ?? ""} user board={chat.board} agent={chat.agent} />}
+          {tag !== undefined && <MessageExtras chat={chat} index={tag} item={item} />}
         </div>
       );
     }
@@ -161,6 +173,7 @@ export function ItemView({ item, chat, sub, index }: { item: Item; chat: ChatVie
         <div className={`msg assistant${streaming ? " streaming" : ""}`} data-item={tag} data-quotable={tag === undefined ? undefined : String(quotable(item))}>
           <Markdown text={item.text ?? ""} board={chat.board} agent={chat.agent} streaming={streaming} />
           {streaming && !item.text?.trim() && <span className="caret-blink" />}
+          {tag !== undefined && <MessageExtras chat={chat} index={tag} item={item} />}
         </div>
       );
     }
@@ -168,6 +181,7 @@ export function ItemView({ item, chat, sub, index }: { item: Item; chat: ChatVie
     case "perm": return <PermCard item={item} chat={chat} />;
     case "note": return item.text ? <div className={`note ${item.tone ?? ""}`}>{item.text}</div> : null;
     case "subresult": return <SubResultRow item={item} chat={chat} />;
+    case "end": return null; // the mark after a turn: never drawn
   }
   return null;
 }

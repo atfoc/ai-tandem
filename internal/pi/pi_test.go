@@ -463,6 +463,79 @@ func TestSendClearsIdleAbort(t *testing.T) {
 	f.stdinLines(t, a)
 }
 
+// TestTurnEndPoint: after every agent_settled the adapter asks for the stats and the fork
+// messages, and the turn end carries the last user message's entry id, or none when the turn
+// added no user message or the request failed.
+func TestTurnEndPoint(t *testing.T) {
+	t.Setenv(envEvery, "1")
+	f := newFake(t, `{"type":"agent_settled"}`)
+	f.replies(t, map[string]fakeReply{
+		"get_fork_messages":   {Data: json.RawMessage(`{"messages":[{"entryId":"0efdb07e","text":"one"},{"entryId":"b85ebc6a","text":"two"}]}`)},
+		"get_fork_messages#3": {Fail: true, Error: "nope"},
+		"get_fork_messages#4": {Data: json.RawMessage(`{"messages":[]}`)},
+		"get_fork_messages#5": {Data: json.RawMessage(`{"messages":[{"entryId":"0efdb07e","text":"one"},{"entryId":"b85ebc6a","text":"two"},{"entryId":"59b265f9","text":"three"}]}`)},
+	})
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	for i, want := range []string{"b85ebc6a", "", "", "", "59b265f9"} {
+		if err := a.Send([]agent.ContentBlock{{Text: "hi"}}); err != nil {
+			t.Fatal(err)
+		}
+		if ev := next(t, a); ev.Kind != agent.EvThinking {
+			t.Fatalf("turn %d: event %+v, want EvThinking", i+1, ev)
+		}
+		if ev := next(t, a); ev.Kind != agent.EvUsage || ev.CtxIn != 300 {
+			t.Fatalf("turn %d: event %+v, want the usage before the turn end", i+1, ev)
+		}
+		if ev := next(t, a); ev.Kind != agent.EvTurnEnd || ev.Point != want || ev.Aborted || ev.Error != "" {
+			t.Fatalf("turn %d: event %+v, want one turn end with Point %q", i+1, ev, want)
+		}
+	}
+	turn := []string{"prompt", "get_session_stats", "get_fork_messages"}
+	want := []string{"get_state", "get_available_models"}
+	for i := 0; i < 5; i++ {
+		want = append(want, turn...)
+	}
+	if got := commandTypes(f.stdinLines(t, a)); !equalStrings(got, want) {
+		t.Fatalf("commands %q\nwant %q", got, want)
+	}
+}
+
+// A turn the user stopped keeps Aborted and gets its fork-point id like any other.
+func TestAbortedTurnEndPoint(t *testing.T) {
+	f := newFake(t, `{"type":"agent_settled"}`)
+	f.replies(t, map[string]fakeReply{
+		"get_fork_messages": {Data: json.RawMessage(`{"messages":[{"entryId":"0efdb07e","text":"one"}]}`)},
+	})
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	if err := a.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	if ev := waitKind(t, a, agent.EvTurnEnd); !ev.Aborted || ev.Point != "0efdb07e" {
+		t.Fatalf("turn end %+v, want aborted with the point", ev)
+	}
+	f.stdinLines(t, a)
+}
+
+// A prompt pi rejected ends the turn with the error and no point, and asks pi nothing.
+func TestRejectedPromptHasNoPoint(t *testing.T) {
+	t.Setenv(envPromptOnly, "1")
+	f := newFake(t)
+	f.replies(t, map[string]fakeReply{"prompt": {Fail: true, Error: "busy"}})
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	if err := a.Send([]agent.ContentBlock{{Text: "hi"}}); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("Send = %v, want the rejection", err)
+	}
+	if ev := waitKind(t, a, agent.EvTurnEnd); ev.Point != "" || !strings.Contains(ev.Error, "busy") {
+		t.Fatalf("turn end %+v, want the error and no point", ev)
+	}
+	if got := commandTypes(f.stdinLines(t, a)); !equalStrings(got, []string{"get_state", "get_available_models", "prompt"}) {
+		t.Fatalf("commands %q", got)
+	}
+}
+
 func TestCloseReapsChildGroup(t *testing.T) {
 	f := newFake(t)
 	pidFile := filepath.Join(f.dir, "child.json")

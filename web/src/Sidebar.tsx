@@ -4,10 +4,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, isBusy, isLegacy, chatTitle, boardName, type Sel } from "./store.ts";
 import { api } from "./api.ts";
-import { loadItems } from "./conn.ts";
+import { loadItems, loadTree } from "./conn.ts";
 import { flush } from "./board.ts";
 import { focusComposer, subline } from "./Composer.tsx";
 import { NameInput } from "./ChatView.tsx";
+import { BranchBadge } from "./fork/Chrome.tsx";
 import { Menu, confirm, reportError } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
 import { dotState, rowLine } from "./logic/labels.ts";
@@ -32,6 +33,7 @@ export function select(sel: Sel) {
     setState({ panel: true });
     void api.openChat(sel.chat).catch(() => {});
     void loadItems(sel.chat);
+    void loadTree(sel.chat).catch(() => {});
     focusComposer();
   }
 }
@@ -541,6 +543,7 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
           : <div className={`side-name ${c.name ? "" : "unnamed"}`}>{title}</div>}
         <div className="side-sub">{sub}</div>
       </div>
+      <BranchBadge chat={c} />
       {draft && <DraftTag />}
       {c.archived && <ArchivedTag />}
       {!c.archived && legacy && <span className="archived-tag">Disabled</span>}

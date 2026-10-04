@@ -1,0 +1,39 @@
+/* Chat forking: the thread. A message's extras are children of the message element, placed
+   around it; their texts come from data-text, so they are no text of the message (Message.tsx). */
+.thread > .msg { position: relative; }
+.fk-acts, .fk-label-tag, .fk-marker { user-select: none; }
+.fk-act::after, .fk-marker-chip::after { content: attr(data-text); }
+
+/* the hover actions, over the message's top right corner */
+.fk-acts { position: absolute; top: -13px; right: 2px; z-index: 2; display: none; gap: 1px; padding: 2px; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow-sm); }
+.thread > .msg:hover > .fk-acts { display: flex; }
+.thread > .msg:has(> .fk-marker:hover) > .fk-acts { display: none; }
+.fk-act { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--muted); font-size: 11.5px; line-height: 1.5; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.fk-act:hover { background: var(--accent-soft); color: var(--accent); }
+.fk-act:is(.k-fork, .k-forkEdit)::before { content: "⧉"; }
+
+/* the label: under a reply's text, and under your message's bubble, at its right */
+.fk-label-tag { width: fit-content; max-width: min(100%, 320px); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 0 6px; line-height: 16px; }
+.fk-label-tag::before { content: "⚑ " attr(data-text); }
+.msg.user > .fk-label-tag { position: absolute; top: 100%; right: 0; max-width: 320px; }
+.thread > .msg.user:has(> .fk-label-tag) { margin-bottom: 19px; }
+.fk-label-float { position: absolute; top: -15px; right: 2px; z-index: 3; width: 250px; display: flex; padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-md); font-size: 12px; color: var(--text); }
+
+/* the branch marker, above the message: across the thread over a reply, at the bubble's right over your message */
+.thread > .msg:has(> .fk-marker) { margin-top: 36px; }
+.fk-marker { position: absolute; bottom: calc(100% + 12px); right: 0; display: flex; align-items: center; gap: 8px; width: max-content; border: 0; background: none; padding: 2px 0; color: var(--muted); font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.fk-marker-line { flex: none; width: 28px; height: 1px; background: var(--line-2); }
+.msg.assistant > .fk-marker { width: 100%; }
+.msg.assistant > .fk-marker .fk-marker-line { flex: 1; width: auto; }
+.fk-marker-chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg); }
+.fk-marker:hover { color: var(--accent); }
+.fk-marker:hover .fk-marker-chip { border-color: var(--accent); }
+
+/* a message of quotes only keeps its bottom margin with the extras after its cards */
+.msg.user > .qsent:not(:has(~ .md)) { margin-bottom: 2px; }
+
+/* the note at the top of a forked chat */
+.fk-forked { font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.fk-forked .branch-icon { margin-right: 2px; }
+.fk-forked .link { padding: 0; font-size: inherit; text-align: left; }
+.fk-forked b { color: var(--text); font-weight: 600; }

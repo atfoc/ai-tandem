@@ -497,8 +497,8 @@ func TestErroredTurnEndNote(t *testing.T) {
 		if errs := notes(items, "error"); len(errs) != 1 || errs[0] != "API Error: overloaded" {
 			t.Fatalf("%s: error notes %q", kind, errs)
 		}
-		if last := items[len(items)-1]; len(items) != 2 || items[0].Kind != "user" || last.Kind != "note" {
-			t.Fatalf("%s: thread %+v, want the message and the note", kind, items)
+		if got := kinds(items); !reflect.DeepEqual(got, []string{"user", "note", "end"}) {
+			t.Fatalf("%s: thread %+v, want the message, the note and the end mark", kind, items)
 		}
 		if e.m.Busy(v.ID) || e.status(v.ID) != model.StatusReady {
 			t.Fatalf("%s: status %q after an errored turn end", kind, e.status(v.ID))
@@ -512,7 +512,7 @@ func TestErroredTurnEndNote(t *testing.T) {
 		if errs := notes(items, "error"); len(errs) != 2 || errs[1] != "limit reached" {
 			t.Fatalf("%s: error notes %q", kind, errs)
 		}
-		if n := len(items); n != 5 || items[n-2].Kind != "text" || items[n-2].Text != "half" || items[n-1].Kind != "note" {
+		if n := len(items); !reflect.DeepEqual(kinds(items), []string{"user", "note", "end", "user", "text", "note", "end"}) || items[n-3].Text != "half" {
 			t.Fatalf("%s: thread %+v", kind, items)
 		}
 	}

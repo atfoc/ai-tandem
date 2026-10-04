@@ -4,6 +4,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	"ai-whiteboard/internal/model"
 )
@@ -41,6 +42,32 @@ type SplitReader interface {
 	ReadContextSplit(o SpawnOptions) (model.ContextSplit, error)
 }
 
+// ForkTimeout bounds a fork start (SpawnFork) for every provider.
+const ForkTimeout = 60 * time.Second
+
+// ForkSource names the session a new process is forked from, and where.
+type ForkSource struct {
+	ChatID    string // server id of the chat or branch whose session is forked
+	SessionID string // the session to fork
+	Point     string // the id on the end mark at the fork point; "" = none recorded
+	Next      string // the id on the first end mark after the fork point; "" = none
+	End       bool   // the fork point is the end of the source session; known only when the fork is first made
+}
+
+// Forker is a Spawner that can start a chat's process on a fork of another session. Found by
+// type assertion on the Spawner, like SplitReader.
+type Forker interface {
+	// SpawnFork starts the process of o on a fork of src and returns only when the provider has
+	// confirmed the fork, or with an error. It never takes longer than ForkTimeout. sessionID is
+	// the forked session's id (the app's choice in o.SessionID for Claude; chosen by the adapter
+	// or the provider for Cursor and pi). When it returns an error the process has been ended and
+	// whatever the start created outside the app's folder has been removed.
+	SpawnFork(o SpawnOptions, src ForkSource) (ag Agent, sessionID string, err error)
+	// DiscardFork removes what a successful SpawnFork created outside the app's folder for a fork
+	// that is given up after its process was closed (Cursor: the store copy; Claude, pi: nothing).
+	DiscardFork(sessionID string)
+}
+
 // ContextSplitter is an Agent that can report its context split while it runs (Claude).
 type ContextSplitter interface {
 	ContextSplit() (model.ContextSplit, error)
@@ -72,7 +99,7 @@ const (
 	EvToolDenied                      // ToolID
 	EvPermRequest                     // PermID, ToolName, ToolID, Input
 	EvUsage                           // CtxIn/CtxOut/CtxWindow (any may be 0 = unchanged), or CtxError
-	EvTurnEnd                         // Aborted, Error
+	EvTurnEnd                         // Aborted, Error, Point
 	EvExit                            // ExitErr
 	EvSub                             // SubInfo: a subagent appeared or changed (a patch; zero fields are unchanged)
 )
@@ -93,6 +120,7 @@ type Event struct {
 	CtxError                 string // EvUsage: context usage could not be read (the numbers are then all 0)
 	Aborted                  bool
 	Error                    string
+	Point                    string // EvTurnEnd: the provider's fork-point id for the end of this turn; "" = none
 	ExitErr                  string
 	// Sub is the parent's tool call id (Claude's Agent tool_use, Cursor's Task tool_call) of the
 	// subagent this event belongs to. EvText*, EvTool*, EvThinking and EvSub with Sub set belong to

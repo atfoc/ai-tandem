@@ -40,12 +40,22 @@ var piMarkerEnv = map[string]bool{
 // flag multiple times and joins the values with blank lines, so the reminder follows the board
 // prompt.
 func (s *Spawner) args(o agent.SpawnOptions, sessionDir, appendPromptFile string) []string {
+	return s.sessionArgs(o, sessionDir, appendPromptFile, "")
+}
+
+// sessionArgs is args for a process that may start on a fork: a non-empty forkFile is the source
+// session file, opened with --session instead of --session-id (o.SessionID is then ignored). The
+// session dir stays the chat's own, so the fork or clone sent in the handshake writes the new
+// session file there, not next to the source.
+func (s *Spawner) sessionArgs(o agent.SpawnOptions, sessionDir, appendPromptFile, forkFile string) []string {
 	args := []string{"--mode", "rpc", "--no-extensions"}
 	if s.Extension != "" {
 		args = append(args, "-e", s.Extension)
 	}
 	args = append(args, "--session-dir", sessionDir)
-	if o.SessionID != "" {
+	if forkFile != "" {
+		args = append(args, "--session", forkFile)
+	} else if o.SessionID != "" {
 		args = append(args, "--session-id", o.SessionID)
 	}
 	if o.Model != "" {

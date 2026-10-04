@@ -234,6 +234,9 @@ func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	if !deliverable(c) {
 		return nil
 	}
+	if p := m.parentOf(c); p.Archived || p.InstructionsSent { // a branch's flags are its top-level chat's
+		return nil
+	}
 	d, taken, ups := m.carryOwed(c, false, out)
 	if d == nil {
 		return nil

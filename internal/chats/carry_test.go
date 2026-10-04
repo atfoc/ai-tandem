@@ -322,7 +322,7 @@ func TestHumanCarryingTurnSettled(t *testing.T) {
 			if tc.note == "" && len(errs) != 1 || tc.note != "" && (len(errs) != 2 || errs[1] != tc.note) {
 				t.Fatalf("error notes %q, want one more: %q", errs, tc.note)
 			}
-			if got := diskItems(t, e.m.itemsPath(id)); tc.note != "" && (len(got) != len(items) || got[len(got)-1].Text != tc.note) {
+			if got := diskItems(t, e.m.itemsPath(id)); tc.note != "" && (len(got) != len(items) || lastNote(got) != tc.note) {
 				t.Fatalf("the note was not written: %+v", got)
 			}
 			if rows := resultRows(items); len(rows) != 1 || rows[0] != owed.ID {

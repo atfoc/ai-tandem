@@ -27,6 +27,7 @@ type Spawner struct {
 	// OnCatalog is not used; catalogs come back as EvCatalog.
 
 	ctxInterval time.Duration // context poll interval; 0 = 1 s (tests shorten it)
+	forkTimeout time.Duration // tests: SpawnFork's time box; 0 = agent.ForkTimeout
 
 	mu   sync.Mutex
 	last *model.Catalog // the last catalog Cursor reported, for a resumed session's catalog Default
@@ -106,6 +107,16 @@ type proc struct {
 
 // Spawn starts `agent acp` in the chat's folder; the handshake continues in the background.
 func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
+	p, err := s.start(o, time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// start is Spawn. With a deadline, every call of the handshake fails once it has passed
+// (SpawnFork, which waits for the handshake).
+func (s *Spawner) start(o agent.SpawnOptions, deadline time.Time) (*proc, error) {
 	if fi, err := os.Stat(o.Cwd); err != nil || !fi.IsDir() {
 		return nil, agent.ErrFolderMissing
 	}
@@ -131,6 +142,7 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	p.ctx.interval = s.ctxInterval
 	conn.OnNotify = p.onUpdate
 	conn.OnRequest = p.onRequest
+	conn.SetDeadline(deadline)
 	p.gate.RLock()
 	go p.handshake()
 	go func() {
@@ -302,9 +314,12 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 		defer p.gate.RUnlock()
 		res, err := p.conn.Call("session/prompt", map[string]any{"sessionId": p.sessionID, "prompt": prompt})
 		p.ctx.stopPolling()
-		p.readCtx() // one final read after every turn, errors included
+		// One final read after every turn, errors included. The root it finds is the turn's fork
+		// point: only this read, after the prompt returned, names the end of the turn (a turn
+		// writes several roots, and the poller can see any of them).
+		point := p.readCtx()
 		if err != nil {
-			p.emit(agent.Event{Kind: agent.EvTurnEnd, Error: err.Error()})
+			p.emit(agent.Event{Kind: agent.EvTurnEnd, Error: err.Error(), Point: point})
 			return
 		}
 		p.mu.Lock()
@@ -314,7 +329,7 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 			StopReason string `json:"stopReason"`
 		}
 		json.Unmarshal(res, &r)
-		e := agent.Event{Kind: agent.EvTurnEnd, Aborted: r.StopReason == "cancelled"}
+		e := agent.Event{Kind: agent.EvTurnEnd, Aborted: r.StopReason == "cancelled", Point: point}
 		switch r.StopReason {
 		case "end_turn", "cancelled", "max_tokens":
 		default:

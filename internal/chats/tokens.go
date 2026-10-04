@@ -13,7 +13,10 @@ type extraCaller struct {
 
 // Caller is the identity ResolveToken returns for a persisted chat token or a live extra token.
 type Caller struct {
+	// Meta is the meta of the caller's own chat object. For a branch that is the branch's (its ID
+	// the branch's server id), with the archive fields of its top-level chat.
 	Meta     model.ChatMeta
+	Chat     string // the top-level chat id (the client's id for this caller's chat)
 	SID      string // empty for the chat agent
 	Subagent bool
 	Kind     model.AgentKind
@@ -38,8 +41,10 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 		c.mu.Lock()
 		meta := c.meta
 		c.mu.Unlock()
+		meta, chat := m.callerMeta(c, meta)
 		return Caller{
 			Meta:     meta,
+			Chat:     chat,
 			SID:      extra.sid,
 			Subagent: true,
 			Kind:     extra.kind,
@@ -52,8 +57,10 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 		meta := c.meta
 		c.mu.Unlock()
 		if meta.Token == token {
+			meta, chat := m.callerMeta(c, meta)
 			return Caller{
 				Meta:     meta,
+				Chat:     chat,
 				SID:      "",
 				Subagent: false,
 				Kind:     meta.Agent,
@@ -65,8 +72,22 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 	return Caller{}, false
 }
 
+// callerMeta is the meta a caller of the chat object c is known by, and its top-level chat's id:
+// for a branch, its own meta (a copy taken under its lock) with the archive state of its
+// top-level chat, where alone it is kept. No chat's mu may be held.
+func (m *Manager) callerMeta(c *Chat, meta model.ChatMeta) (model.ChatMeta, string) {
+	if c.top == nil {
+		return meta, meta.ID
+	}
+	c.top.mu.Lock()
+	defer c.top.mu.Unlock()
+	meta.Archive = c.top.meta.Archive
+	return meta, c.top.meta.ID
+}
+
 // ByToken finds the chat whose MCP credential is token, including a live extra token
 // (which resolves to the parent chat, so board-parent sub board tools still hit the parent board).
+// A branch's token gives the branch's meta (see Caller).
 func (m *Manager) ByToken(token string) (model.ChatMeta, bool) {
 	caller, ok := m.ResolveToken(token)
 	return caller.Meta, ok

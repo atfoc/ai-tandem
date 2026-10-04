@@ -148,6 +148,38 @@ func TestReadContextUsageErrors(t *testing.T) {
 	}
 }
 
+// The root id comes with the usage read: also when the root has no usage, not when there is no
+// root to read.
+func TestReadUsageRoot(t *testing.T) {
+	needSQLite(t)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	const format = "Cursor session store has an unexpected format"
+	cases := []struct {
+		name     string
+		sql      string
+		wantRoot string
+		wantErr  string
+	}{
+		{"usage", goodMeta() + blobRow(testBlobID, sampleRoot(15989, 272000)), testBlobID, ""},
+		{"root without usage", goodMeta() + blobRow(testBlobID, cat(pbBytes(1, []byte("x")), pbUint(3, 7))), testBlobID, format},
+		{"no blob row", goodMeta(), "", format},
+		{"no meta row", blobRow(testBlobID, sampleRoot(15989, 272000)), "", format},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			makeStore(t, home, c.sql)
+			u, root, err := readUsageRootAt("sqlite3", StorePath(home, testSessionID))
+			if root != c.wantRoot || (err == nil) != (c.wantErr == "") || (err != nil && err.Error() != c.wantErr) {
+				t.Fatalf("got %+v, %q, %v; want root %q, error %q", u, root, err, c.wantRoot, c.wantErr)
+			}
+			if err == nil && u != (ContextUsage{Used: 15989, Max: 272000}) {
+				t.Fatalf("usage %+v", u)
+			}
+		})
+	}
+}
+
 func TestReadContextUsageSQLiteFails(t *testing.T) {
 	needSQLite(t)
 	t.Setenv("CURSOR_CONFIG_DIR", "")

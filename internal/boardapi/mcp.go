@@ -44,10 +44,11 @@ type Relay struct {
 // Errors come back as text too (isErr = true), so the agent can tell the user.
 // Spawn-family tools must not go through Call (that path is the 30s board-tool bridge).
 func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isErr bool) {
-	meta, ok := r.Chats.ByToken(token)
+	caller, ok := r.Chats.ResolveToken(token)
 	if !ok {
 		return "unknown board token", true
 	}
+	meta := caller.Meta
 	if meta.Archived {
 		return "this chat is archived", true
 	}
@@ -58,8 +59,9 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 		return "unknown tool " + tool, true
 	}
 	bd, _ := r.Boards.Get(meta.Board)
+	// The client knows the chat by its top-level id, also when a branch's agent calls.
 	out, err := r.Bridge.Call("tool", map[string]any{
-		"chat": meta.ID, "board": bd.ID, "name": tool, "args": args,
+		"chat": caller.Chat, "board": bd.ID, "name": tool, "args": args,
 	}, callTimeout)
 	if errors.Is(err, editorbridge.ErrNoClient) {
 		return NoClientText, true
@@ -299,6 +301,8 @@ func (r *Relay) dispatch(token, name string, args json.RawMessage) (text string,
 	return "unknown tool " + name, true
 }
 
+// callSpawnFamily runs a spawn-family tool on the caller's own chat object: caller.Meta.ID, a
+// branch's server id for a branch.
 func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawMessage) (string, bool) {
 	switch name {
 	case "spawn_subagent":
@@ -382,11 +386,12 @@ func parseStopArgs(args json.RawMessage) (string, error) {
 	return p.SID, nil
 }
 
-// chatKey resolves a credential to its short chat id and tracker key. An unknown or empty
-// credential maps to the constant unknown marker; the credential itself is never returned.
+// chatKey resolves a credential to its short chat id and tracker key: the top-level chat's, also
+// for a branch's credential. An unknown or empty credential maps to the constant unknown marker;
+// the credential itself is never returned.
 func (r *Relay) chatKey(token string) (label, key string) {
-	if meta, ok := r.Chats.ByToken(token); ok {
-		return short(meta.ID), meta.ID
+	if caller, ok := r.Chats.ResolveToken(token); ok {
+		return short(caller.Chat), caller.Chat
 	}
 	return unknownContact, unknownContact
 }

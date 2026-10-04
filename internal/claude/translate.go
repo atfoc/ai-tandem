@@ -36,6 +36,7 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 	case "stream_event":
 		return p.streamEvent(obj(m["event"]))
 	case "assistant":
+		p.point = str(m["uuid"])
 		msg := obj(m["message"])
 		id := str(msg["id"])
 		// An API error is the CLI's own message, not text the model wrote: the errored result that
@@ -57,6 +58,7 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		}
 		return evs
 	case "user":
+		p.point = str(m["uuid"]) // also the "[Request interrupted by user]" line of a stopped turn
 		var evs []agent.Event
 		for _, c := range list(obj(m["message"])["content"]) {
 			b := obj(c)
@@ -69,6 +71,10 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		}
 		return evs
 	case "result":
+		// The turn's fork point is the uuid of its last session entry, never message.id or this
+		// line's own uuid (neither names an entry).
+		point := p.point
+		p.point = ""
 		orphan := p.orphan
 		p.orphan = false
 		if orphan && num(m["num_turns"]) == 0 {
@@ -102,7 +108,7 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		}
 		return []agent.Event{
 			{Kind: agent.EvUsage, CtxWindow: win},
-			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText},
+			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText, Point: point},
 		}
 	}
 	return nil
@@ -318,3 +324,11 @@ func obj(v any) map[string]any { m, _ := v.(map[string]any); return m }
 func list(v any) []any         { l, _ := v.([]any); return l }
 func str(v any) string         { s, _ := v.(string); return s }
 func num(v any) float64        { f, _ := v.(float64); return f }
+
+// first is the first element of a JSON list; nil for anything else.
+func first(v any) any {
+	if l := list(v); len(l) > 0 {
+		return l[0]
+	}
+	return nil
+}

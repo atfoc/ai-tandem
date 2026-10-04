@@ -24,19 +24,30 @@ func TestViewOfHidesSecrets(t *testing.T) {
 		InstructionsSent:    true,
 		McpInstructionsSent: true,
 		Usage:               Usage{Turns: 3},
+		ForkSource:          &ForkSource{Chat: "c0", Session: "sess-SECRET-3", Point: "point-SECRET-4", Next: "next-SECRET-5", Items: 7},
+		ForkedFrom:          "c0",
+		ForkedFromTitle:     "Old chat",
 	}
 	v := ViewOf(m, StatusTool, "Bash", "", true)
+	if v != ViewOf(m, StatusTool, "Bash", "", true) { // ChatView is comparable
+		t.Error("two views of the same chat differ")
+	}
+	if v.ForkedFrom != "c0" || v.ForkedFromTitle != "Old chat" || v.Branches != 0 || v.Branch != "" {
+		t.Errorf("view %+v", v)
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, bad := range []string{"tok-SECRET-2", "sess-SECRET-1", "token", "sessionId", "turnActive", "mcpInstructionsSent"} {
+	for _, bad := range []string{"tok-SECRET-2", "sess-SECRET-1", "token", "sessionId", "turnActive", "mcpInstructionsSent",
+		"forkSource", "sess-SECRET-3", "point-SECRET-4", "next-SECRET-5", `"branches"`, `"branch"`} {
 		if strings.Contains(s, bad) {
 			t.Errorf("view JSON contains %q: %s", bad, s)
 		}
 	}
-	for _, want := range []string{`"id":"c1"`, `"agent":"cursor"`, `"board":"b_abc"`, `"locked":true`, `"status":"tool"`, `"statusTool":"Bash"`, `"folderMissing":true`, `"turns":3`, `"instructionsSent":true`} {
+	for _, want := range []string{`"id":"c1"`, `"agent":"cursor"`, `"board":"b_abc"`, `"locked":true`, `"status":"tool"`, `"statusTool":"Bash"`, `"folderMissing":true`, `"turns":3`, `"instructionsSent":true`,
+		`"forkedFrom":"c0"`, `"forkedFromTitle":"Old chat"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("view JSON missing %s: %s", want, s)
 		}
@@ -245,5 +256,52 @@ func TestSubDeliveryOwed(t *testing.T) {
 	b, err := json.Marshal([]SubDelivery{SubOwed, SubOwedAgain, SubSent, SubGivenUp})
 	if err != nil || string(b) != `["owed","retry","sent","given-up"]` {
 		t.Fatalf("%s %v", b, err)
+	}
+}
+
+// The fork and tree types are read by the web client and kept on disk: their JSON is fixed.
+func TestForkAndTreeJSON(t *testing.T) {
+	before := 3
+	for _, tc := range []struct {
+		v    any
+		want string
+	}{
+		{Item{Kind: "end"}, `{"kind":"end"}`},
+		{Item{Kind: "end", Point: "p1"}, `{"kind":"end","point":"p1"}`},
+		{ForkSource{Chat: "c0", Session: "s0"}, `{"chat":"c0","session":"s0","items":0}`},
+		{ForkSource{Chat: "c0", Session: "s0", Point: "p1", Next: "p2", Items: 3},
+			`{"chat":"c0","session":"s0","point":"p1","next":"p2","items":3}`},
+		{ChatMeta{ID: "c1", Agent: Claude, ForkedFrom: "c0", ForkedFromTitle: "Old chat", ForkSource: &ForkSource{Chat: "c0", Session: "s0", Items: 3}},
+			`{"id":"c1","agent":"claude","cwd":"","model":"","locked":false,"created":"0001-01-01T00:00:00Z",` +
+				`"usage":{"ctxIn":0,"ctxOut":0,"ctxWindow":0,"turns":0},` +
+				`"forkSource":{"chat":"c0","session":"s0","items":3},"forkedFrom":"c0","forkedFromTitle":"Old chat"}`},
+		{ChatView{ID: "c1", Agent: Claude, Status: StatusReady, Branches: 2, Branch: "br1", ForkedFrom: "c0", ForkedFromTitle: "Old chat"},
+			`{"id":"c1","agent":"claude","cwd":"","model":"","locked":false,"created":"0001-01-01T00:00:00Z",` +
+				`"usage":{"ctxIn":0,"ctxOut":0,"ctxWindow":0,"turns":0},"status":"ready",` +
+				`"branches":2,"branch":"br1","forkedFrom":"c0","forkedFromTitle":"Old chat"}`},
+		{Tree{Branches: []TreeBranch{{ID: "br1", From: MainBranch, At: 3}}}, `{"branches":[{"id":"br1","from":"main","at":3}]}`},
+		{Tree{Branches: []TreeBranch{{ID: "br1", From: "main", At: 0}}, Labels: []TreeLabel{{Branch: "main", Item: 0, Text: "start"}}, Current: "br1"},
+			`{"branches":[{"id":"br1","from":"main","at":0}],"labels":[{"branch":"main","item":0,"text":"start"}],"current":"br1"}`},
+		{TreeView{Current: "main", Labels: []TreeLabel{}, Branches: []TreeBranchView{
+			{ID: "main", Len: 4, Items: []TreeItem{
+				{I: 0, Kind: "user", Text: "hi", Before: new(int), OK: true},
+				{I: 1, Kind: "text", Text: "hello", Done: true, End: 3, OK: true},
+				{I: 3, Kind: "user", Text: "again", Before: &before},
+				{I: 4, Kind: "text", Text: ""}}},
+			{ID: "br1", From: "main", At: 3, Len: 3, Items: []TreeItem{}}}},
+			`{"current":"main","branches":[{"id":"main","at":0,"len":4,"items":[` +
+				`{"i":0,"kind":"user","text":"hi","before":0,"ok":true},` +
+				`{"i":1,"kind":"text","text":"hello","done":true,"end":3,"ok":true},` +
+				`{"i":3,"kind":"user","text":"again","before":3},` +
+				`{"i":4,"kind":"text","text":""}]},` +
+				`{"id":"br1","from":"main","at":3,"len":3,"items":[]}],"labels":[]}`},
+	} {
+		b, err := json.Marshal(tc.v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != tc.want {
+			t.Errorf("%T:\n got %s\nwant %s", tc.v, b, tc.want)
+		}
 	}
 }

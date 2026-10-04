@@ -172,6 +172,51 @@ func TestTurnEndNotes(t *testing.T) {
 	}
 }
 
+func TestAddEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c", "items.jsonl")
+	tr := New(path)
+	tr.AddUser("a", "", nil)
+	tr.Apply(agent.Event{Kind: agent.EvText, Text: "x"})
+	tr.Apply(agent.Event{Kind: agent.EvTurnEnd})
+	ver := tr.Version()
+	ups := tr.AddEnd("p1")
+	want := model.Item{Kind: "end", Point: "p1"}
+	if len(ups) != 1 || ups[0].Index != 2 || !reflect.DeepEqual(ups[0].Item, want) {
+		t.Fatalf("updates %+v", ups)
+	}
+	if tr.Version() != ver+1 || status(tr) != model.StatusReady {
+		t.Errorf("version %d → %d, status %q", ver, tr.Version(), status(tr))
+	}
+
+	// A mark is settled: Flush(false) writes it.
+	if err := tr.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `{"i":2,"item":{"kind":"end","point":"p1"}}`) {
+		t.Fatalf("items.jsonl:\n%s", raw)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items(got), items(tr)) || !reflect.DeepEqual(items(got)[2], want) {
+		t.Fatalf("loaded %+v\nwant %+v", items(got), items(tr))
+	}
+
+	// A mark with no id, added mid-turn, leaves the status alone.
+	tr.AddUser("b", "", nil)
+	if ups := tr.AddEnd(""); len(ups) != 1 || ups[0].Index != 4 || !reflect.DeepEqual(ups[0].Item, model.Item{Kind: "end"}) {
+		t.Fatalf("updates %+v", ups)
+	}
+	if status(tr) != model.StatusThinking {
+		t.Errorf("AddEnd changed the status to %q", status(tr))
+	}
+	if b, _ := json.Marshal(items(tr)[4]); string(b) != `{"kind":"end"}` {
+		t.Errorf("mark %s", b)
+	}
+}
+
 func TestExitWhileBusy(t *testing.T) {
 	tr := newT(t)
 	tr.AddUser("go", "", nil)
@@ -756,4 +801,93 @@ func TestAddSubResult(t *testing.T) {
 	if ups := back.AddSubResult("s2"); ups != nil || len(items(back)) != 3 {
 		t.Fatalf("row added again after a load %+v", ups)
 	}
+}
+
+func TestWriteItems(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "c")
+	path := filepath.Join(dir, "items.jsonl")
+	res := "42 files"
+	want := []model.Item{
+		{Kind: "user", Text: "hi", Context: "ctx"},
+		{Kind: "tool", ToolID: "t1", Name: "Agent", Input: json.RawMessage(`{"a":1}`), Result: &res, Subagent: "abc123"},
+		{}, // a hole
+		{Kind: "text", Text: "done", Done: true},
+		{Kind: "end", Point: "p1"},
+		{Kind: "user", Text: "more", References: []model.Reference{{Quote: "done", Comment: "why", Item: 3, Start: 0, End: 4}}},
+		{Kind: "tool", ToolID: "t2", Name: "Read"}, // still running
+		{}, // a trailing hole
+	}
+	// A file already there is replaced, not appended to.
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"i":9,"item":{"kind":"note","text":"old"}}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteItems(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items(got), want[:7]) {
+		t.Fatalf("loaded %+v\nwant %+v", items(got), want[:7])
+	}
+	if got.tools["t1"] != 1 || got.tools["t2"] != 6 {
+		t.Errorf("tools map %+v", got.tools)
+	}
+
+	// One line per item, in index order, none for a hole.
+	raw, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	var idx []int
+	for _, l := range lines {
+		var ln line
+		if err := json.Unmarshal([]byte(l), &ln); err != nil {
+			t.Fatalf("line %q: %v", l, err)
+		}
+		idx = append(idx, ln.I)
+	}
+	if !reflect.DeepEqual(idx, []int{0, 1, 3, 4, 5, 6}) {
+		t.Fatalf("indexes %v:\n%s", idx, raw)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0600 {
+		t.Errorf("mode %v %v", fi.Mode(), err)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 1 {
+		t.Errorf("files left beside items.jsonl: %v", ents)
+	}
+}
+
+func TestWriteItemsNothingToWrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "c")
+	path := filepath.Join(dir, "items.jsonl")
+	for _, its := range [][]model.Item{nil, {{}, {}}} {
+		if err := WriteItems(path, its); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("WriteItems(%+v) touched the disk: %v", its, err)
+		}
+	}
+	// An existing file is left alone.
+	if err := WriteItems(path, []model.Item{{Kind: "note", Text: "kept"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteItems(path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if its := items(mustLoad(t, path)); len(its) != 1 || its[0].Text != "kept" {
+		t.Fatalf("items %+v", its)
+	}
+}
+
+func mustLoad(t *testing.T, path string) *Transcript {
+	t.Helper()
+	tr, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tr
 }

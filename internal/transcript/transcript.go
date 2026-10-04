@@ -16,6 +16,7 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/store"
 )
 
 type Transcript struct {
@@ -116,6 +117,31 @@ func Load(path string) (*Transcript, error) {
 	return t, nil
 }
 
+// WriteItems writes a clean items.jsonl from a final item list: one line per item under its own
+// index (its position in items); empty items (holes) are skipped. A file already at path is
+// replaced. A list with nothing to write writes no file and leaves an existing one alone.
+func WriteItems(path string, items []model.Item) error {
+	var buf bytes.Buffer
+	for i, it := range items {
+		if it.Kind == "" {
+			continue
+		}
+		b, err := json.Marshal(line{I: i, Item: it})
+		if err != nil {
+			return err
+		}
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	if buf.Len() == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return store.WriteFileAtomic(path, buf.Bytes(), 0600)
+}
+
 // Snapshot returns the version and a copy of the items.
 func (t *Transcript) Snapshot() (version int, items []model.Item) {
 	return t.version, append([]model.Item(nil), t.items...)
@@ -168,6 +194,14 @@ func (t *Transcript) AddSubResult(sid string) []Update {
 	}
 	u := t.push(model.Item{Kind: "subresult", Subagent: sid})
 	t.results[sid] = u.Index
+	t.dirty[u.Index] = true
+	return []Update{u}
+}
+
+// AddEnd adds the end mark of a turn, carrying the provider's fork-point id (may be ""). The mark
+// is a settled item: Flush writes it.
+func (t *Transcript) AddEnd(point string) []Update {
+	u := t.push(model.Item{Kind: "end", Point: point})
 	t.dirty[u.Index] = true
 	return []Update{u}
 }
@@ -451,7 +485,7 @@ func (t *Transcript) Flush(all bool) error {
 }
 
 // settled reports whether an item is final: user item, finished text, tool with a result or
-// denial, decided permission, note, subagent result row.
+// denial, decided permission, note, subagent result row, end mark.
 func settled(it model.Item) bool {
 	switch it.Kind {
 	case "text":

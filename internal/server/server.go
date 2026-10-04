@@ -101,9 +101,9 @@ func ok(w http.ResponseWriter) { writeJSON(w, map[string]any{"ok": true}) }
 func statusOf(err error, fallback int) int {
 	switch {
 	case errors.Is(err, boards.ErrNotFound), errors.Is(err, chats.ErrNotFound),
-		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, app.ErrGroupNotFound):
+		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, chats.ErrNoBranch), errors.Is(err, app.ErrGroupNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, chats.ErrBadReference):
+	case errors.Is(err, chats.ErrBadReference), errors.Is(err, chats.ErrBadLabel), errors.Is(err, chats.ErrBadPoint):
 		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
@@ -474,8 +474,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, cv)
 	})
+	// The thread of one branch of the chat: ?branch=<branch id>, without it the current branch.
+	// "branch" in the answer is the branch served.
 	mux.HandleFunc("GET /api/chats/{id}/items", func(w http.ResponseWriter, r *http.Request) {
-		v, items, subs, err := a.Chats.Items(r.PathValue("id"))
+		branch, v, items, subs, err := a.Chats.ItemsOf(r.PathValue("id"), r.URL.Query().Get("branch"))
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -486,10 +488,10 @@ func (s *Server) Handler() http.Handler {
 		if subs == nil {
 			subs = []model.Subagent{}
 		}
-		writeJSON(w, map[string]any{"version": v, "items": items, "subagents": subs})
+		writeJSON(w, map[string]any{"branch": branch, "version": v, "items": items, "subagents": subs})
 	})
 	mux.HandleFunc("GET /api/chats/{id}/subagents/{sid}/items", func(w http.ResponseWriter, r *http.Request) {
-		v, items, err := a.Chats.SubItems(r.PathValue("id"), r.PathValue("sid"))
+		v, items, err := a.Chats.SubItemsOf(r.PathValue("id"), r.URL.Query().Get("branch"), r.PathValue("sid"))
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -509,6 +511,55 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, split)
 	})
+	// The chat's whole tree: every branch's messages and replies, and the labels. It reads the
+	// branches' files and loads nothing.
+	mux.HandleFunc("GET /api/chats/{id}/tree", func(w http.ResponseWriter, r *http.Request) {
+		tv, err := a.Chats.Tree(r.PathValue("id"))
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, tv)
+	})
+	// Names a message or a reply; blank text removes the name. Answers all the chat's labels.
+	mux.HandleFunc("PUT /api/chats/{id}/label", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Branch string
+			Item   *int
+			Text   string
+		}
+		if !readJSON(w, r, &body) {
+			return
+		}
+		if body.Item == nil {
+			writeError(w, http.StatusBadRequest, "item is missing")
+			return
+		}
+		labels, err := a.Chats.SetLabel(r.PathValue("id"), body.Branch, *body.Item, body.Text)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"labels": labels})
+	})
+	// Makes a new chat holding a branch's first "at" items, in a session forked there. With
+	// "message", that user message is left out and becomes the new chat's draft (Fork and edit).
+	mux.HandleFunc("POST /api/chats/{id}/fork", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Branch  string
+			At      int
+			Message *int
+		}
+		if !readJSON(w, r, &body) {
+			return
+		}
+		v, err := a.Chats.Fork(r.PathValue("id"), chats.ForkReq{Branch: body.Branch, At: body.At, Message: body.Message})
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, v)
+	})
 	mux.HandleFunc("POST /api/chats/{id}/open", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.Chats.Open(r.PathValue("id")); err != nil {
 			fail(w, err, http.StatusInternalServerError)
@@ -516,15 +567,24 @@ func (s *Server) Handler() http.Handler {
 		}
 		ok(w)
 	})
+	// Sends a message on the chat's current branch. With "target" it goes to a point of one of the
+	// chat's branches instead: that branch is carried on, or a new branch starts there.
 	mux.HandleFunc("POST /api/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text, Context string
 			References    []model.Reference
+			Target        *chats.Target
 		}
 		if !readJSON(w, r, &body) {
 			return
 		}
-		if err := a.Chats.Send(r.PathValue("id"), body.Text, body.Context, body.References); err != nil {
+		var err error
+		if body.Target != nil {
+			err = a.Chats.SendTo(r.PathValue("id"), *body.Target, body.Text, body.Context, body.References)
+		} else {
+			err = a.Chats.Send(r.PathValue("id"), body.Text, body.Context, body.References)
+		}
+		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
 		}

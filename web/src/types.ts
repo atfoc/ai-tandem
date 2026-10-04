@@ -6,6 +6,9 @@ export type AgentKind = "claude" | "cursor" | "pi";
 /** The group id of the ungrouped area (model.Ungrouped). */
 export const UNGROUPED = "__ungrouped__";
 
+/** The id of a chat's first branch. */
+export const MAIN = "main";
+
 /** The order agents are offered in, everywhere. */
 export const AGENT_ORDER: AgentKind[] = ["claude", "cursor", "pi"];
 
@@ -168,6 +171,10 @@ export type ChatView = Archive & {
   // From the chat's subagent records; both absent (0) for a chat not opened since the server started.
   subsRunning?: number; // app-spawned subagents still running
   subsOwed?: number;    // finished ones whose result the agent has not received
+  branches?: number;        // how many branches the chat has; absent when one
+  branch?: string;          // the current branch; absent when it is MAIN
+  forkedFrom?: string;      // the chat this one was forked from
+  forkedFromTitle?: string; // that chat's title when it was forked
 };
 
 /** The message typed in a chat's composer and not sent yet; the server clears it on send. */
@@ -189,7 +196,7 @@ export type Reference = {
 
 /** One entry of a chat's thread. */
 export type Item = {
-  kind: "user" | "text" | "tool" | "perm" | "note" | "subresult";
+  kind: "user" | "text" | "tool" | "perm" | "note" | "subresult" | "end";
   text?: string;
   context?: string;
   references?: Reference[]; // user
@@ -206,7 +213,34 @@ export type Item = {
   decided?: "" | "allow" | "deny";
   tone?: "muted" | "error";
   subagent?: string; // tool: the sid it started; perm: the sid that asked; subresult: the sid whose result was carried
+  point?: string; // end: the agent's id for the point after the turn; "" when it has none
 };
+
+// ---- chat forking: GET /api/chats/{id}/tree
+
+/** A label on a message, keyed by the branch that owns the item (the one whose own part holds it). */
+export type TreeLabel = { branch: string; item: number; text: string };
+
+/** A message in a branch's own part, with its index in the branch's items. end: the item count
+ *  after the turn this reply closes; before: the count before this user message; ok: whether that
+ *  point can be gone to. */
+export type TreeItem = { i: number; kind: "user" | "text"; text: string; done?: boolean; end?: number; before?: number; ok?: boolean };
+
+/** A branch: split from branch `from` at item count `at` (MAIN: no from, at 0), `len` items long.
+ *  items holds only its own part (index >= at), and only messages and replies. */
+export type TreeBranchView = { id: string; from?: string; at: number; len: number; items: TreeItem[] };
+
+export type TreeView = { current: string; branches: TreeBranchView[]; labels: TreeLabel[] };
+
+/** A point a message is sent to: a branch, an item count, and whether a new branch is asked for. */
+export type Target = { branch: string; at: number; new: boolean };
+
+/** What a composer holds. */
+export type Held = { text: string; mentions: { name: string; id: string }[]; references: Reference[] };
+
+/** A move chosen and not sent yet: held is what the composer held before it (for Back), put what
+ *  the move put there (Branch and edit: the message and its quotes), null when it put nothing. */
+export type PendingMove = Target & { held: Held; put: Held | null };
 
 export type SubStatus = "running" | "completed" | "failed" | "stopped";
 

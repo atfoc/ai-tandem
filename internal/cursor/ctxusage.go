@@ -71,21 +71,28 @@ func ReadContextUsage(sqlite, home, sessionID string) (ContextUsage, error) {
 
 // readUsageAt reads the store at db; see ReadContextUsage.
 func readUsageAt(sqlite, db string) (ContextUsage, error) {
-	blob, err := readRootAt(sqlite, db)
+	u, _, err := readUsageRootAt(sqlite, db)
+	return u, err
+}
+
+// readUsageRootAt is readUsageAt that also returns the id of the root blob it read (the store's
+// latestRootBlobId): "" when the root could not be read, set even when the root has no usage.
+func readUsageRootAt(sqlite, db string) (ContextUsage, string, error) {
+	root, blob, err := readRootAt(sqlite, db)
 	if err != nil {
-		return ContextUsage{}, err
+		return ContextUsage{}, "", err
 	}
 	u, ok := decodeTokenDetails(blob)
 	if !ok {
-		return ContextUsage{}, errors.New(errStoreFormat)
+		return ContextUsage{}, root, errors.New(errStoreFormat)
 	}
-	return u, nil
+	return u, root, nil
 }
 
 // ReadContextSplit reads the chat's context split from its session store: token_details'
 // categories, in Cursor's order, and the room left as "free". No process is needed.
 func (s *Spawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, error) {
-	blob, err := readRootAt(s.sqlite(), StorePath(s.Home, o.SessionID))
+	_, blob, err := readRootAt(s.sqlite(), StorePath(s.Home, o.SessionID))
 	if err != nil {
 		return model.ContextSplit{}, err
 	}
@@ -96,39 +103,40 @@ func (s *Spawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, er
 	return split, nil
 }
 
-// readRootAt returns the latest root blob (a ConversationStateStructure) of the store at db.
-func readRootAt(sqlite, db string) ([]byte, error) {
+// readRootAt returns the latest root blob (a ConversationStateStructure) of the store at db, and
+// its id.
+func readRootAt(sqlite, db string) (id string, blob []byte, err error) {
 	if _, err := os.Stat(db); err != nil {
-		return nil, errors.New(errStoreNotFound)
+		return "", nil, errors.New(errStoreNotFound)
 	}
 	if _, err := exec.LookPath(sqlite); err != nil {
-		return nil, errors.New(errSQLiteNotFound)
+		return "", nil, errors.New(errSQLiteNotFound)
 	}
 
 	out, err := runSQLite(sqlite, db, "SELECT value FROM meta WHERE key = '0';")
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	metaJSON, err := hex.DecodeString(out)
 	if err != nil || len(metaJSON) == 0 {
-		return nil, errors.New(errStoreFormat)
+		return "", nil, errors.New(errStoreFormat)
 	}
 	var meta struct {
 		LatestRootBlobID string `json:"latestRootBlobId"`
 	}
 	if err := json.Unmarshal(metaJSON, &meta); err != nil || !blobIDRe.MatchString(meta.LatestRootBlobID) {
-		return nil, errors.New(errStoreFormat)
+		return "", nil, errors.New(errStoreFormat)
 	}
 
 	out, err = runSQLite(sqlite, db, "SELECT hex(data) FROM blobs WHERE id = '"+meta.LatestRootBlobID+"';")
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	blob, err := hex.DecodeString(out)
+	blob, err = hex.DecodeString(out)
 	if err != nil || len(blob) == 0 {
-		return nil, errors.New(errStoreFormat)
+		return "", nil, errors.New(errStoreFormat)
 	}
-	return blob, nil
+	return meta.LatestRootBlobID, blob, nil
 }
 
 // ctxPoller re-reads the context usage while a turn runs: a ticker goroutine (1 s by default), at
@@ -188,26 +196,29 @@ func (c *ctxPoller) stopPolling() {
 }
 
 // readCtx reads the session's context usage and sends it as EvUsage, or its error as
-// EvUsage{CtxError}. It waits for a read that is already running.
-func (p *proc) readCtx() {
+// EvUsage{CtxError}. It waits for a read that is already running. It returns the id of the root
+// blob it read, "" when the store could not be read.
+func (p *proc) readCtx() string {
 	p.ctx.read.Lock()
 	defer p.ctx.read.Unlock()
-	p.readCtxLocked(false)
+	return p.readCtxLocked(false)
 }
 
 // readCtxLocked does one read with p.ctx.read held; onlyChanged drops a result equal to the last.
-func (p *proc) readCtxLocked(onlyChanged bool) {
+func (p *proc) readCtxLocked(onlyChanged bool) (root string) {
 	e := agent.Event{Kind: agent.EvUsage}
-	if u, err := ReadContextUsage(p.s.sqlite(), p.s.Home, p.sessionID); err != nil {
+	u, root, err := readUsageRootAt(p.s.sqlite(), StorePath(p.s.Home, p.sessionID))
+	if err != nil {
 		e.CtxError = err.Error()
 	} else {
 		e.CtxIn, e.CtxWindow = u.Used, u.Max
 	}
 	if onlyChanged && p.ctx.hasLast && p.ctx.last.CtxIn == e.CtxIn && p.ctx.last.CtxWindow == e.CtxWindow && p.ctx.last.CtxError == e.CtxError {
-		return
+		return root
 	}
 	p.ctx.last, p.ctx.hasLast = e, true
 	p.emit(e)
+	return root
 }
 
 // pollChild reads a subagent's store every p.ctx.interval (1 s by default) until stopChild.
@@ -279,7 +290,14 @@ func (p *proc) readChildCtx(c *child, onlyChanged bool) {
 func runSQLite(sqlite, db, query string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), sqliteTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, sqlite, db, query)
+	return runSQLiteCtx(ctx, sqlite, "", db, query)
+}
+
+// runSQLiteCtx runs sqlite3 on db with args (SQL or dot-commands, run in order) until ctx ends,
+// in the directory dir ("" = the server's), and returns its trimmed stdout.
+func runSQLiteCtx(ctx context.Context, sqlite, dir, db string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, sqlite, append([]string{db}, args...)...)
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

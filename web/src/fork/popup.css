@@ -1,0 +1,43 @@
+/* Chat forking: the tree popup. */
+.fk-nav-backdrop { position: fixed; inset: 0; z-index: 150; background: var(--backdrop); display: grid; place-items: center; }
+.fk-nav { width: min(760px, calc(100vw - 48px)); height: min(660px, calc(100vh - 64px)); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg); overflow: hidden; }
+.fk-nav-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; color: var(--accent); }
+.fk-nav-head b { color: var(--text); font-weight: 650; }
+.fk-nav-sub { color: var(--muted); font-size: 12px; }
+.fk-filters { display: inline-flex; padding: 2px; border-radius: 7px; background: var(--panel); border: 1px solid var(--line); }
+.fk-filters button { border: 0; background: none; padding: 2px 9px; border-radius: 5px; font-size: 11.5px; color: var(--muted); }
+.fk-filters button.on { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
+.fk-search { flex: none; margin: 0 12px 8px; padding: 6px 10px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; outline: 0; }
+.fk-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.fk-nav-body { position: relative; flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--line); }
+.fk-rows { flex: 1; min-width: 0; overflow-y: auto; padding: 6px 0; }
+.fk-row { display: flex; align-items: center; gap: 6px; padding: 0 12px; height: 25px; cursor: default; white-space: nowrap; }
+.fk-row:hover { background: var(--hover); }
+.fk-row.on { background: var(--accent-soft); }
+.fk-row.off .fk-text { color: var(--muted); }
+.fk-row.path .fk-text { color: var(--text); font-weight: 500; }
+.fk-gutter { flex: none; align-self: stretch; display: flex; }
+.fk-gutter .g { position: relative; width: 16px; flex: none; }
+.fk-gutter .g.pipe::before, .fk-gutter .g.tee::before, .fk-gutter .g.elbow::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; border-left: 1.5px solid color-mix(in srgb, var(--faint) 60%, transparent); }
+.fk-gutter .g.elbow::before { bottom: 50%; }
+.fk-gutter .g.tee::after, .fk-gutter .g.elbow::after { content: ""; position: absolute; left: 7px; right: 0; top: 50%; border-top: 1.5px solid color-mix(in srgb, var(--faint) 60%, transparent); }
+.fk-glyph { flex: none; width: 24px; display: inline-flex; justify-content: center; color: var(--muted); font-size: 12px; }
+.fk-row.k-text .fk-glyph { color: var(--agent); }
+.fk-you { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--accent); }
+.fk-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fk-row.k-tool .fk-text { font: 11.5px var(--mono); }
+.fk-tag { flex: none; font-size: 10.5px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 4px; padding: 0 5px; line-height: 15px; }
+.fk-tag::before { content: "⚑ "; }
+.fk-here { flex: none; font-size: 10.5px; font-weight: 700; color: var(--ok); }
+.fk-end { flex: none; font-size: 10px; color: var(--faint); }
+.fk-none { color: var(--muted); padding: 20px; text-align: center; }
+.fk-err { color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
+.fk-ctx { position: fixed; z-index: 170; width: 0; height: 0; }
+.fk-ctx .menu { top: 2px; min-width: 190px; }
+.fk-ctx .menu-item:disabled { color: var(--faint); background: none; }
+.fk-ctx-note { padding: 5px 10px 4px; max-width: 220px; }
+.fk-nav-foot { flex: none; display: flex; flex-wrap: wrap; gap: 14px; padding: 7px 14px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+.fk-busy { color: var(--warn); }
+
+/* its button in the chat header */
+.fk-tree-btn { flex: none; color: var(--muted); }

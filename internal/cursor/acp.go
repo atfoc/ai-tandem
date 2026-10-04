@@ -36,6 +36,8 @@ type Conn struct {
 	seq     atomic.Int64
 	pending sync.Map // int64 id → chan msg
 
+	deadline atomic.Int64 // Unix nanoseconds; 0 = a Call waits without limit (SetDeadline)
+
 	OnNotify  func(method string, params json.RawMessage)
 	OnRequest func(id json.RawMessage, method string, params json.RawMessage)
 
@@ -133,8 +135,25 @@ func (c *Conn) write(m map[string]any) error {
 	return err
 }
 
-// Call sends a request and waits for its response.
+// SetDeadline puts a time limit on the calls started from now on: a Call with no response at t
+// fails. The request is not withdrawn, so the caller then closes the connection. The zero time
+// removes the limit; ordinary chat calls have none (a turn is one call).
+func (c *Conn) SetDeadline(t time.Time) {
+	if t.IsZero() {
+		c.deadline.Store(0)
+		return
+	}
+	c.deadline.Store(t.UnixNano())
+}
+
+// Call sends a request and waits for its response, until the deadline when one is set.
 func (c *Conn) Call(method string, params any) (json.RawMessage, error) {
+	var late <-chan time.Time
+	if d := c.deadline.Load(); d != 0 {
+		t := time.NewTimer(time.Until(time.Unix(0, d)))
+		defer t.Stop()
+		late = t.C
+	}
 	id := c.seq.Add(1)
 	ch := make(chan msg, 1)
 	c.pending.Store(id, ch)
@@ -143,6 +162,9 @@ func (c *Conn) Call(method string, params any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}
 	select {
+	case <-late:
+		c.pending.Delete(id)
+		return nil, fmt.Errorf("%s: Cursor did not answer in time", method)
 	case m := <-ch:
 		if len(m.Error) > 0 && string(m.Error) != "null" {
 			return nil, fmt.Errorf("%s: %s", method, rpcErrorText(m.Error))

@@ -1,0 +1,9 @@
+/* Chat forking: above the composer. */
+.fk-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 5px 6px 5px 10px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 12px; }
+.fk-banner-text { flex: 1; min-width: 0; color: var(--text); }
+.fk-banner .btn.ghost { color: var(--accent); }
+.fk-banner .btn.ghost:hover { background: var(--bg); }
+
+/* header and sidebar */
+.fk-crumb { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
+.fk-badge { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: 10px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }

@@ -333,36 +333,24 @@ func patchSub(sa *model.Subagent, p *agent.SubInfo, now int64) bool {
 }
 
 // SubItems returns a subagent's thread and its version, reading its items.jsonl the first time.
+// The subagent is one of the chat's current branch.
 func (m *Manager) SubItems(chat, sid string) (int, []model.Item, error) {
-	var out outbox
-	c, err := m.lock(chat)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { c.mu.Unlock(); m.send(out) }()
-	if _, err := m.trOf(c, &out); err != nil {
-		return 0, nil, err
-	}
-	s, ok := c.subs[sid]
-	if !ok {
-		return 0, nil, ErrNoSubagent
-	}
-	tr, err := m.subTr(c, s)
-	if err != nil {
-		return 0, nil, err
-	}
-	v, items := tr.Snapshot()
-	return v, items, nil
+	return m.SubItemsOf(chat, "", sid)
 }
 
-// emitSub queues a subagent's state. c.mu held.
+// emitSub queues a subagent's state, under the top-level chat's id and the branch's. c.mu held.
 func (o *outbox) emitSub(c *Chat, sa model.Subagent) {
-	*o = append(*o, map[string]any{"type": "sub", "chat": c.meta.ID, "subagent": sa})
+	if c.unlisted {
+		return
+	}
+	chat, branch := splitID(c.meta.ID)
+	*o = append(*o, map[string]any{"type": "sub", "chat": chat, "branch": branch, "subagent": sa})
 }
 
 // emitSubItems queues the changed items of a subagent's thread, if any. c.mu held.
 func (o *outbox) emitSubItems(c *Chat, sid string, version int, ups []transcript.Update) {
-	if len(ups) > 0 {
-		*o = append(*o, map[string]any{"type": "sub_items", "chat": c.meta.ID, "sub": sid, "version": version, "updates": ups})
+	if len(ups) > 0 && !c.unlisted {
+		chat, branch := splitID(c.meta.ID)
+		*o = append(*o, map[string]any{"type": "sub_items", "chat": chat, "branch": branch, "sub": sid, "version": version, "updates": ups})
 	}
 }

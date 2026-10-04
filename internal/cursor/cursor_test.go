@@ -1002,6 +1002,104 @@ func TestContextUsagePollsWhileTurnRuns(t *testing.T) {
 	}
 }
 
+// Every turn end carries the store's latest root, as read after session/prompt returned: the
+// turn's fork point.
+func TestTurnEndPoint(t *testing.T) {
+	needSQLite(t)
+	cases := []struct {
+		name    string
+		prompt  []fakeStep
+		aborted bool
+		wantErr string
+	}{
+		{"normal", []fakeStep{{Result: raw(`{"stopReason":"end_turn"}`)}}, false, ""},
+		{"cancelled", []fakeStep{
+			step("update", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "working"}}),
+			{Wait: "session/cancel"},
+			{Result: raw(`{"stopReason":"cancelled"}`)},
+		}, true, ""},
+		{"error stop reason", []fakeStep{{Result: raw(`{"stopReason":"refusal"}`)}}, false, "Cursor stopped: refusal"},
+		{"failed call", []fakeStep{{Error: raw(`{"code":-32603,"message":"Internal error"}`)}}, false, "session/prompt: Internal error"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, fakeScript{"session/prompt": c.prompt})
+			makeStore(t, e.home, goodMeta()+blobRow(testBlobID, sampleRoot(15989, 272000)))
+			a := e.spawn(t, agent.SpawnOptions{})
+			until(t, a, isKind(agent.EvCatalog))
+			send(t, a, "go")
+			if c.aborted {
+				until(t, a, isKind(agent.EvTextDelta)) // the prompt has arrived
+				if err := a.Interrupt(); err != nil {
+					t.Fatalf("Interrupt: %v", err)
+				}
+			}
+			evs := until(t, a, isKind(agent.EvTurnEnd))
+			want := agent.Event{Kind: agent.EvTurnEnd, Aborted: c.aborted, Error: c.wantErr, Point: testBlobID}
+			if end := evs[len(evs)-1]; !reflect.DeepEqual(end, want) {
+				t.Fatalf("turn end %+v, want %+v", end, want)
+			}
+			for _, ev := range evs[:len(evs)-1] {
+				if ev.Point != "" {
+					t.Fatalf("a point on %+v", ev)
+				}
+			}
+		})
+	}
+}
+
+// The point is the root the store has when the prompt returns, not one seen while the turn ran
+// (a turn writes several roots, and the poller reads them).
+func TestTurnEndPointReadAfterPrompt(t *testing.T) {
+	needSQLite(t)
+	other := "9d2c4e6f8a0b1c3d5e7f9a1b2c3d4e5f603b1f0c9a7e5d2b4f6a8c0e1d3f5b7a"
+	e := newEnv(t, fakeScript{"session/prompt": {
+		step("update", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "working"}}),
+		{Wait: "session/cancel"},
+		{Result: raw(`{"stopReason":"end_turn"}`)},
+	}})
+	e.s.ctxInterval = 20 * time.Millisecond
+	makeStore(t, e.home, goodMeta()+blobRow(testBlobID, sampleRoot(15989, 272000))+blobRow(other, sampleRoot(20000, 272000)))
+	a := e.spawn(t, agent.SpawnOptions{})
+	until(t, a, isKind(agent.EvCatalog))
+	send(t, a, "go")
+	// The prompt has arrived and the poller has seen the first root; the turn then writes its
+	// final one and returns.
+	polled, arrived := false, false
+	until(t, a, func(ev agent.Event) bool {
+		polled = polled || (ev.Kind == agent.EvUsage && ev.CtxIn == 15989)
+		arrived = arrived || ev.Kind == agent.EvTextDelta
+		return polled && arrived
+	})
+	meta := hex.EncodeToString([]byte(`{"latestRootBlobId":"` + other + `"}`))
+	if out, err := exec.Command("sqlite3", StorePath(e.home, testSessionID), "UPDATE meta SET value = '"+meta+"' WHERE key = '0';").CombinedOutput(); err != nil {
+		t.Fatalf("sqlite3: %v: %s", err, out)
+	}
+	if err := a.Interrupt(); err != nil { // the fake's cue to answer the prompt
+		t.Fatal(err)
+	}
+	evs := until(t, a, isKind(agent.EvTurnEnd))
+	if end := evs[len(evs)-1]; end.Point != other || end.Error != "" {
+		t.Fatalf("turn end %+v", end)
+	}
+}
+
+// With no readable store the turn end has no point, and the meter's error is what it was.
+func TestTurnEndPointWithoutStore(t *testing.T) {
+	e := newEnv(t, fakeScript{"session/prompt": {{Result: raw(`{"stopReason":"end_turn"}`)}}})
+	a := e.spawn(t, agent.SpawnOptions{})
+	until(t, a, isKind(agent.EvCatalog))
+	send(t, a, "go")
+	evs := without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvThinking)
+	want := []agent.Event{
+		{Kind: agent.EvUsage, CtxError: "Cursor session store not found"},
+		{Kind: agent.EvTurnEnd},
+	}
+	if !reflect.DeepEqual(evs, want) {
+		t.Fatalf("events %+v, want %+v", evs, want)
+	}
+}
+
 func TestCatalogProbe(t *testing.T) {
 	e := newEnv(t, baseScript())
 	seed(t, fakeConfig{SelectedModel: "claude-sonnet-5"})

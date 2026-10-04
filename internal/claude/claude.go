@@ -27,6 +27,8 @@ type Spawner struct {
 	AppRoot string // data folder
 	Home    string
 	Prompt  string // prompts.Claude()
+
+	forkTimeout time.Duration // tests: SpawnFork's time box; 0 = agent.ForkTimeout
 }
 
 const stderrCap = 64 * 1024
@@ -67,6 +69,13 @@ type proc struct {
 	// initID is the id of the initialize request this process wrote, until its answer has been
 	// taken (only touched by the read loop after start).
 	initID string
+	// initDone is closed when the answer to the initialize request has arrived (an error answer
+	// included). early is closed when a result line came before that answer (the process failed at
+	// startup), after earlyErr got the first of its errors[] ("" = none). Both are closed by the
+	// read loop only and are for SpawnFork's wait.
+	initDone chan struct{}
+	early    chan struct{}
+	earlyErr string
 
 	// translate state (only touched by the read loop)
 	curMsg   string
@@ -77,6 +86,7 @@ type proc struct {
 	subModel map[string]string // Agent tool_use id → the subagent's model
 	windows  map[string]int    // model id → context window, from result.modelUsage
 	orphan   bool              // a task_notification came for an agent this process never started
+	point    string            // uuid of the turn's last own assistant or user line so far: its fork point
 }
 
 // Args are the command-line arguments for one chat process.
@@ -198,6 +208,8 @@ func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 		stderr:   &bytes.Buffer{},
 		s:        s,
 		done:     make(chan struct{}),
+		initDone: make(chan struct{}),
+		early:    make(chan struct{}),
 		streamed: map[string]bool{},
 		blocks:   map[int]string{},
 		taskTool: map[string]string{},
@@ -264,6 +276,7 @@ func (p *proc) readLoop(stdout io.Reader) {
 		case "control_response":
 			if resp, _ := m["response"].(map[string]any); p.initID != "" && resp["request_id"] == p.initID {
 				p.initID = "" // one catalog event per process
+				close(p.initDone)
 				// An error answer or an unusable list is no event: the chat does not depend on it.
 				if cat, err := CatalogFromInitialize(sc.Bytes()); err == nil {
 					p.events <- agent.Event{Kind: agent.EvCatalog, Catalog: cat}
@@ -272,6 +285,14 @@ func (p *proc) readLoop(stdout io.Reader) {
 			}
 			p.reply(sc.Bytes()) // answers to our interrupts are dropped: the result line tells the rest
 			continue
+		}
+		if m["type"] == "result" && p.initID != "" {
+			select {
+			case <-p.early: // not the first one
+			default:
+				p.earlyErr = str(first(m["errors"]))
+				close(p.early)
+			}
 		}
 		for _, ev := range p.translate(m) {
 			p.events <- ev

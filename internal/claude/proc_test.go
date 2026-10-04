@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -32,6 +33,7 @@ const (
 	envPad    = "CLAUDE_FAKE_PAD"     // bytes of padding added to the initialize answer
 	envSleep  = "CLAUDE_FAKE_SLEEP"   // set: the test binary only sleeps 30 s (the child of envHold)
 	envRuns   = "CLAUDE_FAKE_RUNS"    // file the fake appends one line per invocation to: its pid and arguments
+	envForkEr = "CLAUDE_FAKE_FORKERR" // text a run with --fork-session among its arguments prints to stderr, exiting at once (status 1) with nothing on stdout; other runs go on
 )
 
 func TestMain(m *testing.M) {
@@ -74,6 +76,10 @@ func helperProcess() {
 			fmt.Fprintln(os.Stderr, os.Getenv(envStderr))
 		}
 		os.Exit(code)
+	}
+	if msg := os.Getenv(envForkEr); msg != "" && slices.Contains(os.Args, "--fork-session") {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(1)
 	}
 	cwd, _ := os.Getwd()
 	rec, _ := json.Marshal(map[string]any{"cwd": cwd, "args": os.Args[1:], "noMemory": os.Getenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY")})

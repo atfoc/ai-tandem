@@ -11,6 +11,7 @@ import { boardChats, groupPath } from "./logic/tree.ts";
 import { AgentGlyph, BoardIcon } from "./icons.tsx";
 import { Resizer } from "./Resizer.tsx";
 import { SubagentDrawer } from "./Subagents.tsx";
+import { TreePopup } from "./fork/TreePopup.tsx";
 import type { Pane as PaneKind } from "./logic/layout.ts";
 import { UNGROUPED } from "./types.ts";
 
@@ -25,7 +26,7 @@ export function App() {
   }, []);
   if (role === "superseded") return <TakeoverScreen />;
   if (role === "waiting") return <WaitingScreen />;
-  return <><Grouped /><ConfirmDialog /></>;
+  return <><Grouped /><TreePopup /><ConfirmDialog /></>;
 }
 
 function Grouped() {
