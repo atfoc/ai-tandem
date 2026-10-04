@@ -422,6 +422,206 @@ func TestSpawnSubagentValidation(t *testing.T) {
 	}
 }
 
+// TestSpawnValueErrors: a rejected model or effort names the agent's list it was checked against
+// and what the model takes, and is the only kind of spawn error typed *SpawnValueError.
+func TestSpawnValueErrors(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+
+	for _, tc := range []struct {
+		name   string
+		req    SpawnSubRequest
+		text   string
+		kind   model.AgentKind
+		model  string
+		effort string
+	}{
+		{"unknown model", SpawnSubRequest{Model: "nope"},
+			`unknown model "nope": not in the claude model list`, model.Claude, "nope", ""},
+		{"unknown model with effort", SpawnSubRequest{Model: "nope", Effort: "high"},
+			`unknown model "nope": not in the claude model list`, model.Claude, "nope", ""},
+		{"effort, model omitted", SpawnSubRequest{Effort: "nope"},
+			`sonnet has no effort "nope": checked against the claude model list; sonnet takes low, medium, high, xhigh, max (default high)`,
+			model.Claude, "sonnet", "nope"},
+		{"effort, model named", SpawnSubRequest{Model: "opus", Effort: "nope"},
+			`opus has no effort "nope": checked against the claude model list; opus takes low, medium, high, xhigh, max (default high)`,
+			model.Claude, "opus", "nope"},
+		{"model without efforts", SpawnSubRequest{Model: "haiku", Effort: "high"},
+			`haiku has no effort "high": checked against the claude model list; haiku takes no effort, so omit effort`,
+			model.Claude, "haiku", "high"},
+		{"cross-agent, model omitted", SpawnSubRequest{Kind: model.Cursor, Effort: "max"},
+			`composer-2 has no effort "max": checked against the cursor model list; composer-2 takes low, high`,
+			model.Cursor, "composer-2", "max"},
+		{"cross-agent, model named", SpawnSubRequest{Kind: model.Cursor, Model: "composer-2", Effort: "max"},
+			`composer-2 has no effort "max": checked against the cursor model list; composer-2 takes low, high`,
+			model.Cursor, "composer-2", "max"},
+		{"cross-agent, model without efforts", SpawnSubRequest{Kind: model.Cursor, Model: "gpt-5.4-mini", Effort: "low"},
+			`gpt-5.4-mini has no effort "low": checked against the cursor model list; gpt-5.4-mini takes no effort, so omit effort`,
+			model.Cursor, "gpt-5.4-mini", "low"},
+		{"cross-agent unknown model", SpawnSubRequest{Kind: model.Cursor, Model: "nope"},
+			`unknown model "nope": not in the cursor model list`, model.Cursor, "nope", ""},
+	} {
+		tc.req.Prompt = "x"
+		_, err := e.m.SpawnSubagent(v.ID, tc.req)
+		if err == nil || err.Error() != tc.text {
+			t.Fatalf("%s: error %v, want %s", tc.name, err, tc.text)
+		}
+		var ve *SpawnValueError
+		if !errors.As(err, &ve) {
+			t.Fatalf("%s: %T is not a *SpawnValueError", tc.name, err)
+		}
+		if ve.Kind != tc.kind || ve.Model != tc.model || ve.Effort != tc.effort {
+			t.Fatalf("%s: %+v, want kind %q model %q effort %q", tc.name, ve, tc.kind, tc.model, tc.effort)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(e.st.P.ChatDir(v.ID), "subagents")); !os.IsNotExist(err) {
+		t.Fatal("a rejected value created a sub folder")
+	}
+	if len(e.subs(v.ID)) != 0 || e.claude.count() != 0 || e.cursor.count() != 0 {
+		t.Fatalf("a rejected value started something: subs %+v, %d claude, %d cursor", e.subs(v.ID), e.claude.count(), e.cursor.count())
+	}
+
+	// The model checked on a same-agent spawn is the chat's own, whatever it is now.
+	if err := e.m.Configure(v.ID, ConfigReq{Model: "haiku"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x", Effort: "high"})
+	var ve *SpawnValueError
+	if !errors.As(err, &ve) || ve.Kind != model.Claude || ve.Model != "haiku" || ve.Effort != "high" ||
+		err.Error() != `haiku has no effort "high": checked against the claude model list; haiku takes no effort, so omit effort` {
+		t.Fatalf("chat on haiku: %v (%+v)", err, ve)
+	}
+}
+
+// TestSpawnValueErrorDefaultMark: the default effort is marked only when the model offers it.
+func TestSpawnValueErrorDefaultMark(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	if err := e.st.Update(func(s *model.State) error {
+		s.Cursor = &model.Catalog{
+			Models: []model.CatalogModel{
+				{ID: "marked", Efforts: []string{"low", "high"}, DefaultEffort: "low"},
+				{ID: "stray", Efforts: []string{"low", "high"}, DefaultEffort: "medium"},
+			},
+			Default: model.ModelChoice{Model: "marked", Effort: "low"},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{
+		"marked": `marked has no effort "max": checked against the cursor model list; marked takes low, high (default low)`,
+		"stray":  `stray has no effort "max": checked against the cursor model list; stray takes low, high`,
+	} {
+		_, err := e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor, Model: id, Effort: "max"})
+		if err == nil || err.Error() != want {
+			t.Fatalf("%s: error %v, want %s", id, err, want)
+		}
+	}
+}
+
+// TestSpawnOtherErrorsUnmarked: no error but a rejected model or effort is a *SpawnValueError.
+func TestSpawnOtherErrorsUnmarked(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	unmarked := func(name string, err error) {
+		t.Helper()
+		var ve *SpawnValueError
+		if err == nil {
+			t.Fatalf("%s: no error", name)
+		}
+		if errors.As(err, &ve) {
+			t.Fatalf("%s: %v is a *SpawnValueError", name, err)
+		}
+	}
+
+	_, err := e.m.SpawnSubagent(v.ID, SpawnSubRequest{})
+	unmarked("empty prompt", err)
+	_, err = e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x", Kind: model.AgentKind("nope")})
+	unmarked("unknown agent", err)
+	if err == nil || err.Error() != `unknown agent "nope"` {
+		t.Fatalf("unknown agent: %v", err)
+	}
+	_, err = e.m.SpawnSubagent("nope", SpawnSubRequest{Prompt: "x"})
+	unmarked("unknown chat", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown chat: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := e.m.Configure(v.ID, ConfigReq{Cwd: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x"})
+	unmarked("missing folder", err)
+	if !errors.Is(err, ErrFolderMissing) {
+		t.Fatalf("missing folder: %v", err)
+	}
+
+	delete(e.m.Spawners, model.Claude)
+	_, err = e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x"})
+	unmarked("missing spawner", err)
+	if err == nil || !strings.Contains(err.Error(), "no spawner") {
+		t.Fatalf("missing spawner: %v", err)
+	}
+
+	if err := e.m.SetArchive(v.ID, model.Archive{Archived: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x"})
+	unmarked("archived", err)
+	if !errors.Is(err, ErrArchived) {
+		t.Fatalf("archived: %v", err)
+	}
+}
+
+// TestSpawnUnknownListAcceptsAnyValue: with no list for the agent, nothing is checked.
+func TestSpawnUnknownListAcceptsAnyValue(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	if err := e.st.Update(func(s *model.State) error {
+		s.Cursor = nil
+		s.Catalogs = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sa, err := e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor, Model: "nonsense", Effort: "nonsense"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sa.Kind != model.Cursor || sa.Model != "nonsense" || sa.Effort != "nonsense" {
+		t.Fatalf("unknown list %+v", sa)
+	}
+	waitChild(t, e.cursor, 1)
+}
+
+// TestConfigureErrorsStayShort: Configure's errors go to the UI picker and carry nothing of the
+// spawn errors' added text or type.
+func TestConfigureErrorsStayShort(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	short := func(err error, want string) {
+		t.Helper()
+		if err == nil || err.Error() != want {
+			t.Fatalf("error %v, want %s", err, want)
+		}
+		var ve *SpawnValueError
+		if errors.As(err, &ve) {
+			t.Fatalf("%v is a *SpawnValueError", err)
+		}
+	}
+
+	short(e.m.Configure(v.ID, ConfigReq{Model: "nope"}), `unknown model "nope"`)
+	if err := e.m.Configure(v.ID, ConfigReq{Model: "haiku"}); err != nil {
+		t.Fatal(err)
+	}
+	short(e.m.Configure(v.ID, ConfigReq{Effort: "high"}), `haiku has no effort "high"`)
+}
+
 func TestSpawnSubagentMissingSpawnerAndFolder(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")

@@ -308,7 +308,7 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 		}
 		sa, err := r.Chats.SpawnSubagent(caller.Meta.ID, req)
 		if err != nil {
-			return err.Error(), true
+			return spawnErrorText(err), true
 		}
 		return fmt.Sprintf("spawned subagent %s (%s)", sa.ID, sa.Status), false
 	case "stop_subagent":
@@ -320,9 +320,21 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 			return err.Error(), true
 		}
 		return "stopped subagent " + sid, false
+	case "list_subagent_models":
+		return r.listSubagentModels(caller, args)
 	default:
 		return "unknown tool " + name, true
 	}
+}
+
+// spawnErrorText is a spawn error as the agent reads it. A model or effort the manager rejected
+// against a known list also says how to find the valid values.
+func spawnErrorText(err error) string {
+	var ve *chats.SpawnValueError
+	if errors.As(err, &ve) {
+		return fmt.Sprintf("%s. Call list_subagent_models with agent %q to see the models and efforts spawn_subagent accepts.", err.Error(), ve.Kind)
+	}
+	return err.Error()
 }
 
 func parseSpawnArgs(args json.RawMessage) (chats.SpawnSubRequest, error) {

@@ -34,7 +34,7 @@ func TestTools(t *testing.T) {
 	if IsTool("rm_rf") {
 		t.Error("IsTool accepted an unknown tool")
 	}
-	for _, tname := range []string{"spawn_subagent", "stop_subagent"} {
+	for _, tname := range []string{"spawn_subagent", "stop_subagent", "list_subagent_models"} {
 		if IsTool(tname) {
 			t.Errorf("IsTool(%q) = true, spawn-family names are not board tools", tname)
 		}
@@ -42,7 +42,7 @@ func TestTools(t *testing.T) {
 }
 
 func TestSpawnFamily(t *testing.T) {
-	want := []string{"spawn_subagent", "stop_subagent"}
+	want := []string{"spawn_subagent", "stop_subagent", "list_subagent_models"}
 	if len(SpawnFamily) != len(want) {
 		t.Fatalf("len(SpawnFamily) = %d, want %d", len(SpawnFamily), len(want))
 	}
@@ -113,5 +113,56 @@ func TestSpawnFamily(t *testing.T) {
 		if strings.Contains(tool.Description, "wait_subagents") || strings.Contains(tool.Summary, "wait_subagents") {
 			t.Errorf("%s still names wait_subagents: %q", tool.Name, tool.Description)
 		}
+	}
+}
+
+// TestSpawnPointsToModelList: spawn_subagent names list_subagent_models where an agent picks a
+// model or effort, and the pointer changes neither the earlier text nor the arguments.
+func TestSpawnPointsToModelList(t *testing.T) {
+	var spawn Tool
+	for _, tool := range SpawnFamily {
+		if tool.Name == "spawn_subagent" {
+			spawn = tool
+			break
+		}
+	}
+	if spawn.Name == "" {
+		t.Fatal("spawn_subagent missing")
+	}
+	const before = "Start one subagent run and return immediately with a receipt naming its sid. " +
+		"The run continues in the background, and there is nothing to call for its result: " +
+		"when the subagent finishes, the app sends you the result as a message, in a " +
+		"<subagent-results> block written by the app, not by the user. " +
+		"After spawning, end your turn when you have nothing else to do; " +
+		"do not poll, sleep or run commands to wait for a subagent. " +
+		"Parallel spawn_subagent calls need distinct descriptions so their arguments differ. " +
+		"Every spawn is asynchronous: there is no background parameter."
+	const pointer = " To name a model or effort, first call list_subagent_models: it lists the model ids and efforts each agent accepts."
+	if spawn.Description != before+pointer {
+		t.Errorf("spawn_subagent description = %q, want the earlier text followed by %q", spawn.Description, pointer)
+	}
+
+	props, _ := spawn.Schema["properties"].(map[string]any)
+	for _, name := range []string{"model", "effort"} {
+		p, _ := props[name].(map[string]any)
+		desc, _ := p["description"].(string)
+		if !strings.Contains(desc, "list_subagent_models") {
+			t.Errorf("%s description does not name list_subagent_models: %q", name, desc)
+		}
+	}
+	for _, name := range []string{"prompt", "description", "agent", "model", "effort"} {
+		if _, ok := props[name]; !ok {
+			t.Errorf("spawn_subagent schema missing %s", name)
+		}
+	}
+	if len(props) != 5 {
+		t.Errorf("spawn_subagent schema has %d properties, want 5: %v", len(props), props)
+	}
+	if req, _ := spawn.Schema["required"].([]string); len(req) != 1 || req[0] != "prompt" {
+		t.Errorf("spawn_subagent required = %v, want [prompt]", spawn.Schema["required"])
+	}
+	const summary = `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`
+	if spawn.Summary != summary {
+		t.Errorf("spawn_subagent summary = %q, want %q", spawn.Summary, summary)
 	}
 }

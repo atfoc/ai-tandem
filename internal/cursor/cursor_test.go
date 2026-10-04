@@ -774,6 +774,68 @@ func TestSpawnFamilyToolNormalize(t *testing.T) {
 	jsonEq(t, input.Input, `{"description":"files","prompt":"go"}`)
 }
 
+// list_subagent_models is spawn-family like the other two: no permission card, and the same
+// tool name as Claude's.
+func TestListSubagentModelsMCPAutoApproved(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
+			"sessionId": testSessionID,
+			"toolCall":  map[string]any{"toolCallId": "call_models", "title": "board: list_subagent_models", "kind": "other", "rawInput": mcpRawInput("board", "list_subagent_models", map[string]any{"agent": "pi", "filter": "opus"})},
+			"options": []any{
+				map[string]any{"optionId": "allow-once", "kind": "allow_once"},
+				map[string]any{"optionId": "never", "kind": "reject_once"},
+			},
+		}}),
+		{Result: raw(`{"stopReason":"end_turn"}`)},
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	send(t, a, "go")
+	var perms int
+	until(t, a, func(ev agent.Event) bool {
+		if ev.Kind == agent.EvPermRequest {
+			perms++
+		}
+		return ev.Kind == agent.EvTurnEnd
+	})
+	if perms != 0 {
+		t.Fatalf("list_subagent_models raised %d permission cards", perms)
+	}
+	for _, r := range readRecord(t, e.record) {
+		if string(r.ID) == `"srv-1"` {
+			jsonEq(t, r.Result, `{"outcome":{"outcome":"selected","optionId":"allow-once"}}`)
+			return
+		}
+	}
+	t.Fatal("no answer recorded")
+}
+
+func TestListSubagentModelsToolNormalize(t *testing.T) {
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "m1", "title": "MCP: tool", "kind": "other", "status": "pending", "rawInput": map[string]any{}}),
+		step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "m1", "title": "board: list_subagent_models",
+			"rawInput": mcpRawInput("board", "list_subagent_models", map[string]any{"agent": "pi", "filter": "opus"})}),
+		{Result: raw(`{"stopReason":"end_turn"}`)},
+	}
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	send(t, a, "go")
+	evs := without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvUsage, agent.EvSession, agent.EvCatalog, agent.EvThinking)
+	var input agent.Event
+	for _, ev := range evs {
+		if ev.Kind == agent.EvToolInput {
+			input = ev
+			break
+		}
+	}
+	if input.ToolName != "mcp__board__list_subagent_models" {
+		t.Fatalf("list tool name %q", input.ToolName)
+	}
+	jsonEq(t, input.Input, `{"agent":"pi","filter":"opus"}`)
+}
+
 func TestDecideAllow(t *testing.T) {
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{

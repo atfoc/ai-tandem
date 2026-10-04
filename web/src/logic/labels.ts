@@ -72,6 +72,7 @@ export function toolVerb(name: string, input: any, nameOf: BoardNames = noNames)
     case "show_board": return `Showing ${board}`;
     case "wait_subagents": return "Waiting for subagents";
     case "stop_subagent": return "Stopping subagent";
+    case "list_subagent_models": return "Listing subagent models";
     default: return short(name);
   }
 }
@@ -101,6 +102,7 @@ export function toolDone(name: string, input: any, result: string | undefined, n
     case "show_board": return `Showed ${board}`;
     case "wait_subagents": return "Waited for subagents";
     case "stop_subagent": return "Stopped subagent";
+    case "list_subagent_models": return "Listed subagent models";
     default: return short(name);
   }
 }

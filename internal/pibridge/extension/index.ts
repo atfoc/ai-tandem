@@ -72,15 +72,19 @@ function killChildren(): void {
   childKillers.clear();
 }
 
-const SPAWN_FAMILY_BARE = new Set(["spawn_subagent", "stop_subagent"]);
+const SPAWN_FAMILY_BARE = new Set(["spawn_subagent", "stop_subagent", "list_subagent_models"]);
 
 /** Spawn-family MCP tools must not run sequentially so sibling spawns in one
  *  assistant message can proceed in parallel (plan D2). Board-engine MCP tools
- *  stay sequential. Detect by the registered name: the two bare names, a
+ *  stay sequential. Detect by the registered name: the three bare names, a
  *  namespaced form ending in `__<bare>`, or `mcp__<server>__<bare>`. */
 function isSpawnFamilyTool(name: string): boolean {
   if (SPAWN_FAMILY_BARE.has(name)) return true;
-  if (name.endsWith("__spawn_subagent") || name.endsWith("__stop_subagent")) {
+  if (
+    name.endsWith("__spawn_subagent") ||
+    name.endsWith("__stop_subagent") ||
+    name.endsWith("__list_subagent_models")
+  ) {
     return true;
   }
   const parts = name.split("__");

@@ -122,7 +122,8 @@ var SpawnFamily = []Tool{
 			"After spawning, end your turn when you have nothing else to do; " +
 			"do not poll, sleep or run commands to wait for a subagent. " +
 			"Parallel spawn_subagent calls need distinct descriptions so their arguments differ. " +
-			"Every spawn is asynchronous: there is no background parameter.",
+			"Every spawn is asynchronous: there is no background parameter. " +
+			"To name a model or effort, first call list_subagent_models: it lists the model ids and efforts each agent accepts.",
 		Schema: obj(props{
 			"prompt":      str("the task for the subagent"),
 			"description": str("short label for the subagent row; give parallel spawns distinct descriptions"),
@@ -131,8 +132,8 @@ var SpawnFamily = []Tool{
 				"description": "claude, cursor, or pi; omit for this chat's agent",
 				"enum":        []any{"claude", "cursor", "pi"},
 			},
-			"model":  str("model id for the requested agent; omit for this chat's current model"),
-			"effort": str("effort/thinking level; omit for this chat's current effort"),
+			"model":  str("model id for the requested agent, exactly as list_subagent_models lists it; omit for this chat's current model"),
+			"effort": str("effort/thinking level the model accepts, as list_subagent_models lists it; omit for this chat's current effort"),
 		}, "prompt"),
 		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`,
 	},
@@ -141,6 +142,23 @@ var SpawnFamily = []Tool{
 		Description: "Cancel one running subagent by sid.",
 		Schema:      obj(props{"sid": str("subagent id from spawn_subagent")}, "sid"),
 		Summary:     `{"sid": "<sid>"}`,
+	},
+	{
+		Name: "list_subagent_models",
+		Description: "List the models spawn_subagent accepts for one agent: each model's id, the efforts it accepts " +
+			"and its default effort, and what spawn_subagent uses when model and effort are omitted. " +
+			"Call it only when you are about to name a model or effort in spawn_subagent; a spawn that names neither needs no lookup. " +
+			"Copy a model id exactly as listed. " +
+			"A long list is answered with an overview or with ids alone instead of full rows: call again with filter to narrow it.",
+		Schema: obj(props{
+			"agent": map[string]any{
+				"type":        "string",
+				"description": "claude, cursor, or pi; omit for this chat's agent",
+				"enum":        []any{"claude", "cursor", "pi"},
+			},
+			"filter": str("words to narrow the list, for example \"opus\" or \"openrouter/openai\": a model is listed when every word occurs in its id or its label, in any letter case and any order; omit to list all"),
+		}),
+		Summary: `{"agent"?: "claude|cursor|pi", "filter"?: "..."}`,
 	},
 }
 

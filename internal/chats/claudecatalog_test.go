@@ -1,6 +1,9 @@
 package chats
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -378,4 +381,225 @@ func TestSubagentSharedIDNamedEffort(t *testing.T) {
 	if _, err := e.m.SpawnSubagent(cl.ID, SpawnSubRequest{Prompt: "x", Effort: "xhigh"}); err == nil || !strings.Contains(err.Error(), `shared has no effort "xhigh"`) {
 		t.Fatalf("same-kind effort the chat's model lacks: %v", err)
 	}
+}
+
+// A pi list as pi reports it: ids with a provider path, "off" as an effort value.
+var storedPi = &model.Catalog{
+	Models: []model.CatalogModel{
+		{ID: "openrouter/openai/gpt-5", Label: "GPT-5", Provider: "openrouter", Efforts: []string{"off", "low", "high"}, DefaultEffort: "low"},
+		{ID: "anthropic/claude-opus", Label: "Claude Opus", Provider: "anthropic", Efforts: []string{"off", "high"}},
+		{ID: "local/llama", Label: "Llama", Provider: "local"},
+	},
+	Default: model.ModelChoice{Model: "openrouter/openai/gpt-5", Effort: "low"},
+}
+
+// A Cursor list with "none" as an effort value.
+var storedCursor = &model.Catalog{
+	Models: []model.CatalogModel{
+		{ID: "gpt-5.4-mini", Label: "GPT 5.4 mini"},
+		{ID: "composer-2", Label: "Composer 2", Efforts: []string{"none", "low", "high"}, DefaultEffort: "high"},
+	},
+	Default: model.ModelChoice{Model: "composer-2", Effort: "high"},
+}
+
+func (e *env) forgetCursorCatalog() {
+	e.t.Helper()
+	if err := e.st.Update(func(s *model.State) error { s.Cursor = nil; s.SetCatalog(model.Cursor, nil); return nil }); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// Discovery reads the list spawn_subagent validates against: SpawnCatalog is catalog.
+func TestSpawnCatalog(t *testing.T) {
+	e := newEnv(t)
+	if got := e.m.SpawnCatalog(model.Claude); got == nil || !reflect.DeepEqual(*got, claude.Catalog) {
+		t.Fatalf("Claude, nothing stored: %+v", got)
+	}
+	e.storeCatalog(model.Claude, storedClaude)
+	if got := e.m.SpawnCatalog(model.Claude); got == nil || !reflect.DeepEqual(*got, *storedClaude) {
+		t.Fatalf("Claude, stored: %+v", got)
+	}
+
+	if got := e.m.SpawnCatalog(model.Pi); got != nil {
+		t.Fatalf("pi before a list is stored: %+v", got)
+	}
+	e.storeCatalog(model.Pi, storedPi)
+	if got := e.m.SpawnCatalog(model.Pi); got == nil || !reflect.DeepEqual(*got, *storedPi) {
+		t.Fatalf("pi, stored: %+v", got)
+	}
+
+	if got := e.m.SpawnCatalog(model.Cursor); got == nil || !reflect.DeepEqual(*got, *cursorCatalog) {
+		t.Fatalf("Cursor, the legacy field: %+v", got)
+	}
+	e.forgetCursorCatalog()
+	if got := e.m.SpawnCatalog(model.Cursor); got != nil {
+		t.Fatalf("Cursor after its list is cleared: %+v", got)
+	}
+	for _, a := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
+		if got, want := e.m.SpawnCatalog(a), e.m.catalog(a); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: SpawnCatalog %+v, catalog %+v", a, got, want)
+		}
+	}
+}
+
+// Every model and every effort SpawnCatalog returns is one spawn_subagent accepts for that kind,
+// in the same state; so is every model with no effort named.
+func TestSpawnCatalogListsWhatSpawnAccepts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		kind   model.AgentKind
+		stored *model.Catalog // nil: Claude's built-in list
+	}{
+		{"built-in Claude", model.Claude, nil},
+		{"stored Claude", model.Claude, storedClaude},
+		{"stored Cursor", model.Cursor, storedCursor},
+		{"stored pi", model.Pi, storedPi},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			v := e.create(model.Claude, gOne, "")
+			if tc.stored != nil {
+				e.storeCatalog(tc.kind, tc.stored)
+			}
+			cat := e.m.SpawnCatalog(tc.kind)
+			if cat == nil || len(cat.Models) == 0 {
+				t.Fatalf("no list: %+v", cat)
+			}
+			for _, cm := range cat.Models {
+				sa, err := e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x", Kind: tc.kind, Model: cm.ID})
+				if err != nil || sa.Kind != tc.kind || sa.Model != cm.ID {
+					t.Fatalf("%s with no effort named: %+v, %v", cm.ID, sa, err)
+				}
+				for _, effort := range cm.Efforts {
+					sa, err := e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "x", Kind: tc.kind, Model: cm.ID, Effort: effort})
+					if err != nil || sa.Kind != tc.kind || sa.Model != cm.ID || sa.Effort != effort {
+						t.Fatalf("%s at %s: %+v, %v", cm.ID, effort, sa, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// SpawnDefaults is what a spawn that names the agent alone records, in the same state.
+func TestSpawnDefaultsMatchSpawn(t *testing.T) {
+	check := func(t *testing.T, e *env, chat string, kind model.AgentKind, wantKind model.AgentKind, wantModel, wantEffort string) {
+		t.Helper()
+		k, mo, ef, err := e.m.SpawnDefaults(chat, kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k != wantKind || mo != wantModel || ef != wantEffort {
+			t.Fatalf("SpawnDefaults(%q) = %s %q %q, want %s %q %q", kind, k, mo, ef, wantKind, wantModel, wantEffort)
+		}
+		sa := e.spawn(chat, SpawnSubRequest{Prompt: "x", Kind: kind})
+		if sa.Kind != k || sa.Model != mo || sa.Effort != ef {
+			t.Fatalf("SpawnDefaults(%q) = %s %q %q, the spawn recorded %s %q %q", kind, k, mo, ef, sa.Kind, sa.Model, sa.Effort)
+		}
+	}
+
+	t.Run("same kind on the built-in list", func(t *testing.T) {
+		e := newEnv(t)
+		v := e.create(model.Claude, gOne, "")
+		check(t, e, v.ID, "", model.Claude, "sonnet", "high")
+		check(t, e, v.ID, model.Claude, model.Claude, "sonnet", "high")
+		e.configure(v.ID, ConfigReq{Model: "haiku"})
+		check(t, e, v.ID, model.Claude, model.Claude, "haiku", "")
+	})
+
+	t.Run("a Claude chat whose model the stored list lacks", func(t *testing.T) {
+		e := newEnv(t)
+		v := e.create(model.Claude, gOne, "") // sonnet at high
+		e.storeCatalog(model.Claude, storedClaude)
+		check(t, e, v.ID, "", model.Claude, "cl-only", "low")
+	})
+
+	t.Run("cross-kind", func(t *testing.T) {
+		e := newEnv(t)
+		e.storeCatalog(model.Claude, storedClaude)
+		e.storeCatalog(model.Cursor, sharedCursorCatalog)
+		e.storeCatalog(model.Pi, storedPi)
+		cu := e.create(model.Cursor, gOne, "")
+		e.configure(cu.ID, ConfigReq{Model: "shared", Effort: "low"})
+		check(t, e, cu.ID, model.Claude, model.Claude, "cl-only", "low")
+		check(t, e, cu.ID, model.Pi, model.Pi, "openrouter/openai/gpt-5", "low")
+		check(t, e, cu.ID, "", model.Cursor, "shared", "low")
+
+		// With a saved Claude choice for the chat's group, that choice wins.
+		if err := e.st.Update(func(s *model.State) error {
+			defaults.RecordChange(&s.Defaults, gOne, model.Claude, "", model.ModelChoice{Model: "saved", Effort: "low"})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, e, cu.ID, model.Claude, model.Claude, "saved", "low")
+	})
+
+	t.Run("a kind whose list is not known", func(t *testing.T) {
+		e := newEnv(t)
+		v := e.create(model.Claude, gOne, "")
+		e.forgetCursorCatalog()
+		check(t, e, v.ID, model.Cursor, model.Cursor, "sonnet", "high")
+		check(t, e, v.ID, model.Pi, model.Pi, "sonnet", "high")
+		// A chat created while its own list was not known has no model and no effort.
+		cu := e.create(model.Cursor, gOne, "")
+		check(t, e, cu.ID, "", model.Cursor, "", "")
+	})
+}
+
+func TestSpawnDefaultsStartsNothing(t *testing.T) {
+	e := newEnv(t)
+	evs := listen(t, e.br)
+	v := e.create(model.Claude, gOne, "")
+	before := e.meta(v.ID)
+	files := func() []string {
+		t.Helper()
+		ents, err := os.ReadDir(e.st.P.ChatDir(v.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, ent := range ents {
+			names = append(names, ent.Name())
+		}
+		return names
+	}
+	filesBefore := files()
+	evs.drain(t, e.br)
+
+	for _, kind := range []model.AgentKind{"", model.Claude, model.Cursor, model.Pi} {
+		if _, _, _, err := e.m.SpawnDefaults(v.ID, kind); err != nil {
+			t.Fatalf("%q: %v", kind, err)
+		}
+	}
+	if _, _, _, err := e.m.SpawnDefaults("nope", model.Claude); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown chat: %v", err)
+	}
+	if _, _, _, err := e.m.SpawnDefaults(v.ID, "gemini"); err == nil || err.Error() != `unknown agent "gemini"` {
+		t.Fatalf("unknown kind: %v", err)
+	}
+
+	if n := e.claude.count() + e.cursor.count() + e.pi.count(); n != 0 {
+		t.Fatalf("%d processes started", n)
+	}
+	if got := evs.drain(t, e.br); len(got) != 0 {
+		t.Fatalf("messages %v", got)
+	}
+	if items := e.items(v.ID); len(items) != 0 {
+		t.Fatalf("items %+v", items)
+	}
+	if subs := e.subs(v.ID); len(subs) != 0 {
+		t.Fatalf("subagents %+v", subs)
+	}
+	if _, err := os.Stat(filepath.Join(e.st.P.ChatDir(v.ID), "subagents")); !os.IsNotExist(err) {
+		t.Fatalf("subagents folder: %v", err)
+	}
+	if got := files(); !reflect.DeepEqual(got, filesBefore) {
+		t.Fatalf("chat folder %v, was %v", got, filesBefore)
+	}
+	if after := e.meta(v.ID); !reflect.DeepEqual(after, before) {
+		t.Fatalf("chat.json changed: %+v, was %+v", after, before)
+	}
+	// The chat is not left locked.
+	e.configure(v.ID, ConfigReq{Model: "opus"})
 }

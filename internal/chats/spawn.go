@@ -6,6 +6,7 @@ import (
 	"log"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/defaults"
@@ -20,6 +21,36 @@ type SpawnSubRequest struct {
 	Kind        model.AgentKind // empty = the chat's kind
 	Model       string          // empty = the chat's current model
 	Effort      string          // empty = the chat's current effort
+}
+
+// SpawnValueError is a model or effort that spawn_subagent rejected against a known model list.
+type SpawnValueError struct {
+	Kind   model.AgentKind // the agent whose list was checked
+	Model  string          // the model that was checked: the one named, the chat's own, or the default the spawn resolved
+	Effort string          // the rejected effort; empty when the model itself is unknown
+	text   string
+}
+
+func (e *SpawnValueError) Error() string { return e.text }
+
+// unknownModelError is the error for a model that is not in kind's list.
+func unknownModelError(kind model.AgentKind, id string) *SpawnValueError {
+	return &SpawnValueError{Kind: kind, Model: id,
+		text: fmt.Sprintf("unknown model %q: not in the %s model list", id, kind)}
+}
+
+// noEffortError is the error for an effort that cm, a model in kind's list, does not offer. It
+// names the efforts cm does take.
+func noEffortError(kind model.AgentKind, cm *model.CatalogModel, effort string) *SpawnValueError {
+	takes := "no effort, so omit effort"
+	if len(cm.Efforts) > 0 {
+		takes = strings.Join(cm.Efforts, ", ")
+		if slices.Contains(cm.Efforts, cm.DefaultEffort) {
+			takes += fmt.Sprintf(" (default %s)", cm.DefaultEffort)
+		}
+	}
+	return &SpawnValueError{Kind: kind, Model: cm.ID, Effort: effort,
+		text: fmt.Sprintf("%s has no effort %q: checked against the %s model list; %s takes %s", cm.ID, effort, kind, cm.ID, takes)}
 }
 
 // SpawnSubagent starts one independent agent process and returns a receipt without waiting for it
@@ -207,7 +238,7 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 	if explicitModel {
 		cm, err := findModel(cat, modelID)
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", unknownModelError(kind, modelID)
 		}
 		if !explicitEffort && cm != nil && !slices.Contains(cm.Efforts, effort) {
 			effort = ""
@@ -222,10 +253,10 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 	if explicitEffort && !rebased {
 		cm, err := findModel(cat, modelID)
 		if err != nil && explicitModel {
-			return "", "", "", err
+			return "", "", "", unknownModelError(kind, modelID)
 		}
 		if cm != nil && !slices.Contains(cm.Efforts, effort) {
-			return "", "", "", fmt.Errorf("%s has no effort %q", modelID, effort)
+			return "", "", "", noEffortError(kind, cm, effort)
 		}
 	}
 
@@ -252,10 +283,10 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 		if explicitEffort {
 			cm, err := findModel(cat, modelID)
 			if err != nil {
-				return "", "", "", err
+				return "", "", "", unknownModelError(kind, modelID)
 			}
 			if cm != nil && !slices.Contains(cm.Efforts, effort) {
-				return "", "", "", fmt.Errorf("%s has no effort %q", modelID, effort)
+				return "", "", "", noEffortError(kind, cm, effort)
 			}
 		}
 	}

@@ -22,6 +22,7 @@ test("isSubagentTool: Agent, Task, and mcp__board__spawn_subagent", () => {
   assert.equal(isSubagentTool({ kind: "tool", name: "Bash" }), false);
   assert.equal(isSubagentTool({ kind: "tool", name: "mcp__board__wait_subagents" }), false);
   assert.equal(isSubagentTool({ kind: "tool", name: "mcp__board__stop_subagent" }), false);
+  assert.equal(isSubagentTool({ kind: "tool", name: "mcp__board__list_subagent_models" }), false);
   assert.equal(isSubagentTool({ kind: "perm", name: "Agent" }), false);
   assert.equal(isSubagentTool(undefined), false);
 });

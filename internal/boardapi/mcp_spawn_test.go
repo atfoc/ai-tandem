@@ -153,8 +153,8 @@ func namesOf(tools []boardtools.Tool) []string {
 
 func TestToolsListMatrix(t *testing.T) {
 	e := newEnv(t)
-	if got := namesOf(boardtools.SpawnFamily); !joinEq(got, []string{"spawn_subagent", "stop_subagent"}) {
-		t.Fatalf("spawn family %v, want spawn_subagent and stop_subagent alone", got)
+	if got := namesOf(boardtools.SpawnFamily); !joinEq(got, []string{"spawn_subagent", "stop_subagent", "list_subagent_models"}) {
+		t.Fatalf("spawn family %v, want spawn_subagent, stop_subagent and list_subagent_models alone", got)
 	}
 	boardSpawn := append(namesOf(boardtools.Tools), namesOf(boardtools.SpawnFamily)...)
 
@@ -343,16 +343,19 @@ func TestSubagentSpawnFamilyRejected(t *testing.T) {
 	waitFor(t, "child", func() bool { return e.claude.count() >= 1 })
 	extra := e.claude.last(t).opts.MCP.Token
 	before := e.claude.count()
-	for _, name := range []string{"spawn_subagent", "stop_subagent"} {
+	for _, name := range []string{"spawn_subagent", "stop_subagent", "list_subagent_models"} {
 		args := `{"prompt":"nope"}`
-		if name == "stop_subagent" {
+		switch name {
+		case "stop_subagent":
 			args = `{"sid":"x"}`
+		case "list_subagent_models":
+			args = `{}`
 		}
 		got, isErr, status := e.toolsCall(extra, name, args)
 		if status != 200 || !isErr || strings.Contains(got, "board isn't open") {
 			t.Fatalf("%s: %q isErr=%v status=%d", name, got, isErr, status)
 		}
-		if !strings.Contains(got, "not available to subagents") {
+		if got != name+" is not available to subagents" {
 			t.Fatalf("%s text %q", name, got)
 		}
 	}
@@ -394,6 +397,54 @@ func TestSpawnFamilyValidationAndUnknown(t *testing.T) {
 	text, isErr, status = e.toolsCall("nope", "spawn_subagent", `{"prompt":"x"}`)
 	if status != 200 || !isErr || text != "unknown board token" {
 		t.Fatalf("unknown token %q isErr=%v status=%d", text, isErr, status)
+	}
+}
+
+// TestSpawnValueErrorsPointToModelList: a model or effort rejected against a known list names the
+// agent checked and list_subagent_models; every other spawn error is forwarded as it is.
+func TestSpawnValueErrorsPointToModelList(t *testing.T) {
+	e := newEnv(t)
+	const pointer = `. Call list_subagent_models with agent "claude" to see the models and efforts spawn_subagent accepts.`
+	for _, tc := range []struct {
+		name, args string
+		want       []string
+	}{
+		{"unknown model", `{"prompt":"x","model":"nope"}`, []string{`unknown model "nope"`, "claude model list"}},
+		{"unoffered effort", `{"prompt":"x","effort":"nope"}`, []string{`sonnet has no effort "nope"`, "low, medium, high, xhigh, max"}},
+		{"model without effort", `{"prompt":"x","model":"haiku","effort":"high"}`, []string{"takes no effort"}},
+	} {
+		text, isErr, status := e.toolsCall(e.token, "spawn_subagent", tc.args)
+		if status != 200 || !isErr {
+			t.Fatalf("%s: %q isErr=%v status=%d", tc.name, text, isErr, status)
+		}
+		for _, want := range append(tc.want, pointer) {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s: text lacks %q: %q", tc.name, want, text)
+			}
+		}
+		if !strings.HasSuffix(text, pointer) {
+			t.Errorf("%s: text does not end with the pointer: %q", tc.name, text)
+		}
+	}
+	if e.claude.count() != 0 {
+		t.Fatal("rejected spawn started a process")
+	}
+
+	for _, tc := range []struct{ name, args, want string }{
+		{"no spawner", `{"prompt":"x","agent":"cursor"}`, `no spawner for agent "cursor"`},
+		{"missing prompt", `{}`, "prompt is required"},
+		{"unknown agent", `{"prompt":"x","agent":"nope"}`, "unknown agent"},
+	} {
+		text, isErr, status := e.toolsCall(e.token, "spawn_subagent", tc.args)
+		if status != 200 || !isErr || !strings.Contains(text, tc.want) {
+			t.Fatalf("%s: %q isErr=%v status=%d", tc.name, text, isErr, status)
+		}
+		if strings.Contains(text, "list_subagent_models") {
+			t.Errorf("%s: unmarked error names list_subagent_models: %q", tc.name, text)
+		}
+	}
+	if e.claude.count() != 0 {
+		t.Fatal("rejected spawn started a process")
 	}
 }
 
