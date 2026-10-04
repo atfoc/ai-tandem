@@ -25,8 +25,11 @@ import (
 //	tool_execution_start                     EvToolStart / EvToolInput when not already emitted
 //	tool_execution_update                    subagent tool: EvSub progress; never tool input
 //	tool_execution_end                       EvToolResult
-//	message_end (role assistant)             EvUsage (input + cache read/write, output, window)
-//	agent_settled                            get_session_stats → EvUsage + EvTurnEnd (the idle signal)
+//	message_end (role assistant)             EvUsage (input + cache read/write, output, window);
+//	                                         its error state is kept for the turn end
+//	agent_settled                            get_session_stats → EvUsage + EvTurnEnd (the idle signal),
+//	                                         with pi's error text when the turn's last assistant
+//	                                         message ended in pi's error state
 //	extension_error                          logged once
 //	compaction_*, auto_retry_*,              ignored, like every unknown type, so a newer pi
 //	summarization_retry_*, queue_update,     cannot break the stream
@@ -59,6 +62,15 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		msg := obj(m["message"])
 		if str(msg["role"]) != "assistant" {
 			return nil
+		}
+		// pi reports a failed model call on the message, never on the settle signal. Only the last
+		// assistant message counts: a message pi's own retry replaced with a good one is no failure.
+		p.turnErr = ""
+		if str(msg["stopReason"]) == "error" {
+			p.turnErr = str(msg["errorMessage"])
+			if p.turnErr == "" {
+				p.turnErr = "Unknown error"
+			}
 		}
 		u := obj(msg["usage"])
 		in := int(num(u["input"]) + num(u["cacheRead"]) + num(u["cacheWrite"]))
@@ -173,24 +185,29 @@ func (p *proc) toolExecutionUpdate(m map[string]any) []agent.Event {
 }
 
 // onSettled is pi's idle signal. It asks for the session stats without blocking the read loop;
-// the response emits the context numbers and the turn end.
+// the response emits the context numbers and the turn end. The turn ends with an error when its
+// last assistant message did; a turn the user stopped is aborted, whatever pi said last.
 func (p *proc) onSettled() {
-	aborted := p.takeAbort()
+	end := agent.Event{Kind: agent.EvTurnEnd, Aborted: p.takeAbort(), Error: p.turnErr}
+	p.turnErr = ""
+	if end.Aborted {
+		end.Error = ""
+	}
 	if p.rpc == nil {
-		p.emit(agent.Event{Kind: agent.EvTurnEnd, Aborted: aborted})
+		p.emit(end)
 		return
 	}
 	err := p.rpc.expect("get_session_stats", nil, func(resp rpcResponse) {
-		p.emitStatsTurnEnd(resp, aborted)
+		p.emitStatsTurnEnd(resp, end)
 	})
 	if err != nil { // the command could not even be written: the turn still ends
-		p.emit(agent.Event{Kind: agent.EvTurnEnd, Aborted: aborted})
+		p.emit(end)
 	}
 }
 
 // emitStatsTurnEnd emits the context usage get_session_stats reported (when it has numbers) and
 // then, always, the turn end.
-func (p *proc) emitStatsTurnEnd(resp rpcResponse, aborted bool) {
+func (p *proc) emitStatsTurnEnd(resp rpcResponse, end agent.Event) {
 	if resp.Success {
 		var stats struct {
 			ContextUsage *struct {
@@ -205,7 +222,7 @@ func (p *proc) emitStatsTurnEnd(resp rpcResponse, aborted bool) {
 			}
 		}
 	}
-	p.emit(agent.Event{Kind: agent.EvTurnEnd, Aborted: aborted})
+	p.emit(end)
 }
 
 // translateLine is the RPC read loop's event callback: it decodes one wire line, translates it

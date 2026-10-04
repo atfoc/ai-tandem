@@ -21,7 +21,6 @@ type sub struct {
 	saved model.Subagent         // what subagent.json holds; meta != saved means a write is due
 	tr    *transcript.Transcript // nil until its thread is needed (an event, or a client's fetch)
 	ag    agent.Agent            // app-spawned process; nil for native
-	done  chan struct{}          // closed when the sub reaches a final status; WaitSubagents
 	stop  chan struct{}          // closed so the runner exits even if Events() stays open
 	app   bool                   // started by SpawnSubagent (has its own process)
 }
@@ -62,6 +61,7 @@ func (m *Manager) loadSubs(c *Chat) {
 		}
 		if sa.Status == model.SubRunning {
 			s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
+			ended(s, endRestart)
 			m.saveSub(c, s)
 		}
 	}
@@ -79,10 +79,18 @@ func (m *Manager) subTr(c *Chat, s *sub) (*transcript.Transcript, error) {
 	return s.tr, nil
 }
 
-// saveSub writes subagent.json when it changed since the last write. c.mu held.
+// saveSub writes subagent.json when it changed since the last write; a failure is only logged.
+// c.mu held.
 func (m *Manager) saveSub(c *Chat, s *sub) {
+	if err := m.writeSub(c, s); err != nil {
+		log.Printf("chats: save subagent %s/%s: %v", c.meta.ID, s.meta.ID, err)
+	}
+}
+
+// writeSub is saveSub for a caller that must know the record is on disk. c.mu held.
+func (m *Manager) writeSub(c *Chat, s *sub) error {
 	if s.meta == s.saved {
-		return
+		return nil
 	}
 	dir := m.subDir(c.meta.ID, s.meta.ID)
 	err := os.MkdirAll(dir, 0o700)
@@ -90,10 +98,10 @@ func (m *Manager) saveSub(c *Chat, s *sub) {
 		err = store.WriteJSONAtomic(filepath.Join(dir, "subagent.json"), s.meta, 0o600)
 	}
 	if err != nil {
-		log.Printf("chats: save subagent %s/%s: %v", c.meta.ID, s.meta.ID, err)
-		return
+		return err
 	}
 	s.saved = s.meta
+	return nil
 }
 
 // flushSub writes the subagent's thread and then its state. c.mu held.
@@ -122,13 +130,15 @@ func (m *Manager) owner(c *Chat, id string) (tr *transcript.Transcript, parent s
 
 // routeSub applies an event of a subagent (ev.Sub = the Agent/Task tool call that started it).
 // The first event for a tool call creates the subagent: its folder, subagent.json and the link on
-// the tool item. Events for a tool call no thread holds are dropped. c.mu held.
-func (m *Manager) routeSub(c *Chat, ev agent.Event, out *outbox) {
+// the tool item. Events for a tool call no thread holds are dropped. c.mu held. After unlock the
+// caller hands off the returned delivery: one starts when the subagent ended with the chat's last
+// open permission request and results are owed (nil when none started).
+func (m *Manager) routeSub(c *Chat, ev agent.Event, out *outbox) *carry {
 	sid, ok := c.subByTool[ev.Sub]
 	if !ok {
 		otr, parent, found := m.owner(c, ev.Sub)
 		if !found {
-			return
+			return nil
 		}
 		sid = randHex(6)
 		s := &sub{meta: model.Subagent{ID: sid, Tool: ev.Sub, Parent: parent, Status: model.SubRunning, Started: m.nowMs()},
@@ -141,16 +151,19 @@ func (m *Manager) routeSub(c *Chat, ev agent.Event, out *outbox) {
 	switch {
 	case ev.Kind == agent.EvSub:
 		if ev.SubInfo != nil && patchSub(&s.meta, ev.SubInfo, m.nowMs()) {
-			m.endSub(c, s, out)
-			return
+			ended(s, endNative)
+			if m.endSub(c, s, out) {
+				return m.deliver(c, out)
+			}
+			return nil
 		}
 	case s.meta.Status != model.SubRunning:
-		return // late lines of an ended subagent
+		return nil // late lines of an ended subagent
 	default:
 		tr, err := m.subTr(c, s)
 		if err != nil {
 			log.Printf("chats: subagent %s/%s: %v", c.meta.ID, sid, err)
-			return
+			return nil
 		}
 		ev.Sub = ""
 		ups := tr.Apply(ev)
@@ -165,6 +178,7 @@ func (m *Manager) routeSub(c *Chat, ev agent.Event, out *outbox) {
 	if !ok || s.meta != before {
 		out.emitSub(c, s.meta)
 	}
+	return nil
 }
 
 // link puts the new subagent's sid on its tool item, writes that item and sends it. c.mu held.
@@ -181,8 +195,16 @@ func (m *Manager) link(c *Chat, otr *transcript.Transcript, parent, tool, sid st
 }
 
 // endSub finishes a subagent that just reached a final status: its open text is closed, its last
-// text kept for the row, its thread and state written and sent. c.mu held.
-func (m *Manager) endSub(c *Chat, s *sub, out *outbox) {
+// text kept for the row, its thread and state written and sent. The permission requests it still
+// has open are closed as denied in the chat's thread, and only there: nothing is left to answer
+// (a stop path has told a live process no before this, denySubPerms). It reports whether that took
+// the chat out of approval; a caller that may start a turn then checks for owed results (deliver),
+// after endSub has returned, so the turn carries this subagent's finished record. c.mu held.
+func (m *Manager) endSub(c *Chat, s *sub, out *outbox) (leftApproval bool) {
+	if c.tr != nil {
+		before := view(c)
+		leftApproval = m.permsClosed(c, before, c.tr.DenyPerms(s.meta.ID), out)
+	}
 	if tr, err := m.subTr(c, s); err == nil {
 		ups := tr.CloseOpen()
 		s.meta.Last = tr.LastText()
@@ -190,11 +212,25 @@ func (m *Manager) endSub(c *Chat, s *sub, out *outbox) {
 	}
 	m.flushSub(c, s, false)
 	out.emitSub(c, s.meta)
+	return leftApproval
+}
+
+// subErrorNote closes s's own thread with the error note a chat's thread gets when its turn ends
+// with an error. Nothing else of a subagent's turn end is applied to its thread. The note is
+// written with the thread when s is finished (endSub). c.mu held.
+func (m *Manager) subErrorNote(c *Chat, s *sub, text string, out *outbox) {
+	tr, err := m.subTr(c, s)
+	if err != nil {
+		log.Printf("chats: subagent %s/%s: %v", c.meta.ID, s.meta.ID, err)
+		return
+	}
+	ups := append(tr.CloseOpen(), tr.AddNote("error", text)...)
+	out.emitSubItems(c, s.meta.ID, tr.Version(), ups)
 }
 
 // stopSubs marks every subagent still running as stopped (nested ones included: they are all in
 // c.subs). App-spawned processes are detached and returned so the caller can Close them after
-// unlock. c.mu held.
+// unlock. Stopping them is never a reason to start a turn. c.mu held.
 func (m *Manager) stopSubs(c *Chat, out *outbox) []agent.Agent {
 	return m.stopRunningSubs(c, out, false)
 }
@@ -215,23 +251,24 @@ func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool) []agent.Ag
 			continue
 		}
 		if s.ag != nil {
-			m.denySubPerms(c, s, out)
+			m.denySubPerms(c, s)
 			ags = append(ags, s.ag)
 			s.ag = nil
 		}
 		s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
+		ended(s, endParent)
 		m.endSub(c, s, out)
 		if s.app {
 			m.revokeExtra(c.meta.ID, s.meta.ID)
 		}
-		closeDone(s)
 		closeStop(s)
 	}
 	return ags
 }
 
-// denySubPerms answers no to unanswered parent-transcript perms asked by s. c.mu held.
-func (m *Manager) denySubPerms(c *Chat, s *sub, out *outbox) {
+// denySubPerms tells s's process no for every permission request of s still open in the chat's
+// thread. Their cards are closed when s is finished (endSub). c.mu held.
+func (m *Manager) denySubPerms(c *Chat, s *sub) {
 	if c.tr == nil || s.ag == nil {
 		return
 	}
@@ -239,17 +276,8 @@ func (m *Manager) denySubPerms(c *Chat, s *sub, out *outbox) {
 	for _, it := range items {
 		if it.Kind == "perm" && it.Decided == "" && it.Subagent == s.meta.ID {
 			_ = s.ag.Decide(it.RequestID, false)
-			out.emitItems(c, c.tr.Decided(it.RequestID, false))
 		}
 	}
-}
-
-func closeDone(s *sub) {
-	if s.done == nil {
-		return
-	}
-	close(s.done)
-	s.done = nil
 }
 
 func closeStop(s *sub) {

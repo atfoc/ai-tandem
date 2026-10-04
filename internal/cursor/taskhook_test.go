@@ -96,8 +96,22 @@ func assertIsolatedHook(t *testing.T, e *env) {
 	if !strings.Contains(h.Command, `"permission":"deny"`) {
 		t.Fatalf("command missing deny: %s", h.Command)
 	}
-	if !strings.Contains(h.Command, "spawn_subagent") || !strings.Contains(h.Command, "wait_subagents") {
-		t.Fatalf("command missing spawn family: %s", h.Command)
+	if !strings.Contains(h.Command, "spawn_subagent") || strings.Contains(h.Command, "wait_subagents") {
+		t.Fatalf("command does not point at spawn_subagent alone: %s", h.Command)
+	}
+	// The command is a shell echo of one single-quoted JSON object: what the model reads is its
+	// user_message, which says the result arrives on its own.
+	payload, ok := strings.CutPrefix(h.Command, "echo '")
+	payload, ok2 := strings.CutSuffix(payload, "'")
+	var deny struct {
+		Permission  string `json:"permission"`
+		UserMessage string `json:"user_message"`
+	}
+	if !ok || !ok2 || strings.Contains(payload, "'") || json.Unmarshal([]byte(payload), &deny) != nil {
+		t.Fatalf("command is not an echo of one quoted JSON object: %s", h.Command)
+	}
+	if deny.Permission != "deny" || !strings.Contains(deny.UserMessage, "the app sends you the result later as a message") {
+		t.Fatalf("deny message %+v", deny)
 	}
 
 	defaultHook := filepath.Join(e.home, ".cursor", "projects", cwdSlug(e.cwd), ".cursor", "hooks.json")

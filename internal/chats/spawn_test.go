@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +42,13 @@ func agentDecides(a *fakeAgent) []decision {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]decision(nil), a.decides...)
+}
+
+// agentStrays is the answers a refused: for requests it had not raised, or had answered.
+func agentStrays(a *fakeAgent) []decision {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]decision(nil), a.strays...)
 }
 
 type gatedSpawner struct {
@@ -130,43 +138,6 @@ func TestSpawnSubagentPersistsKindEffort(t *testing.T) {
 	}
 }
 
-func TestSpawnSubagentWait(t *testing.T) {
-	e := newEnv(t)
-	v := e.create(model.Claude, gOne, "")
-	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "go"})
-	if sa.Status != model.SubRunning {
-		t.Fatalf("spawn blocked until completion: %+v", sa)
-	}
-	child := waitChild(t, e.claude, 1)
-
-	poll, err := e.m.WaitSubagents(v.ID, []string{sa.ID}, 0)
-	if err != nil || len(poll) != 1 || poll[0].Status != model.SubRunning {
-		t.Fatalf("timeout 0 %+v %v", poll, err)
-	}
-	short, err := e.m.WaitSubagents(v.ID, []string{sa.ID}, 20*time.Millisecond)
-	if err != nil || len(short) != 1 || short[0].Status != model.SubRunning {
-		t.Fatalf("short timeout %+v %v", short, err)
-	}
-
-	child.emit(t, agent.Event{Kind: agent.EvText, Text: "done"}, agent.Event{Kind: agent.EvTurnEnd})
-	got, err := e.m.WaitSubagents(v.ID, []string{sa.ID}, 5*time.Second)
-	if err != nil || len(got) != 1 || got[0].Status != model.SubCompleted || got[0].Last != "done" {
-		t.Fatalf("wait completion %+v %v", got, err)
-	}
-	again, err := e.m.WaitSubagents(v.ID, []string{sa.ID}, 5*time.Second)
-	if err != nil || again[0].Status != model.SubCompleted || again[0].Last != "done" {
-		t.Fatalf("repeated wait %+v %v", again, err)
-	}
-
-	mixed, err := e.m.WaitSubagents(v.ID, []string{sa.ID, "nope"}, 0)
-	if err != nil || len(mixed) != 2 || mixed[0].Status != model.SubCompleted || mixed[1].Error == "" || mixed[1].ID != "nope" {
-		t.Fatalf("unknown sid %+v %v", mixed, err)
-	}
-	if _, err := e.m.WaitSubagents("no-chat", []string{sa.ID}, 0); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("unknown chat: %v", err)
-	}
-}
-
 func TestSpawnSubagentParallel(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
@@ -218,6 +189,10 @@ func TestSpawnSubagentKillOnStop(t *testing.T) {
 	if len(sm) == 0 || subOf(t, sm[len(sm)-1]).Status != model.SubStopped {
 		t.Fatalf("stop emit %v", sm)
 	}
+	e.m.handoffs.Wait()
+	if e.claude.count() != 1 || len(resultRows(e.items(v.ID))) != 0 || e.subFile(v.ID, sa.ID).Delivery != model.SubNotOwed {
+		t.Fatalf("Stop left a result to deliver: %d processes, rows %v", e.claude.count(), resultRows(e.items(v.ID)))
+	}
 
 	sa2 := e.spawn(v.ID, SpawnSubRequest{Prompt: "again"})
 	child2 := waitChild(t, e.claude, 2)
@@ -257,11 +232,44 @@ func TestSpawnSubagentDecideRoutesToChild(t *testing.T) {
 	if _, subItems, _ := e.m.SubItems(v.ID, sa.ID); len(subItems) != 0 {
 		t.Fatalf("perm in the sub thread %+v", subItems)
 	}
-	if err := e.m.Decide(v.ID, "r1", true); err != nil {
+	if err := e.m.Decide(v.ID, sa.ID, "r1", true); err != nil {
 		t.Fatal(err)
 	}
 	if d := agentDecides(child); len(d) != 1 || d[0].id != "r1" || !d[0].allow {
 		t.Fatalf("child decides %+v", d)
+	}
+	if d := agentDecides(parent); len(d) != 0 {
+		t.Fatalf("parent decides %+v", d)
+	}
+
+	// With the parent idle, a result that comes while a child's request is open waits for the
+	// answer. The answer does not wait for the agent to take the message.
+	parent.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	child.emit(t, agent.Event{Kind: agent.EvPermRequest, PermID: "r2", ToolName: "Bash", ToolID: "s2"})
+	sb := e.spawn(v.ID, SpawnSubRequest{Prompt: "other"})
+	e.finish(waitChild(t, e.claude, 3), "other report")
+	if st := e.view(v.ID).Status; st != model.StatusApproval || len(parent.sent()) != 1 {
+		t.Fatalf("status %q, %d sends with a request open", st, len(parent.sent()))
+	}
+	if f := e.subFile(v.ID, sb.ID); f.Delivery != model.SubOwed {
+		t.Fatalf("subagent.json %+v", f)
+	}
+	release := parent.blockSends()
+	defer release()
+	returns(t, "Decide", func() error { return e.m.Decide(v.ID, sa.ID, "r2", false) })
+	if d := agentDecides(child); len(d) != 2 || d[1].id != "r2" || d[1].allow {
+		t.Fatalf("child decides %+v", d)
+	}
+	if st := e.view(v.ID).Status; st != model.StatusThinking || len(parent.sent()) != 1 {
+		t.Fatalf("status %q, %d sends while the hand-off waits", st, len(parent.sent()))
+	}
+	if f := e.subFile(v.ID, sb.ID); f.Delivery != model.SubSent {
+		t.Fatalf("subagent.json %+v", f)
+	}
+	release()
+	e.m.handoffs.Wait()
+	if len(parent.sent()) != 2 || !reflect.DeepEqual(deliveredSids(parent.sent()[1]), []string{sb.ID}) {
+		t.Fatalf("%d sends, the last delivers %v", len(parent.sent()), deliveredSids(parent.sent()[len(parent.sent())-1]))
 	}
 	if d := agentDecides(parent); len(d) != 0 {
 		t.Fatalf("parent decides %+v", d)
@@ -305,6 +313,14 @@ func TestSpawnSubagentParentLifecycle(t *testing.T) {
 	if e.subFile(v.ID, sa.ID).Status != model.SubStopped {
 		t.Fatalf("subagent.json %+v", e.subFile(v.ID, sa.ID))
 	}
+	quiet := func(when string) {
+		t.Helper()
+		e.m.handoffs.Wait()
+		if n, rows := len(parent.sent()), resultRows(e.items(v.ID)); n != 2 || len(rows) != 0 {
+			t.Fatalf("after %s: %d sends, result rows %v", when, n, rows)
+		}
+	}
+	quiet("the aborted turn")
 
 	sa2 := e.spawn(v.ID, SpawnSubRequest{Prompt: "again"})
 	child2 := waitChild(t, e.claude, 3)
@@ -318,6 +334,10 @@ func TestSpawnSubagentParentLifecycle(t *testing.T) {
 		return false
 	})
 	waitFor(t, "closed on exit", func() bool { return agentClosed(child2) })
+	quiet("the exit")
+	if e.claude.count() != 3 {
+		t.Fatalf("%d processes: one was started after the exit", e.claude.count())
+	}
 }
 
 func TestSpawnPiChatIDDistinct(t *testing.T) {
@@ -456,6 +476,18 @@ func TestSpawnSubagentInterrupt(t *testing.T) {
 	}
 	if agentClosed(parent) {
 		t.Fatal("interrupt closed the parent process")
+	}
+	if parent.interrupted() != 1 {
+		t.Fatalf("the parent was signalled %d times", parent.interrupted())
+	}
+	e.m.handoffs.Wait()
+	items := e.items(v.ID)
+	if len(parent.sent()) != 1 || len(resultRows(items)) != 0 {
+		t.Fatalf("after interrupt: %d sends, result rows %v", len(parent.sent()), resultRows(items))
+	}
+	// The parent's turn is running: the note comes from its aborted end, not from Interrupt.
+	if n := notes(items, "muted"); len(n) != 0 {
+		t.Fatalf("notes %q", n)
 	}
 }
 

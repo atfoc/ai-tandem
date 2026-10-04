@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolVerb, toolDone, statusText } from "../src/logic/labels.ts";
+import { toolVerb, toolDone, statusText, waitingText, rowLine, dotState } from "../src/logic/labels.ts";
 
 const names = (id: string) => ({ b_arch0001: "arch", b_flow0001: "flows" } as Record<string, string>)[id];
 const on = { board: "b_flow0001" };
@@ -106,4 +106,82 @@ test("statusText", () => {
   assert.equal(statusText({ status: "approval", usage }), "Needs your approval");
   assert.equal(statusText({ status: "stopped", usage }), "Stopped");
   assert.equal(statusText({ status: "error", usage }), "Can't start");
+});
+
+const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 3 };
+const SENT_ONE = "1 subagent result not sent yet. It goes to the agent after your next message.";
+const SENT_TWO = "2 subagent results not sent yet. They go to the agent after your next message.";
+
+test("waitingText: what an idle chat waits on", () => {
+  // neither
+  assert.equal(waitingText({ status: "ready" }), "");
+  assert.equal(waitingText({ status: "ready", subsRunning: 0, subsOwed: 0 }), "");
+  // subagents still running
+  assert.equal(waitingText({ status: "ready", subsRunning: 1 }), "Waiting on 1 subagent");
+  assert.equal(waitingText({ status: "ready", subsRunning: 3 }), "Waiting on 3 subagents");
+  // results the agent has not been sent
+  assert.equal(waitingText({ status: "ready", subsOwed: 1 }), SENT_ONE);
+  assert.equal(waitingText({ status: "ready", subsOwed: 2 }), SENT_TWO);
+  // both
+  assert.equal(waitingText({ status: "ready", subsRunning: 2, subsOwed: 1 }), "Waiting on 2 subagents. " + SENT_ONE);
+  assert.equal(waitingText({ status: "ready", subsRunning: 1, subsOwed: 2 }), "Waiting on 1 subagent. " + SENT_TWO);
+  // a busy chat says what its agent does, not what it waits on
+  for (const status of ["thinking", "writing", "tool", "approval"] as const) {
+    assert.equal(waitingText({ status, subsRunning: 2, subsOwed: 1 }), "", status);
+  }
+  // not busy, whatever the status: the thread's line shows under a stopped chat too
+  assert.equal(waitingText({ status: "stopped", subsOwed: 1 }), SENT_ONE);
+  assert.equal(waitingText({ status: "error", subsOwed: 2 }), SENT_TWO);
+  // an archived chat takes no message
+  assert.equal(waitingText({ status: "ready", subsOwed: 1, archived: true }), "");
+});
+
+test("statusText: an idle chat says what it waits on", () => {
+  assert.equal(statusText({ status: "ready", usage, subsRunning: 1 }), "Waiting on 1 subagent");
+  assert.equal(statusText({ status: "ready", usage, subsRunning: 2 }), "Waiting on 2 subagents");
+  assert.equal(statusText({ status: "ready", usage, subsOwed: 1 }), SENT_ONE);
+  assert.equal(statusText({ status: "ready", usage, subsOwed: 2 }), SENT_TWO);
+  assert.equal(statusText({ status: "ready", usage, subsRunning: 2, subsOwed: 2 }), "Waiting on 2 subagents. " + SENT_TWO);
+  // neither: as before
+  assert.equal(statusText({ status: "ready", usage, subsRunning: 0, subsOwed: 0 }), "Idle");
+  assert.equal(statusText({ status: "ready", usage: { ...usage, turns: 0 } }), "Ready");
+  // busy: what it shows today, with subagents running or results owed
+  assert.equal(statusText({ status: "thinking", usage, subsRunning: 2, subsOwed: 1 }), "Thinking…");
+  assert.equal(statusText({ status: "writing", usage, subsRunning: 2 }), "Writing…");
+  assert.equal(statusText({ status: "tool", statusTool: "Bash", usage, subsRunning: 2 }), "Running a command…");
+  assert.equal(statusText({ status: "approval", usage, subsRunning: 2 }), "Needs your approval");
+  // the louder states keep their word; the thread's line carries the rest
+  assert.equal(statusText({ status: "stopped", usage, subsOwed: 1 }), "Stopped");
+  assert.equal(statusText({ status: "error", usage, subsOwed: 1 }), "Can't start");
+});
+
+test("rowLine: a sidebar row's second line", () => {
+  const settings = "~/code · Sonnet";
+  // an idle row with nothing to say shows its settings
+  assert.equal(rowLine({ status: "ready", usage }, settings), settings);
+  assert.equal(rowLine({ status: "ready", usage, subsRunning: 0, subsOwed: 0 }, settings), settings);
+  // an idle row with something to say shows it in place of the settings, in the status text's words
+  assert.equal(rowLine({ status: "ready", usage, subsRunning: 2 }, settings), "Waiting on 2 subagents");
+  assert.equal(rowLine({ status: "ready", usage, subsOwed: 1 }, settings), SENT_ONE);
+  for (const c of [{ status: "ready", usage, subsRunning: 1, subsOwed: 2 }, { status: "ready", usage, subsRunning: 3 }] as const) {
+    assert.equal(rowLine(c, settings), statusText(c));
+  }
+  // as before
+  assert.equal(rowLine({ status: "thinking", usage, subsRunning: 2 }, settings), "Thinking…");
+  assert.equal(rowLine({ status: "approval", usage }, settings), "Needs your approval");
+  assert.equal(rowLine({ status: "stopped", usage, subsOwed: 1 }, settings), "Stopped");
+  assert.equal(rowLine({ status: "error", usage, error: "Folder not found" }, settings), "Folder not found");
+  assert.equal(rowLine({ status: "error", usage }, settings), "Can't start");
+  assert.equal(rowLine({ status: "ready", usage, subsOwed: 1, archived: true }, settings), settings);
+});
+
+test("dotState: the quiet waiting state of a sidebar row", () => {
+  assert.equal(dotState({ status: "ready", usage }), "ready");
+  assert.equal(dotState({ status: "ready", usage, subsRunning: 1 }), "waiting");
+  assert.equal(dotState({ status: "ready", usage, subsOwed: 1 }), "waiting");
+  assert.equal(dotState({ status: "ready", usage, subsOwed: 1, archived: true }), "ready");
+  assert.equal(dotState({ status: "thinking", usage, subsRunning: 1 }), "thinking");
+  assert.equal(dotState({ status: "approval", usage, subsRunning: 1 }), "approval");
+  assert.equal(dotState({ status: "stopped", usage, subsOwed: 1 }), "stopped");
+  assert.equal(dotState({ status: "error", usage, subsOwed: 1 }), "error");
 });

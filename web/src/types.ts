@@ -165,6 +165,9 @@ export type ChatView = Archive & {
   statusTool?: string;
   error?: string;
   folderMissing?: boolean;
+  // From the chat's subagent records; both absent (0) for a chat not opened since the server started.
+  subsRunning?: number; // app-spawned subagents still running
+  subsOwed?: number;    // finished ones whose result the agent has not received
 };
 
 /** The message typed in a chat's composer and not sent yet; the server clears it on send. */
@@ -186,7 +189,7 @@ export type Reference = {
 
 /** One entry of a chat's thread. */
 export type Item = {
-  kind: "user" | "text" | "tool" | "perm" | "note";
+  kind: "user" | "text" | "tool" | "perm" | "note" | "subresult";
   text?: string;
   context?: string;
   references?: Reference[]; // user
@@ -202,10 +205,14 @@ export type Item = {
   toolName?: string;
   decided?: "" | "allow" | "deny";
   tone?: "muted" | "error";
-  subagent?: string;
+  subagent?: string; // tool: the sid it started; perm: the sid that asked; subresult: the sid whose result was carried
 };
 
 export type SubStatus = "running" | "completed" | "failed" | "stopped";
+
+/** model.SubDelivery: what the app owes the agent for an app-spawned subagent's result. Absent:
+ *  nothing owed. "retry" is owed after one failed attempt; "given-up" is not owed: two failed. */
+export type SubDelivery = "owed" | "retry" | "sent" | "given-up";
 
 /** model.Subagent: a subagent's state (subagent.json). Its thread is loaded apart (§7.3). */
 export type Subagent = {
@@ -230,4 +237,5 @@ export type Subagent = {
   toolUses?: number;
   started?: number; // unix ms
   ended?: number;
+  delivery?: SubDelivery;
 };

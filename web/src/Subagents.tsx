@@ -6,7 +6,7 @@ import { ItemView, useStickToBottom } from "./ChatView.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { CtxRing, ctxTitle } from "./Composer.tsx";
 import { subagentOf, subBadge, subLine, subModelLabel, subToolCount, subDurationMs, fmtDuration,
-  subKey, subList, subReport, showReport } from "./logic/subagents.ts";
+  subKey, subList, subReport, showReport, subResultLine } from "./logic/subagents.ts";
 import { AgentGlyph } from "./icons.tsx";
 import { agentClass, agentShortName } from "./agents.ts";
 import type { ChatView, Item, SubStatus, Subagent } from "./types.ts";
@@ -97,6 +97,22 @@ export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
         <div className={`sub-line ${line.tone}`}>{line.text}</div>
       </div>
       <SubStats sa={sa} items={items} now={now} />
+    </div>
+  );
+}
+
+/** The row of a subagent's result the app carried to the agent: a system line, not a message.
+ *  Its state is the subagent's, so it follows a later change with no change to the item. */
+export function SubResultRow({ item, chat }: { item: Item; chat: ChatView }) {
+  const sid = item.subagent ?? "";
+  const sa = useStore((s) => s.subs[chat.id]?.[sid]);
+  const on = useStore((s) => !!sid && s.subDrawer?.chat === chat.id && s.subDrawer.sub === sid);
+  const line = subResultLine(sa);
+  const open = () => { if (sa) toggleSub(chat.id, sid); };
+  return (
+    <div className={`sub-result ${line.tone}${on ? " on" : ""}`} role="button" tabIndex={0} onClick={open}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }}>
+      Subagent result · <b>{line.name}</b>{line.text ? ` · ${line.text}` : ""}
     </div>
   );
 }

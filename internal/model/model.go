@@ -274,6 +274,11 @@ type ChatView struct {
 	StatusTool    string `json:"statusTool,omitempty"`
 	Error         string `json:"error,omitempty"`
 	FolderMissing bool   `json:"folderMissing,omitempty"`
+
+	// The two counts come from the chat's subagent records, so both are zero for a chat whose
+	// thread has not been read since the server started. They say what an idle chat waits on.
+	SubsRunning int `json:"subsRunning,omitempty"` // app-spawned subagents still running
+	SubsOwed    int `json:"subsOwed,omitempty"`    // finished ones whose result the agent has not received (SubDelivery.Owed)
 }
 
 // ViewOf builds the client view of a chat. Token, SessionID, TurnActive and McpInstructionsSent
@@ -304,7 +309,7 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 
 // Item is one entry of a chat's thread (the prototype's chat.ts Item, moved to the server).
 type Item struct {
-	Kind string `json:"kind"` // "user" | "text" | "tool" | "perm" | "note"
+	Kind string `json:"kind"` // "user" | "text" | "tool" | "perm" | "note" | "subresult"
 	// user
 	Text    string `json:"text,omitempty"`    // user, text, note
 	Context string `json:"context,omitempty"` // user: the <ui-context> sent with it (not shown)
@@ -327,7 +332,9 @@ type Item struct {
 	// note
 	Tone string `json:"tone,omitempty"` // "muted" | "error"
 	// subagents
-	Subagent string `json:"subagent,omitempty"` // tool (Agent/Task): the sid it started; perm: the sid that asked
+	// tool (Agent/Task): the sid it started; perm: the sid that asked; subresult: the sid whose
+	// result the app carried to the agent (its delivery state and report stay on the subagent)
+	Subagent string `json:"subagent,omitempty"`
 }
 
 // SubStatus is a subagent's lifecycle state. Every state but running is final.
@@ -339,6 +346,23 @@ const (
 	SubFailed    SubStatus = "failed"
 	SubStopped   SubStatus = "stopped"
 )
+
+// SubDelivery says what the app owes the parent agent for an app-spawned subagent's result. Only
+// a finished app-spawned subagent ever leaves SubNotOwed; a record written before the field
+// existed reads as SubNotOwed and is never delivered.
+type SubDelivery string
+
+const (
+	SubNotOwed   SubDelivery = ""         // nothing owed: running, or an ending that does not notify
+	SubOwed      SubDelivery = "owed"     // the parent has not received the result
+	SubOwedAgain SubDelivery = "retry"    // owed after one failed attempt: the turn that carried it failed before the agent answered
+	SubSent      SubDelivery = "sent"     // handed to the parent in a turn
+	SubGivenUp   SubDelivery = "given-up" // two attempts failed: not owed, never carried again; the report stays on the record
+)
+
+// Owed reports whether the parent has yet to receive the result: owed, or owed after one failed
+// attempt.
+func (d SubDelivery) Owed() bool { return d == SubOwed || d == SubOwedAgain }
 
 // Subagent is a subagent's state: chats/<chat>/subagents/<ID>/subagent.json. Its own thread is the
 // items.jsonl next to it, in the same format as a chat's. It is not an Item: the parent's thread
@@ -365,4 +389,6 @@ type Subagent struct {
 	ToolUses    int       `json:"toolUses,omitempty"` // Claude's own count
 	Started     int64     `json:"started,omitempty"`  // unix ms, set by the app when it first hears of it
 	Ended       int64     `json:"ended,omitempty"`    // unix ms, set when Status leaves running
+	// Delivery is the state of the result's delivery to the parent agent; app-spawned only.
+	Delivery SubDelivery `json:"delivery,omitempty"`
 }

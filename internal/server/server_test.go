@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +51,70 @@ func (fakeSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 
 func (fakeSpawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, error) {
 	return model.ContextSplit{Total: 10, Window: 100, Categories: []model.ContextCategory{{ID: "messages", Label: "Messages", Tokens: 10, Kind: "used"}}}, nil
+}
+
+// permAgent raises permission requests and keeps the answers it gets. Like the real adapters it
+// refuses an id it has not raised or has had answered.
+type permAgent struct {
+	fakeAgent
+	mu      sync.Mutex
+	asked   map[string]bool
+	answers []string // "<id> true" or "<id> false", in order
+}
+
+func (a *permAgent) ask(id string) {
+	a.mu.Lock()
+	a.asked[id] = true
+	a.mu.Unlock()
+	a.ch <- agent.Event{Kind: agent.EvPermRequest, PermID: id, ToolName: "Bash"}
+}
+
+func (a *permAgent) Decide(id string, allow bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.asked[id] {
+		return fmt.Errorf("unknown permission request %q", id)
+	}
+	delete(a.asked, id)
+	a.answers = append(a.answers, fmt.Sprintf("%s %v", id, allow))
+	return nil
+}
+
+func (a *permAgent) answered() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.answers...)
+}
+
+// permSpawner spawns permAgents and keeps them, in spawn order.
+type permSpawner struct {
+	fakeSpawner
+	mu     sync.Mutex
+	agents []*permAgent
+}
+
+func (s *permSpawner) Spawn(agent.SpawnOptions) (agent.Agent, error) {
+	a := &permAgent{fakeAgent: fakeAgent{ch: make(chan agent.Event)}, asked: map[string]bool{}}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agents = append(s.agents, a)
+	return a, nil
+}
+
+// agent waits for the i-th process spawned.
+func (s *permSpawner) agent(t *testing.T, i int) *permAgent {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		s.mu.Lock()
+		if len(s.agents) > i {
+			a := s.agents[i]
+			s.mu.Unlock()
+			return a
+		}
+		s.mu.Unlock()
+	}
+	t.Fatalf("process %d was not spawned", i)
+	return nil
 }
 
 // ---- environment ----------------------------------------------------------
@@ -640,6 +705,82 @@ func TestChatContext(t *testing.T) {
 	if s.Total != 10 || s.AtMessage != 1 || len(s.Categories) != 1 {
 		t.Fatalf("split %+v", s)
 	}
+}
+
+// The permission route passes on who asked together with the request id. An answer that names no
+// asker is for the chat's own agent, so it is refused for a subagent's card (a page loaded before
+// answers named the asker).
+func TestChatPermission(t *testing.T) {
+	e := newEnv(t)
+	sp := &permSpawner{}
+	e.a.Chats.Spawners[model.Claude] = sp
+	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
+	path := "/api/chats/" + c.ID + "/permission"
+	e.expect(200, "POST", "/api/chats/"+c.ID+"/messages", `{"text":"hi"}`)
+	parent := sp.agent(t, 0)
+	sa, err := e.a.Chats.SpawnSubagent(c.ID, chats.SpawnSubRequest{Prompt: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := sp.agent(t, 1)
+
+	// cards waits for the thread to hold n permission cards and returns them.
+	cards := func(n int) []model.Item {
+		t.Helper()
+		var got []model.Item
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			got = nil
+			out := decode[struct{ Items []model.Item }](t, e.expect(200, "GET", "/api/chats/"+c.ID+"/items", ""))
+			for _, it := range out.Items {
+				if it.Kind == "perm" {
+					got = append(got, it)
+				}
+			}
+			if len(got) == n {
+				return got
+			}
+		}
+		t.Fatalf("permission cards %+v, want %d", got, n)
+		return nil
+	}
+
+	// Both use the id Cursor gives the first request of every process.
+	child.ask("p1")
+	if ps := cards(1); ps[0].Subagent != sa.ID || ps[0].RequestID != "p1" {
+		t.Fatalf("the subagent's card %+v", ps[0])
+	}
+	out := decode[map[string]string](t, e.expect(400, "POST", path, `{"requestId":"p1","allow":true}`))
+	if out["error"] != chats.ErrNoRequest.Error() {
+		t.Fatalf("error %q", out["error"])
+	}
+	if ps := cards(1); ps[0].Decided != "" || len(child.answered()) != 0 || len(parent.answered()) != 0 {
+		t.Fatalf("an answer without the asker reached the subagent's request: %+v", ps)
+	}
+
+	parent.ask("p1")
+	cards(2)
+	e.expect(200, "POST", path, `{"requestId":"p1","allow":false}`)
+	if got := parent.answered(); !reflect.DeepEqual(got, []string{"p1 false"}) || len(child.answered()) != 0 {
+		t.Fatalf("answer without an asker: parent %v child %v", got, child.answered())
+	}
+	if ps := cards(2); ps[0].Decided != "" || ps[1].Subagent != "" || ps[1].Decided != "deny" {
+		t.Fatalf("cards %+v", ps)
+	}
+
+	e.expect(200, "POST", path, `{"requestId":"p1","subagent":"`+sa.ID+`","allow":true}`)
+	if got := child.answered(); !reflect.DeepEqual(got, []string{"p1 true"}) || len(parent.answered()) != 1 {
+		t.Fatalf("answer naming the subagent: child %v parent %v", got, parent.answered())
+	}
+	if ps := cards(2); ps[0].Decided != "allow" || ps[1].Decided != "deny" {
+		t.Fatalf("cards %+v", ps)
+	}
+
+	// A card that is no longer open takes no answer.
+	out = decode[map[string]string](t, e.expect(400, "POST", path, `{"requestId":"p1","subagent":"`+sa.ID+`","allow":false}`))
+	if out["error"] != chats.ErrNoRequest.Error() || len(child.answered()) != 1 {
+		t.Fatalf("second answer: %v, child %v", out, child.answered())
+	}
+	e.a.Chats.Stop(c.ID)
 }
 
 func TestNoStaticClientWhenUnset(t *testing.T) {

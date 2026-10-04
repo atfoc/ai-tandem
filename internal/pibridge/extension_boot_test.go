@@ -607,7 +607,6 @@ func checkNoNativeBoardTools(t *testing.T, allTools []string) {
 func spawnFamilyToolDefs() []map[string]any {
 	return []map[string]any{
 		{"name": "spawn_subagent", "description": "Spawn a subagent", "inputSchema": map[string]any{"type": "object"}},
-		{"name": "wait_subagents", "description": "Wait for subagents", "inputSchema": map[string]any{"type": "object"}},
 		{"name": "stop_subagent", "description": "Stop a subagent", "inputSchema": map[string]any{"type": "object"}},
 	}
 }
@@ -615,18 +614,16 @@ func spawnFamilyToolDefs() []map[string]any {
 func spawnFamilyRegisteredNames() []string {
 	return []string{
 		"mcp__board__spawn_subagent",
-		"mcp__board__wait_subagents",
 		"mcp__board__stop_subagent",
 	}
 }
 
 func isSpawnFamilyName(name string) bool {
 	switch name {
-	case "spawn_subagent", "wait_subagents", "stop_subagent":
+	case "spawn_subagent", "stop_subagent":
 		return true
 	}
 	return strings.HasSuffix(name, "__spawn_subagent") ||
-		strings.HasSuffix(name, "__wait_subagents") ||
 		strings.HasSuffix(name, "__stop_subagent")
 }
 
@@ -912,7 +909,6 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 		"mcp__board__bad":            true,
 		"mcp__board__third":          true,
 		"mcp__board__spawn_subagent": true,
-		"mcp__board__wait_subagents": true,
 		"mcp__board__stop_subagent":  true,
 	}
 	got := map[string]bool{}

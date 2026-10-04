@@ -35,6 +35,18 @@ test("runningChats counts thinking, writing, tool and approval", () => {
   assert.equal(runningChats([]), 0);
 });
 
+test("runningChats counts an idle chat whose subagents run, not one that only holds results", () => {
+  // A restart stops running subagents; results not sent yet are kept on disk.
+  assert.equal(runningChats([{ status: "ready", subsRunning: 2 }]), 1);
+  assert.equal(runningChats([{ status: "ready", subsRunning: 1, subsOwed: 1 }]), 1);
+  assert.equal(runningChats([{ status: "ready", subsOwed: 3 }]), 0);
+  assert.equal(runningChats([{ status: "ready", subsRunning: 0, subsOwed: 0 }]), 0);
+  assert.equal(runningChats([{ status: "stopped", subsOwed: 1 }]), 0);
+  // A busy chat with running subagents is one chat.
+  assert.equal(runningChats([{ status: "tool", subsRunning: 2 }, { status: "ready", subsRunning: 1 }, { status: "ready", subsOwed: 1 }]), 2);
+  assert.equal(restartConfirmText(runningChats([{ status: "ready", subsRunning: 4 }])), "Restart ends 1 running agent chat.");
+});
+
 test("restartConfirmText", () => {
   assert.equal(restartConfirmText(2), "Restart ends 2 running agent chats.");
   assert.equal(restartConfirmText(1), "Restart ends 1 running agent chat.");

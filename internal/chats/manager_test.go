@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,32 +38,120 @@ type fakeAgent struct {
 	opts agent.SpawnOptions
 	ch   chan agent.Event // unbuffered: a send returns once the pump has taken the event
 
-	mu         sync.Mutex
-	sends      [][]agent.ContentBlock
-	decides    []decision
-	interrupts int
-	closed     bool
+	mu           sync.Mutex
+	sends        [][]agent.ContentBlock
+	asked        map[string]bool // the permission requests it raised that have no answer yet
+	decides      []decision
+	strays       []decision // the answers Decide refused
+	interrupts   int
+	closed       bool
+	interruptErr error         // what Interrupt returns
+	sendErr      error         // non-nil: Send refuses the message with it, as an adapter does
+	sendEmits    []agent.Event // what a refusing Send emits before it returns
+	refusals     int           // the messages Send refused
+	sendGate     chan struct{} // non-nil: Send waits for it to close before it takes or refuses a message
+	sendPause    chan struct{} // non-nil: a refusing Send waits for it to close once it has emitted, before it returns
+	sendPaused   chan struct{} // closed when a Send is waiting for sendPause
 }
 
 func (a *fakeAgent) Events() <-chan agent.Event { return a.ch }
 
 func (a *fakeAgent) Send(b []agent.ContentBlock) error {
 	a.mu.Lock()
+	gate := a.sendGate
+	a.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	a.mu.Lock()
+	err, evs := a.sendErr, a.sendEmits
+	if err == nil {
+		a.sends = append(a.sends, b)
+	} else {
+		a.refusals++
+	}
+	a.mu.Unlock()
+	if err != nil && len(evs) > 0 {
+		for _, ev := range append(append([]agent.Event(nil), evs...), syncEv) {
+			a.ch <- ev // the pump has finished with them before Send returns
+		}
+	}
+	if err != nil {
+		a.mu.Lock()
+		pause, paused := a.sendPause, a.sendPaused
+		a.sendPause, a.sendPaused = nil, nil
+		a.mu.Unlock()
+		if pause != nil {
+			close(paused)
+			<-pause
+		}
+	}
+	return err
+}
+
+// pauseRefusal makes the next refusing Send wait between its emits and its return until release is
+// called: the pump has finished with what the adapter emitted, and the caller of Send does not have
+// the error yet. reached is closed when that Send is waiting.
+func (a *fakeAgent) pauseRefusal() (reached <-chan struct{}, release func()) {
+	pause, paused := make(chan struct{}), make(chan struct{})
+	a.mu.Lock()
+	a.sendPause, a.sendPaused = pause, paused
+	a.mu.Unlock()
+	return paused, sync.OnceFunc(func() { close(pause) })
+}
+
+// failSends makes every later Send refuse its message with err (nil: accept again), after emitting
+// evs: pi signals "thinking" before an ack that times out, and ends the turn itself when it
+// rejects a prompt.
+func (a *fakeAgent) failSends(err error, evs ...agent.Event) {
+	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.sends = append(a.sends, b)
-	return nil
+	a.sendErr, a.sendEmits = err, evs
+}
+
+// blockSends makes every later Send wait until the returned function is called, as pi's does for
+// an RPC ack and Cursor's for its handshake. Until then the message is neither sent nor refused.
+func (a *fakeAgent) blockSends() (release func()) {
+	gate := make(chan struct{})
+	a.mu.Lock()
+	a.sendGate = gate
+	a.mu.Unlock()
+	return sync.OnceFunc(func() {
+		a.mu.Lock()
+		a.sendGate = nil
+		a.mu.Unlock()
+		close(gate)
+	})
+}
+
+func (a *fakeAgent) interrupted() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.interrupts
+}
+
+func (a *fakeAgent) refused() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.refusals
 }
 
 func (a *fakeAgent) Interrupt() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.interrupts++
-	return nil
+	return a.interruptErr
 }
 
+// Decide refuses an id the agent has not raised or has had answered, as the real adapters do.
 func (a *fakeAgent) Decide(id string, allow bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if !a.asked[id] {
+		a.strays = append(a.strays, decision{id, allow})
+		return fmt.Errorf("unknown permission request %q", id)
+	}
+	delete(a.asked, id)
 	a.decides = append(a.decides, decision{id, allow})
 	return nil
 }
@@ -80,6 +169,14 @@ var syncEv = agent.Event{Kind: agent.EvToolInputDelta, ToolID: "__sync__"}
 func (a *fakeAgent) emit(t *testing.T, evs ...agent.Event) {
 	t.Helper()
 	for _, ev := range append(evs, syncEv) {
+		if ev.Kind == agent.EvPermRequest {
+			a.mu.Lock()
+			if a.asked == nil {
+				a.asked = map[string]bool{}
+			}
+			a.asked[ev.PermID] = true
+			a.mu.Unlock()
+		}
 		select {
 		case a.ch <- ev:
 		case <-time.After(5 * time.Second):
@@ -1737,12 +1834,19 @@ func TestSubagentPermissionWhileIdle(t *testing.T) {
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
+	sid := e.onlySub(id)
+	// The agent's own request is still open when its turn ends. It is closed there, so it cannot
+	// keep the idle chat in approval once the subagent's request is answered.
+	a.emit(t, agent.Event{Kind: agent.EvPermRequest, PermID: "r0", ToolName: "Bash", ToolID: "t0"})
 	a.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	if p := perms(e.items(id)); len(p) != 1 || p[0].Decided != "deny" {
+		t.Fatalf("the agent's own request after its turn ended %+v", p)
+	}
 	a.emit(t, agent.Event{Kind: agent.EvPermRequest, Sub: "t1", PermID: "r1", ToolName: "Bash", ToolID: "s1"})
 	if st := e.view(id).Status; st != model.StatusApproval {
 		t.Fatalf("status %q", st)
 	}
-	if err := e.m.Decide(id, "r1", true); err != nil {
+	if err := e.m.Decide(id, sid, "r1", true); err != nil {
 		t.Fatal(err)
 	}
 	if st := e.view(id).Status; st != model.StatusReady {
@@ -1796,6 +1900,10 @@ func TestSubagentsStoppedOnAbortedTurn(t *testing.T) {
 	items := diskItems(t, filepath.Join(e.subDir(id, sid), "items.jsonl"))
 	if len(items) != 1 || !items[0].Done || items[0].Text != "half" {
 		t.Fatalf("open text not closed: %+v", items)
+	}
+	e.m.handoffs.Wait()
+	if n, rows := len(a.sent()), resultRows(e.items(id)); n != 2 || len(rows) != 0 {
+		t.Fatalf("after the aborted turn: %d sends, result rows %v", n, rows)
 	}
 }
 

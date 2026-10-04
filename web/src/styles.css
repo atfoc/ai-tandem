@@ -272,6 +272,10 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .sub-type { color: var(--accent); } .sub-bg { color: var(--muted); }
 .sub-line { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub-line.live { color: var(--ok); } .sub-line.error { color: var(--danger); }
+.sub-result { font-size: 12px; color: var(--muted); padding: 0 2px; cursor: pointer; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub-result b { font-weight: 600; color: var(--text); }
+.sub-result:hover b, .sub-result.on b { color: var(--accent); }
+.sub-result.error { color: var(--danger); }
 .sub-stats { flex: none; display: inline-flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ctx-meter.sub-meter { font-size: inherit; padding: 0; }
 .sub-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(700px, 58vw); z-index: 45; display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--line); box-shadow: var(--shadow-md); }
@@ -325,6 +329,7 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .crow-dot { position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--panel); background: transparent; }
 .crow-dot.st-thinking, .crow-dot.st-writing, .crow-dot.st-tool { background: var(--ok); animation: pulse 1s infinite; }
 .crow-dot.st-approval { background: var(--warn); }
+.crow-dot.st-waiting { background: var(--muted); }
 .crow-dot.st-stopped, .crow-dot.st-error { background: var(--danger); }
 .unnamed { color: var(--muted); font-weight: 450; }
 .name-input { width: 100%; font: inherit; font-weight: 540; color: var(--text); background: var(--bg); border: 1px solid var(--accent); border-radius: 5px; padding: 1px 5px; outline: 0; box-shadow: 0 0 0 3px var(--accent-soft); }

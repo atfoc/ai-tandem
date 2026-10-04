@@ -2,7 +2,10 @@ package claude
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ai-whiteboard/internal/agent"
@@ -107,6 +110,49 @@ func TestTranslateResultErrors(t *testing.T) {
 		if evs[1].Aborted != c.aborted || evs[1].Error != c.err {
 			t.Errorf("translate(%s): aborted %v error %q, want %v %q", c.line, evs[1].Aborted, evs[1].Error, c.aborted, c.err)
 		}
+	}
+}
+
+// The fixtures are the lines Claude Code 2.1.284 wrote for real turns the API refused: a model id
+// it does not know, and a key it rejects (after the CLI's own retries). The init line is cut down
+// to the fields testdata/usage.jsonl keeps; the other lines are as written.
+func TestTranslateAPIErrorTurn(t *testing.T) {
+	cases := []struct {
+		file, err string
+	}{
+		{"api_error_model.jsonl", "There's an issue with the selected model (claude-no-such-model-j4). It may not exist or you may not have access to it. Run --model to pick a different model."},
+		{"api_error_auth.jsonl", "Failed to authenticate. API Error: 401 API key is invalid."},
+	}
+	for _, c := range cases {
+		raw, err := os.ReadFile(filepath.Join("testdata", c.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := &proc{}
+		var ends []agent.Event
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			for _, ev := range translateLine(t, p, line) {
+				switch ev.Kind {
+				case agent.EvText, agent.EvTextStart, agent.EvTextDelta, agent.EvToolStart, agent.EvToolInput, agent.EvPermRequest:
+					t.Errorf("%s: the CLI's error arrived as model output: %s", c.file, dump([]agent.Event{ev}))
+				case agent.EvTurnEnd:
+					ends = append(ends, ev)
+				}
+			}
+		}
+		if len(ends) != 1 || ends[0].Error != c.err || ends[0].Aborted {
+			t.Errorf("%s: turn ends %s, want one with error %q", c.file, dump(ends), c.err)
+		}
+	}
+
+	// The mark decides, with or without the "<synthetic>" model name; an unmarked line is text.
+	marked := `{"type":"assistant","message":{"id":"m1","model":"claude-haiku-4-5","content":[{"type":"text","text":"API Error: 529 Overloaded"}]},"parent_tool_use_id":null,"error":"overloaded","is_api_error_message":true}`
+	if evs := translateLine(t, &proc{}, marked); len(evs) != 0 {
+		t.Errorf("marked line gave %s, want nothing", dump(evs))
+	}
+	unmarked := `{"type":"assistant","message":{"id":"m1","model":"<synthetic>","content":[{"type":"text","text":"API Error: 529 Overloaded"}]},"parent_tool_use_id":null,"is_api_error_message":false}`
+	if evs := translateLine(t, &proc{}, unmarked); !eventsEqual(evs, []agent.Event{{Kind: agent.EvText, MsgID: "m1", Text: "API Error: 529 Overloaded"}}) {
+		t.Errorf("unmarked line gave %s, want its text", dump(evs))
 	}
 }
 

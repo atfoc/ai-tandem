@@ -3,6 +3,7 @@
 // version.json) are `git describe` strings, which can't be ordered; the files on disk always come
 // from the newest install, so they tell which side is stale.
 import type { Status } from "../types.ts";
+import { isWorking } from "./status.ts";
 
 export type Banner = "none" | "restart" | "reload";
 
@@ -20,12 +21,11 @@ export function bannerFor(page: string, server: string, disk: string): Banner {
   return "restart";
 }
 
-const RUNNING: ReadonlySet<Status> = new Set<Status>(["thinking", "writing", "tool", "approval"]);
-
-/** How many chats have an agent running: a restart ends them. */
-export const runningChats = (chats: Iterable<{ status: Status }>): number => {
+/** How many chats have an agent running, or subagents running while their agent waits for them: a
+ *  restart ends them. A chat that only holds results not sent yet is not counted. */
+export const runningChats = (chats: Iterable<{ status: Status; subsRunning?: number; subsOwed?: number }>): number => {
   let n = 0;
-  for (const c of chats) if (RUNNING.has(c.status)) n++;
+  for (const c of chats) if (isWorking(c)) n++;
   return n;
 };
 

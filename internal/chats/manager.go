@@ -41,10 +41,11 @@ type Deps struct {
 
 type Manager struct {
 	Deps
-	mu     sync.Mutex
-	chats  map[string]*Chat
-	naming sync.WaitGroup   // the auto namer goroutines Send starts
-	now    func() time.Time // the clock subagents' times come from; tests replace it
+	mu       sync.Mutex
+	chats    map[string]*Chat
+	naming   sync.WaitGroup   // the auto namer goroutines Send starts
+	handoffs sync.WaitGroup   // the deliveries of subagent results being given to an agent (handOff)
+	now      func() time.Time // the clock subagents' times come from; tests replace it
 
 	// extrasMu protects extras, extraBySID and used. Never take Chat.mu while holding extrasMu
 	// (issue/revoke run with Chat.mu then extrasMu).
@@ -68,6 +69,10 @@ type Chat struct {
 	subByTool     map[string]string  // Agent/Task tool call id → sid
 	pendingLinks  []pendingSpawnLink // unlinked app-spawned subs waiting for a matching spawn tool item
 	splitRun      *splitRun          // the context split being taken now (see ContextSplit)
+	shown         subCounts          // the subagent counts of the chat view clients were last sent (see emitCounts)
+	carry         *carry             // the turn carrying subagent results to the agent; nil once it ended
+	lateEnd       string             // the error of a refused delivery whose own turn end may still come (see lateEvent)
+	hold          bool               // the app starts no turn until the user sends (see setHold); not saved
 }
 
 var (
@@ -80,6 +85,7 @@ var (
 	ErrBusy          = errors.New("the agent is still working; wait for it to finish or stop it")
 	ErrNotStarted    = errors.New("the context split shows after the first message")
 	ErrBadReference  = errors.New("a quote must be part of an earlier message or reply in this chat")
+	ErrNoRequest     = errors.New("this permission request is no longer open; reload the page if it still looks open")
 )
 
 type ConfigReq struct {
@@ -113,7 +119,20 @@ func (m *Manager) send(out outbox) {
 
 // emitChat queues {type:"chat", chat: view(c)}. c.mu held.
 func (o *outbox) emitChat(c *Chat) {
-	*o = append(*o, map[string]any{"type": "chat", "chat": view(c)})
+	v := view(c)
+	c.shown = subCounts{v.SubsRunning, v.SubsOwed}
+	*o = append(*o, map[string]any{"type": "chat", "chat": v})
+}
+
+// emitCounts queues the chat's view when its subagent counts are not the ones clients were last
+// sent. A subagent's lifecycle and its result's delivery change them with only a sub event, and a
+// client shows what an idle chat waits on from the view alone, so whatever may have changed them
+// calls this before it unlocks. It queues nothing when a view was queued after the change, or when
+// the counts are back where they were (a result owed and taken under one lock). c.mu held.
+func (o *outbox) emitCounts(c *Chat) {
+	if !c.deleted && countSubs(c) != c.shown {
+		o.emitChat(c)
+	}
 }
 
 // emitItems queues the changed items, if any. c.mu held.
@@ -138,7 +157,31 @@ func view(c *Chat) model.ChatView {
 	default:
 		st = model.StatusReady
 	}
-	return model.ViewOf(c.meta, st, tool, c.errText, c.folderMissing)
+	v := model.ViewOf(c.meta, st, tool, c.errText, c.folderMissing)
+	n := countSubs(c)
+	v.SubsRunning, v.SubsOwed = n.running, n.owed
+	return v
+}
+
+// subCounts are the two numbers of a chat's view that come from its subagents' records.
+type subCounts struct {
+	running int // app-spawned subagents still running
+	owed    int // results the agent has not received
+}
+
+// countSubs counts them. A chat whose subagents are not loaded has none of either: a restart
+// leaves no subagent running, and what is owed is known once the chat is opened. c.mu held.
+func countSubs(c *Chat) subCounts {
+	var n subCounts
+	for _, s := range c.subs {
+		if s.app && s.meta.Status == model.SubRunning {
+			n.running++
+		}
+		if s.meta.Delivery.Owed() {
+			n.owed++
+		}
+	}
+	return n
 }
 
 // save writes chat.json. c.mu held.
@@ -169,6 +212,10 @@ func (m *Manager) trOf(c *Chat, out *outbox) (*transcript.Transcript, error) {
 	}
 	c.tr = tr
 	m.loadSubs(c)
+	// Load closed the permission requests the file had open (the app was closed over them).
+	if err := tr.Flush(false); err != nil {
+		log.Printf("chats: flush %s: %v", c.meta.ID, err)
+	}
 	if c.interrupted {
 		c.interrupted = false
 		c.meta.TurnActive = false
@@ -181,6 +228,8 @@ func (m *Manager) trOf(c *Chat, out *outbox) (*transcript.Transcript, error) {
 		out.emitItems(c, ups)
 		out.emitChat(c)
 	}
+	// Until now the chat's view had no counts: clients learn here what a restart left owed.
+	out.emitCounts(c)
 	return tr, nil
 }
 
@@ -485,6 +534,7 @@ func (m *Manager) spawn(c *Chat, out *outbox) error {
 			c.errText = ""
 			c.gen++
 			c.ag = ag
+			c.lateEnd = ""
 			go m.pump(c, ag, c.gen)
 			return nil
 		}
@@ -525,10 +575,25 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		before := view(c)
 		wasBusy := busy(c)
 		if ev.Sub != "" && ev.Kind != agent.EvPermRequest {
-			m.routeSub(c, ev, &out)
+			d := m.routeSub(c, ev, &out)
+			out.emitCounts(c)
+			c.mu.Unlock()
+			m.send(out)
+			m.handOff(c, d)
+			continue
+		}
+		if late, counts := lateEvent(c, ev); late {
+			if counts {
+				c.meta.Usage.Turns++
+				m.logSave(c)
+				out.emitChat(c)
+			}
 			c.mu.Unlock()
 			m.send(out)
 			continue
+		}
+		if c.carry != nil && modelOutput(ev) {
+			c.carry.settled = true // the results it carries are delivered
 		}
 		if ev.Kind == agent.EvPermRequest && ev.Sub != "" {
 			ev.Sub = c.subByTool[ev.Sub] // the perm item names the sid ("" if unknown)
@@ -571,6 +636,8 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		if len(c.pendingLinks) > 0 {
 			m.reconcileSpawnLinks(c, &out)
 		}
+		// Ahead of the cards stopSubs closes below: a client drops an update whose version it has.
+		out.emitItems(c, ups)
 		var toClose []agent.Agent
 		if (ev.Kind == agent.EvTurnEnd && ev.Aborted) || ev.Kind == agent.EvExit {
 			// An interrupt or cancel stops every subagent; background ones die with the process.
@@ -589,19 +656,27 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			}
 			m.logSave(c)
 		}
-		out.emitItems(c, ups)
 		if view(c) != before {
 			out.emitChat(c)
 		}
+		var d *carry
+		if ev.Kind == agent.EvTurnEnd || ev.Kind == agent.EvExit {
+			d = m.turnOver(c, ev, &out)
+		}
+		out.emitCounts(c)
 		c.mu.Unlock()
 		m.send(out)
 		closeAgents(toClose)
+		m.handOff(c, d)
 	}
 }
 
 // Send posts one user turn, starting (or resuming) the agent if it has no process. refs are the
 // parts of earlier messages the user quoted: the agent gets them as <reference> blocks in front of
-// the text, and the user item keeps them.
+// the text, and the user item keeps them. An accepted Send releases the chat's hold and carries the
+// subagent results the agent is owed, unless their delivery failed before: their rows go ahead of
+// the user item and their block ahead of the text, after a board chat's context. With nothing owed
+// the message is what it always was.
 func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 	var out outbox
 	c, err := m.lock(id)
@@ -629,6 +704,7 @@ func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 		m.send(out)
 		return err
 	}
+	releaseHold(c)
 	first := !c.meta.Locked
 	if first {
 		// Sending the first message confirms the chat's settings as chosen, changed or not.
@@ -655,8 +731,13 @@ func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 	} else {
 		context = "" // plain chats never get board context
 	}
+	d, taken, ups := m.carryOwed(c, true, &out)
+	if d != nil {
+		blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningAppSubs(c), true)})
+		c.carry = d
+	}
 	blocks = append(blocks, agent.ContentBlock{Text: withReferences(refs, text)})
-	ups := c.tr.AddUser(text, context, refs)
+	ups = append(ups, c.tr.AddUser(text, context, refs)...)
 	if err := c.tr.Flush(false); err != nil {
 		log.Printf("chats: flush %s: %v", c.meta.ID, err)
 	}
@@ -679,7 +760,11 @@ func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
 			}()
 		}
 	}
-	return ag.Send(blocks)
+	err = ag.Send(blocks)
+	if err != nil && d != nil {
+		m.sendRefused(c, d)
+	}
+	return err
 }
 
 // Configure changes the folder, model or effort before the first message; after it, only a
@@ -891,65 +976,110 @@ func (m *Manager) SetDraft(id string, d model.Draft) error {
 	return err
 }
 
-// Interrupt asks the running agent to stop its turn. App-spawned subagents are terminated
-// immediately; native ones wait for the aborted turn end, as they always have.
+// Interrupt asks the running agent to stop its turn, and holds the chat: the app starts no turn on
+// it until the user sends. App-spawned subagents are terminated immediately; native ones wait for
+// the aborted turn end, as they always have. With no turn running no aborted end follows, so the
+// "Stopped." note for the subagents it stopped is written here. A turn carrying subagent results
+// is marked as stopped by the human: if it ends with no model output, they are owed again.
+//
+// While subagent results are being handed to the agent (handOff), the agent is signalled only once
+// it has the message, and Interrupt does not wait for that.
 func (m *Manager) Interrupt(id string) error {
 	var out outbox
 	c, err := m.lock(id)
 	if err != nil {
 		return err
 	}
+	setHold(c)
 	ag := c.ag
+	stopped := runningAppSubs(c)
 	toClose := m.stopAppSubs(c, &out)
-	if len(toClose) > 0 && c.tr != nil {
+	if stopped > 0 && c.tr != nil {
+		if !turnRunning(c) {
+			out.emitItems(c, c.tr.AddNote("muted", "Stopped."))
+		}
 		if err := c.tr.Flush(false); err != nil {
 			log.Printf("chats: flush %s: %v", c.meta.ID, err)
 		}
 	}
+	late := false
+	if d := c.carry; d != nil {
+		d.human = true
+		if late = d.handing; late {
+			d.stop = true
+		}
+	}
+	out.emitCounts(c)
 	c.mu.Unlock()
 	m.send(out)
 	closeAgents(toClose)
-	if ag == nil {
+	if ag == nil || late {
 		return nil
 	}
 	return ag.Interrupt()
 }
 
-// Decide answers a permission request.
-func (m *Manager) Decide(id, requestID string, allow bool) error {
+// Decide answers a permission request. The request is named by who asked together with its id:
+// asker is the subagent on its card, "" for the chat's own agent. The answer goes to the asker's
+// process and to that request's card, and to nothing when the request is not open (ErrNoRequest).
+func (m *Manager) Decide(id, asker, requestID string, allow bool) error {
 	var out outbox
+	var d *carry
 	c, err := m.lock(id)
 	if err != nil {
 		return err
 	}
-	defer func() { c.mu.Unlock(); m.send(out) }()
+	defer func() { c.mu.Unlock(); m.send(out); m.handOff(c, d) }()
 	tr, err := m.trOf(c, &out)
 	if err != nil {
 		return err
 	}
-	ag := c.ag
-	_, items := tr.Snapshot()
-	for _, it := range items {
-		if it.Kind == "perm" && it.RequestID == requestID && it.Subagent != "" {
-			if s, ok := c.subs[it.Subagent]; ok && s.ag != nil {
-				ag = s.ag // app-spawned: the child asked; native still uses c.ag
-			}
-			break
-		}
+	if !tr.PermOpen(asker, requestID) {
+		return ErrNoRequest
 	}
+	ag := permAgent(c, asker)
 	if ag == nil {
 		return errors.New("the agent is not running")
 	}
 	if err := ag.Decide(requestID, allow); err != nil {
 		return err
 	}
-	ups := tr.Decided(requestID, allow)
-	if err := tr.Flush(false); err != nil {
+	before := view(c)
+	if m.permsClosed(c, before, tr.Decided(asker, requestID, allow), &out) {
+		d = m.deliver(c, &out)
+	}
+	return nil
+}
+
+// permAgent is the process that holds asker's permission requests: an app-spawned subagent's own,
+// else the chat's, which holds its own and its native subagents'. nil when that process is gone.
+// c.mu held.
+func permAgent(c *Chat, asker string) agent.Agent {
+	if s := c.subs[asker]; s != nil && s.app {
+		return s.ag
+	}
+	return c.ag
+}
+
+// permsClosed writes and sends ups, the thread's changes after permission requests were answered
+// (Decide) or closed because the subagent that asked reached a final status (endSub), and the
+// chat's view when that changed it; before is the view from before. These two are how a chat
+// leaves approval while no turn of its own agent is running; it reports whether the chat left
+// approval, which is when a caller that may start a turn checks for owed results (deliver).
+// c.mu held.
+func (m *Manager) permsClosed(c *Chat, before model.ChatView, ups []transcript.Update, out *outbox) bool {
+	if len(ups) == 0 {
+		return false
+	}
+	if err := c.tr.Flush(false); err != nil {
 		log.Printf("chats: flush %s: %v", c.meta.ID, err)
 	}
 	out.emitItems(c, ups)
-	out.emitChat(c)
-	return nil
+	now := view(c)
+	if now != before {
+		out.emitChat(c)
+	}
+	return before.Status == model.StatusApproval && now.Status != model.StatusApproval
 }
 
 // Move puts a plain chat in another group. Its settings are unchanged.
@@ -975,7 +1105,8 @@ func (m *Manager) Move(id, group string) error {
 }
 
 // Stop ends the chat's agent (archive, delete, board delete): pending approvals are answered
-// "no", a running turn gets a "Stopped." note.
+// "no", a running turn gets a "Stopped." note. A turn carrying subagent results is settled as
+// stopped by the human.
 func (m *Manager) Stop(id string) {
 	var out outbox
 	c, err := m.lock(id)
@@ -984,6 +1115,7 @@ func (m *Manager) Stop(id string) {
 	}
 	var toClose []agent.Agent
 	defer func() { c.mu.Unlock(); m.send(out); closeAgents(toClose) }()
+	setHold(c)
 	if c.tr == nil && !c.interrupted {
 		return // unloaded: no agent, nothing open
 	}
@@ -1004,7 +1136,7 @@ func (m *Manager) Stop(id string) {
 			if c.ag != nil {
 				_ = c.ag.Decide(it.RequestID, false)
 			}
-			ups = append(ups, tr.Decided(it.RequestID, false)...)
+			ups = append(ups, tr.Decided(it.Subagent, it.RequestID, false)...)
 		}
 	}
 	if c.ag != nil {
@@ -1012,6 +1144,10 @@ func (m *Manager) Stop(id string) {
 		_ = c.ag.Interrupt()
 		c.ag.Close()
 		c.ag = nil
+	}
+	if c.carry != nil { // its turn ends here: the pump drops what the old process still says
+		c.carry.human = true
+		m.endCarry(c, false, &out)
 	}
 	toClose = m.stopSubs(c, &out)
 	m.revokeChatExtras(c.meta.ID)
@@ -1060,6 +1196,7 @@ func (m *Manager) Delete(id string) error {
 		c.ag.Close()
 		c.ag = nil
 	}
+	c.carry = nil
 	c.mu.Unlock()
 	m.revokeChatExtras(id)
 	m.unregisterChatToken(tok)
@@ -1110,12 +1247,20 @@ func (m *Manager) Busy(id string) bool {
 
 // Shutdown writes everything still open and ends every agent without waiting (the caller then
 // ends what is left with agent.EndAll). A running turn keeps TurnActive, so the chat shows as
-// Stopped next time.
+// Stopped next time. A turn carrying subagent results is settled here, as stopped by the human, so
+// the closing process's exit, handled or not before the server ends, changes nothing. Every chat is
+// held: a turn end the closing process still reports starts no delivery, and what is owed stays
+// owed for the next run.
 func (m *Manager) Shutdown() {
 	for _, c := range m.all() {
 		var out outbox
 		c.mu.Lock()
+		setHold(c)
 		if c.tr != nil {
+			if c.carry != nil {
+				c.carry.human = true
+				m.endCarry(c, false, &out)
+			}
 			if err := c.tr.Flush(true); err != nil {
 				log.Printf("chats: flush %s: %v", c.meta.ID, err)
 			}
@@ -1129,6 +1274,7 @@ func (m *Manager) Shutdown() {
 		if c.ag != nil {
 			go c.ag.Close() // Cursor's Close waits for the process, forever when its children hold its output
 		}
+		out.emitCounts(c)
 		c.mu.Unlock()
 		m.send(out)
 		closeAgents(toClose)

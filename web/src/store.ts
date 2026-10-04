@@ -2,11 +2,10 @@
 // arrays) live outside it in board.ts `scenes`, because they change on every
 // stroke and nothing but the canvas renders from them.
 import { useSyncExternalStore } from "react";
-import type { AgentKind, Board, Catalog, ChatView, Defaults, Draft, Group, Item, Status, Subagent } from "./types.ts";
+import type { AgentKind, Board, Catalog, ChatView, Defaults, Draft, Group, Item, Subagent } from "./types.ts";
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
 import { forgetBoard } from "./board.ts";
-import { plainText } from "./logic/refs.ts";
 import { parseWidths, type Widths } from "./logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
 import type { Unsaved } from "./logic/drafts.ts";
@@ -176,19 +175,12 @@ export const lastChat = {
 
 // ---- chats
 
-export const isBusy = (s: Status | undefined) => s === "thinking" || s === "writing" || s === "tool" || s === "approval";
+export { isBusy } from "./logic/status.ts";
 
 /** Curl-era Cursor board chats: disabled in the UI, still listed (not archived). */
 export const isLegacy = (c?: { instructionsSent?: boolean } | null) => !!c?.instructionsSent;
 
-/** The chat's name, or its first message until it is named. */
-export function chatTitle(c: ChatView, items?: Item[]): string {
-  if (c.name) return c.name;
-  const first = items?.find((i) => i.kind === "user");
-  if (!first?.text) return "New chat";
-  const t = plainText(first.text).replace(/\s+/g, " ").trim();
-  return t.length > 42 ? t.slice(0, 40) + "…" : t;
-}
+export { chatTitle } from "./logic/labels.ts";
 
 /** Board id → name, for tool labels. */
 export const boardName = (id: string) => state.boards[id]?.name;

@@ -105,6 +105,7 @@ type proc struct {
 
 	// translate state (only touched by the read loop)
 	msgSeq      int
+	turnErr     string         // pi's error text while the turn's last assistant message is an errored one
 	toolByIndex map[int]string // content index → tool call id
 	toolEmit    map[string]*toolEmit
 	extErrOnce  sync.Once

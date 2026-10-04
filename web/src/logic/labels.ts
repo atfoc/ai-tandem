@@ -4,7 +4,9 @@
 // left out). The label names the board through `nameOf` (id → name, from the
 // store), or says "this board" when the argument is left out.
 
-import type { CatalogModel, ChatView } from "../types.ts";
+import type { CatalogModel, ChatView, Item } from "../types.ts";
+import { plainText } from "./refs.ts";
+import { isBusy } from "./status.ts";
 
 const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
@@ -103,10 +105,35 @@ export function toolDone(name: string, input: any, result: string | undefined, n
   }
 }
 
-/** The chat's status line. */
-export function statusText(c: Pick<ChatView, "status" | "statusTool" | "usage">, nameOf: BoardNames = noNames): string {
+/** The chat's name, or its first message until it is named. */
+export function chatTitle(c: Pick<ChatView, "name">, items?: Item[]): string {
+  if (c.name) return c.name;
+  const first = items?.find((i) => i.kind === "user");
+  if (!first?.text) return "New chat";
+  const t = plainText(first.text).replace(/\s+/g, " ").trim();
+  return t.length > 42 ? t.slice(0, 40) + "…" : t;
+}
+
+/** What a chat that is not busy waits on, from its two subagent counts: the subagents it spawned
+ *  that still run, and the results the agent has not been sent. "" with neither, while the agent is
+ *  busy, and for an archived chat, which takes no message. */
+export function waitingText(c: Pick<ChatView, "status" | "subsRunning" | "subsOwed" | "archived">): string {
+  if (isBusy(c.status) || c.archived) return "";
+  const running = c.subsRunning ?? 0, owed = c.subsOwed ?? 0;
+  const parts: string[] = [];
+  if (running > 0) parts.push(`Waiting on ${running} subagent${running === 1 ? "" : "s"}`);
+  if (owed > 0) parts.push(owed === 1
+    ? "1 subagent result not sent yet. It goes to the agent after your next message."
+    : `${owed} subagent results not sent yet. They go to the agent after your next message.`);
+  return parts.join(". ");
+}
+
+type Stated = Pick<ChatView, "status" | "statusTool" | "usage" | "subsRunning" | "subsOwed" | "archived">;
+
+/** The chat's status line. An idle chat says what it waits on (waitingText), when it does. */
+export function statusText(c: Stated, nameOf: BoardNames = noNames): string {
   switch (c.status) {
-    case "ready": return c.usage?.turns ? "Idle" : "Ready";
+    case "ready": return waitingText(c) || (c.usage?.turns ? "Idle" : "Ready");
     case "thinking": return "Thinking…";
     case "writing": return "Writing…";
     case "tool": return toolVerb(c.statusTool ?? "", null, nameOf) + "…";
@@ -114,4 +141,17 @@ export function statusText(c: Pick<ChatView, "status" | "statusTool" | "usage">,
     case "stopped": return "Stopped";
     case "error": return "Can't start";
   }
+}
+
+/** The state a sidebar row's dot shows: the chat's status, or "waiting" for an idle chat that
+ *  waits on subagents or holds results for the agent. */
+export const dotState = (c: Stated): ChatView["status"] | "waiting" =>
+  c.status === "ready" && waitingText(c) ? "waiting" : c.status;
+
+/** A sidebar chat row's second line: what the chat is doing when that says something (busy,
+ *  stopped, can't start, waiting on subagents or holding their results), else its settings line. */
+export function rowLine(c: Stated & Pick<ChatView, "error">, settings: string, nameOf: BoardNames = noNames): string {
+  if (c.status === "stopped") return "Stopped";
+  if (c.status === "error") return c.error || statusText(c, nameOf);
+  return isBusy(c.status) || waitingText(c) ? statusText(c, nameOf) : settings;
 }

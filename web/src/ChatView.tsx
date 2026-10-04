@@ -5,10 +5,12 @@ import { useStore, setState, isBusy, isLegacy, chatTitle, boardName } from "./st
 import { api } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
-import { toolVerb, toolDone, statusText } from "./logic/labels.ts";
+import { toolVerb, toolDone, statusText, waitingText } from "./logic/labels.ts";
 import { isSubagentTool } from "./logic/subagents.ts";
+import { quotable } from "./logic/quotes.ts";
+import { permAnswer } from "./logic/perms.ts";
 import { Markdown } from "./Markdown.tsx";
-import { SubagentRow } from "./Subagents.tsx";
+import { SubagentRow, SubResultRow } from "./Subagents.tsx";
 import { SentQuotes } from "./Quotes.tsx";
 import { AgentGlyph, BoardIcon, Pencil, agentClass, agentName } from "./icons.tsx";
 import type { ChatView, Item, Subagent } from "./types.ts";
@@ -102,11 +104,13 @@ export function Thread({ chatId }: { chatId: string }) {
   const onScroll = useStickToBottom(ref, true, chatId);
   if (!c) return null;
   const busy = isBusy(c.status);
+  const waiting = waitingText(c); // "" while busy
   return (
     <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
       {loaded && !items.length && <EmptyThread c={c} />}
       {items.map((it, i) => it ? <ItemView key={i} item={it} chat={c} index={i} /> : null)}
       {busy && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
+      {!!waiting && <div className="typing waiting">{waiting}</div>}
     </div>
   );
 }
@@ -145,7 +149,7 @@ export function ItemView({ item, chat, sub, index }: { item: Item; chat: ChatVie
     case "user": {
       const refs = item.references ?? [];
       return (
-        <div className="msg user" data-item={tag} data-quotable={tag === undefined ? undefined : "true"}>
+        <div className="msg user" data-item={tag} data-quotable={tag === undefined ? undefined : String(quotable(item))}>
           {refs.length > 0 && <SentQuotes chatId={chat.id} refs={refs} />}
           {(item.text || !refs.length) && <Markdown text={item.text ?? ""} user board={chat.board} agent={chat.agent} />}
         </div>
@@ -154,7 +158,7 @@ export function ItemView({ item, chat, sub, index }: { item: Item; chat: ChatVie
     case "text": {
       const streaming = !item.done && (sub ? live : chat.status === "writing");
       return (
-        <div className={`msg assistant${streaming ? " streaming" : ""}`} data-item={tag} data-quotable={tag === undefined ? undefined : String(!!item.done)}>
+        <div className={`msg assistant${streaming ? " streaming" : ""}`} data-item={tag} data-quotable={tag === undefined ? undefined : String(quotable(item))}>
           <Markdown text={item.text ?? ""} board={chat.board} agent={chat.agent} streaming={streaming} />
           {streaming && !item.text?.trim() && <span className="caret-blink" />}
         </div>
@@ -163,6 +167,7 @@ export function ItemView({ item, chat, sub, index }: { item: Item; chat: ChatVie
     case "tool": return isSubagentTool(item) ? <SubagentRow item={item} chat={chat} /> : <ToolCard item={item} chat={chat} live={live} />;
     case "perm": return <PermCard item={item} chat={chat} />;
     case "note": return item.text ? <div className={`note ${item.tone ?? ""}`}>{item.text}</div> : null;
+    case "subresult": return <SubResultRow item={item} chat={chat} />;
   }
   return null;
 }
@@ -215,7 +220,7 @@ function PermCard({ item, chat }: { item: Item; chat: ChatView }) {
   const [err, setErr] = useState("");
   const asker = useStore((s) => (item.subagent ? s.subs[chat.id]?.[item.subagent] : undefined));
   const input: any = item.input ?? {};
-  const decide = (allow: boolean) => api.decide(chat.id, item.requestId ?? "", allow).then(() => setErr(""), (e) => setErr(e.message));
+  const decide = (allow: boolean) => api.decide(chat.id, permAnswer(item, allow)).then(() => setErr(""), (e) => setErr(e.message));
   const what = input.command ?? input.file_path ?? input.url ?? input.notebook_path ?? null;
   return (
     <div className={`perm ${item.decided || "pending"}`}>

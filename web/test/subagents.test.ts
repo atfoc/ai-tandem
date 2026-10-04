@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   fmtDuration, isSubagentTool, showReport, subActivity, subagentOf, subBadge, subDurationMs, subKey,
-  subLine, subList, subModelLabel, subReport, subToolCount,
+  subLine, subList, subModelLabel, subReport, subResultLine, subToolCount,
 } from "../src/logic/subagents.ts";
+import { quotable } from "../src/logic/quotes.ts";
+import { chatTitle } from "../src/logic/labels.ts";
 import type { Catalog, Item, Subagent } from "../src/types.ts";
 
 const call = (extra: Partial<Item> = {}): Item => ({
@@ -96,6 +98,54 @@ test("subLine: completed, failed, stopped", () => {
   assert.deepEqual(subLine(call(), sub({ status: "failed", error: "It broke\nstack" })), { text: "It broke", tone: "error" });
   assert.deepEqual(subLine(call(), sub({ status: "failed" })), { text: "Failed", tone: "error" });
   assert.deepEqual(subLine(call(), sub({ status: "stopped" })), { text: "Stopped", tone: "muted" });
+});
+
+test("subResultLine: the subagent's name, final status and delivery state", () => {
+  const done = sub({ status: "completed", description: "Count files" });
+  assert.deepEqual(subResultLine({ ...done, delivery: "sent" }), { name: "Count files", text: "Done · sent to the agent", tone: "muted" });
+  assert.deepEqual(subResultLine({ ...done, delivery: "owed" }), { name: "Count files", text: "Done · not sent yet", tone: "muted" });
+  // No delivery on the record: the line says nothing about delivery.
+  assert.deepEqual(subResultLine(done), { name: "Count files", text: "Done", tone: "muted" });
+  assert.deepEqual(subResultLine(sub({ status: "stopped", delivery: "sent" })), { name: "Subagent", text: "Stopped · sent to the agent", tone: "muted" });
+  assert.deepEqual(subResultLine(sub({ status: "failed", delivery: "owed" })), { name: "Subagent", text: "Failed · not sent yet", tone: "error" });
+  // Owed after one failed attempt reads as owed; after two the result is given up.
+  assert.deepEqual(subResultLine({ ...done, delivery: "retry" }), { name: "Count files", text: "Done · not sent yet", tone: "muted" });
+  assert.deepEqual(subResultLine({ ...done, delivery: "given-up" }), { name: "Count files", text: "Done · could not be delivered", tone: "muted" });
+  assert.deepEqual(subResultLine(sub({ status: "completed", error: "limit reached", delivery: "given-up" })),
+    { name: "Subagent", text: "Done · ended with an error · could not be delivered", tone: "error" });
+});
+
+test("subResultLine: a delivery state this client does not know adds nothing", () => {
+  const newer = { ...sub({ status: "completed", description: "Count files" }), delivery: "queued" } as unknown as Subagent;
+  assert.deepEqual(subResultLine(newer), { name: "Count files", text: "Done", tone: "muted" });
+  assert.deepEqual(subResultLine({ ...newer, error: "boom" }), { name: "Count files", text: "Done · ended with an error", tone: "error" });
+});
+
+test("subResultLine: says a result ended with an error", () => {
+  // A subagent whose turn ended with an error is recorded as completed, with the error.
+  assert.deepEqual(subResultLine(sub({ status: "completed", error: "API Error: overloaded", last: "half", delivery: "sent" })),
+    { name: "Subagent", text: "Done · ended with an error · sent to the agent", tone: "error" });
+  assert.deepEqual(subResultLine(sub({ status: "failed", error: "boom", delivery: "owed" })),
+    { name: "Subagent", text: "Failed · ended with an error · not sent yet", tone: "error" });
+  assert.deepEqual(subResultLine(sub({ status: "stopped", error: "process ended", delivery: "sent" })),
+    { name: "Subagent", text: "Stopped · ended with an error · sent to the agent", tone: "error" });
+});
+
+test("subResultLine: before the chat's subagents are loaded", () => {
+  assert.deepEqual(subResultLine(undefined), { name: "Subagent", text: "", tone: "muted" });
+});
+
+test("a result row is not a subagent tool, not quotable and not a chat title source", () => {
+  const row: Item = { kind: "subresult", subagent: "s1" };
+  assert.equal(isSubagentTool(row), false);
+  assert.equal(quotable(row), undefined);
+  assert.equal(quotable({ kind: "user" }), true);
+  assert.equal(quotable({ kind: "text", done: true }), true);
+  assert.equal(quotable({ kind: "text" }), false);
+  for (const kind of ["tool", "perm", "note"] as const) assert.equal(quotable({ kind }), undefined);
+  assert.equal(chatTitle({}, [row]), "New chat");
+  assert.equal(chatTitle({}, [row, { kind: "user", text: "Count the files" }]), "Count the files");
+  assert.equal(chatTitle({ name: "Named" }, [row]), "Named");
 });
 
 test("subReport / showReport", () => {

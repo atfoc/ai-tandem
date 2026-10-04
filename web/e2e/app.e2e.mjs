@@ -20,16 +20,26 @@
 //   AIWB_E2E_SKIP_CURSOR_MCP=1  skip the real-Cursor-over-MCP steps (reported as skipped, never
 //                               silently dropped) and start the app on the hidden test-only MCP
 //                               port override, so a normal app instance may keep 6006.
+//   AIWB_E2E_STEPS   run only these steps, e.g. "18,19,19b"; the others are reported as skipped.
+//                    Step 1 always runs: it starts the server. Steps 18, 19 and 19b need nothing
+//                    an earlier step made; most other steps do.
 //
 // The run gives the server and Cursor a copy of the Cursor CLI config ($CURSOR_CONFIG_DIR or
 // ~/.cursor) in a temp folder, removed at the end, so the deny rules the server adds for the data
 // folder never reach the user's config.
 //
-// Subagents on app chats go through the MCP spawn family (`spawn_subagent` / `wait_subagents` /
-// `stop_subagent`), not native Agent / Task / subagent. Steps 18 and 19 drive that path on plain
-// Claude and plain Cursor. pi chats are created from the same "New chat" menu ("Pi chat") and use
-// the same composer, so they would follow the Claude/Cursor steps below; no pi step is wired into
-// this paid run yet. The adapter's own cheap, gated real-pi checks run separately:
+// Subagents on app chats go through the MCP spawn family (`spawn_subagent` / `stop_subagent`), not
+// native Agent / Task / subagent; their results reach the agent as a message from the app. Steps
+// 18, 19 and 19b drive that path on plain Claude and plain Cursor. Two scenarios, kept apart
+// because a stopped subagent never sends a result:
+//   delivery            the agent ends its turn while its subagents run; each result comes as a
+//                       row and starts a turn of the agent's (step 18 on Claude, 19b on Cursor)
+//   Stop while waiting  Stop on an idle chat stops its subagents and starts no turn (the closing
+//                       part of step 18 on Claude, step 19 on Cursor)
+// pi chats are created from the same "New chat" menu ("Pi chat") and use the same composer, so
+// they would follow the Claude/Cursor steps below; no pi step is wired into this paid run yet. The
+// adapter's own cheap, gated real-pi checks run separately, the two scenarios among them
+// (TestE2ESubagentDelivery, which also needs AIWB_PI_E2E_SUBAGENT=1):
 //   AIWB_PI_E2E=1 go test -count=1 -run TestE2E ./internal/pi/
 // This full Playwright run stays manual.
 //
@@ -125,7 +135,11 @@ async function waitFor(what, fn, { timeout = 30_000, every = 250 } = {}) {
   }
 }
 
+// AIWB_E2E_STEPS: the steps to run, null for all of them.
+const ONLY = process.env.AIWB_E2E_STEPS ? new Set(process.env.AIWB_E2E_STEPS.split(",").map((x) => x.trim()).filter(Boolean)) : null;
+
 async function step(n, title, fn) {
+  if (ONLY && n !== 1 && !ONLY.has(String(n))) return skipStep(n, title, "not in AIWB_E2E_STEPS");
   current = `${n}. ${title}`;
   log(`\n== Step ${current}`);
   await fn();
@@ -244,6 +258,149 @@ async function waitTurn(id, before, what = "the agent's turn ends") {
   return { view: await chatView(id), items: await chatItems(id) };
 }
 
+// ---------------------------------------------------------------- subagents
+
+const chatSubs = async (id) => (await get(`/api/chats/${id}/items`)).subagents;
+const resultItems = (items) => items.filter((i) => i.kind === "subresult");
+const stoppedNotes = (items) => items.filter((i) => i.kind === "note" && i.text === "Stopped.").length;
+const sinceLastUser = (items) => items.slice(items.map((i) => i.kind).lastIndexOf("user") + 1);
+
+/**
+ * The agent's own tool calls that wait for a subagent: a sleep, or the removed wait_subagents. An
+ * agent that does not end its turn after spawning runs these. A spawn_subagent call may name a
+ * sleep in the task it hands over.
+ */
+function waitingCalls(items) {
+  return items.filter((i) => i.kind === "tool" && !/__(spawn|stop)_subagent$/.test(i.name ?? "")
+    && /\bsleep\b|wait_subagents/i.test(`${i.name ?? ""} ${JSON.stringify(i.input ?? "")} ${i.partial ?? ""}`))
+    .map((i) => ({ name: i.name, input: i.input ?? i.partial }));
+}
+
+/** Reads a chat's view in the background and keeps every change of its turn count, status and subagent counts. */
+function watchChat(id, every = 100) {
+  const seen = [];
+  let on = true;
+  const done = (async () => {
+    while (on) {
+      try {
+        const v = await chatView(id);
+        const e = { turns: v.usage?.turns ?? 0, status: v.status, running: v.subsRunning ?? 0, owed: v.subsOwed ?? 0 };
+        const last = seen.at(-1);
+        if (!last || last.turns !== e.turns || last.status !== e.status || last.running !== e.running || last.owed !== e.owed) seen.push(e);
+      } catch { /* the server is restarting */ }
+      await sleep(every);
+    }
+  })();
+  return { seen, stop: async () => { on = false; await done; } };
+}
+
+/**
+ * The delivery checks, on a chat whose agent was asked (in the turn after `before` turns) to spawn
+ * `n` subagents and use their results: its turn ended while they still ran; each result came as a
+ * row and reached the agent; the agent ran at least two turns and waited in none of them; its last
+ * turn's text uses the reports (`uses`). `watch` has read the chat since before the message.
+ */
+async function checkDelivery(page, id, before, n, watch, uses) {
+  const rowTexts = await waitFor(`${n} result rows say "sent to the agent"`, async () => {
+    const now = (await page.locator(".thread .sub-result").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
+    return now.length === n && now.every((t) => /sent to the agent$/.test(t)) ? now : saw(now);
+  }, { timeout: TURN_TIMEOUT });
+  log(`    result rows: ${rowTexts.join(" | ")}`);
+  const view = await waitFor("every result has reached the agent and its last turn has ended", async () => {
+    const v = await chatView(id);
+    const subs = await chatSubs(id);
+    const ok = !BUSY.has(v.status) && !v.subsRunning && !v.subsOwed && subs.length === n && subs.every((x) => x.delivery === "sent") && (v.usage?.turns ?? 0) >= before + 2;
+    return ok ? v : saw({ status: v.status, turns: v.usage?.turns, subsRunning: v.subsRunning, subsOwed: v.subsOwed, subs: subs.map((x) => [x.id, x.status, x.delivery]) });
+  }, { timeout: TURN_TIMEOUT, every: 500 });
+  await watch.stop();
+  log(`    the chat, change by change: ${watch.seen.map((e) => `${e.turns}/${e.status}/${e.running}/${e.owed}`).join(" ")} (turns/status/running/unsent)`);
+  check(watch.seen.some((e) => e.turns > before && e.status === "ready" && e.running > 0),
+    "the agent's first turn ended while its subagents were still running (chat ready, subagents running)", watch.seen);
+  const items = await chatItems(id);
+  const subs = await chatSubs(id);
+  const results = resultItems(items).map((i) => i.subagent).sort();
+  check(show(results) === show(subs.map((x) => x.id).sort()), "the thread has one result row per subagent", { results, subs: subs.map((x) => x.id) });
+  check(view.usage.turns >= before + 2, `the agent ran at least two turns (${view.usage.turns - before})`, view.usage);
+  const mine = sinceLastUser(items);
+  check(waitingCalls(mine).length === 0, "the agent ran no sleep or polling command between its turns", waitingCalls(mine));
+  const last = mine.slice(mine.map((i) => i.kind).lastIndexOf("subresult") + 1).filter((i) => i.kind === "text").map((i) => i.text ?? "").join("\n").trim();
+  check(uses(last), "the agent's last turn uses the subagents' reports", last);
+  log(`    last turn: ${last.replace(/\s+/g, " ").slice(0, 200)}`);
+}
+
+/**
+ * Stop while a chat only waits on its subagents, and what must hold afterwards. The agent was
+ * asked (in the turn after `before` turns) to spawn `n` long-running subagents. First the agent's
+ * turn has ended and the chat is idle with them running, and the composer shows Stop. After Stop:
+ * `rowsStopped(when)` (the caller's check of its rows), exactly one "Stopped." note, the server
+ * has them stopped, and their processes have ended, with whatever they started and no other
+ * process of the server's. Then no result row appears and the agent's turn count does not grow;
+ * the same after a reload; and a message of the user's gets a normal reply. A turn that starts by
+ * itself, or a second note, would be the agent's process answering a Stop that met no turn.
+ */
+async function stopWhileWaiting(page, id, before, n, rowsStopped) {
+  const idle = await waitFor(`the agent's turn has ended and the chat is idle with ${n} subagent${n === 1 ? "" : "s"} running`, async () => {
+    const v = await chatView(id);
+    return (v.usage?.turns ?? 0) > before && v.status === "ready" && v.subsRunning === n ? v : saw({ turns: v.usage?.turns, status: v.status, subsRunning: v.subsRunning });
+  }, { timeout: TURN_TIMEOUT, every: 200 });
+  const turns = idle.usage.turns;
+  const stop = page.locator(".composer button.send.stop");
+  await waitFor("the composer shows Stop while the chat only waits", async () => await stop.isVisible(), { timeout: 10_000 });
+  log(`    while waiting: thread "${(await page.locator(".thread .typing.waiting").innerText().catch(() => "")).trim()}", Stop is titled "${await stop.getAttribute("title")}"`);
+  const itemsBefore = await chatItems(id);
+  const results = resultItems(itemsBefore).length;
+  check(stoppedNotes(itemsBefore) === 0, 'the thread has no "Stopped." note before Stop', itemsBefore.filter((i) => i.kind === "note"));
+  check(waitingCalls(sinceLastUser(itemsBefore)).length === 0, "the agent ran no sleep or polling command before it ended its turn", waitingCalls(sinceLastUser(itemsBefore)));
+  const running = (await chatSubs(id)).filter((x) => x.status === "running");
+  check(running.length === n, `the server has ${n} running`, running);
+  // The server's agent processes: one per chat with a live agent, one per running subagent.
+  const agents = await agentProcs();
+  const below = new Map(agents.map((pid) => [pid, descendantsOf(pid)]));
+  check(agents.length > n, `the server runs the agent and its ${n} subagent${n === 1 ? "" : "s"} as processes`, agents.map((pid) => `${pid} ${argsOf(String(pid)).slice(0, 60)}`));
+
+  await stop.click();
+  await rowsStopped("after Stop");
+  const note = page.locator(".thread .note", { hasText: /^Stopped\.$/ });
+  await waitFor('the thread gets exactly one "Stopped." note', async () => (await note.count()) === 1 || saw(`${await note.count()} notes`), { timeout: 15_000 });
+  const subs = await chatSubs(id);
+  check(running.every((r) => { const now = subs.find((x) => x.id === r.id); return now?.status === "stopped" && !now.delivery; }), "the server has them stopped, with no result owed", subs);
+  await waitFor("the chat is not busy", async () => !BUSY.has((await chatView(id)).status), { timeout: 30_000 });
+  const gone = await waitFor(`${n} of the server's agent processes have ended`, async () => {
+    const g = agents.filter((pid) => !alive(pid));
+    return g.length >= n ? g : saw(agents.filter(alive));
+  }, { timeout: 15_000 });
+  await waitFor("nothing the subagents started is left running", async () => {
+    const left = gone.flatMap((pid) => below.get(pid)).filter(alive);
+    return left.length === 0 || saw(left.map((pid) => `${pid} ${argsOf(String(pid)).slice(0, 80)}`));
+  }, { timeout: 15_000 });
+
+  const quiet = async (when) => {
+    const v = await chatView(id), items = await chatItems(id);
+    const now = { turns: v.usage?.turns ?? 0, status: v.status, results: resultItems(items).length, notes: stoppedNotes(items), subsRunning: v.subsRunning ?? 0, subsOwed: v.subsOwed ?? 0 };
+    if (now.turns !== turns || now.status !== "ready" || now.results !== results || now.notes !== 1 || now.subsRunning || now.subsOwed) {
+      throw new Fail(`${when}: no result row appears, the agent's turn count does not grow, and there is one "Stopped." note`, { want: { turns, status: "ready", results, notes: 1 }, now });
+    }
+  };
+  for (const until = Date.now() + 15_000; Date.now() < until; await sleep(1000)) await quiet("for 15 s after Stop");
+  log('    ok  for 15 s after Stop: no result row appears, the turn count does not grow, one "Stopped." note');
+  const stillGone = agents.filter((pid) => !alive(pid));
+  check(stillGone.length === n, "only the subagents' processes ended: the agent's own is still running", { ended: stillGone, of: agents });
+
+  await page.reload();
+  await page.locator(".side").waitFor();
+  await waitFor("the chat is selected after the reload", async () => (await sel(page)).chat === id || saw(await sel(page)));
+  await rowsStopped("after the reload");
+  await waitFor('one "Stopped." note after the reload', async () => (await note.count()) === 1 || saw(`${await note.count()} notes`), { timeout: 15_000 });
+  check(await page.locator(".thread .sub-result").count() === results, "no result row after the reload", await page.locator(".thread .sub-result").allInnerTexts());
+  await quiet("after the reload");
+
+  const b = await send(page, id, "Reply with just the word PONG.");
+  const { view, items } = await waitTurn(id, b);
+  check(/pong/i.test(lastReply(items)), "a follow-up message gets a normal reply", lastReply(items));
+  check(view.usage.turns === turns + 1 && stoppedNotes(items) === 1 && resultItems(items).length === results && !items.some((i) => i.kind === "note" && i.tone === "error"),
+    'the follow-up ran one turn: still one "Stopped." note, no result row, no error note', { turns: view.usage.turns, was: turns, notes: items.filter((i) => i.kind === "note") });
+}
+
 // ---------------------------------------------------------------- files
 
 const boardDir = (id) => path.join(HOME, "boards", id);
@@ -268,6 +425,41 @@ function pgrep(pattern) {
 }
 function argsOf(pid) { return spawnSync("ps", ["-o", "args=", "-p", pid], { encoding: "utf8" }).stdout.trim(); }
 const claudeProcs = (sid) => pgrep(sid).map((pid) => ({ pid, args: argsOf(pid) })).filter((p) => /claude/.test(p.args));
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+
+/** Each process's children, from ps. */
+function procChildren() {
+  const r = spawnSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" });
+  const kids = new Map();
+  for (const line of r.stdout.split("\n")) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (!pid || pid === r.pid) continue;
+    if (!kids.has(ppid)) kids.set(ppid, []);
+    kids.get(ppid).push(pid);
+  }
+  return kids;
+}
+/** Everything under a process: its children and theirs. */
+function descendantsOf(pid) {
+  const kids = procChildren(), out = [];
+  for (let next = [...(kids.get(pid) ?? [])]; next.length;) { const p = next.shift(); out.push(p); next.push(...(kids.get(p) ?? [])); }
+  return out;
+}
+/**
+ * The agent processes the server runs: its own children that stay (seen in three readings), without
+ * the short-lived helpers it also starts (the chat namer, the context meter's sqlite3). A subagent's
+ * process is found this way and not by its arguments: Cursor's is a bare `agent acp`.
+ */
+async function agentProcs() {
+  let stay = null;
+  for (let i = 0; i < 3; i++) {
+    if (i) await sleep(300);
+    const now = new Set(procChildren().get(server.p.pid) ?? []);
+    stay = stay ? stay.filter((pid) => now.has(pid)) : [...now];
+  }
+  return stay.filter((pid) => { const a = argsOf(String(pid)); return a && !/--no-session-persistence|sqlite3|cursor-cost/.test(a); });
+}
 
 /** A PATH in which no folder has a sqlite3; every other program stays reachable. */
 function pathWithoutSqlite() {
@@ -403,6 +595,8 @@ const idSet = (board) => new Set(liveElements(board).map((e) => e.id));
 
 const ids = {};  // chats and boards made along the way
 const folders = {};
+const token = () => randomUUID().slice(0, 8);
+const TOKEN = { ls: token(), a: token(), b: token() }; // made per run, so no agent can know them
 
 async function run() {
   log(`AI Whiteboard end-to-end run\n  bin    ${BIN}\n  client ${CLIENT}\n  home   ${HOME}\n  port   ${PORT}\n  output ${OUT}`);
@@ -425,6 +619,11 @@ async function run() {
   folders.A = dir("ungrouped-a");
   folders.B = dir("research-b");
   fs.writeFileSync(path.join(folders.B, "README.md"), "A folder for the e2e run.\n");
+  // What only a subagent's report can tell the agent that spawned it (steps 18 and 19b).
+  fs.writeFileSync(path.join(folders.B, `note-${TOKEN.ls}.txt`), "A note.\n");
+  folders.C = dir("subagents-c");
+  fs.writeFileSync(path.join(folders.C, "a.txt"), `${TOKEN.a}\n`);
+  fs.writeFileSync(path.join(folders.C, "b.txt"), `${TOKEN.b}\n`);
 
   browser = await chromium.launch({ headless: true });
   context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
@@ -871,7 +1070,7 @@ async function run() {
     await waitTurn(ids.chat3, b2);
   });
 
-  await step(18, "Claude subagents: two rows run then complete; the drawer; Esc closes it only; a reload keeps them", async () => {
+  await step(18, "Claude subagents: two rows run then complete and their results reach the agent; the drawer; Esc closes it only; a reload keeps them; Stop while waiting", async () => {
     ids.claudeSubs = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
     await pickModelId(page, CLAUDE_MODEL_ID);
     await pickFolder(page, ids.claudeSubs, folders.B); // it has a README.md
@@ -879,7 +1078,8 @@ async function run() {
     check(v0.agent === "claude" && v0.model === "haiku" && !v0.board, "a plain Claude chat on Haiku", v0);
     const cj0 = readJSON(path.join(HOME, "chats", ids.claudeSubs, "chat.json"));
     check(!!cj0.token, "plain chat.json has a token", cj0);
-    const before = await send(page, ids.claudeSubs, "Spawn two subagents in parallel via spawn_subagent. Give them distinct descriptions. One runs `ls`; the other reads README.md. Then call wait_subagents for their results, then summarise.");
+    const watch = watchChat(ids.claudeSubs);
+    const before = await send(page, ids.claudeSubs, "Spawn two subagents in parallel via spawn_subagent. Give them distinct descriptions. One runs `ls`; the other reads README.md. When their results arrive, summarise them.");
 
     // Rows appear where the Agent calls are; each is watched from its first sight on.
     const rows = page.locator(".thread .subagent");
@@ -895,7 +1095,9 @@ async function run() {
     check(await rows.count() === 2, "there are two subagent rows", await rows.count());
     check(seenDot[0] && seenDot[1], "each row showed a pulsing dot while running", { seenDot, marks });
     log(`    rows: ${marks.map((m) => m.line).join(" | ")}`);
-    await waitTurn(ids.claudeSubs, before, "the parent's turn ends");
+    // The parent's turn ends before the results come, so the checks below wait for the result rows first.
+    // What the reports hold and the prompt does not: the other file `ls` lists, and README.md's text.
+    await checkDelivery(page, ids.claudeSubs, before, 2, watch, (text) => text.includes(TOKEN.ls) || /e2e run/i.test(text));
     const subs = (await get(`/api/chats/${ids.claudeSubs}/items`)).subagents;
     check(subs.length === 2 && subs.every((s) => s.status === "completed"), "the server has two completed subagents", subs);
     check(subs.every((s) => s.kind === "claude"), "server subagents have kind claude", subs.map((s) => ({ id: s.id, kind: s.kind })));
@@ -952,9 +1154,26 @@ async function run() {
     await waitFor("the drawer shows the fetched thread", async () => (await drawer.locator(".tool").count()) > 0 || saw(await drawer.innerText().catch(() => "(no drawer)")), { timeout: 10_000 });
     await page.keyboard.press("Escape");
     await waitFor("the drawer closes", async () => (await drawer.count()) === 0, { timeout: 5000 });
+
+    // Stop while waiting. The two subagents above finished at once, so one more is spawned that
+    // runs long; the thread has no "Stopped." note so far (checked above). Claude Code refuses a
+    // standalone `sleep` (the subagent would end at once) and asks before a `ping`.
+    const b3 = await send(page, ids.claudeSubs, "Spawn one more subagent via spawn_subagent. It should run the shell command `sleep 100; echo done` in the foreground and then reply done.");
+    const rowStates = async () => rows.evaluateAll((els) => els.map((e) => ({
+      mark: e.querySelector(".sub-mark")?.textContent ?? "", cls: e.className, line: e.querySelector(".sub-line")?.textContent ?? "",
+    })));
+    await waitFor("a third subagent row shows running", async () => {
+      const now = await rowStates();
+      return now.length === 3 && /st-running/.test(now[2].cls) ? now : saw(now);
+    }, { timeout: TURN_TIMEOUT, every: 200 });
+    await stopWhileWaiting(page, ids.claudeSubs, b3, 1, async (when) => {
+      const ok = (now) => now.length === 3 && now.slice(0, 2).every((r) => r.mark === "✓") && now[2].mark === "■" && /st-stopped/.test(now[2].cls) && now[2].line === "Stopped";
+      const now = await waitFor(`the third row shows ■ and "Stopped" ${when}, the first two stay ✓`, async () => { const r = await rowStates(); return ok(r) ? r : saw(r); }, { timeout: 30_000 });
+      check(ok(now), `the running row is stopped ${when}`, now);
+    });
   });
 
-  const step19Title = "Cursor subagents: meters while running; Stop stops both; still stopped after a reload";
+  const step19Title = "Cursor subagents: meters while running; Stop while waiting stops both and starts no turn; still stopped after a reload";
   if (SKIP_CURSOR_MCP) {
     await skipStep(19, step19Title, `real Cursor over MCP spawn_subagent needs exclusive port ${MCP_PORT} (AIWB_E2E_SKIP_CURSOR_MCP is set)`);
   } else {
@@ -964,7 +1183,7 @@ async function run() {
     await pickModel(page, CURSOR_MODEL_LABEL);
     const v0 = await chatView(ids.cursorSubs);
     check(v0.agent === "cursor" && v0.model === "gpt-5.4-nano" && !v0.board, `a plain Cursor chat on ${CURSOR_MODEL_LABEL}`, v0);
-    await send(page, ids.cursorSubs, "Spawn two subagents in parallel via spawn_subagent. Give them distinct descriptions. Each should run `sleep 20` then `ls`. Collect their results with wait_subagents.");
+    const before = await send(page, ids.cursorSubs, "Spawn two subagents in parallel via spawn_subagent. Give them distinct descriptions. Each should run `sleep 20` then `ls`.");
 
     const rows = page.locator(".thread .subagent");
     const running = async () => rows.evaluateAll((els) => els.map((e) => ({
@@ -998,34 +1217,59 @@ async function run() {
     }, { timeout: 12_000, every: 200 });
     log(`    meters after ${((Date.now() - t0) / 1000).toFixed(1)} s: ${meters.map((m) => m.meter).join(" | ")}`);
 
-    await page.locator(".composer button.send.stop").click();
+    // Stop while waiting: the agent has ended its turn, so Stop meets an idle chat. No result can
+    // come after it (a stopped subagent sends none); the delivery itself is step 19b.
     const stopped = async () => rows.evaluateAll((els) => els.map((e) => ({
       mark: e.querySelector(".sub-mark")?.textContent ?? "", cls: e.className, line: e.querySelector(".sub-line")?.textContent ?? "",
     })));
     const allStopped = (now) => now.length === 2 && now.every((r) => r.mark === "■" && /st-stopped/.test(r.cls) && r.line === "Stopped");
-    const s1 = await waitFor('both rows show ■ and "Stopped"', async () => { const now = await stopped(); return allStopped(now) ? now : saw(now); }, { timeout: 30_000 });
-    check(allStopped(s1), 'both rows are stopped', s1);
-    await page.locator(".thread .note", { hasText: /^Stopped\.$/ }).first().waitFor({ timeout: 15_000 }).catch(() => {});
-    check(await page.locator(".thread .note", { hasText: /^Stopped\.$/ }).count() > 0, 'the thread gets "Stopped."', await page.locator(".thread").innerText());
+    await stopWhileWaiting(page, ids.cursorSubs, before, 2, async (when) => {
+      const now = await waitFor(`both rows show ■ and "Stopped" ${when}`, async () => { const r = await stopped(); return allStopped(r) ? r : saw(r); }, { timeout: 30_000 });
+      check(allStopped(now), `both rows are stopped ${when}`, now);
+    });
     const subs = (await get(`/api/chats/${ids.cursorSubs}/items`)).subagents;
     check(subs.length === 2 && subs.every((s) => s.status === "stopped"), "the server has both subagents stopped", subs);
-    await waitFor("the chat is no longer busy", async () => !BUSY.has((await chatView(ids.cursorSubs)).status), { timeout: 30_000 });
     const subDir = path.join(HOME, "chats", ids.cursorSubs, "subagents");
     await waitFor("no leftover subagent processes", async () => {
       const left = pgrep(subDir);
       return left.length === 0 || saw(left);
     }, { timeout: 15_000 });
-
-    await page.reload();
-    await page.locator(".side").waitFor();
-    await waitFor("the chat is selected after the reload", async () => (await sel(page)).chat === ids.cursorSubs || saw(await sel(page)));
-    const s2 = await waitFor("both rows are still stopped after the reload", async () => { const now = await stopped(); return allStopped(now) ? now : saw(now); }, { timeout: 15_000 });
-    check(allStopped(s2), "both rows show ■ and Stopped after the reload", s2);
     for (const s of subs) {
       const f = path.join(HOME, "chats", ids.cursorSubs, "subagents", s.id, "subagent.json");
       const disk = fs.existsSync(f) ? readJSON(f) : null;
       check(disk && disk.status === "stopped" && disk.kind === "cursor", `subagent ${s.id} is saved as stopped with kind cursor`, disk ?? "(no subagent.json)");
     }
+  });
+  }
+
+  const step19bTitle = "Cursor subagents: the agent ends its turn; the results come as rows, reach the agent and start its next turn";
+  if (SKIP_CURSOR_MCP) {
+    await skipStep("19b", step19bTitle, `real Cursor over MCP spawn_subagent needs exclusive port ${MCP_PORT} (AIWB_E2E_SKIP_CURSOR_MCP is set)`);
+  } else {
+  await step("19b", step19bTitle, async () => {
+    ids.cursorDelivery = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Cursor chat");
+    await waitFor("Cursor's model list is loaded", async () => (await page.locator('.composer button.tchip[title^="Model"]').count()) > 0, { timeout: 60_000 });
+    await pickModel(page, CURSOR_MODEL_LABEL);
+    await pickFolder(page, ids.cursorDelivery, folders.C); // it has a.txt and b.txt
+    const v0 = await chatView(ids.cursorDelivery);
+    check(v0.agent === "cursor" && v0.model === "gpt-5.4-nano" && !v0.board, `a plain Cursor chat on ${CURSOR_MODEL_LABEL}`, v0);
+    const watch = watchChat(ids.cursorDelivery);
+    // The sleep keeps each subagent running past the end of the agent's own turn.
+    const before = await send(page, ids.cursorDelivery, "Spawn two subagents in parallel via spawn_subagent. Give them distinct descriptions. One runs `sleep 15` and then `cat a.txt`; the other runs `sleep 15` and then `cat b.txt`. Each replies with just the file's content. When their results arrive, reply with both contents.");
+    const rows = page.locator(".thread .subagent");
+    const marks = await waitFor("two subagent rows show ✓", async () => {
+      const now = await rows.evaluateAll((els) => els.map((e) => ({ mark: e.querySelector(".sub-mark")?.textContent ?? "", cls: e.className, line: e.querySelector(".sub-line")?.textContent ?? "" })));
+      return now.length === 2 && now.every((r) => r.mark === "✓" && /st-completed/.test(r.cls)) ? now : saw(now);
+    }, { timeout: TURN_TIMEOUT, every: 200 });
+    log(`    rows: ${marks.map((m) => m.line).join(" | ")}`);
+    // What only the reports hold: the files' contents.
+    await checkDelivery(page, ids.cursorDelivery, before, 2, watch, (text) => text.includes(TOKEN.a) || text.includes(TOKEN.b));
+    const subs = await chatSubs(ids.cursorDelivery);
+    check(subs.every((x) => x.kind === "cursor" && x.status === "completed"), "the server has two completed subagents of kind cursor", subs.map((x) => ({ id: x.id, kind: x.kind, status: x.status })));
+    const items = await chatItems(ids.cursorDelivery);
+    const taskCalls = items.filter((i) => i.kind === "tool" && i.name === "Task");
+    check(!taskCalls.some((i) => !i.isError && !i.denied), "no native Task succeeded", taskCalls.map((i) => ({ name: i.name, isError: i.isError, denied: i.denied })));
+    check(!items.some((i) => i.kind === "note"), "the thread has no note (no error, no Stopped.)", items.filter((i) => i.kind === "note"));
   });
   }
 
@@ -1061,7 +1305,7 @@ async function run() {
 let code = 0;
 try {
   await run();
-  log("\nALL STEPS PASSED (step 15 is checked by hand)");
+  log(ONLY ? `\nTHE SELECTED STEPS PASSED (AIWB_E2E_STEPS=${[...ONLY].join(",")}; the others were not run)` : "\nALL STEPS PASSED (step 15 is checked by hand)");
 } catch (e) {
   code = 1;
   const shot = await screenshot().catch(() => "(no screenshot)");

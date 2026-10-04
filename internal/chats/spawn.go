@@ -6,7 +6,6 @@ import (
 	"log"
 	"path/filepath"
 	"slices"
-	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/defaults"
@@ -23,15 +22,6 @@ type SpawnSubRequest struct {
 	Effort      string          // empty = the chat's current effort
 }
 
-// SubWaitResult is one sid's status as WaitSubagents saw it.
-type SubWaitResult struct {
-	ID      string
-	Status  model.SubStatus
-	Summary string
-	Last    string
-	Error   string
-}
-
 // SpawnSubagent starts one independent agent process and returns a receipt without waiting for it
 // to finish. Validation and lifecycle errors start nothing.
 func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subagent, error) {
@@ -40,26 +30,26 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	if err != nil {
 		return model.Subagent{}, err
 	}
+	unlock := func() { c.mu.Unlock(); m.send(out) }
 	if _, err := m.trOf(c, &out); err != nil {
-		c.mu.Unlock()
-		m.send(out)
+		unlock()
 		return model.Subagent{}, err
 	}
 	if c.meta.Archived {
-		c.mu.Unlock()
+		unlock()
 		return model.Subagent{}, ErrArchived
 	}
 	if c.meta.InstructionsSent {
-		c.mu.Unlock()
+		unlock()
 		return model.Subagent{}, ErrLegacy
 	}
 	if req.Prompt == "" {
-		c.mu.Unlock()
+		unlock()
 		return model.Subagent{}, errors.New("prompt is required")
 	}
 	kind, modelID, effort, err := m.resolveSubSpawn(c, req)
 	if err != nil {
-		c.mu.Unlock()
+		unlock()
 		return model.Subagent{}, err
 	}
 
@@ -77,7 +67,6 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 			Started:     m.nowMs(),
 		},
 		tr:   transcript.New(filepath.Join(m.subDir(c.meta.ID, sid), "items.jsonl")),
-		done: make(chan struct{}),
 		stop: make(chan struct{}),
 		app:  true,
 	}
@@ -93,11 +82,11 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	}
 	m.saveSub(c, s)
 	out.emitSub(c, s.meta)
+	out.emitCounts(c)
 	sa := s.meta
 	opts := m.subSpawnOptions(c, sid, kind, modelID, effort)
 	prompt := req.Prompt
-	c.mu.Unlock()
-	m.send(out) // receipt before the process starts, so the caller never waits on it
+	unlock() // receipt before the process starts, so the caller never waits on it
 
 	if sa.Tool == "" {
 		tool, gone := m.retrySpawnClaim(chatID, sid, canon)
@@ -110,7 +99,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 
 	sp := m.Spawners[kind]
 	if sp == nil {
-		failed := m.finishAppSub(chatID, sid, model.SubFailed, fmt.Sprintf("no spawner for agent %q", kind))
+		failed := m.finishAppSub(chatID, sid, model.SubFailed, fmt.Sprintf("no spawner for agent %q", kind), endSpawnFailed)
 		return failed, fmt.Errorf("no spawner for agent %q", kind)
 	}
 	ag, err := sp.Spawn(opts)
@@ -119,7 +108,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		if errors.Is(err, ErrFolderMissing) {
 			msg = folderMissingText(opts.Cwd)
 		}
-		failed := m.finishAppSub(chatID, sid, model.SubFailed, msg)
+		failed := m.finishAppSub(chatID, sid, model.SubFailed, msg, endSpawnFailed)
 		return failed, err
 	}
 
@@ -145,34 +134,6 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	return sa, nil
 }
 
-// WaitSubagents blocks until every named sub finishes or timeout elapses. Timeout 0 polls.
-// Unknown sids still get a result; an unknown chat is an error. Does not hold Chat.mu while waiting.
-func (m *Manager) WaitSubagents(chatID string, sids []string, timeout time.Duration) ([]SubWaitResult, error) {
-	results, dones, err := m.subWaitSnapshot(chatID, sids)
-	if err != nil {
-		return nil, err
-	}
-	if timeout <= 0 {
-		return results, nil
-	}
-	deadline := time.Now().Add(timeout)
-	for _, d := range dones {
-		if d == nil {
-			continue
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		select {
-		case <-d:
-		case <-time.After(remaining):
-		}
-	}
-	results, _, err = m.subWaitSnapshot(chatID, sids)
-	return results, err
-}
-
 // StopSubagent terminates one app-spawned process. Unknown or already-final sids are an error.
 func (m *Manager) StopSubagent(chatID, sid string) error {
 	var out outbox
@@ -188,62 +149,35 @@ func (m *Manager) StopSubagent(chatID, sid string) error {
 	s, ok := c.subs[sid]
 	if !ok {
 		c.mu.Unlock()
+		m.send(out)
 		return ErrNoSubagent
 	}
 	if s.meta.Status != model.SubRunning {
 		c.mu.Unlock()
+		m.send(out)
 		return fmt.Errorf("subagent %s is %s", sid, s.meta.Status)
 	}
 	var toClose []agent.Agent
 	if s.ag != nil {
-		m.denySubPerms(c, s, &out)
+		m.denySubPerms(c, s)
 		toClose = append(toClose, s.ag)
 		s.ag = nil
 	}
 	s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
-	m.endSub(c, s, &out)
+	ended(s, endStopTool)
+	leftApproval := m.endSub(c, s, &out)
 	m.revokeExtra(c.meta.ID, sid)
-	closeDone(s)
 	closeStop(s)
+	var d *carry
+	if leftApproval {
+		d = m.deliver(c, &out)
+	}
+	out.emitCounts(c)
 	c.mu.Unlock()
 	m.send(out)
 	closeAgents(toClose)
+	m.handOff(c, d)
 	return nil
-}
-
-func (m *Manager) subWaitSnapshot(chatID string, sids []string) ([]SubWaitResult, []<-chan struct{}, error) {
-	var out outbox
-	c, err := m.lock(chatID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if _, err := m.trOf(c, &out); err != nil {
-		c.mu.Unlock()
-		m.send(out)
-		return nil, nil, err
-	}
-	results := make([]SubWaitResult, len(sids))
-	dones := make([]<-chan struct{}, len(sids))
-	for i, sid := range sids {
-		s, ok := c.subs[sid]
-		if !ok {
-			results[i] = SubWaitResult{ID: sid, Error: ErrNoSubagent.Error()}
-			continue
-		}
-		results[i] = SubWaitResult{
-			ID:      s.meta.ID,
-			Status:  s.meta.Status,
-			Summary: s.meta.Summary,
-			Last:    s.meta.Last,
-			Error:   s.meta.Error,
-		}
-		if s.meta.Status == model.SubRunning && s.done != nil {
-			dones[i] = s.done
-		}
-	}
-	c.mu.Unlock()
-	m.send(out)
-	return results, dones, nil
 }
 
 // resolveSubSpawn picks kind/model/effort. Explicit values are validated like Configure against
@@ -346,7 +280,7 @@ func (m *Manager) subSpawnOptions(c *Chat, sid string, kind model.AgentKind, mod
 	return opts
 }
 
-func (m *Manager) finishAppSub(chatID, sid string, status model.SubStatus, errText string) model.Subagent {
+func (m *Manager) finishAppSub(chatID, sid string, status model.SubStatus, errText string, why subEnding) model.Subagent {
 	var out outbox
 	c, err := m.lock(chatID)
 	if err != nil {
@@ -358,38 +292,49 @@ func (m *Manager) finishAppSub(chatID, sid string, status model.SubStatus, errTe
 		return model.Subagent{}
 	}
 	var toClose []agent.Agent
+	var d *carry
 	if s.meta.Status == model.SubRunning {
-		if ag := m.finalizeAppSub(c, s, status, errText, &out); ag != nil {
+		var ag agent.Agent
+		if ag, d = m.finalizeAppSub(c, s, status, errText, why, &out); ag != nil {
 			toClose = []agent.Agent{ag}
 		}
 	}
 	meta := s.meta
+	out.emitCounts(c)
 	c.mu.Unlock()
 	m.send(out)
 	closeAgents(toClose)
+	m.handOff(c, d)
 	return meta
 }
 
-// finalizeAppSub marks s finished. c.mu held. The caller Closes the returned agent after unlock.
-func (m *Manager) finalizeAppSub(c *Chat, s *sub, status model.SubStatus, errText string, out *outbox) agent.Agent {
+// finalizeAppSub marks s finished; why decides whether the parent is owed its result. The owed
+// results are delivered at once when the parent can take them: because this one became owed, or
+// because s ended with the chat's last open permission request. c.mu held. After unlock the caller
+// Closes the returned agent and hands off the returned delivery (nil when none started).
+func (m *Manager) finalizeAppSub(c *Chat, s *sub, status model.SubStatus, errText string, why subEnding, out *outbox) (agent.Agent, *carry) {
 	if s.meta.Status != model.SubRunning {
-		return nil
+		return nil, nil
 	}
 	s.meta.Status, s.meta.Ended = status, m.nowMs()
 	if errText != "" {
 		s.meta.Error = errText
 	}
-	m.endSub(c, s, out)
+	ended(s, why)
+	leftApproval := m.endSub(c, s, out)
 	m.revokeExtra(c.meta.ID, s.meta.ID)
 	ag := s.ag
 	s.ag = nil
-	closeDone(s)
-	return ag
+	var d *carry
+	if leftApproval || s.meta.Delivery == model.SubOwed {
+		d = m.deliver(c, out)
+	}
+	return ag, d
 }
 
 func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-chan struct{}) {
 	if err := ag.Send([]agent.ContentBlock{{Text: prompt}}); err != nil {
-		m.finishAppSub(c.meta.ID, sid, model.SubFailed, err.Error())
+		m.finishAppSub(c.meta.ID, sid, model.SubFailed, err.Error(), endFailed)
 		return
 	}
 	ch := ag.Events()
@@ -399,7 +344,7 @@ func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-cha
 			return
 		case ev, ok := <-ch:
 			if !ok {
-				m.finishAppSub(c.meta.ID, sid, model.SubStopped, "process ended")
+				m.finishAppSub(c.meta.ID, sid, model.SubStopped, "process ended", endGone)
 				return
 			}
 			m.handleSubEv(c, sid, ev)
@@ -410,11 +355,14 @@ func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-cha
 func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 	var out outbox
 	var toClose []agent.Agent
+	var d *carry
 	c.mu.Lock()
 	defer func() {
+		out.emitCounts(c)
 		c.mu.Unlock()
 		m.send(out)
 		closeAgents(toClose)
+		m.handOff(c, d)
 	}()
 	if c.deleted || c.tr == nil {
 		return
@@ -427,7 +375,7 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 	// They must not patch or complete this app-spawned process; route them like pump does.
 	// EvPermRequest still lands on the parent transcript with the app-spawned sid.
 	if ev.Sub != "" && ev.Kind != agent.EvPermRequest {
-		m.routeSub(c, ev, &out)
+		d = m.routeSub(c, ev, &out)
 		return
 	}
 	before := s.meta
@@ -470,11 +418,15 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		if s.meta.Status != model.SubRunning {
 			return
 		}
-		st := model.SubCompleted
+		st, why := model.SubCompleted, endTurn
 		if ev.Aborted {
-			st = model.SubStopped
+			st, why = model.SubStopped, endAborted
+		} else if ev.Error != "" {
+			why = endTurnError
+			m.subErrorNote(c, s, ev.Error, &out)
 		}
-		if ag := m.finalizeAppSub(c, s, st, ev.Error, &out); ag != nil {
+		var ag agent.Agent
+		if ag, d = m.finalizeAppSub(c, s, st, ev.Error, why, &out); ag != nil {
 			toClose = append(toClose, ag)
 		}
 		return
@@ -482,14 +434,15 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		if s.meta.Status != model.SubRunning {
 			return
 		}
-		st := model.SubStopped
+		st, why := model.SubStopped, endGone
 		msg := ev.ExitErr
 		if msg != "" {
-			st = model.SubFailed
+			st, why = model.SubFailed, endFailed
 		} else {
 			msg = "process ended"
 		}
-		if ag := m.finalizeAppSub(c, s, st, msg, &out); ag != nil {
+		var ag agent.Agent
+		if ag, d = m.finalizeAppSub(c, s, st, msg, why, &out); ag != nil {
 			toClose = append(toClose, ag)
 		}
 		return

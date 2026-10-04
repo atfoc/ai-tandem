@@ -79,6 +79,23 @@ export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNa
   }
 }
 
+const RESULT_STATUS: Record<Subagent["status"], string> = { running: "Running", completed: "Done", failed: "Failed", stopped: "Stopped" };
+const RESULT_DELIVERY: Record<NonNullable<Subagent["delivery"]>, string> = {
+  owed: "not sent yet", retry: "not sent yet", sent: "sent to the agent", "given-up": "could not be delivered",
+};
+
+/** A result row's text: the subagent's name, then its final status, that it ended with an error
+ *  when its state carries one, and whether the result has reached the agent (nothing for a
+ *  delivery state a newer server added). sa is undefined until the chat's subagents are loaded. */
+export function subResultLine(sa: Subagent | undefined): { name: string; text: string; tone: "muted" | "error" } {
+  if (!sa) return { name: "Subagent", text: "", tone: "muted" };
+  const parts = [RESULT_STATUS[sa.status]];
+  if (sa.error) parts.push("ended with an error");
+  const delivery = sa.delivery && RESULT_DELIVERY[sa.delivery];
+  if (delivery) parts.push(delivery);
+  return { name: sa.description || "Subagent", text: parts.join(" · "), tone: sa.error || sa.status === "failed" ? "error" : "muted" };
+}
+
 /** "model · effort" labels from the subagent's own kind and catalog, not the parent chat.
  *  Cursor puts the effort in the id ("gpt-5.4-mini-medium" = model gpt-5.4-mini, effort medium).
  *  Claude reports no effort for subagents; its model is matched by exact catalog id only. Pi

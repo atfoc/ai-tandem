@@ -15,8 +15,11 @@ agents run with the logins you already have.
   runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
   `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
   MCP: one fixed MCP endpoint, `http://localhost:6006/mcp`, carries the chat's token in
-  the `Authorization` header (every chat). The spawn family (`spawn_subagent`, `wait_subagents`,
-  `stop_subagent`) is on every chat and replaces native Agent / Task / subagent on app chats. For pi
+  the `Authorization` header (every chat). The spawn family (`spawn_subagent`, `stop_subagent`) is
+  on every chat and replaces native Agent / Task / subagent on app chats. An agent does not wait for
+  a subagent or fetch its result: it ends its turn, and when the subagent finishes the app sends the
+  result to the agent as a message, in a turn of its own once the agent is idle, or with the user's
+  next message after a stop or a failed turn. For pi
   the token travels only inside `AIWB_MCP_CONFIG` (never in argv or a URL); app-spawned subagents get
   their own extra token. The owner-only UDS bridge carries a per-run, non-secret handle for permission
   asks, subagent activity, abort and MCP failure notices. pi tool

@@ -1,6 +1,7 @@
 // The server's HTTP API (section 4.12). Every call carries this tab's client id,
 // so the server can tell the active client from a stale one.
 import type { AgentKind, Board, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference, Subagent } from "./types.ts";
+import type { PermAnswer } from "./logic/perms.ts";
 
 /** GET /api/state and the `snapshot` event. */
 export type Snapshot = {
@@ -77,7 +78,7 @@ export const api = {
   renameChat: (id: string, name: string) => call("PATCH", `/api/chats/${id}`, { name }),
   moveChat: (id: string, group: string) => call("PATCH", `/api/chats/${id}`, { group }),
   interrupt: (id: string) => call("POST", `/api/chats/${id}/interrupt`),
-  decide: (id: string, requestId: string, allow: boolean) => call("POST", `/api/chats/${id}/permission`, { requestId, allow }),
+  decide: (id: string, answer: PermAnswer) => call("POST", `/api/chats/${id}/permission`, answer),
   deleteChat: (id: string) => call("DELETE", `/api/chats/${id}`),
   dirs: (path: string) => call<Dirs>("GET", `/api/dirs?path=${encodeURIComponent(path)}`),
   contextSplit: (id: string, fresh = false) => call<ContextSplit>("GET", `/api/chats/${id}/context${fresh ? "?fresh=1" : ""}`),

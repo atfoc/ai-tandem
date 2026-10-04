@@ -72,19 +72,15 @@ function killChildren(): void {
   childKillers.clear();
 }
 
-const SPAWN_FAMILY_BARE = new Set(["spawn_subagent", "wait_subagents", "stop_subagent"]);
+const SPAWN_FAMILY_BARE = new Set(["spawn_subagent", "stop_subagent"]);
 
 /** Spawn-family MCP tools must not run sequentially so sibling spawns in one
  *  assistant message can proceed in parallel (plan D2). Board-engine MCP tools
- *  stay sequential. Detect by the registered name: the three bare names, a
+ *  stay sequential. Detect by the registered name: the two bare names, a
  *  namespaced form ending in `__<bare>`, or `mcp__<server>__<bare>`. */
 function isSpawnFamilyTool(name: string): boolean {
   if (SPAWN_FAMILY_BARE.has(name)) return true;
-  if (
-    name.endsWith("__spawn_subagent") ||
-    name.endsWith("__wait_subagents") ||
-    name.endsWith("__stop_subagent")
-  ) {
+  if (name.endsWith("__spawn_subagent") || name.endsWith("__stop_subagent")) {
     return true;
   }
   const parts = name.split("__");
@@ -197,7 +193,7 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
 
   // App chats keep the permission gate, hello/abort, and child-killer wiring.
   // They do not register the native `subagent` tool: the MCP spawn family
-  // (spawn_subagent / wait_subagents / stop_subagent) replaces it.
+  // (spawn_subagent / stop_subagent) replaces it.
 
   // Permission gate: exactly one rule (plan R4). The auto-allowed set is the
   // app-sourced mcp__board__* names (the native raw board tools were removed in

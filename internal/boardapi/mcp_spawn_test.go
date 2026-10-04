@@ -103,6 +103,21 @@ func (e *env) items(id string) []model.Item {
 	return items
 }
 
+func (e *env) sub(id, sid string) model.Subagent {
+	e.t.Helper()
+	_, _, subs, err := e.relay.Chats.Items(id)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	for _, sa := range subs {
+		if sa.ID == sid {
+			return sa
+		}
+	}
+	e.t.Fatalf("no subagent %s", sid)
+	return model.Subagent{}
+}
+
 func receiptSid(t *testing.T, text string) string {
 	t.Helper()
 	const prefix = "spawned subagent "
@@ -138,6 +153,9 @@ func namesOf(tools []boardtools.Tool) []string {
 
 func TestToolsListMatrix(t *testing.T) {
 	e := newEnv(t)
+	if got := namesOf(boardtools.SpawnFamily); !joinEq(got, []string{"spawn_subagent", "stop_subagent"}) {
+		t.Fatalf("spawn family %v, want spawn_subagent and stop_subagent alone", got)
+	}
 	boardSpawn := append(namesOf(boardtools.Tools), namesOf(boardtools.SpawnFamily)...)
 
 	if got := e.listNames(e.token); !joinEq(got, boardSpawn) {
@@ -227,9 +245,8 @@ func TestSpawnNoClientSucceeds(t *testing.T) {
 	if time.Since(start) > time.Second {
 		t.Fatal("spawn did not return immediately")
 	}
-	poll, isErr, status := e.toolsCall(e.token, "wait_subagents", fmt.Sprintf(`{"sids":[%q],"timeout":0}`, sid))
-	if status != 200 || isErr || !strings.Contains(poll, sid) || !strings.Contains(poll, "running") {
-		t.Fatalf("poll %q isErr=%v status=%d", poll, isErr, status)
+	if sa := e.sub(e.chat, sid); sa.Status != model.SubRunning {
+		t.Fatalf("subagent %+v", sa)
 	}
 
 	_, plainTok := e.createPlain()
@@ -240,50 +257,35 @@ func TestSpawnNoClientSucceeds(t *testing.T) {
 	receiptSid(t, text)
 }
 
-func TestWaitSubagentsReportAndPoll(t *testing.T) {
-	e := newEnv(t)
-	text, isErr, _ := e.toolsCall(e.token, "spawn_subagent", `{"prompt":"go"}`)
-	if isErr {
-		t.Fatalf("spawn %q", text)
-	}
-	sid := receiptSid(t, text)
-	waitFor(t, "child", func() bool { return e.claude.count() >= 1 })
-	child := e.claude.last(t)
-
-	poll, isErr, _ := e.toolsCall(e.token, "wait_subagents", fmt.Sprintf(`{"sids":[%q],"timeout":0}`, sid))
-	if isErr || !strings.Contains(poll, "running") {
-		t.Fatalf("timeout 0 %q isErr=%v", poll, isErr)
-	}
-	short, isErr, _ := e.toolsCall(e.token, "wait_subagents", fmt.Sprintf(`{"sids":[%q],"timeout":0.05}`, sid))
-	if isErr || !strings.Contains(short, "running") {
-		t.Fatalf("short timeout %q isErr=%v", short, isErr)
-	}
-
-	child.emit(t, agent.Event{Kind: agent.EvText, Text: "done"}, agent.Event{Kind: agent.EvTurnEnd})
-	got, isErr, _ := e.toolsCall(e.token, "wait_subagents", fmt.Sprintf(`{"sids":[%q],"timeout":2}`, sid))
-	if isErr || !strings.Contains(got, "completed") || !strings.Contains(got, "done") {
-		t.Fatalf("completion %q isErr=%v", got, isErr)
-	}
-	again, isErr, _ := e.toolsCall(e.token, "wait_subagents", fmt.Sprintf(`{"sids":[%q],"timeout":2}`, sid))
-	if isErr || !strings.Contains(again, "completed") || !strings.Contains(again, "done") {
-		t.Fatalf("repeated wait %q isErr=%v", again, isErr)
-	}
-}
-
 func TestStopSubagentReceipt(t *testing.T) {
 	e := newEnv(t)
+	parent := e.startParent(e.chat)
+	parent.emit(t, agent.Event{Kind: agent.EvTurnEnd}) // idle, with a live process
 	text, isErr, _ := e.toolsCall(e.token, "spawn_subagent", `{"prompt":"go"}`)
 	if isErr {
 		t.Fatalf("spawn %q", text)
 	}
 	sid := receiptSid(t, text)
-	waitFor(t, "child", func() bool { return e.claude.count() >= 1 })
+	waitFor(t, "child", func() bool { return e.claude.count() >= 2 })
 	child := e.claude.last(t)
 	stopped, isErr, status := e.toolsCall(e.token, "stop_subagent", fmt.Sprintf(`{"sid":%q}`, sid))
 	if status != 200 || isErr || !strings.Contains(stopped, sid) || !strings.Contains(stopped, "stopped") {
 		t.Fatalf("stop %q isErr=%v status=%d", stopped, isErr, status)
 	}
 	waitFor(t, "child closed", func() bool { return child.isClosed() })
+
+	// The parent asked and has the receipt: nothing is owed and no message goes to it.
+	if sa := e.sub(e.chat, sid); sa.Status != model.SubStopped || sa.Delivery != model.SubNotOwed {
+		t.Fatalf("subagent %+v", sa)
+	}
+	if n := len(parent.sent()); n != 1 {
+		t.Fatalf("%d sends to the parent", n)
+	}
+	for _, it := range e.items(e.chat) {
+		if it.Kind == "subresult" {
+			t.Fatalf("result row %+v", it)
+		}
+	}
 }
 
 func TestSpawnClaimFIFOMCP(t *testing.T) {
@@ -341,11 +343,8 @@ func TestSubagentSpawnFamilyRejected(t *testing.T) {
 	waitFor(t, "child", func() bool { return e.claude.count() >= 1 })
 	extra := e.claude.last(t).opts.MCP.Token
 	before := e.claude.count()
-	for _, name := range []string{"spawn_subagent", "wait_subagents", "stop_subagent"} {
+	for _, name := range []string{"spawn_subagent", "stop_subagent"} {
 		args := `{"prompt":"nope"}`
-		if name == "wait_subagents" {
-			args = `{"sids":["x"],"timeout":0}`
-		}
 		if name == "stop_subagent" {
 			args = `{"sid":"x"}`
 		}
@@ -356,6 +355,11 @@ func TestSubagentSpawnFamilyRejected(t *testing.T) {
 		if !strings.Contains(got, "not available to subagents") {
 			t.Fatalf("%s text %q", name, got)
 		}
+	}
+	// The removed polling tool is no tool at all, for a subagent as for a chat's agent.
+	got, isErr, status := e.toolsCall(extra, "wait_subagents", `{"sids":["x"],"timeout":0}`)
+	if status != 200 || !isErr || got != "unknown tool wait_subagents" {
+		t.Fatalf("wait_subagents from a subagent: %q isErr=%v status=%d", got, isErr, status)
 	}
 	if e.claude.count() != before {
 		t.Fatal("subagent spawn-family started a process")
@@ -375,9 +379,9 @@ func TestSpawnFamilyValidationAndUnknown(t *testing.T) {
 	if e.claude.count() != 0 {
 		t.Fatal("invalid spawn started a process")
 	}
-	text, isErr, status = e.toolsCall(e.token, "wait_subagents", `{}`)
-	if status != 200 || !isErr || !strings.Contains(text, "sids") {
-		t.Fatalf("missing sids %q", text)
+	text, isErr, status = e.toolsCall(e.token, "wait_subagents", `{"sids":["x"],"timeout":0}`)
+	if status != 200 || !isErr || text != "unknown tool wait_subagents" {
+		t.Fatalf("wait_subagents %q isErr=%v status=%d", text, isErr, status)
 	}
 	text, isErr, status = e.toolsCall(e.token, "stop_subagent", `{}`)
 	if status != 200 || !isErr || !strings.Contains(text, "sid") {
@@ -401,9 +405,8 @@ func TestSpawnFamilyNoClientText(t *testing.T) {
 		t.Fatalf("spawn hit the bridge: %q isErr=%v", text, isErr)
 	}
 	sid := receiptSid(t, text)
-	text, isErr, _ = e.toolsCall(e.token, "wait_subagents", fmt.Sprintf(`{"sids":[%q],"timeout":0}`, sid))
-	if isErr || text == NoClientText {
-		t.Fatalf("wait hit the bridge: %q", text)
+	if sa := e.sub(e.chat, sid); sa.Status != model.SubRunning {
+		t.Fatalf("subagent %+v", sa)
 	}
 	text, isErr, _ = e.toolsCall(e.token, "stop_subagent", fmt.Sprintf(`{"sid":%q}`, sid))
 	if isErr || text == NoClientText {
@@ -497,16 +500,5 @@ func TestSpawnArchivedAndLegacy(t *testing.T) {
 	}
 	if e2.claude.count() != 0 {
 		t.Fatal("legacy spawn started a process")
-	}
-}
-
-func TestWaitUnknownSid(t *testing.T) {
-	e := newEnv(t)
-	text, isErr, status := e.toolsCall(e.token, "wait_subagents", `{"sids":["nope"],"timeout":0}`)
-	if status != 200 || isErr {
-		t.Fatalf("unknown sid wait isError: %q status=%d", text, status)
-	}
-	if !strings.Contains(text, "nope") || !strings.Contains(text, "error") {
-		t.Fatalf("unknown sid %q", text)
 	}
 }

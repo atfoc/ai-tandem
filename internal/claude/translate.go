@@ -38,6 +38,10 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 	case "assistant":
 		msg := obj(m["message"])
 		id := str(msg["id"])
+		// An API error is the CLI's own message, not text the model wrote: the errored result that
+		// follows carries the same text. The CLI's mark decides, not the "<synthetic>" model name,
+		// which its other locally written messages have too.
+		apiErr, _ := m["is_api_error_message"].(bool)
 		var evs []agent.Event
 		for _, c := range list(msg["content"]) {
 			b := obj(c)
@@ -46,7 +50,7 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 				evs = append(evs, agent.Event{Kind: agent.EvToolInput, ToolID: str(b["id"]),
 					ToolName: str(b["name"]), Input: rawJSON(b["input"])})
 			case "text":
-				if t := str(b["text"]); t != "" && !p.streamed[id] {
+				if t := str(b["text"]); t != "" && !p.streamed[id] && !apiErr {
 					evs = append(evs, agent.Event{Kind: agent.EvText, MsgID: id, Text: t})
 				}
 			}

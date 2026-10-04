@@ -26,13 +26,6 @@ import (
 // callTimeout is how long a board tool call waits for the client's answer.
 const callTimeout = 30 * time.Second
 
-// WaitInterval is the server's blocking budget for one wait_subagents call:
-// CLI MCP tool-call timeout with margin. Phase 2 Q1 will measure live CLI
-// timeouts; 20s is the v1 stand-in.
-// TODO: if an adapter override env is found, set it on app-chat processes so
-// this interval fits inside the CLI limit.
-const WaitInterval = 20 * time.Second
-
 // NoClientText is what an agent is told when no client is active.
 const NoClientText = "The board isn't open: the AI Whiteboard window is closed. " +
 	"Board work needs the window open. Tell the user, and don't retry until they ask again."
@@ -318,16 +311,6 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 			return err.Error(), true
 		}
 		return fmt.Sprintf("spawned subagent %s (%s)", sa.ID, sa.Status), false
-	case "wait_subagents":
-		sids, timeout, err := parseWaitArgs(args)
-		if err != nil {
-			return err.Error(), true
-		}
-		results, err := r.Chats.WaitSubagents(caller.Meta.ID, sids, timeout)
-		if err != nil {
-			return err.Error(), true
-		}
-		return formatWaitResults(results), false
 	case "stop_subagent":
 		sid, err := parseStopArgs(args)
 		if err != nil {
@@ -372,33 +355,6 @@ func parseSpawnArgs(args json.RawMessage) (chats.SpawnSubRequest, error) {
 	}, nil
 }
 
-func parseWaitArgs(args json.RawMessage) ([]string, time.Duration, error) {
-	var p struct {
-		Sids    []string `json:"sids"`
-		Timeout *float64 `json:"timeout"`
-	}
-	if len(args) > 0 && string(args) != "null" {
-		if err := json.Unmarshal(args, &p); err != nil {
-			return nil, 0, errors.New("invalid wait_subagents arguments")
-		}
-	}
-	if p.Sids == nil {
-		return nil, 0, errors.New("sids is required")
-	}
-	var timeout time.Duration
-	if p.Timeout == nil {
-		timeout = WaitInterval
-	} else if *p.Timeout <= 0 {
-		timeout = 0
-	} else {
-		timeout = time.Duration(*p.Timeout * float64(time.Second))
-		if timeout > WaitInterval {
-			timeout = WaitInterval
-		}
-	}
-	return p.Sids, timeout, nil
-}
-
 func parseStopArgs(args json.RawMessage) (string, error) {
 	var p struct {
 		SID string `json:"sid"`
@@ -412,30 +368,6 @@ func parseStopArgs(args json.RawMessage) (string, error) {
 		return "", errors.New("sid is required")
 	}
 	return p.SID, nil
-}
-
-func formatWaitResults(results []chats.SubWaitResult) string {
-	var b strings.Builder
-	for i, r := range results {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		st := string(r.Status)
-		if st == "" {
-			st = "unknown"
-		}
-		fmt.Fprintf(&b, "%s: %s", r.ID, st)
-		if r.Error != "" {
-			fmt.Fprintf(&b, "\nerror: %s", r.Error)
-		}
-		if r.Summary != "" {
-			fmt.Fprintf(&b, "\nsummary: %s", r.Summary)
-		}
-		if r.Last != "" {
-			fmt.Fprintf(&b, "\nlast: %s", r.Last)
-		}
-	}
-	return b.String()
 }
 
 // chatKey resolves a credential to its short chat id and tracker key. An unknown or empty

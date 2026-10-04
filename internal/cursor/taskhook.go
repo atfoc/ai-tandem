@@ -34,7 +34,7 @@ var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 // taskDenyCommand is a static echo of the preToolUse deny JSON. Matcher already restricts it to
 // Task; user_message is the only field the model receives.
-const taskDenyCommand = `echo '{"permission":"deny","user_message":"Native subagents (the Task tool) are disabled in this chat. To delegate, use spawn_subagent (asynchronous; it returns a receipt immediately) and wait_subagents for results. Do not use native Task."}'`
+const taskDenyCommand = `echo '{"permission":"deny","user_message":"Native subagents (the Task tool) are disabled in this chat. To delegate, use spawn_subagent (asynchronous; it returns a receipt immediately, and the app sends you the result later as a message). Do not use native Task."}'`
 
 type taskHookFile struct {
 	Version int `json:"version"`

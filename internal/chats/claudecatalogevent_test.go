@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
-	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
@@ -63,9 +62,8 @@ func TestSubagentCatalogEventIsDropped(t *testing.T) {
 	}
 	// The events of a process are handled in order: once the turn end is, the catalog event was.
 	child.emit(t, agent.Event{Kind: agent.EvCatalog, Catalog: &other}, agent.Event{Kind: agent.EvText, Text: "done"}, agent.Event{Kind: agent.EvTurnEnd})
-	got, err := e.m.WaitSubagents(v.ID, []string{sa.ID}, 5*time.Second)
-	if err != nil || len(got) != 1 || got[0].Status != model.SubCompleted {
-		t.Fatalf("subagent %+v %v", got, err)
+	if got := e.sub(v.ID, sa.ID); got.Status != model.SubCompleted {
+		t.Fatalf("subagent %+v", got)
 	}
 	if n := len(ofType(evs.drain(t, e.br), "catalog")); n != 0 {
 		t.Errorf("%d catalog broadcasts for a subagent's catalog event", n)

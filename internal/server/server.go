@@ -585,12 +585,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/chats/{id}/permission", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			RequestID string `json:"requestId"`
+			Subagent  string `json:"subagent"` // who asked, as the card says; none = the chat's own agent
 			Allow     bool   `json:"allow"`
 		}
 		if !readJSON(w, r, &body) {
 			return
 		}
-		if err := a.Chats.Decide(r.PathValue("id"), body.RequestID, body.Allow); err != nil {
+		if err := a.Chats.Decide(r.PathValue("id"), body.Subagent, body.RequestID, body.Allow); err != nil {
 			fail(w, err, http.StatusBadRequest)
 			return
 		}

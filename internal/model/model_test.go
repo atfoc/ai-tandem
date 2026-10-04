@@ -43,6 +43,27 @@ func TestViewOfHidesSecrets(t *testing.T) {
 	}
 }
 
+// The two subagent counts go to clients under the names the web reads, and are left out when zero,
+// so a view without subagents is the view it was before they existed.
+func TestViewSubCountsJSON(t *testing.T) {
+	b, err := json.Marshal(ChatView{ID: "c1", Status: StatusReady, SubsRunning: 2, SubsOwed: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"subsRunning":2`, `"subsOwed":1`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("view JSON missing %s: %s", want, b)
+		}
+	}
+	b, err = json.Marshal(ViewOf(ChatMeta{ID: "c1"}, StatusReady, "", "", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "subs") {
+		t.Errorf("view JSON has counts for a chat with no subagents: %s", b)
+	}
+}
+
 func TestStateCatalogLegacyFallback(t *testing.T) {
 	legacy := &Catalog{Models: []CatalogModel{{ID: "composer-2", Label: "Composer 2", Provider: "cursor"}}, Default: ModelChoice{Model: "legacy"}}
 	generic := &Catalog{Models: []CatalogModel{{ID: "deepseek-flash", Label: "DeepSeek Flash", Provider: "deepseek"}}, Default: ModelChoice{Model: "generic"}}
@@ -208,5 +229,21 @@ func TestCatalogModelEffortFieldsJSON(t *testing.T) {
 		if _, present := got[k]; present {
 			t.Errorf("key %q present in %s, want absent", k, b)
 		}
+	}
+}
+
+// Owed and owed after one failed attempt are the owed states; a given-up result is not owed.
+func TestSubDeliveryOwed(t *testing.T) {
+	for d, want := range map[SubDelivery]bool{
+		SubNotOwed: false, SubOwed: true, SubOwedAgain: true, SubSent: false, SubGivenUp: false, "queued": false,
+	} {
+		if d.Owed() != want {
+			t.Errorf("%q.Owed() = %v, want %v", d, d.Owed(), want)
+		}
+	}
+	// The states are stored and sent to clients as these strings.
+	b, err := json.Marshal([]SubDelivery{SubOwed, SubOwedAgain, SubSent, SubGivenUp})
+	if err != nil || string(b) != `["owed","retry","sent","given-up"]` {
+		t.Fatalf("%s %v", b, err)
 	}
 }

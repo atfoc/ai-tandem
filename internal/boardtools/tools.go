@@ -116,7 +116,11 @@ var SpawnFamily = []Tool{
 	{
 		Name: "spawn_subagent",
 		Description: "Start one subagent run and return immediately with a receipt naming its sid. " +
-			"The run continues in the background; call wait_subagents to collect results. " +
+			"The run continues in the background, and there is nothing to call for its result: " +
+			"when the subagent finishes, the app sends you the result as a message, in a " +
+			"<subagent-results> block written by the app, not by the user. " +
+			"After spawning, end your turn when you have nothing else to do; " +
+			"do not poll, sleep or run commands to wait for a subagent. " +
 			"Parallel spawn_subagent calls need distinct descriptions so their arguments differ. " +
 			"Every spawn is asynchronous: there is no background parameter.",
 		Schema: obj(props{
@@ -131,17 +135,6 @@ var SpawnFamily = []Tool{
 			"effort": str("effort/thinking level; omit for this chat's current effort"),
 		}, "prompt"),
 		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`,
-	},
-	{
-		Name: "wait_subagents",
-		Description: "Wait for one or more subagents started by spawn_subagent. Blocks up to timeout seconds " +
-			"(omit for the server default wait interval; 0 polls). Returns per-subagent status and report; " +
-			"on timeout returns current status so it can be called again.",
-		Schema: obj(props{
-			"sids":    arr(str("subagent id from spawn_subagent")),
-			"timeout": map[string]any{"type": "number", "description": "seconds to wait; omit for the server default; 0 polls"},
-		}, "sids"),
-		Summary: `{"sids": ["<sid>"], "timeout"?: number}`,
 	},
 	{
 		Name:        "stop_subagent",

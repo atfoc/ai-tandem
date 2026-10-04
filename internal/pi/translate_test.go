@@ -3,6 +3,8 @@ package pi
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -203,6 +205,191 @@ func TestSettledAfterUserAbort(t *testing.T) {
 	p.abortMu.Unlock()
 	if rest {
 		t.Error("abort flag was not consumed")
+	}
+}
+
+// settle sends pi's idle signal and answers the stats request it causes; it returns what the
+// turn emitted up to and including its end.
+func settle(t *testing.T, p *proc, w *memWriteCloser) []agent.Event {
+	t.Helper()
+	before := len(w.commands(t))
+	p.translateLine([]byte(`{"type":"agent_settled"}`))
+	cmds := w.commands(t)
+	if len(cmds) != before+1 || cmds[before]["type"] != "get_session_stats" {
+		t.Fatalf("commands %v, want one more get_session_stats", cmds)
+	}
+	p.rpc.handleLine([]byte(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_session_stats","success":false,"error":"no stats"}`, str(cmds[before]["id"]))))
+	return drainEvents(p)
+}
+
+// turnEnd is the turn end closing evs, which must hold exactly one, last.
+func turnEnd(t *testing.T, evs []agent.Event) agent.Event {
+	t.Helper()
+	for i, ev := range evs {
+		if ev.Kind == agent.EvTurnEnd && i != len(evs)-1 {
+			t.Fatalf("a turn end before the last event: %s", dump(evs))
+		}
+	}
+	if len(evs) == 0 || evs[len(evs)-1].Kind != agent.EvTurnEnd {
+		t.Fatalf("events %s, want a turn end last", dump(evs))
+	}
+	return evs[len(evs)-1]
+}
+
+// textOf joins the text the events streamed.
+func textOf(evs []agent.Event) string {
+	var sb strings.Builder
+	for _, ev := range evs {
+		if ev.Kind == agent.EvTextDelta || ev.Kind == agent.EvText {
+			sb.WriteString(ev.Text)
+		}
+	}
+	return sb.String()
+}
+
+func TestSettledAfterErroredMessage(t *testing.T) {
+	const errored = `{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"429 rate limited","usage":{"input":0,"output":0}}}`
+	const good = `{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}],"stopReason":"stop","usage":{"input":10,"output":2}}}`
+
+	// The turn's last assistant message is in pi's error state: the turn ends with pi's text.
+	p, w := unitProc()
+	p.translateLine([]byte(errored))
+	p.translateLine([]byte(`{"type":"turn_end"}`))
+	p.translateLine([]byte(`{"type":"agent_end","messages":[],"willRetry":false}`))
+	evs := settle(t, p, w)
+	if end := turnEnd(t, evs); end.Error != "429 rate limited" || end.Aborted {
+		t.Fatalf("errored turn ended %s", dump(evs))
+	}
+	if textOf(evs) != "" {
+		t.Fatalf("an errored message gave text: %s", dump(evs))
+	}
+	// The error belongs to that turn only.
+	if end := turnEnd(t, settle(t, p, w)); end.Error != "" || end.Aborted {
+		t.Fatalf("the next turn ended %+v, want a clean end", end)
+	}
+
+	// pi's own retry overcomes the error: a clean turn with its text.
+	p, w = unitProc()
+	for _, line := range []string{
+		errored,
+		`{"type":"agent_end","messages":[],"willRetry":true}`,
+		`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":2000,"errorMessage":"429 rate limited"}`,
+		`{"type":"message_start","message":{"role":"assistant","content":[]}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hi"}}`,
+		good,
+		`{"type":"auto_retry_end","success":true,"attempt":1}`,
+	} {
+		p.translateLine([]byte(line))
+	}
+	evs = settle(t, p, w)
+	if end := turnEnd(t, evs); end.Error != "" || end.Aborted {
+		t.Fatalf("recovered turn ended %s", dump(evs))
+	}
+	if textOf(evs) != "Hi" {
+		t.Fatalf("recovered turn text %q in %s", textOf(evs), dump(evs))
+	}
+
+	// Retries that all fail: still one errored end, at the settle signal.
+	p, w = unitProc()
+	for i := 0; i < 3; i++ {
+		p.translateLine([]byte(errored))
+		p.translateLine([]byte(`{"type":"agent_end","messages":[],"willRetry":true}`))
+	}
+	p.translateLine([]byte(errored))
+	p.translateLine([]byte(`{"type":"auto_retry_end","success":false,"attempt":3,"finalError":"429 rate limited"}`))
+	if got := drainEvents(p); textOf(got) != "" || len(got) != 4 {
+		t.Fatalf("before the settle signal: %s, want four usage events", dump(got))
+	}
+	if end := turnEnd(t, settle(t, p, w)); end.Error != "429 rate limited" {
+		t.Fatalf("exhausted retries ended %+v", end)
+	}
+
+	// An error with no text of its own still ends the turn as errored.
+	p, w = unitProc()
+	p.translateLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error"}}`))
+	if end := turnEnd(t, settle(t, p, w)); end.Error != "Unknown error" {
+		t.Fatalf("error without text ended %+v", end)
+	}
+
+	// Only an assistant message decides: a tool result after a good message changes nothing.
+	p, w = unitProc()
+	p.translateLine([]byte(good))
+	p.translateLine([]byte(`{"type":"message_end","message":{"role":"toolResult","stopReason":"error","errorMessage":"x"}}`))
+	if end := turnEnd(t, settle(t, p, w)); end.Error != "" {
+		t.Fatalf("a tool result's error ended the turn %+v", end)
+	}
+
+	// A turn the user stopped is aborted, as before, whatever pi's last message says.
+	p, w = unitProc()
+	p.translateLine([]byte(errored))
+	p.abortMu.Lock()
+	p.abortPending = true
+	p.abortMu.Unlock()
+	if end := turnEnd(t, settle(t, p, w)); !end.Aborted || end.Error != "" {
+		t.Fatalf("stopped turn ended %+v, want aborted with no error", end)
+	}
+	if end := turnEnd(t, settle(t, p, w)); end.Aborted || end.Error != "" {
+		t.Fatalf("the turn after a stopped one ended %+v", end)
+	}
+	p, w = unitProc()
+	p.translateLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"Request was aborted"}}`))
+	p.abortMu.Lock()
+	p.abortPending = true
+	p.abortMu.Unlock()
+	if end := turnEnd(t, settle(t, p, w)); !end.Aborted || end.Error != "" {
+		t.Fatalf("aborted message ended %+v, want aborted with no error", end)
+	}
+}
+
+// The fixtures are the lines pi 0.85.1 wrote for real turns, from the prompt's answer to the
+// stats answer: a key the provider rejected, a connection refused on every attempt, a connection
+// refused once and then answered, and a stream that broke after some text.
+func TestFailedTurnFixtures(t *testing.T) {
+	cases := []struct {
+		file, err, text string
+	}{
+		{"failed_turn.jsonl", `401: {"message":"User not found.","code":401}`, ""},
+		{"failed_turn_retries.jsonl", "Connection error.", ""},
+		{"retry_recovered.jsonl", "", "OK"},
+		// pi streams the partial text again on each of its retries
+		{"failed_after_text.jsonl", "Stream ended without finish_reason", strings.Repeat("Half an ans", 4)},
+	}
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", c.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, w := unitProc()
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				var m map[string]any
+				if err := json.Unmarshal([]byte(line), &m); err != nil {
+					t.Fatalf("bad fixture line %s: %v", line, err)
+				}
+				if m["type"] != "response" {
+					p.translateLine([]byte(line))
+					continue
+				}
+				if m["command"] != "get_session_stats" {
+					continue
+				}
+				// the stats answer, under the id this proc asked with
+				cmds := w.commands(t)
+				if len(cmds) != 1 || cmds[0]["type"] != "get_session_stats" {
+					t.Fatalf("commands %v, want one get_session_stats", cmds)
+				}
+				m["id"] = cmds[0]["id"]
+				p.rpc.handleLine(mustJSON(m))
+			}
+			evs := drainEvents(p)
+			if end := turnEnd(t, evs); end.Error != c.err || end.Aborted {
+				t.Errorf("turn ended %+v, want error %q", end, c.err)
+			}
+			if got := textOf(evs); got != c.text {
+				t.Errorf("text %q, want %q", got, c.text)
+			}
+		})
 	}
 }
 

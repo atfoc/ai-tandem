@@ -21,15 +21,21 @@ import (
 type Transcript struct {
 	path     string // items.jsonl
 	items    []model.Item
-	version  int            // bumped on every change
-	open     int            // index of the open text item, -1 if none
-	tools    map[string]int // tool id → item index
-	perms    map[string]int // request id → item index
-	dirty    map[int]bool   // settled items not yet written
+	version  int             // bumped on every change
+	open     int             // index of the open text item, -1 if none
+	tools    map[string]int  // tool id → item index
+	perms    map[permKey]int // the open permission requests → item index
+	results  map[string]int  // sid → index of its subresult item
+	dirty    map[int]bool    // settled items not yet written
 	status   model.Status
 	tool     string       // tool name behind StatusTool
 	permPrev model.Status // the status before the pending approval
 }
+
+// permKey identifies a permission request: who asked (a subagent's sid, "" for the chat's own
+// agent) together with the id the asker's process gave it. The id alone repeats within a thread:
+// Cursor numbers its requests per process, and every app-spawned subagent is a process of its own.
+type permKey struct{ asker, id string }
 
 // Update is one changed item, sent to clients.
 type Update struct {
@@ -47,18 +53,21 @@ type line struct {
 // write.
 func New(path string) *Transcript {
 	return &Transcript{
-		path:   path,
-		open:   -1,
-		tools:  map[string]int{},
-		perms:  map[string]int{},
-		dirty:  map[int]bool{},
-		status: model.StatusReady,
+		path:    path,
+		open:    -1,
+		tools:   map[string]int{},
+		perms:   map[permKey]int{},
+		results: map[string]int{},
+		dirty:   map[int]bool{},
+		status:  model.StatusReady,
 	}
 }
 
 // Load reads items.jsonl at path. A missing file is an empty transcript. Lines are applied in
 // order; a later line for the same index replaces the earlier one. A line that does not parse
-// (a write cut short by a crash) is skipped.
+// (a write cut short by a crash) is skipped. A permission request the file has open is closed as
+// denied, to be written by the next Flush: a thread is loaded before any process of its chat
+// exists, so nothing could answer it.
 func Load(path string) (*Transcript, error) {
 	t := New(path)
 	f, err := os.Open(path)
@@ -95,9 +104,13 @@ func Load(path string) (*Transcript, error) {
 				t.tools[it.ToolID] = i
 			}
 		case "perm":
-			if it.RequestID != "" {
-				t.perms[it.RequestID] = i
+			if it.Decided == "" {
+				it.Decided = "deny"
+				t.items[i] = it
+				t.dirty[i] = true
 			}
+		case "subresult":
+			t.results[it.Subagent] = i
 		}
 	}
 	return t, nil
@@ -143,6 +156,18 @@ func (t *Transcript) AddUser(text, context string, refs []model.Reference) []Upd
 // AddNote adds a note ("muted" or "error").
 func (t *Transcript) AddNote(tone, text string) []Update {
 	u := t.push(model.Item{Kind: "note", Tone: tone, Text: text})
+	t.dirty[u.Index] = true
+	return []Update{u}
+}
+
+// AddSubResult adds the row of subagent sid's result, carried to the agent by the app. A subagent
+// has one row, ever: a second call for the same sid adds nothing. The status is left alone.
+func (t *Transcript) AddSubResult(sid string) []Update {
+	if _, ok := t.results[sid]; ok {
+		return nil
+	}
+	u := t.push(model.Item{Kind: "subresult", Subagent: sid})
+	t.results[sid] = u.Index
 	t.dirty[u.Index] = true
 	return []Update{u}
 }
@@ -234,10 +259,15 @@ func (t *Transcript) Apply(ev agent.Event) []Update {
 			t.permPrev = t.status
 		}
 		t.status = model.StatusApproval
+		k := permKey{ev.Sub, ev.PermID}
+		var ups []Update
+		if i, ok := t.perms[k]; ok {
+			ups = append(ups, t.deny(i)) // only the new request can be answered under this asker and id
+		}
 		u := t.push(model.Item{Kind: "perm", RequestID: ev.PermID, ToolName: ev.ToolName, ToolID: ev.ToolID,
 			Input: ev.Input, Subagent: ev.Sub})
-		t.perms[ev.PermID] = u.Index
-		return []Update{u}
+		t.perms[k] = u.Index
+		return append(ups, u)
 
 	case agent.EvTurnEnd:
 		ups := t.closeOpen()
@@ -246,6 +276,9 @@ func (t *Transcript) Apply(ev agent.Event) []Update {
 		} else if ev.Error != "" {
 			ups = append(ups, t.AddNote("error", ev.Error)...)
 		}
+		// The turn that raised the agent's own requests is over, however it ended. A subagent's
+		// request stays open: the subagent may still be running.
+		ups = append(ups, t.denyPerms(func(k permKey) bool { return k.asker == "" })...)
 		t.status = model.StatusReady
 		t.tool = ""
 		return ups
@@ -260,25 +293,30 @@ func (t *Transcript) Apply(ev agent.Event) []Update {
 			ups = append(ups, t.AddNote("error", "The agent stopped: "+msg)...)
 			t.status = model.StatusStopped
 			t.tool = ""
-			for i, it := range t.items {
-				if it.Kind == "perm" && it.Decided == "" {
-					it.Decided = "deny"
-					t.dirty[i] = true
-					ups = append(ups, t.set(i, it))
-				}
-			}
 		}
-		return ups
+		// Busy or not: the process held its own requests and its subagents', and every subagent
+		// ends with it. An idle chat can have one open too: a turn's end closes only the agent's own.
+		return append(ups, t.denyPerms(func(permKey) bool { return true })...)
 	}
 	return nil
 }
 
-// Decided records the user's answer to a permission request.
-func (t *Transcript) Decided(requestID string, allow bool) []Update {
-	i, ok := t.perms[requestID]
+// PermOpen reports whether asker's permission request requestID is open: raised, and neither
+// answered nor closed. asker is the subagent that asked, "" for the chat's own agent.
+func (t *Transcript) PermOpen(asker, requestID string) bool {
+	_, ok := t.perms[permKey{asker, requestID}]
+	return ok
+}
+
+// Decided records the user's answer to asker's open permission request requestID, on that
+// request's card and no other. A request that is not open changes nothing.
+func (t *Transcript) Decided(asker, requestID string, allow bool) []Update {
+	k := permKey{asker, requestID}
+	i, ok := t.perms[k]
 	if !ok {
 		return nil
 	}
+	delete(t.perms, k)
 	it := t.items[i]
 	it.Decided = "deny"
 	if allow {
@@ -286,23 +324,54 @@ func (t *Transcript) Decided(requestID string, allow bool) []Update {
 	}
 	t.dirty[i] = true
 	ups := []Update{t.set(i, it)}
-	if t.status == model.StatusApproval && !t.pendingPerm() {
-		t.status = t.permPrev
-		if t.status == "" || t.status == model.StatusApproval {
-			t.status = model.StatusTool
+	t.leaveApproval()
+	return ups
+}
+
+// DenyPerms closes as denied every permission request asker still has open (a subagent that
+// reached a final status). The requests of other askers stay open, whatever their ids.
+func (t *Transcript) DenyPerms(asker string) []Update {
+	ups := t.denyPerms(func(k permKey) bool { return k.asker == asker })
+	t.leaveApproval()
+	return ups
+}
+
+// leaveApproval puts the status back to what it was before the approval, once no request of any
+// asker is open.
+func (t *Transcript) leaveApproval() {
+	if t.status != model.StatusApproval || len(t.perms) > 0 {
+		return
+	}
+	t.status = t.permPrev
+	if t.status == "" || t.status == model.StatusApproval {
+		t.status = model.StatusTool
+	}
+}
+
+// denyPerms closes as denied the open requests match accepts, in thread order. The status is the
+// caller's.
+func (t *Transcript) denyPerms(match func(permKey) bool) []Update {
+	var idx []int
+	for k, i := range t.perms {
+		if match(k) {
+			idx = append(idx, i)
+			delete(t.perms, k)
 		}
+	}
+	sort.Ints(idx)
+	var ups []Update
+	for _, i := range idx {
+		ups = append(ups, t.deny(i))
 	}
 	return ups
 }
 
-// pendingPerm reports whether a permission request is still unanswered.
-func (t *Transcript) pendingPerm() bool {
-	for _, i := range t.perms {
-		if t.items[i].Decided == "" {
-			return true
-		}
-	}
-	return false
+// deny marks the permission item at i denied.
+func (t *Transcript) deny(i int) Update {
+	it := t.items[i]
+	it.Decided = "deny"
+	t.dirty[i] = true
+	return t.set(i, it)
 }
 
 // HasTool reports whether the thread has a tool item with this id.
@@ -382,7 +451,7 @@ func (t *Transcript) Flush(all bool) error {
 }
 
 // settled reports whether an item is final: user item, finished text, tool with a result or
-// denial, decided permission, note.
+// denial, decided permission, note, subagent result row.
 func settled(it model.Item) bool {
 	switch it.Kind {
 	case "text":

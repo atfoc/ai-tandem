@@ -123,14 +123,14 @@ func TestPermission(t *testing.T) {
 	if status(tr) != model.StatusApproval {
 		t.Fatalf("thinking overrode approval: %q", status(tr))
 	}
-	ups := tr.Decided("r1", true)
+	ups := tr.Decided("", "r1", true)
 	if len(ups) != 1 || ups[0].Item.Decided != "allow" || ups[0].Item.RequestID != "r1" || ups[0].Item.ToolID != "t1" {
 		t.Fatalf("updates %+v", ups)
 	}
 	if s, tool := tr.Status(); s != model.StatusTool || tool != "Bash" {
 		t.Fatalf("status %q %q", s, tool)
 	}
-	if tr.Decided("nope", false) != nil {
+	if tr.Decided("", "nope", false) != nil {
 		t.Error("unknown request id changed something")
 	}
 }
@@ -216,6 +216,24 @@ func TestExitWhileIdle(t *testing.T) {
 	}
 	if len(items(tr)) != n || status(tr) != model.StatusReady {
 		t.Errorf("idle exit shown: %+v %q", items(tr), status(tr))
+	}
+
+	// A request still open in an idle thread (a subagent's, raised before the turn ended, whose
+	// status the turn's end overwrote) is closed by the exit, with no note.
+	tr.AddUser("again", "", nil)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, Sub: "s1", PermID: "r1", ToolName: "Bash"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r2", ToolName: "Bash"})
+	tr.Apply(agent.Event{Kind: agent.EvTurnEnd})
+	if !tr.PermOpen("s1", "r1") || tr.PermOpen("", "r2") || status(tr) != model.StatusReady {
+		t.Fatalf("after the turn end: %+v %q", items(tr), status(tr))
+	}
+	n = len(items(tr))
+	ups := tr.Apply(agent.Event{Kind: agent.EvExit})
+	if len(ups) != 1 || ups[0].Item.Kind != "perm" || ups[0].Item.Subagent != "s1" || ups[0].Item.Decided != "deny" {
+		t.Errorf("updates %+v", ups)
+	}
+	if tr.PermOpen("s1", "r1") || len(items(tr)) != n || status(tr) != model.StatusReady {
+		t.Errorf("after the idle exit: %+v %q", items(tr), status(tr))
 	}
 }
 
@@ -329,8 +347,8 @@ func TestLoadLaterLineWins(t *testing.T) {
 	if len(its) != 2 || its[0].Text != "hello" || its[1].Decided != "allow" {
 		t.Fatalf("items %+v", its)
 	}
-	if tr.perms["r1"] != 1 {
-		t.Error("perms map not rebuilt")
+	if tr.PermOpen("", "r1") {
+		t.Error("an answered request loaded as open")
 	}
 }
 
@@ -356,7 +374,7 @@ func TestPermFromSubagent(t *testing.T) {
 	if status(tr) != model.StatusApproval {
 		t.Fatalf("status %q", status(tr))
 	}
-	if ups := tr.Decided("r1", true); len(ups) != 1 || ups[0].Item.Decided != "allow" || ups[0].Item.Subagent != "s1" {
+	if ups := tr.Decided("s1", "r1", true); len(ups) != 1 || ups[0].Item.Decided != "allow" || ups[0].Item.Subagent != "s1" {
 		t.Fatalf("updates %+v", ups)
 	}
 	if s, tool := tr.Status(); s != model.StatusReady || tool != "" {
@@ -371,13 +389,219 @@ func TestTwoPendingPerms(t *testing.T) {
 	if status(tr) != model.StatusApproval {
 		t.Fatalf("status %q", status(tr))
 	}
-	tr.Decided("r2", false)
+	tr.Decided("s2", "r2", false)
 	if status(tr) != model.StatusApproval {
 		t.Fatalf("status %q after one of two decided", status(tr))
 	}
-	tr.Decided("r1", true)
+	tr.Decided("s1", "r1", true)
 	if status(tr) != model.StatusReady {
 		t.Fatalf("status %q after both decided, want ready", status(tr))
+	}
+}
+
+// Two open requests with one id and different askers are two requests: each answer marks its own
+// card, and the thread leaves approval only when neither is open.
+func TestSamePermIDTwoAskers(t *testing.T) {
+	tr := newT(t)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash", Sub: "s1"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Edit", Sub: "s2"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Read"})
+	if !tr.PermOpen("s1", "p1") || !tr.PermOpen("s2", "p1") || !tr.PermOpen("", "p1") || tr.PermOpen("s3", "p1") {
+		t.Fatal("open requests")
+	}
+	ups := tr.Decided("s2", "p1", true)
+	if len(ups) != 1 || ups[0].Index != 1 || ups[0].Item.Subagent != "s2" || ups[0].Item.Decided != "allow" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if its := items(tr); its[0].Decided != "" || its[2].Decided != "" {
+		t.Fatalf("another asker's card changed: %+v", its)
+	}
+	if status(tr) != model.StatusApproval {
+		t.Fatalf("status %q after one of three answered", status(tr))
+	}
+	if tr.PermOpen("s2", "p1") {
+		t.Error("an answered request is still open")
+	}
+	v := tr.Version()
+	if ups := tr.Decided("s2", "p1", false); ups != nil || items(tr)[1].Decided != "allow" || tr.Version() != v {
+		t.Fatalf("a second answer changed the card: %+v", ups)
+	}
+	if ups := tr.Decided("", "p1", false); len(ups) != 1 || ups[0].Index != 2 || ups[0].Item.Decided != "deny" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if status(tr) != model.StatusApproval {
+		t.Fatalf("status %q with s1's request open", status(tr))
+	}
+	tr.Decided("s1", "p1", true)
+	if status(tr) != model.StatusReady {
+		t.Fatalf("status %q after all answered, want ready", status(tr))
+	}
+}
+
+// DenyPerms closes one asker's open requests and nobody else's, and leaves approval like an answer.
+func TestDenyPerms(t *testing.T) {
+	tr := newT(t)
+	tr.AddUser("go", "", nil)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash", Sub: "s1"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p2", ToolName: "Edit", Sub: "s1"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash", Sub: "s2"})
+	if err := tr.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	ups := tr.DenyPerms("s1")
+	if len(ups) != 2 || ups[0].Index != 1 || ups[1].Index != 2 || ups[0].Item.Decided != "deny" || ups[1].Item.Decided != "deny" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if !tr.dirty[1] || !tr.dirty[2] || tr.dirty[3] {
+		t.Fatalf("dirty %v", tr.dirty)
+	}
+	if tr.PermOpen("s1", "p1") || tr.PermOpen("s1", "p2") || !tr.PermOpen("s2", "p1") || items(tr)[3].Decided != "" {
+		t.Fatalf("after closing s1's: %+v", items(tr))
+	}
+	if status(tr) != model.StatusApproval {
+		t.Fatalf("status %q with s2's request open", status(tr))
+	}
+	if ups := tr.DenyPerms("s1"); ups != nil {
+		t.Fatalf("closing again: %+v", ups)
+	}
+	tr.DenyPerms("s2")
+	if status(tr) != model.StatusThinking {
+		t.Fatalf("status %q after the last request closed, want the one before the approval", status(tr))
+	}
+}
+
+// A turn end, however the turn ended, closes the agent's own open requests as denied. A
+// subagent's stays open and answerable.
+func TestTurnEndClosesOwnPerms(t *testing.T) {
+	for name, end := range map[string]agent.Event{
+		"clean":   {Kind: agent.EvTurnEnd},
+		"error":   {Kind: agent.EvTurnEnd, Error: "rate limited"},
+		"aborted": {Kind: agent.EvTurnEnd, Aborted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tr := newT(t)
+			tr.AddUser("go", "", nil)
+			tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash"})
+			tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash", Sub: "s1"})
+			ups := tr.Apply(end)
+			var closed bool
+			for _, u := range ups {
+				closed = closed || (u.Index == 1 && u.Item.Decided == "deny")
+			}
+			its := items(tr)
+			if !closed || its[1].Decided != "deny" || !tr.dirty[1] || tr.PermOpen("", "p1") {
+				t.Fatalf("the agent's own request: updates %+v items %+v", ups, its)
+			}
+			if its[2].Decided != "" || !tr.PermOpen("s1", "p1") {
+				t.Fatalf("the subagent's request %+v", its[2])
+			}
+			if status(tr) != model.StatusReady {
+				t.Fatalf("status %q", status(tr))
+			}
+			if tr.Decided("", "p1", true) != nil || items(tr)[1].Decided != "deny" {
+				t.Fatal("a late answer changed the closed card")
+			}
+			if ups := tr.Decided("s1", "p1", true); len(ups) != 1 || ups[0].Item.Decided != "allow" {
+				t.Fatalf("answer to the subagent's request %+v", ups)
+			}
+			if status(tr) != model.StatusReady {
+				t.Fatalf("status %q after the answer", status(tr))
+			}
+		})
+	}
+}
+
+// The stuck trace: a turn leaves the agent's own request open, a subagent then asks into the idle
+// thread, and the subagent's card is answered. The thread is ready.
+func TestStaleOwnPermDoesNotHoldApproval(t *testing.T) {
+	tr := newT(t)
+	tr.AddUser("go", "", nil)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r1", ToolName: "Bash"})
+	tr.Apply(agent.Event{Kind: agent.EvTurnEnd})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r2", ToolName: "Bash", Sub: "s1"})
+	if status(tr) != model.StatusApproval {
+		t.Fatalf("status %q", status(tr))
+	}
+	tr.Decided("s1", "r2", true)
+	if status(tr) != model.StatusReady {
+		t.Fatalf("status %q after the subagent's card was answered, want ready", status(tr))
+	}
+}
+
+// A thread saved with open requests is loaded with every one of them closed as denied, and the
+// next flush writes that. Requests raised afterwards with the same ids are new requests.
+func TestLoadClosesOpenPerms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c", "items.jsonl")
+	tr := New(path)
+	tr.AddUser("go", "", nil)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p0", ToolName: "Read"})
+	tr.Decided("", "p0", true)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash", Sub: "s1"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Edit", Sub: "s2"})
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Write"})
+	if err := tr.Flush(true); err != nil { // shutdown writes open cards as they are
+		t.Fatal(err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	its := items(got)
+	if len(its) != 5 || its[1].Decided != "allow" {
+		t.Fatalf("loaded %+v", its)
+	}
+	for i := 2; i < 5; i++ {
+		if its[i].Decided != "deny" || !got.dirty[i] {
+			t.Fatalf("item %d %+v dirty %v", i, its[i], got.dirty)
+		}
+	}
+	if got.PermOpen("s1", "p1") || got.PermOpen("s2", "p1") || got.PermOpen("", "p1") || got.PermOpen("", "p0") {
+		t.Fatal("a request is open after the load")
+	}
+	if status(got) != model.StatusReady {
+		t.Fatalf("status %q", status(got))
+	}
+	if got.Decided("s1", "p1", true) != nil || items(got)[2].Decided != "deny" {
+		t.Fatal("an answer changed a card closed at load")
+	}
+	if err := got.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items(again), items(got)) || len(again.dirty) != 0 {
+		t.Fatalf("reloaded %+v dirty %v", items(again), again.dirty)
+	}
+
+	got.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash", Sub: "s1"})
+	if status(got) != model.StatusApproval || !got.PermOpen("s1", "p1") {
+		t.Fatalf("a new request with an old id: status %q", status(got))
+	}
+	if ups := got.Decided("s1", "p1", true); len(ups) != 1 || ups[0].Index != 5 || ups[0].Item.Decided != "allow" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if items(got)[2].Decided != "deny" || status(got) != model.StatusReady {
+		t.Fatalf("after the answer: %+v status %q", items(got)[2], status(got))
+	}
+}
+
+// An asker that raises an id it already has open (no process does) leaves the older card closed:
+// only one card can be answered under an asker and id.
+func TestPermSameAskerSameID(t *testing.T) {
+	tr := newT(t)
+	tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Bash", Sub: "s1"})
+	ups := tr.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "p1", ToolName: "Edit", Sub: "s1"})
+	if len(ups) != 2 || ups[0].Index != 0 || ups[0].Item.Decided != "deny" || ups[1].Index != 1 || ups[1].Item.Decided != "" {
+		t.Fatalf("updates %+v", ups)
+	}
+	if ups := tr.Decided("s1", "p1", true); len(ups) != 1 || ups[0].Index != 1 {
+		t.Fatalf("updates %+v", ups)
+	}
+	if status(tr) != model.StatusReady {
+		t.Fatalf("status %q", status(tr))
 	}
 }
 
@@ -494,5 +718,42 @@ func TestUserReferences(t *testing.T) {
 	}
 	if its := items(got); len(its) != 1 || !reflect.DeepEqual(its[0].References, refs) {
 		t.Fatalf("loaded %+v", its)
+	}
+}
+
+func TestAddSubResult(t *testing.T) {
+	tr := newT(t)
+	tr.AddUser("go", "", nil)
+	tr.Apply(agent.Event{Kind: agent.EvTurnEnd})
+	v := tr.Version()
+
+	ups := tr.AddSubResult("s1")
+	if len(ups) != 1 || ups[0].Index != 1 || !reflect.DeepEqual(ups[0].Item, model.Item{Kind: "subresult", Subagent: "s1"}) {
+		t.Fatalf("updates %+v", ups)
+	}
+	if tr.Version() != v+1 || status(tr) != model.StatusReady || tr.Sent() != 1 {
+		t.Fatalf("version %d status %q sent %d", tr.Version(), status(tr), tr.Sent())
+	}
+	// One row per subagent, ever.
+	if ups := tr.AddSubResult("s1"); ups != nil || tr.Version() != v+1 {
+		t.Fatalf("second row %+v", ups)
+	}
+	if ups := tr.AddSubResult("s2"); len(ups) != 1 || ups[0].Index != 2 {
+		t.Fatalf("another subagent's row %+v", ups)
+	}
+
+	// Written at once, like a user item or a note, and known again after a load.
+	if err := tr.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(tr.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items(back), items(tr)) {
+		t.Fatalf("loaded %+v, want %+v", items(back), items(tr))
+	}
+	if ups := back.AddSubResult("s2"); ups != nil || len(items(back)) != 3 {
+		t.Fatalf("row added again after a load %+v", ups)
 	}
 }

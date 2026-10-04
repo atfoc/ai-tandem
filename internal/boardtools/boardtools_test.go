@@ -34,7 +34,7 @@ func TestTools(t *testing.T) {
 	if IsTool("rm_rf") {
 		t.Error("IsTool accepted an unknown tool")
 	}
-	for _, tname := range []string{"spawn_subagent", "wait_subagents", "stop_subagent"} {
+	for _, tname := range []string{"spawn_subagent", "stop_subagent"} {
 		if IsTool(tname) {
 			t.Errorf("IsTool(%q) = true, spawn-family names are not board tools", tname)
 		}
@@ -42,7 +42,7 @@ func TestTools(t *testing.T) {
 }
 
 func TestSpawnFamily(t *testing.T) {
-	want := []string{"spawn_subagent", "wait_subagents", "stop_subagent"}
+	want := []string{"spawn_subagent", "stop_subagent"}
 	if len(SpawnFamily) != len(want) {
 		t.Fatalf("len(SpawnFamily) = %d, want %d", len(SpawnFamily), len(want))
 	}
@@ -69,6 +69,10 @@ func TestSpawnFamily(t *testing.T) {
 	if IsSpawnFamily("apply") {
 		t.Error("IsSpawnFamily accepted a board tool")
 	}
+	// The polling tool is gone: results are pushed to the agent.
+	if IsSpawnFamily("wait_subagents") || IsTool("wait_subagents") {
+		t.Error("wait_subagents is still a tool")
+	}
 
 	var spawn Tool
 	for _, tool := range SpawnFamily {
@@ -93,7 +97,21 @@ func TestSpawnFamily(t *testing.T) {
 	if !strings.Contains(spawn.Description, "distinct description") {
 		t.Error("spawn_subagent description does not tell callers to give parallel spawns distinct descriptions")
 	}
-	if !strings.Contains(spawn.Description, "wait_subagents") {
-		t.Error("spawn_subagent description does not point at wait_subagents for results")
+	// The description is the only steering Cursor and pi chats get: the result arrives as a message
+	// from the app, the agent ends its turn, and it neither polls nor sleeps.
+	for _, want := range []string{
+		"the app sends you the result as a message",
+		"<subagent-results>",
+		"end your turn when you have nothing else to do",
+		"do not poll, sleep",
+	} {
+		if !strings.Contains(spawn.Description, want) {
+			t.Errorf("spawn_subagent description lacks %q: %q", want, spawn.Description)
+		}
+	}
+	for _, tool := range SpawnFamily {
+		if strings.Contains(tool.Description, "wait_subagents") || strings.Contains(tool.Summary, "wait_subagents") {
+			t.Errorf("%s still names wait_subagents: %q", tool.Name, tool.Description)
+		}
 	}
 }

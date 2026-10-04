@@ -10,7 +10,8 @@ import { focusComposer, subline } from "./Composer.tsx";
 import { NameInput } from "./ChatView.tsx";
 import { Menu, confirm, reportError } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
-import { statusText } from "./logic/labels.ts";
+import { dotState, rowLine } from "./logic/labels.ts";
+import { workingOn } from "./logic/status.ts";
 import { hasDraft } from "./logic/drafts.ts";
 import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, SunIcon, SystemIcon, agentClass, agentName } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
@@ -79,7 +80,7 @@ function setCollapsed(id: string, collapsed: boolean) {
 
 // ---------------------------------------------------------------- actions (menus)
 
-const busyChats = (board: string) => Object.values(getState().chats).filter((c) => c.board === board && !c.archived && isBusy(c.status));
+const busyChats = (board: string) => workingOn(Object.values(getState().chats), board); // busy, or waiting on running subagents
 const stopAll = async (chats: ChatView[]) => { await Promise.all(chats.map((c) => api.interrupt(c.id).catch(() => {}))); };
 const attempt = (title: string, f: () => Promise<unknown>) => { f().catch((e) => reportError(title, e)); };
 
@@ -512,11 +513,8 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
   const items = useStore((s) => s.items[c.id]?.items);
   const cat = useStore((s) => s.catalogs[c.agent]);
   const key = "chat:" + c.id;
-  const busy = isBusy(c.status);
-  const sub = busy ? statusText(c, boardName)
-    : c.status === "stopped" ? "Stopped"
-    : c.status === "error" ? c.error || statusText(c, boardName)
-    : subline(c, cat);
+  const sub = rowLine(c, subline(c, cat), boardName);
+  const st = dotState(c);
   const legacy = isLegacy(c);
   const menu = c.archived
     ? [{ label: "Unarchive", run: () => attempt("Couldn't unarchive the chat", () => api.unarchive("chats", c.id)) },
@@ -530,12 +528,12 @@ function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; neste
   const title = chatTitle(c, items);
   const draft = hasDraft(c.draft) && !on && !c.archived && !legacy; // the open chat shows its draft in the composer
   return (
-    <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived || legacy ? "archived" : ""} st-${c.status}`}
+    <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived || legacy ? "archived" : ""} st-${st}`}
       {...(nested || c.archived || editing === key ? {} : drag(key))}
       onClick={() => openChat(c)} onDoubleClick={() => { if (!c.archived && !legacy) setEditing(key); }} title={`${title} — ${sub}`}>
       <span className={`side-glyph agent-${agentClass(c.agent)}`}>
         <AgentGlyph agent={c.agent} size={11} />
-        <span className={`crow-dot st-${c.status}`} />
+        <span className={`crow-dot st-${st}`} />
       </span>
       <div className="side-row-main">
         {editing === key

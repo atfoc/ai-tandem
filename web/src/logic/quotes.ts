@@ -6,7 +6,7 @@
 // selection's own text (the quote) has line breaks between blocks, so quotes are compared with
 // whitespace left out.
 
-import type { Reference } from "../types.ts";
+import type { Item, Reference } from "../types.ts";
 
 export type Span = { start: number; end: number };
 
@@ -40,6 +40,11 @@ export function findQuote(displayed: string, r: Pick<Reference, "quote" | "start
   if (i < 0) return whole;
   return { start: d.at[i], end: d.at[i + q.length - 1] + 1, how: "search" };
 }
+
+/** Whether an item of the chat's thread can be quoted: the user's messages, and the agent's
+ *  replies once finished. undefined for everything else, which is never quotable. */
+export const quotable = (it: Pick<Item, "kind" | "done">): boolean | undefined =>
+  it.kind === "user" ? true : it.kind === "text" ? !!it.done : undefined;
 
 /** A quote as one line, cut to max characters. */
 export function preview(quote: string, max = 80): string {

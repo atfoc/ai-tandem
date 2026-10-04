@@ -2,7 +2,7 @@
 // context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
 // until the first message is sent.
 import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeGet, safeSet, isBusy, isLegacy, upsertChat, unsavedDraft } from "./store.ts";
+import { useStore, getState, setState, safeGet, safeSet, isLegacy, upsertChat, unsavedDraft } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
@@ -10,6 +10,7 @@ import { resolveMentions, mentionOptions, openMention, type Picked } from "./log
 import { filterModels, groupModels } from "./logic/models.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
 import { DraftSaver, hasDraft } from "./logic/drafts.ts";
+import { composerControls } from "./logic/status.ts";
 import { toSend } from "./logic/quotes.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
@@ -181,7 +182,7 @@ export function Composer({ chatId }: { chatId: string }) {
     </div>
   );
 
-  const running = isBusy(c.status);
+  const { stop, blocked: running, esc } = composerControls(c); // running: the agent is busy
   const own = c.board ? boards[c.board] : undefined;
   const refs = c.board ? resolveMentions(plainText(text), boards, picked).filter((b) => b.id !== c.board) : [];
   const matches = mention && c.board ? mentionOptions(mention.q, boards, groups) : [];
@@ -266,13 +267,13 @@ export function Composer({ chatId }: { chatId: string }) {
               if (e.key === "Escape") { setMention(null); return; }
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); }
-            if (e.key === "Escape" && running) void api.interrupt(chatId);
+            if (e.key === "Escape" && esc) void api.interrupt(chatId);
           }}
         />
         <div className="composer-tools">
           <Toolbar chatId={chatId} onError={setErr} />
           <span className="grow" />
-          {running && <button className="send stop" title="Stop (Esc)" onClick={() => api.interrupt(chatId).catch((e) => setErr(e.message))}><span className="sq" /></button>}
+          {stop && <button className="send stop" title={running ? "Stop (Esc)" : "Stop the subagents"} onClick={() => api.interrupt(chatId).catch((e) => setErr(e.message))}><span className="sq" /></button>}
           <button className="send" title={running ? "The agent is working" : "Send (Enter)"} disabled={running || sending || (!text.trim() && !quotes.length)} onClick={() => void submit()}>↑</button>
         </div>
       </div>
