@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/store"
@@ -24,12 +26,23 @@ import (
 var (
 	ErrNoBranch = errors.New("no such branch")
 	ErrBadLabel = errors.New("only a message or a reply can be labeled")
+	// ErrLongLabel is an ErrBadLabel with its own text.
+	ErrLongLabel error = badLabel(fmt.Sprintf("a label can't be longer than %d characters", maxLabel))
 
 	errTreeUnreadable = errors.New("the chat's tree record can't be read")
 	// errTreeSame is what an updateTree function returns when it changed nothing, so that nothing
 	// is written.
 	errTreeSame = errors.New("tree record unchanged")
 )
+
+// maxLabel is the most characters a label has.
+const maxLabel = 200
+
+// badLabel is an ErrBadLabel that says what is wrong with the label's text.
+type badLabel string
+
+func (e badLabel) Error() string      { return string(e) }
+func (badLabel) Is(target error) bool { return target == ErrBadLabel }
 
 func (m *Manager) treePath(chat string) string {
 	return filepath.Join(m.Store.P.ChatDir(chat), "tree.json")
@@ -205,13 +218,26 @@ func (m *Manager) branchItems(chat, branch string) ([]model.Item, error) {
 	return items, nil
 }
 
+// treeText is what the tree shows of an item: its text, or, for a message that is only quotes,
+// its first quote after a quote mark: the comment, else the quoted words.
+func treeText(it model.Item) string {
+	if strings.TrimSpace(it.Text) != "" || len(it.References) == 0 {
+		return it.Text
+	}
+	r := it.References[0]
+	if c := strings.TrimSpace(r.Comment); c != "" {
+		return "❝ " + c
+	}
+	return "❝ " + r.Quote
+}
+
 // treeItems is a branch's own part (index >= at) as the tree shows it: the user and text items,
 // with the point rules applied to the branch's whole list.
 func treeItems(a model.AgentKind, items []model.Item, at int) []model.TreeItem {
 	out := []model.TreeItem{}
 	for i := max(at, 0); i < len(items); i++ {
 		it := items[i]
-		ti := model.TreeItem{I: i, Kind: it.Kind, Text: it.Text}
+		ti := model.TreeItem{I: i, Kind: it.Kind, Text: treeText(it)}
 		switch it.Kind {
 		case "user":
 			if count, ok := cutBefore(items, i); ok {
@@ -281,6 +307,9 @@ func (m *Manager) Tree(id string) (model.TreeView, error) {
 }
 
 // SetLabel names the user message or reply at index item of branch; blank text removes the name.
+// The name is kept as one clean line: every control character (a newline, a tab, NUL, ESC)
+// becomes a space and the spaces around the name go. A name longer than maxLabel characters is
+// refused with ErrLongLabel and changes nothing.
 // The label is kept under the branch that owns the item, so every branch passing through it
 // shows it. It is allowed while the chat is busy, archived or legacy, and sends no event: the
 // answer is all the chat's labels after the change (never nil).
@@ -305,7 +334,15 @@ func (m *Manager) SetLabel(id, branch string, item int, text string) ([]model.Tr
 	if item < 0 || item >= len(items) || !labelable(items[item]) {
 		return nil, ErrBadLabel
 	}
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text))
+	if utf8.RuneCountInString(text) > maxLabel {
+		return nil, ErrLongLabel
+	}
 	labels := []model.TreeLabel{}
 	err = m.updateTree(id, func(t *model.Tree) error {
 		if _, ok := branchOf(*t, branch); !ok {

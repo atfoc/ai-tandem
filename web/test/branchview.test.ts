@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  afterBack, appliesTo, bannerOf, bannerText, Loads, moveDropped, moveValid, quoteLimit, quotesBefore,
+  afterBack, afterSent, appliesTo, bannerOf, bannerText, Loads, moveDropped, moveValid, quoteLimit, quotesBefore,
 } from "../src/logic/branchview.ts";
 import { buildTree, withLive } from "../src/logic/forktree.ts";
 import type { Held, Item, PendingMove, Reference, Target, TreeView } from "../src/types.ts";
@@ -140,14 +140,23 @@ test("moveValid turns false when the shown list goes on past a point without an 
   assert.equal(moveValid("claude", [...BRANCH_ITEMS, { kind: "user", text: "more" }], m), false);
 });
 
-test("moveDropped: busy or no longer valid drops the move, except while its own Send is in flight", () => {
-  assert.equal(moveDropped({ busy: false, valid: true, sending: false }), false);
-  assert.equal(moveDropped({ busy: true, valid: true, sending: false }), true);
-  assert.equal(moveDropped({ busy: false, valid: false, sending: false }), true);
-  assert.equal(moveDropped({ busy: true, valid: false, sending: false }), true);
-  for (const busy of [false, true]) for (const valid of [false, true]) {
-    assert.equal(moveDropped({ busy, valid, sending: true }), false);
+test("moveDropped: archived or no longer valid drops the move, except while its own Send is in flight", () => {
+  assert.equal(moveDropped({ archived: false, valid: true, sending: false }), false);
+  assert.equal(moveDropped({ archived: true, valid: true, sending: false }), true);
+  assert.equal(moveDropped({ archived: false, valid: false, sending: false }), true);
+  assert.equal(moveDropped({ archived: true, valid: false, sending: false }), true);
+  for (const archived of [false, true]) for (const valid of [false, true]) {
+    assert.equal(moveDropped({ archived, valid, sending: true }), false);
   }
+});
+
+test("moveDropped: a turn the app starts on the current branch leaves the move as it is", () => {
+  // the chat turning busy is not asked about: the list shown only grows, so the point stays valid
+  const m: Target = { branch: CURRENT, at: 3, new: true };
+  const turn: Item[] = [{ kind: "subresult" }, { kind: "text", text: "got it" }];
+  const valid = moveValid("claude", [...BRANCH_ITEMS, ...turn], m);
+  assert.equal(valid, true);
+  assert.equal(moveDropped({ archived: false, valid, sending: false }), false);
 });
 
 // ---- Back (A6)
@@ -165,7 +174,28 @@ test("afterBack: a move that put nothing compares with what the composer held", 
   const before = held("", [q(4)]);
   const m = move({ branch: "main", at: 3, new: true }, before);
   assert.equal(afterBack(m, held("", []), 3), before); // the quotes past the point were dropped on the move
-  assert.equal(afterBack(m, held("", [q(1)]), 3), before);
+  assert.equal(afterBack(m, held("", [q(4)]), 3), before);
+});
+
+test("Back keeps a quote added during the move when the text was not changed", () => {
+  const m = move({ branch: "main", at: 6, new: true }, held(""));
+  const added = { ...q(4), comment: "my comment" }; // quoted, with a comment, after the move began
+  assert.deepEqual(afterBack(m, held("", [added]), 6), held("", [added]));
+  // after what the composer held, and only below the limit
+  const before = held("my draft", [q(1)], [{ name: "Board", id: "b1" }]);
+  const kept = move({ branch: "main", at: 6, new: true }, before);
+  assert.deepEqual(afterBack(kept, held("my draft", [q(1), added, q(5)]), 5), held("my draft", [q(1), added], before.mentions));
+  assert.equal(afterBack(kept, held("my draft", [q(1), q(5)]), 5), before);
+});
+
+test("Back after Branch and edit keeps a quote added to the unedited message", () => {
+  const put = held("the old message", [q(1)]);
+  const before = held("my draft", [q(2)]);
+  const m = move({ branch: "main", at: 3, new: true }, before, put);
+  const added = { ...q(0), comment: "added" };
+  // the message's own quote goes, the added one comes with the draft; one the draft has already is not doubled
+  assert.deepEqual(afterBack(m, held("the old message", [q(1), added]), 3), held("my draft", [q(2), added]));
+  assert.deepEqual(afterBack(m, held("the old message", [q(1), q(2)]), 3), before);
 });
 
 test("afterBack: text typed during the move is kept, with the quotes below the limit only", () => {
@@ -179,6 +209,25 @@ test("afterBack: text typed during the move is kept, with the quotes below the l
   assert.deepEqual(afterBack(move({ branch: "main", at: 6, new: true }, before), held("other", [q(5), q(6)]), 6), held("other", [q(5)]));
 });
 
+test("Back brings back the quotes the move hid when its own draft was typed over", () => {
+  // Branch at a point below the draft's quote: the move hid it, and it was no part of what was typed
+  const m = move({ branch: "main", at: 6, new: true }, held("", [q(7)]));
+  assert.deepEqual(afterBack(m, held("hm"), 6), held("hm", [q(7)]));
+  // with the quotes the composer still shows, and one added meanwhile, each once
+  const kept = move({ branch: "main", at: 6, new: true }, held("d", [q(2), q(7)]));
+  assert.deepEqual(afterBack(kept, held("d2", [q(2), q(3)]), 6), held("d2", [q(2), q(3), q(7)]));
+});
+
+test("Back keeps a comment edited during the move on a quote of its own draft", () => {
+  const before = held("my draft", [q(1), { ...q(2), comment: "old" }, q(7)]);
+  const m = move({ branch: "main", at: 6, new: true }, before);
+  const edited = { ...q(2), comment: "new" };
+  assert.deepEqual(afterBack(m, held("my draft", [q(1), edited]), 6), held("my draft", [q(1), edited, q(7)]));
+  // Branch and edit: the message's quote at the same place is not the draft's
+  const put = move({ branch: "main", at: 6, new: true }, before, held("the old message", [q(2)]));
+  assert.equal(afterBack(put, held("the old message", [q(2)]), 6), before);
+});
+
 test("Back and every drop of a move use the limit of the branch returned to", () => {
   const m = move({ branch: "main", at: 8, new: false }, held(""));
   const now = held("typed on main", [q(1), q(2), q(3), q(6)]);
@@ -189,6 +238,95 @@ test("Back and every drop of a move use the limit of the branch returned to", ()
   // the tree is not loaded: the point on the same branch, nothing on another
   assert.deepEqual(afterBack(cut, now, quoteLimit(undefined, cut.at, cut.branch, CURRENT)).references, [q(1), q(2)]);
   assert.deepEqual(afterBack(m, now, quoteLimit(undefined, m.at, m.branch, CURRENT)).references, []);
+});
+
+// ---- Back, the quotes of a plain move one by one: the draft before is "my draft" @Board [1, 2:old, 7], the
+// move at 6 hid 7, and the composer began with [1, 2:old]
+
+const c = (item: number, comment: string): Reference => ({ ...q(item), comment });
+const BOARD = [{ name: "Board", id: "b1" }];
+const DRAFT = held("my draft", [q(1), c(2, "old"), q(7)], BOARD);
+const PLAIN = move({ branch: "main", at: 6, new: true }, DRAFT);
+const refsBack = (m: PendingMove, text: string, now: Reference[], limit = 6) => afterBack(m, held(text, now, BOARD), limit).references;
+
+test("Back does not bring back a quote that was removed during the move", () => {
+  assert.deepEqual(afterBack(PLAIN, held("my draft", [q(1)], BOARD), 6), held("my draft", [q(1), q(7)], BOARD));
+  // removed, and another added
+  assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(3, "new")]), [q(1), q(7), c(3, "new")]);
+  // all removed: what the move hid is all that comes back
+  assert.deepEqual(refsBack(PLAIN, "my draft", []), [q(7)]);
+});
+
+test("Back: every other way a plain move's quotes change, with the text unchanged, changed and emptied", () => {
+  assert.equal(afterBack(PLAIN, held("my draft", [q(1), c(2, "old")], BOARD), 6), DRAFT);
+  assert.equal(afterBack(PLAIN, held("my draft", [{ ...q(1) }, c(2, "old")], [...BOARD]), 6), DRAFT); // copies of the same quotes
+  assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(2, "old"), c(3, "new")]), [q(1), c(2, "old"), q(7), c(3, "new")]);
+  assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(2, "edited")]), [q(1), c(2, "edited"), q(7)]);
+  assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), q(2)]), [q(1), q(2), q(7)]);
+  // removed and quoted again: it is the composer's
+  assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(2, "again")]), [q(1), c(2, "again"), q(7)]);
+  for (const text of ["my draft, more", ""]) {
+    assert.deepEqual(afterBack(PLAIN, held(text, [q(1), c(2, "old")], BOARD), 6), held(text, [q(1), c(2, "old"), q(7)], BOARD));
+    assert.deepEqual(refsBack(PLAIN, text, [q(1), c(2, "old"), c(3, "new")]), [q(1), c(2, "old"), c(3, "new"), q(7)]);
+    assert.deepEqual(refsBack(PLAIN, text, [q(1)]), [q(1), q(7)]);
+    assert.deepEqual(refsBack(PLAIN, text, [q(1), c(3, "new")]), [q(1), c(3, "new"), q(7)]);
+    assert.deepEqual(refsBack(PLAIN, text, [q(1), c(2, "edited")]), [q(1), c(2, "edited"), q(7)]);
+    assert.deepEqual(refsBack(PLAIN, text, [q(1), q(2)]), [q(1), q(2), q(7)]);
+    assert.deepEqual(refsBack(PLAIN, text, []), [q(7)]);
+  }
+});
+
+test("Back after two moves brings back what each of them hid", () => {
+  // a move at 3 hid 4 and 7, then one at 6 went on from it: 4 is below the limit again, and still hidden
+  const before = held("my draft", [q(1), q(4), q(7)]);
+  const m: PendingMove = { ...move({ branch: "main", at: 6, new: true }, before), hid: [q(4), q(7)] };
+  assert.equal(afterBack(m, held("my draft", [q(1)]), 6), before);
+  assert.deepEqual(afterBack(m, held("my draft", []), 6), held("my draft", [q(4), q(7)]));
+  assert.deepEqual(afterBack(m, held("typed", [q(1)]), 6), held("typed", [q(1), q(4), q(7)]));
+  // quoted again by hand meanwhile: once, as the composer has it
+  assert.deepEqual(afterBack(m, held("typed", [q(1), c(4, "again")]), 6), held("typed", [q(1), c(4, "again"), q(7)]));
+  assert.deepEqual(afterBack(m, held("my draft", [q(1), c(4, "again")]), 6), held("my draft", [q(1), c(4, "again"), q(7)]));
+  // a quote added during the first move, which the second one hid
+  const later: PendingMove = { ...move({ branch: "main", at: 3, new: true }, held("my draft", [q(1)])), hid: [c(4, "new")] };
+  assert.deepEqual(afterBack(later, held("my draft", [q(1)]), 3), held("my draft", [q(1), c(4, "new")]));
+  assert.deepEqual(afterBack(later, held("typed", [q(1)]), 3), held("typed", [q(1), c(4, "new")]));
+  // Branch and edit keeps its rules: the draft put aside whole, or what was typed
+  const edit: PendingMove = { ...move({ branch: "main", at: 6, new: true }, before, held("the old message", [q(2)])), hid: [q(8)] };
+  assert.equal(afterBack(edit, held("the old message", []), 6), before);
+  assert.deepEqual(afterBack(edit, held("edited", [q(2)]), 6), held("edited", [q(2)]));
+});
+
+test("Back brings back what the move hid when the limit is another than at its start", () => {
+  // a move to another branch before the tree had both: the limit was 0 and hid all three; at Back it is 3
+  const before = held("my draft", [q(1), q(2), q(7)]);
+  const m: PendingMove = { ...move({ branch: "main", at: 8, new: false }, before), hid: before.references };
+  assert.deepEqual(afterBack(m, held("typed"), 3), held("typed", [q(1), q(2), q(7)]));
+  assert.equal(afterBack(m, held("my draft"), 3), before);
+  // a lower limit at Back: a quote the composer still has is not one the user removed
+  const kept = move({ branch: "main", at: 6, new: true }, held("my draft", [q(1), q(4)]));
+  assert.equal(afterBack(kept, held("my draft", [q(1), q(4)]), 0), kept.held);
+  assert.equal(afterBack({ ...kept, hid: [] }, held("my draft", [q(1), q(4)]), 0), kept.held);
+  assert.deepEqual(afterBack({ ...kept, hid: [] }, held("my draft", [q(4)]), 0), held("my draft", [q(4)]));
+});
+
+// ---- a sent move
+
+test("afterSent: the draft that Branch and edit put aside comes back into the empty composer", () => {
+  const before = held("my draft", [q(1), q(4)], [{ name: "Board", id: "b1" }]);
+  const m = move({ branch: "main", at: 3, new: true }, before, held("redis"));
+  assert.deepEqual(afterSent(m, held(""), 3), held("my draft", [q(1)], before.mentions));
+  assert.deepEqual(afterSent(m, held(" \n"), 0), held("my draft", [], before.mentions));
+  // a draft of quotes alone, all past the limit: nothing is left of it
+  assert.equal(afterSent(move(m, held("", [q(4)]), m.put), held(""), 3), null);
+});
+
+test("afterSent: nothing comes back when nothing was put aside, or the composer holds something again", () => {
+  const before = held("my draft");
+  assert.equal(afterSent(move({ branch: "main", at: 3, new: true }, before), held(""), 3), null); // Branch: the draft itself was sent
+  assert.equal(afterSent(move({ branch: "main", at: 3, new: true }, held(""), held("redis")), held(""), 3), null);
+  const m = move({ branch: "main", at: 3, new: true }, before, held("redis"));
+  assert.equal(afterSent(m, held("typed since"), 3), null);
+  assert.equal(afterSent(m, held("", [q(1)]), 3), null);
 });
 
 // ---- the banner (A10)
@@ -234,6 +372,60 @@ test("bannerOf: the kind, the message before the point and the branch that stays
   assert.deepEqual(bannerOf(t, { branch: "main", at: 3, new: true }, MAIN_ITEMS, "newer"), { kind: "new", after: "options", stays: null });
 });
 
+test("bannerOf: the running subagents of the branch left are counted", () => {
+  const t = buildTree(EXAMPLE);
+  assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: false }, MAIN_ITEMS, CURRENT, 1), { kind: "end", name: "redis", stays: "mem", stops: 1 });
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 2), { kind: "new", after: "options", stays: "mem", stops: 2 });
+  // a current branch the tree cannot name is left all the same
+  assert.deepEqual(bannerOf(t, { branch: "main", at: 3, new: true }, MAIN_ITEMS, "newer", 1), { kind: "new", after: "options", stays: null, stops: 1 });
+  // nothing runs
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 0), { kind: "new", after: "options", stays: "mem" });
+  // the end of the branch the chat is on leaves no branch: its subagents go on
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 6, new: false }, BRANCH_ITEMS, CURRENT, 2), { kind: "end", name: "mem", stays: null });
+});
+
+test("bannerText: the branch left loses its running subagents", () => {
+  const b = (running: number, m: Target = { branch: CURRENT, at: 3, new: true }, items = BRANCH_ITEMS) =>
+    bannerText(bannerOf(buildTree(withLive(EXAMPLE, m.branch, "claude", items), { branch: m.branch, count: m.at }), m, items, CURRENT, running));
+  assert.equal(b(1), "New branch after “options”: your message starts it. “mem” stays in the tree. Its running subagent is stopped when you send.");
+  assert.equal(b(2), "New branch after “options”: your message starts it. “mem” stays in the tree. Its 2 running subagents are stopped when you send.");
+  assert.equal(b(1, { branch: "main", at: 8, new: false }, MAIN_ITEMS),
+    "Now on “redis”, where it ended. “mem” stays in the tree. Its running subagent is stopped when you send.");
+  assert.equal(b(0), "New branch after “options”: your message starts it. “mem” stays in the tree.");
+  // without a branch to name
+  assert.equal(bannerText({ kind: "new", after: "options", stays: null, stops: 1 }), "New branch after “options”: your message starts it. The running subagent is stopped when you send.");
+  assert.equal(bannerText({ kind: "end", name: "redis", stays: null, stops: 3 }), "Now on “redis”, where it ended. The 3 running subagents are stopped when you send.");
+});
+
+test("bannerOf: an approval the agent waits for is told, whatever the move leaves", () => {
+  const t = buildTree(EXAMPLE);
+  assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: false }, MAIN_ITEMS, CURRENT, 0, true), { kind: "end", name: "redis", stays: "mem", asks: true });
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 2, true), { kind: "new", after: "options", stays: "mem", stops: 2, asks: true });
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 6, new: false }, BRANCH_ITEMS, CURRENT, 0, true), { kind: "end", name: "mem", stays: null, asks: true });
+  // no approval is asked for
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 2, false), { kind: "new", after: "options", stays: "mem", stops: 2 });
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 0), { kind: "new", after: "options", stays: "mem" });
+});
+
+test("bannerText: the approval the agent waits for is behind the cut, and Back shows it", () => {
+  const b = (running: number, asks: boolean, m: Target = { branch: CURRENT, at: 3, new: true }, items = BRANCH_ITEMS) =>
+    bannerText(bannerOf(buildTree(withLive(EXAMPLE, m.branch, "claude", items), { branch: m.branch, count: m.at }), m, items, CURRENT, running, asks));
+  assert.equal(b(0, true), "New branch after “options”: your message starts it. “mem” stays in the tree. The agent is waiting for your approval: Back shows it.");
+  assert.equal(b(1, true),
+    "New branch after “options”: your message starts it. “mem” stays in the tree. Its running subagent is stopped when you send. The agent is waiting for your approval: Back shows it.");
+  assert.equal(b(0, true, { branch: "main", at: 8, new: false }, MAIN_ITEMS),
+    "Now on “redis”, where it ended. “mem” stays in the tree. The agent is waiting for your approval: Back shows it.");
+  assert.equal(b(2, true, { branch: "main", at: 8, new: false }, MAIN_ITEMS),
+    "Now on “redis”, where it ended. “mem” stays in the tree. Its 2 running subagents are stopped when you send. The agent is waiting for your approval: Back shows it.");
+  // no sentence otherwise
+  assert.equal(b(0, false), "New branch after “options”: your message starts it. “mem” stays in the tree.");
+  assert.equal(b(1, false), "New branch after “options”: your message starts it. “mem” stays in the tree. Its running subagent is stopped when you send.");
+  // without a branch to name
+  assert.equal(bannerText({ kind: "new", after: null, stays: null, asks: true }), "New branch from the start: your message starts it. The agent is waiting for your approval: Back shows it.");
+  assert.equal(bannerText({ kind: "end", name: "redis", stays: null, stops: 1, asks: true }),
+    "Now on “redis”, where it ended. The running subagent is stopped when you send. The agent is waiting for your approval: Back shows it.");
+});
+
 test("bannerOf: the message before the point is previewed in 44 characters", () => {
   const long = "a very long reply that goes on and on and on, well past the banner's width";
   const items: Item[] = [{ kind: "user", text: "ask" }, { kind: "text", text: long, done: true }, { kind: "end", point: "p1" }];
@@ -241,4 +433,17 @@ test("bannerOf: the message before the point is previewed in 44 characters", () 
   const b = bannerOf(buildTree(withLive(view, "main", "claude", items)), { branch: "main", at: 3, new: true }, items, "main");
   assert.deepEqual(b, { kind: "new", after: long.slice(0, 43) + "…", stays: "main" });
   assert.equal(bannerText(b), `New branch after “${long.slice(0, 43)}…”: your message starts it. “main” stays in the tree.`);
+});
+
+test("bannerOf: a message that is only quotes is named by its first quote", () => {
+  const r = { quote: "options", item: 1, start: 0, end: 7 };
+  const view: TreeView = { current: "main", branches: [{ id: "main", at: 0, len: 5, items: [] }], labels: [] };
+  const after = (refs: Reference[]) => {
+    // the turn of the quotes-only message ended without a reply
+    const items: Item[] = [{ kind: "user", text: "ask" }, { kind: "text", text: "options", done: true }, { kind: "end", point: "p1" }, { kind: "user", text: "", references: refs }, { kind: "end", point: "p2" }];
+    const b = bannerOf(buildTree(withLive(view, "main", "claude", items)), { branch: "main", at: 5, new: true }, items, "main");
+    return b.kind === "new" ? b.after : null;
+  };
+  assert.equal(after([{ ...r, comment: "make it longer" }, r]), "❝ make it longer");
+  assert.equal(after([r]), "❝ options");
 });

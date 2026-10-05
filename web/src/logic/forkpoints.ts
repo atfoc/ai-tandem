@@ -4,6 +4,7 @@
 // nothing (a hole). DOM-free.
 
 import type { AgentKind, Item, TreeItem } from "../types.ts";
+import { nameText } from "./quotes.ts";
 
 export type Items = (Item | undefined)[];
 
@@ -62,12 +63,23 @@ export function pointOK(agent: AgentKind, items: Items, count: number): boolean 
   if (agent !== "pi" || sessionEnd(items, count)) return true;
   // pi forks the end of a turn with the id on the next turn's mark, so that mark must close the
   // turn that starts at count. After a turn cut without a mark the next mark is a later turn's,
-  // and a fork with its id would take in the cut turn.
+  // and a fork with its id would take in the cut turn. So exactly one turn lies between count
+  // and the mark: one message of the human's with no reply or tool call ahead of it (the rows of
+  // the subagent results it carries are), or none, which is a turn the app started to deliver
+  // subagent results. The app starts one only on a live process, so never after a cut turn, and
+  // its message is a user message to pi like any other: the mark carries its id. A mark that
+  // repeats the id before count is no new turn.
   const m = markFrom(items, count);
   if (m < 0 || !items[m]!.point) return false;
   let users = 0;
-  for (let i = count; i < m; i++) if (items[i]?.kind === "user") users++;
-  return users === 1;
+  let early = false; // a reply or a tool call ahead of the first message
+  for (let i = count; i < m; i++) {
+    const kind = items[i]?.kind;
+    if (kind === "user") users++;
+    else if (kind === "text" || kind === "tool") early ||= users === 0;
+  }
+  if (users === 0) return items[m]!.point !== before.point;
+  return users === 1 && !early;
 }
 
 /** The user and text items at index >= from as the server's tree route would send them. */
@@ -77,7 +89,7 @@ export function toTreeItems(agent: AgentKind, items: Items, from = 0): TreeItem[
     const it = items[i];
     if (it?.kind === "user") {
       const before = cutBefore(items, i);
-      const row: TreeItem = { i, kind: "user", text: it.text ?? "" };
+      const row: TreeItem = { i, kind: "user", text: nameText(it) };
       if (before !== null) row.before = before;
       if (before !== null && pointOK(agent, items, before)) row.ok = true;
       out.push(row);

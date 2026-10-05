@@ -176,6 +176,56 @@ func TestE2EPlainChat(t *testing.T) {
 	closeAndWaitExit(t, a)
 }
 
+// TestE2EUnknownModel: real pi answers the handshake's set_model with "Model not found" for a model
+// id it does not offer under a provider it knows, and keeps running. The Send must end the turn
+// with that error and close the process, so that the chat does not stay busy. No model is called.
+func TestE2EUnknownModel(t *testing.T) {
+	e2eAgentDir(t)
+	provider, _, _ := strings.Cut(e2eModel(), "/")
+	s := &Spawner{Bin: "pi", AppRoot: t.TempDir(), Home: t.TempDir()}
+	a, err := s.Spawn(agent.SpawnOptions{ChatID: "e2e-model", Cwd: t.TempDir(), Model: provider + "/no-such-model-e2e"})
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	defer a.Close()
+	err = a.Send([]agent.ContentBlock{{Text: "Reply with exactly: pong"}})
+	if err == nil {
+		t.Fatal("Send succeeded with a model pi does not offer")
+	}
+	t.Logf("Send error: %v", err)
+	var ends []agent.Event
+	for len(ends) == 0 || ends[len(ends)-1].Kind != agent.EvExit {
+		if ev := next(t, a); ev.Kind == agent.EvTurnEnd || ev.Kind == agent.EvExit {
+			ends = append(ends, ev)
+		}
+	}
+	t.Logf("ends: %+v; stderr %q", ends, strings.TrimSpace(a.(*proc).stderr.String()))
+	if len(ends) != 2 || ends[0].Error != err.Error() || ends[1].ExitErr != "" {
+		t.Fatalf("ends %+v, want a turn end with the Send error, then the exit with no text", ends)
+	}
+}
+
+// TestE2ECloseExitHasNoText: real pi warns on stderr whenever it starts a chat with a new session
+// id. When the app closes the process, that warning must not become the exit's error text. No
+// model is called.
+func TestE2ECloseExitHasNoText(t *testing.T) {
+	e2eAgentDir(t)
+	s := &Spawner{Bin: "pi", AppRoot: t.TempDir(), Home: t.TempDir()}
+	a, err := s.Spawn(agent.SpawnOptions{ChatID: "e2e-exit", Cwd: t.TempDir(), Model: e2eModel(),
+		SessionID: "0b1f4d1e-7c55-4b0e-9d0a-3f1f5f0a9c11"})
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	defer a.Close()
+	e2eReady(t, a)
+	a.Close()
+	ev := waitKind(t, a, agent.EvExit)
+	t.Logf("stderr %q", strings.TrimSpace(a.(*proc).stderr.String()))
+	if ev.ExitErr != "" {
+		t.Fatalf("an exit the app asked for carries the error text %q", ev.ExitErr)
+	}
+}
+
 // e2eReply is what one turn of a real pi chat produced.
 type e2eReply struct {
 	text    string
@@ -465,6 +515,83 @@ func TestE2EForkAtStoppedTurn(t *testing.T) {
 	r = e2eSay(t, midA, e2eRecall, nil)
 	e2eRecalls(t, "fork at the stopped turn", r.text, []string{"ALPHA7", "BRAVO3"}, []string{"CHARLIE9"})
 	closeAndWaitExit(t, midA)
+	closeAndWaitExit(t, srcA)
+}
+
+// e2eUserEntries is the entry ids of the user messages of the session a process has open.
+func e2eUserEntries(t *testing.T, a agent.Agent) []string {
+	t.Helper()
+	res, err := a.(*proc).rpc.call("get_fork_messages", nil, 10*time.Second)
+	if err != nil || !res.Success {
+		t.Fatalf("get_fork_messages: %v %s", err, res.Error)
+	}
+	var d struct {
+		Messages []struct {
+			EntryID string `json:"entryId"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(res.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(d.Messages))
+	for _, m := range d.Messages {
+		ids = append(ids, m.EntryID)
+	}
+	return ids
+}
+
+// TestE2EForkAtEndDuringSend covers a fork at the source's end that starts while the source
+// takes its next message: the chat manager found the end before that message, so the fork must
+// stop at its point and not hold the message.
+func TestE2EForkAtEndDuringSend(t *testing.T) {
+	e2eAgentDir(t)
+	s := &Spawner{Bin: "pi", AppRoot: t.TempDir(), Home: t.TempDir()}
+	cwd := t.TempDir()
+	const srcChat, srcSession = "A", "33333333-3333-4333-8333-333333333333"
+	srcA, err := s.Spawn(agent.SpawnOptions{ChatID: srcChat, SessionID: srcSession, Cwd: cwd, Model: e2eModel()})
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	defer srcA.Close()
+	e2eReady(t, srcA)
+	first := e2eSay(t, srcA, fmt.Sprintf(e2eRemember, "ALPHA7"), nil)
+	users := e2eUserEntries(t, srcA)
+	if len(users) != 1 || users[0] != first.end.Point {
+		t.Fatalf("the source's user messages %q after turn 1, want only its point %q", users, first.end.Point)
+	}
+	srcFile, err := s.findSessionFile(srcChat, srcSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The fork is asked for at the end of turn 1; the source gets its next message right then,
+	// and has it in its file by the time the fork's process opens it.
+	if err := srcA.Send([]agent.ContentBlock{{Text: fmt.Sprintf(e2eRemember, "BRAVO3")}}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if b, _ := os.ReadFile(srcFile); strings.Contains(string(b), "BRAVO3") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("the source did not write its next message within 10 s: nothing to race with")
+		}
+	}
+	a, id, err := s.SpawnFork(agent.SpawnOptions{ChatID: srcChat + "/branches/race", Cwd: cwd, Model: e2eModel()},
+		agent.ForkSource{ChatID: srcChat, SessionID: srcSession, Point: first.end.Point, End: true})
+	if err != nil {
+		t.Fatalf("SpawnFork: %v", err)
+	}
+	defer a.Close()
+	got := e2eUserEntries(t, a)
+	t.Logf("fork %s made at the end of turn 1 (user messages %q): it has %d user messages", id, users, len(got))
+	if len(got) != len(users) {
+		t.Fatalf("the fork at the end of turn 1 holds %d user messages, want %d: it took in the source's next message",
+			len(got), len(users))
+	}
+	r := e2eSay(t, a, e2eRecall, nil)
+	e2eRecalls(t, "fork at the end during a send", r.text, []string{"ALPHA7"}, []string{"BRAVO3"})
+	closeAndWaitExit(t, a)
 	closeAndWaitExit(t, srcA)
 }
 

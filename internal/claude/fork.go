@@ -16,11 +16,20 @@ var _ agent.Forker = (*Spawner)(nil)
 // about the source session or the point.
 const inUse = "is already in use"
 
+// noPoint is in the CLI's reason "No message found with message.uuid of: <uuid>" for a point it
+// no longer loads: one before a compaction of the source. errPointGone is what the fork fails
+// with in its place.
+const (
+	noPoint      = "No message found with message.uuid"
+	errPointGone = "this point can no longer be branched or forked from: Claude has compacted the conversation since then"
+)
+
 // SpawnFork starts the process of o on a fork of src: the resume arguments of the source session
-// plus --fork-session, the point (--resume-session-at, unless the fork is at the source's end or
-// no point is recorded) and the fork's own id, o.SessionID. It returns once the process has
-// answered its initialize request. Nothing but that request is written to the process: the forked
-// session has no file until its first message is sent.
+// plus --fork-session, the point (--resume-session-at, unless no point is recorded) and the
+// fork's own id, o.SessionID. The point is passed at the source's end too: the source may have
+// taken a message since the end was found. It returns once the process has answered its
+// initialize request. Nothing but that request is written to the process: the forked session has
+// no file until its first message is sent.
 //
 // When the fork's file exists already (a message was accepted by an earlier process of this
 // fork) the launch is refused as "already in use", and a plain resume of o.SessionID is started
@@ -41,7 +50,7 @@ func (s *Spawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.A
 	fork := o
 	fork.SessionID, fork.Resume = src.SessionID, true
 	extra := []string{"--fork-session"}
-	if !src.End && src.Point != "" {
+	if src.Point != "" {
 		extra = append(extra, "--resume-session-at", src.Point)
 	}
 	p, err := s.start(fork, append(extra, "--session-id", o.SessionID)...)
@@ -106,6 +115,9 @@ func (p *proc) confirmed(box <-chan time.Time, limit time.Duration) (exists bool
 	}
 	if msg == "" {
 		return exists, errors.New("claude: the fork failed")
+	}
+	if strings.Contains(msg, noPoint) {
+		msg = errPointGone
 	}
 	return exists, fmt.Errorf("claude: %s", msg)
 }

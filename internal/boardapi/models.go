@@ -40,7 +40,7 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 		return err.Error(), true
 	}
 	if cat == nil {
-		return strings.Join(unknownListLines(kind, dModel, dEffort), "\n"), false
+		return strings.Join(unknownListLines(kind, kind == caller.Meta.Agent, dModel, dEffort), "\n"), false
 	}
 
 	matches := matchModels(cat.Models, p.Filter)
@@ -56,7 +56,7 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 	case formNoneMatch:
 		header = noneMatchAnswer(kind, n, filter)
 	case formOverview:
-		header, body = overviewAnswer(kind, n, filter, matches)
+		header, body = overviewAnswer(kind, n, filter, matches, cat.Models)
 	case formIDsOnly:
 		header, body = idsOnlyAnswer(kind, n, filter, matches)
 	}
@@ -145,10 +145,12 @@ func overCapLead(a model.AgentKind, n, k int, filter string) string {
 }
 
 // overviewAnswer is the header and the body of an answer that counts matches per id prefix, one
-// line per prefix in byte order. A prefix that begins another prefix of the answer (as a string:
-// "openrouter/meta" begins "openrouter/meta-llama") lists its ids as well, because a filter set to
-// it cannot isolate its models.
-func overviewAnswer(a model.AgentKind, n int, filter string, matches []model.CatalogModel) (header string, body []string) {
+// line per prefix in byte order. A prefix lists its ids as well when, set as the filter, it
+// matches a model of all (the agent's whole list) outside its own group, because that filter then
+// cannot isolate its models: "openai" matches the ids under "openrouter/openai", a label
+// "OpenAI GPT" under another prefix, and the ids under "OpenAI". The group without a prefix
+// always lists its ids: a filter cannot name it.
+func overviewAnswer(a model.AgentKind, n int, filter string, matches, all []model.CatalogModel) (header string, body []string) {
 	what := "Models"
 	if filter != "" {
 		what = "Matches"
@@ -167,7 +169,7 @@ func overviewAnswer(a model.AgentKind, n int, filter string, matches []model.Cat
 			name = "(no prefix)"
 		}
 		line := name + ": " + countModels(len(groups[p]))
-		if slices.ContainsFunc(prefixes, func(q string) bool { return q != p && strings.HasPrefix(q, p) }) {
+		if slices.ContainsFunc(matchModels(all, p), func(m model.CatalogModel) bool { return idPrefix(m.ID) != p }) {
 			line += ": " + strings.Join(groups[p], ", ")
 		}
 		body = append(body, line)
@@ -275,19 +277,25 @@ func modelRow(m model.CatalogModel) string {
 }
 
 // unknownListLines is the whole answer for an agent whose model list the app does not know yet
-// (Cursor's and pi's before the agent has reported it). spawn_subagent then checks nothing, so
-// dModel and dEffort are the chat's own model and effort, passed on as they are.
-func unknownListLines(a model.AgentKind, dModel, dEffort string) []string {
+// (Cursor's and pi's before the agent has reported it). spawn_subagent then checks nothing.
+// dModel and dEffort are what it passes on when none is named: for own, a subagent of the chat's
+// own agent, the chat's model and effort; for another agent never those, but the model and
+// effort last picked for a chat of that agent (never an effort without a model), or none.
+func unknownListLines(a model.AgentKind, own bool, dModel, dEffort string) []string {
 	var d string
 	switch {
+	case dModel == "" && dEffort == "":
+		d = fmt.Sprintf("Model omitted -> no model or effort is named, so %s uses its own defaults.", a)
+	case !own && dEffort != "":
+		d = fmt.Sprintf("Model omitted -> %s and effort %s, last picked for a %s chat, are passed on unchecked.", dModel, dEffort, a)
+	case !own:
+		d = fmt.Sprintf("Model omitted -> %s, last picked for a %s chat, is passed on unchecked; no effort is named, so %s uses its own default effort.", dModel, a, a)
 	case dModel != "" && dEffort != "":
 		d = fmt.Sprintf("Model omitted -> this chat's model %s and effort %s are passed on unchecked.", dModel, dEffort)
 	case dModel != "":
 		d = fmt.Sprintf("Model omitted -> this chat's model %s is passed on unchecked; no effort is named, so %s uses its own default effort.", dModel, a)
-	case dEffort != "":
-		d = fmt.Sprintf("Model omitted -> no model is named, so %s uses its own default model; this chat's effort %s is passed on unchecked.", a, dEffort)
 	default:
-		d = fmt.Sprintf("Model omitted -> no model or effort is named, so %s uses its own defaults.", a)
+		d = fmt.Sprintf("Model omitted -> no model is named, so %s uses its own default model; this chat's effort %s is passed on unchecked.", a, dEffort)
 	}
 	return []string{
 		fmt.Sprintf("%s: the model list is not known to the app yet. It becomes known when the app reads it at start or when a %s chat starts.", a, a),

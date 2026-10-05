@@ -297,9 +297,9 @@ func TestEffortGateOnlyForClaude(t *testing.T) {
 	}
 }
 
-// D22 with a kind whose list is not known: nothing is validated, so the chat's model and effort
-// pass through to a cross-agent subagent that names no model.
-func TestSubagentUnknownListPassesChatModel(t *testing.T) {
+// D22 with a kind whose list is not known: the chat's model and effort still do not pass to a
+// cross-agent subagent that names no model. With no model picked for that kind it gets none.
+func TestSubagentUnknownListDropsChatModel(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if err := e.st.Update(func(s *model.State) error { s.Cursor = nil; s.SetCatalog(model.Cursor, nil); return nil }); err != nil {
@@ -309,7 +309,7 @@ func TestSubagentUnknownListPassesChatModel(t *testing.T) {
 		t.Fatal("setup: Cursor list still known")
 	}
 	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor})
-	if sa.Kind != model.Cursor || sa.Model != "sonnet" || sa.Effort != "high" {
+	if sa.Kind != model.Cursor || sa.Model != "" || sa.Effort != "" {
 		t.Fatalf("unknown Cursor list: %+v", sa)
 	}
 }
@@ -539,8 +539,8 @@ func TestSpawnDefaultsMatchSpawn(t *testing.T) {
 		e := newEnv(t)
 		v := e.create(model.Claude, gOne, "")
 		e.forgetCursorCatalog()
-		check(t, e, v.ID, model.Cursor, model.Cursor, "sonnet", "high")
-		check(t, e, v.ID, model.Pi, model.Pi, "sonnet", "high")
+		check(t, e, v.ID, model.Cursor, model.Cursor, "", "")
+		check(t, e, v.ID, model.Pi, model.Pi, "", "")
 		// A chat created while its own list was not known has no model and no effort.
 		cu := e.create(model.Cursor, gOne, "")
 		check(t, e, cu.ID, "", model.Cursor, "", "")

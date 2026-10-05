@@ -20,6 +20,8 @@ export function TreePopup() {
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       if (!isTreeKey(e)) return;
+      // not while a label is typed: the popup would take the focus, and the blur would save the label half typed
+      if (e.target instanceof Element && e.target.classList.contains("fk-label-input")) return;
       const s = getState();
       if (!s.treeNav && !s.sel.chat) return;
       e.preventDefault(); e.stopPropagation();
@@ -182,7 +184,7 @@ function RowView({ r, e, on, agent, labeling, onLabel, onClick, onOpen, onMenu }
       <Gutter g={r.gutter} />
       <span className="fk-glyph">{kind === "user" ? <span className="fk-you">you</span> : <AgentGlyph agent={agent} size={10} />}</span>
       {labeling ? <LabelInput initial={e.label ?? ""} onDone={onLabel} /> : <span className="fk-text">{preview(e.item.text, 110)}</span>}
-      {!labeling && e.label && <span className="fk-tag">{e.label}</span>}
+      {!labeling && e.label && <span className="fk-tag" title={e.label}>{e.label}</span>}
       {r.isLeaf ? <span className="fk-here">● here</span> : r.isTip ? <span className="fk-end" title="The end of a branch">end</span> : null}
     </div>
   );

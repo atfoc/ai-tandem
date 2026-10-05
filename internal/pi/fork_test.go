@@ -146,8 +146,18 @@ func TestSpawnForkAtTurn(t *testing.T) {
 	}
 }
 
+// forkMessagesReply is a get_fork_messages answer listing user messages with these entry ids.
+func forkMessagesReply(ids ...string) fakeReply {
+	msgs := make([]map[string]string, 0, len(ids))
+	for _, id := range ids {
+		msgs = append(msgs, map[string]string{"entryId": id, "text": "said"})
+	}
+	return fakeReply{Data: mustJSON(map[string]any{"messages": msgs})}
+}
+
 func TestSpawnForkAtEndClones(t *testing.T) {
-	f, s, _, srcFile := forkFake(t, nil)
+	// The source holds nothing past the point: its last user message is the point's.
+	f, s, _, srcFile := forkFake(t, map[string]fakeReply{"get_fork_messages": forkMessagesReply("0efdb07e", "59b265f9")})
 	// At the end of the source there is no next mark; one that is given is not used.
 	for _, next := range []string{"", "b85ebc6a"} {
 		a, id, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession,
@@ -162,13 +172,65 @@ func TestSpawnForkAtEndClones(t *testing.T) {
 			t.Errorf("--session %q, want %q", got, srcFile)
 		}
 		lines := f.stdinLines(t, a)
-		want := []string{"get_state", "clone", "get_state", "get_available_models", "set_model", "set_thinking_level"}
+		want := []string{"get_state", "get_fork_messages", "clone", "get_state", "get_available_models", "set_model", "set_thinking_level"}
 		if got := commandTypes(lines); !equalStrings(got, want) {
 			t.Fatalf("commands %q\nwant %q", got, want)
 		}
-		if _, ok := lines[1]["entryId"]; ok {
-			t.Errorf("clone carried an entry id: %v", lines[1])
+		if _, ok := lines[2]["entryId"]; ok {
+			t.Errorf("clone carried an entry id: %v", lines[2])
 		}
+	}
+}
+
+// The end of the source is found by the chat manager before the start: a message the source took
+// since then is in the file pi opens. The fork is then made before that message, not as a clone.
+func TestSpawnForkAtEndCutsAtItsPoint(t *testing.T) {
+	f, s, _, _ := forkFake(t, map[string]fakeReply{
+		"get_fork_messages": forkMessagesReply("0efdb07e", "59b265f9", "c41d07aa", "d52e18bb")})
+	a, id, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession,
+		Point: "59b265f9", End: true})
+	if err != nil {
+		t.Fatalf("SpawnFork: %v", err)
+	}
+	if id != forkNewSession {
+		t.Fatalf("session id %q", id)
+	}
+	lines := f.stdinLines(t, a)
+	want := []string{"get_state", "get_fork_messages", "fork", "get_state", "get_available_models", "set_model", "set_thinking_level"}
+	if got := commandTypes(lines); !equalStrings(got, want) {
+		t.Fatalf("commands %q\nwant %q", got, want)
+	}
+	if lines[2]["entryId"] != "c41d07aa" {
+		t.Errorf("fork %v, want the entry id of the message after the point, c41d07aa", lines[2])
+	}
+}
+
+// Without a way to tell what follows the point, the end of the source is a clone, as it was.
+func TestSpawnForkAtEndClonesWhenPointUnknown(t *testing.T) {
+	cases := []struct {
+		name  string
+		point string
+		reply fakeReply
+		want  []string // the commands up to the clone
+	}{
+		{"no point recorded", "", forkMessagesReply("0efdb07e", "59b265f9"), []string{"get_state", "clone"}},
+		{"point not among the messages", "ffffffff", forkMessagesReply("0efdb07e", "59b265f9"), []string{"get_state", "get_fork_messages", "clone"}},
+		{"no messages", "59b265f9", fakeReply{}, []string{"get_state", "get_fork_messages", "clone"}},
+		{"messages not answered", "59b265f9", fakeReply{Fail: true, Error: "nope"}, []string{"get_state", "get_fork_messages", "clone"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, s, _, _ := forkFake(t, map[string]fakeReply{"get_fork_messages": c.reply})
+			a, _, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession,
+				Point: c.point, End: true})
+			if err != nil {
+				t.Fatalf("SpawnFork: %v", err)
+			}
+			got := commandTypes(f.stdinLines(t, a))
+			if len(got) < len(c.want) || !equalStrings(got[:len(c.want)], c.want) {
+				t.Fatalf("commands %q\nwant them to start with %q", got, c.want)
+			}
+		})
 	}
 }
 
@@ -271,7 +333,7 @@ func TestSpawnForkFailures(t *testing.T) {
 		if err.Error() != "pi fork: This session has not been saved yet." {
 			t.Errorf("error %q", err)
 		}
-		if !equalStrings(cmds, []string{"get_state", "clone"}) {
+		if !equalStrings(cmds, []string{"get_state", "get_fork_messages", "clone"}) {
 			t.Errorf("commands %q", cmds)
 		}
 	})

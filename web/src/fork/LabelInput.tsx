@@ -8,7 +8,7 @@ export function LabelInput({ initial, onDone }: { initial: string; onDone: (v: s
   const done = useRef(false);
   const finish = (x: string | null) => { if (!done.current) { done.current = true; onDone(x); } };
   return (
-    <input className="fk-label-input" autoFocus value={v} placeholder="Label (empty removes it)" onChange={(e) => setV(e.target.value)}
+    <input className="fk-label-input" autoFocus value={v} maxLength={200} placeholder="Label (empty removes it)" onChange={(e) => setV(e.target.value)}
       onBlur={() => finish(v)} onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") finish(v); if (e.key === "Escape") finish(null); }} />
   );

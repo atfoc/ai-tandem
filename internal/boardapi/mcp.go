@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/boardtools"
@@ -25,6 +26,14 @@ import (
 
 // callTimeout is how long a board tool call waits for the client's answer.
 const callTimeout = 30 * time.Second
+
+// maxBodyBytes is the largest /mcp request body that is read. The largest real requests are an
+// apply with a board's worth of elements and a spawn_subagent prompt, both far below it.
+const maxBodyBytes = 4 << 20
+
+// maxNameBytes is how much of a name the caller supplies (client name, client version, tool
+// name) is logged and kept in the contact table.
+const maxNameBytes = 128
 
 // NoClientText is what an agent is told when no client is active.
 const NoClientText = "The board isn't open: the AI Whiteboard window is closed. " +
@@ -80,6 +89,18 @@ func short(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// clipName cuts a name the caller supplies to maxNameBytes, on a rune boundary.
+func clipName(s string) string {
+	if len(s) <= maxNameBytes {
+		return s
+	}
+	n := maxNameBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // Contact is the last MCP contact observed for one chat (or for an unresolved credential). It
@@ -172,10 +193,11 @@ func mcpToolsOf(tools []boardtools.Tool) []map[string]any {
 }
 
 // listedTools is the per-chat, per-caller tools/list. Missing, unknown, or revoked tokens
-// get an empty list (handshake still succeeds). Live tokens follow the §2 matrix.
+// get an empty list (handshake still succeeds), and so do the callers dispatch refuses every
+// call: an archived chat and a legacy chat. Other live tokens follow the §2 matrix.
 func (r *Relay) listedTools(token string) []map[string]any {
 	caller, ok := r.Chats.ResolveToken(token)
-	if !ok {
+	if !ok || caller.Meta.Archived || caller.Meta.InstructionsSent {
 		return mcpToolsOf(nil)
 	}
 	hasBoard := caller.Meta.Board != ""
@@ -213,9 +235,15 @@ func bearerToken(header string) string {
 	return strings.TrimSpace(header[len(prefix):])
 }
 
-// serveRPC decodes and answers one JSON-RPC request for the board token token.
+// serveRPC decodes and answers one JSON-RPC request for the board token token. A body over
+// maxBodyBytes is refused before anything of it is logged or recorded.
 func (r *Relay) serveRPC(w http.ResponseWriter, req *http.Request, token string) {
-	body, _ := io.ReadAll(req.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBodyBytes))
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 	var rq rpcReq
 	if err := json.Unmarshal(body, &rq); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -397,8 +425,9 @@ func (r *Relay) chatKey(token string) (label, key string) {
 }
 
 // logInitialize writes one structured MCP access line and records the contact. It never logs the
-// credential; the agent-supplied client name/version are quoted.
+// credential; the agent-supplied client name/version are cut short and quoted.
 func (r *Relay) logInitialize(token, name, version string) {
+	name, version = clipName(name), clipName(version)
 	label, key := r.chatKey(token)
 	log.Printf("mcp initialize chat=%s client=%q version=%q", label, name, version)
 	r.Contacts.recordInit(key, label, name, version)
@@ -406,8 +435,9 @@ func (r *Relay) logInitialize(token, name, version string) {
 
 // logToolCall writes one structured MCP access line and records the contact. It is the only
 // line a tools/call produces (the arguments are deliberately left out) and never logs the
-// credential; the agent-supplied tool name is quoted.
+// credential; the agent-supplied tool name is cut short and quoted.
 func (r *Relay) logToolCall(token, tool string, isErr bool) {
+	tool = clipName(tool)
 	outcome := "ok"
 	if isErr {
 		outcome = "error"

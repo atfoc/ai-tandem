@@ -599,6 +599,72 @@ func TestSpawnUnknownListAcceptsAnyValue(t *testing.T) {
 	waitChild(t, e.cursor, 1)
 }
 
+// TestSpawnUnknownListCrossKind: with no list for the other agent and no model named, the chat's
+// own model and effort are not handed to it: a model is inherited only by a subagent of the
+// chat's own kind. The other agent gets what a new chat of its kind would, or nothing.
+func TestSpawnUnknownListCrossKind(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	cur := e.create(model.Cursor, gOne, "") // created while Cursor's list is known
+	if err := e.st.Update(func(s *model.State) error {
+		s.Cursor = nil
+		s.Catalogs = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if chat := e.meta(v.ID); chat.Model != "sonnet" || chat.Effort != "high" {
+		t.Fatalf("setup: the Claude chat has model %q, effort %q", chat.Model, chat.Effort)
+	}
+	check := func(name, chat string, req SpawnSubRequest, sp *fakeSpawner, wantModel, wantEffort string) {
+		t.Helper()
+		before := sp.count()
+		sa := e.spawn(chat, req)
+		if sa.Kind != req.Kind || sa.Model != wantModel || sa.Effort != wantEffort {
+			t.Errorf("%s: %s subagent got model %q, effort %q; want %q, %q", name, sa.Kind, sa.Model, sa.Effort, wantModel, wantEffort)
+		}
+		if opts := waitChild(t, sp, before+1).opts; opts.Model != wantModel || opts.Effort != wantEffort {
+			t.Errorf("%s: %s started with model %q, effort %q; want %q, %q", name, req.Kind, opts.Model, opts.Effort, wantModel, wantEffort)
+		}
+		// What list_subagent_models states is what the spawn does.
+		if req.Model == "" && req.Effort == "" {
+			if _, dModel, dEffort, err := e.m.SpawnDefaults(chat, req.Kind); err != nil || dModel != wantModel || dEffort != wantEffort {
+				t.Errorf("%s: SpawnDefaults %q, %q, %v; want %q, %q", name, dModel, dEffort, err, wantModel, wantEffort)
+			}
+		}
+	}
+
+	// Nothing named: no model and no effort, so the agent uses its own defaults.
+	check("nothing named", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Pi}, e.pi, "", "")
+	check("nothing named", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor}, e.cursor, "", "")
+	// A named effort is passed on; the chat's model still is not.
+	check("effort named", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Pi, Effort: "low"}, e.pi, "", "low")
+	check("effort named", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor, Effort: "low"}, e.cursor, "", "low")
+	// A named model is passed on unchecked, with the chat's effort as before.
+	check("model named", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Pi, Model: "some/model"}, e.pi, "some/model", "high")
+
+	// The same kind as the chat: its model and effort are inherited, list or no list.
+	if chat := e.meta(cur.ID); chat.Model != "composer-2" || chat.Effort != "high" {
+		t.Fatalf("setup: the Cursor chat has model %q, effort %q", chat.Model, chat.Effort)
+	}
+	check("same kind", cur.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor}, e.cursor, "composer-2", "high")
+	check("same kind, effort named", cur.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor, Effort: "low"}, e.cursor, "composer-2", "low")
+	// A Cursor chat asking for pi is cross-kind too.
+	check("cursor to pi", cur.ID, SpawnSubRequest{Prompt: "x", Kind: model.Pi}, e.pi, "", "")
+
+	// The model the user last picked for new chats of the other agent is used, as it is with a
+	// known list; a named effort replaces its effort.
+	if err := e.st.Update(func(s *model.State) error {
+		s.Defaults.Last.ByAgent = map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "picked/model", Effort: "medium"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check("picked default", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Pi}, e.pi, "picked/model", "medium")
+	check("picked default, effort named", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Pi, Effort: "low"}, e.pi, "picked/model", "low")
+	check("no pick for cursor", v.ID, SpawnSubRequest{Prompt: "x", Kind: model.Cursor}, e.cursor, "", "")
+}
+
 // TestConfigureErrorsStayShort: Configure's errors go to the UI picker and carry nothing of the
 // spawn errors' added text or type.
 func TestConfigureErrorsStayShort(t *testing.T) {
@@ -651,8 +717,9 @@ func TestSpawnSubagentMissingSpawnerAndFolder(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrFolderMissing) {
 		t.Fatalf("missing folder: %v", err)
 	}
-	if sa2.Status != model.SubFailed || sa2.Error == "" {
-		t.Fatalf("folder-missing sub %+v", sa2)
+	// The agent is told what the row shows: which folder, and what to do about it.
+	if want := folderMissingText(dir); err.Error() != want || sa2.Status != model.SubFailed || sa2.Error != want {
+		t.Fatalf("folder-missing error %q, sub %+v; want %q for both", err, sa2, want)
 	}
 	if e.claude.count() != before {
 		t.Fatal("orphan process after missing folder")
@@ -961,6 +1028,136 @@ func TestSpawnClaimDelayedReconciliation(t *testing.T) {
 		t.Fatalf("persisted Tool %q", e.subFile(id, sa.ID).Tool)
 	}
 	waitChild(t, e.claude, 2)
+}
+
+// A spawn whose tool item never came is forgotten once spawnLinkWait has passed: a later spawn with
+// the same arguments gets its own tool item, and the ended subagent stays unlinked.
+func TestSpawnClaimEndedSubagentTakesNoLaterItem(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.startSpawnParent()
+	old := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	if old.Tool != "" {
+		t.Fatalf("setup: first spawn linked to %q", old.Tool)
+	}
+	waitChild(t, e.claude, 2)
+	if err := e.m.StopSubagent(id, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Store(testNow + spawnLinkWait.Milliseconds() + 1)
+	// The normal order: the tool item first, then the MCP call.
+	emitSpawnItem(t, parent, "t2", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
+	waitFor(t, "tool item t2", func() bool {
+		for _, it := range e.items(id) {
+			if it.ToolID == "t2" {
+				return true
+			}
+		}
+		return false
+	})
+	fresh := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	waitChild(t, e.claude, 3)
+	if got := itemSubagent(e.items(id), "t2"); got != fresh.ID || fresh.Tool != "t2" {
+		t.Fatalf("tool item t2 is linked to %q (the old, stopped subagent is %q); want the new subagent %q (its Tool is %q)",
+			got, old.ID, fresh.ID, fresh.Tool)
+	}
+	if tool := e.subFile(id, old.ID).Tool; tool != "" {
+		t.Fatalf("the stopped subagent is linked to %q", tool)
+	}
+	// The mistake does not repeat: a third identical spawn links to its own item as well.
+	emitSpawnItem(t, parent, "t3", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
+	waitFor(t, "tool item t3", func() bool {
+		for _, it := range e.items(id) {
+			if it.ToolID == "t3" {
+				return true
+			}
+		}
+		return false
+	})
+	third := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	waitChild(t, e.claude, 4)
+	if got := itemSubagent(e.items(id), "t3"); got != third.ID {
+		t.Fatalf("tool item t3 is linked to %q, want %q", got, third.ID)
+	}
+}
+
+// The same while the subagent still runs: after spawnLinkWait its spawn is forgotten too, so a
+// later spawn with the same arguments gets its own tool item.
+func TestSpawnClaimRunningSubagentTakesNoLaterItem(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.startSpawnParent()
+	old := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	if old.Tool != "" {
+		t.Fatalf("setup: first spawn linked to %q", old.Tool)
+	}
+	waitChild(t, e.claude, 2)
+	e.clock.Store(testNow + spawnLinkWait.Milliseconds() + 1)
+	// The normal order: the tool item first, then the MCP call.
+	emitSpawnItem(t, parent, "t2", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
+	fresh := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	waitChild(t, e.claude, 3)
+	if got := itemSubagent(e.items(id), "t2"); got != fresh.ID || fresh.Tool != "t2" {
+		t.Fatalf("tool item t2 is linked to %q (the old, running subagent is %q); want the new subagent %q (its Tool is %q)",
+			got, old.ID, fresh.ID, fresh.Tool)
+	}
+	if sa := e.sub(id, old.ID); sa.Status != model.SubRunning || sa.Tool != "" {
+		t.Fatalf("the old subagent: status %s, linked to %q", sa.Status, sa.Tool)
+	}
+}
+
+// Within spawnLinkWait a subagent that ended before its tool item arrived is still linked to it.
+func TestSpawnClaimLateItemOfEndedSubagent(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.startSpawnParent()
+	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	if sa.Tool != "" {
+		t.Fatalf("setup: linked to %q", sa.Tool)
+	}
+	e.finish(waitChild(t, e.claude, 2), "REPORT")
+	if got := e.sub(id, sa.ID).Status; got != model.SubCompleted {
+		t.Fatalf("setup: the subagent is %s", got)
+	}
+	e.clock.Store(testNow + 1000)
+	emitSpawnItem(t, parent, "t1", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
+	parent.emit(t, agent.Event{Kind: agent.EvToolResult, ToolID: "t1", Text: "spawned subagent " + sa.ID + " (running)"})
+	if got := itemSubagent(e.items(id), "t1"); got != sa.ID || e.subFile(id, sa.ID).Tool != "t1" {
+		t.Fatalf("tool item t1 is linked to %q, want %q; the subagent's Tool is %q", got, sa.ID, e.subFile(id, sa.ID).Tool)
+	}
+}
+
+// The late tool item of an ended subagent is its own: the next spawn with the same arguments does
+// not take it and links to the item that comes after.
+func TestSpawnClaimLateItemNotTakenByNextSpawn(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.startSpawnParent()
+	a := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	e.finish(waitChild(t, e.claude, 2), "REPORT")
+	emitSpawnItem(t, parent, "tA", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
+	b := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	waitChild(t, e.claude, 3)
+	emitSpawnItem(t, parent, "tB", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
+	items := e.items(id)
+	if itemSubagent(items, "tA") != a.ID || itemSubagent(items, "tB") != b.ID {
+		t.Fatalf("tA -> %q (want %s), tB -> %q (want %s)", itemSubagent(items, "tA"), a.ID, itemSubagent(items, "tB"), b.ID)
+	}
+}
+
+// Two unlinked spawns with the same arguments link to their late tool items in spawn order, also
+// when the first was stopped before the items came.
+func TestSpawnClaimLateItemsOfStoppedAndRunning(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.startSpawnParent()
+	c := e.spawn(id, SpawnSubRequest{Prompt: "again"})
+	d := e.spawn(id, SpawnSubRequest{Prompt: "again"})
+	waitChild(t, e.claude, 3)
+	if err := e.m.StopSubagent(id, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	emitSpawnItem(t, parent, "t3", "mcp__board__spawn_subagent", `{"prompt":"again"}`)
+	emitSpawnItem(t, parent, "t4", "mcp__board__spawn_subagent", `{"prompt":"again"}`)
+	items := e.items(id)
+	if itemSubagent(items, "t3") != c.ID || itemSubagent(items, "t4") != d.ID {
+		t.Fatalf("t3 -> %q (want %s), t4 -> %q (want %s)", itemSubagent(items, "t3"), c.ID, itemSubagent(items, "t4"), d.ID)
+	}
 }
 
 func TestSpawnUnlinkedReturnsSid(t *testing.T) {

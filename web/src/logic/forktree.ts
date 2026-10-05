@@ -200,13 +200,17 @@ export function preview(text: string, n = 60): string {
 /**
  * A branch's name, by the entry it ends at: the nearest label on the way to it since the last
  * split (a label above that is shared with other branches), else your first message after that
- * split, else "main" (a chat that never split has one branch).
+ * split, else "main" (a chat that never split has one branch). A label is cut to 40 characters; a
+ * message is cut to a short one-line preview: the name goes into the header and the banner.
  */
 export function branchName(t: ChatTree, end: string | null): string {
   const path = pathTo(t, end);
   let start = -1;
   for (let i = path.length - 1; i >= 0; i--) if (siblingsOf(t, path[i]).length) { start = i; break; }
-  for (let i = path.length - 1; i >= Math.max(start, 0); i--) if (t.entries[path[i]].label) return t.entries[path[i]].label!;
+  for (let i = path.length - 1; i >= Math.max(start, 0); i--) {
+    const label = t.entries[path[i]].label;
+    if (label) return label.length > 40 ? label.slice(0, 39) + "…" : label;
+  }
   if (start < 0) return MAIN;
   const first = path.slice(start).map((id) => t.entries[id]).find((e) => e.item.kind === "user") ?? t.entries[path[start]];
   return preview(first.item.text, 40);

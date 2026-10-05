@@ -83,14 +83,15 @@ func (m *Manager) copyPrefix(src *Chat, dstID string, count int) (err error) {
 }
 
 // prefixSubs lists, sorted, the sids the items refer to (the subagent a tool item started, the
-// one that asked a permission) and every subagent of c whose Parent chain reaches one of them: a
-// nested subagent's tool item is in the outer one's thread, not in items. c.mu held.
+// one that asked a permission, the one whose result a row carried) and every subagent of c whose
+// Parent chain reaches one of them: a nested subagent's tool item is in the outer one's thread,
+// not in items. c.mu held.
 func prefixSubs(c *Chat, items []model.Item) []string {
 	want := map[string]bool{}
 	for _, it := range items {
 		// A sid is a folder name; anything else has no folder to copy.
-		if (it.Kind == "tool" || it.Kind == "perm") && it.Subagent != "" && it.Subagent != "." &&
-			it.Subagent != ".." && filepath.Base(it.Subagent) == it.Subagent {
+		if (it.Kind == "tool" || it.Kind == "perm" || it.Kind == "subresult") && it.Subagent != "" &&
+			it.Subagent != "." && it.Subagent != ".." && filepath.Base(it.Subagent) == it.Subagent {
 			want[it.Subagent] = true
 		}
 	}

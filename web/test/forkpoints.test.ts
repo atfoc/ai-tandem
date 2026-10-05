@@ -14,6 +14,7 @@ const pPerm = (): Item => ({ kind: "perm", requestId: "r", decided: "allow" });
 const pHole = () => undefined;
 const pEnd = (point: string): Item => ({ kind: "end", point });
 const pTool = (): Item => ({ kind: "tool", toolId: "t1", name: "Read", result: "ok" });
+const pSub = (): Item => ({ kind: "subresult", subagent: "s1" });
 
 /** Two finished turns, the second with a tool call between two replies. */
 const twoTurns = (): Items => [
@@ -37,6 +38,20 @@ const cutTurn = (): Items => [
   pUser(),    // 5
   pText(),    // 6
   pEnd("p3"), // 7
+];
+
+/** A turn the app started to hand the agent a subagent's result (a subresult row, no user item)
+ *  between two turns of the human's. */
+const deliveryTurn = (): Items => [
+  pUser(),    // 0
+  pText(),    // 1
+  pEnd("u1"), // 2
+  pSub(),     // 3: the delivery turn
+  pText(),    // 4
+  pEnd("u2"), // 5
+  pUser(),    // 6
+  pText(),    // 7
+  pEnd("u3"), // 8
 ];
 
 // The worked example: a Claude chat's main branch, and the branch a1b2c3d4 split from it at 3.
@@ -160,10 +175,29 @@ test("pointOK: a point needs the id of the mark before it; pi also the mark afte
     ["pi, after the turn that follows a cut one", "pi", cutTurn(), 8, true],
     ["pi, the next mark has no id", "pi", [pUser(), pEnd("p1"), pUser(), pText(), pEnd("")], 2, false],
     ["pi, the next mark belongs to a later turn and has no id", "pi", cutNoID, 3, false],
-    ["pi, a turn the agent started itself is next", "pi", [pUser(), pEnd("p1"), pText(), pEnd("p2")], 2, false],
     ["pi, after a mark with no id", "pi", [pUser(), pText(), pEnd("")], 3, false],
     ["pi, after a reply", "pi", twoTurns(), 5, false],
     ["pi, past the list", "pi", twoTurns(), 9, false],
+
+    // pi: a turn the app started (a delivery of subagent results) has no user item; its mark
+    // carries the id of the message the app sent.
+    ["pi, a delivery turn is next", "pi", deliveryTurn(), 3, true],
+    ["pi, after a delivery turn", "pi", deliveryTurn(), 6, true],
+    ["a delivery turn is next", "claude", deliveryTurn(), 3, true],
+    ["a delivery turn is next, cursor", "cursor", deliveryTurn(), 3, true],
+    ["after a delivery turn", "claude", deliveryTurn(), 6, true],
+    ["after a delivery turn, cursor", "cursor", deliveryTurn(), 6, true],
+    ["pi, a retried delivery turn, with no row, is next", "pi", [pUser(), pEnd("p1"), pText(), pEnd("p2")], 2, true],
+    ["pi, a delivery turn with a tool call is next", "pi", [pUser(), pEnd("p1"), pSub(), pTool(), pText(), pEnd("p2")], 2, true],
+    ["pi, a message that carries a result is next", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pUser(), pText(), pEnd("p2")], 3, true],
+    ["pi, a delivery turn's mark repeats the id before the point", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText(), pEnd("p1")], 3, false],
+    ["pi, a retried delivery turn's mark repeats the id before the point", "pi", [pUser(), pEnd("p1"), pText(), pEnd("p1")], 2, false],
+    ["pi, a delivery turn's mark has no id", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText(), pEnd("")], 3, false],
+    ["pi, a delivery turn with no mark is next", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText()], 3, false],
+    ["pi, a delivery turn cut without a mark, then a message", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText(), pNote(), pUser(), pText(), pEnd("p3")], 3, false],
+    ["pi, a tool call cut without a mark, then a message", "pi", [pUser(), pText(), pEnd("p1"), pTool(), pNote(), pUser(), pText(), pEnd("p3")], 3, false],
+    ["pi, a turn cut without a mark, then a message and a delivery turn", "pi", [...cutTurn(), pSub(), pText(), pEnd("p4")], 3, false],
+    ["pi, a delivery turn after the turn that follows a cut one", "pi", [...cutTurn(), pSub(), pText(), pEnd("p4")], 8, true],
   ];
   for (const [name, agent, items, count, want] of cases) assert.equal(pointOK(agent, items, count), want, name);
 });
@@ -200,6 +234,17 @@ test("toTreeItems leaves out what is false or absent, and reads holes and missin
   ]);
   assert.deepEqual(toTreeItems("claude", items, 4), [{ i: 4, kind: "text", text: "" }]);
   assert.deepEqual(toTreeItems("claude", items, 5), []);
+});
+
+test("toTreeItems names a message that is only quotes by its first quote, as the tree route does", () => {
+  const r = { quote: "reply 1", item: 1, start: 0, end: 7 };
+  const items: Items = [
+    pUser(), pText(), pEnd("p1"),
+    { kind: "user", text: "", references: [{ ...r, comment: " make it longer " }, { ...r, comment: "second" }] }, pText(), pEnd("p2"),
+    { kind: "user", references: [r] }, pText(), pEnd("p3"),
+    { kind: "user", text: "with text", references: [{ ...r, comment: "c" }] },
+  ];
+  assert.deepEqual(toTreeItems("claude", items).filter((x) => x.kind === "user").map((x) => x.text), ["u", "❝ make it longer", "❝ reply 1", "with text"]);
 });
 
 test("toTreeItems for pi: no ok where the next mark closes a later turn", () => {
@@ -297,4 +342,14 @@ test("messageActions for pi: a turn cut without a mark between two finished ones
   assert.deepEqual(acts("claude", items, 3), { ...LABEL, branchEdit: 3, forkEdit: 3 });
   assert.deepEqual(acts("claude", items, 5), { ...LABEL, branchEdit: 3, forkEdit: 3 });
   assert.deepEqual(acts("claude", items, 6), { ...LABEL, branch: 8, fork: 8 });
+});
+
+test("messageActions for pi: the replies before and in a delivery turn offer Branch and Fork", () => {
+  const items = deliveryTurn();
+  for (const agent of ["pi", "claude", "cursor"] as AgentKind[]) {
+    assert.deepEqual(acts(agent, items, 1), { ...LABEL, branch: 3, fork: 3 }, agent);
+    assert.deepEqual(acts(agent, items, 4), { ...LABEL, branch: 6, fork: 6 }, agent);
+    assert.deepEqual(acts(agent, items, 6), { ...LABEL, branchEdit: 6, forkEdit: 6 }, agent);
+  }
+  assert.deepEqual(toTreeItems("pi", items).map((x) => [x.i, x.ok]), [[0, true], [1, true], [4, true], [6, true], [7, true]]);
 });

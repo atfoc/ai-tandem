@@ -24,29 +24,31 @@ export function groupModels(models: CatalogModel[]): ModelGroup[] {
   return out;
 }
 
-/** The lowercased haystack. A model with a provider is searched by exactly "provider - label" (the
- *  user-facing name): its id repeats the provider/model key, so including the id would let a later
- *  term re-match inside it and break strictly left-to-right matching (e.g. "deep open" would find
- *  openrouter's DeepSeek V3 again). Provider-less models keep label, id and note searchable; empty
- *  values are skipped so an absent note leaves no gap. */
-const searchText = (m: CatalogModel): string =>
+/** The lowercased haystacks; a model matches when one of them holds every term. A model with a
+ *  provider is searched by exactly "provider - label" (the user-facing name): its id repeats the
+ *  provider/model key, so including the id would let a later term re-match inside it and break
+ *  strictly left-to-right matching (e.g. "deep open" would find openrouter's DeepSeek V3 again).
+ *  A provider-less model is searched by "label - note" (an absent note leaves no gap) or by its id
+ *  alone, never across the two: its id repeats the label's words in the same way. */
+const searchTexts = (m: CatalogModel): string[] =>
   m.provider
-    ? `${m.provider} - ${m.label}`.toLowerCase()
-    : [m.label, m.id, m.note].filter((s): s is string => !!s).join(" - ").toLowerCase();
+    ? [`${m.provider} - ${m.label}`.toLowerCase()]
+    : [[m.label, m.note].filter((s): s is string => !!s).join(" - ").toLowerCase(), m.id.toLowerCase()];
 
-/** True when every whitespace-separated query term appears in the model's search text in order
- *  and without overlap; an empty or whitespace-only query matches everything. Case-insensitive
- *  because both sides are lowercased. */
+/** True when every whitespace-separated query term appears in one of the model's search texts in
+ *  order and without overlap; an empty or whitespace-only query matches everything.
+ *  Case-insensitive because both sides are lowercased. */
 export function modelMatches(m: CatalogModel, query: string): boolean {
-  const text = searchText(m);
-  let cursor = 0;
-  for (const term of query.toLowerCase().split(/\s+/)) {
-    if (!term) continue;
-    const at = text.indexOf(term, cursor);
-    if (at < 0) return false;
-    cursor = at + term.length;
-  }
-  return true;
+  const terms = query.toLowerCase().split(/\s+/).filter((t) => t);
+  return searchTexts(m).some((text) => {
+    let cursor = 0;
+    for (const term of terms) {
+      const at = text.indexOf(term, cursor);
+      if (at < 0) return false;
+      cursor = at + term.length;
+    }
+    return true;
+  });
 }
 
 /** The models matching the query, in catalog order. Empty/whitespace-only query keeps everything. */

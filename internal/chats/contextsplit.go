@@ -13,6 +13,10 @@ func keepsContextSplit(a model.AgentKind) bool {
 	return a == model.Claude || a == model.Pi
 }
 
+// errForkSplit refuses the context split of a Claude fork that has neither a process nor a
+// session of its own yet, and no id to cut its source's session at.
+var errForkSplit = errors.New("the context split of this fork is available after its first message")
+
 // splitRun is a context split being taken; calls that come meanwhile wait for it.
 type splitRun struct {
 	done  chan struct{}
@@ -27,6 +31,10 @@ type splitRun struct {
 // fresh, it is asked for: the chat's process answers when it runs (pi is live-only); without one,
 // a process is started on a fork of the session just to answer and closed. Only a split taken
 // between turns is kept.
+//
+// A Claude fork that never had a message has no session yet: without a process, the process is
+// started on its source's session up to the fork point instead, and with no id for that point
+// the split is refused until the fork's first message.
 //
 // Cursor's is read from its session store on every call, as it costs no process; it is never
 // persisted.
@@ -63,9 +71,22 @@ func (m *Manager) ContextSplit(id string, fresh bool) (model.ContextSplit, error
 		<-r.done
 		return r.split, r.err
 	}
+	ag, opts, kind := c.ag, m.spawnOptions(c), c.meta.Agent
+	// A Claude fork has no session of its own until its first message was accepted: without a
+	// process it is read from its source's session up to the fork point, as the fork is started.
+	// With no id to stop at, the source may hold turns the fork lacks, and nothing is read.
+	if fs := c.meta.ForkSource; fs != nil && ag == nil && kind == model.Claude {
+		if _, items := tr.Snapshot(); !sentPast(items, fs.Items) {
+			if fs.Point == "" {
+				c.mu.Unlock()
+				m.send(out)
+				return model.ContextSplit{}, errForkSplit
+			}
+			opts.SessionID, opts.Point = fs.Session, fs.Point
+		}
+	}
 	r := &splitRun{done: make(chan struct{})}
 	c.splitRun = r
-	ag, opts, kind := c.ag, m.spawnOptions(c), c.meta.Agent
 	c.mu.Unlock()
 	m.send(out)
 

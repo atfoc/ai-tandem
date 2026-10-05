@@ -69,14 +69,44 @@ const maxFrameBytes = 16 << 20 // 16 MiB
 // socket paths must fit in sockaddr_un.sun_path: 104 bytes on macOS (including
 // the terminating NUL, so ~103 usable) and 108 on Linux. When <root>/bridge.sock
 // would exceed 100 bytes it falls back to a short owner-only directory under
-// os.TempDir() keyed by a hash of root, so restarts reuse the same path.
+// os.TempDir() keyed by a hash of root, so restarts reuse the same path. The
+// bridge removes that fallback directory again when it closes.
 func SocketPath(root string) string {
 	path := filepath.Join(root, "bridge.sock")
 	if len(path) <= 100 {
 		return path
 	}
 	sum := sha256.Sum256([]byte(root))
-	return filepath.Join(os.TempDir(), "aiwb-"+hex.EncodeToString(sum[:8]), "bridge.sock")
+	return filepath.Join(os.TempDir(), fallbackDirPrefix+hex.EncodeToString(sum[:8]), "bridge.sock")
+}
+
+// fallbackDirPrefix starts the name of SocketPath's fallback directory; 16 hex
+// digits follow it.
+const fallbackDirPrefix = "aiwb-"
+
+// isFallbackDir reports whether dir is a fallback directory made for
+// SocketPath: directly under os.TempDir() and named aiwb-<16 hex>. Any other
+// socket directory is the app data root.
+func isFallbackDir(dir string) bool {
+	if filepath.Dir(dir) != filepath.Clean(os.TempDir()) {
+		return false
+	}
+	name := filepath.Base(dir)
+	if len(name) != len(fallbackDirPrefix)+16 || name[:len(fallbackDirPrefix)] != fallbackDirPrefix {
+		return false
+	}
+	_, err := hex.DecodeString(name[len(fallbackDirPrefix):])
+	return err == nil
+}
+
+// removeSocket removes the socket file and, when the socket lives in the
+// fallback directory, that directory if it is now empty. The data root is
+// never removed.
+func (b *Bridge) removeSocket() {
+	os.Remove(b.path)
+	if dir := filepath.Dir(b.path); isFallbackDir(dir) {
+		os.Remove(dir) // fails, as wanted, when something else is in it
+	}
 }
 
 // New returns an unstarted bridge that listens on socketPath (see SocketPath).
@@ -124,7 +154,7 @@ func (b *Bridge) Start() error {
 	if b.closed { // Close won the race.
 		b.mu.Unlock()
 		ln.Close()
-		os.Remove(b.path)
+		b.removeSocket()
 		return errors.New("pibridge: bridge is closed")
 	}
 	b.ln = ln
@@ -134,8 +164,9 @@ func (b *Bridge) Start() error {
 	return nil
 }
 
-// Close stops accepting, closes every connection and removes the socket file.
-// It is safe to call twice.
+// Close stops accepting, closes every connection and removes the socket file,
+// and with it the fallback directory when the socket lives there (see
+// SocketPath). It is safe to call twice.
 func (b *Bridge) Close() {
 	b.mu.Lock()
 	if b.closed {
@@ -159,7 +190,7 @@ func (b *Bridge) Close() {
 		r.closeConns()
 	}
 	if b.path != "" {
-		os.Remove(b.path)
+		b.removeSocket()
 	}
 }
 

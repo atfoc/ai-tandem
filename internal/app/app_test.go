@@ -1,9 +1,11 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -53,6 +55,28 @@ func (s *fakeSpawner) of(t *testing.T, chatID string) *fakeAgent {
 		t.Fatalf("no agent spawned for %s", chatID)
 	}
 	return a
+}
+
+// closeHook is a fakeAgent that calls onClose when it is closed, before it counts as closed.
+type closeHook struct {
+	*fakeAgent
+	onClose func()
+}
+
+func (a closeHook) Close() { a.onClose(); a.fakeAgent.Close() }
+
+// hookSpawner is a fakeSpawner whose agents tell onClose the chat they are closed for.
+type hookSpawner struct {
+	*fakeSpawner
+	onClose func(chatID string)
+}
+
+func (s hookSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
+	ag, err := s.fakeSpawner.Spawn(o)
+	if err != nil {
+		return nil, err
+	}
+	return closeHook{ag.(*fakeAgent), func() { s.onClose(o.ChatID) }}, nil
 }
 
 // ---- environment ----------------------------------------------------------
@@ -168,6 +192,33 @@ func (e *env) must(err error) {
 }
 
 // ---- tests ----------------------------------------------------------------
+
+// Archiving a chat sets the archive state before it stops the chat: the state is on disk when the
+// chat's process is closed, so no message is accepted between the two. The process is closed under
+// the chat's lock, so the state is read from chat.json.
+func TestArchiveChatSetsTheStateBeforeItStops(t *testing.T) {
+	e := newEnv(t)
+	var archivedAtClose []bool
+	e.a.Chats.Spawners[model.Claude] = hookSpawner{e.sp, func(id string) {
+		var meta model.ChatMeta
+		raw, err := os.ReadFile(filepath.Join(e.st.P.ChatDir(id), "chat.json"))
+		if err == nil {
+			err = json.Unmarshal(raw, &meta)
+		}
+		if err != nil {
+			t.Error(err)
+		}
+		archivedAtClose = append(archivedAtClose, meta.Archived)
+	}}
+	id := e.running(model.Ungrouped, "")
+	e.must(e.a.Archive(KindChat, id))
+	if len(archivedAtClose) != 1 || !archivedAtClose[0] {
+		t.Fatalf("archived when the process was closed: %v, want [true]", archivedAtClose)
+	}
+	if !e.sp.of(t, id).isClosed() || !e.chatArchive(id).Archived {
+		t.Fatal("not stopped and archived")
+	}
+}
 
 func TestArchiveBoardArchivesChatsWithOneOpAndStopsAgents(t *testing.T) {
 	e := newEnv(t)

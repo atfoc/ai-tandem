@@ -17,14 +17,14 @@ export type AgentMeta = {
   cls: string;
   /** Which glyph AgentGlyph draws. */
   glyph: GlyphKind;
-  /** The usage popover's heading. */
-  usageTitle: string;
+  /** The usage popover's heading; none for an agent with no plan usage to ask for. */
+  usageTitle?: string;
 };
 
 const AGENTS: Record<string, AgentMeta> = {
   claude: { name: "Claude Code", short: "Claude", cls: "claude", glyph: "claude", usageTitle: "Plan usage limits" },
   cursor: { name: "Cursor", short: "Cursor", cls: "cursor", glyph: "cursor", usageTitle: "Cursor usage" },
-  pi: { name: "Pi", short: "Pi", cls: "pi", glyph: "pi", usageTitle: "Pi usage" },
+  pi: { name: "Pi", short: "Pi", cls: "pi", glyph: "pi" },
 };
 
 /** An agent's display metadata. An unknown kind uses its raw string (never another agent's name)

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findQuote, preview, quoteKey, toSend, withComment } from "../src/logic/quotes.ts";
+import { findQuote, mergeQuotes, preview, quoteKey, toSend, withComment } from "../src/logic/quotes.ts";
 
 // A message's displayed text: its text nodes joined, with nothing between blocks.
 const text = "The planOwn undo in the ShapeStore.Retry 3 times with backoff.";
@@ -41,4 +41,18 @@ test("blank comments are left out, and trimmed when sent", () => {
   assert.deepEqual(withComment({ ...r, comment: "old" }, ""), r);
   assert.deepEqual(withComment(r, " five \n"), { ...r, comment: " five \n" });
   assert.deepEqual(toSend([{ ...r, comment: " five \n" }, { ...r, comment: " " }]), [{ ...r, comment: "five" }, r]);
+});
+
+test("a failed send's quotes come back before the ones added meanwhile", () => {
+  const a = { quote: "apples", item: 1, start: 0, end: 6, comment: "sent" }, b = { quote: "pears", item: 4, start: 2, end: 7 };
+  const c = { quote: "plums", item: 4, start: 9, end: 14, comment: "added" };
+  assert.deepEqual(mergeQuotes([a, b], [c]), [a, b, c]);
+  assert.deepEqual(mergeQuotes([a, b], []), [a, b]);
+  assert.deepEqual(mergeQuotes([], [c]), [c]);
+});
+
+test("a passage quoted again while its send failed is kept once, as quoted last", () => {
+  const a = { quote: "apples", item: 1, start: 0, end: 6, comment: "sent" }, b = { quote: "pears", item: 4, start: 2, end: 7 };
+  const again = { ...a, comment: "written since" };
+  assert.deepEqual(mergeQuotes([a, b], [again]), [b, again]);
 });

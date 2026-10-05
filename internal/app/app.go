@@ -307,10 +307,13 @@ const (
 	KindChat  Kind = "chat"
 )
 
-// archiveChat stops the chat's agent and archives it with ar.
+// archiveChat archives the chat with ar and stops its agent. The archive state is set first: from
+// then on no message is accepted, so the Stop ends whatever a Send started before it, and nothing
+// starts after the Stop.
 func (a *App) archiveChat(id string, ar model.Archive) error {
+	err := a.Chats.SetArchive(id, ar)
 	a.Chats.Stop(id)
-	return a.Chats.SetArchive(id, ar)
+	return err
 }
 
 // archiveBoard archives the board's not yet archived chats and the board with ar.

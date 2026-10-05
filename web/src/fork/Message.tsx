@@ -68,7 +68,7 @@ export function MessageExtras({ chat, index, item }: { chat: ChatView; index: nu
       )}
       {labeling && (
         <div className="fk-label-float">
-          <LabelInput initial={label ?? ""} onDone={(v) => { if (v !== null) void labelMessage(chat.id, shown, index, v); setLabeling(false); }} />
+          <LabelInput initial={label ?? ""} onDone={(v) => { if (v !== null && v !== (label ?? "")) void labelMessage(chat.id, shown, index, v); setLabeling(false); }} />
         </div>
       )}
     </>

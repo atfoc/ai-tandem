@@ -228,6 +228,19 @@ func (f *fake) stdinLines(t *testing.T, a agent.Agent) []map[string]any {
 	return out
 }
 
+// waitStdin waits until the running fake has read a stdin line that contains text.
+func (f *fake) waitStdin(t *testing.T, text string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if b, _ := os.ReadFile(f.stdin); strings.Contains(string(b), text) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no stdin line with %s within 10 s", text)
+		}
+	}
+}
+
 // skipInit checks that the first stdin line is the initialize control request and drops it.
 func skipInit(t *testing.T, lines []map[string]any) []map[string]any {
 	t.Helper()
@@ -316,6 +329,9 @@ func TestDenyAndUnsupportedControl(t *testing.T) {
 	if ev := next(t, a); ev.Kind != agent.EvPermRequest || ev.PermID != "r1" {
 		t.Fatalf("event %+v", ev)
 	}
+	// The read loop answers r2 on its own, some time after it emitted the r1 event: the decision
+	// is made once that answer has reached the process, so the order of the two is fixed.
+	f.waitStdin(t, `"request_id":"r2"`)
 	if err := a.Decide("r1", false); err != nil {
 		t.Fatal(err)
 	}

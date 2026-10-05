@@ -3,6 +3,7 @@
 package chats
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -30,6 +31,11 @@ func errNoForker(a model.AgentKind) error {
 	return fmt.Errorf("forking is not available for %s chats", a)
 }
 
+// errForkGone refuses the start of a fork that has no session of its own yet and no id to cut its
+// source's session at, once that session no longer ends where the fork's thread does: made now,
+// the fork's agent would know turns its thread does not show (see sourceKept).
+var errForkGone = errors.New("this fork was made at a point Claude has no id for, and the chat it was forked from has gone on since: it can no longer be started")
+
 // Fork makes a new chat holding the first req.At items of a branch of the chat id, in a session
 // forked from that branch's at that point. The source chat is not stopped, changed or re-emitted.
 //
@@ -45,6 +51,12 @@ func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
 		return model.ChatView{}, err
 	}
 	c, from, err := m.forkEntry(src, id, curBusy, req, &loaded)
+	// A fork that goes through src's own fork source (see forkSourceOf) at a place no id names is
+	// made of the whole session of that source: ends is the item count that session must end at.
+	ends := -1
+	if fs := src.meta.ForkSource; err == nil && fs != nil && from.ChatID == fs.Chat && from.Point == "" {
+		ends = fs.Items
+	}
 	src.mu.Unlock()
 	m.send(loaded)
 	if err != nil {
@@ -59,10 +71,23 @@ func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
 	// The start of a chat (D7) has nothing to fork: the new chat stays unlocked, with a fresh
 	// session and no process.
 	if req.At > 0 {
+		if ends >= 0 && !m.sourceKept(from.ChatID, ends) {
+			return fail(errForkGone) // as the start of src itself is refused (see spawnFork)
+		}
 		if err := m.startFork(c, from, req.At); err != nil {
 			return fail(err)
 		}
 		forked = true
+		if ends >= 0 {
+			// The record keeps the count of the source's thread, which a later start checks the
+			// source with: src's own thread may be longer by what its start added (an end mark),
+			// never by a message.
+			c.mu.Lock()
+			if c.meta.ForkSource != nil {
+				c.meta.ForkSource.Items = ends
+			}
+			c.mu.Unlock()
+		}
 	}
 
 	if err := m.sourceLive(id); err != nil {
@@ -133,6 +158,8 @@ func (m *Manager) forkEntry(src *Chat, top string, curBusy bool, req ForkReq, ou
 	}
 	_, items := tr.Snapshot()
 	// A fork, unlike a new branch, may also start at the end of an idle branch, whatever its marks.
+	// Without an id on its last mark the fork is made of the whole session, and Claude's can be
+	// made again only while the branch has said nothing since (see spawnFork).
 	if !pointOK(src.meta.Agent, items, req.At) && (req.At == 0 || req.At != len(items)) {
 		return nil, none, ErrBadPoint
 	}
@@ -232,6 +259,10 @@ func prefixMeta(src model.ChatMeta, items []model.Item, at int) model.ChatMeta {
 // While the chat still has its own fork source and nothing was sent past the prefix it started
 // with, it has no session of its own to fork yet: the fork goes through that source, whose ids
 // the copied marks kept. Else it is the chat's own session.
+//
+// Through a source, a fork with no point is of the whole source session: the caller starts it
+// only while that session still ends where the chat's prefix does (Fork checks it with
+// sourceKept). A new branch never gets there: it needs the id of the mark before it (pointOK).
 func forkSourceOf(meta model.ChatMeta, items []model.Item, at int) agent.ForkSource {
 	point := ""
 	if at > 0 && items[at-1].Kind == "end" {
@@ -262,6 +293,14 @@ func sentPast(items []model.Item, count int) bool {
 // object meta names, gives it a token, and puts it in the map unlisted, its transcript and
 // subagents loaded. Its token resolves from now on; no chat.json is written. src.mu held, src's
 // transcript loaded.
+//
+// A subagent's record is copied as it is now, not as it was at the point. A result that was
+// carried in src (handed to its agent, to be retried, or given up) and whose row the copy lacks
+// was never carried in the copy's thread: the copy's agent is owed it, and gets it with the
+// copy's first human message. So is one whose row the copy has but which was last taken for a
+// turn at or past the point (Carried): the row is from an earlier attempt that did not reach the
+// agent, and the turn that carried it again is not in the copy. A record that owes nothing stays
+// so. The new chat object is held, so the app starts no turn on it before the human has sent.
 func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, error) {
 	if err := m.copyPrefix(src, meta.ID, at); err != nil {
 		return nil, err
@@ -276,6 +315,14 @@ func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, er
 	m.extrasMu.Unlock()
 	c := &Chat{meta: meta, tr: tr, unlisted: true}
 	m.loadSubs(c)
+	for _, s := range c.subs {
+		if s.meta.Delivery != model.SubNotOwed && s.meta.Delivery != model.SubOwed &&
+			(!tr.HasSubResult(s.meta.ID) || s.meta.Carried >= at) {
+			s.meta.Delivery = model.SubOwed
+			m.saveSub(c, s)
+		}
+	}
+	setHold(c)
 	m.mu.Lock()
 	m.linkBranch(c, meta.ID) // an entry made under a branch's server id is its chat's from the start
 	m.chats[meta.ID] = c
@@ -325,6 +372,26 @@ func (m *Manager) sourceLive(id string) error {
 		return ErrArchived
 	}
 	return nil
+}
+
+// sourceKept reports whether the session of the chat object id (a chat's or a branch's server id)
+// still ends where a fork that holds its first count items does: the chat object is there, and
+// nothing was said in its thread past them. A fork with no id to cut at is the whole session, so
+// it may be made only while this holds. No chat's mu may be held.
+func (m *Manager) sourceKept(id string, count int) bool {
+	var loaded outbox // what loading the source's transcript sends
+	src, err := m.lock(id)
+	if err != nil {
+		return false
+	}
+	kept := false
+	if tr, err := m.trOf(src, &loaded); err == nil {
+		_, items := tr.Snapshot()
+		kept = sessionEnd(items, count)
+	}
+	src.mu.Unlock()
+	m.send(loaded)
+	return kept
 }
 
 // dropUnlisted is D8's failure row: nothing is left of the unlisted chat c. Its process, if it

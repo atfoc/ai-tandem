@@ -12,6 +12,9 @@ import (
 // recording a pending link. Chat.mu is not held across this sleep.
 const spawnClaimRetry = 20 * time.Millisecond
 
+// spawnLinkWait is how long after its spawn a pending link is still tried against new tool items.
+const spawnLinkWait = 5 * time.Second
+
 // pendingSpawnLink is an app-spawned sub waiting for a matching spawn tool item in the
 // chat's own thread.
 type pendingSpawnLink struct {
@@ -143,17 +146,21 @@ func (m *Manager) retrySpawnClaim(chatID, sid, canon string) (tool string, gone 
 }
 
 // reconcileSpawnLinks re-attempts FIFO matching of pending unlinked spawns against new
-// spawn tool items in the chat's own thread. c.mu held.
+// spawn tool items in the chat's own thread. A spawn is tried for spawnLinkWait after it was
+// made, whether its subagent still runs or has ended: its item can be late by the race with the
+// MCP call. After that, or when its subagent is gone, it is dropped unlinked, so that it does not
+// take the item of a later spawn with the same arguments. Within the wait a late item cannot be
+// told from the item of a second identical spawn. c.mu held.
 func (m *Manager) reconcileSpawnLinks(c *Chat, out *outbox) {
 	if c.tr == nil || len(c.pendingLinks) == 0 {
 		return
 	}
 	keep := c.pendingLinks[:0]
 	for _, p := range c.pendingLinks {
-		if m.tryClaim(c, p.sid, p.canon, out) {
+		if s := c.subs[p.sid]; s == nil || m.nowMs()-s.meta.Started > spawnLinkWait.Milliseconds() {
 			continue
 		}
-		if c.subs[p.sid] == nil {
+		if m.tryClaim(c, p.sid, p.canon, out) {
 			continue
 		}
 		keep = append(keep, p)

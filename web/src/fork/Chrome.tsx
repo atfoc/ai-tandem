@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import "./fork.css";
 import "./chrome.css";
-import { useStore, branchCount, currentBranch, shownBranch, isBusy } from "../store.ts";
+import { useStore, branchCount, currentBranch, shownBranch } from "../store.ts";
 import { BranchIcon } from "../icons.tsx";
 import { buildTree, nameOfBranch, withLive } from "../logic/forktree.ts";
 import { threadTree, viewFor } from "../logic/forkmessage.ts";
@@ -29,7 +29,10 @@ export function BranchCrumb({ chatId }: { chatId: string }) {
   return <> · <span className="fk-crumb"><BranchIcon /> {nameOfBranch(tree, currentBranch(c))}</span></>;
 }
 
-/** The pending move, above the composer's box: where the next message goes, and Back. */
+/** The pending move, above the composer's box: where the next message goes, and Back. Back is
+ *  there also while a turn runs that the app started, so that turn can be watched; it does nothing
+ *  while the move's own Send is in flight. An approval that turn asks for is behind the cut: the
+ *  banner says so. */
 export function BranchBanner({ chatId }: { chatId: string }) {
   const c = useStore((s) => s.chats[chatId]);
   const move = useStore((s) => s.moves[chatId]);
@@ -40,14 +43,14 @@ export function BranchBanner({ chatId }: { chatId: string }) {
     const view = move && viewFor(viewFor(tree, move.branch), current);
     if (!c || !move || !items || !view) return "Your next message starts from here.";
     const t = buildTree(withLive(view, move.branch, c.agent, items), { branch: move.branch, count: move.at });
-    return bannerText(bannerOf(t, move, items, current));
-  }, [c?.agent, move, items, tree, current]);
+    return bannerText(bannerOf(t, move, items, current, c.subsRunning, c.status === "approval")); // the view's counts and status are the current branch's
+  }, [c?.agent, c?.subsRunning, c?.status, move, items, tree, current]);
   if (!c || !move) return null;
   return (
     <div className="fk-banner">
       <BranchIcon size={12} />
       <span className="fk-banner-text">{text}</span>
-      {!isBusy(c.status) && <button className="btn ghost sm" onClick={() => goBack(chatId)} title="Go back to where you were">Back</button>}
+      <button className="btn ghost sm" onClick={() => goBack(chatId)} title="Go back to where you were">Back</button>
     </div>
   );
 }

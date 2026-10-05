@@ -198,6 +198,12 @@ func (t *Transcript) AddSubResult(sid string) []Update {
 	return []Update{u}
 }
 
+// HasSubResult reports whether the thread has the row of subagent sid's result.
+func (t *Transcript) HasSubResult(sid string) bool {
+	_, ok := t.results[sid]
+	return ok
+}
+
 // AddEnd adds the end mark of a turn, carrying the provider's fork-point id (may be ""). The mark
 // is a settled item: Flush writes it.
 func (t *Transcript) AddEnd(point string) []Update {

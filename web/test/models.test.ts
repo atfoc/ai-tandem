@@ -234,3 +234,58 @@ test("filterModels: no matches", () => {
   assert.deepEqual(filterModels(bareCatalog, "nothing here"), []);
   assert.deepEqual(filterModels(piCatalog, "deep open"), []);
 });
+
+// Provider-less catalogs as the agents report them: the id repeats the label's words, so a row is
+// searched by "label - note" or by its id alone, never across the two.
+const claudeCatalog: CatalogModel[] = [
+  { id: "opus", label: "Opus 5.5", note: "For complex work and everyday tasks" },
+  { id: "sonnet", label: "Sonnet 5.5", note: "Most efficient for simpler tasks" },
+  { id: "claude-opus-5", label: "Opus 5", note: "Best for everyday, complex tasks" },
+];
+const cursorCatalog: CatalogModel[] = [
+  { id: "gpt-5.4", label: "GPT-5.4" },
+  { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
+];
+
+test("modelMatches: reversed terms must NOT re-match inside a provider-less model's id", () => {
+  assert.equal(modelMatches(piCatalog[0], "v3 deep"), false); // the rule, as provider rows follow it
+  assert.deepEqual(ids(filterModels(cursorCatalog, "mini gpt")), []);
+  assert.deepEqual(ids(filterModels(cursorCatalog, "5.4 gpt")), []);
+  assert.deepEqual(ids(filterModels(cursorCatalog, "opus claude")), []);
+  assert.deepEqual(ids(filterModels(claudeCatalog, "5.5 opus")), []);
+});
+
+test("modelMatches: a provider-less model is still found by its id alone", () => {
+  assert.deepEqual(ids(filterModels(cursorCatalog, "gpt-5.4-mini")), ["gpt-5.4-mini"]);
+  assert.deepEqual(ids(filterModels(cursorCatalog, "opus-5-5")), ["claude-opus-5-5"]);
+  assert.deepEqual(ids(filterModels(claudeCatalog, "claude-opus")), ["claude-opus-5"]);
+  assert.deepEqual(ids(filterModels(bareCatalog, "seek-chat")), ["deepseek-chat"]);
+  assert.equal(modelMatches(cursorCatalog[1], "gpt mini"), true); // in order within the id, and within the label
+});
+
+test("modelMatches: label then note match in order, without a provider", () => {
+  assert.equal(modelMatches(bareCatalog[0], "sonnet daily"), true); // "claude sonnet - balanced daily driver"
+  assert.equal(modelMatches(bareCatalog[0], "daily sonnet"), false); // the note comes after the label
+  assert.deepEqual(ids(filterModels(claudeCatalog, "opus everyday")), ["opus", "claude-opus-5"]);
+});
+
+test("modelMatches: label and id are never combined for one query", () => {
+  assert.equal(modelMatches(cursorCatalog[1], "mini gpt-5.4-mini"), false); // "mini" from the label, the rest from the id
+  assert.equal(modelMatches(cursorCatalog[1], "mini 5.4"), false); // in order within neither
+  assert.equal(modelMatches(claudeCatalog[2], "5 claude-opus"), false);
+  assert.equal(modelMatches(claudeCatalog[2], "claude-opus everyday"), false); // id, then note
+  assert.equal(modelMatches(bareCatalog[0], "claude sonnet sonnet"), false); // one "sonnet" in the label, one in the id
+});
+
+test("filterModels: punctuation, case, spaces, empty and no-match queries", () => {
+  assert.deepEqual(ids(filterModels(cursorCatalog, "gpt-5.4")), ["gpt-5.4", "gpt-5.4-mini"]);
+  assert.deepEqual(ids(filterModels(cursorCatalog, "  GPT   5.4  ")), ["gpt-5.4", "gpt-5.4-mini"]);
+  assert.deepEqual(ids(filterModels(cursorCatalog, "")), ids(cursorCatalog));
+  assert.deepEqual(ids(filterModels(cursorCatalog, " \t ")), ids(cursorCatalog));
+  assert.deepEqual(filterModels(cursorCatalog, "zzz"), []);
+  assert.deepEqual(ids(filterModels(piCatalog, "deep seek")), ["openrouter/deepseek/deepseek-v3", "deepseek/deepseek-chat"]);
+  assert.deepEqual(ids(filterModels(piCatalog, "DEEPSEEK deepseek")), ["deepseek/deepseek-chat"]);
+  assert.deepEqual(filterModels(piCatalog, "deepseek deepseek deepseek"), []);
+  assert.deepEqual(ids(filterModels(claudeCatalog, "everyday")), ["opus", "claude-opus-5"]);
+});

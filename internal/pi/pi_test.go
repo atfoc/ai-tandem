@@ -3,6 +3,7 @@ package pi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/chats"
 )
 
 func TestHandshakeAppliesModelAndEmitsCatalog(t *testing.T) {
@@ -69,6 +71,211 @@ func TestHandshakeReadyErr(t *testing.T) {
 	lines := f.stdinLines(t, a)
 	if got := commandTypes(lines); !equalStrings(got, []string{"get_state"}) {
 		t.Fatalf("commands %q, want only get_state (no prompt)", got)
+	}
+}
+
+// A handshake that pi answered with a failure leaves pi running, so no turn would ever end. Send
+// ends the turn itself, with the error it returns, and closes the process: its exit follows and
+// says nothing more.
+func TestFailedHandshakeEndsTurn(t *testing.T) {
+	f := newFake(t)
+	f.replies(t, map[string]fakeReply{"set_model": {Fail: true, Error: "Model not found: gone/model"}})
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(), Model: "gone/model"})
+	err := a.Send([]agent.ContentBlock{{Text: "hi"}})
+	if err == nil || !strings.Contains(err.Error(), "Model not found: gone/model") {
+		t.Fatalf("Send = %v, want the handshake error", err)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvTurnEnd || ev.Error != err.Error() || ev.Aborted {
+		t.Fatalf("event %+v, want a turn end with the error Send returned", ev)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvExit || ev.ExitErr != "" {
+		t.Fatalf("event %+v, want the exit of the closed process with no error text", ev)
+	}
+	if _, ok := <-a.Events(); ok {
+		t.Error("events not closed after EvExit")
+	}
+	if got := commandTypes(f.recorded(t)); contains(got, "prompt") {
+		t.Fatalf("commands %q, want no prompt", got)
+	}
+}
+
+// A prompt pi does not answer in time ends the turn the same way.
+func TestUnansweredPromptEndsTurn(t *testing.T) {
+	f := newFake(t)
+	f.replies(t, map[string]fakeReply{"prompt": {Silent: true}})
+	s := f.spawner()
+	s.promptTimeout = 200 * time.Millisecond
+	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	err := a.Send([]agent.ContentBlock{{Text: "hi"}})
+	if err == nil || !strings.Contains(err.Error(), "did not answer prompt") {
+		t.Fatalf("Send = %v, want the timeout", err)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvThinking {
+		t.Fatalf("event %+v, want EvThinking", ev)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvTurnEnd || ev.Error != err.Error() {
+		t.Fatalf("event %+v, want a turn end with the error Send returned", ev)
+	}
+	if ev := next(t, a); ev.Kind != agent.EvExit || ev.ExitErr != "" {
+		t.Fatalf("event %+v, want the exit of the closed process with no error text", ev)
+	}
+}
+
+// A prompt pi runs to its settle without answering the command in time was taken: Send returns
+// nil, the turn's one end is pi's own, and the process stays for the next message.
+func TestSettledPromptWithLateAnswerIsTaken(t *testing.T) {
+	t.Setenv(envEvery, "1")
+	f := newFake(t, `{"type":"agent_settled"}`)
+	f.replies(t, map[string]fakeReply{"prompt#1": {Silent: true}})
+	s := f.spawner()
+	s.promptTimeout = time.Second
+	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	if err := a.Send([]agent.ContentBlock{{Text: "one"}}); err != nil {
+		t.Errorf("Send = %v, want nil: pi ran the turn", err)
+	}
+	if ev := waitKind(t, a, agent.EvTurnEnd); ev.Error != "" {
+		t.Errorf("turn end %+v, want pi's own with no error", ev)
+	}
+	if a.(*proc).closing.Load() {
+		t.Error("the process was closed")
+	}
+	// The second prompt is answered: it reaches the same process, and its turn ends once too.
+	if err := a.Send([]agent.ContentBlock{{Text: "two"}}); err != nil {
+		t.Fatalf("second Send = %v", err)
+	}
+	if ev := waitKind(t, a, agent.EvTurnEnd); ev.Error != "" {
+		t.Errorf("second turn end %+v, want no error", ev)
+	}
+	a.Close()
+	for ev := next(t, a); ev.Kind != agent.EvExit; ev = next(t, a) {
+		if ev.Kind == agent.EvTurnEnd {
+			t.Errorf("a third turn end for two Sends: %+v", ev)
+		}
+	}
+	var prompts []string
+	for _, l := range f.recorded(t) {
+		if l["type"] == "prompt" {
+			prompts = append(prompts, str(l["message"]))
+		}
+	}
+	if !equalStrings(prompts, []string{"one", "two"}) {
+		t.Errorf("prompts %q, want both written to the one process", prompts)
+	}
+}
+
+// A settle that reaches the adapter after Send ended the turn itself (the fake prints it when its
+// stdin closes, as a pi that is being closed can) adds no second turn end.
+func TestSettleAfterSendFailedEmitsNothing(t *testing.T) {
+	t.Setenv(envAtEOF, "1")
+	f := newFake(t, `{"type":"agent_settled"}`)
+	f.replies(t, map[string]fakeReply{"prompt": {Silent: true}})
+	s := f.spawner()
+	s.promptTimeout = 200 * time.Millisecond
+	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	err := a.Send([]agent.ContentBlock{{Text: "hi"}})
+	if err == nil || !strings.Contains(err.Error(), "did not answer prompt") {
+		t.Fatalf("Send = %v, want the timeout", err)
+	}
+	var ends []agent.Event
+	ev := next(t, a)
+	for ; ev.Kind != agent.EvExit; ev = next(t, a) {
+		if ev.Kind == agent.EvTurnEnd {
+			ends = append(ends, ev)
+		}
+	}
+	if len(ends) != 1 || ends[0].Error != err.Error() {
+		t.Fatalf("turn ends %s, want one, with the error Send returned", dump(ends))
+	}
+	if ev.ExitErr != "" {
+		t.Errorf("exit text %q, want none for the closed process", ev.ExitErr)
+	}
+}
+
+// When pi has exited by itself, its exit is the one end of the turn and carries what pi said on
+// stderr: Send adds no turn end of its own.
+func TestSendToExitedProcessLeavesTheExit(t *testing.T) {
+	f := newFake(t)
+	t.Setenv(envExit, "1")
+	t.Setenv(envStderr, "No API key found for test")
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	if err := a.Send([]agent.ContentBlock{{Text: "hi"}}); err == nil {
+		t.Fatal("Send to an exited process succeeded")
+	}
+	if ev := next(t, a); ev.Kind != agent.EvExit || ev.ExitErr != "No API key found for test" {
+		t.Fatalf("event %+v, want only EvExit with pi's stderr", ev)
+	}
+	if _, ok := <-a.Events(); ok {
+		t.Error("events not closed after EvExit")
+	}
+}
+
+// Through the chat manager, which marks the chat busy before the adapter's Send: a handshake that
+// failed with pi still running must leave the chat ready, with the error as its one note, and the
+// next message must be taken.
+func TestFailedHandshakeLeavesChatReady(t *testing.T) {
+	for name, tc := range map[string]struct {
+		replies map[string]fakeReply
+		model   string
+		want    string
+	}{
+		"model no longer offered": {map[string]fakeReply{"set_model": {Fail: true, Error: "Model not found: gone/model"}},
+			"gone/model", "Model not found: gone/model"},
+		"no models": {map[string]fakeReply{"get_available_models": {Data: json.RawMessage(`{"models":[]}`)}},
+			"", "pi reported no models"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			f.replies(t, tc.replies)
+			m := newE2EPiManager(t, f.spawner(), t.TempDir())
+			v := e2eCreatePi(t, m)
+			if tc.model != "" {
+				if err := m.Configure(v.ID, chats.ConfigReq{Model: tc.model}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// settle waits for the chat to stop being busy and returns its error notes.
+			settle := func() []string {
+				t.Helper()
+				for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+					cv, err := m.View(v.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !e2eBusy(cv.Status) {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("the chat is still %s: no turn runs and none will end", cv.Status)
+					}
+				}
+				_, items, _, err := m.Items(v.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var notes []string
+				for _, it := range items {
+					if it.Kind == "note" && it.Tone == "error" {
+						notes = append(notes, it.Text)
+					}
+				}
+				return notes
+			}
+			if err := m.Send(v.ID, "hello", "", nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Send = %v, want the handshake error", err)
+			}
+			if notes := settle(); len(notes) != 1 || !strings.Contains(notes[0], tc.want) {
+				t.Fatalf("error notes %q, want the handshake error once", notes)
+			}
+			if err := m.Send(v.ID, "again", "", nil); errors.Is(err, chats.ErrBusy) {
+				t.Fatal("the next message is refused: the chat is busy")
+			}
+			if notes := settle(); len(notes) != 2 {
+				t.Fatalf("error notes %q, want one for each failed message", notes)
+			}
+		})
 	}
 }
 
@@ -292,6 +499,114 @@ func TestExitStderrOnce(t *testing.T) {
 	}
 	if _, ok := <-a.Events(); ok {
 		t.Error("events not closed after EvExit")
+	}
+}
+
+// piStartWarning is what real pi prints on stderr whenever it starts a chat with a new session id.
+const piStartWarning = "Warning: No project session found with id 'x'; creating a new session with that id."
+
+// An exit the app asked for is no failure: what pi printed while it ran is not its reason.
+func TestExitAskedForHasNoText(t *testing.T) {
+	f := newFake(t)
+	t.Setenv(envStartErr, piStartWarning)
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	a.Close()
+	if ev := waitKind(t, a, agent.EvExit); ev.ExitErr != "" {
+		t.Fatalf("exit text %q, want none for an exit the app asked for", ev.ExitErr)
+	}
+}
+
+// An exit pi made by itself reports the end of its stderr, where the reason is, however much it
+// printed before.
+func TestExitTextIsStderrEnd(t *testing.T) {
+	var noise strings.Builder
+	for i := 0; noise.Len() <= stderrCap; i++ {
+		fmt.Fprintf(&noise, "debug line %d\n", i)
+	}
+	for name, start := range map[string]string{
+		"after the start warning": piStartWarning,
+		"after more than the cap": noise.String(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			t.Setenv(envStartErr, start)
+			t.Setenv(envExit, "1")
+			t.Setenv(envStderr, "Error: the session file is corrupt")
+			a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+			ev := next(t, a)
+			if ev.Kind != agent.EvExit || !strings.HasSuffix(ev.ExitErr, "Error: the session file is corrupt") {
+				t.Fatalf("event kind %v with exit text %.200q, want EvExit ending with pi's last stderr line", ev.Kind, ev.ExitErr)
+			}
+			if n := strings.Count(ev.ExitErr, "\n") + 1; n > exitLines {
+				t.Fatalf("exit text has %d lines, want at most %d", n, exitLines)
+			}
+		})
+	}
+}
+
+// A signal ends pi before it can say why, so the exit names the signal ahead of what stderr has.
+func TestExitTextNamesSignal(t *testing.T) {
+	f := newFake(t)
+	t.Setenv(envStartErr, piStartWarning)
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	waitKind(t, a, agent.EvCatalog)
+	pid := a.(*proc).cmd.Process.Pid
+	if pid <= 1 {
+		t.Fatalf("fake pi pid %d", pid)
+	}
+	syscall.Kill(pid, syscall.SIGKILL)
+	if ev := waitKind(t, a, agent.EvExit); ev.ExitErr != "signal: killed: "+piStartWarning {
+		t.Fatalf("exit text %q, want the signal ahead of stderr", ev.ExitErr)
+	}
+}
+
+// What the thread of a chat shows when its pi ends during a turn: no text of pi's when the app
+// closed it, the reason when pi ended by itself.
+func TestExitDuringTurnNote(t *testing.T) {
+	for name, tc := range map[string]struct {
+		end  func(m *chats.Manager, pid int)
+		want string
+	}{
+		"the app closes pi": {func(m *chats.Manager, pid int) { m.Shutdown() }, "The agent stopped: process ended"},
+		"pi is killed": {func(m *chats.Manager, pid int) { syscall.Kill(pid, syscall.SIGKILL) },
+			"The agent stopped: signal: killed: " + piStartWarning},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			pidFile := filepath.Join(f.dir, "child.json")
+			t.Setenv(envChildPid, pidFile)
+			t.Setenv(envStartErr, piStartWarning)
+			m := newE2EPiManager(t, f.spawner(), t.TempDir())
+			v := e2eCreatePi(t, m)
+			if err := m.Send(v.ID, "hello", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			pid, child := childPids(t, pidFile)
+			tc.end(m, pid)
+			var notes []string
+			for deadline := time.Now().Add(5 * time.Second); len(notes) == 0; time.Sleep(20 * time.Millisecond) {
+				_, items, _, err := m.Items(v.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range items {
+					if it.Kind == "note" {
+						notes = append(notes, it.Text)
+					}
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("no note in the thread: the turn did not end")
+				}
+			}
+			if len(notes) != 1 || notes[0] != tc.want {
+				t.Fatalf("notes %q, want only %q", notes, tc.want)
+			}
+			if cv, err := m.View(v.ID); err != nil || e2eBusy(cv.Status) {
+				t.Fatalf("chat status %q, %v: the turn did not end", cv.Status, err)
+			}
+			waitPidsGone(t, pid, child)
+		})
 	}
 }
 

@@ -87,10 +87,15 @@ func (p *proc) ContextSplit() (model.ContextSplit, error) {
 
 // ReadContextSplit starts a process on a fork of the chat's session (--fork-session: nothing is
 // written to the session, and no new one is kept while nothing is sent), asks it for the context
-// split and closes it. It takes about 2 s.
+// split and closes it. With o.Point the session is read up to that point only
+// (--resume-session-at), as a fork made there is. It takes about 2 s.
 func (s *Spawner) ReadContextSplit(o agent.SpawnOptions) (model.ContextSplit, error) {
 	o.Resume = true
-	p, err := s.start(o, "--fork-session")
+	extra := []string{"--fork-session"}
+	if o.Point != "" {
+		extra = append(extra, "--resume-session-at", o.Point)
+	}
+	p, err := s.start(o, extra...)
 	if err != nil {
 		return model.ContextSplit{}, err
 	}

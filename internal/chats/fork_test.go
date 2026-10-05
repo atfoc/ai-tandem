@@ -1,6 +1,7 @@
 package chats
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -1316,5 +1317,268 @@ func TestForkOfFork(t *testing.T) {
 	e.fork(g1, 2)
 	if got, want := e.claude.forkCalls()[1].src, (agent.ForkSource{ChatID: old, SessionID: e.meta(old).SessionID}); got != want {
 		t.Fatalf("fork of an unsent fork of an older chat %+v, want %+v", got, want)
+	}
+}
+
+// ---- a fork with no id to cut at ------------------------------------------
+
+// oldFork makes a Claude chat from before forking (one turn, no end mark) and a fork of it at its
+// end. Nothing names that place in the source's session: the fork's first start is of the whole
+// source, and its record keeps no point.
+func (e *env) oldFork() (src, fork string) {
+	e.t.Helper()
+	src = e.stored(model.Claude, []model.Item{pUser(), pText()})
+	fork = e.fork(src, 2).ID
+	srcSID := e.meta(src).SessionID
+	if got, want := e.claude.forkCalls()[0].src, (agent.ForkSource{ChatID: src, SessionID: srcSID, End: true}); got != want {
+		e.t.Fatalf("first start %+v, want %+v", got, want)
+	}
+	if got, want := e.meta(fork).ForkSource, (&model.ForkSource{Chat: src, Session: srcSID, Items: 2}); !reflect.DeepEqual(got, want) {
+		e.t.Fatalf("forkSource %+v, want %+v", got, want)
+	}
+	return src, fork
+}
+
+// chatEventsOf keeps the chat events of the chat id.
+func chatEventsOf(evs []map[string]any, id string) []map[string]any {
+	var out []map[string]any
+	for _, ev := range ofType(evs, "chat") {
+		if ev["chat"].(map[string]any)["id"] == id {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func TestForkWithoutPointSourceWentOn(t *testing.T) {
+	e := newEnv(t)
+	src, id := e.oldFork()
+	e.turn(src, nil, 2) // the source goes on; the fork never had a message
+	e.boot()
+	evs := e.listen()
+	n := len(e.items(id))
+	file, _ := os.ReadFile(filepath.Join(e.st.P.ChatDir(id), "chat.json"))
+	srcItems := e.file(src, "items.jsonl")
+	evs.drain(t, e.br)
+
+	// Made again now, the fork would be the whole source, with a turn its thread lacks: no start.
+	for i := 0; i < 2; i++ { // and it stays refused
+		if err := e.m.Send(id, "hello", "", nil); !errors.Is(err, errForkGone) {
+			t.Fatalf("Send %d to a fork whose source went on: %v", i, err)
+		}
+		if calls := e.claude.forkCalls(); len(calls) != 0 || e.claude.count() != 0 {
+			t.Fatalf("Send %d: %d fork starts (%+v), %d spawns", i, len(calls), calls, e.claude.count())
+		}
+		// As after a failed start: no message, note, mark or turn count; the failure shows on the chat.
+		if items := e.items(id); len(items) != n {
+			t.Fatalf("a refused start added items: %+v", items[n:])
+		}
+		if v := e.view(id); v.Status != model.StatusError || v.Error != errForkGone.Error() || v.Usage.Turns != 1 {
+			t.Fatalf("view after a refused start %+v", v)
+		}
+		if after, _ := os.ReadFile(filepath.Join(e.st.P.ChatDir(id), "chat.json")); string(after) != string(file) {
+			t.Fatalf("chat.json changed:\n%s", after)
+		}
+		chatEvs := chatEventsOf(evs.drain(t, e.br), id)
+		if len(chatEvs) != 2 || chatEvs[1]["chat"].(map[string]any)["status"] != string(model.StatusError) ||
+			chatEvs[1]["chat"].(map[string]any)["error"] != errForkGone.Error() {
+			t.Fatalf("chat events %+v", chatEvs)
+		}
+	}
+	if e.m.Busy(id) {
+		t.Fatal("the fork is busy after a refused start")
+	}
+	// The source is only looked at.
+	if v := e.view(src); v.Status != model.StatusReady || v.Error != "" || !bytes.Equal(e.file(src, "items.jsonl"), srcItems) {
+		t.Fatalf("the source after the refusal %+v", v)
+	}
+}
+
+func TestForkWithoutPointSourceKept(t *testing.T) {
+	e := newEnv(t)
+	src, id := e.oldFork()
+	srcSID := e.meta(src).SessionID
+	// An archived source has not gone on: its session still ends where the fork does.
+	if err := e.m.SetArchive(src, model.Archive{Archived: true}); err != nil {
+		t.Fatal(err)
+	}
+	e.boot()
+	e.send(id, "hello", "")
+	calls := e.claude.forkCalls()
+	if len(calls) != 1 || e.claude.count() != 0 {
+		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
+	}
+	if want := (agent.ForkSource{ChatID: src, SessionID: srcSID}); calls[0].src != want {
+		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
+	}
+	if sent := e.claude.lastFork(t).sent(); len(sent) != 1 || !reflect.DeepEqual(texts(sent[0]), []string{"hello"}) {
+		t.Fatalf("the process got %v", sent)
+	}
+	if v := e.view(id); v.Error != "" || v.Status != model.StatusThinking {
+		t.Fatalf("view after the start %+v", v)
+	}
+}
+
+func TestForkWithoutPointSourceDeleted(t *testing.T) {
+	e := newEnv(t)
+	src, id := e.oldFork()
+	if err := e.m.Delete(src); err != nil {
+		t.Fatal(err)
+	}
+	e.boot()
+	n := len(e.items(id))
+	// Nothing says any more where the source's session ended.
+	if err := e.m.Send(id, "hello", "", nil); !errors.Is(err, errForkGone) {
+		t.Fatalf("Send to a fork whose source is deleted: %v", err)
+	}
+	if calls := e.claude.forkCalls(); len(calls) != 0 || e.claude.count() != 0 {
+		t.Fatalf("%d fork starts (%+v), %d spawns", len(calls), calls, e.claude.count())
+	}
+	if v := e.view(id); v.Status != model.StatusError || v.Error != errForkGone.Error() || len(e.items(id)) != n {
+		t.Fatalf("view after a refused start %+v", v)
+	}
+}
+
+// The source of a fork is one chat object: a branch's own thread says whether it went on, not
+// its chat's other branches.
+func TestForkWithoutPointOfABranch(t *testing.T) {
+	for _, cur := range []string{"", exBranch} {
+		e := newEnv(t)
+		id, bid := e.branched(model.Claude, "", cur)
+		v, err := e.m.Fork(id, ForkReq{Branch: exBranch, At: 6}) // the branch's last mark has no id
+		if err != nil {
+			t.Fatal(err)
+		}
+		through := agent.ForkSource{ChatID: bid, SessionID: "ses-" + exBranch}
+		if got, want := e.meta(v.ID).ForkSource, (&model.ForkSource{Chat: bid, Session: through.SessionID, Items: 6}); !reflect.DeepEqual(got, want) {
+			t.Fatalf("forkSource %+v, want %+v", got, want)
+		}
+		e.turn(id, nil, 3) // on the chat's current branch
+		e.boot()
+		err = e.m.Send(v.ID, "hello", "", nil)
+		calls := e.claude.forkCalls()
+		if cur == exBranch {
+			if !errors.Is(err, errForkGone) || len(calls) != 0 {
+				t.Fatalf("Send to a fork of a branch that went on: %v, fork starts %+v", err, calls)
+			}
+			continue
+		}
+		if err != nil || len(calls) != 1 || calls[0].src != through {
+			t.Fatalf("Send to a fork of a branch whose chat went on elsewhere: %v, fork starts %+v", err, calls)
+		}
+	}
+}
+
+// A fork whose first message was accepted has a session of its own, even when its turn never ended
+// and its fork source is still kept: the start goes through the adapter, which finds that session
+// and resumes it, whatever the source holds by now.
+func TestForkWithoutPointSentBeforeSourceWentOn(t *testing.T) {
+	e := newEnv(t)
+	src, id := e.oldFork()
+	srcSID := e.meta(src).SessionID
+	e.send(id, "first", "") // accepted by the fork's process; the app closes during the turn
+	e.turn(src, nil, 2)
+	e.boot()
+	if e.meta(id).ForkSource == nil {
+		t.Fatal("the fork lost its fork source without a turn end")
+	}
+	e.send(id, "again", "")
+	calls := e.claude.forkCalls()
+	if len(calls) != 1 || e.claude.count() != 0 {
+		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
+	}
+	if want := (agent.ForkSource{ChatID: src, SessionID: srcSID}); calls[0].src != want {
+		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
+	}
+	if sent := e.claude.lastFork(t).sent(); len(sent) != 1 || !reflect.DeepEqual(texts(sent[0]), []string{"again"}) {
+		t.Fatalf("the process got %v", sent)
+	}
+}
+
+// With an id the fork is cut at it on every start, whatever the source holds by now.
+func TestForkWithPointSourceWentOn(t *testing.T) {
+	e := newEnv(t)
+	src, a := e.talked(model.Claude, "", 1)
+	srcSID := e.meta(src).SessionID
+	id := e.fork(src, 3).ID // at the source's end
+	if got, want := e.claude.forkCalls()[0].src, (agent.ForkSource{ChatID: src, SessionID: srcSID, Point: "p1", End: true}); got != want {
+		t.Fatalf("first start %+v, want %+v", got, want)
+	}
+	e.turn(src, a, 2)
+	e.boot()
+	e.send(id, "hello", "")
+	calls := e.claude.forkCalls()
+	if len(calls) != 1 || e.claude.count() != 0 {
+		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
+	}
+	if want := (agent.ForkSource{ChatID: src, SessionID: srcSID, Point: "p1"}); calls[0].src != want {
+		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
+	}
+}
+
+// A fork of a fork that has no session of its own yet goes through that fork's source. Where no
+// id names the place, it is refused as that fork's own start is once the source has gone on.
+func TestForkOfForkWithoutPointSourceWentOn(t *testing.T) {
+	e := newEnv(t)
+	old, g1 := e.oldFork()
+	e.turn(old, nil, 2)
+	dirs, views := e.chatDirs(), len(e.m.Views())
+	for _, restart := range []bool{false, true} {
+		if restart {
+			e.boot()
+		}
+		n := len(e.claude.forkCalls())
+		if err := e.forkErr(g1, 2); !errors.Is(err, errForkGone) {
+			t.Fatalf("Fork of an unsent fork whose source went on (restart %v): %v", restart, err)
+		}
+		if calls := e.claude.forkCalls(); len(calls) != n {
+			t.Fatalf("a refused fork started a process: %+v", calls[n:])
+		}
+		// Nothing is left of the chat it was asked for.
+		if got := e.chatDirs(); !reflect.DeepEqual(got, dirs) || len(e.m.Views()) != views {
+			t.Fatalf("chat folders %v, want %v; %d views, want %d", got, dirs, len(e.m.Views()), views)
+		}
+		// A branch never starts at a place without an id.
+		if err := e.sendToErr(g1, Target{Branch: model.MainBranch, At: 2, New: true}); !errors.Is(err, ErrBadPoint) {
+			t.Fatalf("a new branch at the end of an unsent fork without an id: %v", err)
+		}
+	}
+}
+
+// A fork of such a fork, made at the end of its thread, is also of the whole source session, and
+// its record keeps the source's item count, not the count of the fork it was made from: that
+// thread is longer by the end mark of the turn end Claude reports when the fork starts. After a
+// restart it is refused, as that fork is, once the source has gone on by as little as one message.
+func TestForkOfForkKeepsTheSourcesCount(t *testing.T) {
+	e := newEnv(t)
+	src, g := e.oldFork()
+	e.claude.lastFork(t).emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	gItems := e.items(g)
+	if got, want := kinds(gItems), []string{"user", "text", "end"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the fork's thread %v, want %v", got, want)
+	}
+	h := e.fork(g, len(gItems)).ID
+	srcSID := e.meta(src).SessionID
+	if got, want := e.meta(h).ForkSource, (&model.ForkSource{Chat: src, Session: srcSID, Items: 2}); !reflect.DeepEqual(got, want) {
+		t.Errorf("forkSource of the fork's fork %+v, want %+v", got, want)
+	}
+
+	// The source goes on: one message, and its process ends before any reply.
+	e.send(src, "more", "")
+	e.claude.last(t).exit(t)
+	if got, want := kinds(e.items(src)), []string{"user", "text", "user", "note"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the source's thread %v, want %v", got, want)
+	}
+	e.m.Shutdown()
+	e.boot()
+
+	n := len(e.claude.forkCalls())
+	for name, id := range map[string]string{"the fork": g, "the fork's fork": h} {
+		if err := e.m.Send(id, "hello", "", nil); !errors.Is(err, errForkGone) {
+			t.Errorf("Send to %s, whose source went on: %v, want errForkGone", name, err)
+		}
+	}
+	if calls := e.claude.forkCalls(); len(calls) != n {
+		t.Errorf("a fork was started from a source that has gone on: %+v", calls[n:])
 	}
 }

@@ -24,6 +24,7 @@ const (
 	envStdin      = "PI_FAKE_STDIN"              // file the fake appends every stdin line to
 	envArgs       = "PI_FAKE_ARGS"               // file the fake writes its cwd, arguments and env to
 	envStderr     = "PI_FAKE_STDERR"             // text the fake prints to stderr when it exits
+	envStartErr   = "PI_FAKE_START_STDERR"       // text the fake prints to stderr when it starts
 	envExit       = "PI_FAKE_EXIT"               // set: exit at once (status 3) after the stderr, without reading stdin
 	envReplies    = "PI_FAKE_REPLIES"            // JSON map command → {fail, error, data, silent} reply overrides; "command#2" overrides the second call only
 	envSession    = "PI_FAKE_SESSION"            // default get_state sessionId
@@ -31,6 +32,7 @@ const (
 	envHold       = "PI_FAKE_HOLD"               // set: keep running after stdin closes (until killed)
 	envPromptOnly = "PI_FAKE_SCRIPT_PROMPT_ONLY" // set: print the script on prompts only, never on aborts
 	envEvery      = "PI_FAKE_SCRIPT_EVERY"       // set: print the script on every prompt, not only the first (never on aborts)
+	envAtEOF      = "PI_FAKE_SCRIPT_AT_EOF"      // set: print the script when stdin closes, never on a prompt or abort
 )
 
 func TestMain(m *testing.M) {
@@ -73,6 +75,9 @@ func helperProcess() {
 	})
 	os.WriteFile(os.Getenv(envArgs), rec, 0o644)
 
+	if msg := os.Getenv(envStartErr); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
 	if os.Getenv(envExit) != "" {
 		if msg := os.Getenv(envStderr); msg != "" {
 			fmt.Fprintln(os.Stderr, msg)
@@ -122,7 +127,7 @@ func helperProcess() {
 			continue
 		}
 		every := os.Getenv(envEvery) != ""
-		if (cmd.Type == "prompt" || (cmd.Type == "abort" && os.Getenv(envPromptOnly) == "" && !every)) && (!printed || every) {
+		if (cmd.Type == "prompt" || (cmd.Type == "abort" && os.Getenv(envPromptOnly) == "" && !every)) && (!printed || every) && os.Getenv(envAtEOF) == "" {
 			printed = true
 			for _, l := range script {
 				fmt.Fprintln(os.Stdout, l)
@@ -148,6 +153,11 @@ func helperProcess() {
 		}
 		b, _ := json.Marshal(resp)
 		os.Stdout.Write(append(b, '\n'))
+	}
+	if os.Getenv(envAtEOF) != "" {
+		for _, l := range script {
+			fmt.Fprintln(os.Stdout, l)
+		}
 	}
 	if os.Getenv(envHold) != "" {
 		for {

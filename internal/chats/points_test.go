@@ -14,6 +14,7 @@ func pNote() model.Item            { return model.Item{Kind: "note", Tone: "mute
 func pPerm() model.Item            { return model.Item{Kind: "perm", RequestID: "r", Decided: "allow"} }
 func pHole() model.Item            { return model.Item{} }
 func pEnd(point string) model.Item { return model.Item{Kind: "end", Point: point} }
+func pSub() model.Item             { return model.Item{Kind: "subresult", Subagent: "s1"} }
 func pTool() model.Item {
 	res := "ok"
 	return model.Item{Kind: "tool", ToolID: "t1", Name: "Read", Result: &res}
@@ -44,6 +45,22 @@ func cutTurn() []model.Item {
 		pUser(),    // 5
 		pText(),    // 6
 		pEnd("p3"), // 7
+	}
+}
+
+// deliveryTurn is a turn the app started to hand the agent a subagent's result (a subresult row,
+// no user item) between two turns of the human's.
+func deliveryTurn() []model.Item {
+	return []model.Item{
+		pUser(),    // 0
+		pText(),    // 1
+		pEnd("u1"), // 2
+		pSub(),     // 3: the delivery turn
+		pText(),    // 4
+		pEnd("u2"), // 5
+		pUser(),    // 6
+		pText(),    // 7
+		pEnd("u3"), // 8
 	}
 }
 
@@ -214,13 +231,44 @@ func TestPointOK(t *testing.T) {
 		{"pi, after the turn that follows a cut one", model.Pi, cutTurn(), 8, true},
 		{"pi, the next mark has no id", model.Pi, []model.Item{pUser(), pEnd("p1"), pUser(), pText(), pEnd("")}, 2, false},
 		{"pi, the next mark belongs to a later turn and has no id", model.Pi, cutNoID, 3, false},
-		{"pi, a turn the agent started itself is next", model.Pi, []model.Item{pUser(), pEnd("p1"), pText(), pEnd("p2")}, 2, false},
 		{"pi, after a mark with no id", model.Pi, []model.Item{pUser(), pText(), pEnd("")}, 3, false},
 		{"pi, after a reply", model.Pi, twoTurns(), 5, false},
 		{"pi, past the list", model.Pi, twoTurns(), 9, false},
+
+		// pi: a turn the app started (a delivery of subagent results) has no user item; its mark
+		// carries the id of the message the app sent.
+		{"pi, a delivery turn is next", model.Pi, deliveryTurn(), 3, true},
+		{"pi, after a delivery turn", model.Pi, deliveryTurn(), 6, true},
+		{"a delivery turn is next", model.Claude, deliveryTurn(), 3, true},
+		{"a delivery turn is next, cursor", model.Cursor, deliveryTurn(), 3, true},
+		{"after a delivery turn", model.Claude, deliveryTurn(), 6, true},
+		{"after a delivery turn, cursor", model.Cursor, deliveryTurn(), 6, true},
+		{"pi, a retried delivery turn, with no row, is next", model.Pi, []model.Item{pUser(), pEnd("p1"), pText(), pEnd("p2")}, 2, true},
+		{"pi, a delivery turn with a tool call is next", model.Pi, []model.Item{pUser(), pEnd("p1"), pSub(), pTool(), pText(), pEnd("p2")}, 2, true},
+		{"pi, a message that carries a result is next", model.Pi, []model.Item{pUser(), pText(), pEnd("p1"), pSub(), pUser(), pText(), pEnd("p2")}, 3, true},
+		{"pi, a delivery turn's mark repeats the id before the point", model.Pi, []model.Item{pUser(), pText(), pEnd("p1"), pSub(), pText(), pEnd("p1")}, 3, false},
+		{"pi, a retried delivery turn's mark repeats the id before the point", model.Pi, []model.Item{pUser(), pEnd("p1"), pText(), pEnd("p1")}, 2, false},
+		{"pi, a delivery turn's mark has no id", model.Pi, []model.Item{pUser(), pText(), pEnd("p1"), pSub(), pText(), pEnd("")}, 3, false},
+		{"pi, a delivery turn with no mark is next", model.Pi, []model.Item{pUser(), pText(), pEnd("p1"), pSub(), pText()}, 3, false},
+		{"pi, a delivery turn cut without a mark, then a message", model.Pi, []model.Item{pUser(), pText(), pEnd("p1"), pSub(), pText(), pNote(), pUser(), pText(), pEnd("p3")}, 3, false},
+		{"pi, a tool call cut without a mark, then a message", model.Pi, []model.Item{pUser(), pText(), pEnd("p1"), pTool(), pNote(), pUser(), pText(), pEnd("p3")}, 3, false},
+		{"pi, a turn cut without a mark, then a message and a delivery turn", model.Pi, append(cutTurn(), pSub(), pText(), pEnd("p4")), 3, false},
+		{"pi, a delivery turn after the turn that follows a cut one", model.Pi, append(cutTurn(), pSub(), pText(), pEnd("p4")), 8, true},
 	} {
 		if got := pointOK(tc.agent, tc.items, tc.count); got != tc.want {
 			t.Errorf("%s: pointOK(%s, %d) = %v, want %v", tc.name, tc.agent, tc.count, got, tc.want)
 		}
+	}
+}
+
+// pi forks the end of a turn with the id on the next turn's mark: before a delivery turn that is
+// the id of the message the app sent.
+func TestForkSourceBeforeDeliveryTurn(t *testing.T) {
+	meta := model.ChatMeta{ID: "c", SessionID: "s", Agent: model.Pi}
+	if src := forkSourceOf(meta, deliveryTurn(), 3); src.Point != "u1" || src.Next != "u2" || src.End {
+		t.Errorf("fork source at 3: %+v, want point u1, next u2, not the end", src)
+	}
+	if src := forkSourceOf(meta, deliveryTurn(), 6); src.Point != "u2" || src.Next != "u3" || src.End {
+		t.Errorf("fork source at 6: %+v, want point u2, next u3, not the end", src)
 	}
 }

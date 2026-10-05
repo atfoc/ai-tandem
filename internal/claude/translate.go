@@ -93,7 +93,8 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 				win = int(num(obj(u)["contextWindow"]))
 			}
 		}
-		aborted := m["terminal_reason"] == "aborted_streaming"
+		// "aborted_streaming" or "aborted_tools", by what the interrupt cut.
+		aborted := strings.HasPrefix(str(m["terminal_reason"]), "aborted_")
 		isErr, _ := m["is_error"].(bool)
 		errText := ""
 		if isErr && !aborted {

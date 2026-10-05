@@ -102,6 +102,9 @@ func TestBranchTokenArchivedChat(t *testing.T) {
 	if text, isErr := e.relay.Call(testBranchToken, "list_boards", nil); !isErr || text != "this chat is archived" {
 		t.Fatalf("Relay.Call: got %q isErr=%v", text, isErr)
 	}
+	if names := e.listNames(testBranchToken); len(names) != 0 {
+		t.Fatalf("the archived chat's branch lists %v", names)
+	}
 	if err := e.relay.Chats.SetArchive(e.chat, model.Archive{}); err != nil {
 		t.Fatal(err)
 	}

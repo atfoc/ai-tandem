@@ -239,8 +239,13 @@ export type Target = { branch: string; at: number; new: boolean };
 export type Held = { text: string; mentions: { name: string; id: string }[]; references: Reference[] };
 
 /** A move chosen and not sent yet: held is what the composer held before it (for Back), put what
- *  the move put there (Branch and edit: the message and its quotes), null when it put nothing. */
-export type PendingMove = Target & { held: Held; put: Held | null };
+ *  the move put there (Branch and edit: the message and its quotes), null when it put nothing.
+ *  typed: what the composer held when it went away (another chat was opened), until it opens again;
+ *  while the move is being sent, only when it held anything: the move's end makes that the chat's
+ *  draft. After a Send that failed with no composer open it is the message that was not sent.
+ *  hid: the quotes the moves took out of the composer (they name another message past the point):
+ *  Back gives them back, and tells them from the ones the user removed. */
+export type PendingMove = Target & { held: Held; put: Held | null; typed?: Held; hid?: Reference[] };
 
 export type SubStatus = "running" | "completed" | "failed" | "stopped";
 

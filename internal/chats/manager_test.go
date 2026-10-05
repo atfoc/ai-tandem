@@ -309,6 +309,58 @@ func (a *fakeAgent) isClosed() bool {
 	return a.closed
 }
 
+// gatedAgent is an agent whose Send waits for gate to close, as pi's does for an RPC ack and
+// Cursor's for its handshake. entered is closed when a Send is waiting.
+type gatedAgent struct {
+	agent.Agent
+	once    sync.Once
+	entered chan struct{}
+	gate    chan struct{}
+}
+
+func (g *gatedAgent) Send(b []agent.ContentBlock) error {
+	g.once.Do(func() { close(g.entered) })
+	<-g.gate
+	return g.Agent.Send(b)
+}
+
+// gatingForker is a fakeSpawner whose fork starts give a gatedAgent: the message a fork start is
+// made for is held at the new process.
+type gatingForker struct {
+	*fakeSpawner
+	started chan *gatedAgent
+}
+
+func gating(s *fakeSpawner) *gatingForker {
+	return &gatingForker{fakeSpawner: s, started: make(chan *gatedAgent, 1)}
+}
+
+func (s *gatingForker) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.Agent, string, error) {
+	ag, sid, err := s.fakeSpawner.SpawnFork(o, src)
+	if err != nil {
+		return nil, "", err
+	}
+	g := &gatedAgent{Agent: ag, entered: make(chan struct{}), gate: make(chan struct{})}
+	s.started <- g
+	return g, sid, nil
+}
+
+// waiting returns the agent of the fork start once its Send is waiting.
+func (s *gatingForker) waiting(t *testing.T) *gatedAgent {
+	t.Helper()
+	select {
+	case g := <-s.started:
+		select {
+		case <-g.entered:
+			return g
+		case <-time.After(5 * time.Second):
+		}
+	case <-time.After(5 * time.Second):
+	}
+	t.Fatal("no message reached the process of a fork start")
+	return nil
+}
+
 // splitAgent is a fakeAgent that answers ContextSplit, as Claude's process does.
 type splitAgent struct {
 	*fakeAgent
@@ -1471,12 +1523,17 @@ func TestMissingFolderFix(t *testing.T) {
 		t.Fatalf("Configure with a model on a locked chat: %v", err)
 	}
 	newDir := t.TempDir()
+	evs := listen(t, e.br)
+	evs.drain(t, e.br)
 	if err := e.m.Configure(v.ID, ConfigReq{Cwd: newDir}); err != nil {
 		t.Fatal(err)
 	}
 	got = e.view(v.ID)
 	if got.FolderMissing || got.Error != "" || got.Status != model.StatusReady || got.Cwd != newDir {
 		t.Fatalf("view after fix %+v", got)
+	}
+	if sent := evs.drain(t, e.br); len(sent) != 2 || len(ofType(sent, "chat")) != 1 || len(ofType(sent, "defaults")) != 1 {
+		t.Fatalf("events of the fix %+v", sent)
 	}
 	e.send(v.ID, "two", "")
 	if o := e.claude.last(t).opts; !o.Resume || o.SessionID != sid || o.Cwd != newDir {

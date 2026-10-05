@@ -772,9 +772,15 @@ func TestAddSubResult(t *testing.T) {
 	tr.Apply(agent.Event{Kind: agent.EvTurnEnd})
 	v := tr.Version()
 
+	if tr.HasSubResult("s1") {
+		t.Fatal("a row before any was added")
+	}
 	ups := tr.AddSubResult("s1")
 	if len(ups) != 1 || ups[0].Index != 1 || !reflect.DeepEqual(ups[0].Item, model.Item{Kind: "subresult", Subagent: "s1"}) {
 		t.Fatalf("updates %+v", ups)
+	}
+	if !tr.HasSubResult("s1") || tr.HasSubResult("s2") {
+		t.Fatalf("rows known: s1 %v, s2 %v", tr.HasSubResult("s1"), tr.HasSubResult("s2"))
 	}
 	if tr.Version() != v+1 || status(tr) != model.StatusReady || tr.Sent() != 1 {
 		t.Fatalf("version %d status %q sent %d", tr.Version(), status(tr), tr.Sent())
@@ -797,6 +803,9 @@ func TestAddSubResult(t *testing.T) {
 	}
 	if !reflect.DeepEqual(items(back), items(tr)) {
 		t.Fatalf("loaded %+v, want %+v", items(back), items(tr))
+	}
+	if !back.HasSubResult("s1") || !back.HasSubResult("s2") || back.HasSubResult("s3") {
+		t.Fatal("the rows are not known after a load")
 	}
 	if ups := back.AddSubResult("s2"); ups != nil || len(items(back)) != 3 {
 		t.Fatalf("row added again after a load %+v", ups)

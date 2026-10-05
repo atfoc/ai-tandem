@@ -20,13 +20,16 @@
 // The extension presents only the per-run bridge handle (AIWB_BRIDGE_RUN), an
 // internal, non-secret identifier; the board token reaches pi only inside the
 // MCP config's Authorization header (AIWB_MCP_CONFIG), never in argv or a URL.
-// Protocol/mcp/mcp-wiring are dependency-free
+// Both, and the other app handles, are taken out of process.env on the first
+// read (app-env.ts) so the shell commands pi runs do not inherit them.
+// Protocol/mcp/mcp-wiring/app-env are dependency-free
 // modules so they stay testable without pi or typebox.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { callBridge, openControl } from "./protocol.ts";
 import { handleToolCall } from "./permissions.ts";
+import { takeAppEnv } from "./app-env.ts";
 import {
   autoAllowedToolNames,
   makeNoticeSink,
@@ -105,9 +108,12 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
   });
 
   // 2. The bridge environment decides only the app-facing wiring; the MCP
-  // lifecycle below runs with or without it.
-  const socketPath = process.env.AIWB_BRIDGE_SOCKET ?? "";
-  const run = process.env.AIWB_BRIDGE_RUN ?? "";
+  // lifecycle below runs with or without it. The app's variables leave
+  // process.env here; pi runs this factory again on a fork or a new session,
+  // and that run gets the kept values (app-env.ts).
+  const appEnv = takeAppEnv();
+  const socketPath = appEnv.AIWB_BRIDGE_SOCKET ?? "";
+  const run = appEnv.AIWB_BRIDGE_RUN ?? "";
   const bridgePresent = socketPath !== "" && run !== "";
 
   // 3. MCP lifecycle: connect/discover/register/close regardless of the bridge
@@ -151,7 +157,7 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
     // Defensive: session_shutdown normally closes the previous session's
     // clients; never leak them on a reload/new/resume/fork edge.
     resetMCP();
-    const selection = selectMCPConfig(pi.getFlag("mcp-config"), process.env.AIWB_MCP_CONFIG);
+    const selection = selectMCPConfig(pi.getFlag("mcp-config"), appEnv.AIWB_MCP_CONFIG);
     if (selection.source === "none") return;
     const bootstrap = await startMCP({
       selection,

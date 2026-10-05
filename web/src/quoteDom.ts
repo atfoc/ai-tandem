@@ -117,11 +117,26 @@ export function caretAt(x: number, y: number): { node: Node; offset: number } | 
 const highlights = () => (CSS as any).highlights as Map<string, unknown> | undefined;
 const Highlight = () => (window as any).Highlight as (new (...r: Range[]) => unknown) | undefined;
 
+/** range as it is painted: in parts, around the code-block headers inside it, which are not
+ *  part of a message's displayed text. */
+function painted(range: Range): Range[] {
+  const root = range.commonAncestorContainer, out: Range[] = [];
+  const rest = range.cloneRange();
+  for (const head of root instanceof Element ? root.querySelectorAll(SKIP) : []) {
+    if (!rest.intersectsNode(head)) continue;
+    const part = rest.cloneRange();
+    part.setEndBefore(head);
+    if (!part.collapsed) out.push(part);
+    rest.setStartAfter(head);
+  }
+  return [...out, rest];
+}
+
 /** Marks the passages quoted in the composer's draft (styles.css: ::highlight(aiwb-pending)). */
 export function markPending(ranges: Range[]) {
   const hl = highlights(), H = Highlight();
   if (!hl || !H) return;
-  if (ranges.length) hl.set("aiwb-pending", new H(...ranges)); else hl.delete("aiwb-pending");
+  if (ranges.length) hl.set("aiwb-pending", new H(...ranges.flatMap(painted))); else hl.delete("aiwb-pending");
 }
 
 // ---- showing a reference
@@ -143,7 +158,7 @@ function flash(range: Range) {
   if (!hl || !H) return;
   cancelAnimationFrame(frame);
   paint(1);
-  hl.set(FLASH, new H(range));
+  hl.set(FLASH, new H(...painted(range)));
   const t0 = performance.now();
   const step = (now: number) => {
     const t = now - t0;

@@ -458,3 +458,103 @@ func TestSocketPathFallback(t *testing.T) {
 		t.Fatalf("fallback dir %q lacks aiwb- prefix", filepath.Dir(got))
 	}
 }
+
+func TestCloseRemovesFallbackDir(t *testing.T) {
+	long := filepath.Join(t.TempDir(), strings.Repeat("a", 200))
+	path := SocketPath(long)
+	dir := filepath.Dir(path)
+	if dir == long {
+		t.Fatal("long root did not fall back")
+	}
+	t.Cleanup(func() { os.Remove(path); os.Remove(dir) })
+
+	b := New(path)
+	if err := b.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("fallback dir missing after Start: %v", err)
+	}
+	b.Close()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("fallback dir still present after Close: %v", err)
+	}
+
+	// A restart on the same root creates the folder again.
+	b2 := New(SocketPath(long))
+	if err := b2.Start(); err != nil {
+		t.Fatalf("Start after Close: %v", err)
+	}
+	b2.Close()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("fallback dir still present after the second Close: %v", err)
+	}
+}
+
+func TestCloseKeepsNonEmptyFallbackDir(t *testing.T) {
+	long := filepath.Join(t.TempDir(), strings.Repeat("b", 200))
+	path := SocketPath(long)
+	dir := filepath.Dir(path)
+	other := filepath.Join(dir, "other")
+	t.Cleanup(func() { os.Remove(other); os.Remove(path); os.Remove(dir) })
+
+	b := New(path)
+	if err := b.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("Close removed a file it does not own: %v", err)
+	}
+}
+
+func TestCloseKeepsDataRoot(t *testing.T) {
+	// A short root keeps the socket inside it and must survive Close even when
+	// empty, also when it sits in os.TempDir() under an aiwb- name.
+	root, err := os.MkdirTemp("", "aiwb-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	path := SocketPath(root)
+	if path != filepath.Join(root, "bridge.sock") {
+		t.Skipf("os.TempDir %q is too long for a socket inside the root", os.TempDir())
+	}
+
+	b := New(path)
+	if err := b.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	b.Close()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("socket still present after Close: %v", err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("Close removed the data root: %v", err)
+	}
+}
+
+func TestIsFallbackDir(t *testing.T) {
+	tmp := filepath.Clean(os.TempDir())
+	long := filepath.Join(tmp, strings.Repeat("a", 200))
+	for _, c := range []struct {
+		dir  string
+		want bool
+	}{
+		{filepath.Dir(SocketPath(long)), true},
+		{filepath.Join(tmp, "aiwb-0123456789abcdef"), true},
+		{tmp, false},
+		{filepath.Join(tmp, "aiwb-e2e-home-sdavbU"), false},
+		{filepath.Join(tmp, "aiwb-0123456789abcdeg"), false},
+		{filepath.Join(tmp, "aiwb-0123456789abcdef0"), false},
+		{filepath.Join(tmp, "x", "aiwb-0123456789abcdef"), false},
+		{filepath.Join(tmp, "data-0123456789abcdef"), false},
+	} {
+		if got := isFallbackDir(c.dir); got != c.want {
+			t.Errorf("isFallbackDir(%q) = %v, want %v", c.dir, got, c.want)
+		}
+	}
+}

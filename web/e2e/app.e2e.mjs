@@ -67,6 +67,10 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-run-"));
 const WORK = path.join(OUT, "work");
 const LOG = path.join(OUT, "server.log");
 const dir = (...p) => { const d = path.join(WORK, ...p); fs.mkdirSync(d, { recursive: true }); return d; };
+// Step 18's long-running subagent loops in a shell until this file exists; the run makes it once
+// the Stop part is over, and again at the end, so a loop that outlived a failed run ends by itself.
+const STOP_GATE = path.join(WORK, "stop-while-waiting-gate");
+const openStopGate = () => { try { fs.writeFileSync(STOP_GATE, ""); } catch { /* the folder is gone */ } };
 
 // The copy of the user's Cursor CLI config; every process the run starts inherits it.
 const CURSOR_CFG = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-cursor-"));
@@ -482,6 +486,7 @@ async function openTab() {
   const page = await context.newPage();
   page.on("request", (r) => { const id = r.headers()["x-aiwb-client"]; if (id) clientIds.set(page, id); });
   page.on("pageerror", (e) => log(`    [page error] ${e.message}`));
+  page.on("console", (m) => { if (m.type() === "error") log(`    [console error] ${m.text()}`); });
   await page.goto(BASE + "/");
   shotPage = page;
   return page;
@@ -552,9 +557,10 @@ async function pickFolder(page, chatId, folder) {
   await page.locator(".dir-list").waitFor(); // the browser has loaded its first listing
   const input = page.locator(".dir-input");
   await input.fill(folder);
-  await page.locator(".dir-sub", { hasText: path.basename(folder) }).first().waitFor().catch(() => {});
   await input.press("Enter");
-  await page.locator(".dir-foot button", { hasText: `Use ${path.basename(folder)}` }).click();
+  // The button reads "Use <name>" only once the typed folder's listing has loaded, so the click waits for it.
+  const name = path.basename(folder).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await page.locator(".dir-foot button", { hasText: new RegExp(`^Use ${name}$`) }).click();
   await waitFor(`the chat's folder is ${folder}`, async () => { const v = await chatView(chatId); return v.cwd === folder || saw(`cwd ${v.cwd}`); });
 }
 
@@ -1156,9 +1162,11 @@ async function run() {
     await waitFor("the drawer closes", async () => (await drawer.count()) === 0, { timeout: 5000 });
 
     // Stop while waiting. The two subagents above finished at once, so one more is spawned that
-    // runs long; the thread has no "Stopped." note so far (checked above). Claude Code refuses a
-    // standalone `sleep` (the subagent would end at once) and asks before a `ping`.
-    const b3 = await send(page, ids.claudeSubs, "Spawn one more subagent via spawn_subagent. It should run the shell command `sleep 100; echo done` in the foreground and then reply done.");
+    // runs long; the thread has no "Stopped." note so far (checked above). It loops in a shell
+    // until a gate file exists: Claude Code refuses a `sleep N`, alone and followed by another
+    // command (the subagent would end at once), and asks before a `ping`. Stop comes only once the
+    // loop's process is seen, so the process checks after Stop cover a command that really runs.
+    const b3 = await send(page, ids.claudeSubs, `Spawn one more subagent via spawn_subagent. It should run this exact shell command in the foreground with timeout 300000, wait for it to finish, and then reply done: until [ -f ${STOP_GATE} ]; do sleep 2; done; echo done`);
     const rowStates = async () => rows.evaluateAll((els) => els.map((e) => ({
       mark: e.querySelector(".sub-mark")?.textContent ?? "", cls: e.className, line: e.querySelector(".sub-line")?.textContent ?? "",
     })));
@@ -1166,11 +1174,19 @@ async function run() {
       const now = await rowStates();
       return now.length === 3 && /st-running/.test(now[2].cls) ? now : saw(now);
     }, { timeout: TURN_TIMEOUT, every: 200 });
+    const loop = await waitFor("the third subagent's shell loop is running", async () => {
+      const now = pgrep(STOP_GATE), r = await rowStates();
+      if (!now.length && !/st-running/.test(r[2]?.cls ?? "")) throw new Fail("the third row is still running while its loop is awaited", r);
+      return now.length > 0 ? now : saw(r);
+    }, { timeout: TURN_TIMEOUT });
+    log(`    the loop: ${loop.map((pid) => `${pid} ${argsOf(pid)}`).join(" | ")}`);
     await stopWhileWaiting(page, ids.claudeSubs, b3, 1, async (when) => {
       const ok = (now) => now.length === 3 && now.slice(0, 2).every((r) => r.mark === "✓") && now[2].mark === "■" && /st-stopped/.test(now[2].cls) && now[2].line === "Stopped";
       const now = await waitFor(`the third row shows ■ and "Stopped" ${when}, the first two stay ✓`, async () => { const r = await rowStates(); return ok(r) ? r : saw(r); }, { timeout: 30_000 });
       check(ok(now), `the running row is stopped ${when}`, now);
     });
+    check(pgrep(STOP_GATE).length === 0, "no process of the loop is left", pgrep(STOP_GATE).map((pid) => `${pid} ${argsOf(pid)}`));
+    openStopGate();
   });
 
   const step19Title = "Cursor subagents: meters while running; Stop while waiting stops both and starts no turn; still stopped after a reload";
@@ -1321,6 +1337,7 @@ try {
 } finally {
   await browser?.close().catch(() => {});
   await stopServer().catch(() => {});
+  openStopGate();
   fs.rmSync(CURSOR_CFG, { recursive: true, force: true });
   fs.rmSync(ACP_LOG, { force: true }); // never leave the adapter trace behind
 }

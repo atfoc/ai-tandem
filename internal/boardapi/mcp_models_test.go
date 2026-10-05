@@ -409,7 +409,8 @@ func TestListModelsNotKnown(t *testing.T) {
 		want := []string{
 			fmt.Sprintf("%s: the model list is not known to the app yet. It becomes known when the app reads it at start or when a %s chat starts.", a, a),
 			fmt.Sprintf("Until then spawn_subagent does not check model or effort for %s: it passes them on as given, unchecked.", a),
-			"Model omitted -> this chat's model sonnet and effort high are passed on unchecked.",
+			// Another agent never gets this chat's sonnet and high.
+			fmt.Sprintf("Model omitted -> no model or effort is named, so %s uses its own defaults.", a),
 		}
 		// The filter is ignored.
 		for _, args := range []string{`{"agent":%q}`, `{"agent":%q,"filter":"gpt"}`} {
@@ -427,21 +428,43 @@ func TestListModelsNotKnown(t *testing.T) {
 		if _, dModel, dEffort, err := e.relay.Chats.SpawnDefaults(id, a); err != nil || dModel != "" || dEffort != "" {
 			t.Fatalf("%s chat: SpawnDefaults %q %q, %v", a, dModel, dEffort, err)
 		}
-		want[2] = fmt.Sprintf("Model omitted -> no model or effort is named, so %s uses its own defaults.", a)
 		if got := e.modelLines(tok, `{}`); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s chat: %q, want %q", a, got, want)
 		}
+
+		// Its own model and effort are passed on to a subagent of its own kind.
+		own := string(a) + "/own"
+		if err := e.relay.Chats.Configure(id, chats.ConfigReq{Model: own}); err != nil {
+			t.Fatal(err)
+		}
+		want[2] = fmt.Sprintf("Model omitted -> this chat's model %s is passed on unchecked; no effort is named, so %s uses its own default effort.", own, a)
+		if got := e.modelLines(tok, `{}`); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s chat with a model: %q, want %q", a, got, want)
+		}
+		// That model is now the one last picked for a chat of that kind, which is what a chat
+		// of another kind passes on: the line is what SpawnDefaults resolves.
+		want[2] = fmt.Sprintf("Model omitted -> %s, last picked for a %s chat, is passed on unchecked; no effort is named, so %s uses its own default effort.", own, a, a)
+		if got := e.modelLines(e.token, fmt.Sprintf(`{"agent":%q}`, a)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s from a Claude chat, a model picked: %q, want %q", a, got, want)
+		}
+		if err := e.relay.Chats.Configure(id, chats.ConfigReq{Effort: "low"}); err != nil {
+			t.Fatal(err)
+		}
+		want[2] = fmt.Sprintf("Model omitted -> this chat's model %s and effort low are passed on unchecked.", own)
+		if got := e.modelLines(tok, `{}`); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s chat with a model and an effort: %q, want %q", a, got, want)
+		}
+		want[2] = fmt.Sprintf("Model omitted -> %s and effort low, last picked for a %s chat, are passed on unchecked.", own, a)
+		if got := e.modelLines(e.token, fmt.Sprintf(`{"agent":%q}`, a)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s from a Claude chat, a model and an effort picked: %q, want %q", a, got, want)
+		}
+		if _, dModel, dEffort, err := e.relay.Chats.SpawnDefaults(e.chat, a); err != nil || dModel != own || dEffort != "low" {
+			t.Fatalf("%s from a Claude chat: SpawnDefaults %q %q, %v", a, dModel, dEffort, err)
+		}
 	}
 
-	// A chat with a model and no effort.
-	if err := e.relay.Chats.Configure(e.chat, chats.ConfigReq{Model: "haiku"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := e.modelLines(e.token, `{"agent":"pi"}`)[2]; got != "Model omitted -> this chat's model haiku is passed on unchecked; no effort is named, so pi uses its own default effort." {
-		t.Fatalf("model, no effort: %q", got)
-	}
-	// A chat with an effort and no model.
-	if got := unknownListLines(model.Cursor, "", "high")[2]; got != "Model omitted -> no model is named, so cursor uses its own default model; this chat's effort high is passed on unchecked." {
+	// A chat with an effort and no model, asked about its own kind.
+	if got := unknownListLines(model.Cursor, true, "", "high")[2]; got != "Model omitted -> no model is named, so cursor uses its own default model; this chat's effort high is passed on unchecked." {
 		t.Fatalf("effort, no model: %q", got)
 	}
 
@@ -789,13 +812,10 @@ func TestListModelsOverview(t *testing.T) {
 		if i > 0 && strings.Split(groups[i-1], ": ")[0] >= name {
 			t.Fatalf("group %q after %q", name, groups[i-1])
 		}
-		// The ids are shown for a prefix that begins another one, and only for it.
-		begins := false
-		for q := range prefixes {
-			begins = begins || q != name && strings.HasPrefix(q, name)
-		}
-		if withIDs != begins || withIDs && len(strings.Split(ids, ", ")) != prefixes[name] {
-			t.Fatalf("group line %q: ids shown %v, the prefix begins another %v", l, withIDs, begins)
+		// The ids are shown for a prefix that as a filter matches a model outside its group, and only for it.
+		outside := slices.ContainsFunc(matchModels(big.Models, name), func(m model.CatalogModel) bool { return idPrefix(m.ID) != name })
+		if withIDs != outside || withIDs && len(strings.Split(ids, ", ")) != prefixes[name] {
+			t.Fatalf("group line %q: ids shown %v, the prefix as a filter matches a model outside its group %v", l, withIDs, outside)
 		}
 		total += prefixes[name]
 	}
@@ -803,7 +823,7 @@ func TestListModelsOverview(t *testing.T) {
 		t.Fatalf("the groups hold %d of %d models", total, n)
 	}
 	for _, want := range []string{
-		"anthropic: 4 models",
+		"anthropic: 4 models: anthropic/claude-opus-4, anthropic/claude-opus-4-1, anthropic/claude-opus-5, anthropic/claude-opus-5-5",
 		"google: 7 models: google/m-001, google/m-002, google/m-003, google/m-004, google/m-005, google/m-006, google/m-007",
 		"google-vertex: 4 models",
 		"openrouter: 1 model: openrouter/auto",
@@ -896,6 +916,101 @@ func TestListModelsOverview(t *testing.T) {
 	}
 	if lines = e.modelLines(e.token, `{"agent":"pi","filter":"local-1"}`); len(lines) != 4 || lines[3] != "local-1 (Local 1): takes no effort; omit effort" {
 		t.Fatalf("filter local-1: %q", lines)
+	}
+}
+
+// The filter matches anywhere in an id, so a prefix that occurs inside another one ("openai" in
+// "openrouter/openai") cannot isolate its models: a filter set to it can be over the cap again.
+// The overview shows that group's ids, and such an id is a filter that lists the model's efforts.
+func TestListModelsOverviewPrefixInsideAnother(t *testing.T) {
+	e := newEnv(t)
+	var models []model.CatalogModel
+	var ids []string
+	for _, p := range []string{"openai", "openrouter/openai", "zeta"} {
+		for i := range 40 {
+			models = append(models, model.CatalogModel{ID: fmt.Sprintf("%s/m-%02d", p, i), Efforts: []string{"low", "high"}, DefaultEffort: "low"})
+			if p == "openai" {
+				ids = append(ids, models[len(models)-1].ID)
+			}
+		}
+	}
+	e.storeCatalog(model.Pi, &model.Catalog{Models: models, Default: model.ModelChoice{Model: models[0].ID, Effort: "low"}})
+	groups := []string{"openai: 40 models: " + strings.Join(ids, ", "), "openrouter/openai: 40 models", "zeta: 40 models", overviewTail}
+
+	lines := e.modelLines(e.token, `{"agent":"pi"}`)
+	if lines[0] != "pi: 120 models, more than 60, so they are not listed here. Models per id prefix:" || !reflect.DeepEqual(lines[3:], groups) {
+		t.Fatalf("the overview: %q, want the groups %q", lines, groups)
+	}
+	// The prefix as the filter is over the cap again; its answer shows the ids as well.
+	lines = e.modelLines(e.token, `{"agent":"pi","filter":"openai"}`)
+	if lines[0] != `pi: 80 of 120 models match filter "openai", more than 60, so they are not listed here. Matches per id prefix:` ||
+		!reflect.DeepEqual(lines[3:], append(groups[:2:2], overviewTail)) {
+		t.Fatalf("filter openai: %q", lines)
+	}
+	want := []string{"openai/m-07: low, high; default low", "openrouter/openai/m-07: low, high; default low"}
+	if lines = e.modelLines(e.token, `{"agent":"pi","filter":"openai/m-07"}`); lines[0] != `pi: 2 of 120 models match filter "openai/m-07".` || !reflect.DeepEqual(lines[3:], want) {
+		t.Fatalf("filter openai/m-07: %q, want the rows %q", lines, want)
+	}
+}
+
+// The filter matches labels too, so a prefix that occurs in the labels of another group ("openai"
+// in "OpenAI GPT 03" under "github-copilot") cannot isolate its models either. The overview shows
+// that group's ids, also in the answer to the prefix as the filter.
+func TestListModelsOverviewPrefixInLabels(t *testing.T) {
+	e := newEnv(t)
+	var models []model.CatalogModel
+	var ids []string
+	for i := range 45 {
+		models = append(models, model.CatalogModel{ID: fmt.Sprintf("openai/m-%02d", i), Label: fmt.Sprintf("M %02d", i), Efforts: []string{"low", "high"}, DefaultEffort: "low"})
+		ids = append(ids, models[i].ID)
+	}
+	for i := range 20 {
+		models = append(models, model.CatalogModel{ID: fmt.Sprintf("github-copilot/gpt-%02d", i), Label: fmt.Sprintf("OpenAI GPT %02d", i)})
+	}
+	for i := range 5 {
+		models = append(models, model.CatalogModel{ID: fmt.Sprintf("github-copilot/claude-%02d", i), Label: fmt.Sprintf("Claude %02d", i)})
+	}
+	e.storeCatalog(model.Pi, &model.Catalog{Models: models, Default: model.ModelChoice{Model: models[0].ID, Effort: "low"}})
+	openai := "openai: 45 models: " + strings.Join(ids, ", ")
+
+	lines := e.modelLines(e.token, `{"agent":"pi"}`)
+	if want := []string{"github-copilot: 25 models", openai, overviewTail}; lines[0] != "pi: 70 models, more than 60, so they are not listed here. Models per id prefix:" || !reflect.DeepEqual(lines[3:], want) {
+		t.Fatalf("the overview: %q, want the groups %q", lines, want)
+	}
+	// The prefix as the filter is over the cap again; its answer shows the ids as well.
+	lines = e.modelLines(e.token, `{"agent":"pi","filter":"openai"}`)
+	if want := []string{"github-copilot: 20 models", openai, overviewTail}; lines[0] != `pi: 65 of 70 models match filter "openai", more than 60, so they are not listed here. Matches per id prefix:` || !reflect.DeepEqual(lines[3:], want) {
+		t.Fatalf("filter openai: %q, want the groups %q", lines, want)
+	}
+	if lines = e.modelLines(e.token, `{"agent":"pi","filter":"openai/m-07"}`); len(lines) != 4 || lines[3] != "openai/m-07 (M 07): low, high; default low" {
+		t.Fatalf("filter openai/m-07: %q", lines)
+	}
+}
+
+// The filter ignores letter case, so a prefix that differs from a part of another one only by
+// case ("OpenAI" and "proxy/openai") cannot isolate its models either: the overview shows its ids.
+func TestListModelsOverviewPrefixInAnotherCase(t *testing.T) {
+	e := newEnv(t)
+	var models []model.CatalogModel
+	var ids []string
+	for i := range 40 {
+		models = append(models, model.CatalogModel{ID: fmt.Sprintf("OpenAI/m-%02d", i)}, model.CatalogModel{ID: fmt.Sprintf("proxy/openai/m-%02d", i)})
+		ids = append(ids, fmt.Sprintf("OpenAI/m-%02d", i))
+	}
+	e.storeCatalog(model.Pi, &model.Catalog{Models: models, Default: model.ModelChoice{Model: models[0].ID}})
+	groups := []string{"OpenAI: 40 models: " + strings.Join(ids, ", "), "proxy/openai: 40 models", overviewTail}
+
+	for args, header := range map[string]string{
+		`{"agent":"pi"}`:                   "pi: 80 models, more than 60, so they are not listed here. Models per id prefix:",
+		`{"agent":"pi","filter":"OpenAI"}`: `pi: 80 of 80 models match filter "OpenAI", more than 60, so they are not listed here. Matches per id prefix:`,
+	} {
+		if lines := e.modelLines(e.token, args); lines[0] != header || !reflect.DeepEqual(lines[3:], groups) {
+			t.Fatalf("%s: %q, want %q and the groups %q", args, lines, header, groups)
+		}
+	}
+	want := []string{"OpenAI/m-07: takes no effort; omit effort", "proxy/openai/m-07: takes no effort; omit effort"}
+	if lines := e.modelLines(e.token, `{"agent":"pi","filter":"OpenAI/m-07"}`); !reflect.DeepEqual(lines[3:], want) {
+		t.Fatalf("filter OpenAI/m-07: %q, want the rows %q", lines, want)
 	}
 }
 

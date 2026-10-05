@@ -200,6 +200,48 @@ func TestToolsListMatrix(t *testing.T) {
 	}
 }
 
+// An archived chat and a legacy chat are refused every call, so they are listed no tools: the
+// listing agrees with the refusal. A subagent's token follows its chat.
+func TestToolsListArchivedAndLegacy(t *testing.T) {
+	e := newEnv(t)
+	_, plainTok := e.createPlain()
+	if text, isErr, _ := e.toolsCall(e.token, "spawn_subagent", `{"prompt":"board child"}`); isErr {
+		t.Fatalf("spawn: %q", text)
+	}
+	subTok := e.claude.last(t).opts.MCP.Token
+	if len(e.listNames(e.token)) == 0 || len(e.listNames(subTok)) == 0 {
+		t.Fatal("setup: the board chat or its subagent lists no tools")
+	}
+
+	if err := e.relay.Chats.SetArchive(e.chat, model.Archive{Archived: true, Op: "op1"}); err != nil {
+		t.Fatal(err)
+	}
+	for who, tok := range map[string]string{"archived chat": e.token, "subagent of an archived chat": subTok} {
+		if got := e.listNames(tok); len(got) != 0 {
+			t.Fatalf("%s: listed %v", who, got)
+		}
+		if text, isErr, _ := e.toolsCall(tok, "list_boards", `{}`); !isErr || text != "this chat is archived" {
+			t.Fatalf("%s: list_boards %q isErr=%v", who, text, isErr)
+		}
+	}
+	// Another chat is not affected, and the listing comes back with the chat.
+	if got := e.listNames(plainTok); !joinEq(got, namesOf(boardtools.SpawnFamily)) {
+		t.Fatalf("plain chat next to an archived one: %v", got)
+	}
+	if err := e.relay.Chats.SetArchive(e.chat, model.Archive{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.listNames(e.token); len(got) != len(boardtools.Tools)+len(boardtools.SpawnFamily) {
+		t.Fatalf("after unarchive: %v", got)
+	}
+
+	e2 := newEnv(t)
+	markLegacyAndReload(t, e2)
+	if got := e2.listNames(e2.token); len(got) != 0 {
+		t.Fatalf("legacy chat: listed %v", got)
+	}
+}
+
 func joinEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

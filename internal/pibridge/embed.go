@@ -9,7 +9,8 @@ import (
 )
 
 // extensionFS is the embedded pi extension asset (index.ts, protocol.ts,
-// mcp.ts, mcp-wiring.ts, permissions.ts, subagent.ts and the Node tests).
+// mcp.ts, mcp-wiring.ts, permissions.ts, app-env.ts, subagent.ts and the Node
+// tests).
 //
 //go:embed extension
 var extensionFS embed.FS

@@ -238,3 +238,98 @@ func TestContextSplitSharedRun(t *testing.T) {
 		}
 	}
 }
+
+// A Claude fork has no session of its own until its first message was accepted. With no process
+// (after a restart) its split is read from its source's session cut at the fork point, as the
+// fork itself is started, and kept as the fork's own.
+func TestContextSplitOfUnsentFork(t *testing.T) {
+	e := newEnv(t)
+	src, id := e.claudeFork()
+	srcSID := e.meta(src).SessionID
+	e.boot()
+	if e.meta(id).ForkSource == nil {
+		t.Fatal("the fork lost its fork source")
+	}
+	if s := e.split(id, true); s.Total != 1 || s.AtMessage != 1 {
+		t.Fatalf("split %+v", s)
+	}
+	wantCalls(t, e.claude, 0, 1)
+	o := e.claude.splitReads[0]
+	if o.SessionID != srcSID || o.Point != "p1" || !o.Resume {
+		t.Errorf("read from session %q at %q (resume %v), want the source's %q at p1", o.SessionID, o.Point, o.Resume, srcSID)
+	}
+	if o.ChatID != id || o.MCP == nil || o.MCP.Token != e.meta(id).Token {
+		t.Errorf("options %+v, want the fork's own but for the session", o)
+	}
+	if len(e.claude.forkCalls()) != 0 || e.claude.count() != 0 {
+		t.Errorf("the fork's process was started: %d fork starts, %d spawns", len(e.claude.forkCalls()), e.claude.count())
+	}
+	if got := e.meta(id); got.ContextSplit == nil || got.ContextSplit.Total != 1 || got.SessionID == srcSID {
+		t.Errorf("chat.json: split %+v, session %q", got.ContextSplit, got.SessionID)
+	}
+	// The kept one is current: nothing is read again.
+	if s := e.split(id, false); s.Total != 1 {
+		t.Fatalf("kept split %+v", s)
+	}
+	wantCalls(t, e.claude, 0, 1)
+}
+
+// With no id to cut the source at, reading it would show whatever it holds by now: the split is
+// refused, and nothing is started. One kept from the fork's process is still returned.
+func TestContextSplitOfUnsentForkWithoutPoint(t *testing.T) {
+	e := newEnv(t)
+	_, id := e.oldFork()
+	if s := e.split(id, false); s.Total != 1 { // the fork's process answers while it runs
+		t.Fatalf("split of the running fork %+v", s)
+	}
+	wantCalls(t, e.claude, 1, 0)
+	e.boot()
+	if s := e.split(id, false); s.Total != 1 {
+		t.Fatalf("kept split %+v", s)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := e.m.ContextSplit(id, true); err == nil ||
+			err.Error() != "the context split of this fork is available after its first message" {
+			t.Fatalf("split %d of a fork with no point: %v", i, err)
+		}
+	}
+	wantCalls(t, e.claude, 0, 0)
+	if len(e.claude.forkCalls()) != 0 || e.claude.count() != 0 {
+		t.Errorf("a process was started: %d fork starts, %d spawns", len(e.claude.forkCalls()), e.claude.count())
+	}
+	if got := e.meta(id).ContextSplit; got == nil || got.Total != 1 {
+		t.Errorf("chat.json split %+v, want the kept one", got)
+	}
+}
+
+// A fork whose first message was accepted has its own session, though it keeps its fork source
+// until that turn ends: its split is read from its own session, with or without a point.
+func TestContextSplitOfSentFork(t *testing.T) {
+	for _, point := range []bool{true, false} {
+		e := newEnv(t)
+		var id string
+		if point {
+			_, id = e.claudeFork()
+		} else {
+			_, id = e.oldFork()
+		}
+		e.send(id, "first", "") // accepted by the fork's process; the app closes during the turn
+		e.boot()
+		if e.meta(id).ForkSource == nil {
+			t.Fatalf("point %v: the fork lost its fork source without a turn end", point)
+		}
+		e.split(id, true)
+		wantCalls(t, e.claude, 0, 1)
+		if o := e.claude.splitReads[0]; o.SessionID != e.meta(id).SessionID || o.Point != "" {
+			t.Errorf("point %v: read from session %q at %q, want the fork's own %q", point, o.SessionID, o.Point, e.meta(id).SessionID)
+		}
+	}
+}
+
+// While the fork's process runs it answers itself, whatever the fork source.
+func TestContextSplitOfRunningFork(t *testing.T) {
+	e := newEnv(t)
+	_, id := e.claudeFork()
+	e.split(id, true)
+	wantCalls(t, e.claude, 1, 0)
+}

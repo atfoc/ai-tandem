@@ -11,7 +11,7 @@ import { filterModels, groupModels } from "./logic/models.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
 import { DraftSaver, hasDraft } from "./logic/drafts.ts";
 import { composerControls } from "./logic/status.ts";
-import { toSend } from "./logic/quotes.ts";
+import { mergeQuotes, toSend } from "./logic/quotes.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensText, width, type Segment } from "./logic/ctxsplit.ts";
@@ -21,7 +21,7 @@ import { quoteSelection } from "./quoteDom.ts";
 import { BoardIcon, Chevron, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
-import { registerComposer, sendAt } from "./fork/actions.ts";
+import { leftByBack, registerComposer, sendAt, sendFailed } from "./fork/actions.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
@@ -172,17 +172,30 @@ export function Composer({ chatId }: { chatId: string }) {
         setQuotes([...h.references]);
       },
     });
-    return () => registerComposer(chatId, null);
+    return () => { now.current.quotes = q.kept(); registerComposer(chatId, null); };
   }, []);
-  // While a move is pending nothing is saved, on the server or here: a reload equals Back.
+  // While a move is pending nothing is saved on the server until the page goes away: a reload
+  // equals Back, so what Back would leave in the composer is saved then. When only the composer
+  // goes away (another chat is opened), that is kept here as the chat's unsaved draft. A comment
+  // typed in an open float goes with what is saved when the composer or the page goes away.
   useEffect(() => {
     if (!getState().moves[chatId]) drafts.current!.change(text, picked, quotes);
   }, [text, picked, quotes]);
   useEffect(() => {
     const d = drafts.current!;
-    const hide = () => d.flush(true);
+    const hide = () => {
+      now.current.quotes = q.kept();
+      const h = leftByBack(chatId);
+      if (h) d.change(h.text, h.mentions, h.references);
+      else if (!getState().moves[chatId]) d.change(current.current, now.current.picked, now.current.quotes);
+      d.flush(true);
+    };
     window.addEventListener("pagehide", hide);
-    return () => { window.removeEventListener("pagehide", hide); d.flush(); };
+    return () => {
+      window.removeEventListener("pagehide", hide);
+      if (!getState().moves[chatId]) d.change(current.current, now.current.picked, q.kept());
+      d.flush();
+    };
   }, []);
 
   if (!c) return null;
@@ -214,15 +227,22 @@ export function Composer({ chatId }: { chatId: string }) {
     if ((!t && !quotes.length) || running || sending) return; // no send while busy
     setSending(true); setErr("");
     input.current?.set(""); setMention(null); // the server clears the draft on send; the empty one saved after it undoes a save still in flight
-    const p = picked, qs = quotes;
+    const p = picked, qs = quotes, moved = !!getState().moves[chatId];
     setQuotes([]);
     try {
       await sendMessage(chatId, t, p, toSend(qs));
-      setPicked([]);
+      // The sent message's mentions go; a draft that the sent move gave back keeps its own. The move's end set a copy of the list: the two are compared by what they hold.
+      setPicked((now) => (now.length === p.length && now.every((x, i) => x === p[i]) ? [] : now));
+      // During the move nothing was saved: the saver learns here that the Send cleared the draft, and saves what the composer got back.
+      // A composer that went away meanwhile saves nothing here: the move's end wrote the chat's unsaved draft, which the next composer opens with and saves.
+      if (moved && input.current) { const d = drafts.current!; d.change("", [], []); d.flush(); d.change(current.current, now.current.picked, now.current.quotes); }
     } catch (e: any) {
       setErr(e?.message ?? String(e));
-      setQuotes((now) => (now.length ? now : qs));
+      setQuotes((now) => mergeQuotes(qs, now)); // with the quotes added while it was sent
       if (!current.current.trim()) input.current?.set(t); // nothing typed is lost
+      // This composer went away while it was sent (another chat was opened): the message is the chat's draft again unless a pending move or a composer
+      // opened since holds it. Its saver writes the unsaved copy and saves it: a save of the emptied draft still in flight then leaves that copy alone.
+      if (!input.current && !sendFailed(chatId, { text: t, mentions: p, references: qs }, e)) drafts.current!.change(t, p, qs);
       if (e instanceof ApiError && e.status === 409) void refreshChat(chatId);
     } finally { setSending(false); }
   };
@@ -360,6 +380,7 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
   const [hi, setHi] = useState(-1); // index into the flattened filtered rows; headings excluded
   const input = useRef<HTMLInputElement>(null);
   const chip = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   const rows = useRef<(HTMLButtonElement | null)[]>([]);
   const wasOpen = useRef(false);
   const listId = React.useId();
@@ -419,10 +440,28 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
     if (searchable) { setQuery(""); input.current?.focus(); }
     else chip.current?.focus(); // Effort keeps its keys on the chip; some browsers don't focus it on click
   }, [open]);
+  // A list that changes under the open menu (a catalog that arrives late) sets the highlight again,
+  // by the rule for typing. Compared by ids: Effort gets a new options array on every render.
+  const optionIds = options.map((o) => o.id).join("\n");
+  useEffect(() => {
+    if (open) onQuery(query);
+  }, [optionIds]);
   // Keep the highlighted row visible inside the scroll region as it moves or the menu opens.
   useEffect(() => {
     if (open && hi >= 0) rows.current[hi]?.scrollIntoView({ block: "nearest" });
   }, [open, hi]);
+  // The menu is anchored at the chip's left edge: move it left by what its right edge passes the
+  // window's (less a 12px margin), never past the window's left edge. Redone when the rows change,
+  // since the menu is as wide as its rows.
+  const flatIds = flat.map((o) => o.id).join("\n");
+  React.useLayoutEffect(() => {
+    const el = menu.current;
+    if (!el) return;
+    el.style.left = "";
+    const r = el.getBoundingClientRect();
+    const over = Math.min(r.right - (window.innerWidth - 12), r.left);
+    if (over > 0) el.style.left = `${-over}px`;
+  }, [open, flatIds]);
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     e.stopPropagation(); // keep Excalidraw's shortcuts out of the field
@@ -434,8 +473,12 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
   // Effort has no field, so focus stays on the chip and the wrapper takes the keys while the
   // menu is open. Enter is handled here before the chip's default activation can re-toggle it.
   const onWrapKeyDown = (e: React.KeyboardEvent) => {
+    // Model's field has its own keys; Esc from one of its rows closes the menu as Effort's does.
+    if (searchable && open && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onOpenChange(false); }
     if (searchable || !open) return;
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter" && e.key !== "Escape") return;
+    // Enter on a focused row is that row's own click, not a pick of the highlighted one.
+    if (e.key === "Enter" && (e.target as HTMLElement).getAttribute("role") === "option") return;
     e.preventDefault(); e.stopPropagation();
     if (e.key === "ArrowDown") move(1);
     else if (e.key === "ArrowUp") move(-1);
@@ -460,7 +503,7 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
         {prefix && <span className="tchip-pre">{prefix}</span>}{label}<span className="caret">▾</span>
       </button>
       {open && (
-        <div className="menu up" onMouseDown={(e) => e.stopPropagation()}>
+        <div ref={menu} className="menu up" onMouseDown={(e) => e.stopPropagation()}>
           <div className="menu-head">{title}</div>
           {searchable && (
             <div className="menu-search">
@@ -616,8 +659,10 @@ export function CtxRing({ used, win, title, className = "", open, onClick }: {
 const lastUsage: Partial<Record<AgentKind, PlanUsage>> = {};
 
 /** The composer ring's popover: the chat's context, then the plan's limits, fetched on open.
- * Claude's come from `claude -p /usage`, Cursor's from `cursor-cost`. */
+ * Claude's come from `claude -p /usage`, Cursor's from `cursor-cost`. Pi has none: its popover
+ * is the context alone, and nothing is asked. */
 function UsagePopover({ agent, context }: { agent: AgentKind; context: React.ReactNode }) {
+  const title = agentMeta(agent).usageTitle;
   const [u, setU] = useState<PlanUsage | null>(lastUsage[agent] ?? null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -629,16 +674,29 @@ function UsagePopover({ agent, context }: { agent: AgentKind; context: React.Rea
     finally { setLoading(false); setNow(Date.now()); }
   };
   useEffect(() => {
+    if (!title) return;
     void load(false);
     const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
+  // Anchored at the ring's left edge and of a fixed width: when it opens it is moved left as a
+  // picker's menu is, by what its right edge passes the window's (less a 12px margin), never past
+  // the window's left edge.
+  const pop = useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const el = pop.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const over = Math.min(r.right - (window.innerWidth - 12), r.left);
+    if (over > 0) el.style.left = `${-over}px`;
+  }, []);
+  if (!title) return <div ref={pop} className="menu up usage-pop" onMouseDown={(e) => e.preventDefault()}>{context}</div>;
   return (
-    <div className="menu up usage-pop" onMouseDown={(e) => e.preventDefault()}>
+    <div ref={pop} className="menu up usage-pop" onMouseDown={(e) => e.preventDefault()}>
       {context}
       <div className="menu-sep" />
       <div className="menu-head">
-        {agentMeta(agent).usageTitle}<span className="grow" />
+        {title}<span className="grow" />
         <button className="icon-btn usage-refresh" title="Check again" disabled={loading} onClick={() => void load(true)}>
           <span className={loading ? "usage-spin" : ""}>↻</span>
         </button>

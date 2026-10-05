@@ -81,8 +81,13 @@ type Chat struct {
 	treeMu sync.Mutex
 
 	// moveMu makes a Send with a target one step for its top-level chat: the check that the
-	// current branch is idle, the change of the current branch and the Send (see SendTo). It is
-	// taken before treeMu and before any chat's mu, and never held during a fork start.
+	// current branch is idle, the change of the current branch and the Send (see SendTo). A
+	// plain Send takes it as well, until it has locked the current branch (see sendCur): it
+	// waits for a Send with a target to be done, so its message never goes to a branch that
+	// Send is about to stop. It is taken before treeMu and before any chat's mu, and never held
+	// during a fork start: a Send that carries a branch on gives it up before the branch's
+	// process starts. The one exception is a new branch whose process exited before its first
+	// message: step 3 of SendTo starts it again.
 	moveMu sync.Mutex
 
 	// The branches (see branches.go). top and branch are set before the chat object is in the
@@ -608,10 +613,16 @@ func (m *Manager) spawnFailed(c *Chat, tr *transcript.Transcript, err error, out
 // chat forking plan): through the fork capability, with the chat's own session id. Claude then
 // makes the forked session again or, when it already exists, resumes it.
 //
-// c.mu is held on entry and on return, but not during the start: the starting process looks its
-// token up, which locks every chat. Meanwhile the chat is busy (thinking), so a second Send or a
-// fork gets ErrBusy. A failed start is shown as a failed spawn is. Only Send calls it, after its
-// own checks.
+// Made again, the fork is cut at the id of its point. A fork made at a place no id names (the end
+// of a chat whose last turn has no id) can only be made of the whole source session, which is the
+// fork's prefix only while the source has said nothing since: once it has, or is gone, the start
+// is refused with errForkGone. A fork that was sent a message is not looked at: it has a session
+// of its own, which the start resumes.
+//
+// c.mu is held on entry and on return, but not during the look at the source, which locks that
+// chat, or the start: the starting process looks its token up, which locks every chat. Meanwhile
+// the chat is busy (thinking), so a second Send or a fork gets ErrBusy. A failed or refused start
+// is shown as a failed spawn is. Only Send calls it, after its own checks.
 func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 	tr, err := m.trOf(c, out)
 	if err != nil {
@@ -624,6 +635,8 @@ func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 		return err
 	}
 	fs := *c.meta.ForkSource
+	_, items := tr.Snapshot()
+	whole := fs.Point == "" && !sentPast(items, fs.Items) // made of the whole source, with nothing to cut at
 	opts := m.spawnOptions(c)
 	was, _ := tr.Status()
 	tr.SetStatus(model.StatusThinking)
@@ -631,7 +644,13 @@ func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 	c.mu.Unlock()
 	m.send(*out)
 	*out = nil
-	ag, sid, err := fk.SpawnFork(opts, agent.ForkSource{ChatID: fs.Chat, SessionID: fs.Session, Point: fs.Point, Next: fs.Next})
+	var ag agent.Agent
+	var sid string
+	if whole && !m.sourceKept(fs.Chat, fs.Items) {
+		err = errForkGone
+	} else {
+		ag, sid, err = fk.SpawnFork(opts, agent.ForkSource{ChatID: fs.Chat, SessionID: fs.Session, Point: fs.Point, Next: fs.Next})
+	}
 	c.mu.Lock()
 	if err == nil && (c.deleted || m.parentOf(c).Archived) {
 		// Deleted or archived during the start: the message goes nowhere.
@@ -792,8 +811,25 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 // accepted Send releases that branch's hold and carries the subagent results the agent is owed,
 // unless their delivery failed before: their rows go ahead of the user item and their block ahead
 // of the text, after a board chat's context. With nothing owed the message is what it always was.
+//
+// It waits for a Send with a target that is changing the chat's current branch (see moveMu): the
+// message goes to the branch that is current after it, never to the one it stops.
 func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
+	top, err := m.topChat(id)
+	if err != nil {
+		return err
+	}
+	top.moveMu.Lock()
+	return m.sendCur(top, id, text, context, refs)
+}
+
+// sendCur is Send on the current branch of the top-level chat top, whose id is id. top.moveMu is
+// held on entry and released once that branch is locked, ahead of the start of its process. That
+// is enough: sendOn releases the branch's lock only when the branch is busy or the message
+// refused, and a Send with a target checks under moveMu that the current branch is idle.
+func (m *Manager) sendCur(top *Chat, id, text, context string, refs []model.Reference) error {
 	c, err := m.lockCur(id)
+	top.moveMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -875,6 +911,7 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	id, kind := c.meta.ID, c.meta.Agent
 	ag := c.ag
 	c.sentGen = c.gen
+	sent := c.tr.Sent()
 	out.emitItems(c, ups)
 	out.emitChat(c)
 	listed := !c.unlisted
@@ -895,14 +932,16 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 		}
 	}
 	err = ag.Send(blocks)
-	if err != nil && d != nil {
-		m.sendRefused(c, d)
+	if err != nil {
+		m.sendRefused(c, d, sent)
 	}
 	return err
 }
 
 // Configure changes the folder, model or effort before the first message; after it, only a
-// new folder for a chat whose folder is missing. It reaches the chat's current branch only.
+// new folder for a chat whose folder is missing. It acts on the chat's current branch. A new
+// folder for a missing one is the chat's: it is also written to every other branch that has the
+// missing folder (see fixFolder). A branch with another folder keeps it.
 func (m *Manager) Configure(id string, req ConfigReq) error {
 	var out outbox
 	c, err := m.lockCur(id)
@@ -967,8 +1006,10 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 		}
 		next.Effort = req.Effort
 	}
+	// The folder fix: a new folder for the missing one, gone.
+	fix, gone := req.Cwd != "" && c.folderMissing, c.meta.Cwd
 	c.meta = next
-	if req.Cwd != "" && c.folderMissing {
+	if fix {
 		c.folderMissing = false
 		c.errText = ""
 		if tr, err := m.trOf(c, &out); err == nil {
@@ -982,7 +1023,37 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 	m.recordDefaults(c, abs, model.ModelChoice{Model: req.Model, Effort: req.Effort}, &out)
 	out.emitChat(c)
 	unlock()
+	if fix {
+		m.fixFolder(c, gone, abs)
+	}
 	return nil
+}
+
+// fixFolder gives the folder cwd to every branch of c's chat, other than c, whose folder is the
+// missing one, gone, and takes back the error a failed start for that folder left on it. Nothing
+// else of the branch is touched: a process it has runs on where it is, and the folder is used
+// when the branch next starts. Clients are sent nothing: the chat's view holds the folder of the
+// current branch, which Configure has sent. One branch is locked at a time; no chat's mu may be
+// held.
+func (m *Manager) fixFolder(c *Chat, gone, cwd string) {
+	for _, b := range m.branchesOf(topOf(c)) {
+		if b == c {
+			continue
+		}
+		b.mu.Lock()
+		if !b.deleted && b.meta.Cwd == gone {
+			b.meta.Cwd = cwd
+			if b.folderMissing {
+				b.folderMissing = false
+				b.errText = ""
+				if b.tr != nil {
+					b.tr.SetStatus(model.StatusReady)
+				}
+			}
+			m.logSave(b)
+		}
+		b.mu.Unlock()
+	}
 }
 
 // recordDefaults stores cwd and mc as the chosen defaults for c's group and "last", and queues a

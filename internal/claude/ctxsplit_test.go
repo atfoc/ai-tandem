@@ -223,6 +223,9 @@ func TestReadContextSplitForks(t *testing.T) {
 	if _, ok := flag(rec.Args, "--fork-session"); !ok {
 		t.Errorf("args %q, want --fork-session", rec.Args)
 	}
+	if _, ok := flag(rec.Args, "--resume-session-at"); ok {
+		t.Errorf("args %q: no point was given, the whole session is read", rec.Args)
+	}
 	// The fork inherits the same board config, header included.
 	cfg, ok := flag(rec.Args, "--mcp-config")
 	if !ok {
@@ -236,6 +239,35 @@ func TestReadContextSplitForks(t *testing.T) {
 	}
 	if strings.Contains(string(lines), `"type":"user"`) {
 		t.Error("a message was sent")
+	}
+}
+
+// A split read up to a point (a fork that has no session of its own yet, read from its source)
+// starts the process as that fork is started, but for the fork's own session id.
+func TestReadContextSplitAtPoint(t *testing.T) {
+	f := newFake(t)
+	ctxAnswers(t, f, string(readFixture(t)))
+	s, err := f.spawner().ReadContextSplit(agent.SpawnOptions{SessionID: "src", Point: "U", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Total != 47894 {
+		t.Errorf("total %d", s.Total)
+	}
+	var rec struct{ Args []string }
+	b, _ := os.ReadFile(f.args)
+	json.Unmarshal(b, &rec)
+	if v, _ := flag(rec.Args, "--resume"); v != "src" {
+		t.Errorf("args %q, want --resume src", rec.Args)
+	}
+	if _, ok := flag(rec.Args, "--fork-session"); !ok {
+		t.Errorf("args %q, want --fork-session", rec.Args)
+	}
+	if v, _ := flag(rec.Args, "--resume-session-at"); v != "U" {
+		t.Errorf("args %q, want --resume-session-at U", rec.Args)
+	}
+	if _, ok := flag(rec.Args, "--session-id"); ok {
+		t.Errorf("args %q: a split read keeps no session, it must not name one", rec.Args)
 	}
 }
 

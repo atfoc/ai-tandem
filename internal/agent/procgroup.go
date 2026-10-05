@@ -41,14 +41,29 @@ func StartGroup(cmd *exec.Cmd) error {
 }
 
 // Exited forgets the group of cmd, started by StartGroup and since waited for, once nothing is
-// left in it. A group that still has processes the agent started stays, for EndAll.
+// left in it. A group that still has processes the agent started stays, for EndAll, and is
+// forgotten when the last of them is gone, whoever ended it: the number of a group that no longer
+// exists can become another program's, which EndAll must not signal.
 func Exited(cmd *exec.Cmd) {
 	pgid := cmd.Process.Pid
+	if forget(pgid) {
+		return
+	}
+	go func() {
+		for !forget(pgid) {
+			time.Sleep(time.Second)
+		}
+	}()
+}
+
+// forget drops pgid if its group is gone, and reports whether the group is no longer remembered.
+func forget(pgid int) bool {
 	groups.Lock()
 	defer groups.Unlock()
 	if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
 		delete(groups.pgids, pgid)
 	}
+	return !groups.pgids[pgid]
 }
 
 // EndAll ends every group StartGroup started: SIGTERM, then SIGKILL to what is still there after

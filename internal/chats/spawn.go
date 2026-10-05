@@ -19,8 +19,8 @@ type SpawnSubRequest struct {
 	Prompt      string
 	Description string
 	Kind        model.AgentKind // empty = the chat's kind
-	Model       string          // empty = the chat's current model
-	Effort      string          // empty = the chat's current effort
+	Model       string          // empty = the chat's model when Kind is the chat's and it still fits the list, else a new-chat default
+	Effort      string          // empty = the chat's effort for a named model or the chat's own unless the list rules it out, else a default
 }
 
 // SpawnValueError is a model or effort that spawn_subagent rejected against a known model list.
@@ -53,10 +53,17 @@ func noEffortError(kind model.AgentKind, cm *model.CatalogModel, effort string) 
 		text: fmt.Sprintf("%s has no effort %q: checked against the %s model list; %s takes %s", cm.ID, effort, kind, cm.ID, takes)}
 }
 
+// folderMissingError is ErrFolderMissing with the text the subagent's row shows, so the calling
+// agent reads the same as the row.
+type folderMissingError struct{ text string }
+
+func (e *folderMissingError) Error() string { return e.text }
+func (e *folderMissingError) Unwrap() error { return ErrFolderMissing }
+
 // SpawnSubagent starts one independent agent process and returns a receipt without waiting for it
 // to finish. Validation and lifecycle errors start nothing. chatID is the server id of the
-// caller's own chat object (a branch's for a branch), here and in WaitSubagents and StopSubagent:
-// they are never re-routed to the current branch.
+// caller's own chat object (a branch's for a branch), here and in StopSubagent: they are never
+// re-routed to the current branch.
 func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subagent, error) {
 	var out outbox
 	c, err := m.lock(chatID)
@@ -118,7 +125,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	sa := s.meta
 	opts := m.subSpawnOptions(c, sid, kind, modelID, effort)
 	prompt := req.Prompt
-	unlock() // receipt before the process starts, so the caller never waits on it
+	unlock() // the claim retry and Spawn run unlocked; the receipt is returned after both
 
 	if sa.Tool == "" {
 		tool, gone := m.retrySpawnClaim(chatID, sid, canon)
@@ -136,11 +143,10 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	}
 	ag, err := sp.Spawn(opts)
 	if err != nil {
-		msg := err.Error()
 		if errors.Is(err, ErrFolderMissing) {
-			msg = folderMissingText(opts.Cwd)
+			err = &folderMissingError{text: folderMissingText(opts.Cwd)}
 		}
-		failed := m.finishAppSub(chatID, sid, model.SubFailed, msg, endSpawnFailed)
+		failed := m.finishAppSub(chatID, sid, model.SubFailed, err.Error(), endSpawnFailed)
 		return failed, err
 	}
 
@@ -216,7 +222,9 @@ func (m *Manager) StopSubagent(chatID, sid string) error {
 // the requested kind's catalog. Inherited values fall back to new-chat defaults when they do not
 // fit, and always when the requested kind is not the chat's and no model was named: a model
 // is inherited only by a subagent of the chat's own kind, even if the other kind lists the same id;
-// a named effort there is validated against the model the rebase yields. c.mu held.
+// a named effort there is validated against the model the rebase yields. That holds while the
+// other kind's catalog is unknown too: the defaults are then the model the user last picked for
+// that kind, or none, so the agent uses its own. c.mu held.
 func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.AgentKind, modelID, effort string, err error) {
 	kind = req.Kind
 	if kind == "" {
@@ -261,10 +269,10 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 		}
 	}
 
-	unfit := false
+	unfit := !explicitModel && kind != c.meta.Agent
 	if cat != nil {
 		cm, mErr := findModel(cat, modelID)
-		if !explicitModel && (mErr != nil || kind != c.meta.Agent) {
+		if !explicitModel && mErr != nil {
 			unfit = true
 		}
 		if !explicitEffort && cm != nil && effort != "" && !slices.Contains(cm.Efforts, effort) {

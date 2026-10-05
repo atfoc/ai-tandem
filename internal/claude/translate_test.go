@@ -99,6 +99,7 @@ func TestTranslateResultErrors(t *testing.T) {
 		err     string
 	}{
 		{`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming"}`, true, ""},
+		{`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`, true, ""},
 		{`{"type":"result","subtype":"success","is_error":true,"result":"model not found","terminal_reason":"api_error","api_error_status":404}`, false, "model not found"},
 		{`{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error"}`, false, "Error: api_error"},
 	}

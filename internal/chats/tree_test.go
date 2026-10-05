@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -499,6 +500,38 @@ func TestTreePiPoints(t *testing.T) {
 	}
 }
 
+// A message that is only quotes is named in the tree by its first quote: the comment, else the
+// quoted words. A message with text keeps its text.
+func TestTreeQuotesOnlyMessage(t *testing.T) {
+	e := newEnv(t)
+	id, a := e.talked(model.Claude, "", 1)
+	for _, refs := range [][]model.Reference{
+		{{Quote: "reply", Comment: " make it longer ", Item: 1, Start: 0, End: 5}, {Quote: "1", Comment: "second", Item: 1, Start: 6, End: 7}},
+		{{Quote: "reply 1", Item: 1, Start: 0, End: 7}},
+	} {
+		if err := e.m.Send(id, "", "", refs); err != nil {
+			t.Fatal(err)
+		}
+		a.emit(t, agent.Event{Kind: agent.EvText, Text: "ok"}, agent.Event{Kind: agent.EvTurnEnd})
+	}
+	if err := e.m.Send(id, "with text", "", []model.Reference{{Quote: "reply", Comment: "c", Item: 1, Start: 0, End: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	got := map[int]string{}
+	for _, it := range e.tree(id).Branches[0].Items {
+		if it.Kind == "user" {
+			got[it.I] = it.Text
+		}
+	}
+	want := map[int]string{0: "ask 1", 3: "❝ make it longer", 6: "❝ reply 1", 9: "with text"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the tree's messages\n got %v\nwant %v", got, want)
+	}
+	if it := e.items(id)[3]; it.Text != "" || len(it.References) != 2 {
+		t.Fatalf("the message itself changed: %+v", it)
+	}
+}
+
 // ---- SetLabel -------------------------------------------------------------
 
 func TestSetLabel(t *testing.T) {
@@ -655,6 +688,47 @@ func TestSetLabelErrors(t *testing.T) {
 	}
 	if after, err := os.ReadFile(e.m.treePath(split.ID)); err != nil || !bytes.Equal(after, before) {
 		t.Fatalf("tree.json changed by a refused label: %s %v", after, err)
+	}
+}
+
+// A label is one clean line of at most 200 characters: control characters become spaces, and a
+// longer label is refused and changes nothing.
+func TestSetLabelCleanAndBounded(t *testing.T) {
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	e.writeItems(v.ID, exampleMain())
+	e.boot()
+
+	for _, c := range [][2]string{
+		{"a\nb\x00c\x1b[31m", "a b c [31m"},
+		{"\x00 options\r\n", "options"},
+		{"one\ttwo\u0085three", "one two three"},
+		{strings.Repeat("é", 200), strings.Repeat("é", 200)},
+		{" " + strings.Repeat("x", 200) + "\n", strings.Repeat("x", 200)},
+	} {
+		want := []model.TreeLabel{{Branch: model.MainBranch, Item: 1, Text: c[1]}}
+		if labels, err := e.m.SetLabel(v.ID, model.MainBranch, 1, c[0]); err != nil || !reflect.DeepEqual(labels, want) {
+			t.Errorf("SetLabel(%q) = %+v, %v; want %q", c[0], labels, err, c[1])
+		}
+	}
+	// Only control characters: blank, so the label is removed.
+	if labels, err := e.m.SetLabel(v.ID, model.MainBranch, 1, "\x00\n\x1b"); err != nil || labels == nil || len(labels) != 0 {
+		t.Errorf("a label of control characters: %#v %v", labels, err)
+	}
+
+	kept := []model.TreeLabel{{Branch: model.MainBranch, Item: 1, Text: "options"}}
+	if _, err := e.m.SetLabel(v.ID, model.MainBranch, 1, "options"); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{strings.Repeat("x", 201), strings.Repeat("é", 201), strings.Repeat("x", 200_000)} {
+		for _, item := range []int{1, 3} { // a labeled message, and one without a label
+			if labels, err := e.m.SetLabel(v.ID, model.MainBranch, item, text); !errors.Is(err, ErrBadLabel) || labels != nil {
+				t.Errorf("SetLabel(item %d, %d bytes) = %d labels, %v; want ErrBadLabel", item, len(text), len(labels), err)
+			}
+		}
+	}
+	if got, _ := e.treeFile(v.ID); !reflect.DeepEqual(got.Labels, kept) {
+		t.Fatalf("tree.json labels after refused labels: %d", len(got.Labels))
 	}
 }
 

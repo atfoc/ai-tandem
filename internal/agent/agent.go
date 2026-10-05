@@ -23,6 +23,7 @@ type SpawnOptions struct {
 	MCP       *BoardAccess // URL+token; set whenever the process should speak MCP (plain chats included)
 	BoardID   string       // non-empty → board extras on (whiteboard prompt, board-tool allow/auto-approve)
 	Subagent  bool         // app-spawned child: Claude --allowedTools omits the spawn family
+	Point     string       // Claude's ReadContextSplit only: the fork-point id the session is read up to ("" = all of it)
 }
 
 type BoardAccess struct {
@@ -36,8 +37,8 @@ type Spawner interface {
 }
 
 // SplitReader is a Spawner that can report a started chat's context split with no process of
-// its own running: Claude starts a process on a fork of the session just to answer, Cursor reads
-// its session store.
+// its own running: Claude starts a process on a fork of the session just to answer (up to
+// o.Point when it is set), Cursor reads its session store.
 type SplitReader interface {
 	ReadContextSplit(o SpawnOptions) (model.ContextSplit, error)
 }
@@ -51,17 +52,27 @@ type ForkSource struct {
 	SessionID string // the session to fork
 	Point     string // the id on the end mark at the fork point; "" = none recorded
 	Next      string // the id on the first end mark after the fork point; "" = none
-	End       bool   // the fork point is the end of the source session; known only when the fork is first made
+	// End: the fork point is the end of the source session; known only when the fork is first
+	// made. The source may take a message after the end was found, so Claude and pi still stop
+	// the fork at Point when one is recorded.
+	End bool
 }
 
 // Forker is a Spawner that can start a chat's process on a fork of another session. Found by
 // type assertion on the Spawner, like SplitReader.
 type Forker interface {
 	// SpawnFork starts the process of o on a fork of src and returns only when the provider has
-	// confirmed the fork, or with an error. It never takes longer than ForkTimeout. sessionID is
-	// the forked session's id (the app's choice in o.SessionID for Claude; chosen by the adapter
-	// or the provider for Cursor and pi). When it returns an error the process has been ended and
-	// whatever the start created outside the app's folder has been removed.
+	// confirmed the fork, or with an error. It waits for the confirmation no longer than
+	// ForkTimeout. sessionID is the forked session's id (the app's choice in o.SessionID for
+	// Claude; chosen by the adapter or the provider for Cursor and pi).
+	//
+	// When it returns an error the process has been closed, and whatever the start created
+	// outside the app's folder has been removed. Whether the process has exited by then differs:
+	// Claude does not wait for it (it is killed if it is still there 3 s after the close). Cursor
+	// waits only while ForkTimeout lasts, so not at all after a time-out: the process may live a
+	// few seconds longer, and its store copy is removed again once it has ended. pi returns only
+	// when its process has exited, which after a time-out takes up to its two close grace
+	// periods on top of ForkTimeout.
 	SpawnFork(o SpawnOptions, src ForkSource) (ag Agent, sessionID string, err error)
 	// DiscardFork removes what a successful SpawnFork created outside the app's folder for a fork
 	// that is given up after its process was closed (Cursor: the store copy; Claude, pi: nothing).

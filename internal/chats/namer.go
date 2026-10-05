@@ -52,9 +52,12 @@ func (n ClaudeNamer) Name(text string) (string, error) {
 type PiNamer struct{ Bin, Model string }
 
 // Args are the command-line arguments for naming text. Model is only passed when set, so a
-// machine with a single authenticated model works without configuration.
+// machine with a single authenticated model works without configuration. --no-tools takes away
+// pi's built-in tools (bash, read, write, edit): the run gets the user's first message and has no
+// extension, so nothing would gate a tool call. Skills and prompt templates are not needed either.
 func (n PiNamer) Args(text string) []string {
-	args := []string{"--no-session", "--no-extensions", "--no-context-files", "--no-approve", "-p"}
+	args := []string{"--no-session", "--no-extensions", "--no-context-files",
+		"--no-tools", "--no-skills", "--no-prompt-templates", "--no-approve", "-p"}
 	if n.Model != "" {
 		args = append(args, "--model", n.Model)
 	}

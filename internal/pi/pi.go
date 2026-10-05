@@ -35,10 +35,14 @@ type Spawner struct {
 
 	// forkTimeout is a test-only override of agent.ForkTimeout (0 = agent.ForkTimeout).
 	forkTimeout time.Duration
+
+	// promptTimeout is a test-only override of rpcTimeout for the prompt command (0 = rpcTimeout).
+	promptTimeout time.Duration
 }
 
 const (
 	stderrCap        = 64 * 1024
+	exitLines        = 20 // how many of stderr's last lines an exit reports
 	eventsCap        = 512
 	handshakeTimeout = 30 * time.Second
 	rpcTimeout       = 30 * time.Second
@@ -107,6 +111,10 @@ type proc struct {
 	abortMu      sync.Mutex
 	abortPending bool
 
+	endMu     sync.Mutex // a turn has one end, pi's settle or sendFailed: guards the two below
+	settled   bool       // an agent_settled arrived since the last Send began
+	sendEnded bool       // sendFailed ended a turn: a later agent_settled emits nothing
+
 	// translate state (only touched by the read loop)
 	msgSeq      int
 	turnErr     string         // pi's error text while the turn's last assistant message is an errored one
@@ -123,19 +131,16 @@ type proc struct {
 
 type toolEmit struct{ start, input bool }
 
-// cappedBuffer keeps the first max bytes written and drops the rest (a stderr tail).
+// cappedBuffer keeps the last max bytes written and drops what came before (a stderr tail).
 type cappedBuffer struct {
 	buf bytes.Buffer
 	max int
 }
 
 func (w *cappedBuffer) Write(b []byte) (int, error) {
-	if room := w.max - w.buf.Len(); room > 0 {
-		if len(b) > room {
-			w.buf.Write(b[:room])
-		} else {
-			w.buf.Write(b)
-		}
+	w.buf.Write(b)
+	if over := w.buf.Len() - w.max; over > 0 {
+		w.buf.Next(over)
 	}
 	return len(b), nil
 }
@@ -354,10 +359,13 @@ func (p *proc) waitExit() {
 	<-p.rpc.readDone
 	err := p.cmd.Wait()
 	agent.Exited(p.cmd)
-	// Whatever the agent spawned shares its group, so once the leader is gone kill what is left
-	// before it can orphan. This runs for Close too (not only unexpected exits): Close's graceful
-	// window can end with the leader exiting first. After Wait the leader's pid may already be
-	// reused, so this check is best-effort; killing the remaining group below is the backstop.
+	// What pi left in its own group must not outlive it, so once the leader is gone kill what is
+	// left before it can orphan. That does not reach the shell commands of pi's bash tool: pi starts
+	// each one as the leader of a group of its own and ends it itself when it exits in an orderly
+	// way (stdin closed, SIGTERM), so a command running when pi crashes or is SIGKILLed stays. This
+	// runs for Close too (not only unexpected exits): Close's graceful window can end with the
+	// leader exiting first. After Wait the leader's pid may already be reused, so this check is
+	// best-effort; killing the remaining group below is the backstop.
 	if pgid := p.cmd.Process.Pid; syscall.Kill(-pgid, 0) == nil {
 		go killGroup(pgid, killGrace())
 	}
@@ -365,9 +373,9 @@ func (p *proc) waitExit() {
 		p.s.Bridge.DeregisterRun(p.runToken)
 	}
 	close(p.done)
-	msg := strings.TrimSpace(p.stderr.String())
-	if msg == "" && err != nil {
-		msg = err.Error()
+	msg := ""
+	if !p.closing.Load() { // an exit the app asked for is no failure
+		msg = exitText(p.stderr.String(), err)
 	}
 	p.emu.Lock()
 	if !p.closed {
@@ -376,6 +384,28 @@ func (p *proc) waitExit() {
 		close(p.events)
 	}
 	p.emu.Unlock()
+}
+
+// exitText is what an exit pi made by itself reports: the last lines of its stderr, where the
+// reason is (the start is what pi printed while it ran, such as the notice every new session
+// gets), else how the process ended. A signal ends pi before it can say why, so the signal is
+// named ahead of whatever stderr has.
+func exitText(stderr string, err error) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if len(lines) > exitLines {
+		lines = lines[len(lines)-exitLines:]
+	}
+	msg := strings.TrimSpace(strings.Join(lines, "\n"))
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return msg
+	case msg == "":
+		return err.Error()
+	case errors.As(err, &ee) && !ee.Exited():
+		return err.Error() + ": " + msg
+	}
+	return msg
 }
 
 // killGroup ends what is left of a run's process group after its leader exited: SIGTERM, then
@@ -393,15 +423,20 @@ func killGroup(pgid int, grace time.Duration) {
 }
 
 // Send posts one user turn. It waits for the handshake, joins the blocks' texts and writes one
-// prompt command, returning its rejection.
+// prompt command, returning its rejection. The caller counts the turn as begun, so a Send that
+// fails ends it: with a turn end, or by the exit of the process. A prompt pi did not answer but
+// whose turn it settled was taken: Send returns nil and the turn's end is pi's own (sendFailed).
 func (p *proc) Send(blocks []agent.ContentBlock) error {
 	select {
 	case <-p.ready:
 	case <-p.done:
 		return errors.New("pi exited before the chat was ready")
 	}
+	p.endMu.Lock()
+	p.settled = false
+	p.endMu.Unlock()
 	if p.readyErr != nil {
-		return p.readyErr
+		return p.sendFailed(p.readyErr)
 	}
 	// An Interrupt that arrived while idle must not mark this turn as aborted.
 	p.abortMu.Lock()
@@ -414,9 +449,13 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 		}
 	}
 	p.emit(agent.Event{Kind: agent.EvThinking})
-	resp, err := p.rpc.call("prompt", map[string]any{"message": strings.Join(parts, "\n\n")}, rpcTimeout)
+	timeout := p.s.promptTimeout
+	if timeout <= 0 {
+		timeout = rpcTimeout
+	}
+	resp, err := p.rpc.call("prompt", map[string]any{"message": strings.Join(parts, "\n\n")}, timeout)
 	if err != nil {
-		return err
+		return p.sendFailed(err)
 	}
 	if !resp.Success {
 		text := "pi rejected the prompt: " + resp.Error
@@ -424,6 +463,32 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 		return errors.New(text)
 	}
 	return nil
+}
+
+// sendFailed ends the turn of a Send that pi did not take while it keeps running (a failed
+// handshake, a prompt not answered in time): no turn end would come from pi. The turn ends with
+// the error Send returns and the process is closed, so the next message starts a fresh one. When
+// pi's output has ended the process is gone or going, and its exit is the end, with pi's stderr.
+//
+// When pi settled the turn while Send waited, it did take the prompt and only its answer is late:
+// onSettled ends that turn, so nothing is emitted or closed here and Send returns nil. Otherwise
+// the turn is marked as ended by Send, and an agent_settled the closing process still sends emits
+// nothing. The check and the mark are one step under endMu, against onSettled in the read loop.
+func (p *proc) sendFailed(err error) error {
+	p.endMu.Lock()
+	if p.settled {
+		p.endMu.Unlock()
+		return nil
+	}
+	p.sendEnded = true
+	p.endMu.Unlock()
+	select {
+	case <-p.rpc.readDone:
+	default:
+		p.emit(agent.Event{Kind: agent.EvTurnEnd, Error: err.Error()})
+		p.Close()
+	}
+	return err
 }
 
 // Interrupt asks pi to stop the current turn and tells the run's extension connections to kill
@@ -453,8 +518,9 @@ func (p *proc) takeAbort() bool {
 
 // Close deregisters the run, closes stdin for the graceful window and then ends the run's whole
 // process group (SIGTERM, then SIGKILL after a short grace). The group kill is the shutdown
-// backstop: children spawned by the agent share the run's group, so deleting a chat must not
-// leave them behind.
+// backstop for what runs in the run's group, so deleting a chat does not leave that behind. The
+// shell commands of pi's bash tool are not in it (each leads a group of its own): pi ends them
+// itself when stdin closes or on SIGTERM, and one still running when pi has to be SIGKILLed stays.
 func (p *proc) Close() {
 	if p.runToken != "" && p.s.Bridge != nil {
 		p.s.Bridge.DeregisterRun(p.runToken)

@@ -436,9 +436,11 @@ func (m *Manager) stopBranch(id string) {
 	}
 }
 
-// stopOne ends the agent of the chat object c: pending approvals are answered "no", a running
-// turn gets a "Stopped." note, its subagents are stopped and their tokens revoked. A turn carrying
-// subagent results is settled as stopped by the human, and the chat object is held.
+// stopOne ends the agent of the chat object c: pending approvals are answered "no", its subagents
+// are stopped and their tokens revoked. Its thread gets one "Stopped." note when a turn was running
+// or a running subagent was stopped, app-spawned or native: a chat object that only waited on its
+// subagents says so too. A turn carrying subagent results is settled as stopped by the human, and
+// the chat object is held.
 func (m *Manager) stopOne(c *Chat) {
 	var out outbox
 	c.mu.Lock()
@@ -481,9 +483,15 @@ func (m *Manager) stopOne(c *Chat) {
 		c.carry.human = true
 		m.endCarry(c, false, &out)
 	}
+	stopped := 0 // stopSubs stops every running subagent, a native one too
+	for _, s := range c.subs {
+		if s.meta.Status == model.SubRunning {
+			stopped++
+		}
+	}
 	toClose = m.stopSubs(c, &out)
 	m.revokeChatExtras(c.meta.ID)
-	if wasBusy {
+	if wasBusy || stopped > 0 {
 		ups = append(ups, tr.AddNote("muted", "Stopped.")...)
 	}
 	c.meta.TurnActive = false

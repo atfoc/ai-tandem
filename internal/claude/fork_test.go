@@ -26,6 +26,9 @@ func forkFake(t *testing.T, answer bool, lines ...string) (f *fake, runs string)
 	return f, runs
 }
 
+// pointGone is the error text (after "claude: ") of a fork at a point the CLI no longer finds.
+const pointGone = "this point can no longer be branched or forked from: Claude has compacted the conversation since then"
+
 // startupFailure is the one stdout line of a process that cannot start its session.
 func startupFailure(reason string) string {
 	return `{"type":"result","subtype":"error_during_execution","duration_ms":0,"is_error":true,"num_turns":0,"session_id":"N","errors":["` + reason + `"],"result_index":0}`
@@ -51,7 +54,10 @@ func TestSpawnForkArgs(t *testing.T) {
 	}{
 		{"at a point", agent.ForkSource{ChatID: "c", SessionID: "S", Point: "U", Next: "V"},
 			[]string{"--fork-session", "--resume-session-at", "U", "--session-id", "N"}},
+		// The end is cut at its point too: the source may take a message while the fork starts.
 		{"at the end", agent.ForkSource{SessionID: "S", Point: "U", End: true},
+			[]string{"--fork-session", "--resume-session-at", "U", "--session-id", "N"}},
+		{"at the end, no point recorded", agent.ForkSource{SessionID: "S", End: true},
 			[]string{"--fork-session", "--session-id", "N"}},
 		{"no point recorded", agent.ForkSource{SessionID: "S"},
 			[]string{"--fork-session", "--session-id", "N"}},
@@ -139,19 +145,22 @@ func TestSpawnForkResumeFails(t *testing.T) {
 
 // A source session or a point that is gone: one result line, no initialize answer, and the
 // process stays until its stdin is closed. The fork fails at that line.
+//
+// A point that is gone is one before a compaction (the CLI no longer loads those messages): the
+// error says so in place of the CLI's text.
 func TestSpawnForkStartupFailure(t *testing.T) {
-	for _, reason := range []string{
-		"No message found with message.uuid of: U",
-		"No conversation found with session ID: S",
+	for _, c := range []struct{ reason, want string }{
+		{"No message found with message.uuid of: U", pointGone},
+		{"No conversation found with session ID: S", "No conversation found with session ID: S"},
 	} {
-		t.Run(reason, func(t *testing.T) {
-			f, runs := forkFake(t, false, startupFailure(reason))
+		t.Run(c.reason, func(t *testing.T) {
+			f, runs := forkFake(t, false, startupFailure(c.reason))
 			s := f.spawner()
 			s.forkTimeout = 30 * time.Second
 			start := time.Now()
 			a, _, err := s.SpawnFork(agent.SpawnOptions{SessionID: "N", Cwd: t.TempDir()}, agent.ForkSource{SessionID: "S", Point: "U"})
-			if a != nil || err == nil || err.Error() != "claude: "+reason {
-				t.Fatalf("SpawnFork = %v, %v; want the reason", a, err)
+			if a != nil || err == nil || err.Error() != "claude: "+c.want {
+				t.Fatalf("SpawnFork = %v, %v; want %q", a, err, "claude: "+c.want)
 			}
 			if d := time.Since(start); d > 10*time.Second {
 				t.Errorf("failed after %s: the time box was waited out", d)
@@ -172,6 +181,7 @@ func TestSpawnForkStartupFailure(t *testing.T) {
 func TestSpawnForkStartupFailureStderr(t *testing.T) {
 	cases := []struct{ stderr, want string }{
 		{"something broke\nmore", "claude: something broke"},
+		{"Error: No message found with message.uuid of: U", "claude: " + pointGone},
 		{"", "claude: the fork failed"},
 	}
 	for _, c := range cases {

@@ -575,6 +575,172 @@ func TestConfigureReachesTheCurrentBranch(t *testing.T) {
 	}
 }
 
+// The folder is the chat's as far as the user can tell: a new folder for the missing one, picked
+// on the current branch, is the folder of every branch that had the missing one.
+func TestConfigureFolderFixReachesEveryBranch(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	b1, id1, a1 := e.branchTo(id, newAt(3), "one")
+	a1.emit(t, reply("q1")...)
+	b2, id2, a2 := e.branchTo(id, newAt(6), "two")
+	a2.emit(t, reply("r1")...)
+	old := e.meta(id).Cwd
+	if e.meta(id1).Cwd != old || e.meta(id2).Cwd != old {
+		t.Fatal("a branch did not take the chat's folder")
+	}
+	// The app is closed and the folder removed: no branch has a process.
+	e.m.Shutdown()
+	if err := os.Rename(old, old+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	e.boot()
+	if err := e.m.Open(id); err != nil {
+		t.Fatal(err)
+	}
+	if v := e.view(id); v.Branch != b2 || !v.FolderMissing || v.Cwd != old {
+		t.Fatalf("view after the restart %+v", v)
+	}
+
+	dir := t.TempDir()
+	evs := e.listen()
+	if err := e.m.Configure(id, ConfigReq{Cwd: dir}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sid := range []string{id2, id1, id} {
+		if got := e.meta(sid).Cwd; got != dir {
+			t.Errorf("the folder of %s after the fix: %q", sid, got)
+		}
+	}
+	if v := e.view(id); v.Branch != b2 || v.FolderMissing || v.Error != "" || v.Status != model.StatusReady || v.Cwd != dir {
+		t.Fatalf("view after the fix %+v", v)
+	}
+	// Clients are told what they are told of a chat without branches: the chat's view, which
+	// holds the current branch's folder, and the defaults. No other branch is loaded for it.
+	got := evs.drain(t, e.br)
+	if len(got) != 2 || len(ofType(got, "chat")) != 1 || len(ofType(got, "defaults")) != 1 || namesChat(got, "/branches/") {
+		t.Fatalf("events %+v", got)
+	}
+	if c := chatOf(t, ofType(got, "chat")[0]); c["cwd"] != dir || c["branch"] != b2 || c["folderMissing"] != nil {
+		t.Fatalf("the chat event %v", c)
+	}
+	if e.loaded(id) || e.loaded(id1) {
+		t.Fatal("the fix loaded a branch that is not current")
+	}
+
+	// Going back to another branch, and starting a new one from it, finds the folder.
+	if err := e.m.SendTo(id, mainAt(6), "back on main", "", nil); err != nil {
+		t.Fatalf("SendTo main's end after the fix: %v", err)
+	}
+	a := e.claude.last(t)
+	if o := a.opts; e.cur(id) != model.MainBranch || o.ChatID != id || o.Cwd != dir || !o.Resume {
+		t.Fatalf("current %q, spawn options %+v", e.cur(id), o)
+	}
+	a.emit(t, reply("p3")...)
+	_, id3, _ := e.branchTo(id, Target{Branch: b1, At: 3, New: true}, "three")
+	if o := e.claude.lastFork(t).opts; o.ChatID != id3 || o.Cwd != dir || e.meta(id3).Cwd != dir {
+		t.Fatalf("the folder of a branch started from another branch: %+v", o)
+	}
+	// The fix survives a restart.
+	e.m.Shutdown()
+	e.boot()
+	for _, sid := range []string{id, id1, id2, id3} {
+		if got := e.meta(sid).Cwd; got != dir {
+			t.Errorf("the folder of %s after a restart: %q", sid, got)
+		}
+	}
+}
+
+// The folder fix writes the new folder to a branch that has a process, and leaves the process
+// and its turn alone: the folder is used the next time the branch starts.
+func TestConfigureFolderFixLeavesProcessesAlone(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	_, bid, fa := e.branchTo(id, newAt(3), "aside")
+	fa.emit(t, reply("q1")...)
+	old := e.meta(id).Cwd
+	// The branch works, and main is made current without stopping it.
+	e.send(id, "more", "")
+	e.makeCurrent(id, model.MainBranch)
+	if err := os.Rename(old, old+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.Send(id, "on main", "", nil); !errors.Is(err, ErrFolderMissing) {
+		t.Fatalf("Send with the folder gone: %v", err)
+	}
+	branchItems := e.file(bid, "items.jsonl")
+	evs := e.listen()
+
+	dir := t.TempDir()
+	if err := e.m.Configure(id, ConfigReq{Cwd: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if e.meta(id).Cwd != dir || e.meta(bid).Cwd != dir {
+		t.Fatalf("folders after the fix: main %q, the branch %q", e.meta(id).Cwd, e.meta(bid).Cwd)
+	}
+	if fa.isClosed() || fa.interrupted() != 0 || !bytes.Equal(e.file(bid, "items.jsonl"), branchItems) || !e.meta(bid).TurnActive {
+		t.Fatal("the fix disturbed the branch's process or its turn")
+	}
+	if got := evs.drain(t, e.br); len(ofType(got, "chat_items")) != 0 || len(ofType(got, "chat")) != 1 {
+		t.Fatalf("events %+v", got)
+	}
+	// Its turn goes on, in the process it has.
+	fa.emit(t, reply("q2")...)
+	if got := e.diskItems(bid); len(got) != 9 || got[7].Text != "reply q2" || fa.isClosed() {
+		t.Fatalf("the branch's items %+v", got)
+	}
+	e.send(id, "on main", "")
+	if o := e.claude.last(t).opts; o.ChatID != id || o.Cwd != dir {
+		t.Fatalf("spawn options %+v", o)
+	}
+}
+
+// A branch that could not be started for its missing folder, and was not made current for it
+// (see SendTo), does not keep the error once the folder is fixed on another branch.
+func TestConfigureFolderFixClearsTheErrorOfOtherBranches(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	b, bid, fa := e.branchTo(id, newAt(3), "aside")
+	fa.emit(t, reply("q1")...)
+	old := e.meta(id).Cwd
+	if err := os.Rename(old, old+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.SendTo(id, mainAt(6), "back on main", "", nil); !errors.Is(err, ErrFolderMissing) {
+		t.Fatalf("SendTo with the folder gone: %v", err)
+	}
+	own := func(sid string) model.ChatView {
+		t.Helper()
+		c, err := e.m.lock(sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.mu.Unlock()
+		return view(c)
+	}
+	if v := own(id); e.cur(id) != b || !v.FolderMissing || v.Status != model.StatusError {
+		t.Fatalf("current %q, main's own view %+v", e.cur(id), v)
+	}
+	// The branch's process ends; its next start finds the folder gone, and the user picks one.
+	fa.exit(t)
+	if err := e.m.Send(id, "more", "", nil); !errors.Is(err, ErrFolderMissing) {
+		t.Fatalf("Send with the folder gone: %v", err)
+	}
+	dir := t.TempDir()
+	if err := e.m.Configure(id, ConfigReq{Cwd: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if v := own(id); v.FolderMissing || v.Error != "" || v.Status != model.StatusReady || v.Cwd != dir {
+		t.Fatalf("main's own view after the fix %+v", v)
+	}
+	if v := own(bid); v.FolderMissing || v.Error != "" || v.Status != model.StatusReady || v.Cwd != dir {
+		t.Fatalf("the branch's own view after the fix %+v", v)
+	}
+	e.sendTo(id, mainAt(6), "back on main")
+	if o := e.claude.last(t).opts; e.cur(id) != model.MainBranch || o.ChatID != id || o.Cwd != dir {
+		t.Fatalf("current %q, spawn options %+v", e.cur(id), o)
+	}
+}
+
 // ---- the composed view ----------------------------------------------------
 
 func TestComposedView(t *testing.T) {

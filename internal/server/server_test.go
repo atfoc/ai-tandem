@@ -1140,12 +1140,19 @@ func TestChatLabel(t *testing.T) {
 		{400, `{"branch":"main","item":8,"text":"x"}`},     // no such item
 		{400, `{"branch":"a1b2c3d4","item":6,"text":"x"}`}, // no such item in that branch
 		{400, `{"branch":"main","text":"x"}`},
+		{400, `{"branch":"main","item":6,"text":"` + strings.Repeat("x", 201) + `"}`},     // too long
+		{400, `{"branch":"main","item":1,"text":"` + strings.Repeat("x", 200_000) + `"}`}, // too long, on a labeled message
 		{400, `not json`},
 	} {
 		if out := decode[map[string]string](t, e.expect(r.code, "PUT", path, r.body)); out["error"] == "" {
 			t.Fatalf("%s: no error text", r.body)
 		}
 	}
+	if out := e.expect(400, "PUT", path, `{"branch":"main","item":6,"text":"`+strings.Repeat("é", 201)+`"}`); !strings.Contains(out, chats.ErrLongLabel.Error()) {
+		t.Fatalf("error body %s", out)
+	}
+	e.expect(200, "PUT", path, `{"branch":"main","item":6,"text":"`+strings.Repeat("é", 200)+`"}`)
+	e.expect(200, "PUT", path, `{"branch":"main","item":6,"text":""}`)
 	// A mutation: only the active client may make it.
 	for _, client := range []string{"", "B"} {
 		code, out := e.doAs(client, "PUT", path, `{"branch":"main","item":6,"text":"lua"}`)
@@ -1155,6 +1162,12 @@ func TestChatLabel(t *testing.T) {
 	}
 	if after, err := os.ReadFile(treeFile); err != nil || string(after) != string(before) {
 		t.Fatalf("tree.json changed by a refused label: %s %v", after, err)
+	}
+
+	// A label is kept as one clean line: control characters become spaces.
+	got = decode[answer](t, e.expect(200, "PUT", path, `{"branch":"main","item":1,"text":"a\nb\u0000c\u001b[31m\t"}`))
+	if want := (model.TreeLabel{Branch: "main", Item: 1, Text: "a b c [31m"}); got.Labels[0] != want || stored()[0] != want {
+		t.Fatalf("labels %+v, stored %+v", got.Labels, stored())
 	}
 
 	// Blank text removes; "labels" is [] when none is left.
@@ -1228,6 +1241,16 @@ func TestChatFork(t *testing.T) {
 		`{"branch":"main","at":0,"message":3}`, `{"branch":"main","at":"3"}`, `{`} {
 		e.expect(400, "POST", path, body)
 	}
+	// 400: "at" is required; without it nothing is forked from the start of the chat.
+	before := len(e.a.Chats.Views())
+	for _, body := range []string{`{"branch":"main"}`, `{"branch":"main","at":null}`, `{"branch":"main","message":0}`, `{}`} {
+		if out := e.expect(400, "POST", path, body); !strings.Contains(out, "at is missing") {
+			t.Fatalf("%s: error body %s", body, out)
+		}
+	}
+	if n := len(e.a.Chats.Views()); n != before {
+		t.Fatalf("%d chats after forks without a point, %d before", n, before)
+	}
 	if out := e.expect(400, "POST", path, `{"branch":"main","at":4}`); !strings.Contains(out, chats.ErrBadPoint.Error()) {
 		t.Fatalf("error body %s", out)
 	}
@@ -1241,7 +1264,7 @@ func TestChatFork(t *testing.T) {
 	}
 
 	// 500 with the provider's text when the fork start fails; nothing is created.
-	before := len(e.a.Chats.Views())
+	before = len(e.a.Chats.Views())
 	e.a.Chats.Spawners[model.Claude] = fakeSpawner{forkErr: errors.New("No conversation found")}
 	if out := e.expect(500, "POST", path, `{"branch":"main","at":3}`); !strings.Contains(out, "No conversation found") {
 		t.Fatalf("error body %s", out)
@@ -1286,6 +1309,12 @@ func TestChatSendWithTarget(t *testing.T) {
 	}
 	if out := e.expect(400, "POST", path, target(`{"branch":"main","at":4}`)); !strings.Contains(out, chats.ErrBadPoint.Error()) {
 		t.Fatalf("error body %s", out)
+	}
+	// 400: a target's "at" is required; without it no branch starts at the start of the chat.
+	for _, tg := range []string{`{"branch":"main"}`, `{"branch":"main","new":true}`, `{"branch":"main","at":null,"new":true}`, `{}`} {
+		if out := e.expect(400, "POST", path, target(tg)); !strings.Contains(out, "at is missing") {
+			t.Fatalf("%s: error body %s", tg, out)
+		}
 	}
 	// 404: unknown chat, unknown branch.
 	e.expect(404, "POST", "/api/chats/nope/messages", target(`{"branch":"main","at":3}`))

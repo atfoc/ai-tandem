@@ -63,3 +63,15 @@ export function withComment(r: Reference, c: string): Reference {
 
 /** A draft's quotes as they are sent: comments trimmed, blank ones left out. */
 export const toSend = (qs: Reference[]) => qs.map((q) => withComment(q, q.comment?.trim() ?? ""));
+
+/** A failed send's quotes back in the draft: before the ones added meanwhile; a passage quoted
+ *  again since then is kept as it is now. */
+export const mergeQuotes = (sent: Reference[], now: Reference[]) =>
+  [...sent.filter((s) => !now.some((n) => quoteKey(n) === quoteKey(s))), ...now];
+
+/** What names a message in one line: its text, or, for a message that is only quotes, its first
+ *  quote after a quote mark: the comment, else the quoted words (treeText in tree.go). */
+export const nameText = (it: Pick<Item, "text" | "references">): string => {
+  const r = it.references?.[0];
+  return it.text?.trim() || !r ? it.text ?? "" : `❝ ${r.comment?.trim() || r.quote}`;
+};

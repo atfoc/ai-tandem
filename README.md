@@ -25,7 +25,10 @@ agents run with the logins you already have.
   their own extra token. The owner-only UDS bridge carries a per-run, non-secret handle for permission
   asks, subagent activity, abort and MCP failure notices. pi tool
   calls are auto-approved: they run with no permission card, and only a tool that touches the app's
-  own folder is refused. Cursor reaches the same endpoint from its ACP session, keeps one
+  own folder is refused. That guard reads the text of the tool's input, so it stops accidental
+  access by a command that names the folder. It is not a sandbox: a shell command that reaches the
+  folder without naming it (a glob, a variable, a symlink, a search from a parent folder) is not
+  stopped. Cursor reaches the same endpoint from its ACP session, keeps one
   first-message instructions block with the same whiteboard prompt as Claude and pi, and its board calls are
   auto-approved too (no permission card). Plain (non-board) chats get no board tools.
 - **Web client** (`web/`): React + Excalidraw, built with esbuild. The server serves it.
@@ -163,7 +166,7 @@ curl -sS -X POST http://localhost:6006/mcp \
 
 A 200 whose result has `serverInfo.name` `board` means the listener is reachable and the Host
 check passed. Replace the method with `tools/list` to see the tools for that chat (spawn family on
-every chat; board tools only on board chats). `curl` may use either
+every chat; board tools only on board chats; none for an archived chat). `curl` may use either
 the `localhost` or `127.0.0.1` spelling; **agents must never be configured with `127.0.0.1`** (see
 above). The `initialize` and `tools/list` handshakes are permissive, so an unknown token still
 answers them with an empty list; the `tools/call` then returns tool text (`isError`), never HTTP 401.
@@ -213,6 +216,9 @@ before the default e2e run (see Development).
 
 - Your own pi extensions are not loaded: pi runs with `--no-extensions` plus the app's extension,
   so the app's runs are deterministic.
+- The guard on pi's tool calls is not a sandbox. It refuses a tool input that names the app's own
+  folder, which stops accidental access; a shell command that reaches the folder without naming it
+  is not stopped.
 - `/api/usage/pi` is not offered (pi has no plan-limit reporter).
 - The pi context split is computed live from the running process and cached; it is not recomputed
   offline once the process exits.

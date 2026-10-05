@@ -19,7 +19,18 @@ export type ComposerQuotes = {
   count: React.ReactNode;
   /** The float at the passage being commented on, if one is open. */
   float: React.ReactNode;
+  /** The draft's quotes as a click elsewhere would leave them: with the comment typed in an open
+   *  float. For the draft saved when the composer or the page goes away. */
+  kept(): Reference[];
 };
+
+/** qs with what the float holds: a new quote is added (always on Enter, else only with a
+ *  comment), an edited one gets its comment. */
+function withFloat(qs: Reference[], f: Float, enter: boolean): Reference[] {
+  const k = quoteKey(f.r);
+  if (f.edit) return qs.map((q) => (quoteKey(q) === k ? withComment(q, f.text) : q));
+  return (enter || f.text.trim()) && !qs.some((q) => quoteKey(q) === k) ? [...qs, withComment(f.r, f.text)] : qs;
+}
 
 /** The quotes of a chat's composer: quotes and setQuotes are the draft's, box is the composer's
  *  box, whose width and place the float takes. */
@@ -37,12 +48,9 @@ export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes
     if (!at) return;
     setFloat({ r: q ?? r, range: at, edit: !!q, text: q?.comment ?? "" });
   };
-  /** Keeps what the float holds: a new quote is added (always on Enter, else only with a
-   *  comment), an edited one gets its comment. */
+  /** Keeps what the float holds (see withFloat). */
   const keep = (f: Float, enter: boolean) => {
-    const k = quoteKey(f.r);
-    if (f.edit) setQuotes((qs) => qs.map((q) => (quoteKey(q) === k ? withComment(q, f.text) : q)));
-    else if (enter || f.text.trim()) setQuotes((qs) => (qs.some((q) => quoteKey(q) === k) ? qs : [...qs, withComment(f.r, f.text)]));
+    setQuotes((qs) => withFloat(qs, f, enter));
     setFloat(null);
   };
   const remove = (r: Reference) => setQuotes((qs) => qs.filter((q) => quoteKey(q) !== quoteKey(r)));
@@ -55,6 +63,7 @@ export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes
     window.getSelection()?.removeAllRanges(); // the mark shows it; the next selection starts clean
   };
   const quote = useCallback((r: Reference, range: Range) => latest.current(r, range), []);
+  const kept = useCallback(() => (now.current.float ? withFloat(now.current.quotes, now.current.float, false) : now.current.quotes), []);
 
   // The draft's passages, and the one being quoted, stay marked in the thread.
   useEffect(() => {
@@ -99,6 +108,7 @@ export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes
   );
   return {
     quote,
+    kept,
     count: count || null,
     float: float && (
       <QuoteFloat f={float} box={box} onText={(text) => setFloat({ ...float, text })} onKeep={(enter) => keep(float, enter)}
@@ -147,12 +157,18 @@ function QuoteFloat({ f, box, onText, onKeep, onCancel, onRemove }: {
   const [h, setH] = useState(120);
   const keepNow = useRef(onKeep);
   keepNow.current = onKeep;
+  const cancelNow = useRef(onCancel);
+  cancelNow.current = onCancel;
   useEffect(() => {
     const move = () => redraw((x) => x + 1);
     const down = (e: MouseEvent) => { if (!el.current?.contains(e.target as Node)) keepNow.current(false); };
+    // Esc wherever the focus is. The comment field's own Esc, and one a layer above took, do not come
+    // here; a quote list or an ordinary menu (the sidebar's) opened over the float closes first.
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape" && !document.querySelector(".qlist, .menu.left, .menu.right")) cancelNow.current(); };
     window.addEventListener("scroll", move, true);
     window.addEventListener("resize", move);
     document.addEventListener("mousedown", down, true);
+    document.addEventListener("keydown", key);
     const ro = new ResizeObserver(move); // the panel is resized, the composer grows
     if (box.current) ro.observe(box.current);
     return () => {
@@ -160,6 +176,7 @@ function QuoteFloat({ f, box, onText, onKeep, onCancel, onRemove }: {
       window.removeEventListener("scroll", move, true);
       window.removeEventListener("resize", move);
       document.removeEventListener("mousedown", down, true);
+      document.removeEventListener("keydown", key);
     };
   }, []);
   useLayoutEffect(() => { if (el.current && el.current.offsetHeight !== h) setH(el.current.offsetHeight); });

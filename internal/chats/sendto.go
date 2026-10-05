@@ -25,10 +25,17 @@ type Target struct {
 // on it as Send does. At every other point a new branch is made, holding the first t.At items of
 // t.Branch in a session forked there, with the message as its first own item.
 //
-// Whichever branch becomes current, the branch left is stopped (D4). A new branch is made in
-// Fork's order (D8): unlisted while its process starts, visible only once the message is on it
-// and it is in the tree record. When anything fails nothing is left of it: the tree record and
-// the current branch are as before, and the branch left still runs.
+// Whichever branch becomes current, the branch left is stopped (D4), once the message is on the
+// other one. A new branch is made in Fork's order (D8): unlisted while its process starts, visible
+// only once the message is on it and it is in the tree record. When the message does not get onto
+// its branch nothing is left of the Send: the tree record and the current branch are as before,
+// and the branch left still runs.
+//
+// A branch that is carried on is made current before its process starts, and the branch left
+// becomes current again when the start fails: clients see the branch for that long, with the
+// error of the start, which stays the branch's own. In two cases the error is returned and the
+// move is kept, with the branch left stopped: the branch's process refused the message, which
+// is then in its thread as after a refused Send, or another Send got to the branch meanwhile.
 func (m *Manager) SendTo(id string, t Target, text, context string, refs []model.Reference) error {
 	top, err := m.topChat(id)
 	if err != nil {
@@ -43,14 +50,38 @@ func (m *Manager) SendTo(id string, t Target, text, context string, refs []model
 	if !made {
 		// Carrying on: the branch's session goes on, by a resume or, while D9 keeps its source,
 		// by the fork capability. No id is needed.
+		left := m.current(top)
+		if left == c {
+			return m.sendCur(top, id, text, context, refs)
+		}
+		c.mu.Lock()
+		sent := c.tr.Sent() // sendTarget loaded it
+		c.mu.Unlock()
+		if err := m.setCurrent(id, t.Branch); err != nil {
+			top.moveMu.Unlock()
+			return err
+		}
+		err := m.sendCur(top, id, text, context, refs)
+		// moveMu was given up for the start of the branch's process: what follows is a step
+		// of its own, and looks at what happened to the chat meanwhile.
+		top.moveMu.Lock()
 		defer top.moveMu.Unlock()
-		if left := m.current(top); left != c {
-			if err := m.setCurrent(id, t.Branch); err != nil {
-				return err
-			}
+		c.mu.Lock()
+		// Not on it, and nobody else has sent to it since.
+		unsent := err != nil && !c.deleted && !busy(c) && c.tr.Sent() == sent
+		c.mu.Unlock()
+		was := left.branch
+		if left == top {
+			was = model.MainBranch
+		}
+		cur := m.current(top)
+		if cur == c && unsent && m.setCurrent(id, was) == nil {
+			return err // as it was before the Send
+		}
+		if cur != left { // else another Send with a target has carried it on
 			m.stopOne(left)
 		}
-		return m.Send(id, text, context, refs)
+		return err
 	}
 	top.moveMu.Unlock()
 
@@ -135,8 +166,15 @@ func (m *Manager) SendTo(id string, t Target, text, context string, refs []model
 	c.unlisted = false
 	m.logSave(c) // what its process reported while it was unlisted
 	m.makeCurrent(top, c)
+	archived := m.parentOf(c).Archived
 	c.mu.Unlock()
 	m.stopOne(left)
+	if archived {
+		// Archived while the message went to the branch's process: the Stop of the archive
+		// found no branch to stop, since an unlisted one is not yet the chat's. One that comes
+		// after this check finds it.
+		m.stopOne(c)
+	}
 	m.clearDraft(top)
 	m.emitView(top)
 	return nil

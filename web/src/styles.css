@@ -354,8 +354,9 @@ button.tchip:hover { border-color: var(--line-2); }
 .tchip-pre { color: var(--faint); margin-right: 2px; }
 .menu.up { top: auto; bottom: calc(100% + 6px); left: 0; min-width: 220px; }
 .menu-item.pick { padding-left: 10px; gap: 6px; }
-.menu-item.pick > span:last-child { flex: none; }
+.menu-item.pick > span:last-child:not(.menu-label) { flex: none; }
 .menu.up { max-width: min(320px, calc(100vw - 24px)); }
+.menu.up:not(.dirs):not(.usage-pop) { width: max-content; }
 .menu-item.pick .menu-label { max-width: none; white-space: normal; overflow-wrap: anywhere; }
 .menu-note { display: block; min-width: 0; white-space: normal; overflow-wrap: anywhere; font-size: 11px; color: var(--faint); }
 .menu-backdrop { position: fixed; inset: 0; z-index: 40; }

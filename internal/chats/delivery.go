@@ -100,11 +100,13 @@ type carry struct {
 
 // setHold makes the app start no turn on c until the human sends: the triggers do nothing, and the
 // results that become owed meanwhile wait. It is set when the human stops the agent (Interrupt,
-// Stop), when a turn of the agent ends aborted or with an error, when its process exits, and when
-// results did not reach the agent (a carrying turn settled as not received, a record that could
-// not be written). A CLI does not reliably report an interrupted turn as aborted, so the hold is
-// what keeps a turn from starting after the human pressed Stop. It is not saved: after a restart
-// the chat has no process, and only a human Send starts one. c.mu held.
+// Stop), when a turn of the agent ends aborted or with an error, when its process exits, when the
+// adapter refuses the human's message (sendRefused), and when results did not reach the agent (a
+// carrying turn settled as not received, a record that could not be written). A new branch or fork
+// starts held (addUnlisted): its process is there before the human has written in it. A CLI does
+// not reliably report an interrupted turn as aborted, so the hold is what keeps a turn from
+// starting after the human pressed Stop. It is not saved: after a restart the chat has no process,
+// and only a human Send starts one. c.mu held.
 func setHold(c *Chat) { c.hold = true }
 
 // releaseHold is the one way out of the hold: a human Send that was accepted. c.mu held.
@@ -128,19 +130,25 @@ func turnRunning(c *Chat) bool { return c.ag != nil && c.meta.TurnActive }
 // make the chat unusable; the app retries it once the agent has finished a turn. A completion is
 // taken only once its record says sent on disk; one whose write fails stays as it was, with no
 // failed attempt counted, and holds the chat. Each taken subagent gets its row in the thread the
-// first time it is carried. It returns the turn as a carry, for the caller to make the chat's
-// (c.carry), with the taken records in completion order and the thread's changes; nil when nothing
-// was taken. c.mu held.
+// first time it is carried, and its record the thread's item count as it is before this turn adds
+// anything (Carried): a copy of the thread cut at or before that count is of before this turn. It
+// returns the turn as a carry, for the caller to make the chat's (c.carry), with the taken records
+// in completion order and the thread's changes; nil when nothing was taken. c.mu held.
 func (m *Manager) carryOwed(c *Chat, untried bool, out *outbox) (d *carry, taken []model.Subagent, ups []transcript.Update) {
+	at := -1 // the thread's item count before this turn adds anything
 	for _, s := range owedSubs(c) {
-		was := s.meta.Delivery
+		was, wasAt := s.meta.Delivery, s.meta.Carried
 		if untried && was != model.SubOwed {
 			continue
 		}
-		s.meta.Delivery = model.SubSent
+		if at < 0 {
+			_, items := c.tr.Snapshot()
+			at = len(items)
+		}
+		s.meta.Delivery, s.meta.Carried = model.SubSent, at
 		if err := m.writeSub(c, s); err != nil {
 			log.Printf("chats: save subagent %s/%s: %v", c.meta.ID, s.meta.ID, err)
-			s.meta.Delivery = was
+			s.meta.Delivery, s.meta.Carried = was, wasAt
 			setHold(c)
 			continue
 		}
@@ -342,17 +350,26 @@ func (m *Manager) refused(c *Chat, d *carry, cause error, out *outbox) {
 	out.emitChat(c)
 }
 
-// sendRefused is a human message carrying results that the adapter did not accept. When that is
-// what its turn comes to, the results are owed again after a failed attempt and the chat is held.
-// Nothing else is changed: a refused human send is not rolled back, the error goes to the human, and
-// the note comes with whatever ends the turn (the adapter's own errored end, as when pi rejects a
-// prompt; the process's exit; Stop). A turn already settled, by its end or by model output, stays
-// as it was settled.
-func (m *Manager) sendRefused(c *Chat, d *carry) {
+// sendRefused is a human message that the adapter did not accept. d is the results it carried, nil
+// when it carried none. When the refusal is what a carrying turn comes to, the results are owed
+// again after a failed attempt and the chat is held. A message that carried nothing holds the chat
+// as well: it was no accepted Send, and the hold it released is back. sent is the thread's count of
+// user messages with it, so a message the human has sent since keeps the hold it released. Nothing
+// else is changed: a refused human send is not rolled back, the error goes to the human, and the
+// note comes with whatever ends the turn (the adapter's own errored end, as when pi rejects a
+// prompt; the process's exit; Stop). A carrying turn already settled, by its end or by model
+// output, stays as it was settled.
+func (m *Manager) sendRefused(c *Chat, d *carry, sent int) {
 	var out outbox
 	c.mu.Lock()
-	if !c.deleted && c.tr != nil && c.carry == d && !d.settled {
-		m.endCarry(c, false, &out)
+	if !c.deleted && c.tr != nil {
+		if d == nil {
+			if c.tr.Sent() == sent {
+				setHold(c)
+			}
+		} else if c.carry == d && !d.settled {
+			m.endCarry(c, false, &out)
+		}
 	}
 	out.emitCounts(c)
 	c.mu.Unlock()

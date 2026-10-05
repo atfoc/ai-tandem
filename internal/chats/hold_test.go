@@ -467,3 +467,135 @@ func TestNoProcessResultsWaitForHuman(t *testing.T) {
 		t.Fatalf("the human's message did not resume the agent: %+v", next.opts)
 	}
 }
+
+// A human message the adapter refuses is not an accepted Send: a held chat stays held, also when
+// the message carried no result. The refused message is not rolled back, so the chat is left in
+// its turn; a result that comes then starts no turn, nor does a clean end of that turn. It goes
+// out with the next message of the human's.
+func TestRefusedHumanSendKeepsHold(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.idleParent()
+	if err := e.m.Interrupt(id); err != nil { // holds the chat
+		t.Fatal(err)
+	}
+	if !e.holding(id) {
+		t.Fatal("not held")
+	}
+	parent.failSends(errors.New("no ack from the agent"))
+	if err := e.m.Send(id, "hello", "", nil); err == nil || err.Error() != "no ack from the agent" {
+		t.Fatalf("Send: %v", err)
+	}
+	if parent.refused() != 1 || len(parent.sent()) != 1 {
+		t.Fatalf("%d refused, %d sent", parent.refused(), len(parent.sent()))
+	}
+	if !e.holding(id) {
+		t.Errorf("a refused Send released the hold (status %q)", e.status(id))
+	}
+	items := e.items(id)
+	if last := items[len(items)-1]; last.Kind != "user" || last.Text != "hello" || !e.m.Busy(id) || !e.meta(id).TurnActive {
+		t.Fatalf("the refused send was rolled back: last item %+v, busy %v", last, e.m.Busy(id))
+	}
+
+	parent.failSends(nil)
+	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+	e.finish(waitChild(t, e.claude, 2), "report")
+	e.delivery("the chat is in the refused message's turn", id, sa.ID, model.SubOwed)
+	// pi can take a prompt whose ack it then fails to give in time: the turn ends as any turn.
+	parent.emit(t, agent.Event{Kind: agent.EvTurnEnd})
+	e.held("after a clean turn end", id, parent, 1, sa.ID)
+	if !e.holding(id) {
+		t.Fatal("not held after the turn end")
+	}
+	e.afterHold(id, parent, sa.ID)
+}
+
+// A refused Send holds the chat as a refused delivery does, whether it was held before or not.
+func TestRefusedHumanSendHolds(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.idleParent()
+	if e.holding(id) {
+		t.Fatal("held after a clean turn end")
+	}
+	parent.failSends(errors.New("stdin closed"))
+	if err := e.m.Send(id, "two", "", nil); err == nil {
+		t.Fatal("the Send was accepted")
+	}
+	if !e.holding(id) || !e.m.Busy(id) {
+		t.Fatalf("held %v, busy %v", e.holding(id), e.m.Busy(id))
+	}
+}
+
+// A fresh fork is held until the human writes in it. Its first message, refused, leaves it held.
+func TestRefusedFirstSendKeepsForkHeld(t *testing.T) {
+	e := newEnv(t)
+	id, parent := e.startSpawnParent()
+	parent.emit(t, agent.Event{Kind: agent.EvText, Text: "hi"}, agent.Event{Kind: agent.EvTurnEnd, Point: "p1"})
+	f := e.fork(id, len(e.items(id)))
+	a := e.claude.lastFork(t)
+	if !e.holding(f.ID) {
+		t.Fatal("the fork is not held")
+	}
+	a.failSends(errors.New("stdin closed"))
+	if err := e.m.Send(f.ID, "hello fork", "", nil); err == nil || err.Error() != "stdin closed" {
+		t.Fatalf("Send: %v", err)
+	}
+	if !e.holding(f.ID) {
+		t.Errorf("a refused first Send released the fork's hold (status %q)", e.status(f.ID))
+	}
+	if items := e.items(f.ID); items[len(items)-1].Text != "hello fork" || !e.m.Busy(f.ID) {
+		t.Fatalf("the refused send was rolled back: busy %v", e.m.Busy(f.ID))
+	}
+}
+
+// pi ends a turn itself, with an error, when it rejects the prompt, and then returns that error
+// from Send. The chat is held by that end, and by the refusal when it comes. A message of the
+// human's that was accepted between the two keeps its turn: the late refusal does not hold it.
+func TestRefusedHumanSendRace(t *testing.T) {
+	const rejected = "pi rejected the prompt: no model"
+	for _, human := range []bool{false, true} {
+		name := "pump first"
+		if human {
+			name += ", human message between"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			id, parent := e.idleParent()
+			parent.failSends(errors.New(rejected), agent.Event{Kind: agent.EvThinking}, agent.Event{Kind: agent.EvTurnEnd, Error: rejected})
+			reached, release := parent.pauseRefusal()
+			defer release()
+			res := make(chan error, 1)
+			go func() { res <- e.m.Send(id, "hello", "", nil) }()
+			<-reached // the pump has ended the turn; Send does not have the error yet
+			if e.m.Busy(id) || !e.holding(id) {
+				t.Fatalf("after the pump: busy %v, held %v", e.m.Busy(id), e.holding(id))
+			}
+			if human {
+				parent.failSends(nil)
+				e.send(id, "go on", "")
+			}
+			release()
+			if err := <-res; err == nil || err.Error() != rejected {
+				t.Fatalf("Send: %v", err)
+			}
+			if errs := notes(e.items(id), "error"); len(errs) != 1 || errs[0] != rejected {
+				t.Fatalf("error notes %q", errs)
+			}
+			if !human {
+				if e.m.Busy(id) || !e.holding(id) {
+					t.Fatalf("after both: busy %v, held %v", e.m.Busy(id), e.holding(id))
+				}
+				return
+			}
+			if st := e.status(id); st != model.StatusThinking || !e.meta(id).TurnActive || e.holding(id) {
+				t.Fatalf("the late refusal changed the newer turn: status %q, held %v", st, e.holding(id))
+			}
+			// The newer turn ends as any turn: a result that comes after it is delivered at once.
+			parent.emit(t, agent.Event{Kind: agent.EvText, Text: "ok"}, agent.Event{Kind: agent.EvTurnEnd})
+			sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
+			e.finish(waitChild(t, e.claude, 2), "report")
+			if n := len(parent.sent()); n != 3 || !reflect.DeepEqual(deliveredSids(parent.sent()[2]), []string{sa.ID}) {
+				t.Fatalf("%d sends, want the result delivered", n)
+			}
+		})
+	}
+}

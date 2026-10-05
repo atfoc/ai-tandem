@@ -288,10 +288,13 @@ func closeStop(s *sub) {
 	s.stop = nil
 }
 
+// closeAgents ends the processes a stop detached, in the background (Cursor's Close can block).
+// Each is interrupted first: Claude ends the shell command of a running tool on the interrupt,
+// not when its stdin closes. An idle process, or one that is gone, takes no harm from it.
 func closeAgents(ags []agent.Agent) {
 	for _, ag := range ags {
 		if ag != nil {
-			go ag.Close()
+			go func(ag agent.Agent) { _ = ag.Interrupt(); ag.Close() }(ag)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
@@ -859,6 +860,137 @@ func TestSendToFailureKeepsTheTree(t *testing.T) {
 	}
 }
 
+// A branch that is carried on and cannot be started: the current branch is the one it was, and
+// the branch left still runs.
+func TestSendToCarryOnFailureKeepsTheCurrentBranch(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	b, bid, fa := e.branchTo(id, newAt(3), "aside")
+	fa.emit(t, reply("b1")...)
+	d := model.Draft{References: []model.Reference{{Quote: "reply b1", Comment: "on the branch's reply", Item: 4, Start: 0, End: 8}}}
+	if err := e.m.SetDraft(id, d); err != nil {
+		t.Fatal(err)
+	}
+	mainItems, branchItems := e.file(id, "items.jsonl"), e.file(bid, "items.jsonl")
+	same := func(what string) {
+		t.Helper()
+		if rec, _ := e.treeFile(id); e.cur(id) != b || rec.Current != b {
+			t.Fatalf("%s: the current branch is %q, the record's %q", what, e.cur(id), rec.Current)
+		}
+		if fa.isClosed() || fa.interrupted() != 0 {
+			t.Fatalf("%s: the branch left was stopped", what)
+		}
+		if v := e.view(id); !reflect.DeepEqual(v.Draft, &d) || v.Status != model.StatusReady || v.FolderMissing || v.Error != "" {
+			t.Fatalf("%s: view %+v", what, v)
+		}
+		if !bytes.Equal(e.file(id, "items.jsonl"), mainItems) || !bytes.Equal(e.file(bid, "items.jsonl"), branchItems) {
+			t.Fatalf("%s: a thread changed", what)
+		}
+	}
+
+	// A quote that names no message of the branch is refused before anything is switched.
+	if err := e.m.SendTo(id, mainAt(6), "back on main", "", []model.Reference{{Item: 6, Quote: "reply"}}); !errors.Is(err, ErrBadReference) {
+		t.Fatalf("SendTo with a quote past main's end: %v", err)
+	}
+	same("a refused quote")
+
+	// Main's process was stopped when the branch became current; it has to start again, and
+	// its folder is gone.
+	cwd := e.meta(id).Cwd
+	if err := os.Rename(cwd, cwd+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	evs := e.listen()
+	if err := e.m.SendTo(id, mainAt(6), "back on main", "", nil); !errors.Is(err, ErrFolderMissing) {
+		t.Fatalf("SendTo with main's folder gone: %v", err)
+	}
+	same("a start that failed")
+	// A client saw main for a moment, with the error; the last view it got is the branch's.
+	chatEvs := ofType(evs.drain(t, e.br), "chat")
+	if len(chatEvs) == 0 {
+		t.Fatal("no chat event")
+	}
+	if last := chatOf(t, chatEvs[len(chatEvs)-1]); last["branch"] != b || last["status"] != string(model.StatusReady) || last["folderMissing"] != nil {
+		t.Fatalf("the last chat event %v", last)
+	}
+	// The branch left is the one a message goes to, in the process it had.
+	e.send(id, "still here", "")
+	if sent := fa.sent(); len(sent) != 2 || !reflect.DeepEqual(texts(sent[1]), []string{"still here"}) {
+		t.Fatalf("the process of the branch left got %v", sent)
+	}
+	fa.emit(t, reply("b2")...)
+	if err := os.Rename(cwd+".gone", cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same when the branch is started through the fork capability: its first turn was cut.
+	e.sendTo(id, mainAt(6), "back on main")
+	a := e.claude.last(t)
+	a.emit(t, reply("p3")...)
+	b2, _, _ := e.branchTo(id, newAt(3), "cut")
+	e.m.Stop(id)
+	e.sendTo(id, mainAt(9), "on main again")
+	a = e.claude.last(t)
+	a.emit(t, reply("p4")...)
+	_, _, items, _, err := e.m.ItemsOf(id, b2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := e.file(id, "tree.json")
+	boom := errors.New("No conversation found")
+	e.claude.set(func(s *fakeSpawner) { s.forkErr = boom })
+	if err := e.m.SendTo(id, Target{Branch: b2, At: len(items)}, "carry on", "", nil); !errors.Is(err, boom) {
+		t.Fatalf("SendTo with a fork start that fails: %v", err)
+	}
+	e.claude.set(func(s *fakeSpawner) { s.forkErr = nil })
+	if e.cur(id) != model.MainBranch || !bytes.Equal(e.file(id, "tree.json"), record) || a.isClosed() {
+		t.Fatalf("after a failed fork start: current %q, record %s, main's process closed %v", e.cur(id), e.file(id, "tree.json"), a.isClosed())
+	}
+	if v := e.view(id); v.Status != model.StatusReady || v.Error != "" {
+		t.Fatalf("view %+v", v)
+	}
+}
+
+// A branch that is carried on and whose process refuses the message: the message is in its
+// thread, as after a refused Send, so the move stands and the branch left is stopped.
+func TestSendToCarryOnRefusedMessageMoves(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	b, _, fa := e.branchTo(id, newAt(3), "aside")
+	fa.emit(t, reply("b1")...)
+	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+		t.Fatal(err)
+	}
+	rejected := errors.New("stdin closed")
+	e.m.Spawners[model.Claude] = refusingSpawner{e.claude, rejected}
+	if err := e.m.SendTo(id, mainAt(6), "back on main", "", nil); !errors.Is(err, rejected) {
+		t.Fatalf("SendTo to a process that refuses the message: %v", err)
+	}
+	if rec, _ := e.treeFile(id); e.cur(id) != model.MainBranch || rec.Current != model.MainBranch {
+		t.Fatalf("the current branch is %q (was %q), the record's %q", e.cur(id), b, rec.Current)
+	}
+	if got := e.items(id); len(got) != 7 || got[6].Text != "back on main" || e.view(id).Draft != nil {
+		t.Fatalf("main's items %+v", got)
+	}
+	if !fa.isClosed() {
+		t.Fatal("the branch left still runs")
+	}
+}
+
+// refusingSpawner is a fakeSpawner whose spawned processes refuse every message with err.
+type refusingSpawner struct {
+	*fakeSpawner
+	err error
+}
+
+func (s refusingSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
+	ag, err := s.fakeSpawner.Spawn(o)
+	if err == nil {
+		s.set(func(f *fakeSpawner) { f.agents[len(f.agents)-1].failSends(s.err) })
+	}
+	return ag, err
+}
+
 // Two Sends with a target at once: one branch is made, the other Send finds the chat busy.
 func TestSendToTwiceAtOnce(t *testing.T) {
 	e := newEnv(t)
@@ -895,6 +1027,158 @@ func TestSendToTwiceAtOnce(t *testing.T) {
 		})
 		return open == 1
 	})
+}
+
+// A plain Send that comes while a Send with a target is handing its message to the new branch's
+// process: the branch that is still current is idle and about to be stopped, so it must not take
+// the message. The plain Send finds the chat busy.
+func TestSendToAndSendAtOnce(t *testing.T) {
+	e := newEnv(t)
+	id, mainAg := e.talked(model.Claude, "", 2)
+	fk := gating(e.claude)
+	e.m.Spawners[model.Claude] = fk
+	answer := func(what string, res chan error) error {
+		t.Helper()
+		select {
+		case err := <-res:
+			return err
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not return", what)
+			return nil
+		}
+	}
+
+	res, plain := make(chan error, 1), make(chan error, 1)
+	go func() { res <- e.m.SendTo(id, newAt(3), "aside", "", nil) }()
+	g := fk.waiting(t) // main was found idle
+	go func() { plain <- e.m.Send(id, "meanwhile", "", nil) }()
+	// Whether the plain Send answers now or waits for the other, it is not accepted.
+	var sendErr error
+	early := false
+	select {
+	case sendErr = <-plain:
+		early = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(g.gate)
+	if !early {
+		sendErr = answer("the plain Send", plain)
+	}
+	if err := answer("the Send with a target", res); err != nil {
+		t.Fatalf("SendTo: %v", err)
+	}
+	if !errors.Is(sendErr, ErrBusy) {
+		_, _, items, _, _ := e.m.ItemsOf(id, model.MainBranch)
+		var tail []string
+		for _, it := range items[6:] {
+			tail = append(tail, it.Kind+":"+it.Text)
+		}
+		t.Fatalf("the plain Send: %v, want %v; main ends with %v", sendErr, ErrBusy, tail)
+	}
+
+	// Main is the branch left, stopped while idle: it holds nothing of the plain Send.
+	b := e.cur(id)
+	fa := e.claude.lastFork(t)
+	if b == model.MainBranch || fa.isClosed() || len(fa.sent()) != 1 {
+		t.Fatalf("current %q; the branch's process: closed %v, %d messages", b, fa.isClosed(), len(fa.sent()))
+	}
+	if _, _, items, _, err := e.m.ItemsOf(id, model.MainBranch); err != nil || len(items) != 6 {
+		t.Fatalf("main's items %+v (%v)", items, err)
+	}
+	if !mainAg.isClosed() || len(mainAg.sent()) != 2 {
+		t.Fatalf("main's process: closed %v, %d messages", mainAg.isClosed(), len(mainAg.sent()))
+	}
+	if items := e.items(id); len(items) != 4 || items[3].Text != "aside" {
+		t.Fatalf("the branch's items %+v", items)
+	}
+}
+
+// The chat is archived while a Send with a target is handing its message to the new branch's
+// process, which the archive's Stop does not reach: the branch is not yet one of the chat's. It
+// is stopped as soon as it is.
+func TestSendToArchivedDuringTheSend(t *testing.T) {
+	e := newEnv(t)
+	id, mainAg := e.talked(model.Claude, "", 2)
+	fk := gating(e.claude)
+	e.m.Spawners[model.Claude] = fk
+
+	res := make(chan error, 1)
+	go func() { res <- e.m.SendTo(id, newAt(3), "aside", "", nil) }()
+	g := fk.waiting(t)
+	// What archiving a chat does (App.archiveChat).
+	if err := e.m.SetArchive(id, model.Archive{Archived: true, Op: "op1"}); err != nil {
+		t.Fatal(err)
+	}
+	e.m.Stop(id)
+	close(g.gate)
+	select {
+	case err := <-res:
+		if err != nil {
+			t.Fatalf("SendTo: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Send with a target did not return")
+	}
+
+	// The message is on the new branch, and nothing of the archived chat runs.
+	v := e.view(id)
+	fa := e.claude.lastFork(t)
+	if !v.Archived || v.Branch == "" || v.Status != model.StatusReady || e.m.Busy(id) {
+		t.Fatalf("view %+v", v)
+	}
+	if !fa.isClosed() || !mainAg.isClosed() {
+		t.Fatalf("the archived chat's processes: the branch's closed %v, main's closed %v", fa.isClosed(), mainAg.isClosed())
+	}
+	items := e.items(id)
+	if len(items) != 5 || items[3].Text != "aside" || items[4].Kind != "note" || items[4].Text != "Stopped." {
+		t.Fatalf("the branch's items %+v", items)
+	}
+	if bm := e.meta(branchChatID(id, v.Branch)); bm.TurnActive {
+		t.Fatalf("the branch's chat.json %+v", bm)
+	}
+	if err := e.m.Send(id, "more", "", nil); !errors.Is(err, ErrArchived) {
+		t.Fatalf("Send to the archived chat: %v", err)
+	}
+}
+
+// A branch that is carried on while it keeps its fork source is started through the fork
+// capability. The chat's moveMu is not held during that start: another Send, with a target or
+// without, is answered at once, and finds the chat busy.
+func TestSendToCarryOnStartIsNotOneStep(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 3)
+	b, _, _ := e.branchTo(id, newAt(3), "aside")
+	e.m.Stop(id) // in the branch's first turn
+	_, _, items, _, err := e.m.ItemsOf(id, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blk, res := e.block(e.claude, func() error {
+		return e.m.SendTo(id, Target{Branch: b, At: len(items)}, "carry on", "", nil)
+	})
+	for what, send := range map[string]func() error{
+		"a plain Send":         func() error { return e.m.Send(id, "two", "", nil) },
+		"a Send with a target": func() error { return e.sendToErr(id, newAt(3)) },
+	} {
+		done := make(chan error, 1)
+		go func() { done <- send() }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrBusy) {
+				t.Fatalf("%s during the start: %v", what, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s waited for the start", what)
+		}
+	}
+	if err := blk.release(res, nil); err != nil {
+		t.Fatalf("SendTo: %v", err)
+	}
+	fa := e.claude.lastFork(t)
+	if sent := fa.sent(); e.cur(id) != b || len(sent) != 1 || !reflect.DeepEqual(texts(sent[0]), []string{"carry on"}) {
+		t.Fatalf("current %q, the branch's process got %v", e.cur(id), sent)
+	}
 }
 
 // ---- the branch left ------------------------------------------------------

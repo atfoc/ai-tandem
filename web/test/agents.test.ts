@@ -27,6 +27,14 @@ test("agentMeta: Claude and Cursor are unchanged", () => {
   assert.equal(agentMeta("cursor").usageTitle, "Cursor usage");
 });
 
+test("agentMeta: pi has no plan usage to ask for, Claude and Cursor have their headings", () => {
+  assert.equal(agentMeta("pi").usageTitle, undefined);
+  assert.equal(agentMeta("claude").usageTitle, "Plan usage limits");
+  assert.equal(agentMeta("cursor").usageTitle, "Cursor usage");
+  // an unknown kind keeps the default heading
+  assert.equal(agentMeta("future-agent").usageTitle, "Plan usage limits");
+});
+
 test("agentMeta: an unknown kind falls back to its raw string and a neutral slot", () => {
   const m = agentMeta("future-agent");
   assert.equal(m.name, "future-agent");

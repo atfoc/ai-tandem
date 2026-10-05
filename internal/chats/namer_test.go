@@ -16,19 +16,30 @@ func TestPiNamerArgs(t *testing.T) {
 		{
 			name:  "with model",
 			model: "deepseek-flash",
-			want: []string{"--no-session", "--no-extensions", "--no-context-files", "--no-approve", "-p",
+			want: []string{"--no-session", "--no-extensions", "--no-context-files",
+				"--no-tools", "--no-skills", "--no-prompt-templates", "--no-approve", "-p",
 				"--model", "deepseek-flash", "--system-prompt", namerPrompt, request},
 		},
 		{
 			name: "without model",
-			want: []string{"--no-session", "--no-extensions", "--no-context-files", "--no-approve", "-p",
+			want: []string{"--no-session", "--no-extensions", "--no-context-files",
+				"--no-tools", "--no-skills", "--no-prompt-templates", "--no-approve", "-p",
 				"--system-prompt", namerPrompt, request},
 		},
 	}
 	for _, c := range cases {
 		n := PiNamer{Model: c.model}
-		if got := n.Args(text); !reflect.DeepEqual(got, c.want) {
+		got := n.Args(text)
+		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: Args() = %q, want %q", c.name, got, c.want)
+		}
+		// The namer gets the user's first message and no permission gate: it must have no tools.
+		noTools := false
+		for _, a := range got[:len(got)-1] {
+			noTools = noTools || a == "--no-tools"
+		}
+		if !noTools {
+			t.Errorf("%s: Args() = %q lacks --no-tools: the namer would run with pi's bash, read, write and edit", c.name, got)
 		}
 	}
 }

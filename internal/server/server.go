@@ -547,13 +547,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/chats/{id}/fork", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Branch  string
-			At      int
+			At      *int
 			Message *int
 		}
 		if !readJSON(w, r, &body) {
 			return
 		}
-		v, err := a.Chats.Fork(r.PathValue("id"), chats.ForkReq{Branch: body.Branch, At: body.At, Message: body.Message})
+		if body.At == nil {
+			writeError(w, http.StatusBadRequest, "at is missing")
+			return
+		}
+		v, err := a.Chats.Fork(r.PathValue("id"), chats.ForkReq{Branch: body.Branch, At: *body.At, Message: body.Message})
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -568,19 +572,28 @@ func (s *Server) Handler() http.Handler {
 		ok(w)
 	})
 	// Sends a message on the chat's current branch. With "target" it goes to a point of one of the
-	// chat's branches instead: that branch is carried on, or a new branch starts there.
+	// chat's branches instead: that branch is carried on, or a new branch starts there. A target
+	// names its point: without "at" it is refused.
 	mux.HandleFunc("POST /api/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text, Context string
 			References    []model.Reference
-			Target        *chats.Target
+			Target        *struct {
+				Branch string
+				At     *int
+				New    bool
+			}
 		}
 		if !readJSON(w, r, &body) {
 			return
 		}
+		if body.Target != nil && body.Target.At == nil {
+			writeError(w, http.StatusBadRequest, "at is missing")
+			return
+		}
 		var err error
-		if body.Target != nil {
-			err = a.Chats.SendTo(r.PathValue("id"), *body.Target, body.Text, body.Context, body.References)
+		if tg := body.Target; tg != nil {
+			err = a.Chats.SendTo(r.PathValue("id"), chats.Target{Branch: tg.Branch, At: *tg.At, New: tg.New}, body.Text, body.Context, body.References)
 		} else {
 			err = a.Chats.Send(r.PathValue("id"), body.Text, body.Context, body.References)
 		}

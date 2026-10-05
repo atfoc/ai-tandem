@@ -3,7 +3,7 @@
 // newer tab takes over after this one has written its pending saves.
 import { api, clientId } from "./api.ts";
 import { setState, getState, applySnapshot, upsertBoard, removeBoard, upsertChat, removeChat, upsertSub, dropThread,
-  shownBranch, currentBranch, branchCount } from "./store.ts";
+  shownBranch, currentBranch, branchCount, isBusy } from "./store.ts";
 import { runTool, flushAll } from "./board.ts";
 import { subKey } from "./logic/subagents.ts";
 import { appliesTo, Loads } from "./logic/branchview.ts";
@@ -205,10 +205,10 @@ export function showBranch(chat: string): Promise<void> {
   return running || listBranch.has(chat) || s.moves[chat] ? loadList(chat) : Promise.resolve();
 }
 
-/** A chat's view from the server. Its pending move is dropped when the chat became busy (not by
- *  the move's own Send); another current branch is shown, and for the selected chat the tree is
- *  fetched again: a Send made a branch or changed the current one, and the tree reaches the
- *  client no other way. */
+/** A chat's view from the server. Its pending move is dropped when the chat was archived, and
+ *  stays when it became busy (a turn the app started for a subagent's result); another current
+ *  branch is shown, and for the selected chat the tree is fetched again: a Send made a branch or
+ *  changed the current one, and the tree reaches the client no other way. */
 function onChat(c: ChatView) {
   const was = getState().chats[c.id];
   upsertChat(c);
@@ -230,10 +230,13 @@ export async function loadTree(chat: string): Promise<void> {
   setState((s) => (s.chats[chat] ? { trees: { ...s.trees, [chat]: tree } } : {}));
 }
 
-/** Replaces a chat, its items and its subagents with the server's (after a stale 409): a pending
- *  move is dropped, and the list is the current branch's. */
+/** Replaces a chat, its items and its subagents with the server's (after a stale 409). A pending
+ *  move is dropped, and the list is the current branch's; a chat that is busy keeps its move as
+ *  everywhere else (the 409 said that a turn runs: Send waits for its end), and the list is the
+ *  move's. */
 export async function refreshChat(chat: string) {
   try { onChat(await api.chat(chat)); } catch {}
-  goBack(chat); // after the view's fetch: the composer holds again what the refused Send took out
+  // after the view's fetch: the composer holds again what the refused Send took out
+  if (!isBusy(getState().chats[chat]?.status)) goBack(chat);
   try { await loadList(chat, { replace: true }); } catch {}
 }

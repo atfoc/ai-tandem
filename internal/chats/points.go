@@ -99,16 +99,27 @@ func pointOK(a model.AgentKind, items []model.Item, count int) bool {
 	}
 	// pi forks the end of a turn with the id on the next turn's mark, so that mark must close the
 	// turn that starts at count. After a turn cut without a mark the next mark is a later turn's,
-	// and a fork with its id would take in the cut turn.
+	// and a fork with its id would take in the cut turn. So exactly one turn lies between count
+	// and the mark: one message of the human's with no reply or tool call ahead of it (the rows of
+	// the subagent results it carries are), or none, which is a turn the app started to deliver
+	// subagent results. The app starts one only on a live process, so never after a cut turn, and
+	// its message is a user message to pi like any other: the mark carries its id. A mark that
+	// repeats the id before count is no new turn.
 	m := markFrom(items, count)
 	if m < 0 || items[m].Point == "" {
 		return false
 	}
-	users := 0
+	users, early := 0, false // early: a reply or a tool call ahead of the first message
 	for _, it := range items[count:m] {
-		if it.Kind == "user" {
+		switch it.Kind {
+		case "user":
 			users++
+		case "text", "tool":
+			early = early || users == 0
 		}
 	}
-	return users == 1
+	if users == 0 {
+		return items[m].Point != items[count-1].Point
+	}
+	return users == 1 && !early
 }

@@ -228,7 +228,9 @@ type ForkSource struct {
 	Session string `json:"session"`         // that session's id
 	Point   string `json:"point,omitempty"` // the id on the end mark at the fork point; "" = the end of the session
 	Next    string `json:"next,omitempty"`  // the id on the first end mark after the fork point; "" = none
-	Items   int    `json:"items"`           // the item count of the copied prefix
+	// Items is the item count of the copied prefix. A fork with no point that was made through
+	// another fork's source keeps the count of that source's thread instead.
+	Items int `json:"items"`
 }
 
 // Draft is the message typed in a chat's composer and not sent yet. Cleared when a message is sent.
@@ -463,4 +465,8 @@ type Subagent struct {
 	Ended       int64     `json:"ended,omitempty"`    // unix ms, set when Status leaves running
 	// Delivery is the state of the result's delivery to the parent agent; app-spawned only.
 	Delivery SubDelivery `json:"delivery,omitempty"`
+	// Carried is the item count of the chat's thread when the result was last taken for a turn,
+	// before what that turn added: the result reached the agent, if it did, past that count. 0 in
+	// a record that was never taken, or was written before the count was kept.
+	Carried int `json:"carried,omitempty"`
 }

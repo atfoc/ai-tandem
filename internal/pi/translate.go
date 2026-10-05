@@ -188,8 +188,16 @@ func (p *proc) toolExecutionUpdate(m map[string]any) []agent.Event {
 // onSettled is pi's idle signal. It asks for the session stats and the session's user messages
 // without blocking the read loop; the answers emit the context numbers and then, once both are
 // in, the turn end with its fork-point id. The turn ends with an error when its last assistant
-// message did; a turn the user stopped is aborted, whatever pi said last.
+// message did; a turn the user stopped is aborted, whatever pi said last. Once Send has ended a
+// turn itself (sendFailed) the process is being closed and a settle emits nothing.
 func (p *proc) onSettled() {
+	p.endMu.Lock()
+	p.settled = true
+	ended := p.sendEnded
+	p.endMu.Unlock()
+	if ended {
+		return
+	}
 	end := agent.Event{Kind: agent.EvTurnEnd, Aborted: p.takeAbort(), Error: p.turnErr}
 	p.turnErr = ""
 	if end.Aborted {
