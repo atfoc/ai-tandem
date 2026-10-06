@@ -3,7 +3,7 @@
 // version.json) are `git describe` strings, which can't be ordered; the files on disk always come
 // from the newest install, so they tell which side is stale.
 import type { Status } from "../types.ts";
-import { isWorking } from "./status.ts";
+import { isWorking, type StatesOf } from "./status.ts";
 
 export type Banner = "none" | "restart" | "reload";
 
@@ -21,11 +21,12 @@ export function bannerFor(page: string, server: string, disk: string): Banner {
   return "restart";
 }
 
-/** How many chats have an agent running, or subagents running while their agent waits for them: a
- *  restart ends them. A chat that only holds results not sent yet is not counted. */
-export const runningChats = (chats: Iterable<{ status: Status; subsRunning?: number; subsOwed?: number }>): number => {
+/** How many chats have an agent running on some branch, or subagents running while their agent
+ *  waits for them: a restart ends them. A chat that only holds results not sent yet is not counted.
+ *  `statesOf` gives a chat's records, to count the branches that are not the current one. */
+export const runningChats = (chats: Iterable<{ id?: string; status: Status; subsRunning?: number; subsOwed?: number; working?: number }>, statesOf?: StatesOf): number => {
   let n = 0;
-  for (const c of chats) if (isWorking(c)) n++;
+  for (const c of chats) if (isWorking(c, c.id !== undefined ? statesOf?.(c.id) : undefined)) n++;
   return n;
 };
 

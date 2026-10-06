@@ -44,8 +44,13 @@ type splitRun struct {
 //
 // It is the split of the chat's current branch.
 func (m *Manager) ContextSplit(id string, fresh bool) (model.ContextSplit, error) {
+	return m.ContextSplitOf(id, "", fresh)
+}
+
+// ContextSplitOf is ContextSplit for a branch of the chat; branch "" is the current one.
+func (m *Manager) ContextSplitOf(id, branch string, fresh bool) (model.ContextSplit, error) {
 	var out outbox
-	c, err := m.lockCur(id)
+	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return model.ContextSplit{}, err
 	}

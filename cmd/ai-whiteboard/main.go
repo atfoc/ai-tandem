@@ -158,6 +158,7 @@ func serve(o options, args []string) {
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
+	turnCaps()
 	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, Runs: rs, DefaultCwd: o.cwd,
 		MCPURL: boardapi.Endpoint(mcpBoundPort),
 		Namers: map[model.AgentKind]chats.Namer{
@@ -250,6 +251,15 @@ func mcpPort() int {
 		log.Fatalf("AIWB_MCP_PORT %q is not a valid port (0-65535)", v)
 	}
 	return p
+}
+
+// turnCaps applies the hidden test-only overrides of the cap on running turns and returns the caps
+// in force: AIWB_CHAT_CAP for the branches of one chat that may work at once (4), AIWB_APP_CAP
+// for those of all chats (12). Each is a positive integer; unset or anything else keeps the cap.
+// They are read once, before the chats are loaded. An end-to-end test reaches a cap of one with
+// two turns.
+func turnCaps() (perChat, overall int) {
+	return chats.SetCaps(os.Getenv("AIWB_CHAT_CAP"), os.Getenv("AIWB_APP_CAP"))
 }
 
 // mcpListenError is the fail-fast message when the MCP listener cannot bind (plan D11): it names

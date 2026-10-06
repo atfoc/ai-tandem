@@ -2,6 +2,7 @@
 // subagent's state and, when loaded, its own thread. DOM-free.
 import type { AgentKind, Catalog, Item, Subagent } from "../types.ts";
 import { effortLabel, toolVerb, type BoardNames } from "./labels.ts";
+import type { BranchKey } from "./branches.ts";
 
 const DEFAULT_TYPES = new Set(["", "general-purpose", "generalPurpose", "general_purpose", "unspecified"]);
 
@@ -9,8 +10,9 @@ const DEFAULT_TYPES = new Set(["", "general-purpose", "generalPurpose", "general
 export const isSubagentTool = (it: Item | undefined): boolean =>
   !!it && it.kind === "tool" && (it.name === "Agent" || it.name === "Task" || it.name === "mcp__board__spawn_subagent");
 
-/** The key of a subagent's thread in store.items: "<chat>/<sid>". Chat ids hold no "/". */
-export const subKey = (chat: string, sid: string) => `${chat}/${sid}`;
+export type SubKey = string & { readonly __subKey: unique symbol };
+/** The key of a subagent's thread in store.items: "<chat>:<branch>/<sid>", k being its branch's key. */
+export const subKey = (k: BranchKey, sid: string): SubKey => `${k}/${sid}` as SubKey;
 
 /** The subagent of an Agent/Task item: its state once linked. Before that (the agent has not
  *  reported it yet, or a chat saved before subagents were tracked) it is built from the tool call;
@@ -20,6 +22,7 @@ export function subagentOf(it: Item, subs: Record<string, Subagent> | undefined,
   const sa = it.subagent ? subs?.[it.subagent] : undefined;
   if (sa) return {
     ...sa,
+    status: subStatus(sa),
     description: sa.description || input.description,
     prompt: sa.prompt || input.prompt,
     type: sa.type ?? input.subagent_type,
@@ -32,6 +35,12 @@ export function subagentOf(it: Item, subs: Record<string, Subagent> | undefined,
     error: it.denied ? "Denied" : it.isError ? it.result : undefined,
   };
 }
+
+/** The line of a subagent that was still running in the source when this copy was made. */
+export const NOT_CARRIED = "Not carried over: it was running in the chat this was copied from";
+
+/** A subagent's status as shown: one that was not carried over is stopped, whatever its record says. */
+export const subStatus = (sa: Subagent): Subagent["status"] => (sa.notCarried ? "stopped" : sa.status);
 
 /** The type badge: the type unless it is the default general-purpose one. */
 export const subBadge = (type?: string): string | null => (DEFAULT_TYPES.has(type ?? "") ? null : type!);
@@ -69,8 +78,10 @@ export function showReport(it: Item, sa: Subagent, items?: Item[]): boolean {
   return !!r && r !== (lastText(items) || sa.last || "").trim();
 }
 
-/** The row's summary line and its tone. */
+/** The row's summary line and its tone. One that was not carried over says so in place of its
+ *  activity or result. */
 export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNames): { text: string; tone: "live" | "muted" | "error" } {
+  if (sa.notCarried) return { text: NOT_CARRIED, tone: "muted" };
   switch (sa.status) {
     case "running": return { text: subActivity(sa, items, nameOf), tone: "live" };
     case "completed": { const f = firstLine(subReport(it, sa, items)); return { text: f ? `Done · ${f}` : "Done", tone: "muted" }; }
@@ -87,9 +98,11 @@ const RESULT_DELIVERY: Record<NonNullable<Subagent["delivery"]>, string> = {
 
 /** A result row's text: the subagent's name, then its final status, that it ended with an error
  *  when its state carries one, and whether the result has reached the agent (nothing for a
- *  delivery state a newer server added, the raw word for a status it added). sa is undefined until the chat's subagents are loaded. */
+ *  delivery state a newer server added, the raw word for a status it added). One that was not carried
+ *  over has no result and nothing is owed for it. sa is undefined until the chat's subagents are loaded. */
 export function subResultLine(sa: Subagent | undefined): { name: string; text: string; tone: "muted" | "error" } {
   if (!sa) return { name: "Subagent", text: "", tone: "muted" };
+  if (sa.notCarried) return { name: sa.description || "Subagent", text: NOT_CARRIED, tone: "muted" };
   const parts = [Object.hasOwn(RESULT_STATUS, sa.status) ? RESULT_STATUS[sa.status] : String(sa.status ?? "")].filter(Boolean);
   if (sa.error) parts.push("ended with an error");
   const delivery = sa.delivery && RESULT_DELIVERY[sa.delivery];

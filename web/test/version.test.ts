@@ -33,6 +33,9 @@ test("runningChats counts thinking, writing, tool and approval", () => {
   assert.equal(runningChats([{ status: "writing" }, { status: "approval" }, { status: "ready" }]), 2);
   assert.equal(runningChats([{ status: "ready" }, { status: "stopped" }, { status: "error" }]), 0);
   assert.equal(runningChats([]), 0);
+  // a chat whose current branch is idle while other branches work is one chat
+  assert.equal(runningChats([{ status: "ready", working: 2 }, { status: "stopped", working: 1 }, { status: "ready", working: 0 }, { status: "tool", working: 3 }]), 3);
+  assert.equal(runningChats([{ status: "ready", working: 1, approvals: 1 } as { status: Status; working: number }]), 1);
 });
 
 test("runningChats counts an idle chat whose subagents run, not one that only holds results", () => {
@@ -45,6 +48,15 @@ test("runningChats counts an idle chat whose subagents run, not one that only ho
   // A busy chat with running subagents is one chat.
   assert.equal(runningChats([{ status: "tool", subsRunning: 2 }, { status: "ready", subsRunning: 1 }, { status: "ready", subsOwed: 1 }]), 2);
   assert.equal(restartConfirmText(runningChats([{ status: "ready", subsRunning: 4 }])), "Restart ends 1 running agent chat.");
+  // A branch that is not the current one, idle with running subagents: only the chat's records tell.
+  const records: Record<string, { status: Status; subsRunning?: number }[]> = {
+    a: [{ status: "ready" }, { status: "ready", subsRunning: 1 }],
+    b: [{ status: "ready" }, { status: "stopped" }],
+  };
+  const statesOf = (chat: string) => records[chat] ?? [];
+  const chats: { id: string; status: Status }[] = [{ id: "a", status: "ready" }, { id: "b", status: "ready" }, { id: "c", status: "ready" }];
+  assert.equal(runningChats(chats, statesOf), 1);
+  assert.equal(runningChats(chats), 0); // without the records, the views
 });
 
 test("restartConfirmText", () => {

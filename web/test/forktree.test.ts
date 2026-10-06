@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  branchName, buildTree, childrenOf, entryId, FILTERS, labelAt, markerAt, nameOfBranch, ownerOf, pathTo, preview, rowActions, rows,
+  branchName, buildTree, childrenOf, entryId, FILTERS, forkLinks, labelAt, markerAt, nameOfBranch, ownerOf, pathTo, preview, rowActions, rows,
   sharedCount, siblingsOf, tipBranch, tipOf, tips, withLive,
-  type RowActions,
+  type ForkLink, type RowActions,
 } from "../src/logic/forktree.ts";
-import type { Item, TreeBranchView, TreeItem, TreeLabel, TreeView } from "../src/types.ts";
+import { LIVE_FORK } from "../src/logic/forkpoints.ts";
+import type { ChatView, Item, TreeBranchView, TreeItem, TreeLabel, TreeView } from "../src/types.ts";
 
 // The worked example, as GET /api/chats/{id}/tree sends it: main with two turns, and the branch
 // a1b2c3d4 split from it at count 3, which is the current one.
@@ -354,6 +355,25 @@ test("withLive rebuilds one branch's own part from its live items", () => {
   assert.equal(grown.branches[1].len, 8);
   assert.deepEqual(grown.branches[1].items.slice(2), [{ i: 6, kind: "user", text: "and then", before: 6 }, { i: 7, kind: "text", text: "wri" }]);
   assert.equal(buildTree(grown).leaf, "a1b2c3d4:7");
+  // told that the branch runs, the same id rules pick the finished boundaries: the point before
+  // the running turn's message is one
+  const run = withLive(EXAMPLE, "main", "claude", [...MAIN_ITEMS, { kind: "user", text: "and then" }, { kind: "text", text: "wri" }], true);
+  assert.equal(run.branches[0].len, 10);
+  assert.deepEqual(run.branches[0].items.slice(0, 5), EXAMPLE.branches[0].items);
+  assert.deepEqual(run.branches[0].items.slice(5), [{ i: 8, kind: "user", text: "and then", before: 8, ok: true }, { i: 9, kind: "text", text: "wri" }]);
+  // a kind that cannot fork a running source: no row of the running branch is ok
+  const was = LIVE_FORK.claude;
+  LIVE_FORK.claude = false;
+  try {
+    assert.ok(withLive(EXAMPLE, "main", "claude", MAIN_ITEMS, true).branches[0].items.every((x) => !x.ok));
+    assert.deepEqual(withLive(EXAMPLE, "main", "claude", MAIN_ITEMS), { ...EXAMPLE, branches: [EXAMPLE.branches[0], EXAMPLE.branches[1]] });
+    const t = buildTree(withLive(EXAMPLE, "main", "claude", MAIN_ITEMS, true));
+    for (const id of ["main:0", "main:1", "main:3", "main:4"]) assert.deepEqual(rowActions(t, id, busyOn("main")), { ...NOTHING, midTurn: id === "main:4" }, id);
+    assert.deepEqual(rowActions(t, "main:6", busyOn("main")), { ...NOTHING, open: { view: "main" } });
+    assert.equal(rowActions(t, "a1b2c3d4:3", busyOn("main")).branchEdit, 3); // the other branch is not running
+  } finally {
+    LIVE_FORK.claude = was;
+  }
   // items not loaded yet: an empty own part
   const none = withLive(EXAMPLE, "a1b2c3d4", "claude", []);
   assert.deepEqual(none.branches[1], { id: "a1b2c3d4", from: "main", at: 3, len: 0, items: [] });
@@ -403,10 +423,132 @@ test("preview: a message in one line", () => {
   assert.equal(preview("x".repeat(61)), "x".repeat(59) + "…");
 });
 
+// ---- the viewed branch, and the chats forked from this one
+
+test("the leaf is the viewed branch when given", () => {
+  // the server's current branch is a1b2c3d4; this client views main
+  const t = buildTree(EXAMPLE, { branch: "main", count: Infinity });
+  assert.equal(t.leaf, "main:6");
+  const r = rows(t, { filter: "default" });
+  assert.deepEqual(r.filter((x) => x.isLeaf).map((x) => x.id), ["main:6"]);
+  assert.deepEqual(r.filter((x) => x.onPath).map((x) => x.id), ["main:0", "main:1", "main:3", "main:4", "main:6"]);
+  assert.deepEqual(r.filter((x) => x.isTip && !x.isLeaf).map((x) => x.id), ["a1b2c3d4:4"]);
+  assert.equal(buildTree(EXAMPLE, { branch: "a1b2c3d4", count: Infinity }).leaf, "a1b2c3d4:4");
+  assert.equal(buildTree(EXAMPLE).leaf, "a1b2c3d4:4"); // not given: the server's current branch
+  // a branch without messages of its own: where it split; one the view lacks: read as main
+  assert.equal(buildTree({ ...nested(4, []), current: "main" }, { branch: "e5f6a7b8", count: Infinity }).leaf, "a1b2c3d4:3");
+  assert.equal(buildTree(EXAMPLE, { branch: "gone", count: Infinity }).leaf, "main:6");
+});
+
+const chat = (id: string, p: Partial<ChatView> = {}): ChatView => ({ id, created: "2026-01-01T00:00:00Z", ...p } as ChatView);
+const link = (chat: string, p: Partial<ForkLink> = {}): ForkLink => ({ chat, title: chat, archived: false, where: "loose", ...p });
+const under = (chat: string, entry: string, title = chat): ForkLink => link(chat, { where: "entry", entry, title });
+const linked = (v: TreeView, links: ForkLink[], o: { filter?: "default" | "labeled"; query?: string } = {}) =>
+  rows(buildTree(v), { filter: o.filter ?? "default", query: o.query, links }).map((x) => x.gutter + x.id);
+
+test("forkLinks: where each fork left, earlier forks loose, a fork at the start (forkedAt absent with forkedBranch present), a fork of a fork is not listed", () => {
+  const t = buildTree(EXAMPLE);
+  const chats = [
+    chat("c1", { name: "the chat" }),
+    chat("f6", { forkedFrom: "c1", forkedBranch: "gone", forkedAt: 3, created: "2026-01-07T00:00:00Z" }),
+    chat("f5", { forkedFrom: "c1", forkedAt: 3, name: "old fork", created: "2026-01-06T00:00:00Z" }),
+    chat("f4", { forkedFrom: "c1", forkedBranch: "main", created: "2026-01-05T00:00:00Z" }),
+    chat("f3", { forkedFrom: "c1", forkedBranch: "a1b2c3d4", forkedAt: 3, archived: true, created: "2026-01-04T00:00:00Z" }),
+    chat("f2", { forkedFrom: "c1", forkedBranch: "a1b2c3d4", forkedAt: 6, name: "memory fork", created: "2026-01-03T00:00:00Z" }),
+    chat("f1", { forkedFrom: "c1", forkedBranch: "main", forkedAt: 3, name: "redis fork", created: "2026-01-02T00:00:00Z" }),
+    chat("g1", { forkedFrom: "f1", forkedBranch: "main", forkedAt: 3 }), // a fork of a fork: in f1's tree
+    chat("x1", { forkedFrom: "other", forkedBranch: "main", forkedAt: 3 }),
+  ];
+  assert.deepEqual(forkLinks(t, chats, "c1"), [
+    { chat: "f1", title: "redis fork", archived: false, where: "entry", entry: "main:1" },
+    { chat: "f2", title: "memory fork", archived: false, where: "entry", entry: "a1b2c3d4:4" },
+    { chat: "f3", title: "New chat", archived: true, where: "entry", entry: "main:1" }, // below the split: main's entry
+    { chat: "f4", title: "New chat", archived: false, where: "start" },                 // the server leaves a count of 0 out
+    { chat: "f5", title: "old fork", archived: false, where: "loose" },                 // no branch recorded: an earlier fork
+    { chat: "f6", title: "New chat", archived: false, where: "loose" },                 // a branch the view lacks
+  ]);
+  assert.deepEqual(forkLinks(t, chats, "f1").map((l) => l.chat), ["g1"]);
+  assert.deepEqual(forkLinks(t, chats, "nosuch"), []);
+  // the last entry below the count: partway through a turn, at the end, and past it
+  const at = (forkedAt: number, forkedBranch = "main") => forkLinks(t, [chat("f", { forkedFrom: "c1", forkedBranch, forkedAt })], "c1")[0];
+  assert.equal(at(5).entry, "main:4");
+  assert.equal(at(8).entry, "main:6");
+  assert.equal(at(99).entry, "main:6");
+  assert.equal(at(4, "a1b2c3d4").entry, "a1b2c3d4:3");
+  assert.deepEqual(at(0), { chat: "f", title: "New chat", archived: false, where: "start" });
+  // the same time: by id
+  const same = ["b", "c", "a"].map((id) => chat(id, { forkedFrom: "c1", forkedBranch: "main", forkedAt: 3 }));
+  assert.deepEqual(forkLinks(t, same, "c1").map((l) => l.chat), ["a", "b", "c"]);
+});
+
+test("rows: a fork link hangs under its entry and does not indent the run", () => {
+  const one = view("main", [EXAMPLE.branches[0]]);
+  assert.deepEqual(linked(one, [under("f1", "main:1")]), ["main:0", "main:1", "└─ fork:f1", "main:3", "main:4", "main:6"]);
+  assert.deepEqual(linked(one, [under("f1", "main:1"), under("f2", "main:1")]), ["main:0", "main:1", "├─ fork:f1", "└─ fork:f2", "main:3", "main:4", "main:6"]);
+  assert.deepEqual(linked(one, [under("f1", "main:6")]), ["main:0", "main:1", "main:3", "main:4", "main:6", "└─ fork:f1"]);
+  // the row of a link, and the entry above it: still no split
+  const l = under("f1", "main:1");
+  const r = rows(buildTree(one), { filter: "default", links: [l] });
+  assert.deepEqual(r[2], { id: "fork:f1", gutter: "└─ ", onPath: false, isLeaf: false, isTip: false, fork: 0, link: l });
+  assert.equal(r[1].fork, 0);
+  assert.ok(r.filter((x) => !x.link).every((x) => !("link" in x)));
+  assert.deepEqual(r.filter((x) => !x.link), rows(buildTree(one), { filter: "default" }));
+  // inside a branch: under that branch's lines
+  assert.deepEqual(linked(sample(), [under("f1", "main:4"), under("f2", "b1:3")]), [
+    "main:0", "main:1", "├─ main:3", "│  main:4", "│  └─ fork:f1", "└─ b1:3", "   └─ fork:f2", "   b1:4",
+  ]);
+  // from the start: before the first message; loose: last; an entry the tree lacks: from the start
+  assert.deepEqual(linked(one, [link("old"), link("s", { where: "start" }), under("f1", "main:6"), under("lost", "gone:9")]), [
+    "fork:s", "fork:lost", "main:0", "main:1", "main:3", "main:4", "main:6", "└─ fork:f1", "fork:old",
+  ]);
+  // a chat without messages
+  assert.deepEqual(linked(view("main", [main(0)]), [link("s", { where: "start" }), link("old")]), ["fork:s", "fork:old"]);
+});
+
+test("rows: a link beside a split is one of the tees", () => {
+  assert.deepEqual(linked(sample(), [under("f1", "main:1")]), ["main:0", "main:1", "├─ fork:f1", "├─ main:3", "│  main:4", "└─ b1:3", "   b1:4"]);
+  assert.deepEqual(linked(sample(), [under("f1", "main:1"), under("f2", "main:1")]), [
+    "main:0", "main:1", "├─ fork:f1", "├─ fork:f2", "├─ main:3", "│  main:4", "└─ b1:3", "   b1:4",
+  ]);
+  const r = rows(buildTree(sample()), { filter: "default", links: [under("f1", "main:1")] });
+  assert.equal(r[1].fork, 2); // the link is not one of the ways
+  // a branch that ends where another goes on: the one way on is drawn as a branch, and the link beside it
+  assert.deepEqual(linked(branchedAtEnd(), [under("f1", "main:1")]), ["main:0", "main:1", "├─ fork:f1", "└─ b1:3", "   b1:4"]);
+  // two roots: a fork from the start is a tee beside them
+  const roots = view("b1", [
+    main(3, u(0, "ask", { before: 0, ok: true }), a(1, "options", { end: 3, ok: true })),
+    { id: "b1", from: "main", at: 0, len: 3, items: [u(0, "ask again", { before: 0, ok: true }), a(1, "sure", { end: 3, ok: true })] },
+  ]);
+  assert.deepEqual(linked(roots, [link("s", { where: "start" })]), ["├─ fork:s", "├─ main:0", "│  main:1", "└─ b1:0", "   b1:1"]);
+});
+
+test("rows: links under the filter and the search", () => {
+  const labeled = sample([{ branch: "main", item: 3, text: "redis" }, { branch: "b1", item: 3, text: "memory" }]);
+  const links = [under("f1", "main:4", "Redis notes"), under("f2", "b1:4", "Map"), link("s", { where: "start", title: "From the top" }), link("old", { title: "Old redis fork" })];
+  assert.deepEqual(linked(labeled, links), [
+    "fork:s", "main:0", "main:1", "├─ main:3", "│  main:4", "│  └─ fork:f1", "└─ b1:3", "   b1:4", "   └─ fork:f2", "fork:old",
+  ]);
+  // the Labeled filter: no links
+  assert.deepEqual(linked(labeled, links, { filter: "labeled" }), ["├─ main:3", "└─ b1:3"]);
+  assert.deepEqual(linked(labeled, links, { filter: "labeled", query: "redis" }), ["main:3"]);
+  // a search: the links whose title has it; one whose entry is hidden hangs from the nearest shown above it
+  assert.deepEqual(linked(labeled, links, { query: " REDIS " }), ["main:3", "└─ fork:f1", "fork:old"]);
+  assert.deepEqual(linked(labeled, links, { query: "lua" }), ["main:4"]);
+  // nothing shown above it: listed with those from the start
+  assert.deepEqual(linked(labeled, links, { query: "notes" }), ["fork:f1"]);
+  assert.deepEqual(linked(labeled, links, { query: "map" }), ["b1:4", "└─ fork:f2"]);
+  assert.deepEqual(linked(labeled, links, { query: "top" }), ["fork:s"]);
+  assert.deepEqual(linked(labeled, [under("f1", "main:1", "omega")], { query: "m" }), ["fork:f1", "b1:3", "b1:4"]);
+  // the ways shown under an entry are a fan: its link is one of the tees
+  assert.deepEqual(linked(EXAMPLE, [under("f1", "main:1", "an o")], { query: "o" }), ["main:1", "├─ fork:f1", "├─ main:4", "└─ a1b2c3d4:3"]);
+  assert.deepEqual(linked(sample(), [under("f1", "main:1", "an o")], { query: "o" }), ["main:1", "└─ fork:f1", "b1:3"]);
+});
+
 // ---- what a row offers
 
 const NOTHING: RowActions = { open: null, branchEdit: null, forkEdit: null, fork: null, midTurn: false };
-const idle = { busy: false, readOnly: false };
+const idle = { busy: new Set<string>(), readOnly: false };
+const busyOn = (...ids: string[]) => ({ busy: new Set(ids), readOnly: false });
 
 test("rowActions in the example: your messages, turn ends, a reply partway, and the ends of branches", () => {
   const t = buildTree(EXAMPLE);
@@ -424,18 +566,64 @@ test("rowActions in the example: your messages, turn ends, a reply partway, and 
   assert.deepEqual(rowActions(t, "main:1", idle), { ...NOTHING, fork: 3, open: { target: { branch: "main", at: 3, new: false } } });
   // a reply partway through a turn: nothing but the note
   assert.deepEqual(rowActions(t, "main:4", idle), { ...NOTHING, midTurn: true });
-  // the end of a branch: double-click goes to its end
-  assert.deepEqual(rowActions(t, "main:6", idle), { ...NOTHING, fork: 8, open: { target: { branch: "main", at: 8, new: false } } });
+  // the end of a branch: double-click shows that branch
+  assert.deepEqual(rowActions(t, "main:6", idle), { ...NOTHING, fork: 8, open: { view: "main" } });
   // the end of a branch whose last mark has no id: Fork to new at the branch's end all the same
-  assert.deepEqual(rowActions(t, "a1b2c3d4:4", idle), { ...NOTHING, fork: 6, open: { target: { branch: "a1b2c3d4", at: 6, new: false } } });
+  assert.deepEqual(rowActions(t, "a1b2c3d4:4", idle), { ...NOTHING, fork: 6, open: { view: "a1b2c3d4" } });
   assert.deepEqual(rowActions(t, "nosuch:1", idle), NOTHING);
 });
 
-test("rowActions: nothing moves while the agent is replying or in a read-only chat", () => {
+test("rowActions: nothing moves in a read-only chat", () => {
   const t = buildTree(EXAMPLE);
-  for (const p of [{ busy: true, readOnly: false }, { busy: false, readOnly: true }, { busy: true, readOnly: true }]) {
-    for (const id of t.order) assert.deepEqual(rowActions(t, id, p), { ...NOTHING, midTurn: id === "main:4" }, id);
+  const ends: Record<string, string> = { "main:6": "main", "a1b2c3d4:4": "a1b2c3d4" };
+  for (const p of [{ busy: new Set<string>(), readOnly: true }, { busy: new Set(["main", "a1b2c3d4"]), readOnly: true }]) {
+    for (const id of t.order) assert.deepEqual(rowActions(t, id, p), { ...NOTHING, midTurn: id === "main:4", open: ends[id] ? { view: ends[id] } : null }, id);
   }
+});
+
+test("rowActions: the end of a branch is viewed in a read-only chat", () => {
+  const ro = { busy: new Set<string>(), readOnly: true };
+  const t = buildTree(EXAMPLE);
+  // viewing sends nothing: it is all an archived or legacy chat offers, on the end rows only
+  assert.deepEqual(rowActions(t, "main:6", ro), { ...NOTHING, open: { view: "main" } });
+  assert.deepEqual(rowActions(t, "a1b2c3d4:4", ro), { ...NOTHING, open: { view: "a1b2c3d4" } });
+  assert.deepEqual(rowActions(t, "main:6", { busy: new Set(["main"]), readOnly: true }).open, { view: "main" });
+  for (const id of ["main:0", "main:1", "main:3", "a1b2c3d4:3"]) assert.deepEqual(rowActions(t, id, ro), NOTHING, id);
+  // a branch that ended where another was branched from it, and one that ends with your message
+  assert.deepEqual(rowActions(buildTree(branchedAtEnd()), "main:1", ro), { ...NOTHING, open: { view: "main" } });
+  const cut = buildTree(view("main", [EXAMPLE.branches[0], { id: "b1", from: "main", at: 3, len: 5, items: [u(3, "cut", { before: 3, ok: true })] }]));
+  assert.deepEqual(rowActions(cut, "b1:3", ro), { ...NOTHING, open: { view: "b1" } });
+});
+
+test("rowActions: a busy branch gates its own rows only, and there the row's ok decides", () => {
+  // main runs a third turn: the server's tree marks its finished boundaries ok, and nothing in the running turn
+  const v = view("b1", [
+    main(11, u(0, "ask", { before: 0, ok: true }), a(1, "options", { end: 3, ok: true }), u(3, "redis", { before: 3, ok: true }),
+      a(4, "lua", { end: 6, ok: true }), u(6, "more", { before: 6, ok: true }), a(7, "looking"), a(9, "found")),
+    { id: "b1", from: "main", at: 3, len: 6, items: [u(3, "memory", { before: 3, ok: true }), a(4, "map", { end: 6 })] },
+  ]);
+  const t = buildTree(v);
+  const p = busyOn("main");
+  // finished turns of the running branch: as on an idle one
+  for (const id of ["main:0", "main:1", "main:3", "main:4"]) assert.deepEqual(rowActions(t, id, p), rowActions(t, id, idle), id);
+  assert.deepEqual(rowActions(t, "main:1", p), { ...NOTHING, fork: 3, open: { target: { branch: "main", at: 3, new: false } } });
+  assert.deepEqual(rowActions(t, "main:4", p), { ...NOTHING, fork: 6, open: { target: { branch: "main", at: 6, new: false } } });
+  // the message that started the running turn drops it whole
+  assert.deepEqual(rowActions(t, "main:6", p), { ...NOTHING, branchEdit: 6, forkEdit: 6, open: { target: { branch: "main", at: 6, new: true }, edit: 6 } });
+  // inside the running turn: nothing, and no fork of the whole branch at its end; the end is still looked at,
+  // by the branch's id: the tree's len (11 here) is old for a branch that runs and is not shown
+  assert.deepEqual(rowActions(t, "main:7", p), { ...NOTHING, midTurn: true });
+  assert.deepEqual(rowActions(t, "main:9", p), { ...NOTHING, open: { view: "main" } });
+  assert.equal(rowActions(t, "main:9", idle).fork, 11);
+  // the other branch is not gated by main's turn, its end fork included
+  for (const id of ["b1:3", "b1:4"]) assert.deepEqual(rowActions(t, id, p), rowActions(t, id, idle), id);
+  assert.deepEqual(rowActions(t, "b1:4", p), { ...NOTHING, fork: 6, open: { view: "b1" } });
+  // and its own turn gates only its own end: main's rows are as idle
+  assert.deepEqual(rowActions(t, "b1:4", busyOn("b1")), { ...NOTHING, open: { view: "b1" } });
+  assert.equal(rowActions(t, "main:9", busyOn("b1")).fork, 11);
+  // a row the server did not mark ok offers no point, busy or not
+  const no = buildTree(view("main", [main(8, u(0, "ask", { before: 0 }), a(1, "options", { end: 3 }), u(3, "more", { before: 3 }), a(4, "wri"))]));
+  for (const id of ["main:0", "main:1", "main:3"]) assert.deepEqual(rowActions(no, id, busyOn("main")), NOTHING, id);
 });
 
 test("rowActions: a branch that ends with your message opens at its end, to carry it on", () => {
@@ -444,20 +632,22 @@ test("rowActions: a branch that ends with your message opens at its end, to carr
   const t = buildTree(v);
   assert.equal(tipBranch(t, "b1:3"), "b1");
   assert.deepEqual(rowActions(t, "b1:3", idle), {
-    ...NOTHING, branchEdit: 3, forkEdit: 3, open: { target: { branch: "b1", at: 5, new: false } },
+    ...NOTHING, branchEdit: 3, forkEdit: 3, open: { view: "b1" },
   });
-  assert.deepEqual(rowActions(t, "b1:3", { busy: true, readOnly: false }), NOTHING);
+  // while b1 runs the row's ok still decides, and its end is still looked at
+  assert.deepEqual(rowActions(t, "b1:3", busyOn("b1")), rowActions(t, "b1:3", idle));
+  assert.deepEqual(rowActions(t, "b1:3", { busy: new Set(["b1"]), readOnly: true }), { ...NOTHING, open: { view: "b1" } });
   // main's message at the same point is not an end: Branch and edit
   assert.deepEqual(rowActions(t, "main:3", idle).open, { target: { branch: "main", at: 3, new: true }, edit: 3 });
 });
 
 test("rowActions: a branch another was branched from at its end still opens at that end", () => {
   const t = buildTree(branchedAtEnd());
-  assert.deepEqual(rowActions(t, "main:1", idle), { ...NOTHING, fork: 3, open: { target: { branch: "main", at: 3, new: false } } });
-  assert.deepEqual(rowActions(t, "b1:4", idle), { ...NOTHING, fork: 6, open: { target: { branch: "b1", at: 6, new: false } } });
+  assert.deepEqual(rowActions(t, "main:1", idle), { ...NOTHING, fork: 3, open: { view: "main" } });
+  assert.deepEqual(rowActions(t, "b1:4", idle), { ...NOTHING, fork: 6, open: { view: "b1" } });
   // a branch without messages of its own ends at an entry of the branch it came from
   const bare = buildTree(nested(4, []));
-  assert.deepEqual(rowActions(bare, "a1b2c3d4:3", idle).open, { target: { branch: "e5f6a7b8", at: 5, new: false } });
+  assert.deepEqual(rowActions(bare, "a1b2c3d4:3", idle).open, { view: "e5f6a7b8" });
 });
 
 test("rowActions: a point without an id offers nothing, unless the entry is the end of a branch", () => {
@@ -473,7 +663,7 @@ test("rowActions: a point without an id offers nothing, unless the entry is the 
   assert.deepEqual(rowActions(t, "main:3", idle), NOTHING);
   assert.deepEqual(rowActions(t, "main:4", idle), NOTHING);
   assert.deepEqual(rowActions(t, "main:6", idle), NOTHING);
-  assert.deepEqual(rowActions(t, "main:7", idle), { ...NOTHING, fork: 9, open: { target: { branch: "main", at: 9, new: false } } });
+  assert.deepEqual(rowActions(t, "main:7", idle), { ...NOTHING, fork: 9, open: { view: "main" } });
   // a message after a turn that ended without a mark has no point at all
   const cut = buildTree(view("main", [main(4, u(0, "ask", { before: 0 }), a(1, "half"), u(2, "again"), a(3, "ok"))]));
   assert.deepEqual(rowActions(cut, "main:2", idle), NOTHING);
@@ -485,11 +675,14 @@ test("rowActions: the last reply of a branch forks at the branch's end, whatever
   const old = buildTree(view("main", [main(5, u(0, "ask"), a(1, "looking"), a(3, "answer"))]));
   assert.deepEqual(rowActions(old, "main:0", idle), NOTHING);
   assert.deepEqual(rowActions(old, "main:1", idle), { ...NOTHING, midTurn: true });
-  assert.deepEqual(rowActions(old, "main:3", idle), { ...NOTHING, fork: 5, open: { target: { branch: "main", at: 5, new: false } } });
+  assert.deepEqual(rowActions(old, "main:3", idle), { ...NOTHING, fork: 5, open: { view: "main" } });
   // a reply still open is not a place to fork from, and is not partway through a turn either
   const open = buildTree(view("main", [main(2, u(0, "ask"), { i: 1, kind: "text", text: "wri" })]));
-  assert.deepEqual(rowActions(open, "main:1", idle), { ...NOTHING, open: { target: { branch: "main", at: 2, new: false } } });
-  assert.deepEqual(rowActions(open, "main:1", { busy: true, readOnly: false }), NOTHING);
+  assert.deepEqual(rowActions(open, "main:1", idle), { ...NOTHING, open: { view: "main" } });
+  assert.deepEqual(rowActions(open, "main:1", busyOn("main")), { ...NOTHING, open: { view: "main" } });
+  // the fork of the whole branch is not for a busy one
+  assert.deepEqual(rowActions(old, "main:3", busyOn("main")), { ...NOTHING, open: { view: "main" } });
+  assert.equal(rowActions(old, "main:3", busyOn("other")).fork, 5);
   // "last" is by the branch's own part: main's last reply in the example is not a1b2c3d4's
   const t = buildTree(EXAMPLE);
   assert.equal(rowActions(t, "main:6", idle).fork, 8);

@@ -1,18 +1,13 @@
-// The branch a chat shows, and the move chosen and not sent yet: which events and loads belong to
-// the list on screen, what the composer holds when a move starts and when it is taken back, when
+// The branch a chat shows, and the move chosen and not sent yet: which load of a thread is the
+// one kept, what the composer holds when a move starts and when it is taken back, when
 // a move is dropped, and what the banner above the composer says. conn.ts, fork/actions.ts and
 // fork/Chrome.tsx act on these rules. DOM-free.
 
-import { MAIN, type AgentKind, type Held, type Item, type PendingMove, type Reference, type Target, type TreeView } from "../types.ts";
+import { type AgentKind, type Held, type Item, type PendingMove, type Reference, type Target, type TreeView } from "../types.ts";
 import { hasDraft } from "./drafts.ts";
 import { pointOK, sessionEnd } from "./forkpoints.ts";
 import { nameOfBranch, preview, sharedCount, type ChatTree } from "./forktree.ts";
 import { nameText, quoteKey } from "./quotes.ts";
-
-/** Whether an event of evBranch belongs to the list shown (a missing branch is "main"). */
-export function appliesTo(shown: string, evBranch: string | undefined): boolean {
-  return (evBranch || MAIN) === shown;
-}
 
 /** One load per key at a time, the newest wins: begin returns a ticket; current tells whether it is still the newest. */
 export class Loads {
@@ -43,14 +38,17 @@ export function quoteLimit(view: TreeView | undefined, at: number, branch: strin
   return view && has(branch) && has(other) ? Math.min(at, sharedCount(view, branch, other)) : 0;
 }
 
-/** Whether a pending move is still possible on its branch's items. */
-export function moveValid(agent: AgentKind, items: (Item | undefined)[], move: Target): boolean {
-  return (!move.new && sessionEnd(items, move.at)) || pointOK(agent, items, move.at);
+/** Whether a pending move is still possible on its branch's items. running: the branch's turn
+ *  runs; a new branch then starts only at a finished boundary, and only when the agent kind can
+ *  branch from a running source (pointOK), and the end of the branch takes no message. */
+export function moveValid(agent: AgentKind, items: (Item | undefined)[], move: Target, running = false): boolean {
+  return (!move.new && !running && sessionEnd(items, move.at)) || pointOK(agent, items, move.at, running);
 }
 
 /** Whether a pending move is dropped (as Back) after the chat's view or the shown list changed.
- *  sending: the move's own Send is in flight. A busy chat keeps its move: the app starts a turn
- *  by itself when a subagent's result arrives, and the message is sent to the point after it. */
+ *  sending: the move's own Send is in flight. A busy source keeps its move: its list only grows
+ *  past the point, which stays a finished boundary, and the message starts its own branch there
+ *  while the source's turn (the user's, or one the app started for a subagent's result) goes on. */
 export function moveDropped(p: { archived: boolean; valid: boolean; sending: boolean }): boolean {
   return !p.sending && (p.archived || !p.valid);
 }
@@ -86,33 +84,26 @@ export function afterSent(move: PendingMove, now: Held, limit: number): Held | n
   return hasDraft(h) ? h : null;
 }
 
-export type Banner =
-  | { kind: "new"; after: string | null; stays: string | null; stops?: number; asks?: true }   // after: preview of the last message before the point; null = from the start
-  | { kind: "end"; name: string; stays: string | null; stops?: number; asks?: true };          // stops: the running subagents of the branch left, when it has any; asks: an approval is waited for
+/** after: preview of the last message before the point, null = from the start. stays: the name
+ *  of the branch the chat is on, which the new branch leaves as it is. asks: the branch cut at the
+ *  point waits for the user's approval. */
+export type Banner = { kind: "new"; after: string | null; stays: string | null; asks?: true };
 
-/** What the banner says of a pending move on its branch's items. t: the chat's tree; current:
- *  the branch the chat is on, which the move leaves; running: how many subagents of that branch
- *  run, which the Send stops; asks: the chat waits for the user's approval, whose card the thread
- *  cut at the move's point does not show. */
-export function bannerOf(t: ChatTree, move: Target, items: (Item | undefined)[], current: string, running = 0, asks = false): Banner {
-  const end = !move.new && sessionEnd(items, move.at);
-  const left = !end || current !== move.branch;
-  const stays = left && t.view.branches.some((b) => b.id === current) ? nameOfBranch(t, current) : null;
-  const stops = left && running > 0 ? { stops: running } : {};
-  const waits = asks ? { asks: true as const } : {};
-  if (end) return { kind: "end", name: nameOfBranch(t, move.branch), stays, ...stops, ...waits };
+/** What the banner says of a pending move on its branch's items. t: the chat's tree; from: the
+ *  branch the chat is on, which stays as it is (the move stops nothing on it); asks: the branch
+ *  cut at the move's point waits for the user's approval, whose card the cut thread does not show. */
+export function bannerOf(t: ChatTree, move: Target, items: (Item | undefined)[], from: string, asks = false): Banner {
+  const stays = t.view.branches.some((b) => b.id === from) ? nameOfBranch(t, from) : null;
   let after: string | null = null;
   for (let i = Math.min(move.at, items.length) - 1; i >= 0 && after === null; i--) {
     const it = items[i];
     if (it?.kind === "user" || it?.kind === "text") after = preview(nameText(it), 44);
   }
-  return { kind: "new", after, stays, ...stops, ...waits };
+  return { kind: "new", after, stays, ...(asks ? { asks: true as const } : {}) };
 }
 
 export function bannerText(b: Banner): string {
   const stays = b.stays ? ` “${b.stays}” stays in the tree.` : "";
-  const stops = b.stops ? ` ${b.stays ? "Its" : "The"} ${b.stops === 1 ? "running subagent is" : `${b.stops} running subagents are`} stopped when you send.` : "";
   const asks = b.asks ? " The agent is waiting for your approval: Back shows it." : "";
-  if (b.kind === "end") return `Now on “${b.name}”, where it ended.${stays}${stops}${asks}`;
-  return `New branch ${b.after === null ? "from the start" : `after “${b.after}”`}: your message starts it.${stays}${stops}${asks}`;
+  return `New branch ${b.after === null ? "from the start" : `after “${b.after}”`}: your message starts it.${stays}${asks}`;
 }

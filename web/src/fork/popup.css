@@ -37,7 +37,24 @@
 .fk-ctx .menu-item:disabled { color: var(--faint); background: none; }
 .fk-ctx-note { padding: 5px 10px 4px; max-width: 220px; }
 .fk-nav-foot { flex: none; display: flex; flex-wrap: wrap; gap: 14px; padding: 7px 14px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
-.fk-busy { color: var(--warn); }
+/* the mark on the row a branch ends at: it works (.fk-run), waits for approval (.fk-ask), waits for its
+   subagents (.fk-subs), ended in an error (.fk-failed) or was cut by a restart (.fk-stopped) */
+.fk-mark { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600; color: var(--accent); }
+.fk-mark::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.fk-row.fk-run .fk-mark::before { animation: fk-pulse 1.2s ease-in-out infinite; }
+.fk-row.fk-ask .fk-mark { color: var(--warn); }
+.fk-row.fk-failed .fk-mark { color: var(--danger); }
+.fk-row.fk-stopped .fk-mark { color: var(--muted); }
+@keyframes fk-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .fk-row.fk-run .fk-mark::before { animation: none; } }
+.fk-stop { flex: none; border: 1px solid var(--line-2); background: var(--bg); color: var(--text); border-radius: 5px; padding: 0 7px; font-size: 10.5px; font-weight: 600; line-height: 16px; }
+.fk-stop:hover { border-color: var(--danger); color: var(--danger); }
+/* the model and effort of a branch that differ from those of the branch it split from */
+.fk-model { flex: 0 1 auto; min-width: 0; max-width: 35%; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; line-height: 15px; }
+/* a chat forked from this one */
+.fk-fork-link { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0; font-size: inherit; text-align: left; }
+.fk-fork-row.archived .fk-fork-link { color: var(--muted); }
+.fk-loose-head { margin-top: 6px; padding: 7px 14px 3px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
 
 /* its button in the chat header */
 .fk-tree-btn { flex: none; color: var(--muted); }

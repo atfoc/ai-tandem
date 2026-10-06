@@ -34,7 +34,8 @@ type App struct {
 type Snapshot struct {
 	Groups     []model.Group                      `json:"groups"`
 	Boards     []model.Board                      `json:"boards"`
-	Chats      []model.ChatView                   `json:"chats"` // without the chats of runs' agents
+	Chats      []model.ChatView                   `json:"chats"`  // without the chats of runs' agents
+	States     []model.BranchState                `json:"states"` // one per branch of every chat in Chats, main included
 	Runs       []model.RunView                    `json:"runs"`
 	Defaults   model.Defaults                     `json:"defaults"`
 	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"`
@@ -48,8 +49,8 @@ var (
 	ErrGroupArchived = errors.New("the group is archived")
 )
 
-// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats from
-// Chats; runs from Runs.
+// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats and their
+// branches' states from Chats; runs from Runs. They are read one after the other, not at one moment.
 func (a *App) Snapshot() Snapshot {
 	cl := claude.Catalog
 	snap := Snapshot{
@@ -74,6 +75,7 @@ func (a *App) Snapshot() Snapshot {
 	})
 	snap.Boards = a.Boards.List()
 	snap.Chats = a.Chats.Views()
+	snap.States = a.Chats.States()
 	snap.Runs = []model.RunView{}
 	if a.Runs != nil {
 		snap.Runs = a.Runs.Views()

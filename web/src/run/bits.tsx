@@ -3,7 +3,7 @@
 // rows of a text that is being loaded, a command to copy.
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import "./detail.css";
-import { useStore } from "../store.ts";
+import { useStore, threadOf } from "../store.ts";
 import { openChat } from "../Sidebar.tsx";
 import { chatTitle } from "../logic/labels.ts";
 import { STATES, taskState } from "../logic/runtimeline.ts";
@@ -51,7 +51,7 @@ export const cost = (usd: number | null | undefined): string => (typeof usd === 
  *  chat in the panel, when the client knows the chat; else "a chat". */
 export function ChatRef({ id }: { id: string | null | undefined }) {
   const c = useStore((s) => (id ? s.chats[id] : undefined));
-  const items = useStore((s) => (id && !c?.name ? s.items[id]?.items : undefined));
+  const items = useStore((s) => (id && !c?.name ? threadOf(s, id)?.items : undefined));
   if (!c) return <>a chat</>;
   return <>the chat <button type="button" className="link lk" data-chat={c.id} title="Open this chat" onClick={() => openChat(c)}>{chatTitle(c, items)}</button></>;
 }

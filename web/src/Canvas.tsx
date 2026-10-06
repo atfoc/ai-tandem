@@ -3,7 +3,8 @@
 // picked for a chat (⌘⇧L).
 import React, { useEffect, useRef, useState } from "react";
 import { Excalidraw, FONT_FAMILY } from "@excalidraw/excalidraw";
-import { useStore, setState, getState, isBusy, flash } from "./store.ts";
+import { useStore, setState, getState, flash } from "./store.ts";
+import { chatBusy } from "./logic/status.ts";
 import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, type Scene } from "./board.ts";
 import { insertRef, pickPoint } from "./Composer.tsx";
 import { pointLabel } from "./logic/refs.ts";
@@ -116,7 +117,7 @@ function FlashLayer({ board }: { board: string }) {
 /** "<Agent> is working on <board>" while one of the board's chats is busy, or another chat just edited it. */
 function Presence({ board }: { board: string }) {
   const name = useStore((s) => s.boards[board]?.name ?? "");
-  const own = useStore((s) => Object.values(s.chats).find((c: ChatView) => c.board === board && !c.archived && isBusy(c.status))?.agent);
+  const own = useStore((s) => Object.values(s.chats).find((c: ChatView) => c.board === board && !c.archived && chatBusy(c))?.agent);
   const other = useStore((s) => s.busyOn[board]?.agent);
   const agent = own ?? other;
   if (!agent) return null;

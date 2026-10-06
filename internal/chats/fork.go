@@ -21,6 +21,8 @@ type ForkReq struct {
 	Branch  string // the branch the point is on: "main" or a branch id
 	At      int    // the point: an item count of that branch
 	Message *int   // Fork and edit: the index of the user message that becomes the new chat's draft
+	Model   string // the new chat's model and effort; "" for those of the branch (see choose)
+	Effort  string
 }
 
 // closeWait is how long a fork that is given up waits for its process to close before what the
@@ -37,7 +39,9 @@ func errNoForker(a model.AgentKind) error {
 var errForkGone = errors.New("this fork was made at a point Claude has no id for, and the chat it was forked from has gone on since: it can no longer be started")
 
 // Fork makes a new chat holding the first req.At items of a branch of the chat id, in a session
-// forked from that branch's at that point. The source chat is not stopped, changed or re-emitted.
+// forked from that branch's at that point. The source chat is not stopped, changed or re-emitted,
+// also when a turn of that branch or of another is running: the point is then a finished boundary
+// of the branch (see forkEntry).
 //
 // The new chat is in the manager's map from the start, unlisted: its agent finds its MCP token
 // while it starts, but no client sees the chat, and nothing is saved or emitted for it, until the
@@ -47,17 +51,16 @@ func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
 		return model.ChatView{}, err
 	}
 	var loaded outbox // what loading the source's transcript sends
-	// Only the current branch has a process (D4): a chat is busy when that branch is.
-	curBusy := m.Busy(id)
 	src, err := m.branchChat(id, req.Branch)
 	if err != nil {
 		return model.ChatView{}, err
 	}
-	c, from, err := m.forkEntry(src, id, curBusy, req, &loaded)
+	c, from, err := m.forkEntry(src, id, req, &loaded)
 	// A fork that goes through src's own fork source (see forkSourceOf) at a place no id names is
 	// made of the whole session of that source: ends is the item count that session must end at.
+	// Never for a running src: its fork has the id of the mark before the point (forkEntry).
 	ends := -1
-	if fs := src.meta.ForkSource; err == nil && fs != nil && from.ChatID == fs.Chat && from.Point == "" {
+	if fs := src.meta.ForkSource; err == nil && !busy(src) && fs != nil && from.ChatID == fs.Chat && from.Point == "" {
 		ends = fs.Items
 	}
 	src.mu.Unlock()
@@ -140,10 +143,14 @@ func (m *Manager) branchChat(id, branch string) (*Chat, error) {
 }
 
 // forkEntry checks that the chat top, whose branch src is, may be forked as req asks, and makes
-// the unlisted entry of the new chat. It also returns the session the fork is made from. curBusy
-// says that the chat's current branch is busy. What the new chat takes from the chat itself
-// (title, group, board) is the top-level chat's. src.mu held.
-func (m *Manager) forkEntry(src *Chat, top string, curBusy bool, req ForkReq, out *outbox) (*Chat, agent.ForkSource, error) {
+// the unlisted entry of the new chat. It also returns the session the fork is made from. What the
+// new chat takes from the chat itself (title, group, board) is the top-level chat's. src.mu held.
+//
+// Only src's own turn counts, not another branch's. While it runs (a fork start included, which is
+// busy without a turn) the fork is made at a finished boundary by the id rules (pointOK), and src
+// is left as it is. Its end is no such boundary unless the mark there has an id: the fork would be
+// of the whole session, which is still going, so ErrBusy.
+func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*Chat, agent.ForkSource, error) {
 	none := agent.ForkSource{}
 	parent := m.parentOf(src)
 	if parent.Archived {
@@ -156,15 +163,18 @@ func (m *Manager) forkEntry(src *Chat, top string, curBusy bool, req ForkReq, ou
 	if err != nil {
 		return nil, none, err
 	}
-	if busy(src) || curBusy {
-		return nil, none, ErrBusy
-	}
+	running := busy(src)
 	_, items := tr.Snapshot()
 	// A fork, unlike a new branch, may also start at the end of an idle branch, whatever its marks.
 	// Without an id on its last mark the fork is made of the whole session, and Claude's can be
 	// made again only while the branch has said nothing since (see spawnFork).
-	if !pointOK(src.meta.Agent, items, req.At) && (req.At == 0 || req.At != len(items)) {
-		return nil, none, ErrBadPoint
+	if !pointOK(src.meta.Agent, items, req.At, running) {
+		if running && req.At == len(items) {
+			return nil, none, ErrBusy
+		}
+		if running || req.At == 0 || req.At != len(items) {
+			return nil, none, ErrBadPoint
+		}
 	}
 	var draft *model.Draft
 	if req.Message != nil {
@@ -195,20 +205,37 @@ func (m *Manager) forkEntry(src *Chat, top string, curBusy bool, req ForkReq, ou
 		}
 	}
 
+	mc, cm, err := m.choose(src.meta.Agent, model.ModelChoice{Model: src.meta.Model, Effort: src.meta.Effort}, req.Model, req.Effort)
+	if err != nil {
+		return nil, none, err
+	}
+	if req.At > 0 { // at the start of the chat nothing is handed to the model
+		if err := windowGuard(src.meta.Agent, ctxOf(src.meta), src.meta.Model, mc.Model, cm); err != nil {
+			return nil, none, err
+		}
+	}
+
 	title := titleOf(parent, items)
-	meta := prefixMeta(src.meta, items, req.At)
+	meta := prefixMeta(src.meta, items, req.At, mc, windowOf(cm))
+	// Until its first own message a fork that starts with a conversation is told apart from one
+	// that has gone on, and the context it starts with is known only from its source.
+	meta.Fresh = meta.Locked
+	meta.SourceCtx = ctxOf(src.meta)
 	meta.ID = uuid()
 	meta.Board = parent.Board
 	meta.Run = parent.Run
 	meta.Group = parent.Group // empty for a board chat and for a chat on a run
 	meta.Name = title + " (fork)"
-	meta.Draft = draft
+	if draft != nil {
+		meta.Drafts = map[string]*model.Draft{model.MainBranch: draft}
+	}
 	meta.ForkedFrom, meta.ForkedFromTitle = top, title
+	meta.ForkedBranch, meta.ForkedAt = req.Branch, req.At // the branch is registered: "main" or an id
 	c, err := m.addUnlisted(src, meta, req.At)
 	if err != nil {
 		return nil, none, err
 	}
-	return c, forkSourceOf(src.meta, items, req.At), nil
+	return c, forkSourceOf(src.meta, items, req.At, running), nil
 }
 
 // titleOf is the chat's title as the client shows it (chatTitle in web/src/store.ts): its name,
@@ -234,13 +261,15 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 }
 
 // prefixMeta is what the chat.json of a new chat or branch that starts with the first at items
-// of the chat (src, items) takes from it (D11): the agent and its settings, a session id of its
-// own, and what follows from the prefix. It is never a copy of the file. The caller sets the id
-// and what differs between a fork and a branch; addUnlisted gives the token. A fork or branch of
-// a chat on a run is on that run.
-func prefixMeta(src model.ChatMeta, items []model.Item, at int) model.ChatMeta {
-	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Cwd: src.Cwd, Model: src.Model,
-		Effort: src.Effort, Created: time.Now()}
+// of the chat (src, items) takes from it (D11): the agent, its board and folder, a session id of
+// its own, and what follows from the prefix. Its model and effort are mc, the source's or the ones
+// chosen for it (see choose); window is the context window of mc's model, 0 when it is not known,
+// and is taken only for a model other than the source's. It is never a copy of the file. The
+// caller sets the id and what differs between a fork and a branch; addUnlisted gives the token. A
+// fork or branch of a chat on a run is on that run.
+func prefixMeta(src model.ChatMeta, items []model.Item, at int, mc model.ModelChoice, window int) model.ChatMeta {
+	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Cwd: src.Cwd, Model: mc.Model,
+		Effort: mc.Effort, Created: time.Now()}
 	if src.Agent == model.Claude || src.Agent == model.Pi {
 		meta.SessionID = uuid() // Cursor's comes from the fork start, or from session/new
 	}
@@ -256,6 +285,9 @@ func prefixMeta(src model.ChatMeta, items []model.Item, at int) model.ChatMeta {
 		meta.Usage.Turns = 1 // turns ended before there were marks: 0 would read as a chat never used
 	}
 	meta.Usage.CtxWindow = src.Usage.CtxWindow
+	if mc.Model != src.Model {
+		meta.Usage.CtxWindow = window // never the source model's: the meter would show the wrong one
+	}
 	if at == len(items) { // the context numbers are the last turn's only
 		meta.Usage.CtxIn, meta.Usage.CtxOut = src.Usage.CtxIn, src.Usage.CtxOut
 	}
@@ -273,7 +305,10 @@ func prefixMeta(src model.ChatMeta, items []model.Item, at int) model.ChatMeta {
 // Through a source, a fork with no point is of the whole source session: the caller starts it
 // only while that session still ends where the chat's prefix does (Fork checks it with
 // sourceKept). A new branch never gets there: it needs the id of the mark before it (pointOK).
-func forkSourceOf(meta model.ChatMeta, items []model.Item, at int) agent.ForkSource {
+//
+// running says that the chat's turn is running: its session then does not end at the point, also
+// when no item follows it yet (a fork start, or a delivery turn that has put nothing).
+func forkSourceOf(meta model.ChatMeta, items []model.Item, at int, running bool) agent.ForkSource {
 	point := ""
 	if at > 0 && items[at-1].Kind == "end" {
 		point = items[at-1].Point
@@ -286,7 +321,7 @@ func forkSourceOf(meta model.ChatMeta, items []model.Item, at int) agent.ForkSou
 		return agent.ForkSource{ChatID: fs.Chat, SessionID: fs.Session, Point: point, Next: next.Point}
 	}
 	return agent.ForkSource{ChatID: meta.ID, SessionID: meta.SessionID, Point: point, Next: next.Point,
-		End: sessionEnd(items, at)}
+		End: !running && sessionEnd(items, at)}
 }
 
 // sentPast reports whether a user message lies at an index >= count.
@@ -311,6 +346,12 @@ func sentPast(items []model.Item, count int) bool {
 // turn at or past the point (Carried): the row is from an earlier attempt that did not reach the
 // agent, and the turn that carried it again is not in the copy. A record that owes nothing stays
 // so. The new chat object is held, so the app starts no turn on it before the human has sent.
+//
+// Nothing running is carried over. A subagent still running in src does not run in the copy: its
+// record there is stopped, owes nothing and is marked NotCarried, and the copy's agent is told so
+// with the copy's first human message (NoticeOwed, see notCarriedBlock). No open item is carried
+// over either: unfinished text, a tool call without a result and an undecided permission request
+// in the copied items are closed in the copy (transcript.CloseAll). src's own stay as they are.
 func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, error) {
 	m.setRoot(meta) // before the copy makes the folder; a branch's id resolves through its chat's
 	if err := m.copyPrefix(src, meta.ID, at); err != nil {
@@ -327,7 +368,23 @@ func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, er
 	meta.Token = m.uniqueTokenLocked()
 	m.extrasMu.Unlock()
 	c := &Chat{meta: meta, tr: tr, unlisted: true}
-	m.loadSubs(c)
+	setDrafts(c, meta.Drafts) // a fork made to edit a message has that message as main's draft
+	tr.CloseAll()
+	if err := tr.Flush(false); err != nil {
+		log.Printf("chats: flush %s: %v", meta.ID, err)
+	}
+	// A source that is itself a copy may not have told its agent yet, or have told it with a
+	// message the copy lacks: its session is forked as it was before the notice then.
+	told := !src.meta.NoticeOwed && src.meta.NoticeAt > 0 && at >= src.meta.NoticeAt
+	for _, s := range m.loadSubs(c) {
+		s.meta.NotCarried = true
+		m.saveSub(c, s)
+		told = told && s.meta.Parent != ""
+	}
+	c.meta.NoticeOwed = !told && len(notCarried(c)) > 0
+	if told {
+		c.meta.NoticeAt = src.meta.NoticeAt // the message that carried it is in the copy
+	}
 	for _, s := range c.subs {
 		if s.meta.Delivery != model.SubNotOwed && s.meta.Delivery != model.SubOwed &&
 			(!tr.HasSubResult(s.meta.ID) || s.meta.Carried >= at) {

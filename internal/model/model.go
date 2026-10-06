@@ -213,7 +213,15 @@ type ChatMeta struct {
 	InstructionsSent    bool      `json:"instructionsSent,omitempty"`    // curl-era Cursor board chats; those chats are disabled
 	McpInstructionsSent bool      `json:"mcpInstructionsSent,omitempty"` // Cursor board chats — whiteboard MCP instructions already injected
 	Usage               Usage     `json:"usage"`
-	Draft               *Draft    `json:"draft,omitempty"` // the unsent message in the composer
+	// Drafts are the unsent messages in the composer, one per branch, by branch id ("main"
+	// included). Only a top-level chat's chat.json has them: a branch's own holds none. A map
+	// that is in a ChatMeta is never changed: a change puts a new map there, so a copy of the
+	// meta stays good, and a draft's pointer stays the same until that draft changes
+	// (ChatView is compared with ==).
+	Drafts map[string]*Draft `json:"drafts,omitempty"`
+	// Draft is the one draft a chat had before its branches had their own. It is read only,
+	// never written again: the chat manager moves it to Drafts when it loads the chat.
+	Draft *Draft `json:"draft,omitempty"`
 	// ContextSplit is the last context split taken between turns; Claude's and live pi's are kept
 	// in chat.json and asked for again once messages or turns have moved past it.
 	ContextSplit *ContextSplit `json:"contextSplit,omitempty"`
@@ -221,6 +229,21 @@ type ChatMeta struct {
 	ForkSource      *ForkSource `json:"forkSource,omitempty"`
 	ForkedFrom      string      `json:"forkedFrom,omitempty"`      // a fork: the id of the chat it was forked from
 	ForkedFromTitle string      `json:"forkedFromTitle,omitempty"` // and that chat's title at the time
+	ForkedBranch    string      `json:"forkedBranch,omitempty"`    // the branch of that chat the fork's point is on ("main" for main)
+	ForkedAt        int         `json:"forkedAt,omitempty"`        // the point: an item count of that branch
+	// NoticeOwed is set on a copy (a new branch or a fork) that holds records of subagents which
+	// were still running in its source when it was made (Subagent.NotCarried): its agent has not
+	// been told yet that they do not run here. The next human message carries the notice.
+	NoticeOwed bool `json:"noticeOwed,omitempty"`
+	// NoticeAt is the thread's item count right after the user message that carried the notice,
+	// 0 while none has. A copy cut before it is forked from a session that has no notice yet.
+	NoticeAt int `json:"noticeAt,omitempty"`
+	// Fresh is set on a fork whose prefix holds a user message and which has had no message of
+	// its own yet; the first message sent on it clears it. Never set on a branch.
+	Fresh bool `json:"fresh,omitempty"`
+	// SourceCtx is the context use of the chat a fork was made from, when it was made. It stands
+	// for the fork's own until its first message.
+	SourceCtx int `json:"sourceCtx,omitempty"`
 	// Cost is what the chat's agent and its subagents have cost so far; kept for a run agent's
 	// chat (and any chat whose agent reports cost). Never sent to clients.
 	Cost *ChatCost `json:"cost,omitempty"`
@@ -268,7 +291,8 @@ type ForkSource struct {
 	Items int `json:"items"`
 }
 
-// Draft is the message typed in a chat's composer and not sent yet. Cleared when a message is sent.
+// Draft is the message typed in the composer of one branch of a chat and not sent yet. Cleared
+// when a message is sent on that branch.
 type Draft struct {
 	Text     string    `json:"text"`               // the composer's value: the text with its reference tags
 	Mentions []Mention `json:"mentions,omitempty"` // boards picked from the @ menu
@@ -340,11 +364,64 @@ type ChatView struct {
 	Branch          string `json:"branch,omitempty"`   // the current branch's id; "" = main
 	ForkedFrom      string `json:"forkedFrom,omitempty"`
 	ForkedFromTitle string `json:"forkedFromTitle,omitempty"`
+	ForkedBranch    string `json:"forkedBranch,omitempty"` // the branch of that chat the fork was made on
+	ForkedAt        int    `json:"forkedAt,omitempty"`     // and the item count of that branch it starts with
+	// The two counts are over every branch of the chat, whichever is current. Like Branches and
+	// Branch, the chat manager sets them.
+	Working   int `json:"working,omitempty"`   // branches whose status is thinking, writing, tool or approval
+	Approvals int `json:"approvals,omitempty"` // of those, the ones waiting for approval
+	// Draft above is the current branch's (each branch's own is in its BranchState).
+	HasDraft bool `json:"hasDraft,omitempty"` // a branch of the chat has a stored draft
+	Fresh    bool `json:"fresh,omitempty"`    // a fork that has had no message of its own (ChatMeta.Fresh)
+}
+
+// BranchState is what clients see of one branch of a chat: the session side of its view.
+type BranchState struct {
+	Chat          string `json:"chat"`   // the top-level chat's id
+	Branch        string `json:"branch"` // "main" or a branch id
+	Cwd           string `json:"cwd"`
+	Model         string `json:"model"`
+	Effort        string `json:"effort,omitempty"`
+	Locked        bool   `json:"locked"`
+	Usage         Usage  `json:"usage"`
+	Status        Status `json:"status"`
+	StatusTool    string `json:"statusTool,omitempty"`
+	Error         string `json:"error,omitempty"`
+	FolderMissing bool   `json:"folderMissing,omitempty"`
+	SubsRunning   int    `json:"subsRunning,omitempty"`
+	SubsOwed      int    `json:"subsOwed,omitempty"`
+	Draft         *Draft `json:"draft,omitempty"`
+	Fresh         bool   `json:"fresh,omitempty"` // a fork that has had no message of its own (ChatMeta.Fresh)
+}
+
+// StateOf is the state record of the branch whose own view is v: the view of that branch's chat
+// object alone, not the composed one of its chat.
+func StateOf(chat, branch string, v ChatView) BranchState {
+	return BranchState{
+		Chat:          chat,
+		Branch:        branch,
+		Cwd:           v.Cwd,
+		Model:         v.Model,
+		Effort:        v.Effort,
+		Locked:        v.Locked,
+		Usage:         v.Usage,
+		Status:        v.Status,
+		StatusTool:    v.StatusTool,
+		Error:         v.Error,
+		FolderMissing: v.FolderMissing,
+		SubsRunning:   v.SubsRunning,
+		SubsOwed:      v.SubsOwed,
+		Draft:         v.Draft,
+		Fresh:         v.Fresh,
+	}
 }
 
 // ViewOf builds the client view of a chat. Token, SessionID, TurnActive, McpInstructionsSent,
 // ForkSource and Cost are left out; InstructionsSent is included because it is the curl-era disable marker.
-// Branches and Branch stay zero: the chat manager sets them.
+// Branches, Branch, Working and Approvals stay zero: the chat manager sets them. Draft is the
+// draft of main, which is what a top-level chat's meta is the meta of; a branch's meta has none,
+// and the chat manager fills it. HasDraft is over every entry of Drafts: the chat manager, which
+// knows the chat's branches, leaves out an entry that is under none of them.
 func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool) ChatView {
 	return ChatView{
 		ID:               m.ID,
@@ -362,7 +439,8 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 		InstructionsSent: m.InstructionsSent,
 		Created:          m.Created,
 		Usage:            m.Usage,
-		Draft:            m.Draft,
+		Draft:            m.Drafts[MainBranch],
+		HasDraft:         len(m.Drafts) > 0,
 		Archive:          m.Archive,
 		Status:           status,
 		StatusTool:       tool,
@@ -370,6 +448,9 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 		FolderMissing:    folderMissing,
 		ForkedFrom:       m.ForkedFrom,
 		ForkedFromTitle:  m.ForkedFromTitle,
+		ForkedBranch:     m.ForkedBranch,
+		ForkedAt:         m.ForkedAt,
+		Fresh:            m.Fresh,
 	}
 }
 
@@ -508,4 +589,8 @@ type Subagent struct {
 	// before what that turn added: the result reached the agent, if it did, past that count. 0 in
 	// a record that was never taken, or was written before the count was kept.
 	Carried int `json:"carried,omitempty"`
+	// NotCarried marks a copy's record (a new branch's or a fork's) of a subagent that was still
+	// running in the source when the copy was made. It does not run in the copy: its status there
+	// is stopped and nothing is owed for it. Its result goes to the source only.
+	NotCarried bool `json:"notCarried,omitempty"`
 }

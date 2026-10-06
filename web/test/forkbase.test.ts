@@ -9,7 +9,7 @@ const view = (p: Partial<ChatView> = {}): ChatView => ({
   usage: { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 }, status: "ready", ...p,
 });
 const held = { text: "", mentions: [], references: [] };
-const move = (p: Partial<PendingMove> = {}): PendingMove => ({ branch: MAIN, at: 3, new: true, held, put: null, ...p });
+const move = (p: Partial<PendingMove> = {}): PendingMove => ({ branch: MAIN, at: 3, new: true, from: MAIN, held, put: null, ...p });
 
 test("a view without the branch fields is one branch, main", () => {
   assert.equal(branchCount(view()), 1);
@@ -36,6 +36,10 @@ test("a pending move's branch is the one shown", () => {
   assert.equal(shownBranchOf(move({ branch: "e5f6a7b8" }), c), "e5f6a7b8");
   assert.equal(shownBranchOf(move({ branch: "a1b2c3d4" }), view()), "a1b2c3d4");
   assert.equal(currentBranch(c), "a1b2c3d4"); // the move does not change the current branch
+  // the branch the chat is on here is shown instead of the server's current one, and a move's over both
+  assert.equal(shownBranchOf(undefined, c, "e5f6a7b8"), "e5f6a7b8");
+  assert.equal(shownBranchOf(undefined, c, MAIN), "main");
+  assert.equal(shownBranchOf(move({ branch: MAIN, from: "e5f6a7b8" }), c, "e5f6a7b8"), "main");
 });
 
 // The worked example of the tree on the wire (GET /api/chats/<chat id>/tree).
@@ -94,26 +98,53 @@ async function asked(run: () => Promise<unknown>, answer: unknown = { ok: true }
 
 test("send without a target sends today's body", async () => {
   const refs = [{ quote: "q", item: 1, start: 0, end: 1 }];
-  assert.deepEqual(await asked(() => api.send("c_1", "hi", "ctx")),
-    { method: "POST", path: "/api/chats/c_1/messages", body: { text: "hi", context: "ctx" } });
-  assert.deepEqual((await asked(() => api.send("c_1", "hi", "ctx", []))).body, { text: "hi", context: "ctx" });
-  assert.deepEqual((await asked(() => api.send("c_1", "hi", "ctx", refs))).body, { text: "hi", context: "ctx", references: refs });
+  assert.deepEqual(await asked(() => api.send("c_1", "main", "hi", "ctx")),
+    { method: "POST", path: "/api/chats/c_1/messages?branch=main", body: { text: "hi", context: "ctx" } });
+  assert.deepEqual(await asked(() => api.send("c_1", "a1b2c3d4", "hi", "ctx", [])),
+    { method: "POST", path: "/api/chats/c_1/messages?branch=a1b2c3d4", body: { text: "hi", context: "ctx" } });
+  assert.deepEqual((await asked(() => api.send("c_1", "main", "hi", "ctx", refs))).body, { text: "hi", context: "ctx", references: refs });
 });
 
 test("send with a target adds only the target's branch, at and new", async () => {
-  assert.deepEqual((await asked(() => api.send("c_1", "hi", "ctx", [], { branch: "main", at: 3, new: true }))).body,
-    { text: "hi", context: "ctx", target: { branch: "main", at: 3, new: true } });
+  assert.deepEqual(await asked(() => api.send("c_1", "main", "hi", "ctx", [], { branch: "main", at: 3, new: true })),
+    { method: "POST", path: "/api/chats/c_1/messages", body: { text: "hi", context: "ctx", target: { branch: "main", at: 3, new: true } } });
   // a pending move is a Target with more on it
-  assert.deepEqual((await asked(() => api.send("c_1", "hi", "", [], move({ branch: "a1b2c3d4", at: 6, new: false })))).body,
-    { text: "hi", context: "", target: { branch: "a1b2c3d4", at: 6, new: false } });
+  assert.deepEqual(await asked(() => api.send("c_1", "a1b2c3d4", "hi", "", [], move({ branch: "a1b2c3d4", at: 6, new: false }))),
+    { method: "POST", path: "/api/chats/c_1/messages", body: { text: "hi", context: "", target: { branch: "a1b2c3d4", at: 6, new: false } } });
 });
 
-test("items and subItems ask for a branch only when given one", async () => {
+test("items and subItems ask for the branch they are given", async () => {
   const items = { version: 1, items: [] };
-  assert.equal((await asked(() => api.items("c_1"), items)).path, "/api/chats/c_1/items");
+  assert.equal((await asked(() => api.items("c_1", "main"), items)).path, "/api/chats/c_1/items?branch=main");
   assert.equal((await asked(() => api.items("c_1", "a1b2c3d4"), items)).path, "/api/chats/c_1/items?branch=a1b2c3d4");
-  assert.equal((await asked(() => api.subItems("c_1", "s1"), items)).path, "/api/chats/c_1/subagents/s1/items");
-  assert.equal((await asked(() => api.subItems("c_1", "s1", "main"), items)).path, "/api/chats/c_1/subagents/s1/items?branch=main");
+  assert.equal((await asked(() => api.subItems("c_1", "main", "s1"), items)).path, "/api/chats/c_1/subagents/s1/items?branch=main");
+  assert.equal((await asked(() => api.subItems("c_1", "a1b2c3d4", "s1"), items)).path, "/api/chats/c_1/subagents/s1/items?branch=a1b2c3d4");
+});
+
+test("every session call names its branch in the query; a send with a target names it in the target only", async () => {
+  const B = "a1b2c3d4", items = { version: 1, items: [] }, draft = { text: "d" };
+  const calls: [string, () => Promise<unknown>, string, string, unknown?][] = [
+    ["items", () => api.items("c_1", B), "GET", `/api/chats/c_1/items?branch=${B}`, items],
+    ["subItems", () => api.subItems("c_1", B, "s1"), "GET", `/api/chats/c_1/subagents/s1/items?branch=${B}`, items],
+    ["openChat", () => api.openChat("c_1", B), "POST", `/api/chats/c_1/open?branch=${B}`],
+    ["send", () => api.send("c_1", B, "hi", ""), "POST", `/api/chats/c_1/messages?branch=${B}`],
+    ["configure", () => api.configure("c_1", B, { model: "m" }), "PATCH", `/api/chats/c_1?branch=${B}`],
+    ["saveDraft", () => api.saveDraft("c_1", B, draft), "PUT", `/api/chats/c_1/draft?branch=${B}`],
+    ["interrupt", () => api.interrupt("c_1", B), "POST", `/api/chats/c_1/interrupt?branch=${B}`],
+    ["decide", () => api.decide("c_1", B, { requestId: "r1", allow: true }), "POST", `/api/chats/c_1/permission?branch=${B}`],
+    ["contextSplit", () => api.contextSplit("c_1", B), "GET", `/api/chats/c_1/context?branch=${B}`],
+    ["contextSplit fresh", () => api.contextSplit("c_1", B, true), "GET", `/api/chats/c_1/context?branch=${B}&fresh=1`],
+    ["send with a target", () => api.send("c_1", B, "hi", "", [], { branch: B, at: 2, new: true }), "POST", "/api/chats/c_1/messages"],
+  ];
+  for (const [name, run, method, path, answer] of calls) {
+    const r = await asked(run, answer ?? { ok: true });
+    assert.deepEqual([r.method, r.path], [method, path], name);
+  }
+  // the bodies stay as they were: the branch is in the query alone
+  assert.deepEqual((await asked(() => api.configure("c_1", B, { model: "m" }))).body, { model: "m" });
+  assert.deepEqual((await asked(() => api.saveDraft("c_1", B, draft))).body, draft);
+  assert.deepEqual((await asked(() => api.decide("c_1", B, { requestId: "r1", allow: true }))).body, { requestId: "r1", allow: true });
+  assert.equal((await asked(() => api.items("c_1", "a b"), items)).path, "/api/chats/c_1/items?branch=a%20b"); // escaped
 });
 
 test("tree, label and fork use their routes", async () => {

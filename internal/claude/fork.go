@@ -29,13 +29,16 @@ const (
 // fork's own id, o.SessionID. The point is passed at the source's end too: the source may have
 // taken a message since the end was found. It returns once the process has answered its
 // initialize request. Nothing but that request is written to the process: the forked session has
-// no file until its first message is sent.
+// no file until its first message is sent, unless the copied part holds background tasks of the
+// source that had not finished (background Bash, Monitor, Workflow). The CLI then reports each
+// as stopped and writes the fork's file at start; translate drops the empty results that follow.
 //
 // When the fork's file exists already (a message was accepted by an earlier process of this
-// fork) the launch is refused as "already in use", and a plain resume of o.SessionID is started
-// instead. Any other failure is the fork's: a result line before the initialize answer (a source
-// session or a point that is gone), the process's exit, or agent.ForkTimeout, which bounds both
-// attempts together. A failed attempt's process is closed and none of its events are passed on.
+// fork, or it was written at start as above) the launch is refused as "already in use", and a
+// plain resume of o.SessionID is started instead. Any other failure is the fork's: an errored
+// result line before the initialize answer (a source session or a point that is gone), the
+// process's exit, or agent.ForkTimeout, which bounds both attempts together. A failed attempt's
+// process is closed and none of its events are passed on.
 func (s *Spawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.Agent, string, error) {
 	if o.SessionID == "" || src.SessionID == "" {
 		return nil, "", errors.New("claude: a fork needs its own session id and its source's")
@@ -76,11 +79,11 @@ func (s *Spawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.A
 }
 
 // DiscardFork has nothing to remove: a Claude fork has no session file until its first message
-// is sent, and the app never deletes Claude's session files.
+// is sent (or, see SpawnFork, its start), and the app never deletes Claude's session files.
 func (s *Spawner) DiscardFork(sessionID string) {}
 
-// confirmed waits until the process has answered its initialize request, or has failed to: a
-// result line before that answer, its exit, or the time box. A failed process is closed and its
+// confirmed waits until the process has answered its initialize request, or has failed to: an
+// errored result line before that answer, its exit, or the time box. A failed process is closed and its
 // events are dropped. exists reports the exit of a fork launch whose own session file exists.
 func (p *proc) confirmed(box <-chan time.Time, limit time.Duration) (exists bool, err error) {
 	select {

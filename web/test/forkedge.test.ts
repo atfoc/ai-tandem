@@ -20,7 +20,7 @@ const acts = (items: Items, index: number, busy = false) => messageActions({ age
 
 const q = (item: number, comment?: string): Reference => ({ quote: "x", item, start: 0, end: 1, ...(comment ? { comment } : {}) });
 const held = (t: string, references: Reference[] = []): Held => ({ text: t, mentions: [], references });
-const move = (t: Target, h: Held, put: Held | null = null): PendingMove => ({ ...t, held: h, put });
+const move = (t: Target, h: Held, put: Held | null = null): PendingMove => ({ ...t, from: "main", held: h, put });
 
 // ---- points: stopped turns, subagent rows, a thread from before the feature
 
@@ -132,8 +132,9 @@ test("the current branch gone from the tree the client holds: nothing throws, vi
   assert.equal(withLive(v, "gone", "claude", [user(), text(), end()]), v);
   assert.equal(quoteLimit(v, 5, "gone", "main"), 0);
   assert.equal(startEntry(t, { branch: "gone", item: 99 }), t.leaf);
-  assert.deepEqual(menuItems(t, "gone:1", { busy: false, readOnly: false }), []);
-  assert.equal(rowActions(t, "gone:1", { busy: false, readOnly: false }).open, null);
+  assert.deepEqual(menuItems(t, "gone:1", { busy: new Set(), readOnly: false }), []);
+  assert.equal(rowActions(t, "gone:1", { busy: new Set(), readOnly: false }).open, null);
+  assert.deepEqual(menuItems(t, "gone:1", { busy: new Set(["gone"]), readOnly: false }), []);
 });
 
 test("labels: a blank one is none, the same text twice stays two labels, an owner's label shows through a child branch", () => {

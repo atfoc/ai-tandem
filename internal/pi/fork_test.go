@@ -226,6 +226,118 @@ func TestSpawnForkAtEndCutsAtItsPoint(t *testing.T) {
 	}
 }
 
+// A point with no next mark and no end: the turn after it is running in the source, which has
+// its user message in the file but no mark for it yet. The fork is made before that message, and
+// then checked to end at the point before the model commands run.
+func TestSpawnForkFromRunningSource(t *testing.T) {
+	f, s, _, srcFile := forkFake(t, map[string]fakeReply{
+		"get_fork_messages":   forkMessagesReply("0efdb07e", "59b265f9", "c41d07aa"), // the source, turn 3 running
+		"get_fork_messages#2": forkMessagesReply("0efdb07e", "59b265f9"),             // the fork
+	})
+	a, id, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession, Point: "59b265f9"})
+	if err != nil {
+		t.Fatalf("SpawnFork: %v", err)
+	}
+	if id != forkNewSession {
+		t.Fatalf("session id %q", id)
+	}
+	if got := flagValue(f.invocation(t).Args, "--session"); got != srcFile {
+		t.Errorf("--session %q, want %q", got, srcFile)
+	}
+	lines := f.stdinLines(t, a)
+	want := []string{"get_state", "get_fork_messages", "fork", "get_state", "get_fork_messages",
+		"get_available_models", "set_model", "set_thinking_level"}
+	if got := commandTypes(lines); !equalStrings(got, want) {
+		t.Fatalf("commands %q\nwant %q", got, want)
+	}
+	if lines[2]["entryId"] != "c41d07aa" {
+		t.Errorf("fork %v, want the entry id of the running turn's message, c41d07aa", lines[2])
+	}
+}
+
+// The point is the source's last user message when the fork's process opens the file (the next
+// turn's message is not written yet): a clone, checked the same way.
+func TestSpawnForkFromRunningSourceClones(t *testing.T) {
+	f, s, _, _ := forkFake(t, map[string]fakeReply{"get_fork_messages": forkMessagesReply("0efdb07e", "59b265f9")})
+	a, _, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession, Point: "59b265f9"})
+	if err != nil {
+		t.Fatalf("SpawnFork: %v", err)
+	}
+	want := []string{"get_state", "get_fork_messages", "clone", "get_state", "get_fork_messages",
+		"get_available_models", "set_model", "set_thinking_level"}
+	if got := commandTypes(f.stdinLines(t, a)); !equalStrings(got, want) {
+		t.Fatalf("commands %q\nwant %q", got, want)
+	}
+}
+
+// The check of a fork from a running source: a fork that does not end at the point fails, and so
+// does one whose end cannot be read. Nothing of it stays (forkFails).
+func TestSpawnForkFromRunningSourceChecked(t *testing.T) {
+	src := agent.ForkSource{ChatID: "A", SessionID: forkSrcSession, Point: "59b265f9"}
+	atPoint := forkMessagesReply("0efdb07e", "59b265f9")
+	cloned := []string{"get_state", "get_fork_messages", "clone", "get_state", "get_fork_messages"}
+	cases := []struct {
+		name    string
+		replies map[string]fakeReply
+		want    string   // in the error
+		cmds    []string // the commands pi read
+	}{
+		// The source appended a turn between the lookup and the clone, and the clone took it in.
+		{"the source appended a turn", map[string]fakeReply{"get_fork_messages": atPoint,
+			"get_fork_messages#2": forkMessagesReply("0efdb07e", "59b265f9", "c41d07aa")},
+			`ends at "c41d07aa", not at the point "59b265f9"`, cloned},
+		{"the fork was cut too early", map[string]fakeReply{"get_fork_messages": forkMessagesReply("0efdb07e", "59b265f9", "c41d07aa"),
+			"get_fork_messages#2": forkMessagesReply("0efdb07e")},
+			`ends at "0efdb07e", not at the point "59b265f9"`,
+			[]string{"get_state", "get_fork_messages", "fork", "get_state", "get_fork_messages"}},
+		// pi does not list the point: the clone holds whatever the source held, the running turn too.
+		{"point not among the messages", map[string]fakeReply{"get_fork_messages": forkMessagesReply("0efdb07e", "c41d07aa")},
+			`ends at "c41d07aa", not at the point "59b265f9"`, cloned},
+		{"messages not answered", map[string]fakeReply{"get_fork_messages": atPoint,
+			"get_fork_messages#2": {Fail: true, Error: "nope"}}, "cannot check where the fork ends: nope", cloned},
+		{"messages never answered", map[string]fakeReply{"get_fork_messages": {Fail: true, Error: "nope"}},
+			"cannot check where the fork ends: nope", cloned},
+		{"no messages", map[string]fakeReply{"get_fork_messages": atPoint, "get_fork_messages#2": {}},
+			"pi listed no messages", cloned},
+		{"empty list", map[string]fakeReply{"get_fork_messages": atPoint, "get_fork_messages#2": forkMessagesReply()},
+			"pi listed no messages", cloned},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err, cmds, _ := forkFails(t, c.replies, src, 0)
+			if !strings.HasPrefix(err.Error(), "pi fork: ") || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %q, want one holding %q", err, c.want)
+			}
+			if !equalStrings(cmds, c.cmds) {
+				t.Errorf("commands %q\nwant %q", cmds, c.cmds)
+			}
+		})
+	}
+}
+
+// A fork at the source's end is not checked: with End, a fork that holds more than the point's
+// turn, or whose messages pi does not list, starts as it did.
+func TestSpawnForkAtEndIsNotChecked(t *testing.T) {
+	for name, second := range map[string]fakeReply{
+		"more than the point": forkMessagesReply("0efdb07e", "59b265f9", "c41d07aa"),
+		"not answered":        {Fail: true, Error: "nope"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, s, _, _ := forkFake(t, map[string]fakeReply{
+				"get_fork_messages": forkMessagesReply("0efdb07e", "59b265f9"), "get_fork_messages#2": second})
+			a, _, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession,
+				Point: "59b265f9", End: true})
+			if err != nil {
+				t.Fatalf("SpawnFork: %v", err)
+			}
+			want := []string{"get_state", "get_fork_messages", "clone", "get_state", "get_available_models", "set_model", "set_thinking_level"}
+			if got := commandTypes(f.stdinLines(t, a)); !equalStrings(got, want) {
+				t.Fatalf("commands %q\nwant %q", got, want)
+			}
+		})
+	}
+}
+
 // Without a way to tell what follows the point, the end of the source is a clone, as it was.
 func TestSpawnForkAtEndClonesWhenPointUnknown(t *testing.T) {
 	cases := []struct {
@@ -277,9 +389,9 @@ func TestSpawnForkNoProcessErrors(t *testing.T) {
 		}
 		f.noProcess(t)
 	})
-	t.Run("no next mark", func(t *testing.T) {
+	t.Run("no point and no next mark", func(t *testing.T) {
 		f, s, reg, _ := forkFake(t, nil)
-		a, id, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession, Point: "0efdb07e"})
+		a, id, err := s.SpawnFork(forkOptions(t), agent.ForkSource{ChatID: "A", SessionID: forkSrcSession})
 		if err == nil || err.Error() != "pi: no fork point after that turn" || a != nil || id != "" {
 			t.Fatalf("SpawnFork = %v, %q, %v", a, id, err)
 		}

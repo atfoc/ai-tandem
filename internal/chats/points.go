@@ -80,11 +80,21 @@ func markFrom(items []model.Item, count int) int {
 	return -1
 }
 
+// liveFork: may a new branch or a fork start at a finished boundary of a source whose turn is running?
+// One line per agent kind; the web client has the same table (LIVE_FORK in
+// web/src/logic/forkpoints.ts).
+var liveFork = map[model.AgentKind]bool{model.Claude: true, model.Cursor: true, model.Pi: true}
+
 // pointOK reports whether a new branch or a fork may start at count by the id rules alone; busy,
-// archived and legacy are the caller's to check. The start of the chat needs the id on the first
-// end mark, every other point the id on the mark right before it.
-func pointOK(a model.AgentKind, items []model.Item, count int) bool {
+// archived and legacy are the caller's to check. running says that the source's turn is running:
+// its agent kind must then be able to fork a running source (liveFork). The start of the chat
+// needs the id on the first end mark, every other point the id on the mark right before it. A
+// running turn has no end mark yet, so no point inside it passes.
+func pointOK(a model.AgentKind, items []model.Item, count int, running bool) bool {
 	if count < 0 || count > len(items) {
+		return false
+	}
+	if running && !liveFork[a] {
 		return false
 	}
 	if count == 0 {
@@ -94,19 +104,28 @@ func pointOK(a model.AgentKind, items []model.Item, count int) bool {
 	if it := items[count-1]; it.Kind != "end" || it.Point == "" {
 		return false
 	}
-	if a != model.Pi || sessionEnd(items, count) {
+	if a != model.Pi {
 		return true
 	}
-	// pi forks the end of a turn with the id on the next turn's mark, so that mark must close the
-	// turn that starts at count. After a turn cut without a mark the next mark is a later turn's,
-	// and a fork with its id would take in the cut turn. So exactly one turn lies between count
-	// and the mark: one message of the human's with no reply or tool call ahead of it (the rows of
-	// the subagent results it carries are), or none, which is a turn the app started to deliver
-	// subagent results. The app starts one only on a live process, so never after a cut turn, and
-	// its message is a user message to pi like any other: the mark carries its id. A mark that
-	// repeats the id before count is no new turn.
+	// pi has two ways to fork at count, by whether an end mark follows it.
+	//
+	// No mark follows: nothing was said past count, or what was said has no mark (a turn that is
+	// running, or one cut without a mark). pi then forks before the first user entry after the id
+	// on the mark before count, which is all it needs.
+	//
+	// A mark follows: pi forks the end of a turn with the id on the next turn's mark, so that mark
+	// must close the turn that starts at count. After a turn cut without a mark the next mark is a
+	// later turn's, and a fork with its id would take in the cut turn. So exactly one turn lies
+	// between count and the mark: one message of the human's with no reply or tool call ahead of
+	// it (the rows of the subagent results it carries are), or none, which is a turn the app
+	// started to deliver subagent results. The app starts one only on a live process, so never
+	// after a cut turn, and its message is a user message to pi like any other: the mark carries
+	// its id. A mark that repeats the id before count is no new turn.
 	m := markFrom(items, count)
-	if m < 0 || items[m].Point == "" {
+	if m < 0 {
+		return true
+	}
+	if items[m].Point == "" {
 		return false
 	}
 	users, early := 0, false // early: a reply or a tool call ahead of the first message

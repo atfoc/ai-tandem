@@ -2,7 +2,7 @@
 // panel, which beside a run also shows the transcripts of the run's own agents), the
 // selected plain chat, or the home screen.
 import React, { useEffect, useState } from "react";
-import { useStore, setState, getState, closeRunAgent } from "./store.ts";
+import { useStore, setState, getState, viewedBranch, closeRunAgent } from "./store.ts";
 import { Sidebar, AgentItems, newChat, newBoard, newRun, openBoard } from "./Sidebar.tsx";
 import { ChatHeader, Thread } from "./ChatView.tsx";
 import { Composer, focusComposer } from "./Composer.tsx";
@@ -21,7 +21,8 @@ import { Guard } from "./Guard.tsx";
 import { SubagentDrawer } from "./Subagents.tsx";
 import { TreePopup } from "./fork/TreePopup.tsx";
 import type { Pane as PaneKind } from "./logic/layout.ts";
-import { UNGROUPED } from "./types.ts";
+import { branchKey } from "./logic/branches.ts";
+import { MAIN, UNGROUPED } from "./types.ts";
 
 export function App() {
   const role = useStore((s) => s.role);
@@ -44,6 +45,8 @@ export function App() {
 function Grouped() {
   const sel = useStore((s) => s.sel);
   const chat = useStore((s) => (sel.chat ? s.chats[sel.chat] : undefined));
+  // The composer is one per branch: on another branch it goes away with its draft saved, and a new one opens with that branch's.
+  const viewed = useStore((s) => (sel.chat ? viewedBranch(s, sel.chat) : MAIN));
   const board = useStore((s) => (sel.board ? s.boards[sel.board] : undefined));
   // (the run's id and whether its goal is sent, not its record: that changes with every task)
   const runId = useStore((s) => (sel.run && s.runs[sel.run] ? sel.run : null));
@@ -61,7 +64,7 @@ function Grouped() {
           <Pane pane="panel" className="board-panel">
             <ChatHeader chatId={boardChat.id} />
             <Thread chatId={boardChat.id} />
-            <Composer key={boardChat.id} chatId={boardChat.id} />
+            <Composer key={branchKey(boardChat.id, viewed)} chatId={boardChat.id} branch={viewed} />
           </Pane>
         )}
         <main className="board-stage">
@@ -84,7 +87,7 @@ function Grouped() {
                 <>
                   <ChatHeader chatId={pane.chat} />
                   <Thread chatId={pane.chat} />
-                  <Composer key={pane.chat} chatId={pane.chat} />
+                  <Composer key={branchKey(pane.chat, viewed)} chatId={pane.chat} branch={viewed} />
                 </>
               )}
           </Pane>
@@ -101,7 +104,7 @@ function Grouped() {
         <ChatHeader chatId={chat.id} />
         <div className="chat-col">
           <Thread chatId={chat.id} />
-          <Composer key={chat.id} chatId={chat.id} />
+          <Composer key={branchKey(chat.id, viewed)} chatId={chat.id} branch={viewed} />
         </div>
       </main>
     );

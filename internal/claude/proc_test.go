@@ -34,6 +34,9 @@ const (
 	envPad    = "CLAUDE_FAKE_PAD"     // bytes of padding added to the initialize answer
 	envSleep  = "CLAUDE_FAKE_SLEEP"   // set: the test binary only sleeps 30 s (the child of envHold)
 	envRuns   = "CLAUDE_FAKE_RUNS"    // file the fake appends one line per invocation to: its pid and arguments
+	envAfter  = "CLAUDE_FAKE_AFTER"   // file whose lines the fake prints right after each initialize answer
+	envTurns  = "CLAUDE_FAKE_TURNS"   // file with one JSON array per line: what the fake prints for each user message it reads, in order (the last repeats). An element "gate" is not printed: the fake waits there until the file of CLAUDE_FAKE_GATE exists
+	envGate   = "CLAUDE_FAKE_GATE"    // see CLAUDE_FAKE_TURNS
 	envForkEr = "CLAUDE_FAKE_FORKERR" // text a run with --fork-session among its arguments prints to stderr, exiting at once (status 1) with nothing on stdout; other runs go on
 	envStay   = "CLAUDE_FAKE_STAY"    // file: the fake starts one child in its own process group and one that leads a group of its own (each sleeps 30 s), writes "<pid> <pid>" there, and keeps running after stdin closes
 	envDeaf   = "CLAUDE_FAKE_DEAF"    // set: after the script the fake reads nothing from stdin and stays for 30 s
@@ -120,11 +123,36 @@ func helperProcess() {
 		b, _ := os.ReadFile(f)
 		json.Unmarshal(b, &initAnswer)
 	}
+	after, _ := os.ReadFile(os.Getenv(envAfter))
+	var turns []string
+	if f := os.Getenv(envTurns); f != "" {
+		b, _ := os.ReadFile(f)
+		turns = strings.Split(strings.TrimSpace(string(b)), "\n")
+	}
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	for sc.Scan() {
 		out.Write(append(sc.Bytes(), '\n'))
 		out.Sync()
+		if len(turns) > 0 && strings.Contains(sc.Text(), `"type":"user"`) {
+			var lines []json.RawMessage
+			json.Unmarshal([]byte(turns[0]), &lines)
+			for _, l := range lines {
+				if string(l) != `"gate"` {
+					fmt.Printf("%s\n", l)
+					continue
+				}
+				for {
+					if _, err := os.Stat(os.Getenv(envGate)); err == nil {
+						break
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			}
+			if len(turns) > 1 {
+				turns = turns[1:]
+			}
+		}
 		var req struct {
 			Type      string `json:"type"`
 			RequestID string `json:"request_id"`
@@ -156,6 +184,7 @@ func helperProcess() {
 			if os.Getenv(envDup) != "" {
 				fmt.Printf("%s\n", b)
 			}
+			os.Stdout.Write(after)
 		}
 	}
 	out.Close()
@@ -202,6 +231,53 @@ func newFake(t *testing.T, lines ...string) *fake {
 	t.Setenv(envStdin, f.stdin)
 	t.Setenv(envArgs, f.args)
 	return f
+}
+
+// setTurns makes the fakes started from now on answer each user message with the lines of the
+// next turn (the last one repeats); see envTurns for "gate".
+func (f *fake) setTurns(t *testing.T, turns ...[]string) {
+	t.Helper()
+	var sb strings.Builder
+	for _, lines := range turns {
+		sb.WriteString("[" + strings.Join(lines, ",") + "]\n")
+	}
+	file := filepath.Join(f.dir, "turns.jsonl")
+	if err := os.WriteFile(file, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envTurns, file)
+}
+
+// setAfter makes the fakes started from now on print lines right after their initialize answer.
+func (f *fake) setAfter(t *testing.T, lines ...string) {
+	t.Helper()
+	file := filepath.Join(f.dir, "after.jsonl")
+	if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envAfter, file)
+}
+
+// turnEvents waits for the next EvTurnEnd and returns the events up to and with it.
+func turnEvents(t *testing.T, a agent.Agent) []agent.Event {
+	t.Helper()
+	var evs []agent.Event
+	for {
+		ev := next(t, a)
+		evs = append(evs, ev)
+		if ev.Kind == agent.EvTurnEnd {
+			return evs
+		}
+	}
+}
+
+// kinds are the kinds of evs, in order.
+func kinds(evs []agent.Event) []agent.EventKind {
+	var ks []agent.EventKind
+	for _, ev := range evs {
+		ks = append(ks, ev.Kind)
+	}
+	return ks
 }
 
 func (f *fake) spawner() *Spawner {

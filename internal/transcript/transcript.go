@@ -435,6 +435,32 @@ func (t *Transcript) LinkSubagent(toolID, sid string) []Update {
 // CloseOpen marks the open text item done (a subagent's thread, when it ends).
 func (t *Transcript) CloseOpen() []Update { return t.closeOpen() }
 
+// CloseAll closes every item the thread has open, wherever it is: unfinished text becomes done, a
+// tool call without a result that was not denied gets an empty result that is an error, and an
+// undecided permission request is denied (Load has already closed those of a thread read from its
+// file). It is for a thread no agent is writing in: the copy a new branch or a fork starts with.
+// The status is the caller's.
+func (t *Transcript) CloseAll() []Update {
+	var ups []Update
+	for i, it := range t.items {
+		switch {
+		case it.Kind == "text" && !it.Done:
+			it.Done = true
+		case it.Kind == "tool" && it.Result == nil && !it.Denied:
+			it.Result, it.IsError = new(string), true
+		case it.Kind == "perm" && it.Decided == "":
+			it.Decided = "deny"
+		default:
+			continue
+		}
+		t.dirty[i] = true
+		ups = append(ups, t.set(i, it))
+	}
+	t.open = -1
+	t.perms = map[permKey]int{}
+	return ups
+}
+
 // LastText is the text of the last text item; "" when there is none.
 func (t *Transcript) LastText() string {
 	for i := len(t.items) - 1; i >= 0; i-- {

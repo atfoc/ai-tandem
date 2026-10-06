@@ -239,6 +239,8 @@ button.ref-chip:hover { background: var(--accent-soft); }
 /* what a Guard shows in place of a part that could not be drawn */
 .guard-fail { padding: 12px 14px; min-width: 0; }
 .app > .guard-fail { flex: 1; }
+.prefix-end { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); padding: 0 2px; user-select: none; }
+.prefix-end::before, .prefix-end::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
 .empty-thread { margin: auto 0; text-align: center; color: var(--muted); padding: 10px 8px 24px; }
 .big-glyph { width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 10px; display: grid; place-items: center; background: var(--agent-soft); }
@@ -354,6 +356,8 @@ button.ref-chip:hover { background: var(--accent-soft); }
 button.tchip:hover { border-color: var(--line-2); }
 .tchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .tchip.static { color: var(--muted); background: transparent; padding: 0 4px; cursor: default; }
+button.tchip[aria-disabled="true"] { opacity: .55; cursor: default; }
+button.tchip[aria-disabled="true"]:hover { border-color: transparent; }
 .tchip-pre { color: var(--faint); margin-right: 2px; }
 .menu.up { top: auto; bottom: calc(100% + 6px); left: 0; min-width: 220px; }
 .menu-item.pick { padding-left: 10px; gap: 6px; }
@@ -566,6 +570,9 @@ body.resizing iframe { pointer-events: none; }
 
 /* ---------------------------------------------------------------- composer errors and states */
 .composer-err { color: var(--danger); font-size: 12px; padding: 5px 2px 0; }
+/* the model chosen for a new branch or a fork is not the conversation's so far (Composer.tsx ModelNotice) */
+.model-notice { margin-bottom: 6px; padding: 0 2px; font-size: 11.5px; color: var(--muted); }
+.model-notice.warn { color: var(--warn); }
 .ctx-meter.error { color: var(--warn); gap: 4px; }
 .tchip.missing { color: var(--danger); }
 

@@ -21,8 +21,9 @@
 //                               silently dropped) and start the app on the hidden test-only MCP
 //                               port override, so a normal app instance may keep 6006.
 //   AIWB_E2E_STEPS   run only these steps, e.g. "18,19,19b"; the others are reported as skipped.
-//                    Step 1 always runs: it starts the server. Steps 18, 19 and 19b need nothing
-//                    an earlier step made; most other steps do.
+//                    Step 1 always runs: it starts the server. Steps 18, 19, 19b and 21 to 28
+//                    need nothing an earlier step made (each makes its own chat); most other
+//                    steps do.
 //
 // The run gives the server and Cursor a copy of the Cursor CLI config ($CURSOR_CONFIG_DIR or
 // ~/.cursor) in a temp folder, removed at the end, so the deny rules the server adds for the data
@@ -42,6 +43,39 @@
 // (TestE2ESubagentDelivery, which also needs AIWB_PI_E2E_SUBAGENT=1):
 //   AIWB_PI_E2E=1 go test -count=1 -run TestE2E ./internal/pi/
 // This full Playwright run stays manual.
+//
+// Steps 21 to 26 are the scenario of concurrent branches (docs/concurrent-branches-plan.md, phase
+// 1): two branches of one chat in a turn at once, each stopped by itself; a subagent's result that
+// reaches its own branch while another is shown; a fork to a new chat from a running source; a
+// draft per branch; the cap on running turns (step 25 restarts the server with AIWB_CHAT_CAP=1 and
+// puts the default back at its end); a restart. They run on plain Claude chats on Haiku. A turn
+// that must keep running waits on a gate file, as step 18's subagent does.
+//
+// Step 27 is phase 2 of that plan: the tree popup, open during a run, is kept current by the
+// server's `tree` events with no fetch of the tree. Its rows show which branches work, a branch
+// started and a fork made elsewhere appear in it, a row's Stop stops that branch alone, a branch is
+// viewed by a double click on its end row while another runs, and its foot counts the agents
+// working in the folder. One plain Claude chat on Haiku, with the same gates.
+//
+// Step 27b closes two clauses of those phases: a branch is started from a row of the tree popup
+// while main runs (a double click on a finished turn's reply; no reply of the running turn offers
+// it), and two branches of one chat wait for approval at once and are answered each by itself, with
+// the header's alert and the popup's "needs approval" marks. Claude runs with --permission-mode
+// auto and asks for nothing by itself, so the step gives its chat a folder of its own whose project
+// settings (<folder>/.claude/settings.json) hold an "ask" rule for one harmless command, `ping`: a
+// rule comes before the mode, and the CLI then asks through the app. Nothing of the user's Claude
+// config is read for it or changed.
+//
+// Step 28 is phase 3 of that plan: a model and an effort per branch and per fork. A branch started
+// from a chat on Haiku is given Sonnet in the pending branch's toolbar (the picker is there although
+// the chat has started, the notice says the history is read again, Back drops the choice); it
+// answers on Sonnet while main keeps Haiku, and its choice is fixed from then on. A fork to a new
+// chat that has had no message of its own is given Sonnet by a PATCH, which starts its agent
+// again; after its first message that is fixed too. Neither choice becomes a default of new chats,
+// and a subagent of the Sonnet branch takes the branch's model. That an answer came from Sonnet is
+// read from the agent itself, not only from the app's record: the model the branch's Claude
+// process reports (GET …/context) and the one on the assistant lines of its Claude session file.
+// It is the one step that runs turns on Sonnet (three short ones and a subagent's), at effort low.
 //
 // Step 15 (Reveal in Finder) is checked by hand, not here. Exit code 0 only when every step passed.
 
@@ -71,6 +105,11 @@ const dir = (...p) => { const d = path.join(WORK, ...p); fs.mkdirSync(d, { recur
 // the Stop part is over, and again at the end, so a loop that outlived a failed run ends by itself.
 const STOP_GATE = path.join(WORK, "stop-while-waiting-gate");
 const openStopGate = () => { try { fs.writeFileSync(STOP_GATE, ""); } catch { /* the folder is gone */ } };
+// The gates of steps 21 to 27b: a turn (or a subagent) told to loop until its gate file exists runs
+// until the step makes the file. Each step opens its own at its end, and the run all of them again.
+const GATES = [];
+const newGate = (name) => { const f = path.join(WORK, `gate-${name}-${randomUUID().slice(0, 8)}`); GATES.push(f); return f; };
+const openGates = (...files) => { for (const f of files) try { fs.writeFileSync(f, ""); } catch { /* the folder is gone */ } };
 
 // The copy of the user's Cursor CLI config; every process the run starts inherits it.
 const CURSOR_CFG = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-cursor-"));
@@ -405,6 +444,91 @@ async function stopWhileWaiting(page, id, before, n, rowsStopped) {
     'the follow-up ran one turn: still one "Stopped." note, no result row, no error note', { turns: view.usage.turns, was: turns, notes: items.filter((i) => i.kind === "note") });
 }
 
+// ---------------------------------------------------------------- concurrent branches
+
+/** A chat's branch records from the snapshot: one per branch; the main branch's id is "main". */
+async function branchStates(id) { return (await state()).states.filter((r) => r.chat === id); }
+const branchRec = async (id, branch) => (await branchStates(id)).find((r) => r.branch === branch);
+const recBrief = (recs) => recs.map((r) => ({ branch: r.branch, status: r.status, turns: r.usage?.turns ?? 0, subsRunning: r.subsRunning ?? 0, subsOwed: r.subsOwed ?? 0 }));
+/** The items of one branch of a chat. */
+async function itemsOf(id, branch) { return (await get(`/api/chats/${id}/items?branch=${encodeURIComponent(branch)}`)).items; }
+const subsOf = async (id, branch) => (await get(`/api/chats/${id}/items?branch=${encodeURIComponent(branch)}`)).subagents;
+const hasUser = (items, text) => items.some((i) => i.kind === "user" && i.text === text);
+
+/** A message whose turn runs until `gate` exists. `word` starts it (a branch is named by its first message) and is the reply. */
+const gatedTask = (word, gate) => `${word} task. Run this exact shell command in the foreground with timeout 300000, wait for it to finish, and then reply with just the word ${word}: until [ -f ${gate} ]; do sleep 2; done; echo done`;
+/** A message whose turn waits on two gates, one after the other: with the first open the turn goes on (a tool result, the next tool call) without ending. */
+const gatedTask2 = (word, gate1, gate2) => `${word} task. Run these two exact shell commands one after the other, as two separate tool calls, each in the foreground with timeout 300000. Start the second only after the first has finished, and say nothing in between. First: until [ -f ${gate1} ]; do sleep 2; done; echo done` +
+  ` Second: until [ -f ${gate2} ]; do sleep 2; done; echo done When the second has finished, reply with just the word ${word}.`;
+/** A message that makes the agent spawn one subagent that runs until `gate` exists and then reports `word`; the agent's own turn ends at once. */
+const gatedSpawn = (word, gate) => `ALPHA task. Spawn one subagent via spawn_subagent, then end your turn right away without waiting for it. The subagent should run this exact shell command in the foreground with timeout 300000, wait for it to finish, and then reply with just ${word}: until [ -f ${gate} ]; do sleep 2; done; echo done`;
+
+/** Waits until a branch's gated turn (the one after `before` turns) is inside its shell loop. */
+async function waitGated(id, branch, gate, before) {
+  const what = `branch ${branch} is in a turn that waits on its gate (its shell loop runs)`;
+  await waitFor(what, async () => {
+    const r = await branchRec(id, branch);
+    if (r?.status === "error") throw new Fail(what, `the branch is in error: ${r.error}`);
+    if (r && (r.usage?.turns ?? 0) > before && !BUSY.has(r.status)) throw new Fail(what, { ended: recBrief([r]), reply: lastReply(await itemsOf(id, branch)) });
+    return (r && BUSY.has(r.status) && pgrep(gate).length > 0) || saw({ record: r ? recBrief([r]) : "(none)", loop: pgrep(gate) });
+  }, { timeout: TURN_TIMEOUT, every: 500 });
+}
+
+/** Waits for a branch's turn after `before` turns to end, and returns the branch's record. */
+async function waitBranchTurn(id, branch, before, what = `the turn on branch ${branch} ends`) {
+  return waitFor(what, async () => {
+    const r = await branchRec(id, branch);
+    if (r?.status === "error") throw new Fail(what, `the branch is in error: ${r.error}`);
+    return r && (r.usage?.turns ?? 0) > before && !BUSY.has(r.status) ? r : saw(r ? recBrief([r]) : "(no record)");
+  }, { timeout: TURN_TIMEOUT, every: 1000 });
+}
+
+/** Waits until a branch's own turn has ended while the one subagent it spawned still runs in its loop. */
+async function waitSpawned(id, branch, gate, before) {
+  const what = `the turn on branch ${branch} has ended while its subagent runs`;
+  await waitFor(what, async () => {
+    const r = await branchRec(id, branch);
+    if (r?.status === "error") throw new Fail(what, `the branch is in error: ${r.error}`);
+    return (r && (r.usage?.turns ?? 0) > before && r.status === "ready" && r.subsRunning === 1 && pgrep(gate).length > 0) || saw({ record: r ? recBrief([r]) : "(none)", loop: pgrep(gate) });
+  }, { timeout: TURN_TIMEOUT, every: 500 });
+}
+
+/**
+ * The models that wrote the answers of a Claude session, in order, from Claude's own session file
+ * (<Claude's config folder>/projects/<folder>/<session id>.jsonl; read, never written). A branch's
+ * or a fork's file starts with the copied history, so its first answers are the source's.
+ */
+function sessionModels(sessionId) {
+  const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects");
+  let dirs = [];
+  try { dirs = fs.readdirSync(root); } catch { /* no such folder */ }
+  for (const d of dirs) {
+    const text = readIfExists(path.join(root, d, `${sessionId}.jsonl`));
+    if (!text) continue;
+    const out = [];
+    for (const line of text.split("\n")) {
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m.type === "assistant" && m.message?.model && m.message.model !== "<synthetic>") out.push(m.message.model);
+    }
+    return out;
+  }
+  return [];
+}
+
+/** Reads the page in the background and keeps every change of what `read` answers. */
+function watchPage(read, every = 100) {
+  const seen = [];
+  let on = true, last = "";
+  const done = (async () => {
+    while (on) {
+      try { const v = await read(); const k = JSON.stringify(v); if (k !== last) { last = k; seen.push(v); } } catch { /* the page is loading */ }
+      await sleep(every);
+    }
+  })();
+  return { seen, stop: async () => { on = false; await done; } };
+}
+
 // ---------------------------------------------------------------- files
 
 const boardDir = (id) => path.join(HOME, "boards", id);
@@ -571,6 +695,91 @@ async function send(page, chatId, text) {
   await ta.press("Enter");
   await waitFor(`the message "${text.slice(0, 40)}" is sent`, async () => (await chatItems(chatId)).some((i) => i.kind === "user" && i.text === text));
   return before;
+}
+
+/** A plain Claude chat on Haiku with one short finished turn: the point steps 21 to 27b branch and fork from. `folder`: its working folder, when the step needs its own. */
+async function branchChat(page, folder) {
+  const id = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
+  await pickModelId(page, CLAUDE_MODEL_ID);
+  if (folder) await pickFolder(page, id, folder);
+  const v = await chatView(id);
+  check(v.agent === "claude" && v.model === "haiku" && !v.board, "a plain Claude chat on Haiku", v);
+  const b = await send(page, id, "Reply with just the word ONE.");
+  await waitTurn(id, b);
+  return id;
+}
+
+/** Types into the composer and presses Enter; answers the status and body of the POST …/messages it makes (the body names the branch the message was put on). */
+async function typeSend(page, id, text, { typed = false } = {}) {
+  const posted = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/chats/${id}/messages`, { timeout: 15_000 });
+  const ta = page.locator(".composer .composer-input");
+  if (!typed) await ta.fill(text);
+  await ta.press("Enter");
+  const res = await posted;
+  return { status: res.status(), body: await res.json().catch(() => ({})) };
+}
+
+/** Clicks a fork action of the chat's first reply. The actions show on hover and their texts are drawn by CSS, so they are found by class. */
+async function firstReplyAction(page, cls) {
+  const msg = page.locator(".thread > .msg.assistant").first();
+  await msg.hover();
+  await msg.locator(`.fk-act.${cls}`).click();
+}
+
+/** Starts a new branch at the chat's first reply with `text` as its first message: the hover action, the banner, Send. Answers the new branch's id. */
+async function branchFromFirstReply(page, id, text) {
+  await firstReplyAction(page, "k-branch");
+  const banner = page.locator(".fk-banner .fk-banner-text");
+  await banner.waitFor({ timeout: 10_000 });
+  const said = (await banner.innerText()).trim();
+  check(/^New branch after “.+”: your message starts it\. “.+” stays in the tree\.$/.test(said), `the banner tells of the new branch: ${said}`, said);
+  const res = await typeSend(page, id, text);
+  check(res.status === 200 && res.body.ok === true && !!res.body.branch && res.body.branch !== "main", "the Send is accepted and its answer names the new branch", res);
+  await waitFor("the banner goes and the view is on the new branch", async () => (await page.locator(".fk-banner").count()) === 0 && (await crumbText(page)) !== "" || saw({ banner: await page.locator(".fk-banner").count(), crumb: await crumbText(page) }), { timeout: 15_000 });
+  return res.body.branch;
+}
+
+/** The name of the branch the chat is viewed on, from the header ("" before the chat has split). */
+const crumbText = async (page) => ((await page.locator(".fk-crumb").count()) ? (await page.locator(".fk-crumb").innerText()).trim() : "");
+const waitCrumb = (page, re, what) => waitFor(what, async () => re.test(await crumbText(page)) || saw(`crumb: "${await crumbText(page)}"`), { timeout: 15_000 });
+
+/** The tree popup's rows, as drawn. endOf: the branch that ends at the row; link: the title of a fork's link row (such a row has no text). */
+const treeRows = (page) => page.locator(".fk-nav .fk-row").evaluateAll((els) => els.map((e) => ({
+  text: e.querySelector(".fk-text")?.textContent ?? "", cls: e.className, mark: e.querySelector(".fk-mark")?.textContent ?? "",
+  here: !!e.querySelector(".fk-here"), end: !!e.querySelector(".fk-end"), endOf: e.getAttribute("data-end") ?? "",
+  link: e.querySelector(".fk-fork-link")?.textContent ?? "", stop: !!e.querySelector("button.fk-stop"),
+})));
+/** The popup's row a branch ends at: a double click on it views the branch. */
+const endRow = (page, branch) => page.locator(`.fk-nav .fk-row[data-end="${branch}"]`);
+const rowBrief = (rows) => rows.map((r) => `${r.link ? `⑂ ${r.link}` : r.text.slice(0, 24)}${r.mark ? ` [${r.mark}]` : ""}${r.here ? " ●here" : r.end ? " end" : ""}`).join(" | ");
+
+/** Waits until the open popup's rows are as `ok` wants them and have stopped changing; answers them. */
+async function settledRows(page, what, ok = () => true) {
+  let last = "";
+  return waitFor(what, async () => {
+    const now = await treeRows(page), was = last;
+    last = JSON.stringify(now);
+    return last === was && (await ok(now)) ? now : saw(now);
+  }, { timeout: 15_000, every: 200 });
+}
+
+/**
+ * Views a branch of a chat through the tree popup: a double click on the row the branch ends at,
+ * which names the branch in `data-end`. ("● here" is on the end of the branch this page shows,
+ * whichever the server's current one is, so it does not tell the branches apart.) `open` opens the
+ * popup (the header's Tree button). The popup draws the tree the page keeps, fetched when the chat
+ * was selected and kept current by the server's `tree` events, so no request is waited for: the
+ * rows are read once they have settled.
+ */
+async function viewBranchVia(page, branch, open = () => page.locator(".fk-tree-btn").click()) {
+  await open();
+  const nav = page.locator(".fk-nav");
+  await nav.waitFor({ timeout: 10_000 });
+  const row = endRow(page, branch);
+  const rows = await settledRows(page, `the tree shows the row branch ${branch} ends at`, async () => (await row.count()) === 1);
+  await row.dblclick();
+  await waitFor("the double click closes the tree", async () => (await nav.count()) === 0, { timeout: 10_000 });
+  return rows;
 }
 
 async function canvasBox(page) {
@@ -1018,7 +1227,8 @@ async function run() {
     const s = await state();
     const moved = [...s.boards.filter((b) => [ids.arch, ids.scratch].includes(b.id)).map((b) => b.group), ...s.chats.filter((c) => [ids.chat1, ids.chat2, ids.chat3].includes(c.id)).map((c) => c.group)];
     check(moved.length === 5 && moved.every((g) => g === "__ungrouped__"), "its boards and chats are now ungrouped", moved);
-    check(await groupHead(page, "Research").count() === 0, "the group is gone from the sidebar", await page.locator(".side-tree").innerText());
+    // The sidebar is drawn from the server's push, which may come after the state read above.
+    await waitFor("the group is gone from the sidebar", async () => (await groupHead(page, "Research").count()) === 0 || saw(await page.locator(".side-tree").innerText()), { timeout: 10_000 });
 
     const expectedBoardChats = [ids.claudeBoard, ids.cursorBoard].filter(Boolean).length;
     const archChats = s.chats.filter((c) => c.board === ids.arch).map((c) => c.id);
@@ -1033,7 +1243,7 @@ async function run() {
     const left = archChats.filter((id) => fs.existsSync(path.join(HOME, "chats", id)));
     check(archChats.length === expectedBoardChats && left.length === 0, "its chats' folders are gone", { chats: archChats, left });
     check(!(await state()).chats.some((c) => archChats.includes(c.id)), "its chats are gone from the app", archChats);
-    check(await boardRow(page, "arch").count() === 0, "the board is gone from the sidebar", await page.locator(".side-tree").innerText());
+    await waitFor("the board is gone from the sidebar", async () => (await boardRow(page, "arch").count()) === 0 || saw(await page.locator(".side-tree").innerText()), { timeout: 10_000 });
   });
 
   await step(16, "The Cursor CLI config has the two deny rules once after two server starts", async () => {
@@ -1296,7 +1506,7 @@ async function run() {
     const ta = page.locator(".composer .composer-input");
     await ta.pressSequentially(text);
     const chatJSON = path.join(HOME, "chats", ids.drafty, "chat.json");
-    await waitFor("chat.json has the draft", async () => readJSON(chatJSON).draft?.text === text || saw(readJSON(chatJSON).draft), { timeout: 5000 });
+    await waitFor("chat.json has the draft", async () => readJSON(chatJSON).drafts?.main?.text === text || saw(readJSON(chatJSON).drafts?.main), { timeout: 5000 });
 
     await openChat(page, ids.claudeSubs);
     await waitFor("another chat's composer is empty", async () => (await ta.innerText()).trim() === "" || saw(await ta.innerText()), { timeout: 5000 });
@@ -1311,8 +1521,942 @@ async function run() {
 
     await ta.press("Enter");
     await waitFor("the message is sent", async () => (await chatItems(ids.drafty)).some((i) => i.kind === "user" && i.text === text), { timeout: 30_000 });
-    await waitFor("the draft is gone from chat.json", async () => readJSON(chatJSON).draft === undefined || saw(readJSON(chatJSON).draft), { timeout: 5000 });
+    await waitFor("the draft is gone from chat.json", async () => readJSON(chatJSON).drafts?.main === undefined || saw(readJSON(chatJSON).drafts?.main), { timeout: 5000 });
     check((await ta.innerText()).trim() === "", "the composer is empty", await ta.innerText());
+  });
+
+  // ---- Concurrent branches (docs/concurrent-branches-plan.md, phase 1). Each step makes its own
+  // chat. "Approved separately" is step 27b's: it needs a folder whose project settings make Claude
+  // ask, as with --permission-mode auto it asks for nothing by itself.
+  const CAP_TEXT = "this chat already has 1 branch working; wait for it to finish or stop it";
+  const composerText = async () => (await page.locator(".composer .composer-input").innerText()).trim();
+  const headSub = async () => (await page.locator(".chat-head-sub").innerText()).replace(/\s+/g, " ").trim();
+  const alertText = async () => ((await page.locator(".fk-alert").count()) ? (await page.locator(".fk-alert").first().innerText()).trim() : "");
+  /** The selected chat's sidebar row: its state class and second line. */
+  const sideRow = () => page.locator(".side-row.is-chat.on").evaluate((e) => ({ st: [...e.classList].find((c) => c.startsWith("st-")) ?? "", sub: e.querySelector(".side-sub")?.textContent ?? "" }));
+  /** A request of the API that changes something, made as the page's client (not by the page). */
+  const call = async (method, p, body) => {
+    const r = await fetch(BASE + p, {
+      method, headers: { "Content-Type": "application/json", "X-AIWB-Client": clientIds.get(page) ?? "" }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  const postMessage = (id, branch, text) => call("POST", `/api/chats/${id}/messages?branch=${encodeURIComponent(branch)}`, { text, context: "" });
+
+  await step(21, "Two branches of one chat work at once; viewing one sends nothing; Stop stops only the branch shown, the other ends by itself", async () => {
+    const gateA = newGate("21a"), gateB = newGate("21b");
+    try {
+      const id = ids.two = await branchChat(page);
+      const a0 = await send(page, id, gatedTask("ALPHA", gateA));
+      await waitGated(id, "main", gateA, a0);
+
+      // The running branch's finished turn keeps its actions; nothing in the running turn offers one.
+      const acts = await page.locator(".thread > .msg.assistant").evaluateAll((els) => els.map((e) => [...e.querySelectorAll(".fk-act")].map((b) => b.className.replace("fk-act ", ""))));
+      check(acts.length > 0 && acts[0].includes("k-branch") && acts[0].includes("k-fork") && acts.slice(1).every((a) => !a.includes("k-branch") && !a.includes("k-fork")),
+        "the first reply offers a branch and a fork while main runs; no reply of the running turn does", acts);
+      const sendBtn = page.locator(".composer button.send:not(.stop)"), stop = page.locator(".composer button.send.stop");
+      check(await sendBtn.isDisabled() && await stop.isVisible(), "on the running branch Send is greyed out and Stop shows", { sendDisabled: await sendBtn.isDisabled(), stop: await stop.isVisible() });
+
+      // A second branch from the finished point, while main runs.
+      await firstReplyAction(page, "k-branch");
+      const banner = page.locator(".fk-banner .fk-banner-text");
+      await banner.waitFor({ timeout: 10_000 });
+      const said = (await banner.innerText()).trim();
+      check(/^New branch after “.+”: your message starts it\. “.+” stays in the tree\.$/.test(said), `the banner tells of the new branch: ${said}`, said);
+      const ta = page.locator(".composer .composer-input");
+      await ta.fill(gatedTask("BRAVO", gateB));
+      check(await sendBtn.isEnabled() && await stop.isVisible(), "Send is enabled for the new branch although its source runs, and Stop still shows", { sendEnabled: await sendBtn.isEnabled(), stop: await stop.isVisible() });
+      const res = await typeSend(page, id, "", { typed: true });
+      const B = res.body.branch;
+      check(res.status === 200 && !!B && B !== "main", "the Send is accepted and its answer names the new branch", res);
+      await waitGated(id, B, gateB, 0);
+      const v = await chatView(id), recs = await branchStates(id);
+      check(v.branches === 2 && v.working === 2 && v.branch === B, "the chat has 2 branches, both working; the new one is the branch last sent to", { branches: v.branches, working: v.working, branch: v.branch });
+      check(recs.length === 2 && recs.every((r) => BUSY.has(r.status)), "the snapshot has two busy records, main's and the new branch's", recBrief(recs));
+      check(pgrep(gateA).length > 0 && pgrep(gateB).length > 0, "both shell loops run", { a: pgrep(gateA), b: pgrep(gateB) });
+      await waitCrumb(page, /^BRAVO/, "the view moved to the new branch (the crumb names it)");
+      const alert = page.locator("button.fk-alert.quiet");
+      await waitFor('the header says "1 other branch working"', async () => (await alertText()) === "1 other branch working" || saw(await alertText()), { timeout: 10_000 });
+      log(`    crumb "${await crumbText(page)}", header alert "${await alertText()}", sidebar row ${JSON.stringify(await sideRow())}`);
+
+      // The tree marks both; a double click on main's end views main and sends nothing.
+      const sent = [];
+      const onRequest = (r) => { if (r.method() !== "GET") sent.push(`${r.method()} ${new URL(r.url()).pathname}${new URL(r.url()).search}`); };
+      page.on("request", onRequest);
+      const rows = await viewBranchVia(page, "main", async () => {
+        await alert.click(); // the alert opens the tree
+        await waitFor("the tree marks two rows as working", async () => { const r = await treeRows(page); return r.filter((x) => /\bfk-run\b/.test(x.cls) && x.mark === "working").length === 2 || saw(r); }, { timeout: 15_000 });
+      });
+      log(`    tree rows: ${rowBrief(rows)}`);
+      check(rows.filter((r) => /\bfk-run\b/.test(r.cls)).map((r) => r.endOf).sort().join() === ["main", B].sort().join(), "the working marks are on the two branches' end rows", rows);
+      check(rows.filter((r) => r.here).map((r) => r.endOf).join() === B, '"● here" is on the end of the branch the page shows, the new one', rows);
+      await waitCrumb(page, /^ALPHA/, "the crumb names main after the double click on its end");
+      await sleep(500);
+      page.off("request", onRequest);
+      check(!sent.some((x) => /\/messages/.test(x)), `viewing made no POST …/messages (it sent: ${sent.join(", ") || "nothing"})`, sent);
+      const after = await chatView(id);
+      check(after.branch === B && after.working === 2, "viewing left the server's current branch and both turns as they were", { branch: after.branch, working: after.working });
+      await waitFor('on main the header says "1 other branch working" too', async () => (await alertText()) === "1 other branch working" || saw(await alertText()), { timeout: 10_000 });
+
+      // Stop on main stops main only. A turn the user stops ends as "ready" with a "Stopped." note
+      // (the status "stopped" is for a turn the agent's process died in: step 26).
+      await stop.click();
+      const ra1 = await waitFor("main's turn is stopped: its record is not busy any more", async () => { const r = await branchRec(id, "main"); return !BUSY.has(r.status) ? r : saw(recBrief([r])); }, { timeout: 30_000 });
+      await waitFor('main\'s items get one "Stopped." note', async () => stoppedNotes(await itemsOf(id, "main")) === 1 || saw((await itemsOf(id, "main")).filter((i) => i.kind === "note")), { timeout: 15_000 });
+      await sleep(2000);
+      const mid = await branchStates(id);
+      check(mid.find((r) => r.branch === "main").status === "ready" && BUSY.has(mid.find((r) => r.branch === B).status) && pgrep(gateB).length > 0 && stoppedNotes(await itemsOf(id, B)) === 0,
+        "after Stop on main the new branch is still busy in its loop, with no note of the Stop", { records: recBrief(mid), loopB: pgrep(gateB) });
+      await waitFor("main's loop has ended with its turn", async () => pgrep(gateA).length === 0 || saw(pgrep(gateA).map((pid) => `${pid} ${argsOf(pid).slice(0, 80)}`)), { timeout: 15_000 });
+      const note = page.locator(".thread .note", { hasText: /^Stopped\.$/ });
+      await waitFor('main\'s thread shows "Stopped." and its composer no Stop', async () => (await note.count()) === 1 && (await stop.count()) === 0 || saw({ notes: await note.count(), stop: await stop.count() }), { timeout: 10_000 });
+      check((await alertText()) === "1 other branch working" && (await chatView(id)).working === 1, 'the header still says "1 other branch working"', { alert: await alertText(), working: (await chatView(id)).working });
+
+      // The other branch ends by itself, on its own branch.
+      openGates(gateB);
+      const rb = await waitBranchTurn(id, B, 0);
+      const itemsB = await itemsOf(id, B), itemsA = await itemsOf(id, "main");
+      check(rb.status === "ready" && /bravo/i.test(lastReply(itemsB)), "the new branch's turn ended with its reply on its own branch", { record: recBrief([rb]), reply: lastReply(itemsB) });
+      const ra = await branchRec(id, "main");
+      check(ra.status === "ready" && (ra.usage?.turns ?? 0) === (ra1.usage?.turns ?? 0) && stoppedNotes(itemsA) === 1 && !itemsA.some((i) => i.kind === "text" && /bravo/i.test(i.text ?? "")),
+        "main stays as the Stop left it and got nothing of it", { record: recBrief([ra]), was: recBrief([ra1]) });
+      await waitFor("the header alert goes once no other branch works", async () => (await alertText()) === "" || saw(await alertText()), { timeout: 10_000 });
+      check(!(await chatView(id)).working, "the chat has no working branch", (await chatView(id)).working);
+    } finally { openGates(gateA, gateB); }
+  });
+
+  await step(22, "A subagent's result reaches the branch that spawned it while another branch is shown", async () => {
+    const gateS = newGate("22s");
+    try {
+      const id = ids.subBranch = await branchChat(page);
+      const word = `RESULT-${token()}`;
+      const a0 = await send(page, id, `${gatedSpawn(word, gateS)} When its result arrives, reply with just that result.`);
+      await waitSpawned(id, "main", gateS, a0);
+      // Another branch, B, is made and shown before the subagent finishes.
+      const B = await branchFromFirstReply(page, id, "BRAVO task. Reply with just the word TWO.");
+      const rb0 = await waitBranchTurn(id, B, 0);
+      await waitCrumb(page, /^BRAVO/, "branch B is the one shown");
+      const ra0 = await branchRec(id, "main");
+      check(ra0.status === "ready" && ra0.subsRunning === 1, "branch A (main) is idle and its subagent still runs", recBrief([ra0]));
+      check(await page.locator(".thread .sub-result").count() === 0 && await page.locator(".thread .subagent").count() === 0, "B's thread shows no subagent of A's", await page.locator(".thread").innerText());
+
+      const ui = watchPage(async () => ({ crumb: (await crumbText(page)).slice(0, 5), alert: await alertText(), ...(await sideRow()) }));
+      openGates(gateS);
+      const ra = await waitFor("A's result has reached A's agent and its delivery turn has ended", async () => {
+        const r = await branchRec(id, "main"), subs = await subsOf(id, "main");
+        const ok = (r.usage?.turns ?? 0) > (ra0.usage?.turns ?? 0) && !BUSY.has(r.status) && !r.subsRunning && !r.subsOwed && subs.length === 1 && subs[0].delivery === "sent";
+        return ok ? r : saw({ record: recBrief([r]), subs: subs.map((x) => [x.id, x.status, x.delivery]) });
+      }, { timeout: TURN_TIMEOUT, every: 300 });
+      await sleep(300);
+      await ui.stop();
+      log(`    the page while A's result was delivered: ${ui.seen.map((e) => `${e.crumb}/${e.alert || "-"}/${e.st}/${e.sub}`).join(" → ")} (crumb/alert/row state/row line)`);
+      check(ui.seen.every((e) => e.crumb === "BRAVO"), "B stayed the branch shown", ui.seen);
+      check(ui.seen.some((e) => e.alert === "1 other branch working"), 'while A\'s delivery turn ran, the header on B said "1 other branch working"', ui.seen);
+      check(ui.seen.some((e) => e.sub === "1 branch working" && e.st === "st-thinking"), "and the sidebar row showed the chat as working", ui.seen);
+      const itemsA = await itemsOf(id, "main"), itemsB = await itemsOf(id, B);
+      check(resultItems(itemsA).length === 1 && resultItems(itemsB).length === 0, "the result row is in A's items and not in B's", { a: itemsA.map((i) => i.kind), b: itemsB.map((i) => i.kind) });
+      check(ra.usage.turns === ra0.usage.turns + 1, `A's own turn count grew by the delivery turn (${ra0.usage.turns} → ${ra.usage.turns})`, recBrief([ra]));
+      const lastA = itemsA.slice(itemsA.map((i) => i.kind).lastIndexOf("subresult") + 1).filter((i) => i.kind === "text").map((i) => i.text ?? "").join("\n").trim();
+      check(lastA.includes(word), "A's agent answered with the subagent's result", lastA);
+      const rb = await branchRec(id, B);
+      check((rb.usage?.turns ?? 0) === (rb0.usage?.turns ?? 0) && rb.status === "ready" && !rb.subsRunning && !rb.subsOwed, "B ran no turn and has no subagent counts", recBrief([rb]));
+      check((await chatView(id)).branch === B, "B is still the branch last sent to", (await chatView(id)).branch);
+      check(await page.locator(".thread .sub-result").count() === 0, "B's thread still shows no result row", await page.locator(".thread .sub-result").allInnerTexts());
+
+      // A, viewed afterwards, shows the row.
+      await viewBranchVia(page, "main");
+      await waitCrumb(page, /^ALPHA/, "A is shown after a double click on its end in the tree");
+      const rowsA = await waitFor('A\'s thread shows the result row "sent to the agent"', async () => {
+        const now = (await page.locator(".thread .sub-result").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
+        return now.length === 1 && /sent to the agent$/.test(now[0]) ? now : saw(now);
+      }, { timeout: 15_000 });
+      log(`    result row on A: ${rowsA[0]}`);
+    } finally { openGates(gateS); }
+  });
+
+  await step(23, "A fork to a new chat from a branch whose turn runs: the copy answers, the source runs on", async () => {
+    const gateA = newGate("23a");
+    try {
+      const id = ids.forkSource = await branchChat(page);
+      const a0 = await send(page, id, gatedTask("ALPHA", gateA));
+      await waitGated(id, "main", gateA, a0);
+      const before = new Set((await state()).chats.map((c) => c.id));
+      const watch = watchChat(id);
+      await firstReplyAction(page, "k-fork");
+      const fork = await waitFor("a new chat is made and selected", async () => { const s = (await sel(page)).chat; return s && !before.has(s) ? s : saw(await sel(page)); }, { timeout: 30_000 });
+      const fv = await chatView(fork);
+      check(fv.forkedFrom === id && fv.forkedBranch === "main" && fv.forkedAt > 0 && fv.agent === "claude" && fv.model === "haiku", "the new chat names its source, the branch and the point; it is a Claude chat on Haiku",
+        { forkedFrom: fv.forkedFrom, forkedBranch: fv.forkedBranch, forkedAt: fv.forkedAt, agent: fv.agent, model: fv.model });
+      await page.locator(".thread .fk-forked").waitFor({ timeout: 10_000 });
+      await page.locator(".thread .prefix-end").waitFor({ timeout: 10_000 });
+      const users = await page.locator(".thread .msg.user").allInnerTexts();
+      check(users.length === 1 && /word ONE/.test(users[0]), "the fork shows the copied finished turn and nothing of the running one", users);
+      log(`    fork note: ${(await page.locator(".thread .fk-forked").innerText()).replace(/\s+/g, " ").trim()}`);
+      const f0 = await send(page, fork, "Reply with just the word FORKED.");
+      check(BUSY.has((await branchRec(id, "main")).status), "the source is busy when the fork's message is sent", recBrief(await branchStates(id)));
+      const { items } = await waitTurn(fork, f0);
+      check(/forked/i.test(lastReply(items)), "the fork's agent answers", lastReply(items));
+      await watch.stop();
+      const src = await branchRec(id, "main");
+      check(BUSY.has(src.status) && pgrep(gateA).length > 0 && watch.seen.every((e) => BUSY.has(e.status) && e.turns === a0),
+        "the source was busy in the same turn the whole time", { record: recBrief([src]), loop: pgrep(gateA), seen: watch.seen });
+      check(!hasUser(await itemsOf(id, "main"), "Reply with just the word FORKED."), "the fork's message is not in the source", "it is");
+      openGates(gateA);
+      const end = await waitBranchTurn(id, "main", a0);
+      check(end.status === "ready" && /alpha/i.test(lastReply(await itemsOf(id, "main"))), "the source's turn ends by itself once its gate opens", recBrief([end]));
+    } finally { openGates(gateA); }
+  });
+
+  await step(24, "A draft is kept per branch: A's survives a Send on B, which clears only B's", async () => {
+    const id = ids.draftBranches = await branchChat(page);
+    const B = await branchFromFirstReply(page, id, "BRAVO task. Reply with just the word TWO.");
+    await waitBranchTurn(id, B, 0);
+    const chatJSON = path.join(HOME, "chats", id, "chat.json");
+    const drafts = () => readJSON(chatJSON).drafts ?? {};
+    const ta = page.locator(".composer .composer-input");
+
+    // A is main: nothing was sent on it after the point B starts at, so it is still named "main".
+    await viewBranchVia(page, "main");
+    await waitCrumb(page, /^main$/, "A (main) is shown");
+    const textA = "ALPHA draft, typed on A and not sent.";
+    await ta.pressSequentially(textA);
+    await waitFor("chat.json has A's draft as drafts.main", async () => drafts().main?.text === textA || saw(drafts()), { timeout: 5000 });
+
+    const seen = await viewBranchVia(page, B);
+    check(seen.filter((r) => r.here).map((r) => r.endOf).join() === "main" && (await chatView(id)).branch === B, 'with A shown the tree has "● here" on A\'s end, although B is the branch last sent to', seen);
+    await waitCrumb(page, /^BRAVO/, "B is shown");
+    await waitFor("B's composer is empty", async () => (await composerText()) === "" || saw(await composerText()), { timeout: 5000 });
+    const textB = "Reply with just the word THREE.";
+    await ta.pressSequentially(textB);
+    await waitFor(`chat.json has B's draft as drafts.${B}`, async () => drafts()[B]?.text === textB && drafts().main?.text === textA || saw(drafts()), { timeout: 5000 });
+    const b0 = (await branchRec(id, B)).usage?.turns ?? 0;
+    const res = await typeSend(page, id, textB, { typed: true });
+    check(res.status === 200 && res.body.branch === B, "the Send goes to B", res);
+    await waitFor("the Send clears B's draft in chat.json and leaves A's", async () => drafts()[B] === undefined && drafts().main?.text === textA || saw(drafts()), { timeout: 5000 });
+    const rb = await waitBranchTurn(id, B, b0);
+    check(/three/i.test(lastReply(await itemsOf(id, B))), "B answers", lastReply(await itemsOf(id, B)));
+    check(await composerText() === "", "B's composer is empty after the Send", await composerText());
+
+    await viewBranchVia(page, "main");
+    await waitCrumb(page, /^main$/, "A is shown again");
+    await waitFor("A's composer holds A's text", async () => (await composerText()) === textA || saw(await composerText()), { timeout: 5000 });
+    const recs = await branchStates(id);
+    check(drafts().main?.text === textA && drafts()[B] === undefined, "chat.json still has A's draft and none for B", drafts());
+    check(recs.find((r) => r.branch === "main").draft?.text === textA && !recs.find((r) => r.branch === B).draft && (await chatView(id)).hasDraft === true,
+      "the records say the same: A's has the draft, B's has none, the chat has a draft", recs.map((r) => ({ branch: r.branch, draft: r.draft })));
+    check(!hasUser(await itemsOf(id, "main"), textB) && rb.status === "ready", "nothing was sent on A", recBrief(recs));
+  });
+
+  await step(25, "At the cap a Send is refused and keeps its text; a subagent result that comes then stays owed and goes with the next message", async () => {
+    const gateS = newGate("25s"), gateB = newGate("25b");
+    try {
+      // One working branch a chat (the test-only override, read at the server's start).
+      await stopServer();
+      await startServer({ ...process.env, AIWB_CHAT_CAP: "1" });
+      await page.reload();
+      await page.locator(".side").waitFor();
+      const id = ids.capped = await branchChat(page);
+      const word = `RESULT-${token()}`;
+      // A (main) spawns a subagent and ends its turn: A is idle, and a subagent that only runs holds no slot.
+      const a0 = await send(page, id, gatedSpawn(word, gateS));
+      await waitSpawned(id, "main", gateS, a0);
+      // B takes the chat's one slot: its Send would be refused if A's running subagent held it.
+      const B = await branchFromFirstReply(page, id, gatedTask("BRAVO", gateB));
+      await waitGated(id, B, gateB, 0);
+      const v = await chatView(id), ra = await branchRec(id, "main");
+      check(v.working === 1 && v.branches === 2 && ra.status === "ready" && ra.subsRunning === 1, "one branch of the chat works, the cap; A is idle and its subagent runs", { working: v.working, branches: v.branches, records: recBrief(await branchStates(id)) });
+
+      // A Send on A is refused: the server's text shows and the message stays.
+      await viewBranchVia(page, "main");
+      await waitCrumb(page, /^ALPHA/, "A is shown");
+      const ta = page.locator(".composer .composer-input");
+      const later = "Reply with just the result the subagent reported.";
+      const refused = await typeSend(page, id, later);
+      check(refused.status === 429 && refused.body.code === "cap", "the Send on A gets 429 with code cap", refused);
+      const err = page.locator(".composer .composer-err");
+      await waitFor("the composer shows the server's text", async () => (await err.count()) > 0 && (await err.innerText()).trim() === CAP_TEXT || saw(await page.locator(".composer").innerText()), { timeout: 10_000 });
+      log(`    ${(await err.innerText()).trim()}`);
+      await sleep(500);
+      check(await composerText() === later, "the composer still holds the message", await composerText());
+      check(!hasUser(await itemsOf(id, "main"), later), "the message was not put on A", "it is in A's items");
+      const direct = await postMessage(id, "main", "hi");
+      check(direct.status === 429 && direct.body.code === "cap" && direct.body.error === CAP_TEXT, "a POST …/messages?branch=main gets 429, code cap, with that text", direct);
+      const own = await postMessage(id, B, "hi");
+      check(own.status === 409 && own.body.code === "busy", "a POST to the working branch itself gets 409 busy, not the cap", own);
+      // A new branch is refused the same way, and its banner stays.
+      const kept = await composerText();
+      await firstReplyAction(page, "k-branch");
+      await page.locator(".fk-banner").waitFor({ timeout: 10_000 });
+      const refused2 = await typeSend(page, id, "", { typed: true });
+      check(refused2.status === 429 && refused2.body.code === "cap", "a Send that would start a third branch gets 429 with code cap", refused2);
+      await waitFor("the text shows again", async () => (await err.count()) > 0 && (await err.innerText()).trim() === CAP_TEXT || saw(await page.locator(".composer").innerText()), { timeout: 10_000 });
+      await sleep(500);
+      check(await page.locator(".fk-banner").count() === 1 && await composerText() === kept, "the pending-branch banner and the message stay", { banner: await page.locator(".fk-banner").count(), text: await composerText() });
+      check((await chatView(id)).branches === 2, "no branch was made", (await chatView(id)).branches);
+      await page.locator(".fk-banner button", { hasText: "Back" }).click();
+      await waitFor("Back drops the pending branch; A is shown with the message", async () => {
+        const now = { banner: await page.locator(".fk-banner").count(), crumb: await crumbText(page), text: await composerText() };
+        return now.banner === 0 && /^ALPHA/.test(now.crumb) && now.text === kept || saw(now);
+      }, { timeout: 10_000 });
+
+      // The subagent ends while the chat is at the cap: its result is owed on A and starts no turn.
+      const ra0 = await branchRec(id, "main");
+      openGates(gateS);
+      await waitFor("the result is owed on A (subsOwed in A's record)", async () => { const r = await branchRec(id, "main"); return r.subsOwed === 1 && !r.subsRunning || saw(recBrief([r])); }, { timeout: TURN_TIMEOUT, every: 300 });
+      const waiting = page.locator(".thread .typing.waiting");
+      await waitFor("A's thread says the result is not sent yet", async () => (await waiting.count()) > 0 && /1 subagent result not sent yet/.test(await waiting.innerText()) || saw(await page.locator(".thread").innerText()), { timeout: 10_000 });
+      log(`    ${(await waiting.innerText()).trim()}`);
+      const owed = async (when) => {
+        const r = await branchRec(id, "main");
+        if (r.subsOwed !== 1 || r.status !== "ready" || (r.usage?.turns ?? 0) !== (ra0.usage?.turns ?? 0) || !(await waiting.count())) {
+          throw new Fail(`${when}: the result stays owed on A and shown as owed, and no turn starts on A`, { record: recBrief([r]), was: recBrief([ra0]), shown: await waiting.count() });
+        }
+      };
+      for (const until = Date.now() + 8000; Date.now() < until; await sleep(500)) await owed("for 8 s at the cap");
+      log("    ok  for 8 s at the cap: the result stays owed on A and shown as owed, and no turn starts on A");
+      const row = await sideRow();
+      check(/^st-(thinking|writing|tool)$/.test(row.st), "the sidebar row shows the chat as working (B works)", row);
+
+      // B ends: the slot is free, and the result still waits for the user's next message.
+      openGates(gateB);
+      await waitBranchTurn(id, B, 0);
+      for (const until = Date.now() + 4000; Date.now() < until; await sleep(500)) await owed("for 4 s after B's turn ended");
+      log("    ok  for 4 s after B's turn ended: still owed, no turn started by itself");
+      const sent = await typeSend(page, id, "", { typed: true });
+      check(sent.status === 200 && sent.body.branch === "main", "the same message is accepted on A now", sent);
+      const ra1 = await waitBranchTurn(id, "main", ra0.usage?.turns ?? 0);
+      const itemsA = await itemsOf(id, "main"), subs = await subsOf(id, "main");
+      check(!ra1.subsOwed && subs.length === 1 && subs[0].delivery === "sent" && resultItems(itemsA).length === 1, "the result went with it: nothing owed, the subagent's result is sent, A has its row",
+        { record: recBrief([ra1]), subs: subs.map((x) => [x.id, x.status, x.delivery]), kinds: itemsA.map((i) => i.kind) });
+      check(lastReply(itemsA).includes(word), "A's agent answers with the subagent's result", lastReply(itemsA));
+      await waitFor("the refusal text and the owed line are gone", async () => (await err.count()) === 0 && (await waiting.count()) === 0 || saw(await page.locator(".composer").innerText()), { timeout: 10_000 });
+    } finally {
+      openGates(gateS, gateB);
+      // The default caps again.
+      await stopServer();
+      await startServer();
+      await page.reload();
+      await page.locator(".side").waitFor();
+    }
+  });
+
+  await step(26, "After a restart both branches show as stopped, each by itself; a Send on one continues only that one", async () => {
+    const gateA = newGate("26a"), gateB = newGate("26b");
+    try {
+      const id = ids.restarted = await branchChat(page);
+      const a0 = await send(page, id, gatedTask("ALPHA", gateA));
+      await waitGated(id, "main", gateA, a0);
+      const B = await branchFromFirstReply(page, id, gatedTask("BRAVO", gateB));
+      await waitGated(id, B, gateB, 0);
+      check((await branchStates(id)).every((r) => BUSY.has(r.status)) && (await chatView(id)).working === 2, "both branches are in a turn when the server stops", recBrief(await branchStates(id)));
+      await stopServer();
+      openGates(gateA, gateB); // what the stopped server left of the two loops ends
+      await startServer();
+      await page.reload();
+      await page.locator(".side").waitFor();
+      await waitFor("the chat is selected after the restart", async () => (await sel(page)).chat === id || saw(await sel(page)));
+      const recs = await branchStates(id), v = await chatView(id);
+      check(recs.length === 2 && recs.every((r) => r.status === "stopped") && !v.working, "both records are stopped and no branch works", { records: recBrief(recs), working: v.working });
+
+      // Each branch, viewed, shows its own stopped state.
+      await waitCrumb(page, /^BRAVO/, "B, the branch last sent to, is shown after the reload");
+      await waitFor('B\'s header says "Stopped"', async () => /Stopped/.test(await headSub()) || saw(await headSub()), { timeout: 10_000 });
+      const row = await sideRow();
+      check(row.sub === "Stopped" && row.st === "st-stopped", 'the sidebar row says "Stopped"', row);
+      check((await alertText()) === "", "the header has no alert about another branch", await alertText());
+      await viewBranchVia(page, "main");
+      await waitCrumb(page, /^ALPHA/, "A is shown");
+      await waitFor('A\'s header says "Stopped"', async () => /Stopped/.test(await headSub()) || saw(await headSub()), { timeout: 10_000 });
+      check(await page.locator(".composer button.send.stop").count() === 0, "A's composer shows no Stop", "it shows Stop");
+
+      // A Send on B continues B alone.
+      const seen = await viewBranchVia(page, B);
+      check(seen.filter((r) => r.here).map((r) => r.endOf).join() === "main" && seen.filter((r) => /\bfk-stopped\b/.test(r.cls)).map((r) => r.endOf).sort().join() === ["main", B].sort().join(),
+        'with A shown the tree has "● here" on A\'s end and marks both ends as stopped', seen);
+      await waitCrumb(page, /^BRAVO/, "B is shown again");
+      const b0 = (await branchRec(id, B)).usage?.turns ?? 0, turnsA = (await branchRec(id, "main")).usage?.turns ?? 0;
+      const text = "Reply with just the word BACK.";
+      const res = await typeSend(page, id, text);
+      check(res.status === 200 && res.body.branch === B, "the Send goes to B", res);
+      const rb = await waitBranchTurn(id, B, b0);
+      check(rb.status === "ready" && /back/i.test(lastReply(await itemsOf(id, B))), "B answers", { record: recBrief([rb]), reply: lastReply(await itemsOf(id, B)) });
+      const ra = await branchRec(id, "main");
+      check(ra.status === "stopped" && (ra.usage?.turns ?? 0) === turnsA && !hasUser(await itemsOf(id, "main"), text), "A's record stays stopped: nothing ran on A", recBrief([ra]));
+      await waitFor('B\'s header no longer says "Stopped"', async () => !/Stopped/.test(await headSub()) || saw(await headSub()), { timeout: 10_000 });
+      await viewBranchVia(page, "main");
+      await waitCrumb(page, /^ALPHA/, "A is shown");
+      await waitFor('A\'s header still says "Stopped"', async () => /Stopped/.test(await headSub()) || saw(await headSub()), { timeout: 10_000 });
+    } finally { openGates(gateA, gateB); }
+  });
+
+  // ---- Concurrent branches, phase 2: the tree popup while branches work. Not here, as unit tests
+  // cover them: the marks of an error, of a turn cut by a restart and of running subagents, and the
+  // model note. The approval mark and a branch started from a row are step 27b's.
+  await step(27, "The tree popup stays current during a run: marks, Stop from a row, a fork link, the folder hint, no tree fetch", async () => {
+    const gateA1 = newGate("27a1"), gateA2 = newGate("27a2"), gateB = newGate("27b");
+    const nav = page.locator(".fk-nav"), treeBtn = page.locator(".fk-tree-btn");
+    const stop = page.locator(".composer button.send.stop");
+    const isRun = (r) => /\bfk-run\b/.test(r.cls), isReply = (r) => /\bk-text\b/.test(r.cls);
+    const hereOf = (rows) => rows.filter((r) => r.here).map((r) => r.endOf).join();
+    // What the page itself asks of the server about this chat from the popup's first opening on.
+    let id = "";
+    const treeGets = [], posts = [];
+    const onRequest = (r) => {
+      const u = new URL(r.url());
+      if (r.method() === "GET" && u.pathname === `/api/chats/${id}/tree`) treeGets.push(new Date().toISOString());
+      if (r.method() === "POST" && u.pathname === `/api/chats/${id}/messages`) posts.push(u.pathname + u.search);
+    };
+    const noFetch = (when) => check(treeGets.length === 0, `${when}: the page has made no GET …/tree for the chat since the popup first opened`, treeGets);
+    try {
+      id = ids.live = await branchChat(page);
+      const at = (await itemsOf(id, "main")).findIndex((i) => i.kind === "end") + 1;
+      check(at > 0, `the first turn ends at item count ${at}: the point the branch and the fork start from`, (await itemsOf(id, "main")).map((i) => i.kind));
+      // A, on main: a turn that waits on two gates, one after the other.
+      const textA = gatedTask2("ALPHA", gateA1, gateA2);
+      const a0 = await send(page, id, textA);
+      await waitGated(id, "main", gateA1, a0);
+
+      // The popup, opened while main works: the tree was fetched when the chat was selected.
+      page.on("request", onRequest);
+      await treeBtn.click();
+      await nav.waitFor({ timeout: 10_000 });
+      let rows = await settledRows(page, "the tree marks one row as working", (r) => r.filter(isRun).length === 1);
+      log(`    tree rows: ${rowBrief(rows)}`);
+      const runA = rows.find(isRun);
+      check(runA.mark === "working" && runA.stop && runA.endOf === "main" && runA.here, 'main\'s end row is marked "working", has Stop, and is "● here"', rows);
+
+      // B starts elsewhere (the API) with the popup open.
+      const textB = gatedTask("BRAVO", gateB);
+      const made = await call("POST", `/api/chats/${id}/messages`, { text: textB, context: "", target: { branch: "main", at, new: true } });
+      const B = made.body.branch;
+      check(made.status === 200 && !!B && B !== "main", "a message sent through the API starts a new branch at the first reply", made);
+      await waitGated(id, B, gateB, 0);
+      rows = await settledRows(page, "the open popup gets B's row: two rows are marked as working", (r) => r.filter(isRun).length === 2 && r.some((x) => x.endOf === B));
+      log(`    tree rows: ${rowBrief(rows)}`);
+      const rowB = rows.find((r) => r.endOf === B);
+      check(isRun(rowB) && rowB.mark === "working" && rowB.stop && rowB.text.startsWith("BRAVO task."), "B's message is a row, marked \"working\" with Stop", rows);
+      const v = await chatView(id);
+      check(hereOf(rows) === "main" && v.branch === B && v.working === 2, '"● here" stays on main\'s end, the branch the page shows, although B is now the server\'s current branch', { here: hereOf(rows), current: v.branch, working: v.working });
+      await waitCrumb(page, /^ALPHA/, "the chat under the popup still shows main (the crumb names it)");
+
+      // The agents in the folder: both in the popup's foot, the other one beside the composer.
+      const footHint = page.locator(".fk-nav-foot .fk-folder-agents"), chip = page.locator(".composer .folder-agents");
+      await waitFor('the popup\'s foot says "2 agents working in <folder>"', async () => (await footHint.count()) === 1 && /^2 agents working in \S/.test((await footHint.innerText()).trim()) || saw(await page.locator(".fk-nav-foot").innerText()), { timeout: 10_000 });
+      await waitFor('the composer says "1 other working here"', async () => (await chip.count()) === 1 && (await chip.innerText()).trim() === "1 other working here" || saw(await page.locator(".composer").innerText()), { timeout: 10_000 });
+      log(`    foot: "${(await footHint.innerText()).trim()}" (${await footHint.getAttribute("title")}); composer: "${(await chip.innerText()).trim()}" (${await chip.getAttribute("title")})`);
+
+      // A fork made elsewhere is a link under the reply it left from.
+      const forked = await call("POST", `/api/chats/${id}/fork`, { branch: "main", at });
+      const fork = ids.liveFork = forked.body.id;
+      check(forked.status === 200 && !!fork && forked.body.forkedFrom === id && !!forked.body.name, "a fork of main at the first reply is made through the API while both branches work", forked);
+      rows = await settledRows(page, "the open popup gets the fork's link row", (r) => r.some((x) => /\bfk-fork-row\b/.test(x.cls)));
+      log(`    tree rows: ${rowBrief(rows)}`);
+      const links = rows.filter((r) => /\bfk-fork-row\b/.test(r.cls));
+      check(links.length === 1 && links[0].link === forked.body.name, `one link row, named as the new chat: ${forked.body.name}`, rows);
+      const li = rows.indexOf(links[0]), before = rows[li - 1];
+      check(!!before && isReply(before) && /one/i.test(before.text) && li < rows.findIndex((r) => r.text.startsWith("ALPHA task.")) && li < rows.indexOf(rows.find((r) => r.endOf === B)),
+        "the link is the row right after the first turn's reply, before the two branches' messages", rows);
+      const sub = (await page.locator(".fk-nav-sub").innerText()).trim();
+      check(/ · 2 branches · 1 fork$/.test(sub), `the popup's header counts it: ${sub}`, sub);
+      check((await sel(page)).chat === id && await nav.count() === 1, "the page stays on the chat, the popup open", await sel(page));
+
+      // Stop on B's row stops B alone.
+      await endRow(page, B).locator("button.fk-stop").click();
+      await waitFor("B's turn is stopped: its record is not busy any more", async () => { const r = await branchRec(id, B); return !BUSY.has(r.status) ? r : saw(recBrief([r])); }, { timeout: 30_000 });
+      await waitFor('B\'s items get one "Stopped." note', async () => stoppedNotes(await itemsOf(id, B)) === 1 || saw((await itemsOf(id, B)).filter((i) => i.kind === "note")), { timeout: 15_000 });
+      rows = await settledRows(page, "one working row is left, and B's row has no mark", (r) => r.filter(isRun).length === 1 && r.find((x) => x.endOf === B)?.mark === "");
+      log(`    tree rows: ${rowBrief(rows)}`);
+      const ra = await branchRec(id, "main");
+      check(BUSY.has(ra.status) && pgrep(gateA1).length > 0 && stoppedNotes(await itemsOf(id, "main")) === 0 && rows.find(isRun).endOf === "main" && !rows.find((r) => r.endOf === B).stop,
+        "main is still busy in its loop with no note of the Stop, and its row is the working one; B's row has no Stop", { record: recBrief([ra]), loop: pgrep(gateA1), rows });
+      await waitFor("both folder hints go: one agent is left in the folder", async () => (await footHint.count()) === 0 && (await chip.count()) === 0 || saw({ foot: await footHint.count(), chip: await chip.count() }), { timeout: 10_000 });
+      check(await nav.count() === 1 && hereOf(rows) === "main", 'the popup stayed open, "● here" on main\'s end', rows);
+      noFetch("so far");
+
+      // B is viewed; main, not shown, grows past what the tree's rows were built from.
+      await nav.locator('.fk-nav-head button[title="Close"]').click();
+      await waitFor("the popup closes", async () => (await nav.count()) === 0, { timeout: 5000 });
+      await viewBranchVia(page, B);
+      await waitCrumb(page, /^BRAVO/, "B is shown after a double click on its end row");
+      const note = page.locator(".thread .note", { hasText: /^Stopped\.$/ });
+      await waitFor('B\'s thread shows "Stopped." and its composer no Stop', async () => (await note.count()) === 1 && (await stop.count()) === 0 || saw({ notes: await note.count(), stop: await stop.count() }), { timeout: 10_000 });
+      const lenA = (await itemsOf(id, "main")).length;
+      openGates(gateA1);
+      await waitGated(id, "main", gateA2, a0);
+      const grown = await itemsOf(id, "main");
+      check(grown.length > lenA && BUSY.has((await branchRec(id, "main")).status), `with B shown, main's turn went on to its second command without ending: ${lenA} → ${grown.length} items`, grown.map((i) => i.kind));
+      await treeBtn.click();
+      await nav.waitFor({ timeout: 10_000 });
+      rows = await settledRows(page, "the tree shows main's end row, marked as working", (r) => r.filter(isRun).length === 1 && r.find(isRun).endOf === "main");
+      log(`    tree rows: ${rowBrief(rows)}`);
+      check(hereOf(rows) === B, '"● here" is on B\'s end now', rows);
+      await endRow(page, "main").dblclick();
+      await waitFor("the double click on main's end row closes the popup", async () => (await nav.count()) === 0, { timeout: 10_000 });
+      await waitCrumb(page, /^ALPHA/, "the crumb names main");
+      await waitFor("the thread is main's running turn: its last message is A's, Stop shows, no \"Stopped.\"", async () => {
+        const users = await page.locator(".thread .msg.user").allInnerTexts();
+        const now = { lastUser: (users.at(-1) ?? "").trim().slice(0, 40), stop: await stop.count(), notes: await note.count() };
+        return now.lastUser.startsWith("ALPHA task.") && now.stop === 1 && now.notes === 0 || saw(now);
+      }, { timeout: 15_000 });
+      await sleep(500);
+      check(await page.locator(".fk-banner").count() === 0, "no pending-branch banner shows: the branch is viewed, no new one is started", await page.locator(".fk-banner").allInnerTexts());
+      check(posts.length === 0, "viewing made no POST …/messages", posts);
+      check(BUSY.has((await branchRec(id, "main")).status) && pgrep(gateA2).length > 0 && (await chatView(id)).branches === 2, "main is still in its turn, and the chat still has 2 branches", recBrief(await branchStates(id)));
+
+      // main ends with the popup open: its mark goes and its reply is a new row.
+      await treeBtn.click();
+      await nav.waitFor({ timeout: 10_000 });
+      rows = await settledRows(page, "the tree marks main's end row as working", (r) => r.filter(isRun).length === 1 && r.find(isRun).endOf === "main" && hereOf(r) === "main");
+      const was = rows.length;
+      openGates(gateA2);
+      const endA = await waitBranchTurn(id, "main", a0);
+      check(endA.status === "ready" && /alpha/i.test(lastReply(await itemsOf(id, "main"))), "main's turn ends by itself once its second gate opens", { record: recBrief([endA]), reply: lastReply(await itemsOf(id, "main")) });
+      rows = await settledRows(page, "no row is marked as working, and main ends at a new reply row", (r) => r.filter(isRun).length === 0 && r.some((x) => x.endOf === "main" && isReply(x) && /alpha/i.test(x.text)));
+      log(`    tree rows: ${rowBrief(rows)}`);
+      check(rows.length > was && !rows.some((r) => r.mark || r.stop) && await nav.count() === 1, `the popup, still open, has the reply as a new row (${was} → ${rows.length} rows) and no mark or Stop`, rows);
+
+      // Another branch is opened from the popup, and the popup opened again.
+      await endRow(page, B).dblclick();
+      await waitFor("the double click on B's end row closes the popup", async () => (await nav.count()) === 0, { timeout: 10_000 });
+      await waitCrumb(page, /^BRAVO/, "the crumb names B");
+      await sleep(500);
+      check(posts.length === 0 && await page.locator(".fk-banner").count() === 0, "that made no POST …/messages and no pending branch", { posts, banner: await page.locator(".fk-banner").count() });
+      await treeBtn.click();
+      await nav.waitFor({ timeout: 10_000 });
+      rows = await settledRows(page, 'the tree has "● here" on B\'s end row', (r) => hereOf(r) === B);
+      log(`    tree rows: ${rowBrief(rows)}`);
+      noFetch("to the end");
+
+      // The fork's link opens the fork.
+      await nav.locator(".fk-fork-link").click();
+      await waitFor("a click on the fork's link closes the popup and selects the fork", async () => (await nav.count()) === 0 && (await sel(page)).chat === fork || saw({ popup: await nav.count(), sel: await sel(page) }), { timeout: 10_000 });
+      await page.locator(".thread .fk-forked").waitFor({ timeout: 10_000 });
+      log(`    fork note: ${(await page.locator(".thread .fk-forked").innerText()).replace(/\s+/g, " ").trim()}`);
+      check(treeGets.length === 0 && posts.length === 0, "from the popup's first opening to here the page made no GET …/tree and no POST …/messages for the chat", { treeGets, posts });
+
+      // The step's two chats go.
+      for (const c of [fork, id]) {
+        const gone = await call("DELETE", `/api/chats/${c}`);
+        check(gone.status === 200, `chat ${shortId(c)} is deleted through the API`, gone);
+      }
+      await waitFor("neither chat is in the snapshot or the sidebar's selection", async () => {
+        const left = (await state()).chats.filter((c) => c.id === id || c.id === fork).map((c) => c.id), chat = (await sel(page)).chat ?? null;
+        return left.length === 0 && chat !== id && chat !== fork || saw({ left, sel: chat });
+      }, { timeout: 10_000 });
+    } finally {
+      page.off("request", onRequest);
+      openGates(gateA1, gateA2, gateB);
+    }
+  });
+
+  // ---- Step 27b: two clauses of phases 1 and 2 that the steps above leave to unit tests. A branch
+  // is started from a row of the tree popup while main runs, and two branches of one chat ask for
+  // approval at once and are answered each by itself. Claude runs with --permission-mode auto, where
+  // it asks for nothing by itself; an "ask" rule in the project settings of the chat's folder
+  // (<folder>/.claude/settings.json) comes before the mode, so a command the rule names is asked for.
+  await step("27b", "A branch starts from a row of the tree popup while main runs; two branches ask for approval and each is answered by itself", async () => {
+    const gateA = newGate("27ba"), gateB = newGate("27bb");
+    const nav = page.locator(".fk-nav"), treeBtn = page.locator(".fk-tree-btn"), banner = page.locator(".fk-banner .fk-banner-text");
+    const sendBtn = page.locator(".composer button.send:not(.stop)"), stop = page.locator(".composer button.send.stop");
+    const pending = page.locator(".thread .perm.pending"), asksAlert = page.locator("button.fk-alert.asks");
+    const rowAt = (i) => page.locator(".fk-nav .fk-row").nth(i);
+    const isRun = (r) => /\bfk-run\b/.test(r.cls), isAsk = (r) => /\bfk-ask\b/.test(r.cls), isReply = (r) => /\bk-text\b/.test(r.cls), isUser = (r) => /\bk-user\b/.test(r.cls);
+    const hereOf = (rows) => rows.filter((r) => r.here).map((r) => r.endOf).join();
+    const asking = (rows) => rows.filter(isAsk).map((r) => r.endOf).sort().join();
+    const closePopup = async () => {
+      await nav.locator('.fk-nav-head button[title="Close"]').click();
+      await waitFor("the popup closes", async () => (await nav.count()) === 0, { timeout: 5000 });
+    };
+    /** A row's right-click menu as drawn ([] for a row that opens none); Esc closes it and leaves the popup open. */
+    const menuOf = async (i) => {
+      const ctx = page.locator(".fk-ctx");
+      await rowAt(i).click({ button: "right" });
+      try { await ctx.waitFor({ state: "attached", timeout: 2000 }); } catch { return []; } // the box itself has no size: the menu in it is drawn over the page
+      const items = await ctx.locator(".menu-item, .fk-ctx-note").evaluateAll((els) => els.map((e) => ({ text: (e.textContent ?? "").trim(), note: e.classList.contains("fk-ctx-note"), disabled: !!e.disabled })));
+      await page.keyboard.press("Escape");
+      await waitFor("Esc closes the row's menu and leaves the popup open", async () => (await ctx.count()) === 0 && (await nav.count()) === 1 || saw({ menu: await ctx.count(), popup: await nav.count() }), { timeout: 5000 });
+      return items;
+    };
+    // The folder's project settings make Claude ask before this one harmless command.
+    const ASK_RULE = "Bash(ping:*)", ASK_CMD = "ping -c 1 127.0.0.1";
+    const askTask = (word) => `${word} check. Run this exact shell command once and then reply with just the word ${word}: ${ASK_CMD} If you are not allowed to run it, try nothing else and reply with just the word REFUSED.`;
+    // A turn with replies partway through it, which then waits on its gate.
+    const textA = `ALPHA task. This is one turn with two shell commands: do not end your turn before both have finished. First write the single word STARTING and, in that same message, run this exact shell command: echo first ` +
+      `When it has finished, write the single word MIDDLE and, in that same message, run this exact shell command in the foreground with timeout 300000, and wait for it to finish: until [ -f ${gateA} ]; do sleep 2; done; echo done When that has finished, reply with just the word ALPHA.`;
+    let id = "";
+    /** The requests about this chat's permissions and messages the page makes, with the branch each names. */
+    const posts = [];
+    const onRequest = (r) => {
+      const u = new URL(r.url());
+      if (r.method() === "POST" && /^\/api\/chats\/[^/]+\/(messages|permission)$/.test(u.pathname) && u.pathname.includes(id)) posts.push(`${u.pathname.split("/").pop()}${u.search}`);
+    };
+    /** Waits until a branch's turn (the one after `before` turns) has asked for approval and waits; answers the request's item. */
+    const waitAsks = async (branch, before) => {
+      const what = `branch ${branch} asks for approval and waits (its record says "approval")`;
+      await waitFor(what, async () => {
+        const r = await branchRec(id, branch);
+        if (r?.status === "error") throw new Fail(what, `the branch is in error: ${r.error}`);
+        if (r && (r.usage?.turns ?? 0) > before && !BUSY.has(r.status)) throw new Fail(what, { ended: recBrief([r]), reply: lastReply(await itemsOf(id, branch)) });
+        return r?.status === "approval" || saw(r ? recBrief([r]) : "(no record)");
+      }, { timeout: TURN_TIMEOUT, every: 500 });
+      const open = (await itemsOf(id, branch)).filter((i) => i.kind === "perm" && !i.decided);
+      check(open.length === 1 && String(open[0].input?.command ?? "").includes("ping"), `branch ${branch} has one open request, for the command of the rule: ${open[0]?.toolName} ${open[0]?.input?.command}`, open);
+      return open[0];
+    };
+    const permsOf = async (branch) => (await itemsOf(id, branch)).filter((i) => i.kind === "perm").map((i) => i.decided || "open");
+    /** The calls of the rule's command that ran: their result is ping's own output. */
+    const pinged = (items) => items.filter((i) => i.kind === "tool" && String(i.input?.command ?? "").includes("ping") && /1 packets transmitted/.test(i.result ?? ""));
+    try {
+      const folder = dir("ask-27b");
+      fs.mkdirSync(path.join(folder, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(folder, ".claude", "settings.json"), JSON.stringify({ permissions: { ask: [ASK_RULE] } }, null, 2));
+      id = ids.rowBranch = await branchChat(page, folder);
+      const at = (await itemsOf(id, "main")).findIndex((i) => i.kind === "end") + 1;
+      check(at > 0, `the first turn ends at item count ${at}: the finished point the new branch starts from`, (await itemsOf(id, "main")).map((i) => i.kind));
+
+      // ---- Part A: a branch from a row of the popup while main runs.
+      const a0 = await send(page, id, textA);
+      await waitGated(id, "main", gateA, a0);
+      page.on("request", onRequest);
+      await treeBtn.click();
+      await nav.waitFor({ timeout: 10_000 });
+      const iTask = (r) => r.findIndex((x) => isUser(x) && x.text.startsWith("ALPHA task."));
+      let rows = await settledRows(page, "the tree marks main's end row as working, and the running turn has a reply row", (r) => r.filter(isRun).length === 1 && r.find(isRun).endOf === "main" && r.slice(iTask(r) + 1).some(isReply));
+      log(`    tree rows: ${rowBrief(rows)}`);
+      const task = iTask(rows), first = task - 1;
+      check(task > 0 && isReply(rows[first]) && /one/i.test(rows[first].text) && !rows[first].endOf, "the row before main's running message is the first turn's reply, and no branch ends there", rows);
+
+      // The rows inside the running turn: none of its replies starts a branch or a fork.
+      const inTurn = rows.map((r, i) => ({ r, i })).filter((x) => x.i > task && isReply(x.r));
+      for (const { r, i } of inTurn) {
+        const menu = await menuOf(i);
+        const offers = menu.filter((m) => !m.note && !m.disabled && !/label/i.test(m.text));
+        if (r.endOf) {
+          check(offers.length === 0 && menu.some((m) => m.text === "Fork to new chat" && m.disabled), `the running turn's last reply "${r.text.slice(0, 20)}" (main's end) has its fork greyed out and no branch action`, menu);
+        } else {
+          check(offers.length === 0 && menu.some((m) => m.note && /^Partway through a turn/.test(m.text)), `the running turn's reply "${r.text.slice(0, 20)}" offers no branch or fork: its menu says "${menu.find((m) => m.note)?.text}"`, menu);
+          await rowAt(i).dblclick();
+          await sleep(700);
+          check(await nav.count() === 1 && await page.locator(".fk-banner").count() === 0 && posts.length === 0, "a double click on it does nothing: the popup stays, no banner, nothing sent", { popup: await nav.count(), banner: await page.locator(".fk-banner").count(), posts });
+        }
+      }
+
+      // The finished boundary, the first turn's reply: the popup's actions are there although main works.
+      const menu1 = await menuOf(first);
+      check(menu1.some((m) => m.text === "Fork to new chat" && !m.disabled) && !menu1.some((m) => m.note), "the first reply's menu offers Fork to new chat, enabled, and has no \"partway through a turn\" note", menu1);
+      const foot = (await page.locator(".fk-nav-foot").innerText()).replace(/\s+/g, " ").trim();
+      check(/Double-click a message to open the chat there; what you send next branches off/.test(foot), `the popup says how a branch starts from a row: ${foot}`, foot);
+      await rowAt(first).dblclick();
+      await waitFor("the double click on the first reply's row closes the popup", async () => (await nav.count()) === 0, { timeout: 10_000 });
+      await banner.waitFor({ timeout: 10_000 });
+      const said = (await banner.innerText()).trim();
+      check(/^New branch after “.+”: your message starts it\. “.+” stays in the tree\.$/.test(said), `the banner tells of the new branch: ${said}`, said);
+      const recs0 = await branchStates(id);
+      check(posts.length === 0 && recs0.length === 1 && recs0[0].branch === "main" && BUSY.has(recs0[0].status), "nothing is sent yet: the chat's one record is main's, still working", { posts, records: recBrief(recs0) });
+      await page.locator(".composer .composer-input").fill(gatedTask("BRAVO", gateB));
+      check(await sendBtn.isEnabled() && await stop.isVisible(), "Send is enabled for the new branch although its source runs, and Stop still shows", { sendEnabled: await sendBtn.isEnabled(), stop: await stop.isVisible() });
+      const res = await typeSend(page, id, "", { typed: true });
+      const B = res.body.branch;
+      check(res.status === 200 && !!B && B !== "main", "the Send is accepted and its answer names the new branch", res);
+      await waitGated(id, B, gateB, 0);
+      const v = await chatView(id), recs = await branchStates(id);
+      check(recs.length === 2 && recs.every((r) => BUSY.has(r.status)) && recs.map((r) => r.branch).sort().join() === ["main", B].sort().join(), "the snapshot has a second record for the chat; main's and the new branch's are both busy", recBrief(recs));
+      check(v.branches === 2 && v.working === 2 && !v.approvals, "the chat has 2 branches and both work", { branches: v.branches, working: v.working, approvals: v.approvals });
+      check(pgrep(gateA).length > 0 && pgrep(gateB).length > 0, "both shell loops run", { a: pgrep(gateA), b: pgrep(gateB) });
+      const itemsB0 = await itemsOf(id, B);
+      check(itemsB0.findIndex((i) => i.kind === "user" && i.text.startsWith("BRAVO task.")) === at && !hasUser(itemsB0, textA), `the new branch starts at the first reply (its message is item ${at}) and has nothing of main's running turn`, itemsB0.map((i) => i.kind));
+      await waitFor("the banner goes and the view is on the new branch", async () => (await page.locator(".fk-banner").count()) === 0 && /^BRAVO/.test(await crumbText(page)) || saw({ banner: await page.locator(".fk-banner").count(), crumb: await crumbText(page) }), { timeout: 15_000 });
+      await waitFor('the header says "1 other branch working"', async () => (await alertText()) === "1 other branch working" || saw(await alertText()), { timeout: 10_000 });
+
+      // Both end by themselves.
+      openGates(gateA, gateB);
+      const endA = await waitBranchTurn(id, "main", a0), endB = await waitBranchTurn(id, B, 0);
+      check(endA.status === "ready" && /alpha/i.test(lastReply(await itemsOf(id, "main"))) && endB.status === "ready" && /bravo/i.test(lastReply(await itemsOf(id, B))),
+        "with the gates open each turn ends with its own reply on its own branch", { main: lastReply(await itemsOf(id, "main")), B: lastReply(await itemsOf(id, B)) });
+      await waitFor("the header alert goes once no other branch works", async () => (await alertText()) === "" || saw(await alertText()), { timeout: 10_000 });
+
+      // ---- Part B: approval per branch. A is main, B the branch made above.
+      // A asks.
+      await viewBranchVia(page, "main");
+      await waitCrumb(page, /^ALPHA/, "main is shown (the crumb names it)");
+      posts.length = 0;
+      const a1 = (await branchRec(id, "main")).usage?.turns ?? 0, b1 = (await branchRec(id, B)).usage?.turns ?? 0;
+      const sentA = await typeSend(page, id, askTask("CHARLIE"));
+      check(sentA.status === 200 && hasUser(await itemsOf(id, "main"), askTask("CHARLIE")), "A's message is put on main", sentA);
+      const askA = await waitAsks("main", a1);
+      await waitFor("main's thread shows the request as a pending card with the command", async () => (await pending.count()) === 1 && (await pending.locator(".perm-what").innerText()).includes(ASK_CMD) || saw(await page.locator(".thread .perm").allInnerTexts()), { timeout: 10_000 });
+      log(`    main's card: ${(await pending.innerText()).replace(/\s+/g, " ").trim()}`);
+
+      // B asks too, while A waits.
+      await viewBranchVia(page, B);
+      await waitCrumb(page, /^BRAVO/, "B is shown (the crumb names it)");
+      await waitFor("B's thread has no card of A's request, and the header tells of the approval on the other branch", async () => (await pending.count()) === 0 && (await asksAlert.count()) === 1 || saw({ cards: await pending.count(), alert: await alertText() }), { timeout: 10_000 });
+      const sentB = await typeSend(page, id, askTask("DELTA"));
+      check(sentB.status === 200 && hasUser(await itemsOf(id, B), askTask("DELTA")) && !hasUser(await itemsOf(id, "main"), askTask("DELTA")), "B's message is put on B while A waits for its approval", sentB);
+      const askB = await waitAsks(B, b1);
+      let cv = await chatView(id), rs = await branchStates(id);
+      check(cv.approvals === 2 && cv.working === 2 && rs.length === 2 && rs.every((r) => r.status === "approval") && askA.requestId !== askB.requestId,
+        "the chat counts 2 approvals, both records say \"approval\", and the two requests are different ones", { approvals: cv.approvals, working: cv.working, records: recBrief(rs), requests: [askA.requestId, askB.requestId] });
+      await waitFor("B's thread shows one pending card, B's own", async () => (await pending.count()) === 1 || saw(await page.locator(".thread .perm").allInnerTexts()), { timeout: 10_000 });
+      const alertSaid = (await asksAlert.innerText()).trim();
+      check(await asksAlert.count() === 1 && /^Approval needed on “ALPHA/.test(alertSaid), `with B shown the header tells of A's request: ${alertSaid}`, alertSaid);
+      await treeBtn.click();
+      await nav.waitFor({ timeout: 10_000 });
+      rows = await settledRows(page, "the tree marks both branches' end rows as needing approval", (r) => asking(r) === ["main", B].sort().join());
+      log(`    tree rows: ${rowBrief(rows)}`);
+      check(rows.filter(isAsk).every((r) => r.mark === "needs approval" && r.stop) && !rows.some(isRun) && hereOf(rows) === B, 'both rows say "needs approval" and have Stop; none says "working"; "● here" is on B\'s end', rows);
+      await closePopup();
+
+      // B's request is approved with its card: B goes on and ends, A still waits.
+      const decidedB = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/chats/${id}/permission`, { timeout: 15_000 });
+      await pending.locator(".perm-actions button", { hasText: /^Allow$/ }).click();
+      const dB = await decidedB;
+      check(dB.status() === 200 && new URL(dB.url()).searchParams.get("branch") === B && dB.request().postDataJSON().requestId === askB.requestId && dB.request().postDataJSON().allow === true,
+        "Allow on the card sends B's request id for branch B", { status: dB.status(), url: dB.url(), body: dB.request().postDataJSON() });
+      const doneB = await waitBranchTurn(id, B, b1);
+      const itemsB = await itemsOf(id, B);
+      check(doneB.status === "ready" && /delta/i.test(lastReply(itemsB)) && (await permsOf(B)).join() === "allow" && pinged(itemsB).length === 1,
+        "B ran the command and ended with its reply; its request is marked as allowed", { record: recBrief([doneB]), reply: lastReply(itemsB), perms: await permsOf(B), tools: itemsB.filter((i) => i.kind === "tool").map((i) => [i.input?.command, i.result]) });
+      cv = await chatView(id);
+      const recA = await branchRec(id, "main");
+      check(recA.status === "approval" && cv.approvals === 1 && cv.working === 1 && (await permsOf("main")).join() === "open", "A's record still says \"approval\" and its request is still open: the chat counts 1 approval", { record: recBrief([recA]), approvals: cv.approvals, working: cv.working, perms: await permsOf("main") });
+      await waitFor('B\'s thread shows its card as "Approved", none pending; the header still tells of A\'s request', async () => (await pending.count()) === 0 && (await page.locator(".thread .perm.allow").count()) === 1 && (await asksAlert.count()) === 1 || saw({ cards: await page.locator(".thread .perm").allInnerTexts(), alert: await alertText() }), { timeout: 10_000 });
+
+      // A is viewed: its card is still pending. It is denied, and A ends by itself.
+      rows = await viewBranchVia(page, "main", async () => {
+        await treeBtn.click();
+        await waitFor("the tree marks only main's end row as needing approval", async () => { const r = await treeRows(page); return asking(r) === "main" && !r.find((x) => x.endOf === B)?.mark || saw(r); }, { timeout: 15_000 });
+      });
+      log(`    tree rows: ${rowBrief(rows)}`);
+      await waitCrumb(page, /^ALPHA/, "main is shown again");
+      await waitFor("main's thread still shows its card as pending, and no header alert: no other branch asks or works", async () => (await pending.count()) === 1 && (await page.locator(".fk-alert").count()) === 0 || saw({ cards: await page.locator(".thread .perm").allInnerTexts(), alert: await alertText() }), { timeout: 10_000 });
+      const decidedA = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/chats/${id}/permission`, { timeout: 15_000 });
+      await pending.locator(".perm-actions button", { hasText: /^Don't$/ }).click();
+      const dA = await decidedA;
+      check(dA.status() === 200 && new URL(dA.url()).searchParams.get("branch") === "main" && dA.request().postDataJSON().requestId === askA.requestId && dA.request().postDataJSON().allow === false,
+        "Don't on the card sends A's request id for main", { status: dA.status(), url: dA.url(), body: dA.request().postDataJSON() });
+      const doneA = await waitBranchTurn(id, "main", a1);
+      const itemsA = await itemsOf(id, "main");
+      log(`    A's reply after the denial: ${JSON.stringify(lastReply(itemsA))}`);
+      check(doneA.status === "ready" && (await permsOf("main")).join() === "deny" && pinged(itemsA).length === 0 && !/charlie/i.test(lastReply(itemsA)),
+        "A's turn ended by itself without the command having run; its request is marked as denied", { record: recBrief([doneA]), reply: lastReply(itemsA), perms: await permsOf("main"), tools: itemsA.filter((i) => i.kind === "tool").map((i) => [i.input?.command, i.result]) });
+      cv = await chatView(id);
+      check(!cv.approvals && !cv.working && (await permsOf(B)).join() === "allow", "the chat counts no approval and no working branch; B's request stays as it was answered", { approvals: cv.approvals, working: cv.working, permsB: await permsOf(B) });
+      await waitFor('main\'s thread shows its card as "Denied", none pending, and no header alert', async () => (await pending.count()) === 0 && (await page.locator(".thread .perm.deny").count()) === 1 && (await page.locator(".fk-alert").count()) === 0 || saw({ cards: await page.locator(".thread .perm").allInnerTexts(), alert: await alertText() }), { timeout: 10_000 });
+      await treeBtn.click();
+      await nav.waitFor({ timeout: 10_000 });
+      rows = await settledRows(page, "no row of the tree has a mark or Stop", (r) => !r.some((x) => x.mark || x.stop || isAsk(x) || isRun(x)));
+      log(`    tree rows: ${rowBrief(rows)}`);
+      await closePopup();
+      check(posts.join() === [`messages?branch=main`, `messages?branch=${B}`, `permission?branch=${B}`, `permission?branch=main`].join(), "the page's requests of part B: a message and an answer per branch, each naming its own", posts);
+
+      const gone = await call("DELETE", `/api/chats/${id}`);
+      check(gone.status === 200, `chat ${shortId(id)} is deleted through the API`, gone);
+      await waitFor("the chat is not in the snapshot or the sidebar's selection", async () => {
+        const left = (await state()).chats.some((c) => c.id === id), chat = (await sel(page)).chat ?? null;
+        return !left && chat !== id || saw({ left, sel: chat });
+      }, { timeout: 10_000 });
+    } finally {
+      page.off("request", onRequest);
+      openGates(gateA, gateB);
+    }
+  });
+
+  await step(28, "A branch and a fork on another model: the picker on a pending branch, the notice, fixed after the first message, a fork without a message is given another model", async () => {
+    const SONNET = "sonnet", ASK = "Which word? Answer with the word only.";
+    const haikuLabel = await claudeLabel(CLAUDE_MODEL_ID), sonnetLabel = await claudeLabel(SONNET);
+    const modelBtn = page.locator('.composer button.tchip[title^="Model"]'), effortBtn = page.locator('.composer button.tchip[title^="Effort"]');
+    const fixedChip = page.locator('.composer .tchip.static[title^="Model and effort are fixed"]'), folderChip = page.locator('.composer .tchip.static[title^="Working directory"]');
+    const restartChip = page.locator('.composer .tchip.static[title="Starting the agent on this model…"]');
+    const notice = page.locator(".composer .model-notice"), banner = page.locator(".fk-banner .fk-banner-text");
+    const noticeText = `Another model than the conversation so far (${haikuLabel}): the history is read again once, at full price.`;
+    const one = async (loc) => ((await loc.count()) ? (await loc.first().innerText()).replace(/\s+/g, " ").trim() : "");
+    /** The toolbar and the notice as drawn: "" for what is not there. */
+    const bar = async () => ({ model: await one(modelBtn), effort: await one(effortBtn), fixed: await one(fixedChip), folder: await one(folderChip), notice: await one(notice), banner: await banner.count() });
+    const stateOf = async (id, branch) => (await get(`/api/chats/${id}/items?branch=${encodeURIComponent(branch)}`)).state;
+    const stateBrief = (s) => s && { model: s.model, effort: s.effort ?? "", locked: s.locked, fresh: !!s.fresh, status: s.status };
+    /** A branch's folder in the data folder: the chat's own for main. */
+    const branchDir = (id, branch) => (branch === "main" ? path.join(HOME, "chats", id) : path.join(HOME, "chats", id, "branches", branch));
+    /** The model the branch's Claude process says it runs on (the "Model" fact of its context split, asked of the process). */
+    const processModel = async (id, branch) => (await get(`/api/chats/${id}/context?branch=${encodeURIComponent(branch)}&fresh=1`)).facts?.find((f) => f.label === "Model")?.value ?? "";
+    /** Claude's choice among the defaults a new chat starts with: the last one and each group's. */
+    const claudeDefaults = (d) => ({ last: d.last?.byAgent?.claude ?? null, groups: Object.fromEntries(Object.entries(d.groups ?? {}).sort().map(([k, g]) => [k, g.byAgent?.claude ?? null])) });
+    // Everything the page sends that is not a GET, with the body of a message or a PATCH.
+    const sent = [];
+    const bodyOf = (r) => { try { return r.postDataJSON(); } catch { return null; } };
+    const onRequest = (r) => { if (r.method() !== "GET") sent.push({ req: `${r.method()} ${new URL(r.url()).pathname}${new URL(r.url()).search}`, body: bodyOf(r) }); };
+    page.on("request", onRequest);
+    try {
+      // 1. A plain Claude chat on Haiku with one finished turn.
+      const id = ids.models = await newChatVia(page, async () => { await page.locator("button.icon-btn.new").click(); }, "Claude Code chat");
+      await pickModelId(page, CLAUDE_MODEL_ID);
+      const v0 = await chatView(id);
+      check(v0.agent === "claude" && v0.model === CLAUDE_MODEL_ID && !v0.board, "a plain Claude chat on Haiku", v0);
+      const t0 = await send(page, id, "Remember the word KIWI. Answer OK.");
+      await waitTurn(id, t0);
+      await waitFor("the started chat's toolbar shows the fixed chip with Haiku's label and no Model picker", async () => { const b = await bar(); return b.fixed.includes(haikuLabel) && !b.model && !b.notice || saw(b); }, { timeout: 10_000 });
+
+      // 2. The defaults of a new chat, before any choice for a branch or a fork.
+      const defaults0 = (await state()).defaults;
+      log(`    defaults for Claude: ${JSON.stringify(claudeDefaults(defaults0))}`);
+      check(claudeDefaults(defaults0).last?.model === CLAUDE_MODEL_ID, "the last choice for a new Claude chat is Haiku", claudeDefaults(defaults0));
+
+      // 3. A pending branch has the Model picker although the chat has started; a choice shows the notice and sends nothing.
+      sent.length = 0;
+      await firstReplyAction(page, "k-branch");
+      await banner.waitFor({ timeout: 10_000 });
+      let b = await waitFor("the pending branch has the Model picker, on Haiku", async () => { const now = await bar(); return now.model.includes(haikuLabel) ? now : saw(now); }, { timeout: 10_000 });
+      check(!b.fixed && !b.notice && !!b.folder, "with it: no fixed model chip, no notice, and the folder as a fixed chip", b);
+      await pickModelId(page, SONNET);
+      b = await waitFor("after picking Sonnet the picker shows it and the notice appears", async () => { const now = await bar(); return now.model.includes(sonnetLabel) && !!now.notice ? now : saw(now); }, { timeout: 10_000 });
+      check(b.notice === noticeText && /history is read again/.test(b.notice), `the notice says the history is read again: ${b.notice}`, b);
+      check(await notice.evaluate((e) => !e.classList.contains("warn")), "it is the plain notice, not the warning", await notice.getAttribute("class"));
+      log(`    toolbar of the pending branch: model "${b.model}", effort "${b.effort}", folder "${b.folder}"`);
+      const recs3 = await branchStates(id);
+      check(sent.length === 0 && recs3.length === 1 && recs3[0].branch === "main" && recs3[0].model === CLAUDE_MODEL_ID && (await chatView(id)).model === CLAUDE_MODEL_ID,
+        "the choice sent nothing: the chat has its one record, main's, still on Haiku", { sent, records: recs3.map((r) => [r.branch, r.model]), view: (await chatView(id)).model });
+
+      // 4. Back drops the choice with the pending branch; a new pending branch starts on Haiku again.
+      await page.locator(".fk-banner button", { hasText: "Back" }).click();
+      b = await waitFor("after Back: no banner, no notice, no Model picker, the fixed chip with Haiku's label", async () => { const now = await bar(); return !now.banner && !now.notice && !now.model && now.fixed.includes(haikuLabel) ? now : saw(now); }, { timeout: 10_000 });
+      await firstReplyAction(page, "k-branch");
+      await banner.waitFor({ timeout: 10_000 });
+      b = await waitFor("the next pending branch shows Haiku again and no notice: the choice was not kept", async () => { const now = await bar(); return now.model.includes(haikuLabel) && !now.notice ? now : saw(now); }, { timeout: 10_000 });
+      await pickModelId(page, SONNET);
+      await waitFor("Sonnet is picked again", async () => { const now = await bar(); return now.model.includes(sonnetLabel) && now.notice === noticeText ? now : saw(now); }, { timeout: 10_000 });
+      // The cheapest effort Sonnet offers, when it offers "low": the branch's effort is its own too.
+      const sonnet = (await state()).catalogs.claude.models.find((m) => m.id === SONNET);
+      const low = sonnet.efforts?.includes("low") ? "low" : "";
+      if (low) {
+        await pickEffort(page, "Low");
+        await waitFor("effort Low is picked for the pending branch, and the notice stays", async () => { const now = await bar(); return /Low/.test(now.effort) && now.notice === noticeText ? now : saw(now); }, { timeout: 10_000 });
+      } else log(`    Sonnet offers no effort "low" (${JSON.stringify(sonnet.efforts ?? [])}): the effort is left as the picker set it`);
+      check(sent.length === 0, "picking sent nothing so far", sent);
+      const res = await typeSend(page, id, ASK);
+      const B = res.body.branch, target = sent.find((x) => /\/messages$/.test(x.req))?.body?.target;
+      check(res.status === 200 && res.body.ok === true && !!B && B !== "main", "the Send is accepted and its answer names the new branch", res);
+      check(target?.branch === "main" && target.new === true && target.model === SONNET && (!low || target.effort === low), "the message's target names main, a new branch and the choice", target);
+
+      // 5. The branch answers on Sonnet and knows the word; its choice is fixed; main keeps Haiku.
+      const rb = await waitBranchTurn(id, B, 0);
+      const itemsB = await itemsOf(id, B);
+      check(/kiwi/i.test(lastReply(itemsB)), `the branch's reply has the word of the turn before it: ${JSON.stringify(lastReply(itemsB))}`, itemsB.map((i) => [i.kind, i.text ?? i.name]));
+      const sb = await stateOf(id, B), sm = await stateOf(id, "main");
+      check(sb.model === SONNET && sb.locked === true && !sb.fresh && (!low || sb.effort === low), "the branch's state: Sonnet, the effort picked, locked, not fresh", stateBrief(sb));
+      check(sm.model === CLAUDE_MODEL_ID && sm.locked === true && !sm.effort, "main's state still says Haiku", stateBrief(sm));
+      check(rb.model === SONNET && (await branchRec(id, "main")).model === CLAUDE_MODEL_ID, "and so do the snapshot's two records", (await branchStates(id)).map((r) => [r.branch, r.model, r.effort ?? ""]));
+      b = await waitFor("the branch's toolbar: the fixed chip with Sonnet's label, no Model picker, no notice", async () => { const now = await bar(); return now.fixed.includes(sonnetLabel) && !now.model && !now.notice && !now.banner ? now : saw(now); }, { timeout: 15_000 });
+      log(`    fixed chip on the branch: "${b.fixed}"`);
+      // That the answer came from Sonnet, not only that the record says so: the branch's own Claude
+      // process names its model, and the assistant lines of its Claude session file carry theirs.
+      const pmB = await processModel(id, B), pmMain = await processModel(id, "main");
+      check(/sonnet/i.test(pmB) && /haiku/i.test(pmMain), `the branch's Claude process says it runs ${pmB}, main's ${pmMain}`, { branch: pmB, main: pmMain });
+      const sfB = sessionModels(readJSON(path.join(branchDir(id, B), "chat.json")).sessionId), sfMain = sessionModels(readJSON(path.join(branchDir(id, "main"), "chat.json")).sessionId);
+      check(/sonnet/i.test(sfB.at(-1) ?? "") && sfMain.length > 0 && sfMain.every((m) => /haiku/i.test(m)),
+        `Claude's session files: the branch's last answer was written by ${sfB.at(-1)}, main's answers by ${[...new Set(sfMain)].join(", ")}`, { branch: sfB, main: sfMain });
+      log(`    the models of the branch's session file, in order: ${sfB.join(", ")}`);
+
+      // 6. What the API refuses: a choice for a branch that goes on, an unknown model, a change once started.
+      const before6 = recBrief(await branchStates(id));
+      const carry = await call("POST", `/api/chats/${id}/messages`, { text: "Reply with just the word NO.", context: "", target: { branch: B, at: itemsB.length, model: CLAUDE_MODEL_ID } });
+      check(carry.status === 409, `a target at the branch's end with a model is refused with 409: ${JSON.stringify(carry.body)}`, carry);
+      const unknown = await call("POST", `/api/chats/${id}/messages`, { text: "Reply with just the word NO.", context: "", target: { branch: "main", at: target.at, new: true, model: "nope" } });
+      check(unknown.status === 400, `a new branch on the model "nope" is refused with 400: ${JSON.stringify(unknown.body)}`, unknown);
+      const patchB = await call("PATCH", `/api/chats/${id}?branch=${B}`, { model: CLAUDE_MODEL_ID });
+      check(patchB.status === 409, `a PATCH of the started branch's model is refused with 409: ${JSON.stringify(patchB.body)}`, patchB);
+      const patchMain = await call("PATCH", `/api/chats/${id}?branch=main`, { model: SONNET });
+      check(patchMain.status === 409, `a PATCH of main's model is refused with 409: ${JSON.stringify(patchMain.body)}`, patchMain);
+      await sleep(500);
+      const after6 = await branchStates(id);
+      check(JSON.stringify(recBrief(after6)) === JSON.stringify(before6) && after6.length === 2 && after6.find((r) => r.branch === B).model === SONNET && after6.find((r) => r.branch === "main").model === CLAUDE_MODEL_ID,
+        "the refusals changed nothing: two branches, no turn, Sonnet and Haiku as before", { before: before6, after: after6.map((r) => [r.branch, r.model, r.status, r.usage?.turns]) });
+
+      // 7. A fork of main to a new chat has had no message of its own: its model can still be changed.
+      await viewBranchVia(page, "main");
+      await waitFor("main is shown: its fixed chip has Haiku's label", async () => { const now = await bar(); return now.fixed.includes(haikuLabel) && !now.model ? now : saw(now); }, { timeout: 15_000 });
+      const chatsBefore = new Set((await state()).chats.map((c) => c.id));
+      await firstReplyAction(page, "k-fork");
+      const fork = ids.modelsFork = await waitFor("a new chat is made and selected", async () => { const s = (await sel(page)).chat; return s && !chatsBefore.has(s) ? s : saw(await sel(page)); }, { timeout: 30_000 });
+      await page.locator(".thread .fk-forked").waitFor({ timeout: 10_000 });
+      const fv = await waitFor("the fork is ready", async () => { const v = await chatView(fork); return v.status === "ready" ? v : saw({ status: v.status, error: v.error }); }, { timeout: 60_000 });
+      check(fv.forkedFrom === id && fv.forkedBranch === "main" && fv.agent === "claude" && fv.model === CLAUDE_MODEL_ID && fv.fresh === true && fv.locked === true,
+        "the fork names main of the source, is on Haiku, and its view says fresh", { forkedFrom: fv.forkedFrom, forkedBranch: fv.forkedBranch, forkedAt: fv.forkedAt, model: fv.model, effort: fv.effort ?? "", fresh: fv.fresh, locked: fv.locked });
+      b = await waitFor("the fork's toolbar has the Model picker on Haiku", async () => { const now = await bar(); return now.model.includes(haikuLabel) ? now : saw(now); }, { timeout: 15_000 });
+      check(!!b.folder && !b.fixed && !b.notice, "with the folder as a fixed chip, no fixed model chip and no notice", b);
+      const watch = watchChat(fork);
+      const ui = watchPage(async () => ({ picker: await modelBtn.count() ? ((await modelBtn.getAttribute("aria-disabled")) === "true" ? "disabled" : "open") : "none", restart: await restartChip.count(),
+        stop: await page.locator(".composer button.send.stop").count(), typing: await one(page.locator(".thread .typing")) }));
+      const patched = page.waitForResponse((r) => r.request().method() === "PATCH" && new URL(r.url()).pathname === `/api/chats/${fork}`, { timeout: 120_000 });
+      sent.length = 0;
+      await pickModelId(page, SONNET);
+      const pr = await patched;
+      const prBody = await pr.json().catch(() => ({}));
+      check(pr.status() === 200 && prBody.ok === true && pr.request().postDataJSON().model === SONNET, "the pick is a PATCH of the fork's model, answered {ok: true}", { status: pr.status(), body: prBody, sent: pr.request().postDataJSON() });
+      const fv2 = await waitFor("the fork is on Sonnet, ready and still fresh", async () => { const v = await chatView(fork); return v.model === SONNET && v.status === "ready" && v.fresh === true ? v : saw({ model: v.model, status: v.status, fresh: v.fresh, error: v.error }); }, { timeout: 60_000 });
+      await sleep(300);
+      await watch.stop();
+      await ui.stop();
+      log(`    the fork while its agent started again: status ${watch.seen.map((e) => e.status).join(" → ")}; the page ${ui.seen.map((e) => `${e.picker}${e.restart ? "+restart chip" : ""}${e.typing ? ` "${e.typing}"` : ""}${e.stop ? "+Stop" : ""}`).join(" → ")}`);
+      check(watch.seen.some((e) => e.status === "thinking") && watch.seen.at(-1).status === "ready" && watch.seen.every((e) => e.turns === watch.seen[0].turns),
+        "its status was thinking during the restart and ready after; no turn ran", watch.seen);
+      check(ui.seen.some((e) => e.picker === "disabled" || e.restart), "meanwhile the page's Model picker was disabled or replaced by the \"Starting the agent\" chip", ui.seen);
+      check(ui.seen.every((e) => !e.stop && !/Thinking/.test(e.typing)) && ui.seen.every((e) => !e.typing || e.typing === "Starting the agent…"),
+        "and the restart did not look like a turn: no Stop button, and the thread said nothing or \"Starting the agent…\", never \"Thinking…\"", ui.seen);
+      b = await waitFor("the fork's toolbar: the Model picker on Sonnet, enabled, and the notice", async () => { const now = await bar(); return now.model.includes(sonnetLabel) && now.notice === noticeText && (await modelBtn.getAttribute("aria-disabled")) !== "true" ? now : saw(now); }, { timeout: 15_000 });
+      check(!!b.folder && !b.fixed, "the folder is still a fixed chip and the model is not", b);
+      log(`    toolbar of the fork after the change: model "${b.model}", effort "${b.effort}", record ${JSON.stringify({ model: fv2.model, effort: fv2.effort ?? "" })}`);
+      if (low) {
+        // Its effort too, by a second PATCH and a second restart.
+        const patchedEffort = page.waitForResponse((r) => r.request().method() === "PATCH" && new URL(r.url()).pathname === `/api/chats/${fork}`, { timeout: 120_000 });
+        await pickEffort(page, "Low");
+        const pe = await patchedEffort;
+        const peBody = await pe.json().catch(() => ({}));
+        check(pe.status() === 200 && peBody.ok === true && pe.request().postDataJSON().effort === low, "picking effort Low is a PATCH of the fork's effort, answered {ok: true}", { status: pe.status(), body: peBody, sent: pe.request().postDataJSON() });
+        await waitFor("the fork is on Sonnet at effort low, ready and still fresh", async () => { const v = await chatView(fork); return v.model === SONNET && v.effort === low && v.status === "ready" && v.fresh === true || saw({ model: v.model, effort: v.effort, status: v.status, fresh: v.fresh, error: v.error }); }, { timeout: 60_000 });
+        await waitFor("the fork's toolbar shows effort Low, the pickers enabled, and the notice still", async () => { const now = await bar(); return /Low/.test(now.effort) && now.model.includes(sonnetLabel) && now.notice === noticeText && (await modelBtn.getAttribute("aria-disabled")) !== "true" ? now : saw(now); }, { timeout: 15_000 });
+      }
+      check((await branchRec(id, "main")).model === CLAUDE_MODEL_ID, "the source's main is still on Haiku", (await branchStates(id)).map((r) => [r.branch, r.model]));
+      const f0 = await send(page, fork, ASK);
+      const { items: itemsF } = await waitTurn(fork, f0);
+      check(/kiwi/i.test(lastReply(itemsF)), `the fork's reply has the word of the copied turn: ${JSON.stringify(lastReply(itemsF))}`, itemsF.map((i) => [i.kind, i.text ?? i.name]));
+      const fv3 = await chatView(fork), sf = await stateOf(fork, "main");
+      check(fv3.model === SONNET && (!low || fv3.effort === low) && !fv3.fresh && fv3.locked === true && sf.model === SONNET && !sf.fresh, "after its first message the fork is on Sonnet, at the effort picked, and not fresh", { view: stateBrief(fv3), state: stateBrief(sf) });
+      b = await waitFor("the fork's toolbar: the fixed chip with Sonnet's label, no Model picker, no notice", async () => { const now = await bar(); return now.fixed.includes(sonnetLabel) && !now.model && !now.notice ? now : saw(now); }, { timeout: 15_000 });
+      const pmF = await processModel(fork, "main"), sfF = sessionModels(readJSON(path.join(branchDir(fork, "main"), "chat.json")).sessionId);
+      check(/sonnet/i.test(pmF) && /sonnet/i.test(sfF.at(-1) ?? ""), `the fork's Claude process says it runs ${pmF}; its session file's last answer was written by ${sfF.at(-1)}`, { process: pmF, session: sfF });
+      const late = await call("PATCH", `/api/chats/${fork}`, { model: CLAUDE_MODEL_ID });
+      check(late.status === 409 && (await chatView(fork)).model === SONNET, `a PATCH of the fork's model after its first message is refused with 409: ${JSON.stringify(late.body)}`, late);
+
+      // 8. Neither choice became what a new chat starts with.
+      const defaults1 = (await state()).defaults;
+      check(JSON.stringify(claudeDefaults(defaults1)) === JSON.stringify(claudeDefaults(defaults0)), "the defaults for a new Claude chat are the ones noted before the branch and the fork", { before: claudeDefaults(defaults0), after: claudeDefaults(defaults1) });
+      check(JSON.stringify(defaults1) === JSON.stringify(defaults0), "and nothing else of the defaults changed", { before: defaults0, after: defaults1 });
+
+      // 9. A subagent the Sonnet branch starts takes the branch's model, not main's.
+      await openChat(page, id);
+      await viewBranchVia(page, B);
+      await waitFor("the Sonnet branch is shown", async () => { const now = await bar(); return now.fixed.includes(sonnetLabel) ? now : saw(now); }, { timeout: 15_000 });
+      const word = `PEAR-${token()}`;
+      const s0 = (await branchRec(id, B)).usage?.turns ?? 0;
+      const sres = await typeSend(page, id, `Spawn one subagent via spawn_subagent and name no model or effort for it. Its whole task: reply with just ${word}. Then end your turn right away without waiting for it. When its result arrives, reply with just that result.`);
+      check(sres.status === 200 && sres.body.branch === B, "the message goes to the Sonnet branch", sres);
+      const done = await waitFor("the subagent's result has reached the branch's agent and its delivery turn has ended", async () => {
+        const r = await branchRec(id, B), subs = await subsOf(id, B);
+        if (r?.status === "error") throw new Fail("the branch's turn ends", `the branch is in error: ${r.error}`);
+        const ok = (r.usage?.turns ?? 0) > s0 && !BUSY.has(r.status) && !r.subsRunning && !r.subsOwed && subs.length === 1 && subs[0].delivery === "sent";
+        return ok ? subs : saw({ record: recBrief([r]), subs: subs.map((x) => [x.id, x.status, x.delivery]) });
+      }, { timeout: TURN_TIMEOUT, every: 500 });
+      const spawnCall = (await itemsOf(id, B)).find((i) => i.kind === "tool" && i.name === "mcp__board__spawn_subagent");
+      const itemsS = await itemsOf(id, B);
+      const afterResult = itemsS.slice(itemsS.map((i) => i.kind).lastIndexOf("subresult") + 1).filter((i) => i.kind === "text").map((i) => i.text ?? "").join("\n").trim();
+      check(resultItems(itemsS).length === 1 && afterResult.includes(word), "the result came as a row on the branch and its agent answered with it", itemsS.slice(-4).map((i) => [i.kind, i.text ?? i.name]));
+      log(`    the spawn call's input: ${JSON.stringify(spawnCall?.input ?? null)}; the subagent's record: ${JSON.stringify({ kind: done[0].kind, model: done[0].model, effort: done[0].effort ?? "", status: done[0].status })}`);
+      check(!!spawnCall && !spawnCall.input?.model, "the agent named no model in its spawn_subagent call", spawnCall?.input);
+      check(done[0].kind === "claude" && done[0].model === SONNET && (!low || done[0].effort === low), "the subagent's record names the branch's model and effort, not main's", done[0]);
+      const onDisk = readJSON(path.join(branchDir(id, B), "subagents", done[0].id, "subagent.json"));
+      check(onDisk.model === SONNET, "and so does its subagent.json", { model: onDisk.model, effort: onDisk.effort, kind: onDisk.kind });
+      check((await subsOf(id, "main")).length === 0 && (await branchRec(id, "main")).model === CLAUDE_MODEL_ID, "main has no subagent and is still on Haiku", { subs: await subsOf(id, "main"), main: stateBrief(await stateOf(id, "main")) });
+    } finally { page.off("request", onRequest); }
   });
 }
 
@@ -1338,6 +2482,7 @@ try {
   await browser?.close().catch(() => {});
   await stopServer().catch(() => {});
   openStopGate();
+  openGates(...GATES);
   fs.rmSync(CURSOR_CFG, { recursive: true, force: true });
   fs.rmSync(ACP_LOG, { force: true }); // never leave the adapter trace behind
 }

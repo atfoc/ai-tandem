@@ -34,8 +34,9 @@ func (m *Manager) subDir(chat, sid string) string {
 
 // loadSubs reads every subagents/<sid>/subagent.json of a chat whose transcript was just loaded.
 // A subagent still running belongs to a process that is gone (server restart, crash): it is marked
-// stopped and written. Unreadable folders are logged and skipped. c.mu held.
-func (m *Manager) loadSubs(c *Chat) {
+// stopped and written; those are returned, in no order. Unreadable folders are logged and skipped.
+// c.mu held.
+func (m *Manager) loadSubs(c *Chat) (cut []*sub) {
 	c.subs, c.subByTool = map[string]*sub{}, map[string]string{}
 	dir := filepath.Join(m.chatDir(c.meta.ID), "subagents")
 	ents, err := os.ReadDir(dir)
@@ -43,7 +44,7 @@ func (m *Manager) loadSubs(c *Chat) {
 		if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("chats: subagents of %s: %v", c.meta.ID, err)
 		}
-		return
+		return nil
 	}
 	for _, e := range ents {
 		var sa model.Subagent
@@ -64,8 +65,10 @@ func (m *Manager) loadSubs(c *Chat) {
 			s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
 			ended(s, endRestart)
 			m.saveSub(c, s)
+			cut = append(cut, s)
 		}
 	}
+	return cut
 }
 
 // subTr returns the subagent's thread, reading its items.jsonl the first time. c.mu held.

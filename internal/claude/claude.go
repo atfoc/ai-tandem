@@ -76,8 +76,8 @@ type proc struct {
 	// taken (only touched by the read loop after start).
 	initID string
 	// initDone is closed when the answer to the initialize request has arrived (an error answer
-	// included). early is closed when a result line came before that answer (the process failed at
-	// startup), after earlyErr got the first of its errors[] ("" = none). Both are closed by the
+	// included). early is closed when an errored result line came before that answer (the process
+	// failed at startup), after earlyErr got the first of its errors[] ("" = none). Both are closed by the
 	// read loop only and are for SpawnFork's wait.
 	initDone chan struct{}
 	early    chan struct{}
@@ -91,7 +91,7 @@ type proc struct {
 	taskTool map[string]string // subagent task_id → the parent's Agent tool_use id
 	subModel map[string]string // Agent tool_use id → the subagent's model
 	windows  map[string]int    // model id → context window, from result.modelUsage
-	orphan   bool              // a task_notification came for an agent this process never started
+	orphans  int               // task_notifications for tasks this process never started whose empty result is still to come
 	point    string            // uuid of the turn's last own assistant or user line so far: its fork point
 }
 
@@ -385,7 +385,8 @@ func (p *proc) readLoop(stdout io.Reader) {
 			p.reply(sc.Bytes()) // answers to our interrupts are dropped: the result line tells the rest
 			continue
 		}
-		if m["type"] == "result" && p.initID != "" {
+		// Only an errored result is a failed start: the empty result of a lost task may come here too.
+		if isErr, _ := m["is_error"].(bool); m["type"] == "result" && p.initID != "" && (isErr || len(list(m["errors"])) > 0) {
 			select {
 			case <-p.early: // not the first one
 			default:

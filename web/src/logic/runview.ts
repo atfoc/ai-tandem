@@ -76,16 +76,16 @@ export function escIn(v: ViewState, transcript = false): ViewState | "transcript
 /** The agent whose transcript the panel beside a run shows (State.runAgent). */
 export type RunAgentRef = { run: string; agent: string };
 /** The part of the app's state a transcript opens and closes in. */
-export type PanelState = { runAgent: RunAgentRef | null; subDrawer: { chat: string; sub: string } | null };
+export type PanelState<D extends { chat: string } = { chat: string; sub: string }> = { runAgent: RunAgentRef | null; subDrawer: D | null };
 
 /** An agent's transcript opens in the panel beside its run, over the chat that shows there. A
  *  subagent drawer of anything else closes. */
-export const showAgentIn = (s: PanelState, run: string, agent: string): PanelState =>
+export const showAgentIn = <D extends { chat: string }>(s: PanelState<D>, run: string, agent: string): PanelState<D> =>
   (s.runAgent?.run === run && s.runAgent.agent === agent ? s
     : { runAgent: { run, agent }, subDrawer: s.subDrawer?.chat === agent ? s.subDrawer : null });
 
 /** The transcript closes (its ×, Esc, the way back to the chat), with its subagent's drawer. */
-export const hideAgentIn = (s: PanelState): PanelState =>
+export const hideAgentIn = <D extends { chat: string }>(s: PanelState<D>): PanelState<D> =>
   (s.runAgent == null ? s : { runAgent: null, subDrawer: s.subDrawer?.chat === s.runAgent.agent ? null : s.subDrawer });
 
 /** What the panel beside a run shows: an agent's transcript (back: the chat it lies over, which

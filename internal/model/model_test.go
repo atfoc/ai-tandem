@@ -75,6 +75,104 @@ func TestViewSubCountsJSON(t *testing.T) {
 	}
 }
 
+// The two counts over a chat's branches go to clients as "working" and "approvals", and are left
+// out when zero.
+func TestViewBranchCountsJSON(t *testing.T) {
+	b, err := json.Marshal(ChatView{ID: "c1", Status: StatusReady, Working: 3, Approvals: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"working":3`, `"approvals":1`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("view JSON missing %s: %s", want, b)
+		}
+	}
+	b, err = json.Marshal(ViewOf(ChatMeta{ID: "c1"}, StatusReady, "", "", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "working") || strings.Contains(string(b), "approvals") {
+		t.Errorf("view JSON has counts for a chat no branch of which works: %s", b)
+	}
+}
+
+// A top-level chat's meta holds the drafts of all its branches: its view has main's, and says
+// whether any branch has one. The draft a chat had before that is not shown: the chat manager
+// moves it when it loads the chat.
+func TestViewDrafts(t *testing.T) {
+	d, o := &Draft{Text: "on main"}, &Draft{Text: "on a branch"}
+	for _, tc := range []struct {
+		name  string
+		meta  ChatMeta
+		draft *Draft
+		has   bool
+	}{
+		{"none", ChatMeta{ID: "c1"}, nil, false},
+		{"main", ChatMeta{ID: "c1", Drafts: map[string]*Draft{MainBranch: d}}, d, true},
+		{"another branch", ChatMeta{ID: "c1", Drafts: map[string]*Draft{"b1": o}}, nil, true},
+		{"both", ChatMeta{ID: "c1", Drafts: map[string]*Draft{MainBranch: d, "b1": o}}, d, true},
+		{"the old field", ChatMeta{ID: "c1", Draft: d}, nil, false},
+	} {
+		if v := ViewOf(tc.meta, StatusReady, "", "", false); v.Draft != tc.draft || v.HasDraft != tc.has {
+			t.Errorf("%s: draft %+v, hasDraft %v", tc.name, v.Draft, v.HasDraft)
+		}
+	}
+	b, err := json.Marshal(ChatMeta{ID: "c1", Drafts: map[string]*Draft{MainBranch: d, "b1": o}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"drafts":{"b1":{"text":"on a branch"},"main":{"text":"on main"}}`) || strings.Contains(string(b), `"draft":`) {
+		t.Errorf("meta JSON %s", b)
+	}
+	b, err = json.Marshal(ViewOf(ChatMeta{ID: "c1", Drafts: map[string]*Draft{"b1": o}}, StatusReady, "", "", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"hasDraft":true`) || strings.Contains(string(b), `"draft"`) {
+		t.Errorf("view JSON %s", b)
+	}
+	b, err = json.Marshal(ViewOf(ChatMeta{ID: "c1"}, StatusReady, "", "", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "raft") {
+		t.Errorf("view JSON of a chat without a draft: %s", b)
+	}
+}
+
+// A state record is the session side of a branch's own view, under the chat's id and the branch's.
+func TestStateOf(t *testing.T) {
+	d := &Draft{Text: "typed"}
+	v := ViewOf(ChatMeta{ID: "c1/branches/b1", Name: "never shown", Group: "g", Cwd: "/w", Model: "opus", Effort: "max",
+		Locked: true, Usage: Usage{Turns: 2, CtxIn: 7, CtxWindow: 100}}, StatusTool, "Bash", "boom", true)
+	v.SubsRunning, v.SubsOwed, v.Draft = 2, 1, d // a branch's draft is not in its own meta
+	st := StateOf("c1", "b1", v)
+	want := BranchState{Chat: "c1", Branch: "b1", Cwd: "/w", Model: "opus", Effort: "max", Locked: true,
+		Usage: v.Usage, Status: StatusTool, StatusTool: "Bash", Error: "boom", FolderMissing: true,
+		SubsRunning: 2, SubsOwed: 1, Draft: d}
+	if st != want { // comparable, as ChatView is
+		t.Fatalf("StateOf %+v, want %+v", st, want)
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const full = `{"chat":"c1","branch":"b1","cwd":"/w","model":"opus","effort":"max","locked":true,` +
+		`"usage":{"ctxIn":7,"ctxOut":0,"ctxWindow":100,"turns":2},"status":"tool","statusTool":"Bash","error":"boom",` +
+		`"folderMissing":true,"subsRunning":2,"subsOwed":1,"draft":{"text":"typed"}}`
+	if string(b) != full {
+		t.Errorf("state record JSON\n got %s\nwant %s", b, full)
+	}
+	b, err = json.Marshal(StateOf("c1", MainBranch, ViewOf(ChatMeta{ID: "c1"}, StatusReady, "", "", false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bare = `{"chat":"c1","branch":"main","cwd":"","model":"","locked":false,"usage":{"ctxIn":0,"ctxOut":0,"ctxWindow":0,"turns":0},"status":"ready"}`
+	if string(b) != bare {
+		t.Errorf("state record JSON of a new chat\n got %s\nwant %s", b, bare)
+	}
+}
+
 func TestStateCatalogLegacyFallback(t *testing.T) {
 	legacy := &Catalog{Models: []CatalogModel{{ID: "composer-2", Label: "Composer 2", Provider: "cursor"}}, Default: ModelChoice{Model: "legacy"}}
 	generic := &Catalog{Models: []CatalogModel{{ID: "deepseek-flash", Label: "DeepSeek Flash", Provider: "deepseek"}}, Default: ModelChoice{Model: "generic"}}

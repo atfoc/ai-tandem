@@ -112,8 +112,8 @@ func TestHumanSendCarriesOwedResults(t *testing.T) {
 
 	// It is a human turn: thinking, active, the hold released, the draft cleared.
 	m := e.meta(id)
-	if st := e.status(id); st != model.StatusThinking || !m.TurnActive || e.holding(id) || m.Draft != nil {
-		t.Fatalf("status %q, turnActive %v, held %v, draft %+v", st, m.TurnActive, e.holding(id), m.Draft)
+	if st := e.status(id); st != model.StatusThinking || !m.TurnActive || e.holding(id) || m.Drafts != nil {
+		t.Fatalf("status %q, turnActive %v, held %v, drafts %+v", st, m.TurnActive, e.holding(id), m.Drafts)
 	}
 	// Clients are sent each record's new state and the rows.
 	got := evs.drain(t, e.br)

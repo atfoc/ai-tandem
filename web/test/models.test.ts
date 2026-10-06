@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupModels, modelMatches, filterModels } from "../src/logic/models.ts";
-import type { CatalogModel } from "../src/types.ts";
+import { groupModels, modelMatches, filterModels, pickerMode, moveChoice, sameChoice, tooSmall, modelNotice, PI_RESERVE } from "../src/logic/models.ts";
+import type { Catalog, CatalogModel, Status } from "../src/types.ts";
 
 const ids = (ms: CatalogModel[]) => ms.map((m) => m.id);
 
@@ -288,4 +288,86 @@ test("filterModels: punctuation, case, spaces, empty and no-match queries", () =
   assert.deepEqual(ids(filterModels(piCatalog, "DEEPSEEK deepseek")), ["deepseek/deepseek-chat"]);
   assert.deepEqual(filterModels(piCatalog, "deepseek deepseek deepseek"), []);
   assert.deepEqual(ids(filterModels(claudeCatalog, "everyday")), ["opus", "claude-opus-5"]);
+});
+
+// ---- the choice of a new branch or a fork
+
+test("pickerMode: a pending move wins", () => {
+  assert.equal(pickerMode({ locked: true, status: "writing" }, true), "move");
+  assert.equal(pickerMode({ locked: false, status: "ready" }, true), "move");
+  assert.equal(pickerMode({ locked: true, fresh: true, status: "ready" }, true), "move");
+});
+
+test("pickerMode: an unlocked chat is patched, whatever its status", () => {
+  assert.equal(pickerMode({ locked: false, status: "ready" }, false), "patch");
+  assert.equal(pickerMode({ locked: false, status: "thinking" }, false), "patch");
+});
+
+test("pickerMode: a fresh fork is patched while idle, fixed while busy", () => {
+  for (const status of ["ready", "error"] as Status[]) assert.equal(pickerMode({ locked: true, fresh: true, status }, false), "patch", status);
+  for (const status of ["thinking", "writing", "tool", "approval"] as Status[]) assert.equal(pickerMode({ locked: true, fresh: true, status }, false), "fixed", status);
+});
+
+test("pickerMode: a locked chat is fixed", () => {
+  assert.equal(pickerMode({ locked: true, status: "ready" }, false), "fixed");
+  assert.equal(pickerMode({ locked: true, fresh: false, status: "ready" }, false), "fixed");
+});
+
+test("moveChoice: the move's own once it has a model, else the source's", () => {
+  const source = { model: "opus", effort: "high" };
+  assert.equal(moveChoice(undefined, source), source);
+  assert.equal(moveChoice({}, source), source);
+  assert.equal(moveChoice({ effort: "low" }, source), source);
+  assert.deepEqual(moveChoice({ model: "haiku", effort: "low" }, source), { model: "haiku", effort: "low" });
+  assert.deepEqual(moveChoice({ model: "haiku" }, source), { model: "haiku", effort: undefined }); // not the source's effort
+});
+
+test("sameChoice: equal model and effort; an absent and an empty effort are the same", () => {
+  assert.equal(sameChoice({ model: "a", effort: "high" }, { model: "a", effort: "high" }), true);
+  assert.equal(sameChoice({ model: "a" }, { model: "a", effort: "" }), true);
+  assert.equal(sameChoice({ model: "a", effort: undefined }, { model: "a" }), true);
+  assert.equal(sameChoice({ model: "a", effort: "high" }, { model: "a" }), false);
+  assert.equal(sameChoice({ model: "a", effort: "high" }, { model: "a", effort: "low" }), false);
+  assert.equal(sameChoice({ model: "a", effort: "high" }, { model: "b", effort: "high" }), false);
+});
+
+const small: CatalogModel = { id: "p/small", label: "Small", contextWindow: 100000 };
+
+test("tooSmall: pi only, over the window less the reserve", () => {
+  assert.equal(PI_RESERVE, 16384);
+  assert.equal(tooSmall("pi", 100000 - PI_RESERVE, small), false); // at the limit
+  assert.equal(tooSmall("pi", 100000 - PI_RESERVE + 1, small), true);
+  assert.equal(tooSmall("claude", 500000, small), false);
+  assert.equal(tooSmall("cursor", 500000, small), false);
+});
+
+test("tooSmall: false when a size is unknown", () => {
+  assert.equal(tooSmall("pi", undefined, small), false);
+  assert.equal(tooSmall("pi", 500000, undefined), false);
+  assert.equal(tooSmall("pi", 500000, { id: "x", label: "X" }), false);
+  assert.equal(tooSmall("pi", 0, small), false);
+});
+
+const noticeCat: Catalog = { models: [small, { id: "p/big", label: "Big", contextWindow: 1000000 }], default: { model: "p/big" } as Catalog["default"] };
+
+test("modelNotice: null without a parent, at the start, or on the parent's model", () => {
+  const parent = { model: "p/big", effort: "high" };
+  assert.equal(modelNotice({ agent: "pi", choice: { model: "p/small" }, parent: undefined, at: 4, ctxIn: 500000, cat: noticeCat }), null);
+  assert.equal(modelNotice({ agent: "pi", choice: { model: "p/small" }, parent, at: 0, ctxIn: 500000, cat: noticeCat }), null);
+  assert.equal(modelNotice({ agent: "pi", choice: { model: "p/big", effort: "low" }, parent, at: 4, ctxIn: 500000, cat: noticeCat }), null); // effort only
+});
+
+test("modelNotice: another model tells the price, with the parent's label", () => {
+  const price = (label: string) => ({ text: `Another model than the conversation so far (${label}): the history is read again once, at full price.`, warn: false });
+  assert.deepEqual(modelNotice({ agent: "pi", choice: { model: "p/small" }, parent: { model: "p/big" }, at: 4, ctxIn: 1000, cat: noticeCat }), price("Big"));
+  assert.deepEqual(modelNotice({ agent: "claude", choice: { model: "p/small" }, parent: { model: "p/big" }, at: 4, ctxIn: 500000, cat: noticeCat }), price("Big")); // not pi: no guard
+  assert.deepEqual(modelNotice({ agent: "pi", choice: { model: "p/small" }, parent: { model: "p/big" }, at: 4, cat: noticeCat }), price("Big"));              // size unknown
+  assert.deepEqual(modelNotice({ agent: "pi", choice: { model: "p/small" }, parent: { model: "gone" }, at: 4, cat: noticeCat }), price("gone"));              // the id when the row is unknown
+  assert.deepEqual(modelNotice({ agent: "pi", choice: { model: "a" }, parent: { model: "b" }, at: 1, ctxIn: 500000 }), price("b"));                          // no catalog
+});
+
+test("modelNotice: a pi model too small for the conversation warns", () => {
+  assert.deepEqual(modelNotice({ agent: "pi", choice: { model: "p/small" }, parent: { model: "p/big" }, at: 4, ctxIn: 100000 - PI_RESERVE + 1, cat: noticeCat }),
+    { text: "Small has too small a context window for this conversation. Pick a larger model.", warn: true });
+  assert.equal(modelNotice({ agent: "pi", choice: { model: "p/small" }, parent: { model: "p/big" }, at: 4, ctxIn: 100000 - PI_RESERVE, cat: noticeCat })?.warn, false);
 });

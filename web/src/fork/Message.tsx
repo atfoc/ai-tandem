@@ -8,7 +8,7 @@
 import { useRef, useState } from "react";
 import "./fork.css";
 import "./message.css";
-import { useStore, isBusy, isLegacy, shownBranch } from "../store.ts";
+import { useStore, isBusy, isLegacy, shownBranch, threadOf } from "../store.ts";
 import { openChat } from "../Sidebar.tsx";
 import { BranchIcon } from "../icons.tsx";
 import { messageActions } from "../logic/forkpoints.ts";
@@ -23,12 +23,13 @@ const EMPTY: Item[] = [];
 /** A message's fork actions and label; the last child of the chat's own .msg.user and .msg.assistant. */
 export function MessageExtras({ chat, index, item }: { chat: ChatView; index: number; item: Item }) {
   // The shown branch's full list, even while the thread is shown cut for a pending move.
-  const items = useStore((s) => s.items[chat.id]?.items) ?? EMPTY;
+  const items = useStore((s) => threadOf(s, chat.id)?.items) ?? EMPTY;
   const shown = useStore((s) => shownBranch(s, chat.id));
   const view = useStore((s) => viewFor(s.trees[chat.id], shownBranch(s, chat.id)));
   const [labeling, setLabeling] = useState(false);
   const running = useRef(false); // a fork or a move was asked for and has not answered yet
 
+  // chat is the view of the branch shown (shownView): its status is that branch's, not the chat's.
   const acts = messageActions({ agent: chat.agent, items, index, busy: isBusy(chat.status), readOnly: !!chat.archived || isLegacy(chat) });
   const label = labelAt(view, shown, index);
   const marker = view ? markerAt(threadTree(view, shown, chat.agent, items), shown, index) : null;

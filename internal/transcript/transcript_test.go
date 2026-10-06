@@ -900,3 +900,92 @@ func mustLoad(t *testing.T, path string) *Transcript {
 	}
 	return tr
 }
+
+// CloseAll closes every open item of a thread, in one read from a file and in a live one, leaves
+// the closed ones alone, and what it closed is written by the next Flush.
+func TestCloseAll(t *testing.T) {
+	ok := "ok"
+	path := filepath.Join(t.TempDir(), "chat", "items.jsonl")
+	stored := []model.Item{
+		{Kind: "user", Text: "go"},
+		{Kind: "text", Text: "cut he"},                            // unfinished
+		{Kind: "tool", ToolID: "t1", Name: "Bash"},                // no result
+		{Kind: "tool", ToolID: "t2", Name: "Read", Result: &ok},   // answered
+		{Kind: "tool", ToolID: "t3", Name: "Write", Denied: true}, // denied
+		{Kind: "perm", RequestID: "r1", ToolName: "Bash"},         // undecided: Load denies it
+		{Kind: "perm", RequestID: "r2", ToolName: "Read", Decided: "allow"},
+		{Kind: "text", Text: "said", Done: true},
+		{Kind: "note", Tone: "muted", Text: "a note"},
+		{Kind: "subresult", Subagent: "s1"},
+		{Kind: "end", Point: "p1"},
+	}
+	if err := WriteItems(path, stored); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ups := tr.CloseAll()
+	if len(ups) != 2 || ups[0].Index != 1 || ups[1].Index != 2 {
+		t.Fatalf("updates %+v", ups)
+	}
+	want := append([]model.Item(nil), stored...)
+	want[1].Done = true
+	want[2].Result, want[2].IsError = new(string), true
+	want[5].Decided = "deny"
+	if got := items(tr); !reflect.DeepEqual(got, want) {
+		t.Fatalf("items %+v\nwant  %+v", got, want)
+	}
+	if tr.CloseAll() != nil {
+		t.Fatal("a second CloseAll changed something")
+	}
+	if err := tr.Flush(false); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items(again); !reflect.DeepEqual(got, want) {
+		t.Fatalf("items in the file %+v\nwant %+v", got, want)
+	}
+	if !tr.HasSubResult("s1") || !tr.HasTool("t1") {
+		t.Fatal("CloseAll lost the thread's indexes")
+	}
+
+	// A live thread: the open text, a running tool call and an open request.
+	live := newT(t)
+	live.AddUser("go", "", nil)
+	live.Apply(agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Bash"})
+	live.Apply(agent.Event{Kind: agent.EvPermRequest, PermID: "r1", ToolName: "Bash", ToolID: "t1"})
+	live.Apply(agent.Event{Kind: agent.EvTextStart, MsgID: "m1"})
+	live.Apply(agent.Event{Kind: agent.EvTextDelta, Text: "half"})
+	if !live.PermOpen("", "r1") {
+		t.Fatal("the request is not open")
+	}
+	ups = live.CloseAll()
+	if len(ups) != 3 {
+		t.Fatalf("updates %+v", ups)
+	}
+	for i, it := range items(live) {
+		if !settled(it) {
+			t.Fatalf("item %d is open: %+v", i, it)
+		}
+	}
+	got := items(live)
+	if it := got[1]; it.Result == nil || *it.Result != "" || !it.IsError || it.Denied {
+		t.Fatalf("tool %+v", it)
+	}
+	if got[2].Decided != "deny" || !got[3].Done || got[3].Text != "half" {
+		t.Fatalf("perm %+v, text %+v", got[2], got[3])
+	}
+	if live.PermOpen("", "r1") || live.Decided("", "r1", true) != nil {
+		t.Fatal("the request can still be decided")
+	}
+	// Text that comes after is a new item, not more of the closed one.
+	live.Apply(agent.Event{Kind: agent.EvTextDelta, Text: "new"})
+	if got := items(live); len(got) != 5 || got[3].Text != "half" || got[4].Text != "new" {
+		t.Fatalf("items %+v", got)
+	}
+}

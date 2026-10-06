@@ -193,29 +193,31 @@ func (m *Manager) treeChat(id string) (model.AgentKind, error) {
 // chat's first load has side effects, see trOf and loadSubs): the live list when the branch's
 // transcript is already loaded, as it is ahead of the file (a reply is done before the pump has
 // flushed it), else items.jsonl read directly. A branch other than main must have its folder.
+// running is whether the branch's agent is working (see busy): never for a branch not loaded.
 // The tree lock must not be held.
-func (m *Manager) branchItems(chat, branch string) ([]model.Item, error) {
+func (m *Manager) branchItems(chat, branch string) (items []model.Item, running bool, err error) {
 	id := branchChatID(chat, branch)
 	if c, err := m.get(id); err == nil {
 		c.mu.Lock()
 		if c.tr != nil {
 			_, items := c.tr.Snapshot()
+			running := busy(c)
 			c.mu.Unlock()
-			return items, nil
+			return items, running, nil
 		}
 		c.mu.Unlock()
 	}
 	if branch != model.MainBranch {
 		if _, err := os.Stat(m.chatDir(id)); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	tr, err := transcript.Load(m.itemsPath(id))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	_, items := tr.Snapshot()
-	return items, nil
+	_, items = tr.Snapshot()
+	return items, false, nil
 }
 
 // treeText is what the tree shows of an item: its text, or, for a message that is only quotes,
@@ -232,8 +234,9 @@ func treeText(it model.Item) string {
 }
 
 // treeItems is a branch's own part (index >= at) as the tree shows it: the user and text items,
-// with the point rules applied to the branch's whole list.
-func treeItems(a model.AgentKind, items []model.Item, at int) []model.TreeItem {
+// with the point rules applied to the branch's whole list. running is whether the branch's agent
+// is working.
+func treeItems(a model.AgentKind, items []model.Item, at int, running bool) []model.TreeItem {
 	out := []model.TreeItem{}
 	for i := max(at, 0); i < len(items); i++ {
 		it := items[i]
@@ -242,12 +245,12 @@ func treeItems(a model.AgentKind, items []model.Item, at int) []model.TreeItem {
 		case "user":
 			if count, ok := cutBefore(items, i); ok {
 				ti.Before = &count
-				ti.OK = pointOK(a, items, count)
+				ti.OK = pointOK(a, items, count, running)
 			}
 		case "text":
 			ti.Done = it.Done
 			if ti.End = turnEnd(items, i); ti.End > 0 {
-				ti.OK = pointOK(a, items, ti.End)
+				ti.OK = pointOK(a, items, ti.End, running)
 			}
 		default:
 			continue
@@ -255,6 +258,13 @@ func treeItems(a model.AgentKind, items []model.Item, at int) []model.TreeItem {
 		out = append(out, ti)
 	}
 	return out
+}
+
+// branchView is the own part of the branch b of the tree record as the tree shows it, items being
+// the branch's whole list: what Tree answers of it and what a tree event carries.
+func branchView(a model.AgentKind, b model.TreeBranch, items []model.Item, running bool) model.TreeBranchView {
+	return model.TreeBranchView{ID: b.ID, From: b.From, At: b.At, Len: len(items),
+		Items: treeItems(a, items, b.At, running)}
 }
 
 // Tree is the whole tree of the top-level chat id: main, then the recorded branches whose folder
@@ -270,13 +280,12 @@ func (m *Manager) Tree(id string) (model.TreeView, error) {
 		log.Printf("chats: tree %s: %v", id, err)
 		t = model.Tree{}
 	}
-	main, err := m.branchItems(id, model.MainBranch)
+	main, running, err := m.branchItems(id, model.MainBranch)
 	if err != nil {
 		return model.TreeView{}, err
 	}
 	tv := model.TreeView{Current: model.MainBranch, Labels: []model.TreeLabel{}}
-	tv.Branches = append(tv.Branches, model.TreeBranchView{ID: model.MainBranch, Len: len(main),
-		Items: treeItems(a, main, 0)})
+	tv.Branches = append(tv.Branches, branchView(a, model.TreeBranch{ID: model.MainBranch}, main, running))
 	lists := map[string][]model.Item{model.MainBranch: main} // the branches in the view
 	for _, b := range t.Branches {
 		if _, dup := lists[b.ID]; dup || b.ID == "" || b.At < 0 {
@@ -285,14 +294,13 @@ func (m *Manager) Tree(id string) (model.TreeView, error) {
 		if _, known := lists[b.From]; !known {
 			continue
 		}
-		items, err := m.branchItems(id, b.ID)
+		items, running, err := m.branchItems(id, b.ID)
 		if err != nil {
 			log.Printf("chats: tree %s: branch %s left out: %v", id, b.ID, err)
 			continue
 		}
 		lists[b.ID] = items
-		tv.Branches = append(tv.Branches, model.TreeBranchView{ID: b.ID, From: b.From, At: b.At,
-			Len: len(items), Items: treeItems(a, items, b.At)})
+		tv.Branches = append(tv.Branches, branchView(a, b, items, running))
 	}
 	if _, ok := lists[t.Current]; ok {
 		tv.Current = t.Current
@@ -306,18 +314,98 @@ func (m *Manager) Tree(id string) (model.TreeView, error) {
 	return tv, nil
 }
 
+// The tree event keeps the tree a client holds (the answer of Tree) right without another read of
+// it. It is {type:"tree", chat: <the top-level id>} with one or more parts, each replacing that
+// part of the client's tree:
+//
+//	branch   one branch's own part, as Tree gives it now; a branch the client lacks is added
+//	labels   all labels of the record, as SetLabel answers them (never null)
+//	current  the id of the current branch
+//
+// A whole tree is never sent: it would read the items of every branch that is not loaded, at
+// every turn boundary. A branch's part is sent when its agent starts or stops working, when its
+// items change while it is not working, and when it is listed; not for the items of a running
+// turn, which the turn's end sends, and never for a branch whose transcript is not loaded. A fork
+// is told by the chat events alone.
+
+// emitTree sends a tree event of the top-level chat top, whose id is chat, with the parts asked
+// for: the part of the chat object branch (nil = none), the labels, the current branch. Each is
+// read inside top.treeOutMu, which is held to the broadcast: the tree events of a chat reach
+// clients in the order their parts were read. With ifDirty the branch's part is left out when no
+// change waits for it (Chat.treeDirty), an earlier event having told it. An event with no part
+// is not sent, and none once the chat was deleted (see cast).
+//
+// An unreadable record still gives main's part and the current branch, as Tree does; no other
+// branch's part and no labels. No chat's mu may be held, and no treeMu, sendMu nor Manager.mu.
+func (m *Manager) emitTree(chat string, top, branch *Chat, labels, current, ifDirty bool) {
+	top.treeOutMu.Lock()
+	defer top.treeOutMu.Unlock()
+	// The flag is cleared before the part is read, both in here: a change that comes after the
+	// read finds it cleared and its own event sends the part again.
+	part := branch != nil && (branch.treeDirty.Swap(false) || !ifDirty)
+	var t model.Tree
+	var terr error
+	if labels || (part && branch != top) { // main's part needs nothing of the record
+		if t, terr = m.readTree(chat); terr != nil {
+			log.Printf("chats: tree %s: %v", chat, terr)
+		}
+	}
+	ev := map[string]any{"type": "tree", "chat": chat}
+	if part && (terr == nil || branch == top) {
+		if v, ok := treePart(t, branch); ok {
+			ev["branch"] = v
+		}
+	}
+	if labels && terr == nil {
+		ev["labels"] = append([]model.TreeLabel{}, t.Labels...)
+	}
+	if current {
+		ev["current"] = model.MainBranch
+		if cur := m.current(top); cur != top {
+			ev["current"] = cur.branch
+		}
+	}
+	if len(ev) > 2 {
+		m.cast(top, ev)
+	}
+}
+
+// treePart is the own part of the chat object c's branch as Tree gives it now, t being the tree
+// record of its chat. ok is false when there is none to send: the branch is deleted, not listed
+// or not in the record, or its transcript is not loaded (the part would be the file's, which a
+// client has from Tree). No chat's mu may be held.
+func treePart(t model.Tree, c *Chat) (v model.TreeBranchView, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.deleted || c.unlisted || c.tr == nil {
+		return v, false
+	}
+	_, id := splitID(c.meta.ID)
+	b, ok := branchOf(t, id)
+	if !ok {
+		return v, false
+	}
+	_, items := c.tr.Snapshot()
+	return branchView(c.meta.Agent, b, items, busy(c)), true
+}
+
 // SetLabel names the user message or reply at index item of branch; blank text removes the name.
 // The name is kept as one clean line: every control character (a newline, a tab, NUL, ESC)
 // becomes a space and the spaces around the name go. A name longer than maxLabel characters is
 // refused with ErrLongLabel and changes nothing.
 // The label is kept under the branch that owns the item, so every branch passing through it
-// shows it. It is allowed while the chat is busy, archived or legacy, and sends no event: the
-// answer is all the chat's labels after the change (never nil).
+// shows it. It is allowed while the chat is busy, archived or legacy. The answer is all the
+// chat's labels after the change (never nil); when the record changed they are sent to every
+// client as well, in a tree event (see emitTree).
 func (m *Manager) SetLabel(id, branch string, item int, text string) ([]model.TreeLabel, error) {
 	if err := m.person(id); err != nil {
 		return nil, err
 	}
 	if _, err := m.treeChat(id); err != nil {
+		return nil, err
+	}
+	top, err := m.topChat(id)
+	if err != nil {
 		return nil, err
 	}
 	t, err := m.readTree(id)
@@ -327,7 +415,7 @@ func (m *Manager) SetLabel(id, branch string, item int, text string) ([]model.Tr
 	if _, ok := branchOf(t, branch); !ok {
 		return nil, ErrNoBranch
 	}
-	items, err := m.branchItems(id, branch)
+	items, _, err := m.branchItems(id, branch)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, ErrNoBranch // recorded, but its folder is gone: Tree leaves it out too
 	}
@@ -372,8 +460,12 @@ func (m *Manager) SetLabel(id, branch string, item int, text string) ([]model.Tr
 		}
 		return nil
 	})
-	if err != nil && !errors.Is(err, errTreeSame) {
+	if errors.Is(err, errTreeSame) {
+		return labels, nil
+	}
+	if err != nil {
 		return nil, err
 	}
+	m.emitTree(id, top, nil, true, false, false)
 	return labels, nil
 }

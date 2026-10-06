@@ -130,21 +130,34 @@ func TestStoppedSubagentInterruptedBeforeClose(t *testing.T) {
 	}
 }
 
-// A switch to another branch stops the branch that is left, and the subagent running on it gets
-// the interrupt before its close as well.
-func TestBranchSwitchInterruptsSubagent(t *testing.T) {
+// A Send that makes another branch the current one stops nothing of the branch that is left: the
+// subagent running on it runs on, and gets no interrupt. The stop of that branch alone ends it,
+// with the interrupt before its close.
+func TestBranchSwitchLeavesSubagentRunning(t *testing.T) {
 	e := newEnv(t)
-	id, _ := e.talked(model.Claude, "", 2)
+	id, mainAg := e.talked(model.Claude, "", 2)
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
 	child := waitChild(t, e.claude, 2)
 
-	e.branchTo(id, newAt(3), "aside")
-	waitFor(t, "subagent closed after the switch", func() bool { return agentClosed(child) })
-	if n := child.interrupted(); n != 1 {
-		t.Fatalf("the subagent of the branch that was left got %d interrupts before its close", n)
+	b, _, _ := e.branchTo(id, newAt(3), "aside")
+	e.m.handoffs.Wait()
+	if agentClosed(child) || child.interrupted() != 0 || mainAg.isClosed() {
+		t.Fatalf("after the switch: the subagent closed %v, %d interrupts, its parent closed %v", agentClosed(child), child.interrupted(), mainAg.isClosed())
 	}
-	if s := e.subFile(id, sa.ID); s.Status != model.SubStopped {
+	if s := e.subFile(id, sa.ID); s.Status != model.SubRunning {
 		t.Fatalf("after the switch %+v", s)
+	}
+
+	// The branch that is not current is stopped by name, and the current one is not touched.
+	if err := e.m.InterruptOf(id, model.MainBranch); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "subagent closed after the stop of its branch", func() bool { return agentClosed(child) })
+	if s := e.subFile(id, sa.ID); s.Status != model.SubStopped || child.interrupted() != 1 {
+		t.Fatalf("after the stop of its branch %+v, %d interrupts", s, child.interrupted())
+	}
+	if e.cur(id) != b || !e.m.BusyOf(id, b) {
+		t.Fatalf("the stop of main touched the current branch %q", e.cur(id))
 	}
 }
 

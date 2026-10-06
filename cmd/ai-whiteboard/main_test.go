@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/boardapi"
+	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/store"
 )
 
@@ -80,6 +82,30 @@ func TestMCPPortSetting(t *testing.T) {
 	t.Setenv("AIWB_MCP_PORT", " 1234 ")
 	if got := mcpPort(); got != 1234 {
 		t.Fatalf("override: got %d, want 1234", got)
+	}
+}
+
+// The hidden AIWB_CHAT_CAP and AIWB_APP_CAP overrides lower the cap on running turns; unset or
+// invalid, the caps stay 4 per chat and 12 overall.
+func TestTurnCapsSetting(t *testing.T) {
+	t.Cleanup(func() { chats.SetCaps("4", "12") })
+	t.Setenv("AIWB_CHAT_CAP", "")
+	t.Setenv("AIWB_APP_CAP", "")
+	if c, a := turnCaps(); c != 4 || a != 12 {
+		t.Fatalf("unset overrides: got %d and %d, want 4 and 12", c, a)
+	}
+	t.Setenv("AIWB_CHAT_CAP", "many")
+	t.Setenv("AIWB_APP_CAP", "0")
+	if c, a := turnCaps(); c != 4 || a != 12 {
+		t.Fatalf("invalid overrides: got %d and %d, want 4 and 12", c, a)
+	}
+	t.Setenv("AIWB_CHAT_CAP", "1")
+	t.Setenv("AIWB_APP_CAP", " 2 ")
+	if c, a := turnCaps(); c != 1 || a != 2 {
+		t.Fatalf("overrides: got %d and %d, want 1 and 2", c, a)
+	}
+	if got := chats.ErrChatCap.Error(); !strings.Contains(got, "1 branch working") {
+		t.Fatalf("the refusal's text with the override: %q", got)
 	}
 }
 

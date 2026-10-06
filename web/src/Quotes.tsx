@@ -4,7 +4,7 @@
 // came from (quoteDom.ts).
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
-import { useStore } from "./store.ts";
+import { useStore, threadOf } from "./store.ts";
 import { preview, quoteKey, withComment } from "./logic/quotes.ts";
 import { caretAt, markPending, rangeForRef, showQuote } from "./quoteDom.ts";
 import type { Reference } from "./types.ts";
@@ -37,7 +37,7 @@ function withFloat(qs: Reference[], f: Float, enter: boolean): Reference[] {
 export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes: Dispatch<SetStateAction<Reference[]>>, box: RefObject<HTMLElement | null>): ComposerQuotes {
   const [float, setFloat] = useState<Float | null>(null);
   const [list, setList] = useState(false);
-  const items = useStore((s) => s.items[chatId]?.items);
+  const items = useStore((s) => threadOf(s, chatId)?.items);
   const now = useRef({ quotes, float });
   now.current = { quotes, float };
 

@@ -1189,8 +1189,8 @@ func TestDeliveryLeavesHumanStateAlone(t *testing.T) {
 	}
 
 	m := e.meta(id)
-	if m.Draft == nil || m.Draft.Text != "half typed" || len(m.Draft.References) != 1 {
-		t.Fatalf("draft %+v", m.Draft)
+	if d := m.Drafts[model.MainBranch]; d == nil || d.Text != "half typed" || len(d.References) != 1 {
+		t.Fatalf("draft %+v", d)
 	}
 	if m.Name != name || len(e.namer.callList()) != named {
 		t.Fatalf("name %q, %d namer calls", m.Name, len(e.namer.callList()))
@@ -1213,7 +1213,7 @@ func TestDeliveryLeavesHumanStateAlone(t *testing.T) {
 	if err := e.m.Send(id, "wait", "", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("Send during a delivery turn: %v", err)
 	}
-	if len(e.items(id)) != len(items) || len(parent.sent()) != 2 || e.meta(id).Draft == nil {
+	if len(e.items(id)) != len(items) || len(parent.sent()) != 2 || e.meta(id).Drafts[model.MainBranch] == nil {
 		t.Fatal("a busy Send changed something")
 	}
 

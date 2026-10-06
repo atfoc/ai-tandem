@@ -1,19 +1,20 @@
 // Subagents in the chat: the one-line row in the thread and the drawer on the right. A run
 // agent's transcript beside its run opens its subagents in the same drawer.
 import { useEffect, useRef, useState } from "react";
-import { useStore, setState, getState, boardName, isBusy, chatOf } from "./store.ts";
+import { useStore, getState, boardName, isBusy, chatOf, setDrawer, shownView, subsOf, subThreadOf, threadOf } from "./store.ts";
 import { loadSubItems } from "./conn.ts";
-import { ItemView, useStickToBottom } from "./ChatView.tsx";
+import { ItemView, usePrefixEnd, useStickToBottom } from "./ChatView.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { CtxRing, ctxTitle } from "./Composer.tsx";
 import { subagentOf, subBadge, subLine, subModelLabel, subToolCount, subDurationMs, fmtDuration,
-  subKey, subList, subReport, showReport, subResultLine } from "./logic/subagents.ts";
+  subList, subReport, showReport, subResultLine, subStatus } from "./logic/subagents.ts";
+import { subInPrefix } from "./logic/prefix.ts";
 import { AgentGlyph } from "./icons.tsx";
 import { agentClass, agentShortName } from "./agents.ts";
 import type { ChatView, Item, SubStatus, Subagent } from "./types.ts";
 
-export const openSub = (chat: string, sub: string) => setState({ subDrawer: { chat, sub } });
-export const closeSub = () => setState({ subDrawer: null });
+export const openSub = (chat: string, sub: string) => setDrawer(chat, sub);
+export const closeSub = () => setDrawer(getState().subDrawer?.chat ?? "", null);
 export function toggleSub(chat: string, sub: string) {
   const d = getState().subDrawer;
   if (d?.chat === chat && d.sub === sub) closeSub(); else openSub(chat, sub);
@@ -36,7 +37,7 @@ export function escTaken(e: KeyboardEvent): boolean {
 
 /** A subagent's own thread, fetched the first time it is wanted; undefined until loaded. */
 export function useSubThread(chat: string, sid: string, want: boolean): Item[] | undefined {
-  const items = useStore((s) => (sid ? s.items[subKey(chat, sid)]?.items : undefined));
+  const items = useStore((s) => (sid ? subThreadOf(s, chat, sid)?.items : undefined));
   useEffect(() => { if (want && sid && !items) void loadSubItems(chat, sid); }, [want, chat, sid, !items]);
   return items;
 }
@@ -97,7 +98,7 @@ export function SubStats({ sa, items, now }: { sa: Subagent; items?: Item[]; now
 /** The one-line row in the thread where the Agent/Task call is. A running one loads its thread
  *  for the live line; a finished one needs only its state. */
 export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
-  const subs = useStore((s) => s.subs[chat.id]);
+  const subs = useStore((s) => subsOf(s, chat.id));
   const sa = subagentOf(item, subs, isBusy(chat.status));
   const { on, toggle } = useSubNav(chat.id, sa.id);
   const items = useSubThread(chat.id, sa.id, sa.status === "running");
@@ -121,7 +122,7 @@ export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
  *  Its state is the subagent's, so it follows a later change with no change to the item. */
 export function SubResultRow({ item, chat }: { item: Item; chat: ChatView }) {
   const sid = item.subagent ?? "";
-  const sa = useStore((s) => s.subs[chat.id]?.[sid]);
+  const sa = useStore((s) => subsOf(s, chat.id)?.[sid]);
   const { on, toggle } = useSubNav(chat.id, sid);
   const line = subResultLine(sa);
   const open = () => { if (sa) toggle(); };
@@ -147,24 +148,28 @@ function SubPrompt({ text }: { text: string }) {
 
 /** A chat's subagent as the drawer and SubThread show it: its state with what the Agent/Task call
  *  that started it says (the call is in the chat's thread, or in the outer subagent's). sa is
- *  undefined until the subagent is known. */
+ *  undefined until the subagent is known. readOnly: it was started in the part copied from the
+ *  thread's source, so its thread is read-only here. */
 function useSub(chat: string, sid: string) {
-  const subs = useStore((s) => s.subs[chat]);
+  const subs = useStore((s) => subsOf(s, chat));
   const raw = sid ? subs?.[sid] : undefined;
-  const call = useStore((s) => (raw ? (s.items[raw.parent ? subKey(chat, raw.parent) : chat]?.items ?? []).find((it) => it?.toolId === raw.tool) : undefined));
-  const sa = raw && (call ? subagentOf(call, subs, false) : raw);
-  return { subs, call, sa };
+  const call = useStore((s) => (raw ? ((raw.parent ? subThreadOf(s, chat, raw.parent) : threadOf(s, chat))?.items ?? []).find((it) => it?.toolId === raw.tool) : undefined));
+  const sa = raw && (call ? subagentOf(call, subs, false) : { ...raw, status: subStatus(raw) });
+  const end = usePrefixEnd(chat);
+  const readOnly = useStore((s) => subInPrefix(raw, subs, threadOf(s, chat)?.items, end));
+  return { subs, call, sa, readOnly };
 }
 
 /** A subagent's prompt, live thread and report, with its header: what the drawer shows, with no
  *  place of its own. It renders a header and a scroller side by side: its parent must be a flex
- *  column with a bounded height. chat: the chat or the run agent whose subagent it is. onOpen:
+ *  column with a bounded height. chat: the chat or the run agent whose subagent it is. branch: the
+ *  branch the thread is of, where a card in it answers ("": the chat's current one). onOpen:
  *  another subagent of the chat was chosen with ‹ ›. Nothing is rendered until the subagent is
  *  known. */
-export function SubThread({ chat, sid, onClose, onOpen, closeTitle = "Close (Esc)" }: {
-  chat: ChatView; sid: string; onClose: () => void; onOpen: (sid: string) => void; closeTitle?: string;
+export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle = "Close (Esc)" }: {
+  chat: ChatView; sid: string; branch?: string; onClose: () => void; onOpen: (sid: string) => void; closeTitle?: string;
 }) {
-  const { subs, call, sa } = useSub(chat.id, sid);
+  const { subs, call, sa, readOnly } = useSub(chat.id, sid);
   const items = useSubThread(chat.id, sid, true);
   const list = subList(subs);
   const idx = sa ? list.findIndex((x) => x.id === sa.id) : -1;
@@ -197,7 +202,7 @@ export function SubThread({ chat, sid, onClose, onOpen, closeTitle = "Close (Esc
       <div className="sub-drawer-body" ref={ref} onScroll={onScroll}>
         {sa.prompt && <SubPrompt text={sa.prompt} />}
         {!items && <div className="typing"><span className="dots"><i /><i /><i /></span> Loading…</div>}
-        {(items ?? []).map((x, i) => (x ? <ItemView key={i} item={x} chat={chat} sub={sa} /> : null))}
+        {(items ?? []).map((x, i) => (x ? <ItemView key={i} item={x} chat={chat} branch={branch} sub={sa} readOnly={readOnly} /> : null))}
         {running && items && !items.length && <div className="typing"><span className="dots"><i /><i /><i /></span> Starting…</div>}
         {items && showReport(it, sa, items) && (
           <div className="sub-report">
@@ -221,8 +226,8 @@ export function SubagentDrawer() {
     if (s.sel.chat !== c.id) return false;
     return !(c.board || c.run) || s.panel; // a board or run chat's drawer only while its panel shows
   });
-  const chat = useStore((s) => (d ? chatOf(s, d.chat) : undefined));
-  const { sa } = useSub(d?.chat ?? "", d?.sub ?? "");
+  const chat = useStore((s) => (d ? shownView(s, d.chat) : undefined));
+  const { sa, readOnly } = useSub(d?.chat ?? "", d?.sub ?? "");
 
   useEffect(() => {
     if (!shown) return;
@@ -237,8 +242,8 @@ export function SubagentDrawer() {
 
   if (!shown || !chat || !d || !sa) return null;
   return (
-    <aside className={`sub-drawer st-${sa.status}`}>
-      <SubThread chat={chat} sid={d.sub} onClose={closeSub} onOpen={(sid) => openSub(chat.id, sid)} />
+    <aside className={`sub-drawer st-${sa.status}${readOnly ? " read-only" : ""}`}>
+      <SubThread chat={chat} sid={d.sub} branch={d.branch} onClose={closeSub} onOpen={(sid) => openSub(chat.id, sid)} />
     </aside>
   );
 }

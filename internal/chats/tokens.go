@@ -17,6 +17,7 @@ type Caller struct {
 	// the branch's server id), with the archive fields of its top-level chat.
 	Meta     model.ChatMeta
 	Chat     string // the top-level chat id (the client's id for this caller's chat)
+	Branch   string // the branch whose agent calls, "main" or a branch id; a subagent's is its owner's
 	SID      string // empty for the chat agent
 	Subagent bool
 	Kind     model.AgentKind
@@ -45,6 +46,7 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 		return Caller{
 			Meta:     meta,
 			Chat:     chat,
+			Branch:   callerBranch(c),
 			SID:      extra.sid,
 			Subagent: true,
 			Kind:     extra.kind,
@@ -61,6 +63,7 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 			return Caller{
 				Meta:     meta,
 				Chat:     chat,
+				Branch:   callerBranch(c),
 				SID:      "",
 				Subagent: false,
 				Kind:     meta.Agent,
@@ -83,6 +86,14 @@ func (m *Manager) callerMeta(c *Chat, meta model.ChatMeta) (model.ChatMeta, stri
 	defer c.top.mu.Unlock()
 	meta.Archive = c.top.meta.Archive
 	return meta, c.top.meta.ID
+}
+
+// callerBranch is the branch id of the chat object c: "main" for a top-level chat.
+func callerBranch(c *Chat) string {
+	if c.branch == "" {
+		return model.MainBranch
+	}
+	return c.branch
 }
 
 // ByToken finds the chat whose MCP credential is token, including a live extra token

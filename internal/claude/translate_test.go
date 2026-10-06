@@ -331,6 +331,41 @@ func TestTranslateResumeOrphanResult(t *testing.T) {
 	}
 }
 
+// Every lost task's empty result is dropped: by its origin (CLI 2.1.284), or by the count of the
+// notices when the line has none. A turn's own result is never dropped.
+func TestTranslateOrphanResults(t *testing.T) {
+	const (
+		notice = `{"type":"system","subtype":"task_notification","task_id":"lost","status":"stopped","summary":"x"}`
+		empty  = `{"type":"result","subtype":"success","is_error":false,"num_turns":0,"terminal_reason":"completed"}`
+		marked = `{"type":"result","subtype":"success","is_error":false,"num_turns":0,"terminal_reason":"completed","origin":{"kind":"task-notification"}}`
+		human  = `{"type":"result","subtype":"success","is_error":false,"num_turns":0,"terminal_reason":"completed","origin":{"kind":"human"}}`
+		turn   = `{"type":"result","subtype":"success","is_error":false,"num_turns":2,"terminal_reason":"completed","origin":{"kind":"task-notification"}}`
+	)
+	cases := []struct {
+		name  string
+		lines []string
+		want  []bool // per line: it gives the turn's end
+	}{
+		{"two notices, two marked results", []string{notice, notice, marked, marked, human}, []bool{false, false, false, false, true}},
+		{"two notices, two results without origin", []string{notice, notice, empty, empty, empty}, []bool{false, false, false, false, true}},
+		{"notice and result by turns", []string{notice, marked, notice, marked, empty}, []bool{false, false, false, false, true}},
+		{"marked results without a notice", []string{marked, marked, empty}, []bool{false, false, true}},
+		{"a turn's result ends the count", []string{notice, notice, marked, turn, empty}, []bool{false, false, false, true, true}},
+		{"an empty turn of the user's", []string{human}, []bool{true}},
+		{"a turn the notice started", []string{notice, turn}, []bool{false, true}},
+	}
+	for _, c := range cases {
+		p := &proc{}
+		for i, l := range c.lines {
+			evs := translateLine(t, p, l)
+			ended := len(evs) == 2 && evs[0].Kind == agent.EvUsage && evs[1].Kind == agent.EvTurnEnd
+			if ended != c.want[i] || (!ended && len(evs) != 0) {
+				t.Errorf("%s: line %d gave %s, want turn end = %v", c.name, i, dump(evs), c.want[i])
+			}
+		}
+	}
+}
+
 // The fork point of a turn is the uuid of its last own assistant or user line (lines shaped like
 // testdata/usage.jsonl), never message.id or the result line's uuid.
 func TestTranslateForkPoint(t *testing.T) {

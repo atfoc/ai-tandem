@@ -13,6 +13,8 @@ import (
 
 // The "Stopped." note of a branch that is stopped while it waits on its subagents: no turn of its
 // agent runs, so the note is all that says in its thread why a subagent's card reads "Stopped".
+// A Send that makes another branch the current one stops nothing, so it notes nothing: the note
+// comes with the stop of the branch itself, or of the chat.
 
 // ---- fixtures -------------------------------------------------------------
 
@@ -92,54 +94,75 @@ func (e *env) branchWaiting() (id, b, bid string, branchAg *fakeAgent) {
 
 // ---- a Send that leaves the branch ----------------------------------------
 
-func TestNewBranchNotesTheStoppedSubagents(t *testing.T) {
+// running fails unless the subagent sid of the chat object id still runs, in the process child,
+// and nothing was noted in the thread of id.
+func (e *env) running(when, id, sid string, child *fakeAgent) {
+	e.t.Helper()
+	e.m.handoffs.Wait()
+	if s := e.subFile(id, sid); s.Status != model.SubRunning || agentClosed(child) || child.interrupted() != 0 {
+		e.t.Fatalf("%s: subagent.json %+v, its process closed %v, %d interrupts", when, s, agentClosed(child), child.interrupted())
+	}
+	e.unnoted(when, id)
+}
+
+// A new branch leaves the branch it starts from, and the one that was current, as they are: the
+// process runs on, the subagent it waits on runs on, and its thread gets no note.
+func TestNewBranchStopsNoSubagent(t *testing.T) {
 	for name, at := range map[string]int{"at an earlier point": 3, "from the start": 0, "at the end": 6} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			id, mainAg := e.talked(model.Claude, "", 2)
 			sa, child := e.waiting(id)
+			mainItems := e.file(id, "items.jsonl")
 			evs := e.listen()
 
 			_, bid, _ := e.branchTo(id, Target{Branch: model.MainBranch, At: at, New: true}, "another way")
-			if !mainAg.isClosed() {
-				t.Fatal("the branch left still runs")
+			if mainAg.isClosed() || mainAg.interrupted() != 0 {
+				t.Fatal("the branch left was stopped")
 			}
-			e.stoppedUnowed(id, sa.ID, child)
-			e.noted("the branch left", id)
-			if got := e.diskItems(id); len(got) != 7 {
-				t.Fatalf("the items of the branch left %+v", got)
+			e.running("the branch left", id, sa.ID, child)
+			if !bytes.Equal(e.file(id, "items.jsonl"), mainItems) {
+				t.Fatalf("the items of the branch left %+v", e.diskItems(id))
 			}
 			e.unnoted("the new branch", bid)
-			// Clients are told, and of that branch.
-			var told bool
-			for _, ev := range ofType(evs.drain(t, e.br), "chat_items") {
-				for _, u := range updatesOf(t, ev) {
-					if u.Item.Kind == "note" && u.Item.Text == "Stopped." {
-						told = ev["chat"] == id && ev["branch"] == model.MainBranch
-					}
+			// Clients are sent nothing of the branch left: no items, no record.
+			got := evs.drain(t, e.br)
+			for _, ev := range ofType(got, "chat_items") {
+				if ev["branch"] == model.MainBranch {
+					t.Fatalf("items of the branch left were sent: %v", ev)
 				}
 			}
-			if !told {
-				t.Fatal("clients were not sent the note of the branch left")
+			if sts := statesOf(t, got, id, model.MainBranch); len(sts) != 0 {
+				t.Fatalf("records of the branch left were sent: %+v", sts)
 			}
+			// Its own stop is what stops the subagent, and the thread says so.
+			if err := e.m.InterruptOf(id, model.MainBranch); err != nil {
+				t.Fatal(err)
+			}
+			e.stoppedUnowed(id, sa.ID, child)
+			e.noted("the branch left, stopped by name", id)
+			if got := e.diskItems(id); len(got) != 7 {
+				t.Fatalf("the items of the branch left after its stop %+v", got)
+			}
+			e.unnoted("the new branch", bid)
 		})
 	}
 }
 
-func TestCarryOnNotesTheStoppedSubagents(t *testing.T) {
+// Carrying another branch on leaves the branch that was current as it is, the same way.
+func TestCarryOnStopsNoSubagent(t *testing.T) {
 	e := newEnv(t)
 	id, b, bid, branchAg := e.branchWaiting()
 	sa, child := e.waiting(bid)
-	mainItems := e.file(id, "items.jsonl")
+	mainItems, branchItems := e.file(id, "items.jsonl"), e.file(bid, "items.jsonl")
 
 	e.sendTo(id, mainAt(6), "back on main")
-	if e.cur(id) != model.MainBranch || !branchAg.isClosed() {
+	if e.cur(id) != model.MainBranch || branchAg.isClosed() || branchAg.interrupted() != 0 {
 		t.Fatalf("current %q, the branch left closed %v", e.cur(id), branchAg.isClosed())
 	}
-	e.stoppedUnowed(bid, sa.ID, child)
-	e.noted("the branch left", bid)
-	if got := e.diskItems(bid); len(got) != 7 {
-		t.Fatalf("the items of the branch left %+v", got)
+	e.running("the branch left", bid, sa.ID, child)
+	if !bytes.Equal(e.file(bid, "items.jsonl"), branchItems) {
+		t.Fatalf("the items of the branch left %+v", e.diskItems(bid))
 	}
 	// The branch carried on has the message and nothing else.
 	e.unnoted("the branch carried on", id)
@@ -151,29 +174,29 @@ func TestCarryOnNotesTheStoppedSubagents(t *testing.T) {
 	}
 }
 
-// A branch left that waits on nothing is stopped without a word, as before.
+// A branch left that waits on nothing is left without a word too.
 func TestBranchLeftIdleGetsNoNote(t *testing.T) {
 	t.Run("a new branch", func(t *testing.T) {
 		e := newEnv(t)
-		id, _ := e.talked(model.Claude, "", 2)
+		id, mainAg := e.talked(model.Claude, "", 2)
 		mainItems := e.file(id, "items.jsonl")
 		_, bid, _ := e.branchTo(id, newAt(3), "aside")
 		e.unnoted("the branch left", id)
 		e.unnoted("the new branch", bid)
-		if !bytes.Equal(e.file(id, "items.jsonl"), mainItems) {
-			t.Fatal("the thread of the branch left changed")
+		if !bytes.Equal(e.file(id, "items.jsonl"), mainItems) || mainAg.isClosed() {
+			t.Fatal("the thread or the process of the branch left changed")
 		}
 	})
 
 	t.Run("a carry-on", func(t *testing.T) {
 		e := newEnv(t)
-		id, _, bid, _ := e.branchWaiting()
+		id, _, bid, branchAg := e.branchWaiting()
 		branchItems := e.file(bid, "items.jsonl")
 		e.sendTo(id, mainAt(6), "back on main")
 		e.unnoted("the branch left", bid)
 		e.unnoted("the branch carried on", id)
-		if !bytes.Equal(e.file(bid, "items.jsonl"), branchItems) {
-			t.Fatal("the thread of the branch left changed")
+		if !bytes.Equal(e.file(bid, "items.jsonl"), branchItems) || branchAg.isClosed() {
+			t.Fatal("the thread or the process of the branch left changed")
 		}
 	})
 
@@ -195,15 +218,16 @@ func TestBranchLeftIdleGetsNoNote(t *testing.T) {
 	})
 }
 
-// A carry-on whose target fails to start leaves the chat on the branch the user was on, which is
-// not stopped: its subagent runs on and nothing is noted.
+// A carry-on whose target fails to start leaves the chat on the branch the user was on. Nothing
+// is stopped, failed or not: that branch's subagent runs on and nothing is noted.
 func TestFailedCarryOnNotesNothing(t *testing.T) {
 	e := newEnv(t)
 	id, b, bid, branchAg := e.branchWaiting()
 	sa, child := e.waiting(bid)
 	branchItems := e.file(bid, "items.jsonl")
 
-	// Main's process was stopped when the branch became current; its folder is gone.
+	// Main's process has ended, and its folder is gone.
+	e.m.stopBranch(id)
 	cwd := e.meta(id).Cwd
 	if err := os.Rename(cwd, cwd+".gone"); err != nil {
 		t.Fatal(err)
@@ -224,20 +248,26 @@ func TestFailedCarryOnNotesNothing(t *testing.T) {
 		t.Fatal("the thread of the branch the chat stays on changed")
 	}
 
-	// With the folder back the same Send moves, and then the branch is left.
+	// With the folder back the same Send makes main the current branch, and the branch left is
+	// as it was all the same.
 	if err := os.Rename(cwd+".gone", cwd); err != nil {
 		t.Fatal(err)
 	}
 	e.sendTo(id, mainAt(6), "back on main")
-	e.stoppedUnowed(bid, sa.ID, child)
-	e.noted("the branch left", bid)
+	if e.cur(id) != model.MainBranch || branchAg.isClosed() {
+		t.Fatalf("current %q, the branch's process closed %v", e.cur(id), branchAg.isClosed())
+	}
+	e.running("the branch left", bid, sa.ID, child)
 	e.unnoted("the branch carried on", id)
+	if !bytes.Equal(e.file(bid, "items.jsonl"), branchItems) {
+		t.Fatal("the thread of the branch left changed")
+	}
 }
 
 // ---- Stop -----------------------------------------------------------------
 
-// A branch with an open turn is not left by a Send (ErrBusy); the chat's Stop ends it. Its thread
-// gets one note for the turn and its subagents together.
+// A branch with an open turn takes no message (ErrBusy), which ends nothing; the chat's Stop ends
+// it. Its thread gets one note for the turn and its subagents together.
 func TestStopWithTurnOpenNotesOnce(t *testing.T) {
 	// turnOpen is a chat whose branch is current and in its first turn.
 	turnOpen := func(e *env) (id, bid string, branchAg *fakeAgent) {
@@ -251,8 +281,8 @@ func TestStopWithTurnOpenNotesOnce(t *testing.T) {
 	}
 	refused := func(e *env, id, bid string) {
 		e.t.Helper()
-		if err := e.sendToErr(id, mainAt(6)); !errors.Is(err, ErrBusy) {
-			e.t.Fatalf("a Send to another branch while the chat is busy: %v", err)
+		if err := e.sendToErr(id, Target{Branch: splitBranch(bid), End: true}); !errors.Is(err, ErrBusy) {
+			e.t.Fatalf("a Send to the end of the busy branch: %v", err)
 		}
 		e.unnoted("after the refused Send", bid)
 	}
@@ -363,10 +393,10 @@ func TestArchiveNotesTheWaitingBranchOnly(t *testing.T) {
 }
 
 // A native subagent of Claude's that runs in the background outlives its turn: the chat object is
-// idle and waits on it. Leaving the branch, or archiving the chat, stops it as it stops an app
-// subagent, and the thread says so.
+// idle and waits on it. A Send that leaves the branch does not stop it. Stopping the chat, as
+// archiving does, stops it as it stops an app subagent, and the thread says so.
 func TestStoppedNativeSubagentIsNoted(t *testing.T) {
-	for _, how := range []string{"a new branch", "archive"} {
+	for _, how := range []string{"after a new branch", "archive"} {
 		t.Run(how, func(t *testing.T) {
 			e := newEnv(t)
 			id, a := e.subStart()
@@ -384,6 +414,12 @@ func TestStoppedNativeSubagentIsNoted(t *testing.T) {
 				e.m.Stop(id)
 			} else {
 				e.sendTo(id, newAt(0), "elsewhere")
+				th, err := e.m.ThreadOf(id, model.MainBranch)
+				if err != nil || len(th.Subagents) != 1 || th.Subagents[0].Status != model.SubRunning || a.isClosed() {
+					t.Fatalf("the subagent of the branch left: %+v (%v), its parent closed %v", th.Subagents, err, a.isClosed())
+				}
+				e.unnoted("after the Send elsewhere", id)
+				e.m.Stop(id)
 			}
 			if s := e.subFile(id, sid); s.Status != model.SubStopped || s.Delivery != model.SubNotOwed {
 				t.Fatalf("subagent.json %+v", s)
@@ -399,18 +435,19 @@ func TestStoppedNativeSubagentIsNoted(t *testing.T) {
 
 // ---- after the note -------------------------------------------------------
 
-// The note is not something said in the session: the branch left still ends at its last end mark.
+// The note is not something said in the session: the stopped branch still ends at its last end mark.
 // A Send to that point, or to the end of its thread, carries it on in its own session, and a new
 // branch may start there.
 func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
-	// left is a chat that is back on main, whose branch was left while it waited on a subagent:
-	// its thread is six items and the note. Main has finished the turn that left it.
+	// left is a chat that is back on main, whose branch was stopped while it waited on a
+	// subagent: its thread is six items and the note. Main has finished the turn that left it.
 	left := func(e *env) (id, b, bid string, mainAg *fakeAgent) {
 		e.t.Helper()
 		id, b, bid, _ = e.branchWaiting()
+		mainAg = e.claude.last(e.t) // main's, which the branch did not stop
 		sa, child := e.waiting(bid)
+		e.m.stopBranch(bid)
 		e.sendTo(id, mainAt(6), "back on main")
-		mainAg = e.claude.last(e.t)
 		mainAg.emit(e.t, reply("p3")...)
 		e.stoppedUnowed(bid, sa.ID, child)
 		e.noted("the branch left", bid)
@@ -427,7 +464,7 @@ func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
 			session, spawns := e.meta(bid).SessionID, e.claude.count()
 
 			e.sendTo(id, Target{Branch: b, At: at}, "back on the branch")
-			if e.cur(id) != b || !mainAg.isClosed() || e.claude.count() != spawns+1 || len(e.claude.forkCalls()) != 1 {
+			if e.cur(id) != b || mainAg.isClosed() || e.claude.count() != spawns+1 || len(e.claude.forkCalls()) != 1 {
 				t.Fatalf("current %q, %d spawns, %d fork starts", e.cur(id), e.claude.count(), len(e.claude.forkCalls()))
 			}
 			if rec, _ := e.treeFile(id); len(rec.Branches) != 1 || rec.Current != b {

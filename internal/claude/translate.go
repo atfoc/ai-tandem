@@ -75,11 +75,16 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		// line's own uuid (neither names an entry).
 		point := p.point
 		p.point = ""
-		orphan := p.orphan
-		p.orphan = false
-		if orphan && num(m["num_turns"]) == 0 {
-			return nil // the empty result a resume sends after reporting a lost agent
+		// The empty result a resume or a fork sends for each task its session lost: marked by its
+		// origin, or (a line without one) counted off against the notices. Any other result is a
+		// turn's own, and ends the count.
+		if num(m["num_turns"]) == 0 && (p.orphans > 0 || str(obj(m["origin"])["kind"]) == "task-notification") {
+			if p.orphans > 0 {
+				p.orphans--
+			}
+			return nil
 		}
+		p.orphans = 0
 		// The chat's window is the parent model's; 0 (unchanged) when that is unknown.
 		usage := obj(m["modelUsage"])
 		for id, u := range usage {
@@ -165,7 +170,7 @@ func (p *proc) taskEvent(m map[string]any) []agent.Event {
 	tool, ok := p.taskTool[id]
 	if !ok {
 		if m["subtype"] == "task_notification" && id != "" && (m["task_type"] == nil || m["task_type"] == "local_agent") {
-			p.orphan = true // an agent lost with an earlier process, reported after --resume
+			p.orphans++ // a task lost with an earlier process or left in the source, reported after --resume
 		}
 		return nil
 	}

@@ -55,7 +55,8 @@ func addBranch(t *testing.T, e *env) string {
 }
 
 // A board tool call made by a branch's agent reaches the client under the chat's own id, which
-// is the one the client knows; so does the contact log.
+// is the one the client knows, with the branch's id next to it; so does the contact log. A
+// subagent's call carries the branch of the agent that spawned it.
 func TestBranchTokenCallsUnderTheChatID(t *testing.T) {
 	e := newEnv(t)
 	addBranch(t, e)
@@ -69,12 +70,12 @@ func TestBranchTokenCallsUnderTheChatID(t *testing.T) {
 	if isErr || text != "ok" {
 		t.Fatalf("got %q isErr=%v", text, isErr)
 	}
-	if p := <-got; p["chat"] != e.chat || p["board"] != e.board.ID || p["name"] != "read_board" {
+	if p := <-got; p["chat"] != e.chat || p["branch"] != testBranch || p["board"] != e.board.ID || p["name"] != "read_board" {
 		t.Fatalf("rpc params %v", p)
 	}
 	// Main's own agent is the same chat to the client.
 	e.toolsCall(e.token, "read_board", `{}`)
-	if p := <-got; p["chat"] != e.chat {
+	if p := <-got; p["chat"] != e.chat || p["branch"] != model.MainBranch {
 		t.Fatalf("rpc params %v", p)
 	}
 	contacts := e.relay.Contacts.Snapshot()
@@ -83,6 +84,19 @@ func TestBranchTokenCallsUnderTheChatID(t *testing.T) {
 	}
 	if names := e.listNames(testBranchToken); len(names) != len(e.listNames(e.token)) {
 		t.Fatalf("the branch's tools %v", names)
+	}
+
+	// A subagent's token carries the branch of the agent that spawned it: the branch's, then main's.
+	for _, c := range []struct{ token, branch string }{{testBranchToken, testBranch}, {e.token, model.MainBranch}} {
+		n := e.claude.count()
+		if text, isErr, _ := e.toolsCall(c.token, "spawn_subagent", `{"prompt":"go"}`); isErr {
+			t.Fatalf("spawn under %s: %q", c.branch, text)
+		}
+		waitFor(t, "child process", func() bool { return e.claude.count() > n })
+		e.toolsCall(e.claude.last(t).opts.MCP.Token, "read_board", `{}`)
+		if p := <-got; p["chat"] != e.chat || p["branch"] != c.branch {
+			t.Fatalf("subagent of %s: rpc params %v", c.branch, p)
+		}
 	}
 }
 

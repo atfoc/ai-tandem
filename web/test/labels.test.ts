@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolVerb, toolDone, runTool, statusText, waitingText, rowLine, dotState } from "../src/logic/labels.ts";
+import { toolVerb, toolDone, runTool, statusText, waitingText, rowLine, dotState, otherBranches, otherBranchesText, alertsOf, alertText } from "../src/logic/labels.ts";
 
 const names = (id: string) => ({ b_arch0001: "arch", b_flow0001: "flows" } as Record<string, string>)[id];
 const on = { board: "b_flow0001" };
@@ -175,6 +175,22 @@ test("rowLine: a sidebar row's second line", () => {
   assert.equal(rowLine({ status: "error", usage, error: "Folder not found" }, settings), "Folder not found");
   assert.equal(rowLine({ status: "error", usage }, settings), "Can't start");
   assert.equal(rowLine({ status: "ready", usage, subsOwed: 1, archived: true }, settings), settings);
+  // an approval on any branch comes first, also when the current branch does something else
+  assert.equal(rowLine({ status: "ready", usage, working: 1, approvals: 1 }, settings), "Needs your approval");
+  assert.equal(rowLine({ status: "thinking", usage, working: 2, approvals: 1 }, settings), "Needs your approval");
+  assert.equal(rowLine({ status: "stopped", usage, working: 1, approvals: 1 }, settings), "Needs your approval");
+  assert.equal(rowLine({ status: "ready", usage, subsRunning: 2, working: 3, approvals: 2 }, settings), "Needs your approval");
+  // the current branch is busy: its own status text, whatever the other branches do
+  assert.equal(rowLine({ status: "writing", usage, working: 3 }, settings), "Writing…");
+  assert.equal(rowLine({ status: "approval", usage, working: 1, approvals: 1 }, settings), "Needs your approval");
+  // the current branch is not busy and other branches work
+  assert.equal(rowLine({ status: "ready", usage, working: 1 }, settings), "1 branch working");
+  assert.equal(rowLine({ status: "ready", usage, working: 2 }, settings), "2 branches working");
+  assert.equal(rowLine({ status: "ready", usage, subsRunning: 1, working: 2 }, settings), "2 branches working");
+  assert.equal(rowLine({ status: "stopped", usage, working: 1 }, settings), "1 branch working");
+  // none working: as without the counts
+  assert.equal(rowLine({ status: "ready", usage, working: 0, approvals: 0 }, settings), settings);
+  assert.equal(rowLine({ status: "stopped", usage, working: 0 }, settings), "Stopped");
 });
 
 test("dotState: the quiet waiting state of a sidebar row", () => {
@@ -186,6 +202,102 @@ test("dotState: the quiet waiting state of a sidebar row", () => {
   assert.equal(dotState({ status: "approval", usage, subsRunning: 1 }), "approval");
   assert.equal(dotState({ status: "stopped", usage, subsOwed: 1 }), "stopped");
   assert.equal(dotState({ status: "error", usage, subsOwed: 1 }), "error");
+  // an approval on any branch comes first
+  assert.equal(dotState({ status: "ready", usage, working: 1, approvals: 1 }), "approval");
+  assert.equal(dotState({ status: "writing", usage, working: 2, approvals: 1 }), "approval");
+  assert.equal(dotState({ status: "stopped", usage, working: 1, approvals: 1 }), "approval");
+  assert.equal(dotState({ status: "error", usage, working: 1, approvals: 1 }), "approval");
+  // then the current branch's status when it is busy
+  assert.equal(dotState({ status: "tool", usage, working: 3 }), "tool");
+  // then other branches working, before a current branch that stopped or can't start (as rowLine) and the quiet waiting state
+  assert.equal(dotState({ status: "stopped", usage, working: 1 }), "thinking");
+  assert.equal(dotState({ status: "error", usage, working: 1 }), "thinking");
+  assert.equal(dotState({ status: "stopped", usage, working: 0 }), "stopped");
+  assert.equal(dotState({ status: "error", usage, working: 0 }), "error");
+  assert.equal(dotState({ status: "ready", usage, working: 2 }), "thinking");
+  assert.equal(dotState({ status: "ready", usage, subsOwed: 1, working: 1 }), "thinking");
+  // none working: as without the counts
+  assert.equal(dotState({ status: "ready", usage, working: 0, approvals: 0 }), "ready");
+  assert.equal(dotState({ status: "ready", usage, subsRunning: 1, working: 0 }), "waiting");
+});
+
+test("otherBranches: the branches other than the one shown that wait for approval or work", () => {
+  const st = (branch: string, status: string) => ({ branch, status: status as "ready" });
+  assert.deepEqual(otherBranches([], "main"), { asks: null, failed: null, working: 0 });
+  assert.deepEqual(otherBranches([st("main", "ready"), st("b1", "ready"), st("b2", "stopped"), st("b3", "error")], "main"), { asks: null, failed: "b3", working: 0 });
+  // the branch shown is not another one, whatever it does
+  assert.deepEqual(otherBranches([st("main", "approval"), st("b1", "ready")], "main"), { asks: null, failed: null, working: 0 });
+  assert.deepEqual(otherBranches([st("main", "tool"), st("b1", "ready")], "main"), { asks: null, failed: null, working: 0 });
+  // the same records seen from another branch
+  assert.deepEqual(otherBranches([st("main", "approval"), st("b1", "ready")], "b1"), { asks: "main", failed: null, working: 0 });
+  assert.deepEqual(otherBranches([st("main", "tool"), st("b1", "ready")], "b1"), { asks: null, failed: null, working: 1 });
+  // working: in a turn, not waiting for approval; the first approval is the one named
+  assert.deepEqual(otherBranches([st("main", "ready"), st("b1", "thinking"), st("b2", "writing"), st("b3", "tool")], "main"), { asks: null, failed: null, working: 3 });
+  assert.deepEqual(otherBranches([st("main", "ready"), st("b1", "thinking"), st("b2", "approval"), st("b3", "approval")], "main"), { asks: "b2", failed: null, working: 1 });
+});
+
+test("dotState and rowLine agree when the current branch stopped or can't start and another works", () => {
+  const settings = "Sonnet · default";
+  for (const status of ["stopped", "error"] as const) {
+    assert.equal(dotState({ status, usage, working: 1 }), "thinking");
+    assert.equal(rowLine({ status, usage, working: 1 }, settings), "1 branch working");
+  }
+});
+
+test("otherBranches: failed is the first other branch whose status is error", () => {
+  const st = (branch: string, status: string) => ({ branch, status: status as "ready" });
+  assert.equal(otherBranches([st("main", "ready"), st("b1", "stopped"), st("b2", "error"), st("b3", "error")], "main").failed, "b2");
+  assert.equal(otherBranches([st("main", "error"), st("b1", "ready")], "main").failed, null); // the branch shown is not another one
+  assert.deepEqual(otherBranches([st("main", "error"), st("b1", "tool"), st("b2", "approval")], "b1"), { asks: "b2", failed: "main", working: 0 });
+});
+
+test("otherBranchesText: the approval by the branch's name, else the error, else how many others work", () => {
+  const name = (b: string) => (b === "b2" ? "redis" : b);
+  assert.equal(otherBranchesText({ asks: null, failed: null, working: 0 }, name), "");
+  assert.equal(otherBranchesText({ asks: null, failed: null, working: 1 }, name), "1 other branch working");
+  assert.equal(otherBranchesText({ asks: null, failed: null, working: 3 }, name), "3 other branches working");
+  assert.equal(otherBranchesText({ asks: "b2", failed: null, working: 0 }, name), "Approval needed on “redis”");
+  assert.equal(otherBranchesText({ asks: "b2", failed: null, working: 2 }, name), "Approval needed on “redis”"); // the approval comes first
+  assert.equal(otherBranchesText({ asks: null, failed: "b2", working: 0 }, name), "Error on “redis”");
+  assert.equal(otherBranchesText({ asks: null, failed: "b2", working: 2 }, name), "Error on “redis”"); // the error comes before the count
+  assert.equal(otherBranchesText({ asks: "b1", failed: "b2", working: 2 }, name), "Approval needed on “b1”");
+});
+
+test("alertsOf: the approval alone; the error with the count of the others that work after it; else the count", () => {
+  assert.deepEqual(alertsOf({ asks: null, failed: null, working: 0 }), []);
+  assert.deepEqual(alertsOf({ asks: null, failed: null, working: 2 }), ["working"]);
+  assert.deepEqual(alertsOf({ asks: null, failed: "b2", working: 0 }), ["failed"]);
+  assert.deepEqual(alertsOf({ asks: null, failed: "b2", working: 2 }), ["failed", "working"]); // an error does not hide the count
+  assert.deepEqual(alertsOf({ asks: "b1", failed: null, working: 2 }), ["asks"]);
+  assert.deepEqual(alertsOf({ asks: "b1", failed: "b2", working: 2 }), ["asks"]); // the approval comes before both
+  // from the records: an errored branch left alone while two others work
+  const st = (branch: string, status: string) => ({ branch, status: status as "ready" });
+  assert.deepEqual(alertsOf(otherBranches([st("main", "ready"), st("b1", "error"), st("b2", "tool"), st("b3", "writing")], "main")), ["failed", "working"]);
+});
+
+test("alertText: each alert's own line", () => {
+  const name = (b: string) => (b === "b2" ? "redis" : b);
+  const o = { asks: null, failed: "b2", working: 2 };
+  assert.deepEqual(alertsOf(o).map((k) => alertText(o, k, name)), ["Error on “redis”", "2 other branches working"]);
+  assert.equal(alertText({ asks: null, failed: "b2", working: 1 }, "working", name), "1 other branch working");
+  assert.equal(alertText({ asks: "b1", failed: "b2", working: 1 }, "asks", name), "Approval needed on “b1”");
+});
+
+test("statusText: a fork without a message whose agent starts says so, not what a turn would", () => {
+  assert.equal(statusText({ status: "thinking", usage, fresh: true }), "Starting the agent…");
+  assert.equal(statusText({ status: "tool", statusTool: "Bash", usage, fresh: true }), "Starting the agent…");
+  assert.equal(statusText({ status: "writing", usage, fresh: true }), "Starting the agent…");
+  // not busy: as any chat
+  assert.equal(statusText({ status: "ready", usage, fresh: true }), "Idle");
+  assert.equal(statusText({ status: "stopped", usage, fresh: true }), "Stopped");
+  assert.equal(statusText({ status: "error", usage, fresh: true }), "Can't start");
+  // not fresh: as before
+  assert.equal(statusText({ status: "thinking", usage, fresh: false }), "Thinking…");
+  assert.equal(statusText({ status: "thinking", usage }), "Thinking…");
+  // the sidebar row follows; its dot stays the busy one
+  assert.equal(rowLine({ status: "thinking", usage, fresh: true }, "Fable · High"), "Starting the agent…");
+  assert.equal(rowLine({ status: "thinking", usage, fresh: true, working: 1 }, "Fable · High"), "Starting the agent…");
+  assert.equal(dotState({ status: "thinking", usage, fresh: true }), "thinking");
 });
 
 // The eleven run tools with the input fields of the data contract: [tool, input, while it runs, once done].

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  afterBack, afterSent, appliesTo, bannerOf, bannerText, Loads, moveDropped, moveValid, quoteLimit, quotesBefore,
+  afterBack, afterSent, bannerOf, bannerText, Loads, moveDropped, moveValid, quoteLimit, quotesBefore,
 } from "../src/logic/branchview.ts";
 import { buildTree, withLive } from "../src/logic/forktree.ts";
 import type { Held, Item, PendingMove, Reference, Target, TreeView } from "../src/types.ts";
@@ -39,10 +39,12 @@ const BRANCH_ITEMS: Item[] = [
   ...MAIN_ITEMS.slice(0, 3), { kind: "user", text: "memory" }, { kind: "text", text: "map", done: true }, { kind: "end", point: "" },
 ];
 const CURRENT = "a1b2c3d4";
+// A turn of main that runs: no end mark yet.
+const RUNNING: Item[] = [{ kind: "user", text: "more" }, { kind: "text", text: "on it" }];
 
 const q = (item: number, quote = "x"): Reference => ({ quote, item, start: 0, end: quote.length });
 const held = (text: string, references: Reference[] = [], mentions: Held["mentions"] = []): Held => ({ text, mentions, references });
-const move = (t: Target, h: Held, put: Held | null = null): PendingMove => ({ ...t, held: h, put });
+const move = (t: Target, h: Held, put: Held | null = null): PendingMove => ({ ...t, from: "main", held: h, put });
 
 /** The banner of a move on the example, built as the composer builds it. */
 function banner(m: Target, items: Item[], view: TreeView = EXAMPLE, current = CURRENT): string {
@@ -50,17 +52,7 @@ function banner(m: Target, items: Item[], view: TreeView = EXAMPLE, current = CU
   return bannerText(bannerOf(t, m, items, current));
 }
 
-// ---- which events and loads apply (A4)
-
-test("appliesTo: only the shown branch's events; a missing branch is main", () => {
-  assert.equal(appliesTo("b", "main"), false);
-  assert.equal(appliesTo("b", "b"), true);
-  assert.equal(appliesTo("b", undefined), false);
-  assert.equal(appliesTo("main", undefined), true);
-  assert.equal(appliesTo("main", ""), true);
-  assert.equal(appliesTo("main", "main"), true);
-  assert.equal(appliesTo("main", "b"), false);
-});
+// ---- which load applies (A4)
 
 test("Loads: a newer load takes a key over, and the old answer is no longer current", () => {
   const loads = new Loads();
@@ -118,19 +110,31 @@ test("a move to another branch keeps the composer's quotes below the limit", () 
 
 // ---- the move
 
-test("moveValid: carrying a branch on at its end needs no id", () => {
+test("moveValid: carrying a branch on at its end needs no id, and is not possible while its turn runs", () => {
   assert.equal(moveValid("claude", BRANCH_ITEMS, { branch: CURRENT, at: 6, new: false }), true);
   assert.equal(moveValid("claude", MAIN_ITEMS, { branch: "main", at: 8, new: false }), true);
   assert.equal(moveValid("claude", [], { branch: "main", at: 0, new: false }), true);
+  assert.equal(moveValid("claude", BRANCH_ITEMS, { branch: CURRENT, at: 6, new: false }, false), true);
+  // a running branch takes no message at its end: its mark has no id, so no branch starts there either
+  assert.equal(moveValid("claude", BRANCH_ITEMS, { branch: CURRENT, at: 6, new: false }, true), false);
+  assert.equal(moveValid("claude", [...MAIN_ITEMS, ...RUNNING], { branch: "main", at: 10, new: false }, true), false);
 });
 
-test("moveValid: a new branch needs a point with an id", () => {
+test("moveValid: a new branch needs a point with an id, also from a source whose turn runs", () => {
   assert.equal(moveValid("claude", MAIN_ITEMS, { branch: "main", at: 3, new: true }), true);
   assert.equal(moveValid("claude", MAIN_ITEMS, { branch: "main", at: 0, new: true }), true);
   assert.equal(moveValid("claude", MAIN_ITEMS, { branch: "main", at: 8, new: true }), true);
   assert.equal(moveValid("claude", MAIN_ITEMS, { branch: "main", at: 3, new: false }), true); // mid-branch: the message branches
   assert.equal(moveValid("claude", MAIN_ITEMS, { branch: "main", at: 5, new: false }), false); // partway through a turn
   assert.equal(moveValid("claude", BRANCH_ITEMS, { branch: CURRENT, at: 6, new: true }), false); // its mark has no id
+  // the source runs a third turn: the finished boundaries before it take a new branch, the turn itself does not
+  const live = [...MAIN_ITEMS, ...RUNNING];
+  for (const at of [0, 3, 8]) {
+    assert.equal(moveValid("claude", live, { branch: "main", at, new: true }, true), true, `at ${at}`);
+    assert.equal(moveValid("claude", live, { branch: "main", at, new: false }, true), true, `at ${at}, without the flag`);
+  }
+  for (const at of [5, 9, 10]) assert.equal(moveValid("claude", live, { branch: "main", at, new: true }, true), false, `at ${at}`);
+  assert.equal(moveValid("claude", BRANCH_ITEMS, { branch: CURRENT, at: 6, new: true }, true), false);
 });
 
 test("moveValid turns false when the shown list goes on past a point without an id", () => {
@@ -138,6 +142,10 @@ test("moveValid turns false when the shown list goes on past a point without an 
   assert.equal(moveValid("claude", BRANCH_ITEMS, m), true);
   assert.equal(moveValid("claude", [...BRANCH_ITEMS, { kind: "note", text: "n" }], m), true);
   assert.equal(moveValid("claude", [...BRANCH_ITEMS, { kind: "user", text: "more" }], m), false);
+  assert.equal(moveValid("claude", [...BRANCH_ITEMS, { kind: "user", text: "more" }], m, true), false);
+  // a point with an id stays one, whatever the list goes on with and whether the turn runs
+  const p = { branch: CURRENT, at: 3, new: true };
+  for (const running of [false, true]) assert.equal(moveValid("claude", [...BRANCH_ITEMS, { kind: "user", text: "more" }], p, running), true);
 });
 
 test("moveDropped: archived or no longer valid drops the move, except while its own Send is in flight", () => {
@@ -150,13 +158,20 @@ test("moveDropped: archived or no longer valid drops the move, except while its 
   }
 });
 
-test("moveDropped: a turn the app starts on the current branch leaves the move as it is", () => {
-  // the chat turning busy is not asked about: the list shown only grows, so the point stays valid
+test("moveDropped: a turn the app starts on the move's source leaves the move as it is", () => {
+  // the source turning busy is asked about: the list shown only grows, so the point stays a finished boundary
   const m: Target = { branch: CURRENT, at: 3, new: true };
   const turn: Item[] = [{ kind: "subresult" }, { kind: "text", text: "got it" }];
   const valid = moveValid("claude", [...BRANCH_ITEMS, ...turn], m);
   assert.equal(valid, true);
   assert.equal(moveDropped({ archived: false, valid, sending: false }), false);
+  // judged as the point of a running source, as checkMove does while the turn runs
+  const running = moveValid("claude", [...BRANCH_ITEMS, ...turn], m, true);
+  assert.equal(running, true);
+  assert.equal(moveDropped({ archived: false, valid: running, sending: false }), false);
+  // and when the turn is over
+  const over = moveValid("claude", [...BRANCH_ITEMS, ...turn, { kind: "end", point: "p9" }], m);
+  assert.equal(moveDropped({ archived: false, valid: over, sending: false }), false);
 });
 
 // ---- Back (A6)
@@ -348,9 +363,11 @@ test("bannerText: a new branch from the start", () => {
 });
 
 test("bannerText: at the end of another branch", () => {
+  // a move never carries a branch on at its end (that is looking at the branch): the message starts a new one there too
   assert.equal(banner({ branch: "main", at: 8, new: false }, MAIN_ITEMS),
-    "Now on “redis”, where it ended. “mem” stays in the tree.");
-  assert.equal(bannerText({ kind: "end", name: "redis", stays: null }), "Now on “redis”, where it ended.");
+    "New branch after “lua”: your message starts it. “mem” stays in the tree.");
+  assert.equal(banner({ branch: "main", at: 8, new: true }, MAIN_ITEMS),
+    "New branch after “lua”: your message starts it. “mem” stays in the tree.");
 });
 
 test("bannerText without a branch to name", () => {
@@ -360,70 +377,40 @@ test("bannerText without a branch to name", () => {
 
 test("bannerOf: the kind, the message before the point and the branch that stays", () => {
   const t = buildTree(EXAMPLE);
-  assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: false }, MAIN_ITEMS, CURRENT), { kind: "end", name: "redis", stays: "mem" });
+  assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: false }, MAIN_ITEMS, CURRENT), { kind: "new", after: "lua", stays: "mem" });
   assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: true }, MAIN_ITEMS, CURRENT), { kind: "new", after: "lua", stays: "mem" });
   // the last message below the point, past marks, tools and notes
   assert.deepEqual(bannerOf(t, { branch: "main", at: 6, new: true }, MAIN_ITEMS, CURRENT), { kind: "new", after: "looking", stays: "mem" });
   assert.deepEqual(bannerOf(t, { branch: "main", at: 4, new: true }, MAIN_ITEMS, CURRENT), { kind: "new", after: "redis", stays: "mem" });
   assert.deepEqual(bannerOf(t, { branch: "main", at: 0, new: true }, MAIN_ITEMS, CURRENT), { kind: "new", after: null, stays: "mem" });
-  // the end of the branch the chat is on leaves no branch
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 6, new: false }, BRANCH_ITEMS, CURRENT), { kind: "end", name: "mem", stays: null });
-  // a current branch the tree does not have yet cannot be named
+  // the end of the branch the chat is on: a new branch as well, and the branch stays
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 6, new: true }, BRANCH_ITEMS, CURRENT), { kind: "new", after: "map", stays: "mem" });
+  // a branch the tree does not have yet cannot be named
   assert.deepEqual(bannerOf(t, { branch: "main", at: 3, new: true }, MAIN_ITEMS, "newer"), { kind: "new", after: "options", stays: null });
+  // the banner says nothing of what the branch left runs: the Send stops nothing
+  assert.equal("stops" in bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT), false);
 });
 
-test("bannerOf: the running subagents of the branch left are counted", () => {
+test("bannerOf: an approval the cut branch waits for is told", () => {
   const t = buildTree(EXAMPLE);
-  assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: false }, MAIN_ITEMS, CURRENT, 1), { kind: "end", name: "redis", stays: "mem", stops: 1 });
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 2), { kind: "new", after: "options", stays: "mem", stops: 2 });
-  // a current branch the tree cannot name is left all the same
-  assert.deepEqual(bannerOf(t, { branch: "main", at: 3, new: true }, MAIN_ITEMS, "newer", 1), { kind: "new", after: "options", stays: null, stops: 1 });
-  // nothing runs
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 0), { kind: "new", after: "options", stays: "mem" });
-  // the end of the branch the chat is on leaves no branch: its subagents go on
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 6, new: false }, BRANCH_ITEMS, CURRENT, 2), { kind: "end", name: "mem", stays: null });
-});
-
-test("bannerText: the branch left loses its running subagents", () => {
-  const b = (running: number, m: Target = { branch: CURRENT, at: 3, new: true }, items = BRANCH_ITEMS) =>
-    bannerText(bannerOf(buildTree(withLive(EXAMPLE, m.branch, "claude", items), { branch: m.branch, count: m.at }), m, items, CURRENT, running));
-  assert.equal(b(1), "New branch after “options”: your message starts it. “mem” stays in the tree. Its running subagent is stopped when you send.");
-  assert.equal(b(2), "New branch after “options”: your message starts it. “mem” stays in the tree. Its 2 running subagents are stopped when you send.");
-  assert.equal(b(1, { branch: "main", at: 8, new: false }, MAIN_ITEMS),
-    "Now on “redis”, where it ended. “mem” stays in the tree. Its running subagent is stopped when you send.");
-  assert.equal(b(0), "New branch after “options”: your message starts it. “mem” stays in the tree.");
-  // without a branch to name
-  assert.equal(bannerText({ kind: "new", after: "options", stays: null, stops: 1 }), "New branch after “options”: your message starts it. The running subagent is stopped when you send.");
-  assert.equal(bannerText({ kind: "end", name: "redis", stays: null, stops: 3 }), "Now on “redis”, where it ended. The 3 running subagents are stopped when you send.");
-});
-
-test("bannerOf: an approval the agent waits for is told, whatever the move leaves", () => {
-  const t = buildTree(EXAMPLE);
-  assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: false }, MAIN_ITEMS, CURRENT, 0, true), { kind: "end", name: "redis", stays: "mem", asks: true });
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 2, true), { kind: "new", after: "options", stays: "mem", stops: 2, asks: true });
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 6, new: false }, BRANCH_ITEMS, CURRENT, 0, true), { kind: "end", name: "mem", stays: null, asks: true });
+  assert.deepEqual(bannerOf(t, { branch: "main", at: 8, new: true }, MAIN_ITEMS, CURRENT, true), { kind: "new", after: "lua", stays: "mem", asks: true });
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, true), { kind: "new", after: "options", stays: "mem", asks: true });
+  assert.deepEqual(bannerOf(t, { branch: "main", at: 3, new: true }, MAIN_ITEMS, "newer", true), { kind: "new", after: "options", stays: null, asks: true });
   // no approval is asked for
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 2, false), { kind: "new", after: "options", stays: "mem", stops: 2 });
-  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, 0), { kind: "new", after: "options", stays: "mem" });
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT, false), { kind: "new", after: "options", stays: "mem" });
+  assert.deepEqual(bannerOf(t, { branch: CURRENT, at: 3, new: true }, BRANCH_ITEMS, CURRENT), { kind: "new", after: "options", stays: "mem" });
 });
 
 test("bannerText: the approval the agent waits for is behind the cut, and Back shows it", () => {
-  const b = (running: number, asks: boolean, m: Target = { branch: CURRENT, at: 3, new: true }, items = BRANCH_ITEMS) =>
-    bannerText(bannerOf(buildTree(withLive(EXAMPLE, m.branch, "claude", items), { branch: m.branch, count: m.at }), m, items, CURRENT, running, asks));
-  assert.equal(b(0, true), "New branch after “options”: your message starts it. “mem” stays in the tree. The agent is waiting for your approval: Back shows it.");
-  assert.equal(b(1, true),
-    "New branch after “options”: your message starts it. “mem” stays in the tree. Its running subagent is stopped when you send. The agent is waiting for your approval: Back shows it.");
-  assert.equal(b(0, true, { branch: "main", at: 8, new: false }, MAIN_ITEMS),
-    "Now on “redis”, where it ended. “mem” stays in the tree. The agent is waiting for your approval: Back shows it.");
-  assert.equal(b(2, true, { branch: "main", at: 8, new: false }, MAIN_ITEMS),
-    "Now on “redis”, where it ended. “mem” stays in the tree. Its 2 running subagents are stopped when you send. The agent is waiting for your approval: Back shows it.");
-  // no sentence otherwise
-  assert.equal(b(0, false), "New branch after “options”: your message starts it. “mem” stays in the tree.");
-  assert.equal(b(1, false), "New branch after “options”: your message starts it. “mem” stays in the tree. Its running subagent is stopped when you send.");
+  const b = (asks: boolean, m: Target = { branch: CURRENT, at: 3, new: true }, items = BRANCH_ITEMS) =>
+    bannerText(bannerOf(buildTree(withLive(EXAMPLE, m.branch, "claude", items), { branch: m.branch, count: m.at }), m, items, CURRENT, asks));
+  assert.equal(b(true), "New branch after “options”: your message starts it. “mem” stays in the tree. The agent is waiting for your approval: Back shows it.");
+  assert.equal(b(true, { branch: "main", at: 8, new: true }, MAIN_ITEMS),
+    "New branch after “lua”: your message starts it. “mem” stays in the tree. The agent is waiting for your approval: Back shows it.");
+  // no sentence otherwise, and none about stopping anything
+  assert.equal(b(false), "New branch after “options”: your message starts it. “mem” stays in the tree.");
   // without a branch to name
   assert.equal(bannerText({ kind: "new", after: null, stays: null, asks: true }), "New branch from the start: your message starts it. The agent is waiting for your approval: Back shows it.");
-  assert.equal(bannerText({ kind: "end", name: "redis", stays: null, stops: 1, asks: true }),
-    "Now on “redis”, where it ended. The running subagent is stopped when you send. The agent is waiting for your approval: Back shows it.");
 });
 
 test("bannerOf: the message before the point is previewed in 44 characters", () => {

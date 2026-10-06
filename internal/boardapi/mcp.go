@@ -71,9 +71,10 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 		return "unknown tool " + tool, true
 	}
 	bd, _ := r.Boards.Get(meta.Board)
-	// The client knows the chat by its top-level id, also when a branch's agent calls.
+	// The client knows the chat by its top-level id, also when a branch's agent calls; branch
+	// says which branch's agent (or subagent) it is, "main" for the chat's main line.
 	out, err := r.Bridge.Call("tool", map[string]any{
-		"chat": caller.Chat, "board": bd.ID, "name": tool, "args": args,
+		"chat": caller.Chat, "branch": caller.Branch, "board": bd.ID, "name": tool, "args": args,
 	}, callTimeout)
 	if errors.Is(err, editorbridge.ErrNoClient) {
 		return NoClientText, true

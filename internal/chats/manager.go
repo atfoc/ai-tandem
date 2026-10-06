@@ -1,4 +1,4 @@
-// Package chats owns the chats: one agent per chat, the agent's events turned into items,
+// Package chats owns the chats: one agent per branch of a chat, the agent's events turned into items,
 // persistence (chat.json, items.jsonl, subagents/<sid>/) and the sticky defaults a chat's settings feed.
 // (The prototype's Chats and Chat in chats.go.)
 package chats
@@ -12,7 +12,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -76,6 +75,10 @@ type Manager struct {
 	// after setting it. So a start either came first and has its process on the chat when Shutdown
 	// gets there, which closes it, or is refused with ErrShutdown.
 	down atomic.Bool
+	// capMu makes the admission of a turn one step: counting the chat objects that work and
+	// reserving a slot (see cap.go). It protects every Chat.reserved. It is taken with one chat's
+	// mu held or none, and only Manager.mu is taken under it: a chat's mu → capMu → Manager.mu.
+	capMu sync.Mutex
 }
 
 type Chat struct {
@@ -87,7 +90,7 @@ type Chat struct {
 	errText       string
 	folderMissing bool
 	interrupted   bool               // TurnActive was true at boot; the "Stopped" note is added when tr loads
-	deleted       bool               // removed by Delete: nothing more is written or emitted for it
+	deleted       bool               // removed by Delete: nothing more is written or emitted for it (see gone)
 	unlisted      bool               // being made by Fork: only the token lookup sees it; never listed, saved or emitted
 	sentGen       int                // the gen of the process the last Send went to; 0 = none yet
 	subs          map[string]*sub    // sid → subagent; loaded with tr (see trOf)
@@ -107,19 +110,68 @@ type Chat struct {
 	wake      chan struct{} // closed, and dropped, when a WaitOwned should look again; nil while none waits
 	removing  bool          // being deleted: a WaitOwned answers ErrNotFound from now on
 	costFirst bool          // the next cost report is the first of its process (see costSample)
+	// The cap on running turns (see cap.go). reserved says that a turn admitted on this chat
+	// object is starting and pub does not show it yet; Manager.capMu guards it, not mu. noTurn
+	// says that pub shows as working what is no turn: a message of the human's that the agent
+	// refused, with nothing from the agent since (see sendRefused). It is written with mu held
+	// and read without it, for the count.
+	reserved bool
+	noTurn   atomic.Bool
+
+	// pub mirrors the status clients were last told of: idle, working or waiting for approval
+	// (see pubOf). emitChat writes it with mu held; it is read without any lock, for the counts
+	// over a chat's branches (see chatView).
+	pub atomic.Uint32
+
+	// gone is deleted for send, which holds no chat's mu: it is set with deleted when the chat
+	// object is retired, and never cleared.
+	gone atomic.Bool
+
+	// goneMu makes "check that the chat is still there, broadcast" one step (see cast), so that
+	// no state record and no view of a top-level chat follows its chat_removed, which Delete
+	// broadcasts under it. It is a top-level chat's only and a leaf: only the bridge's lock is
+	// taken under it, and it is never taken with a chat's mu or Manager.mu held.
+	goneMu sync.Mutex
+
+	// drafts publishes meta.Drafts of a top-level chat, which stays what is saved: a branch's
+	// view reads its own draft here, without this chat's mu (see view). It is stored wherever
+	// meta.Drafts is assigned (see setDrafts); nil when none was, which is no draft for a branch.
+	drafts atomic.Pointer[map[string]*model.Draft]
+
+	// sendMu makes "compose the view, broadcast it" one step for the chat events of a top-level
+	// chat (see send): the counts over its branches are read when an event is sent, so two
+	// events must reach clients in the order their counts were read. It is a top-level chat's
+	// only, taken where no chat's mu, no treeMu and not Manager.mu is held (moveMu may be), and
+	// held for nothing but chatView and the broadcast: under it come the chats' mu (one at a
+	// time), Manager.mu, goneMu and the bridge's lock, and nothing that sends. A state record is
+	// not sent under it: chatView waits for chats' locks, and a branch's records must not.
+	sendMu sync.Mutex
 
 	// treeMu serialises the changes of tree.json (see updateTree). It is taken before mu, never
 	// while mu is held.
 	treeMu sync.Mutex
 
-	// moveMu makes a Send with a target one step for its top-level chat: the check that the
-	// current branch is idle, the change of the current branch and the Send (see SendTo). A
-	// plain Send takes it as well, until it has locked the current branch (see sendCur): it
-	// waits for a Send with a target to be done, so its message never goes to a branch that
-	// Send is about to stop. It is taken before treeMu and before any chat's mu, and never held
-	// during a fork start: a Send that carries a branch on gives it up before the branch's
-	// process starts. The one exception is a new branch whose process exited before its first
-	// message: step 3 of SendTo starts it again.
+	// treeOutMu makes "read the part, broadcast it" one step for the tree events of a top-level
+	// chat (see emitTree), so that they reach clients in the order their parts were read and the
+	// last one of a part is the newest. It is a top-level chat's only, taken where no chat's mu,
+	// no treeMu, no sendMu and not Manager.mu is held (moveMu may be): under it come the chats'
+	// mu (one at a time), Manager.mu, goneMu and the bridge's lock, and nothing that sends. The
+	// tree record is read under it without treeMu, as Tree reads it.
+	treeOutMu sync.Mutex
+
+	// treeDirty says that a change of this chat object's part of the tree waits to be sent (see
+	// emitTreePart): the tree event that sends the part clears it, and those queued behind it
+	// for changes it has already told send nothing.
+	treeDirty atomic.Bool
+
+	// moveMu makes one step of the change of the chat's current branch: the tree record's Current
+	// and cur change together, so the two never name different branches once a change is done.
+	// It is taken by setCurrent and by the listing of a new branch (SendTo), for the write of the
+	// record and the change in memory and nothing else. It does not decide whether a message may
+	// go: that is decided under the mu of the branch the message goes to, where sendOn refuses a
+	// busy branch, and a change of the current branch stops nothing. Send and SendTo do not hold
+	// it while they send. It is taken before treeMu and any chat's mu, with none of the chat's
+	// other locks held, and never held during the start of a process or an agent's Send.
 	moveMu sync.Mutex
 
 	// The branches (see branches.go). top and branch are set before the chat object is in the
@@ -170,23 +222,53 @@ func (m *Manager) nowMs() int64 { return m.now().UnixMilli() }
 // so the bridge's lock is never taken under a chat's lock (the bridge's snapshot reads chats).
 type outbox []any
 
-// send broadcasts the queued events. No chat's mu may be held: a chat event is composed here.
-// The events of a run agent's chat go out only while a client watches it (see Watch).
+// send broadcasts the queued events. No chat's mu may be held, and no treeMu nor Manager.mu: a
+// chat event is composed here, under its top-level chat's sendMu. The tree events are built and
+// sent after all the others, wherever they were queued, each under its top-level chat's
+// treeOutMu with no sendMu held: a part of the tree follows the state record and the view of the
+// change it is of. None of them, and no state record, is sent once its chat was deleted (see
+// cast). The events of a run agent's chat go out only while a client watches it (see Watch), and
+// no state record and no tree event of it ever: it has main alone, and its view tells its state.
 func (m *Manager) send(out outbox) {
+	var trees []treeEvent
 	for _, ev := range out {
 		switch e := ev.(type) {
 		case chatEvent:
-			v, ok := m.chatView(e)
-			if !ok || (v.Role != "" && !m.watching(v.ID)) {
-				continue
+			top := topOf(e.c)
+			top.sendMu.Lock()
+			if v, ok := m.chatView(e); ok && (v.Role == "" || m.watching(v.ID)) {
+				m.cast(top, map[string]any{"type": "chat", "chat": v})
 			}
-			ev = map[string]any{"type": "chat", "chat": v}
+			top.sendMu.Unlock()
+		case stateEvent:
+			if e.c.role == "" {
+				m.cast(e.c, map[string]any{"type": "branch_state", "state": e.state})
+			}
+		case treeEvent:
+			if e.c.role == "" {
+				trees = append(trees, e)
+			}
 		case agentEvent:
-			if !m.watching(e.chat) {
-				continue
+			if m.watching(e.chat) {
+				m.Bridge.Broadcast(e.ev)
 			}
-			ev = e.ev
+		default:
+			m.Bridge.Broadcast(ev)
 		}
+	}
+	for _, e := range trees {
+		m.emitTree(e.chat, topOf(e.c), e.c, false, false, true)
+	}
+}
+
+// cast broadcasts ev, an event of the chat object c, unless c or its top-level chat was deleted.
+// Delete retires the chat objects and then sends chat_removed under the same goneMu, so ev goes
+// out before chat_removed or not at all. No chat's mu may be held.
+func (m *Manager) cast(c *Chat, ev any) {
+	top := topOf(c)
+	top.goneMu.Lock()
+	defer top.goneMu.Unlock()
+	if !c.gone.Load() && !top.gone.Load() {
 		m.Bridge.Broadcast(ev)
 	}
 }
@@ -208,16 +290,84 @@ func (o *outbox) threadEvent(c *Chat, chat string, ev map[string]any) {
 	*o = append(*o, ev)
 }
 
-// emitChat queues the chat event of a change of c's session side (status, error, usage,
-// settings): {type:"chat", chat: <the chat's view>}, sent only when c is its chat's current
-// branch. c.mu held. Nothing is queued for an unlisted chat, here and in the other emit functions.
+// The values of Chat.pub.
+const (
+	pubIdle uint32 = iota
+	pubWorking
+	pubApproval
+)
+
+// pubOf is the value of Chat.pub for the status st.
+func pubOf(st model.Status) uint32 {
+	switch st {
+	case model.StatusThinking, model.StatusWriting, model.StatusTool:
+		return pubWorking
+	case model.StatusApproval:
+		return pubApproval
+	}
+	return pubIdle
+}
+
+// stateEvent is a "branch_state" event waiting in an outbox: the state record of the chat object
+// c, taken under its lock. It is sent as {type:"branch_state", state: <the record>}, unless c or
+// its chat was deleted meanwhile (see send).
+type stateEvent struct {
+	c     *Chat
+	state model.BranchState
+}
+
+// stateEventOf is the event of c's state record, v being c's own view. c.mu held.
+func stateEventOf(c *Chat, v model.ChatView) stateEvent {
+	chat, branch := splitID(c.meta.ID)
+	return stateEvent{c: c, state: model.StateOf(chat, branch, v)}
+}
+
+// emitChat queues the two events of a change of c's session side (status, error, usage,
+// settings): c's state record (see stateEvent), then {type:"chat", chat: <the chat's view>}. The
+// chat event is sent when c is its chat's current branch, and for another branch only when the
+// chat's counts of working branches changed with it (see chatView). When c started or stopped
+// being busy, c's part of the tree follows them (see emitTreePart). c.mu held.
+//
+// It also writes c.pub, for an unlisted chat as well: every change of a chat object's status is
+// followed by a call under the same hold of c.mu, which is what keeps the mirror right. Nothing
+// is queued for an unlisted chat, here and in the other emit functions.
 func (o *outbox) emitChat(c *Chat) {
+	v := view(c)
+	if v.Status != model.StatusThinking {
+		c.noTurn.Store(false) // the flag lives only while a refused message's "thinking" shows
+	}
+	pub := pubOf(v.Status)
+	old := c.pub.Swap(pub)
 	if c.unlisted {
 		return
 	}
-	v := view(c)
 	c.shown = subCounts{v.SubsRunning, v.SubsOwed}
-	*o = append(*o, chatEvent{c: c, v: v, session: true})
+	*o = append(*o, stateEventOf(c, v), chatEvent{c: c, v: v, session: true, agg: old != pub})
+	if (old == pubIdle) != (pub == pubIdle) {
+		o.emitTreePart(c) // a turn started or ended: the tree shows it on the branch's points
+	}
+}
+
+// emitRecord queues c's state record alone, for a change of it that is not one of c's session
+// side: its draft, which the top-level chat holds for it, and the listing of a new branch. c.pub
+// is left alone: only emitChat writes it. c.mu held.
+func (o *outbox) emitRecord(c *Chat) {
+	if c.unlisted {
+		return
+	}
+	*o = append(*o, stateEventOf(c, view(c)))
+}
+
+// emitState sends the state record of the chat object c as it is now. It sends no chat event: its
+// callers send the chat's view next (emitView), which has the counts. No chat's mu may be held.
+func (m *Manager) emitState(c *Chat) {
+	var out outbox
+	c.mu.Lock()
+	if !c.deleted {
+		out.emitRecord(c)
+	}
+	c.mu.Unlock()
+	m.send(out)
 }
 
 // emitCounts queues the chat's view when its subagent counts are not the ones clients were last
@@ -233,7 +383,7 @@ func (o *outbox) emitCounts(c *Chat) {
 }
 
 // emitIdentity queues the chat event of a change of the top-level chat c's own (name, group,
-// draft, archive), whatever its current branch is. c.mu held.
+// archive, whether a branch has a draft), whatever its current branch is. c.mu held.
 func (o *outbox) emitIdentity(c *Chat) {
 	if c.unlisted {
 		return
@@ -242,17 +392,44 @@ func (o *outbox) emitIdentity(c *Chat) {
 }
 
 // emitItems queues the changed items, if any, under the top-level chat's id and the branch's.
-// c.mu held.
+// When c is not busy its part of the tree follows them (see emitTreePart): the items of a running
+// turn are in the part its end sends. c.mu held.
 func (o *outbox) emitItems(c *Chat, ups []transcript.Update) {
 	if len(ups) == 0 || c.tr == nil || c.unlisted {
 		return
 	}
 	chat, branch := splitID(c.meta.ID)
 	o.threadEvent(c, chat, map[string]any{"type": "chat_items", "chat": chat, "branch": branch, "version": c.tr.Version(), "updates": ups})
+	if !busy(c) {
+		o.emitTreePart(c)
+	}
+}
+
+// treeEvent is a "tree" event waiting in an outbox: the part of the tree that is the chat object
+// c's branch, in the top-level chat with the id chat. Nothing of the part is held: it is read
+// when the event is sent (see emitTree).
+type treeEvent struct {
+	c    *Chat
+	chat string
+}
+
+// emitTreePart queues the tree event of c's own part of its chat's tree, for a change of what the
+// tree shows of the branch: its items, or whether its agent is working. It marks the part as
+// waiting (Chat.treeDirty), so that of several events queued for it the first one sent tells them
+// all. c.mu held.
+func (o *outbox) emitTreePart(c *Chat) {
+	if c.unlisted {
+		return
+	}
+	c.treeDirty.Store(true)
+	chat, _ := splitID(c.meta.ID)
+	*o = append(*o, treeEvent{c: c, chat: chat})
 }
 
 // view is what clients see of the chat object c alone: of a chat with branches, only the half c
-// holds (see compose). c.mu held.
+// holds (see compose). Its draft is that of the branch c is. c.mu held. For a branch the draft is
+// read from what its top-level chat publishes (Chat.drafts), not under that chat's mu: a branch's
+// events never wait for its top-level chat, which may be starting a process.
 func view(c *Chat) model.ChatView {
 	var st model.Status
 	var tool string
@@ -267,6 +444,9 @@ func view(c *Chat) model.ChatView {
 		st = model.StatusReady
 	}
 	v := model.ViewOf(c.meta, st, tool, c.errText, c.folderMissing)
+	if c.top != nil { // main's draft is in its own meta; the others' are in their top-level chat's
+		v.Draft = draftsOf(c.top)[c.branch]
+	}
 	n := countSubs(c)
 	v.SubsRunning, v.SubsOwed = n.running, n.owed
 	return v
@@ -406,6 +586,10 @@ func (m *Manager) all() []*Chat {
 // Load reads every chats/<id>/chat.json at boot, and the branches each chat's tree record names
 // (see loadBranches), then the chats of the runs (see loadRunChats). items.jsonl is not read here.
 // A folder without a readable chat.json is logged and skipped (never deleted).
+//
+// A chat.json from before drafts were per branch has one draft for the chat. It becomes the draft
+// of the chat's current branch, and chat.json is written at once: left to the next save, a change
+// of the current branch before that save would give the draft to another branch after a restart.
 func (m *Manager) Load() error {
 	ents, err := os.ReadDir(m.Store.P.Chats)
 	if err != nil {
@@ -431,9 +615,21 @@ func (m *Manager) Load() error {
 			continue
 		}
 		c := &Chat{meta: meta, interrupted: meta.TurnActive}
+		setDrafts(c, meta.Drafts)
 		m.chats[meta.ID] = c
 		m.registerChatToken(meta.Token)
 		m.loadBranches(c, meta.ID)
+		if d := c.meta.Draft; d != nil {
+			cur := model.MainBranch
+			if c.cur != nil {
+				cur = c.cur.branch
+			}
+			if c.meta.Drafts[cur] == nil { // else the new form has one already: it stays
+				setDrafts(c, withDraft(c.meta.Drafts, cur, d))
+			}
+			c.meta.Draft = nil
+			m.logSave(c)
+		}
 	}
 	m.loadRunChats()
 	return nil
@@ -474,6 +670,37 @@ func (m *Manager) View(id string) (model.ChatView, error) {
 	v := view(c)
 	c.mu.Unlock()
 	return m.composed(c, v), nil
+}
+
+// States returns the state record of every registered branch of every listed chat, main included
+// and no run agent's chat,
+// by chat id and then main first and the others in the tree record's order. Nothing is loaded for
+// it: a branch whose thread has not been read since the server started has the status its
+// chat.json gives (ready, or stopped after a turn cut by a restart) and no counts. One chat object
+// is locked at a time.
+func (m *Manager) States() []model.BranchState {
+	out := []model.BranchState{}
+	for _, top := range m.all() {
+		if top.top != nil || top.role != "" {
+			continue
+		}
+		for i, c := range m.branchesOf(top) {
+			c.mu.Lock()
+			hidden := c.unlisted || c.deleted
+			chat, branch := splitID(c.meta.ID)
+			st := model.StateOf(chat, branch, view(c))
+			c.mu.Unlock()
+			if hidden {
+				if i == 0 {
+					break // the chat itself: none of its branches is listed
+				}
+				continue
+			}
+			out = append(out, st)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Chat < out[j].Chat })
+	return out
 }
 
 // Items returns the history of the chat's current branch and its version, reading items.jsonl
@@ -590,12 +817,16 @@ func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView
 }
 
 // Open is called when the client selects the chat. It never starts an agent; it only reads the
-// history and shows a missing folder before the user types. Of a run agent's chat it only reads
-// the history: the checkout a finished task agent worked in is removed by design.
-func (m *Manager) Open(id string) error {
+// history and shows a missing folder before the user types. It acts on the chat's current branch.
+// Of a run agent's chat it only reads the history: the checkout a finished task agent worked in
+// is removed by design.
+func (m *Manager) Open(id string) error { return m.OpenOf(id, "") }
+
+// OpenOf is Open for a branch of the chat; branch "" is the current one.
+func (m *Manager) OpenOf(id, branch string) error {
 	var out outbox
 	defer func() { m.send(out) }()
-	c, err := m.lockCur(id)
+	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return err
 	}
@@ -686,7 +917,8 @@ func (m *Manager) spawnFailed(c *Chat, tr *transcript.Transcript, err error, out
 //
 // c.mu is held on entry and on return, but not during the look at the source, which locks that
 // chat, or the start: the starting process looks its token up, which locks every chat. Meanwhile
-// the chat is busy (thinking), so a second Send or a fork gets ErrBusy. A failed or refused start
+// the chat is busy (thinking), so a second Send gets ErrBusy; a fork is made only at a finished
+// boundary, through this chat's fork source (see forkEntry). A failed or refused start
 // is shown as a failed spawn is. Only Send calls it, after its own checks.
 func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 	tr, err := m.trOf(c, out)
@@ -793,6 +1025,11 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		if c.carry != nil && modelOutput(ev) {
 			c.carry.settled = true // the results it carries are delivered
 		}
+		switch {
+		case ev.Kind == agent.EvThinking, ev.Kind == agent.EvPermRequest, ev.Kind == agent.EvTurnEnd,
+			ev.Kind == agent.EvExit, modelOutput(ev):
+			c.noTurn.Store(false) // the agent is in a turn after all, or ends one (see sendRefused)
+		}
 		if ev.Kind == agent.EvPermRequest && ev.Sub != "" {
 			ev.Sub = c.subByTool[ev.Sub] // the perm item names the sid ("" if unknown)
 		}
@@ -897,76 +1134,92 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 
 // Send posts one user turn, starting (or resuming) the agent if it has no process. refs are the
 // parts of earlier messages the user quoted: the agent gets them as <reference> blocks in front of
-// the text, and the user item keeps them. The message goes to the chat's current branch. An
+// the text, and the user item keeps them. The message goes to the chat's current branch, the one
+// a message last got onto: the other branches of the chat are not looked at, busy or not. An
 // accepted Send releases that branch's hold and carries the subagent results the agent is owed,
 // unless their delivery failed before: their rows go ahead of the user item and their block ahead
 // of the text, after a board chat's context. With nothing owed the message is what it always was.
-//
-// It waits for a Send with a target that is changing the chat's current branch (see moveMu): the
-// message goes to the branch that is current after it, never to the one it stops.
 func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
-	if err := m.person(id); err != nil {
-		return err
-	}
-	top, err := m.topChat(id)
-	if err != nil {
-		return err
-	}
-	top.moveMu.Lock()
-	return m.sendCur(top, id, text, context, refs)
+	_, err := m.SendBranch(id, text, context, refs)
+	return err
 }
 
-// sendCur is Send on the current branch of the top-level chat top, whose id is id. top.moveMu is
-// held on entry and released once that branch is locked, ahead of the start of its process. That
-// is enough: sendOn releases the branch's lock only when the branch is busy or the message
-// refused, and a Send with a target checks under moveMu that the current branch is idle.
-func (m *Manager) sendCur(top *Chat, id, text, context string, refs []model.Reference) error {
-	c, err := m.lockCur(id)
-	top.moveMu.Unlock()
-	if err != nil {
-		return err
+// SendBranch is Send, and returns the id of the branch the message was put on ("main" for main):
+// the one that was current when it was sent. It is "" with an error.
+func (m *Manager) SendBranch(id, text, context string, refs []model.Reference) (branch string, err error) {
+	if err := m.person(id); err != nil {
+		return "", err
 	}
-	return m.sendOn(c, text, context, refs)
+	c, err := m.lockCur(id)
+	if err != nil {
+		return "", err
+	}
+	_, branch = splitID(c.meta.ID)
+	if _, err := m.sendOn(c, text, context, refs); err != nil {
+		return "", err
+	}
+	return branch, nil
 }
 
 // sendOn is Send on the chat object c, which may still be unlisted. c.mu is held on entry and
-// released. On a branch the first-send effects (group defaults, auto-naming) never run, and the
-// draft cleared is the top-level chat's, once the branch is listed.
+// released. Whether the message may go is decided here: ErrBusy says that c is busy, whatever the
+// chat's other branches do, and ErrChatCap or ErrAppCap that too many chat objects work already
+// (see cap.go). A message refused so leaves nothing: no item, the draft and what c owes its agent
+// as they were. On a branch the first-send effects (group defaults, auto-naming) never run. The
+// draft cleared is c's own alone (see dropDraft): another branch's stays.
 //
 // A chat on a run feeds no sticky defaults, and every message of it starts with the run's
 // context block (RunOwner.ChatContext), as a board chat's does with its board's. For a run
 // agent's chat it is SendOwned's: the wait of that message starts here, and nothing of the
 // human's (the namer, quotes, the draft) is touched.
-func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) error {
+//
+// on says that the message is in c's thread. It is false with every error but the refusal of the
+// agent's own Send, which leaves the message there as a turn that failed (see sendRefused).
+func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) (on bool, err error) {
 	var out outbox
-	var err error
 	if m.down.Load() {
 		// In the hold of c.mu that would start the process (see Manager.down).
 		c.mu.Unlock()
-		return ErrShutdown
+		return false, ErrShutdown
 	}
 	p := m.parentOf(c)
 	if p.Archived {
 		c.mu.Unlock()
-		return ErrArchived
+		return false, ErrArchived
 	}
 	if p.InstructionsSent {
 		c.mu.Unlock()
-		return ErrLegacy
+		return false, ErrLegacy
 	}
 	if c.meta.Run != "" {
 		if _, err := m.openRun(c.meta.Run); err != nil {
 			c.mu.Unlock()
-			return err
+			return false, err
 		}
 	}
+	// A chat not read since the app started has no transcript loaded yet; the checks read it.
+	if _, err := m.trOf(c, &out); err != nil {
+		c.mu.Unlock()
+		m.send(out)
+		return false, err
+	}
+	// The three refusals below leave nothing, but the load above may have: out holds what it sends.
 	if busy(c) {
 		c.mu.Unlock()
-		return ErrBusy
+		m.send(out)
+		return false, ErrBusy
 	}
 	if c.role == "" && !validReferences(c.tr, refs) {
 		c.mu.Unlock()
-		return ErrBadReference
+		m.send(out)
+		return false, ErrBadReference
+	}
+	// The cap, last of the refusals that leave nothing: no process is started for a turn that
+	// may not run. The slot is reserved until c shows as working, below.
+	if err := m.reserveTurn(c); err != nil {
+		c.mu.Unlock()
+		m.send(out)
+		return false, err
 	}
 	if c.meta.ForkSource != nil && c.ag == nil {
 		err = m.spawnFork(c, &out)
@@ -974,9 +1227,10 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 		err = m.spawn(c, &out)
 	}
 	if err != nil {
+		m.releaseTurn(c) // no turn: c shows what the failed start left, which is not working
 		c.mu.Unlock()
 		m.send(out)
-		return err
+		return false, err
 	}
 	if c.role != "" {
 		// After the start, so a start that failed leaves the wait of the message before; ahead of
@@ -988,13 +1242,11 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	first := !c.meta.Locked && c.top == nil
 	if first && c.meta.Run == "" {
 		// Sending the first message confirms the chat's settings as chosen, changed or not.
-		m.recordDefaults(c, c.meta.Cwd, model.ModelChoice{Model: c.meta.Model, Effort: c.meta.Effort}, &out)
+		m.recordDefaults(c, c.meta.Cwd, defaultsChoice(c, model.ModelChoice{Model: c.meta.Model, Effort: c.meta.Effort}), &out)
 	}
 	c.meta.Locked = true
-	c.meta.TurnActive = true // in the hold of c.mu that started the process: its first tools/list finds a running turn
-	if c.role == "" {
-		c.meta.Draft = nil // the message is the draft, sent
-	}
+	c.meta.Fresh, c.meta.SourceCtx = false, 0 // a fork has its own message from here, also one its agent refuses
+	c.meta.TurnActive = true                  // in the hold of c.mu that started the process: its first tools/list finds a running turn
 	var blocks []agent.ContentBlock
 	if rc := m.runContext(c); rc != "" {
 		context = rc
@@ -1016,6 +1268,15 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	} else {
 		context = "" // plain chats never get board context
 	}
+	notice, told := c.meta.NoticeOwed, false
+	if notice {
+		// A copy's first message: its agent is told what was running in the source and is not here.
+		c.meta.NoticeOwed = false
+		if gone := notCarried(c); len(gone) > 0 {
+			blocks = append(blocks, agent.ContentBlock{Text: notCarriedBlock(gone)})
+			told = true
+		}
+	}
 	d, taken, ups := m.carryOwed(c, true, &out)
 	if d != nil {
 		blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningAppSubs(c), true)})
@@ -1023,22 +1284,27 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	}
 	blocks = append(blocks, agent.ContentBlock{Text: withReferences(refs, text)})
 	ups = append(ups, c.tr.AddUser(text, context, refs)...)
+	if told {
+		// A copy cut before this point is forked from the session as it was before the notice.
+		_, items := c.tr.Snapshot()
+		c.meta.NoticeAt = len(items)
+	}
 	if err := c.tr.Flush(false); err != nil {
 		log.Printf("chats: flush %s: %v", c.meta.ID, err)
+	}
+	if c.role == "" {
+		m.dropDraft(c) // the message is the draft, sent
 	}
 	m.logSave(c)
 	name, userNamed := c.meta.Name, c.meta.UserNamed
 	id, kind := c.meta.ID, c.meta.Agent
 	ag := c.ag
 	c.sentGen = c.gen
-	sent := c.tr.Sent()
+	sent, turns := c.tr.Sent(), c.meta.Usage.Turns
 	out.emitItems(c, ups)
 	out.emitChat(c)
-	listed := !c.unlisted
+	m.releaseTurn(c) // c shows as working: the mirror holds the slot from here
 	c.mu.Unlock()
-	if c.top != nil && listed {
-		m.clearDraft(c.top) // one draft per chat; the chat event above is composed after it
-	}
 	m.send(out)
 	if first && name == "" && !userNamed && c.role == "" {
 		if namer := m.Namers[kind]; namer != nil {
@@ -1053,21 +1319,27 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	}
 	err = ag.Send(blocks)
 	if err != nil {
-		m.sendRefused(c, d, sent)
+		m.sendRefused(c, d, sent, turns, notice)
 	}
-	return err
+	return true, err
 }
 
 // Configure changes the folder, model or effort before the first message; after it, only a
-// new folder for a chat whose folder is missing. It acts on the chat's current branch. A new
-// folder for a missing one is the chat's: it is also written to every other branch that has the
-// missing folder (see fixFolder). A branch with another folder keeps it.
-func (m *Manager) Configure(id string, req ConfigReq) error {
+// new folder for a chat whose folder is missing, and the model or effort of a fork that has had
+// no message of its own, whose process is then started again (see configureFresh): it returns
+// once that start is over. It acts on the chat's current branch. A new folder for a missing one
+// is the chat's: it is also written to every other branch that has the missing folder (see
+// fixFolder). A branch with another folder keeps it.
+func (m *Manager) Configure(id string, req ConfigReq) error { return m.ConfigureOf(id, "", req) }
+
+// ConfigureOf is Configure for a branch of the chat; branch "" is the current one. All of req is
+// the branch's: the chat's name and group are not in it (see Rename and Move).
+func (m *Manager) ConfigureOf(id, branch string, req ConfigReq) error {
 	if err := m.person(id); err != nil {
 		return err
 	}
 	var out outbox
-	c, err := m.lockCur(id)
+	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return err
 	}
@@ -1082,6 +1354,12 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 		return ErrLegacy
 	}
 	onlyFolderFix := c.meta.Locked && c.folderMissing && req.Model == "" && req.Effort == "" && req.Cwd != ""
+	if c.meta.Fresh && !onlyFolderFix {
+		// A fork that has had no message of its own: its model and effort can still be changed.
+		err := m.configureFresh(c, req, &out)
+		unlock()
+		return err
+	}
 	if c.meta.Locked && !onlyFolderFix {
 		unlock()
 		return ErrLocked
@@ -1100,35 +1378,12 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 		}
 		next.Cwd = abs
 	}
-	cat := m.catalog(c.meta.Agent)
-	if req.Model != "" {
-		cm, err := findModel(cat, req.Model)
-		if err != nil {
-			unlock()
-			return err
-		}
-		next.Model = req.Model
-		if cm != nil && !slices.Contains(cm.Efforts, next.Effort) {
-			// The chat must never hold an effort its model lacks: fall back to the model's
-			// default effort, or none when the model has no efforts.
-			next.Effort = ""
-			if len(cm.Efforts) > 0 {
-				next.Effort = cm.DefaultEffort
-			}
-		}
+	mc, _, err := m.choose(c.meta.Agent, model.ModelChoice{Model: next.Model, Effort: next.Effort}, req.Model, req.Effort)
+	if err != nil {
+		unlock()
+		return err
 	}
-	if req.Effort != "" {
-		cm, err := findModel(cat, next.Model)
-		if err != nil {
-			unlock()
-			return err
-		}
-		if cm != nil && !slices.Contains(cm.Efforts, req.Effort) {
-			unlock()
-			return fmt.Errorf("%s has no effort %q", next.Model, req.Effort)
-		}
-		next.Effort = req.Effort
-	}
+	next.Model, next.Effort = mc.Model, mc.Effort
 	// The folder fix: a new folder for the missing one, gone.
 	fix, gone := req.Cwd != "" && c.folderMissing, c.meta.Cwd
 	c.meta = next
@@ -1144,7 +1399,7 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 		return err
 	}
 	if c.meta.Run == "" { // a chat on a run feeds no sticky defaults
-		m.recordDefaults(c, abs, model.ModelChoice{Model: req.Model, Effort: req.Effort}, &out)
+		m.recordDefaults(c, abs, defaultsChoice(c, model.ModelChoice{Model: req.Model, Effort: req.Effort}), &out)
 	}
 	out.emitChat(c)
 	unlock()
@@ -1157,14 +1412,15 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 // fixFolder gives the folder cwd to every branch of c's chat, other than c, whose folder is the
 // missing one, gone, and takes back the error a failed start for that folder left on it. Nothing
 // else of the branch is touched: a process it has runs on where it is, and the folder is used
-// when the branch next starts. Clients are sent nothing: the chat's view holds the folder of the
-// current branch, which Configure has sent. One branch is locked at a time; no chat's mu may be
-// held.
+// when the branch next starts. Each branch changed sends its state record, and the chat's view
+// when it is the current branch (c is not, when Configure named another). One branch is locked
+// at a time; no chat's mu may be held.
 func (m *Manager) fixFolder(c *Chat, gone, cwd string) {
 	for _, b := range m.branchesOf(topOf(c)) {
 		if b == c {
 			continue
 		}
+		var out outbox
 		b.mu.Lock()
 		if !b.deleted && b.meta.Cwd == gone {
 			b.meta.Cwd = cwd
@@ -1176,8 +1432,10 @@ func (m *Manager) fixFolder(c *Chat, gone, cwd string) {
 				}
 			}
 			m.logSave(b)
+			out.emitChat(b)
 		}
 		b.mu.Unlock()
+		m.send(out)
 	}
 }
 
@@ -1196,6 +1454,15 @@ func (m *Manager) recordDefaults(c *Chat, cwd string, mc model.ModelChoice, out 
 	if defs != nil {
 		*out = append(*out, map[string]any{"type": "defaults", "defaults": defs})
 	}
+}
+
+// defaultsChoice is what recordDefaults gets of the choice mc made on c: nothing for a branch and
+// for a fork, whose model and effort are never a new chat's defaults. c.mu held.
+func defaultsChoice(c *Chat, mc model.ModelChoice) model.ModelChoice {
+	if c.top != nil || c.meta.ForkedFrom != "" {
+		return model.ModelChoice{}
+	}
+	return mc
 }
 
 // findModel looks id up in cat. A nil catalog (Cursor's or pi's list not known yet) accepts any
@@ -1296,26 +1563,105 @@ func withReferences(refs []model.Reference, text string) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// SetDraft stores the message typed in the chat's composer; empty text and no quotes clear it.
-func (m *Manager) SetDraft(id string, d model.Draft) error {
+// SetDraft stores the message typed in the composer of the chat's current branch; empty text and
+// no quotes clear it.
+func (m *Manager) SetDraft(id string, d model.Draft) error { return m.SetDraftOf(id, "", d) }
+
+// SetDraftOf is SetDraft for the branch named ("" = the current one): each branch has its own
+// draft, and all of them are kept with the top-level chat. The branch's state record is sent, then
+// the chat's view.
+func (m *Manager) SetDraftOf(id, branch string, d model.Draft) error {
 	if err := m.person(id); err != nil {
 		return err
 	}
-	var out outbox
-	c, err := m.lockTop(id)
+	top, err := m.topChat(id)
 	if err != nil {
 		return err
 	}
-	if d.Text == "" && len(d.References) == 0 {
-		c.meta.Draft = nil
-	} else {
-		c.meta.Draft = &d
+	b := m.current(top)
+	if branch != "" {
+		if b, err = m.branchObj(id, branch); err != nil {
+			return err
+		}
 	}
-	err = m.save(c)
-	out.emitIdentity(c)
-	c.mu.Unlock()
-	m.send(out)
+	bid := model.MainBranch
+	if b != top {
+		bid = b.branch
+	}
+	if _, err := m.lockTop(id); err != nil { // top, locked
+		return err
+	}
+	var draft *model.Draft
+	if d.Text != "" || len(d.References) > 0 {
+		draft = &d
+	}
+	setDrafts(top, withDraft(top.meta.Drafts, bid, draft))
+	err = m.save(top)
+	top.mu.Unlock()
+	m.emitState(b)
+	m.emitView(top)
 	return err
+}
+
+// withDraft is the drafts ds with d as the draft of branch, or with none for it when d is nil: a
+// new map, since one that is in a chat's meta is never changed (see ChatMeta.Drafts), and nil
+// when no draft is left.
+func withDraft(ds map[string]*model.Draft, branch string, d *model.Draft) map[string]*model.Draft {
+	if _, has := ds[branch]; d == nil && !has {
+		return ds
+	}
+	out := make(map[string]*model.Draft, len(ds)+1)
+	for b, x := range ds {
+		if b != branch {
+			out[b] = x
+		}
+	}
+	if d != nil {
+		out[branch] = d
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// setDrafts makes ds the drafts of the top-level chat top: in its meta, which is what is saved,
+// and published for its branches' views (see Chat.drafts). Every assignment of a chat object's
+// meta.Drafts goes through it. top.mu held, or top is not shared yet.
+func setDrafts(top *Chat, ds map[string]*model.Draft) {
+	top.meta.Drafts = ds
+	top.drafts.Store(&ds)
+}
+
+// draftsOf is the drafts the top-level chat top publishes: its meta.Drafts as of the last
+// assignment, never changed afterwards (see withDraft). No lock is needed.
+func draftsOf(top *Chat) map[string]*model.Draft {
+	if p := top.drafts.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// dropDraft removes the stored draft of the branch c is: a message was sent on it. Main's is in
+// its own meta, which the caller saves. Another branch's is in its top-level chat's, which is
+// locked for it (a branch's mu, then its top-level chat's) and saved here; a branch that is still
+// unlisted has none. c.mu held.
+func (m *Manager) dropDraft(c *Chat) {
+	if c.top == nil {
+		setDrafts(c, withDraft(c.meta.Drafts, model.MainBranch, nil))
+		return
+	}
+	if c.unlisted {
+		return
+	}
+	top := c.top
+	top.mu.Lock()
+	defer top.mu.Unlock()
+	if _, has := top.meta.Drafts[c.branch]; top.deleted || !has {
+		return
+	}
+	setDrafts(top, withDraft(top.meta.Drafts, c.branch, nil))
+	m.logSave(top)
 }
 
 // Interrupt asks the running agent to stop its turn, and holds the chat: the app starts no turn on
@@ -1326,18 +1672,23 @@ func (m *Manager) SetDraft(id string, d model.Draft) error {
 //
 // While subagent results are being handed to the agent (handOff), the agent is signalled only once
 // it has the message, and Interrupt does not wait for that.
-func (m *Manager) Interrupt(id string) error {
+//
+// It acts on the chat's current branch.
+func (m *Manager) Interrupt(id string) error { return m.InterruptOf(id, "") }
+
+// InterruptOf is Interrupt for a branch of the chat; branch "" is the current one.
+func (m *Manager) InterruptOf(id, branch string) error {
 	if err := m.person(id); err != nil {
 		return err
 	}
-	return m.interrupt(id)
+	return m.interrupt(id, branch)
 }
 
-// interrupt is Interrupt for whoever drives the chat: a person, or the run that owns it
+// interrupt is InterruptOf for whoever drives the chat: a person, or the run that owns it
 // (StopOwned).
-func (m *Manager) interrupt(id string) error {
+func (m *Manager) interrupt(id, branch string) error {
 	var out outbox
-	c, err := m.lockCur(id)
+	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return err
 	}
@@ -1373,10 +1724,16 @@ func (m *Manager) interrupt(id string) error {
 // Decide answers a permission request. The request is named by who asked together with its id:
 // asker is the subagent on its card, "" for the chat's own agent. The answer goes to the asker's
 // process and to that request's card, and to nothing when the request is not open (ErrNoRequest).
+// It acts on the chat's current branch.
 func (m *Manager) Decide(id, asker, requestID string, allow bool) error {
+	return m.DecideOf(id, "", asker, requestID, allow)
+}
+
+// DecideOf is Decide for a branch of the chat; branch "" is the current one.
+func (m *Manager) DecideOf(id, branch, asker, requestID string, allow bool) error {
 	var out outbox
 	var d *carry
-	c, err := m.lockCur(id)
+	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return err
 	}
@@ -1552,7 +1909,9 @@ func (m *Manager) remove(id string, announce bool) error {
 	m.dropRoot(id) // after the folder: a late lookup never falls back to chats/<id>
 	m.unwatch(id)
 	if announce {
+		top.goneMu.Lock() // what is still queued for the chat is dropped from here on (see cast)
 		m.Bridge.Broadcast(map[string]any{"type": "chat_removed", "id": id})
+		top.goneMu.Unlock()
 	}
 	return nil
 }
@@ -1600,10 +1959,15 @@ func (m *Manager) GroupOf(meta model.ChatMeta) string {
 	return meta.Group
 }
 
-// Busy reports whether the chat's agent (its current branch's) is thinking, writing, running a
-// tool or waiting for approval.
-func (m *Manager) Busy(id string) bool {
-	c, err := m.lockCur(id)
+// Busy reports whether the agent of the chat's current branch is thinking, writing, running a
+// tool or waiting for approval. It says nothing of the chat's other branches, each of which may
+// be working: BusyOf asks for one of them, and the chat's view counts them (ChatView.Working).
+func (m *Manager) Busy(id string) bool { return m.BusyOf(id, "") }
+
+// BusyOf is Busy for a branch of the chat; branch "" is the current one. It is false for a branch
+// the chat does not have.
+func (m *Manager) BusyOf(id, branch string) bool {
+	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return false
 	}

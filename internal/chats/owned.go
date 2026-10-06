@@ -445,7 +445,7 @@ func (m *Manager) SendOwned(id, text string, o OwnedSend) error {
 		}
 		m.logSave(c)
 	}
-	err = m.sendOn(c, text, "", nil) // releases c.mu
+	_, err = m.sendOn(c, text, "", nil) // releases c.mu
 	if err == nil || errors.Is(err, ErrBusy) {
 		return err
 	}
@@ -610,7 +610,7 @@ func (m *Manager) StopOwned(id string, grace time.Duration) {
 		return !c.deleted && turnRunning(c)
 	}
 	if grace > 0 && running() {
-		if err := m.interrupt(id); err != nil {
+		if err := m.interrupt(id, ""); err != nil {
 			log.Printf("chats: interrupt %s: %v", id, err)
 		}
 		for end := time.Now().Add(grace); running() && time.Now().Before(end); {

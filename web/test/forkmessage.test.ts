@@ -34,13 +34,28 @@ test("messageButtons: what each kind of message offers, in order (A2)", () => {
   assert.deepEqual(texts([...items, mUser(), mOpen()], 9), []);                       // a streaming reply
 });
 
-test("messageButtons: only Label while the agent replies and in a read-only chat", () => {
+test("messageButtons: only Label in a read-only chat", () => {
   const items = twoTurns();
-  for (const p of [{ busy: true }, { readOnly: true }]) {
+  for (const p of [{ readOnly: true }, { busy: true, readOnly: true }]) {
     assert.deepEqual(texts(items, 3, p), ["Label"]);
     assert.deepEqual(texts(items, 6, p), ["Label"]);
     assert.deepEqual(texts(items, 4, p), ["Label"]);
   }
+});
+
+test("messageButtons: while the branch runs, its finished turns keep their buttons; the running turn has only Label", () => {
+  const items: Items = [...twoTurns(), mUser(), mText(), mTool(), mText()];
+  const busy = { busy: true };
+  assert.deepEqual(texts(items, 3, busy), ["Branch and edit", "Fork and edit", "Label"]);
+  assert.deepEqual(texts(items, 1, busy), ["Branch", "Fork to new", "Label"]);
+  assert.deepEqual(texts(items, 6, busy), ["Branch", "Fork to new", "Label"]);
+  assert.deepEqual(texts(items, 4, busy), ["Label"]);
+  // the running turn: its replies have no point, and its last one no fork of the whole thread
+  assert.deepEqual(texts(items, 9, busy), ["Label"]);
+  assert.deepEqual(texts(items, 11, busy), ["Label"]);
+  assert.deepEqual(texts(items, 11), ["Fork to new", "Label"]);
+  // your message that started it: the point before it is a finished boundary
+  assert.deepEqual(texts(items, 8, busy), ["Branch and edit", "Fork and edit", "Label"]);
 });
 
 test("messageButtons: a chat made before end marks offers Label, and Fork to new on its last reply", () => {

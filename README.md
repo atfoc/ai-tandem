@@ -309,3 +309,7 @@ org allowlist approves only `http://localhost:6006/mcp`). If 6006 is taken the s
 with an explicit message; set `AIWB_E2E_SKIP_CURSOR_MCP=1` to report the real-Cursor MCP steps as
 skipped and run the rest on the hidden test-only MCP port override, so a normal app instance may
 keep 6006.
+
+At most 4 branches of one chat and 12 chats and branches overall work at the same time (a message
+beyond that is refused with HTTP 429, code `cap`); for tests, `AIWB_CHAT_CAP` and `AIWB_APP_CAP`
+(positive integers, read at start) override the two limits.

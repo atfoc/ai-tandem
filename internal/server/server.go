@@ -92,18 +92,25 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
+func writeError(w http.ResponseWriter, status int, msg string) { writeErrorCode(w, status, msg, "") }
+
+// writeErrorCode is writeError with the refusal's code (see codeOf); "" leaves it out.
+func writeErrorCode(w http.ResponseWriter, status int, msg, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	body := map[string]string{"error": msg}
+	if code != "" {
+		body["code"] = code
+	}
+	json.NewEncoder(w).Encode(body)
 }
 
 func ok(w http.ResponseWriter) { writeJSON(w, map[string]any{"ok": true}) }
 
-// statusOf maps an error to its status: not found → 404; archived, locked, folder missing,
-// busy, a run in a state the call does not fit, a run agent's chat → 409; file system and process
-// errors → 500; anything else → fallback (400 where the call validates the request's input, 500
-// where it does not).
+// statusOf maps an error to its status: not found → 404; a model or effort that can't be chosen
+// → 400; archived, locked, folder missing, busy, a context window too small, a run in a state the
+// call does not fit, a run agent's chat → 409; file system and process errors → 500; anything else
+// → fallback (400 where the call validates the request's input, 500 where it does not).
 func statusOf(err error, fallback int) int {
 	var blocked *runs.BlockedError
 	switch {
@@ -113,11 +120,13 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, runs.ErrNoVersion), errors.Is(err, runs.ErrNoText), errors.Is(err, runs.ErrGroup),
 		errors.Is(err, chats.ErrNoRun):
 		return http.StatusNotFound
-	case errors.Is(err, chats.ErrBadReference), errors.Is(err, chats.ErrBadLabel), errors.Is(err, chats.ErrBadPoint):
+	case errors.Is(err, chats.ErrBadReference), errors.Is(err, chats.ErrBadLabel), errors.Is(err, chats.ErrBadPoint),
+		errors.Is(err, chats.ErrBadChoice):
 		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
 		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived),
+		errors.Is(err, chats.ErrWindow),
 		errors.Is(err, chats.ErrRunAgent), errors.Is(err, chats.ErrRunArchived),
 		errors.Is(err, runs.ErrArchived), errors.Is(err, runs.ErrStarted), errors.Is(err, runs.ErrNotStarted),
 		errors.Is(err, runs.ErrFinished), errors.Is(err, runs.ErrNotHalted), errors.Is(err, runs.ErrNotRunning),
@@ -125,6 +134,9 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, runs.ErrLive),
 		errors.As(err, &blocked):
 		return http.StatusConflict
+	case errors.Is(err, chats.ErrChatCap), errors.Is(err, chats.ErrAppCap):
+		// Not 409: a client takes a 409 on a message as "stale, wait for the turn's end".
+		return http.StatusTooManyRequests
 	}
 	var pe *fs.PathError
 	var le *os.LinkError
@@ -137,10 +149,30 @@ func statusOf(err error, fallback int) int {
 	return fallback
 }
 
-// fail writes err with the status statusOf gives it.
-func fail(w http.ResponseWriter, err error, fallback int) {
-	writeError(w, statusOf(err, fallback), err.Error())
+// codeOf is the "code" of a refusal a client tells apart from the others with the same status:
+// "busy", "cap", "bad_point" and "window". Every other error has none.
+func codeOf(err error) string {
+	switch {
+	case errors.Is(err, chats.ErrBusy):
+		return "busy"
+	case errors.Is(err, chats.ErrChatCap), errors.Is(err, chats.ErrAppCap):
+		return "cap"
+	case errors.Is(err, chats.ErrBadPoint):
+		return "bad_point"
+	case errors.Is(err, chats.ErrWindow):
+		return "window"
+	}
+	return ""
 }
+
+// fail writes err with the status statusOf gives it and the code codeOf gives it.
+func fail(w http.ResponseWriter, err error, fallback int) {
+	writeErrorCode(w, statusOf(err, fallback), err.Error(), codeOf(err))
+}
+
+// branchOf is the branch a session call is for: ?branch=<branch id>, "main" for main; without it
+// "", the chat's current branch.
+func branchOf(r *http.Request) string { return r.URL.Query().Get("branch") }
 
 // checkGroup rejects "" (the ungrouped area is "__ungrouped__").
 func checkGroup(w http.ResponseWriter, group string) bool {
@@ -507,25 +539,26 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, cv)
 	})
 	// The thread of one branch of the chat: ?branch=<branch id>, without it the current branch.
-	// "branch" in the answer is the branch served. For the chat of a run's agent this also starts
-	// its chat events to the client: the watch comes first, so no change between the two is lost.
+	// "branch" in the answer is the branch served, "state" its state record as of these items. For
+	// the chat of a run's agent this also starts its chat events to the client: the watch comes
+	// first, so no change between the two is lost.
 	mux.HandleFunc("GET /api/chats/{id}/items", func(w http.ResponseWriter, r *http.Request) {
 		a.Chats.Watch(r.PathValue("id"))
-		branch, v, items, subs, err := a.Chats.ItemsOf(r.PathValue("id"), r.URL.Query().Get("branch"))
+		t, err := a.Chats.ThreadOf(r.PathValue("id"), branchOf(r))
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
 		}
-		if items == nil {
-			items = []model.Item{}
+		if t.Items == nil {
+			t.Items = []model.Item{}
 		}
-		if subs == nil {
-			subs = []model.Subagent{}
+		if t.Subagents == nil {
+			t.Subagents = []model.Subagent{}
 		}
-		writeJSON(w, map[string]any{"branch": branch, "version": v, "items": items, "subagents": subs})
+		writeJSON(w, map[string]any{"branch": t.Branch, "version": t.Version, "items": t.Items, "subagents": t.Subagents, "state": t.State})
 	})
 	mux.HandleFunc("GET /api/chats/{id}/subagents/{sid}/items", func(w http.ResponseWriter, r *http.Request) {
-		v, items, err := a.Chats.SubItemsOf(r.PathValue("id"), r.URL.Query().Get("branch"), r.PathValue("sid"))
+		v, items, err := a.Chats.SubItemsOf(r.PathValue("id"), branchOf(r), r.PathValue("sid"))
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -535,10 +568,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, map[string]any{"version": v, "items": items})
 	})
-	// What fills the chat's context window, by category. ?fresh=1 asks the agent even when the
-	// kept split is current.
+	// What fills the context window of one branch of the chat (?branch=), by category. ?fresh=1
+	// asks the agent even when the kept split is current.
 	mux.HandleFunc("GET /api/chats/{id}/context", func(w http.ResponseWriter, r *http.Request) {
-		split, err := a.Chats.ContextSplit(r.PathValue("id"), r.URL.Query().Get("fresh") == "1")
+		split, err := a.Chats.ContextSplitOf(r.PathValue("id"), branchOf(r), r.URL.Query().Get("fresh") == "1")
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -576,13 +609,16 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, map[string]any{"labels": labels})
 	})
-	// Makes a new chat holding a branch's first "at" items, in a session forked there. With
+	// Makes a new chat holding a branch's first "at" items, in a session forked there, on the
+	// branch's model and effort unless "model" or "effort" name others. With
 	// "message", that user message is left out and becomes the new chat's draft (Fork and edit).
 	mux.HandleFunc("POST /api/chats/{id}/fork", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Branch  string
 			At      *int
 			Message *int
+			Model   string
+			Effort  string
 		}
 		if !readJSON(w, r, &body) {
 			return
@@ -591,7 +627,7 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, http.StatusBadRequest, "at is missing")
 			return
 		}
-		v, err := a.Chats.Fork(r.PathValue("id"), chats.ForkReq{Branch: body.Branch, At: *body.At, Message: body.Message})
+		v, err := a.Chats.Fork(r.PathValue("id"), chats.ForkReq{Branch: body.Branch, At: *body.At, Message: body.Message, Model: body.Model, Effort: body.Effort})
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -599,15 +635,22 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, v)
 	})
 	mux.HandleFunc("POST /api/chats/{id}/open", func(w http.ResponseWriter, r *http.Request) {
-		if err := a.Chats.Open(r.PathValue("id")); err != nil {
+		if err := a.Chats.OpenOf(r.PathValue("id"), branchOf(r)); err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
 		}
 		ok(w)
 	})
-	// Sends a message on the chat's current branch. With "target" it goes to a point of one of the
-	// chat's branches instead: that branch is carried on, or a new branch starts there. A target
-	// names its point: without "at" it is refused.
+	// Sends a message on the chat's current branch. With ?branch= it goes to the end of that branch,
+	// whatever its length, and the branch becomes the current one. With "target" it goes to a point
+	// of one of the chat's branches instead: that branch is carried on, or a new branch starts
+	// there. A target names its point: without "at" it is refused, and so is one with ?branch=.
+	// A target that starts a new branch may name its "model" and "effort"; one that carries a
+	// branch on may not (409).
+	// Busy (409) is the branch's the message goes to; the chat's other branches may be working.
+	// The answer names the branch the message was put on: {"ok":true,"branch":"<branch id>"},
+	// "main" for main, the new id for a new branch, and without ?branch= and "target" the branch
+	// that was current when the message was sent.
 	mux.HandleFunc("POST /api/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text, Context string
@@ -616,6 +659,8 @@ func (s *Server) Handler() http.Handler {
 				Branch string
 				At     *int
 				New    bool
+				Model  string
+				Effort string
 			}
 		}
 		if !readJSON(w, r, &body) {
@@ -625,29 +670,38 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, http.StatusBadRequest, "at is missing")
 			return
 		}
+		branch := branchOf(r)
+		if body.Target != nil && branch != "" {
+			writeError(w, http.StatusBadRequest, "branch and target together")
+			return
+		}
+		var on string // the branch the message was put on
 		var err error
 		if tg := body.Target; tg != nil {
-			err = a.Chats.SendTo(r.PathValue("id"), chats.Target{Branch: tg.Branch, At: *tg.At, New: tg.New}, body.Text, body.Context, body.References)
+			on, err = a.Chats.SendToBranch(r.PathValue("id"), chats.Target{Branch: tg.Branch, At: *tg.At, New: tg.New, Model: tg.Model, Effort: tg.Effort}, body.Text, body.Context, body.References)
+		} else if branch != "" {
+			on, err = a.Chats.SendToBranch(r.PathValue("id"), chats.Target{Branch: branch, End: true}, body.Text, body.Context, body.References)
 		} else {
-			err = a.Chats.Send(r.PathValue("id"), body.Text, body.Context, body.References)
+			on, err = a.Chats.SendBranch(r.PathValue("id"), body.Text, body.Context, body.References)
 		}
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
 		}
-		ok(w)
+		writeJSON(w, map[string]any{"ok": true, "branch": on})
 	})
 	mux.HandleFunc("PUT /api/chats/{id}/draft", func(w http.ResponseWriter, r *http.Request) {
 		var body model.Draft
 		if !readJSON(w, r, &body) {
 			return
 		}
-		if err := a.Chats.SetDraft(r.PathValue("id"), body); err != nil {
+		if err := a.Chats.SetDraftOf(r.PathValue("id"), branchOf(r), body); err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
 		}
 		ok(w)
 	})
+	// "name" and "group" are the chat's; "model", "effort" and "cwd" go to one branch (?branch=).
 	mux.HandleFunc("PATCH /api/chats/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name               *string
@@ -675,7 +729,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		if body.Model != "" || body.Effort != "" || body.Cwd != "" {
 			req := chats.ConfigReq{Model: body.Model, Effort: body.Effort, Cwd: body.Cwd}
-			if err := a.Chats.Configure(id, req); err != nil {
+			if err := a.Chats.ConfigureOf(id, branchOf(r), req); err != nil {
 				fail(w, err, http.StatusBadRequest)
 				return
 			}
@@ -683,7 +737,7 @@ func (s *Server) Handler() http.Handler {
 		ok(w)
 	})
 	mux.HandleFunc("POST /api/chats/{id}/interrupt", func(w http.ResponseWriter, r *http.Request) {
-		if err := a.Chats.Interrupt(r.PathValue("id")); err != nil {
+		if err := a.Chats.InterruptOf(r.PathValue("id"), branchOf(r)); err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
 		}
@@ -698,7 +752,7 @@ func (s *Server) Handler() http.Handler {
 		if !readJSON(w, r, &body) {
 			return
 		}
-		if err := a.Chats.Decide(r.PathValue("id"), body.Subagent, body.RequestID, body.Allow); err != nil {
+		if err := a.Chats.DecideOf(r.PathValue("id"), branchOf(r), body.Subagent, body.RequestID, body.Allow); err != nil {
 			fail(w, err, http.StatusBadRequest)
 			return
 		}

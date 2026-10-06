@@ -249,7 +249,7 @@ func TestToolsCallThroughClient(t *testing.T) {
 		t.Fatalf("got %q isError=%v", text, isErr)
 	}
 	p := <-got
-	if p["chat"] != e.chat || p["board"] != e.board.ID || p["name"] != "read_board" ||
+	if p["chat"] != e.chat || p["branch"] != model.MainBranch || p["board"] != e.board.ID || p["name"] != "read_board" ||
 		p["args"].(map[string]any)["board"] != "b_x" {
 		t.Fatalf("rpc params %v", p)
 	}

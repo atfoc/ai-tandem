@@ -49,11 +49,18 @@ function markFrom(items: Items, count: number): number {
   return -1;
 }
 
-/** Whether a new branch or a fork may start at count by the id rules alone; busy, archived and
- *  legacy are the caller's to check. The start of the chat needs the id on the first end mark,
- *  every other point the id on the mark right before it. */
-export function pointOK(agent: AgentKind, items: Items, count: number): boolean {
+/** May a new branch or a fork start at a finished boundary of a source whose turn is running?
+ *  The mirror of liveFork in internal/chats/points.go. */
+export const LIVE_FORK: Record<AgentKind, boolean> = { claude: true, cursor: true, pi: true };
+
+/** Whether a new branch or a fork may start at count by the id rules alone; archived and legacy
+ *  are the caller's to check. running says the source's turn is still running: then the agent
+ *  kind must allow it (LIVE_FORK), and the same id rules pick the finished boundaries. The start
+ *  of the chat needs the id on the first end mark, every other point the id on the mark right
+ *  before it. */
+export function pointOK(agent: AgentKind, items: Items, count: number, running = false): boolean {
   if (!Number.isInteger(count) || count < 0 || count > items.length) return false;
+  if (running && !LIVE_FORK[agent]) return false;
   if (count === 0) {
     const first = markFrom(items, 0);
     return first >= 0 && !!items[first]!.point;
@@ -61,16 +68,19 @@ export function pointOK(agent: AgentKind, items: Items, count: number): boolean 
   const before = items[count - 1];
   if (before?.kind !== "end" || !before.point) return false;
   if (agent !== "pi" || sessionEnd(items, count)) return true;
-  // pi forks the end of a turn with the id on the next turn's mark, so that mark must close the
-  // turn that starts at count. After a turn cut without a mark the next mark is a later turn's,
-  // and a fork with its id would take in the cut turn. So exactly one turn lies between count
-  // and the mark: one message of the human's with no reply or tool call ahead of it (the rows of
-  // the subagent results it carries are), or none, which is a turn the app started to deliver
-  // subagent results. The app starts one only on a live process, so never after a cut turn, and
-  // its message is a user message to pi like any other: the mark carries its id. A mark that
-  // repeats the id before count is no new turn.
+  // With no mark after count (the turn that starts there is running, or was cut without a mark)
+  // the id on the mark before count is enough: pi forks before the first user message after that
+  // mark. With a mark after count pi forks the end of a turn with the id on the next turn's mark,
+  // so that mark must close the turn that starts at count. After a turn cut without a mark the
+  // next mark is a later turn's, and a fork with its id would take in the cut turn. So exactly
+  // one turn lies between count and the mark: one message of the human's with no reply or tool
+  // call ahead of it (the rows of the subagent results it carries are), or none, which is a turn
+  // the app started to deliver subagent results. The app starts one only on a live process, so
+  // never after a cut turn, and its message is a user message to pi like any other: the mark
+  // carries its id. A mark that repeats the id before count is no new turn.
   const m = markFrom(items, count);
-  if (m < 0 || !items[m]!.point) return false;
+  if (m < 0) return true;
+  if (!items[m]!.point) return false;
   let users = 0;
   let early = false; // a reply or a tool call ahead of the first message
   for (let i = count; i < m; i++) {
@@ -82,8 +92,9 @@ export function pointOK(agent: AgentKind, items: Items, count: number): boolean 
   return users === 1 && !early;
 }
 
-/** The user and text items at index >= from as the server's tree route would send them. */
-export function toTreeItems(agent: AgentKind, items: Items, from = 0): TreeItem[] {
+/** The user and text items at index >= from as the server's tree route would send them. running
+ *  says the branch's turn is still running (see pointOK). */
+export function toTreeItems(agent: AgentKind, items: Items, from = 0, running = false): TreeItem[] {
   const out: TreeItem[] = [];
   for (let i = Math.max(from, 0); i < items.length; i++) {
     const it = items[i];
@@ -91,14 +102,14 @@ export function toTreeItems(agent: AgentKind, items: Items, from = 0): TreeItem[
       const before = cutBefore(items, i);
       const row: TreeItem = { i, kind: "user", text: nameText(it) };
       if (before !== null) row.before = before;
-      if (before !== null && pointOK(agent, items, before)) row.ok = true;
+      if (before !== null && pointOK(agent, items, before, running)) row.ok = true;
       out.push(row);
     } else if (it?.kind === "text") {
       const end = turnEnd(items, i);
       const row: TreeItem = { i, kind: "text", text: it.text ?? "" };
       if (it.done) row.done = true;
       if (end > 0) row.end = end;
-      if (end > 0 && pointOK(agent, items, end)) row.ok = true;
+      if (end > 0 && pointOK(agent, items, end, running)) row.ok = true;
       out.push(row);
     }
   }
@@ -115,25 +126,27 @@ export type MessageActions = {
   midTurn: boolean;             // a reply partway through a turn
 };
 
-/** The actions of the item at index. While the agent is replying (busy) and in an archived or
- *  legacy chat (readOnly) only Label is left. A turn's last reply offers Branch and Fork to new
- *  when its point has an id; the branch's last reply offers Fork to new whatever the marks. */
+/** The actions of the item at index. busy says that this branch's turn is running (another
+ *  branch's does not count): a new branch or a fork then starts only at a finished boundary (see
+ *  pointOK). In an archived or legacy chat (readOnly) only Label is left. A turn's last reply
+ *  offers Branch and Fork to new when its point has an id; the last reply of a branch that is not
+ *  busy offers Fork to new whatever the marks (a fork of the whole session, which must be done). */
 export function messageActions(p: { agent: AgentKind; items: Items; index: number; busy: boolean; readOnly: boolean }): MessageActions {
   const { agent, items, index } = p;
   const it = items[index];
   const out: MessageActions = { label: false, branch: null, fork: null, branchEdit: null, forkEdit: null, midTurn: false };
   if (it?.kind !== "user" && !(it?.kind === "text" && it.done)) return out;
   out.label = true;
-  if (p.busy || p.readOnly) return out;
+  if (p.readOnly) return out;
   if (it.kind === "user") {
     const c = cutBefore(items, index);
-    if (c !== null && pointOK(agent, items, c)) out.branchEdit = out.forkEdit = c;
+    if (c !== null && pointOK(agent, items, c, p.busy)) out.branchEdit = out.forkEdit = c;
     return out;
   }
   const e = turnEnd(items, index);
   const last = !items.slice(index + 1).some((x) => x?.kind === "user" || x?.kind === "text" || x?.kind === "tool");
-  if (e > 0 && pointOK(agent, items, e)) out.branch = out.fork = e;
-  else if (last) out.fork = items.length;
+  if (e > 0 && pointOK(agent, items, e, p.busy)) out.branch = out.fork = e;
+  else if (last && !p.busy) out.fork = items.length;
   out.midTurn = e === 0 && !last;
   return out;
 }

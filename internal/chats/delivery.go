@@ -228,11 +228,12 @@ func (m *Manager) endCarry(c *Chat, clean bool, out *outbox) (lost bool) {
 }
 
 // deliver starts a turn that hands the parent agent every owed completion, when the chat can take
-// one (deliverable). Checking that, taking the completions and marking the chat busy are one step
-// under c.mu, so a completion is carried by exactly one turn. In everything else the turn starts
-// as Send starts one, without anything that is the human's: no user item, and the draft, the
-// settings, the name and the references are not touched. The caller passes the result to handOff
-// after unlocking and sending out; nil when no turn started. c.mu held.
+// one (deliverable) and the cap on running turns leaves it a slot. Checking that, taking the
+// completions and marking the chat busy are one step under c.mu, so a completion is carried by
+// exactly one turn. In everything else the turn starts as Send starts one, without anything that
+// is the human's: no user item, and the draft, the settings, the name and the references are not
+// touched. The caller passes the result to handOff after unlocking and sending out; nil when no
+// turn started. c.mu held.
 //
 // It is called at the three moments a chat becomes able to take a message, and at no other: a
 // completion becomes owed (finalizeAppSub), the agent's turn ends cleanly (turnOver), and the chat
@@ -245,8 +246,19 @@ func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	if p := m.parentOf(c); p.Archived || p.InstructionsSent { // a branch's flags are its top-level chat's
 		return nil
 	}
+	if len(owedSubs(c)) == 0 {
+		return nil
+	}
+	// The cap (see cap.go). A turn of the app's own is not started at it: nothing is taken, so the
+	// results stay owed and show as owed, c is not held, and nothing is queued or tried again.
+	// They go with the human's next message, or at c's own next trigger once a slot is free.
+	if err := m.reserveTurn(c); err != nil {
+		log.Printf("chats: %s: no turn for its subagents' results: %v", c.meta.ID, err)
+		return nil
+	}
 	d, taken, ups := m.carryOwed(c, false, out)
 	if d == nil {
+		m.releaseTurn(c)
 		return nil
 	}
 	ups = append(ups, c.tr.CloseOpen()...)
@@ -269,6 +281,7 @@ func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	m.logSave(c)
 	out.emitItems(c, ups)
 	out.emitChat(c)
+	m.releaseTurn(c) // c shows as working: the mirror holds the slot from here
 	d.ag, d.blocks, d.handing = c.ag, blocks, true
 	c.carry = d
 	return d
@@ -362,11 +375,27 @@ func (m *Manager) refused(c *Chat, d *carry, cause error, out *outbox) {
 // else is changed: a refused human send is not rolled back, the error goes to the human, and the
 // note comes with whatever ends the turn (the adapter's own errored end, as when pi rejects a
 // prompt; the process's exit; Stop). A carrying turn already settled, by its end or by model
-// output, stays as it was settled.
-func (m *Manager) sendRefused(c *Chat, d *carry, sent int) {
+// output, stays as it was settled. notice says that the message carried the notice of what was not
+// carried over (notCarriedBlock): it is owed again, and goes with the next human message.
+//
+// The chat keeps showing as thinking until something ends the turn, and an adapter may send nothing
+// that does (Cursor, after a handshake that failed, refuses every message and its process runs on).
+// No turn runs then, so the chat gives its slot of the cap back here (Chat.noTurn): while it still
+// shows the refused message's "thinking", which is when no message was sent since (sent), no turn
+// has ended since (turns is the chat's count of turns with the message) and the agent has put
+// nothing in the thread. Whatever the agent says later takes the slot again (pump).
+func (m *Manager) sendRefused(c *Chat, d *carry, sent, turns int, notice bool) {
 	var out outbox
 	c.mu.Lock()
 	if !c.deleted && c.tr != nil {
+		if st, _ := c.tr.Status(); st == model.StatusThinking && c.tr.Sent() == sent && c.meta.Usage.Turns == turns {
+			c.noTurn.Store(true)
+		}
+		if notice && !c.meta.NoticeOwed {
+			c.meta.NoticeOwed = true
+			c.meta.NoticeAt = 0
+			m.logSave(c)
+		}
 		if d == nil {
 			if c.tr.Sent() == sent {
 				setHold(c)
@@ -450,5 +479,55 @@ func subResultsBlock(subs []model.Subagent, running int, withMessage bool) strin
 	}
 	fmt.Fprintf(&b, "\nSubagents of this chat still running: %d.\n", running)
 	b.WriteString("</" + subResultsTag + ">")
+	return b.String()
+}
+
+// notCarriedTag names the block that tells a copy's agent what was not carried over.
+const notCarriedTag = "subagents-not-carried-over"
+
+// notCarried returns the records marked NotCarried that c's agent knows of (its own spawns, not
+// those of a subagent), in the order they started, then by id. c.mu held.
+func notCarried(c *Chat) []model.Subagent {
+	var gone []model.Subagent
+	for _, s := range c.subs {
+		if s.meta.NotCarried && s.meta.Parent == "" {
+			gone = append(gone, s.meta)
+		}
+	}
+	sort.Slice(gone, func(i, j int) bool {
+		if gone[i].Started != gone[j].Started {
+			return gone[i].Started < gone[j].Started
+		}
+		return gone[i].ID < gone[j].ID
+	})
+	return gone
+}
+
+// notCarriedBlock is what the agent of a copy (a new branch or a fork) gets once, ahead of the
+// first human message: one block written by the app that lists the subagents which were still
+// running in the source when the copy was made, by sid and description, and says that neither
+// they nor the source's background commands and workflows run here. The copied session holds the
+// receipts of their start and nothing of their end; a Claude fork is even told that such tasks
+// stopped. What a subagent supplied is escaped, as in subResultsBlock.
+func notCarriedBlock(subs []model.Subagent) string {
+	var b strings.Builder
+	b.WriteString("<" + notCarriedTag + ">\n")
+	b.WriteString("This block was written by the app, not by the user; the user's message follows it. " +
+		"This chat is a copy of another chat. The subagents below were running in the chat this one " +
+		"was copied from when the copy was made. They do not run " +
+		"here, and no result will come from them in this chat: do not wait for them. Spawn a " +
+		"subagent again if you need its work.\n")
+	for _, sa := range subs {
+		b.WriteString("\n<subagent>\n")
+		fmt.Fprintf(&b, "<sid>%s</sid>\n", xmlEscape.Replace(sa.ID))
+		if sa.Description != "" {
+			fmt.Fprintf(&b, "<description>%s</description>\n", xmlEscape.Replace(sa.Description))
+		}
+		b.WriteString("</subagent>\n")
+	}
+	b.WriteString("\nBackground commands and workflows started before this point belong to the chat this " +
+		"one was copied from: they may still run there, and they are not running here. A message " +
+		"that says such a task stopped is about this copy only.\n")
+	b.WriteString("</" + notCarriedTag + ">")
 	return b.String()
 }

@@ -4,7 +4,7 @@
 // is where the chat is, and the thread on screen is the path from the root to it. The server owns
 // the tree: this is the read side only. DOM-free.
 
-import { MAIN, type AgentKind, type Target, type TreeBranchView, type TreeItem, type TreeView } from "../types.ts";
+import { MAIN, type AgentKind, type ChatView, type Target, type TreeBranchView, type TreeItem, type TreeView } from "../types.ts";
 import { toTreeItems, type Items } from "./forkpoints.ts";
 
 export type Entry = {
@@ -84,19 +84,20 @@ export function labelAt(view: TreeView | undefined, branch: string, i: number): 
   return view.labels.find((l) => l.branch === owner && l.item === i)?.text || undefined;
 }
 
-/** view with one branch's own part rebuilt from its live items (the shown branch). */
-export function withLive(view: TreeView, branch: string, agent: AgentKind, items: Items): TreeView {
+/** view with one branch's own part rebuilt from its live items (the shown branch). running says
+ *  that branch's turn is still running (see pointOK). */
+export function withLive(view: TreeView, branch: string, agent: AgentKind, items: Items, running = false): TreeView {
   if (!view.branches.some((b) => b.id === branch)) return view;
   return {
     ...view,
-    branches: view.branches.map((b) => (b.id === branch ? { ...b, items: toTreeItems(agent, items, b.at), len: items.length } : b)),
+    branches: view.branches.map((b) => (b.id === branch ? { ...b, items: toTreeItems(agent, items, b.at, running), len: items.length } : b)),
   };
 }
 
 // ---- the tree
 
-/** The tree. leaf is where the chat is: the end of view.current, or, with at (a pending move),
- *  the last entry of at.branch before at.count. */
+/** The tree. leaf is where the chat is: the end of view.current, or, with at (a pending move, or
+ *  the branch this client views with count Infinity), the last entry of at.branch before at.count. */
 export function buildTree(view: TreeView, at?: { branch: string; count: number }): ChatTree {
   const entries: Record<string, Entry> = {};
   const order: string[] = [];
@@ -227,13 +228,32 @@ export const FILTERS: { id: Filter; label: string }[] = [
 ];
 
 export type Row = {
-  id: string;
+  id: string;          // the entry's id; "fork:<chat id>" for a fork link
   gutter: string;      // the tree lines in front of the row: "│  ├─ "
   onPath: boolean;     // on the way to the leaf
   isLeaf: boolean;     // where the chat is now
   isTip: boolean;      // the end of a branch
   fork: number;        // branches that start right under this row (0: none)
+  link?: ForkLink;     // the row is a chat forked from this one, not an entry
 };
+
+/** A chat forked from this one. where: under the entry it left after (entry), before the first
+ *  message (start), or unknown (loose: a fork made before fork points were recorded). */
+export type ForkLink = { chat: string; title: string; archived: boolean; where: "entry" | "start" | "loose"; entry?: string };
+
+/** The chats forked from a chat, oldest first, each with the place it left the tree at. Only the
+ *  chat's own forks: a fork of a fork shows in that fork's tree. */
+export function forkLinks(t: ChatTree, chats: Iterable<ChatView>, chat: string): ForkLink[] {
+  const forks = [...chats].filter((c) => c.forkedFrom === chat);
+  forks.sort((a, b) => (a.created < b.created ? -1 : a.created > b.created ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return forks.map((c): ForkLink => {
+    const link = { chat: c.id, title: c.name || "New chat", archived: !!c.archived };
+    const from = c.forkedBranch;
+    if (from === undefined || !t.view.branches.some((b) => b.id === from)) return { ...link, where: "loose" };
+    const entry = lastBelow(t.view, from, c.forkedAt ?? 0); // the server leaves a count of 0 out
+    return entry && t.entries[entry] ? { ...link, where: "entry", entry } : { ...link, where: "start" };
+  });
+}
 
 function shows(e: Entry, filter: Filter, query: string): boolean {
   if (filter === "labeled" && !e.label) return false;
@@ -245,9 +265,13 @@ function shows(e: Entry, filter: Filter, query: string): boolean {
 /**
  * The tree as rows. Entries the filter hides are skipped: their children hang from the nearest
  * entry shown above them. A run without splits stays at one depth; where it splits, each branch is
- * drawn under a ├─ or └─.
+ * drawn under a ├─ or └─. A fork link (links) is a row under the entry the fork left after, before
+ * the ways the chat goes on from there: one more tee beside a split, a └─ of its own on a run,
+ * which stays a run. The forks from the start come before the roots and the loose ones last. The
+ * Labeled filter shows no links and a search those whose title matches; a link whose entry is not
+ * shown hangs from the nearest entry shown above it, else it is listed with those from the start.
  */
-export function rows(t: ChatTree, opts: { filter: Filter; query?: string }): Row[] {
+export function rows(t: ChatTree, opts: { filter: Filter; query?: string; links?: readonly ForkLink[] }): Row[] {
   const query = (opts.query ?? "").trim();
   // the nearest entries shown under id
   const shown = (id: string | null): string[] => {
@@ -260,18 +284,34 @@ export function rows(t: ChatTree, opts: { filter: Filter; query?: string }): Row
     }
     return out;
   };
+  // the links by the entry they hang under (null: the start)
+  const hung = new Map<string | null, ForkLink[]>();
+  const loose: ForkLink[] = [];
+  for (const l of opts.filter === "labeled" ? [] : opts.links ?? []) {
+    if (query && !l.title.toLowerCase().includes(query.toLowerCase())) continue;
+    if (l.where === "loose") { loose.push(l); continue; }
+    let e = l.where === "entry" && l.entry ? t.entries[l.entry] : undefined;
+    while (e && !shows(e, opts.filter, query)) e = e.parent ? t.entries[e.parent] : undefined;
+    const at = e ? e.id : null;
+    const list = hung.get(at);
+    if (list) list.push(l);
+    else hung.set(at, [l]);
+  }
+  const linkRow = (link: ForkLink, gutter: string): Row => ({ id: `fork:${link.chat}`, gutter, onPath: false, isLeaf: false, isTip: false, fork: 0, link });
   // split: a branch ends at the row above, so even a single way on is drawn as a branch off it
+  const fanned = (ids: string[], split: boolean) => ids.length > 1 || (ids.length === 1 && split);
   type Todo = { id: string; gutter: string; prefix: string };
   const fan = (ids: string[], prefix: string, split: boolean): Todo[] =>
-    ids.length === 1 && !split
-      ? [{ id: ids[0], gutter: prefix, prefix }]
+    !fanned(ids, split)
+      ? ids.map((id) => ({ id, gutter: prefix, prefix }))
       : ids.map((id, i) => {
           const last = i === ids.length - 1;
           return { id, gutter: prefix + (last ? "└─ " : "├─ "), prefix: prefix + (last ? "   " : "│  ") };
         });
   const path = new Set(pathTo(t, t.leaf));
-  const out: Row[] = [];
-  const todo = fan(shown(null), "", false).reverse();
+  const roots = shown(null);
+  const out: Row[] = (hung.get(null) ?? []).map((l) => linkRow(l, roots.length > 1 ? "├─ " : ""));
+  const todo = fan(roots, "", false).reverse();
   while (todo.length) {
     const { id, gutter, prefix } = todo.pop()!;
     const e = t.entries[id];
@@ -282,24 +322,33 @@ export function rows(t: ChatTree, opts: { filter: Filter; query?: string }): Row
       onPath: path.has(id), isLeaf: t.leaf === id, isTip: !under(t, id).length || !!e.end,
       fork: ways > 1 ? ways : 0,
     });
+    const links = hung.get(id) ?? [];
+    const tee = fanned(next, !!e.end);
+    links.forEach((l, i) => out.push(linkRow(l, prefix + (tee || i < links.length - 1 ? "├─ " : "└─ "))));
     todo.push(...fan(next, prefix, !!e.end).reverse());
   }
+  for (const l of loose) out.push(linkRow(l, ""));
   return out;
 }
 
 /** What a row of the tree popup offers. */
 export type RowActions = {
-  open: { target: Target; edit?: number } | null;   // double-click; null: nothing moves
+  open: { target: Target; edit?: number } | { view: string } | null; // double-click: a move, or the branch to show; null: nothing
   branchEdit: number | null;                        // Branch and edit (your message)
   forkEdit: number | null;                          // Fork and edit
   fork: number | null;                              // Fork to new chat
   midTurn: boolean;                                 // a reply partway through a turn
 };
 
-/** The actions of an entry. A number is the point count the action uses. While the agent is
- *  replying (busy) and in an archived or legacy chat (readOnly) nothing moves. Double-click on the
- *  end of a branch goes there, to carry the branch on, whatever the entry is. */
-export function rowActions(t: ChatTree, id: string, p: { busy: boolean; readOnly: boolean }): RowActions {
+/** The actions of an entry. A number is the point count the action uses. busy holds the ids of
+ *  the branches whose turn is running: each gates its own entries only, and there the item's ok
+ *  (the point rules for a running source) decides, so a finished turn of a running branch still
+ *  branches and forks. The fork of a whole branch, at the end of its own part whatever the marks,
+ *  is not offered for a busy one. Double-click on the end of a branch shows that branch, to look
+ *  at it or carry it on, whatever the entry is and whether or not the branch is busy: it is named
+ *  by its id and not by a count, which is old for a branch that runs and is not shown. In an
+ *  archived or legacy chat (readOnly) nothing moves: only that view is left, which sends nothing. */
+export function rowActions(t: ChatTree, id: string, p: { busy: ReadonlySet<string>; readOnly: boolean }): RowActions {
   const out: RowActions = { open: null, branchEdit: null, forkEdit: null, fork: null, midTurn: false };
   const e = t.entries[id];
   if (!e) return out;
@@ -307,14 +356,15 @@ export function rowActions(t: ChatTree, id: string, p: { busy: boolean; readOnly
   const own = branchOf(t.view, e.branch);
   const last = own.items[own.items.length - 1]?.i === it.i; // the last entry of its branch's own part
   out.midTurn = it.kind === "text" && !it.end && !last;
-  if (p.busy || p.readOnly) return out;
+  const tip = tipBranch(t, id);
+  if (tip !== null) out.open = { view: tip };
+  if (p.readOnly) return out;
   const before = it.kind === "user" && it.before !== undefined && it.ok ? it.before : null;
   const end = it.kind === "text" && it.end && it.ok ? it.end : null;
   if (it.kind === "user") out.branchEdit = out.forkEdit = before;
-  else out.fork = end ?? (last && it.done ? own.len : null);
-  const tip = tipBranch(t, id);
-  if (tip !== null) out.open = { target: { branch: tip, at: branchOf(t.view, tip).len, new: false } };
-  else if (before !== null) out.open = { target: { branch: e.branch, at: before, new: true }, edit: it.i };
+  else out.fork = end ?? (last && it.done && !p.busy.has(own.id) ? own.len : null);
+  if (tip !== null) return out;
+  if (before !== null) out.open = { target: { branch: e.branch, at: before, new: true }, edit: it.i };
   else if (end !== null) out.open = { target: { branch: e.branch, at: end, new: false } };
   return out;
 }

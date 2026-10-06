@@ -1,16 +1,18 @@
 // The message box under a chat, and its toolbar: folder, model, effort and
 // context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
-// until the first message is sent.
-import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeGet, safeSet, isLegacy, upsertChat, unsavedDraft, currentBranch } from "./store.ts";
+// until the first message is sent: of a new chat, of a fork that has had none of its own, and of the branch a pending move starts.
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useStore, getState, setState, safeGet, safeSet, isLegacy, upsertChat, upsertState, unsavedDraft, branchState, statesOfChat, shownBranch, shownKey, shownView, viewedBranch } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
-import { filterModels, groupModels } from "./logic/models.ts";
+import { filterModels, groupModels, modelNotice, moveChoice, pickerMode, withEffort, withModel, type Choice } from "./logic/models.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
-import { DraftSaver, hasDraft } from "./logic/drafts.ts";
-import { composerControls } from "./logic/status.ts";
+import type { BranchKey } from "./logic/branches.ts";
+import { DraftSaver, draftSet, hasDraft } from "./logic/drafts.ts";
+import { composerControls, refreshAfterRefusal, starting } from "./logic/status.ts";
+import { LIVE_FORK } from "./logic/forkpoints.ts";
 import { mergeQuotes, toSend } from "./logic/quotes.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
@@ -21,10 +23,25 @@ import { quoteSelection } from "./quoteDom.ts";
 import { BoardIcon, Chevron, Folder, Lock, RunIcon, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
-import { leftByBack, registerComposer, sendAt, sendFailed } from "./fork/actions.ts";
+import { FolderHint } from "./fork/FolderHint.tsx";
+import { isSending, leftByBack, registerComposer, sendAt, sendFailed, setMoveChoice } from "./fork/actions.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
 
 export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
+
+/** Puts the caret after what a composer's box holds, when the box has the focus. */
+function caretToEnd(box: HTMLElement | null) {
+  const el = box?.querySelector<HTMLElement>(".composer-input");
+  if (!el || document.activeElement !== el) return;
+  const r = document.createRange();
+  r.selectNodeContents(el); r.collapse(false);
+  const sel = getSelection();
+  sel?.removeAllRanges(); sel?.addRange(r);
+}
+
+/** The chat whose composer had the focus as it went away for the composer of another branch
+ *  (the chat is on that one now): the one that opens takes the focus, as if it were the same. */
+let refocus: string | null = null;
 
 // ---- folders
 
@@ -55,22 +72,25 @@ export async function sendMessage(chat: string, text: string, picked: Picked[] =
   const c = getState().chats[chat];
   if (isLegacy(c)) return;
   const context = c?.board ? buildContext(chat, text, picked) : "";
-  return sendAt(chat, (target) => api.send(chat, text, context, references, target));
+  return sendAt(chat, (branch, target) => api.send(chat, branch, text, context, references, target));
 }
 
 // ---- drafts
 
-/** Saves a chat's draft on the server, and in the store at once: a composer reopened before
- * the server's `chat` event comes back starts from it. */
-async function saveDraft(chat: string, d: Draft, keepalive: boolean) {
-  const c = getState().chats[chat];
+/** Saves a branch's draft on the server, and in the store at once (on the branch's record, and
+ *  on the chat's view when the branch is its current one): a composer reopened before the
+ *  server's events come back starts from it. */
+export async function saveDraft(chat: string, branch: string, d: Draft, keepalive = false) {
+  const s = getState(), c = s.chats[chat];
   if (!c) return; // deleted
-  upsertChat({ ...c, draft: hasDraft(d) ? d : undefined });
-  await api.saveDraft(chat, d, keepalive).catch((e) => { console.warn(`draft of ${chat} not saved:`, e); throw e; });
+  const { state, view } = draftSet(c, statesOfChat(s, chat), branch, d);
+  if (state) upsertState(state);
+  if (view !== c) upsertChat(view);
+  await api.saveDraft(chat, branch, d, keepalive).catch((e) => { console.warn(`draft of ${chat} on ${branch} not saved:`, e); throw e; });
 }
 
-/** The draft a composer opens with: one the server may not have yet, else the server's. */
-const draftToShow = (chat: string) => unsavedDraft(chat).read() ?? getState().chats[chat]?.draft;
+/** The draft a branch's composer opens with: one the server may not have yet, else the server's. */
+export const draftToShow = (chat: string, branch: string): Draft | undefined => unsavedDraft(chat, branch).read() ?? branchState(getState(), chat, branch)?.draft;
 
 // ---- references (⌘L, ⌘⇧L): text selected in a message, or the board's selection
 
@@ -87,17 +107,20 @@ export function insertRef(chat: string, r: Ref) { inserters.get(chat)?.(r); }
 /** Starts (or stops) waiting for a point clicked on the chat's board. */
 export function pickPoint(chat: string | null) { setState({ picking: chat }); }
 
-export function Composer({ chatId }: { chatId: string }) {
-  const c = useStore((s) => s.chats[chatId]);
+/** The composer of one branch of a chat: branch is the one the chat is on, whose draft it holds.
+ *  On another branch the chat gets another composer (its key in App.tsx names the branch). */
+export function Composer({ chatId, branch }: { chatId: string; branch: string }) {
+  const c = useStore((s) => shownView(s, chatId));
+  const move = useStore((s) => !!s.moves[chatId]); // the next message starts a new branch
   const boards = useStore((s) => s.boards);
   const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined));
   const groups = useStore((s) => s.groups);
   const selection = useStore((s) => s.selection);
   const onScreen = useStore((s) => s.sel.board);
   const picking = useStore((s) => s.picking === chatId);
-  const [text, setText] = useState(() => draftToShow(chatId)?.text ?? "");
-  const [picked, setPicked] = useState<Picked[]>(() => draftToShow(chatId)?.mentions ?? []);
-  const [quotes, setQuotes] = useState<Reference[]>(() => draftToShow(chatId)?.references ?? []);
+  const [text, setText] = useState(() => draftToShow(chatId, branch)?.text ?? "");
+  const [picked, setPicked] = useState<Picked[]>(() => draftToShow(chatId, branch)?.mentions ?? []);
+  const [quotes, setQuotes] = useState<Reference[]>(() => draftToShow(chatId, branch)?.references ?? []);
   const [mention, setMention] = useState<{ q: string; at: number; i: number } | null>(null);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
@@ -107,8 +130,9 @@ export function Composer({ chatId }: { chatId: string }) {
   const current = useRef(text); // the text now, for a failed send
   const now = useRef({ picked, quotes }); // with it, what the composer holds (for a move)
   now.current = { picked, quotes };
+  const put = useRef<{ picked: Picked[]; quotes: Reference[] } | null>(null); // what a move set that no render has shown yet: the composer may go away before one does
   const drafts = useRef<DraftSaver | null>(null);
-  drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(chatId, d, keepalive), getState().chats[chatId]?.draft, unsavedDraft(chatId));
+  drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(chatId, branch, d, keepalive), branchState(getState(), chatId, branch)?.draft, unsavedDraft(chatId, branch));
   const board = c?.board;
   const archived = !!c?.archived;
   const legacy = isLegacy(c);
@@ -156,45 +180,61 @@ export function Composer({ chatId }: { chatId: string }) {
   // changes, and saved at once when the composer or the page goes away. Later drafts from the
   // server (the echo of our own saves) are not put in: they would overwrite the typing.
   useEffect(() => {
-    const d = draftToShow(chatId);
+    const d = draftToShow(chatId, branch);
     if (c?.archived || isLegacy(c) || !hasDraft(d)) return;
     input.current?.set(d.text);
     setPicked(d.mentions ?? []);
     setQuotes(d.references ?? []);
   }, [c?.archived, c?.instructionsSent]);
-  // A move reads what the composer holds and puts into it what it takes back or restores. set
-  // gives fresh lists, so the draft is looked at again also when nothing else changed.
+  // The typing goes on in the composer of the branch a sent move went to.
+  useLayoutEffect(() => () => {
+    const s = getState();
+    if (s.sel.chat === chatId && viewedBranch(s, chatId) !== branch && box.current?.contains(document.activeElement)) refocus = chatId;
+  }, []);
   useEffect(() => {
-    registerComposer(chatId, {
-      get: (): Held => ({ text: current.current, mentions: now.current.picked, references: now.current.quotes }),
+    if (refocus === chatId) { input.current?.focus(); caretToEnd(box.current); }
+    refocus = null;
+  }, []);
+  // A move reads what the composer holds and puts into it what it takes back or restores. set
+  // gives fresh lists, so the draft is looked at again also when nothing else changed. What it
+  // set is what the composer holds at once, also for one that goes away before it renders again
+  // (a sent move's end sets the draft of the branch left, and the chat is on another branch).
+  const held = (): Held => ({ text: current.current, mentions: put.current?.picked ?? now.current.picked, references: put.current?.quotes ?? now.current.quotes });
+  useEffect(() => {
+    registerComposer(chatId, branch, {
+      get: held,
       set: (h) => {
-        if (h.text !== current.current) input.current?.set(h.text);
-        setPicked([...h.mentions]);
-        setQuotes([...h.references]);
+        if (h.text !== current.current) { input.current?.set(h.text); caretToEnd(box.current); }
+        put.current = { picked: [...h.mentions], quotes: [...h.references] };
+        setPicked(put.current.picked);
+        setQuotes(put.current.quotes);
       },
     });
-    return () => { now.current.quotes = q.kept(); registerComposer(chatId, null); };
+    return () => { now.current.quotes = q.kept(); registerComposer(chatId, branch, null); };
   }, []);
   // While a move is pending nothing is saved on the server until the page goes away: a reload
   // equals Back, so what Back would leave in the composer is saved then. When only the composer
-  // goes away (another chat is opened), that is kept here as the chat's unsaved draft. A comment
+  // goes away (another chat is opened), that is kept here as the branch's unsaved draft. A comment
   // typed in an open float goes with what is saved when the composer or the page goes away.
   useEffect(() => {
+    put.current = null; // shown
     if (!getState().moves[chatId]) drafts.current!.change(text, picked, quotes);
   }, [text, picked, quotes]);
   useEffect(() => {
     const d = drafts.current!;
+    const save = (h: Held) => d.change(h.text, h.mentions, h.references);
     const hide = () => {
       now.current.quotes = q.kept();
-      const h = leftByBack(chatId);
-      if (h) d.change(h.text, h.mentions, h.references);
-      else if (!getState().moves[chatId]) d.change(current.current, now.current.picked, now.current.quotes);
+      const h = leftByBack(chatId, branch);
+      if (h) save(h);
+      else if (!getState().moves[chatId]) save(held());
       d.flush(true);
     };
     window.addEventListener("pagehide", hide);
     return () => {
       window.removeEventListener("pagehide", hide);
-      if (!getState().moves[chatId]) d.change(current.current, now.current.picked, q.kept());
+      now.current.quotes = q.kept();
+      if (!getState().moves[chatId]) save(held());
       d.flush();
     };
   }, []);
@@ -217,7 +257,8 @@ export function Composer({ chatId }: { chatId: string }) {
     </div>
   );
 
-  const { stop, blocked: running, esc } = composerControls(c); // running: the agent is busy
+  // esc: the agent is busy on the branch shown; a message that starts a new branch may go out all the same
+  const { stop, blocked, esc } = composerControls(c, { newBranch: move, liveFork: LIVE_FORK[c.agent] });
   const own = c.board ? boards[c.board] : undefined;
   const refs = c.board ? resolveMentions(plainText(text), boards, picked).filter((b) => b.id !== c.board) : [];
   const matches = mention && c.board ? mentionOptions(mention.q, boards, groups) : [];
@@ -225,26 +266,27 @@ export function Composer({ chatId }: { chatId: string }) {
 
   const submit = async () => {
     const t = text.trim();
-    if ((!t && !quotes.length) || running || sending) return; // no send while busy
+    if ((!t && !quotes.length) || blocked || sending || isSending(chatId)) return; // no send while busy, or while the composer of the branch left sends the move
     setSending(true); setErr("");
-    input.current?.set(""); setMention(null); // the server clears the draft on send; the empty one saved after it undoes a save still in flight
-    const p = picked, qs = quotes, moved = !!getState().moves[chatId];
+    input.current?.set(""); setMention(null); // the server clears the draft of the branch sent on; the empty one saved after it undoes a save still in flight
+    const p = picked, qs = quotes;
     setQuotes([]);
     try {
       await sendMessage(chatId, t, p, toSend(qs));
       // The sent message's mentions go; a draft that the sent move gave back keeps its own. The move's end set a copy of the list: the two are compared by what they hold.
       setPicked((now) => (now.length === p.length && now.every((x, i) => x === p[i]) ? [] : now));
-      // During the move nothing was saved: the saver learns here that the Send cleared the draft, and saves what the composer got back.
-      // A composer that went away meanwhile saves nothing here: the move's end wrote the chat's unsaved draft, which the next composer opens with and saves.
-      if (moved && input.current) { const d = drafts.current!; d.change("", [], []); d.flush(); d.change(current.current, now.current.picked, now.current.quotes); }
+      // A sent move saves nothing here: the Send cleared the draft of the branch sent to, not this composer's, and the move's end (moveSent) sets the
+      // drafts of both, this branch's through this composer while it is open.
     } catch (e: any) {
       setErr(e?.message ?? String(e));
       setQuotes((now) => mergeQuotes(qs, now)); // with the quotes added while it was sent
       if (!current.current.trim()) input.current?.set(t); // nothing typed is lost
-      // This composer went away while it was sent (another chat was opened): the message is the chat's draft again unless a pending move or a composer
-      // opened since holds it. Its saver writes the unsaved copy and saves it: a save of the emptied draft still in flight then leaves that copy alone.
-      if (!input.current && !sendFailed(chatId, { text: t, mentions: p, references: qs }, e)) drafts.current!.change(t, p, qs);
-      if (e instanceof ApiError && e.status === 409) void refreshChat(chatId);
+      // This composer went away while it was sent (another chat or branch was opened): the message is its branch's draft again unless a pending move or a
+      // composer of the branch opened since holds it. Its saver writes the unsaved copy and saves it: a save of the emptied draft still in flight then leaves that copy alone.
+      if (!input.current && !sendFailed(chatId, branch, { text: t, mentions: p, references: qs }, e)) drafts.current!.change(t, p, qs);
+      // The chat is read again when its state here is stale (refreshAfterRefusal). Else the text is shown, and the message and a pending move with its
+      // choice stay for a later Send.
+      if (e instanceof ApiError && refreshAfterRefusal(e.status, e.code)) void refreshChat(chatId, e.code);
     } finally { setSending(false); }
   };
   const pick = (o: { board: { id: string; name: string } }) => {
@@ -293,6 +335,7 @@ export function Composer({ chatId }: { chatId: string }) {
         <div className="context-row">{q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}</div>
       ) : null}
       <BranchBanner chatId={chatId} />
+      <ModelNotice chatId={chatId} />
       <div className="composer-box with-tools" ref={box}>
         {mention && matches.length > 0 && (
           <div className="mention-pop">
@@ -316,14 +359,14 @@ export function Composer({ chatId }: { chatId: string }) {
               if (e.key === "Escape") { setMention(null); return; }
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); }
-            if (e.key === "Escape" && esc) void api.interrupt(chatId);
+            if (e.key === "Escape" && esc) void api.interrupt(chatId, shownBranch(getState(), chatId));
           }}
         />
         <div className="composer-tools">
-          <Toolbar chatId={chatId} onError={setErr} />
+          <Toolbar chatId={chatId} onError={setErr} sending={sending} />
           <span className="grow" />
-          {stop && <button className="send stop" title={running ? "Stop (Esc)" : "Stop the subagents"} onClick={() => api.interrupt(chatId).catch((e) => setErr(e.message))}><span className="sq" /></button>}
-          <button className="send" title={running ? "The agent is working" : "Send (Enter)"} disabled={running || sending || (!text.trim() && !quotes.length)} onClick={() => void submit()}>↑</button>
+          {stop && <button className="send stop" title={esc ? "Stop (Esc)" : "Stop the subagents"} onClick={() => api.interrupt(chatId, shownBranch(getState(), chatId)).catch((e) => setErr(e.message))}><span className="sq" /></button>}
+          <button className="send" title={blocked ? (starting(c) ? "The agent is starting" : "The agent is working") : "Send (Enter)"} disabled={blocked || sending || (!text.trim() && !quotes.length)} onClick={() => void submit()}>↑</button>
         </div>
       </div>
       {err ? <div className="composer-err">{err}</div> : c.status === "error" && c.error ? <div className="composer-err">{c.error}</div> : null}
@@ -334,43 +377,76 @@ export function Composer({ chatId }: { chatId: string }) {
 
 // ---- toolbar
 
-export function Toolbar({ chatId, onError }: { chatId: string; onError: (msg: string) => void }) {
-  const c = useStore((s) => s.chats[chatId]);
+/** Folder, model, effort and context usage of the branch shown. Where the model and effort
+ *  controls write is pickerMode's: with a pending move they show and set the move's choice, which
+ *  goes with its message; on a new chat and on a fork without a message of its own they change the
+ *  session (PATCH); else they are fixed. While the composer sends a message (sending) they take no
+ *  pick: a move's choice has gone with the message, and the server refuses a fork's PATCH. */
+export function Toolbar({ chatId, onError, sending = false }: { chatId: string; onError: (msg: string) => void; sending?: boolean }) {
+  const c = useStore((s) => shownView(s, chatId));
+  const move = useStore((s) => s.moves[chatId]);
   const cat = useStore((s) => (c ? s.catalogs[c.agent] : undefined));
   // One open menu at a time for Model and Effort; their state used to live inside each Picker,
   // which let both menus and both backdrops stack. DirPicker and the usage popover keep theirs.
   const [openPicker, setOpenPicker] = useState<"model" | "effort" | null>(null);
+  const [patching, setPatching] = useState(false); // a fork's PATCH starts its agent again, which takes seconds
   if (!c) return null;
-  const configure = (p: { model?: string; effort?: string; cwd?: string }) => api.configure(chatId, p).then(() => onError(""), (e) => onError(e.message));
+  const mode = pickerMode(c, !!move);
+  const shown: Choice = mode === "move" ? moveChoice(move, c) : c;
+  const configure = (p: { model?: string; effort?: string }) => {
+    setPatching(true);
+    return api.configure(chatId, shownBranch(getState(), chatId), p).then(() => onError(""), (e) => onError(e.message)).finally(() => setPatching(false));
+  };
+  // A refusal's text was about the choice before this one.
+  const setChoice = (ch: Choice) => { onError(""); setMoveChoice(chatId, ch); };
+  const pickModel = (id: string) => (mode === "move" ? setChoice(withModel(shown, id, cat)) : void configure({ model: id }));
+  const pickEffort = (id: string) => (mode === "move" ? setChoice(withEffort(shown, id)) : void configure({ effort: id }));
   const folderOpen = !c.locked || !!c.folderMissing;
-  const m = modelOf(c, cat);
+  const m = modelOf(shown, cat);
   return (
     <>
       {!folderOpen && <Lock />}
-      <DirPicker cwd={c.cwd} missing={c.folderMissing} locked={!folderOpen} onPick={(d) => api.configure(c.id, { cwd: d })} />
-      {c.locked ? (
-        <span className="tchip static" title="Model and effort are fixed once the chat has started">
+      <DirPicker cwd={c.cwd} missing={c.folderMissing} locked={!folderOpen} onPick={(d) => api.configure(c.id, shownBranch(getState(), c.id), { cwd: d })} />
+      <FolderHint chatId={chatId} />
+      {mode === "fixed" ? (
+        <span className="tchip static" title={c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started"}>
           {folderOpen && <Lock />} {subline(c, cat)}
         </span>
       ) : !cat ? (
         <span className="tchip static">Loading models…</span>
       ) : (
         <>
-          <Picker label={modelLabel(c, cat)} title="Model" value={c.model} searchable
+          <Picker label={modelLabel(shown, cat)} title="Model" value={shown.model} searchable disabled={patching || sending}
             options={cat.models}
             open={openPicker === "model"} onOpenChange={(o) => setOpenPicker(o ? "model" : null)}
-            onPick={(id) => configure({ model: id })} />
+            onPick={pickModel} />
           {!!m?.efforts?.length && (
-            <Picker label={effortLabel(c.effort, m)} title="Effort" prefix="Effort" value={c.effort ?? ""} searchable={false}
+            <Picker label={effortLabel(shown.effort, m)} title="Effort" prefix="Effort" value={shown.effort ?? ""} searchable={false} disabled={patching || sending}
               options={m.efforts.map((e) => ({ id: e, label: effortLabel(e, m) }))}
               open={openPicker === "effort"} onOpenChange={(o) => setOpenPicker(o ? "effort" : null)}
-              onPick={(id) => configure({ effort: id })} />
+              onPick={pickEffort} />
           )}
         </>
       )}
       <ContextMeter c={c} cat={cat} />
     </>
   );
+}
+
+/** The note above the composer's box when the model chosen is not the one the conversation so
+ *  far ran on: for a pending move against its source, for a fork without a message of its own
+ *  against the branch it was forked from. What it says is modelNotice's. */
+function ModelNotice({ chatId }: { chatId: string }) {
+  const c = useStore((s) => shownView(s, chatId));
+  const move = useStore((s) => s.moves[chatId]);
+  const cat = useStore((s) => (c ? s.catalogs[c.agent] : undefined));
+  const parent = useStore((s) => (c?.fresh && c.forkedFrom ? branchState(s, c.forkedFrom, c.forkedBranch) : undefined));
+  if (!c) return null;
+  const n = move
+    ? modelNotice({ agent: c.agent, choice: moveChoice(move, c), parent: c, at: move.at, ctxIn: c.usage?.ctxIn, cat })
+    // A fork is fresh only with a prefix: the server leaves forkedAt out when it does not know the count.
+    : c.fresh ? modelNotice({ agent: c.agent, choice: c, parent, at: c.forkedAt || 1, ctxIn: c.usage?.ctxIn, cat }) : null;
+  return n ? <div className={`model-notice ${n.warn ? "warn" : ""}`}>{n.text}</div> : null;
 }
 
 /** One Picker row: a catalog model for Model (id/label/note/provider), or a bare {id, label} for
@@ -383,10 +459,11 @@ export const UNTIL_FIRST_MESSAGE = "can be changed until you send the first mess
 /** The Model and Effort pickers. `searchable` (Model only) adds the search field and provider
  *  grouping; both modes share the keyboard highlight, listbox/option ARIA and single-open state.
  *  A run's goal composer (run/RunComposer.tsx) uses it too, also for the agent: icon goes before
- *  the chip's label, and hint is the title's second half. */
-export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE, options, value, searchable = false, open, onOpenChange, onPick }: {
+ *  the chip's label, and hint is the title's second half.
+ *  `disabled` (a change is being saved): the chip opens nothing, and keeps the focus a pick gave it. */
+export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE, options, value, searchable = false, disabled = false, open, onOpenChange, onPick }: {
   label: string; title: string; prefix?: string; icon?: React.ReactNode; hint?: string; options: PickerOption[]; value: string;
-  searchable?: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPick: (id: string) => void;
+  searchable?: boolean; disabled?: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPick: (id: string) => void;
 }) {
   const [query, setQuery] = useState(""); // searchable only; never touched by Effort
   const [hi, setHi] = useState(-1); // index into the flattened filtered rows; headings excluded
@@ -510,8 +587,8 @@ export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE,
 
   return (
     <div className="menu-wrap" onKeyDown={onWrapKeyDown}>
-      <button ref={chip} className="tchip" aria-expanded={open} aria-haspopup="listbox"
-        onClick={() => onOpenChange(!open)} title={`${title} — ${hint}`}>
+      <button ref={chip} className="tchip" aria-expanded={open} aria-haspopup="listbox" aria-disabled={disabled || undefined}
+        onClick={() => { if (!disabled) onOpenChange(!open); }} title={`${title} — ${hint}`}>
         {icon}{prefix && <span className="tchip-pre">{prefix}</span>}{label}<span className="caret">▾</span>
       </button>
       {open && (
@@ -753,21 +830,16 @@ function LimitRow({ l, now }: { l: UsageLimit; now: number }) {
 
 // ---- context split
 
-/** Each chat's last context split, kept while the page is open so the popover opens with it. It
- * is its current branch's: one of another branch is cleared. */
-const lastSplit: Record<string, { branch: string; split: ContextSplit }> = {};
-function splitOf(c: ChatView): ContextSplit | null {
-  if (lastSplit[c.id] && lastSplit[c.id].branch !== currentBranch(c)) delete lastSplit[c.id];
-  return lastSplit[c.id]?.split ?? null;
-}
+/** Each branch's last context split, kept while the page is open so the popover opens with it. */
+const lastSplit: Record<BranchKey, ContextSplit> = {};
 
 /** The popover's context: the ring's numbers, then what fills the context as the agent splits it,
  * asked for on open. The server answers Claude's from chat.json while no message or turn has
  * moved past it, else asks Claude (about 2 s without a running process); Cursor's it reads from
  * its session store. */
 function ContextSection({ c, lines }: { c: ChatView; lines: string[] }) {
-  const [s, setS] = useState<ContextSplit | null>(() => splitOf(c));
-  const branch = currentBranch(c);
+  const branch = useStore((st) => shownBranch(st, c.id)), key = useStore((st) => shownKey(st, c.id));
+  const [s, setS] = useState<ContextSplit | null>(() => lastSplit[key] ?? null);
   const on = useRef(branch); // the branch now, for an answer that comes after it changed
   on.current = branch;
   const [loading, setLoading] = useState(false);
@@ -775,14 +847,15 @@ function ContextSection({ c, lines }: { c: ChatView; lines: string[] }) {
   const load = async (fresh: boolean) => {
     setLoading(true); setErr("");
     try {
-      const r = await api.contextSplit(c.id, fresh);
+      const r = await api.contextSplit(c.id, branch, fresh);
+      lastSplit[key] = r;
       if (on.current !== branch) return;
-      lastSplit[c.id] = { branch, split: r }; setS(r);
+      setS(r);
     }
     catch (e: any) { if (!(e instanceof ApiError && e.status === 409)) setErr(e?.message ?? String(e)); } // 409: not started
     finally { setLoading(false); }
   };
-  useEffect(() => { setS(splitOf(c)); if (c.locked) void load(false); }, [branch]);
+  useEffect(() => { setS(lastSplit[key] ?? null); if (c.locked) void load(false); }, [branch]);
   return <>
     <div className="menu-head">
       Context<span className="grow" />

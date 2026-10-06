@@ -657,6 +657,13 @@ func TestChatPatchRoutesFields(t *testing.T) {
 	if subs, ok := items["subagents"].([]any); !ok || len(subs) != 0 {
 		t.Fatalf("subagents %v", items)
 	}
+	// With the branch named: the session fields go to it, the name stays the chat's.
+	e.expect(200, "PATCH", "/api/chats/"+c.ID+"?branch=main", `{"name":"Ours","model":"sonnet","effort":"high"}`)
+	v = decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, ""))
+	if st := e.thread(c.ID, "main").State; v.Name != "Ours" || v.Model != "sonnet" || v.Effort != "high" || st.Model != "sonnet" || st.Effort != "high" || st.Cwd != dir {
+		t.Fatalf("chat %+v, state %+v", v, st)
+	}
+	e.expect(404, "PATCH", "/api/chats/"+c.ID+"?branch=nope", `{"model":"opus"}`)
 	out := e.expect(404, "GET", "/api/chats/"+c.ID+"/subagents/nope/items", "")
 	if decode[map[string]string](t, out)["error"] == "" {
 		t.Fatalf("unknown subagent: no error text in %s", out)
@@ -700,9 +707,24 @@ func TestChatDraft(t *testing.T) {
 	if !reflect.DeepEqual(v.Draft, want) {
 		t.Fatalf("draft %+v", v.Draft)
 	}
+	if st := e.thread(c.ID, "").State; !reflect.DeepEqual(st.Draft, want) || !v.HasDraft {
+		t.Fatalf("draft in the state %+v, hasDraft %v", st.Draft, v.HasDraft)
+	}
 	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft", `{"text":""}`)
 	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft != nil {
 		t.Fatalf("cleared draft %+v", v.Draft)
+	}
+	// With the branch named: the same draft for an unsplit chat.
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?branch=main", `{"text":"again"}`)
+	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft == nil || v.Draft.Text != "again" {
+		t.Fatalf("draft by branch %+v", v.Draft)
+	}
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?branch=main", `{"text":""}`)
+	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft != nil || v.HasDraft || e.thread(c.ID, "main").State.Draft != nil {
+		t.Fatalf("cleared draft %+v", v.Draft)
+	}
+	if out := e.expect(404, "PUT", "/api/chats/"+c.ID+"/draft?branch=nope", `{"text":"x"}`); !strings.Contains(out, chats.ErrNoBranch.Error()) {
+		t.Fatalf("error body %s", out)
 	}
 }
 
@@ -717,6 +739,13 @@ func TestChatContext(t *testing.T) {
 	s := decode[model.ContextSplit](t, e.expect(200, "GET", "/api/chats/"+c.ID+"/context?fresh=1", ""))
 	if s.Total != 10 || s.AtMessage != 1 || len(s.Categories) != 1 {
 		t.Fatalf("split %+v", s)
+	}
+	named := decode[model.ContextSplit](t, e.expect(200, "GET", "/api/chats/"+c.ID+"/context?branch=main&fresh=1", ""))
+	if !reflect.DeepEqual(named, s) {
+		t.Fatalf("split by branch %+v, want %+v", named, s)
+	}
+	if out := e.expect(404, "GET", "/api/chats/"+c.ID+"/context?branch=nope", ""); !strings.Contains(out, chats.ErrNoBranch.Error()) {
+		t.Fatalf("error body %s", out)
 	}
 }
 
@@ -780,7 +809,9 @@ func TestChatPermission(t *testing.T) {
 		t.Fatalf("cards %+v", ps)
 	}
 
-	e.expect(200, "POST", path, `{"requestId":"p1","subagent":"`+sa.ID+`","allow":true}`)
+	// With the branch named: the same request.
+	e.expect(404, "POST", path+"?branch=nope", `{"requestId":"p1","subagent":"`+sa.ID+`","allow":true}`)
+	e.expect(200, "POST", path+"?branch=main", `{"requestId":"p1","subagent":"`+sa.ID+`","allow":true}`)
 	if got := child.answered(); !reflect.DeepEqual(got, []string{"p1 true"}) || len(parent.answered()) != 1 {
 		t.Fatalf("answer naming the subagent: child %v parent %v", got, parent.answered())
 	}
@@ -1007,21 +1038,36 @@ func TestChatItemsOfABranch(t *testing.T) {
 		Version   int
 		Items     []model.Item
 		Subagents []model.Subagent
+		State     model.BranchState
 	}
 	path := "/api/chats/" + id + "/items"
 
-	// Without the query: the current branch.
+	// Without the query: the current branch. "state" is the state record of the branch served.
 	got := decode[answer](t, e.expect(200, "GET", path, ""))
 	if got.Branch != "a1b2c3d4" || len(got.Items) != 6 || got.Items[3].Text != "memory" || len(got.Subagents) != 1 {
 		t.Fatalf("items of the current branch %+v", got)
+	}
+	ofBranch := model.BranchState{Chat: id, Branch: "a1b2c3d4", Cwd: e.a.DefaultCwd, Locked: true, Status: model.StatusReady}
+	if !reflect.DeepEqual(got.State, ofBranch) {
+		t.Fatalf("state of the current branch %+v, want %+v", got.State, ofBranch)
 	}
 	got = decode[answer](t, e.expect(200, "GET", path+"?branch=main", ""))
 	if got.Branch != "main" || len(got.Items) != 8 || got.Items[3].Text != "redis" || len(got.Subagents) != 0 {
 		t.Fatalf("items of main %+v", got)
 	}
+	if st := got.State; st.Chat != id || st.Branch != "main" || st.Locked || st.Status != model.StatusReady {
+		t.Fatalf("state of main %+v", st)
+	}
 	got = decode[answer](t, e.expect(200, "GET", path+"?branch=a1b2c3d4", ""))
-	if got.Branch != "a1b2c3d4" || len(got.Items) != 6 {
+	if got.Branch != "a1b2c3d4" || len(got.Items) != 6 || !reflect.DeepEqual(got.State, ofBranch) {
 		t.Fatalf("items of the branch %+v", got)
+	}
+	// The record's keys are the wire names.
+	raw, _ := decode[map[string]any](t, e.expect(200, "GET", path+"?branch=a1b2c3d4", ""))["state"].(map[string]any)
+	for _, k := range []string{"chat", "branch", "cwd", "model", "locked", "usage", "status"} {
+		if _, ok := raw[k]; !ok {
+			t.Fatalf("state without %q: %v", k, raw)
+		}
 	}
 	if out := e.expect(404, "GET", path+"?branch=nope", ""); !strings.Contains(out, chats.ErrNoBranch.Error()) {
 		t.Fatalf("error body %s", out)
@@ -1052,6 +1098,9 @@ func TestChatItemsOfABranch(t *testing.T) {
 	if got.Branch != "main" || got.Items == nil || got.Subagents == nil {
 		t.Fatalf("items of an unsplit chat %+v", got)
 	}
+	if st := got.State; st.Chat != c.ID || st.Branch != "main" || st.Model != c.Model || st.Cwd != c.Cwd || st.Status != model.StatusReady {
+		t.Fatalf("state of an unsplit chat %+v", st)
+	}
 	e.expect(200, "GET", "/api/chats/"+c.ID+"/items?branch=main", "")
 	e.expect(404, "GET", "/api/chats/"+c.ID+"/items?branch=a1b2c3d4", "")
 	plain := decode[map[string]any](t, e.expect(200, "GET", "/api/chats/"+c.ID, ""))
@@ -1068,7 +1117,10 @@ func TestChatItemsOfABranch(t *testing.T) {
 func TestBranchedChatSendAndMCPStatus(t *testing.T) {
 	e := newEnv(t)
 	id := e.branchedChat()
-	e.expect(200, "POST", "/api/chats/"+id+"/messages", `{"text":"more"}`)
+	// The answer names the branch the message was put on: the current one.
+	if out := e.expect(200, "POST", "/api/chats/"+id+"/messages", `{"text":"more"}`); !reflect.DeepEqual(decode[any](t, out), map[string]any{"ok": true, "branch": "a1b2c3d4"}) {
+		t.Fatalf("answer %s", out)
+	}
 	type answer struct {
 		Branch string
 		Items  []model.Item
@@ -1080,7 +1132,20 @@ func TestBranchedChatSendAndMCPStatus(t *testing.T) {
 	if main := decode[answer](t, e.expect(200, "GET", "/api/chats/"+id+"/items?branch=main", "")); len(main.Items) != 8 {
 		t.Fatalf("items of main %+v", main)
 	}
-	e.expect(409, "POST", "/api/chats/"+id+"/messages", `{"text":"again"}`) // busy
+	// Busy, with the code, for the branch that works: named or, as the current one, not.
+	for _, q := range []string{"", "?branch=a1b2c3d4"} {
+		out := decode[map[string]string](t, e.expect(409, "POST", "/api/chats/"+id+"/messages"+q, `{"text":"again"}`))
+		if !reflect.DeepEqual(out, map[string]string{"error": chats.ErrBusy.Error(), "code": "busy"}) {
+			t.Fatalf("busy with %q: %v", q, out)
+		}
+	}
+	// A branch the chat does not have is 404 also while another one works.
+	if out := e.expect(404, "POST", "/api/chats/"+id+"/messages?branch=nope", `{"text":"again"}`); !strings.Contains(out, chats.ErrNoBranch.Error()) {
+		t.Fatalf("error body %s", out)
+	}
+	if got := e.thread(id, ""); got.Branch != "a1b2c3d4" || len(got.Items) != 7 || got.State.Status != model.StatusThinking {
+		t.Fatalf("the current branch after refused Sends %+v", got)
+	}
 
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"claude","version":"1"}}}`))
 	req.Header.Set("Authorization", "Bearer branch-token")
@@ -1210,7 +1275,7 @@ func TestChatFork(t *testing.T) {
 	// Fork to new: the answer is the new chat's view, and the chat is listed.
 	v := decode[model.ChatView](t, e.expect(200, "POST", path, `{"branch":"main","at":3}`))
 	if v.ID == "" || v.ID == id || v.Name != "ask (fork)" || !v.Locked || v.ForkedFrom != id || v.ForkedFromTitle != "ask" ||
-		v.Agent != model.Claude || v.Group != model.Ungrouped || v.Draft != nil {
+		v.ForkedBranch != "main" || v.ForkedAt != 3 || v.Agent != model.Claude || v.Group != model.Ungrouped || v.Draft != nil {
 		t.Fatalf("fork %+v", v)
 	}
 	if got := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+v.ID, "")); !reflect.DeepEqual(got, v) {
@@ -1274,9 +1339,9 @@ func TestChatFork(t *testing.T) {
 	}
 	e.a.Chats.Spawners[model.Claude] = fakeSpawner{}
 
-	// 409: busy, archived.
+	// 409: busy (the end of a chat whose turn is running), archived.
 	e.expect(200, "POST", "/api/chats/"+v.ID+"/messages", `{"text":"hi"}`)
-	e.expect(409, "POST", "/api/chats/"+v.ID+"/fork", `{"branch":"main","at":3}`)
+	e.expect(409, "POST", "/api/chats/"+v.ID+"/fork", `{"branch":"main","at":4}`)
 	e.expect(200, "POST", "/api/chats/"+id+"/archive", "")
 	e.expect(409, "POST", path, `{"branch":"main","at":3}`)
 }
@@ -1307,7 +1372,18 @@ func TestChatSendWithTarget(t *testing.T) {
 			t.Fatalf("%s: no error text", body)
 		}
 	}
-	if out := e.expect(400, "POST", path, target(`{"branch":"main","at":4}`)); !strings.Contains(out, chats.ErrBadPoint.Error()) {
+	bad := decode[map[string]string](t, e.expect(400, "POST", path, target(`{"branch":"main","at":4}`)))
+	if !reflect.DeepEqual(bad, map[string]string{"error": chats.ErrBadPoint.Error(), "code": "bad_point"}) {
+		t.Fatalf("error body %v", bad)
+	}
+	// 400: a target together with ?branch=. An empty ?branch= is none.
+	for _, q := range []string{"?branch=main", "?branch=nope"} {
+		out := decode[map[string]string](t, e.expect(400, "POST", path+q, target(`{"branch":"main","at":3}`)))
+		if !reflect.DeepEqual(out, map[string]string{"error": "branch and target together"}) {
+			t.Fatalf("target with %s: %v", q, out)
+		}
+	}
+	if out := e.expect(400, "POST", path+"?branch=", target(`{"branch":"main","at":4}`)); !strings.Contains(out, chats.ErrBadPoint.Error()) {
 		t.Fatalf("error body %s", out)
 	}
 	// 400: a target's "at" is required; without it no branch starts at the start of the chat.
@@ -1347,12 +1423,13 @@ func TestChatSendWithTarget(t *testing.T) {
 
 	// Something lies after the point: a new branch, which is the current one from now on.
 	out := e.expect(200, "POST", path, `{"text":"another way","references":[{"item":1,"quote":"options"}],"target":{"branch":"main","at":3}}`)
-	if !reflect.DeepEqual(decode[any](t, out), map[string]any{"ok": true}) {
-		t.Fatalf("answer %s", out)
-	}
 	v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+id, ""))
 	if v.ID != id || v.Branches != 2 || len(v.Branch) != 8 || v.Status != model.StatusThinking {
 		t.Fatalf("view %+v", v)
+	}
+	// The answer names the new branch.
+	if !reflect.DeepEqual(decode[any](t, out), map[string]any{"ok": true, "branch": v.Branch}) {
+		t.Fatalf("answer %s, the new branch is %q", out, v.Branch)
 	}
 	got := decode[answer](t, e.expect(200, "GET", "/api/chats/"+id+"/items", ""))
 	if got.Branch != v.Branch || len(got.Items) != 4 || got.Items[3].Text != "another way" || got.Items[2].Point != "p1" ||
@@ -1368,9 +1445,29 @@ func TestChatSendWithTarget(t *testing.T) {
 		t.Fatalf("tree %+v", tv)
 	}
 
-	// 409: busy, whatever the target; then archived.
-	for _, tg := range []string{`{"branch":"main","at":8}`, `{"branch":"main","at":3,"new":true}`, `{"branch":"` + v.Branch + `","at":4}`, `null`} {
-		e.expect(409, "POST", path, target(tg))
+	// 409: busy, for the branch that works: its end as a target, and no target (it is the
+	// current branch). A point in its running turn is no point for a new branch (400), and an
+	// unknown branch is 404 all the same.
+	for _, tg := range []string{`{"branch":"` + v.Branch + `","at":4}`, `null`} {
+		out := decode[map[string]string](t, e.expect(409, "POST", path, target(tg)))
+		if !reflect.DeepEqual(out, map[string]string{"error": chats.ErrBusy.Error(), "code": "busy"}) {
+			t.Fatalf("busy with the target %s: %v", tg, out)
+		}
+	}
+	bad = decode[map[string]string](t, e.expect(400, "POST", path, target(`{"branch":"`+v.Branch+`","at":4,"new":true}`)))
+	if !reflect.DeepEqual(bad, map[string]string{"error": chats.ErrBadPoint.Error(), "code": "bad_point"}) {
+		t.Fatalf("a new branch in the running turn: %v", bad)
+	}
+	if out := e.expect(404, "POST", path, target(`{"branch":"nope","at":3}`)); !strings.Contains(out, chats.ErrNoBranch.Error()) {
+		t.Fatalf("error body %s", out)
+	}
+	// The other branch is not busy with it: a second branch starts at a finished boundary of
+	// main while the first one works, and both work.
+	out = e.expect(200, "POST", path, target(`{"branch":"main","at":3,"new":true}`))
+	second := decode[map[string]any](t, out)["branch"]
+	v2 := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+id, ""))
+	if second == v.Branch || second != v2.Branch || v2.Branches != 3 || v2.Working != 2 {
+		t.Fatalf("answer %s, view %+v", out, v2)
 	}
 	e.expect(200, "POST", "/api/chats/"+id+"/archive", "")
 	e.expect(409, "POST", path, target(`{"branch":"main","at":8}`))
@@ -1381,7 +1478,7 @@ func TestChatSendWithTarget(t *testing.T) {
 	for i, body := range []string{`{"text":"hi"}`, target(`{"branch":"main","at":0}`), target(`null`)} {
 		c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
 		out := e.expect(200, "POST", "/api/chats/"+c.ID+"/messages", body)
-		if !reflect.DeepEqual(decode[any](t, out), map[string]any{"ok": true}) {
+		if !reflect.DeepEqual(decode[any](t, out), map[string]any{"ok": true, "branch": "main"}) {
 			t.Fatalf("answer %d: %s", i, out)
 		}
 		if _, err := os.Stat(filepath.Join(e.st.P.ChatDir(c.ID), "tree.json")); !os.IsNotExist(err) {
@@ -1391,7 +1488,13 @@ func TestChatSendWithTarget(t *testing.T) {
 		if _, ok := plain["branches"]; ok || plain["locked"] != true {
 			t.Fatalf("view of an unsplit chat %v", plain)
 		}
-		e.expect(409, "POST", "/api/chats/"+c.ID+"/messages", body) // busy
+		// The same again, while the turn runs: the end of the branch is busy, and the start of
+		// a chat whose first turn has not ended is no point for a new branch.
+		again := 409
+		if i == 1 {
+			again = 400
+		}
+		e.expect(again, "POST", "/api/chats/"+c.ID+"/messages", body)
 	}
 	e.expect(400, "POST", "/api/chats/"+c.ID+"/messages", target(`{"branch":"main","at":0,"new":true}`))
 }

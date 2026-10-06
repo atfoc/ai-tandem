@@ -695,6 +695,10 @@ func TestForkWhileSubagentRuns(t *testing.T) {
 	if v := e.view(f.ID); v.SubsRunning != 0 || v.SubsOwed != 0 {
 		t.Fatalf("fork view %+v", v)
 	}
+	e.marked("made", f.ID, sa.ID)
+	if e.sub(id, sa.ID).NotCarried || e.subFile(id, sa.ID).NotCarried || !e.meta(f.ID).NoticeOwed {
+		t.Fatalf("source record %+v, the fork's notice owed %v", e.sub(id, sa.ID), e.meta(f.ID).NoticeOwed)
+	}
 
 	e.finish(child, "the report")
 	if got := deliveredSids(parent.sent()[len(parent.sent())-1]); !reflect.DeepEqual(got, []string{sa.ID}) {
@@ -705,11 +709,20 @@ func TestForkWhileSubagentRuns(t *testing.T) {
 		t.Fatalf("the fork's agent was sent %q", fa.sent())
 	}
 	e.send(f.ID, "hello fork", "")
-	if got := texts(fa.sent()[0]); !reflect.DeepEqual(got, []string{"hello fork"}) {
-		t.Fatalf("the fork's first message is %q", got)
+	// The fork's agent is told once that the subagent does not run here; no result comes.
+	noticeAhead(t, fa.sent()[0], "hello fork", sa.ID)
+	if got := deliveredSids(fa.sent()[0]); len(got) != 0 {
+		t.Fatalf("the fork's agent got the results of %v", got)
 	}
 	if s := e.subFile(f.ID, sa.ID); s.Status != model.SubStopped || s.Delivery != model.SubNotOwed || e.view(f.ID).SubsOwed != 0 {
 		t.Fatalf("fork subagent.json %+v, view %+v", s, e.view(f.ID))
+	}
+	e.marked("after the first message", f.ID, sa.ID)
+	if e.meta(f.ID).NoticeOwed || len(resultRows(e.items(f.ID))) != 0 {
+		t.Fatalf("notice owed %v, result rows %v", e.meta(f.ID).NoticeOwed, resultRows(e.items(f.ID)))
+	}
+	if s := e.sub(id, sa.ID); s.Status != model.SubCompleted || s.NotCarried {
+		t.Fatalf("the source's record after its result: %+v", s)
 	}
 }
 

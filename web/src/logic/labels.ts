@@ -5,9 +5,9 @@
 // store), or says "this board" when the argument is left out.
 // The run tools come from the same server and name a task or an agent of the run.
 
-import type { CatalogModel, ChatView, Item } from "../types.ts";
+import type { BranchState, CatalogModel, ChatView, Item } from "../types.ts";
 import { plainText } from "./refs.ts";
-import { isBusy } from "./status.ts";
+import { isBusy, starting } from "./status.ts";
 
 const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
@@ -167,10 +167,12 @@ export function waitingText(c: Pick<ChatView, "status" | "subsRunning" | "subsOw
   return parts.join(". ");
 }
 
-type Stated = Pick<ChatView, "status" | "statusTool" | "usage" | "subsRunning" | "subsOwed" | "archived">;
+type Stated = Pick<ChatView, "status" | "statusTool" | "usage" | "subsRunning" | "subsOwed" | "archived" | "fresh">;
 
-/** The chat's status line. An idle chat says what it waits on (waitingText), when it does. */
+/** The chat's status line. An idle chat says what it waits on (waitingText), when it does; a fork
+ *  without a message whose agent starts says that, not what a turn would. */
 export function statusText(c: Stated, nameOf: BoardNames = noNames): string {
+  if (starting(c)) return "Starting the agent…";
   switch (c.status) {
     case "ready": return waitingText(c) || (c.usage?.turns ? "Idle" : "Ready");
     case "thinking": return "Thinking…";
@@ -182,15 +184,71 @@ export function statusText(c: Stated, nameOf: BoardNames = noNames): string {
   }
 }
 
-/** The state a sidebar row's dot shows: the chat's status, or "waiting" for an idle chat that
- *  waits on subagents or holds results for the agent. */
-export const dotState = (c: Stated): ChatView["status"] | "waiting" =>
-  c.status === "ready" && waitingText(c) ? "waiting" : c.status;
+type Row = Stated & Pick<ChatView, "working" | "approvals">;
 
-/** A sidebar chat row's second line: what the chat is doing when that says something (busy,
- *  stopped, can't start, waiting on subagents or holding their results), else its settings line. */
-export function rowLine(c: Stated & Pick<ChatView, "error">, settings: string, nameOf: BoardNames = noNames): string {
+/** The state a sidebar row's dot shows. A branch that waits for approval comes first, whichever
+ *  branch it is: it blocks its agent until the user answers. Then the current branch's status when
+ *  it is busy; then "thinking" when another branch works, as rowLine tells of it before a current
+ *  branch that stopped or can't start; then that status; else "waiting" for an idle chat that
+ *  waits on subagents or holds results for the agent, else the status. */
+export const dotState = (c: Row): ChatView["status"] | "waiting" => {
+  if ((c.approvals ?? 0) > 0) return "approval";
+  if (isBusy(c.status)) return c.status;
+  if ((c.working ?? 0) > 0) return "thinking";
+  if (c.status !== "ready") return c.status;
+  return waitingText(c) ? "waiting" : c.status;
+};
+
+/** A sidebar chat row's second line: an approval any branch waits for; else what the current
+ *  branch is doing when that says something (busy, stopped, can't start); else how many other
+ *  branches work; else what it waits on (subagents, their results), else its settings line. */
+export function rowLine(c: Row & Pick<ChatView, "error">, settings: string, nameOf: BoardNames = noNames): string {
+  if ((c.approvals ?? 0) > 0) return "Needs your approval";
+  if (isBusy(c.status)) return statusText(c, nameOf);
+  const n = c.working ?? 0;
+  if (n > 0) return n === 1 ? "1 branch working" : `${n} branches working`;
   if (c.status === "stopped") return "Stopped";
   if (c.status === "error") return c.error || statusText(c, nameOf);
-  return isBusy(c.status) || waitingText(c) ? statusText(c, nameOf) : settings;
+  return waitingText(c) ? statusText(c, nameOf) : settings;
+}
+
+/** What the chat's header tells of the branches other than the one the chat is on (shown), from
+ *  the chat's records. asks: the first of them that waits for the user's approval, by its id;
+ *  failed: the first of them whose turn could not start or ended in an error, by its id (its
+ *  record says so until the branch is sent to again); working: how many of them are in a turn
+ *  without waiting for approval. */
+export function otherBranches(states: readonly Pick<BranchState, "branch" | "status">[], shown: string): { asks: string | null; failed: string | null; working: number } {
+  const others = states.filter((st) => st.branch !== shown);
+  return {
+    asks: others.find((st) => st.status === "approval")?.branch ?? null,
+    failed: others.find((st) => st.status === "error")?.branch ?? null,
+    working: others.filter((st) => isBusy(st.status) && st.status !== "approval").length,
+  };
+}
+
+export type BranchAlertKind = "asks" | "failed" | "working";
+
+/** What the header shows of the other branches, in order: the approval alone; else the error, and
+ *  after it how many work, when any do (an error stays until its branch is sent to again: it does
+ *  not hide the count); else how many work; nothing when there is nothing to tell. */
+export function alertsOf(o: ReturnType<typeof otherBranches>): BranchAlertKind[] {
+  if (o.asks !== null) return ["asks"];
+  const working: BranchAlertKind[] = o.working > 0 ? ["working"] : [];
+  return o.failed !== null ? ["failed", ...working] : working;
+}
+
+/** The text of one of alertsOf's: the approval or the error by the branch's name (name gives it),
+ *  or how many work. */
+export function alertText(o: ReturnType<typeof otherBranches>, kind: BranchAlertKind, name: (branch: string) => string): string {
+  if (kind === "asks") return `Approval needed on “${name(o.asks ?? "")}”`;
+  if (kind === "failed") return `Error on “${name(o.failed ?? "")}”`;
+  return `${o.working} other ${o.working === 1 ? "branch" : "branches"} working`;
+}
+
+/** The header's line about the other branches, the first of alertsOf's: the approval first, by
+ *  the branch's name (name gives it); else the error, by the branch's name; else how many work;
+ *  "" when there is nothing to tell. */
+export function otherBranchesText(o: ReturnType<typeof otherBranches>, name: (branch: string) => string): string {
+  const [first] = alertsOf(o);
+  return first ? alertText(o, first, name) : "";
 }

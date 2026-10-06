@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  NOT_CARRIED, subStatus,
   fmtDuration, isSubagentTool, showReport, subActivity, subagentOf, subBadge, subDurationMs, subKey,
   subLine, subList, subModelLabel, subReport, subResultLine, subToolCount,
 } from "../src/logic/subagents.ts";
+import { branchKey, keyOfChat } from "../src/logic/branches.ts";
 import { quotable } from "../src/logic/quotes.ts";
 import { chatTitle } from "../src/logic/labels.ts";
 import type { Catalog, Item, Subagent } from "../src/types.ts";
@@ -28,7 +30,10 @@ test("isSubagentTool: Agent, Task, and mcp__board__spawn_subagent", () => {
 });
 
 test("subKey", () => {
-  assert.equal(subKey("c1", "s1"), "c1/s1");
+  assert.equal(subKey(branchKey("c1", "ab12cd34"), "s1"), "c1:ab12cd34/s1");
+  assert.equal(subKey(branchKey("c1"), "s1"), "c1:main/s1"); // a missing branch is main
+  assert.equal(keyOfChat(subKey(branchKey("c1"), "s1"), "c1"), true);
+  assert.equal(keyOfChat(subKey(branchKey("c12"), "s1"), "c1"), false);
 });
 
 test("subagentOf: linked uses the state, falling back to the input", () => {
@@ -254,4 +259,29 @@ test("a status the client does not know is shown as it is, not a crash", () => {
   assert.deepEqual(subResultLine(odd), { name: "Scout", text: "paused", tone: "muted" });
   assert.deepEqual(subResultLine(sub({ status: "toString" as any, description: "Scout", delivery: "sent" })), { name: "Scout", text: "toString · sent to the agent", tone: "muted" });
   assert.deepEqual(subResultLine(sub({ status: undefined as any, description: "Scout", delivery: "sent" })), { name: "Scout", text: "sent to the agent", tone: "muted" });
+});
+
+test("notCarried: the row says it was not carried over, muted, whatever the record's status", () => {
+  const text = "Not carried over: it was running in the chat this was copied from";
+  assert.deepEqual(subLine(call(), sub({ status: "stopped", notCarried: true })), { text, tone: "muted" });
+  assert.deepEqual(subLine(call(), sub({ status: "running", notCarried: true, progress: "Reading files" })), { text, tone: "muted" });
+  assert.deepEqual(subLine(call(), sub({ status: "failed", notCarried: true, error: "boom" })), { text, tone: "muted" });
+  assert.deepEqual(subLine(call({ result: "42" }), sub({ status: "completed", notCarried: true, summary: "Found 42" })), { text, tone: "muted" });
+  // other records are unchanged
+  assert.deepEqual(subLine(call(), sub({ status: "stopped" })), { text: "Stopped", tone: "muted" });
+  assert.deepEqual(subLine(call(), sub({ status: "stopped", notCarried: false })), { text: "Stopped", tone: "muted" });
+  assert.deepEqual(subLine(call(), sub({ progress: "Reading files" })), { text: "Reading files", tone: "live" });
+});
+
+test("notCarried: never running, and never a result that is not sent yet", () => {
+  assert.equal(subStatus(sub({ status: "running", notCarried: true })), "stopped");
+  assert.equal(subStatus(sub({ status: "running" })), "running");
+  assert.equal(subStatus(sub({ status: "completed" })), "completed");
+  assert.equal(subagentOf(call({ subagent: "s1" }), { s1: sub({ status: "running", notCarried: true }) }, true).status, "stopped");
+  assert.equal(subagentOf(call({ subagent: "s1" }), { s1: sub({ status: "running" }) }, false).status, "running");
+  assert.deepEqual(subResultLine(sub({ status: "stopped", notCarried: true, description: "Count files", delivery: "owed" })),
+    { name: "Count files", text: NOT_CARRIED, tone: "muted" });
+  assert.deepEqual(subResultLine(sub({ status: "running", notCarried: true, error: "boom", delivery: "retry" })),
+    { name: "Subagent", text: NOT_CARRIED, tone: "muted" });
+  assert.deepEqual(subResultLine(sub({ status: "stopped", delivery: "owed" })), { name: "Subagent", text: "Stopped · not sent yet", tone: "muted" });
 });

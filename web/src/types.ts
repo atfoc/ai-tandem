@@ -173,6 +173,9 @@ export type ChatView = Archive & {
   statusTool?: string;
   error?: string;
   folderMissing?: boolean;
+  // A fork to a new chat with no message of its own yet: its model and effort are still open, its
+  // folder is fixed. Absent otherwise; a branch is never fresh.
+  fresh?: boolean;
   // From the chat's subagent records; both absent (0) for a chat not opened since the server started.
   subsRunning?: number; // app-spawned subagents still running
   subsOwed?: number;    // finished ones whose result the agent has not received
@@ -180,6 +183,31 @@ export type ChatView = Archive & {
   branch?: string;          // the current branch; absent when it is MAIN
   forkedFrom?: string;      // the chat this one was forked from
   forkedFromTitle?: string; // that chat's title when it was forked
+  forkedBranch?: string;    // the branch of that chat it was forked from
+  forkedAt?: number;        // the item count of the prefix it was forked with; absent for older forks
+  // Over all the chat's branches; absent from a server without per-branch state.
+  working?: number;   // how many branches are thinking, writing, on a tool or waiting for approval
+  approvals?: number; // how many of those wait for approval
+  hasDraft?: boolean; // a branch has a stored draft
+};
+
+/** One branch's session state: what ChatView tells of the current branch, for any branch. */
+export type BranchState = {
+  chat: string;
+  branch: string;
+  cwd: string;
+  model: string;
+  effort?: string;
+  locked: boolean;
+  usage: Usage;
+  status: Status;
+  statusTool?: string;
+  error?: string;
+  folderMissing?: boolean;
+  fresh?: boolean;
+  subsRunning?: number;
+  subsOwed?: number;
+  draft?: Draft;
 };
 
 /** The message typed in a chat's composer and not sent yet; the server clears it on send. */
@@ -249,8 +277,13 @@ export type Held = { text: string; mentions: { name: string; id: string }[]; ref
  *  while the move is being sent, only when it held anything: the move's end makes that the chat's
  *  draft. After a Send that failed with no composer open it is the message that was not sent.
  *  hid: the quotes the moves took out of the composer (they name another message past the point):
- *  Back gives them back, and tells them from the ones the user removed. */
-export type PendingMove = Target & { held: Held; put: Held | null; typed?: Held; hid?: Reference[] };
+ *  Back gives them back, and tells them from the ones the user removed.
+ *  from: the branch the chat was on when the move was started, which Back returns to: the
+ *  composer is that branch's and holds its draft. A move is always to a branch that is not there
+ *  yet (new): the end of one that is there is looked at, with no move.
+ *  model, effort: the choice the new branch starts on, as shown, set together; both absent is the
+ *  source's. */
+export type PendingMove = Target & { from: string; held: Held; put: Held | null; typed?: Held; hid?: Reference[]; model?: string; effort?: string };
 
 export type SubStatus = "running" | "completed" | "failed" | "stopped";
 
@@ -282,6 +315,7 @@ export type Subagent = {
   started?: number; // unix ms
   ended?: number;
   delivery?: SubDelivery;
+  notCarried?: boolean; // a copy's record of one still running in the source when the copy was made: stopped, nothing owed
 };
 
 // ---- runs: mirror of the run types in internal/model/run.go, field for field, by json name.

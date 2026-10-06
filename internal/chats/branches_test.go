@@ -2,6 +2,7 @@ package chats
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -122,6 +123,41 @@ func (e *env) bothRunning(id string) (mainAg, branchAg *fakeAgent) {
 		e.t.Fatal("one process for both branches")
 	}
 	return mainAg, branchAg
+}
+
+// stateIn decodes the state record of a branch_state event.
+func stateIn(t *testing.T, ev map[string]any) model.BranchState {
+	t.Helper()
+	if ev["type"] != "branch_state" {
+		t.Fatalf("not a branch_state event: %v", ev)
+	}
+	raw, _ := json.Marshal(ev["state"])
+	var st model.BranchState
+	if err := json.Unmarshal(raw, &st); err != nil || st.Chat == "" || st.Branch == "" {
+		t.Fatalf("the state record of %v: %v", ev, err)
+	}
+	return st
+}
+
+// statesOf decodes the state records broadcast for the branch of the chat, in order.
+func statesOf(t *testing.T, evs []map[string]any, chat, branch string) []model.BranchState {
+	t.Helper()
+	var out []model.BranchState
+	for _, ev := range ofType(evs, "branch_state") {
+		if st := stateIn(t, ev); st.Chat == chat && st.Branch == branch {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// typesOf is the type of each event, in order.
+func typesOf(evs []map[string]any) []string {
+	out := make([]string, len(evs))
+	for i, ev := range evs {
+		out[i], _ = ev["type"].(string)
+	}
+	return out
 }
 
 func chatOf(t *testing.T, ev map[string]any) map[string]any {
@@ -367,14 +403,15 @@ func TestSendGoesToTheCurrentBranch(t *testing.T) {
 	if e.loaded(id) {
 		t.Fatal("a Send on the branch loaded main")
 	}
-	if top := e.meta(id); top.Draft != nil || top.TurnActive || top.ID != id {
+	// The draft was the branch's, kept with the top-level chat: the Send took it.
+	if top := e.meta(id); top.Drafts != nil || top.Draft != nil || top.TurnActive || top.ID != id {
 		t.Fatalf("the top-level chat.json %+v", top)
 	}
-	if b := e.meta(bid); !b.TurnActive || b.Draft != nil || b.Name != "" || b.Group != "" {
+	if b := e.meta(bid); !b.TurnActive || b.Drafts != nil || b.Draft != nil || b.Name != "" || b.Group != "" {
 		t.Fatalf("the branch's chat.json %+v", b)
 	}
 	v := e.view(id)
-	if v.Draft != nil || v.Status != model.StatusThinking || v.Branch != exBranch {
+	if v.Draft != nil || v.HasDraft || v.Status != model.StatusThinking || v.Branch != exBranch {
 		t.Fatalf("view %+v", v)
 	}
 
@@ -388,7 +425,7 @@ func TestSendGoesToTheCurrentBranch(t *testing.T) {
 		t.Fatalf("chat events %v", chatEvs)
 	}
 	c := chatOf(t, chatEvs[0])
-	if _, draft := c["draft"]; draft || c["id"] != id || c["branch"] != exBranch || c["branches"] != 2.0 ||
+	if _, draft := c["draft"]; draft || c["hasDraft"] != nil || c["id"] != id || c["branch"] != exBranch || c["branches"] != 2.0 ||
 		c["status"] != string(model.StatusThinking) || c["group"] != gOne {
 		t.Fatalf("chat event %v", c)
 	}
@@ -488,6 +525,112 @@ func TestSessionCallsReachTheCurrentBranch(t *testing.T) {
 	if e.loaded(id) {
 		t.Fatal("main was loaded")
 	}
+
+	// Named, main is reached though it is not current, and stays not current.
+	if e.m.BusyOf(id, model.MainBranch) || e.loaded(id) {
+		t.Fatal("BusyOf main: busy, or it loaded main")
+	}
+	if err := e.m.OpenOf(id, model.MainBranch); err != nil {
+		t.Fatal(err)
+	}
+	if !e.loaded(id) {
+		t.Fatal("OpenOf did not load main")
+	}
+	if s, err := e.m.ContextSplitOf(id, model.MainBranch, false); err != nil || s.Total == 0 || e.meta(id).ContextSplit == nil {
+		t.Fatalf("main's split %+v, %v; kept %v", s, err, e.meta(id).ContextSplit)
+	}
+	if e.cur(id) != exBranch {
+		t.Fatalf("the current branch is %q", e.cur(id))
+	}
+}
+
+// Each session call with a branch named acts on that branch, which need not be the current one,
+// and on no other.
+func TestSessionCallsReachANamedBranch(t *testing.T) {
+	e := newEnv(t)
+	id, bid := e.branched(model.Claude, "", "")
+	mainAg, branchAg := e.bothRunning(id)
+	// Main works while the branch is the current one.
+	e.makeCurrent(id, model.MainBranch)
+	e.send(id, "more on main", "")
+	e.makeCurrent(id, exBranch)
+	if !e.m.BusyOf(id, model.MainBranch) || e.m.BusyOf(id, exBranch) || e.m.Busy(id) {
+		t.Fatalf("busy: main %v, the branch %v, the current one %v",
+			e.m.BusyOf(id, model.MainBranch), e.m.BusyOf(id, exBranch), e.m.Busy(id))
+	}
+
+	mainAg.emit(t, agent.Event{Kind: agent.EvPermRequest, PermID: "r1", ToolName: "Bash", ToolID: "t9"})
+	if err := e.m.DecideOf(id, exBranch, "", "r1", true); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("DecideOf the branch, for main's request: %v", err)
+	}
+	if err := e.m.Decide(id, "", "r1", true); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("Decide, for main's request: %v", err)
+	}
+	if err := e.m.DecideOf(id, model.MainBranch, "", "r1", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentDecides(mainAg); !reflect.DeepEqual(got, []decision{{"r1", true}}) || len(agentDecides(branchAg)) != 0 {
+		t.Fatalf("decisions: main %v, the branch %v", got, agentDecides(branchAg))
+	}
+
+	if err := e.m.InterruptOf(id, model.MainBranch); err != nil {
+		t.Fatal(err)
+	}
+	if mainAg.interrupted() != 1 || branchAg.interrupted() != 0 {
+		t.Fatalf("interrupts: main %d, the branch %d", mainAg.interrupted(), branchAg.interrupted())
+	}
+	mainAg.emit(t, agent.Event{Kind: agent.EvTurnEnd, Aborted: true})
+	if e.m.BusyOf(id, model.MainBranch) {
+		t.Fatal("main is busy after its turn")
+	}
+
+	s, err := e.m.ContextSplitOf(id, model.MainBranch, false)
+	if err != nil || s.Total == 0 {
+		t.Fatalf("main's split %+v, %v", s, err)
+	}
+	if e.meta(id).ContextSplit == nil || e.meta(bid).ContextSplit != nil {
+		t.Fatalf("context split kept: main %v, the branch %v", e.meta(id).ContextSplit, e.meta(bid).ContextSplit)
+	}
+	if err := e.m.OpenOf(id, model.MainBranch); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.ConfigureOf(id, model.MainBranch, ConfigReq{Model: "opus"}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("ConfigureOf main, which has started: %v", err)
+	}
+	if e.cur(id) != exBranch || mainAg.isClosed() || branchAg.isClosed() {
+		t.Fatalf("current %q; closed: main %v, the branch %v", e.cur(id), mainAg.isClosed(), branchAg.isClosed())
+	}
+
+	// A branch the chat does not have, and a chat there is not.
+	const nope = "nope"
+	if err := e.m.InterruptOf(id, nope); !errors.Is(err, ErrNoBranch) {
+		t.Errorf("InterruptOf: %v", err)
+	}
+	if err := e.m.DecideOf(id, nope, "", "r1", true); !errors.Is(err, ErrNoBranch) {
+		t.Errorf("DecideOf: %v", err)
+	}
+	if err := e.m.ConfigureOf(id, nope, ConfigReq{Cwd: t.TempDir()}); !errors.Is(err, ErrNoBranch) {
+		t.Errorf("ConfigureOf: %v", err)
+	}
+	if err := e.m.OpenOf(id, nope); !errors.Is(err, ErrNoBranch) {
+		t.Errorf("OpenOf: %v", err)
+	}
+	if _, err := e.m.ContextSplitOf(id, nope, false); !errors.Is(err, ErrNoBranch) {
+		t.Errorf("ContextSplitOf: %v", err)
+	}
+	if e.m.BusyOf(id, nope) {
+		t.Error("BusyOf an unknown branch")
+	}
+	if err := e.m.SendTo(id, Target{Branch: nope, End: true}, "never sent", "", nil); !errors.Is(err, ErrNoBranch) {
+		t.Errorf("SendTo its end: %v", err)
+	}
+	if err := e.m.InterruptOf("nope", model.MainBranch); !errors.Is(err, ErrNotFound) {
+		t.Errorf("InterruptOf an unknown chat: %v", err)
+	}
+	// A branch's server id names no chat, with a branch as without.
+	if err := e.m.OpenOf(bid, model.MainBranch); !errors.Is(err, ErrNotFound) {
+		t.Errorf("OpenOf a branch's server id: %v", err)
+	}
 }
 
 func TestChatCallsReachTheTopLevelChat(t *testing.T) {
@@ -509,8 +652,9 @@ func TestChatCallsReachTheTopLevelChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	top := e.meta(id)
-	if top.Name != "Named" || !top.UserNamed || top.Group != gTwo || top.Draft == nil || top.Draft.Text != "typed" ||
-		!top.Archived || top.Op != "op1" {
+	// The draft is the current branch's, and is kept here as the chat's name is.
+	if d := top.Drafts[exBranch]; top.Name != "Named" || !top.UserNamed || top.Group != gTwo || len(top.Drafts) != 1 ||
+		d == nil || d.Text != "typed" || top.Draft != nil || !top.Archived || top.Op != "op1" {
 		t.Fatalf("the top-level chat.json %+v", top)
 	}
 	if !bytes.Equal(e.file(bid, "chat.json"), branch) {
@@ -544,6 +688,13 @@ func TestConfigureReachesTheCurrentBranch(t *testing.T) {
 	meta := e.meta(bid)
 	meta.Cwd = gone
 	e.writeMeta(meta)
+	// A third branch, which has not started: it takes a model, an effort and a folder.
+	const b2 = "0e0e0e0e"
+	bid2 := branchChatID(id, b2)
+	e.writeBranch(id, b2, nil)
+	tree := exampleTree
+	tree.Branches = append(tree.Branches[:1:1], model.TreeBranch{ID: b2, From: model.MainBranch, At: 0})
+	e.writeTree(id, tree)
 	e.boot()
 	topCwd := e.meta(id).Cwd
 
@@ -572,6 +723,82 @@ func TestConfigureReachesTheCurrentBranch(t *testing.T) {
 	e.send(id, "more", "")
 	if o := e.claude.last(t).opts; o.ChatID != bid || o.Cwd != dir || !o.Resume {
 		t.Fatalf("spawn options %+v", o)
+	}
+
+	// Named, a branch that is not current is configured, and only that one.
+	top, cur := e.file(id, "chat.json"), e.file(bid, "chat.json")
+	dir2 := t.TempDir()
+	evs := e.listen()
+	if err := e.m.ConfigureOf(id, b2, ConfigReq{Model: "opus", Effort: "max", Cwd: dir2}); err != nil {
+		t.Fatal(err)
+	}
+	if m := e.meta(bid2); m.Model != "opus" || m.Effort != "max" || m.Cwd != dir2 || m.Locked {
+		t.Fatalf("the named branch's chat.json %+v", m)
+	}
+	// A branch's model and effort are never a new chat's defaults; its folder is, as before.
+	e.st.Read(func(s *model.State) {
+		for name, g := range s.Defaults.Groups {
+			if mc := g.ByAgent[model.Claude]; mc.Model == "opus" || mc.Effort == "max" {
+				t.Fatalf("the defaults of %s took the branch's choice: %+v", name, mc)
+			}
+		}
+		if last := s.Defaults.Last; last.ByAgent[model.Claude].Model == "opus" || last.ByAgent[model.Claude].Effort == "max" || last.Cwd != dir2 {
+			t.Fatalf("the last defaults after configuring a branch %+v", last)
+		}
+	})
+	if !bytes.Equal(e.file(id, "chat.json"), top) || !bytes.Equal(e.file(bid, "chat.json"), cur) {
+		t.Fatal("another branch's chat.json changed")
+	}
+	// Its state record is sent, and no view of the chat: that is the current branch's.
+	got := evs.drain(t, e.br)
+	if sts := statesOf(t, got, id, b2); len(sts) != 1 || sts[0].Model != "opus" || sts[0].Effort != "max" || sts[0].Cwd != dir2 {
+		t.Fatalf("the state records of the named branch %+v", sts)
+	}
+	if len(ofType(got, "branch_state")) != 1 || len(ofType(got, "chat")) != 0 {
+		t.Fatalf("events %+v", got)
+	}
+	if v := e.view(id); v.Branch != exBranch || v.Cwd != dir || v.Model == "opus" {
+		t.Fatalf("view after configuring another branch %+v", v)
+	}
+	if err := e.m.ConfigureOf(id, model.MainBranch, ConfigReq{Cwd: dir2}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("ConfigureOf main, which has started and has its folder: %v", err)
+	}
+}
+
+// A chat object that has a message of its own has its model, effort and folder fixed: main and a
+// branch once started, and a fork after its first message. Until that message a fork with a
+// conversation still takes another model (see restart_test.go).
+func TestConfigureLockedOnceStarted(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	b, _, ba := e.branchTo(id, newAt(3), "aside")
+	reqs := []ConfigReq{{Model: "opus"}, {Effort: "low"}, {Model: "sonnet", Effort: "high"}, {Cwd: t.TempDir()}}
+	locked := func(when, id, branch string) {
+		t.Helper()
+		for _, req := range reqs {
+			if err := e.m.ConfigureOf(id, branch, req); !errors.Is(err, ErrLocked) {
+				t.Fatalf("%s, ConfigureOf %+v: %v", when, req, err)
+			}
+		}
+	}
+	locked("main, which has started", id, model.MainBranch)
+	locked("a branch during its first turn", id, b)
+	ba.emit(t, reply("q1")...)
+	locked("a branch, which has started", id, b)
+
+	fork := e.fork(id, 3).ID
+	if err := e.m.Configure(fork, ConfigReq{Model: "opus"}); err != nil {
+		t.Fatalf("Configure on a fork that has had no message: %v", err)
+	}
+	if v := e.view(fork); v.Model != "opus" || !v.Fresh || !v.Locked {
+		t.Fatalf("the fork's view %+v", v)
+	}
+	e.send(fork, "on the fork", "")
+	locked("a fork during its first turn", fork, "")
+	e.claude.lastFork(t).emit(t, reply("f1")...)
+	locked("a fork after its first message", fork, model.MainBranch)
+	if m := e.meta(fork); m.Model != "opus" || m.Fresh {
+		t.Fatalf("the fork's chat.json %+v", m)
 	}
 }
 
@@ -614,11 +841,20 @@ func TestConfigureFolderFixReachesEveryBranch(t *testing.T) {
 	if v := e.view(id); v.Branch != b2 || v.FolderMissing || v.Error != "" || v.Status != model.StatusReady || v.Cwd != dir {
 		t.Fatalf("view after the fix %+v", v)
 	}
-	// Clients are told what they are told of a chat without branches: the chat's view, which
-	// holds the current branch's folder, and the defaults. No other branch is loaded for it.
+	// Clients are told what they are told of a chat without branches (the state record of the
+	// branch that was configured, the chat's view, which holds the current branch's folder, and
+	// the defaults) and the state record of each other branch. No other branch is loaded for it.
 	got := evs.drain(t, e.br)
-	if len(got) != 2 || len(ofType(got, "chat")) != 1 || len(ofType(got, "defaults")) != 1 || namesChat(got, "/branches/") {
+	if len(got) != 5 || len(ofType(got, "chat")) != 1 || len(ofType(got, "defaults")) != 1 || namesChat(got, "/branches/") {
 		t.Fatalf("events %+v", got)
+	}
+	for _, other := range []string{model.MainBranch, b1} {
+		if sts := statesOf(t, got, id, other); len(sts) != 1 || sts[0].Cwd != dir || sts[0].FolderMissing || sts[0].Error != "" || sts[0].Status != model.StatusReady {
+			t.Fatalf("the state records of the branch %s %+v", other, sts)
+		}
+	}
+	if sts := statesOf(t, got, id, b2); len(sts) != 1 || sts[0].Cwd != dir || sts[0].FolderMissing || sts[0].Error != "" || sts[0].Status != model.StatusReady {
+		t.Fatalf("the state records of the branch %+v", sts)
 	}
 	if c := chatOf(t, ofType(got, "chat")[0]); c["cwd"] != dir || c["branch"] != b2 || c["folderMissing"] != nil {
 		t.Fatalf("the chat event %v", c)
@@ -657,8 +893,9 @@ func TestConfigureFolderFixLeavesProcessesAlone(t *testing.T) {
 	id, _ := e.talked(model.Claude, "", 2)
 	_, bid, fa := e.branchTo(id, newAt(3), "aside")
 	fa.emit(t, reply("q1")...)
+	e.m.stopBranch(id) // main's process ends: its next message has to start one
 	old := e.meta(id).Cwd
-	// The branch works, and main is made current without stopping it.
+	// The branch works, and main is made current, which stops nothing.
 	e.send(id, "more", "")
 	e.makeCurrent(id, model.MainBranch)
 	if err := os.Rename(old, old+".gone"); err != nil {
@@ -701,6 +938,7 @@ func TestConfigureFolderFixClearsTheErrorOfOtherBranches(t *testing.T) {
 	id, _ := e.talked(model.Claude, "", 2)
 	b, bid, fa := e.branchTo(id, newAt(3), "aside")
 	fa.emit(t, reply("q1")...)
+	e.m.stopBranch(id) // main's process ends: its next message has to start one
 	old := e.meta(id).Cwd
 	if err := os.Rename(old, old+".gone"); err != nil {
 		t.Fatal(err)
@@ -726,11 +964,21 @@ func TestConfigureFolderFixClearsTheErrorOfOtherBranches(t *testing.T) {
 		t.Fatalf("Send with the folder gone: %v", err)
 	}
 	dir := t.TempDir()
+	evs := e.listen()
 	if err := e.m.Configure(id, ConfigReq{Cwd: dir}); err != nil {
 		t.Fatal(err)
 	}
 	if v := own(id); v.FolderMissing || v.Error != "" || v.Status != model.StatusReady || v.Cwd != dir {
 		t.Fatalf("main's own view after the fix %+v", v)
+	}
+	// Main's record is sent without the error, after the one of the branch that was configured.
+	got := evs.drain(t, e.br)
+	sts := ofType(got, "branch_state")
+	if len(sts) != 2 || stateIn(t, sts[0]).Branch != b || len(ofType(got, "chat")) != 1 {
+		t.Fatalf("events %+v", got)
+	}
+	if st := stateIn(t, sts[1]); st.Branch != model.MainBranch || st.FolderMissing || st.Error != "" || st.Status != model.StatusReady || st.Cwd != dir {
+		t.Fatalf("main's state record after the fix %+v", st)
 	}
 	if v := own(bid); v.FolderMissing || v.Error != "" || v.Status != model.StatusReady || v.Cwd != dir {
 		t.Fatalf("the branch's own view after the fix %+v", v)
@@ -741,13 +989,57 @@ func TestConfigureFolderFixClearsTheErrorOfOtherBranches(t *testing.T) {
 	}
 }
 
+// The folder fix on a named branch that is not current reaches the current branch as any other:
+// its record is sent, and the chat's view, which holds its folder.
+func TestConfigureFolderFixFromANamedBranch(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	b, bid, fa := e.branchTo(id, newAt(3), "aside")
+	fa.emit(t, reply("q1")...)
+	e.m.stopBranch(id) // main's process ends: its next message has to start one
+	old := e.meta(id).Cwd
+	if err := os.Rename(old, old+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	// Main's start fails for the folder: the branch stays current, and main keeps the error.
+	if err := e.m.SendTo(id, Target{Branch: model.MainBranch, End: true}, "back on main", "", nil); !errors.Is(err, ErrFolderMissing) {
+		t.Fatalf("SendTo with the folder gone: %v", err)
+	}
+	dir := t.TempDir()
+	evs := e.listen()
+	if err := e.m.ConfigureOf(id, model.MainBranch, ConfigReq{Cwd: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if e.meta(id).Cwd != dir || e.meta(bid).Cwd != dir {
+		t.Fatalf("folders after the fix: main %q, the branch %q", e.meta(id).Cwd, e.meta(bid).Cwd)
+	}
+	got := evs.drain(t, e.br)
+	sts := ofType(got, "branch_state")
+	if len(sts) != 2 || len(ofType(got, "chat")) != 1 {
+		t.Fatalf("events %+v", got)
+	}
+	if st := stateIn(t, sts[0]); st.Branch != model.MainBranch || st.FolderMissing || st.Error != "" || st.Status != model.StatusReady || st.Cwd != dir {
+		t.Fatalf("main's state record %+v", st)
+	}
+	if st := stateIn(t, sts[1]); st.Branch != b || st.Cwd != dir {
+		t.Fatalf("the current branch's state record %+v", st)
+	}
+	if c := chatOf(t, ofType(got, "chat")[0]); c["cwd"] != dir || c["branch"] != b {
+		t.Fatalf("the chat event %v", c)
+	}
+	if e.cur(id) != b || fa.isClosed() {
+		t.Fatalf("current %q, the branch's process closed: %v", e.cur(id), fa.isClosed())
+	}
+}
+
 // ---- the composed view ----------------------------------------------------
 
 func TestComposedView(t *testing.T) {
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	top := e.meta(id)
-	top.Name, top.UserNamed, top.Draft = "Top", true, &model.Draft{Text: "typed"}
+	top.Name, top.UserNamed = "Top", true
+	top.Drafts = map[string]*model.Draft{model.MainBranch: {Text: "typed on main"}, exBranch: {Text: "typed"}}
 	top.Archive = model.Archive{Archived: true, Op: "op1"}
 	top.ForkedFrom, top.ForkedFromTitle = "elsewhere", "Elsewhere"
 	top.Model, top.Effort = "sonnet", "low"
@@ -765,10 +1057,11 @@ func TestComposedView(t *testing.T) {
 	want := model.ChatView{ID: id, Agent: model.Claude, Name: "Top", UserNamed: true, Group: gOne,
 		Created: v.Created, Draft: v.Draft, Archive: top.Archive, ForkedFrom: "elsewhere", ForkedFromTitle: "Elsewhere",
 		Cwd: b.Cwd, Model: "opus", Effort: "max", Locked: true, Usage: b.Usage, Status: model.StatusStopped,
-		Branches: 2, Branch: exBranch}
+		Branches: 2, Branch: exBranch, HasDraft: true}
 	if v != want {
 		t.Fatalf("view\n got %+v\nwant %+v", v, want)
 	}
+	// The draft is the current branch's: part of the session side, though the top-level chat keeps it.
 	if !v.Created.Equal(top.Created) || v.Draft == nil || v.Draft.Text != "typed" {
 		t.Fatalf("created %v, draft %+v", v.Created, v.Draft)
 	}
@@ -781,17 +1074,46 @@ func TestComposedView(t *testing.T) {
 	e.makeCurrent(id, model.MainBranch)
 	v = e.view(id)
 	if v.Branch != "" || v.Branches != 2 || v.Model != "sonnet" || v.Effort != "low" || v.Usage != top.Usage ||
-		v.Cwd != top.Cwd || v.Status != model.StatusReady || v.Name != "Top" {
+		v.Cwd != top.Cwd || v.Status != model.StatusReady || v.Name != "Top" ||
+		v.Draft == nil || v.Draft.Text != "typed on main" || !v.HasDraft {
 		t.Fatalf("view with main current %+v", v)
 	}
 	chatEvs := ofType(evs.drain(t, e.br), "chat")
 	if len(chatEvs) != 1 {
 		t.Fatalf("chat events %v", chatEvs)
 	}
-	if c := chatOf(t, chatEvs[0]); c["model"] != "sonnet" || c["branches"] != 2.0 || c["name"] != "Top" {
+	if c := chatOf(t, chatEvs[0]); c["model"] != "sonnet" || c["branches"] != 2.0 || c["name"] != "Top" ||
+		!reflect.DeepEqual(c["draft"], map[string]any{"text": "typed on main"}) || c["hasDraft"] != true {
 		t.Fatalf("chat event %v", c)
 	} else if _, ok := c["branch"]; ok {
 		t.Fatalf("chat event names a branch with main current: %v", c)
+	} else if c["working"] != nil || c["approvals"] != nil {
+		t.Fatalf("chat event with counts while no branch works: %v", c)
+	}
+
+	// The counts of working branches are in neither half: they are over every branch of the
+	// chat, and stay when the current branch changes.
+	top.Archive = model.Archive{}
+	if err := e.m.SetArchive(id, top.Archive); err != nil {
+		t.Fatal(err)
+	}
+	e.send(id, "on main", "")
+	if v := e.view(id); v.Status != model.StatusThinking || v.Working != 1 || v.Approvals != 0 {
+		t.Fatalf("view while main works %+v", v)
+	}
+	evs.drain(t, e.br)
+	e.makeCurrent(id, exBranch)
+	v = e.view(id)
+	want.Archive = top.Archive // the Send took main's draft; the branch's is the one it was
+	want.Working = 1
+	if v != want {
+		t.Fatalf("view with the branch current while main works\n got %+v\nwant %+v", v, want)
+	}
+	if vs := e.m.Views(); len(vs) != 1 || vs[0] != v {
+		t.Fatalf("Views %+v", vs)
+	}
+	if sent := chatViews(t, evs.drain(t, e.br), id); len(sent) != 1 || sent[0].Working != 1 || sent[0].Branch != exBranch || sent[0].Status != model.StatusStopped {
+		t.Fatalf("chat events of the move %+v", sent)
 	}
 }
 
@@ -806,11 +1128,16 @@ func TestBranchEvents(t *testing.T) {
 	mainAg, branchAg := e.bothRunning(id)
 	evs := e.listen()
 
-	// The branch that is not current still sends its items, and no chat event.
+	// The branch that is not current still sends its items, and its state record with every
+	// change of it. The chat's view is sent only where the chat's counts of working branches
+	// change with it: here when main starts to write and when its turn ends, and not for its
+	// usage in between.
 	mainAg.emit(t, agent.Event{Kind: agent.EvTextDelta, Text: "late"})
-	if st := e.view(id).Status; st != model.StatusReady {
-		t.Fatalf("status of the chat while main writes: %q", st)
+	if v := e.view(id); v.Status != model.StatusReady || v.Working != 1 {
+		t.Fatalf("the chat while main writes: %+v", v)
 	}
+	mainAg.emit(t, agent.Event{Kind: agent.EvTextDelta, Text: "r"}) // no change of its record
+	mainAg.emit(t, agent.Event{Kind: agent.EvUsage, CtxIn: 5, CtxWindow: 50})
 	mainAg.emit(t, agent.Event{Kind: agent.EvTurnEnd, Point: "p4"})
 	got := evs.drain(t, e.br)
 	items := ofType(got, "chat_items")
@@ -822,26 +1149,80 @@ func TestBranchEvents(t *testing.T) {
 			t.Fatalf("chat_items event %v", ev)
 		}
 	}
-	if c := ofType(got, "chat"); len(c) != 0 {
-		t.Fatalf("a change of a branch that is not current sent chat events: %v", c)
+	sts := statesOf(t, got, id, model.MainBranch)
+	if len(sts) != 3 || len(ofType(got, "branch_state")) != 3 {
+		t.Fatalf("state records of main %+v, of %d branch_state events", sts, len(ofType(got, "branch_state")))
 	}
-	if v := e.view(id); v.Status != model.StatusReady || v.Usage.Turns != 2 {
+	if sts[0].Status != model.StatusWriting || sts[0].Usage.Turns != 3 || sts[0].Usage.CtxIn != 0 ||
+		sts[1].Status != model.StatusWriting || sts[1].Usage.CtxIn != 5 || sts[1].Usage.CtxWindow != 50 ||
+		sts[2].Status != model.StatusReady || sts[2].Usage.Turns != 4 || sts[2].Usage.CtxIn != 5 {
+		t.Fatalf("state records of main %+v", sts)
+	}
+	// The two chat events: each right after the state record of its change, and the current
+	// branch's view but for the count.
+	var after []model.Status // the status of the state record ahead of each chat event
+	for i, ev := range got {
+		if ev["type"] == "chat" {
+			if i == 0 {
+				t.Fatalf("a chat event ahead of every state record: %v", got)
+			}
+			after = append(after, stateIn(t, got[i-1]).Status)
+		}
+	}
+	if !reflect.DeepEqual(after, []model.Status{model.StatusWriting, model.StatusReady}) {
+		t.Fatalf("chat events after the state records with status %v: %v", after, got)
+	}
+	views := chatViews(t, got, id)
+	if len(views) != 2 || views[0].Working != 1 || views[1].Working != 0 {
+		t.Fatalf("chat events of a branch that is not current %+v", views)
+	}
+	// Main's part of the tree, each time its agent starts or stops working: right after the
+	// chat event of that change.
+	for i, ev := range got {
+		if ev["type"] == "tree" && got[i-1]["type"] != "chat" {
+			t.Fatalf("the tree event at %d does not follow a chat event: %v", i, typesOf(got))
+		}
+	}
+	if trees := treesOf(t, got, id); len(trees) != 2 || len(ofType(got, "tree")) != 2 {
+		t.Fatalf("tree events of main's turn %v", trees)
+	} else if w, r := trees[0].branchPart(t, model.MainBranch), trees[1].branchPart(t, model.MainBranch); w.Len != 11 || r.Len != 12 ||
+		w.From != "" || w.At != 0 || w.Items[len(w.Items)-1].Done || !r.Items[len(r.Items)-1].Done || r.Items[len(r.Items)-1].End != 12 {
+		t.Fatalf("main's part while it writes %+v, after its turn %+v", w, r)
+	}
+	for _, v := range views {
+		if v.Branch != exBranch || v.Branches != 2 || v.Status != model.StatusReady || v.Usage.Turns != 2 ||
+			v.Usage.CtxIn != 0 || v.Approvals != 0 || v.Name != "Top" {
+			t.Fatalf("chat event of a branch that is not current %+v", v)
+		}
+	}
+	if v := e.view(id); v.Status != model.StatusReady || v.Usage.Turns != 2 || v.Working != 0 {
 		t.Fatalf("view %+v", v) // the branch's two turns, not main's four
 	}
 
-	// The current branch's status change sends the composed view.
+	// The current branch's status change sends its state record, then the composed view, and
+	// as its agent started to work the branch's part of the tree.
 	branchAg.emit(t, agent.Event{Kind: agent.EvTextDelta, Text: "writing"})
 	got = evs.drain(t, e.br)
+	if !reflect.DeepEqual(typesOf(got), []string{"chat_items", "branch_state", "chat", "tree"}) {
+		t.Fatalf("events %v", got)
+	}
+	if p := treeIn(t, got[3]).branchPart(t, exBranch); p.From != model.MainBranch || p.At != 3 || p.Len != 9 ||
+		p.Items[len(p.Items)-1].Text != "writing" {
+		t.Fatalf("the branch's part of the tree %+v", p)
+	}
 	items = ofType(got, "chat_items")
 	if len(items) != 1 || items[0]["chat"] != id || items[0]["branch"] != exBranch {
 		t.Fatalf("chat_items events %v", items)
+	}
+	if st := stateIn(t, got[1]); st.Chat != id || st.Branch != exBranch || st.Status != model.StatusWriting || st.Usage.Turns != 2 {
+		t.Fatalf("state record of the current branch %+v", st)
 	}
 	chatEvs := ofType(got, "chat")
 	if len(chatEvs) != 1 {
 		t.Fatalf("chat events %v", chatEvs)
 	}
 	if c := chatOf(t, chatEvs[0]); c["id"] != id || c["branch"] != exBranch || c["branches"] != 2.0 ||
-		c["status"] != string(model.StatusWriting) || c["name"] != "Top" || c["group"] != gOne {
+		c["status"] != string(model.StatusWriting) || c["name"] != "Top" || c["group"] != gOne || c["working"] != 1.0 {
 		t.Fatalf("chat event %v", c)
 	}
 
@@ -1151,7 +1532,7 @@ func TestForkFromABranch(t *testing.T) {
 	if got := e.diskItems(v.ID); !reflect.DeepEqual(got, exampleBranch()) {
 		t.Fatalf("the fork's items %+v", got)
 	}
-	if v.Name != "Top (fork)" || v.ForkedFrom != id || v.ForkedFromTitle != "Top" || v.Group != gOne ||
+	if v.Name != "Top (fork)" || v.ForkedFrom != id || v.ForkedFromTitle != "Top" || v.ForkedBranch != exBranch || v.ForkedAt != 6 || v.Group != gOne ||
 		v.Branches != 0 || v.Branch != "" || strings.Contains(v.ID, "/") {
 		t.Fatalf("the fork's view %+v", v)
 	}
@@ -1166,13 +1547,26 @@ func TestForkFromABranch(t *testing.T) {
 		t.Fatalf("views %+v", vs)
 	}
 
-	// Busy is the chat's: its current branch's turn refuses a fork of any branch.
+	// Busy is the branch's: the turn of the current branch refuses the fork of its own end only.
 	e.send(id, "on main", "")
-	if _, err := e.m.Fork(id, ForkReq{Branch: exBranch, At: 3}); !errors.Is(err, ErrBusy) {
-		t.Fatalf("Fork of an idle branch of a busy chat: %v", err)
+	if _, err := e.m.Fork(id, ForkReq{Branch: model.MainBranch, At: len(e.items(id))}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Fork of the end of the busy branch: %v", err)
 	}
 	if len(e.claude.forkCalls()) != 1 {
 		t.Fatal("a refused fork started a process")
+	}
+	v2, err := e.m.Fork(id, ForkReq{Branch: exBranch, At: 6})
+	if err != nil {
+		t.Fatalf("Fork of an idle branch of a busy chat: %v", err)
+	}
+	if calls = e.claude.forkCalls(); len(calls) != 2 || calls[1].src.ChatID != bid || !calls[1].src.End {
+		t.Fatalf("fork calls %+v", calls)
+	}
+	if !reflect.DeepEqual(e.diskItems(v2.ID), exampleBranch()) || v2.ForkedBranch != exBranch || v2.ForkedAt != 6 {
+		t.Fatalf("the fork of the idle branch %+v", v2)
+	}
+	if !e.m.BusyOf(id, model.MainBranch) || e.claude.last(t).isClosed() || e.claude.last(t).interrupted() != 0 {
+		t.Fatal("the fork disturbed the running branch")
 	}
 }
 
@@ -1196,7 +1590,7 @@ func TestAddBranchAndSetCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, items := tr.Snapshot()
-	meta := prefixMeta(src.meta, items, 3)
+	meta := prefixMeta(src.meta, items, 3, model.ModelChoice{Model: src.meta.Model, Effort: src.meta.Effort}, 0)
 	meta.ID = bid
 	c, err := e.m.addUnlisted(src, meta, 3)
 	src.mu.Unlock()

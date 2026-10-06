@@ -18,7 +18,8 @@ var _ agent.Forker = (*Spawner)(nil)
 type forkStart struct {
 	file  string // the source session file, opened with --session
 	entry string // the user message to fork before; "" = the fork is at the source's end
-	end   string // at the source's end: the id on the end mark there; "" = none recorded
+	end   string // with no entry: the id on the end mark at the point; "" = none recorded
+	check bool   // the fork must end at end's user message, or it fails (forkEndsAt)
 }
 
 // SpawnFork starts the chat's pi process on the source session file, with the chat's own folder
@@ -31,10 +32,16 @@ type forkStart struct {
 // pi opened holds a user message after the one src.Point names, the fork is made before that
 // message in place of the clone (forkSession).
 //
+// A point with no src.Next and no src.End is the end of a turn whose following turn has no mark
+// yet: the source is in the middle of it. Its user message is found the same way, in this second
+// process and from the session file, so the running source process is never asked anything. The
+// source can append between that lookup and the fork, so there the result is checked: the fork
+// fails unless it ends at src.Point.
+//
 // pi gives no error for a missing source file (it would start an empty session at that path), so
 // the file is checked here first.
 func (s *Spawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.Agent, string, error) {
-	if !src.End && src.Next == "" {
+	if !src.End && src.Next == "" && src.Point == "" {
 		return nil, "", errors.New("pi: no fork point after that turn")
 	}
 	file, err := s.findSessionFile(s.chatDir(src.ChatID, src.Dir), src.SessionID)
@@ -42,10 +49,13 @@ func (s *Spawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.A
 		return nil, "", err
 	}
 	fork := &forkStart{file: file}
-	if !src.End {
-		fork.entry = src.Next
-	} else {
+	switch {
+	case src.End:
 		fork.end = src.Point
+	case src.Next != "":
+		fork.entry = src.Next
+	default:
+		fork.end, fork.check = src.Point, true
 	}
 	o.SessionID = ""
 	p, err := s.start(o, fork)
@@ -116,7 +126,9 @@ func (s *Spawner) findSessionFile(chatDir, sessionID string) (string, error) {
 // read again; it is returned for the rest of the handshake.
 //
 // A fork at the source's end is a clone, unless the source holds a user message after its end
-// mark's (entryAfter): then it is a fork before that message.
+// mark's (entryAfter): then it is a fork before that message. So is a fork at a point whose next
+// turn is running in the source; that one is checked afterwards (forkEndsAt), before set_model
+// and set_thinking_level write to the new session.
 func (p *proc) forkSession(call func(string, map[string]any) (rpcResponse, error), state rpcResponse) (rpcResponse, error) {
 	var src piState
 	json.Unmarshal(state.Data, &src)
@@ -159,7 +171,37 @@ func (p *proc) forkSession(call func(string, map[string]any) (rpcResponse, error
 	if dst.SessionID == "" || samePath(dst.SessionFile, p.fork.file) {
 		return rpcResponse{}, errors.New("pi fork: pi is still on the source session")
 	}
+	if p.fork.check {
+		if err := forkEndsAt(call, p.fork.end); err != nil {
+			return rpcResponse{}, err
+		}
+	}
 	return forked, nil
+}
+
+// forkEndsAt checks that the last user message of the open session, the fork, is the one with
+// entry id point (copied entries keep their ids). A listing that fails or is empty is an error
+// too: with a point pi does not list, the clone would have taken the source's running turn in.
+func forkEndsAt(call func(string, map[string]any) (rpcResponse, error), point string) error {
+	res, err := call("get_fork_messages", nil)
+	if err != nil {
+		return err
+	}
+	if !res.Success {
+		return fmt.Errorf("pi fork: cannot check where the fork ends: %s", res.Error)
+	}
+	var data struct {
+		Messages []struct {
+			EntryID string `json:"entryId"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(res.Data, &data) != nil || len(data.Messages) == 0 {
+		return errors.New("pi fork: cannot check where the fork ends: pi listed no messages")
+	}
+	if last := data.Messages[len(data.Messages)-1].EntryID; last != point {
+		return fmt.Errorf("pi fork: the fork ends at %q, not at the point %q: the source moved on during the fork", last, point)
+	}
+	return nil
 }
 
 // entryAfter is the entry id of the user message that follows the one with entry id point in the

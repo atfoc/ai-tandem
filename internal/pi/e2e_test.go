@@ -5,7 +5,8 @@ package pi
 //
 //	AIWB_PI_E2E=1 go test -count=1 -run TestE2E ./internal/pi/
 //
-// AIWB_PI_E2E_MODEL overrides the model (default deepseek/deepseek-flash). The subagent tests
+// AIWB_PI_E2E_MODEL overrides the model (default deepseek/deepseek-flash); AIWB_PI_E2E_MODEL2
+// overrides the second model of TestE2EForkOtherModel. The subagent tests
 // are additionally gated behind AIWB_PI_E2E_SUBAGENT=1: TestE2ESubagent (app-managed MCP spawn
 // family via Manager.SpawnSubagent, a child's ending and stop, abort cleanup) and
 // TestE2ESubagentDelivery (a pi parent that spawns over the real MCP endpoint and gets the results
@@ -19,6 +20,7 @@ package pi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -592,6 +594,342 @@ func TestE2EForkAtEndDuringSend(t *testing.T) {
 	r := e2eSay(t, a, e2eRecall, nil)
 	e2eRecalls(t, "fork at the end during a send", r.text, []string{"ALPHA7"}, []string{"BRAVO3"})
 	closeAndWaitExit(t, a)
+	closeAndWaitExit(t, srcA)
+}
+
+// TestE2EForkFromRunningSource forks a source whose process is in the middle of a turn, at the
+// end of the turn before it, through the app's own launch path (Spawner, bridge, materialized
+// extension, board MCP). Turn 3 of the source is blocked in a sleep; the fork is asked for with
+// turn 2's point only (no next mark exists yet). The fork must hold turns 1 and 2 and answer
+// while the source still runs; the source must not notice: its file only grows, and its turn
+// ends normally.
+func TestE2EForkFromRunningSource(t *testing.T) {
+	e2eAgentDir(t)
+	env := newE2EBoardEnv(t)
+	s, cwd := e2eEnvSpawner(t, env)
+	opts := func(chatID, sessionID string) agent.SpawnOptions {
+		return agent.SpawnOptions{ChatID: chatID, SessionID: sessionID, Cwd: cwd,
+			Model: e2eModel(), MCP: env.boardAccess(), BoardID: "b"}
+	}
+	const srcChat, srcSession = "A", "44444444-4444-4444-8444-444444444444"
+	srcA, err := s.Spawn(opts(srcChat, srcSession))
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	defer srcA.Close()
+	e2eReady(t, srcA)
+	p1 := e2eSay(t, srcA, fmt.Sprintf(e2eRemember, "ALPHA7"), nil).end.Point
+	p2 := e2eSay(t, srcA, fmt.Sprintf(e2eRemember, "BRAVO3"), nil).end.Point
+	if p1 == "" || p2 == "" || p1 == p2 {
+		t.Fatalf("the source's turns ended with points %q and %q", p1, p2)
+	}
+	srcFile, err := s.findSessionFile(srcChat, srcSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 3 blocks in its bash tool. Its events are read on the side, up to its end.
+	if err := srcA.Send([]agent.ContentBlock{{Text: "Remember the secret word CHARLIE9. Then run the bash " +
+		"command `sleep 30; echo SLEPT-OK` with a timeout of 90 seconds and reply with only: done"}}); err != nil {
+		t.Fatal(err)
+	}
+	toolStarted := make(chan struct{})
+	srcEnd := make(chan agent.Event, 1)
+	go func() {
+		started := false
+		for ev := range srcA.Events() {
+			switch ev.Kind {
+			case agent.EvToolStart:
+				if !started {
+					started = true
+					close(toolStarted)
+				}
+			case agent.EvTurnEnd, agent.EvExit:
+				srcEnd <- ev
+				return
+			}
+		}
+		srcEnd <- agent.Event{Kind: agent.EvExit}
+	}()
+	select {
+	case <-toolStarted:
+	case ev := <-srcEnd:
+		t.Skipf("the source's turn ended without running the tool to block in: %+v", ev)
+	case <-time.After(time.Minute):
+		t.Skip("the source did not start its tool within a minute: nothing to fork from")
+	}
+	// The tool start is reported before the assistant message with the call is written.
+	var snap []byte
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		snap, _ = os.ReadFile(srcFile)
+		lines := strings.Split(strings.TrimSpace(string(snap)), "\n")
+		if last := lines[len(lines)-1]; strings.Contains(last, `"toolCall"`) && strings.Contains(last, `"assistant"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the source's file does not end in turn 3's tool call:\n%s", snap)
+		}
+	}
+	if !strings.Contains(string(snap), "CHARLIE9") {
+		t.Fatalf("the source's file lacks turn 3's message:\n%s", snap)
+	}
+
+	const branch = srcChat + "/branches/b1"
+	forked := time.Now()
+	forkA, forkID, err := s.SpawnFork(opts(branch, ""), agent.ForkSource{ChatID: srcChat, SessionID: srcSession, Point: p2})
+	if err != nil {
+		t.Fatalf("SpawnFork from the running source: %v", err)
+	}
+	defer forkA.Close()
+	t.Logf("fork %s ready %s after it was asked for", forkID, time.Since(forked).Round(time.Millisecond))
+	if after, _ := os.ReadFile(srcFile); !bytes.Equal(after, snap) {
+		t.Errorf("the source's file changed during the fork: %d bytes, was %d", len(after), len(snap))
+	}
+	if users := e2eUserEntries(t, forkA); !equalStrings(users, []string{p1, p2}) {
+		t.Fatalf("the fork's user messages %q, want turns 1 and 2: %q", users, []string{p1, p2})
+	}
+	forkFile, err := s.findSessionFile(branch, forkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(forkFile); strings.Contains(string(b), "CHARLIE9") {
+		t.Fatalf("the fork's file holds turn 3:\n%s", b)
+	}
+	r := e2eSay(t, forkA, e2eRecall, nil)
+	e2eRecalls(t, "fork from the running source", r.text, []string{"ALPHA7", "BRAVO3"}, []string{"CHARLIE9"})
+	select {
+	case ev := <-srcEnd:
+		t.Fatalf("the source's turn was over before the fork had answered (%+v): the two did not run at once", ev)
+	default:
+	}
+	closeAndWaitExit(t, forkA)
+
+	// The source finishes its turn as if nothing had happened.
+	select {
+	case ev := <-srcEnd:
+		if ev.Kind != agent.EvTurnEnd || ev.Error != "" || ev.Aborted {
+			t.Fatalf("the source's turn ended %+v, want a normal end", ev)
+		}
+		if ev.Point == "" || ev.Point == p2 {
+			t.Errorf("the source's turn ended with Point %q (turn 2: %q), want its own id", ev.Point, p2)
+		}
+		t.Logf("the source's turn ended %s after the fork", time.Since(forked).Round(time.Second))
+	case <-time.After(3 * time.Minute):
+		t.Fatal("the source's turn did not end within 3 minutes of the fork")
+	}
+	final, err := os.ReadFile(srcFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(final, snap) || len(final) == len(snap) {
+		t.Fatalf("the source's file at fork time (%d bytes) is not a proper prefix of its final state (%d bytes)", len(snap), len(final))
+	}
+	if !strings.Contains(string(final), "SLEPT-OK") {
+		t.Errorf("the source's file lacks the output of its sleep command")
+	}
+	closeAndWaitExit(t, srcA)
+}
+
+// e2eModel2 is the second model of TestE2EForkOtherModel: cheap, authenticated on the machines
+// this was developed on, and of another provider family than e2eModel. AIWB_PI_E2E_MODEL2
+// overrides it.
+func e2eModel2() string {
+	if m := os.Getenv("AIWB_PI_E2E_MODEL2"); m != "" {
+		return m
+	}
+	return "openrouter/google/gemini-3.1-flash-lite"
+}
+
+// e2eRunsOn fails the test unless pi's own get_state names the model (provider/id) as the one the
+// process has selected.
+func e2eRunsOn(t *testing.T, a agent.Agent, what, want string) {
+	t.Helper()
+	res, err := a.(*proc).rpc.call("get_state", nil, 10*time.Second)
+	if err != nil || !res.Success {
+		t.Fatalf("%s: get_state: %v %s", what, err, res.Error)
+	}
+	var st struct {
+		Model struct {
+			Provider string `json:"provider"`
+			ID       string `json:"id"`
+		} `json:"model"`
+	}
+	if err := json.Unmarshal(res.Data, &st); err != nil {
+		t.Fatal(err)
+	}
+	got := st.Model.Provider + "/" + st.Model.ID
+	t.Logf("%s: get_state names model %s", what, got)
+	if got != want {
+		t.Fatalf("%s runs on %s by get_state, want %s", what, got, want)
+	}
+}
+
+// e2eAnswers is the provider/model pi recorded on each assistant message of a session file, in
+// order: the model that produced the answer, next to its usage record.
+func e2eAnswers(t *testing.T, file string) []string {
+	t.Helper()
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var entry struct {
+			Message struct {
+				Role     string `json:"role"`
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.Message.Role == "assistant" {
+			models = append(models, entry.Message.Provider+"/"+entry.Message.Model)
+		}
+	}
+	return models
+}
+
+// TestE2EForkOtherModel covers the model choice of phase 3 of the concurrent branches plan with
+// real pi: a fork that runs on a model of another provider family than its source, and a fork
+// that is given another model before its first message. The second is done the way the app will
+// do it: the fork's process is closed and an ordinary Spawn resumes the fork's own session on the
+// new model (no second fork, no set_model on a live process). The model of every process is read
+// from pi (get_state) and from the model pi recorded on each answer in the session file, never
+// from what the model says about itself.
+//
+//	AIWB_PI_E2E=1 go test -count=1 -v -run TestE2EForkOtherModel ./internal/pi/
+func TestE2EForkOtherModel(t *testing.T) {
+	e2eAgentDir(t)
+	modelA, modelB := e2eModel(), e2eModel2()
+	if pa, _, _ := strings.Cut(modelA, "/"); modelA == modelB || strings.HasPrefix(modelB, pa+"/") {
+		t.Fatalf("models %s and %s are not of two provider families", modelA, modelB)
+	}
+	s := &Spawner{Bin: "pi", AppRoot: t.TempDir(), Home: t.TempDir()}
+	cwd := t.TempDir()
+	const (
+		srcChat, srcSession = "A", "55555555-5555-4555-8555-555555555555"
+		plant               = "Remember the word KIWI. Reply OK."
+		ask                 = "Which word?"
+	)
+	// modelMissing skips when a start failed because pi does not offer the model to this login.
+	modelMissing := func(model string, err error) {
+		t.Helper()
+		if err != nil && strings.Contains(err.Error(), "pi set_model") {
+			t.Skipf("model %s is unavailable (not authenticated?): %v", model, err)
+		}
+	}
+
+	// 1. The source on model A plants the word.
+	srcA, err := s.Spawn(agent.SpawnOptions{ChatID: srcChat, SessionID: srcSession, Cwd: cwd, Model: modelA})
+	if err != nil {
+		t.Skipf("pi could not start: %v", err)
+	}
+	defer srcA.Close()
+	e2eReady(t, srcA)
+	e2eRunsOn(t, srcA, "source", modelA)
+	first := e2eSay(t, srcA, plant, nil)
+	if first.end.Point == "" {
+		t.Fatalf("the source's turn ended with no point: %+v", first.end)
+	}
+	srcFile, err := s.findSessionFile(srcChat, srcSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := e2eFileSum(t, srcFile)
+	src := agent.ForkSource{ChatID: srcChat, SessionID: srcSession, Point: first.end.Point, End: true}
+
+	// 2. A fork at that turn's end on model B, of another family.
+	const b1 = srcChat + "/branches/b1"
+	asked := time.Now()
+	oneA, oneID, err := s.SpawnFork(agent.SpawnOptions{ChatID: b1, Cwd: cwd, Model: modelB}, src)
+	if err != nil {
+		modelMissing(modelB, err)
+		t.Fatalf("SpawnFork on %s: %v", modelB, err)
+	}
+	defer oneA.Close()
+	one := oneA.(*proc)
+	t.Logf("fork 1 (%s -> %s): session %s ready %s after it was asked for", modelA, modelB, oneID,
+		time.Since(asked).Round(time.Millisecond))
+	e2eRunsOn(t, oneA, "fork 1", modelB)
+	r := e2eSay(t, oneA, ask, nil)
+	e2eRecalls(t, "fork 1 on "+modelB, r.text, []string{"KIWI"}, nil)
+	if got := e2eAnswers(t, one.sessionFile); !equalStrings(got, []string{modelA, modelB}) {
+		t.Fatalf("fork 1's file records answers by %q, want the source's by %s and its own by %s", got, modelA, modelB)
+	} else {
+		t.Logf("fork 1's file records answers by %q", got)
+	}
+	closeAndWaitExit(t, oneA)
+
+	// 3. A second fork on model A gets no message; then its model is changed: the process is
+	// closed and the fork's own session is resumed on model B.
+	const b2 = srcChat + "/branches/b2"
+	asked = time.Now()
+	twoA, twoID, err := s.SpawnFork(agent.SpawnOptions{ChatID: b2, Cwd: cwd, Model: modelA}, src)
+	if err != nil {
+		t.Fatalf("SpawnFork on %s: %v", modelA, err)
+	}
+	defer twoA.Close()
+	twoFile := twoA.(*proc).sessionFile
+	t.Logf("fork 2 (%s): session %s ready %s after it was asked for, file %s", modelA, twoID,
+		time.Since(asked).Round(time.Millisecond), twoFile)
+	if twoID == "" || twoID == oneID || twoID == srcSession {
+		t.Fatalf("fork 2 has session id %q (source %s, fork 1 %s)", twoID, srcSession, oneID)
+	}
+	e2eRunsOn(t, twoA, "fork 2 before the change", modelA)
+	if _, err := os.Stat(twoFile); err != nil {
+		t.Fatalf("fork 2 has no session file before its first message: %v", err)
+	}
+	changed := time.Now()
+	closeAndWaitExit(t, twoA)
+	exited := time.Since(changed)
+	reA, err := s.Spawn(agent.SpawnOptions{ChatID: b2, SessionID: twoID, Resume: true, Cwd: cwd, Model: modelB})
+	if err != nil {
+		t.Fatalf("Spawn of fork 2's own session on %s: %v", modelB, err)
+	}
+	defer reA.Close()
+	re := reA.(*proc)
+	select {
+	case <-re.ready:
+	case <-re.done:
+		t.Fatalf("pi exited before the resumed fork was ready; stderr %q", re.stderr.String())
+	}
+	if re.readyErr != nil {
+		modelMissing(modelB, re.readyErr)
+		t.Fatalf("the resumed fork did not get ready: %v", re.readyErr)
+	}
+	t.Logf("fork 2 model change (%s -> %s): closed in %s, ready on the new model %s after the close began",
+		modelA, modelB, exited.Round(time.Millisecond), time.Since(changed).Round(time.Millisecond))
+	if !samePath(re.sessionFile, twoFile) || re.sessionID != twoID {
+		t.Fatalf("the resume opened session %s file %s, not fork 2's %s %s", re.sessionID, re.sessionFile, twoID, twoFile)
+	}
+	if files, _ := filepath.Glob(filepath.Join(s.AppRoot, "chats", b2, "pi", "*.jsonl")); len(files) != 1 {
+		t.Fatalf("fork 2's folder holds %d session files after the change, want 1: %q", len(files), files)
+	}
+	e2eRunsOn(t, reA, "fork 2 after the change", modelB)
+	r = e2eSay(t, reA, ask, func(ev agent.Event) {
+		if ev.Kind == agent.EvSession {
+			t.Errorf("the resumed fork reported another session id: %q", ev.SessionID)
+		}
+	})
+	e2eRecalls(t, "fork 2 on "+modelB, r.text, []string{"KIWI"}, nil)
+	if got := e2eAnswers(t, twoFile); !equalStrings(got, []string{modelA, modelB}) {
+		t.Fatalf("fork 2's file records answers by %q, want the source's by %s and its own by %s", got, modelA, modelB)
+	} else {
+		t.Logf("fork 2's file records answers by %q", got)
+	}
+	closeAndWaitExit(t, reA)
+
+	// 4. The source, alive the whole time and untouched by the forks, answers on its own model A.
+	if after := e2eFileSum(t, srcFile); after != before {
+		t.Fatalf("the forks changed the source file: %s -> %s", before, after)
+	}
+	e2eRunsOn(t, srcA, "source after the forks", modelA)
+	r = e2eSay(t, srcA, ask, nil)
+	e2eRecalls(t, "source on "+modelA, r.text, []string{"KIWI"}, nil)
+	if got := e2eAnswers(t, srcFile); !equalStrings(got, []string{modelA, modelA}) {
+		t.Fatalf("the source's file records answers by %q, want both by %s", got, modelA)
+	} else {
+		t.Logf("the source's file records answers by %q", got)
+	}
 	closeAndWaitExit(t, srcA)
 }
 

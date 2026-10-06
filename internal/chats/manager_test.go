@@ -1312,23 +1312,46 @@ func TestDraft(t *testing.T) {
 		dr, _ := c["draft"].(map[string]any)
 		return ev["type"] == "chat" && c["id"] == v.ID && dr["text"] == d.Text
 	})
-	if m := e.meta(v.ID); !reflect.DeepEqual(m.Draft, &d) {
-		t.Fatalf("chat.json draft %+v", m.Draft)
+	// It is main's: kept by branch id, and never in the field a chat's one draft had.
+	if m := e.meta(v.ID); !reflect.DeepEqual(m.Drafts, map[string]*model.Draft{model.MainBranch: &d}) || m.Draft != nil {
+		t.Fatalf("chat.json drafts %+v, draft %+v", m.Drafts, m.Draft)
+	}
+	if got := e.view(v.ID); !got.HasDraft {
+		t.Fatalf("view %+v", got)
 	}
 
 	e.boot() // kept across a restart
 	if got := e.view(v.ID).Draft; !reflect.DeepEqual(got, &d) {
 		t.Fatalf("draft after restart %+v", got)
 	}
+	// The view has the same draft until it changes: views are compared with ==.
+	if a, b := e.view(v.ID), e.view(v.ID); a != b {
+		t.Fatalf("two views of an unchanged chat differ: %+v, %+v", a, b)
+	}
 
 	if err := e.m.SetDraft(v.ID, model.Draft{Mentions: d.Mentions}); err != nil { // mentions alone are no draft
 		t.Fatal(err)
 	}
-	if m := e.meta(v.ID); m.Draft != nil {
-		t.Fatalf("empty draft stored %+v", m.Draft)
+	if m := e.meta(v.ID); m.Drafts != nil || m.Draft != nil {
+		t.Fatalf("empty draft stored %+v", m.Drafts)
+	}
+	if strings.Contains(string(e.file(v.ID, "chat.json")), "draft") {
+		t.Fatalf("chat.json of a chat without a draft: %s", e.file(v.ID, "chat.json"))
+	}
+	if got := e.view(v.ID); got.Draft != nil || got.HasDraft {
+		t.Fatalf("view after the draft was cleared %+v", got)
 	}
 	if err := e.m.SetDraft("nope", d); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetDraft on unknown chat: %v", err)
+	}
+	if err := e.m.SetDraftOf("nope", model.MainBranch, d); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetDraftOf on unknown chat: %v", err)
+	}
+	if err := e.m.SetDraftOf(v.ID, "nope", d); !errors.Is(err, ErrNoBranch) {
+		t.Fatalf("SetDraftOf on unknown branch: %v", err)
+	}
+	if m := e.meta(v.ID); m.Drafts != nil {
+		t.Fatalf("a draft stored for a branch the chat does not have: %+v", m.Drafts)
 	}
 }
 
@@ -1337,16 +1360,19 @@ func TestSendClearsDraft(t *testing.T) {
 	v := e.create(model.Claude, gOne, "")
 	e.m.SetDraft(v.ID, model.Draft{Text: "one"})
 	e.send(v.ID, "one", "")
-	if m := e.meta(v.ID); m.Draft != nil {
-		t.Fatalf("draft after send %+v", m.Draft)
+	if m := e.meta(v.ID); m.Drafts != nil || m.Draft != nil {
+		t.Fatalf("draft after send %+v", m.Drafts)
+	}
+	if got := e.view(v.ID); got.Draft != nil || got.HasDraft {
+		t.Fatalf("view after send %+v", got)
 	}
 	// A send refused while busy leaves the draft alone.
 	e.m.SetDraft(v.ID, model.Draft{Text: "two"})
 	if err := e.m.Send(v.ID, "two", "", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("Send while busy: %v", err)
 	}
-	if m := e.meta(v.ID); m.Draft == nil || m.Draft.Text != "two" {
-		t.Fatalf("draft after busy send %+v", m.Draft)
+	if d := e.meta(v.ID).Drafts[model.MainBranch]; d == nil || d.Text != "two" {
+		t.Fatalf("draft after busy send %+v", d)
 	}
 }
 
@@ -1532,8 +1558,12 @@ func TestMissingFolderFix(t *testing.T) {
 	if got.FolderMissing || got.Error != "" || got.Status != model.StatusReady || got.Cwd != newDir {
 		t.Fatalf("view after fix %+v", got)
 	}
-	if sent := evs.drain(t, e.br); len(sent) != 2 || len(ofType(sent, "chat")) != 1 || len(ofType(sent, "defaults")) != 1 {
+	sent := evs.drain(t, e.br)
+	if len(sent) != 3 || len(ofType(sent, "chat")) != 1 || len(ofType(sent, "defaults")) != 1 {
 		t.Fatalf("events of the fix %+v", sent)
+	}
+	if sts := statesOf(t, sent, v.ID, model.MainBranch); len(sts) != 1 || sts[0] != model.StateOf(v.ID, model.MainBranch, got) {
+		t.Fatalf("state records of the fix %+v", sts)
 	}
 	e.send(v.ID, "two", "")
 	if o := e.claude.last(t).opts; !o.Resume || o.SessionID != sid || o.Cwd != newDir {
@@ -2257,7 +2287,7 @@ func TestDraftReferences(t *testing.T) {
 	if err := e.m.SetDraft(v.ID, model.Draft{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.view(v.ID).Draft; got != nil {
+	if got := e.view(v.ID); got.Draft != nil || got.HasDraft || e.meta(v.ID).Drafts != nil {
 		t.Fatalf("empty draft kept: %+v", got)
 	}
 }
@@ -2449,5 +2479,100 @@ func TestSubagentThreadsHaveNoEndMark(t *testing.T) {
 	}
 	if items := e.items(v.ID); len(items) != 0 {
 		t.Fatalf("the parent of an app-spawned subagent got items %+v", items)
+	}
+}
+
+// A plain Send with quotes to a chat not read since the app started: the thread is loaded before
+// the quotes are checked against it, and the chat's lock is released either way.
+func TestQuotedSendAfterBoot(t *testing.T) {
+	e := newEnv(t)
+	good, _ := e.talked(model.Claude, "", 2)
+	bad, _ := e.talked(model.Claude, "", 2)
+	e.boot()
+	send := func(id string, ref model.Reference) (err error) {
+		defer func() { // as net/http does for a handler
+			if r := recover(); r != nil {
+				err = fmt.Errorf("Send panicked: %v", r)
+			}
+		}()
+		return e.m.Send(id, "about that", "", []model.Reference{ref})
+	}
+	if err := send(bad, model.Reference{Item: 2, Quote: "an end mark"}); !errors.Is(err, ErrBadReference) {
+		t.Errorf("a quote of an end mark: %v", err)
+	}
+	if err := send(good, model.Reference{Item: 1, Quote: "reply"}); err != nil {
+		t.Errorf("a quote of a reply: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { e.m.Views(); e.m.States(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Views hangs: a chat's mu was never released")
+	}
+	if items := e.items(bad); len(items) != 6 {
+		t.Errorf("the refused message left %d items", len(items))
+	}
+	items := e.items(good)
+	if len(items) != 7 || items[6].Kind != "user" || len(items[6].References) != 1 {
+		t.Errorf("the quoted message: %+v", items)
+	}
+}
+
+// A Send that is refused after it loaded the chat's thread still sends what the load made: for a
+// chat a restart interrupted, the note of the stop, the state it leaves and the tree.
+func TestRefusedSendSendsWhatTheLoadMade(t *testing.T) {
+	const closed = "Stopped: the app was closed while the agent was working."
+	refusals := []struct {
+		name string
+		send func(e *env, id string) error
+		want error
+	}{
+		{"a bad quote", func(e *env, id string) error {
+			return e.m.Send(id, "about that", "", []model.Reference{{Item: 99, Quote: "nothing"}})
+		}, ErrBadReference},
+		{"the cap", func(e *env, id string) error {
+			lowerCaps(e.t, 0, 12)
+			return e.m.Send(id, "one more", "", nil)
+		}, ErrChatCap},
+	}
+	for _, tc := range refusals {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			id, _ := e.talked(model.Claude, "", 1)
+			e.send(id, "never answered", "")
+			e.boot()
+			if e.loaded(id) {
+				t.Fatal("the chat's thread is loaded before anything read it")
+			}
+			evs := e.listen()
+			if err := tc.send(e, id); !errors.Is(err, tc.want) {
+				t.Fatalf("the Send: %v", err)
+			}
+			got := evs.drain(t, e.br)
+			noted := false
+			for _, ev := range ofType(got, "chat_items") {
+				raw, _ := json.Marshal(ev["updates"])
+				if ev["chat"] == id && strings.Contains(string(raw), closed) {
+					noted = true
+				}
+			}
+			if !noted {
+				t.Fatalf("no chat_items event has the note of the stop: %+v", got)
+			}
+			if len(ofType(got, "tree")) == 0 || len(ofType(got, "chat")) == 0 || len(statesOf(t, got, id, model.MainBranch)) == 0 {
+				t.Fatalf("the events of the load: %v", typesOf(got))
+			}
+			// The refused message left nothing; the note is in the thread.
+			items := e.items(id)
+			if last := items[len(items)-1]; last.Kind != "note" || last.Text != closed {
+				t.Fatalf("the thread ends with %+v", last)
+			}
+			for _, it := range items {
+				if it.Kind == "user" && (it.Text == "about that" || it.Text == "one more") {
+					t.Fatalf("the refused message is in the thread: %+v", items)
+				}
+			}
+		})
 	}
 }

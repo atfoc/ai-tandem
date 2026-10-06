@@ -2,7 +2,7 @@
 // its own chats) and plain chats, plus the ungrouped area. Also the selection helpers
 // every part of the app opens boards, runs and chats through.
 import React, { memo, useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, answerRun, isBusy, isLegacy, chatTitle, boardName, type Sel } from "./store.ts";
+import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, answerRun, isBusy, isLegacy, chatTitle, boardName, shownBranch, statesOfChat, threadOf, viewedBranch, type Sel } from "./store.ts";
 import { api } from "./api.ts";
 import { loadItems, loadTree, dropRun } from "./conn.ts";
 import { flush } from "./board.ts";
@@ -12,8 +12,8 @@ import { BranchBadge } from "./fork/Chrome.tsx";
 import { Menu, confirm, reportError } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
 import { dotState, rowLine } from "./logic/labels.ts";
-import { workingOn } from "./logic/status.ts";
-import { hasDraft } from "./logic/drafts.ts";
+import { chatBusy, workingBranches, workingOn } from "./logic/status.ts";
+import { chatHasDraft, hasDraft, otherDrafts } from "./logic/drafts.ts";
 import { selOf } from "./logic/sel.ts";
 import { isDraft, runChats, runDot, runRowLine } from "./logic/run.ts";
 import { GROUP_ARCHIVE_RUN, GROUP_DELETE_RUN, groupCount, runArchiveConfirm, runDeleteConfirm, runDraftTag, runLightsGroup, runRowTitle, workingRunIn } from "./logic/siderun.ts";
@@ -39,7 +39,7 @@ export function select(sel: Sel, o: { keepPanel?: boolean } = {}) {
   if (prev.run && prev.run !== sel.run) dropRun(prev.run); // one run's detail at a time; the run's view fetches its own
   if (sel.chat) {
     if (!o.keepPanel) setState({ panel: true });
-    void api.openChat(sel.chat).catch(() => {});
+    void api.openChat(sel.chat, shownBranch(getState(), sel.chat)).catch(() => {});
     void loadItems(sel.chat);
     void loadTree(sel.chat).catch(() => {});
     focusComposer();
@@ -112,8 +112,16 @@ function setCollapsed(id: string, collapsed: boolean) {
 
 // ---------------------------------------------------------------- actions (menus)
 
-const busyChats = (board: string) => workingOn(Object.values(getState().chats), board); // busy, or waiting on running subagents
-const stopAll = async (chats: ChatView[]) => { await Promise.all(chats.map((c) => api.interrupt(c.id).catch(() => {}))); };
+const busyChats = (board: string) => workingOn(Object.values(getState().chats), board, (chat) => statesOfChat(getState(), chat)); // a branch busy, or waiting on running subagents
+/** Stops every working branch of each chat; the branch shown when its records name none. */
+const stopAll = async (chats: ChatView[]) => {
+  const stops = chats.flatMap((c) => {
+    const working = workingBranches(statesOfChat(getState(), c.id)).map((st) => st.branch);
+    const branches = working.length ? working : [viewedBranch(getState(), c.id)];
+    return branches.map((branch) => api.interrupt(c.id, branch).catch(() => {}));
+  });
+  await Promise.all(stops);
+};
 const attempt = (title: string, f: () => Promise<unknown>) => { f().catch((e) => reportError(title, e)); };
 
 function archiveBoard(b: Board) {
@@ -151,7 +159,7 @@ export function deleteRun(r: RunView) {
 
 function deleteChat(c: ChatView) {
   confirm({
-    title: `Delete ${chatTitle(c, getState().items[c.id]?.items)}?`,
+    title: `Delete ${chatTitle(c, threadOf(getState(), c.id)?.items)}?`,
     body: "Its history is removed. This can't be undone.",
     actions: [{ label: "Delete", tone: "danger", run: () => api.deleteChat(c.id) }],
   });
@@ -422,7 +430,7 @@ function AddMenu({ title, head, children }: { title: string; head: string; child
 }
 
 const ArchivedTag = () => <span className="archived-tag">Archived</span>;
-const DraftTag = () => <span className="draft-tag" title="Unsent message">Draft</span>;
+const DraftTag = ({ other }: { other?: boolean }) => <span className="draft-tag" title={other ? "Unsent message on another branch" : "Unsent message"}>Draft</span>;
 
 /** A group and, nested inside it, its subgroups (first), boards, runs and plain chats. depth 0 is the top level. */
 function GroupNode({ n, depth, editing, setEditing, addBoard, addRun, addGroup }: Edit & {
@@ -436,7 +444,7 @@ function GroupNode({ n, depth, editing, setEditing, addBoard, addRun, addGroup }
   const collapsed = !!g.collapsed;
   const inside = contents(n);
   const count = groupCount(inside);
-  const working = inside.chats.some((c) => isBusy(c.status)) || inside.boards.some((b) => boardChats(all, b.id, showArchived).some((c) => isBusy(c.status)))
+  const working = inside.chats.some(chatBusy) || inside.boards.some((b) => boardChats(all, b.id, showArchived).some(chatBusy))
     || inside.runs.some((r) => runLightsGroup(r, all, showArchived));
   const toggle = () => setCollapsed(g.id, !collapsed);
   const rename = (v: string) => {
@@ -521,7 +529,7 @@ const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edit & { b
   const [open, setOpen] = useState(true);
   const [err, setErr] = useState("");
   const chats = boardChats(all, b.id, showArchived);
-  const working = chats.find((c) => !c.archived && isBusy(c.status))?.agent ?? other;
+  const working = chats.find((c) => !c.archived && chatBusy(c))?.agent ?? other;
   const on = sel.board === b.id;
   const key = "board:" + b.id;
   const rename = async (v: string) => {
@@ -633,7 +641,7 @@ const RunNode = memo(function RunNode({ r, editing, setEditing }: Edit & { r: Ru
 
 const ChatRow = memo(function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; nested?: boolean }) {
   const on = useStore((s) => s.sel.chat === c.id);
-  const items = useStore((s) => s.items[c.id]?.items);
+  const items = useStore((s) => threadOf(s, c.id)?.items);
   const cat = useStore((s) => s.catalogs[c.agent]);
   const key = "chat:" + c.id;
   const sub = rowLine(c, subline(c, cat), boardName);
@@ -649,7 +657,9 @@ const ChatRow = memo(function ChatRow({ c, editing, setEditing, nested }: Edit &
        { label: "Archive", run: () => attempt("Couldn't archive the chat", () => api.archive("chats", c.id)) },
        { label: "Delete", tone: "danger" as const, run: () => deleteChat(c) }];
   const title = chatTitle(c, items);
-  const draft = hasDraft(c.draft) && !on && !c.archived && !legacy; // the open chat shows its draft in the composer
+  // a draft on any branch; the open chat shows the one of the branch it is on in the composer, so only another branch's counts
+  const other = useStore((s) => s.sel.chat === c.id && otherDrafts(statesOfChat(s, c.id), viewedBranch(s, c.id)));
+  const draft = (on ? other : chatHasDraft(c)) && !c.archived && !legacy;
   return (
     <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived || legacy ? "archived" : ""} st-${st}`}
       {...(nested || c.archived || editing === key ? {} : drag(key))}
@@ -665,7 +675,7 @@ const ChatRow = memo(function ChatRow({ c, editing, setEditing, nested }: Edit &
         <div className="side-sub">{sub}</div>
       </div>
       <BranchBadge chat={c} />
-      {draft && <DraftTag />}
+      {draft && <DraftTag other={on} />}
       {c.archived && <ArchivedTag />}
       {!c.archived && legacy && <span className="archived-tag">Disabled</span>}
       {editing !== key && <RowMenu label="More" items={menu} />}

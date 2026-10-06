@@ -196,8 +196,9 @@ func TestForkStoreCopyLeftoverWAL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// End: the latest root stays the source's, and with no sidecar one is written for the cwd.
-	id, err := s.copyStore(agent.ForkSource{SessionID: testSessionID, Point: testBlobID2, End: true}, "/fork/cwd", time.Now().Add(20*time.Second))
+	// End with no point: the latest root stays the source's, and with no sidecar one is written
+	// for the cwd.
+	id, err := s.copyStore(agent.ForkSource{SessionID: testSessionID, End: true}, "/fork/cwd", time.Now().Add(20*time.Second))
 	if err != nil {
 		t.Fatalf("copyStore: %v", err)
 	}
@@ -218,6 +219,62 @@ func TestForkStoreCopyLeftoverWAL(t *testing.T) {
 	jsonEq(t, b, `{"schemaVersion":1,"cwd":"/fork/cwd"}`)
 }
 
+// A fork at the source's end is cut back to the recorded point like any other: the source may have
+// gone on since the end was found. Only without a point is the latest root kept.
+func TestForkStoreCopyEnd(t *testing.T) {
+	needSQLite(t)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	cases := []struct {
+		name        string
+		latest      string // the source's latest root when the copy is made
+		point, want string
+		wantUsedCtx int
+	}{
+		{"a later root of a running turn", testBlobID3, testBlobID2, testBlobID2, 200},
+		{"the point is the latest root", testBlobID2, testBlobID2, testBlobID2, 200},
+		{"no point", testBlobID3, "", testBlobID3, 300},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := &Spawner{Home: t.TempDir()}
+			src := StorePath(s.Home, testSessionID)
+			makeStoreAt(t, src, metaRow(forkMeta(testBlobID))+blobRow(testBlobID, sampleRoot(100, 272000)))
+			// The "live agent" has ended a turn at testBlobID2 and, in the first case, has written a
+			// root of the next one since.
+			live := blobRow(testBlobID2, sampleRoot(200, 272000))
+			if c.latest == testBlobID3 {
+				live += blobRow(testBlobID3, sampleRoot(300, 272000))
+			}
+			holdStore(t, src, live+"UPDATE meta SET value = '"+hex.EncodeToString([]byte(forkMeta(c.latest)))+"' WHERE key = '0';")
+			before, err := os.ReadFile(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			id, err := s.copyStore(agent.ForkSource{SessionID: testSessionID, Point: c.point, End: true}, "/fork/cwd", time.Now().Add(20*time.Second))
+			if err != nil {
+				t.Fatalf("copyStore: %v", err)
+			}
+			dst := StorePath(s.Home, id)
+			if meta := storeMeta(t, dst); meta["agentId"] != id || meta["latestRootBlobId"] != c.want {
+				t.Fatalf("meta of the copy %v", meta)
+			}
+			if got, want := query(t, dst, allBlobs), query(t, src, allBlobs); got != want {
+				t.Fatalf("blobs of the copy %q, of the source %q", got, want)
+			}
+			if u, root, err := readUsageRootAt("sqlite3", dst); err != nil || root != c.want || u.Used != c.wantUsedCtx {
+				t.Fatalf("read of the copy: %+v %q %v", u, root, err)
+			}
+			if meta := storeMeta(t, src); meta["agentId"] != testSessionID || meta["latestRootBlobId"] != c.latest {
+				t.Fatalf("meta of the source %v", meta)
+			}
+			if after, _ := os.ReadFile(src); !bytes.Equal(before, after) {
+				t.Fatal("the source store.db changed")
+			}
+		})
+	}
+}
+
 func TestForkStoreCopyErrors(t *testing.T) {
 	needSQLite(t)
 	t.Setenv("CURSOR_CONFIG_DIR", "")
@@ -234,6 +291,8 @@ func TestForkStoreCopyErrors(t *testing.T) {
 		{"no point", good, "sqlite3", agent.ForkSource{}, "no fork point recorded for that turn"},
 		{"point is not a blob id", good, "sqlite3", agent.ForkSource{Point: "x' OR '1'='1"}, "Cursor no longer has that point of the conversation"},
 		{"point not in the store", good, "sqlite3", agent.ForkSource{Point: testBlobID2}, "Cursor no longer has that point of the conversation"},
+		{"end, point is not a blob id", good, "sqlite3", agent.ForkSource{Point: "x' OR '1'='1", End: true}, "Cursor no longer has that point of the conversation"},
+		{"end, point not in the store", good, "sqlite3", agent.ForkSource{Point: testBlobID2, End: true}, "Cursor no longer has that point of the conversation"},
 		{"end, root not in the store", metaRow(forkMeta(testBlobID2)) + blobRow(testBlobID, sampleRoot(100, 272000)), "sqlite3",
 			agent.ForkSource{End: true}, "Cursor no longer has that point of the conversation"},
 		{"end, no root in the meta row", metaRow(`{"agentId":"a"}`) + blobRow(testBlobID, sampleRoot(100, 272000)), "sqlite3",
@@ -439,7 +498,69 @@ func TestSpawnFork(t *testing.T) {
 	}
 }
 
-// A fork at the source's end keeps the source's latest root, whatever the recorded point.
+// A fork from a running source, at the finished boundary before its turn: the source's store has
+// the rows of the running turn, in the WAL only, and a latest root of that turn. The fork loads a
+// copy cut back to the point, takes a turn of its own, and leaves the source's store as it was.
+func TestSpawnForkRunningSource(t *testing.T) {
+	needSQLite(t)
+	e := newEnv(t, fakeScript{"session/prompt": {{Result: raw(`{"stopReason":"end_turn"}`)}}})
+	// Two turns ended, at testBlobID and testBlobID2.
+	makeStore(t, e.home, metaRow(forkMeta(testBlobID2))+
+		blobRow(testBlobID, sampleRoot(15989, 272000))+blobRow(testBlobID2, sampleRoot(20000, 272000)))
+	src := StorePath(e.home, testSessionID)
+	// The third is running in the source's process: a root of it is the latest one.
+	holdStore(t, src, blobRow(testBlobID3, sampleRoot(31000, 272000))+
+		"UPDATE meta SET value = '"+hex.EncodeToString([]byte(forkMeta(testBlobID3)))+"' WHERE key = '0';")
+	before, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(before, []byte(testBlobID3)) {
+		t.Fatal("test setup: the held rows are in the main file, not only in the WAL")
+	}
+
+	a, id, err := e.s.SpawnFork(agent.SpawnOptions{Cwd: e.cwd}, agent.ForkSource{SessionID: testSessionID, Point: testBlobID2})
+	if err != nil {
+		t.Fatalf("SpawnFork: %v", err)
+	}
+	t.Cleanup(a.Close)
+	dst := StorePath(e.home, id)
+	if meta := storeMeta(t, dst); meta["agentId"] != id || meta["latestRootBlobId"] != testBlobID2 {
+		t.Fatalf("meta of the fork %v", meta)
+	}
+	if got := query(t, dst, "PRAGMA integrity_check;"); got != "ok" {
+		t.Fatalf("integrity_check: %s", got)
+	}
+	ld, _ := find(readRecord(t, e.record), "session/load")
+	jsonEq(t, ld.Params, `{"sessionId":"`+id+`","cwd":`+string(mustMarshal(e.cwd))+`,"mcpServers":[]}`)
+
+	// The fork's meter and its turn are at the point, not at the running turn's root.
+	if u := until(t, a, isKind(agent.EvUsage)); u[len(u)-1].CtxIn != 20000 || u[len(u)-1].CtxError != "" {
+		t.Fatalf("usage of the fork %+v", u[len(u)-1])
+	}
+	send(t, a, "hi")
+	evs := until(t, a, isKind(agent.EvTurnEnd))
+	if end := evs[len(evs)-1]; end.Error != "" || end.Point != testBlobID2 {
+		t.Fatalf("turn end %+v", end)
+	}
+	pr, _ := find(readRecord(t, e.record), "session/prompt")
+	var pp struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(pr.Params, &pp); pp.SessionID != id {
+		t.Fatalf("prompt sent to session %q", pp.SessionID)
+	}
+
+	// The source is where it was: its file, and the running turn's root as its latest.
+	if after, _ := os.ReadFile(src); !bytes.Equal(before, after) {
+		t.Fatal("the source store.db changed")
+	}
+	if meta := storeMeta(t, src); meta["agentId"] != testSessionID || meta["latestRootBlobId"] != testBlobID3 {
+		t.Fatalf("meta of the source %v", meta)
+	}
+}
+
+// A fork at the source's end with no point recorded keeps the source's latest root.
 func TestSpawnForkEnd(t *testing.T) {
 	needSQLite(t)
 	e := newEnv(t, baseScript())

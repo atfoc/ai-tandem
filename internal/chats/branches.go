@@ -1,11 +1,29 @@
-// Branches in the manager (D3, D4, D6 and D10 of the chat forking plan). A branch other than main
-// is a chat object of its own, under the server id <chat id>/branches/<branch id>, linked to its
-// top-level chat and never listed. The client names the chat by its top-level id only: the
-// session-side operations go to the chat's current branch, the others to the top-level chat.
+// Branches in the manager (D3, D6 and D10 of the chat forking plan, and 4.5 of the concurrent
+// branches plan). A branch other than main is a chat object of its own, under the server id
+// <chat id>/branches/<branch id>, linked to its top-level chat and never listed. The client names
+// the chat by its top-level id only: the session-side operations go to the branch it names with
+// it (the …Of methods, through lockBranch), or to the chat's current branch when it names none,
+// the others to the top-level chat.
+//
+// Every branch has its own process and its own turn: any number of a chat's branches work at the
+// same time, and busy is a branch's, never the chat's. The current branch is the one a human
+// message last got onto (see setCurrent): the branch the chat opens on and the one an unnamed
+// call goes to. It says nothing about which branches have a process, and changing it stops
+// nothing.
 //
 // Locks: a branch's mu may be held while its top-level chat's mu is taken (for the flags and the
 // identity only the top-level chat has), never the other way round, and never two branches' at
 // once. The registry (Chat.kids and Chat.cur) is guarded by Manager.mu, which is taken last.
+//
+// The order over one chat, each lock taken only with those before it held: the top-level chat's
+// moveMu; its treeMu, its sendMu or its treeOutMu, never two of them; a branch's mu; the
+// top-level chat's mu; Manager.mu. moveMu (see Chat.moveMu) is held only for one change of the
+// current branch, never while a process starts or a message goes to an agent. sendMu (see
+// Chat.sendMu) is held only while a chat event is composed and broadcast (see send), treeOutMu
+// (see Chat.treeOutMu) only while a tree event is (see emitTree). The top-level chat's goneMu is
+// a leaf, taken with sendMu or treeOutMu held or with none of these (see cast). The bridge's lock
+// comes under sendMu, treeOutMu and goneMu, and the bridge reads the chats (their mu, Manager.mu)
+// under its own: so no chat's mu, no treeMu and not Manager.mu is held when an event is sent.
 package chats
 
 import (
@@ -193,7 +211,8 @@ func (m *Manager) branchObj(id, branch string) (*Chat, error) {
 }
 
 // lockTop returns the top-level chat id with its mu held, as lock does: the chat-level
-// operations (name, group, draft, archive) act on it whatever the current branch is.
+// operations (name, group, archive) act on it whatever the current branch is, and it keeps the
+// drafts of all its branches.
 func (m *Manager) lockTop(id string) (*Chat, error) {
 	if _, err := m.topChat(id); err != nil {
 		return nil, err
@@ -202,7 +221,8 @@ func (m *Manager) lockTop(id string) (*Chat, error) {
 }
 
 // lockCur returns the current branch of the top-level chat id with its mu held: the session-side
-// operations act on it.
+// operations act on it when no branch is named, and the plain Send always. It is the branch a
+// message last got onto, which need not be the only one with a process, nor have one.
 func (m *Manager) lockCur(id string) (*Chat, error) {
 	top, err := m.topChat(id)
 	if err != nil {
@@ -223,7 +243,9 @@ func (m *Manager) lockCur(id string) (*Chat, error) {
 }
 
 // lockBranch returns a branch of the top-level chat id with its mu held; branch "" is the
-// current one. served is the id of the branch returned.
+// current one. served is the id of the branch returned. Every session-side operation that takes
+// a branch (InterruptOf, DecideOf, ConfigureOf, OpenOf, BusyOf, ContextSplitOf, ThreadOf) gets
+// its chat object here: ErrNoBranch for a branch the chat does not have.
 func (m *Manager) lockBranch(id, branch string) (c *Chat, served string, err error) {
 	if branch == "" {
 		c, err = m.lockCur(id)
@@ -237,15 +259,20 @@ func (m *Manager) lockBranch(id, branch string) (c *Chat, served string, err err
 	return c, served, nil
 }
 
-// setCurrent makes a registered branch of the top-level chat id the current one: the tree record
-// first (left alone when it names the branch already), then memory, and the chat's view is sent.
-// It stops nothing (see stopBranch). No chat's mu may be held.
+// setCurrent makes a registered branch of the top-level chat id the current one, as one step
+// under the chat's moveMu: the tree record first (left alone when it names the branch already),
+// then memory. The chat's view is sent when the current branch changed, and the tree event that
+// names the branch after it. It is called once a human message is in the branch's thread, and
+// stops nothing: the branch that was current keeps its process and its turn. No chat's mu may be
+// held.
 func (m *Manager) setCurrent(id, branch string) error {
 	c, err := m.branchObj(id, branch)
 	if err != nil {
 		return err
 	}
 	top := topOf(c)
+	top.moveMu.Lock()
+	was := m.current(top)
 	err = m.updateTree(id, func(t *model.Tree) error {
 		if t.Current == branch || (t.Current == "" && branch == model.MainBranch) {
 			return errTreeSame
@@ -254,16 +281,21 @@ func (m *Manager) setCurrent(id, branch string) error {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errTreeSame) {
+		top.moveMu.Unlock()
 		return err
 	}
 	m.makeCurrent(top, c)
-	m.emitView(top)
+	top.moveMu.Unlock()
+	if was != c {
+		m.emitView(top)
+		m.emitTree(id, top, nil, false, true, false)
+	}
 	return nil
 }
 
 // makeCurrent is the memory half of setCurrent: the chat object c, top itself or one of its
 // registered branches, is the current branch of top from now on. The tree record is the caller's
-// to write.
+// to write, under the same hold of top's moveMu.
 func (m *Manager) makeCurrent(top, c *Chat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -286,7 +318,7 @@ func (m *Manager) emitView(top *Chat) {
 
 // ---- what a branch takes from its top-level chat --------------------------
 
-// parentOf is the meta of c's top-level chat: what holds the chat's name, group, board, draft,
+// parentOf is the meta of c's top-level chat: what holds the chat's name, group, board, drafts,
 // archive state and legacy flag (a branch's own chat.json has none of them). c.mu held.
 func (m *Manager) parentOf(c *Chat) model.ChatMeta {
 	if c.top == nil {
@@ -295,18 +327,6 @@ func (m *Manager) parentOf(c *Chat) model.ChatMeta {
 	c.top.mu.Lock()
 	defer c.top.mu.Unlock()
 	return c.top.meta
-}
-
-// clearDraft drops the draft of the top-level chat top: a message was sent on one of its
-// branches. No chat's mu may be held. The view is sent by the caller.
-func (m *Manager) clearDraft(top *Chat) {
-	top.mu.Lock()
-	defer top.mu.Unlock()
-	if top.deleted || top.meta.Draft == nil {
-		return
-	}
-	top.meta.Draft = nil
-	m.logSave(top)
 }
 
 // ---- the composed view ----------------------------------------------------
@@ -318,52 +338,98 @@ type chatEvent struct {
 	c       *Chat
 	v       model.ChatView
 	session bool // c's session side changed; else the top-level chat c's identity did
+	agg     bool // with session: c started or stopped working or waiting for approval (c.pub changed)
 }
 
-// compose is the view of a chat: identity (name, group, board, draft, archive, ...) from its
-// top-level chat's view, the session side (settings, usage, status) from its current branch's.
+// compose is the view of a chat: identity (name, group, board, archive, whether a branch has a
+// draft, ...) from its top-level chat's view, the session side (settings, whether they can still
+// be changed: Locked and Fresh, usage, status, draft) from its current branch's. The counts over all its branches (Working, Approvals) are in
+// neither half: chatView sets them.
 func compose(identity, session model.ChatView) model.ChatView {
 	v := identity
 	v.Cwd, v.Model, v.Effort, v.Locked, v.Usage = session.Cwd, session.Model, session.Effort, session.Locked, session.Usage
 	v.Status, v.StatusTool, v.Error, v.FolderMissing = session.Status, session.StatusTool, session.Error, session.FolderMissing
 	v.SubsRunning, v.SubsOwed = session.SubsRunning, session.SubsOwed
+	v.Fresh = session.Fresh
+	v.Draft = session.Draft
 	return v
 }
 
 // chatView is the view a queued chat event carries: one per top-level chat, composed. ok is false
-// when nothing is to be sent: the session side of a branch that is not current changed. No
-// chat's mu may be held.
+// when nothing is to be sent: the session side of a branch that is not current changed, and the
+// chat's counts of working branches did not change with it. No chat's mu may be held.
+//
+// Working and Approvals are counted here from the mirrors (Chat.pub) of the chat's branches: no
+// branch is locked for them, so never two at once, and they are as of the moment the event is
+// sent. send holds the chat's sendMu from here to the broadcast, so the last chat event clients
+// get has the counts of the last change. Whether a branch other than main has a draft is read
+// the same way, from what the top-level chat publishes (Chat.drafts).
 func (m *Manager) chatView(e chatEvent) (v model.ChatView, ok bool) {
 	top := topOf(e.c)
 	m.mu.Lock()
-	cur, n := top.cur, len(top.kids)
+	cur, all := top.cur, append([]*Chat{top}, top.kids...)
 	m.mu.Unlock()
 	if cur == nil {
 		cur = top
 	}
+	var own model.ChatView           // top's own view: the identity half, with main's draft
+	other := e.session && e.c != cur // the session side of a branch that is not current
 	switch {
-	case e.session && e.c != cur:
+	case other && !e.agg:
 		return model.ChatView{}, false
-	case e.c == cur && cur == top:
-		v = e.v
-	case e.c == top: // its identity changed; the current branch has the rest
-		cur.mu.Lock()
-		v = compose(e.v, view(cur))
-		cur.mu.Unlock()
-	default: // the current branch changed; its top-level chat has the rest
+	case other: // only the counts changed: neither half of the view is e.c's
 		top.mu.Lock()
 		gone := top.deleted
-		v = compose(view(top), e.v)
+		own = view(top)
 		top.mu.Unlock()
 		if gone {
 			return model.ChatView{}, false
 		}
+		v = own
+		if cur != top {
+			cur.mu.Lock()
+			v = compose(own, view(cur))
+			cur.mu.Unlock()
+		}
+	case e.c == cur && cur == top:
+		own, v = e.v, e.v
+	case e.c == top: // its identity changed; the current branch has the rest
+		own = e.v
+		cur.mu.Lock()
+		v = compose(own, view(cur))
+		cur.mu.Unlock()
+	default: // the current branch changed; its top-level chat has the rest
+		top.mu.Lock()
+		gone := top.deleted
+		own = view(top)
+		top.mu.Unlock()
+		if gone {
+			return model.ChatView{}, false
+		}
+		v = compose(own, e.v)
 	}
-	if n > 0 {
-		v.Branches = n + 1
+	if n := len(all); n > 1 {
+		v.Branches = n
 	}
 	if cur != top {
 		v.Branch = cur.branch
+	}
+	// HasDraft is over the registered branches only. A draft stored under another id (a branch
+	// that was skipped at load) is left in the file and not counted: no branch shows it, and no
+	// call can clear it.
+	drafts := draftsOf(top)
+	v.HasDraft = own.Draft != nil
+	for _, b := range all {
+		switch b.pub.Load() {
+		case pubWorking:
+			v.Working++
+		case pubApproval:
+			v.Working++
+			v.Approvals++
+		}
+		if b != top && drafts[b.branch] != nil {
+			v.HasDraft = true
+		}
 	}
 	return v, true
 }
@@ -377,31 +443,52 @@ func (m *Manager) composed(top *Chat, own model.ChatView) model.ChatView {
 
 // ---- reading a branch -----------------------------------------------------
 
-// ItemsOf is Items for one branch of the chat; branch "" means the current branch. served is the
-// branch id the answer is for.
-func (m *Manager) ItemsOf(id, branch string) (served string, version int, items []model.Item, subs []model.Subagent, err error) {
+// Thread is what a client reads of one branch of a chat: its history with its version, its
+// subagents, sorted by Started, then ID, and its state record, all taken under one hold of the
+// branch's lock.
+type Thread struct {
+	Branch    string // the branch id the answer is for
+	Version   int
+	Items     []model.Item
+	Subagents []model.Subagent
+	State     model.BranchState
+}
+
+// ThreadOf reads one branch of the chat, reading items.jsonl the first time; branch "" means the
+// current branch.
+func (m *Manager) ThreadOf(id, branch string) (Thread, error) {
 	var out outbox
 	c, served, err := m.lockBranch(id, branch)
 	if err != nil {
-		return "", 0, nil, nil, err
+		return Thread{}, err
 	}
+	t := Thread{Branch: served}
 	tr, err := m.trOf(c, &out)
 	if err == nil {
-		version, items = tr.Snapshot()
-		subs = make([]model.Subagent, 0, len(c.subs))
+		t.Version, t.Items = tr.Snapshot()
+		t.Subagents = make([]model.Subagent, 0, len(c.subs))
 		for _, s := range c.subs {
-			subs = append(subs, s.meta)
+			t.Subagents = append(t.Subagents, s.meta)
 		}
-		sort.Slice(subs, func(i, j int) bool {
-			if subs[i].Started != subs[j].Started {
-				return subs[i].Started < subs[j].Started
+		sort.Slice(t.Subagents, func(i, j int) bool {
+			if t.Subagents[i].Started != t.Subagents[j].Started {
+				return t.Subagents[i].Started < t.Subagents[j].Started
 			}
-			return subs[i].ID < subs[j].ID
+			return t.Subagents[i].ID < t.Subagents[j].ID
 		})
 	}
+	chat, _ := splitID(c.meta.ID)
+	t.State = model.StateOf(chat, served, view(c)) // with the error of a thread that could not be read
 	c.mu.Unlock()
 	m.send(out)
-	return served, version, items, subs, err
+	return t, err
+}
+
+// ItemsOf is Items for one branch of the chat; branch "" means the current branch. served is the
+// branch id the answer is for.
+func (m *Manager) ItemsOf(id, branch string) (served string, version int, items []model.Item, subs []model.Subagent, err error) {
+	t, err := m.ThreadOf(id, branch)
+	return t.Branch, t.Version, t.Items, t.Subagents, err
 }
 
 // SubItemsOf is SubItems for one branch of the chat; branch "" means the current branch.
@@ -429,8 +516,8 @@ func (m *Manager) SubItemsOf(id, branch, sid string) (int, []model.Item, error) 
 
 // ---- the two stops --------------------------------------------------------
 
-// stopBranch is "stop one branch" (D4): the agent of the one chat object with the server id id
-// is ended, with its subagents and their tokens; no other branch of its chat is touched.
+// stopBranch is "stop one branch": the agent of the one chat object with the server id id is
+// ended, with its subagents and their tokens; no other branch of its chat is touched.
 func (m *Manager) stopBranch(id string) {
 	if c, err := m.get(id); err == nil {
 		m.stopOne(c)
@@ -529,6 +616,7 @@ func (m *Manager) retire(c *Chat) bool {
 		return false
 	}
 	c.deleted = true
+	c.gone.Store(true)
 	c.gen++
 	wakeOwned(c) // a WaitOwned answers ErrNotFound
 	id, tok := c.meta.ID, c.meta.Token

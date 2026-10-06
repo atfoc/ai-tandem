@@ -116,10 +116,13 @@ func (s *Spawner) DiscardFork(sessionID string) {
 
 // copyStore makes the session store of a fork of src and returns the fork's session id, a new
 // uuid: a SQLite backup of the source's store.db in a new session directory, whose meta row names
-// the new id and, unless the fork is at the source's end, src.Point as the latest root; and a
-// meta.json sidecar like the source's (for cwd when the source has none). The root must be a blob
-// of the copy: session/load would not report a missing one, it silently starts a new
-// conversation. The source is only read. On an error nothing is left behind.
+// the new id and src.Point as the latest root; and a meta.json sidecar like the source's (for cwd
+// when the source has none). Only a fork at the source's end with no point recorded keeps the
+// root that is latest in the copy. With a point the end is cut back to as well: the source may
+// have taken a message since the end was found, and its latest root is then one of a running
+// turn. The root must be a blob of the copy: session/load would not report a missing one, it
+// silently starts a new conversation. The source is only read. On an error nothing is left
+// behind.
 //
 // Everything goes through the sqlite3 CLI, like the context meter, and ends at deadline.
 func (s *Spawner) copyStore(src agent.ForkSource, cwd string, deadline time.Time) (id string, err error) {
@@ -137,13 +140,11 @@ func (s *Spawner) copyStore(src agent.ForkSource, cwd string, deadline time.Time
 	if err != nil {
 		return "", errors.New(errSQLiteNotFound)
 	}
-	if !src.End {
-		if src.Point == "" {
-			return "", errors.New(errNoForkPoint)
-		}
-		if !blobIDRe.MatchString(src.Point) {
-			return "", errors.New(errForkPointGone)
-		}
+	if src.Point == "" && !src.End {
+		return "", errors.New(errNoForkPoint)
+	}
+	if src.Point != "" && !blobIDRe.MatchString(src.Point) {
+		return "", errors.New(errForkPointGone)
 	}
 
 	id = newSessionID()
@@ -185,7 +186,7 @@ func (s *Spawner) copyStore(src agent.ForkSource, cwd string, deadline time.Time
 		return "", errors.New(errStoreFormat)
 	}
 	meta["agentId"] = mustJSON(id)
-	if !src.End {
+	if src.Point != "" {
 		meta["latestRootBlobId"] = mustJSON(src.Point)
 	}
 	var root string

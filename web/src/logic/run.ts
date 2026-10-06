@@ -7,7 +7,7 @@ import { deliveryWord } from "./rundelivery.ts";
 
 type Lived = Pick<RunView, "status" | "archived">;
 type Counted = Pick<RunView, "counts">;
-type RunChat = Pick<ChatView, "id" | "created" | "run" | "role" | "archived" | "status" | "subsRunning" | "subsOwed">;
+type RunChat = Pick<ChatView, "id" | "created" | "run" | "role" | "archived" | "status" | "subsRunning" | "subsOwed" | "working">;
 
 /** The goal was not sent yet: the stage shows the goal composer. */
 export const isDraft = (r: Pick<RunView, "started">): boolean => !r.started;
@@ -46,7 +46,7 @@ export function runChats<C extends RunChat>(chats: Record<string, C>, runId: str
 /** The user's chats on a run that work (logic/status.ts isWorking), archived ones left out: the
  *  ones a run's archive and delete confirmations warn about. */
 export function workingRunChats<C extends RunChat>(chats: Record<string, C>, runId: string): C[] {
-  return runChats(chats, runId, false).filter(isWorking);
+  return runChats(chats, runId, false).filter((c) => isWorking(c));
 }
 
 /** The run works, or an agent works in one of the user's chats on it. */

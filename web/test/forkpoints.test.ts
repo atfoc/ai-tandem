@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cutBefore, messageActions, pointOK, sessionEnd, toTreeItems, turnEnd, type MessageActions } from "../src/logic/forkpoints.ts";
+import { cutBefore, LIVE_FORK, messageActions, pointOK, sessionEnd, toTreeItems, turnEnd, type MessageActions } from "../src/logic/forkpoints.ts";
 import type { AgentKind, Item } from "../src/types.ts";
 
 type Items = (Item | undefined)[];
@@ -128,7 +128,7 @@ test("sessionEnd: nothing was said past the count", () => {
   for (const [name, items, count, want] of cases) assert.equal(sessionEnd(items, count), want, name);
 });
 
-test("pointOK: a point needs the id of the mark before it; pi also the mark after it", () => {
+test("pointOK: a point needs the id of the mark before it; for pi a mark after it must close the turn that starts there", () => {
   // The cut turn's next mark has no id.
   const cutNoID = cutTurn();
   cutNoID[7] = pEnd("");
@@ -166,11 +166,12 @@ test("pointOK: a point needs the id of the mark before it; pi also the mark afte
     ["before a cut turn, cursor", "cursor", cutTurn(), 3, true],
     ["before a running turn", "claude", running, 3, true],
 
-    // pi: the mark after the point must close the turn that starts there.
+    // pi: a mark after the point must close the turn that starts there; with no mark after it the
+    // id before the point is enough.
     ["pi, the next mark closes the next turn", "pi", twoTurns(), 3, true],
     ["pi, the end of the session", "pi", twoTurns(), 8, true],
     ["pi, nothing said past the point", "pi", idle, 3, true],
-    ["pi, the next turn has no mark", "pi", running, 3, false],
+    ["pi, the next turn has no mark", "pi", running, 3, true],
     ["pi, the next mark belongs to a later turn", "pi", cutTurn(), 3, false],
     ["pi, after the turn that follows a cut one", "pi", cutTurn(), 8, true],
     ["pi, the next mark has no id", "pi", [pUser(), pEnd("p1"), pUser(), pText(), pEnd("")], 2, false],
@@ -193,13 +194,101 @@ test("pointOK: a point needs the id of the mark before it; pi also the mark afte
     ["pi, a delivery turn's mark repeats the id before the point", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText(), pEnd("p1")], 3, false],
     ["pi, a retried delivery turn's mark repeats the id before the point", "pi", [pUser(), pEnd("p1"), pText(), pEnd("p1")], 2, false],
     ["pi, a delivery turn's mark has no id", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText(), pEnd("")], 3, false],
-    ["pi, a delivery turn with no mark is next", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText()], 3, false],
+    ["pi, a delivery turn with no mark is next", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText()], 3, true],
+    ["pi, a turn cut without a mark is next", "pi", [pUser(), pText(), pEnd("p1"), pUser(), pNote()], 3, true],
     ["pi, a delivery turn cut without a mark, then a message", "pi", [pUser(), pText(), pEnd("p1"), pSub(), pText(), pNote(), pUser(), pText(), pEnd("p3")], 3, false],
     ["pi, a tool call cut without a mark, then a message", "pi", [pUser(), pText(), pEnd("p1"), pTool(), pNote(), pUser(), pText(), pEnd("p3")], 3, false],
     ["pi, a turn cut without a mark, then a message and a delivery turn", "pi", [...cutTurn(), pSub(), pText(), pEnd("p4")], 3, false],
     ["pi, a delivery turn after the turn that follows a cut one", "pi", [...cutTurn(), pSub(), pText(), pEnd("p4")], 8, true],
   ];
-  for (const [name, agent, items, count, want] of cases) assert.equal(pointOK(agent, items, count), want, name);
+  for (const [name, agent, items, count, want] of cases) {
+    assert.equal(pointOK(agent, items, count), want, name);
+    assert.equal(pointOK(agent, items, count, false), want, name + ", running false");
+  }
+});
+
+/** The pointOK cases of a source whose turn is running: [name, items, count, want]. The same for
+ *  every agent kind unless the name says pi. */
+const runningCases = (): [string, AgentKind[], Items, number, boolean][] => {
+  const all: AgentKind[] = ["claude", "cursor", "pi"];
+  // A second turn that is running after a finished one: a message and a partial reply, no mark.
+  const second: Items = [pUser(), pText(), pEnd("p1"), pUser(), pOpen()];
+  // The same with a tool call and a finished reply in the running turn.
+  const tools: Items = [pUser(), pText(), pEnd("p1"), pUser(), pText(), pTool(), pOpen()];
+  // The mark before the running turn has no id.
+  const noID: Items = [pUser(), pText(), pEnd(""), pUser(), pOpen()];
+  // The first turn is running: no mark at all.
+  const first: Items = [pUser(), pOpen()];
+  // Two finished turns, then a running one.
+  const third: Items = [...twoTurns(), pUser(), pOpen()];
+  // A delivery turn (no user item) is running.
+  const delivery: Items = [pUser(), pText(), pEnd("p1"), pSub(), pOpen()];
+  return [
+    ["the boundary right before the running turn", all, second, 3, true],
+    ["the boundary right before a running turn with a tool call", all, tools, 3, true],
+    ["the boundary right before a running delivery turn", all, delivery, 3, true],
+    ["the boundary right before the running third turn", all, third, 8, true],
+    ["an earlier boundary, two turns back", all, third, 3, true],
+    ["the start, the first turn finished", all, second, 0, true],
+    ["inside the running turn, after its message", all, second, 4, false],
+    ["inside the running turn, after its partial reply", all, second, 5, false],
+    ["inside the running turn, after a finished reply", all, tools, 5, false],
+    ["inside the running turn, at the end of the list", all, tools, 7, false],
+    ["the boundary whose mark has no id", all, noID, 3, false],
+    ["the start while the first turn runs, no mark at all", all, first, 0, false],
+    ["the end of the list while the first turn runs", all, first, 2, false],
+    ["the start when the first mark has no id", all, noID, 0, false],
+    ["past the list", all, second, 6, false],
+    ["inside the running turn, after a tool call", all, [...twoTurns(), pUser(), pTool(), pOpen()], 10, false],
+    ["the boundary before a delivery turn that has only its subagent result so far", all, [pUser(), pText(), pEnd("p1"), pSub()], 3, true],
+    ["the end of the list during a fork start, nothing past the end mark", all, [pUser(), pText(), pEnd("p1")], 3, true],
+    // pi: a later mark still has to close the turn that starts at the point.
+    ["pi, a later mark with two messages between", ["pi"], [...cutTurn(), pUser(), pOpen()], 3, false],
+    ["pi, a later mark without an id", ["pi"], [pUser(), pEnd("p1"), pUser(), pText(), pEnd(""), pUser(), pOpen()], 2, false],
+    ["pi, the boundary right before the turn that runs after a cut one", ["pi"], [...cutTurn(), pUser(), pOpen()], 8, true],
+  ];
+};
+
+test("pointOK, running: the finished boundaries of a source whose turn is running", () => {
+  assert.deepEqual(LIVE_FORK, { claude: true, cursor: true, pi: true });
+  for (const [name, agents, items, count, want] of runningCases())
+    for (const agent of agents) assert.equal(pointOK(agent, items, count, true), want, `${agent}: ${name}`);
+});
+
+test("pointOK: for pi no mark after the point is OK also when idle, a later mark keeps its rule", () => {
+  // A turn cut without a mark, nothing after it.
+  const cut: Items = [pUser(), pText(), pEnd("p1"), pUser(), pText(), pNote()];
+  for (const running of [false, true]) {
+    assert.equal(pointOK("pi", cut, 3, running), true, "no later mark");
+    assert.equal(pointOK("pi", cutTurn(), 3, running), false, "a later mark with two messages between");
+    assert.equal(pointOK("pi", [pUser(), pEnd("p1"), pUser(), pText(), pEnd("")], 2, running), false, "a later mark without an id");
+    assert.equal(pointOK("pi", twoTurns(), 3, running), true, "a later mark that closes the next turn");
+    assert.equal(pointOK("pi", [pUser(), pText(), pEnd(""), pUser(), pText()], 3, running), false, "the mark before has no id");
+    assert.equal(pointOK("pi", [pUser(), pText()], 0, running), false, "the start with no mark");
+  }
+});
+
+test("pointOK, running: a kind whose LIVE_FORK is false has no point while its turn runs", () => {
+  for (const kind of ["claude", "cursor", "pi"] as AgentKind[]) {
+    const was = LIVE_FORK[kind];
+    LIVE_FORK[kind] = false;
+    try {
+      for (const [name, agents, items, count] of runningCases()) {
+        if (!agents.includes(kind)) continue;
+        assert.equal(pointOK(kind, items, count, true), false, `${kind}: ${name}`);
+      }
+      // the tree rows of that kind carry no ok either
+      const rows = toTreeItems(kind, [...twoTurns(), pUser(), pOpen()], 0, true);
+      assert.deepEqual(rows.filter((x) => x.ok).map((x) => x.i), [], kind);
+      // idle is untouched, and so are the other kinds
+      assert.equal(pointOK(kind, twoTurns(), 3), true, kind + ", idle");
+      for (const other of (["claude", "cursor", "pi"] as AgentKind[]).filter((k) => k !== kind))
+        assert.equal(pointOK(other, [pUser(), pText(), pEnd("p1"), pUser(), pOpen()], 3, true), true, `${other} while ${kind} is off`);
+    } finally {
+      LIVE_FORK[kind] = was;
+    }
+  }
+  assert.deepEqual(LIVE_FORK, { claude: true, cursor: true, pi: true });
 });
 
 test("the worked example's main items give the points the server gives", () => {
@@ -234,6 +323,37 @@ test("toTreeItems leaves out what is false or absent, and reads holes and missin
   ]);
   assert.deepEqual(toTreeItems("claude", items, 4), [{ i: 4, kind: "text", text: "" }]);
   assert.deepEqual(toTreeItems("claude", items, 5), []);
+  // running changes none of it: the first turn has no mark
+  assert.deepEqual(toTreeItems("claude", items, 0, true), toTreeItems("claude", items));
+});
+
+test("toTreeItems, running: ok on the finished boundaries of a branch whose turn is running", () => {
+  // the worked example's main branch with a third turn running
+  const items: Items = [...exampleMain(), pUser("more"), pText("first"), pTool(), { kind: "text", text: "part" }];
+  for (const agent of ["claude", "cursor", "pi"] as AgentKind[]) {
+    assert.deepEqual(toTreeItems(agent, items, 0, true), [
+      { i: 0, kind: "user", text: "ask", before: 0, ok: true },
+      { i: 1, kind: "text", text: "options", done: true, end: 3, ok: true },
+      { i: 3, kind: "user", text: "redis", before: 3, ok: true },
+      { i: 4, kind: "text", text: "looking", done: true },
+      { i: 6, kind: "text", text: "lua", done: true, end: 8, ok: true },
+      { i: 8, kind: "user", text: "more", before: 8, ok: true },
+      { i: 9, kind: "text", text: "first", done: true },
+      { i: 11, kind: "text", text: "part" },
+    ], agent);
+    // a branch's own part, from its split point
+    assert.deepEqual(toTreeItems(agent, items, 8, true).map((x) => [x.i, x.ok]), [[8, true], [9, undefined], [11, undefined]], agent);
+    // the mark before the running turn has no id: no ok at that boundary, and for pi none at the
+    // boundary before it either (the mark after that one has no id)
+    const noID: Items = [pUser(), pText(), pEnd("p1"), pUser(), pText(), pEnd(""), pUser(), pOpen()];
+    const early = agent === "pi" ? undefined : true;
+    assert.deepEqual(toTreeItems(agent, noID, 0, true).map((x) => [x.i, x.ok]), [[0, true], [1, early], [3, early], [4, undefined], [6, undefined], [7, undefined]], agent);
+    // the first turn is running: no ok at all
+    assert.deepEqual(toTreeItems(agent, [pUser(), pOpen()], 0, true), [{ i: 0, kind: "user", text: "u", before: 0 }, { i: 1, kind: "text", text: "t" }], agent);
+  }
+  // running or not gives the same rows while every LIVE_FORK entry is true
+  assert.deepEqual(toTreeItems("claude", items, 0, false), toTreeItems("claude", items, 0, true));
+  assert.deepEqual(toTreeItems("claude", exampleMain(), 0, true), toTreeItems("claude", exampleMain()));
 });
 
 test("toTreeItems names a message that is only quotes by its first quote, as the tree route does", () => {
@@ -253,6 +373,12 @@ test("toTreeItems for pi: no ok where the next mark closes a later turn", () => 
   assert.deepEqual(got.filter((x) => "ok" in x).map((x) => x.i), [0, 6]);
   assert.deepEqual(got.map((x) => x.before ?? x.end), [0, 3, 3, 3, 8]);
   assert.deepEqual(toTreeItems("claude", cutTurn()).map((x) => x.ok), [true, true, true, true, true]);
+  // the same while a later turn runs
+  const live: Items = [...cutTurn(), pUser(), pOpen()];
+  assert.deepEqual(toTreeItems("pi", live, 0, true).map((x) => [x.i, x.ok]), [[0, true], [1, undefined], [3, undefined], [5, undefined], [6, true], [8, true], [9, undefined]]);
+  // a turn cut without a mark at the end: the boundary before it is a point, idle too
+  const cut: Items = [pUser(), pText(), pEnd("p1"), pUser(), pText()];
+  assert.deepEqual(toTreeItems("pi", cut).map((x) => [x.i, x.ok]), [[0, true], [1, true], [3, true], [4, undefined]]);
 });
 
 // ---- what a message offers
@@ -287,11 +413,59 @@ test("messageActions: a streaming reply offers nothing", () => {
   assert.deepEqual(acts("claude", items, 9), NONE);
 });
 
-test("messageActions: only Label while the agent is replying and in a read-only chat", () => {
+test("messageActions: only Label in a read-only chat, whether or not the branch runs", () => {
   const items = exampleMain();
-  for (const p of [{ busy: true }, { readOnly: true }, { busy: true, readOnly: true }]) {
+  for (const p of [{ readOnly: true }, { busy: true, readOnly: true }]) {
     for (const i of [0, 1, 3, 4, 6]) assert.deepEqual(acts("claude", items, i, p), LABEL, `${JSON.stringify(p)} ${i}`);
     assert.deepEqual(acts("claude", items, 5, p), NONE);
+  }
+});
+
+test("messageActions: a running branch offers its finished turns, and nothing inside the running turn", () => {
+  // two finished turns, then a turn that is running: your message, a reply, a tool call, a reply being written
+  const items: Items = [...exampleMain(), pUser("more"), pText(), pTool(), pOpen()];
+  const busy = { busy: true };
+  for (const agent of ["claude", "cursor", "pi"] as const) {
+    // the finished turns: all as on an idle branch
+    assert.deepEqual(acts(agent, items, 0, busy), { ...LABEL, branchEdit: 0, forkEdit: 0 }, agent);
+    assert.deepEqual(acts(agent, items, 1, busy), { ...LABEL, branch: 3, fork: 3 }, agent);
+    assert.deepEqual(acts(agent, items, 3, busy), { ...LABEL, branchEdit: 3, forkEdit: 3 }, agent);
+    assert.deepEqual(acts(agent, items, 4, busy), { ...LABEL, midTurn: true }, agent);
+    assert.deepEqual(acts(agent, items, 6, busy), { ...LABEL, branch: 8, fork: 8 }, agent);
+    for (const i of [0, 1, 3, 4, 6]) assert.deepEqual(acts(agent, items, i, busy), acts(agent, items, i), `${agent} ${i}`);
+    // the running turn: its message drops it whole (the point before it is a finished boundary);
+    // its replies offer no point
+    assert.deepEqual(acts(agent, items, 8, busy), { ...LABEL, branchEdit: 8, forkEdit: 8 }, agent);
+    assert.deepEqual(acts(agent, items, 9, busy), { ...LABEL, midTurn: true }, agent);
+    assert.deepEqual(acts(agent, items, 10, busy), NONE, agent);
+    assert.deepEqual(acts(agent, items, 11, busy), NONE, agent);
+  }
+  // the last reply of a running branch: no fork of the whole thread
+  const last: Items = [...exampleMain(), pUser("more"), pText()];
+  assert.deepEqual(acts("claude", last, 9, busy), LABEL);
+  assert.deepEqual(acts("claude", last, 9), { ...LABEL, fork: 10 });
+  // a first turn that is running: nothing was finished yet, so no point at all
+  const first: Items = [pUser(), pText(), pTool()];
+  assert.deepEqual(acts("claude", first, 0, busy), LABEL);
+  assert.deepEqual(acts("claude", first, 1, busy), { ...LABEL, midTurn: true });
+});
+
+test("messageActions: a kind that cannot fork a running source offers only Label on a running branch", () => {
+  const items: Items = [...exampleMain(), pUser("more"), pText()];
+  const was = LIVE_FORK.cursor;
+  LIVE_FORK.cursor = false;
+  try {
+    for (const i of [0, 1, 3, 4, 6, 8, 9]) {
+      const a = acts("cursor", items, i, { busy: true });
+      assert.deepEqual([a.branch, a.fork, a.branchEdit, a.forkEdit], [null, null, null, null], String(i));
+      assert.equal(a.label, true);
+    }
+    // idle, the kind offers all as before; another kind is not touched
+    assert.deepEqual(acts("cursor", items, 1), { ...LABEL, branch: 3, fork: 3 });
+    assert.deepEqual(acts("cursor", items, 9), { ...LABEL, fork: 10 });
+    assert.deepEqual(acts("claude", items, 1, { busy: true }), { ...LABEL, branch: 3, fork: 3 });
+  } finally {
+    LIVE_FORK.cursor = was;
   }
 });
 
@@ -321,10 +495,10 @@ test("messageActions: a mark without an id gives no point, but the last reply st
   assert.deepEqual(acts("claude", last, 3), { ...LABEL, branchEdit: 3, forkEdit: 3 });
 });
 
-test("messageActions for pi: a turn end whose next turn has no mark offers no Branch", () => {
+test("messageActions for pi: a turn end whose next turn has no mark offers Branch, as for claude", () => {
   const running: Items = [pUser(), pText(), pEnd("p1"), pUser(), pText()];
-  assert.deepEqual(acts("pi", running, 1), LABEL);
-  assert.deepEqual(acts("pi", running, 3), LABEL);
+  assert.deepEqual(acts("pi", running, 1), { ...LABEL, branch: 3, fork: 3 });
+  assert.deepEqual(acts("pi", running, 3), { ...LABEL, branchEdit: 3, forkEdit: 3 });
   assert.deepEqual(acts("pi", running, 4), { ...LABEL, fork: 5 });
   assert.deepEqual(acts("claude", running, 1), { ...LABEL, branch: 3, fork: 3 });
   assert.deepEqual(acts("claude", running, 3), { ...LABEL, branchEdit: 3, forkEdit: 3 });

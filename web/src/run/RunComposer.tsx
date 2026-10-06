@@ -4,7 +4,7 @@
 // starts the run.
 import React, { useEffect, useRef, useState } from "react";
 import "./composer.css";
-import { useStore, getState, upsertRun, answerRun, unsavedDraft } from "../store.ts";
+import { useStore, getState, upsertRun, answerRun, unsavedRunDraft } from "../store.ts";
 import { refreshRun, useFresh } from "./actions.ts";
 import { api, ApiError } from "../api.ts";
 import { RefInput, type RefInputHandle } from "../RefInput.tsx";
@@ -30,7 +30,7 @@ async function saveDraft(run: string, d: Draft, keepalive: boolean) {
 }
 
 /** The draft the composer opens with: one the server may not have yet, else the server's. */
-const draftToShow = (run: string) => unsavedDraft(run).read() ?? getState().runs[run]?.draft;
+const draftToShow = (run: string) => unsavedRunDraft(run).read() ?? getState().runs[run]?.draft;
 
 export function RunComposer({ runId }: { runId: string }) {
   const r = useStore((s) => s.runs[runId]);
@@ -41,7 +41,7 @@ export function RunComposer({ runId }: { runId: string }) {
   const box = useRef<HTMLDivElement>(null);
   const current = useRef(text); // the text now
   const drafts = useRef<DraftSaver | null>(null);
-  drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(runId, d, keepalive), getState().runs[runId]?.draft, unsavedDraft(runId));
+  drafts.current ??= new DraftSaver((d, keepalive) => saveDraft(runId, d, keepalive), getState().runs[runId]?.draft, unsavedRunDraft(runId));
 
   // The draft: put into the box when it appears (on open, after unarchiving), saved as it changes,
   // and saved at once when the composer or the page goes away, as a chat's.
@@ -82,7 +82,7 @@ export function RunComposer({ runId }: { runId: string }) {
     try {
       await answerRun(runId, async () => {
         const started = await api.startRun(runId, goal);
-        unsavedDraft(runId).write(null);
+        unsavedRunDraft(runId).write(null);
         return started; // it has `started`: the stage changes to the follow view
       });
     } catch (e: any) {

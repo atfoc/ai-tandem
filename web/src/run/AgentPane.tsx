@@ -3,7 +3,7 @@
 // read-only, and one line where a chat has its composer. The agent is held while this is mounted.
 import { useRef } from "react";
 import "./shell.css";
-import { useStore, closeRunAgent, chatTitle, isBusy, boardName } from "../store.ts";
+import { useStore, closeRunAgent, chatTitle, isBusy, boardName, threadOf } from "../store.ts";
 import { ChatHeader, Thread } from "../ChatView.tsx";
 import { modelLabel, effortLabel } from "../Composer.tsx";
 import { useNow } from "../Subagents.tsx";
@@ -38,7 +38,7 @@ function Head({ runId, agentId }: { runId: string; agentId: string }) {
 /** back: the chat of the run the transcript lies over (its id), which the foot leads back to. */
 export function AgentPane({ runId, agentId, back }: { runId: string; agentId: string; back: string | null }) {
   useAgent(agentId);
-  const chat = useStore((s) => (back && s.chats[back] ? chatTitle(s.chats[back], s.items[back]?.items) : null));
+  const chat = useStore((s) => (back && s.chats[back] ? chatTitle(s.chats[back], threadOf(s, back)?.items) : null));
   return (
     <>
       <Head runId={runId} agentId={agentId} />

@@ -7,3 +7,9 @@
 /* header and sidebar */
 .fk-crumb { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
 .fk-badge { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: 10px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fk-alert { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; border-radius: 999px; padding: 3px 9px; font: inherit; font-size: 11.5px; cursor: pointer; }
+.fk-alert.asks { border: 1px solid var(--warn); background: var(--warn-soft); color: var(--text); font-weight: 600; }
+.fk-alert.failed { border: 1px solid var(--danger); background: var(--danger-soft); color: var(--text); font-weight: 600; }
+.fk-alert.quiet { background: none; color: var(--muted); }
+.fk-alert:hover { text-decoration: underline; }
+.fk-alert.failed:has(+ .fk-alert), .fk-alert + .fk-alert { max-width: 30%; } /* the error and the count beside it */

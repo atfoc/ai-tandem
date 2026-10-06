@@ -2,7 +2,7 @@
 // on-disk version on every connect, and runs "Restart server". The server only starts `relaunch`
 // (stop + launch); the page then waits for a server with a new version and reloads.
 import { api, ApiError } from "./api.ts";
-import { getState, setState } from "./store.ts";
+import { getState, setState, statesOfChat } from "./store.ts";
 import { confirm } from "./Dialogs.tsx";
 import { bannerFor, restartConfirmText, runningChats, type UpdateBanner } from "./logic/version.ts";
 import { runningRuns } from "./logic/run.ts";
@@ -35,7 +35,7 @@ export async function checkVersion() {
 /** "Restart server" and "Retry": confirms when agents are running or a run works, then restarts. */
 export function restartServer() {
   if (busy || restarting()) return;
-  const n = runningChats(Object.values(getState().chats)); // a run's own agents are not among them
+  const n = runningChats(Object.values(getState().chats), (chat) => statesOfChat(getState(), chat)); // a run's own agents are not among them
   const runs = runningRuns(Object.values(getState().runs));
   if (!n && !runs) { void restart(); return; }
   confirm({

@@ -1,6 +1,6 @@
 // The server's HTTP API (section 4.12). Every call carries this tab's client id,
 // so the server can tell the active client from a stale one.
-import type { AgentKind, AttemptChanges, AttemptReport, Board, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, ModelChoice, PlanUsage, Reference,
+import type { AgentKind, AttemptChanges, AttemptReport, Board, BranchState, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, ModelChoice, PlanUsage, Reference,
   RunDelivery, RunDetail, RunGoal, RunNotes, RunSettings, RunView, Subagent, Target, TaskBrief, Tier, TreeLabel, TreeView } from "./types.ts";
 import type { PermAnswer } from "./logic/perms.ts";
 import { normBrief, normChanges, normDelivery, normGoal, normNotes, normReport } from "./logic/runnorm.ts";
@@ -16,6 +16,7 @@ export type Snapshot = {
   home: string;
   defaultCwd: string;
   dataDir: string;
+  states?: BranchState[]; // one per branch of every chat; a server before the branch records sends none
 };
 
 /** GET /api/hello: the running server's version and the web client's on disk. */
@@ -25,12 +26,13 @@ export type Dirs = { path: string; parent: string; dirs: string[]; git: boolean 
 
 export const clientId: string = crypto.randomUUID(); // one per tab load
 
-/** An API error: the server's message, with the HTTP status. */
+/** An API error: the server's message, with the HTTP status and, when the server names one, its code. */
 export class ApiError extends Error {
   status: number;
   /** The message is the server's own sentence (its JSON `error`), not the status line. */
   said: boolean;
-  constructor(status: number, msg: string, said = true) { super(msg); this.status = status; this.said = said; }
+  code?: string;
+  constructor(status: number, msg: string, said = true, code?: string) { super(msg); this.status = status; this.said = said; if (code !== undefined) this.code = code; }
 }
 
 /** keepalive lets the request finish while the page unloads. */
@@ -41,9 +43,11 @@ async function call<T = void>(method: string, path: string, body?: unknown, keep
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!r.ok) {
-    const said = (await r.json().catch(() => null))?.error;
+    const e = await r.json().catch(() => null);
+    const said = e?.error;
     // (no sentence of the server's: a proxy's or a body limit's answer has only a status)
-    throw new ApiError(r.status, typeof said === "string" && said ? said : r.statusText || `The server answered ${r.status}.`, typeof said === "string" && !!said);
+    throw new ApiError(r.status, typeof said === "string" && said ? said : r.statusText || `The server answered ${r.status}.`, typeof said === "string" && !!said,
+      typeof e?.code === "string" ? e.code : undefined);
   }
   if (r.status === 204) return undefined as T;
   const text = await r.text();
@@ -52,8 +56,8 @@ async function call<T = void>(method: string, path: string, body?: unknown, keep
 
 type Kind = "groups" | "boards" | "chats" | "runs";
 
-/** The query that asks for a branch of a chat; none asks for its current branch. */
-const onBranch = (branch?: string) => (branch ? `?branch=${encodeURIComponent(branch)}` : "");
+/** The query that names the branch of a chat a session call is for. */
+const onBranch = (branch: string) => `?branch=${encodeURIComponent(branch)}`;
 
 export const api = {
   state: () => call<Snapshot>("GET", "/api/state"),
@@ -112,26 +116,28 @@ export const api = {
   /** 404 for a task that only reports, and while nothing is committed. */
   attemptChanges: (run: string, task: string, n: number) => call<AttemptChanges>("GET", `/api/runs/${run}/tasks/${task}/attempts/${n}/changes`).then(normChanges),
   runNotes: (run: string, v: number) => call<RunNotes>("GET", `/api/runs/${run}/notes/${v}`).then(normNotes),
-  /** A branch's items and subagents; without branch the current one's. The answer names the branch served. */
-  items: (id: string, branch?: string) =>
-    call<{ version: number; items: Item[]; subagents?: Subagent[]; branch?: string }>("GET", `/api/chats/${id}/items${onBranch(branch)}`),
-  subItems: (chat: string, sid: string, branch?: string) =>
+  /** A branch's items and subagents. The answer names the branch served, and brings its record. */
+  items: (id: string, branch: string) =>
+    call<{ version: number; items: Item[]; subagents?: Subagent[]; branch?: string; state?: BranchState }>("GET", `/api/chats/${id}/items${onBranch(branch)}`),
+  subItems: (chat: string, branch: string, sid: string) =>
     call<{ version: number; items: Item[] }>("GET", `/api/chats/${chat}/subagents/${sid}/items${onBranch(branch)}`),
   chat: (id: string) => call<ChatView>("GET", `/api/chats/${id}`),
-  openChat: (id: string) => call("POST", `/api/chats/${id}/open`),
-  /** target: the point the message goes to; without it, the end of the current branch. */
-  send: (id: string, text: string, context: string, references: Reference[] = [], target?: Target) =>
-    call("POST", `/api/chats/${id}/messages`, {
+  openChat: (id: string, branch: string) => call("POST", `/api/chats/${id}/open${onBranch(branch)}`),
+  /** target: the point the message goes to; without it, the end of branch. The server refuses
+   *  a target together with the query, so the branch is named in one of the two only. */
+  send: (id: string, branch: string, text: string, context: string, references: Reference[] = [], target?: Target & { model?: string; effort?: string }) =>
+    call("POST", `/api/chats/${id}/messages${target ? "" : onBranch(branch)}`, {
       text, context,
       ...(references.length ? { references } : {}),
-      ...(target ? { target: { branch: target.branch, at: target.at, new: target.new } } : {}),
+      ...(target ? { target: { branch: target.branch, at: target.at, new: target.new,
+        ...(target.model ? { model: target.model } : {}), ...(target.effort ? { effort: target.effort } : {}) } } : {}),
     }),
-  configure: (id: string, p: { model?: string; effort?: string; cwd?: string }) => call("PATCH", `/api/chats/${id}`, p),
-  saveDraft: (id: string, d: Draft, keepalive = false) => call("PUT", `/api/chats/${id}/draft`, d, keepalive),
+  configure: (id: string, branch: string, p: { model?: string; effort?: string; cwd?: string }) => call("PATCH", `/api/chats/${id}${onBranch(branch)}`, p),
+  saveDraft: (id: string, branch: string, d: Draft, keepalive = false) => call("PUT", `/api/chats/${id}/draft${onBranch(branch)}`, d, keepalive),
   renameChat: (id: string, name: string) => call("PATCH", `/api/chats/${id}`, { name }),
   moveChat: (id: string, group: string) => call("PATCH", `/api/chats/${id}`, { group }),
-  interrupt: (id: string) => call("POST", `/api/chats/${id}/interrupt`),
-  decide: (id: string, answer: PermAnswer) => call("POST", `/api/chats/${id}/permission`, answer),
+  interrupt: (id: string, branch: string) => call("POST", `/api/chats/${id}/interrupt${onBranch(branch)}`),
+  decide: (id: string, branch: string, answer: PermAnswer) => call("POST", `/api/chats/${id}/permission${onBranch(branch)}`, answer),
   deleteChat: (id: string) => call("DELETE", `/api/chats/${id}`),
   tree: (id: string) => call<TreeView>("GET", `/api/chats/${id}/tree`),
   /** Blank text removes the label. Answers all the chat's labels. */
@@ -139,6 +145,6 @@ export const api = {
   /** Forks branch at item count `at` to a new chat; message: the user message that becomes its draft. */
   fork: (id: string, branch: string, at: number, message?: number) => call<ChatView>("POST", `/api/chats/${id}/fork`, { branch, at, message }),
   dirs: (path: string) => call<Dirs>("GET", `/api/dirs?path=${encodeURIComponent(path)}`),
-  contextSplit: (id: string, fresh = false) => call<ContextSplit>("GET", `/api/chats/${id}/context${fresh ? "?fresh=1" : ""}`),
+  contextSplit: (id: string, branch: string, fresh = false) => call<ContextSplit>("GET", `/api/chats/${id}/context${onBranch(branch)}${fresh ? "&fresh=1" : ""}`),
   usage: (agent: AgentKind, fresh = false) => call<PlanUsage>("GET", `/api/usage/${agent}${fresh ? "?fresh=1" : ""}`),
 };

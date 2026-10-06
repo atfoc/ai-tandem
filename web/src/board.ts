@@ -13,7 +13,7 @@ import { getState, flash, markBusy, type Box } from "./store.ts";
 import { api, ApiError } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { groupPath } from "./logic/tree.ts";
-import { agentShortName } from "./agents.ts";
+import { editLabel, branchNameFor } from "./logic/attribution.ts";
 import type { AgentKind, Board } from "./types.ts";
 
 export type Scene = { elements: El[]; appState: any; files: any; version: number; rev: number };
@@ -234,10 +234,11 @@ function syncLive(id: string) {
   s.elements = els; s.version = getSceneVersion(els);
 }
 
-const agentLabel = (agent: string) => agentShortName(agent);
+/** The flash label of an agent's edit: the agent, and its branch once the chat has more than one. */
+const agentLabel = (agent: string, chat: string, branch?: string) => editLabel(agent, branchNameFor(getState().trees[chat], branch));
 
 /** After an agent edit: save soon, and show where it happened when the board is on screen. */
-function afterEdit(id: string, chat: string, ids: string[], tone: "edit" | "danger" = "edit") {
+function afterEdit(id: string, chat: string, branch: string | undefined, ids: string[], tone: "edit" | "danger" = "edit") {
   const st = getState();
   const agent = st.chats[chat]?.agent ?? "unknown";
   syncLive(id);
@@ -246,7 +247,7 @@ function afterEdit(id: string, chat: string, ids: string[], tone: "edit" | "dang
     const els = engineFor(id).getSceneElementsIncludingDeleted().filter((e: El) => ids.includes(e.id));
     const alive = els.filter((e: El) => !e.isDeleted);
     const box = bbox(alive.length ? alive : els);
-    if (box) flash({ board: id, box, agent, label: agentLabel(agent), tone });
+    if (box) flash({ board: id, box, agent, label: agentLabel(agent, chat, branch), tone });
   }
 }
 
@@ -275,7 +276,7 @@ function expandIds(board: string, v: any): any {
 
 // ---- board tools
 
-type ToolCall = { chat: string; board: string; name: string; args: any }; // board = the chat's own board id
+type ToolCall = { chat: string; branch?: string; board: string; name: string; args: any }; // board = the chat's own board id; branch = the calling branch ("main" or a branch id)
 
 /** The group's path, "Work / Infra", or "Ungrouped". */
 const groupName = (g: string) => groupPath(getState().groups, g).join(" / ") || "Ungrouped";
@@ -314,7 +315,7 @@ export async function runTool(call: ToolCall): Promise<string> {
     case "read_board": {
       const id = resolveBoard(call);
       const sc = await loadScene(id);
-      markBusy(id, call.chat);
+      markBusy(id, call.chat, call.branch);
       const els = engineFor(id).getSceneElementsIncludingDeleted();
       const body = formatScene(toFmt(els));
       return `${boardRef(s.boards[id])} (rev ${sc.rev}, ${live(els).filter((e: El) => !e.containerId).length} elements)\n${body || "(empty board)"}`;
@@ -336,10 +337,10 @@ export async function runTool(call: ToolCall): Promise<string> {
       const id = resolveBoard(call);
       writable(id);
       await loadScene(id);
-      markBusy(id, call.chat);
+      markBusy(id, call.chat, call.branch);
       const a = expandIds(id, args);
       const res = applyChanges(engineFor(id), { create: a.create, update: a.update }, hooks(id));
-      afterEdit(id, call.chat, [...Object.values(res.created), ...res.updated]);
+      afterEdit(id, call.chat, call.branch, [...Object.values(res.created), ...res.updated]);
       return JSON.stringify({ board: getState().boards[id].name, id, ...res });
     }
 
@@ -347,7 +348,7 @@ export async function runTool(call: ToolCall): Promise<string> {
       const id = resolveBoard(call);
       writable(id);
       await loadScene(id);
-      markBusy(id, call.chat);
+      markBusy(id, call.chat, call.branch);
       const a = expandIds(id, args);
       const refs: any[] = a.refs ?? [];
       const eng = engineFor(id);

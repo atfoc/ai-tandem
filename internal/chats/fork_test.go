@@ -305,12 +305,19 @@ func TestForkRefusals(t *testing.T) {
 		}
 	}
 
-	// Busy: also at a point that is fine otherwise.
+	// Busy: its end is no point (the fork would be of a session that is still going), and nor
+	// is a place inside the running turn. (The finished boundaries are:
+	// TestForkFromARunningSource.)
 	e.send(id, "more", "")
-	for _, at := range []int{0, 3, 6, 7} {
-		if err := e.forkErr(id, at); !errors.Is(err, ErrBusy) {
-			t.Fatalf("busy chat at %d: %v", at, err)
-		}
+	if err := e.forkErr(id, 7); !errors.Is(err, ErrBusy) {
+		t.Fatalf("busy chat at its end, right after the message: %v", err)
+	}
+	a.emit(t, agent.Event{Kind: agent.EvText, Text: "half a rep"})
+	if err := e.forkErr(id, 7); !errors.Is(err, ErrBadPoint) {
+		t.Fatalf("busy chat inside the running turn: %v", err)
+	}
+	if err := e.forkErr(id, 8); !errors.Is(err, ErrBusy) {
+		t.Fatalf("busy chat at its end: %v", err)
 	}
 	a.emit(t, agent.Event{Kind: agent.EvTurnEnd, Point: "p3"})
 
@@ -434,12 +441,15 @@ func TestForkNewChat(t *testing.T) {
 	v := e.fork(id, at)
 	got := evs.drain(t, e.br)
 
-	// One chat event, for the new chat; nothing for the source.
-	if len(got) != 1 || got[0]["type"] != "chat" || got[0]["chat"].(map[string]any)["id"] != v.ID {
+	// The new chat's state record, then one chat event for it; nothing for the source.
+	if !reflect.DeepEqual(typesOf(got), []string{"branch_state", "chat"}) || got[1]["chat"].(map[string]any)["id"] != v.ID {
 		t.Fatalf("events %+v", got)
 	}
-	if !reflect.DeepEqual(asJSON(t, got[0]["chat"]), asJSON(t, v)) {
-		t.Fatalf("the event's view %+v, the answer %+v", got[0]["chat"], v)
+	if !reflect.DeepEqual(asJSON(t, got[1]["chat"]), asJSON(t, v)) {
+		t.Fatalf("the event's view %+v, the answer %+v", got[1]["chat"], v)
+	}
+	if st := stateIn(t, got[0]); st != model.StateOf(v.ID, model.MainBranch, v) {
+		t.Fatalf("the event's state record %+v, the answer %+v", st, v)
 	}
 	if !e.listed(v.ID) || e.view(v.ID) != v {
 		t.Fatalf("the fork is not listed as answered: %+v", e.view(v.ID))
@@ -447,7 +457,7 @@ func TestForkNewChat(t *testing.T) {
 	want := model.ChatView{ID: v.ID, Agent: model.Claude, Name: "Named title (fork)", Group: gOne,
 		Cwd: srcView.Cwd, Model: srcView.Model, Effort: srcView.Effort, Locked: true, Created: v.Created,
 		Usage: model.Usage{CtxWindow: 1000, Turns: 1}, Status: model.StatusReady,
-		ForkedFrom: id, ForkedFromTitle: "Named title"}
+		ForkedFrom: id, ForkedFromTitle: "Named title", ForkedBranch: model.MainBranch, ForkedAt: at, Fresh: true}
 	if v != want {
 		t.Fatalf("view %+v\nwant %+v", v, want)
 	}
@@ -474,8 +484,12 @@ func TestForkNewChat(t *testing.T) {
 	if m.Token == "" || m.Token == srcMeta.Token || m.SessionID == "" || m.SessionID == srcMeta.SessionID {
 		t.Fatalf("token or session id not its own: %+v", m)
 	}
-	if m.TurnActive || m.Archived || m.Draft != nil || m.ContextSplit != nil || m.UserNamed || m.McpInstructionsSent {
+	if m.TurnActive || m.Archived || m.Drafts != nil || m.Draft != nil || m.ContextSplit != nil || m.UserNamed || m.McpInstructionsSent {
 		t.Fatalf("chat.json %+v", m)
+	}
+	// No message of its own yet, and the context it starts with is the source's.
+	if !m.Fresh || m.SourceCtx != 100 || srcMeta.Usage.CtxIn != 100 {
+		t.Fatalf("chat.json: fresh %v, the source's context %d (the source has %d)", m.Fresh, m.SourceCtx, srcMeta.Usage.CtxIn)
 	}
 	if c, ok := e.m.ResolveToken(m.Token); !ok || c.Meta.ID != v.ID {
 		t.Fatalf("the fork's token resolves to %+v, %v", c.Meta.ID, ok)
@@ -662,13 +676,15 @@ func TestForkAndEdit(t *testing.T) {
 		t.Fatalf("items %+v", got)
 	}
 	want := &model.Draft{Text: "the message", References: []model.Reference{items[5].References[0], items[5].References[2]}}
-	if !reflect.DeepEqual(e.meta(v.ID).Draft, want) || !reflect.DeepEqual(e.view(v.ID).Draft, want) {
-		t.Fatalf("draft %+v", e.meta(v.ID).Draft)
+	// It is the draft of the new chat's main, the one branch it has.
+	if m := e.meta(v.ID); !reflect.DeepEqual(m.Drafts, map[string]*model.Draft{model.MainBranch: want}) || m.Draft != nil ||
+		!reflect.DeepEqual(e.view(v.ID).Draft, want) || !v.HasDraft {
+		t.Fatalf("drafts %+v, view %+v", m.Drafts, v)
 	}
 	if !v.Locked || e.claude.forkCalls()[0].src.Point != "p1" {
 		t.Fatalf("view %+v, fork %+v", v, e.claude.forkCalls()[0].src)
 	}
-	if e.meta(id).Draft != nil {
+	if m := e.meta(id); m.Drafts != nil || m.Draft != nil {
 		t.Fatal("the source got a draft")
 	}
 }
@@ -695,12 +711,17 @@ func TestForkAndEditFirstMessage(t *testing.T) {
 	}
 	want := model.ChatView{ID: v.ID, Agent: model.Claude, Name: "Named title (fork)", Group: gTwo, Cwd: dir,
 		Model: "opus", Effort: "low", Created: v.Created, Usage: model.Usage{CtxWindow: src.Usage.CtxWindow},
-		Draft: &model.Draft{Text: "ask 1"}, Status: model.StatusReady, ForkedFrom: id, ForkedFromTitle: "Named title"}
+		Draft: &model.Draft{Text: "ask 1"}, HasDraft: true, Status: model.StatusReady, ForkedFrom: id, ForkedFromTitle: "Named title",
+		ForkedBranch: model.MainBranch}
 	if !reflect.DeepEqual(v, want) {
 		t.Fatalf("view %+v\nwant %+v", v, want)
 	}
-	if got := evs.drain(t, e.br); len(got) != 1 || got[0]["type"] != "chat" || got[0]["chat"].(map[string]any)["id"] != v.ID {
+	got := evs.drain(t, e.br)
+	if !reflect.DeepEqual(typesOf(got), []string{"branch_state", "chat"}) || got[1]["chat"].(map[string]any)["id"] != v.ID {
 		t.Fatalf("events %+v", got)
+	}
+	if st := stateIn(t, got[0]); !reflect.DeepEqual(st, model.StateOf(v.ID, model.MainBranch, want)) {
+		t.Fatalf("the event's state record %+v", st)
 	}
 	m := e.meta(v.ID)
 	if m.SessionID == "" || m.SessionID == src.SessionID || m.ForkSource != nil || m.Token == "" || m.Token == src.Token {
@@ -725,7 +746,7 @@ func TestForkAndEditFirstMessage(t *testing.T) {
 	if o := e.claude.last(t).opts; o.Resume || o.SessionID != m.SessionID || o.ChatID != v.ID || o.Cwd != dir || o.Effort != "high" {
 		t.Fatalf("spawn options %+v", o)
 	}
-	if after := e.meta(v.ID); !after.Locked || after.Draft != nil || after.Name != "Named title (fork)" {
+	if after := e.meta(v.ID); !after.Locked || after.Drafts != nil || after.Name != "Named title (fork)" {
 		t.Fatalf("chat.json after the first Send %+v", after)
 	}
 	if len(e.namer.callList()) != 1 {
@@ -849,8 +870,12 @@ func TestForkIsUnlistedDuringTheStart(t *testing.T) {
 	if !e.listed(o.ChatID) || e.meta(o.ChatID).ID != o.ChatID {
 		t.Fatal("not listed after the start")
 	}
-	if got := evs.drain(t, e.br); len(got) != 1 || got[0]["type"] != "chat" {
+	got := evs.drain(t, e.br)
+	if !reflect.DeepEqual(typesOf(got), []string{"branch_state", "chat"}) {
 		t.Fatalf("events after the start %+v", got)
+	}
+	if st := stateIn(t, got[0]); st.Chat != o.ChatID || st.Branch != model.MainBranch {
+		t.Fatalf("the state record after the start %+v", st)
 	}
 }
 
@@ -989,10 +1014,10 @@ func TestUnlistedEntryIsNeverSavedOrEmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, items := tr.Snapshot()
-	meta := prefixMeta(src.meta, items, 3)
+	meta := prefixMeta(src.meta, items, 3, model.ModelChoice{Model: src.meta.Model, Effort: src.meta.Effort}, 0)
 	meta.ID = uuid()
 	c, err := e.m.addUnlisted(src, meta, 3)
-	from := forkSourceOf(src.meta, items, 3)
+	from := forkSourceOf(src.meta, items, 3, false)
 	src.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -1005,7 +1030,7 @@ func TestUnlistedEntryIsNeverSavedOrEmitted(t *testing.T) {
 	evs := e.listen()
 
 	c.mu.Lock()
-	if err := e.m.sendOn(c, "on the branch", "", nil); err != nil {
+	if _, err := e.m.sendOn(c, "on the branch", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if e.claude.count() != 1 || len(e.claude.forkCalls()) != 1 || len(fa.sent()) != 1 {
@@ -1223,19 +1248,54 @@ func TestForkRelaunchBusyDeleteArchive(t *testing.T) {
 	e := newEnv(t)
 	_, id := e.claudeFork()
 	_, other := e.claudeFork()
+	src, third := e.claudeFork()
 	e.boot()
 	n := len(e.items(id))
 
-	// During the start the chat is busy.
-	b, res := e.block(e.claude, func() error { return e.m.Send(id, "carry on", "", nil) })
+	// During the start the chat is busy without a turn. A fork at a finished boundary is made
+	// all the same: it has no session of its own yet, so the fork goes through its fork source,
+	// cut at the id of the point.
+	b, res := e.block(e.claude, func() error { return e.m.Send(third, "carry on", "", nil) })
+	if !e.m.Busy(third) {
+		t.Fatal("not busy during the start")
+	}
+	starts := len(e.claude.forkCalls())
+	forked := make(chan error, 1)
+	var fv model.ChatView
+	go func() {
+		var err error
+		fv, err = e.m.Fork(third, ForkReq{Branch: model.MainBranch, At: 3})
+		forked <- err
+	}()
+	waitFor(t, "the fork's own start", func() bool { return len(e.claude.forkCalls()) == starts+1 })
+	if got, want := e.claude.forkCalls()[starts].src, (agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: e.meta(src).SessionID, Point: "p1"}); got != want {
+		t.Fatalf("fork source during the start %+v, want %+v", got, want)
+	}
+	if err := b.release(res, nil); err != nil {
+		t.Fatalf("Send whose start a fork was made during: %v", err)
+	}
+	select {
+	case err := <-forked:
+		if err != nil {
+			t.Fatalf("Fork during the start: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fork did not return")
+	}
+	if got := e.diskItems(fv.ID); !reflect.DeepEqual(got, e.diskItems(third)[:3]) || fv.ForkedFrom != third || !e.listed(fv.ID) {
+		t.Fatalf("the fork made during the start: items %+v, view %+v", got, fv)
+	}
+	if got := e.items(third); len(got) != 4 || got[3].Text != "carry on" || !e.m.Busy(third) {
+		t.Fatalf("the chat whose start a fork was made during: %+v", got)
+	}
+
+	// During the start a second Send is refused, and nothing is added.
+	b, res = e.block(e.claude, func() error { return e.m.Send(id, "carry on", "", nil) })
 	if !e.m.Busy(id) {
 		t.Fatal("not busy during the start")
 	}
 	if err := e.m.Send(id, "two", "", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("second Send during the start: %v", err)
-	}
-	if err := e.forkErr(id, 3); !errors.Is(err, ErrBusy) {
-		t.Fatalf("Fork during the start: %v", err)
 	}
 	if len(e.items(id)) != n {
 		t.Fatal("the message was added before the start was confirmed")
@@ -1580,5 +1640,278 @@ func TestForkOfForkKeepsTheSourcesCount(t *testing.T) {
 	}
 	if calls := e.claude.forkCalls(); len(calls) != n {
 		t.Errorf("a fork was started from a source that has gone on: %+v", calls[n:])
+	}
+}
+
+// ---- the model and effort of a fork ---------------------------------------
+
+func (e *env) forkWith(id string, at int, modelID, effort string) (model.ChatView, error) {
+	return e.m.Fork(id, ForkReq{Branch: model.MainBranch, At: at, Model: modelID, Effort: effort})
+}
+
+func TestForkTakesTheChoice(t *testing.T) {
+	e := newEnv(t)
+	id, a := e.talked(model.Claude, "", 2)
+	e.usedTurn(id, a, 100) // the source's window is known: 1000
+	src, srcView := e.meta(id), e.view(id)
+	cases := []struct {
+		name          string
+		at            int
+		model, effort string
+		want          model.ModelChoice
+		window        int
+	}{
+		{"a model without efforts", 3, "haiku", "", model.ModelChoice{Model: "haiku"}, 200_000},
+		{"a model that offers the effort", 9, "opus", "", model.ModelChoice{Model: "opus", Effort: "high"}, 1_000_000},
+		{"an effort alone", 3, "", "low", model.ModelChoice{Model: "sonnet", Effort: "low"}, 1000},
+		{"a model and an effort", 6, "opus", "max", model.ModelChoice{Model: "opus", Effort: "max"}, 1_000_000},
+		{"none", 3, "", "", model.ModelChoice{Model: "sonnet", Effort: "high"}, 1000},
+	}
+	for _, tc := range cases {
+		v, err := e.forkWith(id, tc.at, tc.model, tc.effort)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		m := e.meta(v.ID)
+		if v.Model != tc.want.Model || v.Effort != tc.want.Effort || m.Model != v.Model || m.Effort != v.Effort {
+			t.Fatalf("%s: the fork's view %+v, its chat.json %+v", tc.name, v, m)
+		}
+		if v.Usage.CtxWindow != tc.window {
+			t.Fatalf("%s: the fork's context window %d, want %d", tc.name, v.Usage.CtxWindow, tc.window)
+		}
+		if st := e.stateOfBranch(v.ID, model.MainBranch); st.Model != tc.want.Model || st.Effort != tc.want.Effort {
+			t.Fatalf("%s: the fork's state record %+v", tc.name, st)
+		}
+		if o := e.claude.lastFork(t).opts; o.ChatID != v.ID || o.Model != tc.want.Model || o.Effort != tc.want.Effort {
+			t.Fatalf("%s: the fork's process was started with %+v", tc.name, o)
+		}
+		if e.view(id) != srcView || !reflect.DeepEqual(e.meta(id), src) {
+			t.Fatalf("%s: the source changed", tc.name)
+		}
+	}
+
+	// A choice that cannot be: no chat is made, no fork started.
+	dirs, forks := e.chatDirs(), len(e.claude.forkCalls())
+	for _, tc := range []struct {
+		at            int
+		model, effort string
+		want          string
+	}{
+		{3, "nope", "", `unknown model "nope"`},
+		{0, "nope", "", `unknown model "nope"`},
+		{3, "", "bogus", `sonnet has no effort "bogus"`},
+		{3, "haiku", "high", `haiku has no effort "high"`},
+	} {
+		if _, err := e.forkWith(id, tc.at, tc.model, tc.effort); err == nil || err.Error() != tc.want {
+			t.Fatalf("a fork on %q, %q: %v", tc.model, tc.effort, err)
+		}
+	}
+	if _, err := e.forkWith(id, 4, "nope", ""); !errors.Is(err, ErrBadPoint) { // the point comes first
+		t.Fatalf("a bad point with an unknown model: %v", err)
+	}
+	if !reflect.DeepEqual(e.chatDirs(), dirs) || len(e.claude.forkCalls()) != forks {
+		t.Fatalf("a refused choice left something: %v (were %v), %d fork starts (were %d)", e.chatDirs(), dirs, len(e.claude.forkCalls()), forks)
+	}
+}
+
+func TestForkIsFreshUntilItsFirstMessage(t *testing.T) {
+	e := newEnv(t)
+	id, a := e.talked(model.Claude, "", 2)
+	e.usedTurn(id, a, 100)
+	fresh := func(when, fid string, want bool, ctx int) {
+		t.Helper()
+		m, v, st := e.meta(fid), e.view(fid), e.stateOfBranch(fid, model.MainBranch)
+		if m.Fresh != want || v.Fresh != want || st.Fresh != want || m.SourceCtx != ctx {
+			t.Fatalf("%s: fresh in chat.json %v, the view %v, the state record %v, want %v; the source's context %d, want %d",
+				when, m.Fresh, v.Fresh, st.Fresh, want, m.SourceCtx, ctx)
+		}
+		raw := string(e.file(fid, "chat.json"))
+		if strings.Contains(raw, `"fresh"`) != want || strings.Contains(raw, `"sourceCtx"`) != (ctx != 0) {
+			t.Fatalf("%s: chat.json %s", when, raw)
+		}
+	}
+
+	// A fork with a conversation is fresh until a message is sent on it.
+	v := e.fork(id, 3)
+	if !v.Locked {
+		t.Fatalf("the fork %+v", v)
+	}
+	fresh("a new fork", v.ID, true, 100)
+	if e.view(id).Fresh || e.meta(id).Fresh || e.meta(id).SourceCtx != 0 {
+		t.Fatalf("the source is fresh: %+v", e.meta(id))
+	}
+	evs := e.listen()
+	e.send(v.ID, "on the fork", "")
+	fresh("after its first message", v.ID, false, 0)
+	got := evs.drain(t, e.br)
+	if sts := statesOf(t, got, v.ID, model.MainBranch); len(sts) == 0 || sts[len(sts)-1].Fresh {
+		t.Fatalf("the state records after its first message %+v", sts)
+	}
+	for _, ev := range ofType(got, "chat") {
+		if c := ev["chat"].(map[string]any); c["id"] == v.ID && c["fresh"] != nil {
+			t.Fatalf("a chat event names the fork as fresh after its first message: %v", c)
+		}
+	}
+	e.claude.lastFork(t).emit(t, reply("f1")...)
+	fresh("after its first turn", v.ID, false, 0)
+
+	// A message its agent refuses is still its first.
+	v2 := e.fork(id, 3)
+	fresh("a second fork", v2.ID, true, 100)
+	e.claude.lastFork(t).failSends(errors.New("refused"))
+	if err := e.m.Send(v2.ID, "never taken", "", nil); err == nil {
+		t.Fatal("the refusing agent took the message")
+	}
+	fresh("after a refused message", v2.ID, false, 0)
+
+	// A fork of a fresh fork keeps the context of the first source: its own turn has reported none.
+	v3 := e.fork(id, 3)
+	v4 := e.fork(v3.ID, 3)
+	fresh("a fork of a fresh fork", v4.ID, true, 100)
+	fresh("the fork it was made of", v3.ID, true, 100)
+
+	// A fork at the start has no conversation: it is a chat not started, never fresh.
+	v0 := e.fork(id, 0)
+	if v0.Locked {
+		t.Fatalf("the fork at the start %+v", v0)
+	}
+	fresh("a fork at the start", v0.ID, false, 100)
+	e.send(v0.ID, "start", "")
+	fresh("a fork at the start, after its first message", v0.ID, false, 0)
+
+	// A fork made before there was the flag has none in its file: it stays not fresh, also
+	// after a restart. One that has it keeps it.
+	old := e.meta(v3.ID)
+	old.Fresh, old.SourceCtx = false, 0
+	e.writeMeta(old)
+	e.m.naming.Wait()
+	e.boot()
+	fresh("a fork without the flag, after a restart", v3.ID, false, 0)
+	fresh("a fresh fork, after a restart", v4.ID, true, 100)
+	if v := e.view(v3.ID); !v.Locked || v.ForkedFrom != id {
+		t.Fatalf("the fork without the flag %+v", v)
+	}
+	e.send(v3.ID, "on the old fork", "")
+	fresh("a fork without the flag, after its first message", v3.ID, false, 0)
+}
+
+func TestForkWindowRefused(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.piTalked()
+	dirs := e.chatDirs()
+	untouched := func(when string) {
+		t.Helper()
+		if !reflect.DeepEqual(e.chatDirs(), dirs) || len(e.pi.forkCalls()) != 0 || len(e.m.Views()) != 1 {
+			t.Fatalf("%s: folders %v (were %v), %d fork starts, %d chats", when, e.chatDirs(), dirs, len(e.pi.forkCalls()), len(e.m.Views()))
+		}
+	}
+	for _, at := range []int{3, 6} {
+		_, err := e.forkWith(id, at, "small", "")
+		if !errors.Is(err, ErrWindow) || !strings.Contains(err.Error(), "Small takes 32000 tokens and the conversation holds about 20000") {
+			t.Fatalf("a fork at %d on a model too small: %v", at, err)
+		}
+		untouched("the window refusal")
+	}
+	if _, err := e.forkWith(id, 4, "small", ""); !errors.Is(err, ErrBadPoint) { // the point comes first
+		t.Fatalf("a bad point with a model too small: %v", err)
+	}
+	untouched("a bad point")
+
+	// At the start the model is given nothing; a model whose window is not known passes.
+	v0, err := e.forkWith(id, 0, "small", "")
+	if err != nil || v0.Model != "small" || v0.Effort != "" || v0.Usage.CtxWindow != 32_000 || v0.Fresh || v0.Locked {
+		t.Fatalf("a fork at the start on the small model: %+v, %v", v0, err)
+	}
+	v1, err := e.forkWith(id, 3, "unsized", "")
+	if err != nil || v1.Model != "unsized" || v1.Usage.CtxWindow != 0 || !v1.Fresh {
+		t.Fatalf("a fork on a model without a known window: %+v, %v", v1, err)
+	}
+	// The same model, and one with room.
+	v2, err := e.forkWith(id, 3, "big", "high")
+	if err != nil || v2.Model != "big" || v2.Effort != "high" || v2.Usage.CtxWindow != 200_000 {
+		t.Fatalf("a fork on the source's model: %+v, %v", v2, err)
+	}
+	// A fork of that fork, which has had no turn: the guard has the first source's context.
+	if m := e.meta(v2.ID); m.Usage.CtxIn != 0 || m.SourceCtx != piCtx {
+		t.Fatalf("the fork's chat.json %+v", m)
+	}
+	n := len(e.pi.forkCalls())
+	if _, err := e.m.Fork(v2.ID, ForkReq{Branch: model.MainBranch, At: 3, Model: "small"}); !errors.Is(err, ErrWindow) {
+		t.Fatalf("a fork of a fresh fork on a model too small: %v", err)
+	}
+	if len(e.pi.forkCalls()) != n {
+		t.Fatal("a fork was started for the refused choice")
+	}
+}
+
+func TestChoiceDoesNotRecordDefaults(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	was := e.defaultsOf()
+	if mc := was.Last.ByAgent[model.Claude]; mc.Model != "sonnet" || mc.Effort != "high" || was.Last.Cwd != e.cwd {
+		t.Fatalf("the defaults the chat's first message recorded %+v", was)
+	}
+	same := func(when string) {
+		t.Helper()
+		if got := e.defaultsOf(); !reflect.DeepEqual(got, was) {
+			t.Fatalf("%s: the defaults %+v, were %+v", when, got, was)
+		}
+	}
+
+	// A new branch, at a point and at the start.
+	_, _, ba := e.branchTo(id, Target{Branch: model.MainBranch, At: 3, New: true, Model: "haiku"}, "aside")
+	ba.emit(t, reply("q1")...)
+	same("a branch on another model")
+	_, _, ba = e.branchTo(id, Target{Branch: model.MainBranch, At: 0, New: true, Model: "opus", Effort: "max"}, "from the start")
+	ba.emit(t, reply("q2")...)
+	same("a branch at the start on another model")
+
+	// A fork with a conversation, and its first message.
+	v, err := e.forkWith(id, 3, "opus", "low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("a fork on another model")
+	e.send(v.ID, "on the fork", "")
+	e.claude.lastFork(t).emit(t, reply("f1")...)
+	same("the fork's first message")
+
+	// A fork at the start is a chat not started: it can be configured and its first message
+	// confirms its settings, but only its folder becomes a default.
+	v0, err := e.forkWith(id, 0, "haiku", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("a fork at the start on another model")
+	if err := e.m.Configure(v0.ID, ConfigReq{Model: "opus", Effort: "max"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := e.meta(v0.ID); m.Model != "opus" || m.Effort != "max" {
+		t.Fatalf("the configured fork %+v", m)
+	}
+	same("a fork at the start, configured")
+	dir := t.TempDir()
+	if err := e.m.Configure(v0.ID, ConfigReq{Cwd: dir, Model: "haiku"}); err != nil {
+		t.Fatal(err)
+	}
+	folder := func(when string) {
+		t.Helper()
+		got := e.defaultsOf()
+		if got.Last.Cwd != dir || got.Groups[gOne].Cwd != dir {
+			t.Fatalf("%s: the folder was not recorded: %+v", when, got)
+		}
+		if !reflect.DeepEqual(got.Last.ByAgent, was.Last.ByAgent) || !reflect.DeepEqual(got.Groups[gOne].ByAgent, was.Groups[gOne].ByAgent) {
+			t.Fatalf("%s: the defaults took the fork's choice: %+v, were %+v", when, got, was)
+		}
+	}
+	folder("a fork at the start, given a folder")
+	e.send(v0.ID, "start", "")
+	folder("the first message of a fork at the start")
+
+	// A chat that is neither still records its choice.
+	c := e.create(model.Claude, gOne, "")
+	e.configure(c.ID, ConfigReq{Model: "opus", Effort: "max"})
+	if mc := e.defaultsOf().Last.ByAgent[model.Claude]; mc.Model != "opus" || mc.Effort != "max" {
+		t.Fatalf("a new chat's choice was not recorded: %+v", mc)
 	}
 }

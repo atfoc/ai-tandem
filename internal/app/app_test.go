@@ -731,3 +731,54 @@ func TestSnapshotCatalogs(t *testing.T) {
 		t.Error("an id only the built-in list has was accepted with a Claude list stored")
 	}
 }
+
+// The snapshot lists the state record of every chat's branch next to the chats, under "states".
+func TestSnapshotStates(t *testing.T) {
+	e := newEnv(t)
+	raw, err := json.Marshal(e.a.Snapshot())
+	e.must(err)
+	var js map[string]json.RawMessage
+	e.must(json.Unmarshal(raw, &js))
+	if string(js["states"]) != "[]" {
+		t.Fatalf("states with no chat: %s", js["states"])
+	}
+
+	g := e.group("g")
+	idle, busy := e.chat(g, ""), e.running(g, "")
+	snap := e.a.Snapshot()
+	if len(snap.Chats) != 2 || len(snap.States) != 2 || !reflect.DeepEqual(snap.States, e.a.Chats.States()) {
+		t.Fatalf("snapshot: %d chats, states %+v", len(snap.Chats), snap.States)
+	}
+	for _, v := range snap.Chats {
+		var st *model.BranchState
+		for i := range snap.States {
+			if snap.States[i].Chat == v.ID {
+				st = &snap.States[i]
+			}
+		}
+		// A chat with one branch: its record is main's, the session side of its view.
+		if st == nil || *st != model.StateOf(v.ID, model.MainBranch, v) {
+			t.Fatalf("the state record of %s: %+v, its view %+v", v.ID, st, v)
+		}
+		if want := map[string]model.Status{idle: model.StatusReady, busy: model.StatusThinking}[v.ID]; st.Status != want {
+			t.Fatalf("the status of %s: %q, want %q", v.ID, st.Status, want)
+		}
+		if working := map[string]int{idle: 0, busy: 1}[v.ID]; v.Working != working || v.Approvals != 0 {
+			t.Fatalf("the counts of %s: %d working, %d waiting for approval", v.ID, v.Working, v.Approvals)
+		}
+	}
+	raw, err = json.Marshal(snap)
+	e.must(err)
+	var wire struct {
+		States []map[string]any `json:"states"`
+	}
+	e.must(json.Unmarshal(raw, &wire))
+	if len(wire.States) != 2 || wire.States[0]["branch"] != model.MainBranch || wire.States[0]["chat"] == nil {
+		t.Fatalf("states on the wire: %s", raw)
+	}
+
+	e.must(e.a.Chats.Delete(idle))
+	if snap := e.a.Snapshot(); len(snap.States) != 1 || snap.States[0].Chat != busy {
+		t.Fatalf("states after a delete %+v", snap.States)
+	}
+}
