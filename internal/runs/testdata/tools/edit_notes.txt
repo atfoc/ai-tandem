@@ -1,0 +1,80 @@
+=== a chat calls edit_notes
+chat: edit_notes {"heading":"Facts","text":"The user wants it fast."}
+refusal:
+The notes are the orchestrator's own memory, so a chat does not write them. To pass something on, use tell_orchestrator; to change the work, change the tasks.
+
+=== the heading is empty
+orchestrator: edit_notes {"heading":" ## ","text":"x"}
+refusal:
+the heading is empty
+
+=== no heading given
+orchestrator: edit_notes {"text":"x"}
+refusal:
+the heading is empty
+
+=== nothing to remove: there are no notes
+orchestrator: edit_notes {"heading":"Facts","text":""}
+refusal:
+the notes have no section called 'Facts'; there is nothing to remove
+
+=== added: the first version of the notes
+orchestrator: edit_notes {"heading":"Facts","text":"The old importer reads CSV in three passes (T01).\n"}
+answer:
+Section 'Facts' added; the notes are 59 characters (version 1).
+
+=== added at the end, the heading given with its marks
+orchestrator: edit_notes {"heading":"### Sources ","text":"T01."}
+answer:
+Section '### Sources' added; the notes are 78 characters (version 2).
+
+=== added: a second section
+orchestrator: edit_notes {"heading":"Plan","text":"Build it, then measure."}
+answer:
+Section 'Plan' added; the notes are 112 characters (version 3).
+
+=== replaced: the name in another case, its inner section goes with it
+orchestrator: edit_notes {"heading":"  facts","text":"One pass is enough (T02)."}
+answer:
+Section 'facts' replaced; the notes are 69 characters (version 4).
+
+=== no text given
+orchestrator: edit_notes {"heading":"Plan"}
+refusal:
+text is missing: give the section's new content, or an empty text to remove it
+
+=== removed: the text is empty
+orchestrator: edit_notes {"heading":"Plan","text":"  "}
+answer:
+Section 'Plan' removed; the notes are 35 characters (version 5).
+
+=== nothing to remove
+orchestrator: edit_notes {"heading":"Plan","text":"  "}
+refusal:
+the notes have no section called 'Plan'; there is nothing to remove
+
+=== removing the only section
+orchestrator: edit_notes {"heading":"Facts","text":""}
+refusal:
+removing it would leave the notes empty; replace them with set_notes instead
+
+=== the notes now (version 5)
+## Facts
+
+One pass is enough (T02).
+
+=== two sections of that name
+orchestrator: edit_notes {"heading":"Facts","text":"Three."}
+refusal:
+the notes have 2 sections called 'Facts'; rename them with set_notes
+
+=== replaced, the notes are over 20,000 characters
+orchestrator: edit_notes {"heading":"Plan","text": 400 lines}
+answer:
+Section 'Plan' replaced; the notes are 21,240 characters (version 7). They are over 20,000 characters, and every instance reads all of them: shorten them, keeping what the next instance needs to decide.
+
+=== a heading of 150 characters
+orchestrator: edit_notes {"heading":"Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks ","text":"None."}
+answer:
+Section 'Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks Risks' added; the notes are 21,401 characters (version 8). They are over 20,000 characters, and every instance reads all of them: shorten them, keeping what the next instance needs to decide.
+

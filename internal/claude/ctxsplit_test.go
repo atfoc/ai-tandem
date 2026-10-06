@@ -205,8 +205,8 @@ func TestLiveContextSplitError(t *testing.T) {
 func TestReadContextSplitForks(t *testing.T) {
 	f := newFake(t)
 	ctxAnswers(t, f, string(readFixture(t)))
-	cwd := t.TempDir()
-	s, err := f.spawner().ReadContextSplit(agent.SpawnOptions{SessionID: "s1", Cwd: cwd, Model: "opus",
+	cwd, dir := t.TempDir(), t.TempDir()
+	s, err := f.spawner().ReadContextSplit(agent.SpawnOptions{SessionID: "s1", Cwd: cwd, Model: "opus", Dir: dir,
 		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "fork-tok"}})
 	if err != nil {
 		t.Fatal(err)
@@ -226,12 +226,14 @@ func TestReadContextSplitForks(t *testing.T) {
 	if _, ok := flag(rec.Args, "--resume-session-at"); ok {
 		t.Errorf("args %q: no point was given, the whole session is read", rec.Args)
 	}
-	// The fork inherits the same board config, header included.
+	// The fork inherits the same board config, header included: the chat's own file.
 	cfg, ok := flag(rec.Args, "--mcp-config")
 	if !ok {
 		t.Errorf("args %q, want the chat's own arguments (--mcp-config)", rec.Args)
-	} else if cfg != `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer fork-tok"}}}}` {
-		t.Errorf("--mcp-config = %q, want the fixed URL with the bearer header", cfg)
+	} else if cfg != filepath.Join(dir, "mcp.json") {
+		t.Errorf("--mcp-config = %q, want the file in the chat's folder", cfg)
+	} else if b, _ := os.ReadFile(cfg); string(b) != `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer fork-tok"}}}}` {
+		t.Errorf("the --mcp-config file holds %s, want the fixed URL with the bearer header", b)
 	}
 	lines, _ := os.ReadFile(f.stdin) // the fake has exited: stdin was closed
 	if n := strings.Count(string(lines), "get_context_usage"); n != 1 {

@@ -174,7 +174,7 @@ func TestE2EAppDirDenied(t *testing.T) {
 	closeAndWaitExit(t, a)
 }
 
-// TestE2EMCPToolsAutoApproved is the A6 real-pi leg: an app board chat whose AIWB_MCP_CONFIG also
+// TestE2EMCPToolsAutoApproved is the A6 real-pi leg: an app board chat whose MCP config file also
 // carries a test-only non-board server (config key "other") served by the same board MCP endpoint
 // whose serverInfo.name is also "board". Both the app-sourced board tool and the non-board tool
 // must run with no permission ask.

@@ -1,0 +1,192 @@
+/* The run timeline (Timeline.tsx). Everything is under .tl; colours come from the tokens of
+   styles.css only. Violet (--accent) is what the orchestrator did, green / red / grey is execution. */
+.tl { --tl-add: color-mix(in srgb, var(--accent) 17%, transparent); --tl-dot: color-mix(in srgb, var(--accent) 60%, var(--bg)); }
+.tl { position: relative; isolation: isolate; flex: 1 1 0; height: 100%; min-width: 0; min-height: 0; display: flex; user-select: none; -webkit-user-select: none; }
+.tl .tl-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; position: relative; outline: 0; }
+.tl .tl-inner { position: relative; min-height: 100%; display: flex; flex-direction: column; }
+
+/* the sticky header: the corner, the ruler, the orchestrator lane */
+.tl .tl-head { position: sticky; top: 0; z-index: 6; flex: none; display: flex; background: var(--bg); border-bottom: 1px solid var(--line); }
+.tl .tl-corner { position: sticky; left: 0; z-index: 7; flex: none; background: var(--bg); border-right: 1px solid var(--line); overflow: hidden; white-space: nowrap; }
+.tl .tl-corner .c-top { height: 20px; display: flex; align-items: center; padding: 0 8px; font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+.tl .tl-corner .c-lane { height: 30px; display: flex; align-items: flex-start; gap: 6px; padding: 1px 8px 0; font-size: 12px; font-weight: 600; color: var(--accent); }
+.tl .tl-corner .c-lane span { font-weight: 450; color: var(--muted); font-size: 11px; line-height: 18px; }
+.tl .tl-headchart { position: relative; flex: none; overflow-x: clip; }
+.tl .tl-ruler { position: relative; height: 20px; }
+.tl .tl-tick { position: absolute; top: 0; height: 20px; padding: 3px 0 0 4px; border-left: 1px solid var(--line-2); font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tl .tl-gaplabel { position: absolute; top: 2px; height: 16px; transform: translateX(-50%); z-index: 2; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg); font-size: 10px; line-height: 14px; color: var(--muted); white-space: nowrap; }
+.tl .tl-nowtag { position: absolute; top: 2px; transform: translateX(-50%); z-index: 3; padding: 0 5px; border-radius: 8px; background: var(--text); color: var(--bg); font: 600 10px/15px var(--font); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tl .tl-lane { position: relative; height: 30px; }
+.tl .tl-turn { position: absolute; top: 1px; height: 14px; padding: 0; border: 0; border-radius: 3px; background: var(--accent-fill); color: var(--on-accent); font: 600 10px/14px var(--font); font-variant-numeric: tabular-nums; text-align: center; overflow: hidden; cursor: pointer; }
+.tl .tl-turn:hover { filter: brightness(1.1); }
+.tl .tl-turn.st-failed { background: var(--danger-fill); }
+/* a turn that left the plan as it was is hollow */
+.tl .tl-turn.idle { background: var(--bg); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, var(--bg)); color: var(--accent); }
+/* one that started before its wait was met: an amber left edge */
+.tl .tl-turn.early::before, .tl .tl-legend .lg-turn.early::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: min(3px, 50%); border-radius: 3px 0 0 3px; background: var(--warn); }
+.tl .tl-turn.run { animation: tl-pulse 1.2s infinite; }
+.tl .tl-turn.on { overflow: visible; z-index: 1; box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent); }
+.tl .tl-turn.idle.on { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, var(--bg)), 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent); }
+.tl .tl-turn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; z-index: 1; }
+.tl .tl-turnnum { position: absolute; top: 1px; font: 600 10px/14px var(--font); font-variant-numeric: tabular-nums; color: var(--accent); pointer-events: none; }
+.tl .tl-opsum { position: absolute; top: 16px; font: 600 10px/12px var(--font); color: var(--accent); white-space: nowrap; pointer-events: none; }
+.tl .tl-opsum .refused { color: var(--warn); }
+.tl .tl-opsum .fin { color: var(--ok); }
+/* the wait between two turns: a dotted line, the awaited ids on it; right of now, what it waits for */
+.tl .tl-lwait { position: absolute; top: 7px; height: 0; display: flex; justify-content: center; border-top: 1.5px dotted var(--tl-dot); pointer-events: none; }
+.tl .tl-lwait b { height: 12px; margin-top: -7px; padding: 0 3px; background: var(--bg); font: 500 9.5px/12px var(--font); font-variant-numeric: tabular-nums; color: var(--accent); white-space: nowrap; }
+.tl .tl-lanetail { position: absolute; top: 1px; right: 0; overflow: hidden; text-overflow: ellipsis; font: 500 11px/14px var(--font); font-variant-numeric: tabular-nums; color: var(--accent); white-space: nowrap; pointer-events: none; }
+
+/* rows */
+.tl .tl-rows { position: relative; flex: 1 0 auto; display: flex; flex-direction: column; }
+.tl .tl-row { flex: none; }
+/* under the last row the label column goes on to the bottom, over what scrolls behind it */
+.tl .tl-fill { position: sticky; left: 0; z-index: 4; flex: 1 0 0; background: var(--bg); border-right: 1px solid var(--line); }
+.tl .tl-row { position: relative; display: flex; height: 22px; cursor: default; }
+.tl .tl-row.first::before { content: ""; position: absolute; left: 0; right: 0; top: 0; z-index: 5; border-top: 1px solid var(--line); pointer-events: none; }
+.tl .tl-label { position: sticky; left: 0; z-index: 4; flex: none; display: flex; align-items: center; gap: 5px; padding: 0 6px 0 0; background: var(--bg); border-right: 1px solid var(--line); font-size: 12px; white-space: nowrap; overflow: hidden; }
+/* (clipped sideways: a text longer than the room right of now must not widen what scrolls) */
+.tl .tl-cell { position: relative; flex: 1 0 0; min-width: 0; overflow-x: clip; }
+.tl .tl-row:hover .tl-cell { background: var(--hover); }
+.tl .tl-row:hover .tl-label { background: linear-gradient(var(--hover), var(--hover)), var(--bg); }
+.tl .tl-row.sel .tl-cell { background: color-mix(in srgb, var(--accent-soft) 70%, transparent); }
+.tl .tl-row.sel .tl-label { background: var(--accent-soft); }
+.tl .tl-gut { width: 24px; flex: none; align-self: stretch; display: grid; place-items: center; border-right: 1px solid var(--line); font: 600 10.5px var(--font); font-variant-numeric: tabular-nums; color: var(--accent); }
+.tl .tl-gut[data-turn] { cursor: pointer; }
+.tl .tl-gut[data-turn]:hover { background: var(--accent-soft); }
+.tl .tl-gut.on, .tl .tl-gut.on:hover { background: var(--accent-fill); color: var(--on-accent); }
+.tl .tl-mark { width: 14px; flex: none; text-align: center; font-weight: 700; font-size: 11.5px; line-height: 1; }
+.tl .tl-mark .sub-dot { width: 7px; height: 7px; }
+/* (the dotted circle of "held" is too thin to read at the size and tone of the other marks) */
+.tl .tl-row.st-held .tl-mark { font-size: 14px; color: var(--muted); }
+.tl .tone-ok { color: var(--ok); } .tl .tone-danger { color: var(--danger); } .tl .tone-warn { color: var(--warn-ink); }
+.tl .tone-muted { color: var(--muted); } .tl .tone-faint { color: var(--faint); }
+.tl .tl-id { flex: none; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+.tl .tl-kind { flex: none; font-size: 10.5px; color: var(--muted); }
+.tl .tl-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.tl .tl-row.sel .tl-title { color: var(--text); }
+.tl .tl-row.st-cancelled .tl-title, .tl .tl-row.st-cancelled .tl-id { text-decoration: line-through; color: var(--faint); }
+/* the tier, a word; dotted under when an earlier attempt ran at another one */
+.tl .tl-tier { flex: none; width: 28px; font-size: 10px; color: var(--faint); }
+.tl .tl-tier.t-deep { color: var(--text); font-weight: 600; }
+.tl .tl-tier.mixed { text-decoration: underline dotted; text-underline-offset: 2px; }
+/* what the task needs: ids to click. Grey: done; dark: not finished yet; amber: failed or cancelled */
+.tl .tl-needs { flex: none; width: 96px; display: flex; align-items: center; gap: 4px; overflow: hidden; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--faint); }
+.tl .tl-needs i { font-style: normal; }
+.tl .tl-needs b { font-weight: 500; color: var(--muted); cursor: pointer; }
+.tl .tl-needs em { font-style: normal; color: var(--muted); }
+.tl .tl-needs .n-open { font-weight: 600; color: var(--text); }
+.tl .tl-needs .n-warn { font-weight: 600; color: var(--warn-ink); }
+.tl .tl-needs b:hover { color: var(--accent); text-decoration: underline; }
+.tl .tl-tag { flex: none; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 4px; background: var(--accent-soft); font: 600 10px/14px var(--font); color: var(--accent); }
+.tl .tl-row.sel .tl-tag { background: var(--bg); }
+.tl .tl-touch { flex: none; min-width: 14px; text-align: center; font: 700 11px var(--font); color: var(--accent); }
+.tl .tl-row.dim .tl-cell > *, .tl .tl-row.dim .tl-label > :not(.tl-gut) { opacity: .5; }
+.tl .tl-row.far .tl-cell > *, .tl .tl-row.far .tl-label > :not(.tl-gut) { opacity: .7; }
+
+/* waiting lines: thin solid = queued (held until its turn ends, or ready with no free slot),
+   dashed = waiting on dependencies, dashed amber = blocked */
+.tl .tl-wait { position: absolute; top: 10px; height: 0; border-top: 2px solid var(--faint); }
+.tl .tl-wait.k-deps { border-top-style: dashed; }
+.tl .tl-wait.k-queued { border-top-color: var(--line-2); }
+:root[data-theme="dark"] .tl .tl-wait.k-queued { border-top-color: var(--faint); }
+.tl .tl-wait.k-blocked { border-top-style: dashed; border-top-color: var(--warn); }
+
+/* attempt bars */
+.tl .tl-bar { position: absolute; top: 6px; height: 10px; border-radius: 3px; overflow: hidden; display: flex; background: color-mix(in srgb, var(--ok) 34%, var(--bg)); }
+.tl .tl-bar.o-failed { background: color-mix(in srgb, var(--danger) 80%, var(--bg)); }
+.tl .tl-bar.o-cancelled { background: repeating-linear-gradient(135deg, var(--faint) 0 2px, transparent 2px 4px); }
+.tl .tl-bar.open { background: var(--ok); border-radius: 3px 0 0 3px; }
+.tl .tl-bar.open::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 3px; background: var(--bg); opacity: .6; animation: tl-pulse 1s infinite; }
+.tl .tl-bar.paused { background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--ok) 60%, var(--bg)) 0 4px, color-mix(in srgb, var(--ok) 34%, var(--bg)) 4px 6px); }
+.tl .tl-bar .p { height: 100%; flex: none; }
+.tl .tl-bar .p.k-merge { background: repeating-linear-gradient(135deg, var(--ok) 0 2px, color-mix(in srgb, var(--ok) 25%, var(--bg)) 2px 4px); }
+.tl .tl-bar.conf .p.k-merge { background: repeating-linear-gradient(135deg, var(--warn) 0 2px, color-mix(in srgb, var(--warn) 25%, var(--bg)) 2px 4px); }
+.tl .tl-bar .mcap { position: absolute; right: 0; top: 0; bottom: 0; width: 3px; background: var(--ok); }
+.tl .tl-bar.conf .mcap { background: var(--warn); }
+/* a stop the bar runs across: the bar is cut there and a dotted line bridges the break */
+.tl .tl-pause { position: absolute; top: 5px; height: 12px; background: var(--panel); }
+.tl .tl-pause::after { content: ""; position: absolute; left: 2px; right: 2px; top: 5px; border-top: 2px dotted var(--faint); }
+.tl .tl-m { position: absolute; top: 4px; width: 12px; margin-left: -6px; text-align: center; font: 700 10px/14px var(--font); color: var(--accent); pointer-events: none; }
+.tl .tl-m.k-add { font-size: 8px; }
+/* violet on a row = the orchestrator acted on this task then: ~ ↻ ✕ stand on the colour of the block
+   (opaque, so that the glyph reads over a bar or a waiting line) */
+.tl .tl-m.k-update, .tl .tl-m.k-retry, .tl .tl-m.k-cancel { top: 1px; height: 20px; z-index: 1; border-radius: 3px; background: color-mix(in srgb, var(--accent) 17%, var(--bg)); font-size: 10.5px; line-height: 20px; text-shadow: 0 0 2px var(--bg), 0 0 2px var(--bg); }
+/* (a retry on another tier names it: "↻ deep") */
+.tl .tl-m.k-retry:has(.tr) { width: auto; padding: 0 3px 0 2px; white-space: nowrap; }
+.tl .tl-m .tr { margin-left: 2px; font-weight: 600; font-size: 9.5px; }
+.tl .tl-m.k-end { width: auto; margin-left: 2px; text-align: left; font-size: 10.5px; white-space: nowrap; }
+.tl .tl-m.k-end.o-done { color: var(--ok); } .tl .tl-m.k-end.o-failed { color: var(--danger); } .tl .tl-m.k-end.o-paused { color: var(--muted); }
+.tl .tl-m.k-end .cf { margin-left: 1px; color: var(--warn); }
+.tl .tl-m.k-end.k-cancel { width: 12px; margin-left: 1px; text-align: center; color: var(--accent); }
+/* a task the orchestrator waits for right now: a dot on the now line */
+.tl .tl-await { position: absolute; top: 7px; z-index: 3; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg); pointer-events: none; }
+.tl .tl-tail { position: absolute; top: 3px; right: 4px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+.tl .tl-tail.live { color: var(--ok); } .tl .tl-tail.warn { color: var(--warn-ink); }
+/* zoomed in, a row whose marks are all out of view: on which side they are */
+.tl .tl-row[data-off] .tl-cell::before { position: sticky; display: block; width: 10px; font: 600 13px/21px var(--font); text-align: center; color: var(--faint); pointer-events: none; }
+.tl .tl-row[data-off="l"] .tl-cell::before { content: "‹"; left: calc(var(--tl-label) + 3px); }
+.tl .tl-row[data-off="r"] .tl-cell::before { content: "›"; right: 3px; margin-left: auto; }
+
+/* behind the rows: the selected turn's band, the block of the rows a turn added over that turn's
+   time, grid lines, stop breaks, the tint right of now, the now / end line */
+.tl .tl-back { position: absolute; top: 0; bottom: 0; pointer-events: none; }
+.tl .tl-band { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.tl .tl-addband { position: absolute; border-radius: 3px; background: var(--tl-add); }
+.tl .tl-grid { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--line); opacity: .7; }
+.tl .tl-gap { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, var(--line) 0 1px, transparent 1px 5px), var(--panel); border-left: 1px solid var(--line-2); border-right: 1px solid var(--line-2); }
+.tl .tl-future { position: absolute; top: 0; bottom: 0; right: 0; background: color-mix(in srgb, var(--panel) 70%, transparent); }
+.tl .tl-nowline { position: absolute; top: 0; bottom: 0; width: 0; z-index: 3; border-left: 1.5px solid var(--text); }
+.tl .tl-endline { position: absolute; top: 0; bottom: 0; width: 0; z-index: 3; border-left: 1.5px solid var(--muted); }
+.tl .tl-endline.st-completed { border-left-color: var(--ok); } .tl .tl-endline.st-error { border-left-color: var(--danger); } .tl .tl-endline.st-stalled { border-left-color: var(--warn); }
+
+/* dependency connectors */
+.tl .tl-edges { position: absolute; top: 0; z-index: 2; overflow: visible; pointer-events: none; }
+.tl .tl-edges path { fill: none; stroke: var(--muted); stroke-width: 1; opacity: .45; }
+.tl .tl-edges circle { fill: var(--muted); }
+.tl .tl-edges .lv-direct { stroke: var(--accent); stroke-width: 1.6; opacity: 1; }
+.tl .tl-edges .lv-far { stroke: var(--accent); stroke-width: 1; opacity: .5; }
+.tl .tl-edges circle.lv-direct, .tl .tl-edges circle.lv-far { fill: var(--accent); stroke: none; }
+.tl .tl-edges .k-lineage.lv-direct { stroke-width: 1.2; opacity: .75; }
+.tl .tl-edges .k-pending { stroke-dasharray: 3 3; }
+.tl .tl-edges .k-blocked { stroke: var(--warn); stroke-dasharray: 3 3; opacity: 1; }
+/* the direct edges of the row under the pointer */
+.tl .tl-edges.hover { animation: tl-in .12s ease-out; }
+
+/* (no height of its own: the label column's line runs from the header down, beside it) */
+.tl .tl-empty { box-sizing: border-box; position: sticky; z-index: 1; height: 0; max-width: 460px; font-size: 12.5px; color: var(--muted); white-space: normal; }
+.tl .tl-empty > div { padding: 26px 20px; }
+.tl .tl-empty b { color: var(--text); }
+
+/* over the chart: the tooltip and the legend */
+.tl .tl-tip { position: absolute; z-index: 20; left: 0; top: 0; width: 300px; max-width: calc(100% - 8px); max-height: calc(100% - 8px); overflow: hidden; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); box-shadow: var(--shadow-md); font-size: 12px; pointer-events: none; }
+.tl .tl-tip .h { font-weight: 600; }
+.tl .tl-tip .r { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
+.tl .tl-tip .r b { color: var(--text); font-weight: 600; }
+/* the legend: a popover under the toolbar's Legend button */
+.tl .tl-legend { position: absolute; top: 6px; right: 8px; z-index: 21; box-sizing: border-box; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; max-width: min(360px, calc(100% - 16px)); max-height: calc(100% - 12px); overflow: auto; padding: 8px 12px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); box-shadow: var(--shadow-md); font-size: 11px; color: var(--muted); }
+.tl .tl-legend .lg-h { margin-top: 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+.tl .tl-legend .lg-l { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; }
+.tl .tl-legend .lg-l > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.tl .tl-legend .lg-sep { color: var(--faint); }
+.tl .tl-legend i { position: relative; flex: none; display: inline-block; width: 18px; height: 10px; }
+.tl .tl-legend i > .tl-bar { top: 0; left: 0; right: 0; }
+.tl .tl-legend i > .tl-wait { top: 4px; left: 0; right: 0; }
+.tl .tl-legend i > .tl-lwait { top: 4px; left: 0; right: 0; }
+.tl .tl-legend .tl-await { position: static; flex: none; margin: 0 2px; }
+.tl .tl-legend .lg-turn { position: absolute; top: -2px; left: 0; right: 0; height: 14px; border-radius: 3px; overflow: hidden; background: var(--accent-fill); }
+.tl .tl-legend .lg-turn.idle { background: var(--bg); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, var(--bg)); }
+.tl .tl-legend .lg-add { position: absolute; inset: -3px 0; border-radius: 3px; background: var(--tl-add); }
+.tl .tl-legend .lg-dia { position: absolute; inset: -3px 0; text-align: center; font: 700 8px/16px var(--font); color: var(--accent); }
+.tl .tl-legend .lg-m { flex: none; width: 12px; height: 16px; border-radius: 3px; background: var(--tl-add); text-align: center; font: 700 10.5px/16px var(--font); color: var(--accent); }
+/* in a run that is not live nothing pulses, the legend's swatch included */
+.tl .tl-legend.still .tl-bar.open::after { animation: none; }
+.tl .tl-legend .m { color: var(--muted); font-weight: 700; }
+.tl .tl-legend .dep { flex: none; }
+.tl .tl-legend .dep path { fill: none; stroke: var(--muted); stroke-width: 1; }
+.tl .tl-legend .dep circle { fill: var(--muted); }
+.tl .tl-legend .w { color: var(--warn); font-weight: 700; }
+
+@keyframes tl-pulse { 50% { opacity: .55; } }
+@keyframes tl-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .tl .tl-turn.run, .tl .tl-bar.open::after, .tl .tl-edges.hover { animation: none; } }

@@ -3,13 +3,17 @@
 // newer tab takes over after this one has written its pending saves.
 import { api, clientId } from "./api.ts";
 import { setState, getState, applySnapshot, upsertBoard, removeBoard, upsertChat, removeChat, upsertSub, dropThread,
-  shownBranch, currentBranch, branchCount, isBusy } from "./store.ts";
+  onRunEvent, removeRun, shownBranch, currentBranch, branchCount, isBusy } from "./store.ts";
 import { runTool, flushAll } from "./board.ts";
 import { subKey } from "./logic/subagents.ts";
 import { appliesTo, Loads } from "./logic/branchview.ts";
+import { RunLoads, type RunFeedEvent } from "./logic/rundetail.ts";
+import { normDetail, normPatch } from "./logic/runnorm.ts";
+import { dropTexts } from "./run/texts.ts";
+import { Holds } from "./logic/holds.ts";
 import { checkMove, dropMoves, goBack, moveSent } from "./fork/actions.ts";
 import { checkVersion } from "./version.ts";
-import type { ChatView, Item, Subagent } from "./types.ts";
+import type { ChatView, Item, RunDetail, Subagent } from "./types.ts";
 
 let es: EventSource | null = null;
 
@@ -38,7 +42,11 @@ async function handle(m: any, src: EventSource) {
     case "groups": setState({ groups: m.groups ?? [] }); return;
     case "board": upsertBoard(m.board); return;
     case "board_removed": removeBoard(m.id); return;
-    case "chat": onChat(m.chat); return;
+    case "run": if (m.run?.id) onRunEvent(m.run); return;
+    case "run_removed": onRunRemoved(m.id); return;
+    case "run_detail": onRunFeed(m.run, { version: m.version, patch: normPatch(m.patch, getState().runDetail[m.run]?.startedAt) }); return;
+    case "run_activity": onRunFeed(m.run, { agents: m.agents ?? {} }); return;
+    case "chat": if (m.chat?.role) onAgent(m.chat); else onChat(m.chat); return; // a run's own agent is kept only while held
     case "chat_removed": removeChat(m.id); return;
     case "chat_items": applyItems(m.chat, m.chat, m.branch, m.version, m.updates ?? []); return;
     case "sub": return applySub(m.chat, m.branch, m.subagent); // queued while the chat's items load
@@ -48,11 +56,16 @@ async function handle(m: any, src: EventSource) {
   }
 }
 
-/** A fresh snapshot drops cached items; the chat on screen gets its history again. */
+/** A fresh snapshot drops cached items and run details; the chat on screen gets its history
+ *  again, the run on screen its detail, and the run agents that are held their view and thread. */
 function afterSnapshot() {
   listBranch.clear();
-  const chat = getState().sel.chat;
+  runLoads.reset(); runFetches.clear();
+  const { chat, run } = getState().sel;
   if (chat) { void api.openChat(chat).catch(() => {}); void loadItems(chat); void loadTree(chat).catch(() => {}); }
+  const r = run ? getState().runs[run] : undefined;
+  if (r?.started) void fetchRun(r.id);
+  refreshAgents();
 }
 
 async function answer(m: any) {
@@ -105,6 +118,7 @@ function applySub(chat: string, branch: string | undefined, sa: Subagent) {
   if (!sa?.id) return;
   const buf = pending.get(chat);
   if (buf) { buf.push({ branch, sub: sa }); return; }
+  if (!getState().chats[chat] && !agentHolds.has(chat)) return; // a run agent nobody looks at: its list brings its subagents when it is opened
   if (appliesTo(shownBranch(getState(), chat), branch)) upsertSub(chat, sa);
 }
 
@@ -239,4 +253,164 @@ export async function refreshChat(chat: string) {
   // after the view's fetch: the composer holds again what the refused Send took out
   if (!isBusy(getState().chats[chat]?.status)) goBack(chat);
   try { await loadList(chat, { replace: true }); } catch {}
+}
+
+// ---- runs: the detail of the run on screen (State.runDetail), kept current by `run_detail` and
+// `run_activity` events. One run's detail at a time: select() drops the one it leaves.
+
+const runLoads = new RunLoads();                       // the fetches, and what arrives while one runs
+const runFetches = new Map<string, Promise<void>>();   // by run id: the fetch that runs, for who waits for the detail
+const runAborts = new Map<string, AbortController>();   // by run id: the way to end the fetch that runs
+const runErrors = new Map<string, string>();           // by run id: what the last fetch of its detail failed with
+
+/** Why the last fetch of a run's detail failed, in the server's words; "" when it did not fail. */
+export const runLoadError = (run: string): string => runErrors.get(run) ?? "";
+
+const setRunDetail = (run: string, d: RunDetail) => setState((s) => (s.runs[run] ? { runDetail: { ...s.runDetail, [run]: d } } : {}));
+const clearRunDetail = (run: string) => setState((s) => {
+  if (!s.runDetail[run]) return {};
+  const { [run]: _, ...runDetail } = s.runDetail;
+  return { runDetail };
+});
+
+/** A `run_detail` or `run_activity` event: applied to a detail that is loaded, queued while it is
+ *  fetched, dropped otherwise. A version that is not the next one means an event was lost: the
+ *  detail is dropped and fetched again (there is no replay). */
+function onRunFeed(run: string, ev: RunFeedEvent) {
+  const cur = getState().runDetail[run];
+  const r = runLoads.event(run, cur, ev);
+  if (r === "queued" || r === "ignored" || r === cur) return;
+  if (r === "gap") { clearRunDetail(run); void fetchRun(run); return; }
+  setRunDetail(run, r);
+}
+
+/** Fetches a run's detail in full; what arrives for it meanwhile is applied after it by the rule
+ *  above. A fetch begun later takes the run over. */
+function fetchRun(run: string): Promise<void> {
+  const ticket = runLoads.begin(run);
+  runAborts.get(run)?.abort(); // a fetch begun earlier is superseded: its answer is not needed
+  const ctl = new AbortController();
+  runAborts.set(run, ctl);
+  const done: Promise<void> = (async () => {
+    let got: RunDetail | undefined;
+    try { got = normDetail(await api.runDetail(run, ctl.signal)); runErrors.delete(run); }
+    catch (e) { if (!ctl.signal.aborted) { console.error(`loading run ${run}:`, e); runErrors.set(run, e instanceof Error && e.message ? e.message : String(e)); } }
+    if (runAborts.get(run) === ctl) runAborts.delete(run);
+    const r = runLoads.end(run, ticket, got);
+    if (r === "superseded") return runFetches.get(run); // the newer fetch has the run
+    if (r === "gap") return fetchRun(run);              // the events queued start past the answer
+    if (r !== "failed") setRunDetail(run, r);
+  })().finally(() => { if (runFetches.get(run) === done) runFetches.delete(run); });
+  runFetches.set(run, done);
+  return done;
+}
+
+/** Loads a started run's detail into State.runDetail and keeps it current; one fetch at a time
+ *  for a run. Resolves when the fetch ended and never rejects: after a failed one the detail is
+ *  still absent, and the caller may call again. */
+export function loadRun(run: string): Promise<void> {
+  if (getState().runDetail[run]) return Promise.resolve();
+  return runFetches.get(run) ?? fetchRun(run);
+}
+
+/** Forgets a run's detail (another item was opened): a fetch that runs is discarded, and the run's
+ *  events are dropped from here on. */
+export function dropRun(run: string) {
+  runLoads.drop(run);
+  runFetches.delete(run);
+  runErrors.delete(run);
+  runAborts.get(run)?.abort(); runAborts.delete(run); // the answer is not waited for: the next run's detail is
+  dropTexts(run);
+  clearRunDetail(run);
+}
+
+/** `run_removed`: the run goes with its detail and with its agents that were held. */
+function onRunRemoved(run: string) {
+  for (const a of Object.values(getState().agents)) if (a.run === run) forgetThread(a.id);
+  runLoads.drop(run);
+  runFetches.delete(run);
+  runErrors.delete(run);
+  runAborts.get(run)?.abort(); runAborts.delete(run);
+  dropTexts(run);
+  removeRun(run);
+}
+
+// ---- run agents: chat-shaped records that are in no list. One is kept (its view in State.agents,
+// its thread in State.items) only while a view holds it to show its transcript.
+
+const LINGER_MS = 5000; // how long an agent is kept after its last view let go: a swap with its subagent, a tab change
+const agentHolds = new Holds(LINGER_MS, dropAgent);
+const agentViews = new Map<string, ChatView[]>(); // by agent chat id: the `chat` events that arrive while its view is fetched
+
+/** A run agent's view from the server: kept only while the agent is held. */
+function onAgent(c: ChatView) {
+  if (!agentHolds.has(c.id)) return;
+  const buf = agentViews.get(c.id);
+  if (buf) { buf.push(c); return; }
+  setState((s) => ({ agents: { ...s.agents, [c.id]: c } }));
+}
+
+/** Fetches a held agent's view; a `chat` event that arrived meanwhile is newer and wins. */
+async function fetchAgent(id: string) {
+  if (agentViews.has(id)) return; // its fetch runs
+  agentViews.set(id, []);
+  let v: ChatView | undefined;
+  let why = "";
+  try { v = await api.chat(id); } catch (e) { console.error(`loading agent ${id}:`, e); why = e instanceof Error && e.message ? e.message : String(e); }
+  const buf = agentViews.get(id) ?? [];
+  agentViews.delete(id);
+  if (!agentHolds.has(id)) return; // let go meanwhile
+  const last = buf.at(-1) ?? v;
+  if (last) setState((s) => ({ agents: { ...s.agents, [id]: last }, agentErrors: without(s.agentErrors, id) }));
+  else setState((s) => ({ agentErrors: { ...s.agentErrors, [id]: why || "the server did not answer" } })); // the view says so, with a way to try again
+}
+
+/** Forgets a thread and everything fetched or queued for it: its items, its subagents and their
+ *  threads. A fetch of it that runs is discarded when it answers. */
+function forgetThread(chat: string) {
+  for (const k of [...pending.keys()]) if (k === chat || k.startsWith(chat + "/")) { pending.delete(k); loads.begin(k); }
+  loads.begin(chat); lists.delete(chat); listBranch.delete(chat);
+  dropThread(chat);
+}
+
+/** The linger after an agent's last release passed: its view and its thread go. */
+function dropAgent(id: string) {
+  agentViews.delete(id);
+  forgetThread(id);
+  setState((s) => {
+    const agentErrors = without(s.agentErrors, id);
+    if (!s.agents[id]) return { agentErrors };
+    const { [id]: _, ...agents } = s.agents;
+    return { agents, agentErrors };
+  });
+}
+
+/** Holds a run agent while a view shows its transcript: its view (State.agents) and its thread
+ *  (State.items, with its subagents) are fetched and kept current. Returns the release; a few
+ *  seconds after the last one the agent is dropped, so the 60 to 100 agents of a long run never
+ *  pile up in memory. */
+export function holdAgent(id: string): () => void {
+  const { release } = agentHolds.hold(id);
+  if (!getState().agents[id]) void fetchAgent(id);
+  if (!getState().items[id]) void loadItems(id);
+  return release;
+}
+
+/** A held agent whose view could not be fetched is asked for again. */
+export function retryAgent(id: string) {
+  setState((s) => ({ agentErrors: without(s.agentErrors, id) }));
+  if (!agentHolds.has(id)) return;
+  void fetchAgent(id); void loadItems(id);
+}
+
+const without = (m: Record<string, string>, id: string): Record<string, string> => {
+  if (!(id in m)) return m;
+  const { [id]: _, ...rest } = m;
+  return rest;
+};
+
+/** After a snapshot (it dropped every thread): the view and the thread of each agent that is held
+ *  or lingers, again. */
+function refreshAgents() {
+  for (const id of agentHolds.ids()) { void fetchAgent(id); void loadItems(id); }
 }

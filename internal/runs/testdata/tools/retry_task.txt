@@ -1,0 +1,60 @@
+=== no such task
+orchestrator: retry_task {"id":"T44","reason":"again"}
+refusal:
+there is no task 'T44' (the run has tasks T01 to T06)
+
+=== the reason is empty
+orchestrator: retry_task {"id":"T03"}
+refusal:
+the reason is empty
+
+=== a waiting task
+orchestrator: retry_task {"id":"T06","reason":"again"}
+refusal:
+T06 is pending; only a failed or cancelled task can be retried
+
+=== a running task
+orchestrator: retry_task {"id":"T05","reason":"again"}
+refusal:
+T05 is running; only a failed or cancelled task can be retried
+
+=== a task that is being merged
+orchestrator: retry_task {"id":"T02","reason":"again"}
+refusal:
+T02 is merging; only a failed or cancelled task can be retried
+
+=== a done task
+orchestrator: retry_task {"id":"T01","reason":"again"}
+refusal:
+T01 is done; only a failed or cancelled task can be retried
+
+=== the tier is none of the three
+orchestrator: retry_task {"id":"T03","reason":"again","tier":"deeper"}
+refusal:
+tier must be one of deep, standard, light
+
+=== queued again
+orchestrator: retry_task {"id":"T03","reason":"the fixture files are in testdata/ now"}
+answer:
+T03 is queued again as attempt 2 (standard), from a fresh checkout.
+
+=== queued again by a chat: it depends on a cancelled task
+chat: retry_task {"id":"T04","reason":"the user wants the notes"}
+answer:
+T04 is queued again as attempt 2 (standard), from a fresh checkout. Note: it depends on T03 (cancelled) and will not start until that is retried and done, or the dependency is removed.
+
+=== refused for a chat
+chat: retry_task {"id":"T04","reason":"again"}
+refusal:
+T04 is pending; only a failed or cancelled task can be retried
+
+=== queued again on a higher tier
+orchestrator: retry_task {"id":"T03","reason":"it was  too hard\nfor its agent","tier":"deep"}
+answer:
+T03 is queued again as attempt 3 (deep), from a fresh checkout.
+
+=== queued again, in a run without git
+orchestrator: retry_task {"id":"T01","reason":"now"}
+answer:
+T01 is queued again as attempt 2 (standard).
+

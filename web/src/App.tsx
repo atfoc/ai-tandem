@@ -1,15 +1,23 @@
-// The window: the sidebar, and beside it the selected board (with its chat
-// panel), the selected plain chat, or the home screen.
+// The window: the sidebar, and beside it the selected board or run (with its chat
+// panel, which beside a run also shows the transcripts of the run's own agents), the
+// selected plain chat, or the home screen.
 import React, { useEffect, useState } from "react";
-import { useStore, setState, getState } from "./store.ts";
-import { Sidebar, AgentItems, newChat, newBoard, openBoard } from "./Sidebar.tsx";
+import { useStore, setState, getState, closeRunAgent } from "./store.ts";
+import { Sidebar, AgentItems, newChat, newBoard, newRun, openBoard } from "./Sidebar.tsx";
 import { ChatHeader, Thread } from "./ChatView.tsx";
-import { Composer } from "./Composer.tsx";
+import { Composer, focusComposer } from "./Composer.tsx";
 import { Canvas } from "./Canvas.tsx";
 import { ConfirmDialog, TakeoverScreen, WaitingScreen, Menu, reportError } from "./Dialogs.tsx";
 import { boardChats, groupPath } from "./logic/tree.ts";
-import { AgentGlyph, BoardIcon } from "./icons.tsx";
+import { isDraft } from "./logic/run.ts";
+import { runPane } from "./logic/runview.ts";
+import { AgentGlyph, BoardIcon, RunIcon } from "./icons.tsx";
+import { RunBar } from "./run/RunBar.tsx";
+import { RunComposer } from "./run/RunComposer.tsx";
+import { RunView } from "./run/RunView.tsx";
+import { AgentPane } from "./run/AgentPane.tsx";
 import { Resizer } from "./Resizer.tsx";
+import { Guard } from "./Guard.tsx";
 import { SubagentDrawer } from "./Subagents.tsx";
 import { TreePopup } from "./fork/TreePopup.tsx";
 import type { Pane as PaneKind } from "./logic/layout.ts";
@@ -19,7 +27,11 @@ export function App() {
   const role = useStore((s) => s.role);
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.code === "KeyJ") { e.preventDefault(); e.stopPropagation(); setState({ panel: !getState().panel }); }
+      if (!((e.metaKey || e.ctrlKey) && e.code === "KeyJ")) return;
+      e.preventDefault(); e.stopPropagation();
+      // The panel hides whatever it shows: a run agent's transcript closes with it.
+      const s = getState();
+      if (s.runAgent && s.runAgent.run === s.sel.run) { closeRunAgent(); setState({ panel: false }); } else setState({ panel: !s.panel });
     };
     window.addEventListener("keydown", k, true);
     return () => window.removeEventListener("keydown", k, true);
@@ -33,7 +45,11 @@ function Grouped() {
   const sel = useStore((s) => s.sel);
   const chat = useStore((s) => (sel.chat ? s.chats[sel.chat] : undefined));
   const board = useStore((s) => (sel.board ? s.boards[sel.board] : undefined));
+  // (the run's id and whether its goal is sent, not its record: that changes with every task)
+  const runId = useStore((s) => (sel.run && s.runs[sel.run] ? sel.run : null));
+  const runDraft = useStore((s) => (sel.run && s.runs[sel.run] ? isDraft(s.runs[sel.run]) : false));
   const panel = useStore((s) => s.panel);
+  const runAgent = useStore((s) => s.runAgent);
   const connecting = useStore((s) => s.role === "connecting" && !s.connected);
 
   let main: React.ReactNode;
@@ -54,7 +70,32 @@ function Grouped() {
         </main>
       </>
     );
-  } else if (chat && !chat.board) {
+  } else if (runId) {
+    // The panel beside a run: a chat on the run, or over it the transcript of one of the run's own agents.
+    const runChat = chat && chat.run === runId ? chat : undefined;
+    const pane = runPane(runId, { runAgent, chat: runChat?.id ?? null, panel });
+    main = (
+      <>
+        {pane && (
+          <Pane pane="panel" className="board-panel">
+            {"agent" in pane
+              ? <AgentPane key={pane.agent} runId={runId} agentId={pane.agent} back={pane.back} />
+              : (
+                <>
+                  <ChatHeader chatId={pane.chat} />
+                  <Thread chatId={pane.chat} />
+                  <Composer key={pane.chat} chatId={pane.chat} />
+                </>
+              )}
+          </Pane>
+        )}
+        <main className="board-stage run-stage">
+          <RunBar run={runId} chatOpen={!!pane && "chat" in pane} />
+          {runDraft ? <RunComposer key={runId} runId={runId} /> : <RunView key={runId} runId={runId} />}
+        </main>
+      </>
+    );
+  } else if (chat && !chat.board && !chat.run) {
     main = (
       <main className="chat-page">
         <ChatHeader chatId={chat.id} />
@@ -70,11 +111,18 @@ function Grouped() {
 
   return (
     <div className="app">
-      <Pane pane="side" className="side-pane"><Sidebar /></Pane>
-      {main}
+      <Pane pane="side" className="side-pane"><Side /></Pane>
+      <Guard what="this page" resetKey={`${sel.board}|${sel.run}|${sel.chat}`}>{main}</Guard>
       <SubagentDrawer />
     </div>
   );
+}
+
+/** The sidebar behind its own fence: a record it cannot draw leaves the page beside it usable, and
+ *  the next change of the lists draws it again. */
+function Side() {
+  const key = useStore((s) => s.runs);
+  return <Guard what="the sidebar" resetKey={key}><Sidebar /></Guard>;
 }
 
 /** A pane with its width from the store and a resize handle on its right edge. Only the pane
@@ -124,12 +172,13 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
 function Home() {
   return (
     <main className="home">
-      <div className="home-glyphs"><AgentGlyph agent="claude" size={26} /><BoardIcon size={26} /></div>
-      <h2>Start a chat or a whiteboard</h2>
-      <p>Chats are Claude Code, Cursor or pi sessions, the same as in a terminal. A whiteboard is an Excalidraw board with its own chats that can see and draw on it.</p>
+      <div className="home-glyphs"><AgentGlyph agent="claude" size={26} /><BoardIcon size={26} /><RunIcon size={26} /></div>
+      <h2>Start a chat, a whiteboard or a run</h2>
+      <p>Chats are Claude Code, Cursor or pi sessions, the same as in a terminal. A whiteboard is an Excalidraw board with its own chats that can see and draw on it. A run takes a goal and works on it with a team of agents while you follow along.</p>
       <div className="row-gap">
         <button className="btn primary" onClick={() => void newChat("claude", { group: UNGROUPED })}><AgentGlyph agent="claude" size={12} /> New chat</button>
         <button className="btn" onClick={() => newBoard(UNGROUPED).catch((e) => reportError("Couldn't create the whiteboard", e))}><BoardIcon /> New whiteboard</button>
+        <button className="btn" onClick={() => newRun(UNGROUPED).then(focusComposer, (e) => reportError("Couldn't create the run", e))}><RunIcon /> New run</button>
       </div>
     </main>
   );

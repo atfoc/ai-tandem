@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildTree, boardChats, contents, groupPath, subtree } from "../src/logic/tree.ts";
-import type { Board, ChatView, Group } from "../src/types.ts";
+import type { Board, ChatView, Group, RunView } from "../src/types.ts";
 import { UNGROUPED } from "../src/types.ts";
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
@@ -142,4 +142,84 @@ test("a parent cycle in bad state doesn't hang", () => {
   const cyc: Group[] = [{ id: "g_a", name: "A", parent: "g_b" }, { id: "g_b", name: "B", parent: "g_a" }];
   assert.deepEqual(groupPath(cyc, "g_a"), ["B", "A"]);
   buildTree({ groups: cyc, boards: {}, chats: {} }, false);
+});
+
+// ---- runs
+
+const run = (id: string, created: string, group: string, archived = false): RunView => ({
+  id, name: id, group, created, agent: "claude", tiers: { deep: { model: "opus" }, standard: { model: "opus" }, light: { model: "opus" } }, cwd: "/tmp",
+  settings: { maxParallel: 4, maxTurns: 60, maxCost: 0, wake: "each", maxIdleTurns: 3, agentTimeoutSec: 10800, agentRetries: 2 },
+  status: "draft", activeMs: 0, asOf: 0, turns: 0, idleStreak: 0,
+  counts: { held: 0, deps: 0, blocked: 0, slot: 0, setup: 0, work: 0, merge: 0, done: 0, failed: 0, cancelled: 0 },
+  cost: 0, attention: 0, ...arch(archived),
+});
+const runs = byId([
+  run("r_old", "2026-09-01T00:00:00Z", "g_a"),
+  run("r_new", "2026-09-03T00:00:00Z", "g_a"),
+  run("r_tie_b", "2026-09-02T00:00:00Z", "g_a"),
+  run("r_tie_a", "2026-09-02T00:00:00Z", "g_a"),
+  run("r_loose", "2026-09-01T00:00:00Z", UNGROUPED),
+  run("r_lost", "2026-09-02T00:00:00Z", "g_gone"),
+  run("r_arch", "2026-09-04T00:00:00Z", "g_a", true),
+  run("r_inold", "2026-09-01T00:00:00Z", "g_x", true),
+  run("r_hidden", "2026-09-05T00:00:00Z", "g_x"),
+]);
+const withRuns = { ...s, runs };
+
+test("runs are grouped and ordered newest first, the id breaking ties", () => {
+  const t = buildTree(withRuns, false);
+  assert.deepEqual(ids(t.groups[1].runs), ["r_new", "r_tie_a", "r_tie_b", "r_old"]);
+  assert.deepEqual(ids(t.groups[0].runs), []);
+  assert.deepEqual(ids(t.groups[1].boards), ["b_alpha", "b_alpha2", "b_zeta"], "boards are as without runs");
+  assert.deepEqual(buildTree(s, false).loose.runs, [], "a state without runs has none");
+});
+
+test("a run of an unknown or hidden group falls into loose", () => {
+  const t = buildTree(withRuns, false);
+  assert.deepEqual(ids(t.loose.runs), ["r_hidden", "r_lost", "r_loose"]);
+});
+
+test("archived runs are hidden unless archived items show", () => {
+  const hidden = buildTree(withRuns, false);
+  assert.ok(![...hidden.loose.runs, ...hidden.groups.flatMap((g) => g.runs)].some((r) => r.archived));
+  const t = buildTree(withRuns, true);
+  assert.deepEqual(ids(t.groups[1].runs), ["r_arch", "r_new", "r_tie_a", "r_tie_b", "r_old"]);
+  assert.deepEqual(ids(t.groups[2].runs), ["r_hidden", "r_inold"], "in their archived group");
+  assert.deepEqual(ids(t.loose.runs), ["r_lost", "r_loose"]);
+});
+
+test("contents includes the runs of subgroups", () => {
+  const groups: Group[] = [{ id: "g_top", name: "Top" }, { id: "g_kid", name: "Kid", parent: "g_top" }, { id: "g_grand", name: "Grand", parent: "g_kid" }];
+  const t = buildTree({ groups, boards: {}, chats: {}, runs: byId([
+    run("r_top", "2026-09-01T00:00:00Z", "g_top"), run("r_kid", "2026-09-02T00:00:00Z", "g_kid"), run("r_grand", "2026-09-03T00:00:00Z", "g_grand"),
+  ]) }, false);
+  assert.deepEqual(ids(t.groups[0].runs), ["r_top"]);
+  assert.deepEqual(ids(contents(t.groups[0]).runs), ["r_top", "r_kid", "r_grand"]);
+  assert.deepEqual(ids(contents(t.groups[0].children[0]).runs), ["r_kid", "r_grand"]);
+});
+
+test("a chat on a run is not a plain chat", () => {
+  const on = byId([
+    chat("c_plain", "2026-09-01T00:00:00Z", { group: "g_a" }),
+    { ...chat("c_run", "2026-09-02T00:00:00Z", {}), run: "r_new" },
+    { ...chat("c_run_loose", "2026-09-02T00:00:00Z", {}), run: "r_loose" },
+  ]);
+  const t = buildTree({ groups, boards, chats: on, runs }, true);
+  assert.deepEqual(ids(t.groups.find((g) => g.group.id === "g_a")!.chats), ["c_plain"]);
+  assert.deepEqual(ids(t.loose.chats), [], "it has no group of its own, and still does not fall into loose");
+});
+
+test("a record with a role never appears anywhere", () => {
+  const agents = byId([
+    { ...chat("a_turn", "2026-09-06T00:00:00Z", {}), run: "r_new", role: "orchestrator" as const },
+    { ...chat("a_task", "2026-09-06T00:00:00Z", { group: "g_a" }), role: "task" as const },      // malformed on purpose:
+    { ...chat("a_merge", "2026-09-06T00:00:00Z", { board: "b_zeta" }), role: "merge" as const }, // a role wins over where it claims to be
+    { ...chat("a_loose", "2026-09-06T00:00:00Z", {}), role: "task" as const },
+  ]);
+  for (const showArchived of [false, true]) {
+    const t = buildTree({ groups, boards, chats: { ...chats, ...agents }, runs }, showArchived);
+    const all = [...t.loose.chats, ...t.groups.flatMap((g) => contents(g).chats), ...boardChats({ ...chats, ...agents }, "b_zeta", showArchived)];
+    assert.ok(all.length > 0);
+    assert.ok(!all.some((c) => c.role), "no agent in a list");
+  }
 });

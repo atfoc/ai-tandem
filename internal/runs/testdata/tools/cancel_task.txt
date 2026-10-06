@@ -1,0 +1,65 @@
+=== no such task
+orchestrator: cancel_task {"id":"T9","reason":"not needed"}
+refusal:
+there is no task 'T9' (the run has tasks T01 to T06)
+
+=== the reason is empty
+orchestrator: cancel_task {"id":"T06","reason":"  "}
+refusal:
+the reason is empty
+
+=== a done task
+orchestrator: cancel_task {"id":"T01","reason":"not needed"}
+refusal:
+T01 is done; its work is already part of the run. Add a task to change it.
+
+=== cancelled: a failed task that another waits for
+orchestrator: cancel_task {"id":"T03","reason":"there is nothing to measure"}
+answer:
+Cancelled T03. T04 depend on it and cannot start until you change or cancel them.
+
+=== already cancelled
+orchestrator: cancel_task {"id":"T03","reason":"again"}
+refusal:
+T03 is already cancelled
+
+=== cancelled: a waiting task that the orchestrator waits for
+orchestrator: cancel_task {"id":"T04","reason":"the notes are not needed"}
+answer:
+Cancelled T04. It is taken out of what you wait for.
+
+=== a task that is being merged
+orchestrator: cancel_task {"id":"T02","reason":"wrong approach"}
+refusal:
+T02 has finished and is being merged; it can no longer be cancelled.
+
+=== a task that is starting
+orchestrator: cancel_task {"id":"T05","reason":"wrong approach"}
+refusal:
+T05 is starting; try again in a moment
+
+=== a task whose agent does not let go
+orchestrator: cancel_task {"id":"T05","reason":"wrong approach"}
+refusal:
+T05 is being stopped but has not let go yet; look again with get_run
+
+=== a task that ended otherwise while it was being stopped
+orchestrator: cancel_task {"id":"T05","reason":"wrong approach"}
+refusal:
+T05 is now merging
+
+=== cancelled: a running task, the last one waited for
+orchestrator: cancel_task {"id":"T02","reason":"wrong approach"}
+answer:
+Cancelled T02. T06 depend on it and cannot start until you change or cancel them. It is taken out of what you wait for.
+
+=== cancelled by a chat: the orchestrator's wait stays
+chat: cancel_task {"id":"T07","reason":"the user changed their mind"}
+answer:
+Cancelled T07.
+
+=== refused for a chat
+chat: cancel_task {"id":"T07","reason":"again"}
+refusal:
+T07 is already cancelled
+

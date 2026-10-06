@@ -155,6 +155,27 @@ func forkMessagesReply(ids ...string) fakeReply {
 	return fakeReply{Data: mustJSON(map[string]any{"messages": msgs})}
 }
 
+// A fork's process gets its MCP config the way an ordinary start does: in the file of its own
+// folder (the branch's), never in the environment.
+func TestSpawnForkMCPConfigFile(t *testing.T) {
+	const tok = "fork-mcp-token"
+	f, s, _, _ := forkFake(t, map[string]fakeReply{
+		"get_fork_messages": {Data: json.RawMessage(`{"messages":[{"entryId":"0efdb07e","text":"one"},{"entryId":"aa11bb22","text":"new"}]}`)},
+	}, `{"type":"agent_settled"}`)
+	o := forkOptions(t)
+	o.MCP = &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: tok}
+	a, _, err := s.SpawnFork(o, agent.ForkSource{ChatID: "A", SessionID: forkSrcSession,
+		Point: "0efdb07e", Next: "b85ebc6a"})
+	if err != nil {
+		t.Fatalf("SpawnFork: %v", err)
+	}
+	t.Cleanup(a.Close)
+	path := filepath.Join(f.root, "chats", "A", "branches", "b1", "mcp.json")
+	if got := f.invocation(t).mcpFileConfig(t, path, tok); !strings.Contains(got, "Bearer "+tok) {
+		t.Fatalf("the fork's mcp.json = %q", got)
+	}
+}
+
 func TestSpawnForkAtEndClones(t *testing.T) {
 	// The source holds nothing past the point: its last user message is the point's.
 	f, s, _, srcFile := forkFake(t, map[string]fakeReply{"get_fork_messages": forkMessagesReply("0efdb07e", "59b265f9")})
@@ -393,21 +414,21 @@ func TestFindSessionFile(t *testing.T) {
 	if err := os.Chtimes(old, past, past); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.findSessionFile(forkBranch, "s1"); err != nil || got != newer {
+	if got, err := s.findSessionFile(s.chatDir(forkBranch, ""), "s1"); err != nil || got != newer {
 		t.Fatalf("findSessionFile = %q, %v; want the newest match %q", got, err, newer)
 	}
 	if err := os.Chtimes(newer, past.Add(-time.Hour), past.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.findSessionFile(forkBranch, "s1"); err != nil || got != old {
+	if got, err := s.findSessionFile(s.chatDir(forkBranch, ""), "s1"); err != nil || got != old {
 		t.Fatalf("findSessionFile = %q, %v; want %q, now the newest", got, err, old)
 	}
 	for _, id := range []string{"", "s2", "1"} {
-		if got, err := s.findSessionFile(forkBranch, id); err == nil {
+		if got, err := s.findSessionFile(s.chatDir(forkBranch, ""), id); err == nil {
 			t.Errorf("findSessionFile(%q) = %q, want an error", id, got)
 		}
 	}
-	if _, err := s.findSessionFile("no-chat", "s1"); err == nil || !strings.Contains(err.Error(), "s1") {
+	if _, err := s.findSessionFile(s.chatDir("no-chat", ""), "s1"); err == nil || !strings.Contains(err.Error(), "s1") {
 		t.Errorf("missing folder: error %v, want one naming the session", err)
 	}
 }

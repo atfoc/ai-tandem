@@ -1,0 +1,224 @@
+=== no such task
+chat: get_task {"id":"T77"}
+refusal:
+there is no task 'T77' (the run has tasks T01 to T07)
+
+=== no id
+chat: get_task {}
+refusal:
+there is no task '' (the run has tasks T01 to T07)
+
+=== no such attempt
+chat: get_task {"id":"T03","attempt":3}
+refusal:
+T03 has no attempt 3
+
+=== the part is neither
+chat: get_task {"id":"T03","part":"result"}
+refusal:
+part must be brief or report
+
+=== a done task that only reports
+chat: get_task {"id":"T01"}
+answer:
+# T01 [research, reports only] Read the old importer
+
+Status: done
+Tier: standard (A build or a later task checks it.)
+Depends on: nothing
+Needed by: nothing
+Added in turn 1
+Time: 4m22s
+
+Agents:
+- T01-work (task, attempt 1, sonnet): done, $0.50
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+## Result (completed)
+
+The old importer reads CSV in three passes.
+
+# Report
+
+Three passes: sniff, parse, write.
+
+=== a done task that writes: commits, files, agents, result, report
+chat: get_task {"id":"T02"}
+answer:
+# T02 [implement, writes] Build the importer
+
+Status: done
+Tier: standard (A build or a later task checks it.)
+Depends on: nothing
+Needed by: T06, T07
+Added in turn 1
+Time: 5m46s
+Commits: 87220658d4c8..fd8c08d45948 on branch aiwb/r_tools001/T02, merged into the integration branch
+2 file(s) changed, +29 -4:
+  internal/importer/importer.go +24 -2
+  internal/importer/importer_test.go +5 -2
+
+Agents:
+- T02-work (task, attempt 1, sonnet): done, $1.25, context up to 148k tokens
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+## Result (completed)
+
+Built the importer.
+
+# Report
+
+One pass.
+
+=== a running task in its second attempt
+chat: get_task {"id":"T03"}
+answer:
+# T03 [verify, reports only] Measure the old importer
+
+Status: running (attempt 2)
+Tier: deep (it was too hard for its agent)
+Depends on: nothing
+Needed by: T04
+Added in turn 1, changed in turn 2
+Time: 1m39s
+
+Agents:
+- T03-work (task, attempt 1, sonnet): failed
+- T03-a2-work (task, attempt 2, opus, high effort): running
+
+Earlier attempt 1 (standard): failed. its agent reported that it could not do the task: there is no benchmark data in the repository
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+It has no result yet. `get_agent` with agent T03-a2-work shows what it is doing.
+
+=== its first attempt
+chat: get_task {"id":"T03","attempt":1}
+answer:
+# T03 [verify, reports only] Measure the old importer
+
+Status: failed (attempt 1 of 2)
+Tier: deep (it was too hard for its agent); attempt 1 ran on standard
+Depends on: nothing
+Needed by: T04
+Added in turn 1, changed in turn 2
+Time: 4m10s
+Error: its agent reported that it could not do the task: there is no benchmark data in the repository
+
+Agents:
+- T03-work (task, attempt 1, sonnet): failed
+- T03-a2-work (task, attempt 2, opus, high effort): running
+
+Attempt 2 (deep): not finished.
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+=== a task that waits for a failed one
+chat: get_task {"id":"T04"}
+answer:
+# T04 [docs, reports only] Write the migration notes
+
+Status: pending, waiting on T03
+Tier: standard (A build or a later task checks it.)
+Depends on: T03
+Needed by: nothing
+Added in turn 1
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+=== a cancelled task with a branch
+chat: get_task {"id":"T05"}
+answer:
+# T05 [implement, writes] Port the tests
+
+Status: cancelled
+Tier: standard (A build or a later task checks it.)
+Depends on: nothing
+Needed by: nothing
+Added in turn 1
+Time: 5m04s
+Cancelled: the tests move with the importer
+Whatever it changed before it stopped is on branch aiwb/r_tools001/T05, not merged.
+
+Agents:
+- T05-work (task, attempt 1, sonnet): running
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+=== a task a chat added, held by the chat
+chat: get_task {"id":"T07"}
+answer:
+# T07 [verify, reports only] Check the importer by hand
+
+Status: pending, starts when the chat that changed it ends its reply
+Tier: standard (A build or a later task checks it.)
+Depends on: T02
+Needed by: nothing
+Added by a chat on the run after turn 2
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+=== only the brief
+chat: get_task {"id":"T06","part":"brief"}
+answer:
+# T06: brief, revision 1 of 1 (91 characters)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+=== only the report
+chat: get_task {"id":"T02","part":"report"}
+answer:
+# T02: report of attempt 1 (completed, 19 characters)
+
+Built the importer.
+
+# Report
+
+One pass.
+
+=== only the report, of an attempt that has none
+chat: get_task {"id":"T03","part":"report"}
+answer:
+T03 has no report yet (attempt 2).
+
+=== only the report, past its end
+chat: get_task {"id":"T02","part":"report","offset":900}
+refusal:
+offset 900 is past the end: the answer has 19 characters.
+
+=== the orchestrator reads a task: its tier, and the report it is given
+orchestrator: get_task {"id":"T06"}
+answer:
+# T06 [implement, writes] Clean up
+
+Status: pending, ready to start
+Tier: light (It follows a recipe.)
+Depends on: T02 (given the full report of T02)
+Needed by: nothing
+Added in turn 1, changed in turn 2
+
+## Brief (revision 1 of 1)
+
+Read the old importer and write down what it does, step by step, with the files it touches.
+
+=== the orchestrator asks for a task that is not there
+orchestrator: get_task {"id":"T0"}
+refusal:
+there is no task 'T0' (the run has tasks T01 to T07)
+

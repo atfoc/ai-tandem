@@ -359,7 +359,7 @@ func TestForkPiCutTurn(t *testing.T) {
 	}
 	e.fork(id, 8)
 	sid := e.meta(id).SessionID
-	if got, want := e.pi.forkCalls()[0].src, (agent.ForkSource{ChatID: id, SessionID: sid, Point: "p3", End: true}); got != want {
+	if got, want := e.pi.forkCalls()[0].src, (agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: sid, Point: "p3", End: true}); got != want {
 		t.Fatalf("pi fork at the end %+v, want %+v", got, want)
 	}
 	if e.meta(e.pi.forkCalls()[0].opts.ChatID).ForkSource != nil {
@@ -373,7 +373,7 @@ func TestForkPiCutTurn(t *testing.T) {
 	if _, err := e.m.Fork(id, ForkReq{Branch: model.MainBranch, At: 3, Message: &five}); err != nil {
 		t.Fatalf("claude fork and edit past a cut turn: %v", err)
 	}
-	want := agent.ForkSource{ChatID: id, SessionID: e.meta(id).SessionID, Point: "p1", Next: "p3"}
+	want := agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: e.meta(id).SessionID, Point: "p1", Next: "p3"}
 	for _, call := range e.claude.forkCalls() {
 		if call.src != want {
 			t.Fatalf("claude fork at 3 %+v, want %+v", call.src, want)
@@ -384,7 +384,7 @@ func TestForkPiCutTurn(t *testing.T) {
 	e = newEnv(t)
 	id, _ = e.talked(model.Pi, "", 3)
 	e.fork(id, 3)
-	want = agent.ForkSource{ChatID: id, SessionID: e.meta(id).SessionID, Point: "p1", Next: "p2"}
+	want = agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: e.meta(id).SessionID, Point: "p1", Next: "p2"}
 	if got := e.pi.forkCalls()[0].src; got != want {
 		t.Fatalf("pi fork at the end of turn 1 %+v, want %+v", got, want)
 	}
@@ -397,7 +397,7 @@ func TestForkAtEndWithoutMarks(t *testing.T) {
 		t.Fatalf("Fork inside an older chat: %v", err)
 	}
 	v := e.fork(id, 2)
-	want := agent.ForkSource{ChatID: id, SessionID: e.meta(id).SessionID, End: true}
+	want := agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: e.meta(id).SessionID, End: true}
 	if got := e.claude.forkCalls()[0].src; got != want {
 		t.Fatalf("fork source %+v, want %+v", got, want)
 	}
@@ -486,11 +486,11 @@ func TestForkNewChat(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("%d fork starts", len(calls))
 	}
-	if want := (agent.ForkSource{ChatID: id, SessionID: srcMeta.SessionID, Point: "p1", Next: "p2"}); calls[0].src != want {
+	if want := (agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: srcMeta.SessionID, Point: "p1", Next: "p2"}); calls[0].src != want {
 		t.Fatalf("fork source %+v, want %+v", calls[0].src, want)
 	}
 	wantOpts := agent.SpawnOptions{ChatID: v.ID, SessionID: m.SessionID, Resume: true, Cwd: v.Cwd, Model: v.Model,
-		Effort: v.Effort, MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: m.Token}}
+		Effort: v.Effort, MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: m.Token}, Dir: e.st.P.ChatDir(v.ID)}
 	if !reflect.DeepEqual(calls[0].opts, wantOpts) {
 		t.Fatalf("fork options %+v, want %+v", calls[0].opts, wantOpts)
 	}
@@ -537,7 +537,7 @@ func TestForkNewChat(t *testing.T) {
 	if want := (model.Usage{CtxIn: 100, CtxOut: 10, CtxWindow: 1000, Turns: 3}); end.Usage != want {
 		t.Fatalf("usage of a fork at the end %+v", end.Usage)
 	}
-	if got, want := e.claude.forkCalls()[1].src, (agent.ForkSource{ChatID: id, SessionID: srcMeta.SessionID, Point: "p3", End: true}); got != want {
+	if got, want := e.claude.forkCalls()[1].src, (agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: srcMeta.SessionID, Point: "p3", End: true}); got != want {
 		t.Fatalf("fork source at the end %+v, want %+v", got, want)
 	}
 }
@@ -568,7 +568,7 @@ func TestForkBoardChat(t *testing.T) {
 	// Cursor: the session id is the adapter's; the fork is durable at once, so no source is kept.
 	// The forked session holds the whiteboard instructions already.
 	call := e.cursor.forkCalls()[0]
-	if want := (agent.ForkSource{ChatID: id, SessionID: "cur-1", Point: "p1", Next: "p2"}); call.src != want {
+	if want := (agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: "cur-1", Point: "p1", Next: "p2"}); call.src != want {
 		t.Fatalf("fork source %+v, want %+v", call.src, want)
 	}
 	if call.opts.SessionID != "" || call.opts.BoardID != bd.ID || !call.opts.Resume {
@@ -1118,7 +1118,7 @@ func TestForkSourceKeptUntilFirstTurn(t *testing.T) {
 	if len(calls) != 1 || e.claude.count() != 0 {
 		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
 	}
-	if want := (agent.ForkSource{ChatID: src, SessionID: srcSID, Point: "p1", Next: "p2"}); calls[0].src != want {
+	if want := (agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: srcSID, Point: "p1", Next: "p2"}); calls[0].src != want {
 		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
 	}
 	if o := calls[0].opts; o.SessionID != sid || o.ChatID != id || !o.Resume {
@@ -1282,7 +1282,7 @@ func TestForkOfFork(t *testing.T) {
 
 	// Not sent to yet: it has no session of its own, so its fork goes through the first source.
 	f2 := e.fork(f1, 3).ID
-	through := agent.ForkSource{ChatID: src, SessionID: srcSID, Point: "p1"}
+	through := agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: srcSID, Point: "p1"}
 	if got := e.claude.forkCalls()[1].src; got != through {
 		t.Fatalf("fork of an unsent fork %+v, want %+v", got, through)
 	}
@@ -1300,12 +1300,12 @@ func TestForkOfFork(t *testing.T) {
 		t.Fatalf("the fork after a cut turn %+v", e.meta(f1))
 	}
 	e.fork(f1, 3)
-	if got, want := e.claude.forkCalls()[2].src, (agent.ForkSource{ChatID: f1, SessionID: f1SID, Point: "p1"}); got != want {
+	if got, want := e.claude.forkCalls()[2].src, (agent.ForkSource{ChatID: f1, Dir: e.st.P.ChatDir(f1), SessionID: f1SID, Point: "p1"}); got != want {
 		t.Fatalf("fork of a sent fork %+v, want %+v", got, want)
 	}
 	n := len(e.items(f1))
 	e.fork(f1, n)
-	if got, want := e.claude.forkCalls()[3].src, (agent.ForkSource{ChatID: f1, SessionID: f1SID, End: true}); got != want {
+	if got, want := e.claude.forkCalls()[3].src, (agent.ForkSource{ChatID: f1, Dir: e.st.P.ChatDir(f1), SessionID: f1SID, End: true}); got != want {
 		t.Fatalf("fork of a sent fork at its end %+v, want %+v", got, want)
 	}
 
@@ -1315,7 +1315,7 @@ func TestForkOfFork(t *testing.T) {
 	old := e.stored(model.Claude, []model.Item{pUser(), pText()})
 	g1 := e.fork(old, 2).ID
 	e.fork(g1, 2)
-	if got, want := e.claude.forkCalls()[1].src, (agent.ForkSource{ChatID: old, SessionID: e.meta(old).SessionID}); got != want {
+	if got, want := e.claude.forkCalls()[1].src, (agent.ForkSource{ChatID: old, Dir: e.st.P.ChatDir(old), SessionID: e.meta(old).SessionID}); got != want {
 		t.Fatalf("fork of an unsent fork of an older chat %+v, want %+v", got, want)
 	}
 }
@@ -1330,7 +1330,7 @@ func (e *env) oldFork() (src, fork string) {
 	src = e.stored(model.Claude, []model.Item{pUser(), pText()})
 	fork = e.fork(src, 2).ID
 	srcSID := e.meta(src).SessionID
-	if got, want := e.claude.forkCalls()[0].src, (agent.ForkSource{ChatID: src, SessionID: srcSID, End: true}); got != want {
+	if got, want := e.claude.forkCalls()[0].src, (agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: srcSID, End: true}); got != want {
 		e.t.Fatalf("first start %+v, want %+v", got, want)
 	}
 	if got, want := e.meta(fork).ForkSource, (&model.ForkSource{Chat: src, Session: srcSID, Items: 2}); !reflect.DeepEqual(got, want) {
@@ -1408,7 +1408,7 @@ func TestForkWithoutPointSourceKept(t *testing.T) {
 	if len(calls) != 1 || e.claude.count() != 0 {
 		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
 	}
-	if want := (agent.ForkSource{ChatID: src, SessionID: srcSID}); calls[0].src != want {
+	if want := (agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: srcSID}); calls[0].src != want {
 		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
 	}
 	if sent := e.claude.lastFork(t).sent(); len(sent) != 1 || !reflect.DeepEqual(texts(sent[0]), []string{"hello"}) {
@@ -1449,7 +1449,7 @@ func TestForkWithoutPointOfABranch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		through := agent.ForkSource{ChatID: bid, SessionID: "ses-" + exBranch}
+		through := agent.ForkSource{ChatID: bid, Dir: e.st.P.ChatDir(bid), SessionID: "ses-" + exBranch}
 		if got, want := e.meta(v.ID).ForkSource, (&model.ForkSource{Chat: bid, Session: through.SessionID, Items: 6}); !reflect.DeepEqual(got, want) {
 			t.Fatalf("forkSource %+v, want %+v", got, want)
 		}
@@ -1487,7 +1487,7 @@ func TestForkWithoutPointSentBeforeSourceWentOn(t *testing.T) {
 	if len(calls) != 1 || e.claude.count() != 0 {
 		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
 	}
-	if want := (agent.ForkSource{ChatID: src, SessionID: srcSID}); calls[0].src != want {
+	if want := (agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: srcSID}); calls[0].src != want {
 		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
 	}
 	if sent := e.claude.lastFork(t).sent(); len(sent) != 1 || !reflect.DeepEqual(texts(sent[0]), []string{"again"}) {
@@ -1501,7 +1501,7 @@ func TestForkWithPointSourceWentOn(t *testing.T) {
 	src, a := e.talked(model.Claude, "", 1)
 	srcSID := e.meta(src).SessionID
 	id := e.fork(src, 3).ID // at the source's end
-	if got, want := e.claude.forkCalls()[0].src, (agent.ForkSource{ChatID: src, SessionID: srcSID, Point: "p1", End: true}); got != want {
+	if got, want := e.claude.forkCalls()[0].src, (agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: srcSID, Point: "p1", End: true}); got != want {
 		t.Fatalf("first start %+v, want %+v", got, want)
 	}
 	e.turn(src, a, 2)
@@ -1511,7 +1511,7 @@ func TestForkWithPointSourceWentOn(t *testing.T) {
 	if len(calls) != 1 || e.claude.count() != 0 {
 		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
 	}
-	if want := (agent.ForkSource{ChatID: src, SessionID: srcSID, Point: "p1"}); calls[0].src != want {
+	if want := (agent.ForkSource{ChatID: src, Dir: e.st.P.ChatDir(src), SessionID: srcSID, Point: "p1"}); calls[0].src != want {
 		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
 	}
 }

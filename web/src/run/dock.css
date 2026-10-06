@@ -1,0 +1,57 @@
+/* The dock under a run's timeline (RunDock.tsx) and what its views are made of. A view of the
+   dock may rely on: .dock-col (the column it is put in, at most 780 px), .rd-head / .rd-mark /
+   .rd-title (its heading), .rd-sub (the line under it), .rd-chips / .rd-k / .rd-chip (labelled
+   chips), .rd-md (a markdown text), .feed / .feed-row (lines with a time and a glyph),
+   and the tone classes .tone-ok / -danger / -warn / -muted / -faint / -orch / -chat. */
+.run-dock { position: relative; box-sizing: border-box; flex: none; display: flex; flex-direction: column; min-height: 0; max-height: 100%; background: var(--bg); border-top: 1px solid var(--line-2); }
+.run-dock.max { position: absolute; inset: 0; z-index: 30; max-height: none; border-top: 0; }
+.dock-resizer.resizer { top: -4px; bottom: auto; left: 0; right: 0; width: auto; height: 8px; cursor: row-resize; }
+.dock-resizer.resizer::after { top: 3px; bottom: auto; left: 0; right: 0; width: auto; height: 2px; }
+body.resizing.resizing-y, body.resizing.resizing-y * { cursor: row-resize !important; }
+
+.dock-tabs { box-sizing: border-box; flex: none; display: flex; align-items: center; gap: 2px; height: 32px; padding: 0 6px 0 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+/* in a narrow stage the tabs scroll under the dock's own buttons, which stay in reach */
+.dock-btns { position: sticky; right: 0; flex: none; display: inline-flex; align-items: center; gap: 2px; align-self: stretch; padding-left: 4px; background: var(--bg); }
+.run-dock:not(.closed) .dock-tabs { height: 33px; border-bottom: 1px solid var(--line); }
+.dock-tab { flex: none; display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: none; padding: 3px 9px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.dock-tab:hover { background: var(--hover); color: var(--text); }
+.dock-tab.on, .dock-tab.on:hover { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.dock-tab:focus-visible, .dock-tab button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dock-tab .v { font-weight: 400; color: var(--faint); }
+.dock-tab.entity { padding: 0; gap: 0; }
+.dock-tab.entity button { border: 0; background: none; color: inherit; font: inherit; padding: 3px 4px 3px 9px; border-radius: 6px 0 0 6px; }
+.dock-tab.entity button.x { padding: 3px 7px 3px 3px; border-radius: 0 6px 6px 0; font-size: 13px; font-weight: 400; line-height: 1; color: var(--faint); }
+.dock-tab.entity button.x:hover { color: var(--text); }
+.dock-sep { flex: none; width: 1px; height: 16px; margin: 0 4px; background: var(--line-2); }
+
+.dock-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px 14px; outline: 0; }
+.dock-col { max-width: 780px; }
+
+/* ---- what the views are made of */
+.rd-head { display: flex; align-items: baseline; gap: 8px; }
+.rd-mark { flex: none; width: 14px; text-align: center; font-weight: 700; }
+.rd-mark .sub-dot { width: 7px; height: 7px; }
+.rd-title { min-width: 0; font-weight: 620; font-size: 13.5px; overflow-wrap: anywhere; }
+.rd-sub { margin: 2px 0 8px; font-size: 12px; color: var(--muted); }
+.rd-sub .link.lk, .feed-row .link.lk { padding: 0; font-size: inherit; font-weight: 600; }
+.rd-sub .link { padding: 0; }
+.rd-agent { display: inline-flex; vertical-align: -2px; color: var(--agent); }
+.rd-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 0; font-size: 12px; color: var(--muted); }
+.rd-k2 { margin-left: 8px; }
+.rd-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg); font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }
+button.rd-chip:hover { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+button.rd-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rd-chip.gone { color: var(--faint); }
+.rd-chip .rd-mark { width: auto; }
+.rd-md { margin-top: 4px; }
+.dock-col .tool-sub { margin: 8px 0 3px; }
+.run-dock .tone-ok { color: var(--ok); } .run-dock .tone-danger { color: var(--danger); } .run-dock .tone-warn { color: var(--warn-ink); }
+.run-dock .tone-muted { color: var(--muted); } .run-dock .tone-faint { color: var(--faint); } .run-dock .tone-orch { color: var(--accent); }
+.rd-mark.tone-orch .sub-dot { background: var(--accent); }
+.feed { display: flex; flex-direction: column; }
+.feed-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; font-size: 12px; }
+.feed-row .t { flex: none; width: 40px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.feed-row .g { flex: none; width: 14px; text-align: center; font-weight: 700; }
+.feed-row .s { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.feed-row .s .dm { color: var(--muted); }
+.feed-row.tone-orch .g { color: var(--accent); } .feed-row.tone-chat .g { color: var(--text); } .feed-row.tone-warn .g { color: var(--warn); } .feed-row.tone-muted .g { color: var(--muted); }

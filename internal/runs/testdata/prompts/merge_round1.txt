@@ -1,0 +1,51 @@
+You are resolving a merge conflict in an automated build run.
+
+Task T06 (Document the flag) was built on a branch of its own. While it was being built, other tasks were merged into the integration branch. The integration branch has just been merged into this task's worktree (your working directory) and these files conflict:
+
+- README.md
+- cmd/main.go
+
+What git reported:
+
+CONFLICT (content): Merge conflict in README.md
+CONFLICT (modify/delete): cmd/main.go deleted in aiwb/r_x/integration and modified in HEAD.
+
+Resolve every conflict so that the result keeps the intent of both sides: this task's change and what the other tasks merged. Neither side may lose behaviour.
+
+- The brief of this task:
+
+<brief>
+Write the README section for `--verbose`.
+</brief>
+
+- The report of the agent that built this task: /work/aiwb-run-work/r_x/ctx/reports/T06.a1.md
+
+- The tasks merged into the integration branch since this one started, with what each reported:
+  - T02 Add the flag: The flag is in. It is documented in the help text.
+    Its brief is at /work/aiwb-run-work/r_x/ctx/briefs/T02.md and its full report at /work/aiwb-run-work/r_x/ctx/reports/T02.a1.md.
+  - T07 Rename main
+    Its brief is at /work/aiwb-run-work/r_x/ctx/briefs/T07.md.
+  - T08 Fix the help: Fixed.
+  Their commits are on the integration branch as "Merge <id>: <title>".
+- `git log --merge` and `git diff` show both sides.
+- When no conflict marker is left, build and run the tests the conflicting files affect.
+- Do not run `git commit`, `git merge --abort` or `git reset`. Leave the resolved files in the working tree; the run concludes the merge.
+
+Finish by ending your final message with a result block in exactly this layout (plain tags, not inside a code fence, nothing after it):
+
+<result>
+<outcome>completed</outcome>
+<summary>two or three sentences</summary>
+<report>
+for each file, what conflicted and how you resolved it, and what you ran to verify it
+</report>
+</result>
+
+Use <outcome>failed</outcome> when you could not resolve a conflict without losing one side's behaviour, and say which. Write the report only inside the block. Never end with a question: nobody will answer.
+
+Rules:
+- Work only inside your working directory. Other agents are working at the same time in other
+  git worktrees of this repository; never touch anything outside your own.
+- Do not commit, push, stash, switch branches or rewrite history.
+- You run unattended and cannot ask questions. Where something is unclear, make the most
+  reasonable choice and say so in your report.

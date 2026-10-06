@@ -236,6 +236,9 @@ button.ref-chip:hover { background: var(--accent-soft); }
 @keyframes bounce { 30% { opacity: 1; transform: translateY(-2px); } }
 .note { font-size: 12px; color: var(--muted); padding: 0 2px; }
 .note.error { color: var(--danger); }
+/* what a Guard shows in place of a part that could not be drawn */
+.guard-fail { padding: 12px 14px; min-width: 0; }
+.app > .guard-fail { flex: 1; }
 
 .empty-thread { margin: auto 0; text-align: center; color: var(--muted); padding: 10px 8px 24px; }
 .big-glyph { width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 10px; display: grid; place-items: center; background: var(--agent-soft); }
@@ -484,6 +487,9 @@ button.split-row { cursor: pointer; }
 .side-glyph { position: relative; width: 20px; height: 20px; flex: none; border-radius: 6px; display: grid; place-items: center; background: var(--agent-soft); }
 .side-glyph .crow-dot { width: 8px; height: 8px; }
 .side-board-icon { width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--accent); }
+.side-row.is-run .side-name { font-weight: 560; }
+.side-run-icon { position: relative; width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--accent); }
+.side-run-icon .crow-dot { width: 8px; height: 8px; right: 0; bottom: 1px; }
 .side-board-chats { position: relative; }
 .side-board-chats::before { content: ""; position: absolute; left: 21px; top: 0; bottom: 6px; width: 1px; background: var(--line-2); }
 .side-addgroup { display: flex; align-items: center; gap: 6px; margin-top: 10px; width: 100%; border: 1px dashed var(--line-2); background: none; color: var(--faint); border-radius: 7px; padding: 5px 10px; font-size: 12px; }
@@ -514,6 +520,8 @@ body.resizing iframe { pointer-events: none; }
 .home { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; color: var(--muted); padding: 40px; }
 .home h2 { margin: 6px 0 0; color: var(--text); font-size: 18px; font-weight: 650; }
 .home p { max-width: 420px; margin: 0 0 8px; }
+.home .row-gap { flex-wrap: wrap; justify-content: center; }
+.home .row-gap .btn { flex: none; white-space: nowrap; }
 .home .board-icon { color: var(--accent); }
 .menu-item .board-icon { color: var(--accent); }
 

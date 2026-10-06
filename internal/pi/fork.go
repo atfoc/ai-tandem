@@ -37,7 +37,7 @@ func (s *Spawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.A
 	if !src.End && src.Next == "" {
 		return nil, "", errors.New("pi: no fork point after that turn")
 	}
-	file, err := s.findSessionFile(src.ChatID, src.SessionID)
+	file, err := s.findSessionFile(s.chatDir(src.ChatID, src.Dir), src.SessionID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -77,14 +77,15 @@ func (s *Spawner) SpawnFork(o agent.SpawnOptions, src agent.ForkSource) (agent.A
 // which the chat manager removes.
 func (s *Spawner) DiscardFork(sessionID string) {}
 
-// findSessionFile finds a chat's session file, <AppRoot>/chats/<chatID>/pi/*_<sessionID>.jsonl
-// (pi names it <timestamp>_<session id>.jsonl); the newest when several match.
-func (s *Spawner) findSessionFile(chatID, sessionID string) (string, error) {
+// findSessionFile finds the session file of the chat whose folder is chatDir,
+// <chatDir>/pi/*_<sessionID>.jsonl (pi names it <timestamp>_<session id>.jsonl); the newest when
+// several match.
+func (s *Spawner) findSessionFile(chatDir, sessionID string) (string, error) {
 	missing := fmt.Errorf("pi: the session file of session %q is missing", sessionID)
 	if sessionID == "" {
 		return "", missing
 	}
-	dir := filepath.Join(s.AppRoot, "chats", chatID, "pi")
+	dir := filepath.Join(chatDir, "pi")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", missing

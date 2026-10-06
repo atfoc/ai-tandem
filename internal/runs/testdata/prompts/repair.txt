@@ -1,0 +1,11 @@
+Your last message did not end with the result block, so your result could not be recorded. Give your result now in exactly this format (plain tags, not inside a code fence, nothing before or after it):
+
+<result>
+<outcome>completed</outcome>
+<summary>two or three sentences</summary>
+<report>
+the full report in markdown
+</report>
+</result>
+
+Use <outcome>failed</outcome> if you could not do the job. Do not ask a question and do not do further work: answer with the block only.

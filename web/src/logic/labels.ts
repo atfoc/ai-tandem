@@ -3,6 +3,7 @@
 // Board tools take a board id (`board`, optional: the chat's own board when
 // left out). The label names the board through `nameOf` (id → name, from the
 // store), or says "this board" when the argument is left out.
+// The run tools come from the same server and name a task or an agent of the run.
 
 import type { CatalogModel, ChatView, Item } from "../types.ts";
 import { plainText } from "./refs.ts";
@@ -50,6 +51,42 @@ export function genericTool(name: string, input: any, done: boolean): string | n
   return null;
 }
 
+const what = (i: any) => clip(i?.id ?? i?.task ?? i?.agent ?? "", 24);
+const titled = (i: any) => (i?.title ? `: ${clip(i.title, 36)}` : "");
+/** "Reading task T07"; "Reading a task" when the call's input is not known (a chat's status line). */
+const named = (verb: string, noun: string, i: any) => (what(i) ? `${verb} ${noun} ${what(i)}` : `${verb} ${/^[aeiou]/.test(noun) ? "an" : "a"} ${noun}`);
+const pair = (running: string, done: string, noun: string) => (i: any): [string, string] => [named(running, noun, i), named(done, noun, i)];
+
+/** The run tools (a chat on a run, and the run's own agents): [while it runs, once done]. */
+const RUN_TOOLS: Record<string, (i: any) => [string, string]> = {
+  get_run: () => ["Reading the run", "Read the run"],
+  get_task: pair("Reading", "Read", "task"),
+  get_agent: pair("Reading", "Read", "agent"),
+  get_notes: () => ["Reading the notes", "Read the notes"],
+  set_notes: () => ["Writing the notes", "Wrote the notes"],
+  add_task: (i) => [`Adding a task${titled(i)}`, `Added a task${titled(i)}`],
+  update_task: pair("Updating", "Updated", "task"),
+  cancel_task: pair("Cancelling", "Cancelled", "task"),
+  retry_task: pair("Retrying", "Retried", "task"),
+  edit_notes: (i) => { const h = i?.heading ? `: ${clip(i.heading, 36)}` : ""; return [`Editing the notes${h}`, `Edited the notes${h}`]; },
+  wait_for: (i) => {
+    const ids = Array.isArray(i?.tasks) ? i.tasks.map(String).filter(Boolean) : [];
+    if (!ids.length) return ["Setting what it waits for", "Set what it waits for"];
+    const of = `${i.mode === "any" ? "the first of " : ""}${ids.join(", ")}`;
+    return [`Waiting for ${of}`, `Will wait for ${of}`];
+  },
+  finish_run: () => ["Finishing the run", "Finished the run"],
+  tell_orchestrator: () => ["Telling the orchestrator", "Told the orchestrator"],
+};
+
+/** A run tool's label, or null for any other tool. Object.hasOwn: a plain lookup would take a
+ *  tool named toString for one of the table's. */
+export function runTool(name: string, input: any, done: boolean): string | null {
+  const n = short(name);
+  if (!name.startsWith("mcp__board__") || !Object.hasOwn(RUN_TOOLS, n)) return null;
+  return RUN_TOOLS[n](input ?? {})[done ? 1 : 0];
+}
+
 /** The board a board tool call names: its name, the id when unknown, or "this board". */
 function boardOf(input: any, nameOf: BoardNames): string {
   const id = input?.board ? String(input.board) : "";
@@ -59,7 +96,7 @@ function boardOf(input: any, nameOf: BoardNames): string {
 
 /** The label of a running tool call. */
 export function toolVerb(name: string, input: any, nameOf: BoardNames = noNames): string {
-  const g = genericTool(name, input, false);
+  const g = genericTool(name, input, false) ?? runTool(name, input, false);
   if (g) return g;
   const board = boardOf(input, nameOf);
   switch (short(name)) {
@@ -79,7 +116,7 @@ export function toolVerb(name: string, input: any, nameOf: BoardNames = noNames)
 
 /** The label of a finished tool call. */
 export function toolDone(name: string, input: any, result: string | undefined, nameOf: BoardNames = noNames): string {
-  const g = genericTool(name, input, true);
+  const g = genericTool(name, input, true) ?? runTool(name, input, true);
   if (g) return g;
   let r: any = null;
   try { r = result ? JSON.parse(result) : null; } catch {}

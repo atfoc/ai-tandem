@@ -43,9 +43,13 @@ import (
 	"ai-whiteboard/internal/pi"
 	"ai-whiteboard/internal/pibridge"
 	"ai-whiteboard/internal/prompts"
+	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/store"
 )
+
+// The chat manager is the runs' chat host.
+var _ runs.ChatHost = (*chats.Manager)(nil)
 
 // options are the flags every command takes.
 type options struct {
@@ -142,14 +146,19 @@ func serve(o options, args []string) {
 		log.Fatalf("data folder %s: %v", p.Root, err)
 	}
 	var a *app.App
-	br := editorbridge.New(func() any { return a.Snapshot() })
+	var cm *chats.Manager
+	// A new snapshot goes to a client that watches no run agent's chat yet. The bridge calls this
+	// with its lock held: ClearWatches takes only the watch lock.
+	br := editorbridge.New(func() any { cm.ClearWatches(); return a.Snapshot() })
 	bs := boards.New(st, br)
+	rs := runs.New(runs.Deps{Store: st, Emit: br, DefaultCwd: o.cwd, Clock: runs.RealClock{},
+		Bins: map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
-	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd,
+	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, Runs: rs, DefaultCwd: o.cwd,
 		MCPURL: boardapi.Endpoint(mcpBoundPort),
 		Namers: map[model.AgentKind]chats.Namer{
 			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
@@ -164,10 +173,14 @@ func serve(o options, args []string) {
 	if err := bs.Load(); err != nil { // before chats: board chats look up their board
 		log.Fatalf("loading boards: %v", err)
 	}
+	if err := rs.Load(); err != nil { // before chats: a run's chats look up their run
+		log.Fatalf("loading runs: %v", err)
+	}
 	if err := cm.Load(); err != nil {
 		log.Fatalf("loading chats: %v", err)
 	}
-	relay := &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}
+	rs.Chats = cm
+	relay := &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs, Runs: rs}
 	extPath, err := pibridge.MaterializeExtension(filepath.Join(p.Root, "pi-extension"))
 	if err != nil {
 		log.Printf("pi extension: %v", err) // pi chats run without board tools
@@ -182,7 +195,7 @@ func serve(o options, args []string) {
 	go refreshCursorCatalog(cursorSpawner, st, br)
 	go refreshPiCatalog(piSpawner, st, br)
 	go refreshClaudeCatalog(claudeSpawner, st, br)
-	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
+	a = &app.App{St: st, Boards: bs, Chats: cm, Runs: rs, Bridge: br, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
 	}
@@ -206,6 +219,7 @@ func serve(o options, args []string) {
 		log.Printf("server.json: %v", err)
 	}
 	go onSignal(func() {
+		rs.Shutdown(2 * time.Second)     // runs halt (they continue at the next start); no agent, task or turn starts from here on
 		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
 		cm.Shutdown()                    // history written; agents end
 		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
@@ -216,6 +230,10 @@ func serve(o options, args []string) {
 
 	log.Printf("AI Whiteboard: %s  (data in %s)", base, p.Root)
 	log.Printf("MCP endpoint: %s", boardapi.Endpoint(mcpBoundPort))
+	// Last, with the MCP endpoint up and before the first request is served: runs a dead server
+	// left are halted, and runs an orderly stop halted continue (their agents call the run tools
+	// at once).
+	rs.Boot()
 	log.Fatal(http.Serve(ln, srv.Handler()))
 }
 

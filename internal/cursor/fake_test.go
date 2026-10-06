@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -32,12 +36,88 @@ type fakeStep struct {
 
 type fakeScript map[string][]fakeStep
 
+// More of the fake, each switched on by a variable:
+//
+//	FAKE_ACP_ARGS      file the fake writes its arguments to, one per line
+//	FAKE_ACP_CHILDREN  file: the fake starts one child in its own process group and one that
+//	                   leads a group of its own (each sleeps 30 s and holds none of the fake's
+//	                   pipes) and writes "<pid> <pid>" there
+//	FAKE_ACP_STAY      set: the fake keeps running after stdin closes, as `agent acp` does
+//	FAKE_ACP_SLEEP     set: the test binary only sleeps 30 s (a child of FAKE_ACP_CHILDREN)
+//	FAKE_ACP_HOLD      set: the child of FAKE_ACP_CHILDREN that leads its own group holds the
+//	                   fake's stdout and stderr open
+//	FAKE_ACP_LATE      file: once stdin has closed, the fake starts one more child that leads a
+//	                   group of its own (it holds none of the fake's pipes) and writes its pid there
+//	FAKE_ACP_TRAP      file: the fake and its children do not end on SIGTERM; the fake appends
+//	                   "TERM" to the file when it gets one
 func TestMain(m *testing.M) {
+	if os.Getenv("FAKE_ACP_SLEEP") != "" {
+		if os.Getenv("FAKE_ACP_TRAP") != "" {
+			signal.Ignore(syscall.SIGTERM)
+		}
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
 	if path := os.Getenv("FAKE_ACP_SCRIPT"); path != "" {
+		if f := os.Getenv("FAKE_ACP_ARGS"); f != "" {
+			os.WriteFile(f, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
+		}
+		if f := os.Getenv("FAKE_ACP_TRAP"); f != "" {
+			trapTerm(f)
+		}
+		if f := os.Getenv("FAKE_ACP_CHILDREN"); f != "" {
+			startFakeChildren(f)
+		}
 		runFakeACP(path, os.Getenv("FAKE_ACP_RECORD"), os.Getenv("FAKE_ACP_STATE"))
+		if f := os.Getenv("FAKE_ACP_LATE"); f != "" {
+			pid := startFakeChild(true, false)
+			os.WriteFile(f, []byte(strconv.Itoa(pid)), 0o644)
+		}
+		if os.Getenv("FAKE_ACP_STAY") != "" {
+			time.Sleep(30 * time.Second)
+		}
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// trapTerm makes the fake outlive SIGTERM and note each one it gets in file.
+func trapTerm(file string) {
+	got := make(chan os.Signal, 4)
+	signal.Notify(got, syscall.SIGTERM)
+	go func() {
+		for range got {
+			if f, err := os.OpenFile(file, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+				f.WriteString("TERM\n")
+				f.Close()
+			}
+		}
+	}()
+}
+
+// startFakeChild starts a copy of the test binary that only sleeps, in the fake's process group
+// or as the leader of its own, and returns its pid. With hold it has the fake's stdout and stderr.
+func startFakeChild(ownGroup, hold bool) int {
+	child := exec.Command(os.Args[0])
+	child.Env = append(os.Environ(), "FAKE_ACP_SLEEP=1")
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: ownGroup}
+	if hold {
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+	}
+	if err := child.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "fake: ", err)
+		os.Exit(2)
+	}
+	return child.Process.Pid
+}
+
+func startFakeChildren(file string) {
+	var pids []string
+	for _, ownGroup := range []bool{false, true} {
+		pid := startFakeChild(ownGroup, ownGroup && os.Getenv("FAKE_ACP_HOLD") != "")
+		pids = append(pids, strconv.Itoa(pid))
+	}
+	os.WriteFile(file, []byte(strings.Join(pids, " ")), 0o644)
 }
 
 func runFakeACP(scriptPath, recordPath, statePath string) {
@@ -198,6 +278,7 @@ func fake(t *testing.T, script fakeScript) string {
 	t.Setenv("FAKE_ACP_SCRIPT", sp)
 	t.Setenv("FAKE_ACP_RECORD", rp)
 	t.Setenv("FAKE_ACP_CURSOR_DATA_DIR", filepath.Join(dir, "cursor-data-dir"))
+	t.Setenv("FAKE_ACP_ARGS", filepath.Join(dir, "args"))
 	t.Setenv("GORACE", "atexit_sleep_ms=0") // a -race fake would otherwise wait 1 s before exiting
 	return rp
 }

@@ -1,13 +1,13 @@
-// The sidebar tree: groups with their subgroups, boards and plain chats, and the
+// The sidebar tree: groups with their subgroups, boards, runs and plain chats, and the
 // loose (ungrouped) area. DOM-free; Sidebar.tsx renders it.
 
-import type { Board, ChatView, Group } from "../types.ts";
+import type { Board, ChatView, Group, RunView } from "../types.ts";
 import { UNGROUPED } from "../types.ts";
 
-export type GroupTree = { group: Group; boards: Board[]; chats: ChatView[]; children: GroupTree[] };
+export type GroupTree = { group: Group; boards: Board[]; runs: RunView[]; chats: ChatView[]; children: GroupTree[] };
 
 export type Tree = {
-  loose: { boards: Board[]; chats: ChatView[] };
+  loose: { boards: Board[]; runs: RunView[]; chats: ChatView[] };
   groups: GroupTree[];
 };
 
@@ -16,8 +16,9 @@ const shown = (x: { archived?: boolean }, showArchived: boolean) => showArchived
 /** Boards by name (id breaks ties, since names are not unique). */
 const byName = (a: Board, b: Board) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-/** Chats newest first. */
-const newestFirst = (a: ChatView, b: ChatView) => (a.created < b.created ? 1 : a.created > b.created ? -1 : 0);
+/** Chats and runs newest first (id breaks ties). */
+const newestFirst = (a: { created: string; id: string }, b: { created: string; id: string }) =>
+  a.created < b.created ? 1 : a.created > b.created ? -1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 
 /** The group and the groups above it, innermost first. Stops at a missing parent (and a cycle). */
 function chain(groups: Group[], id: string): Group[] {
@@ -30,38 +31,43 @@ function chain(groups: Group[], id: string): Group[] {
 
 /**
  * A group shows when it and every group above it show. A group whose parent is gone sits at the
- * top level; the contents of a group that doesn't show fall into loose.
+ * top level; the contents of a group that doesn't show fall into loose. A plain chat is one on
+ * no board and no run; a run's own agents (records with a role) are in no list.
  */
 export function buildTree(
-  s: { groups: Group[]; boards: Record<string, Board>; chats: Record<string, ChatView> },
+  s: { groups: Group[]; boards: Record<string, Board>; chats: Record<string, ChatView>; runs?: Record<string, RunView> },
   showArchived: boolean,
 ): Tree {
   const groups = s.groups.filter((g) => chain(s.groups, g.id).every((x) => shown(x, showArchived)));
   const known = new Set(groups.map((g) => g.id));
   const parentOf = (g: Group) => (g.parent && known.has(g.parent) ? g.parent : "");
   const boards = Object.values(s.boards).filter((b) => shown(b, showArchived)).sort(byName);
-  const chats = Object.values(s.chats).filter((c) => !c.board && shown(c, showArchived)).sort(newestFirst);
+  const runs = Object.values(s.runs ?? {}).filter((r) => shown(r, showArchived)).sort(newestFirst);
+  const chats = Object.values(s.chats).filter((c) => !c.board && !c.run && !c.role && shown(c, showArchived)).sort(newestFirst);
   const chatGroup = (c: ChatView) => c.group ?? "";
   const node = (group: Group): GroupTree => ({
     group,
     boards: boards.filter((b) => b.group === group.id),
+    runs: runs.filter((r) => r.group === group.id),
     chats: chats.filter((c) => chatGroup(c) === group.id),
     children: groups.filter((g) => parentOf(g) === group.id).map(node),
   });
   return {
     loose: {
       boards: boards.filter((b) => !known.has(b.group)),
+      runs: runs.filter((r) => !known.has(r.group)),
       chats: chats.filter((c) => !known.has(chatGroup(c))),
     },
     groups: groups.filter((g) => parentOf(g) === "").map(node),
   };
 }
 
-/** A node's boards and plain chats, its subgroups' included. */
-export function contents(n: GroupTree): { boards: Board[]; chats: ChatView[] } {
+/** A node's boards, runs and plain chats, its subgroups' included. */
+export function contents(n: GroupTree): { boards: Board[]; runs: RunView[]; chats: ChatView[] } {
   const inner = n.children.map(contents);
   return {
     boards: [...n.boards, ...inner.flatMap((x) => x.boards)],
+    runs: [...n.runs, ...inner.flatMap((x) => x.runs)],
     chats: [...n.chats, ...inner.flatMap((x) => x.chats)],
   };
 }
@@ -85,5 +91,5 @@ export function groupPath(groups: Group[], id: string): string[] {
 
 /** A board's own chats, newest first. */
 export function boardChats(chats: Record<string, ChatView>, board: string, showArchived: boolean): ChatView[] {
-  return Object.values(chats).filter((c) => c.board === board && shown(c, showArchived)).sort(newestFirst);
+  return Object.values(chats).filter((c) => c.board === board && !c.role && shown(c, showArchived)).sort(newestFirst);
 }

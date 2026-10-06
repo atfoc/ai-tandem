@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,6 +35,8 @@ const (
 	envSleep  = "CLAUDE_FAKE_SLEEP"   // set: the test binary only sleeps 30 s (the child of envHold)
 	envRuns   = "CLAUDE_FAKE_RUNS"    // file the fake appends one line per invocation to: its pid and arguments
 	envForkEr = "CLAUDE_FAKE_FORKERR" // text a run with --fork-session among its arguments prints to stderr, exiting at once (status 1) with nothing on stdout; other runs go on
+	envStay   = "CLAUDE_FAKE_STAY"    // file: the fake starts one child in its own process group and one that leads a group of its own (each sleeps 30 s), writes "<pid> <pid>" there, and keeps running after stdin closes
+	envDeaf   = "CLAUDE_FAKE_DEAF"    // set: after the script the fake reads nothing from stdin and stays for 30 s
 )
 
 func TestMain(m *testing.M) {
@@ -82,7 +85,8 @@ func helperProcess() {
 		os.Exit(1)
 	}
 	cwd, _ := os.Getwd()
-	rec, _ := json.Marshal(map[string]any{"cwd": cwd, "args": os.Args[1:], "noMemory": os.Getenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY")})
+	rec, _ := json.Marshal(map[string]any{"cwd": cwd, "args": os.Args[1:], "noMemory": os.Getenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
+		"bearerEnv": slices.ContainsFunc(os.Environ(), func(kv string) bool { return strings.Contains(kv, "Bearer") })})
 	os.WriteFile(os.Getenv(envArgs), rec, 0o644)
 	script, err := os.ReadFile(os.Getenv(envScript))
 	if err != nil {
@@ -90,9 +94,16 @@ func helperProcess() {
 		os.Exit(2)
 	}
 	os.Stdout.Write(script)
+	if f := os.Getenv(envStay); f != "" {
+		startStayChildren(f)
+	}
 	if os.Getenv(envExit) != "" {
 		fmt.Fprintln(os.Stderr, os.Getenv(envStderr))
 		os.Exit(3)
+	}
+	if os.Getenv(envDeaf) != "" {
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
 	}
 	out, err := os.Create(os.Getenv(envStdin))
 	if err != nil {
@@ -148,9 +159,28 @@ func helperProcess() {
 		}
 	}
 	out.Close()
+	if os.Getenv(envStay) != "" {
+		time.Sleep(30 * time.Second)
+	}
 	if msg := os.Getenv(envStderr); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
 	}
+}
+
+// startStayChildren starts the two children of envStay. Neither holds the fake's output.
+func startStayChildren(file string) {
+	var pids []string
+	for _, ownGroup := range []bool{false, true} {
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), envSleep+"=1")
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: ownGroup}
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		pids = append(pids, strconv.Itoa(child.Process.Pid))
+	}
+	os.WriteFile(file, []byte(strings.Join(pids, " ")), 0o644)
 }
 
 type fake struct {
@@ -461,5 +491,247 @@ func TestMissingFolder(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("a process was started")
+	}
+}
+
+// answers returns the fake's stdin lines that answer control requests, by request id.
+func answers(lines []map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, l := range lines {
+		if l["type"] == "control_response" {
+			out[str(obj(l["response"])["request_id"])] = l
+		}
+	}
+	return out
+}
+
+// Nobody answers the requests of an unattended or a read-only process, so none becomes a card:
+// the adapter answers each at once. The app's folder is refused as always; beyond that an
+// unattended process is allowed and a read-only one refused, also when it is unattended too.
+func TestStrayPermissionRequestIsAnsweredAtOnce(t *testing.T) {
+	script := []string{
+		`{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cat ~/.ai-whiteboard/x"},"tool_use_id":"toolu_1"}}`,
+		`{"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch a.txt","description":"Create a.txt"},"tool_use_id":"toolu_2"}}`,
+		`{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_T","description":"d","task_type":"local_agent","prompt":"p"}`,
+		`{"type":"control_request","request_id":"r3","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[]},"tool_use_id":"toolu_3","agent_id":"a1","requires_user_interaction":true}}`,
+		`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok"}`,
+	}
+	cases := []struct {
+		name  string
+		o     agent.SpawnOptions
+		allow bool
+	}{
+		{"unattended", agent.SpawnOptions{Unattended: true}, true},
+		{"read-only", agent.SpawnOptions{ReadOnly: true}, false},
+		{"read-only and unattended", agent.SpawnOptions{ReadOnly: true, Unattended: true}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t, script...)
+			c.o.SessionID, c.o.Cwd = "s1", t.TempDir()
+			a, err := f.spawner().Spawn(c.o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The turn's end comes after the three requests: by then each was answered or raised.
+			for {
+				ev := next(t, a)
+				if ev.Kind == agent.EvPermRequest {
+					t.Fatalf("a permission request was raised: %+v", ev)
+				}
+				if ev.Kind == agent.EvTurnEnd {
+					break
+				}
+			}
+			for _, id := range []string{"r1", "r2", "r3"} {
+				if err := a.Decide(id, true); err == nil {
+					t.Errorf("request %s is waiting for a decision", id)
+				}
+			}
+			a.Close()
+			for ev := next(t, a); ev.Kind != agent.EvExit; ev = next(t, a) {
+			}
+			b, _ := os.ReadFile(f.stdin)
+			var lines []map[string]any
+			for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+				var m map[string]any
+				json.Unmarshal([]byte(l), &m)
+				lines = append(lines, m)
+			}
+			got := answers(lines)
+			if len(got) != 3 {
+				t.Fatalf("answers %v, want one for each of the 3 requests", got)
+			}
+			if r := response(got["r1"]); r["behavior"] != "deny" || r["message"] != agent.AppDirDenied {
+				t.Errorf("r1 (the app's folder): %v, want a deny with AppDirDenied", r)
+			}
+			for _, id := range []string{"r2", "r3"} {
+				r := response(got[id])
+				if c.allow && r["behavior"] != "allow" {
+					t.Errorf("%s: %v, want allow", id, r)
+				}
+				if !c.allow && (r["behavior"] != "deny" || r["message"] != readOnlyDenied) {
+					t.Errorf("%s: %v, want a deny that says read-only", id, r)
+				}
+			}
+			if c.allow {
+				if in := obj(response(got["r2"])["updatedInput"]); in["command"] != "touch a.txt" || in["description"] != "Create a.txt" {
+					t.Errorf("r2 updatedInput %v", in)
+				}
+			}
+		})
+	}
+}
+
+// stayPids reads the two child pids the fake wrote (envStay): the one in the fake's group and the
+// one that leads its own. Both are ended when the test ends, each by its own pid and only while
+// it is still a child the fake started (a sleeping copy of the test binary).
+func stayPids(t *testing.T, file string) (inGroup, ownGroup int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		b, _ := os.ReadFile(file)
+		if n, _ := fmt.Sscan(string(b), &inGroup, &ownGroup); n == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fake did not start its children")
+		}
+	}
+	t.Cleanup(func() {
+		for _, pid := range []int{inGroup, ownGroup} {
+			if alive(pid) {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	return inGroup, ownGroup
+}
+
+// alive reports whether pid is a running copy of the test binary (not a zombie, not another
+// program that got the number).
+func alive(pid int) bool {
+	out, err := exec.Command("ps", "-o", "stat=,comm=", "-p", strconv.Itoa(pid)).Output()
+	f := strings.Fields(string(out))
+	return err == nil && len(f) >= 2 && !strings.HasPrefix(f[0], "Z") && filepath.Base(f[len(f)-1]) == filepath.Base(os.Args[0])
+}
+
+func waitGone(t *testing.T, what string, pid int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); alive(pid); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s (%d) is still running", what, pid)
+		}
+	}
+}
+
+// Close of an unattended process stops its turn first, and when the process is still there after
+// the grace period it ends its whole group and the groups of what it started. A chat's process is
+// killed alone, as before.
+func TestCloseUnattendedEndsWhatItStarted(t *testing.T) {
+	old := closeGraceNanos.Swap(int64(300 * time.Millisecond))
+	t.Cleanup(func() { closeGraceNanos.Store(old) })
+
+	t.Run("unattended", func(t *testing.T) {
+		f := newFake(t)
+		pidFile := filepath.Join(f.dir, "pids")
+		t.Setenv(envStay, pidFile)
+		a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir(), Unattended: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inGroup, ownGroup := stayPids(t, pidFile)
+		f.waitStdin(t, `"initialize"`)
+		a.Close()
+		exits := 0
+		for ev := range a.Events() {
+			if ev.Kind == agent.EvExit {
+				exits++
+			}
+		}
+		if exits != 1 {
+			t.Errorf("%d exit events, want 1", exits)
+		}
+		waitGone(t, "the child in the process's group", inGroup)
+		waitGone(t, "the child that leads a group of its own", ownGroup)
+		// The turn was stopped before stdin closed.
+		b, _ := os.ReadFile(f.stdin)
+		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+		if last := lines[len(lines)-1]; !strings.Contains(last, `"subtype":"interrupt"`) {
+			t.Errorf("last stdin line %s, want the interrupt", last)
+		}
+	})
+
+	t.Run("a chat", func(t *testing.T) {
+		f := newFake(t)
+		pidFile := filepath.Join(f.dir, "pids")
+		t.Setenv(envStay, pidFile)
+		a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inGroup, ownGroup := stayPids(t, pidFile)
+		f.waitStdin(t, `"initialize"`)
+		a.Close()
+		for range a.Events() {
+		}
+		if !alive(inGroup) || !alive(ownGroup) {
+			t.Error("Close of a chat's process ended more than the process")
+		}
+		b, _ := os.ReadFile(f.stdin)
+		if strings.Contains(string(b), `"subtype":"interrupt"`) {
+			t.Error("Close of a chat's process sent an interrupt")
+		}
+	})
+}
+
+// Send writes to the process's stdin and so waits for as long as a stuck process does not read
+// it. Close does not wait behind that write: it closes stdin under it, Send returns an error, and
+// the process is killed after the grace period as always.
+func TestCloseReleasesABlockedSend(t *testing.T) {
+	oldClose := closeGraceNanos.Swap(int64(300 * time.Millisecond))
+	oldWrite := writeGraceNanos.Swap(int64(200 * time.Millisecond))
+	t.Cleanup(func() { closeGraceNanos.Store(oldClose); writeGraceNanos.Store(oldWrite) })
+
+	for _, unattended := range []bool{false, true} {
+		f := newFake(t)
+		t.Setenv(envDeaf, "1")
+		a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir(), Unattended: unattended})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sent := make(chan error, 1)
+		// Far more than a pipe holds.
+		go func() { sent <- a.Send([]agent.ContentBlock{{Text: strings.Repeat("x", 4<<20)}}) }()
+		select {
+		case err := <-sent:
+			t.Fatalf("unattended %v: Send returned %v although nothing reads stdin", unattended, err)
+		case <-time.After(300 * time.Millisecond):
+		}
+
+		closed := make(chan struct{})
+		go func() { a.Close(); close(closed) }()
+		limit := time.After(2 * time.Second)
+		select {
+		case err := <-sent:
+			if err == nil {
+				t.Errorf("unattended %v: Send returned no error", unattended)
+			}
+		case <-limit:
+			t.Fatalf("unattended %v: Send did not return after Close", unattended)
+		}
+		select {
+		case <-closed:
+		case <-limit:
+			t.Fatalf("unattended %v: Close did not return", unattended)
+		}
+		exits := 0
+		for ev := range a.Events() {
+			if ev.Kind == agent.EvExit {
+				exits++
+			}
+		}
+		if exits != 1 {
+			t.Errorf("unattended %v: %d exit events, want 1", unattended, exits)
+		}
 	}
 }

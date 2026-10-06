@@ -1,0 +1,101 @@
+=== no such agent
+chat: get_agent {"agent":"T09-work"}
+refusal:
+there is no agent 'T09-work'. Agents are named turn-007 (an orchestrator turn), T03-work, T03-a2-work (attempt 2), T03-merge and T03-merge-r2 (a later merge round); get_task lists the agents of a task.
+
+=== no agent named
+chat: get_agent {}
+refusal:
+there is no agent ''. Agents are named turn-007 (an orchestrator turn), T03-work, T03-a2-work (attempt 2), T03-merge and T03-merge-r2 (a later merge round); get_task lists the agents of a task.
+
+=== last is no number
+chat: get_agent {"agent":"T05-work","last":"many"}
+refusal:
+last must be a number
+
+=== a running agent
+chat: get_agent {"agent":"T05-work"}
+answer:
+# Agent T05-work (task of T05): running
+5 tool calls, 5m42s, 1 launch(es)
+
+## Its last 9 steps
+
+- said: I'll start by reading the old tests.
+- used Read: internal/importer/importer_test.go
+- used Bash: go test ./internal/importer/ 2>&1 | tail -5
+- tool error: exit status 1 FAIL
+- used Grep: func Test
+- note: The agent's process ended.
+- used spawn_subagent: Port one test
+- used TodoWrite
+- said: Two of five tests are ported.
+
+=== its last three steps
+chat: get_agent {"agent":"T05-work","last":3}
+answer:
+# Agent T05-work (task of T05): running
+5 tool calls, 5m42s, 1 launch(es)
+
+## Its last 3 steps
+
+- used spawn_subagent: Port one test
+- used TodoWrite
+- said: Two of five tests are ported.
+
+=== an agent that is done: its final message
+chat: get_agent {"agent":"T01-work"}
+answer:
+# Agent T01-work (task of T01): done
+1 tool call, $0.50, 4m18s, 1 launch(es)
+
+## Its last 3 steps
+
+- said: Reading the importer.
+- used Read: internal/importer/importer.go
+- said: <result> <outcome>completed</outcome> <summary>The old importer reads CSV in three passes.</summary> </result>
+
+## Its final message
+
+<result>
+<outcome>completed</outcome>
+<summary>The old importer reads CSV in three passes.</summary>
+</result>
+
+=== an agent that failed, with nothing in its thread
+chat: get_agent {"agent":"T03-work"}
+answer:
+# Agent T03-work (task of T03): failed
+4m06s, 1 launch(es)
+Error: its agent reported that it could not do the task: there is no benchmark data in the repository
+Launch 1 ended with: its agent reported that it could not do the task: there is no benchmark data in the repository
+
+## Its last 0 steps
+
+(nothing yet)
+
+=== an orchestrator's agent
+chat: get_agent {"agent":"turn-001"}
+answer:
+# Agent turn-001 (orchestrator, turn 1): done
+$0.25, 0s, 1 launch(es)
+
+## Its last 0 steps
+
+(nothing yet)
+
+=== the orchestrator looks at an agent
+orchestrator: get_agent {"agent":" T05-work ","last":1}
+answer:
+# Agent T05-work (task of T05): running
+5 tool calls, 5m42s, 1 launch(es)
+
+## Its last 1 step
+
+- said: Two of five tests are ported.
+
+=== the orchestrator asks for an agent that is not there
+orchestrator: get_agent {"agent":"T05"}
+refusal:
+there is no agent 'T05'. Agents are named turn-007 (an orchestrator turn), T03-work, T03-a2-work (attempt 2), T03-merge and T03-merge-r2 (a later merge round); get_task lists the agents of a task.
+

@@ -1,0 +1,110 @@
+=== fields are missing
+orchestrator: add_task {"title":"Read the importer"}
+refusal:
+missing: brief, kind, writes, tier, tier_reason
+
+=== the tier and its reason are missing
+orchestrator: add_task {"title":"Read","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":false}
+refusal:
+missing: tier, tier_reason
+
+=== the tier is none of the three
+orchestrator: add_task {"title":"  ","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":false,"tier":"heavy","tier_reason":"A later task checks it."}
+refusal:
+tier must be one of deep, standard, light
+
+=== the tier's reason is empty
+orchestrator: add_task {"title":"  ","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":false,"tier":"light","tier_reason":" \n "}
+refusal:
+tier_reason is empty: say in a sentence why this tier is enough for the task
+
+=== the title is empty
+orchestrator: add_task {"title":"  ","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":false,"tier":"standard","tier_reason":"A later task checks it."}
+refusal:
+the title is empty
+
+=== the brief is too short
+orchestrator: add_task {"title":"Read","brief":"Read it.","kind":"research","writes":false,"tier":"standard","tier_reason":"A later task checks it."}
+refusal:
+the brief is too short to work from: its agent knows nothing but the brief
+
+=== the kind is no word
+orchestrator: add_task {"title":"Read","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"!!!","writes":false,"tier":"standard","tier_reason":"A later task checks it."}
+refusal:
+kind must be one short word, e.g. research, implement, review
+
+=== the kind starts with a digit
+orchestrator: add_task {"title":"Read","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"2nd pass","writes":false,"tier":"standard","tier_reason":"A later task checks it."}
+refusal:
+kind must be one short word, e.g. research, implement, review
+
+=== writes is not a boolean
+orchestrator: add_task {"title":"Read","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":"no","tier":"standard","tier_reason":"A later task checks it."}
+refusal:
+writes must be true or false
+
+=== depends_on is not a list
+orchestrator: add_task {"title":"Read","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":false,"tier":"standard","tier_reason":"A later task checks it.","depends_on":"T01"}
+refusal:
+depends_on must be a list of task ids
+
+=== depends_on names tasks that do not exist
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","depends_on":["T07","T09","T07"],"kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+depends_on names tasks that do not exist: T07, T09
+
+=== needs_report is not a list
+orchestrator: add_task {"title":"Read","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":false,"tier":"standard","tier_reason":"A later task checks it.","needs_report":"T01"}
+refusal:
+needs_report must be a list of task ids
+
+=== needs_report names a task it does not depend on
+orchestrator: add_task {"title":"Read","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","writes":false,"tier":"standard","tier_reason":"A later task checks it.","needs_report":["T01"]}
+refusal:
+needs_report names tasks this one does not depend on: T01. Add them to depends_on as well.
+
+=== the notes gate
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"implement","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Build the importer","writes":true}
+refusal:
+The notes are empty, so a task that changes files is refused. First record with set_notes what the goal requires, what done means and how it will be checked, and the approach the facts support. If you cannot write that yet, the run needs tasks that investigate (writes: false) before tasks that build.
+
+=== the notes gate, a chat
+chat: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"implement","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Build the importer","writes":true}
+refusal:
+The run's notes are empty, so a task that changes files is refused: the orchestrator has not yet recorded what done means. Add a task that investigates (writes: false), or tell the orchestrator what the person wants.
+
+=== added: a task that only reports
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"Research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"  Read the   old importer ","writes":false}
+answer:
+Added T01: Read the old importer. It starts after your turn ends, once its dependencies are done.
+
+=== added: a task that writes and depends on another
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","depends_on":["T01","T01"],"kind":"implement","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Build the importer","writes":true}
+answer:
+Added T02: Build the importer. It starts after your turn ends, once its dependencies are done.
+
+=== added: the kind is made one word
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"Code Review!","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Look at it again","writes":false}
+answer:
+Added T03: Look at it again. It starts after your turn ends, once its dependencies are done.
+
+=== added: it depends on a failed task
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","depends_on":["T01","T02"],"kind":"docs","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Write the migration notes","writes":false}
+answer:
+Added T04: Write the migration notes. It starts after your turn ends, once its dependencies are done. Note: it depends on T01 (failed) and will not start until that is retried and done, or the dependency is removed.
+
+=== added by a chat
+chat: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","depends_on":["T02"],"kind":"verify","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Check the importer by hand","writes":false}
+answer:
+Added T05: Check the importer by hand. It starts after your reply ends, once its dependencies are done.
+
+=== added: on the deep tier, given the full report of one task
+orchestrator: add_task {"title":"Decide the file format","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"design","writes":false,"tier":"deep","tier_reason":"  The other tasks are\nbuilt on its decision. ","depends_on":["T02","T03"],"needs_report":["T03","T03"]}
+answer:
+Added T06: Decide the file format. It starts after your turn ends, once its dependencies are done.
+
+=== added: given more full reports than a task should start with
+orchestrator: add_task {"title":"Review the whole port","brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"review","writes":false,"tier":"deep","tier_reason":"Nothing checks it.","depends_on":["T02","T03","T04","T06"],"needs_report":["T02","T03","T04","T06"]}
+answer:
+Added T07: Review the whole port. It starts after your turn ends, once its dependencies are done. Note: its agent is given 4 full report(s) to read before it writes a line. Name only the reports it cannot work without, and quote what it needs from the others in the brief.
+

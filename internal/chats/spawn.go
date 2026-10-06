@@ -82,6 +82,19 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		unlock()
 		return model.Subagent{}, ErrLegacy
 	}
+	// Shutdown ends the subagents it finds on the chat, in a hold of this lock (see Manager.down).
+	// One recorded before that is ended there: its process, if it starts later, is closed below.
+	if m.down.Load() {
+		unlock()
+		return model.Subagent{}, ErrShutdown
+	}
+	// A run's agent calls this from inside its turn. Its token outlives the process (it is revoked
+	// with the chat), so a call that comes once the run has stopped the agent (StopOwned), or the
+	// turn has ended, would start a subagent nothing in the run stops any more.
+	if c.role != "" && !turnRunning(c) {
+		unlock()
+		return model.Subagent{}, ErrTurnOver
+	}
 	if req.Prompt == "" {
 		unlock()
 		return model.Subagent{}, errors.New("prompt is required")
@@ -200,6 +213,9 @@ func (m *Manager) StopSubagent(chatID, sid string) error {
 		m.denySubPerms(c, s)
 		toClose = append(toClose, s.ag)
 		s.ag = nil
+		if costSubLost(c, s.meta.Kind) { // stopped in its one turn: it reports no cost any more
+			m.logSave(c)
+		}
 	}
 	s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
 	ended(s, endStopTool)
@@ -317,6 +333,8 @@ func (m *Manager) subSpawnOptions(c *Chat, sid string, kind model.AgentKind, mod
 	if kind == model.Claude || kind == model.Pi {
 		opts.SessionID = uuid()
 	}
+	opts.Dir = m.chatDir(opts.ChatID)
+	runOptions(c, &opts, true)
 	return opts
 }
 
@@ -430,6 +448,13 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		ev.Sub = sid
 		beforeView := view(c)
 		ups := c.tr.Apply(ev)
+		if c.role != "" {
+			// Nobody answers for a run agent's subagent either (see denyAtOnce).
+			ups = append(ups, denyAtOnce(c, sid, ev.PermID)...)
+			if err := c.tr.Flush(false); err != nil {
+				log.Printf("chats: flush %s: %v", c.meta.ID, err)
+			}
+		}
 		out.emitItems(c, ups)
 		if view(c) != beforeView {
 			out.emitChat(c)
@@ -465,6 +490,9 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 			why = endTurnError
 			m.subErrorNote(c, s, ev.Error, &out)
 		}
+		if costSubEnd(c, ev) {
+			m.logSave(c) // the chat's cost is in chat.json; finishing the subagent writes its own record only
+		}
 		var ag agent.Agent
 		if ag, d = m.finalizeAppSub(c, s, st, ev.Error, why, &out); ag != nil {
 			toClose = append(toClose, ag)
@@ -480,6 +508,9 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 			st, why = model.SubFailed, endFailed
 		} else {
 			msg = "process ended"
+		}
+		if costSubLost(c, s.meta.Kind) { // it ended in its one turn without a turn end
+			m.logSave(c)
 		}
 		var ag agent.Agent
 		if ag, d = m.finalizeAppSub(c, s, st, msg, why, &out); ag != nil {

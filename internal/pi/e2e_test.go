@@ -353,7 +353,7 @@ func TestE2EFork(t *testing.T) {
 		}
 		points = append(points, r.end.Point)
 	}
-	srcFile, err := s.findSessionFile(srcChat, srcSession)
+	srcFile, err := s.findSessionFile(s.chatDir(srcChat, ""), srcSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +559,7 @@ func TestE2EForkAtEndDuringSend(t *testing.T) {
 	if len(users) != 1 || users[0] != first.end.Point {
 		t.Fatalf("the source's user messages %q after turn 1, want only its point %q", users, first.end.Point)
 	}
-	srcFile, err := s.findSessionFile(srcChat, srcSession)
+	srcFile, err := s.findSessionFile(s.chatDir(srcChat, ""), srcSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,7 +784,8 @@ func (e *e2eBoardEnv) recorded() []e2eBoardCall {
 
 // boardAccess is what the app passes to Spawn: the fixed endpoint URL and the
 // chat's durable MCP token, exactly like the Claude path. pi puts the token in
-// the Authorization header of AIWB_MCP_CONFIG; it is never a URL segment.
+// the Authorization header of the config file AIWB_MCP_CONFIG_FILE names; it is never a URL
+// segment and never in the environment.
 func (e *e2eBoardEnv) boardAccess() *agent.BoardAccess {
 	return &agent.BoardAccess{MCPURL: e.srv.URL + "/mcp", Token: e.token}
 }

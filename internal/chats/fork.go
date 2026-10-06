@@ -43,6 +43,9 @@ var errForkGone = errors.New("this fork was made at a point Claude has no id for
 // while it starts, but no client sees the chat, and nothing is saved or emitted for it, until the
 // provider has confirmed the fork. When anything fails nothing is left of it.
 func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
+	if err := m.person(id); err != nil {
+		return model.ChatView{}, err
+	}
 	var loaded outbox // what loading the source's transcript sends
 	// Only the current branch has a process (D4): a chat is busy when that branch is.
 	curBusy := m.Busy(id)
@@ -186,12 +189,18 @@ func (m *Manager) forkEntry(src *Chat, top string, curBusy bool, req ForkReq, ou
 			return nil, none, boards.ErrArchived
 		}
 	}
+	if parent.Run != "" { // the fork is a chat on the same run
+		if _, err := m.openRun(parent.Run); err != nil {
+			return nil, none, err
+		}
+	}
 
 	title := titleOf(parent, items)
 	meta := prefixMeta(src.meta, items, req.At)
 	meta.ID = uuid()
 	meta.Board = parent.Board
-	meta.Group = parent.Group // empty for a board chat
+	meta.Run = parent.Run
+	meta.Group = parent.Group // empty for a board chat and for a chat on a run
 	meta.Name = title + " (fork)"
 	meta.Draft = draft
 	meta.ForkedFrom, meta.ForkedFromTitle = top, title
@@ -227,9 +236,10 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 // prefixMeta is what the chat.json of a new chat or branch that starts with the first at items
 // of the chat (src, items) takes from it (D11): the agent and its settings, a session id of its
 // own, and what follows from the prefix. It is never a copy of the file. The caller sets the id
-// and what differs between a fork and a branch; addUnlisted gives the token.
+// and what differs between a fork and a branch; addUnlisted gives the token. A fork or branch of
+// a chat on a run is on that run.
 func prefixMeta(src model.ChatMeta, items []model.Item, at int) model.ChatMeta {
-	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Cwd: src.Cwd, Model: src.Model,
+	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Cwd: src.Cwd, Model: src.Model,
 		Effort: src.Effort, Created: time.Now()}
 	if src.Agent == model.Claude || src.Agent == model.Pi {
 		meta.SessionID = uuid() // Cursor's comes from the fork start, or from session/new
@@ -302,12 +312,15 @@ func sentPast(items []model.Item, count int) bool {
 // agent, and the turn that carried it again is not in the copy. A record that owes nothing stays
 // so. The new chat object is held, so the app starts no turn on it before the human has sent.
 func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, error) {
+	m.setRoot(meta) // before the copy makes the folder; a branch's id resolves through its chat's
 	if err := m.copyPrefix(src, meta.ID, at); err != nil {
+		m.dropRoot(meta.ID)
 		return nil, err
 	}
 	tr, err := transcript.Load(m.itemsPath(meta.ID))
 	if err != nil {
-		os.RemoveAll(m.Store.P.ChatDir(meta.ID))
+		os.RemoveAll(m.chatDir(meta.ID))
+		m.dropRoot(meta.ID)
 		return nil, err
 	}
 	m.extrasMu.Lock()
@@ -343,11 +356,21 @@ func (m *Manager) startFork(c *Chat, src agent.ForkSource, at int) error {
 	if !ok {
 		return errNoForker(kind)
 	}
+	if m.down.Load() {
+		return ErrShutdown
+	}
+	src.Dir = m.chatDir(src.ChatID)
 	ag, sid, err := fk.SpawnFork(opts, src)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
+	if m.down.Load() {
+		// Shutdown began during the start and may have been at this chat already (see Manager.down).
+		c.mu.Unlock()
+		go ag.Close()
+		return ErrShutdown
+	}
 	c.meta.SessionID = sid
 	if kind == model.Claude {
 		// Claude's fork is only durable once it has had a message: until then every launch makes
@@ -415,9 +438,10 @@ func (m *Manager) dropUnlisted(c *Chat, forked bool) {
 	m.mu.Lock()
 	delete(m.chats, id)
 	m.mu.Unlock()
-	if err := os.RemoveAll(m.Store.P.ChatDir(id)); err != nil {
+	if err := os.RemoveAll(m.chatDir(id)); err != nil {
 		log.Printf("chats: remove %s: %v", id, err)
 	}
+	m.dropRoot(id) // a branch's id has none
 	fk, _ := m.Spawners[kind].(agent.Forker)
 	if !forked || fk == nil {
 		closeAgents([]agent.Agent{ag})

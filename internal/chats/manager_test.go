@@ -1030,7 +1030,7 @@ func TestFirstSendSpawnsOnce(t *testing.T) {
 	}
 	o := e.claude.last(t).opts
 	want := agent.SpawnOptions{ChatID: v.ID, SessionID: sid, Resume: false, Cwd: v.Cwd, Model: v.Model, Effort: v.Effort,
-		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: e.meta(v.ID).Token}}
+		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: e.meta(v.ID).Token}, Dir: e.st.P.ChatDir(v.ID)}
 	if !reflect.DeepEqual(o, want) {
 		t.Fatalf("spawn options %+v, want %+v", o, want)
 	}

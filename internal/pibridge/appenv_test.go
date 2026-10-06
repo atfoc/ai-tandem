@@ -39,17 +39,17 @@ func TestAppEnvNode(t *testing.T) {
 }
 
 // appEnvNames are the variables the extension takes out of pi's environment.
-var appEnvNames = []string{"AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG", "AIWB_CHAT_DIR", "AIWB_APPEND_PROMPT"}
+var appEnvNames = []string{"AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG", "AIWB_MCP_CONFIG_FILE", "AIWB_CHAT_DIR", "AIWB_APPEND_PROMPT"}
 
-// appEnvShell prints the five variables as a shell command sees them.
-const appEnvShell = `printf 'S=[%s] R=[%s] M=[%s] D=[%s] P=[%s]\n' "$AIWB_BRIDGE_SOCKET" "$AIWB_BRIDGE_RUN" "$AIWB_MCP_CONFIG" "$AIWB_CHAT_DIR" "$AIWB_APPEND_PROMPT"; env | grep -cE '^AIWB_(BRIDGE_SOCKET|BRIDGE_RUN|MCP_CONFIG|CHAT_DIR|APPEND_PROMPT)='`
+// appEnvShell prints the six variables as a shell command sees them.
+const appEnvShell = `printf 'S=[%s] R=[%s] M=[%s] F=[%s] D=[%s] P=[%s]\n' "$AIWB_BRIDGE_SOCKET" "$AIWB_BRIDGE_RUN" "$AIWB_MCP_CONFIG" "$AIWB_MCP_CONFIG_FILE" "$AIWB_CHAT_DIR" "$AIWB_APPEND_PROMPT"; env | grep -cE '^AIWB_(BRIDGE_SOCKET|BRIDGE_RUN|MCP_CONFIG|MCP_CONFIG_FILE|CHAT_DIR|APPEND_PROMPT)='`
 
 // appEnvShellEmpty is what appEnvShell prints when a shell command inherits none of them.
-const appEnvShellEmpty = "S=[] R=[] M=[] D=[] P=[]\n0"
+const appEnvShellEmpty = "S=[] R=[] M=[] F=[] D=[] P=[]\n0"
 
 // appEnvProbeSource wraps the real extension factory. Every evaluation of the factory appends one
 // JSON line: how often this module and this factory have run in the process (counted on
-// globalThis, which outlives a re-imported module), which of the five variables were in
+// globalThis, which outlives a re-imported module), which of the six variables were in
 // process.env before and after the app's factory ran, and whether the factory registered the
 // tool_call permission gate. Its /aiwb-reload command runs pi's reload, which imports the
 // extension's modules again.
@@ -57,7 +57,7 @@ const appEnvProbeSource = `import type { ExtensionAPI } from "@earendil-works/pi
 import { appendFileSync } from "node:fs";
 import boardExtension from "./index.ts";
 
-const NAMES = ["AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG", "AIWB_CHAT_DIR", "AIWB_APPEND_PROMPT"];
+const NAMES = ["AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG", "AIWB_MCP_CONFIG_FILE", "AIWB_CHAT_DIR", "AIWB_APPEND_PROMPT"];
 const counts = ((globalThis as any).__aiwbAppEnvProbe ??= { module: 0, factory: 0 });
 counts.module += 1;
 
@@ -221,8 +221,16 @@ func TestRealPiAppEnvTaken(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(chatDir, "chat.json"), []byte(`{"token":"CHATFILETOKEN"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The app's way: the config with the token is a file in the chat's folder and the variable
+	// holds its path. AIWB_MCP_CONFIG is set too (the app does not), with another token: the
+	// file must win, and the extension must take both variables.
+	configFile := filepath.Join(chatDir, "mcp.json")
+	if err := os.WriteFile(configFile, configJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	run := startBootPiWith(t, pi, probePath, bootPiOptions{extraEnv: []string{
-		"AIWB_MCP_CONFIG=" + string(configJSON),
+		"AIWB_MCP_CONFIG_FILE=" + configFile,
+		"AIWB_MCP_CONFIG=" + strings.Replace(string(configJSON), "APPBTOKEN", "ENVVARTOKEN", 1),
 		"AIWB_BRIDGE_SOCKET=" + filepath.Join(data, "missing.sock"),
 		"AIWB_BRIDGE_RUN=run-app-env-1",
 		"AIWB_CHAT_DIR=" + chatDir,
@@ -234,7 +242,7 @@ func TestRealPiAppEnvTaken(t *testing.T) {
 		for _, req := range stub.methods() {
 			if req.Method == "initialize" {
 				if req.Auth != "Bearer APPBTOKEN" {
-					t.Fatalf("initialize Authorization = %q, want the token from AIWB_MCP_CONFIG", req.Auth)
+					t.Fatalf("initialize Authorization = %q, want the token from the file AIWB_MCP_CONFIG_FILE names", req.Auth)
 				}
 				n++
 			}
@@ -257,13 +265,13 @@ func TestRealPiAppEnvTaken(t *testing.T) {
 			t.Fatalf("a shell command run by pi sees the app's variables: %q, want %q", out, appEnvShellEmpty)
 		}
 		// T07-F1 way 5: with the variable gone the command reads nothing.
-		out = appEnvBash(t, run, id+"-cat", `cat "$AIWB_CHAT_DIR/chat.json" 2>&1; echo "$AIWB_MCP_CONFIG"`)
-		if strings.Contains(out, "CHATFILETOKEN") || strings.Contains(out, "APPBTOKEN") {
+		out = appEnvBash(t, run, id+"-cat", `cat "$AIWB_CHAT_DIR/chat.json" "$AIWB_MCP_CONFIG_FILE" 2>&1 </dev/null; echo "$AIWB_MCP_CONFIG"`)
+		if strings.Contains(out, "CHATFILETOKEN") || strings.Contains(out, "APPBTOKEN") || strings.Contains(out, "ENVVARTOKEN") {
 			t.Fatalf("a shell command run by pi printed a token: %q", out)
 		}
 	}
 
-	// The first evaluation: the factory finds the five variables and removes them.
+	// The first evaluation: the factory finds the six variables and removes them.
 	first := appEnvProbeLines(t, run, 1)[0]
 	t.Logf("first evaluation: %+v", first)
 	if len(first.Before) != len(appEnvNames) {

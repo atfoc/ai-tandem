@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/app"
@@ -21,6 +24,8 @@ import (
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/rungit"
+	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/version"
 )
 
@@ -96,18 +101,29 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func ok(w http.ResponseWriter) { writeJSON(w, map[string]any{"ok": true}) }
 
 // statusOf maps an error to its status: not found → 404; archived, locked, folder missing,
-// busy → 409; file system and process errors → 500; anything else → fallback (400 where the
-// call validates the request's input, 500 where it does not).
+// busy, a run in a state the call does not fit, a run agent's chat → 409; file system and process
+// errors → 500; anything else → fallback (400 where the call validates the request's input, 500
+// where it does not).
 func statusOf(err error, fallback int) int {
+	var blocked *runs.BlockedError
 	switch {
 	case errors.Is(err, boards.ErrNotFound), errors.Is(err, chats.ErrNotFound),
-		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, chats.ErrNoBranch), errors.Is(err, app.ErrGroupNotFound):
+		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, chats.ErrNoBranch), errors.Is(err, app.ErrGroupNotFound),
+		errors.Is(err, runs.ErrNotFound), errors.Is(err, runs.ErrNoTask), errors.Is(err, runs.ErrNoAttempt),
+		errors.Is(err, runs.ErrNoVersion), errors.Is(err, runs.ErrNoText), errors.Is(err, runs.ErrGroup),
+		errors.Is(err, chats.ErrNoRun):
 		return http.StatusNotFound
 	case errors.Is(err, chats.ErrBadReference), errors.Is(err, chats.ErrBadLabel), errors.Is(err, chats.ErrBadPoint):
 		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
-		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived):
+		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived),
+		errors.Is(err, chats.ErrRunAgent), errors.Is(err, chats.ErrRunArchived),
+		errors.Is(err, runs.ErrArchived), errors.Is(err, runs.ErrStarted), errors.Is(err, runs.ErrNotStarted),
+		errors.Is(err, runs.ErrFinished), errors.Is(err, runs.ErrNotHalted), errors.Is(err, runs.ErrNotRunning),
+		errors.Is(err, runs.ErrStopping), errors.Is(err, runs.ErrLimit), errors.Is(err, runs.ErrGroupArchived),
+		errors.Is(err, runs.ErrLive),
+		errors.As(err, &blocked):
 		return http.StatusConflict
 	}
 	var pe *fs.PathError
@@ -160,6 +176,9 @@ func expandDir(p string) (string, error) {
 	}
 	return abs, nil
 }
+
+// dirsGitWait is how long GET /api/dirs waits for git to say whether a folder is in a work tree.
+const dirsGitWait = 5 * time.Second
 
 // ---- routes ---------------------------------------------------------------
 
@@ -346,7 +365,7 @@ func (s *Server) Handler() http.Handler {
 	for _, k := range []struct {
 		path string
 		kind app.Kind
-	}{{"groups", app.KindGroup}, {"boards", app.KindBoard}, {"chats", app.KindChat}} {
+	}{{"groups", app.KindGroup}, {"boards", app.KindBoard}, {"chats", app.KindChat}, {"runs", app.KindRun}} {
 		mux.HandleFunc("POST /api/"+k.path+"/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
 			if err := a.Archive(k.kind, r.PathValue("id")); err != nil {
 				fail(w, err, http.StatusInternalServerError)
@@ -446,14 +465,27 @@ func (s *Server) Handler() http.Handler {
 		ok(w)
 	})
 
+	s.runRoutes(mux)
+
 	// ---- chats ----
+	// A new chat in a group, on a board, or on a run ({agent, run}: it has no group of its own).
 	mux.HandleFunc("POST /api/chats", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Agent model.AgentKind
 			Group string
 			Board string
+			Run   string
 		}
 		if !readJSON(w, r, &body) {
+			return
+		}
+		if body.Run != "" {
+			cv, err := a.Chats.CreateOnRun(body.Agent, body.Run)
+			if err != nil {
+				fail(w, err, http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, cv)
 			return
 		}
 		if body.Board == "" && !checkGroup(w, body.Group) {
@@ -475,8 +507,10 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, cv)
 	})
 	// The thread of one branch of the chat: ?branch=<branch id>, without it the current branch.
-	// "branch" in the answer is the branch served.
+	// "branch" in the answer is the branch served. For the chat of a run's agent this also starts
+	// its chat events to the client: the watch comes first, so no change between the two is lost.
 	mux.HandleFunc("GET /api/chats/{id}/items", func(w http.ResponseWriter, r *http.Request) {
+		a.Chats.Watch(r.PathValue("id"))
 		branch, v, items, subs, err := a.Chats.ItemsOf(r.PathValue("id"), r.URL.Query().Get("branch"))
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
@@ -678,7 +712,8 @@ func (s *Server) Handler() http.Handler {
 		ok(w)
 	})
 
-	// Folder browser for the chat's working-directory picker.
+	// Folder browser for the working-directory picker of a chat and of a run. "git" says the
+	// folder is inside a git work tree: what decides whether a run there works with git.
 	mux.HandleFunc("GET /api/dirs", func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Query().Get("path")
 		if p == "" {
@@ -696,8 +731,9 @@ func (s *Server) Handler() http.Handler {
 				dirs = append(dirs, e.Name())
 			}
 		}
-		_, gitErr := os.Stat(filepath.Join(abs, ".git"))
-		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs, "git": gitErr == nil})
+		ctx, cancel := context.WithTimeout(r.Context(), dirsGitWait)
+		defer cancel()
+		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs, "git": rungit.IsWorkTree(ctx, abs)})
 	})
 
 	// An agent's plan usage limits, run on request and not stored. ?fresh=1 skips the cache.
@@ -719,4 +755,200 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", clientFiles(s.Client))
 	}
 	return guard(s.Bridge, s.Port, mux)
+}
+
+// ---- runs -------------------------------------------------------------------
+
+// runRoutes adds the routes of runs: thin handlers on runs.Service, and on the app for what
+// cascades (delete; archive and unarchive are in the table of every kind). A server whose app has
+// no runs answers each with 404.
+func (s *Server) runRoutes(mux *http.ServeMux) {
+	a := s.App
+	// handle registers h, which gets the run service and the path's run id.
+	handle := func(pattern string, h func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string)) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			if a.Runs == nil {
+				writeError(w, http.StatusNotFound, runs.ErrNotFound.Error())
+				return
+			}
+			h(w, r, a.Runs, r.PathValue("id"))
+		})
+	}
+	// view writes a call's answer: the run's view, or its error.
+	view := func(w http.ResponseWriter, v model.RunView, err error, fallback int) {
+		if err != nil {
+			fail(w, err, fallback)
+			return
+		}
+		writeJSON(w, v)
+	}
+	// number reads a path value that counts from 1 (an attempt, a notes version).
+	number := func(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
+		n, err := strconv.Atoi(r.PathValue(name))
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, name+" must be a number, 1 or more")
+			return 0, false
+		}
+		return n, true
+	}
+
+	handle("POST /api/runs", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, _ string) {
+		var body struct{ Group, Name string }
+		if !readJSON(w, r, &body) {
+			return
+		}
+		v, err := rs.Create(body.Group, body.Name)
+		view(w, v, err, http.StatusBadRequest)
+	})
+	// The run's view, with what it says of its folder (git, folderMissing, blocked) checked again.
+	handle("GET /api/runs/{id}", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		v, err := rs.View(id)
+		view(w, v, err, http.StatusInternalServerError)
+	})
+	// Name and group in every status; agent, tiers, cwd and settings until the run starts.
+	handle("PATCH /api/runs/{id}", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		var body runs.PatchReq
+		if !readJSON(w, r, &body) {
+			return
+		}
+		v, err := rs.Patch(id, body)
+		view(w, v, err, http.StatusBadRequest)
+	})
+	// The goal being typed. A started run ignores it.
+	handle("PUT /api/runs/{id}/draft", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		var body model.Draft
+		if !readJSON(w, r, &body) {
+			return
+		}
+		if err := rs.SetDraft(id, body); err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		ok(w)
+	})
+	// Answers when the start is recorded, before any agent runs.
+	handle("POST /api/runs/{id}/start", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		var body struct{ Goal string }
+		if !readJSON(w, r, &body) {
+			return
+		}
+		v, err := rs.Start(id, body.Goal)
+		view(w, v, err, http.StatusBadRequest)
+	})
+	handle("POST /api/runs/{id}/stop", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		v, err := rs.Stop(id)
+		view(w, v, err, http.StatusInternalServerError)
+	})
+	// The body may raise the limit that stalled the run: {maxTurns} or {maxCost}.
+	handle("POST /api/runs/{id}/resume", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		var body runs.ResumeReq
+		if !readOptionalJSON(w, r, &body) {
+			return
+		}
+		v, err := rs.Resume(id, body)
+		view(w, v, err, http.StatusBadRequest)
+	})
+	// Applies the result to the person's folder. The body may name the folder's branch ({branch},
+	// "HEAD" for a detached one): needed when it is not the branch the run started on. An outcome
+	// that is blocked or pending is an answer, not an error.
+	handle("POST /api/runs/{id}/apply", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		var body struct{ Branch string }
+		if !readOptionalJSON(w, r, &body) {
+			return
+		}
+		d, err := rs.Apply(id, body.Branch)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, d)
+	})
+	// What an apply would do now: nothing changes and nothing is recorded.
+	handle("GET /api/runs/{id}/delivery", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		d, err := rs.Delivery(id)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, d)
+	})
+	handle("DELETE /api/runs/{id}", func(w http.ResponseWriter, r *http.Request, _ *runs.Service, id string) {
+		if err := a.DeleteRun(id); err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		ok(w)
+	})
+
+	// What the run view reads on demand.
+	handle("GET /api/runs/{id}/detail", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		d, err := rs.Detail(id)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, d)
+	})
+	handle("GET /api/runs/{id}/goal", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		g, err := rs.Goal(id)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, g)
+	})
+	// A task's brief: ?rev=<n>, without it the one in force.
+	handle("GET /api/runs/{id}/tasks/{tid}/brief", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		rev := 0
+		if q := r.URL.Query().Get("rev"); q != "" {
+			n, err := strconv.Atoi(q)
+			if err != nil || n < 1 {
+				writeError(w, http.StatusBadRequest, "rev must be a number, 1 or more")
+				return
+			}
+			rev = n
+		}
+		b, err := rs.Brief(id, r.PathValue("tid"), rev)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, b)
+	})
+	handle("GET /api/runs/{id}/tasks/{tid}/attempts/{n}/report", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		n, good := number(w, r, "n")
+		if !good {
+			return
+		}
+		rep, err := rs.Report(id, r.PathValue("tid"), n)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, rep)
+	})
+	handle("GET /api/runs/{id}/tasks/{tid}/attempts/{n}/changes", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		n, good := number(w, r, "n")
+		if !good {
+			return
+		}
+		ch, err := rs.Changes(id, r.PathValue("tid"), n)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, ch)
+	})
+	handle("GET /api/runs/{id}/notes/{v}", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
+		v, good := number(w, r, "v")
+		if !good {
+			return
+		}
+		notes, err := rs.Notes(id, v)
+		if err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, notes)
+	})
 }

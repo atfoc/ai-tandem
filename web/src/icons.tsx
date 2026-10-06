@@ -40,6 +40,13 @@ export const BoardIcon = ({ size = 13 }: { size?: number }) => (
   </svg>
 );
 
+/** A run: three staggered bars, as tasks on a timeline. */
+export const RunIcon = ({ size = 13 }: { size?: number }) => (
+  <svg className="run-icon" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
+    <path d="M2.5 3.8h5.5M6 8h7.5M3.5 12.2h6" />
+  </svg>
+);
+
 export const Chevron = () => <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3.5 2 6.5 5l-3 3" /></svg>;
 
 export const GroupIcon = () => <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.5 1.5h6.3a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>;

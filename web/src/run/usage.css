@@ -1,0 +1,29 @@
+/* The dock's Usage tab (RunUsage.tsx): a line of figures, then the tables by tier and by kind. */
+.run-usage { font-size: 12px; }
+.ru-top { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 2px 0 10px; }
+.ru-top > div { display: flex; flex-direction: column; min-width: 0; }
+.ru-top b { font-size: 17px; font-weight: 620; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.ru-top span { font-size: 11.5px; color: var(--muted); }
+.ru-top .warn b { color: var(--warn); }
+/* a stage too narrow for the table scrolls it sideways in its own box */
+.ru-scroll { overflow-x: auto; container-type: inline-size; }
+.ru-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ru-table th, .ru-table td { padding: 5px 0 5px 16px; text-align: right; border-bottom: 1px solid var(--line); }
+.ru-table .ru-cols th { padding-top: 3px; padding-bottom: 4px; font-size: 11.5px; font-weight: 400; color: var(--muted); }
+/* the two tables are sections of one, so that their columns line up: a section's heading is its first row */
+.ru-table .ru-cap th { padding: 12px 0 3px; border-bottom: 0; font-weight: 400; text-align: left; }
+.ru-table tbody:first-child .ru-cap th { padding-top: 2px; }
+.ru-table th:first-child, .ru-table td:first-child { padding-left: 0; text-align: left; }
+.ru-table td b { font-weight: 620; }
+.ru-table td .n { color: var(--muted); }
+.ru-table .bar { box-sizing: content-box; width: 120px; min-width: 120px; padding-left: 10px; text-align: left; }
+.ru-table .bar i { display: block; height: 5px; border-radius: 3px; background: var(--accent); opacity: .6; }
+/* a narrow dock (the stage at 1000 px): a shorter bar and tighter columns, so that the last column is whole */
+@container (max-width: 780px) {
+  .ru-table .bar { width: 56px; min-width: 56px; }
+  .ru-table th, .ru-table td { padding-left: 12px; }
+}
+/* a run with no cost and no tokens: the few columns there are do not spread over the dock */
+.run-usage.bare .ru-table { width: auto; min-width: 360px; }
+.ru-note, .ru-none { color: var(--muted); }
+.ru-note { margin-top: 8px; }

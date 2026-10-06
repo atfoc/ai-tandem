@@ -253,7 +253,9 @@ func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	c.tr.SetStatus(model.StatusThinking)
 	c.meta.TurnActive = true
 	var blocks []agent.ContentBlock
-	if c.meta.Board != "" { // every board chat message names its board
+	if rc := m.runContext(c); rc != "" { // every message of a chat on a run starts with the run's state
+		blocks = append(blocks, agent.ContentBlock{Text: rc})
+	} else if c.meta.Board != "" { // every board chat message names its board
 		name := c.meta.Board
 		if bd, ok := m.Boards.Get(c.meta.Board); ok {
 			name = bd.Name
@@ -337,6 +339,8 @@ func (m *Manager) refused(c *Chat, d *carry, cause error, out *outbox) {
 		return
 	}
 	m.endCarry(c, false, out)
+	c.wait.refused("the subagent results could not be sent to the agent: " + cause.Error())
+	wakeOwned(c)
 	c.lateEnd = cause.Error()
 	ups := c.tr.CloseOpen()
 	ups = append(ups, c.tr.AddNote("error", "The subagent results could not be sent to the agent: "+cause.Error())...)

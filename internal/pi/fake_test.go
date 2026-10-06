@@ -33,6 +33,7 @@ const (
 	envPromptOnly = "PI_FAKE_SCRIPT_PROMPT_ONLY" // set: print the script on prompts only, never on aborts
 	envEvery      = "PI_FAKE_SCRIPT_EVERY"       // set: print the script on every prompt, not only the first (never on aborts)
 	envAtEOF      = "PI_FAKE_SCRIPT_AT_EOF"      // set: print the script when stdin closes, never on a prompt or abort
+	envDeafAfter  = "PI_FAKE_DEAF_AFTER"         // a command: once the fake has answered it, it reads nothing more from stdin and stays (until killed)
 )
 
 func TestMain(m *testing.M) {
@@ -59,19 +60,20 @@ func helperProcess() {
 	cwd, _ := os.Getwd()
 	rec, _ := json.Marshal(map[string]any{
 		"cwd": cwd, "args": os.Args[1:],
-		"PI_SUBAGENT":        os.Getenv("PI_SUBAGENT"),
-		"AI_AGENT":           os.Getenv("AI_AGENT"),
-		"PI_MODEL":           os.Getenv("PI_MODEL"),
-		"AIWB_CHAT_ID":       os.Getenv("AIWB_CHAT_ID"),
-		"AIWB_CHAT_DIR":      os.Getenv("AIWB_CHAT_DIR"),
-		"AIWB_PI_BIN":        os.Getenv("AIWB_PI_BIN"),
-		"AIWB_BRIDGE_SOCKET": os.Getenv("AIWB_BRIDGE_SOCKET"),
-		"AIWB_BRIDGE_RUN":    os.Getenv("AIWB_BRIDGE_RUN"),
-		"AIWB_MODEL":         os.Getenv("AIWB_MODEL"),
-		"AIWB_THINKING":      os.Getenv("AIWB_THINKING"),
-		"AIWB_APPEND_PROMPT": os.Getenv("AIWB_APPEND_PROMPT"),
-		"AIWB_MCP_CONFIG":    os.Getenv("AIWB_MCP_CONFIG"),
-		"env":                os.Environ(),
+		"PI_SUBAGENT":          os.Getenv("PI_SUBAGENT"),
+		"AI_AGENT":             os.Getenv("AI_AGENT"),
+		"PI_MODEL":             os.Getenv("PI_MODEL"),
+		"AIWB_CHAT_ID":         os.Getenv("AIWB_CHAT_ID"),
+		"AIWB_CHAT_DIR":        os.Getenv("AIWB_CHAT_DIR"),
+		"AIWB_PI_BIN":          os.Getenv("AIWB_PI_BIN"),
+		"AIWB_BRIDGE_SOCKET":   os.Getenv("AIWB_BRIDGE_SOCKET"),
+		"AIWB_BRIDGE_RUN":      os.Getenv("AIWB_BRIDGE_RUN"),
+		"AIWB_MODEL":           os.Getenv("AIWB_MODEL"),
+		"AIWB_THINKING":        os.Getenv("AIWB_THINKING"),
+		"AIWB_APPEND_PROMPT":   os.Getenv("AIWB_APPEND_PROMPT"),
+		"AIWB_MCP_CONFIG":      os.Getenv("AIWB_MCP_CONFIG"),
+		"AIWB_MCP_CONFIG_FILE": os.Getenv("AIWB_MCP_CONFIG_FILE"),
+		"env":                  os.Environ(),
 	})
 	os.WriteFile(os.Getenv(envArgs), rec, 0o644)
 
@@ -153,6 +155,11 @@ func helperProcess() {
 		}
 		b, _ := json.Marshal(resp)
 		os.Stdout.Write(append(b, '\n'))
+		if cmd.Type == os.Getenv(envDeafAfter) {
+			for {
+				time.Sleep(time.Hour)
+			}
+		}
 	}
 	if os.Getenv(envAtEOF) != "" {
 		for _, l := range script {
@@ -288,7 +295,54 @@ type invocation struct {
 	Thinking     string `json:"AIWB_THINKING"`
 	AppendPrompt string `json:"AIWB_APPEND_PROMPT"`
 	MCPConfig    string `json:"AIWB_MCP_CONFIG"`
+	MCPFile      string `json:"AIWB_MCP_CONFIG_FILE"`
 	Env          []string
+}
+
+// mcpFileConfig checks how the invocation got its MCP config and returns the file's content: the
+// path wantPath in AIWB_MCP_CONFIG_FILE, a file only the user can read, no AIWB_MCP_CONFIG, and
+// neither the token nor the word "Bearer" in the arguments or the environment.
+func (inv invocation) mcpFileConfig(t *testing.T, wantPath, token string) string {
+	t.Helper()
+	if inv.MCPConfig != "" {
+		t.Errorf("AIWB_MCP_CONFIG is set: %q", inv.MCPConfig)
+	}
+	if inv.MCPFile != wantPath {
+		t.Fatalf("AIWB_MCP_CONFIG_FILE = %q, want %q", inv.MCPFile, wantPath)
+	}
+	assertNoToken(t, token, inv.Args, inv.Env)
+	return readMCPFile(t, wantPath)
+}
+
+// readMCPFile returns the content of an MCP config file after checking that only the user can read
+// it and that its folder holds no left-over temp file.
+func readMCPFile(t *testing.T, path string) string {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("the MCP config file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("the MCP config file has mode %o, want 600", fi.Mode().Perm())
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "mcp-*.tmp")); len(left) != 0 {
+		t.Errorf("temp files left beside the MCP config file: %q", left)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// assertNoToken fails when an argument or an environment entry holds the token or "Bearer".
+func assertNoToken(t *testing.T, token string, args, env []string) {
+	t.Helper()
+	for _, v := range append(append([]string{}, args...), env...) {
+		if strings.Contains(v, "Bearer") || (token != "" && strings.Contains(v, token)) {
+			t.Fatalf("the MCP token is in the arguments or the environment: %q", v)
+		}
+	}
 }
 
 func (f *fake) invocation(t *testing.T) invocation {

@@ -1,18 +1,21 @@
 // A chat's header and thread. Items come from the server (chat_items); this
-// file only renders them.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject, type UIEvent } from "react";
-import { useStore, setState, isBusy, isLegacy, chatTitle, boardName, shownBranch } from "./store.ts";
+// file only renders them. Both also draw the transcript of one of a run's own agents, read-only:
+// ChatHeader with `agent`, Thread with `readOnly`.
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject, type UIEvent } from "react";
+import { useStore, setState, isBusy, isLegacy, chatTitle, boardName, shownBranch, chatOf } from "./store.ts";
 import { api } from "./api.ts";
+import { loadItems, retryAgent } from "./conn.ts";
 import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
 import { toolVerb, toolDone, statusText, waitingText } from "./logic/labels.ts";
 import { isSubagentTool } from "./logic/subagents.ts";
 import { quotable } from "./logic/quotes.ts";
 import { permAnswer } from "./logic/perms.ts";
+import { runChat } from "./logic/runchat.ts";
 import { Markdown } from "./Markdown.tsx";
 import { SubagentRow, SubResultRow } from "./Subagents.tsx";
 import { SentQuotes } from "./Quotes.tsx";
-import { AgentGlyph, BoardIcon, Pencil, agentClass, agentName } from "./icons.tsx";
+import { AgentGlyph, BoardIcon, Pencil, RunIcon, agentClass, agentName } from "./icons.tsx";
 import { MessageExtras, ForkedFrom } from "./fork/Message.tsx";
 import { TreeButton } from "./fork/TreeButton.tsx";
 import { BranchCrumb } from "./fork/Chrome.tsx";
@@ -43,11 +46,30 @@ export function NameInput({ chat, onDone }: { chat: ChatView; onDone: () => void
   );
 }
 
-export function ChatHeader({ chatId }: { chatId: string }) {
-  const c = useStore((s) => s.chats[chatId]);
+/** What ChatHeader shows of a run agent's transcript in place of a chat's own name, sub-line and
+ *  controls. title: what the run calls the agent ("T11 · work agent · attempt 2"); facts: the
+ *  sub-line (tier, model, status, time, cost); onClose: the × ("Close transcript"). */
+export type AgentHead = { title: ReactNode; facts: ReactNode; onClose(): void };
+
+/** A chat's header. With `agent` it is the header of a run agent's transcript: the same markup and
+ *  glyph, a name that is plain text (no rename), no branch crumb, no tree button. The agent's
+ *  record may still be on its way: the header is drawn without the glyph until it is there. */
+export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHead }) {
+  const c = useStore((s) => (agent ? chatOf(s, chatId) : s.chats[chatId]));
   const items = useStore((s) => s.items[chatId]?.items);
   const board = useStore((s) => (c?.board ? s.boards[c.board] : undefined));
+  const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined)); // not the record: it changes with every task of the run
   const [editing, setEditing] = useState(false);
+  if (agent) return (
+    <div className="chat-head read-only" data-agent={chatId}>
+      {c && <span className={`crow-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={14} /></span>}
+      <div className="chat-head-main">
+        <div className="chat-head-name"><span>{agent.title}</span></div>
+        <div className="chat-head-sub">{agent.facts}</div>
+      </div>
+      <button className="icon-btn" title="Close transcript (Esc)" onClick={agent.onClose}>×</button>
+    </div>
+  );
   if (!c) return null;
   return (
     <div className="chat-head">
@@ -60,6 +82,7 @@ export function ChatHeader({ chatId }: { chatId: string }) {
         )}
         <div className="chat-head-sub">
           {c.board && <><BoardIcon /> {board?.name ?? "board"} · </>}
+          {c.run && !c.board && <><RunIcon size={12} /> {runName ?? "run"} · </>}
           {agentName(c.agent)}
           {c.cwd ? <> · <span className="mono">{tildify(c.cwd)}</span></> : null}
           {" · "}{c.archived ? "Archived" : isLegacy(c) ? "Disabled" : statusText(c, boardName)}
@@ -67,7 +90,7 @@ export function ChatHeader({ chatId }: { chatId: string }) {
         </div>
       </div>
       <TreeButton chatId={chatId} />
-      {c.board && <button className="icon-btn" title="Hide chat (⌘J)" onClick={() => setState({ panel: false })}>×</button>}
+      {(c.board || c.run) && <button className="icon-btn" title="Hide chat (⌘J)" onClick={() => setState({ panel: false })}>×</button>}
     </div>
   );
 }
@@ -101,16 +124,56 @@ export function useStickToBottom(ref: RefObject<HTMLDivElement | null>, follow: 
   };
 }
 
-/** A chat's thread: the items of the branch it shows, cut at the point of a pending move. */
-export function Thread({ chatId }: { chatId: string }) {
-  const c = useStore((s) => s.chats[chatId]);
+/** Whether the items drawn belong to a read-only thread: a permission card draws no buttons. */
+const ReadOnlyContext = createContext(false);
+
+const Dots = () => <span className="dots"><i /><i /><i /></span>;
+
+/** A chat's thread: the items of the branch it shows, cut at the point of a pending move.
+ *
+ *  readOnly: the transcript of a chat nobody can write to, which is how a run shows its own
+ *  agents. The record is the chat's or a held agent's (chatOf; the caller holds the agent, conn.ts
+ *  holdAgent). No message can be forked, labelled or quoted (ItemView gets no index), a permission
+ *  card has no buttons, and there is no empty state with suggestions: `empty` is what an agent
+ *  that is not busy and wrote nothing shows. A subagent row opens the app's drawer, as in a chat.
+ *  It is the scroller: its parent must be a flex column with a bounded height. */
+export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?: boolean; empty?: ReactNode }) {
+  const c = useStore((s) => (readOnly ? chatOf(s, chatId) : s.chats[chatId]));
   const loaded = useStore((s) => s.items[chatId]);
-  const branch = useStore((s) => shownBranch(s, chatId));
-  const cut = useStore((s) => s.moves[chatId]?.at);
-  const all = loaded?.items ?? EMPTY;
+  const failed = useStore((s) => (readOnly ? s.agentErrors[chatId] : undefined));
+  const branch = useStore((s) => (readOnly ? "" : shownBranch(s, chatId))); // an agent has one branch
+  const cut = useStore((s) => (readOnly ? undefined : s.moves[chatId]?.at));
+  // A snapshot drops every thread (store.ts applySnapshot): a read-only one on screen is fetched
+  // again here. (A chat's is fetched by whoever selects it.)
+  useEffect(() => { if (readOnly && !loaded) void loadItems(chatId); }, [readOnly, chatId, !loaded]);
+  // The last items stay on screen while that fetch runs, so the reader keeps the place.
+  const last = useRef<{ id: string; items: Item[] } | null>(null);
+  if (readOnly && loaded) last.current = { id: chatId, items: loaded.items };
+  const kept = readOnly && last.current?.id === chatId ? last.current.items : null;
+  const all = loaded?.items ?? kept ?? EMPTY;
   const items = useMemo(() => (cut === undefined ? all : all.slice(0, cut)), [all, cut]);
   const ref = useRef<HTMLDivElement>(null);
-  const onScroll = useStickToBottom(ref, true, `${chatId}:${branch}`);
+  const onScroll = useStickToBottom(ref, true, readOnly ? chatId : `${chatId}:${branch}`);
+  if (readOnly) {
+    const ready = !!c && (!!loaded || !!kept);
+    const busy = !!c && isBusy(c.status);
+    const subs = c?.subsRunning ?? 0;
+    return (
+      <div className="thread read-only" data-chat={chatId} ref={ref} onScroll={onScroll}>
+        {!ready && !failed && <div className="typing"><Dots /> Loading…</div>}
+        {!ready && failed && <div className="note error">Couldn't load this agent's transcript: {failed} <button type="button" className="link" onClick={() => retryAgent(chatId)}>Retry</button></div>}
+        {c && ready && !items.length && (busy
+          ? <div className="typing"><Dots /> Starting…</div>
+          : <div className="note">{empty ?? "This agent wrote nothing."}</div>)}
+        <ReadOnlyContext.Provider value={true}>
+          {c && ready && items.map((it, i) => (it ? <ItemView key={i} item={it} chat={c} /> : null))}
+        </ReadOnlyContext.Provider>
+        {c && ready && busy && !!items.length && c.status !== "approval" && c.status !== "writing" && <div className="typing"><Dots /> {statusText(c, boardName)}</div>}
+        {c && ready && !busy && subs > 0 && <div className="typing waiting">Waiting on {subs} subagent{subs === 1 ? "" : "s"}</div>}
+        {c?.status === "error" && c.error && <div className="note error">{c.error}</div>}
+      </div>
+    );
+  }
   if (!c) return null;
   const busy = isBusy(c.status);
   const waiting = waitingText(c); // "" while busy
@@ -128,8 +191,13 @@ export function Thread({ chatId }: { chatId: string }) {
 
 function EmptyThread({ c }: { c: ChatView }) {
   const board = useStore((s) => (c.board ? s.boards[c.board] : undefined));
+  const runName = useStore((s) => (c.run ? s.runs[c.run]?.name : undefined));
+  const runStatus = useStore((s) => (c.run ? s.runs[c.run]?.status : undefined));
+  const onRun = useMemo(() => runChat(runStatus, runName), [runStatus, runName]); // what a chat on a run says, by the run's state
   const suggest = c.board
     ? ["Sketch a 3-tier web architecture here", "Summarize what's on this board", "Tidy up the selected shapes into a row"]
+    : c.run
+    ? onRun.suggestions
     : ["What is this project?", "What changed in the last few commits?"];
   return (
     <div className="empty-thread">
@@ -137,9 +205,11 @@ function EmptyThread({ c }: { c: ChatView }) {
       <div className="empty-title">{agentName(c.agent)}</div>
       {c.board
         ? <p>Ask about or change <b>{board?.name ?? "this board"}</b>. Type <kbd>@</kbd> to point at other boards.</p>
+        : c.run
+        ? <p>{onRun.text.map((part, i) => (typeof part === "string" ? part : <b key={i}>{part.b}</b>))}</p>
         : <p>The same session you get in a terminal, started in <b className="mono">{base(c.cwd) || "/"}</b>.</p>}
       {!c.locked && !c.archived && !isLegacy(c) && <p className="config-hint">Pick the folder, model and effort below — they lock when you send.</p>}
-      {!c.archived && !isLegacy(c) && (
+      {!c.archived && !isLegacy(c) && suggest.length > 0 && (
         <div className="suggestions">
           {suggest.map((s) => (
             <button key={s} className="chip" onClick={() => void sendMessage(c.id, s).catch((e) => console.error(e))}>{s}</button>
@@ -209,7 +279,7 @@ function ToolCard({ item, chat, live = true }: { item: Item; chat: ChatView; liv
     : toolDone(name, item.input, item.result, boardName);
   const show = () => {
     if (!target) return;
-    select(target === chat.board ? { board: target, chat: chat.id } : { board: target, chat: null });
+    select({ board: target, run: null, chat: target === chat.board ? chat.id : null });
   };
   return (
     <div className={`tool ${running ? "running" : ""} ${item.isError || item.denied ? "err" : ""}`}>
@@ -230,7 +300,10 @@ function ToolCard({ item, chat, live = true }: { item: Item; chat: ChatView; liv
   );
 }
 
+/** A permission request. In a read-only thread it shows what was asked and how it was decided,
+ *  with no buttons. */
 function PermCard({ item, chat }: { item: Item; chat: ChatView }) {
+  const readOnly = useContext(ReadOnlyContext);
   const [err, setErr] = useState("");
   const asker = useStore((s) => (item.subagent ? s.subs[chat.id]?.[item.subagent] : undefined));
   const input: any = item.input ?? {};
@@ -244,7 +317,7 @@ function PermCard({ item, chat }: { item: Item; chat: ChatView }) {
       {what && <pre className="perm-what">{String(what)}</pre>}
       {item.decided ? (
         <div className="perm-done">{item.decided === "allow" ? "Approved" : "Denied"}</div>
-      ) : chat.archived || isLegacy(chat) ? null : (
+      ) : readOnly || chat.archived || isLegacy(chat) || chat.role ? null : (
         <div className="perm-actions">
           <button className="btn danger sm" onClick={() => decide(true)}>Allow</button>
           <button className="btn sm" onClick={() => decide(false)}>Don't</button>

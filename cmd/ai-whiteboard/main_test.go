@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"testing"
 
+	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/store"
 )
@@ -19,6 +20,7 @@ import (
 // TestMain points CURSOR_CONFIG_DIR at a temp folder for the whole run: every server a test starts
 // adds deny rules for its data folder to the Cursor CLI config, and must not add them to the user's.
 func TestMain(m *testing.M) {
+	agenttest.FastGit()
 	dir, err := os.MkdirTemp("", "aiwb-cmd-cursor-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

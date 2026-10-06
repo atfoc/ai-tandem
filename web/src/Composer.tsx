@@ -18,7 +18,7 @@ import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensTe
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { useComposerQuotes } from "./Quotes.tsx";
 import { quoteSelection } from "./quoteDom.ts";
-import { BoardIcon, Chevron, Folder, Lock, WarnIcon, agentName } from "./icons.tsx";
+import { BoardIcon, Chevron, Folder, Lock, RunIcon, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
 import { leftByBack, registerComposer, sendAt, sendFailed } from "./fork/actions.ts";
@@ -90,6 +90,7 @@ export function pickPoint(chat: string | null) { setState({ picking: chat }); }
 export function Composer({ chatId }: { chatId: string }) {
   const c = useStore((s) => s.chats[chatId]);
   const boards = useStore((s) => s.boards);
+  const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined));
   const groups = useStore((s) => s.groups);
   const selection = useStore((s) => s.selection);
   const onScreen = useStore((s) => s.sel.board);
@@ -259,7 +260,7 @@ export function Composer({ chatId }: { chatId: string }) {
     setMention(m ? { ...m, i: 0 } : null);
   };
 
-  const placeholder = !c.board ? `Ask ${agentName(c.agent)}…` : "Ask or tell… (@ to mention a board)";
+  const placeholder = c.board ? "Ask or tell… (@ to mention a board)" : c.run ? "Ask about this run…" : `Ask ${agentName(c.agent)}…`;
   return (
     <div className="composer">
       {c.board && (
@@ -282,7 +283,13 @@ export function Composer({ chatId }: { chatId: string }) {
           </>}
         </div>
       )}
-      {!c.board && (q.count || note) ? (
+      {c.run && !c.board && (
+        <div className="context-row">
+          <span className="ctx-chip" title={`This chat can read and manage this run (${c.run})`}><RunIcon /> {runName ?? "run"}</span>
+          {q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}
+        </div>
+      )}
+      {!c.board && !c.run && (q.count || note) ? (
         <div className="context-row">{q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}</div>
       ) : null}
       <BranchBanner chatId={chatId} />
@@ -340,7 +347,7 @@ export function Toolbar({ chatId, onError }: { chatId: string; onError: (msg: st
   return (
     <>
       {!folderOpen && <Lock />}
-      <DirPicker c={c} locked={!folderOpen} />
+      <DirPicker cwd={c.cwd} missing={c.folderMissing} locked={!folderOpen} onPick={(d) => api.configure(c.id, { cwd: d })} />
       {c.locked ? (
         <span className="tchip static" title="Model and effort are fixed once the chat has started">
           {folderOpen && <Lock />} {subline(c, cat)}
@@ -368,12 +375,17 @@ export function Toolbar({ chatId, onError }: { chatId: string; onError: (msg: st
 
 /** One Picker row: a catalog model for Model (id/label/note/provider), or a bare {id, label} for
  *  Effort. */
-type PickerOption = { id: string; label: string; note?: string; provider?: string };
+export type PickerOption = { id: string; label: string; note?: string; provider?: string; icon?: React.ReactNode };
+
+/** What a setting's chip says about when it can be changed. */
+export const UNTIL_FIRST_MESSAGE = "can be changed until you send the first message";
 
 /** The Model and Effort pickers. `searchable` (Model only) adds the search field and provider
- *  grouping; both modes share the keyboard highlight, listbox/option ARIA and single-open state. */
-function Picker({ label, title, prefix, options, value, searchable = false, open, onOpenChange, onPick }: {
-  label: string; title: string; prefix?: string; options: PickerOption[]; value: string;
+ *  grouping; both modes share the keyboard highlight, listbox/option ARIA and single-open state.
+ *  A run's goal composer (run/RunComposer.tsx) uses it too, also for the agent: icon goes before
+ *  the chip's label, and hint is the title's second half. */
+export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE, options, value, searchable = false, open, onOpenChange, onPick }: {
+  label: string; title: string; prefix?: string; icon?: React.ReactNode; hint?: string; options: PickerOption[]; value: string;
   searchable?: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPick: (id: string) => void;
 }) {
   const [query, setQuery] = useState(""); // searchable only; never touched by Effort
@@ -491,7 +503,7 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
       ref={(el) => { rows.current[i] = el; }}
       className={`menu-item pick ${o.id === value ? "on" : ""} ${i === hi ? "active" : ""}`}
       onClick={() => pickAt(i)}>
-      <span className="menu-label">{o.label}{o.note && <span className="menu-note">{o.note}</span>}</span>
+      {o.icon}<span className="menu-label">{o.label}{o.note && <span className="menu-note">{o.note}</span>}</span>
       {o.id === value && <span>✓</span>}
     </button>
   );
@@ -499,8 +511,8 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
   return (
     <div className="menu-wrap" onKeyDown={onWrapKeyDown}>
       <button ref={chip} className="tchip" aria-expanded={open} aria-haspopup="listbox"
-        onClick={() => onOpenChange(!open)} title={`${title} — can be changed until you send the first message`}>
-        {prefix && <span className="tchip-pre">{prefix}</span>}{label}<span className="caret">▾</span>
+        onClick={() => onOpenChange(!open)} title={`${title} — ${hint}`}>
+        {icon}{prefix && <span className="tchip-pre">{prefix}</span>}{label}<span className="caret">▾</span>
       </button>
       {open && (
         <div ref={menu} className="menu up" onMouseDown={(e) => e.stopPropagation()}>
@@ -537,23 +549,27 @@ function Picker({ label, title, prefix, options, value, searchable = false, open
   );
 }
 
-function DirPicker({ c, locked }: { c: ChatView; locked: boolean }) {
+/** The folder chip and its browser. onPick sets the folder (a chat's, a run's); a rejection shows
+ *  in the browser. */
+export function DirPicker({ cwd, missing, locked, hint = UNTIL_FIRST_MESSAGE, onPick }: {
+  cwd: string; missing?: boolean; locked: boolean; hint?: string; onPick: (dir: string) => Promise<unknown>;
+}) {
   const [open, setOpen] = useState(false);
-  const name = base(c.cwd) || "/";
-  if (locked) return <span className="tchip static" title={`Working directory: ${c.cwd}`}><Folder /> {name}</span>;
+  const name = base(cwd) || "/";
+  if (locked) return <span className="tchip static" title={`Working directory: ${cwd}`}><Folder /> {name}</span>;
   return (
     <div className="menu-wrap">
-      <button className={`tchip ${c.folderMissing ? "missing" : ""}`} onClick={() => setOpen(!open)}
-        title={c.folderMissing ? `Folder not found: ${c.cwd}` : `Working directory: ${c.cwd} — can be changed until you send the first message`}>
+      <button className={`tchip ${missing ? "missing" : ""}`} onClick={() => setOpen(!open)}
+        title={missing ? `Folder not found: ${cwd}` : `Working directory: ${cwd} — ${hint}`}>
         <Folder /> {name}<span className="caret">▾</span>
       </button>
-      {open && <DirBrowser start={c.cwd ?? ""} onPick={async (d) => { await api.configure(c.id, { cwd: d }); rememberDir(d); setOpen(false); }} />}
+      {open && <DirBrowser start={cwd ?? ""} onPick={async (d) => { await onPick(d); rememberDir(d); setOpen(false); }} />}
       {open && <div className="menu-backdrop" onMouseDown={() => setOpen(false)} />}
     </div>
   );
 }
 
-function DirBrowser({ start, onPick }: { start: string; onPick: (dir: string) => Promise<void> }) {
+export function DirBrowser({ start, onPick }: { start: string; onPick: (dir: string) => Promise<void> }) {
   const [at, setAt] = useState<Dirs | null>(null);
   const [typed, setTyped] = useState("");
   const [err, setErr] = useState("");
@@ -570,8 +586,19 @@ function DirBrowser({ start, onPick }: { start: string; onPick: (dir: string) =>
   }, []);
   const use = async (p: string) => { try { await onPick(p); } catch (e: any) { setErr(e.message); } };
   const recent = recentDirs().filter((d) => d !== at?.path).slice(0, 4);
+  // Anchored at the chip's left edge and of a fixed width: where the chip is near the window's
+  // right edge (a run's narrow stage) it is moved left as a picker's menu is, by what its right
+  // edge passes the window's (less a 12px margin), never past the window's left edge.
+  const menu = useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const el = menu.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const over = Math.min(r.right - (window.innerWidth - 12), r.left);
+    if (over > 0) el.style.left = `${-over}px`;
+  }, []);
   return (
-    <div className="menu up dirs" onMouseDown={(e) => e.stopPropagation()}>
+    <div ref={menu} className="menu up dirs" onMouseDown={(e) => e.stopPropagation()}>
       <div className="menu-head">Start the agent in</div>
       <input className="dir-input" value={typed} spellCheck={false} placeholder="~/path/to/project"
         onChange={(e) => setTyped(e.target.value)}

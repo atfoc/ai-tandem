@@ -39,6 +39,9 @@ type splitRun struct {
 // Cursor's is read from its session store on every call, as it costs no process; it is never
 // persisted.
 //
+// A run agent's chat never has a process started just to answer: its split comes from its running
+// process, else it is the one that was kept, however old, and ErrNotStarted when there is none.
+//
 // It is the split of the chat's current branch.
 func (m *Manager) ContextSplit(id string, fresh bool) (model.ContextSplit, error) {
 	var out outbox
@@ -70,6 +73,15 @@ func (m *Manager) ContextSplit(id string, fresh bool) (model.ContextSplit, error
 		m.send(out)
 		<-r.done
 		return r.split, r.err
+	}
+	if _, live := c.ag.(agent.ContextSplitter); c.role != "" && !live && keepsContextSplit(c.meta.Agent) {
+		split, err := model.ContextSplit{}, ErrNotStarted
+		if s := c.meta.ContextSplit; s != nil {
+			split, err = *s, nil
+		}
+		c.mu.Unlock()
+		m.send(out)
+		return split, err
 	}
 	ag, opts, kind := c.ag, m.spawnOptions(c), c.meta.Agent
 	// A Claude fork has no session of its own until its first message was accepted: without a

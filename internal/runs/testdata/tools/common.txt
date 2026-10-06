@@ -1,0 +1,135 @@
+=== a subagent of the orchestrator
+subagent: get_run {}
+refusal:
+get_run is not available to subagents
+
+=== a subagent of a chat on the run
+subagent: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+add_task is not available to subagents
+
+=== a task agent
+task agent: get_run {}
+refusal:
+get_run is not available to this agent
+
+=== a merge agent
+merge agent: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+add_task is not available to this agent
+
+=== a chat that is on no run
+chat: get_run {}
+refusal:
+get_run is not available on this chat
+
+=== a chat on a run that does not exist
+chat: get_run {}
+refusal:
+get_run is not available on this chat
+
+=== a tool that is none of the run tools
+orchestrator: rm_rf {}
+refusal:
+unknown tool rm_rf
+
+=== the arguments are not an object, the orchestrator
+orchestrator: add_task ["T01"]
+refusal:
+the arguments must be an object
+
+=== the arguments are not an object, a chat's change
+chat: cancel_task "T01"
+refusal:
+the arguments must be an object
+
+=== the arguments are not an object, a chat's read
+chat: get_task 7
+refusal:
+the arguments must be an object
+
+=== no arguments at all are an empty object
+chat: get_notes 
+answer:
+The run has no notes yet.
+
+=== a chat calls set_notes
+chat: set_notes {"notes":"# Goal\n\nPort the importer. Done means the old tests pass against the new code.\n"}
+refusal:
+The notes are the orchestrator's own memory, so a chat does not write them. To pass something on, use tell_orchestrator; to change the work, change the tasks.
+
+=== a chat calls finish_run
+chat: finish_run {"outcome":"achieved","summary":"Done."}
+refusal:
+Only the orchestrator ends the run, with its verdict on the goal. The person can stop the run in its view; you can cancel tasks or tell the orchestrator what the person wants.
+
+=== the orchestrator calls tell_orchestrator
+orchestrator: tell_orchestrator {"text":"note to self"}
+refusal:
+tell_orchestrator is for chats on the run; your own memory is the notes
+
+=== any other failure
+orchestrator: get_run {}
+refusal:
+internal error in get_run: git rev-parse failed in /work/int: exit status 128
+
+=== the orchestrator's turn is over, a change
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+the orchestrator's turn is over; add_task was not run
+
+=== the orchestrator's turn is over, a read
+orchestrator: get_run {}
+refusal:
+the orchestrator's turn is over; get_run was not run
+
+=== the orchestrator's turn is over and the arguments are not an object
+orchestrator: get_run []
+refusal:
+the arguments must be an object
+
+=== a call of the chat of an earlier turn
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+the orchestrator's turn is over; add_task was not run
+
+=== the run is stopping, the orchestrator's change
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+the run is stopping; try again when it has stopped
+
+=== the run is stopping, a chat's change
+chat: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+the run is stopping; try again when it has stopped
+
+=== the run is stopped, a call of the orchestrator that was on its way
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+the run is stopping; try again when it has stopped
+
+=== the run is archived, a chat's change
+chat: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+the run is archived; nothing can be changed until the person unarchives it
+
+=== the run is a draft, a read
+chat: get_run {}
+answer:
+Run New run has not started: its goal is still being written in the app. There is nothing to read yet.
+
+=== the run is a draft, another read
+chat: get_task {"id":"T01"}
+answer:
+Run New run has not started: its goal is still being written in the app. There is nothing to read yet.
+
+=== the run is a draft, a change
+chat: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"Read","writes":false}
+refusal:
+the run has not started: its goal is still being written in the app. Nothing can be changed yet.
+
+=== the run is finished, a chat's change
+chat: tell_orchestrator {"text":"one more thing"}
+refusal:
+the run is finished; nothing more can be changed
+

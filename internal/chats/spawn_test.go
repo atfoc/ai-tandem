@@ -1169,3 +1169,45 @@ func TestSpawnUnlinkedReturnsSid(t *testing.T) {
 	}
 	waitChild(t, e.claude, 1)
 }
+
+// A run agent's token lives until the run is deleted, so a spawn_subagent call can arrive after
+// the engine stopped the agent (a stop, a cancel, the task's end): it is refused and no process
+// is started, since nothing in the run would stop that subagent. Inside a turn it starts one.
+func TestStaleTaskAgentSpawn(t *testing.T) {
+	e, id, ag, _ := ownStart(t)
+	before := e.claude.count()
+	sa, err := e.m.SpawnSubagent(id, SpawnSubRequest{Prompt: "work in the turn", Description: "in time"})
+	if err != nil || sa.Status != model.SubRunning {
+		t.Fatalf("SpawnSubagent in the agent's turn: %+v, %v", sa, err)
+	}
+	child := waitChild(t, e.claude, before+1)
+	if !child.opts.Unattended {
+		t.Errorf("the subagent's process is not unattended: %+v", child.opts)
+	}
+
+	ag.emit(t, ownText("done", "p1")...)
+	subFolders := func() int {
+		ents, _ := os.ReadDir(filepath.Join(e.m.chatDir(id), "subagents"))
+		return len(ents)
+	}
+	if subFolders() != 1 {
+		t.Fatalf("%d subagent folders, want the one of the subagent started in the turn", subFolders())
+	}
+	refused := func(when string) {
+		t.Helper()
+		if e.m.TurnRunning(id) {
+			t.Fatalf("%s: the chat is in a turn", when)
+		}
+		n, subs := e.claude.count(), subFolders()
+		sa, err := e.m.SpawnSubagent(id, SpawnSubRequest{Prompt: "late work", Description: "late"})
+		if !errors.Is(err, ErrTurnOver) || err.Error() != "this agent's turn is over: it can no longer start a subagent" {
+			t.Fatalf("%s: SpawnSubagent: %+v, %v", when, sa, err)
+		}
+		if sa.ID != "" || e.claude.count() != n || subFolders() != subs {
+			t.Errorf("%s: the refused call left something: %+v, processes %d -> %d", when, sa, n, e.claude.count())
+		}
+	}
+	refused("the turn has ended") // the process is still there
+	e.m.StopOwned(id, 0)          // what the engine does when the task's agent has ended, or the run is stopped
+	refused("the agent was stopped")
+}

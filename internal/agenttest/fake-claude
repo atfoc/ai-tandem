@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+// A scripted stand-in for the `claude` CLI, for tests that start a whole server:
+//   ai-whiteboard serve ... -claude /path/to/fake-claude        (agenttest.FakeClaude writes it)
+// What it answers is decided by the user message, so a test controls it through the message
+// itself (a chat message, a run's goal, a task's brief):
+//   plain text                    -> replies "FAKE(<model>): <text>"
+//   [[sleep 2.5]]                 -> waits that many seconds before answering (an interrupt ends the wait)
+//   <<sleep 2.5>>                 -> every directive has this second spelling, for use inside the JSON of [[mcp ...]]
+//   [[mcp TOOL {json args}]]      -> calls that tool on the app's MCP endpoint (from --mcp-config)
+//                                    before answering, and puts the tool's text in the reply. The
+//                                    JSON may hold an array (a single "]"); a directive ends at "]]"
+//   [[write PATH TEXT]]           -> writes TEXT and a newline to the file PATH (relative to the
+//                                    process's working directory; its folders are made), as an agent
+//                                    that edits a file; "\n" in TEXT is a line break
+//   [[tools]]                     -> calls tools/list and puts the names in the reply
+//   [[final TEXT]]                -> remembered by the process; a later turn whose message is a
+//                                    <subagent-results> block is answered with TEXT alone
+//   [[fail some text]]            -> ends the turn as an error with that text
+//   [[exit 3]]                    -> the process exits with that status mid-turn
+//   [[cost 0.01]]                 -> the turn costs that many dollars: the result line's total_cost_usd
+//                                    (cumulative for the process, as claude's is) rises by it, its
+//                                    usage.output_tokens is 100,000 tokens per dollar for this turn,
+//                                    and modelUsage.<model>.outputTokens is their sum for the process.
+//                                    Every turn also adds 10 input, 1000 cache read and 100 cache
+//                                    write tokens to the process's modelUsage
+//   [[block completed]]           -> ends the reply with a result block
+//   [[block failed]]                 <result><outcome>…</outcome><summary>…</summary><report>…</report></result>;
+//                                    the reply then repeats only the first line of the message.
+//                                    In a message that also has [[final TEXT]] the block is kept
+//                                    for the reply to <subagent-results>, which is then TEXT and the block
+//   [[if TEXT]]                   -> the directives after it, up to the next [[if …]], run only when the
+//                                    message without its directives contains TEXT ([[if]] alone: always).
+//                                    A run's goal reaches every turn and every task, so its directives
+//                                    need this: [[if This is turn 1.]] [[mcp add_task {…}]]
+// FAKE_CLAUDE_LOG=<file> appends one JSON line per invocation and per stdin line.
+const fs = require("node:fs");
+const readline = require("node:readline");
+const args = process.argv.slice(2);
+const log = (o) => { if (process.env.FAKE_CLAUDE_LOG) fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ pid: process.pid, ...o }) + "\n"); };
+const arg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+log({ start: args, cwd: process.cwd() });
+
+if (args[0] === "auth") process.exit(0);                       // `claude auth status`: signed in
+if (!args.includes("--input-format")) {                        // one-shot runs: /usage, the chat namer
+  if (args.includes("/usage")) process.exit(1);
+  console.log("Fake title");
+  process.exit(0);
+}
+
+const model = arg("--model") || "sonnet";
+const session = arg("--session-id") || arg("--resume") || "fake-session";
+let mcp = null;
+// --mcp-config is a JSON string or, as the app passes it, the path of a JSON file.
+try {
+  let cfg = arg("--mcp-config") || "{}";
+  if (!cfg.trimStart().startsWith("{")) cfg = fs.readFileSync(cfg, "utf8");
+  mcp = Object.values(JSON.parse(cfg).mcpServers || {})[0] || null;
+} catch { /* none */ }
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+const uuid = () => require("node:crypto").randomUUID();
+let rpcId = 0;
+async function rpc(method, params) {
+  const r = await fetch(mcp.url, { method: "POST", headers: { "Content-Type": "application/json", ...(mcp.headers || {}) },
+    body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }) });
+  return r.json();
+}
+async function callTool(name, input) {
+  if (!mcp) return "no --mcp-config";
+  const body = await rpc("tools/call", { name, arguments: input });
+  return (body.result?.content || []).map((c) => c.text ?? "").join("\n") || JSON.stringify(body);
+}
+
+// A directive is [[verb rest]] or <<verb rest>>; the second form is for one nested in the JSON of an [[mcp ...]].
+const DIRECTIVE = /\[\[(\w+)\s*((?:[^\]]|\](?!\]))*)\]\]|<<(\w+)\s*([^>]*)>>/g;
+const TOKENS_PER_USD = 100000;
+let turns = 0, current = null; // current: { cancel() } while a turn runs
+let finalText = null, finalBlock = null; // kept for the reply to <subagent-results>
+let costTotal = 0, outTotal = 0;         // cumulative for the process, as claude reports them
+const resultBlock = (outcome, report) =>
+  `<result>\n<outcome>${outcome}</outcome>\n<summary>The fake agent ${outcome === "failed" ? "could not do" : "did"} the job.</summary>\n<report>\n${report}\n</report>\n</result>`;
+
+async function turn(text) {
+  let aborted = false, wake = null;
+  current = { cancel: () => { aborted = true; wake?.(); } };
+  out({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, model, tools: [], mcp_servers: [] });
+  out({ type: "system", subtype: "status", status: "requesting", session_id: session });
+  const plain = text.replace(DIRECTIVE, "").trim();
+  let reply = `FAKE(${model}): ${plain}`, error = "", block = null, cost = 0, on = true, hasFinal = false;
+  if (finalText !== null && text.trimStart().startsWith("<subagent-results>")) {
+    reply = finalText; block = finalBlock; text = "";
+  }
+  for (const [, a, b, c, d] of text.matchAll(DIRECTIVE)) {
+    const verb = a ?? c, rest = b ?? d;
+    if (aborted) break;
+    if (verb === "if") { on = rest === "" || plain.includes(rest); continue; }
+    if (!on) continue;
+    if (verb === "sleep") await new Promise((r) => { wake = r; setTimeout(r, Number(rest) * 1000); });
+    else if (verb === "exit") process.exit(Number(rest) || 1);
+    else if (verb === "fail") error = rest || "fake failure";
+    else if (verb === "final") { finalText = rest; hasFinal = true; }
+    else if (verb === "cost") cost += Number(rest) || 0;
+    else if (verb === "block") block = rest.trim() === "failed" ? "failed" : "completed";
+    else if (verb === "write") {
+      const sp = rest.indexOf(" "), file = require("node:path").resolve(sp < 0 ? rest : rest.slice(0, sp));
+      const body = (sp < 0 ? "" : rest.slice(sp + 1)).replaceAll("\\n", "\n") + "\n";
+      const id = "toolu_" + uuid().slice(0, 8);
+      out({ type: "assistant", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+        message: { id: "msg_" + uuid().slice(0, 8), role: "assistant", model, content: [{ type: "tool_use", id, name: "Write", input: { file_path: file, content: body } }] } });
+      let result = "written";
+      try { fs.mkdirSync(require("node:path").dirname(file), { recursive: true }); fs.writeFileSync(file, body); } catch (e) { result = "write failed: " + e.message; }
+      out({ type: "user", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: result }] } });
+      reply += `\nwrite ${sp < 0 ? rest : rest.slice(0, sp)} -> ${result}`;
+    }
+    else if (verb === "tools") {
+      const body = mcp ? await rpc("tools/list", {}).catch((e) => ({ error: e.message })) : { error: "no --mcp-config" };
+      reply += `\ntools -> [${(body.result?.tools || []).map((t) => t.name).join(", ")}]${body.error ? " " + JSON.stringify(body.error) : ""}`;
+    }
+    else if (verb === "mcp") {
+      const sp = rest.indexOf(" "), name = sp < 0 ? rest : rest.slice(0, sp), input = sp < 0 ? {} : JSON.parse(rest.slice(sp + 1));
+      const id = "toolu_" + uuid().slice(0, 8), full = "mcp__board__" + name;
+      out({ type: "assistant", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+        message: { id: "msg_" + uuid().slice(0, 8), role: "assistant", model, content: [{ type: "tool_use", id, name: full, input }] } });
+      const result = await callTool(name, input).catch((e) => "fetch failed: " + e.message);
+      out({ type: "user", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: result }] } });
+      reply += `\n${name} -> ${result}`;
+    }
+  }
+  if (block && hasFinal) { finalBlock = block; block = null; } // the block ends the work, not this turn
+  if (block && !aborted && !error) {
+    // The message is not repeated in a reply that ends with a block: a task's prompt shows the
+    // block's layout, and a reader of the reply must find one block, the real one.
+    if (reply.startsWith(`FAKE(${model}): ${plain}`)) reply = `FAKE(${model}): ${plain.split("\n")[0].slice(0, 200)}` + reply.slice(`FAKE(${model}): ${plain}`.length);
+    reply = reply.replaceAll("<result>", "(result)");
+    reply += "\n\n" + resultBlock(block, reply);
+  }
+  current = null;
+  turns++;
+  // What the turn cost, as claude's result line says it: the total of the process so far, this
+  // turn's output tokens, and the process's output tokens per model.
+  const outNow = cost > 0 ? Math.round(cost * TOKENS_PER_USD) : 5;
+  costTotal += cost; outTotal += outNow;
+  const spent = { total_cost_usd: Number(costTotal.toFixed(6)),
+    usage: { input_tokens: 10, output_tokens: outNow, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    modelUsage: { [model]: { inputTokens: 10 * turns, outputTokens: outTotal, cacheReadInputTokens: 1000 * turns,
+      cacheCreationInputTokens: 100 * turns, contextWindow: 200000 } } };
+  if (aborted) return out({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_streaming", num_turns: turns, session_id: session, ...spent });
+  if (error) return out({ type: "result", subtype: "error_during_execution", is_error: true, result: error, num_turns: turns, session_id: session, ...spent });
+  out({ type: "assistant", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+    message: { id: "msg_" + uuid().slice(0, 8), role: "assistant", model, content: [{ type: "text", text: reply }],
+      usage: { input_tokens: 10, output_tokens: outNow, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } });
+  out({ type: "result", subtype: "success", is_error: false, result: reply, num_turns: turns, session_id: session, ...spent });
+}
+
+let queue = Promise.resolve();
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  log({ stdin: m });
+  if (m.type === "control_request") {
+    const ok = (response) => out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
+    switch (m.request?.subtype) {
+      case "initialize": return ok({ models: [
+        { value: "sonnet", displayName: "Fake Sonnet", description: "scripted", supportedEffortLevels: ["low", "medium", "high"] },
+        { value: "haiku", displayName: "Fake Haiku", description: "scripted" }] });
+      case "interrupt": current?.cancel(); return ok({});
+      default: return out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "fake claude: unsupported " + m.request?.subtype } });
+    }
+  }
+  if (m.type === "user") {
+    const text = (m.message?.content || []).map((c) => c.text ?? "").join("\n");
+    queue = queue.then(() => turn(text)).catch((e) => out({ type: "result", subtype: "error_during_execution", is_error: true, result: "fake claude crashed: " + e.message, num_turns: ++turns }));
+  }
+}).on("close", () => queue.then(() => process.exit(0)));

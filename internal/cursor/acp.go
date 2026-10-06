@@ -8,10 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"ai-whiteboard/internal/agent"
@@ -31,7 +33,7 @@ type msg struct {
 type Conn struct {
 	cmd     *exec.Cmd
 	w       io.WriteCloser
-	r       io.Reader
+	r       io.ReadCloser
 	wmu     sync.Mutex
 	seq     atomic.Int64
 	pending sync.Map // int64 id → chan msg
@@ -41,7 +43,12 @@ type Conn struct {
 	OnNotify  func(method string, params json.RawMessage)
 	OnRequest func(id json.RawMessage, method string, params json.RawMessage)
 
+	// EndStarted: Close also ends the process groups the process's descendants lead (Cursor starts
+	// each shell command as the leader of a group of its own). Set before Close.
+	EndStarted bool
+
 	start   sync.Once
+	ending  sync.Once
 	stderr  *tailBuffer
 	done    chan struct{} // closed once the process has exited and stdout is drained
 	waitErr error
@@ -68,6 +75,9 @@ func Start(bin string, args []string, dir string, extraEnv ...string) (*Conn, er
 	}
 	c := &Conn{cmd: cmd, w: w, r: r, stderr: &tailBuffer{max: 4096}, done: make(chan struct{})}
 	cmd.Stderr = c.stderr
+	// Once the process has exited, Wait gives its stderr this long to end: something the process
+	// left behind may hold it open.
+	cmd.WaitDelay = outputGrace
 	if err := agent.StartGroup(cmd); err != nil {
 		return nil, err
 	}
@@ -112,6 +122,9 @@ func (c *Conn) readLoop() {
 	io.Copy(io.Discard, c.r)
 	err := c.cmd.Wait()
 	agent.Exited(c.cmd)
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil // the process itself exited without an error; only its stderr was still held
+	}
 	if err != nil {
 		if tail := c.stderr.lastLine(); tail != "" {
 			err = fmt.Errorf("%w: %s", err, tail)
@@ -199,17 +212,103 @@ func (c *Conn) Wait() error {
 	return c.waitErr
 }
 
-// Close closes stdin, kills the process if it has not exited after 3 s, and waits for it.
+// How long Close waits at each step. `agent acp` rarely exits when its stdin closes, so that
+// wait is short; a SIGTERM ends it within a fraction of a second.
+var (
+	closeStdinGrace = 300 * time.Millisecond // for the process to exit by itself once stdin is closed
+	closeTermGrace  = 3 * time.Second        // for the process to exit after SIGTERM
+	closeRestGrace  = 300 * time.Millisecond // for the rest of its group once the process has exited
+	closeKillGrace  = time.Second            // for everything to be gone after SIGKILL
+)
+
+// outputGrace is how long the stderr of a process that has exited is still read: a process it
+// started and Close did not reach can hold the pipe open for as long as it runs.
+const outputGrace = time.Second
+
+// Close ends the process and everything in its process group, and waits for it: stdin is closed;
+// what is still there a moment later gets SIGTERM, and what outlives that SIGKILL. The group is
+// signalled, not the process alone: Cursor's worker-server and its language servers run in it and
+// would otherwise stay for minutes. With EndStarted the groups led by the process's descendants
+// (shell commands, also ones running in the background) get the same signals.
+//
+// Only groups this process started are signalled: its own through agent.SignalGroup, which knows
+// the groups StartGroup made and forgets them when they are empty, and its descendants' as they
+// were found while the process was still there (agent.StartedGroups): when Close begins, and
+// again before each of the two signals, since a turn that is still running starts commands until
+// the process ends. A command that detached itself from the process is not found and stays.
+//
+// Close does not wait for such a survivor: if the process was killed and its output has still not
+// ended a moment later, the output is given up, so that the exit is reported.
 func (c *Conn) Close() {
 	c.run()
+	c.ending.Do(c.end)
+	<-c.done
+}
+
+func (c *Conn) end() {
+	var started []int
+	// collect adds the groups the process's descendants lead now. Once the process has been waited
+	// for it finds none, so what was found earlier stays.
+	collect := func() {
+		if !c.EndStarted {
+			return
+		}
+		for _, pgid := range agent.StartedGroups(c.cmd, c.done) {
+			if !slices.Contains(started, pgid) {
+				started = append(started, pgid)
+			}
+		}
+	}
+	collect()
+	// signal reports whether anything it signalled is still there (signal 0 only asks).
+	signal := func(sig syscall.Signal) bool {
+		own := agent.SignalGroup(c.cmd, sig)
+		return agent.SignalStarted(started, sig) || own
+	}
+	exited := func() bool {
+		select {
+		case <-c.done:
+			return true
+		default:
+			return false
+		}
+	}
+	// until waits for cond, at most d.
+	until := func(d time.Duration, cond func() bool) {
+		for deadline := time.Now().Add(d); !cond() && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
 	c.wmu.Lock()
 	c.w.Close()
 	c.wmu.Unlock()
-	select {
-	case <-c.done:
-	case <-time.After(3 * time.Second):
-		c.cmd.Process.Kill()
-		<-c.done
+	until(closeStdinGrace, exited)
+	collect()
+	if !signal(syscall.SIGTERM) && exited() {
+		return // the process exited by itself and left nothing
+	}
+	until(closeTermGrace, exited)
+	until(closeRestGrace, func() bool { return exited() && !signal(0) })
+	collect()
+	killed := signal(syscall.SIGKILL)
+	if killed {
+		until(closeKillGrace, func() bool { return exited() && !signal(0) })
+	}
+	if exited() {
+		return
+	}
+	// Not ended yet: no signal reached its group, or its output is held open. The process itself
+	// is killed, as before.
+	c.cmd.Process.Kill()
+	if !killed {
+		until(closeKillGrace, exited)
+	}
+	if !exited() {
+		// The process is killed, but something it started that no signal here reached still holds
+		// its output open. Nothing the process wrote is lost by not reading on: the read loop
+		// ends, and the process is waited for.
+		c.r.Close()
 	}
 }
 

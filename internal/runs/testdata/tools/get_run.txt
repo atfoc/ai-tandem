@@ -1,0 +1,316 @@
+=== a chat reads the run
+chat: get_run {}
+answer:
+Run Port the importer: running. Turn 2. Tasks: 1 done, 1 merging, 1 failed, 2 pending, 1 running. Spent $2.00 (orchestrator $0.25, some agents reported no cost).
+Limits: turn 2 of 60, $2.00 of $20.00, 2 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at cac8e1710d84, 3 commit(s) since the run started from 87220658d4c8.
+
+## Notes
+
+Version 1, 78 characters, written in turn 1. `get_notes` returns them.
+
+## Tasks
+
+T01 [research, reports only, standard] done, $0.50: Read the old importer
+    result: The old importer reads CSV in three passes.
+T02 [implement, writes, standard] merging for 6m43s (agent T02-work), $1.25: Build the importer
+    result: Built the importer.
+T03 [verify, reports only, standard] failed: Measure the old importer
+    error: its agent reported that it could not do the task: there is no benchmark data in the repository
+T04 [docs, reports only, standard] pending, blocked by T03 (failed): Write the migration notes (depends on T03)
+T05 [implement, writes, standard] running for 6m31s (agent T05-work): Port the tests
+T06 [implement, writes, standard] pending, waiting on T02: Clean up (depends on T02)
+
+## Earlier turns
+
+Turn 1 (set_notes, add_task T01, add_task T02, add_task T03, add_task T04, add_task T05, add_task T06): Six tasks added.
+
+=== the orchestrator reads the run: what is new since it last looked
+orchestrator: get_run {}
+answer:
+Run Port the importer: running. Turn 2. Tasks: 2 done, 2 failed, 2 pending. Spent $2.00 (orchestrator $0.25, some agents reported no cost).
+Limits: turn 2 of 60, $2.00 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at cac8e1710d84, 3 commit(s) since the run started from 87220658d4c8.
+
+## Notes
+
+Version 1, 78 characters, written in turn 1. `get_notes` returns them.
+
+## Tasks
+
+T01 [research, reports only, standard] done, $0.50: Read the old importer
+    result: The old importer reads CSV in three passes.
+T02 [implement, writes, standard] done, $1.25: Build the importer
+    result: Built the importer.
+T03 [verify, reports only, standard] failed: Measure the old importer
+    error: its agent reported that it could not do the task: there is no benchmark data in the repository
+T04 [docs, reports only, standard] pending, blocked by T03 (failed): Write the migration notes (depends on T03)
+T05 [implement, writes, standard] failed: Port the tests
+    error: agent T05-work failed: the process ended in the turn
+T06 [implement, writes, standard] pending, ready to start: Clean up (depends on T02)
+
+## Earlier turns
+
+Turn 1 (set_notes, add_task T01, add_task T02, add_task T03, add_task T04, add_task T05, add_task T06): Six tasks added.
+
+## New since you last looked
+
+- T02 finished. Built the importer.
+- T05 failed. agent T05-work failed: the process ended in the turn
+
+=== the orchestrator reads it again: a chat's changes are new
+orchestrator: get_run {}
+answer:
+Run Port the importer: running. Turn 2. Tasks: 2 done, 5 pending, 1 failed. Spent $2.00 (orchestrator $0.25, some agents reported no cost).
+Limits: turn 2 of 60, $2.00 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at cac8e1710d84, 3 commit(s) since the run started from 87220658d4c8.
+
+## Notes
+
+Version 1, 78 characters, written in turn 1. `get_notes` returns them.
+
+## Tasks
+
+T01 [research, reports only, standard] done, $0.50: Read the old importer
+    result: The old importer reads CSV in three passes.
+T02 [implement, writes, standard] done, $1.25: Build the importer
+    result: Built the importer.
+T03 [verify, reports only, standard] pending, starts when the current turn ends, attempt 2: Measure the old importer
+T04 [docs, reports only, standard] pending, waiting on T03: Write the migration notes (depends on T03)
+T05 [implement, writes, standard] failed: Port the tests
+    error: agent T05-work failed: the process ended in the turn
+T06 [implement, writes, standard] pending, ready to start: Clean up (depends on T02)
+T07 [verify, reports only, standard] pending, starts when the chat that changed it ends its reply: Check the importer by hand (depends on T02)
+T08 [docs, reports only, standard] pending, starts when the current turn ends: Write the changelog
+
+## Earlier turns
+
+Turn 1 (set_notes, add_task T01, add_task T02, add_task T03, add_task T04, add_task T05, add_task T06): Six tasks added.
+
+## Changes made by chats on the run
+
+After turn 2 (add_task T07): Check the importer by hand
+After turn 2 (tell_orchestrator): Keep the old command-line flags.
+After turn 2 (cancel_task T01, refused): T01 is done; its work is already part of the run. Add a task to change it.
+
+## New since you last looked
+
+- A chat on the run added T07 [verify, reports only]: Check the importer by hand.
+- Message from the person, passed on by a chat on the run:
+Keep the old command-line flags.
+
+=== and again: nothing is new
+orchestrator: get_run {}
+answer:
+Run Port the importer: running. Turn 2. Tasks: 2 done, 5 pending, 1 failed. Spent $2.00 (orchestrator $0.25, some agents reported no cost).
+Limits: turn 2 of 60, $2.00 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at cac8e1710d84, 3 commit(s) since the run started from 87220658d4c8.
+
+## Notes
+
+Version 1, 78 characters, written in turn 1. `get_notes` returns them.
+
+## Tasks
+
+T01 [research, reports only, standard] done, $0.50: Read the old importer
+    result: The old importer reads CSV in three passes.
+T02 [implement, writes, standard] done, $1.25: Build the importer
+    result: Built the importer.
+T03 [verify, reports only, standard] pending, starts when the current turn ends, attempt 2: Measure the old importer
+T04 [docs, reports only, standard] pending, waiting on T03: Write the migration notes (depends on T03)
+T05 [implement, writes, standard] failed: Port the tests
+    error: agent T05-work failed: the process ended in the turn
+T06 [implement, writes, standard] pending, ready to start: Clean up (depends on T02)
+T07 [verify, reports only, standard] pending, starts when the chat that changed it ends its reply: Check the importer by hand (depends on T02)
+T08 [docs, reports only, standard] pending, starts when the current turn ends: Write the changelog
+
+## Earlier turns
+
+Turn 1 (set_notes, add_task T01, add_task T02, add_task T03, add_task T04, add_task T05, add_task T06): Six tasks added.
+
+## Changes made by chats on the run
+
+After turn 2 (add_task T07): Check the importer by hand
+After turn 2 (tell_orchestrator): Keep the old command-line flags.
+After turn 2 (cancel_task T01, refused): T01 is done; its work is already part of the run. Add a task to change it.
+
+=== a chat reads it now
+chat: get_run {}
+answer:
+Run Port the importer: running. Turn 2. Tasks: 2 done, 5 pending, 1 failed. Spent $2.00 (orchestrator $0.25, some agents reported no cost).
+Limits: turn 2 of 60, $2.00 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at cac8e1710d84, 3 commit(s) since the run started from 87220658d4c8.
+
+## Notes
+
+Version 1, 78 characters, written in turn 1. `get_notes` returns them.
+
+## Tasks
+
+T01 [research, reports only, standard] done, $0.50: Read the old importer
+    result: The old importer reads CSV in three passes.
+T02 [implement, writes, standard] done, $1.25: Build the importer
+    result: Built the importer.
+T03 [verify, reports only, standard] pending, starts when turn 2 ends, attempt 2: Measure the old importer
+T04 [docs, reports only, standard] pending, waiting on T03: Write the migration notes (depends on T03)
+T05 [implement, writes, standard] failed: Port the tests
+    error: agent T05-work failed: the process ended in the turn
+T06 [implement, writes, standard] pending, ready to start: Clean up (depends on T02)
+T07 [verify, reports only, standard] pending, starts when the chat that changed it ends its reply: Check the importer by hand (depends on T02)
+T08 [docs, reports only, standard] pending, starts when turn 2 ends: Write the changelog
+
+## Earlier turns
+
+Turn 1 (set_notes, add_task T01, add_task T02, add_task T03, add_task T04, add_task T05, add_task T06): Six tasks added.
+
+## Changes made by chats on the run
+
+After turn 2 (add_task T07): Check the importer by hand
+After turn 2 (tell_orchestrator): Keep the old command-line flags.
+After turn 2 (cancel_task T01, refused): T01 is done; its work is already part of the run. Add a task to change it.
+
+=== the offset is no number
+chat: get_run {"offset":-1}
+refusal:
+offset must be a number, 0 or more
+
+=== the offset is past the end
+chat: get_run {"offset":99999}
+refusal:
+offset 99999 is past the end: the answer has 1,705 characters.
+
+=== the snapshot for the prompt of turn 3
+Run Port the importer: running. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at cac8e1710d84, 3 commit(s) since the run started from 87220658d4c8.
+
+## Notes
+
+Version 1, 78 characters, written in turn 1. `get_notes` returns them.
+
+## Tasks
+
+T01 [research, reports only, standard] done, $0.50: Read the old importer
+    result: The old importer reads CSV in three passes.
+T02 [implement, writes, standard] done, $1.25: Build the importer
+    result: Built the importer.
+T03 [verify, reports only, standard] pending, ready to start, attempt 2: Measure the old importer
+T04 [docs, reports only, standard] pending, waiting on T03: Write the migration notes (depends on T03)
+T05 [implement, writes, standard] failed: Port the tests
+    error: agent T05-work failed: the process ended in the turn
+T06 [implement, writes, standard] pending, ready to start: Clean up (depends on T02)
+T07 [verify, reports only, standard] pending, ready to start: Check the importer by hand (depends on T02)
+T08 [docs, reports only, standard] pending, ready to start: Write the changelog
+
+## Earlier turns
+
+Turn 1 (set_notes, add_task T01, add_task T02, add_task T03, add_task T04, add_task T05, add_task T06): Six tasks added.
+Turn 2 (retry_task T03, add_task T08): Retried T03 and added the changelog task.
+
+## Changes made by chats on the run
+
+After turn 2 (add_task T07): Check the importer by hand
+After turn 2 (tell_orchestrator): Keep the old command-line flags.
+After turn 2 (cancel_task T01, refused): T01 is done; its work is already part of the run. Add a task to change it.
+
+=== the head: stopping
+Run Port the importer: stopping. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at cac8e1710d84, 3 commit(s) since the run started from 87220658d4c8.
+
+=== the head: stopped, with the reason
+Run Port the importer: stopped (stopped by the person). Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: stalled on idle turns
+Run Port the importer: stalled (the orchestrator was started 3 times in a row with nothing running and neither added work nor finished the run). Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy, 3 of 3 idle turns in a row.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: stopped by an error
+Run Port the importer: stopped by an error (orchestrator turn 3: agent turn-003 failed: the process ended in the turn). Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: completed
+Run Port the importer: completed, goal achieved. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at 0123456789ab, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: gave up
+Run Port the importer: ended, goal not achieved. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: an agent kind that reports no cost, no cost limit, no git
+Run Port the importer: running. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Cost unknown: the run's agents (Cursor) report none.
+Limits: turn 3 of 60, 0 of 8 task slots busy.
+
+=== the head: an agent kind that reports no cost, a cost limit set
+Run Port the importer: running. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Cost unknown: the run's agents (Cursor) report none.
+Limits: turn 3 of 60, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: an agent that reported no cost
+Run Port the importer: running. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.15 (orchestrator $0.40, some agents reported no cost).
+Limits: turn 3 of 60, $2.15 of $20.00, 0 of 8 task slots busy.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: the orchestrator waits for all of two tasks
+Run Port the importer: running. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Next turn: when all of T03, T05 have ended (asked in turn 2), or earlier if a task fails, nothing is left running, or a chat on the run changes it.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the head: the orchestrator waits for any of two tasks
+Run Port the importer: running. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+Next turn: when any of T03, T05 have ended (asked in turn 2), or earlier if a task fails, nothing is left running, or a chat on the run changes it.
+Integration branch aiwb/r_tools001/integration at 87220658d4c8, 0 commit(s) since the run started from 87220658d4c8.
+
+=== the whole text in a run without git
+Run Port the importer: running. Turn 3. Tasks: 2 done, 5 pending, 1 failed. Spent $2.40 (orchestrator $0.65, some agents reported no cost).
+Limits: turn 3 of 60, $2.40 of $20.00, 0 of 8 task slots busy.
+
+## Notes
+
+Version 1, 78 characters, written in turn 1. `get_notes` returns them.
+
+## Tasks
+
+T01 [research, reports only, standard] done, $0.50: Read the old importer
+    result: The old importer reads CSV in three passes.
+T02 [implement, writes, standard] done, $1.25: Build the importer
+    result: Built the importer.
+T03 [verify, reports only, standard] pending, ready to start, attempt 2: Measure the old importer
+T04 [docs, reports only, standard] pending, waiting on T03: Write the migration notes (depends on T03)
+T05 [implement, writes, standard] failed: Port the tests
+    error: agent T05-work failed: the process ended in the turn
+T06 [implement, writes, standard] pending, ready to start: Clean up (depends on T02)
+T07 [verify, reports only, standard] pending, ready to start: Check the importer by hand (depends on T02)
+T08 [docs, reports only, standard] pending, ready to start: Write the changelog
+
+## Earlier turns
+
+Turn 1 (set_notes, add_task T01, add_task T02, add_task T03, add_task T04, add_task T05, add_task T06): Six tasks added.
+Turn 2 (retry_task T03, add_task T08): Retried T03 and added the changelog task.
+
+## Changes made by chats on the run
+
+After turn 2 (add_task T07): Check the importer by hand
+After turn 2 (tell_orchestrator): Keep the old command-line flags.
+After turn 2 (cancel_task T01, refused): T01 is done; its work is already part of the run. Add a task to change it.
+
+=== a run with nothing in it
+Run New run: running. Turn 0. Tasks: none. Spent $0.00 (orchestrator $0.00).
+Limits: turn 0 of 60, 0 of 8 task slots busy.
+
+## Notes
+
+(empty)
+
+## Tasks
+
+(no tasks yet)
+

@@ -28,7 +28,7 @@ type Spawner struct {
 	Bridge    agent.BridgeRegistry
 
 	// mcpConfigExtra is a test-only seam: extra non-board MCP servers merged into the
-	// board chat's AIWB_MCP_CONFIG so tests can exercise the A6 permission rule (a
+	// board chat's MCP config file so tests can exercise the A6 permission rule (a
 	// non-board MCP tool asks; the board tool does not). Production code never sets it,
 	// and it can never replace the app-owned "board" key.
 	mcpConfigExtra map[string]mcpServerConfig
@@ -192,7 +192,7 @@ func (s *Spawner) start(o agent.SpawnOptions, fork *forkStart) (*proc, error) {
 		}
 		return nil, err
 	}
-	sessionDir := filepath.Join(s.AppRoot, "chats", o.ChatID, "pi")
+	sessionDir := filepath.Join(s.chatDir(o.ChatID, o.Dir), "pi")
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return fail(err)
 	}
@@ -203,13 +203,19 @@ func (s *Spawner) start(o agent.SpawnOptions, fork *forkStart) (*proc, error) {
 			return fail(err)
 		}
 	}
+	mcpFile := ""
+	if ok, err := s.writeMCPConfig(o); err != nil {
+		return fail(fmt.Errorf("pi mcp config: %w", err))
+	} else if ok {
+		mcpFile = s.mcpConfigPath(o)
+	}
 	forkFile := ""
 	if fork != nil {
 		forkFile = fork.file
 	}
 	cmd := exec.Command(bin, s.sessionArgs(o, sessionDir, appendPrompt, forkFile)...)
 	cmd.Dir = o.Cwd
-	cmd.Env = s.env(o, bin, p.socketPath, p.runToken, appendPrompt)
+	cmd.Env = s.env(o, bin, p.socketPath, p.runToken, appendPrompt, mcpFile)
 	cmd.Stderr = p.stderr
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
@@ -259,7 +265,8 @@ func (p *proc) handshake() {
 
 // doHandshake: get_state (readiness + session) → get_available_models → set_model →
 // set_thinking_level → EvSession (when the reconciled id differs) + one EvCatalog. A fork start
-// forks right after get_state (forkSession) and always reports the new session's id.
+// forks right after get_state (forkSession) and always reports the new session's id. A resume
+// that needs the session's history fails right after get_state when there is none (noHistory).
 func (p *proc) doHandshake() error {
 	deadline := time.Now().Add(handshakeTimeout)
 	call := func(command string, fields map[string]any) (rpcResponse, error) {
@@ -281,6 +288,8 @@ func (p *proc) doHandshake() error {
 		if state, err = p.forkSession(call, state); err != nil {
 			return err
 		}
+	} else if p.o.Resume && p.o.NeedHistory && noHistory(state.Data) {
+		return agent.NoSession("pi has no messages in session " + p.o.SessionID)
 	}
 	models, err := call("get_available_models", nil)
 	if err != nil {
@@ -331,6 +340,17 @@ type piState struct {
 	SessionID   string          `json:"sessionId"`
 	SessionFile string          `json:"sessionFile"`
 	Model       json.RawMessage `json:"model"`
+}
+
+// noHistory reports whether the session get_state describes holds no message. pi gives no error
+// for a session id it does not know: it opens a new, empty session under that id, and only a
+// warning on stderr says so (the same one every first start prints). An agent "resumed" into it
+// knows nothing of its task.
+func noHistory(state []byte) bool {
+	var st struct {
+		MessageCount int `json:"messageCount"`
+	}
+	return json.Unmarshal(state, &st) == nil && st.MessageCount == 0
 }
 
 // applyState records the session and current model from get_state's data.

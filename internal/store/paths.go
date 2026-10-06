@@ -9,21 +9,41 @@ import (
 
 // Paths is where everything lives. Root is ~/.ai-whiteboard unless -home says otherwise (tests).
 type Paths struct {
-	Root   string // ~/.ai-whiteboard
-	Boards string // Root/boards
-	Chats  string // Root/chats
-	State  string // Root/state.json
-	Server string // Root/server.json
+	Root    string // ~/.ai-whiteboard
+	Boards  string // Root/boards
+	Chats   string // Root/chats
+	Runs    string // Root/runs
+	RunWork string // <parent of Root>/aiwb-run-work: the checkouts run agents work in; never inside Root
+	State   string // Root/state.json
+	Server  string // Root/server.json
 }
 
 func NewPaths(root string) Paths {
 	return Paths{Root: root, Boards: filepath.Join(root, "boards"), Chats: filepath.Join(root, "chats"),
+		Runs: filepath.Join(root, "runs"), RunWork: filepath.Join(filepath.Dir(filepath.Clean(root)), "aiwb-run-work"),
 		State: filepath.Join(root, "state.json"), Server: filepath.Join(root, "server.json")}
 }
 
 func (p Paths) BoardDir(id string) string  { return filepath.Join(p.Boards, id) }
 func (p Paths) BoardFile(id string) string { return filepath.Join(p.Boards, id, "drawing.excalidraw") }
 func (p Paths) ChatDir(id string) string   { return filepath.Join(p.Chats, id) }
+
+// RunDir is a run's folder: run.json, the journal, the checkpoint and text files, and the folders
+// of its chats.
+func (p Paths) RunDir(id string) string { return filepath.Join(p.Runs, id) }
+
+// RunChatDir is the folder of a chat object that belongs to a run: one of the run's agents
+// (agent true: Runs/<run>/agents/<id>) or a person's chat on the run (Runs/<run>/chats/<id>).
+func (p Paths) RunChatDir(run string, agent bool, id string) string {
+	if agent {
+		return filepath.Join(p.Runs, run, "agents", id)
+	}
+	return filepath.Join(p.Runs, run, "chats", id)
+}
+
+// RunWorkDir is where a run's checkouts are made (RunWork/<run>). It is outside Root, because an
+// agent's working folder cannot be inside the app's own; it is created on first use, not by Open.
+func (p Paths) RunWorkDir(run string) string { return filepath.Join(p.RunWork, run) }
 
 // Contains reports whether path is Root or inside it, after resolving ~, symlinks and "..".
 func (p Paths) Contains(path string) bool {

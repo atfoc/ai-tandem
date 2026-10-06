@@ -246,3 +246,12 @@ test("subList: sorted by started, then id; nested included", () => {
   assert.deepEqual(list.map((s) => s.id), ["a", "b", "c"]);
   assert.deepEqual(subList(undefined), []);
 });
+
+test("a status the client does not know is shown as it is, not a crash", () => {
+  const odd = sub({ status: "paused" as any, description: "Scout" });
+  assert.deepEqual(subLine(call(), odd), { text: "paused", tone: "muted" });
+  assert.deepEqual(subLine(call(), sub({ status: undefined as any })), { text: "", tone: "muted" });
+  assert.deepEqual(subResultLine(odd), { name: "Scout", text: "paused", tone: "muted" });
+  assert.deepEqual(subResultLine(sub({ status: "toString" as any, description: "Scout", delivery: "sent" })), { name: "Scout", text: "toString · sent to the agent", tone: "muted" });
+  assert.deepEqual(subResultLine(sub({ status: undefined as any, description: "Scout", delivery: "sent" })), { name: "Scout", text: "sent to the agent", tone: "muted" });
+});

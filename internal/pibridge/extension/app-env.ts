@@ -3,9 +3,11 @@
 // The Go adapter hands the extension its settings in AIWB_* variables. pi's
 // shell commands (the bash tool, the RPC `bash` command) inherit process.env,
 // so a variable left there is readable by any command the model runs: the
-// chat's MCP token inside AIWB_MCP_CONFIG, the bridge socket and run handle,
-// the path of the chat's folder inside the app's data folder. takeAppEnv reads
-// them once and deletes them from the environment.
+// bridge socket and run handle, the path of the chat's folder inside the app's
+// data folder, the path of the file that holds the chat's MCP token
+// (AIWB_MCP_CONFIG_FILE; the app passes the path, never the token) and, in
+// standalone use, the MCP config itself inside AIWB_MCP_CONFIG. takeAppEnv
+// reads them once and deletes them from the environment.
 //
 // The values must outlive this module: pi runs the extension's factory again
 // in the same process on a fork, clone, new session, resume or reload, and it
@@ -26,6 +28,7 @@ export const APP_ENV_NAMES = [
   "AIWB_BRIDGE_SOCKET",
   "AIWB_BRIDGE_RUN",
   "AIWB_MCP_CONFIG",
+  "AIWB_MCP_CONFIG_FILE",
   "AIWB_CHAT_DIR",
   "AIWB_APPEND_PROMPT",
 ] as const;

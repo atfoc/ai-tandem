@@ -445,6 +445,32 @@ func (t *Transcript) LastText() string {
 	return ""
 }
 
+// Len is the number of items in the thread.
+func (t *Transcript) Len() int { return len(t.items) }
+
+// LastTextSince is the text of the last text item at index from or later; "" when there is none.
+// It is LastText for the part of the thread a message and what followed it take.
+func (t *Transcript) LastTextSince(from int) string {
+	for i := len(t.items) - 1; i >= from && i >= 0; i-- {
+		if t.items[i].Kind == "text" {
+			return t.items[i].Text
+		}
+	}
+	return ""
+}
+
+// LastTool counts the thread's tool items and returns the last of them; its Kind is "" when
+// there is none.
+func (t *Transcript) LastTool() (n int, last model.Item) {
+	for i := range t.items {
+		if t.items[i].Kind == "tool" {
+			n++
+			last = t.items[i]
+		}
+	}
+	return n, last
+}
+
 // Flush appends a line for every settled item not yet written and, when all is set (shutdown),
 // for every item still open.
 func (t *Transcript) Flush(all bool) error {

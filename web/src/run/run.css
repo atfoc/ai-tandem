@@ -1,0 +1,69 @@
+/* A started run's stage (RunView.tsx): the status in the run bar, the meters and tools, the Now
+   strip, and the body the timeline and the dock share. Colours come from the tokens of styles.css. */
+
+/* ---- the run bar's status, Stop and Resume (RunBarStatus.tsx) */
+.run-state { flex: none; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.run-state .run-status { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.run-state .run-status .g { font-weight: 700; }
+.run-state .run-status.st-running, .run-state .run-status.st-completed { color: var(--ok); }
+.run-state .run-status.st-stopping, .run-state .run-status.st-stopped, .run-state .run-status.st-gave_up { color: var(--muted); }
+.run-state .run-status.st-stalled { color: var(--warn-ink); }
+.run-state .run-status.st-stalled .g { color: var(--warn); }
+.run-state .run-status.st-error { color: var(--danger); }
+.run-state .run-status .why { font-weight: 450; color: var(--muted); }
+.run-state .run-status .sub-dot { width: 7px; height: 7px; }
+.run-state .btn .g, .run-state .run-status .g.sq, .run-banner .g.sq { font-size: 9px; }
+.run-banner .g.sq { align-self: center; }
+.run-state .run-resume { border-color: var(--accent); color: var(--accent); }
+.run-state .btn:disabled { opacity: .5; cursor: default; }
+.run-state .btn:disabled:hover { background: var(--bg); }
+.run-raise { width: 250px; padding: 2px 6px 6px; font-size: 12px; white-space: normal; }
+.run-raise .menu-head { padding-left: 0; }
+.run-raise-row { display: flex; align-items: center; gap: 6px; padding: 4px 0 6px; color: var(--text); white-space: nowrap; }
+.run-raise-row .menu-search-input { flex: 0 0 64px; width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+.run-raise .dir-err { padding: 6px 0 0; }
+.run-raise-foot { display: flex; justify-content: flex-end; padding-top: 8px; }
+
+/* ---- the stage */
+/* amber as text: the app's amber is a fill (2.2:1 on white); on the light theme text takes it mixed with the text colour */
+.run-stage { --warn-ink: color-mix(in srgb, var(--warn) 55%, var(--text)); }
+:root[data-theme="dark"] .run-stage { --warn-ink: var(--warn); }
+.run-follow { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.run-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.run-tl { flex: 1 1 0; min-height: 0; display: flex; }
+.run-unloaded { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; max-width: 620px; }
+.run-unloaded .note { overflow-wrap: anywhere; }
+.run-stale { flex: none; padding: 4px 10px; border-bottom: 1px solid var(--line); background: var(--warn-soft); color: var(--text); }
+
+/* ---- meters and tools (RunHead.tsx) */
+/* (36 px: what the row filter needs, so the line keeps its height when the tools are hidden) */
+.run-head { box-sizing: border-box; flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-height: 36px; padding: 4px 10px 4px 8px; border-bottom: 1px solid var(--line); }
+.run-head .run-meter b { color: var(--text); font-weight: 600; }
+.run-head .run-meter.warn b { color: var(--warn-ink); }
+.run-head .run-meter.danger b { color: var(--danger); }
+.run-head .run-idle { color: var(--warn-ink); }
+.run-head .run-na { font-size: 11.5px; }
+.run-slots { display: inline-flex; gap: 2px; }
+.run-slots i { width: 6px; height: 10px; border-radius: 2px; background: var(--line-2); }
+.run-slots i.on { background: var(--ok); }
+.run-agent-chip { font-size: 11.5px; }
+.run-agent-glyph { display: inline-flex; color: var(--agent); }
+.run-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 2px 6px; max-width: 100%; margin-left: auto; }
+.run-zoom { display: inline-flex; align-items: center; gap: 1px; }
+.run-tools .btn.ghost.sm { padding: 2px 6px; }
+.run-tools .icon-btn:disabled { opacity: .35; cursor: default; }
+.run-tools .icon-btn:disabled:hover { background: transparent; color: var(--muted); }
+
+/* ---- how the run ended or why it is halted (RunNow.tsx) */
+.run-now { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-height: 33px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12px; }
+.run-now .run-offline { color: var(--muted); }
+.run-banner { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.run-banner .g { flex: none; font-weight: 700; color: var(--muted); }
+.run-banner.st-completed .g { color: var(--ok); }
+.run-banner.st-stalled .g { color: var(--warn); }
+.run-banner.st-error .g { color: var(--danger); }
+.run-banner .say { flex: 1; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.run-banner .say b { color: var(--text); font-weight: 600; }
+.run-banner .say .why { color: var(--text); }
+.run-banner .say .run-applied { white-space: nowrap; }
+.run-banner-link { flex: none; }

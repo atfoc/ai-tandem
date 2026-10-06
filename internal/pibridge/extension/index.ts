@@ -1,5 +1,5 @@
 // The app's pi extension. It wires the MCP lifecycle from --mcp-config /
-// AIWB_MCP_CONFIG independently of the app bridge, so standalone
+// AIWB_MCP_CONFIG_FILE / AIWB_MCP_CONFIG independently of the app bridge, so standalone
 // `pi -e index.ts --mcp-config '<json>'` works; the app-facing wiring
 // (the UDS permission gate, hello/abort) is gated on AIWB_BRIDGE_*. App chats
 // do not register the native `subagent` tool: the MCP spawn family replaces it.
@@ -12,16 +12,21 @@
 //      app-facing wiring (the UDS permission gate, hello/abort). Bridge absence
 //      does NOT gate the MCP lifecycle. Native `subagent` is not registered on
 //      app chats (or standalone).
-//   3. session_start resolves the config flag-over-env, connects, discovers and
+//   3. session_start resolves the config (the flag, then the file
+//      AIWB_MCP_CONFIG_FILE names, then AIWB_MCP_CONFIG), connects, discovers and
 //      registers tools; session_shutdown closes every client from either source.
 //      MCP failures are per-server, non-fatal, and reported as one one-shot
 //      `notice` frame (bridge) or a prefixed stderr line (standalone).
 //
 // The extension presents only the per-run bridge handle (AIWB_BRIDGE_RUN), an
 // internal, non-secret identifier; the board token reaches pi only inside the
-// MCP config's Authorization header (AIWB_MCP_CONFIG), never in argv or a URL.
-// Both, and the other app handles, are taken out of process.env on the first
-// read (app-env.ts) so the shell commands pi runs do not inherit them.
+// MCP config's Authorization header. The app writes that config to a file only
+// the user can read, in the chat's folder, and passes the path
+// (AIWB_MCP_CONFIG_FILE): the token is never in argv, a URL or the environment,
+// which other processes of the user can read from the process table.
+// AIWB_MCP_CONFIG (the config itself in a variable) is kept for standalone use;
+// the app does not set it. The app handles are taken out of process.env on the
+// first read (app-env.ts) so the shell commands pi runs do not inherit them.
 // Protocol/mcp/mcp-wiring/app-env are dependency-free
 // modules so they stay testable without pi or typebox.
 
@@ -33,6 +38,7 @@ import { takeAppEnv } from "./app-env.ts";
 import {
   autoAllowedToolNames,
   makeNoticeSink,
+  appSourced,
   selectMCPConfig,
   startMCP,
   type MCPBootstrap,
@@ -103,7 +109,7 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
   pi.registerFlag("mcp-config", {
     type: "string",
     description:
-      "Claude-compatible MCP servers JSON ({\"mcpServers\":{...}}); HTTP/Streamable servers only. Takes precedence over AIWB_MCP_CONFIG.",
+      "Claude-compatible MCP servers JSON ({\"mcpServers\":{...}}); HTTP/Streamable servers only. Takes precedence over AIWB_MCP_CONFIG_FILE and AIWB_MCP_CONFIG.",
     default: "",
   });
 
@@ -157,7 +163,11 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
     // Defensive: session_shutdown normally closes the previous session's
     // clients; never leak them on a reload/new/resume/fork edge.
     resetMCP();
-    const selection = selectMCPConfig(pi.getFlag("mcp-config"), appEnv.AIWB_MCP_CONFIG);
+    const selection = selectMCPConfig(
+      pi.getFlag("mcp-config"),
+      appEnv.AIWB_MCP_CONFIG,
+      appEnv.AIWB_MCP_CONFIG_FILE,
+    );
     if (selection.source === "none") return;
     const bootstrap = await startMCP({
       selection,
@@ -185,7 +195,7 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
       // The permission gate auto-allows app-sourced board MCP tools (plan R4);
       // a flag-sourced board-key server stays gated.
       boardMCPNames = bootstrap.boardToolNames;
-      boardMCPAppSourced = bootstrap.source === "env";
+      boardMCPAppSourced = appSourced(bootstrap.source);
     }
   });
 

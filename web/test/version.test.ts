@@ -51,3 +51,11 @@ test("restartConfirmText", () => {
   assert.equal(restartConfirmText(2), "Restart ends 2 running agent chats.");
   assert.equal(restartConfirmText(1), "Restart ends 1 running agent chat.");
 });
+
+test("restartConfirmText with runs: they pause and continue", () => {
+  assert.equal(restartConfirmText(2, 0), "Restart ends 2 running agent chats.");
+  assert.equal(restartConfirmText(0, 1), "1 running run pauses and continues after the restart.");
+  assert.equal(restartConfirmText(0, 3), "3 running runs pause and continue after the restart.");
+  assert.equal(restartConfirmText(2, 1), "Restart ends 2 running agent chats. 1 running run pauses and continues after the restart.");
+  assert.equal(restartConfirmText(1, 2), "Restart ends 1 running agent chat. 2 running runs pause and continue after the restart.");
+});

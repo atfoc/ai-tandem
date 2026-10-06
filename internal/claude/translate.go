@@ -100,6 +100,13 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		if isErr && !aborted {
 			errText = str(m["result"])
 			if errText == "" {
+				// A failed start (--resume of an unknown id) has no result text, only errors[]. A
+				// line of the CLI's own diagnostics there says nothing to a reader.
+				if e := str(first(m["errors"])); !strings.HasPrefix(e, "[ede_diagnostic]") {
+					errText = e
+				}
+			}
+			if errText == "" {
 				reason := str(m["terminal_reason"])
 				if reason == "" {
 					reason = "unknown"
@@ -107,9 +114,34 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 				errText = "Error: " + reason
 			}
 		}
+		// The raw numbers of the line: total_cost_usd and modelUsage are cumulative for the
+		// process, num_turns and usage are this turn's. What a run has spent is the engine's sum.
+		_, hasCost := m["total_cost_usd"].(float64)
+		cumOut := 0
+		var cum model.TokenCount
+		hasTok := false // a model's entry carries a count: a line without one reports no tokens
+		for _, u := range usage {
+			mu := obj(u)
+			cumOut += int(num(mu["outputTokens"]))
+			for name, to := range map[string]*int64{"inputTokens": &cum.In, "outputTokens": &cum.Out,
+				"cacheReadInputTokens": &cum.CacheRead, "cacheCreationInputTokens": &cum.CacheWrite} {
+				if n, ok := mu[name].(float64); ok {
+					*to += int64(n)
+					hasTok = true
+				}
+			}
+		}
 		return []agent.Event{
 			{Kind: agent.EvUsage, CtxWindow: win},
-			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText, Point: point},
+			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText, Point: point,
+				CostUSD: num(m["total_cost_usd"]), HasCost: hasCost, NumTurns: int(num(m["num_turns"])),
+				OutTokens: int(num(obj(m["usage"])["output_tokens"])), CumOutTokens: cumOut,
+				CumTokens: cum, HasTokens: hasTok,
+				Final: str(m["result"]),
+				// --resume of a session Claude does not have: this line comes about a second after
+				// the start, with no message sent, and the process then exits.
+				NoSession: isErr && num(m["num_turns"]) == 0 &&
+					strings.HasPrefix(str(first(m["errors"])), "No conversation found with session ID")},
 		}
 	}
 	return nil

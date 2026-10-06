@@ -108,6 +108,7 @@ type ModelChoice struct {
 type GroupDefaults struct {
 	Cwd     string                    `json:"cwd,omitempty"`
 	ByAgent map[AgentKind]ModelChoice `json:"byAgent,omitempty"`
+	Run     *RunDefaults              `json:"run,omitempty"` // what the last run started in the group used
 }
 
 type Defaults struct {
@@ -199,6 +200,8 @@ type ChatMeta struct {
 	UserNamed           bool      `json:"userNamed,omitempty"`
 	Group               string    `json:"group,omitempty"` // plain chats (a group id or Ungrouped); empty for board chats, which use the board's group
 	Board               string    `json:"board,omitempty"` // board id for board chats
+	Run                 string    `json:"run,omitempty"`   // run id: a chat on a run, or (with Role) one of the run's agents; Group stays empty
+	Role                AgentRole `json:"role,omitempty"`  // a run agent: "orchestrator" | "task" | "merge"; empty for a user's chat
 	Cwd                 string    `json:"cwd"`
 	Model               string    `json:"model"`
 	Effort              string    `json:"effort,omitempty"`
@@ -218,7 +221,39 @@ type ChatMeta struct {
 	ForkSource      *ForkSource `json:"forkSource,omitempty"`
 	ForkedFrom      string      `json:"forkedFrom,omitempty"`      // a fork: the id of the chat it was forked from
 	ForkedFromTitle string      `json:"forkedFromTitle,omitempty"` // and that chat's title at the time
+	// Cost is what the chat's agent and its subagents have cost so far; kept for a run agent's
+	// chat (and any chat whose agent reports cost). Never sent to clients.
+	Cost *ChatCost `json:"cost,omitempty"`
 	Archive
+}
+
+// ChatCost is ChatMeta.Cost: what the chat's agent and its subagents have cost. Claude reports a
+// total per process that starts again from a baseline when the session is resumed, pi a total
+// per session, Cursor nothing; the chat manager keeps the running sum by this record.
+type ChatCost struct {
+	Sum   float64    `json:"sum"`             // closed processes (Claude) or closed sessions (pi)
+	Base  float64    `json:"base,omitempty"`  // Claude: the current process's baseline
+	Last  float64    `json:"last,omitempty"`  // the newest reported total of the current process or session
+	Subs  float64    `json:"subs,omitempty"`  // finished app-spawned subagents
+	Marks []CostMark `json:"marks,omitempty"` // Claude: (cumulative output tokens, total) of every result line of the session
+	Known bool       `json:"known,omitempty"` // a cost was reported at least once (never for Cursor)
+	Lost  int        `json:"lost,omitempty"`  // processes that ended in a turn without reporting it
+	// The token twins of Sum, Base, Last and Subs: what the same reports said of tokens.
+	TokSum   TokenCount `json:"tokSum,omitzero"`
+	TokBase  TokenCount `json:"tokBase,omitzero"`
+	TokLast  TokenCount `json:"tokLast,omitzero"`
+	TokSubs  TokenCount `json:"tokSubs,omitzero"`
+	TokKnown bool       `json:"tokKnown,omitempty"` // tokens were reported at least once (never for Cursor)
+	Peak     int        `json:"peak,omitempty"`     // the largest context a request of the chat's own agent was made with
+}
+
+// CostMark is one result line of a Claude session: the session's cumulative output tokens and the
+// total cost and cumulative tokens reported with them. A resumed process's baseline is found
+// among them.
+type CostMark struct {
+	Out int        `json:"out"`
+	USD float64    `json:"usd"`
+	Tok TokenCount `json:"tok,omitzero"`
 }
 
 // ForkSource is the session a chat or branch was forked from. It is kept in chat.json while the
@@ -279,6 +314,8 @@ type ChatView struct {
 	UserNamed        bool      `json:"userNamed,omitempty"`
 	Group            string    `json:"group,omitempty"`
 	Board            string    `json:"board,omitempty"`
+	Run              string    `json:"run,omitempty"`  // a chat on a run, or (with Role) one of the run's agents
+	Role             AgentRole `json:"role,omitempty"` // a run agent: never in the snapshot's chats
 	Cwd              string    `json:"cwd"`
 	Model            string    `json:"model"`
 	Effort           string    `json:"effort,omitempty"`
@@ -305,8 +342,8 @@ type ChatView struct {
 	ForkedFromTitle string `json:"forkedFromTitle,omitempty"`
 }
 
-// ViewOf builds the client view of a chat. Token, SessionID, TurnActive, McpInstructionsSent and
-// ForkSource are left out; InstructionsSent is included because it is the curl-era disable marker.
+// ViewOf builds the client view of a chat. Token, SessionID, TurnActive, McpInstructionsSent,
+// ForkSource and Cost are left out; InstructionsSent is included because it is the curl-era disable marker.
 // Branches and Branch stay zero: the chat manager sets them.
 func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool) ChatView {
 	return ChatView{
@@ -316,6 +353,8 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 		UserNamed:        m.UserNamed,
 		Group:            m.Group,
 		Board:            m.Board,
+		Run:              m.Run,
+		Role:             m.Role,
 		Cwd:              m.Cwd,
 		Model:            m.Model,
 		Effort:           m.Effort,

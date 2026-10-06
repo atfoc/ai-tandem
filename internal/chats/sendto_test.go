@@ -257,7 +257,7 @@ func TestSendToPiCutTurn(t *testing.T) {
 	e = newEnv(t)
 	id, _ = e.talked(model.Pi, "", 3)
 	_, bid, _ := e.branchTo(id, newAt(3), "aside")
-	want := agent.ForkSource{ChatID: id, SessionID: e.meta(id).SessionID, Point: "p1", Next: "p2"}
+	want := agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: e.meta(id).SessionID, Point: "p1", Next: "p2"}
 	if got := e.pi.forkCalls()[0].src; got != want {
 		t.Fatalf("pi branch at the end of turn 1 %+v, want %+v", got, want)
 	}
@@ -335,7 +335,7 @@ func TestSendToNewBranch(t *testing.T) {
 	if len(calls) != 1 || e.claude.count() != 1 {
 		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
 	}
-	if want := (agent.ForkSource{ChatID: id, SessionID: main.SessionID, Point: "p1", Next: "p2"}); calls[0].src != want {
+	if want := (agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: main.SessionID, Point: "p1", Next: "p2"}); calls[0].src != want {
 		t.Fatalf("fork source %+v, want %+v", calls[0].src, want)
 	}
 	if o := calls[0].opts; o.ChatID != bid || o.SessionID != bm.SessionID || !o.Resume || o.MCP == nil || o.MCP.Token != bm.Token {
@@ -440,7 +440,7 @@ func TestSendToAtTheEnd(t *testing.T) {
 	if rec, _ := e.treeFile(id); !reflect.DeepEqual(rec.Branches, []model.TreeBranch{{ID: b, From: model.MainBranch, At: 6}}) || rec.Current != b {
 		t.Fatalf("tree record %+v", rec)
 	}
-	if want := (agent.ForkSource{ChatID: id, SessionID: main.SessionID, Point: "p2", End: true}); e.claude.forkCalls()[0].src != want {
+	if want := (agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: main.SessionID, Point: "p2", End: true}); e.claude.forkCalls()[0].src != want {
 		t.Fatalf("fork source %+v, want %+v", e.claude.forkCalls()[0].src, want)
 	}
 	if got := e.diskItems(bid); len(got) != 7 || got[6].Text != "aside" || !mainAg.isClosed() {
@@ -671,7 +671,7 @@ func TestSendToRecordsTheOwner(t *testing.T) {
 		t.Fatalf("tree record %+v, want %+v", rec, want)
 	}
 	// It is x's session that is forked: x is the branch the point was named on.
-	if got, want := e.claude.forkCalls()[1].src, (agent.ForkSource{ChatID: xid, SessionID: xm.SessionID, Point: "p1", Next: "p2"}); got != want {
+	if got, want := e.claude.forkCalls()[1].src, (agent.ForkSource{ChatID: xid, Dir: e.st.P.ChatDir(xid), SessionID: xm.SessionID, Point: "p1", Next: "p2"}); got != want {
 		t.Fatalf("fork source %+v, want %+v", got, want)
 	}
 	if got := e.diskItems(yid); len(got) != 4 || !reflect.DeepEqual(got[:3], e.diskItems(id)[:3]) || got[3].Text != "on y" {
@@ -1285,7 +1285,7 @@ func TestSendToClaudeRelaunch(t *testing.T) {
 	if len(calls) != 1 || e.claude.count() != 0 {
 		t.Fatalf("%d fork starts, %d spawns", len(calls), e.claude.count())
 	}
-	if want := (agent.ForkSource{ChatID: id, SessionID: main.SessionID, Point: "p1", Next: "p2"}); calls[0].src != want {
+	if want := (agent.ForkSource{ChatID: id, Dir: e.st.P.ChatDir(id), SessionID: main.SessionID, Point: "p1", Next: "p2"}); calls[0].src != want {
 		t.Fatalf("relaunch source %+v, want %+v", calls[0].src, want)
 	}
 	if o := calls[0].opts; o.SessionID != sid || o.ChatID != bid || !o.Resume {

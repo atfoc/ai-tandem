@@ -351,8 +351,8 @@ func TestSpawnBoardPromptEnvAndSessionDir(t *testing.T) {
 	if inv.BridgeSocket != "" || inv.BridgeRun != "" {
 		t.Errorf("bridge env set without a bridge: %+v", inv)
 	}
-	if inv.MCPConfig != "" {
-		t.Errorf("board chat without a registered run got AIWB_MCP_CONFIG %q", inv.MCPConfig)
+	if inv.MCPConfig != "" || inv.MCPFile != "" {
+		t.Errorf("board chat without MCP access got AIWB_MCP_CONFIG %q, AIWB_MCP_CONFIG_FILE %q", inv.MCPConfig, inv.MCPFile)
 	}
 	if inv.Model != "test/test-model" || inv.AppendPrompt != promptFile {
 		t.Errorf("env %+v", inv)
@@ -394,8 +394,11 @@ func TestSpawnBoardChatMCPConfig(t *testing.T) {
 			Headers map[string]string `json:"headers"`
 		} `json:"mcpServers"`
 	}
-	if err := json.Unmarshal([]byte(inv.MCPConfig), &cfg); err != nil {
-		t.Fatalf("AIWB_MCP_CONFIG %q is not JSON: %v", inv.MCPConfig, err)
+	// Contract (D16): the board token is only in the file AIWB_MCP_CONFIG_FILE names, which only
+	// the user can read: never in the child env, and never in argv.
+	raw := inv.mcpFileConfig(t, filepath.Join(f.root, "chats", "c1", "mcp.json"), boardToken)
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("mcp.json %q is not JSON: %v", raw, err)
 	}
 	if len(cfg.MCPServers) != 1 {
 		t.Fatalf("MCP servers %+v, want only the board server", cfg.MCPServers)
@@ -405,21 +408,11 @@ func TestSpawnBoardChatMCPConfig(t *testing.T) {
 		srv.Headers["Authorization"] != "Bearer "+boardToken {
 		t.Fatalf("board server %+v, want the fixed URL and the bearer header", srv)
 	}
-	// Contract (D16): the board token appears only inside AIWB_MCP_CONFIG, never
-	// elsewhere in the child env, and never in argv.
-	for _, kv := range inv.Env {
-		if strings.Contains(kv, boardToken) && !strings.HasPrefix(kv, "AIWB_MCP_CONFIG=") {
-			t.Fatalf("board token leaked outside AIWB_MCP_CONFIG: %q", kv)
-		}
-	}
-	if strings.Contains(strings.Join(inv.Args, " "), boardToken) {
-		t.Fatalf("board token leaked into argv: %q", inv.Args)
-	}
 	f.stdinLines(t, a)
 }
 
 // TestSpawnBoardChatMCPConfigExtraSeam pins the test-only A6 seam: extra non-board servers are
-// merged into the board chat's AIWB_MCP_CONFIG while the app-owned "board" key can never be
+// merged into the board chat's MCP config file while the app-owned "board" key can never be
 // replaced by it.
 func TestSpawnBoardChatMCPConfigExtraSeam(t *testing.T) {
 	const boardToken = "board-secret-token"
@@ -437,19 +430,15 @@ func TestSpawnBoardChatMCPConfigExtraSeam(t *testing.T) {
 	inv := f.invocation(t)
 
 	var cfg mcpConfig
-	if err := json.Unmarshal([]byte(inv.MCPConfig), &cfg); err != nil {
-		t.Fatalf("AIWB_MCP_CONFIG %q is not JSON: %v", inv.MCPConfig, err)
+	raw := inv.mcpFileConfig(t, filepath.Join(f.root, "chats", "c1", "mcp.json"), boardToken)
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("mcp.json %q is not JSON: %v", raw, err)
 	}
 	if got := cfg.MCPServers["board"].URL; got != "http://localhost:6006/mcp" {
 		t.Fatalf("board server URL = %q, want the fixed app URL", got)
 	}
 	if got := cfg.MCPServers["other"]; got.Type != "http" || got.URL != "http://127.0.0.1:1/mcp/other" {
 		t.Fatalf("extra server = %+v, want the merged test-only entry", got)
-	}
-	for _, kv := range inv.Env {
-		if strings.Contains(kv, boardToken) && !strings.HasPrefix(kv, "AIWB_MCP_CONFIG=") {
-			t.Fatalf("board token leaked outside AIWB_MCP_CONFIG: %q", kv)
-		}
 	}
 	f.stdinLines(t, a)
 }
@@ -462,8 +451,11 @@ func TestSpawnPlainChatNoMCPConfig(t *testing.T) {
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
 	waitKind(t, a, agent.EvCatalog)
 	inv := f.invocation(t)
-	if inv.MCPConfig != "" {
-		t.Fatalf("MCP unset got AIWB_MCP_CONFIG %q", inv.MCPConfig)
+	if inv.MCPConfig != "" || inv.MCPFile != "" {
+		t.Fatalf("MCP unset got AIWB_MCP_CONFIG %q, AIWB_MCP_CONFIG_FILE %q", inv.MCPConfig, inv.MCPFile)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "chats", "c1", "mcp.json")); err == nil {
+		t.Fatal("MCP unset: an MCP config file was written")
 	}
 	if inv.BridgeRun != "run-7" {
 		t.Fatalf("plain chat AIWB_BRIDGE_RUN = %q, want the minted bridge run handle", inv.BridgeRun)
@@ -482,10 +474,67 @@ func TestSpawnPlainChatWithMCPConfig(t *testing.T) {
 	waitKind(t, a, agent.EvCatalog)
 	inv := f.invocation(t)
 	want := `{"mcpServers":{"board":{"type":"http","url":"http://localhost:6006/mcp","headers":{"Authorization":"Bearer plain-mcp-token"}}}}`
-	if inv.MCPConfig != want {
-		t.Fatalf("MCP set: AIWB_MCP_CONFIG = %q\nwant %q", inv.MCPConfig, want)
+	if got := inv.mcpFileConfig(t, filepath.Join(f.root, "chats", "c1", "mcp.json"), tok); got != want {
+		t.Fatalf("MCP set: mcp.json = %q\nwant %q", got, want)
 	}
 	f.stdinLines(t, a)
+}
+
+// An app-spawned subagent has its own folder (SpawnOptions.Dir) and its own token: its config file
+// is in that folder, and the parent's file is not touched.
+func TestSpawnSubagentMCPConfigInItsOwnFolder(t *testing.T) {
+	const parentTok, subTok = "parent-mcp-token", "subagent-mcp-token"
+	f := newFake(t)
+	s := f.spawner()
+	s.Bridge = &fakeRegistry{}
+	parentDir := filepath.Join(f.root, "chats", "c1")
+	parent := agent.SpawnOptions{ChatID: "c1", Dir: parentDir, Cwd: t.TempDir(),
+		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: parentTok}}
+	if ok, err := s.writeMCPConfig(parent); err != nil || !ok {
+		t.Fatalf("the parent's config file: %v, %v", ok, err)
+	}
+
+	subDir := filepath.Join(parentDir, "subagents", "s1")
+	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Dir: subDir, Cwd: t.TempDir(), Subagent: true,
+		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: subTok}})
+	waitKind(t, a, agent.EvCatalog)
+	inv := f.invocation(t)
+	if got := inv.mcpFileConfig(t, filepath.Join(subDir, "mcp.json"), subTok); !strings.Contains(got, "Bearer "+subTok) {
+		t.Fatalf("the subagent's mcp.json = %q", got)
+	}
+	assertNoToken(t, parentTok, inv.Args, inv.Env)
+	if got := readMCPFile(t, filepath.Join(parentDir, "mcp.json")); !strings.Contains(got, "Bearer "+parentTok) {
+		t.Fatalf("the parent's mcp.json after the subagent's start = %q", got)
+	}
+}
+
+// A process whose config file cannot be written is not started: it would run without its tools, or
+// the token would have to travel another way.
+func TestSpawnRefusesWhenMCPConfigCannotBeWritten(t *testing.T) {
+	reg := &fakeRegistry{}
+	f := newFake(t)
+	s := f.spawner()
+	s.Bridge = reg
+	dir := filepath.Join(f.root, "chats", "c1")
+	// mcp.json is a folder that is not empty: the rename onto it fails.
+	if err := os.MkdirAll(filepath.Join(dir, "mcp.json", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Spawn(agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(),
+		MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}})
+	if err == nil {
+		a.Close()
+		t.Fatal("Spawn started a process without its MCP config file")
+	}
+	if !strings.Contains(err.Error(), "pi mcp config") {
+		t.Errorf("error %q, want it to name the MCP config", err)
+	}
+	if _, statErr := os.Stat(f.args); statErr == nil {
+		t.Error("a pi process was started")
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "mcp-*.tmp")); len(left) != 0 {
+		t.Errorf("temp files left: %q", left)
+	}
 }
 
 func TestExitStderrOnce(t *testing.T) {

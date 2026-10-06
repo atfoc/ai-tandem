@@ -1,8 +1,9 @@
 package pi
 
 // Real-pi end-to-end tests for the app's handles in pi's environment: the extension takes
-// AIWB_BRIDGE_SOCKET, AIWB_BRIDGE_RUN, AIWB_MCP_CONFIG (the chat's token), AIWB_CHAT_DIR and
-// AIWB_APPEND_PROMPT out of process.env, so the shell commands pi runs do not inherit them, and
+// AIWB_BRIDGE_SOCKET, AIWB_BRIDGE_RUN, AIWB_MCP_CONFIG_FILE (the path of the file with the chat's
+// token; the token itself is never in the environment), AIWB_CHAT_DIR and AIWB_APPEND_PROMPT out
+// of process.env, so the shell commands pi runs do not inherit them, and
 // keeps the values, so a fork (pi runs the extension's factory again in the same process) still
 // has the permission gate and the app-folder guard. Gated like e2e_test.go (AIWB_PI_E2E=1, real
 // pi on PATH); see that file for the gate, model override and isolation notes.
@@ -15,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,15 +26,15 @@ import (
 )
 
 // e2eAppEnvNames are the variables the extension takes out of pi's environment.
-var e2eAppEnvNames = []string{"AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG", "AIWB_CHAT_DIR", "AIWB_APPEND_PROMPT"}
+var e2eAppEnvNames = []string{"AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG_FILE", "AIWB_CHAT_DIR", "AIWB_APPEND_PROMPT"}
 
-// e2eEnvShell prints the five variables as a shell command sees them, and how many of them are in
-// its environment at all.
-const e2eEnvShell = `echo "APPENV[$AIWB_BRIDGE_SOCKET|$AIWB_BRIDGE_RUN|$AIWB_MCP_CONFIG|$AIWB_CHAT_DIR|$AIWB_APPEND_PROMPT]"; ` +
-	`echo "COUNT[$(env | grep -cE '^AIWB_(BRIDGE_SOCKET|BRIDGE_RUN|MCP_CONFIG|CHAT_DIR|APPEND_PROMPT)=')]"`
+// e2eEnvShell prints the five variables (and AIWB_MCP_CONFIG, which the app no longer sets) as a
+// shell command sees them, and how many of them are in its environment at all.
+const e2eEnvShell = `echo "APPENV[$AIWB_BRIDGE_SOCKET|$AIWB_BRIDGE_RUN|$AIWB_MCP_CONFIG_FILE|$AIWB_MCP_CONFIG|$AIWB_CHAT_DIR|$AIWB_APPEND_PROMPT]"; ` +
+	`echo "COUNT[$(env | grep -cE '^AIWB_(BRIDGE_SOCKET|BRIDGE_RUN|MCP_CONFIG|MCP_CONFIG_FILE|CHAT_DIR|APPEND_PROMPT)=')]"`
 
 // e2eEnvShellEmpty is what e2eEnvShell prints when the command inherits none of them.
-const e2eEnvShellEmpty = "APPENV[||||]\nCOUNT[0]"
+const e2eEnvShellEmpty = "APPENV[|||||]\nCOUNT[0]"
 
 // e2eEnvSpawner is the app's Spawner over a data folder with a distinctive name, so the
 // app-folder guard (a text match that includes the folder's last name) refuses nothing by chance.
@@ -139,13 +141,27 @@ func TestE2EShellEnv(t *testing.T) {
 	e2eReady(t, a)
 	p := a.(*proc)
 	given := e2eGivenAppEnv(t, p)
-	if given["AIWB_CHAT_DIR"] != chatDir || !strings.Contains(given["AIWB_MCP_CONFIG"], env.token) {
+	configFile := filepath.Join(chatDir, "mcp.json")
+	if given["AIWB_CHAT_DIR"] != chatDir || given["AIWB_MCP_CONFIG_FILE"] != configFile {
 		t.Fatalf("the adapter's variables are not the chat's: %v", given)
+	}
+	// The token is in the file only the user can read, and nowhere in what `ps` shows of pi.
+	if got := readMCPFile(t, configFile); !strings.Contains(got, "Bearer "+env.token) {
+		t.Fatalf("the chat's MCP config file does not hold its token: %q", got)
+	}
+	assertNoToken(t, env.token, p.cmd.Args, p.cmd.Env)
+	ps, err := exec.Command("ps", "eww", fmt.Sprint(p.cmd.Process.Pid)).CombinedOutput()
+	if err != nil || !strings.Contains(string(ps), "AIWB_CHAT_ID="+chatID) {
+		t.Logf("ps eww does not show the start environment here (%v): nothing to check", err)
+	} else if strings.Contains(string(ps), env.token) || strings.Contains(string(ps), "Bearer") {
+		t.Fatalf("ps eww of the pi process shows the token: %q", ps)
+	} else {
+		t.Logf("ps eww of pi shows its start environment (%d bytes), with neither the token nor \"Bearer\"", len(ps))
 	}
 
 	e2eNoAppEnv(t, "new chat", p, given)
-	out := e2eRPCBash(t, p, `cat "$AIWB_CHAT_DIR/chat.json" 2>&1; echo "$AIWB_MCP_CONFIG"`)
-	t.Logf(`cat "$AIWB_CHAT_DIR/chat.json"; echo "$AIWB_MCP_CONFIG" prints %q`, out)
+	out := e2eRPCBash(t, p, `cat "$AIWB_CHAT_DIR/chat.json" "$AIWB_MCP_CONFIG_FILE" 2>&1 </dev/null; echo "$AIWB_MCP_CONFIG"`)
+	t.Logf(`cat "$AIWB_CHAT_DIR/chat.json" "$AIWB_MCP_CONFIG_FILE"; echo "$AIWB_MCP_CONFIG" prints %q`, out)
 	if strings.Contains(out, env.token) {
 		t.Fatalf("a shell command run by pi printed the chat's token: %q", out)
 	}
@@ -199,7 +215,8 @@ func TestE2EForkKeepsGuard(t *testing.T) {
 	defer forkA.Close()
 	fork := forkA.(*proc)
 	t.Logf("fork %s: session %s file %s", branch, forkID, fork.sessionFile)
-	given := e2eGivenAppEnv(t, fork, "AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG", "AIWB_CHAT_DIR")
+	given := e2eGivenAppEnv(t, fork, "AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG_FILE", "AIWB_CHAT_DIR")
+	assertNoToken(t, env.token, fork.cmd.Args, fork.cmd.Env)
 
 	// No model call: the fork's shell commands see none of the variables.
 	e2eNoAppEnv(t, "after the fork", fork, given)

@@ -45,7 +45,7 @@ func (e badLabel) Error() string      { return string(e) }
 func (badLabel) Is(target error) bool { return target == ErrBadLabel }
 
 func (m *Manager) treePath(chat string) string {
-	return filepath.Join(m.Store.P.ChatDir(chat), "tree.json")
+	return filepath.Join(m.chatDir(chat), "tree.json")
 }
 
 // readTree reads the tree record of the top-level chat. No file is the zero Tree and no error; a
@@ -206,7 +206,7 @@ func (m *Manager) branchItems(chat, branch string) ([]model.Item, error) {
 		c.mu.Unlock()
 	}
 	if branch != model.MainBranch {
-		if _, err := os.Stat(m.Store.P.ChatDir(id)); err != nil {
+		if _, err := os.Stat(m.chatDir(id)); err != nil {
 			return nil, err
 		}
 	}
@@ -314,6 +314,9 @@ func (m *Manager) Tree(id string) (model.TreeView, error) {
 // shows it. It is allowed while the chat is busy, archived or legacy, and sends no event: the
 // answer is all the chat's labels after the change (never nil).
 func (m *Manager) SetLabel(id, branch string, item int, text string) ([]model.TreeLabel, error) {
+	if err := m.person(id); err != nil {
+		return nil, err
+	}
 	if _, err := m.treeChat(id); err != nil {
 		return nil, err
 	}

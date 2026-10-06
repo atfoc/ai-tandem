@@ -1,0 +1,35 @@
+/* The Result tab's delivery card (Delivery.tsx) and the "Do it by hand" block under the summary. */
+.rd-deliver { display: flex; align-items: center; gap: 10px; margin: 8px 0 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.rd-deliver[data-tone="warn"] { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.rd-deliver-mark { flex: none; align-self: flex-start; display: grid; place-items: center; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; background: var(--muted); color: var(--bg); font-size: 12px; font-weight: 700; line-height: 1; }
+.rd-deliver[data-tone="ok"] .rd-deliver-mark { background: var(--ok); }
+.rd-deliver[data-tone="warn"] .rd-deliver-mark { background: var(--warn); }
+.rd-deliver-main { flex: 1; min-width: 0; }
+.rd-deliver-title { font-weight: 620; font-size: 13px; }
+.rd-deliver[data-tone="ok"] .rd-deliver-title { color: var(--ok); }
+.rd-deliver[data-tone="warn"] .rd-deliver-title { color: var(--warn-ink); }
+.rd-deliver-say { margin-top: 1px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.rd-deliver-say code, .run-banner .say code, .run-apply-chip code { font-family: var(--mono); font-size: .92em; }
+.rd-deliver-detail { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
+.rd-deliver-error { margin-top: 4px; padding: 0; }
+/* under the card: an apply that changed nothing */
+.rd-deliver-still { margin: -6px 0 10px; font-size: 11.5px; color: var(--muted); }
+.rd-deliver-files { margin: 6px 0 0; padding: 0; list-style: none; font-size: 11.5px; }
+.rd-deliver-files li { padding: 1px 0; }
+.rd-deliver-files .more { color: var(--muted); }
+.rd-deliver-btns { flex: none; display: flex; align-items: center; gap: 6px; }
+.rd-apply .spin { border-color: color-mix(in srgb, var(--on-accent) 35%, transparent); border-top-color: var(--on-accent); }
+.run-follow.narrow .rd-deliver { flex-wrap: wrap; }
+.run-follow.narrow .rd-deliver-btns { width: 100%; justify-content: flex-end; }
+
+.rd-byhand { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+.rd-byhand > summary { width: fit-content; font-size: 12px; color: var(--muted); cursor: pointer; }
+.rd-byhand > summary:hover { color: var(--text); }
+.rd-byhand > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.rd-byhand .rd-take-line { margin-top: 6px; }
+
+/* ---- the delivery's words elsewhere: the end-of-run line (RunNow.tsx), the header (RunHead.tsx) */
+.run-banner .say .run-applied code { color: var(--text); }
+.run-banner .say .run-banner-apply { height: 20px; margin: -2px 0 -2px 8px; padding: 0 8px; font-size: 11.5px; color: var(--text); vertical-align: baseline; }
+.run-apply-chip { font-size: 11.5px; }
+button.run-cost:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

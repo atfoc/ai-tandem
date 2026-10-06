@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolVerb, toolDone, statusText, waitingText, rowLine, dotState } from "../src/logic/labels.ts";
+import { toolVerb, toolDone, runTool, statusText, waitingText, rowLine, dotState } from "../src/logic/labels.ts";
 
 const names = (id: string) => ({ b_arch0001: "arch", b_flow0001: "flows" } as Record<string, string>)[id];
 const on = { board: "b_flow0001" };
@@ -186,4 +186,90 @@ test("dotState: the quiet waiting state of a sidebar row", () => {
   assert.equal(dotState({ status: "approval", usage, subsRunning: 1 }), "approval");
   assert.equal(dotState({ status: "stopped", usage, subsOwed: 1 }), "stopped");
   assert.equal(dotState({ status: "error", usage, subsOwed: 1 }), "error");
+});
+
+// The eleven run tools with the input fields of the data contract: [tool, input, while it runs, once done].
+const RUN_TOOL_CASES: [string, any, string, string][] = [
+  ["get_run", { offset: 2 }, "Reading the run", "Read the run"],
+  ["get_task", { id: "T07", part: "report", attempt: 2, offset: 0 }, "Reading task T07", "Read task T07"],
+  ["get_agent", { agent: "T11-work", last: 15 }, "Reading agent T11-work", "Read agent T11-work"],
+  ["get_notes", { version: 3, offset: 0 }, "Reading the notes", "Read the notes"],
+  ["set_notes", { notes: "Keep the e2e script green." }, "Writing the notes", "Wrote the notes"],
+  ["add_task", { title: "Document the fork tree", brief: "Write docs/fork-tree.md", kind: "docs", writes: true, depends_on: ["T07"] },
+    "Adding a task: Document the fork tree", "Added a task: Document the fork tree"],
+  ["update_task", { id: "T12", title: "A new title" }, "Updating task T12", "Updated task T12"],
+  ["cancel_task", { id: "T99", reason: "Not needed." }, "Cancelling task T99", "Cancelled task T99"],
+  ["retry_task", { id: "T07", reason: "Another pass." }, "Retrying task T07", "Retried task T07"],
+  ["edit_notes", { heading: "Decisions", text: "- Keep the fork tree flat." }, "Editing the notes: Decisions", "Edited the notes: Decisions"],
+  ["wait_for", { tasks: ["T02", "T03"] }, "Waiting for T02, T03", "Will wait for T02, T03"],
+  ["finish_run", { outcome: "achieved", summary: "All done." }, "Finishing the run", "Finished the run"],
+  ["tell_orchestrator", { text: "Keep the e2e script green." }, "Telling the orchestrator", "Told the orchestrator"],
+];
+
+test("run tools: every one, running and done", () => {
+  assert.equal(RUN_TOOL_CASES.length, 13);
+  for (const [tool, input, running, done] of RUN_TOOL_CASES) {
+    const name = "mcp__board__" + tool;
+    assert.equal(toolVerb(name, input, names), running, tool);
+    assert.equal(toolDone(name, input, "ok", names), done, tool);
+    assert.equal(toolDone(name, input, undefined), done, tool + " without a result");
+    assert.equal(runTool(name, input, false), running, tool);
+    assert.equal(runTool(name, input, true), done, tool);
+  }
+});
+
+test("run tools: long and missing arguments", () => {
+  // a title is cut at 36 characters, an id at 24
+  assert.equal(toolVerb("mcp__board__add_task", { title: "Rewrite the checkout flow on the new cart API" }), "Adding a task: Rewrite the checkout flow on the ne…");
+  assert.equal(toolDone("mcp__board__add_task", {}, "ok"), "Added a task");
+  assert.equal(toolDone("mcp__board__get_agent", { agent: "T11-work-attempt-3-merge-again" }, "ok"), "Read agent T11-work-attempt-3-merg…");
+  // an argument the label does not use changes nothing
+  assert.equal(toolDone("mcp__board__update_task", { id: "T12", title: "A new title" }, "ok"), "Updated task T12");
+  // no input: a call whose input has not arrived, and a chat's status line (which has the name alone)
+  assert.equal(toolVerb("mcp__board__get_task", null), "Reading a task");
+  assert.equal(toolVerb("mcp__board__get_agent", {}), "Reading an agent");
+  assert.equal(toolDone("mcp__board__retry_task", undefined, undefined), "Retried a task");
+  assert.equal(toolVerb("mcp__board__cancel_task", {}), "Cancelling a task");
+  assert.equal(toolVerb("mcp__board__update_task", null), "Updating a task");
+  assert.equal(statusText({ status: "tool", statusTool: "mcp__board__get_task", usage }), "Reading a task…");
+  assert.equal(statusText({ status: "tool", statusTool: "mcp__board__tell_orchestrator", usage }), "Telling the orchestrator…");
+  assert.equal(rowLine({ status: "tool", statusTool: "mcp__board__get_run", usage }, "~/code · Sonnet"), "Reading the run…");
+});
+
+test("run tools: only the board server's own, and only the ones in the table", () => {
+  // an unknown tool of the board server falls through to its raw short name
+  assert.equal(runTool("mcp__board__some_future_tool", { id: "T07" }, true), null);
+  assert.equal(toolVerb("mcp__board__some_future_tool", { id: "T07" }), "some_future_tool");
+  assert.equal(toolDone("mcp__board__some_future_tool", { id: "T07" }, "ok"), "some_future_tool");
+  // a name that every object has is not a hit
+  for (const n of ["toString", "constructor", "hasOwnProperty", "__proto__", "valueOf"]) {
+    assert.equal(runTool("mcp__board__" + n, {}, false), null, n);
+    assert.equal(toolVerb("mcp__board__" + n, {}), n, n);
+    assert.equal(toolDone("mcp__board__" + n, {}, "ok"), n, n);
+  }
+  // another server's tool of the same name keeps the generic label
+  assert.equal(runTool("mcp__other__get_run", {}, false), null);
+  assert.equal(toolVerb("mcp__other__get_run", {}), "other · get run");
+  assert.equal(toolDone("mcp__other__cancel_task", { id: "T1" }, "ok"), "other · cancel task");
+  // and so does a bare name, which is no tool of the board server
+  assert.equal(runTool("get_run", {}, true), null);
+  assert.equal(toolDone("get_run", {}, "ok"), "get_run");
+  // the board tools are untouched
+  assert.equal(runTool("mcp__board__read_board", {}, false), null);
+  assert.equal(toolVerb("mcp__board__read_board", {}), "Reading this board");
+});
+
+test("run tools: what the orchestrator waits for, and the section of the notes it edits", () => {
+  const w = "mcp__board__wait_for", e = "mcp__board__edit_notes";
+  assert.equal(runTool(w, { tasks: ["T02", "T03"], mode: "all" }, false), "Waiting for T02, T03");
+  assert.equal(runTool(w, { tasks: ["T02", "T03"], mode: "any" }, false), "Waiting for the first of T02, T03");
+  assert.equal(runTool(w, { tasks: ["T02", "T03"], mode: "any" }, true), "Will wait for the first of T02, T03");
+  assert.equal(runTool(w, { tasks: ["T02"] }, true), "Will wait for T02");
+  for (const input of [undefined, {}, { tasks: [] }, { tasks: "T02" }]) {
+    assert.equal(runTool(w, input, false), "Setting what it waits for");
+    assert.equal(runTool(w, input, true), "Set what it waits for");
+  }
+  assert.equal(runTool(e, {}, false), "Editing the notes");
+  assert.equal(runTool(e, undefined, true), "Edited the notes");
+  assert.equal(runTool(e, { heading: "What the review of the checkout flow found" }, true), "Edited the notes: What the review of the checkout flo…");
 });

@@ -5,6 +5,7 @@ import { api, ApiError } from "./api.ts";
 import { getState, setState } from "./store.ts";
 import { confirm } from "./Dialogs.tsx";
 import { bannerFor, restartConfirmText, runningChats, type UpdateBanner } from "./logic/version.ts";
+import { runningRuns } from "./logic/run.ts";
 
 declare const __APP_VERSION__: string; // build.mjs: AIWB_VERSION, "dev" by default
 
@@ -31,13 +32,14 @@ export async function checkVersion() {
   show(bannerFor(__APP_VERSION__, h.version || "dev", h.webVersion || "dev"));
 }
 
-/** "Restart server" and "Retry": confirms when agents are running, then restarts. */
+/** "Restart server" and "Retry": confirms when agents are running or a run works, then restarts. */
 export function restartServer() {
   if (busy || restarting()) return;
-  const n = runningChats(Object.values(getState().chats));
-  if (!n) { void restart(); return; }
+  const n = runningChats(Object.values(getState().chats)); // a run's own agents are not among them
+  const runs = runningRuns(Object.values(getState().runs));
+  if (!n && !runs) { void restart(); return; }
   confirm({
-    title: "Restart server", body: restartConfirmText(n),
+    title: "Restart server", body: restartConfirmText(n, runs),
     actions: [{ label: "Restart", tone: "danger", run: () => { void restart(); } }],
   });
 }

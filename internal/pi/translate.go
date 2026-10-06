@@ -28,9 +28,9 @@ import (
 //	message_end (role assistant)             EvUsage (input + cache read/write, output, window);
 //	                                         its error state is kept for the turn end
 //	agent_settled                            get_session_stats + get_fork_messages → EvUsage +
-//	                                         EvTurnEnd with Point (the idle signal), with pi's
-//	                                         error text when the turn's last assistant message
-//	                                         ended in pi's error state
+//	                                         EvTurnEnd with Point (the idle signal) and the
+//	                                         session's cost so far, with pi's error text when the
+//	                                         turn's last assistant message ended in pi's error state
 //	extension_error                          logged once
 //	compaction_*, auto_retry_*,              ignored, like every unknown type, so a newer pi
 //	summarization_retry_*, queue_update,     cannot break the stream
@@ -217,6 +217,28 @@ func (p *proc) onSettled() {
 	}
 	err := p.rpc.expect("get_session_stats", nil, func(resp rpcResponse) {
 		p.emitStats(resp)
+		// pi computes the cost from the session file: it is the whole session's so far, across
+		// processes, a killed one included.
+		var stats struct {
+			Cost   *float64 `json:"cost"`
+			Tokens *struct {
+				Input      int64 `json:"input"`
+				Output     int64 `json:"output"`
+				CacheRead  int64 `json:"cacheRead"`
+				CacheWrite int64 `json:"cacheWrite"`
+			} `json:"tokens"`
+		}
+		if resp.Success && json.Unmarshal(resp.Data, &stats) == nil {
+			if stats.Cost != nil {
+				end.CostUSD, end.HasCost = *stats.Cost, true
+			}
+			// The tokens are the session's as the cost is.
+			if tk := stats.Tokens; tk != nil {
+				end.CumTokens.In, end.CumTokens.Out = tk.Input, tk.Output
+				end.CumTokens.CacheRead, end.CumTokens.CacheWrite = tk.CacheRead, tk.CacheWrite
+				end.HasTokens = true
+			}
+		}
 		finish()
 	})
 	if err != nil { // the command could not even be written: the turn still ends

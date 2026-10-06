@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/boardtools"
 )
 
 // piMarkerEnv is the pi process-marker environment that must not leak into an app-run pi
@@ -34,6 +35,11 @@ var piMarkerEnv = map[string]bool{
 // hook still routes them through the bridge, where the adapter auto-approves them and refuses
 // only inputs touching the app's own folder. --no-extensions keeps user extensions out; the explicit
 // -e loads only the app's extension.
+//
+// A read-only process gets --tools, an allowlist: pi's read tools and the app's MCP tools it may
+// call (readOnlyTools). There is no bash, write or edit then, and every extension tool that is not
+// named is removed too. An unattended process needs nothing more: pi never asks, the bridge
+// approves every call (perm.go).
 //
 // A DeepSeek Flash model gets a second --append-system-prompt with the bash-timeout reminder:
 // those models tend to run bash commands without a timeout and can hang a run. pi accepts the
@@ -70,7 +76,47 @@ func (s *Spawner) sessionArgs(o agent.SpawnOptions, sessionDir, appendPromptFile
 	if isDeepSeekFlash(o.Model) {
 		args = append(args, "--append-system-prompt", bashTimeoutReminder)
 	}
+	if o.ReadOnly {
+		args = append(args, "--tools", strings.Join(readOnlyTools(o), ","))
+	}
 	return append(args, "--no-approve")
+}
+
+// readOnlyTools is the --tools list of a read-only process: pi's built-in tools that only read,
+// and the app's MCP tools the process may call, by the names the extension registers them under.
+// Those are o.MCPTools when set; else the board tools when board extras are on and the spawn
+// family when this is the chat agent, as for the other agents. Without MCP there are none.
+func readOnlyTools(o agent.SpawnOptions) []string {
+	tools := []string{"read", "grep", "find", "ls"}
+	if o.MCP == nil || o.MCP.MCPURL == "" {
+		return tools
+	}
+	if o.MCPTools != nil {
+		for _, name := range o.MCPTools {
+			tools = append(tools, "mcp__board__"+name)
+		}
+		return tools
+	}
+	if o.BoardID != "" {
+		for _, t := range boardtools.Tools {
+			tools = append(tools, "mcp__board__"+t.Name)
+		}
+	}
+	if !o.Subagent {
+		for _, t := range boardtools.SpawnFamily {
+			tools = append(tools, "mcp__board__"+t.Name)
+		}
+	}
+	return tools
+}
+
+// chatDir is the folder of a chat object: dir when the caller names it (SpawnOptions.Dir,
+// ForkSource.Dir), else <AppRoot>/chats/<chatID>. pi's session files are in its "pi" folder.
+func (s *Spawner) chatDir(chatID, dir string) string {
+	if dir != "" {
+		return dir
+	}
+	return filepath.Join(s.AppRoot, "chats", chatID)
 }
 
 // bashTimeoutReminder is the extra system-prompt line DeepSeek Flash models get (see args).
@@ -99,8 +145,8 @@ func (s *Spawner) cleanEnv() []string {
 	return out
 }
 
-// mcpConfig is the Claude-compatible config object AIWB_MCP_CONFIG carries; its single board
-// server is the app-owned board MCP endpoint (plan R2/R3).
+// mcpConfig is the Claude-compatible config object the file AIWB_MCP_CONFIG_FILE names holds; its
+// single board server is the app-owned board MCP endpoint (plan R2/R3).
 type mcpConfig struct {
 	MCPServers map[string]mcpServerConfig `json:"mcpServers"`
 }
@@ -111,8 +157,8 @@ type mcpServerConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// boardMCPConfig builds the AIWB_MCP_CONFIG value: the fixed MCP endpoint with this process's
-// token in the Authorization header. It returns "" when MCP is unset or has no URL. extra is the
+// boardMCPConfig builds the content of the MCP config file: the fixed MCP endpoint with this
+// process's token in the Authorization header. It returns "" when MCP is unset or has no URL. extra is the
 // test-only non-board server seam (see Spawner.mcpConfigExtra); it can never replace the app-owned
 // "board" key.
 func boardMCPConfig(mcp *agent.BoardAccess, extra map[string]mcpServerConfig) string {
@@ -136,16 +182,60 @@ func boardMCPConfig(mcp *agent.BoardAccess, extra map[string]mcpServerConfig) st
 	return string(raw)
 }
 
+// mcpConfigFile is the name of the MCP config file in a chat object's folder.
+const mcpConfigFile = "mcp.json"
+
+// mcpConfigPath is where the MCP config file of o's process is: in the folder of the chat object
+// (o.Dir, else <AppRoot>/chats/<ChatID>), which is under the app's folder. An app-spawned
+// subagent's folder is its own, so its token has its own file.
+func (s *Spawner) mcpConfigPath(o agent.SpawnOptions) string {
+	return filepath.Join(s.chatDir(o.ChatID, o.Dir), mcpConfigFile)
+}
+
+// writeMCPConfig writes the MCP config file of o's process, readable by the user only, and
+// reports whether o has a config at all (MCP set, with a URL). The token is in this file and not
+// in the environment because the start environment of a process is readable by every process of
+// the same user (ps eww), also after the extension deleted the variable. It is written at every
+// start, since the token may differ from the last process's, and put in place by a rename: a
+// process of the same chat that is reading it sees the old file or the new one, never half of
+// one. Nothing removes it but the removal of the chat's folder.
+func (s *Spawner) writeMCPConfig(o agent.SpawnOptions) (bool, error) {
+	cfg := boardMCPConfig(o.MCP, s.mcpConfigExtra)
+	if cfg == "" {
+		return false, nil
+	}
+	path := s.mcpConfigPath(o)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "mcp-*.tmp") // made with mode 0600
+	if err != nil {
+		return false, err
+	}
+	_, err = tmp.WriteString(cfg)
+	if err2 := tmp.Close(); err == nil {
+		err = err2
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+	}
+	return err == nil, err
+}
+
 // env is the environment one chat process starts with: the server's environment without the pi
 // markers or any inherited AIWB_* value, plus the per-run bridge handle and chat variables. bin is
-// the resolved absolute pi path (children need it to spawn their own runs). Whenever MCP is set
-// the process gets the fixed endpoint and its token header inside AIWB_MCP_CONFIG; the token
-// appears only there, never in argv or a URL. Board extras (append-prompt path) stay board-only.
-func (s *Spawner) env(o agent.SpawnOptions, bin, socketPath, runToken, appendPromptFile string) []string {
+// the resolved absolute pi path (children need it to spawn their own runs). mcpConfigFile is the
+// path of the written MCP config file ("" = the process has none): the fixed endpoint and the
+// token header are in that file, and the token is never in the environment, argv or a URL. Board
+// extras (append-prompt path) stay board-only.
+func (s *Spawner) env(o agent.SpawnOptions, bin, socketPath, runToken, appendPromptFile, mcpConfigFile string) []string {
 	out := s.cleanEnv()
 	out = append(out,
 		"AIWB_CHAT_ID="+o.ChatID,
-		"AIWB_CHAT_DIR="+filepath.Join(s.AppRoot, "chats", o.ChatID),
+		"AIWB_CHAT_DIR="+s.chatDir(o.ChatID, o.Dir),
 		"AIWB_PI_BIN="+bin,
 	)
 	if socketPath != "" {
@@ -154,8 +244,8 @@ func (s *Spawner) env(o agent.SpawnOptions, bin, socketPath, runToken, appendPro
 	if runToken != "" {
 		out = append(out, "AIWB_BRIDGE_RUN="+runToken)
 	}
-	if cfg := boardMCPConfig(o.MCP, s.mcpConfigExtra); cfg != "" {
-		out = append(out, "AIWB_MCP_CONFIG="+cfg)
+	if mcpConfigFile != "" {
+		out = append(out, "AIWB_MCP_CONFIG_FILE="+mcpConfigFile)
 	}
 	if o.Model != "" {
 		out = append(out, "AIWB_MODEL="+o.Model)

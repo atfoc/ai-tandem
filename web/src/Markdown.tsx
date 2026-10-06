@@ -50,7 +50,7 @@ type Props = {
 };
 
 export function Markdown({ text, user = false, board, agent, streaming = false }: Props) {
-  const blocks = useMemo(() => splitBlocks(streaming ? trimPartialRef(text) : text), [text, streaming]);
+  const blocks = useMemo(() => splitBlocks(streaming ? trimPartialRef(text ?? "") : text ?? ""), [text, streaming]);
   const where = useMemo(() => ({ board, agent }), [board, agent]);
   return (
     <Where.Provider value={where}>

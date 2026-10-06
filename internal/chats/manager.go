@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ai-whiteboard/internal/agent"
@@ -37,6 +38,9 @@ type Deps struct {
 	Namers     map[model.AgentKind]Namer // per-agent auto namers; a missing entry means chats of that agent are not named
 	DefaultCwd string
 	MCPURL     string // the fixed MCP endpoint handed to every chat, http://localhost:6006/mcp
+	// Runs is what the manager asks about runs: for the chats people open on a run and for the
+	// run's agents, which are chats too (see owned.go). nil = the server has no runs.
+	Runs RunOwner
 }
 
 type Manager struct {
@@ -53,6 +57,25 @@ type Manager struct {
 	extras     map[string]extraCaller // extra token → caller (in memory only)
 	extraBySID map[string]string      // chatID+"/"+sid → extra token
 	used       map[string]struct{}    // live chat tokens and extra tokens, for uniqueness
+
+	// rootsMu protects roots: top-level chat id → its folder, for the chats that do not live in
+	// chats/<id> (a run's, see chatDir). A leaf lock: taken with any other lock held, and nothing
+	// is taken under it.
+	rootsMu sync.Mutex
+	roots   map[string]string
+
+	// watchMu protects watched: the run agents' chats whose events clients are sent (see Watch).
+	// A leaf lock too: ClearWatches runs with the bridge's lock held.
+	watchMu sync.Mutex
+	watched map[string]bool
+
+	ownedMu sync.Mutex // makes CreateOwned's "find it or make it" one step
+
+	// down is set when Shutdown begins, before it visits any chat: from then on no process is
+	// started. Every start reads it with the chat's lock held, which Shutdown takes for each chat
+	// after setting it. So a start either came first and has its process on the chat when Shutdown
+	// gets there, which closes it, or is refused with ErrShutdown.
+	down atomic.Bool
 }
 
 type Chat struct {
@@ -75,6 +98,15 @@ type Chat struct {
 	carry         *carry             // the turn carrying subagent results to the agent; nil once it ended
 	lateEnd       string             // the error of a refused delivery whose own turn end may still come (see lateEvent)
 	hold          bool               // the app starts no turn until the user sends (see setHold); not saved
+
+	// A run agent's chat (see owned.go). role is set before the chat object is in the map and
+	// never changes, so the guard of the calls people make and the event filter read it with no
+	// lock; "" for every other chat object, a branch included.
+	role      model.AgentRole
+	wait      *ownedWait    // what has happened since the last SendOwned; nil = none since the server started
+	wake      chan struct{} // closed, and dropped, when a WaitOwned should look again; nil while none waits
+	removing  bool          // being deleted: a WaitOwned answers ErrNotFound from now on
+	costFirst bool          // the next cost report is the first of its process (see costSample)
 
 	// treeMu serialises the changes of tree.json (see updateTree). It is taken before mu, never
 	// while mu is held.
@@ -109,6 +141,8 @@ var (
 	ErrNotStarted    = errors.New("the context split shows after the first message")
 	ErrBadReference  = errors.New("a quote must be part of an earlier message or reply in this chat")
 	ErrNoRequest     = errors.New("this permission request is no longer open; reload the page if it still looks open")
+	// ErrShutdown is what a call that would start a process answers once Shutdown has begun.
+	ErrShutdown = errors.New("the server is shutting down")
 )
 
 type ConfigReq struct {
@@ -122,6 +156,8 @@ func New(d Deps) *Manager {
 		extras:     map[string]extraCaller{},
 		extraBySID: map[string]string{},
 		used:       map[string]struct{}{},
+		roots:      map[string]string{},
+		watched:    map[string]bool{},
 		now:        time.Now,
 	}
 }
@@ -135,17 +171,41 @@ func (m *Manager) nowMs() int64 { return m.now().UnixMilli() }
 type outbox []any
 
 // send broadcasts the queued events. No chat's mu may be held: a chat event is composed here.
+// The events of a run agent's chat go out only while a client watches it (see Watch).
 func (m *Manager) send(out outbox) {
 	for _, ev := range out {
-		if ce, ok := ev.(chatEvent); ok {
-			v, ok := m.chatView(ce)
-			if !ok {
+		switch e := ev.(type) {
+		case chatEvent:
+			v, ok := m.chatView(e)
+			if !ok || (v.Role != "" && !m.watching(v.ID)) {
 				continue
 			}
 			ev = map[string]any{"type": "chat", "chat": v}
+		case agentEvent:
+			if !m.watching(e.chat) {
+				continue
+			}
+			ev = e.ev
 		}
 		m.Bridge.Broadcast(ev)
 	}
+}
+
+// agentEvent is an items or subagent event of a run agent's chat waiting in an outbox: whether it
+// is sent is decided when the outbox is (send).
+type agentEvent struct {
+	chat string
+	ev   map[string]any
+}
+
+// threadEvent queues ev, an event about c's thread or its subagents that names the top-level chat
+// as chat. c.mu held.
+func (o *outbox) threadEvent(c *Chat, chat string, ev map[string]any) {
+	if c.role != "" {
+		*o = append(*o, agentEvent{chat: chat, ev: ev})
+		return
+	}
+	*o = append(*o, ev)
 }
 
 // emitChat queues the chat event of a change of c's session side (status, error, usage,
@@ -166,6 +226,7 @@ func (o *outbox) emitChat(c *Chat) {
 // calls this before it unlocks. It queues nothing when a view was queued after the change, or when
 // the counts are back where they were (a result owed and taken under one lock). c.mu held.
 func (o *outbox) emitCounts(c *Chat) {
+	wakeOwned(c) // whatever may have changed the counts may have settled the chat
 	if !c.deleted && countSubs(c) != c.shown {
 		o.emitChat(c)
 	}
@@ -187,7 +248,7 @@ func (o *outbox) emitItems(c *Chat, ups []transcript.Update) {
 		return
 	}
 	chat, branch := splitID(c.meta.ID)
-	*o = append(*o, map[string]any{"type": "chat_items", "chat": chat, "branch": branch, "version": c.tr.Version(), "updates": ups})
+	o.threadEvent(c, chat, map[string]any{"type": "chat_items", "chat": chat, "branch": branch, "version": c.tr.Version(), "updates": ups})
 }
 
 // view is what clients see of the chat object c alone: of a chat with branches, only the half c
@@ -243,7 +304,7 @@ func (m *Manager) save(c *Chat) error {
 
 // writeMeta writes chat.json, also for an unlisted chat. c.mu held.
 func (m *Manager) writeMeta(c *Chat) error {
-	return store.WriteJSONAtomic(filepath.Join(m.Store.P.ChatDir(c.meta.ID), "chat.json"), c.meta, 0o600)
+	return store.WriteJSONAtomic(filepath.Join(m.chatDir(c.meta.ID), "chat.json"), c.meta, 0o600)
 }
 
 func (m *Manager) logSave(c *Chat) {
@@ -253,7 +314,7 @@ func (m *Manager) logSave(c *Chat) {
 }
 
 func (m *Manager) itemsPath(id string) string {
-	return filepath.Join(m.Store.P.ChatDir(id), "items.jsonl")
+	return filepath.Join(m.chatDir(id), "items.jsonl")
 }
 
 // trOf returns the chat's transcript, reading items.jsonl the first time. c.mu held.
@@ -343,8 +404,8 @@ func (m *Manager) all() []*Chat {
 // ---- loading and reading --------------------------------------------------
 
 // Load reads every chats/<id>/chat.json at boot, and the branches each chat's tree record names
-// (see loadBranches). items.jsonl is not read here. A folder without a readable chat.json is
-// logged and skipped (never deleted).
+// (see loadBranches), then the chats of the runs (see loadRunChats). items.jsonl is not read here.
+// A folder without a readable chat.json is logged and skipped (never deleted).
 func (m *Manager) Load() error {
 	ents, err := os.ReadDir(m.Store.P.Chats)
 	if err != nil {
@@ -356,7 +417,7 @@ func (m *Manager) Load() error {
 		if !e.IsDir() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(m.Store.P.ChatDir(e.Name()), "chat.json"))
+		raw, err := os.ReadFile(filepath.Join(m.chatDir(e.Name()), "chat.json"))
 		if err != nil {
 			log.Printf("chats: skipping %s: %v", e.Name(), err)
 			continue
@@ -374,15 +435,17 @@ func (m *Manager) Load() error {
 		m.registerChatToken(meta.Token)
 		m.loadBranches(c, meta.ID)
 	}
+	m.loadRunChats()
 	return nil
 }
 
-// Views returns every chat's view, oldest first: one per top-level chat, never one for a branch.
+// Views returns every chat's view, oldest first: one per top-level chat, never one for a branch
+// or for a run agent's chat.
 func (m *Manager) Views() []model.ChatView {
 	cs := m.all()
 	out := make([]model.ChatView, 0, len(cs))
 	for _, c := range cs {
-		if c.top != nil {
+		if c.top != nil || c.role != "" {
 			continue
 		}
 		c.mu.Lock()
@@ -501,7 +564,7 @@ func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView
 	if a == model.Claude || a == model.Pi {
 		meta.SessionID = uuid() // the app assigns it; pi starts/resumes with it
 	}
-	if err := os.MkdirAll(m.Store.P.ChatDir(meta.ID), 0o700); err != nil {
+	if err := os.MkdirAll(m.chatDir(meta.ID), 0o700); err != nil {
 		return model.ChatView{}, err
 	}
 	c := &Chat{meta: meta, subs: map[string]*sub{}, subByTool: map[string]string{}}
@@ -527,7 +590,8 @@ func (m *Manager) Create(a model.AgentKind, group, board string) (model.ChatView
 }
 
 // Open is called when the client selects the chat. It never starts an agent; it only reads the
-// history and shows a missing folder before the user types.
+// history and shows a missing folder before the user types. Of a run agent's chat it only reads
+// the history: the checkout a finished task agent worked in is removed by design.
 func (m *Manager) Open(id string) error {
 	var out outbox
 	defer func() { m.send(out) }()
@@ -540,7 +604,7 @@ func (m *Manager) Open(id string) error {
 	if err != nil {
 		return err
 	}
-	if c.meta.Locked && !m.parentOf(c).Archived && c.ag == nil {
+	if c.role == "" && c.meta.Locked && !m.parentOf(c).Archived && c.ag == nil {
 		if _, err := os.Stat(c.meta.Cwd); err != nil {
 			c.folderMissing = true
 			c.errText = folderMissingText(c.meta.Cwd)
@@ -594,6 +658,7 @@ func (m *Manager) attach(c *Chat, ag agent.Agent) {
 	c.gen++
 	c.ag = ag
 	c.lateEnd = ""
+	c.costFirst = true
 	go m.pump(c, ag, c.gen)
 }
 
@@ -649,11 +714,12 @@ func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 	if whole && !m.sourceKept(fs.Chat, fs.Items) {
 		err = errForkGone
 	} else {
-		ag, sid, err = fk.SpawnFork(opts, agent.ForkSource{ChatID: fs.Chat, SessionID: fs.Session, Point: fs.Point, Next: fs.Next})
+		ag, sid, err = fk.SpawnFork(opts, agent.ForkSource{ChatID: fs.Chat, Dir: m.chatDir(fs.Chat), SessionID: fs.Session, Point: fs.Point, Next: fs.Next})
 	}
 	c.mu.Lock()
-	if err == nil && (c.deleted || m.parentOf(c).Archived) {
-		// Deleted or archived during the start: the message goes nowhere.
+	if err == nil && (c.deleted || m.parentOf(c).Archived || m.down.Load()) {
+		// Deleted or archived during the start, or the server began to shut down and may have
+		// been at this chat already: the message goes nowhere.
 		go ag.Close()
 		if st, _ := tr.Status(); st == model.StatusThinking && !c.deleted {
 			tr.SetStatus(was)
@@ -661,6 +727,9 @@ func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 		}
 		if c.deleted {
 			return ErrNotFound
+		}
+		if m.down.Load() {
+			return ErrShutdown
 		}
 		return ErrArchived
 	}
@@ -676,15 +745,18 @@ func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 }
 
 // spawnOptions are the options c's agent starts with. c.mu held.
-// MCP URL+token is set for every chat; board extras only when the chat belongs to a board.
+// MCP URL+token and the chat object's folder are set for every chat; board extras only when the
+// chat belongs to a board; what a chat on a run and a run's agent start with is in runOptions.
 func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
 	m.ensureToken(c)
 	opts := agent.SpawnOptions{ChatID: c.meta.ID, SessionID: c.meta.SessionID, Resume: c.meta.Locked,
 		Cwd: c.meta.Cwd, Model: c.meta.Model, Effort: m.effortFor(c.meta.Agent, c.meta.Model, c.meta.Effort),
-		MCP: &agent.BoardAccess{MCPURL: m.MCPURL, Token: c.meta.Token}, BoardID: c.meta.Board}
+		MCP: &agent.BoardAccess{MCPURL: m.MCPURL, Token: c.meta.Token}, BoardID: c.meta.Board,
+		Dir: m.chatDir(c.meta.ID)}
 	if c.meta.Agent == model.Cursor && !c.meta.Locked {
 		opts.SessionID = ""
 	}
+	runOptions(c, &opts, false)
 	return opts
 }
 
@@ -699,6 +771,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		}
 		before := view(c)
 		wasBusy := busy(c)
+		wasTurn, subsRan := turnRunning(c), runningAppSubs(c) > 0
 		if ev.Sub != "" && ev.Kind != agent.EvPermRequest {
 			d := m.routeSub(c, ev, &out)
 			out.emitCounts(c)
@@ -741,6 +814,10 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			} else {
 				if ev.CtxIn != 0 {
 					u.CtxIn = ev.CtxIn
+					// The peak of a run's chat; chat.json gets it with the turn end's write.
+					if k := costOf(c); k != nil && ev.CtxIn > k.Peak {
+						k.Peak = ev.CtxIn
+					}
 				}
 				if ev.CtxOut != 0 {
 					u.CtxOut = ev.CtxOut
@@ -754,6 +831,8 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			u := &c.meta.Usage
 			u.Turns++
 			c.meta.TurnActive = false
+			c.wait.turnEnded(ev)
+			costTurnEnd(c, ev)
 			if c.sentGen == gen {
 				// The forked session has had a turn of its own and can be resumed from now on.
 				// A turn end before any Send to this process drops nothing.
@@ -761,11 +840,22 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			}
 		case agent.EvExit:
 			c.ag = nil
+			c.wait.exited(ev.ExitErr, wasBusy || subsRan)
+			if wasTurn {
+				costLost(c, c.meta.Agent) // the turn it was in reports no cost any more
+			}
 		}
 		ups := c.tr.Apply(ev)
 		if ev.Kind == agent.EvTurnEnd {
 			// The end mark of the turn, after its "Stopped." or error note.
 			ups = append(ups, c.tr.AddEnd(ev.Point)...)
+		}
+		if ev.Kind == agent.EvPermRequest && c.role != "" {
+			// Nobody answers for a run's agent (see denyAtOnce).
+			ups = append(ups, denyAtOnce(c, ev.Sub, ev.PermID)...)
+			if err := c.tr.Flush(false); err != nil {
+				log.Printf("chats: flush %s: %v", c.meta.ID, err)
+			}
 		}
 		if len(c.pendingLinks) > 0 {
 			m.reconcileSpawnLinks(c, &out)
@@ -815,6 +905,9 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 // It waits for a Send with a target that is changing the chat's current branch (see moveMu): the
 // message goes to the branch that is current after it, never to the one it stops.
 func (m *Manager) Send(id, text, context string, refs []model.Reference) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
 	top, err := m.topChat(id)
 	if err != nil {
 		return err
@@ -839,9 +932,19 @@ func (m *Manager) sendCur(top *Chat, id, text, context string, refs []model.Refe
 // sendOn is Send on the chat object c, which may still be unlisted. c.mu is held on entry and
 // released. On a branch the first-send effects (group defaults, auto-naming) never run, and the
 // draft cleared is the top-level chat's, once the branch is listed.
+//
+// A chat on a run feeds no sticky defaults, and every message of it starts with the run's
+// context block (RunOwner.ChatContext), as a board chat's does with its board's. For a run
+// agent's chat it is SendOwned's: the wait of that message starts here, and nothing of the
+// human's (the namer, quotes, the draft) is touched.
 func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) error {
 	var out outbox
 	var err error
+	if m.down.Load() {
+		// In the hold of c.mu that would start the process (see Manager.down).
+		c.mu.Unlock()
+		return ErrShutdown
+	}
 	p := m.parentOf(c)
 	if p.Archived {
 		c.mu.Unlock()
@@ -851,11 +954,17 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 		c.mu.Unlock()
 		return ErrLegacy
 	}
+	if c.meta.Run != "" {
+		if _, err := m.openRun(c.meta.Run); err != nil {
+			c.mu.Unlock()
+			return err
+		}
+	}
 	if busy(c) {
 		c.mu.Unlock()
 		return ErrBusy
 	}
-	if !validReferences(c.tr, refs) {
+	if c.role == "" && !validReferences(c.tr, refs) {
 		c.mu.Unlock()
 		return ErrBadReference
 	}
@@ -869,17 +978,28 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 		m.send(out)
 		return err
 	}
+	if c.role != "" {
+		// After the start, so a start that failed leaves the wait of the message before; ahead of
+		// everything the message adds to the thread.
+		c.wait = &ownedWait{from: c.tr.Len()}
+		wakeOwned(c) // a WaitOwned of the message before answers ErrSuperseded
+	}
 	releaseHold(c)
 	first := !c.meta.Locked && c.top == nil
-	if first {
+	if first && c.meta.Run == "" {
 		// Sending the first message confirms the chat's settings as chosen, changed or not.
 		m.recordDefaults(c, c.meta.Cwd, model.ModelChoice{Model: c.meta.Model, Effort: c.meta.Effort}, &out)
 	}
 	c.meta.Locked = true
-	c.meta.TurnActive = true
-	c.meta.Draft = nil // the message is the draft, sent
+	c.meta.TurnActive = true // in the hold of c.mu that started the process: its first tools/list finds a running turn
+	if c.role == "" {
+		c.meta.Draft = nil // the message is the draft, sent
+	}
 	var blocks []agent.ContentBlock
-	if c.meta.Board != "" {
+	if rc := m.runContext(c); rc != "" {
+		context = rc
+		blocks = append(blocks, agent.ContentBlock{Text: context})
+	} else if c.meta.Board != "" {
 		if c.meta.Agent == model.Cursor && !c.meta.McpInstructionsSent && !c.meta.InstructionsSent {
 			// Cursor has no system-prompt slot; inject the same whiteboard body Claude and pi get.
 			blocks = append(blocks, agent.ContentBlock{Text: prompts.Claude()})
@@ -920,7 +1040,7 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 		m.clearDraft(c.top) // one draft per chat; the chat event above is composed after it
 	}
 	m.send(out)
-	if first && name == "" && !userNamed {
+	if first && name == "" && !userNamed && c.role == "" {
 		if namer := m.Namers[kind]; namer != nil {
 			m.naming.Add(1)
 			go func() {
@@ -943,6 +1063,9 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 // folder for a missing one is the chat's: it is also written to every other branch that has the
 // missing folder (see fixFolder). A branch with another folder keeps it.
 func (m *Manager) Configure(id string, req ConfigReq) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
 	var out outbox
 	c, err := m.lockCur(id)
 	if err != nil {
@@ -1020,7 +1143,9 @@ func (m *Manager) Configure(id string, req ConfigReq) error {
 		unlock()
 		return err
 	}
-	m.recordDefaults(c, abs, model.ModelChoice{Model: req.Model, Effort: req.Effort}, &out)
+	if c.meta.Run == "" { // a chat on a run feeds no sticky defaults
+		m.recordDefaults(c, abs, model.ModelChoice{Model: req.Model, Effort: req.Effort}, &out)
+	}
 	out.emitChat(c)
 	unlock()
 	if fix {
@@ -1108,6 +1233,9 @@ func expandDir(p string) (string, error) {
 
 // Rename sets the chat's name. An automatic name never overwrites the user's.
 func (m *Manager) Rename(id, name string, byUser bool) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
 	var out outbox
 	c, err := m.lockTop(id)
 	if err != nil {
@@ -1170,6 +1298,9 @@ func withReferences(refs []model.Reference, text string) string {
 
 // SetDraft stores the message typed in the chat's composer; empty text and no quotes clear it.
 func (m *Manager) SetDraft(id string, d model.Draft) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
 	var out outbox
 	c, err := m.lockTop(id)
 	if err != nil {
@@ -1196,6 +1327,15 @@ func (m *Manager) SetDraft(id string, d model.Draft) error {
 // While subagent results are being handed to the agent (handOff), the agent is signalled only once
 // it has the message, and Interrupt does not wait for that.
 func (m *Manager) Interrupt(id string) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
+	return m.interrupt(id)
+}
+
+// interrupt is Interrupt for whoever drives the chat: a person, or the run that owns it
+// (StopOwned).
+func (m *Manager) interrupt(id string) error {
 	var out outbox
 	c, err := m.lockCur(id)
 	if err != nil {
@@ -1295,6 +1435,9 @@ func (m *Manager) permsClosed(c *Chat, before model.ChatView, ups []transcript.U
 
 // Move puts a plain chat in another group. Its settings are unchanged.
 func (m *Manager) Move(id, group string) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
 	if !m.groupExists(group) {
 		return fmt.Errorf("no such group %q", group)
 	}
@@ -1307,6 +1450,10 @@ func (m *Manager) Move(id, group string) error {
 		c.mu.Unlock()
 		return errors.New("a board chat moves with its board")
 	}
+	if c.meta.Run != "" {
+		c.mu.Unlock()
+		return errors.New("a run's chat moves with its run")
+	}
 	c.meta.Group = group
 	err = m.save(c)
 	out.emitIdentity(c)
@@ -1316,12 +1463,19 @@ func (m *Manager) Move(id, group string) error {
 }
 
 // Stop ends the chat's agent (archive, delete, board delete): every branch of the chat that is
-// loaded or has a process is stopped, main included (see stopOne).
+// loaded or has a process is stopped, main included (see stopOne). It does nothing to a run
+// agent's chat, which only its run stops (StopOwned).
 func (m *Manager) Stop(id string) {
-	top, err := m.topChat(id)
-	if err != nil {
+	if m.person(id) != nil {
 		return
 	}
+	if top, err := m.topChat(id); err == nil {
+		m.stopAll(top)
+	}
+}
+
+// stopAll stops every branch of the top-level chat top.
+func (m *Manager) stopAll(top *Chat) {
 	for _, c := range m.branchesOf(top) {
 		m.stopOne(c)
 	}
@@ -1330,6 +1484,9 @@ func (m *Manager) Stop(id string) {
 // SetArchive sets the chat's archive state, which is the top-level chat's alone: its branches
 // read it from there.
 func (m *Manager) SetArchive(id string, a model.Archive) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
 	var out outbox
 	c, err := m.lockTop(id)
 	if err != nil {
@@ -1347,14 +1504,29 @@ func (m *Manager) SetArchive(id string, a model.Archive) error {
 // and taken out of the manager, then the whole folder goes and one chat_removed is sent. The
 // agent CLIs' own session files are left alone.
 func (m *Manager) Delete(id string) error {
-	if _, err := m.topChat(id); err != nil {
+	if err := m.person(id); err != nil {
 		return err
 	}
-	m.Stop(id)
-	top, err := m.lockTop(id)
+	return m.remove(id, true)
+}
+
+// remove is Delete for whoever owns the chat: a person, or the run whose agent it is
+// (DeleteOwned), which has chat_removed left out (announce false). The folder of a run's chat is
+// under the run's: the agents/ or chats/ folder it was in goes with it when nothing else is there.
+func (m *Manager) remove(id string, announce bool) error {
+	top, err := m.topChat(id)
 	if err != nil {
 		return err
 	}
+	top.mu.Lock()
+	top.removing = true
+	top.mu.Unlock()
+	m.stopAll(top)
+	top, err = m.lockTop(id)
+	if err != nil {
+		return err
+	}
+	inRun := top.meta.Run != ""
 	top.mu.Unlock()
 	if !m.retire(top) {
 		return ErrNotFound // deleted meanwhile
@@ -1370,10 +1542,18 @@ func (m *Manager) Delete(id string) error {
 	for _, b := range branches {
 		m.retire(b)
 	}
-	if err := os.RemoveAll(m.Store.P.ChatDir(id)); err != nil {
+	dir := m.chatDir(id)
+	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	m.Bridge.Broadcast(map[string]any{"type": "chat_removed", "id": id})
+	if inRun {
+		os.Remove(filepath.Dir(dir)) // fails, as it should, while another chat is in it
+	}
+	m.dropRoot(id) // after the folder: a late lookup never falls back to chats/<id>
+	m.unwatch(id)
+	if announce {
+		m.Bridge.Broadcast(map[string]any{"type": "chat_removed", "id": id})
+	}
 	return nil
 }
 
@@ -1394,13 +1574,19 @@ func (m *Manager) ChatsOfBoard(boardID string) []model.ChatMeta {
 	return out
 }
 
-// GroupOf is the board's group for board chats, else meta.Group. A board chat whose board is
-// gone counts as ungrouped. A branch's meta has no group: it is its top-level chat's (whose mu
-// must not be held).
+// GroupOf is the board's group for board chats and the run's for a run's chats, else meta.Group.
+// A chat whose board or run is gone counts as ungrouped. A branch's meta has no group: it is its
+// top-level chat's (whose mu must not be held).
 func (m *Manager) GroupOf(meta model.ChatMeta) string {
 	if meta.Board != "" {
 		if bd, ok := m.Boards.Get(meta.Board); ok {
 			return bd.Group
+		}
+		return model.Ungrouped
+	}
+	if meta.Run != "" {
+		if ri, ok := m.runOf(meta.Run); ok {
+			return ri.Group
 		}
 		return model.Ungrouped
 	}
@@ -1431,7 +1617,19 @@ func (m *Manager) Busy(id string) bool {
 // the closing process's exit, handled or not before the server ends, changes nothing. Every chat is
 // held: a turn end the closing process still reports starts no delivery, and what is owed stays
 // owed for the next run.
+//
+// From its first step on no process is started (see Manager.down): a message, a fork or a
+// subagent that comes later is refused with ErrShutdown, and a process whose start had the chat's
+// lock first is on the chat when Shutdown gets to it. It can be called again.
+//
+// The processes of a run's agents and of their subagents are the exception to "without waiting":
+// nobody watches them, so what they started (shell commands in process groups of their own) is
+// ended only by their adapters' Close, which agent.EndAll does not stand in for. Each is
+// interrupted and closed, all at once, and Shutdown waits for those closes, no longer than
+// ownedCloseWait.
 func (m *Manager) Shutdown() {
+	m.down.Store(true) // before the chats are listed: see Manager.down
+	var owned []agent.Agent
 	for _, c := range m.all() {
 		var out outbox
 		c.mu.Lock()
@@ -1451,7 +1649,12 @@ func (m *Manager) Shutdown() {
 		}
 		toClose := m.stopAppSubs(c, &out) // app-spawned processes must not outlive the server
 		m.revokeChatExtras(c.meta.ID)
-		if c.ag != nil {
+		if c.role != "" {
+			if c.ag != nil {
+				owned = append(owned, c.ag)
+			}
+			owned, toClose = append(owned, toClose...), nil
+		} else if c.ag != nil {
 			go c.ag.Close() // Cursor's Close waits for the process, forever when its children hold its output
 		}
 		out.emitCounts(c)
@@ -1459,6 +1662,7 @@ func (m *Manager) Shutdown() {
 		m.send(out)
 		closeAgents(toClose)
 	}
+	closeAndWait(owned, ownedCloseWait)
 }
 
 func uuid() string {

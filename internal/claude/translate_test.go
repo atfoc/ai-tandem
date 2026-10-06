@@ -54,7 +54,8 @@ var sampleTurn = []struct {
 	{`{"type":"assistant","message":{"id":"msg_3","model":"<synthetic>","content":[{"type":"text","text":"Done."}]},"parent_tool_use_id":null}`,
 		[]agent.Event{{Kind: agent.EvText, MsgID: "msg_3", Text: "Done."}}},
 	{`{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"Done. The new revision number is **2**.","session_id":"9d9c65ba","usage":{"input_tokens":10,"output_tokens":40},"modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000}},"duration_ms":5736,"permission_denials":[],"terminal_reason":"completed","stop_reason":"end_turn"}`,
-		[]agent.Event{{Kind: agent.EvUsage, CtxWindow: 200000}, {Kind: agent.EvTurnEnd}}},
+		[]agent.Event{{Kind: agent.EvUsage, CtxWindow: 200000},
+			{Kind: agent.EvTurnEnd, NumTurns: 3, OutTokens: 40, Final: "Done. The new revision number is **2**."}}},
 }
 
 func translateLine(t *testing.T, p *proc, line string) []agent.Event {
@@ -110,6 +111,103 @@ func TestTranslateResultErrors(t *testing.T) {
 		}
 		if evs[1].Aborted != c.aborted || evs[1].Error != c.err {
 			t.Errorf("translate(%s): aborted %v error %q, want %v %q", c.line, evs[1].Aborted, evs[1].Error, c.aborted, c.err)
+		}
+	}
+}
+
+// The result line's cost and token numbers go out as they are: total_cost_usd and modelUsage are
+// cumulative for the process, num_turns and usage are the turn's. The lines are those of a real
+// session (Claude Code 2.1.284): a turn, and the first turn of the process that resumed it.
+func TestTranslateResultCost(t *testing.T) {
+	turn := `{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0278674,"num_turns":1,"duration_ms":5118,"result":"Four.","result_index":1,` +
+		`"usage":{"input_tokens":10,"cache_creation_input_tokens":223,"cache_read_input_tokens":19231,"output_tokens":342},` +
+		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":52,"outputTokens":1155,"costUSD":0.0278674,"contextWindow":200000}},"terminal_reason":"completed"}`
+	evs := translateLine(t, &proc{}, turn)
+	want := agent.Event{Kind: agent.EvTurnEnd, CostUSD: 0.0278674, HasCost: true, NumTurns: 1, OutTokens: 342, CumOutTokens: 1155, Final: "Four.",
+		CumTokens: model.TokenCount{In: 52, Out: 1155}, HasTokens: true}
+	if len(evs) != 2 || !reflect.DeepEqual(evs[1], want) {
+		t.Errorf("turn end %s\nwant %s", dump(evs), dump([]agent.Event{want}))
+	}
+
+	// Two models in one process (a subagent's, or plan mode's): the cumulative output is their sum.
+	two := `{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.155,"num_turns":4,"result":"ok",` +
+		`"usage":{"output_tokens":270},"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":1425},"claude-sonnet-5-5":{"outputTokens":600}}}`
+	evs = translateLine(t, &proc{}, two)
+	if len(evs) != 2 || evs[1].CumOutTokens != 2025 || evs[1].OutTokens != 270 || evs[1].CostUSD != 0.155 || !evs[1].HasCost {
+		t.Errorf("two models: %s", dump(evs))
+	}
+
+	// The four token counts are the sums over the models, cumulative for the process as the cost is.
+	// (The counters' names are Claude Code's; the numbers here are made up.)
+	usage := `{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.2,"num_turns":2,"result":"ok","usage":{"output_tokens":270},` +
+		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":52,"outputTokens":1425,"cacheReadInputTokens":19231,"cacheCreationInputTokens":223,"contextWindow":200000},` +
+		`"claude-sonnet-5-5":{"inputTokens":8,"outputTokens":600,"cacheReadInputTokens":769,"cacheCreationInputTokens":4000}}}`
+	evs = translateLine(t, &proc{}, usage)
+	if tok := (model.TokenCount{In: 60, Out: 2025, CacheRead: 20000, CacheWrite: 4223}); len(evs) != 2 || evs[1].CumTokens != tok || !evs[1].HasTokens || evs[1].CumOutTokens != 2025 {
+		t.Errorf("token counts: %s", dump(evs))
+	}
+
+	// An interrupted turn still reports what the process has spent; it has no result text.
+	stopped := `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools","stop_reason":"tool_use","total_cost_usd":0.010191,"num_turns":4,` +
+		`"errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],"usage":{"output_tokens":120},"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":120}}}`
+	evs = translateLine(t, &proc{}, stopped)
+	want = agent.Event{Kind: agent.EvTurnEnd, Aborted: true, CostUSD: 0.010191, HasCost: true, NumTurns: 4, OutTokens: 120, CumOutTokens: 120,
+		CumTokens: model.TokenCount{Out: 120}, HasTokens: true}
+	if len(evs) != 2 || !reflect.DeepEqual(evs[1], want) {
+		t.Errorf("stopped turn %s\nwant %s", dump(evs), dump([]agent.Event{want}))
+	}
+
+	// A cost of 0 that was reported is still a report; a line without the field reports none.
+	if evs := translateLine(t, &proc{}, `{"type":"result","is_error":false,"num_turns":1,"total_cost_usd":0}`); !evs[1].HasCost || evs[1].CostUSD != 0 {
+		t.Errorf("zero cost: %s", dump(evs))
+	} else if evs[1].HasTokens {
+		t.Errorf("a line without modelUsage reports tokens: %s", dump(evs))
+	}
+	if evs := translateLine(t, &proc{}, `{"type":"result","is_error":false,"num_turns":1}`); evs[1].HasCost {
+		t.Errorf("no cost field: %s", dump(evs))
+	}
+}
+
+// --resume of a session Claude does not have: the result line Claude Code 2.1.284 writes about a
+// second after the start, before any message. Its only text is in errors[].
+func TestTranslateNoSession(t *testing.T) {
+	line := `{"type":"result","subtype":"error_during_execution","duration_ms":0,"duration_api_ms":0,"is_error":true,"num_turns":0,"stop_reason":null,"session_id":"dfe38768","total_cost_usd":0,"modelUsage":{},"errors":["No conversation found with session ID: dfe38768"],"result_index":0}`
+	evs := translateLine(t, &proc{}, line)
+	want := agent.Event{Kind: agent.EvTurnEnd, Error: "No conversation found with session ID: dfe38768", NoSession: true, HasCost: true}
+	if len(evs) != 2 || !reflect.DeepEqual(evs[1], want) {
+		t.Errorf("turn end %s\nwant %s", dump(evs), dump([]agent.Event{want}))
+	}
+
+	for name, line := range map[string]string{
+		"another error":        `{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["Error: Session ID x is already in use."]}`,
+		"a turn that ran":      `{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":2,"errors":["No conversation found with session ID: x"]}`,
+		"not an error":         `{"type":"result","subtype":"success","is_error":false,"num_turns":0,"errors":["No conversation found with session ID: x"]}`,
+		"the text as a result": `{"type":"result","subtype":"success","is_error":true,"num_turns":0,"result":"No conversation found with session ID: x"}`,
+	} {
+		if evs := translateLine(t, &proc{}, line); len(evs) != 2 || evs[1].NoSession {
+			t.Errorf("%s: %s, want no NoSession", name, dump(evs))
+		}
+	}
+}
+
+// An errored result without result text takes its text from errors[], unless that is only a line
+// of the CLI's own diagnostics.
+func TestTranslateResultErrorsList(t *testing.T) {
+	cases := []struct{ line, err string }{
+		{`{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["Error: Session ID x is already in use."]}`,
+			"Error: Session ID x is already in use."},
+		{`{"type":"result","subtype":"success","is_error":true,"result":"model not found","errors":["something else"],"terminal_reason":"api_error"}`,
+			"model not found"},
+		{`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":[],"terminal_reason":"max_turns"}`,
+			"Error: max_turns"},
+		{`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],"terminal_reason":"max_turns"}`,
+			"Error: max_turns"},
+		{`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["[ede_diagnostic] x"]}`,
+			"Error: unknown"},
+	}
+	for _, c := range cases {
+		if evs := translateLine(t, &proc{}, c.line); len(evs) != 2 || evs[1].Error != c.err || evs[1].Aborted {
+			t.Errorf("translate(%s): %s, want the error %q", c.line, dump(evs), c.err)
 		}
 	}
 }

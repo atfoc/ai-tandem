@@ -15,6 +15,7 @@ const APP_VALUES: Record<string, string> = {
   AIWB_BRIDGE_SOCKET: "/tmp/aiwbdata/pi-bridge.sock",
   AIWB_BRIDGE_RUN: "run-1",
   AIWB_MCP_CONFIG: '{"mcpServers":{"board":{"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"Authorization":"Bearer TOKEN"}}}}',
+  AIWB_MCP_CONFIG_FILE: "/tmp/aiwbdata/chats/c1/mcp.json",
   AIWB_CHAT_DIR: "/tmp/aiwbdata/chats/c1",
   AIWB_APPEND_PROMPT: "/tmp/aiwbdata/chats/c1/pi/append-prompt.md",
 };
@@ -24,7 +25,7 @@ function bridgePresent(app: { AIWB_BRIDGE_SOCKET?: string; AIWB_BRIDGE_RUN?: str
   return (app.AIWB_BRIDGE_SOCKET ?? "") !== "" && (app.AIWB_BRIDGE_RUN ?? "") !== "";
 }
 
-test("the five app handles are the names taken", () => {
+test("the six app handles are the names taken", () => {
   assert.deepEqual([...APP_ENV_NAMES].sort(), Object.keys(APP_VALUES).sort());
 });
 

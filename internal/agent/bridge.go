@@ -14,11 +14,15 @@
 //	AIWB_MODEL          the parent run's provider-qualified model id
 //	AIWB_THINKING       the parent run's thinking level
 //	AIWB_APPEND_PROMPT  path of the board system-prompt file (board chats only; children reuse it)
-//	AIWB_MCP_CONFIG     set whenever the process should speak MCP: a Claude-compatible MCP config
-//	                    object naming the fixed endpoint with this process's MCP token in the
-//	                    Authorization header. The token appears only here, never in argv and never
-//	                    in a URL. Native child pi processes inherit it; app-spawned children get
-//	                    their own config with their own extra token.
+//	AIWB_MCP_CONFIG_FILE  set whenever the process should speak MCP: the path of mcp.json in the
+//	                    chat's folder, a file only the user can read (0600) holding a
+//	                    Claude-compatible MCP config object that names the fixed endpoint with this
+//	                    process's MCP token in the Authorization header. The token appears only in
+//	                    that file, never in the environment, argv or a URL: the start environment
+//	                    of a process is readable by every process of the same user. App-spawned
+//	                    children get their own file, in their own folder, with their own token.
+//	AIWB_MCP_CONFIG     not set by the app. The extension still reads it (the config object itself)
+//	                    for standalone use, after the --mcp-config flag and AIWB_MCP_CONFIG_FILE.
 //	AIWB_SUB_PARENT     child runs only: the parent's subagent tool-call id
 //	AIWB_SUB_DEPTH      child runs only: 0 for a direct child of the chat
 //	AIWB_SUB_CHILD      child runs only: the child run's pi session id

@@ -1,0 +1,25 @@
+=== the message is empty
+chat: tell_orchestrator {"text":" "}
+refusal:
+the message is empty
+
+=== the message is too long
+chat: tell_orchestrator {"text":"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "}
+refusal:
+the message is 4,004 characters; keep it to 4,000
+
+=== passed on: no turn is running
+chat: tell_orchestrator {"text":"Use the new CSV library, not the old one."}
+answer:
+Passed on. The orchestrator reads it when its next turn starts, which is now.
+
+=== passed on: a turn is running
+chat: tell_orchestrator {"text":"And keep the old flags."}
+answer:
+Passed on. The orchestrator reads it when its next turn starts, after the turn that is running.
+
+=== passed on: the run is stopped
+chat: tell_orchestrator {"text":"When you go on: tests first."}
+answer:
+Passed on. The orchestrator reads it when its next turn starts, when the person resumes the run.
+

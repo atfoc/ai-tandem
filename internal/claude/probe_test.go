@@ -263,9 +263,13 @@ func TestProbeDescendantHoldingPipes(t *testing.T) {
 			} else {
 				t.Setenv(envHold, pidFile)
 			}
+			// Long enough for the sign-in check to answer and for the probe's process to start its
+			// child on a machine that is busy with the other packages' tests (two seconds were
+			// not, with three suites at once); each of the two steps may take the whole of it.
+			const timeout = 5 * time.Second
 			start := time.Now()
-			_, err := s.Catalog(700 * time.Millisecond)
-			if d := time.Since(start); d > 3*time.Second {
+			_, err := s.Catalog(timeout)
+			if d := time.Since(start); d > 2*timeout+2*time.Second {
 				t.Errorf("Catalog took %s", d)
 			}
 			if err == nil {

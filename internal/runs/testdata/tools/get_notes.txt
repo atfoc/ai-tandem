@@ -1,0 +1,55 @@
+=== no notes yet
+orchestrator: get_notes {}
+answer:
+The run has no notes yet.
+
+=== no notes yet, a chat asks for a version
+chat: get_notes {"version":2}
+answer:
+The run has no notes yet.
+
+=== the current version
+orchestrator: get_notes {}
+answer:
+# Notes, version 2 of 2 (15 characters, written in turn 1)
+
+# Goal
+
+Shorter.
+
+=== an earlier version
+chat: get_notes {"version":1}
+answer:
+# Notes, version 1 of 2 (78 characters, written in turn 1)
+
+# Goal
+
+Port the importer. Done means the old tests pass against the new code.
+
+=== no such version
+chat: get_notes {"version":7}
+refusal:
+there is no version 7 of the notes (the latest is 2)
+
+=== the version is no number
+orchestrator: get_notes {"version":"two"}
+refusal:
+there is no version "two" of the notes (the latest is 2)
+
+=== the offset is no number
+orchestrator: get_notes {"offset":"start"}
+refusal:
+offset must be a number, 0 or more
+
+=== the offset is past the end
+chat: get_notes {"offset":5000}
+refusal:
+offset 5000 is past the end: the answer has 76 characters.
+
+=== from an offset
+chat: get_notes {"version":1,"offset":70}
+answer:
+rt the importer. Done means the old tests pass against the new code.
+
+[Characters 71–138 of 138: the end.]
+

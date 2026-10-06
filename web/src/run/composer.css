@@ -1,0 +1,52 @@
+/* The goal composer (RunComposer.tsx): the chat page's column, with the composer's own classes. */
+.run-new.run-goal { flex: 1; min-height: 0; width: 100%; max-width: 780px; margin: 0 auto; padding: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; overflow: visible; }
+.run-new-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 20px 20px 8px; }
+.run-goal .composer { flex: none; padding: 6px 20px 18px; }
+.big-glyph.run { background: var(--accent-soft); color: var(--accent); }
+/* at a narrow stage the chips wrap instead of running out of the box */
+.run-composer .composer-tools { flex-wrap: wrap; row-gap: 4px; }
+.run-composer .composer-tools .menu-wrap { min-width: 0; max-width: 100%; }
+.run-composer .composer-tools .tchip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.run-composer .tchip .caret { flex: none; }
+.run-composer .composer-tools .send { margin-left: auto; } /* stays at the right edge when it wraps onto a line of its own */
+.run-agent-glyph { display: inline-grid; place-items: center; flex: none; }
+.run-composer.starting .composer-input { opacity: .6; pointer-events: none; }
+.run-composer.starting .composer-tools .menu-wrap { opacity: .6; pointer-events: none; }
+.run-composer .ctx-chip { min-width: 0; max-width: 100%; }
+.run-composer .ctx-chip .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-composer .ctx-chip .git { flex: none; font: 600 9.5px var(--font); color: var(--ok); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
+.run-composer .ctx-chip.missing { color: var(--danger); border-color: var(--danger); }
+.run-note { display: flex; align-items: flex-start; gap: 6px; color: var(--warn-ink); font-size: 12px; padding: 5px 2px 0; overflow-wrap: anywhere; }
+.run-note svg { flex: none; color: var(--warn); }
+.run-composer .composer-err { overflow-wrap: anywhere; }
+.run-note svg { flex: none; margin-top: 1px; }
+/* the settings form: a .usage-pop for its fixed width (a .menu.up is otherwise as wide as its rows) */
+.menu.run-limits { width: 280px; max-height: none; overflow: visible; padding: 4px 8px 8px; cursor: default; } /* its menu opens out of it */
+.run-field { display: flex; align-items: center; gap: 6px; padding: 3px 2px; font-size: 12px; }
+.run-field-name { flex: 1; min-width: 0; }
+.run-field-pre { flex: none; color: var(--faint); }
+.run-limits .dir-input { margin: 0; }
+.run-limits .dir-input:disabled { background: var(--panel); color: var(--faint); }
+.run-limits .run-num { width: 76px; flex: none; text-align: right; }
+.run-limits .menu-head { padding-left: 2px; }
+.run-limits .dir-err { padding: 6px 2px 0; }
+.run-field-foot { font-size: 11px; color: var(--faint); padding: 4px 2px 0; }
+.run-field.sel .menu-wrap { flex: none; }
+.run-field.check { align-items: flex-start; gap: 7px; }
+.run-field.check input { flex: none; margin: 2px 0 0; }
+.run-field.check.off { color: var(--muted); }
+/* the tier form: wide enough for each tier's note on one line; the pickers' menus open out of it */
+.run-composer .run-tiers-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.menu.run-tiers { width: 460px; max-width: calc(100vw - 24px); max-height: none; overflow: visible; padding: 4px 10px 8px; cursor: default; }
+.run-tiers > .menu-head { padding-left: 2px; }
+.run-field-foot.top { padding: 0 2px 6px; }
+.run-tier { display: flex; align-items: center; gap: 6px; padding: 5px 2px; border-top: 1px solid var(--line); }
+.run-tier-name { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 12.5px; }
+.run-tier-name span { font-size: 11px; color: var(--faint); }
+.run-tier .menu-wrap { flex: none; }
+.run-tier .tchip { max-width: 170px; }
+.run-tier-none { min-width: 28px; justify-content: center; }
+.run-tier-foot { padding: 6px 2px 0; border-top: 1px solid var(--line); }
+.run-tier-reset { border: 0; background: none; padding: 0; font-size: 12px; color: var(--accent); }
+.run-tier-reset:hover:not(:disabled) { text-decoration: underline; }
+.run-tier-reset:disabled { color: var(--faint); cursor: default; }

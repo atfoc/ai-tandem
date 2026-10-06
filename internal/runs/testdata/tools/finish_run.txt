@@ -1,0 +1,35 @@
+=== the outcome is neither
+orchestrator: finish_run {"outcome":"done","summary":"Done."}
+refusal:
+outcome must be achieved or not_achieved
+
+=== the summary is empty
+orchestrator: finish_run {"outcome":"achieved","summary":" "}
+refusal:
+the summary is empty
+
+=== tasks are not finished
+orchestrator: finish_run {"outcome":"achieved","summary":"The importer is ported."}
+refusal:
+T02, T04, T05, T06 are not finished. Let them finish and decide then, or cancel the ones the run no longer needs.
+
+=== the run ends: failed and cancelled tasks do not stand in the way
+orchestrator: finish_run {"outcome":"not_achieved","summary":"The importer could not be ported: there is nothing to measure it against."}
+answer:
+The run ends when your turn does.
+
+=== after finish_run, the orchestrator's change
+orchestrator: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"One more","writes":false}
+refusal:
+the run is finished; nothing more can be changed
+
+=== after finish_run, a chat's change
+chat: add_task {"brief":"Read the old importer and write down what it does, step by step, with the files it touches.","kind":"research","tier":"standard","tier_reason":"A build or a later task checks it.","title":"One more","writes":false}
+refusal:
+the run is finished; nothing more can be changed
+
+=== after finish_run, finish_run again
+orchestrator: finish_run {"outcome":"achieved","summary":"Done after all."}
+refusal:
+the run is finished; nothing more can be changed
+

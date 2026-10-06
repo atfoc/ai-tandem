@@ -463,7 +463,7 @@ func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
 			t.Fatalf("tree record %+v", rec)
 		}
 		calls := e.claude.forkCalls()
-		if want := (agent.ForkSource{ChatID: bid, SessionID: session, Point: "b1", End: true}); calls[len(calls)-1].src != want {
+		if want := (agent.ForkSource{ChatID: bid, Dir: e.st.P.ChatDir(bid), SessionID: session, Point: "b1", End: true}); calls[len(calls)-1].src != want {
 			t.Fatalf("fork source %+v, want %+v", calls[len(calls)-1].src, want)
 		}
 		nid := branchChatID(id, rec.Branches[1].ID)

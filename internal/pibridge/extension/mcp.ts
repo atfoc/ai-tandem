@@ -161,7 +161,8 @@ function objectKeys(value: Record<string, unknown>): string[] {
 
 /**
  * parseMCPConfig parses a Claude-compatible `mcpServers` object from the
- * `--mcp-config` flag or `AIWB_MCP_CONFIG`. It never throws: unsupported or
+ * `--mcp-config` flag, the file `AIWB_MCP_CONFIG_FILE` names or
+ * `AIWB_MCP_CONFIG`. It never throws: unsupported or
  * malformed entries are returned as per-entry `errors` and every valid HTTP
  * server is returned in config order. An absent/empty `raw` yields no servers
  * and no errors.

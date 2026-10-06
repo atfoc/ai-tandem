@@ -22,6 +22,12 @@ export function ConfirmDialog(): React.JSX.Element | null {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const close = () => { setState({ confirm: null }); setErr(""); setBusy(false); };
+  // The focus goes back to what had it when the dialog opened (a menu's button, a row), if that is still there.
+  useEffect(() => {
+    if (!req) return;
+    const before = document.activeElement;
+    return () => { if (before instanceof HTMLElement && before.isConnected && (document.activeElement === document.body || !document.activeElement)) before.focus({ preventScroll: true }); };
+  }, [!req]);
   useEffect(() => {
     if (!req) return;
     const k = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } };

@@ -1,0 +1,130 @@
+=== no such task
+orchestrator: update_task {"id":"T09","title":"x"}
+refusal:
+there is no task 'T09' (the run has tasks T01 to T06)
+
+=== no id
+orchestrator: update_task {"title":"x"}
+refusal:
+there is no task '' (the run has tasks T01 to T06)
+
+=== a done task
+orchestrator: update_task {"id":"T01","title":"Read it again"}
+refusal:
+T01 is done and final. Add a task that depends on it instead.
+
+=== a task that is being merged
+orchestrator: update_task {"id":"T02","title":"Build it better"}
+refusal:
+T02 has finished and is being merged; it can no longer be changed. Add a task that depends on it instead.
+
+=== a running task
+orchestrator: update_task {"id":"T05","title":"Port all the tests"}
+refusal:
+T05 is running. Cancel it first if it must change, then retry it.
+
+=== nothing to change
+orchestrator: update_task {"id":"T06"}
+refusal:
+nothing to change: give title, brief, kind, writes, tier, tier_reason, depends_on or needs_report
+
+=== it already is as described
+orchestrator: update_task {"id":"T06","title":"Clean  up","kind":"implement","writes":true,"depends_on":["T02"],"brief":"Read the old importer and write down what it does, step by step, with the files it touches."}
+refusal:
+T06 already is as you describe it
+
+=== the title is empty
+orchestrator: update_task {"id":"T06","title":""}
+refusal:
+the title is empty
+
+=== the brief is too short
+orchestrator: update_task {"id":"T06","brief":"Tidy."}
+refusal:
+the brief is too short to work from: its agent knows nothing but the brief
+
+=== it cannot depend on itself
+orchestrator: update_task {"id":"T06","depends_on":["T06"]}
+refusal:
+T06 cannot depend on itself
+
+=== a dependency cycle
+orchestrator: update_task {"id":"T03","depends_on":["T04"]}
+refusal:
+that would make a dependency cycle: T03 -> T04 -> T03
+
+=== depends_on names tasks that do not exist
+orchestrator: update_task {"id":"T06","depends_on":["T02","T77"]}
+refusal:
+depends_on names tasks that do not exist: T77
+
+=== the tier is none of the three
+orchestrator: update_task {"id":"T06","tier":"cheap"}
+refusal:
+tier must be one of deep, standard, light
+
+=== the tier's reason is empty
+orchestrator: update_task {"id":"T06","tier_reason":""}
+refusal:
+tier_reason is empty: say in a sentence why this tier is enough for the task
+
+=== needs_report is not a list
+orchestrator: update_task {"id":"T06","needs_report":"T02"}
+refusal:
+needs_report must be a list of task ids
+
+=== needs_report names a task it does not depend on
+orchestrator: update_task {"id":"T06","needs_report":["T02","T01"]}
+refusal:
+needs_report names tasks this one does not depend on: T01. Add them to depends_on as well.
+
+=== updated: a waiting task
+orchestrator: update_task {"id":"T06","title":"Clean up the old importer","brief":"Remove the old importer once the new one is merged, with its tests and its fixtures.","depends_on":["T02","T05"]}
+answer:
+Updated T06 (title, brief, depends_on).
+
+=== updated: a failed task
+orchestrator: update_task {"id":"T03","brief":"Measure the old importer on the fixture files under testdata/, three runs each, and report the times."}
+answer:
+Updated T03 (brief). It is failed: call retry_task to queue it again.
+
+=== updated: it depends on a failed task
+orchestrator: update_task {"id":"T04","kind":"Writing"}
+answer:
+Updated T04 (kind). Note: it depends on T03 (failed) and will not start until that is retried and done, or the dependency is removed.
+
+=== updated by a chat
+chat: update_task {"id":"T04","title":"Write the migration guide","writes":true}
+answer:
+Updated T04 (title, writes). Note: it depends on T03 (failed) and will not start until that is retried and done, or the dependency is removed.
+
+=== refused for a chat
+chat: update_task {"id":"T01","title":"x"}
+refusal:
+T01 is done and final. Add a task that depends on it instead.
+
+=== updated: the tier of a waiting task, and the reports it is given
+orchestrator: update_task {"id":"T06","tier":"light","tier_reason":"It follows a recipe.","needs_report":["T05","T02"]}
+answer:
+Updated T06 (tier, tier_reason, needs_report).
+
+=== updated: it no longer depends on a task whose report it was given
+orchestrator: update_task {"id":"T06","depends_on":["T02"]}
+answer:
+Updated T06 (depends_on, needs_report).
+
+=== updated: the tier of a failed task
+orchestrator: update_task {"id":"T03","tier":"deep"}
+answer:
+Updated T03 (tier). It is failed: call retry_task to queue it again.
+
+=== the notes gate
+orchestrator: update_task {"id":"T01","writes":true}
+refusal:
+The notes are empty, so a task that changes files is refused. First record with set_notes what the goal requires, what done means and how it will be checked, and the approach the facts support. If you cannot write that yet, the run needs tasks that investigate (writes: false) before tasks that build.
+
+=== the notes gate, a chat
+chat: update_task {"id":"T01","writes":true}
+refusal:
+The run's notes are empty, so a task that changes files is refused: the orchestrator has not yet recorded what done means. Add a task that investigates (writes: false), or tell the orchestrator what the person wants.
+

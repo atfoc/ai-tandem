@@ -118,7 +118,7 @@ func (m *Manager) loadBranches(top *Chat, id string) {
 		}
 		sid := branchChatID(id, b.ID)
 		var meta model.ChatMeta
-		raw, err := os.ReadFile(filepath.Join(m.Store.P.ChatDir(sid), "chat.json"))
+		raw, err := os.ReadFile(filepath.Join(m.chatDir(sid), "chat.json"))
 		if err == nil {
 			err = json.Unmarshal(raw, &meta)
 		}
@@ -130,6 +130,7 @@ func (m *Manager) loadBranches(top *Chat, id string) {
 			continue
 		}
 		c := &Chat{meta: meta, interrupted: meta.TurnActive, top: top, branch: b.ID}
+		countInterrupted(c)
 		m.chats[sid] = c
 		top.kids = append(top.kids, c)
 		m.registerChatToken(meta.Token)
@@ -441,6 +442,10 @@ func (m *Manager) stopBranch(id string) {
 // or a running subagent was stopped, app-spawned or native: a chat object that only waited on its
 // subagents says so too. A turn carrying subagent results is settled as stopped by the human, and
 // the chat object is held.
+//
+// The process of a run's agent is closed after c.mu is released, on a goroutine of its own
+// (closeAgents): an adapter's Close can wait for the process without limit, and the pump, which
+// takes c.mu for every event, must go on draining what the closing process still says.
 func (m *Manager) stopOne(c *Chat) {
 	var out outbox
 	c.mu.Lock()
@@ -474,11 +479,20 @@ func (m *Manager) stopOne(c *Chat) {
 		}
 	}
 	if c.ag != nil {
+		if turnRunning(c) {
+			costLost(c, c.meta.Agent) // the turn it is in reports no cost any more
+		}
 		c.gen++
-		_ = c.ag.Interrupt()
-		c.ag.Close()
+		if c.role != "" {
+			toClose = append(toClose, c.ag)
+		} else {
+			_ = c.ag.Interrupt()
+			c.ag.Close()
+		}
 		c.ag = nil
 	}
+	c.wait.stopped()
+	wakeOwned(c)
 	if c.carry != nil { // its turn ends here: the pump drops what the old process still says
 		c.carry.human = true
 		m.endCarry(c, false, &out)
@@ -489,7 +503,7 @@ func (m *Manager) stopOne(c *Chat) {
 			stopped++
 		}
 	}
-	toClose = m.stopSubs(c, &out)
+	toClose = append(toClose, m.stopSubs(c, &out)...)
 	m.revokeChatExtras(c.meta.ID)
 	if wasBusy || stopped > 0 {
 		ups = append(ups, tr.AddNote("muted", "Stopped.")...)
@@ -516,13 +530,20 @@ func (m *Manager) retire(c *Chat) bool {
 	}
 	c.deleted = true
 	c.gen++
+	wakeOwned(c) // a WaitOwned answers ErrNotFound
 	id, tok := c.meta.ID, c.meta.Token
+	var toClose []agent.Agent
 	if c.ag != nil { // a Send that came in after Stop
-		c.ag.Close()
+		if c.role != "" {
+			toClose = append(toClose, c.ag) // as stopOne closes it
+		} else {
+			c.ag.Close()
+		}
 		c.ag = nil
 	}
 	c.carry = nil
 	c.mu.Unlock()
+	closeAgents(toClose)
 	m.revokeChatExtras(id)
 	m.unregisterChatToken(tok)
 	m.mu.Lock()

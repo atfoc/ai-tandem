@@ -1,0 +1,25 @@
+=== the notes are empty
+orchestrator: set_notes {"notes":"  \n "}
+refusal:
+the notes are empty
+
+=== no notes given
+orchestrator: set_notes {}
+refusal:
+the notes are empty
+
+=== saved
+orchestrator: set_notes {"notes":"# Goal\n\nPort the importer. Done means the old tests pass against the new code.\n"}
+answer:
+Notes saved; the notes are 78 characters (version 1).
+
+=== saved again: a new version
+orchestrator: set_notes {"notes":"# Goal\n\nShorter.\n"}
+answer:
+Notes saved; the notes are 16 characters (version 2).
+
+=== saved, over 20,000 characters
+orchestrator: set_notes {"notes": 800 lines}
+answer:
+Notes saved; the notes are 42,399 characters (version 3). They are over 20,000 characters, and every instance reads all of them: shorten them, keeping what the next instance needs to decide.
+

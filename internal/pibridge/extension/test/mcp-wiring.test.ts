@@ -10,10 +10,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AddressInfo } from "node:net";
 import { parseMCPConfig } from "../mcp.ts";
 import {
   autoAllowedToolNames,
+  appSourced,
   boardServerActive,
   configNotice,
   makeNoticeSink,
@@ -221,6 +225,71 @@ test("selectMCPConfig: empty/absent values mean none and fall through", () => {
   // A malformed but non-empty flag still wins: it is the app's job to reject it
   // through the notice channel, not to silently use the environment.
   assert.deepEqual(selectMCPConfig("{nope", env), { source: "flag", raw: "{nope" });
+});
+
+test("selectMCPConfig: the flag, then the file, then the environment", () => {
+  const flag = '{"mcpServers":{"flag":{"url":"http://flag"}}}';
+  const env = '{"mcpServers":{"env":{"url":"http://env"}}}';
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-mcp-file-"));
+  try {
+    const file = path.join(dir, "mcp.json");
+    const fileRaw = '{"mcpServers":{"board":{"url":"http://file","headers":{"Authorization":"Bearer FILETOKEN"}}}}';
+    fs.writeFileSync(file, fileRaw, { mode: 0o600 });
+
+    assert.deepEqual(selectMCPConfig(flag, env, file), { source: "flag", raw: flag });
+    assert.deepEqual(selectMCPConfig(undefined, env, file), { source: "file", raw: fileRaw });
+    assert.deepEqual(selectMCPConfig("", undefined, file), { source: "file", raw: fileRaw });
+    // An empty/absent path falls through to the environment.
+    assert.deepEqual(selectMCPConfig(undefined, env, ""), { source: "env", raw: env });
+    assert.deepEqual(selectMCPConfig(undefined, env, "  "), { source: "env", raw: env });
+    assert.deepEqual(selectMCPConfig(undefined, undefined, undefined), { source: "none", raw: undefined });
+    assert.deepEqual(parseMCPConfig(selectMCPConfig(undefined, env, file).raw).servers[0].headers, {
+      Authorization: "Bearer FILETOKEN",
+    });
+
+    // A file that cannot be read is still the selection (the environment is
+    // not silently used instead); the error is carried, never thrown.
+    const missing = selectMCPConfig(undefined, env, path.join(dir, "absent.json"));
+    assert.equal(missing.source, "file");
+    assert.equal(missing.raw, undefined);
+    assert.match(missing.error ?? "", /cannot read config file .*absent\.json/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("startMCP: an unreadable or malformed config file is one notice, never a throw", async () => {
+  const run = async (selection: MCPSelection): Promise<string[]> => {
+    const notices: string[] = [];
+    const bootstrap = await startMCP({
+      selection,
+      register: () => assert.fail("no tool may be registered"),
+      notice: (message) => notices.push(message),
+    });
+    assert.equal(bootstrap.source, "file");
+    assert.deepEqual(bootstrap.boardToolNames, []);
+    bootstrap.close();
+    return notices;
+  };
+  const unreadable = await run(selectMCPConfig(undefined, undefined, "/nonexistent/aiwb/mcp.json"));
+  assert.equal(unreadable.length, 1);
+  assert.match(unreadable[0], /^config rejected: cannot read config file \/nonexistent\/aiwb\/mcp\.json/);
+
+  const malformed = await run(selectMCPConfig(undefined, undefined, "/any/mcp.json", () => "{nope"));
+  assert.equal(malformed.length, 1);
+  assert.match(malformed[0], /^config rejected: invalid JSON/);
+});
+
+test("the file source is app-sourced like the environment; the flag is not", () => {
+  assert.equal(appSourced("file"), true);
+  assert.equal(appSourced("env"), true);
+  assert.equal(appSourced("flag"), false);
+  assert.equal(appSourced("none"), false);
+  const raw = '{"mcpServers":{"board":{"url":"http://board"}}}';
+  assert.equal(
+    boardServerActive({ bridgePresent: true, selection: selectionOf(raw, "file"), parsed: parseMCPConfig(raw) }),
+    true,
+  );
 });
 
 // ---- board-active predicate and auto-allow set -----------------------------

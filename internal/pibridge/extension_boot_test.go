@@ -974,6 +974,90 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 	run.assertRPCAlive(t)
 }
 
+// TestMCPRealPiAppEnvFileBoot is the app's own way since the token left the environment: the
+// config is a file only the user can read and AIWB_MCP_CONFIG_FILE holds its path. The board
+// tools must be registered and the Authorization header of the file must reach the endpoint. A
+// path that names no file is reported and never stops pi.
+func TestMCPRealPiAppEnvFileBoot(t *testing.T) {
+	pi, probePath := bootProbeSetup(t)
+
+	stub := newBootStubTools(t, spawnFamilyToolDefs(), nil)
+	configJSON, err := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"board": map[string]any{"type": "http", "url": stub.server.URL + "/mcp",
+				"headers": map[string]any{"Authorization": "Bearer FILEBTOKEN"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatDir := filepath.Join(t.TempDir(), "aiwbdata", "chats", "c1")
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configFile := filepath.Join(chatDir, "mcp.json")
+	if err := os.WriteFile(configFile, configJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := startBootPiWith(t, pi, probePath, bootPiOptions{extraEnv: []string{
+		"AIWB_MCP_CONFIG_FILE=" + configFile,
+		"AIWB_BRIDGE_SOCKET=" + filepath.Join(t.TempDir(), "missing.sock"),
+		"AIWB_BRIDGE_RUN=run-app-file-1",
+	}})
+	for _, kv := range run.cmd.Env {
+		if strings.Contains(kv, "FILEBTOKEN") || strings.Contains(kv, "Bearer") {
+			t.Fatalf("the token is in pi's environment: %q", kv)
+		}
+	}
+	for _, arg := range run.cmd.Args {
+		if strings.Contains(arg, "FILEBTOKEN") || strings.Contains(arg, "Bearer") {
+			t.Fatalf("the token is in pi's arguments: %q", arg)
+		}
+	}
+	report := decodeBootReport(t, run.waitReport(t, 90*time.Second))
+
+	got := map[string]bool{}
+	for _, tool := range report.Captured {
+		got[tool.Name] = true
+	}
+	for _, name := range []string{"mcp__board__echo", "mcp__board__spawn_subagent", "mcp__board__stop_subagent"} {
+		if !got[name] {
+			t.Fatalf("tool %q missing from the registered set: %+v", name, report.Captured)
+		}
+	}
+	reqs := stub.methods()
+	if len(reqs) == 0 || reqs[0].Method != "initialize" {
+		t.Fatalf("stub saw %v, want an MCP handshake", reqs)
+	}
+	for _, req := range reqs {
+		if req.Path != "/mcp" {
+			t.Fatalf("stub request path = %q, want /mcp", req.Path)
+		}
+		if req.Auth != "Bearer FILEBTOKEN" {
+			t.Fatalf("stub request Authorization = %q, want the token of the config file", req.Auth)
+		}
+	}
+	if report.CallText == nil || *report.CallText != "echo:hi" {
+		t.Fatalf("echo call = %v, want echo:hi", report.CallText)
+	}
+	run.assertRPCAlive(t)
+
+	// A path that names no file: no tools, no crash.
+	missing := startBootPiWith(t, pi, probePath, bootPiOptions{extraEnv: []string{
+		"AIWB_MCP_CONFIG_FILE=" + filepath.Join(chatDir, "absent.json"),
+		"AIWB_BRIDGE_SOCKET=" + filepath.Join(t.TempDir(), "missing.sock"),
+		"AIWB_BRIDGE_RUN=run-app-file-2",
+	}})
+	report = decodeBootReport(t, missing.waitReport(t, 90*time.Second))
+	for _, tool := range report.Captured {
+		if strings.HasPrefix(tool.Name, "mcp__") {
+			t.Fatalf("a missing config file registered %q", tool.Name)
+		}
+	}
+	missing.assertRPCAlive(t)
+}
+
 // TestMCPRealPiAppPlainChatBoot is the A4 app-run leg: a plain chat's boot has
 // the bridge environment (permission gate, hello/abort) and AIWB_MCP_CONFIG
 // pointing at a spawn-family MCP server. It must register the spawn-family

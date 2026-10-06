@@ -1,5 +1,6 @@
-// Subagents of a chat: each in chats/<chat>/subagents/<sid>/, with its state in subagent.json and
-// its own thread in items.jsonl. The manager routes events whose Sub is set here.
+// Subagents of a chat: each in the chat's folder under subagents/<sid>/ (chats/<chat>/subagents/<sid>/,
+// or under its run for a run's chat), with its state in subagent.json and its own thread in
+// items.jsonl. The manager routes events whose Sub is set here.
 package chats
 
 import (
@@ -28,7 +29,7 @@ type sub struct {
 var ErrNoSubagent = errors.New("no such subagent")
 
 func (m *Manager) subDir(chat, sid string) string {
-	return filepath.Join(m.Store.P.ChatDir(chat), "subagents", sid)
+	return filepath.Join(m.chatDir(chat), "subagents", sid)
 }
 
 // loadSubs reads every subagents/<sid>/subagent.json of a chat whose transcript was just loaded.
@@ -36,7 +37,7 @@ func (m *Manager) subDir(chat, sid string) string {
 // stopped and written. Unreadable folders are logged and skipped. c.mu held.
 func (m *Manager) loadSubs(c *Chat) {
 	c.subs, c.subByTool = map[string]*sub{}, map[string]string{}
-	dir := filepath.Join(m.Store.P.ChatDir(c.meta.ID), "subagents")
+	dir := filepath.Join(m.chatDir(c.meta.ID), "subagents")
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -254,6 +255,9 @@ func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool) []agent.Ag
 			m.denySubPerms(c, s)
 			ags = append(ags, s.ag)
 			s.ag = nil
+			if costSubLost(c, s.meta.Kind) { // stopped in its one turn: it reports no cost any more
+				m.logSave(c)
+			}
 		}
 		s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
 		ended(s, endParent)
@@ -347,13 +351,13 @@ func (o *outbox) emitSub(c *Chat, sa model.Subagent) {
 		return
 	}
 	chat, branch := splitID(c.meta.ID)
-	*o = append(*o, map[string]any{"type": "sub", "chat": chat, "branch": branch, "subagent": sa})
+	o.threadEvent(c, chat, map[string]any{"type": "sub", "chat": chat, "branch": branch, "subagent": sa})
 }
 
 // emitSubItems queues the changed items of a subagent's thread, if any. c.mu held.
 func (o *outbox) emitSubItems(c *Chat, sid string, version int, ups []transcript.Update) {
 	if len(ups) > 0 && !c.unlisted {
 		chat, branch := splitID(c.meta.ID)
-		*o = append(*o, map[string]any{"type": "sub_items", "chat": chat, "branch": branch, "sub": sid, "version": version, "updates": ups})
+		o.threadEvent(c, chat, map[string]any{"type": "sub_items", "chat": chat, "branch": branch, "sub": sid, "version": version, "updates": ups})
 	}
 }

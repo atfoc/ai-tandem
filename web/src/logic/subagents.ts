@@ -76,6 +76,7 @@ export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNa
     case "completed": { const f = firstLine(subReport(it, sa, items)); return { text: f ? `Done · ${f}` : "Done", tone: "muted" }; }
     case "failed": return { text: firstLine(sa.error) || "Failed", tone: "error" };
     case "stopped": return { text: "Stopped", tone: "muted" };
+    default: return { text: String(sa.status ?? ""), tone: "muted" }; // a status a newer server added
   }
 }
 
@@ -86,10 +87,10 @@ const RESULT_DELIVERY: Record<NonNullable<Subagent["delivery"]>, string> = {
 
 /** A result row's text: the subagent's name, then its final status, that it ended with an error
  *  when its state carries one, and whether the result has reached the agent (nothing for a
- *  delivery state a newer server added). sa is undefined until the chat's subagents are loaded. */
+ *  delivery state a newer server added, the raw word for a status it added). sa is undefined until the chat's subagents are loaded. */
 export function subResultLine(sa: Subagent | undefined): { name: string; text: string; tone: "muted" | "error" } {
   if (!sa) return { name: "Subagent", text: "", tone: "muted" };
-  const parts = [RESULT_STATUS[sa.status]];
+  const parts = [Object.hasOwn(RESULT_STATUS, sa.status) ? RESULT_STATUS[sa.status] : String(sa.status ?? "")].filter(Boolean);
   if (sa.error) parts.push("ended with an error");
   const delivery = sa.delivery && RESULT_DELIVERY[sa.delivery];
   if (delivery) parts.push(delivery);

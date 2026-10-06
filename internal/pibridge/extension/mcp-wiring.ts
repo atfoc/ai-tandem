@@ -1,10 +1,11 @@
 // Pure, dependency-free wiring logic for the MCP lifecycle (plan §2.2 B, §3.2-3.5).
 //
 // This module owns everything about MCP that is not pi/typebox glue:
-//   - config source selection (the --mcp-config flag wins over AIWB_MCP_CONFIG;
-//     an empty/absent value means no config),
-//   - the app-owned "board server is active" predicate (bridge present + env
-//     source + config key "board"),
+//   - config source selection (the --mcp-config flag wins over the file named by
+//     AIWB_MCP_CONFIG_FILE, which wins over AIWB_MCP_CONFIG; an empty/absent
+//     value means no config),
+//   - the app-owned "board server is active" predicate (bridge present + file
+//     or env source + config key "board"),
 //   - the permission auto-allow set (the registered mcp__board__* names only
 //     when the config came from the app),
 //   - the failure channel formatting (one-shot notice message or prefixed
@@ -16,9 +17,11 @@
 //   - the subagent description/prompt-snippet wording so only app runs with a
 //     board server promise board tools.
 //
-// It imports only ./mcp.ts (which imports nothing), so it is unit-testable with
-// `node --test --experimental-strip-types` and no pi, typebox, or node_modules.
+// It imports only ./mcp.ts (which imports nothing) and node:fs, so it is
+// unit-testable with `node --test --experimental-strip-types` and no pi,
+// typebox, or node_modules.
 
+import * as fs from "node:fs";
 import {
   buildToolMappings,
   connectServer,
@@ -33,22 +36,47 @@ import {
 } from "./mcp.ts";
 
 /** Where the effective MCP config came from. */
-export type MCPSource = "flag" | "env" | "none";
+export type MCPSource = "flag" | "file" | "env" | "none";
 
 /** The effective config selection: `raw` is the winning value, if any. */
 export interface MCPSelection {
   source: MCPSource;
   raw: string | undefined;
+  /** Set when the winning source could not be read (the file source only). */
+  error?: string;
+}
+
+/** appSourced reports whether the app chose the config: the file the Go adapter
+ *  writes (AIWB_MCP_CONFIG_FILE) or the AIWB_MCP_CONFIG value. */
+export function appSourced(source: MCPSource): boolean {
+  return source === "file" || source === "env";
 }
 
 /**
  * selectMCPConfig resolves the flag over the environment (plan R1). The flag
- * wins when it carries a non-empty value; an empty/absent flag falls back to a
- * non-empty AIWB_MCP_CONFIG; otherwise there is no config.
+ * wins when it carries a non-empty value; an empty/absent flag falls back to
+ * the file a non-empty AIWB_MCP_CONFIG_FILE names (the app's way: the token is
+ * in a file only the user can read, not in the process's environment), then to
+ * a non-empty AIWB_MCP_CONFIG; otherwise there is no config. It never throws: a
+ * file that cannot be read is still the selection, with `error` set and no
+ * `raw`, and startMCP reports it. readFile is a test seam.
  */
-export function selectMCPConfig(flagValue: unknown, envValue: string | undefined): MCPSelection {
+export function selectMCPConfig(
+  flagValue: unknown,
+  envValue: string | undefined,
+  filePath?: string,
+  readFile: (path: string) => string = (path) => fs.readFileSync(path, "utf8"),
+): MCPSelection {
   const flag = typeof flagValue === "string" && flagValue.trim() !== "" ? flagValue : undefined;
   if (flag !== undefined) return { source: "flag", raw: flag };
+  const file = typeof filePath === "string" && filePath.trim() !== "" ? filePath : undefined;
+  if (file !== undefined) {
+    try {
+      return { source: "file", raw: readFile(file) };
+    } catch (err) {
+      return { source: "file", raw: undefined, error: `cannot read config file ${file}: ${errorText(err)}` };
+    }
+  }
   const env = typeof envValue === "string" && envValue.trim() !== "" ? envValue : undefined;
   if (env !== undefined) return { source: "env", raw: env };
   return { source: "none", raw: undefined };
@@ -57,7 +85,8 @@ export function selectMCPConfig(flagValue: unknown, envValue: string | undefined
 /**
  * boardServerActive is the factory-scope predicate for the subagent wording and
  * the auto-allow rule (plan R4): the board server is the one keyed "board" in
- * the app-owned AIWB_MCP_CONFIG, in an app run (bridge present). A flag-sourced
+ * the app-owned config (AIWB_MCP_CONFIG_FILE or AIWB_MCP_CONFIG), in an app run
+ * (bridge present). A flag-sourced
  * server keyed "board" never counts, and serverInfo.name is irrelevant.
  */
 export function boardServerActive(input: {
@@ -67,7 +96,7 @@ export function boardServerActive(input: {
 }): boolean {
   return (
     input.bridgePresent &&
-    input.selection.source === "env" &&
+    appSourced(input.selection.source) &&
     input.parsed.servers.some((spec) => spec.key === "board")
   );
 }
@@ -241,7 +270,7 @@ export interface MCPToolRegistration {
 }
 
 export interface StartMCPOptions {
-  /** The effective config selection (flag over env already resolved). */
+  /** The effective config selection (flag over file over env already resolved). */
   selection: MCPSelection;
   /** Called once per discovered tool, in server/tool discovery order. */
   register: (tool: MCPToolRegistration) => void;
@@ -294,6 +323,7 @@ export async function startMCP(options: StartMCPOptions): Promise<MCPBootstrap> 
   };
 
   const selection = options.selection;
+  if (selection.error !== undefined) options.notice(configNotice([selection.error]));
   if (selection.source === "none" || selection.raw === undefined) {
     return { source: selection.source, boardToolNames: [], close };
   }

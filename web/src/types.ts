@@ -52,6 +52,7 @@ export type ModelChoice = {
 export type GroupDefaults = {
   cwd?: string;
   byAgent?: Partial<Record<AgentKind, ModelChoice>>;
+  run?: RunDefaults; // what a new run in the group starts with; recorded when a run starts
 };
 
 export type Defaults = {
@@ -132,6 +133,8 @@ export type ChatMeta = Archive & {
   userNamed?: boolean;
   group?: string;
   board?: string;
+  run?: string;
+  role?: AgentRole;
   cwd: string;
   model: string;
   effort?: string;
@@ -156,6 +159,8 @@ export type ChatView = Archive & {
   userNamed?: boolean;
   group?: string;
   board?: string;
+  run?: string;      // a chat on a run, or (with role) one of the run's agents
+  role?: AgentRole;  // a run agent: never in the snapshot's chats, never in the sidebar
   cwd: string;
   model: string;
   effort?: string;
@@ -278,3 +283,334 @@ export type Subagent = {
   ended?: number;
   delivery?: SubDelivery;
 };
+
+// ---- runs: mirror of the run types in internal/model/run.go, field for field, by json name.
+//
+// Time format: `created` and `started` are RFC 3339 strings, like every sidebar record
+// (Board.created, ChatView.created). Every other time is epoch milliseconds as a number: fields
+// named `t`, `at`, `…At`, `asOf` (as Subagent.started). Durations are milliseconds (`…Ms`).
+
+export type RunStatus = "draft" | "running" | "stopping" | "stopped" | "stalled" | "error" | "completed" | "gave_up";
+/** Which limit stalled the run: idle turns in a row, the turn limit, or the cost limit. */
+export type StalledBy = "idle" | "turns" | "cost";
+export type RunOutcome = "achieved" | "not_achieved";
+
+/** What a task is doing: the kind of its last attempt's last phase, or how that attempt ended. */
+export type PhaseKind = "held" | "deps" | "blocked" | "slot" | "setup" | "work" | "merge";
+export type AttemptOutcome = "done" | "failed" | "cancelled";
+export type TaskState = PhaseKind | AttemptOutcome;
+export const TASK_STATES: TaskState[] = ["held", "deps", "blocked", "slot", "setup", "work", "merge", "done", "failed", "cancelled"];
+
+/** Why a turn started: the run's start, the wait the orchestrator declared was met ("wait"), an
+ *  event that starts one whatever the wait says ("events": a failed task, a chat's change), nothing
+ *  was running ("idle"), or a resume. */
+export type TurnReason = "start" | "wait" | "events" | "idle" | "resume";
+export type TurnStatus = "running" | "done" | "failed";
+export type AgentRole = "orchestrator" | "task" | "merge";
+export type AgentStatus = "running" | "done" | "failed" | "interrupted" | "cancelled";
+export type StopReason = "user" | "app_quit" | "stalled" | "error";
+
+/** The three levels of model a run works with: the orchestrator picks one per task. */
+export type Tier = "deep" | "standard" | "light";
+export const TIERS: Tier[] = ["deep", "standard", "light"];
+/** The model and effort of each tier; all three keys are always present. */
+export type RunTiers = Record<Tier, ModelChoice>;
+/** Tokens an agent used. */
+export type TokenCount = { in: number; out: number; cacheRead: number; cacheWrite: number };
+/** The tasks the orchestrator waits for before its next turn: all of them, or any one. */
+export type RunWait = { tasks: string[]; mode: "all" | "any"; turn: number }; // turn: the turn that declared it
+
+/** What became of the run's result (its integration branch) in the folder's own branch. */
+export type RunDeliveryState = "none" | "pending" | "applied" | "blocked";
+export type RunDeliveryReason = "no_git" | "no_changes" | "manual" | "not_achieved" | "halted" | "other_branch" | "history_changed"
+  | "local_changes" | "conflict" | "busy" | "folder_missing" | "not_repo" | "result_missing" | "git";
+export interface RunDelivery {
+  state: RunDeliveryState;
+  reason?: RunDeliveryReason; // none, pending, blocked: why
+  auto?: boolean;             // the app applied it (or tried to) when the run finished
+  at?: number;
+  result?: string;            // the result's commit
+  commit?: string;            // applied: the branch's head after it
+  how?: "ff" | "merge" | "already";
+  branch?: string;            // the branch it was (or would be) applied to
+  files?: string[];           // blocked: the files in the way; absent when none
+  more?: number;              // files left out of `files`
+  detail?: string;
+  partial?: boolean;          // the run did not finish: the result is what was merged so far
+}
+
+/** A run's settings. The composer shows maxParallel, maxTurns, maxCost and setup; the rest keep the
+ *  server's defaults. All of them are fixed when the run starts, except that a resume may raise
+ *  maxTurns or maxCost. */
+export type RunSettings = {
+  maxParallel: number;     // tasks at once (default 8; 1–16)
+  maxTurns: number;        // orchestrator turns before the run stalls (default 60; 1–500)
+  maxCost: number;         // USD before the run stalls; 0 = no limit (default 0)
+  setup?: string;          // shell command run in every new task checkout; absent = none
+  wake: "declared" | "each" | "idle"; // when a turn starts: the orchestrator says which tasks it waits for (default),
+                           //   after every finished task, or only when nothing runs
+  applyResult?: "auto" | "manual"; // the result goes into the folder's branch when the run finishes, or when the user says; absent = "auto"
+  maxIdleTurns: number;    // idle turns in a row before the run stalls (default 3)
+  agentTimeoutSec: number; // one launch of an agent (default 10800)
+  agentRetries: number;    // extra counted launches of an agent after a failure (default 2)
+  keepWorktrees?: boolean; // keep task checkouts after their task ends (default false)
+};
+
+/** Tasks by state; every key is always present. */
+export type RunCounts = Record<TaskState, number>;
+
+/** A run as the sidebar, the run bar and the run's meters need it: in the snapshot (`runs`), in the
+ *  `run` event and in the answer of every run route. It changes at task and turn boundaries, never
+ *  per agent event. */
+export type RunView = Archive & {
+  id: string;            // "r_" + 8 base36 characters; the folder name
+  name: string;
+  userNamed?: boolean;   // the user renamed it: starting the run does not name it from the goal
+  group: string;         // group id or UNGROUPED
+  created: string;
+  agent: AgentKind;      // one agent kind for every agent of the run
+  tiers: RunTiers;       // the model and effort of each tier
+  tierDefaults?: RunTiers; // draft only: the agent kind's defaults
+  cwd: string;
+  folderMissing?: boolean;
+  git?: boolean;         // cwd is inside a git work tree
+  dirty?: boolean;       // draft: the folder has uncommitted changes
+  blocked?: string;      // why the run cannot start (or resume) as it is set up; shown verbatim
+  settings: RunSettings;
+  draft?: Draft;         // the goal being typed; cleared by the server when the run starts
+  started?: string;      // absent exactly while status is "draft"
+  status: RunStatus;
+  reason?: string;       // stopped, stalled, error: why, one sentence
+  stalledBy?: StalledBy; // status "stalled" only
+  outcome?: RunOutcome;  // completed: "achieved"; gave_up: "not_achieved"
+  activeMs: number;      // working time (stops left out) up to asOf; while status is running or
+  asOf: number;          //   stopping the client shows activeMs + (now - asOf)
+  turns: number;         // orchestrator turns so far (the number of the latest turn)
+  turnRunning?: number;  // the turn that is running now
+  wait?: RunWait;        // what the orchestrator waits for now; absent = nothing
+  delivery?: RunDeliveryState; // RunDetail.delivery.state
+  idleStreak: number;    // idle turns in a row
+  counts: RunCounts;
+  cost: number | null;   // USD of the run's agents; null: this agent kind reports no cost
+  costPartial?: boolean; // the sum is known to miss something
+  attention: number;     // failed tasks + blocked tasks + refused calls in the latest turn
+};
+
+// ---- run detail: GET /api/runs/{id}/detail, kept current by `run_detail` events
+
+export type RunDetail = {
+  run: string;                      // the run's id
+  version: number;                  // rises by one with every change of the run's recorded state
+  status: RunStatus;                // the same value as RunView.status, changed together with stops
+  startedAt: number;
+  endedAt?: number;                 // completed and gave_up only; a halted run ends at its open stop
+  goalSize: number;                 // characters of the goal; the text: GET /api/runs/{id}/goal
+  git?: RunGit;                     // absent: the run does not use git
+  stops: Stop[];                    // in time order; the last one is open while the run is halted
+  turns: Turn[];                    // by n
+  tasks: Task[];                    // in creation order
+  chatOps: Op[];                    // changes made outside a turn by a chat on the run, by i
+  agents: Record<string, RunAgent>; // key: the agent's chat id
+  notes: NotesVersion[];            // by v; the texts: GET /api/runs/{id}/notes/{v}
+  result?: RunResult;
+  delivery?: RunDelivery;           // absent for a draft and for a live run
+};
+
+export type RunGit = {
+  baseRef: string;            // the commit the run started from
+  integrationBranch: string;  // where finished work is merged; the run's result
+  resultHead?: string;        // its head when the run finished
+  branch?: string;            // the folder's branch at the start; absent: detached
+  dirtyAtStart?: boolean;     // the folder had uncommitted changes when the run started: they are not in the run
+};
+
+export type Stop = { at: number; resumedAt?: number; reason: StopReason };
+
+export type RunResult = {
+  outcome: RunOutcome;
+  summary: string;   // the orchestrator's summary for the user, markdown
+  turn: number;
+  at: number;
+};
+
+/** Something the orchestrator is told about. */
+export type RunEvent = {
+  seq: number;
+  t: number;
+  type: "task_done" | "task_failed" | "chat_op";
+  task?: string;
+  chat?: string;     // chat_op: the chat that made the change
+  text: string;      // the task's summary or error, or what the chat did: at most 600 characters (a tell_orchestrator message: 4,000)
+};
+
+export type OpName = "get_run" | "get_task" | "get_agent" | "get_notes" | "add_task" | "update_task"
+  | "cancel_task" | "retry_task" | "set_notes" | "edit_notes" | "wait_for" | "finish_run" | "tell_orchestrator";
+
+/** One call of a run tool: by the orchestrator in a turn (Turn.ops; reads included), or by a chat
+ *  on the run outside a turn (RunDetail.chatOps; changes only). */
+export type Op = {
+  i: number;               // its index in Turn.ops or in RunDetail.chatOps
+  t: number;
+  op: OpName;
+  chat?: string;           // chatOps only: the chat that made it
+  turn?: number;           // chatOps only: the latest turn at that moment
+  error?: string;          // the call was refused: the refusal (at most 400 characters)
+  task?: string;
+  agent?: string;          // get_agent: the agent's name
+  title?: string;          // add_task, update_task
+  kind?: string;           // add_task
+  writes?: boolean;        // add_task
+  dependsOn?: string[];    // add_task, update_task: the list after the call
+  changed?: string[];      // update_task: "title" | "brief" | "kind" | "writes" | "depends_on"
+  briefRev?: number;       // add_task, update_task: the brief revision the call wrote
+  reason?: string;         // cancel_task, retry_task (at most 400 characters)
+  attempt?: number;        // retry_task: the attempt it queued
+  tier?: Tier;             // add_task, update_task, retry_task
+  tierReason?: string;
+  needsReport?: string[];  // add_task, update_task: the list after the call; absent when empty
+  notesVersion?: number;   // set_notes, edit_notes
+  size?: number;           // set_notes, edit_notes: characters
+  heading?: string;        // edit_notes: the section
+  tasks?: string[];        // wait_for
+  mode?: "all" | "any";    // wait_for
+  outcome?: RunOutcome;    // finish_run
+  text?: string;           // tell_orchestrator, and finish_run's summary (at most 600 characters)
+};
+
+export type Turn = {
+  n: number;
+  agent: string;           // its agent's chat id (RunDetail.agents)
+  reason: TurnReason;
+  idle?: boolean;          // it started with nothing running and nothing able to start
+  wait?: RunWait;          // the wait it started under
+  waitMet?: boolean;       // that wait was met when it started; otherwise reason and wokenBy say what started it early
+  status: TurnStatus;
+  startedAt: number;
+  endedAt?: number;
+  wokenBy: RunEvent[];     // the events that started it
+  learned: RunEvent[];     // the events it read while running (get_run)
+  ops: Op[];
+  summary?: string;        // the orchestrator's closing message
+  error?: string;          // failed: why
+  cost: number | null;
+};
+
+export type BriefRev = { rev: number; at: number; turn?: number; chat?: string; size: number };
+
+export type Task = {
+  id: string;              // "T01", "T02", …
+  title: string;
+  kind: string;            // a one-word label: research, implement, review, …
+  writes: boolean;         // its changes are merged; false: it only reports
+  dependsOn: string[];
+  needsReport: string[];   // a subset of dependsOn: the dependencies whose reports its agent is given whole
+  tier: Tier;
+  tierReason: string;      // why the orchestrator chose it, one sentence
+  addedTurn: number;       // the turn that added it; for a task a chat added, the latest turn then
+  addedBy?: string;        // the chat that added it
+  createdAt: number;
+  changedTurns: number[];  // the turns that updated or retried it
+  briefRev: number;        // the brief revision in force
+  briefs: BriefRev[];      // every revision; the texts: GET /api/runs/{id}/tasks/{tid}/brief?rev=
+  attempts: Attempt[];     // at least one; the last one is the current one
+};
+
+export type Phase = {
+  k: PhaseKind;
+  t: number;
+  on?: string[];           // deps: the dependencies not done yet; blocked: the failed or cancelled ones
+  turn?: number;           // held: the turn whose end releases it
+  chat?: string;           // held: or the chat whose reply's end releases it
+};
+
+/** The agent's own result block, as it reported it. */
+export type AttemptResult = { outcome: "completed" | "failed"; summary: string; reportSize: number };
+
+export type Attempt = {
+  n: number;
+  tier: Tier;              // the tier it runs on (a retry may raise it)
+  queuedTurn: number;      // the turn that added (n = 1) or retried the task; for a chat, the latest turn then
+  queuedBy?: string;       // the chat that did
+  queuedAt: number;
+  phases: Phase[];         // in time order; each lasts until the next one or endedAt
+  startedAt?: number;      // a slot was taken (the first setup phase)
+  endedAt?: number;
+  outcome?: AttemptOutcome;
+  error?: string;          // failed: why
+  cancel?: { t: number; reason: string; turn?: number; chat?: string };
+  result?: AttemptResult;  // the report: GET /api/runs/{id}/tasks/{tid}/attempts/{n}/report
+  mergedAt?: number;
+  conflicts?: string[];    // the files a merge agent had to resolve
+  agents: { work?: string; merge?: string }; // chat ids (RunDetail.agents)
+  cost: number | null;
+  branch?: string;         // writing tasks
+  base?: string;           // the integration head it started from
+  head?: string;           // its own last commit
+  merged?: string;         // the integration head after its merge; absent: nothing was merged
+};
+
+export type Launch = { n: number; startedAt: number; endedAt?: number; resume: boolean; error?: string };
+
+/** One agent of the run. Its transcript is the chat with this id (role set): GET /api/chats/{id}. */
+export type RunAgent = {
+  id: string;              // its chat id
+  name: string;            // what the run calls it: "turn-007", "T03-work", "T03-a2-work", "T03-merge"
+  role: AgentRole;
+  task?: string;
+  attempt?: number;
+  turn?: number;
+  status: AgentStatus;
+  startedAt: number;
+  endedAt?: number;
+  launches: Launch[];      // one per process started for it
+  error?: string;
+  cost: number | null;
+  tier: Tier;              // an orchestrator's is "deep", a merge agent's "standard"
+  model: string;
+  effort?: string;
+  tokens: TokenCount | null; // null: this agent kind reports none (Cursor)
+  peakContext?: number;    // tokens of its fullest context so far; 0 or absent = unknown
+  tools?: number;          // tool calls so far            ┐ not part of the recorded state: sent in
+  activity?: string;       // its last action, one line    ┘ `run_activity` events while it runs
+};
+
+export type NotesVersion = { v: number; at: number; turn?: number; chat?: string; size: number };
+
+// ---- events
+
+/** `run_detail {run, version, patch}`: the records a change touched. Scalars replace; stops is the
+ *  whole list; turns, tasks, chatOps and notes replace the record with the same key or are added;
+ *  agents are merged by id. Nothing is ever removed from a detail. */
+export type RunPatch = Partial<Omit<RunDetail, "run" | "version">>;
+export type RunDetailEvent = { type: "run_detail"; run: string; version: number; patch: RunPatch };
+
+/** `run_activity {run, agents}`: what running agents do right now, at most every 2 s per run. It
+ *  is not versioned: the values are merged into the agents the detail has. */
+export type RunActivityEvent = {
+  type: "run_activity"; run: string;
+  agents: Record<string, { activity?: string; tools?: number; cost?: number | null; peakContext?: number }>;
+};
+
+// ---- loaded on demand
+
+/** GET /api/runs/{id}/goal */
+export type RunGoal = { text: string };
+/** GET /api/runs/{id}/tasks/{tid}/brief[?rev=] */
+export type TaskBrief = BriefRev & { task: string; text: string };
+/** GET /api/runs/{id}/tasks/{tid}/attempts/{n}/report */
+export type AttemptReport = { task: string; attempt: number; outcome: "completed" | "failed"; summary: string; report: string };
+/** GET /api/runs/{id}/tasks/{tid}/attempts/{n}/changes */
+export type AttemptChanges = {
+  task: string; attempt: number;
+  branch: string; base: string; head: string;
+  merged?: string; mergedAt?: number;
+  files: { path: string; add: number; del: number; binary?: boolean }[];
+  add: number; del: number;
+  commits: { sha: string; subject: string; at: number }[];
+  conflicts?: string[];
+};
+/** GET /api/runs/{id}/notes/{v} */
+export type RunNotes = NotesVersion & { text: string };
+
+/** What a new run in a group starts with (GroupDefaults.run). */
+export type RunDefaults = { agent: AgentKind; tiers?: RunTiers; maxParallel: number; maxTurns: number; maxCost: number; setup?: string; setupCwd?: string };

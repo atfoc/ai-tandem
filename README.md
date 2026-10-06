@@ -11,8 +11,8 @@ agents run with the logins you already have.
 
 ## How it fits together
 
-- **Server** (`cmd/`, `internal/`): a Go program on `127.0.0.1:4747`. It stores boards and chats,
-  runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
+- **Server** (`cmd/`, `internal/`): a Go program on `127.0.0.1:4747`. It stores boards, chats and
+  [runs](#runs), runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
   `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
   MCP: one fixed MCP endpoint, `http://localhost:6006/mcp`, carries the chat's token in
   the `Authorization` header (every chat). The spawn family (`spawn_subagent`, `stop_subagent`,
@@ -55,6 +55,71 @@ pi -e <extension> --mcp-config '{"mcpServers":{"board":{"type":"http","url":"htt
 
 That mode connects and registers the MCP tools normally, but shows no permission card: the
 user-supplied MCP tools run un-gated because the ask UI comes from the app's UDS bridge.
+
+## Runs
+
+A **run** is a sidebar item next to boards and chats. You type a goal and leave: an *orchestrator*
+agent splits the goal into tasks, *task agents* carry them out in parallel, and the run goes on
+until the orchestrator says the goal is met (or cannot be), a limit is reached, or you stop it. You
+pick the agent (Claude, Cursor or pi), the model and the folder before you start; they are fixed
+from then on. The run view shows the turns, the tasks and what every agent is doing, and each
+agent's transcript.
+
+- **Where its state lives.** Everything the app records about a run is in
+  `~/.ai-whiteboard/runs/<run id>/`, never in the folder the run works on:
+
+  ```
+  run.json                         what you set up: name, group, agent, model, folder, limits
+  goal.md                          the goal
+  journal.jsonl                    one line per change to the run; state.json, tasks.json,
+                                   turns.json and agents.json are a checkpoint of it
+  notes/v0001.md, …                the orchestrator's notes, every version
+  tasks/T01/brief.r1.md            a task's brief, every revision
+  tasks/T01/a1.report.md           what its agent reported (a1 = attempt 1)
+  tasks/T01/a1.changes.json        what it changed; a1.setup.log is the setup command's output
+  agents/<chat id>/                the chat of each of the run's agents
+  chats/<chat id>/                 the chats you open on the run
+  ```
+
+- **With git.** When the run's folder is inside a git work tree, the run starts from the
+  repository's last commit (uncommitted changes are not seen, and not touched). Every task gets a
+  checkout of its own, a linked work tree in `<parent of the data folder>/aiwb-run-work/<run id>/`
+  (`~/aiwb-run-work/<run id>/` by default) on a branch `aiwb/<run id>/<task>`. A finished task's
+  work is committed and merged into the branch **`aiwb/<run id>/integration`**, which is the run's
+  result. Your own branch and work tree are not changed while the run is going. When the run ends
+  with its goal achieved, the app applies the result to your folder if that touches none of your
+  uncommitted work; otherwise, after a run that did not reach its goal, or with automatic applying
+  off for the run, you apply it with one action in the run view. When a
+  merge conflicts, a *merge agent* resolves it in the task's checkout. A task's checkout is removed
+  when the task ends, the run's own when it finishes or is deleted; the branches stay. A repository
+  with no commit cannot start a run.
+- **Without git.** In a folder that is not in a git work tree the agents work directly in that
+  folder. Tasks that change files run one at a time, tasks that only report may run beside them,
+  nothing is merged and nothing is undone when a task fails or is cancelled.
+- **Tools.** Run tools are MCP tools on the same `board` endpoint, and the endpoint decides per
+  chat token who may call what:
+  - the orchestrator: `get_run`, `get_task`, `get_agent`, `get_notes`, `set_notes`, `add_task`,
+    `update_task`, `cancel_task`, `retry_task`, `finish_run`. It runs read-only (it cannot edit
+    files) and has no spawn family;
+  - a chat you open on a run: `get_run`, `get_task`, `get_agent`, `get_notes`, `add_task`,
+    `update_task`, `cancel_task`, `retry_task`, `tell_orchestrator` (a message for the
+    orchestrator), and the spawn family;
+  - task and merge agents: the spawn family only. They cannot see or change the run.
+
+  No chat of a run gets board tools. The run's agents run unattended: nothing they do raises a
+  permission card, and a request that comes anyway is refused at once.
+- **Limits.** A run stalls, and waits for you, when it reaches its number of orchestrator turns or
+  its cost limit (Resume with a higher value), or when the orchestrator is started three times in a
+  row with nothing running and changes nothing. The cost is what the agents report: Cursor reports
+  none, so a Cursor run has no cost and no cost limit.
+- **Stop, resume, restart.** Stop interrupts the run's agents; Resume continues every task and turn
+  where it was. When the server stops in an orderly way (`ai-whiteboard stop` or `relaunch`, a
+  restart from the app) a working run is halted and **continues by itself** when the server starts
+  again. After a crash or a kill it does not: the dead server's agents may still be working in the
+  checkouts, so the run shows as stopped and waits for Resume. A run that was closed three times
+  within a minute of continuing waits for Resume too.
+- **Requirements.** Runs are for macOS and other Unix systems, and a run with git needs git 2.27
+  or newer.
 
 ## Prerequisites
 
@@ -233,6 +298,7 @@ cd web && npm run watch   # rebuild the web client on change, then reload the pa
 
 go test ./...             # server tests
 cd web && npm test        # web client tests
+cd web && npm run check   # type check of the web client
 cd desktop && npm test    # desktop app tests
 ```
 

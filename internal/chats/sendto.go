@@ -37,6 +37,9 @@ type Target struct {
 // move is kept, with the branch left stopped: the branch's process refused the message, which
 // is then in its thread as after a refused Send, or another Send got to the branch meanwhile.
 func (m *Manager) SendTo(id string, t Target, text, context string, refs []model.Reference) error {
+	if err := m.person(id); err != nil {
+		return err
+	}
 	top, err := m.topChat(id)
 	if err != nil {
 		return err
@@ -89,7 +92,7 @@ func (m *Manager) SendTo(id string, t Target, text, context string, refs []model
 	forked := false
 	fail := func(err error) error {
 		m.dropUnlisted(c, forked)
-		os.Remove(filepath.Dir(m.Store.P.ChatDir(sid))) // branches/, when nothing else is in it
+		os.Remove(filepath.Dir(m.chatDir(sid))) // branches/, when nothing else is in it
 		return err
 	}
 
@@ -264,7 +267,7 @@ func (m *Manager) newBranchID(chat string, t model.Tree) string {
 		if _, taken := branchOf(t, b); taken {
 			continue
 		}
-		if _, err := os.Lstat(m.Store.P.ChatDir(branchChatID(chat, b))); err == nil {
+		if _, err := os.Lstat(m.chatDir(branchChatID(chat, b))); err == nil {
 			continue
 		}
 		return b

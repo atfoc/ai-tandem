@@ -1,5 +1,5 @@
 // Package app ties the stores together: groups and their subgroups, moves, and the archive /
-// unarchive / delete cascades across groups, boards and chats.
+// unarchive / delete cascades across groups, boards, chats and runs.
 package app
 
 import (
@@ -14,6 +14,7 @@ import (
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/store"
 )
 
@@ -21,6 +22,7 @@ type App struct {
 	St     *store.Store
 	Boards *boards.Service
 	Chats  *chats.Manager
+	Runs   *runs.Service // nil: an app without runs
 	Bridge *editorbridge.Bridge
 
 	// Set by main; reported in the snapshot.
@@ -32,7 +34,8 @@ type App struct {
 type Snapshot struct {
 	Groups     []model.Group                      `json:"groups"`
 	Boards     []model.Board                      `json:"boards"`
-	Chats      []model.ChatView                   `json:"chats"`
+	Chats      []model.ChatView                   `json:"chats"` // without the chats of runs' agents
+	Runs       []model.RunView                    `json:"runs"`
 	Defaults   model.Defaults                     `json:"defaults"`
 	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"`
 	Home       string                             `json:"home"`
@@ -45,7 +48,8 @@ var (
 	ErrGroupArchived = errors.New("the group is archived")
 )
 
-// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats from Chats.
+// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats from
+// Chats; runs from Runs.
 func (a *App) Snapshot() Snapshot {
 	cl := claude.Catalog
 	snap := Snapshot{
@@ -70,6 +74,10 @@ func (a *App) Snapshot() Snapshot {
 	})
 	snap.Boards = a.Boards.List()
 	snap.Chats = a.Chats.Views()
+	snap.Runs = []model.RunView{}
+	if a.Runs != nil {
+		snap.Runs = a.Runs.Views()
+	}
 	return snap
 }
 
@@ -80,6 +88,10 @@ func copyGroupDefaults(g model.GroupDefaults) model.GroupDefaults {
 		for k, v := range g.ByAgent {
 			out.ByAgent[k] = v
 		}
+	}
+	if g.Run != nil {
+		run := *g.Run
+		out.Run = &run
 	}
 	return out
 }
@@ -305,6 +317,7 @@ const (
 	KindGroup Kind = "group"
 	KindBoard Kind = "board"
 	KindChat  Kind = "chat"
+	KindRun   Kind = "run"
 )
 
 // archiveChat archives the chat with ar and stops its agent. The archive state is set first: from
@@ -329,11 +342,11 @@ func (a *App) archiveBoard(id string, ar model.Archive) error {
 	return a.Boards.SetArchive(id, ar)
 }
 
-// plainChatsIn returns the plain (non-board) chats of the groups in.
+// plainChatsIn returns the plain chats of the groups in: the ones on no board and on no run.
 func (a *App) plainChatsIn(in map[string]bool) []model.ChatView {
 	var out []model.ChatView
 	for _, c := range a.Chats.Views() {
-		if c.Board == "" && in[c.Group] {
+		if c.Board == "" && c.Run == "" && in[c.Group] {
 			out = append(out, c)
 		}
 	}
@@ -351,11 +364,42 @@ func (a *App) boardsIn(in map[string]bool) []model.Board {
 	return out
 }
 
-// Archive archives a chat, a board (with its chats) or a group (with everything in it, its
-// subgroups too). Every item archived by this call shares one archive op id.
+// runsIn returns the runs of the groups in, oldest first.
+func (a *App) runsIn(in map[string]bool) []model.RunMeta {
+	if a.Runs == nil {
+		return nil
+	}
+	var out []model.RunMeta
+	for _, r := range a.Runs.List() {
+		if in[r.Group] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// errNoRuns is what a call about a run answers in an app without runs.
+func (a *App) errNoRuns() error {
+	if a.Runs == nil {
+		return runs.ErrNotFound
+	}
+	return nil
+}
+
+// Archive archives a chat, a board (with its chats), a run (stopped first when it works; with the
+// chats people have on it) or a group (with everything in it, its subgroups too). Every item
+// archived by this call shares one archive op id.
+//
+// A run that has not stopped in time refuses (runs.ErrStopping). A group goes on without that run:
+// everything else in it is archived, the group too, and the error is returned.
 func (a *App) Archive(k Kind, id string) error {
 	ar := model.Archive{Archived: true, Op: model.NewID("a_")}
 	switch k {
+	case KindRun:
+		if err := a.errNoRuns(); err != nil {
+			return err
+		}
+		return a.Runs.Archive(id, ar)
 	case KindChat:
 		if _, err := a.Chats.View(id); err != nil {
 			return err
@@ -387,6 +431,18 @@ func (a *App) Archive(k Kind, id string) error {
 				return err
 			}
 		}
+		var stopping error
+		for _, r := range a.runsIn(in) {
+			if r.Archived {
+				continue
+			}
+			switch err := a.Runs.Archive(r.ID, ar); {
+			case errors.Is(err, runs.ErrStopping):
+				stopping = errors.Join(stopping, fmt.Errorf("%s: %w", r.Name, err))
+			case err != nil && !errors.Is(err, runs.ErrNotFound):
+				return err
+			}
+		}
 		if err := a.St.Update(func(s *model.State) error {
 			for i := range s.Groups {
 				g := &s.Groups[i]
@@ -399,7 +455,7 @@ func (a *App) Archive(k Kind, id string) error {
 			return err
 		}
 		a.broadcastGroups()
-		return nil
+		return stopping
 	}
 	return fmt.Errorf("unknown kind %q", k)
 }
@@ -430,12 +486,24 @@ func (a *App) unarchiveGroupRecord(id string) error {
 	return nil
 }
 
-// Unarchive puts an item back where it was. A chat brings back its archived board and group
-// records; a board or a group brings back exactly what was archived together with it, and the
-// archived groups it is nested in.
+// Unarchive puts an item back where it was. A chat brings back its archived board or run and group
+// records; a board, a run or a group brings back exactly what was archived together with it, and
+// the archived groups it is nested in. A run that comes back is not resumed.
 func (a *App) Unarchive(k Kind, id string) error {
 	clear := model.Archive{}
 	switch k {
+	case KindRun:
+		if err := a.errNoRuns(); err != nil {
+			return err
+		}
+		if err := a.Runs.Unarchive(id); err != nil {
+			return err
+		}
+		ri, ok := a.Runs.RunOf(id)
+		if !ok {
+			return runs.ErrNotFound
+		}
+		return a.unarchiveGroupRecord(ri.Group)
 	case KindChat:
 		cv, err := a.Chats.View(id)
 		if err != nil {
@@ -445,7 +513,20 @@ func (a *App) Unarchive(k Kind, id string) error {
 			return err
 		}
 		group := cv.Group
-		if cv.Board != "" {
+		if cv.Run != "" {
+			// A chat on a run: the run's record comes back, not the run's other chats.
+			group = model.Ungrouped
+			if a.Runs != nil {
+				if ri, ok := a.Runs.RunOf(cv.Run); ok {
+					group = ri.Group
+					if ri.Archived {
+						if err := a.Runs.UnarchiveAlone(cv.Run); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		} else if cv.Board != "" {
 			bd, ok := a.Boards.Get(cv.Board)
 			if ok {
 				group = bd.Group
@@ -508,11 +589,19 @@ func (a *App) Unarchive(k Kind, id string) error {
 				if !cv.Archived || cv.Op != op {
 					continue
 				}
-				meta := model.ChatMeta{Board: cv.Board, Group: cv.Group}
+				meta := model.ChatMeta{Board: cv.Board, Run: cv.Run, Group: cv.Group}
 				if !in[a.Chats.GroupOf(meta)] {
 					continue
 				}
 				if err := a.Chats.SetArchive(cv.ID, clear); err != nil {
+					return err
+				}
+			}
+			for _, r := range a.runsIn(in) {
+				if !r.Archived || r.Op != op {
+					continue
+				}
+				if err := a.Runs.Unarchive(r.ID); err != nil && !errors.Is(err, runs.ErrNotFound) {
 					return err
 				}
 			}
@@ -540,8 +629,17 @@ func (a *App) DeleteBoard(id string) error {
 	return a.Boards.Delete(id)
 }
 
-// DeleteGroup removes a group and its defaults. With deleteContents its subgroups, boards and
-// plain chats are deleted too; without, they move up to the group's parent (ungrouped for a
+// DeleteRun stops the run and removes it for good, with its agents' chats and the chats people
+// have on it. Its branches in the repository stay.
+func (a *App) DeleteRun(id string) error {
+	if err := a.errNoRuns(); err != nil {
+		return err
+	}
+	return a.Runs.Delete(id)
+}
+
+// DeleteGroup removes a group and its defaults. With deleteContents its subgroups, boards, plain
+// chats and runs are deleted too; without, they move up to the group's parent (ungrouped for a
 // top-level group).
 func (a *App) DeleteGroup(id string, deleteContents bool) error {
 	g, err := a.group(id)
@@ -575,6 +673,17 @@ func (a *App) DeleteGroup(id string, deleteContents bool) error {
 			err = a.Chats.Move(c.ID, to)
 		}
 		if err != nil {
+			return err
+		}
+	}
+	for _, r := range a.runsIn(gone) {
+		var err error
+		if deleteContents {
+			err = a.DeleteRun(r.ID)
+		} else {
+			err = a.Runs.Move(r.ID, to)
+		}
+		if err != nil && !errors.Is(err, runs.ErrNotFound) {
 			return err
 		}
 	}

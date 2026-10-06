@@ -1,0 +1,85 @@
+=== a chat calls wait_for
+chat: wait_for {"tasks":["T05"]}
+refusal:
+wait_for is the orchestrator's: it says when its own next turn starts. A chat on the run does not wait; get_run shows what is running.
+
+=== no tasks given
+orchestrator: wait_for {}
+refusal:
+tasks must be a list of task ids, with at least one
+
+=== tasks is not a list
+orchestrator: wait_for {"tasks":"T05"}
+refusal:
+tasks must be a list of task ids, with at least one
+
+=== tasks is a list of other things
+orchestrator: wait_for {"tasks":[5]}
+refusal:
+tasks must be a list of task ids, with at least one
+
+=== an empty list
+orchestrator: wait_for {"tasks":[]}
+refusal:
+tasks must be a list of task ids, with at least one
+
+=== a mode that is none
+orchestrator: wait_for {"tasks":["T05"],"mode":"first"}
+refusal:
+mode must be all or any
+
+=== tasks that do not exist
+orchestrator: wait_for {"tasks":["T05","T9","T10"]}
+refusal:
+there is no task 'T9', 'T10' (the run has tasks T01 to T06)
+
+=== tasks that have ended
+orchestrator: wait_for {"tasks":["T01","T05","T03"]}
+refusal:
+T01 (done), T03 (failed) already ended, so there is nothing to wait for: its result is there to read now (get_task). Name only tasks that are pending or running.
+
+=== all of two, one named twice
+orchestrator: wait_for {"tasks":["T05","T02","T05"]}
+answer:
+After this turn the next instance starts when all of T05, T02 ended, or earlier if a task fails, nothing is left running, or a chat on the run changes it.
+
+=== again in the same turn: the last one holds
+orchestrator: wait_for {"tasks":["T06","T04","T05"],"mode":"any"}
+answer:
+After this turn the next instance starts when any of T06, T04, T05 ended, or earlier if a task fails, nothing is left running, or a chat on the run changes it.
+
+=== a refused call leaves the wait as it is
+orchestrator: wait_for {"tasks":["T01"]}
+refusal:
+T01 (done) already ended, so there is nothing to wait for: its result is there to read now (get_task). Name only tasks that are pending or running.
+
+=== mode all, given
+orchestrator: wait_for {"tasks":["T05"],"mode":"all"}
+answer:
+After this turn the next instance starts when all of T05 ended, or earlier if a task fails, nothing is left running, or a chat on the run changes it.
+
+=== the run's wake mode is each
+orchestrator: wait_for {"tasks":["T02"]}
+refusal:
+unknown tool wait_for
+
+=== the run's wake mode is each, a chat
+chat: wait_for {"tasks":["T02"]}
+refusal:
+wait_for is the orchestrator's: it says when its own next turn starts. A chat on the run does not wait; get_run shows what is running.
+
+=== the run's wake mode is idle
+orchestrator: wait_for {"tasks":["T02"]}
+refusal:
+unknown tool wait_for
+
+=== no wake mode recorded counts as declared
+orchestrator: wait_for {"tasks":["T02"],"mode":""}
+answer:
+After this turn the next instance starts when all of T02 ended, or earlier if a task fails, nothing is left running, or a chat on the run changes it.
+
+=== the run is stopping
+orchestrator: wait_for {"tasks":["T05"]}
+refusal:
+the run is stopping; try again when it has stopped
+

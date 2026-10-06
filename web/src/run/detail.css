@@ -1,0 +1,97 @@
+/* The content of the dock's views (RunTask, RunTurn, RunNotes, RunGoal, RunResult):
+   what they add to the pieces of dock.css. Nothing here may be wider than the dock's column:
+   long words, paths and shas wrap, a table and a code line scroll inside their own box. The rules
+   that touch the app's own classes are under .dock-col, the column these views are put in: an
+   agent's transcript in the dock is not in it and keeps the chat's look. */
+.dock-col > * { min-width: 0; }
+.rd-wrap { overflow-wrap: anywhere; min-width: 0; }
+.rd-sub .mono, .rd-kv .mono, .rd-take .mono { font-size: 11px; }
+.rd-sub .link.lk, .rd-att-line .link.lk, .rd-cancel .link.lk, .rd-event .link.lk, .rd-take .link.lk { padding: 0; font-size: inherit; font-weight: 600; }
+.dock-col .note { padding: 0; }
+.dock-col .note .link { padding: 0 2px; }
+.rd-nothing, .rd-noreport, .rd-nochanges { margin: 4px 0; }
+.rd-loading { padding: 4px 0; }
+
+/* the tabs of a task, and the small switchers under them (attempts, brief revisions) */
+.rd-seg { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0 10px; }
+.rd-seg .fk-filters { flex-wrap: wrap; max-width: 100%; }
+.rd-seg .link, .rd-att-head .link, .rd-conflicts .link { padding: 0; }
+.rd-pick { margin: 0 0 8px; }
+.rd-pick .fk-filters { flex-wrap: wrap; max-width: 100%; }
+.dock-col .fk-filters button { white-space: nowrap; }
+.dock-col .fk-filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* a text: the app's markdown, kept inside the column */
+.rd-md .md { overflow-wrap: break-word; } /* not "anywhere": that would let a table squeeze its words apart instead of scrolling */
+.rd-md .md-code pre, .rd-md .md-table { max-width: 100%; }
+.rd-outcome { font-size: 12px; margin: 2px 0 2px; }
+.rd-summary { margin: 0 0 6px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+.rd-error, .rd-cancel, .rd-doing, .rd-interrupted { margin: 2px 0 6px; overflow-wrap: anywhere; }
+.rd-activity { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+.rd-meta { margin: 0 0 6px; }
+
+/* attempts */
+.rd-attempts { display: flex; flex-direction: column; gap: 10px; }
+.rd-attempt + .rd-attempt { padding-top: 9px; border-top: 1px solid var(--line); }
+.rd-att-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 12px; }
+.rd-att-head b { font-weight: 620; }
+.rd-att-head .rd-times, .rd-att-head .rd-cost { color: var(--muted); font-variant-numeric: tabular-nums; }
+.rd-att-line { margin: 3px 0 0 22px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.rd-attempt .note { margin: 3px 0 0 22px; }
+.rd-phases { font-variant-numeric: tabular-nums; }
+.rd-launch { font-size: 11.5px; }
+
+/* changes */
+.rd-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; font-size: 12px; margin: 0 0 6px; }
+.rd-kv .rd-k { color: var(--muted); }
+.rd-conflicts { margin: 4px 0; font-size: 12px; }
+.rd-files, .rd-commits { display: flex; flex-direction: column; font-size: 12px; }
+.rd-file, .rd-commit { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; border-bottom: 1px solid var(--line); }
+.rd-file:last-child, .rd-commit:last-child { border-bottom: 0; }
+.rd-file > .mono, .rd-commit > .rd-wrap { flex: 1; }
+.rd-commit > .mono { flex: none; color: var(--muted); }
+.rd-stat { flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rd-tag { flex: none; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 8px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.rd-tag.tone-warn { border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.rd-cmd { margin: 8px 0 2px; max-width: 100%; }
+.rd-cmd pre { white-space: pre; }
+
+/* a turn */
+.rd-events { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 2px 0 4px; font-size: 12px; color: var(--muted); }
+.rd-event { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.rd-event.k-chat { flex-basis: 100%; color: var(--text); }
+.rd-event.k-chat .rd-mark { color: var(--text); font-size: 9px; }
+.rd-why { margin: 2px 0 4px; font-size: 12px; color: var(--muted); }
+.rd-reads .s { color: var(--muted); }
+
+/* the feed */
+.feed-row.tone-ok .g { color: var(--ok); } .feed-row.tone-danger .g { color: var(--danger); }
+.feed-row.turn { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); }
+.feed-row.turn:first-child { margin-top: 0; padding-top: 2px; border-top: 0; }
+
+/* notes */
+.rd-notes-head { flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-bottom: 8px; }
+.rd-notes-head .rd-sub { margin: 0; }
+.rd-notes-head .sub-nav button:disabled { opacity: .35; cursor: default; }
+.rd-notes-head .rd-latest { padding: 0; }
+.rd-step { min-width: 34px; text-align: center; }
+
+/* the result */
+.rd-take { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+.rd-take-line { font-size: 12.5px; overflow-wrap: anywhere; }
+.rd-branch { font-weight: 600; }
+
+/* v3: a task's tier, what a dependency hands over, what an attempt ran on and used; why a turn
+   started and what it waits for; the section a version of the notes changed */
+.rd-tier { margin: -4px 0 8px; overflow-wrap: anywhere; }
+.rd-tier b { font-weight: 620; color: var(--text); }
+.rd-chip-x { color: var(--faint); }
+.rd-att-head .rd-att-tier { color: var(--muted); }
+.rd-was { color: var(--faint); }
+.rd-tokens { font-variant-numeric: tabular-nums; }
+.rd-why { line-height: 24px; overflow-wrap: anywhere; }
+.rd-why .rd-chip { vertical-align: middle; margin: 0 1px; }
+.rd-kept { align-self: center; color: var(--muted); white-space: nowrap; }
+.rd-notes-line i, .feed-row .s i { font-style: italic; }
+.rd-md .md .rd-changed { margin-left: -10px; padding-left: 8px; border-left: 2px solid var(--accent); }
+.rd-goal-tier-name { color: var(--text); }

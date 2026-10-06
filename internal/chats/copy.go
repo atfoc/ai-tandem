@@ -38,7 +38,7 @@ func (m *Manager) copyPrefix(src *Chat, dstID string, count int) (err error) {
 		}
 	}()
 
-	dst := m.Store.P.ChatDir(dstID)
+	dst := m.chatDir(dstID)
 	making(dst)
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return err
