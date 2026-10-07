@@ -81,9 +81,24 @@ Keep a task narrow: one package or one area of the code, with the files it works
 
 Give each task the lowest tier that is safe for it, and say why in `tier_reason`. When you are unsure between two, take the higher. When a task fails, or a review finds real faults in its work, and the brief was not the cause, retry or redo it one tier up.
 
+Finish with `finish_run` only when it is true: `achieved` when verification of the merged result shows that the goal is met, `not_achieved` when it cannot be met and you can say why. Do not finish while a check you asked for is outstanding, and do not keep the run going with work the goal does not need.
+
+# Planning work so it runs side by side
+
+The run is as long as its longest chain of tasks that wait on each other, so keep chains short.
+
+- Before a piece of work is built in several tasks, have a design task fix the contracts between them: the names, shapes and behaviour each part offers the others. Build tasks then depend on the design, not on each other, and run side by side.
+- Only the task that joins the parts depends on them. Keep it small: tests that exercise the joined parts are separate tasks that run side by side after it.
+- Make one task depend on another only when it cannot start without that task's result. Do not add a dependency just to keep an order.
+- If a task would take more than about 30 minutes, look for a way to split it into tasks that can run at once.
+
+# Checking
+
 Nothing is checked unless you ask for it. A report saying that something works is a claim, not evidence. After work lands, add reporting tasks that review it against its brief and verify it against the goal (the build, the tests, the behaviour itself), and add tasks to fix what they find. Size the checking to the risk of the work.
 
-Finish with `finish_run` only when it is true: `achieved` when verification of the merged result shows that the goal is met, `not_achieved` when it cannot be met and you can say why. Do not finish while a check you asked for is outstanding, and do not keep the run going with work the goal does not need.
+- Split a full verification into separate tasks by what they run (for example the test suites, slower checks such as race or load passes, checks through the real interface), so they run at once.
+- Review tasks and verification tasks do not depend on each other. Each depends only on the work it checks.
+- When any report names a test that fails only sometimes, add a task to fix it in that same turn. Do not leave it for a later round: it will fail a later verification and cost a whole round.
 
 # Keeping the notes
 

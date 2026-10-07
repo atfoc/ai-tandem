@@ -65,8 +65,14 @@ func TestSvcDefaultTiers(t *testing.T) {
 	}
 	ts := model.RunTiers{Deep: tierChoice("d", ""), Standard: tierChoice("s", ""), Light: tierChoice("l", "")}
 	if ts.Of(model.TierDeep).Model != "d" || ts.Of(model.TierLight).Model != "l" || ts.Of(model.TierStandard).Model != "s" || ts.Of("").Model != "s" || ts.Of("huge").Model != "s" ||
-		ts.Of(model.OrchestratorTier).Model != "d" || ts.Of(model.MergeTier).Model != "s" {
+		ts.Of(model.TierOrchestrator).Model != "d" || ts.OrchestratorTier() != model.TierDeep || ts.Of(model.MergeTier).Model != "s" {
 		t.Error("RunTiers.Of")
+	}
+	// The orchestrator's own choice: its turns run on it and are recorded with its tier, which no task can have.
+	ts.Orchestrator = tierChoice("o", "max")
+	if ts.Of(model.TierOrchestrator) != tierChoice("o", "max") || ts.OrchestratorTier() != model.TierOrchestrator || ts.Of(model.TierDeep).Model != "d" ||
+		model.ValidTier("orchestrator") {
+		t.Error("RunTiers.Orchestrator")
 	}
 }
 
@@ -382,6 +388,77 @@ func TestAgentRecordsCarryTheTier(t *testing.T) {
 		a, ok := r.engAgentNamed(name)
 		mc := tiers.Of(tier)
 		if !ok || a.Tier != tier || a.Model != mc.Model || a.Effort != mc.Effort || a.Tokens != nil {
+			t.Errorf("the record of %s: %+v", name, a.RunAgent)
+		}
+		e.host.mu.Lock()
+		c := e.host.chats[AgentChatID(r.id, name)]
+		e.host.mu.Unlock()
+		if c == nil || c.spec.Model != mc.Model || c.spec.Effort != mc.Effort {
+			t.Errorf("the chat of %s: %+v", name, c)
+		}
+	}
+}
+
+// The orchestrator's choice in a tier map: checked like a tier when it has a model, absent
+// otherwise, set and taken away by a patch.
+func TestSvcOrchestratorChoice(t *testing.T) {
+	levels := []string{"low", "medium", "high"}
+	cat := &model.Catalog{Models: []model.CatalogModel{{ID: "big", Efforts: levels, DefaultEffort: "medium"}, {ID: "plain"}}}
+	base := tiersAll("big", "high")
+	str := func(s string) *string { return &s }
+
+	if got, err := svcCheckTiers(cat, base); err != nil || got != base {
+		t.Errorf("no choice: %+v, %v", got, err)
+	}
+	with := base
+	with.Orchestrator = tierChoice("", "high") // an effort without a model is no choice
+	if got, err := svcCheckTiers(cat, with); err != nil || got != base {
+		t.Errorf("an effort alone: %+v, %v", got, err)
+	}
+	with.Orchestrator = tierChoice("plain", "high")
+	if got, err := svcCheckTiers(cat, with); err != nil || got.Orchestrator != tierChoice("plain", "") {
+		t.Errorf("an effort the model lacks: %+v, %v", got, err)
+	}
+	with.Orchestrator = tierChoice("gone", "")
+	if _, err := svcCheckTiers(cat, with); err == nil || !strings.Contains(err.Error(), "(tier orchestrator)") {
+		t.Errorf("an unknown model: %v", err)
+	}
+
+	ts := base
+	if err := (TiersPatch{Orchestrator: &TierPatch{Model: str("plain")}}).apply(cat, &ts); err != nil || ts.Orchestrator != tierChoice("plain", "") || ts.Deep != base.Deep {
+		t.Errorf("a model: %+v, %v", ts, err)
+	}
+	if err := (TiersPatch{Orchestrator: &TierPatch{Model: str("big")}}).apply(cat, &ts); err != nil || ts.Orchestrator != tierChoice("big", "medium") {
+		t.Errorf("another model: %+v, %v", ts, err)
+	}
+	if err := (TiersPatch{Orchestrator: &TierPatch{Model: str("")}}).apply(cat, &ts); err != nil || ts != base {
+		t.Errorf("taken away: %+v, %v", ts, err)
+	}
+	// An effort alone, for an orchestrator on the deep tier: the deep tier's model at that effort.
+	if err := (TiersPatch{Orchestrator: &TierPatch{Effort: str("low")}}).apply(cat, &ts); err != nil || ts.Orchestrator != tierChoice("big", "low") || ts.Deep != base.Deep {
+		t.Errorf("an effort: %+v, %v", ts, err)
+	}
+	if err := (TiersPatch{Orchestrator: &TierPatch{Model: str("gone")}}).apply(cat, &ts); err == nil {
+		t.Error("an unknown model was taken")
+	}
+}
+
+// An orchestrator with a model of its own: its turn's record and chat are on that model, under
+// the orchestrator's tier, and the tasks keep theirs.
+func TestOrchestratorRunsOnItsOwnModel(t *testing.T) {
+	t.Parallel()
+	e, r := engConflictRun(t, "r_orchm", 2, nil)
+	tiers := model.RunTiers{Deep: tierChoice("opus", "high"), Standard: tierChoice("sonnet", "medium"), Light: tierChoice("haiku", ""),
+		Orchestrator: tierChoice("fable", "max")}
+	if err := e.s.svcSetMeta(r, func(m *model.RunMeta) error { m.Tiers = tiers; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	r.startEngine()
+	engTask(t, r, "T01", model.TaskWork)
+	for name, tier := range map[string]model.Tier{"turn-001": model.TierOrchestrator, "T01-work": model.TierStandard} {
+		a, ok := r.engAgentNamed(name)
+		mc := tiers.Of(tier)
+		if !ok || a.Tier != tier || a.Model != mc.Model || a.Effort != mc.Effort {
 			t.Errorf("the record of %s: %+v", name, a.RunAgent)
 		}
 		e.host.mu.Lock()

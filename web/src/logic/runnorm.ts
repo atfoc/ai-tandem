@@ -3,7 +3,7 @@
 // this client does not know is not drawn. DOM-free. The views validate nothing: this is the one
 // place where the wire's shape is trusted no further than it must be.
 import type { Attempt, AttemptChanges, AttemptReport, ModelChoice, NotesVersion, Op, Phase, RunAgent, RunCounts, RunDelivery, RunDetail, RunGoal, RunNotes, RunPatch, RunSettings,
-  RunTiers, RunView, RunWait, Task, TaskBrief, Tier, TokenCount, Turn } from "../types.ts";
+  RunTiers, RunView, RunWait, Task, TaskBrief, Tier, TokenCount, Turn, AgentTier } from "../types.ts";
 
 const arr = <T>(v: T[] | null | undefined): T[] => (Array.isArray(v) ? v : []);
 /** A list of records: an entry that is no record is left out. */
@@ -21,8 +21,12 @@ const TIER_NAMES = new Set<string>(["deep", "standard", "light"]);
 /** A tier this client does not know (or none: a record of before tiers) is the middle one. */
 const tier = (v: unknown): Tier => (typeof v === "string" && TIER_NAMES.has(v) ? (v as Tier) : "standard");
 const choice = (c: ModelChoice | null | undefined): ModelChoice => ({ ...c, model: str(c?.model) });
-/** A run's tiers: all three keys, each with a model ("" when the server named none). */
-export const normTiers = (t: Partial<RunTiers> | null | undefined): RunTiers => ({ deep: choice(t?.deep), standard: choice(t?.standard), light: choice(t?.light) });
+/** An agent's tier: a turn of an orchestrator with a model of its own has that name for one. */
+const agentTier = (v: unknown): AgentTier => (v === "orchestrator" ? v : tier(v));
+/** A run's tiers: all three keys, each with a model ("" when the server named none), and the
+ *  orchestrator's own choice when it has a model. */
+export const normTiers = (t: Partial<RunTiers> | null | undefined): RunTiers => ({ deep: choice(t?.deep), standard: choice(t?.standard), light: choice(t?.light),
+  ...(str(t?.orchestrator?.model) ? { orchestrator: choice(t?.orchestrator) } : {}) });
 /** A wait: its tasks are a list; one that is null or absent is no wait. */
 const normWait = (w: RunWait | null | undefined): RunWait | undefined =>
   (w && typeof w === "object" ? { tasks: arr(w.tasks), mode: w.mode === "any" ? "any" : "all", turn: num(w.turn) } : undefined);
@@ -72,7 +76,7 @@ function normTask(t: Task, at: number): Task {
 
 const normAgent = (a: RunAgent, id: string, at: number): RunAgent =>
   ({ ...a, id: str(a.id, id), name: str(a.name, id), startedAt: num(a.startedAt, at), launches: recs(a.launches), cost: typeof a.cost === "number" ? a.cost : null,
-    tier: tier(a.tier), model: str(a.model), tokens: normTokens(a.tokens) });
+    tier: agentTier(a.tier), model: str(a.model), tokens: normTokens(a.tokens) });
 
 const normNote = (n: NotesVersion): NotesVersion => ({ ...n, size: num(n.size) });
 

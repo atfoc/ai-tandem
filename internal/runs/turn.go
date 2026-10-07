@@ -79,9 +79,10 @@ func (e *engine) startTurn() {
 		if engIdleTurn(reason, idle) {
 			st.IdleStreak++
 		}
-		mc := r.meta.Tiers.Of(model.OrchestratorTier)
+		tier := r.meta.Tiers.OrchestratorTier()
+		mc := r.meta.Tiers.Of(tier)
 		tx.AddAgent(Agent{RunAgent: model.RunAgent{ID: id, Name: name, Role: model.RoleOrchestrator, Turn: n,
-			Status: model.AgentRunning, StartedAt: tx.Now(), Tier: model.OrchestratorTier, Model: mc.Model, Effort: mc.Effort}})
+			Status: model.AgentRunning, StartedAt: tx.Now(), Tier: tier, Model: mc.Model, Effort: mc.Effort}})
 		tx.Head(Entry{Turn: n})
 		tx.After(func() { e.spawnTurn(n) })
 		return nil

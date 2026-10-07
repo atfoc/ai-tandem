@@ -9,7 +9,7 @@ import { effortLabel } from "../logic/labels.ts";
 import { fmtDuration } from "../logic/subagents.ts";
 import { TIER_ROWS } from "../logic/rungoal.ts";
 import { NO_TIER, costShare, manyQuiet, missingNote, runUsage, usageMoney, usageTokens, type UsageRow } from "../logic/runusage.ts";
-import type { Catalog, RunDetail, RunTiers, Tier } from "../types.ts";
+import type { AgentTier, Catalog, RunDetail, RunTiers } from "../types.ts";
 import { catalogFor } from "../logic/agentlist.ts";
 import { serverOf } from "../logic/serverlists.ts";
 
@@ -21,7 +21,7 @@ export interface RunUsageProps {
 type Named = { row: UsageRow; name: string; note?: string };
 
 /** "Opus 5.5 · Max": a tier's model and effort, named as the composer's Models chip names them. */
-function tierNote(tiers: RunTiers | undefined, tier: Tier, cat?: Catalog): string {
+function tierNote(tiers: RunTiers | undefined, tier: AgentTier, cat?: Catalog): string {
   const c = tiers?.[tier];
   if (!c?.model) return "";
   const m = cat?.models.find((x) => x.id === c.model);
@@ -85,7 +85,7 @@ export function RunUsage({ runId, detail }: RunUsageProps) {
   const u = useMemo(() => runUsage(detail), [detail]);
   const note = useMemo(() => missingNote(detail), [detail]);
   if (!u.total.agents) return <div className="run-usage"><div className="ru-none">No agent has started yet: nothing is used.</div></div>;
-  const tierName = new Map(TIER_ROWS.map(([k, name]) => [k as string, name]));
+  const tierName = new Map([ORCHESTRATOR_ROW, ...TIER_ROWS].map(([k, name]) => [k as string, name]));
   const { turns, bare } = u, peak = u.total.medianPeakContext != null;
   return (
     <div className={`run-usage${bare ? " bare" : ""}`}>
@@ -105,7 +105,7 @@ export function RunUsage({ runId, detail }: RunUsageProps) {
         <table className="ru-table">
           {u.byTier.length > 0 && (
             <Section title="By tier" head="Tier" bare={bare} peak={peak}
-              rows={u.byTier.map((row) => ({ row, name: tierName.get(row.key) ?? row.key, note: row.key === NO_TIER ? "no tier" : tierNote(tiers, row.key as Tier, cat) }))} />
+              rows={u.byTier.map((row) => ({ row, name: tierName.get(row.key) ?? row.key, note: row.key === NO_TIER ? "no tier" : tierNote(tiers, row.key as AgentTier, cat) }))} />
           )}
           <Section title="By kind of task" head="Kind" bare={bare} peak={peak} rows={u.byKind.map((row) => ({ row, name: KIND_NAMES[row.key] ?? row.key }))} />
         </table>

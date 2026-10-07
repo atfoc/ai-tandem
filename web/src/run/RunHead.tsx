@@ -16,8 +16,8 @@ import { fitZoom, zoomIn, zoomOut, type RowFilter } from "../logic/runzoom.ts";
 import { busySlots, countsTitle, meterTone, money, moneyLimit, stoppedTotal, workingMs } from "../logic/runview.ts";
 import type { TimelineView } from "./Timeline.tsx";
 import { TIGHT, useSize } from "./actions.ts";
-import { TIER_ROWS } from "../logic/rungoal.ts";
-import { TIERS, type RunView, type Stop, type Tier } from "../types.ts";
+import { orchestratorChoice, ORCHESTRATOR_ROW, TIER_ROWS } from "../logic/rungoal.ts";
+import { TIERS, type AgentTier, type RunView, type Stop } from "../types.ts";
 import { catalogFor } from "../logic/agentlist.ts";
 import { serverOf } from "../logic/serverlists.ts";
 import { folderOn, runWhere } from "../logic/runserver.ts";
@@ -82,9 +82,10 @@ export const RunHead = memo(function RunHead({ run: r, stops, view: v, rows, fol
   const showAgent = !narrow && (!row || w >= 840);
   const s = r.settings, busy = busySlots(r), total = runTaskTotal(r), done = runTasksDone(r);
   const turnsTone = meterTone(r.turns, s.maxTurns), costTone = r.cost != null ? meterTone(r.cost, s.maxCost) : "ok";
-  const deep = r.tiers.deep, model = modelLabel(deep, cat), effort = deep.effort ? effortLabel(deep.effort) : ""; // the orchestrator's tier
+  const deep = orchestratorChoice(r.tiers), model = modelLabel(deep, cat), effort = deep.effort ? effortLabel(deep.effort) : ""; // what the orchestrator runs on
   const same = TIERS.every((k) => r.tiers[k]?.model === deep.model && (r.tiers[k]?.effort ?? "") === (deep.effort ?? "")); // one model at three efforts is three tiers
-  const tier = (k: Tier) => { const c = r.tiers[k], e = c?.effort ? effortLabel(c.effort) : ""; return `${c?.model ? modelLabel(c, cat) : "none"}${e ? `, ${e} effort` : ""}`; };
+  const tier = (k: AgentTier) => { const c = k === "orchestrator" ? deep : r.tiers[k], e = c?.effort ? effortLabel(c.effort) : ""; return `${c?.model ? modelLabel(c, cat) : "none"}${e ? `, ${e} effort` : ""}`; };
+  const named = r.tiers.orchestrator ? [ORCHESTRATOR_ROW, ...TIER_ROWS] : TIER_ROWS; // an orchestrator on the deep tier is not named apart
   // In a tight stage the three filters of a selected task do not fit the tools' row: their counts
   // go to their titles and the Now button keeps its mark only.
   const brief = tight && v?.counts.related != null;
@@ -121,7 +122,7 @@ export const RunHead = memo(function RunHead({ run: r, stops, view: v, rows, fol
       {showAgent && (
         <span className={`tchip static run-agent-chip agent-${agentClass(r.agent)}`} title={same
           ? `Every agent of this run is ${agentName(r.agent)}, in ${folder}. Its orchestrator works on ${model}${effort ? `, ${effort} effort` : ""}`
-          : `Every agent of this run is ${agentName(r.agent)}, in ${folder}. ${TIER_ROWS.map(([k, name]) => `${name}: ${tier(k)}`).join("; ")}`}>
+          : `Every agent of this run is ${agentName(r.agent)}, in ${folder}. ${named.map(([k, name]) => `${name}: ${tier(k)}`).join("; ")}`}>
           <span className="run-agent-glyph"><AgentGlyph agent={r.agent} size={12} /></span>{agentShortName(r.agent)} · {same ? `${model}${effort ? ` · ${effort}` : ""}` : "3 tiers"}
         </span>
       )}

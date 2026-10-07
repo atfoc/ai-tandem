@@ -559,11 +559,14 @@ type PatchReq struct {
 	Settings *SettingsPatch   `json:"settings,omitempty"`
 }
 
-// TiersPatch changes what the tiers run on; only the tiers that are set change.
+// TiersPatch changes what the tiers run on; only the tiers that are set change. Orchestrator is
+// the orchestrator's own choice: the model "" takes it away, and the orchestrator runs on the deep
+// tier again.
 type TiersPatch struct {
-	Deep     *TierPatch `json:"deep,omitempty"`
-	Standard *TierPatch `json:"standard,omitempty"`
-	Light    *TierPatch `json:"light,omitempty"`
+	Deep         *TierPatch `json:"deep,omitempty"`
+	Standard     *TierPatch `json:"standard,omitempty"`
+	Light        *TierPatch `json:"light,omitempty"`
+	Orchestrator *TierPatch `json:"orchestrator,omitempty"`
 }
 
 type TierPatch struct {

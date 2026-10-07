@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applies, applyResultOf, canResetTiers, goalLine, sentence, limitText, limitValue, settingsChange, setupValue, tiersReset, withoutGit,
-  LIMITS, NOT_GIT, SETUP_MAX, TIER_ROWS, UNCOMMITTED, WAKES } from "../src/logic/rungoal.ts";
+  LIMITS, NOT_GIT, ORCHESTRATOR_ROW, SETUP_MAX, TIER_ROWS, UNCOMMITTED, WAKES, orchestratorChoice } from "../src/logic/rungoal.ts";
 import { limitsLabel, startBlock } from "../src/logic/run.ts";
 import { TIERS, type RunSettings, type RunTiers } from "../src/types.ts";
 
@@ -188,7 +188,17 @@ test("canResetTiers: only with defaults that a tier differs from", () => {
 });
 
 test("tiersReset: every tier's default model and effort", () => {
-  assert.deepEqual(tiersReset(tiers), { deep: { model: "opus", effort: "high" }, standard: { model: "sonnet", effort: "medium" }, light: { model: "haiku" } });
+  assert.deepEqual(tiersReset(tiers), { deep: { model: "opus", effort: "high" }, standard: { model: "sonnet", effort: "medium" }, light: { model: "haiku" }, orchestrator: { model: "" } });
+  assert.deepEqual(tiersReset({ ...tiers, orchestrator: { model: "fable", effort: "max" } }).orchestrator, { model: "fable", effort: "max" });
+});
+
+test("the orchestrator's own choice: shown, and reset away", () => {
+  assert.deepEqual(orchestratorChoice(tiers), tiers.deep); // none of its own: the deep tier's
+  const own: RunTiers = { ...tiers, orchestrator: { model: "fable", effort: "max" } };
+  assert.deepEqual(orchestratorChoice(own), { model: "fable", effort: "max" });
+  assert.equal(canResetTiers({ tiers: own, tierDefaults: tiers }), true);
+  assert.equal(canResetTiers({ tiers: own, tierDefaults: structuredClone(own) }), false);
+  assert.equal(ORCHESTRATOR_ROW[0], "orchestrator");
 });
 
 test("TIER_ROWS: the three tiers in order, named", () => {

@@ -1,13 +1,13 @@
-// The Models chip of the goal composer and its popover: a model and an effort for each of the
-// run's three tiers, with the chat's own pickers. Each pick is saved at once.
+// The Models chip of the goal composer and its popover: a model and an effort for the orchestrator
+// and for each of the run's three tiers, with the chat's own pickers. Each pick is saved at once.
 import React, { useEffect, useRef, useState } from "react";
 import { Picker, effortLabel } from "../Composer.tsx";
 import { tiersLabel } from "../logic/run.ts";
-import { canResetTiers, tiersReset, TIER_ROWS } from "../logic/rungoal.ts";
-import type { Catalog, ModelChoice, RunView, Tier } from "../types.ts";
+import { canResetTiers, orchestratorChoice, tiersReset, ORCHESTRATOR_ROW, TIER_ROWS } from "../logic/rungoal.ts";
+import type { Catalog, RunView, TiersChange } from "../types.ts";
 
 export function RunTiers({ r, cat, hint, onChange }: {
-  r: RunView; cat: Catalog; hint: string; onChange: (tiers: Partial<Record<Tier, Partial<ModelChoice>>>) => void;
+  r: RunView; cat: Catalog; hint: string; onChange: (tiers: TiersChange) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [pick, setPick] = useState<string | null>(null); // the open picker: the tier and "m" or "e"
@@ -32,18 +32,21 @@ export function RunTiers({ r, cat, hint, onChange }: {
     if (over > 0) el.style.left = `${-over}px`;
   }, [open]);
   const label = tiersLabel(r.tiers, (id) => modelOf(id)?.label);
+  // The orchestrator's row shows the deep tier's choice until it has one of its own.
+  const rows = [ORCHESTRATOR_ROW, ...TIER_ROWS];
+  const choiceOf = (k: (typeof rows)[number][0]) => (k === "orchestrator" ? orchestratorChoice(r.tiers) : r.tiers[k]);
   return (
     <div className="menu-wrap">
       <button className="tchip" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}
-        title={`Models: ${TIER_ROWS.map(([k, name]) => `${name} ${modelOf(r.tiers[k].model)?.label ?? (r.tiers[k].model || "none")}`).join(", ")} — ${hint}`}>
+        title={`Models: ${rows.map(([k, name]) => `${name} ${modelOf(choiceOf(k).model)?.label ?? (choiceOf(k).model || "none")}`).join(", ")} — ${hint}`}>
         <span className="tchip-pre">Models</span><span className="run-tiers-label">{label}</span><span className="caret">▾</span>
       </button>
       {open && (
-        <div ref={pop} className="menu up usage-pop run-tiers" role="dialog" aria-label="Models by tier" onMouseDown={(e) => e.stopPropagation()}>
-          <div className="menu-head">Models by tier</div>
+        <div ref={pop} className="menu up usage-pop run-tiers" role="dialog" aria-label="Models of the orchestrator and by tier" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="menu-head">Models</div>
           <div className="run-field-foot top">The orchestrator gives every task one of three tiers.</div>
-          {TIER_ROWS.map(([k, name, note]) => {
-            const c = r.tiers[k], m = modelOf(c.model);
+          {rows.map(([k, name, note]) => {
+            const c = choiceOf(k), m = modelOf(c.model);
             return (
               <div className="run-tier" key={k} data-tier={k}>
                 <span className="run-tier-name"><b>{name}</b><span>{note}</span></span>

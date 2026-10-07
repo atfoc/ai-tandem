@@ -109,7 +109,7 @@ var RunTools = []Tool{
 		Name:        "wait_for",
 		Description: "Says which tasks you are waiting for. After this turn you are started again when they have ended (all of them, or the first one with mode any), and in any case when a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat. Other tasks that finish meanwhile do not start you; you are told about them then. It holds until your next turn starts; calling it again replaces it.",
 		Schema: obj(props{
-			"tasks": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ids of pending or running tasks whose results you need before you can decide anything more"},
+			"tasks": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ids of pending or running tasks whose results can create new work: the design, review and verification tasks that are still open"},
 			"mode":  map[string]any{"type": "string", "enum": []any{"all", "any"}, "description": "Default all"},
 		}, "tasks"),
 		Summary: `{"tasks": ["T03", "T04"], "mode"?: "all|any"}`,

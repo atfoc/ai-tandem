@@ -928,7 +928,7 @@ function step(R) {
         ...(e.wait ? { wait: e.wait, waitMet: met } : {}), wokenBy, learned: [], ops: [], cost: null };
       e.resumed = false; e.wait = null;
       d.turns.push(turn); p.turns.push(turn);
-      agent({ id, name: `turn-${pad(n, 3)}`, role: "orchestrator", turn: n, status: "running", startedAt: now, launches: [{ n: 1, startedAt: now, resume: false }], cost: null, ...start("deep") });
+      agent({ id, name: `turn-${pad(n, 3)}`, role: "orchestrator", turn: n, status: "running", startedAt: now, launches: [{ n: 1, startedAt: now, resume: false }], cost: null, ...start(R.meta.tiers.orchestrator ? "orchestrator" : "deep") });
       e.step = 1; break;
     }
     case 1: op({ op: "get_run" }); e.step = 2; break;
@@ -1249,7 +1249,10 @@ function patchRun(R, b) {
   if (b.tiers !== undefined) { // only the tiers and the fields given change
     const tiers = clone(next.tiers), models = catalogOf(next.agent)?.models ?? [];
     for (const [k, c] of Object.entries(b.tiers ?? {})) {
-      if (!TIERS.includes(k)) return fail(400, `unknown tier ${k}`);
+      if (k === "orchestrator") { // its own choice: the model "" takes it away, an effort alone is given to a copy of the deep tier's
+        if (c?.model === "") { delete tiers.orchestrator; continue; }
+        tiers.orchestrator ??= c?.model !== undefined ? { model: "" } : { ...tiers.deep };
+      } else if (!TIERS.includes(k)) return fail(400, `unknown tier ${k}`);
       if (c?.model !== undefined) {
         const mm = models.find((x) => x.id === c.model);
         if (!mm) return fail(400, `unknown model ${c.model}`);

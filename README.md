@@ -61,8 +61,10 @@ user-supplied MCP tools run un-gated because the ask UI comes from the app's UDS
 A **run** is a sidebar item next to boards and chats. You type a goal and leave: an *orchestrator*
 agent splits the goal into tasks, *task agents* carry them out in parallel, and the run goes on
 until the orchestrator says the goal is met (or cannot be), a limit is reached, or you stop it. You
-pick the agent (Claude, Cursor or pi), the model and the folder before you start; they are fixed
-from then on. The run view shows the turns, the tasks and what every agent is doing, and each
+pick the agent (Claude, Cursor or pi), the models and the folder before you start; they are fixed
+from then on. The models are one for each of the three tiers the orchestrator gives its tasks
+(deep, standard, light) and, if you want, one for the orchestrator itself, which otherwise runs on
+the deep tier's. The run view shows the turns, the tasks and what every agent is doing, and each
 agent's transcript.
 
 - **Where its state lives.** Everything the app records about a run is in

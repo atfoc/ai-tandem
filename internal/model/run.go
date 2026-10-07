@@ -96,8 +96,11 @@ const (
 	TierStandard Tier = "standard"
 	TierLight    Tier = "light"
 
-	OrchestratorTier = TierDeep     // every orchestrator turn
-	MergeTier        = TierStandard // every merge agent
+	// TierOrchestrator is not a tier a task can have: it is what an orchestrator turn is recorded
+	// with in a run whose orchestrator has a model of its own (RunTiers.Orchestrator).
+	TierOrchestrator Tier = "orchestrator"
+
+	MergeTier = TierStandard // every merge agent
 )
 
 // Tiers are the tiers, most capable first.
@@ -118,11 +121,29 @@ type RunTiers struct {
 	Deep     ModelChoice `json:"deep"`
 	Standard ModelChoice `json:"standard"`
 	Light    ModelChoice `json:"light"`
+	// Orchestrator is what the orchestrator's turns run on. Without a model (as in every run made
+	// before it could be chosen) the orchestrator runs on the deep tier.
+	Orchestrator ModelChoice `json:"orchestrator,omitzero"`
 }
 
-// Of is the choice of tier; "" and an unknown tier are the standard one.
+// OrchestratorTier is the tier an orchestrator turn is recorded with: TierOrchestrator when the
+// orchestrator has a model of its own, else the deep tier it runs on.
+func (t RunTiers) OrchestratorTier() Tier {
+	if t.Orchestrator.Model != "" {
+		return TierOrchestrator
+	}
+	return TierDeep
+}
+
+// Of is the choice of tier; "" and an unknown tier are the standard one, and the orchestrator's
+// is the deep one while it has no model of its own.
 func (t RunTiers) Of(tier Tier) ModelChoice {
 	switch tier {
+	case TierOrchestrator:
+		if t.Orchestrator.Model != "" {
+			return t.Orchestrator
+		}
+		return t.Deep
 	case TierDeep:
 		return t.Deep
 	case TierLight:

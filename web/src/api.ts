@@ -2,7 +2,7 @@
 // so the server knows which of its clients is calling.
 import { LOCAL_SERVER } from "./types.ts";
 import type { AgentKind, AttemptChanges, AttemptReport, Board, BranchState, Catalog, ChatView, ContextSplit, Defaults, Draft, Group, Item, ModelChoice, PlanUsage, Reference,
-  RunDelivery, RunDetail, RunGoal, RunNotes, RunSettings, RunView, ServerLists, Subagent, Target, TaskBrief, Tier, TreeLabel, TreeView } from "./types.ts";
+  RunDelivery, RunDetail, RunGoal, RunNotes, RunSettings, RunView, ServerLists, Subagent, Target, TaskBrief, Tier, TiersChange, TreeLabel, TreeView } from "./types.ts";
 import type { PermAnswer } from "./logic/perms.ts";
 import type { ServerView } from "./logic/servers.ts";
 import { UNKNOWN_CLIENT, unknownClient } from "./logic/unknownclient.ts";
@@ -132,7 +132,7 @@ export const api = {
   moveRun: (id: string, group: string) => call<RunView>("PATCH", `/api/runs/${id}`, { group }),
   /** Until the run starts (409 after). Only the tiers and the fields given change; another agent: the
    *  answer has that agent's defaults in all three tiers. settings are merged. */
-  configureRun: (id: string, p: { server?: string; agent?: AgentKind; tiers?: Partial<Record<Tier, Partial<ModelChoice>>>; cwd?: string; settings?: Partial<RunSettings> }) =>
+  configureRun: (id: string, p: { server?: string; agent?: AgentKind; tiers?: TiersChange; cwd?: string; settings?: Partial<RunSettings> }) =>
     call<RunView>("PATCH", `/api/runs/${id}`, p),
   /** The goal being typed; a started run ignores it. */
   saveRunDraft: (id: string, d: Draft, keepalive = false) => call("PUT", `/api/runs/${id}/draft`, d, keepalive),

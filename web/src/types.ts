@@ -365,8 +365,15 @@ export type StopReason = "user" | "app_quit" | "stalled" | "error";
 /** The three levels of model a run works with: the orchestrator picks one per task. */
 export type Tier = "deep" | "standard" | "light";
 export const TIERS: Tier[] = ["deep", "standard", "light"];
-/** The model and effort of each tier; all three keys are always present. */
-export type RunTiers = Record<Tier, ModelChoice>;
+/** What an agent is recorded with: its tier, or "orchestrator" for a turn of an orchestrator that
+ *  has a model of its own. */
+export type AgentTier = Tier | "orchestrator";
+/** The model and effort of each tier; all three keys are always present. `orchestrator` is the
+ *  orchestrator's own choice: absent, the orchestrator runs on the deep tier. */
+export type RunTiers = Record<Tier, ModelChoice> & { orchestrator?: ModelChoice };
+/** What the composer saves of the tiers: the choices given change; the orchestrator's model ""
+ *  takes its own choice away. */
+export type TiersChange = Partial<Record<AgentTier, Partial<ModelChoice>>>;
 /** Tokens an agent used. */
 export type TokenCount = { in: number; out: number; cacheRead: number; cacheWrite: number };
 /** The tasks the orchestrator waits for before its next turn: all of them, or any one. */
@@ -621,7 +628,7 @@ export type RunAgent = {
   launches: Launch[];      // one per process started for it
   error?: string;
   cost: number | null;
-  tier: Tier;              // an orchestrator's is "deep", a merge agent's "standard"
+  tier: AgentTier;         // an orchestrator's is "deep", or "orchestrator" with a model of its own; a merge agent's "standard"
   model: string;
   effort?: string;
   tokens: TokenCount | null; // null: this agent kind reports none (Cursor)

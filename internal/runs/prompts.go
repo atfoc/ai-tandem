@@ -190,6 +190,32 @@ func engWhy(p engOrchPrompt) string {
 	return why
 }
 
+// engPlanning is the part of the orchestrator's prompt on how to lay tasks out so that they run at
+// the same time.
+const engPlanning = `# Planning work so it runs side by side
+
+The run is as long as its longest chain of tasks that wait on each other, so keep chains short.
+
+- Before a piece of work is built in several tasks, have a design task fix the contracts between them: the names, shapes and behaviour each part offers the others. Build tasks then depend on the design, not on each other, and run side by side.
+- Only the task that joins the parts depends on them. Keep it small: tests that exercise the joined parts are separate tasks that run side by side after it.
+- Make one task depend on another only when it cannot start without that task's result. Do not add a dependency just to keep an order.
+- If a task would take more than about 30 minutes, look for a way to split it into tasks that can run at once.`
+
+// engChecking is the part of the orchestrator's prompt on reviews and verification.
+const engChecking = `# Checking
+
+Nothing is checked unless you ask for it. A report saying that something works is a claim, not evidence. After work lands, add reporting tasks that review it against its brief and verify it against the goal (the build, the tests, the behaviour itself), and add tasks to fix what they find. Size the checking to the risk of the work.
+
+- Split a full verification into separate tasks by what they run (for example the test suites, slower checks such as race or load passes, checks through the real interface), so they run at once.
+- Review tasks and verification tasks do not depend on each other. Each depends only on the work it checks.
+- When any report names a test that fails only sometimes, add a task to fix it in that same turn. Do not leave it for a later round: it will fail a later verification and cost a whole round.`
+
+// engStartedAgain is the part of the orchestrator's prompt on what to wait for, in a run whose
+// orchestrator says so (wake mode declared). Its %s is the run's limit of turns.
+const engStartedAgain = "# When you are started again\n\n" +
+	"Call `wait_for` in mode `any`, naming every design, review and verification task that is still open. These are the tasks whose results create new work. Do not wait for build tasks: the tasks that depend on them start by themselves. When no design, review or verification task is open and build tasks are still running, name those build tasks in mode `all` instead.\n\n" +
+	"When you are started, act on the result that arrived: add the tasks it calls for at once, without waiting for the other checks of the stage. Then call `wait_for` again with the tasks still open. After a turn that ends without a wait, an instance is started after every task that finishes, which uses up the run's turns: the run is stopped after %s.\n\n"
+
 // engOrchestratorPrompt is the first message of an orchestrator turn.
 func engOrchestratorPrompt(p engOrchPrompt) string {
 	notes := strings.TrimSpace(p.Notes)
@@ -226,15 +252,16 @@ func engOrchestratorPrompt(p engOrchPrompt) string {
 		also = "It can also read the goal and the other briefs, for context only."
 	}
 	ending := "When the run is the way you want it, end with a short message for the person watching: what you learned, what you changed in the run and why, and what you expect to happen next."
-	var wake string
+	var wake, again string
 	switch p.Wake {
 	case "each":
 		wake = "You are started again whenever a task finishes or fails, and when the person changes the run or leaves a message through a chat"
 	case "idle":
 		wake = "You are started again when a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat"
 	default:
-		wake = "You say when you are started again: `wait_for` names the tasks whose results you need before you can decide anything more, and the next instance starts when they have ended. One also starts whenever a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat"
-		ending = fmt.Sprintf("Before you end, call `wait_for` with the tasks whose results the next decision depends on, unless nothing is pending or running. Wait for all the tasks of a stage rather than for each one: without `wait_for` an instance is started after every task that finishes, and the run is stopped after %s.\n\n", toolCount(p.MaxTurns, "turn")) + ending
+		wake = "You say when you are started again: `wait_for` names the tasks whose results can create new work, and the next instance starts when they have ended (all of them, or the first one in mode `any`). One also starts whenever a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat"
+		again = fmt.Sprintf(engStartedAgain, toolCount(p.MaxTurns, "turn"))
+		ending = "Before you end, call `wait_for` as described above, unless nothing is pending or running.\n\n" + ending
 	}
 	return fmt.Sprintf(`You are the orchestrator of an automated build run. Someone gave the run the goal below and left; nobody is available to answer questions. The run reaches that goal through tasks, each carried out by a separate agent, and your job is to decide what those tasks are. You do none of the work yourself: you cannot change the %s, and whatever you want investigated, built, checked or fixed has to become a task.
 
@@ -289,11 +316,13 @@ Keep a task narrow: one package or one area of the code, with the files it works
 
 Give each task the lowest tier that is safe for it, and say why in `+"`tier_reason`"+`. When you are unsure between two, take the higher. When a task fails, or a review finds real faults in its work, and the brief was not the cause, retry or redo it one tier up.
 
-Nothing is checked unless you ask for it. A report saying that something works is a claim, not evidence. After work lands, add reporting tasks that review it against its brief and verify it against the goal (the build, the tests, the behaviour itself), and add tasks to fix what they find. Size the checking to the risk of the work.
-
 Finish with `+"`finish_run`"+` only when it is true: `+"`achieved`"+` when verification of %s shows that the goal is met, `+"`not_achieved`"+` when it cannot be met and you can say why. Do not finish while a check you asked for is outstanding, and do not keep the run going with work the goal does not need.
 
-# Keeping the notes
+`+engPlanning+`
+
+`+engChecking+`
+
+%s# Keeping the notes
 
 The notes are your memory: the next instance knows only what the run and the notes tell it. They should hold, briefly: what the goal requires, the definition of done and how it will be checked, the facts established so far and which task established them, the approach and what is planned next, decisions made and why, and open questions and risks. Give each of these a section of its own (a `+"`##`"+` heading), write the first version with `+"`set_notes`"+`, and after that keep them current with `+"`edit_notes`"+`, which replaces the one section you name and leaves the rest alone. Keep them short and true: every instance reads all of them, so replace what is out of date instead of adding to it, and do not turn them into a log.
 
@@ -305,7 +334,7 @@ Rules:
 - Do not create, edit or delete files, and do not commit. Change the run only through the run tools.
 - You run unattended and cannot ask questions. Where the goal leaves something open, make the most reasonable choice and record it in the notes.`,
 		thing, p.Turn, strings.TrimSpace(p.Goal), engWhy(p), notes, p.Snapshot, where, others, gets, also, engThousands(engReportsBudget), fits, engTierLines(p.Tiers, "`"), writes, starts, wake, result,
-		thing, thing, verified, ending)
+		thing, thing, verified, again, ending)
 }
 
 // ---- a task -------------------------------------------------------------------

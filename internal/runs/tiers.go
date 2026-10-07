@@ -54,12 +54,21 @@ func svcTierEffort(cm *model.CatalogModel, want string) string {
 	return ""
 }
 
+// svcTierSlots are the choices of a tier map: the three tiers, then the orchestrator's own.
+var svcTierSlots = append(slices.Clone(model.Tiers), model.TierOrchestrator)
+
 // svcCheckTiers validates and normalises a tier map against cat: ErrNoModel for a tier with no
 // model, an error that names the tier for a model the catalogue does not have, and an effort the
-// model lacks becomes its default. A nil catalogue accepts every model and effort as it is.
+// model lacks becomes its default. A nil catalogue accepts every model and effort as it is. The
+// orchestrator's choice is checked the same way when it has a model; without one it is empty: the
+// orchestrator runs on the deep tier.
 func svcCheckTiers(cat *model.Catalog, t model.RunTiers) (model.RunTiers, error) {
-	for _, tier := range model.Tiers {
+	for _, tier := range svcTierSlots {
 		c := svcTierOf(&t, tier)
+		if c.Model == "" && tier == model.TierOrchestrator {
+			*c = model.ModelChoice{}
+			continue
+		}
 		if c.Model == "" {
 			return t, ErrNoModel
 		}
@@ -81,6 +90,8 @@ func svcTierOf(t *model.RunTiers, tier model.Tier) *model.ModelChoice {
 		return &t.Deep
 	case model.TierLight:
 		return &t.Light
+	case model.TierOrchestrator:
+		return &t.Orchestrator
 	}
 	return &t.Standard
 }
@@ -110,16 +121,28 @@ func (s *Service) svcNewTiers(on svcSide, group string, a model.AgentKind, rd *m
 }
 
 // apply puts the tiers that are set into t, checked against cat. A new model keeps the tier's
-// effort only when it has it, else takes its default; an empty effort changes nothing.
+// effort only when it has it, else takes its default; an empty effort changes nothing. The
+// orchestrator's choice is taken away by the model "", and an effort given to an orchestrator
+// that has no model of its own is given to a copy of the deep tier's choice.
 func (p TiersPatch) apply(cat *model.Catalog, t *model.RunTiers) error {
 	next := *t
-	set := map[model.Tier]*TierPatch{model.TierDeep: p.Deep, model.TierStandard: p.Standard, model.TierLight: p.Light}
-	for _, tier := range model.Tiers {
+	set := map[model.Tier]*TierPatch{model.TierDeep: p.Deep, model.TierStandard: p.Standard, model.TierLight: p.Light,
+		model.TierOrchestrator: p.Orchestrator}
+	for _, tier := range svcTierSlots {
 		tp := set[tier]
 		if tp == nil {
 			continue
 		}
 		c := svcTierOf(&next, tier)
+		if tier == model.TierOrchestrator {
+			if tp.Model != nil && *tp.Model == "" {
+				*c = model.ModelChoice{}
+				continue
+			}
+			if c.Model == "" && tp.Model == nil && tp.Effort != nil && *tp.Effort != "" {
+				*c = next.Deep
+			}
+		}
 		if tp.Model != nil {
 			if *tp.Model == "" {
 				return errSvcEmptyModel

@@ -232,7 +232,15 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 		"When you finish the run as `achieved`, the app brings the result into that folder if it can do so without touching the person's own uncommitted work; otherwise, and after `not_achieved`, the person applies it with one action. Nothing is applied while the run is going.",
 		"add no task to deliver, merge or push the result.\n\n# How to decide", "\n\nKeep a task narrow: one package", "\n\nGive each task the lowest tier that is safe for it",
 		"keep them current with `edit_notes`",
-		"# Ending your turn\n\nBefore you end, call `wait_for` with the tasks", "the run is stopped after 60 turns.\n\nWhen the run is the way you want it")
+		"\n\n# Planning work so it runs side by side\n\nThe run is as long as its longest chain of tasks that wait on each other", "have a design task fix the contracts between them",
+		"Build tasks then depend on the design, not on each other", "Only the task that joins the parts depends on them.", "more than about 30 minutes",
+		"\n\n# Checking\n\nNothing is checked unless you ask for it.", "Split a full verification into separate tasks by what they run",
+		"Review tasks and verification tasks do not depend on each other.", "a test that fails only sometimes, add a task to fix it in that same turn",
+		"\n\n# When you are started again\n\nCall `wait_for` in mode `any`, naming every design, review and verification task that is still open.",
+		"Do not wait for build tasks", "act on the result that arrived: add the tasks it calls for at once, without waiting for the other checks of the stage",
+		"the run is stopped after 60 turns.\n\n# Keeping the notes",
+		"# Ending your turn\n\nBefore you end, call `wait_for` as described above, unless nothing is pending or running.\n\nWhen the run is the way you want it")
+	hasNot("orchestrator_git_start", "Wait for all the tasks of a stage")
 	hasNot("orchestrator_git_start", "Keep one task to one coherent piece of work", "120,000", "The folder had uncommitted changes")
 	has("orchestrator_git_dirty", "no tasks and no notes. The folder had uncommitted changes when the run started. The run started from the last commit and does not see them, and the result can only be applied to the folder where it does not touch the files they are in. If the goal depends on them, say so in the notes and in your final message.\n\n# Notes")
 	has("orchestrator_git_manual", "The integration branch is not the folder the person works in. When the run has ended, the person applies the result to that folder with one action. Nothing is applied while the run is going.")
@@ -249,7 +257,8 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 	hasNot("orchestrator_early_idle", "in a row that began this way")
 	// Only wake mode declared has wait_for; a run without git has no folder to apply a result to.
 	for _, name := range []string{"orchestrator_git_events", "orchestrator_git_sub", "orchestrator_nogit_idle"} {
-		hasNot(name, "wait_for", "You say when you are started again")
+		hasNot(name, "wait_for", "You say when you are started again", "# When you are started again")
+		has(name, "# Planning work so it runs side by side", "# Checking")
 	}
 	has("orchestrator_git_events", "- You are started again whenever a task finishes or fails, and when the person changes the run or leaves a message through a chat. You never need to wait or poll")
 	hasNot("orchestrator_nogit_idle", "The integration branch is not the folder", "apply")

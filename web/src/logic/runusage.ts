@@ -10,7 +10,7 @@ export type UsageRow = { key: string; agents: number; cost: number | null; costP
                          /** How long its agents ran, from start to end; one still at work is not counted. null: none has ended. */
                          ms: number | null };
 export type RunUsage = {
-  byTier: UsageRow[];  // deep, standard, light: every agent in its own tier (the orchestrator's turns, the merge agents too), so the rows add up to the total; a tier with no agent has no row; last, NO_TIER for the agents with none
+  byTier: UsageRow[];  // orchestrator (the turns of one with a model of its own), deep, standard, light: every agent in its own tier (the orchestrator's turns, the merge agents too), so the rows add up to the total; a tier with no agent has no row; last, NO_TIER for the agents with none
   byKind: UsageRow[];  // "orchestrator", the task kinds by cost, "merge"; a row with no agent is left out
   total: { agents: number; cost: number | null; medianPeakContext: number | null; ms: number | null };
   /** No agent has a cost or tokens (the agent kind reports none): the tab leaves those columns out. */
@@ -58,8 +58,9 @@ export function runUsage(detail: RunDetail): RunUsage {
   const agents = Object.values(detail.agents ?? {});
   const tasks = agents.filter((a) => a.role === "task");
 
-  const tierless = agents.filter((a) => !TIERS.includes(a.tier));
-  const byTier = [...TIERS.map((t) => row(t, agents.filter((a) => a.tier === t))), row(NO_TIER, tierless)].filter((r) => r.agents > 0);
+  const keys = ["orchestrator", ...TIERS] as const;
+  const tierless = agents.filter((a) => !keys.includes(a.tier));
+  const byTier = [...keys.map((t) => row(t, agents.filter((a) => a.tier === t))), row(NO_TIER, tierless)].filter((r) => r.agents > 0);
 
   const kindOf = new Map((detail.tasks ?? []).map((t) => [t.id, t.kind]));
   const kinds = new Map<string, RunAgent[]>();

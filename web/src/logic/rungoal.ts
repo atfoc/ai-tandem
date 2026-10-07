@@ -1,7 +1,7 @@
 // The goal composer's rules (run/RunComposer.tsx), DOM-free: what leaving a field of the settings
 // popover saves, when the tiers can be reset, and the one line under the goal box. The server
 // checks the same ranges again.
-import { TIERS, type ModelChoice, type RunSettings, type RunTiers, type RunView, type Tier } from "../types.ts";
+import { TIERS, type ModelChoice, type RunSettings, type RunTiers, type RunView, type Tier, type TiersChange } from "../types.ts";
 
 export type LimitKey = "maxParallel" | "maxTurns" | "maxCost";
 
@@ -64,25 +64,32 @@ export const APPLY_NOTE_NO_GIT = "Not used without git: agents work in the folde
 
 /** The rows of the tier popover: the tier, its name and what runs on it. */
 export const TIER_ROWS: [Tier, string, string][] = [
-  ["deep", "Deep", "the orchestrator, and the hardest tasks"],
+  ["deep", "Deep", "the hardest tasks"],
   ["standard", "Standard", "most tasks, and merges"],
   ["light", "Light", "simple, mechanical tasks"],
 ];
 
+/** The orchestrator's row of the tier popover, above the tiers'. */
+export const ORCHESTRATOR_ROW: ["orchestrator", string, string] = ["orchestrator", "Orchestrator", "plans the run; on the Deep model until you pick one"];
+
+/** What the orchestrator runs on: its own choice, else the deep tier's. */
+export const orchestratorChoice = (t: RunTiers): ModelChoice => (t.orchestrator?.model ? t.orchestrator : t.deep);
+
 const sameChoice = (a: ModelChoice, b: ModelChoice): boolean => a.model === b.model && (a.effort ?? "") === (b.effort ?? "");
+const NO_CHOICE: ModelChoice = { model: "" };
 
 /** "Reset to the defaults" can be pressed: the agent kind's defaults are known and a tier differs
  *  from them. */
 export function canResetTiers(r: Pick<RunView, "tiers" | "tierDefaults">): boolean {
   const d = r.tierDefaults;
-  return !!d && TIERS.some((k) => !sameChoice(r.tiers[k], d[k]));
+  return !!d && (TIERS.some((k) => !sameChoice(r.tiers[k], d[k])) || !sameChoice(r.tiers.orchestrator ?? NO_CHOICE, d.orchestrator ?? NO_CHOICE));
 }
 
 /** What "Reset to the defaults" saves: the defaults' model and effort of every tier (no effort for
- *  a model that has none). */
-export function tiersReset(d: RunTiers): Record<Tier, Partial<ModelChoice>> {
+ *  a model that has none), and the orchestrator's own choice taken away when the defaults have none. */
+export function tiersReset(d: RunTiers): TiersChange {
   const one = (c: ModelChoice) => (c.effort ? { model: c.model, effort: c.effort } : { model: c.model });
-  return { deep: one(d.deep), standard: one(d.standard), light: one(d.light) };
+  return { deep: one(d.deep), standard: one(d.standard), light: one(d.light), orchestrator: one(d.orchestrator ?? NO_CHOICE) };
 }
 
 /** The run's folder is there and is not a git repository: tasks get no checkout of their own, and
