@@ -228,7 +228,7 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 		"the full reports of those you name in `needs_report`", "whole up to 60,000 characters together, in the order of `depends_on`; one that does not fit is given to it as a file to read.\n",
 		"- Every task has a tier, which decides how capable an agent it gets and what it costs:\n  - `deep` (opus, high effort): the result is a decision",
 		"\n  - `standard` (opus, medium effort): work from a precise brief", "\n  - `light` (sonnet, medium effort): gathering facts",
-		"- You say when you are started again: `wait_for` names the tasks", "One also starts whenever a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat. You never need to wait or poll",
+		"- You say when you are started again, with `wait_for`: \"What to wait for\" below says what to name. An instance is also started whenever a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat. Never poll or sleep until a task ends",
 		"When you finish the run as `achieved`, the app brings the result into that folder if it can do so without touching the person's own uncommitted work; otherwise, and after `not_achieved`, the person applies it with one action. Nothing is applied while the run is going.",
 		"add no task to deliver, merge or push the result.\n\n# How to decide", "\n\nKeep a task narrow: one package", "\n\nGive each task the lowest tier that is safe for it",
 		"keep them current with `edit_notes`",
@@ -236,10 +236,13 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 		"Build tasks then depend on the design, not on each other", "Only the task that joins the parts depends on them.", "more than about 30 minutes",
 		"\n\n# Checking\n\nNothing is checked unless you ask for it.", "Split a full verification into separate tasks by what they run",
 		"Review tasks and verification tasks do not depend on each other.", "a test that fails only sometimes, add a task to fix it in that same turn",
-		"\n\n# When you are started again\n\nCall `wait_for` in mode `any`, naming every design, review and verification task that is still open.",
+		"\n\n# What to wait for\n\nCall `wait_for` in mode `any`, naming every design, review and verification task that is still open.",
 		"Do not wait for build tasks", "act on the result that arrived: add the tasks it calls for at once, without waiting for the other checks of the stage",
 		"the run is stopped after 60 turns.\n\n# Keeping the notes",
-		"# Ending your turn\n\nBefore you end, call `wait_for` as described above, unless nothing is pending or running.\n\nWhen the run is the way you want it")
+		"# Ending your turn\n\nBefore you end, call `wait_for` as \"What to wait for\" says. When nothing is pending or running there is nothing to wait for: the run moves on only if you add work or finish it.\n\nWhen the run is the way you want it",
+		"- Add the checks of a piece of work in the same turn as the work, depending on it", "Add them when the design has reported, with its contracts quoted in their briefs.",
+		"also in a turn that changed nothing else", "The task that joins parts is the exception")
+	hasNot("orchestrator_git_start", "After work lands", "as wide as it safely can be", "In this run, though, writing tasks run one at a time")
 	hasNot("orchestrator_git_start", "Wait for all the tasks of a stage")
 	hasNot("orchestrator_git_start", "Keep one task to one coherent piece of work", "120,000", "The folder had uncommitted changes")
 	has("orchestrator_git_dirty", "no tasks and no notes. The folder had uncommitted changes when the run started. The run started from the last commit and does not see them, and the result can only be applied to the folder where it does not touch the files they are in. If the goal depends on them, say so in the notes and in your final message.\n\n# Notes")
@@ -257,10 +260,10 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 	hasNot("orchestrator_early_idle", "in a row that began this way")
 	// Only wake mode declared has wait_for; a run without git has no folder to apply a result to.
 	for _, name := range []string{"orchestrator_git_events", "orchestrator_git_sub", "orchestrator_nogit_idle"} {
-		hasNot(name, "wait_for", "You say when you are started again", "# When you are started again")
+		hasNot(name, "wait_for", "You say when you are started again", "# What to wait for")
 		has(name, "# Planning work so it runs side by side", "# Checking")
 	}
-	has("orchestrator_git_events", "- You are started again whenever a task finishes or fails, and when the person changes the run or leaves a message through a chat. You never need to wait or poll")
+	has("orchestrator_git_events", "- You are started again whenever a task finishes or fails, and when the person changes the run or leaves a message through a chat. Never poll or sleep until a task ends")
 	hasNot("orchestrator_nogit_idle", "The integration branch is not the folder", "apply")
 	// The run tools are named bare in the texts; one passage says how a CLI lists them and which
 	// tools of its own they are not.
@@ -276,7 +279,7 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 	has("orchestrator_git_sub", "The run was started in its folder `services/api`: every task's agent starts in that folder of its own checkout and can read and change the whole repository. Give paths in a brief from the top of the repository.", "Since the last orchestrator turn:\n\n- nothing new",
 		"You are started again when a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat")
 	has("orchestrator_nogit_idle", "Nothing is running and nothing can start.", "This is turn 2 in a row that began this way; after 3 the run is stopped as stalled.",
-		"Your working directory is the run's folder itself", "Writing tasks run one at a time", "the run's folder to work in", "Nothing is undone")
+		"Your working directory is the run's folder itself", "Writing tasks run one at a time", "- In this run, though, writing tasks run one at a time whatever their dependencies: only reporting tasks run side by side.", "the run's folder to work in", "Nothing is undone")
 	hasNot("orchestrator_nogit_idle", "git worktree", "integration branch,")
 	has("orchestrator_git_resume", "The run was halted (it had reached the limit of orchestrator turns) and the person who started it resumed it.\n\nSince the last orchestrator turn:\n\n- T01 finished.",
 		"Nothing is running and nothing can start.")
@@ -306,17 +309,17 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 	has("task_nogit_writes", "the run's own folder, which is not a git repository: you work directly in it", "Do not create a git repository in it.",
 		"say so in your report.\n- Everything you read stays with you", "Its full report is at /work/aiwb-run-work/r_x/ctx/reports/T02.a1.md.")
 	hasNot("task_nogit_writes", "git worktree", "git diff", "The changes of a failed task are not merged.")
-	has("task_nogit_reports", "do not create, change or delete files in it")
+	has("task_nogit_reports", "do not create, change or delete the folder's own files. What a build or a test run writes by itself is fine.")
 	has("task_git_sub_writes", "Your working directory is the folder `services/api` of a git worktree made for this task, branched from the run's integration branch as it is now. The worktree is the whole repository (`git rev-parse --show-toplevel` names its top), and when you finish, whatever you changed anywhere in it is committed and merged into that branch for you. Other tasks may be running",
-		"Rules:\n- Work only inside your worktree. Other agents are working at the same time in other\n  git worktrees of this repository; never touch anything outside your own.")
+		"Rules:\n- Change nothing outside your worktree: other agents are working at the same time in other git worktrees of this repository. Files this message names by path are yours to read.")
 	has("task_git_sub_reports", "Your working directory is the folder `services/api` of a scratch checkout of the run's integration branch as it is now (the checkout is the whole repository). This task produces a report, not changes",
-		"Rules:\n- Work only inside your worktree.")
+		"Rules:\n- Change nothing outside your worktree:")
 	for _, name := range []string{"task_git_sub_writes", "task_git_sub_reports"} {
-		hasNot(name, "Work only inside your working directory")
+		hasNot(name, "Change nothing outside your working directory")
 	}
 	has("task_goal_cut", "document it.\n[The goal is cut here: the first 19,961 of 25,011 characters.]\n</goal>\n\nYour working directory")
 	has("orchestrator_nogit_start", "you cannot change the folder, and whatever", "what the folder already has", "Add tasks that change the folder once", "when verification of the result shows",
-		"it may run while a writing task is changing them, so a task that checks a writing task's work must depend on it.", "`wait_for` names the tasks")
+		"it may run while a writing task is changing them, so a task that checks a writing task's work must depend on it.", "You say when you are started again, with `wait_for`")
 	hasNot("orchestrator_nogit_start", "change the repository,", "the repository already has", "change the repository", "the merged result", "Integration branch", "integration branch")
 	has("orchestrator_git_start", "you cannot change the repository, and whatever", "what the repository already has", "Add tasks that change the repository once", "when verification of the merged result shows",
 		"the full reports of those you name in `needs_report` (it can open the other reports as files when a summary leaves it short), and a checkout of the repository.",
@@ -339,7 +342,7 @@ func TestPromptsSayWhatTheyMust(t *testing.T) {
 	has("resume_task", "Your previous run of this job stopped before it finished", "Subagents you had started are gone", "First check what state your working directory is in", "They follow in full.\n\n---\n\nYou are one of the agents")
 	hasNot("resume_orchestrator", "Subagents you had started", "your working directory is in")
 	has("resume_orchestrator", "did not finish; do not assume that it completed. Continue where you left off and complete the job.\n\nEverything in the original instructions", "They follow in full.\n\nTool calls you made before the stop took effect; the run below is as it is now.\n\n---\n\nYou are the orchestrator")
-	has("retry_task_git", "you do not need what it reads yourself.\n\nNote: an earlier attempt at this job did not finish.", "check `git status`")
+	has("retry_task_git", "you do not need what it reads yourself.\n\nNote: an earlier attempt at this job did not finish, and you are in the working directory it left, not a fresh one.", "check `git status`")
 	has("retry_task_nogit", "look at the files and build on whatever is sound.")
 	hasNot("retry_task_nogit", "git status")
 	has("retry_orchestrator_start", "Note: an earlier instance of this turn did not finish. Tool calls it made took effect; the run above is as it is now.")
@@ -614,7 +617,7 @@ func TestOrchPromptFromRecord(t *testing.T) {
 	asked := "# Why you were started\n\nThe instance of turn 1 asked to be started again when all of " + a + " had ended. "
 	chat := turn(2, func(t *Turn) { t.WokenBy = []model.RunEvent{{Seq: 1, Type: "chat_op", Chat: "c_1", Text: "changed"}} })
 	for _, want := range []string{asked + "This instance is started before that, because a chat on the run changed it or left a message.",
-		"`deep` (opus, high effort)", "`light` (sonnet, medium effort)", "You say when you are started again: `wait_for`", "the run is stopped after 45 turns.",
+		"`deep` (opus, high effort)", "`light` (sonnet, medium effort)", "You say when you are started again, with `wait_for`", "the run is stopped after 45 turns.",
 		"one that does not fit is given to it as a file to read.", "When the run has ended, the person applies the result to that folder with one action."} {
 		if !strings.Contains(chat, want) {
 			t.Errorf("the prompt of a turn a chat started does not contain %q", want)

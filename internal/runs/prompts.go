@@ -86,9 +86,9 @@ var engTierWhat = [...]struct {
 	tier model.Tier
 	what string
 }{
-	{model.TierDeep, "the result is a decision that other work is built on (a design, a contract, a review), or nothing after it checks it."},
+	{model.TierDeep, "the result is a decision that other work is built on (a design, a contract, a review), or a change that nothing after it checks."},
 	{model.TierStandard, "work from a precise brief, whose result a build, a test or a later task checks."},
-	{model.TierLight, "gathering facts, taking inventory or following a recipe: cheap to do again if it is wrong."},
+	{model.TierLight, "gathering facts, taking inventory, running a build or a test suite and reporting what it shows, or following a recipe: cheap to do again if it is wrong."},
 }
 
 // engTierLines is one line for each tier: its name, what it runs on and what it is for. mark is
@@ -196,25 +196,32 @@ const engPlanning = `# Planning work so it runs side by side
 
 The run is as long as its longest chain of tasks that wait on each other, so keep chains short.
 
-- Before a piece of work is built in several tasks, have a design task fix the contracts between them: the names, shapes and behaviour each part offers the others. Build tasks then depend on the design, not on each other, and run side by side.
+- Tasks with no dependency path between them run at the same time. Two such tasks must not edit the same files or rely on each other's output; a piece that several tasks need belongs in an earlier task they all depend on.
+- Before a piece of work is built in several tasks, have a design task fix the contracts between them: the names, shapes and behaviour each part offers the others. Build tasks then depend on the design, not on each other, and run side by side. Add them when the design has reported, with its contracts quoted in their briefs.
 - Only the task that joins the parts depends on them. Keep it small: tests that exercise the joined parts are separate tasks that run side by side after it.
 - Make one task depend on another only when it cannot start without that task's result. Do not add a dependency just to keep an order.
 - If a task would take more than about 30 minutes, look for a way to split it into tasks that can run at once.`
 
+// engPlanningNoGit ends engPlanning in a run whose folder is not a git repository, where writing
+// tasks do not run side by side.
+const engPlanningNoGit = `
+- In this run, though, writing tasks run one at a time whatever their dependencies: only reporting tasks run side by side. Lay the build tasks out the same way all the same, so that none waits for a result it does not need.`
+
 // engChecking is the part of the orchestrator's prompt on reviews and verification.
 const engChecking = `# Checking
 
-Nothing is checked unless you ask for it. A report saying that something works is a claim, not evidence. After work lands, add reporting tasks that review it against its brief and verify it against the goal (the build, the tests, the behaviour itself), and add tasks to fix what they find. Size the checking to the risk of the work.
+Nothing is checked unless you ask for it. A report saying that something works is a claim, not evidence. Have each piece of work reviewed against its brief and verified against the goal (the build, the tests, the behaviour itself) by reporting tasks, and add tasks to fix what they find. Size the checking to the risk of the work.
 
+- Add the checks of a piece of work in the same turn as the work, depending on it: they start by themselves when it lands, without a turn of yours.
 - Split a full verification into separate tasks by what they run (for example the test suites, slower checks such as race or load passes, checks through the real interface), so they run at once.
 - Review tasks and verification tasks do not depend on each other. Each depends only on the work it checks.
 - When any report names a test that fails only sometimes, add a task to fix it in that same turn. Do not leave it for a later round: it will fail a later verification and cost a whole round.`
 
 // engStartedAgain is the part of the orchestrator's prompt on what to wait for, in a run whose
 // orchestrator says so (wake mode declared). Its %s is the run's limit of turns.
-const engStartedAgain = "# When you are started again\n\n" +
-	"Call `wait_for` in mode `any`, naming every design, review and verification task that is still open. These are the tasks whose results create new work. Do not wait for build tasks: the tasks that depend on them start by themselves. When no design, review or verification task is open and build tasks are still running, name those build tasks in mode `all` instead.\n\n" +
-	"When you are started, act on the result that arrived: add the tasks it calls for at once, without waiting for the other checks of the stage. Then call `wait_for` again with the tasks still open. After a turn that ends without a wait, an instance is started after every task that finishes, which uses up the run's turns: the run is stopped after %s.\n\n"
+const engStartedAgain = "# What to wait for\n\n" +
+	"Call `wait_for` in mode `any`, naming every design, review and verification task that is still open. These are the tasks whose results create new work, and the next instance starts when the first of them has ended. Do not wait for build tasks: the tasks that depend on them start by themselves. When no design, review or verification task is open and build tasks are still running, name those build tasks in mode `all` instead: the next instance starts when all of them have ended.\n\n" +
+	"When you are started, act on the result that arrived: add the tasks it calls for at once, without waiting for the other checks of the stage. Then call `wait_for` again with the tasks still open, also in a turn that changed nothing else. After a turn that ends without a wait, an instance is started after every task that finishes, which uses up the run's turns: the run is stopped after %s.\n\n"
 
 // engOrchestratorPrompt is the first message of an orchestrator turn.
 func engOrchestratorPrompt(p engOrchPrompt) string {
@@ -223,7 +230,7 @@ func engOrchestratorPrompt(p engOrchPrompt) string {
 		notes = "(empty)"
 	}
 	var where, gets, writes, starts, result string
-	thing, verified := "repository", "the merged result"
+	thing, verified, planning := "repository", "the merged result", engPlanning
 	if p.Git {
 		where = "Your working directory is a checkout of the integration branch, where the finished work of every task that changes the repository is merged; read it when you need to see the code as it stands."
 		if p.Sub != "" {
@@ -238,10 +245,10 @@ func engOrchestratorPrompt(p engOrchPrompt) string {
 		}
 		result = "\n- The integration branch is not the folder the person works in. " + applied + " Nothing is applied while the run is going. Never give a task the job of changing the person's folder, and add no task to deliver, merge or push the result."
 	} else {
-		thing, verified = "folder", "the result"
+		thing, verified, planning = "folder", "the result", engPlanning+engPlanningNoGit
 		where = "Your working directory is the run's folder itself, where every task works; read it when you need to see the files as they stand."
 		gets = "the run's folder to work in"
-		writes = "A task either changes the folder (`writes: true`) or only reports (`writes: false`). The run's folder is not a git repository, so there are no separate checkouts and nothing is merged: every agent works directly in the folder. Writing tasks run one at a time. A reporting task must not change files, and it may run while a writing task is changing them, so a task that checks a writing task's work must depend on it. Investigation, design, review and verification are reporting tasks. Nothing is undone: what a task changed stays in the folder when it fails or is cancelled, and a retried task finds it there."
+		writes = "A task either changes the folder (`writes: true`) or only reports (`writes: false`). The run's folder is not a git repository, so there are no separate checkouts and nothing is merged: every agent works directly in the folder. Writing tasks run one at a time. A reporting task must not change the folder's files, though it may build and run tests, and it may run while a writing task is changing them, so a task that checks a writing task's work must depend on it. Investigation, design, review and verification are reporting tasks. Nothing is undone: what a task changed stays in the folder when it fails or is cancelled, and a retried task finds it there."
 		starts = fmt.Sprintf("A task starts by itself once every task it depends on is done, up to %d at a time. It then sees the folder as the tasks before it left it. Tasks you add or change in this turn start when your turn ends.", p.MaxParallel)
 	}
 	fits := "cut, so the brief must carry what the task cannot do without."
@@ -259,9 +266,9 @@ func engOrchestratorPrompt(p engOrchPrompt) string {
 	case "idle":
 		wake = "You are started again when a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat"
 	default:
-		wake = "You say when you are started again: `wait_for` names the tasks whose results can create new work, and the next instance starts when they have ended (all of them, or the first one in mode `any`). One also starts whenever a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat"
+		wake = "You say when you are started again, with `wait_for`: \"What to wait for\" below says what to name. An instance is also started whenever a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat"
 		again = fmt.Sprintf(engStartedAgain, toolCount(p.MaxTurns, "turn"))
-		ending = "Before you end, call `wait_for` as described above, unless nothing is pending or running.\n\n" + ending
+		ending = "Before you end, call `wait_for` as \"What to wait for\" says. When nothing is pending or running there is nothing to wait for: the run moves on only if you add work or finish it.\n\n" + ending
 	}
 	return fmt.Sprintf(`You are the orchestrator of an automated build run. Someone gave the run the goal below and left; nobody is available to answer questions. The run reaches that goal through tasks, each carried out by a separate agent, and your job is to decide what those tasks are. You do none of the work yourself: you cannot change the %s, and whatever you want investigated, built, checked or fixed has to become a task.
 
@@ -299,7 +306,7 @@ You are one in a series of orchestrator instances. An instance is started when s
 - %s
 - %s
 - A task that is done is final. To build on it, correct it or check it, add another task that depends on it. A pending task can be changed, a running one cancelled, and a failed or cancelled one changed and retried.
-- %s. You never need to wait or poll: end your turn and the run carries on.
+- %s. Never poll or sleep until a task ends: end your turn and the run carries on.
 - The person who started the run can change tasks, or leave you a message, through a chat on the run. What they did is listed under "Why you were started" and in `+"`get_run`"+`. A message from them is an instruction about the goal: follow it and record it in the notes.%s
 
 # How to decide
@@ -308,23 +315,23 @@ Work from evidence. The task reports and the code are the facts; the notes are w
 
 Do not rush to a solution. A task that builds something before the problem is understood produces confident work on the wrong thing, and every later task inherits the mistake. So the first turns are for understanding: what the goal really asks for, what the %s already has, what is unknown, what "done" means here and how it will be checked. A quick look at the code is yours to take; anything deeper is a reporting task, and several can run side by side. A turn that adds only investigation tasks, or that changes nothing because the running tasks are the right ones, is a good turn. Add tasks that change the %s once the notes can state the definition of done and an approach that the findings support. The tools refuse a writing task while the notes are empty.
 
-Plan as far as you can see and no further. You do not have to lay out the whole run now: add the tasks whose briefs you can write precisely today, and leave the rest to a later instance that will have their results in hand. When what you learn makes a pending task wrong, change it; when it makes one unnecessary, cancel it.
+Plan as far as you can see and no further. You do not have to lay out the whole run now: add the tasks whose briefs you can write precisely today, and leave the rest to a later instance that will have their results in hand. The checks of a task are not the rest: their briefs follow from its brief, so they are added with it. When what you learn makes a pending task wrong, change it; when it makes one unnecessary, cancel it.
 
-Write briefs for a reader who knows nothing. A brief says what to do and why, what exists that the task builds on (name the files), the exact names, paths and shapes of anything shared with other tasks, what is out of scope, and how the result is to be verified. Tasks with no dependency path between them run at the same time, which is what makes the run fast, so make the graph as wide as it safely can be: two such tasks must not edit the same files or rely on each other's output, and a piece that several tasks need belongs in an earlier task they all depend on.
+Write briefs for a reader who knows nothing. A brief says what to do and why, what exists that the task builds on (name the files), the exact names, paths and shapes of anything shared with other tasks, what is out of scope, and how the result is to be verified.
 
-Keep a task narrow: one package or one area of the code, with the files it works on named. An agent pays for everything it reads before it writes its first line, and again on every step after that, so what makes a task expensive is how much it has to take in, more than how much it has to produce. Quote in the brief the parts of earlier reports that the task needs (the contract, the names, the decision) instead of sending its agent to read them, and name a report in `+"`needs_report`"+` only when the task cannot be done without the whole of it. A task that needs several whole reports, or touches several areas, is two tasks.
+Keep a task narrow: one package or one area of the code, with the files it works on named. An agent pays for everything it reads before it writes its first line, and again on every step after that, so what makes a task expensive is how much it has to take in, more than how much it has to produce. Quote in the brief the parts of earlier reports that the task needs (the contract, the names, the decision) instead of sending its agent to read them, and name a report in `+"`needs_report`"+` only when the task cannot be done without the whole of it. A task that needs several whole reports, or builds in several areas, is two tasks. The task that joins parts is the exception, which is why it is kept small.
 
 Give each task the lowest tier that is safe for it, and say why in `+"`tier_reason`"+`. When you are unsure between two, take the higher. When a task fails, or a review finds real faults in its work, and the brief was not the cause, retry or redo it one tier up.
 
 Finish with `+"`finish_run`"+` only when it is true: `+"`achieved`"+` when verification of %s shows that the goal is met, `+"`not_achieved`"+` when it cannot be met and you can say why. Do not finish while a check you asked for is outstanding, and do not keep the run going with work the goal does not need.
 
-`+engPlanning+`
+%s
 
 `+engChecking+`
 
 %s# Keeping the notes
 
-The notes are your memory: the next instance knows only what the run and the notes tell it. They should hold, briefly: what the goal requires, the definition of done and how it will be checked, the facts established so far and which task established them, the approach and what is planned next, decisions made and why, and open questions and risks. Give each of these a section of its own (a `+"`##`"+` heading), write the first version with `+"`set_notes`"+`, and after that keep them current with `+"`edit_notes`"+`, which replaces the one section you name and leaves the rest alone. Keep them short and true: every instance reads all of them, so replace what is out of date instead of adding to it, and do not turn them into a log.
+The notes should hold, briefly: what the goal requires, the definition of done and how it will be checked, the facts established so far and which task established them, the approach and what is planned next, decisions made and why, and open questions and risks. Give each of these a section of its own (a `+"`##`"+` heading), write the first version with `+"`set_notes`"+`, and after that keep them current with `+"`edit_notes`"+`, which replaces the one section you name and leaves the rest alone. Keep them short and true: every instance reads all of them, so replace what is out of date instead of adding to it, and do not turn them into a log.
 
 # Ending your turn
 
@@ -332,27 +339,24 @@ The notes are your memory: the next instance knows only what the run and the not
 
 Rules:
 - Do not create, edit or delete files, and do not commit. Change the run only through the run tools.
-- You run unattended and cannot ask questions. Where the goal leaves something open, make the most reasonable choice and record it in the notes.`,
+- Where the goal leaves something open, make the most reasonable choice and record it in the notes.`,
 		thing, p.Turn, strings.TrimSpace(p.Goal), engWhy(p), notes, p.Snapshot, where, others, gets, also, engThousands(engReportsBudget), fits, engTierLines(p.Tiers, "`"), writes, starts, wake, result,
-		thing, thing, verified, again, ending)
+		thing, thing, verified, planning, again, ending)
 }
 
 // ---- a task -------------------------------------------------------------------
 
 // engWriteRules are the rules that end a task's and a merge agent's prompt.
 const engWriteRules = `Rules:
-- Work only inside your working directory. Other agents are working at the same time in other
-  git worktrees of this repository; never touch anything outside your own.
+- Change nothing outside your working directory: other agents are working at the same time in other git worktrees of this repository. Files this message names by path are yours to read.
 - Do not commit, push, stash, switch branches or rewrite history.
-- You run unattended and cannot ask questions. Where something is unclear, make the most
-  reasonable choice and say so in your report.`
+- You run unattended and cannot ask questions. Where something is unclear, make the most reasonable choice and say so in your report.`
 
 // engWriteRulesNoGit are the same rules in a run whose folder is not a git repository.
 const engWriteRulesNoGit = `Rules:
-- Work only inside your working directory; never touch anything outside it.
+- Change nothing outside your working directory. Files this message names by path are yours to read.
 - Do not create a git repository in it.
-- You run unattended and cannot ask questions. Where something is unclear, make the most
-  reasonable choice and say so in your report.`
+- You run unattended and cannot ask questions. Where something is unclear, make the most reasonable choice and say so in your report.`
 
 // engReadRule is the fourth rule of a task agent's prompt, after either set of rules. A merge
 // agent is not given it.
@@ -361,7 +365,7 @@ const engReadRule = `
 
 // engWriteRulesSub are engWriteRules for a task whose agent starts in a folder below the top of
 // its checkout.
-var engWriteRulesSub = strings.Replace(engWriteRules, "Work only inside your working directory.", "Work only inside your worktree.", 1)
+var engWriteRulesSub = strings.Replace(engWriteRules, "Change nothing outside your working directory:", "Change nothing outside your worktree:", 1)
 
 // engScope is the three bullets a writing task is told about staying in its lane.
 const engScope = `- Build what your brief says and stay inside its scope. Work that belongs to another task will collide with that task's agent.
@@ -504,7 +508,7 @@ func engTaskPromptText(p engTaskPrompt) string {
 		where = "Your working directory is the run's own folder, which is not a git repository: you work directly in it, and what you change is the result. Other tasks that change the folder run before or after you, never at the same time; tasks that only read may run beside you.\n\n" + engScope
 		rules = engWriteRulesNoGit
 	default:
-		where = "Your working directory is the run's own folder, which is not a git repository. This task produces a report, not changes: do not create, change or delete files in it; a task that changes the folder may be running beside you. Whatever the orchestrator should know has to be in your report."
+		where = "Your working directory is the run's own folder, which is not a git repository. This task produces a report, not changes: do not create, change or delete the folder's own files. What a build or a test run writes by itself is fine. A task that changes the folder may be running beside you, so files can change while you read them. Whatever the orchestrator should know has to be in your report."
 		rules = engWriteRulesNoGit
 	}
 	return fmt.Sprintf(`You are one of the agents of an automated build run. The run works toward a goal through tasks: an orchestrator decides what the tasks are and reads what each one reports. You have one task. Do that task completely, and only that task.
@@ -668,7 +672,7 @@ func engRetryNote(role model.AgentRole, git bool) string {
 	case role == model.RoleOrchestrator:
 		return "\n\nNote: an earlier instance of this turn did not finish. Tool calls it made took effect; the run above is as it is now."
 	case git:
-		return "\n\nNote: an earlier attempt at this job did not finish. Your working directory may hold its partial work; check `git status` and build on whatever is sound."
+		return "\n\nNote: an earlier attempt at this job did not finish, and you are in the working directory it left, not a fresh one. It may hold partial work: check `git status` and build on whatever is sound."
 	}
-	return "\n\nNote: an earlier attempt at this job did not finish. Your working directory may hold its partial work; look at the files and build on whatever is sound."
+	return "\n\nNote: an earlier attempt at this job did not finish. Your working directory may hold its partial work: look at the files and build on whatever is sound."
 }

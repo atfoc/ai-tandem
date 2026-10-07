@@ -16,7 +16,7 @@ For context only, this is the goal the whole run works toward. Your brief is wha
 Add a --verbose flag to the tool and document it.
 </goal>
 
-Your working directory is the run's own folder, which is not a git repository. This task produces a report, not changes: do not create, change or delete files in it; a task that changes the folder may be running beside you. Whatever the orchestrator should know has to be in your report.
+Your working directory is the run's own folder, which is not a git repository. This task produces a report, not changes: do not create, change or delete the folder's own files. What a build or a test run writes by itself is fine. A task that changes the folder may be running beside you, so files can change while you read them. Whatever the orchestrator should know has to be in your report.
 
 # Your result
 
@@ -37,8 +37,7 @@ the full report in markdown; it may contain code fences
 Write the report only inside the block; do not write it out before the block as well. Never end with a question: nobody will answer. If you cannot proceed, end with the block and `failed`. If you start subagents, your turn ends while they work and you are started again with their results: give the block only in the message that ends your work.
 
 Rules:
-- Work only inside your working directory; never touch anything outside it.
+- Change nothing outside your working directory. Files this message names by path are yours to read.
 - Do not create a git repository in it.
-- You run unattended and cannot ask questions. Where something is unclear, make the most
-  reasonable choice and say so in your report.
+- You run unattended and cannot ask questions. Where something is unclear, make the most reasonable choice and say so in your report.
 - Everything you read stays with you for the rest of the task and is paid for on every step, so read what the task needs and not more. A subagent starts from nothing and has to read the code again: hand one a part only when that part is independent and you do not need what it reads yourself.

@@ -417,7 +417,7 @@ func TestAttemptSubFolder(t *testing.T) {
 	engTask(t, r, "T01", model.TaskDone)
 	work := e.s.Store.P.RunWorkDir(r.id)
 	if m := e.host.sent("T01-work")[0]; m.Cwd != filepath.Join(work, "T01", "services", "api") ||
-		!strings.Contains(m.Text, "Your working directory is the folder `services/api` of a git worktree made for this task") || !strings.Contains(m.Text, "- Work only inside your worktree.") {
+		!strings.Contains(m.Text, "Your working directory is the folder `services/api` of a git worktree made for this task") || !strings.Contains(m.Text, "- Change nothing outside your worktree:") {
 		t.Errorf("the task agent worked in %s", m.Cwd)
 	}
 	if m := e.host.sent("turn-001")[0]; m.Cwd != filepath.Join(work, "orch") || !strings.Contains(m.Text, "The run was started in its folder `services/api`: every task's agent starts in that folder of its own checkout") {

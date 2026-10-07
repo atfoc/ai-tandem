@@ -14,9 +14,9 @@ var taskProps = props{
 	"kind":         str("A one-word label for the kind of work, e.g. research, design, implement, review, verify, fix"),
 	"writes":       map[string]any{"type": "boolean", "description": "true: the task changes files, and its changes become part of the run's result (in a git run they are merged). false: it only reports and leaves nothing behind."},
 	"depends_on":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ids of the tasks that must be done before this one starts. Its agent is given the summary of each and where its report is."},
-	"tier":         tierEnum("How capable an agent the task gets. deep: its result is a decision that other work is built on, or nothing after it checks it. standard: work from a precise brief whose result a build, a test or a later task checks. light: gathering facts or following a recipe, cheap to do again."),
+	"tier":         tierEnum("How capable an agent the task gets, and what it costs. Your instructions say what each tier is for."),
 	"tier_reason":  str("One sentence: why this tier is enough for this task"),
-	"needs_report": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Those of depends_on whose full report the agent must read before it can start: they are put in front of it whole. Name as few as the task can work from."},
+	"needs_report": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Those of depends_on whose full report the agent must read before it can start: they are put in its prompt whole while they fit, and one that does not fit is given to it as a file to read. Name as few as the task can work from."},
 }
 
 func withID(p props) props {
@@ -67,7 +67,7 @@ var RunTools = []Tool{
 	},
 	{
 		Name:        "set_notes",
-		Description: "Replaces the whole of the run's notes, your memory across orchestrator instances: what the goal requires, the definition of done and how it will be checked, facts established and by which task, the approach and what is planned next, decisions and why, open questions and risks. For the first version and for reorganising them; to change one part use edit_notes.",
+		Description: "Replaces the whole of the run's notes, your memory across orchestrator instances. For the first version and for reorganising them; to change one part use edit_notes.",
 		Schema:      obj(props{"notes": str("Markdown")}, "notes"),
 		Summary:     `{"notes": "..."}`,
 	},
@@ -109,8 +109,8 @@ var RunTools = []Tool{
 		Name:        "wait_for",
 		Description: "Says which tasks you are waiting for. After this turn you are started again when they have ended (all of them, or the first one with mode any), and in any case when a task fails, when nothing is left running, and when the person changes the run or leaves a message through a chat. Other tasks that finish meanwhile do not start you; you are told about them then. It holds until your next turn starts; calling it again replaces it.",
 		Schema: obj(props{
-			"tasks": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ids of pending or running tasks whose results can create new work: the design, review and verification tasks that are still open"},
-			"mode":  map[string]any{"type": "string", "enum": []any{"all", "any"}, "description": "Default all"},
+			"tasks": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ids of pending or running tasks. Name those whose results can create new work (the design, review and verification tasks that are still open); when none of those is open, the build tasks still running"},
+			"mode":  map[string]any{"type": "string", "enum": []any{"all", "any"}, "description": "any: started when the first of them has ended. all (the default): when all of them have"},
 		}, "tasks"),
 		Summary: `{"tasks": ["T03", "T04"], "mode"?: "all|any"}`,
 	},

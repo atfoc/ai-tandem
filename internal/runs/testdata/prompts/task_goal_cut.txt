@@ -436,9 +436,7 @@ the full report in markdown; it may contain code fences
 Write the report only inside the block; do not write it out before the block as well. Never end with a question: nobody will answer. If you cannot proceed, end with the block and `failed`. If you start subagents, your turn ends while they work and you are started again with their results: give the block only in the message that ends your work.
 
 Rules:
-- Work only inside your working directory. Other agents are working at the same time in other
-  git worktrees of this repository; never touch anything outside your own.
+- Change nothing outside your working directory: other agents are working at the same time in other git worktrees of this repository. Files this message names by path are yours to read.
 - Do not commit, push, stash, switch branches or rewrite history.
-- You run unattended and cannot ask questions. Where something is unclear, make the most
-  reasonable choice and say so in your report.
+- You run unattended and cannot ask questions. Where something is unclear, make the most reasonable choice and say so in your report.
 - Everything you read stays with you for the rest of the task and is paid for on every step, so read what the task needs and not more. A subagent starts from nothing and has to read the code again: hand one a part only when that part is independent and you do not need what it reads yourself.
