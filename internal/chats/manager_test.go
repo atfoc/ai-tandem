@@ -443,13 +443,44 @@ type events struct {
 	evs []map[string]any
 }
 
+// listenID is the client id of the stream listen opens.
+const listenID = "test"
+
+// managers has the manager of each test bridge (see boot), for followAll.
+var managers sync.Map // *editorbridge.Bridge → *Manager
+
+// followAll makes the listening client follow every chat people have, as a page does by reading
+// a chat's thread: the content events of a chat (its items, subagents and tree) go only to the
+// clients that follow it. listen, drain and env.create call it, so a chat made in another way
+// after listen is followed from the next drain on. A run agent's chat is followed only by the
+// test that says so.
+func followAll(br *editorbridge.Bridge) {
+	v, ok := managers.Load(br)
+	if !ok {
+		return
+	}
+	m := v.(*Manager)
+	var ids []string
+	m.mu.Lock()
+	for id, c := range m.chats {
+		if c.top == nil && c.role == "" {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		br.Follow(listenID, editorbridge.Chat(id))
+	}
+}
+
+// listen connects a client that follows every chat people have (see followAll).
 func listen(t *testing.T, br *editorbridge.Bridge) *events {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(br.ServeSSE))
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/?client=test", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/?client="+listenID, nil)
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -473,6 +504,7 @@ func listen(t *testing.T, br *editorbridge.Bridge) *events {
 		}
 	}()
 	e.wait(t, func(ev map[string]any) bool { return ev["type"] == "snapshot" })
+	followAll(br)
 	return e
 }
 
@@ -503,9 +535,11 @@ func (e *events) wait(t *testing.T, pred func(map[string]any) bool) map[string]a
 var markSeq atomic.Int64
 
 // drain returns, and forgets, every event received so far: a mark is broadcast and waited for,
-// so everything broadcast before the call has arrived.
+// so everything broadcast before the call has arrived. The client follows the chats made since
+// (see followAll).
 func (e *events) drain(t *testing.T, br *editorbridge.Bridge) []map[string]any {
 	t.Helper()
+	followAll(br)
 	n := float64(markSeq.Add(1))
 	br.Broadcast(map[string]any{"type": "mark", "n": n})
 	e.wait(t, func(ev map[string]any) bool { return ev["type"] == "mark" && ev["n"] == n })
@@ -621,6 +655,9 @@ func (e *env) boot() {
 		MCPURL:     "http://localhost:6006/mcp",
 	})
 	e.m.now = func() time.Time { return time.UnixMilli(e.clock.Load()) }
+	br := e.br
+	managers.Store(br, e.m)
+	e.t.Cleanup(func() { managers.Delete(br) })
 	if err := e.m.Load(); err != nil {
 		e.t.Fatal(err)
 	}
@@ -636,6 +673,7 @@ func (e *env) create(a model.AgentKind, group, board string) model.ChatView {
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	followAll(e.br) // a client that listens follows the new chat at once
 	return v
 }
 
@@ -709,8 +747,8 @@ func TestCreateAppliesGroupDefaults(t *testing.T) {
 	e := newEnv(t)
 	dirA, dirB := t.TempDir(), t.TempDir()
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
-		gOne: {Cwd: dirA, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "low"}}},
-		gTwo: {Cwd: dirB, ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "gpt-5.4-mini"}}},
+		gOne: model.LocalDefaults(model.ServerDefaults{Cwd: dirA, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "low"}}}),
+		gTwo: model.LocalDefaults(model.ServerDefaults{Cwd: dirB, ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "gpt-5.4-mini"}}}),
 	}})
 
 	v := e.create(model.Claude, gOne, "")
@@ -759,8 +797,8 @@ func TestCreateAppliesGroupDefaults(t *testing.T) {
 	}
 	// Resolved values are not recorded.
 	e.st.Read(func(s *model.State) {
-		if s.Defaults.Last.Cwd != "" || len(s.Defaults.Last.ByAgent) != 0 {
-			t.Fatalf("Create recorded defaults: %+v", s.Defaults.Last)
+		if _, ok := s.Defaults.Groups[model.Ungrouped]; ok || len(s.Defaults.Groups) != 2 {
+			t.Fatalf("Create recorded defaults: %+v", s.Defaults)
 		}
 	})
 
@@ -879,7 +917,7 @@ func TestPiCatalogEventPersistsAndBroadcasts(t *testing.T) {
 func TestOpenNeverSpawnsAndShowsMissingFolder(t *testing.T) {
 	e := newEnv(t)
 	dir := t.TempDir()
-	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{model.Ungrouped: {Cwd: dir}}})
+	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{model.Ungrouped: model.LocalDefaults(model.ServerDefaults{Cwd: dir})}})
 	v := e.create(model.Claude, model.Ungrouped, "")
 	if err := e.m.Open(v.ID); err != nil {
 		t.Fatal(err)
@@ -922,9 +960,10 @@ func TestConfigureBeforeFirstMessage(t *testing.T) {
 	if e.claude.count() != 0 {
 		t.Fatal("Configure spawned")
 	}
-	want := model.GroupDefaults{Cwd: dir, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}}
+	// The change is recorded for the chat's group alone.
+	want := map[string]model.GroupDefaults{gOne: model.LocalDefaults(model.ServerDefaults{Cwd: dir, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}})}
 	e.st.Read(func(s *model.State) {
-		if !reflect.DeepEqual(s.Defaults.Groups[gOne], want) || !reflect.DeepEqual(s.Defaults.Last, want) {
+		if !reflect.DeepEqual(s.Defaults.Groups, want) {
 			t.Fatalf("defaults %+v", s.Defaults)
 		}
 	})
@@ -1046,20 +1085,23 @@ func TestFirstSendSpawnsOnce(t *testing.T) {
 
 func TestFirstSendRecordsDefaults(t *testing.T) {
 	e := newEnv(t)
-	e.setDefaults(model.Defaults{Last: model.GroupDefaults{
+	ungrouped := model.LocalDefaults(model.ServerDefaults{
 		Cwd:     t.TempDir(),
 		ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}},
-	}})
+	})
+	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{model.Ungrouped: ungrouped}})
 	v := e.create(model.Claude, gOne, "")
 	dir := t.TempDir()
 	if err := e.m.Configure(v.ID, ConfigReq{Cwd: dir}); err != nil {
 		t.Fatal(err)
 	}
 	e.send(v.ID, "hello", "")
-	// The model came from "last" and was never changed, but sending confirms it for the group.
-	want := model.GroupDefaults{Cwd: dir, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}}
+	// The model came from the ungrouped group and was never changed, but sending confirms it for
+	// the chat's group. The ungrouped group keeps what it had.
+	want := model.LocalDefaults(model.ServerDefaults{Agent: model.Claude, Cwd: dir, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}})
+	want.Server = model.LocalServer
 	e.st.Read(func(s *model.State) {
-		if !reflect.DeepEqual(s.Defaults.Groups[gOne], want) || !reflect.DeepEqual(s.Defaults.Last, want) {
+		if !reflect.DeepEqual(s.Defaults.Groups[gOne], want) || !reflect.DeepEqual(s.Defaults.Groups[model.Ungrouped], ungrouped) {
 			t.Fatalf("defaults after first Send %+v", s.Defaults)
 		}
 	})
@@ -1304,7 +1346,7 @@ func TestDraft(t *testing.T) {
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
 	d := model.Draft{Text: "half a thought", Mentions: []model.Mention{{Name: "Plan", ID: "b_1"}}}
-	if err := e.m.SetDraft(v.ID, d); err != nil {
+	if err := e.setDraft(v.ID, d); err != nil {
 		t.Fatal(err)
 	}
 	evs.wait(t, func(ev map[string]any) bool {
@@ -1329,25 +1371,25 @@ func TestDraft(t *testing.T) {
 		t.Fatalf("two views of an unchanged chat differ: %+v, %+v", a, b)
 	}
 
-	if err := e.m.SetDraft(v.ID, model.Draft{Mentions: d.Mentions}); err != nil { // mentions alone are no draft
+	if err := e.setDraft(v.ID, model.Draft{Mentions: d.Mentions}); err != nil { // mentions alone are no draft
 		t.Fatal(err)
 	}
 	if m := e.meta(v.ID); m.Drafts != nil || m.Draft != nil {
 		t.Fatalf("empty draft stored %+v", m.Drafts)
 	}
-	if strings.Contains(string(e.file(v.ID, "chat.json")), "draft") {
+	if raw := string(e.file(v.ID, "chat.json")); strings.Contains(raw, `"draft"`) || strings.Contains(raw, `"drafts"`) { // the counter stays
 		t.Fatalf("chat.json of a chat without a draft: %s", e.file(v.ID, "chat.json"))
 	}
 	if got := e.view(v.ID); got.Draft != nil || got.HasDraft {
 		t.Fatalf("view after the draft was cleared %+v", got)
 	}
-	if err := e.m.SetDraft("nope", d); !errors.Is(err, ErrNotFound) {
+	if err := e.setDraft("nope", d); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetDraft on unknown chat: %v", err)
 	}
-	if err := e.m.SetDraftOf("nope", model.MainBranch, d); !errors.Is(err, ErrNotFound) {
+	if err := e.setDraftOf("nope", model.MainBranch, d); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetDraftOf on unknown chat: %v", err)
 	}
-	if err := e.m.SetDraftOf(v.ID, "nope", d); !errors.Is(err, ErrNoBranch) {
+	if err := e.setDraftOf(v.ID, "nope", d); !errors.Is(err, ErrNoBranch) {
 		t.Fatalf("SetDraftOf on unknown branch: %v", err)
 	}
 	if m := e.meta(v.ID); m.Drafts != nil {
@@ -1358,7 +1400,7 @@ func TestDraft(t *testing.T) {
 func TestSendClearsDraft(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
-	e.m.SetDraft(v.ID, model.Draft{Text: "one"})
+	e.setDraft(v.ID, model.Draft{Text: "one"})
 	e.send(v.ID, "one", "")
 	if m := e.meta(v.ID); m.Drafts != nil || m.Draft != nil {
 		t.Fatalf("draft after send %+v", m.Drafts)
@@ -1367,7 +1409,7 @@ func TestSendClearsDraft(t *testing.T) {
 		t.Fatalf("view after send %+v", got)
 	}
 	// A send refused while busy leaves the draft alone.
-	e.m.SetDraft(v.ID, model.Draft{Text: "two"})
+	e.setDraft(v.ID, model.Draft{Text: "two"})
 	if err := e.m.Send(v.ID, "two", "", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("Send while busy: %v", err)
 	}
@@ -1529,7 +1571,7 @@ func TestInterruptedAtBoot(t *testing.T) {
 func TestMissingFolderFix(t *testing.T) {
 	e := newEnv(t)
 	dir := t.TempDir()
-	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: {Cwd: dir}}})
+	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: model.LocalDefaults(model.ServerDefaults{Cwd: dir})}})
 	v := e.create(model.Claude, gOne, "")
 	sid := e.meta(v.ID).SessionID
 	e.send(v.ID, "one", "")
@@ -2277,14 +2319,14 @@ func TestDraftReferences(t *testing.T) {
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	d := model.Draft{References: []model.Reference{{Quote: "q", Comment: "c", Item: 0, Start: 1, End: 2}}} // quotes alone are a draft
-	if err := e.m.SetDraft(v.ID, d); err != nil {
+	if err := e.setDraft(v.ID, d); err != nil {
 		t.Fatal(err)
 	}
 	e.boot()
 	if got := e.view(v.ID).Draft; !reflect.DeepEqual(got, &d) {
 		t.Fatalf("draft after restart %+v", got)
 	}
-	if err := e.m.SetDraft(v.ID, model.Draft{}); err != nil {
+	if err := e.setDraft(v.ID, model.Draft{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.view(v.ID); got.Draft != nil || got.HasDraft || e.meta(v.ID).Drafts != nil {

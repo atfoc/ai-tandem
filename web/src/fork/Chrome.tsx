@@ -74,7 +74,7 @@ export function BranchBanner({ chatId }: { chatId: string }) {
   const asks = useStore((s) => { const m = s.moves[chatId]; return !!m && branchState(s, chatId, m.from)?.status === "approval"; });
   const text = useMemo(() => {
     const view = move && viewFor(viewFor(tree, move.branch), move.from);
-    if (!c || !move || !items || !view) return "Your next message starts from here.";
+    if (!c || !c.agent || !move || !items || !view) return "Your next message starts from here.";
     const t = buildTree(withLive(view, move.branch, c.agent, items), { branch: move.branch, count: move.at });
     return bannerText(bannerOf(t, move, items, move.from, asks));
   }, [c?.agent, asks, move, items, tree]);

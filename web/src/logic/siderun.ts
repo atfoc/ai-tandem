@@ -1,6 +1,6 @@
 // What the sidebar says about runs beyond a row's own line (logic/run.ts): a row's tag and
-// tooltip, what a run adds to its group's count and working dot, and the texts of the archive and
-// delete confirmations. DOM-free; Sidebar.tsx renders it.
+// tooltip, what a run adds to its group's count and working dot, and the texts of the archive
+// confirmations (the delete dialog is logic/runserver.ts runDeleteAsk). DOM-free; Sidebar.tsx renders it.
 import type { ChatView, RunView } from "../types.ts";
 import { hasDraft } from "./drafts.ts";
 import { isBusy } from "./status.ts";
@@ -48,16 +48,4 @@ export function runArchiveConfirm(r: Pick<RunView, "id" | "status" | "archived">
   };
   if (workingRunChats(chats, r.id).length) return { title: "An agent is working in a chat on this run. Stop it and archive?", action: "Stop and archive" };
   return null;
-}
-
-/** The question before a run is deleted. folder: the run's folder as the user reads it (~/…); a
- *  run that has not started changed nothing there, so the sentence about it is left out. */
-export function runDeleteConfirm(r: Pick<RunView, "name" | "started" | "status" | "archived">, folder: string): { title: string; body: string; action: string } {
-  const working = runWorking(r) ? "This run is working: its agents are stopped. " : "";
-  const stays = r.started && folder ? ` What its agents changed in ${folder} stays.` : "";
-  return {
-    title: `Delete ${r.name}?`,
-    body: `${working}The run's tasks, reports, notes, agent transcripts and chats are removed.${stays} This can't be undone.`,
-    action: "Delete",
-  };
 }

@@ -1,13 +1,13 @@
-// Modal pieces: the confirm dialog the sidebar menus use, the takeover screens,
-// and the small popup menu.
+// Modal pieces: the confirm dialog the sidebar menus use and the small popup menu.
 import React, { useEffect, useRef, useState } from "react";
 import { useStore, setState } from "./store.ts";
-import { takeBack } from "./conn.ts";
-import { Logo } from "./icons.tsx";
 
 export type ConfirmRequest = {
   title: string; body?: string;
-  actions: { label: string; tone?: "danger" | "primary"; run: () => Promise<void> | void }[]; // plus Cancel
+  /** refused: what an action's failure is answered with: another dialog in this one's place (a
+   *  chat on a server that is not connected can be removed from this sidebar only), or null to
+   *  show the error's sentence here. */
+  actions: { label: string; tone?: "danger" | "primary"; run: () => Promise<void> | void; refused?: (err: unknown) => ConfirmRequest | null }[]; // plus Cancel
 };
 
 export function confirm(req: ConfirmRequest): void { setState({ confirm: req }); }
@@ -35,9 +35,13 @@ export function ConfirmDialog(): React.JSX.Element | null {
     return () => window.removeEventListener("keydown", k, true);
   }, [req]);
   if (!req) return null;
-  const run = async (f: () => Promise<void> | void) => {
+  const run = async (a: ConfirmRequest["actions"][number]) => {
     setBusy(true); setErr("");
-    try { await f(); close(); } catch (e: any) { setErr(e?.message ?? String(e)); setBusy(false); }
+    try { await a.run(); close(); } catch (e: any) {
+      const next = a.refused?.(e);
+      if (next) setState({ confirm: next }); else setErr(e?.message ?? String(e));
+      setBusy(false);
+    }
   };
   return (
     <div className="dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
@@ -49,32 +53,10 @@ export function ConfirmDialog(): React.JSX.Element | null {
           <button className="btn sm" onClick={close} autoFocus={!req.actions.length}>{req.actions.length ? "Cancel" : "Close"}</button>
           {req.actions.map((a, i) => (
             <button key={a.label} className={`btn sm ${a.tone ?? ""}`} disabled={busy} autoFocus={i === req.actions.length - 1}
-              onClick={() => run(a.run)}>{a.label}</button>
+              onClick={() => run(a)}>{a.label}</button>
           ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-/** This tab lost the board to a newer one. */
-export function TakeoverScreen(): React.JSX.Element {
-  return (
-    <div className="takeover">
-      <Logo />
-      <h2>Opened in another window</h2>
-      <p>AI Whiteboard is open in another tab or window. Only one can be in use at a time.</p>
-      <button className="btn primary" onClick={() => takeBack()}>Use here</button>
-    </div>
-  );
-}
-
-/** Shown while the server hands the board over from the other tab. */
-export function WaitingScreen(): React.JSX.Element {
-  return (
-    <div className="takeover quiet">
-      <span className="spin" />
-      <p>Taking over from the other window…</p>
     </div>
   );
 }

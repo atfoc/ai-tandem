@@ -10,6 +10,8 @@ import { Menu, confirm, reportError, type ConfirmRequest } from "../Dialogs.tsx"
 import { isDraft, runWord } from "../logic/run.ts";
 import { canResume, moneyLimit, raiseValue, resumeRaise, runDoing, stopConfirm, type Raise } from "../logic/runview.ts";
 import { NARROW, TIGHT, refreshRun, resumeRun, stopRun, useFresh, useSize } from "./actions.ts";
+import { runWhere } from "../logic/runserver.ts";
+import { runActBlock } from "../logic/runrows.ts";
 import type { RunView } from "../types.ts";
 
 /** The status mark of the vocabulary: a pulsing dot while it runs, a spinner while it stops. */
@@ -26,6 +28,8 @@ export function RunBarStatus({ runId }: { runId: string }) {
   const doing = useStore((s) => { const v = s.runs[runId]; return v?.status === "running" ? runDoing(v, s.runDetail[runId]) : ""; });
   const loaded = useStore((s) => !!s.runDetail[runId]);
   const connected = useStore((s) => s.connected);
+  // A run on another server takes no Stop and no Resume while that server is not connected (the title says so).
+  const off = useStore((s) => { const v = s.runs[runId]; return v ? runActBlock(runWhere(s, v)) : ""; });
   const ref = useRef<HTMLSpanElement>(null);
   const followed = !!r && !isDraft(r);
   const stage = useSize(ref, (el) => el.closest<HTMLElement>(".board-stage"), followed).w || 1000;
@@ -60,7 +64,7 @@ export function RunBarStatus({ runId }: { runId: string }) {
   if (!r) return null;
   if (isDraft(r)) return <span className="run-status st-draft">{runWord(r)}</span>;
 
-  const raise = resumeRaise(r), acts = !r.archived;
+  const raise = resumeRaise(r), acts = !r.archived && !r.gone; // a run its server no longer has takes neither
   const stop = acts && (r.status === "running" || r.status === "stopping");
   const resume = acts && canResume(r.status) && !unreadable;
   // A narrow stage says less: first what the run is at, then the buttons' words, then the status word.
@@ -94,15 +98,15 @@ export function RunBarStatus({ runId }: { runId: string }) {
         </span>
       )}
       {stop && (
-        <button className="btn sm run-stop" disabled={r.status === "stopping" || !connected} onClick={askStop}
-          title={!connected ? "Reconnecting to the server…" : r.status === "stopping" ? "The run is stopping" : words ? "Stop the run: its agents are interrupted and continue when you resume" : `${says} — Stop`}>
+        <button className="btn sm run-stop" disabled={r.status === "stopping" || !connected || !!off} onClick={askStop}
+          title={!connected ? "Reconnecting to the server…" : off ? off : r.status === "stopping" ? "The run is stopping" : words ? "Stop the run: its agents are interrupted and continue when you resume" : `${says} — Stop`}>
           <span className="g">■</span>{words && " Stop"}
         </button>
       )}
       {resume && (
         <span className="menu-wrap">
-          <button className={`btn sm run-resume${menu ? " on" : ""}`} disabled={busy || !connected} onClick={go}
-            title={!connected ? "Reconnecting to the server…" : r.blocked || (raise ? "Resume the run with a higher limit" : words ? "Resume the run where it stopped" : `${says} — Resume`)}>
+          <button className={`btn sm run-resume${menu ? " on" : ""}`} disabled={busy || !connected || !!off} onClick={go}
+            title={!connected ? "Reconnecting to the server…" : off ? off : r.blocked || (raise ? "Resume the run with a higher limit" : words ? "Resume the run where it stopped" : `${says} — Resume`)}>
             <span className="g">▶</span>{words && " Resume"}
           </button>
           {menu && raise && <Menu onClose={() => setMenu(false)}><RaiseForm run={r} raise={raise} onDone={() => setMenu(false)} /></Menu>}

@@ -249,6 +249,9 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 	if kind != model.Claude && kind != model.Cursor && kind != model.Pi {
 		return "", "", "", fmt.Errorf("unknown agent %q", kind)
 	}
+	if m.Agents.Check(kind) != nil {
+		return "", "", "", notUsableError(kind, m.Agents.List())
+	}
 	cat := m.catalog(kind)
 	explicitModel := req.Model != ""
 	explicitEffort := req.Effort != ""
@@ -297,8 +300,10 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 	}
 	if unfit {
 		var d model.Defaults
-		m.Store.Read(func(s *model.State) { d = s.Defaults })
-		_, mc := defaults.Resolve(d, m.GroupOf(c.meta), kind, c.meta.Cwd, cat)
+		if c.meta.Client == "" { // a chat with a client mark reads no defaults: the catalog's default
+			m.Store.Read(func(s *model.State) { d = s.Defaults })
+		}
+		_, mc := defaults.Resolve(d, m.GroupOf(c.meta), model.LocalServer, kind, c.meta.Cwd, cat)
 		if !explicitModel {
 			modelID = mc.Model
 		}
@@ -316,6 +321,20 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 		}
 	}
 	return kind, modelID, effort, nil
+}
+
+// notUsableError is the tool error for a subagent of a kind the server cannot use, the chat's own
+// included: can lists the ones it can.
+func notUsableError(kind model.AgentKind, can []model.AgentKind) error {
+	names := make([]string, len(can))
+	for i, a := range can {
+		names[i] = string(a)
+	}
+	list := strings.Join(names, ", ")
+	if list == "" {
+		list = "none"
+	}
+	return fmt.Errorf("agent %q cannot be used on this server: its program was not found. Usable: %s", kind, list)
 }
 
 func (m *Manager) subSpawnOptions(c *Chat, sid string, kind model.AgentKind, modelID, effort string) agent.SpawnOptions {

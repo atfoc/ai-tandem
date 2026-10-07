@@ -108,7 +108,7 @@ func TestSendRefusedAtTheChatCap(t *testing.T) {
 	b2, _, a2 := e.branchTo(id, newAt(3), "two")
 	lowerCaps(t, 2, 12)
 	e.sendTo(id, Target{Branch: model.MainBranch, End: true}, "on main")
-	if err := e.m.SetDraftOf(id, b1, model.Draft{Text: "kept"}); err != nil {
+	if err := e.setDraftOf(id, b1, model.Draft{Text: "kept"}); err != nil {
 		t.Fatal(err)
 	}
 	e.slotsHeld("main and a branch work", id, 2, 2)
@@ -190,7 +190,7 @@ func TestSendRefusedAtTheAppCap(t *testing.T) {
 	}
 	x, xa := e.talked(model.Claude, "", 1)
 	y, _ := e.talked(model.Claude, "", 1)
-	if err := e.m.SetDraft(f, model.Draft{Text: "kept"}); err != nil {
+	if err := e.setDraft(f, model.Draft{Text: "kept"}); err != nil {
 		t.Fatal(err)
 	}
 	lowerCaps(t, 4, 2)

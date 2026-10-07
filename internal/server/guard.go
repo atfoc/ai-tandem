@@ -11,16 +11,22 @@ import (
 // ClientHeader carries the id of the client making an /api request.
 const ClientHeader = "X-AIWB-Client"
 
+// SceneRevHeader carries the revision of the drawing in the answer of GET /api/boards/{id}/scene.
+const SceneRevHeader = "X-AIWB-Scene-Rev"
+
 // guard rejects requests that could come from a web page other than the client:
 //   - Host must be 127.0.0.1:<port> or localhost:<port> (DNS rebinding);
-//   - every /api request except GET and the /api/client/* and /api/rpc-reply routes must carry
-//     X-AIWB-Client equal to the active client's id (409 {"error":"not_active"} otherwise).
-//     A custom header also forces a CORS preflight, which the server never answers.
+//   - every /api request except GET and HEAD must carry in X-AIWB-Client the id of a known
+//     client, one with an open event stream (409 {"error":"unknown_client"} otherwise). No route
+//     is exempt, and an id in the body does not count: a custom header forces a CORS preflight,
+//     which the server never answers.
 //
 // The MCP listener on 6006 (POST /mcp) gets the same guard for its Host check only: its requests
-// are outside /api, so the active-client rule does not apply, and the caller is identified by the
-// board token in the Authorization header. /api/client/* and /api/rpc-reply check the client
-// themselves (see clientOf), since the id may be in the body.
+// are outside /api, so the known-client rule does not apply, and the caller is identified by the
+// board token in the Authorization header. Every /api request with the id of a known client in the
+// header, a GET or HEAD too, also marks that client as one that acted (see
+// editorbridge.Bridge.Acted): a page that has only read since its stream opened is still asked a
+// board tool call, and a client that only opened a stream is given no board.
 func guard(b *editorbridge.Bridge, port int, next http.Handler) http.Handler {
 	p := strconv.Itoa(port)
 	allowed := map[string]bool{"127.0.0.1:" + p: true, "localhost:" + p: true}
@@ -29,29 +35,24 @@ func guard(b *editorbridge.Bridge, port int, next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "bad host")
 			return
 		}
-		if needsActive(r) && !b.IsActive(r.Header.Get(ClientHeader)) {
-			writeError(w, http.StatusConflict, "not_active")
+		known := false
+		if id := r.Header.Get(ClientHeader); id != "" && isAPI(r) {
+			known = b.Acted(id)
+		}
+		if needsClient(r) && !known {
+			writeError(w, http.StatusConflict, "unknown_client")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// needsActive reports whether r must come from the active client (checked by header).
-func needsActive(r *http.Request) bool {
-	if r.URL.Path != "/api" && !strings.HasPrefix(r.URL.Path, "/api/") {
-		return false
-	}
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return false
-	}
-	if strings.HasPrefix(r.URL.Path, "/api/client/") || r.URL.Path == "/api/rpc-reply" {
-		return false
-	}
-	return true
+// isAPI reports whether r is an /api request.
+func isAPI(r *http.Request) bool {
+	return r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/")
 }
 
-// activeOrPending reports whether id is the active client or the one waiting to take over.
-func activeOrPending(b *editorbridge.Bridge, id string) bool {
-	return id != "" && (b.IsActive(id) || b.IsPending(id))
+// needsClient reports whether r must come from a known client (checked by header).
+func needsClient(r *http.Request) bool {
+	return isAPI(r) && r.Method != http.MethodGet && r.Method != http.MethodHead
 }

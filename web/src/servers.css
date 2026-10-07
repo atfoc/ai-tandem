@@ -1,0 +1,33 @@
+/* The Servers dialog (Servers.tsx). Its backdrop lies under the confirm dialog's (200), which asks before a remove. */
+.servers-btn { position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 1px solid var(--line); background: var(--bg); color: var(--muted); border-radius: 7px; }
+.servers-btn:hover { color: var(--text); }
+.servers-dot { position: absolute; top: -3px; right: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+
+.servers-backdrop { position: fixed; inset: 0; z-index: 190; background: var(--backdrop); display: grid; place-items: center; }
+.servers-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 18px 18px 14px; }
+.servers-notice { margin-top: 8px; padding: 6px 8px; border-radius: 6px; background: var(--warn-soft); border: 1px solid var(--warn); font-size: 12px; overflow-wrap: anywhere; user-select: text; }
+
+.servers-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.servers-row { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; }
+.servers-row-head { display: flex; align-items: baseline; gap: 8px; }
+.servers-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.servers-state { flex: none; font-size: 12px; color: var(--muted); }
+.servers-state::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; background: var(--faint); }
+.servers-state.ok::before { background: var(--ok); }
+.servers-state.bad { color: var(--danger); }
+.servers-state.bad::before { background: var(--danger); }
+.servers-line { margin-top: 3px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
+.servers-addr, .servers-fp { font-family: var(--mono); font-size: 11px; }
+.servers-fp { color: var(--text); word-break: break-all; }
+.servers-row-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+.servers-result { margin-top: 8px; padding: 6px 8px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line); }
+.servers-result-msg { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; user-select: text; }
+.servers-result.ok .servers-result-msg { color: var(--ok); }
+.servers-result.bad .servers-result-msg { color: var(--danger); }
+
+.servers-field { display: block; margin-top: 10px; font-size: 12px; color: var(--muted); }
+.servers-field input { display: block; width: 100%; box-sizing: border-box; margin-top: 3px; font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 8px; outline: 0; }
+.servers-field input:focus { border-color: var(--accent); }
+.servers-check { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; cursor: pointer; }
+.servers-check input { margin: 0; }

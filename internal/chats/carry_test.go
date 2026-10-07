@@ -67,7 +67,7 @@ func TestHumanSendCarriesOwedResults(t *testing.T) {
 	if len(parent.sent()) != 1 || len(resultRows(e.items(id))) != 0 {
 		t.Fatalf("a held result was carried: %d sends", len(parent.sent()))
 	}
-	if err := e.m.SetDraft(id, model.Draft{Text: "go on"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "go on"}); err != nil {
 		t.Fatal(err)
 	}
 	before := e.items(id)

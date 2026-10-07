@@ -6,6 +6,7 @@ import { getState, setState, statesOfChat } from "./store.ts";
 import { confirm } from "./Dialogs.tsx";
 import { bannerFor, restartConfirmText, runningChats, type UpdateBanner } from "./logic/version.ts";
 import { runningRuns } from "./logic/run.ts";
+import { localRuns } from "./logic/runrows.ts";
 
 declare const __APP_VERSION__: string; // build.mjs: AIWB_VERSION, "dev" by default
 
@@ -36,7 +37,7 @@ export async function checkVersion() {
 export function restartServer() {
   if (busy || restarting()) return;
   const n = runningChats(Object.values(getState().chats), (chat) => statesOfChat(getState(), chat)); // a run's own agents are not among them
-  const runs = runningRuns(Object.values(getState().runs));
+  const runs = runningRuns(localRuns(Object.values(getState().runs))); // a run on another server goes on: this restart is not its server's
   if (!n && !runs) { void restart(); return; }
   confirm({
     title: "Restart server", body: restartConfirmText(n, runs),

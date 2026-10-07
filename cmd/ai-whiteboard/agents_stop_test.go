@@ -212,7 +212,8 @@ func pidAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// activate connects to the server's events as client and waits until it is the active client.
+// activate connects to the server's events as client and waits for its hello: the client is
+// known from then on.
 // The connection stays open until the test ends.
 func activate(t *testing.T, base, client string) {
 	t.Helper()
@@ -228,11 +229,11 @@ func activate(t *testing.T, base, client string) {
 	sc.Buffer(nil, 1<<20)
 	for active := false; !active; {
 		if !sc.Scan() {
-			t.Fatalf("events ended before the client was active: %v", sc.Err())
+			t.Fatalf("events ended before the client's hello: %v", sc.Err())
 		}
 		var ev map[string]any
 		if line, ok := strings.CutPrefix(sc.Text(), "data: "); ok && json.Unmarshal([]byte(line), &ev) == nil {
-			active = ev["type"] == "hello" && ev["active"] == true
+			active = ev["type"] == "hello"
 		}
 	}
 	go io.Copy(io.Discard, resp.Body) // keep reading so the server never blocks on this client

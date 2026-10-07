@@ -5,33 +5,49 @@ import React, { memo, useEffect, useRef, useState } from "react";
 import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, answerRun, isBusy, isLegacy, chatTitle, boardName, shownBranch, statesOfChat, threadOf, viewedBranch, type Sel } from "./store.ts";
 import { api } from "./api.ts";
 import { loadItems, loadTree, dropRun } from "./conn.ts";
-import { flush } from "./board.ts";
+import { flush, takeBoard } from "./board.ts";
 import { focusComposer, subline, tildify } from "./Composer.tsx";
 import { NameInput } from "./ChatView.tsx";
 import { BranchBadge } from "./fork/Chrome.tsx";
-import { Menu, confirm, reportError } from "./Dialogs.tsx";
+import { Menu, confirm, reportError, type ConfirmRequest } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
 import { dotState, rowLine } from "./logic/labels.ts";
-import { chatBusy, workingBranches, workingOn } from "./logic/status.ts";
+import { chatBusy, remoteRow, workingBranches, workingOn } from "./logic/status.ts";
+import { REMOVE, deleteAsk, deleteRefused, type DeleteAsk } from "./logic/remoteview.ts";
+import { offersChatOn, runDeleteAsk, runDeleteRefused } from "./logic/runserver.ts";
+import { runRow, runRowTip } from "./logic/runrows.ts";
+import "./remotechat.css";
+import { serverConnected, serverName, serverOf } from "./logic/serverlists.ts";
 import { chatHasDraft, hasDraft, otherDrafts } from "./logic/drafts.ts";
 import { selOf } from "./logic/sel.ts";
-import { isDraft, runChats, runDot, runRowLine } from "./logic/run.ts";
-import { GROUP_ARCHIVE_RUN, GROUP_DELETE_RUN, groupCount, runArchiveConfirm, runDeleteConfirm, runDraftTag, runLightsGroup, runRowTitle, workingRunIn } from "./logic/siderun.ts";
-import { AgentGlyph, BoardIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, RunIcon, SunIcon, SystemIcon, agentClass, agentName } from "./icons.tsx";
+import { takeOnSelect } from "./logic/roles.ts";
+import { catalogFor } from "./logic/agentlist.ts";
+import { isDraft, runChats } from "./logic/run.ts";
+import { GROUP_ARCHIVE_RUN, GROUP_DELETE_RUN, groupCount, runArchiveConfirm, runDraftTag, runLightsGroup, workingRunIn } from "./logic/siderun.ts";
+import { AgentGlyph, BoardIcon, ChatIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, RunIcon, SunIcon, SystemIcon, agentClass } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
 import { inDesktopApp, openServerLog, restartServer } from "./version.ts";
 import { THEME_PREFS, type ThemePref } from "./logic/theme.ts";
-import { AGENT_ORDER, UNGROUPED, type AgentKind, type Board, type ChatView, type Group, type RunView } from "./types.ts";
+import { UNGROUPED, type Board, type ChatView, type Group, type RunView } from "./types.ts";
+import { ServersButton } from "./Servers.tsx";
 
 // ---------------------------------------------------------------- selection
 
 /** Selects a board or a run, with one of its chats in the panel, or a plain chat alone.
  *  keepPanel: a chat panel the user hid stays hidden. Nothing is focused unless a chat is
- *  selected: a new run's row is in rename mode, and a focus here would end it. */
-export function select(sel: Sel, o: { keepPanel?: boolean } = {}) {
+ *  selected: a new run's row is in rename mode, and a focus here would end it. A board this
+ *  window does not hold is asked for: taken from a window that holds it, or with ifFree (the
+ *  selection is not the user's own, or it is of one of the board's chats and not of the board)
+ *  only when no window does (logic/roles.ts takeOnSelect). row: the click was on the board's own
+ *  row, which takes the board also when it is the one on screen. */
+export function select(sel: Sel, o: { keepPanel?: boolean; ifFree?: boolean; row?: boolean } = {}) {
   const prev = getState().sel;
   if (prev.board && prev.board !== sel.board) void flush(prev.board); // closing a board writes it
   setState({ sel, runAgent: null }); safeSet("aiwb.sel", JSON.stringify(sel)); // a run agent's transcript in the panel gives way to what was picked
+  // (the board that is on screen already is never taken from another window by picking one of its chats: those are
+  // used without the board, and its own row or "Use here" is what takes it)
+  const take = sel.board ? takeOnSelect(getState().roles[sel.board], sel.board === prev.board, !!o.ifFree, !!o.row) : null;
+  if (sel.board && take) void takeBoard(sel.board, take === "free");
   if (sel.chat !== prev.chat || sel.run !== prev.run) setState({ subDrawer: null });
   if (sel.board && getState().boards[sel.board]?.new) void api.seenBoard(sel.board).catch(() => {});
   const owner = sel.board ?? sel.run;
@@ -46,12 +62,13 @@ export function select(sel: Sel, o: { keepPanel?: boolean } = {}) {
   }
 }
 
-/** Opens a board with the last chat opened on it if it still exists, else its newest chat, else none. */
-export function openBoard(id: string) {
+/** Opens a board with the last chat opened on it if it still exists, else its newest chat, else none.
+ *  row: the click was on the board's own row in the sidebar (select). */
+export function openBoard(id: string, row = false) {
   const s = getState();
   const last = lastChat.get(id);
   const lc = last && s.chats[last]?.board === id && (s.showArchived || !s.chats[last].archived) ? last : null;
-  select({ board: id, run: null, chat: lc ?? boardChats(s.chats, id, s.showArchived)[0]?.id ?? null });
+  select({ board: id, run: null, chat: lc ?? boardChats(s.chats, id, s.showArchived)[0]?.id ?? null }, { row });
 }
 
 /** Opens a run with the last chat opened on it if it still exists, else its newest chat, else none.
@@ -67,15 +84,17 @@ export function openRun(id: string) {
 }
 
 /** A board chat opens on its board, a run chat on its run; a plain chat opens alone. A run's own
- *  agent (a record with a role) is not opened this way: its transcript shows inside the run. */
+ *  agent (a record with a role) is not opened this way: its transcript shows inside the run. The
+ *  chat's board is taken only if no window holds it: the chat is what was picked, and it is used
+ *  without the board. */
 export function openChat(c: ChatView) {
   if (c.role) return;
-  select(selOf(c));
+  select(selOf(c), { ifFree: true });
 }
 
-export async function newChat(agent: AgentKind, where: { group: string } | { board: string } | { run: string }) {
+export async function newChat(where: { group: string } | { board: string } | { run: string }) {
   try {
-    const c = await api.newChat(agent, where);
+    const c = await api.newChat(where);
     upsertChat(c);
     openChat(c);
   } catch (e) { reportError("Couldn't start the chat", e); }
@@ -143,7 +162,9 @@ function deleteBoard(b: Board) {
   });
 }
 
-/** The server stops a live run, and the agents of the chats on it, before it archives. */
+/** The server stops a live run, and the agents of the chats on it, before it archives. A run on
+ *  another server is archived there: a refusal is shown, and the row is what the server's next
+ *  `run` event says (nothing is marked archived here). */
 function archiveRun(r: RunView) {
   const run = () => api.archive("runs", r.id);
   const ask = runArchiveConfirm(r, getState().chats);
@@ -151,18 +172,33 @@ function archiveRun(r: RunView) {
   confirm({ title: ask.title, body: ask.body, actions: [{ label: ask.action, tone: "primary", run }] });
 }
 
-/** The server stops everything of the run and removes its chats with it. */
+/** The server stops everything of the run and removes its chats with it. A run on another server
+ *  is deleted there. When that server is not connected or does not answer (503, 504) the dialog
+ *  offers to remove it from this sidebar only, which is also all a run that is gone there takes. */
 export function deleteRun(r: RunView) {
-  const ask = runDeleteConfirm(r, tildify(r.cwd));
-  confirm({ title: ask.title, body: ask.body, actions: [{ label: ask.action, tone: "danger", run: () => api.deleteRun(r.id) }] });
+  const s = getState(), server = serverOf(r), name = serverName(s, server), folder = tildify(r.cwd, server);
+  const dialog = (ask: DeleteAsk): ConfirmRequest => ({
+    title: ask.title, body: ask.body,
+    actions: [{
+      label: ask.action, tone: "danger", run: () => api.deleteRun(r.id, { local: ask.local }),
+      refused: (err) => { const next = ask.local ? null : runDeleteRefused(r, r.name, name, err, serverConnected(getState(), server)); return next && dialog(next); },
+    }],
+  });
+  confirm(dialog(runDeleteAsk(r, r.name, name, folder)));
 }
 
+/** A chat on another server is deleted there. When that server is not connected (503) the dialog
+ *  offers to remove it from this sidebar only, which is also all a chat that is gone there takes. */
 function deleteChat(c: ChatView) {
-  confirm({
-    title: `Delete ${chatTitle(c, threadOf(getState(), c.id)?.items)}?`,
-    body: "Its history is removed. This can't be undone.",
-    actions: [{ label: "Delete", tone: "danger", run: () => api.deleteChat(c.id) }],
+  const s = getState(), title = chatTitle(c, threadOf(s, c.id)?.items), name = serverName(s, serverOf(c));
+  const dialog = (ask: DeleteAsk): ConfirmRequest => ({
+    title: ask.title, body: ask.body,
+    actions: [{
+      label: ask.action, tone: "danger", run: () => api.deleteChat(c.id, { local: ask.local }),
+      refused: (err) => { const next = ask.local ? null : deleteRefused(c, title, name, err); return next && dialog(next); },
+    }],
   });
+  confirm(dialog(deleteAsk(c, title, name)));
 }
 
 /** Whether a run in the group, or in a group nested in it, works: archiving and deleting stop it. */
@@ -252,7 +288,7 @@ export function Sidebar() {
           <button className="icon-btn new" title="New…" onClick={() => setMenu(!menu)}>+</button>
           {menu && (
             <Menu onClose={() => setMenu(false)} align="right">
-              <AgentItems onPick={(a) => { setMenu(false); void newChat(a, { group: UNGROUPED }); }} />
+              <button className="menu-item agent" onClick={() => { setMenu(false); void newChat({ group: UNGROUPED }); }}><ChatIcon /> New chat</button>
               <button className="menu-item agent" onClick={() => { setMenu(false); addBoard(UNGROUPED); }}><BoardIcon /> New whiteboard</button>
               <button className="menu-item agent" onClick={() => { setMenu(false); addRun(UNGROUPED); }}><RunIcon /> New run</button>
               <div className="menu-sep" />
@@ -280,6 +316,7 @@ export function Sidebar() {
             onChange={(e) => { setState({ showArchived: e.target.checked }); safeSet("aiwb.archived", e.target.checked ? "1" : "0"); }} />
           Show archived
         </label>
+        <ServersButton />
         <ThemeSwitch />
       </div>
     </nav>
@@ -354,18 +391,6 @@ function ThemeSwitch() {
   );
 }
 
-export function AgentItems({ onPick, suffix = " chat" }: { onPick: (a: AgentKind) => void; suffix?: string }) {
-  return (
-    <>
-      {AGENT_ORDER.map((a) => (
-        <button key={a} className="menu-item agent" onClick={() => onPick(a)}>
-          <AgentGlyph agent={a} size={13} /> {agentName(a)}{suffix}
-        </button>
-      ))}
-    </>
-  );
-}
-
 /** Takes boards, runs and chats (moved into group) and groups (nested in it; the ungrouped area: top level). */
 function DropZone({ group, className, children }: { group: string; className?: string; children: React.ReactNode }) {
   const [over, setOver] = useState(false);
@@ -425,6 +450,15 @@ function AddMenu({ title, head, children }: { title: string; head: string; child
           {children(() => setOpen(false))}
         </Menu>
       )}
+    </div>
+  );
+}
+
+/** A row's "+" that makes a chat at once (a board's, a run's): AddMenu's button with no menu. */
+function AddChat({ title, onClick }: { title: string; onClick: () => void }) {
+  return (
+    <div className="menu-wrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+      <button className="side-hover icon-btn sm" title={title} onClick={onClick}>+</button>
     </div>
   );
 }
@@ -496,7 +530,7 @@ function GroupNode({ n, depth, editing, setEditing, addBoard, addRun, addGroup }
         {!g.archived && (
           <AddMenu title={`New in ${g.name}`} head={`New in ${g.name}`}>
             {(close) => <>
-              <AgentItems onPick={(a) => { close(); void newChat(a, { group: g.id }); }} />
+              <button className="menu-item agent" onClick={() => { close(); void newChat({ group: g.id }); }}><ChatIcon /> Chat</button>
               <button className="menu-item agent" onClick={() => { close(); addBoard(g.id); }}><BoardIcon /> Whiteboard</button>
               <button className="menu-item agent" onClick={() => { close(); addRun(g.id); }}><RunIcon /> Run</button>
               <button className="menu-item agent" onClick={() => { close(); addGroup(g.id); }}><GroupIcon /> Group</button>
@@ -549,7 +583,7 @@ const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edit & { b
     <div className={`side-board ${b.archived ? "archived" : ""}`}>
       <div className={`side-row is-board ${on && !sel.chat ? "on" : on ? "within" : ""}`} {...(b.archived || editing === key ? {} : drag(key))}
         title={[...groupPath(groups, b.group), b.name].join(" / ")}
-        onClick={() => openBoard(b.id)} onDoubleClick={() => { if (!b.archived) setEditing(key); }}>
+        onClick={() => openBoard(b.id, true)} onDoubleClick={() => { if (!b.archived) setEditing(key); }}>
         <button className={`side-caret ${open ? "open" : ""} ${chats.length ? "" : "none"}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}><Chevron /></button>
         <span className="side-board-icon">{working ? <span className={`agent-${agentClass(working)}`}><AgentGlyph agent={working} size={12} /></span> : <BoardIcon />}</span>
         {editing === key
@@ -560,9 +594,7 @@ const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edit & { b
         {!open && chats.length > 0 && <span className="side-count">{chats.length}</span>}
         <span className="grow" />
         {!b.archived && (
-          <AddMenu title="New chat on this board" head={`Chat on ${b.name}`}>
-            {(close) => <AgentItems onPick={(a) => { close(); setOpen(true); void newChat(a, { board: b.id }); }} />}
-          </AddMenu>
+          <AddChat title="New chat on this board" onClick={() => { setOpen(true); void newChat({ board: b.id }); }} />
         )}
         <RowMenu label="More" items={menu} />
       </div>
@@ -588,7 +620,12 @@ const RunNode = memo(function RunNode({ r, editing, setEditing }: Edit & { r: Ru
   const chats = runChats(all, r.id, showArchived);
   const on = sel.run === r.id;
   const key = "run:" + r.id;
-  const dot = runDot(r);
+  const server = serverOf(r);
+  const serverIs = useStore((s) => serverName(s, server));
+  const connected = useStore((s) => serverConnected(s, server));
+  // (a run on another server: its server's name after the line, grey while that is not connected or the run is gone there)
+  const row = runRow(r, serverIs, connected);
+  const dot = row.dot;
   const rename = async (v: string, left: boolean) => {
     setEditing(null);
     // named: on to the goal. Not when the user went elsewhere, nor with a chat open beside the
@@ -598,7 +635,9 @@ const RunNode = memo(function RunNode({ r, editing, setEditing }: Edit & { r: Ru
     try { await answerRun(r.id, () => api.renameRun(r.id, v)); setErr(""); }
     catch (e: any) { setErr(e?.message ?? String(e)); }
   };
-  const menu = r.archived
+  const menu = row.gone
+    ? [{ label: REMOVE, run: () => deleteRun(r) }]
+    : r.archived
     ? [{ label: "Unarchive", run: () => attempt("Couldn't unarchive the run", () => api.unarchive("runs", r.id)) },
        { label: "Delete", tone: "danger" as const, run: () => deleteRun(r) }]
     : [{ label: "Rename", run: () => setEditing(key) },
@@ -606,26 +645,25 @@ const RunNode = memo(function RunNode({ r, editing, setEditing }: Edit & { r: Ru
        { label: "Delete", tone: "danger" as const, run: () => deleteRun(r) }];
   return (
     <div className={`side-run ${r.archived ? "archived" : ""}`}>
-      <div className={`side-row is-run ${on && !sel.chat ? "on" : on ? "within" : ""} ${dot ? "st-" + dot : ""}`} {...(r.archived || editing === key ? {} : drag(key))}
-        title={runRowTitle(r, groupPath(groups, r.group))}
+      <div className={`side-row is-run ${on && !sel.chat ? "on" : on ? "within" : ""} ${row.off ? "off" : ""} ${row.gone ? "gone" : ""} ${dot ? "st-" + dot : ""}`}
+        {...(r.archived || row.gone || editing === key ? {} : drag(key))}
+        title={runRowTip(r, groupPath(groups, r.group), row)}
         // a double-click's second click opens nothing: the first did, and opening again would
         // send the focus to a composer just after the name input took it
-        onClick={(e) => { if (e.detail < 2) openRun(r.id); }} onDoubleClick={() => { if (!r.archived) setEditing(key); }}>
+        onClick={(e) => { if (e.detail < 2) openRun(r.id); }} onDoubleClick={() => { if (!r.archived && !row.gone) setEditing(key); }}>
         <button className={`side-caret ${open ? "open" : ""} ${chats.length ? "" : "none"}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}><Chevron /></button>
         <span className="side-run-icon"><RunIcon />{dot && <span className={`crow-dot st-${dot}`} />}</span>
         <div className="side-row-main">
           {editing === key
             ? <InlineName value={r.name} onDone={(v, left) => void rename(v, left)} />
             : <div className="side-name">{r.name}</div>}
-          <div className="side-sub">{runRowLine(r)}</div>
+          <div className="side-sub">{row.line}</div>
         </div>
         {runDraftTag(r, on) && <span className="draft-tag" title="Unsent goal">Draft</span>}
         {r.archived && <ArchivedTag />}
         {!open && chats.length > 0 && <span className="side-count">{chats.length}</span>}
-        {!r.archived && (
-          <AddMenu title="New chat on this run" head={`Chat on ${r.name}`}>
-            {(close) => <AgentItems onPick={(a) => { close(); setOpen(true); void newChat(a, { run: r.id }); }} />}
-          </AddMenu>
+        {offersChatOn(r) && !row.gone && (
+          <AddChat title="New chat on this run" onClick={() => { setOpen(true); void newChat({ run: r.id }); }} />
         )}
         {editing !== key && <RowMenu label="More" items={menu} />}
       </div>
@@ -642,12 +680,18 @@ const RunNode = memo(function RunNode({ r, editing, setEditing }: Edit & { r: Ru
 const ChatRow = memo(function ChatRow({ c, editing, setEditing, nested }: Edit & { c: ChatView; nested?: boolean }) {
   const on = useStore((s) => s.sel.chat === c.id);
   const items = useStore((s) => threadOf(s, c.id)?.items);
-  const cat = useStore((s) => s.catalogs[c.agent]);
+  const server = serverOf(c);
+  const cat = useStore((s) => catalogFor(s, server, c.agent));
+  const serverIs = useStore((s) => serverName(s, server));
+  const connected = useStore((s) => serverConnected(s, server));
   const key = "chat:" + c.id;
-  const sub = rowLine(c, subline(c, cat), boardName);
-  const st = dotState(c);
+  // (a chat on another server: its server's name after the line, grey while that is not connected or the chat is gone there)
+  const row = remoteRow(c, serverIs, connected, rowLine(c, subline(c, cat), boardName), dotState(c));
+  const sub = row.line, st = row.dot;
   const legacy = isLegacy(c);
-  const menu = c.archived
+  const menu = row.gone
+    ? [{ label: REMOVE, run: () => deleteChat(c) }]
+    : c.archived
     ? [{ label: "Unarchive", run: () => attempt("Couldn't unarchive the chat", () => api.unarchive("chats", c.id)) },
        { label: "Delete", tone: "danger" as const, run: () => deleteChat(c) }]
     : legacy
@@ -661,9 +705,9 @@ const ChatRow = memo(function ChatRow({ c, editing, setEditing, nested }: Edit &
   const other = useStore((s) => s.sel.chat === c.id && otherDrafts(statesOfChat(s, c.id), viewedBranch(s, c.id)));
   const draft = (on ? other : chatHasDraft(c)) && !c.archived && !legacy;
   return (
-    <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived || legacy ? "archived" : ""} st-${st}`}
-      {...(nested || c.archived || editing === key ? {} : drag(key))}
-      onClick={() => openChat(c)} onDoubleClick={() => { if (!c.archived && !legacy) setEditing(key); }} title={`${title} — ${sub}`}>
+    <div className={`side-row is-chat ${on ? "on" : ""} ${nested ? "nested" : ""} ${c.archived || legacy ? "archived" : ""} ${row.off ? "off" : ""} ${row.gone ? "gone" : ""} st-${st}`}
+      {...(nested || c.archived || row.gone || editing === key ? {} : drag(key))}
+      onClick={() => openChat(c)} onDoubleClick={() => { if (!c.archived && !legacy && !row.gone) setEditing(key); }} title={row.title || `${title} — ${sub}`}>
       <span className={`side-glyph agent-${agentClass(c.agent)}`}>
         <AgentGlyph agent={c.agent} size={11} />
         <span className={`crow-dot st-${st}`} />

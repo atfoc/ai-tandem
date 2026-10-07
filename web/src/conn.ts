@@ -1,11 +1,12 @@
 // The line to the server: SSE in (state, chat items, rpc calls), POSTs out
-// through api.ts. The server lets one tab at a time be the active client; a
-// newer tab takes over after this one has written its pending saves.
+// through api.ts. Several tabs work on one server at once; each board is held
+// by one of them, which hands it over after it has written its pending save
+// (board.ts keeps the roles).
 import { api, clientId } from "./api.ts";
 import { setState, getState, applySnapshot, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
-  upsertState, setDrawer, setShown, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
-  onRunEvent, removeRun, type ThreadKey } from "./store.ts";
-import { runTool, flushAll } from "./board.ts";
+  upsertState, setDrawer, setShown, setThreadError, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
+  onRunEvent, removeRun, setRunError, type ThreadKey } from "./store.ts";
+import { runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot } from "./board.ts";
 import { subKey } from "./logic/subagents.ts";
 import { branchKey, keyOfChat, type BranchKey } from "./logic/branches.ts";
 import { Loads } from "./logic/branchview.ts";
@@ -18,6 +19,10 @@ import { checkMove, dropMoves, goBack, moveSent } from "./fork/actions.ts";
 import { checkVersion } from "./version.ts";
 import { patchTree, type TreePatch } from "./logic/treepatch.ts";
 import type { BranchState, ChatView, Item, RunDetail, Subagent, TreeView } from "./types.ts";
+import { LOCAL_ENTRY, upsertServer } from "./logic/servers.ts";
+import { onUnknownClient, streamGone } from "./logic/unknownclient.ts";
+import { chatReload, serverBack, threadError, withLists, withoutThread } from "./logic/serverlists.ts";
+import { Unfollows, runServerBack } from "./logic/runserver.ts";
 
 let es: EventSource | null = null;
 
@@ -26,7 +31,7 @@ export function connect() {
   setState({ role: "connecting" });
   const src = new EventSource(`/api/events?client=${encodeURIComponent(clientId)}`);
   es = src;
-  src.onerror = () => { if (es === src) setState({ connected: false }); }; // EventSource reconnects by itself
+  src.onerror = () => { if (es === src) setState({ connected: false }); }; // EventSource reconnects by itself, unless the browser gave it up: see onUnknownClient below
   src.onmessage = (e) => {
     let m: any;
     try { m = JSON.parse(e.data); } catch { return; }
@@ -34,18 +39,25 @@ export function connect() {
   };
 }
 
+// A write was refused as `unknown_client`: the server has no stream of this page. One the browser
+// closed for good is opened again; one that is open or reconnecting is left to the browser.
+onUnknownClient(() => { if (streamGone(es)) connect(); });
+
 async function handle(m: any, src: EventSource) {
   if (es !== src) return;
   switch (m.type) {
-    case "hello": setState({ connected: true, role: m.active ? "active" : "waiting" }); void checkVersion(); return;
+    case "hello": streamOpened(); setState({ connected: true, role: "active" }); void checkVersion(); return; // a new stream holds no board
     case "snapshot": applySnapshot(m, dropMoves()); afterSnapshot(); return; // the open composers end up as after Back; a move being sent stays
-    case "release_request": await flushAll(); await api.release().catch(() => {}); return;
-    case "superseded": src.close(); es = null; setState({ role: "superseded" }); return; // TakeoverScreen
+    case "release_request": if (m.board) await handOver(m.board); return; // another window asks for one board
+    case "superseded": if (m.board) boardLost(m.board); return; // that board's canvas gives way to the panel (TakeoverPanel); the stream stays
+    case "held": if (m.board) granted(m.board, m.rev ?? 0); return; // a board handed over to this window, or given to it for a tool call
     case "server_stopping": await flushAll(); await api.flushed().catch(() => {}); return;
     case "rpc": return answer(m);
     case "groups": setState({ groups: m.groups ?? [] }); return;
     case "board": upsertBoard(m.board); return;
     case "board_removed": removeBoard(m.id); return;
+    case "servers": setState({ servers: m.servers ?? [LOCAL_ENTRY], serversNotice: m.notice ?? "" }); return;
+    case "server_state": setState((s) => ({ servers: upsertServer(s.servers, m.server) })); return;
     case "run": if (m.run?.id) onRunEvent(m.run); return;
     case "run_removed": onRunRemoved(m.id); return;
     case "run_detail": onRunFeed(m.run, { version: m.version, patch: normPatch(m.patch, getState().runDetail[m.run]?.startedAt) }); return;
@@ -59,6 +71,10 @@ async function handle(m: any, src: EventSource) {
     case "sub_items": applyItems(m.chat, subKey(branchKey(m.chat, m.branch), m.sub), m.version, m.updates ?? []); return;
     case "defaults": setState({ defaults: m.defaults }); return;
     case "catalog": setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
+    case "agents": setState({ usable: m.agents ?? [] }); return; // the local server's usable agents changed
+    case "server_lists": if (m.server) setState((s) => ({ lists: withLists(s.lists, m.server, m.lists) })); return; // what another server offers; null: its entry is gone
+    case "server_back": if (m.server) { onServerBack(m.server); onRunServerBack(m.server); } return; // before the `branch_state` and `chat` events of that server's chats
+    case "chat_reload": onChatReload(m.chat); return;
   }
 }
 
@@ -72,14 +88,16 @@ function afterSnapshot() {
   treeQueue.clear();
   if (treeRetry !== null) { clearTimeout(treeRetry); treeRetry = null; }
   const snap = ++snapshots;
+  stale.clear(); // the snapshot dropped every thread
   runLoads.reset(); runFetches.clear();
   const { chat, run } = getState().sel;
   const r = run ? getState().runs[run] : undefined;
   if (r?.started) void fetchRun(r.id);
   refreshAgents();
+  takeAfterSnapshot(); // the board on screen and those with an unsaved edit, if no other window holds them
   if (!chat) return;
   void api.openChat(chat, shownBranch(getState(), chat)).catch(() => {});
-  void loadItems(chat);
+  void loadList(chat).catch(() => {}); // a new fetch, and not one that runs: a read made while the stream was down started no follow
   void loadTree(chat, true).catch(() => {
     if (snap !== snapshots) return;
     treeRetry = setTimeout(() => {
@@ -97,10 +115,9 @@ async function answer(m: any) {
   } catch (err: any) {
     reply = { error: `${err?.code ? err.code + ": " : ""}${err?.message ?? String(err)}` };
   }
-  await api.rpcReply(m.id, reply).catch((e) => console.error("rpc reply:", e));
+  // (409: the call is no longer this window's to answer, its board went to another one or it timed out)
+  await api.rpcReply(m.id, reply).catch((e) => { if (e?.status !== 409) console.error("rpc reply:", e); });
 }
-
-export function takeBack() { connect(); } // "Use here" button
 
 // ---- threads: a branch's list under branchKey(chat, branch), a subagent's under subKey(that,
 // sid). A thread is fetched when its chat first shows the branch, and is kept from then on: the
@@ -113,6 +130,7 @@ const pending = new Map<ThreadKey, Queued[]>();     // by thread key: what arriv
 const loads = new Loads();                          // by thread key: its newest fetch, whose answer is the one kept
 const lists = new Map<BranchKey, Promise<void>>();  // by branch key: the fetch of its list that runs
 const removed = new Set<string>();                  // the chats removed in this session: what still comes for one is dropped
+const stale = new Set<ThreadKey>();                 // the threads `server_back` left on screen until a read of them answers
 
 function apply(key: ThreadKey, version: number, updates: Update[]) {
   const cur = threadAt(getState(), key), next = applyUpdates(cur, version, updates);
@@ -168,9 +186,11 @@ function flush(key: ThreadKey, list: BranchKey | null) {
  *  and the answer is kept under the key of the branch it names, also when the chat shows another
  *  one by then. A list's answer also brings the branch's subagents and its record. A fetch begun
  *  later takes the thread over: the answer of an older one is discarded, and so is the answer for
- *  a chat that is gone by then. replace: the answer replaces the list whatever its version. The
- *  first list of a chat that loads puts the chat on the server's current branch (setShown): from
- *  then on only this client changes the branch it is on. Rejects when the fetch fails. */
+ *  a chat that is gone by then. replace: the answer replaces the list whatever its version, as it
+ *  does for a thread `server_back` left on screen (stale); a fetch of such a thread that fails
+ *  takes it away. The first list of a chat that loads puts the chat on the server's current
+ *  branch (setShown): from then on only this client changes the branch it is on. Rejects when the
+ *  fetch fails. */
 async function loadThread(chat: string, branch: string, sid?: string, o: { replace?: boolean } = {}): Promise<void> {
   const list = branchKey(chat, branch);
   const key: ThreadKey = sid ? subKey(list, sid) : list;
@@ -184,17 +204,21 @@ async function loadThread(chat: string, branch: string, sid?: string, o: { repla
     if (r?.branch && branchKey(chat, r.branch) !== list) throw new Error(`asked for branch ${branch}, got ${r.branch}`);
   } catch (e) { failed = e ?? new Error("not loaded"); }
   if (!loads.current(key, ticket)) return sid ? undefined : lists.get(list); // a newer fetch has the thread
-  if (!getState().chats[chat] && !agentHolds.has(chat)) { pending.delete(key); return; } // removed meanwhile (a run agent: let go): nothing of it is kept
+  if (!getState().chats[chat] && !agentHolds.has(chat)) { pending.delete(key); stale.delete(key); return; } // removed meanwhile (a run agent: let go): nothing of it is kept
   if (failed || !r) {
+    if (stale.delete(key)) dropStale(chat, key); // kept, it would stay at its old version, and what is queued is not for it
     flush(key, sid ? null : list);
     console.error(`loading thread ${key}:`, failed);
+    if (!sid && getState().chats[chat]) setThreadError(chat, threadError(failed)); // the chat's view says so in place of the thread (a run agent has agentErrors)
     throw failed ?? new Error("not loaded");
   }
+  if (!sid) setThreadError(chat, null);
+  const was = stale.delete(key), replace = !!o.replace || was;
   const cur = threadAt(getState(), key);
-  const next = afterAnswer(cur, { version: r.version, items: r.items ?? [] }, o.replace);
+  const next = afterAnswer(cur, { version: r.version, items: r.items ?? [] }, replace);
   if (next !== cur) {
     setThread(key, next);
-    if (!sid && (r.subagents !== undefined || o.replace)) setSubs(list, subsById(r.subagents));
+    if (!sid && (r.subagents !== undefined || replace)) setSubs(list, subsById(r.subagents));
   }
   const listed = !!getState().chats[chat]; // not a run agent's chat, which has main alone and no record: its view tells its state
   if (!sid && listed && r.state && answerStateTaken(pending.get(key) ?? [])) upsertState(r.state);
@@ -340,16 +364,70 @@ export async function refreshChat(chat: string, code?: string) {
   if (shownKey(getState(), chat) !== was) try { await loadList(chat, { replace: true }); } catch {}
 }
 
+/** `server_back`: a server is connected again. It may have restarted, and its thread versions
+ *  then start again: a thread kept at version 10 would drop every event up to 10. So everything
+ *  kept of that server's chats goes (threads, subagents, trees, the fetches that run and what is
+ *  queued behind them, branch states, load errors), and the chat on screen is read again; another
+ *  one is when it is opened next. The local server ended this page's follows of them: the reads
+ *  are the new ones.
+ *  The chat on screen keeps the list it shows, its subagents and an open subagent pane with its
+ *  thread until the reads answer, so the reader keeps the place: the reads start here, what
+ *  arrives meanwhile waits behind them, and their answers replace what is kept whatever its
+ *  version. What is kept is marked (stale) until a read of it answers: the newest read of it that
+ *  fails takes it away, also when that is not the read started here (a `chat_reload` or a refused
+ *  Send began a newer one, and this one's answer was then discarded). Only what was kept goes: the
+ *  read of another branch the chat shows by then keeps its place.
+ *  The pane's thread is read whenever a pane is open, kept or not: the read of it that ran was
+ *  given up with the others, and the pane asks only once (Subagents.tsx useSubThread). */
+function onServerBack(server: string) {
+  const back = serverBack(getState(), server);
+  const chat = back.load, s = getState();
+  const list = chat ? shownKey(s, chat) : null;
+  const pane = chat && list && s.subDrawer?.chat === chat && drawerStays(s.subDrawer, chat, shownBranch(s, chat)) ? s.subDrawer.sub : "";
+  const sub = list && pane ? subKey(list, pane) : null;
+  const keep = [list, sub].filter((k): k is NonNullable<typeof k> => !!k && !!threadAt(s, k));
+  for (const id of back.chats) { forgetThread(id, id === chat && list ? keep : undefined); treeLoads.delete(id); treeQueue.delete(id); }
+  for (const k of keep) stale.add(k);
+  setState(back.patch);
+  if (!chat) return;
+  const branch = shownBranch(getState(), chat);
+  void loadList(chat, { replace: true }).catch(() => {});
+  if (pane) void loadThread(chat, branch, pane, { replace: true }).catch(() => {});
+  void loadTree(chat, true).catch(() => {});
+}
+
+/** Takes away a thread `server_back` left on screen, whose read failed: a list with its subagents,
+ *  their threads and the pane on one of them; a subagent's thread alone (the pane reads it
+ *  again). Nothing else of the chat is touched, and no fetch is given up. */
+function dropStale(chat: string, key: ThreadKey) {
+  setState((s) => {
+    const items = withoutThread(s.items, key), subs = withoutThread(s.subs, key);
+    const pane = s.subDrawer?.chat === chat && branchKey(chat, s.subDrawer.branch) === key ? null : s.subDrawer;
+    return { items, subs, subDrawer: pane };
+  });
+}
+
+/** `chat_reload`: what this page holds of a chat is no longer the chat's (its first message
+ *  started it on another server): the view and the list shown are read again, and the tree when
+ *  one is kept. */
+function onChatReload(chat: string) {
+  const { refresh, tree } = chatReload(getState(), chat);
+  if (!refresh) return;
+  void refreshChat(chat);
+  if (tree) void loadTree(chat, true).catch(() => {});
+}
+
 // ---- runs: the detail of the run on screen (State.runDetail), kept current by `run_detail` and
 // `run_activity` events. One run's detail at a time: select() drops the one it leaves.
 
 const runLoads = new RunLoads();                       // the fetches, and what arrives while one runs
 const runFetches = new Map<string, Promise<void>>();   // by run id: the fetch that runs, for who waits for the detail
 const runAborts = new Map<string, AbortController>();   // by run id: the way to end the fetch that runs
-const runErrors = new Map<string, string>();           // by run id: what the last fetch of its detail failed with
+const runUnfollows = new Unfollows();                  // by run id: the unfollow of a dropped run that is under way
 
-/** Why the last fetch of a run's detail failed, in the server's words; "" when it did not fail. */
-export const runLoadError = (run: string): string => runErrors.get(run) ?? "";
+/** Why the last fetch of a run's detail failed, in the server's words; "" when it did not fail.
+ *  State.runErrors has it with the server's code. */
+export const runLoadError = (run: string): string => getState().runErrors[run]?.message ?? "";
 
 const setRunDetail = (run: string, d: RunDetail) => setState((s) => (s.runs[run] ? { runDetail: { ...s.runDetail, [run]: d } } : {}));
 const clearRunDetail = (run: string) => setState((s) => {
@@ -370,7 +448,9 @@ function onRunFeed(run: string, ev: RunFeedEvent) {
 }
 
 /** Fetches a run's detail in full; what arrives for it meanwhile is applied after it by the rule
- *  above. A fetch begun later takes the run over. */
+ *  above. A fetch begun later takes the run over. An unfollow of the run that is still under way
+ *  is waited for first: one that reached the server after the read of the detail would end the
+ *  follow that read starts. */
 function fetchRun(run: string): Promise<void> {
   const ticket = runLoads.begin(run);
   runAborts.get(run)?.abort(); // a fetch begun earlier is superseded: its answer is not needed
@@ -378,8 +458,12 @@ function fetchRun(run: string): Promise<void> {
   runAborts.set(run, ctl);
   const done: Promise<void> = (async () => {
     let got: RunDetail | undefined;
-    try { got = normDetail(await api.runDetail(run, ctl.signal)); runErrors.delete(run); }
-    catch (e) { if (!ctl.signal.aborted) { console.error(`loading run ${run}:`, e); runErrors.set(run, e instanceof Error && e.message ? e.message : String(e)); } }
+    const gone = runUnfollows.wait(run);
+    if (gone) await gone;
+    if (!ctl.signal.aborted) {
+      try { got = normDetail(await api.runDetail(run, ctl.signal)); setRunError(run, null); }
+      catch (e) { if (!ctl.signal.aborted) { console.error(`loading run ${run}:`, e); setRunError(run, threadError(e)); } }
+    }
     if (runAborts.get(run) === ctl) runAborts.delete(run);
     const r = runLoads.end(run, ticket, got);
     if (r === "superseded") return runFetches.get(run); // the newer fetch has the run
@@ -398,15 +482,41 @@ export function loadRun(run: string): Promise<void> {
   return runFetches.get(run) ?? fetchRun(run);
 }
 
+/** Forgets what is kept of a run: its detail, the fetch that runs (discarded when it answers),
+ *  what is queued behind it, its texts and its load error. */
+function forgetRun(run: string) {
+  runLoads.drop(run);
+  runFetches.delete(run);
+  setRunError(run, null);
+  runAborts.get(run)?.abort(); runAborts.delete(run); // the answer is not waited for
+  dropTexts(run);
+  clearRunDetail(run);
+}
+
 /** Forgets a run's detail (another item was opened): a fetch that runs is discarded, and the run's
  *  events are dropped from here on. */
 export function dropRun(run: string) {
-  runLoads.drop(run);
-  runFetches.delete(run);
-  runErrors.delete(run);
-  runAborts.get(run)?.abort(); runAborts.delete(run); // the answer is not waited for: the next run's detail is
-  dropTexts(run);
-  clearRunDetail(run);
+  const s = getState();
+  const followed = !!s.runDetail[run] || runLoads.fetching(run) || !!s.runs[run]?.started; // a draft's detail was never read
+  forgetRun(run);
+  if (followed) runUnfollows.start(run, () => api.unfollowRun(run));
+}
+
+/** `server_back` for runs: the local server ended this page's follows of that server's runs and
+ *  of their agents' chats, so a detail kept would stay as it is while the run goes on. What is
+ *  kept of those runs goes (detail, the fetch that runs and what is queued behind it, texts, load
+ *  errors), and the thread of each of their agents that is kept; then the run on screen is read
+ *  again, and each of those agents that is still held. A run of another server and a local one
+ *  keep what they have. */
+function onRunServerBack(server: string) {
+  const back = runServerBack(getState(), server, [...runFetches.keys()]);
+  for (const run of back.runs) forgetRun(run);
+  for (const id of back.agents) {
+    forgetThread(id);
+    setState((s) => ({ agentErrors: without(s.agentErrors, id) }));
+  }
+  if (back.load) void fetchRun(back.load);
+  for (const id of back.agents) if (agentHolds.has(id)) readAgent(id, false, true);
 }
 
 /** `run_removed`: the run goes with its detail and with its agents that were held. */
@@ -414,7 +524,6 @@ function onRunRemoved(run: string) {
   for (const a of Object.values(getState().agents)) if (a.run === run) forgetThread(a.id);
   runLoads.drop(run);
   runFetches.delete(run);
-  runErrors.delete(run);
   runAborts.get(run)?.abort(); runAborts.delete(run);
   dropTexts(run);
   removeRun(run);
@@ -427,6 +536,7 @@ function onRunRemoved(run: string) {
 const LINGER_MS = 5000; // how long an agent is kept after its last view let go: a swap with its subagent, a tab change
 const agentHolds = new Holds(LINGER_MS, dropAgent);
 const agentViews = new Map<string, ChatView[]>(); // by agent chat id: the `chat` events that arrive while its view is fetched
+const unfollows = new Map<string, Promise<void>>(); // by agent chat id: the unfollow of a dropped agent that is under way
 
 /** A run agent's view from the server: kept only while the agent is held. */
 function onAgent(c: ChatView) {
@@ -452,15 +562,24 @@ async function fetchAgent(id: string) {
 }
 
 /** Forgets a thread and everything fetched or queued for it: its items, its subagents and their
- *  threads. A fetch of it that runs is discarded when it answers. */
-function forgetThread(chat: string) {
+ *  threads. A fetch of it that runs is discarded when it answers. keep: the threads (a branch's
+ *  list, with its subagents, and a subagent's thread) that stay until the caller's reads of them
+ *  answer, and with them the subagent pane. */
+function forgetThread(chat: string, keep?: ThreadKey[]) {
   for (const k of [...pending.keys()]) if (keyOfChat(k, chat)) { pending.delete(k); loads.begin(k); }
-  const list = branchKey(chat);
-  loads.begin(list); lists.delete(list);
-  setState((s) => ({ items: withoutChat(s.items, chat), subs: withoutChat(s.subs, chat), subDrawer: s.subDrawer?.chat === chat ? null : s.subDrawer }));
+  loads.begin(branchKey(chat));
+  for (const k of [...lists.keys()]) if (keyOfChat(k, chat)) lists.delete(k); // of every branch: none is left for who asks next
+  for (const k of [...stale]) if (keyOfChat(k, chat) && !keep?.includes(k)) stale.delete(k);
+  const kept = <V,>(m: Record<string, V>): Record<string, V> => {
+    const out = withoutChat(m, chat);
+    for (const k of keep ?? []) if (k in m) out[k] = m[k];
+    return out;
+  };
+  setState((s) => ({ items: kept(s.items), subs: kept(s.subs), subDrawer: !keep && s.subDrawer?.chat === chat ? null : s.subDrawer }));
 }
 
-/** The linger after an agent's last release passed: its view and its thread go. */
+/** The linger after an agent's last release passed: its view and its thread go, and the server
+ *  is told to send its events no more (the read of its items started that). */
 function dropAgent(id: string) {
   agentViews.delete(id);
   forgetThread(id);
@@ -470,6 +589,24 @@ function dropAgent(id: string) {
     const { [id]: _, ...agents } = s.agents;
     return { agents, agentErrors };
   });
+  const done: Promise<void> = api.unfollowChat(id).catch(() => {}).then(() => { if (unfollows.get(id) === done) unfollows.delete(id); });
+  unfollows.set(id, done);
+}
+
+/** Reads a held agent's view and thread (missing: only what is not kept). An unfollow of the
+ *  agent that is still under way is waited for first: one that reached the server after the read
+ *  of the items would end the follow that read starts. anew (after a snapshot): the thread is
+ *  fetched also when a fetch of it runs, which may have been made while the stream was down and
+ *  then started no follow. */
+function readAgent(id: string, missing = false, anew = false) {
+  const read = () => {
+    if (!agentHolds.has(id)) return; // let go meanwhile
+    if (!missing || !getState().agents[id]) void fetchAgent(id);
+    if (anew) void loadList(id).catch(() => {});
+    else if (!missing || !threadAt(getState(), branchKey(id))) void loadItems(id);
+  };
+  const gone = unfollows.get(id);
+  if (gone) void gone.then(read); else read();
 }
 
 /** Holds a run agent while a view shows its transcript: its view (State.agents) and its thread
@@ -478,16 +615,14 @@ function dropAgent(id: string) {
  *  pile up in memory. */
 export function holdAgent(id: string): () => void {
   const { release } = agentHolds.hold(id);
-  if (!getState().agents[id]) void fetchAgent(id);
-  if (!threadAt(getState(), branchKey(id))) void loadItems(id);
+  readAgent(id, true);
   return release;
 }
 
 /** A held agent whose view could not be fetched is asked for again. */
 export function retryAgent(id: string) {
   setState((s) => ({ agentErrors: without(s.agentErrors, id) }));
-  if (!agentHolds.has(id)) return;
-  void fetchAgent(id); void loadItems(id);
+  readAgent(id);
 }
 
 const without = (m: Record<string, string>, id: string): Record<string, string> => {
@@ -499,5 +634,5 @@ const without = (m: Record<string, string>, id: string): Record<string, string> 
 /** After a snapshot (it dropped every thread): the view and the thread of each agent that is held
  *  or lingers, again. */
 function refreshAgents() {
-  for (const id of agentHolds.ids()) { void fetchAgent(id); void loadItems(id); }
+  for (const id of agentHolds.ids()) readAgent(id, false, true);
 }

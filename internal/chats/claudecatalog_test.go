@@ -168,7 +168,7 @@ func TestSubagentSharedIDAcrossKinds(t *testing.T) {
 
 	// With a saved Claude choice for the chat's group, that choice wins.
 	if err := e.st.Update(func(s *model.State) error {
-		defaults.RecordChange(&s.Defaults, gOne, model.Claude, "", model.ModelChoice{Model: "saved", Effort: "low"})
+		defaults.RecordChange(&s.Defaults, gOne, model.LocalServer, model.Claude, "", model.ModelChoice{Model: "saved", Effort: "low"})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -350,7 +350,7 @@ func TestSubagentSharedIDNamedEffort(t *testing.T) {
 		t.Fatalf("options %+v", got)
 	}
 	if err := e.st.Update(func(s *model.State) error {
-		defaults.RecordChange(&s.Defaults, gOne, model.Claude, "", model.ModelChoice{Model: "saved", Effort: "low"})
+		defaults.RecordChange(&s.Defaults, gOne, model.LocalServer, model.Claude, "", model.ModelChoice{Model: "saved", Effort: "low"})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -527,7 +527,7 @@ func TestSpawnDefaultsMatchSpawn(t *testing.T) {
 
 		// With a saved Claude choice for the chat's group, that choice wins.
 		if err := e.st.Update(func(s *model.State) error {
-			defaults.RecordChange(&s.Defaults, gOne, model.Claude, "", model.ModelChoice{Model: "saved", Effort: "low"})
+			defaults.RecordChange(&s.Defaults, gOne, model.LocalServer, model.Claude, "", model.ModelChoice{Model: "saved", Effort: "low"})
 			return nil
 		}); err != nil {
 			t.Fatal(err)

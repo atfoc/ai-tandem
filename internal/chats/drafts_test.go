@@ -47,7 +47,7 @@ func TestDraftPerBranch(t *testing.T) {
 
 	// A draft for a branch that is not current: its record has it, the chat's view only says that
 	// there is one.
-	if err := e.m.SetDraftOf(id, model.MainBranch, model.Draft{Text: "for main"}); err != nil {
+	if err := e.setDraftOf(id, model.MainBranch, model.Draft{Text: "for main"}); err != nil {
 		t.Fatal(err)
 	}
 	got := evs.drain(t, e.br)
@@ -62,7 +62,7 @@ func TestDraftPerBranch(t *testing.T) {
 	}
 
 	// One for the current branch, named and not named: the view has it as well.
-	if err := e.m.SetDraftOf(id, exBranch, model.Draft{Text: "for the branch"}); err != nil {
+	if err := e.setDraftOf(id, exBranch, model.Draft{Text: "for the branch"}); err != nil {
 		t.Fatal(err)
 	}
 	got = evs.drain(t, e.br)
@@ -75,13 +75,13 @@ func TestDraftPerBranch(t *testing.T) {
 	if vs := chatViews(t, got, id); len(vs) != 1 || draftIn(vs[0].Draft) != "for the branch" || !vs[0].HasDraft {
 		t.Fatalf("the chat event of the branch's draft %+v", vs)
 	}
-	if err := e.m.SetDraft(id, model.Draft{Text: "B"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "B"}); err != nil {
 		t.Fatal(err)
 	}
 	if st := statesOf(t, evs.drain(t, e.br), id, exBranch); len(st) != 1 || draftIn(st[0].Draft) != "B" {
 		t.Fatalf("the state record of a draft for the current branch %+v", st)
 	}
-	if err := e.m.SetDraftOf(id, model.MainBranch, model.Draft{Text: "A"}); err != nil {
+	if err := e.setDraftOf(id, model.MainBranch, model.Draft{Text: "A"}); err != nil {
 		t.Fatal(err)
 	}
 	evs.drain(t, e.br)
@@ -131,7 +131,7 @@ func TestDraftPerBranch(t *testing.T) {
 
 	// The next message is typed while the branch works: its record keeps the draft through the
 	// events of the turn.
-	if err := e.m.SetDraftOf(id, exBranch, model.Draft{Text: "B2"}); err != nil {
+	if err := e.setDraftOf(id, exBranch, model.Draft{Text: "B2"}); err != nil {
 		t.Fatal(err)
 	}
 	evs.drain(t, e.br)
@@ -162,7 +162,7 @@ func TestDraftPerBranch(t *testing.T) {
 		t.Fatalf("main's state records after its Send %+v", st)
 	}
 	e.claude.last(t).emit(t, agent.Event{Kind: agent.EvTurnEnd, Point: "p3"})
-	if err := e.m.SetDraftOf(id, model.MainBranch, model.Draft{Text: "A2"}); err != nil {
+	if err := e.setDraftOf(id, model.MainBranch, model.Draft{Text: "A2"}); err != nil {
 		t.Fatal(err)
 	}
 	e.boot()
@@ -174,13 +174,13 @@ func TestDraftPerBranch(t *testing.T) {
 	}
 
 	// Clearing one leaves the other; a branch the chat does not have gets none.
-	if err := e.m.SetDraftOf(id, model.MainBranch, model.Draft{}); err != nil {
+	if err := e.setDraftOf(id, model.MainBranch, model.Draft{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.m.SetDraftOf(id, "nope", model.Draft{Text: "x"}); !errors.Is(err, ErrNoBranch) {
+	if err := e.setDraftOf(id, "nope", model.Draft{Text: "x"}); !errors.Is(err, ErrNoBranch) {
 		t.Fatalf("SetDraftOf on an unknown branch: %v", err)
 	}
-	if err := e.m.SetDraftOf(bid, "", model.Draft{Text: "x"}); !errors.Is(err, ErrNotFound) {
+	if err := e.setDraftOf(bid, "", model.Draft{Text: "x"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetDraftOf on a branch's server id: %v", err)
 	}
 	if ds := e.draftsOf(id); !reflect.DeepEqual(ds, map[string]string{exBranch: "B2"}) {
@@ -270,7 +270,9 @@ func TestDraftsWhileABranchWorks(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 50; i++ {
-				if err := e.m.SetDraftOf(id, b, model.Draft{Text: strings.Repeat("x", i%3)}); err != nil {
+				// Two of the three write the current branch's draft: one that lost to the
+				// other is refused, which is what the counter is for.
+				if err := e.setDraftOf(id, b, model.Draft{Text: strings.Repeat("x", i%3)}); err != nil && !errors.Is(err, ErrStaleDraft) {
 					t.Error(err)
 				}
 			}
@@ -299,7 +301,7 @@ func TestDraftsWhileABranchWorks(t *testing.T) {
 	wg.Wait()
 	a.emit(t, agent.Event{Kind: agent.EvTurnEnd, Point: "q2"})
 	for _, b := range []string{model.MainBranch, exBranch} {
-		if err := e.m.SetDraftOf(id, b, model.Draft{Text: "last on " + b}); err != nil {
+		if err := e.setDraftOf(id, b, model.Draft{Text: "last on " + b}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -336,7 +338,7 @@ func TestHasDraft(t *testing.T) {
 	}
 	set := func(branch, text string) {
 		t.Helper()
-		if err := e.m.SetDraftOf(id, branch, model.Draft{Text: text}); err != nil {
+		if err := e.setDraftOf(id, branch, model.Draft{Text: text}); err != nil {
 			t.Fatal(err)
 		}
 	}

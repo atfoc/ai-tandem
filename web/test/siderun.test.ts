@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GROUP_ARCHIVE_RUN, GROUP_DELETE_RUN, groupCount, runArchiveConfirm, runDeleteConfirm, runDraftTag, runLightsGroup, runRowTitle,
+import { GROUP_ARCHIVE_RUN, GROUP_DELETE_RUN, groupCount, runArchiveConfirm, runDraftTag, runLightsGroup, runRowTitle,
   workingRunIn } from "../src/logic/siderun.ts";
 import { runRowLine } from "../src/logic/run.ts";
+import { runDeleteAsk } from "../src/logic/runserver.ts";
+
+// the delete dialog of a run of this computer (Sidebar.tsx deleteRun): the run, its name, "This computer", its folder
+const runDeleteConfirm = (r: RunView, folder: string) => runDeleteAsk(r, r.name, "This computer", folder);
 import { buildTree, contents, subtree } from "../src/logic/tree.ts";
 import { TASK_STATES, type Board, type ChatView, type Group, type RunCounts, type RunStatus, type RunView } from "../src/types.ts";
 
@@ -132,9 +136,9 @@ test("runArchiveConfirm: asks only when something works", () => {
 test("runDeleteConfirm: always asks; the folder sentence only for a started run", () => {
   const removed = "The run's tasks, reports, notes, agent transcripts and chats are removed.";
   assert.deepEqual(runDeleteConfirm(run("r", "draft", { name: "New run" }), "~/shop"),
-    { title: "Delete New run?", body: `${removed} This can't be undone.`, action: "Delete" });
+    { title: "Delete New run?", body: `${removed} This can't be undone.`, action: "Delete", local: false });
   assert.deepEqual(runDeleteConfirm(run("r", "completed"), "~/shop"),
-    { title: "Delete Checkout rewrite?", body: `${removed} What its agents changed in ~/shop stays. This can't be undone.`, action: "Delete" });
+    { title: "Delete Checkout rewrite?", body: `${removed} What its agents changed in ~/shop stays. This can't be undone.`, action: "Delete", local: false });
   assert.equal(runDeleteConfirm(run("r", "running"), "~/shop").body,
     `This run is working: its agents are stopped. ${removed} What its agents changed in ~/shop stays. This can't be undone.`);
   assert.equal(runDeleteConfirm(run("r", "stopping"), "/srv/shop").body,

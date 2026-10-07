@@ -2,11 +2,39 @@
 // the dock's height (localStorage "aiwb.run.ui").
 import { useEffect, useLayoutEffect, useState, type RefObject } from "react";
 import { api } from "../api.ts";
-import { answerRun, safeGet, safeSet } from "../store.ts";
+import { answerRun, getState, runNow, safeGet, safeSet, setRunStart, unsavedRunDraft } from "../store.ts";
+import { startFailure } from "../logic/runcompose.ts";
 
 /** The run's view again, with its folder and what blocks it checked again (the server checks them
  *  when it is asked, not by itself). Never rejects. */
 export const refreshRun = (id: string): Promise<void> => answerRun(id, () => api.run(id)).then(() => {}, () => {});
+
+/** Starts a draft run with its goal. Not optimistic: the stage changes when the server has
+ *  recorded the start, and the goal's text stays in the box all along, so a start that fails has
+ *  nothing to put back. The start's state is the store's, by run id (State.runStarts), and not
+ *  the composer's: a draft that gets a new id while its start is on its way (a `run` event with
+ *  `was`) takes it along, so the composer of the new id shows the start still running, and a
+ *  refusal leaves its sentence, and reads the run again, under the id the run has by then
+ *  (runNow). Returns the sentence of a refusal that is shown apart from the composer (goal_kept:
+ *  the run has started with an earlier goal, and the composer goes away), else "". Never rejects. */
+export async function startRun(id: string, goal: string): Promise<string> {
+  if (getState().runStarts[id]?.starting) return "";
+  setRunStart(id, { starting: true, error: "" });
+  try {
+    await answerRun(id, async () => {
+      const started = await api.startRun(id, goal);
+      unsavedRunDraft(runNow(id)).write(null); // only a start that worked clears the unsaved goal
+      return started; // it has `started`: the stage changes to the follow view
+    });
+    setRunStart(runNow(id), null);
+    return "";
+  } catch (e) {
+    const f = startFailure(e), now = runNow(id);
+    setRunStart(now, { starting: false, error: f.kept ? "" : f.text });
+    if (f.reread) void refreshRun(now); // it started, was archived, is being started, or its folder changed
+    return f.kept ? f.text : "";
+  }
+}
 
 /** Asks again while the page shows a fact that the user can change outside the app (a folder, a
  *  commit, an installed program): now, and whenever the window gets the focus. */

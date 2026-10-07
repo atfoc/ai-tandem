@@ -82,7 +82,9 @@ func TestMaxParallelDefault(t *testing.T) {
 	}
 	h.open("at T01")
 	h.atGate("at T09")
-	l := h.waitL("the ninth task to work", func(l *Loaded) bool { return mxState(l, "T01") == model.TaskDone && mxState(l, "T09") == model.TaskWork })
+	l := h.waitL("the ninth task to work", func(l *Loaded) bool {
+		return mxState(l, "T01") == model.TaskDone && mxState(l, "T09") == model.TaskWork
+	})
 	if !h.steady(func(l *Loaded) bool { return mxState(l, "T10") == model.TaskSlot && mxCount(l, model.TaskWork) == 8 }) {
 		t.Errorf("after one task ended: %d tasks work, T10 is %s", mxCount(l, model.TaskWork), mxState(h.L(), "T10"))
 	}

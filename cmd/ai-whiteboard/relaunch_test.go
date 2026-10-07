@@ -136,11 +136,11 @@ func TestRestartEndpoint(t *testing.T) {
 	sc.Buffer(nil, 1<<20)
 	for active := false; !active; {
 		if !sc.Scan() {
-			t.Fatalf("events ended before the client was active: %v", sc.Err())
+			t.Fatalf("events ended before the client's hello: %v", sc.Err())
 		}
 		var ev map[string]any
 		if line, ok := strings.CutPrefix(sc.Text(), "data: "); ok && json.Unmarshal([]byte(line), &ev) == nil {
-			active = ev["type"] == "hello" && ev["active"] == true
+			active = ev["type"] == "hello"
 		}
 	}
 

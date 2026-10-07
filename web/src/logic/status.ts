@@ -50,14 +50,48 @@ export function workingOn<C extends Doing & Pick<ChatView, "board" | "archived" 
  *  turn runs (o.liveFork false).
  *  esc: Esc stops, only while the agent is busy.
  *  While the agent of a fork without a message starts (starting), there is nothing to stop and no
- *  message is taken: no Stop, no Esc, blocked. */
-export function composerControls(c: Doing & Pick<ChatView, "fresh">, o?: { newBranch: boolean; liveFork: boolean }): { stop: boolean; blocked: boolean; esc: boolean } {
-  if (starting(c)) return { stop: false, blocked: true, esc: false };
+ *  message is taken: no Stop, no Esc, blocked. A chat with no agent (agent "") takes none either,
+ *  and has nothing to stop. */
+export function composerControls(c: Doing & Pick<ChatView, "fresh"> & Partial<Pick<ChatView, "agent">>, o?: { newBranch: boolean; liveFork: boolean }): { stop: boolean; blocked: boolean; esc: boolean } {
+  if (starting(c) || c.agent === "") return { stop: false, blocked: true, esc: false };
   const busy = isBusy(c.status);
   return { stop: branchWorking(c), blocked: o?.newBranch ? busy && !o.liveFork : busy, esc: busy };
 }
 
+/** What a chat's header says after its agent and folder: "Archived", "Disabled" for a chat of the
+ *  old board connection (legacy), else status, the chat's status line. A chat with no agent
+ *  (agent "") takes no message and runs nothing, so it has no status: "" leaves the header's
+ *  "No agent" to say it. Neither has an unstarted chat whose server is not connected (off). */
+export const headStatus = (c: Pick<ChatView, "agent" | "archived">, legacy: boolean, status: string, off = false): string =>
+  c.archived ? "Archived" : legacy ? "Disabled" : c.agent === "" || off ? "" : status;
+
+/** The title of the composer's Send: why no message is taken when blocked (composerControls), with
+ *  noAgent the reason of a chat with no agent. */
+export const sendTitle = (c: Pick<ChatView, "status" | "fresh"> & Partial<Pick<ChatView, "agent">>, blocked: boolean, noAgent: string): string =>
+  !blocked ? "Send (Enter)" : c.agent === "" ? noAgent : starting(c) ? "The agent is starting" : "The agent is working";
+
 /** A Send was refused: whether the chat is read again. 409: the branch the message goes to is busy
- *  by now. 429 `cap` (too many turns run) and 409 `window` (the model chosen cannot take the
- *  conversation) are no stale state. */
-export const refreshAfterRefusal = (status: number, code?: string): boolean => status === 409 && code !== "cap" && code !== "window";
+ *  by now. 429 `cap` (too many turns run), 409 `window` (the model chosen cannot take the
+ *  conversation), and 409 `agent_missing` and `no_agent` (the server lacks the chat's agent, or the
+ *  chat has none) are no stale state: the message stays in the box. */
+const NOT_STALE = ["cap", "window", "agent_missing", "no_agent"];
+export const refreshAfterRefusal = (status: number, code?: string): boolean => status === 409 && !NOT_STALE.includes(code ?? "");
+
+/** "<Name> is not connected." / "No longer on <Name>": what the page says of a chat on another
+ *  server (an entry of the server list) that cannot be reached, or that the server no longer has. */
+export const notConnected = (name: string): string => `${name} is not connected`;
+export const noLongerOn = (name: string): string => `No longer on ${name}`;
+
+/** A sidebar row of a chat on another server: line and dot are those of a local chat (rowLine and
+ *  dotState, labels.ts), so working, approval, finished and archived show the same.
+ *  line: the server's name follows it; a chat its server no longer has (gone) says that alone.
+ *  dot: "off" (grey) while the server is not connected or the chat is gone, whatever it did last.
+ *  off, gone: the row's classes. title: the row's own title, "" for the usual one.
+ *  A chat with no server (this computer's) is given back as it is. */
+export function remoteRow<D extends string>(c: Pick<ChatView, "server" | "gone">, name: string, connected: boolean, line: string, dot: D):
+  { line: string; dot: D | "off"; off: boolean; gone: boolean; title: string } {
+  if (!c.server) return { line, dot, off: false, gone: false, title: "" };
+  if (c.gone) return { line: noLongerOn(name), dot: "off", off: false, gone: true, title: noLongerOn(name) };
+  const sub = line ? `${line} · ${name}` : name;
+  return connected ? { line: sub, dot, off: false, gone: false, title: "" } : { line: sub, dot: "off", off: true, gone: false, title: notConnected(name) };
+}

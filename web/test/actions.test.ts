@@ -29,7 +29,7 @@ function ask(chat: string, branch: string): Promise<unknown> {
 }
 /** A save of a draft: taken or refused at once, or when the test says. */
 function save(chat: string, branch: string, d: Draft): Promise<void> {
-  const end = (ok: boolean) => { if (!ok) throw new Error("not_active"); fake.saves.push([chat, branch, d]); };
+  const end = (ok: boolean) => { if (!ok) throw new Error("unknown_client"); fake.saves.push([chat, branch, d]); };
   if (!fake.waiting) return Promise.resolve().then(() => end(!fake.failSaves));
   return new Promise<void>((resolve, reject) => {
     fake.waiting!.push({ branch, text: d.text, done: async (ok) => { try { end(ok); resolve(); } catch (e) { reject(e); } await settle(); } });
@@ -50,7 +50,8 @@ let source: { onmessage?: (e: { data: string }) => void; close(): void } | undef
 (globalThis as any).EventSource = class { constructor() { source = this; } close() {} };
 
 const stubs: Record<string, string> = {
-  "board.ts": `export const runTool = async () => ({}); export const flushAll = async () => {}; export const forgetBoard = () => {};`,
+  "board.ts": `export const runTool = async () => ({}); export const flushAll = async () => {}; export const forgetBoard = () => {};
+    export const boardLost = () => {}, granted = () => {}, handOver = async () => {}, streamOpened = () => {}, takeAfterSnapshot = () => {};`,
   "version.ts": `export const checkVersion = async () => {};`,
   "api.ts": `
     const { fake, ask, save } = globalThis.__act;
@@ -62,23 +63,26 @@ const stubs: Record<string, string> = {
       openChat: async (chat) => { fake.opened.push(chat); },
       tree: async () => fake.tree,
       chat: async () => { throw new Error("not in this test"); },
-      saveDraft: (chat, branch, d) => save(chat, branch, d),
+      saveDraft: (chat, branch, d, base) => save(chat, branch, d),
     };`,
   // saveDraft and draftToShow as in the real Composer.tsx, which cannot be loaded without the DOM.
   "Composer.tsx": `
-    import { getState, upsertChat, upsertState, statesOfChat, unsavedDraft, branchState } from "./store.ts";
-    import { draftSet } from "./logic/drafts.ts";
+    import { getState, upsertChat, upsertState, statesOfChat, unsavedDraft, draftRevOf, branchState } from "./store.ts";
+    import { draftSet, revSet, unsavedToShow } from "./logic/drafts.ts";
     import { api } from "./api.ts";
     export const focusComposer = () => {};
-    export async function saveDraft(chat, branch, d, keepalive = false) {
+    export async function saveDraft(chat, branch, d, keepalive = false, base) {
       const s = getState(), c = s.chats[chat];
       if (!c) return;
       const { state, view } = draftSet(c, statesOfChat(s, chat), branch, d);
       if (state) upsertState(state);
       if (view !== c) upsertChat(view);
-      await api.saveDraft(chat, branch, d, keepalive);
+      const rev = await api.saveDraft(chat, branch, d, base ?? draftRevOf(chat, branch) ?? 0, keepalive);
+      const now = getState(), st = now.chats[chat] && typeof rev === "number" ? revSet(now.chats[chat], statesOfChat(now, chat), branch, rev) : undefined;
+      if (st) upsertState(st);
+      return rev;
     }
-    export const draftToShow = (chat, branch) => unsavedDraft(chat, branch).read() ?? branchState(getState(), chat, branch)?.draft;`,
+    export const draftToShow = (chat, branch) => unsavedToShow(unsavedDraft(chat, branch), draftRevOf(chat, branch)) ?? branchState(getState(), chat, branch)?.draft;`,
   "Sidebar.tsx": `export const openChat = () => {};`,
   "Dialogs.tsx": `export const reportError = (title) => { globalThis.__act.fake.errors.push(title); };`,
 };
@@ -116,7 +120,7 @@ const view = (id: string, o: Record<string, unknown> = {}) =>
 const rec = (chat: string, branch: string, o: Record<string, unknown> = {}) =>
   ({ chat, branch, cwd: "/w", model: "m", locked: true, usage, status: "ready", ...o });
 const snapshot = (chats: unknown[], states: unknown[]) =>
-  ({ type: "snapshot", groups: [], boards: [], chats, defaults: { last: {}, groups: {} }, catalogs: {}, home: "", defaultCwd: "", dataDir: "", states });
+  ({ type: "snapshot", groups: [], boards: [], chats, defaults: { groups: {} }, catalogs: {}, home: "", defaultCwd: "", dataDir: "", states });
 const user = (text: string) => ({ kind: "user", text });
 const reply = (text: string) => ({ kind: "text", text, done: true });
 const end = (point: string) => ({ kind: "end", point });
@@ -149,7 +153,8 @@ class Box {
   constructor(chat: string, branch: string) {
     this.chat = chat; this.branch = branch;
     this.held = drafts.heldOf(composer.draftToShow(chat, branch) ?? { text: "" });
-    this.saver = new drafts.DraftSaver((d: Draft) => composer.saveDraft(chat, branch, d), store.branchState(s(), chat, branch)?.draft, store.unsavedDraft(chat, branch), 0);
+    this.saver = new drafts.DraftSaver((d: Draft, keepalive: boolean, base?: number) => composer.saveDraft(chat, branch, d, keepalive, base), store.branchState(s(), chat, branch)?.draft, store.unsavedDraft(chat, branch), 0,
+      store.draftRevOf(chat, branch) ?? 0);
   }
   mount() {
     this.mounted = true;
@@ -1109,4 +1114,24 @@ test("a move's choice is carried to a new move on the same branch only", async (
   await actions.startMove("c_1", { branch: "main", at: 3, new: true }); // and back on main: nothing is remembered
   await settle();
   assert.deepEqual([s().moves.c_1.branch, choice()], ["main", { model: undefined, effort: undefined, has: [] }]);
+});
+
+test("the unsaved copy records the draft counter it was typed on; a composer opens with it only on the server's counter", async () => {
+  await ev(snapshot([view("c_9", { draft: { text: "theirs" }, draftRev: 3 })], [rec("c_9", "main", { draft: { text: "theirs" }, draftRev: 3 })]));
+  const copy = store.unsavedDraft("c_9", "main");
+  copy.write({ text: "mine" }); // no base named: the counter known here
+  assert.deepEqual([copy.read(), copy.base(), JSON.parse(localStorage.getItem(drafts.draftKey("c_9", "main"))!)], [{ text: "mine" }, 3, { text: "mine", base: 3 }]);
+  assert.deepEqual(composer.draftToShow("c_9", "main"), { text: "mine" });
+  // Another window saved the draft since: the copy is on an older base and is dropped for the server's.
+  await ev({ type: "branch_state", state: rec("c_9", "main", { draft: { text: "theirs, newer" }, draftRev: 4 }) });
+  assert.deepEqual(composer.draftToShow("c_9", "main"), { text: "theirs, newer" });
+  assert.equal(copy.read(), null);
+  // A copy of a build before the counter has no base: it is used.
+  localStorage.setItem(drafts.draftKey("c_9", "main"), JSON.stringify({ text: "old build" }));
+  assert.deepEqual([copy.base(), composer.draftToShow("c_9", "main")], [undefined, { text: "old build" }]);
+  copy.write(null);
+  // A branch with no record here: its counter is not known, and the copy has no base.
+  store.unsavedDraft("c_9", N).write({ text: "typed" });
+  assert.deepEqual([store.draftRevOf("c_9", N), store.unsavedDraft("c_9", N).base()], [undefined, undefined]);
+  store.unsavedDraft("c_9", N).write(null);
 });

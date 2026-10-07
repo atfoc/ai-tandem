@@ -389,10 +389,10 @@ func TestE2EFork(t *testing.T) {
 	}
 	// The fork rebinds the session inside pi: the extension must have its board MCP tools and the
 	// bridge permission gate back, under the path-shaped run.
-	r = e2eSay(t, brA, "Call the tool named mcp__board__list_boards with an empty object argument. Then "+
+	r = e2eSay(t, brA, "Call the tool named mcp__board__read_board with an empty object argument. Then "+
 		"reply with exactly the text the tool returned, and nothing else.", nil)
 	t.Logf("branch board tool turn: tools %v results %q text %q", r.tools, r.results, r.text)
-	if len(r.tools) == 0 || r.tools[0] != "mcp__board__list_boards" || !strings.Contains(strings.Join(r.results, " "), "E2E-BOARD-TEXT-42") {
+	if len(r.tools) == 0 || r.tools[0] != "mcp__board__read_board" || !strings.Contains(strings.Join(r.results, " "), "E2E-BOARD-TEXT-42") {
 		t.Fatalf("the board tool did not work after the fork: tools %v results %q", r.tools, r.results)
 	}
 	e2eSay(t, brA, fmt.Sprintf(e2eRemember, "DELTA5"), nil)
@@ -1079,6 +1079,7 @@ func (e *e2eBoardEnv) startBrowser(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("board browser client did not become active")
 	}
+	e.editor.Acted("A") // a page that only opened its stream is asked no tool call
 }
 
 // answerRPC records one board call and replies with the configured text or the
@@ -1093,13 +1094,13 @@ func (e *e2eBoardEnv) answerRPC(id string, params map[string]any) {
 	reply, errText := e.reply, e.errText[tool]
 	e.mu.Unlock()
 	if errText != "" {
-		e.editor.Reply(id, editorbridge.RPCReply{Error: errText})
+		e.editor.ReplyFrom("A", id, editorbridge.RPCReply{Error: errText})
 		return
 	}
 	if reply == "" {
 		reply = "empty board list"
 	}
-	e.editor.Reply(id, editorbridge.RPCReply{Result: mustJSON(reply)})
+	e.editor.ReplyFrom("A", id, editorbridge.RPCReply{Result: mustJSON(reply)})
 }
 
 func (e *e2eBoardEnv) setReply(reply string) {
@@ -1159,7 +1160,7 @@ func TestE2EBoardTool(t *testing.T) {
 		t.Skipf("pi could not start: %v", err)
 	}
 	defer a.Close()
-	const prompt = "Call the tool named mcp__board__list_boards with an empty object argument. Then " +
+	const prompt = "Call the tool named mcp__board__read_board with an empty object argument. Then " +
 		"reply with exactly the text the tool returned, and nothing else."
 	if err := a.Send([]agent.ContentBlock{{Text: prompt}}); err != nil {
 		t.Skipf("model %s is unavailable (not authenticated?): %v", e2eModel(), err)
@@ -1172,7 +1173,7 @@ func TestE2EBoardTool(t *testing.T) {
 	if !e2eTurn(t, a, func(ev agent.Event) {
 		switch ev.Kind {
 		case agent.EvToolStart:
-			if ev.ToolName == "mcp__board__list_boards" {
+			if ev.ToolName == "mcp__board__read_board" {
 				called = true
 				toolID = ev.ToolID
 			}
@@ -1188,7 +1189,7 @@ func TestE2EBoardTool(t *testing.T) {
 		t.Skip("pi exited before the turn ended (model or auth unavailable?)")
 	}
 	if !called {
-		t.Fatalf("the model never called mcp__board__list_boards; streamed text %q", text.String())
+		t.Fatalf("the model never called mcp__board__read_board; streamed text %q", text.String())
 	}
 	if !strings.Contains(result.String(), "E2E-BOARD-TEXT-42") {
 		t.Fatalf("tool result %q does not contain the fake client's text", result.String())
@@ -1198,8 +1199,8 @@ func TestE2EBoardTool(t *testing.T) {
 		t.Fatal("the fake browser client was never invoked")
 	}
 	for _, call := range calls {
-		if call.tool != "list_boards" || call.chat != env.chat || call.board != env.board.ID {
-			t.Fatalf("browser client saw %+v, want list_boards for chat %s board %s", call, env.chat, env.board.ID)
+		if call.tool != "read_board" || call.chat != env.chat || call.board != env.board.ID {
+			t.Fatalf("browser client saw %+v, want read_board for chat %s board %s", call, env.chat, env.board.ID)
 		}
 	}
 
@@ -1485,7 +1486,7 @@ func TestE2ESubagent(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa3 := e2eSpawnPi(t, env.m, pv.ID, chats.SpawnSubRequest{
-		Prompt: "Call the tool named mcp__board__list_boards with an empty object argument. Then " +
+		Prompt: "Call the tool named mcp__board__read_board with an empty object argument. Then " +
 			"reply with exactly the text the tool returned, and nothing else.",
 		Description: "board check",
 	})
@@ -1500,8 +1501,8 @@ func TestE2ESubagent(t *testing.T) {
 		t.Fatalf("the fake browser client was never invoked by the child; last %q", boardGot.Last)
 	}
 	for _, call := range childCalls {
-		if call.tool != "list_boards" {
-			t.Fatalf("child board call %+v, want list_boards", call)
+		if call.tool != "read_board" {
+			t.Fatalf("child board call %+v, want read_board", call)
 		}
 	}
 	if !strings.Contains(boardGot.Last, "E2E-BOARD-SUB-TEXT-13") {

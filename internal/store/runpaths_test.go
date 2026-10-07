@@ -1,12 +1,13 @@
 package store
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/model"
 )
 
@@ -20,6 +21,8 @@ func TestRunPaths(t *testing.T) {
 		p.RunChatDir("r_1", true, "c-agent"): filepath.Join(base, "data", "runs", "r_1", "agents", "c-agent"),
 		p.RunChatDir("r_1", false, "c-chat"): filepath.Join(base, "data", "runs", "r_1", "chats", "c-chat"),
 		p.RunWorkDir("r_1"):                  filepath.Join(base, "aiwb-run-work", "r_1"),
+		p.RemoteRuns:                         filepath.Join(base, "data", "remote", "runs"),
+		p.RemoteRunFile("r_1"):               filepath.Join(base, "data", "remote", "runs", "r_1.json"),
 	} {
 		if got != want {
 			t.Errorf("got %s, want %s", got, want)
@@ -71,7 +74,8 @@ func TestOpenCreatesRunsNotRunWork(t *testing.T) {
 	})
 }
 
-// GroupDefaults.Run is kept in state.json and is absent from it until a run was started.
+// The run defaults are kept in state.json, per group and per server, and are absent from it until a
+// run was started.
 func TestRunDefaultsPersist(t *testing.T) {
 	p := NewPaths(t.TempDir())
 	st, err := Open(p)
@@ -79,7 +83,7 @@ func TestRunDefaultsPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := st.Update(func(s *model.State) error {
-		s.Defaults.Groups[model.Ungrouped] = model.GroupDefaults{Cwd: "/tmp"}
+		s.Defaults.Groups[model.Ungrouped] = model.LocalDefaults(model.ServerDefaults{Cwd: "/tmp"})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -87,14 +91,20 @@ func TestRunDefaultsPersist(t *testing.T) {
 	if b, _ := os.ReadFile(p.State); strings.Contains(string(b), `"run"`) {
 		t.Errorf("state.json names run defaults nobody set: %s", b)
 	}
-	want := model.RunDefaults{Agent: model.Cursor, MaxParallel: 3, MaxTurns: 40, MaxCost: 2.5, Setup: "npm ci", SetupCwd: "/tmp"}
+	want := model.RunDefaults{Agent: model.Cursor, MaxParallel: 3, MaxTurns: 40, MaxCost: 2.5, Setup: "npm ci", SetupCwd: "/tmp",
+		Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: "gpt-5.4", Effort: "high"}, Standard: model.ModelChoice{Model: "auto"}, Light: model.ModelChoice{Model: "auto"}}}
+	far := model.RunDefaults{Agent: model.Pi, MaxParallel: 1, MaxTurns: 5, Setup: "make", SetupCwd: "/srv/far"}
 	if err := st.Update(func(s *model.State) error {
-		g := s.Defaults.Groups[model.Ungrouped]
-		g.Run = &want
-		s.Defaults.Groups[model.Ungrouped] = g
-		s.Defaults.Last.Run = &want
+		defaults.RecordRun(&s.Defaults, model.Ungrouped, model.LocalServer, want)
+		defaults.RecordRun(&s.Defaults, model.Ungrouped, "srv_far", far)
+		defaults.RecordRun(&s.Defaults, "g_one", "srv_far", far)
 		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p.State)
+	before, err := os.Stat(p.State)
+	if err != nil {
 		t.Fatal(err)
 	}
 	st2, err := Open(p)
@@ -102,10 +112,29 @@ func TestRunDefaultsPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	st2.Read(func(s *model.State) {
+		// Per server: each part has its own, and a group's part for one server says nothing of another.
 		g := s.Defaults.Groups[model.Ungrouped]
-		if g.Run == nil || *g.Run != want || s.Defaults.Last.Run == nil || *s.Defaults.Last.Run != want || g.Cwd != "/tmp" {
-			b, _ := json.Marshal(s.Defaults)
-			t.Errorf("defaults after reopen: %s", b)
+		if got := g.On(model.LocalServer); !reflect.DeepEqual(got.Run, &want) || got.Cwd != "/tmp" {
+			t.Errorf("the local part after reopen: %+v", got)
+		}
+		if got := g.On("srv_far"); !reflect.DeepEqual(got.Run, &far) || got.Cwd != "" {
+			t.Errorf("the other server's part after reopen: %+v", got)
+		}
+		if got := defaults.Run(s.Defaults, "g_one", model.LocalServer); !reflect.DeepEqual(got, &want) {
+			t.Errorf("g_one on the local server: %+v, want the ungrouped group's", got)
+		}
+		if got := defaults.Run(s.Defaults, "g_one", "srv_far"); !reflect.DeepEqual(got, &far) {
+			t.Errorf("g_one on the other server: %+v, want its own", got)
+		}
+		if got := defaults.Run(s.Defaults, "g_two", "srv_none"); got != nil {
+			t.Errorf("a server nobody ran on: %+v, want none", got)
 		}
 	})
+	// A file in today's shape is not written again at the load.
+	if b2, _ := os.ReadFile(p.State); string(b2) != string(b) || strings.Contains(string(b), `"last"`) {
+		t.Errorf("state.json after reopen: %s\nwas: %s", b2, b)
+	}
+	if after, err := os.Stat(p.State); err != nil || !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("state.json was written at the reopen: %v -> %v (%v)", before.ModTime(), after, err)
+	}
 }

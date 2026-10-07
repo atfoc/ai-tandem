@@ -360,6 +360,12 @@ func (e *engine) send(ctx context.Context, id, text string, o chats.OwnedSend) e
 		}()
 		errc <- host.SendOwned(id, text, o)
 	}()
+	return e.sent(ctx, id, errc)
+}
+
+// sent is send's wait for the result of SendOwned, which comes on errc (buffered).
+func (e *engine) sent(ctx context.Context, id string, errc <-chan error) error {
+	host := e.r.svc.Chats
 	select {
 	case err := <-errc:
 		return err
@@ -368,6 +374,14 @@ func (e *engine) send(ctx context.Context, id, text string, o chats.OwnedSend) e
 	if e.quitting() {
 		// The server closes the process itself: chats.Manager.Shutdown closes the one this message
 		// has started by then, and refuses the message (chats.ErrShutdown) when it comes later.
+		// A result that is there already is taken all the same: a message the agent's chat has
+		// accepted is recorded as sent, or the next server would send it again. SendOwned may be
+		// about to return it, so the wait goes on for a short time.
+		select {
+		case err := <-errc:
+			return err
+		case <-time.After(engStopGrace):
+		}
 		return ctx.Err()
 	}
 	host.StopOwned(id, 0)

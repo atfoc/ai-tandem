@@ -119,7 +119,7 @@ func (e *env) listen() *events {
 			}
 		}
 	}()
-	evs.wait(e.t, "hello", 0, func(ev map[string]any) bool { return ev["type"] == "hello" && ev["active"] == true })
+	evs.wait(e.t, "hello", 0, func(ev map[string]any) bool { return ev["type"] == "hello" })
 	return evs
 }
 
@@ -176,6 +176,19 @@ func okAnswer(t *testing.T, what, out string) {
 	sameJSON(t, what, decode[any](t, out), `{"ok":true}`)
 }
 
+// chatAnswer fails unless out is PATCH /api/chats/{id}'s answer, {"ok": true, "chat": <the view of
+// the chat at path>}, with nothing else in it. It returns the view.
+func chatAnswer(t *testing.T, what, out, path string) map[string]any {
+	t.Helper()
+	got := decode[map[string]any](t, out)
+	view, _ := got["chat"].(map[string]any)
+	id, _ := view["id"].(string)
+	if len(got) != 2 || got["ok"] != true || id == "" || !strings.HasSuffix(path, "/"+id) {
+		t.Fatalf("%s\n got %s\nwant {\"ok\":true,\"chat\":{the view of %s}}", what, out, path)
+	}
+	return view
+}
+
 // sentOn fails unless out is the answer of a message that was put on branch: {"ok": true,
 // "branch": branch}.
 func sentOn(t *testing.T, what, out, branch string) {
@@ -214,6 +227,7 @@ func TestForkAndBranchFlow(t *testing.T) {
 	// 1. A chat with two finished turns: each ends with an end mark that carries the point's id.
 	id := e.chat(`{"agent":"claude","group":"__ungrouped__"}`).ID
 	chat := "/api/chats/" + id
+	e.get(chat + "/items") // the client opens the chat: the events of its thread go to who read it
 	sentOn(t, "send", e.expect(200, "POST", chat+"/messages", `{"text":"ask","context":""}`), "main")
 	main := sp.last(t)
 	reply(t, main, "options", "p1")
@@ -454,7 +468,7 @@ func TestForkAndBranchFlow(t *testing.T) {
 	e.errorOf(404, "PATCH", chat+"?branch=nope", `{"model":"opus"}`)
 	e.errorOf(404, "POST", chat+"/open?branch=nope", "")
 	e.errorOf(404, "GET", chat+"/context?branch=nope", "")
-	e.errorOf(404, "PUT", chat+"/draft?branch=nope", `{"text":"x"}`)
+	e.errorOf(404, "PUT", chat+"/draft?branch=nope&rev=0", `{"text":"x"}`)
 
 	// None of the refused requests changed the chat.
 	view = e.get(chat)
@@ -465,9 +479,11 @@ func TestForkAndBranchFlow(t *testing.T) {
 
 	// 8. The session calls by branch. The branch left by step 5: its draft is its own, and nothing
 	// of main changes. Its model is fixed like main's (409), the chat's name is not.
-	okAnswer(t, "draft of the branch", e.expect(200, "PUT", chat+"/draft?branch="+b, `{"text":"later"}`))
+	sameJSON(t, "draft of the branch", decode[any](t, e.expect(200, "PUT", chat+"/draft?rev=0&branch="+b, `{"text":"later"}`)), `{"ok":true,"rev":1}`)
 	e.errorOf(409, "PATCH", chat+"?branch="+b, `{"model":"opus"}`)
-	okAnswer(t, "name by the branch", e.expect(200, "PATCH", chat+"?branch="+b, `{"name":"Renamed"}`))
+	if v := chatAnswer(t, "name by the branch", e.expect(200, "PATCH", chat+"?branch="+b, `{"name":"Renamed"}`), chat); v["name"] != "Renamed" {
+		t.Fatalf("the chat in the answer of the rename %v", v)
+	}
 	okAnswer(t, "open the branch", e.expect(200, "POST", chat+"/open?branch="+b, ""))
 	okAnswer(t, "stop the branch", e.expect(200, "POST", chat+"/interrupt?branch="+b, ""))
 	e.errorOf(400, "POST", chat+"/permission?branch="+b, `{"requestId":"p1","allow":true}`) // no such request

@@ -96,10 +96,14 @@ func TestSessionRoutesTakeABranch(t *testing.T) {
 		{"PATCH", "", `{"model":"opus"}`},
 		{"POST", "/open", ""},
 		{"GET", "/context", ""},
-		{"PUT", "/draft", `{"text":"x"}`},
+		{"PUT", "/draft?rev=0", `{"text":"x"}`},
 		{"POST", "/messages", `{"text":"x"}`},
 	} {
-		refused(404, r[0], chat+r[1]+"?branch=nope", r[2], chats.ErrNoBranch)
+		q := "?branch=nope"
+		if strings.Contains(r[1], "?") {
+			q = "&branch=nope"
+		}
+		refused(404, r[0], chat+r[1]+q, r[2], chats.ErrNoBranch)
 	}
 	// A target together with a branch: 400, whatever the two name.
 	for _, q := range []string{"?branch=main", "?branch=" + other, "?branch=nope"} {
@@ -113,8 +117,8 @@ func TestSessionRoutesTakeABranch(t *testing.T) {
 	}
 
 	// PUT /draft: each branch has its own.
-	e.expect(200, "PUT", chat+"/draft?branch=main", `{"text":"for main"}`)
-	e.expect(200, "PUT", chat+"/draft", `{"text":"for the branch"}`)
+	e.expect(200, "PUT", chat+"/draft?branch=main&rev=0", `{"text":"for main"}`)
+	e.expect(200, "PUT", chat+"/draft?rev=0", `{"text":"for the branch"}`)
 	if m, b := e.thread(id, "main").State.Draft, e.thread(id, other).State.Draft; m == nil || m.Text != "for main" || b == nil || b.Text != "for the branch" {
 		t.Fatalf("drafts: main %+v, the branch %+v", m, b)
 	}
@@ -231,7 +235,7 @@ func TestStateRoute(t *testing.T) {
 	e := newEnv(t)
 	id := e.branchedChat()
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
-	e.expect(200, "PUT", "/api/chats/"+id+"/draft?branch=main", `{"text":"kept"}`)
+	e.expect(200, "PUT", "/api/chats/"+id+"/draft?branch=main&rev=0", `{"text":"kept"}`)
 
 	check := func(what string, snap obj) {
 		t.Helper()
@@ -440,7 +444,9 @@ func TestPatchFreshFork(t *testing.T) {
 	// 200: the view and the state record have the choice, and the fork is still fresh.
 	fork := forkOf(chat, `{"branch":"main","at":3}`)
 	started := hs.count()
-	okAnswer(t, "PATCH on a fresh fork", e.expect(200, "PATCH", fork, `{"model":"opus","effort":"max"}`))
+	if v := chatAnswer(t, "PATCH on a fresh fork", e.expect(200, "PATCH", fork, `{"model":"opus","effort":"max"}`), fork); v["model"] != "opus" || v["effort"] != "max" {
+		t.Fatalf("the chat in the answer of the patch %v", v)
+	}
 	if v := e.get(fork); v["model"] != "opus" || v["effort"] != "max" || v["fresh"] != true || v["status"] != "ready" {
 		t.Fatalf("the fork's view after the patch %v", v)
 	}
@@ -454,8 +460,8 @@ func TestPatchFreshFork(t *testing.T) {
 		t.Fatalf("%d processes started for the patch", hs.count()-started)
 	}
 	// Its branch named, and a choice it has already: 200, the second with no new process.
-	okAnswer(t, "PATCH with the branch named", e.expect(200, "PATCH", fork+"?branch=main", `{"effort":"low"}`))
-	okAnswer(t, "PATCH with the same choice", e.expect(200, "PATCH", fork, `{"model":"opus","effort":"low"}`))
+	chatAnswer(t, "PATCH with the branch named", e.expect(200, "PATCH", fork+"?branch=main", `{"effort":"low"}`), fork)
+	chatAnswer(t, "PATCH with the same choice", e.expect(200, "PATCH", fork, `{"model":"opus","effort":"low"}`), fork)
 	if st := stateOf(fork); st["model"] != "opus" || st["effort"] != "low" || hs.count() != started+2 {
 		t.Fatalf("the fork's state record %v; %d processes started", st, hs.count()-started)
 	}
@@ -505,7 +511,7 @@ func TestPatchFreshFork(t *testing.T) {
 		if got.status != 200 {
 			t.Fatalf("the patch a second one came in during: %d %s", got.status, got.body)
 		}
-		okAnswer(t, "the patch a second one came in during", got.body)
+		chatAnswer(t, "the patch a second one came in during", got.body, fork)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the patch did not return")
 	}
@@ -520,7 +526,7 @@ func TestPatchFreshFork(t *testing.T) {
 	if v := e.get(piFork); v["model"] != "big" || v["status"] != "ready" || v["fresh"] != true {
 		t.Fatalf("the pi fork's view after the refusal %v", v)
 	}
-	okAnswer(t, "PATCH of the pi fork's effort", e.expect(200, "PATCH", piFork, `{"effort":"high"}`))
+	chatAnswer(t, "PATCH of the pi fork's effort", e.expect(200, "PATCH", piFork, `{"effort":"high"}`), piFork)
 	if v := e.get(piFork); v["model"] != "big" || v["effort"] != "high" {
 		t.Fatalf("the pi fork's view after the patch %v", v)
 	}

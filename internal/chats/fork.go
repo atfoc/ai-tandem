@@ -12,6 +12,7 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/boards"
+	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/store"
 	"ai-whiteboard/internal/transcript"
@@ -68,9 +69,20 @@ func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
 	if err != nil {
 		return model.ChatView{}, err
 	}
+	// The fork of a chat with a client mark has it too: the bridge is told before the fork is
+	// listed, and with no chat's lock held.
+	c.mu.Lock()
+	forkID, mark := c.meta.ID, c.meta.Client
+	c.mu.Unlock()
+	if mark != "" {
+		m.Bridge.SetMark(editorbridge.Chat(forkID), mark)
+	}
 	forked := false
 	fail := func(err error) (model.ChatView, error) {
 		m.dropUnlisted(c, forked)
+		if mark != "" {
+			m.Bridge.SetMark(editorbridge.Chat(forkID), "") // no chat_removed takes it away
+		}
 		return model.ChatView{}, err
 	}
 
@@ -158,6 +170,9 @@ func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*C
 	}
 	if parent.InstructionsSent {
 		return nil, none, ErrLegacy
+	}
+	if remoteUnstarted(src) {
+		return nil, none, ErrRemoteStart // nothing of it is here to fork (see remote.go)
 	}
 	tr, err := m.trOf(src, out)
 	if err != nil {
@@ -261,15 +276,15 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 }
 
 // prefixMeta is what the chat.json of a new chat or branch that starts with the first at items
-// of the chat (src, items) takes from it (D11): the agent, its board and folder, a session id of
-// its own, and what follows from the prefix. Its model and effort are mc, the source's or the ones
+// of the chat (src, items) takes from it (D11): the agent, its board and folder, its client mark,
+// a session id of its own, and what follows from the prefix. Its model and effort are mc, the source's or the ones
 // chosen for it (see choose); window is the context window of mc's model, 0 when it is not known,
 // and is taken only for a model other than the source's. It is never a copy of the file. The
 // caller sets the id and what differs between a fork and a branch; addUnlisted gives the token. A
 // fork or branch of a chat on a run is on that run.
 func prefixMeta(src model.ChatMeta, items []model.Item, at int, mc model.ModelChoice, window int) model.ChatMeta {
-	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Cwd: src.Cwd, Model: mc.Model,
-		Effort: mc.Effort, Created: time.Now()}
+	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Client: src.Client, Cwd: src.Cwd,
+		Model: mc.Model, Effort: mc.Effort, Created: time.Now()}
 	if src.Agent == model.Claude || src.Agent == model.Pi {
 		meta.SessionID = uuid() // Cursor's comes from the fork start, or from session/new
 	}

@@ -387,11 +387,25 @@ func TestDeleteGroupUngroupsContents(t *testing.T) {
 	}
 }
 
-func TestCreateGroupSeedsDefaultsFromLast(t *testing.T) {
+// AC32: a new top-level group starts with a copy of the ungrouped group's values, the sticky
+// server and its run defaults for every server included.
+func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
 	e := newEnv(t)
-	last := model.GroupDefaults{Cwd: t.TempDir(), ByAgent: map[model.AgentKind]model.ModelChoice{
-		model.Claude: {Model: "opus", Effort: "max"}}}
-	e.must(e.st.Update(func(s *model.State) error { s.Defaults.Last = last; return nil }))
+	ungrouped := func() model.GroupDefaults {
+		return model.GroupDefaults{Server: "srv_far", Servers: map[string]model.ServerDefaults{
+			model.LocalServer: {Agent: model.Cursor, Cwd: "/here", ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}},
+				Run: &model.RunDefaults{Agent: model.Claude, MaxParallel: 3, MaxTurns: 40, Setup: "make deps", SetupCwd: "/here",
+					Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: "opus", Effort: "max"}, Standard: model.ModelChoice{Model: "sonnet"}, Light: model.ModelChoice{Model: "haiku"}}}},
+			"srv_far": {Agent: model.Pi, Cwd: "/far", Run: &model.RunDefaults{Agent: model.Pi, MaxParallel: 2, MaxTurns: 10}},
+		}}
+	}
+	other := e.group("Other")
+	e.must(e.st.Update(func(s *model.State) error {
+		s.Defaults.Groups[model.Ungrouped] = ungrouped()
+		// Another group's values are nobody's source: there is no "last used".
+		s.Defaults.Groups[other] = model.LocalDefaults(model.ServerDefaults{Cwd: "/other", ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "haiku"}}})
+		return nil
+	}))
 
 	g, err := e.a.CreateGroup("  ", "")
 	if err != nil {
@@ -401,17 +415,22 @@ func TestCreateGroupSeedsDefaultsFromLast(t *testing.T) {
 		t.Errorf("name %q", g.Name)
 	}
 	snap := e.a.Snapshot()
-	gd := snap.Defaults.Groups[g.ID]
-	if gd.Cwd != last.Cwd || gd.ByAgent[model.Claude] != last.ByAgent[model.Claude] {
-		t.Errorf("seeded %+v, want %+v", gd, last)
+	if gd := snap.Defaults.Groups[g.ID]; !reflect.DeepEqual(gd, ungrouped()) {
+		t.Errorf("seeded %+v, want %+v", gd, ungrouped())
 	}
-	// a deep copy: changing last later leaves the group alone
+	// a deep copy: changing the ungrouped group later leaves the group alone
 	e.must(e.st.Update(func(s *model.State) error {
-		s.Defaults.Last.ByAgent[model.Claude] = model.ModelChoice{Model: "haiku"}
+		u := s.Defaults.Groups[model.Ungrouped]
+		u.Server = model.LocalServer
+		u.Servers[model.LocalServer].ByAgent[model.Claude] = model.ModelChoice{Model: "haiku"}
+		u.Servers[model.LocalServer].Run.MaxParallel = 9
+		u.Servers[model.LocalServer].Run.Tiers.Deep.Model = "sonnet"
+		u.Servers["srv_far"] = model.ServerDefaults{Cwd: "/elsewhere"}
+		s.Defaults.Groups[model.Ungrouped] = u
 		return nil
 	}))
-	if e.a.Snapshot().Defaults.Groups[g.ID].ByAgent[model.Claude].Model != "opus" {
-		t.Error("group defaults share last's map")
+	if gd := e.a.Snapshot().Defaults.Groups[g.ID]; !reflect.DeepEqual(gd, ungrouped()) {
+		t.Errorf("after a change in the ungrouped group %+v, want %+v", gd, ungrouped())
 	}
 }
 
@@ -462,8 +481,10 @@ func TestCreateSubgroup(t *testing.T) {
 	g := e.group("G")
 	cwd := t.TempDir()
 	e.must(e.st.Update(func(s *model.State) error {
-		s.Defaults.Groups[g] = model.GroupDefaults{Cwd: cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus"}}}
-		s.Defaults.Last = model.GroupDefaults{Cwd: t.TempDir()}
+		s.Defaults.Groups[g] = model.GroupDefaults{Server: model.LocalServer, Servers: map[string]model.ServerDefaults{model.LocalServer: {
+			Agent: model.Pi, Cwd: cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus"}},
+			Run: &model.RunDefaults{Agent: model.Pi, MaxParallel: 2, MaxTurns: 10}}}}
+		s.Defaults.Groups[model.Ungrouped] = model.LocalDefaults(model.ServerDefaults{Cwd: t.TempDir()})
 		return nil
 	}))
 	s := e.subgroup("S", g)
@@ -471,8 +492,9 @@ func TestCreateSubgroup(t *testing.T) {
 	if err != nil || sg.Parent != g {
 		t.Fatalf("subgroup %+v, %v", sg, err)
 	}
-	if gd := e.a.Snapshot().Defaults.Groups[s]; gd.Cwd != cwd || gd.ByAgent[model.Claude].Model != "opus" {
-		t.Errorf("subgroup defaults %+v, want the parent's", gd)
+	snap := e.a.Snapshot()
+	if gd := snap.Defaults.Groups[s]; !reflect.DeepEqual(gd, snap.Defaults.Groups[g]) || gd.On(model.LocalServer).Cwd != cwd || gd.On(model.LocalServer).Run == nil {
+		t.Errorf("subgroup defaults %+v, want the parent's %+v", gd, snap.Defaults.Groups[g])
 	}
 
 	if _, err := e.a.CreateGroup("X", "g_missing"); !errors.Is(err, ErrGroupNotFound) {

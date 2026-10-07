@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { agentsOf, folderAgents, folderName, sameFolder } from "../src/logic/folderagents.ts";
@@ -86,4 +87,39 @@ test("with a pending move (self null) nothing is left out", () => {
   assert.deepEqual(folderAgents({ ...p, self: null }), { total: 3, here: 3, elsewhere: 0, who: [{ chat: "a", branch: "b1", agents: 1 }, { chat: "a", branch: "main", agents: 2 }] });
   assert.equal(folderAgents(p).total, 3); // no self at all is the same
   assert.equal(folderAgents({ ...p, self: { chat: "a", branch: "main" } }).total, 1);
+});
+
+test("folderAgents: the same path on another server is another folder", () => {
+  const all = chats(chat("c_1"), chat("c_2", { server: "s_1" }), chat("c_3", { server: "s_1" }), chat("c_4", { server: "s_2" }));
+  const states = [rec("c_1", "main", { status: "thinking" }), rec("c_2", "main", { status: "tool" }), rec("c_3", "main", { status: "writing", subsRunning: 1 }), rec("c_4", "main", { status: "thinking" })];
+  // seen from the local chat: the remote ones work on other machines
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_1", self: null }), { total: 1, here: 1, elsewhere: 0, who: [{ chat: "c_1", branch: "main", agents: 1 }] });
+  // seen from a chat on s_1: its own and the other chat of s_1, not the local one and not s_2's
+  const there = folderAgents({ chats: all, states, cwd: "/w", chat: "c_2", self: { chat: "c_2", branch: "main" } });
+  assert.deepEqual([there.total, there.here, there.elsewhere, there.who.map((w) => w.chat)], [2, 0, 2, ["c_3"]]);
+  assert.equal(folderAgents({ chats: all, states, cwd: "/w", chat: "c_4", self: { chat: "c_4", branch: "main" } }).total, 0);
+});
+
+test("a chat of a run on another server is where the run is: it does not work in this computer's folder of the same path", () => {
+  const runs = { r_far: { server: "s_1" }, r_here: {} };
+  const all = chats(chat("mine"), chat("far", { run: "r_far" }), chat("agent", { run: "r_far", role: "task" } as Partial<ChatView>), chat("near", { run: "r_here" }), chat("rec", { run: "r_far", server: "s_1" }));
+  const states = [rec("mine", "main"), rec("far", "main", { status: "tool" }), rec("agent", "main", { status: "thinking", subsRunning: 2 }), rec("near", "main", { status: "tool" }), rec("rec", "main", { status: "tool" })];
+  // from a chat of this computer: the local run's chat alone
+  const fa = folderAgents({ chats: all, states, cwd: "/w", chat: "mine", runs });
+  assert.deepEqual(fa.who, [{ chat: "near", branch: "main", agents: 1 }]);
+  assert.equal(fa.total, 1);
+  // from a chat on the remote run: that run's, on its server, and none of this computer's
+  const there = folderAgents({ chats: all, states, cwd: "/w", chat: "far", self: { chat: "far", branch: "main" }, runs });
+  assert.deepEqual(there.who.map((w) => w.chat), ["agent", "rec"]);
+  assert.equal(there.total, 4);
+  // without the runs a view that names no server counts as this computer's (what the hint must not do)
+  assert.equal(folderAgents({ chats: all, states, cwd: "/w", chat: "mine" }).total, 5);
+  // a run that is not known leaves the chat's own server
+  assert.equal(folderAgents({ chats: chats(chat("mine"), chat("x", { run: "r_gone" })), states: [rec("x", "main", { status: "tool" })], cwd: "/w", chat: "mine", runs }).total, 1);
+});
+
+test("the folder hints give the runs to folderAgents", () => {
+  const src = readFileSync(new URL("../src/fork/FolderHint.tsx", import.meta.url), "utf8");
+  assert.equal(src.split("folderAgents({").length - 1, 2);
+  assert.equal((src.match(/self: [^\n]*, runs \}\)/g) ?? []).length, 2);
 });

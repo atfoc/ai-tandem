@@ -22,8 +22,8 @@ func HasNode() bool {
 // t.TempDir() and returns its path, to give a server as its claude binary. What it answers is
 // decided by directives in the message it gets; the head of the script (fake-claude in this
 // package) lists them: [[sleep n]], <<sleep n>>, [[mcp TOOL {json}]], [[tools]], [[final TEXT]],
-// [[write PATH TEXT]], [[fail text]], [[exit n]], [[cost usd]], [[block completed|failed]],
-// [[if TEXT]].
+// [[write PATH TEXT]], [[ask TOOL {json}]], [[fail text]], [[exit n]], [[cost usd]],
+// [[block completed|failed]], [[if TEXT]].
 func FakeClaude(t testing.TB) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-claude")

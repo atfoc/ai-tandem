@@ -1,5 +1,6 @@
-// The page is the only place a scene changes. This file holds every loaded
-// scene (by board id), saves them back to the server (debounced autosave),
+// A page is the only place a scene changes, and of the pages open on one server
+// the one that holds the board (its role, kept here). This file holds every
+// loaded scene (by board id), saves them back to the server (debounced autosave),
 // answers the board tools the agents call (relayed by the server as `rpc`),
 // gathers the <ui-context> block for a board chat's message, and turns the
 // live selection or a clicked point into a reference for the composer.
@@ -9,38 +10,53 @@ import { formatScene, formatElement, formatViewport, type FmtElement, type FmtVi
 import { contextBlock, boardRef } from "./logic/context.ts";
 import { resolveMentions, type Picked } from "./logic/mentions.ts";
 import { selectionRef, pointRef, plainText, type Ref } from "./logic/refs.ts";
-import { getState, flash, markBusy, type Box } from "./store.ts";
+import { getState, setState, flash, markBusy, setRole, setDropped, reloadScene, type Box } from "./store.ts";
 import { api, ApiError } from "./api.ts";
 import { select } from "./Sidebar.tsx";
-import { groupPath } from "./logic/tree.ts";
 import { editLabel, branchNameFor } from "./logic/attribution.ts";
-import type { AgentKind, Board } from "./types.ts";
+import { afterReconnect, onGrant, onLost, onRefusal, onTake, type Cache, type Step } from "./logic/roles.ts";
+import type { AgentKind } from "./types.ts";
 
-export type Scene = { elements: El[]; appState: any; files: any; version: number; rev: number };
+/** rev counts the writes made here (read_board shows it); base is the revision the server stores the scene at, as this
+ *  window knows it: the one it was read at, then the one of each accepted save. */
+export type Scene = { elements: El[]; appState: any; files: any; version: number; rev: number; base: number };
 export const scenes = new Map<string, Scene>(); // key: board id
 const loading = new Map<string, Promise<Scene>>();
+const voided = new Map<string, number>(); // by board id: how often a read in flight was made void (a dropped scene)
+const voidLoad = (id: string) => { voided.set(id, (voided.get(id) ?? 0) + 1); };
+const grants = new Map<string, { n: number; rev: number }>(); // by board id: how often it was granted to this window, and the stored revision of the last grant
 
 /** The live Excalidraw API for the board on screen, set by the canvas. */
 export let liveApi: any = null;
 export let liveBoard: string | null = null;
 export function setLive(board: string | null, api: any) { liveBoard = board; liveApi = api; }
 
+/** The scene of a board, read from the server when it is not kept. A read that was on its way when the board was
+ *  granted to this window, or when its kept scene was dropped, may be of before what the window that held it wrote
+ *  last: it is not kept, and the scene is read again. One that lands at the revision of the grant is the scene the
+ *  board was granted at (a free board, taken as it is opened), and is kept. */
 export async function loadScene(id: string): Promise<Scene> {
   const have = scenes.get(id);
   if (have) return have;
   const pending = loading.get(id);
   if (pending) return pending;
   const p = (async () => {
-    let data: any;
-    try { data = await api.scene(id); }
-    catch (e: any) {
-      if (e instanceof ApiError && e.status === 404) throw new RpcError("NO_BOARD", `no board with id ${id}; call list_boards to find ids`);
-      throw e;
+    for (;;) {
+      const at = voided.get(id) ?? 0, grant = grants.get(id)?.n ?? 0;
+      let data: any, base = 0;
+      try { ({ scene: data, rev: base } = await api.scene(id)); }
+      catch (e: any) {
+        if (e instanceof ApiError && e.status === 404) throw new RpcError("NO_BOARD", `no board with id ${id}; call list_boards to find ids`);
+        throw e;
+      }
+      if ((voided.get(id) ?? 0) !== at) continue;
+      const g = grants.get(id);
+      if (g && g.n !== grant && g.rev !== base) continue; // granted meanwhile, at another revision than the one read
+      const elements = restoreElements(data?.elements ?? [], null);
+      const s: Scene = { elements, appState: data?.appState ?? {}, files: data?.files ?? {}, version: getSceneVersion(elements), rev: 0, base };
+      if (!scenes.has(id)) scenes.set(id, s);
+      return scenes.get(id)!;
     }
-    const elements = restoreElements(data?.elements ?? [], null);
-    const s: Scene = { elements, appState: data?.appState ?? {}, files: data?.files ?? {}, version: getSceneVersion(elements), rev: 0 };
-    if (!scenes.has(id)) scenes.set(id, s);
-    return scenes.get(id)!;
   })();
   loading.set(id, p);
   try { return await p; } finally { loading.delete(id); }
@@ -66,18 +82,25 @@ export function forgetBoard(id: string) {
   if (s?.timer) clearTimeout(s.timer);
   saving.delete(id);
   scenes.delete(id);
+  asking.delete(id);
+  turns.delete(id);
 }
 
-// ---- autosave: debounced, one write in flight per board, in order.
-// A write that fails leaves the board unsaved (`failed`) until a later write of it
-// succeeds; there is no retry timer, the next change or flush writes it again.
+// ---- autosave: debounced, one write in flight per board, in order, and only of a board this
+// window holds. A write names the revision it is based on. One that fails leaves the board
+// unsaved (`failed`) until a later write of it succeeds; there is no retry timer, the next change
+// or flush writes it again. One the server refuses (the scene was changed elsewhere, or another
+// window holds the board) drops the edit: see refused.
 
 const SAVE_DEBOUNCE = 500;
 type SaveState = { timer?: any; running?: Promise<void>; again?: boolean; failed?: boolean };
 const saving = new Map<string, SaveState>();
 
-/** A board whose scene can still be written: loaded, and neither removed nor archived. */
-const writableScene = (id: string) => { const b = getState().boards[id]; return scenes.has(id) && !!b && !b.archived; };
+/** A board whose scene can still be written: loaded, held by this window, and neither removed nor archived. */
+const writableScene = (id: string) => { const st = getState(), b = st.boards[id]; return scenes.has(id) && !!b && !b.archived && st.roles[id] === "held"; };
+
+/** Whether an edit of a board still waits to be saved: a write that waits, runs or failed. */
+const unsaved = (id: string) => { const s = saving.get(id); return !!s && !!(s.timer || s.running || s.again || s.failed); };
 
 export function saveSoon(id: string, ms = SAVE_DEBOUNCE) {
   const s = saving.get(id) ?? {}; saving.set(id, s);
@@ -94,14 +117,23 @@ async function runSave(id: string): Promise<void> {
       s.again = false;
       const sc = scenes.get(id); const b = getState().boards[id];
       if (!sc || !b || b.archived) { s.failed = false; break; }
+      // A board this window does not hold is never written: its edit waits for the grant, which saves or drops it.
+      if (getState().roles[id] !== "held") { s.failed = true; break; }
       sc.rev++;
+      const at = turnOf(id);
       try {
-        await api.saveScene(id, {
+        sc.base = await api.saveScene(id, sc.base, {
           type: "excalidraw", version: 2, source: "ai-whiteboard", elements: sc.elements,
           appState: { viewBackgroundColor: sc.appState.viewBackgroundColor ?? "#ffffff" }, files: sc.files ?? {},
         });
         s.failed = false;
-      } catch (e) { s.failed = true; console.error(`saving board ${id}:`, e); }
+      } catch (e) {
+        if (saving.get(id) !== s) break; // the board was lost or forgotten meanwhile, and this edit with it
+        const code = e instanceof ApiError ? e.code : undefined;
+        // (a `not_holder` for a write sent before the role last changed says nothing of the role now: the write failed)
+        if (code === "stale" || (code === "not_holder" && turnOf(id) === at)) { refused(id, code); break; }
+        s.failed = true; console.error(`saving board ${id}:`, e);
+      }
     } while (s.again);
   })().finally(() => { s.running = undefined; });
   return s.running;
@@ -117,8 +149,121 @@ export async function flush(id: string) {
 }
 
 export async function flushAll() { await Promise.all([...saving.keys()].map(flush)); }
-/** True while a board has a write waiting, in flight, or failed (and not yet written since). */
-export const hasPendingSaves = () => [...saving].some(([id, s]) => s.timer || s.running || (s.failed && writableScene(id)));
+/** True while a board this window holds has a write waiting, in flight, or failed (and not yet written since). */
+export const hasPendingSaves = () => [...saving].some(([id, s]) => (s.timer || s.running || s.failed) && writableScene(id));
+
+// ---- the role per board: one window at a time holds a board, and only the holder writes its
+// scene and answers the tool calls on it. A board is asked for (takeBoard); the server answers,
+// and tells later what changes: `held` (the board was handed over to this window, or given to it
+// for a tool call), `release_request` (another window asks for it) and `superseded` (it went to
+// another window). What each does to the kept scene and its waiting edit is decided in
+// logic/roles.ts; step carries it out.
+
+let stream = 0;                                                              // the streams opened: a take's answer is of its own stream only
+const turns = new Map<string, number>();                                     // by board id: how often its role was told anew (a grant, a loss)
+const asking = new Map<string, { ifFree: boolean; done: Promise<void> }>();  // by board id: the take that runs
+
+const turnOf = (id: string) => turns.get(id) ?? 0;
+const cacheOf = (id: string): Cache => { const sc = scenes.get(id); return sc ? { base: sc.base, unsaved: unsaved(id) } : null; };
+
+/** Drops the scene kept for a board with its save state, written or not: the canvas, when it shows the board, reads the
+ *  stored scene again. */
+function dropScene(id: string) {
+  const s = saving.get(id);
+  if (s?.timer) clearTimeout(s.timer);
+  saving.delete(id);
+  scenes.delete(id);
+  voidLoad(id);
+  if (liveBoard === id) setLive(null, null); // the canvas of the scene that went: no tool call draws on it
+  reloadScene(id);
+}
+
+function step(id: string, st: Step) {
+  if (st.forget) dropScene(id);
+  if (st.dropped) setDropped(id, true);
+  setRole(id, st.role);
+  // (a write that was on its way while the board was not this window's has failed by then: it is made once more)
+  if (st.flush) void flush(id).then(() => { if (saving.get(id)?.failed) return flush(id); });
+}
+
+/** Asks for a board. Not if free (the user picked the board, or pressed "Use here"): a window that holds it is asked to
+ *  hand it over, and the panel shows the wait. If free (after a snapshot, for an agent's show_board): a board another
+ *  window holds stays there, and the panel shows in place of its canvas. An archived board is not asked for: nobody
+ *  writes it. Resolves when the server answered, and never rejects: after a failed take the role is as before. */
+export function takeBoard(id: string, ifFree = false): Promise<void> {
+  const b = getState().boards[id];
+  if (!b || b.archived) return Promise.resolve();
+  const cur = asking.get(id);
+  if (cur && (ifFree || !cur.ifFree)) return cur.done; // the take that runs asks for as much
+  const of = stream, at = turnOf(id);
+  const done: Promise<void> = (async () => {
+    let a: Awaited<ReturnType<typeof api.takeBoard>>;
+    try { a = await api.takeBoard(id, ifFree); }
+    catch (e) { console.error(`taking board ${id}:`, e); return; }
+    if (of !== stream) return;       // the stream it was made on ended, and what it gave with it
+    if (turnOf(id) !== at) return;   // an event told the board's role meanwhile: that is the newer word
+    if (a?.state === "held") { granted(id, a.rev ?? 0); return; }
+    const st = a && onTake(cacheOf(id), a, getState().roles[id] ?? null);
+    if (st) step(id, st);
+  })().finally(() => { if (asking.get(id)?.done === done) asking.delete(id); });
+  asking.set(id, { ifFree, done });
+  return done;
+}
+
+/** The board is this window's, at the stored revision rev: a take answered so, or a `held` event came. */
+export function granted(id: string, rev: number) {
+  if (!getState().boards[id]) return;
+  turns.set(id, turnOf(id) + 1);
+  grants.set(id, { n: (grants.get(id)?.n ?? 0) + 1, rev }); // a read on its way may be of before the last write of the window that held the board: loadScene
+  step(id, onGrant(cacheOf(id), rev));
+}
+
+/** `superseded`: the board went to another window (or the wait for it ended). Only this board's canvas gives way to the
+ *  panel; the stream and the other boards stay. */
+export function boardLost(id: string) {
+  if (!getState().boards[id]) return;
+  turns.set(id, turnOf(id) + 1);
+  step(id, onLost(cacheOf(id)));
+}
+
+/** A save the server refused, see logic/roles.ts onRefusal. */
+function refused(id: string, code: "stale" | "not_holder") {
+  if (code === "not_holder") turns.set(id, turnOf(id) + 1);
+  step(id, onRefusal(code, getState().roles[id] ?? null));
+}
+
+/** `release_request`: another window asks for the board. Its pending save is written first, then it is let go; the
+ *  `superseded` that follows shows the panel. When nobody waits for it by then (the other window went away) the server
+ *  has freed it all the same: it is asked for again, if free. */
+export async function handOver(id: string) {
+  await flush(id);
+  let state: string | undefined;
+  try { state = (await api.releaseBoard(id))?.state; } catch { return; }
+  if (state !== "free" || getState().roles[id] !== "held") return;
+  turns.set(id, turnOf(id) + 1);
+  setRole(id, null); // not written until the answer: the server holds it for nobody now
+  void takeBoard(id, true);
+}
+
+/** `hello`: a new stream. The server keeps nothing of the one before, so no board is held and none is waited for. */
+export function streamOpened() {
+  stream++;
+  asking.clear();
+  for (const id of Object.keys(getState().roles)) turns.set(id, turnOf(id) + 1);
+  setState((s) => ({ roles: afterReconnect(s.roles) }));
+}
+
+/** After a snapshot (the page loaded, or its stream came back): the board on screen and every board with an edit that
+ *  waits are asked for, if free. Free at the revision its scene is kept at, the edit is saved; at another one it is
+ *  dropped with a note on the canvas; not free, it is dropped and the panel shows (logic/roles.ts). A board that showed
+ *  the panel before the stream was cut is not asked for: after a restart of the server every window comes back at once,
+ *  and the one that held the board, which may have an edit to save, is the one to get it; "Use here" still takes it. */
+export function takeAfterSnapshot() {
+  const st = getState();
+  const ids = new Set<string>(st.sel.board ? [st.sel.board] : []);
+  for (const id of saving.keys()) if (unsaved(id)) ids.add(id);
+  for (const id of ids) if (!st.roles[id]) void takeBoard(id, true);
+}
 
 // ---- reading
 
@@ -276,24 +421,33 @@ function expandIds(board: string, v: any): any {
 
 // ---- board tools
 
-type ToolCall = { chat: string; branch?: string; board: string; name: string; args: any }; // board = the chat's own board id; branch = the calling branch ("main" or a branch id)
+// board = the chat's own board id; target = the board the call is for, resolved and checked by the server (get_view has
+// none); branch = the calling branch ("main" or a branch id). list_boards and create_board never come here: the server
+// answers them.
+type ToolCall = { chat: string; branch?: string; board: string; target?: string; name: string; args: any };
 
-/** The group's path, "Work / Infra", or "Ungrouped". */
-const groupName = (g: string) => groupPath(getState().groups, g).join(" / ") || "Ungrouped";
-const byName = (a: Board, b: Board) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-
-/** The board a call names (`args.board`, an id), or the chat's own board. */
-function resolveBoard(call: ToolCall): string {
-  const ref = call.args?.board;
-  if (!ref) {
-    if (!getState().boards[call.board]) throw new RpcError("NO_BOARD", `this chat's board ${call.board} no longer exists`);
-    return call.board;
-  }
-  const id = String(ref); // ids only, no name lookup
-  const b = getState().boards[id];
-  if (!b) throw new RpcError("NO_BOARD", `no board with id ${id}; call list_boards to find ids`);
-  if (b.archived) throw new RpcError("ARCHIVED", `${b.name} is archived`);
+/** The board a call is for, which the server named. */
+function targetOf(call: ToolCall): string {
+  const id = call.target;
+  if (!id || !getState().boards[id]) throw new RpcError("NO_BOARD", `no board with id ${id ?? ""}; call list_boards to find ids`);
   return id;
+}
+
+/** The board a call reads or draws on, which this window holds: the server asks a board's holder. One it holds without
+ *  having been told (the server gives a new board to the window that made it) is asked for first, which also tells the
+ *  revision; a board that went to another window meanwhile is not touched. */
+async function heldTarget(call: ToolCall): Promise<string> {
+  const id = targetOf(call);
+  if (getState().roles[id] !== "held") await takeBoard(id, true);
+  if (getState().roles[id] !== "held") throw new RpcError("NOT_HOLDER", "this window does not hold the board");
+  return id;
+}
+
+/** Loads the scene of a board a call is for; the board is still this window's after the read. */
+async function heldScene(id: string): Promise<Scene> {
+  const sc = await loadScene(id);
+  if (getState().roles[id] !== "held" || scenes.get(id) !== sc) throw new RpcError("NOT_HOLDER", "this window does not hold the board");
+  return sc;
 }
 
 /** A board that is about to be written: never an archived one. */
@@ -308,13 +462,9 @@ export async function runTool(call: ToolCall): Promise<string> {
   const s = getState();
   const args = call.args ?? {};
   switch (call.name) {
-    case "list_boards":
-      return Object.values(s.boards).filter((b) => !b.archived).sort(byName).map((b) =>
-        `${b.name}  (${b.id})  [${groupName(b.group)}]${b.id === call.board ? "  (this chat's board)" : ""}${b.id === s.sel.board ? "  (on screen)" : ""}`).join("\n") || "(no boards)";
-
     case "read_board": {
-      const id = resolveBoard(call);
-      const sc = await loadScene(id);
+      const id = await heldTarget(call);
+      const sc = await heldScene(id);
       markBusy(id, call.chat, call.branch);
       const els = engineFor(id).getSceneElementsIncludingDeleted();
       const body = formatScene(toFmt(els));
@@ -334,9 +484,9 @@ export async function runTool(call: ToolCall): Promise<string> {
     }
 
     case "apply": {
-      const id = resolveBoard(call);
+      const id = await heldTarget(call);
       writable(id);
-      await loadScene(id);
+      await heldScene(id);
       markBusy(id, call.chat, call.branch);
       const a = expandIds(id, args);
       const res = applyChanges(engineFor(id), { create: a.create, update: a.update }, hooks(id));
@@ -345,9 +495,9 @@ export async function runTool(call: ToolCall): Promise<string> {
     }
 
     case "delete_elements": {
-      const id = resolveBoard(call);
+      const id = await heldTarget(call);
       writable(id);
-      await loadScene(id);
+      await heldScene(id);
       markBusy(id, call.chat, call.branch);
       const a = expandIds(id, args);
       const refs: any[] = a.refs ?? [];
@@ -367,20 +517,12 @@ export async function runTool(call: ToolCall): Promise<string> {
       return JSON.stringify({ board: getState().boards[id].name, id, deleted: res.deleted });
     }
 
-    case "create_board": {
-      const own = s.boards[call.board];
-      if (!own) throw new RpcError("NO_BOARD", `this chat's board ${call.board} no longer exists`);
-      const b = await api.newBoard(own.group, args.name ? String(args.name) : undefined, true); // marked new
-      const on = getState().sel.board;
-      return `created ${b.name} (${b.id}) in ${groupName(b.group)} (the user is still on ${on && getState().boards[on] ? getState().boards[on].name : "no board"})`;
-    }
-
     case "show_board": {
-      const id = resolveBoard(call);
+      const id = targetOf(call);
       // another board opens without a chat panel: the chat is not that board's
       const cur = getState().sel.chat;
       const keep = id === call.board && cur && getState().chats[cur]?.board === id ? cur : null;
-      select({ board: id, run: null, chat: keep });
+      select({ board: id, run: null, chat: keep }, { ifFree: true }); // an agent's wish takes the board from no other window
       const refs: any[] = args.refs ?? [];
       if (refs.length) setTimeout(() => {
         if (liveBoard !== id || !liveApi) return;

@@ -11,7 +11,9 @@ import { draftOf, draftsAfterSent, hasDraft, heldOf, sameDraft } from "../logic/
 import { mergeQuotes } from "../logic/quotes.ts";
 import { branchKey } from "../logic/branches.ts";
 import { sameChoice, withModel, type Choice } from "../logic/models.ts";
+import { catalogFor } from "../logic/agentlist.ts";
 import type { Draft, Held, PendingMove, Target } from "../types.ts";
+import { serverOf } from "../logic/serverlists.ts";
 
 /** Sets (or, with blank text, removes) a label; puts the answer's labels into the loaded tree. An error is shown with reportError. */
 export async function labelMessage(chat: string, branch: string, item: number, text: string): Promise<void> {
@@ -181,7 +183,7 @@ export async function viewBranch(chat: string, branch: string): Promise<void> {
  *  boundary, as checkMove judges once the list is there. */
 export async function startMove(chat: string, target: Target, edit?: number): Promise<void> {
   const ok = () => { const c = getState().chats[chat]; return !!c && !c.archived && !isLegacy(c) && !isSending(chat); };
-  const live = () => LIVE_FORK[getState().chats[chat]!.agent] || !sourceBusy(chat, target.branch);
+  const live = () => { const a = getState().chats[chat]!.agent; return (!!a && LIVE_FORK[a]) || !sourceBusy(chat, target.branch); };
   if (!ok()) return;
   const n = ++startSeq;
   starts.set(chat, n);
@@ -249,7 +251,7 @@ export function setMoveChoice(chat: string, choice: Choice | null): void {
   const source = shownView(s, chat);
   const { model: _, effort: __, ...rest } = move;
   if (choice && !choice.effort && source) {
-    const id = choice.model, cat = s.catalogs[s.chats[chat]?.agent];
+    const id = choice.model, cat = catalogFor(s, serverOf(s.chats[chat]), s.chats[chat]?.agent ?? "");
     if (cat?.models.some((m) => m.id === id)) choice = withModel(source, id, cat);
   }
   if (!choice || (source && sameChoice(choice, source))) { if (move.model !== undefined || move.effort !== undefined) setMove(chat, rest); return; }
@@ -289,7 +291,7 @@ const sourceBusy = (chat: string, branch: string) => isBusy(branchState(getState
  *  the move stays as well: the turn may be one the app started, and Send waits for its end. */
 export function checkMove(chat: string): void {
   const s = getState(), move = s.moves[chat], c = s.chats[chat];
-  if (!move || !c) return;
+  if (!move || !c || !c.agent) return; // a chat with no agent has no point to move to
   const items = threadOf(s, chat)?.items;
   const running = sourceBusy(chat, move.branch) && LIVE_FORK[c.agent];
   const valid = !items || moveValid(c.agent, items, move, running); // not loaded yet: judged when it is

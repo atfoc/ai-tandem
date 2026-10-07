@@ -56,12 +56,23 @@ func (r *Relay) runListed(caller chats.Caller) []boardtools.Tool {
 	case model.RoleOrchestrator:
 		return r.runToolsOf(caller)
 	case model.RoleTask, model.RoleMerge:
-		return boardtools.SpawnFamily
+		return r.spawnListed()
 	case "":
 		tools := r.runToolsOf(caller)
-		return append(tools, boardtools.SpawnFamily...)
+		return append(tools, r.spawnListed()...)
 	}
 	return nil // a role this endpoint does not know gets nothing
+}
+
+// spawnListed is the spawn family as tools/list shows it: its agent parameter names only the
+// agents this server can start.
+func (r *Relay) spawnListed() []boardtools.Tool {
+	usable := r.Chats.UsableAgents()
+	names := make([]string, len(usable))
+	for i, a := range usable {
+		names[i] = string(a)
+	}
+	return boardtools.SpawnFamilyFor(names)
 }
 
 // runToolsOf is the run service's list for the caller, with nothing in it that is not a run tool:

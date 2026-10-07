@@ -30,9 +30,10 @@ export function MessageExtras({ chat, index, item }: { chat: ChatView; index: nu
   const running = useRef(false); // a fork or a move was asked for and has not answered yet
 
   // chat is the view of the branch shown (shownView): its status is that branch's, not the chat's.
-  const acts = messageActions({ agent: chat.agent, items, index, busy: isBusy(chat.status), readOnly: !!chat.archived || isLegacy(chat) });
+  // (a chat with no agent has no message: the kind given for it is never read)
+  const acts = messageActions({ agent: chat.agent || "claude", items, index, busy: isBusy(chat.status), readOnly: !!chat.archived || isLegacy(chat) });
   const label = labelAt(view, shown, index);
-  const marker = view ? markerAt(threadTree(view, shown, chat.agent, items), shown, index) : null;
+  const marker = view && chat.agent ? markerAt(threadTree(view, shown, chat.agent, items), shown, index) : null;
   const buttons = messageButtons(acts, items, !!label);
   if (!marker && !label && !buttons.length && !labeling) return null;
 

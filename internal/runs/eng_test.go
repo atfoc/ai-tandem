@@ -74,6 +74,20 @@ type engMsg struct {
 	stopped chan struct{}
 }
 
+// setOn replaces the script of the turns that start from here on. An engine may be sending.
+func (h *engHost) setOn(on func(m *engMsg)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.on = on
+}
+
+// wrapOn puts wrap around the script of the turns: wrap gets the script there is and gives the new one.
+func (h *engHost) wrapOn(wrap func(on func(m *engMsg)) func(m *engMsg)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.on = wrap(h.on)
+}
+
 func newEngHost() *engHost {
 	return &engHost{chats: map[string]*engChat{}, costs: map[string]chats.Cost{}, acts: map[string]chats.Activity{}, busy: map[string]bool{}}
 }

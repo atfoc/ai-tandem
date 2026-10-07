@@ -8,6 +8,7 @@ import (
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/rungit"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/usable"
 )
 
 // ChatHost is what runs need from the chat manager: chats.Manager implements it (the …Owned
@@ -64,10 +65,6 @@ type ChatHost interface {
 	Idle(id string) bool
 	// TurnRunning reports whether the chat has a process and a turn of it is running.
 	TurnRunning(id string) bool
-	// Watch makes the manager send the chat, chat_items, sub and sub_items events of a run
-	// agent's chat to the client; ClearWatches forgets every watch (a new snapshot was built).
-	Watch(id string)
-	ClearWatches()
 
 	// The chat manager's methods as they are today.
 
@@ -95,10 +92,12 @@ type RealClock struct{}
 func (RealClock) Now() time.Time                         { return time.Now() }
 func (RealClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-// Emitter sends an event to the clients; editorbridge.Bridge is one. Broadcast is never called
-// with a run's lock held.
+// Emitter sends an event to the clients; editorbridge.Bridge is one. SendRun sends an event of
+// the run with this id to the clients it concerns: the list events to every client that lists the
+// run, the content events to those that follow it. Neither is called with a run's lock held.
 type Emitter interface {
 	Broadcast(ev any)
+	SendRun(run string, ev any)
 }
 
 // Deps is what a Service is made of.
@@ -108,12 +107,21 @@ type Deps struct {
 	DefaultCwd string
 	Clock      Clock                      // nil = RealClock
 	Bins       map[model.AgentKind]string // the agents' programs, as the adapters start them: a missing one blocks a run
+	// Agents is the look-up of the agents this server can use: a draft run takes and accepts only
+	// those. nil = every kind is usable.
+	Agents *usable.Set
 	// GitEnv is added to the environment of every git command the service and the engine run
 	// ("KEY=value"). The server leaves it empty; tests give agenttest.Repo.Env().
 	GitEnv []string
 	// HaltWait is how long an archive and a delete wait for a run's workers to let go. 0 = 30 s;
 	// the server leaves it so, tests shorten it.
 	HaltWait time.Duration
+	// Mark tells whoever routes the events the client mark of a run; "" removes it. nil = nobody.
+	// It is called with no run's lock held, and before the run's first event: when the runs are
+	// loaded, and by a start call before the run's first `run` event (entry 1's `run_detail`, which
+	// goes to followers and not by the mark, is sent before it). Nothing calls it with "": a mark
+	// is dropped by whoever keeps it, after the run's `run_removed`.
+	Mark func(run, client string)
 }
 
 // nowMs is the clock's time in unix milliseconds, the unit of every recorded time.

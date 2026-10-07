@@ -33,11 +33,12 @@ function useOthers(fa: FolderAgents, chatId: string): { id: string; title: strin
 export function FolderHint({ chatId }: { chatId: string }) {
   const chats = useStore((s) => s.chats);
   const states = useStore((s) => s.states);
+  const runs = useStore((s) => s.runs);
   const cwd = useStore((s) => shownView(s, chatId)?.cwd);
   const branch = useStore((s) => (s.moves[chatId] ? null : shownBranch(s, chatId)));
   const fa = useMemo(
-    () => folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId, self: branch === null ? null : { chat: chatId, branch } }),
-    [chats, states, cwd, chatId, branch],
+    () => folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId, self: branch === null ? null : { chat: chatId, branch }, runs }),
+    [chats, states, cwd, chatId, branch, runs],
   );
   const others = useOthers(fa, chatId);
   if (fa.total < 1) return null;
@@ -55,8 +56,9 @@ export function FolderHint({ chatId }: { chatId: string }) {
 export function TreeFolderHint({ chatId }: { chatId: string }) {
   const chats = useStore((s) => s.chats);
   const states = useStore((s) => s.states);
+  const runs = useStore((s) => s.runs);
   const cwd = useStore((s) => stateOf(s.states, s.chats[chatId], viewedBranch(s, chatId))?.cwd ?? s.chats[chatId]?.cwd);
-  const fa = useMemo(() => folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId, self: null }), [chats, states, cwd, chatId]);
+  const fa = useMemo(() => folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId, self: null, runs }), [chats, states, cwd, chatId, runs]);
   if (fa.total < 2 || !cwd) return null;
   return (
     <span className="fk-folder-agents" title={cwd}>

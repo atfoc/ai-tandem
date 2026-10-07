@@ -9,12 +9,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 )
 
@@ -67,8 +69,7 @@ func ownTree(t *testing.T, dir string, names map[string]string) []string {
 
 func TestCreateOwned(t *testing.T) {
 	e, fr := runEnv(t)
-	var before model.Defaults
-	e.st.Read(func(s *model.State) { before = s.Defaults })
+	before := e.defaultsOf()
 	evs := e.listen()
 
 	spec := OwnedSpec{ID: "agent-1", Run: ownRun, Role: model.RoleTask, Name: "T01-work", Agent: model.Claude, Model: "haiku", Effort: "low", Cwd: e.cwd}
@@ -130,13 +131,12 @@ func TestCreateOwned(t *testing.T) {
 	if calls := e.namer.callList(); len(calls) != 0 {
 		t.Fatalf("the namer ran: %v", calls)
 	}
-	var after model.Defaults
-	e.st.Read(func(s *model.State) { after = s.Defaults })
-	if len(after.Groups) != len(before.Groups) || after.Last.Cwd != before.Last.Cwd || len(after.Last.ByAgent) != len(before.Last.ByAgent) {
+	after := e.defaultsOf()
+	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("the sticky defaults changed: %+v -> %+v", before, after)
 	}
 	if got := evs.drain(t, e.br); len(got) != 0 {
-		t.Fatalf("events for an unwatched run agent's chat: %v", got)
+		t.Fatalf("events for a run agent's chat nobody follows: %v", got)
 	}
 	if got := e.chatDirs(); len(got) != 0 {
 		t.Fatalf("chats/ is not empty: %v", got)
@@ -183,7 +183,7 @@ func TestCreateOnRun(t *testing.T) {
 	e, fr := runEnv(t)
 	other := t.TempDir()
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
-		gOne: {Cwd: other, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "low"}, model.Pi: {Model: "pi-model", Effort: "low"}}},
+		gOne: model.LocalDefaults(model.ServerDefaults{Cwd: other, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "low"}, model.Pi: {Model: "pi-model", Effort: "low"}}}),
 	}})
 	// A chat of another agent kind than the run's keeps the new-chat defaults of the run's group.
 	if pv, err := e.m.CreateOnRun(model.Pi, ownRun); err != nil || pv.Model != "pi-model" || pv.Effort != "low" || pv.Cwd != e.cwd {
@@ -221,8 +221,7 @@ func TestCreateOnRun(t *testing.T) {
 
 	// The first message: the run's context block ahead of the text, on every message; the namer
 	// runs as for any chat; the sticky defaults stay as they were.
-	var before model.Defaults
-	e.st.Read(func(s *model.State) { before = s.Defaults })
+	before := e.defaultsOf()
 	e.send(v.ID, "how far is it?", "<ui-context/>")
 	ag := e.claude.last(t)
 	ctx := fr.ChatContext(ownRun)
@@ -237,9 +236,8 @@ func TestCreateOnRun(t *testing.T) {
 	if calls := e.namer.callList(); len(calls) != 1 {
 		t.Fatalf("namer calls: %v", calls)
 	}
-	var after model.Defaults
-	e.st.Read(func(s *model.State) { after = s.Defaults })
-	if after.Last.Cwd != before.Last.Cwd || after.Groups[gOne].Cwd != other || len(after.Last.ByAgent) != len(before.Last.ByAgent) {
+	after := e.defaultsOf()
+	if !reflect.DeepEqual(after, before) || after.Groups[gOne].On(model.LocalServer).Cwd != other {
 		t.Fatalf("the sticky defaults changed: %+v -> %+v", before, after)
 	}
 	e.send(v.ID, "and now?", "")
@@ -564,7 +562,7 @@ func TestPersonCannotChangeARunAgentsChat(t *testing.T) {
 	for name, err := range map[string]error{
 		"Send":       e.m.Send(id, "from a person", "", nil),
 		"SendTo":     e.m.SendTo(id, Target{Branch: model.MainBranch, At: 3, New: true}, "aside", "", nil),
-		"SetDraft":   e.m.SetDraft(id, model.Draft{Text: "a draft"}),
+		"SetDraft":   e.setDraft(id, model.Draft{Text: "a draft"}),
 		"Configure":  e.m.Configure(id, ConfigReq{Model: "opus"}),
 		"Rename":     e.m.Rename(id, "mine", true),
 		"Move":       e.m.Move(id, gTwo),
@@ -806,8 +804,8 @@ func TestRunCallersByToken(t *testing.T) {
 
 // ---- events --------------------------------------------------------------------
 
-// The events of a run agent's chat reach clients only after Watch, and ClearWatches stops them.
-func TestRunAgentEventsOnlyWhileWatched(t *testing.T) {
+// The events of a run agent's chat reach a client only while it follows the chat.
+func TestRunAgentEventsOnlyWhileFollowed(t *testing.T) {
 	e, id, ag, _ := ownStart(t)
 	evs := e.listen()
 	types := func() map[string]int {
@@ -822,59 +820,65 @@ func TestRunAgentEventsOnlyWhileWatched(t *testing.T) {
 	child.emit(t, agent.Event{Kind: agent.EvText, Text: "child text"})
 	ag.emit(t, ownText("first", "p1")...)
 	if got := types(); len(got) != 0 {
-		t.Fatalf("events of an unwatched run agent's chat: %v", got)
+		t.Fatalf("events of a run agent's chat nobody follows: %v", got)
 	}
 
-	e.m.Watch(id)
-	e.m.Watch("nope")
+	item := editorbridge.Chat(id)
+	if !e.br.Follow(listenID, item) {
+		t.Fatal("the follow was refused")
+	}
 	child.emit(t, agent.Event{Kind: agent.EvText, Text: "more"}, agent.Event{Kind: agent.EvTurnEnd})
 	waitFor(t, "the delivery", func() bool { return len(ag.sent()) == 2 })
 	ag.emit(t, ownText("second", "p2")...)
 	got := types()
 	if got["chat"] == 0 || got["chat_items"] == 0 || got["sub"] == 0 || got["sub_items"] == 0 {
-		t.Fatalf("events of a watched run agent's chat: %v", got)
+		t.Fatalf("events of a followed run agent's chat: %v", got)
 	}
 	_ = sa
 
-	e.m.ClearWatches()
+	e.br.Unfollow(listenID, item)
 	e.sendOwned(id, "again")
 	ag.emit(t, ownText("third", "p3")...)
 	if got := types(); len(got) != 0 {
-		t.Fatalf("events after ClearWatches: %v", got)
+		t.Fatalf("events after the unfollow: %v", got)
 	}
 
-	// A person's chat on the run is never filtered, and Watch does nothing for it.
+	// A person's chat on the run is in every client's list: its chat event goes to all, the
+	// items of its thread to the clients that follow it.
 	v := e.onRun(model.Claude)
-	types()
-	e.m.Watch(v.ID)
-	e.m.ClearWatches()
 	e.send(v.ID, "hello", "")
 	e.claude.last(t).emit(t, ownText("hi", "p1")...)
-	if got := types(); got["chat"] == 0 || got["chat_items"] == 0 {
-		t.Fatalf("events of a person's chat on a run: %v", got)
+	if got := types(); got["chat"] == 0 || got["chat_items"] != 0 {
+		t.Fatalf("events of a person's chat on a run, not followed: %v", got)
+	}
+	e.claude.last(t).emit(t, ownText("more", "p2")...) // types has made the client follow it
+	if got := types(); got["chat_items"] == 0 {
+		t.Fatalf("events of a person's chat on a run, followed: %v", got)
 	}
 
-	// A watch ends with the chat.
-	e.m.Watch(id)
+	// A follow ends with the chat, which sends no chat_removed.
+	e.br.Follow(listenID, item)
 	if err := e.m.DeleteOwned(id); err != nil {
 		t.Fatal(err)
 	}
-	e.m.watchMu.Lock()
-	n := len(e.m.watched)
-	e.m.watchMu.Unlock()
-	if n != 0 {
-		t.Fatalf("%d watches left after the delete", n)
+	if e.br.Followed(item) {
+		t.Fatal("the follow is left after the delete")
+	}
+	if got := types(); got["chat_removed"] != 0 {
+		t.Fatalf("a run agent's chat was announced as removed: %v", got)
 	}
 }
 
 // ---- options -------------------------------------------------------------------
 
-// A subagent of a chat on a run takes the run's group for its defaults, not the user's "last".
+// A subagent of a chat on a run takes the run's group for its defaults, not the ungrouped group.
 func TestRunChatSubagentDefaultsComeFromTheRunsGroup(t *testing.T) {
 	e, _ := runEnv(t)
 	e.setDefaults(model.Defaults{
-		Groups: map[string]model.GroupDefaults{gOne: {ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "gpt-5.4-mini"}}}},
-		Last:   model.GroupDefaults{ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "composer-2", Effort: "low"}}},
+		Groups: map[string]model.GroupDefaults{
+			gOne:            model.LocalDefaults(model.ServerDefaults{ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "gpt-5.4-mini"}}}),
+			model.Ungrouped: model.LocalDefaults(model.ServerDefaults{ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "composer-2", Effort: "low"}}}),
+		},
 	})
 	id := e.agentChat("agent-1", model.RoleTask, model.Claude)
 	e.sendOwned(id, "the brief")

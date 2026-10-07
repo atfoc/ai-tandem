@@ -70,12 +70,51 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 	if !boardtools.IsTool(tool) {
 		return "unknown tool " + tool, true
 	}
-	bd, _ := r.Boards.Get(meta.Board)
+	// The board the call is about: the one it names, else the chat's own.
+	var named struct {
+		Board json.RawMessage `json:"board"`
+	}
+	json.Unmarshal(args, &named)
+	var target string
+	if len(named.Board) > 0 && string(named.Board) != "null" && json.Unmarshal(named.Board, &target) != nil {
+		// Not a string: no board has such an id, and the call must not fall to the chat's own.
+		return "NO_BOARD: no board with id " + string(named.Board) + "; call list_boards to find ids", true
+	}
+	switch tool {
+	case "list_boards":
+		return r.listBoards(meta.Board), false
+	case "create_board":
+		return r.createBoard(meta.Board, args)
+	case "get_view": // about the screen, not about a board
+		target = ""
+	default:
+		if target == "" {
+			target = meta.Board
+		}
+		bd, ok := r.Boards.Get(target)
+		switch {
+		case !ok && target == meta.Board:
+			return "NO_BOARD: this chat's board " + target + " no longer exists", true
+		case !ok:
+			return "NO_BOARD: no board with id " + target + "; call list_boards to find ids", true
+		case bd.Archived:
+			return "ARCHIVED: " + bd.Name + " is archived", true
+		}
+	}
 	// The client knows the chat by its top-level id, also when a branch's agent calls; branch
-	// says which branch's agent (or subagent) it is, "main" for the chat's main line.
-	out, err := r.Bridge.Call("tool", map[string]any{
-		"chat": caller.Chat, "branch": caller.Branch, "board": bd.ID, "name": tool, "args": args,
-	}, callTimeout)
+	// says which branch's agent (or subagent) it is, "main" for the chat's main line. board is
+	// the chat's board and target the board the call is about.
+	params := map[string]any{
+		"chat": caller.Chat, "branch": caller.Branch, "board": meta.Board, "name": tool, "args": args,
+	}
+	if target != "" {
+		params["target"] = target
+	}
+	spec := editorbridge.CallSpec{Method: "tool", Params: params, Board: target, ChatBoard: meta.Board}
+	if tool == "get_view" || tool == "show_board" { // asked of the screen that shows the chat's board
+		spec.Board, spec.Screen = "", true
+	}
+	out, err := r.Bridge.CallBoard(spec, callTimeout)
 	if errors.Is(err, editorbridge.ErrNoClient) {
 		return NoClientText, true
 	}
@@ -86,6 +125,63 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 		text = string(out)
 	}
 	return text, false
+}
+
+// groupText is a board's group path as an agent reads it, "Work / Infra", or "Ungrouped".
+func groupText(path []string) string {
+	if len(path) == 0 {
+		return "Ungrouped"
+	}
+	return strings.Join(path, " / ")
+}
+
+// listBoards answers list_boards: the boards that are not archived, by name then id, one line
+// each, with a mark on the chat's own board. No client is asked.
+func (r *Relay) listBoards(chatBoard string) string {
+	groups := r.Boards.Groups()
+	var list []model.Board
+	for _, bd := range r.Boards.List() {
+		if !bd.Archived {
+			list = append(list, bd)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Name != list[j].Name {
+			return list[i].Name < list[j].Name
+		}
+		return list[i].ID < list[j].ID
+	})
+	lines := make([]string, 0, len(list))
+	for _, bd := range list {
+		line := fmt.Sprintf("%s  (%s)  [%s]", bd.Name, bd.ID, groupText(groups[bd.ID]))
+		if bd.ID == chatBoard {
+			line += "  (this chat's board)"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return "(no boards)"
+	}
+	return strings.Join(lines, "\n")
+}
+
+// createBoard answers create_board: a new board, marked new, in the group of the chat's board.
+// No client is asked, and no client holds the new board.
+func (r *Relay) createBoard(chatBoard string, args json.RawMessage) (text string, isErr bool) {
+	own, ok := r.Boards.Get(chatBoard)
+	if !ok {
+		return "NO_BOARD: this chat's board " + chatBoard + " no longer exists", true
+	}
+	var p struct {
+		Name any `json:"name"`
+	}
+	json.Unmarshal(args, &p)
+	name, _ := p.Name.(string)
+	bd, err := r.Boards.Create(name, own.Group, true)
+	if err != nil {
+		return err.Error(), true
+	}
+	return fmt.Sprintf("created %s (%s) in %s", bd.Name, bd.ID, groupText(r.Boards.Groups()[bd.ID])), false
 }
 
 func short(id string) string {
@@ -217,10 +313,10 @@ func (r *Relay) listedTools(token string) []map[string]any {
 	case hasBoard:
 		tools := make([]boardtools.Tool, 0, len(boardtools.Tools)+len(boardtools.SpawnFamily))
 		tools = append(tools, boardtools.Tools...)
-		tools = append(tools, boardtools.SpawnFamily...)
+		tools = append(tools, r.spawnListed()...)
 		return mcpToolsOf(tools)
 	default:
-		return mcpToolsOf(boardtools.SpawnFamily)
+		return mcpToolsOf(r.spawnListed())
 	}
 }
 

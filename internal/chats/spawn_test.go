@@ -652,10 +652,11 @@ func TestSpawnUnknownListCrossKind(t *testing.T) {
 	// A Cursor chat asking for pi is cross-kind too.
 	check("cursor to pi", cur.ID, SpawnSubRequest{Prompt: "x", Kind: model.Pi}, e.pi, "", "")
 
-	// The model the user last picked for new chats of the other agent is used, as it is with a
-	// known list; a named effort replaces its effort.
+	// The model the user picked for new chats of the other agent is used, as it is with a known
+	// list; a named effort replaces its effort. The chat's group has none for pi, so the ungrouped
+	// group's is the one.
 	if err := e.st.Update(func(s *model.State) error {
-		s.Defaults.Last.ByAgent = map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "picked/model", Effort: "medium"}}
+		s.Defaults.Groups[model.Ungrouped] = model.LocalDefaults(model.ServerDefaults{ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "picked/model", Effort: "medium"}}})
 		return nil
 	}); err != nil {
 		t.Fatal(err)

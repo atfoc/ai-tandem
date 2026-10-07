@@ -15,7 +15,7 @@ func TestEngineRunEndToEndNoGit(t *testing.T) {
 	t.Parallel()
 	e := newEngEnv(t, false)
 	r := e.run("r_e2e", nil)
-	e.host.on = func(m *engMsg) {
+	e.host.setOn(func(m *engMsg) {
 		switch {
 		case m.Name == "turn-001":
 			e.add(r, 1, "Look around", false)
@@ -26,7 +26,7 @@ func TestEngineRunEndToEndNoGit(t *testing.T) {
 			e.finishRun(r, 2, model.Achieved)
 			m.Say("Finished.")
 		}
-	}
+	})
 	r.startEngine()
 	engStatus(t, r, model.RunCompleted)
 
@@ -86,7 +86,7 @@ func TestEngineRunEndToEndNoGit(t *testing.T) {
 // turn says nothing new, and a task's agent passes its gate and reports "completed". reply, when
 // set, answers instead for the messages it wants (it returns true then).
 func (e *engEnv) play(r *run, first func(), reply func(m *engMsg) bool) {
-	e.host.on = func(m *engMsg) {
+	e.host.setOn(func(m *engMsg) {
 		if !e.gates.pass(m) {
 			return
 		}
@@ -104,7 +104,7 @@ func (e *engEnv) play(r *run, first func(), reply func(m *engMsg) bool) {
 		default:
 			m.Block("completed", m.Name+" is done.", "report of "+m.Name)
 		}
-	}
+	})
 }
 
 // Tasks start in creation order, at most maxParallel at once, and only when the turn that added
@@ -121,7 +121,7 @@ func TestSchedOrderMaxParallelAndHeld(t *testing.T) {
 		}
 		return false
 	})
-	e.host.on = func(on func(m *engMsg)) func(m *engMsg) {
+	e.host.wrapOn(func(on func(m *engMsg)) func(m *engMsg) {
 		return func(m *engMsg) {
 			if m.Name == "turn-001" && m.N == 1 {
 				for i := 0; i < 4; i++ {
@@ -131,7 +131,7 @@ func TestSchedOrderMaxParallelAndHeld(t *testing.T) {
 			}
 			on(m)
 		}
-	}(e.host.on)
+	})
 	r.startEngine()
 	<-added
 	// While the turn runs its tasks are held: none has an agent.
@@ -326,7 +326,7 @@ func TestSchedMaxTurns(t *testing.T) {
 	r.mu.Lock()
 	r.meta.Settings.MaxTurns = 3
 	r.mu.Unlock()
-	e.host.on = func(m *engMsg) { e.finishRun(r, 3, model.NotAchieved); m.Say("giving up") }
+	e.host.setOn(func(m *engMsg) { e.finishRun(r, 3, model.NotAchieved); m.Say("giving up") })
 	if err := r.resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -401,11 +401,11 @@ func TestSchedCostLimit(t *testing.T) {
 	// 4. Nothing halts a run that has called finish_run: the last turn's own cost may pass the limit.
 	e = newEngEnv(t, false)
 	r = e.run("r_cost", func(m *model.RunMeta) { m.Settings.MaxCost = 1 })
-	e.host.on = func(m *engMsg) {
+	e.host.setOn(func(m *engMsg) {
 		e.finishRun(r, 1, model.Achieved)
 		e.host.setCost(m.ID, 5)
 		m.Say("done")
-	}
+	})
 	r.startEngine()
 	engStatus(t, r, model.RunCompleted)
 	if c := r.viewNow().Cost; c == nil || *c != 5 {
@@ -615,13 +615,13 @@ func TestSchedFinishWhileTheTurnRuns(t *testing.T) {
 	r := e.run("r_fin", nil)
 	e.gates.block("turn-001")
 	finished := make(chan struct{})
-	e.host.on = func(m *engMsg) {
+	e.host.setOn(func(m *engMsg) {
 		e.finishRun(r, 1, model.Achieved)
 		close(finished)
 		if e.gates.pass(m) {
 			m.Say("That is all.")
 		}
-	}
+	})
 	r.startEngine()
 	<-finished
 	e.clock.Advance(3 * time.Second)
@@ -647,14 +647,14 @@ func TestSchedStopAfterFinishRun(t *testing.T) {
 	e := newEngEnv(t, false)
 	r := e.run("r_finstop", nil)
 	finished := make(chan struct{})
-	e.host.on = func(m *engMsg) {
+	e.host.setOn(func(m *engMsg) {
 		e.finishRun(r, 1, model.NotAchieved)
 		e.host.mu.Lock()
 		m.c.text = "I was about to say goodbye."
 		e.host.mu.Unlock()
 		close(finished)
 		m.Hang()
-	}
+	})
 	r.startEngine()
 	<-finished
 	if err := r.halt(Halting{Status: model.RunStopped, Reason: "stopped by the user", Stop: model.StopUser}); err != nil {
@@ -682,7 +682,7 @@ func TestEnginePanicHaltsTheRun(t *testing.T) {
 	t.Parallel()
 	e := newEngEnv(t, false)
 	r := e.run("r_panic", nil)
-	e.host.on = func(m *engMsg) { m.Say("x") }
+	e.host.setOn(func(m *engMsg) { m.Say("x") })
 	e.host.boom = "turn-001"
 	r.startEngine()
 	engStatus(t, r, model.RunError)
@@ -729,7 +729,7 @@ func TestSchedTurnWithoutSession(t *testing.T) {
 	t.Parallel()
 	e := newEngEnv(t, false)
 	r := e.run("r_turnns", nil)
-	e.host.on = func(m *engMsg) {
+	e.host.setOn(func(m *engMsg) {
 		switch {
 		case m.N == 1:
 			m.Hang()
@@ -739,7 +739,7 @@ func TestSchedTurnWithoutSession(t *testing.T) {
 			e.finishRun(r, 1, model.Achieved)
 			m.Say("third time lucky")
 		}
-	}
+	})
 	r.startEngine()
 	engUntil(t, "the turn's message", func() bool { return len(e.host.sent("turn-001")) == 1 })
 	if err := r.halt(engUserStop); err != nil {

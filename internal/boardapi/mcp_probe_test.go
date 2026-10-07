@@ -80,7 +80,7 @@ export default function probeExtension(pi: ExtensionAPI): void {
       result.serverInfo = client.serverInfo ?? null;
       const tools = await client.listTools();
       result.tools = tools.map((tool) => tool.name);
-      const ok = await client.callTool("read_board", { board: "b_x" });
+      const ok = await client.callTool("read_board", {});
       result.callText = ok.text;
       result.callIsError = ok.isError;
       const unknown = await client.callTool("rm_rf", {});

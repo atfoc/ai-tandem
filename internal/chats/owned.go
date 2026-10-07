@@ -21,7 +21,6 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/boardtools"
-	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/transcript"
 )
@@ -41,6 +40,23 @@ func (m *Manager) chatDir(id string) string {
 		return m.Store.P.ChatDir(id)
 	}
 	return filepath.Join(root, rest)
+}
+
+// removeChatDir removes the folder of the top-level chat id with all that is in it; run is the
+// chat's run, "" for none. Of a chat on a run the folders around it go too, each only when it
+// is empty: the one of the run's chats, then the run's own. That one is empty when the run is on
+// another server and is a record here: nothing but its unstarted chats is ever kept in it, while
+// a run of this server has its run.json there. It is called before dropRoot.
+func (m *Manager) removeChatDir(id, run string) error {
+	dir := m.chatDir(id)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if run != "" {
+		os.Remove(filepath.Dir(dir)) // fails, as it should, while another chat is in it
+		os.Remove(m.Store.P.RunDir(run))
+	}
+	return nil
 }
 
 // setRoot registers where the top-level chat meta names lives, when that is under its run and
@@ -69,8 +85,9 @@ func safeSegment(s string) bool {
 
 // loadRunChats is Load for the chats kept under the runs: runs/<run>/chats/<id> (the ones people
 // talk to) and runs/<run>/agents/<id> (the run's agents). A folder whose name, chat.json id, run
-// and role do not agree with where it is, is logged and skipped. m.mu held.
-func (m *Manager) loadRunChats() {
+// and role do not agree with where it is, is logged and skipped. The client marks of the chats
+// loaded are put in marks (see Load). m.mu held.
+func (m *Manager) loadRunChats(marks map[string]string) {
 	runs, err := os.ReadDir(m.Store.P.Runs)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -113,6 +130,9 @@ func (m *Manager) loadRunChats() {
 				m.chats[meta.ID] = c
 				m.registerChatToken(meta.Token)
 				m.loadBranches(c, meta.ID)
+				if meta.Client != "" {
+					marks[meta.ID] = meta.Client
+				}
 			}
 		}
 	}
@@ -231,50 +251,13 @@ func denyAtOnce(c *Chat, asker, requestID string) []transcript.Update {
 
 // ---- chats people open on a run ---------------------------------------------
 
-// CreateOnRun makes a person's chat on a run: no group, no board, no role; its folder is the
-// run's, its model and effort those of the run's deep tier when a is the run's agent
-// kind, else the new-chat defaults of the run's group. The run must exist
-// (ErrNoRun) and not be archived (ErrRunArchived). The chat lives in runs/<run>/chats/<id> and is
-// listed like any chat, with Run set. No agent starts.
+// CreateOnRun makes a person's chat of agent a on a run (see CreateChat).
 func (m *Manager) CreateOnRun(a model.AgentKind, run string) (model.ChatView, error) {
-	none := model.ChatView{}
-	if a != model.Claude && a != model.Cursor && a != model.Pi {
-		return none, fmt.Errorf("unknown agent %q", a)
-	}
-	if !safeSegment(run) {
-		return none, ErrNoRun
-	}
-	ri, err := m.openRun(run)
-	if err != nil {
-		return none, err
-	}
-	var d model.Defaults
-	m.Store.Read(func(s *model.State) { d = s.Defaults })
-	cwd, mc := defaults.Resolve(d, ri.Group, a, m.DefaultCwd, m.catalog(a))
-	if ri.Cwd != "" {
-		cwd = ri.Cwd
-	}
-	// A chat of the run's agent kind starts on what the orchestrator runs on: its changes of the
-	// plan are decisions that nothing checks, as the orchestrator's are.
-	if a == ri.Agent && ri.Model != "" {
-		mc = model.ModelChoice{Model: ri.Model, Effort: ri.Effort}
-	}
-	meta := model.ChatMeta{ID: uuid(), Agent: a, Run: run, Cwd: cwd, Model: mc.Model, Effort: mc.Effort, Created: time.Now()}
-	c, err := m.addRunChat(meta)
-	if err != nil {
-		return none, err
-	}
-	var out outbox
-	c.mu.Lock()
-	out.emitChat(c)
-	v := view(c)
-	c.mu.Unlock()
-	m.send(out)
-	return v, nil
+	return m.CreateChat(NewChat{Agent: a, Run: run})
 }
 
-// addRunChat makes the chat object of a new chat of a run, as Create makes one in chats/: its
-// token and session id, its folder under the run, an empty thread, chat.json, the map entry.
+// addRunChat makes the chat object of a new chat, of a run or in chats/: its token and session
+// id, its folder, an empty thread, chat.json, the map entry. A failure leaves none of them.
 func (m *Manager) addRunChat(meta model.ChatMeta) (*Chat, error) {
 	m.extrasMu.Lock()
 	meta.Token = m.uniqueTokenLocked()
@@ -284,9 +267,7 @@ func (m *Manager) addRunChat(meta model.ChatMeta) (*Chat, error) {
 	}
 	m.setRoot(meta) // before the folder is made
 	fail := func(err error) (*Chat, error) {
-		dir := m.chatDir(meta.ID)
-		os.RemoveAll(dir)
-		os.Remove(filepath.Dir(dir))
+		m.removeChatDir(meta.ID, meta.Run)
 		m.dropRoot(meta.ID)
 		m.unregisterChatToken(meta.Token)
 		return nil, err
@@ -366,6 +347,9 @@ func (m *Manager) CreateOwned(s OwnedSpec) (created bool, err error) {
 	}
 	m.ownedMu.Lock()
 	defer m.ownedMu.Unlock()
+	// A creation with a client's id (create) looks for this id too: the two never make one id twice.
+	m.createMu.Lock()
+	defer m.createMu.Unlock()
 	if c, err := m.get(s.ID); err == nil {
 		c.mu.Lock()
 		run, role, gone := c.meta.Run, c.meta.Role, c.deleted
@@ -725,40 +709,6 @@ func (m *Manager) TurnRunning(id string) bool {
 	}
 	defer c.mu.Unlock()
 	return turnRunning(c)
-}
-
-// ---- watching a run's agent ---------------------------------------------------
-
-// Watch makes the manager send the chat, chat_items, sub and sub_items events of a run agent's
-// chat to the client, from now on: call it before reading the thread (ItemsOf), or a change
-// between the two is missed. It does nothing for any other chat, whose events are always sent.
-func (m *Manager) Watch(id string) {
-	if _, err := m.owned(id); err != nil {
-		return
-	}
-	m.watchMu.Lock()
-	m.watched[id] = true
-	m.watchMu.Unlock()
-}
-
-// ClearWatches forgets every watch: a new snapshot was built, and its client watches nothing yet.
-// It is called with the bridge's lock held and takes only the watch lock.
-func (m *Manager) ClearWatches() {
-	m.watchMu.Lock()
-	clear(m.watched)
-	m.watchMu.Unlock()
-}
-
-func (m *Manager) watching(id string) bool {
-	m.watchMu.Lock()
-	defer m.watchMu.Unlock()
-	return m.watched[id]
-}
-
-func (m *Manager) unwatch(id string) {
-	m.watchMu.Lock()
-	delete(m.watched, id)
-	m.watchMu.Unlock()
 }
 
 // ---- closing a run's processes -------------------------------------------------

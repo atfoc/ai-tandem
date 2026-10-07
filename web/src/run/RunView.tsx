@@ -4,7 +4,9 @@
 // panel where the run's chats show (store.ts openRunAgent, App.tsx).
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import "./run.css";
+import "../remotechat.css";
 import { useStore, getState, openRunAgent, closeRunAgent } from "../store.ts";
+import { api } from "../api.ts";
 import { loadRun, runLoadError } from "../conn.ts";
 import { Guard } from "../Guard.tsx";
 import { deleteRun } from "../Sidebar.tsx";
@@ -14,6 +16,7 @@ import { clearIn, dockIn, escIn, openingView, selectIn, tabIn, taskCounts, taskT
 import { rowCounts, type RowFilter } from "../logic/runzoom.ts";
 import type { TierNames } from "../logic/runlabels.ts";
 import { TIERS } from "../types.ts";
+import { catalogFor } from "../logic/agentlist.ts";
 import { modelLabel, effortLabel } from "../Composer.tsx";
 import { escTaken } from "../Subagents.tsx";
 import { NARROW, loadUi, saveUi, useSize } from "./actions.ts";
@@ -28,6 +31,10 @@ import { RunGoal } from "./RunGoal.tsx";
 import { RunUsage } from "./RunUsage.tsx";
 import { RunResult } from "./RunResult.tsx";
 import type { RunDetail, RunView as RunRecord } from "../types.ts";
+import { serverName, serverOf, serverState } from "../logic/serverlists.ts";
+import { runRemoteView } from "../logic/runserver.ts";
+import { REMOVE, SERVERS, type RemoteView } from "../logic/remoteview.ts";
+import { openServers } from "../Servers.tsx";
 
 const AGAIN_MS = 3000; // a refetch that failed while the view shows its last detail is tried again this much later
 const FIRST_AGAIN_MS = 1000; // the second attempt for a run whose detail never arrived
@@ -45,6 +52,15 @@ export function RunView({ runId }: { runId: string }) {
   const [fails, setFails] = useState(0);
   const [why, setWhy] = useState("");
   const [again, setAgain] = useState(0);
+  // A run on another server: what shows while that server is not connected, and when the run is
+  // no longer there (runRemoteView). A load that failed for another reason is told as a local run's.
+  const server = serverOf(r);
+  const serverIs = useStore((s) => serverName(s, server));
+  const state = useStore((s) => serverState(s, server));
+  const loadErr = useStore((s) => s.runErrors[runId]);
+  // Its server is connected again: the failures before count no more, and the detail is asked for again.
+  const there = state === "connected";
+  useEffect(() => { if (there) setFails(0); }, [there]);
   // on mount, and again whenever the detail went away
   useEffect(() => {
     if (d) { setFails(0); return; }
@@ -58,11 +74,21 @@ export function RunView({ runId }: { runId: string }) {
       else if (n < 2) timer = window.setTimeout(() => setAgain((k) => k + 1), FIRST_AGAIN_MS);
     });
     return () => { gone = true; clearTimeout(timer); };
-  }, [runId, !d, again]);
+  }, [runId, !d, again, there]);
   const detail = d ?? last.current;
   if (!r) return null;
+  const remote = runRemoteView(r, serverIs, state, !!detail, loadErr);
   if (!detail) {
     const retry = () => { setFails(1); setAgain((k) => k + 1); };
+    if (remote.kind === "unreachable" || remote.kind === "gone") return (
+      <div className="run-view run-loading run-remote">
+        <div className={`remote-off ${remote.kind}`} role="status">
+          <p className="remote-off-text">{remote.text}</p>
+          {remote.kind === "unreachable" && remote.state && <p className="remote-off-state">{remote.state}</p>}
+          {remote.kind === "unreachable" ? <button type="button" className="btn sm remote-servers" onClick={() => openServers()}>{SERVERS}</button> : <RemoveHere runId={runId} />}
+        </div>
+      </div>
+    );
     return (
       <div className="run-view run-loading">
         {fails >= 2
@@ -79,12 +105,23 @@ export function RunView({ runId }: { runId: string }) {
       </div>
     );
   }
-  return <Follow key={runId} run={r} detail={detail} stale={!d && fails >= 2} />;
+  return <Follow key={runId} run={r} detail={detail} stale={!d && fails >= 2} remote={remote} />;
+}
+
+/** "Remove from this sidebar": the record of a run that is gone on its server is all there is to remove. */
+function RemoveHere({ runId }: { runId: string }) {
+  const [err, setErr] = useState("");
+  return (
+    <>
+      <button type="button" className="btn sm remote-remove" onClick={() => api.deleteRun(runId, { local: true }).then(() => setErr(""), (e) => setErr(e.message))}>{REMOVE}</button>
+      {err && <span className="dir-err">{err}</span>}
+    </>
+  );
 }
 
 /** The view of one run. Everything the user set here (selection, dock, zoom, filter) is its own
  *  state and starts fresh with another run. */
-function Follow({ run: r, detail, stale }: { run: RunRecord; detail: RunDetail; stale: boolean }) {
+function Follow({ run: r, detail, stale, remote }: { run: RunRecord; detail: RunDetail; stale: boolean; remote: RemoteView }) {
   const runId = r.id;
   // While the connection is down nothing here is known to be current: the clocks stop at the
   // moment it went, and the strip says so.
@@ -173,7 +210,7 @@ function Follow({ run: r, detail, stale }: { run: RunRecord; detail: RunDetail; 
   const base = useMemo(() => timelineInput(detail), [detail]);
   const tl = useMemo(() => ({ ...base, wait: r.wait ?? null }), [base, r.wait]);
   // What each tier runs on, in the catalog's words, for the tooltips of the timeline's attempts.
-  const cat = useStore((s) => s.catalogs[r.agent]);
+  const cat = useStore((s) => catalogFor(s, serverOf(r), r.agent));
   const tiers = useMemo<TierNames>(() => Object.fromEntries(TIERS.map((k) => {
     const c = r.tiers[k], m = cat?.models.find((x) => x.id === c.model);
     return [k, { model: modelLabel(c, cat), effort: c.effort ? effortLabel(c.effort, m) : null }];
@@ -207,7 +244,14 @@ function Follow({ run: r, detail, stale }: { run: RunRecord; detail: RunDetail; 
           onRows={setRows} onZoom={setPpm} onFollow={setFollow} onLegend={setLegend} onUsage={openUsage} />
         <RunNow run={r} detail={detail} asOf={asOf} onResult={openResult} />
       </Guard>
-      {stale && connected && <div className="run-stale note" role="status">Not up to date: the run could not be reloaded. Retrying…</div>}
+      {/* the detail last received stays; the bar says why it is not current */}
+      {remote.kind === "bar" && (
+        <div className={`remote-bar run-remote-bar ${remote.gone ? "gone" : "off"}`} role="status">
+          <span className="remote-bar-text">{remote.text}</span>
+          {remote.gone ? <RemoveHere runId={runId} /> : <button type="button" className="link remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
+        </div>
+      )}
+      {stale && connected && remote.kind !== "bar" && <div className="run-stale note" role="status">Not up to date: the run could not be reloaded. Retrying…</div>}
       <div className="run-body">
         <div className="run-tl">
           <Guard what="the timeline" resetKey={detail.version}>

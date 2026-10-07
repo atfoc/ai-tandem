@@ -9,7 +9,9 @@ import (
 // This file declares the types of the chat manager's API for runs: the chats a run's engine
 // drives (its agents) and the chats people open on a run. The manager's methods that use them are
 // CreateOnRun, ChatsOfRun, CreateOwned, SendOwned, WaitOwned, StopOwned, DeleteOwned, OwnedState,
-// CostOf, Activity, Idle, TurnRunning, Watch and ClearWatches.
+// CostOf, Activity, Idle and TurnRunning. The events of a run agent's chat go through the bridge's
+// SendChat as unlisted: only to the clients that follow the chat (editorbridge.Follow, at a read
+// of its thread), which the manager asks with Followed and ends with Forget when the chat goes.
 
 // RunOwner is what the chat manager needs to know about runs. runs.Service implements it;
 // nil means the server has no runs (tests).
@@ -32,6 +34,10 @@ type RunInfo struct {
 	Agent    model.AgentKind // the run's agent kind
 	Model    string          // what its deep tier runs on: a new chat of that kind starts on it
 	Effort   string
+	// Server is the server the run is on: the id of an entry of the server list, "" for this
+	// computer. A chat on the run is on that server.
+	Server string
+	Draft  bool // the run has not started
 }
 
 var (

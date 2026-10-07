@@ -63,7 +63,7 @@ func newRunEnv(t *testing.T) *runEnv {
 	}
 	var a *app.App
 	var cm *chats.Manager
-	br := editorbridge.New(func() any { cm.ClearWatches(); return a.Snapshot() })
+	br := editorbridge.New(func() any { return a.Snapshot() })
 	bds := boards.New(st, br)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -94,11 +94,40 @@ func newRunEnv(t *testing.T) *runEnv {
 	t.Cleanup(func() {
 		rs.Shutdown(5 * time.Second)
 		cm.Shutdown()
+		e.agentsGone()
 		srv.Close()
 	})
 	rs.Boot()
 	e.follow()
 	return e
+}
+
+// agentsGone waits until no chat of a run's agent has a process. The chat manager's Shutdown
+// closes the processes and does not wait for what it makes of their exit: the chat's files are
+// written once more, which must be over before the test's folder is removed. The exit is taken
+// in under the chat's lock, the write included, so a chat seen without a process has written.
+func (e *runEnv) agentsGone() {
+	e.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		left := ""
+		for _, r := range e.rs.List() {
+			_, agents := e.cm.ChatsOfRun(r.ID)
+			for _, c := range agents {
+				if st, _ := e.cm.OwnedState(c.ID); st.HasProcess {
+					left = c.ID
+				}
+			}
+		}
+		if left == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Errorf("the agent of the chat %s still has its process after the shutdown", left)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // follow connects as clientID, keeps every event, and returns when the client is active.
@@ -132,7 +161,7 @@ func (e *runEnv) follow() {
 		}
 	}()
 	e.await("the client to be active", func(evs []runTestEvent) bool {
-		return slices.ContainsFunc(evs, func(ev runTestEvent) bool { return ev.Type == "hello" && strings.Contains(ev.Raw, `"active":true`) })
+		return slices.ContainsFunc(evs, func(ev runTestEvent) bool { return ev.Type == "hello" })
 	})
 }
 
@@ -142,7 +171,8 @@ func (e *runEnv) events() []runTestEvent {
 	return slices.Clone(e.evs)
 }
 
-// await blocks until ok holds for the events so far.
+// await blocks until ok holds for the events so far. It also looks again every few milliseconds:
+// what ok reads may be no event, and the client is sent only the events that concern it.
 func (e *runEnv) await(what string, ok func(evs []runTestEvent) bool) {
 	e.t.Helper()
 	deadline := time.After(20 * time.Second)
@@ -155,6 +185,7 @@ func (e *runEnv) await(what string, ok func(evs []runTestEvent) bool) {
 		}
 		select {
 		case <-more:
+		case <-time.After(10 * time.Millisecond):
 		case <-deadline:
 			var tail []string
 			for _, ev := range evs[max(0, len(evs)-10):] {
@@ -267,7 +298,7 @@ func TestRunRoutesBeforeTheStart(t *testing.T) {
 	e.expect(200, "POST", "/api/groups/"+g.ID+"/archive", "")
 	e.refused(409, "the group is archived", "POST", "/api/runs", `{"group":"`+g.ID+`"}`)
 	e.expect(200, "POST", "/api/groups/"+g.ID+"/unarchive", "")
-	if code, out := e.doAs("", "POST", "/api/runs", `{"group":"`+model.Ungrouped+`"}`); code != 409 || !strings.Contains(out, "not_active") {
+	if code, out := e.doAs("", "POST", "/api/runs", `{"group":"`+model.Ungrouped+`"}`); code != 409 || !strings.Contains(out, "unknown_client") {
 		t.Fatalf("a run route without the client header: %d %s", code, out)
 	}
 
@@ -439,7 +470,7 @@ func TestRunRoutesOfAStartedRun(t *testing.T) {
 		t.Fatalf("the orchestrator's chat: %+v", cv)
 	}
 	for _, c := range [][3]string{
-		{"POST", "/messages", `{"text":"hello"}`}, {"PUT", "/draft", `{"text":"x"}`}, {"PATCH", "", `{"name":"x"}`},
+		{"POST", "/messages", `{"text":"hello"}`}, {"PUT", "/draft?rev=0", `{"text":"x"}`}, {"PATCH", "", `{"name":"x"}`},
 		{"PATCH", "", `{"model":"haiku"}`}, {"PATCH", "", `{"group":"` + model.Ungrouped + `"}`},
 		{"POST", "/fork", `{"at":1}`}, {"PUT", "/label", `{"item":0,"text":"x"}`}, {"POST", "/interrupt", ""},
 		{"POST", "/archive", ""}, {"POST", "/unarchive", ""}, {"DELETE", "", ""},
@@ -777,7 +808,7 @@ func TestGroupCascadesOverRuns(t *testing.T) {
 }
 
 // The chat events of a run's agent reach the client only after it read that chat's items; a new
-// connection watches nothing.
+// connection follows nothing.
 func TestRunAgentEventsStartWithItsItems(t *testing.T) {
 	e := newRunEnv(t)
 	said, next := make(chan struct{}, 8), make(chan struct{})
@@ -795,6 +826,9 @@ func TestRunAgentEventsStartWithItsItems(t *testing.T) {
 		<-t.Interrupted()
 	})
 	v := e.newRun()
+	// The client has the run open: the read makes it follow the run (a draft has no detail yet),
+	// so that it gets the run's run_detail and run_activity.
+	e.expect(409, "GET", "/api/runs/"+v.ID+"/detail", "")
 	e.view(200, "POST", "/api/runs/"+v.ID+"/start", `{"goal":"Look around."}`)
 	<-said
 	orch := e.detail(v.ID).Turns[0].Agent
@@ -832,13 +866,16 @@ func TestRunAgentEventsStartWithItsItems(t *testing.T) {
 		})
 	})
 
-	// A client that connects anew gets a snapshot and watches nothing.
-	e.cm.ClearWatches()
+	// A client that connects anew gets a snapshot and follows nothing.
+	e.follow()
+	if got := e.s.Bridge.Followers(editorbridge.Chat(orch)); len(got) != 0 {
+		t.Fatalf("followers after the new connection: %v", got)
+	}
 	before := about(e.events())
 	e.expect(200, "POST", "/api/runs/"+v.ID+"/stop", "")
 	e.awaitRun(v.ID, "to stop", func(v model.RunView) bool { return v.Status == model.RunStopped })
 	if n := about(e.events()); n != before {
-		t.Errorf("%d chat events of the agent's chat after the watches were cleared", n-before)
+		t.Errorf("%d chat events of the agent's chat after the new connection", n-before)
 	}
 }
 

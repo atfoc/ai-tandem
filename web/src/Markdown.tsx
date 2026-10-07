@@ -37,14 +37,14 @@ import { RefChip } from "./RefInput.tsx";
 import type { AgentKind } from "./types.ts";
 
 /** Where a chip shows its reference: the chat's board, drawn in its agent's colour. */
-const Where = createContext<{ board?: string; agent?: AgentKind }>({});
+const Where = createContext<{ board?: string; agent?: AgentKind | "" }>({});
 
 type Props = {
   text: string;
   /** A user's message: single line breaks are kept and @mentions link to boards. */
   user?: boolean;
   board?: string;
-  agent?: AgentKind;
+  agent?: AgentKind | "";
   /** The agent is still writing it: a reference tag cut off at the end is not shown yet. */
   streaming?: boolean;
 };
@@ -92,7 +92,7 @@ const Block = React.memo(function Block({ text, user }: { text: string; user: bo
 function Chip({ tag, after }: { tag: string; after?: React.ReactNode }) {
   const { board, agent } = useContext(Where);
   const r = parseRef(tag);
-  const chip = <RefChip tag={tag} onClick={board && r ? () => showRef(board, r, agent ?? "unknown") : undefined} />;
+  const chip = <RefChip tag={tag} onClick={board && r ? () => showRef(board, r, agent || "unknown") : undefined} />;
   return after ? <span className="nowrap">{chip}{after}</span> : chip;
 }
 

@@ -60,6 +60,18 @@ func startFakeClaude(t *testing.T) agent.Agent {
 // startFakeClaudeIn starts the fake with cwd as its working directory.
 func startFakeClaudeIn(t *testing.T, cwd string) agent.Agent {
 	t.Helper()
+	return spawnFakeClaude(t, cwd, true)
+}
+
+// startFakeClaudeAttended starts the fake as a chat's process: its permission requests reach the
+// test, which answers them.
+func startFakeClaudeAttended(t *testing.T) agent.Agent {
+	t.Helper()
+	return spawnFakeClaude(t, t.TempDir(), false)
+}
+
+func spawnFakeClaude(t *testing.T, cwd string, unattended bool) agent.Agent {
+	t.Helper()
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH")
 	}
@@ -69,7 +81,7 @@ func startFakeClaudeIn(t *testing.T, cwd string) agent.Agent {
 	}
 	sp := &claude.Spawner{Bin: bin, AppRoot: t.TempDir(), Home: t.TempDir()}
 	ag, err := sp.Spawn(agent.SpawnOptions{ChatID: "c1", SessionID: "11111111-1111-4111-8111-111111111111",
-		Cwd: cwd, Model: "sonnet", Unattended: true})
+		Cwd: cwd, Model: "sonnet", Unattended: unattended})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +91,119 @@ func startFakeClaudeIn(t *testing.T, cwd string) agent.Agent {
 		}
 	})
 	return ag
+}
+
+// askTurn sends one message that holds an [[ask …]] and returns the permission request it raises.
+func askTurn(t *testing.T, ag agent.Agent, msg string) agent.Event {
+	t.Helper()
+	if err := ag.Send([]agent.ContentBlock{{Text: msg}}); err != nil {
+		t.Fatal(err)
+	}
+	timeout := time.After(30 * time.Second)
+	for {
+		select {
+		case ev, ok := <-ag.Events():
+			if !ok {
+				t.Fatal("the process ended before it asked")
+			}
+			switch ev.Kind {
+			case agent.EvPermRequest:
+				return ev
+			case agent.EvTurnEnd:
+				t.Fatalf("the turn ended before it asked: %+v", ev)
+			case agent.EvExit:
+				t.Fatalf("the process exited before it asked: %s", ev.ExitErr)
+			}
+		case <-timeout:
+			t.Fatal("no permission request from the fake claude")
+		}
+	}
+}
+
+// turnEnd waits for the end of the turn that is running and returns it; a permission request on
+// the way fails the test.
+func turnEnd(t *testing.T, ag agent.Agent) agent.Event {
+	t.Helper()
+	timeout := time.After(30 * time.Second)
+	for {
+		select {
+		case ev, ok := <-ag.Events():
+			if !ok {
+				t.Fatal("the process ended before the turn did")
+			}
+			switch ev.Kind {
+			case agent.EvPermRequest:
+				t.Fatalf("a second permission request: %+v", ev)
+			case agent.EvTurnEnd:
+				return ev
+			case agent.EvExit:
+				t.Fatalf("the process exited in the turn: %s", ev.ExitErr)
+			}
+		case <-timeout:
+			t.Fatal("no turn end from the fake claude")
+		}
+	}
+}
+
+// [[ask]] raises a permission request with the tool and its input, and the reply says what the
+// answer was; <<ask>> is the same directive.
+func TestFakeClaudeAskAllowAndDeny(t *testing.T) {
+	ag := startFakeClaudeAttended(t)
+	for _, c := range []struct {
+		msg, tool, input string
+		allow            bool
+		tail             string
+	}{
+		{`list it [[ask Bash {"command":"ls"}]]`, "Bash", `{"command":"ls"}`, true, "ask Bash -> allow"},
+		{`list it [[ask Bash {"command":"ls"}]]`, "Bash", `{"command":"ls"}`, false, "ask Bash -> deny"},
+		{`edit it <<ask Edit {"file_path":"a.txt"}>>`, "Edit", `{"file_path":"a.txt"}`, true, "ask Edit -> allow"},
+		{`bare [[ask]]`, "Bash", `{}`, false, "ask Bash -> deny"},
+		{`named <<ask Read>>`, "Read", `{}`, true, "ask Read -> allow"},
+	} {
+		req := askTurn(t, ag, c.msg)
+		if req.PermID == "" || req.ToolID == "" || req.ToolName != c.tool || string(req.Input) != c.input {
+			t.Errorf("%s: request id %q, tool id %q, tool %q, input %s; want tool %q, input %s", c.msg, req.PermID, req.ToolID, req.ToolName, req.Input, c.tool, c.input)
+		}
+		if err := ag.Decide(req.PermID, c.allow); err != nil {
+			t.Fatalf("%s: Decide: %v", c.msg, err)
+		}
+		end := turnEnd(t, ag)
+		if end.Error != "" || end.Aborted {
+			t.Fatalf("%s: turn end: %+v", c.msg, end)
+		}
+		if !strings.HasSuffix(end.Final, c.tail) || strings.Contains(end.Final, "ask "+c.tool+" {") {
+			t.Errorf("%s: the reply does not end %q:\n%s", c.msg, c.tail, end.Final)
+		}
+	}
+}
+
+// An interrupt while the fake waits for the answer ends the turn as aborted, and the process
+// takes the next turn.
+func TestFakeClaudeAskInterrupted(t *testing.T) {
+	ag := startFakeClaudeAttended(t)
+	askTurn(t, ag, `[[ask Bash {"command":"ls"}]] [[ask Bash {"command":"pwd"}]]`)
+	if err := ag.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	if end := turnEnd(t, ag); !end.Aborted {
+		t.Errorf("turn end after the interrupt: %+v, want aborted", end)
+	}
+	texts, end := claudeTurn(t, ag, "after")
+	if end.Error != "" || end.Aborted || len(texts) == 0 || texts[len(texts)-1] != "FAKE(sonnet): after" {
+		t.Errorf("the turn after the interrupt: %+v, texts %q", end, texts)
+	}
+}
+
+// An unattended process (a run's agent) is answered by the adapter at once: no request reaches
+// the test, and the turn ends allowed.
+func TestFakeClaudeAskUnattended(t *testing.T) {
+	ag := startFakeClaude(t)
+	if err := ag.Send([]agent.ContentBlock{{Text: `[[ask Bash {"command":"ls"}]]`}}); err != nil {
+		t.Fatal(err)
+	}
+	if end := turnEnd(t, ag); end.Error != "" || end.Aborted || !strings.HasSuffix(end.Final, "ask Bash -> allow") {
+		t.Errorf("turn end: %+v", end)
+	}
 }
 
 // The Node fake through the real Claude adapter: a turn with a cost and a result block.

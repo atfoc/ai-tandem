@@ -1,21 +1,30 @@
 // The goal composer: what a run's stage shows until its goal is sent. The chat composer's look
 // and parts (RefInput, DraftSaver, Picker, DirPicker, the same classes), bound to a run: the
 // agent can be picked here too, the three tiers' models and the settings have a chip each, and Send
-// starts the run.
+// starts the run. A draft run has a server (an entry of the server list): the server can be picked
+// first, and the agents, models and folders offered are that server's.
 import React, { useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
 import "./composer.css";
-import { useStore, getState, upsertRun, answerRun, unsavedRunDraft } from "../store.ts";
-import { refreshRun, useFresh } from "./actions.ts";
-import { api, ApiError } from "../api.ts";
+import { useStore, getState, upsertRun, answerRun, setRunStart, unsavedRunDraft } from "../store.ts";
+import { refreshRun, startRun, useFresh } from "./actions.ts";
+import { api } from "../api.ts";
 import { RefInput, type RefInputHandle } from "../RefInput.tsx";
 import { DirPicker, Picker, tildify } from "../Composer.tsx";
 import { DraftSaver, hasDraft } from "../logic/drafts.ts";
-import { limitsLabel, startBlock } from "../logic/run.ts";
-import { applies, applyResultOf, goalLine, limitText, limitValue, settingsChange, setupValue, withoutGit,
+import { limitsLabel, tiersLabel } from "../logic/run.ts";
+import { applies, applyResultOf, limitText, limitValue, settingsChange, setupValue, withoutGit,
   APPLY_NOTE, APPLY_NOTE_NO_GIT, LIMITS, SETUP_MAX, WAKES, type LimitKey, type SettingKey } from "../logic/rungoal.ts";
 import { RunTiers } from "./RunTiers.tsx";
 import { AgentGlyph, RunIcon, WarnIcon, agentClass, agentName } from "../icons.tsx";
-import { AGENT_ORDER, type AgentKind, type Draft, type RunSettings, type RunView } from "../types.ts";
+import { catalogFor, usableAgents } from "../logic/agentlist.ts";
+import { agentChoiceOn } from "../logic/chatserver.ts";
+import { runAgentReason, runServerChoice, runStartBlock } from "../logic/runserver.ts";
+import { changeFailure, runFixed, runFolderChip, runHasChats, runLine } from "../logic/runcompose.ts";
+import { applySetting } from "../logic/runrows.ts";
+import { useWhere } from "../ChatChoices.tsx";
+import { openServers } from "../Servers.tsx";
+import { type AgentKind, type Draft, type RunSettings, type RunView } from "../types.ts";
 
 const UNTIL_START = "can be changed until you start the run";
 
@@ -34,9 +43,16 @@ const draftToShow = (run: string) => unsavedRunDraft(run).read() ?? getState().r
 
 export function RunComposer({ runId }: { runId: string }) {
   const r = useStore((s) => s.runs[runId]);
+  const w = useWhere(r); // the run's server, as runWhere reads it
   const [text, setText] = useState(() => draftToShow(runId)?.text ?? "");
-  const [err, setErr] = useState("");
-  const [starting, setStarting] = useState(false);
+  // The start's state is the store's, by run id (startRun, actions.ts): it follows a draft that
+  // gets a new id mid-start, for which this composer is made again, and the store drops the
+  // sentence when what it is about changed (the folder, what blocks the run, its server, its
+  // start mark, a server that is connected again).
+  const starting = useStore((s) => !!s.runStarts[runId]?.starting);
+  const err = useStore((s) => s.runStarts[runId]?.error ?? "");
+  const setErr = (msg: string) => setRunStart(runId, { error: msg });
+  const agentReason = useStore((s) => (r ? runAgentReason(w, usableAgents(s, w.server), r) : ""));
   const input = useRef<RefInputHandle>(null);
   const box = useRef<HTMLDivElement>(null);
   const current = useRef(text); // the text now
@@ -51,8 +67,6 @@ export function RunComposer({ runId }: { runId: string }) {
     input.current?.set(d.text);
   }, [r?.archived]);
   useEffect(() => { drafts.current!.change(text); }, [text]);
-  // What the server said about a start is old once the run's folder or what blocks it changed.
-  useEffect(() => { setErr(""); }, [r?.blocked, r?.folderMissing, r?.cwd]);
   // The server checks the folder and what blocks a start only when it is asked.
   useFresh(runId, true);
   useEffect(() => {
@@ -71,28 +85,19 @@ export function RunComposer({ runId }: { runId: string }) {
   }, [starting]);
 
   if (!r) return null;
-  const block = startBlock(r, text);
-  // Not optimistic: the stage changes when the server has recorded the start. The text stays in
-  // the box all along, so a start that fails has nothing to put back.
+  const block = runStartBlock(w, r, text, agentReason);
   const submit = async () => {
     const goal = current.current.trim();
     if (block || starting) return;
-    setStarting(true); setErr("");
     drafts.current!.flush(); // the server holds the text as the draft, should the start fail and the page go away
-    try {
-      await answerRun(runId, async () => {
-        const started = await api.startRun(runId, goal);
-        unsavedRunDraft(runId).write(null);
-        return started; // it has `started`: the stage changes to the follow view
-      });
-    } catch (e: any) {
-      // a body the server would not take, with no sentence of its own
-      setErr(e instanceof ApiError && e.status === 413 && !e.said ? "The goal is too long for the server to take." : e?.message || String(e));
-      setStarting(false);
-      if (e instanceof ApiError && e.status === 409) void refreshRun(runId); // it started, was archived, or its folder changed
-    }
+    // The run started with an earlier goal and this composer goes away with the `run` event:
+    // the sentence and the text that was not sent are shown apart from it.
+    const kept = await startRun(runId, goal);
+    if (kept) showGoalKept(kept, goal);
   };
-  const line = goalLine(r, err, tildify);
+  const tilde = (p: string) => tildify(p, w.server);
+  const line = runLine(w, r, err, tilde, agentReason);
+  const folder = runFolderChip(w, r, tilde);
 
   return (
     <div className="run-new run-goal">
@@ -115,9 +120,9 @@ export function RunComposer({ runId }: { runId: string }) {
       ) : (
         <div className={`composer run-composer${starting ? " starting" : ""}`}>
           <div className="context-row">
-            <span className={`ctx-chip${r.folderMissing ? " missing" : ""}`} title="The folder the run's agents work in">
-              <span className="mono">{tildify(r.cwd) || "No folder"}</span>
-              {r.git && !r.folderMissing && <span className="git">git</span>}
+            <span className={`ctx-chip${folder.missing ? " missing" : ""}`} title={folder.title}>
+              <span className="mono">{folder.text}</span>
+              {folder.git && <span className="git">git</span>}
             </span>
           </div>
           <div className="composer-box with-tools" ref={box}>
@@ -152,26 +157,82 @@ export function RunComposer({ runId }: { runId: string }) {
 
 type Change = Parameters<typeof api.configureRun>[1];
 
-/** Agent, folder, the tiers' models and the settings. Each change is sent at once and the answer
- *  is the run's view: after another agent is picked, the three tiers are what the server chose. */
+/** Server, agent, folder, the tiers' models and the settings. Each change is sent at once and the
+ *  answer is the run's view: after another server is picked, agent, tiers, folder and settings are
+ *  what the server chose for it, and after another agent the three tiers. The agents, the models
+ *  and the folders are the run's server's. While the start got no answer (runFixed) every choice
+ *  is a chip with the reason. */
 function RunToolbar({ r, onError }: { r: RunView; onError: (msg: string) => void }) {
-  const cat = useStore((s) => s.catalogs[r.agent]);
+  const w = useWhere(r);
+  const cat = useStore((s) => catalogFor(s, w.server, r.agent));
+  const usable = useStore((s) => usableAgents(s, w.server));
+  const choice = agentChoiceOn(w, usable, r.agent);
+  const fixed = runFixed(r);
   const [open, setOpen] = useState(false);
-  const failed = (e: any) => { if (e instanceof ApiError && e.status === 409) void refreshRun(r.id); };
-  const configure = (p: Change) => answerRun(r.id, () => api.configureRun(r.id, p)).then(() => onError(""), (e) => { onError(e.message); failed(e); });
+  const failed = (e: unknown) => { if (changeFailure(e).reread) void refreshRun(r.id); };
+  const configure = (p: Change) => answerRun(r.id, () => api.configureRun(r.id, p)).then(() => onError(""), (e) => { onError(changeFailure(e).text); failed(e); });
   const glyph = (a: AgentKind) => <span className={`run-agent-glyph agent-${agentClass(a)}`}><AgentGlyph agent={a} size={12} /></span>;
   return (
     <>
-      <Picker label={agentName(r.agent)} title="Agent" hint={UNTIL_START} icon={glyph(r.agent)} value={r.agent}
-        options={AGENT_ORDER.map((a) => ({ id: a, label: agentName(a), icon: glyph(a) }))}
-        open={open} onOpenChange={setOpen}
-        onPick={(id) => configure({ agent: id as AgentKind })} />
-      <DirPicker cwd={r.cwd} missing={r.folderMissing} locked={false} hint={UNTIL_START}
+      <RunServer r={r} configure={configure} />
+      {/* Only the agents the server can run; one it lacks, or none at all, shows with the reason. */}
+      {fixed ? <span className="tchip static run-fixed" data-fixed="agent" title={`Agent — ${fixed}`}>{r.agent ? <>{glyph(r.agent)}{agentName(r.agent)}</> : "No agent"}</span>
+        : !choice.options.length ? <span className="tchip static missing" title={`Agent — ${choice.reason}`}>No agent</span>
+        : <Picker label={r.agent ? agentName(r.agent) : "No agent"} title="Agent" hint={choice.reason || UNTIL_START} icon={r.agent ? glyph(r.agent) : undefined} value={r.agent}
+          options={choice.options.map((a) => ({ id: a, label: agentName(a), icon: glyph(a) }))}
+          open={open} onOpenChange={setOpen}
+          onPick={(id) => configure({ agent: id as AgentKind })} />}
+      <DirPicker cwd={r.cwd} missing={r.folderMissing} locked={!!fixed} hint={UNTIL_START} server={w.server}
         onPick={(d) => answerRun(r.id, () => api.configureRun(r.id, { cwd: d })).then(() => onError(""), (e) => { failed(e); throw e; })} />
-      {!cat ? <span className="tchip static">Loading models…</span>
+      {!r.agent ? null
+        : fixed ? <span className="tchip static run-fixed" data-fixed="tiers" title={`Models — ${fixed}`}><span className="tchip-pre">Models</span><span className="run-tiers-label">{tiersLabel(r.tiers, (id) => cat?.models.find((m) => m.id === id)?.label)}</span></span>
+        : !cat ? <span className="tchip static">Loading models…</span>
         : <RunTiers r={r} cat={cat} hint={UNTIL_START} onChange={(tiers) => configure({ tiers })} />}
-      <RunLimits r={r} onError={onError} />
+      {fixed ? <span className="tchip static run-fixed" data-fixed="settings" title={`Run settings — ${fixed}`}>{limitsLabel(r.settings)}</span>
+        : <RunLimits r={r} onError={onError} />}
     </>
+  );
+}
+
+/** The server choice: every entry of the server list by name, this computer first, one that waits
+ *  for the user disabled with its state, and "Servers…", which opens the Servers dialog. A pick is
+ *  sent at once. Where the server cannot be changed (runServerChoice's fixed: the start got no
+ *  answer, or the run has chats) it is a chip with the reason. */
+function RunServer({ r, configure }: { r: RunView; configure: (p: Change) => Promise<unknown> }) {
+  const servers = useStore((s) => s.servers);
+  const hasChats = useStore((s) => runHasChats(s.chats, r.id));
+  const w = useWhere(r);
+  const [open, setOpen] = useState(false);
+  const { options, fixed } = runServerChoice(servers, r, hasChats);
+  if (fixed) return <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${fixed}`}>{w.name}</span>;
+  return <Picker className="server-pick" label={w.name} title="Server" hint={UNTIL_START} value={w.server}
+    options={options.map((o) => ({ id: o.id, label: o.label, note: o.reason, disabled: o.disabled }))}
+    more={{ label: "Servers…", onClick: () => openServers() }}
+    open={open} onOpenChange={setOpen} onPick={(id) => configure({ server: id })} />;
+}
+
+// ---- a start whose text was not sent
+
+/** The notice of a start the server answered 409 goal_kept: the run had started with the goal of
+ *  an earlier start, and the stage shows the run by now. It has a root of its own, since the
+ *  composer is gone; it shows the server's sentence and the text that was not sent until it is
+ *  dismissed. */
+function showGoalKept(sentence: string, text: string) {
+  document.querySelector(".goal-kept-host")?.remove();
+  const host = document.createElement("div");
+  host.className = "goal-kept-host";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  const close = () => { root.unmount(); host.remove(); };
+  root.render(
+    <div className="goal-kept" role="alert">
+      <div className="goal-kept-said"><WarnIcon /> <span>{sentence}</span></div>
+      <pre className="goal-kept-text">{text}</pre>
+      <div className="goal-kept-foot">
+        <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(text)}>Copy text</button>
+        <button className="btn sm" onClick={close}>Dismiss</button>
+      </div>
+    </div>,
   );
 }
 
@@ -185,6 +246,7 @@ type Fields = Pick<RunSettings, FieldKey>;
  *  (blur, Enter, a click outside), a menu or checkbox when it changes; Esc closes the form and
  *  leaves the field as it was. */
 function RunLimits({ r, onError }: { r: RunView; onError: (msg: string) => void }) {
+  const w = useWhere(r);
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState("");
   const [rev, setRev] = useState(0); // counts refused saves: the fields are made again from what is saved
@@ -235,7 +297,7 @@ function RunLimits({ r, onError }: { r: RunView; onError: (msg: string) => void 
         answered();
         setRev((n) => n + 1);
         if (shown.current) setErr(e.message); else onError(e.message); // the form went away: the line under the box says it
-        if (e instanceof ApiError && e.status === 409) void refreshRun(r.id);
+        if (changeFailure(e).reread) void refreshRun(r.id);
       },
     );
   };
@@ -291,7 +353,7 @@ function RunLimits({ r, onError }: { r: RunView; onError: (msg: string) => void 
           <label className={`run-field check${noGit ? " off" : ""}`}>
             <input type="checkbox" className="switch" data-limit="applyResult" checked={applies(held())} disabled={noGit}
               onChange={(e) => save("applyResult", applyResultOf(e.currentTarget.checked))} />
-            <span className="run-field-name">Apply the result to my folder when the run ends
+            <span className="run-field-name">{applySetting(w)}
               <span className="menu-note">{noGit ? APPLY_NOTE_NO_GIT : APPLY_NOTE}</span></span>
           </label>
           {err && <div className="dir-err">{err}</div>}

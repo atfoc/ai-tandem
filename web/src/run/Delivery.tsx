@@ -5,6 +5,9 @@ import "./result.css";
 import { api } from "../api.ts";
 import { useStore } from "../store.ts";
 import { deliveryCard, type SayPart } from "../logic/rundelivery.ts";
+import { listsOf, serverOf } from "../logic/serverlists.ts";
+import { runWhere } from "../logic/runserver.ts";
+import { applyLabel, deliveryTitle } from "../logic/runrows.ts";
 import type { RunDelivery, RunDetail } from "../types.ts";
 
 /** A sentence, its folders, branches and commits as code. */
@@ -15,7 +18,10 @@ const open = (d: RunDelivery | undefined): boolean => d?.state === "pending" || 
 
 export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }) {
   const r = useStore((s) => s.runs[runId]);
-  const home = useStore((s) => s.home);
+  // the folder is the run's server's: "~" is that server's home, and another server's is named, not "your folder"
+  const home = useStore((s) => listsOf(s, serverOf(r))?.home);
+  const serverIs = useStore((s) => runWhere(s, r ?? {}).name);
+  const where = { server: serverOf(r), name: serverIs, connected: true };
   const recorded = detail.delivery;
   const live = detail.status === "running" || detail.status === "stopping";
   // What the server last answered (an apply, a dry run), shown in place of the record until the
@@ -52,7 +58,7 @@ export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }
     return () => clearTimeout(t);
   }, [still]);
 
-  const card = deliveryCard(shown, { cwd: r?.cwd ?? "", home, startBranch: detail.git?.branch, resultBranch: detail.git?.integrationBranch, settings: r?.settings, status: detail.status });
+  const card = deliveryCard(shown, { cwd: r?.cwd ?? "", home, startBranch: detail.git?.branch, resultBranch: detail.git?.integrationBranch, settings: r?.settings, status: detail.status, where });
   if (!card) return null;
   const apply = () => {
     if (busy) return;
@@ -72,7 +78,7 @@ export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }
     <div className="rd-deliver" data-tone={card.tone} data-delivery={card.state} data-reason={shown?.reason}>
       <span className="rd-deliver-mark" aria-hidden="true">{card.mark}</span>
       <div className="rd-deliver-main">
-        <div className="rd-deliver-title">{card.title}</div>
+        <div className="rd-deliver-title">{deliveryTitle(where, card.title)}</div>
         <div className="rd-deliver-say"><Say parts={card.sentence} /></div>
         {card.detail && <div className="rd-deliver-detail mono rd-wrap">{card.detail}</div>}
         {error && <div className="note error rd-deliver-error" role="alert">Could not apply: {error}</div>}
@@ -88,7 +94,7 @@ export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }
           {card.files && <button type="button" className="btn ghost sm" aria-expanded={files} onClick={() => setFiles(!files)}>{files ? "Hide" : "Show"} {card.files.label}</button>}
           {card.action && (
             <button type="button" className="btn primary sm rd-apply" disabled={!card.canApply || busy} aria-busy={busy || undefined} title={card.applyTitle} onClick={apply}>
-              {busy && <span className="spin" />}{busy ? "Applying…" : "Apply to my folder"}
+              {busy && <span className="spin" />}{busy ? "Applying…" : applyLabel(where)}
             </button>
           )}
         </div>

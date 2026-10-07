@@ -22,6 +22,9 @@ type run struct {
 	svc *Service
 	id  string
 	dir string // store.Paths.RunDir(id)
+	// client is the run's client mark (model.RunMeta.Client): set by newRun and never written
+	// again, so it is read with no lock.
+	client string
 
 	mu    sync.Mutex    // the run's one lock: meta, L, head, sum, facts, the journal counters, eng
 	meta  model.RunMeta // run.json
@@ -62,7 +65,7 @@ type checkpointMark struct {
 // newRun makes the run of a run.json in memory. Nothing else is read: open does that for a run
 // that has started.
 func newRun(s *Service, meta model.RunMeta) *run {
-	r := &run{svc: s, id: meta.ID, dir: s.Store.P.RunDir(meta.ID), meta: meta, wake: make(chan struct{}, 1)}
+	r := &run{svc: s, id: meta.ID, dir: s.Store.P.RunDir(meta.ID), client: meta.Client, meta: meta, wake: make(chan struct{}, 1)}
 	r.refreshView()
 	return r
 }

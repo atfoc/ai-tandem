@@ -380,7 +380,7 @@ func TestSendGoesToTheCurrentBranch(t *testing.T) {
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	e.setDefaults(model.Defaults{})
-	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 	mainItems, branchTok := e.file(id, "items.jsonl"), e.meta(bid).Token
@@ -436,7 +436,7 @@ func TestSendGoesToTheCurrentBranch(t *testing.T) {
 		t.Fatalf("the auto namer ran for a Send on a branch: %v", calls)
 	}
 	e.st.Read(func(s *model.State) {
-		if len(s.Defaults.Groups) != 0 || s.Defaults.Last.Cwd != "" {
+		if len(s.Defaults.Groups) != 0 {
 			t.Fatalf("defaults recorded by a Send on a branch: %+v", s.Defaults)
 		}
 	})
@@ -464,7 +464,7 @@ func TestFirstSendOnAnEmptyBranch(t *testing.T) {
 		t.Fatalf("the auto namer ran: %v", calls)
 	}
 	e.st.Read(func(s *model.State) {
-		if len(s.Defaults.Groups) != 0 || s.Defaults.Last.Cwd != "" {
+		if len(s.Defaults.Groups) != 0 {
 			t.Fatalf("defaults recorded: %+v", s.Defaults)
 		}
 	})
@@ -645,7 +645,7 @@ func TestChatCallsReachTheTopLevelChat(t *testing.T) {
 	if err := e.m.Move(id, gTwo); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.m.SetArchive(id, model.Archive{Archived: true, Op: "op1"}); err != nil {
@@ -738,12 +738,12 @@ func TestConfigureReachesTheCurrentBranch(t *testing.T) {
 	// A branch's model and effort are never a new chat's defaults; its folder is, as before.
 	e.st.Read(func(s *model.State) {
 		for name, g := range s.Defaults.Groups {
-			if mc := g.ByAgent[model.Claude]; mc.Model == "opus" || mc.Effort == "max" {
+			if mc := g.On(model.LocalServer).ByAgent[model.Claude]; mc.Model == "opus" || mc.Effort == "max" {
 				t.Fatalf("the defaults of %s took the branch's choice: %+v", name, mc)
 			}
 		}
-		if last := s.Defaults.Last; last.ByAgent[model.Claude].Model == "opus" || last.ByAgent[model.Claude].Effort == "max" || last.Cwd != dir2 {
-			t.Fatalf("the last defaults after configuring a branch %+v", last)
+		if own := s.Defaults.Groups[gOne].On(model.LocalServer); own.Cwd != dir2 {
+			t.Fatalf("the group's defaults after configuring a branch %+v", own)
 		}
 	})
 	if !bytes.Equal(e.file(id, "chat.json"), top) || !bytes.Equal(e.file(bid, "chat.json"), cur) {

@@ -49,14 +49,23 @@ export type ModelChoice = {
   effort?: string;
 };
 
-export type GroupDefaults = {
+/** The key of the local server's part of the defaults (model.LocalServer), and the wire value of
+ *  "server" for the local server. */
+export const LOCAL_SERVER = "local";
+
+export type ServerDefaults = {
+  agent?: AgentKind; // the agent a new chat starts with
   cwd?: string;
   byAgent?: Partial<Record<AgentKind, ModelChoice>>;
   run?: RunDefaults; // what a new run in the group starts with; recorded when a run starts
 };
 
+export type GroupDefaults = {
+  server?: string; // the sticky server; absent: none stored
+  servers?: Record<string, ServerDefaults>; // key: LOCAL_SERVER or an instance id
+};
+
 export type Defaults = {
-  last: GroupDefaults;
   groups: Record<string, GroupDefaults>; // key: group id or UNGROUPED
 };
 
@@ -64,6 +73,10 @@ export type Catalog = {
   models: CatalogModel[];
   default: ModelChoice;
 };
+
+/** What a server offers, as the local server sends it for another one (by entry id): its usable agents in the order
+ *  they are offered, their catalogs, its home and the folder a new chat starts in. */
+export type ServerLists = { agents: AgentKind[]; catalogs: Partial<Record<AgentKind, Catalog | null>>; home: string; defaultCwd: string };
 
 export type CatalogModel = {
   id: string;
@@ -154,13 +167,16 @@ export type Status = "ready" | "thinking" | "writing" | "tool" | "approval" | "s
  *  instructionsSent is the curl-era disable marker. */
 export type ChatView = Archive & {
   id: string;
-  agent: AgentKind;
+  agent: AgentKind | ""; // "": no agent yet (none was usable when the chat was made)
   name?: string;
   userNamed?: boolean;
   group?: string;
   board?: string;
   run?: string;      // a chat on a run, or (with role) one of the run's agents
   role?: AgentRole;  // a run agent: never in the snapshot's chats, never in the sidebar
+  server?: string;   // the entry id of the chat's server (logic/serverlists.ts serverOf); absent = this computer
+  start?: "unconfirmed"; // an unstarted chat on another server whose first message got no answer: it may have arrived
+  gone?: boolean;    // a chat on another server that the server no longer has
   cwd: string;
   model: string;
   effort?: string;
@@ -169,6 +185,7 @@ export type ChatView = Archive & {
   instructionsSent?: boolean;
   usage: Usage;
   draft?: Draft;
+  draftRev?: number; // the counter of the current branch's draft, raised at each change; absent when 0
   status: Status;
   statusTool?: string;
   error?: string;
@@ -208,6 +225,7 @@ export type BranchState = {
   subsRunning?: number;
   subsOwed?: number;
   draft?: Draft;
+  draftRev?: number; // the counter of the draft, raised at each change; absent when 0
 };
 
 /** The message typed in a chat's composer and not sent yet; the server clears it on send. */
@@ -402,7 +420,7 @@ export type RunView = Archive & {
   userNamed?: boolean;   // the user renamed it: starting the run does not name it from the goal
   group: string;         // group id or UNGROUPED
   created: string;
-  agent: AgentKind;      // one agent kind for every agent of the run
+  agent: AgentKind | ""; // one agent kind for every agent of the run; "": a draft with no usable agent
   tiers: RunTiers;       // the model and effort of each tier
   tierDefaults?: RunTiers; // draft only: the agent kind's defaults
   cwd: string;
@@ -428,6 +446,10 @@ export type RunView = Archive & {
   cost: number | null;   // USD of the run's agents; null: this agent kind reports no cost
   costPartial?: boolean; // the sum is known to miss something
   attention: number;     // failed tasks + blocked tasks + refused calls in the latest turn
+  server?: string;       // the entry id of the run's server; absent = this computer
+  start?: "unconfirmed"; // a draft on another server whose start got no answer: its choices are fixed until that is known
+  gone?: boolean;        // a run on another server that the server no longer has
+  was?: string;          // only in a `run` event: the id the draft had before it got this one (the store moves to it and drops the field)
 };
 
 // ---- run detail: GET /api/runs/{id}/detail, kept current by `run_detail` events

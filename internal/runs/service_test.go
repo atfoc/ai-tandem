@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -85,15 +86,24 @@ func TestSvcCreate(t *testing.T) {
 		t.Fatalf("list: %+v", ms)
 	}
 
-	// What the run started last in the group used: its agent and the settings the composer
-	// shows; the setup command only for the folder it was used in.
+	// What the run started last in the group used, on the local server: its agent and the
+	// settings the composer shows; the setup command only for the folder it was used in. What a
+	// run on another server used is that server's.
 	other := t.TempDir()
+	svcGroupAdd(t, e.s, model.Group{ID: "g_two", Name: "Two"})
+	svcGroupAdd(t, e.s, model.Group{ID: "g_three", Name: "Three"})
+	far := &model.RunDefaults{Agent: model.Claude, MaxParallel: 4, MaxTurns: 44, MaxCost: 4, Setup: "far", SetupCwd: e.cwd}
 	if err := e.s.Store.Update(func(st *model.State) error {
 		st.Defaults.Groups = map[string]model.GroupDefaults{
-			"g_one": {Run: &model.RunDefaults{Agent: model.Pi, MaxParallel: 2, MaxTurns: 90, MaxCost: 12.5, Setup: "npm ci", SetupCwd: e.cwd},
-				ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "deepseek-flash", Effort: "high"}}},
+			"g_one": {Servers: map[string]model.ServerDefaults{
+				model.LocalServer: {Run: &model.RunDefaults{Agent: model.Pi, MaxParallel: 2, MaxTurns: 90, MaxCost: 12.5, Setup: "npm ci", SetupCwd: e.cwd},
+					ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "deepseek-flash", Effort: "high"}}},
+				"srv_far": {Run: far},
+			}},
+			"g_two": {Servers: map[string]model.ServerDefaults{"srv_far": {Run: far}}},
+			model.Ungrouped: model.LocalDefaults(model.ServerDefaults{
+				Run: &model.RunDefaults{Agent: model.Cursor, MaxParallel: 99, MaxTurns: 30, Setup: "make", SetupCwd: other}}),
 		}
-		st.Defaults.Last.Run = &model.RunDefaults{Agent: model.Cursor, MaxParallel: 99, MaxTurns: 30, Setup: "make", SetupCwd: other}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -104,11 +114,32 @@ func TestSvcCreate(t *testing.T) {
 	if v.Agent != model.Pi || v.Tiers != tiersAll("deepseek-flash", "") || v.Settings != want {
 		t.Fatalf("a run in a group with run defaults: %+v", v)
 	}
-	// No defaults in the group: the last run anywhere; a value out of range and a setup command
-	// of another folder are not taken over.
+	// No run record in the group for the local server: the ungrouped group's; a value out of range
+	// and a setup command of another folder are not taken over.
+	for _, g := range []string{"g_two", "g_three"} {
+		v, _ = e.s.Create(g, "")
+		if v.Agent != model.Cursor || v.Settings != model.DefaultRunSettings() {
+			t.Fatalf("a run in %s, a group without run defaults: %+v", g, v)
+		}
+	}
+	// The ungrouped group takes its own.
 	v, _ = e.s.Create(model.Ungrouped, "")
 	if v.Agent != model.Cursor || v.Settings != model.DefaultRunSettings() {
-		t.Fatalf("a run in a group without run defaults: %+v", v)
+		t.Fatalf("a run in the ungrouped group: %+v", v)
+	}
+	// There is no "last used": with no record of its own the ungrouped group has the built-in
+	// ones, whatever another group holds.
+	if err := e.s.Store.Update(func(st *model.State) error {
+		delete(st.Defaults.Groups, model.Ungrouped)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []string{model.Ungrouped, "g_two"} {
+		v, _ = e.s.Create(g, "")
+		if v.Agent != model.Claude || v.Settings != model.DefaultRunSettings() {
+			t.Fatalf("a run in %s with no run defaults anywhere but in g_one: %+v", g, v)
+		}
 	}
 }
 
@@ -182,7 +213,7 @@ func TestSvcPatch(t *testing.T) {
 	}
 	// A new agent brings its own model for the group; the folder and the settings stay.
 	if err := e.s.Store.Update(func(st *model.State) error {
-		st.Defaults.Groups = map[string]model.GroupDefaults{"g_one": {ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "deepseek-flash", Effort: "low"}}}}
+		st.Defaults.Groups = map[string]model.GroupDefaults{"g_one": model.LocalDefaults(model.ServerDefaults{ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "deepseek-flash", Effort: "low"}}})}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -617,10 +648,13 @@ func TestSvcStartInAGitRepository(t *testing.T) {
 		t.Fatalf("detail: %+v %v", d, err)
 	}
 	// The events: the entry, the run as started, the defaults; and the engine was started last.
-	// (Between the entry and run.json the run is still a draft; its view may be sent as that.)
+	// (Between the entry and run.json the run is still a draft; its view may be sent as that. A
+	// view of the draft that was queued before the start, and is sent late, comes before the entry.)
 	evs := e.events()
 	kinds := svcKinds(evs)
-	if n := len(kinds); n < 3 || kinds[0] != "run_detail 1" || kinds[n-1] != "defaults" || strings.Trim(strings.Join(kinds[1:n-1], " "), "run ") != "" {
+	entry := slices.Index(kinds, "run_detail 1")
+	if n := len(kinds); n < 3 || entry < 0 || kinds[n-1] != "defaults" ||
+		strings.Trim(strings.Join(kinds[:entry], " ")+" "+strings.Join(kinds[entry+1:n-1], " "), "run ") != "" {
 		t.Fatalf("events: %v", kinds)
 	}
 	if runs := svcRunEvents(evs, v.ID); runs[len(runs)-1].Status != model.RunRunning || runs[len(runs)-1].Started.IsZero() || runs[len(runs)-1].Name != "Port the importer" {
@@ -632,10 +666,15 @@ func TestSvcStartInAGitRepository(t *testing.T) {
 	// The group remembers what the run was started with.
 	var defs model.Defaults
 	e.s.Store.Read(func(s *model.State) { defs = s.Defaults })
-	rd := defs.Groups[model.Ungrouped].Run
-	if rd == nil || rd.Agent != model.Claude || rd.MaxParallel != 8 || rd.MaxTurns != 60 || rd.SetupCwd != repo.Dir() || defs.Last.Run == nil || !svcSameJSON(*defs.Last.Run, *rd) ||
-		rd.Tiers == nil || *rd.Tiers != v.Tiers || defs.Groups[model.Ungrouped].Cwd != repo.Dir() || len(defs.Groups[model.Ungrouped].ByAgent) != 0 {
-		t.Fatalf("defaults: %+v, run %+v", defs.Groups[model.Ungrouped], rd)
+	own := defs.Groups[model.Ungrouped].On(model.LocalServer)
+	rd := own.Run
+	if rd == nil || rd.Agent != model.Claude || rd.MaxParallel != 8 || rd.MaxTurns != 60 || rd.SetupCwd != repo.Dir() || len(defs.Groups) != 1 || len(defs.Groups[model.Ungrouped].Servers) != 1 ||
+		rd.Tiers == nil || *rd.Tiers != v.Tiers || own.Cwd != repo.Dir() || len(own.ByAgent) != 0 || own.Agent != "" {
+		t.Fatalf("defaults: %+v, run %+v", defs.Groups, rd)
+	}
+	// And the server it started on: the group's next chat or run starts there.
+	if got := defs.Groups[model.Ungrouped].Server; got != "local" {
+		t.Fatalf("the group's sticky server after the start: %q", got)
 	}
 	// A second start is refused, and so is every change of what the start fixed.
 	if _, err := e.s.Start(v.ID, svcGoal); !errors.Is(err, ErrStarted) {
@@ -1149,7 +1188,7 @@ func TestSvcRunOfAndChatContext(t *testing.T) {
 		t.Fatal("a run that does not exist")
 	}
 	draft, _ := e.s.Create(model.Ungrouped, "")
-	if info, ok := e.s.RunOf(draft.ID); !ok || info != (chats.RunInfo{Group: model.Ungrouped, Cwd: e.cwd, Agent: model.Claude, Model: "opus", Effort: "high"}) {
+	if info, ok := e.s.RunOf(draft.ID); !ok || info != (chats.RunInfo{Group: model.Ungrouped, Cwd: e.cwd, Agent: model.Claude, Model: "opus", Effort: "high", Draft: true}) {
 		t.Fatalf("RunOf a draft: %+v", info)
 	}
 	want := "<ui-context>\n" +

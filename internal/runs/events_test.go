@@ -155,7 +155,9 @@ type svcNosyEmitter struct {
 	seen int
 }
 
-func (n *svcNosyEmitter) Broadcast(ev any) {
+func (n *svcNosyEmitter) Broadcast(ev any) { n.SendRun("", ev) }
+
+func (n *svcNosyEmitter) SendRun(run string, ev any) {
 	n.mu.Lock()
 	s := n.s
 	n.seen++
@@ -168,8 +170,8 @@ func (n *svcNosyEmitter) Broadcast(ev any) {
 	}
 }
 
-// Nothing is broadcast under a run's lock, nor under the service's or the queue's: a Broadcast
-// that reads the runs, and so takes those locks itself, does not deadlock.
+// Nothing is sent under a run's lock, nor under the service's or the queue's: a SendRun that
+// reads the runs, and so takes those locks itself, does not deadlock.
 func TestSvcBroadcastTakesNoLock(t *testing.T) {
 	e := newSvcEnv(t)
 	nosy := &svcNosyEmitter{}
@@ -258,5 +260,45 @@ func TestSvcRunRemoved(t *testing.T) {
 	d.changed()
 	if got := svcRunEvents(x.events(), x.id); len(got) == 0 || got[len(got)-1].Status != model.RunDraft {
 		t.Fatalf("a run with the same id: %+v", got)
+	}
+}
+
+// Every event goes out as an event of its run (SendRun), so that it reaches the clients that run
+// concerns: the `run` and `run_detail` events of two runs, and the `run_removed` of a deleted one.
+func TestSvcEventsNameTheirRun(t *testing.T) {
+	x := newToolRun(t, false)
+	other := x.startRun("r_other001", "Another run", false)
+	x.turnStart("start")
+	x.ok("orchestrator", "add_task", toolAdd("One", "research", false))
+	x.must(other, KTurnStarted, func(tx *Tx) error {
+		tx.AddTurn(Turn{N: 1, Agent: "a", Reason: "start", Status: "running", StartedAt: tx.Now()})
+		return nil
+	})
+	if err := x.s.Delete(x.id); err != nil {
+		t.Fatal(err)
+	}
+	evs, runs := x.allEvents(), x.emit.sentAs()
+	seen := map[string]int{}
+	for i, ev := range evs {
+		var kind, want string
+		switch e := ev.(type) {
+		case svcRunEvent:
+			kind, want = "run", e.Run.ID
+		case detailEvent:
+			kind, want = "run_detail", e.Run
+		case svcRemovedEvent:
+			kind, want = "run_removed", e.ID
+		default: // the defaults a start records are about no run
+			continue
+		}
+		if runs[i] != want {
+			t.Errorf("a %s event of %s was sent as an event of %q", kind, want, runs[i])
+		}
+		seen[kind+" "+want]++
+	}
+	for _, k := range []string{"run " + x.id, "run_detail " + x.id, "run_removed " + x.id, "run " + other.id, "run_detail " + other.id} {
+		if seen[k] == 0 {
+			t.Errorf("no %s event: %v", k, svcKinds(evs))
+		}
 	}
 }

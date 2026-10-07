@@ -426,7 +426,7 @@ type runEvents struct {
 	err  error         // set when the stream ended
 }
 
-// follow connects as client, waits until it is the active one, and keeps reading until the test
+// follow connects as client, waits for its hello, and keeps reading until the test
 // ends (or the server does, or close is called). Like the app's client it tells a server that is
 // stopping that it has nothing left to write.
 func (s *runServer) follow(t *testing.T, client string) *runEvents {
@@ -475,11 +475,8 @@ func (s *runServer) follow(t *testing.T, client string) *runEvents {
 		e.more = make(chan struct{})
 		e.mu.Unlock()
 	}()
-	e.wait(t, e2eWait, "the client to be active", func(evs []runEvent) bool {
-		return slices.ContainsFunc(evs, func(ev runEvent) bool {
-			var h struct{ Active bool }
-			return ev.Type == "hello" && json.Unmarshal(ev.Raw, &h) == nil && h.Active
-		})
+	e.wait(t, e2eWait, "the client's hello", func(evs []runEvent) bool {
+		return slices.ContainsFunc(evs, func(ev runEvent) bool { return ev.Type == "hello" })
 	})
 	return e
 }
@@ -854,6 +851,11 @@ func TestRunEndToEnd(t *testing.T) {
 	srv.must(t, client, "PATCH", "api/runs/"+run, map[string]any{"cwd": repo.Dir(), "tiers": tiersOn("haiku"), "settings": map[string]any{"maxTurns": 12}}, &v)
 	if !v.Git || v.Blocked != "" || v.Cwd != repo.Dir() || v.Settings.MaxTurns != 12 {
 		t.Fatalf("the run in the repository: %+v", v)
+	}
+	// The client has the run open: reading its detail makes it follow the run, so that it is sent
+	// every run_detail event from the first. A draft has no detail to give yet.
+	if code, body := srv.call(t, client, "GET", "api/runs/"+run+"/detail", nil, nil); code != http.StatusConflict {
+		t.Fatalf("the detail of a draft: %d %s", code, body)
 	}
 	started := time.Now()
 	srv.must(t, client, "POST", "api/runs/"+run+"/start", map[string]any{"goal": e2eGoal(t)}, &v)

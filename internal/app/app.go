@@ -1,12 +1,16 @@
 // Package app ties the stores together: groups and their subgroups, moves, and the archive /
-// unarchive / delete cascades across groups, boards, chats and runs.
+// unarchive / delete cascades across groups, boards, chats and runs, the chats and runs of other
+// servers included (remote.go).
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
@@ -14,8 +18,11 @@ import (
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/remotes"
 	"ai-whiteboard/internal/runs"
+	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/usable"
 )
 
 type App struct {
@@ -25,20 +32,33 @@ type App struct {
 	Runs   *runs.Service // nil: an app without runs
 	Bridge *editorbridge.Bridge
 
+	// Servers is the list of remote servers; nil: this computer alone.
+	Servers *servers.Manager
+	// Remotes holds the chats of those servers, each a record with a place in a group of this
+	// one (see remote.go); nil: none.
+	Remotes *remotes.Relay
+
+	Agents *usable.Set // nil: every kind of agent is usable
+
 	// Set by main; reported in the snapshot.
 	Home       string // the user's home folder
 	DefaultCwd string // the server's default working folder
 	DataDir    string // the data folder (~/.ai-whiteboard)
+
+	remoteMu sync.Mutex // one RemoteGroup at a time: the group is announced before its id is used
 }
 
 type Snapshot struct {
 	Groups     []model.Group                      `json:"groups"`
 	Boards     []model.Board                      `json:"boards"`
-	Chats      []model.ChatView                   `json:"chats"`  // without the chats of runs' agents
+	Servers    []servers.View                     `json:"servers"`
+	Chats      []model.ChatView                   `json:"chats"`  // without the chats of runs' agents; with the chats of other servers
 	States     []model.BranchState                `json:"states"` // one per branch of every chat in Chats, main included
-	Runs       []model.RunView                    `json:"runs"`
+	Lists      map[string]remotes.ServerLists     `json:"lists"`  // what each other server offers for a new chat, by entry id; never nil
+	Runs       []model.RunView                    `json:"runs"`   // with the runs of other servers
 	Defaults   model.Defaults                     `json:"defaults"`
 	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"`
+	Agents     []model.AgentKind                  `json:"agents"` // the agents this server can start, never nil
 	Home       string                             `json:"home"`
 	DefaultCwd string                             `json:"defaultCwd"`
 	DataDir    string                             `json:"dataDir"`
@@ -50,7 +70,9 @@ var (
 )
 
 // Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats and their
-// branches' states from Chats; runs from Runs. They are read one after the other, not at one moment.
+// branches' states from Chats, and those of other servers and the servers' lists from Remotes;
+// runs from Runs, and those of other servers from Remotes. They are read one after the other, not
+// at one moment.
 func (a *App) Snapshot() Snapshot {
 	cl := claude.Catalog
 	snap := Snapshot{
@@ -59,13 +81,14 @@ func (a *App) Snapshot() Snapshot {
 			model.Cursor: nil, // known only after Cursor reports its list
 			model.Pi:     nil, // known only after pi reports its list
 		},
+		Agents:     a.Agents.List(),
 		Home:       a.Home,
 		DefaultCwd: a.DefaultCwd,
 		DataDir:    a.DataDir,
 	}
 	a.St.Read(func(s *model.State) {
 		snap.Groups = append([]model.Group{}, s.Groups...)
-		snap.Defaults = copyDefaults(s.Defaults)
+		snap.Defaults = defaults.Copy(s.Defaults)
 		for _, kind := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
 			if c := s.Catalog(kind); c != nil {
 				cp := *c
@@ -74,36 +97,21 @@ func (a *App) Snapshot() Snapshot {
 		}
 	})
 	snap.Boards = a.Boards.List()
+	snap.Servers = a.Servers.Views()
 	snap.Chats = a.Chats.Views()
 	snap.States = a.Chats.States()
+	snap.Lists = map[string]remotes.ServerLists{}
+	if a.Remotes != nil {
+		a.withRecords(&snap)
+	}
 	snap.Runs = []model.RunView{}
 	if a.Runs != nil {
 		snap.Runs = a.Runs.Views()
 	}
+	if a.Remotes != nil {
+		a.withRunRecords(&snap)
+	}
 	return snap
-}
-
-func copyGroupDefaults(g model.GroupDefaults) model.GroupDefaults {
-	out := model.GroupDefaults{Cwd: g.Cwd}
-	if g.ByAgent != nil {
-		out.ByAgent = make(map[model.AgentKind]model.ModelChoice, len(g.ByAgent))
-		for k, v := range g.ByAgent {
-			out.ByAgent[k] = v
-		}
-	}
-	if g.Run != nil {
-		run := *g.Run
-		out.Run = &run
-	}
-	return out
-}
-
-func copyDefaults(d model.Defaults) model.Defaults {
-	out := model.Defaults{Last: copyGroupDefaults(d.Last), Groups: make(map[string]model.GroupDefaults, len(d.Groups))}
-	for k, v := range d.Groups {
-		out.Groups[k] = copyGroupDefaults(v)
-	}
-	return out
 }
 
 // ---- broadcasting ---------------------------------------------------------
@@ -116,7 +124,7 @@ func (a *App) broadcastGroups() {
 
 func (a *App) broadcastDefaults() {
 	var d model.Defaults
-	a.St.Read(func(s *model.State) { d = copyDefaults(s.Defaults) })
+	a.St.Read(func(s *model.State) { d = defaults.Copy(s.Defaults) })
 	a.Bridge.Broadcast(map[string]any{"type": "defaults", "defaults": d})
 }
 
@@ -188,7 +196,7 @@ func checkParent(s *model.State, parent string) error {
 }
 
 // CreateGroup adds a group at the top level (parent "") or nested in parent. A subgroup starts
-// with its parent's defaults, a top-level group with the ones used most recently anywhere.
+// with a copy of its parent's defaults, a top-level group with a copy of the ungrouped group's.
 func (a *App) CreateGroup(name, parent string) (model.Group, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -331,8 +339,27 @@ func (a *App) archiveChat(id string, ar model.Archive) error {
 	return err
 }
 
+// freeWait is how long the client that holds a board has to write its pending changes before the
+// board is archived or deleted. Shorter in tests.
+var freeWait = 3 * time.Second
+
+// freeBoards frees the boards at the same time, so that clients that do not answer cost one wait
+// and not one each.
+func (a *App) freeBoards(ids []string) {
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.Bridge.FreeBoard(id, freeWait)
+		}()
+	}
+	wg.Wait()
+}
+
 // archiveBoard archives the board's not yet archived chats and the board with ar.
 func (a *App) archiveBoard(id string, ar model.Archive) error {
+	a.Bridge.FreeBoard(id, freeWait) // the client that holds it writes its pending changes first
 	for _, c := range a.Chats.ChatsOfBoard(id) {
 		if c.Archived {
 			continue
@@ -341,7 +368,11 @@ func (a *App) archiveBoard(id string, ar model.Archive) error {
 			return err
 		}
 	}
-	return a.Boards.SetArchive(id, ar)
+	if err := a.Boards.SetArchive(id, ar); err != nil {
+		return err
+	}
+	a.Bridge.FreeBoard(id, 0) // a client may have taken the board while its chats were archived
+	return nil
 }
 
 // plainChatsIn returns the plain chats of the groups in: the ones on no board and on no run.
@@ -389,8 +420,9 @@ func (a *App) errNoRuns() error {
 }
 
 // Archive archives a chat, a board (with its chats), a run (stopped first when it works; with the
-// chats people have on it) or a group (with everything in it, its subgroups too). Every item
-// archived by this call shares one archive op id.
+// chats people have on it) or a group (with everything in it, its subgroups too, and the chats and
+// runs of other servers that have their place there). Every item archived by this call shares one
+// archive op id.
 //
 // A run that has not stopped in time refuses (runs.ErrStopping). A group goes on without that run:
 // everything else in it is archived, the group too, and the error is returned.
@@ -417,33 +449,20 @@ func (a *App) Archive(k Kind, id string) error {
 			return err
 		}
 		in := a.subtreeOf(id)
+		var free []string
 		for _, b := range a.boardsIn(in) {
-			if b.Archived {
-				continue
-			}
-			if err := a.archiveBoard(b.ID, ar); err != nil {
-				return err
+			if !b.Archived {
+				free = append(free, b.ID)
 			}
 		}
-		for _, c := range a.plainChatsIn(in) {
-			if c.Archived {
-				continue
-			}
-			if err := a.archiveChat(c.ID, ar); err != nil {
-				return err
-			}
+		a.freeBoards(free)
+		tried := map[string]bool{}
+		stopping, err := a.archiveGroups(in, ar, tried)
+		if err != nil {
+			return err
 		}
-		var stopping error
-		for _, r := range a.runsIn(in) {
-			if r.Archived {
-				continue
-			}
-			switch err := a.Runs.Archive(r.ID, ar); {
-			case errors.Is(err, runs.ErrStopping):
-				stopping = errors.Join(stopping, fmt.Errorf("%s: %w", r.Name, err))
-			case err != nil && !errors.Is(err, runs.ErrNotFound):
-				return err
-			}
+		if beforeGroupChange != nil {
+			beforeGroupChange()
 		}
 		if err := a.St.Update(func(s *model.State) error {
 			for i := range s.Groups {
@@ -456,10 +475,52 @@ func (a *App) Archive(k Kind, id string) error {
 		}); err != nil {
 			return err
 		}
+		// A start that checked its group before the mark may have placed its run, chat or board
+		// there since the listing above: what appeared is archived like the rest.
+		late, err := a.archiveGroups(in, ar, tried)
 		a.broadcastGroups()
-		return stopping
+		if err != nil {
+			return err
+		}
+		return errors.Join(stopping, late)
 	}
 	return fmt.Errorf("unknown kind %q", k)
+}
+
+// archiveGroups archives with ar the boards, plain chats, records (of chats and of runs) and runs
+// of the groups in that are not archived. stopping names the runs that have not stopped in time (runs.ErrStopping) and
+// stay. tried takes the runs it asked, and a run that is in it already is not asked again.
+func (a *App) archiveGroups(in map[string]bool, ar model.Archive, tried map[string]bool) (stopping, err error) {
+	for _, b := range a.boardsIn(in) {
+		if b.Archived {
+			continue
+		}
+		if err := a.archiveBoard(b.ID, ar); err != nil {
+			return nil, err
+		}
+	}
+	for _, c := range a.plainChatsIn(in) {
+		if c.Archived {
+			continue
+		}
+		if err := a.archiveChat(c.ID, ar); err != nil {
+			return nil, err
+		}
+	}
+	a.archiveRecords(in, ar)
+	for _, r := range a.runsIn(in) {
+		if r.Archived || tried[r.ID] {
+			continue
+		}
+		tried[r.ID] = true
+		switch err := a.Runs.Archive(r.ID, ar); {
+		case errors.Is(err, runs.ErrStopping):
+			stopping = errors.Join(stopping, fmt.Errorf("%s: %w", r.Name, err))
+		case err != nil && !errors.Is(err, runs.ErrNotFound):
+			return nil, err
+		}
+	}
+	return stopping, nil
 }
 
 // unarchiveGroupRecord clears the archive mark of the group and of every group it is nested
@@ -490,7 +551,9 @@ func (a *App) unarchiveGroupRecord(id string) error {
 
 // Unarchive puts an item back where it was. A chat brings back its archived board or run and group
 // records; a board, a run or a group brings back exactly what was archived together with it, and
-// the archived groups it is nested in. A run that comes back is not resumed.
+// the archived groups it is nested in. A run that comes back is not resumed. A chat or a run of
+// another server that a group's archive archived comes back with the group; one that was archived
+// on its own server does not.
 func (a *App) Unarchive(k Kind, id string) error {
 	clear := model.Archive{}
 	switch k {
@@ -521,7 +584,15 @@ func (a *App) Unarchive(k Kind, id string) error {
 			if a.Runs != nil {
 				if ri, ok := a.Runs.RunOf(cv.Run); ok {
 					group = ri.Group
-					if ri.Archived {
+					switch _, there := a.runRecord(cv.Run); {
+					case !ri.Archived:
+					case there:
+						// A run of another server comes back there, with what its server
+						// archived together with it: nothing of it is this server's to bring back.
+						if err := a.Remotes.UnarchiveRun(context.Background(), cv.Run); err != nil {
+							return err
+						}
+					default:
 						if err := a.Runs.UnarchiveAlone(cv.Run); err != nil {
 							return err
 						}
@@ -599,6 +670,7 @@ func (a *App) Unarchive(k Kind, id string) error {
 					return err
 				}
 			}
+			a.unarchiveRecords(in, op)
 			for _, r := range a.runsIn(in) {
 				if !r.Archived || r.Op != op {
 					continue
@@ -623,12 +695,17 @@ func (a *App) DeleteBoard(id string) error {
 	if _, ok := a.Boards.Get(id); !ok {
 		return boards.ErrNotFound
 	}
+	a.Bridge.FreeBoard(id, freeWait) // as at an archive
 	for _, c := range a.Chats.ChatsOfBoard(id) {
 		if err := a.Chats.Delete(c.ID); err != nil && !errors.Is(err, chats.ErrNotFound) {
 			return err
 		}
 	}
-	return a.Boards.Delete(id)
+	if err := a.Boards.Delete(id); err != nil {
+		return err
+	}
+	a.Bridge.FreeBoard(id, 0) // as at an archive
+	return nil
 }
 
 // DeleteRun stops the run and removes it for good, with its agents' chats and the chats people
@@ -643,6 +720,11 @@ func (a *App) DeleteRun(id string) error {
 // DeleteGroup removes a group and its defaults. With deleteContents its subgroups, boards, plain
 // chats and runs are deleted too; without, they move up to the group's parent (ungrouped for a
 // top-level group).
+//
+// The chats and the runs of other servers that have their place there are deleted on their
+// servers first, or moved up. While one of those servers is not connected nothing is deleted (an
+// error of the relay: 409 server_unreachable), and neither is anything of this server once a chat
+// or a run could not be deleted there.
 func (a *App) DeleteGroup(id string, deleteContents bool) error {
 	g, err := a.group(id)
 	if err != nil {
@@ -656,6 +738,54 @@ func (a *App) DeleteGroup(id string, deleteContents bool) error {
 	if to == "" {
 		to = model.Ungrouped
 	}
+	if deleteContents {
+		if err := a.deleteRecords(gone); err != nil {
+			return err
+		}
+		var free []string
+		for _, b := range a.boardsIn(gone) {
+			free = append(free, b.ID)
+		}
+		a.freeBoards(free)
+	} else if err := a.moveRecords(gone, to); err != nil {
+		return err
+	}
+	if err := a.emptyGroups(gone, to, deleteContents); err != nil {
+		return err
+	}
+	if beforeGroupChange != nil {
+		beforeGroupChange()
+	}
+	if err := a.St.Update(func(s *model.State) error {
+		s.Groups = slices.DeleteFunc(s.Groups, func(x model.Group) bool { return gone[x.ID] })
+		for i := range s.Groups {
+			if s.Groups[i].Parent == id {
+				s.Groups[i].Parent = g.Parent
+			}
+		}
+		for x := range gone {
+			delete(s.Defaults.Groups, x)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	// A start that checked its group before the removal may have placed its run, chat or board
+	// there since the listing above: what appeared is deleted or moved like the rest. So is a
+	// record that a start on another server made of a draft run or a chat of these groups.
+	err = errors.Join(a.emptyGroups(gone, to, deleteContents), a.lateRecords(gone, to, deleteContents))
+	a.broadcastGroups()
+	a.broadcastDefaults()
+	return err
+}
+
+// beforeGroupChange is called, in a test, between the listing of a group's contents and the
+// group's removal or archive.
+var beforeGroupChange func()
+
+// emptyGroups deletes the boards, plain chats and runs of the groups gone, or moves them to the
+// group to.
+func (a *App) emptyGroups(gone map[string]bool, to string, deleteContents bool) error {
 	for _, b := range a.boardsIn(gone) {
 		var err error
 		if deleteContents {
@@ -689,21 +819,5 @@ func (a *App) DeleteGroup(id string, deleteContents bool) error {
 			return err
 		}
 	}
-	if err := a.St.Update(func(s *model.State) error {
-		s.Groups = slices.DeleteFunc(s.Groups, func(x model.Group) bool { return gone[x.ID] })
-		for i := range s.Groups {
-			if s.Groups[i].Parent == id {
-				s.Groups[i].Parent = g.Parent
-			}
-		}
-		for x := range gone {
-			delete(s.Defaults.Groups, x)
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	a.broadcastGroups()
-	a.broadcastDefaults()
 	return nil
 }

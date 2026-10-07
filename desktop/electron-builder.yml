@@ -20,6 +20,9 @@ extraFiles:
 extraResources:
   - from: ../web/dist
     to: web
+  # Sets the app's own server up as a remote server; run through sh (scripts/remote).
+  - from: ../scripts/remote/setup-remote.sh
+    to: remote/setup-remote.sh
   - from: ../assets/icon/AppIcon.icns
     to: AppIcon.icns
 mac:

@@ -12,6 +12,10 @@
 //   [[write PATH TEXT]]           -> writes TEXT and a newline to the file PATH (relative to the
 //                                    process's working directory; its folders are made), as an agent
 //                                    that edits a file; "\n" in TEXT is a line break
+//   [[ask TOOL {json input}]]     -> shows a call of that tool, asks permission for it as claude does
+//                                    (a can_use_tool control request), waits for the answer and puts
+//                                    "ask TOOL -> allow" or "ask TOOL -> deny" in the reply; an interrupt
+//                                    ends the wait and the turn. No input: {}; no tool name: Bash
 //   [[tools]]                     -> calls tools/list and puts the names in the reply
 //   [[final TEXT]]                -> remembered by the process; a later turn whose message is a
 //                                    <subagent-results> block is answered with TEXT alone
@@ -59,6 +63,7 @@ try {
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const uuid = () => require("node:crypto").randomUUID();
 let rpcId = 0;
+const asks = new Map(); // request id -> resolve, for [[ask ...]]
 async function rpc(method, params) {
   const r = await fetch(mcp.url, { method: "POST", headers: { "Content-Type": "application/json", ...(mcp.headers || {}) },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }) });
@@ -111,6 +116,21 @@ async function turn(text) {
       out({ type: "user", uuid: uuid(), session_id: session, parent_tool_use_id: null,
         message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: result }] } });
       reply += `\nwrite ${sp < 0 ? rest : rest.slice(0, sp)} -> ${result}`;
+    }
+    else if (verb === "ask") {
+      const sp = rest.indexOf(" "), name = (sp < 0 ? rest : rest.slice(0, sp)) || "Bash", input = sp < 0 ? {} : JSON.parse(rest.slice(sp + 1));
+      const id = "toolu_" + uuid().slice(0, 8), rid = "perm_" + uuid().slice(0, 8);
+      out({ type: "assistant", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+        message: { id: "msg_" + uuid().slice(0, 8), role: "assistant", model, content: [{ type: "tool_use", id, name, input }] } });
+      out({ type: "control_request", request_id: rid, request: { subtype: "can_use_tool", tool_name: name, tool_use_id: id, input } });
+      const answer = await new Promise((r) => { asks.set(rid, r); wake = () => r(null); });
+      asks.delete(rid); wake = null;
+      if (answer === null) break; // interrupted while it waited
+      const allowed = answer.behavior === "allow";
+      const result = allowed ? "allowed" : "denied: " + (answer.message || "");
+      out({ type: "user", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: result, is_error: !allowed }] } });
+      reply += `\nask ${name} -> ${allowed ? "allow" : "deny"}`;
     }
     else if (verb === "tools") {
       const body = mcp ? await rpc("tools/list", {}).catch((e) => ({ error: e.message })) : { error: "no --mcp-config" };
@@ -167,6 +187,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       default: return out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "fake claude: unsupported " + m.request?.subtype } });
     }
   }
+  if (m.type === "control_response") { asks.get(m.response?.request_id)?.(m.response?.response || {}); return; }
   if (m.type === "user") {
     const text = (m.message?.content || []).map((c) => c.text ?? "").join("\n");
     queue = queue.then(() => turn(text)).catch((e) => out({ type: "result", subtype: "error_during_execution", is_error: true, result: "fake claude crashed: " + e.message, num_turns: ++turns }));

@@ -16,6 +16,8 @@ import type { ChatView } from "../types.ts";
 import { buildTree, FILTERS, forkLinks, preview, rowActions, rows, tipBranch, withLive, type Entry, type Filter, type ForkLink, type Row } from "../logic/forktree.ts";
 import { busyBranches, escStep, isTreeKey, menuItems, modelNotes, pickedRow, rowMarks, startEntry, stoppable, type MarkOf, type MenuItem, type RowMark } from "../logic/treepopup.ts";
 import { chatBusy } from "../logic/status.ts";
+import { catalogFor } from "../logic/agentlist.ts";
+import { serverOf } from "../logic/serverlists.ts";
 import { closeTree, forkChat, labelMessage, openTree, startMove, viewBranch } from "./actions.ts";
 import { LabelInput } from "./LabelInput.tsx";
 import { TreeFolderHint } from "./FolderHint.tsx";
@@ -50,7 +52,7 @@ function Navigator({ nav }: { nav: Nav }) {
   const move = useStore((s) => s.moves[nav.chat]);
   const states = useStore((s) => statesOfChat(s, nav.chat));
   const chats = useStore((s) => s.chats);
-  const cat = useStore((s) => { const k = s.chats[nav.chat]?.agent; return k ? s.catalogs[k] : undefined; });
+  const cat = useStore((s) => { const k = s.chats[nav.chat]; return k ? catalogFor(s, serverOf(k), k.agent) : undefined; });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [tries, setTries] = useState(0); // counts the fetches asked for again

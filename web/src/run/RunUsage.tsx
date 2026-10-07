@@ -10,6 +10,8 @@ import { fmtDuration } from "../logic/subagents.ts";
 import { TIER_ROWS } from "../logic/rungoal.ts";
 import { NO_TIER, costShare, manyQuiet, missingNote, runUsage, usageMoney, usageTokens, type UsageRow } from "../logic/runusage.ts";
 import type { Catalog, RunDetail, RunTiers, Tier } from "../types.ts";
+import { catalogFor } from "../logic/agentlist.ts";
+import { serverOf } from "../logic/serverlists.ts";
 
 export interface RunUsageProps {
   runId: string;
@@ -79,7 +81,7 @@ function Section({ title, head, rows, bare, peak }: { title: string; head: strin
 
 export function RunUsage({ runId, detail }: RunUsageProps) {
   const tiers = useStore((s) => s.runs[runId]?.tiers);
-  const cat = useStore((s) => { const r = s.runs[runId]; return r ? s.catalogs[r.agent] : undefined; });
+  const cat = useStore((s) => { const r = s.runs[runId]; return r ? catalogFor(s, serverOf(r), r.agent) : undefined; });
   const u = useMemo(() => runUsage(detail), [detail]);
   const note = useMemo(() => missingNote(detail), [detail]);
   if (!u.total.agents) return <div className="run-usage"><div className="ru-none">No agent has started yet: nothing is used.</div></div>;

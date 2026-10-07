@@ -15,6 +15,7 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/boards"
+	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/store"
 )
@@ -1844,11 +1845,42 @@ func TestForkWindowRefused(t *testing.T) {
 	}
 }
 
+// A fork made at the start is not locked, but its first message is still a fork's: the folder it
+// has of its source does not become its group's.
+func TestForkAtStartRecordsNothingAtFirstMessage(t *testing.T) {
+	e := newEnv(t)
+	id, _ := e.talked(model.Claude, "", 2)
+	v0, err := e.forkWith(id, 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := e.meta(v0.ID); m.Locked || m.ForkedFrom != id || m.Cwd != e.cwd {
+		t.Fatalf("the fork at the start %+v", m)
+	}
+	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
+		model.Ungrouped: model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, Cwd: t.TempDir()})}})
+	was := e.defaultsOf()
+	evs := e.listen()
+	e.send(v0.ID, "start", "")
+	if got := e.defaultsOf(); !reflect.DeepEqual(got, was) {
+		t.Fatalf("the defaults after the fork's first message %+v, were %+v", got, was)
+	}
+	for _, ev := range evs.drain(t, e.br) {
+		if ev["type"] == "defaults" {
+			t.Fatalf("a defaults event of the fork's first message: %v", ev)
+		}
+	}
+	if m := e.meta(v0.ID); !m.Locked {
+		t.Fatalf("the fork after its first message %+v", m)
+	}
+}
+
 func TestChoiceDoesNotRecordDefaults(t *testing.T) {
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	was := e.defaultsOf()
-	if mc := was.Last.ByAgent[model.Claude]; mc.Model != "sonnet" || mc.Effort != "high" || was.Last.Cwd != e.cwd {
+	own := func(d model.Defaults) model.ServerDefaults { return d.Groups[gOne].On(model.LocalServer) }
+	if mc := own(was).ByAgent[model.Claude]; mc.Model != "sonnet" || mc.Effort != "high" || own(was).Cwd != e.cwd || len(was.Groups) != 1 {
 		t.Fatalf("the defaults the chat's first message recorded %+v", was)
 	}
 	same := func(when string) {
@@ -1876,8 +1908,8 @@ func TestChoiceDoesNotRecordDefaults(t *testing.T) {
 	e.claude.lastFork(t).emit(t, reply("f1")...)
 	same("the fork's first message")
 
-	// A fork at the start is a chat not started: it can be configured and its first message
-	// confirms its settings, but only its folder becomes a default.
+	// A fork at the start is a chat not started: it can be configured, and of what is chosen for
+	// it only a folder becomes a default, when it is chosen. Its first message records nothing.
 	v0, err := e.forkWith(id, 0, "haiku", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1897,21 +1929,26 @@ func TestChoiceDoesNotRecordDefaults(t *testing.T) {
 	folder := func(when string) {
 		t.Helper()
 		got := e.defaultsOf()
-		if got.Last.Cwd != dir || got.Groups[gOne].Cwd != dir {
+		if own(got).Cwd != dir {
 			t.Fatalf("%s: the folder was not recorded: %+v", when, got)
 		}
-		if !reflect.DeepEqual(got.Last.ByAgent, was.Last.ByAgent) || !reflect.DeepEqual(got.Groups[gOne].ByAgent, was.Groups[gOne].ByAgent) {
-			t.Fatalf("%s: the defaults took the fork's choice: %+v, were %+v", when, got, was)
+		// Nothing but the folder: no choice, no agent, no server, and no other group.
+		sd := own(got)
+		sd.Cwd = own(was).Cwd
+		got.Groups[gOne].Servers[model.LocalServer] = sd
+		if !reflect.DeepEqual(got, was) {
+			t.Fatalf("%s: the defaults took the fork's choice: %+v, were %+v", when, e.defaultsOf(), was)
 		}
 	}
 	folder("a fork at the start, given a folder")
+	e.setDefaults(defaults.Copy(was)) // a copy: the store changes what it is given
 	e.send(v0.ID, "start", "")
-	folder("the first message of a fork at the start")
+	same("the first message of a fork at the start")
 
 	// A chat that is neither still records its choice.
 	c := e.create(model.Claude, gOne, "")
 	e.configure(c.ID, ConfigReq{Model: "opus", Effort: "max"})
-	if mc := e.defaultsOf().Last.ByAgent[model.Claude]; mc.Model != "opus" || mc.Effort != "max" {
+	if mc := own(e.defaultsOf()).ByAgent[model.Claude]; mc.Model != "opus" || mc.Effort != "max" {
 		t.Fatalf("a new chat's choice was not recorded: %+v", mc)
 	}
 }

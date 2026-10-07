@@ -151,6 +151,7 @@ func newEnv(t *testing.T, with ...func(*Server)) *env {
 	var a *app.App
 	br := editorbridge.New(func() any { return a.Snapshot() })
 	bds := boards.New(st, br)
+	br.SceneRev = bds.Rev
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +177,9 @@ func newEnv(t *testing.T, with ...func(*Server)) *env {
 
 func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
-// connect opens /api/events as clientID and waits until it is the active client.
+// connect opens /api/events as clientID and waits until it is a known client. As the page does, it
+// releases a board it is asked to release (one it made: it holds no other), so an archive or a
+// delete of that board does not wait three seconds for it.
 func (e *env) connect() {
 	e.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -198,9 +201,12 @@ func (e *env) connect() {
 				continue
 			}
 			var ev map[string]any
-			if json.Unmarshal([]byte(line), &ev) == nil && ev["type"] == "hello" && ev["active"] == true && !done {
+			if json.Unmarshal([]byte(line), &ev) == nil && ev["type"] == "hello" && !done {
 				done = true
 				close(active)
+			}
+			if board, _ := ev["board"].(string); ev["type"] == "release_request" {
+				go e.release(board)
 			}
 		}
 	}()
@@ -208,6 +214,15 @@ func (e *env) connect() {
 	case <-active:
 	case <-time.After(2 * time.Second):
 		e.t.Fatal("client not active")
+	}
+}
+
+// release is clientID's answer to a release_request for the board.
+func (e *env) release(board string) {
+	req, _ := http.NewRequest("POST", e.url+"/api/boards/"+board+"/release", nil)
+	req.Header.Set(ClientHeader, clientID)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
 	}
 }
 
@@ -379,7 +394,7 @@ func TestMCPStatusRoute(t *testing.T) {
 	}
 	post("Bearer "+token, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Cursor","version":"1.2.3"}}}`)
 	e.expect(200, "POST", "/api/boards/"+bd.ID+"/archive", "")
-	post("Bearer "+token, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_boards","arguments":{}}}`)
+	post("Bearer "+token, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
 	// An unresolved credential is logged and reported as unknown, and answered normally (D8).
 	post("Bearer not-a-real-token", `{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"clientInfo":{"name":"probe","version":"0"}}}`)
 
@@ -412,16 +427,16 @@ func TestMCPStatusRoute(t *testing.T) {
 		t.Fatalf("unknown contact %+v", *unknown)
 	}
 	if known.Chat != c.ID[:8] || known.Client != "Cursor" || known.ClientVersion != "1.2.3" ||
-		known.Method != "tools/call" || known.Tool != "list_boards" || known.Outcome != "error" || known.At.IsZero() {
+		known.Method != "tools/call" || known.Tool != "read_board" || known.Outcome != "error" || known.At.IsZero() {
 		t.Fatalf("known contact %+v", *known)
 	}
 }
 
-func TestMutationsNeedTheActiveClient(t *testing.T) {
+func TestMutationsNeedAKnownClient(t *testing.T) {
 	e := newEnv(t)
 	for _, client := range []string{"", "B"} {
 		code, out := e.doAs(client, "POST", "/api/boards", `{"group":"__ungrouped__"}`)
-		if code != 409 || decode[map[string]string](t, out)["error"] != "not_active" {
+		if code != 409 || decode[map[string]string](t, out)["error"] != "unknown_client" {
 			t.Fatalf("client %q: %d %s", client, code, out)
 		}
 	}
@@ -432,18 +447,26 @@ func TestMutationsNeedTheActiveClient(t *testing.T) {
 	if code, out := e.doAs("", "GET", "/api/state", ""); code != 200 {
 		t.Fatalf("state: %d %s", code, out)
 	}
-	// Client routes check the client in the body or header instead.
-	if code, _ := e.doAs("", "POST", "/api/rpc-reply", `{"id":"rpc_1","client":"B"}`); code != 409 {
-		t.Fatalf("rpc-reply from B: %d", code)
-	}
-	if code, _ := e.doAs("", "POST", "/api/rpc-reply", `{"id":"rpc_1","client":"A"}`); code != 200 {
-		t.Fatalf("rpc-reply from A: %d", code)
-	}
-	if code, _ := e.doAs("B", "POST", "/api/client/flushed", ""); code != 409 {
-		t.Fatalf("flushed from B: %d", code)
+	// The client routes are no exception, and a client in the body does not count.
+	for _, path := range []string{"/api/rpc-reply", "/api/client/flushed"} {
+		for _, client := range []string{"", "B"} {
+			code, out := e.doAs(client, "POST", path, `{"id":"rpc_1","client":"A"}`)
+			if code != 409 || decode[map[string]string](t, out)["error"] != "unknown_client" {
+				t.Fatalf("%s from %q: %d %s", path, client, code, out)
+			}
+		}
 	}
 	if code, _ := e.doAs("A", "POST", "/api/client/flushed", ""); code != 200 {
 		t.Fatalf("flushed from A: %d", code)
+	}
+	// A client releases a board, not itself: the route of the one active client is gone.
+	if code, _ := e.doAs("A", "POST", "/api/client/release", `{"client":"A"}`); code != 404 {
+		t.Fatalf("release from A: %d", code)
+	}
+	// A reply counts only from the client that was asked: A was asked nothing.
+	code, out := e.doAs("A", "POST", "/api/rpc-reply", `{"id":"rpc_1","result":"x"}`)
+	if code != 409 || decode[map[string]string](t, out)["error"] != "not_asked" {
+		t.Fatalf("rpc-reply from A, which was not asked: %d %s", code, out)
 	}
 }
 
@@ -523,7 +546,7 @@ func TestCreateBoardAndSceneRoundTrip(t *testing.T) {
 		t.Fatalf("new scene %s", got)
 	}
 	scene := `{"type":"excalidraw","version":2,"elements":[{"id":"x","type":"rectangle"}],"appState":{},"files":{}}`
-	e.expect(200, "PUT", "/api/boards/"+bd.ID+"/scene", scene)
+	e.expect(200, "PUT", "/api/boards/"+bd.ID+"/scene?rev=0", scene)
 	if got := e.expect(200, "GET", "/api/boards/"+bd.ID+"/scene", ""); got != scene {
 		t.Fatalf("scene %s", got)
 	}
@@ -535,7 +558,7 @@ func TestNotFound(t *testing.T) {
 	e := newEnv(t)
 	for _, r := range [][3]string{
 		{"GET", "/api/boards/b_nope/scene", ""},
-		{"PUT", "/api/boards/b_nope/scene", `{}`},
+		{"PUT", "/api/boards/b_nope/scene?rev=0", `{}`},
 		{"POST", "/api/boards/b_nope/rename", `{"name":"x"}`},
 		{"POST", "/api/boards/b_nope/archive", ""},
 		{"DELETE", "/api/boards/b_nope", ""},
@@ -547,7 +570,7 @@ func TestNotFound(t *testing.T) {
 		{"GET", "/api/chats/nope/subagents/nope/items", ""},
 		{"POST", "/api/chats/nope/messages", `{"text":"hi"}`},
 		{"PATCH", "/api/chats/nope", `{"name":"x"}`},
-		{"PUT", "/api/chats/nope/draft", `{"text":"x"}`},
+		{"PUT", "/api/chats/nope/draft?rev=0", `{"text":"x"}`},
 		{"DELETE", "/api/chats/nope", ""},
 		{"PATCH", "/api/groups/g_nope", `{"name":"x"}`},
 		{"POST", "/api/groups/g_nope/archive", ""},
@@ -569,7 +592,7 @@ func TestConflict(t *testing.T) {
 	bd := e.board(model.Ungrouped)
 	c := e.chat(`{"agent":"claude","board":"` + bd.ID + `"}`)
 	e.expect(200, "POST", "/api/boards/"+bd.ID+"/archive", "")
-	e.expect(409, "PUT", "/api/boards/"+bd.ID+"/scene", `{}`)
+	e.expect(409, "PUT", "/api/boards/"+bd.ID+"/scene?rev=0", `{}`)
 	e.expect(409, "POST", "/api/chats/"+c.ID+"/messages", `{"text":"hi"}`)
 	e.expect(409, "PATCH", "/api/chats/"+c.ID, `{"model":"opus"}`)
 
@@ -612,7 +635,8 @@ func TestBadRequest(t *testing.T) {
 		{"POST", "/api/boards", `{"name":"x"}`},
 		{"POST", "/api/boards", `{"name":"a/b","group":"__ungrouped__"}`},
 		{"POST", "/api/boards", `{"name":"x","group":"g_nope"}`},
-		{"PUT", "/api/boards/" + bd.ID + "/scene", `not json`},
+		{"PUT", "/api/boards/" + bd.ID + "/scene?rev=0", `not json`},
+		{"PUT", "/api/boards/" + bd.ID + "/scene", `{}`},
 		{"POST", "/api/boards/" + bd.ID + "/rename", `{"name":"  "}`},
 		{"PATCH", "/api/boards/" + bd.ID, `{"group":""}`},
 		{"PATCH", "/api/boards/" + bd.ID, `{"group":"g_nope"}`},
@@ -622,7 +646,7 @@ func TestBadRequest(t *testing.T) {
 		{"PATCH", "/api/chats/" + c.ID, `{"cwd":"` + notDir + `"}`},
 		{"PATCH", "/api/chats/" + c.ID, `{"cwd":"` + e.st.P.Root + `"}`},
 		{"PATCH", "/api/chats/" + c.ID, `{"model":"no-such-model"}`},
-		{"PUT", "/api/chats/" + c.ID + "/draft", `not json`},
+		{"PUT", "/api/chats/" + c.ID + "/draft?rev=0", `not json`},
 		{"PUT", "/api/groups/order", `{"ids":["g_nope"]}`},
 		{"DELETE", "/api/groups/g_x?contents=maybe", ""},
 		{"POST", "/api/groups/" + g.ID + "/move", `{"parent":"` + g.ID + `"}`},
@@ -698,10 +722,10 @@ func TestGroupRoutesNestAndMove(t *testing.T) {
 func TestChatDraft(t *testing.T) {
 	e := newEnv(t)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
-	if code, _ := e.doAs("B", "PUT", "/api/chats/"+c.ID+"/draft", `{"text":"x"}`); code != 409 {
+	if code, _ := e.doAs("B", "PUT", "/api/chats/"+c.ID+"/draft?rev=0", `{"text":"x"}`); code != 409 {
 		t.Fatalf("draft from B: %d", code)
 	}
-	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft", `{"text":"hi @Plan","mentions":[{"name":"Plan","id":"b_1"}]}`)
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?rev=0", `{"text":"hi @Plan","mentions":[{"name":"Plan","id":"b_1"}]}`)
 	v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, ""))
 	want := &model.Draft{Text: "hi @Plan", Mentions: []model.Mention{{Name: "Plan", ID: "b_1"}}}
 	if !reflect.DeepEqual(v.Draft, want) {
@@ -710,22 +734,85 @@ func TestChatDraft(t *testing.T) {
 	if st := e.thread(c.ID, "").State; !reflect.DeepEqual(st.Draft, want) || !v.HasDraft {
 		t.Fatalf("draft in the state %+v, hasDraft %v", st.Draft, v.HasDraft)
 	}
-	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft", `{"text":""}`)
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?rev=1", `{"text":""}`)
 	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft != nil {
 		t.Fatalf("cleared draft %+v", v.Draft)
 	}
 	// With the branch named: the same draft for an unsplit chat.
-	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?branch=main", `{"text":"again"}`)
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?branch=main&rev=2", `{"text":"again"}`)
 	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft == nil || v.Draft.Text != "again" {
 		t.Fatalf("draft by branch %+v", v.Draft)
 	}
-	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?branch=main", `{"text":""}`)
+	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?branch=main&rev=3", `{"text":""}`)
 	if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, "")); v.Draft != nil || v.HasDraft || e.thread(c.ID, "main").State.Draft != nil {
 		t.Fatalf("cleared draft %+v", v.Draft)
 	}
-	if out := e.expect(404, "PUT", "/api/chats/"+c.ID+"/draft?branch=nope", `{"text":"x"}`); !strings.Contains(out, chats.ErrNoBranch.Error()) {
+	if out := e.expect(404, "PUT", "/api/chats/"+c.ID+"/draft?branch=nope&rev=4", `{"text":"x"}`); !strings.Contains(out, chats.ErrNoBranch.Error()) {
 		t.Fatalf("error body %s", out)
 	}
+}
+
+// PUT /api/chats/{id}/draft names the counter of the draft it was typed on (?rev=): the answer
+// has the new one, a save on another counter is refused with the stored counter and draft, and
+// a save that names none is refused.
+func TestChatDraftCounter(t *testing.T) {
+	e := newEnv(t)
+	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
+	draft := "/api/chats/" + c.ID + "/draft"
+	view := func() model.ChatView {
+		t.Helper()
+		return decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, ""))
+	}
+	if raw := e.expect(200, "GET", "/api/chats/"+c.ID, ""); strings.Contains(raw, "draftRev") {
+		t.Fatalf("a chat without a draft has a counter: %s", raw)
+	}
+
+	// No counter, or one that is none: 400, and nothing is stored.
+	for _, q := range []string{"", "?branch=main", "?rev=", "?rev=x", "?rev=-1", "?rev=1.5"} {
+		out := decode[map[string]any](t, e.expect(400, "PUT", draft+q, `{"text":"x"}`))
+		want := "rev is not a number"
+		if !strings.Contains(q, "rev") {
+			want = "rev is missing"
+		}
+		if !reflect.DeepEqual(out, map[string]any{"error": want}) {
+			t.Fatalf("PUT draft%s: %v", q, out)
+		}
+	}
+	if v := view(); v.Draft != nil || v.DraftRev != 0 {
+		t.Fatalf("view after the refused saves %+v", v)
+	}
+
+	sameJSON(t, "the first save", decode[any](t, e.expect(200, "PUT", draft+"?rev=0", `{"text":"one"}`)), `{"ok":true,"rev":1}`)
+	sameJSON(t, "the second save", decode[any](t, e.expect(200, "PUT", draft+"?branch=main&rev=1", `{"text":"two","mentions":[{"name":"Plan","id":"b_1"}]}`)), `{"ok":true,"rev":2}`)
+	if v, st := view(), e.thread(c.ID, "main").State; v.DraftRev != 2 || st.DraftRev != 2 || v.Draft == nil || v.Draft.Text != "two" {
+		t.Fatalf("view %+v, state %+v", v, st)
+	}
+
+	// A late save, typed on the first draft: 409 with what is stored, which stays.
+	stale := `{"error":"the draft was changed elsewhere","code":"stale","rev":2,"draft":{"text":"two","mentions":[{"name":"Plan","id":"b_1"}]}}`
+	for _, q := range []string{"?rev=1", "?rev=0", "?rev=3", "?branch=main&rev=1"} {
+		sameJSON(t, "a save on "+q, decode[any](t, e.expect(409, "PUT", draft+q, `{"text":"late"}`)), stale)
+	}
+	if v := view(); v.DraftRev != 2 || v.Draft == nil || v.Draft.Text != "two" {
+		t.Fatalf("view after the late saves %+v", v)
+	}
+
+	// A clear keeps the counter; a late save then gets no draft back.
+	sameJSON(t, "the clear", decode[any](t, e.expect(200, "PUT", draft+"?rev=2", `{"text":""}`)), `{"ok":true,"rev":3}`)
+	if v, st := view(), e.thread(c.ID, "main").State; v.Draft != nil || v.DraftRev != 3 || st.Draft != nil || st.DraftRev != 3 {
+		t.Fatalf("view after the clear %+v, state %+v", v, st)
+	}
+	sameJSON(t, "a late save after the clear", decode[any](t, e.expect(409, "PUT", draft+"?rev=2", `{"text":"late"}`)),
+		`{"error":"the draft was changed elsewhere","code":"stale","rev":3,"draft":null}`)
+
+	// A message sent clears the draft of its branch and raises the counter.
+	sameJSON(t, "a save before the message", decode[any](t, e.expect(200, "PUT", draft+"?rev=3", `{"text":"hello"}`)), `{"ok":true,"rev":4}`)
+	e.expect(200, "POST", "/api/chats/"+c.ID+"/messages", `{"text":"hello","context":""}`)
+	if v := view(); v.Draft != nil || v.DraftRev != 5 {
+		t.Fatalf("view after the message %+v", v)
+	}
+	sameJSON(t, "a late save after the message", decode[any](t, e.expect(409, "PUT", draft+"?rev=4", `{"text":"hello"}`)),
+		`{"error":"the draft was changed elsewhere","code":"stale","rev":5,"draft":null}`)
 }
 
 func TestChatContext(t *testing.T) {
@@ -1218,10 +1305,10 @@ func TestChatLabel(t *testing.T) {
 	}
 	e.expect(200, "PUT", path, `{"branch":"main","item":6,"text":"`+strings.Repeat("é", 200)+`"}`)
 	e.expect(200, "PUT", path, `{"branch":"main","item":6,"text":""}`)
-	// A mutation: only the active client may make it.
+	// A mutation: only a known client may make it.
 	for _, client := range []string{"", "B"} {
 		code, out := e.doAs(client, "PUT", path, `{"branch":"main","item":6,"text":"lua"}`)
-		if code != 409 || decode[map[string]string](t, out)["error"] != "not_active" {
+		if code != 409 || decode[map[string]string](t, out)["error"] != "unknown_client" {
 			t.Fatalf("client %q: %d %s", client, code, out)
 		}
 	}

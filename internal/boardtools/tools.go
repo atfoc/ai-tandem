@@ -2,6 +2,8 @@
 // the prompts and the board API. It imports nothing from this project.
 package boardtools
 
+import "strings"
+
 // Tool is one board tool an agent can call.
 type Tool struct {
 	Name        string
@@ -45,7 +47,7 @@ const boardDesc = "board id (from list_boards or <ui-context>); omit for this ch
 var Tools = []Tool{
 	{
 		Name:        "list_boards",
-		Description: "List the whiteboards: name, id, group, which one is this chat's board and which one is on screen. Names are not unique; the other tools take the id.",
+		Description: "List the whiteboards: name, id, group and which one is this chat's board. Names are not unique; the other tools take the id.",
 		Schema:      obj(props{}),
 		Summary:     "{}",
 	},
@@ -160,6 +162,51 @@ var SpawnFamily = []Tool{
 		}),
 		Summary: `{"agent"?: "claude|cursor|pi", "filter"?: "..."}`,
 	},
+}
+
+// SpawnFamilyFor is SpawnFamily as it is listed on a server that can start only agents: the agent
+// parameter's enum, its description and the summary name these alone. With none the parameter is
+// left out. SpawnFamily is not changed.
+func SpawnFamilyFor(agents []string) []Tool {
+	enum := make([]any, len(agents))
+	for i, a := range agents {
+		enum[i] = a
+	}
+	desc := strings.Join(agents, ", ")
+	if n := len(agents); n > 1 {
+		desc = strings.Join(agents[:n-1], ", ") + ", or " + agents[n-1]
+	}
+	out := make([]Tool, len(SpawnFamily))
+	for i, t := range SpawnFamily {
+		old, ok := t.Schema["properties"].(map[string]any)
+		if _, has := old["agent"]; !ok || !has {
+			out[i] = t
+			continue
+		}
+		ps := make(map[string]any, len(old))
+		for k, v := range old {
+			ps[k] = v
+		}
+		if len(agents) == 0 {
+			delete(ps, "agent")
+			t.Summary = strings.Replace(t.Summary, `"agent"?: "claude|cursor|pi", `, "", 1)
+		} else {
+			ps["agent"] = map[string]any{
+				"type":        "string",
+				"description": desc + "; omit for this chat's agent",
+				"enum":        enum,
+			}
+			t.Summary = strings.Replace(t.Summary, "claude|cursor|pi", strings.Join(agents, "|"), 1)
+		}
+		schema := make(map[string]any, len(t.Schema))
+		for k, v := range t.Schema {
+			schema[k] = v
+		}
+		schema["properties"] = ps
+		t.Schema = schema
+		out[i] = t
+	}
+	return out
 }
 
 // IsTool reports whether name is one of Tools (board-engine operations only).

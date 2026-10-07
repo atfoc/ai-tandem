@@ -1,11 +1,14 @@
 // The canvas: one Excalidraw for the selected board, plus the layers that show
 // where an agent just worked, who is working on the board, and the point being
-// picked for a chat (⌘⇧L).
+// picked for a chat (⌘⇧L). A board another window holds shows the take-over
+// panel in its place.
 import React, { useEffect, useRef, useState } from "react";
 import { Excalidraw, FONT_FAMILY } from "@excalidraw/excalidraw";
-import { useStore, setState, getState, flash } from "./store.ts";
+import { useStore, setState, getState, flash, setRole, setDropped } from "./store.ts";
 import { chatBusy } from "./logic/status.ts";
-import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, type Scene } from "./board.ts";
+import { showsPanel } from "./logic/roles.ts";
+import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, takeBoard, scenes, type Scene } from "./board.ts";
+import { TakeoverPanel, DROPPED_TEXT } from "./TakeoverPanel.tsx";
 import { insertRef, pickPoint } from "./Composer.tsx";
 import { pointLabel } from "./logic/refs.ts";
 import { AgentGlyph } from "./icons.tsx";
@@ -40,29 +43,46 @@ function blockSceneDrop(e: React.DragEvent) {
 export function Canvas({ board }: { board: string }) {
   const b = useStore((s) => s.boards[board]);
   const theme = useStore((s) => s.theme);
-  const [loaded, setLoaded] = useState<{ board: string; scene: Scene } | null>(null);
+  const role = useStore((s) => s.roles[board]);
+  const gen = useStore((s) => s.sceneGen[board] ?? 0); // raised when the scene kept for the board was dropped: it is read again
+  const dropped = useStore((s) => !!s.dropped[board]);
+  const [loaded, setLoaded] = useState<{ board: string; gen: number; scene: Scene } | null>(null);
   const [err, setErr] = useState("");
+  const known = !!b, archived = !!b?.archived;
+  // An archived board is nobody's to write: it shows read-only whatever window held it last.
+  const panel = known && !archived && showsPanel(role);
 
   useEffect(() => {
+    if (panel) return; // the panel shows in place of the canvas: no scene is read for it
     let gone = false;
     setErr("");
     loadScene(board).then(
-      (scene) => { if (!gone) setLoaded({ board, scene }); },
+      (scene) => { if (!gone) setLoaded({ board, gen, scene }); },
       (e) => { if (!gone) setErr(e?.message ?? String(e)); },
     );
     return () => { gone = true; void flush(board); if (liveBoard === board) setLive(null, null); };
-  }, [board]);
+  }, [board, gen, panel]);
 
+  // A board on screen that was not asked for (it was unarchived, or it was let go because nobody waited for it) is taken
+  // if no other window holds it. An archived one has no role: once unarchived it is asked for anew.
+  useEffect(() => {
+    if (!known) return;
+    if (archived) { if (role) setRole(board, null); }
+    else if (!role) void takeBoard(board, true);
+  }, [board, known, archived, role]);
+
+  if (!b) return <div className="canvas-empty" />;
+  if (panel) return <TakeoverPanel board={board} role={role} dropped={dropped} />;
   if (err) return <div className="canvas-empty"><p>Couldn't open this board: {err}</p></div>;
-  if (!b || !loaded || loaded.board !== board) return <div className="canvas-empty" />;
+  if (!loaded || loaded.board !== board || loaded.gen !== gen) return <div className="canvas-empty" />;
   const { scene } = loaded;
   const as = scene.appState ?? {};
   return (
     <div className="canvas" onDropCapture={blockSceneDrop}>
       <Excalidraw
-        key={board}
+        key={`${board}:${gen}`}
         theme={theme}                            // the app's theme; Excalidraw's own toggle is hidden
-        viewModeEnabled={!!b.archived}
+        viewModeEnabled={archived || role !== "held"} // only the window that holds a board draws on it
         UIOptions={{ canvasActions: {
           loadScene: false,                      // no Open / ⌘O
           saveToActiveFile: false,               // no Save / ⌘S
@@ -78,7 +98,7 @@ export function Canvas({ board }: { board: string }) {
         }}
         excalidrawAPI={(api) => setLive(board, api)}
         onChange={(els, appState, files) => {
-          if (!getState().boards[board]?.archived) sceneChanged(board, els, appState, files);
+          if (!getState().boards[board]?.archived && scene === scenes.get(board)) sceneChanged(board, els, appState, files);
           rememberStyle(appState);
           const count = Object.keys(appState.selectedElementIds ?? {}).length;
           const v = getState().view;
@@ -91,6 +111,12 @@ export function Canvas({ board }: { board: string }) {
       <FlashLayer board={board} />
       <Presence board={board} />
       <PickLayer board={board} />
+      {dropped && role === "held" && !archived && (
+        <div className="canvas-note" role="status">
+          <span>{DROPPED_TEXT}</span>
+          <button className="icon-btn" title="Hide" aria-label="Hide" onClick={() => setDropped(board, false)}>×</button>
+        </div>
+      )}
     </div>
   );
 }

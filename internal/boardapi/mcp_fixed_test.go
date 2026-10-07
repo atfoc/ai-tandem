@@ -70,13 +70,13 @@ func TestFixedMCPToolsCallValidToken(t *testing.T) {
 		got <- p
 		return editorbridge.RPCReply{Result: json.RawMessage(`"rect r1 at 0,0"`)}
 	})
-	_, out := e.fixed("Bearer "+e.token, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_board","arguments":{"board":"b_x"}}}`)
+	_, out := e.fixed("Bearer "+e.token, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
 	text, isErr := callResult(t, out)
 	if isErr || text != "rect r1 at 0,0" {
 		t.Fatalf("got %q isError=%v", text, isErr)
 	}
 	p := <-got
-	if p["chat"] != e.chat || p["board"] != e.board.ID || p["name"] != "read_board" {
+	if p["chat"] != e.chat || p["board"] != e.board.ID || p["target"] != e.board.ID || p["name"] != "read_board" {
 		t.Fatalf("rpc params %v", p)
 	}
 }

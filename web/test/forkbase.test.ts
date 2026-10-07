@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { branchCount, currentBranch, shownBranchOf } from "../src/logic/branches.ts";
-import { api } from "../src/api.ts";
+import { api, ApiError } from "../src/api.ts";
 import { MAIN, type ChatView, type PendingMove, type TreeView } from "../src/types.ts";
 
 const view = (p: Partial<ChatView> = {}): ChatView => ({
@@ -113,6 +113,30 @@ test("send with a target adds only the target's branch, at and new", async () =>
     { method: "POST", path: "/api/chats/c_1/messages", body: { text: "hi", context: "", target: { branch: "a1b2c3d4", at: 6, new: false } } });
 });
 
+test("the calls that take a server name it by its entry id, and not at all for this computer", async () => {
+  const dirs = { path: "/w", parent: "/", dirs: [], git: false };
+  const calls: [string, () => Promise<unknown>, string, string][] = [
+    ["dirs", () => api.dirs("/w x"), "GET", "/api/dirs?path=%2Fw%20x"],
+    ["dirs local", () => api.dirs("/w", "local"), "GET", "/api/dirs?path=%2Fw"],
+    ["dirs there", () => api.dirs("/w", "s_1"), "GET", "/api/dirs?path=%2Fw&server=s_1"],
+    ["usage", () => api.usage("claude"), "GET", "/api/usage/claude"],
+    ["usage fresh", () => api.usage("claude", true), "GET", "/api/usage/claude?fresh=1"],
+    ["usage local", () => api.usage("claude", false, "local"), "GET", "/api/usage/claude"],
+    ["usage there", () => api.usage("claude", false, "s_1"), "GET", "/api/usage/claude?server=s_1"],
+    ["usage fresh there", () => api.usage("claude", true, "s_1"), "GET", "/api/usage/claude?fresh=1&server=s_1"],
+    ["deleteChat", () => api.deleteChat("c_1"), "DELETE", "/api/chats/c_1"],
+    ["deleteChat here only", () => api.deleteChat("c_1", { local: true }), "DELETE", "/api/chats/c_1?local=1"],
+    ["deleteChat not here only", () => api.deleteChat("c_1", { local: false }), "DELETE", "/api/chats/c_1"],
+  ];
+  for (const [name, run, method, path] of calls) {
+    const r = await asked(run, dirs);
+    assert.deepEqual([r.method, r.path], [method, path], name);
+  }
+  assert.deepEqual(await asked(() => api.configure("c_1", "main", { server: "s_1" })), { method: "PATCH", path: "/api/chats/c_1?branch=main", body: { server: "s_1" } });
+  assert.deepEqual((await asked(() => api.newChat({ group: "g_1", server: "s_1" }))).body, { group: "g_1", server: "s_1" });
+  assert.deepEqual((await asked(() => api.newChat({ group: "g_1" }))).body, { group: "g_1" });
+});
+
 test("items and subItems ask for the branch they are given", async () => {
   const items = { version: 1, items: [] };
   assert.equal((await asked(() => api.items("c_1", "main"), items)).path, "/api/chats/c_1/items?branch=main");
@@ -129,7 +153,7 @@ test("every session call names its branch in the query; a send with a target nam
     ["openChat", () => api.openChat("c_1", B), "POST", `/api/chats/c_1/open?branch=${B}`],
     ["send", () => api.send("c_1", B, "hi", ""), "POST", `/api/chats/c_1/messages?branch=${B}`],
     ["configure", () => api.configure("c_1", B, { model: "m" }), "PATCH", `/api/chats/c_1?branch=${B}`],
-    ["saveDraft", () => api.saveDraft("c_1", B, draft), "PUT", `/api/chats/c_1/draft?branch=${B}`],
+    ["saveDraft", () => api.saveDraft("c_1", B, draft, 3), "PUT", `/api/chats/c_1/draft?branch=${B}&rev=3`],
     ["interrupt", () => api.interrupt("c_1", B), "POST", `/api/chats/c_1/interrupt?branch=${B}`],
     ["decide", () => api.decide("c_1", B, { requestId: "r1", allow: true }), "POST", `/api/chats/c_1/permission?branch=${B}`],
     ["contextSplit", () => api.contextSplit("c_1", B), "GET", `/api/chats/c_1/context?branch=${B}`],
@@ -142,9 +166,23 @@ test("every session call names its branch in the query; a send with a target nam
   }
   // the bodies stay as they were: the branch is in the query alone
   assert.deepEqual((await asked(() => api.configure("c_1", B, { model: "m" }))).body, { model: "m" });
-  assert.deepEqual((await asked(() => api.saveDraft("c_1", B, draft))).body, draft);
+  assert.deepEqual((await asked(() => api.saveDraft("c_1", B, draft, 0))).body, draft);
   assert.deepEqual((await asked(() => api.decide("c_1", B, { requestId: "r1", allow: true }))).body, { requestId: "r1", allow: true });
   assert.equal((await asked(() => api.items("c_1", "a b"), items)).path, "/api/chats/c_1/items?branch=a%20b"); // escaped
+});
+
+test("saveDraft names its base and answers the new counter; a stale refusal is an ApiError with the server's counter and draft", async () => {
+  const answer = (status: number, body: unknown) => async (run: () => Promise<unknown>) => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
+    try { return await run(); } finally { globalThis.fetch = real; }
+  };
+  assert.equal(await answer(200, { ok: true, rev: 5 })(() => api.saveDraft("c_1", "main", { text: "d" }, 4)), 5);
+  for (const stored of [{ text: "theirs" }, null]) {
+    const e = await answer(409, { error: "the draft was changed elsewhere", code: "stale", rev: 7, draft: stored })(() => api.saveDraft("c_1", "main", { text: "d" }, 4).catch((x) => x));
+    assert.ok(e instanceof ApiError);
+    assert.deepEqual([e.status, e.code, e.rev, e.draft, e.message], [409, "stale", 7, stored, "the draft was changed elsewhere"]);
+  }
 });
 
 test("tree, label and fork use their routes", async () => {

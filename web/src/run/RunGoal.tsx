@@ -11,12 +11,17 @@ import { TIER_ROWS } from "../logic/rungoal.ts";
 import { DirtyNote, TextError, TextLoading, useDockTop } from "./bits.tsx";
 import { useGoal } from "./texts.ts";
 import { TIERS, type ModelChoice, type RunDetail } from "../types.ts";
+import { catalogFor } from "../logic/agentlist.ts";
+import { serverOf } from "../logic/serverlists.ts";
+import { folderOn, runWhere } from "../logic/runserver.ts";
 
 export interface RunGoalProps { runId: string; detail: RunDetail }
 
 export function RunGoal({ runId, detail }: RunGoalProps) {
   const r = useStore((s) => s.runs[runId]);
-  const cat = useStore((s) => (r ? s.catalogs[r.agent] : undefined));
+  const server = serverOf(r);
+  const cat = useStore((s) => (r ? catalogFor(s, server, r.agent) : undefined));
+  const folder = useStore((s) => (r ? folderOn(runWhere(s, r), tildify(r.cwd, server)) : "")); // another server's folder names the server
   const text = useGoal(runId);
   const top = useDockTop();
   const s = r?.settings;
@@ -30,7 +35,7 @@ export function RunGoal({ runId, detail }: RunGoalProps) {
           <span className={`rd-agent agent-${agentClass(r.agent)}`}><AgentGlyph agent={r.agent} size={12} /></span> {agentName(r.agent)} · {same
             ? choice(r.tiers.deep)
             : TIER_ROWS.map(([k, name], i) => <span key={k} className="rd-goal-tier" data-tier={k}>{i > 0 && " · "}<span className="rd-goal-tier-name">{name}</span> {choice(r.tiers[k])}</span>)}
-          {" · "}<span className="mono rd-wrap" title={r.cwd}>{tildify(r.cwd)}</span>{!detail.git ? " (not a git repository)" : ""} · started {dateTime(detail.startedAt)}
+          {" · "}<span className="mono rd-wrap rd-folder" title={r.cwd}>{folder}</span>{!detail.git ? " (not a git repository)" : ""} · started {dateTime(detail.startedAt)}
           {" · "}{limitsLabel(s)}
           {s.setup ? <> · setup <span className="mono rd-wrap">{s.setup}</span></> : null}
         </div>

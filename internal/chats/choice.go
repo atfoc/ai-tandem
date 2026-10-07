@@ -35,7 +35,12 @@ func (e badChoice) Is(target error) bool { return target == ErrBadChoice }
 // known yet (see catalog) accepts anything. cm is the catalog's row of next.Model, nil when the
 // catalog has none. Every error is an ErrBadChoice.
 func (m *Manager) choose(kind model.AgentKind, cur model.ModelChoice, modelID, effort string) (next model.ModelChoice, cm *model.CatalogModel, err error) {
-	cat := m.catalog(kind)
+	return chooseIn(m.catalog(kind), cur, modelID, effort)
+}
+
+// chooseIn is choose against the catalog cat, which is this server's for a kind or another
+// server's (see side); nil accepts anything.
+func chooseIn(cat *model.Catalog, cur model.ModelChoice, modelID, effort string) (next model.ModelChoice, cm *model.CatalogModel, err error) {
 	next = cur
 	if modelID != "" {
 		cm, err := findModel(cat, modelID)

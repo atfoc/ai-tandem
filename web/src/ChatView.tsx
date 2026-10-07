@@ -2,21 +2,29 @@
 // file only renders them. Both also draw the transcript of one of a run's own agents, read-only:
 // ChatHeader with `agent`, Thread with `readOnly`.
 import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject, type UIEvent } from "react";
-import { useStore, setState, isBusy, isLegacy, chatTitle, boardName, shownBranch, shownView, threadOf, subsOf } from "./store.ts";
+import { useStore, setState, setStarting, isBusy, isLegacy, chatTitle, boardName, shownBranch, shownView, threadOf, subsOf } from "./store.ts";
 import { api } from "./api.ts";
 import { loadItems, retryAgent } from "./conn.ts";
+import { openServers } from "./Servers.tsx";
 import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
 import { toolVerb, toolDone, statusText, waitingText } from "./logic/labels.ts";
+import { headStatus } from "./logic/status.ts";
 import { isSubagentTool } from "./logic/subagents.ts";
+import { REMOVE, SERVERS, TRY_AGAIN, remoteView } from "./logic/remoteview.ts";
+import { serverName, serverOf, serverState } from "./logic/serverlists.ts";
+import { emptyReason, sendOff, sendingLine } from "./logic/chatserver.ts";
+import { startingAfter } from "./logic/sendend.ts";
+import { useWhere } from "./ChatChoices.tsx";
 import { quotable } from "./logic/quotes.ts";
 import { permAnswer } from "./logic/perms.ts";
 import { runChat } from "./logic/runchat.ts";
+import { agentLabel, configHint, usableAgents } from "./logic/agentlist.ts";
 import { inPrefix, prefixEnd, prefixMark, prefixText } from "./logic/prefix.ts";
 import { Markdown } from "./Markdown.tsx";
 import { SubagentRow, SubResultRow } from "./Subagents.tsx";
 import { SentQuotes } from "./Quotes.tsx";
-import { AgentGlyph, BoardIcon, Pencil, RunIcon, agentClass, agentName } from "./icons.tsx";
+import { AgentGlyph, BoardIcon, Pencil, RunIcon, agentClass } from "./icons.tsx";
 import { MessageExtras, ForkedFrom } from "./fork/Message.tsx";
 import { TreeButton } from "./fork/TreeButton.tsx";
 import { BranchAlert, BranchCrumb } from "./fork/Chrome.tsx";
@@ -60,6 +68,9 @@ export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHea
   const items = useStore((s) => threadOf(s, chatId)?.items);
   const board = useStore((s) => (c?.board ? s.boards[c.board] : undefined));
   const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined)); // not the record: it changes with every task of the run
+  const server = serverOf(c);
+  const on = useStore((s) => (c?.server ? serverName(s, server) : "")); // a chat on another server names it
+  const where = useWhere(c);
   const [editing, setEditing] = useState(false);
   if (agent) return (
     <div className="chat-head read-only" data-agent={chatId}>
@@ -72,6 +83,7 @@ export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHea
     </div>
   );
   if (!c) return null;
+  const status = headStatus(c, isLegacy(c), statusText(c, boardName), sendOff(where, c));
   return (
     <div className="chat-head">
       <span className={`crow-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={14} /></span>
@@ -84,9 +96,10 @@ export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHea
         <div className="chat-head-sub">
           {c.board && <><BoardIcon /> {board?.name ?? "board"} · </>}
           {c.run && !c.board && <><RunIcon size={12} /> {runName ?? "run"} · </>}
-          {agentName(c.agent)}
-          {c.cwd ? <> · <span className="mono">{tildify(c.cwd)}</span></> : null}
-          {" · "}{c.archived ? "Archived" : isLegacy(c) ? "Disabled" : statusText(c, boardName)}
+          {agentLabel(c.agent)}
+          {c.cwd ? <> · <span className="mono">{tildify(c.cwd, server)}</span></> : null}
+          {on && <> · <span className="chat-head-server">{on}</span></>}
+          {status && <>{" · "}{status}</>}
           <BranchCrumb chatId={chatId} />
         </div>
       </div>
@@ -162,6 +175,15 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   const ref = useRef<HTMLDivElement>(null);
   const onScroll = useStickToBottom(ref, true, readOnly ? chatId : `${chatId}:${branch}`);
   const end = usePrefixEnd(chatId);
+  // A chat on another server: what its thread's place shows while that server is not connected.
+  const server = serverOf(c);
+  const serverIs = useStore((s) => serverName(s, server));
+  const state = useStore((s) => serverState(s, server));
+  const loadErr = useStore((s) => s.threadErrors[chatId]);
+  // The first message of a chat on another server, while its call runs: shown in the empty thread's place.
+  const starting = useStore((s) => (readOnly ? undefined : s.starting[chatId]));
+  // After a call that was taken the text stays until the thread read again has the message.
+  useEffect(() => { if (starting !== undefined && !startingAfter(true, !!all.length)) setStarting(chatId, null); }, [starting, chatId, !all.length]);
   if (readOnly) {
     const ready = !!c && (!!loaded || !!kept);
     const busy = !!c && isBusy(c.status);
@@ -187,10 +209,27 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   const markEl = <div className="prefix-end" data-at={end}><span>{prefixText(branch)}</span></div>;
   const busy = isBusy(c.status);
   const waiting = waitingText(c); // "" while busy
+  const remote = remoteView(c, serverIs, state, !!loaded, loadErr);
+  if (remote.kind !== "none" && remote.kind !== "bar") return (
+    <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
+      <div className={`remote-off ${remote.kind}`} role="status">
+        <p className="remote-off-text">{remote.text}</p>
+        {remote.kind === "unreachable" && remote.state && <p className="remote-off-state">{remote.state}</p>}
+        {remote.kind === "unreachable" && <button type="button" className="btn sm remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
+        {remote.kind === "failed" && <button type="button" className="btn sm remote-retry" onClick={() => void loadItems(chatId)}>{TRY_AGAIN}</button>}
+        {remote.kind === "gone" && <RemoveHere chatId={chatId} />}
+      </div>
+    </div>
+  );
   return (
     <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
       <ForkedFrom chat={c} />
-      {loaded && !items.length && <EmptyThread c={c} />}
+      {loaded && !items.length && (starting !== undefined ? (
+        <>
+          <div className="msg user starting"><Markdown text={starting} user board={c.board} agent={c.agent} /></div>
+          <div className="typing starting-line"><Dots /> {sendingLine(serverIs)}</div>
+        </>
+      ) : <EmptyThread c={c} />)}
       {/* keyed by the branch: a message's own state does not carry over to another branch's */}
       {items.map((it, i) => (
         <Fragment key={`${branch}:${i}`}>
@@ -201,7 +240,24 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
       {mark === items.length && markEl}
       {busy && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
       {!!waiting && <div className="typing waiting">{waiting}</div>}
+      {remote.kind === "bar" && (
+        <div className={`remote-bar ${remote.gone ? "gone" : "off"}`} role="status">
+          <span className="remote-bar-text">{remote.text}</span>
+          {remote.gone ? <RemoveHere chatId={chatId} /> : <button type="button" className="link remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
+        </div>
+      )}
     </div>
+  );
+}
+
+/** "Remove from this sidebar": drops this server's record of a chat its own server no longer has. */
+function RemoveHere({ chatId }: { chatId: string }) {
+  const [err, setErr] = useState("");
+  return (
+    <>
+      <button type="button" className="btn sm remote-remove" onClick={() => api.deleteChat(chatId, { local: true }).then(() => setErr(""), (e) => setErr(e.message))}>{REMOVE}</button>
+      {err && <span className="dir-err">{err}</span>}
+    </>
   );
 }
 
@@ -210,21 +266,30 @@ function EmptyThread({ c }: { c: ChatView }) {
   const runName = useStore((s) => (c.run ? s.runs[c.run]?.name : undefined));
   const runStatus = useStore((s) => (c.run ? s.runs[c.run]?.status : undefined));
   const onRun = useMemo(() => runChat(runStatus, runName), [runStatus, runName]); // what a chat on a run says, by the run's state
-  const suggest = c.board
+  const usable = useStore((s) => usableAgents(s, serverOf(c)));
+  const where = useWhere(c);
+  const off = sendOff(where, c); // its server is not connected: no agent is shown, and nothing is to be picked
+  const reason = emptyReason(where, usable, c);
+  const agent = off ? "" : c.agent;
+  const hint = off ? "" : configHint(usable, c.agent);
+  // (a chat with no agent, or whose server is not connected, takes no message: it says why, and offers none to send)
+  const suggest = reason ? [] : c.board
     ? ["Sketch a 3-tier web architecture here", "Summarize what's on this board", "Tidy up the selected shapes into a row"]
     : c.run
     ? onRun.suggestions
     : ["What is this project?", "What changed in the last few commits?"];
   return (
     <div className="empty-thread">
-      <div className={`big-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={28} /></div>
-      <div className="empty-title">{agentName(c.agent)}</div>
-      {c.board
+      <div className={`big-glyph agent-${agentClass(agent)}`}><AgentGlyph agent={agent} size={28} /></div>
+      <div className="empty-title">{agentLabel(agent)}</div>
+      {reason
+        ? <p className="empty-reason">{reason}</p>
+        : c.board
         ? <p>Ask about or change <b>{board?.name ?? "this board"}</b>. Type <kbd>@</kbd> to point at other boards.</p>
         : c.run
         ? <p>{onRun.text.map((part, i) => (typeof part === "string" ? part : <b key={i}>{part.b}</b>))}</p>
         : <p>The same session you get in a terminal, started in <b className="mono">{base(c.cwd) || "/"}</b>.</p>}
-      {!c.locked && !c.archived && !isLegacy(c) && <p className="config-hint">Pick the folder, model and effort below — they lock when you send.</p>}
+      {!c.locked && !c.archived && !isLegacy(c) && hint && <p className="config-hint">{hint}</p>}
       {!c.archived && !isLegacy(c) && suggest.length > 0 && (
         <div className="suggestions">
           {suggest.map((s) => (

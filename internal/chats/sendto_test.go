@@ -78,7 +78,7 @@ func (e *env) unsplit(id string) {
 func (e *env) noDefaults() {
 	e.t.Helper()
 	e.st.Read(func(s *model.State) {
-		if len(s.Defaults.Groups) != 0 || s.Defaults.Last.Cwd != "" {
+		if len(s.Defaults.Groups) != 0 {
 			e.t.Fatalf("defaults recorded by a Send on a branch: %+v", s.Defaults)
 		}
 	})
@@ -299,7 +299,7 @@ func TestSendToNewBranch(t *testing.T) {
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 3)
 	e.setDefaults(model.Defaults{})
-	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 	main, mainItems := e.meta(id), e.file(id, "items.jsonl")
@@ -500,7 +500,7 @@ func TestSendToAtTheEnd(t *testing.T) {
 	// Main's process ends here, so that carrying main on has to start one.
 	e.m.stopBranch(id)
 	bm, branchItems := e.meta(bid), e.file(bid, "items.jsonl")
-	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -943,7 +943,7 @@ func TestSendToCarryOnFailureKeepsTheCurrentBranch(t *testing.T) {
 	fa.emit(t, reply("b1")...)
 	e.m.stopBranch(id) // main's process ends: a message to main has to start one
 	d := model.Draft{References: []model.Reference{{Quote: "reply b1", Comment: "on the branch's reply", Item: 4, Start: 0, End: 8}}}
-	if err := e.m.SetDraft(id, d); err != nil {
+	if err := e.setDraft(id, d); err != nil {
 		t.Fatal(err)
 	}
 	mainItems, branchItems := e.file(id, "items.jsonl"), e.file(bid, "items.jsonl")
@@ -1041,7 +1041,7 @@ func TestSendToCarryOnRefusedMessageMoves(t *testing.T) {
 	b, _, fa := e.branchTo(id, newAt(3), "aside")
 	fa.emit(t, reply("b1")...)
 	e.m.stopBranch(id) // main's process ends: a message to main has to start one
-	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 	rejected := errors.New("stdin closed")
@@ -1291,7 +1291,7 @@ func TestSendToStopsNoBranch(t *testing.T) {
 	id, mainAg := e.talked(model.Claude, "", 3)
 	b1, id1, a1 := e.branchTo(id, newAt(3), "one")
 	a1.emit(t, reply("q1")...)
-	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 	main, mainItems := e.meta(id), e.file(id, "items.jsonl")
@@ -1484,7 +1484,7 @@ func TestSendToReferences(t *testing.T) {
 func TestSendToTheCurrentEndIsSend(t *testing.T) {
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
-	if err := e.m.SetDraft(id, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 	evs := e.listen()

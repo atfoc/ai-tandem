@@ -1,0 +1,12 @@
+/* The composer of a chat on another server: the server choice and the lines that name the server. */
+.tchip.server-chip.off { color: var(--muted); }
+.agent-reason.unconfirmed { color: var(--warn); }
+.menu-item.pick[aria-disabled="true"] { color: var(--muted); cursor: default; }
+.menu-item.pick[aria-disabled="true"]:hover { background: none; }
+.menu-item.menu-more { color: var(--muted); }
+.msg.user.starting { opacity: .7; }
+
+/* A run on another server: its sidebar row, and what its stage shows while that server is not connected or the run is gone there. */
+.side-row.is-run.off .side-run-icon, .side-row.is-run.gone .side-run-icon, .side-row.is-run.gone .side-name { opacity: .55; }
+.run-view.run-remote { display: flex; flex-direction: column; }
+.remote-bar.run-remote-bar { position: static; margin: 0; border-width: 0 0 1px; border-radius: 0; }

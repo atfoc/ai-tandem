@@ -2,7 +2,7 @@
 // arrays) live outside it in board.ts `scenes`, because they change on every
 // stroke and nothing but the canvas renders from them.
 import { useSyncExternalStore } from "react";
-import type { AgentKind, Board, BranchState, Catalog, ChatView, Defaults, Draft, Group, PendingMove, RunDetail, RunView, Subagent, TreeView } from "./types.ts";
+import { AGENT_ORDER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type RunDetail, type RunView, type ServerLists, type Subagent, type TreeView } from "./types.ts";
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
 import { forgetBoard } from "./board.ts";
@@ -16,6 +16,11 @@ import { drawerStays, statesByKey, withoutChat, type Thread } from "./logic/thre
 import { NO_SEL, parseSel, validSel, type Sel } from "./logic/sel.ts";
 import { hideAgentIn, showAgentIn, type RunAgentRef } from "./logic/runview.ts";
 import { normRun } from "./logic/runnorm.ts";
+import type { BoardRole } from "./logic/roles.ts";
+import { listsFrom, withThreadError, type ThreadError } from "./logic/serverlists.ts";
+import { movedId, movedSel, withRunError } from "./logic/runserver.ts";
+import { keptRunStarts, movedRunStart, withRunStart, type RunStart } from "./logic/runcompose.ts";
+import { LOCAL_ENTRY, serversOf, type ServerForm, type ServerView } from "./logic/servers.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
 export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind | string; tone: "edit" | "danger"; until: number };
@@ -30,7 +35,7 @@ export type { Thread };
 
 export type State = {
   connected: boolean;
-  role: "connecting" | "active" | "waiting" | "superseded";
+  role: "connecting" | "active";      // the stream: before its first hello, and from then on
   home: string; defaultCwd: string; dataDir: string;
   groups: Group[];
   boards: Record<string, Board>;
@@ -39,6 +44,8 @@ export type State = {
   agents: Record<string, ChatView>;   // a run's own agents whose transcript is shown, by chat id (conn.ts holdAgent); absent otherwise
   agentErrors: Record<string, string>; // by agent chat id: why its view or thread could not be fetched (conn.ts)
   runDetail: Record<string, RunDetail>; // by run id; absent until loaded (conn.ts loadRun), dropped by every snapshot
+  runErrors: Record<string, ThreadError>; // by run id: why the last load of its detail failed, with the server's code (conn.ts); absent after one that worked
+  runStarts: Record<string, RunStart>; // by run id: a draft's start that is on its way, and what the server said of the one that failed (run/actions.ts startRun; setState drops what is old); in memory only
   items: Record<ThreadKey, Thread>;   // a branch's list by branchKey(chat, branch), a subagent's thread by subKey(that, sid); absent until loaded. A run agent's chat has main alone
   subs: Record<BranchKey, Record<string, Subagent>>; // branch → sid → the subagent's state (loaded with the branch's items)
   states: Record<BranchKey, BranchState>; // every branch's session state, as the server sends it; empty with a server that sends none
@@ -49,7 +56,11 @@ export type State = {
   shown: Record<string, string>;      // chat id → the branch it is on in this client, once its list loaded; in memory only (see viewedBranch)
   treeNav: { chat: string; focus?: { branch: string; item: number } } | null; // the open tree popup
   defaults: Defaults;
+  usable: AgentKind[];            // the local server's usable agents (the snapshot's and the `agents` event's list); read through logic/agentlist.ts
   catalogs: Partial<Record<AgentKind, Catalog>>;
+  lists: Record<string, ServerLists>; // by entry id: what each other server offers (the snapshot's and the `server_lists` event's); read through logic/serverlists.ts
+  threadErrors: Record<string, ThreadError>; // by chat id: why the last load of its list failed (conn.ts); absent after one that worked
+  starting: Record<string, string>; // by chat id: the text of a first message on its way to the chat's server (Composer.tsx submit): the thread shows it
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
   panel: boolean;                 // board chat panel shown (⌘J)
   widths: Widths;                 // sidebar and board chat panel, persisted in localStorage "aiwb.widths"
@@ -61,8 +72,16 @@ export type State = {
   flashes: Flash[];               // keyed by board id
   busyOn: Record<string, { chat: string; branch?: string; agent: AgentKind | string; until: number }>; // by board id; branch = the calling branch, when the call names one
   confirm: ConfirmRequest | null; // Dialogs.tsx
+  servers: ServerView[];          // the server list, the local entry first (logic/servers.ts)
+  serversNotice: string;          // why the list file was set aside, or ""; read when the Servers dialog opens
+  serversDialog: { form?: ServerForm } | null; // the Servers dialog (Servers.tsx): null = closed; form = the form it opens with
   picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L)
   update: { banner: UpdateBanner; hidden: boolean }; // the version banner (version.ts); hidden = ×'d until the next reconnect
+
+  // The role per board: several windows work on one server, and each board is held by one of them (board.ts).
+  roles: Record<string, BoardRole>;   // by board id; absent = not asked for
+  dropped: Record<string, true>;      // the boards whose pending edit was dropped (the take-over panel and the canvas say so)
+  sceneGen: Record<string, number>;   // by board id; raised to make the canvas load the scene again
 };
 
 export function safeGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
@@ -78,20 +97,29 @@ const savedSel = (): Sel => parseSel(safeGet("aiwb.sel"));
 let state: State = {
   connected: false, role: "connecting",
   home: "", defaultCwd: "", dataDir: "",
-  groups: [], boards: {}, chats: {}, runs: {}, agents: {}, agentErrors: {}, runDetail: {}, items: {}, subs: {}, states: {}, subDrawer: null, runAgent: null,
+  groups: [], boards: {}, chats: {}, runs: {}, agents: {}, agentErrors: {}, runDetail: {}, runErrors: {}, runStarts: {}, items: {}, subs: {}, states: {}, subDrawer: null, runAgent: null,
   trees: {}, moves: {}, shown: {}, treeNav: null,
-  defaults: { last: {}, groups: {} }, catalogs: {},
+  defaults: { groups: {} }, usable: [], catalogs: {}, lists: {}, threadErrors: {}, starting: {},
   sel: savedSel(), panel: true, widths: parseWidths(safeGet("aiwb.widths")), showArchived: safeGet("aiwb.archived") === "1",
   themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
   selection: { count: 0, lines: [] }, view: { scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 },
   flashes: [], busyOn: {}, confirm: null, picking: null,
+  servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
   update: { banner: "none", hidden: false },
+  roles: {}, dropped: {}, sceneGen: {},
 };
 const subs = new Set<() => void>();
 
 export const getState = () => state;
 export function setState(patch: Partial<State> | ((s: State) => Partial<State>)) {
-  const p = typeof patch === "function" ? patch(state) : patch;
+  let p = typeof patch === "function" ? patch(state) : patch;
+  // A draft run's start (runStarts) is about its run and that run's server as they were: whatever
+  // changes a run or the server list drops what is old of it (logic/runcompose.ts keptRunStarts).
+  if (p.runs || p.servers) {
+    const from = p.runStarts ?? state.runStarts;
+    const runStarts = keptRunStarts(from, state, { runs: p.runs ?? state.runs, servers: p.servers ?? state.servers });
+    if (runStarts !== from) p = { ...p, runStarts };
+  }
   let same = true;
   for (const k in p) if ((p as Record<string, unknown>)[k] !== (state as unknown as Record<string, unknown>)[k]) { same = false; break; }
   if (same) return; // nothing changed: no selector is asked again
@@ -120,7 +148,8 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
   setState((st) => {
     const sel = validSel(st.sel, { boards, runs, chats });
     safeSet("aiwb.sel", JSON.stringify(sel));
-    const busyOn = Object.fromEntries(Object.entries(st.busyOn).filter(([k]) => boards[k]));
+    const kept = <V,>(m: Record<string, V>) => Object.fromEntries(Object.entries(m).filter(([k]) => boards[k]));
+    const busyOn = kept(st.busyOn);
     const states = statesByKey(s.states);
     // A chat stays on the branch it was on (a reconnect does not jump the view) while that branch is still there.
     const shown = Object.fromEntries(Object.entries(st.shown).filter(([id, b]) => chats[id] && states[branchKey(id, b)]));
@@ -129,8 +158,12 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
     const moves = Object.fromEntries(sending.filter((id) => chats[id] && st.moves[id]).map((id) => [id, st.moves[id]]));
     return {
       groups: s.groups ?? [], boards, chats, runs, catalogs,
+      lists: listsFrom(s),
+      threadErrors: {}, // with the threads
+      runErrors: {}, // with the details
       runDetail: {}, // refetched for the run on screen; agents stays: conn.ts refreshes the held ones
-      defaults: s.defaults ?? { last: {}, groups: {} },
+      defaults: s.defaults ?? { groups: {} },
+      usable: s.agents ?? AGENT_ORDER, // a server before the list sends none
       home: s.home ?? "", defaultCwd: s.defaultCwd ?? "", dataDir: s.dataDir ?? "",
       items: {}, // refetched when a chat is shown; updates missed while away are not replayed
       subs: {},  // with them
@@ -138,8 +171,9 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
       // (a held run agent's stays: its chat is not among the snapshot's, and it has main alone)
       subDrawer: drawer && (st.agents[drawer.chat] || (chats[drawer.chat] && drawerStays(drawer, drawer.chat, shown[drawer.chat] ?? currentBranch(chats[drawer.chat])))) ? drawer : null,
       trees: {}, moves,
+      ...serversOf(s),
       treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
-      sel, busyOn,
+      sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen),
     };
   });
   for (const id of Object.keys(boardsBefore)) if (!boards[id]) forgetBoard(id);
@@ -152,17 +186,45 @@ export function upsertBoard(b: Board) {
   boardsBefore = getState().boards;
 }
 
-/** Clears sel.board, the scene and busyOn for it. */
+/** Clears sel.board, the scene, busyOn and the role for it. */
 export function removeBoard(id: string) {
   forgetBoard(id);
   setState((s) => {
     const { [id]: _, ...boards } = s.boards;
     const { [id]: __, ...busyOn } = s.busyOn;
+    const { [id]: _r, ...roles } = s.roles;
+    const { [id]: _d, ...dropped } = s.dropped;
+    const { [id]: _g, ...sceneGen } = s.sceneGen;
     const sel = s.sel.board === id ? NO_SEL : s.sel;
     if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
-    return { boards, busyOn, sel, flashes: s.flashes.filter((f) => f.board !== id) };
+    return { boards, busyOn, roles, dropped, sceneGen, sel, flashes: s.flashes.filter((f) => f.board !== id) };
   });
   boardsBefore = getState().boards;
+}
+
+// ---- the role per board: board.ts decides, by logic/roles.ts
+
+/** Sets the role this window has on a board; null: it is not asked for. */
+export function setRole(board: string, role: BoardRole | null) {
+  setState((s) => {
+    if ((s.roles[board] ?? null) === role) return {};
+    const { [board]: _, ...roles } = s.roles;
+    return { roles: role ? { ...roles, [board]: role } : roles };
+  });
+}
+
+/** Notes that a pending edit of a board was dropped, or with false that the user has seen it. */
+export function setDropped(board: string, on: boolean) {
+  setState((s) => {
+    if (!!s.dropped[board] === on) return {};
+    const { [board]: _, ...dropped } = s.dropped;
+    return { dropped: on ? { ...dropped, [board]: true } : dropped };
+  });
+}
+
+/** Makes the canvas load a board's scene again: the one it shows is no longer the one kept. */
+export function reloadScene(board: string) {
+  setState((s) => ({ sceneGen: { ...s.sceneGen, [board]: (s.sceneGen[board] ?? 0) + 1 } }));
 }
 
 export function upsertRun(r: RunView) {
@@ -172,11 +234,43 @@ export function upsertRun(r: RunView) {
 
 const runEvents = new Map<string, number>(); // by run id: how many `run` events arrived
 let runEpoch = 0;                            // how many snapshots
+const runMoves = new Map<string, string>();  // a draft's old id → the id it got (`run` with `was`)
 
-/** A `run` event: the run as the server has it now. */
-export function onRunEvent(r: RunView) {
+/** The id a run has now: a draft that got a new id while a call about it was on its way (its
+ *  start) is found under the new one. An id that never changed is itself. */
+export const runNow = (id: string): string => movedId(runMoves, id);
+
+/** Sets a draft run's start (State.runStarts): `starting`, `error`, or both; null takes it out.
+ *  Nothing is kept for a run the store does not have. */
+export function setRunStart(id: string, patch: Partial<RunStart> | null) {
+  setState((s) => ({ runStarts: withRunStart(s.runStarts, id, s.runs[id] ? patch : null) }));
+}
+
+/** A `run` event: the run as the server has it now. One with `was` is of a draft that got a new
+ *  id (its `run_removed` of the old one follows): the selection, the unsaved goal and the start's
+ *  state move to the new id here, so that the removal finds nothing of the run on screen to clear. */
+export function onRunEvent(ev: RunView) {
+  const { was, ...r } = ev;
   runEvents.set(r.id, (runEvents.get(r.id) ?? 0) + 1);
-  upsertRun(r);
+  if (!was || was === r.id) { upsertRun(r); return; }
+  const from = unsavedRunDraft(was), goal = from.read();
+  if (goal && !unsavedRunDraft(r.id).read()) unsavedRunDraft(r.id).write(goal, from.base?.());
+  from.write(null);
+  runMoves.set(was, r.id);
+  const run = normRun(r);
+  setState((s) => {
+    const sel = movedSel(s.sel, was, r.id);
+    if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
+    return { runs: { ...s.runs, [r.id]: run }, sel, runStarts: movedRunStart(s.runStarts, was, r.id) };
+  });
+}
+
+/** Why the last load of a run's detail failed, or null after one that worked. */
+export function setRunError(run: string, e: ThreadError | null) {
+  setState((s) => {
+    const runErrors = withRunError(s.runErrors, run, e);
+    return runErrors === s.runErrors ? {} : { runErrors };
+  });
 }
 
 /** Puts the answer of a request about a run into the store, unless the server said something
@@ -196,17 +290,19 @@ export async function answerRun(id: string, request: () => Promise<RunView>): Pr
 export function removeRun(id: string) {
   unsavedRunDraft(id).write(null);
   runEvents.delete(id);
+  for (const [was, now] of runMoves) if (now === id) runMoves.delete(was);
   setState((s) => {
     const { [id]: _, ...runs } = s.runs;
     const { [id]: __, ...runDetail } = s.runDetail;
+    const runErrors = withRunError(s.runErrors, id, null);
     const sel = s.sel.run === id ? NO_SEL : s.sel;
     if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
     const runAgent = s.runAgent?.run === id ? null : s.runAgent;
     const gone = Object.values(s.agents).filter((a) => a.run === id).map((a) => a.id);
-    if (!gone.length) return { runs, runDetail, sel, runAgent };
+    if (!gone.length) return { runs, runDetail, runErrors, sel, runAgent };
     const without = <K extends string, V>(map: Record<K, V>) => gone.reduce((m, a) => withoutChat(m, a), map);
     return {
-      runs, runDetail, sel, runAgent,
+      runs, runDetail, runErrors, sel, runAgent,
       agents: Object.fromEntries(Object.entries(s.agents).filter(([k]) => !gone.includes(k))),
       items: without(s.items), subs: without(s.subs), states: without(s.states),
       subDrawer: s.subDrawer && gone.includes(s.subDrawer.chat) ? null : s.subDrawer,
@@ -247,7 +343,8 @@ export function removeChat(id: string) {
     const { [id]: ____, ...moves } = s.moves;
     const { [id]: _____, ...shown } = s.shown;
     const treeNav = s.treeNav?.chat === id ? null : s.treeNav;
-    return { chats, agents, items: withoutChat(s.items, id), subs: withoutChat(s.subs, id), states: withoutChat(s.states, id), sel, subDrawer, runAgent, trees, moves, shown, treeNav };
+    return { chats, agents, items: withoutChat(s.items, id), subs: withoutChat(s.subs, id), states: withoutChat(s.states, id), sel, subDrawer, runAgent, trees, moves, shown, treeNav,
+      threadErrors: withThreadError(s.threadErrors, id, null), starting: withStarting(s.starting, id, null) };
   });
   ofChat.delete(id);
 }
@@ -258,6 +355,24 @@ export function removeChat(id: string) {
 /** Sets a thread: a branch's list, or a subagent's. */
 export function setThread(key: ThreadKey, thread: Thread) {
   setState((s) => ({ items: { ...s.items, [key]: thread } }));
+}
+
+const withStarting = (m: Record<string, string>, chat: string, text: string | null): Record<string, string> => {
+  if (text !== null) return m[chat] === text ? m : { ...m, [chat]: text };
+  if (!(chat in m)) return m;
+  const { [chat]: _, ...rest } = m;
+  return rest;
+};
+
+/** Notes the text of a chat's first message that is on its way to its server, or with null that
+ *  the call is answered. */
+export function setStarting(chat: string, text: string | null) {
+  setState((s) => ({ starting: withStarting(s.starting, chat, text) }));
+}
+
+/** Notes why the load of a chat's list failed, or with null that it worked. */
+export function setThreadError(chat: string, e: ThreadError | null) {
+  setState((s) => ({ threadErrors: withThreadError(s.threadErrors, chat, e) }));
 }
 
 /** Sets a branch's subagents, by sid. */
@@ -277,13 +392,29 @@ export function upsertState(st: BranchState) {
   setState((s) => ({ states: { ...s.states, [key]: st } }));
 }
 
-const unsavedAt = (k: string): Unsaved => ({
-  read(): Draft | null { try { const d = JSON.parse(safeGet(k) ?? "null"); return typeof d?.text === "string" ? d : null; } catch { return null; } },
-  write(d: Draft | null) { if (d) safeSet(k, JSON.stringify(d)); else safeRemove(k); },
+/** rev: the counter a copy written with no base is on; none: its copies have no base. The base is kept with the draft, as its `base`. */
+const unsavedAt = (k: string, rev?: () => number | undefined): Unsaved => ({
+  read(): Draft | null {
+    try {
+      const d = JSON.parse(safeGet(k) ?? "null");
+      if (typeof d?.text !== "string") return null;
+      const { base: _, ...draft } = d;
+      return draft;
+    } catch { return null; }
+  },
+  base(): number | undefined { try { const b = JSON.parse(safeGet(k) ?? "null")?.base; return typeof b === "number" ? b : undefined; } catch { return undefined; } },
+  write(d: Draft | null, base = rev?.()) { if (d) safeSet(k, JSON.stringify(base === undefined ? d : { ...d, base })); else safeRemove(k); },
 });
 
-/** A branch's draft the server may not have yet, in localStorage "aiwb.draft.<chat>:<branch>" (see logic/drafts.ts). */
-export const unsavedDraft = (chat: string, branch: string): Unsaved => unsavedAt(draftKey(chat, branch));
+/** The server's counter of a branch's draft as known here; undefined for a branch with no record yet. */
+export const draftRevOf = (chat: string, branch: string): number | undefined => {
+  const st = branchState(getState(), chat, branch);
+  return st ? st.draftRev ?? 0 : undefined;
+};
+
+/** A branch's draft the server may not have yet, in localStorage "aiwb.draft.<chat>:<branch>" (see logic/drafts.ts), with the
+ *  counter it was typed on: the one known here when the writer names none. */
+export const unsavedDraft = (chat: string, branch: string): Unsaved => unsavedAt(draftKey(chat, branch), () => draftRevOf(chat, branch));
 
 /** A run's goal the server may not have yet, in localStorage "aiwb.draft.<run>". */
 export const unsavedRunDraft = (run: string): Unsaved => unsavedAt(legacyDraftKey(run));

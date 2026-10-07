@@ -6,6 +6,11 @@
  *  report yet, a task with no changes), or a failure it can try again. */
 export type TextState<T> = { s: "loading" } | { s: "ok"; value: T } | { s: "none" } | { s: "error"; message: string };
 
+/** A view's own copy of an answer: the key it asked with, and what came. */
+export type Held<T> = { key: string; state: TextState<T> };
+
+const LOADING: TextState<never> = { s: "loading" };
+
 /** Whether a failed request means "there is no such text": the server's 404. */
 export const isNone = (e: unknown): boolean => typeof e === "object" && e !== null && (e as { status?: unknown }).status === 404;
 
@@ -14,8 +19,12 @@ export const isNone = (e: unknown): boolean => typeof e === "object" && e !== nu
  * is `final` and a text: the text of something that never changes (a brief revision, a notes
  * version, the report of an attempt that has its result). What can still change is asked for again
  * every time: a running attempt's changes, and the absence of a text (a 404). A failure is never
- * kept. At most `max` answers are kept, and a run's go when the run is left (drop). Callers that
- * ask for the same key while its request runs share that request.
+ * kept. At most `max` answers are kept, and a run's go when the run is left (drop) or its server
+ * is back (`server_back`, conn.ts forgetRun). Callers that ask for the same key while its request
+ * runs share that request.
+ *
+ * A view holds its own copy of the answer it shows (open, or the answer of its load), so a drop
+ * under a view that is on screen changes nothing there: nothing would ask for the text again.
  */
 export class TextCache {
   private kept = new Map<string, TextState<unknown>>();
@@ -27,6 +36,20 @@ export class TextCache {
   /** The kept answer of `key`; undefined when it has to be loaded. */
   peek<T>(key: string): TextState<T> | undefined {
     return this.kept.get(key) as TextState<T> | undefined;
+  }
+
+  /** What a view takes as its own copy when it turns to `key`: the kept answer; null when it has
+   *  to load. */
+  open<T>(key: string): Held<T> | null {
+    const state = this.peek<T>(key);
+    return state ? { key, state } : null;
+  }
+
+  /** What a view shows of `key` (null: none is wanted): the kept answer, else its own copy when
+   *  that is of this key (after a drop, and of what is never kept), else "loading". */
+  shown<T>(key: string | null, own: Held<T> | null): TextState<T> {
+    if (!key) return LOADING;
+    return this.peek<T>(key) ?? (own?.key === key ? own.state : LOADING);
   }
 
   /** The answer of `key`: the kept one, else the request's (one request per key at a time). */

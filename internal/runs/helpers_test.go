@@ -22,16 +22,28 @@ import (
 // testStart is the time the test clock starts at.
 var testStart = time.UnixMilli(1_800_000_000_000)
 
-// recEmitter keeps what the service broadcasts.
+// recEmitter keeps what the service sends, and for each event the run it was sent as an event of
+// ("" for a Broadcast).
 type recEmitter struct {
-	mu  sync.Mutex
-	evs []any
+	mu   sync.Mutex
+	evs  []any
+	runs []string
 }
 
-func (e *recEmitter) Broadcast(ev any) {
+func (e *recEmitter) Broadcast(ev any) { e.SendRun("", ev) }
+
+func (e *recEmitter) SendRun(run string, ev any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.evs = append(e.evs, ev)
+	e.runs = append(e.runs, run)
+}
+
+// sentAs returns, for each event sent so far, the run it was sent as an event of.
+func (e *recEmitter) sentAs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.runs...)
 }
 
 func (e *recEmitter) events() []any {
@@ -252,8 +264,6 @@ func (nopHost) CostOf(string) (chats.Cost, error)                        { retur
 func (nopHost) Activity(string) (chats.Activity, error)                  { return chats.Activity{}, nil }
 func (nopHost) Idle(string) bool                                         { return true }
 func (nopHost) TurnRunning(string) bool                                  { return false }
-func (nopHost) Watch(string)                                             {}
-func (nopHost) ClearWatches()                                            {}
 func (nopHost) Delete(string) error                                      { return nil }
 func (nopHost) SetArchive(string, model.Archive) error                   { return nil }
 func (nopHost) Stop(string)                                              {}

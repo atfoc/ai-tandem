@@ -9,6 +9,8 @@ import { runTaskTotal } from "../logic/run.ts";
 import { dateTime } from "../logic/runlabels.ts";
 import { whenText } from "../logic/runview.ts";
 import { deliveryCard } from "../logic/rundelivery.ts";
+import { byHandLine } from "../logic/runrows.ts";
+import { runWhere } from "../logic/runserver.ts";
 import { CopyCmd, DirtyNote, cost, useDockTop } from "./bits.tsx";
 import { Delivery } from "./Delivery.tsx";
 import type { RunDetail } from "../types.ts";
@@ -16,8 +18,10 @@ import type { RunDetail } from "../types.ts";
 export interface RunResultProps { runId: string; detail: RunDetail; /** The turn that finished the run was asked for. */ onSelectTurn?(n: number): void }
 
 /** The branch the result is on and the command that takes it, closed under "Do it by hand". Only
- *  for a run that used git and merged something, and whose result is not applied: the card says the rest. */
-function ByHand({ detail, open }: { detail: RunDetail; open: boolean }) {
+ *  for a run that used git and merged something, and whose result is not applied: the card says the rest.
+ *  The command is run where the run's folder is: the line names another server. */
+function ByHand({ runId, detail, open }: { runId: string; detail: RunDetail; open: boolean }) {
+  const line = useStore((s) => byHandLine(runWhere(s, s.runs[runId] ?? {})));
   const git = detail.git;
   const merged = detail.tasks.some((t) => t.attempts.some((a) => a.merged || a.mergedAt != null)) || (!!git?.resultHead && git.resultHead !== git.baseRef);
   // an applied result is in the folder, and the server has deleted the branch: there is nothing to do by hand
@@ -28,7 +32,7 @@ function ByHand({ detail, open }: { detail: RunDetail; open: boolean }) {
       <DirtyNote git={git} />
       <div className="rd-take-line">
         Everything the tasks changed is merged into the branch <span className="mono rd-wrap rd-branch">{git.integrationBranch}</span>
-        {git.resultHead ? <> (at <span className="mono" title={git.resultHead}>{git.resultHead.slice(0, 7)}</span>)</> : null}: that branch is the run's result. To take it into the branch you are on:
+        {git.resultHead ? <> (at <span className="mono" title={git.resultHead}>{git.resultHead.slice(0, 7)}</span>)</> : null}: that branch is the run's result. {line}
       </div>
       <CopyCmd text={`git merge ${git.integrationBranch}`} />
     </details>
@@ -46,7 +50,7 @@ export function RunResult({ runId, detail, onSelectTurn }: RunResultProps) {
     <div className="run-result" ref={top}>
       {!card && <div className="note rd-nothing">The run has no result yet.</div>}
       <Delivery key={runId} runId={runId} detail={detail} />
-      <ByHand detail={detail} open={byHand} />
+      <ByHand runId={runId} detail={detail} open={byHand} />
     </div>
   );
   const ok = res.outcome === "achieved", n = r ? runTaskTotal(r) : detail.tasks.length;
@@ -65,7 +69,7 @@ export function RunResult({ runId, detail, onSelectTurn }: RunResultProps) {
       </div>
       <Delivery key={runId} runId={runId} detail={detail} />
       <div className="rd-md rd-text"><Markdown text={res.summary} agent={r?.agent} /></div>
-      <ByHand detail={detail} open={byHand} />
+      <ByHand runId={runId} detail={detail} open={byHand} />
     </div>
   );
 }

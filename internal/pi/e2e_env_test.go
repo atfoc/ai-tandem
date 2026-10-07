@@ -264,7 +264,7 @@ func TestE2EForkKeepsGuard(t *testing.T) {
 	// The model's own bash tool, and the board tool: one turn for both.
 	r = e2eSay(t, forkA, "Do these two things. First: use the bash tool to run exactly this command, unchanged: "+
 		e2eEnvShell+` ; echo "SESSIONFILE[$PI_SESSION_FILE]"`+
-		" . Second: call the tool named mcp__board__list_boards with an empty object argument. Then reply with only: done", nil)
+		" . Second: call the tool named mcp__board__read_board with an empty object argument. Then reply with only: done", nil)
 	t.Logf("fork bash and board turn: tools %v results %q", r.tools, r.results)
 	all := strings.Join(r.results, "\n")
 	if !contains(r.tools, "bash") || !strings.Contains(all, "COUNT[") {
@@ -278,7 +278,7 @@ func TestE2EForkKeepsGuard(t *testing.T) {
 			t.Fatalf("the value of %s reached the model's bash tool: %q", name, all)
 		}
 	}
-	if !contains(r.tools, "mcp__board__list_boards") || !strings.Contains(all, "E2E-BOARD-TEXT-42") {
+	if !contains(r.tools, "mcp__board__read_board") || !strings.Contains(all, "E2E-BOARD-TEXT-42") {
 		t.Fatalf("the board tool did not work after the fork: tools %v results %q", r.tools, r.results)
 	}
 	closeAndWaitExit(t, forkA)

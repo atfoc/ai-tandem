@@ -1178,7 +1178,7 @@ func TestDeliveryLeavesHumanStateAlone(t *testing.T) {
 		t.Fatalf("Sent() %d", sent())
 	}
 	draft := model.Draft{Text: "half typed", References: []model.Reference{{Quote: "delegate", Item: 0, Start: 0, End: 8}}}
-	if err := e.m.SetDraft(id, draft); err != nil {
+	if err := e.setDraft(id, draft); err != nil {
 		t.Fatal(err)
 	}
 	e.spawn(id, SpawnSubRequest{Prompt: "go"})

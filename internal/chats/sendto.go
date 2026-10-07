@@ -213,6 +213,8 @@ func (m *Manager) sendTarget(id string, t Target, refs []model.Reference) (c *Ch
 		return nil, none, false, ErrArchived
 	case parent.InstructionsSent:
 		return nil, none, false, ErrLegacy
+	case remoteUnstarted(src):
+		return nil, none, false, ErrRemoteStart // its first message is its server's (see remote.go)
 	}
 	tr, err := m.trOf(src, &loaded)
 	if err != nil {

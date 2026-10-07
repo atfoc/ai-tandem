@@ -1,6 +1,7 @@
 package runs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -518,5 +519,62 @@ func TestAgentSendRefused(t *testing.T) {
 	sent := e.host.sent("T01-work")
 	if len(sent) != 1 || !sent[0].Fresh || !strings.Contains(sent[0].Text, "Note: an earlier attempt at this job did not finish.") {
 		t.Errorf("the launch after a refused send: %d messages", len(sent))
+	}
+}
+
+// A message the agent's chat accepted at the moment the server shuts down is recorded as sent:
+// with the result there and the context ended at once, the result is taken whichever of the two
+// the wait sees first. (Then launch records the session, and the next server resumes it instead
+// of sending the message again.)
+func TestSendTakesAResultThatIsThereAtAShutdown(t *testing.T) {
+	t.Parallel()
+	e := newEngEnv(t, false)
+	r := e.run("r_agent", nil)
+	quit := make(chan struct{})
+	close(quit)
+	eng := &engine{r: r, quit: quit}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stopsBefore := len(e.host.stoppedNames())
+	for _, want := range []error{nil, chats.ErrShutdown} {
+		// Many times: the wait picks between the two at random.
+		for i := range 200 {
+			errc := make(chan error, 1)
+			errc <- want
+			if err := eng.sent(ctx, "T01-work", errc); err != want {
+				t.Fatalf("round %d: the result %v was there, the answer is %v", i, want, err)
+			}
+		}
+	}
+	// No result for engStopGrace: the answer is the context's, and no process is closed.
+	if err := eng.sent(ctx, "T01-work", make(chan error, 1)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("with no result: %v", err)
+	}
+	if n := len(e.host.stoppedNames()); n != stopsBefore {
+		t.Fatalf("%d agent process(es) closed at a shutdown", n-stopsBefore)
+	}
+}
+
+// At a shutdown SendOwned may still be inside the chat manager: its result, which comes a
+// moment later, is the answer, so an accepted message is not sent again by the next server.
+func TestSendWaitsForAResultThatComesJustAfterAShutdown(t *testing.T) {
+	t.Parallel()
+	e := newEngEnv(t, false)
+	r := e.run("r_agent", nil)
+	quit := make(chan struct{})
+	close(quit)
+	eng := &engine{r: r, quit: quit}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stopsBefore := len(e.host.stoppedNames())
+	for _, want := range []error{nil, chats.ErrShutdown} {
+		errc := make(chan error, 1)
+		time.AfterFunc(20*time.Millisecond, func() { errc <- want })
+		if err := eng.sent(ctx, "T01-work", errc); err != want {
+			t.Fatalf("the result %v came 20 ms after the call, the answer is %v", want, err)
+		}
+	}
+	if n := len(e.host.stoppedNames()); n != stopsBefore {
+		t.Fatalf("%d agent process(es) closed at a shutdown", n-stopsBefore)
 	}
 }

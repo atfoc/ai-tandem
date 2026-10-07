@@ -511,7 +511,8 @@ func ViewOf(m model.RunMeta, st *State, sum Summary, f Facts) model.RunView {
 		Agent: m.Agent, Tiers: m.Tiers, Cwd: m.Cwd, FolderMissing: f.FolderMissing,
 		Git: f.Git, Blocked: f.Blocked, Settings: m.Settings, Draft: m.Draft, Started: m.Started,
 		Archive: m.Archive, Status: model.RunDraft, Turns: sum.Turns, TurnRunning: sum.TurnRunning,
-		Counts: sum.Counts, Cost: sum.Cost, CostPartial: sum.CostPartial, Attention: sum.Attention}
+		Counts: sum.Counts, Cost: sum.Cost, CostPartial: sum.CostPartial, Attention: sum.Attention,
+		Server: m.Server, Start: m.RemoteStart}
 	if m.Started.IsZero() {
 		td := f.TierDefaults
 		v.TierDefaults = &td

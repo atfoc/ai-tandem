@@ -11,6 +11,8 @@ import { fmtDuration } from "../logic/subagents.ts";
 import { statusText } from "../logic/labels.ts";
 import { AGENT_ENDED, agentMs, agentTitle, money, tokensShort } from "../logic/runview.ts";
 import { useAgent } from "./useAgent.ts";
+import { catalogFor } from "../logic/agentlist.ts";
+import { serverOf } from "../logic/serverlists.ts";
 
 /** The header: what the run calls the agent, and under it one line: what it is doing (or how it
  *  ended) and how long it ran first, so that what changes stays in view when the line is cut, then
@@ -23,7 +25,7 @@ function Head({ runId, agentId }: { runId: string; agentId: string }) {
   const last = useRef(rec);
   if (rec) last.current = rec;
   const a = rec ?? last.current;
-  const cat = useStore((s) => { const r = s.runs[runId]; return r ? s.catalogs[r.agent] : undefined; });
+  const cat = useStore((s) => { const r = s.runs[runId]; return r ? catalogFor(s, serverOf(r), r.agent) : undefined; });
   const running = a?.status === "running";
   const now = useNow(running);
   const m = a && cat?.models.find((x) => x.id === a.model);

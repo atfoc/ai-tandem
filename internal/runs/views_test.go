@@ -96,6 +96,15 @@ func TestViewOf(t *testing.T) {
 		v.Cwd != "/work" || v.Settings.MaxParallel != 8 || v.Cost != nil || v.Turns != 0 {
 		t.Errorf("draft view: %+v", v)
 	}
+	// A draft's server and an unconfirmed start are in the view; a run of this computer names neither.
+	if b, _ := json.Marshal(v); v.Server != "" || v.Start != "" || strings.Contains(string(b), `"server"`) || strings.Contains(string(b), `"start"`) {
+		t.Errorf("a local draft's view names a server or a start: %s", b)
+	}
+	remote := meta
+	remote.Server, remote.RemoteStart = "s_1", model.RemoteUnconfirmed
+	if v := ViewOf(remote, nil, Summary{}, Facts{}); v.Server != "s_1" || v.Start != model.RemoteUnconfirmed || v.Gone || v.Was != "" {
+		t.Errorf("a remote draft's view: %+v", v)
+	}
 	// A state without Started in run.json is still a draft to clients (the start's last write).
 	if v := ViewOf(meta, &l.State, l.Summarize(false), Facts{}); v.Status != model.RunDraft || v.ActiveMs != 0 {
 		t.Errorf("state without started: %+v", v)

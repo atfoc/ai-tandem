@@ -80,7 +80,7 @@ func TestMergeConflictResolvedByAgent(t *testing.T) {
 		tx.File(briefRel("T03", 1), []byte("brief"))
 		return nil
 	})
-	e.host.on = func(on func(m *engMsg)) func(m *engMsg) {
+	e.host.wrapOn(func(on func(m *engMsg)) func(m *engMsg) {
 		return func(m *engMsg) {
 			if m.Name == "T03-work" {
 				engWrite(t, m.Cwd, "other.txt", "by T03\n")
@@ -89,7 +89,7 @@ func TestMergeConflictResolvedByAgent(t *testing.T) {
 			}
 			on(m)
 		}
-	}(e.host.on)
+	})
 
 	e.gates.open("T01-work")
 	engTask(t, r, "T01", model.TaskDone)

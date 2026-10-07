@@ -146,7 +146,7 @@ func TestBranchStateEvents(t *testing.T) {
 	}
 
 	// A branch's draft is in its record: a change of it sends the record, then the chat's view.
-	if err := e.m.SetDraft(v.ID, model.Draft{Text: "typed"}); err != nil {
+	if err := e.setDraft(v.ID, model.Draft{Text: "typed"}); err != nil {
 		t.Fatal(err)
 	}
 	got = evs.drain(t, e.br)

@@ -4,14 +4,14 @@
 // the key it was asked with.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.ts";
-import { TextCache, type TextState } from "../logic/runtexts.ts";
+import { TextCache, type Held, type TextState } from "../logic/runtexts.ts";
 import type { AttemptChanges, AttemptReport, RunGoal, RunNotes, TaskBrief } from "../types.ts";
 
 const cache = new TextCache();
 
-/** Forgets the texts of a run: it was left for another item, or removed. */
+/** Forgets the texts of a run: it was left for another item, removed, or its server is back. A
+ *  view that shows one of them keeps showing it (its own copy). */
 export const dropTexts = (run: string): void => cache.drop(run + "/");
-const LOADING: TextState<never> = { s: "loading" };
 
 export type Text<T> = TextState<T> & { retry(): void };
 
@@ -21,19 +21,20 @@ export type Text<T> = TextState<T> & { retry(): void };
  * function every render.
  */
 export function useText<T>(key: string | null, fetch: () => Promise<T>, final: boolean): Text<T> {
-  const [got, setGot] = useState<{ key: string; state: TextState<T> } | null>(null);
+  const [got, setGot] = useState<Held<T> | null>(null);
   const [again, setAgain] = useState(0);
   const load = useRef(fetch);
   load.current = fetch;
   useEffect(() => {
-    if (!key || cache.peek(key)) return;
+    if (!key) return;
+    const kept = cache.open<T>(key);
+    if (kept) { setGot(kept); return; } // its own copy: the cache may be emptied under it, and nothing asks again then
     let gone = false;
     void cache.load<T>(key, () => load.current(), final).then((state) => { if (!gone) setGot({ key, state }); });
     return () => { gone = true; };
   }, [key, final, again]);
   const retry = useCallback(() => { setGot(null); setAgain((n) => n + 1); }, []);
-  const state: TextState<T> = (key ? cache.peek<T>(key) : undefined) ?? (key && got?.key === key ? got.state : LOADING);
-  return { ...state, retry };
+  return { ...cache.shown(key, got), retry };
 }
 
 /** The run's goal. */

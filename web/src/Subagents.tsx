@@ -11,6 +11,8 @@ import { subagentOf, subBadge, subLine, subModelLabel, subToolCount, subDuration
 import { subInPrefix } from "./logic/prefix.ts";
 import { AgentGlyph } from "./icons.tsx";
 import { agentClass, agentShortName } from "./agents.ts";
+import { catalogFor } from "./logic/agentlist.ts";
+import { serverOfChat } from "./logic/serverlists.ts";
 import type { ChatView, Item, SubStatus, Subagent } from "./types.ts";
 
 export const openSub = (chat: string, sub: string) => setDrawer(chat, sub);
@@ -80,8 +82,9 @@ export function SubMeter({ sa }: { sa: Subagent }) {
   return <CtxRing used={used} win={win} title={ctxTitle(used, win)} className="sub-meter" />;
 }
 
-export function SubStats({ sa, items, now }: { sa: Subagent; items?: Item[]; now: number }) {
-  const cat = useStore((s) => (sa.kind ? s.catalogs[sa.kind] : undefined));
+/** server: the entry id of the server of the subagent's chat (serverOfChat), whose catalog names its model. */
+export function SubStats({ sa, items, now, server }: { sa: Subagent; items?: Item[]; now: number; server: string }) {
+  const cat = useStore((s) => catalogFor(s, server, sa.kind ?? ""));
   const m = subModelLabel(sa.model, sa.kind, cat, sa.effort);
   const tools = subToolCount(sa, items);
   const ms = subDurationMs(sa, now);
@@ -103,6 +106,7 @@ export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
   const { on, toggle } = useSubNav(chat.id, sa.id);
   const items = useSubThread(chat.id, sa.id, sa.status === "running");
   const now = useNow(sa.status === "running");
+  const server = useStore((s) => serverOfChat(s, chat));
   const line = subLine(item, sa, items, boardName);
   const open = () => { if (sa.id) toggle(); }; // not linked yet: nothing to open
   return (
@@ -113,7 +117,7 @@ export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
         <SubName sa={sa} />
         <div className={`sub-line ${line.tone}`}>{line.text}</div>
       </div>
-      <SubStats sa={sa} items={items} now={now} />
+      <SubStats sa={sa} items={items} now={now} server={server} />
     </div>
   );
 }
@@ -171,6 +175,7 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
 }) {
   const { subs, call, sa, readOnly } = useSub(chat.id, sid);
   const items = useSubThread(chat.id, sid, true);
+  const server = useStore((s) => serverOfChat(s, chat)); // a run agent's subagent: the run's server names its model
   const list = subList(subs);
   const idx = sa ? list.findIndex((x) => x.id === sa.id) : -1;
   const running = sa?.status === "running";
@@ -197,7 +202,7 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
           <button className="icon-btn" title={closeTitle} onClick={onClose}>×</button>
         </div>
         <div className={`sub-line ${line.tone}`}>{line.text}</div>
-        <SubStats sa={sa} items={items} now={now} />
+        <SubStats sa={sa} items={items} now={now} server={server} />
       </header>
       <div className="sub-drawer-body" ref={ref} onScroll={onScroll}>
         {sa.prompt && <SubPrompt text={sa.prompt} />}

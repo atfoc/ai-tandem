@@ -5,6 +5,8 @@
 #                                    the server
 #   Contents/Resources/app.asar      Electron main process and preload only
 #   Contents/Resources/web/          the built web client, served by the Go server
+#   Contents/Resources/remote/setup-remote.sh
+#                                    sets the app's server up as a remote server (run through sh)
 #   Contents/Resources/AppIcon.icns
 # One version (git describe) is stamped into the Go binary, the web client and CFBundleVersion.
 # Install it into ~/Applications with scripts/install-app.sh.

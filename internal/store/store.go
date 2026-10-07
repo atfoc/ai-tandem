@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/model"
 )
 
@@ -85,6 +86,13 @@ func Open(p Paths) (*Store, error) {
 	}
 	if st.s.Defaults.Groups == nil {
 		st.s.Defaults.Groups = map[string]model.GroupDefaults{}
+	}
+	// An old file's defaults are brought into today's shape once, and the file is written at this
+	// load, so that the disk holds what runs.
+	if defaults.Migrate(b, &st.s.Defaults) {
+		if err := WriteJSONAtomic(p.State, st.s, 0o600); err != nil {
+			return nil, err
+		}
 	}
 	return st, nil
 }

@@ -242,6 +242,13 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .prefix-end { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); padding: 0 2px; user-select: none; }
 .prefix-end::before, .prefix-end::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
+/* a chat on another server: its thread's place while that server is not connected, and the bar under a thread that stays */
+.remote-off { margin: auto 0; text-align: center; color: var(--muted); padding: 10px 8px 24px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.remote-off p { margin: 0; }
+.remote-off-text { color: var(--text); }
+.remote-off-state { font-size: 12px; }
+.remote-bar { position: sticky; bottom: 0; margin-top: auto; flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; }
+.remote-bar-text { flex: 1; min-width: 0; }
 .empty-thread { margin: auto 0; text-align: center; color: var(--muted); padding: 10px 8px 24px; }
 .big-glyph { width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 10px; display: grid; place-items: center; background: var(--agent-soft); }
 .empty-title { font-weight: 650; color: var(--text); margin-bottom: 4px; }
@@ -336,6 +343,7 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .crow-dot.st-approval { background: var(--warn); }
 .crow-dot.st-waiting { background: var(--muted); }
 .crow-dot.st-stopped, .crow-dot.st-error { background: var(--danger); }
+.crow-dot.st-off { background: var(--line-2); } /* a chat on a server that is not connected, or gone there */
 .unnamed { color: var(--muted); font-weight: 450; }
 .name-input { width: 100%; font: inherit; font-weight: 540; color: var(--text); background: var(--bg); border: 1px solid var(--accent); border-radius: 5px; padding: 1px 5px; outline: 0; box-shadow: 0 0 0 3px var(--accent-soft); }
 .menu-item.agent { padding-left: 8px; gap: 8px; justify-content: flex-start; }
@@ -488,6 +496,7 @@ button.split-row { cursor: pointer; }
 .side-sub { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: -1px; }
 .side-row.st-thinking .side-sub, .side-row.st-writing .side-sub, .side-row.st-tool .side-sub { color: var(--ok); }
 .side-row.st-approval .side-sub { color: var(--warn); }
+.side-row.is-chat.off .side-glyph, .side-row.is-chat.gone .side-glyph, .side-row.is-chat.gone .side-name { opacity: .55; }
 .side-glyph { position: relative; width: 20px; height: 20px; flex: none; border-radius: 6px; display: grid; place-items: center; background: var(--agent-soft); }
 .side-glyph .crow-dot { width: 8px; height: 8px; }
 .side-board-icon { width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--accent); }
@@ -540,8 +549,9 @@ body.resizing iframe { pointer-events: none; }
 .side-update-text code, .side-update-path { font: 11px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; user-select: text; }
 .side-update-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .side-update-x { flex: none; width: 22px; height: 22px; font-size: 15px; }
-.side-foot { display: flex; align-items: center; gap: 8px; padding: 7px 10px 7px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); user-select: none; }
-.side-archived { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; white-space: nowrap; cursor: pointer; }
+.side-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 7px 10px 7px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); user-select: none; }
+.side-archived { flex: 1 0 auto; display: flex; align-items: center; gap: 8px; white-space: nowrap; cursor: pointer; }
+.side-foot .seg { margin-left: auto; } /* on a line of its own in a narrow sidebar, it stays at the right */
 /* the theme switch: light, dark, system */
 .seg { display: inline-flex; flex: none; gap: 1px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
 .seg button { display: grid; place-items: center; width: 22px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--faint); }
@@ -575,6 +585,12 @@ body.resizing iframe { pointer-events: none; }
 .model-notice.warn { color: var(--warn); }
 .ctx-meter.error { color: var(--warn); gap: 4px; }
 .tchip.missing { color: var(--danger); }
+/* a chat's agent choice (ChatChoices.tsx): the glyph in its chip and rows, and under the toolbar's row the line on why the chat has no agent or cannot use its own */
+.agent-pick-glyph { display: inline-grid; place-items: center; flex: none; color: var(--agent); }
+.agent-pick-glyph.missing { color: var(--danger); }
+.composer-tools:has(> .agent-reason) { flex-wrap: wrap; }
+.agent-reason { order: 1; flex: none; width: 100%; padding: 3px 2px 1px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.agent-reason.missing { color: var(--danger); }
 
 /* ---------------------------------------------------------------- dialogs */
 .dialog-backdrop { position: fixed; inset: 0; z-index: 200; background: var(--backdrop); display: grid; place-items: center; }
@@ -585,11 +601,14 @@ body.resizing iframe { pointer-events: none; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .btn:disabled { opacity: .6; cursor: default; }
 
-/* ---------------------------------------------------------------- takeover */
-.takeover { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; color: var(--muted); padding: 40px; }
-.takeover h2 { margin: 4px 0 0; color: var(--text); font-size: 18px; font-weight: 650; }
-.takeover p { max-width: 380px; margin: 0 0 6px; }
-.takeover.quiet p { margin: 0; }
+/* ---------------------------------------------------------------- takeover: the panel in place of one board's canvas */
+.takeover-panel { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; color: var(--muted); padding: 40px; }
+.takeover-panel h2 { margin: 4px 0 0; color: var(--text); font-size: 18px; font-weight: 650; }
+.takeover-panel p { max-width: 380px; margin: 0 0 6px; }
+.takeover-panel.quiet p { margin: 0; }
+.takeover-panel .takeover-dropped { color: var(--danger); }
+/* on the canvas of a board that is held: a change made here was dropped */
+.canvas-note { position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 28px); padding: 6px 8px 6px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); box-shadow: var(--shadow-sm); font-size: 12px; color: var(--danger); }
 
 /* ---- quote references (⌘L on text in a message) */
 ::highlight(aiwb-pending) { background-color: rgba(255, 214, 10, .2); text-decoration: underline 2px rgba(222, 160, 0, .85); text-underline-offset: 3px; }

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chatBusy, composerControls, isBusy, isWorking, refreshAfterRefusal, starting, workingBranches, workingOn } from "../src/logic/status.ts";
+import { readFileSync } from "node:fs";
+import { chatBusy, composerControls, headStatus, isBusy, isWorking, refreshAfterRefusal, starting, workingBranches, workingOn } from "../src/logic/status.ts";
 import type { BranchState, Status } from "../src/types.ts";
 
 const BUSY: Status[] = ["thinking", "writing", "tool", "approval"];
@@ -156,4 +157,22 @@ test("refreshAfterRefusal: the chat is read again after a 409 that tells of stal
   assert.equal(refreshAfterRefusal(429), false);
   assert.equal(refreshAfterRefusal(400), false);
   assert.equal(refreshAfterRefusal(400, "busy"), false);
+});
+
+test("headStatus: a chat with no agent has no status word; an archived or disabled one says so", () => {
+  assert.equal(headStatus({ agent: "claude" }, false, "Ready"), "Ready");
+  assert.equal(headStatus({ agent: "claude" }, false, "Thinking…"), "Thinking…");
+  assert.equal(headStatus({ agent: "" }, false, "Ready"), ""); // "No agent" stands alone: nothing can be sent
+  assert.equal(headStatus({ agent: "claude" }, false, "Ready", true), ""); // an unstarted chat whose server is not connected: no "Ready"
+  assert.equal(headStatus({ agent: "claude", archived: true }, false, "Ready", true), "Archived");
+  assert.equal(headStatus({ agent: "" }, false, "Idle"), "");
+  assert.equal(headStatus({ agent: "claude", archived: true }, false, "Idle"), "Archived");
+  assert.equal(headStatus({ agent: "", archived: true }, false, "Ready"), "Archived");
+  assert.equal(headStatus({ agent: "claude" }, true, "Ready"), "Disabled");
+});
+
+test("the chat's header takes its status from headStatus, and draws no separator for none", () => {
+  const view = readFileSync(new URL("../src/ChatView.tsx", import.meta.url), "utf8");
+  assert.ok(view.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardName), sendOff(where, c));"));
+  assert.ok(view.includes('{status && <>{" · "}{status}</>}'));
 });

@@ -21,15 +21,17 @@ import (
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/rungit"
+	"ai-whiteboard/internal/usable"
 )
 
 // This file is the run service: what the HTTP routes, the app and the chat manager call.
 //
-// Locks, in the order they may be taken: a run's op lock (svcLock), then the run's mu, and the
-// service's mu and the event queue's lock as leaves. The op lock makes the calls that write
-// run.json one at a time per run (create, patch, draft, start, the limit of a resume, archive,
-// unarchive, delete); git, the store and the chat manager are called with at most that lock held,
-// never with a run's mu.
+// Locks, in the order they may be taken: an id's creation lock (Service.starts: a start call and
+// a delete), then a run's op lock (svcLock), then the run's mu, and the service's mu and the event
+// queue's lock as leaves. The op lock makes the calls that write run.json one at a time per run
+// (create, patch, draft, start, the limit of a resume, archive, unarchive, delete); git, the store
+// and the chat manager are called with at most those two locks held, never with a run's mu. Another
+// server is asked (Remote.CheckDraft) with none of them held.
 
 // Errors of the routes besides the sentinels of errors.go. The HTTP layer answers 409 for
 // ErrGroupArchived and for a *LimitError (errors.Is(err, ErrLimit)); the others are 400.
@@ -64,14 +66,23 @@ type Service struct {
 	Deps
 	// Chats is the chat manager. It is set after New, before any run is loaded, and not changed.
 	Chats ChatHost
+	// Remote is the other servers (remote.go). It is set before the server list starts and not
+	// changed; nil: this computer alone, and a draft that names another server is blocked.
+	Remote Remote
 
 	mu   sync.Mutex             // guards runs, git and ops; never held while a run's mu is taken or anything slow happens
 	runs map[string]*run        // every run that has a run.json, by id
 	git  map[string]svcGit      // where a started run's work is in git, for RunOf and ChatContext
 	ops  map[string]*sync.Mutex // the op lock of each run
 
+	// starts is the creation lock of each run id (apistart.go): a start call and a delete of one
+	// id happen one after the other.
+	starts idLocks
+
 	// eng is what the engine keeps per service (engine.go): the service never looks inside.
 	eng engines
+
+	asks sync.WaitGroup // the draft checks ServerUp makes in the background; tests wait for them
 
 	ev       svcEvents     // the event queue (events.go)
 	engine   svcEngine     // how the service and the tools call the engine
@@ -196,9 +207,13 @@ func (s *Service) Load() error {
 			log.Printf("runs: %s is skipped: %v", dir, err)
 			continue
 		}
+		if r.client != "" {
+			s.svcMark(r.id, r.client)
+		}
 		s.add(r)
 		s.svcNoteGit(r)
-		r.setFacts(s.svcFactsOf(r))
+		_, f := s.svcFactsOf(r, false) // no other server is asked at load
+		r.setFacts(f)
 	}
 	return nil
 }
@@ -238,13 +253,14 @@ func (s *Service) List() []model.RunMeta {
 }
 
 // View is one run, with what the view says of its folder (git, folderMissing, blocked) found out
-// again.
+// again: of a draft that will start on another server, that server is asked (the draft check),
+// with no lock held.
 func (s *Service) View(id string) (model.RunView, error) {
 	r, err := s.run(id)
 	if err != nil {
 		return model.RunView{}, err
 	}
-	s.svcRefreshFacts(r)
+	s.svcRefreshFacts(r, true)
 	return r.viewNow(), nil
 }
 
@@ -277,22 +293,26 @@ func (r *run) svcMetaRec() (model.RunMeta, svcRec) {
 	return r.meta, rec
 }
 
-// svcFactsOf finds out the facts of a run as it is now. No lock is held.
-func (s *Service) svcFactsOf(r *run) Facts {
+// svcFactsOf finds out the facts of a run as it is now, and returns the run.json they are of. No
+// lock is held. With ask, the server of a draft that will start on another one is asked
+// (svcRemoteFacts); without, what the view says of its folder stays as it is.
+func (s *Service) svcFactsOf(r *run, ask bool) (model.RunMeta, Facts) {
 	meta, rec := r.svcMetaRec()
+	if svcRemoteDraft(meta) {
+		r.mu.Lock()
+		last := r.facts
+		r.mu.Unlock()
+		return meta, s.svcRemoteFacts(meta, last, ask, nil)
+	}
 	f, _ := s.svcFacts(meta, rec)
-	return f
+	return meta, f
 }
 
-// svcRefreshFacts finds the facts out again and puts them into the view when they changed.
-func (s *Service) svcRefreshFacts(r *run) Facts {
-	f := s.svcFactsOf(r)
-	r.mu.Lock()
-	same := r.facts == f
-	r.mu.Unlock()
-	if !same {
-		r.setFacts(f)
-	}
+// svcRefreshFacts finds the facts out again (svcFactsOf) and puts them into the view when they
+// changed (svcSetFacts).
+func (s *Service) svcRefreshFacts(r *run, ask bool) Facts {
+	meta, f := s.svcFactsOf(r, ask)
+	s.svcSetFacts(r, meta, f)
 	return f
 }
 
@@ -318,16 +338,22 @@ const svcNoCommit = "this repository has no commit yet: commit your files (or `g
 // lock is held.
 //
 // Blocked is the first of these that applies:
-//  1. the agent's program is not found;
+//  1. the run has no agent (none was usable when it was made), or the agent's program is not found;
 //  2. the repository has no commit yet;
 //  3. git cannot open the folder for another reason;
 //  4. the data folder's name is part of the run's folder or of the place its checkouts go (the
 //     agents refuse every command that names it);
 //  5. for a resume: the folder is no longer the repository the run started in.
+//
+// A draft that will start on another server has nothing looked at here: its facts are
+// svcRemoteFacts, and this function asks that server nothing.
 func (s *Service) svcFacts(meta model.RunMeta, rec svcRec) (Facts, *rungit.Repo) {
+	if svcRemoteDraft(meta) {
+		return s.svcRemoteFacts(meta, Facts{}, false, nil), nil
+	}
 	f := Facts{Git: meta.Git}
-	if meta.Started.IsZero() {
-		f.TierDefaults = s.svcBaseTiers(meta.Group, meta.Agent)
+	if meta.Started.IsZero() && meta.Client == "" { // a run with a client mark reads no defaults
+		f.TierDefaults = s.svcBaseTiers(svcSide{}, meta.Group, meta.Agent)
 	}
 	if st, err := os.Stat(meta.Cwd); err != nil || !st.IsDir() {
 		f.FolderMissing = true
@@ -338,7 +364,9 @@ func (s *Service) svcFacts(meta model.RunMeta, rec svcRec) (Facts, *rungit.Repo)
 		return f, nil
 	}
 	var reasons [6]string
-	if bin := s.Bins[meta.Agent]; bin != "" {
+	if meta.Agent == "" {
+		reasons[1] = s.svcNoAgent()
+	} else if bin := s.Bins[meta.Agent]; bin != "" {
 		if _, err := exec.LookPath(bin); err != nil {
 			reasons[1] = svcAgentName(meta.Agent) + "'s program was not found: install it, then start the run"
 		}
@@ -468,15 +496,21 @@ func svcModel(cat *model.Catalog, id string) (*model.CatalogModel, error) {
 			return &cat.Models[i], nil
 		}
 	}
-	return nil, fmt.Errorf("unknown model %q", id)
+	return nil, fmt.Errorf("%w %q", ErrUnknownModel, id)
 }
 
 // Create makes a run that has not started: its folder and its run.json. The name is the one given
 // (checked with CleanName) or "New run". The agent and the settings the composer shows come from
 // the run started last in the group (else anywhere, else Claude and the defaults), and so do the
 // tiers when that run was of the same agent kind (else svcDefaultTiers); the folder as for a new
-// chat there. ErrGroup for a group that does not exist,
+// chat there. An agent the server cannot use is replaced by the first usable one, with that
+// agent's own tiers; with none usable the run has no agent ("") and no tiers, and cannot start
+// until one is picked. ErrGroup for a group that does not exist,
 // ErrGroupArchived for an archived one.
+//
+// The run is on the sticky server of the group (svcStickySide). On another server than this one
+// all of that is taken from that server's lists and its part of the defaults (svcChoose): nothing
+// is checked on this computer, and that server is asked nothing.
 func (s *Service) Create(group, name string) (model.RunView, error) {
 	if group == "" {
 		return model.RunView{}, errSvcNoGroup
@@ -488,7 +522,7 @@ func (s *Service) Create(group, name string) (model.RunView, error) {
 		return model.RunView{}, ErrGroupArchived
 	}
 	meta := model.RunMeta{ID: model.NewID("r_"), Name: DefaultName, Group: group, Created: s.Clock.Now(),
-		Agent: model.Claude, Settings: model.DefaultRunSettings()}
+		Settings: model.DefaultRunSettings()}
 	if name != "" {
 		n, err := CleanName(name)
 		if err != nil {
@@ -496,24 +530,9 @@ func (s *Service) Create(group, name string) (model.RunView, error) {
 		}
 		meta.Name, meta.UserNamed = n, true
 	}
-	var rd *model.RunDefaults
-	s.Store.Read(func(st *model.State) { rd = svcRunDefaults(st, group) })
-	if rd != nil {
-		if svcKnownAgent(rd.Agent) {
-			meta.Agent = rd.Agent
-		}
-		// What was recorded is checked like what a person types: a value out of range keeps the default.
-		if p := (SettingsPatch{MaxParallel: &rd.MaxParallel, MaxTurns: &rd.MaxTurns, MaxCost: &rd.MaxCost}); p.apply(&meta.Settings) != nil {
-			meta.Settings = model.DefaultRunSettings()
-		}
-	}
-	s.Store.Read(func(st *model.State) {
-		meta.Cwd, _ = defaults.Resolve(st.Defaults, group, meta.Agent, s.DefaultCwd, nil)
-	})
-	meta.Tiers = s.svcNewTiers(group, meta.Agent, rd)
-	if rd != nil && rd.Setup != "" && rd.SetupCwd == meta.Cwd {
-		meta.Settings.Setup = rd.Setup
-	}
+	on := s.svcStickySide(group)
+	meta.Server = on.id()
+	s.svcChoose(on, &meta)
 	dir := s.Store.P.RunDir(meta.ID)
 	if err := writeMeta(dir, meta); err != nil {
 		return model.RunView{}, err
@@ -529,8 +548,11 @@ func (s *Service) Create(group, name string) (model.RunView, error) {
 // PatchReq is the body of PATCH /api/runs/{id}: only the fields that are set change, in the order
 // they stand here.
 type PatchReq struct {
-	Name     *string          `json:"name,omitempty"`
-	Group    *string          `json:"group,omitempty"`
+	Name  *string `json:"name,omitempty"`
+	Group *string `json:"group,omitempty"`
+	// Server is the server the draft will start on: the id of an entry of the server list, or
+	// "local" for this computer. It is the first of the composer's choices to be applied.
+	Server   *string          `json:"server,omitempty"`
 	Agent    *model.AgentKind `json:"agent,omitempty"`
 	Tiers    *TiersPatch      `json:"tiers,omitempty"`
 	Cwd      *string          `json:"cwd,omitempty"`
@@ -609,12 +631,7 @@ func (p SettingsPatch) apply(set *model.RunSettings) error {
 // svcExpandDir resolves ~ and a relative path and checks that the result is a folder, as a chat's
 // folder is checked.
 func svcExpandDir(p string) (string, error) {
-	p = strings.TrimSpace(p)
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, _ := os.UserHomeDir()
-		p = filepath.Join(home, strings.TrimPrefix(p, "~"))
-	}
-	abs, err := filepath.Abs(p)
+	abs, err := svcAbsDir(p)
 	if err != nil {
 		return "", err
 	}
@@ -649,18 +666,47 @@ func (s *Service) svcSetMeta(r *run, change func(m *model.RunMeta) error) error 
 }
 
 // Patch changes what the composer and the sidebar set. The name (CleanName; it becomes the
-// user's) and the group can change in every status. The agent, tiers, folder and settings only
-// while the run has not started (ErrStarted) and is not archived (ErrArchived). A new agent brings
-// its own tiers, as a new run of that agent gets them; a tier's new model keeps the effort only
+// user's) and the group can change in every status. The server, agent, tiers, folder and settings
+// only while the run has not started (ErrStarted), is not archived (ErrArchived), no start of it
+// on another server may have arrived (ErrStartUnconfirmed) and none is being made right now
+// (ErrStarting). A new agent brings its own tiers,
+// as a new run of that agent gets them; one the server cannot use is refused (a
+// *usable.MissingError). A tier's new model keeps the effort only
 // when it has it. Nothing is changed when any part is refused.
+//
+// A server must be one of the list (chats.ErrServerUnknown); another one than the draft has must
+// not wait for the user (chats.ErrServerUnusable), and the draft must have no chats
+// (ErrRunHasChats). The draft then gets the agent, tiers, folder, limits and set-up command a new
+// run in its place begins with on that server (svcChoose); the same server changes nothing.
+//
+// On another server the agent is checked against that server's list and the tiers against its
+// catalogue, and a folder is asked of that server (the draft check) before the run's op lock is
+// taken: chats.ErrServerUnreachable while it is not connected, chats.ErrFolderMissing (wrapped)
+// for a folder that is not there; else the folder is the one that server answered, and so are
+// the facts.
 func (s *Service) Patch(id string, p PatchReq) (model.RunView, error) {
 	r, err := s.run(id)
 	if err != nil {
 		return model.RunView{}, err
 	}
-	defer s.svcLock(id)()
-	facts := false
-	err = s.svcSetMeta(r, func(m *model.RunMeta) error {
+	for try := 0; ; try++ {
+		v, err := s.svcPatch(r, p, s.svcAskFolder(r, p))
+		if err == errSvcAskAgain && try < 2 { // the draft changed its server meanwhile
+			continue
+		}
+		return v, err
+	}
+}
+
+// svcPatch is Patch with what the draft's server answered about the folder p names (asked).
+// errSvcAskAgain when that was another server than the draft is on now.
+func (s *Service) svcPatch(r *run, p PatchReq, asked svcAsked) (model.RunView, error) {
+	unlock := s.svcLock(r.id)
+	// facts: what the view says of the folder may have changed; ask: of a draft on another
+	// server, that server is asked; answer: it has answered already.
+	facts, ask := false, false
+	var answer *DraftFacts
+	err := s.svcSetMeta(r, func(m *model.RunMeta) error {
 		if p.Name != nil {
 			n, err := CleanName(*p.Name)
 			if err != nil {
@@ -678,7 +724,7 @@ func (s *Service) Patch(id string, p PatchReq) (model.RunView, error) {
 			m.Group = *p.Group
 			facts = m.Started.IsZero() // the tier defaults are the group's
 		}
-		if p.Agent == nil && p.Tiers == nil && p.Cwd == nil && p.Settings == nil {
+		if p.Server == nil && p.Agent == nil && p.Tiers == nil && p.Cwd == nil && p.Settings == nil {
 			return nil
 		}
 		switch {
@@ -686,23 +732,63 @@ func (s *Service) Patch(id string, p PatchReq) (model.RunView, error) {
 			return ErrStarted
 		case m.Archived:
 			return ErrArchived
+		case m.RemoteStart == model.RemoteUnconfirmed:
+			return ErrStartUnconfirmed
+		case s.svcStarting(*m):
+			return ErrStarting
 		}
-		facts = facts || p.Agent != nil || p.Cwd != nil
+		on, known := s.svcSideOf(m.Server)
+		if p.Server != nil {
+			to, ok := s.svcSideOf(*p.Server)
+			if !ok {
+				return chats.ErrServerUnknown
+			}
+			if to.id() != m.Server {
+				switch {
+				case to.remote && to.entry.Stopped:
+					return chats.ErrServerUnusable
+				case s.svcHasChats(m.ID):
+					return ErrRunHasChats
+				}
+				m.Server = to.id()
+				s.svcChoose(to, m)
+				facts, ask = true, true
+			}
+			on, known = to, true
+		}
+		if !known && (p.Agent != nil || p.Tiers != nil || p.Cwd != nil) {
+			return chats.ErrServerUnknown // the draft's server left the list: only another server can be chosen
+		}
+		if p.Agent != nil {
+			facts, ask = true, true
+		}
 		if p.Agent != nil && *p.Agent != m.Agent {
 			if !svcKnownAgent(*p.Agent) {
 				return fmt.Errorf("unknown agent %q", *p.Agent)
 			}
+			if err := s.svcCheckAgentOn(on, *p.Agent); err != nil {
+				return err
+			}
 			m.Agent = *p.Agent
-			var rd *model.RunDefaults
-			s.Store.Read(func(st *model.State) { rd = svcRunDefaults(st, m.Group) })
-			m.Tiers = s.svcNewTiers(m.Group, m.Agent, rd)
+			m.Tiers = s.svcNewTiers(on, m.Group, m.Agent, s.svcRunDefaultsOn(on, m.Group))
 		}
 		if p.Tiers != nil {
-			if err := p.Tiers.apply(s.svcCatalog(m.Agent), &m.Tiers); err != nil {
+			if err := p.Tiers.apply(s.svcCatalogOn(on, m.Agent), &m.Tiers); err != nil {
 				return err
 			}
 		}
-		if p.Cwd != nil {
+		if p.Cwd != nil && on.remote {
+			f, err := svcFolderOn(on, *p.Cwd, asked)
+			if err != nil {
+				return err
+			}
+			m.Cwd, facts = f.Cwd, true
+			if asked.agent == m.Agent {
+				answer = &f
+			} else {
+				ask = true // the answer is of another agent
+			}
+		} else if p.Cwd != nil {
 			abs, err := svcExpandDir(*p.Cwd)
 			if err != nil {
 				return err
@@ -710,7 +796,7 @@ func (s *Service) Patch(id string, p PatchReq) (model.RunView, error) {
 			if s.Store.P.Contains(abs) {
 				return chats.ErrAppFolder
 			}
-			m.Cwd = abs
+			m.Cwd, facts = abs, true
 		}
 		if p.Settings != nil {
 			if err := p.Settings.apply(&m.Settings); err != nil {
@@ -720,10 +806,23 @@ func (s *Service) Patch(id string, p PatchReq) (model.RunView, error) {
 		return nil
 	})
 	if err != nil {
+		unlock()
 		return model.RunView{}, err
 	}
-	if facts {
-		s.svcRefreshFacts(r)
+	meta, _ := r.svcMetaRec()
+	if !svcRemoteDraft(meta) {
+		if facts {
+			s.svcRefreshFacts(r, false)
+		}
+		unlock()
+		return r.viewNow(), nil
+	}
+	unlock() // the run's server is asked with no lock held
+	switch {
+	case answer != nil:
+		s.svcSetFacts(r, meta, s.svcRemoteFacts(meta, Facts{}, false, answer))
+	case facts:
+		s.svcRefreshFacts(r, ask)
 	}
 	return r.viewNow(), nil
 }
@@ -763,6 +862,15 @@ func (s *Service) SetDraft(id string, d model.Draft) error {
 // svcIntegrationBranch is the branch a run's finished work is merged into.
 func svcIntegrationBranch(run string) string { return "aiwb/" + run + "/integration" }
 
+// svcNoAgent is why a run with no agent is blocked: no agent can be used on this server, or one
+// can by now and none is chosen.
+func (s *Service) svcNoAgent() string {
+	if err := s.Agents.Check(""); err != nil {
+		return err.Error()
+	}
+	return usable.ErrNone.Error()
+}
+
 // svcBlockedErr is the 409 of a start or resume that the facts forbid: the folder is gone, or the
 // view's blocked sentence.
 func svcBlockedErr(meta model.RunMeta, f Facts) error {
@@ -784,7 +892,8 @@ func svcBlockedErr(meta model.RunMeta, f Facts) error {
 // folder below it, where the checkouts will be, the integration branch's name, the branch the
 // folder is on, and whether the folder had uncommitted changes (which the run does not see).
 //
-// ErrNoGoal, ErrNoModel (400); ErrStarted, ErrArchived, *BlockedError (409).
+// ErrNoGoal, ErrNoModel (400); ErrStarted, ErrArchived, *BlockedError (409). ErrRemoteStart for a
+// draft that will start on another server: whoever talks to that server starts it.
 func (s *Service) Start(id, goal string) (model.RunView, error) {
 	r, err := s.run(id)
 	if err != nil {
@@ -795,48 +904,21 @@ func (s *Service) Start(id, goal string) (model.RunView, error) {
 	switch {
 	case !meta.Started.IsZero():
 		return model.RunView{}, ErrStarted
+	case meta.Server != "":
+		return model.RunView{}, ErrRemoteStart
 	case meta.Archived:
 		return model.RunView{}, ErrArchived
 	case strings.TrimSpace(goal) == "":
 		return model.RunView{}, ErrNoGoal
 	}
-	// The tiers are fixed here: a model that is gone refuses the start, an effort that is gone is
-	// replaced by the model's default.
-	tiers, err := svcCheckTiers(s.svcCatalog(meta.Agent), meta.Tiers)
+	p, err := s.svcPrepare(meta)
+	if p.checked {
+		r.setFacts(p.facts)
+	}
 	if err != nil {
 		return model.RunView{}, err
 	}
-	f, repo := s.svcFacts(meta, svcRec{})
-	r.setFacts(f)
-	if err := svcBlockedErr(meta, f); err != nil {
-		return model.RunView{}, err
-	}
-	var git *Git
-	if repo != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), svcGitWait)
-		defer cancel()
-		base, err := repo.Resolve(ctx, "HEAD")
-		if err != nil {
-			return model.RunView{}, &BlockedError{Reason: "git cannot use this folder: " + err.Error()}
-		}
-		work := s.Store.P.RunWorkDir(id)
-		git = &Git{RunGit: model.RunGit{BaseRef: base, IntegrationBranch: svcIntegrationBranch(id)}, Repo: repo.Root(),
-			Integration: filepath.Join(work, "int"), Orchestrator: filepath.Join(work, "orch")}
-		// The repository's top level has its symlinks resolved, so the folder must have too.
-		if abs, err := filepath.Abs(meta.Cwd); err == nil {
-			if real, err := filepath.EvalSymlinks(abs); err == nil {
-				if sub, err := filepath.Rel(repo.Root(), real); err == nil && sub != "." && !strings.HasPrefix(sub, "..") {
-					git.Sub = sub
-				}
-			}
-		}
-		git.DirtyAtStart = f.Dirty
-		// The branch the folder is on ("" when its HEAD is detached): the result is applied by
-		// itself only while the folder is still on it.
-		if git.Branch, err = repo.Branch(ctx, repo.Root()); err != nil {
-			return model.RunView{}, &BlockedError{Reason: "git cannot use this folder: " + err.Error()}
-		}
-	}
+	tiers, git := p.tiers, p.git
 	name := meta.Name
 	if !meta.UserNamed {
 		if n := NameFromGoal(goal); n != "" {
@@ -881,25 +963,25 @@ func (s *Service) Start(id, goal string) (model.RunView, error) {
 	}
 	s.svcNoteGit(r)
 
-	// The group remembers what the run was started with, as it does for a chat.
-	set := meta.Settings
-	rd := model.RunDefaults{Agent: meta.Agent, MaxParallel: set.MaxParallel, MaxTurns: set.MaxTurns, MaxCost: set.MaxCost,
-		Setup: set.Setup, SetupCwd: meta.Cwd, Tiers: &tiers}
-	var defs json.RawMessage
-	if err := s.Store.Update(func(st *model.State) error {
-		defaults.RecordChange(&st.Defaults, meta.Group, meta.Agent, meta.Cwd, model.ModelChoice{}) // the folder; a run does not change the group's chat model
-		inGroup, last := rd, rd
-		gd := st.Defaults.Groups[meta.Group]
-		gd.Run = &inGroup
-		st.Defaults.Groups[meta.Group] = gd
-		st.Defaults.Last.Run = &last
-		defs, _ = json.Marshal(st.Defaults) // a copy, taken under the store's lock
-		return nil
-	}); err != nil {
-		log.Printf("runs: record defaults: %v", err)
-	}
-	if defs != nil {
-		s.queue(id, map[string]any{"type": "defaults", "defaults": defs})
+	// The group remembers what the run was started with, as it does for a chat. A run with a
+	// client mark records no defaults.
+	if meta.Client == "" {
+		set := meta.Settings
+		rd := model.RunDefaults{Agent: meta.Agent, MaxParallel: set.MaxParallel, MaxTurns: set.MaxTurns, MaxCost: set.MaxCost,
+			Setup: set.Setup, SetupCwd: meta.Cwd, Tiers: &tiers}
+		var defs json.RawMessage
+		if err := s.Store.Update(func(st *model.State) error {
+			defaults.RecordServer(&st.Defaults, meta.Group, model.LocalServer)
+			defaults.RecordChange(&st.Defaults, meta.Group, model.LocalServer, meta.Agent, meta.Cwd, model.ModelChoice{}) // the folder; a run does not change the group's chat model
+			defaults.RecordRun(&st.Defaults, meta.Group, model.LocalServer, rd)
+			defs, _ = json.Marshal(st.Defaults) // a copy, taken under the store's lock
+			return nil
+		}); err != nil {
+			log.Printf("runs: record defaults: %v", err)
+		}
+		if defs != nil {
+			s.queue(id, map[string]any{"type": "defaults", "defaults": defs})
+		}
 	}
 
 	s.engine.start(r)
@@ -1105,7 +1187,7 @@ func (s *Service) Unarchive(id string) error {
 			}
 		}
 	}
-	s.svcRefreshFacts(r)
+	s.svcRefreshFacts(r, false)
 	return nil
 }
 
@@ -1118,7 +1200,7 @@ func (s *Service) UnarchiveAlone(id string) error {
 	}
 	was, err := s.svcUnarchive(r)
 	if err == nil && was.Archived {
-		s.svcRefreshFacts(r)
+		s.svcRefreshFacts(r, false)
 	}
 	return err
 }
@@ -1139,18 +1221,43 @@ func (s *Service) svcUnarchive(r *run) (was model.Archive, err error) {
 // person's folder, and whatever the run's agents changed in a folder without git. From
 // its first step on nothing can be written to the run any more, so a worker that has not let go
 // in time writes nothing either.
+//
+// It holds the id's creation lock from before it looks the run up: a delete waits for a start
+// call of that id that is under way and then removes what it made, and a start call that comes
+// after finds `run_removed` queued already.
+//
+// A draft whose start on another server may have arrived is deleted there too
+// (Remote.DropRun), once it is gone here and no lock is held. One whose start is being made
+// right now is not deleted (ErrStarting): the answer of that call decides what there is to
+// delete.
 func (s *Service) Delete(id string) error {
+	var drop func()
+	defer func() { // deferred first: it runs when the locks below are released
+		if drop != nil {
+			drop()
+		}
+	}()
+	defer s.starts.lock(id)()
 	r, err := s.run(id)
 	if err != nil {
 		return err
 	}
 	defer s.svcLock(id)()
 	r.mu.Lock()
-	gone := r.gone
-	r.gone = true
+	gone, meta := r.gone, r.meta
+	starting := !gone && s.svcStarting(meta)
+	if !starting {
+		r.gone = true
+	}
 	r.mu.Unlock()
-	if gone {
+	switch {
+	case gone:
 		return ErrNotFound
+	case starting:
+		return ErrStarting
+	}
+	if s.Remote != nil && svcRemoteDraft(meta) && meta.RemoteStart == model.RemoteUnconfirmed {
+		drop = func() { s.Remote.DropRun(meta.Server, id) }
 	}
 	if !s.engine.stop(r, s.haltWait) {
 		log.Printf("runs: delete %s: its workers have not let go; their agents are ended with their chats", id)
@@ -1384,12 +1491,17 @@ func (s *Service) Notes(id string, v int) (model.RunNotes, error) {
 
 // RunOf returns the facts of a run that its chats depend on; ok is false when there is none. The
 // chat manager calls it with a chat's lock held: it reads the run's published view and takes no
-// run's lock.
+// run's lock. A run this service does not have may be one that runs on another server: the record
+// of it is asked (Remote.RunInfo).
 func (s *Service) RunOf(id string) (chats.RunInfo, bool) {
 	r, err := s.run(id)
 	if err != nil {
+		if s.Remote != nil {
+			return s.Remote.RunInfo(id)
+		}
 		return chats.RunInfo{}, false
 	}
 	v := r.viewNow()
-	return chats.RunInfo{Group: v.Group, Archived: v.Archived, Cwd: v.Cwd, Agent: v.Agent, Model: v.Tiers.Deep.Model, Effort: v.Tiers.Deep.Effort}, true
+	return chats.RunInfo{Group: v.Group, Archived: v.Archived, Cwd: v.Cwd, Agent: v.Agent, Model: v.Tiers.Deep.Model, Effort: v.Tiers.Deep.Effort,
+		Server: v.Server, Draft: v.Started.IsZero()}, true
 }

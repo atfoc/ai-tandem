@@ -40,6 +40,13 @@ export const BoardIcon = ({ size = 13 }: { size?: number }) => (
   </svg>
 );
 
+/** A chat of no agent in particular: a speech bubble ("+" names no agent). */
+export const ChatIcon = ({ size = 13 }: { size?: number }) => (
+  <svg className="chat-icon" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+    <path d="M2.5 3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7l-3 2.5V11h-.5a1 1 0 0 1-1-1z" />
+  </svg>
+);
+
 /** A run: three staggered bars, as tasks on a timeline. */
 export const RunIcon = ({ size = 13 }: { size?: number }) => (
   <svg className="run-icon" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">

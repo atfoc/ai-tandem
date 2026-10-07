@@ -11,7 +11,7 @@ import (
 // This file is the service's event queue: what is sent to clients, and when.
 //
 // Everything a client is told about runs goes through one queue and one goroutine (sender), which
-// calls Emit.Broadcast with no lock held. So nothing is broadcast under a run's lock, the events
+// calls Emit.SendRun with no lock held. So nothing is sent under a run's lock, the events
 // of a run arrive in the order they were queued, and there is no lock order between a run and the
 // bridge (the snapshot reads r.view without a lock).
 
@@ -59,7 +59,7 @@ type svcSent struct {
 const svcRunEventGap = time.Second
 
 // queue appends an event to the service's queue for the clients. One goroutine (Service.sender)
-// sends the queue in order with Emit.Broadcast, so nothing is broadcast under a lock and the
+// sends the queue in order with Emit.SendRun, so nothing is sent under a lock and the
 // events of a run arrive in the order they were queued. It is called with the run's lock (run.mu)
 // held by commit, and without it by the engine (a `run_activity` event): it takes nothing but
 // the queue's own lock, and does not block.
@@ -127,10 +127,12 @@ func (s *Service) svcSendOne(it svcQueued) {
 	case it.done != nil:
 		close(it.done)
 	case it.ev != nil:
+		run := it.run
 		if rm, ok := it.ev.(svcRemovedEvent); ok {
 			delete(s.ev.sent, rm.ID)
+			run = rm.ID
 		}
-		s.svcEmit(it.ev)
+		s.svcEmit(run, it.ev)
 	case it.mark || it.timer:
 		s.svcSendRun(it.run, it.timer)
 	}
@@ -164,7 +166,7 @@ func (s *Service) svcSendRun(id string, timer bool) {
 	now := s.Clock.Now()
 	if !known || !reflect.DeepEqual(svcSteady(v), svcSteady(st.view)) || now.Sub(st.at) >= svcRunEventGap {
 		st.view, st.at = v, now
-		s.svcEmit(svcRunEvent{Type: "run", Run: v})
+		s.svcEmit(id, svcRunEvent{Type: "run", Run: v})
 		return
 	}
 	if st.armed {
@@ -185,10 +187,10 @@ func svcSteady(v model.RunView) model.RunView {
 	return v
 }
 
-// svcEmit broadcasts one event. No lock is held.
-func (s *Service) svcEmit(ev any) {
+// svcEmit sends one event of the run with this id to the clients it concerns. No lock is held.
+func (s *Service) svcEmit(run string, ev any) {
 	if s.Emit != nil {
-		s.Emit.Broadcast(ev)
+		s.Emit.SendRun(run, ev)
 	}
 }
 

@@ -1,5 +1,5 @@
-// Package boards keeps the boards: one folder per board (boards/<id>/) holding board.json and
-// drawing.excalidraw. The client owns the open scene and saves it back here; the server never
+// Package boards keeps the boards: one folder per board (boards/<id>/) holding board.json,
+// drawing.excalidraw and scene.rev (the drawing's revision). The client owns the open scene and saves it back here; the server never
 // edits a scene. (The prototype's pages.go, keyed by board id.)
 package boards
 
@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -27,8 +29,14 @@ type Emitter interface{ Broadcast(ev any) }
 type Service struct {
 	st     *store.Store // for P and the group list
 	bridge Emitter
+	// sendMu keeps the board events in the order of the changes. Create, update and Delete take
+	// it before mu and hold it over the Broadcast, which runs with mu released: the bridge calls
+	// List with its own lock held, so its lock must never be taken under mu. Nothing waits for
+	// sendMu with mu held.
+	sendMu sync.Mutex
 	mu     sync.Mutex // guards boards and serializes file operations
 	boards map[string]*model.Board
+	revs   sync.Map // board id -> *atomic.Int64, the scene revision; read without mu (Rev)
 }
 
 func New(st *store.Store, bridge Emitter) *Service {
@@ -39,6 +47,12 @@ const EmptyScene = `{"type":"excalidraw","version":2,"source":"ai-whiteboard","e
 
 var ErrArchived = errors.New("the board is archived")
 var ErrNotFound = errors.New("no such board")
+
+// StaleError is SaveAt's refusal of a write whose base is not the stored revision. Rev is the
+// stored one.
+type StaleError struct{ Rev int64 }
+
+func (e StaleError) Error() string { return "the board was changed elsewhere" }
 
 // CleanName turns user input into a board name (a label; duplicates allowed).
 func CleanName(s string) (string, error) {
@@ -65,6 +79,10 @@ func CleanName(s string) (string, error) {
 
 func (b *Service) boardJSON(id string) string {
 	return filepath.Join(b.st.P.BoardDir(id), "board.json")
+}
+
+func (b *Service) revFile(id string) string {
+	return filepath.Join(b.st.P.BoardDir(id), "scene.rev")
 }
 
 // save writes bd's board.json. Callers hold b.mu.
@@ -100,8 +118,48 @@ func (b *Service) Load() error {
 			continue
 		}
 		b.boards[bd.ID] = &bd
+		b.loadRev(bd.ID)
 	}
 	return nil
+}
+
+// loadRev reads a board's scene.rev into memory. A board without the file (one from before the
+// revisions, or one never written) has revision 0; an unreadable file is logged and counts as 0.
+func (b *Service) loadRev(id string) {
+	raw, err := os.ReadFile(b.revFile(id))
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	var n int64
+	if err == nil {
+		n, err = strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	}
+	if err != nil || n < 0 {
+		if err == nil {
+			err = errors.New("negative")
+		}
+		log.Printf("boards: %s: scene.rev ignored: %v", id, err)
+		return
+	}
+	b.rev(id).Store(n)
+}
+
+// rev returns the board's revision counter, made on first use.
+func (b *Service) rev(id string) *atomic.Int64 {
+	if v, ok := b.revs.Load(id); ok {
+		return v.(*atomic.Int64)
+	}
+	v, _ := b.revs.LoadOrStore(id, new(atomic.Int64))
+	return v.(*atomic.Int64)
+}
+
+// Rev returns the revision of a board's stored drawing: 0 for a board never written and for an
+// unknown id. It takes no lock (the bridge calls it with its own lock held).
+func (b *Service) Rev(id string) int64 {
+	if v, ok := b.revs.Load(id); ok {
+		return v.(*atomic.Int64).Load()
+	}
+	return 0
 }
 
 // List returns every registered board (the client sorts).
@@ -123,6 +181,36 @@ func (b *Service) Get(id string) (model.Board, bool) {
 		return model.Board{}, false
 	}
 	return *bd, true
+}
+
+// Groups returns, for every registered board, the names of the groups it is in: from the top
+// level down to the board's own group. An ungrouped board (and one whose group is gone) has an
+// empty path. Keyed by board id.
+func (b *Service) Groups() map[string][]string {
+	byID := map[string]model.Group{}
+	b.st.Read(func(s *model.State) {
+		for _, g := range s.Groups {
+			byID[g.ID] = g
+		}
+	})
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make(map[string][]string, len(b.boards))
+	for id, bd := range b.boards {
+		path := []string{}
+		seen := map[string]bool{}
+		for at := bd.Group; at != "" && !seen[at]; {
+			g, ok := byID[at]
+			if !ok {
+				break
+			}
+			seen[at] = true
+			path = append([]string{g.Name}, path...)
+			at = g.Parent
+		}
+		out[id] = path
+	}
+	return out
 }
 
 // checkGroup reports an error unless group is Ungrouped or a known group.
@@ -154,12 +242,23 @@ func (b *Service) Create(name, group string, isNew bool) (model.Board, error) {
 	if err != nil {
 		return model.Board{}, err
 	}
+	b.sendMu.Lock()
+	defer b.sendMu.Unlock()
+	bd, err := b.create(base, group, isNew)
+	if err != nil {
+		return model.Board{}, err
+	}
+	b.bridge.Broadcast(map[string]any{"type": "board", "board": bd})
+	return bd, nil
+}
+
+func (b *Service) create(name, group string, isNew bool) (model.Board, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.checkGroup(group); err != nil {
 		return model.Board{}, err
 	}
-	bd := &model.Board{ID: model.NewID("b_"), Name: base, Group: group, Created: time.Now(), New: isNew}
+	bd := &model.Board{ID: model.NewID("b_"), Name: name, Group: group, Created: time.Now(), New: isNew}
 	if err := os.MkdirAll(b.st.P.BoardDir(bd.ID), 0o700); err != nil {
 		return model.Board{}, err
 	}
@@ -171,44 +270,80 @@ func (b *Service) Create(name, group string, isNew bool) (model.Board, error) {
 		return model.Board{}, err
 	}
 	b.boards[bd.ID] = bd
-	b.bridge.Broadcast(map[string]any{"type": "board", "board": *bd})
 	return *bd, nil
 }
 
-// Scene returns a board's drawing. A known board with a missing file gives EmptyScene; an
-// unknown id is ErrNotFound.
-func (b *Service) Scene(id string) ([]byte, error) {
+// SceneAt returns a board's drawing and its revision. A known board with a missing file gives
+// EmptyScene; an unknown id is ErrNotFound.
+func (b *Service) SceneAt(id string) (raw []byte, rev int64, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, ok := b.boards[id]; !ok {
-		return nil, ErrNotFound
+		return nil, 0, ErrNotFound
 	}
-	raw, err := os.ReadFile(b.st.P.BoardFile(id))
+	rev = b.Rev(id)
+	raw, err = os.ReadFile(b.st.P.BoardFile(id))
 	if errors.Is(err, fs.ErrNotExist) {
-		return []byte(EmptyScene), nil
+		return []byte(EmptyScene), rev, nil
 	}
-	return raw, err
+	return raw, rev, err
 }
 
-// Save writes a board's drawing. Archived boards are read-only.
-func (b *Service) Save(id string, body []byte) error {
+// SaveAt writes a board's drawing if base is its stored revision, and returns the new one
+// (base+1). Another base is a StaleError with the stored revision, and nothing is written.
+// Archived boards are read-only.
+//
+// scene.rev is written before the drawing, so a crash between the two leaves a revision ahead
+// of the drawing (a client reads again), never a drawing ahead of its revision. If the drawing
+// can't be written the old revision is put back.
+func (b *Service) SaveAt(id string, base int64, body []byte) (rev int64, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	bd, ok := b.boards[id]
 	if !ok {
-		return ErrNotFound
+		return 0, ErrNotFound
 	}
 	if bd.Archived {
-		return ErrArchived
+		return 0, ErrArchived
 	}
 	if !json.Valid(body) {
-		return errors.New("the drawing is not valid JSON")
+		return 0, errors.New("the drawing is not valid JSON")
 	}
-	return store.WriteFileAtomic(b.st.P.BoardFile(id), body, 0o644)
+	cur := b.rev(id)
+	old := cur.Load()
+	if base != old {
+		return 0, StaleError{Rev: old}
+	}
+	if err := b.writeRev(id, old+1); err != nil {
+		return 0, err
+	}
+	if err := store.WriteFileAtomic(b.st.P.BoardFile(id), body, 0o644); err != nil {
+		if rerr := b.writeRev(id, old); rerr != nil {
+			log.Printf("boards: %s: scene.rev not put back to %d: %v", id, old, rerr)
+		}
+		return 0, err
+	}
+	cur.Store(old + 1)
+	return old + 1, nil
+}
+
+func (b *Service) writeRev(id string, n int64) error {
+	return store.WriteFileAtomic(b.revFile(id), []byte(strconv.FormatInt(n, 10)), 0o644)
 }
 
 // update applies f to a registered board, saves board.json and broadcasts the board.
 func (b *Service) update(id string, f func(bd *model.Board) error) (model.Board, error) {
+	b.sendMu.Lock()
+	defer b.sendMu.Unlock()
+	next, err := b.apply(id, f)
+	if err != nil {
+		return model.Board{}, err
+	}
+	b.bridge.Broadcast(map[string]any{"type": "board", "board": next})
+	return next, nil
+}
+
+func (b *Service) apply(id string, f func(bd *model.Board) error) (model.Board, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	bd, ok := b.boards[id]
@@ -223,7 +358,6 @@ func (b *Service) update(id string, f func(bd *model.Board) error) (model.Board,
 		return model.Board{}, err
 	}
 	*bd = next
-	b.bridge.Broadcast(map[string]any{"type": "board", "board": next})
 	return next, nil
 }
 
@@ -270,6 +404,16 @@ func (b *Service) SetArchive(id string, a model.Archive) error {
 
 // Delete removes the board's folder and record.
 func (b *Service) Delete(id string) error {
+	b.sendMu.Lock()
+	defer b.sendMu.Unlock()
+	if err := b.remove(id); err != nil {
+		return err
+	}
+	b.bridge.Broadcast(map[string]any{"type": "board_removed", "id": id})
+	return nil
+}
+
+func (b *Service) remove(id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, ok := b.boards[id]; !ok {
@@ -279,7 +423,7 @@ func (b *Service) Delete(id string) error {
 		return err
 	}
 	delete(b.boards, id)
-	b.bridge.Broadcast(map[string]any{"type": "board_removed", "id": id})
+	b.revs.Delete(id)
 	return nil
 }
 

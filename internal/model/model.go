@@ -73,6 +73,9 @@ type State struct {
 	// Cursor is the legacy Cursor catalog slot, kept for backward-compatible reads of older
 	// state.json files. It is never written after the generic Catalogs map exists.
 	Cursor *Catalog `json:"cursorCatalog,omitempty"`
+	// RemoteGroup is the id of the group "Remote", where what API clients make goes; "" until
+	// the first of them makes something. The group it names may be gone or archived.
+	RemoteGroup string `json:"remoteGroup,omitempty"`
 }
 
 // Catalog returns the last model list an agent reported, or nil when none is known. It is nil-receiver
@@ -105,15 +108,39 @@ type ModelChoice struct {
 	Effort string `json:"effort,omitempty"`
 }
 
-type GroupDefaults struct {
+// LocalServer is the key of the local server's part of the defaults, and the wire value of
+// "server" for the local server. A remote server's key is its instance id.
+const LocalServer = "local"
+
+// The values of ChatMeta.RemoteStart other than "".
+const (
+	RemoteLeft        = "left"        // the chat was made on its server and did not start
+	RemoteUnconfirmed = "unconfirmed" // the first message got no answer: it may have arrived
+)
+
+// ServerDefaults is what a group remembers for one server.
+type ServerDefaults struct {
+	Agent   AgentKind                 `json:"agent,omitempty"` // the agent a new chat starts with
 	Cwd     string                    `json:"cwd,omitempty"`
 	ByAgent map[AgentKind]ModelChoice `json:"byAgent,omitempty"`
 	Run     *RunDefaults              `json:"run,omitempty"` // what the last run started in the group used
 }
 
+type GroupDefaults struct {
+	Server  string                    `json:"server,omitempty"`  // sticky server; "" = none stored
+	Servers map[string]ServerDefaults `json:"servers,omitempty"` // key: LocalServer or an instance id
+}
+
 type Defaults struct {
-	Last   GroupDefaults            `json:"last"`   // most recent choices anywhere
 	Groups map[string]GroupDefaults `json:"groups"` // key: group id, or Ungrouped ("__ungrouped__")
+}
+
+// On is the group's part for server; the zero value when it has none.
+func (g GroupDefaults) On(server string) ServerDefaults { return g.Servers[server] }
+
+// LocalDefaults is a group's entry that holds sd for the local server and nothing else.
+func LocalDefaults(sd ServerDefaults) GroupDefaults {
+	return GroupDefaults{Servers: map[string]ServerDefaults{LocalServer: sd}}
 }
 
 type Catalog struct {
@@ -194,14 +221,26 @@ type UsageLimit struct {
 
 // ChatMeta is chat.json.
 type ChatMeta struct {
-	ID                  string    `json:"id"` // uuid v4
-	Agent               AgentKind `json:"agent"`
-	Name                string    `json:"name,omitempty"`
-	UserNamed           bool      `json:"userNamed,omitempty"`
-	Group               string    `json:"group,omitempty"` // plain chats (a group id or Ungrouped); empty for board chats, which use the board's group
-	Board               string    `json:"board,omitempty"` // board id for board chats
-	Run                 string    `json:"run,omitempty"`   // run id: a chat on a run, or (with Role) one of the run's agents; Group stays empty
-	Role                AgentRole `json:"role,omitempty"`  // a run agent: "orchestrator" | "task" | "merge"; empty for a user's chat
+	ID        string    `json:"id"` // uuid v4
+	Agent     AgentKind `json:"agent"`
+	Name      string    `json:"name,omitempty"`
+	UserNamed bool      `json:"userNamed,omitempty"`
+	Group     string    `json:"group,omitempty"` // plain chats (a group id or Ungrouped); empty for board chats, which use the board's group
+	Board     string    `json:"board,omitempty"` // board id for board chats
+	Run       string    `json:"run,omitempty"`   // run id: a chat on a run, or (with Role) one of the run's agents; Group stays empty
+	Role      AgentRole `json:"role,omitempty"`  // a run agent: "orchestrator" | "task" | "merge"; empty for a user's chat
+	// Client is the client mark: the client id of the API client that made the chat, "" for a
+	// chat made on this server. It is set at creation and never changes; a fork and a branch
+	// carry their source's. A chat with a mark feeds and reads no sticky defaults.
+	Client string `json:"client,omitempty"`
+	// Server is the server a chat that has not started will start on: the id of an entry of the
+	// server list, "" for this computer. A chat that started on another server is no chat object
+	// here any more (the local server keeps a record of it), so only an unstarted chat has one.
+	Server string `json:"server,omitempty"`
+	// RemoteStart says what is known of a first message sent to Server: "" (nothing was sent, or
+	// nothing is left there), "left" (the chat was made there and did not start) or "unconfirmed"
+	// (the message got no answer: it may have arrived).
+	RemoteStart         string    `json:"remoteStart,omitempty"`
 	Cwd                 string    `json:"cwd"`
 	Model               string    `json:"model"`
 	Effort              string    `json:"effort,omitempty"`
@@ -219,6 +258,11 @@ type ChatMeta struct {
 	// meta stays good, and a draft's pointer stays the same until that draft changes
 	// (ChatView is compared with ==).
 	Drafts map[string]*Draft `json:"drafts,omitempty"`
+	// DraftRevs counts the changes of each branch's draft, by branch id like Drafts and in the
+	// same chat.json: a save of a draft names the count it was typed on, so a late one cannot
+	// replace a newer draft. An entry is never removed: a cleared draft keeps its count. Like
+	// Drafts, a map that is in a ChatMeta is never changed.
+	DraftRevs map[string]int64 `json:"draftRevs,omitempty"`
 	// Draft is the one draft a chat had before its branches had their own. It is read only,
 	// never written again: the chat manager moves it to Drafts when it loads the chat.
 	Draft *Draft `json:"draft,omitempty"`
@@ -338,8 +382,11 @@ type ChatView struct {
 	UserNamed        bool      `json:"userNamed,omitempty"`
 	Group            string    `json:"group,omitempty"`
 	Board            string    `json:"board,omitempty"`
-	Run              string    `json:"run,omitempty"`  // a chat on a run, or (with Role) one of the run's agents
-	Role             AgentRole `json:"role,omitempty"` // a run agent: never in the snapshot's chats
+	Run              string    `json:"run,omitempty"`    // a chat on a run, or (with Role) one of the run's agents
+	Role             AgentRole `json:"role,omitempty"`   // a run agent: never in the snapshot's chats
+	Server           string    `json:"server,omitempty"` // the entry id of the chat's server; absent = the local server
+	Start            string    `json:"start,omitempty"`  // "unconfirmed": a first message got no answer (unstarted chats)
+	Gone             bool      `json:"gone,omitempty"`   // a remote chat its server no longer has
 	Cwd              string    `json:"cwd"`
 	Model            string    `json:"model"`
 	Effort           string    `json:"effort,omitempty"`
@@ -348,6 +395,7 @@ type ChatView struct {
 	Created          time.Time `json:"created"`
 	Usage            Usage     `json:"usage"`
 	Draft            *Draft    `json:"draft,omitempty"`
+	DraftRev         int64     `json:"draftRev,omitempty"` // the count of that draft's changes (ChatMeta.DraftRevs)
 	Archive
 
 	Status        Status `json:"status"`
@@ -391,7 +439,8 @@ type BranchState struct {
 	SubsRunning   int    `json:"subsRunning,omitempty"`
 	SubsOwed      int    `json:"subsOwed,omitempty"`
 	Draft         *Draft `json:"draft,omitempty"`
-	Fresh         bool   `json:"fresh,omitempty"` // a fork that has had no message of its own (ChatMeta.Fresh)
+	DraftRev      int64  `json:"draftRev,omitempty"` // the count of that draft's changes (ChatMeta.DraftRevs)
+	Fresh         bool   `json:"fresh,omitempty"`    // a fork that has had no message of its own (ChatMeta.Fresh)
 }
 
 // StateOf is the state record of the branch whose own view is v: the view of that branch's chat
@@ -412,13 +461,15 @@ func StateOf(chat, branch string, v ChatView) BranchState {
 		SubsRunning:   v.SubsRunning,
 		SubsOwed:      v.SubsOwed,
 		Draft:         v.Draft,
+		DraftRev:      v.DraftRev,
 		Fresh:         v.Fresh,
 	}
 }
 
 // ViewOf builds the client view of a chat. Token, SessionID, TurnActive, McpInstructionsSent,
 // ForkSource and Cost are left out; InstructionsSent is included because it is the curl-era disable marker.
-// Branches, Branch, Working and Approvals stay zero: the chat manager sets them. Draft is the
+// Branches, Branch, Working and Approvals stay zero: the chat manager sets them, as it does Server
+// and Start (Gone is a record's, never a chat object's). Draft is the
 // draft of main, which is what a top-level chat's meta is the meta of; a branch's meta has none,
 // and the chat manager fills it. HasDraft is over every entry of Drafts: the chat manager, which
 // knows the chat's branches, leaves out an entry that is under none of them.
@@ -440,6 +491,7 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 		Created:          m.Created,
 		Usage:            m.Usage,
 		Draft:            m.Drafts[MainBranch],
+		DraftRev:         m.DraftRevs[MainBranch],
 		HasDraft:         len(m.Drafts) > 0,
 		Archive:          m.Archive,
 		Status:           status,

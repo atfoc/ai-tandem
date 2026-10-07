@@ -243,8 +243,8 @@ func TestSvcTiersAcrossAgentsAndRuns(t *testing.T) {
 	}
 	var defs model.Defaults
 	e.s.Store.Read(func(s *model.State) { defs = s.Defaults })
-	if rd := defs.Groups[model.Ungrouped].Run; rd == nil || rd.Tiers == nil || *rd.Tiers != want || defs.Last.Run.Tiers == nil ||
-		len(defs.Groups[model.Ungrouped].ByAgent) != 0 || len(defs.Last.ByAgent) != 0 {
+	if own := defs.Groups[model.Ungrouped].On(model.LocalServer); own.Run == nil || own.Run.Tiers == nil || *own.Run.Tiers != want ||
+		len(own.ByAgent) != 0 || len(defs.Groups) != 1 {
 		t.Fatalf("defaults: %+v", defs)
 	}
 	// A tier patch on the started run is refused.
@@ -273,7 +273,7 @@ func TestSvcTiersAcrossAgentsAndRuns(t *testing.T) {
 	}
 	// A recorded map with a model that is gone is not used.
 	if err := e.s.Store.Update(func(st *model.State) error {
-		st.Defaults.Groups[model.Ungrouped].Run.Tiers.Deep.Model = "opus-1"
+		st.Defaults.Groups[model.Ungrouped].Servers[model.LocalServer].Run.Tiers.Deep.Model = "opus-1"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -353,7 +353,7 @@ func TestAgentRecordsCarryTheTier(t *testing.T) {
 	engTask(t, r, "T01", model.TaskWork)
 	engTask(t, r, "T02", model.TaskWork)
 	// Two tasks added by hand: one with a tier, one whose attempt has another tier than the task.
-	e.host.on = func(on func(m *engMsg)) func(m *engMsg) {
+	e.host.wrapOn(func(on func(m *engMsg)) func(m *engMsg) {
 		return func(m *engMsg) {
 			if m.Name == "T03-work" || m.Name == "T04-work" {
 				m.Block("completed", "Looked.", "r")
@@ -361,7 +361,7 @@ func TestAgentRecordsCarryTheTier(t *testing.T) {
 			}
 			on(m)
 		}
-	}(e.host.on)
+	})
 	e.must(r, KOp, func(tx *Tx) error {
 		tx.AddTask(Task{ID: "T03", Title: "Look", Kind: "research", CreatedAt: tx.Now(), BriefRev: 1, Tier: model.TierLight,
 			Attempts: []Attempt{{RunAttempt: model.RunAttempt{N: 1, QueuedAt: tx.Now()}}}})

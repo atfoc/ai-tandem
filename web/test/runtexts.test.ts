@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TextCache, isNone } from "../src/logic/runtexts.ts";
+import { readFileSync } from "node:fs";
+import { TextCache, isNone, type Held } from "../src/logic/runtexts.ts";
 
 /** A fetch that counts its calls and answers what it is told to. */
 function source<T>(answer: () => Promise<T>) {
@@ -82,4 +83,38 @@ test("only the server's 404 means there is no text", () => {
   assert.equal(isNone(Object.assign(new Error("x"), { status: 404 })), true);
   assert.equal(isNone(Object.assign(new Error("x"), { status: 409 })), false);
   assert.equal(isNone(new Error("x")), false); assert.equal(isNone(null), false); assert.equal(isNone("404"), false);
+});
+
+// ---- what a view shows after a drop (`server_back` drops a run's texts under the dock that shows them)
+
+test("a view that took its text from the cache keeps showing it after a drop; one that opens after it loads", async () => {
+  const c = new TextCache(), goal = { s: "ok", value: "the goal" } as const;
+  await c.load("r_1/goal", () => Promise.resolve("the goal"), true); // the first visit of the Goal tab fetched it
+  assert.equal(c.open("r_1/notes/1"), null, "nothing is kept of it: the view has to load");
+  const own = c.open<string>("r_1/goal"); // the second visit takes the kept answer as its own copy
+  assert.deepEqual(own, { key: "r_1/goal", state: goal });
+  assert.deepEqual(c.shown("r_1/goal", own), goal);
+
+  c.drop("r_1/"); // server_back
+  assert.equal(c.peek("r_1/goal"), undefined);
+  assert.deepEqual(c.shown("r_1/goal", own), goal, "the view on screen shows its copy: nothing would ask again");
+  assert.deepEqual(c.shown("r_1/goal", null), { s: "loading" }, "a view with no copy is loading, and its effect loads");
+  assert.equal(c.open("r_1/goal"), null, "a view that opens now loads");
+
+  // a copy is only ever shown for the key it was asked with
+  assert.deepEqual(c.shown("r_1/notes/2", own), { s: "loading" });
+  assert.deepEqual(c.shown(null, own), { s: "loading" });
+  // the kept answer comes before the copy; what is never kept (a running attempt's changes) is the view's copy alone
+  await c.load("r_1/goal", () => Promise.resolve("read again"), true);
+  assert.deepEqual(c.shown("r_1/goal", own), { s: "ok", value: "read again" });
+  const live: Held<number> = { key: "r_1/changes/T01/1/abc", state: await c.load("r_1/changes/T01/1/abc", () => Promise.resolve(3), false) };
+  assert.deepEqual(c.shown(live.key, live), { s: "ok", value: 3 });
+});
+
+test("useText holds a copy of what it takes from the cache, and shows by the cache's rule", () => {
+  const src = readFileSync(new URL("../src/run/texts.ts", import.meta.url), "utf8");
+  const hook = src.slice(src.indexOf("export function useText"), src.indexOf("/** The run's goal. */"));
+  assert.match(hook, /const kept = cache\.open<T>\(key\);\s*if \(kept\) \{ setGot\(kept\); return; \}/);
+  assert.match(hook, /return \{ \.\.\.cache\.shown\(key, got\), retry \};/);
+  assert.doesNotMatch(hook, /cache\.peek/, "no path shows the cache's answer alone");
 });

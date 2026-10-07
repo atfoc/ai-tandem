@@ -204,6 +204,11 @@ type RunMeta struct {
 	Draft     *Draft      `json:"draft,omitempty"`  // the goal being typed; cleared by the start
 	Started   time.Time   `json:"started,omitzero"` // when the goal was sent
 	Git       bool        `json:"git,omitempty"`    // set by the start: the run uses git (cwd was inside a work tree)
+	Client    string      `json:"client,omitempty"` // the client mark: the client id of the API client whose start call made the run; never changes
+	// Server is a draft's server: the id of an entry of the server list, "" for this computer.
+	Server string `json:"server,omitempty"`
+	// RemoteStart is "" or RemoteUnconfirmed: the start on the draft's server got no answer.
+	RemoteStart string `json:"remoteStart,omitempty"`
 	Archive
 }
 
@@ -259,6 +264,11 @@ type RunView struct {
 	Attention   int        `json:"attention"` // failed + blocked tasks + refused calls in the latest turn
 
 	Delivery RunDeliveryState `json:"delivery,omitempty"` // where the result is; absent for a draft and for a live run
+
+	Server string `json:"server,omitempty"` // the entry id of the run's server; absent = this computer
+	Start  string `json:"start,omitempty"`  // "unconfirmed": a start got no answer (a draft only)
+	Gone   bool   `json:"gone,omitempty"`   // a remote run its server no longer has
+	Was    string `json:"was,omitempty"`    // only in the events and the answer of Reissue: the id the draft had
 }
 
 // ---- run detail: GET /api/runs/{id}/detail and `run_detail` events ---------

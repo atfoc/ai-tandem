@@ -1,7 +1,9 @@
 // What became of a run's result in the person's folder (RunDelivery), in words: the card of the
 // Result tab (run/Delivery.tsx), and the short words of the end-of-run line and the sidebar.
 // DOM-free.
-import type { RunDelivery, RunDeliveryState, RunSettings, RunStatus } from "../types.ts";
+import { LOCAL_SERVER, type RunDelivery, type RunDeliveryState, type RunSettings, type RunStatus } from "../types.ts";
+import type { Where } from "./chatserver.ts";
+import { yourFolder } from "./runrows.ts";
 
 /** A sentence in parts: plain text, and what is set as code (a folder, a branch, a commit). */
 export type SayPart = string | { code: string };
@@ -16,6 +18,9 @@ export interface DeliveryFacts {
   resultBranch?: string;
   settings?: Pick<RunSettings, "applyResult">;
   status: RunStatus;
+  /** The run's server; absent: this computer. Another server's folder, branch and commits are
+   *  not the person's own ("the folder on <Name>", yourFolder). */
+  where?: Where;
 }
 
 export interface DeliveryCard {
@@ -53,10 +58,11 @@ const PARTIAL = " The run has not finished: this is what was merged so far.";
 const DEAD = new Set(["folder_missing", "not_repo", "result_missing"]);
 
 function sentence(d: RunDelivery, f: DeliveryFacts): SayPart[] {
+  const there = f.where && f.where.server !== LOCAL_SERVER ? f.where : null; // the run is on another server
   const cwd = c(tilde(f.cwd, f.home) || "the run's folder"), branch = c(d.branch || f.startBranch || "the folder's branch");
   switch (d.state) {
     case "applied":
-      if (d.how === "merge") return ["The result was merged into ", branch, " with your own commits", ...(d.commit ? [" (merge commit ", c(sha(d.commit)), ")"] : []), "."];
+      if (d.how === "merge") return ["The result was merged into ", branch, there ? ` with the commits of ${yourFolder(there)}` : " with your own commits", ...(d.commit ? [" (merge commit ", c(sha(d.commit)), ")"] : []), "."];
       return ["The result is in ", cwd, ...(d.commit || d.result ? [" (", branch, " is now at ", c(sha(d.commit || d.result)), ")"] : []), "."];
     case "none":
       if (d.reason === "no_git") return ["This folder is not a git repository: the agents worked directly in ", cwd, "."];
@@ -66,14 +72,14 @@ function sentence(d: RunDelivery, f: DeliveryFacts): SayPart[] {
         case "not_achieved": return ["The run did not reach its goal. What was finished can be applied to ", cwd, "."];
         case "halted": return ["The run is not finished. What was merged so far can be applied to ", cwd, "."];
         case "other_branch": return ["The folder is on ", branch, "; the run started on ", c(f.startBranch || "another branch"), ". Apply merges the result into ", branch, "."];
-        case "history_changed": return ["Your branch no longer contains the commit this run started from (it was amended, rebased or reset). Apply brings that commit and its changes back along with the result."];
+        case "history_changed": return [there ? `The branch of ${yourFolder(there)}` : "Your branch", " no longer contains the commit this run started from (it was amended, rebased or reset). Apply brings that commit and its changes back along with the result."];
         case "manual": return ["Automatic applying is off for this run. The result is ready: apply it to ", cwd, "."];
         default: return [...(f.settings?.applyResult === "manual" ? ["Automatic applying is off for this run. "] : []), "The result is ready: apply it to ", cwd, "."];
       }
     case "blocked":
       switch (d.reason) {
         case "local_changes": return ["These files have uncommitted changes or are in the way. Commit, stash or move them, then apply."];
-        case "conflict": return ["Your commits and the result change the same lines. Merge by hand with the command below."];
+        case "conflict": return [there ? `The commits of ${yourFolder(there)}` : "Your commits", " and the result change the same lines. Merge by hand with the command below", there ? `, run on ${there.name}.` : "."];
         case "busy": return ["A merge, rebase or other git operation is in progress in the folder. Finish or abort it, then apply."];
         case "folder_missing": case "not_repo": return [cwd, " is gone or is no longer the repository. The result is on the branch shown below."];
         case "result_missing": return ["The result's commit no longer exists in the repository."];

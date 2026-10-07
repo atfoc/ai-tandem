@@ -123,7 +123,7 @@ func TestBranchTokenArchivedChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No client is connected: past the archive check the call fails for that reason instead.
-	if text, isErr, _ := e.toolsCall(testBranchToken, "list_boards", `{}`); !isErr || text != NoClientText {
+	if text, isErr, _ := e.toolsCall(testBranchToken, "read_board", `{}`); !isErr || text != NoClientText {
 		t.Fatalf("after unarchive: got %q isErr=%v", text, isErr)
 	}
 }

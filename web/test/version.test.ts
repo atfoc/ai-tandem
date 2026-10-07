@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bannerFor, runningChats, restartConfirmText } from "../src/logic/version.ts";
@@ -31,6 +32,9 @@ test("runningChats counts thinking, writing, tool and approval", () => {
   assert.equal(runningChats(chats), 2);
   assert.equal(restartConfirmText(runningChats(chats)), "Restart ends 2 running agent chats.");
   assert.equal(runningChats([{ status: "writing" }, { status: "approval" }, { status: "ready" }]), 2);
+  // a chat on another server is not this server's to stop
+  assert.equal(runningChats([{ status: "writing", server: "s_1" }, { status: "ready", server: "s_1", subsRunning: 2 }]), 0);
+  assert.equal(runningChats([{ id: "c_1", status: "ready", server: "s_1" }, { status: "tool" }], () => [{ status: "thinking" }]), 1);
   assert.equal(runningChats([{ status: "ready" }, { status: "stopped" }, { status: "error" }]), 0);
   assert.equal(runningChats([]), 0);
   // a chat whose current branch is idle while other branches work is one chat
@@ -70,4 +74,21 @@ test("restartConfirmText with runs: they pause and continue", () => {
   assert.equal(restartConfirmText(0, 3), "3 running runs pause and continue after the restart.");
   assert.equal(restartConfirmText(2, 1), "Restart ends 2 running agent chats. 1 running run pauses and continues after the restart.");
   assert.equal(restartConfirmText(1, 2), "Restart ends 1 running agent chat. 2 running runs pause and continue after the restart.");
+});
+
+test("the restart confirmation counts the chats the store has through runningChats", () => {
+  const src = readFileSync(new URL("../src/version.ts", import.meta.url), "utf8");
+  assert.ok(src.includes("runningChats(Object.values(getState().chats)"));
+});
+
+test("the restart confirmation counts the runs of this computer only", async () => {
+  const { localRuns } = await import("../src/logic/runrows.ts");
+  const { runningRuns } = await import("../src/logic/run.ts");
+  const runs = [{ status: "running" as const }, { status: "running" as const, server: "s_1" }, { status: "stopping" as const, server: "s_1" }, { status: "stopped" as const }];
+  assert.equal(runningRuns(runs), 3);
+  assert.equal(runningRuns(localRuns(runs)), 1); // a run on another server goes on through this restart
+  assert.equal(runningRuns(localRuns([{ status: "running" as const, server: "s_1" }])), 0);
+  assert.equal(restartConfirmText(0, 0), restartConfirmText(0, runningRuns(localRuns([{ status: "running" as const, server: "s_1" }]))));
+  const src = readFileSync(new URL("../src/version.ts", import.meta.url), "utf8");
+  assert.match(src, /runningRuns\(localRuns\(Object\.values\(getState\(\)\.runs\)\)\)/);
 });

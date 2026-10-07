@@ -351,7 +351,7 @@ func compose(identity, session model.ChatView) model.ChatView {
 	v.Status, v.StatusTool, v.Error, v.FolderMissing = session.Status, session.StatusTool, session.Error, session.FolderMissing
 	v.SubsRunning, v.SubsOwed = session.SubsRunning, session.SubsOwed
 	v.Fresh = session.Fresh
-	v.Draft = session.Draft
+	v.Draft, v.DraftRev = session.Draft, session.DraftRev
 	return v
 }
 

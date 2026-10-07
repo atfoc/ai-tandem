@@ -25,7 +25,12 @@ func TestShutdownThenBootContinues(t *testing.T) {
 		m.Block("completed", "Done after the restart.", "r")
 	})
 	r.startEngine()
-	engUntil(t, "the work agent's message", func() bool { return len(e.host.sent("T01-work")) == 1 })
+	// The message is sent before the engine records that the agent's session exists: a shutdown
+	// between the two leaves an agent that starts anew, which is not what this test is about.
+	engUntil(t, "the work agent's message", func() bool {
+		a, _ := r.engAgentNamed("T01-work")
+		return len(e.host.sent("T01-work")) == 1 && a.Resumable
+	})
 	e.clock.Advance(5 * time.Minute)
 	stopsBefore := len(e.host.stoppedNames())
 	e.s.Shutdown(10 * time.Second)
@@ -145,7 +150,7 @@ func TestBootAfterCrash(t *testing.T) {
 
 	// A person resumes: the turn goes on with the same number and agent, with the resume
 	// message built from the run as it is now.
-	e.host.on = func(m *engMsg) { e.finishRun(r, 1, model.Achieved); m.Say("back") }
+	e.host.setOn(func(m *engMsg) { e.finishRun(r, 1, model.Achieved); m.Say("back") })
 	if err := r.resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +170,7 @@ func TestBootLoopGuardFakeHost(t *testing.T) {
 	t.Parallel()
 	e := newEngEnv(t, false)
 	r := e.run("r_loop", nil)
-	e.host.on = func(m *engMsg) { m.Hang() }
+	e.host.setOn(func(m *engMsg) { m.Hang() })
 	r.startEngine()
 	cycle := func(after time.Duration) {
 		t.Helper()
@@ -173,7 +178,7 @@ func TestBootLoopGuardFakeHost(t *testing.T) {
 		e.clock.Advance(after)
 		e.s.Shutdown(10 * time.Second)
 		r = e.reload("r_loop")
-		e.host.on = func(m *engMsg) { m.Hang() }
+		e.host.setOn(func(m *engMsg) { m.Hang() })
 		e.s.Boot()
 	}
 	cycle(10 * time.Second)
@@ -198,7 +203,7 @@ func TestBootLoopGuardFakeHost(t *testing.T) {
 	if r.engSt() != model.RunStopped || r.engHasEngine() {
 		t.Error("the run was continued after the guard")
 	}
-	e.host.on = func(m *engMsg) { e.finishRun(r, 1, model.Achieved); m.Say("done") }
+	e.host.setOn(func(m *engMsg) { e.finishRun(r, 1, model.Achieved); m.Say("done") })
 	if err := r.resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -467,11 +472,11 @@ func TestRecoveryTableNoGit(t *testing.T) {
 		e := newEngEnv(t, false)
 		r := e.run("r_rec", nil)
 		added := make(chan struct{})
-		e.host.on = func(m *engMsg) {
+		e.host.setOn(func(m *engMsg) {
 			e.add(r, 1, "held", false)
 			close(added)
 			m.Hang()
-		}
+		})
 		r.startEngine()
 		<-added
 		if err := r.halt(engUserStop); err != nil {
@@ -519,7 +524,7 @@ func TestRecoveryTableNoGit(t *testing.T) {
 		t.Parallel()
 		e := newEngEnv(t, false)
 		r := e.run("r_rec", nil)
-		e.host.on = func(m *engMsg) { m.Say("x") }
+		e.host.setOn(func(m *engMsg) { m.Say("x") })
 		e.must(r, KTurnStarted, func(tx *Tx) error {
 			tx.AddTurn(Turn{N: 1, Agent: "a", Reason: "start", Status: "done", StartedAt: tx.Now(), EndedAt: tx.Now()})
 			return nil

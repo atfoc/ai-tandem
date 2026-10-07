@@ -18,6 +18,10 @@ import type { TimelineView } from "./Timeline.tsx";
 import { TIGHT, useSize } from "./actions.ts";
 import { TIER_ROWS } from "../logic/rungoal.ts";
 import { TIERS, type RunView, type Stop, type Tier } from "../types.ts";
+import { catalogFor } from "../logic/agentlist.ts";
+import { serverOf } from "../logic/serverlists.ts";
+import { folderOn, runWhere } from "../logic/runserver.ts";
+import { yourFolder } from "../logic/runrows.ts";
 
 /** The context meter's ring, for a value of a limit. */
 function Ring({ used, max }: { used: number; max: number }) {
@@ -60,7 +64,11 @@ export interface RunHeadProps {
 }
 
 export const RunHead = memo(function RunHead({ run: r, stops, view: v, rows, follow, legend, tools, narrow, onRows, onZoom, onFollow, onLegend, onUsage }: RunHeadProps) {
-  const cat = useStore((s) => s.catalogs[r.agent]);
+  const server = serverOf(r);
+  const cat = useStore((s) => catalogFor(s, server, r.agent));
+  // the run's folder, "~" by its server's home; another server's names the server, and is not "your folder"
+  const folder = useStore((s) => folderOn(runWhere(s, r), tildify(r.cwd, server)));
+  const yours = useStore((s) => yourFolder(runWhere(s, r)));
   const startBranch = useStore((s) => s.runDetail[r.id]?.git?.branch); // the folder's branch when the run started
   const live = r.status === "running" || r.status === "stopping";
   const line = useRef<HTMLDivElement>(null);
@@ -112,14 +120,14 @@ export const RunHead = memo(function RunHead({ run: r, stops, view: v, rows, fol
       <Working run={r} stops={stops} />
       {showAgent && (
         <span className={`tchip static run-agent-chip agent-${agentClass(r.agent)}`} title={same
-          ? `Every agent of this run is ${agentName(r.agent)}, in ${tildify(r.cwd)}. Its orchestrator works on ${model}${effort ? `, ${effort} effort` : ""}`
-          : `Every agent of this run is ${agentName(r.agent)}, in ${tildify(r.cwd)}. ${TIER_ROWS.map(([k, name]) => `${name}: ${tier(k)}`).join("; ")}`}>
+          ? `Every agent of this run is ${agentName(r.agent)}, in ${folder}. Its orchestrator works on ${model}${effort ? `, ${effort} effort` : ""}`
+          : `Every agent of this run is ${agentName(r.agent)}, in ${folder}. ${TIER_ROWS.map(([k, name]) => `${name}: ${tier(k)}`).join("; ")}`}>
           <span className="run-agent-glyph"><AgentGlyph agent={r.agent} size={12} /></span>{agentShortName(r.agent)} · {same ? `${model}${effort ? ` · ${effort}` : ""}` : "3 tiers"}
         </span>
       )}
       {showApply && (s.applyResult === "manual"
         ? <span className="tchip static run-apply-chip" title="Automatic applying is off for this run: when it ends, the result waits for Apply in the Result tab.">auto-apply off</span>
-        : <span className="tchip static run-apply-chip" title="When the run ends, its result is applied to this branch of your folder if that is safe.">→ applies to {startBranch ? <code>{startBranch}</code> : "your folder"} at the end</span>
+        : <span className="tchip static run-apply-chip" title={`When the run ends, its result is applied to this branch of ${yours} if that is safe.`}>→ applies to {startBranch ? <code>{startBranch}</code> : yours} at the end</span>
       )}
       {tools && v && (
         <span className="run-tools">

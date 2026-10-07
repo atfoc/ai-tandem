@@ -16,6 +16,8 @@ import { ChatRef, Clock, CopyCmd, Line, TaskChip, TaskMark, TextError, TextLoadi
 import { useBrief, useChanges, useReport } from "./texts.ts";
 import type { TaskTab } from "../logic/runview.ts";
 import type { AgentKind, Attempt, CatalogModel, RunAgent, RunDetail, RunTiers, Task } from "../types.ts";
+import { catalogFor } from "../logic/agentlist.ts";
+import { serverOf } from "../logic/serverlists.ts";
 
 export interface RunTaskProps {
   runId: string;
@@ -44,7 +46,7 @@ function AgentLink({ agent, id, label, onOpen }: { agent: RunAgent | undefined; 
 
 export function RunTask({ runId, task, detail, tab, onTab: setTab, onOpenAgent, onSelectTask, onSelectTurn }: RunTaskProps) {
   const r = useStore((s) => s.runs[runId]);
-  const models = useStore((s) => (r ? s.catalogs[r.agent]?.models : undefined));
+  const models = useStore((s) => (r ? catalogFor(s, serverOf(r), r.agent)?.models : undefined));
   const top = useDockTop();
   const live = runLive(detail), st = taskState(task), state = stateOf(task, live), turn = addingTurn(task);
   const last = task.attempts[task.attempts.length - 1];
@@ -139,7 +141,7 @@ function Cancelled({ a, onSelectTurn }: { a: Attempt; onSelectTurn(n: number): v
 // ---- Report: the attempt's error, its outcome and summary, then the report's text
 
 function Report({ runId, task, a, isLast, detail, agentKind, onOpenAgent, onSelectTurn }: {
-  runId: string; task: Task; a: Attempt; isLast: boolean; detail: RunDetail; agentKind?: AgentKind; onOpenAgent(id: string): void; onSelectTurn(n: number): void;
+  runId: string; task: Task; a: Attempt; isLast: boolean; detail: RunDetail; agentKind?: AgentKind | ""; onOpenAgent(id: string): void; onSelectTurn(n: number): void;
 }) {
   const live = runLive(detail), st = isLast ? taskState(task) : a.outcome ?? "held";
   // The detail says whether there is a report: one is asked for only then.
@@ -194,7 +196,7 @@ function sentence(wait: string): string {
 
 // ---- Brief: the revision in force, or another one
 
-function Brief({ runId, task, agentKind, onSelectTurn }: { runId: string; task: Task; agentKind?: AgentKind; onSelectTurn(n: number): void }) {
+function Brief({ runId, task, agentKind, onSelectTurn }: { runId: string; task: Task; agentKind?: AgentKind | ""; onSelectTurn(n: number): void }) {
   // null: the revision in force, whichever that becomes
   const [pick, setPick] = useState<number | null>(null);
   const rev = pick != null && task.briefs.some((b) => b.rev === pick) ? pick : task.briefRev;

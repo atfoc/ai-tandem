@@ -8,6 +8,14 @@
 //	ai-whiteboard launch [flags]   start the server in the background if needed, print its URL, exit
 //	ai-whiteboard relaunch [flags] stop the running server if any, then launch; prints the URL
 //	ai-whiteboard stop [flags]     stop the running server
+//	ai-whiteboard remote setup [-port N] [-name X]... [-server-port N] [-new-cert]
+//	                               set up remote access (HTTPS with a secret); makes what is missing
+//	ai-whiteboard remote status [-server-port N]
+//	                               what a running server serves and what the next start will do
+//	ai-whiteboard remote off       turn remote access off at the next start; keeps secret and certificate
+//	ai-whiteboard secret [-new]    print the secret of remote access, or replace it and print the new one
+//
+// The remote and secret commands take their own flags after the sub-command, and -home <dir>.
 //
 // The program never opens a browser or a window: the Electron app does that. To use a browser tab,
 // run launch (or serve) and open the printed URL.
@@ -46,6 +54,7 @@ import (
 	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/usable"
 )
 
 // The chat manager is the runs' chat host.
@@ -63,6 +72,9 @@ type options struct {
 
 func main() {
 	cmd, args := command(os.Args[1:])
+	if code, ok := ownCommand(cmd, args, os.Stdout, os.Stderr); ok {
+		os.Exit(code)
+	}
 	o := parseFlags(cmd, args)
 	switch cmd {
 	case "serve":
@@ -74,7 +86,7 @@ func main() {
 	case "stop":
 		stop(o)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (serve, launch, relaunch, stop)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (serve, launch, relaunch, stop, remote, secret)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -125,6 +137,7 @@ func serve(o options, args []string) {
 		fmt.Println("AI Whiteboard is already running at", url)
 		return
 	}
+	rem := checkRemote(o)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", o.port))
 	if err != nil {
@@ -140,6 +153,7 @@ func serve(o options, args []string) {
 		log.Fatalf("%s", mcpListenError(wantMCPPort, err))
 	}
 	mcpBoundPort := mcpLn.Addr().(*net.TCPAddr).Port
+	rem.bind()
 
 	st, err := store.Open(p)
 	if err != nil {
@@ -147,19 +161,21 @@ func serve(o options, args []string) {
 	}
 	var a *app.App
 	var cm *chats.Manager
-	// A new snapshot goes to a client that watches no run agent's chat yet. The bridge calls this
-	// with its lock held: ClearWatches takes only the watch lock.
-	br := editorbridge.New(func() any { cm.ClearWatches(); return a.Snapshot() })
+	br := editorbridge.New(func() any { return a.Snapshot() })
 	bs := boards.New(st, br)
+	br.SceneRev = bs.Rev
+	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
+	agents := usable.New(bins) // the agents whose programs are found; looked up again every usable.Every
 	rs := runs.New(runs.Deps{Store: st, Emit: br, DefaultCwd: o.cwd, Clock: runs.RealClock{},
-		Bins: map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}})
+		Bins: bins, Agents: agents,
+		Mark: func(run, client string) { br.SetMark(editorbridge.Run(run), client) }})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
 	turnCaps()
-	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, Runs: rs, DefaultCwd: o.cwd,
+	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, Runs: rs, DefaultCwd: o.cwd, Agents: agents,
 		MCPURL: boardapi.Endpoint(mcpBoundPort),
 		Namers: map[model.AgentKind]chats.Namer{
 			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
@@ -196,7 +212,9 @@ func serve(o options, args []string) {
 	go refreshCursorCatalog(cursorSpawner, st, br)
 	go refreshPiCatalog(piSpawner, st, br)
 	go refreshClaudeCatalog(claudeSpawner, st, br)
-	a = &app.App{St: st, Boards: bs, Chats: cm, Runs: rs, Bridge: br, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
+	// Never stopped: the server ends by exiting.
+	go agents.Watch(usable.Every, nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
+	a = &app.App{St: st, Boards: bs, Chats: cm, Runs: rs, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
 	}
@@ -209,6 +227,7 @@ func serve(o options, args []string) {
 		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load,
 		Restart: func() error { return startRelaunch(p, args) }}
 	mcpHandler := srv.MCPHandler(mcpBoundPort)
+	stopServers := startServers(p, br, cm, a, srv)
 	mcpUp.Store(true)
 	go func() {
 		if err := http.Serve(mcpLn, mcpHandler); err != nil && err != http.ErrServerClosed {
@@ -216,6 +235,7 @@ func serve(o options, args []string) {
 			mcpUp.Store(false)
 		}
 	}()
+	rem.attach(srv)
 	if err := store.WriteServerFile(p, port); err != nil {
 		log.Printf("server.json: %v", err)
 	}
@@ -223,6 +243,7 @@ func serve(o options, args []string) {
 		rs.Shutdown(2 * time.Second)     // runs halt (they continue at the next start); no agent, task or turn starts from here on
 		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
 		cm.Shutdown()                    // history written; agents end
+		stopServers()                    // the connections to other servers end; what is kept of their chats is written
 		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
 		pb.Close()                       // the extension bridge: no more connections, socket removed
 		store.RemoveServerFile(p)
@@ -325,6 +346,10 @@ type helloReply struct {
 	App     string `json:"app"`
 	Version string `json:"version"`
 	Pid     int    `json:"pid"`
+	// FeatureLevel is 0 for a build that reports none; from level 1 on a running server reads its
+	// secret again when it is sent SIGUSR1.
+	FeatureLevel int    `json:"featureLevel"`
+	InstanceID   string `json:"instanceId"`
 }
 
 // helloOf asks base for /api/hello; ok only when an AI Whiteboard server answers.

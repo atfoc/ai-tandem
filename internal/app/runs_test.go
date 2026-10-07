@@ -12,6 +12,7 @@ import (
 	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
+	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/runs"
@@ -105,20 +106,20 @@ func TestSnapshotRuns(t *testing.T) {
 	}
 
 	e.must(e.st.Update(func(s *model.State) error {
-		gd := s.Defaults.Groups[g]
-		gd.Run = &model.RunDefaults{Agent: model.Claude, MaxParallel: 3, MaxTurns: 40, Setup: "make deps", SetupCwd: "/repo"}
-		s.Defaults.Groups[g] = gd
-		s.Defaults.Last.Run = &model.RunDefaults{Agent: model.Cursor, MaxParallel: 2, MaxTurns: 10}
+		defaults.RecordRun(&s.Defaults, g, model.LocalServer, model.RunDefaults{Agent: model.Claude, MaxParallel: 3, MaxTurns: 40, Setup: "make deps", SetupCwd: "/repo",
+			Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: "opus"}}})
+		defaults.RecordRun(&s.Defaults, model.Ungrouped, model.LocalServer, model.RunDefaults{Agent: model.Cursor, MaxParallel: 2, MaxTurns: 10})
 		return nil
 	}))
 	snap = e.a.Snapshot()
-	got, last := snap.Defaults.Groups[g].Run, snap.Defaults.Last.Run
-	if got == nil || got.MaxParallel != 3 || got.Setup != "make deps" || last == nil || last.Agent != model.Cursor {
-		t.Fatalf("the snapshot's run defaults: %+v, %+v", got, last)
+	got, ungrouped := snap.Defaults.Groups[g].On(model.LocalServer).Run, snap.Defaults.Groups[model.Ungrouped].On(model.LocalServer).Run
+	if got == nil || got.MaxParallel != 3 || got.Setup != "make deps" || ungrouped == nil || ungrouped.Agent != model.Cursor {
+		t.Fatalf("the snapshot's run defaults: %+v, %+v", got, ungrouped)
 	}
-	got.MaxParallel, last.MaxTurns = 99, 99
+	got.MaxParallel, got.Tiers.Deep.Model, ungrouped.MaxTurns = 99, "changed", 99
 	e.st.Read(func(s *model.State) {
-		if s.Defaults.Groups[g].Run.MaxParallel != 3 || s.Defaults.Last.Run.MaxTurns != 10 {
+		in, un := s.Defaults.Groups[g].On(model.LocalServer).Run, s.Defaults.Groups[model.Ungrouped].On(model.LocalServer).Run
+		if in.MaxParallel != 3 || in.Tiers.Deep.Model != "opus" || un.MaxTurns != 10 {
 			t.Error("changing the snapshot's run defaults changed the store's")
 		}
 	})
@@ -263,5 +264,68 @@ func TestArchiveGroupMeetsARunThatDoesNotStop(t *testing.T) {
 	e.must(e.a.Archive(KindRun, stuck))
 	if v := e.view(stuck); !v.Archived || v.Status != model.RunStopped {
 		t.Errorf("the run after its archive: %+v", v)
+	}
+}
+
+// lateRun makes beforeGroupChange add a run to the group once, as a start does that checked its
+// group just before the group is deleted or archived. It returns where the run's id is put.
+func lateRun(e *runEnv, group string) *string {
+	id := new(string)
+	beforeGroupChange = func() {
+		beforeGroupChange = nil
+		*id = e.run(group)
+	}
+	e.t.Cleanup(func() { beforeGroupChange = nil })
+	return id
+}
+
+// A run placed in a group between the listing of the group's contents and its removal goes the
+// way of the rest: no run is left in a group that is gone.
+func TestDeleteGroupTakesARunPlacedDuringTheDelete(t *testing.T) {
+	e := newRunEnv(t)
+	top := e.group("top")
+	kept := e.subgroup("kept", top)
+	late := lateRun(e, kept)
+	e.must(e.a.DeleteGroup(kept, false))
+	if *late == "" || e.view(*late).Group != top {
+		t.Fatalf("kept: the late run %q is in %q, want %q", *late, e.view(*late).Group, top)
+	}
+
+	gone := e.subgroup("gone", top)
+	late = lateRun(e, gone)
+	e.must(e.a.DeleteGroup(gone, true))
+	if _, err := e.rs.View(*late); *late == "" || !errors.Is(err, runs.ErrNotFound) {
+		t.Fatalf("with contents: the late run %q after the delete: %v", *late, err)
+	}
+	groups := map[string]bool{model.Ungrouped: true}
+	e.st.Read(func(s *model.State) {
+		for _, g := range s.Groups {
+			groups[g.ID] = true
+		}
+	})
+	for _, r := range e.rs.List() {
+		if !groups[r.Group] {
+			t.Errorf("run %s names the group %s, which is gone", r.ID, r.Group)
+		}
+	}
+}
+
+// The same at the archive of a group: no unarchived run in an archived group.
+func TestArchiveGroupTakesARunPlacedDuringTheArchive(t *testing.T) {
+	e := newRunEnv(t)
+	g := e.group("G")
+	first := e.run(g)
+	late := lateRun(e, g)
+	e.must(e.a.Archive(KindGroup, g))
+	if *late == "" {
+		t.Fatal("the hook did not run")
+	}
+	for _, id := range []string{first, *late} {
+		if !e.view(id).Archived {
+			t.Errorf("run %s is not archived in its archived group", id)
+		}
+	}
+	if a, b := e.view(first).Op, e.view(*late).Op; a == "" || a != b {
+		t.Errorf("the archive ops of the two runs: %q and %q", a, b)
 	}
 }

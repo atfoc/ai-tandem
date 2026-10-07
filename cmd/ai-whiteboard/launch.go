@@ -120,6 +120,7 @@ func startDetached(p store.Paths, exe, command string, args []string, what strin
 // everything launch does. Like launch, it writes only the server's URL to out; the stop step writes
 // nothing there.
 func relaunch(o options, args []string, out io.Writer) {
+	refuseBadRemote(o)
 	if url, ok := findRunning(o.paths, o.port); ok {
 		stopServer(strings.TrimSuffix(url, "/"))
 	}

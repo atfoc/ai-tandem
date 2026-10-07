@@ -123,7 +123,8 @@ agent's transcript.
 
 ## Prerequisites
 
-- macOS (the desktop app build is macOS only)
+- macOS (the desktop app build is macOS only; the server alone also builds for Linux, see
+  [Build the server for another machine](#build-the-server-for-another-machine))
 - Go 1.25+
 - Node.js 22.19+ and npm
 - At least one agent CLI, installed and logged in:
@@ -161,6 +162,71 @@ scripts/build-app.sh    # makes bin/AI Whiteboard.app
 scripts/install-app.sh  # copies it to ~/Applications, so Spotlight finds it
 ```
 
+### Build the server for another machine
+
+```sh
+scripts/build-server.sh              # for this machine's system and processor
+scripts/build-server.sh linux/amd64  # or darwin/arm64, darwin/amd64, linux/arm64
+```
+
+It makes `bin/ai-whiteboard-server-<os>-<arch>/`: the server binary, the web client (`web/`),
+`setup-remote.sh`, `start-server.sh` and a `README.md` with the steps for that machine. Every
+target builds on any of them, without cgo. There is no installer and no service file: copy the
+folder to the machine. See [Use a server on another machine](#use-a-server-on-another-machine).
+
+## Use a server on another machine
+
+The app can use an AI Whiteboard server on another machine, a remote server, next to its own:
+chats and runs started on it run there, with that machine's agents and folders. The app connects
+over HTTPS with a secret, and accepts one certificate by its fingerprint. The app never installs
+or starts a remote server: you set it up and start it on that machine yourself.
+
+A remote server is meant for a private network or a VPN. Its remote port listens on every IPv4
+address of the machine; keeping the port off the internet is up to that machine's network and
+firewall. HTTPS and the secret do not replace that.
+
+**On the other machine,** with the folder from `scripts/build-server.sh` (its `README.md` has the
+same steps in full):
+
+```sh
+sh ai-whiteboard-server-linux-amd64/setup-remote.sh   # asks nothing
+sh ai-whiteboard-server-linux-amd64/start-server.sh   # starts the server in the background
+```
+
+**On a Mac that has the app,** the script is in the bundle and sets the app's own server up:
+
+```sh
+sh ~/Applications/AI\ Whiteboard.app/Contents/Resources/remote/setup-remote.sh
+~/Applications/AI\ Whiteboard.app/Contents/MacOS/ai-whiteboard relaunch   # restart the app's server
+```
+
+Set-up prints the addresses (every name and address the machine has, with the remote port, 4748),
+the certificate's fingerprint and the secret, and how to restart the server. Run again, it
+changes nothing and prints the same. A set-up takes effect at the server's next start, except a
+new secret, which a running server takes at once. On macOS
+with the firewall on, incoming connections to the server can be blocked: allow `ai-whiteboard`
+when macOS asks, or add it in System Settings, Network, Firewall.
+
+**In the app on your own machine,** open **Servers** at the foot of the sidebar, choose **Add
+server** and enter a name, one of the addresses (`https://host:4748`) and the secret, and tick
+**Self-signed certificate**. Compare the fingerprint the app shows with the one set-up printed
+and accept it only when they are the same. **Test connection** says at which step a connection
+fails.
+
+| `setup-remote.sh` option | What it does                                                                       |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| `--name NAME`            | adds a DNS name or IPv4 address clients reach the machine by; may be repeated      |
+| `--port N`               | the remote port (default: keep it, or 4748 at the first set-up)                    |
+| `--new-cert`             | replaces the key and the certificate: every client must accept the new fingerprint |
+| `--new-secret`           | replaces the secret: every client needs the new one; a running server takes it at once |
+| `--home DIR`             | the data folder (default `~/.ai-whiteboard`)                                       |
+| `--server-port N`        | the server's own port, when it is not the running server's or 4747                 |
+
+`start-server.sh [--restart] [server flags]` runs `launch` (with `--restart`, `relaunch`) with
+the absolute path of the folder's `web/`, so it works from any folder; the other arguments are
+the server's flags below. The scripts are called through `sh` because a copy may lose its
+executable bit. They need no `openssl`.
+
 ## Server commands and flags
 
 ```sh
@@ -169,6 +235,25 @@ ai-whiteboard launch    # start it in the background if it isn't running, print 
 ai-whiteboard relaunch  # stop the running server, then launch
 ai-whiteboard stop      # stop the running server
 ```
+
+The commands for remote access (see
+[Use a server on another machine](#use-a-server-on-another-machine)):
+
+| Command                  | What it does |
+| ------------------------ | ------------ |
+| `remote setup`           | makes what is missing (secret, key and certificate, configuration) and replaces nothing; prints port, names, fingerprint and the server's own port, and whether the next start will work. `-port N` sets the remote port (4748 at first), `-name X` adds a name or IPv4 address (may be repeated) |
+| `remote setup -new-cert` | replaces the key and the certificate |
+| `remote status`          | what the running server does (off, or listening with port, names and fingerprint) and what the files say for the next start, with the reason when the server will not start. Never the secret |
+| `remote off`             | removes the remote configuration only; a running server keeps listening until its next start, and a later set-up gives the same secret and fingerprint |
+| `secret`                 | prints the secret |
+| `secret -new`            | replaces the secret and prints the new one; a running server takes it at once and disconnects its clients |
+
+Each takes `-home` for the data folder; `remote setup` and `remote status` take `-server-port`
+for the server's own port when it is not the running server's or 4747. They exit 1 when they
+refuse or fail, and also when the files are written and the server will not start with them: the
+message says which file or port, and the command that repairs it. A server whose remote set-up
+is broken does not start at all. The flags in the table below belong to `serve`, `launch`,
+`relaunch` and `stop`.
 
 | Flag       | Default            | What it does                              |
 | ---------- | ------------------ | ----------------------------------------- |

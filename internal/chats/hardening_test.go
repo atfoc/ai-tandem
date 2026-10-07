@@ -122,7 +122,7 @@ func TestHasDraftOnlyOfRegisteredBranches(t *testing.T) {
 
 	// A registered branch's counts, and the chat event says so; the other entry stays in the file.
 	evs := e.listen()
-	if err := e.m.SetDraftOf(id, exBranch, model.Draft{Text: "B"}); err != nil {
+	if err := e.setDraftOf(id, exBranch, model.Draft{Text: "B"}); err != nil {
 		t.Fatal(err)
 	}
 	has("a draft on a registered branch", true)
@@ -130,7 +130,7 @@ func TestHasDraftOnlyOfRegisteredBranches(t *testing.T) {
 		t.Fatalf("the chat event of the branch's draft %+v", vs)
 	}
 	stored("with the branch's draft", map[string]string{"ghost": "lost", exBranch: "B"})
-	if err := e.m.SetDraftOf(id, "ghost", model.Draft{}); !errors.Is(err, ErrNoBranch) {
+	if err := e.setDraftOf(id, "ghost", model.Draft{}); !errors.Is(err, ErrNoBranch) {
 		t.Fatalf("clearing the draft of an unknown branch: %v", err)
 	}
 
@@ -147,7 +147,7 @@ func TestHasDraftOnlyOfRegisteredBranches(t *testing.T) {
 
 	// Main's counts, and a Send on main ends it; the entries under no branch are still stored.
 	evs = e.listen()
-	if err := e.m.SetDraftOf(id, model.MainBranch, model.Draft{Text: "A"}); err != nil {
+	if err := e.setDraftOf(id, model.MainBranch, model.Draft{Text: "A"}); err != nil {
 		t.Fatal(err)
 	}
 	has("a draft on main", true)
@@ -207,7 +207,7 @@ func TestDraftsPublished(t *testing.T) {
 
 	// A draft set and cleared; another branch's keeps its pointer.
 	for _, text := range []string{"A", "A2", ""} {
-		if err := e.m.SetDraftOf(id, model.MainBranch, model.Draft{Text: text}); err != nil {
+		if err := e.setDraftOf(id, model.MainBranch, model.Draft{Text: text}); err != nil {
 			t.Fatal(err)
 		}
 		e.published("main's draft "+text, id)
@@ -218,7 +218,7 @@ func TestDraftsPublished(t *testing.T) {
 			t.Fatalf("the branch's draft changed with main's: %p, was %p", d, kept)
 		}
 	}
-	if err := e.m.SetDraftOf(id, exBranch, model.Draft{Text: "B"}); err != nil {
+	if err := e.setDraftOf(id, exBranch, model.Draft{Text: "B"}); err != nil {
 		t.Fatal(err)
 	}
 	e.published("the branch's draft", id)
@@ -227,7 +227,7 @@ func TestDraftsPublished(t *testing.T) {
 	}
 
 	// A Send takes its branch's: the current branch's, then main's.
-	if err := e.m.SetDraftOf(id, model.MainBranch, model.Draft{Text: "A"}); err != nil {
+	if err := e.setDraftOf(id, model.MainBranch, model.Draft{Text: "A"}); err != nil {
 		t.Fatal(err)
 	}
 	e.send(id, "on the branch", "")
@@ -262,7 +262,7 @@ func TestBranchDoesNotWaitForItsChat(t *testing.T) {
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	_, branchAg := e.bothRunning(id)
-	if err := e.m.SetDraftOf(id, exBranch, model.Draft{Text: "typed on the branch"}); err != nil {
+	if err := e.setDraftOf(id, exBranch, model.Draft{Text: "typed on the branch"}); err != nil {
 		t.Fatal(err)
 	}
 	e.makeCurrent(id, model.MainBranch)

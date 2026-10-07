@@ -16,17 +16,30 @@ type Paths struct {
 	RunWork string // <parent of Root>/aiwb-run-work: the checkouts run agents work in; never inside Root
 	State   string // Root/state.json
 	Server  string // Root/server.json
+	// RemoteChats holds what this server keeps of the chats that run on other servers, one file
+	// each (Root/remote/chats). It is created on first use, not by Open.
+	RemoteChats string
+	// RemoteRuns holds what this server keeps of the runs that run on other servers, one file
+	// each (Root/remote/runs). It is created on first use, not by Open.
+	RemoteRuns string
 }
 
 func NewPaths(root string) Paths {
 	return Paths{Root: root, Boards: filepath.Join(root, "boards"), Chats: filepath.Join(root, "chats"),
 		Runs: filepath.Join(root, "runs"), RunWork: filepath.Join(filepath.Dir(filepath.Clean(root)), "aiwb-run-work"),
-		State: filepath.Join(root, "state.json"), Server: filepath.Join(root, "server.json")}
+		State: filepath.Join(root, "state.json"), Server: filepath.Join(root, "server.json"),
+		RemoteChats: filepath.Join(root, "remote", "chats"), RemoteRuns: filepath.Join(root, "remote", "runs")}
 }
 
 func (p Paths) BoardDir(id string) string  { return filepath.Join(p.Boards, id) }
 func (p Paths) BoardFile(id string) string { return filepath.Join(p.Boards, id, "drawing.excalidraw") }
 func (p Paths) ChatDir(id string) string   { return filepath.Join(p.Chats, id) }
+
+// RemoteChatFile is the file of the remote chat id (RemoteChats/<id>.json).
+func (p Paths) RemoteChatFile(id string) string { return filepath.Join(p.RemoteChats, id+".json") }
+
+// RemoteRunFile is the file of the remote run id (RemoteRuns/<id>.json).
+func (p Paths) RemoteRunFile(id string) string { return filepath.Join(p.RemoteRuns, id+".json") }
 
 // RunDir is a run's folder: run.json, the journal, the checkpoint and text files, and the folders
 // of its chats.

@@ -366,7 +366,7 @@ func (m *Manager) emitTree(chat string, top, branch *Chat, labels, current, ifDi
 		}
 	}
 	if len(ev) > 2 {
-		m.cast(top, ev)
+		m.cast(top, chat, ev)
 	}
 }
 
