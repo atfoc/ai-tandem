@@ -197,14 +197,15 @@ func (s *Server) recordRoutes() *routeMux {
 }
 
 // firstAlone is the refusal of a first message that is more than its text.
-const firstAlone = "the first message of a chat on another server is its text alone: it takes no target, branch, context or references"
+const firstAlone = "the first message of a chat on another server is its text alone, with its board's context on a board: it takes no target, branch or references, and no context off a board"
 
 // startThere is POST /api/chats/{id}/messages for a chat of this server that has not started
 // and whose server is another one (meta): the message is that server's creation call, one call
 // that makes the chat there and sends the text. alone says that the request holds nothing but
-// the text; such a chat has nothing to quote or to branch from, so anything else is refused.
+// the text and, for a chat on a board, the context that names its board; such a chat has
+// nothing to quote or to branch from, so anything else is refused.
 // On success the chat is a record from now on, under the same id.
-func (s *Server) startThere(w http.ResponseWriter, r *http.Request, meta model.ChatMeta, text string, alone bool) {
+func (s *Server) startThere(w http.ResponseWriter, r *http.Request, meta model.ChatMeta, text, context string, alone bool) {
 	if !alone {
 		writeError(w, http.StatusBadRequest, firstAlone)
 		return
@@ -213,7 +214,7 @@ func (s *Server) startThere(w http.ResponseWriter, r *http.Request, meta model.C
 		fail(w, chats.ErrArchived, http.StatusInternalServerError)
 		return
 	}
-	out := s.Remotes.Start(r.Context(), meta.ID, text)
+	out := s.Remotes.Start(r.Context(), meta.ID, text, context)
 	if out.Status != http.StatusOK {
 		writeErrorCode(w, out.Status, out.Error, out.Code)
 		return

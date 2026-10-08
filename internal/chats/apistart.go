@@ -28,6 +28,7 @@ type StartReq struct {
 	Name          string
 	UserNamed     bool
 	Text          string // required, not blank: the first message
+	Context       string // the <ui-context> sent with it, for a chat on a board; "" = the board is named here
 	// Place is asked once, only when the chat is made and Run and Board are "": for the group the
 	// chat goes in. It is called with the creation lock of the id held, so it must not wait for a delete of
 	// a chat. nil = the ungrouped group.
@@ -133,7 +134,7 @@ func (m *Manager) Start(req StartReq) (res StartResult, err error) {
 		return res, ErrNotFound
 	}
 	res.Tried = true
-	res.Sent, err = m.sendOn(c, req.Text, "", nil) // releases c.mu
+	res.Sent, err = m.sendOn(c, req.Text, req.Context, nil) // releases c.mu
 	return res, err
 }
 

@@ -48,8 +48,9 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 // and sends it the first message (chats.Manager.Start). The call can be repeated: of any number
 // of calls with one id one sends.
 //
-// Body: {"id", "agent", "cwd", "model", "effort", "name", "userNamed", "text", "run", "board"}.
-// id, agent and text are required, cwd too unless run is given. A body that names a group, a
+// Body: {"id", "agent", "cwd", "model", "effort", "name", "userNamed", "text", "context", "run",
+// "board"}. id, agent and text are required, cwd too unless run is given; context is the
+// <ui-context> of a first message on a board, and is left out off one. A body that names a group, a
 // board that is not the caller's (or is archived), or both a run and a board is refused before
 // anything else.
 //
@@ -65,7 +66,7 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 		Model, Effort string
 		Name          string
 		UserNamed     bool
-		Text          string
+		Text, Context string
 		Run           string
 		Board, Group  string
 	}
@@ -89,7 +90,7 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 	res, err := s.App.Chats.Start(chats.StartReq{
 		ID: body.ID, Client: r.Header.Get(ClientHeader), Run: body.Run, Board: body.Board,
 		Agent: body.Agent, Cwd: body.Cwd, Model: body.Model, Effort: body.Effort,
-		Name: body.Name, UserNamed: body.UserNamed, Text: body.Text,
+		Name: body.Name, UserNamed: body.UserNamed, Text: body.Text, Context: body.Context,
 		Place: s.App.RemoteGroup,
 	})
 	if err != nil {

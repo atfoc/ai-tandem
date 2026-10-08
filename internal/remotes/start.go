@@ -32,7 +32,8 @@ type StartOutcome struct {
 var started = StartOutcome{Status: http.StatusOK}
 
 // Start sends text as the first message of the chat id, which must be one that Local reports as
-// unstarted on another server. On success the page is answered {"ok":true,"branch":"main"}.
+// unstarted on another server. context is the <ui-context> the page sent with it, for a chat on
+// a board; "" lets that server name the board itself. On success the page is answered {"ok":true,"branch":"main"}.
 //
 // One call runs per id: a second one meanwhile gets 409 busy. The call is not ended by the page
 // that asked: its answer decides what the chat is here, whoever still waits for it.
@@ -62,7 +63,7 @@ var started = StartOutcome{Status: http.StatusOK}
 // An answer that says the chat has not started, or is not there, tells of this call alone: a
 // call sent before that got no answer may still wait on that server and start the chat later.
 // So what is kept of the text of such a call (firstText) stays through every such answer.
-func (r *Relay) Start(ctx context.Context, id, text string) StartOutcome {
+func (r *Relay) Start(ctx context.Context, id, text, context string) StartOutcome {
 	unlock, ok := r.locks.start.try(id)
 	if !ok {
 		return StartOutcome{http.StatusConflict, "The first message of this chat is being sent.", "busy"}
@@ -89,7 +90,7 @@ func (r *Relay) Start(ctx context.Context, id, text string) StartOutcome {
 	ctx = r.lasting(ctx)
 	sum := sha256.Sum256([]byte(text))
 	other := r.firstOther(id, entry, sum) // read before the call: the swap drops what is kept
-	rep, err := r.call(ctx, entry, http.MethodPost, "/api/chats", startBody(meta, text), r.o.Limits.Start)
+	rep, err := r.call(ctx, entry, http.MethodPost, "/api/chats", startBody(meta, text, context), r.o.Limits.Start)
 	switch {
 	case errors.Is(err, ErrUnreachable):
 		return outcomeOf(r.unreachable(entry))
@@ -166,8 +167,11 @@ func (r *Relay) runClosed(run string) *Error {
 
 // startBody is the body of the creation call for the chat meta: the one place it is made. A
 // chat on a run names the run, and one on a board the board: each is on that server under the
-// same id.
-func startBody(meta model.ChatMeta, text string) []byte {
+// same id. context goes with a chat on a board alone.
+func startBody(meta model.ChatMeta, text, context string) []byte {
+	if meta.Board == "" {
+		context = ""
+	}
 	b, _ := json.Marshal(struct {
 		ID        string          `json:"id"`
 		Agent     model.AgentKind `json:"agent"`
@@ -177,9 +181,10 @@ func startBody(meta model.ChatMeta, text string) []byte {
 		Name      string          `json:"name"`
 		UserNamed bool            `json:"userNamed"`
 		Text      string          `json:"text"`
+		Context   string          `json:"context,omitempty"`
 		Run       string          `json:"run,omitempty"`
 		Board     string          `json:"board,omitempty"`
-	}{meta.ID, meta.Agent, meta.Cwd, meta.Model, meta.Effort, meta.Name, meta.UserNamed, text, meta.Run, meta.Board})
+	}{meta.ID, meta.Agent, meta.Cwd, meta.Model, meta.Effort, meta.Name, meta.UserNamed, text, context, meta.Run, meta.Board})
 	return b
 }
 

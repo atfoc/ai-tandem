@@ -204,14 +204,19 @@ func (pr *pair) create(p *bridgetest.Page, name string) (bd model.Board, group s
 }
 
 // boardChat makes a chat on the board from A's page and sends its first message, which starts
-// it on B. It returns the chat's id and the token of its agent on B.
+// it on B. The message goes with the <ui-context> the page puts in front of every message of a
+// board chat, and B's thread has it. It returns the chat's id and the token of its agent on B.
 func (pr *pair) boardChat(p *bridgetest.Page, board string) (chat, token string) {
 	pr.t.Helper()
 	cv := decode[model.ChatView](pr.t, string(do(pr.t, p, "POST", "/api/chats", obj{"agent": "claude", "board": board})))
 	if cv.Board != board || cv.Server != pr.entry || cv.Locked {
 		pr.t.Fatalf("the new chat on the board: %+v", cv)
 	}
-	do(pr.t, p, "POST", "/api/chats/"+cv.ID+"/messages", obj{"text": "hello"})
+	ctx := "<ui-context>\nactive_board: the board (" + board + ")\nreferenced_boards: another (b_other001)\n</ui-context>"
+	do(pr.t, p, "POST", "/api/chats/"+cv.ID+"/messages", obj{"text": "hello", "context": ctx})
+	if _, items, _, err := pr.b.a.Chats.Items(cv.ID); err != nil || len(items) == 0 || items[0].Kind != "user" || items[0].Context != ctx {
+		pr.t.Fatalf("the first message on B: %+v, %v", items, err)
+	}
 	metas := pr.b.a.Chats.ChatsOfBoard(board)
 	if len(metas) != 1 || metas[0].ID != cv.ID || metas[0].Client != testLocalID || metas[0].Token == "" {
 		pr.t.Fatalf("the chats of the board on B: %+v", metas)

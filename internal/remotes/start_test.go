@@ -248,7 +248,7 @@ func TestStartTable(t *testing.T) {
 				create.answer(row.status, startAnswerOf(row.started, row.status == 200, chat, row.errText, row.code))
 			}
 			before := create.count()
-			if got := rg.r.Start(context.Background(), id, "hello there"); got != row.want {
+			if got := rg.r.Start(context.Background(), id, "hello there", ""); got != row.want {
 				t.Errorf("the outcome: %+v, want %+v", got, row.want)
 			}
 			if create.count() != before+1 {
@@ -337,7 +337,7 @@ func TestStartOnARun(t *testing.T) {
 	on(chatN(1), open.ID)
 	view := remoteView(chatN(1), model.StatusThinking)
 	create.answer(http.StatusOK, startAnswerOf(true, true, &view, "", ""))
-	if got := rg.r.Start(ctx, chatN(1), "hello"); got != started {
+	if got := rg.r.Start(ctx, chatN(1), "hello", ""); got != started {
 		t.Fatalf("the outcome: %+v", got)
 	}
 	var body map[string]any
@@ -354,11 +354,11 @@ func TestStartOnARun(t *testing.T) {
 	// An archived run and a gone one: refused before the call, and what was known stays.
 	sent := create.count()
 	on(chatN(2), shut.ID)
-	if got := rg.r.Start(ctx, chatN(2), "hello"); got != (StartOutcome{Status: http.StatusConflict, Error: "the run is archived"}) {
+	if got := rg.r.Start(ctx, chatN(2), "hello", ""); got != (StartOutcome{Status: http.StatusConflict, Error: "the run is archived"}) {
 		t.Errorf("a chat on an archived run: %+v", got)
 	}
 	on(chatN(3), lost.ID)
-	if got := rg.r.Start(ctx, chatN(3), "hello"); got != (StartOutcome{http.StatusNotFound, "This run is no longer on Studio.", "gone_there"}) {
+	if got := rg.r.Start(ctx, chatN(3), "hello", ""); got != (StartOutcome{http.StatusNotFound, "This run is no longer on Studio.", "gone_there"}) {
 		t.Errorf("a chat on a gone run: %+v", got)
 	}
 	// A run that is being archived here is archived for its chats.
@@ -367,7 +367,7 @@ func TestStartOnARun(t *testing.T) {
 		t.Fatal(err)
 	}
 	on(chatN(4), open.ID)
-	if got := rg.r.Start(ctx, chatN(4), "hello"); got.Status != http.StatusConflict || got.Error != "the run is archived" {
+	if got := rg.r.Start(ctx, chatN(4), "hello", ""); got.Status != http.StatusConflict || got.Error != "the run is archived" {
 		t.Errorf("a chat on a run that is being archived: %+v", got)
 	}
 	for _, id := range []string{chatN(2), chatN(3), chatN(4)} {
@@ -382,7 +382,7 @@ func TestStartOnARun(t *testing.T) {
 	// A refusal of the run's server is handed on: nothing of the chat is there.
 	on(chatN(5), runN(9)) // no record here: the server answers for the run
 	create.answer(http.StatusNotFound, startAnswerOf(false, false, nil, "no such run", ""))
-	if got := rg.r.Start(ctx, chatN(5), "hello"); got != (StartOutcome{Status: http.StatusNotFound, Error: "no such run"}) {
+	if got := rg.r.Start(ctx, chatN(5), "hello", ""); got != (StartOutcome{Status: http.StatusNotFound, Error: "no such run"}) {
 		t.Errorf("a chat on a run the server lacks: %+v", got)
 	}
 	if state, ok := rg.startOf(chatN(5)); !ok || state != "" || !strings.Contains(create.last(t).Body, `"run":"`+runN(9)+`"`) {
@@ -390,7 +390,8 @@ func TestStartOnARun(t *testing.T) {
 	}
 }
 
-// TestStartOnABoard: the creation call of a chat on a board of the entry names the board, and
+// TestStartOnABoard: the creation call of a chat on a board of the entry names the board and
+// holds the context the page sent with the message (a chat on no board sends none), and
 // the record is written with no group, as for a chat on a run: its place is the board.
 func TestStartOnABoard(t *testing.T) {
 	t.Parallel()
@@ -407,14 +408,14 @@ func TestStartOnABoard(t *testing.T) {
 	view := remoteView(chatN(1), model.StatusThinking)
 	view.Board = board
 	create.answer(http.StatusOK, startAnswerOf(true, true, &view, "", ""))
-	if got := rg.r.Start(context.Background(), chatN(1), "hello"); got != started {
+	if got := rg.r.Start(context.Background(), chatN(1), "hello", "the board"); got != started {
 		t.Fatalf("the outcome: %+v", got)
 	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(create.last(t).Body), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["board"] != board || body["id"] != chatN(1) || len(body) != 9 {
+	if body["board"] != board || body["id"] != chatN(1) || body["context"] != "the board" || len(body) != 10 {
 		t.Errorf("the creation call: %v", body)
 	}
 	if _, has := body["run"]; has {
@@ -424,14 +425,14 @@ func TestStartOnABoard(t *testing.T) {
 		t.Errorf("the record: %+v", d)
 	}
 
-	// A chat on no board sends no "board".
+	// A chat on no board sends no "board", and no context.
 	rg.unstarted(chatN(2), "")
 	plain := remoteView(chatN(2), model.StatusThinking)
 	create.answer(http.StatusOK, startAnswerOf(true, true, &plain, "", ""))
-	if got := rg.r.Start(context.Background(), chatN(2), "hello"); got != started {
+	if got := rg.r.Start(context.Background(), chatN(2), "hello", "the board"); got != started {
 		t.Fatalf("the outcome of a plain chat: %+v", got)
 	}
-	if strings.Contains(create.last(t).Body, `"board"`) || rg.file(chatN(2)).Group != "g_here" {
+	if strings.Contains(create.last(t).Body, `"board"`) || strings.Contains(create.last(t).Body, `"context"`) || rg.file(chatN(2)).Group != "g_here" {
 		t.Errorf("a plain chat: body %s, record %+v", create.last(t).Body, rg.file(chatN(2)))
 	}
 }
@@ -443,7 +444,7 @@ func TestStartNotSent(t *testing.T) {
 	create := rg.script("POST /api/chats")
 	ctx := context.Background()
 
-	if got := rg.r.Start(ctx, chatA, "hello"); got.Status != http.StatusNotFound || got.Error != "no such chat" {
+	if got := rg.r.Start(ctx, chatA, "hello", ""); got.Status != http.StatusNotFound || got.Error != "no such chat" {
 		t.Errorf("a chat nobody has: %+v", got)
 	}
 	meta := rg.unstarted(chatA, "")
@@ -451,7 +452,7 @@ func TestStartNotSent(t *testing.T) {
 	rg.local.mu.Lock()
 	rg.local.chats[chatA] = meta
 	rg.local.mu.Unlock()
-	if got := rg.r.Start(ctx, chatA, "hello"); got.Status != http.StatusConflict || got.Code != "no_agent" || !strings.Contains(got.Error, "Studio") {
+	if got := rg.r.Start(ctx, chatA, "hello", ""); got.Status != http.StatusConflict || got.Code != "no_agent" || !strings.Contains(got.Error, "Studio") {
 		t.Errorf("a chat with no agent: %+v", got)
 	}
 	if create.count() != 0 {
@@ -463,7 +464,7 @@ func TestStartNotSent(t *testing.T) {
 	rg.local.chats[chatA] = meta
 	rg.local.mu.Unlock()
 	create.answer(http.StatusConflict, startAnswerOf(false, false, nil, "the id is taken", "id_taken"))
-	rg.r.Start(ctx, chatA, "hello")
+	rg.r.Start(ctx, chatA, "hello", "")
 	if q := create.last(t); !strings.Contains(q.Body, `"agent":"pi"`) || !strings.Contains(q.Body, `"model":"pi-model"`) {
 		t.Errorf("the creation call after a change of agent: %s", q.Body)
 	}
@@ -472,7 +473,7 @@ func TestStartNotSent(t *testing.T) {
 	rg.unstarted(chatB, model.RemoteLeft)
 	create.answer(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 	want := StartOutcome{http.StatusServiceUnavailable, "Studio is not connected.", "server_unreachable"}
-	if got := rg.r.Start(ctx, chatB, "hello"); got != want {
+	if got := rg.r.Start(ctx, chatB, "hello", ""); got != want {
 		t.Errorf("an answer of 401: %+v", got)
 	}
 	if state, ok := rg.startOf(chatB); !ok || state != model.RemoteLeft || rg.r.Has(chatB) || len(rg.told(chatB)) != 0 {
@@ -483,7 +484,7 @@ func TestStartNotSent(t *testing.T) {
 	// text (no 409).
 	rg.until("the entry is not connected", func() bool { return !rg.r.connected(rg.entry) })
 	sent := create.count()
-	if got := rg.r.Start(ctx, chatB, "hello"); got != want {
+	if got := rg.r.Start(ctx, chatB, "hello", ""); got != want {
 		t.Errorf("an entry that is not connected: %+v", got)
 	}
 	if state, _ := rg.startOf(chatB); state != model.RemoteLeft || create.count() != sent {
@@ -509,7 +510,7 @@ func TestStartNoAnswer(t *testing.T) {
 		id := chatN(1)
 		rg.unstarted(id, "")
 		serveViews(get, model.StatusThinking)
-		if got := rg.r.Start(ctx, id, "hello"); got != (StartOutcome{Status: 200}) {
+		if got := rg.r.Start(ctx, id, "hello", ""); got != (StartOutcome{Status: 200}) {
 			t.Errorf("the outcome: %+v", got)
 		}
 		if !rg.r.Has(id) || !rg.handedOver(id) || !reflect.DeepEqual(rg.told(id), []string{model.RemoteUnconfirmed}) {
@@ -524,7 +525,7 @@ func TestStartNoAnswer(t *testing.T) {
 			v.Locked = false
 			writeAnswer(w, http.StatusOK, v)
 		})
-		if got := rg.r.Start(ctx, id, "hello"); got != (StartOutcome{http.StatusBadGateway, notSent, "not_sent"}) {
+		if got := rg.r.Start(ctx, id, "hello", ""); got != (StartOutcome{http.StatusBadGateway, notSent, "not_sent"}) {
 			t.Errorf("the outcome: %+v", got)
 		}
 		if state, ok := rg.startOf(id); !ok || state != model.RemoteLeft || rg.r.Has(id) ||
@@ -536,7 +537,7 @@ func TestStartNoAnswer(t *testing.T) {
 		id := chatN(3)
 		rg.unstarted(id, "")
 		get.answer(http.StatusNotFound, map[string]string{"error": "no such chat"})
-		if got := rg.r.Start(ctx, id, "hello"); got != (StartOutcome{http.StatusBadGateway, notSent, "not_sent"}) {
+		if got := rg.r.Start(ctx, id, "hello", ""); got != (StartOutcome{http.StatusBadGateway, notSent, "not_sent"}) {
 			t.Errorf("the outcome: %+v", got)
 		}
 		if state, ok := rg.startOf(id); !ok || state != "" || rg.r.Has(id) ||
@@ -552,7 +553,7 @@ func TestStartNoAnswer(t *testing.T) {
 		_, free := get.hang()
 		defer free()
 		start := time.Now()
-		if got := rg.r.Start(ctx, id, "hello"); got != (StartOutcome{http.StatusGatewayTimeout, unconfirmed, "start_unconfirmed"}) {
+		if got := rg.r.Start(ctx, id, "hello", ""); got != (StartOutcome{http.StatusGatewayTimeout, unconfirmed, "start_unconfirmed"}) {
 			t.Errorf("the outcome: %+v", got)
 		}
 		if took := time.Since(start); took < 300*time.Millisecond || took > 3*time.Second {
@@ -568,7 +569,7 @@ func TestStartNoAnswer(t *testing.T) {
 		rg.unstarted(id, "")
 		create.answer(http.StatusOK, map[string]any{"ok": true})
 		serveViews(get, model.StatusThinking)
-		if got := rg.r.Start(ctx, id, "hello"); got != (StartOutcome{Status: 200}) || !rg.r.Has(id) {
+		if got := rg.r.Start(ctx, id, "hello", ""); got != (StartOutcome{Status: 200}) || !rg.r.Has(id) {
 			t.Errorf("the outcome: %+v, a record %v", got, rg.r.Has(id))
 		}
 	})
@@ -588,7 +589,7 @@ func TestStartWhileTheStreamDrops(t *testing.T) {
 	rg.unstarted(chatA, model.RemoteLeft)
 
 	done := make(chan StartOutcome, 1)
-	go func() { done <- rg.r.Start(context.Background(), chatA, "hello") }()
+	go func() { done <- rg.r.Start(context.Background(), chatA, "hello", "") }()
 	<-arrived
 	rg.s.DropStreams()
 	rg.returned(2)
@@ -618,7 +619,7 @@ func TestStartWhileTheServerGoes(t *testing.T) {
 	rg.b.Follow(p.ID, editorbridge.Chat(chatA))
 
 	done := make(chan StartOutcome, 1)
-	go func() { done <- rg.r.Start(context.Background(), chatA, "hello") }()
+	go func() { done <- rg.r.Start(context.Background(), chatA, "hello", "") }()
 	<-arrived
 	rg.s.Stop()
 	if got := <-done; got.Status != http.StatusGatewayTimeout || got.Code != "start_unconfirmed" {
@@ -868,7 +869,7 @@ func TestFirstTextKept(t *testing.T) {
 		t.Helper()
 		create.drop()
 		get.drop()
-		if got := rg.r.Start(ctx, id, text); got.Status != http.StatusGatewayTimeout || got.Code != "start_unconfirmed" {
+		if got := rg.r.Start(ctx, id, text, ""); got.Status != http.StatusGatewayTimeout || got.Code != "start_unconfirmed" {
 			t.Fatalf("a first message with no answer: %+v", got)
 		}
 	}
@@ -888,7 +889,7 @@ func TestFirstTextKept(t *testing.T) {
 		rg.unstarted(id, "")
 		lost(id, "hello")
 		arrived(id, false)
-		if got := rg.r.Start(ctx, id, "hello"); got != started || !swapped(id) {
+		if got := rg.r.Start(ctx, id, "hello", ""); got != started || !swapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, swapped(id))
 		}
 	})
@@ -897,7 +898,7 @@ func TestFirstTextKept(t *testing.T) {
 		rg.unstarted(id, "")
 		lost(id, "hello")
 		arrived(id, false)
-		if got := rg.r.Start(ctx, id, "hello, and more"); got != kept {
+		if got := rg.r.Start(ctx, id, "hello, and more", ""); got != kept {
 			t.Errorf("the outcome: %+v", got)
 		}
 		if !swapped(id) {
@@ -912,7 +913,7 @@ func TestFirstTextKept(t *testing.T) {
 		id := chatN(3)
 		rg.unstarted(id, model.RemoteUnconfirmed)
 		arrived(id, false)
-		if got := rg.r.Start(ctx, id, "whatever"); got != started || !swapped(id) {
+		if got := rg.r.Start(ctx, id, "whatever", ""); got != started || !swapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, swapped(id))
 		}
 	})
@@ -921,7 +922,7 @@ func TestFirstTextKept(t *testing.T) {
 		rg.unstarted(id, "")
 		lost(id, "hello")
 		arrived(id, true)
-		if got := rg.r.Start(ctx, id, "hello, and more"); got != started || !swapped(id) {
+		if got := rg.r.Start(ctx, id, "hello, and more", ""); got != started || !swapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, swapped(id))
 		}
 	})
@@ -940,14 +941,14 @@ func TestFirstTextKept(t *testing.T) {
 				refusal = startAnswerOf(false, false, &left, "the agent did not start", "agent_failed")
 			}
 			create.answer(http.StatusConflict, refusal)
-			if got := rg.r.Start(ctx, id, "hello"); got.Code != refusal["code"] {
+			if got := rg.r.Start(ctx, id, "hello", ""); got.Code != refusal["code"] {
 				t.Fatalf("the refusal: %+v", got)
 			}
 			if state, _ := rg.startOf(id); state != mark {
 				t.Errorf("the mark after the refusal %s: %q", refusal["code"], state)
 			}
 			arrived(id, false)
-			if got := rg.r.Start(ctx, id, "hello, and more"); got != kept || !swapped(id) {
+			if got := rg.r.Start(ctx, id, "hello, and more", ""); got != kept || !swapped(id) {
 				t.Errorf("after the refusal %s: %+v, swapped %v", refusal["code"], got, swapped(id))
 			}
 		}
@@ -959,7 +960,7 @@ func TestFirstTextKept(t *testing.T) {
 		lost(id, "hello")
 		lost(id, "hello, and more")
 		arrived(id, false)
-		if got := rg.r.Start(ctx, id, "hello, and more"); got != kept || !swapped(id) {
+		if got := rg.r.Start(ctx, id, "hello, and more", ""); got != kept || !swapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, swapped(id))
 		}
 	})
@@ -969,7 +970,7 @@ func TestFirstTextKept(t *testing.T) {
 		lost(id, "hello")
 		create.answer(http.StatusOK, startAnswerOf(true, false, nil, "", ""))
 		serveViews(get, model.StatusThinking)
-		if got := rg.r.Start(ctx, id, "hello, and more"); got != kept || !swapped(id) {
+		if got := rg.r.Start(ctx, id, "hello, and more", ""); got != kept || !swapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, swapped(id))
 		}
 	})
@@ -982,7 +983,7 @@ func TestFirstTextKept(t *testing.T) {
 	rg.local.mu.Lock()
 	delete(rg.local.chats, chatA)
 	rg.local.mu.Unlock()
-	if got := rg.r.Start(ctx, chatA, "hello"); got.Status != http.StatusNotFound {
+	if got := rg.r.Start(ctx, chatA, "hello", ""); got.Status != http.StatusNotFound {
 		t.Errorf("a first message of a chat that is gone: %+v", got)
 	}
 	rg.r.fmu.Lock()
@@ -1023,7 +1024,7 @@ func TestStartOnce(t *testing.T) {
 	const n = 24
 	out := make(chan StartOutcome, n)
 	for range n {
-		go func() { out <- rg.r.Start(context.Background(), chatA, "hello") }()
+		go func() { out <- rg.r.Start(context.Background(), chatA, "hello", "") }()
 	}
 	for range n - 1 {
 		if got := <-out; got.Status != http.StatusConflict || got.Code != "busy" {
@@ -1038,7 +1039,7 @@ func TestStartOnce(t *testing.T) {
 		t.Errorf("%d creation calls, want 1", create.count())
 	}
 	// The chat has started: a first message that comes now is not sent either.
-	if got := rg.r.Start(context.Background(), chatA, "hello"); got.Status != http.StatusConflict || create.count() != 1 {
+	if got := rg.r.Start(context.Background(), chatA, "hello", ""); got.Status != http.StatusConflict || create.count() != 1 {
 		t.Errorf("a first message for a started chat: %+v, %d calls", got, create.count())
 	}
 }
@@ -1070,7 +1071,7 @@ func TestSwapOrder(t *testing.T) {
 		view := remoteView(id, model.StatusThinking)
 		create.answer(http.StatusOK, startAnswerOf(true, true, &view, "", ""))
 		serveViews(get, read)
-		if got := rg.r.Start(context.Background(), id, "hello"); got != (StartOutcome{Status: 200}) {
+		if got := rg.r.Start(context.Background(), id, "hello", ""); got != (StartOutcome{Status: 200}) {
 			t.Fatalf("the outcome: %+v", got)
 		}
 		evs := rg.barrier(p, q)
@@ -1131,7 +1132,7 @@ func (rg *rig) lose(create, get *script, id, text string) {
 	rg.t.Helper()
 	create.drop()
 	get.drop()
-	if got := rg.r.Start(context.Background(), id, text); got.Status != http.StatusGatewayTimeout || got.Code != "start_unconfirmed" {
+	if got := rg.r.Start(context.Background(), id, text, ""); got.Status != http.StatusGatewayTimeout || got.Code != "start_unconfirmed" {
 		rg.t.Fatalf("a first message with no answer: %+v", got)
 	}
 }
@@ -1210,16 +1211,16 @@ func TestFirstTextKeptAfterASnapshot(t *testing.T) {
 		serveViews(get, model.StatusThinking)
 	}
 	arrived(other)
-	if got := rg.r.Start(ctx, other, "hello, and more"); got != kept || !rg.isSwapped(other) {
+	if got := rg.r.Start(ctx, other, "hello, and more", ""); got != kept || !rg.isSwapped(other) {
 		t.Errorf("another text after the snapshot: %+v, swapped %v", got, rg.isSwapped(other))
 	}
 	arrived(same)
-	if got := rg.r.Start(ctx, same, "hello"); got != started || !rg.isSwapped(same) {
+	if got := rg.r.Start(ctx, same, "hello", ""); got != started || !rg.isSwapped(same) {
 		t.Errorf("the same text after the snapshot: %+v, swapped %v", got, rg.isSwapped(same))
 	}
 	// A chat the snapshot does not list may be in a creation call that still waits there.
 	arrived(absent)
-	if got := rg.r.Start(ctx, absent, "hello, and more"); got != kept || !rg.isSwapped(absent) {
+	if got := rg.r.Start(ctx, absent, "hello, and more", ""); got != kept || !rg.isSwapped(absent) {
 		t.Errorf("another text for a chat that was not there: %+v, swapped %v", got, rg.isSwapped(absent))
 	}
 }
@@ -1268,7 +1269,7 @@ func TestFirstTextKeptByTheRead(t *testing.T) {
 				}
 				free := end.set()
 				serveViews(get, model.StatusThinking)
-				got := rg.r.Start(ctx, id, c.text)
+				got := rg.r.Start(ctx, id, c.text, "")
 				free()
 				if got != c.want || !rg.isSwapped(id) {
 					t.Errorf("%q after %q: %+v, swapped %v, want %+v", c.text, c.before, got, rg.isSwapped(id), c.want)
@@ -1306,7 +1307,7 @@ func TestSwapTakesTheCountersOfTheHandOver(t *testing.T) {
 
 	rg.unstarted(chatA, "") // the counter of main is 3
 	during(chatA)
-	if got := rg.r.Start(context.Background(), chatA, "hello"); got != started {
+	if got := rg.r.Start(context.Background(), chatA, "hello", ""); got != started {
 		t.Fatalf("the outcome: %+v", got)
 	}
 	if d := rg.file(chatA); !reflect.DeepEqual(d.DraftRevs, map[string]int64{mainBranch: 7, "b1": 2}) || len(d.Drafts) != 0 {
@@ -1331,7 +1332,7 @@ func TestSwapTakesTheCountersOfTheHandOver(t *testing.T) {
 	rg.adopt(seed)
 	rg.unstarted(chatB, "")
 	during(chatB)
-	if got := rg.r.Start(context.Background(), chatB, "hello"); got != started {
+	if got := rg.r.Start(context.Background(), chatB, "hello", ""); got != started {
 		t.Fatalf("the outcome with a record: %+v", got)
 	}
 	if d := rg.file(chatB); !reflect.DeepEqual(d.DraftRevs, map[string]int64{mainBranch: 7, "b1": 9}) || len(d.Drafts) != 0 {
@@ -1469,7 +1470,7 @@ func TestSwapKeepsAnEditedDraft(t *testing.T) {
 	view := remoteView(id, model.StatusThinking)
 	create.answer(http.StatusOK, startAnswerOf(true, false, &view, "", ""))
 	serveViews(get, model.StatusThinking)
-	if got := rg.r.Start(context.Background(), id, edited); got.Code != "first_text_kept" {
+	if got := rg.r.Start(context.Background(), id, edited, ""); got.Code != "first_text_kept" {
 		t.Fatalf("the outcome: %+v", got)
 	}
 	if d := rg.file(id); len(d.Drafts) != 0 || d.DraftRevs[mainBranch] != 5 {
@@ -1576,7 +1577,7 @@ func TestFirstTextStaysWhileTheChatIsNotThere(t *testing.T) {
 	byRead := func(rg *rig, create *script, ids []string) {
 		create.drop()
 		for _, id := range ids {
-			if got := rg.r.Start(ctx, id, sent); got != notSent {
+			if got := rg.r.Start(ctx, id, sent, ""); got != notSent {
 				t.Fatalf("a first message with no answer whose read finds nothing started: %+v", got)
 			}
 		}
@@ -1689,15 +1690,15 @@ func TestFirstTextStaysWhileTheChatIsNotThere(t *testing.T) {
 				create.answer(http.StatusOK, startAnswerOf(true, sent, &view, "", ""))
 			}
 			arrived(other, false)
-			if got := rg.r.Start(ctx, other, edited); got != kept || !rg.isSwapped(other) {
+			if got := rg.r.Start(ctx, other, edited, ""); got != kept || !rg.isSwapped(other) {
 				t.Errorf("another text for a chat that had started: %+v, swapped %v", got, rg.isSwapped(other))
 			}
 			arrived(same, false)
-			if got := rg.r.Start(ctx, same, sent); got != started || !rg.isSwapped(same) {
+			if got := rg.r.Start(ctx, same, sent, ""); got != started || !rg.isSwapped(same) {
 				t.Errorf("the same text for a chat that had started: %+v, swapped %v", got, rg.isSwapped(same))
 			}
 			arrived(fresh, true)
-			if got := rg.r.Start(ctx, fresh, edited); got != started || !rg.isSwapped(fresh) {
+			if got := rg.r.Start(ctx, fresh, edited, ""); got != started || !rg.isSwapped(fresh) {
 				t.Errorf("another text for a chat that never arrived: %+v, swapped %v", got, rg.isSwapped(fresh))
 			}
 			if d := rg.file(fresh); len(d.Drafts) != 0 {
@@ -1733,7 +1734,7 @@ func TestFirstTextOfAnotherServer(t *testing.T) {
 		rg.keepFirst(id, elsewhere, before)
 		create.drop()
 		serveViews(get, model.StatusThinking)
-		if got := rg.r.Start(ctx, id, text); got != started || !rg.isSwapped(id) {
+		if got := rg.r.Start(ctx, id, text, ""); got != started || !rg.isSwapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, rg.isSwapped(id))
 		}
 	})
@@ -1745,7 +1746,7 @@ func TestFirstTextOfAnotherServer(t *testing.T) {
 		view := remoteView(id, model.StatusThinking)
 		create.answer(http.StatusOK, startAnswerOf(true, false, &view, "", ""))
 		serveViews(get, model.StatusThinking)
-		if got := rg.r.Start(ctx, id, text); got != started || !rg.isSwapped(id) {
+		if got := rg.r.Start(ctx, id, text, ""); got != started || !rg.isSwapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, rg.isSwapped(id))
 		}
 	})

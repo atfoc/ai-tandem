@@ -910,7 +910,7 @@ func (s *Server) routes() *routeMux {
 	// "main" for main, the new id for a new branch, and without ?branch= and "target" the branch
 	// that was current when the message was sent.
 	// The first message of a chat that starts on another server is that server's creation call
-	// (startThere): it takes the text alone.
+	// (startThere): it takes the text alone, and on a board the context with it.
 	mux.HandleFunc("POST /api/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text, Context string
@@ -937,8 +937,8 @@ func (s *Server) routes() *routeMux {
 		}
 		if !fromRemote(r) && s.Remotes != nil {
 			if meta, there := a.Chats.RemoteUnstarted(r.PathValue("id")); there {
-				alone := body.Target == nil && branch == "" && body.Context == "" && len(body.References) == 0
-				s.startThere(w, r, meta, body.Text, alone)
+				alone := body.Target == nil && branch == "" && (body.Context == "" || meta.Board != "") && len(body.References) == 0
+				s.startThere(w, r, meta, body.Text, body.Context, alone)
 				return
 			}
 		}
