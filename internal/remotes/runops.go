@@ -318,7 +318,7 @@ func (r *Relay) agentRead(ctx context.Context, chat, client, path string, limit 
 		case !noSuchChat(rep):
 			return r.handed(rec.entry, rep)
 		}
-		again := patient && time.Since(began)+agentEvery <= agentWait
+		again := patient && time.Since(began)+r.agentEvery <= r.agentWait
 		if v := rec.view(); v.Gone || !v.Status.Live() {
 			again = false
 		}
@@ -328,7 +328,7 @@ func (r *Relay) agentRead(ctx context.Context, chat, client, path string, limit 
 				again = false
 			case <-r.ctx.Done():
 				again = false
-			case <-time.After(agentEvery):
+			case <-time.After(r.agentEvery):
 			}
 		}
 		if !again {

@@ -110,16 +110,56 @@ func (r *Repo) commitOpts(ctx context.Context, dir string) ([]string, error) {
 	// Never signed: the server has no terminal where a passphrase could be asked for, so a
 	// repository set up to sign commits would block or fail here.
 	opts := []string{"-c", "commit.gpgsign=false"}
-	for _, key := range []string{"user.name", "user.email"} {
-		out, err := r.run(ctx, dir, "config", "--get", key)
-		if err != nil && exitCode(err) != 1 {
-			return nil, err
-		}
-		if out == "" { // the repository has no identity of its own: use the fallback for both
-			return append(opts, "-c", "user.name="+r.name, "-c", "user.email="+r.email), nil
+	own, known := r.ownIdentity(ctx, dir)
+	if !known {
+		own = true
+		for _, key := range []string{"user.name", "user.email"} {
+			out, err := r.run(ctx, dir, "config", "--get", key)
+			if err != nil && exitCode(err) != 1 {
+				return nil, err
+			}
+			if out == "" {
+				own = false
+				break
+			}
 		}
 	}
+	if !own { // the repository has no identity of its own: use the fallback for both
+		return append(opts, "-c", "user.name="+r.name, "-c", "user.email="+r.email), nil
+	}
 	return opts, nil
+}
+
+// ownIdentity asks git for user.name and user.email with one command and reports whether both
+// have a value. The last value of a key counts, as for git. known is false when the command
+// failed, printed something else than those two keys, or ended well without printing any: the
+// caller then asks for each key by itself. Nothing is remembered: the person can change the
+// config between two commits.
+func (r *Repo) ownIdentity(ctx context.Context, dir string) (own, known bool) {
+	entries, err := r.runZ(ctx, dir, "config", "--null", "--get-regexp", `^user\.(name|email)$`)
+	return identityIn(entries, err)
+}
+
+// identityIn is ownIdentity for what git printed, entries, and how it ended, err.
+func identityIn(entries []string, err error) (own, known bool) {
+	// An entry is "key\nvalue", or just "key" for a key without a value. Git exits with 0 when it
+	// printed an entry and with 1 when none is set; neither or both is not an answer.
+	if set := len(entries) > 0; set != (err == nil) || !set && exitCode(err) != 1 {
+		return false, false
+	}
+	var name, email string
+	for _, e := range entries {
+		key, value, _ := strings.Cut(e, "\n")
+		switch key {
+		case "user.name":
+			name = strings.TrimSpace(value)
+		case "user.email":
+			email = strings.TrimSpace(value)
+		default:
+			return false, false
+		}
+	}
+	return name != "" && email != "", true
 }
 
 // commit commits what is staged in dir, with msg or, when msg is "", with the message git has

@@ -68,6 +68,7 @@ const STOPPED: readonly ServerState[] = ["secret_not_accepted", "fingerprint_not
 export const waitsForUser = (state: ServerState): boolean => STOPPED.includes(state);
 
 export const BOARD_LOCAL = "Boards and their chats are on this computer";
+export const BOARD_SERVER = "A chat on a board is on the board's server";
 export const RUN_SERVER = "A chat on a run is on the run's server";
 export const START_UNCONFIRMED = "The first message may have arrived: the server cannot be changed until that is known";
 export const SERVER_FIXED = "The server cannot be changed after the first message, in a fork or on a branch";
@@ -89,9 +90,14 @@ export function serverOptions(servers: ServerView[]): ServerOption[] {
 
 /** A chat's server choice: every entry with its name, this computer first; one that is not
  *  connected has its state as the reason, and one whose state waits for the user is disabled. fixed: why the chat's server cannot be
- *  changed, or "". The server is the authority (it answers 409). */
-export function serverChoice(servers: ServerView[], c: Pick<ChatView, "board" | "run" | "start" | "locked" | "forkedFrom" | "branch" | "branches" | "role">): { options: ServerOption[]; fixed: string } {
+ *  changed, or "". The server is the authority (it answers 409).
+ *  boardServer: the entry id of the server the chat's board is on, when that is not this
+ *  computer: the chat is on that server, which is then the only option. */
+export function serverChoice(servers: ServerView[], c: Pick<ChatView, "board" | "run" | "start" | "locked" | "forkedFrom" | "branch" | "branches" | "role">, boardServer?: string): { options: ServerOption[]; fixed: string } {
   const options = serverOptions(servers);
+  if (c.board && boardServer && boardServer !== LOCAL_SERVER) {
+    return { options: [options.find((o) => o.id === boardServer) ?? { id: boardServer, label: UNKNOWN_SERVER }], fixed: BOARD_SERVER };
+  }
   const fixed = c.board ? BOARD_LOCAL : c.run ? RUN_SERVER : c.start === "unconfirmed" ? START_UNCONFIRMED : !agentOpen(c) ? SERVER_FIXED : "";
   return { options, fixed };
 }

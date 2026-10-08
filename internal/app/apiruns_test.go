@@ -86,6 +86,7 @@ func (e *runEnv) defaultsNow() string {
 // The group "Remote" with a run in it, deleted alone, deleted with its contents and archived:
 // the owner's cascades reach the run as any run's, and the next start call makes a new group.
 func TestRemoteGroupWithRuns(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	e.hold()
 
@@ -164,6 +165,7 @@ func TestRemoteGroupWithRuns(t *testing.T) {
 // A run of an API client that the owner moved to a group with sticky run defaults records and
 // changes none: not by its stop, its resume, its rename, or the owner's chat on it.
 func TestRunOfAnAPIClientLeavesTheDefaults(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	e.hold()
 	g := e.group("G")
@@ -234,7 +236,23 @@ func TestRunOfAnAPIClientLeavesTheDefaults(t *testing.T) {
 	if vs := e.a.APISnapshot(clientX).Chats; len(vs) != 0 {
 		t.Fatalf("the owner's chat on the run is in the client's snapshot: %+v", vs)
 	}
-	same("the chat's first message")
+	// The chat is a person's: its first message records its agent and model in the run's group, as
+	// any chat's does (the next chat on the run starts with them), and nothing else changes.
+	e.st.Read(func(s *model.State) {
+		sd := s.Defaults.Groups[g].On(model.LocalServer)
+		if sd.Agent != model.Claude || sd.ByAgent[model.Claude].Model != chat.Model || chat.Model == "" || len(sd.ByAgent) != 1 || sd.Cwd != "" || s.Defaults.Groups[g].Server != "" {
+			t.Errorf("the defaults of the run's group after the chat's first message: %+v", s.Defaults.Groups[g])
+		}
+	})
+	e.must(e.st.Update(func(s *model.State) error {
+		gd := s.Defaults.Groups[g]
+		sd := gd.Servers[model.LocalServer]
+		sd.Agent, sd.ByAgent = "", nil
+		gd.Servers[model.LocalServer] = sd
+		s.Defaults.Groups[g] = gd
+		return nil
+	}))
+	same("the chat's first message, its agent and model taken away")
 
 	// The sticky values are the ones recorded before, and the run still has its own.
 	e.st.Read(func(s *model.State) {
@@ -251,6 +269,7 @@ func TestRunOfAnAPIClientLeavesTheDefaults(t *testing.T) {
 // The API snapshot's runs are the client's own: nobody else's, the owner's neither; a list that
 // is never null, with and without a run service.
 func TestAPISnapshotRuns(t *testing.T) {
+	t.Parallel()
 	// An app without runs.
 	bare := newEnv(t)
 	snap := bare.a.APISnapshot(clientX)

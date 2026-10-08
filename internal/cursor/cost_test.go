@@ -1,6 +1,8 @@
 package cursor
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +21,7 @@ func costFixture(t *testing.T) []byte {
 }
 
 func TestParseCost(t *testing.T) {
+	t.Parallel()
 	u, err := ParseCost(costFixture(t))
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +41,7 @@ func TestParseCost(t *testing.T) {
 
 // A failed status keeps the last good numbers, with the error as the note.
 func TestParseCostError(t *testing.T) {
+	t.Parallel()
 	u, err := ParseCost([]byte(`{"status":"error","bucket":"individual.overall","used":10,"limit":20,
 		"buckets":[{"key":"individual.overall","used":10,"limit":20},{"key":"team.onDemand","used":0,"limit":null}],
 		"updated_at":"2026-09-27T13:10:11+02:00","error":"refresh failed: 401"}`))
@@ -50,6 +54,7 @@ func TestParseCostError(t *testing.T) {
 }
 
 func TestParseCostNoPlan(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ out, note string }{
 		{`{"status":"no_cache","used":null,"limit":null,"error":"no cache file (is cursor-cost-refresh running?)"}`,
 			"no cache file (is cursor-cost-refresh running?)"},
@@ -75,6 +80,7 @@ func TestParseCostNoPlan(t *testing.T) {
 }
 
 func TestBucketLabel(t *testing.T) {
+	t.Parallel()
 	for key, want := range map[string]string{
 		"individual.overall":  "Your usage",
 		"individual.onDemand": "Your usage (on demand)",
@@ -88,6 +94,7 @@ func TestBucketLabel(t *testing.T) {
 }
 
 func TestDollars(t *testing.T) {
+	t.Parallel()
 	for v, want := range map[float64]string{0: "$0", 413.89: "$413.89", 1101: "$1,101", 1234567.5: "$1,234,567.50", -3: "-$3"} {
 		if got := dollars(v); got != want {
 			t.Errorf("dollars(%v) = %q, want %q", v, got, want)
@@ -95,22 +102,63 @@ func TestDollars(t *testing.T) {
 	}
 }
 
-// fakeCost writes a cursor-cost that records its arguments and prints the fixture.
-func fakeCost(t *testing.T, dir, name string) (bin, args string) {
+// fakeCost puts a cursor-cost at dir/name that records its arguments and prints the fixture. It
+// is a link to the test binary, as the fake agent is (fake_test.go), not a script: macOS checks a
+// newly written script on its first run, one at a time for the whole machine, and on a loaded
+// machine that alone took longer than costTimeout.
+func fakeCost(t *testing.T, dir, name string, vars map[string]string) (bin, args string) {
 	t.Helper()
-	fixture, _ := filepath.Abs("testdata/cost.json")
+	fixture, err := filepath.Abs("testdata/cost.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	args = filepath.Join(t.TempDir(), "args")
 	bin = filepath.Join(dir, name)
-	script := "#!/bin/sh\necho \"$@\" > '" + args + "'\ncat '" + fixture + "'\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+	if err := os.Symlink(self, bin); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"FAKE_COST_ARGS": args, "FAKE_COST_OUT": fixture}
+	for k, v := range vars {
+		env[k] = v
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fakeEnvFile), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return bin, args
 }
 
+// runFakeCost is the test binary as cursor-cost (FAKE_COST_ARGS is set): it writes its arguments
+// to that file, one per line, and prints the file FAKE_COST_OUT. With FAKE_COST_HANG it then
+// never answers: it stays for fakeStays.
+func runFakeCost(argsFile string) {
+	os.WriteFile(argsFile, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
+	if os.Getenv("FAKE_COST_HANG") != "" {
+		time.Sleep(fakeStays)
+		os.Exit(0)
+	}
+	b, err := os.ReadFile(os.Getenv("FAKE_COST_OUT"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake: ", err)
+		os.Exit(2)
+	}
+	os.Stdout.Write(b)
+	os.Exit(0)
+}
+
+// The tests give Usage mustHappen for the start of the fake: the 10 s of costTimeout are for a
+// program that reads one small file, not for a process start on a machine busy starting others.
 func TestCostReaderUsage(t *testing.T) {
-	bin, args := fakeCost(t, t.TempDir(), "cursor-cost")
-	u, err := (&CostReader{Bin: bin}).Usage()
+	t.Parallel()
+	bin, args := fakeCost(t, t.TempDir(), "cursor-cost", nil)
+	u, err := (&CostReader{Bin: bin, timeout: mustHappen}).Usage()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,14 +173,38 @@ func TestCostReaderUsage(t *testing.T) {
 
 // Not on PATH: ~/bin/<Bin>.
 func TestCostReaderHomeBin(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	os.Mkdir(filepath.Join(home, "bin"), 0o755)
-	fakeCost(t, filepath.Join(home, "bin"), "cursor-cost-test-only")
-	if _, err := (&CostReader{Bin: "cursor-cost-test-only", Home: home}).Usage(); err != nil {
+	_, args := fakeCost(t, filepath.Join(home, "bin"), "cursor-cost-test-only", nil)
+	if _, err := (&CostReader{Bin: "cursor-cost-test-only", Home: home, timeout: mustHappen}).Usage(); err != nil {
 		t.Fatal(err)
 	}
-	_, err := (&CostReader{Bin: "cursor-cost-test-only", Home: t.TempDir()}).Usage()
+	if _, err := os.Stat(args); err != nil {
+		t.Fatalf("the program in ~/bin was not run: %v", err)
+	}
+	_, err := (&CostReader{Bin: "cursor-cost-test-only", Home: t.TempDir(), timeout: mustHappen}).Usage()
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("err %v", err)
+	}
+}
+
+// A cursor-cost that does not answer is given up after the time Usage has for it, and ended.
+// The time is short here; what the fake does inside it decides nothing, started or not.
+func TestCostReaderNoAnswer(t *testing.T) {
+	t.Parallel()
+	bin, _ := fakeCost(t, t.TempDir(), "cursor-cost", map[string]string{"FAKE_COST_HANG": "1"})
+	answered := make(chan error, 1)
+	go func() {
+		_, err := (&CostReader{Bin: bin, timeout: 300 * time.Millisecond}).Usage()
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if err == nil || err.Error() != "cursor-cost: no answer within 300ms" {
+			t.Fatalf("err %v", err)
+		}
+	case <-time.After(mustHappen):
+		t.Fatal("Usage did not return")
 	}
 }

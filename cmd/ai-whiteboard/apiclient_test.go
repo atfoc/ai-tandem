@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,7 +84,12 @@ func waitLog(t *testing.T, dir, line string) {
 // nothing leaves it running, since SIGUSR1 ends a sleep.
 func child(t *testing.T, name string, args ...string) (pid int, alive func() bool) {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	return childOf(t, exec.Command(name, args...))
+}
+
+// childOf is child for a command the test prepared, to read its output for one.
+func childOf(t *testing.T, cmd *exec.Cmd) (pid int, alive func() bool) {
+	t.Helper()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +146,7 @@ func newGateServer(t *testing.T, hello, status string) *gateServer {
 // that has the reload, and listening for remote access. In every other case the command writes
 // the secret, says on stderr what holds, exits 0 and signals nothing.
 func TestSecretNewGate(t *testing.T) {
+	t.Parallel()
 	const (
 		otherID   = "7b1e9d40-2c5a-4f38-a6d7-0e1f2a3b4c5d"
 		next      = "The new secret takes effect at the server's next start.\n"
@@ -180,6 +188,7 @@ func TestSecretNewGate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			pid, alive := child(t, "sleep", "600")
 			g := newGateServer(t, tc.hello(pid), tc.status)
 			home := t.TempDir()
@@ -245,8 +254,9 @@ func TestSecretNewAsksNoDefaultPort(t *testing.T) {
 // The gate's last two rows: a server that cannot be signalled, and one that takes the signal and
 // does not confirm.
 func TestSecretNewSignalNotConfirmed(t *testing.T) {
+	t.Parallel()
 	const listening = `{"listening":true,"port":5123,"names":["mac.local"],"fingerprint":"AB:CD","secretReloads":4}`
-	gate := func(t *testing.T, pid int) (errOut string) {
+	gate := func(t *testing.T, pid int) (errOut string, took time.Duration) {
 		t.Helper()
 		g := newGateServer(t, fmt.Sprintf(`{"app":"ai-whiteboard","version":"dev","pid":%d,"instanceId":%q,"featureLevel":1}`, pid, standInID), listening)
 		home := t.TempDir()
@@ -256,33 +266,56 @@ func TestSecretNewSignalNotConfirmed(t *testing.T) {
 		}
 		asThisFolders(t, home, standInID)
 		writeServerFile(t, store.NewPaths(home), portOf(t, g.Server))
+		start := time.Now()
 		out, errOut, code := own(t, "secret", "-new", "-home", home)
+		took = time.Since(start)
 		if fresh := secretOf(t, home); code != 0 || out != fresh+"\n" {
 			t.Fatalf("code %d, stdout %q", code, out)
 		}
-		return errOut
+		return errOut, took
 	}
 
 	t.Run("the process is gone", func(t *testing.T) {
-		gone := exec.Command("true")
-		if err := gone.Run(); err != nil {
-			t.Fatal(err)
+		t.Parallel()
+		// A pid that no process has or gets: the pid of one that just ended can be given to the
+		// next process the machine starts, which the signal would then end.
+		const gone = math.MaxInt32
+		if err := syscall.Kill(gone, 0); err != syscall.ESRCH {
+			t.Fatalf("signal 0 to the pid %d: %v, want %v", gone, err, syscall.ESRCH)
 		}
 		want := fmt.Sprintf("The running server could not be told (%v). The new secret takes effect at the server's next start.\n", syscall.ESRCH)
-		if errOut := gate(t, gone.Process.Pid); errOut != want {
+		if errOut, _ := gate(t, gone); errOut != want {
 			t.Fatalf("stderr %q, want %q", errOut, want)
 		}
 	})
 	t.Run("no confirmation", func(t *testing.T) {
+		t.Parallel()
 		// A process of this test's that ignores the signal, as a server that hangs would.
-		pid, alive := child(t, "sh", "-c", `trap "" USR1; exec sleep 600`)
-		time.Sleep(300 * time.Millisecond) // the shell has set the trap
-		start := time.Now()
-		errOut := gate(t, pid)
+		// The shell says when it has set the trap: a signal before that would end it.
+		cmd := exec.Command("sh", "-c", `trap "" USR1; echo trapped; exec sleep 600`)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, alive := childOf(t, cmd)
+		trapped := make(chan string, 1)
+		go func() {
+			line, _ := bufio.NewReader(stdout).ReadString('\n')
+			trapped <- line
+		}()
+		select {
+		case line := <-trapped:
+			if line != "trapped\n" {
+				t.Fatalf("the shell printed %q before it set the trap, want %q", line, "trapped\n")
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the shell did not set the trap in 30 s")
+		}
+		errOut, d := gate(t, pid)
 		if errOut != "The running server did not confirm the new secret. Restart it to be sure the old one is refused.\n" {
 			t.Fatalf("stderr %q", errOut)
 		}
-		if d := time.Since(start); d < 2500*time.Millisecond || d > 10*time.Second {
+		if d < 2500*time.Millisecond || d > 10*time.Second {
 			t.Fatalf("the command waited %v for the confirmation, want about 3 s", d)
 		}
 		if !alive() {
@@ -293,6 +326,7 @@ func TestSecretNewSignalNotConfirmed(t *testing.T) {
 
 // SIGUSR1 to a server with remote access off: it keeps running and says so in its log.
 func TestReloadSignalWithRemoteOff(t *testing.T) {
+	serverTest(t, "TestReloadKeepsSecretWhenUnreadable (the signal to a real server), TestSecretNewGate (a server with remote access off is not signalled) (this package)", "TestReloadSecret (internal/server)")
 	in := newInstance(t)
 	in.run(t, "launch")
 	pid := in.hello(t).Pid
@@ -326,6 +360,7 @@ func TestReloadSignalWithRemoteOff(t *testing.T) {
 // A secret file that cannot be read at the signal: the server keeps the old secret and says so in
 // its log without the file's content. No reload is counted, and only a reload closes streams.
 func TestReloadKeepsSecretWhenUnreadable(t *testing.T) {
+	smokeTest(t)
 	in, port := newRemoteInstance(t)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	in.run(t, "launch")
@@ -353,6 +388,7 @@ func TestReloadKeepsSecretWhenUnreadable(t *testing.T) {
 // `secret -new` for another data folder, whose server.json names this folder's server: that
 // server is not signalled and keeps its secret.
 func TestSecretNewOfAnotherFolderLeavesTheServer(t *testing.T) {
+	serverTest(t, "TestSecretNewGate, TestRemoteStatusOfThisFolderOnly (this package)")
 	in, port := newRemoteInstance(t)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	in.run(t, "launch")
@@ -388,6 +424,7 @@ func TestSecretNewOfAnotherFolderLeavesTheServer(t *testing.T) {
 // its instance id and its server.json: the server is the original's, not the copy's. It is not
 // signalled and keeps its secret, and the status of the copy reports no server.
 func TestSecretNewOfACopiedFolderLeavesTheServer(t *testing.T) {
+	serverTest(t, "TestSecretNewGate, TestRemoteStatusOfThisFolderOnly (this package)")
 	in, port := newRemoteInstance(t)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	in.run(t, "launch")
@@ -485,6 +522,7 @@ func typesOf(evs []string) (types []string) {
 // a board, and an API client over HTTPS that creates a chat, reads it, answers a permission ask,
 // sends a second message and stops it. The page keeps its board and saves it meanwhile.
 func TestAPIClientBesideAPage(t *testing.T) {
+	serverTest(t, "TestAPIClientsTakeNothingFromAPage, TestTableRoutesServeAnAPIClient, TestEventsOfAnAPIClient (internal/server)")
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH (the fake claude is a Node script)")
 	}

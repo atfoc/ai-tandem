@@ -319,22 +319,23 @@ func TestCloseReleasesABlockedSend(t *testing.T) {
 		name  string
 		setup func(t *testing.T, f *fake)
 		text  string
+		last  string // the last command pi reads: after it Send waits
 	}{
 		{"no answer to get_state", func(t *testing.T, f *fake) {
 			f.replies(t, map[string]fakeReply{"get_state": {Silent: true}})
-		}, "hi"},
+		}, "hi", "get_state"},
 		{"no answer to get_state, pi stays", func(t *testing.T, f *fake) {
 			f.replies(t, map[string]fakeReply{"get_state": {Silent: true}})
 			t.Setenv(envHold, "1")
-		}, "hi"},
+		}, "hi", "get_state"},
 		{"no answer to the prompt", func(t *testing.T, f *fake) {
 			f.replies(t, map[string]fakeReply{"prompt": {Silent: true}})
 			t.Setenv(envHold, "1")
-		}, "hi"},
+		}, "hi", "prompt"},
 		// Far more than a pipe holds: the write itself waits.
 		{"the prompt is not read", func(t *testing.T, f *fake) {
 			t.Setenv(envDeafAfter, "get_available_models")
-		}, strings.Repeat("x", 4<<20)},
+		}, strings.Repeat("x", 4<<20), "get_available_models"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -343,10 +344,13 @@ func TestCloseReleasesABlockedSend(t *testing.T) {
 			a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir(), Unattended: true})
 			sent := make(chan error, 1)
 			go func() { sent <- a.Send([]agent.ContentBlock{{Text: c.text}}) }()
+			// Once pi has read its last command Send is where it waits (or a write away from it),
+			// so the wait that shows it does not return starts there and not at the process start.
+			f.waitCommand(t, c.last)
 			select {
 			case err := <-sent:
 				t.Fatalf("Send returned %v before Close", err)
-			case <-time.After(300 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 			}
 
 			closed := make(chan struct{})

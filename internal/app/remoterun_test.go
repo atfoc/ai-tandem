@@ -63,6 +63,7 @@ func (f *far) order() []string {
 // record's and a draft's of this server, as it is for a moment while a run starts on its
 // server, is listed once: as the record.
 func TestSnapshotWithRunRecords(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	g := e.group("G")
 	own, both := e.run(g), e.run(g)
@@ -199,6 +200,7 @@ func TestArchiveGroupWithRunRecords(t *testing.T) {
 // The archive and the unarchive of one run record: the unarchive brings back the archived groups
 // the record is nested in, as that of a run of this server does, and nothing else in them.
 func TestArchiveOfOneRunRecord(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	g := e.group("G")
 	sub := e.subgroup("Sub", g)
@@ -334,6 +336,7 @@ func TestDeleteGroupWithALateRunRecord(t *testing.T) {
 // While the server of one run record is not connected, the delete of a group with its contents
 // deletes nothing: not what is on the servers that are connected, and nothing here.
 func TestDeleteGroupWithARunsServerAway(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	g := e.group("G")
 	sub := e.subgroup("Sub", g)
@@ -377,6 +380,7 @@ func TestDeleteGroupWithARunsServerAway(t *testing.T) {
 // The unarchive of a chat a person has on a run of another server brings the run's record back
 // with it, through the relay: the run service knows no such run.
 func TestUnarchiveOfAChatOnARunRecord(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	g := e.group("G")
 	f := e.far(seed{id: runA, group: g, run: true})

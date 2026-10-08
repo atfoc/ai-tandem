@@ -20,9 +20,10 @@ const (
 type Per int
 
 const (
-	PerNone Per = iota // no chat and no run
+	PerNone Per = iota // no chat, no run and no board
 	PerChat
 	PerRun
+	PerBoard
 )
 
 // Rule is one row of the event table. PagesOnly types reach no client of another kind: route
@@ -34,8 +35,8 @@ type Rule struct {
 	PagesOnly bool
 }
 
-// Events is the event table: every type a server sends, by its "type". Broadcast, SendChat and
-// SendRun route by it. A type that is missing here goes to every page, and is logged.
+// Events is the event table: every type a server sends, by its "type". Broadcast, SendChat,
+// SendRun and SendBoard route by it. A type that is missing here goes to every page, and is logged.
 var Events = map[string]Rule{
 	"hello":           {Class: Role},
 	"snapshot":        {Class: Role},
@@ -47,8 +48,8 @@ var Events = map[string]Rule{
 
 	"groups":        {Class: List, PagesOnly: true},
 	"defaults":      {Class: List, PagesOnly: true},
-	"board":         {Class: List, PagesOnly: true},
-	"board_removed": {Class: List, PagesOnly: true},
+	"board":         {Class: List, Per: PerBoard},
+	"board_removed": {Class: List, Per: PerBoard},
 	"catalog":       {Class: List},
 	"agents":        {Class: List},
 	"servers":       {Class: List, PagesOnly: true},
@@ -77,9 +78,10 @@ var APIEvents = map[string]bool{
 	"chat": true, "chat_items": true, "chat_removed": true, "branch_state": true, "tree": true,
 	"sub": true, "sub_items": true, "catalog": true, "agents": true,
 	"run": true, "run_removed": true, "run_detail": true, "run_activity": true,
+	"board": true, "board_removed": true,
 }
 
-// Item names a chat or a run: what a client follows and what a per-item event is about.
+// Item names a chat, a run or a board: what a client follows and what a per-item event is about.
 type Item struct{ Kind, ID string }
 
 // Chat is the item of a top-level chat.
@@ -88,7 +90,10 @@ func Chat(id string) Item { return Item{Kind: "chat", ID: id} }
 // Run is the item of a run.
 func Run(id string) Item { return Item{Kind: "run", ID: id} }
 
-// Broadcast sends ev, an event about no chat and no run, to the clients its type is for. It
+// Board is the item of a board. It carries a client mark and is not followed.
+func Board(id string) Item { return Item{Kind: "board", ID: id} }
+
+// Broadcast sends ev, an event about no chat, no run and no board, to the clients its type is for. It
 // never blocks.
 func (b *Bridge) Broadcast(ev any) {
 	b.route(ev, PerNone, Item{}, false)
@@ -104,6 +109,17 @@ func (b *Bridge) SendChat(chat string, unlisted bool, ev any) {
 // SendRun sends ev, an event of the run with this id. It never blocks.
 func (b *Bridge) SendRun(run string, ev any) {
 	b.route(ev, PerRun, Run(run), false)
+}
+
+// SendBoard sends ev, an event of the board with this id: to every page, and to the API client
+// whose mark the board carries. It never blocks.
+func (b *Bridge) SendBoard(board string, ev any) {
+	b.route(ev, PerBoard, Board(board), false)
+}
+
+// MarkBoard records the client mark of a board: SetMark for Board(board).
+func (b *Bridge) MarkBoard(board, client string) {
+	b.SetMark(Board(board), client)
 }
 
 // route marshals ev once and queues it for the clients the table names. per and it say which
@@ -151,7 +167,7 @@ func (b *Bridge) route(ev any, per Per, it Item, unlisted bool) {
 		}
 		b.sendRawLocked(c, msg)
 	}
-	if typ == "chat_removed" || typ == "run_removed" {
+	if typ == "chat_removed" || typ == "run_removed" || typ == "board_removed" {
 		b.forgetLocked(it)
 		delete(b.marks, it) // after the send: the client with the mark was told
 	}
@@ -159,8 +175,8 @@ func (b *Bridge) route(ev any, per Per, it Item, unlisted bool) {
 
 // SetMark records the client mark of it: the id of the API client that made the item, in whose
 // list the item then is. "" removes it. Whoever makes or loads the item calls it before the
-// item's first event. The mark ends when the item's chat_removed or run_removed was sent; Forget
-// keeps it. A follow of the item is left as it is: a client may follow an id before it is made.
+// item's first event. The mark ends when the item's chat_removed, run_removed or board_removed
+// was sent; Forget keeps it. A follow of the item is left as it is: a client may follow an id before it is made.
 func (b *Bridge) SetMark(it Item, client string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -326,7 +342,7 @@ func (b *Bridge) followedLocked(it Item) bool {
 }
 
 // Forget drops every follow of it: the item was removed. The bridge calls it itself after a
-// chat_removed or run_removed sent through SendChat or SendRun. The item's client mark stays
+// chat_removed, run_removed or board_removed sent through SendChat, SendRun or SendBoard. The item's client mark stays
 // until that event was sent.
 func (b *Bridge) Forget(it Item) {
 	b.mu.Lock()

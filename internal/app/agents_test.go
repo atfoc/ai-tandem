@@ -14,6 +14,7 @@ import (
 // The snapshot lists the agents the set finds, as an array even when there are none; an app with
 // no set lists every kind.
 func TestSnapshotAgentsFollowTheSet(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if got := e.a.Snapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Pi}) {
 		t.Fatalf("agents with no set = %v", got)

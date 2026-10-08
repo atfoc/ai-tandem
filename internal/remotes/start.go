@@ -165,7 +165,8 @@ func (r *Relay) runClosed(run string) *Error {
 }
 
 // startBody is the body of the creation call for the chat meta: the one place it is made. A
-// chat on a run names the run, which is on that server under the same id.
+// chat on a run names the run, and one on a board the board: each is on that server under the
+// same id.
 func startBody(meta model.ChatMeta, text string) []byte {
 	b, _ := json.Marshal(struct {
 		ID        string          `json:"id"`
@@ -177,7 +178,8 @@ func startBody(meta model.ChatMeta, text string) []byte {
 		UserNamed bool            `json:"userNamed"`
 		Text      string          `json:"text"`
 		Run       string          `json:"run,omitempty"`
-	}{meta.ID, meta.Agent, meta.Cwd, meta.Model, meta.Effort, meta.Name, meta.UserNamed, text, meta.Run})
+		Board     string          `json:"board,omitempty"`
+	}{meta.ID, meta.Agent, meta.Cwd, meta.Model, meta.Effort, meta.Name, meta.UserNamed, text, meta.Run, meta.Board})
 	return b
 }
 
@@ -387,7 +389,11 @@ func (r *Relay) swap(ctx context.Context, meta model.ChatMeta, v model.ChatView,
 	if read {
 		states = []model.BranchState{model.StateOf(id, mainBranch, v)}
 	}
-	rec, err := r.adopt(Record{ID: id, Entry: meta.Server, Group: meta.Group, Run: meta.Run, View: v, States: states, DraftRevs: startRevs(meta)})
+	group := meta.Group
+	if meta.Run != "" || meta.Board != "" {
+		group = "" // the chat's place is its run or its board, which the view names
+	}
+	rec, err := r.adopt(Record{ID: id, Entry: meta.Server, Group: group, Run: meta.Run, View: v, States: states, DraftRevs: startRevs(meta)})
 	if errors.Is(err, errTaken) {
 		rec, err = r.rec(id), nil // the record is there: the object alone is left to go
 	}

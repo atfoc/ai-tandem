@@ -17,9 +17,15 @@ import "./remotechat.css";
 type Menu = { disabled: boolean; open: boolean; onOpenChange: (open: boolean) => void };
 type Saves = { c: ChatView; onBusy: (busy: boolean) => void; onError: (msg: string) => void };
 
-/** A chat's server as its composer reads it (logic/chatserver.ts). */
-export function useWhere(c?: { server?: string }): Where {
-  const server = serverOf(c);
+/** The entry id of the server a chat's board is on; none for a chat on no board and for a board
+ *  of this computer. */
+const useBoardServer = (c?: { board?: string }): string | undefined => useStore((s) => (c?.board ? s.boards[c.board]?.server : undefined));
+
+/** A chat's server as its composer reads it (logic/chatserver.ts). A chat on a board of another
+ *  server is on that server, also where its own record does not name it. */
+export function useWhere(c?: { server?: string; board?: string }): Where {
+  const onBoard = useBoardServer(c);
+  const server = serverOf(c?.server ? c : { server: onBoard });
   const name = useStore((s) => serverName(s, server));
   const connected = useStore((s) => serverConnected(s, server));
   return { server, name, connected };
@@ -28,11 +34,12 @@ export function useWhere(c?: { server?: string }): Where {
 /** The server choice: every entry of the server list, one that waits for the user disabled with
  *  its state, and "Servers…", which opens the Servers dialog. A pick is sent at once, and the
  *  answer is the chat with the agent, folder, model and effort the server chose for that server.
- *  Where the server cannot be changed (serverChoice's fixed) it is a chip with the reason. */
+ *  Where the server cannot be changed (serverChoice's fixed) it is a chip with the reason; a chat
+ *  on a board of another server is on that server. */
 export function ServerPick({ c, disabled, open, onOpenChange, onBusy, onError }: Menu & Saves) {
   const servers = useStore((s) => s.servers);
   const w = useWhere(c);
-  const { options, fixed } = serverChoice(servers, c);
+  const { options, fixed } = serverChoice(servers, c, useBoardServer(c));
   if (fixed) return <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${fixed}`}>{w.name}</span>;
   const pick = (id: string) => {
     onBusy(true);

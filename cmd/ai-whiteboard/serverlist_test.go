@@ -92,13 +92,14 @@ func wiredWith(t *testing.T, root string, withRuns bool) (*app.App, *server.Serv
 		a.Runs.Chats = cm
 		t.Cleanup(func() { a.Runs.Shutdown(time.Second) })
 	}
-	t.Cleanup(startServers(p, br, cm, a, srv))
+	t.Cleanup(startServers(p, br, cm, a, srv, testWaits{}))
 	return a, srv, cm
 }
 
 // startServers gives the app and the routes one manager, and the saved entries connect with this
 // installation's instance id as their client id.
 func TestStartServersConnectsSavedEntries(t *testing.T) {
+	t.Parallel()
 	st := standin.Start(t, standin.Options{})
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, servers.FileName), []byte(savedEntry(st)), 0o600); err != nil {
@@ -155,6 +156,7 @@ func TestStartServersConnectsSavedEntries(t *testing.T) {
 // relay without a run service answers "no such run" for it); and an app without a run service
 // gets a relay that keeps no runs.
 func TestStartServersWiresRuns(t *testing.T) {
+	t.Parallel()
 	const entry = "s_0123456789ab"
 	st := standin.Start(t, standin.Options{})
 	root := t.TempDir()
@@ -256,6 +258,7 @@ func TestStartServersDialOverride(t *testing.T) {
 // A list file that cannot be read does not stop the start: it is set aside, and the list is this
 // computer with the notice.
 func TestStartServersWithUnreadableList(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, servers.FileName), []byte("garbage\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -275,6 +278,7 @@ func TestStartServersWithUnreadableList(t *testing.T) {
 // A server started with a list file that cannot be read starts all the same: the list is the
 // local entry, the answer and the log say what happened, and the file is set aside with its bytes.
 func TestServeWithUnreadableServerList(t *testing.T) {
+	serverTest(t, "TestStartServersWithUnreadableList (this package)", "TestListUnreadableSetAside, TestManagerUnreadableList (internal/servers)")
 	in := newInstance(t)
 	const garbage = "{\"version\":1,\"servers\":[{\"secret\":\"kept-for-the-owner\"\n"
 	path := filepath.Join(in.dir, servers.FileName)
@@ -317,6 +321,7 @@ func TestServeWithUnreadableServerList(t *testing.T) {
 // Without entries the start is today's: the list is this computer alone, no list file is made,
 // the log says nothing of servers, and nothing is dialed.
 func TestServeDialsNothingWithoutEntries(t *testing.T) {
+	serverTest(t, "TestListMissingAndEmptyFile, TestManagerViews (internal/servers)", "TestSnapshotHasServers (internal/server)")
 	in := newInstance(t)
 	if got := in.run(t, "launch"); got != in.url+"\n" {
 		t.Fatalf("launch printed %q", got)

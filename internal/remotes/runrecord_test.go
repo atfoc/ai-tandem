@@ -14,6 +14,7 @@ import (
 // TestRunViewOf: the view of a run record as a page gets it. The place, the entry and the mark
 // are this server's; what belongs to a draft is cleared; the rest is what came.
 func TestRunViewOf(t *testing.T) {
+	t.Parallel()
 	cost := 1.5
 	there := remoteRun(runA, model.RunStalled)
 	there.Archive = model.Archive{Archived: true, Op: "a_there"}
@@ -79,6 +80,7 @@ func TestRunViewOf(t *testing.T) {
 
 // TestRunApply: the rules of a view that came from the run's server are those of a chat record.
 func TestRunApply(t *testing.T) {
+	t.Parallel()
 	view := func(archived bool) model.RunView {
 		v := remoteRun(runA, model.RunStopped)
 		v.Archived = archived
@@ -119,6 +121,7 @@ func TestRunApply(t *testing.T) {
 // TestRunRecordShape: the keys of a run record's file, and nothing that could hold a secret: no
 // journal, no detail, no token.
 func TestRunRecordShape(t *testing.T) {
+	t.Parallel()
 	rec := RunRecord{
 		ID: runA, Entry: "s_entry", Group: "g", Archived: true, Op: "a_x", Pending: pendingArchive, Gone: true,
 		View: remoteRun(runA, model.RunRunning), Agents: []string{agent1},
@@ -160,6 +163,7 @@ func TestRunRecordShape(t *testing.T) {
 // TestRunAgents: the list of a record's agents is sorted, holds each id once and maxAgents of
 // them at most, and an added id never changes a list that was handed out.
 func TestRunAgents(t *testing.T) {
+	t.Parallel()
 	var rec RunRecord
 	for _, id := range []string{"c", "a", "b", "a", "d"} {
 		rec.addAgent(id)

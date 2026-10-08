@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"ai-whiteboard/internal/agenttest"
@@ -21,8 +22,13 @@ import (
 
 // TestMain points CURSOR_CONFIG_DIR at a temp folder for the whole run: every server a test starts
 // adds deny rules for its data folder to the Cursor CLI config, and must not add them to the user's.
+// (A server started with serverEnv gets a folder of its own; this one is for whatever is not.)
+//
+// The tests that start servers run in parallel, at most agenttest.SpawnBound at once on macOS: they
+// mostly wait, and each starts a server, git commands and Node processes.
 func TestMain(m *testing.M) {
 	agenttest.FastGit()
+	agenttest.LimitParallel()
 	dir, err := os.MkdirTemp("", "aiwb-cmd-cursor-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -31,6 +37,11 @@ func TestMain(m *testing.M) {
 	os.Setenv("CURSOR_CONFIG_DIR", dir)
 	code := m.Run()
 	os.RemoveAll(dir)
+	for _, b := range []*builtBinary{&plainBinary, &raceBinary} {
+		if b.dir != "" {
+			os.RemoveAll(b.dir)
+		}
+	}
 	os.Exit(code)
 }
 
@@ -39,37 +50,86 @@ func portOf(t *testing.T, srv *httptest.Server) int {
 	return srv.Listener.Addr().(*net.TCPAddr).Port
 }
 
-// freePort returns a port nothing listens on.
+// freePorts are the ports freePort has given out: tests run in parallel, and two of them must not
+// be given the same port before either has a server listening on it.
+var freePorts = struct {
+	sync.Mutex
+	given map[int]bool
+}{given: map[int]bool{}}
+
+// freePort returns a port nothing listens on, and that no other test of this binary was given.
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		ln.Close()
+		freePorts.Lock()
+		taken := freePorts.given[port]
+		freePorts.given[port] = true
+		freePorts.Unlock()
+		if !taken {
+			return port
+		}
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-	return port
 }
 
-// buildBinary builds the program into a temp folder for a process-level test.
+// builtBinary is the program built once for the whole test binary, into a temp folder that
+// TestMain removes.
+type builtBinary struct {
+	once sync.Once
+	dir  string
+	path string
+	err  error
+}
+
+var plainBinary, raceBinary builtBinary
+
+func (b *builtBinary) build(t *testing.T, name string, flags ...string) string {
+	t.Helper()
+	b.once.Do(func() {
+		if b.dir, b.err = os.MkdirTemp("", "aiwb-cmd-bin-"); b.err != nil {
+			return
+		}
+		b.path = filepath.Join(b.dir, name)
+		args := append(append([]string{"build"}, flags...), "-o", b.path, "ai-whiteboard/cmd/ai-whiteboard")
+		if out, err := exec.Command("go", args...).CombinedOutput(); err != nil {
+			b.err = fmt.Errorf("go %s: %v\n%s", strings.Join(args[:len(args)-3], " "), err, out)
+		}
+	})
+	if b.err != nil {
+		t.Fatal(b.err)
+	}
+	return b.path
+}
+
+// buildBinary returns the program built for the process-level tests; the first test that asks
+// builds it.
 func buildBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "ai-whiteboard")
-	if out, err := exec.Command("go", "build", "-o", bin, "ai-whiteboard/cmd/ai-whiteboard").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
-	return bin
+	return plainBinary.build(t, "ai-whiteboard")
 }
 
-// testMCPPort returns a free port for the hidden AIWB_MCP_PORT override and sets it in the
-// environment, so every server this test starts (serve/launch/relaunch and the relaunch children)
-// binds there instead of the machine-global 6006. The override is test-only: production is fixed
-// at 6006 (plan D10), so no process test may ever touch it.
-func testMCPPort(t *testing.T) int {
+// buildRaceBinary is buildBinary with the race detector built in.
+func buildRaceBinary(t *testing.T) string {
 	t.Helper()
-	p := freePort(t)
-	t.Setenv("AIWB_MCP_PORT", strconv.Itoa(p))
-	return p
+	return raceBinary.build(t, "ai-whiteboard-race", "-race")
+}
+
+// serverEnv is the environment of the processes of the program that one test starts
+// (serve/launch/relaunch/stop, and the children of relaunch, which inherit it): this process's,
+// with the hidden AIWB_MCP_PORT override set to mcpPort, so that every server binds there instead
+// of the machine-global 6006, and a Cursor CLI config folder of the test's own. The override is
+// test-only: production is fixed at 6006 (plan D10), so no process test may ever touch it. It goes
+// to the child through cmd.Env, not through this process's environment, so the tests can run in
+// parallel.
+func serverEnv(t *testing.T, mcpPort int, more ...string) []string {
+	t.Helper()
+	env := append(os.Environ(), "AIWB_MCP_PORT="+strconv.Itoa(mcpPort), "CURSOR_CONFIG_DIR="+t.TempDir())
+	return append(env, more...)
 }
 
 // The hidden AIWB_MCP_PORT override defaults to the fixed production port; it is not a flag

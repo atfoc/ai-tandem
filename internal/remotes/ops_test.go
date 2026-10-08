@@ -64,6 +64,7 @@ func seeded(t *testing.T, o rigOpt, ids ...string) *rig {
 // TestPassedOn: the routes of a record that are passed on as they are: what the server gets,
 // and that its answer is handed on with its status.
 func TestPassedOn(t *testing.T) {
+	t.Parallel()
 	rg := seeded(t, rigOpt{}, chatA)
 	ctx := context.Background()
 	p, _ := rg.page("page-1")
@@ -133,6 +134,7 @@ func TestPassedOn(t *testing.T) {
 
 // TestGetAndItems: the two reads whose answer this server has a part in.
 func TestGetAndItems(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	seed.Drafts = map[string]*model.Draft{"b1": {Text: "for b1"}}
 	seed.DraftRevs = map[string]int64{mainBranch: 2, "b1": 5}
@@ -196,6 +198,7 @@ func TestGetAndItems(t *testing.T) {
 
 // TestCannotBeMade: what the page gets when a call cannot be made. None of it is 409.
 func TestCannotBeMade(t *testing.T) {
+	t.Parallel()
 	rg := seeded(t, rigOpt{limits: Limits{Call: 150 * time.Millisecond, Start: 150 * time.Millisecond}}, chatA, chatB)
 	ctx := context.Background()
 	p, _ := rg.page("page-1")
@@ -256,6 +259,7 @@ func TestCannotBeMade(t *testing.T) {
 
 // TestSend: a message for a record.
 func TestSend(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	seed.States = append(seed.States, model.StateOf(chatA, "b1", seed.View))
 	seed.Drafts = map[string]*model.Draft{mainBranch: {Text: "for main"}, "b1": {Text: "for b1"}}
@@ -325,6 +329,7 @@ func TestSend(t *testing.T) {
 
 // TestPatch: the changes of a record.
 func TestPatch(t *testing.T) {
+	t.Parallel()
 	archived := seedOf(chatB)
 	archived.Archived = true
 	archived.View.Archived = true
@@ -414,6 +419,7 @@ func TestPatch(t *testing.T) {
 
 // TestFork: a fork is made by the chat's server, and gets a record in the source's place.
 func TestFork(t *testing.T) {
+	t.Parallel()
 	rg := seeded(t, rigOpt{}, chatA)
 	ctx := context.Background()
 	p, _ := rg.page("page-1")
@@ -505,6 +511,7 @@ func TestFork(t *testing.T) {
 
 // TestDirsAndUsage: the two routes that take the entry, and what the chat manager asks.
 func TestDirsAndUsage(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	ctx := context.Background()
 	dirs := rg.script("GET /api/dirs")

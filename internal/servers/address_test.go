@@ -6,6 +6,7 @@ import (
 )
 
 func TestParseAddress(t *testing.T) {
+	t.Parallel()
 	good := []struct{ in, address, host, port string }{
 		{"https://mac.local:4748", "https://mac.local:4748", "mac.local", "4748"},
 		{"HTTPS://Mac.Local:4748", "https://mac.local:4748", "mac.local", "4748"},

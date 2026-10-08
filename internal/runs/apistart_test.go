@@ -183,6 +183,7 @@ func (e *apiEnv) nothing(defaultsBefore string) {
 // A start with a given id makes the run and starts it: the view, run.json, the goal, the detail,
 // one engine start, one group request, and the mark told before the `run` event.
 func TestStartCallMakesAndStartsTheRun(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	before := e.defaults()
 	req := e.req(apiID)
@@ -242,6 +243,7 @@ func TestStartCallMakesAndStartsTheRun(t *testing.T) {
 // A repeat does nothing, whatever its values; the id of a run that is not the caller's started
 // run is taken.
 func TestStartCallRepeatAndTakenIDs(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	first, err := e.s.StartCall(e.req(apiID))
 	if err != nil {
@@ -310,6 +312,7 @@ func TestStartCallRepeatAndTakenIDs(t *testing.T) {
 // Load tells the mark of every run that has one, before the run is in the service; a repeat after
 // the restart finds the run.
 func TestStartCallMarkAtLoad(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	if _, err := e.s.StartCall(e.req(apiID)); err != nil {
 		t.Fatal(err)
@@ -350,6 +353,7 @@ func TestStartCallMarkAtLoad(t *testing.T) {
 
 // 24 calls at once, in a git repository, make one run and leave no creation lock.
 func TestStartCallManyAtOnce(t *testing.T) {
+	t.Parallel()
 	repo := agenttest.NewRepo(t)
 	repo.Write("README.md", "hello\n")
 	head := repo.Commit("first")
@@ -407,6 +411,7 @@ func TestStartCallManyAtOnce(t *testing.T) {
 // Each refusal leaves no folder, run, group request, mark, event or engine start, and the
 // defaults as they were.
 func TestStartCallRefusalsLeaveNothing(t *testing.T) {
+	t.Parallel()
 	blocked := func(reason string) func(error) bool {
 		return func(err error) bool {
 			var be *BlockedError
@@ -503,6 +508,7 @@ func TestStartCallRefusalsLeaveNothing(t *testing.T) {
 
 // A write that fails leaves nothing.
 func TestStartCallFailedWriteLeavesNothing(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root writes into a read-only folder")
 	}
@@ -566,6 +572,7 @@ func TestStartCallFailedWriteLeavesNothing(t *testing.T) {
 // What a start call left when the server ended under it is no run, and the repeat removes it and
 // makes the run. A folder with a run.json or with anything else in it is taken and not touched.
 func TestStartCallLeftoverOfACutCall(t *testing.T) {
+	t.Parallel()
 	// files is the folder's content: path below it → bytes ("" for a folder).
 	listing := func(t *testing.T, dir string) map[string]string {
 		t.Helper()
@@ -703,6 +710,7 @@ func TestStartCallLeftoverOfACutCall(t *testing.T) {
 
 // An id of another form is refused before anything is looked at.
 func TestStartCallIDsOfOtherForms(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	before := e.defaults()
 	bad := []string{"", "r_", "r_ABCDEFGH", "r_Abcdefgh", "r_1234567", "r_123456789", "../../etc", "r_/../etc0", "a/b", "r_ab/cdefg", "r_ab.cdefg",
@@ -735,6 +743,7 @@ func TestStartCallIDsOfOtherForms(t *testing.T) {
 // The name: the user's is kept, else the goal names the run, else the given name, else "New run".
 // The settings are the call's on top of the built-in ones.
 func TestStartCallNameAndSettings(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	// The owner's group has sticky run settings; a start call takes none of them.
 	if err := e.s.Store.Update(func(st *model.State) error {
@@ -794,6 +803,7 @@ func TestStartCallNameAndSettings(t *testing.T) {
 
 // A run with a client mark reads no defaults and records none, on any path.
 func TestStartCallNoDefaults(t *testing.T) {
+	t.Parallel()
 	t.Run("a start call, the owner's move, a stop and a resume", func(t *testing.T) {
 		e := newAPIEnv(t)
 		svcGroupAdd(t, e.s, model.Group{ID: "g_one", Name: "One"})
@@ -911,6 +921,7 @@ func TestStartCallNoDefaults(t *testing.T) {
 
 // ViewsOf and ClientOf give one client's runs; ViewsOf takes no run's lock.
 func TestViewsOfAndClientOf(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	if got := e.s.ViewsOf(apiClient); got == nil || len(got) != 0 {
 		t.Fatalf("ViewsOf with no runs: %#v", got)
@@ -991,6 +1002,7 @@ func TestViewsOfAndClientOf(t *testing.T) {
 // A delete that arrives while a start call of that id is under way waits for it and then removes
 // what it made.
 func TestStartCallDeleteWaitsForIt(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	inPlace, release := make(chan struct{}), make(chan struct{})
 	req := e.req(apiID)
@@ -1054,6 +1066,7 @@ func TestStartCallDeleteWaitsForIt(t *testing.T) {
 // A start call after a delete of that id sets the mark only after the old `run_removed` was sent:
 // whoever routes the events drops the id's mark after that event.
 func TestStartCallAfterDeleteSetsTheMarkAfterRunRemoved(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	if _, err := e.s.StartCall(e.req(apiID)); err != nil {
 		t.Fatal(err)
@@ -1084,6 +1097,7 @@ func TestStartCallAfterDeleteSetsTheMarkAfterRunRemoved(t *testing.T) {
 
 // The creation lock: one holder per id at a time, other ids go on, and no entry stays.
 func TestIDLocks(t *testing.T) {
+	t.Parallel()
 	var l idLocks
 	unlockA := l.lock("a")
 	unlockB := l.lock("b") // another id does not wait
@@ -1125,6 +1139,7 @@ func TestIDLocks(t *testing.T) {
 
 // The draft check: what a draft of an agent in a folder would show, with nothing written.
 func TestCheckDraft(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	// The group's defaults name a model: the draft check reads none of it.
 	if err := e.s.Store.Update(func(st *model.State) error {
@@ -1238,6 +1253,7 @@ func TestCheckDraft(t *testing.T) {
 
 // The model's error names the sentinel and keeps its text.
 func TestUnknownModelIsASentinel(t *testing.T) {
+	t.Parallel()
 	_, err := svcModel(&model.Catalog{Models: []model.CatalogModel{{ID: "a"}}}, "x")
 	if !errors.Is(err, ErrUnknownModel) || err.Error() != `unknown model "x"` {
 		t.Fatalf("svcModel: %v", err)
@@ -1247,6 +1263,7 @@ func TestUnknownModelIsASentinel(t *testing.T) {
 // A run made by a start call is the real engine's like any other: it runs to its end, with and
 // without git, and the mark is told before the engine's first agent.
 func TestStartCallRunsOnTheEngine(t *testing.T) {
+	t.Parallel()
 	for _, git := range []bool{false, true} {
 		t.Run(fmt.Sprintf("git %v", git), func(t *testing.T) {
 			t.Parallel()
@@ -1298,6 +1315,7 @@ func TestStartCallRunsOnTheEngine(t *testing.T) {
 // An id whose earlier run left a branch in the folder's repository, or a work folder, makes no
 // run: the new run's checkout would be made on what was left. Once that is gone the call succeeds.
 func TestStartCallRefusesAnIDThatLeftABranchOrAWorkFolder(t *testing.T) {
+	t.Parallel()
 	setup := func(t *testing.T) (*apiEnv, *agenttest.Repo, StartReq) {
 		repo := agenttest.NewRepo(t)
 		repo.Write("README.md", "hello\n")
@@ -1382,6 +1400,7 @@ func TestStartCallRefusesAnIDThatLeftABranchOrAWorkFolder(t *testing.T) {
 // The owner deletes or archives the group a start call was given while the run is in no list: the
 // call asks for a group once more and the run ends in that one.
 func TestStartCallGroupGoneUnderIt(t *testing.T) {
+	t.Parallel()
 	drop := func(st *model.State, id string) {
 		st.Groups = slices.DeleteFunc(st.Groups, func(g model.Group) bool { return g.ID == id })
 	}
@@ -1457,6 +1476,7 @@ func TestStartCallGroupGoneUnderIt(t *testing.T) {
 
 // AwaitStart waits for a start call of the id that is under way, and leaves no lock entry.
 func TestAwaitStart(t *testing.T) {
+	t.Parallel()
 	e := newAPIEnv(t)
 	inPlace, release := make(chan struct{}), make(chan struct{})
 	req := e.req(apiID)

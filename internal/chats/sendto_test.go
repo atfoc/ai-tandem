@@ -87,6 +87,7 @@ func (e *env) noDefaults() {
 // ---- the point ------------------------------------------------------------
 
 func TestSendToPoints(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		kind  model.AgentKind
@@ -170,6 +171,7 @@ func TestSendToPoints(t *testing.T) {
 }
 
 func TestSendToRefusals(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 
@@ -256,6 +258,7 @@ func TestSendToRefusals(t *testing.T) {
 
 // A1: pi, with a turn cut without a mark between two finished ones.
 func TestSendToPiCutTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.stored(model.Pi, cutTurn())
 	if err := e.sendToErr(id, newAt(3)); !errors.Is(err, ErrBadPoint) {
@@ -296,6 +299,7 @@ func TestSendToPiCutTurn(t *testing.T) {
 // ---- a new branch ---------------------------------------------------------
 
 func TestSendToNewBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 3)
 	e.setDefaults(model.Defaults{})
@@ -473,6 +477,7 @@ func splitBranch(id string) string {
 }
 
 func TestSendToAtTheEnd(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	main := e.meta(id)
@@ -603,6 +608,7 @@ func TestSendToAtTheEnd(t *testing.T) {
 // A5: a branch whose last turn has no end mark is carried on at its end, and takes no new branch
 // there.
 func TestSendToEndWithoutMark(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 1)
 	main := e.meta(id)
@@ -644,6 +650,7 @@ func TestSendToEndWithoutMark(t *testing.T) {
 
 // A6: the start of a chat has nothing to fork.
 func TestSendToFromTheStart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	e.setDefaults(model.Defaults{})
@@ -737,6 +744,7 @@ func TestSendToFromTheStart(t *testing.T) {
 
 // A point on a part two branches share is one place: the new branch splits from its owner.
 func TestSendToRecordsTheOwner(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 3)
 	x, xid, xa := e.branchTo(id, newAt(6), "on x")
@@ -786,6 +794,7 @@ func TestSendToRecordsTheOwner(t *testing.T) {
 // ---- failure --------------------------------------------------------------
 
 func TestSendToFailureLeavesNothing(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("the provider said no")
 	cases := []struct {
 		name string
@@ -885,6 +894,7 @@ func TestSendToFailureLeavesNothing(t *testing.T) {
 
 // A failed branch of a chat that is split already: the record and the current branch stay.
 func TestSendToFailureKeepsTheTree(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 3)
 	b, bid, fa := e.branchTo(id, newAt(3), "aside")
@@ -937,6 +947,7 @@ func TestSendToFailureKeepsTheTree(t *testing.T) {
 // current branch is the one it was, at every moment. The error of the start is on the record of
 // the branch that did not start, and clients get nothing else.
 func TestSendToCarryOnFailureKeepsTheCurrentBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b, bid, fa := e.branchTo(id, newAt(3), "aside")
@@ -1036,6 +1047,7 @@ func TestSendToCarryOnFailureKeepsTheCurrentBranch(t *testing.T) {
 // A branch that is carried on and whose process refuses the message: the message is in its
 // thread, as after a refused Send, so the branch is the current one. The branch left runs on.
 func TestSendToCarryOnRefusedMessageMoves(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b, _, fa := e.branchTo(id, newAt(3), "aside")
@@ -1080,6 +1092,7 @@ func (s refusingSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 // Two Sends with a target at once: both branches are made, each with its message. The current
 // branch is one of the two, the same in the record and in memory, and no process is stopped.
 func TestSendToTwiceAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	res := make(chan error, 2)
@@ -1127,6 +1140,7 @@ func TestSendToTwiceAtOnce(t *testing.T) {
 // process: it does not wait for that Send, and goes to the branch that is current then, which
 // keeps its process and its message when the new branch becomes the current one.
 func TestSendToAndSendAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	fk := gating(e.claude)
@@ -1183,6 +1197,7 @@ func TestSendToAndSendAtOnce(t *testing.T) {
 // process, which the archive's Stop does not reach: the branch is not yet one of the chat's. It
 // is stopped as soon as it is.
 func TestSendToArchivedDuringTheSend(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	fk := gating(e.claude)
@@ -1231,6 +1246,7 @@ func TestSendToArchivedDuringTheSend(t *testing.T) {
 // capability. No lock of the chat is held during that start: another Send is answered at once.
 // One to the starting branch finds it busy; one to another branch is accepted.
 func TestSendToCarryOnStartIsNotOneStep(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 3)
 	b, _, _ := e.branchTo(id, newAt(3), "aside")
@@ -1287,6 +1303,7 @@ func TestSendToCarryOnStartIsNotOneStep(t *testing.T) {
 // A Send that makes another branch the current one stops nothing: the branch left keeps its
 // process, its thread and its token, and takes its next message in that process.
 func TestSendToStopsNoBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 3)
 	b1, id1, a1 := e.branchTo(id, newAt(3), "one")
@@ -1358,6 +1375,7 @@ func TestSendToStopsNoBranch(t *testing.T) {
 
 // A18: a Claude branch whose first turn was cut is made again from its source.
 func TestSendToClaudeRelaunch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 3)
 	main := e.meta(id)
@@ -1429,6 +1447,7 @@ func TestSendToClaudeRelaunch(t *testing.T) {
 // ---- quotes ---------------------------------------------------------------
 
 func TestSendToReferences(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	ref := func(i int) []model.Reference { return []model.Reference{{Item: i, Quote: "reply"}} }
@@ -1482,6 +1501,7 @@ func TestSendToReferences(t *testing.T) {
 
 // A message to the end of the current branch is a Send, on split and unsplit chats alike.
 func TestSendToTheCurrentEndIsSend(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 	if err := e.setDraft(id, model.Draft{Text: "typed"}); err != nil {
@@ -1538,6 +1558,7 @@ func TestSendToTheCurrentEndIsSend(t *testing.T) {
 // A Send to the end of a branch (Target.End) carries the branch on whatever length the client
 // last saw of it: no point that the branch has grown past makes a new branch.
 func TestSendToTheEndOfABranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	b, bid, fa := e.branchTo(id, newAt(3), "aside")
@@ -1602,6 +1623,7 @@ func TestSendToTheEndOfABranch(t *testing.T) {
 // ---- the model and effort of a new branch ---------------------------------
 
 func TestSendToNewBranchTakesTheChoice(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	e.usedTurn(id, mainAg, 100) // the source's window is known: 1000
@@ -1671,6 +1693,7 @@ func TestSendToNewBranchTakesTheChoice(t *testing.T) {
 }
 
 func TestSendToChoiceRefusals(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	objects := len(e.m.all())
@@ -1787,6 +1810,7 @@ func TestSendToWindowRefused(t *testing.T) {
 }
 
 func TestSubagentInheritsTheBranchModel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	_, bid, a := e.branchTo(id, Target{Branch: model.MainBranch, At: 3, New: true, Model: "haiku"}, "aside")

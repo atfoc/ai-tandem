@@ -308,6 +308,7 @@ func (e *remEnv) quiet() { e.s.asks.Wait() }
 // that server's lists and its part of the defaults; nothing is checked on this computer and that
 // server is asked nothing.
 func TestRemoteCreateOnTheStickyServer(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	e.s.Agents = svcAgents(map[string]bool{}) // this computer can use no agent
 	was := tiersAll("far-gpt", "")
@@ -377,6 +378,7 @@ func TestRemoteCreateOnTheStickyServer(t *testing.T) {
 // A sticky key of no entry, or of an entry that waits for the user, falls back to this computer;
 // so does everything while the service knows no other servers.
 func TestRemoteCreateFallsBackToThisComputer(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	local := func(what string) {
 		t.Helper()
@@ -414,6 +416,7 @@ func TestRemoteCreateFallsBackToThisComputer(t *testing.T) {
 // HandOver records the server, the folder and the run defaults under the server's key, and the
 // next "New run" in the group begins with them.
 func TestRemoteHandOverRecordsDefaults(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	v, err := e.s.Create(remGroup, "")
 	if err != nil || v.Server != "" {
@@ -460,6 +463,7 @@ func TestRemoteHandOverRecordsDefaults(t *testing.T) {
 
 // HandOver retires the draft with no run_removed, and takes nothing but a draft of another server.
 func TestRemoteHandOver(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_handover", func(m *model.RunMeta) { m.Draft = &model.Draft{Text: "the goal"} })
 	e.far.change(remB, func(en *chats.RemoteEntry) { en.Key = "" }) // it has not said who it is
@@ -530,6 +534,7 @@ func TestRemoteHandOver(t *testing.T) {
 // A server change sets agent, tiers, folder, limits and set-up command from that server's run
 // defaults and lists, and the view's folder facts are that server's answer.
 func TestRemotePatchServer(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	e.s.Agents = svcAgents(map[string]bool{"claude": true})
 	was := tiersAll("far-gpt", "")
@@ -604,6 +609,7 @@ func TestRemotePatchServer(t *testing.T) {
 // A folder of a draft on another server is asked of that server alone: its answer is the folder
 // and the facts.
 func TestRemotePatchFolder(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_folder00", nil)
 	before := svcMetaOnDisk(t, r)
@@ -661,6 +667,7 @@ func TestRemotePatchFolder(t *testing.T) {
 // The agent is checked against the entry's list and the tiers against its catalogue; default
 // tiers take their base from that server's defaults and catalogue (AC44, and T90's finding 4).
 func TestRemotePatchAgentAndTiers(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	e.s.Agents = svcAgents(map[string]bool{"pi": true}) // this computer can use pi alone
 	r := e.on("r_agent000", nil)
@@ -733,6 +740,7 @@ func TestRemotePatchAgentAndTiers(t *testing.T) {
 
 // The refusals of Patch, in their order (AC5 among them: an entry that waits for the user).
 func TestRemotePatchRefusals(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	e.far.entries["s_old00000"] = chats.RemoteEntry{ID: "s_old00000", Name: "Old", Key: "inst-old", Stopped: true}
 	server := func(id string) PatchReq { return PatchReq{Server: svcPtr(id)} }
@@ -811,6 +819,7 @@ func TestRemotePatchRefusals(t *testing.T) {
 
 // What the view says of a draft on another server, row by row.
 func TestRemoteDraftFacts(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_facts000", nil)
 	e.far.folders[remB+" "+remWork] = DraftFacts{Cwd: remWork, Git: true, Dirty: true}
@@ -890,6 +899,7 @@ func TestRemoteDraftFacts(t *testing.T) {
 // The draft check is asked at a read, after a patch of server or agent, and when the server is
 // up; not at "New run", at load, or while the start may have arrived.
 func TestRemoteDraftCheckWhenAsked(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	e.defaults(func(g map[string]model.GroupDefaults) { g[remGroup] = model.GroupDefaults{Server: remKeyB} })
 	asked := func(what string, want ...string) {
@@ -995,6 +1005,7 @@ func remProbe(t *testing.T, e *remEnv, id, during string) {
 
 // No lock of the run is held while its server is asked: the fake holds every kind of check back.
 func TestRemoteDraftCheckHoldsNoLock(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_nolock00", nil)
 	id := r.id
@@ -1046,6 +1057,7 @@ func TestRemoteDraftCheckHoldsNoLock(t *testing.T) {
 // A folder is applied only if the draft is still on the server that was asked: when it is not,
 // the folder is looked at where the draft is by then.
 func TestRemotePatchFolderOnAnotherServerByThen(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_moved000", nil)
 	here := t.TempDir()
@@ -1107,6 +1119,7 @@ func TestRemotePatchFolderOnAnotherServerByThen(t *testing.T) {
 // ---- AC44: the agent when the server is up ----------------------------------------------------------
 
 func TestRemoteServerUp(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	e.defaults(func(g map[string]model.GroupDefaults) { g[remGroup] = model.GroupDefaults{Server: remKeyB} })
 	// Bee is in the list, has said who it is, and is not connected: nothing of it is known.
@@ -1213,6 +1226,7 @@ func TestRemoteServerUp(t *testing.T) {
 // ---- the relay's other calls -------------------------------------------------------------------
 
 func TestRemoteDraftsOnAndResetServer(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	second := e.on("r_second00", func(m *model.RunMeta) { m.Created = testStart.Add(2 * time.Hour) })
 	first := e.on("r_first000", func(m *model.RunMeta) {
@@ -1291,6 +1305,7 @@ func TestRemoteDraftsOnAndResetServer(t *testing.T) {
 }
 
 func TestRemoteSetRemoteStart(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_start000", nil)
 	e.events()
@@ -1336,6 +1351,7 @@ func TestRemoteSetRemoteStart(t *testing.T) {
 // Reissue: a new id, the folder renamed, `run` with `was` and then `run_removed`; the goal draft
 // and every value kept.
 func TestRemoteReissue(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_reissue0", func(m *model.RunMeta) {
 		m.Name, m.UserNamed, m.Draft, m.RemoteStart = "Mine", true, &model.Draft{Text: "the goal so far"}, model.RemoteUnconfirmed
@@ -1416,6 +1432,7 @@ func TestRemoteReissue(t *testing.T) {
 // RunOf says where a run is and whether it has started, and asks the records for a run the
 // service does not have.
 func TestRemoteRunOf(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	far := e.on("r_far00000", nil)
 	local := e.draft("r_local000")
@@ -1445,6 +1462,7 @@ func TestRemoteRunOf(t *testing.T) {
 
 // A draft whose start may have arrived is deleted on its server too, once it is gone here.
 func TestRemoteDeleteDropsAnUnconfirmedDraft(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	unc := e.on("r_unconfir", func(m *model.RunMeta) { m.RemoteStart = model.RemoteUnconfirmed })
 	plain := e.on("r_plain000", nil)
@@ -1479,6 +1497,7 @@ func TestRemoteDeleteDropsAnUnconfirmedDraft(t *testing.T) {
 // While the start of a draft on another server is being made, what the start sends is fixed and
 // the draft cannot be deleted; its name, its group and the goal that is typed stay free.
 func TestRemoteDraftWhileItsStartIsMade(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	svcGroupAdd(t, e.s, model.Group{ID: "g_other", Name: "Other"})
 	r := e.on("r_starting", nil)
@@ -1543,6 +1562,7 @@ func TestRemoteDraftWhileItsStartIsMade(t *testing.T) {
 // draft on one of them then says that its server is gone. RemoteReady, called when Remote is set,
 // puts that right with no server asked.
 func TestRemoteReadyAfterARestart(t *testing.T) {
+	t.Parallel()
 	const offline = "Bee is not connected: the folder cannot be checked and the run cannot start."
 	e := newRemEnv(t)
 	away := e.on("r_away0000", nil)
@@ -1611,6 +1631,7 @@ func TestRemoteReadyAfterARestart(t *testing.T) {
 
 // Start makes no start of a draft that will start on another server, and leaves it as it is.
 func TestRemoteStartIsNotMadeHere(t *testing.T) {
+	t.Parallel()
 	e := newRemEnv(t)
 	r := e.on("r_start000", func(m *model.RunMeta) { m.Draft = &model.Draft{Text: "the goal"} })
 	before := svcMetaOnDisk(t, r)

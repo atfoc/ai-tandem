@@ -4,29 +4,50 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"ai-whiteboard/internal/testset"
 )
 
-// TestProtocolNode runs the dependency-free protocol unit tests under Node's
-// type stripping. Skipped when node is not installed.
-func TestProtocolNode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping node test in short mode")
-	}
+// runNodeTest runs one file of the extension's unit tests under Node's type stripping, in parallel
+// with the other tests: the files share nothing. The file is run as a program, which runs its
+// tests like node --test does, without the second node process that --test starts for the file.
+// Skipped when node is not installed.
+func runNodeTest(t *testing.T, file string) {
+	t.Helper()
+	runNodeTestEnv(t, file)
+}
+
+// runNodeTestEnv is runNodeTest with variables added to the environment of the node process, each
+// as "NAME=value". It returns what the file printed.
+func runNodeTestEnv(t *testing.T, file string, env ...string) string {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not available")
 	}
-	testPath, err := filepath.Abs(filepath.Join("extension", "test", "protocol.test.ts"))
+	t.Parallel()
+	testPath, err := filepath.Abs(filepath.Join("extension", "test", file))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(node, "--test", "--experimental-strip-types", testPath)
+	cmd := exec.Command(node, "--experimental-strip-types", testPath)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("node --test failed: %v\n%s", err, out)
+		t.Fatalf("node test failed: %v\n%s", err, out)
 	}
-	t.Logf("node --test:\n%s", out)
+	t.Logf("node test:\n%s", out)
+	return string(out)
+}
+
+// TestProtocolNode runs the dependency-free protocol unit tests under Node's
+// type stripping. Skipped when node is not installed.
+func TestProtocolNode(t *testing.T) {
+	runNodeTest(t, "protocol.test.ts")
 }
 
 func TestMaterializeExtension(t *testing.T) {
@@ -85,87 +106,35 @@ func TestMaterializeExtension(t *testing.T) {
 // TestMCPNode runs the dependency-free MCP client unit tests under Node's type
 // stripping. Skipped when node is not installed.
 func TestMCPNode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping node test in short mode")
-	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not available")
-	}
-	testPath, err := filepath.Abs(filepath.Join("extension", "test", "mcp.test.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(node, "--test", "--experimental-strip-types", testPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node --test failed: %v\n%s", err, out)
-	}
-	t.Logf("node --test:\n%s", out)
+	runNodeTest(t, "mcp.test.ts")
 }
 
 // TestMCPWiringNode runs the dependency-free MCP wiring unit tests under
 // Node's type stripping. Skipped when node is not installed.
 func TestMCPWiringNode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping node test in short mode")
-	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not available")
-	}
-	testPath, err := filepath.Abs(filepath.Join("extension", "test", "mcp-wiring.test.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(node, "--test", "--experimental-strip-types", testPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node --test failed: %v\n%s", err, out)
-	}
-	t.Logf("node --test:\n%s", out)
+	runNodeTest(t, "mcp-wiring.test.ts")
 }
 
 // TestPermissionsNode runs the permission-gate unit tests under Node's type
 // stripping. Skipped when node is not installed.
 func TestPermissionsNode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping node test in short mode")
-	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not available")
-	}
-	testPath, err := filepath.Abs(filepath.Join("extension", "test", "permissions.test.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(node, "--test", "--experimental-strip-types", testPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node --test failed: %v\n%s", err, out)
-	}
-	t.Logf("node --test:\n%s", out)
+	runNodeTest(t, "permissions.test.ts")
 }
 
 // TestSubagentNode runs the subagent-tool unit tests under Node's type
 // stripping. Skipped when node is not installed.
+//
+// All of them start some thirty node processes, so the default set runs a few: the file itself
+// thins them (its defaultTest), and it is told here which set runs, not by the variable of this
+// process, so that -short gives the default set there too. The file prints which set it ran and
+// how many of its tests; a run of the wrong set fails.
 func TestSubagentNode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping node test in short mode")
+	full, want := "0", "subagent.test.ts: default set, running "
+	if testset.Full() {
+		full, want = "1", "subagent.test.ts: full set, running all "
 	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not available")
+	out := runNodeTestEnv(t, "subagent.test.ts", testset.Env+"="+full)
+	if !strings.Contains(out, want) {
+		t.Fatalf("the node test did not run the set it was told to: its output has no %q", want)
 	}
-	testPath, err := filepath.Abs(filepath.Join("extension", "test", "subagent.test.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(node, "--test", "--experimental-strip-types", testPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node --test failed: %v\n%s", err, out)
-	}
-	t.Logf("node --test:\n%s", out)
 }

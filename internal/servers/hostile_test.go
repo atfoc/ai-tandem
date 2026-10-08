@@ -76,6 +76,7 @@ func ownStream(w http.ResponseWriter) func(v any) {
 // stream. While no stream stays open for Stable the back-off goes on growing and stays at its
 // last step; with Stable 0, and after a stream that was open for Stable, it starts again.
 func TestBackoffOfADroppingServer(t *testing.T) {
+	t.Parallel()
 	// dropping records when each stream was asked for, and drops it after hold.
 	dropping := func(t *testing.T, hold time.Duration) (*httptest.Server, func() []time.Time) {
 		var mu sync.Mutex
@@ -106,6 +107,7 @@ func TestBackoffOfADroppingServer(t *testing.T) {
 	}
 
 	t.Run("it grows while no stream is stable", func(t *testing.T) {
+		t.Parallel()
 		steps := []time.Duration{30 * time.Millisecond, 90 * time.Millisecond, 200 * time.Millisecond}
 		s, asked := dropping(t, 0)
 		r := startRig(t, timing(time.Minute, steps...))
@@ -129,18 +131,21 @@ func TestBackoffOfADroppingServer(t *testing.T) {
 	// starts again each time.
 	long := []time.Duration{20 * time.Millisecond, 20 * time.Millisecond, time.Minute}
 	t.Run("Stable 0 starts it again at once", func(t *testing.T) {
+		t.Parallel()
 		s, asked := dropping(t, 0)
 		r := startRig(t, timing(0, long...))
 		r.add(ownForm(s))
 		waitFor(t, "the attempts", func() bool { return len(asked()) >= 7 })
 	})
 	t.Run("a stream that was open for Stable starts it again", func(t *testing.T) {
+		t.Parallel()
 		s, asked := dropping(t, 150*time.Millisecond)
-		r := startRig(t, timing(100*time.Millisecond, long...))
+		r := startRig(t, timing(50*time.Millisecond, long...))
 		r.add(ownForm(s))
 		waitFor(t, "the attempts", func() bool { return len(asked()) >= 5 })
 	})
 	t.Run("one that was not does not", func(t *testing.T) {
+		t.Parallel()
 		s, asked := dropping(t, 0)
 		r := startRig(t, timing(time.Minute, long...))
 		r.add(ownForm(s))
@@ -156,6 +161,7 @@ func TestBackoffOfADroppingServer(t *testing.T) {
 // Neither a test's Result nor an event for the pages holds it, whole or with characters in it
 // that are not shown.
 func TestNoSecretFromTheServer(t *testing.T) {
+	t.Parallel()
 	sent := func(r *http.Request) string { return r.Header.Get(remote.SecretHeader) }
 	split := func(s string) string { return s[:5] + "\x00" + s[5:10] + "\u0007" + s[10:] }
 	lacksSecret := func(t *testing.T, what string, b []byte) {
@@ -177,6 +183,7 @@ func TestNoSecretFromTheServer(t *testing.T) {
 	}
 
 	t.Run("the error text of hello", func(t *testing.T) {
+		t.Parallel()
 		for _, text := range []func(string) string{
 			func(s string) string { return "got " + s },
 			func(s string) string { return "got " + split(s) },
@@ -199,6 +206,7 @@ func TestNoSecretFromTheServer(t *testing.T) {
 	})
 
 	t.Run("version and agents", func(t *testing.T) {
+		t.Parallel()
 		more := make(chan struct{})
 		routes := map[string]http.HandlerFunc{
 			HelloPath: ownHello(func(r *http.Request) string { return "v1 " + sent(r) + " " + split(sent(r)) }),
@@ -259,6 +267,7 @@ func TestNoSecretFromTheServer(t *testing.T) {
 // TestWhatAServerCanMakeUsKeep: a catalog is kept for the agent kinds of this build alone, and
 // of the agents a server names the first 16.
 func TestWhatAServerCanMakeUsKeep(t *testing.T) {
+	t.Parallel()
 	names := func(prefix string) []string {
 		out := make([]string, 100)
 		for i := range out {

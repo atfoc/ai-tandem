@@ -65,7 +65,8 @@ export function Menu({ children, onClose, align = "left" }: { children: React.Re
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
-    const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    // (the Escape is marked as taken: the server choice of a new whiteboard under the menu does not drop its draft for it)
+    const k = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
     const t = setTimeout(() => document.addEventListener("mousedown", h));
     document.addEventListener("keydown", k);
     return () => { clearTimeout(t); document.removeEventListener("mousedown", h); document.removeEventListener("keydown", k); };

@@ -7,7 +7,7 @@
 //
 // No pi, no real app, no npm packages, nothing outside 127.0.0.1.
 
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import * as fs from "node:fs";
@@ -626,22 +626,26 @@ async function runStallScenario(stall: StubOptions, expectedPhase: "handshake" |
   }
 }
 
-test("startMCP: a server that never answers initialize is bounded and isolated", { timeout: 15000 }, async () => {
-  const result = await runStallScenario({ hangInitialize: true }, "handshake");
-  assert.deepEqual(result.stalledMethods, ["initialize"]);
-  assert.equal(result.cancelled, true, "the aborted initialize should get a best-effort cancellation");
-});
+// Each of the three stall tests waits out the 500 ms bound and shares nothing with the others, so
+// they run at the same time.
+describe("startMCP: a stalled server", { concurrency: true }, () => {
+  test("startMCP: a server that never answers initialize is bounded and isolated", { timeout: 15000 }, async () => {
+    const result = await runStallScenario({ hangInitialize: true }, "handshake");
+    assert.deepEqual(result.stalledMethods, ["initialize"]);
+    assert.equal(result.cancelled, true, "the aborted initialize should get a best-effort cancellation");
+  });
 
-test("startMCP: a hung notifications/initialized POST is bounded and isolated", { timeout: 15000 }, async () => {
-  const result = await runStallScenario({ hangNotification: true }, "handshake");
-  assert.deepEqual(result.stalledMethods, ["initialize", "notifications/initialized"]);
-  assert.equal(result.cancelled, false, "a notification has no request id to cancel");
-});
+  test("startMCP: a hung notifications/initialized POST is bounded and isolated", { timeout: 15000 }, async () => {
+    const result = await runStallScenario({ hangNotification: true }, "handshake");
+    assert.deepEqual(result.stalledMethods, ["initialize", "notifications/initialized"]);
+    assert.equal(result.cancelled, false, "a notification has no request id to cancel");
+  });
 
-test("startMCP: a hung tools/list discovery is bounded and isolated", { timeout: 15000 }, async () => {
-  const result = await runStallScenario({ hangList: true }, "discovery");
-  assert.deepEqual(result.stalledMethods, ["initialize", "notifications/initialized", "tools/list"]);
-  assert.equal(result.cancelled, true, "the aborted tools/list should get a best-effort cancellation");
+  test("startMCP: a hung tools/list discovery is bounded and isolated", { timeout: 15000 }, async () => {
+    const result = await runStallScenario({ hangList: true }, "discovery");
+    assert.deepEqual(result.stalledMethods, ["initialize", "notifications/initialized", "tools/list"]);
+    assert.equal(result.cancelled, true, "the aborted tools/list should get a best-effort cancellation");
+  });
 });
 
 test("startMCP: a non-positive or non-finite handshake timeout falls back to the default", async () => {

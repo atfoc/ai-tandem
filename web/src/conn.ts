@@ -6,7 +6,7 @@ import { api, clientId } from "./api.ts";
 import { setState, getState, applySnapshot, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
   upsertState, setDrawer, setShown, setThreadError, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   onRunEvent, removeRun, setRunError, type ThreadKey } from "./store.ts";
-import { runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot } from "./board.ts";
+import { runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot, serverBack as boardServerBack } from "./board.ts";
 import { subKey } from "./logic/subagents.ts";
 import { branchKey, keyOfChat, type BranchKey } from "./logic/branches.ts";
 import { Loads } from "./logic/branchview.ts";
@@ -73,7 +73,7 @@ async function handle(m: any, src: EventSource) {
     case "catalog": setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
     case "agents": setState({ usable: m.agents ?? [] }); return; // the local server's usable agents changed
     case "server_lists": if (m.server) setState((s) => ({ lists: withLists(s.lists, m.server, m.lists) })); return; // what another server offers; null: its entry is gone
-    case "server_back": if (m.server) { onServerBack(m.server); onRunServerBack(m.server); } return; // before the `branch_state` and `chat` events of that server's chats
+    case "server_back": if (m.server) { onServerBack(m.server); onRunServerBack(m.server); boardServerBack(m.server); } return; // before the `branch_state` and `chat` events of that server's chats
     case "chat_reload": onChatReload(m.chat); return;
   }
 }

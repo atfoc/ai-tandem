@@ -77,6 +77,7 @@ func carriedAhead(t *testing.T, msg []agent.ContentBlock, text string, sids ...s
 // before the result's row, in a session forked from before the message. The branch's agent has not
 // had the result, so the edited message carries it.
 func TestEditOfCarryingMessageOwesResult(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, child := e.spawnLinked()
 	e.finish(child, "the report") // owed: the parent is busy
@@ -127,6 +128,7 @@ func TestEditOfCarryingMessageOwesResult(t *testing.T) {
 // A branch that starts before a turn the app started to deliver a result keeps the spawn, not the
 // delivery: its first message carries the result.
 func TestBranchBeforeDeliveryTurnOwesResult(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, at := e.deliveredLinked()
 	sends := len(parent.sent())
@@ -167,6 +169,7 @@ func TestBranchBeforeDeliveryTurnOwesResult(t *testing.T) {
 // The same through a fork to a new chat: the fork shows the result as owed from the start, starts
 // no turn for it, and its first human message carries it.
 func TestForkBeforeDeliveryTurnOwesResult(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, at := e.deliveredLinked()
 	sends := len(parent.sent())
@@ -286,6 +289,7 @@ func (e *env) retriedSource(how string) (id string, parent *fakeAgent, sa model.
 // delivery. The copy's agent is owed the result and gets it with the copy's first message, with no
 // second row.
 func TestCopyBeforeRetriedDeliveryOwesResult(t *testing.T) {
+	t.Parallel()
 	for _, how := range []string{"refused", "errored", "stopped"} {
 		t.Run("fork/"+how, func(t *testing.T) {
 			e := newEnv(t)
@@ -349,6 +353,7 @@ func TestCopyBeforeRetriedDeliveryOwesResult(t *testing.T) {
 // before what the turn added: the index of the result's row at the first attempt, and at a later
 // one the count right before the turn that carried it again.
 func TestCarriedIsTheCountBeforeTheTurn(t *testing.T) {
+	t.Parallel()
 	carried := func(e *env, id, sid string, want int) {
 		e.t.Helper()
 		if s, file := e.sub(id, sid), e.subFile(id, sid); s.Carried != want || file.Carried != want {
@@ -376,6 +381,7 @@ func TestCarriedIsTheCountBeforeTheTurn(t *testing.T) {
 // result. So it is for a result delivered at the first attempt, by a turn of the app's or with the
 // human's message, and for one delivered at a later attempt.
 func TestCopyAfterDeliveryOwesNothing(t *testing.T) {
+	t.Parallel()
 	sources := map[string]func(e *env) (string, model.Subagent){
 		"a delivery turn": func(e *env) (string, model.Subagent) {
 			id, _, sa, _ := e.deliveredLinked()
@@ -442,6 +448,7 @@ func TestCopyAfterDeliveryOwesNothing(t *testing.T) {
 // Only the chat's own agent is owed a result. A subagent's own native subagent is copied with it
 // and stays as it was.
 func TestForkOwesOnlyTheChatsOwnResult(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, child := e.spawnLinked()
 	child.emit(t, agent.Event{Kind: agent.EvToolStart, ToolID: "n1", ToolName: "Agent"},
@@ -495,6 +502,7 @@ func (e *env) storeSub(id string, sa model.Subagent) {
 // row: that thread never carried it. With its row the record is copied as it is. A record that
 // owes nothing (a stopped subagent, a native one, a subagent's own) never becomes owed.
 func TestCopyDeliveryStates(t *testing.T) {
+	t.Parallel()
 	res := "receipt"
 	tool := func(n, sid string) model.Item {
 		return model.Item{Kind: "tool", ToolID: n, Name: "mcp__board__spawn_subagent", Result: &res, Subagent: sid}
@@ -615,6 +623,7 @@ func TestCopyDeliveryStates(t *testing.T) {
 // A fork of a held chat that is owed a result inherits the debt: the result goes to the fork's
 // agent with the fork's first message, and to the source's agent with the source's next message.
 func TestForkInheritsOwedResult(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, child := e.spawnLinked()
 	e.finish(child, "the report")
@@ -645,6 +654,7 @@ func TestForkInheritsOwedResult(t *testing.T) {
 // The fork that inherited a debt is held like any chat the human has not written in: a turn end
 // of its process before any Send starts no turn. The human's first message carries the result.
 func TestForkWithOwedResultStartsNoTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, child := e.spawnLinked()
 	e.finish(child, "the report")
@@ -680,6 +690,7 @@ func TestForkWithOwedResultStartsNoTurn(t *testing.T) {
 // A fork made while a subagent of the source still runs leaves that subagent alone: the copy
 // shows it stopped and owes nothing for it, and its result still reaches the source only.
 func TestForkWhileSubagentRuns(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, child := e.spawnLinked()
 	parent.emit(t, agent.Event{Kind: agent.EvText, Text: "spawned"}, agent.Event{Kind: agent.EvTurnEnd, Point: "p1"})
@@ -729,6 +740,7 @@ func TestForkWhileSubagentRuns(t *testing.T) {
 // A result row whose subagent no tool item of the thread names (a spawn that was never linked to
 // its tool call) takes its record along: the copy's row has its subagent, and its state.
 func TestForkCopiesRecordOfResultRow(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	parent.emit(t, agent.Event{Kind: agent.EvText, Text: "spawned"}, agent.Event{Kind: agent.EvTurnEnd, Point: "p1"})
@@ -765,6 +777,7 @@ func TestForkCopiesRecordOfResultRow(t *testing.T) {
 
 // The order of a batch: completion time first, then sid, for the block and for the rows.
 func TestDeliveryBatchOrder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent() // mid-turn: everything stays owed
 	var subs []model.Subagent

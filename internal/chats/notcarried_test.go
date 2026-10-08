@@ -95,6 +95,7 @@ func (e *env) marked(when, id, sid string) {
 }
 
 func TestNotCarriedBlock(t *testing.T) {
+	t.Parallel()
 	got := notCarriedBlock([]model.Subagent{
 		{ID: "aaa", Description: "look <up> & report"},
 		{ID: "bbb"},
@@ -117,6 +118,7 @@ func TestNotCarriedBlock(t *testing.T) {
 
 // The notice goes with one accepted message: the first.
 func TestNotCarriedNoticeGoesOnce(t *testing.T) {
+	t.Parallel()
 	t.Run("fork", func(t *testing.T) {
 		e := newEnv(t)
 		id, _, sa, _, at := e.runningLinked()
@@ -277,6 +279,7 @@ func TestNotCarriedNoticeGoesOnce(t *testing.T) {
 // A copy of a copy that was told is forked from the copy's session as it was at the point: before
 // the message that carried the notice the session has none, and the second copy's agent is told.
 func TestNoticeOnACopyOfACopyInsideThePrefix(t *testing.T) {
+	t.Parallel()
 	t.Run("branch from a branch", func(t *testing.T) {
 		e := newEnv(t)
 		id, _, sa, _, at := e.runningLinked()
@@ -391,6 +394,7 @@ func (e *env) subIDs(id string) []string {
 // a subagent of an earlier turn that still runs is in the copy, marked and named in the notice;
 // one spawned in the running turn is past the point and is not. The source keeps both running.
 func TestCopyOfARunningSourceWithSubagents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, a, _, at := e.runningLinked()
 	e.send(id, "more", "")
@@ -451,6 +455,7 @@ func open(items []model.Item) []int {
 // here a turn that was cut with text unfinished and a tool call unanswered. The source's own items
 // stay as they are.
 func TestCopyClosesOpenItems(t *testing.T) {
+	t.Parallel()
 	done := "ok"
 	prefix := []model.Item{
 		{Kind: "user", Text: "ask 1"},

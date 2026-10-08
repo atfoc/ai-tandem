@@ -122,6 +122,7 @@ func TestStopRestartResume(t *testing.T) {
 	})
 	h.startRun(nil)
 	h.atGate("work")
+	h.taken("T01-work")
 	l := h.stopRun()
 	if a, _ := mxAgent(l, "T01-work"); l.State.Reason != "stopped by the user" || a.Status != model.AgentInterrupted || len(a.Launches) != 1 || !a.Resumable {
 		t.Fatalf("stopped: %q, the agent %+v", l.State.Reason, a)

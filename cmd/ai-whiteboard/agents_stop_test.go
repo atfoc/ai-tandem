@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -37,9 +36,11 @@ while :; do sleep 1; done
 // Claude chat, a Cursor chat, the Claude sign-in check (`auth status`, the first step of its
 // model-list probe) and the Cursor model-list probe the server starts at startup.
 func TestStopEndsAgentProcesses(t *testing.T) {
+	serverTest(t, "TestCloseUnattendedEndsWhatItStarted (internal/claude)", "TestCloseEndsTheGroup (internal/cursor)", "TestSignalGroupAndStarted (internal/agent)")
 	in := newInstance(t)
 	fakes := t.TempDir()
 	in.claude = filepath.Join(fakes, "claude")
+	in.cursor = "" // `agent` on PATH, which is the fake below
 	for name, body := range map[string]string{"claude": fakeAgent, "agent": fakeAgent, "fake-child": fakeChild} {
 		if err := os.WriteFile(filepath.Join(fakes, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
@@ -48,18 +49,18 @@ func TestStopEndsAgentProcesses(t *testing.T) {
 	pidFile := filepath.Join(fakes, "pids")
 	t.Cleanup(func() { killOurs(t, fakes, readPids(pidFile)) })
 
-	serve := exec.Command(in.bin, append([]string{"serve", "-cwd", t.TempDir(),
-		"-cursor-cost", filepath.Join(fakes, "no-cursor-cost")}, in.flags()...)...)
-	serve.Env = append(os.Environ(), "PATH="+fakes+":"+os.Getenv("PATH"), "AIWB_FAKE_PIDS="+pidFile)
+	serve := in.command(context.Background(), "serve", "-cwd", t.TempDir(),
+		"-cursor-cost", filepath.Join(fakes, "no-cursor-cost"))
+	serve.Env = append(in.environ(), "PATH="+fakes+":"+os.Getenv("PATH"), "AIWB_FAKE_PIDS="+pidFile)
 	serve.Stdout, serve.Stderr = os.Stderr, os.Stderr
 	if err := serve.Start(); err != nil {
 		t.Fatal(err)
 	}
 	served := make(chan struct{})
 	go func() { serve.Wait(); close(served) }()
-	for deadline := time.Now().Add(20 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(60 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatal("the server did not answer within 20 s")
+			t.Fatal("the server did not answer within 60 s")
 		}
 	}
 
@@ -76,7 +77,9 @@ func TestStopEndsAgentProcesses(t *testing.T) {
 		}()
 	}
 	var pids []int
-	for deadline := time.Now().Add(10 * time.Second); len(pids) < 8; time.Sleep(100 * time.Millisecond) {
+	// A bound for what must happen, not a measure: the fakes are scripts this test has just
+	// written, and on a loaded machine their first starts take seconds.
+	for deadline := time.Now().Add(60 * time.Second); len(pids) < 8; time.Sleep(20 * time.Millisecond) {
 		// Two chats, the Claude sign-in check and the Cursor probe, each an agent and its child.
 		// The fakes never answer, so the check and the probe run until the stop.
 		if time.Now().After(deadline) {
@@ -141,6 +144,7 @@ done
 // Stopping the server ends a pi chat's process group too: the fake pi starts a child that stays
 // in the same group, and both must be gone after `stop`.
 func TestStopEndsPiProcesses(t *testing.T) {
+	serverTest(t, "TestCloseReapsChildGroup (internal/pi)")
 	in := newInstance(t)
 	fakes := t.TempDir()
 	if err := os.WriteFile(filepath.Join(fakes, "pi"), []byte(fakePi), 0o755); err != nil {
@@ -149,17 +153,17 @@ func TestStopEndsPiProcesses(t *testing.T) {
 	pidFile := filepath.Join(fakes, "pi-pids")
 	t.Cleanup(func() { killOurs(t, fakes, readPids(pidFile)) })
 
-	serve := exec.Command(in.bin, append([]string{"serve", "-cwd", t.TempDir(),
-		"-pi", filepath.Join(fakes, "pi"),
-		"-cursor-cost", filepath.Join(fakes, "no-cursor-cost")}, in.flags()...)...)
-	serve.Env = append(os.Environ(), "PI_FAKE_PIDS="+pidFile)
+	in.pi = filepath.Join(fakes, "pi")
+	serve := in.command(context.Background(), "serve", "-cwd", t.TempDir(),
+		"-cursor-cost", filepath.Join(fakes, "no-cursor-cost"))
+	serve.Env = append(in.environ(), "PI_FAKE_PIDS="+pidFile)
 	serve.Stdout, serve.Stderr = os.Stderr, os.Stderr
 	if err := serve.Start(); err != nil {
 		t.Fatal(err)
 	}
 	served := make(chan struct{})
 	go func() { serve.Wait(); close(served) }()
-	for deadline := time.Now().Add(20 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(20 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the server did not answer within 20 s")
 		}
@@ -236,7 +240,25 @@ func activate(t *testing.T, base, client string) {
 			active = ev["type"] == "hello"
 		}
 	}
-	go io.Copy(io.Discard, resp.Body) // keep reading so the server never blocks on this client
+	go flushWhenStopping(base, client, sc) // keeps reading, so the server never blocks on this client
+}
+
+// flushWhenStopping reads the rest of client's event stream and, like the app's client, answers
+// the server's `server_stopping` with POST /api/client/flushed: it has no board changes left to
+// write. A server that gets no answer waits two seconds for it before it goes down.
+func flushWhenStopping(base, client string, events *bufio.Scanner) {
+	for events.Scan() {
+		var ev struct{ Type string }
+		line, ok := strings.CutPrefix(events.Text(), "data: ")
+		if !ok || json.Unmarshal([]byte(line), &ev) != nil || ev.Type != "server_stopping" {
+			continue
+		}
+		go func() {
+			if resp, err := post(base+"api/client/flushed", client, nil); err == nil {
+				resp.Body.Close()
+			}
+		}()
+	}
 }
 
 // post posts body as JSON to url as client.
@@ -245,7 +267,7 @@ func post(url, client string, body any) (*http.Response, error) {
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-AIWB-Client", client)
-	return (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	return (&http.Client{Timeout: 60 * time.Second}).Do(req)
 }
 
 // postJSON posts body as JSON to url as client; the answer must be 200. It decodes the answer

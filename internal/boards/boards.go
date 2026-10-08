@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,11 +27,18 @@ import (
 // Emitter sends an event to the clients (the editor bridge).
 type Emitter interface{ Broadcast(ev any) }
 
+// boardSender is an Emitter that sends a board's events only to the clients that may see the
+// board (the editor bridge): every page, and the API client whose mark the board carries.
+type boardSender interface {
+	SendBoard(board string, ev any)
+	MarkBoard(board, client string)
+}
+
 type Service struct {
 	st     *store.Store // for P and the group list
 	bridge Emitter
 	// sendMu keeps the board events in the order of the changes. Create, update and Delete take
-	// it before mu and hold it over the Broadcast, which runs with mu released: the bridge calls
+	// it before mu and hold it over the send, which runs with mu released: the bridge calls
 	// List with its own lock held, so its lock must never be taken under mu. Nothing waits for
 	// sendMu with mu held.
 	sendMu sync.Mutex
@@ -47,6 +55,8 @@ const EmptyScene = `{"type":"excalidraw","version":2,"source":"ai-whiteboard","e
 
 var ErrArchived = errors.New("the board is archived")
 var ErrNotFound = errors.New("no such board")
+var ErrBadID = errors.New("not a board id")
+var ErrIDTaken = errors.New("the board id is taken")
 
 // StaleError is SaveAt's refusal of a write whose base is not the stored revision. Rev is the
 // stored one.
@@ -97,6 +107,21 @@ func (b *Service) Load() error {
 	if err != nil {
 		return err
 	}
+	if err := b.load(ents); err != nil {
+		return err
+	}
+	// The marks go to the bridge with mu released (see sendMu), before any event of the boards.
+	if s, ok := b.bridge.(boardSender); ok {
+		for _, bd := range b.List() {
+			if bd.Client != "" {
+				s.MarkBoard(bd.ID, bd.Client)
+			}
+		}
+	}
+	return nil
+}
+
+func (b *Service) load(ents []os.DirEntry) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, e := range ents {
@@ -160,6 +185,32 @@ func (b *Service) Rev(id string) int64 {
 		return v.(*atomic.Int64).Load()
 	}
 	return 0
+}
+
+// send sends a board's event: through SendBoard when the bridge has it, else to every client.
+// Callers hold sendMu.
+func (b *Service) send(id string, ev any) {
+	if s, ok := b.bridge.(boardSender); ok {
+		s.SendBoard(id, ev)
+		return
+	}
+	b.bridge.Broadcast(ev)
+}
+
+// ListOf returns the boards that carry client's mark. No client has no boards.
+func (b *Service) ListOf(client string) []model.Board {
+	out := []model.Board{}
+	if client == "" {
+		return out
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, bd := range b.boards {
+		if bd.Client == client {
+			out = append(out, *bd)
+		}
+	}
+	return out
 }
 
 // List returns every registered board (the client sorts).
@@ -233,44 +284,83 @@ func (b *Service) checkGroup(group string) error {
 	return nil
 }
 
+// NewBoard is what Make makes a board from. ID is empty for a board whose id is made here.
+// Client is the API client that makes it (the mark), Origin the board of the chat whose agent
+// made it.
+type NewBoard struct {
+	ID, Name, Group, Client, Origin string
+	New                             bool
+}
+
+var idForm = regexp.MustCompile(`^b_[a-z0-9]{8}$`)
+
+// ValidID reports whether id has the form of a board id (model.NewID("b_")).
+func ValidID(id string) bool { return idForm.MatchString(id) }
+
 // Create makes a board with an empty drawing, saved the moment it is created.
 func (b *Service) Create(name, group string, isNew bool) (model.Board, error) {
-	if name == "" {
-		name = "whiteboard"
+	bd, _, err := b.Make(NewBoard{Name: name, Group: group, New: isNew})
+	return bd, err
+}
+
+// Make makes a board with an empty drawing, saved the moment it is made. With an id it can be
+// repeated: a board with that id and the same mark is returned as it is (made false, its name
+// untouched), and any other board with that id is ErrIDTaken.
+func (b *Service) Make(n NewBoard) (bd model.Board, made bool, err error) {
+	if n.ID != "" && !ValidID(n.ID) {
+		return model.Board{}, false, ErrBadID
 	}
-	base, err := CleanName(name)
-	if err != nil {
-		return model.Board{}, err
+	if n.Name == "" {
+		n.Name = "whiteboard"
+	}
+	if n.Name, err = CleanName(n.Name); err != nil {
+		return model.Board{}, false, err
 	}
 	b.sendMu.Lock()
 	defer b.sendMu.Unlock()
-	bd, err := b.create(base, group, isNew)
-	if err != nil {
-		return model.Board{}, err
+	bd, made, err = b.create(n)
+	if err != nil || !made {
+		return bd, false, err
 	}
-	b.bridge.Broadcast(map[string]any{"type": "board", "board": bd})
-	return bd, nil
+	// The mark before the first event: the bridge sends a marked board only to its client.
+	if s, ok := b.bridge.(boardSender); ok && bd.Client != "" {
+		s.MarkBoard(bd.ID, bd.Client)
+	}
+	b.send(bd.ID, map[string]any{"type": "board", "board": bd})
+	return bd, true, nil
 }
 
-func (b *Service) create(name, group string, isNew bool) (model.Board, error) {
+// create is Make under mu, which is also the lock of one id: the look for a board with the id
+// and its registration are one step.
+func (b *Service) create(n NewBoard) (model.Board, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.checkGroup(group); err != nil {
-		return model.Board{}, err
+	if old, ok := b.boards[n.ID]; ok {
+		if n.Client == "" || old.Client != n.Client {
+			return model.Board{}, false, ErrIDTaken
+		}
+		return *old, false, nil
 	}
-	bd := &model.Board{ID: model.NewID("b_"), Name: name, Group: group, Created: time.Now(), New: isNew}
+	if err := b.checkGroup(n.Group); err != nil {
+		return model.Board{}, false, err
+	}
+	id := n.ID
+	if id == "" {
+		id = model.NewID("b_")
+	}
+	bd := &model.Board{ID: id, Name: n.Name, Group: n.Group, Created: time.Now(), New: n.New, Client: n.Client, Origin: n.Origin}
 	if err := os.MkdirAll(b.st.P.BoardDir(bd.ID), 0o700); err != nil {
-		return model.Board{}, err
+		return model.Board{}, false, err
 	}
 	if err := store.WriteFileAtomic(b.st.P.BoardFile(bd.ID), []byte(EmptyScene), 0o644); err != nil {
-		return model.Board{}, err
+		return model.Board{}, false, err
 	}
 	// board.json last: a folder without it is not a board.
 	if err := b.save(bd); err != nil {
-		return model.Board{}, err
+		return model.Board{}, false, err
 	}
 	b.boards[bd.ID] = bd
-	return *bd, nil
+	return *bd, true, nil
 }
 
 // SceneAt returns a board's drawing and its revision. A known board with a missing file gives
@@ -339,7 +429,7 @@ func (b *Service) update(id string, f func(bd *model.Board) error) (model.Board,
 	if err != nil {
 		return model.Board{}, err
 	}
-	b.bridge.Broadcast(map[string]any{"type": "board", "board": next})
+	b.send(id, map[string]any{"type": "board", "board": next})
 	return next, nil
 }
 
@@ -409,7 +499,7 @@ func (b *Service) Delete(id string) error {
 	if err := b.remove(id); err != nil {
 		return err
 	}
-	b.bridge.Broadcast(map[string]any{"type": "board_removed", "id": id})
+	b.send(id, map[string]any{"type": "board_removed", "id": id})
 	return nil
 }
 

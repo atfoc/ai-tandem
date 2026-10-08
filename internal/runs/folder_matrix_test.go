@@ -16,6 +16,7 @@ import (
 	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // Git and folders: a run without git, a repository it cannot use, what a delete and an archive
@@ -486,6 +487,9 @@ func TestArchiveStopsRun(t *testing.T) {
 func TestRunFilesStayInRunFolder(t *testing.T) {
 	t.Parallel()
 	for _, keep := range []bool{false, true} {
+		if keep && !testset.Full() {
+			continue // a second whole run; TestKeepWorktrees has a run that keeps its worktrees
+		}
 		t.Run(fmt.Sprintf("git,keepWorktrees=%v", keep), func(t *testing.T) {
 			t.Parallel()
 			h := newMx(t, true)

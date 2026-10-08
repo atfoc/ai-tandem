@@ -220,6 +220,7 @@ func absent(t *testing.T, what string, v obj, keys ...string) {
 // ---- the flow -------------------------------------------------------------
 
 func TestForkAndBranchFlow(t *testing.T) {
+	t.Parallel()
 	sp := &flowSpawner{}
 	e := newEnv(t, func(s *Server) { s.App.Chats.Spawners[model.Claude] = sp })
 	evs := e.listen()
@@ -585,6 +586,7 @@ func (e *env) refusal(want int, path, body, code, text string) {
 }
 
 func TestMessagesTargetChoice(t *testing.T) {
+	t.Parallel()
 	e, chat, pi := choiceEnv(t)
 	msg := func(target string) string { return `{"text":"x","context":"","target":` + target + `}` }
 	const window = "the model's context window is too small for this conversation: Small takes 32000 tokens and the conversation holds about 20000; pick a larger model"
@@ -638,6 +640,7 @@ func TestMessagesTargetChoice(t *testing.T) {
 }
 
 func TestForkBodyChoice(t *testing.T) {
+	t.Parallel()
 	e, chat, pi := choiceEnv(t)
 	const window = "the model's context window is too small for this conversation: Small takes 32000 tokens and the conversation holds about 20000; pick a larger model"
 	chats := len(e.a.Chats.Views())

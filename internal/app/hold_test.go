@@ -78,6 +78,9 @@ func TestArchiveAndDeleteBoardLeaveNoHolder(t *testing.T) {
 // answer costs one wait, not one per board.
 func TestGroupArchiveAndDeleteFreeBoardsTogether(t *testing.T) {
 	const wait = 500 * time.Millisecond
+	// Set here and not in the subtests: the two wait at the same time, and the test itself is
+	// not parallel, so no other test of the package runs while the wait is short.
+	shortFreeWait(t, wait)
 	for _, tc := range []struct {
 		name string
 		do   func(e *env, group string) error
@@ -86,8 +89,8 @@ func TestGroupArchiveAndDeleteFreeBoardsTogether(t *testing.T) {
 		{"delete", func(e *env, group string) error { return e.a.DeleteGroup(group, true) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
-			shortFreeWait(t, wait)
 			e.page("P1")
 			g := e.group("G")
 			var bs []string

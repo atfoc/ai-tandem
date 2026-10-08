@@ -26,6 +26,7 @@ func decided(a *fakeAgent) []decision {
 // Two branches of a chat in a turn at once: each takes no message while it works, and each is
 // approved and stopped by its own name, the other one not touched. The chat's view counts them.
 func TestTwoBranchesBusyAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	evs := e.listen()
@@ -120,6 +121,7 @@ func TestTwoBranchesBusyAtOnce(t *testing.T) {
 // A subagent of a branch that is not the current one finishes: its result reaches that branch,
 // and the turn that carries it starts there. The current branch is not touched and stays current.
 func TestDeliveryToANonCurrentBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	sa, child := e.waiting(id)
@@ -198,6 +200,7 @@ func TestDeliveryToANonCurrentBranch(t *testing.T) {
 // right before that turn included, for every agent kind (liveFork). A point inside or after the
 // running turn is no point, and the source runs on.
 func TestBranchFromARunningSource(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
 		t.Run(string(kind), func(t *testing.T) {
 			e := newEnv(t)
@@ -316,6 +319,7 @@ func TestBranchFromARunningSource(t *testing.T) {
 // stopped, each on its own: reading one gives it its note and leaves the other as it is, and a
 // Send on one continues that one only.
 func TestRestartWithTwoInterruptedBranches(t *testing.T) {
+	t.Parallel()
 	const closed = "Stopped: the app was closed while the agent was working."
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
@@ -398,6 +402,7 @@ func TestRestartWithTwoInterruptedBranches(t *testing.T) {
 // same branch after every Send, also when Sends to several branches run at once, and a Send
 // that does not get onto its branch changes neither.
 func TestCurrentIsTheBranchLastSentTo(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	b1, _, a1 := e.branchTo(id, newAt(3), "one")
@@ -487,6 +492,7 @@ func TestCurrentIsTheBranchLastSentTo(t *testing.T) {
 // boundary right before that turn included, for every agent kind (liveFork). A point inside the
 // running turn is no point, its end is a session that is still going, and the source runs on.
 func TestForkFromARunningSource(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
 		t.Run(string(kind), func(t *testing.T) {
 			e := newEnv(t)
@@ -584,6 +590,7 @@ func TestForkFromARunningSource(t *testing.T) {
 // A fork records where it was made: the branch of its source and the point, in chat.json and in
 // its view. A chat that is no fork has neither, nor has a fork made before they were recorded.
 func TestForkOrigin(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 	for _, tc := range []struct {

@@ -26,7 +26,18 @@ import (
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/testset"
 )
+
+// TestMain lets GET /api/dirs wait a minute for git instead of the product's five seconds: on a
+// machine where many suites test at once one git start can take longer than that, and the answer
+// would be "not git" (TestDirsGit). It is set here, before any test runs, because the tests of
+// the package run in parallel. The tests of the runs start git, so git is the real one.
+func TestMain(m *testing.M) {
+	agenttest.FastGit()
+	dirsGitWait = time.Minute
+	os.Exit(m.Run())
+}
 
 // ---- a server with runs, on scripted agents ---------------------------------------------------
 
@@ -50,7 +61,21 @@ type runTestEvent struct {
 	Raw  string
 }
 
-func newRunEnv(t *testing.T) *runEnv {
+func newRunEnv(t *testing.T) *runEnv { return newRunEnvOn(t, nil) }
+
+// quickTicks is the wall clock with the engine's ticker (run_activity, every two seconds) at a
+// tenth of a second, for a test that waits for a tick. Every other wait is as long as it is.
+type quickTicks struct{ runs.RealClock }
+
+func (c quickTicks) After(d time.Duration) <-chan time.Time {
+	if d == 2*time.Second {
+		d = 100 * time.Millisecond
+	}
+	return c.RealClock.After(d)
+}
+
+// newRunEnvOn is newRunEnv with the run service on the clock given (nil is the wall clock).
+func newRunEnvOn(t *testing.T, clock runs.Clock) *runEnv {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "aiwb-srv-data")
 	st, err := store.Open(store.NewPaths(root))
@@ -71,7 +96,7 @@ func newRunEnv(t *testing.T) *runEnv {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	fake := agenttest.New(model.Claude)
-	rs := runs.New(runs.Deps{Store: st, Emit: br, DefaultCwd: cwd})
+	rs := runs.New(runs.Deps{Store: st, Emit: br, DefaultCwd: cwd, Clock: clock})
 	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds, Runs: rs, DefaultCwd: cwd, MCPURL: "http://localhost:6006/mcp",
 		Spawners: map[model.AgentKind]agent.Spawner{model.Claude: fake}})
 	if err := rs.Load(); err != nil {
@@ -279,6 +304,7 @@ func (e *runEnv) plan(hold chan struct{}) {
 
 // Create, patch and draft of a run that has not started, and what each refuses.
 func TestRunRoutesBeforeTheStart(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 
 	// Create.
@@ -376,6 +402,7 @@ func TestRunRoutesBeforeTheStart(t *testing.T) {
 
 // Every run route answers 404 for a run that does not exist.
 func TestRunRoutesOfAMissingRun(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	for _, c := range [][3]string{
 		{"GET", "", ""}, {"PATCH", "", `{"name":"x"}`}, {"DELETE", "", ""},
@@ -391,6 +418,7 @@ func TestRunRoutesOfAMissingRun(t *testing.T) {
 
 // A start that the folder forbids answers 409 with the sentence the view shows.
 func TestRunStartRefusals(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	v := e.newRun()
 	e.refused(400, "the goal is empty", "POST", "/api/runs/"+v.ID+"/start", `{"goal":"  "}`)
@@ -429,6 +457,7 @@ func TestRunStartRefusals(t *testing.T) {
 // One run from its start to its end through the routes: start, what a started run refuses, the
 // detail and what is read on demand, the snapshot, and delete.
 func TestRunRoutesOfAStartedRun(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	hold := make(chan struct{})
 	e.plan(hold)
@@ -560,6 +589,7 @@ func TestRunRoutesOfAStartedRun(t *testing.T) {
 // Stop, the answers while a run is stopping, resume, a limit that must be raised, and archive of
 // a run that works.
 func TestRunStopResumeAndLimit(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	// The first turn hangs; once it is interrupted it takes a moment to let go, so the run is
 	// seen stopping. From the second start on the script is the small run's.
@@ -643,6 +673,7 @@ func TestRunStopResumeAndLimit(t *testing.T) {
 // A chat a person opens on a run: made by POST /api/chats {agent, run}, listed with its run and
 // no group, told about the run with every message, archived and brought back with its run.
 func TestChatOnARunRoutes(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	var mu sync.Mutex
 	var seen []string
@@ -738,6 +769,7 @@ func TestChatOnARunRoutes(t *testing.T) {
 
 // A group's delete and archive reach its runs.
 func TestGroupCascadesOverRuns(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	group := func(name, parent string) string {
 		return decode[model.Group](t, e.expect(200, "POST", "/api/groups", fmt.Sprintf(`{"name":%q,"parent":%q}`, name, parent))).ID
@@ -810,7 +842,8 @@ func TestGroupCascadesOverRuns(t *testing.T) {
 // The chat events of a run's agent reach the client only after it read that chat's items; a new
 // connection follows nothing.
 func TestRunAgentEventsStartWithItsItems(t *testing.T) {
-	e := newRunEnv(t)
+	t.Parallel()
+	e := newRunEnvOn(t, quickTicks{})
 	said, next := make(chan struct{}, 8), make(chan struct{})
 	e.fake.Script(func(t *agenttest.Turn) {
 		t.Say("first")
@@ -882,6 +915,7 @@ func TestRunAgentEventsStartWithItsItems(t *testing.T) {
 // GET /api/dirs says whether a folder is inside a git work tree: a folder below the top level
 // counts, a folder that only holds something named .git does not.
 func TestDirsGit(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	repo := agenttest.NewRepo(t)
 	sub := filepath.Join(repo.Dir(), "pkg", "deep")
@@ -908,6 +942,7 @@ func TestDirsGit(t *testing.T) {
 // end of its own (aborted) before the process goes, and the text before it can be a whole result
 // block.
 func TestAbortedTurnAfterAStopIsNotAResult(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	wrote := make(chan struct{}, 8)
 	var mu sync.Mutex
@@ -995,6 +1030,7 @@ func TestAbortedTurnAfterAStopIsNotAResult(t *testing.T) {
 // POST /api/runs/{id}/apply and GET /api/runs/{id}/delivery: what they refuse, and what they
 // answer for a run without git, which has nothing to apply.
 func TestRunApplyRefusalsAndNoGit(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	e.refused(404, "no such run", "POST", "/api/runs/r_nope/apply", "")
 	e.refused(404, "no such run", "GET", "/api/runs/r_nope/delivery", "")
@@ -1070,6 +1106,8 @@ func (e *runEnv) planWriter() {
 // the dry run says the apply would work and changes nothing, an apply that names the wrong
 // branch is pending as an answer, and the apply brings the result into the folder.
 func TestRunApplyRoutes(t *testing.T) {
+	testset.SkipUnlessFull(t, "a whole run in a git folder, about 160 git processes; TestRunApplyRefusalsAndNoGit goes through both routes in the default set")
+	t.Parallel()
 	e := newRunEnv(t)
 	repo := agenttest.NewRepo(t)
 	repo.Write("README.md", "the project\n")
@@ -1141,6 +1179,8 @@ func TestRunApplyRoutes(t *testing.T) {
 // An apply that is not on the branch the run started on answers 200 with pending, other_branch:
 // an outcome, not an error.
 func TestRunApplyOnAnotherBranchIsAnAnswer(t *testing.T) {
+	testset.SkipUnlessFull(t, "a whole run in a git folder, about 140 git processes; TestRunApplyRefusalsAndNoGit goes through both routes in the default set")
+	t.Parallel()
 	e := newRunEnv(t)
 	repo := agenttest.NewRepo(t)
 	repo.Write("README.md", "the project\n")

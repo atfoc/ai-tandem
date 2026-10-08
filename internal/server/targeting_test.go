@@ -32,8 +32,7 @@ func typeOf(raw string) string {
 // what was sent before the call is in the lists, and the event of the mark is not.
 func (e *env) sent(pages ...*bridgetest.Page) [][]string {
 	e.t.Helper()
-	marks++
-	g, err := e.a.CreateGroup("mark "+strconv.Itoa(marks), "")
+	g, err := e.a.CreateGroup("mark "+strconv.FormatInt(marks.Add(1), 10), "")
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -123,6 +122,7 @@ func (e *env) working(sp *flowSpawner) (id string, a *fakeAgent) {
 // Every row of the event table whose sender is the app, the boards or the chat manager: who is
 // sent it, of a page that follows the chat and one that does not.
 func TestEventsOfAChatReachWhoTheyConcern(t *testing.T) {
+	t.Parallel()
 	e, sp := flowEnv(t)
 	f, o := e.page("F"), e.page("O")
 	step := func() (follower, other []string) {
@@ -199,6 +199,7 @@ func TestEventsOfAChatReachWhoTheyConcern(t *testing.T) {
 // A content event reaches a page only after its read, and after a reconnect only after a new
 // read.
 func TestContentOnlyAfterTheRead(t *testing.T) {
+	t.Parallel()
 	e, sp := flowEnv(t)
 	p := e.page("P")
 	id, a := e.working(sp)
@@ -242,6 +243,7 @@ func TestContentOnlyAfterTheRead(t *testing.T) {
 // Two pages that follow the same chats are sent the same events in the same order, whatever the
 // order the chats' agents work in.
 func TestTwoFollowersGetTheSameEventsInTheSameOrder(t *testing.T) {
+	t.Parallel()
 	e, sp := flowEnv(t)
 	p, q := e.page("P"), e.page("Q")
 	one, a := e.working(sp)
@@ -283,6 +285,7 @@ func TestTwoFollowersGetTheSameEventsInTheSameOrder(t *testing.T) {
 
 // A second page's connect leaves what the first page follows.
 func TestAConnectLeavesTheFollowsOfOthers(t *testing.T) {
+	t.Parallel()
 	e, sp := flowEnv(t)
 	p := e.page("P")
 	id, a := e.working(sp)
@@ -303,7 +306,8 @@ func TestAConnectLeavesTheFollowsOfOthers(t *testing.T) {
 // agent is in nobody's list: its view and its items go only to the page that read its items, and
 // a page that connects meanwhile takes nothing from it.
 func TestEventsOfARunReachWhoTheyConcern(t *testing.T) {
-	e := newRunEnv(t)
+	t.Parallel()
+	e := newRunEnvOn(t, quickTicks{}) // the test waits for a tick
 	said, next := make(chan struct{}, 8), make(chan struct{})
 	e.fake.Script(func(t *agenttest.Turn) {
 		t.Say("first")

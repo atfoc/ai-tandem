@@ -109,7 +109,7 @@ beforeEach(() => {
   fake.take = async () => ({ state: "held", rev: 0 }); fake.release = async () => ({ state: "handed" });
   for (const b of Object.keys(st().boards)) board.forgetBoard(b); // what a failed test left
   board.streamOpened();
-  store.setState({ boards: {}, roles: {}, dropped: {}, sceneGen: {}, sel: { board: null, run: null, chat: null } });
+  store.setState({ boards: {}, roles: {}, dropped: {}, sceneGen: {}, outage: {}, sel: { board: null, run: null, chat: null } });
 });
 test.after(() => { console.error = quiet; });
 
@@ -615,6 +615,252 @@ test("a take's `waiting` that arrives after the `held` event does not undo the g
   answer({ state: "waiting" });
   await taking;
   assert.equal(st().roles[b], "held");
+});
+
+// ---- a board on another server (Board.server): the outage and the return
+
+const away = (code = "server_unreachable") => { fake.saveScene = async () => { throw new ApiError(503, "Studio is not connected.", true, code); }; };
+/** A loaded board on the server s_1 this window holds, with one edit that the server's absence kept from being saved. */
+async function outage(rev: number, code?: string) {
+  const b = fresh(rev);
+  setBoard(b, { server: "s_1" });
+  store.setRole(b, "held");
+  await board.loadScene(b);
+  edit(b);
+  away(code);
+  await board.flush(b);
+  asked();
+  return b;
+}
+
+test("a save answered 503 keeps the edit and sets the outage, for either code", async () => {
+  for (const code of ["server_unreachable", "not_held_there"]) {
+    const b = await outage(3, code);
+    assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.has(b)], [true, "held", undefined, true]);
+    assert.equal(board.hasPendingSaves(), true);
+    edit(b); // the canvas stays in use: the next change is tried, and kept again
+    await board.flush(b);
+    assert.deepEqual(asked(), [`save ${b} on 3`]);
+    assert.deepEqual([st().outage[b], board.scenes.get(b).base], [true, 3]);
+    board.forgetBoard(b);
+    assert.equal(st().outage[b], undefined);
+  }
+});
+
+test("a save answered 504 (the link broke while it was on its way) keeps the edit and sets the outage", async () => {
+  const b = fresh(3);
+  setBoard(b, { server: "s_1" });
+  store.setRole(b, "held");
+  await board.loadScene(b);
+  edit(b);
+  fake.saveScene = async () => { throw new ApiError(504, "Studio did not answer.", true, "no_answer"); };
+  await board.flush(b);
+  assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.has(b)], [true, "held", undefined, true]);
+  assert.equal(board.hasPendingSaves(), true);
+  board.forgetBoard(b);
+  const l = await edited(3); // a local board: no banner
+  await board.flush(l);
+  assert.deepEqual([st().outage[l], board.hasPendingSaves()], [undefined, true]);
+  board.forgetBoard(l);
+});
+
+test("a 503 for a local board, and a save that got no answer, raise no banner", async () => {
+  const b = await edited(3);
+  away();
+  await board.flush(b);
+  assert.deepEqual([st().outage[b], board.hasPendingSaves()], [undefined, true]);
+  board.forgetBoard(b);
+  const r = fresh(3);
+  setBoard(r, { server: "s_1" });
+  store.setRole(r, "held");
+  await board.loadScene(r);
+  edit(r);
+  down();
+  await board.flush(r);
+  assert.deepEqual([st().outage[r], board.hasPendingSaves()], [undefined, true]);
+  board.forgetBoard(r);
+});
+
+test("`held` at the same revision saves the edit and clears the outage", async () => {
+  const b = await outage(3);
+  const writes: string[] = [];
+  up(writes);
+  board.granted(b, 3);
+  await tick(); await tick();
+  assert.deepEqual(asked(), [`save ${b} on 3`]);
+  assert.deepEqual(writes, [b]);
+  assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.get(b).base], [undefined, "held", undefined, 4]);
+  assert.equal(board.hasPendingSaves(), false);
+  board.forgetBoard(b);
+});
+
+test("`held` at another revision drops the edit with the outage notice", async () => {
+  const b = await outage(3);
+  const gen = st().sceneGen[b] ?? 0;
+  const writes: string[] = [];
+  up(writes);
+  board.granted(b, 5); // the board was changed on its server meanwhile
+  await tick(); await tick();
+  assert.deepEqual(asked(), []);
+  assert.deepEqual(writes, []);
+  assert.deepEqual([st().roles[b], st().dropped[b], st().outage[b]], ["held", true, undefined]);
+  assert.equal(board.droppedInOutage(b), true); // Canvas.tsx: droppedText(true, name)
+  assert.deepEqual([board.scenes.has(b), st().sceneGen[b]], [false, gen + 1]);
+  assert.equal(await aiwbFlush(), true);
+  board.forgetBoard(b);
+  assert.equal(board.droppedInOutage(b), false);
+});
+
+test("a drop with no outage keeps the plain notice, also after one with an outage", async () => {
+  const b = await outage(3);
+  board.granted(b, 5);
+  assert.equal(board.droppedInOutage(b), true);
+  store.setDropped(b, false);
+  fake.scene = stored(5);
+  await board.loadScene(b);
+  edit(b);
+  fake.saveScene = async () => { throw refusal("stale"); };
+  await board.flush(b);
+  assert.deepEqual([st().dropped[b], board.droppedInOutage(b)], [true, false]);
+  board.forgetBoard(b);
+});
+
+test("under an outage `stale` and `not_holder` drop the edit and clear the outage", async () => {
+  for (const code of ["stale", "not_holder"]) {
+    const b = await outage(3);
+    fake.saveScene = async () => { throw refusal(code); };
+    await board.flush(b);
+    assert.deepEqual([st().dropped[b], st().outage[b], board.scenes.has(b), st().roles[b]], [true, undefined, false, code === "stale" ? "held" : "other"]);
+    assert.equal(await aiwbFlush(), true);
+    board.forgetBoard(b);
+  }
+});
+
+test("superseded under an outage: the panel, and the edit is kept, unwritten, without the dropped text", async () => {
+  const b = await outage(3);
+  const writes: string[] = [];
+  up(writes);
+  board.boardLost(b); // the board's server answered `busy` at the return: the board is merely open there
+  assert.deepEqual([st().roles[b], st().dropped[b], board.scenes.has(b)], ["lost", undefined, true]); // TakeoverPanel: no DROPPED_TEXT
+  await board.flushAll();
+  await tick();
+  assert.deepEqual([asked(), writes], [[], []]); // a board that is not held is never written
+  assert.equal(await aiwbFlush(), true);
+  assert.equal(board.scenes.has(b), true);
+  board.forgetBoard(b);
+  assert.equal(st().outage[b], undefined);
+});
+
+test("superseded under an outage, then \"Use here\" at the same revision: the kept edit is saved, and the outage cleared", async () => {
+  const b = await outage(3);
+  board.boardLost(b);
+  const writes: string[] = [];
+  up(writes);
+  fake.take = async () => ({ state: "held", rev: 3 });
+  await board.takeBoard(b);
+  await tick(); await tick();
+  assert.deepEqual(asked(), [`take ${b}`, `save ${b} on 3`]);
+  assert.deepEqual(writes, [b]);
+  assert.deepEqual([st().roles[b], st().dropped[b], st().outage[b], board.scenes.get(b).base], ["held", undefined, undefined, 4]);
+  assert.equal(board.hasPendingSaves(), false);
+  board.forgetBoard(b);
+});
+
+test("superseded under an outage, then \"Use here\" at another revision: the kept edit is dropped with the outage notice", async () => {
+  const b = await outage(3);
+  board.boardLost(b);
+  const gen = st().sceneGen[b] ?? 0;
+  const writes: string[] = [];
+  up(writes);
+  fake.take = async () => ({ state: "waiting" });
+  await board.takeBoard(b);
+  assert.deepEqual([st().roles[b], st().dropped[b], board.scenes.has(b)], ["taking", undefined, true]);
+  board.granted(b, 5); // the `held` event: the board was drawn on at its server meanwhile
+  await tick(); await tick();
+  assert.deepEqual(asked(), [`take ${b}`]);
+  assert.deepEqual(writes, []);
+  assert.deepEqual([st().roles[b], st().dropped[b], st().outage[b]], ["held", true, undefined]);
+  assert.equal(board.droppedInOutage(b), true); // Canvas.tsx: droppedText(true, name)
+  assert.deepEqual([board.scenes.has(b), st().sceneGen[b]], [false, gen + 1]);
+  board.forgetBoard(b);
+});
+
+test("an edit kept at the loss stays kept when a take if free finds the board busy (server_back), and is saved at the grant", async () => {
+  const b = await outage(3);
+  board.boardLost(b);
+  store.setState({ sel: { board: b, run: null, chat: null } });
+  fake.take = async () => ({ state: "busy" });
+  board.serverBack("s_1");
+  await tick(); await tick();
+  assert.deepEqual(asked(), [`take if free ${b}`]);
+  assert.deepEqual([st().roles[b], st().dropped[b], board.scenes.has(b)], ["other", undefined, true]);
+  const writes: string[] = [];
+  up(writes);
+  board.granted(b, 3);
+  await tick(); await tick();
+  assert.deepEqual([writes, st().roles[b], st().outage[b]], [[b], "held", undefined]);
+  board.forgetBoard(b);
+});
+
+test("superseded with no outage drops the unsaved edit as before: a board on another server, and a local one that got a 503", async () => {
+  const r = fresh(3);
+  setBoard(r, { server: "s_1" });
+  store.setRole(r, "held");
+  await board.loadScene(r);
+  edit(r);
+  down(); // no answer at all: no outage
+  await board.flush(r);
+  board.boardLost(r);
+  assert.deepEqual([st().roles[r], st().dropped[r], st().outage[r], board.scenes.has(r)], ["lost", true, undefined, false]);
+  assert.equal(board.droppedInOutage(r), false);
+  board.forgetBoard(r);
+  const l = await edited(3);
+  away();
+  await board.flush(l);
+  board.boardLost(l);
+  assert.deepEqual([st().roles[l], st().dropped[l], board.scenes.has(l)], ["lost", true, false]);
+  board.forgetBoard(l);
+});
+
+test("a scene read answered 503 rejects with it, and keeps nothing", async () => {
+  const b = fresh();
+  setBoard(b, { server: "s_1" });
+  fake.scene = async () => { throw new ApiError(503, "Studio is not connected.", true, "server_unreachable"); };
+  await assert.rejects(board.loadScene(b), (e: any) => e instanceof ApiError && e.status === 503);
+  assert.equal(board.scenes.has(b), false);
+});
+
+test("server_back: the board on screen of that server is read again when no scene is kept, and asked for if free", async () => {
+  const b = fresh(3);
+  setBoard(b, { server: "s_1" });
+  store.setState({ sel: { board: b, run: null, chat: null } });
+  const gen = st().sceneGen[b] ?? 0;
+  fake.take = async () => ({ state: "held", rev: 3 });
+  board.serverBack("s_2"); // another server: nothing
+  assert.deepEqual([asked(), st().sceneGen[b] ?? 0], [[], gen]);
+  board.serverBack("s_1");
+  await tick(); await tick();
+  assert.deepEqual(asked(), [`take if free ${b}`]);
+  assert.deepEqual([st().sceneGen[b], st().roles[b]], [gen + 1, "held"]);
+  board.forgetBoard(b);
+});
+
+test("server_back: a kept scene is not read again, a held board not asked for, a board off screen and a local one left alone", async () => {
+  const b = await outage(3);
+  store.setState({ sel: { board: b, run: null, chat: null } });
+  const gen = st().sceneGen[b] ?? 0;
+  board.serverBack("s_1");
+  await tick();
+  assert.deepEqual([asked(), st().sceneGen[b] ?? 0, st().outage[b]], [[], gen, true]); // the `held` event of the return decides
+  store.setState({ sel: { board: null, run: null, chat: null } });
+  store.setRole(b, null);
+  board.serverBack("s_1");
+  assert.deepEqual(asked(), []);
+  board.forgetBoard(b);
+  const l = fresh();
+  store.setState({ sel: { board: l, run: null, chat: null } });
+  board.serverBack("local"); board.serverBack("s_1");
+  assert.deepEqual(asked(), []);
 });
 
 // ---- board tools: the server names the target and asks the window that holds it

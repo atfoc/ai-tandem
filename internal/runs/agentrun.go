@@ -365,7 +365,7 @@ func (e *engine) send(ctx context.Context, id, text string, o chats.OwnedSend) e
 
 // sent is send's wait for the result of SendOwned, which comes on errc (buffered).
 func (e *engine) sent(ctx context.Context, id string, errc <-chan error) error {
-	host := e.r.svc.Chats
+	host, grace := e.r.svc.Chats, e.r.svc.stopGrace
 	select {
 	case err := <-errc:
 		return err
@@ -380,14 +380,14 @@ func (e *engine) sent(ctx context.Context, id string, errc <-chan error) error {
 		select {
 		case err := <-errc:
 			return err
-		case <-time.After(engStopGrace):
+		case <-time.After(grace):
 		}
 		return ctx.Err()
 	}
 	host.StopOwned(id, 0)
 	select {
 	case <-errc:
-	case <-time.After(3 * engStopGrace):
+	case <-time.After(3 * grace):
 		log.Printf("runs: a message to agent chat %s of %s did not return after its process was closed", id, e.r.id)
 	}
 	return ctx.Err()

@@ -115,7 +115,7 @@ func (s *permSpawner) Spawn(agent.SpawnOptions) (agent.Agent, error) {
 // agent waits for the i-th process spawned.
 func (s *permSpawner) agent(t *testing.T, i int) *permAgent {
 	t.Helper()
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(waitLimit); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		s.mu.Lock()
 		if len(s.agents) > i {
 			a := s.agents[i]
@@ -131,6 +131,10 @@ func (s *permSpawner) agent(t *testing.T, i int) *permAgent {
 // ---- environment ----------------------------------------------------------
 
 const clientID = "A"
+
+// waitLimit is how long a test waits for something that must happen. It is an upper bound for a
+// machine that runs several test suites at once, not a time any test waits out.
+const waitLimit = 20 * time.Second
 
 type env struct {
 	t   *testing.T
@@ -212,7 +216,7 @@ func (e *env) connect() {
 	}()
 	select {
 	case <-active:
-	case <-time.After(2 * time.Second):
+	case <-time.After(waitLimit):
 		e.t.Fatal("client not active")
 	}
 }
@@ -282,6 +286,7 @@ func (e *env) chat(body string) model.ChatView {
 // ---- guard ----------------------------------------------------------------
 
 func TestBadHostIsForbidden(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	for _, method := range []string{"GET", "POST"} {
 		req, _ := http.NewRequest(method, e.url+"/api/state", nil)
@@ -308,6 +313,7 @@ func TestBadHostIsForbidden(t *testing.T) {
 }
 
 func TestMCPHandlerRoutesAndHost(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	const mcpPort = 6006
 	h := e.s.MCPHandler(mcpPort)
@@ -352,6 +358,7 @@ func TestMCPHandlerRoutesAndHost(t *testing.T) {
 }
 
 func TestMCPStatusRoute(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, func(s *Server) {
 		s.MCPPort = 6006
 		s.MCPURL = boardapi.MCPURL
@@ -433,6 +440,7 @@ func TestMCPStatusRoute(t *testing.T) {
 }
 
 func TestMutationsNeedAKnownClient(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	for _, client := range []string{"", "B"} {
 		code, out := e.doAs(client, "POST", "/api/boards", `{"group":"__ungrouped__"}`)
@@ -471,6 +479,7 @@ func TestMutationsNeedAKnownClient(t *testing.T) {
 }
 
 func TestHello(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	out := decode[map[string]any](t, e.expect(200, "GET", "/api/hello", ""))
 	if out["app"] != "ai-whiteboard" || out["version"] != version.Version || out["pid"] != float64(os.Getpid()) {
@@ -479,6 +488,7 @@ func TestHello(t *testing.T) {
 }
 
 func TestHelloWebVersion(t *testing.T) {
+	t.Parallel()
 	webVersion := func(e *env) any {
 		return decode[map[string]any](t, e.expect(200, "GET", "/api/hello", ""))["webVersion"]
 	}
@@ -506,6 +516,7 @@ func TestHelloWebVersion(t *testing.T) {
 }
 
 func TestRestart(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	e := newEnv(t, func(s *Server) { s.Restart = func() error { calls++; return nil } })
 	if code, out := e.doAs("B", "POST", "/api/restart", ""); code != 409 || calls != 0 {
@@ -520,6 +531,7 @@ func TestRestart(t *testing.T) {
 }
 
 func TestRestartBinaryMissing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, func(s *Server) {
 		s.Restart = func() error { return fmt.Errorf("%w: stat /x: no such file", ErrBinaryMissing) }
 	})
@@ -534,6 +546,7 @@ func TestRestartBinaryMissing(t *testing.T) {
 // ---- boards ---------------------------------------------------------------
 
 func TestCreateBoardAndSceneRoundTrip(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd := e.board(model.Ungrouped)
 	if _, err := os.Stat(e.st.P.BoardFile(bd.ID)); err != nil {
@@ -555,6 +568,7 @@ func TestCreateBoardAndSceneRoundTrip(t *testing.T) {
 // ---- error mapping --------------------------------------------------------
 
 func TestNotFound(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	for _, r := range [][3]string{
 		{"GET", "/api/boards/b_nope/scene", ""},
@@ -586,6 +600,7 @@ func TestNotFound(t *testing.T) {
 }
 
 func TestConflict(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 
 	// archived board and chat
@@ -623,6 +638,7 @@ func TestConflict(t *testing.T) {
 }
 
 func TestBadRequest(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd := e.board(model.Ungrouped)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
@@ -665,6 +681,7 @@ func TestBadRequest(t *testing.T) {
 // ---- other routes ---------------------------------------------------------
 
 func TestChatPatchRoutesFields(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	g := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"G"}`))
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
@@ -695,6 +712,7 @@ func TestChatPatchRoutesFields(t *testing.T) {
 }
 
 func TestGroupRoutesNestAndMove(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	a := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"A"}`))
 	b := decode[model.Group](t, e.expect(200, "POST", "/api/groups", `{"name":"B"}`))
@@ -720,6 +738,7 @@ func TestGroupRoutesNestAndMove(t *testing.T) {
 }
 
 func TestChatDraft(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
 	if code, _ := e.doAs("B", "PUT", "/api/chats/"+c.ID+"/draft?rev=0", `{"text":"x"}`); code != 409 {
@@ -756,6 +775,7 @@ func TestChatDraft(t *testing.T) {
 // has the new one, a save on another counter is refused with the stored counter and draft, and
 // a save that names none is refused.
 func TestChatDraftCounter(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
 	draft := "/api/chats/" + c.ID + "/draft"
@@ -816,6 +836,7 @@ func TestChatDraftCounter(t *testing.T) {
 }
 
 func TestChatContext(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
 	out := decode[map[string]string](t, e.expect(409, "GET", "/api/chats/"+c.ID+"/context", ""))
@@ -840,6 +861,7 @@ func TestChatContext(t *testing.T) {
 // asker is for the chat's own agent, so it is refused for a subagent's card (a page loaded before
 // answers named the asker).
 func TestChatPermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sp := &permSpawner{}
 	e.a.Chats.Spawners[model.Claude] = sp
@@ -857,7 +879,7 @@ func TestChatPermission(t *testing.T) {
 	cards := func(n int) []model.Item {
 		t.Helper()
 		var got []model.Item
-		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		for deadline := time.Now().Add(waitLimit); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 			got = nil
 			out := decode[struct{ Items []model.Item }](t, e.expect(200, "GET", "/api/chats/"+c.ID+"/items", ""))
 			for _, it := range out.Items {
@@ -915,6 +937,7 @@ func TestChatPermission(t *testing.T) {
 }
 
 func TestNoStaticClientWhenUnset(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	code, _ := e.do("GET", "/", "")
 	if code != 404 {
@@ -939,6 +962,7 @@ func (e *env) getClient(path string, hdr map[string]string) (*http.Response, str
 }
 
 func TestClientFilesRevalidateByContent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	js := filepath.Join(dir, "main.js")
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>v1</html>"), 0o644); err != nil {
@@ -1071,6 +1095,7 @@ func (e *env) exampleChat(tree string) string {
 }
 
 func TestChatTree(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.exampleChat(exTree)
 	// A GET: no client header needed.
@@ -1118,6 +1143,7 @@ func (e *env) branchedChat() string {
 }
 
 func TestChatItemsOfABranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.branchedChat()
 	type answer struct {
@@ -1202,6 +1228,7 @@ func TestChatItemsOfABranch(t *testing.T) {
 // A message goes to the current branch, and the MCP status lists a branch's agent under the
 // chat's id.
 func TestBranchedChatSendAndMCPStatus(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.branchedChat()
 	// The answer names the branch the message was put on: the current one.
@@ -1248,6 +1275,7 @@ func TestBranchedChatSendAndMCPStatus(t *testing.T) {
 }
 
 func TestChatLabel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.exampleChat(`{"branches":[{"id":"a1b2c3d4","from":"main","at":3}],"current":"a1b2c3d4"}`)
 	path := "/api/chats/" + id + "/label"
@@ -1355,6 +1383,7 @@ func TestChatLabel(t *testing.T) {
 // ---- usage ----------------------------------------------------------------
 
 func TestChatFork(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.exampleChat(exTree)
 	path := "/api/chats/" + id + "/fork"
@@ -1434,6 +1463,7 @@ func TestChatFork(t *testing.T) {
 }
 
 func TestChatSendWithTarget(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.exampleChat("")
 	path := "/api/chats/" + id + "/messages"
@@ -1587,6 +1617,7 @@ func TestChatSendWithTarget(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.expect(404, "GET", "/api/usage/claude", "") // no Usage set
 

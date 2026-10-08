@@ -32,6 +32,8 @@ export type Board = Archive & {
   group: string; // group id or UNGROUPED
   created: string;
   new?: boolean;
+  server?: string; // entry id of the server the board lives on; absent = this computer
+  gone?: boolean;  // no longer on its server
 };
 
 export type State = {

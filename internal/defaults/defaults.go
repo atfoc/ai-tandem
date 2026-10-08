@@ -46,6 +46,22 @@ func Agent(d model.Defaults, g, server string, usable []model.AgentKind) model.A
 	return ""
 }
 
+// Recorded reports what was chosen for a new chat in group g on server, in the group or in the
+// ungrouped group: agent, that an agent in usable (nil = all of AgentOrder) is stored, which is
+// then what Agent answers; choice, that a model is stored for a, which is then what Resolve starts
+// from. A run reads it: its chats start on what was chosen last, and on the run's own agent and
+// model only where nothing was.
+func Recorded(d model.Defaults, g, server string, a model.AgentKind, usable []model.AgentKind) (agent, choice bool) {
+	if usable == nil {
+		usable = AgentOrder
+	}
+	for _, sd := range []model.ServerDefaults{d.Groups[g].On(server), d.Groups[model.Ungrouped].On(server)} {
+		agent = agent || sd.Agent != "" && slices.Contains(usable, sd.Agent)
+		choice = choice || a != "" && sd.ByAgent[a].Model != ""
+	}
+	return agent, choice
+}
+
 // Resolve returns the folder, model and effort for a new chat of agent a in group g on server.
 // fallbackCwd is the server's default folder; cat is the agent's catalog (its Default is the last
 // resort). Whether the folder exists is checked for the local server only. a == "" gives the

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -103,29 +104,49 @@ func TestRunSetupCancel(t *testing.T) {
 }
 
 func TestRunSetupTimeout(t *testing.T) {
-	dir := t.TempDir()
-	start := time.Now()
-	err := RunSetup(bg, dir, "echo $$ > pids; sleep 300", nil, 300*time.Millisecond)
-	if took := time.Since(start); took > 1500*time.Millisecond {
-		t.Errorf("RunSetup took %s with a timeout of 300ms", took)
-	}
-	var se *SetupError
-	if !errors.As(err, &se) || !errors.Is(err, ErrSetupTimeout) || errors.Is(err, context.Canceled) ||
-		!strings.Contains(err.Error(), "timed out after 300ms") {
-		t.Errorf("RunSetup = %v, want a timeout", err)
-	}
-	for _, pid := range waitForPids(t, filepath.Join(dir, "pids"), 1) {
+	// The command has to be running when its time is up, or nothing shows that it was ended. On
+	// a busy machine the shell may not have started within 300ms: such a try proves less than
+	// the test is for, and it is made again with more time. What RunSetup returns, and when, is
+	// checked in every try.
+	timeouts := []time.Duration{300 * time.Millisecond, 1200 * time.Millisecond, 5 * time.Second, 20 * time.Second}
+	for i, timeout := range timeouts {
+		dir := t.TempDir()
+		start := time.Now()
+		err := RunSetup(bg, dir, "echo $$ > pids; sleep 300", nil, timeout)
+		// As in TestRunSetupCancel: a sleep that was being forked when the SIGTERM went to the
+		// group is ended by the SIGKILL that follows after the grace.
+		if took := time.Since(start); took > timeout+grace+1500*time.Millisecond {
+			t.Errorf("RunSetup took %s with a timeout of %s", took, timeout)
+		}
+		var se *SetupError
+		if !errors.As(err, &se) || !errors.Is(err, ErrSetupTimeout) || errors.Is(err, context.Canceled) ||
+			!strings.Contains(err.Error(), "timed out after "+timeout.String()) {
+			t.Errorf("RunSetup = %v, want a timeout after %s", err, timeout)
+		}
+		// RunSetup is back, so the shell is ended: what it wrote, it wrote before its time was up.
+		b, _ := os.ReadFile(filepath.Join(dir, "pids"))
+		pid, perr := strconv.Atoi(strings.TrimSpace(string(b)))
+		if perr != nil || !strings.HasSuffix(string(b), "\n") {
+			if i == len(timeouts)-1 {
+				t.Fatalf("the command had not written its process id after %s: %q", timeout, b)
+			}
+			t.Logf("the command had not started within %s (pids: %q): once more with %s", timeout, b, timeouts[i+1])
+			continue
+		}
 		if !gone(pid) {
 			t.Errorf("process %d is still alive", pid)
 			syscall.Kill(pid, syscall.SIGKILL)
 		}
+		return
 	}
 }
 
 // A command that ignores SIGTERM gets SIGKILL after the grace, with its children.
 func TestRunSetupKillsWhatIgnoresSIGTERM(t *testing.T) {
 	dir := t.TempDir()
-	ctx, cancel := context.WithCancel(bg)
+	// A shorter grace than the package's, so that the test does not wait two seconds.
+	const grace = 400 * time.Millisecond
+	ctx, cancel := context.WithCancel(withWaits(bg, waits{grace: grace}))
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {

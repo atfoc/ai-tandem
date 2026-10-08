@@ -39,17 +39,24 @@ export function onGrant(cache: Cache, rev: number): Step {
 const without = (role: BoardRole, cache: Cache): Step =>
   ({ role, forget: !!cache?.unsaved, flush: false, dropped: !!cache?.unsaved });
 
-/** `superseded`: the board went to another window, or the wait for it ended. */
-export const onLost = (cache: Cache): Step => without("lost", cache);
+/** The board is not this window's to write, and its edit waited for the board's server (a board on
+ *  another server, under an outage): the scene and the edit stay, since the board may only be open
+ *  on that server, unchanged. The next grant decides by the revision (onGrant). */
+const kept = (role: BoardRole): Step => ({ role, forget: false, flush: false, dropped: false });
+
+/** `superseded`: the board went to another window, or the wait for it ended. keep: the edit waited
+ *  for the board's server, see kept. */
+export const onLost = (cache: Cache, keep = false): Step => keep ? kept("lost") : without("lost", cache);
 
 /** The answer of a take, also of the one made if free after a reconnect. `held`: the grant.
  *  `busy` (only if free): another window holds the board. `waiting`: the holder was asked, and
  *  a `held` event follows; nothing is dropped until then. null: the answer changes nothing (a
- *  take if free that was overtaken by a take). */
-export function onTake(cache: Cache, a: TakeAnswer, role: BoardRole | null): Step | null {
+ *  take if free that was overtaken by a take). keep: the edit was kept at a loss (onLost), and a
+ *  `busy` keeps it on. */
+export function onTake(cache: Cache, a: TakeAnswer, role: BoardRole | null, keep = false): Step | null {
   switch (a.state) {
     case "held": return onGrant(cache, a.rev ?? 0);
-    case "busy": return role === "taking" ? null : without("other", cache);
+    case "busy": return role === "taking" ? null : keep ? kept("other") : without("other", cache);
     case "waiting": return { role: "taking", forget: false, flush: false, dropped: false };
   }
   return null;

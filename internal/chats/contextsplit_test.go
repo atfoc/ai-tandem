@@ -26,6 +26,7 @@ func wantCalls(t *testing.T, sp *fakeSpawner, live, reads int) {
 }
 
 func TestContextSplitNotStarted(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	for _, a := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
 		v := e.create(a, gOne, "")
@@ -39,6 +40,7 @@ func TestContextSplitNotStarted(t *testing.T) {
 }
 
 func TestContextSplitKeptUntilMessagesOrTurnsMove(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -82,6 +84,7 @@ func TestContextSplitKeptUntilMessagesOrTurnsMove(t *testing.T) {
 }
 
 func TestContextSplitPiKept(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Pi, gOne, "")
 	e.send(v.ID, "one", "")
@@ -112,6 +115,7 @@ func TestContextSplitPiKept(t *testing.T) {
 }
 
 func TestContextSplitDuringTurnNotKept(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -133,6 +137,7 @@ func TestContextSplitDuringTurnNotKept(t *testing.T) {
 }
 
 func TestContextSplitWithoutProcess(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gOne, false)
 	if err != nil {
@@ -166,6 +171,7 @@ func TestContextSplitWithoutProcess(t *testing.T) {
 }
 
 func TestContextSplitAfterInterruptedTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -183,6 +189,7 @@ func TestContextSplitAfterInterruptedTurn(t *testing.T) {
 }
 
 func TestContextSplitCursorNotKept(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Cursor, gOne, "")
 	e.send(v.ID, "one", "")
@@ -204,6 +211,7 @@ func TestContextSplitCursorNotKept(t *testing.T) {
 }
 
 func TestContextSplitSharedRun(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -243,6 +251,7 @@ func TestContextSplitSharedRun(t *testing.T) {
 // (after a restart) its split is read from its source's session cut at the fork point, as the
 // fork itself is started, and kept as the fork's own.
 func TestContextSplitOfUnsentFork(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, id := e.claudeFork()
 	srcSID := e.meta(src).SessionID
@@ -277,6 +286,7 @@ func TestContextSplitOfUnsentFork(t *testing.T) {
 // With no id to cut the source at, reading it would show whatever it holds by now: the split is
 // refused, and nothing is started. One kept from the fork's process is still returned.
 func TestContextSplitOfUnsentForkWithoutPoint(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, id := e.oldFork()
 	if s := e.split(id, false); s.Total != 1 { // the fork's process answers while it runs
@@ -305,6 +315,7 @@ func TestContextSplitOfUnsentForkWithoutPoint(t *testing.T) {
 // A fork whose first message was accepted has its own session, though it keeps its fork source
 // until that turn ends: its split is read from its own session, with or without a point.
 func TestContextSplitOfSentFork(t *testing.T) {
+	t.Parallel()
 	for _, point := range []bool{true, false} {
 		e := newEnv(t)
 		var id string
@@ -328,6 +339,7 @@ func TestContextSplitOfSentFork(t *testing.T) {
 
 // While the fork's process runs it answers itself, whatever the fork source.
 func TestContextSplitOfRunningFork(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, id := e.claudeFork()
 	e.split(id, true)

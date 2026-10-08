@@ -51,7 +51,7 @@ let source: { onmessage?: (e: { data: string }) => void; close(): void } | undef
 
 const stubs: Record<string, string> = {
   "board.ts": `export const runTool = async () => ({}); export const flushAll = async () => {}; export const forgetBoard = () => {};
-    export const boardLost = () => {}, granted = () => {}, handOver = async () => {}, streamOpened = () => {}, takeAfterSnapshot = () => {};`,
+    export const boardLost = () => {}, granted = () => {}, handOver = async () => {}, streamOpened = () => {}, takeAfterSnapshot = () => {}, serverBack = () => {};`,
   "version.ts": `export const checkVersion = async () => {};`,
   "api.ts": `
     const { fake, ask, save } = globalThis.__act;

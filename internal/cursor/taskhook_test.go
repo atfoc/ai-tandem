@@ -17,6 +17,7 @@ import (
 )
 
 func TestCwdSlug(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ in, want string }{
 		{"/Users/x/proj", "Users-x-proj"},
 		{"/tmp/ctd/ws", "tmp-ctd-ws"},
@@ -31,6 +32,7 @@ func TestCwdSlug(t *testing.T) {
 }
 
 func TestCursorDataDir(t *testing.T) {
+	t.Parallel()
 	s := &Spawner{AppRoot: filepath.Join("/Users/x", "store")}
 	if got, want := s.cursorDataDir(), filepath.Join("/Users/x", "cursor-acp"); got != want {
 		t.Fatalf("with AppRoot: %q, want %q", got, want)
@@ -49,9 +51,9 @@ func TestCursorDataDir(t *testing.T) {
 	}
 }
 
-func fakeCursorDataDir(t *testing.T) string {
+func (e *env) fakeCursorDataDir(t *testing.T) string {
 	t.Helper()
-	path := os.Getenv("FAKE_ACP_CURSOR_DATA_DIR")
+	path := e.fake.vars["FAKE_ACP_CURSOR_DATA_DIR"]
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read child CURSOR_DATA_DIR: %v", err)
@@ -148,7 +150,7 @@ func assertGuardMatcher(t *testing.T, doc hookFile, dataDir, cwd, appRoot, match
 
 func assertIsolatedHook(t *testing.T, e *env) {
 	t.Helper()
-	got := fakeCursorDataDir(t)
+	got := e.fakeCursorDataDir(t)
 	want := e.s.cursorDataDir()
 	if got != want {
 		t.Fatalf("CURSOR_DATA_DIR=%q, want %q", got, want)
@@ -203,6 +205,7 @@ func assertIsolatedHook(t *testing.T, e *env) {
 }
 
 func TestSpawnPlainIsolatesCursorDataDirAndWritesTaskHook(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{})
 	until(t, a, isKind(agent.EvCatalog))
@@ -210,6 +213,7 @@ func TestSpawnPlainIsolatesCursorDataDirAndWritesTaskHook(t *testing.T) {
 }
 
 func TestSpawnBoardIsolatesCursorDataDirAndWritesTaskHook(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{
 		MCP:     &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken},
@@ -220,6 +224,7 @@ func TestSpawnBoardIsolatesCursorDataDirAndWritesTaskHook(t *testing.T) {
 }
 
 func TestSpawnSubagentIsolatesCursorDataDirAndWritesTaskHook(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{Subagent: true})
 	until(t, a, isKind(agent.EvCatalog))
@@ -227,11 +232,12 @@ func TestSpawnSubagentIsolatesCursorDataDirAndWritesTaskHook(t *testing.T) {
 }
 
 func TestCatalogProbeDoesNotIsolate(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	if _, err := e.s.Catalog(10 * time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if got, parent := fakeCursorDataDir(t), os.Getenv("CURSOR_DATA_DIR"); got != parent {
+	if got, parent := e.fakeCursorDataDir(t), os.Getenv("CURSOR_DATA_DIR"); got != parent {
 		t.Fatalf("probe CURSOR_DATA_DIR=%q, parent has %q", got, parent)
 	}
 	hook := filepath.Join(e.s.cursorDataDir(), "projects", cwdSlug(os.TempDir()), ".cursor", "hooks.json")
@@ -244,6 +250,7 @@ func TestCatalogProbeDoesNotIsolate(t *testing.T) {
 // entries of every process, one that refuses every tool that changes files. A process that may
 // write and runs in the same folder keeps its file, whichever of the two starts last.
 func TestReadOnlyHookFileAndDataDir(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{})
 	until(t, a, isKind(agent.EvCatalog))
@@ -254,7 +261,7 @@ func TestReadOnlyHookFileAndDataDir(t *testing.T) {
 	if filepath.Base(ro) != "cursor-acp-ro" || filepath.Dir(ro) != filepath.Dir(e.s.cursorDataDir()) {
 		t.Fatalf("read-only data dir %q", ro)
 	}
-	if got := fakeCursorDataDir(t); got != ro {
+	if got := e.fakeCursorDataDir(t); got != ro {
 		t.Fatalf("CURSOR_DATA_DIR of the read-only process %q, want %q", got, ro)
 	}
 	if got := e.s.dataDir(true); got != ro {
@@ -296,12 +303,13 @@ func TestReadOnlyHookFileAndDataDir(t *testing.T) {
 // A run's orchestrator is read-only and unattended at once: it has the read-only entry and the
 // read-only data dir like any read-only process.
 func TestReadOnlyUnattendedHookFileAndDataDir(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{ReadOnly: true, Unattended: true})
 	until(t, a, isKind(agent.EvCatalog))
 
 	ro := e.s.cursorDataDir() + "-ro"
-	if got := fakeCursorDataDir(t); got != ro {
+	if got := e.fakeCursorDataDir(t); got != ro {
 		t.Fatalf("CURSOR_DATA_DIR %q, want %q", got, ro)
 	}
 	doc := readHooks(t, ro, e.cwd)
@@ -334,6 +342,7 @@ func hookPath(dataDir, cwd string) string {
 // obeys no hook when it reads the file empty. So a start that would write what is there leaves
 // the file alone, and one that changes it replaces it in one step: no reader sees it half-written.
 func TestHookFileIsNotRewritten(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{Unattended: true})
 	until(t, a, isKind(agent.EvCatalog))
@@ -388,6 +397,7 @@ func TestHookFileIsNotRewritten(t *testing.T) {
 }
 
 func TestHookFileIsNeverSeenEmpty(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cwd := filepath.Join(root, "work")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
@@ -458,6 +468,7 @@ func TestHookFileIsNeverSeenEmpty(t *testing.T) {
 // them has the app folder's base name in its path, the guard would refuse every call, so it is
 // left out. So it is when there is no app folder.
 func TestAppDirGuardLeftOut(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cases := []struct {
 		name          string
@@ -520,6 +531,7 @@ func TestAppDirGuardLeftOut(t *testing.T) {
 
 // The folder's name is one word of the shell command whatever it contains.
 func TestAppDirGuardQuotesTheName(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, base := range []string{"it's data $HOME `id`", "-e x", "a b; touch " + filepath.Join(root, "pwned")} {
 		s := &Spawner{AppRoot: filepath.Join(root, "apps", base)}
@@ -604,6 +616,7 @@ var (
 // The read-only matcher refuses every tool but the reading ones and the MCP tools: also a tool
 // nobody has heard of, and one whose name only begins or ends like an allowed one.
 func TestReadOnlyMatcher(t *testing.T) {
+	t.Parallel()
 	// The matcher is a JavaScript expression (Go's regexp has no lookahead), so its two parts are
 	// read out of it here; node, where there is one, evaluates it as Cursor does (below).
 	inner, ok := strings.CutPrefix(readOnlyMatcher, "^(?!(")
@@ -656,6 +669,7 @@ for (const m of ms) out[m] = ns.filter(n => new RegExp(m).test(n)); console.log(
 }
 
 func TestHookMatchersAsCursorEvaluatesThem(t *testing.T) {
+	t.Parallel()
 	var all []string
 	for _, group := range [][]string{seenReadTools, codeReadTools, seenOtherTools, codeOtherTools, mcpTools,
 		{"Edit", "StrReplace", "Reader", "XRead", "ReadLintsX", "mcp:get_run", "XMCP:get_run", "MCP", ""}} {
@@ -709,6 +723,7 @@ const chatHookFile = `{
 // so that a run's agent can write about a project that names the app's folder to the app's own
 // tools; the tools of other MCP servers keep the guard, where the server is known.
 func TestGuardLeavesOutTheAppsMCPTools(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cwd := filepath.Join(root, "work")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {

@@ -16,6 +16,7 @@ import (
 // AC30: the agent and the server are fixed for a fork, which has no message of its own, and for
 // a branch, at the routes. The chat is the worked example: started, idle, with one branch.
 func TestAgentAndServerAreFixedForAForkAndABranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.branchedChat()
 	chat := "/api/chats/" + id
@@ -66,8 +67,10 @@ func TestAgentAndServerAreFixedForAForkAndABranch(t *testing.T) {
 // a level below the minimum, or with none. Every way to put something on it or to start what
 // waits there is refused, and nothing is sent to it.
 func TestNothingStartsOnATooOldServer(t *testing.T) {
+	t.Parallel()
 	for name, level := range map[string]*int{"lower": standin.Level(servers.MinFeatureLevel - 1), "missing": nil} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newFar(t, farOpt{local: true})
 			p := f.page("P")
 			g := f.group(p, "Work", "")

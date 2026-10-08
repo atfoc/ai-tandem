@@ -47,7 +47,7 @@ test("the server choice lists this computer and every entry, and ends with Serve
   assert.deepEqual(got.options.map((o) => [o.id, o.label, !!o.disabled]), [["local", "This computer", false], ["s_1", "Studio", false], ["s_2", "Old", true]]);
   assert.ok(got.options[2].reason, "a disabled entry says why");
   // the component: the options with the reason as the note, the last item, and a fixed chip in place of the choice
-  assert.ok(/const \{ options, fixed \} = serverChoice\(servers, c\);/.test(choices), "ServerPick lists serverChoice");
+  assert.ok(/const \{ options, fixed \} = serverChoice\(servers, c, useBoardServer\(c\)\);/.test(choices), "ServerPick lists serverChoice");
   assert.ok(choices.includes("options={options.map((o) => ({ id: o.id, label: o.label, note: o.reason, disabled: o.disabled }))}"));
   assert.ok(choices.includes('more={{ label: "Servers…", onClick: () => openServers() }}'));
   assert.ok(choices.includes("if (fixed) return <span className={`tchip static server-chip ${w.connected ? \"\" : \"off\"}`} title={`Server — ${fixed}`}>{w.name}</span>;"));

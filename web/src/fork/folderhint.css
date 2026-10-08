@@ -1,5 +1,3 @@
-/* The agents working in a folder: beside the composer's folder, and in the tree popup's foot. Quiet:
-   it tells, it does not warn. */
-.tchip.folder-agents { gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.tchip.folder-agents::before, .fk-folder-agents::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+/* The agents working in a folder: in the tree popup's foot. Quiet: it tells, it does not warn. */
+.fk-folder-agents::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
 .fk-folder-agents { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-variant-numeric: tabular-nums; }

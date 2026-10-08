@@ -59,6 +59,7 @@ func (e *env) carrying(id string) []string {
 // result's row ahead of the user item, the records sent on disk before the agent has the message.
 // The turn is the human's in everything else, and the results go out once.
 func TestHumanSendCarriesOwedResults(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, owed, running, runner := e.heldResult(model.Claude)
 	e.clock.Store(testNow + 10)
@@ -156,6 +157,7 @@ func TestHumanSendCarriesOwedResults(t *testing.T) {
 // With nothing owed a human message is the blocks it always was, and starts no carrying turn:
 // results already delivered, given to the agent by a stop it asked for, or never owed add nothing.
 func TestHumanSendWithNothingOwed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	e.spawn(id, SpawnSubRequest{Prompt: "delivered"})
@@ -190,6 +192,7 @@ func TestHumanSendWithNothingOwed(t *testing.T) {
 // between it and the human's text, also behind the whiteboard instructions of Cursor's first
 // message.
 func TestHumanSendCarryOnBoardChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("Arch", gOne, false)
 	if err != nil {
@@ -251,6 +254,7 @@ func TestHumanSendCarryOnBoardChat(t *testing.T) {
 // A turn of the human's that carries results is settled as a turn the app started is: by its first
 // model output, or else by how it ends.
 func TestHumanCarryingTurnSettled(t *testing.T) {
+	t.Parallel()
 	interrupt := func(end agent.Event) func(t *testing.T, e *env, id string, parent *fakeAgent) bool {
 		return func(t *testing.T, e *env, id string, parent *fakeAgent) bool {
 			t.Helper()
@@ -303,6 +307,7 @@ func TestHumanCarryingTurnSettled(t *testing.T) {
 		{"interrupt, clean end", model.Claude, interrupt(agent.Event{Kind: agent.EvTurnEnd}), model.SubOwed, true, backstopNote},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			id, parent, owed, _, _ := e.heldResult(tc.kind)
 			e.send(id, "go on", "")
@@ -348,6 +353,7 @@ func TestHumanCarryingTurnSettled(t *testing.T) {
 // the message is not rolled back, as always. The results are owed again after one failed attempt:
 // the next human message does not carry them, and they go out once at that turn's clean end.
 func TestRefusedHumanSendThatCarries(t *testing.T) {
+	t.Parallel()
 	const rejected = "pi rejected the prompt: no model"
 	refuse := func(t *testing.T, e *env, id string, parent *fakeAgent, owed model.Subagent, cause string) {
 		t.Helper()
@@ -449,6 +455,7 @@ func TestRefusedHumanSendThatCarries(t *testing.T) {
 // it, once. A subagent that Shutdown stopped, and one still marked running on disk that loading
 // marks stopped, are never carried.
 func TestOwedResultAcrossRestart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent() // mid-turn
 	owed := e.spawn(id, SpawnSubRequest{Prompt: "finishes"})
@@ -532,6 +539,7 @@ func TestOwedResultAcrossRestart(t *testing.T) {
 // Shutdown holds every chat: what the closing process still says starts no turn, so a result owed
 // at shutdown is still owed, with nothing counted against it, when the app starts again.
 func TestShutdownStartsNoDelivery(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, owed, _, _ := e.pendingParent()
 	e.m.Shutdown()
@@ -550,6 +558,7 @@ func TestShutdownStartsNoDelivery(t *testing.T) {
 
 // A crash while a carrying turn runs leaves its results as sent: nothing is delivered twice.
 func TestCrashDuringCarryingTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _, carried, _, _ := e.delivering(model.Claude)
 	e.boot() // no Shutdown: the records and the thread are as the running app last wrote them
@@ -568,6 +577,7 @@ func TestCrashDuringCarryingTurn(t *testing.T) {
 // An archived chat keeps what it is owed. It takes no message; once it is unarchived the next
 // message carries the results.
 func TestArchivedChatKeepsOwedResults(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, owed, _, _ := e.pendingParent()
 	e.m.Stop(id)

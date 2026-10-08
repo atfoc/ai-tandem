@@ -232,6 +232,7 @@ func sameRoutes(t *testing.T, what string, mux, table []string, one func(string)
 // route that is added to the mux without a row here would reach the run service for a record,
 // which knows no such run.
 func TestRunRecordRoutesAreTheRunRoutesOfTheMux(t *testing.T) {
+	t.Parallel()
 	s := newEnv(t).s
 	sameRoutes(t, "run", s.routes().patterns, s.runRecordRoutes().patterns, runRoute, 19)
 }
@@ -239,12 +240,14 @@ func TestRunRecordRoutesAreTheRunRoutesOfTheMux(t *testing.T) {
 // The table of the routes of a run agent's chat holds exactly the routes the mux has for one
 // chat: one without a row would reach the chat manager, which knows no such chat.
 func TestRunAgentRoutesAreTheChatRoutesOfTheMux(t *testing.T) {
+	t.Parallel()
 	s := newEnv(t).s
 	sameRoutes(t, "chat", s.routes().patterns, s.runAgentRoutes().patterns, chatRoute, 17)
 }
 
 // Each row of the run record's table: what the stand-in gets, and what the page gets.
 func TestRunRecordRoutes(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{runs: []model.RunView{runThere(runA), runThere(runB)}})
 	p, other := f.page("P"), f.page("Q")
 	g := f.group(p, "Work", "")
@@ -429,6 +432,7 @@ func TestRunRecordRoutes(t *testing.T) {
 // Each row of the table of a run agent's chat: the reads are passed on as they came, the page
 // that read follows the chat, and every other route is refused with nothing sent.
 func TestRunAgentRoutes(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(recA)}, runs: []model.RunView{runThere(runA)}})
 	p, other := f.page("P"), f.page("Q")
 	at := "/api/chats/" + agentA
@@ -483,6 +487,8 @@ func TestRunAgentRoutes(t *testing.T) {
 	if evs = f.events(p); len(evs[0]) != 0 {
 		t.Fatalf("after the unfollow the page got %v", evs[0])
 	}
+	// The relay makes the unfollow call on its own: it is there before what must send nothing.
+	f.wait("the stand-in is told of the unfollow", func() bool { return len(f.sent("POST /api/chats/{id}/unfollow")) == 1 })
 
 	// Everything else is refused here: the chat is a run's agent's.
 	bodies := map[string]string{
@@ -529,6 +535,7 @@ func TestRunAgentRoutes(t *testing.T) {
 
 // A call that cannot be made, per case of the design's table, through the routes.
 func TestRunCallsThatCannotBeMade(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{runs: []model.RunView{runThere(runA), runThere(runB)},
 		limits: remotes.Limits{Call: 300 * time.Millisecond, Start: 300 * time.Millisecond, RunDelete: 300 * time.Millisecond}})
 	p := f.page("P")
@@ -600,6 +607,7 @@ func TestRunCallsThatCannotBeMade(t *testing.T) {
 // On the remote listener a run record's id and the id of an agent's chat are nobody's: this
 // server passes nothing on for its API clients, and tells them nothing of the record.
 func TestRemoteListenerPassesNoRunOn(t *testing.T) {
+	t.Parallel()
 	l := newListener(t)
 	f := newFar(t, farOpt{runs: []model.RunView{runThere(runA)}, with: []func(*Server){l.set}})
 	l.serve(f.s)
@@ -657,6 +665,7 @@ func TestRemoteListenerPassesNoRunOn(t *testing.T) {
 // The known-client rule holds for the routes of both tables: a call that is no read, from a
 // client without an open stream, is refused before the table and reaches no server.
 func TestRunRecordRoutesNeedAKnownClient(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{runs: []model.RunView{runThere(runA)}})
 	p := f.page("P")
 	f.learnAgent(p, runA, agentA)
@@ -684,6 +693,7 @@ func TestRunRecordRoutesNeedAKnownClient(t *testing.T) {
 // The start route: a remote draft's start is the relay's start call, a record's is answered
 // here, and a draft of this server starts as before.
 func TestStartOfARunOnAnotherServer(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{local: true})
 	p := f.page("P")
 	g := f.group(p, "Work", "")
@@ -787,6 +797,7 @@ func TestStartOfARunOnAnotherServer(t *testing.T) {
 // The start call is not ended by the page that asked: the page leaves while the other server
 // works, and the run is a record all the same.
 func TestStartOutlivesThePageThatAsked(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{local: true})
 	p := f.page("P")
 	d := f.remoteDraft(p, model.Ungrouped)
@@ -830,6 +841,7 @@ func TestStartOutlivesThePageThatAsked(t *testing.T) {
 // The errors of a draft run's server and of a chat on such a run have their statuses and codes,
 // in the table and through the routes.
 func TestRunServerErrors(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		err    error
 		status int
@@ -905,6 +917,7 @@ func TestRunServerErrors(t *testing.T) {
 // of the run tells nothing, and the run's event puts the record in its place; with a read that
 // says "no such run" the mark is cleared, and the event still makes the swap.
 func TestRunStartThatEndsAfterTheSnapshot(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{local: true, limits: remotes.Limits{Start: 200 * time.Millisecond, Settle: 200 * time.Millisecond}})
 	p := f.page("P")
 	g := f.group(p, "Work", "")
@@ -1024,6 +1037,7 @@ func TestRunStartThatEndsAfterTheSnapshot(t *testing.T) {
 // deleted: 409 busy. A rename and the goal's draft text stay free. When the other server
 // answers, the run is one record and no draft.
 func TestRunChangedWhileItsStartIsMade(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{local: true})
 	p := f.page("P")
 	g := f.group(p, "Work", "")
@@ -1089,6 +1103,7 @@ func TestRunChangedWhileItsStartIsMade(t *testing.T) {
 // Removing an entry removes the unstarted chats people made on its runs with them: such a chat
 // would be a chat on no run.
 func TestEntryRemovalTakesTheChatsOnItsRuns(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{runs: []model.RunView{runThere(runA)}})
 	p := f.page("P")
 	c := decode[model.ChatView](t, mustOK(t, f, p, "POST", "/api/chats", form("run", runA)))
@@ -1124,6 +1139,7 @@ func TestEntryRemovalTakesTheChatsOnItsRuns(t *testing.T) {
 // it: the records go with the group, an unarchive of one record brings its groups back, and a
 // delete with the server away deletes nothing (AC33).
 func TestGroupRoutesWithRunRecords(t *testing.T) {
+	t.Parallel()
 	onRun := viewThere(recA)
 	onRun.Run, onRun.Group = runA, ""
 	f := newFar(t, farOpt{chats: []model.ChatView{onRun}, runs: []model.RunView{runThere(runA), runThere(runB)}})
@@ -1206,6 +1222,7 @@ func TestGroupRoutesWithRunRecords(t *testing.T) {
 // every one a page got when the test ends. This test makes the calls whose answers are built
 // from the entry.
 func TestRunAnswersHoldNoSecret(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{runs: []model.RunView{runThere(runA)}})
 	p := f.page("P")
 	f.learnAgent(p, runA, agentA)

@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"ai-whiteboard/internal/testset"
 )
 
 // The tests of Deliver. Each works on a person's repository of its own under t.TempDir(): three
@@ -34,17 +36,34 @@ var baseFiles = map[string]string{"a.txt": "one\ntwo\nthree\n", "keep.txt": "kee
 // resultFiles is what the run of newDelivery wrote.
 var resultFiles = map[string]string{"a.txt": "ONE\ntwo\nthree\n", "new.txt": "new\n", "sub/deep.txt": "deep\n"}
 
+var (
+	deliveryTemplate template
+	deliveryCommits  [2]string // the base and the result of deliveryTemplate
+)
+
+// variant is called first in a subtest that is one more case of something the default set of
+// tests already has in the subtests named in covered. Deliver is some dozens of git commands,
+// and so is each look at what it left, so such a case runs in the full set only.
+func variant(t *testing.T, covered string) {
+	t.Helper()
+	testset.SkipUnlessFull(t, "one more case of what the default set has in: "+covered)
+}
+
 func newDelivery(t *testing.T) *delivery {
 	t.Helper()
-	dir := initRepo(t, true)
-	for name, content := range baseFiles {
-		write(t, dir, name, content)
-	}
-	git(t, dir, "add", "-A")
-	git(t, dir, "commit", "-q", "-m", "init")
-	f := &delivery{t: t, root: resolve(dir)}
-	f.base = git(t, f.root, "rev-parse", "HEAD")
-	f.result = runResult(t, f.root, "r1", f.base, resultFiles)
+	dir := deliveryTemplate.copyOf(t, func(t *testing.T, dir string) {
+		initIn(t, dir, true)
+		for name, content := range baseFiles {
+			write(t, dir, name, content)
+		}
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", "init")
+		base := git(t, dir, "rev-parse", "HEAD")
+		// The work tree of the run goes next to the template and is removed again: nothing in
+		// the repository names the place it was made in.
+		deliveryCommits = [2]string{base, runResult(t, dir, "r1", base, resultFiles)}
+	})
+	f := &delivery{t: t, root: resolve(dir), base: deliveryCommits[0], result: deliveryCommits[1]}
 	f.req = DeliverReq{Folder: f.root, Base: f.base, Result: f.result, StartBranch: "main", Auto: true,
 		Scratch: sibling(f.root, "r1/apply"), Message: `Merge run "one" (r1)`}
 	return f
@@ -93,12 +112,21 @@ func status(t *testing.T, dir string) string {
 func checkoutState(t *testing.T, root string) string {
 	t.Helper()
 	var b strings.Builder
-	branch, _, _ := runGit(bg, gitEnv(hermetic), root, "symbolic-ref", "-q", "HEAD")
-	fmt.Fprintf(&b, "HEAD %s (%s)\n", git(t, root, "rev-parse", "HEAD"), branch)
+	// One git command for HEAD, where the files of an operation are, and the branch (the last
+	// line: "HEAD" when the head is detached).
+	args := []string{"rev-parse", "HEAD"}
+	for _, name := range busyFiles {
+		args = append(args, "--git-path", name)
+	}
+	lines := strings.Split(git(t, root, append(args, "--symbolic-full-name", "HEAD")...), "\n")
+	if len(lines) != len(busyFiles)+2 {
+		t.Fatalf("git rev-parse printed %q", lines)
+	}
+	fmt.Fprintf(&b, "HEAD %s (%s)\n", lines[0], strings.TrimPrefix(lines[len(lines)-1], "HEAD"))
 	b.WriteString("status:\n" + rawGit(t, root, "status", "--porcelain", "--ignored"))
 	b.WriteString("index:\n" + rawGit(t, root, "ls-files", "--stage"))
-	for _, name := range busyFiles {
-		path := absIn(root, git(t, root, "rev-parse", "--git-path", name))
+	for i, name := range busyFiles {
+		path := absIn(root, lines[i+1])
 		if data, err := os.ReadFile(path); err == nil {
 			fmt.Fprintf(&b, "%s: %q\n", name, data)
 		} else if exists(path) {
@@ -139,8 +167,11 @@ func checkoutState(t *testing.T, root string) string {
 func folderState(t *testing.T, root string) string {
 	t.Helper()
 	return checkoutState(t, root) + "refs:\n" + git(t, root, "for-each-ref", "--format=%(refname) %(objectname)") +
-		"\nworktrees:\n" + git(t, root, "worktree", "list", "--porcelain") + "\n"
+		worktreesMark + git(t, root, "worktree", "list", "--porcelain") + "\n"
 }
+
+// worktreesMark is what comes before the list of work trees, the last part of a folderState.
+const worktreesMark = "\nworktrees:\n"
 
 // deliver is Deliver with the request of f.
 func (f *delivery) deliver() Delivery {
@@ -163,19 +194,27 @@ func same(t *testing.T, what string, got, want Delivery) {
 // unchanged fails the test when the folder or its repository is not as before.
 func (f *delivery) unchanged(what, before string) {
 	f.t.Helper()
-	if after := folderState(f.t, f.root); after != before {
+	after := folderState(f.t, f.root)
+	if after != before {
 		f.t.Errorf("%s changed the folder:\n--- before\n%s\n--- after\n%s", what, before, after)
 	}
-	f.noScratch()
+	_, list, _ := strings.Cut(after, worktreesMark) // the list git just printed: not asked for twice
+	f.noScratchIn(list)
 }
 
 // noScratch fails the test when a scratch work tree is left, as a folder or on git's record.
 func (f *delivery) noScratch() {
 	f.t.Helper()
+	f.noScratchIn(git(f.t, f.root, "worktree", "list", "--porcelain"))
+}
+
+// noScratchIn is noScratch with list as what git worktree list --porcelain prints.
+func (f *delivery) noScratchIn(list string) {
+	f.t.Helper()
 	if exists(f.req.Scratch) {
 		f.t.Errorf("the scratch folder %s is left", f.req.Scratch)
 	}
-	if list := git(f.t, f.root, "worktree", "list", "--porcelain"); strings.Contains(list, "apply") {
+	if strings.Contains(list, "apply") {
 		f.t.Errorf("a scratch work tree is still on record:\n%s", list)
 	}
 }
@@ -295,6 +334,9 @@ func TestDeliverKeepsLocalChangesItDoesNotTouch(t *testing.T) {
 	t.Parallel()
 	for _, how := range []string{"ff", "merge"} {
 		t.Run(how, func(t *testing.T) {
+			if how != "ff" {
+				variant(t, "ff")
+			}
 			t.Parallel()
 			f := newDelivery(t)
 			if how == "merge" {
@@ -355,6 +397,9 @@ func TestDeliverLocalChangesBlock(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if c.name != "unstaged" && c.name != "staged" {
+				variant(t, "unstaged and staged")
+			}
 			t.Parallel()
 			f := newDelivery(t)
 			c.setup(f)
@@ -381,6 +426,7 @@ func TestDeliverLocalChangesThatGitAccepts(t *testing.T) {
 		f.files(resultFiles)
 	})
 	t.Run("staged identical, then edited again", func(t *testing.T) {
+		variant(t, "staged, identical to the result")
 		t.Parallel()
 		f := newDelivery(t)
 		write(t, f.root, "a.txt", resultFiles["a.txt"])
@@ -428,6 +474,9 @@ func TestDeliverUntrackedFilesBlock(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if c.name != "a file" {
+				variant(t, "a file")
+			}
 			t.Parallel()
 			f := newDelivery(t)
 			c.setup(f)
@@ -485,6 +534,7 @@ func TestDeliverIgnoredFilesBlock(t *testing.T) {
 		f.files(map[string]string{"new.txt": "my secret, ignored\n"})
 	})
 	t.Run("ignored by a committed .gitignore", func(t *testing.T) {
+		variant(t, "file")
 		t.Parallel()
 		f := newDelivery(t)
 		write(t, f.root, ".gitignore", "*.env\n")
@@ -498,6 +548,7 @@ func TestDeliverIgnoredFilesBlock(t *testing.T) {
 		f.files(map[string]string{"prod.env": "my secret, ignored\n"})
 	})
 	t.Run("folder", func(t *testing.T) {
+		variant(t, "file")
 		t.Parallel()
 		f := newDelivery(t)
 		write(t, f.root, ".git/info/exclude", "new.txt\n")
@@ -541,14 +592,20 @@ func TestDeliverDetachedHead(t *testing.T) {
 		t.Parallel()
 		f := detached(t)
 		f.req.Auto = false
-		f.refuses(Delivery{State: "pending", Reason: "other_branch"})
-		f.req.Branch = "main"
-		f.refuses(Delivery{State: "pending", Reason: "other_branch"})
+		// No branch named, and another one named: the default set has both in
+		// TestDeliverLookingAtTheResult, and here what only this subtest has, a detached HEAD
+		// that is named.
+		if testset.Full() {
+			f.refuses(Delivery{State: "pending", Reason: "other_branch"})
+			f.req.Branch = "main"
+			f.refuses(Delivery{State: "pending", Reason: "other_branch"})
+		}
 		f.req.Branch = "HEAD"
 		f.applies("ff")
 		check(t, f)
 	})
 	t.Run("the run started detached and the folder is on a branch now", func(t *testing.T) {
+		variant(t, "the two automatic ones")
 		t.Parallel()
 		f := newDelivery(t)
 		f.req.StartBranch = ""
@@ -565,6 +622,7 @@ func TestDeliverDetachedHead(t *testing.T) {
 func TestDeliverOtherBranch(t *testing.T) {
 	t.Parallel()
 	t.Run("diverged", func(t *testing.T) {
+		variant(t, "at the base")
 		t.Parallel()
 		f := newDelivery(t)
 		git(t, f.root, "checkout", "-q", "-b", "feature")
@@ -695,7 +753,12 @@ func TestDeliverFolderOrRepositoryGone(t *testing.T) {
 	t.Run("the result is gone", func(t *testing.T) {
 		t.Parallel()
 		f := newDelivery(t)
-		for _, result := range []string{strings.Repeat("0123456789", 4), "aiwb/r9/integration", "", "--force"} {
+		results := []string{strings.Repeat("0123456789", 4), "aiwb/r9/integration", "", "--force"}
+		if !testset.Full() {
+			// One name of what is not there, and the one that git would take for an option.
+			results = []string{results[0], "--force"}
+		}
+		for _, result := range results {
 			f.req.Result = result
 			f.refuses(Delivery{State: "blocked", Reason: "result_missing"})
 		}
@@ -707,6 +770,7 @@ func TestDeliverFolderOrRepositoryGone(t *testing.T) {
 		f.refuses(Delivery{State: "blocked", Reason: "result_missing"})
 	})
 	t.Run("the result's branch is deleted, the commit is still there", func(t *testing.T) {
+		variant(t, "the folder is gone, the folder is another repository now and the result is gone")
 		t.Parallel()
 		f := newDelivery(t)
 		git(t, f.root, "branch", "-D", "aiwb/r1/integration")
@@ -716,6 +780,7 @@ func TestDeliverFolderOrRepositoryGone(t *testing.T) {
 
 // Row "A second run was applied first": the merge outside, or a conflict.
 func TestDeliverAfterAnotherRun(t *testing.T) {
+	testset.SkipUnlessFull(t, "three deliveries in a row; TestDeliverFastForward, TestDeliverMergesWithOwnCommits and TestDeliverConflict have one each")
 	t.Parallel()
 	f := newDelivery(t)
 	f.applies("ff")
@@ -823,6 +888,9 @@ func TestDeliverBusy(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if c.name != "a merge with unmerged files" && c.name != "an interactive rebase paused at edit" {
+				variant(t, "a merge with unmerged files and an interactive rebase paused at edit")
+			}
 			t.Parallel()
 			f := newDelivery(t)
 			c.setup(t, f)
@@ -880,6 +948,7 @@ func TestDeliverIntoALinkedWorktree(t *testing.T) {
 		check(t, f, main, mainState)
 	})
 	t.Run("merge", func(t *testing.T) {
+		variant(t, "fast-forward")
 		t.Parallel()
 		f, main, mainState := linked(t)
 		write(t, f.root, "own.txt", "own\n")
@@ -890,6 +959,7 @@ func TestDeliverIntoALinkedWorktree(t *testing.T) {
 		check(t, f, main, mainState)
 	})
 	t.Run("busy", func(t *testing.T) {
+		variant(t, "fast-forward")
 		t.Parallel()
 		f, main, mainState := linked(t)
 		git(t, f.root, "revert", "--no-commit", "HEAD")
@@ -897,6 +967,7 @@ func TestDeliverIntoALinkedWorktree(t *testing.T) {
 		check(t, f, main, mainState)
 	})
 	t.Run("an operation in the main work tree is not the folder's", func(t *testing.T) {
+		variant(t, "fast-forward")
 		t.Parallel()
 		f, main, _ := linked(t)
 		write(t, main, "keep.txt", baseFiles["keep.txt"])
@@ -906,6 +977,7 @@ func TestDeliverIntoALinkedWorktree(t *testing.T) {
 		check(t, f, main, mainState)
 	})
 	t.Run("local changes", func(t *testing.T) {
+		variant(t, "fast-forward")
 		t.Parallel()
 		f, main, mainState := linked(t)
 		write(t, f.root, "new.txt", "mine\n")
@@ -954,6 +1026,7 @@ func TestDeliverWhenHeadMovesMeanwhile(t *testing.T) {
 		f.noScratch()
 	})
 	t.Run("after the merge was built", func(t *testing.T) {
+		variant(t, "once")
 		t.Parallel()
 		f := newDelivery(t)
 		commitOwn(t, f.root, "own.txt")
@@ -1018,6 +1091,7 @@ func TestDeliverTwice(t *testing.T) {
 		already(t, f)
 	})
 	t.Run("after a merge, and after more commits", func(t *testing.T) {
+		variant(t, "after a fast-forward and the person merged by hand")
 		t.Parallel()
 		f := newDelivery(t)
 		commitOwn(t, f.root, "own.txt")
@@ -1035,6 +1109,7 @@ func TestDeliverTwice(t *testing.T) {
 		already(t, f)
 	})
 	t.Run("on another branch that has it, once the request names the branch", func(t *testing.T) {
+		variant(t, "after a fast-forward and the person merged by hand")
 		t.Parallel()
 		f := newDelivery(t)
 		f.applies("ff")
@@ -1050,6 +1125,7 @@ func TestDeliverTwice(t *testing.T) {
 		already(t, f)
 	})
 	t.Run("the person merged by hand into another branch", func(t *testing.T) {
+		variant(t, "after a fast-forward and the person merged by hand")
 		t.Parallel()
 		f := newDelivery(t)
 		git(t, f.root, "checkout", "-q", "-b", "feature")
@@ -1060,6 +1136,7 @@ func TestDeliverTwice(t *testing.T) {
 		already(t, f)
 	})
 	t.Run("in the middle of an operation", func(t *testing.T) {
+		variant(t, "after a fast-forward and the person merged by hand")
 		t.Parallel()
 		f := newDelivery(t)
 		f.applies("ff")
@@ -1099,6 +1176,7 @@ func TestDeliverDryRun(t *testing.T) {
 		}
 	})
 	t.Run("merge, local changes in the way of the merge commit", func(t *testing.T) {
+		variant(t, "fast-forward and merge")
 		t.Parallel()
 		f := newDelivery(t)
 		commitOwn(t, f.root, "own.txt")
@@ -1106,6 +1184,7 @@ func TestDeliverDryRun(t *testing.T) {
 		f.refuses(Delivery{State: "blocked", Reason: "local_changes", Branch: "main", Files: []string{"new.txt"}})
 	})
 	t.Run("no scratch folder is needed for a fast-forward", func(t *testing.T) {
+		variant(t, "fast-forward and merge")
 		t.Parallel()
 		f := newDelivery(t)
 		f.req.Scratch = ""
@@ -1185,6 +1264,7 @@ func TestDeliverConcurrently(t *testing.T) {
 		f.noScratch()
 	})
 	t.Run("the second waits for the first", func(t *testing.T) {
+		variant(t, "two runs and one result twice")
 		t.Parallel()
 		f := newDelivery(t)
 		second := runResult(t, f.root, "r2", f.base, map[string]string{"two.txt": "two\n"})
@@ -1259,6 +1339,7 @@ func TestDeliverAndHooks(t *testing.T) {
 		}
 	})
 	t.Run("a hook refuses the merge commit", func(t *testing.T) {
+		variant(t, "post-merge and config that the environment passes stays")
 		t.Parallel()
 		f := newDelivery(t)
 		commitOwn(t, f.root, "own.txt")
@@ -1278,6 +1359,7 @@ func TestDeliverAndHooks(t *testing.T) {
 		f.applies("merge")
 	})
 	t.Run("no hook runs in the scratch work tree, and those of the folder still do", func(t *testing.T) {
+		variant(t, "post-merge and config that the environment passes stays")
 		t.Parallel()
 		f := newDelivery(t)
 		commitOwn(t, f.root, "own.txt")
@@ -1374,7 +1456,8 @@ func TestDeliverTimeout(t *testing.T) {
 		f := newDelivery(t)
 		started := filepath.Join(t.TempDir(), "started")
 		hook(t, open(t, f.root), "post-merge", `echo $$ > "`+started+`"; sleep 60`)
-		ctx, cancel := context.WithCancel(bg)
+		// The hook never ends: how long it is left to finish by itself changes nothing here.
+		ctx, cancel := context.WithCancel(withWaits(bg, waits{settle: 300 * time.Millisecond}))
 		defer cancel()
 		go func() {
 			for !exists(started) {
@@ -1402,7 +1485,7 @@ func TestDeliverTimeout(t *testing.T) {
 		f.req.Result = runResult(t, f.root, "r2", f.base, map[string]string{".gitattributes": "*.big filter=slow\n",
 			"a.txt": "A\n", "b.txt": "b\n", "z.big": "big\n", "zz.txt": "zz\n"})
 		started := filepath.Join(t.TempDir(), "started")
-		git(t, f.root, "config", "filter.slow.smudge", `sh -c 'touch "`+started+`"; sleep 2; cat'`)
+		git(t, f.root, "config", "filter.slow.smudge", `sh -c 'touch "`+started+`"; sleep 1; cat'`)
 		git(t, f.root, "config", "filter.slow.clean", "cat")
 		ctx, cancel := context.WithCancel(bg)
 		defer cancel()
@@ -1458,7 +1541,18 @@ func TestDeliverTimeout(t *testing.T) {
 		// On the branch the run started on, the same wait ends applied.
 		git(t, f.root, "switch", "-q", "main")
 		git(t, f.root, "merge", "-q", "--ff-only", "review")
-		same(t, "on main", d.deliver(bg, f.req), Delivery{State: "applied", How: "already", Commit: f.result, Branch: "main"})
+		// The time has to be up while the delivery waits, not before it knows the repository and
+		// the result: that is a handful of git commands, and on a busy machine they can take
+		// longer than half a second. Then step 4 has nothing to look with, and the delivery is
+		// tried again with more time.
+		var got Delivery
+		for _, d.timeout = range []time.Duration{500 * time.Millisecond, 2 * time.Second, 8 * time.Second, 30 * time.Second} {
+			got = d.deliver(bg, f.req)
+			if got.State != "blocked" || got.Reason != "git" || !strings.Contains(got.Detail, "did not finish within") {
+				break // anything else, another blocked too, is the outcome
+			}
+		}
+		same(t, "on main", got, Delivery{State: "applied", How: "already", Commit: f.result, Branch: "main"})
 	})
 }
 
@@ -1498,6 +1592,7 @@ func TestDeliverScratchFolder(t *testing.T) {
 		}
 	})
 	t.Run("its record is left and the folder is gone", func(t *testing.T) {
+		variant(t, "left by a killed server and a folder with files")
 		t.Parallel()
 		f := newDelivery(t)
 		git(t, f.root, "worktree", "add", "-q", "--detach", f.req.Scratch, f.base)
@@ -1593,6 +1688,9 @@ func TestDeliverLookingAtTheResult(t *testing.T) {
 		"the run's own branch":   {[]string{"switch", "-q", "aiwb/r1/integration"}, "aiwb/r1/integration", "aiwb/r1/integration", false},
 	} {
 		t.Run(how, func(t *testing.T) {
+			if how == "detached" {
+				variant(t, "a branch of the person")
+			}
 			t.Parallel()
 			f := newDelivery(t)
 			git(t, f.root, tc.look...)
@@ -1615,6 +1713,7 @@ func TestDeliverLookingAtTheResult(t *testing.T) {
 		})
 	}
 	t.Run("another run's branch, with the result not in it", func(t *testing.T) {
+		variant(t, "a branch of the person")
 		t.Parallel()
 		f := newDelivery(t)
 		git(t, f.root, "switch", "-q", "-c", "aiwb/r0/integration", f.base)
@@ -1680,6 +1779,7 @@ func TestDeliverHistoryChanged(t *testing.T) {
 		f.noScratch()
 	})
 	t.Run("reset back", func(t *testing.T) {
+		variant(t, "amended and no start commit given")
 		t.Parallel()
 		f := historyChanged(t)
 		git(t, f.root, "reset", "-q", "--hard", "HEAD~1")
@@ -1695,18 +1795,21 @@ func TestDeliverHistoryChanged(t *testing.T) {
 		same(t, "apply by hand", f.deliver(), Delivery{State: "applied", How: "ff", Commit: f.result, Branch: "main"})
 	})
 	t.Run("the same files in another commit", func(t *testing.T) {
+		variant(t, "amended and no start commit given")
 		t.Parallel()
 		f := historyChanged(t)
 		git(t, f.root, "commit", "-q", "--amend", "--no-edit", "--date=2001-01-01T00:00:00")
 		f.refuses(changed)
 	})
 	t.Run("own commits on top of the start commit are no change of history", func(t *testing.T) {
+		variant(t, "amended and no start commit given")
 		t.Parallel()
 		f := historyChanged(t)
 		commitOwn(t, f.root, "own.txt")
 		f.applies("merge")
 	})
 	t.Run("another branch comes first", func(t *testing.T) {
+		variant(t, "amended and no start commit given")
 		t.Parallel()
 		f := historyChanged(t)
 		git(t, f.root, "switch", "-q", "-c", "old", "HEAD~1")
@@ -1762,6 +1865,9 @@ func TestDeliverBranchCannotBeMoved(t *testing.T) {
 	}
 	for _, name := range []string{"refs/heads/main.lock", "HEAD.lock"} {
 		t.Run(name, func(t *testing.T) {
+			if name != "refs/heads/main.lock" {
+				variant(t, "refs/heads/main.lock")
+			}
 			t.Parallel()
 			f := newDelivery(t)
 			write(t, f.root, "keep.txt", "keep\nmine\n")
@@ -1787,6 +1893,7 @@ func TestDeliverBranchCannotBeMoved(t *testing.T) {
 		f.applies("ff")
 	})
 	t.Run("a reference-transaction hook refuses the branch", func(t *testing.T) {
+		variant(t, "refs/heads/main.lock")
 		t.Parallel()
 		f := newDelivery(t)
 		write(t, f.root, "keep.txt", "keep\nmine\n")
@@ -1885,6 +1992,7 @@ func TestDeliverDryRunIsDry(t *testing.T) {
 		dry(t, f, Delivery{State: "pending", Branch: "main"})
 	})
 	t.Run("files in the way of the merge", func(t *testing.T) {
+		variant(t, "a merge that would go through")
 		t.Parallel()
 		f := newDelivery(t)
 		commitOwn(t, f.root, "own.txt")
@@ -1893,6 +2001,7 @@ func TestDeliverDryRunIsDry(t *testing.T) {
 		dry(t, f, Delivery{State: "blocked", Reason: "local_changes", Branch: "main", Files: []string{"new.txt"}})
 	})
 	t.Run("a conflict", func(t *testing.T) {
+		variant(t, "a merge that would go through")
 		t.Parallel()
 		f := newDelivery(t)
 		write(t, f.root, "a.txt", "mine\ntwo\nthree\n")

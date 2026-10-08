@@ -2,6 +2,7 @@ package claude
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -198,18 +199,31 @@ func TestSpawnForkStartupFailureStderr(t *testing.T) {
 }
 
 func TestSpawnForkTimeout(t *testing.T) {
-	f, runs := forkFake(t, false) // never answers initialize
-	s := f.spawner()
-	s.forkTimeout = 300 * time.Millisecond
-	start := time.Now()
-	a, _, err := s.SpawnFork(agent.SpawnOptions{SessionID: "N", Cwd: t.TempDir()}, agent.ForkSource{SessionID: "S", Point: "U"})
-	if a != nil || err == nil || err.Error() != "claude: the fork did not start within 300ms" {
-		t.Fatalf("SpawnFork = %v, %v; want the time-out", a, err)
+	// The fake has to start within the time box. A box it did not start in (it recorded no run)
+	// does not count and a longer one follows; the last holds on a machine that is busy with
+	// several whole test suites, and only costs its time there.
+	boxes := []time.Duration{300 * time.Millisecond, 1200 * time.Millisecond, 5 * time.Second, 15 * time.Second}
+	var rs []fakeRun
+	for i, box := range boxes {
+		f, runs := forkFake(t, false) // never answers initialize
+		s := f.spawner()
+		s.forkTimeout = box
+		start := time.Now()
+		a, _, err := s.SpawnFork(agent.SpawnOptions{SessionID: "N", Cwd: t.TempDir()}, agent.ForkSource{SessionID: "S", Point: "U"})
+		d := time.Since(start)
+		rs = readRuns(t, runs)
+		if len(rs) == 0 && i < len(boxes)-1 {
+			t.Logf("%s was too short on this machine now", box)
+			continue
+		}
+		if a != nil || err == nil || err.Error() != fmt.Sprintf("claude: the fork did not start within %s", box) {
+			t.Fatalf("SpawnFork = %v, %v; want the time-out", a, err)
+		}
+		if d < box || d > box+10*time.Second {
+			t.Errorf("failed after %s, want the time box", d)
+		}
+		break
 	}
-	if d := time.Since(start); d < 300*time.Millisecond || d > 10*time.Second {
-		t.Errorf("failed after %s, want the time box", d)
-	}
-	rs := readRuns(t, runs)
 	if len(rs) != 1 {
 		t.Fatalf("%d processes started, want 1", len(rs))
 	}

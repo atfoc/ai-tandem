@@ -15,6 +15,7 @@ import (
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/servers/linksim"
 	"ai-whiteboard/internal/servers/standin"
+	"ai-whiteboard/internal/testset"
 )
 
 // Link.Dial is what servers.Options.Dial takes.
@@ -134,6 +135,7 @@ func trip(t *testing.T, c net.Conn, msg string) time.Duration {
 
 // TestRoundTrip: the measured round trip is the profile's, within 20 % or a few milliseconds.
 func TestRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		p    linksim.Profile
@@ -164,6 +166,7 @@ func TestRoundTrip(t *testing.T) {
 
 // TestAddr: the address is a loopback one that forwards as Dial does, to another process too.
 func TestAddr(t *testing.T) {
+	t.Parallel()
 	e := startEcho(t)
 	l := linksim.Start(t, e.addr, linksim.Profile{})
 	host, _, err := net.SplitHostPort(l.Addr())
@@ -189,12 +192,15 @@ func TestAddr(t *testing.T) {
 	waitFor(t, "the target's connection to end", func() bool { return e.conns() == 0 })
 }
 
-// TestRate: 1 MB at 2e6 bit/s takes about 4 s, in each direction.
+// TestRate: 1 MB at 2e6 bit/s takes about 4 s, in each direction. The default set sends a fifth
+// of it, 40 slices of the rate's clock: about 0.8 s.
 func TestRate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("takes 4 s")
+	t.Parallel()
+	const rate = 2_000_000
+	size := 200_000
+	if testset.Full() {
+		size = 1_000_000
 	}
-	const size, rate = 1_000_000, 2_000_000
 	want := time.Duration(size) * 8 * time.Second / rate
 	for _, c := range []struct {
 		name string
@@ -233,6 +239,7 @@ func TestRate(t *testing.T) {
 // TestCut: a cut ends the open connections and refuses new ones; after Uncut new ones pass, on
 // the same address.
 func TestCut(t *testing.T) {
+	t.Parallel()
 	e := startEcho(t)
 	l := linksim.Start(t, e.addr, linksim.Good)
 	addr := l.Addr()
@@ -286,6 +293,7 @@ func TestCut(t *testing.T) {
 // TestStall: with the way back stalled the connection stays open, the bytes to the target
 // arrive and those from it wait; they come in their order afterwards. The same the other way.
 func TestStall(t *testing.T) {
+	t.Parallel()
 	const hold = 150 * time.Millisecond
 	// silent checks that nothing can be read from c for a while and that c is still open.
 	silent := func(t *testing.T, c net.Conn) {
@@ -313,6 +321,7 @@ func TestStall(t *testing.T) {
 	}
 
 	t.Run("back", func(t *testing.T) {
+		t.Parallel()
 		e := startEcho(t)
 		l := linksim.Start(t, e.addr, linksim.Good)
 		c := dial(t, l)
@@ -341,6 +350,7 @@ func TestStall(t *testing.T) {
 	})
 
 	t.Run("forth", func(t *testing.T) {
+		t.Parallel()
 		e := startEcho(t)
 		l := linksim.Start(t, e.addr, linksim.Good)
 		c := dial(t, l)
@@ -360,6 +370,7 @@ func TestStall(t *testing.T) {
 	})
 
 	t.Run("both, then a cut", func(t *testing.T) {
+		t.Parallel()
 		e := startEcho(t)
 		l := linksim.Start(t, e.addr, linksim.Profile{})
 		c := dial(t, l)
@@ -391,6 +402,7 @@ func TestStall(t *testing.T) {
 // address, so TLS, the pin and the Host check are the real ones. A cut is an outage; after
 // Uncut, Retry brings the entry back although its back-off is long.
 func TestBehindAManager(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	target := s.URL()[len("https://"):]
 	l := linksim.Start(t, target, linksim.Good)

@@ -64,6 +64,7 @@ func (e *env) counted(when string, evs *events, id string, running, owed int, ch
 // completion, delivery, a failed delivery, stop_subagent, the carry with a human message, the retry,
 // the give-up and an interrupt. After each step a client that only listens has the right numbers.
 func TestSubCountsInView(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, parent := e.startSpawnParent() // mid-turn
@@ -127,6 +128,7 @@ func TestSubCountsInView(t *testing.T) {
 // A completion that meets an idle parent is delivered in the lock hold that made it owed: clients
 // get one chat view, the delivery turn's, and never a count that was owed for no time at all.
 func TestSubCountsDeliveredAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, parent := e.idleParent()
@@ -147,6 +149,7 @@ func TestSubCountsDeliveredAtOnce(t *testing.T) {
 // The other ways a count changes, each followed by a chat view: every way a parent's subagents are
 // stopped with it, and a delivery or a human message the adapter refuses.
 func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
+	t.Parallel()
 	// running is a chat in its first turn with two subagents running.
 	running := func(t *testing.T) (*env, *events, string, *fakeAgent) {
 		e := newEnv(t)
@@ -160,6 +163,7 @@ func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
 		return e, evs, id, parent
 	}
 	t.Run("spawn that fails", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t)
 		evs := listen(t, e.br)
 		id, _ := e.idleParent()
@@ -174,6 +178,7 @@ func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
 		}
 	})
 	t.Run("subagent whose process fails", func(t *testing.T) {
+		t.Parallel()
 		e, evs, id, _ := running(t)
 		child := e.claude.last(t)
 		child.emit(t, agent.Event{Kind: agent.EvExit, ExitErr: "crashed"})
@@ -185,16 +190,19 @@ func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
 		}
 	})
 	t.Run("aborted turn end", func(t *testing.T) {
+		t.Parallel()
 		e, evs, id, parent := running(t)
 		parent.emit(t, agent.Event{Kind: agent.EvTurnEnd, Aborted: true})
 		e.counted("aborted", evs, id, 0, 0, true)
 	})
 	t.Run("parent exit", func(t *testing.T) {
+		t.Parallel()
 		e, evs, id, parent := running(t)
 		parent.exit(t)
 		e.counted("exit", evs, id, 0, 0, true)
 	})
 	t.Run("idle parent exit", func(t *testing.T) {
+		t.Parallel()
 		e, evs, id, parent := running(t)
 		parent.emit(t, agent.Event{Kind: agent.EvTurnEnd})
 		e.counted("idle", evs, id, 2, 0, false)
@@ -202,16 +210,19 @@ func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
 		e.counted("exit", evs, id, 0, 0, true)
 	})
 	t.Run("Stop", func(t *testing.T) {
+		t.Parallel()
 		e, evs, id, _ := running(t)
 		e.m.Stop(id)
 		e.counted("Stop", evs, id, 0, 0, true)
 	})
 	t.Run("Shutdown", func(t *testing.T) {
+		t.Parallel()
 		e, evs, id, _ := running(t)
 		e.m.Shutdown()
 		e.counted("Shutdown", evs, id, 0, 0, true)
 	})
 	t.Run("Shutdown during a carrying turn", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t)
 		evs := listen(t, e.br)
 		id, _, _, _, _ := e.delivering(model.Claude)
@@ -220,6 +231,7 @@ func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
 		e.counted("Shutdown", evs, id, 0, 1, true)
 	})
 	t.Run("refused delivery", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t)
 		evs := listen(t, e.br)
 		id, parent := e.idleParent()
@@ -233,6 +245,7 @@ func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
 		}
 	})
 	t.Run("refused human message that carries", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t)
 		evs := listen(t, e.br)
 		id, parent, owed, _, _ := e.heldResult(model.Claude)
@@ -251,6 +264,7 @@ func TestSubCountsBroadcastOnEveryChange(t *testing.T) {
 
 // What changes neither count, nor anything else in the view, broadcasts no chat view.
 func TestSubCountsNoBroadcastWithoutChange(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, _ := e.idleParent()
@@ -281,6 +295,7 @@ func TestSubCountsNoBroadcastWithoutChange(t *testing.T) {
 // is on its subagents' records. Reading it broadcasts the chat's view with the owed count, once,
 // whichever call reads it first; a client does not ask for the view when it opens a chat.
 func TestSubCountsAfterRestart(t *testing.T) {
+	t.Parallel()
 	// owedAtBoot restarts the app over a chat that is owed one result and returns a listener of the
 	// new run.
 	owedAtBoot := func(t *testing.T, e *env, id string) *events {

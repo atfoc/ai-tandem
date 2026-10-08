@@ -744,6 +744,7 @@ func waitFor(t *testing.T, what string, f func() bool) {
 // ---- tests ----------------------------------------------------------------
 
 func TestCreateAppliesGroupDefaults(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	dirA, dirB := t.TempDir(), t.TempDir()
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
@@ -811,6 +812,7 @@ func TestCreateAppliesGroupDefaults(t *testing.T) {
 }
 
 func TestCreatePiAssignsSessionIDAndResolvesCatalog(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	piCat := &model.Catalog{
 		Models: []model.CatalogModel{
@@ -836,6 +838,7 @@ func TestCreatePiAssignsSessionIDAndResolvesCatalog(t *testing.T) {
 }
 
 func TestCreateRejectsUnknownAgent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if _, err := e.m.Create(model.AgentKind("future"), gOne, ""); err == nil || !strings.Contains(err.Error(), "unknown agent") {
 		t.Fatalf("Create with an unknown kind: %v, want an unknown agent error", err)
@@ -843,6 +846,7 @@ func TestCreateRejectsUnknownAgent(t *testing.T) {
 }
 
 func TestPiResumeKeepsAssignedSessionID(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Pi, gOne, "")
 	sid := e.meta(v.ID).SessionID
@@ -863,6 +867,7 @@ func TestPiResumeKeepsAssignedSessionID(t *testing.T) {
 }
 
 func TestCatalogLegacyCursorField(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t) // newEnv stores cursorCatalog in the legacy cursorCatalog field only
 	if got := e.m.catalog(model.Cursor); got == nil || got.Default != cursorCatalog.Default || len(got.Models) != len(cursorCatalog.Models) {
 		t.Fatalf("legacy cursor catalog not returned: %+v", got)
@@ -881,6 +886,7 @@ func TestCatalogLegacyCursorField(t *testing.T) {
 }
 
 func TestPiCatalogEventPersistsAndBroadcasts(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Pi, gOne, "")
@@ -915,6 +921,7 @@ func TestPiCatalogEventPersistsAndBroadcasts(t *testing.T) {
 }
 
 func TestOpenNeverSpawnsAndShowsMissingFolder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	dir := t.TempDir()
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{model.Ungrouped: model.LocalDefaults(model.ServerDefaults{Cwd: dir})}})
@@ -945,6 +952,7 @@ func TestOpenNeverSpawnsAndShowsMissingFolder(t *testing.T) {
 }
 
 func TestConfigureBeforeFirstMessage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -985,6 +993,7 @@ func TestConfigureBeforeFirstMessage(t *testing.T) {
 }
 
 func TestConfigureModelChangeFitsEffort(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if err := e.st.Update(func(s *model.State) error {
 		s.Cursor = &model.Catalog{
@@ -1029,6 +1038,7 @@ func TestConfigureModelChangeFitsEffort(t *testing.T) {
 }
 
 func TestSpawnMintsTokenlessChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	meta := e.meta(v.ID)
@@ -1060,6 +1070,7 @@ func TestSpawnMintsTokenlessChat(t *testing.T) {
 }
 
 func TestFirstSendSpawnsOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	sid := e.meta(v.ID).SessionID
@@ -1084,6 +1095,7 @@ func TestFirstSendSpawnsOnce(t *testing.T) {
 }
 
 func TestFirstSendRecordsDefaults(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	ungrouped := model.LocalDefaults(model.ServerDefaults{
 		Cwd:     t.TempDir(),
@@ -1108,6 +1120,7 @@ func TestFirstSendRecordsDefaults(t *testing.T) {
 }
 
 func TestConfigureLockedAndAppFolder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if err := e.m.Configure(v.ID, ConfigReq{Cwd: e.st.P.Boards}); !errors.Is(err, ErrAppFolder) {
@@ -1125,6 +1138,7 @@ func TestConfigureLockedAndAppFolder(t *testing.T) {
 }
 
 func TestSendBlocks(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gOne, false)
 	if err != nil {
@@ -1207,6 +1221,7 @@ func TestSendBlocks(t *testing.T) {
 }
 
 func TestSendPiBoardChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gOne, false)
 	if err != nil {
@@ -1242,6 +1257,7 @@ func TestSendPiBoardChat(t *testing.T) {
 }
 
 func TestLegacyCursorBoardChatDisabled(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gOne, false)
 	if err != nil {
@@ -1277,6 +1293,7 @@ func TestLegacyCursorBoardChatDisabled(t *testing.T) {
 }
 
 func TestNoNamerEntryMeansNoName(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.m.Namers = map[model.AgentKind]Namer{model.Claude: e.namer}
 	v := e.create(model.Pi, gOne, "")
@@ -1290,6 +1307,7 @@ func TestNoNamerEntryMeansNoName(t *testing.T) {
 }
 
 func TestSendNamesTheBoard(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("arch", gOne, false)
 	if err != nil {
@@ -1314,6 +1332,7 @@ func TestSendNamesTheBoard(t *testing.T) {
 }
 
 func TestPlainText(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"no refs": "no refs",
 		`a <selection ids="x,y" label="2 elements">…</selection> b`:                     "a [2 elements] b",
@@ -1328,6 +1347,7 @@ func TestPlainText(t *testing.T) {
 }
 
 func TestRenameUserNameWins(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if err := e.m.Rename(v.ID, "  Mine ", true); err != nil {
@@ -1342,6 +1362,7 @@ func TestRenameUserNameWins(t *testing.T) {
 }
 
 func TestDraft(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -1398,6 +1419,7 @@ func TestDraft(t *testing.T) {
 }
 
 func TestSendClearsDraft(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.setDraft(v.ID, model.Draft{Text: "one"})
@@ -1419,6 +1441,7 @@ func TestSendClearsDraft(t *testing.T) {
 }
 
 func TestSendAfterExitResumes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	sid := e.meta(v.ID).SessionID
@@ -1453,6 +1476,7 @@ func TestSendAfterExitResumes(t *testing.T) {
 }
 
 func TestSendWhileBusy(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -1484,6 +1508,7 @@ func TestSendWhileBusy(t *testing.T) {
 }
 
 func TestLoadIsLazy(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	good := e.create(model.Claude, gOne, "")
 	e.send(good.ID, "hello", "")
@@ -1518,6 +1543,7 @@ func TestLoadIsLazy(t *testing.T) {
 }
 
 func TestInterruptedAtBoot(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	sid := e.meta(v.ID).SessionID
@@ -1569,6 +1595,7 @@ func TestInterruptedAtBoot(t *testing.T) {
 }
 
 func TestMissingFolderFix(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	dir := t.TempDir()
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: model.LocalDefaults(model.ServerDefaults{Cwd: dir})}})
@@ -1614,6 +1641,7 @@ func TestMissingFolderFix(t *testing.T) {
 }
 
 func TestStopDeniesPendingPermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "delete it", "")
@@ -1652,6 +1680,7 @@ func TestStopDeniesPendingPermission(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -1676,6 +1705,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestUsageTurns(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -1693,6 +1723,7 @@ func TestUsageTurns(t *testing.T) {
 }
 
 func TestUsageCtxError(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Cursor, gOne, "")
 	e.send(v.ID, "one", "")
@@ -1711,6 +1742,7 @@ func TestUsageCtxError(t *testing.T) {
 }
 
 func TestOldGenerationIgnored(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -1727,6 +1759,7 @@ func TestOldGenerationIgnored(t *testing.T) {
 }
 
 func TestCleanTitle(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"Title: Draw a flowchart\nmore": "Draw a flowchart",
 		`"Sketch the API"`:              "Sketch the API",
@@ -1830,6 +1863,7 @@ func updatesOf(t *testing.T, ev map[string]any) []transcript.Update {
 }
 
 func TestSubagentCreatedOnFirstEvent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -1867,6 +1901,7 @@ func TestSubagentCreatedOnFirstEvent(t *testing.T) {
 }
 
 func TestSubagentThread(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -1898,6 +1933,7 @@ func TestSubagentThread(t *testing.T) {
 }
 
 func TestSubagentEnd(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -1948,6 +1984,7 @@ func TestSubagentEnd(t *testing.T) {
 }
 
 func TestSubagentThinkingSendsNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	_, a := e.subStart()
@@ -1962,6 +1999,7 @@ func TestSubagentThinkingSendsNothing(t *testing.T) {
 }
 
 func TestSubagentUnknownTool(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -1981,6 +2019,7 @@ func TestSubagentUnknownTool(t *testing.T) {
 }
 
 func TestNestedSubagent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -2027,6 +2066,7 @@ func TestNestedSubagent(t *testing.T) {
 }
 
 func TestSubagentPermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
@@ -2046,6 +2086,7 @@ func TestSubagentPermission(t *testing.T) {
 }
 
 func TestSubagentPermissionWhileIdle(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
@@ -2073,6 +2114,7 @@ func TestSubagentPermissionWhileIdle(t *testing.T) {
 }
 
 func TestStopMarksSubagentsStopped(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -2094,6 +2136,7 @@ func TestStopMarksSubagentsStopped(t *testing.T) {
 }
 
 func TestSubagentsStoppedOnAbortedTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
@@ -2123,6 +2166,7 @@ func TestSubagentsStoppedOnAbortedTurn(t *testing.T) {
 }
 
 func TestSubagentsStoppedOnExit(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
@@ -2141,6 +2185,7 @@ func TestSubagentsStoppedOnExit(t *testing.T) {
 }
 
 func TestLoadStopsRunningSubagents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
@@ -2163,6 +2208,7 @@ func TestLoadStopsRunningSubagents(t *testing.T) {
 }
 
 func TestShutdownWritesSubagents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
@@ -2183,6 +2229,7 @@ func TestShutdownWritesSubagents(t *testing.T) {
 }
 
 func TestItemsAndSubItems(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	a.emit(t, agent.Event{Kind: agent.EvToolStart, ToolID: "t2", ToolName: "Agent"})
@@ -2220,6 +2267,7 @@ func TestItemsAndSubItems(t *testing.T) {
 }
 
 func TestUnrequestedTurnSetsTurnActive(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "one", "")
@@ -2247,6 +2295,7 @@ func TestUnrequestedTurnSetsTurnActive(t *testing.T) {
 }
 
 func TestDeleteRemovesSubagents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.subStart()
 	subRun(t, a, "t1")
@@ -2263,6 +2312,7 @@ func TestDeleteRemovesSubagents(t *testing.T) {
 }
 
 func TestSendReferences(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "plan please", "")
@@ -2316,6 +2366,7 @@ func TestSendReferences(t *testing.T) {
 }
 
 func TestDraftReferences(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	d := model.Draft{References: []model.Reference{{Quote: "q", Comment: "c", Item: 0, Start: 1, End: 2}}} // quotes alone are a draft
@@ -2355,6 +2406,7 @@ func lastItems(t *testing.T, evs []map[string]any, chat string) []transcript.Upd
 }
 
 func TestTurnEndAddsEndMark(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -2415,6 +2467,7 @@ func TestTurnEndAddsEndMark(t *testing.T) {
 }
 
 func TestEndMarkFollowsTurnEndNote(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -2449,6 +2502,7 @@ func TestEndMarkFollowsTurnEndNote(t *testing.T) {
 
 // Only a turn-end event of the chat's own thread writes a mark.
 func TestNoEndMarkWithoutTurnEnd(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	noMark := func(what, id string, want ...string) {
 		t.Helper()
@@ -2482,6 +2536,7 @@ func TestNoEndMarkWithoutTurnEnd(t *testing.T) {
 }
 
 func TestSubagentThreadsHaveNoEndMark(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 
 	// Native: the subagent's events come through the chat's own process.
@@ -2527,6 +2582,7 @@ func TestSubagentThreadsHaveNoEndMark(t *testing.T) {
 // A plain Send with quotes to a chat not read since the app started: the thread is loaded before
 // the quotes are checked against it, and the chat's lock is released either way.
 func TestQuotedSendAfterBoot(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	good, _ := e.talked(model.Claude, "", 2)
 	bad, _ := e.talked(model.Claude, "", 2)

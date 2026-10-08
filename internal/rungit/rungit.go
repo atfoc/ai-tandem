@@ -29,13 +29,17 @@
 package rungit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -79,6 +83,11 @@ type Repo struct {
 	env       []string
 	name      string
 	email     string
+
+	// What tree learned from git about the linked work trees, by top level (see recall).
+	memoMu   sync.Mutex
+	memo     map[string]*remembered
+	memoHits atomic.Int64 // how often recall spared a git command: for the tests
 }
 
 // Option changes how Open sets a Repo up.
@@ -116,6 +125,12 @@ func newOptions(opts []Option) options {
 func Open(ctx context.Context, dir string, opts ...Option) (*Repo, error) {
 	o := newOptions(opts)
 	r := &Repo{env: gitEnv(o.env), name: o.name, email: o.email}
+	if done, err := r.openAtOnce(ctx, dir); done {
+		if err != nil {
+			return nil, err
+		}
+		return r, nil
+	}
 	abs, err := insideWorkTree(ctx, r.env, dir)
 	if err != nil {
 		return nil, err
@@ -137,6 +152,63 @@ func Open(ctx context.Context, dir string, opts ...Option) (*Repo, error) {
 		return nil, fmt.Errorf("%w: %s", ErrNoCommits, r.root)
 	}
 	return r, nil
+}
+
+// openAtOnce asks git with one command what Open otherwise asks with three: whether dir is inside
+// a work tree, where its top level and the shared git dir are, and whether HEAD is a commit. done
+// is false when what git answered is not exactly one of the answers below: Open then asks step
+// by step, and nothing of r is set.
+//
+//   - "true", the top level, the git dir and a commit, exit 0: r is set.
+//   - "true", the top level and the git dir, exit 1: HEAD is unborn (ErrNoCommits).
+//   - "false" first: a bare repository or the inside of a .git folder (ErrNotRepo).
+//   - Nothing but "not a git repository" on stderr: a plain folder (ErrNotRepo).
+func (r *Repo) openAtOnce(ctx context.Context, dir string) (done bool, err error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false, nil
+	}
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return false, nil
+	}
+	// LC_ALL=C for git's "not a git repository", as in insideWorkTree.
+	out, stderr, err := runGit(ctx, append(r.env[:len(r.env):len(r.env)], "LC_ALL=C"), abs, "rev-parse",
+		"--is-inside-work-tree", "--show-toplevel", "--git-common-dir", "--verify", "--quiet", "HEAD^{commit}")
+	code := 0
+	if err != nil {
+		if code = exitCode(err); code < 0 { // it did not run to its end
+			return false, nil
+		}
+	}
+	lines := strings.Split(out, "\n")
+	switch {
+	case out == "" && code != 0 && strings.Contains(stderr, "not a git repository"):
+		return true, fmt.Errorf("%w: %s", ErrNotRepo, abs)
+	case lines[0] == "false" && code != 0:
+		return true, fmt.Errorf("%w: %s", ErrNotRepo, abs)
+	case lines[0] != "true" || len(lines) < 3 || !filepath.IsAbs(lines[1]) || lines[2] == "":
+		return false, nil
+	case len(lines) == 3 && code == 1:
+		return true, fmt.Errorf("%w: %s", ErrNoCommits, resolve(lines[1]))
+	case len(lines) == 4 && code == 0 && isSHA(lines[3]):
+		r.root = resolve(lines[1])
+		r.commonDir = resolve(absIn(abs, lines[2]))
+		return true, nil
+	}
+	return false, nil
+}
+
+// isSHA reports whether s is a full object name as git prints it: 40 hex digits, or 64.
+func isSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // IsWorkTree reports whether dir is inside a git work tree. A folder that merely has a .git entry
@@ -218,6 +290,27 @@ func (r *Repo) Branches(ctx context.Context, prefix string) ([]string, error) {
 	return names, nil
 }
 
+// MergedBranches lists the local branches whose name starts with prefix (as for Branches) and
+// whose head is the commit into or an ancestor of it, sorted: every commit such a branch names is
+// in into.
+func (r *Repo) MergedBranches(ctx context.Context, prefix, into string) ([]string, error) {
+	if err := checkArg("ref", into); err != nil {
+		return nil, err
+	}
+	out, err := r.run(ctx, r.root, "for-each-ref", "--format=%(refname)", "--merged", into, "refs/heads/")
+	if err != nil {
+		return nil, err
+	}
+	names := []string{}
+	for _, line := range strings.Split(out, "\n") {
+		if name, ok := strings.CutPrefix(line, "refs/heads/"); ok && strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // IsAncestor reports whether commit a is an ancestor of commit b (or the same commit).
 func (r *Repo) IsAncestor(ctx context.Context, a, b string) (bool, error) {
 	if err := errors.Join(checkArg("ref", a), checkArg("ref", b)); err != nil {
@@ -238,6 +331,34 @@ func (r *Repo) DeleteBranch(ctx context.Context, name string) error {
 	}
 	_, err := r.run(ctx, r.root, "branch", "-D", name)
 	return err
+}
+
+// DeleteBranches deletes the local branches names, merged or not, with one git command when all
+// goes well. As for DeleteBranch, a branch that does not exist is not an error and one that is
+// checked out in a work tree is: it is left, the others are deleted all the same, and the error
+// is that of the first branch that could not be deleted.
+func (r *Repo) DeleteBranches(ctx context.Context, names ...string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	for _, name := range names {
+		if err := checkArg("branch", name); err != nil {
+			return err
+		}
+	}
+	_, err := r.run(ctx, r.root, append([]string{"branch", "-D"}, names...)...)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	// Git stops at no branch it cannot delete, but it does not say which ones those were in
+	// words that could be relied on: what is still there is deleted one by one.
+	var failed error
+	for _, name := range names {
+		if err := r.DeleteBranch(ctx, name); err != nil && failed == nil {
+			failed = err
+		}
+	}
+	return failed
 }
 
 // Dirty reports whether the work tree that dir is in (dir may be a subfolder) has uncommitted
@@ -270,8 +391,18 @@ type tree struct {
 }
 
 // tree checks that dir is the top level of a work tree of this repository.
+//
+// Git is asked, but for a linked work tree about which it gave this very answer before and whose
+// files still say the same (see recall): nearly every function of the package starts here, and
+// this was the most frequent git command of a run.
 func (r *Repo) tree(ctx context.Context, dir string) (tree, error) {
 	abs := resolve(dir)
+	if ctx.Err() == nil { // a done context gets the error of the command below
+		if t, ok := r.recall(abs); ok {
+			return t, nil
+		}
+	}
+	before, readable := readLinked(abs)
 	out, err := r.run(ctx, abs, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir",
 		"--git-path", "MERGE_HEAD")
 	if err != nil {
@@ -289,7 +420,199 @@ func (r *Repo) tree(ctx context.Context, dir string) (tree, error) {
 		return tree{}, fmt.Errorf("%w: %s", ErrNotWorktree, dir)
 	}
 	gitDir := resolve(lines[2])
-	return tree{top: abs, gitDir: gitDir, mergeHead: absIn(abs, lines[3]), linked: gitDir != common}, nil
+	t := tree{top: abs, gitDir: gitDir, mergeHead: absIn(abs, lines[3]), linked: gitDir != common}
+	if readable && t.linked {
+		r.remember(t, before)
+	}
+	return t, nil
+}
+
+// remembered is an answer of git about a linked work tree, with the files it follows from.
+type remembered struct {
+	tree  tree
+	files linkFiles
+}
+
+// linkFiles is what git reads to find the git dirs and the top level of a linked work tree, and
+// where that leads.
+type linkFiles struct {
+	dotGit    []byte // <top>/.git: "gitdir: " and the way to the work tree's own git dir
+	commondir []byte // <gitDir>/commondir: the way to the shared git dir
+	config    []byte // <common>/config: the format of the repository, and core.worktree
+	ownConfig []byte // <gitDir>/config.worktree, where core.worktree can be too
+	hasOwn    bool   // config.worktree is there
+	gitDir    string // where dotGit leads, symlinks resolved
+	common    string // where commondir leads, symlinks resolved
+}
+
+func (f linkFiles) equal(g linkFiles) bool {
+	return bytes.Equal(f.dotGit, g.dotGit) && bytes.Equal(f.commondir, g.commondir) &&
+		bytes.Equal(f.config, g.config) && bytes.Equal(f.ownConfig, g.ownConfig) && f.hasOwn == g.hasOwn &&
+		f.gitDir == g.gitDir && f.common == g.common
+}
+
+// readLinked reads the linkFiles of the folder top, following them as git does: on disk (see
+// linkIn), so that a path with a symlink before ".." leads elsewhere once the symlink is turned.
+// ok is false when
+// top is not a linked work tree whose git dirs are in order: .git is not a regular file (it is
+// gone, or a folder as in a main work tree), a file cannot be read, a path leads nowhere, HEAD is
+// not one, or the shared git dir has lost its objects or refs folder.
+func readLinked(top string) (f linkFiles, ok bool) {
+	dotGit := filepath.Join(top, ".git")
+	if fi, err := os.Lstat(dotGit); err != nil || !fi.Mode().IsRegular() {
+		return f, false
+	}
+	var err error
+	if f.dotGit, err = os.ReadFile(dotGit); err != nil {
+		return f, false
+	}
+	link, isLink := strings.CutPrefix(strings.TrimRight(string(f.dotGit), "\r\n"), "gitdir: ")
+	if !isLink || link == "" {
+		return f, false
+	}
+	if f.gitDir, err = filepath.EvalSymlinks(linkIn(top, link)); err != nil {
+		return f, false
+	}
+	if f.commondir, err = os.ReadFile(filepath.Join(f.gitDir, "commondir")); err != nil {
+		return f, false
+	}
+	link = strings.TrimRight(string(f.commondir), "\r\n")
+	if link == "" {
+		return f, false
+	}
+	if f.common, err = filepath.EvalSymlinks(linkIn(f.gitDir, link)); err != nil {
+		return f, false
+	}
+	if f.config, err = os.ReadFile(filepath.Join(f.common, "config")); err != nil {
+		return f, false
+	}
+	f.ownConfig, err = os.ReadFile(filepath.Join(f.gitDir, "config.worktree"))
+	if f.hasOwn = err == nil; err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return f, false
+	}
+	return f, validHead(filepath.Join(f.gitDir, "HEAD")) &&
+		isDir(filepath.Join(f.common, "objects")) && isDir(filepath.Join(f.common, "refs"))
+}
+
+// validHead reports whether path is a HEAD file as git accepts one: a ref under refs/, or a
+// commit. Git takes a folder with another HEAD (an empty one, after a crash) for no git dir.
+func validHead(path string) bool {
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	if ref, ok := strings.CutPrefix(string(b), "ref:"); ok {
+		return strings.HasPrefix(strings.TrimLeft(ref, " \t\r\n"), "refs/")
+	}
+	return len(b) >= 40 && isSHA(string(b[:40]))
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+// remember keeps t, the answer git just gave about a linked work tree, for recall. before is what
+// readLinked gave just before git was asked. The answer is kept only when the files were the same
+// before and after it, so that they are what git read, and when they lead where git says: the
+// answer is then nothing but what these files say.
+//
+// Nothing is kept about a work tree whose config names a work tree (see namesWorktree): the
+// folder core.worktree leads to is not in these files, and git is asked about it every time.
+func (r *Repo) remember(t tree, before linkFiles) {
+	after, ok := readLinked(t.top)
+	if !ok || !after.equal(before) || after.gitDir != t.gitDir || after.common != r.commonDir ||
+		t.mergeHead != filepath.Join(t.gitDir, "MERGE_HEAD") {
+		return
+	}
+	if namesWorktree(after.config) || namesWorktree(after.ownConfig) {
+		return
+	}
+	r.memoMu.Lock()
+	if r.memo == nil {
+		r.memo = map[string]*remembered{}
+	}
+	r.memo[t.top] = &remembered{tree: t, files: after}
+	r.memoMu.Unlock()
+}
+
+// namesWorktree reports whether the config file b has the word "worktree" in it, in any letter
+// case: core.worktree or extensions.worktreeConfig, however they are written. A branch or a URL
+// with the word in its name counts too, which only costs what remembering would have saved.
+func namesWorktree(b []byte) bool {
+	return bytes.Contains(bytes.ToLower(b), []byte("worktree"))
+}
+
+// recall returns what git said before about the linked work tree with the top level top, when
+// what it said still holds. Git works its four answers out from a few small files, and these are
+// read again on every call; beside them only the checks of the known limit below can make git
+// refuse the folder. The answer holds only when
+//
+//   - <top>/.git is a regular file with the same bytes as when git answered, and the path in it
+//     still leads to the same git dir (a symlink on the way may have changed);
+//   - <gitDir>/commondir has the same bytes and still leads to the shared git dir of r;
+//   - <common>/config and <gitDir>/config.worktree have the same bytes (the second may be
+//     missing, as it was), and neither has the word "worktree" in it, which remember sees to:
+//     with extensions.worktreeConfig, a core.worktree in either makes another folder the work
+//     tree of the commands that run here, and that folder can become another one while the
+//     bytes stay (a symlink on the way to it). A repository that uses either setting is asked
+//     about every time;
+//   - <gitDir>/HEAD is a ref or a commit, and <common>/objects and <common>/refs are folders:
+//     without them git takes the folder for no repository.
+//
+// Anything else, a file that cannot be read included, drops the answer, and git is asked as if
+// it had never been: a folder that lost its .git, where git would go up to the enclosing
+// checkout, is never answered from here. Nor is the main work tree, whose .git is a folder.
+// Nothing is remembered about refs, the value of HEAD, the index or the files, and whether a
+// merge is in progress is for the caller to look up each time, at t.mergeHead.
+//
+// The lock is held for the map alone, never while files are read or git runs.
+//
+// Known limit: git also refuses a repository for reasons that the files above do not show, and
+// the checks here do not see them (tried on git 2.50.1):
+//
+//   - the repository's files belong to another user, and safe.directory in the user's own
+//     config does not allow it;
+//   - <common>/objects or <common>/refs cannot be searched (chmod 000, for one): git asks for
+//     the permission to search them, the check here only stats them;
+//   - <gitDir>/HEAD has its "refs/" after the first 255 bytes ("ref:" and 300 spaces before it,
+//     for one): git reads no more of the file than that;
+//   - the path in <top>/.git crosses more than 32 symlinks: git gives up there,
+//     filepath.EvalSymlinks does not;
+//   - a config file that is none of the files above, the user's or the system's, cannot be
+//     parsed.
+//
+// When one of these comes to be true of a work tree that is remembered and none of the files
+// above changes, the answer is still given, and every git command that follows fails in this
+// folder ("fatal: not a git repository"): they do not go up, so they act on no other checkout
+// and change nothing on disk, but the error is an *Error of git where it would have been
+// ErrNotWorktree.
+func (r *Repo) recall(top string) (tree, bool) {
+	r.memoMu.Lock()
+	m := r.memo[top]
+	r.memoMu.Unlock()
+	if m == nil {
+		return tree{}, false
+	}
+	if now, ok := readLinked(top); ok && now.equal(m.files) {
+		r.memoHits.Add(1)
+		return m.tree, true
+	}
+	r.forget(top, m)
+	return tree{}, false
+}
+
+// forget drops what is remembered about the work tree with the top level top: the answer m, or
+// whatever there is when m is nil.
+func (r *Repo) forget(top string, m *remembered) {
+	r.memoMu.Lock()
+	if m == nil || r.memo[top] == m {
+		delete(r.memo, top)
+	}
+	r.memoMu.Unlock()
 }
 
 // checkArg refuses a ref or branch name that git would read as an option or that cannot be one.
@@ -306,6 +629,15 @@ func absIn(dir, path string) string {
 		return path
 	}
 	return filepath.Join(dir, path)
+}
+
+// linkIn is absIn for a path that a file of git names: nothing is cleaned away, so that ".."
+// after a symlink leads where it leads for git, to the parent of what the symlink points at.
+func linkIn(dir, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return dir + string(filepath.Separator) + path
 }
 
 // resolve cleans path and resolves symlinks in it (/tmp is /private/tmp on macOS). When path does

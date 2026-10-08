@@ -16,9 +16,7 @@ import (
 // TestLaunchRace starts two `launch` at the same moment for one data folder: both must print the
 // same URL and exactly one server must run.
 func TestLaunchRace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds the binary and starts servers")
-	}
+	serverTest(t)
 	bin := buildBinary(t)
 	for round := 1; round <= 3; round++ {
 		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) { launchRace(t, bin) })
@@ -26,13 +24,15 @@ func TestLaunchRace(t *testing.T) {
 }
 
 func launchRace(t *testing.T, bin string) {
-	testMCPPort(t) // every launched serve binds this free port, never the machine-global 6006
+	env := serverEnv(t, freePort(t)) // every launched serve binds this free port, never the machine-global 6006
 	dir := t.TempDir()
 	port := freePort(t)
 	portArg := strconv.Itoa(port)
 	claude := noClaude(t)
 	t.Cleanup(func() {
-		exec.Command(bin, "stop", "-home", dir, "-port", portArg).Run()
+		stop := exec.Command(bin, "stop", "-home", dir, "-port", portArg)
+		stop.Env = env
+		stop.Run()
 		exec.Command("pkill", "-KILL", "-f", "--", "-home "+dir).Run()
 	})
 
@@ -50,7 +50,9 @@ func launchRace(t *testing.T, bin string) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, bin, "launch", "-home", dir, "-port", portArg, "-client", "", "-claude", claude)
+			cmd := exec.CommandContext(ctx, bin, "launch", "-home", dir, "-port", portArg, "-client", "",
+				"-claude", claude, "-cursor", claude, "-pi", claude)
+			cmd.Env = env
 			<-start
 			out, err := cmd.Output()
 			r := result{out: string(out), err: err}

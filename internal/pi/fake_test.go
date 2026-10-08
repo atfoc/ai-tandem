@@ -41,7 +41,18 @@ func TestMain(m *testing.M) {
 		helperProcess()
 		os.Exit(0)
 	}
+	fakesExitAtOnce()
 	os.Exit(m.Run())
+}
+
+// fakesExitAtOnce sets GORACE for the processes the tests start, the fakes: a fake built with -race
+// would otherwise sleep 1 s before every exit (the race detector's atexit_sleep_ms). What GORACE
+// already holds is kept. The test binary itself read its GORACE when it started, so its own race
+// reporting is as it was.
+func fakesExitAtOnce() {
+	if old := os.Getenv("GORACE"); !strings.Contains(old, "atexit_sleep_ms") {
+		os.Setenv("GORACE", strings.TrimSpace(old+" atexit_sleep_ms=0"))
+	}
 }
 
 // fakeReply is one scripted RPC answer; a zero reply is success with no data. Silent: the fake
@@ -393,6 +404,34 @@ func (f *fake) recorded(t *testing.T) []map[string]any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// readCommand reports whether the fake has read a command of the given type.
+func (f *fake) readCommand(typ string) bool {
+	b, err := os.ReadFile(f.stdin)
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		var cmd struct{ Type string }
+		if json.Unmarshal([]byte(l), &cmd) == nil && cmd.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+// waitCommand waits until the fake has read a command of the given type.
+func (f *fake) waitCommand(t *testing.T, typ string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if f.readCommand(typ) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pi read no %s command within 10 s", typ)
+		}
+	}
 }
 
 // commandTypes is the type of every recorded command, in order.

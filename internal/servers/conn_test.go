@@ -281,6 +281,7 @@ func silentStream(w http.ResponseWriter, r *http.Request) {
 // TestConnStates has one case and more per state: the outcome of an attempt that enters it, what
 // the view then shows, and whether the connection retries or stops.
 func TestConnStates(t *testing.T) {
+	t.Parallel()
 	// Each short limit is the one its case is about: the others stay out of reach.
 	const short = 250 * time.Millisecond
 	type setup struct {
@@ -414,48 +415,52 @@ func TestConnStates(t *testing.T) {
 			StateAnotherServer, "This is the local server", false},
 	}
 	seen := map[State]bool{StateConnecting: true} // every new entry's first state; see add
-	for _, c := range cases {
-		seen[c.want] = true
-		t.Run(c.name, func(t *testing.T) {
-			su := c.setup(t)
-			r := startRig(t, su.set)
-			id := r.add(su.in)
-			v := r.waitState(id, c.want)
-			if c.detail == "" && v.Detail != "" || !strings.Contains(v.Detail, c.detail) {
-				t.Errorf("detail %q; want %q in it", v.Detail, c.detail)
-			}
-			if c.want.retries() != c.retries || c.want.stops() != (!c.retries && c.want != StateConnected) {
-				t.Errorf("state %q: retries %v, stops %v", c.want, c.want.retries(), c.want.stops())
-			}
-			if _, err := r.m.Do(context.Background(), id, http.MethodGet, StatePath, nil, 0); (err == nil) != (c.want == StateConnected) {
-				t.Errorf("Do in %q: err %v", c.want, err)
-			} else if err != nil && !errors.Is(err, ErrNotConnected) {
-				t.Errorf("Do in %q: err %v; want ErrNotConnected", c.want, err)
-			}
-			switch {
-			case c.retries:
-				// Without end: attempt after attempt, and no event for any but the first.
-				dials := r.dials.Load()
-				waitFor(t, "three more attempts", func() bool { return r.dials.Load() >= dials+3 })
-				r.wantStateEvents(id, string(c.want))
-				if got := r.callsOf(id); !slices.Equal(got, []string{"state connecting > " + string(c.want)}) {
-					t.Errorf("hooks %q", got)
+	// The cases run in parallel, inside a group that ends when the last of them has.
+	t.Run("cases", func(t *testing.T) {
+		for _, c := range cases {
+			seen[c.want] = true
+			t.Run(c.name, func(t *testing.T) {
+				t.Parallel()
+				su := c.setup(t)
+				r := startRig(t, su.set)
+				id := r.add(su.in)
+				v := r.waitState(id, c.want)
+				if c.detail == "" && v.Detail != "" || !strings.Contains(v.Detail, c.detail) {
+					t.Errorf("detail %q; want %q in it", v.Detail, c.detail)
 				}
-			case su.srv != nil:
-				staysQuiet(t, su.srv)
-				want := int64(1)
-				if c.want == StateFingerprintNotAccepted {
-					want = 0
+				if c.want.retries() != c.retries || c.want.stops() != (!c.retries && c.want != StateConnected) {
+					t.Errorf("state %q: retries %v, stops %v", c.want, c.want.retries(), c.want.stops())
 				}
-				if dials := r.dials.Load(); dials != want {
-					t.Errorf("%d dials; want %d", dials, want)
+				if _, err := r.m.Do(context.Background(), id, http.MethodGet, StatePath, nil, 0); (err == nil) != (c.want == StateConnected) {
+					t.Errorf("Do in %q: err %v", c.want, err)
+				} else if err != nil && !errors.Is(err, ErrNotConnected) {
+					t.Errorf("Do in %q: err %v; want ErrNotConnected", c.want, err)
 				}
-			}
-			if v := r.view(id); v.State != c.want {
-				t.Errorf("state is %q in the end; want %q", v.State, c.want)
-			}
-		})
-	}
+				switch {
+				case c.retries:
+					// Without end: attempt after attempt, and no event for any but the first.
+					dials := r.dials.Load()
+					waitFor(t, "three more attempts", func() bool { return r.dials.Load() >= dials+3 })
+					r.wantStateEvents(id, string(c.want))
+					if got := r.callsOf(id); !slices.Equal(got, []string{"state connecting > " + string(c.want)}) {
+						t.Errorf("hooks %q", got)
+					}
+				case su.srv != nil:
+					staysQuiet(t, su.srv)
+					want := int64(1)
+					if c.want == StateFingerprintNotAccepted {
+						want = 0
+					}
+					if dials := r.dials.Load(); dials != want {
+						t.Errorf("%d dials; want %d", dials, want)
+					}
+				}
+				if v := r.view(id); v.State != c.want {
+					t.Errorf("state is %q in the end; want %q", v.State, c.want)
+				}
+			})
+		}
+	})
 	for _, s := range allStates {
 		if !seen[s] {
 			t.Errorf("no case for the state %q", s)
@@ -475,6 +480,7 @@ var allStates = []State{
 // TestConnConnecting: an entry is connecting while its first attempt runs, and the table of
 // states holds for the outcomes of the test's table.
 func TestConnConnecting(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	release := make(chan struct{})
 	s.SetHello(func(w http.ResponseWriter, r *http.Request) {
@@ -521,6 +527,7 @@ func TestConnConnecting(t *testing.T) {
 // TestConnNoPinSendsNothing: with the box on and no fingerprint accepted nothing is dialed, and
 // an accept connects.
 func TestConnNoPinSendsNothing(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	in := form("Studio", s)
@@ -571,6 +578,7 @@ func TestConnNoPinSendsNothing(t *testing.T) {
 // TestConnOtherCertRefused: a server that presents another certificate at a reconnect is refused
 // in the handshake: no request, both fingerprints in the view, no retry. An accept connects.
 func TestConnOtherCertRefused(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -613,6 +621,7 @@ func TestConnOtherCertRefused(t *testing.T) {
 
 // TestConnExpiredPinned: under a pin the certificate's dates and names are not checked.
 func TestConnExpiredPinned(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{
 		Names: []string{"elsewhere.example"}, NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Hour),
 		Hosts: []string{"127.0.0.1"},
@@ -625,6 +634,7 @@ func TestConnExpiredPinned(t *testing.T) {
 // TestConnSelfSignedBoxOffRetries: without the box a self-signed certificate is refused before
 // any request, with Go's text, and the connection keeps trying.
 func TestConnSelfSignedBoxOffRetries(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(Input{Name: "Studio", Address: s.URL(), Secret: standin.DefaultSecret})
@@ -647,6 +657,7 @@ func TestConnSelfSignedBoxOffRetries(t *testing.T) {
 
 // TestConnLocalID: a server that answers with this server's own id is not connected to.
 func TestConnLocalID(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{InstanceID: testLocalID})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -693,6 +704,7 @@ func TestConnLocalID(t *testing.T) {
 // TestConnOneIDTwoAddresses: one server under two addresses is one entry: the second is refused
 // by the test, and saved anyway it shows the first one's name and connects to nothing.
 func TestConnOneIDTwoAddresses(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{Names: []string{"127.0.0.1", "localhost"}})
 	_, port := hostPort(t, s.URL())
 	// Both names lead to the stand-in, whatever this machine's resolver says.
@@ -739,6 +751,7 @@ func TestConnOneIDTwoAddresses(t *testing.T) {
 // TestConnTwoForcedEntriesOneServer: two entries saved anyway for one server, connecting at the
 // same time: one connects and the other is refused, never both.
 func TestConnTwoForcedEntriesOneServer(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{Names: []string{"127.0.0.1", "localhost"}})
 	_, port := hostPort(t, s.URL())
 	r := openRig(t, t.TempDir(), func(o *Options) {
@@ -763,6 +776,7 @@ func TestConnTwoForcedEntriesOneServer(t *testing.T) {
 
 // TestConnOtherIDAtReconnect: another id at a reconnect is another server: no stream, no retry.
 func TestConnOtherIDAtReconnect(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -789,8 +803,10 @@ func TestConnOtherIDAtReconnect(t *testing.T) {
 // TestConnTooOld: a level below the minimum, or none, is not connected to and not retried; a
 // test after the update on that machine connects.
 func TestConnTooOld(t *testing.T) {
+	t.Parallel()
 	for name, level := range map[string]*int{"lower": standin.Level(MinFeatureLevel - 1), "missing": nil} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			s := standin.Start(t, standin.Options{Version: "0.9"})
 			s.SetFeatureLevel(level)
 			r := startRig(t, nil)
@@ -833,6 +849,7 @@ func TestConnTooOld(t *testing.T) {
 // TestConnReconnects: the server stops and comes back: unreachable, then connected again, with
 // the snapshot of the new stream, Back once, and the pin checked at a new handshake.
 func TestConnReconnects(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -875,6 +892,7 @@ func TestConnReconnects(t *testing.T) {
 
 // TestConnSilence: a stream on which nothing arrives, no ping either, for Silence has ended.
 func TestConnSilence(t *testing.T) {
+	t.Parallel()
 	const silence = 400 * time.Millisecond
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, func(o *Options) { o.Timing.Silence = silence })
@@ -882,7 +900,7 @@ func TestConnSilence(t *testing.T) {
 	r.waitState(id, StateConnected)
 
 	// With pings the stream outlives Silence.
-	time.Sleep(2 * silence)
+	time.Sleep(silence + silence/2)
 	if got := r.callsOf(id); len(got) != 2 || s.Streams() != 1 {
 		t.Fatalf("hooks %q, %d streams; want the first stream still open", got, s.Streams())
 	}
@@ -906,6 +924,7 @@ func TestConnSilence(t *testing.T) {
 // TestConnSecretChanged: after a new secret on the server the entry stops at "secret not
 // accepted"; an edit with the new secret connects, and Back says so.
 func TestConnSecretChanged(t *testing.T) {
+	t.Parallel()
 	const newSecret = "a-new-secret-0123456789"
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
@@ -948,6 +967,7 @@ func TestConnSecretChanged(t *testing.T) {
 
 // TestConnSecretRefusedAtACall: a 401 on a call passed on is "secret not accepted" too.
 func TestConnSecretRefusedAtACall(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -973,6 +993,7 @@ func TestConnSecretRefusedAtACall(t *testing.T) {
 // TestDoHeadersAndLimit: a call carries the secret and the client id, takes its limit from the
 // caller or from Timing.Call, and its end leaves the stream open.
 func TestDoHeadersAndLimit(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	var got atomic.Value
 	s.Handle("POST /api/echo", func(w http.ResponseWriter, r *http.Request) {
@@ -982,12 +1003,12 @@ func TestDoHeadersAndLimit(t *testing.T) {
 	})
 	s.Handle("GET /api/slow", hang)
 	s.Handle("GET /api/late", func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(900 * time.Millisecond)
+		time.Sleep(550 * time.Millisecond)
 		answer(http.StatusOK, "text/plain", "late")(w, r)
 	})
 	r := startRig(t, func(o *Options) {
-		o.Timing.Headers = 500 * time.Millisecond // of hello and the stream; no limit of a call
-		o.Timing.Call = 300 * time.Millisecond
+		o.Timing.Headers = 400 * time.Millisecond // of hello and the stream; no limit of a call
+		o.Timing.Call = 150 * time.Millisecond
 	})
 	ctx := context.Background()
 
@@ -1024,8 +1045,8 @@ func TestDoHeadersAndLimit(t *testing.T) {
 	}
 
 	for name, c := range map[string]struct{ limit, want time.Duration }{
-		"the caller's limit": {500 * time.Millisecond, 500 * time.Millisecond},
-		"Timing.Call":        {0, 300 * time.Millisecond},
+		"the caller's limit": {250 * time.Millisecond, 250 * time.Millisecond},
+		"Timing.Call":        {0, 150 * time.Millisecond},
 	} {
 		start := time.Now()
 		_, err := r.m.Do(ctx, id, http.MethodGet, "/api/slow", nil, c.limit)
@@ -1054,6 +1075,7 @@ func TestDoHeadersAndLimit(t *testing.T) {
 
 // TestStreamHasNoLimit: the limits of hello, of the stream's start and of a call end no stream.
 func TestStreamHasNoLimit(t *testing.T) {
+	t.Parallel()
 	const limit = 400 * time.Millisecond
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, func(o *Options) {
@@ -1061,7 +1083,7 @@ func TestStreamHasNoLimit(t *testing.T) {
 	})
 	id := r.add(form("Studio", s))
 	r.waitState(id, StateConnected)
-	time.Sleep(3 * limit)
+	time.Sleep(2 * limit)
 	s.Send(map[string]any{"type": "late"})
 	r.waitCall(id, "event late", 1)
 	if got := r.callsOf(id); !slices.Equal(got, []string{"snapshot", "state connecting > connected", "event late"}) {
@@ -1074,6 +1096,7 @@ func TestStreamHasNoLimit(t *testing.T) {
 
 // TestEventsInOrder: every event after the snapshot reaches Hooks.Event, in the order sent.
 func TestEventsInOrder(t *testing.T) {
+	t.Parallel()
 	const n = 200
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
@@ -1114,6 +1137,7 @@ func TestEventsInOrder(t *testing.T) {
 // TestAgentsEventUpdatesView: the usable agents of the snapshot, then of an "agents" event, are
 // in the view, in a server_state event and in Lists; a "catalog" event updates Lists.
 func TestAgentsEventUpdatesView(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -1158,6 +1182,7 @@ func TestAgentsEventUpdatesView(t *testing.T) {
 
 // TestReadEvent: the stream's format: data lines, comments, other fields, a last event cut off.
 func TestReadEvent(t *testing.T) {
+	t.Parallel()
 	stream := ": ping\n\ndata: {\"a\":1}\n\n: ping\n\nevent: x\nid: 7\ndata:{\"b\":\ndata: 2}\r\n\r\n\n\ndata: {\"cut\":"
 	br := bufioReader(stream)
 	for _, want := range []string{`{"a":1}`, "{\"b\":\n2}"} {
@@ -1182,6 +1207,7 @@ func TestReadEvent(t *testing.T) {
 
 // TestTiming: the defaults of the plan, and the back-off with its ±20 %.
 func TestTiming(t *testing.T) {
+	t.Parallel()
 	const s = time.Second
 	d := (Timing{}).withDefaults()
 	if d.Dial != 3*s || d.Handshake != 3*s || d.Headers != 3*s || d.Hello != 10*s || d.FirstEvent != 10*s ||

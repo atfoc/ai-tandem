@@ -61,6 +61,21 @@ test("a loss: the role is lost, an unsaved edit is dropped with its scene, a sav
   assert.deepEqual(onLost(null), { role: "lost", forget: false, flush: false, dropped: false });
 });
 
+test("a loss under an outage of the board's server: the scene and its edit are kept, and the next grant decides by the revision", () => {
+  const stay = { role: "lost", forget: false, flush: false, dropped: false };
+  for (const c of [dirty(3), clean(3), null]) assert.deepEqual(onLost(c, true), stay);
+  assert.deepEqual(onLost(dirty(3), false), onLost(dirty(3))); // not kept unless asked: a local board, or no outage
+  assert.deepEqual(onGrant(dirty(3), 3), { role: "held", forget: false, flush: true, dropped: false });
+  assert.deepEqual(onGrant(dirty(3), 5), { role: "held", forget: true, flush: false, dropped: true });
+});
+
+test("a take if free answered busy keeps an edit that was kept at the loss; a take that waits is not undone", () => {
+  assert.deepEqual(onTake(dirty(3), { state: "busy" }, "lost", true), { role: "other", forget: false, flush: false, dropped: false });
+  assert.deepEqual(onTake(dirty(3), { state: "busy" }, "lost"), { role: "other", forget: true, flush: false, dropped: true });
+  assert.equal(onTake(dirty(3), { state: "busy" }, "taking", true), null);
+  assert.deepEqual(onTake(dirty(3), { state: "held", rev: 5 }, "lost", true), onGrant(dirty(3), 5));
+});
+
 test("a refused save drops the edit: stale keeps the role, not_holder makes the board another window's", () => {
   assert.deepEqual(onRefusal("stale", "held"), { role: "held", forget: true, flush: false, dropped: true });
   assert.deepEqual(onRefusal("stale", null), { role: null, forget: true, flush: false, dropped: true });
@@ -71,8 +86,9 @@ test("no step both saves and drops, and only a grant saves", () => {
   const caches = [null, clean(1), dirty(1)];
   const roles: (BoardRole | null)[] = [null, "held", "taking", "other", "lost"];
   const steps = [
-    ...caches.flatMap((c) => [onGrant(c, 1), onGrant(c, 2), onLost(c)]),
-    ...caches.flatMap((c) => roles.flatMap((r) => (["held", "waiting", "busy"] as const).flatMap((state) => [onTake(c, { state, rev: 1 }, r), onTake(c, { state, rev: 2 }, r)]))),
+    ...caches.flatMap((c) => [onGrant(c, 1), onGrant(c, 2), onLost(c), onLost(c, true)]),
+    ...caches.flatMap((c) => roles.flatMap((r) => (["held", "waiting", "busy"] as const).flatMap((state) =>
+      [onTake(c, { state, rev: 1 }, r), onTake(c, { state, rev: 2 }, r), onTake(c, { state, rev: 1 }, r, true), onTake(c, { state, rev: 2 }, r, true)]))),
     ...roles.flatMap((r) => [onRefusal("stale", r), onRefusal("not_holder", r)]),
   ];
   for (const st of steps) {

@@ -68,6 +68,7 @@ func (e *env) defaultsOf() (d model.Defaults) {
 // ---- the guard ------------------------------------------------------------
 
 func TestWindowGuard(t *testing.T) {
+	t.Parallel()
 	small := &model.CatalogModel{ID: "small", Label: "Small", ContextWindow: 32_000}
 	const limit = 32_000 - piReserve
 	cases := []struct {
@@ -120,6 +121,7 @@ func TestWindowGuard(t *testing.T) {
 }
 
 func TestChoose(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.storeCatalog(model.Claude, &model.Catalog{Models: []model.CatalogModel{
 		{ID: "wide", Efforts: []string{"low", "high", "max"}, DefaultEffort: "high", ContextWindow: 1000},
@@ -176,6 +178,7 @@ func TestChoose(t *testing.T) {
 
 // Every refusal of choose is an ErrBadChoice with its own text, which is what a route answers 400 for.
 func TestChooseRefusalsAreBadChoices(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	cur := model.ModelChoice{Model: "sonnet", Effort: "high"}
 	for _, tc := range [][2]string{{"nope", ""}, {"", "bogus"}, {"haiku", "high"}} {

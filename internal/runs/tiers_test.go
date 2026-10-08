@@ -402,6 +402,7 @@ func TestAgentRecordsCarryTheTier(t *testing.T) {
 // The orchestrator's choice in a tier map: checked like a tier when it has a model, absent
 // otherwise, set and taken away by a patch.
 func TestSvcOrchestratorChoice(t *testing.T) {
+	t.Parallel()
 	levels := []string{"low", "medium", "high"}
 	cat := &model.Catalog{Models: []model.CatalogModel{{ID: "big", Efforts: levels, DefaultEffort: "medium"}, {ID: "plain"}}}
 	base := tiersAll("big", "high")

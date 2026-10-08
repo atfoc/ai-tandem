@@ -34,6 +34,7 @@ func findModel(t *testing.T, c *model.Catalog, id string) model.CatalogModel {
 }
 
 func TestParseModelList(t *testing.T) {
+	t.Parallel()
 	raw, c := loadModelList(t)
 
 	// Every model in the file appears once, in file order; Default is left empty.
@@ -111,6 +112,7 @@ func TestParseModelList(t *testing.T) {
 }
 
 func TestParseModelListStripsTrailingEffort(t *testing.T) {
+	t.Parallel()
 	c := ParseModelList(json.RawMessage(`{"models":[{"value":"g","name":"Gemini 3.8 Flash High"},{"value":"h","name":"High"}]}`))
 	if c == nil {
 		t.Fatal("nil catalog")
@@ -124,6 +126,7 @@ func TestParseModelListStripsTrailingEffort(t *testing.T) {
 }
 
 func TestParseModelListInvalid(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{`not json`, `{"models":[]}`} {
 		if c := ParseModelList(json.RawMessage(in)); c != nil {
 			t.Errorf("ParseModelList(%s) = %+v, want nil", in, c)
@@ -132,6 +135,7 @@ func TestParseModelListInvalid(t *testing.T) {
 }
 
 func TestContextSize(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want int
@@ -155,6 +159,7 @@ func TestContextSize(t *testing.T) {
 }
 
 func TestLargestContext(t *testing.T) {
+	t.Parallel()
 	for _, in := range [][]string{{"1m", "300k"}, {"300k", "1m"}} {
 		if v, n := largestContext(in); v != "1m" || n != 1_000_000 {
 			t.Errorf("largestContext(%v) = %q, %d; want 1m", in, v, n)

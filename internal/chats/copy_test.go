@@ -111,6 +111,7 @@ const rewritten = `{"i":0,"item":{"kind":"user","text":"count the files"}}
 `
 
 func TestCopyPrefixRewrittenLines(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if err := os.WriteFile(filepath.Join(e.st.P.ChatDir(v.ID), "items.jsonl"), []byte(rewritten), 0o600); err != nil {
@@ -160,6 +161,7 @@ func TestCopyPrefixRewrittenLines(t *testing.T) {
 }
 
 func TestCopyPrefixLiveItems(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.subStart() // the tool call t1 has no result and was never written
 	if disk := diskItems(t, filepath.Join(e.st.P.ChatDir(id), "items.jsonl")); len(disk) != 1 {
@@ -235,6 +237,7 @@ func (e *env) subTree() (id string, count int, a, b, c string) {
 }
 
 func TestCopyPrefixSubagents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, count, a, b, c := e.subTree()
 	if items := e.items(id); count != 4 || items[1].Subagent != a || items[5].Subagent != c {
@@ -275,6 +278,7 @@ func TestCopyPrefixSubagents(t *testing.T) {
 }
 
 func TestCopyPrefixBranchFolder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, count, a, b, _ := e.subTree()
 	before := folder(t, e.st.P.ChatDir(id), false)
@@ -309,6 +313,7 @@ func TestCopyPrefixBranchFolder(t *testing.T) {
 }
 
 func TestCopyPrefixPermSubagent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "go"}) // no tool item links it
@@ -340,6 +345,7 @@ func TestCopyPrefixPermSubagent(t *testing.T) {
 }
 
 func TestCopyPrefixFlushesRunningSubagent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	emitSpawnItem(t, parent, "t1", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
@@ -387,6 +393,7 @@ func TestCopyPrefixFlushesRunningSubagent(t *testing.T) {
 }
 
 func TestCopyPrefixNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _, _, _, _ := e.subTree()
 	before := folder(t, e.st.P.ChatDir(id), false)
@@ -402,6 +409,7 @@ func TestCopyPrefixNothing(t *testing.T) {
 }
 
 func TestCopyPrefixFailureLeavesNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, count, a, _, _ := e.subTree()
 	n := len(e.items(id))

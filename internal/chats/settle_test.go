@@ -81,6 +81,7 @@ func (e *env) delivery(when, id, sid string, want model.SubDelivery) {
 // the process's exit, and on pi a clean end. Its results are owed again after one failed attempt,
 // the thread has a note, and the chat is held: a result that comes later starts no turn.
 func TestCarryingTurnNotReceived(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		kind model.AgentKind
@@ -148,6 +149,7 @@ func TestCarryingTurnNotReceived(t *testing.T) {
 // without any: its results are delivered, whatever follows. The chat is held only by how the turn
 // ended, and when it is not, a second subagent's result is sent.
 func TestCarryingTurnDelivered(t *testing.T) {
+	t.Parallel()
 	text := []agent.Event{{Kind: agent.EvTextStart}, {Kind: agent.EvTextDelta, Text: "noted"}}
 	with := func(evs []agent.Event, end agent.Event) []agent.Event {
 		return append(append([]agent.Event(nil), evs...), end)
@@ -204,6 +206,7 @@ func TestCarryingTurnDelivered(t *testing.T) {
 // The turn's end is settled before it is looked at as a trigger: a result that became owed during a
 // carrying turn that is settled as not received does not go out at that turn's clean end.
 func TestSettlementComesBeforeTurnEndTrigger(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, carried, running, runner := e.delivering(model.Pi)
 	e.finish(runner, "second report")
@@ -219,6 +222,7 @@ func TestSettlementComesBeforeTurnEndTrigger(t *testing.T) {
 
 // A permission request raised by a subagent is not output of the agent the results went to.
 func TestChildRequestIsNotModelOutput(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, carried, running, runner := e.delivering(model.Claude)
 	ask(t, runner, "", "p1")
@@ -232,6 +236,7 @@ func TestChildRequestIsNotModelOutput(t *testing.T) {
 // Nor is one raised by a native subagent that an earlier turn left running, which reaches the app
 // through the agent's own process.
 func TestNativeSubagentRequestIsNotModelOutput(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.subStart()
 	subRun(t, parent, "t1")
@@ -254,6 +259,7 @@ func TestNativeSubagentRequestIsNotModelOutput(t *testing.T) {
 // The human stops a carrying turn. With no model output its results are owed again and the attempt
 // does not count; with model output first they are delivered.
 func TestHumanStopsCarryingTurn(t *testing.T) {
+	t.Parallel()
 	interrupt := func(t *testing.T, e *env, id string, parent *fakeAgent, runner *fakeAgent) {
 		t.Helper()
 		if err := e.m.Interrupt(id); err != nil {
@@ -354,6 +360,7 @@ func TestHumanStopsCarryingTurn(t *testing.T) {
 // whatever is sent or finishes later, with its report still on its record. Every change of its
 // state is sent to the clients.
 func TestRetryOnceThenGiveUp(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, parent, sa, sb, runner := e.delivering(model.Claude)
@@ -450,6 +457,7 @@ func TestRetryOnceThenGiveUp(t *testing.T) {
 
 // Results that shared two failed turns are given up together.
 func TestBatchGivenUpTogether(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent() // mid-turn
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "a"})
@@ -488,6 +496,7 @@ func TestBatchGivenUpTogether(t *testing.T) {
 // settled once, the thread gets one note, one turn is counted, and a human message that got in
 // between keeps its turn.
 func TestRefusalRace(t *testing.T) {
+	t.Parallel()
 	const rejected = "pi rejected the prompt: no model"
 	ended := []agent.Event{{Kind: agent.EvThinking}, {Kind: agent.EvTurnEnd, Error: rejected}}
 	for _, tc := range []struct {
@@ -609,6 +618,7 @@ func TestRefusalRace(t *testing.T) {
 // A refusal with an error the turn's own end does not carry: that end is the next turn's, and is
 // not taken for the refused delivery's.
 func TestRefusalThenUnrelatedTurnEnd(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -639,6 +649,7 @@ func TestRefusalThenUnrelatedTurnEnd(t *testing.T) {
 // A refused delivery that had no turn end of its own, and then a turn in which the agent answers and
 // which ends with the refusal's error: that end is the newer turn's, and ends it.
 func TestRefusalThenTurnEndWithItsError(t *testing.T) {
+	t.Parallel()
 	const cause = "connection lost"
 	e := newEnv(t)
 	id, parent := e.idleParent()
@@ -664,6 +675,7 @@ func TestRefusalThenTurnEndWithItsError(t *testing.T) {
 // A result owed after a failed attempt whose record cannot be written is not handed over, and keeps
 // its failed attempt: the retry that follows is its last.
 func TestRecordWriteFailureKeepsFailedAttempt(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, carried, _, _ := e.delivering(model.Claude)
 	parent.emit(t, agent.Event{Kind: agent.EvTurnEnd, Error: "API Error: overloaded"})
@@ -698,6 +710,7 @@ func TestRecordWriteFailureKeepsFailedAttempt(t *testing.T) {
 // The refusal comes after the delivery's turn was settled some other way: it changes nothing. The
 // results are not put back as owed, the chat is not held again, and no note is added.
 func TestLateRefusalChangesNothing(t *testing.T) {
+	t.Parallel()
 	blocked := func(t *testing.T) (e *env, id string, parent *fakeAgent, sa model.Subagent, release func()) {
 		t.Helper()
 		e = newEnv(t)
@@ -786,6 +799,7 @@ func TestLateRefusalChangesNothing(t *testing.T) {
 
 // Stop (archive) settles the turn that was carrying results, as stopped by the human.
 func TestStopDuringCarryingTurn(t *testing.T) {
+	t.Parallel()
 	t.Run("no model output", func(t *testing.T) {
 		e := newEnv(t)
 		id, parent, carried, _, _ := e.delivering(model.Claude)
@@ -816,6 +830,7 @@ func TestStopDuringCarryingTurn(t *testing.T) {
 // Delete during a carrying turn: nothing is written for the chat afterwards, whatever its old
 // process or a hand-off still in flight comes back with.
 func TestDeleteDuringCarryingTurn(t *testing.T) {
+	t.Parallel()
 	gone := func(t *testing.T, e *env, id string) {
 		t.Helper()
 		if _, err := os.Stat(e.st.P.ChatDir(id)); !errors.Is(err, os.ErrNotExist) {
@@ -872,6 +887,7 @@ func TestDeleteDuringCarryingTurn(t *testing.T) {
 // Shutdown settles a carrying turn itself, as stopped by the human: with no model output its
 // results are owed again, with no failed attempt counted, whatever the closing process then does.
 func TestShutdownDuringCarryingTurn(t *testing.T) {
+	t.Parallel()
 	t.Run("no model output", func(t *testing.T) {
 		e := newEnv(t)
 		id, parent, carried, running, _ := e.delivering(model.Claude)
@@ -947,6 +963,7 @@ func TestShutdownDuringCarryingTurn(t *testing.T) {
 // The hand-off of a delivery that starts at a turn's end does not run on the pump: with the agent's
 // Send blocked, the pump goes on taking the agent's events.
 func TestTurnEndHandOffNotOnPump(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, owed, _, _ := e.pendingParent()
 	release := parent.blockSends()
@@ -969,6 +986,7 @@ func TestTurnEndHandOffNotOnPump(t *testing.T) {
 // An Interrupt that came while results were being handed over is passed on once the agent has the
 // message. When the delivery's turn has ended by then, there is nothing to stop: no signal.
 func TestDeferredInterruptDroppedAfterTurnEnded(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})

@@ -7,6 +7,7 @@ import (
 )
 
 func TestInstanceID(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "home") // made when missing
 	f := FilesIn(root)
 	id, err := EnsureInstanceID(root)
@@ -44,6 +45,7 @@ func TestInstanceID(t *testing.T) {
 }
 
 func TestValidID(t *testing.T) {
+	t.Parallel()
 	if !ValidID("6f9619ff-8b86-4d01-b42d-00cf4fc964ff") {
 		t.Error("a version 4 UUID is refused")
 	}

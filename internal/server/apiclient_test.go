@@ -390,6 +390,7 @@ func (e *env) remoteGroups() (ids []string) {
 // ---- the client id (AC38) -------------------------------------------------------
 
 func TestAPIClientID(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	h := e.s.RemoteHandler()
@@ -518,6 +519,7 @@ func TestAPIClientID(t *testing.T) {
 // An API client's state and stream hold its own chats and the server's lists: no group, board,
 // defaults, data folder or server list, and no chat of another client or of the owner.
 func TestAPIClientSnapshot(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	list, _ := withServers(t)
 	e, l := remoteEnv(t, withAgents(sp), list)
@@ -540,8 +542,12 @@ func TestAPIClientSnapshot(t *testing.T) {
 		}
 	}
 
-	want := []string{"agents", "catalogs", "chats", "defaultCwd", "home", "runs", "states"}
+	want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "runs", "states"}
 	x, snapX := l.api(apiX)
+	// The boards are the client's own: none yet, and then an empty list, not null.
+	if !strings.Contains(snapX, `"boards":[]`) {
+		t.Fatalf("the snapshot's boards: %s", snapX)
+	}
 	y, _ := l.api(apiY)
 	if got := keysOf(t, snapX); !slices.Equal(got, append(slices.Clone(want), "type")) {
 		t.Fatalf("keys of the snapshot event: %v", got)
@@ -621,7 +627,7 @@ func TestAPIClientSnapshot(t *testing.T) {
 	// Neither the state nor the stream of X holds what is not its own.
 	seen := stateX + "\n" + snapX + "\n" + strings.Join(evs[0], "\n")
 	for _, s := range []string{`"servers"`, "Studio", "https://127.0.0.1:1", pin, secondSecret, testSecret, `"dataDir"`, e.a.DataDir,
-		`"groups"`, `"defaults"`, `"boards"`, `"board"`, bd.ID, owner.ID, `"Remote"`, `"Mine"`, ownID} {
+		`"groups"`, `"defaults"`, `"board"`, bd.ID, owner.ID, `"Remote"`, `"Mine"`, ownID} {
 		if strings.Contains(seen, s) {
 			t.Errorf("X's state or stream holds %s", s)
 		}
@@ -634,6 +640,7 @@ func TestAPIClientSnapshot(t *testing.T) {
 // Every route of the table does for an API client what it does for a page, on a chat the client
 // made and on one it did not make.
 func TestTableRoutesServeAnAPIClient(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp), func(s *Server) {
 		s.Usage = map[model.AgentKind]func(bool) (model.PlanUsage, error){model.Claude: func(bool) (model.PlanUsage, error) { return model.PlanUsage{}, nil }}
@@ -743,9 +750,10 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	if got := e.reach(x)[0]; count(got, "chat_removed", chat1) != 1 {
 		t.Errorf("after the delete the client was sent %v", types(got))
 	}
-	// The run routes of the table are called in apiruns_test.go, on a server with runs.
+	// The run routes of the table are called in apiruns_test.go, on a server with runs, and the
+	// board routes in apiboards_test.go (TestBoardRoutesOfAnAPIClient).
 	for _, route := range RemoteRoutes {
-		if !called[route] && !strings.Contains(route, " /api/runs/") {
+		if !called[route] && !strings.Contains(route, " /api/runs/") && !isBoardRoute(route) {
 			t.Errorf("the route %s of the table was not called", route)
 		}
 	}
@@ -753,6 +761,8 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 
 // ---- the creation call ----------------------------------------------------------
 
+// Not parallel: the test lowers the caps on running turns, which are the package's, one pair for every
+// manager of the process (see TestMessagesRefusedAtTheCap).
 func TestCreationCall(t *testing.T) {
 	sp := &apiSpawner{}
 	set, _ := agentsOf("claude", "cursor") // pi is not installed
@@ -911,6 +921,7 @@ func TestCreationCall(t *testing.T) {
 
 // Of many creation calls with one id, at once, one makes the chat and one sends.
 func TestCreationCallManyAtOnce(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	cwd := t.TempDir()
@@ -1001,6 +1012,7 @@ func content(evs []string) []string { return only(evs, "chat_items", "tree", "su
 // While a page holds a board and follows a chat of its own, two API clients connect and one of
 // them creates a chat, sends, answers a permission ask and stops. Nothing is taken from the page.
 func TestAPIClientsTakeNothingFromAPage(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	p := e.page("P")
@@ -1084,6 +1096,7 @@ func TestAPIClientsTakeNothingFromAPage(t *testing.T) {
 
 // The same with no page connected at all.
 func TestAPIClientWithNoPage(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	// The env's own page goes: a new stream with its id ends the old one, and is then closed.
@@ -1114,6 +1127,7 @@ func TestAPIClientWithNoPage(t *testing.T) {
 // A page that follows the chat of a run's agent still gets that chat's events after API clients
 // connected; an API client gets them only when it follows the chat, and nothing of the run.
 func TestRunAgentsChatBesideAPIClients(t *testing.T) {
+	t.Parallel()
 	l := newListener(t)
 	e := newRunEnv(t)
 	l.set(e.s)
@@ -1196,6 +1210,7 @@ func TestRunAgentsChatBesideAPIClients(t *testing.T) {
 // Two answers to one permission ask at once, one from a page and one from an API client: one is
 // taken, the other finds the request closed, and the agent gets one answer.
 func TestTwoAnswersToOneAsk(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	p := e.page("P")
@@ -1236,6 +1251,7 @@ func TestTwoAnswersToOneAsk(t *testing.T) {
 // ---- the group "Remote" (AC45) ----------------------------------------------------
 
 func TestChatsOfAPIClientsSitInTheRemoteGroup(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	p := e.page("P")
@@ -1383,6 +1399,7 @@ func TestChatsOfAPIClientsSitInTheRemoteGroup(t *testing.T) {
 // Every row of the event table whose sender is the app, the boards or the chat manager, for
 // three API clients beside a page: X made the chat (its mark), Y follows it, Z does neither.
 func TestEventsOfAnAPIClient(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	p := e.page("P")
@@ -1543,6 +1560,7 @@ func TestEventsOfAnAPIClient(t *testing.T) {
 // ---- the reload of the secret (AC24) ----------------------------------------------
 
 func TestReloadSecret(t *testing.T) {
+	t.Parallel()
 	e, l := remoteEnv(t)
 	p := e.page("P")
 	x, _ := l.api(apiX)
@@ -1630,6 +1648,7 @@ func TestReloadSecret(t *testing.T) {
 // A stream whose request passed the secret check before a reload and is recorded after it would
 // stay open with the old secret: it gets no snapshot and ends at once.
 func TestStreamAcrossAReloadEnds(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withRemote)
 	stream := func(gen int64) (*httptest.ResponseRecorder, chan struct{}, context.CancelFunc) {
 		ctx, cancel := context.WithCancel(context.WithValue(context.Background(), remoteKey{}, remoteCall{secretGen: gen}))
@@ -1725,6 +1744,7 @@ func (h *hooked) await(t *testing.T, what string, ok func(h *hooked) bool) {
 // The connection another server makes (internal/servers: the test of the Servers dialog and the
 // manager's own connection) against the real listener: the contract of the two packages.
 func TestServersPackageAgainstTheListener(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	timing := servers.Timing{Backoff: []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, Jitter: -1}
@@ -1766,7 +1786,7 @@ func TestServersPackageAgainstTheListener(t *testing.T) {
 	m.Start()
 	t.Cleanup(m.Close)
 	v, saved, res, err := m.Add(ctx, servers.Input{Name: "Studio", Address: l.base, Secret: testSecret, SelfSigned: true, Pin: l.pin}, false)
-	if err != nil || !saved || res == nil || !res.OK || res.Step != 5 || res.FeatureLevel != 1 || v.InstanceID != ownID {
+	if err != nil || !saved || res == nil || !res.OK || res.Step != 5 || res.FeatureLevel != FeatureLevel || v.InstanceID != ownID {
 		t.Fatalf("add: %+v, saved %v, result %+v, %v", v, saved, res, err)
 	}
 	h.await(t, "the connection", func(h *hooked) bool { return slices.Contains(h.states, servers.StateConnected) && len(h.snaps) == 1 })
@@ -1777,7 +1797,7 @@ func TestServersPackageAgainstTheListener(t *testing.T) {
 	if !ok || lists.Home != "/home/owner" || lists.DefaultCwd != e.a.DefaultCwd || len(lists.Catalogs) != 3 || lists.Catalogs[model.Claude] == nil || len(lists.Agents) != 3 {
 		t.Fatalf("the lists: %+v, %v", lists, ok)
 	}
-	if got := keysOf(t, h.snaps[0]); !slices.Equal(got, []string{"agents", "catalogs", "chats", "defaultCwd", "home", "runs", "states", "type"}) {
+	if got := keysOf(t, h.snaps[0]); !slices.Equal(got, []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "runs", "states", "type"}) {
 		t.Fatalf("the snapshot the hooks got: %v", got)
 	}
 	if !e.s.Bridge.Known(apiX) {

@@ -38,12 +38,15 @@ type RemoteServers interface {
 	ByKey(key string) (RemoteEntry, bool)
 	Dir(entry, path string) (abs string, err error) // GET /api/dirs there; ErrServerUnreachable; a 400 there wraps agent.ErrFolderMissing
 	DropLeftover(entry, chat string)                // DELETE there when connected, in the background
+	// BoardOn tells of a board that lives on another server: the entry it is on, its group here
+	// and whether it is archived. ok is false for a board this server keeps no record of.
+	BoardOn(id string) (entry, group string, archived, ok bool)
 }
 
 var (
 	ErrServerUnknown     = errors.New("no such server")
 	ErrBoardLocal        = errors.New("boards and the chats on them are on this computer")
-	ErrServerFixed       = errors.New("a chat on a run is on the run's server")
+	ErrServerFixed       = errors.New("a chat on a run is on the run's server") // and one on a board of another server on the board's
 	ErrServerUnusable    = errors.New("no chat can be started on that server")
 	ErrServerUnreachable = errors.New("the server is not connected")
 	ErrStartUnconfirmed  = errors.New("the first message may have arrived: server and agent are fixed until that is known")
@@ -134,10 +137,11 @@ func (m *Manager) stickySide(group string) side {
 
 // newSide is the side the chat n asks for starts on. A chat with a client mark is on this
 // computer: an API client's chat is never passed on. A chat on a run is on the run's server
-// (ErrServerFixed for another), a chat on a board on this computer (ErrBoardLocal), whatever
-// the sticky server of the board's group. Any other chat is on the server it names, which must
+// (ErrServerFixed for another), a chat on a board on the board's: this computer (ErrBoardLocal),
+// or the entry boardOn for a board of another server (ErrServerFixed), whatever the sticky server
+// of the board's group. Any other chat is on the server it names, which must
 // be one a chat can be started on (ErrServerUnusable), else on the sticky server of group.
-func (m *Manager) newSide(n NewChat, ri *RunInfo, board bool, group string) (side, error) {
+func (m *Manager) newSide(n NewChat, ri *RunInfo, board bool, boardOn, group string) (side, error) {
 	switch {
 	case n.Client != "":
 		if !localServer(n.Server) {
@@ -149,6 +153,11 @@ func (m *Manager) newSide(n NewChat, ri *RunInfo, board bool, group string) (sid
 			return side{}, ErrServerFixed
 		}
 		return m.sideOf(ri.Server)
+	case board && boardOn != "":
+		if n.Server != "" && !sameServer(n.Server, boardOn) {
+			return side{}, ErrServerFixed
+		}
+		return m.sideOf(boardOn)
 	case board:
 		if !localServer(n.Server) {
 			return side{}, ErrBoardLocal
@@ -164,6 +173,29 @@ func (m *Manager) newSide(n NewChat, ri *RunInfo, board bool, group string) (sid
 	return m.stickySide(group), nil
 }
 
+// remoteBoard asks the server list of the board id: the entry of the server it is on, its group
+// here and whether it is archived. ok is false with no server list, and for a board that list
+// keeps no record of. A board of this server is not asked for here: Boards has it.
+func (m *Manager) remoteBoard(id string) (entry, group string, archived, ok bool) {
+	if m.Servers == nil {
+		return "", "", false, false
+	}
+	if entry, group, archived, ok = m.Servers.BoardOn(id); !ok || entry == "" {
+		return "", "", false, false
+	}
+	return entry, group, archived, true
+}
+
+// boardServer is the entry of the server the board id is on, "" for this computer: a board of
+// this server, and one nobody knows.
+func (m *Manager) boardServer(id string) string {
+	if _, ok := m.Boards.Get(id); ok {
+		return ""
+	}
+	entry, _, _, _ := m.remoteBoard(id)
+	return entry
+}
+
 // sameServer says whether a and b name one server.
 func sameServer(a, b string) bool {
 	return a == b || localServer(a) && localServer(b)
@@ -173,7 +205,8 @@ func sameServer(a, b string) bool {
 // server than it is on now. p is the meta of c's top-level chat. c.mu held.
 //
 // A server req names must be one of the list (ErrServerUnknown); for a chat on a board it must
-// be this computer (ErrBoardLocal), for a chat on a run the run's (ErrServerFixed), and another
+// be the board's: this computer (ErrBoardLocal), or the entry of a board on another server
+// (ErrServerFixed); for a chat on a run the run's (ErrServerFixed), and another
 // one than the chat has must not wait for the user (ErrServerUnusable). A chat with a client
 // mark stays here: any other server is unknown to it, as before there were any. Whether the
 // chat may change its server at all is the caller's to say.
@@ -188,8 +221,13 @@ func (m *Manager) configSide(c *Chat, p model.ChatMeta, req ConfigReq) (on side,
 	if on, err = m.sideOf(req.Server); err != nil {
 		return side{}, false, err
 	}
-	if p.Board != "" && on.remote {
-		return side{}, false, ErrBoardLocal
+	if p.Board != "" {
+		switch entry := m.boardServer(p.Board); {
+		case entry != "" && !sameServer(req.Server, entry):
+			return side{}, false, ErrServerFixed
+		case entry == "" && on.remote:
+			return side{}, false, ErrBoardLocal
+		}
 	}
 	if p.Run != "" {
 		if ri, _ := m.runOf(p.Run); !sameServer(req.Server, ri.Server) {
@@ -227,16 +265,19 @@ func (m *Manager) checkAgent(on side, a model.AgentKind) error {
 	return nil
 }
 
-// agentOn is the agent a chat on the side in group starts with when none is named: on the run
-// ri its agent kind when the side can use it, else the sticky agent of the group for that server
-// (defaults.Agent), and none when the side can use none or its list is not known.
+// agentOn is the agent a chat on the side in group starts with when none is named: the sticky
+// agent of the group for that server (defaults.Agent), and none when the side can use none or its
+// list is not known. On the run ri, whose group that is, it is the same; only where no agent the
+// side can use was chosen before is it the run's agent kind, when the side can use that.
 func (m *Manager) agentOn(on side, group string, ri *RunInfo) model.AgentKind {
 	can := m.agentsOn(on)
-	if ri != nil && slices.Contains(can, ri.Agent) {
-		return ri.Agent
-	}
 	var d model.Defaults
 	m.Store.Read(func(s *model.State) { d = defaults.Copy(s.Defaults) })
+	if ri != nil && slices.Contains(can, ri.Agent) {
+		if chosen, _ := defaults.Recorded(d, group, on.key(), "", can); !chosen {
+			return ri.Agent
+		}
+	}
 	return defaults.Agent(d, group, on.key(), can)
 }
 
@@ -365,8 +406,8 @@ func (m *Manager) SetRemoteStart(id, state string) error {
 // from here on, under the same id. meta is its chat.json as it was, token included.
 //
 // In one hold of the chat's lock, the chat's server, agent, folder, model and effort become the
-// defaults of its group, as a first message sent here makes them (not for a chat on a run, and
-// not while its server's key is unknown), and the chat object is retired. Then its token and
+// defaults of its group, as a first message sent here makes them (of a chat on a run the agent,
+// model and effort alone, of a chat on a board all but the server, and nothing while its server's key is unknown), and the chat object is retired. Then its token and
 // its folder go. Of the chat itself nothing is sent: no chat_removed, since the chat is still
 // there for the clients, and what is queued for the object is dropped (see cast). The bridge is
 // not told to forget it, so its followers and its mark stay. It holds the creation lock of the
@@ -379,12 +420,14 @@ func (m *Manager) HandOver(id string) (model.ChatMeta, error) {
 	}
 	var out outbox
 	meta := c.meta
-	if meta.Run == "" {
-		// The entry may be gone from the list by now: its key is then not known, and nothing
-		// is recorded.
-		if on, err := m.sideOf(meta.Server); err == nil {
-			m.recordDefaults(c, on.key(), on.key(), meta.Agent, meta.Cwd, model.ModelChoice{Model: meta.Model, Effort: meta.Effort}, &out)
+	// The entry may be gone from the list by now: its key is then not known, and nothing is
+	// recorded.
+	if on, err := m.sideOf(meta.Server); err == nil {
+		server := on.key()
+		if meta.Run != "" || meta.Board != "" {
+			server = "" // the run's server or the board's, not one chosen for a new chat of the group
 		}
+		m.recordDefaults(c, on.key(), server, meta.Agent, defaultsCwd(c, meta.Cwd), model.ModelChoice{Model: meta.Model, Effort: meta.Effort}, &out)
 	}
 	// What retire does, in the hold that recorded: no change of the chat falls between the two.
 	c.deleted = true

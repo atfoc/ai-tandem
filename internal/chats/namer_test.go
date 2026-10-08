@@ -6,6 +6,7 @@ import (
 )
 
 func TestPiNamerArgs(t *testing.T) {
+	t.Parallel()
 	const text = "draw a flow chart"
 	request := "Request to name:\n<<<\n" + text + "\n>>>\nTitle:"
 	cases := []struct {
@@ -45,6 +46,7 @@ func TestPiNamerArgs(t *testing.T) {
 }
 
 func TestPiNamerNameFails(t *testing.T) {
+	t.Parallel()
 	// A missing binary is an error; the chat keeps its empty title.
 	if _, err := (PiNamer{Bin: "ai-whiteboard-test-no-such-pi-binary"}).Name("hello"); err == nil {
 		t.Fatal("Name with a missing binary succeeded")

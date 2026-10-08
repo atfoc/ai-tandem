@@ -72,13 +72,13 @@ func branchOf(v model.ChatView) string {
 	return v.Branch
 }
 
-// viewOf is the view of a record as a page gets it, in events and in answers alike: the last
-// view received, with the chat's place, mark and drafts as this server keeps them.
+// viewOf is the view of a record as this server keeps it: the last view received, with the
+// chat's place, mark and drafts as this server keeps them. The board is the one the chat's
+// server names; what a page gets is pageView of it.
 func viewOf(rec Record) model.ChatView {
 	v := rec.View
 	v.ID = rec.ID
 	v.Group, v.Run = rec.Group, rec.Run
-	v.Board = ""
 	v.Role = "" // a record is never a run agent's chat
 	v.Server = rec.Entry
 	v.Start = "" // a record is a started chat

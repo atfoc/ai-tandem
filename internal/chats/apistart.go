@@ -21,14 +21,15 @@ type StartReq struct {
 	ID            string          // required: a lowercase version 4 UUID
 	Client        string          // required: the caller's client id, the chat's mark
 	Run           string          // "" = a plain chat in the group Place gives; else the chat sits on this run
+	Board         string          // "" = no board; else the chat is on this board of this server, in the board's group
 	Agent         model.AgentKind // required
 	Cwd           string          // required without Run; with Run the folder is the run's and Cwd is ignored
 	Model, Effort string          // "" = the agent's default from its catalog
 	Name          string
 	UserNamed     bool
 	Text          string // required, not blank: the first message
-	// Place is asked once, only when the chat is made and Run is "": for the group the chat goes
-	// in. It is called with the creation lock of the id held, so it must not wait for a delete of
+	// Place is asked once, only when the chat is made and Run and Board are "": for the group the
+	// chat goes in. It is called with the creation lock of the id held, so it must not wait for a delete of
 	// a chat. nil = the ungrouped group.
 	Place func() (group string, err error)
 }
@@ -46,15 +47,17 @@ type StartResult struct {
 // sends it req.Text as its first message. It returns when the agent has taken the message.
 //
 //   - No chat has the id: the chat is made with the caller's mark and the values of req (see
-//     CreateChat), in the group req.Place gives or on the run req.Run, and sent the message. A
+//     CreateChat), in the group req.Place gives, on the run req.Run or on the board req.Board (which
+//     must be one of this server, not archived: whose board it is the caller has checked), and
+//     sent the message. A
 //     creation that is refused leaves nothing, and asks for no group.
 //   - The caller's chat, not started (a call before made it and its send failed before the agent
 //     took the message): it is given the agent, folder, model, effort and name of req, as a new
 //     chat would get them, and sent the message.
 //   - The caller's chat, started: nothing is changed and nothing is sent; Sent is false.
 //   - Any other chat with the id is ErrIDTaken: one without the caller's mark, a fork, a chat of
-//     another run than req.Run (or of one, when req names none), a run agent's chat, and a chat
-//     folder that holds no chat that is loaded. The id of a chat that was deleted is free.
+//     another run than req.Run (or of one, when req names none), a chat of another board than
+//     req.Board (or of one, when req names none), a run agent's chat, and a chat folder that holds no chat that is loaded. The id of a chat that was deleted is free.
 //
 // The whole call holds the creation lock of the id: a repeat that arrives meanwhile waits, and
 // then finds the chat as this call left it. So of many calls with one id one sends.
@@ -96,7 +99,7 @@ func (m *Manager) Start(req StartReq) (res StartResult, err error) {
 
 	c, err := m.get(req.ID)
 	if err != nil {
-		n := NewChat{ID: req.ID, Client: req.Client, Run: req.Run, Agent: req.Agent, Group: model.Ungrouped,
+		n := NewChat{ID: req.ID, Client: req.Client, Run: req.Run, Board: req.Board, Agent: req.Agent, Group: model.Ungrouped,
 			Cwd: cwd, Model: req.Model, Effort: req.Effort, Name: req.Name, UserNamed: req.UserNamed}
 		if _, err := m.create(n, req.Place); err != nil {
 			return res, err
@@ -106,7 +109,7 @@ func (m *Manager) Start(req StartReq) (res StartResult, err error) {
 		meta, hidden, leaving := c.meta, c.unlisted || c.deleted, c.removing
 		c.mu.Unlock()
 		switch {
-		case hidden || c.top != nil || c.role != "" || meta.Client != req.Client || meta.ForkedFrom != "" || meta.Run != req.Run:
+		case hidden || c.top != nil || c.role != "" || meta.Client != req.Client || meta.ForkedFrom != "" || meta.Run != req.Run || meta.Board != boardOf(req):
 			return res, ErrIDTaken
 		case leaving:
 			return res, ErrNotFound // a delete of the chat is under way
@@ -132,6 +135,14 @@ func (m *Manager) Start(req StartReq) (res StartResult, err error) {
 	res.Tried = true
 	res.Sent, err = m.sendOn(c, req.Text, "", nil) // releases c.mu
 	return res, err
+}
+
+// boardOf is the board of the chat req makes: none on a run, where create looks at no board.
+func boardOf(req StartReq) string {
+	if req.Run != "" {
+		return ""
+	}
+	return req.Board
 }
 
 // restart gives the caller's chat req.ID, which has not started, the values of req, as a new chat

@@ -83,6 +83,7 @@ func (l upCounter) ServerUp(entry string) {
 type farOpt struct {
 	chats  []model.ChatView // the chats the stand-in has; each one has a record here, ungrouped
 	runs   []model.RunView  // the runs the stand-in has; each one has a run record here, ungrouped
+	boards []model.Board    // the boards the stand-in has; each one has a board record here, ungrouped
 	local  bool             // this server has a run service, as it has with runs (see remoterun_test.go)
 	limits remotes.Limits   // zero fields: Flush 20 ms, the others the defaults
 	with   []func(*Server)  // set up the server before the relay is made
@@ -131,6 +132,9 @@ func newFar(t *testing.T, o farOpt) *far {
 	if o.runs != nil {
 		snap["runs"] = o.runs
 	}
+	if o.boards != nil {
+		snap["boards"] = o.boards
+	}
 	withRuns := o.local || o.runs != nil
 	f.st = standin.Start(t, standin.Options{Snapshot: snap})
 	f.script(withRuns)
@@ -162,6 +166,15 @@ func newFar(t *testing.T, o farOpt) *far {
 				t.Fatal(err)
 			}
 		}
+		if err := os.MkdirAll(paths.RemoteBoards, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, bd := range o.boards {
+			raw, _ := json.Marshal(remotes.BoardRecord{ID: bd.ID, Entry: f.entry, Group: model.Ungrouped, View: bd})
+			if err := os.WriteFile(paths.RemoteBoardFile(bd.ID), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if o.limits.Flush == 0 {
 			o.limits.Flush = 20 * time.Millisecond
 		}
@@ -189,6 +202,20 @@ func newFar(t *testing.T, o farOpt) *far {
 		s.Servers, s.App.Servers = m, m
 		s.Remotes, s.App.Remotes = rm, rm
 		s.Bridge.OnUnfollowed(rm.Unfollowed)
+		// A board of another server: the relay is told when no page holds it any more, and the
+		// revision a grant names is the last one known of the board's server.
+		s.Bridge.OnBoardFree(rm.BoardFree)
+		ownRev := s.Bridge.SceneRev
+		s.Bridge.SceneRev = func(id string) int64 {
+			if rev, ok := rm.BoardRev(id); ok {
+				return rev
+			}
+			return ownRev(id)
+		}
+		rm.SetLocalBoards(func(id string) bool {
+			_, ok := s.App.Boards.Get(id)
+			return ok
+		})
 		s.Usage = map[model.AgentKind]func(bool) (model.PlanUsage, error){
 			model.Claude: func(bool) (model.PlanUsage, error) {
 				f.usage[model.Claude].Add(1)
@@ -231,6 +258,10 @@ func (f *far) script(withRuns bool) {
 		},
 	}
 	pats := append((&Server{}).recordRoutes().patterns, "POST /api/chats", "GET /api/dirs", "GET /api/usage/{agent}")
+	pats = append(pats, (&Server{}).boardRecordRoutes().patterns...)
+	for pat, h := range f.usualBoards() {
+		usual[pat] = h
+	}
 	if withRuns {
 		pats = append(append(pats, (&Server{}).runRecordRoutes().patterns...), "GET /api/runs/check")
 		for pat, h := range f.usualRuns() {
@@ -491,6 +522,7 @@ func chatRoute(pattern string) bool {
 // route that is added to the mux without a row here would reach the chat manager for a record,
 // which knows no such chat.
 func TestRecordRoutesAreTheChatRoutesOfTheMux(t *testing.T) {
+	t.Parallel()
 	s := newEnv(t).s
 	var mux []string
 	for _, p := range s.routes().patterns {
@@ -530,6 +562,7 @@ func sameQuery(a, b string) bool {
 // The rows that are passed on as they are: the stand-in gets the method, the path, the query
 // and the body, and the page gets what it answered, a refusal with its status too.
 func TestRecordRoutesPassOn(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(recA)}})
 	p := f.page("P")
 	rows := []struct {
@@ -588,6 +621,7 @@ func TestRecordRoutesPassOn(t *testing.T) {
 // The rows that this server has a part in: the view, the reads that follow, the draft, a send,
 // the change of name, model and place, the fork, archive and unarchive, unfollow and delete.
 func TestRecordRoutes(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(recA), viewThere(recB)}})
 	p, q := f.page("P"), f.page("Q")
 	chat := "/api/chats/" + recA
@@ -802,6 +836,7 @@ func TestRecordRoutes(t *testing.T) {
 // What the page gets when a call cannot be made: the status table of the relay, through the
 // routes.
 func TestRecordCallsThatCannotBeMade(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(recA), viewThere(recB)},
 		limits: remotes.Limits{Call: 150 * time.Millisecond, Start: 150 * time.Millisecond}})
 	p := f.page("P")
@@ -886,6 +921,7 @@ func TestRecordCallsThatCannotBeMade(t *testing.T) {
 // the chat is a record under its own id from then on (AC30). A record, a fork of one and a
 // branch refuse a change of server and of agent.
 func TestFirstMessageOfAChatOnAnotherServer(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{})
 	p, q := f.page("P"), f.page("Q")
 	g := f.group(p, "Work", "")
@@ -1002,6 +1038,7 @@ func TestFirstMessageOfAChatOnAnotherServer(t *testing.T) {
 // before, with the text of an earlier call that got no answer. The page sent another text: it
 // gets the relay's 409 with its code and sentence, and so keeps the text; the chat is a record.
 func TestFirstMessageWhoseTextWasNotSent(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{limits: remotes.Limits{Start: 200 * time.Millisecond, Settle: 200 * time.Millisecond}})
 	p := f.page("P")
 	g := f.group(p, "Work", "")
@@ -1049,6 +1086,7 @@ func mustOK(t *testing.T, f *far, p *bridgetest.Page, method, path, body string)
 // The folders and the plan usage of another server are asked there, and those of this one are
 // not (AC18).
 func TestDirsAndUsageOfAServer(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{})
 	p := f.page("P")
 	here := t.TempDir()
@@ -1117,6 +1155,7 @@ func TestDirsAndUsageOfAServer(t *testing.T) {
 // The snapshot, as GET /api/state and as a stream's second event: the lists of the entry, the
 // records among the chats and their states among the states.
 func TestSnapshotHasRecordsAndLists(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(recA)}})
 	p := f.page("P")
 	own := decode[model.ChatView](t, mustOK(t, f, p, "POST", "/api/chats", `{"group":"`+model.Ungrouped+`","server":"local"}`))
@@ -1167,6 +1206,7 @@ func TestSnapshotHasRecordsAndLists(t *testing.T) {
 // On the remote listener a record is no chat: this server passes nothing on for its own API
 // clients, lists no record for them, and asks no other server for folders or usage.
 func TestRemoteListenerPassesNothingOn(t *testing.T) {
+	t.Parallel()
 	l := newListener(t)
 	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(recA)}, with: []func(*Server){l.set, func(s *Server) { s.App.Home = "/home/owner" }}})
 	l.serve(f.s)
@@ -1231,6 +1271,7 @@ func TestRemoteListenerPassesNothingOn(t *testing.T) {
 // the records go with the group, an unarchive of one record brings its groups back, and a
 // delete with one server away deletes nothing (AC33).
 func TestGroupRoutesWithRecords(t *testing.T) {
+	t.Parallel()
 	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(recA), viewThere(recB)}})
 	p := f.page("P")
 	g := f.group(p, "Work", "")
@@ -1304,6 +1345,7 @@ func TestGroupRoutesWithRecords(t *testing.T) {
 // The errors of a chat's server choice have their statuses and codes, in the table and through
 // the routes.
 func TestServerChoiceErrors(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		err    error
 		status int

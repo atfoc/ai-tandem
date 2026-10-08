@@ -88,6 +88,7 @@ func noSecret(t *testing.T, secret string, streams ...string) {
 var fingerprintForm = regexp.MustCompile(`^([0-9A-F]{2}:){31}[0-9A-F]{2}$`)
 
 func TestRemoteSetupCommand(t *testing.T) {
+	t.Parallel()
 	home := filepath.Join(t.TempDir(), "data")
 	out, errOut, code := own(t, "remote", "setup", "-home", home, "-name", "wb.example")
 	if code != 0 || errOut != "" {
@@ -140,6 +141,7 @@ func TestRemoteSetupCommand(t *testing.T) {
 }
 
 func TestRemoteSetupFlags(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	out, errOut, code := own(t, "remote", "setup", "-port", "5099", "-name", "One.example", "--name", "10.1.2.3", "-home", home)
 	if code != 0 {
@@ -196,6 +198,7 @@ func TestRemoteSetupFlags(t *testing.T) {
 }
 
 func TestRemoteSetupNewCertNeedsConfig(t *testing.T) {
+	t.Parallel()
 	home := filepath.Join(t.TempDir(), "data")
 	out, errOut, code := own(t, "remote", "setup", "-new-cert", "-home", home)
 	if code != 1 || out != "" {
@@ -231,6 +234,7 @@ func TestRemoteSetupNewCertNeedsConfig(t *testing.T) {
 }
 
 func TestRemoteOffCommand(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	out, errOut, code := own(t, "remote", "off", "-home", home)
 	if code != 0 || errOut != "" || out != "Remote access was not set up in "+home+".\n" {
@@ -259,6 +263,7 @@ func TestRemoteOffCommand(t *testing.T) {
 }
 
 func TestRemoteStatusFromFiles(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	// Nothing listens on this port: the status asks no other.
 	port := strconv.Itoa(freePort(t))
@@ -358,6 +363,7 @@ func standIn(home, status string) *httptest.Server {
 }
 
 func TestRemoteStatusAgainstServer(t *testing.T) {
+	t.Parallel()
 	const fp = "AB:CD:EF"
 	cases := []struct {
 		name, status, want string
@@ -426,6 +432,7 @@ func untouched(t *testing.T) (port int, check func(what string)) {
 // The status reports a running server only when it is this data folder's: another folder's
 // server on the port is not it, and no port but the given one, or else server.json's, is asked.
 func TestRemoteStatusOfThisFolderOnly(t *testing.T) {
+	t.Parallel()
 	const listening = `{"listening":true,"port":5123,"names":["mac.local"],"fingerprint":"AB:CD"}`
 	const otherID = "7b1e9d40-2c5a-4f38-a6d7-0e1f2a3b4c5d"
 	mine := t.TempDir()
@@ -503,6 +510,7 @@ type roundTrip func(*http.Request) (*http.Response, error)
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestSecretCommand(t *testing.T) {
+	t.Parallel()
 	home := filepath.Join(t.TempDir(), "data")
 
 	// Without a configuration: 1, the repair, nothing written.
@@ -575,6 +583,7 @@ func TestSecretCommand(t *testing.T) {
 }
 
 func TestOwnCommand(t *testing.T) {
+	t.Parallel()
 	for _, cmd := range []string{"serve", "launch", "relaunch", "stop", "nope"} {
 		var out, errOut bytes.Buffer
 		if code, ok := ownCommand(cmd, []string{"-home", t.TempDir()}, &out, &errOut); ok || code != 0 || out.Len()+errOut.Len() != 0 {

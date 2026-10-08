@@ -54,6 +54,7 @@ func checkMessage(t *testing.T, rep Report, repair string) {
 }
 
 func TestCheckNotConfigured(t *testing.T) {
+	t.Parallel()
 	if rep := Check(t.TempDir(), 4747, 6006); !reflect0(rep) {
 		t.Errorf("empty folder: %+v", rep)
 	}
@@ -82,6 +83,7 @@ func reflect0(rep Report) bool {
 }
 
 func TestCheckFatalRows(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	otherCert, otherKey, err := GenerateCert([]string{"wb.example"}, now.Add(-time.Hour), now.AddDate(10, 0, 0))
 	if err != nil {
@@ -169,6 +171,7 @@ func TestCheckFatalRows(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root, f := setUp(t)
 			if tc.break_ != nil {
 				tc.break_(t, f)
@@ -222,6 +225,7 @@ func unreadable(t *testing.T, path string) {
 }
 
 func TestMessageWorstCase(t *testing.T) {
+	t.Parallel()
 	root, f := setUp(t)
 	write(t, f.Secret, "", 0o600)
 	os.Remove(f.Key)
@@ -253,6 +257,7 @@ func TestMessageWorstCase(t *testing.T) {
 }
 
 func TestBindMessage(t *testing.T) {
+	t.Parallel()
 	err := errors.New("listen tcp4 0.0.0.0:4748: bind: address already in use")
 	for home, suffix := range map[string]string{"": "", testHome: ` -home "` + testHome + `"`} {
 		got := strings.Split(BindMessage(testExe, home, 4748, err), "\n")
@@ -269,6 +274,7 @@ func TestBindMessage(t *testing.T) {
 }
 
 func TestCheckNotes(t *testing.T) {
+	t.Parallel()
 	root, f := setUp(t)
 	c, _, _ := LoadConfig(root)
 	rep := Check(root, 4747, 6006)
@@ -319,6 +325,7 @@ func TestCheckNotes(t *testing.T) {
 }
 
 func TestCheckOwnersPair(t *testing.T) {
+	t.Parallel()
 	root, f := setUp(t)
 	c, _, _ := LoadConfig(root)
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)

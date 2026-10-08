@@ -179,7 +179,8 @@ folder to the machine. See [Use a server on another machine](#use-a-server-on-an
 ## Use a server on another machine
 
 The app can use an AI Whiteboard server on another machine, a remote server, next to its own:
-chats and runs started on it run there, with that machine's agents and folders. The app connects
+chats and runs started on it run there, with that machine's agents and folders, and a whiteboard
+can live there too (see [Whiteboards on a remote server](#whiteboards-on-a-remote-server)). The app connects
 over HTTPS with a secret, and accepts one certificate by its fingerprint. The app never installs
 or starts a remote server: you set it up and start it on that machine yourself.
 
@@ -228,6 +229,43 @@ fails.
 the absolute path of the folder's `web/`, so it works from any folder; the other arguments are
 the server's flags below. The scripts are called through `sh` because a copy may lose its
 executable bit. They need no `openssl`.
+
+### Whiteboards on a remote server
+
+A whiteboard can live on a remote server instead of on your own machine. You draw on it in the
+app as on any board; its drawing is stored on the remote server only, and its chats run there.
+
+- **Creation and server choice.** With at least one remote server in the list, a new whiteboard
+  first asks **Where should this board live?**: **This computer**, or one of the servers. A
+  server that is not connected cannot be picked, since the board is made at once. Without a
+  remote server nothing is asked. The choice is final: a board cannot be moved between servers.
+- **Where it lives.** The board, its drawing and its chats are on the remote server. Your own
+  machine keeps a small record (name, the group it is in here, the server) in
+  `~/.ai-whiteboard/remote/boards/`, and no drawing. The group and the place in your sidebar are
+  yours alone; the name and the archive mark are the server's. A chat made on such a board is
+  always on the board's server. A board an agent makes there with `create_board` appears in your
+  sidebar next to the board its chat is on.
+- **Holding.** One window draws on a board at a time, as for a local board. Among the windows of
+  your app the board is handed over as usual; to the remote server your app is one user of the
+  board, whatever the number of its windows. When the board is taken on the remote server
+  itself, your window is asked to save and let go, and shows the take-over panel; **Use here**
+  takes it back. The agents' board tools are answered by the window that holds the board, so the
+  board has to be open in a window, here or there, for an agent to draw on it.
+- **Outage.** While the server cannot be reached you keep drawing in the window that has the
+  board open; the changes stay in that window and a banner says they are not saved. When the
+  server is back they are saved if nobody changed the board there meanwhile, and dropped, with a
+  notice, if somebody did. A board that is not open in a window cannot be opened during an
+  outage. Rename and delete are refused until the server is back; moving the board between your
+  groups works; archive and unarchive are applied here at once and on the server when it is
+  back. A board that was deleted on the server stays greyed in your sidebar until you remove it.
+- **What the remote server's owner sees.** The board is a normal board of that server, in a group
+  named **Remote**, with the chats you made on it. Its owner can open it, draw on it (taking it
+  from you), rename, archive or delete it, and add chats, which you do not see. Through the
+  remote port your app reaches only the boards it made itself, never the server's own boards.
+- **Limits.** A drawing saved through a remote server is at most 32 MB, images included; a
+  larger one is refused and stays in the window. A board cannot be moved to another server or
+  to this computer. Two people cannot draw on it at the same time. A server that was built
+  before remote boards refuses the creation and has to be updated.
 
 ## Server commands and flags
 
@@ -383,11 +421,15 @@ before the default e2e run (see Development).
 ```sh
 cd web && npm run watch   # rebuild the web client on change, then reload the page
 
-go test ./...             # server tests
+go test ./...                                  # server tests, default set: fast, for while you work (about 1 minute)
+AIWB_TEST_FULL=1 go test -timeout 20m ./...    # server tests, full set: every test in full (about 2 minutes)
 cd web && npm test        # web client tests
 cd web && npm run check   # type check of the web client
 cd desktop && npm test    # desktop app tests
 ```
+
+Which set to run when, what each costs and how to write a test for either set is in
+[`AGENTS.md`](AGENTS.md).
 
 `web/e2e/app.e2e.mjs` runs an end-to-end pass in headless Chrome against real agents. It uses
 cheap models but still spends a little money; its header explains how to run it. Stop the running

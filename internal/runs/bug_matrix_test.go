@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // The eighteen bugs of the reference script (T01 §15.2), each with the test that shows the run
@@ -69,6 +70,9 @@ func (h *mx) markersAnywhere() string {
 func TestB01RestartInResolution(t *testing.T) {
 	t.Parallel()
 	for _, how := range []string{"crash", "quit"} {
+		if !testset.Full() && how != "crash" {
+			continue // a whole run each
+		}
 		t.Run(how, func(t *testing.T) {
 			t.Parallel()
 			h := newMx(t, true)
@@ -90,6 +94,7 @@ func TestB01RestartInResolution(t *testing.T) {
 				}
 			}
 			wt := filepath.Join(h.world().st.P.RunWorkDir(h.id), tid)
+			h.taken(tid + "-merge")
 			h.regate("merge")
 			if how == "crash" {
 				h.crash()
@@ -133,12 +138,9 @@ func TestB01RestartInResolution(t *testing.T) {
 // B2: a task's end, its event and what it releases are one journal entry.
 func TestB02EndAndEventOneEntry(t *testing.T) {
 	t.Parallel()
-	h := newMx(t, true)
-	h.startRun(nil)
-	h.refEnd()
 	l := &Loaded{}
 	ends, released := 0, false
-	for _, e := range h.journalWhole() {
+	for _, e := range mxReference(t).entries(t) {
 		seq := l.State.EventSeq
 		var before model.TaskState
 		if rep, ok := mxByTitle(l, mxReport); ok {
@@ -550,7 +552,6 @@ func TestB08TasksStartDuringResolution(t *testing.T) {
 // timeout, so it does not run beside the others.
 func TestB09SetupCancelAndTimeout(t *testing.T) {
 	old := engSetupTimeout
-	engSetupTimeout = 700 * time.Millisecond
 	defer func() { engSetupTimeout = old }()
 
 	turn := func(a *mxTurn, n int) {
@@ -566,28 +567,56 @@ func TestB09SetupCancelAndTimeout(t *testing.T) {
 		a.Say("Looked.")
 	}
 	t.Run("timeout", func(t *testing.T) {
-		h := newMx(t, true)
-		mark := mxSetupMark(4901)
-		h.plan(mxPlan{Turn: turn, Task: mxWriter})
-		h.startRun(func(m *model.RunMeta) { m.Settings.Setup = "echo getting ready; sleep " + mark })
-		l := h.finished()
-		tk, _ := mxTask(l, "T01")
-		at := tk.Attempts[0]
-		if tk.State() != model.TaskFailed || !strings.Contains(at.Error, "the setup command timed out after 700ms") || !strings.Contains(at.Error, "getting ready") {
-			t.Errorf("the task: %s %q", tk.State(), at.Error)
+		defer func() { engSetupTimeout = old }()
+		// The shell has to start inside the timeout before the test can say anything about a
+		// command that is cut off, and on a loaded machine the start alone can take longer than
+		// 700ms. The command shows that it started by making a file, after it wrote its line and
+		// apart from the log the test asserts: a run that timed out without the file says nothing
+		// and is made again with a timeout four times as long, and a run with the file counts, so
+		// a line the product lost fails here at once. Without the file the last one fails.
+		boxes := []time.Duration{700 * time.Millisecond, 2800 * time.Millisecond, 11200 * time.Millisecond}
+		for i, box := range boxes {
+			engSetupTimeout = box
+			h := newMx(t, true)
+			mark := mxSetupMark(4901 + i)
+			h.plan(mxPlan{Turn: turn, Task: mxWriter})
+			started := filepath.Join(t.TempDir(), "started")
+			h.startRun(func(m *model.RunMeta) {
+				m.Settings.Setup = "echo getting ready; : > '" + strings.ReplaceAll(started, "'", `'\''`) + "'; sleep " + mark
+			})
+			l := h.finished()
+			tk, _ := mxTask(l, "T01")
+			at := tk.Attempts[0]
+			timedOut := "the setup command timed out after " + box.String()
+			setupLog, _ := os.ReadFile(setupLogPath(h.r().dir, "T01", 1))
+			_, err := os.Stat(started)
+			ran := err == nil
+			if mxSleeping(mark) {
+				exec.Command("pkill", "-f", "sleep "+mark).Run()
+				t.Error("the setup command outlived its timeout")
+			}
+			if at.SetupDone || h.turnsOf("T01-work") != 0 || at.Worktree != "" {
+				t.Errorf("after the timeout: setup done %v, the agent ran %d times, checkout %q", at.SetupDone, h.turnsOf("T01-work"), at.Worktree)
+			}
+			h.noCheckouts()
+			if !ran {
+				if i < len(boxes)-1 && !t.Failed() && tk.State() == model.TaskFailed && strings.Contains(at.Error, timedOut) {
+					t.Logf("the setup command had not started after %s; again with a longer timeout", box)
+					continue
+				}
+				t.Errorf("the setup command did not start inside %s (no file %s): the task %s %q, the setup log %q", box, started, tk.State(), at.Error, setupLog)
+				return
+			}
+			if tk.State() != model.TaskFailed || !strings.Contains(at.Error, timedOut) || !strings.Contains(at.Error, "getting ready") {
+				t.Errorf("the task: %s %q", tk.State(), at.Error)
+			}
+			if !strings.Contains(string(setupLog), "getting ready") {
+				t.Errorf("the setup log: %q", setupLog)
+			}
+			return
 		}
-		if mxSleeping(mark) {
-			exec.Command("pkill", "-f", "sleep "+mark).Run()
-			t.Error("the setup command outlived its timeout")
-		}
-		if at.SetupDone || h.turnsOf("T01-work") != 0 || at.Worktree != "" {
-			t.Errorf("after the timeout: setup done %v, the agent ran %d times, checkout %q", at.SetupDone, h.turnsOf("T01-work"), at.Worktree)
-		}
-		if b, _ := os.ReadFile(setupLogPath(h.r().dir, "T01", 1)); !strings.Contains(string(b), "getting ready") {
-			t.Errorf("the setup log: %q", b)
-		}
-		h.noCheckouts()
 	})
+	// The failing command runs with the timeout of production: nothing here is about a timeout.
 	t.Run("a failing command", func(t *testing.T) {
 		h := newMx(t, true)
 		h.plan(mxPlan{Turn: turn, Task: mxWriter})
@@ -743,6 +772,9 @@ func TestB11HalfResolved(t *testing.T) {
 		},
 	}
 	for name, leave := range cases {
+		if !testset.Full() && name != "one marker left" {
+			continue // a whole run each; TestMergeAgentFailsOrLeavesMarkers has the two other ways
+		}
 		t.Run(strings.ReplaceAll(name, " ", "_"), func(t *testing.T) {
 			t.Parallel()
 			h := newMx(t, true)

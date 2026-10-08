@@ -30,12 +30,12 @@ import (
 )
 
 // newRemoteInstance is newInstance with remote access set up on a free port, with the name
-// 127.0.0.1. Its servers bind the remote port on 127.0.0.1 through the hidden test-only override:
-// a wildcard bind by a freshly built binary can raise the macOS firewall dialog.
+// 127.0.0.1. Its servers bind the remote port on 127.0.0.1 through the hidden test-only override
+// (loopbackBind), which is in the instance's environment, not in this process's.
 func newRemoteInstance(t *testing.T) (in *instance, remotePort int) {
 	t.Helper()
 	in = newInstance(t)
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
+	in.setenv(loopbackBind)
 	remotePort = freePort(t)
 	setUpRemote(t, in.dir, remotePort)
 	return in, remotePort
@@ -56,7 +56,7 @@ func (in *instance) ends(t *testing.T, command string) (stdout, stderr string, c
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	var out, errOut bytes.Buffer
-	cmd := exec.CommandContext(ctx, in.bin, append([]string{command}, in.flags()...)...)
+	cmd := in.command(ctx, command)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err := cmd.Run()
 	var ee *exec.ExitError
@@ -250,8 +250,9 @@ func messageLines(t *testing.T, text, message string) {
 // Without remote.json the start is today's: stray secret, key and certificate files are neither
 // read nor replaced, and nothing listens for remote access.
 func TestServeWithoutConfigIsToday(t *testing.T) {
+	serverTest(t, "TestCheckNotConfigured (internal/remote)", "TestServeRemoteNeedsRemote (internal/server)")
 	in := newInstance(t)
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
+	in.setenv(loopbackBind)
 	f := remote.FilesIn(in.dir)
 	for _, path := range []string{f.Secret, f.Key, f.Cert} {
 		if err := os.WriteFile(path, []byte("garbage\n"), 0o600); err != nil {
@@ -303,8 +304,9 @@ func TestServeWithoutConfigIsToday(t *testing.T) {
 
 // Hello gives the instance id, which is made at the first start and kept from then on.
 func TestHelloInstanceIDSurvivesRestart(t *testing.T) {
+	serverTest(t, "TestInstanceID (internal/remote)", "TestHelloInstanceID (internal/server)")
 	in := newInstance(t)
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
+	in.setenv(loopbackBind)
 	in.run(t, "launch")
 	old := in.hello(t).Pid
 	id, _ := in.helloMap(t)["instanceId"].(string)
@@ -328,6 +330,7 @@ func TestHelloInstanceIDSurvivesRestart(t *testing.T) {
 // With a set-up the start serves hello over HTTPS to a caller with the secret and a listed Host,
 // and to nobody else; the loopback listener is as before.
 func TestRemoteListenerServes(t *testing.T) {
+	smokeTest(t)
 	in, port := newRemoteInstance(t)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 
@@ -397,11 +400,12 @@ func TestRemoteListenerServes(t *testing.T) {
 // machine and on no IPv6 one. On macOS it runs only on request, because the wildcard bind of a
 // freshly built binary can raise the macOS firewall dialog.
 func TestRemoteListenerBindsWildcardIPv4(t *testing.T) {
+	serverTest(t, "TestRemoteBindSetting, TestRemoteListenerServes (this package)")
 	if runtime.GOOS == "darwin" && os.Getenv("AIWB_TEST_WILDCARD") != "1" {
-		t.Skip("binds 0.0.0.0, which can raise the macOS firewall dialog: set AIWB_TEST_WILDCARD=1 to run it (it is skipped with -short too)")
+		t.Skip("binds 0.0.0.0, which can raise the macOS firewall dialog: set AIWB_TEST_WILDCARD=1 to run it (in the full set)")
 	}
 	in := newInstance(t)
-	t.Setenv("AIWB_REMOTE_BIND", "")
+	in.setenv("AIWB_REMOTE_BIND=") // whatever this process has
 	port := freePort(t)
 	setUpRemote(t, in.dir, port)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
@@ -436,8 +440,9 @@ func TestRemoteListenerBindsWildcardIPv4(t *testing.T) {
 // Every fatal row of the start's check ends `serve` with exit code 1 and the check's message, and
 // the start creates nothing: no listener, no server.json, no file in the data folder.
 func TestStartCheckFatalRows(t *testing.T) {
+	serverTest(t, "TestCheckFatalRows, TestMessageWorstCase (internal/remote)", "TestStartCheckComesBeforeTheBinds (a start that the check ends) (this package)")
 	first := newInstance(t)
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
+	first.setenv(loopbackBind)
 	write := func(t *testing.T, path, content string) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -574,6 +579,7 @@ func TestStartCheckFatalRows(t *testing.T) {
 // The row the check cannot see: another listener holds the remote port. The start ends the same
 // way, after its binds and before it writes anything.
 func TestStartBindRow(t *testing.T) {
+	serverTest(t, "TestBindMessage (internal/remote)", "TestStartCheckComesBeforeTheBinds (a start that ends and creates nothing) (this package)")
 	in, port := newRemoteInstance(t)
 	holder, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -622,8 +628,9 @@ func TestStartBindRow(t *testing.T) {
 // a start with a fatal row of the check ends with the check's message and never gets as far as
 // the port's own message.
 func TestStartCheckComesBeforeTheBinds(t *testing.T) {
+	smokeTest(t)
 	first := newInstance(t)
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
+	first.setenv(loopbackBind)
 	srv := hello("other")
 	defer srv.Close()
 	first.port = portOf(t, srv)
@@ -695,8 +702,9 @@ func TestStartCheckComesBeforeTheBinds(t *testing.T) {
 
 // launch passes the check's message on whole, also when it has its six lines.
 func TestLaunchShowsTheCheckMessage(t *testing.T) {
+	serverTest(t, "TestMessageWorstCase (internal/remote)", "TestStartCheckComesBeforeTheBinds (this package)")
 	in := newInstance(t)
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
+	in.setenv(loopbackBind)
 	setUpRemote(t, in.dir, in.port) // the server's own port
 	f := remote.FilesIn(in.dir)
 	for _, path := range []string{f.Secret, f.Key} {
@@ -725,6 +733,7 @@ func TestLaunchShowsTheCheckMessage(t *testing.T) {
 // relaunch runs the check before it stops anything: with a set-up that would end the new start,
 // the running server stays.
 func TestRelaunchRefusesBrokenSetup(t *testing.T) {
+	serverTest(t, "TestCheckFatalRows (internal/remote)", "TestStartCheckComesBeforeTheBinds (this package)")
 	in, port := newRemoteInstance(t)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	in.run(t, "launch")
@@ -778,6 +787,7 @@ func TestRelaunchRefusesBrokenSetup(t *testing.T) {
 
 // A restart keeps the secret and the certificate: a client set up once goes on working.
 func TestSecretSurvivesRestart(t *testing.T) {
+	serverTest(t, "TestSetupMakesWhatIsMissing (internal/remote)", "TestRemoteSecretAndHost (internal/server)", "TestRemoteListenerServes (this package)")
 	in, port := newRemoteInstance(t)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	in.run(t, "launch")
@@ -801,6 +811,7 @@ func TestSecretSurvivesRestart(t *testing.T) {
 // `secret -new` writes the new secret and tells the running server, which accepts the new one
 // alone from then on and ends the streams of its API clients. A restart keeps the new secret.
 func TestSecretNewThenRestart(t *testing.T) {
+	serverTest(t, "TestReloadSecret, TestStreamAcrossAReloadEnds, TestOldSecretIsRefusedBeforeTheStreamEnds (internal/server)", "TestSecretNewGate, TestReloadKeepsSecretWhenUnreadable (this package)")
 	in, port := newRemoteInstance(t)
 	old, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	in.run(t, "launch")
@@ -854,6 +865,7 @@ func TestSecretNewThenRestart(t *testing.T) {
 // A start, a restart and a stop leave the files of remote access as set-up wrote them; the start
 // adds the instance id alone.
 func TestStartChangesNoFile(t *testing.T) {
+	serverTest(t, "TestInstanceID, TestCheckNotes (internal/remote)", "TestRemoteListenerServes (this package)")
 	in, _ := newRemoteInstance(t)
 	before := remoteFiles(t, in.dir)
 	if before["instance-id"] != "" {
@@ -884,6 +896,7 @@ func TestStartChangesNoFile(t *testing.T) {
 // The owner's own pair, here an RSA one in the two files, is loaded and served as it is; that its
 // names are not the list's is a note in the log.
 func TestOwnersPairIsServed(t *testing.T) {
+	serverTest(t, "TestCheckOwnersPair (internal/remote)", "TestReadCertificate (internal/servers)")
 	in, port := newRemoteInstance(t)
 	secret, made := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 
@@ -933,6 +946,7 @@ func TestOwnersPairIsServed(t *testing.T) {
 
 // internal/remote and internal/server each spell the header names: they must agree.
 func TestHeaderNamesAgree(t *testing.T) {
+	t.Parallel()
 	if remote.SecretHeader != server.SecretHeader {
 		t.Fatalf("the secret's header is %q in internal/remote and %q in internal/server", remote.SecretHeader, server.SecretHeader)
 	}
@@ -955,6 +969,7 @@ func TestRemoteBindSetting(t *testing.T) {
 
 // The commands of a message name the data folder unless it is the default one.
 func TestMessageHome(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip(err)

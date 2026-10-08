@@ -33,7 +33,7 @@ test("the composer's Where is the chat's server, its name and whether it is conn
   const c = { server: "s_1" };
   assert.deepEqual({ server: serverOf(c), name: serverName(s, serverOf(c)), connected: serverConnected(s, serverOf(c)) }, DOWN);
   assert.deepEqual({ server: serverOf({}), name: serverName(s, serverOf({})), connected: serverConnected(s, serverOf({})) }, HERE);
-  assert.ok(choices.includes("const server = serverOf(c);") && choices.includes("serverName(s, server)") && choices.includes("serverConnected(s, server)"));
+  assert.ok(choices.includes("const server = serverOf(c?.server ? c : { server: onBoard });") && choices.includes("serverName(s, server)") && choices.includes("serverConnected(s, server)"));
   // the agents are the chat's server's: none while it is not connected
   assert.deepEqual(usableAgents(s, "s_1"), []);
   assert.deepEqual(usableAgents(store("connected"), "s_1"), ["pi"]);

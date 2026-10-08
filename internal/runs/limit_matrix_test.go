@@ -530,6 +530,7 @@ func TestAgentTimeout(t *testing.T) {
 	h.setStill(true)
 	h.startRun(func(m *model.RunMeta) { m.Settings.AgentTimeoutSec = 60 })
 	h.wait("the agent to work", func() bool { return h.turnsOf("T01-work") == 1 })
+	h.taken("T01-work")
 	launched := func(n int) func(l *Loaded) bool {
 		return func(l *Loaded) bool {
 			a, ok := mxAgent(l, "T01-work")
@@ -782,6 +783,7 @@ func TestNoSessionPerKind(t *testing.T) {
 			}})
 			h.startRun(func(m *model.RunMeta) { m.Agent, m.Tiers = kind, tiersAll("sonnet", "") })
 			h.atGate("work")
+			h.taken("T01-work")
 			h.stopRun()
 			var session string
 			_, agents := h.cm().ChatsOfRun(h.id)

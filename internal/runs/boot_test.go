@@ -25,8 +25,9 @@ func TestShutdownThenBootContinues(t *testing.T) {
 		m.Block("completed", "Done after the restart.", "r")
 	})
 	r.startEngine()
-	// The message is sent before the engine records that the agent's session exists: a shutdown
-	// between the two leaves an agent that starts anew, which is not what this test is about.
+	// The shutdown comes once the engine has recorded that the message was taken: a shutdown
+	// between the chat's taking it and that record leaves an agent that is started fresh, which
+	// is not what this test is about.
 	engUntil(t, "the work agent's message", func() bool {
 		a, _ := r.engAgentNamed("T01-work")
 		return len(e.host.sent("T01-work")) == 1 && a.Resumable
@@ -479,6 +480,9 @@ func TestRecoveryTableNoGit(t *testing.T) {
 		})
 		r.startEngine()
 		<-added
+		// The stop comes once the engine has recorded that the message was taken: before that
+		// the turn's agent is started fresh, not continued.
+		engUntil(t, "the record of the turn's message", func() bool { a, _ := r.engAgentNamed("turn-001"); return a.Resumable })
 		if err := r.halt(engUserStop); err != nil {
 			t.Fatal(err)
 		}

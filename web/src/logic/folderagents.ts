@@ -5,9 +5,8 @@ import { isBusy } from "./status.ts";
 import { serverOf } from "./serverlists.ts";
 import type { BranchState, ChatView, RunView } from "../types.ts";
 
-/** The agents working in a folder: `here` in the branches of one chat, `elsewhere` in other chats;
- *  `who` names the branches, that chat's first, then by chat id and branch. */
-export type FolderAgents = { total: number; here: number; elsewhere: number; who: { chat: string; branch: string; agents: number }[] };
+/** The agents working in a folder: `here` in the branches of one chat, `elsewhere` in other chats. */
+export type FolderAgents = { total: number; here: number; elsewhere: number };
 
 const trimmed = (p: string) => p.replace(/\/+$/, "") || (p ? "/" : "");
 
@@ -32,24 +31,16 @@ export function agentsOf(st: Pick<BranchState, "status" | "subsRunning">): numbe
 /** The agents working in `cwd`, seen from `chat`. A record counts when its chat is known and not
  *  archived, its folder is `cwd` and it is on the server `chat` is on (the same path on another
  *  machine is another folder). A chat of a run on another server (a chat on it, one of its
- *  agents) is where that run is, whatever its own view says: `runs` gives the runs. `self` is the branch that asks and is left out with its
- *  subagents; null leaves none out (a branch about to start is one more agent beside them all). */
-export function folderAgents(p: { chats: Record<string, ChatView>; states: Iterable<BranchState>; cwd?: string; chat: string; self?: { chat: string; branch: string } | null; runs?: Record<string, Pick<RunView, "server">> }): FolderAgents {
-  const who: FolderAgents["who"] = [];
+ *  agents) is where that run is, whatever its own view says: `runs` gives the runs. */
+export function folderAgents(p: { chats: Record<string, ChatView>; states: Iterable<BranchState>; cwd?: string; chat: string; runs?: Record<string, Pick<RunView, "server">> }): FolderAgents {
   let here = 0, elsewhere = 0;
   const on = (c?: Pick<ChatView, "server" | "run">) => (c?.run && p.runs?.[c.run]?.server) || serverOf(c);
   const server = on(p.chats[p.chat]);
   for (const st of p.states) {
     const c = p.chats[st.chat];
     if (!c || c.archived || !sameFolder(st.cwd, p.cwd) || on(c) !== server) continue;
-    if (p.self && p.self.chat === st.chat && p.self.branch === st.branch) continue;
     const agents = agentsOf(st);
-    if (!agents) continue;
     if (st.chat === p.chat) here += agents; else elsewhere += agents;
-    who.push({ chat: st.chat, branch: st.branch, agents });
   }
-  const rank = (w: { chat: string }) => (w.chat === p.chat ? 0 : 1);
-  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-  who.sort((a, b) => rank(a) - rank(b) || cmp(a.chat, b.chat) || cmp(a.branch, b.branch));
-  return { total: here + elsewhere, here, elsewhere, who };
+  return { total: here + elsewhere, here, elsewhere };
 }

@@ -12,6 +12,7 @@ import (
 // AC30: a branch that has no message of its own because its first send failed is a branch of a
 // started chat all the same: its agent and its server are fixed.
 func TestAgentIsFixedOnABranchWhoseFirstSendFailed(t *testing.T) {
+	t.Parallel()
 	e, f := fakeEnv(t, model.Claude)
 	f.Script(func(tn *agenttest.Turn) { tn.Say("an answer") })
 	v := e.create(model.Claude, gOne, "")

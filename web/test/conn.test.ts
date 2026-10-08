@@ -70,7 +70,7 @@ const stubs: Record<string, string> = {
     export const flushAll = async () => { fake.board.push(["flushAll"]); };
     export const forgetBoard = () => {};
     export const handOver = async (id) => { fake.board.push(["handOver", id]); };
-    export const boardLost = told("boardLost"), granted = told("granted"), streamOpened = told("streamOpened"), takeAfterSnapshot = told("takeAfterSnapshot");`,
+    export const boardLost = told("boardLost"), granted = told("granted"), streamOpened = told("streamOpened"), takeAfterSnapshot = told("takeAfterSnapshot"), serverBack = told("serverBack");`,
   "./version.ts": `export const checkVersion = async () => {};`,
   "./api.ts": `
     const { fake, ask, askTree, unfollow, askRun, unfollowRun, askStart } = globalThis.__conn;
@@ -886,6 +886,15 @@ test("`superseded` loses one board: the stream stays open, and the events that f
   assert.equal(s().boards.b_2.name, "renamed");
   await ev({ type: "held", board: "b_2", rev: 7 });
   assert.deepEqual(fake.board, [["boardLost", "b_1"], ["granted", "b_2", 7]]);
+});
+
+test("`server_back` is told to the board layer, which reads and takes the board on screen of that server", async () => {
+  fake.board.length = 0;
+  await ev({ type: "server_back", server: "s_1" });
+  assert.deepEqual(fake.board, [["serverBack", "s_1"]]);
+  fake.board.length = 0;
+  await ev({ type: "server_back" });
+  assert.deepEqual(fake.board, []);
 });
 
 test("`server_stopping` writes every board and says so", async () => {

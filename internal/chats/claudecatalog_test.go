@@ -50,6 +50,7 @@ func (e *env) configure(id string, req ConfigReq) {
 }
 
 func TestClaudeCatalogBuiltInAndStored(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	builtIn := claude.Catalog
 	builtIn.Models = append([]model.CatalogModel(nil), claude.Catalog.Models...)
@@ -97,6 +98,7 @@ func TestClaudeCatalogBuiltInAndStored(t *testing.T) {
 // U1 cases 3 and 4: with no listed Claude choice recorded, a Claude subagent nobody picked a
 // model for lands on the stored list's default model and effort.
 func TestClaudeSubagentStoredDefault(t *testing.T) {
+	t.Parallel()
 	for _, from := range []model.AgentKind{model.Cursor, model.Pi} {
 		e := newEnv(t)
 		e.storeCatalog(model.Claude, storedClaude)
@@ -121,6 +123,7 @@ func TestClaudeSubagentStoredDefault(t *testing.T) {
 
 // §7.3 situation 2 / U1 case 5: a listed model that no longer offers the chat's effort.
 func TestClaudeSubagentEffortRoute(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "") // sonnet at high
 	narrowed := &model.Catalog{
@@ -148,6 +151,7 @@ func TestClaudeSubagentEffortRoute(t *testing.T) {
 // D22: a model is inherited only by a subagent of the chat's own kind, also when the other
 // kind lists the same id.
 func TestSubagentSharedIDAcrossKinds(t *testing.T) {
+	t.Parallel()
 	setup := func() *env {
 		e := newEnv(t)
 		e.storeCatalog(model.Claude, storedClaude)
@@ -208,6 +212,7 @@ func TestSubagentSharedIDAcrossKinds(t *testing.T) {
 }
 
 func TestEffortFittingOnModelSwitch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.configure(v.ID, ConfigReq{Model: "haiku"})
@@ -237,6 +242,7 @@ func TestEffortFittingOnModelSwitch(t *testing.T) {
 
 // D11: a process starts without an effort when the catalog lists its model with none.
 func TestProcessStartsWithoutEffortForNoEffortModel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.configure(v.ID, ConfigReq{Model: "haiku"})
@@ -272,6 +278,7 @@ func TestProcessStartsWithoutEffortForNoEffortModel(t *testing.T) {
 // D11 is for Claude only: a Cursor or pi chat keeps its stored effort on a model its list shows
 // without efforts, for the chat process (the subagent path is not exercised here).
 func TestEffortGateOnlyForClaude(t *testing.T) {
+	t.Parallel()
 	withEfforts := &model.Catalog{
 		Models:  []model.CatalogModel{{ID: "p/m", Efforts: []string{"medium"}, DefaultEffort: "medium"}},
 		Default: model.ModelChoice{Model: "p/m", Effort: "medium"},
@@ -300,6 +307,7 @@ func TestEffortGateOnlyForClaude(t *testing.T) {
 // D22 with a kind whose list is not known: the chat's model and effort still do not pass to a
 // cross-agent subagent that names no model. With no model picked for that kind it gets none.
 func TestSubagentUnknownListDropsChatModel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if err := e.st.Update(func(s *model.State) error { s.Cursor = nil; s.SetCatalog(model.Cursor, nil); return nil }); err != nil {
@@ -317,6 +325,7 @@ func TestSubagentUnknownListDropsChatModel(t *testing.T) {
 // D22 with a named effort: on a cross-agent spawn without a model, the effort is validated against
 // the rebased model, not the chat's model that the other kind happens to list too.
 func TestSubagentSharedIDNamedEffort(t *testing.T) {
+	t.Parallel()
 	xl := append(append([]string(nil), levels...), "xhigh")
 	setup := func() *env {
 		e := newEnv(t)
@@ -411,6 +420,7 @@ func (e *env) forgetCursorCatalog() {
 
 // Discovery reads the list spawn_subagent validates against: SpawnCatalog is catalog.
 func TestSpawnCatalog(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if got := e.m.SpawnCatalog(model.Claude); got == nil || !reflect.DeepEqual(*got, claude.Catalog) {
 		t.Fatalf("Claude, nothing stored: %+v", got)
@@ -445,6 +455,7 @@ func TestSpawnCatalog(t *testing.T) {
 // Every model and every effort SpawnCatalog returns is one spawn_subagent accepts for that kind,
 // in the same state; so is every model with no effort named.
 func TestSpawnCatalogListsWhatSpawnAccepts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		kind   model.AgentKind
@@ -456,6 +467,7 @@ func TestSpawnCatalogListsWhatSpawnAccepts(t *testing.T) {
 		{"stored pi", model.Pi, storedPi},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			v := e.create(model.Claude, gOne, "")
 			if tc.stored != nil {
@@ -483,6 +495,7 @@ func TestSpawnCatalogListsWhatSpawnAccepts(t *testing.T) {
 
 // SpawnDefaults is what a spawn that names the agent alone records, in the same state.
 func TestSpawnDefaultsMatchSpawn(t *testing.T) {
+	t.Parallel()
 	check := func(t *testing.T, e *env, chat string, kind model.AgentKind, wantKind model.AgentKind, wantModel, wantEffort string) {
 		t.Helper()
 		k, mo, ef, err := e.m.SpawnDefaults(chat, kind)
@@ -548,6 +561,7 @@ func TestSpawnDefaultsMatchSpawn(t *testing.T) {
 }
 
 func TestSpawnDefaultsStartsNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")

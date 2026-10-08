@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/usable"
@@ -112,6 +113,7 @@ const (
 // ---- the creation call ------------------------------------------------------
 
 func TestStartMakesTheChatAndSendsOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	stickyDir := e.sticky()
 	was := e.defaultsRaw()
@@ -213,6 +215,7 @@ func TestStartMakesTheChatAndSendsOnce(t *testing.T) {
 }
 
 func TestStartManyAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p := &places{g: gOne}
 	req := e.startReq(idA, clientX)
@@ -250,6 +253,7 @@ func TestStartManyAtOnce(t *testing.T) {
 }
 
 func TestStartChecksItsValues(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	p := &places{g: gOne}
 	good := e.startReq(idA, clientX)
@@ -287,6 +291,7 @@ func TestStartChecksItsValues(t *testing.T) {
 }
 
 func TestRefusedStartLeavesNothing(t *testing.T) {
+	t.Parallel()
 	e, _, _ := startEnv(t, model.Claude)
 	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{
 		ownRun:  {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "sonnet"},
@@ -374,6 +379,7 @@ func TestRefusedStartLeavesNothing(t *testing.T) {
 }
 
 func TestStartAgainAfterAFailedStart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.sticky()
 	was := e.defaultsRaw()
@@ -455,6 +461,7 @@ func TestStartAgainAfterAFailedStart(t *testing.T) {
 }
 
 func TestStartWhenTheAgentRefusesTheMessage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.m.Spawners[model.Pi] = refusing{e.pi, t}
 	req := e.startReq(idA, clientX)
@@ -483,6 +490,7 @@ func TestStartWhenTheAgentRefusesTheMessage(t *testing.T) {
 }
 
 func TestStartWithATakenID(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	fr.set("r_two", RunInfo{Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "sonnet"})
 	p := &places{g: gTwo}
@@ -575,6 +583,7 @@ func TestStartWithATakenID(t *testing.T) {
 }
 
 func TestStartOnARun(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	e.sticky()
 	was := e.defaultsRaw()
@@ -615,9 +624,91 @@ func TestStartOnARun(t *testing.T) {
 	}
 }
 
+// TestStartOnABoard: a creation call that names a board makes the chat on it, and a repeat must
+// name the same board.
+func TestStartOnABoard(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	bd, err := e.bds.Create("Far board", gOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := e.bds.Create("Other", gOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &places{g: gTwo}
+	req := e.startReq(idA, clientX)
+	req.Board, req.Place = bd.ID, p.place
+	res := e.start(req)
+	v := res.Chat
+	if !res.Sent || !res.Started || v.Board != bd.ID || v.Group != "" || v.Cwd != e.cwd || v.Server != "" {
+		t.Fatalf("a chat made on a board: %+v", res)
+	}
+	if p.n.Load() != 0 {
+		t.Fatalf("the group was asked for %d times for a chat on a board", p.n.Load())
+	}
+	meta := e.meta(idA)
+	if meta.Client != clientX || meta.Board != bd.ID || meta.Group != "" || e.m.GroupOf(meta) != gOne {
+		t.Fatalf("its chat.json: %+v, group %q", meta, e.m.GroupOf(meta))
+	}
+	if e.markOf(idA) != clientX {
+		t.Fatalf("its mark in the bridge: %q", e.markOf(idA))
+	}
+	a := e.claude.last(t)
+	if got := texts(a.sent()[0]); len(got) != 2 || !strings.Contains(got[0], bd.ID) || got[1] != req.Text {
+		t.Fatalf("the agent was sent %q", got)
+	}
+
+	// The repeat finds the chat; with another board, or none, the id is taken.
+	if again := e.start(req); again.Sent || !again.Exists || !again.Started || again.Chat.Board != bd.ID {
+		t.Fatalf("the repeat: %+v", again)
+	}
+	for _, board := range []string{other.ID, "", "b_nowhere1"} {
+		r := req
+		r.Board = board
+		if res, err := e.m.Start(r); !errors.Is(err, ErrIDTaken) || res.Exists {
+			t.Errorf("a repeat with the board %q: %+v, %v, want ErrIDTaken", board, res, err)
+		}
+	}
+	// A chat on no board is not one on a board.
+	e.start(e.startReq(idB, clientX))
+	r := e.startReq(idB, clientX)
+	r.Board = bd.ID
+	if _, err := e.m.Start(r); !errors.Is(err, ErrIDTaken) {
+		t.Errorf("a repeat that names a board for a chat on none: %v, want ErrIDTaken", err)
+	}
+	if len(a.sent()) != 1 || e.claude.count() != 2 {
+		t.Fatalf("after the repeats: %d messages, %d processes", len(a.sent()), e.claude.count())
+	}
+
+	// A board that is not there, an archived one, and no folder: refused, nothing left.
+	dirs := len(e.chatDirs())
+	r = e.startReq(idC, clientX)
+	r.Board, r.Place = "b_nowhere1", p.place
+	if res, err := e.m.Start(r); !errors.Is(err, boards.ErrNotFound) || res.Exists {
+		t.Errorf("a board that is not there: %+v, %v", res, err)
+	}
+	if err := e.bds.SetArchive(other.ID, model.Archive{Archived: true}); err != nil {
+		t.Fatal(err)
+	}
+	r.Board = other.ID
+	if res, err := e.m.Start(r); !errors.Is(err, boards.ErrArchived) || res.Exists {
+		t.Errorf("an archived board: %+v, %v", res, err)
+	}
+	r.Board, r.Cwd = bd.ID, ""
+	if _, err := e.m.Start(r); !errors.Is(err, ErrStartValue) {
+		t.Errorf("a chat on a board with no folder: %v, want ErrStartValue", err)
+	}
+	if n := len(e.chatDirs()); n != dirs || p.n.Load() != 0 || e.markOf(idC) != "" {
+		t.Fatalf("the refused calls left %d folders, %d asks for a group, the mark %q", n-dirs, p.n.Load(), e.markOf(idC))
+	}
+}
+
 // ---- the mark -----------------------------------------------------------------
 
 func TestClientMarkOnForksAndBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	req := e.startReq(idA, clientX)
 	e.start(req)
@@ -711,6 +802,7 @@ func TestClientMarkOnForksAndBranches(t *testing.T) {
 }
 
 func TestClientMarkOfARunsChats(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	onRun := e.startReq(idA, clientX)
 	onRun.Run = ownRun
@@ -734,6 +826,7 @@ func TestClientMarkOfARunsChats(t *testing.T) {
 }
 
 func TestViewsAndStatesOfAClient(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	ids := func(vs []model.ChatView) []string {
 		out := []string{}
@@ -805,6 +898,7 @@ func TestViewsAndStatesOfAClient(t *testing.T) {
 // ---- no defaults --------------------------------------------------------------
 
 func TestMarkedChatFeedsAndReadsNoDefaults(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	stickyDir := e.sticky()
 	was := e.defaultsRaw()
@@ -938,6 +1032,7 @@ func TestMarkedChatFeedsAndReadsNoDefaults(t *testing.T) {
 // A creation call with the id of a chat that is being deleted waits until the delete has sent
 // chat_removed: the bridge drops the mark with that event, and would drop the new chat's.
 func TestStartWaitsForADeleteOfItsID(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.start(e.startReq(idA, clientX))
 	e.claude.last(t).emit(t, reply("1")...)
@@ -1029,6 +1124,7 @@ func TestStartWaitsForADeleteOfItsID(t *testing.T) {
 // A delete that began before a creation call got to its send is seen by the call: no process is
 // started for a chat that is going.
 func TestStartOfAChatThatIsBeingDeleted(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	gone := &noStart{}
 	e.m.Spawners[model.Claude] = gone
@@ -1059,6 +1155,7 @@ func TestStartOfAChatThatIsBeingDeleted(t *testing.T) {
 // ---- the group "Remote" in the state ---------------------------------------------
 
 func TestRemoteGroupIsKeptInTheState(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	stateFile := func() map[string]any {
 		t.Helper()
@@ -1092,6 +1189,7 @@ func TestRemoteGroupIsKeptInTheState(t *testing.T) {
 // ---- the creation locks ---------------------------------------------------------
 
 func TestIDLocksLeaveNothing(t *testing.T) {
+	t.Parallel()
 	var l idLocks
 	if l.held() != 0 {
 		t.Fatal("a new set of locks holds one")

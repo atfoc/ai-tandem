@@ -41,6 +41,7 @@ func (s *script) raw(status int, b string) {
 // TestRunRoutes: every route method of a run record: what the server gets, what the record
 // takes, and what the page is answered.
 func TestRunRoutes(t *testing.T) {
+	t.Parallel()
 	rg := seededRuns(t, rigOpt{}, runA)
 	ctx := context.Background()
 	p, _ := rg.page("page-1")
@@ -227,6 +228,7 @@ func TestRunRoutes(t *testing.T) {
 
 // TestRunCannotBeMade: the answers of a run's call that cannot be made.
 func TestRunCannotBeMade(t *testing.T) {
+	t.Parallel()
 	rg := seededRuns(t, rigOpt{limits: Limits{Call: 150 * time.Millisecond, Start: 150 * time.Millisecond}}, runA, runB)
 	ctx := context.Background()
 	p, _ := rg.page("page-1")
@@ -295,6 +297,10 @@ func TestRunCannotBeMade(t *testing.T) {
 
 // TestAgentRoutes: the routes of the chat of a run's agent.
 func TestAgentRoutes(t *testing.T) {
+	t.Parallel()
+	// The relay's agentEvery and agentWait, lowered in the same proportion. The upper bounds
+	// below stay those of the waits outside the tests.
+	const every, patience = agentEvery / 5, agentWait / 5
 	live, halted := runSeedOf(runA), runSeedOf(runB)
 	live.Agents = []string{agent1}
 	halted.View.Status, halted.Agents = model.RunStopped, []string{agent2}
@@ -303,7 +309,7 @@ func TestAgentRoutes(t *testing.T) {
 		snap := snapshotWith(chat.View)
 		snap["runs"] = []model.RunView{live.View, halted.View}
 		return snap
-	}(), runSeed: []RunRecord{live, halted}, seed: []Record{chat}})
+	}(), runSeed: []RunRecord{live, halted}, seed: []Record{chat}, agent: [2]time.Duration{every, patience}})
 	ctx := context.Background()
 	p, _ := rg.page("page-1")
 	view := rg.script("GET /api/chats/{id}")
@@ -381,20 +387,20 @@ func TestAgentRoutes(t *testing.T) {
 	if rep := rg.r.AgentRead(ctx, agent1, p.ID, "/items", ""); rep.Status != http.StatusOK || string(rep.Body) != came || calls.Load() != 3 {
 		t.Errorf("a chat that is there at the third read: %d %s after %d reads", rep.Status, rep.Body, calls.Load())
 	}
-	if took := time.Since(start); took < 2*agentEvery || took > agentWait {
+	if took := time.Since(start); took < 2*every || took > agentWait {
 		t.Errorf("two waits took %v", took)
 	}
 	view.set(late(1))
 	if rep := rg.r.AgentView(ctx, agent1); rep.Status != http.StatusOK || calls.Load() != 2 {
 		t.Errorf("a view that is there at the second read: %d %s after %d reads", rep.Status, rep.Body, calls.Load())
 	}
-	// It never comes: the 404 is handed on after two seconds, nothing is marked gone, and the
+	// It never comes: the 404 is handed on after agentWait (here patience), nothing is marked gone, and the
 	// page follows nothing.
 	items.set(late(1 << 30))
 	start = time.Now()
 	rep := rg.r.AgentRead(ctx, agent1, p.ID, "/items", "")
 	refused(t, "a chat that never comes", rep, http.StatusNotFound, "", "no such chat")
-	if took, n := time.Since(start), calls.Load(); took < agentWait-2*agentEvery || took > 2*agentWait || n < 5 || n > 9 {
+	if took, n := time.Since(start), calls.Load(); took < patience-2*every || took > 2*agentWait || n < 5 || n > 9 {
 		t.Errorf("the retries took %v and %d reads", took, n)
 	}
 	if rg.runFile(runA).Gone || rg.b.Followed(editorbridge.Chat(agent1)) {
@@ -431,6 +437,7 @@ func TestAgentRoutes(t *testing.T) {
 // TestNoRunsHere: on a relay without a run service every run method answers "no such run" or
 // "none", and nothing is sent.
 func TestNoRunsHere(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{noRuns: true, snapshot: snapshotWithRuns(remoteRun(runA, model.RunRunning))})
 	ctx := context.Background()
 	name := "n"

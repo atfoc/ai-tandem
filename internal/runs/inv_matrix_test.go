@@ -14,6 +14,7 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // The fifteen invariants of the reference script (T01 §15.1), each on the real chat manager and
@@ -97,7 +98,10 @@ func TestInv02StepFlags(t *testing.T) {
 		{"committed", func(a Attempt) bool { return a.Head != "" }, 1, 1},
 		{"merged", func(a Attempt) bool { return a.Merged != "" }, 1, 1},
 	}
-	for _, p := range points {
+	for i, p := range points {
+		if !testset.Full() && i%2 == 0 {
+			continue // a whole run each: the default set has the flag of the work and of the merge
+		}
 		t.Run(strings.ReplaceAll(p.name, " ", "_"), func(t *testing.T) {
 			t.Parallel()
 			h := newMx(t, true)
@@ -155,15 +159,12 @@ func TestInv03DoneAgentNeverRunsAgain(t *testing.T) {
 	t.Parallel()
 	t.Run("done and result are one entry", func(t *testing.T) {
 		t.Parallel()
-		h := newMx(t, true)
-		h.startRun(nil)
-		h.refEnd()
 		// Replay the journal: whenever an agent becomes done, the same entry holds what its
 		// caller made of the answer.
 		l := &Loaded{}
 		was := map[string]model.RunAgentStatus{}
 		checked := 0
-		for _, e := range h.journalWhole() {
+		for _, e := range mxReference(t).entries(t) {
 			l.Apply(e.V, e.Patch)
 			for _, a := range e.Patch.Agents {
 				if a.Status != model.AgentDone || was[a.ID] == model.AgentDone {
@@ -207,37 +208,45 @@ func TestInv03DoneAgentNeverRunsAgain(t *testing.T) {
 	// after the resume no agent that was done gets a process or a message.
 	for _, role := range []model.AgentRole{model.RoleOrchestrator, model.RoleTask, model.RoleMerge} {
 		for _, back := range []int64{0, 1} {
-			if testing.Short() && (role != model.RoleTask || back != 0) {
+			if !testset.Full() && (role != model.RoleTask || back != 0) {
 				continue // two whole runs each
 			}
 			t.Run(fmt.Sprintf("crash at the %s's result, %d before", role, back), func(t *testing.T) {
 				t.Parallel()
-				h := newMx(t, true)
-				h.newRun(nil)
-				var at atomic.Int64
-				h.mu.Lock()
-				h.onEntry = func(l *Loaded) {
-					if at.Load() != 0 {
-						return
-					}
-					for _, a := range l.Agents {
-						if a.Role == role && a.Status == model.AgentDone {
+				roleDone := func(l *Loaded) bool {
+					return slices.ContainsFunc(l.Agents, func(a Agent) bool { return a.Role == role && a.Status == model.AgentDone })
+				}
+				var h2 *mx
+				var fired <-chan struct{}
+				if testset.Full() || back != 0 {
+					h := newMx(t, true)
+					h.newRun(nil)
+					var at atomic.Int64
+					h.mu.Lock()
+					h.onEntry = func(l *Loaded) {
+						if at.Load() == 0 && roleDone(l) {
 							at.Store(l.Version)
 						}
 					}
-				}
-				h.mu.Unlock()
-				// A first run finds the entry's number; the crash is armed for it in a second run.
-				h.begin()
-				h.refEnd()
-				k := at.Load() - back
-				if k < 2 {
-					t.Fatalf("no %s became done", role)
-				}
+					h.mu.Unlock()
+					// A first run finds the entry's number; the crash is armed for it in a second run.
+					h.begin()
+					h.refEnd()
+					k := at.Load() - back
+					if k < 2 {
+						t.Fatalf("no %s became done", role)
+					}
 
-				h2 := newMx(t, true)
-				h2.newRun(nil)
-				fired := h2.crashAtEntry(k)
+					h2 = newMx(t, true)
+					h2.newRun(nil)
+					fired = h2.crashAtEntry(k)
+				} else {
+					// The default set has only the crash in the entry itself, and that entry is
+					// found by what it records: no first run is needed to number it.
+					h2 = newMx(t, true)
+					h2.newRun(nil)
+					fired = h2.crashWhen(roleDone)
+				}
 				h2.begin()
 				if !h2.awaitFired(fired) {
 					t.Skip("this run was shorter")
@@ -616,8 +625,12 @@ func TestInv05StopReachesEveryWorker(t *testing.T) {
 	}
 	for si, st := range steps {
 		for i, how := range []string{"stop", "cancel"} {
-			if testing.Short() && i != si%2 {
-				continue // every step once, by a stop or by a cancel in turn
+			// The steps that no other test stops or cancels in (slot wait, work, commit, merge and
+			// merge agent), by a stop or by a cancel in turn; the merge agent by both, because a
+			// stop while it works has no other test. The setup command, the blocked SendOwned
+			// and the back-off sleep have tests of their own.
+			if !testset.Full() && si != len(steps)-1 && (i != si%2 || (si%3 != 0 && st.name != "commit")) {
+				continue
 			}
 			t.Run(strings.ReplaceAll(st.name, " ", "_")+"/"+how, func(t *testing.T) {
 				t.Parallel()
@@ -734,7 +747,7 @@ func TestInv05StopReachesEveryWorker(t *testing.T) {
 func TestInv06CancelBoundary(t *testing.T) {
 	t.Parallel()
 	rounds := 16
-	if testing.Short() {
+	if !testset.Full() {
 		rounds = 4
 	}
 	var cancelled, merged atomic.Int32
@@ -1682,6 +1695,7 @@ func TestInv15ActiveTasksRestartFirst(t *testing.T) {
 					mxState(l, "T03") == model.TaskSlot && mxState(l, "T04") == model.TaskSlot
 			})
 			h.wait("both agents to be at work", func() bool { return h.turnsOf("T01-work") == 1 && h.turnsOf("T02-work") == 1 })
+			h.taken("T01-work", "T02-work")
 			if how == "stop" {
 				h.stopRun()
 				h.idleEngine()

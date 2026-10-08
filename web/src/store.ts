@@ -82,6 +82,8 @@ export type State = {
   roles: Record<string, BoardRole>;   // by board id; absent = not asked for
   dropped: Record<string, true>;      // the boards whose pending edit was dropped (the take-over panel and the canvas say so)
   sceneGen: Record<string, number>;   // by board id; raised to make the canvas load the scene again
+  outage: Record<string, true>;       // the boards on another server whose last save did not reach it (the canvas says so)
+  boardDraft: { group: string; busy?: boolean; error?: string } | null; // a board being made whose server is not chosen yet; never sent to the server
 };
 
 export function safeGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
@@ -106,7 +108,7 @@ let state: State = {
   flashes: [], busyOn: {}, confirm: null, picking: null,
   servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
   update: { banner: "none", hidden: false },
-  roles: {}, dropped: {}, sceneGen: {},
+  roles: {}, dropped: {}, sceneGen: {}, outage: {}, boardDraft: null,
 };
 const subs = new Set<() => void>();
 
@@ -173,7 +175,7 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
       trees: {}, moves,
       ...serversOf(s),
       treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
-      sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen),
+      sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage),
     };
   });
   for (const id of Object.keys(boardsBefore)) if (!boards[id]) forgetBoard(id);
@@ -195,9 +197,10 @@ export function removeBoard(id: string) {
     const { [id]: _r, ...roles } = s.roles;
     const { [id]: _d, ...dropped } = s.dropped;
     const { [id]: _g, ...sceneGen } = s.sceneGen;
+    const { [id]: _o, ...outage } = s.outage;
     const sel = s.sel.board === id ? NO_SEL : s.sel;
     if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
-    return { boards, busyOn, roles, dropped, sceneGen, sel, flashes: s.flashes.filter((f) => f.board !== id) };
+    return { boards, busyOn, roles, dropped, sceneGen, outage, sel, flashes: s.flashes.filter((f) => f.board !== id) };
   });
   boardsBefore = getState().boards;
 }
@@ -220,6 +223,20 @@ export function setDropped(board: string, on: boolean) {
     const { [board]: _, ...dropped } = s.dropped;
     return { dropped: on ? { ...dropped, [board]: true } : dropped };
   });
+}
+
+/** Notes that a board's save did not reach its server, or with false that one did. */
+export function setOutage(board: string, on: boolean) {
+  setState((s) => {
+    if (!!s.outage[board] === on) return {};
+    const { [board]: _, ...outage } = s.outage;
+    return { outage: on ? { ...outage, [board]: true } : outage };
+  });
+}
+
+/** Sets the board being made whose server is not chosen yet, or with null ends it. */
+export function setBoardDraft(draft: State["boardDraft"]) {
+  setState({ boardDraft: draft });
 }
 
 /** Makes the canvas load a board's scene again: the one it shows is no longer the one kept. */

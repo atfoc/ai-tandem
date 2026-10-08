@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -17,10 +18,15 @@ import (
 var (
 	bg       = context.Background()
 	hermetic []string // the environment that switches the user's git config off
+	scratch  string   // where the template repositories of the test binary are (see template)
 )
 
 func TestMain(m *testing.M) {
 	agenttest.FastGit()
+	// Nearly every test here waits for git commands, and a Mac starts only so many processes a
+	// second: more than a few tests at once are done no sooner, and each takes longer against
+	// its wall-clock waits.
+	agenttest.LimitParallel()
 	home, err := os.MkdirTemp("", "rungit-home")
 	if err != nil {
 		panic(err)
@@ -29,9 +35,32 @@ func TestMain(m *testing.M) {
 	for _, name := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
 		os.Unsetenv(name)
 	}
+	if scratch, err = os.MkdirTemp("", "rungit-templates"); err != nil {
+		panic(err)
+	}
 	code := m.Run()
+	os.RemoveAll(scratch)
 	os.RemoveAll(home)
 	os.Exit(code)
+}
+
+// withWaits is ctx for calls that sit through one of the package's waits: the test gives the ones
+// it waits out a shorter time. A zero field keeps the package's own.
+func withWaits(ctx context.Context, w waits) context.Context {
+	own := waitsOf(ctx)
+	if w.grace == 0 {
+		w.grace = own.grace
+	}
+	if w.settle == 0 {
+		w.settle = own.settle
+	}
+	if w.staleAge == 0 {
+		w.staleAge = own.staleAge
+	}
+	if w.flockWait == 0 {
+		w.flockWait = own.flockWait
+	}
+	return context.WithValue(ctx, waitsKey{}, w)
 }
 
 // git runs git in dir the way a person (or an agent) would, and fails the test when it fails.
@@ -71,13 +100,52 @@ func initRepo(t *testing.T, identity bool) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "repo")
 	must(t, os.MkdirAll(dir, 0o755))
-	git(t, dir, "init", "-q", "-b", "main")
-	if identity {
-		git(t, dir, "config", "user.name", "Tester")
-		git(t, dir, "config", "user.email", "tester@example.com")
-	}
+	initIn(t, dir, identity)
 	return dir
 }
+
+// initIn is initRepo in the folder dir, which is there and empty.
+func initIn(t *testing.T, dir string, identity bool) {
+	t.Helper()
+	git(t, dir, "init", "-q", "-b", "main")
+	if identity {
+		// What git config user.name and git config user.email write, without the two processes.
+		f, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+		must(t, err)
+		_, err = f.WriteString("[user]\n\tname = Tester\n\temail = tester@example.com\n")
+		must(t, err)
+		must(t, f.Close())
+	}
+}
+
+// template is a repository that is built once for the test binary and copied for each test that
+// starts from it: a copy of a few files instead of the same handful of git commands every time.
+type template struct {
+	once sync.Once
+	dir  string
+}
+
+// copyOf returns a copy of the repository that build makes, in a new temp folder of t. A test
+// gets what it would get from build: its own repository, with an index that matches its files.
+func (tpl *template) copyOf(t *testing.T, build func(t *testing.T, dir string)) string {
+	t.Helper()
+	tpl.once.Do(func() {
+		dir, err := os.MkdirTemp(scratch, "repo")
+		must(t, err)
+		build(t, dir)
+		tpl.dir = dir
+	})
+	if tpl.dir == "" {
+		t.Fatal("the template repository could not be built (see the first test that failed)")
+	}
+	dir := filepath.Join(t.TempDir(), "repo")
+	must(t, os.CopyFS(dir, os.DirFS(tpl.dir)))
+	// The index has the inodes and times of the template's files, not of the copies.
+	git(t, dir, "update-index", "-q", "--refresh")
+	return dir
+}
+
+var newRepoTemplate template
 
 func open(t *testing.T, dir string) *Repo {
 	t.Helper()
@@ -93,10 +161,12 @@ func open(t *testing.T, dir string) *Repo {
 // of a test go next to it, in sibling(root, name).
 func newRepo(t *testing.T) (*Repo, string) {
 	t.Helper()
-	dir := initRepo(t, true)
-	write(t, dir, "f.txt", "one\ntwo\nthree\n")
-	git(t, dir, "add", "-A")
-	git(t, dir, "commit", "-q", "-m", "init")
+	dir := newRepoTemplate.copyOf(t, func(t *testing.T, dir string) {
+		initIn(t, dir, true)
+		write(t, dir, "f.txt", "one\ntwo\nthree\n")
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", "init")
+	})
 	r := open(t, dir)
 	if r.Root() != resolve(dir) {
 		t.Fatalf("Root() = %s, want %s", r.Root(), resolve(dir))

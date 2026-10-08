@@ -2,7 +2,7 @@
 // its own chats) and plain chats, plus the ungrouped area. Also the selection helpers
 // every part of the app opens boards, runs and chats through.
 import React, { memo, useEffect, useRef, useState } from "react";
-import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, answerRun, isBusy, isLegacy, chatTitle, boardName, shownBranch, statesOfChat, threadOf, viewedBranch, type Sel } from "./store.ts";
+import { useStore, getState, setState, safeSet, lastChat, setBoardDraft, upsertBoard, upsertChat, answerRun, isBusy, isLegacy, chatTitle, boardName, shownBranch, statesOfChat, threadOf, viewedBranch, type Sel } from "./store.ts";
 import { api } from "./api.ts";
 import { loadItems, loadTree, dropRun } from "./conn.ts";
 import { flush, takeBoard } from "./board.ts";
@@ -20,6 +20,10 @@ import "./remotechat.css";
 import { serverConnected, serverName, serverOf } from "./logic/serverlists.ts";
 import { chatHasDraft, hasDraft, otherDrafts } from "./logic/drafts.ts";
 import { selOf } from "./logic/sel.ts";
+import { CREATE_FAILED, DRAFT_NAME, hasRemote } from "./logic/boarddraft.ts";
+import { BOARD_MENU_LABEL, boardDeleteRefused, boardMenu, isUnreachable, moveTargets, type BoardMenuItem } from "./logic/boardrow.ts";
+import { BoardTag } from "./BoardTag.tsx";
+import "./boardchoice.css";
 import { takeOnSelect } from "./logic/roles.ts";
 import { catalogFor } from "./logic/agentlist.ts";
 import { isDraft, runChats } from "./logic/run.ts";
@@ -39,9 +43,11 @@ import { ServersButton } from "./Servers.tsx";
  *  window does not hold is asked for: taken from a window that holds it, or with ifFree (the
  *  selection is not the user's own, or it is of one of the board's chats and not of the board)
  *  only when no window does (logic/roles.ts takeOnSelect). row: the click was on the board's own
- *  row, which takes the board also when it is the one on screen. */
+ *  row, which takes the board also when it is the one on screen. A new board's draft whose server
+ *  is not chosen yet ends here: selecting anything leaves it. */
 export function select(sel: Sel, o: { keepPanel?: boolean; ifFree?: boolean; row?: boolean } = {}) {
   const prev = getState().sel;
+  if (getState().boardDraft) setBoardDraft(null);
   if (prev.board && prev.board !== sel.board) void flush(prev.board); // closing a board writes it
   setState({ sel, runAgent: null }); safeSet("aiwb.sel", JSON.stringify(sel)); // a run agent's transcript in the panel gives way to what was picked
   // (the board that is on screen already is never taken from another window by picking one of its chats: those are
@@ -100,12 +106,51 @@ export async function newChat(where: { group: string } | { board: string } | { r
   } catch (e) { reportError("Couldn't start the chat", e); }
 }
 
-/** Returns the new board's id; the row opens in rename mode. */
-export async function newBoard(group: string): Promise<string> {
-  const b = await api.newBoard(group);
+/** Returns the new board's id; the row opens in rename mode. server: the entry id of the server
+ *  the user chose for it ("local": this computer), and the board is then named as its draft was;
+ *  without it the board is made on this computer with the server's default name. */
+export async function newBoard(group: string, server?: string): Promise<string> {
+  const b = server === undefined ? await api.newBoard(group) : await api.newBoard(group, DRAFT_NAME, false, server);
   upsertBoard(b);
   select({ board: b.id, run: null, chat: null });
   return b.id;
+}
+
+let editRow: (key: string | null) => void = () => {}; // puts a row of the sidebar in rename mode (Sidebar sets it while it is mounted)
+
+/** "New whiteboard": with no server but this computer the board is made here at once, its row in
+ *  rename mode. Otherwise a draft: the row "Untitled" in the group and the server choice in the
+ *  main area (BoardChoice.tsx), until one is picked or the draft is left. */
+export function addBoard(group: string) {
+  const s = getState();
+  if (!hasRemote(s.servers)) return attempt(CREATE_FAILED, async () => editRow("board:" + await newBoard(group)));
+  if (s.sel.board) void flush(s.sel.board); // its canvas gives way to the choice
+  if (s.groups.find((g) => g.id === group)?.collapsed) setCollapsed(group, false); // the draft's row is seen
+  setBoardDraft({ group });
+}
+
+/** Leaves a new board's draft without a pick; what was selected before it is on screen again. */
+export function dropBoardDraft() {
+  if (getState().boardDraft) setBoardDraft(null);
+}
+
+/** The pick of a draft's server: the board is made there and opened, its row in rename mode. A
+ *  refusal stays in the draft as its error, and the choice stays usable. A draft the user left
+ *  while the request ran is not opened: its board is in the sidebar. */
+export async function pickBoardServer(server: string) {
+  const d = getState().boardDraft;
+  if (!d || d.busy) return;
+  const mine = { group: d.group, busy: true };
+  setBoardDraft(mine);
+  try {
+    const b = await api.newBoard(d.group, DRAFT_NAME, false, server);
+    upsertBoard(b);
+    if (getState().boardDraft !== mine) return;
+    select({ board: b.id, run: null, chat: null }); // which ends the draft
+    editRow("board:" + b.id);
+  } catch (e) {
+    if (getState().boardDraft === mine) setBoardDraft({ group: d.group, error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 /** Returns the new run's id; the stage shows its goal composer. Nothing is focused: the caller
@@ -153,12 +198,17 @@ function archiveBoard(b: Board) {
   });
 }
 
+/** A board on another server is deleted there. When that server is not connected (503) nothing
+ *  was deleted: the dialog says so, and the row stays. */
 function deleteBoard(b: Board) {
   const busy = busyChats(b.id);
   confirm({
     title: `Delete ${b.name}?`,
     body: `${busy.length ? "An agent is working on this board. Stop it and delete? " : ""}The board file and all its chats are removed. This can't be undone.`,
-    actions: [{ label: "Delete", tone: "danger", run: async () => { await stopAll(busy); await flush(b.id); await api.deleteBoard(b.id); } }],
+    actions: [{
+      label: "Delete", tone: "danger", run: async () => { await stopAll(busy); await flush(b.id); await api.deleteBoard(b.id); },
+      refused: (err) => (b.server && isUnreachable(err) ? { title: "Couldn't delete the board", body: boardDeleteRefused(b.name, serverName(getState(), b.server)), actions: [] } : null),
+    }],
   });
 }
 
@@ -273,14 +323,17 @@ export function Sidebar() {
   const connected = useStore((s) => s.connected);
   const [editing, setEditing] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
+  const draft = useStore((s) => s.boardDraft?.group);
   const tree = buildTree({ groups, boards, chats, runs }, showArchived);
+  useEffect(() => { editRow = setEditing; return () => { editRow = () => {}; }; }, []);
+  // a draft whose group is gone has no row: it ends
+  useEffect(() => { if (draft !== undefined && draft !== UNGROUPED && !groups.some((g) => g.id === draft)) setBoardDraft(null); }, [draft, groups]);
 
   const addGroup = (parent = "") => attempt("Couldn't create the group", async () => setEditing("group:" + await newGroup(parent)));
-  const addBoard = (g: string) => attempt("Couldn't create the whiteboard", async () => setEditing("board:" + await newBoard(g)));
   const addRun = (g: string) => attempt("Couldn't create the run", async () => setEditing("run:" + await newRun(g)));
 
   return (
-    <nav className="side">
+    <nav className={`side ${draft !== undefined ? "drafting" : ""}`}>
       <div className="side-head">
         <div className="brand"><Logo /> AI Whiteboard</div>
         {!connected && <span className="offline">Reconnecting…</span>}
@@ -299,10 +352,11 @@ export function Sidebar() {
       </div>
       <div className="side-tree">
         <DropZone group={UNGROUPED} className="side-loose">
+          {draft === UNGROUPED && <DraftRow />}
           {tree.loose.boards.map((b) => <BoardNode key={b.id} b={b} editing={editing} setEditing={setEditing} />)}
           {tree.loose.runs.map((r) => <RunNode key={r.id} r={r} editing={editing} setEditing={setEditing} />)}
           {tree.loose.chats.map((c) => <ChatRow key={c.id} c={c} editing={editing} setEditing={setEditing} />)}
-          {!tree.loose.boards.length && !tree.loose.runs.length && !tree.loose.chats.length && !tree.groups.length && <div className="side-empty">No chats yet.</div>}
+          {draft !== UNGROUPED && !tree.loose.boards.length && !tree.loose.runs.length && !tree.loose.chats.length && !tree.groups.length && <div className="side-empty">No chats yet.</div>}
         </DropZone>
         {tree.groups.map((n) => (
           <GroupNode key={n.group.id} n={n} depth={0} editing={editing} setEditing={setEditing} addBoard={addBoard} addRun={addRun} addGroup={addGroup} />
@@ -423,16 +477,25 @@ const drag = (key: string) => ({
   onDragStart: (e: React.DragEvent) => { e.stopPropagation(); e.dataTransfer.setData("text/x-aiwb", key); e.dataTransfer.effectAllowed = "move"; },
 });
 
-function RowMenu({ items, label }: { items: { label: string; run: () => void; tone?: "danger" }[]; label: string }) {
+type RowItem = { label: string; run: () => void; tone?: "danger" };
+
+/** sub: the item opens a second list in the menu's place ("Move to…": the groups). */
+function RowMenu({ items, label }: { items: (RowItem & { sub?: RowItem[] })[]; label: string }) {
   const [open, setOpen] = useState(false);
+  const [sub, setSub] = useState<RowItem[] | null>(null);
+  const close = () => { setOpen(false); setSub(null); };
   return (
     <div className="menu-wrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-      <button className={`side-hover icon-btn sm ${open ? "open" : ""}`} title={label} onClick={() => setOpen(!open)}><MoreIcon /></button>
+      <button className={`side-hover icon-btn sm ${open ? "open" : ""}`} title={label} onClick={() => (open ? close() : setOpen(true))}><MoreIcon /></button>
       {open && (
-        <Menu onClose={() => setOpen(false)} align="right">
-          {items.map((it) => (
-            <button key={it.label} className={`menu-item plain ${it.tone ?? ""}`} onClick={() => { setOpen(false); it.run(); }}>{it.label}</button>
-          ))}
+        <Menu onClose={close} align="right">
+          {sub
+            ? sub.map((it, i) => (
+              <button key={i} className="menu-item plain" title={it.label} onClick={() => { close(); it.run(); }}><span className="menu-label">{it.label}</span></button>
+            ))
+            : items.map((it) => (
+              <button key={it.label} className={`menu-item plain ${it.tone ?? ""}`} onClick={() => { if (it.sub) return setSub(it.sub); close(); it.run(); }}>{it.label}</button>
+            ))}
         </Menu>
       )}
     </div>
@@ -474,6 +537,7 @@ function GroupNode({ n, depth, editing, setEditing, addBoard, addRun, addGroup }
   const all = useStore((s) => s.chats);
   const groups = useStore((s) => s.groups);
   const showArchived = useStore((s) => s.showArchived);
+  const draft = useStore((s) => s.boardDraft?.group === g.id);
   const [dropBefore, setDropBefore] = useState(false);
   const collapsed = !!g.collapsed;
   const inside = contents(n);
@@ -544,13 +608,28 @@ function GroupNode({ n, depth, editing, setEditing, addBoard, addRun, addGroup }
           {children.map((c) => (
             <GroupNode key={c.group.id} n={c} depth={depth + 1} editing={editing} setEditing={setEditing} addBoard={addBoard} addRun={addRun} addGroup={addGroup} />
           ))}
+          {draft && <DraftRow />}
           {boards.map((b) => <BoardNode key={b.id} b={b} editing={editing} setEditing={setEditing} />)}
           {runs.map((r) => <RunNode key={r.id} r={r} editing={editing} setEditing={setEditing} />)}
           {chats.map((c) => <ChatRow key={c.id} c={c} editing={editing} setEditing={setEditing} />)}
-          {!children.length && !boards.length && !runs.length && !chats.length && <div className="side-empty">Empty — use + or drag chats here.</div>}
+          {!draft && !children.length && !boards.length && !runs.length && !chats.length && <div className="side-empty">Empty — use + or drag chats here.</div>}
         </div>
       )}
     </DropZone>
+  );
+}
+
+/** The row of a new board whose server is not chosen yet (logic/boarddraft.ts): it is what is on
+ *  screen, has no menu and is not dragged. */
+function DraftRow() {
+  return (
+    <div className="side-board">
+      <div className="side-row is-board on draft" title={DRAFT_NAME}>
+        <span className="side-caret none" />
+        <span className="side-board-icon"><BoardIcon /></span>
+        <span className="side-name">{DRAFT_NAME}</span>
+      </div>
+    </div>
   );
 }
 
@@ -572,28 +651,37 @@ const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edit & { b
     try { await flush(b.id); upsertBoard(await api.renameBoard(b.id, v)); setErr(""); }
     catch (e: any) { setErr(e?.message ?? String(e)); }
   };
-  const menu = b.archived
-    ? [{ label: "Unarchive", run: () => attempt("Couldn't unarchive the board", () => api.unarchive("boards", b.id)) },
-       { label: "Delete", tone: "danger" as const, run: () => deleteBoard(b) }]
-    : [{ label: "Rename", run: () => setEditing(key) },
-       { label: "Reveal in Finder", run: () => attempt("Couldn't reveal the board", () => flush(b.id).then(() => api.reveal(b.id))) },
-       { label: "Archive", run: () => archiveBoard(b) },
-       { label: "Delete", tone: "danger" as const, run: () => deleteBoard(b) }];
+  // (a board on another server: its menu has no file to reveal and moves it between this computer's groups; one that is gone
+  // there is grey, and can only be removed from this sidebar)
+  const gone = !!b.server && !!b.gone;
+  const targets = moveTargets(groups, b.group).map((g) => ({ label: g.label, run: () => attempt("Couldn't move the board", () => api.moveBoard(b.id, g.id)) }));
+  const run: Record<BoardMenuItem, () => void> = {
+    rename: () => setEditing(key),
+    move: () => {},
+    reveal: () => attempt("Couldn't reveal the board", () => flush(b.id).then(() => api.reveal(b.id))),
+    archive: () => archiveBoard(b),
+    unarchive: () => attempt("Couldn't unarchive the board", () => api.unarchive("boards", b.id)),
+    delete: () => deleteBoard(b),
+    remove: () => attempt("Couldn't remove the board", () => api.deleteBoard(b.id, true)),
+  };
+  const menu = boardMenu(b).filter((i) => i !== "move" || targets.length > 0)
+    .map((i) => ({ label: BOARD_MENU_LABEL[i], tone: i === "delete" ? "danger" as const : undefined, run: run[i], sub: i === "move" ? targets : undefined }));
   return (
     <div className={`side-board ${b.archived ? "archived" : ""}`}>
-      <div className={`side-row is-board ${on && !sel.chat ? "on" : on ? "within" : ""}`} {...(b.archived || editing === key ? {} : drag(key))}
+      <div className={`side-row is-board ${on && !sel.chat ? "on" : on ? "within" : ""} ${gone ? "gone" : ""}`} {...(b.archived || gone || editing === key ? {} : drag(key))}
         title={[...groupPath(groups, b.group), b.name].join(" / ")}
-        onClick={() => openBoard(b.id, true)} onDoubleClick={() => { if (!b.archived) setEditing(key); }}>
+        onClick={() => openBoard(b.id, true)} onDoubleClick={() => { if (!b.archived && !gone) setEditing(key); }}>
         <button className={`side-caret ${open ? "open" : ""} ${chats.length ? "" : "none"}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}><Chevron /></button>
         <span className="side-board-icon">{working ? <span className={`agent-${agentClass(working)}`}><AgentGlyph agent={working} size={12} /></span> : <BoardIcon />}</span>
         {editing === key
           ? <InlineName value={b.name} onDone={(v) => void rename(v)} />
           : <span className="side-name">{b.name}</span>}
+        <BoardTag board={b} />
         {b.new && <span className="new-dot" title="New — made by an agent" />}
         {b.archived && <ArchivedTag />}
         {!open && chats.length > 0 && <span className="side-count">{chats.length}</span>}
         <span className="grow" />
-        {!b.archived && (
+        {!b.archived && !gone && (
           <AddChat title="New chat on this board" onClick={() => { setOpen(true); void newChat({ board: b.id }); }} />
         )}
         <RowMenu label="More" items={menu} />

@@ -80,6 +80,7 @@ func (e *env) twoAskers() (id string, parent *fakeAgent, a, b model.Subagent, ca
 // However the agent's turn ends, its own open request is closed as denied, in the thread only. A
 // late answer is refused and reaches no process.
 func TestTurnEndClosesOwnPermission(t *testing.T) {
+	t.Parallel()
 	for name, end := range map[string]agent.Event{
 		"clean":   {Kind: agent.EvTurnEnd},
 		"error":   {Kind: agent.EvTurnEnd, Error: "rate limited"},
@@ -135,6 +136,7 @@ func TestTurnEndClosesOwnPermission(t *testing.T) {
 // that became owed while the chat waited for the answer is delivered when it leaves approval, or,
 // after a turn that ended with an error, once the human has sent.
 func TestStaleOwnRequestDoesNotHoldIdleChat(t *testing.T) {
+	t.Parallel()
 	for name, end := range map[string]agent.Event{
 		"clean": {Kind: agent.EvTurnEnd},
 		"error": {Kind: agent.EvTurnEnd, Error: "boom"},
@@ -198,6 +200,7 @@ func TestStaleOwnRequestDoesNotHoldIdleChat(t *testing.T) {
 // The same with a card that was open when the app was closed: it is closed when the thread loads.
 // A result owed across the restart is not sent until a human message has started a process.
 func TestLoadClosesOpenPermissions(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	ask(t, parent, "", "p1")
@@ -266,6 +269,7 @@ func TestLoadClosesOpenPermissions(t *testing.T) {
 // A child that ends on its own with its request open: the request is closed as denied, in the
 // thread only, before the delivery's preconditions are checked, so the parent gets the result.
 func TestChildEndClosesItsPermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -308,6 +312,7 @@ func TestChildEndClosesItsPermission(t *testing.T) {
 
 // A native subagent's request is held by the chat's process; it is closed with the subagent too.
 func TestNativeSubagentEndClosesItsPermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -345,6 +350,7 @@ func TestNativeSubagentEndClosesItsPermission(t *testing.T) {
 // Clients get the turn's end and then the subagents' cards, as updates of rising versions (a
 // client drops an update whose version it already has).
 func TestAbortedTurnClosesSubagentPermissions(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, a := e.subStart()
@@ -395,6 +401,7 @@ func TestAbortedTurnClosesSubagentPermissions(t *testing.T) {
 
 // A parent turn that ends while a child's card is open leaves that card open and answerable.
 func TestTurnEndKeepsChildPermissionOpen(t *testing.T) {
+	t.Parallel()
 	for name, end := range map[string]agent.Event{
 		"clean": {Kind: agent.EvTurnEnd},
 		"error": {Kind: agent.EvTurnEnd, Error: "rate limited"},
@@ -436,6 +443,7 @@ func TestTurnEndKeepsChildPermissionOpen(t *testing.T) {
 
 // Two children use the same request id one after the other.
 func TestSameRequestIDInTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	a := e.spawn(id, SpawnSubRequest{Prompt: "a"})
@@ -490,6 +498,7 @@ func TestSameRequestIDInTurn(t *testing.T) {
 
 // Two children have the same request id open at once: an answer reaches its own child and card.
 func TestSameRequestIDBothOpenAnswered(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, a, b, ca, cb := e.twoAskers()
 	owed := e.spawn(id, SpawnSubRequest{Prompt: "c"})
@@ -552,6 +561,7 @@ func TestSameRequestIDBothOpenAnswered(t *testing.T) {
 // only its card closes; the other stays open, its answer reaches its child, and only then does
 // the chat leave approval. The results owed by then are delivered at that moment.
 func TestSameRequestIDOneAskerGone(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		gone func(e *env, id string, a model.Subagent, ca *fakeAgent)
 		told []decision // what the child that went away was told on its process
@@ -626,6 +636,7 @@ func TestSameRequestIDOneAskerGone(t *testing.T) {
 // The parent's own request has the id of a child's open request: each answer reaches its own
 // process. An answer that names no asker is for the parent's own request.
 func TestSameRequestIDParentAndChild(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -669,6 +680,7 @@ func TestSameRequestIDParentAndChild(t *testing.T) {
 // An answer that does not name the asker of a subagent's card (a page from before the change) is
 // refused; so is one that names an asker with no such request.
 func TestAnswerMustNameTheAsker(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -704,6 +716,7 @@ func TestAnswerMustNameTheAsker(t *testing.T) {
 
 // Stop tells each process no for its own request and closes every card, whatever the ids.
 func TestStopDeniesEachAskersPermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -730,6 +743,7 @@ func TestStopDeniesEachAskersPermission(t *testing.T) {
 // they went stale): both are closed at load, and new requests with that id are raised, answered
 // and closed like any others.
 func TestLoadClosesSameIDPermissions(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _, a, b, _, _ := e.twoAskers()
 	var open []byte

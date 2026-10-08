@@ -29,7 +29,6 @@ import { quoteSelection } from "./quoteDom.ts";
 import { BoardIcon, Chevron, Folder, Lock, RunIcon, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
-import { FolderHint } from "./fork/FolderHint.tsx";
 import { AgentPick, ServerPick, useWhere } from "./ChatChoices.tsx";
 import { isSending, leftByBack, registerComposer, sendAt, sendFailed, setMoveChoice } from "./fork/actions.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
@@ -523,7 +522,6 @@ export function Toolbar({ chatId, onError, sending = false }: { chatId: string; 
       {agentOpen(c) && <AgentPick c={c} disabled={patching || sending} open={openPicker === "agent"} onOpenChange={(o) => setOpenPicker(o ? "agent" : null)} onBusy={setPatching} onError={onError} />}
       {!folderOpen && <Lock />}
       <DirPicker cwd={c.cwd} missing={c.folderMissing} locked={!folderOpen} server={where.server} onPick={(d) => api.configure(c.id, shownBranch(getState(), c.id), { cwd: d })} />
-      <FolderHint chatId={chatId} />
       {mode === "fixed" ? (
         <span className="tchip static" title={c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started"}>
           {folderOpen && <Lock />} {subline(c, cat)}

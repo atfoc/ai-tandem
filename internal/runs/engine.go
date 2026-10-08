@@ -529,6 +529,14 @@ func (r *run) gitFacts(ctx context.Context) (gitFacts, error) {
 	if err != nil {
 		return gitFacts{}, err
 	}
+	// While the run goes on, one command answers both when the branch has commits: the newest
+	// of them is its head. Without any (no branch yet, a branch still at the base) it is asked
+	// step by step, as for a run that has ended.
+	if g.ResultHead == "" {
+		if commits, err := repo.Commits(ctx, g.BaseRef, engIntBranch(r.id, g)); err == nil && len(commits) > 0 {
+			return gitFacts{Head: commits[len(commits)-1].SHA, Commits: len(commits)}, nil
+		}
+	}
 	head, err := repo.Resolve(ctx, engIntBranch(r.id, g))
 	if errors.Is(err, rungit.ErrUnknownRef) {
 		if g.ResultHead == "" {
@@ -538,6 +546,9 @@ func (r *run) gitFacts(ctx context.Context) (gitFacts, error) {
 	}
 	if err != nil {
 		return gitFacts{}, err
+	}
+	if head == g.BaseRef {
+		return gitFacts{Head: head}, nil
 	}
 	commits, err := repo.Commits(ctx, g.BaseRef, head)
 	if err != nil {

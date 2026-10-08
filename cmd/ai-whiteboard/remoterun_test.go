@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -33,17 +34,15 @@ type runPair struct {
 }
 
 // connectedRunPair starts the two servers with the repository's git environment, adds B to A's
-// list and waits until it is connected.
-func connectedRunPair(t *testing.T, p linksim.Profile) *runPair {
+// list and waits until it is connected. env is more in the environment of both servers: the waits
+// a test lowers (clock.env).
+func connectedRunPair(t *testing.T, p linksim.Profile, env ...string) *runPair {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("builds the binary and starts two servers")
-	}
 	repo := agenttest.NewRepo(t)
 	repo.Write(e2eFile, e2eBefore)
 	repo.Write("README.md", "a repository\n")
 	repo.Commit("the start")
-	rp := &runPair{remotePair: startRemotePairIn(t, p, "", repo.Env()), repo: repo}
+	rp := &runPair{remotePair: startRemotePairIn(t, p, "", append(repo.Env(), env...)), repo: repo}
 	rp.addEntry(t)
 	return rp
 }
@@ -287,11 +286,15 @@ func (rp *runPair) nothingAtB(t *testing.T, when string) {
 // has a record in place of the draft, and nothing of the run ever ran on A. On the good and on
 // the poor link.
 func TestRemoteRunStart(t *testing.T) {
+	serverTest(t, "TestRunStartTable (internal/remotes)", "TestStartOfARunOnAnotherServer (internal/server)")
 	for _, link := range []struct {
 		name string
 		p    linksim.Profile
 	}{{"good link", linksim.Good}, {"poor link", linksim.Poor}} {
-		t.Run(link.name, func(t *testing.T) { remoteRunStart(t, link.p) })
+		t.Run(link.name, func(t *testing.T) {
+			t.Parallel() // each link has its own pair
+			remoteRunStart(t, link.p)
+		})
 	}
 }
 
@@ -475,6 +478,7 @@ func (rp *runPair) sameEvents(t *testing.T, direct *watcher, pm, dm int, last fu
 // AC43, the run table of flow 5.2: one case per row of what each action on a remote run does,
 // through A's routes, with B's own view beside it.
 func TestRemoteRunActions(t *testing.T) {
+	serverTest(t, "TestRunRoutes, TestAgentRoutes, TestRunArchiveConnected, TestRunDelete (internal/remotes)", "TestRunRoutesOfAStartedRun (internal/server)")
 	rp := connectedRunPair(t, linksim.Good)
 	g, other := rp.group(t, "Work"), rp.group(t, "Other")
 	direct := rp.direct(t)
@@ -866,12 +870,18 @@ func (rp *runPair) unconfirmed(t *testing.T, run, when string) {
 // run, and A is told nothing. The start answers 504 start_unconfirmed, the draft says so and its
 // server cannot be changed. After a cut and the return the run is a record on A and one run at
 // B: once with the start repeated twice by the page, once with no repeat at all.
+//
+// The limit of the start call and the silence that ends A's stream before it are those of the
+// slower clock, 9 s and 7 s for 45 s and 35 s: the check of the draft's folder, which is read
+// while the start is under way, keeps its 5 s and has to end before both.
 func TestRemoteRunNoAnswer(t *testing.T) {
-	rp := connectedRunPair(t, linksim.Good)
+	serverTest(t, "TestRunStartNoAnswer, TestRunSettleAtSnapshot, TestRunStartOnce (internal/remotes)")
+	rp := connectedRunPair(t, linksim.Good, slower.env(t, "silence", "start"))
 	g := rp.group(t, "Work")
 	repeated, settled := rp.newRepo(t), rp.newRepo(t)
 
-	// The limits run out with the link still up: 45 s for the start call, then the settle read.
+	// The limits run out with the link still up: the 45 s of the start call (9 s here), then the
+	// settle read.
 	t.Run("repeated twice", func(t *testing.T) {
 		const first = "Started with no answer, then repeated."
 		goal := noteGoal(t, first, "repeated.txt", "")
@@ -985,6 +995,7 @@ func TestRemoteRunNoAnswer(t *testing.T) {
 // AC43, the refusals: a start call that B refuses leaves the draft a draft of this server, with
 // B's reason in the answer, and leaves nothing at B: no run folder and no group "Remote".
 func TestRemoteRunRefusals(t *testing.T) {
+	serverTest(t, "TestRunStartTable (internal/remotes)", "TestRunStartRefusals, TestRunStartCallRefusals (internal/server)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	// stays checks the draft after a refused start.
@@ -1092,12 +1103,14 @@ func (rp *runPair) localDone(t *testing.T, run string) model.RunView {
 	}
 }
 
-// AC43 and AC12, the outage: B is stopped for 60 s while a task of a run works, and in a second
+// AC43 and AC12, the outage: B is stopped for 60 s while a task of a run works (for 6 s, with the
+// back-off of A's connection on the fast clock as well: see TestRemoteChatOutage), and in a second
 // run restarted at once. The record stays listed as last seen, a stop and a read answer at once
 // that the server is not connected, and a run of this computer works meanwhile. After the
 // return B goes on with the run by itself; the record's view and the detail through A are B's.
 func TestRemoteRunOutage(t *testing.T) {
-	rp := connectedRunPair(t, linksim.Good)
+	serverTest(t, "TestOutageAndReturn, TestRunSnapshotSteps (internal/remotes)", "TestConnReconnects (internal/servers)")
+	rp := connectedRunPair(t, linksim.Good, fast.env(t, "backoff"))
 	g := rp.group(t, "Work")
 	hereRepo := rp.newRepo(t) // for the runs of this computer
 	ended := rp.startRun(t, g, "Ended before", rp.repo.Dir(), noteGoal(t, "Ended before the outage.", "ended.txt", ""))
@@ -1185,14 +1198,15 @@ func TestRemoteRunOutage(t *testing.T) {
 	}
 
 	stoppedRepo, restartedRepo := rp.newRepo(t), rp.newRepo(t)
-	t.Run("stopped for 60 s", func(t *testing.T) { down(t, "stopped", stoppedRepo, 60*time.Second) })
+	t.Run("stopped for 60 s", func(t *testing.T) { down(t, "stopped", stoppedRepo, fast.of(60*time.Second)) })
 	t.Run("restarted", func(t *testing.T) { down(t, "restarted", restartedRepo, 0) })
 }
 
 // AC34, the run half: a chat made on a remote run is on the run's server and in the run's
 // folder, and no other server can be chosen for it; its first message makes it at B on the run;
-// and A's defaults are what they were.
+// and of A's defaults only the agent and model for B are the chat's.
 func TestRemoteRunChat(t *testing.T) {
+	serverTest(t, "TestStartOnARun (internal/remotes)", "TestRemoteDefaultsWithoutAKeyAndOnARun (internal/chats)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	skip := rp.b.fakeMessages(t)
@@ -1304,9 +1318,28 @@ func TestRemoteRunChat(t *testing.T) {
 	if a := rp.do(t, "PATCH", "/api/chats/"+chat, map[string]any{"server": servers.LocalID}); a.Status != http.StatusConflict {
 		t.Fatalf("a change of the started chat's server: %s, want 409", a)
 	}
-	// The chat recorded nothing: A's defaults are what the run's start left.
-	if after := defaults(); after != before {
-		t.Fatalf("A's defaults changed with the chat on the run:\nbefore: %s\nafter:  %s", before, after)
+	// The chat recorded its agent and model for the run's server, as a chat of the group does,
+	// so the next chat on the run starts with them; the group's sticky server, the folders and
+	// this computer's part are what the run's start left.
+	var was, now model.Defaults
+	after := defaults()
+	if err := json.Unmarshal([]byte(before), &was); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(after), &now); err != nil {
+		t.Fatal(err)
+	}
+	wg, ng := was.Groups[g], now.Groups[g]
+	var far model.ServerDefaults
+	for key, sd := range ng.Servers {
+		if key == servers.LocalID {
+			continue
+		}
+		far, sd.Agent, sd.ByAgent = sd, "", nil
+		ng.Servers[key] = sd
+	}
+	if far.Agent != model.Claude || far.ByAgent[model.Claude].Model != "haiku" || len(far.ByAgent) != 1 || !reflect.DeepEqual(ng, wg) || len(now.Groups) != len(was.Groups) {
+		t.Fatalf("A's defaults after the chat on the run:\nbefore: %s\nafter:  %s", before, after)
 	}
 	if on := goes(); on != "" {
 		t.Fatalf("a new chat of the group after the chat on the run is on %q, want this computer as before", on)
@@ -1325,6 +1358,7 @@ func TestRemoteRunChat(t *testing.T) {
 // run; the record goes with run_removed; the draft is a run of this computer again; and B, which
 // is told nothing, still has the run and takes it to its end.
 func TestRemoteRunRemoval(t *testing.T) {
+	serverTest(t, "TestRunCountsAndRemoved (internal/remotes)", "TestRemoteDraftsOnAndResetServer (internal/runs)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	hereRepo := rp.newRepo(t)
@@ -1420,6 +1454,7 @@ func TestRemoteRunRemoval(t *testing.T) {
 // deletes nothing and says which run and which server. With the server back it deletes the run
 // there too.
 func TestRemoteRunGroupDelete(t *testing.T) {
+	serverTest(t, "TestRunDeletableAndMove, TestRunDelete (internal/remotes)")
 	rp := connectedRunPair(t, linksim.Good)
 	kept := rp.group(t, "Kept")
 	run := rp.startRun(t, kept, "Kept run", rp.repo.Dir(), noteGoal(t, "A run in a group.", "kept.txt", ""))
@@ -1474,6 +1509,7 @@ func TestRemoteRunGroupDelete(t *testing.T) {
 // ended. A's next start settles the draft from the snapshot of its connection: the run is a
 // record, the draft is gone, and B has one orchestrator.
 func TestRemoteRunKilledInAStart(t *testing.T) {
+	serverTest(t, "TestRunSettleAtSnapshot, TestAdoptRun (internal/remotes)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	const first = "Cut by a kill."
@@ -1546,6 +1582,7 @@ func TestRemoteRunKilledInAStart(t *testing.T) {
 // `run` with the new id and `was`, then `run_removed` of the old id, and the run starts under
 // the new id.
 func TestRemoteRunIDTaken(t *testing.T) {
+	serverTest(t, "TestRunStartIDTaken (internal/remotes)", "TestRemoteReissue (internal/runs)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	const first = "Started under a new id."
@@ -1631,8 +1668,10 @@ func TestRemoteRunIDTaken(t *testing.T) {
 
 // AC29 and AC44, a server that lost its agent: B's Claude program goes away while B is connected.
 // A's page is told B's lists with no agent within 35 s, and a chat then made on B has no agent.
+// B looks its programs up on the fastest clock, every second for every 30 s; the 35 s are the bound.
 func TestRemoteRunNoAgentProgram(t *testing.T) {
-	rp := connectedRunPair(t, linksim.Good)
+	serverTest(t, "TestAgentsReachPages (internal/remotes)", "TestAgentsEventUpdatesView (internal/servers)", "TestListFollowsThePath (internal/usable)")
+	rp := connectedRunPair(t, linksim.Good, fastest.env(t, "agents"))
 	g := rp.group(t, "Work")
 	agentsOf := func(e seenEvent) (agents []model.AgentKind, ok bool) {
 		var ev struct {
@@ -1677,7 +1716,12 @@ func TestRemoteRunNoAgentProgram(t *testing.T) {
 // AC31: "New run" and "+" in a group start with the server the group's last first message went
 // to. After a chat of the group started on B both are on B; in another group both are on this
 // computer.
+//
+// This is the test of a pair of real servers that the default set runs too (smokeTest): B is an
+// entry of A's list, connected through the link to B's remote listener, and a chat is started on
+// B through A. It is the cheapest of the pairs: under a second, two servers, no run.
 func TestRemoteRunGroupServer(t *testing.T) {
+	smokeTest(t)
 	rp := connectedRunPair(t, linksim.Good)
 	g, other := rp.group(t, "Work"), rp.group(t, "Other")
 	for _, gr := range []string{g, other} {
@@ -1717,6 +1761,7 @@ func (rp *runPair) bPage(t *testing.T, method, path string, body any) answer {
 // further call. An archive made on B's own page shows on A without an action of A's, and stays
 // through a cut of the link.
 func TestRemoteRunArchiveAway(t *testing.T) {
+	serverTest(t, "TestRunArchivePending, TestRunArchiveTriedAgain, TestRunArchivedThere (internal/remotes)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	second := rp.newRepo(t)
@@ -1790,6 +1835,7 @@ func TestRemoteRunArchiveAway(t *testing.T) {
 // server is connected; with the server stopped it removes A's record alone, and B still has the
 // run when it is back; and for a run that is gone at B it removes the record.
 func TestRemoteRunSidebarOnly(t *testing.T) {
+	serverTest(t, "TestRunDelete, TestRunWithoutARecord (internal/remotes)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	second := rp.newRepo(t)
@@ -1886,6 +1932,7 @@ func TestRemoteRunSidebarOnly(t *testing.T) {
 // it cannot start and its folder cannot be changed, and its agent and what was typed stay. With B
 // back the draft is not blocked, an agent B does not have is refused, and the run starts.
 func TestRemoteRunDraftAway(t *testing.T) {
+	serverTest(t, "TestRemoteDraftFacts, TestRemoteServerUp, TestRemotePatchRefusals (internal/runs)")
 	rp := connectedRunPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	const first = "Started after its server came back."
@@ -1968,8 +2015,11 @@ func TestRemoteRunDraftAway(t *testing.T) {
 // on: it takes the call and starts the run, while A connects again. Whichever comes first, the
 // snapshot of the connection or the start at B, the run ends up a record on A with nothing
 // called on A but reads of its snapshot, and one run at B, which takes it to its end.
+//
+// A's limit and the silence before it are those of the fast clock: 4.5 s and 3.5 s.
 func TestRemoteRunFrozenStart(t *testing.T) {
-	rp := connectedRunPair(t, linksim.Good)
+	serverTest(t, "TestRunStartNoAnswer, TestRunStartEndsAfterTheSnapshot (internal/remotes)")
+	rp := connectedRunPair(t, linksim.Good, fast.env(t, "silence", "start"))
 	g := rp.group(t, "Work")
 	const first = "Started while its server was frozen."
 	goal := noteGoal(t, first, "frozen.txt", "")

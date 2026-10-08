@@ -10,6 +10,7 @@ import (
 // A chat cannot be made on a run that will start on another server and has not started; on the
 // same run once it has started, and on a draft run of this computer, it can.
 func TestRunNotStartedRefusesAChat(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	fr := &fakeRuns{runs: map[string]RunInfo{}}
 	e.m.Runs = fr

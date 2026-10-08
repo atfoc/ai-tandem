@@ -271,7 +271,7 @@ func (r *Relay) Get(ctx context.Context, id string) Reply {
 	}
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	return jsonReply(http.StatusOK, viewOf(rec.d))
+	return jsonReply(http.StatusOK, r.pageView(viewOf(rec.d)))
 }
 
 // readView reads the chat's view from its server. The record takes it unless a view of the chat
@@ -622,7 +622,7 @@ func (r *Relay) Patch(ctx context.Context, id, branch string, p PatchReq) Reply 
 	}
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	return jsonReply(http.StatusOK, map[string]any{"ok": true, "chat": viewOf(rec.d)})
+	return jsonReply(http.StatusOK, map[string]any{"ok": true, "chat": r.pageView(viewOf(rec.d))})
 }
 
 // groupFor is the refusal of a group as a record's place: one that is not named, does not
@@ -711,7 +711,7 @@ func (r *Relay) Fork(ctx context.Context, id string, body []byte) Reply {
 	_ = r.readView(ctx, fork, true, true)
 	fork.mu.Lock()
 	defer fork.mu.Unlock()
-	return jsonReply(http.StatusOK, viewOf(fork.d))
+	return jsonReply(http.StatusOK, r.pageView(viewOf(fork.d)))
 }
 
 // short is an id cut for a log line.

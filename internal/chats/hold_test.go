@@ -49,6 +49,7 @@ func (e *env) held(when, id string, parent *fakeAgent, sends int, owed ...string
 // What holds a chat: after each, no turn starts for the result already owed, nor for one that comes
 // later, until the human sends. Then they go out once, with the human's message.
 func TestHoldStartsNoTurn(t *testing.T) {
+	t.Parallel()
 	interrupt := func(t *testing.T, e *env, id string) {
 		t.Helper()
 		if err := e.m.Interrupt(id); err != nil {
@@ -91,6 +92,7 @@ func TestHoldStartsNoTurn(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			id, parent, owed, running, runner := e.pendingParent()
 			alive, runs := tc.hold(t, e, id, parent)
@@ -130,6 +132,7 @@ func TestHoldStartsNoTurn(t *testing.T) {
 // Interrupt, then a result from a subagent the turn spawned in its last moments, then the turn's
 // end, reported as clean: nothing is sent.
 func TestInterruptThenResultThenTurnEnd(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, owed, _, _ := e.pendingParent()
 	if err := e.m.Interrupt(id); err != nil {
@@ -152,6 +155,7 @@ func TestInterruptThenResultThenTurnEnd(t *testing.T) {
 // An interrupted turn's own permission card is closed at its end; a late answer to it is refused
 // and starts nothing.
 func TestInterruptedTurnsCardStartsNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, owed, _, _ := e.pendingParent()
 	ask(t, parent, "", "r1")
@@ -179,6 +183,7 @@ func TestInterruptedTurnsCardStartsNothing(t *testing.T) {
 // No aborted turn end follows to say so, so Interrupt leaves the "Stopped." note, once, and only
 // when it stopped a subagent.
 func TestInterruptIdleParent(t *testing.T) {
+	t.Parallel()
 	stopped := func(t *testing.T, e *env, id string, parent *fakeAgent, signals int, kids ...*fakeAgent) {
 		t.Helper()
 		for _, k := range kids {
@@ -290,6 +295,7 @@ func TestInterruptIdleParent(t *testing.T) {
 // is signalled only once it has the message, so the signal stops that turn. A hand-off the agent
 // refuses leaves no turn to stop: no signal.
 func TestInterruptDuringHandOff(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		refuse bool
@@ -365,6 +371,7 @@ func TestInterruptDuringHandOff(t *testing.T) {
 
 // With no hand-off in flight Interrupt still returns the agent's own error.
 func TestInterruptReturnsAgentError(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -386,6 +393,7 @@ func TestInterruptReturnsAgentError(t *testing.T) {
 // it is left to be taken for the newer turn's. That refusal changes nothing: not the results, which
 // the newer turn now carries, not that turn, and not the hold the human's message released.
 func TestStopClearsDeliveryInFlight(t *testing.T) {
+	t.Parallel()
 	inFlight := func(e *env, id string) *carry {
 		c, err := e.m.lock(id)
 		if err != nil {
@@ -452,6 +460,7 @@ func TestStopClearsDeliveryInFlight(t *testing.T) {
 // A delivery never starts a process: results that meet a chat without one wait, held, for the
 // human's message, which starts it.
 func TestNoProcessResultsWaitForHuman(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	parent.exit(t)
@@ -473,6 +482,7 @@ func TestNoProcessResultsWaitForHuman(t *testing.T) {
 // its turn; a result that comes then starts no turn, nor does a clean end of that turn. It goes
 // out with the next message of the human's.
 func TestRefusedHumanSendKeepsHold(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	if err := e.m.Interrupt(id); err != nil { // holds the chat
@@ -511,6 +521,7 @@ func TestRefusedHumanSendKeepsHold(t *testing.T) {
 
 // A refused Send holds the chat as a refused delivery does, whether it was held before or not.
 func TestRefusedHumanSendHolds(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	if e.holding(id) {
@@ -527,6 +538,7 @@ func TestRefusedHumanSendHolds(t *testing.T) {
 
 // A fresh fork is held until the human writes in it. Its first message, refused, leaves it held.
 func TestRefusedFirstSendKeepsForkHeld(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	parent.emit(t, agent.Event{Kind: agent.EvText, Text: "hi"}, agent.Event{Kind: agent.EvTurnEnd, Point: "p1"})
@@ -551,6 +563,7 @@ func TestRefusedFirstSendKeepsForkHeld(t *testing.T) {
 // from Send. The chat is held by that end, and by the refusal when it comes. A message of the
 // human's that was accepted between the two keeps its turn: the late refusal does not hold it.
 func TestRefusedHumanSendRace(t *testing.T) {
+	t.Parallel()
 	const rejected = "pi rejected the prompt: no model"
 	for _, human := range []bool{false, true} {
 		name := "pump first"

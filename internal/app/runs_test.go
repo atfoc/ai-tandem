@@ -26,6 +26,8 @@ type runEnv struct {
 	fake *agenttest.Fake
 }
 
+// Each has its own data folder and nothing in common with another, so the tests on one run in
+// parallel: their time is the git commands of their runs.
 func newRunEnv(t *testing.T) *runEnv {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "aiwb-app-data") // a run refuses a folder whose path holds the data folder's name
@@ -88,6 +90,7 @@ func TestSnapshotRunsWithoutARunService(t *testing.T) {
 // The snapshot lists the runs and the chats people have on them, never a run agent's chat; the
 // defaults it carries are copies, the run defaults too.
 func TestSnapshotRuns(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	g := e.group("G")
 	id := e.run(g)
@@ -127,6 +130,7 @@ func TestSnapshotRuns(t *testing.T) {
 
 // Delete of a group: its runs move up with the rest, or go with it.
 func TestDeleteGroupWithRuns(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	top := e.group("top")
 	mid := e.subgroup("mid", top)
@@ -159,6 +163,7 @@ func TestDeleteGroupWithRuns(t *testing.T) {
 // A group's archive reaches its subtree's runs and their chats with one action; a chat of a run
 // brings its run and the groups above back, and not the run's other chats.
 func TestArchiveGroupWithRuns(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	top := e.group("top")
 	sub := e.subgroup("sub", top)
@@ -224,6 +229,7 @@ func TestArchiveGroupWithRuns(t *testing.T) {
 // A run that does not stop in time refuses its archive; the group's archive goes on with the
 // rest and reports it.
 func TestArchiveGroupMeetsARunThatDoesNotStop(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	release := make(chan struct{})
 	working := make(chan struct{}, 4)

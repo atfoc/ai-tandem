@@ -34,6 +34,7 @@ func costRun(k *model.ChatCost, procs ...costProc) {
 // The rule on the numbers measured with the real CLI (T08, scenario c6): the state a resumed
 // Claude process starts from is saved when a process exits in an orderly way, not at a turn end.
 func TestCostRule(t *testing.T) {
+	t.Parallel()
 	// (i) P1: a turn, then SIGKILL. P2: resume. Nothing is restored: the two totals add up.
 	var k model.ChatCost
 	costRun(&k, costProc{{0.008066, 44, 44}}, costProc{{0.002583, 46, 46}})
@@ -192,6 +193,7 @@ func (e *env) cost(id string) Cost {
 // The pump feeds the rule with every turn end and the cost is in chat.json: c6 (ii) through a
 // real manager, with a restart in the middle, then a fresh send.
 func TestCostOfARunAgent(t *testing.T) {
+	t.Parallel()
 	e, fr, f := ownFakeEnv(t, model.Claude)
 	id := e.agentChat("agent-1", model.RoleTask, model.Claude)
 	if c := e.cost(id); c != (Cost{}) {
@@ -275,6 +277,7 @@ func TestCostOfARunAgent(t *testing.T) {
 
 // A turn cut off by the end of the server is counted when the chat is read again.
 func TestCostLostAcrossARestart(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	id := e.agentChat("agent-1", model.RoleTask, model.Claude)
 	e.sendOwned(id, "one")
@@ -298,6 +301,7 @@ func TestCostLostAcrossARestart(t *testing.T) {
 // A subagent's turn end is counted on its parent's chat, and saved with it; a subagent stopped in
 // its turn leaves the cost partial. Cursor reports nothing, whatever its turns do.
 func TestCostOfSubagentsAndOtherKinds(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, c1 := e.ownChild(id, "one")
 	_, c2 := e.ownChild(id, "two")
@@ -371,6 +375,7 @@ func tokEv(usd float64, out, cumOut int, cum model.TokenCount) agent.Event {
 // The tokens follow the cost: a process's counts less those it started from, never a sum of
 // result lines.
 func TestTokenRule(t *testing.T) {
+	t.Parallel()
 	tc := func(in, out, read, write int64) model.TokenCount {
 		return model.TokenCount{In: in, Out: out, CacheRead: read, CacheWrite: write}
 	}
@@ -458,6 +463,7 @@ func TestTokenRule(t *testing.T) {
 // Through the manager: the tokens of every turn end and of an app-spawned subagent, the peak of
 // the chat's own requests, both in chat.json; and a chat with two branches.
 func TestTokensAndPeakOfARunAgent(t *testing.T) {
+	t.Parallel()
 	tc := func(in, out, read, write int64) model.TokenCount {
 		return model.TokenCount{In: in, Out: out, CacheRead: read, CacheWrite: write}
 	}

@@ -68,6 +68,32 @@ func TestResolveNothingRecorded(t *testing.T) {
 	check(t, "pi", cwd, mc, ds.fallback, model.ModelChoice{Model: "deepseek-flash"})
 }
 
+func TestRecorded(t *testing.T) {
+	var d model.Defaults
+	if a, c := Recorded(d, "g1", local, model.Claude, nil); a || c {
+		t.Fatalf("nothing recorded: %v %v", a, c)
+	}
+	RecordChange(&d, "g1", local, model.Claude, "/w", model.ModelChoice{}) // a folder alone is no choice
+	RecordAgent(&d, model.Ungrouped, local, model.Pi)
+	RecordChange(&d, model.Ungrouped, local, model.Cursor, "", model.ModelChoice{Model: "auto"})
+	for _, c := range []struct {
+		g, server string
+		a         model.AgentKind
+		usable    []model.AgentKind
+		agent, mc bool
+	}{
+		{"g1", local, model.Claude, nil, true, false},                        // the ungrouped group's agent
+		{"g1", local, model.Cursor, nil, true, true},                         // and its model for Cursor
+		{"g1", local, "", []model.AgentKind{model.Claude}, false, false},     // an agent that cannot be used is none
+		{"g1", "inst-far", model.Cursor, nil, false, false},                  // another server's part
+		{"g2", local, model.Cursor, []model.AgentKind{model.Pi}, true, true}, // a group with no entry
+	} {
+		if a, mc := Recorded(d, c.g, c.server, c.a, c.usable); a != c.agent || mc != c.mc {
+			t.Errorf("Recorded(%s, %s, %q, %v) = %v %v, want %v %v", c.g, c.server, c.a, c.usable, a, mc, c.agent, c.mc)
+		}
+	}
+}
+
 func TestRecordChangeThenResolve(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
@@ -198,6 +224,7 @@ func TestSeedGroup(t *testing.T) {
 // AC31: a seeded group is a copy. A later change in its source does not reach it, and a change in
 // it does not reach its source.
 func TestSeededGroupIsACopy(t *testing.T) {
+	t.Parallel()
 	ds := mkdirs(t)
 	var d model.Defaults
 	RecordServer(&d, model.Ungrouped, local)
@@ -366,6 +393,7 @@ func TestResolveEffortFitsModel(t *testing.T) {
 // AC31: a group that has no value of its own takes the ungrouped group's, live, value by value;
 // a group that has one is not affected by a change in another group.
 func TestGroupWithoutValueFollowsUngrouped(t *testing.T) {
+	t.Parallel()
 	ds := mkdirs(t)
 	var d model.Defaults
 	RecordAgent(&d, model.Ungrouped, local, model.Cursor)
@@ -437,6 +465,7 @@ func TestGroupWithoutValueFollowsUngrouped(t *testing.T) {
 // AC31: the agent is the group's, then the ungrouped group's, then the first of the fixed order;
 // a kind the server cannot run is skipped at every step, and with none usable there is none.
 func TestAgentOrderOfFallback(t *testing.T) {
+	t.Parallel()
 	all := []model.AgentKind{model.Claude, model.Cursor, model.Pi}
 	var d model.Defaults
 	if got := Agent(d, "g1", local, nil); got != model.Claude {
@@ -500,6 +529,7 @@ func TestAgentOrderOfFallback(t *testing.T) {
 // AC31: the server is the group's, then the ungrouped group's, then the local one; a stored
 // server that is not known falls back the same way.
 func TestServerFallsBackToLocal(t *testing.T) {
+	t.Parallel()
 	var d model.Defaults
 	if got := Server(d, "g1", nil); got != local {
 		t.Errorf("nothing stored = %q, want local", got)
@@ -540,6 +570,7 @@ func TestServerFallsBackToLocal(t *testing.T) {
 }
 
 func TestResolveOnAnotherServerAndWithNoAgent(t *testing.T) {
+	t.Parallel()
 	ds := mkdirs(t)
 	var d model.Defaults
 	// A folder of another machine is not looked for on this one.
@@ -560,6 +591,7 @@ func TestResolveOnAnotherServerAndWithNoAgent(t *testing.T) {
 }
 
 func TestRunDefaultsPerServer(t *testing.T) {
+	t.Parallel()
 	var d model.Defaults
 	if got := Run(d, "g1", local); got != nil {
 		t.Fatalf("nothing stored = %+v, want nil", got)
@@ -608,6 +640,7 @@ func TestRunDefaultsPerServer(t *testing.T) {
 }
 
 func TestCopy(t *testing.T) {
+	t.Parallel()
 	var d model.Defaults
 	if got := Copy(d); got.Groups == nil || len(got.Groups) != 0 {
 		t.Fatalf("copy of nothing = %+v, want an empty map", got)
@@ -679,6 +712,7 @@ func sameJSON(t *testing.T, what string, got any, want string) {
 // AC32: the "last" of an old state file is merged into the ungrouped group once, in the per-server
 // shape, run defaults too, and every group's flat values move under the local server.
 func TestMigrate(t *testing.T) {
+	t.Parallel()
 	// The ungrouped group keeps its own values and takes the missing ones; flat groups move; an
 	// empty group stays empty.
 	d, changed := load(t, before)

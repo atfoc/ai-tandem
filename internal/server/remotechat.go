@@ -26,9 +26,11 @@ import (
 // remoteFirst serves a request whose path is /api/chats/{id} or below it from recordRoutes when
 // the id is a record's, and from runAgentRoutes when it is the chat of an agent of a run record;
 // one whose path is /api/runs/{id} or below it from runRecordRoutes when the id is a run
-// record's (see remoterun.go). It gives every other request to next.
+// record's (see remoterun.go); one whose path is /api/boards/{id} or below it from
+// boardRecordRoutes when the id is a board record's, and the two routes of a remote board that
+// name no id (see remoteboard.go). It gives every other request to next.
 func (s *Server) remoteFirst(next http.Handler) http.Handler {
-	records, runRecords, runAgents := s.recordRoutes(), s.runRecordRoutes(), s.runAgentRoutes()
+	records, runRecords, runAgents, boardRecords := s.recordRoutes(), s.runRecordRoutes(), s.runAgentRoutes(), s.boardRecordRoutes()
 	table := func(path string) http.Handler {
 		if s.Remotes == nil {
 			return next
@@ -40,12 +42,19 @@ func (s *Server) remoteFirst(next http.Handler) http.Handler {
 			if _, agent := s.Remotes.AgentChat(id); agent {
 				return runAgents
 			}
-		} else if id, ok := runOf(path); ok && s.Remotes.HasRun(id) {
-			return runRecords
+		} else if id, ok := runOf(path); ok {
+			if s.Remotes.HasRun(id) {
+				return runRecords
+			}
+		} else if id, ok := boardOf(path); ok && s.Remotes.HasBoard(id) {
+			return boardRecords
 		}
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.peekBoardRoute(w, r) {
+			return
+		}
 		table(r.URL.Path).ServeHTTP(w, r)
 	})
 }

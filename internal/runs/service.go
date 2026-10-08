@@ -87,6 +87,9 @@ type Service struct {
 	ev       svcEvents     // the event queue (events.go)
 	engine   svcEngine     // how the service and the tools call the engine
 	haltWait time.Duration // svcHaltWait; tests shorten it
+	// stopGrace is engStopGrace: how long a send waits for its result after it was stopped
+	// (engine.sent). Only tests shorten it.
+	stopGrace time.Duration
 }
 
 // svcEngine is the engine as the service and the tools call it: exactly the functions of
@@ -115,7 +118,8 @@ func New(d Deps) *Service {
 	if d.Clock == nil {
 		d.Clock = RealClock{}
 	}
-	s := &Service{Deps: d, runs: map[string]*run{}, git: map[string]svcGit{}, ops: map[string]*sync.Mutex{}, haltWait: svcHaltWait}
+	s := &Service{Deps: d, runs: map[string]*run{}, git: map[string]svcGit{}, ops: map[string]*sync.Mutex{}, haltWait: svcHaltWait,
+		stopGrace: engStopGrace}
 	if d.HaltWait > 0 {
 		s.haltWait = d.HaltWait
 	}

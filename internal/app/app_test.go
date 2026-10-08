@@ -390,6 +390,7 @@ func TestDeleteGroupUngroupsContents(t *testing.T) {
 // AC32: a new top-level group starts with a copy of the ungrouped group's values, the sticky
 // server and its run defaults for every server included.
 func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	ungrouped := func() model.GroupDefaults {
 		return model.GroupDefaults{Server: "srv_far", Servers: map[string]model.ServerDefaults{

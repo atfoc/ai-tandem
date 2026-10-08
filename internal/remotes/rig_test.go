@@ -51,6 +51,7 @@ type fakeLocal struct {
 	resets    []string                  // the ids ResetServer was called for
 	known     map[string]bool           // the ids of the chats of this server that are not unstarted ones
 	onRuns    []string                  // the runs DeleteOnRun was called for
+	onBoards  []string                  // the boards DeleteOnBoard was called for
 	onUp      func(entry string)
 	onHand    func(id string)
 }
@@ -131,6 +132,12 @@ func (f *fakeLocal) ServerUp(entry string) {
 	}
 }
 
+func (f *fakeLocal) DeleteOnBoard(board string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onBoards = append(f.onBoards, board)
+}
+
 func (f *fakeLocal) ResetServer(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -175,16 +182,19 @@ func (l *logs) count(part string) int {
 
 // rigOpt says how a rig differs from the usual one.
 type rigOpt struct {
-	snapshot any                    // the stand-in's snapshot; nil = standin.DefaultSnapshot()
-	limits   Limits                 // zero fields: Flush 20 ms, the others DefaultLimits
-	root     string                 // "" = a new temp folder
-	seed     []Record               // adopted after Open, before the manager starts; "" as Entry = the rig's entry
-	runSeed  []RunRecord            // the same for run records
-	noRuns   bool                   // Options.Runs is nil: this server has no runs
-	prepare  func(rg *rig)          // after the entry was added, before Open
-	wire     func(rg *rig)          // after Open and the seed, before the hooks are set
-	hold     bool                   // do not start the manager: the test calls start
-	hooks    func(h *servers.Hooks) // may wrap the relay's hooks
+	snapshot  any                    // the stand-in's snapshot; nil = standin.DefaultSnapshot()
+	limits    Limits                 // zero fields: Flush 20 ms, the others DefaultLimits
+	root      string                 // "" = a new temp folder
+	seed      []Record               // adopted after Open, before the manager starts; "" as Entry = the rig's entry
+	runSeed   []RunRecord            // the same for run records
+	boardSeed []BoardRecord          // the same for board records
+	noRuns    bool                   // Options.Runs is nil: this server has no runs
+	prepare   func(rg *rig)          // after the entry was added, before Open
+	wire      func(rg *rig)          // after Open and the seed, before the hooks are set
+	hold      bool                   // do not start the manager: the test calls start
+	hooks     func(h *servers.Hooks) // may wrap the relay's hooks
+	again     time.Duration          // the relay's wait before an archive change is passed on again; 0 = Limits.Call
+	agent     [2]time.Duration       // the relay's agentEvery and agentWait; zero = as outside the tests
 }
 
 // rig is a relay between a stand-in remote server, reached through a real servers.Manager, and
@@ -221,7 +231,7 @@ func newRig(t *testing.T, o rigOpt) *rig {
 		if r == nil {
 			return map[string]any{}
 		}
-		return map[string]any{"chats": r.Views(), "states": r.States(), "lists": r.Lists(), "runs": r.RunViews()}
+		return map[string]any{"chats": r.Views(), "states": r.States(), "lists": r.Lists(), "runs": r.RunViews(), "boards": r.BoardViews()}
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/events", rg.b.ServeSSE)
@@ -258,6 +268,12 @@ func newRig(t *testing.T, o rigOpt) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if o.again != 0 {
+		rg.r.again = o.again
+	}
+	if o.agent != [2]time.Duration{} {
+		rg.r.agentEvery, rg.r.agentWait = o.agent[0], o.agent[1]
+	}
 	rg.relay.Store(rg.r)
 	t.Cleanup(func() { // the order of a shutdown
 		m.Close()
@@ -268,6 +284,9 @@ func newRig(t *testing.T, o rigOpt) *rig {
 	}
 	for _, d := range o.runSeed {
 		rg.adoptRun(d)
+	}
+	for _, d := range o.boardSeed {
+		rg.adoptBoard(d)
 	}
 	if o.wire != nil {
 		o.wire(rg)
@@ -550,5 +569,62 @@ func snapshotWithRuns(views ...model.RunView) map[string]any {
 		views = []model.RunView{}
 	}
 	snap["runs"] = views
+	return snap
+}
+
+// The board ids of the tests.
+const (
+	boardA = "b_aaaa0001"
+	boardB = "b_bbbb0002"
+	boardC = "b_cccc0003"
+)
+
+// adoptBoard makes a board record, on the rig's entry unless it names one.
+func (rg *rig) adoptBoard(d BoardRecord) *boardRecord {
+	rg.t.Helper()
+	if d.Entry == "" {
+		d.Entry = rg.entry
+	}
+	rec, err := rg.r.adoptBoard(d)
+	if err != nil {
+		rg.t.Fatalf("adoptBoard %s: %v", d.ID, err)
+	}
+	return rec
+}
+
+// boardFile reads the board record's file.
+func (rg *rig) boardFile(id string) BoardRecord {
+	rg.t.Helper()
+	b, err := os.ReadFile(rg.r.boardFiles.path(id))
+	if err != nil {
+		rg.t.Fatal(err)
+	}
+	var d BoardRecord
+	if err := json.Unmarshal(b, &d); err != nil {
+		rg.t.Fatalf("the file of %s: %v", id, err)
+	}
+	return d
+}
+
+// remoteBoard is a board as its server sends it: in that server's group, with this server's mark.
+func remoteBoard(id string) model.Board {
+	return model.Board{
+		ID: id, Name: "Board " + id[2:4], Group: "g_remote", Client: testLocalID,
+		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC),
+	}
+}
+
+// boardSeedOf is a record of the board id in the local group g_here, with the board its server sends.
+func boardSeedOf(id string) BoardRecord {
+	return BoardRecord{ID: id, Group: "g_here", View: remoteBoard(id)}
+}
+
+// snapshotWithBoards is the stand-in's snapshot with these boards and no chats.
+func snapshotWithBoards(boards ...model.Board) map[string]any {
+	snap := standin.DefaultSnapshot()
+	if boards == nil {
+		boards = []model.Board{}
+	}
+	snap["boards"] = boards
 	return snap
 }

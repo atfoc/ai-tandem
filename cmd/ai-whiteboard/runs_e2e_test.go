@@ -80,11 +80,9 @@ func newRunServer(t *testing.T, gitEnv []string) *runServer {
 	}
 	in.dir = filepath.Join(base, "aiwb-e2e-data")
 	in.claude = agenttest.FakeClaude(t)
+	in.cursor, in.pi = "/nonexistent/agent", "/nonexistent/pi"
 	if os.Getenv("AIWB_E2E_RACE") != "" {
-		in.bin = filepath.Join(t.TempDir(), "ai-whiteboard-race")
-		if out, err := exec.Command("go", "build", "-race", "-o", in.bin, "ai-whiteboard/cmd/ai-whiteboard").CombinedOutput(); err != nil {
-			t.Fatalf("go build -race: %v\n%s", err, out)
-		}
+		in.bin = buildRaceBinary(t)
 	}
 	s := &runServer{in: in, home: in.dir, work: filepath.Join(base, "aiwb-run-work"), gitEnv: gitEnv,
 		fakeLog: filepath.Join(t.TempDir(), "fake-claude.jsonl")}
@@ -102,9 +100,8 @@ func newRunServer(t *testing.T, gitEnv []string) *runServer {
 // start runs the server and waits until it answers with its own pid.
 func (s *runServer) start(t *testing.T) {
 	t.Helper()
-	cmd := exec.Command(s.in.bin, append([]string{"serve", "-cwd", t.TempDir(),
-		"-cursor", "/nonexistent/agent", "-pi", "/nonexistent/pi", "-cursor-cost", "/nonexistent/cursor-cost"}, s.in.flags()...)...)
-	cmd.Env = append(append(os.Environ(), s.gitEnv...), "FAKE_CLAUDE_LOG="+s.fakeLog)
+	cmd := s.in.command(context.Background(), "serve", "-cwd", t.TempDir(), "-cursor-cost", "/nonexistent/cursor-cost")
+	cmd.Env = append(append(s.in.environ(), s.gitEnv...), "FAKE_CLAUDE_LOG="+s.fakeLog)
 	cmd.Stdout, cmd.Stderr = &s.out, &s.out
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -758,9 +755,12 @@ func e2eFileWriter(file, text, before string) string {
 // The run that the stop, quit and crash tests halt in the middle: one writing task whose agent
 // waits e2eSlow seconds before it writes, every time it is launched. The fake logs the message
 // before it starts to wait, and a test acts at once when it sees that line, so the halt arrives
-// while the agent works; the agent that is launched again after the halt waits once more.
+// while the agent works; the agent that is launched again after the halt waits once more, in
+// full, so the wait is what these tests take longest over. The halt is there within some 0.1 s of
+// the line on a machine that runs a dozen of these tests at once (a kill, which first lists the
+// processes, is the slowest), so 3 s leave it thirty times that.
 const (
-	e2eSlow     = "6" // seconds
+	e2eSlow     = "3" // seconds
 	e2eNote     = "note.txt"
 	e2eNoteText = "the note of the run"
 )
@@ -833,6 +833,7 @@ func (s *runServer) stopClean(t *testing.T) {
 // writer to merge conflicts, a merge agent resolves it; the last turn finishes the run, and its
 // result is applied to the person's folder.
 func TestRunEndToEnd(t *testing.T) {
+	serverTest(t, "TestRunE2ENoGit (a whole server and a run) (this package)", "TestMergeConflictResolvedByAgent (internal/runs)")
 	repo := agenttest.NewRepo(t)
 	repo.Write(e2eFile, e2eBefore)
 	base := repo.Commit("the shared file")
@@ -1126,6 +1127,7 @@ func e2eApplied(t *testing.T, srv *runServer, repo *agenttest.Repo, client, run 
 // Apply say the same; when the person has moved the file, Apply brings the result in, and a
 // server that starts again still says so.
 func TestRunE2EApplyAfterBlocked(t *testing.T) {
+	serverTest(t, "TestDeliverBlockedThenApply (internal/runs)", "TestRunApplyRefusalsAndNoGit (internal/server)")
 	repo, base := e2eNoteRepo(t)
 	srv := newRunServer(t, repo.Env())
 	srv.start(t)
@@ -1302,6 +1304,7 @@ func e2eNoteDone(t *testing.T, srv *runServer, repo *agenttest.Repo, client, bas
 // Stop and Resume over HTTP while a task's agent works: the stop answers stopping, the run then
 // says stopped and none of its agent processes is left; the resume takes the run to its end.
 func TestRunE2EStopResume(t *testing.T) {
+	serverTest(t, "TestStopRestartResume (internal/runs)", "TestRunStopResumeAndLimit (internal/server)")
 	repo, base := e2eNoteRepo(t)
 	srv := newRunServer(t, repo.Env())
 	srv.start(t)
@@ -1340,6 +1343,7 @@ func TestRunE2EStopResume(t *testing.T) {
 // An orderly quit (SIGTERM) while a task's agent works: the server closes its agents and records
 // the halt; started again on the same data folder it continues the run by itself, to its end.
 func TestRunE2ESigtermContinues(t *testing.T) {
+	serverTest(t, "TestRestartAtEveryStep (its orderly quits) (internal/runs)")
 	repo, base := e2eNoteRepo(t)
 	srv := newRunServer(t, repo.Env())
 	srv.start(t)
@@ -1374,6 +1378,7 @@ const e2eCrashReason = "the app ended unexpectedly while the run was working; re
 // A crash (SIGKILL) while a task's agent works: the next server shows the run stopped with the
 // crash sentence and launches nothing; the run goes on when it is resumed.
 func TestRunE2EKillWaitsForResume(t *testing.T) {
+	serverTest(t, "TestBootAfterCrash, TestBootAfterCrashWaits (internal/runs)")
 	repo, base := e2eNoteRepo(t)
 	srv := newRunServer(t, repo.Env())
 	srv.start(t)
@@ -1472,6 +1477,7 @@ func (s *runServer) mcpTool(t *testing.T, token, name string, args any) (text st
 // A person's chat on a run that is going: where it is kept, what it may call and what it is
 // refused, a task it adds, and how the snapshot lists it.
 func TestRunE2EChatOnRun(t *testing.T) {
+	serverTest(t, "TestChatOnARunRoutes (internal/server)", "TestRunChatStorageAndRestart (internal/chats)", "TestToolChatOps (internal/runs)")
 	repo, base := e2eNoteRepo(t)
 	srv := newRunServer(t, repo.Env())
 	srv.start(t)
@@ -1627,7 +1633,10 @@ func TestRunE2EChatOnRun(t *testing.T) {
 // A run in a folder that is no git repository: every agent works in the folder itself, the
 // writing tasks one after the other, and the run leaves in it what its tasks wrote and nothing
 // else.
+//
+// This is the test of a whole server that the default set runs too (smokeTest).
 func TestRunE2ENoGit(t *testing.T) {
+	smokeTest(t)
 	// The repository is only here for its environment, which keeps git from the user's config.
 	srv := newRunServer(t, agenttest.NewRepo(t).Env())
 	base, err := filepath.EvalSymlinks(t.TempDir())

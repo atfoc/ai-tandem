@@ -97,7 +97,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 is not on PATH")
 	}
-	src := os.Getenv("CURSOR_CONFIG_DIR")
+	src := outsideConfigDir // TestMain cleared the variable itself
 	if src == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

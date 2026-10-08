@@ -108,6 +108,7 @@ func TestListFollowsThePath(t *testing.T) {
 }
 
 func TestListIsACopy(t *testing.T) {
+	t.Parallel()
 	s := NewWith(testBins, newFakeLook("claude", "pi").look)
 	l := s.List()
 	l[0] = model.Cursor
@@ -136,6 +137,7 @@ func TestProgramGivenAsAPath(t *testing.T) {
 }
 
 func TestEmptyProgramNameIsNotUsable(t *testing.T) {
+	t.Parallel()
 	// A look-up that finds everything, the empty name included.
 	all := func(bin string) (string, error) { return bin, nil }
 
@@ -153,6 +155,7 @@ func TestEmptyProgramNameIsNotUsable(t *testing.T) {
 }
 
 func TestCheck(t *testing.T) {
+	t.Parallel()
 	f := newFakeLook("claude")
 	s := NewWith(testBins, f.look)
 
@@ -193,6 +196,7 @@ func TestCheck(t *testing.T) {
 // No agent: ErrNone while none is usable, ErrUnchosen once one is. Both are ErrNone to errors.Is,
 // and Check looks now.
 func TestCheckNoAgent(t *testing.T) {
+	t.Parallel()
 	f := newFakeLook()
 	s := NewWith(testBins, f.look)
 	err := s.Check("")
@@ -235,6 +239,7 @@ func TestCheckNoAgent(t *testing.T) {
 }
 
 func TestMissingErrorNames(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		e    MissingError
 		want string
@@ -250,6 +255,7 @@ func TestMissingErrorNames(t *testing.T) {
 }
 
 func TestNilSet(t *testing.T) {
+	t.Parallel()
 	var s *Set
 	all := kinds(model.Claude, model.Cursor, model.Pi)
 	wantList(t, s.List(), all)
@@ -326,6 +332,7 @@ func wantNoCall(t *testing.T, calls <-chan []model.AgentKind) {
 }
 
 func TestWatchCallsOncePerChange(t *testing.T) {
+	t.Parallel()
 	f := newFakeLook("claude")
 	s := NewWith(testBins, f.look)
 	calls, end := watch(t, s, 10*time.Millisecond)
@@ -352,6 +359,7 @@ func TestWatchCallsOncePerChange(t *testing.T) {
 }
 
 func TestRefreshWakesWatch(t *testing.T) {
+	t.Parallel()
 	f := newFakeLook("claude")
 	s := NewWith(testBins, f.look)
 	// The interval never comes in this test: only a wake can make Watch call.
@@ -384,6 +392,7 @@ func TestRefreshWakesWatch(t *testing.T) {
 }
 
 func TestWatchReportsAChangeMadeBeforeItStarted(t *testing.T) {
+	t.Parallel()
 	f := newFakeLook("claude")
 	s := NewWith(testBins, f.look)
 	f.set("pi", true)
@@ -394,6 +403,7 @@ func TestWatchReportsAChangeMadeBeforeItStarted(t *testing.T) {
 }
 
 func TestRefreshNeverCallsChanged(t *testing.T) {
+	t.Parallel()
 	f := newFakeLook()
 	s := NewWith(testBins, f.look)
 
@@ -436,6 +446,7 @@ func TestRefreshNeverCallsChanged(t *testing.T) {
 }
 
 func TestConcurrentUse(t *testing.T) {
+	t.Parallel()
 	f := newFakeLook("claude")
 	s := NewWith(testBins, f.look)
 

@@ -28,7 +28,10 @@ import (
 //   - No git command of the package is at work in the checkout, in this server or another one,
 //     alive or killed: each of them holds the flock of guardFile, shared, and hands it down to
 //     git and to whatever git starts, so the exclusive flock can be had only when all of them are
-//     gone.
+//     gone. A lock file goes only while clearStale holds that flock. When it is not free,
+//     clearStale tries again for flockWait and then leaves every lock where it is: the flock of
+//     a command that just ended is held a moment longer by any process the server was starting
+//     at that time, which has a copy of the open guard file until it runs its program.
 //   - The file has been there, unchanged, for staleAge. That is for git commands the package did
 //     not start (an agent's, a person's): one that is just writing is done long before.
 const (
@@ -39,6 +42,11 @@ const (
 	ownRefs = "aiwb/"
 	// staleAge is how long a lock file must have been there before it counts as left behind.
 	staleAge = 2 * time.Second
+	// flockWait is how long clearStale tries for the exclusive flock of guardFile when it is not
+	// free at once, and flockTry is the pause between two tries. A command that is really at work
+	// in the checkout costs the next one flockWait, and only while a lock file is there.
+	flockWait = 250 * time.Millisecond
+	flockTry  = 5 * time.Millisecond
 )
 
 type guardKey struct{}
@@ -91,7 +99,7 @@ func (r *Repo) guard(ctx context.Context, t tree) (guarded context.Context, done
 		return ctx, done, err
 	}
 	// Shared, so that the commands of one checkout never wait for each other, only for a
-	// clearStale that is looking at the checkout.
+	// clearStale that is looking at the checkout (and in clearStale, while a lock file is there).
 	for !tryFlock(f, syscall.LOCK_SH) {
 		select {
 		case <-ctx.Done():
@@ -114,21 +122,35 @@ func tryFlock(f *os.File, how int) bool {
 }
 
 // clearStale removes the lock files of the checkout t that nobody holds; f is its open guard file.
+// The error is the context's.
 func (r *Repo) clearStale(ctx context.Context, t tree, f *os.File) error {
-	var found []string
+	found := false
 	for _, path := range r.lockFiles(t) {
 		if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {
-			found = append(found, path)
+			found = true
+			break
 		}
 	}
-	if len(found) == 0 {
+	if !found {
 		return nil
 	}
-	if !tryFlock(f, syscall.LOCK_EX) {
-		return nil // a git command of the package is at work in the checkout: the lock may be its
+	// The flock is not free while a git command of the package is at work in the checkout: the
+	// lock may be its. It is not free either for a moment after a command ended (see the top of
+	// the file), so it is tried for flockWait before the locks are left where they are.
+	for deadline := time.Now().Add(waitsOf(ctx).flockWait); !tryFlock(f, syscall.LOCK_EX); {
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(flockTry):
+		}
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	for _, path := range found {
+	// Listed again, now that no command of the package can change which they are: the checkout
+	// may have left its branch while the flock was waited for.
+	for _, path := range r.lockFiles(t) {
 		if err := removeStale(ctx, path); err != nil {
 			return err
 		}
@@ -168,7 +190,8 @@ func removeStale(ctx context.Context, path string) error {
 	if err != nil || !was.Mode().IsRegular() {
 		return nil
 	}
-	if wait := min(staleAge-time.Since(was.ModTime()), staleAge); wait > 0 {
+	age := waitsOf(ctx).staleAge
+	if wait := min(age-time.Since(was.ModTime()), age); wait > 0 {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

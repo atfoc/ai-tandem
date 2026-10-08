@@ -5,14 +5,16 @@ import (
 	"errors"
 	"sync"
 
+	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/remotes"
 	"ai-whiteboard/internal/runs"
 )
 
-// The chats and the runs of other servers in the app's own structure. Such a chat or run is a
-// record of the relay (App.Remotes): its thread or its work is on its server, and its place, a
-// group of this server, is here. So a record is part of the snapshot and of what a group's
+// The chats, the runs and the boards of other servers in the app's own structure. Such a chat,
+// run or board is a record of the relay (App.Remotes): its thread, its work or its drawing is on
+// its server, and its place, a group of this server, is here. So a record is part of the snapshot and of what a group's
 // archive, unarchive and delete reach. What is done to the chat or the run itself is the
 // relay's: it shows the change here at once and passes it on to the item's server.
 
@@ -66,6 +68,26 @@ func (a *App) withRunRecords(snap *Snapshot) {
 	snap.Runs = append(local, views...)
 }
 
+// withBoardRecords adds the board records to the snapshot's boards. A board of this server that
+// has a record's id is left out, as for chats: the id is listed once, as the record.
+func (a *App) withBoardRecords(snap *Snapshot) {
+	views := a.Remotes.BoardViews()
+	if len(views) == 0 {
+		return
+	}
+	record := make(map[string]bool, len(views))
+	for _, v := range views {
+		record[v.ID] = true
+	}
+	local := snap.Boards[:0:0]
+	for _, b := range snap.Boards {
+		if !record[b.ID] {
+			local = append(local, b)
+		}
+	}
+	snap.Boards = append(local, views...)
+}
+
 // record is the view of the record with this chat id.
 func (a *App) record(id string) (model.ChatView, bool) {
 	if a.Remotes == nil || !a.Remotes.Has(id) {
@@ -113,6 +135,20 @@ func (a *App) runRecordsIn(in map[string]bool) []model.RunView {
 	}
 	var out []model.RunView
 	for _, v := range a.Remotes.RunViews() {
+		if in[v.Group] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// boardRecordsIn returns the board records whose place is one of the groups in.
+func (a *App) boardRecordsIn(in map[string]bool) []model.Board {
+	if a.Remotes == nil {
+		return nil
+	}
+	var out []model.Board
+	for _, v := range a.Remotes.BoardViews() {
 		if in[v.Group] {
 			out = append(out, v)
 		}
@@ -176,6 +212,50 @@ func (a *App) UnarchiveRunRecord(ctx context.Context, id string) error {
 	return a.unarchiveGroupRecord(v.Group)
 }
 
+// ArchiveBoardRecord archives the board of a board record, as the user's own action. The mark
+// shows at once; the relay passes it on to the board's server now or when that server connects
+// next. That server archives the chats on the board.
+func (a *App) ArchiveBoardRecord(ctx context.Context, id string) error {
+	if a.Remotes == nil {
+		return boards.ErrNotFound
+	}
+	return a.Remotes.ArchiveBoard(ctx, id, "")
+}
+
+// UnarchiveBoardRecord is ArchiveBoardRecord's reverse. As for a board of this server, the
+// archived groups the record is nested in come back with it.
+func (a *App) UnarchiveBoardRecord(ctx context.Context, id string) error {
+	if a.Remotes == nil {
+		return boards.ErrNotFound
+	}
+	v, ok := a.Remotes.BoardView(id)
+	if !ok {
+		return boards.ErrNotFound
+	}
+	if err := a.Remotes.UnarchiveBoard(ctx, id); err != nil {
+		return err
+	}
+	return a.unarchiveGroupRecord(v.Group)
+}
+
+// DeleteBoardRecord deletes the board of a board record on its server, and the record with it;
+// with localOnly the record alone ("Remove from this sidebar"). The chats on the board that have
+// not started are this server's own: they go after the record.
+func (a *App) DeleteBoardRecord(ctx context.Context, id string, localOnly bool) error {
+	if a.Remotes == nil {
+		return boards.ErrNotFound
+	}
+	if err := a.Remotes.DeleteBoard(ctx, id, localOnly); err != nil {
+		return err
+	}
+	for _, c := range a.Chats.ChatsOfBoard(id) {
+		if err := a.Chats.Delete(c.ID); err != nil && !errors.Is(err, chats.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
 // eachRecord calls f for every id at the same time, so that servers that do not answer cost one
 // wait and not one each.
 func eachRecord(ids []string, f func(id string)) {
@@ -191,11 +271,11 @@ func eachRecord(ids []string, f func(id string)) {
 }
 
 // archiveRecords archives, as part of the archive action ar, every record of the groups in that
-// is not archived: the chats and the runs. It fails for none: a server that cannot be asked gets
+// is not archived: the chats, the runs and the boards. It fails for none: a server that cannot be asked gets
 // the change when it connects next, and one that refuses it keeps its chat or run as it is.
 func (a *App) archiveRecords(in map[string]bool, ar model.Archive) {
 	var ids []string
-	run := map[string]bool{}
+	run, board := map[string]bool{}, map[string]bool{}
 	for _, v := range a.recordsIn(in) {
 		if !v.Archived {
 			ids = append(ids, v.ID)
@@ -206,28 +286,39 @@ func (a *App) archiveRecords(in map[string]bool, ar model.Archive) {
 			ids, run[v.ID] = append(ids, v.ID), true
 		}
 	}
-	eachRecord(ids, func(id string) {
-		if run[id] {
-			_ = a.Remotes.ArchiveRun(context.Background(), id, ar.Op)
-			return
+	for _, v := range a.boardRecordsIn(in) {
+		if !v.Archived {
+			ids, board[v.ID] = append(ids, v.ID), true
 		}
-		_ = a.Remotes.Archive(context.Background(), id, ar.Op)
+	}
+	eachRecord(ids, func(id string) {
+		switch {
+		case run[id]:
+			_ = a.Remotes.ArchiveRun(context.Background(), id, ar.Op)
+		case board[id]:
+			_ = a.Remotes.ArchiveBoard(context.Background(), id, ar.Op)
+		default:
+			_ = a.Remotes.Archive(context.Background(), id, ar.Op)
+		}
 	})
 }
 
 // unarchiveRecords brings back the records of the groups in that the archive action op
-// archived, chats and runs. A mark made on an item's own server belongs to no action here and
+// archived, chats, runs and boards. A mark made on an item's own server belongs to no action here and
 // stays.
 func (a *App) unarchiveRecords(in map[string]bool, op string) {
 	if a.Remotes == nil || op == "" {
 		return
 	}
-	with, run := map[string]bool{}, map[string]bool{}
+	with, run, board := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, id := range a.Remotes.ArchivedWith(op) {
 		with[id] = true
 	}
 	for _, id := range a.Remotes.RunsArchivedWith(op) {
 		with[id], run[id] = true, true
+	}
+	for _, id := range a.Remotes.BoardsArchivedWith(op) {
+		board[id] = true
 	}
 	var ids []string
 	for _, v := range a.recordsIn(in) {
@@ -240,17 +331,26 @@ func (a *App) unarchiveRecords(in map[string]bool, op string) {
 			ids = append(ids, v.ID)
 		}
 	}
-	eachRecord(ids, func(id string) {
-		if run[id] {
-			_ = a.Remotes.UnarchiveRun(context.Background(), id)
-			return
+	back := map[string]bool{}
+	for _, v := range a.boardRecordsIn(in) {
+		if board[v.ID] {
+			ids, back[v.ID] = append(ids, v.ID), true
 		}
-		_ = a.Remotes.Unarchive(context.Background(), id)
+	}
+	eachRecord(ids, func(id string) {
+		switch {
+		case back[id]:
+			_ = a.Remotes.UnarchiveBoard(context.Background(), id)
+		case run[id]:
+			_ = a.Remotes.UnarchiveRun(context.Background(), id)
+		default:
+			_ = a.Remotes.Unarchive(context.Background(), id)
+		}
 	})
 }
 
-// deleteRecords deletes the chats and the runs of the records of the groups in on their servers,
-// and the records with them: the chats first, then the runs. An item whose server is not
+// deleteRecords deletes the chats, the runs and the boards of the records of the groups in on
+// their servers, and the records with them: the chats first, then the runs, then the boards. An item whose server is not
 // connected could not be deleted, so the check comes before anything is deleted
 // (remotes.Relay.Deletable); after it the first failure ends the work. The caller deletes
 // nothing of its own before this has returned nil.
@@ -271,10 +371,15 @@ func (a *App) deleteRecords(in map[string]bool) error {
 			return err
 		}
 	}
+	for _, v := range a.boardRecordsIn(in) {
+		if err := a.DeleteBoardRecord(context.Background(), v.ID, false); err != nil && !errors.Is(err, remotes.ErrNoBoard) {
+			return err
+		}
+	}
 	return nil
 }
 
-// moveRecords puts the records of the groups in, chats and runs, into the group to. Nothing is
+// moveRecords puts the records of the groups in, chats, runs and boards, into the group to. Nothing is
 // sent for it: a record's place is this server's alone.
 func (a *App) moveRecords(in map[string]bool, to string) error {
 	for _, v := range a.recordsIn(in) {
@@ -284,6 +389,11 @@ func (a *App) moveRecords(in map[string]bool, to string) error {
 	}
 	for _, v := range a.runRecordsIn(in) {
 		if err := a.Remotes.MoveRun(v.ID, to); err != nil && !errors.Is(err, runs.ErrNotFound) {
+			return err
+		}
+	}
+	for _, v := range a.boardRecordsIn(in) {
+		if err := a.Remotes.MoveBoard(v.ID, to); err != nil && !errors.Is(err, remotes.ErrNoBoard) {
 			return err
 		}
 	}

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { applyRunPatch, emptyDetail } from "../src/logic/rundetail.ts";
 import { taskState } from "../src/logic/runtimeline.ts";
 import { normDetail } from "../src/logic/runnorm.ts";
-import { TASK_STATES, TIERS, type RunDetail, type RunPatch } from "../src/types.ts";
+import { TASK_STATES, TIERS, type AgentTier, type RunDetail, type RunPatch } from "../src/types.ts";
 
 const raw = readFileSync(new URL("./fixtures/run-detail-qa.json", import.meta.url), "utf8");
 const d: RunDetail = JSON.parse(raw);
@@ -96,7 +96,7 @@ test("every task, attempt and agent has a tier; an agent has its model and its u
   assert.ok(d.tasks.some((t) => t.needsReport.length) && d.tasks.some((t) => t.dependsOn.length && !t.needsReport.length));
   assert.deepEqual([...new Set(d.tasks.map((t) => t.tier))].sort(), ["deep", "light", "standard"]);
   for (const a of Object.values(d.agents)) {
-    assert.ok(TIERS.includes(a.tier), a.name); assert.ok(a.model, a.name);
+    assert.ok(([...TIERS, "orchestrator"] satisfies AgentTier[]).includes(a.tier), a.name); assert.ok(a.model, a.name);
     if (a.role === "orchestrator") assert.equal(a.tier, "deep");
     else if (a.role === "merge") assert.equal(a.tier, "standard");
     else assert.equal(a.tier, d.tasks.find((t) => t.id === a.task)!.attempts[a.attempt! - 1].tier, a.name);

@@ -77,6 +77,7 @@ func (s *sentinel) until(t *testing.T, p *bridgetest.Page) []string {
 // The two tables agree: an API client is sent exactly the list and content types that are not
 // for pages only.
 func TestAPIEventsAgreeWithEvents(t *testing.T) {
+	t.Parallel()
 	for typ := range APIEvents {
 		rule, ok := Events[typ]
 		switch {
@@ -99,14 +100,18 @@ func TestAPIEventsAgreeWithEvents(t *testing.T) {
 			t.Errorf("the API kind allows %s = %v, want %v", typ, got, want)
 		}
 	}
-	if b.kinds[KindAPI].allow("brand_new") || b.kinds[KindAPI].boards {
-		t.Error("the API kind allows a type outside the table, or boards")
+	if b.kinds[KindAPI].allow("brand_new") {
+		t.Error("the API kind allows a type outside the table")
+	}
+	if !b.kinds[KindAPI].boards {
+		t.Error("the API kind may hold no board")
 	}
 }
 
 // One case per row of the event table: an API client with the item's mark (X), one that follows
 // the item without the mark (F), one with neither (Y), beside a page (P).
 func TestAPIEventRows(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	p := open(t, srv, "P")
@@ -118,7 +123,8 @@ func TestAPIEventRows(t *testing.T) {
 	set := func() {
 		b.SetMark(Chat("c1"), "X")
 		b.SetMark(Run("r1"), "X")
-		if !b.Follow("F", Chat("c1")) || !b.Follow("F", Run("r1")) {
+		b.MarkBoard("b1", "X")
+		if !b.Follow("F", Chat("c1")) || !b.Follow("F", Run("r1")) || !b.Follow("F", Board("b1")) {
 			t.Fatal("Follow refused a connected API client")
 		}
 	}
@@ -144,6 +150,7 @@ func TestAPIEventRows(t *testing.T) {
 		return func(ev any) { b.SendChat(id, unlisted, ev) }
 	}
 	run := func(id string) func(any) { return func(ev any) { b.SendRun(id, ev) } }
+	board := func(id string) func(any) { return func(ev any) { b.SendBoard(id, ev) } }
 
 	for typ, rule := range Events {
 		t.Run(typ, func(t *testing.T) {
@@ -186,6 +193,16 @@ func TestAPIEventRows(t *testing.T) {
 				sent(t, typ, chat("c2", false))
 				sent(t, typ, run("c1"), p)
 				sent(t, typ, b.Broadcast, p)
+			case rule.Per == PerBoard:
+				if rule.Class != List {
+					t.Fatalf("a %v type of a board", rule.Class)
+				}
+				sent(t, typ, board("b1"), p, x)    // by mark, not by follow
+				sent(t, typ, board("b2"), p)       // a board of the owner's
+				sent(t, typ, board("c1"), p)       // a chat's id is not a board's
+				sent(t, typ, b.Broadcast, p)       // misdirected: every page, no API client
+				sent(t, typ, chat("c1", false), p) // the same
+				sent(t, typ, run("r1"), p)
 			case rule.Class == List: // of a run
 				sent(t, typ, run("r1"), p, x)
 				sent(t, typ, run("r2"), p)
@@ -230,6 +247,7 @@ func TestAPIEventRows(t *testing.T) {
 
 // A mark is of one client and one item, and "" removes it.
 func TestSetMark(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	x, y := openAPI(t, api, "X"), openAPI(t, api, "Y")
@@ -272,6 +290,7 @@ func TestSetMark(t *testing.T) {
 // The removal reaches the client with the mark although Forget ran before it, as the chat
 // manager's remove does. The mark is gone afterwards, and not before.
 func TestRemovalReachesMarkedClientAfterForget(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		typ  string
 		it   Item
@@ -281,6 +300,7 @@ func TestRemovalReachesMarkedClientAfterForget(t *testing.T) {
 		{"run_removed", Run("r1"), func(b *Bridge, ev any) { b.SendRun("r1", ev) }},
 	} {
 		t.Run(tc.typ, func(t *testing.T) {
+			t.Parallel()
 			b, srv := newTestServer(t, nil)
 			api := newAPIServer(t, b, nil)
 			p, x, y := open(t, srv, "P"), openAPI(t, api, "X"), openAPI(t, api, "Y")
@@ -317,6 +337,7 @@ func TestRemovalReachesMarkedClientAfterForget(t *testing.T) {
 		})
 	}
 	t.Run("a misdirected removal keeps the mark", func(t *testing.T) {
+		t.Parallel()
 		b, _ := newTestServer(t, nil)
 		b.SetMark(Chat("c1"), "X")
 		b.SendRun("c1", map[string]any{"type": "chat_removed"})
@@ -331,6 +352,7 @@ func TestRemovalReachesMarkedClientAfterForget(t *testing.T) {
 // Content reaches an API client only after Follow, and after a new stream only after a new
 // Follow. A follow noted before the item is made holds when the item gets its mark.
 func TestAPIContentOnlyAfterFollow(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	x := openAPI(t, api, "X")
@@ -385,6 +407,7 @@ func TestAPIContentOnlyAfterFollow(t *testing.T) {
 
 // Two API clients and a page that follow one chat get the same events, byte for byte.
 func TestAPIFollowersGetTheSameBytes(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	p, x, y := open(t, srv, "P"), openAPI(t, api, "X"), openAPI(t, api, "Y")
@@ -407,6 +430,7 @@ func TestAPIFollowersGetTheSameBytes(t *testing.T) {
 // The snapshot function is called once per stream, and its fields are inline in the snapshot
 // event. The page's snapshot function is not asked for an API client, nor the other way round.
 func TestAPISnapshot(t *testing.T) {
+	t.Parallel()
 	var pageCalls, apiCalls atomic.Int32
 	b, srv := newTestServer(t, func() any {
 		pageCalls.Add(1)
@@ -467,6 +491,7 @@ func TestAPISnapshot(t *testing.T) {
 
 // The caller of ServeAPI gives the id: a client value in the query does not count.
 func TestServeAPITakesTheGivenID(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	x := openAPI(t, api, "X") // bridgetest states the id in the query too
@@ -486,6 +511,7 @@ func TestServeAPITakesTheGivenID(t *testing.T) {
 
 // A second stream with a connected API client's id ends the first, whose follows go with it.
 func TestSecondAPIStreamReplacesFirst(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	first := openAPI(t, api, "X")
@@ -511,6 +537,7 @@ func TestSecondAPIStreamReplacesFirst(t *testing.T) {
 // An id that is connected with one kind is refused as the other kind's, in both directions,
 // and the connected record stays as it was.
 func TestClientIDOfAnotherKindIsRefused(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	refused := func(t *testing.T, url, id string) {
@@ -543,12 +570,10 @@ func TestClientIDOfAnotherKindIsRefused(t *testing.T) {
 
 	client := openAPI(t, api, "B")
 	b.Follow("B", Chat("c2"))
+	take(t, b, "B", "b2", false, "held")
 	refused(t, srv.URL, "B")
-	if !b.Followed(Chat("c2")) || b.Acted("B") {
+	if !b.Holds("B", "b2") || !b.Followed(Chat("c2")) || b.Acted("B") {
 		t.Fatal("the refused page stream changed the API client's record")
-	}
-	if _, _, err := b.TakeBoard("B", "b2", false); !errors.Is(err, ErrUnknownClient) {
-		t.Fatalf("TakeBoard by B = %v", err)
 	}
 	b.Broadcast(map[string]any{"type": "groups"})
 	b.Broadcast(map[string]any{"type": "agents"})
@@ -567,8 +592,9 @@ func TestClientIDOfAnotherKindIsRefused(t *testing.T) {
 }
 
 // An API client's id is no known client for Acted, and an API client is never the page that
-// acted last.
+// acted last: not after its own take either.
 func TestActedIsFalseForAPIClient(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	x := openAPI(t, api, "X")
@@ -578,18 +604,22 @@ func TestActedIsFalseForAPIClient(t *testing.T) {
 	if b.Acted("X") {
 		t.Fatal("Acted is true for an API client")
 	}
+	take(t, b, "X", "b9", false, "held") // a take stamps a page, and not an API client
 	b.mu.Lock()
 	acted, clock := b.clients["X"].acted, b.clock
 	b.mu.Unlock()
 	if acted != 0 || clock != 0 {
-		t.Fatalf("Acted stamped an API client: acted %d, clock %d", acted, clock)
+		t.Fatalf("an API client was stamped: acted %d, clock %d", acted, clock)
 	}
-	// With API clients alone a board call has nobody to ask.
+	// With API clients alone a call about a board that nobody holds has nobody to ask.
 	if _, err := b.CallBoard(CallSpec{Method: "m", Board: "b1"}, time.Second); !errors.Is(err, ErrNoClient) {
 		t.Fatalf("CallBoard with an API client alone = %v", err)
 	}
 	if _, err := b.CallBoard(CallSpec{Method: "m", Screen: true}, time.Second); !errors.Is(err, ErrNoClient) {
 		t.Fatalf("a screen call with an API client alone = %v", err)
+	}
+	if _, ok := b.HolderOf("b1"); ok {
+		t.Fatal("the failed call left a holder")
 	}
 
 	// A page acts; the API client's later calls do not make it the last one.
@@ -598,6 +628,7 @@ func TestActedIsFalseForAPIClient(t *testing.T) {
 		t.Fatal("Acted is false for a page")
 	}
 	b.Acted("X")
+	take(t, b, "X", "b9", false, "held")
 	p.OnRPC(func(map[string]any) (any, string) { return "from P", "" })
 	v, err := b.CallBoard(CallSpec{Method: "m", Board: "b1"}, bridgetest.Wait)
 	if err != nil || string(v) != `"from P"` {
@@ -610,10 +641,13 @@ func TestActedIsFalseForAPIClient(t *testing.T) {
 	}
 }
 
-// An API client holds no board, and the pages' work with boards sends it nothing.
-func TestAPIClientHoldsNoBoard(t *testing.T) {
+// An API client holds a board as a page does: it takes a free one, is busy or waits on a held
+// one, and releases. What it has no part in sends it nothing.
+func TestAPIClientHoldsBoard(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
-	b.handoverAfter = time.Hour
+	b.SceneRev = func(board string) int64 { return int64(len(board)) }
+	b.handoverAfter, b.apiHandoverAfter = time.Hour, time.Hour
 	api := newAPIServer(t, b, nil)
 	p := open(t, srv, "P")
 	take(t, b, "P", "b1", false, "held") // the answer says so: no event
@@ -623,66 +657,78 @@ func TestAPIClientHoldsNoBoard(t *testing.T) {
 	if !b.Holds("P", "b1") {
 		t.Fatal("the page lost its board at an API client's connect")
 	}
-	for _, ifFree := range []bool{false, true} {
-		for _, board := range []string{"b1", "b2"} { // held, and free
-			if state, _, err := b.TakeBoard("X", board, ifFree); !errors.Is(err, ErrUnknownClient) {
-				t.Fatalf("TakeBoard(X, %s, %v) = %q, %v", board, ifFree, state, err)
-			}
-		}
-	}
-	if got := b.ReleaseBoard("X", "b1"); got != "none" {
-		t.Fatalf("ReleaseBoard by an API client = %q", got)
-	}
-	if id, ok := b.HolderOf("b1"); !ok || id != "P" {
-		t.Fatalf("holder of b1 = %q, %v", id, ok)
-	}
-	if _, ok := b.HolderOf("b2"); ok {
-		t.Fatal("the refused take left a holder")
+	if state, _, err := b.TakeBoard("Z", "b2", false); !errors.Is(err, ErrUnknownClient) {
+		t.Fatalf("TakeBoard by an id with no stream = %q, %v", state, err)
 	}
 
-	// A hand-off between two pages, a superseded waiter, a board call and the stop.
-	q, r := open(t, srv, "Q"), open(t, srv, "R")
-	take(t, b, "Q", "b1", false, "waiting")
+	// A free board: held, with its revision, and no event. Again: still held.
+	for range 2 {
+		if rev := take(t, b, "X", "b22", false, "held"); rev != 3 {
+			t.Fatalf("rev = %d, want 3", rev)
+		}
+	}
+	if id, ok := b.HolderOf("b22"); !ok || id != "X" || !b.Holds("X", "b22") {
+		t.Fatalf("holder of b22 = %q, %v", id, ok)
+	}
+	// A held one: busy if asked so, else it waits and the holder is asked.
+	take(t, b, "X", "b1", true, "busy")
+	take(t, b, "Y", "b22", true, "busy")
+	take(t, b, "X", "b1", false, "waiting")
 	expectBoard(t, p, "release_request", "b1")
-	take(t, b, "R", "b1", false, "waiting")
-	expectBoard(t, q, "superseded", "b1")
+	if got := b.ReleaseBoard("X", "b1"); got != "none" {
+		t.Fatalf("ReleaseBoard by a waiting API client = %q", got)
+	}
 	if got := b.ReleaseBoard("P", "b1"); got != "handed" {
 		t.Fatalf("release = %q", got)
 	}
 	expectBoard(t, p, "superseded", "b1")
-	expectBoard(t, r, "held", "b1")
-	r.OnRPC(func(map[string]any) (any, string) { return 1, "" })
-	if _, err := b.CallBoard(CallSpec{Method: "m", Board: "b1"}, bridgetest.Wait); err != nil {
-		t.Fatal(err)
+	if ev := expectBoard(t, x, "held", "b1"); ev["rev"] != float64(2) {
+		t.Fatalf("held = %v", ev)
 	}
-	done := make(chan struct{})
-	go func() { b.StopAndFlush(bridgetest.Wait); close(done) }()
-	r.Expect("server_stopping")
-	b.FlushedBy("R")
-	<-done
-	// The end of an API client's stream changes no board either.
-	y.Close()
-	waitFor(t, func() bool { return !b.Known("Y") })
-	if !b.Holds("R", "b1") {
-		t.Fatal("the board's holder changed")
+	// It releases with nobody waiting: free, and no event.
+	if got := b.ReleaseBoard("X", "b22"); got != "free" {
+		t.Fatalf("ReleaseBoard = %q", got)
+	}
+	if _, ok := b.HolderOf("b22"); ok {
+		t.Fatal("b22 is still held")
 	}
 
-	b.Broadcast(map[string]any{"type": "agents"})
-	if ev := x.Next(); ev["type"] != "agents" {
-		t.Fatalf("the API client got %v", ev)
+	// A call about the board it holds is asked of it, and fails when it loses the board.
+	done := goCall(b, CallSpec{Method: "tool", Board: "b1"}, bridgetest.Wait)
+	rpc := x.Expect("rpc")
+	if !b.ReplyFrom("X", rpc["id"].(string), RPCReply{Result: json.RawMessage(`"from X"`)}) {
+		t.Fatal("the API client's reply was refused")
 	}
-	for _, c := range []*bridgetest.Page{p, q, x} {
-		if c != x {
-			c.Expect("agents")
-		}
-		if got := c.Drain(10 * time.Millisecond); len(got) != 0 {
-			t.Fatalf("client %s got %v", c.ID, got)
-		}
+	if r := expectResult(t, done); r.err != nil || string(r.v) != `"from X"` {
+		t.Fatalf("call = %s, %v", r.v, r.err)
+	}
+	// The stop asks every holder, of either kind.
+	stopped := make(chan struct{})
+	go func() { b.StopAndFlush(bridgetest.Wait); close(stopped) }()
+	x.Expect("server_stopping")
+	b.FlushedBy("X")
+	<-stopped
+
+	// The end of its stream frees its board, and that of a client with no board changes none.
+	take(t, b, "P", "b3", false, "held")
+	y.Close()
+	waitFor(t, func() bool { return !b.Known("Y") })
+	if !b.Holds("X", "b1") || !b.Holds("P", "b3") {
+		t.Fatal("a holder changed at the end of another client's stream")
+	}
+	x.Close()
+	waitFor(t, func() bool { return !b.Known("X") })
+	if id, ok := b.HolderOf("b1"); ok {
+		t.Fatalf("b1 is held by %s after its holder's stream ended", id)
+	}
+	if got := p.Drain(20 * time.Millisecond); len(got) != 0 {
+		t.Fatalf("the page got %v", got)
 	}
 }
 
 // CloseKind ends every stream of the kind and no other, after what was queued for them.
 func TestCloseKind(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	if n := b.CloseKind(KindAPI); n != 0 {
@@ -748,6 +794,7 @@ func TestCloseKind(t *testing.T) {
 // ConnectWith sends its headers with the stream's request and with every call, and uses the
 // HTTP client it is given. Drain returns what waits and what arrives, and nothing for nothing.
 func TestConnectWithAndDrain(t *testing.T) {
+	t.Parallel()
 	b := New(nil)
 	var calls atomic.Int32
 	type seen struct{ secret, client, extra string }
@@ -834,6 +881,7 @@ func (c countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // The lists of the kinds table stay consistent under streams, marks and sends of both kinds at
 // once (run with -race).
 func TestAPIAndPagesAtOnce(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, func() any { return map[string]any{"n": 1} })
 	api := newAPIServer(t, b, func(id string) any { return map[string]any{"me": id} })
 	done := make(chan struct{})
@@ -892,6 +940,7 @@ func TestAPIAndPagesAtOnce(t *testing.T) {
 // FollowAs and UnfollowAs act on a record of the caller's kind only: a page's id stated by an API
 // client, or an API client's stated by a page, starts and ends nothing.
 func TestFollowAndUnfollowByKind(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	p := bridgetest.Connect(t, srv.URL, "P")

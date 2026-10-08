@@ -64,6 +64,8 @@ type Server struct {
 	// beforeTake is a test's hook: the take route calls it with the board's id between its check
 	// of the board and the grant. nil outside tests.
 	beforeTake func(board string)
+	// awaitLimit is awaitStartLimit for this server; 0 = awaitStartLimit. Shorter in a test.
+	awaitLimit time.Duration
 }
 
 // ErrBinaryMissing is what Restart reports when this server's program is no longer on disk.
@@ -233,19 +235,24 @@ func fail(w http.ResponseWriter, err error, fallback int) {
 
 // awaitStartLimit is how long an API client's read of a chat or run waits for a creation call or
 // a removal of that id that is under way. The settle read of the server that made the call waits
-// 15 s on these routes and relies on the wait, so it is not shorter. Shorter in a test.
-var awaitStartLimit = 30 * time.Second
+// 15 s on these routes and relies on the wait, so it is not shorter. A test sets a shorter one
+// for its server (Server.awaitLimit).
+const awaitStartLimit = 30 * time.Second
 
 // awaitStart runs wait (an AwaitStart) and returns when it has ended, when ctx has (the caller
 // gave up) or after awaitStartLimit; the read then answers what is there. wait itself goes on
 // until the call it waits for ends.
-func awaitStart(ctx context.Context, wait func()) {
+func (s *Server) awaitStart(ctx context.Context, wait func()) {
+	after := awaitStartLimit
+	if s.awaitLimit > 0 {
+		after = s.awaitLimit
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		wait()
 	}()
-	limit := time.NewTimer(awaitStartLimit)
+	limit := time.NewTimer(after)
 	defer limit.Stop()
 	select {
 	case <-done:
@@ -313,7 +320,9 @@ func expandDir(p string) (string, error) {
 }
 
 // dirsGitWait is how long GET /api/dirs waits for git to say whether a folder is in a work tree.
-const dirsGitWait = 5 * time.Second
+// A git that has not answered by then counts as "not in a work tree". A variable so that the
+// tests can wait longer on a loaded machine (TestMain); nothing else writes it.
+var dirsGitWait = 5 * time.Second
 
 // ---- routes ---------------------------------------------------------------
 
@@ -408,6 +417,9 @@ func (s *Server) routes() *routeMux {
 	// client's already. "waiting": another client holds it and was asked to release; a held event
 	// follows. With {"ifFree": true} a board held elsewhere is left there: "busy".
 	mux.HandleFunc("POST /api/boards/{id}/take", func(w http.ResponseWriter, r *http.Request) {
+		if !s.ownBoard(w, r) {
+			return
+		}
 		var body struct{ IfFree bool }
 		if !readOptionalJSON(w, r, &body) {
 			return
@@ -452,6 +464,9 @@ func (s *Server) routes() *routeMux {
 	// Ends the client's hold: "handed" (to the client that waited for the board), "free", or
 	// "none" (the client did not hold it).
 	mux.HandleFunc("POST /api/boards/{id}/release", func(w http.ResponseWriter, r *http.Request) {
+		if !s.ownBoard(w, r) {
+			return
+		}
 		writeJSON(w, map[string]any{"state": s.Bridge.ReleaseBoard(r.Header.Get(ClientHeader), r.PathValue("id"))})
 	})
 	// Ends the events of a chat or a run that a read started for the client (see the reads).
@@ -561,6 +576,9 @@ func (s *Server) routes() *routeMux {
 		kind app.Kind
 	}{{"groups", app.KindGroup}, {"boards", app.KindBoard}, {"chats", app.KindChat}, {"runs", app.KindRun}} {
 		mux.HandleFunc("POST /api/"+k.path+"/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
+			if k.kind == app.KindBoard && !s.ownBoard(w, r) {
+				return
+			}
 			if err := a.Archive(k.kind, r.PathValue("id")); err != nil {
 				fail(w, err, http.StatusInternalServerError)
 				return
@@ -568,6 +586,9 @@ func (s *Server) routes() *routeMux {
 			ok(w)
 		})
 		mux.HandleFunc("POST /api/"+k.path+"/{id}/unarchive", func(w http.ResponseWriter, r *http.Request) {
+			if k.kind == app.KindBoard && !s.ownBoard(w, r) {
+				return
+			}
 			if err := a.Unarchive(k.kind, r.PathValue("id")); err != nil {
 				fail(w, err, http.StatusInternalServerError)
 				return
@@ -594,8 +615,14 @@ func (s *Server) routes() *routeMux {
 		s.Bridge.TakeBoard(r.Header.Get(ClientHeader), bd.ID, true) // the client that creates a board holds it
 		writeJSON(w, bd)
 	})
+	// An API client's creation of a board with an id of its making, on the remote listener only
+	// (apiboards.go).
+	mux.HandleFunc("PUT /api/boards/{id}", s.apiMakeBoard)
 	// The drawing, with its revision in the header SceneRevHeader.
 	mux.HandleFunc("GET /api/boards/{id}/scene", func(w http.ResponseWriter, r *http.Request) {
+		if !s.ownBoard(w, r) {
+			return
+		}
 		b, rev, err := a.Boards.SceneAt(r.PathValue("id"))
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
@@ -609,9 +636,11 @@ func (s *Server) routes() *routeMux {
 	// names the revision the drawing is based on, the one of its read or of its last accepted
 	// write: on another one nothing is written (code "stale", with the stored revision).
 	mux.HandleFunc("PUT /api/boards/{id}/scene", func(w http.ResponseWriter, r *http.Request) {
-		b, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if !s.ownBoard(w, r) {
+			return
+		}
+		b, fits := readScene(w, r)
+		if !fits {
 			return
 		}
 		id := r.PathValue("id")
@@ -652,6 +681,9 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, map[string]any{"ok": true, "rev": rev})
 	})
 	mux.HandleFunc("POST /api/boards/{id}/rename", func(w http.ResponseWriter, r *http.Request) {
+		if !s.ownBoard(w, r) {
+			return
+		}
 		var body struct{ Name string }
 		if !readJSON(w, r, &body) {
 			return
@@ -675,6 +707,9 @@ func (s *Server) routes() *routeMux {
 		ok(w)
 	})
 	mux.HandleFunc("POST /api/boards/{id}/seen", func(w http.ResponseWriter, r *http.Request) {
+		if !s.ownBoard(w, r) {
+			return
+		}
 		if err := a.Boards.Seen(r.PathValue("id")); err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -682,6 +717,9 @@ func (s *Server) routes() *routeMux {
 		ok(w)
 	})
 	mux.HandleFunc("DELETE /api/boards/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !s.ownBoard(w, r) {
+			return
+		}
 		if err := a.DeleteBoard(r.PathValue("id")); err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return
@@ -737,7 +775,7 @@ func (s *Server) routes() *routeMux {
 		// An API client reads the chat to learn what a creation call it gave up on did: the
 		// answer waits for a call still under way.
 		if fromRemote(r) {
-			awaitStart(r.Context(), func() { a.Chats.AwaitStart(r.PathValue("id")) })
+			s.awaitStart(r.Context(), func() { a.Chats.AwaitStart(r.PathValue("id")) })
 		}
 		cv, err := a.Chats.View(r.PathValue("id"))
 		if err != nil {
@@ -840,9 +878,9 @@ func (s *Server) routes() *routeMux {
 			writeError(w, http.StatusBadRequest, "at is missing")
 			return
 		}
-		// An API client makes no chat on a board, by a fork either (see apiStart).
+		// An API client makes a chat only on a board with its mark, by a fork too (see apiStart).
 		if fromRemote(r) {
-			if src, err := a.Chats.View(r.PathValue("id")); err == nil && src.Board != "" {
+			if src, err := a.Chats.View(r.PathValue("id")); err == nil && src.Board != "" && !s.marked(r, src.Board) {
 				writeErrorCode(w, http.StatusBadRequest, boardRefused, "board_refused")
 				return
 			}
@@ -1154,7 +1192,7 @@ func (s *Server) runRoutes(mux *routeMux) {
 	handle("GET /api/runs/{id}", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
 		// As the read of a chat: an API client's read waits for a start call still under way.
 		if fromRemote(r) {
-			awaitStart(r.Context(), func() { rs.AwaitStart(id) })
+			s.awaitStart(r.Context(), func() { rs.AwaitStart(id) })
 		}
 		v, err := rs.View(id)
 		view(w, v, err, http.StatusInternalServerError)

@@ -68,6 +68,7 @@ func ownTree(t *testing.T, dir string, names map[string]string) []string {
 // ---- creating ---------------------------------------------------------------
 
 func TestCreateOwned(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	before := e.defaultsOf()
 	evs := e.listen()
@@ -179,7 +180,48 @@ func TestCreateOwned(t *testing.T) {
 	}
 }
 
+// The agent, model and effort chosen last are sticky on a run as in its group: a new chat on a
+// run starts with them, whichever of the two they were chosen in.
+func TestChatsOnARunKeepTheChoice(t *testing.T) {
+	t.Parallel()
+	e, _ := runEnv(t)
+	// Nothing was chosen yet: the run's kind, on what its deep tier runs on.
+	v := e.onRun("")
+	if v.Agent != model.Claude || v.Model != "sonnet" || v.Effort != "high" {
+		t.Fatalf("the first chat on a run: %+v", v)
+	}
+	// A model chosen in a chat on the run: the next chat on the run starts with it, before any
+	// message, and so does a chat of the run's group.
+	if err := e.m.Configure(v.ID, ConfigReq{Model: "opus", Effort: "max"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := e.onRun(""); w.Agent != model.Claude || w.Model != "opus" || w.Effort != "max" || w.Cwd != e.cwd {
+		t.Fatalf("the next chat on the run: %+v", w)
+	}
+	if g := e.newChat(NewChat{Group: gOne}); g.Model != "opus" || g.Effort != "max" {
+		t.Fatalf("a chat of the run's group: %+v", g)
+	}
+	// Another kind chosen and confirmed by a message: the next chat is of that kind.
+	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Pi}); err != nil {
+		t.Fatal(err)
+	}
+	e.send(v.ID, "hello", "")
+	if w := e.onRun(""); w.Agent != model.Pi || w.Model != e.view(v.ID).Model {
+		t.Fatalf("a chat on the run after pi was chosen: %+v", w)
+	}
+	// What is chosen in a chat of the group reaches the run's chats too.
+	g := e.newChat(NewChat{Group: gOne, Agent: model.Claude})
+	if err := e.m.Configure(g.ID, ConfigReq{Model: "haiku"}); err != nil {
+		t.Fatal(err)
+	}
+	e.send(g.ID, "hello", "")
+	if w := e.onRun(""); w.Agent != model.Claude || w.Model != "haiku" {
+		t.Fatalf("a chat on the run after a choice in its group: %+v", w)
+	}
+}
+
 func TestCreateOnRun(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	other := t.TempDir()
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
@@ -193,9 +235,9 @@ func TestCreateOnRun(t *testing.T) {
 	}
 	evs := e.listen()
 	v := e.onRun(model.Claude)
-	// Model and effort are those of the run's deep tier, not the new-chat defaults of the run's
-	// group; the folder is the run's.
-	if v.Run != ownRun || v.Role != "" || v.Group != "" || v.Board != "" || v.Model != "sonnet" || v.Effort != "high" || v.Cwd != e.cwd || v.Locked {
+	// Model and effort are the new-chat defaults of the run's group, as for the other kind, not
+	// those of the run's deep tier; the folder is the run's.
+	if v.Run != ownRun || v.Role != "" || v.Group != "" || v.Board != "" || v.Model != "opus" || v.Effort != "low" || v.Cwd != e.cwd || v.Locked {
 		t.Fatalf("view: %+v", v)
 	}
 	m := e.runMeta(v.ID, false)
@@ -220,7 +262,7 @@ func TestCreateOnRun(t *testing.T) {
 	}
 
 	// The first message: the run's context block ahead of the text, on every message; the namer
-	// runs as for any chat; the sticky defaults stay as they were.
+	// runs as for any chat; of the sticky defaults the agent is recorded, and the folder stays.
 	before := e.defaultsOf()
 	e.send(v.ID, "how far is it?", "<ui-context/>")
 	ag := e.claude.last(t)
@@ -236,8 +278,9 @@ func TestCreateOnRun(t *testing.T) {
 	if calls := e.namer.callList(); len(calls) != 1 {
 		t.Fatalf("namer calls: %v", calls)
 	}
-	after := e.defaultsOf()
-	if !reflect.DeepEqual(after, before) || after.Groups[gOne].On(model.LocalServer).Cwd != other {
+	after, want := e.defaultsOf(), before.Groups[gOne].On(model.LocalServer)
+	want.Agent = model.Claude
+	if got := after.Groups[gOne]; !reflect.DeepEqual(got, model.LocalDefaults(want)) || want.Cwd != other || len(after.Groups) != 1 {
 		t.Fatalf("the sticky defaults changed: %+v -> %+v", before, after)
 	}
 	e.send(v.ID, "and now?", "")
@@ -289,6 +332,7 @@ func TestCreateOnRun(t *testing.T) {
 // subagents, branches and forks, and the run's agents with theirs. Nothing is in chats/. A new
 // manager on the same folder finds them all.
 func TestRunChatStorageAndRestart(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	names := map[string]string{}
 
@@ -515,6 +559,7 @@ func (e *env) loadedOwned(id string) bool {
 
 // A folder under a run whose chat.json does not agree with where it is, is skipped at boot.
 func TestLoadSkipsMisplacedRunChats(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	good := e.agentChat("good", model.RoleTask, model.Claude)
 	write := func(dir string, m model.ChatMeta) {
@@ -547,6 +592,7 @@ func TestLoadSkipsMisplacedRunChats(t *testing.T) {
 // Every call a person can make to change a chat answers ErrRunAgent for a run agent's chat, and
 // changes nothing; the calls that read one work; the engine's own calls work.
 func TestPersonCannotChangeARunAgentsChat(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	id := e.agentChat("agent-1", model.RoleTask, model.Claude)
 	e.sendOwned(id, "the brief")
@@ -641,6 +687,7 @@ func TestPersonCannotChangeARunAgentsChat(t *testing.T) {
 // Reading a run agent's chat changes nothing about it: no "folder not found" for a checkout that
 // was removed by design, and no process started to answer a context split.
 func TestReadsDoNotChangeARunAgentsChat(t *testing.T) {
+	t.Parallel()
 	e, fr := runEnv(t)
 	cwd := filepath.Join(t.TempDir(), "checkout")
 	if err := os.Mkdir(cwd, 0o700); err != nil {
@@ -696,6 +743,7 @@ func TestReadsDoNotChangeARunAgentsChat(t *testing.T) {
 // A permission request on a run agent's chat is answered "no" at once and recorded as decided, so
 // the chat never waits for an answer; of its own agent and of an app-spawned subagent alike.
 func TestRunAgentPermissionIsDeniedAtOnce(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	sa, child := e.ownChild(id, "child work")
 	ask(t, ag, "", "r1")
@@ -758,6 +806,7 @@ func (e *env) itemsFileAt(dir string) string {
 // What the MCP endpoint decides tool access by: a caller resolved from a token says which run its
 // chat is on, the role of that chat, and whether the caller is a subagent.
 func TestRunCallersByToken(t *testing.T) {
+	t.Parallel()
 	e, id, ag, _ := ownStart(t)
 	c, ok := e.m.ResolveToken(ag.opts.MCP.Token)
 	if !ok || c.Subagent || c.Chat != id || c.Meta.ID != id || c.Meta.Run != ownRun || c.Meta.Role != model.RoleTask {
@@ -806,6 +855,7 @@ func TestRunCallersByToken(t *testing.T) {
 
 // The events of a run agent's chat reach a client only while it follows the chat.
 func TestRunAgentEventsOnlyWhileFollowed(t *testing.T) {
+	t.Parallel()
 	e, id, ag, _ := ownStart(t)
 	evs := e.listen()
 	types := func() map[string]int {
@@ -873,6 +923,7 @@ func TestRunAgentEventsOnlyWhileFollowed(t *testing.T) {
 
 // A subagent of a chat on a run takes the run's group for its defaults, not the ungrouped group.
 func TestRunChatSubagentDefaultsComeFromTheRunsGroup(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	e.setDefaults(model.Defaults{
 		Groups: map[string]model.GroupDefaults{
@@ -896,6 +947,7 @@ func TestRunChatSubagentDefaultsComeFromTheRunsGroup(t *testing.T) {
 // The first tools/list of a run agent's new process finds a running turn: the turn is marked in
 // the hold of the chat's lock that starts the process.
 func TestSendOwnedMarksTheTurnBeforeTheProcessCanAsk(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	id := e.agentChat("agent-1", model.RoleOrchestrator, model.Claude)
 	saw := make(chan bool, 1)

@@ -13,21 +13,78 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // The reference run, uninterrupted: the base line of every restart test.
 func TestMatrixReferenceRun(t *testing.T) {
 	t.Parallel()
-	h := newMx(t, true)
-	h.startRun(nil)
-	end := h.refEnd()
-	l := h.L()
-	if !mxMergeAgentRan(l) {
-		t.Errorf("no merge agent ran: the two writers did not conflict\n%s", h.dump())
+	ref := mxReference(t)
+	if !ref.mergeAgentRan {
+		t.Errorf("no merge agent ran: the two writers did not conflict\n%s", ref.dump)
 	}
-	if len(end.Tasks) != 4 {
-		t.Errorf("tasks: %v", end.Tasks)
+	if len(ref.end.Tasks) != 4 {
+		t.Errorf("tasks: %v", ref.end.Tasks)
 	}
+}
+
+// mxRef is a reference run that ran uninterrupted to its end: what refEnd found, whether a merge
+// agent ran, the journal file and the dump of the run.
+type mxRef struct {
+	end           mxEnd
+	mergeAgentRan bool
+	journal       []byte
+	dump          string
+}
+
+// entries is the run's journal, read anew for every caller.
+func (ref mxRef) entries(t *testing.T) []Entry {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, fileJournal), ref.journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	es, _, torn, err := readJournal(dir, 0)
+	if err != nil || torn {
+		t.Fatalf("the journal: torn %v, %v", torn, err)
+	}
+	return es
+}
+
+var mxSharedRef struct {
+	once sync.Once
+	ref  mxRef
+	ok   bool
+}
+
+// mxReference makes the reference run, checks its end with refEnd and its journal with
+// journalWhole, and returns it. The tests that only read the uninterrupted run (its end, to
+// compare a restarted run with, or its journal) call it. In the full set each of them gets a run
+// of its own; in the default set they share one run of the test binary, because five runs that
+// are the same show nothing that one does not.
+func mxReference(t *testing.T) mxRef {
+	t.Helper()
+	run := func() (ref mxRef, ok bool) {
+		h := newMx(t, true)
+		h.startRun(nil)
+		ref.end = h.refEnd()
+		h.journalWhole()
+		data, err := os.ReadFile(filepath.Join(h.r().dir, fileJournal))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref.journal, ref.mergeAgentRan, ref.dump = data, mxMergeAgentRan(h.L()), h.dump()
+		return ref, !t.Failed()
+	}
+	if testset.Full() {
+		ref, _ := run()
+		return ref
+	}
+	mxSharedRef.once.Do(func() { mxSharedRef.ref, mxSharedRef.ok = run() })
+	if !mxSharedRef.ok {
+		t.Fatal("the reference run that the default set shares failed (see the first test that failed)")
+	}
+	return mxSharedRef.ref
 }
 
 func mxMergeAgentRan(l *Loaded) bool {
@@ -122,20 +179,20 @@ func (h *mx) quiet() bool {
 // uninterrupted one. A second sweep quits the server in an orderly way at chosen points; the
 // run must then continue by itself to the same end.
 func TestRestartAtEveryStep(t *testing.T) {
-	base := newMx(t, true)
-	base.startRun(nil)
-	want := base.refEnd()
-	entries := base.journalWhole()
+	base := mxReference(t)
+	want := base.end
+	entries := base.entries(t)
 	n := int64(len(entries))
-	if !mxMergeAgentRan(base.L()) {
-		t.Fatalf("the reference run had no conflict\n%s", base.dump())
+	if !base.mergeAgentRan {
+		t.Fatalf("the reference run had no conflict\n%s", base.dump)
 	}
 	t.Logf("the reference run has %d journal entries", n)
 
 	// A few more than the reference run had: the order of some entries differs from run to run.
 	var ks []int64
 	for k := int64(1); k <= n+3; k++ {
-		if testing.Short() && k%16 != 1 {
+		// Entry 1 is the crash inside Start, which has a branch of its own below.
+		if !testset.Full() && k != 1 && k%32 != 17 {
 			continue
 		}
 		ks = append(ks, k)
@@ -254,7 +311,10 @@ func TestRestartAtEveryStep(t *testing.T) {
 	}
 	t.Run("quit", func(t *testing.T) {
 		for i, p := range points {
-			if testing.Short() && i%6 != 0 {
+			// One point of the task's work, one of the merge stages ("the merge agent done, not
+			// concluded", picked by its name so that a new order of the points cannot drop it)
+			// and one of the last turn.
+			if !testset.Full() && p.name != "the merge agent done, not concluded" && (i%6 != 0 || i == 0) {
 				continue
 			}
 			t.Run(strings.ReplaceAll(p.name, " ", "_"), func(t *testing.T) {
@@ -316,6 +376,9 @@ func TestQuitWhileAnAgentStarts(t *testing.T) {
 	t.Parallel()
 	h := newMx(t, false)
 	mxOneTask(h)
+	// The held message has no result for the shutdown to take: the engine's send waits its whole
+	// grace for one (agentrun.go sent), and then Service.Shutdown goes on without it.
+	h.s().stopGrace = 100 * time.Millisecond
 	held, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	h.mu.Lock()
@@ -426,6 +489,7 @@ func TestStopResume(t *testing.T) {
 	})
 	h.startRun(nil)
 	h.atGate("work")
+	h.taken("T01-work")
 	h.tick(30 * time.Second)
 	v, err := h.s().Stop(h.id)
 	if err != nil || v.Status != model.RunStopping {
@@ -633,6 +697,7 @@ func TestBootContinues(t *testing.T) {
 	mxOneTask(h)
 	h.startRun(nil)
 	h.atGate("work")
+	h.taken("T01-work")
 	h.stopWorld(true)
 	// What the closed server left.
 	w := h.start()
@@ -838,9 +903,7 @@ func TestBootAfterCrashWaits(t *testing.T) {
 // cuts it off, and the run goes on from the entry before it.
 func TestTornJournalLine(t *testing.T) {
 	t.Parallel()
-	base := newMx(t, true)
-	base.startRun(nil)
-	want := base.refEnd()
+	want := mxReference(t).end
 	points := map[string]func(l *Loaded) bool{
 		"a result": func(l *Loaded) bool {
 			tk, ok := mxByTitle(l, mxOne)
@@ -861,7 +924,7 @@ func TestTornJournalLine(t *testing.T) {
 		"a turn's end": func(l *Loaded) bool { return len(l.Turns) >= 2 && l.Turns[1].Status == "done" },
 	}
 	for name, when := range points {
-		if testing.Short() && name != "a merge" {
+		if !testset.Full() && name != "a merge" {
 			continue
 		}
 		t.Run(strings.ReplaceAll(name, " ", "_"), func(t *testing.T) {

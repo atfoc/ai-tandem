@@ -11,6 +11,7 @@ import (
 
 // A catalog event from a Claude chat process is stored under Claude and broadcast.
 func TestClaudeCatalogEventPersistsAndBroadcasts(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -47,6 +48,7 @@ func TestClaudeCatalogEventPersistsAndBroadcasts(t *testing.T) {
 // A catalog event from an app-spawned subagent process changes nothing: not the store, and
 // nothing is broadcast.
 func TestSubagentCatalogEventIsDropped(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.storeCatalog(model.Claude, storedClaude)
 	evs := listen(t, e.br)

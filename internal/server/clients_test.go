@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // The known-client guard, the hold of a board and the scene revision, with stand-in pages
@@ -116,14 +118,13 @@ func until(t *testing.T, p *bridgetest.Page, typ, board string) map[string]any {
 	}
 }
 
-var marks int
+var marks atomic.Int64
 
 // roleEvents returns the events about a role ("<type> <board>") that the page was sent and has
 // not read yet. It makes a group, which every page is told of, and reads up to that event.
 func (e *env) roleEvents(p *bridgetest.Page) (got []string) {
 	e.t.Helper()
-	marks++
-	g, err := e.a.CreateGroup("mark "+strconv.Itoa(marks), "")
+	g, err := e.a.CreateGroup("mark "+strconv.FormatInt(marks.Add(1), 10), "")
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -258,6 +259,7 @@ func (e *env) boardChat(p *bridgetest.Page) (model.Board, string) {
 // ---- the guard (AC38) -------------------------------------------------------
 
 func TestKnownClientGuard(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p := e.page("P")
 	bd := newBoard(t, p, "b")
@@ -340,6 +342,7 @@ func mustRead(t *testing.T, path string) []byte {
 // What a page of another origin can do (T09 Part A): open a stream, and post without the client
 // header. It takes no board, forges no answer, and is asked nothing.
 func TestForeignPageGetsNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.page("V")
 	bd, token := e.boardChat(v)
@@ -436,6 +439,7 @@ func TestForeignPageGetsNothing(t *testing.T) {
 
 // A reply counts only from the client that was asked, another known client's is refused.
 func TestReplyOnlyFromTheClientAsked(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p, q := e.page("P"), e.page("Q")
 	bd, token := e.boardChat(p)
@@ -481,6 +485,7 @@ func TestReplyOnlyFromTheClientAsked(t *testing.T) {
 // ---- the hold of a board (AC39) ---------------------------------------------
 
 func TestTwoPagesSaveTwoBoards(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p, q := e.page("P"), e.page("Q")
 	bp, bq := newBoard(t, p, "p"), newBoard(t, q, "q")
@@ -512,6 +517,7 @@ func TestTwoPagesSaveTwoBoards(t *testing.T) {
 }
 
 func TestTakeAndReleaseRoutes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p, q := e.page("P"), e.page("Q")
 	bd := newBoard(t, p, "b")
@@ -587,6 +593,7 @@ func TestTakeAndReleaseRoutes(t *testing.T) {
 // A take of a held board puts the holder's pending write on disk before the grant: the revision
 // the new holder is given is the one after that write.
 func TestTakeOfAHeldBoard(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p, q := e.page("P"), e.page("Q")
 	bd := newBoard(t, p, "b")
@@ -638,6 +645,7 @@ func TestTakeOfAHeldBoard(t *testing.T) {
 // ---- the scene revision (AC42) ----------------------------------------------
 
 func TestStaleSceneWrite(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p := e.page("P")
 	bd := newBoard(t, p, "b")
@@ -685,6 +693,7 @@ func TestStaleSceneWrite(t *testing.T) {
 // T11 X1: a page that had a board, lost it to another page that changed it, and takes it back,
 // does not put its older scene over the newer one.
 func TestReturningPageDoesNotOverwrite(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p, q := e.page("P"), e.page("Q")
 	bd := newBoard(t, p, "b")
@@ -725,7 +734,11 @@ func TestReturningPageDoesNotOverwrite(t *testing.T) {
 // T11 X3 (b): a holder that could not write its pending edit within the handover delay loses
 // the board, and the edit is written neither late nor after it took the board back.
 func TestLateWriteOfTheOldHolderIsRefused(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
+	// The handover delay is three seconds; the test waits it out, so its bridge has a shorter one.
+	const delay = 300 * time.Millisecond
+	e.s.Bridge.SetHandoverDelay(delay)
 	p, q := e.page("P"), e.page("Q")
 	bd := newBoard(t, p, "b")
 	written(t, p, bd.ID, 0, drawing("saved")) // P then edits: "pending", based on revision 1
@@ -739,7 +752,7 @@ func TestLateWriteOfTheOldHolderIsRefused(t *testing.T) {
 	if ev := until(t, q, "held", bd.ID); ev["rev"] != float64(1) {
 		t.Fatalf("Q's grant: %v", ev)
 	}
-	if waited := time.Since(start); waited < 2500*time.Millisecond {
+	if waited := time.Since(start); waited < delay {
 		t.Fatalf("the grant came after %v, before the holder's time was over", waited)
 	}
 	until(t, p, "superseded", bd.ID)
@@ -775,9 +788,15 @@ func TestLateWriteOfTheOldHolderIsRefused(t *testing.T) {
 // can fall between the write's holder check and its store, and then names the revision before
 // the write; the page is told the stored revision with a second held.
 func TestGrantDuringTheOldHoldersWrite(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
+	// A stress loop: the full set runs every round, the default set a third of them.
+	rounds := 100
+	if testset.Full() {
+		rounds = 300
+	}
 	late := 0
-	for i := range 300 {
+	for i := range rounds {
 		n := strconv.Itoa(i)
 		h, q := e.page("H"+n), e.page("Q"+n)
 		bd := newBoard(t, h, "b"+n)
@@ -809,12 +828,13 @@ func TestGrantDuringTheOldHoldersWrite(t *testing.T) {
 		written(t, q, bd.ID, stored, drawing("q"))
 		q.Close()
 	}
-	t.Logf("the grant named the revision before the write in %d of 300 rounds", late)
+	t.Logf("the grant named the revision before the write in %d of %d rounds", late, rounds)
 }
 
 // T11 X5: a page whose stream was cut comes back while another page works on its board. It
 // takes nothing back unasked, and its older scene is not written.
 func TestReconnectDoesNotOverwrite(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p, q := e.page("P"), e.page("Q")
 	bd := newBoard(t, p, "b")
@@ -867,6 +887,7 @@ func TestReconnectDoesNotOverwrite(t *testing.T) {
 // ---- archive and delete -----------------------------------------------------
 
 func TestArchiveAndDeleteAskTheHolder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p := e.page("P")
 	for _, c := range []struct{ name, method, path string }{
@@ -941,6 +962,7 @@ func TestArchiveAndDeleteAskTheHolder(t *testing.T) {
 // ---- follow at a read -------------------------------------------------------
 
 func TestReadsFollow(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p := e.page("P")
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
@@ -1001,6 +1023,7 @@ func TestReadsFollow(t *testing.T) {
 }
 
 func TestRunDetailReadFollows(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	said := make(chan struct{}, 1)
 	e.fake.Script(func(t *agenttest.Turn) {
@@ -1032,6 +1055,7 @@ func TestRunDetailReadFollows(t *testing.T) {
 // A page that has only read since its stream opened (a reload of a page that shows a chat) is
 // asked a board tool call (AC40).
 func TestPageThatOnlyReadIsAskedACall(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.page("V")
 	bd, token := e.boardChat(v)
@@ -1052,6 +1076,7 @@ func TestPageThatOnlyReadIsAskedACall(t *testing.T) {
 // A read of a chat that is not there leaves no follow; a missing subagent of a chat that is there
 // keeps the chat's.
 func TestFailedChatReadLeavesNoFollow(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p := e.page("P")
 	none := editorbridge.Chat("no-such-chat")
@@ -1074,6 +1099,7 @@ func TestFailedChatReadLeavesNoFollow(t *testing.T) {
 }
 
 func TestFailedRunReadLeavesNoFollow(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	e.expect(404, "GET", "/api/runs/r_nosuchrun/detail", "")
 	if got := e.s.Bridge.Followers(editorbridge.Run("r_nosuchrun")); len(got) != 0 {
@@ -1087,6 +1113,7 @@ func TestFailedRunReadLeavesNoFollow(t *testing.T) {
 // holds nor asks for the board gets none of them, an agent's call goes to the holder alone, and
 // the hello and the snapshot of a new stream go to that stream alone.
 func TestRoleEventsReachOnlyWhoTheyConcern(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	p, q, n := e.page("P"), e.page("Q"), e.page("N")
 	bd, token := e.boardChat(p)

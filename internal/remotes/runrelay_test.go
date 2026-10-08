@@ -25,6 +25,7 @@ const agent3 = "3c000000-0000-4000-8000-000000000003"
 // TestRunEventTable: every row of the table of a remote server's run events, as two pages see
 // it: one that read the run's detail and the chat of one of its agents, and one that did not.
 func TestRunEventTable(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed}})
 	rg.serveRuns(agent1)
@@ -211,6 +212,7 @@ func TestRunEventTable(t *testing.T) {
 // call is under way, is not logged. A server's event never reaches the record of another
 // server's run, nor the chat of its agent.
 func TestRunWithoutARecord(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	seed.Agents = []string{agent1}
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed}})
@@ -285,6 +287,7 @@ func TestRunWithoutARecord(t *testing.T) {
 // TestRunAgentsLearned: which chat ids a record takes as those of its run's agents, and that
 // what the other server sends never grows a record without limit.
 func TestRunAgentsLearned(t *testing.T) {
+	t.Parallel()
 	a, b := runSeedOf(runA), runSeedOf(runB)
 	chat := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(a.View, b.View), seed: []Record{chat}, runSeed: []RunRecord{a, b}})
@@ -375,6 +378,7 @@ func TestRunAgentsLearned(t *testing.T) {
 // them; the remote server is told to end a follow when the last page's stream ends, and not
 // while another page follows.
 func TestRunFollows(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed}})
 	rg.serveRuns(agent1)
@@ -481,6 +485,7 @@ func TestRunFollows(t *testing.T) {
 // chats too. While a read is passed on the unfollow call waits, and while an unfollow call is
 // out a read waits.
 func TestRunUnfollowNeverOvertakesARead(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	seed.Agents = []string{agent1}
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed}})
@@ -570,6 +575,7 @@ func TestRunUnfollowNeverOvertakesARead(t *testing.T) {
 // the hook points see them. In every step the chats come before the runs. A run that the
 // snapshot does not have is gone, and is back with a later snapshot that has it.
 func TestRunSnapshotSteps(t *testing.T) {
+	t.Parallel()
 	chat := seedOf(chatA)
 	there := remoteRun(runA, model.RunStalled)
 	snap := snapshotWith(chat.View)
@@ -705,6 +711,7 @@ func TestRunSnapshotSteps(t *testing.T) {
 // go with their files after the chat records, the pages are told, the draft runs go back to
 // this computer, and the server is sent nothing.
 func TestRunCountsAndRemoved(t *testing.T) {
+	t.Parallel()
 	chat := seedOf(chatA)
 	a, b := runSeedOf(runA), runSeedOf(runB)
 	a.Agents = []string{agent1}
@@ -787,6 +794,7 @@ func TestRunCountsAndRemoved(t *testing.T) {
 // TestTakeRun: an answer and an event of one run can cross: a view is taken only if no view of
 // the run was taken since its read was sent. The pages are told when what they get changed.
 func TestTakeRun(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	seed.Agents = []string{agent1}
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed}})
@@ -863,6 +871,7 @@ func TestTakeRun(t *testing.T) {
 // TestNoRunService: a relay of a server without runs keeps no run record, and every run branch
 // does nothing.
 func TestNoRunService(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{noRuns: true, snapshot: snapshotWithRuns(remoteRun(runA, model.RunRunning))})
 	p, _ := rg.page("page-1")
 	rg.b.FollowAs(editorbridge.KindPage, p.ID, editorbridge.Run(runA))

@@ -33,6 +33,7 @@ import (
 	"ai-whiteboard/internal/boardtools"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/pibridge"
+	"ai-whiteboard/internal/testset"
 )
 
 // probeExtensionSource is the throwaway probe extension. It is written next to
@@ -182,9 +183,7 @@ func probeEnv(extra ...string) []string {
 }
 
 func TestMCPRealPiProbe(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real-pi probe in short mode")
-	}
+	testset.SkipUnlessFull(t, "needs the real pi installed; the default set covers the same handler without pi in TestFixedMCPInitializeAndToolsListPermissive and TestFixedMCPToolsCallValidToken")
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not available")
 	}

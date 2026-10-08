@@ -63,6 +63,7 @@ type patched struct {
 // A chat is made without an agent or with a given id, and its agent and server are chosen with
 // PATCH until its first message (AC30).
 func TestChatCreateAndConfigureRoutes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	group := `"group":"` + model.Ungrouped + `"`
 
@@ -123,6 +124,7 @@ func TestChatCreateAndConfigureRoutes(t *testing.T) {
 // creation, configuration, a draft run's patch and the first message; a chat with no agent is
 // refused with "no_agent". The look-up changes while the server runs (AC44).
 func TestAgentOutsideTheUsableOnes(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	set, path := agentsOf("claude")
 	e.cm.Agents, e.rs.Agents, e.a.Agents = set, set, set
@@ -197,6 +199,7 @@ func TestAgentOutsideTheUsableOnes(t *testing.T) {
 // What main gives Watch: a change of the usable agents reaches a connected client as an "agents"
 // event with the new list.
 func TestAgentsEventReachesAClient(t *testing.T) {
+	t.Parallel()
 	e := newRunEnv(t)
 	set, path := agentsOf("claude")
 	e.cm.Agents, e.rs.Agents, e.a.Agents = set, set, set

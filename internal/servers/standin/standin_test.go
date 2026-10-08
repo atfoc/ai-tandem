@@ -139,6 +139,7 @@ func (e *events) next(t *testing.T) (m map[string]any, ok bool) {
 }
 
 func TestHello(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	c := plainClient(t, nil)
 	res, body := get(t, c, s.URL()+"/api/hello", DefaultSecret, nil)
@@ -192,6 +193,7 @@ func TestHello(t *testing.T) {
 }
 
 func TestOptions(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{
 		Secret: "s3", InstanceID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", Version: "9.9",
 		FeatureLevel: Level(7), Snapshot: map[string]any{"home": "/x"},
@@ -209,6 +211,7 @@ func TestOptions(t *testing.T) {
 }
 
 func TestRefusals(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	c := plainClient(t, nil)
 	for _, path := range []string{"/api/hello", "/api/state", "/api/events?client=x", "/api/other"} {
@@ -245,6 +248,7 @@ func TestRefusals(t *testing.T) {
 // checks it: a missing or malformed one is refused on every path, the server's own on every
 // path but hello.
 func TestClientID(t *testing.T) {
+	t.Parallel()
 	const own = "11111111-2222-4333-8444-555555555555"
 	s := Start(t, Options{InstanceID: own})
 	c := plainClient(t, nil)
@@ -310,6 +314,7 @@ func TestClientID(t *testing.T) {
 }
 
 func TestHosts(t *testing.T) {
+	t.Parallel()
 	byName := Start(t, Options{Names: []string{"127.0.0.1", "localhost"}})
 	listed := Start(t, Options{Hosts: []string{"box.example", "other.example:1"}})
 	c := plainClient(t, nil)
@@ -335,6 +340,7 @@ func TestHosts(t *testing.T) {
 }
 
 func TestState(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	c := plainClient(t, nil)
 	res, body := get(t, c, s.URL()+"/api/state", DefaultSecret, nil)
@@ -375,6 +381,7 @@ func TestState(t *testing.T) {
 }
 
 func TestStream(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{PingEvery: 10 * time.Millisecond})
 	c := plainClient(t, nil)
 	e := openStream(t, c, s)
@@ -452,6 +459,7 @@ func TestStream(t *testing.T) {
 }
 
 func TestDropStreams(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	c := plainClient(t, nil)
 	e := openStream(t, c, s)
@@ -479,6 +487,7 @@ func TestDropStreams(t *testing.T) {
 }
 
 func TestStreamEndsWhenClientLeaves(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	c := plainClient(t, nil)
 	e := openStream(t, c, s)
@@ -489,6 +498,7 @@ func TestStreamEndsWhenClientLeaves(t *testing.T) {
 }
 
 func TestStopAndRestart(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	c := plainClient(t, nil)
 	url, fp := s.URL(), s.Fingerprint()
@@ -528,6 +538,7 @@ func TestStopAndRestart(t *testing.T) {
 }
 
 func TestSwapCert(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	url, old := s.URL(), s.Fingerprint()
 	if _, err := remote.ParseFingerprint(old); err != nil {
@@ -562,6 +573,7 @@ func TestSwapCert(t *testing.T) {
 // TestPool: a client that verifies against Pool() accepts the pair, and refuses another name
 // and an expired one with Go's own error types.
 func TestPool(t *testing.T) {
+	t.Parallel()
 	verifying := func(s *Server) *http.Client {
 		tr := &http.Transport{ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{RootCAs: s.Pool()}}
 		t.Cleanup(tr.CloseIdleConnections)
@@ -591,6 +603,7 @@ func TestPool(t *testing.T) {
 }
 
 func TestRequestsAndHandshakes(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	if len(s.Requests()) != 0 || s.Handshakes() != 0 || s.Streams() != 0 {
 		t.Fatalf("a new server: %v, %d, %d", s.Requests(), s.Handshakes(), s.Streams())
@@ -655,6 +668,7 @@ func TestRequestsAndHandshakes(t *testing.T) {
 }
 
 func TestHandle(t *testing.T) {
+	t.Parallel()
 	s := Start(t, Options{})
 	c := plainClient(t, nil)
 	s.Handle("POST /api/chats/{id}/send", func(w http.ResponseWriter, r *http.Request) {
@@ -712,6 +726,7 @@ func TestHandle(t *testing.T) {
 }
 
 func TestRefused(t *testing.T) {
+	t.Parallel()
 	url := Refused(t)
 	if !strings.HasPrefix(url, "https://127.0.0.1:") {
 		t.Fatalf("url %q", url)
@@ -723,6 +738,7 @@ func TestRefused(t *testing.T) {
 }
 
 func TestSilent(t *testing.T) {
+	t.Parallel()
 	url := Silent(t)
 	if !strings.HasPrefix(url, "https://127.0.0.1:") {
 		t.Fatalf("url %q", url)
@@ -747,6 +763,7 @@ func TestSilent(t *testing.T) {
 }
 
 func TestPlainHTTP(t *testing.T) {
+	t.Parallel()
 	url := PlainHTTP(t)
 	if !strings.HasPrefix(url, "https://127.0.0.1:") {
 		t.Fatalf("url %q", url)
@@ -768,6 +785,7 @@ func TestPlainHTTP(t *testing.T) {
 }
 
 func TestNotAIWB(t *testing.T) {
+	t.Parallel()
 	s := NotAIWB(t)
 	c := plainClient(t, nil)
 	for _, path := range []string{"/", "/api/hello", "/api/state", "/anything/else"} {

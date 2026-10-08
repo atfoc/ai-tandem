@@ -51,12 +51,17 @@ func Exited(cmd *exec.Cmd) {
 	if forget(pgid) {
 		return
 	}
+	every := forgetEvery
 	go func() {
 		for !forget(pgid) {
-			time.Sleep(time.Second)
+			time.Sleep(every)
 		}
 	}()
 }
+
+// forgetEvery is how often Exited looks whether a group it could not forget is gone. A variable
+// so that a test need not wait it out.
+var forgetEvery = time.Second
 
 // forget drops pgid if its group is gone, and reports whether the group is no longer remembered.
 func forget(pgid int) bool {

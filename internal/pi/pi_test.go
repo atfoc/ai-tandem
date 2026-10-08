@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -129,7 +130,8 @@ func TestSettledPromptWithLateAnswerIsTaken(t *testing.T) {
 	f := newFake(t, `{"type":"agent_settled"}`)
 	f.replies(t, map[string]fakeReply{"prompt#1": {Silent: true}})
 	s := f.spawner()
-	s.promptTimeout = time.Second
+	// The settle has to arrive within it: one line from a process that is already running.
+	s.promptTimeout = 500 * time.Millisecond
 	a := spawn(t, s, agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
 	waitKind(t, a, agent.EvCatalog)
 	if err := a.Send([]agent.ContentBlock{{Text: "one"}}); err != nil {
@@ -229,6 +231,7 @@ func TestFailedHandshakeLeavesChatReady(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			f.replies(t, tc.replies)
+			waitsForPumps(t)
 			m := newE2EPiManager(t, f.spawner(), t.TempDir())
 			v := e2eCreatePi(t, m)
 			if tc.model != "" {
@@ -276,6 +279,36 @@ func TestFailedHandshakeLeavesChatReady(t *testing.T) {
 				t.Fatalf("error notes %q, want one for each failed message", notes)
 			}
 		})
+	}
+}
+
+// waitsForPumps makes the test wait at its end, after the chat manager's Shutdown, until the
+// manager's pumps (the goroutines that take the agents' events) have ended. Shutdown closes a
+// chat's process without waiting for it, and pi's Close after a failed handshake does not wait
+// either, so the pump takes pi's exit later and writes chat.json then: into the test's temp
+// folder while it is being removed, which fails the test ("directory not empty") on a busy
+// machine. Call it after the test's first t.TempDir (the removal is registered there, and so runs
+// after this) and before the manager is made (its Shutdown runs before this). It checks nothing:
+// a pump that does not end is only logged.
+func waitsForPumps(t *testing.T) {
+	t.Helper()
+	before := pumps()
+	t.Cleanup(func() {
+		for deadline := time.Now().Add(10 * time.Second); pumps() > before; time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Logf("%d of the chat manager's pumps are still running", pumps()-before)
+				return
+			}
+		}
+	})
+}
+
+// pumps is the number of goroutines that run a chat manager's pump.
+func pumps() int {
+	for buf := make([]byte, 1<<20); ; buf = make([]byte, 2*len(buf)) {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			return strings.Count(string(buf[:n]), "chats.(*Manager).pump(")
+		}
 	}
 }
 
@@ -626,6 +659,7 @@ func TestExitDuringTurnNote(t *testing.T) {
 			pidFile := filepath.Join(f.dir, "child.json")
 			t.Setenv(envChildPid, pidFile)
 			t.Setenv(envStartErr, piStartWarning)
+			waitsForPumps(t)
 			m := newE2EPiManager(t, f.spawner(), t.TempDir())
 			v := e2eCreatePi(t, m)
 			if err := m.Send(v.ID, "hello", "", nil); err != nil {

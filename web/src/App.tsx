@@ -3,7 +3,8 @@
 // selected plain chat, or the home screen.
 import React, { useEffect } from "react";
 import { useStore, setState, getState, viewedBranch, closeRunAgent } from "./store.ts";
-import { Sidebar, newChat, newBoard, newRun, openBoard } from "./Sidebar.tsx";
+import { Sidebar, newChat, addBoard, newRun, openBoard } from "./Sidebar.tsx";
+import { BoardChoice } from "./BoardChoice.tsx";
 import { ChatHeader, Thread } from "./ChatView.tsx";
 import { Composer, focusComposer } from "./Composer.tsx";
 import { Canvas } from "./Canvas.tsx";
@@ -13,6 +14,7 @@ import { isDraft } from "./logic/run.ts";
 import { runPane } from "./logic/runview.ts";
 import { homeAgentsText, usableAgents } from "./logic/agentlist.ts";
 import { BoardIcon, ChatIcon, RunIcon } from "./icons.tsx";
+import { BoardTag } from "./BoardTag.tsx";
 import { RunBar } from "./run/RunBar.tsx";
 import { RunComposer } from "./run/RunComposer.tsx";
 import { RunView } from "./run/RunView.tsx";
@@ -23,6 +25,7 @@ import { SubagentDrawer } from "./Subagents.tsx";
 import { TreePopup } from "./fork/TreePopup.tsx";
 import type { Pane as PaneKind } from "./logic/layout.ts";
 import { branchKey } from "./logic/branches.ts";
+import { isNewChatKey, newChatPlace } from "./logic/newchatwhere.ts";
 import { MAIN, UNGROUPED } from "./types.ts";
 
 export function App() {
@@ -33,6 +36,20 @@ export function App() {
       // The panel hides whatever it shows: a run agent's transcript closes with it.
       const s = getState();
       if (s.runAgent && s.runAgent.run === s.sel.run) { closeRunAgent(); setState({ panel: false }); } else setState({ panel: !s.panel });
+    };
+    window.addEventListener("keydown", k, true);
+    return () => window.removeEventListener("keydown", k, true);
+  }, []);
+  useEffect(() => {
+    // ⌘N: a new chat where the user is, if that place offers one. Not under a dialog; a browser opens its window all the same.
+    const k = (e: KeyboardEvent) => {
+      if (!isNewChatKey(e, navigator.platform)) return;
+      const s = getState();
+      if (s.confirm || s.serversDialog || s.treeNav) return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.repeat) return;
+      const where = newChatPlace(s);
+      if (where) void newChat(where);
     };
     window.addEventListener("keydown", k, true);
     return () => window.removeEventListener("keydown", k, true);
@@ -52,9 +69,12 @@ function Grouped() {
   const panel = useStore((s) => s.panel);
   const runAgent = useStore((s) => s.runAgent);
   const connecting = useStore((s) => s.role === "connecting" && !s.connected);
+  const draft = useStore((s) => s.boardDraft);
 
   let main: React.ReactNode;
-  if (board) {
+  if (draft) {
+    main = <BoardChoice draft={draft} />; // a new board whose server is not chosen yet; what is selected shows again when it is left
+  } else if (board) {
     const boardChat = chat && chat.board === board.id ? chat : undefined;
     main = (
       <>
@@ -147,7 +167,7 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
   };
   return (
     <div className="board-bar">
-      <span className="board-crumb">{groupPath(groups, b.group).map((name, i) => <React.Fragment key={i}>{name} <span className="sep">/</span> </React.Fragment>)}<BoardIcon /> <b>{b.name}</b></span>
+      <span className="board-crumb">{groupPath(groups, b.group).map((name, i) => <React.Fragment key={i}>{name} <span className="sep">/</span> </React.Fragment>)}<BoardIcon /> <b>{b.name}</b><BoardTag board={b} /></span>
       {b.archived && <span className="archived-note">Archived — read-only</span>}
       <span className="grow" />
       {!chatOpen && chats.length > 0 && (
@@ -171,7 +191,7 @@ function Home() {
       <p>{homeAgentsText(agents)} A whiteboard is an Excalidraw board with its own chats that can see and draw on it. A run takes a goal and works on it with a team of agents while you follow along.</p>
       <div className="row-gap">
         <button className="btn primary" onClick={() => void newChat({ group: UNGROUPED })}><ChatIcon /> New chat</button>
-        <button className="btn" onClick={() => newBoard(UNGROUPED).catch((e) => reportError("Couldn't create the whiteboard", e))}><BoardIcon /> New whiteboard</button>
+        <button className="btn" onClick={() => addBoard(UNGROUPED)}><BoardIcon /> New whiteboard</button>
         <button className="btn" onClick={() => newRun(UNGROUPED).then(focusComposer, (e) => reportError("Couldn't create the run", e))}><RunIcon /> New run</button>
       </div>
     </main>

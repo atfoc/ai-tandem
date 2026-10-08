@@ -64,6 +64,7 @@ func (s *gatedSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 }
 
 func TestSpawnSubagentCrossKindOptions(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 
@@ -105,6 +106,7 @@ func TestSpawnSubagentCrossKindOptions(t *testing.T) {
 }
 
 func TestSpawnSubagentPersistsKindEffort(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -139,6 +141,7 @@ func TestSpawnSubagentPersistsKindEffort(t *testing.T) {
 }
 
 func TestSpawnSubagentParallel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	enter := make(chan struct{}, 2)
@@ -173,6 +176,7 @@ func TestSpawnSubagentParallel(t *testing.T) {
 }
 
 func TestSpawnSubagentKillOnStop(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	v := e.create(model.Claude, gOne, "")
@@ -215,6 +219,7 @@ func TestSpawnSubagentKillOnStop(t *testing.T) {
 }
 
 func TestSpawnSubagentDecideRoutesToChild(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "parent", "")
@@ -277,6 +282,7 @@ func TestSpawnSubagentDecideRoutesToChild(t *testing.T) {
 }
 
 func TestSpawnSubagentStopDeniesPerms(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.spawn(v.ID, SpawnSubRequest{Prompt: "go"})
@@ -290,6 +296,7 @@ func TestSpawnSubagentStopDeniesPerms(t *testing.T) {
 }
 
 func TestSpawnSubagentParentLifecycle(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "parent", "")
@@ -341,6 +348,7 @@ func TestSpawnSubagentParentLifecycle(t *testing.T) {
 }
 
 func TestSpawnPiChatIDDistinct(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Pi, gOne, "")
 	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "go"})
@@ -355,6 +363,7 @@ func TestSpawnPiChatIDDistinct(t *testing.T) {
 }
 
 func TestSpawnSubagentValidation(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 
@@ -425,6 +434,7 @@ func TestSpawnSubagentValidation(t *testing.T) {
 // TestSpawnValueErrors: a rejected model or effort names the agent's list it was checked against
 // and what the model takes, and is the only kind of spawn error typed *SpawnValueError.
 func TestSpawnValueErrors(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 
@@ -495,6 +505,7 @@ func TestSpawnValueErrors(t *testing.T) {
 
 // TestSpawnValueErrorDefaultMark: the default effort is marked only when the model offers it.
 func TestSpawnValueErrorDefaultMark(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if err := e.st.Update(func(s *model.State) error {
@@ -522,6 +533,7 @@ func TestSpawnValueErrorDefaultMark(t *testing.T) {
 
 // TestSpawnOtherErrorsUnmarked: no error but a rejected model or effort is a *SpawnValueError.
 func TestSpawnOtherErrorsUnmarked(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	unmarked := func(name string, err error) {
@@ -580,6 +592,7 @@ func TestSpawnOtherErrorsUnmarked(t *testing.T) {
 
 // TestSpawnUnknownListAcceptsAnyValue: with no list for the agent, nothing is checked.
 func TestSpawnUnknownListAcceptsAnyValue(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if err := e.st.Update(func(s *model.State) error {
@@ -603,6 +616,7 @@ func TestSpawnUnknownListAcceptsAnyValue(t *testing.T) {
 // own model and effort are not handed to it: a model is inherited only by a subagent of the
 // chat's own kind. The other agent gets what a new chat of its kind would, or nothing.
 func TestSpawnUnknownListCrossKind(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	cur := e.create(model.Cursor, gOne, "") // created while Cursor's list is known
@@ -669,6 +683,7 @@ func TestSpawnUnknownListCrossKind(t *testing.T) {
 // TestConfigureErrorsStayShort: Configure's errors go to the UI picker and carry nothing of the
 // spawn errors' added text or type.
 func TestConfigureErrorsStayShort(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	short := func(err error, want string) {
@@ -690,6 +705,7 @@ func TestConfigureErrorsStayShort(t *testing.T) {
 }
 
 func TestSpawnSubagentMissingSpawnerAndFolder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	delete(e.m.Spawners, model.Claude)
@@ -728,6 +744,7 @@ func TestSpawnSubagentMissingSpawnerAndFolder(t *testing.T) {
 }
 
 func TestSpawnSubagentInterrupt(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "parent", "")
@@ -760,6 +777,7 @@ func TestSpawnSubagentInterrupt(t *testing.T) {
 }
 
 func TestSpawnSubagentIgnoresNestedEvSub(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "go", Description: "files"})
@@ -799,6 +817,7 @@ func TestSpawnSubagentIgnoresNestedEvSub(t *testing.T) {
 }
 
 func TestSpawnSubagentExtraToken(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	parentTok := e.meta(v.ID).Token
@@ -843,6 +862,7 @@ func TestSpawnSubagentExtraToken(t *testing.T) {
 }
 
 func TestSpawnSubagentExtraTokenRevokeOnStopAndComplete(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 
@@ -878,6 +898,7 @@ func TestSpawnSubagentExtraTokenRevokeOnStopAndComplete(t *testing.T) {
 }
 
 func TestSpawnSubagentBoardParentByToken(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gOne, false)
 	if err != nil {
@@ -929,6 +950,7 @@ func itemSubagent(items []model.Item, toolID string) string {
 }
 
 func TestSpawnClaimMatchingItem(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	emitSpawnItem(t, parent, "t1", "mcp__board__spawn_subagent", `{"prompt":"go"}`)
@@ -946,6 +968,7 @@ func TestSpawnClaimMatchingItem(t *testing.T) {
 }
 
 func TestSpawnClaimUnprefixedName(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	emitSpawnItem(t, parent, "t1", "spawn_subagent", `{"prompt":"go"}`)
@@ -957,6 +980,7 @@ func TestSpawnClaimUnprefixedName(t *testing.T) {
 }
 
 func TestSpawnClaimOmitsEmptyOptionals(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	emitSpawnItem(t, parent, "t1", "mcp__board__spawn_subagent", `{"prompt":"x","description":""}`)
@@ -968,6 +992,7 @@ func TestSpawnClaimOmitsEmptyOptionals(t *testing.T) {
 }
 
 func TestSpawnClaimFIFO(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	args := `{"prompt":"same"}`
@@ -985,6 +1010,7 @@ func TestSpawnClaimFIFO(t *testing.T) {
 }
 
 func TestSpawnClaimFIFOParallel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	args := `{"prompt":"same"}`
@@ -1014,6 +1040,7 @@ func TestSpawnClaimFIFOParallel(t *testing.T) {
 }
 
 func TestSpawnClaimDelayedReconciliation(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -1034,6 +1061,7 @@ func TestSpawnClaimDelayedReconciliation(t *testing.T) {
 // A spawn whose tool item never came is forgotten once spawnLinkWait has passed: a later spawn with
 // the same arguments gets its own tool item, and the ended subagent stays unlinked.
 func TestSpawnClaimEndedSubagentTakesNoLaterItem(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	old := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -1084,6 +1112,7 @@ func TestSpawnClaimEndedSubagentTakesNoLaterItem(t *testing.T) {
 // The same while the subagent still runs: after spawnLinkWait its spawn is forgotten too, so a
 // later spawn with the same arguments gets its own tool item.
 func TestSpawnClaimRunningSubagentTakesNoLaterItem(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	old := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -1107,6 +1136,7 @@ func TestSpawnClaimRunningSubagentTakesNoLaterItem(t *testing.T) {
 
 // Within spawnLinkWait a subagent that ended before its tool item arrived is still linked to it.
 func TestSpawnClaimLateItemOfEndedSubagent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -1128,6 +1158,7 @@ func TestSpawnClaimLateItemOfEndedSubagent(t *testing.T) {
 // The late tool item of an ended subagent is its own: the next spawn with the same arguments does
 // not take it and links to the item that comes after.
 func TestSpawnClaimLateItemNotTakenByNextSpawn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	a := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -1145,6 +1176,7 @@ func TestSpawnClaimLateItemNotTakenByNextSpawn(t *testing.T) {
 // Two unlinked spawns with the same arguments link to their late tool items in spawn order, also
 // when the first was stopped before the items came.
 func TestSpawnClaimLateItemsOfStoppedAndRunning(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent()
 	c := e.spawn(id, SpawnSubRequest{Prompt: "again"})
@@ -1162,6 +1194,7 @@ func TestSpawnClaimLateItemsOfStoppedAndRunning(t *testing.T) {
 }
 
 func TestSpawnUnlinkedReturnsSid(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "go"})
@@ -1175,6 +1208,7 @@ func TestSpawnUnlinkedReturnsSid(t *testing.T) {
 // the engine stopped the agent (a stop, a cancel, the task's end): it is refused and no process
 // is started, since nothing in the run would stop that subagent. Inside a turn it starts one.
 func TestStaleTaskAgentSpawn(t *testing.T) {
+	t.Parallel()
 	e, id, ag, _ := ownStart(t)
 	before := e.claude.count()
 	sa, err := e.m.SpawnSubagent(id, SpawnSubRequest{Prompt: "work in the turn", Description: "in time"})

@@ -47,7 +47,7 @@ const (
 func newAPIRunServer(t *testing.T, gitEnv []string) *apiRunServer {
 	t.Helper()
 	srv := newRunServer(t, gitEnv)
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
+	srv.in.setenv(loopbackBind)
 	a := &apiRunServer{runServer: srv, port: freePort(t)}
 	if err := os.MkdirAll(srv.in.dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -332,6 +332,7 @@ const apiHeld = "<<sleep 600>>"
 // group "Remote" and the one folder, which shows that the checks before it looked at the right
 // places.
 func TestAPIRunRefusedStartLeavesNothing(t *testing.T) {
+	serverTest(t, "TestRunStartCallRefusals, TestRunStartCallGroupCannotBeMade (internal/server)")
 	repo, _ := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
 	goal := apiGoal(t, "Refused, then accepted.", "", "refused.txt", apiHeld)
@@ -408,6 +409,7 @@ func TestAPIRunRefusedStartLeavesNothing(t *testing.T) {
 // 24 start calls at once with one id start one orchestrator. A call whose request the client
 // cancels right after it was sent, repeated three times, starts one run too.
 func TestAPIRunStartCallsStartOneRun(t *testing.T) {
+	serverTest(t, "TestStartCallManyAtOnce (internal/runs)", "TestRunStartCall (internal/server)")
 	repo, _ := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
 
@@ -508,6 +510,7 @@ func TestAPIRunStartCallsStartOneRun(t *testing.T) {
 // itself, the repeat of its start call answers started and not made and starts nothing, and the
 // run is its client's still.
 func TestAPIRunCleanRestart(t *testing.T) {
+	serverTest(t, "TestRunStartCall (the repeat of a start call) (internal/server)", "TestStopRestartResume, TestViewsOfAndClientOf (internal/runs)")
 	repo, base := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
 	id := model.NewID("r_")
@@ -554,6 +557,7 @@ func TestAPIRunCleanRestart(t *testing.T) {
 // call, and no page was ever there. The run completes and applies its result to the scratch
 // repository; the snapshot of a new stream lists it as completed.
 func TestAPIRunEndsWithNoClient(t *testing.T) {
+	serverTest(t, "TestAPIClientWithNoPage, TestStartOutlivesThePageThatAsked (internal/server)", "TestRunE2ENoGit (this package)")
 	repo := agenttest.NewRepo(t)
 	repo.Write(e2eFile, e2eBefore)
 	repo.Commit("the shared file")
@@ -613,6 +617,7 @@ func TestAPIRunEndsWithNoClient(t *testing.T) {
 // detail and are sent the same `run_detail` events from then on. X reads the orchestrator's chat
 // and is sent its `chat_items`; Y, which did not read it, is sent none.
 func TestAPIRunTwoClients(t *testing.T) {
+	serverTest(t, "TestRunEventsOfAnAPIClient, TestRunTableRoutesServeAnAPIClient (internal/server)")
 	repo, _ := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
 	x, y := a.stream(t, apiX), a.stream(t, apiY)
@@ -710,6 +715,7 @@ func TestAPIRunTwoClients(t *testing.T) {
 // A chat on the run that the start call made, created by the API client with a first message: the
 // client reads the chat, and the stand-in's reply reaches it afterwards as `chat_items`.
 func TestAPIRunChatOnTheRun(t *testing.T) {
+	serverTest(t, "TestAPIClientsRunBesideAPage, TestRunAgentsChatBesideAPIClients (internal/server)")
 	repo, _ := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
 	x := a.stream(t, apiX)

@@ -185,7 +185,7 @@ func TestForkStoreCopy(t *testing.T) {
 // copy's own connection closing.
 func TestForkStoreCopyLeftoverWAL(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	s := &Spawner{Home: t.TempDir()}
 	src := StorePath(s.Home, testSessionID)
 	makeStoreAt(t, src, metaRow(forkMeta(testBlobID))+blobRow(testBlobID, sampleRoot(100, 272000)))
@@ -223,7 +223,7 @@ func TestForkStoreCopyLeftoverWAL(t *testing.T) {
 // gone on since the end was found. Only without a point is the latest root kept.
 func TestForkStoreCopyEnd(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	cases := []struct {
 		name        string
 		latest      string // the source's latest root when the copy is made
@@ -236,6 +236,7 @@ func TestForkStoreCopyEnd(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			s := &Spawner{Home: t.TempDir()}
 			src := StorePath(s.Home, testSessionID)
 			makeStoreAt(t, src, metaRow(forkMeta(testBlobID))+blobRow(testBlobID, sampleRoot(100, 272000)))
@@ -277,7 +278,7 @@ func TestForkStoreCopyEnd(t *testing.T) {
 
 func TestForkStoreCopyErrors(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	good := metaRow(forkMeta(testBlobID)) + blobRow(testBlobID, sampleRoot(100, 272000))
 	cases := []struct {
 		name    string
@@ -304,6 +305,7 @@ func TestForkStoreCopyErrors(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			s := &Spawner{Home: t.TempDir(), SQLite: c.sqlite}
 			if c.sql != "" {
 				makeStore(t, s.Home, c.sql)
@@ -345,8 +347,9 @@ func TestForkStoreCopyTimeout(t *testing.T) {
 }
 
 func TestCallDeadline(t *testing.T) {
-	fake(t, fakeScript{"slow": {{Hang: true}}})
-	conn, err := Start(os.Args[0], []string{"acp"}, t.TempDir())
+	t.Parallel()
+	f := fake(t, fakeScript{"slow": {{Hang: true}}})
+	conn, err := Start(f.bin, []string{"acp"}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,6 +406,7 @@ const boardMCPServers = `[{"type":"http","name":"board","url":"http://localhost:
 
 func TestSpawnFork(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
 	e := newEnv(t, fakeScript{"session/prompt": {{Result: raw(`{"stopReason":"end_turn"}`)}}})
 	makeStore(t, e.home, metaRow(forkMeta(testBlobID2))+
 		blobRow(testBlobID, sampleRoot(15989, 272000))+blobRow(testBlobID2, sampleRoot(20000, 272000)))
@@ -503,6 +507,7 @@ func TestSpawnFork(t *testing.T) {
 // copy cut back to the point, takes a turn of its own, and leaves the source's store as it was.
 func TestSpawnForkRunningSource(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
 	e := newEnv(t, fakeScript{"session/prompt": {{Result: raw(`{"stopReason":"end_turn"}`)}}})
 	// Two turns ended, at testBlobID and testBlobID2.
 	makeStore(t, e.home, metaRow(forkMeta(testBlobID2))+
@@ -563,6 +568,7 @@ func TestSpawnForkRunningSource(t *testing.T) {
 // A fork at the source's end with no point recorded keeps the source's latest root.
 func TestSpawnForkEnd(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	makeStore(t, e.home, metaRow(forkMeta(testBlobID2))+
 		blobRow(testBlobID, sampleRoot(15989, 272000))+blobRow(testBlobID2, sampleRoot(20000, 272000)))
@@ -580,33 +586,50 @@ func TestSpawnForkEnd(t *testing.T) {
 
 func TestSpawnForkTimeout(t *testing.T) {
 	needSQLite(t)
-	e := newEnv(t, fakeScript{"session/load": {{Hang: true}}})
-	e.s.forkTimeout = 400 * time.Millisecond
-	makeStore(t, e.home, metaRow(forkMeta(testBlobID))+blobRow(testBlobID, sampleRoot(15989, 272000)))
+	// Not parallel: the copy and the start of the fake should fit the first, short time box.
+	waitsOutBox(t, 400*time.Millisecond, 20*time.Second, func(box time.Duration, short bool) bool {
+		e := newEnv(t, fakeScript{"session/load": {{Hang: true}}})
+		e.s.forkTimeout = box
+		makeStore(t, e.home, metaRow(forkMeta(testBlobID))+blobRow(testBlobID, sampleRoot(15989, 272000)))
 
-	start := time.Now()
-	a, id, err := e.s.SpawnFork(agent.SpawnOptions{Cwd: e.cwd}, agent.ForkSource{SessionID: testSessionID, Point: testBlobID})
-	if err == nil || a != nil || id != "" {
-		t.Fatalf("got %v, %q, %v", a, id, err)
-	}
-	if d := time.Since(start); d < 300*time.Millisecond || d > 5*time.Second {
-		t.Fatalf("took %s", d)
-	}
-	if got := sessions(t, e.home); !reflect.DeepEqual(got, []string{testSessionID}) {
-		t.Fatalf("sessions %v", got)
-	}
-	rs := waitEOF(t, e.record)
-	if got := methods(rs); !reflect.DeepEqual(got, []string{"initialize", "authenticate", "session/load"}) {
-		t.Fatalf("methods %v", got)
-	}
-	// Still nothing once the process has gone.
-	if got := sessions(t, e.home); !reflect.DeepEqual(got, []string{testSessionID}) {
-		t.Fatalf("sessions %v", got)
-	}
+		start := time.Now()
+		a, id, err := e.s.SpawnFork(agent.SpawnOptions{Cwd: e.cwd}, agent.ForkSource{SessionID: testSessionID, Point: testBlobID})
+		d := time.Since(start)
+		if err == nil || a != nil || id != "" {
+			t.Fatalf("got %v, %q, %v", a, id, err)
+		}
+		if got := sessions(t, e.home); !reflect.DeepEqual(got, []string{testSessionID}) {
+			t.Fatalf("sessions %v", got)
+		}
+		if short {
+			// The box counts only when the fake got the load it never answers; the record is whole
+			// once the fake has gone (SpawnFork does not wait for that past its box).
+			fakeGone(t, e.fake)
+			if _, got := find(readRecordSoFar(e.record), "session/load"); !got {
+				if got := sessions(t, e.home); !reflect.DeepEqual(got, []string{testSessionID}) {
+					t.Fatalf("sessions %v", got)
+				}
+				return false
+			}
+		}
+		if d < box-100*time.Millisecond || d > box+5*time.Second {
+			t.Fatalf("took %s in a box of %s", d, box)
+		}
+		rs := waitEOF(t, e.record)
+		if got := methods(rs); !reflect.DeepEqual(got, []string{"initialize", "authenticate", "session/load"}) {
+			t.Fatalf("methods %v", got)
+		}
+		// Still nothing once the process has gone.
+		if got := sessions(t, e.home); !reflect.DeepEqual(got, []string{testSessionID}) {
+			t.Fatalf("sessions %v", got)
+		}
+		return true
+	})
 }
 
 func TestSpawnForkFailures(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
 	good := metaRow(forkMeta(testBlobID)) + blobRow(testBlobID, sampleRoot(15989, 272000))
 
 	t.Run("the load fails", func(t *testing.T) {

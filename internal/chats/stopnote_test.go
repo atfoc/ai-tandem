@@ -108,6 +108,7 @@ func (e *env) running(when, id, sid string, child *fakeAgent) {
 // A new branch leaves the branch it starts from, and the one that was current, as they are: the
 // process runs on, the subagent it waits on runs on, and its thread gets no note.
 func TestNewBranchStopsNoSubagent(t *testing.T) {
+	t.Parallel()
 	for name, at := range map[string]int{"at an earlier point": 3, "from the start": 0, "at the end": 6} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
@@ -151,6 +152,7 @@ func TestNewBranchStopsNoSubagent(t *testing.T) {
 
 // Carrying another branch on leaves the branch that was current as it is, the same way.
 func TestCarryOnStopsNoSubagent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, b, bid, branchAg := e.branchWaiting()
 	sa, child := e.waiting(bid)
@@ -176,6 +178,7 @@ func TestCarryOnStopsNoSubagent(t *testing.T) {
 
 // A branch left that waits on nothing is left without a word too.
 func TestBranchLeftIdleGetsNoNote(t *testing.T) {
+	t.Parallel()
 	t.Run("a new branch", func(t *testing.T) {
 		e := newEnv(t)
 		id, mainAg := e.talked(model.Claude, "", 2)
@@ -221,6 +224,7 @@ func TestBranchLeftIdleGetsNoNote(t *testing.T) {
 // A carry-on whose target fails to start leaves the chat on the branch the user was on. Nothing
 // is stopped, failed or not: that branch's subagent runs on and nothing is noted.
 func TestFailedCarryOnNotesNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, b, bid, branchAg := e.branchWaiting()
 	sa, child := e.waiting(bid)
@@ -269,6 +273,7 @@ func TestFailedCarryOnNotesNothing(t *testing.T) {
 // A branch with an open turn takes no message (ErrBusy), which ends nothing; the chat's Stop ends
 // it. Its thread gets one note for the turn and its subagents together.
 func TestStopWithTurnOpenNotesOnce(t *testing.T) {
+	t.Parallel()
 	// turnOpen is a chat whose branch is current and in its first turn.
 	turnOpen := func(e *env) (id, bid string, branchAg *fakeAgent) {
 		e.t.Helper()
@@ -337,6 +342,7 @@ func TestStopWithTurnOpenNotesOnce(t *testing.T) {
 
 // Archiving a chat stops every branch of it; the note goes to the one that waited on a subagent.
 func TestArchiveNotesTheWaitingBranchOnly(t *testing.T) {
+	t.Parallel()
 	archive := func(e *env, id string) {
 		e.t.Helper()
 		if err := e.m.SetArchive(id, model.Archive{Archived: true}); err != nil {
@@ -396,6 +402,7 @@ func TestArchiveNotesTheWaitingBranchOnly(t *testing.T) {
 // idle and waits on it. A Send that leaves the branch does not stop it. Stopping the chat, as
 // archiving does, stops it as it stops an app subagent, and the thread says so.
 func TestStoppedNativeSubagentIsNoted(t *testing.T) {
+	t.Parallel()
 	for _, how := range []string{"after a new branch", "archive"} {
 		t.Run(how, func(t *testing.T) {
 			e := newEnv(t)
@@ -439,6 +446,7 @@ func TestStoppedNativeSubagentIsNoted(t *testing.T) {
 // A Send to that point, or to the end of its thread, carries it on in its own session, and a new
 // branch may start there.
 func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
+	t.Parallel()
 	// left is a chat that is back on main, whose branch was stopped while it waited on a
 	// subagent: its thread is six items and the note. Main has finished the turn that left it.
 	left := func(e *env) (id, b, bid string, mainAg *fakeAgent) {

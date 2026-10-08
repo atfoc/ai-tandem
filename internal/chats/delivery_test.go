@@ -20,6 +20,7 @@ import (
 	"ai-whiteboard/internal/claude"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/prompts"
+	"ai-whiteboard/internal/testset"
 )
 
 // idleParent creates a Claude chat whose first turn has ended: idle, with a live process.
@@ -251,6 +252,7 @@ func rowsOf(items []model.Item, sid string) int {
 }
 
 func TestDeliverToIdleParent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, parent := e.idleParent()
@@ -343,6 +345,7 @@ func TestDeliverToIdleParent(t *testing.T) {
 }
 
 func TestDeliverOtherEndings(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		end    func(t *testing.T, child *fakeAgent)
@@ -402,6 +405,7 @@ func (e *env) subItems(id, sid string) []model.Item {
 }
 
 func TestDeliverChildTurnError(t *testing.T) {
+	t.Parallel()
 	const said = "This subagent's turn ended with the error above. Its report, if any, is what it wrote before the error."
 	e := newEnv(t)
 	id, parent := e.idleParent()
@@ -485,6 +489,7 @@ func TestDeliverChildTurnError(t *testing.T) {
 // A failed turn of the chat's own agent leaves its error once, as the note, on every backend:
 // the adapters report the CLI's error text on the turn end, not as text the model wrote.
 func TestErroredTurnEndNote(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []model.AgentKind{model.Claude, model.Pi} {
 		e := newEnv(t)
 		sp := map[model.AgentKind]*fakeSpawner{model.Claude: e.claude, model.Pi: e.pi}[kind]
@@ -519,6 +524,7 @@ func TestErroredTurnEndNote(t *testing.T) {
 }
 
 func TestDeliveryBlockFraming(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go", Description: "a <b> & c"})
@@ -566,6 +572,7 @@ func TestDeliveryBlockFraming(t *testing.T) {
 // the tag, quotes the sentence each kind of block's text starts with and says which fields a
 // subagent's entry always has and which only when the subagent has them.
 func TestSteeringDescribesTheResultsBlock(t *testing.T) {
+	t.Parallel()
 	full := model.Subagent{
 		ID: "s1", Description: "count files", Status: model.SubCompleted,
 		Error: "boom", Summary: "counted", Last: "42 files",
@@ -636,6 +643,7 @@ func TestSteeringDescribesTheResultsBlock(t *testing.T) {
 }
 
 func TestDeliveryOnBoardChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("Arch", gOne, false)
 	if err != nil {
@@ -663,6 +671,7 @@ func TestDeliveryOnBoardChat(t *testing.T) {
 
 // The endings that do not notify (the "no" rows of the policy) leave nothing owed and send nothing.
 func TestEndingsThatOweNothing(t *testing.T) {
+	t.Parallel()
 	quiet := func(t *testing.T, e *env, id string, parent *fakeAgent, sends int, sid string) {
 		t.Helper()
 		e.m.handoffs.Wait()
@@ -744,6 +753,7 @@ func TestEndingsThatOweNothing(t *testing.T) {
 // Results that become owed while the parent is busy wait for its turn to end, and then go out
 // together, in one message, by completion time and then by sid.
 func TestBusyParentKeepsCompletionsOwed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent() // mid-turn
 	last := e.spawn(id, SpawnSubRequest{Prompt: "last"})
@@ -842,6 +852,7 @@ func TestBusyParentKeepsCompletionsOwed(t *testing.T) {
 }
 
 func TestNoProcessNoDelivery(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 
 	// A chat that never had a message: no process, and none is started.
@@ -876,6 +887,7 @@ func TestNoProcessNoDelivery(t *testing.T) {
 }
 
 func TestArchivedChatNoDelivery(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -893,6 +905,7 @@ func TestArchivedChatNoDelivery(t *testing.T) {
 }
 
 func TestRefusedDelivery(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		emits []agent.Event
@@ -962,6 +975,7 @@ func TestRefusedDelivery(t *testing.T) {
 // A human send refused by the adapter keeps today's behaviour: the error is returned and nothing
 // is rolled back.
 func TestRefusedHumanSendUnchanged(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	parent.failSends(errors.New("stdin closed"))
@@ -979,6 +993,7 @@ func TestRefusedHumanSendUnchanged(t *testing.T) {
 
 // A result whose record cannot be written is not handed over: it stays owed, and the chat is held.
 func TestRecordWriteFailureKeepsCompletionOwed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent() // mid-turn
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "a"})
@@ -1054,6 +1069,7 @@ func TestRecordWriteFailureKeepsCompletionOwed(t *testing.T) {
 }
 
 func TestOldRecordNeverDelivered(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	old := e.spawn(v.ID, SpawnSubRequest{Prompt: "go"})
@@ -1108,6 +1124,7 @@ func TestOldRecordNeverDelivered(t *testing.T) {
 }
 
 func TestDeliveryStateSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "a"})
@@ -1162,6 +1179,7 @@ func TestDeliveryStateSurvivesRestart(t *testing.T) {
 
 // A delivery is not a human message: nothing that belongs to one is touched.
 func TestDeliveryLeavesHumanStateAlone(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.idleParent()
 	waitFor(t, "auto name", func() bool { return e.meta(id).Name != "" })
@@ -1231,7 +1249,13 @@ func TestDeliveryLeavesHumanStateAlone(t *testing.T) {
 
 // Two completions at the same moment: each is carried by exactly one turn, and its record says so.
 func TestConcurrentCompletions(t *testing.T) {
-	for i := 0; i < 20; i++ {
+	t.Parallel()
+	// Each round is a new chat and one try at the race: the full set runs 20, the default set 5.
+	rounds := 5
+	if testset.Full() {
+		rounds = 20
+	}
+	for i := 0; i < rounds; i++ {
 		e := newEnv(t)
 		id, parent := e.idleParent()
 		a := e.spawn(id, SpawnSubRequest{Prompt: "a"})

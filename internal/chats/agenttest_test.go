@@ -38,6 +38,7 @@ func kindsOf(items []model.Item) string {
 
 // A plain chat turn: the message, a tool item with its result, a text, a clean end with a cost.
 func TestFakeDrivesAPlainTurn(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
 		t.Run(string(kind), func(t *testing.T) {
 			e, f := fakeEnv(t, kind)
@@ -92,6 +93,7 @@ func TestFakeDrivesAPlainTurn(t *testing.T) {
 
 // A turn that hangs is ended by the manager's Interrupt: a stopped end, the process stays.
 func TestFakeHangEndedByInterrupt(t *testing.T) {
+	t.Parallel()
 	e, f := fakeEnv(t, model.Claude)
 	started := make(chan struct{}, 1)
 	f.Script(func(tn *agenttest.Turn) {
@@ -133,6 +135,7 @@ func TestFakeHangEndedByInterrupt(t *testing.T) {
 // A process that ends in its turn: the chat shows it stopped, and the next message resumes the
 // session on a new process.
 func TestFakeExitInTheTurn(t *testing.T) {
+	t.Parallel()
 	e, f := fakeEnv(t, model.Claude)
 	f.Script(func(tn *agenttest.Turn) {
 		tn.Say("about to fail")
@@ -163,6 +166,7 @@ func TestFakeExitInTheTurn(t *testing.T) {
 // The manager's Stop closes a process in its turn; a failed turn and a failed start show as the
 // real adapters' do.
 func TestFakeStopFailAndSpawnError(t *testing.T) {
+	t.Parallel()
 	e, f := fakeEnv(t, model.Pi)
 	started, returned := make(chan struct{}), make(chan struct{})
 	f.Script(func(tn *agenttest.Turn) { close(started); tn.Hang(); close(returned) })

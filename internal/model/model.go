@@ -56,6 +56,10 @@ type Board struct {
 	Created time.Time `json:"created"`
 	New     bool      `json:"new,omitempty"` // made by an agent and not opened by the user yet
 	Archive
+	Client string `json:"client,omitempty"` // on the board's server: the API client that made it (its mark)
+	Origin string `json:"origin,omitempty"` // on the board's server: the board of the chat whose agent made it with create_board
+	Server string `json:"server,omitempty"` // in the view of a board on another server only: the entry id; absent = this computer
+	Gone   bool   `json:"gone,omitempty"`   // in that view only: the board is no longer on its server
 }
 
 // Archive marks an archived item. Op is the id of the archive action that archived it: every

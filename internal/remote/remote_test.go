@@ -71,6 +71,7 @@ func setUp(t *testing.T) (root string, f Files) {
 }
 
 func TestFilesIn(t *testing.T) {
+	t.Parallel()
 	want := Files{"/r/remote.json", "/r/remote-secret", "/r/remote-key.pem", "/r/remote-cert.pem", "/r/instance-id"}
 	if got := FilesIn("/r"); got != want {
 		t.Errorf("FilesIn = %+v", got)
@@ -78,6 +79,7 @@ func TestFilesIn(t *testing.T) {
 }
 
 func TestNormalName(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"Mac.local": "mac.local", "192.168.1.20": "192.168.1.20", "my-host": "my-host", "127.0.0.1": "127.0.0.1",
 	} {
@@ -93,6 +95,7 @@ func TestNormalName(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if c, found, err := LoadConfig(root); found || err != nil || c.Port != 0 {
 		t.Fatalf("no file: %+v %v %v", c, found, err)
@@ -113,6 +116,7 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestLocalNames(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for _, n := range LocalNames() {
 		if nn, ok := NormalName(n); !ok || nn != n || seen[n] || strings.HasPrefix(n, "127.") {

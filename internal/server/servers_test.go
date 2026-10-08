@@ -29,7 +29,10 @@ const (
 func withServers(t *testing.T) (func(*Server), *string) {
 	root := t.TempDir()
 	return func(s *Server) {
-		m, err := servers.Open(servers.Options{Root: root, LocalID: testLocalID, Version: "test", Notify: s.Bridge.Broadcast})
+		// The production back-off starts at a second: a test that waits for a connection to
+		// return has a short one. Every limit is the production one.
+		quick := servers.Timing{Backoff: []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, Jitter: -1}
+		m, err := servers.Open(servers.Options{Root: root, LocalID: testLocalID, Version: "test", Notify: s.Bridge.Broadcast, Timing: quick})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -112,6 +115,7 @@ func listFile(t *testing.T, root string) string {
 // An entry is added, edited, tested and removed through the routes; the local entry is first and
 // can be neither edited nor removed.
 func TestServerRoutes(t *testing.T) {
+	t.Parallel()
 	with, root := withServers(t)
 	e := newEnv(t, with)
 	st := standin.Start(t, standin.Options{})
@@ -306,6 +310,7 @@ func TestServerRoutes(t *testing.T) {
 
 // Without a manager the list is the local entry and no other route exists.
 func TestServerRoutesWithoutAManager(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	l := e.serverList()
 	if len(l.Servers) != 1 || l.Servers[0].ID != servers.LocalID || !l.Servers[0].Local || l.Notice != "" {
@@ -323,6 +328,7 @@ func TestServerRoutesWithoutAManager(t *testing.T) {
 // The routes that change the list are for a known client: a call without the header, or with an
 // id that has no stream, is refused and saves nothing.
 func TestServerRoutesNeedAClient(t *testing.T) {
+	t.Parallel()
 	with, root := withServers(t)
 	e := newEnv(t, with)
 	s := decode[savedReply](t, e.expect(200, "POST", "/api/servers", form("name", "Kept", "address", "https://127.0.0.1:1", "secret", "abc", "force", true)))
@@ -366,6 +372,7 @@ func TestServerRoutesNeedAClient(t *testing.T) {
 // No answer of a list route, no state and no event holds a secret: the one an entry was added
 // with, or the one an edit gave it.
 func TestNoAnswerOrEventHoldsTheSecret(t *testing.T) {
+	t.Parallel()
 	with, root := withServers(t)
 	e := newEnv(t, with)
 	st := standin.Start(t, standin.Options{})
@@ -496,6 +503,7 @@ func TestNoAnswerOrEventHoldsTheSecret(t *testing.T) {
 
 // The snapshot, as GET /api/state and as a stream's second event, lists the servers.
 func TestSnapshotHasServers(t *testing.T) {
+	t.Parallel()
 	with, _ := withServers(t)
 	e := newEnv(t, with)
 	s := decode[savedReply](t, e.expect(200, "POST", "/api/servers", form("name", "Away", "address", "https://127.0.0.1:1", "secret", "abc", "force", true)))
@@ -533,6 +541,7 @@ func TestSnapshotHasServers(t *testing.T) {
 // The remote listener serves none of the list's routes: every one answers 404 there, with the
 // secret and a known name.
 func TestServersAnswer404OnRemoteHandler(t *testing.T) {
+	t.Parallel()
 	with, _ := withServers(t)
 	e := newEnv(t, with, withRemote)
 	s := decode[savedReply](t, e.expect(200, "POST", "/api/servers", form("name", "Away", "address", "https://127.0.0.1:1", "secret", "abc", "force", true)))
@@ -564,6 +573,7 @@ func TestServersAnswer404OnRemoteHandler(t *testing.T) {
 
 // A body past the limit is refused and nothing is saved.
 func TestServerRoutesLimitTheBody(t *testing.T) {
+	t.Parallel()
 	with, root := withServers(t)
 	e := newEnv(t, with)
 	file := func() string {

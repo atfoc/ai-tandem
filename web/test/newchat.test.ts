@@ -40,7 +40,9 @@ test("the places that make a chat have no agent menu and name no agent", () => {
   assert.equal(count(files["App.tsx"], /void newChat\(\{ board \}\)/g), 1);
   assert.equal(count(files["App.tsx"], /void newChat\(\{ group: UNGROUPED \}\)/g), 1);
   assert.equal(count(files["run/RunBar.tsx"], /void newChat\(\{ run \}\)/g), 1);
-  assert.equal(count(Object.values(files).join("\n"), /\bnewChat\(/g), 7 + 2); // and the function with its api call
+  // and ⌘N, which makes one where the user is, if that place offers one (logic/newchatwhere.ts)
+  assert.equal(count(files["App.tsx"], /const where = newChatPlace\(s\);\s*if \(where\) void newChat\(where\);/g), 1);
+  assert.equal(count(Object.values(files).join("\n"), /\bnewChat\(/g), 7 + 1 + 2); // and the function with its api call
 });
 
 test("the two menus still offer a chat, a whiteboard and a run", () => {

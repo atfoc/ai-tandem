@@ -1,6 +1,7 @@
 package runs
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -139,6 +140,22 @@ func (h *mx) atGate(name string) {
 		default:
 			return false
 		}
+	})
+}
+
+// taken waits until the engine has recorded that each of the named agents took its first
+// message. A stop, a crash or a timeout between the chat's taking the message and that record
+// leaves an agent that is started fresh: a test that wants the agent resumed waits for this
+// before it stops, crashes or lets the time run out.
+func (h *mx) taken(names ...string) {
+	h.t.Helper()
+	h.waitL("the engine to record that "+strings.Join(names, " and ")+" took the message", func(l *Loaded) bool {
+		for _, name := range names {
+			if a, _ := mxAgent(l, name); !a.Resumable {
+				return false
+			}
+		}
+		return true
 	})
 }
 
@@ -1410,9 +1427,7 @@ func (h *mx) refEnd() mxEnd {
 	h.journalWhole()
 	if h.repo != nil {
 		ib := h.resultRef()
-		for _, f := range strings.Fields(h.repo.Git("ls-tree", "-r", "--name-only", ib)) {
-			end.Files[f] = h.repo.Git("show", ib+":"+f)
-		}
+		end.Files = h.filesAt(ib)
 		one, _ := mxByTitle(l, mxOne)
 		two, _ := mxByTitle(l, mxTwo)
 		shared := end.Files["shared.txt"]
@@ -1427,11 +1442,16 @@ func (h *mx) refEnd() mxEnd {
 		if _, ok := end.Files["chat.txt"]; !ok {
 			h.t.Errorf("chat.txt is not on the integration branch: %v", end.Files)
 		}
-		if l.State.Git.ResultHead != h.repo.Git("rev-parse", ib) {
+		// The integration branch's head and the folder's, asked in one process.
+		heads := strings.Fields(h.repo.Git("rev-parse", ib, "HEAD"))
+		if len(heads) != 2 {
+			h.t.Fatalf("rev-parse %s HEAD answered %q", ib, heads)
+		}
+		if l.State.Git.ResultHead != heads[0] {
 			h.t.Errorf("the result's head %s is not the integration branch's", l.State.Git.ResultHead)
 		}
 		h.noCheckouts()
-		end.Delivery, end.Folder = h.delivered(l), map[string]string{}
+		end.Delivery, end.Folder = h.delivered(l, heads[1]), map[string]string{}
 		for _, f := range strings.Fields(h.repo.Git("ls-files")) {
 			b, _ := os.ReadFile(filepath.Join(h.repo.Dir(), f))
 			end.Folder[f] = strings.TrimRight(string(b), "\n")
@@ -1481,6 +1501,55 @@ func (h *mx) journalWhole() []Entry {
 		}
 	}
 	return es
+}
+
+// refFiles is what the files that hold the run's branches say now: the loose refs below
+// refs/heads/aiwb/<run> with what they point at, and the size and time of packed-refs. It is
+// never "".
+func (h *mx) refFiles() string {
+	gitDir := filepath.Join(h.repo.Dir(), ".git")
+	var b strings.Builder
+	b.WriteString("refs:")
+	filepath.WalkDir(filepath.Join(gitDir, "refs", "heads", "aiwb", h.id), func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			sha, _ := os.ReadFile(path)
+			fmt.Fprintf(&b, " %s=%s", path, strings.TrimSpace(string(sha)))
+		}
+		return nil
+	})
+	if fi, err := os.Stat(filepath.Join(gitDir, "packed-refs")); err == nil {
+		fmt.Fprintf(&b, " packed:%d@%d", fi.Size(), fi.ModTime().UnixNano())
+	}
+	return b.String()
+}
+
+// filesAt is every file of the commit ref with its text, trimmed as Repo.Git trims it. One git
+// process reads them all.
+func (h *mx) filesAt(ref string) map[string]string {
+	h.t.Helper()
+	out, err := h.repo.GitIn(h.repo.Dir(), "archive", "--format=tar", ref)
+	if err != nil {
+		h.t.Fatalf("git archive %s: %v\n%s", ref, err, out)
+	}
+	files := map[string]string{}
+	for tr := tar.NewReader(strings.NewReader(out)); ; {
+		hd, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			h.t.Fatalf("git archive %s: %v", ref, err)
+		}
+		if hd.Typeflag != tar.TypeReg {
+			continue
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			h.t.Fatalf("git archive %s: %s: %v", ref, hd.Name, err)
+		}
+		files[hd.Name] = strings.TrimSpace(string(b))
+	}
+	return files
 }
 
 // noCheckouts checks that the repository lists no work tree but its own and that the folder of
@@ -1868,15 +1937,14 @@ func (h *mx) resultRef() string {
 // the run's end: the folder's HEAD is the result and nothing in it is uncommitted, the record
 // says so, and no branch of the run that is part of the result is left. It returns the delivery's
 // state and reason. A run that was restarted between the fast-forward and its last entry finds
-// the result in the folder ("already").
-func (h *mx) delivered(l *Loaded) string {
+// the result in the folder ("already"). head is the folder's HEAD.
+func (h *mx) delivered(l *Loaded, head string) string {
 	h.t.Helper()
 	d, g := l.State.Delivery, l.State.Git
 	if d == nil {
 		h.t.Errorf("the finished run has no delivery")
 		return ""
 	}
-	head := h.repo.Git("rev-parse", "HEAD")
 	if d.State != model.DeliveryApplied || !d.Auto || (d.How != "ff" && d.How != "already") || d.Result != g.ResultHead || d.Commit != head ||
 		head != g.ResultHead || d.Branch != g.Branch || d.Partial || d.At == 0 {
 		h.t.Errorf("the delivery: %+v; the folder's HEAD %s, the result %s", *d, head, g.ResultHead)
@@ -1885,16 +1953,18 @@ func (h *mx) delivered(l *Loaded) string {
 		h.t.Errorf("the person's folder is not clean after the delivery:\n%s", st)
 	}
 	// The branches go after the entry that ends the run.
+	// One git process answers a look, and git is asked again only when the files that hold the
+	// run's branches have changed since it was asked (or after 30 looks, should git keep its
+	// branches somewhere else one day): a look that starts no process costs the tests beside
+	// this one nothing.
+	asked, looks := "", 0
 	h.wait("the run's branches that are in the result to be gone", func() bool {
-		for _, b := range h.branches() {
-			if !strings.HasPrefix(b, "aiwb/"+h.id+"/") {
-				continue
-			}
-			if _, err := h.repo.GitIn(h.repo.Dir(), "merge-base", "--is-ancestor", b, g.ResultHead); err == nil {
-				return false
-			}
+		now := h.refFiles()
+		if looks++; asked == now && looks%30 != 0 {
+			return false
 		}
-		return true
+		asked = now
+		return h.repo.Git("for-each-ref", "--merged", g.ResultHead, "--format=%(refname:short)", "refs/heads/aiwb/"+h.id) == ""
 	})
 	return string(d.State) + "/" + d.Reason
 }

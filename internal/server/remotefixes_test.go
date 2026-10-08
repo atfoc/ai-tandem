@@ -51,6 +51,7 @@ func (l *listener) try(id, secret, method, path string) (int, string) {
 // A read or an unfollow that states the id of a client of the other listener starts and ends
 // nothing: the loopback listener acts on pages, the remote one on API clients.
 func TestFollowIsOfTheListenersKind(t *testing.T) {
+	t.Parallel()
 	e, l := remoteEnv(t)
 	e.page(pageUUID)
 	l.api(apiX)
@@ -128,6 +129,7 @@ func TestFollowIsOfTheListenersKind(t *testing.T) {
 
 // An API client does not list the data folder or a folder inside it; a page does.
 func TestRemoteDirsRefuseTheDataFolder(t *testing.T) {
+	t.Parallel()
 	e, l := remoteEnv(t)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
 	data := e.a.DataDir
@@ -200,6 +202,7 @@ func TestRemoteDirsRefuseTheDataFolder(t *testing.T) {
 
 // The fork of a chat on a board is refused for an API client: it would make a chat on a board.
 func TestRemoteForkOfABoardChatIsRefused(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	p := e.page("P")
@@ -263,6 +266,7 @@ func TestRemoteForkOfABoardChatIsRefused(t *testing.T) {
 // An API client's read of a chat waits for a creation call of that id that is under way, and
 // then finds what the call made. A page's read does not wait.
 func TestRemoteChatReadWaitsForACreationCall(t *testing.T) {
+	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	in, release := make(chan struct{}), make(chan struct{})
@@ -318,6 +322,7 @@ func TestRemoteChatReadWaitsForACreationCall(t *testing.T) {
 // An archive or a delete of the board between the take's check and its grant finds no holder to
 // ask. The take then gives the hold back and answers as it does for such a board.
 func TestTakeOfABoardArchivedUnderIt(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var between func(board string)
 	e := newEnv(t, func(s *Server) {
@@ -382,6 +387,7 @@ func TestTakeOfABoardArchivedUnderIt(t *testing.T) {
 // ReloadSecret makes the old secret refused before it ends a stream: a client that sees its
 // stream end and calls at once with the old secret gets 401.
 func TestOldSecretIsRefusedBeforeTheStreamEnds(t *testing.T) {
+	t.Parallel()
 	e, l := remoteEnv(t)
 	ids := []string{apiX, apiY, apiZ}
 	secret := testSecret
@@ -443,6 +449,7 @@ func TestOldSecretIsRefusedBeforeTheStreamEnds(t *testing.T) {
 // A path in another form than a route's serves nothing on the remote listener: the two with a
 // doubled slash are redirected with no data, the others are not found.
 func TestRemotePathForms(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withRemote)
 	h := e.s.RemoteHandler()
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
@@ -28,11 +29,32 @@ import (
 type fakeServers struct {
 	mu      sync.Mutex
 	entries map[string]RemoteEntry
-	dirs    map[string]string // entry + " " + path as asked → the absolute path there
-	dirErr  error             // what every Dir answers, when set
-	inDir   func()            // called inside every Dir
-	asked   []string          // entry + " " + path, of every Dir
-	dropped []string          // entry + " " + chat, of every DropLeftover
+	dirs    map[string]string   // entry + " " + path as asked → the absolute path there
+	dirErr  error               // what every Dir answers, when set
+	inDir   func()              // called inside every Dir
+	asked   []string            // entry + " " + path, of every Dir
+	dropped []string            // entry + " " + chat, of every DropLeftover
+	boards  map[string]farBoard // the boards on other servers BoardOn knows
+}
+
+// farBoard is a board on another server, as the server list keeps it.
+type farBoard struct {
+	entry, group string
+	archived     bool
+}
+
+// setBoard makes BoardOn know the board id; with no entry it forgets it.
+func (f *fakeServers) setBoard(id string, b farBoard) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.boards == nil {
+		f.boards = map[string]farBoard{}
+	}
+	if b.entry == "" {
+		delete(f.boards, id)
+		return
+	}
+	f.boards[id] = b
 }
 
 func (f *fakeServers) Entry(id string) (RemoteEntry, bool) {
@@ -75,6 +97,13 @@ func (f *fakeServers) DropLeftover(entry, chat string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.dropped = append(f.dropped, entry+" "+chat)
+}
+
+func (f *fakeServers) BoardOn(id string) (entry, group string, archived, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.boards[id]
+	return b.entry, b.group, b.archived, ok
 }
 
 // change changes the entry id.
@@ -180,6 +209,7 @@ func fourOfView(v model.ChatView) four {
 // ---- the model and the paths -------------------------------------------------
 
 func TestServerOnTheWire(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	local := e.create(model.Claude, gOne, "")
 	raw, _ := json.Marshal(local)
@@ -213,6 +243,7 @@ func TestServerOnTheWire(t *testing.T) {
 // ---- "+" ---------------------------------------------------------------------
 
 func TestPlusStartsOnTheStickyServer(t *testing.T) {
+	t.Parallel()
 	// This computer can use Cursor alone: what Bee's chats get is checked nowhere here.
 	e, fs := remoteEnv(t, model.Cursor)
 	bee := model.ServerDefaults{Agent: model.Pi, Cwd: farSrv, ByAgent: map[model.AgentKind]model.ModelChoice{
@@ -267,6 +298,7 @@ func TestPlusStartsOnTheStickyServer(t *testing.T) {
 }
 
 func TestPlusWithNoListsKnown(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude)
 	// AC44: an entry whose lists are not known gives no agent, and a model with none is refused.
 	fs.change(entB, func(en *RemoteEntry) {
@@ -289,6 +321,7 @@ func TestPlusWithNoListsKnown(t *testing.T) {
 // ---- a server change ---------------------------------------------------------
 
 func TestServerChange(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude)
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
 		gOne: {Servers: map[string]model.ServerDefaults{
@@ -370,6 +403,7 @@ func TestServerChange(t *testing.T) {
 
 // A server change takes back what a start that failed here left on the chat.
 func TestServerChangeTakesBackAFailedStart(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	v := e.create(model.Claude, gOne, "")
 	dir := filepath.Join(t.TempDir(), "gone")
@@ -395,6 +429,7 @@ func TestServerChangeTakesBackAFailedStart(t *testing.T) {
 // ---- refusals ----------------------------------------------------------------
 
 func TestRemoteChoiceRefusals(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude, model.Cursor, model.Pi)
 	v := e.onBee(gOne)
 	was := e.meta(v.ID)
@@ -440,6 +475,7 @@ func TestRemoteChoiceRefusals(t *testing.T) {
 
 // The six refusals of a configure that names a server.
 func TestServerRefusals(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude, model.Cursor, model.Pi)
 	fr := &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "sonnet", Effort: "high"}}}
 	e.m.Runs = fr
@@ -518,6 +554,7 @@ func TestServerRefusals(t *testing.T) {
 // ---- nothing is checked here for a chat on another server -------------------------
 
 func TestNoLocalCheckForARemoteChat(t *testing.T) {
+	t.Parallel()
 	// This computer finds no program at all, and has no folder and no model of Bee's.
 	e, fs := remoteEnv(t)
 	if _, err := os.Stat(farHome); err == nil {
@@ -570,6 +607,7 @@ func TestNoLocalCheckForARemoteChat(t *testing.T) {
 // ---- AC29 ---------------------------------------------------------------------
 
 func TestServerThenAgentsAnyNumberOfTimes(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude, model.Cursor)
 	v := e.create(model.Claude, gOne, "")
 	sessions := map[string]bool{e.meta(v.ID).SessionID: true}
@@ -614,6 +652,7 @@ func TestServerThenAgentsAnyNumberOfTimes(t *testing.T) {
 // ---- defaults -------------------------------------------------------------------
 
 func TestRemoteDefaults(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude)
 	fs.mu.Lock()
 	fs.dirs[entB+" /b/one"], fs.dirs[entB+" /b/two"], fs.dirs[entC+" /c/one"] = "/b/one", "/b/two", "/c/one"
@@ -700,7 +739,8 @@ func TestRemoteDefaults(t *testing.T) {
 	}
 }
 
-func TestNoRemoteDefaultsWithoutAKeyOrOnARun(t *testing.T) {
+func TestRemoteDefaultsWithoutAKeyAndOnARun(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude)
 	ev := listen(t, e.br)
 
@@ -729,7 +769,8 @@ func TestNoRemoteDefaultsWithoutAKeyOrOnARun(t *testing.T) {
 		t.Fatalf("defaults events with nothing recorded: %v", evs)
 	}
 
-	// A run on Sea: its chats are there, with the run's folder, and feed no defaults.
+	// A run on Sea: its chats are there, with the run's folder, and feed the defaults of the
+	// run's group for Sea with their agent, model and effort alone: the next one starts with them.
 	fr := &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: "/c/run", Agent: model.Cursor, Model: "gpt-5.4-mini", Server: entC}}}
 	e.m.Runs = fr
 	onRun := e.newChat(NewChat{Run: ownRun})
@@ -744,8 +785,14 @@ func TestNoRemoteDefaultsWithoutAKeyOrOnARun(t *testing.T) {
 	if err != nil || meta.Run != ownRun || meta.Model != "composer-2" {
 		t.Fatalf("HandOver of a chat on a run: %+v, %v", meta, err)
 	}
-	if d := e.defs(); len(d.Groups) != 0 {
-		t.Fatalf("a chat on a run fed the defaults: %+v", d)
+	wantDefs := model.Defaults{Groups: map[string]model.GroupDefaults{gOne: {Servers: map[string]model.ServerDefaults{keyC: {
+		Agent: model.Cursor, ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "composer-2", Effort: "low"}},
+	}}}}}
+	if d := e.defs(); !reflect.DeepEqual(d, wantDefs) {
+		t.Fatalf("the defaults a chat on a run on Sea fed: %+v, want %+v", d, wantDefs)
+	}
+	if next := e.newChat(NewChat{Run: ownRun}); next.Server != entC || fourOfView(next) != (four{model.Cursor, "/c/run", "composer-2", "low"}) {
+		t.Fatalf("the next chat on the run on Sea: %+v", next)
 	}
 	if _, err := os.Stat(e.st.P.RunChatDir(ownRun, false, onRun.ID)); !os.IsNotExist(err) {
 		t.Fatalf("the folder of the chat on the run after the hand-over: %v", err)
@@ -755,6 +802,7 @@ func TestNoRemoteDefaultsWithoutAKeyOrOnARun(t *testing.T) {
 // AC32: a new group starts with a copy of every server's part, and a state file of before
 // chats had servers is not written by a load.
 func TestSeededGroupsCopyEveryServersPart(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
 		gOne: {Server: keyB, Servers: map[string]model.ServerDefaults{
@@ -873,6 +921,7 @@ const phase3State = `{
 `
 
 func TestPhase3StateFileIsNotWrittenByALoad(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), ".ai-whiteboard")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -940,6 +989,7 @@ func TestPhase3StateFileIsNotWrittenByALoad(t *testing.T) {
 // ---- the hand-over ---------------------------------------------------------------
 
 func TestHandOver(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	ev := listen(t, e.br)
 	v := e.onBee(gOne)
@@ -1036,6 +1086,7 @@ func TestHandOver(t *testing.T) {
 // Changes and a hand-over at once: the chat ends handed over once, and every change either
 // came before it or found no chat.
 func TestHandOverAndChangesAtOnce(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	for round := 0; round < 20; round++ {
 		v := e.onBee(gOne)
@@ -1088,6 +1139,7 @@ func TestHandOverAndChangesAtOnce(t *testing.T) {
 // ---- the server is up, the server is gone ------------------------------------------
 
 func TestServerUp(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude)
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
 		gOne: {Servers: map[string]model.ServerDefaults{keyB: {Agent: model.Pi, Cwd: farSrv, ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "pi-big", Effort: "high"}}}}},
@@ -1170,6 +1222,7 @@ func TestServerUp(t *testing.T) {
 }
 
 func TestResetServerAndUnstartedOn(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude)
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
 		gOne: {Server: keyB, Servers: map[string]model.ServerDefaults{
@@ -1277,6 +1330,7 @@ func TestResetServerAndUnstartedOn(t *testing.T) {
 }
 
 func TestSetRemoteStart(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	v := e.onBee(gOne)
 	local := e.create(model.Claude, gOne, "")
@@ -1338,6 +1392,7 @@ func TestSetRemoteStart(t *testing.T) {
 // ---- no agent starts here ------------------------------------------------------------
 
 func TestNoAgentStartsForARemoteChat(t *testing.T) {
+	t.Parallel()
 	e, fs := remoteEnv(t, model.Claude, model.Cursor, model.Pi)
 	v := e.onBee(gOne)
 	was := e.meta(v.ID)
@@ -1410,6 +1465,7 @@ func TestNoAgentStartsForARemoteChat(t *testing.T) {
 // ---- boards (AC34) ---------------------------------------------------------------
 
 func TestBoardChatsStayOnThisComputer(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	sticky := model.GroupDefaults{Server: keyB, Servers: map[string]model.ServerDefaults{
 		keyB: {Agent: model.Pi, Cwd: farSrv},
@@ -1453,9 +1509,108 @@ func TestBoardChatsStayOnThisComputer(t *testing.T) {
 	}
 }
 
+// TestChatsOnARemoteBoard: a chat on a board that lives on another server is on that server,
+// whatever is named and whatever the sticky server of the board's group.
+func TestChatsOnARemoteBoard(t *testing.T) {
+	t.Parallel()
+	const far, shut, lost = "b_far00001", "b_far00002", "b_far00003"
+	e, fs := remoteEnv(t, model.Claude)
+	fs.setBoard(far, farBoard{entry: entB, group: gOne})
+	fs.setBoard(shut, farBoard{entry: entB, group: gOne, archived: true})
+	sticky := model.GroupDefaults{Server: keyC, Servers: map[string]model.ServerDefaults{
+		keyB: {Agent: model.Pi, Cwd: farSrv},
+	}}
+	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: sticky}})
+
+	// With no server named (Cmd+N on the board) and with the board's: on the board's entry.
+	for _, server := range []string{"", entB} {
+		v := e.newChat(NewChat{Board: far, Server: server})
+		if v.Server != entB || v.Board != far || v.Group != "" || fourOfView(v) != (four{model.Pi, farSrv, "", ""}) {
+			t.Fatalf("a chat on a remote board, server %q named: %+v", server, v)
+		}
+		meta, ok := e.m.RemoteUnstarted(v.ID)
+		if !ok || meta.Board != far || meta.Server != entB {
+			t.Fatalf("it is not one that starts on Bee: %+v, %v", meta, ok)
+		}
+		if g := e.m.GroupOf(meta); g != gOne {
+			t.Fatalf("its group: %q, want the record's", g)
+		}
+	}
+	made := len(e.chatDirs())
+
+	// Another server than the board's, this computer among them.
+	for _, server := range []string{entC, model.LocalServer} {
+		if _, err := e.m.CreateChat(NewChat{Board: far, Server: server}); !errors.Is(err, ErrServerFixed) {
+			t.Errorf("a chat on a remote board made on %q: %v, want ErrServerFixed", server, err)
+		}
+	}
+	// An archived board, one nobody knows, and an API client's chat, which is on a board here.
+	if _, err := e.m.CreateChat(NewChat{Board: shut}); !errors.Is(err, boards.ErrArchived) {
+		t.Errorf("a chat on an archived remote board: %v", err)
+	}
+	if _, err := e.m.CreateChat(NewChat{Board: lost}); !errors.Is(err, boards.ErrNotFound) {
+		t.Errorf("a chat on a board nobody knows: %v", err)
+	}
+	if _, err := e.m.CreateChat(NewChat{Board: far, Client: "cli", Agent: model.Claude}); !errors.Is(err, boards.ErrNotFound) {
+		t.Errorf("a chat of an API client on a remote board: %v", err)
+	}
+	if n := len(e.chatDirs()); n != made {
+		t.Fatalf("the refused creations left %d folders", n-made)
+	}
+
+	// The chat stays on the board's server.
+	v := e.newChat(NewChat{Board: far})
+	was := e.meta(v.ID)
+	for _, server := range []string{entC, model.LocalServer} {
+		if err := e.m.Configure(v.ID, ConfigReq{Server: server}); !errors.Is(err, ErrServerFixed) {
+			t.Errorf("a chat on a remote board moved to %q: %v, want ErrServerFixed", server, err)
+		}
+	}
+	if got := e.meta(v.ID); !reflect.DeepEqual(got, was) {
+		t.Fatalf("the refused moves left %+v", got)
+	}
+	e.configure(v.ID, ConfigReq{Server: entB, Agent: model.Claude})
+	if got := e.meta(v.ID); got.Server != entB || got.Agent != model.Claude || got.Board != far {
+		t.Fatalf("after a change that names the board's server: %+v", got)
+	}
+
+	// The hand-over records the agent for Bee in the board's group, and no sticky server.
+	if _, err := e.m.HandOver(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.defs().Groups[gOne]; d.Server != keyC || d.Servers[keyB].Agent != model.Claude {
+		t.Fatalf("the defaults after the hand-over: %+v", d)
+	}
+
+	// A board of this computer wins over a record of its id, and stays here.
+	bd, err := e.bds.Create("Board", gTwo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.setBoard(bd.ID, farBoard{entry: entB, group: gOne})
+	if _, err := e.m.CreateChat(NewChat{Board: bd.ID, Server: entB}); !errors.Is(err, ErrBoardLocal) {
+		t.Errorf("a chat on a local board made on Bee: %v, want ErrBoardLocal", err)
+	}
+	here := e.newChat(NewChat{Board: bd.ID})
+	if here.Server != "" || e.m.GroupOf(e.meta(here.ID)) != gTwo {
+		t.Errorf("a chat on a local board: %+v", here)
+	}
+	if err := e.m.Configure(here.ID, ConfigReq{Server: entB}); !errors.Is(err, ErrBoardLocal) {
+		t.Errorf("a chat on a local board moved to Bee: %v, want ErrBoardLocal", err)
+	}
+
+	// A record that is gone: the chat counts as ungrouped.
+	w := e.newChat(NewChat{Board: far})
+	fs.setBoard(far, farBoard{})
+	if g := e.m.GroupOf(e.meta(w.ID)); g != model.Ungrouped {
+		t.Errorf("the group of a chat whose board is gone: %q", g)
+	}
+}
+
 // ---- a chat of an API client, and a manager with no server list ---------------------------
 
 func TestClientChatsAreNeverRemote(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	sticky := model.GroupDefaults{Server: keyB, Servers: map[string]model.ServerDefaults{keyB: {Agent: model.Pi, Cwd: farSrv}}}
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: sticky, model.Ungrouped: sticky}})
@@ -1480,6 +1635,7 @@ func TestClientChatsAreNeverRemote(t *testing.T) {
 }
 
 func TestNoServerListIsThisComputerAlone(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
 		gOne: {Server: keyB, Servers: map[string]model.ServerDefaults{keyB: {Agent: model.Pi, Cwd: farSrv}}},
@@ -1518,6 +1674,7 @@ func TestNoServerListIsThisComputerAlone(t *testing.T) {
 // folder goes with the last chat in it, at a hand-over and at a delete before the first message.
 // A folder that holds a run.json, as that of a run of this server does, stays.
 func TestRunFolderGoesWithItsLastChat(t *testing.T) {
+	t.Parallel()
 	e, _ := remoteEnv(t, model.Claude)
 	const farRun = "r_far"
 	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{farRun: {Group: gOne, Cwd: "/c/run", Agent: model.Cursor, Model: "gpt-5.4-mini", Server: entC}}}

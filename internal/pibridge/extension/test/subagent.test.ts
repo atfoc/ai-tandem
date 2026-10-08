@@ -1,5 +1,8 @@
 // Unit tests for the app subagent tool (subagent.ts). Run with:
-//   node --test --experimental-strip-types internal/pibridge/extension/test/subagent.test.ts
+//   AIWB_TEST_FULL=1 node --test --experimental-strip-types internal/pibridge/extension/test/subagent.test.ts
+//
+// Without AIWB_TEST_FULL=1 only the default set runs: the few tests declared with defaultTest(),
+// one for each part of subagent.ts. The file prints which set it ran and how many of its tests.
 //
 // A fake bridge socket server records the activity frames (kind/run/sub/event)
 // and a fake `pi` executable (a small node script in a temp dir, selected via
@@ -7,7 +10,7 @@
 // grandchild; no real pi runs. Every process spawned by a test is tracked in a
 // PID file and killed on the test's failure path too.
 
-import { test } from "node:test";
+import { describe, test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import * as net from "node:net";
 import * as fs from "node:fs";
@@ -68,6 +71,18 @@ async function startBridge(): Promise<FakeBridge> {
 // ---------------------------------------------------------------------------
 // fake pi executable
 
+// How long waitFor and waitGone wait for something that must happen. Each of these waits is for a
+// process that has to start or to die, and on a machine that is busy starting processes that alone
+// has taken more than 8 s; a wait ends as soon as the thing happened, so only a failure takes this
+// long.
+const MUST_HAPPEN_MS = 60_000;
+
+// After how long the fake pi and its grandchildren exit on their own, so that none outlives a test
+// run that died before its cleanup. It has to stay longer than MUST_HAPPEN_MS: a process that
+// nobody killed must still be alive when waitGone gives up, or the checks that a process tree was
+// killed pass by themselves. Derived from the wait, so that the two cannot drift apart.
+const FAKE_SELF_EXIT_MS = 3 * MUST_HAPPEN_MS;
+
 // Scripted child pi. FAKE_PI_MODE selects the scenario; it always writes its
 // own PID into FAKE_PI_PIDS so the test can never leak a process.
 const FAKE_PI = [
@@ -123,14 +138,14 @@ const FAKE_PI = [
   '    out({ id: cmd.id, type: "response", command: "prompt", success: true });',
   '    if (mode === "happy" || mode === "slow" || mode === "statsnull") await emitHappy();',
   '    if (mode === "abort") {',
-  '      const gc = spawn(process.execPath, ["-e", "setTimeout(()=>process.exit(0),30000); setInterval(()=>{},1000)"], { stdio: "ignore" });',
+  `      const gc = spawn(process.execPath, ["-e", "setTimeout(()=>process.exit(0),${FAKE_SELF_EXIT_MS}); setInterval(()=>{},1000)"], { stdio: "ignore" });`,
   "      if (process.env.FAKE_PI_PIDS) {",
   '        fs.writeFileSync(process.env.FAKE_PI_PIDS, JSON.stringify({ parent: process.pid, child: gc.pid }));',
   "      }",
   "    }",
   '    if (mode === "stubborn") {',
   '      process.on("SIGTERM", () => {});',
-  '      const gc = spawn(process.execPath, ["-e", "process.on(\'SIGTERM\', () => {}); setTimeout(() => process.exit(0), 30000); setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+  `      const gc = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setTimeout(() => process.exit(0), ${FAKE_SELF_EXIT_MS}); setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
   "      if (process.env.FAKE_PI_PIDS) {",
   '        fs.writeFileSync(process.env.FAKE_PI_PIDS, JSON.stringify({ parent: process.pid, child: gc.pid }));',
   "      }",
@@ -173,7 +188,7 @@ const FAKE_PI = [
   "  }",
   "});",
   'process.stdin.on("end", () => process.exit(0));',
-  "setTimeout(() => process.exit(0), 20000);",
+  `setTimeout(() => process.exit(0), ${FAKE_SELF_EXIT_MS});`,
   "",
 ].join("\n");
 
@@ -242,7 +257,7 @@ function eventsOf(frames: BridgeFrame[]): SubagentFrame[] {
   return frames.map((frame) => frame.event as SubagentFrame);
 }
 
-async function waitFor(predicate: () => boolean, what: string, timeoutMs = 8000): Promise<void> {
+async function waitFor(predicate: () => boolean, what: string, timeoutMs = MUST_HAPPEN_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
@@ -263,7 +278,7 @@ function pidState(pid: number): "alive" | "gone" | "unknown" {
 }
 
 /** waitGone polls process.kill(pid, 0) until every PID reports ESRCH. */
-async function waitGone(pids: number[], what = "child processes", timeoutMs = 8000): Promise<void> {
+async function waitGone(pids: number[], what = "child processes", timeoutMs = MUST_HAPPEN_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (pids.some((pid) => pidState(pid) !== "gone")) {
     if (Date.now() > deadline) {
@@ -333,7 +348,25 @@ async function readDump(fx: Fixture): Promise<any> {
 // ---------------------------------------------------------------------------
 // tests
 
-test("foreground happy path streams activity frames and resolves the summary", async (t) => {
+// Every test has its own bridge, fixture and child processes and shares nothing with the others,
+// and most of a test's time is the start of its fake pi. So test() only collects them, and the
+// end of the file runs them at the same time in one suite.
+//
+// defaultTest() declares a test of the default set: the tests that also run without
+// AIWB_TEST_FULL=1, one for each part of subagent.ts (the child's arguments and environment, the
+// stream and the result of a foreground run, the background ack, a child that cannot start, a
+// child that fails, abort). test() declares one that runs only in the full set.
+const collected: Parameters<typeof nodeTest>[] = [];
+const defaultSet = new Set<Parameters<typeof nodeTest>>();
+function test(...args: Parameters<typeof nodeTest>): void {
+  collected.push(args);
+}
+function defaultTest(...args: Parameters<typeof nodeTest>): void {
+  collected.push(args);
+  defaultSet.add(args);
+}
+
+defaultTest("foreground happy path streams activity frames and resolves the summary", async (t) => {
   const bridge = await startBridge();
   const fx = makeFixture();
   t.after(async () => {
@@ -411,7 +444,7 @@ test("foreground happy path streams activity frames and resolves the summary", a
   await waitGone([fx.pids().parent!], "foreground child");
 });
 
-test("background returns the ack immediately and emits done later", async (t) => {
+defaultTest("background returns the ack immediately and emits done later", async (t) => {
   const bridge = await startBridge();
   const fx = makeFixture({ FAKE_PI_MODE: "slow" });
   t.after(async () => {
@@ -442,7 +475,7 @@ test("background returns the ack immediately and emits done later", async (t) =>
   await waitGone([fx.pids().parent!], "background child");
 });
 
-test("spawn error emits done failed and rejects", async (t) => {
+defaultTest("spawn error emits done failed and rejects", async (t) => {
   const bridge = await startBridge();
   const fx = makeFixture();
   fx.env.AIWB_PI_BIN = path.join(fx.dir, "missing-pi");
@@ -462,7 +495,7 @@ test("spawn error emits done failed and rejects", async (t) => {
   assert.match(done.error ?? "", /failed to spawn subagent pi/);
 });
 
-test("a crashed child rejects with its stderr tail and emits done failed once", async (t) => {
+defaultTest("a crashed child rejects with its stderr tail and emits done failed once", async (t) => {
   const bridge = await startBridge();
   const fx = makeFixture({ FAKE_PI_MODE: "fail" });
   t.after(async () => {
@@ -569,7 +602,7 @@ test("a null contextUsage falls back to the last message usage, not the cumulati
   assert.equal(result.details.tokens, 13);
 });
 
-test("abort via signal kills the child process tree and emits done stopped once", async (t) => {
+defaultTest("abort via signal kills the child process tree and emits done stopped once", async (t) => {
   const bridge = await startBridge();
   const fx = makeFixture({ FAKE_PI_MODE: "abort" });
   t.after(async () => {
@@ -622,6 +655,8 @@ test("abort via the registered killer kills the tree too", async (t) => {
   const result = await promise;
   assert.equal(result.details.status, "stopped");
   await waitGone([pids.parent!, pids.child!], "killed tree (child and grandchild)");
+  // The frame is sent without waiting for it: it can arrive after the tree is gone.
+  await waitFor(() => eventsOf(bridge.frames).some((event) => event.type === "done"), "done frame");
   const doneFrames = eventsOf(bridge.frames).filter((event) => event.type === "done");
   assert.equal(doneFrames.length, 1);
 });
@@ -648,7 +683,7 @@ test("a SIGTERM-resistant tree is SIGKILLed after the grace period", async (t) =
   await waitGone([pids.parent!, pids.child!], "stubborn child and grandchild");
 });
 
-test("nested child env carries depth+1 and the child's own tool-call id", async (t) => {
+defaultTest("nested child env carries depth+1 and the child's own tool-call id", async (t) => {
   const bridge = await startBridge();
   const fx = makeFixture({
     AIWB_SUB_PARENT: "call_outer",
@@ -764,4 +799,19 @@ test("a plain-chat child gets no AIWB_MCP_CONFIG (A10)", async (t) => {
   await promise;
   const dump = await readDump(fx);
   assert.equal(dump.env.AIWB_MCP_CONFIG, null);
+});
+
+// The Go test (TestSubagentNode) sets AIWB_TEST_FULL for this process from testset.Full(), so that
+// -short means the default set here too. The line printed says which set ran, so that a thinned
+// run cannot be taken for a full one; the Go test checks it.
+const full = process.env.AIWB_TEST_FULL === "1";
+const selected = full ? collected : collected.filter((args) => defaultSet.has(args));
+console.log(
+  full
+    ? `subagent.test.ts: full set, running all ${selected.length} of ${collected.length} tests`
+    : `subagent.test.ts: default set, running ${selected.length} of ${collected.length} tests (AIWB_TEST_FULL=1 runs all)`,
+);
+
+describe("subagent", { concurrency: true }, () => {
+  for (const args of selected) nodeTest(...args);
 });

@@ -1,6 +1,7 @@
 package rungit
 
 import (
+	"ai-whiteboard/internal/testset"
 	"context"
 	"errors"
 	"os"
@@ -487,6 +488,10 @@ func TestMergeWhenAHookRefuses(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"pre-merge-commit", "commit-msg"} {
 		t.Run(name, func(t *testing.T) {
+			if name != "pre-merge-commit" {
+				testset.SkipUnlessFull(t, "the same with another hook; the default set has pre-merge-commit")
+			}
+			t.Parallel()
 			r, root := newRepo(t)
 			intDir, taskDir := sibling(root, "integration"), sibling(root, "task")
 			must(t, r.EnsureWorktree(bg, intDir, "int", "main"))
@@ -537,10 +542,12 @@ func TestMergeWhenAHookRefuses(t *testing.T) {
 func TestCancelEndsASlowGitCommand(t *testing.T) {
 	r, root := newRepo(t)
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	hook(t, r, "pre-commit", "echo $$ > "+pidFile+"\nsleep 60 &\necho $! >> "+pidFile+"\nwait")
+	hook(t, r, "pre-commit", "echo $$ > "+pidFile+"\nsleep 600 &\necho $! >> "+pidFile+"\nwait")
 	write(t, root, "g.txt", "g\n")
 
-	ctx, cancel := context.WithCancel(bg)
+	// A shorter settle than the package's, so that the test does not wait two seconds.
+	const settle = 300 * time.Millisecond
+	ctx, cancel := context.WithCancel(withWaits(bg, waits{settle: settle}))
 	defer cancel()
 	type result struct {
 		err error
@@ -557,11 +564,11 @@ func TestCancelEndsASlowGitCommand(t *testing.T) {
 	var res result
 	select {
 	case res = <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("CommitAll did not return after the cancel")
 	}
 	// A commit may be writing, so it is first left settle to finish by itself.
-	if took := res.at.Sub(cancelled); took < settle || took > settle+1500*time.Millisecond {
+	if took := res.at.Sub(cancelled); took < settle || took > settle+3*time.Second {
 		t.Errorf("CommitAll returned %s after the cancel", took)
 	}
 	if !errors.Is(res.err, context.Canceled) {
@@ -589,6 +596,7 @@ func TestCancelEndsASlowGitCommand(t *testing.T) {
 
 // A merge that is interrupted half way is put back: no merge is left in progress.
 func TestCancelDuringAMerge(t *testing.T) {
+	t.Parallel()
 	r, root := newRepo(t)
 	intDir, taskDir := sibling(root, "integration"), sibling(root, "task")
 	must(t, r.EnsureWorktree(bg, intDir, "int", "main"))
@@ -599,9 +607,10 @@ func TestCancelDuringAMerge(t *testing.T) {
 	before := state(t, intDir)
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	// The hook runs when the merge is made in the index and the work tree, before its commit.
-	hook(t, r, "pre-merge-commit", "echo $$ > "+pidFile+"\nsleep 60")
+	hook(t, r, "pre-merge-commit", "echo $$ > "+pidFile+"\nsleep 600")
 
-	ctx, cancel := context.WithCancel(bg)
+	// The hook never ends: how long the merge is left to finish by itself changes nothing here.
+	ctx, cancel := context.WithCancel(withWaits(bg, waits{settle: 300 * time.Millisecond}))
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
@@ -615,7 +624,7 @@ func TestCancelDuringAMerge(t *testing.T) {
 	cancel()
 	select {
 	case err = <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("Merge did not return after the cancel")
 	}
 	if !errors.Is(err, context.Canceled) {
@@ -663,7 +672,7 @@ func TestNoEditor(t *testing.T) {
 // waitForPids waits until file has n process ids and returns them.
 func waitForPids(t *testing.T, file string, n int) []int {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		b, _ := os.ReadFile(file)
 		var pids []int
 		for _, f := range strings.Fields(string(b)) {

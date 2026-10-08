@@ -36,6 +36,7 @@ func spawnsOf(f *agenttest.Fake, chatID string) []agent.SpawnOptions {
 
 // The options table: what the manager sets per kind of chat, whole structs compared.
 func TestSpawnOptionsPerKindOfChat(t *testing.T) {
+	t.Parallel()
 	e, _, f := ownFakeEnv(t, model.Claude)
 	// A run's agent can start a subagent only inside a turn of its own: the turn that is sent
 	// "spawn" starts one, as an agent's spawn_subagent call does.
@@ -174,6 +175,7 @@ func TestSpawnOptionsPerKindOfChat(t *testing.T) {
 
 // A session that does not exist, for each kind of agent, and the fresh start that follows it.
 func TestNoSessionPerKind(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
 		t.Run(string(kind), func(t *testing.T) {
 			e, _, f := ownFakeEnv(t, kind)
@@ -213,6 +215,9 @@ func TestNoSessionPerKind(t *testing.T) {
 			if e.m.Busy(id) || e.m.TurnRunning(id) {
 				t.Fatal("the chat is busy after \"no session\"")
 			}
+			// The manager learns of the exit from the process's events, a moment after the
+			// process has ended.
+			waitFor(t, "the manager to see the exit", func() bool { st, _ := e.m.OwnedState(id); return !st.HasProcess })
 			if st, _ := e.m.OwnedState(id); st.HasProcess {
 				t.Fatalf("a process is left: %+v", st)
 			}

@@ -205,6 +205,7 @@ var forkKinds = []model.AgentKind{model.Pi, model.Claude, model.Cursor}
 // A fork that has had no message takes another model and effort: its process is started again on
 // them, in the order each agent needs.
 func TestConfigureFreshFork(t *testing.T) {
+	t.Parallel()
 	for _, kind := range forkKinds {
 		t.Run(string(kind), func(t *testing.T) {
 			e := newEnv(t)
@@ -327,6 +328,7 @@ func TestConfigureFreshFork(t *testing.T) {
 
 // A choice that resolves to the one the fork has starts nothing.
 func TestConfigureFreshForkSameChoice(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, id, sp := e.freshFork(model.Claude)
 	file := e.file(id, "chat.json")
@@ -363,6 +365,7 @@ func TestConfigureFreshForkSameChoice(t *testing.T) {
 
 // A fresh fork's folder is fixed as a started chat's is: only a missing one is replaced.
 func TestConfigureFreshForkFolderRefused(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, id, sp := e.freshFork(model.Claude)
 	file := e.file(id, "chat.json")
@@ -412,6 +415,7 @@ func TestConfigureFreshForkFolderRefused(t *testing.T) {
 // After a restart of the app the fork has no process: the change starts one the same way, with
 // nothing to close.
 func TestConfigureFreshForkNoProcess(t *testing.T) {
+	t.Parallel()
 	for _, kind := range forkKinds {
 		t.Run(string(kind), func(t *testing.T) {
 			e := newEnv(t)
@@ -464,6 +468,7 @@ func TestConfigureFreshForkNoProcess(t *testing.T) {
 // first one was: the fork is held, also after a restart of the app, which holds nothing. A turn
 // end of the new process starts no turn for a result the fork owes; the human's message carries it.
 func TestConfigureFreshForkStartsNoTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent, sa, child := e.spawnLinked()
 	e.finish(child, "the report")
@@ -499,6 +504,7 @@ func TestConfigureFreshForkStartsNoTurn(t *testing.T) {
 
 // The fork's first accepted message fixes its model and effort, also one its agent refuses.
 func TestConfigureFreshForkLocksAtFirstMessage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, id, sp := e.freshFork(model.Claude)
 	e.configure(id, ConfigReq{Model: "haiku"})
@@ -533,6 +539,7 @@ func TestConfigureFreshForkLocksAtFirstMessage(t *testing.T) {
 
 // A start that fails leaves the record with the previous choice, and the answer is the failure.
 func TestConfigureFreshForkRestartFails(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("the start failed")
 	for _, kind := range forkKinds {
 		t.Run(string(kind), func(t *testing.T) {
@@ -662,6 +669,7 @@ func TestConfigureFreshForkRestartFails(t *testing.T) {
 // has gone on, or is gone, the change is refused before the fork's process is closed, and the fork
 // is as it was. While the source still ends there, the fork is made again of it.
 func TestConfigureFreshForkNoPoint(t *testing.T) {
+	t.Parallel()
 	gone := map[string]func(e *env, src string){
 		"the source went on": func(e *env, src string) { e.turn(src, nil, 2) },
 		"the source deleted": func(e *env, src string) {
@@ -774,6 +782,7 @@ func TestConfigureFreshForkNoPoint(t *testing.T) {
 // A Cursor fork's new session id is in chat.json before its old store is given up: when that save
 // fails the fork keeps its process, its store and its choice, and the new fork is given up instead.
 func TestConfigureFreshForkSaveFails(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("root writes in a read-only folder")
 	}
@@ -845,6 +854,7 @@ func TestConfigureFreshForkSaveFails(t *testing.T) {
 
 // What the closed process still says is dropped: the fork is the new process's from the close on.
 func TestConfigureFreshForkLateEvents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, id, sp := e.freshFork(model.Claude)
 	first, n := e.started(model.Claude), len(e.items(id))
@@ -875,6 +885,7 @@ func TestConfigureFreshForkLateEvents(t *testing.T) {
 // pi fails a session whose conversation does not fit the model's window: the change is refused
 // before anything is closed, by the context the fork got from its source.
 func TestConfigureFreshForkWindow(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sp := e.logged(model.Pi)
 	src, _ := e.piTalked()
@@ -919,6 +930,7 @@ func TestConfigureFreshForkWindow(t *testing.T) {
 // a Send are refused, a Stop does nothing, and a fork deleted or archived meanwhile gets no
 // process.
 func TestConfigureFreshForkAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []model.AgentKind{model.Claude, model.Cursor} {
 		t.Run(string(kind), func(t *testing.T) {
 			e := newEnv(t)

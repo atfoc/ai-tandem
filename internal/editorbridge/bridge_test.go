@@ -118,6 +118,7 @@ func expectOpen(t *testing.T, done chan callResult) {
 // ---- streams ----
 
 func TestFirstClientGetsHelloAndSnapshot(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, func() any { return map[string]any{"groups": []string{"g1"}} })
 	a := bridgetest.Connect(t, srv.URL, "A")
 	h := a.Expect("hello")
@@ -137,6 +138,7 @@ func TestFirstClientGetsHelloAndSnapshot(t *testing.T) {
 }
 
 func TestMissingClientID(t *testing.T) {
+	t.Parallel()
 	_, srv := newTestServer(t, nil)
 	resp, err := srv.Client().Get(srv.URL + "/api/events")
 	if err != nil {
@@ -149,14 +151,24 @@ func TestMissingClientID(t *testing.T) {
 }
 
 func TestDefaultHandoverDelay(t *testing.T) {
-	if New(nil).handoverAfter != 3*time.Second {
+	t.Parallel()
+	b := New(nil)
+	if b.handoverAfter != 3*time.Second {
 		t.Fatal("handover delay is not 3s")
+	}
+	if apiHandoverDelay != 10*time.Second || b.apiHandoverAfter != apiHandoverDelay {
+		t.Fatal("handover delay of an API holder is not 10s")
+	}
+	b.SetHandoverDelay(time.Millisecond)
+	if b.handoverAfter != time.Millisecond || b.apiHandoverAfter != time.Millisecond {
+		t.Fatal("SetHandoverDelay did not set both delays")
 	}
 }
 
 // A second stream with a connected id replaces the first: the old record ends and the new one
 // holds and follows nothing (AC38).
 func TestSecondStreamWithConnectedIDReplacesFirst(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a1 := open(t, srv, "A")
 	w := open(t, srv, "W")
@@ -200,6 +212,7 @@ func TestSecondStreamWithConnectedIDReplacesFirst(t *testing.T) {
 
 // A page that has only opened a stream is given no board and no tool call (AC38).
 func TestStreamOnlyPageGetsNoBoardAndNoCall(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 
@@ -246,6 +259,7 @@ func TestStreamOnlyPageGetsNoBoardAndNoCall(t *testing.T) {
 // ---- holding a board (AC39) ----
 
 func TestTakeFreeBoard(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.SceneRev = func(board string) int64 {
 		if board == "b1" {
@@ -293,6 +307,7 @@ func TestTakeFreeBoard(t *testing.T) {
 }
 
 func TestTwoPagesHoldTwoBoards(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	take(t, b, "A", "b1", false, "held")
@@ -305,6 +320,7 @@ func TestTwoPagesHoldTwoBoards(t *testing.T) {
 }
 
 func TestTakeHeldBoardWithRelease(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	var rev atomic.Int64
 	rev.Store(3)
@@ -343,6 +359,7 @@ func TestTakeHeldBoardWithRelease(t *testing.T) {
 }
 
 func TestSilentHolderLosesBoardAfterDelay(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.handoverAfter = 200 * time.Millisecond
 	a, c := open(t, srv, "A"), open(t, srv, "B")
@@ -368,6 +385,7 @@ func TestSilentHolderLosesBoardAfterDelay(t *testing.T) {
 }
 
 func TestTakeIfFreeOfHeldBoardIsBusy(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.handoverAfter = 50 * time.Millisecond
 	a, c := open(t, srv, "A"), open(t, srv, "B")
@@ -381,6 +399,7 @@ func TestTakeIfFreeOfHeldBoardIsBusy(t *testing.T) {
 }
 
 func TestSecondWaiterSupersedesFirst(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.handoverAfter = time.Minute
 	a, w1, w2 := open(t, srv, "A"), open(t, srv, "B"), open(t, srv, "C")
@@ -415,6 +434,7 @@ func TestSecondWaiterSupersedesFirst(t *testing.T) {
 }
 
 func TestStreamEndPromotesWaiter(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.handoverAfter = time.Minute
 	a, c := open(t, srv, "A"), open(t, srv, "B")
@@ -434,6 +454,7 @@ func TestStreamEndPromotesWaiter(t *testing.T) {
 }
 
 func TestRegrant(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	var rev atomic.Int64
 	b.SceneRev = func(string) int64 { return rev.Load() }
@@ -474,6 +495,7 @@ func TestRegrant(t *testing.T) {
 }
 
 func TestStreamEndRemovesItsWait(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.handoverAfter = 100 * time.Millisecond
 	a, c := open(t, srv, "A"), open(t, srv, "B")
@@ -492,6 +514,7 @@ func TestStreamEndRemovesItsWait(t *testing.T) {
 }
 
 func TestReconnectHoldsNothing(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 	take(t, b, "A", "b1", false, "held")
@@ -512,6 +535,7 @@ func TestReconnectHoldsNothing(t *testing.T) {
 }
 
 func TestFreeBoard(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.handoverAfter = time.Minute
 
@@ -578,6 +602,7 @@ func TestFreeBoard(t *testing.T) {
 // Many clients keep taking one board, each releasing when it is asked. No client is granted the
 // board before the one before it let go.
 func TestOneHolderAtATime(t *testing.T) {
+	t.Parallel()
 	b := New(nil)
 	b.handoverAfter = time.Minute
 	const clients, grants = 6, 150
@@ -661,6 +686,7 @@ func TestOneHolderAtATime(t *testing.T) {
 // Random takes, releases, calls and stream ends from many goroutines keep the records
 // consistent: a board has one holder, and a waiter only while it is held.
 func TestRecordsStayConsistent(t *testing.T) {
+	t.Parallel()
 	b := New(nil)
 	b.handoverAfter = time.Millisecond
 	ids := []string{"c0", "c1", "c2", "c3", "c4"}
@@ -750,6 +776,7 @@ func TestRecordsStayConsistent(t *testing.T) {
 // ---- board calls (AC40) ----
 
 func TestCallGoesToHolderOfTarget(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	take(t, b, "A", "b1", false, "held")
@@ -780,6 +807,7 @@ func TestCallGoesToHolderOfTarget(t *testing.T) {
 }
 
 func TestCallOnFreeTargetGoesToHolderOfChatBoard(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.SceneRev = func(board string) int64 { return int64(len(board)) }
 	a, c := open(t, srv, "A"), open(t, srv, "B")
@@ -807,6 +835,7 @@ func TestCallOnFreeTargetGoesToHolderOfChatBoard(t *testing.T) {
 }
 
 func TestCallFallsBackToLastPageThatActed(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	b.Acted("B")
@@ -840,6 +869,7 @@ func TestCallFallsBackToLastPageThatActed(t *testing.T) {
 }
 
 func TestCallBoardNoClient(t *testing.T) {
+	t.Parallel()
 	b := New(nil)
 	start := time.Now()
 	for _, spec := range []CallSpec{{Method: "tool", Board: "b1", ChatBoard: "b2"}, {Method: "tool", Screen: true}} {
@@ -853,6 +883,7 @@ func TestCallBoardNoClient(t *testing.T) {
 }
 
 func TestCallBoardTimeout(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 	take(t, b, "A", "b1", false, "held")
@@ -867,6 +898,7 @@ func TestCallBoardTimeout(t *testing.T) {
 }
 
 func TestReplyFromAnotherClientIsRefused(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	take(t, b, "A", "b1", false, "held")
@@ -898,6 +930,7 @@ func TestReplyFromAnotherClientIsRefused(t *testing.T) {
 }
 
 func TestLosingBoardFailsItsCallsOnly(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	b.handoverAfter = time.Minute
 	a := open(t, srv, "A")
@@ -942,6 +975,7 @@ func TestLosingBoardFailsItsCallsOnly(t *testing.T) {
 }
 
 func TestStreamEndFailsAllCalls(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 	take(t, b, "A", "b1", false, "held")
@@ -972,6 +1006,7 @@ func TestStreamEndFailsAllCalls(t *testing.T) {
 // One row of the table at a time, with a page that follows the chat and the run and one that
 // does not.
 func TestEventsTable(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	f, n := open(t, srv, "F"), open(t, srv, "N")
 	if !b.Follow("F", Chat("c1")) || !b.Follow("F", Run("r1")) {
@@ -1058,6 +1093,17 @@ func TestEventsTable(t *testing.T) {
 				sent(t, typ, true)
 				b.Broadcast(ev)
 				sent(t, typ, true)
+			case rule.Per == PerBoard:
+				if rule.Class != List {
+					t.Fatalf("a %v type of a board", rule.Class)
+				}
+				b.SendBoard("b1", ev) // every page has every board
+				sent(t, typ, true)
+				// Sent as an event of no item, or of a chat, it goes to every page too.
+				b.Broadcast(ev)
+				sent(t, typ, true)
+				b.SendChat("c1", true, ev)
+				sent(t, typ, true)
 			}
 		})
 	}
@@ -1084,12 +1130,13 @@ func TestEventsTable(t *testing.T) {
 
 // The rows the plan names are all in the table, with their class.
 func TestEventsRows(t *testing.T) {
+	t.Parallel()
 	want := map[string]Rule{
 		"hello": {Role, PerNone, false}, "snapshot": {Role, PerNone, false},
 		"release_request": {Role, PerNone, false}, "superseded": {Role, PerNone, false}, "held": {Role, PerNone, false},
 		"rpc": {Role, PerNone, false}, "server_stopping": {Role, PerNone, false},
 		"groups": {List, PerNone, true}, "defaults": {List, PerNone, true},
-		"board": {List, PerNone, true}, "board_removed": {List, PerNone, true},
+		"board": {List, PerBoard, false}, "board_removed": {List, PerBoard, false},
 		"catalog": {List, PerNone, false}, "agents": {List, PerNone, false},
 		"servers": {List, PerNone, true}, "server_state": {List, PerNone, true},
 		"server_lists": {List, PerNone, true}, "server_back": {List, PerNone, true},
@@ -1111,6 +1158,7 @@ func TestEventsRows(t *testing.T) {
 }
 
 func TestContentOnlyAfterFollow(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 	items := map[string]any{"type": "chat_items", "chat": "c1"}
@@ -1155,6 +1203,7 @@ func TestContentOnlyAfterFollow(t *testing.T) {
 }
 
 func TestTwoFollowersGetTheSameBytes(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c, n := open(t, srv, "A"), open(t, srv, "B"), open(t, srv, "N")
 	b.Follow("B", Chat("c1"))
@@ -1187,6 +1236,7 @@ func TestTwoFollowersGetTheSameBytes(t *testing.T) {
 }
 
 func TestUnfollow(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	b.Follow("A", Chat("c1"))
@@ -1211,6 +1261,7 @@ func TestUnfollow(t *testing.T) {
 }
 
 func TestForget(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	for _, id := range []string{"A", "B"} {
@@ -1240,6 +1291,7 @@ func TestForget(t *testing.T) {
 // ---- stopping ----
 
 func TestStopAndFlushWaitsForEveryHolder(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	// No client: returns at once.
 	start := time.Now()

@@ -292,26 +292,21 @@ func (r *run) delivTidy(ctx context.Context, repo *rungit.Repo, g *Git, d model.
 	if d.State != model.DeliveryApplied || d.Result == "" {
 		return
 	}
-	names, err := repo.Branches(ctx, engTaskBranch(r.id, ""))
+	names, err := repo.MergedBranches(ctx, engTaskBranch(r.id, ""), d.Result)
 	if err != nil {
 		log.Printf("runs: the branches of %s: %v", r.id, err)
 		return
 	}
 	elsewhere := d.Branch != "" && r.delivElsewhere(ctx, repo, g, d.Result, d.Branch)
+	var gone []string
 	for _, name := range names {
 		if name == engIntBranch(r.id, g) && !elsewhere {
 			continue
 		}
-		head, err := repo.Resolve(ctx, "refs/heads/"+name)
-		if err != nil {
-			continue
-		}
-		if in, err := repo.IsAncestor(ctx, head, d.Result); err != nil || !in {
-			continue
-		}
-		if err := repo.DeleteBranch(ctx, name); err != nil {
-			log.Printf("runs: delete branch %s: %v", name, err)
-		}
+		gone = append(gone, name)
+	}
+	if err := repo.DeleteBranches(ctx, gone...); err != nil {
+		log.Printf("runs: delete the branches of %s: %v", r.id, err)
 	}
 }
 
@@ -335,7 +330,7 @@ func (r *run) delivDropBranches(ctx context.Context, repo *rungit.Repo, g *Git) 
 	if was != nil && was.State == model.DeliveryApplied {
 		first = was.Branch
 	}
-	var failed error
+	var gone []string
 	for _, name := range names {
 		if name == engIntBranch(r.id, g) {
 			head, err := repo.Resolve(ctx, "refs/heads/"+name)
@@ -343,9 +338,7 @@ func (r *run) delivDropBranches(ctx context.Context, repo *rungit.Repo, g *Git) 
 				continue
 			}
 		}
-		if err := repo.DeleteBranch(ctx, name); err != nil && failed == nil {
-			failed = err
-		}
+		gone = append(gone, name)
 	}
-	return failed
+	return repo.DeleteBranches(ctx, gone...)
 }

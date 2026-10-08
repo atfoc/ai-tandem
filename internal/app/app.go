@@ -69,10 +69,10 @@ var (
 	ErrGroupArchived = errors.New("the group is archived")
 )
 
-// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats and their
-// branches' states from Chats, and those of other servers and the servers' lists from Remotes;
-// runs from Runs, and those of other servers from Remotes. They are read one after the other, not
-// at one moment.
+// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List, and those of
+// other servers from Remotes; chats and their branches' states from Chats, and those of other
+// servers and the servers' lists from Remotes; runs from Runs, and those of other servers from
+// Remotes. They are read one after the other, not at one moment.
 func (a *App) Snapshot() Snapshot {
 	cl := claude.Catalog
 	snap := Snapshot{
@@ -97,6 +97,9 @@ func (a *App) Snapshot() Snapshot {
 		}
 	})
 	snap.Boards = a.Boards.List()
+	if a.Remotes != nil {
+		a.withBoardRecords(&snap)
+	}
 	snap.Servers = a.Servers.Views()
 	snap.Chats = a.Chats.Views()
 	snap.States = a.Chats.States()

@@ -11,6 +11,7 @@ import (
 
 // A result that becomes owed while the parent is thinking waits for the clean end of that turn.
 func TestPendingResultGoesOutAtTurnEnd(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := listen(t, e.br)
 	id, parent := e.startSpawnParent() // mid-turn
@@ -61,6 +62,7 @@ func TestPendingResultGoesOutAtTurnEnd(t *testing.T) {
 // The agent's own permission request answered mid-turn: its turn goes on, and a result owed by then
 // waits for that turn's end.
 func TestOwnPermissionAnsweredKeepsResultPending(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.startSpawnParent() // mid-turn
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -92,6 +94,7 @@ func TestOwnPermissionAnsweredKeepsResultPending(t *testing.T) {
 // The chat leaves approval because the subagent that asked was stopped with stop_subagent, or (a
 // native one) ended: the results owed by then are delivered.
 func TestAskerGoneDeliversOwedResults(t *testing.T) {
+	t.Parallel()
 	t.Run("stop_subagent", func(t *testing.T) {
 		e := newEnv(t)
 		id, parent := e.idleParent()
@@ -144,6 +147,7 @@ func TestAskerGoneDeliversOwedResults(t *testing.T) {
 // end. It is closed when the process exits, also when the chat is idle then, so it cannot keep the
 // chat in approval after a later subagent's request is answered.
 func TestIdleExitClosesLatePermission(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, parent := e.subStart()
 	subRun(t, parent, "t1")

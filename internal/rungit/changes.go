@@ -34,8 +34,16 @@ func (r *Repo) Changes(ctx context.Context, base, head string) ([]FileChange, er
 	if err := errors.Join(checkArg("ref", base), checkArg("ref", head)); err != nil {
 		return nil, err
 	}
-	diff := func(format string) ([]string, error) {
-		return r.runZ(ctx, r.root, "diff", "--no-ext-diff", "--no-textconv", "-M", format, "-z", base, head, "--")
+	diff := func(format ...string) ([]string, error) {
+		args := append([]string{"diff", "--no-ext-diff", "--no-textconv", "-M"}, format...)
+		return r.runZ(ctx, r.root, append(args, "-z", base, head, "--")...)
+	}
+	// One command for both lists. When it fails, or prints something else than the entries of
+	// --raw followed by one entry of --numstat for each of them, each list is asked for by itself.
+	if both, err := diff("--raw", "--numstat"); err == nil {
+		if changes, ok := bothLists(both); ok {
+			return changes, nil
+		}
 	}
 	names, err := diff("--name-status")
 	if err != nil {
@@ -45,7 +53,55 @@ func (r *Repo) Changes(ctx context.Context, base, head string) ([]FileChange, er
 	if err != nil {
 		return nil, err
 	}
-	changes := []FileChange{}
+	changes, _, err := fileChanges(names, stats)
+	return changes, err
+}
+
+// bothLists makes the list of Changes from what git diff --raw --numstat -z printed. ok is false
+// when that is something else than the entries of --raw followed by one entry of --numstat for
+// each of them: counts with no entry of --raw before them are not "no changes".
+func bothLists(entries []string) (changes []FileChange, ok bool) {
+	names, stats, ok := splitRaw(entries)
+	if !ok || len(names) == 0 && len(stats) > 0 {
+		return nil, false
+	}
+	changes, counted, err := fileChanges(names, stats)
+	if err != nil || counted != len(changes) {
+		return nil, false
+	}
+	return changes, true
+}
+
+// splitRaw splits what git diff --raw --numstat -z printed into the entries that --name-status
+// and --numstat print. The entries of --raw come first: each is ":mode mode sha sha status" and is
+// followed by its path, or by the old and the new path when the status is a rename or a copy. A
+// path may start with a colon too, which is why the paths are counted. ok is false when an entry
+// is not of that form.
+func splitRaw(entries []string) (names, stats []string, ok bool) {
+	i := 0
+	for i < len(entries) && strings.HasPrefix(entries[i], ":") {
+		f := strings.Split(entries[i], " ")
+		if len(f) != 5 || f[4] == "" || strings.Contains(f[4], "\t") {
+			return nil, nil, false
+		}
+		paths := 1
+		if f[4][0] == 'R' || f[4][0] == 'C' {
+			paths = 2
+		}
+		if i+paths >= len(entries) {
+			return nil, nil, false
+		}
+		names = append(names, f[4])
+		names = append(names, entries[i+1:i+1+paths]...)
+		i += 1 + paths
+	}
+	return names, entries[i:], true
+}
+
+// fileChanges makes the list of Changes from the entries of git diff --name-status -z (names) and
+// --numstat -z (stats). counted is the number of files that stats had the counts of.
+func fileChanges(names, stats []string) (changes []FileChange, counted int, err error) {
+	changes = []FileChange{}
 	at := map[string]int{}
 	for i := 0; i < len(names); i++ {
 		c := FileChange{Status: names[i][:1]}
@@ -57,7 +113,7 @@ func (r *Repo) Changes(ctx context.Context, base, head string) ([]FileChange, er
 			c.Status = "M"
 		}
 		if i+paths >= len(names) {
-			return nil, fmt.Errorf("git diff --name-status: unexpected output %q", strings.Join(names, " "))
+			return nil, 0, fmt.Errorf("git diff --name-status: unexpected output %q", strings.Join(names, " "))
 		}
 		if paths == 2 {
 			c.OldPath = names[i+1]
@@ -75,7 +131,7 @@ func (r *Repo) Changes(ctx context.Context, base, head string) ([]FileChange, er
 	for i := 0; i < len(stats); i++ {
 		f := strings.SplitN(stats[i], "\t", 3)
 		if len(f) != 3 {
-			return nil, fmt.Errorf("git diff --numstat: unexpected output %q", stats[i])
+			return nil, 0, fmt.Errorf("git diff --numstat: unexpected output %q", stats[i])
 		}
 		path := f[2]
 		if path == "" && i+2 < len(stats) {
@@ -86,6 +142,7 @@ func (r *Repo) Changes(ctx context.Context, base, head string) ([]FileChange, er
 		if !ok {
 			continue
 		}
+		counted++
 		if f[0] == "-" {
 			changes[n].Binary = true
 			continue
@@ -94,7 +151,7 @@ func (r *Repo) Changes(ctx context.Context, base, head string) ([]FileChange, er
 		changes[n].Deleted, _ = strconv.Atoi(f[1])
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
-	return changes, nil
+	return changes, counted, nil
 }
 
 // Commits lists the commits that are in head and not in base (base..head), oldest first. The

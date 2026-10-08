@@ -245,6 +245,7 @@ func oks(b model.TreeBranchView) []int {
 // ---- the record -----------------------------------------------------------
 
 func TestTreeHelpers(t *testing.T) {
+	t.Parallel()
 	tr := exampleTree
 	tr.Branches = append([]model.TreeBranch{}, tr.Branches...)
 	tr.Branches = append(tr.Branches, model.TreeBranch{ID: "deadbeef", From: exBranch, At: 5})
@@ -293,6 +294,7 @@ func TestTreeHelpers(t *testing.T) {
 }
 
 func TestLabelsOnPath(t *testing.T) {
+	t.Parallel()
 	onMain := model.TreeLabel{Branch: model.MainBranch, Item: 1, Text: "options"}
 	for _, c := range []struct {
 		branch string
@@ -311,6 +313,7 @@ func TestLabelsOnPath(t *testing.T) {
 }
 
 func TestReadAndUpdateTree(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if tr, err := e.m.readTree(v.ID); err != nil || !reflect.DeepEqual(tr, model.Tree{}) {
@@ -353,6 +356,7 @@ func TestReadAndUpdateTree(t *testing.T) {
 // ---- Tree -----------------------------------------------------------------
 
 func TestTreeExample(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.example(model.Claude)
 	if err := os.WriteFile(e.m.treePath(id), []byte(exampleTreeJSON), 0o600); err != nil {
@@ -382,6 +386,7 @@ func TestTreeExample(t *testing.T) {
 // Tree reads the files itself: a chat not opened in this run stays unloaded, with its
 // interrupted turn and its running subagent as they were.
 func TestTreeLoadsNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	dir := e.st.P.ChatDir(v.ID)
@@ -456,6 +461,7 @@ func TestTreeLoadsNothing(t *testing.T) {
 }
 
 func TestTreeUnreadableRecord(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.example(model.Claude)
 	bad := []byte(`{"branches":[{"id":"a1b2c3d4","from":"main","at":3}`)
@@ -487,6 +493,7 @@ func TestTreeUnreadableRecord(t *testing.T) {
 }
 
 func TestTreeLeavesOutUnreadableBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.example(model.Claude)
 	tr := model.Tree{
@@ -541,6 +548,7 @@ func TestTreeLeavesOutUnreadableBranches(t *testing.T) {
 }
 
 func TestTreePiPoints(t *testing.T) {
+	t.Parallel()
 	// The turn at 3 was cut without a mark.
 	items := []model.Item{
 		{Kind: "user", Text: "one"},
@@ -622,6 +630,7 @@ func TestTreeRunningBranch(t *testing.T) {
 // A message that is only quotes is named in the tree by its first quote: the comment, else the
 // quoted words. A message with text keeps its text.
 func TestTreeQuotesOnlyMessage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 1)
 	for _, refs := range [][]model.Reference{
@@ -654,6 +663,7 @@ func TestTreeQuotesOnlyMessage(t *testing.T) {
 // ---- SetLabel -------------------------------------------------------------
 
 func TestSetLabel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.example(model.Claude)
 	e.writeTree(id, model.Tree{Branches: exampleTree.Branches, Current: exBranch})
@@ -751,6 +761,7 @@ func TestSetLabel(t *testing.T) {
 }
 
 func TestSetLabelUnsplitChatSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.writeItems(v.ID, exampleMain())
@@ -789,6 +800,7 @@ func TestSetLabelUnsplitChatSurvivesRestart(t *testing.T) {
 }
 
 func TestSetLabelErrors(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	note := append(exampleMain(), model.Item{Kind: "note", Tone: "muted", Text: "Stopped."})
 
@@ -839,6 +851,7 @@ func TestSetLabelErrors(t *testing.T) {
 // A label is one clean line of at most 200 characters: control characters become spaces, and a
 // longer label is refused and changes nothing.
 func TestSetLabelCleanAndBounded(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.writeItems(v.ID, exampleMain())
@@ -880,6 +893,7 @@ func TestSetLabelCleanAndBounded(t *testing.T) {
 // A reply the thread shows as done can be labeled before the pump has written it: the tree and
 // the label read the loaded list, which is ahead of items.jsonl.
 func TestSetLabelWhileBusy(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.send(v.ID, "ask", "")
@@ -916,6 +930,7 @@ func TestSetLabelWhileBusy(t *testing.T) {
 }
 
 func TestSetLabelArchivedAndLegacy(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	e.writeItems(v.ID, exampleMain())
@@ -940,6 +955,7 @@ func TestSetLabelArchivedAndLegacy(t *testing.T) {
 }
 
 func TestSetLabelConcurrent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	const n = 24
@@ -1064,6 +1080,7 @@ func TestTreeEventOnTurnStartAndEnd(t *testing.T) {
 }
 
 func TestTreeEventOfANonCurrentBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 	_, branchAg := e.bothRunning(id)
@@ -1096,6 +1113,7 @@ func TestTreeEventOfANonCurrentBranch(t *testing.T) {
 }
 
 func TestTreeEventOnListing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	evs := e.listen()
@@ -1148,6 +1166,7 @@ func TestTreeEventOnListing(t *testing.T) {
 }
 
 func TestTreeEventOnLabel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.example(model.Claude)
 	e.writeTree(id, model.Tree{Branches: exampleTree.Branches, Current: exBranch})
@@ -1210,6 +1229,7 @@ func mustJSON(t *testing.T, v any) []byte {
 }
 
 func TestTreeEventOnCurrentChange(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 	b, _, fa := e.branchTo(id, newAt(3), "another way")
@@ -1254,6 +1274,7 @@ func TestTreeEventOnCurrentChange(t *testing.T) {
 // The invariant a client relies on: the tree it read once, with every part since applied to it,
 // is the tree it would read now, whenever no turn is in the middle of its items.
 func TestTreeEventsMatchTree(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 	evs := e.listen()
@@ -1330,6 +1351,7 @@ func TestTreeEventsMatchTree(t *testing.T) {
 }
 
 func TestTreeEventStoppedSubagentsNote(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 1)
 	e.waiting(id)
@@ -1354,6 +1376,7 @@ func TestTreeEventStoppedSubagentsNote(t *testing.T) {
 // Parts of two branches and the labels, all changing at once: whatever order the events of
 // different parts come in, the last of each part is the newest.
 func TestTreeEventsInOrder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 	mainAg, branchAg := e.bothRunning(id)
@@ -1423,6 +1446,10 @@ func TestTreeEventsInOrder(t *testing.T) {
 	}
 }
 
+// No event of a chat is sent after its chat_removed: no tree event, and none of the others (see
+// Manager.cast).
+//
+// Not parallel: the rounds below race a Delete against five goroutines that never rest.
 func TestTreeEventNotAfterDelete(t *testing.T) {
 	e := newEnv(t)
 	removed := func(id string) func(map[string]any) bool {

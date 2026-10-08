@@ -53,6 +53,7 @@ func (h *hookCalls) none(d time.Duration) {
 
 // The three rows of the remote chats reach pages and no API client.
 func TestServerRowsReachPagesOnly(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	p, q := open(t, srv, "P"), open(t, srv, "Q")
@@ -94,6 +95,7 @@ func TestServerRowsReachPagesOnly(t *testing.T) {
 
 // chat_reload goes to the pages that follow its chat, and to no other.
 func TestChatReloadReachesFollowersOnly(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	f, n, o := open(t, srv, "F"), open(t, srv, "N"), open(t, srv, "O")
 	s := &sentinel{b: b}
@@ -123,6 +125,7 @@ func TestChatReloadReachesFollowersOnly(t *testing.T) {
 
 // The hook is called for the last follower's Unfollow, and not while another client follows.
 func TestUnfollowedByUnfollow(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	open(t, srv, "A")
@@ -174,6 +177,7 @@ func TestUnfollowedByUnfollow(t *testing.T) {
 
 // A stream's end calls the hook once, with every item that client was the last to follow.
 func TestUnfollowedByStreamEnd(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	a, bb := open(t, srv, "A"), open(t, srv, "B")
@@ -246,6 +250,7 @@ func waitGone(t *testing.T, b *Bridge, id string) {
 
 // Forget and a removal end follows and call nothing.
 func TestUnfollowedNotByForget(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 	h := hookOf(t, b)
@@ -273,6 +278,7 @@ func TestUnfollowedNotByForget(t *testing.T) {
 // The hook runs outside the bridge's lock: it calls back into the bridge, and the bridge is not
 // held up by a hook that takes its time.
 func TestUnfollowedOutsideTheLock(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 	open(t, srv, "B")
@@ -331,6 +337,7 @@ func TestUnfollowedOutsideTheLock(t *testing.T) {
 
 // Follows, unfollows, stream ends and a hook that calls back, all at once (for -race).
 func TestUnfollowedConcurrently(t *testing.T) {
+	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	var mu sync.Mutex
 	lost := 0

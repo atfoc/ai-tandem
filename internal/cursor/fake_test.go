@@ -3,20 +3,25 @@ package cursor
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
 
 // The test binary doubles as a fake `agent acp` (the helper-process pattern): with
-// FAKE_ACP_SCRIPT set, TestMain plays that script instead of running the tests.
+// FAKE_ACP_SCRIPT set, TestMain plays that script instead of running the tests. The variables
+// named here come from the file a test wrote for its fake (fakeEnvFile), not from the test
+// process's environment.
 //
 // A script maps a method to the steps run when a request or notification with that method
 // arrives. A request with no script entry is answered by the stateful fake Cursor (fakeCursor)
@@ -30,6 +35,7 @@ type fakeStep struct {
 	Request json.RawMessage `json:"request,omitempty"` // {method, params}: send a request, wait for its answer
 	Wait    string          `json:"wait,omitempty"`    // wait until a message with this method arrives
 	Sleep   int             `json:"sleep,omitempty"`   // milliseconds
+	Until   string          `json:"until,omitempty"`   // wait until this file exists (the test's cue, see cue)
 	Hang    bool            `json:"hang,omitempty"`    // never answer; wait for stdin to close
 	Cursor  bool            `json:"cursor,omitempty"`  // answer the current request as fakeCursor does
 }
@@ -40,10 +46,10 @@ type fakeScript map[string][]fakeStep
 //
 //	FAKE_ACP_ARGS      file the fake writes its arguments to, one per line
 //	FAKE_ACP_CHILDREN  file: the fake starts one child in its own process group and one that
-//	                   leads a group of its own (each sleeps 30 s and holds none of the fake's
+//	                   leads a group of its own (each sleeps for fakeStays and holds none of the fake's
 //	                   pipes) and writes "<pid> <pid>" there
 //	FAKE_ACP_STAY      set: the fake keeps running after stdin closes, as `agent acp` does
-//	FAKE_ACP_SLEEP     set: the test binary only sleeps 30 s (a child of FAKE_ACP_CHILDREN)
+//	FAKE_ACP_SLEEP     set: the test binary only sleeps, for fakeStays (a child of FAKE_ACP_CHILDREN)
 //	FAKE_ACP_HOLD      set: the child of FAKE_ACP_CHILDREN that leads its own group holds the
 //	                   fake's stdout and stderr open
 //	FAKE_ACP_LATE      file: once stdin has closed, the fake starts one more child that leads a
@@ -51,11 +57,18 @@ type fakeScript map[string][]fakeStep
 //	FAKE_ACP_TRAP      file: the fake and its children do not end on SIGTERM; the fake appends
 //	                   "TERM" to the file when it gets one
 func TestMain(m *testing.M) {
+	loadFakeEnv()
+	if f := os.Getenv("FAKE_COST_ARGS"); f != "" {
+		runFakeCost(f)
+	}
+	if f := os.Getenv("FAKE_SQLITE_RECORD"); f != "" {
+		runFakeSQLite(f)
+	}
 	if os.Getenv("FAKE_ACP_SLEEP") != "" {
 		if os.Getenv("FAKE_ACP_TRAP") != "" {
 			signal.Ignore(syscall.SIGTERM)
 		}
-		time.Sleep(30 * time.Second)
+		time.Sleep(fakeStays)
 		os.Exit(0)
 	}
 	if path := os.Getenv("FAKE_ACP_SCRIPT"); path != "" {
@@ -74,11 +87,47 @@ func TestMain(m *testing.M) {
 			os.WriteFile(f, []byte(strconv.Itoa(pid)), 0o644)
 		}
 		if os.Getenv("FAKE_ACP_STAY") != "" {
-			time.Sleep(30 * time.Second)
+			time.Sleep(fakeStays)
 		}
 		os.Exit(0)
 	}
+	// For every test, as the fakes inherit it and tests that run in parallel cannot set it: no
+	// CURSOR_CONFIG_DIR from outside, and a -race fake does not wait 1 s before exiting.
+	outsideConfigDir = os.Getenv("CURSOR_CONFIG_DIR")
+	os.Setenv("CURSOR_CONFIG_DIR", "")
+	fakesExitAtOnce()
+	// No test waits for this bound; on a loaded machine a sqlite3 start alone can take longer
+	// than the 2 s it is outside the tests.
+	sqliteTimeout = 20 * time.Second
 	os.Exit(m.Run())
+}
+
+// mustHappen is how long a test waits for something that must happen: an event, a process that
+// has to start or to be gone. On a machine that is busy starting processes 10 s was too short for
+// that; a wait ends as soon as the thing happened, so only a failure takes this long.
+//
+// fakeStays is after how long a fake that stays (FAKE_ACP_STAY) and a sleeping child of a fake
+// (FAKE_ACP_SLEEP) exit on their own, so that none outlives a test binary that died before its
+// cleanup. It has to stay longer than mustHappen: what nobody ended must still be running when a
+// wait for it to be gone gives up, or the checks that Close ends a process pass by themselves.
+// Derived from the wait, so that the two cannot drift apart.
+const (
+	mustHappen = 60 * time.Second
+	fakeStays  = 3 * mustHappen
+)
+
+// outsideConfigDir is the CURSOR_CONFIG_DIR the test process was started with, which TestMain
+// clears: the real-Cursor e2e finds the user's login there.
+var outsideConfigDir string
+
+// fakesExitAtOnce sets GORACE for the processes the tests start, the fakes: a fake built with -race
+// would otherwise sleep 1 s before every exit (the race detector's atexit_sleep_ms). What GORACE
+// already holds is kept. The test binary itself read its GORACE when it started, so its own race
+// reporting is as it was.
+func fakesExitAtOnce() {
+	if old := os.Getenv("GORACE"); !strings.Contains(old, "atexit_sleep_ms") {
+		os.Setenv("GORACE", strings.TrimSpace(old+" atexit_sleep_ms=0"))
+	}
 }
 
 // trapTerm makes the fake outlive SIGTERM and note each one it gets in file.
@@ -246,6 +295,20 @@ func runFakeACP(scriptPath, recordPath, statePath string) {
 				}
 			case s.Sleep > 0:
 				time.Sleep(time.Duration(s.Sleep) * time.Millisecond)
+			case s.Until != "":
+				for {
+					if _, err := os.Stat(s.Until); err == nil {
+						break
+					}
+					select {
+					case a, ok := <-in:
+						if !ok {
+							return
+						}
+						queue = append(queue, a)
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
 			case s.Cursor:
 				answer(m)
 				answered = true
@@ -261,8 +324,38 @@ func runFakeACP(scriptPath, recordPath, statePath string) {
 	}
 }
 
-// fake sets up the fake agent for one test and returns the path of its record file.
-func fake(t *testing.T, script fakeScript) string {
+// fakeEnvFile is the file the fake reads its variables from. It lies next to the name the fake
+// was started under: each test starts the fake through a link of its own to the test binary
+// (fakeAgent.bin), so the variables reach the fake without going through the test process's
+// environment, and tests that start a fake can run in parallel.
+const fakeEnvFile = "fake-env.json"
+
+// loadFakeEnv puts the variables of fakeEnvFile, when there is one next to the name this process
+// was started under, into the environment. The test process itself has none.
+func loadFakeEnv() {
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(os.Args[0]), fakeEnvFile))
+	if err != nil {
+		return
+	}
+	var vars map[string]string
+	if err := json.Unmarshal(b, &vars); err != nil {
+		fmt.Fprintln(os.Stderr, "fake: ", err)
+		os.Exit(2)
+	}
+	for k, v := range vars {
+		os.Setenv(k, v)
+	}
+}
+
+// fakeAgent is the fake agent set up for one test.
+type fakeAgent struct {
+	bin    string // what the test starts: a link to the test binary, with fakeEnvFile next to it
+	record string // the fake's record file
+	vars   map[string]string
+}
+
+// fake sets up the fake agent for one test.
+func fake(t *testing.T, script fakeScript) *fakeAgent {
 	t.Helper()
 	dir := t.TempDir()
 	b, err := json.Marshal(script)
@@ -273,14 +366,119 @@ func fake(t *testing.T, script fakeScript) string {
 	if err := os.WriteFile(sp, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rp := filepath.Join(dir, "record.jsonl")
-	t.Setenv("FAKE_ACP_STATE", filepath.Join(dir, "cli-config.json"))
-	t.Setenv("FAKE_ACP_SCRIPT", sp)
-	t.Setenv("FAKE_ACP_RECORD", rp)
-	t.Setenv("FAKE_ACP_CURSOR_DATA_DIR", filepath.Join(dir, "cursor-data-dir"))
-	t.Setenv("FAKE_ACP_ARGS", filepath.Join(dir, "args"))
-	t.Setenv("GORACE", "atexit_sleep_ms=0") // a -race fake would otherwise wait 1 s before exiting
-	return rp
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The link has the test binary's name: alive tells a fake by it.
+	f := &fakeAgent{bin: filepath.Join(dir, filepath.Base(os.Args[0])), record: filepath.Join(dir, "record.jsonl")}
+	if err := os.Symlink(self, f.bin); err != nil {
+		t.Fatal(err)
+	}
+	f.vars = map[string]string{
+		"FAKE_ACP_STATE":           filepath.Join(dir, "cli-config.json"),
+		"FAKE_ACP_SCRIPT":          sp,
+		"FAKE_ACP_RECORD":          f.record,
+		"FAKE_ACP_CURSOR_DATA_DIR": filepath.Join(dir, "cursor-data-dir"),
+		"FAKE_ACP_ARGS":            filepath.Join(dir, "args"),
+	}
+	f.write(t)
+	return f
+}
+
+// cue returns a step at which the fake waits until the test calls give. A test paces a turn with
+// it where it has to see something first: unlike a sleep in the script, that takes no longer than
+// it must and does not depend on how fast the machine is.
+func cue(t *testing.T) (wait fakeStep, give func()) {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "cue")
+	// give may be called from a timer that fires after the test has ended (it failed early), and
+	// t.Error would then panic the whole test binary: once the test is over, give does nothing.
+	var mu sync.Mutex
+	over := false
+	t.Cleanup(func() {
+		mu.Lock()
+		over = true
+		mu.Unlock()
+	})
+	return fakeStep{Until: file}, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if over {
+			return
+		}
+		if err := os.WriteFile(file, nil, 0o644); err != nil {
+			t.Error(err) // not Fatal: give may be called from a timer
+		}
+	}
+}
+
+// readRecordSoFar is readRecord for a fake that may not have started or may have been killed in
+// the middle of a line: no file is no lines, and a line that is not whole is left out.
+func readRecordSoFar(path string) []recorded {
+	b, _ := os.ReadFile(path)
+	var out []recorded
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var r recorded
+		if line == "EOF" {
+			out = append(out, recorded{EOF: true})
+		} else if json.Unmarshal([]byte(line), &r) == nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// waitsOutBox runs a test of a time-out inside which a fake has to start first. Such a box is
+// short so that the test is fast, and on a loaded machine the start alone can take longer than
+// it: the box then ends before the fake got the request it never answers, which says nothing
+// about what the test is about. So run gets short boxes in turn (first, then 2 s and 8 s), each
+// with short set, and returns false when the fake did not get that far (and only then: everything
+// else it checks fails the test in every box). The last box, full, counts whatever happened in it.
+func waitsOutBox(t *testing.T, first, full time.Duration, run func(box time.Duration, short bool) bool) {
+	t.Helper()
+	for _, d := range []time.Duration{first, 2 * time.Second, 8 * time.Second} {
+		if run(d, true) {
+			return
+		}
+		t.Logf("%s was too short on this machine now", d)
+	}
+	run(full, false)
+}
+
+// fakeGone waits until no process started under the fake's name is left. For a fake whose record
+// cannot tell (it may have been ended before it wrote a line).
+func fakeGone(t *testing.T, f *fakeAgent) {
+	t.Helper()
+	for stop := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		// pgrep exits 1 when it found none.
+		err := exec.Command("pgrep", "-f", "^"+regexp.QuoteMeta(f.bin)+"( |$)").Run()
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return
+		}
+		if time.Now().After(stop) {
+			t.Fatalf("the fake %s is still running (pgrep: %v)", f.bin, err)
+		}
+	}
+}
+
+// set sets one more of the fake's variables. It holds for the fakes started after it.
+func (f *fakeAgent) set(t *testing.T, key, value string) {
+	t.Helper()
+	f.vars[key] = value
+	f.write(t)
+}
+
+func (f *fakeAgent) write(t *testing.T) {
+	t.Helper()
+	b, err := json.Marshal(f.vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(f.bin), fakeEnvFile), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // recorded is one line the fake received.

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"ai-whiteboard/internal/boards"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -53,6 +54,7 @@ func (e *env) named(name string) (ids []string) {
 // The API snapshot holds a client's own chats and the server's lists, under its own seven keys,
 // and nothing of what the page's snapshot holds beyond them.
 func TestAPISnapshot(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.a.Home, e.a.DefaultCwd = "/home/owner", "/home/owner/work"
 	m, err := servers.Open(servers.Options{Root: t.TempDir(), LocalID: "11111111-2222-4333-8444-555555555555", Version: "test"})
@@ -81,10 +83,10 @@ func TestAPISnapshot(t *testing.T) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	if want := []string{"agents", "catalogs", "chats", "defaultCwd", "home", "runs", "states"}; !slices.Equal(names, want) {
+	if want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "runs", "states"}; !slices.Equal(names, want) {
 		t.Fatalf("keys %v, want %v", names, want)
 	}
-	for _, k := range []string{"chats", "states", "runs"} {
+	for _, k := range []string{"chats", "states", "runs", "boards"} {
 		if string(keys[k]) != "[]" {
 			t.Errorf("%s of a new client: %s, want []", k, keys[k])
 		}
@@ -134,7 +136,20 @@ func TestAPISnapshot(t *testing.T) {
 		sort.Strings(states)
 		return chats, states
 	}
+	// And its own boards: the ones with its mark.
+	const boardX, boardY = "b_aaaa1111", "b_bbbb2222"
+	for id, client := range map[string]string{boardX: clientX, boardY: clientY} {
+		if _, made, err := e.a.Boards.Make(boards.NewBoard{ID: id, Name: "n", Group: model.Ungrouped, Client: client}); err != nil || !made {
+			t.Fatalf("the board %s: made %v, %v", id, made, err)
+		}
+	}
 	x, y := e.a.APISnapshot(clientX), e.a.APISnapshot(clientY)
+	if len(x.Boards) != 1 || x.Boards[0].ID != boardX || x.Boards[0].Client != clientX || len(y.Boards) != 1 || y.Boards[0].ID != boardY {
+		t.Fatalf("X's boards %+v, Y's %+v", x.Boards, y.Boards)
+	}
+	if b := e.a.APISnapshot("").Boards; b == nil || len(b) != 0 {
+		t.Fatalf("the boards of no client: %v", b)
+	}
 	if c, s := ids(x); !slices.Equal(c, []string{one, two}) || !slices.Equal(s, []string{one, two}) {
 		t.Fatalf("X's chats %v and states %v", c, s)
 	}
@@ -148,13 +163,13 @@ func TestAPISnapshot(t *testing.T) {
 		t.Fatalf("the page's snapshot lists %d chats, want 4", len(e.a.Snapshot().Chats))
 	}
 
-	// Nothing of the page's snapshot beyond the seven keys: no group list, board, defaults, data
-	// folder or server list, and no value of them either.
+	// Nothing of the page's snapshot beyond the eight keys: no group list, board of another,
+	// defaults, data folder or server list, and no value of them either.
 	raw, err = json.Marshal(x)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{`"groups"`, `"boards"`, `"defaults"`, `"dataDir"`, `"servers"`, `"lists"`, e.a.DataDir, owner, bd, three, clientY,
+	for _, s := range []string{`"groups"`, `"defaults"`, `"dataDir"`, `"servers"`, `"lists"`, e.a.DataDir, owner, bd, boardY, three, clientY,
 		"Studio", "https://127.0.0.1:1", pin, "not-for-a-client", remoteGroupName} {
 		if strings.Contains(string(raw), s) {
 			t.Errorf("X's snapshot holds %s: %s", s, raw)
@@ -168,6 +183,7 @@ func TestAPISnapshot(t *testing.T) {
 // The group "Remote" is made by the first call, remembered by its id, and made again when it is
 // gone or archived.
 func TestRemoteGroup(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	other := e.group("Mine")
 	// The ungrouped group's values, which a new top-level group starts with.
@@ -287,6 +303,7 @@ func TestRemoteGroup(t *testing.T) {
 
 // Many first calls at once make one group.
 func TestRemoteGroupManyAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	var wg sync.WaitGroup
 	ids := make([]string, 24)
@@ -310,6 +327,7 @@ func TestRemoteGroupManyAtOnce(t *testing.T) {
 // What API clients make sits in the one group "Remote", their forks too, and feeds no defaults:
 // not after the owner moved an item out either (AC45).
 func TestItemsOfAPIClientsSitInTheRemoteGroup(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	mine := e.group("Mine")
 	if len(e.named(remoteGroupName)) != 0 {

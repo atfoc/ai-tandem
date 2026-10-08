@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/boardtools"
+	"ai-whiteboard/internal/testset"
 )
 
 // bootProbeSource is a throwaway probe extension written next to the
@@ -528,7 +529,7 @@ func (r *piBootRun) waitReport(t *testing.T, timeout time.Duration) []byte {
 			t.Skipf("pi exited before the boot probe reported (%v)\nstdout:\n%s\nstderr:\n%s", werr, r.stdout.String(), r.stderr.String())
 		default:
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("boot probe did not report within %s\nstdout:\n%s\nstderr:\n%s", timeout, r.stdout.String(), r.stderr.String())
 	return nil
@@ -671,9 +672,7 @@ func checkSpawnFamilyNotSequential(t *testing.T, captured []bootCaptured) {
 // cannot run a real-pi boot.
 func bootProbeSetup(t *testing.T) (pi, probePath string) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping real-pi boot test in short mode")
-	}
+	testset.SkipUnlessFull(t, "needs the real pi installed and boots it; the default set covers the extension without pi, in node, in TestMCPWiringNode, TestMCPNode and TestAppEnvNode")
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not available")
 	}
@@ -697,6 +696,9 @@ func bootProbeSetup(t *testing.T) (pi, probePath string) {
 	if err := os.WriteFile(probePath, []byte(bootProbeSource), 0o600); err != nil {
 		t.Fatalf("write boot probe: %v", err)
 	}
+	// Every boot has its own pi process, folders and MCP stub, and most of its time is pi
+	// starting: the boots run at the same time.
+	t.Parallel()
 	return pi, probePath
 }
 
@@ -704,6 +706,7 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 	pi, probePath := bootProbeSetup(t)
 
 	t.Run("success", func(t *testing.T) {
+		t.Parallel()
 		stub := newBootStub(t)
 		configJSON, err := json.Marshal(map[string]any{
 			"mcpServers": map[string]any{
@@ -779,6 +782,7 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 	})
 
 	t.Run("connect failure", func(t *testing.T) {
+		t.Parallel()
 		deadPort := freeTCPPort(t)
 		configJSON := fmt.Sprintf(`{"mcpServers":{"board":{"url":"http://127.0.0.1:%d/mcp"}}}`, deadPort)
 		run := startBootPi(t, pi, probePath, configJSON)
@@ -816,6 +820,7 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 		{name: "notification never answered", stallMethod: "notifications/initialized"},
 	} {
 		t.Run("stalling server/"+tc.name, func(t *testing.T) {
+			t.Parallel()
 			stub := newBootStallStub(t, tc.stallMethod)
 			configJSON := fmt.Sprintf(`{"mcpServers":{"board":{"url":%q}}}`, stub.server.URL+"/mcp")
 			run := startBootPi(t, pi, probePath, configJSON, "AIWB_MCP_HANDSHAKE_TIMEOUT_MS=1000")
@@ -860,6 +865,7 @@ func TestMCPRealPiStandaloneBoot(t *testing.T) {
 	}
 
 	t.Run("no config", func(t *testing.T) {
+		t.Parallel()
 		run := startBootPi(t, pi, probePath, "")
 		report := decodeBootReport(t, run.waitReport(t, 90*time.Second))
 		if len(report.Captured) != 0 {

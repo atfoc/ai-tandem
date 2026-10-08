@@ -39,6 +39,7 @@ func fileEntries(t *testing.T, root string) []Entry {
 
 // TestManagerViews: the local entry is the first of every list, also of a manager that is nil.
 func TestManagerViews(t *testing.T) {
+	t.Parallel()
 	var none *Manager
 	want := View{ID: LocalID, Local: true, Name: LocalName, State: StateConnected}
 	if got := none.Views(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
@@ -90,6 +91,7 @@ func TestManagerViews(t *testing.T) {
 // TestManagerAdd: a failed test saves nothing; a passed one saves and connects; "anyway" saves
 // and sends no request before the connect.
 func TestManagerAdd(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := standin.Start(t, standin.Options{})
 	root := t.TempDir()
@@ -187,6 +189,7 @@ func TestManagerAdd(t *testing.T) {
 
 // TestManagerEdit: the id stays; another identity is refused; the name alone does not reconnect.
 func TestManagerEdit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := standin.Start(t, standin.Options{})
 	other := standin.Start(t, standin.Options{InstanceID: testOtherID})
@@ -304,6 +307,7 @@ func TestManagerEdit(t *testing.T) {
 // TestManagerRemove: the stream ends and the server is sent nothing; the entry is gone from the
 // list, the file and the events.
 func TestManagerRemove(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	root := t.TempDir()
 	r := openRig(t, root, nil)
@@ -370,6 +374,7 @@ func TestManagerRemove(t *testing.T) {
 // TestManagerRestart: a second manager on the same folder has the same entries and connects
 // them; Open alone dials nothing.
 func TestManagerRestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := standin.Start(t, standin.Options{})
 	down := standin.Refused(t)
@@ -421,6 +426,7 @@ func TestManagerRestart(t *testing.T) {
 
 // TestManagerUnreadableList: the list's notice is the manager's, and the manager works.
 func TestManagerUnreadableList(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, FileName), []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
@@ -444,6 +450,7 @@ func TestManagerUnreadableList(t *testing.T) {
 // TestManagerTestSaved: the stored values with the given ones in their place; only a test of
 // what is stored gets the connection going.
 func TestManagerTestSaved(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
@@ -509,6 +516,7 @@ func TestManagerTestSaved(t *testing.T) {
 // TestManagerNoSecretAnywhere: no event, no view and no result holds a secret, the stored one or
 // one given in an edit.
 func TestManagerNoSecretAnywhere(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const first, second = "the-first-secret-AAAA1111", "the-second-secret-BBBB2222"
 	s := standin.Start(t, standin.Options{Secret: first})
@@ -590,6 +598,7 @@ func TestManagerNoSecretAnywhere(t *testing.T) {
 
 // TestManagerEvents: the two events' shapes, and their order: each state after the one before.
 func TestManagerEvents(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -650,6 +659,7 @@ func TestManagerEvents(t *testing.T) {
 // goroutine at a time: a Notify under the bridge's lock, and a snapshot under the same lock that
 // calls Views, do not block each other.
 func TestManagerNotifyOutsideLock(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	var bridge sync.Mutex // what the bridge holds in Broadcast, and while it builds a snapshot
 	var m *Manager
@@ -726,6 +736,7 @@ func TestManagerNotifyOutsideLock(t *testing.T) {
 // TestManagerCloseEndsEverything: after Close no stream is open, nothing retries, and neither a
 // hook nor Notify is called.
 func TestManagerCloseEndsEverything(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -750,9 +761,10 @@ func TestManagerCloseEndsEverything(t *testing.T) {
 // TestManagerRetry: Retry ends a back-off wait at once; a connected entry, one that waits for
 // the user, the local entry and an unknown id are left alone.
 func TestManagerRetry(t *testing.T) {
+	t.Parallel()
 	// The back-off is longer than the test: an attempt after an outage comes from Retry alone.
 	long := func(o *Options) { o.Timing.Backoff = []time.Duration{time.Minute} }
-	waiting := func(r *rig, id string) {
+	waiting := func(t *testing.T, r *rig, id string) {
 		t.Helper()
 		waitFor(t, "the conn's wait", func() bool {
 			r.m.mu.Lock()
@@ -763,6 +775,7 @@ func TestManagerRetry(t *testing.T) {
 	}
 
 	t.Run("a back-off wait ends", func(t *testing.T) {
+		t.Parallel()
 		s := standin.Start(t, standin.Options{})
 		r := startRig(t, long)
 		id := r.add(form("Studio", s))
@@ -787,7 +800,7 @@ func TestManagerRetry(t *testing.T) {
 		} {
 			outage.down()
 			r.waitState(id, StateUnreachable)
-			waiting(r, id)
+			waiting(t, r, id)
 			outage.up()
 			dials = r.dials.Load()
 			time.Sleep(quiet)
@@ -809,20 +822,21 @@ func TestManagerRetry(t *testing.T) {
 	})
 
 	t.Run("a second Retry during the attempt does nothing", func(t *testing.T) {
+		t.Parallel()
 		s := standin.Start(t, standin.Options{})
 		r := startRig(t, long)
 		id := r.add(form("Studio", s))
 		r.waitState(id, StateConnected)
 		s.Stop()
 		r.waitState(id, StateUnreachable)
-		waiting(r, id)
+		waiting(t, r, id)
 		dials := r.dials.Load()
 		for range 5 {
 			r.m.Retry(id)
 		}
 		// The server is still down: the attempt fails and the entry waits again, for a minute.
 		waitFor(t, "the attempt", func() bool { return r.dials.Load() > dials })
-		waiting(r, id)
+		waiting(t, r, id)
 		time.Sleep(quiet)
 		if got := r.dials.Load() - dials; got != 1 || r.view(id).State != StateUnreachable {
 			t.Errorf("%d dials after five calls of Retry, state %q; want 1 and unreachable", got, r.view(id).State)
@@ -830,13 +844,14 @@ func TestManagerRetry(t *testing.T) {
 	})
 
 	t.Run("an entry that waits for the user stays", func(t *testing.T) {
+		t.Parallel()
 		s := standin.Start(t, standin.Options{})
 		r := startRig(t, long)
 		in := form("Studio", s)
 		in.Secret = "old-secret"
 		id := r.add(in)
 		r.waitState(id, StateSecretNotAccepted)
-		waiting(r, id)
+		waiting(t, r, id)
 		dials, requests := r.dials.Load(), len(s.Requests())
 		r.m.Retry(id)
 		staysQuiet(t, s)
@@ -848,6 +863,7 @@ func TestManagerRetry(t *testing.T) {
 	})
 
 	t.Run("the local entry, an unknown id, no manager", func(t *testing.T) {
+		t.Parallel()
 		r := startRig(t, long)
 		r.m.Retry(LocalID)
 		r.m.Retry("s_nobody")
@@ -861,6 +877,7 @@ func TestManagerRetry(t *testing.T) {
 
 // TestStateStopped: Stopped is true for the states that wait for the user and for no other.
 func TestStateStopped(t *testing.T) {
+	t.Parallel()
 	want := map[State]bool{
 		StateConnecting:             false,
 		StateConnected:              false,

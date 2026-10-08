@@ -30,6 +30,7 @@ func mode(t *testing.T, path string) os.FileMode {
 }
 
 func TestSetupMakesWhatIsMissing(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "home")
 	f := FilesIn(root)
 	made, err := Setup(root, SetupOptions{Names: []string{"WB.example", "10.1.2.3"}})
@@ -100,6 +101,7 @@ func TestSetupMakesWhatIsMissing(t *testing.T) {
 }
 
 func TestSetupNewCert(t *testing.T) {
+	t.Parallel()
 	// Without a configuration: ErrNotSetUp and an unchanged folder, stray files and all.
 	bare := t.TempDir()
 	write(t, FilesIn(bare).Key, "stray", 0o600)
@@ -162,6 +164,7 @@ func TestSetupNewCert(t *testing.T) {
 }
 
 func TestSetupRemakesMissingSecretOnly(t *testing.T) {
+	t.Parallel()
 	root, f := setUp(t)
 	old, conf, key, cert := read(t, f.Secret), read(t, f.Config), read(t, f.Key), read(t, f.Cert)
 	os.Remove(f.Secret)
@@ -199,6 +202,7 @@ func TestSetupRemakesMissingSecretOnly(t *testing.T) {
 }
 
 func TestSetupAddsNameAndPort(t *testing.T) {
+	t.Parallel()
 	root, f := setUp(t)
 	c0, _, _ := LoadConfig(root)
 	secret, key, cert := read(t, f.Secret), read(t, f.Key), read(t, f.Cert)
@@ -245,6 +249,7 @@ func TestSetupAddsNameAndPort(t *testing.T) {
 }
 
 func TestSetupWritesBadConfigAnew(t *testing.T) {
+	t.Parallel()
 	root, f := setUp(t)
 	secret, cert := read(t, f.Secret), read(t, f.Cert)
 	write(t, f.Config, "nonsense", 0o600)
@@ -264,6 +269,7 @@ func TestSetupWritesBadConfigAnew(t *testing.T) {
 }
 
 func TestOffRemovesConfigOnly(t *testing.T) {
+	t.Parallel()
 	root, f := setUp(t)
 	secret := read(t, f.Secret)
 	fp := Check(root, 4747, 6006).Fingerprint

@@ -150,7 +150,7 @@ func (r *Relay) archiveLost(rec *record, err error) {
 		select {
 		case <-r.ctx.Done():
 			return
-		case <-time.After(r.o.Limits.Call):
+		case <-time.After(r.again):
 		}
 		if !r.connected(rec.entry) {
 			return // the next connect passes it on
@@ -220,7 +220,7 @@ func (r *Relay) Delete(ctx context.Context, id string, localOnly bool) error {
 }
 
 // Deletable is the check before a group is deleted with its contents: groups are the ids of the
-// group and of every group below it. A record in one of them, of a chat or of a run, that is
+// group and of every group below it. A record in one of them, of a chat, of a run or of a board, that is
 // not gone and whose entry is not connected cannot be deleted on its server, so nothing may be
 // deleted at all: 409 server_unreachable, with a sentence that names the chat or the run and
 // the server. nil says that every record in the groups can be asked for.
@@ -249,5 +249,5 @@ func (r *Relay) Deletable(groups map[string]bool) error {
 		return &Error{Status: http.StatusConflict, Code: "server_unreachable", cause: ErrUnreachable,
 			Text: fmt.Sprintf("Nothing was deleted: “%s” is on %s, which is not connected.", name, r.name(rec.entry))}
 	}
-	return nil
+	return r.boardsDeletable(groups)
 }

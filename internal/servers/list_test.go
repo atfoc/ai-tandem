@@ -62,7 +62,9 @@ func checkFile(t *testing.T, root string) {
 }
 
 func TestListMissingAndEmptyFile(t *testing.T) {
+	t.Parallel()
 	t.Run("missing folder", func(t *testing.T) {
+		t.Parallel()
 		root := filepath.Join(t.TempDir(), "home")
 		l := open(t, root)
 		if len(l.Entries()) != 0 || l.Notice() != "" {
@@ -74,6 +76,7 @@ func TestListMissingAndEmptyFile(t *testing.T) {
 	})
 	for name, content := range map[string]string{"zero length": "", "white space": " \n\t\r\n"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			path := filepath.Join(root, FileName)
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -92,6 +95,7 @@ func TestListMissingAndEmptyFile(t *testing.T) {
 		})
 	}
 	t.Run("missing file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		l := open(t, root)
 		if len(l.Entries()) != 0 || l.Notice() != "" {
@@ -105,6 +109,7 @@ func TestListMissingAndEmptyFile(t *testing.T) {
 		}
 	})
 	t.Run("no servers field", func(t *testing.T) {
+		t.Parallel()
 		for _, content := range []string{`{"version":1}`, `{"version":1,"servers":null}`, `{"version":1,"servers":[]}`} {
 			root := t.TempDir()
 			os.WriteFile(filepath.Join(root, FileName), []byte(content), 0o600)
@@ -116,6 +121,7 @@ func TestListMissingAndEmptyFile(t *testing.T) {
 }
 
 func TestListAddEditRemoveSurviveReopen(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "home") // made at the first write
 	l := open(t, root)
 
@@ -248,6 +254,7 @@ func TestListAddEditRemoveSurviveReopen(t *testing.T) {
 }
 
 func TestListAddChecksFields(t *testing.T) {
+	t.Parallel()
 	l := open(t, t.TempDir())
 	cases := []struct {
 		name string
@@ -283,6 +290,7 @@ func TestListAddChecksFields(t *testing.T) {
 }
 
 func TestListFileMode(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	l := open(t, root)
 	a, err := l.Add(studio())
@@ -309,6 +317,7 @@ func TestListFileMode(t *testing.T) {
 }
 
 func TestListLocalEntryFixed(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	l := open(t, root)
 	called := false
@@ -345,6 +354,7 @@ func TestListLocalEntryFixed(t *testing.T) {
 }
 
 func TestListUnreadableSetAside(t *testing.T) {
+	t.Parallel()
 	entry := func(id, address string) string {
 		return `{"id":"` + id + `","name":"Studio","address":"` + address + `","secret":"s3cret-one","selfSigned":false,"pin":"","instanceId":""}`
 	}
@@ -374,6 +384,7 @@ func TestListUnreadableSetAside(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			if c.mode == 0 && !c.dir && os.Getuid() == 0 {
 				t.Skip("root reads a file of mode 000")
 			}
@@ -450,6 +461,7 @@ func TestListUnreadableSetAside(t *testing.T) {
 
 // Unknown fields, in the file and in an entry, do not make a file unreadable.
 func TestListUnknownFieldsIgnored(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	content := `{"version":1,"later":true,"servers":[{"id":"s_3f9a1c2b77de","name":"Studio","address":"https://mac.local:4748",
 		"secret":"s3cret-one","selfSigned":true,"pin":"` + pinA + `","instanceId":"` + uuid + `","color":"red"}]}`
@@ -495,6 +507,7 @@ func TestListSetAsideTwice(t *testing.T) {
 
 // When the file cannot be renamed, the list works in memory and every write returns the error.
 func TestListSetAsideFails(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("root renames in a read-only folder")
 	}
@@ -529,6 +542,7 @@ func TestListSetAsideFails(t *testing.T) {
 }
 
 func TestListDuplicateAddress(t *testing.T) {
+	t.Parallel()
 	l := open(t, t.TempDir())
 	a, err := l.Add(studio())
 	if err != nil {
@@ -559,6 +573,7 @@ func TestListDuplicateAddress(t *testing.T) {
 }
 
 func TestListPinClearedWithoutBox(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	l := open(t, root)
 	e := studio()
@@ -604,6 +619,7 @@ func TestListPinClearedWithoutBox(t *testing.T) {
 }
 
 func TestListConcurrentUse(t *testing.T) {
+	t.Parallel()
 	l := open(t, t.TempDir())
 	done := make(chan struct{})
 	for i := 0; i < 4; i++ {

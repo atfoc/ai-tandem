@@ -12,9 +12,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ai-whiteboard/internal/testset"
 )
 
 func TestGenerateCert(t *testing.T) {
+	t.Parallel()
 	from := time.Now().Add(-time.Hour).Truncate(time.Second)
 	to := from.AddDate(10, 0, 0)
 	certPEM, keyPEM, err := GenerateCert([]string{"mac.local", "192.168.1.20", "wb.example"}, from, to)
@@ -66,7 +69,38 @@ func TestGenerateCert(t *testing.T) {
 	}
 }
 
+// knownCert is a certificate GenerateCert made, and knownFingerprint is what
+// "openssl x509 -noout -fingerprint -sha256" printed for it (LibreSSL 3.3.6).
+const knownCert = `-----BEGIN CERTIFICATE-----
+MIIBgDCCASWgAwIBAgIQdaG9bX9w/FGQKSsVR/5fKjAKBggqhkjOPQQDAjAYMRYw
+FAYDVQQDEw1BSSBXaGl0ZWJvYXJkMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAw
+MDAwMFowGDEWMBQGA1UEAxMNQUkgV2hpdGVib2FyZDBZMBMGByqGSM49AgEGCCqG
+SM49AwEHA0IABBT5vYIj7vZWMHZbq9q2nkFUNgRPIL4ulYZa9LPnegLLSNxhv/pd
+D7wK+my/LBIpVhq8UnI4xckmKi3tG2YlsBijUTBPMA4GA1UdDwEB/wQEAwIHgDAT
+BgNVHSUEDDAKBggrBgEFBQcDATAMBgNVHRMBAf8EAjAAMBoGA1UdEQQTMBGCCW1h
+Yy5sb2NhbIcEwKgBFDAKBggqhkjOPQQDAgNJADBGAiEAuDHBSBzniE9XvtT7WzJR
+6Oku6XthPk+82juAs8pNAf0CIQDMdp7cM5QrDTrmdy+eqUBjDNp+DwfVsO4qi6iK
+vBtHzQ==
+-----END CERTIFICATE-----
+`
+
+const knownFingerprint = "31:45:C9:44:76:39:94:7D:EF:29:54:E7:D8:01:5C:26:34:20:1F:80:AC:C9:00:0F:2D:C5:6C:31:F0:F3:25:D4"
+
+// The fingerprint is the one openssl prints, checked against a stored answer: it needs no openssl.
+func TestFingerprintOfAKnownCertificate(t *testing.T) {
+	t.Parallel()
+	got, err := FingerprintOfPEM([]byte(knownCert))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != knownFingerprint {
+		t.Errorf("ours   %s\nopenssl %s", got, knownFingerprint)
+	}
+}
+
 func TestFingerprintIsOpenssls(t *testing.T) {
+	t.Parallel()
+	testset.SkipUnlessFull(t, "needs openssl installed; the default set compares with what openssl printed for a stored certificate in TestFingerprintOfAKnownCertificate")
 	openssl, err := exec.LookPath("openssl")
 	if err != nil {
 		t.Skip("no openssl on PATH")
@@ -99,6 +133,7 @@ func TestFingerprintIsOpenssls(t *testing.T) {
 }
 
 func TestParseFingerprint(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	certPEM, _, err := GenerateCert([]string{"a"}, now, now.Add(time.Hour))
 	if err != nil {

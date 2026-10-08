@@ -376,6 +376,7 @@ func readRevFile(t *testing.T, st *store.Store, id string) string {
 }
 
 func TestSaveAt(t *testing.T) {
+	t.Parallel()
 	s, st, r := setup(t)
 	a, _ := s.Create("a", model.Ungrouped, false)
 	if got := s.Rev(a.ID); got != 0 {
@@ -442,6 +443,7 @@ func TestSaveAt(t *testing.T) {
 }
 
 func TestRevSurvivesReload(t *testing.T) {
+	t.Parallel()
 	s, st, _ := setup(t)
 	a, _ := s.Create("a", model.Ungrouped, false)
 	b, _ := s.Create("b", model.Ungrouped, false)
@@ -475,6 +477,7 @@ func TestRevSurvivesReload(t *testing.T) {
 
 // A board from before the revisions has a drawing and no scene.rev.
 func TestBoardWithoutRevFile(t *testing.T) {
+	t.Parallel()
 	s, st, _ := setup(t)
 	a, _ := s.Create("a", model.Ungrouped, false)
 	old := `{"elements":[{"id":"old"}]}`
@@ -510,6 +513,7 @@ func TestBoardWithoutRevFile(t *testing.T) {
 }
 
 func TestFailedDrawingWriteLeavesRev(t *testing.T) {
+	t.Parallel()
 	s, st, _ := setup(t)
 	a, _ := s.Create("a", model.Ungrouped, false)
 	b, _ := s.Create("b", model.Ungrouped, false)
@@ -559,6 +563,7 @@ func TestFailedDrawingWriteLeavesRev(t *testing.T) {
 }
 
 func TestDeleteThenNewBoardStartsAtZero(t *testing.T) {
+	t.Parallel()
 	s, st, _ := setup(t)
 	a, _ := s.Create("a", model.Ungrouped, false)
 	if _, err := s.SaveAt(a.ID, 0, []byte(`{}`)); err != nil {
@@ -586,6 +591,7 @@ func TestDeleteThenNewBoardStartsAtZero(t *testing.T) {
 }
 
 func TestGroups(t *testing.T) {
+	t.Parallel()
 	s, st, _ := setup(t)
 	if err := st.Update(func(st *model.State) error {
 		st.Groups = append(st.Groups,
@@ -635,6 +641,7 @@ func (l *listing) Broadcast(ev any) {
 }
 
 func TestBroadcastOutsideTheLock(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(store.NewPaths(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
@@ -692,6 +699,7 @@ func (o *ordered) snapshot() {
 }
 
 func TestEventsKeepOrderUnderConnects(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(store.NewPaths(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
@@ -768,5 +776,313 @@ func TestEventsKeepOrderUnderConnects(t *testing.T) {
 	}
 	if got := s.Rev(a.ID); got != writers*each {
 		t.Errorf("revision %d after %d saves", got, writers*each)
+	}
+}
+
+// sender is a bridge with SendBoard and MarkBoard: it records the marks and the events in the
+// order they came.
+type sender struct {
+	recorder
+	mu    sync.Mutex
+	calls []string // "mark <board> <client>" | "send <board> <type>" | "broadcast <type>"
+}
+
+func (s *sender) note(c string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, c)
+}
+
+func (s *sender) take() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.calls
+	s.calls = nil
+	return out
+}
+
+func (s *sender) Broadcast(ev any) {
+	s.note("broadcast " + ev.(map[string]any)["type"].(string))
+}
+
+func (s *sender) SendBoard(board string, ev any) {
+	s.note("send " + board + " " + ev.(map[string]any)["type"].(string))
+	s.recorder.Broadcast(ev)
+}
+
+func (s *sender) MarkBoard(board, client string) { s.note("mark " + board + " " + client) }
+
+func TestValidID(t *testing.T) {
+	if id := model.NewID("b_"); !ValidID(id) {
+		t.Errorf("a made id %q is refused", id)
+	}
+	for _, id := range []string{"", "b_", "b_abc", "b_abcdefghi", "b_ABCDEFGH", "c_abcdefgh", "b_abcd/fgh", "b_abcdefg.", " b_abcdefgh", "b_abcdefgh\n"} {
+		if ValidID(id) {
+			t.Errorf("%q is accepted", id)
+		}
+	}
+}
+
+// A board made with an id: a repeat by the same client gives the board as it is, and the id is
+// taken for everybody else.
+func TestMakeWithID(t *testing.T) {
+	s, st, r := setup(t)
+	const id = "b_abc12345"
+	bd, made, err := s.Make(NewBoard{ID: id, Name: "first", Group: groupID, Client: "A"})
+	if err != nil || !made {
+		t.Fatalf("made %v, %v", made, err)
+	}
+	if bd.ID != id || bd.Name != "first" || bd.Group != groupID || bd.Client != "A" || bd.Origin != "" || bd.New {
+		t.Fatalf("board %+v", bd)
+	}
+	r.wantBoardEvent(t, bd)
+	if got := readBoardJSON(t, st, id); got.Client != "A" || got.Name != "first" {
+		t.Errorf("board.json %+v", got)
+	}
+	if scene, err := os.ReadFile(st.P.BoardFile(id)); err != nil || string(scene) != EmptyScene {
+		t.Errorf("drawing %q %v", scene, err)
+	}
+
+	// The repeat: the same board, its name untouched, no event, nothing written. Not even the
+	// group is looked at.
+	n := r.count()
+	again, made, err := s.Make(NewBoard{ID: id, Name: "second", Group: "g_none", Client: "A"})
+	if err != nil || made || !reflect.DeepEqual(again, bd) {
+		t.Fatalf("repeat: %+v made %v, %v; want %+v", again, made, err, bd)
+	}
+	if r.count() != n || readBoardJSON(t, st, id).Name != "first" {
+		t.Errorf("the repeat changed the board: %d events, %+v", r.count()-n, readBoardJSON(t, st, id))
+	}
+
+	// Another client, and a caller with no mark.
+	for _, client := range []string{"B", ""} {
+		if _, made, err := s.Make(NewBoard{ID: id, Name: "x", Group: groupID, Client: client}); !errors.Is(err, ErrIDTaken) || made {
+			t.Errorf("client %q: made %v, %v", client, made, err)
+		}
+	}
+	// The id of an unmarked board is taken for every caller.
+	plain, err := s.Create("plain", model.Ungrouped, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, client := range []string{"A", ""} {
+		if _, made, err := s.Make(NewBoard{ID: plain.ID, Name: "x", Client: client}); !errors.Is(err, ErrIDTaken) || made {
+			t.Errorf("unmarked board, client %q: made %v, %v", client, made, err)
+		}
+	}
+	if got, _ := s.Get(plain.ID); !reflect.DeepEqual(got, plain) {
+		t.Errorf("the unmarked board changed: %+v", got)
+	}
+	if r.count() != n+1 { // only plain's own event
+		t.Errorf("%d events after the refusals", r.count()-n)
+	}
+
+	// An id of another form, before anything else is looked at.
+	for _, bad := range []string{"b_short", "../b_abcde", "b_ABC12345"} {
+		if _, made, err := s.Make(NewBoard{ID: bad, Name: "x", Client: "A"}); !errors.Is(err, ErrBadID) || made {
+			t.Errorf("id %q: made %v, %v", bad, made, err)
+		}
+	}
+	if len(s.List()) != 2 {
+		t.Errorf("list %+v", s.List())
+	}
+	// A refused name or group makes nothing.
+	if _, made, err := s.Make(NewBoard{ID: "b_zzzzzzzz", Name: "a/b", Group: model.Ungrouped, Client: "A"}); err == nil || made {
+		t.Errorf("bad name: made %v, %v", made, err)
+	}
+	if _, made, err := s.Make(NewBoard{ID: "b_zzzzzzzz", Name: "x", Group: "g_none", Client: "A"}); err == nil || made {
+		t.Errorf("bad group: made %v, %v", made, err)
+	}
+	if _, err := os.Stat(st.P.BoardDir("b_zzzzzzzz")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refused board has a folder: %v", err)
+	}
+}
+
+// Two callers with the same id at once: one makes the board, the other gets it or is refused.
+func TestMakeSameIDAtOnce(t *testing.T) {
+	s, _, r := setup(t)
+	const id = "b_race0000"
+	clients := []string{"A", "A", "A", "B"}
+	mades, errs := make([]bool, len(clients)), make([]error, len(clients))
+	var wg sync.WaitGroup
+	for i, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, mades[i], errs[i] = s.Make(NewBoard{ID: id, Name: "n", Group: model.Ungrouped, Client: c})
+		}()
+	}
+	wg.Wait()
+	n := 0
+	for i := range clients {
+		if mades[i] {
+			n++
+		}
+		if errs[i] != nil && !errors.Is(errs[i], ErrIDTaken) {
+			t.Errorf("caller %d: %v", i, errs[i])
+		}
+	}
+	if n != 1 || r.count() != 1 || len(s.List()) != 1 {
+		t.Errorf("%d made, %d events, %d boards", n, r.count(), len(s.List()))
+	}
+}
+
+func TestListOf(t *testing.T) {
+	s, _, _ := setup(t)
+	a1, _, _ := s.Make(NewBoard{Name: "a1", Group: model.Ungrouped, Client: "A"})
+	a2, _, _ := s.Make(NewBoard{ID: "b_aaaaaaa2", Name: "a2", Group: groupID, Client: "A", Origin: a1.ID})
+	b1, _, _ := s.Make(NewBoard{Name: "b1", Group: model.Ungrouped, Client: "B"})
+	if _, err := s.Create("plain", model.Ungrouped, false); err != nil {
+		t.Fatal(err)
+	}
+	ids := func(l []model.Board) []string {
+		out := []string{}
+		for _, bd := range l {
+			out = append(out, bd.ID)
+		}
+		sort.Strings(out)
+		return out
+	}
+	want := []string{a1.ID, a2.ID}
+	sort.Strings(want)
+	if a1.ID == "" || a2.ID == "" || b1.ID == "" {
+		t.Fatalf("boards not made: %+v %+v %+v", a1, a2, b1)
+	}
+	if got := ids(s.ListOf("A")); !reflect.DeepEqual(got, want) {
+		t.Errorf("A: %v, want %v", got, want)
+	}
+	if got := ids(s.ListOf("B")); !reflect.DeepEqual(got, []string{b1.ID}) {
+		t.Errorf("B: %v", got)
+	}
+	// Nobody's boards, and the unmarked ones for no client: an empty list, not nil (it is sent
+	// as an array).
+	for _, c := range []string{"C", ""} {
+		if got := s.ListOf(c); got == nil || len(got) != 0 {
+			t.Errorf("%q: %#v", c, got)
+		}
+	}
+	if len(s.List()) != 4 {
+		t.Errorf("list %+v", s.List())
+	}
+}
+
+// The mark and the origin are in board.json and come back at Load; a board without them has
+// neither key in the file.
+func TestMarkSurvivesLoad(t *testing.T) {
+	s, st, _ := setup(t)
+	plain, _ := s.Create("plain", model.Ungrouped, false)
+	marked, _, err := s.Make(NewBoard{Name: "m", Group: groupID, Client: "A", Origin: plain.ID, New: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(st.P.BoardDir(plain.ID), "board.json"))
+	if err != nil || strings.Contains(string(raw), "client") || strings.Contains(string(raw), "origin") {
+		t.Errorf("unmarked board.json %s %v", raw, err)
+	}
+	// A later change keeps them.
+	if _, err := s.Rename(marked.ID, "renamed"); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := &sender{}
+	fresh := New(st, bridge)
+	if err := fresh.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := fresh.Get(marked.ID)
+	if !ok || got.Client != "A" || got.Origin != plain.ID || got.Name != "renamed" || got.Group != groupID || !got.New {
+		t.Fatalf("loaded %+v %v", got, ok)
+	}
+	if l := fresh.ListOf("A"); len(l) != 1 || l[0].ID != marked.ID {
+		t.Errorf("ListOf after Load %+v", l)
+	}
+	// Load gave the bridge the mark of the marked board, and only that.
+	if calls := bridge.take(); !reflect.DeepEqual(calls, []string{"mark " + marked.ID + " A"}) {
+		t.Errorf("calls at Load %v", calls)
+	}
+	// The repeat still knows the board after a restart.
+	if _, made, err := fresh.Make(NewBoard{ID: marked.ID, Name: "x", Client: "A"}); err != nil || made {
+		t.Errorf("repeat after Load: made %v, %v", made, err)
+	}
+	if _, _, err := fresh.Make(NewBoard{ID: marked.ID, Name: "x", Client: "B"}); !errors.Is(err, ErrIDTaken) {
+		t.Errorf("another client after Load: %v", err)
+	}
+}
+
+// A bridge with SendBoard gets every board event through it, never Broadcast, and the mark of
+// a marked board before its first event.
+func TestEventsThroughSendBoard(t *testing.T) {
+	st, err := store.Open(store.NewPaths(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := &sender{}
+	s := New(st, bridge)
+	want := func(what string, calls ...string) {
+		t.Helper()
+		if got := bridge.take(); !reflect.DeepEqual(got, calls) {
+			t.Errorf("%s: calls %v, want %v", what, got, calls)
+		}
+	}
+
+	m, made, err := s.Make(NewBoard{ID: "b_marked00", Name: "m", Group: model.Ungrouped, Client: "A"})
+	if err != nil || !made {
+		t.Fatal(made, err)
+	}
+	want("marked board", "mark "+m.ID+" A", "send "+m.ID+" board")
+	bridge.wantBoardEvent(t, m)
+	if _, made, err := s.Make(NewBoard{ID: m.ID, Name: "m", Client: "A"}); err != nil || made {
+		t.Fatal(made, err)
+	}
+	want("repeat")
+	if _, _, err := s.Make(NewBoard{ID: m.ID, Name: "m", Client: "B"}); !errors.Is(err, ErrIDTaken) {
+		t.Fatal(err)
+	}
+	want("taken")
+
+	// An unmarked board has no mark, and its events go the same way.
+	p, err := s.Create("p", model.Ungrouped, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want("unmarked board", "send "+p.ID+" board")
+
+	for _, id := range []string{m.ID, p.ID} {
+		if _, err := s.Rename(id, "renamed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Move(id, model.Ungrouped); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Seen(id); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetArchive(id, model.Archive{Archived: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Delete(id); err != nil {
+			t.Fatal(err)
+		}
+		ev := "send " + id + " board"
+		want("changes of "+id, ev, ev, ev, ev, ev+"_removed")
+	}
+}
+
+// A bridge without SendBoard gets the events of a marked board with Broadcast, as every board.
+func TestMarkedBoardWithPlainBridge(t *testing.T) {
+	s, _, r := setup(t)
+	bd, made, err := s.Make(NewBoard{ID: "b_plain000", Name: "m", Group: model.Ungrouped, Client: "A", Origin: "b_origin00"})
+	if err != nil || !made {
+		t.Fatal(made, err)
+	}
+	r.wantBoardEvent(t, bd)
+	if _, err := s.Rename(bd.ID, "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(bd.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ev := r.last(t); r.count() != 3 || ev["type"] != "board_removed" || ev["id"] != bd.ID {
+		t.Errorf("%d events, last %v", r.count(), ev)
 	}
 }

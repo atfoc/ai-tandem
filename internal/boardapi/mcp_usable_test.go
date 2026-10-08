@@ -27,6 +27,7 @@ func (e *env) agentEnums(token string) map[string][]any {
 // tools/list names only the agents the server can start in spawn_subagent and
 // list_subagent_models, and both tools refuse another one.
 func TestSpawnToolsNameOnlyUsableAgents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	var mu sync.Mutex
 	have := map[string]bool{"claude": true, "pi": true}

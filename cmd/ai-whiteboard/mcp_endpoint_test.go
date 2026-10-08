@@ -17,6 +17,7 @@ import (
 // The app must answer MCP on the hidden test-only port override, and never on the real 6006 in
 // tests (there is no user-facing port flag; production is fixed at 6006, plan D10).
 func TestMCPEndpointAnswersOnOverridePort(t *testing.T) {
+	serverTest(t, "TestMCPPortSetting (this package)", "TestMCPHandlerRoutesAndHost (internal/server)")
 	in := newInstance(t)
 	if got := in.run(t, "launch"); got != in.url+"\n" {
 		t.Fatalf("launch printed %q", got)
@@ -63,21 +64,19 @@ func TestMCPEndpointAnswersOnOverridePort(t *testing.T) {
 // holder and the remedy, writes no server.json, and leaves the running instance untouched
 // (plan D11).
 func TestMCPPortConflictFailsFast(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds the binary and starts servers")
-	}
+	serverTest(t)
 	bin := buildBinary(t)
 	mcpPort := freePort(t)
 	portA, portB := freePort(t), freePort(t)
 	dirA, dirB := t.TempDir(), t.TempDir()
-	mcpEnv := "AIWB_MCP_PORT=" + strconv.Itoa(mcpPort)
+	env := serverEnv(t, mcpPort)
 	claude := noClaude(t)
 
 	start := func(dir string, port int) (*exec.Cmd, *bytes.Buffer) {
 		t.Helper()
 		cmd := exec.Command(bin, "serve", "-home", dir, "-port", strconv.Itoa(port), "-client", "",
-			"-claude", claude)
-		cmd.Env = append(os.Environ(), mcpEnv)
+			"-claude", claude, "-cursor", claude, "-pi", claude)
+		cmd.Env = env
 		var stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stderr, &stderr
 		if err := cmd.Start(); err != nil {
@@ -89,7 +88,9 @@ func TestMCPPortConflictFailsFast(t *testing.T) {
 	a, _ := start(dirA, portA)
 	aURL := fmt.Sprintf("http://127.0.0.1:%d", portA)
 	t.Cleanup(func() {
-		exec.Command(bin, "stop", "-home", dirA, "-port", strconv.Itoa(portA)).Run()
+		stop := exec.Command(bin, "stop", "-home", dirA, "-port", strconv.Itoa(portA))
+		stop.Env = env
+		stop.Run()
 		a.Process.Kill()
 	})
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(50 * time.Millisecond) {

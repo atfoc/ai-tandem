@@ -30,6 +30,24 @@ const (
 	maxErrText = 2000
 )
 
+// waits are the waits of the package that a caller may have to sit through: grace, settle, and
+// staleAge and flockWait (locks.go). They are always those constants, but for a test that changes
+// them for the calls it makes with one context; a value per call, so that tests can run side by
+// side.
+type waits struct {
+	grace, settle, staleAge, flockWait time.Duration
+}
+
+type waitsKey struct{}
+
+// waitsOf is the waits that hold for a call with ctx.
+func waitsOf(ctx context.Context) waits {
+	if w, ok := ctx.Value(waitsKey{}).(waits); ok {
+		return w
+	}
+	return waits{grace: grace, settle: settle, staleAge: staleAge, flockWait: flockWait}
+}
+
 // Error is a git command that failed.
 type Error struct {
 	Cmd    string // the subcommand: "merge", "worktree add"
@@ -188,7 +206,7 @@ func runRaw(ctx context.Context, env []string, dir string, args ...string) (stdo
 	if g := guardOf(ctx); g != nil {
 		cmd.ExtraFiles = []*os.File{g} // see guard: the command and what it starts hold the flock
 	}
-	wait := settle
+	wait := waitsOf(ctx).settle
 	if readOnly[subcommand(args)] {
 		wait = 0
 	}
@@ -276,7 +294,7 @@ func runGroup(ctx context.Context, cmd *exec.Cmd, wait time.Duration) error {
 		select {
 		case <-exited:
 		default:
-			endGroup(pgid)
+			endGroup(pgid, waitsOf(ctx).grace)
 		}
 	}()
 	err := cmd.Wait()
@@ -292,7 +310,7 @@ func runGroup(ctx context.Context, cmd *exec.Cmd, wait time.Duration) error {
 }
 
 // endGroup ends the process group pgid: SIGTERM, then SIGKILL to what is still there after grace.
-func endGroup(pgid int) {
+func endGroup(pgid int, grace time.Duration) {
 	if syscall.Kill(-pgid, syscall.SIGTERM) != nil {
 		return
 	}

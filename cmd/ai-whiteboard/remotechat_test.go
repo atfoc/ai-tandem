@@ -54,9 +54,9 @@ type remotePair struct {
 	work  string   // a folder for the chats' agents (both servers are on this machine)
 }
 
-// pairEnv is what every server of a pair gets beside the test's environment (TestMain's
-// CURSOR_CONFIG_DIR and the helpers' AIWB_REMOTE_BIND): an MCP port of its own, picked by the
-// system, so that two servers of one test do not ask for the same one.
+// pairEnv is what every server of a pair gets beside its instance's environment (a Cursor config
+// folder, and for B the bind of its remote listener on 127.0.0.1): an MCP port of its own, picked
+// by the system, so that two servers of one test do not ask for the same one.
 func pairEnv(more ...string) []string { return append([]string{"AIWB_MCP_PORT=0"}, more...) }
 
 // startRemotePair starts B, the link with profile p, and A with the page; B is not yet in A's
@@ -68,15 +68,13 @@ func startRemotePair(t *testing.T, p linksim.Profile, bClaude string) *remotePai
 }
 
 // startRemotePairIn is startRemotePair with more in the environment of both servers: the git
-// environment of a scratch repository (agenttest.Repo.Env()), for the pairs that run runs.
+// environment of a scratch repository (agenttest.Repo.Env()), for the pairs that run runs, and
+// the waits a test lowers (clock.env).
 func startRemotePairIn(t *testing.T, p linksim.Profile, bClaude string, env []string) *remotePair {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("builds the binary and starts two servers")
-	}
-	t.Setenv("AIWB_REMOTE_BIND", "127.0.0.1")
 	rp := &remotePair{}
 	rp.b = &apiRunServer{runServer: newRunServer(t, pairEnv(env...)), port: freePort(t)}
+	rp.b.in.setenv(loopbackBind)
 	if bClaude != "" {
 		rp.b.in.claude = bClaude
 	}
@@ -112,10 +110,11 @@ func (rp *remotePair) aID(t *testing.T) string {
 	return id
 }
 
-// connectedPair is startRemotePair with B added to A's list and connected.
-func connectedPair(t *testing.T, p linksim.Profile) *remotePair {
+// connectedPair is startRemotePair with B added to A's list and connected. env is more in the
+// environment of both servers: the waits a test lowers (clock.env).
+func connectedPair(t *testing.T, p linksim.Profile, env ...string) *remotePair {
 	t.Helper()
-	rp := startRemotePair(t, p, "")
+	rp := startRemotePairIn(t, p, "", env)
 	rp.addEntry(t)
 	return rp
 }
@@ -135,8 +134,8 @@ func (rp *remotePair) addEntry(t *testing.T) {
 		t.Fatalf("the entry was not saved: %s", saved.Result)
 	}
 	rp.entry = saved.Server.ID
-	rp.waitState(t, servers.StateConnected, 10*time.Second)
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	rp.waitState(t, servers.StateConnected, 30*time.Second)
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		if l, ok := rp.state(t).Lists[rp.entry]; ok && slices.Contains(l.Agents, model.Claude) && l.Catalogs[model.Claude] != nil {
 			return
 		}
@@ -440,7 +439,7 @@ func (rp *remotePair) same(t *testing.T, chat, when string) thread {
 	// B's are read before and after A's: a turn that still writes would differ between the two
 	// reads of B itself, and that is no difference between the servers.
 	var a, b thread
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
 		b = rp.own(t, chat)
 		a = rp.through(t, chat)
 		if sameThread(b, rp.own(t, chat)) == "" {
@@ -713,6 +712,7 @@ func (rp *remotePair) noText(t *testing.T, what, text string, w ...*watcher) {
 // routes, a permission ask raised on B, and the times of a send's acknowledgement and of a
 // content event.
 func TestRemoteChatLive(t *testing.T) {
+	serverTest(t, "TestStartTable, TestFollows, TestEventTable (internal/remotes)", "TestServersPackageAgainstTheListener (internal/server)")
 	rp := connectedPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 
@@ -934,6 +934,7 @@ func (rp *remotePair) reconnect(t *testing.T) {
 // AC33: one case per row of the plan's table of what each action on a remote chat does, and the
 // archive marks that are made on B itself.
 func TestRemoteChatActions(t *testing.T) {
+	serverTest(t, "TestArchiveConnected, TestArchivePending, TestDelete, TestSend, TestPatch, TestFork, TestPassedOn (internal/remotes)")
 	rp := connectedPair(t, linksim.Good)
 	g, g2 := rp.group(t, "Work"), rp.group(t, "Other")
 	d := rp.direct(t)
@@ -1310,6 +1311,7 @@ func TestRemoteChatActions(t *testing.T) {
 // confirmation's counts are the records; the removal takes the records away and gives the
 // unstarted chat back to this computer; B keeps both chats.
 func TestRemoteChatRemoval(t *testing.T) {
+	serverTest(t, "TestCountsAndRemoved (internal/remotes)", "TestManagerRemove (internal/servers)")
 	rp := connectedPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	one, two := rp.startChat(t, g, "one"), rp.startChat(t, g, "two")
@@ -1496,6 +1498,7 @@ func (rp *remotePair) newChatIn(t *testing.T, group, dir string) string {
 // it; a change of server after it deletes what the failed start left on B; and an agent that
 // starts and then refuses the message leaves the chat started on both sides.
 func TestRemoteChatFailedStart(t *testing.T) {
+	serverTest(t, "TestStartTable, TestStartNotSent (internal/remotes)")
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH (the fake claude is a Node script)")
 	}
@@ -1505,6 +1508,7 @@ func TestRemoteChatFailedStart(t *testing.T) {
 		p    linksim.Profile
 	}{{"good link", linksim.Good}, {"poor link", linksim.Poor}} {
 		t.Run(link.name, func(t *testing.T) {
+			t.Parallel() // each link has its own pair
 			rp := startRemotePair(t, link.p, wrap)
 			rp.addEntry(t)
 			g := rp.group(t, "Work")
@@ -1614,11 +1618,11 @@ func TestRemoteChatFailedStart(t *testing.T) {
 				if a.Chat == nil || a.Chat.Server != "" || a.Chat.Locked {
 					t.Fatalf("the change to this computer: %s", a)
 				}
-				eventually(t, 10*time.Second, "B no longer has the chat", func() bool { _, ok := rp.ownView(t, chat); return !ok })
+				eventually(t, 30*time.Second, "B no longer has the chat", func() bool { _, ok := rp.ownView(t, chat); return !ok })
 				// It starts here, with A's own agent.
 				rp.ok(t, "PATCH", "/api/chats/"+chat, map[string]any{"cwd": rp.work})
 				rp.send(t, chat, "here instead")
-				eventually(t, 20*time.Second, "the reply of the local agent", func() bool {
+				eventually(t, 30*time.Second, "the reply of the local agent", func() bool {
 					th, _ := threadOf(rp.ok(t, "GET", "/api/chats/"+chat+"/items", nil).Raw)
 					return th.has(t, "here instead") && th.ends() >= 1
 				})
@@ -1636,7 +1640,7 @@ func TestRemoteChatFailedStart(t *testing.T) {
 					t.Fatalf("the first message with a program that does not start: %s", a)
 				}
 				rp.ok(t, "DELETE", "/api/chats/"+chat, nil)
-				eventually(t, 10*time.Second, "B no longer has the chat", func() bool { _, ok := rp.ownView(t, chat); return !ok })
+				eventually(t, 30*time.Second, "B no longer has the chat", func() bool { _, ok := rp.ownView(t, chat); return !ok })
 			})
 
 			// (c), second case: the agent starts and then refuses the message. The chat is started and
@@ -1645,8 +1649,10 @@ func TestRemoteChatFailedStart(t *testing.T) {
 				chat := rp.newChatIn(t, g, rp.folder(t, ".aiwb-fake-refuse", ""))
 				rp.followUnstarted(t, chat)
 				mark := rp.page.mark()
-				// The message is larger than a pipe holds: B is still writing it when the agent goes.
-				a := first(chat, "refused after the start "+strings.Repeat("x", 400<<10))
+				// The message is larger than a pipe holds (64 KB at most), with room to spare: B is
+				// still writing it when the agent goes. It is no larger than that needs: the poor
+				// link carries it at 1 Mbit/s, and its thread back several times.
+				a := first(chat, "refused after the start "+strings.Repeat("x", 160<<10))
 				t.Logf("an agent that refuses after its start: %s", clipText(a.String(), 400))
 				own, ok := rp.ownView(t, chat)
 				if !ok || !own.Locked {
@@ -1659,8 +1665,8 @@ func TestRemoteChatFailedStart(t *testing.T) {
 				if !v.Locked || v.Server != rp.entry {
 					t.Fatalf("the chat through A after the refusal: %+v", v)
 				}
-				rp.page.awaitChat(t, mark, 5*time.Second, chat, "the lock", func(v model.ChatView) bool { return v.Locked })
-				rp.page.awaitEvent(t, mark, 5*time.Second, "chat_reload", chat)
+				rp.page.awaitChat(t, mark, 30*time.Second, chat, "the lock", func(v model.ChatView) bool { return v.Locked })
+				rp.page.awaitEvent(t, mark, 30*time.Second, "chat_reload", chat)
 				th := rp.same(t, chat, "after the refusal")
 				if th.users(t, "refused after the start") != 1 {
 					t.Fatalf("the thread after the refusal: %s", joinThread(th))
@@ -1728,12 +1734,14 @@ func took(t *testing.T, what string, ch <-chan answer, limit time.Duration) answ
 // the good and on the poor link. Nothing is sent twice, and what the page reads through A after
 // the return is B's own.
 func TestRemoteChatLostAnswers(t *testing.T) {
+	serverTest(t, "TestStartNoAnswer, TestStartOnce, TestStartWhileTheStreamDrops, TestGoneAndBack (internal/remotes)")
 	for _, link := range []struct {
 		name string
 		p    linksim.Profile
 	}{{"good link", linksim.Good}, {"poor link", linksim.Poor}} {
 		t.Run(link.name, func(t *testing.T) {
-			rp := connectedPair(t, link.p)
+			t.Parallel() // each link has its own pair
+			rp := connectedPair(t, link.p, fast.env(t, "backoff"))
 			g := rp.group(t, "Work")
 			// restore lets the link carry again and waits for A's connection.
 			restore := func(t *testing.T) time.Duration {
@@ -1836,14 +1844,15 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				t.Logf("%s, (b): 504 start_unconfirmed, server and agent refused with 409, two repeats without a connection 503; settled as started %v after the link was back; one user message at B", link.name, back.Round(time.Millisecond))
 			})
 
-			// (e) A cut of 15 s in the middle of a turn.
+			// (e) A cut of 15 s in the middle of a turn, on the clock of the test: A's tries to
+			// connect are as many steps into their back-off as after 15 s of the production one.
 			t.Run("a cut in the middle of a turn", func(t *testing.T) {
 				chat := rp.startChat(t, g, "one")
 				rp.turns(t, chat, 1)
 				rp.same(t, chat, "before the cut")
 				skip := rp.b.fakeMessages(t)
 				sent := rp.page.mark()
-				rp.send(t, chat, "through the cut [[sleep 5]]")
+				rp.send(t, chat, "through the cut [[sleep 3]]")
 				rp.b.waitFakeMessage(t, skip, "through the cut")
 				// The user's message is content B sends before the cut: the page has it before
 				// the mark, so that what comes after the mark is the reply's alone.
@@ -1856,7 +1865,8 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				if evs := rp.page.of(mark, "chat_items", chat); len(evs) != 0 {
 					t.Fatalf("the page was sent content events through a cut link: %v", evs)
 				}
-				time.Sleep(time.Until(cut.Add(15 * time.Second)))
+				away := fast.of(15 * time.Second)
+				time.Sleep(time.Until(cut.Add(away)))
 				back := restore(t)
 				th := rp.same(t, chat, "after the return")
 				if !th.has(t, "FAKE(sonnet): through the cut") || th.ends() != 2 {
@@ -1865,7 +1875,7 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				if a, b := rp.view(t, chat), func() model.ChatView { v, _ := rp.ownView(t, chat); return v }(); a.Status != b.Status || a.Status != model.StatusReady {
 					t.Fatalf("the chat's status after the return: %q through A, %q at B", a.Status, b.Status)
 				}
-				t.Logf("%s, (e): cut for 15 s in the middle of a turn; connected again %v after the link was back; the thread through A is B's", link.name, back.Round(time.Millisecond))
+				t.Logf("%s, (e): cut for %v (15 s of the production clock) in the middle of a turn; connected again %v after the link was back; the thread through A is B's", link.name, max(away, time.Since(cut)-back).Round(100*time.Millisecond), back.Round(time.Millisecond))
 			})
 		})
 	}
@@ -1876,6 +1886,7 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 // when a call has ended. A's next start settles the chat from the snapshot of its connect: it is
 // a record, listed as started, and its thread through A is B's with the message once.
 func TestRemoteChatKilledInAStart(t *testing.T) {
+	serverTest(t, "TestSettleAtSnapshot, TestAdopt (internal/remotes)")
 	rp := connectedPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	chat := rp.newChat(t, g)
@@ -1932,8 +1943,14 @@ func TestRemoteChatKilledInAStart(t *testing.T) {
 // AC12: B is stopped for 60 s during a turn, and in a second round restarted at once; then the
 // link stalls. The entry's state is read with its times, a chat of this computer is used
 // meanwhile, and after each return the chat on screen and a second chat are compared with B's.
+//
+// The 60 s, the back-off of A's connection and the silence that ends a stream are those of the
+// fast clock: B is away for 6 s, which is past the last step of a back-off of 0.1 to 3 s as 60 s
+// are past the last of 1 to 30 s, and the stall is found after 3.5 s. AIWB_TEST_REAL_WAITS=1
+// runs the test on the production values (see clock).
 func TestRemoteChatOutage(t *testing.T) {
-	rp := connectedPair(t, linksim.Good)
+	serverTest(t, "TestOutageAndReturn (internal/remotes)", "TestConnReconnects, TestConnSilence (internal/servers)")
+	rp := connectedPair(t, linksim.Good, fast.env(t, "silence", "backoff"))
 	g, kept := rp.group(t, "Work"), rp.group(t, "Kept")
 	onScreen, second := rp.startChat(t, g, "one"), rp.startChat(t, g, "two")
 	inGroup, toArchive := rp.startChat(t, kept, "three"), rp.startChat(t, g, "four")
@@ -2041,7 +2058,7 @@ func TestRemoteChatOutage(t *testing.T) {
 	}
 
 	t.Run("stopped for 60 s", func(t *testing.T) {
-		down(t, "stopped", 60*time.Second, false, func(t *testing.T) {
+		down(t, "stopped", fast.of(60*time.Second), false, func(t *testing.T) {
 			// An archive made while B is away shows at once and waits to be passed on.
 			mark := rp.page.mark()
 			rp.ok(t, "POST", "/api/chats/"+toArchive+"/archive", nil)
@@ -2141,8 +2158,12 @@ func (rp *remotePair) continueB(t *testing.T) {
 // text that is back in the box; then B goes on, takes the call and starts the chat with what was
 // sent. With no call but reads of A's snapshot the chat becomes a record with the message once,
 // and the edited text is still its draft; a draft left as it was sent is none afterwards.
+//
+// A's limit for the creation call and the silence that ends its stream before that are those of
+// the fast clock: 4.5 s and 3.5 s for 45 s and 35 s.
 func TestRemoteChatFrozenFirstMessage(t *testing.T) {
-	rp := connectedPair(t, linksim.Good)
+	serverTest(t, "TestStartNoAnswer, TestFirstTextKept, TestSwapKeepsAnEditedDraft (internal/remotes)")
+	rp := connectedPair(t, linksim.Good, fast.env(t, "silence", "start"))
 	g := rp.group(t, "Work")
 	const sentText = "first M1"
 	for _, c := range []struct {

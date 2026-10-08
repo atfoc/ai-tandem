@@ -141,7 +141,7 @@ func (r *Relay) runArchiveLost(rec *runRecord, err error) {
 		select {
 		case <-r.ctx.Done():
 			return
-		case <-time.After(r.o.Limits.Call):
+		case <-time.After(r.again):
 		}
 		if !r.connected(rec.entry) {
 			return // the next connect passes it on

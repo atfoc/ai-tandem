@@ -76,6 +76,7 @@ func interruptedThenClosed(t *testing.T, when string, a *loggedAgent) {
 // A running app subagent that is stopped gets an interrupt before its process is closed, whatever
 // stopped it (T11-F1).
 func TestStoppedSubagentInterruptedBeforeClose(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		stop func(t *testing.T, e *env, id string, parent *fakeAgent, sa model.Subagent)
@@ -134,6 +135,7 @@ func TestStoppedSubagentInterruptedBeforeClose(t *testing.T) {
 // subagent running on it runs on, and gets no interrupt. The stop of that branch alone ends it,
 // with the interrupt before its close.
 func TestBranchSwitchLeavesSubagentRunning(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	sa := e.spawn(id, SpawnSubRequest{Prompt: "go"})
@@ -164,6 +166,7 @@ func TestBranchSwitchLeavesSubagentRunning(t *testing.T) {
 // A subagent that finished by itself has an idle process; it is closed the same way (an interrupt
 // does nothing to an idle process).
 func TestFinishedSubagentClosed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sp := &loggingSpawner{inner: e.claude}
 	e.m.Spawners[model.Claude] = sp

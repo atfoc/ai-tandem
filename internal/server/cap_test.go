@@ -15,6 +15,9 @@ import (
 // A message that would start a turn beyond the cap on running turns is refused with 429 and the
 // code "cap", in each form of POST /messages, and changes nothing. The caps are lowered as the
 // app's start lowers them from AIWB_CHAT_CAP and AIWB_APP_CAP (chats.SetCaps).
+//
+// Not parallel: the caps are the package's, one pair for every manager of the process. A serial
+// test ends (and its cleanup puts the caps back) before the parallel tests go on.
 func TestMessagesRefusedAtTheCap(t *testing.T) {
 	e := newEnv(t)
 	sp := &stopSpawner{}
@@ -63,7 +66,7 @@ func TestMessagesRefusedAtTheCap(t *testing.T) {
 		t.Fatalf("%d processes of the other chat", sp.count())
 	}
 	sp.agents[0].ch <- agent.Event{Kind: agent.EvTurnEnd}
-	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(waitLimit); ; time.Sleep(5 * time.Millisecond) {
 		if v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+busy.ID, "")); v.Working == 0 {
 			break
 		}

@@ -26,6 +26,7 @@ func archiveRoutes(rg *rig) (archive, unarchive *script) {
 
 // TestArchiveConnected: an archive and an unarchive with the server connected.
 func TestArchiveConnected(t *testing.T) {
+	t.Parallel()
 	rg := seeded(t, rigOpt{}, chatA, chatB)
 	archive, unarchive := archiveRoutes(rg)
 	ctx := context.Background()
@@ -112,6 +113,7 @@ func TestArchiveConnected(t *testing.T) {
 
 // TestArchiveNoAnswer: an archive the server does not answer stays pending, and that is no failure.
 func TestArchiveNoAnswer(t *testing.T) {
+	t.Parallel()
 	rg := seeded(t, rigOpt{limits: Limits{Call: 150 * time.Millisecond}}, chatA)
 	archive, _ := archiveRoutes(rg)
 	_, free := archive.hang()
@@ -139,14 +141,17 @@ func TestArchiveNoAnswer(t *testing.T) {
 // TestArchiveTriedAgain: an archive call that gets no answer on an entry that stays connected is
 // made again, with no reconnect and no action of the user: three calls in a row at most.
 func TestArchiveTriedAgain(t *testing.T) {
-	rg := seeded(t, rigOpt{limits: Limits{Call: 150 * time.Millisecond}}, chatA)
+	t.Parallel()
+	// The calls that get no answer end at once, and the wait before the next one is short: no
+	// limit is waited out, and the calls that are answered have the usual limits.
+	const again = 20 * time.Millisecond
+	rg := seeded(t, rigOpt{again: again}, chatA)
 	archive, unarchive := archiveRoutes(rg)
 	ctx := context.Background()
 	var calls atomic.Int32
 	archive.set(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
-			<-r.Context().Done() // the first call is swallowed
-			return
+			panic(http.ErrAbortHandler) // the first call gets no answer
 		}
 		writeAnswer(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -168,13 +173,12 @@ func TestArchiveTriedAgain(t *testing.T) {
 	}
 
 	// A server that never answers gets three calls, and no more.
-	_, free := unarchive.hang()
-	defer free()
+	unarchive.drop()
 	if err := rg.r.Unarchive(ctx, chatA); err != nil {
 		t.Errorf("an unarchive without an answer: %v", err)
 	}
 	rg.until("the unarchive is sent three times", func() bool { return unarchive.count() == archiveTries })
-	time.Sleep(4 * 150 * time.Millisecond)
+	time.Sleep(quiet) // several times the wait before a next call
 	if n := unarchive.count(); n != archiveTries {
 		t.Errorf("%d unarchive calls, want %d", n, archiveTries)
 	}
@@ -194,6 +198,7 @@ func TestArchiveTriedAgain(t *testing.T) {
 // TestArchivePending: an archive made while the server is away stays pending, wins over the
 // snapshot of the return and is then passed on.
 func TestArchivePending(t *testing.T) {
+	t.Parallel()
 	rg := seeded(t, rigOpt{}, chatA, chatB)
 	archive, unarchive := archiveRoutes(rg)
 	ctx := context.Background()
@@ -275,6 +280,7 @@ func TestArchivePending(t *testing.T) {
 // TestArchivedThere: a mark made on the chat's own server is taken, belongs to no archive action
 // here, and is kept at a reconnect, where nothing is sent for it.
 func TestArchivedThere(t *testing.T) {
+	t.Parallel()
 	rg := seeded(t, rigOpt{}, chatA)
 	archive, unarchive := archiveRoutes(rg)
 	p, _ := rg.page("page-1")
@@ -311,6 +317,7 @@ func TestArchivedThere(t *testing.T) {
 
 // TestDelete: the delete of a record's chat.
 func TestDelete(t *testing.T) {
+	t.Parallel()
 	ids := []string{chatN(1), chatN(2), chatN(3), chatN(4), chatN(5)}
 	rg := seeded(t, rigOpt{limits: Limits{Call: 150 * time.Millisecond}}, ids...)
 	ctx := context.Background()
@@ -415,6 +422,7 @@ func TestDelete(t *testing.T) {
 
 // TestDeletable: the check before a group is deleted with its contents.
 func TestDeletable(t *testing.T) {
+	t.Parallel()
 	inside, unnamed, outside, goneRec := seedOf(chatN(1)), seedOf(chatN(2)), seedOf(chatN(3)), seedOf(chatN(4))
 	inside.Group, inside.View.Name = "g_sub", "Plan the “launch”"
 	unnamed.Group, unnamed.View.Name = "g_top", ""

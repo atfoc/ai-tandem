@@ -1,0 +1,5 @@
+/* A board on another server: the view in place of its canvas while that server is away, and the banner over a canvas whose edit is not saved there. */
+.board-off { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; color: var(--muted); padding: 40px; }
+.board-off h2 { margin: 4px 0 0; color: var(--text); font-size: 18px; font-weight: 650; }
+.board-off p { max-width: 380px; margin: 0 0 6px; }
+.save-banner { position: absolute; left: 50%; top: 58px; transform: translateX(-50%); z-index: 4; max-width: calc(100% - 28px); padding: 5px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); box-shadow: var(--shadow-sm); font-size: 12px; font-weight: 600; color: var(--warn); white-space: nowrap; pointer-events: none; }

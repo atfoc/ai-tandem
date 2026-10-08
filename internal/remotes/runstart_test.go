@@ -116,6 +116,7 @@ const (
 
 // TestRunStartTable: every row of the table of the start call's answers.
 func TestRunStartTable(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	put := rg.script("PUT /api/runs/{id}")
 	get := rg.script("GET /api/runs/{id}")
@@ -260,6 +261,7 @@ func TestRunStartTable(t *testing.T) {
 
 // TestRunStartNotSent: the calls that send nothing.
 func TestRunStartNotSent(t *testing.T) {
+	t.Parallel()
 	rec := runSeedOf(runA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(rec.View), runSeed: []RunRecord{rec}})
 	put := rg.script("PUT /api/runs/{id}")
@@ -303,11 +305,11 @@ func TestRunStartNotSent(t *testing.T) {
 
 // TestRunStartNoAnswer: the start call gets no answer to go by, and the read settles it.
 func TestRunStartNoAnswer(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: Limits{Start: 150 * time.Millisecond, Settle: 150 * time.Millisecond}})
 	put := rg.script("PUT /api/runs/{id}")
 	get := rg.script("GET /api/runs/{id}")
-	_, release := put.hang()
-	defer release()
+	put.drop() // no answer at once; the limits themselves are waited out once, below
 	ctx := context.Background()
 
 	t.Run("the run has started there", func(t *testing.T) {
@@ -337,6 +339,8 @@ func TestRunStartNoAnswer(t *testing.T) {
 	t.Run("the read gets no answer either", func(t *testing.T) {
 		id := runN(3)
 		rg.draftRun(id, "")
+		_, release := put.hang()
+		defer release() // the route ends its requests with no answer from here on, as before
 		_, free := get.hang()
 		defer free()
 		start := time.Now()
@@ -403,6 +407,7 @@ func TestRunStartNoAnswer(t *testing.T) {
 
 // TestRunSettleAtSnapshot: step 3 of a snapshot for the draft runs of the entry.
 func TestRunSettleAtSnapshot(t *testing.T) {
+	t.Parallel()
 	startedID, absentID, quietID, cutID, madeID, recID, lostID, busyID := runN(1), runN(2), runN(3), runN(4), runN(5), runN(6), runN(7), runN(8)
 	other := "r_other001"
 	rec, lost := runSeedOf(recID), runSeedOf(lostID)
@@ -501,6 +506,7 @@ func TestRunSettleAtSnapshot(t *testing.T) {
 
 // TestRunStartOnce: of any number of start calls at once for one run, one is sent.
 func TestRunStartOnce(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	put := rg.script("PUT /api/runs/{id}")
 	get := rg.script("GET /api/runs/{id}")
@@ -538,6 +544,7 @@ func TestRunStartOnce(t *testing.T) {
 // the run service lets go of the draft, and the read after it never puts an older view over a
 // newer one.
 func TestRunSwapOrder(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	put := rg.script("PUT /api/runs/{id}")
 	get := rg.script("GET /api/runs/{id}")
@@ -626,6 +633,7 @@ func TestRunSwapOrder(t *testing.T) {
 
 // TestRunStartIDTaken: 409 id_taken gives the draft a new id, and the call is made once more.
 func TestRunStartIDTaken(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	put := rg.script("PUT /api/runs/{id}")
 	get := rg.script("GET /api/runs/{id}")
@@ -709,6 +717,7 @@ func TestRunStartIDTaken(t *testing.T) {
 // TestRunGoalKept: a start call that finds the run started by an earlier call with another goal
 // makes the swap and tells the page that its text was not sent.
 func TestRunGoalKept(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: Limits{Start: 150 * time.Millisecond, Settle: 150 * time.Millisecond}})
 	put := rg.script("PUT /api/runs/{id}")
 	get := rg.script("GET /api/runs/{id}")
@@ -717,16 +726,14 @@ func TestRunGoalKept(t *testing.T) {
 	// lost makes a start call with the goal that gets no answer; the read answers as read says.
 	lost := func(id, goal string, definite bool) {
 		t.Helper()
-		_, free := put.hang()
-		defer free()
-		want, release := http.StatusGatewayTimeout, func() {}
+		put.drop()
+		want := http.StatusGatewayTimeout
 		if definite {
 			want = http.StatusBadGateway
 			get.answer(http.StatusNotFound, map[string]string{"error": "no such run"})
 		} else {
-			_, release = get.hang()
+			get.drop()
 		}
-		defer release()
 		if rep := rg.r.StartRun(ctx, id, goal); rep.Status != want {
 			t.Fatalf("the lost call: %d %s", rep.Status, rep.Body)
 		}
@@ -791,6 +798,7 @@ func TestRunGoalKept(t *testing.T) {
 
 // TestCheckDraft: the draft check of an entry, as the run service asks it.
 func TestCheckDraft(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: Limits{Check: 150 * time.Millisecond}})
 	check := rg.script("GET /api/runs/check")
 	facts := runs.DraftFacts{Cwd: "/home/standin/repo", Git: true, Dirty: true, Blocked: "the folder has no commit yet"}
@@ -846,6 +854,7 @@ func TestCheckDraft(t *testing.T) {
 // TestRunInfoAndDropRun: what the chat manager and the run service get of a run record, and the
 // delete of the run a deleted draft may have left.
 func TestRunInfoAndDropRun(t *testing.T) {
+	t.Parallel()
 	a, b := runSeedOf(runA), runSeedOf(runB)
 	a.View.Tiers.Deep = model.ModelChoice{Model: "deep-model", Effort: "high"}
 	b.Gone = true
@@ -890,6 +899,7 @@ func TestRunInfoAndDropRun(t *testing.T) {
 // done, so the snapshot does not have it: the draft keeps its mark while the read of the run
 // tells nothing, and the run's event makes the swap.
 func TestRunStartEndsAfterTheSnapshot(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: Limits{Start: 150 * time.Millisecond, Settle: 150 * time.Millisecond}})
 	put := rg.script("PUT /api/runs/{id}")
 	get := rg.script("GET /api/runs/{id}")
@@ -950,6 +960,7 @@ func TestRunStartEndsAfterTheSnapshot(t *testing.T) {
 // TestRunSettledByARead: what the read of a draft with the mark, which the snapshot does not
 // have, makes of each answer, and that a draft without the mark is asked nothing of.
 func TestRunSettledByARead(t *testing.T) {
+	t.Parallel()
 	startedID, absentID, quietID := runN(1), runN(2), runN(3)
 	var get *script
 	rg := newRig(t, rigOpt{hold: true, wire: func(rg *rig) {
@@ -1005,6 +1016,7 @@ func TestRunSettledByARead(t *testing.T) {
 
 // TestRunEventOfADraft: which events of a run without a record make the swap.
 func TestRunEventOfADraft(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	get := rg.script("GET /api/runs/{id}")
 	p, _ := rg.page("page-1")
@@ -1058,6 +1070,7 @@ func TestRunEventOfADraft(t *testing.T) {
 // run is not started here. No record stays, the pages get nothing, the run is deleted on its
 // server, and the answer is 409 run_changed.
 func TestRunChangedInAStart(t *testing.T) {
+	t.Parallel()
 	const changed = "The run was changed while it was being started; it was not started on Studio."
 	rg := newRig(t, rigOpt{limits: Limits{Start: 150 * time.Millisecond, Settle: 150 * time.Millisecond}})
 	put := rg.script("PUT /api/runs/{id}")
@@ -1150,6 +1163,7 @@ func TestRunChangedInAStart(t *testing.T) {
 // TestRunStarting: the run service is told that a start is being made from the moment it is
 // asked for until its answer is taken (runs.Remote).
 func TestRunStarting(t *testing.T) {
+	t.Parallel()
 	var _ runs.Remote = (*Relay)(nil)
 	rg := newRig(t, rigOpt{})
 	put := rg.script("PUT /api/runs/{id}")

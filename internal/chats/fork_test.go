@@ -251,6 +251,7 @@ func (e *env) blockFork(id string, at int) (*blocked, chan error) {
 // ---- the point ------------------------------------------------------------
 
 func TestForkPoints(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		items []model.Item
@@ -291,6 +292,7 @@ func TestForkPoints(t *testing.T) {
 }
 
 func TestForkRefusals(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 
@@ -354,6 +356,7 @@ func TestForkRefusals(t *testing.T) {
 }
 
 func TestForkPiCutTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.stored(model.Pi, cutTurn())
 	three, five := 3, 5
@@ -399,6 +402,7 @@ func TestForkPiCutTurn(t *testing.T) {
 }
 
 func TestForkAtEndWithoutMarks(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.stored(model.Claude, []model.Item{pUser(), pText()})
 	if err := e.forkErr(id, 1); !errors.Is(err, ErrBadPoint) {
@@ -417,6 +421,7 @@ func TestForkAtEndWithoutMarks(t *testing.T) {
 // ---- the new chat ---------------------------------------------------------
 
 func TestForkNewChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	// Turn 1 starts a subagent; then two plain turns.
 	id, a := e.subStart()
@@ -558,6 +563,7 @@ func TestForkNewChat(t *testing.T) {
 }
 
 func TestForkBoardChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
@@ -616,6 +622,7 @@ func TestForkBoardChat(t *testing.T) {
 }
 
 func TestForkTitle(t *testing.T) {
+	t.Parallel()
 	long := "  Please look at <selection label=\"a &amp; b\">x</selection>\nand tell me what you think about it  "
 	for _, tc := range []struct {
 		name  string
@@ -646,6 +653,7 @@ func TestForkTitle(t *testing.T) {
 }
 
 func TestForkAndEdit(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	items := cutTurn()
 	items[5].Text = "the message"
@@ -691,6 +699,7 @@ func TestForkAndEdit(t *testing.T) {
 }
 
 func TestForkAndEditFirstMessage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := e.listen()
 	v0 := e.create(model.Claude, gTwo, "")
@@ -756,6 +765,7 @@ func TestForkAndEditFirstMessage(t *testing.T) {
 }
 
 func TestForkLabels(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	plain := e.fork(id, 3)
@@ -802,6 +812,7 @@ func TestForkLabels(t *testing.T) {
 // ---- the unlisted entry ---------------------------------------------------
 
 func TestForkIsUnlistedDuringTheStart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gOne, false)
 	if err != nil {
@@ -881,6 +892,7 @@ func TestForkIsUnlistedDuringTheStart(t *testing.T) {
 }
 
 func TestForkFailureLeavesNothing(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("the provider said no")
 	archive := model.Archive{Archived: true, Op: "op1"}
 	cases := []struct {
@@ -984,6 +996,7 @@ func TestForkFailureLeavesNothing(t *testing.T) {
 }
 
 func TestShutdownDuringForkStart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b, res := e.blockFork(id, 3)
@@ -1003,6 +1016,7 @@ func TestShutdownDuringForkStart(t *testing.T) {
 // The steps of Fork as a new branch will use them: a Send on the entry while it is still
 // unlisted goes to the confirmed process, and still nothing is saved or emitted for it.
 func TestUnlistedEntryIsNeverSavedOrEmitted(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	var out outbox
@@ -1077,6 +1091,7 @@ func TestUnlistedEntryIsNeverSavedOrEmitted(t *testing.T) {
 }
 
 func TestForkWithoutForker(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	e.m.Spawners[model.Claude] = plainSpawner{e.claude}
@@ -1108,6 +1123,7 @@ func (e *env) claudeFork() (src, fork string) {
 }
 
 func TestForkSourceKeptUntilFirstTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, id := e.claudeFork()
 	srcSID, sid := e.meta(src).SessionID, e.meta(id).SessionID
@@ -1178,6 +1194,7 @@ func TestForkSourceKeptUntilFirstTurn(t *testing.T) {
 }
 
 func TestForkRelaunchAfterExit(t *testing.T) {
+	t.Parallel()
 	// Without a restart: the confirmed process exits before the first Send.
 	e := newEnv(t)
 	_, id := e.claudeFork()
@@ -1195,6 +1212,7 @@ func TestForkRelaunchAfterExit(t *testing.T) {
 }
 
 func TestForkRelaunchFails(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, id := e.claudeFork()
 	e.boot()
@@ -1246,6 +1264,7 @@ func TestForkRelaunchFails(t *testing.T) {
 }
 
 func TestForkRelaunchBusyDeleteArchive(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, id := e.claudeFork()
 	_, other := e.claudeFork()
@@ -1337,6 +1356,7 @@ func TestForkRelaunchBusyDeleteArchive(t *testing.T) {
 }
 
 func TestForkOfFork(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, f1 := e.claudeFork()
 	srcSID, f1SID := e.meta(src).SessionID, e.meta(f1).SessionID
@@ -1412,6 +1432,7 @@ func chatEventsOf(evs []map[string]any, id string) []map[string]any {
 }
 
 func TestForkWithoutPointSourceWentOn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, id := e.oldFork()
 	e.turn(src, nil, 2) // the source goes on; the fork never had a message
@@ -1456,6 +1477,7 @@ func TestForkWithoutPointSourceWentOn(t *testing.T) {
 }
 
 func TestForkWithoutPointSourceKept(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, id := e.oldFork()
 	srcSID := e.meta(src).SessionID
@@ -1481,6 +1503,7 @@ func TestForkWithoutPointSourceKept(t *testing.T) {
 }
 
 func TestForkWithoutPointSourceDeleted(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, id := e.oldFork()
 	if err := e.m.Delete(src); err != nil {
@@ -1503,6 +1526,7 @@ func TestForkWithoutPointSourceDeleted(t *testing.T) {
 // The source of a fork is one chat object: a branch's own thread says whether it went on, not
 // its chat's other branches.
 func TestForkWithoutPointOfABranch(t *testing.T) {
+	t.Parallel()
 	for _, cur := range []string{"", exBranch} {
 		e := newEnv(t)
 		id, bid := e.branched(model.Claude, "", cur)
@@ -1534,6 +1558,7 @@ func TestForkWithoutPointOfABranch(t *testing.T) {
 // and its fork source is still kept: the start goes through the adapter, which finds that session
 // and resumes it, whatever the source holds by now.
 func TestForkWithoutPointSentBeforeSourceWentOn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, id := e.oldFork()
 	srcSID := e.meta(src).SessionID
@@ -1558,6 +1583,7 @@ func TestForkWithoutPointSentBeforeSourceWentOn(t *testing.T) {
 
 // With an id the fork is cut at it on every start, whatever the source holds by now.
 func TestForkWithPointSourceWentOn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, a := e.talked(model.Claude, "", 1)
 	srcSID := e.meta(src).SessionID
@@ -1580,6 +1606,7 @@ func TestForkWithPointSourceWentOn(t *testing.T) {
 // A fork of a fork that has no session of its own yet goes through that fork's source. Where no
 // id names the place, it is refused as that fork's own start is once the source has gone on.
 func TestForkOfForkWithoutPointSourceWentOn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	old, g1 := e.oldFork()
 	e.turn(old, nil, 2)
@@ -1611,6 +1638,7 @@ func TestForkOfForkWithoutPointSourceWentOn(t *testing.T) {
 // thread is longer by the end mark of the turn end Claude reports when the fork starts. After a
 // restart it is refused, as that fork is, once the source has gone on by as little as one message.
 func TestForkOfForkKeepsTheSourcesCount(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, g := e.oldFork()
 	e.claude.lastFork(t).emit(t, agent.Event{Kind: agent.EvTurnEnd})
@@ -1651,6 +1679,7 @@ func (e *env) forkWith(id string, at int, modelID, effort string) (model.ChatVie
 }
 
 func TestForkTakesTheChoice(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 	e.usedTurn(id, a, 100) // the source's window is known: 1000
@@ -1716,6 +1745,7 @@ func TestForkTakesTheChoice(t *testing.T) {
 }
 
 func TestForkIsFreshUntilItsFirstMessage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 	e.usedTurn(id, a, 100)
@@ -1797,6 +1827,7 @@ func TestForkIsFreshUntilItsFirstMessage(t *testing.T) {
 }
 
 func TestForkWindowRefused(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.piTalked()
 	dirs := e.chatDirs()
@@ -1848,6 +1879,7 @@ func TestForkWindowRefused(t *testing.T) {
 // A fork made at the start is not locked, but its first message is still a fork's: the folder it
 // has of its source does not become its group's.
 func TestForkAtStartRecordsNothingAtFirstMessage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	v0, err := e.forkWith(id, 0, "", "")
@@ -1876,6 +1908,7 @@ func TestForkAtStartRecordsNothingAtFirstMessage(t *testing.T) {
 }
 
 func TestChoiceDoesNotRecordDefaults(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	was := e.defaultsOf()

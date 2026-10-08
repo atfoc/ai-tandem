@@ -11,6 +11,7 @@ import (
 // TestKnown: an id is known when a chat object has it or a chat folder is named by it, and
 // not otherwise; an id that is a path names no folder.
 func TestKnown(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if !e.m.Known(v.ID) {

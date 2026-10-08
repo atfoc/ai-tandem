@@ -18,11 +18,13 @@ import (
 // splitWait.
 const (
 	splitWait     = 10 * time.Second
-	splitRetry    = 300 * time.Millisecond
 	replyTimeout  = 10 * time.Second
 	errCtxExited  = "claude exited before it answered"
 	errCtxTimeout = "claude did not answer within %s"
 )
+
+// splitRetry is the pause before the process is asked again. A variable so that a test can shorten it.
+var splitRetry = 300 * time.Millisecond
 
 // controlReply is the "response" of a control_response line.
 type controlReply struct {

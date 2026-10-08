@@ -10,6 +10,7 @@ import (
 
 // TestDrafts: a record's drafts are kept here, by branch, under the rule of a local chat's.
 func TestDrafts(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	seed.View.Branch = "b1" // the chat's current branch
 	seed.States = append(seed.States, model.StateOf(chatA, "b1", seed.View))

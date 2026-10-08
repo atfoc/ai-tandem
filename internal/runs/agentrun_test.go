@@ -158,7 +158,12 @@ func TestAgentTimeoutFakeHost(t *testing.T) {
 		m.Block("completed", "ok", "r")
 	})
 	r.startEngine()
-	engUntil(t, "the first message", func() bool { return len(e.host.sent("T01-work")) == 1 })
+	// The time runs once the engine has recorded that the message was taken: an agent that times
+	// out before that record is started fresh, not resumed.
+	engUntil(t, "the first message", func() bool {
+		a, _ := r.engAgentNamed("T01-work")
+		return len(e.host.sent("T01-work")) == 1 && a.Resumable
+	})
 	e.clock.Advance(59 * time.Minute)
 	time.Sleep(30 * time.Millisecond)
 	if a, _ := r.engAgentNamed("T01-work"); a.Failures != 0 {
@@ -348,10 +353,13 @@ func TestAgentStopDuringAWait(t *testing.T) {
 	})
 	r.startEngine()
 	// The message is taken before the agent's script runs: the stop waits for the turn to be under
-	// way (its cost so far is set), or it would find an agent that has reported nothing.
+	// way (its cost so far is set), or it would find an agent that has reported nothing. And it
+	// waits for the engine's record that the message was taken: a stop before that leaves an
+	// agent that is started fresh, not resumed.
 	engUntil(t, "the first message", func() bool {
 		c, _ := e.host.CostOf(AgentChatID(r.id, "T01-work"))
-		return len(e.host.sent("T01-work")) == 1 && c.Known
+		a, _ := r.engAgentNamed("T01-work")
+		return len(e.host.sent("T01-work")) == 1 && c.Known && a.Resumable
 	})
 	if err := r.halt(Halting{Status: model.RunStopped, Reason: "stopped by the user", Stop: model.StopUser}); err != nil {
 		t.Fatal(err)
@@ -536,6 +544,8 @@ func TestSendTakesAResultThatIsThereAtAShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	stopsBefore := len(e.host.stoppedNames())
+	// The last call below waits the whole grace out, and nothing here has to happen within it.
+	r.svc.stopGrace = 50 * time.Millisecond
 	for _, want := range []error{nil, chats.ErrShutdown} {
 		// Many times: the wait picks between the two at random.
 		for i := range 200 {
@@ -546,7 +556,7 @@ func TestSendTakesAResultThatIsThereAtAShutdown(t *testing.T) {
 			}
 		}
 	}
-	// No result for engStopGrace: the answer is the context's, and no process is closed.
+	// No result for the grace: the answer is the context's, and no process is closed.
 	if err := eng.sent(ctx, "T01-work", make(chan error, 1)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("with no result: %v", err)
 	}

@@ -23,6 +23,7 @@ func svcAgents(have map[string]bool) *usable.Set {
 
 // A draft run's agent can be changed only to one the server can use.
 func TestSvcAgentOutsideTheList(t *testing.T) {
+	t.Parallel()
 	e := newSvcEnv(t)
 	have := map[string]bool{"claude": true, "pi": true}
 	e.s.Agents = svcAgents(have)
@@ -75,6 +76,7 @@ func TestSvcAgentOutsideTheList(t *testing.T) {
 // Run defaults whose agent the server lacks give the first usable agent with that agent's base
 // tiers, not the tiers recorded for the other kind.
 func TestSvcCreateFallsBackToAUsableAgent(t *testing.T) {
+	t.Parallel()
 	e := newSvcEnv(t)
 	stored := tiersAll("gpt-5", "high")
 	if err := e.s.Store.Update(func(st *model.State) error {
@@ -120,6 +122,7 @@ func TestSvcCreateFallsBackToAUsableAgent(t *testing.T) {
 // With no usable agent a run is still made: it has no agent and no tiers, says why it is blocked,
 // and cannot start until an agent is picked.
 func TestSvcCreateWithNoUsableAgent(t *testing.T) {
+	t.Parallel()
 	e := newSvcEnv(t)
 	have := map[string]bool{}
 	e.s.Agents = svcAgents(have)

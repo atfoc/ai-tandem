@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -49,17 +48,20 @@ func baseScript() fakeScript {
 
 type env struct {
 	home, cwd, record string
+	fake              *fakeAgent
 	s                 *Spawner
 }
 
+// newEnv sets up a fake agent and a Spawner that starts it. Nothing of it is in the test
+// process's environment (CURSOR_CONFIG_DIR is empty for every test, see TestMain), so a test that
+// uses it can run in parallel with others.
 func newEnv(t *testing.T, script fakeScript) *env {
 	t.Helper()
-	t.Setenv("CURSOR_CONFIG_DIR", "")
 	home := t.TempDir()
 	cwd := t.TempDir()
-	rec := fake(t, script)
-	return &env{home: home, cwd: cwd, record: rec, s: &Spawner{
-		Bin:     os.Args[0],
+	f := fake(t, script)
+	return &env{home: home, cwd: cwd, record: f.record, fake: f, s: &Spawner{
+		Bin:     f.bin,
 		AppRoot: filepath.Join(home, ".ai-whiteboard"),
 		Home:    home,
 	}}
@@ -84,7 +86,7 @@ func (e *env) spawn(t *testing.T, o agent.SpawnOptions) agent.Agent {
 func until(t *testing.T, a agent.Agent, stop func(agent.Event) bool) []agent.Event {
 	t.Helper()
 	var got []agent.Event
-	timeout := time.After(10 * time.Second)
+	timeout := time.After(mustHappen)
 	for {
 		select {
 		case e, ok := <-a.Events():
@@ -158,19 +160,19 @@ func jsonEq(t *testing.T, got json.RawMessage, want string) {
 }
 
 // seed writes the fake Cursor's shared config (as another process would have left it).
-func seed(t *testing.T, cfg fakeConfig) {
+func (e *env) seed(t *testing.T, cfg fakeConfig) {
 	t.Helper()
 	b, _ := json.Marshal(cfg)
-	if err := os.WriteFile(os.Getenv("FAKE_ACP_STATE"), b, 0o644); err != nil {
+	if err := os.WriteFile(e.fake.vars["FAKE_ACP_STATE"], b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // sharedConfig reads the fake Cursor's shared config.
-func sharedConfig(t *testing.T) fakeConfig {
+func (e *env) sharedConfig(t *testing.T) fakeConfig {
 	t.Helper()
 	var cfg fakeConfig
-	if b, err := os.ReadFile(os.Getenv("FAKE_ACP_STATE")); err == nil {
+	if b, err := os.ReadFile(e.fake.vars["FAKE_ACP_STATE"]); err == nil {
 		json.Unmarshal(b, &cfg)
 	}
 	return cfg
@@ -212,7 +214,10 @@ func onlyHandshakeMethods(t *testing.T, rs []recorded, extra ...string) {
 const ctxReadMethod = "<context read>"
 
 // recordCtxReads makes every context meter read show up in the record as ctxReadMethod: the store
-// exists, and the sqlite3 binary is a script that records its call and fails.
+// exists, and the sqlite3 binary is a fake that records its call and fails. The fake is a link to
+// the test binary, as fakeCost is (cost_test.go), not a script: on a loaded machine the first run
+// of a newly written script took longer than sqliteTimeout, the read before the first prompt was
+// given up, and the record had the prompt without it.
 func (e *env) recordCtxReads(t *testing.T) {
 	t.Helper()
 	db := StorePath(e.home, testSessionID)
@@ -222,15 +227,37 @@ func (e *env) recordCtxReads(t *testing.T) {
 	if err := os.WriteFile(db, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sh := filepath.Join(t.TempDir(), "sqlite3")
-	script := "#!/bin/sh\necho '{\"method\":\"" + ctxReadMethod + "\"}' >> '" + e.record + "'\nexit 1\n"
-	if err := os.WriteFile(sh, []byte(script), 0o755); err != nil {
+	self, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	e.s.SQLite = sh
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sqlite3")
+	if err := os.Symlink(self, bin); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(map[string]string{"FAKE_SQLITE_RECORD": e.record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fakeEnvFile), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.s.SQLite = bin
+}
+
+// runFakeSQLite is the test binary as the sqlite3 of recordCtxReads (FAKE_SQLITE_RECORD is set):
+// it appends one line with ctxReadMethod to that record, in one write, and fails.
+func runFakeSQLite(record string) {
+	if f, err := os.OpenFile(record, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		f.WriteString(`{"method":"` + ctxReadMethod + `"}` + "\n")
+		f.Close()
+	}
+	os.Exit(1)
 }
 
 func TestHandshakeNewSession(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{ChatID: "c1", Model: "claude-sonnet-5", Effort: "low"})
 
@@ -271,6 +298,7 @@ func TestHandshakeNewSession(t *testing.T) {
 // The policy for each option shape: thinking → true, context → largest, the thought_level option
 // (whatever its id) → the chat's effort or the model's list default; fast / optimize_for never.
 func TestApplyChoice(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, model, effort string
 		seed                map[string]map[string]string // last-used params left by another process
@@ -292,9 +320,10 @@ func TestApplyChoice(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t, baseScript())
 			if tc.seed != nil {
-				seed(t, fakeConfig{SelectedModel: "gpt-5.4-mini", ModelParameters: tc.seed})
+				e.seed(t, fakeConfig{SelectedModel: "gpt-5.4-mini", ModelParameters: tc.seed})
 			}
 			a := e.spawn(t, agent.SpawnOptions{Model: tc.model, Effort: tc.effort})
 			send(t, a, "hi")
@@ -304,7 +333,7 @@ func TestApplyChoice(t *testing.T) {
 				t.Fatalf("sets %v, want %v", got, tc.want)
 			}
 			onlyHandshakeMethods(t, rs, "session/prompt")
-			if cfg := sharedConfig(t); cfg.SelectedModel != tc.model {
+			if cfg := e.sharedConfig(t); cfg.SelectedModel != tc.model {
 				t.Fatalf("selected model %q", cfg.SelectedModel)
 			}
 		})
@@ -312,8 +341,9 @@ func TestApplyChoice(t *testing.T) {
 }
 
 func TestEmptyModelUsesReportedModel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
-	seed(t, fakeConfig{SelectedModel: "claude-opus-5-5",
+	e.seed(t, fakeConfig{SelectedModel: "claude-opus-5-5",
 		ModelParameters: map[string]map[string]string{"claude-opus-5-5": {"context": "300k", "effort": "max"}}})
 	a := e.spawn(t, agent.SpawnOptions{})
 	send(t, a, "hi")
@@ -324,6 +354,7 @@ func TestEmptyModelUsesReportedModel(t *testing.T) {
 }
 
 func TestPolicyErrorFailsSend(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		script fakeScript
@@ -336,6 +367,7 @@ func TestPolicyErrorFailsSend(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t, tc.script)
 			a := e.spawn(t, agent.SpawnOptions{Model: tc.model, Effort: "low"})
 			err := a.Send([]agent.ContentBlock{{Text: "hi"}})
@@ -352,6 +384,7 @@ func TestPolicyErrorFailsSend(t *testing.T) {
 // Without the flag the fake is the old agent: the model option lists pre-built variants and a bare
 // id is rejected, so the policy only works because initialize carries the flag.
 func TestFakeWithoutFlagRejectsBareModel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	conn, err := Start(e.s.bin(), []string{"acp"}, e.cwd)
 	if err != nil {
@@ -384,6 +417,7 @@ func TestFakeWithoutFlagRejectsBareModel(t *testing.T) {
 }
 
 func TestHandshakeErrorFailsSend(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, fakeScript{"authenticate": {{Error: raw(`{"code":-32000,"message":"Not logged in"}`)}}})
 	a := e.spawn(t, agent.SpawnOptions{})
 	err := a.Send([]agent.ContentBlock{{Text: "hi"}})
@@ -393,6 +427,7 @@ func TestHandshakeErrorFailsSend(t *testing.T) {
 }
 
 func TestSpawnMissingFolder(t *testing.T) {
+	t.Parallel()
 	s := &Spawner{Bin: os.Args[0]}
 	if _, err := s.Spawn(agent.SpawnOptions{Cwd: filepath.Join(t.TempDir(), "gone")}); err != agent.ErrFolderMissing {
 		t.Fatalf("got %v, want ErrFolderMissing", err)
@@ -416,7 +451,7 @@ func TestResumeReappliesPolicy(t *testing.T) {
 		},
 	})
 	e.recordCtxReads(t)
-	seed(t, fakeConfig{SelectedModel: "gpt-5.4-mini", ModelParameters: map[string]map[string]string{
+	e.seed(t, fakeConfig{SelectedModel: "gpt-5.4-mini", ModelParameters: map[string]map[string]string{
 		"claude-sonnet-5": {"thinking": "false", "context": "300k", "effort": "max"},
 	}})
 	a := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, Model: "claude-sonnet-5", Effort: "low"})
@@ -451,7 +486,7 @@ func TestResumeReappliesPolicy(t *testing.T) {
 	}
 	ld, _ := find(rs, "session/load")
 	jsonEq(t, ld.Params, `{"sessionId":"`+testSessionID+`","cwd":`+string(mustMarshal(e.cwd))+`,"mcpServers":[]}`)
-	cfg := sharedConfig(t)
+	cfg := e.sharedConfig(t)
 	if cfg.SelectedModel != "claude-sonnet-5" || !reflect.DeepEqual(cfg.ModelParameters["claude-sonnet-5"],
 		map[string]string{"thinking": "true", "context": "1m", "effort": "low"}) {
 		t.Fatalf("shared config after resume %+v", cfg)
@@ -461,11 +496,12 @@ func TestResumeReappliesPolicy(t *testing.T) {
 // On resume the catalog Default is the last remembered one when its model is still listed, never
 // what session/load reports; otherwise the first model in the list.
 func TestResumeCatalogDefault(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	if _, err := e.s.Catalog(10 * time.Second); err != nil {
 		t.Fatal(err)
 	}
-	seed(t, fakeConfig{SelectedModel: "grok-4.7"})
+	e.seed(t, fakeConfig{SelectedModel: "grok-4.7"})
 	a := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true, Model: "gpt-5.4"})
 	evs := until(t, a, isKind(agent.EvCatalog))
 	if d := evs[len(evs)-1].Catalog.Default; d != (model.ModelChoice{Model: "gpt-5.4-mini", Effort: "medium"}) {
@@ -481,6 +517,7 @@ func TestResumeCatalogDefault(t *testing.T) {
 }
 
 func TestTextItemsBetweenToolCalls(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	chunk := func(text string) fakeStep {
 		return step("update", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": text}})
@@ -529,6 +566,7 @@ func TestTextItemsBetweenToolCalls(t *testing.T) {
 }
 
 func TestBoardMCPToolCall(t *testing.T) {
+	t.Parallel()
 	mcpCall := func(id string) map[string]any {
 		return map[string]any{"sessionUpdate": "tool_call", "toolCallId": id, "title": "MCP: tool", "kind": "other", "status": "pending", "rawInput": map[string]any{}}
 	}
@@ -586,6 +624,7 @@ func TestBoardMCPToolCall(t *testing.T) {
 // board chat: HTTP type, the exact fixed URL and the chat's board token in an Authorization
 // bearer header. The shape matches the live capture (experiment A.1 and the P3 trace).
 func TestBoardMCPSessionHandshake(t *testing.T) {
+	t.Parallel()
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}
 
 	e := newEnv(t, baseScript())
@@ -602,6 +641,7 @@ func TestBoardMCPSessionHandshake(t *testing.T) {
 }
 
 func TestPlainMCPSessionHandshake(t *testing.T) {
+	t.Parallel()
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{MCP: mcp})
@@ -611,6 +651,7 @@ func TestPlainMCPSessionHandshake(t *testing.T) {
 }
 
 func TestPermissionRequests(t *testing.T) {
+	t.Parallel()
 	perm := func(cmd string) fakeStep {
 		return step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
 			"sessionId": testSessionID,
@@ -689,6 +730,7 @@ func TestPermissionRequests(t *testing.T) {
 // allow_once), a board MCP call is still auto-approved with that option id. Synthetic (the live
 // trace produced no permission request).
 func TestBoardMCPPermissionAllowAlways(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
@@ -715,6 +757,7 @@ func TestBoardMCPPermissionAllowAlways(t *testing.T) {
 }
 
 func TestSpawnFamilyMCPAutoApproved(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
@@ -750,6 +793,7 @@ func TestSpawnFamilyMCPAutoApproved(t *testing.T) {
 }
 
 func TestSpawnFamilyToolNormalize(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "s1", "title": "MCP: tool", "kind": "other", "status": "pending", "rawInput": map[string]any{}}),
@@ -777,6 +821,7 @@ func TestSpawnFamilyToolNormalize(t *testing.T) {
 // list_subagent_models is spawn-family like the other two: no permission card, and the same
 // tool name as Claude's.
 func TestListSubagentModelsMCPAutoApproved(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
@@ -812,6 +857,7 @@ func TestListSubagentModelsMCPAutoApproved(t *testing.T) {
 }
 
 func TestListSubagentModelsToolNormalize(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": "m1", "title": "MCP: tool", "kind": "other", "status": "pending", "rawInput": map[string]any{}}),
@@ -837,6 +883,7 @@ func TestListSubagentModelsToolNormalize(t *testing.T) {
 }
 
 func TestDecideAllow(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
@@ -868,6 +915,7 @@ func TestDecideAllow(t *testing.T) {
 }
 
 func TestUnknownRequestAnsweredMethodNotFound(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("request", map[string]any{"method": "fs/read_text_file", "params": map[string]any{"path": "/x"}}),
@@ -887,6 +935,7 @@ func TestUnknownRequestAnsweredMethodNotFound(t *testing.T) {
 }
 
 func TestInterrupt(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		step("update", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "working"}}),
@@ -912,6 +961,7 @@ func TestInterrupt(t *testing.T) {
 }
 
 func TestStopReasonError(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{{Result: raw(`{"stopReason":"refusal"}`)}}
 	e := newEnv(t, s)
@@ -924,6 +974,7 @@ func TestStopReasonError(t *testing.T) {
 }
 
 func TestExitEndsEvents(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	e := newEnv(t, s)
 	a := e.spawn(t, agent.SpawnOptions{})
@@ -938,13 +989,14 @@ func TestExitEndsEvents(t *testing.T) {
 		if ok {
 			t.Fatal("event after EvExit")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(mustHappen):
 		t.Fatal("events not closed after EvExit")
 	}
 }
 
 func TestContextUsageFromStore(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{{Result: raw(`{"stopReason":"end_turn"}`)}}
 	e := newEnv(t, s)
@@ -983,15 +1035,20 @@ func TestContextUsageFromStore(t *testing.T) {
 
 func TestContextUsagePollsWhileTurnRuns(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
+	// The turn runs until the poller has read the store once, and then for several ticks more.
+	running, end := cue(t)
 	s := baseScript()
-	s["session/prompt"] = []fakeStep{{Sleep: 700}, {Result: raw(`{"stopReason":"end_turn"}`)}}
+	s["session/prompt"] = []fakeStep{running, {Result: raw(`{"stopReason":"end_turn"}`)}}
 	e := newEnv(t, s)
 	e.s.ctxInterval = 50 * time.Millisecond
 	makeStore(t, e.home, goodMeta()+blobRow(testBlobID, sampleRoot(15989, 272000)))
 	a := e.spawn(t, agent.SpawnOptions{})
 	send(t, a, "hi")
+	evs := until(t, a, isKind(agent.EvUsage))
+	time.AfterFunc(400*time.Millisecond, end)
 	var usage []agent.Event
-	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
+	for _, ev := range append(evs, until(t, a, isKind(agent.EvTurnEnd))...) {
 		if ev.Kind == agent.EvUsage {
 			usage = append(usage, ev)
 		}
@@ -1006,6 +1063,7 @@ func TestContextUsagePollsWhileTurnRuns(t *testing.T) {
 // turn's fork point.
 func TestTurnEndPoint(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
 	cases := []struct {
 		name    string
 		prompt  []fakeStep
@@ -1023,6 +1081,7 @@ func TestTurnEndPoint(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t, fakeScript{"session/prompt": c.prompt})
 			makeStore(t, e.home, goodMeta()+blobRow(testBlobID, sampleRoot(15989, 272000)))
 			a := e.spawn(t, agent.SpawnOptions{})
@@ -1052,6 +1111,7 @@ func TestTurnEndPoint(t *testing.T) {
 // (a turn writes several roots, and the poller reads them).
 func TestTurnEndPointReadAfterPrompt(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
 	other := "9d2c4e6f8a0b1c3d5e7f9a1b2c3d4e5f603b1f0c9a7e5d2b4f6a8c0e1d3f5b7a"
 	e := newEnv(t, fakeScript{"session/prompt": {
 		step("update", map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "working"}}),
@@ -1072,9 +1132,7 @@ func TestTurnEndPointReadAfterPrompt(t *testing.T) {
 		return polled && arrived
 	})
 	meta := hex.EncodeToString([]byte(`{"latestRootBlobId":"` + other + `"}`))
-	if out, err := exec.Command("sqlite3", StorePath(e.home, testSessionID), "UPDATE meta SET value = '"+meta+"' WHERE key = '0';").CombinedOutput(); err != nil {
-		t.Fatalf("sqlite3: %v: %s", err, out)
-	}
+	writeStore(t, StorePath(e.home, testSessionID), "UPDATE meta SET value = '"+meta+"' WHERE key = '0';")
 	if err := a.Interrupt(); err != nil { // the fake's cue to answer the prompt
 		t.Fatal(err)
 	}
@@ -1086,6 +1144,7 @@ func TestTurnEndPointReadAfterPrompt(t *testing.T) {
 
 // With no readable store the turn end has no point, and the meter's error is what it was.
 func TestTurnEndPointWithoutStore(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, fakeScript{"session/prompt": {{Result: raw(`{"stopReason":"end_turn"}`)}}})
 	a := e.spawn(t, agent.SpawnOptions{})
 	until(t, a, isKind(agent.EvCatalog))
@@ -1101,8 +1160,9 @@ func TestTurnEndPointWithoutStore(t *testing.T) {
 }
 
 func TestCatalogProbe(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
-	seed(t, fakeConfig{SelectedModel: "claude-sonnet-5"})
+	e.seed(t, fakeConfig{SelectedModel: "claude-sonnet-5"})
 	cat, err := e.s.Catalog(10 * time.Second)
 	if err != nil {
 		t.Fatalf("Catalog: %v", err)
@@ -1131,7 +1191,7 @@ func TestCatalogProbe(t *testing.T) {
 	if !rs[len(rs)-1].EOF {
 		t.Fatal("stdin not closed: the process was not ended")
 	}
-	if cfg := sharedConfig(t); cfg.SelectedModel != "claude-sonnet-5" || len(cfg.ModelParameters) != 0 {
+	if cfg := e.sharedConfig(t); cfg.SelectedModel != "claude-sonnet-5" || len(cfg.ModelParameters) != 0 {
 		t.Fatalf("probe changed the shared config: %+v", cfg)
 	}
 	// The probe's catalog is what a resumed chat's catalog Default uses.
@@ -1141,6 +1201,7 @@ func TestCatalogProbe(t *testing.T) {
 }
 
 func TestCatalogProbeNoModels(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, fakeScript{"cursor/list_available_models": {{Result: raw(`{"models":[]}`)}}})
 	if _, err := e.s.Catalog(10 * time.Second); err == nil || err.Error() != "Cursor reported no models" {
 		t.Fatalf("got %v", err)
@@ -1148,17 +1209,28 @@ func TestCatalogProbeNoModels(t *testing.T) {
 }
 
 func TestCatalogProbeTimeout(t *testing.T) {
-	e := newEnv(t, fakeScript{"session/new": {{Hang: true}}})
-	start := time.Now()
-	if _, err := e.s.Catalog(300 * time.Millisecond); err == nil {
-		t.Fatal("no error on timeout")
-	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("took %s", d)
-	}
-	if rs := readRecord(t, e.record); !rs[len(rs)-1].EOF {
-		t.Fatal("process not ended")
-	}
+	// Not parallel: the start of the fake should fit the first, short time box.
+	waitsOutBox(t, 300*time.Millisecond, 20*time.Second, func(box time.Duration, short bool) bool {
+		e := newEnv(t, fakeScript{"session/new": {{Hang: true}}})
+		start := time.Now()
+		_, err := e.s.Catalog(box)
+		d := time.Since(start)
+		if err == nil {
+			t.Fatal("no error on timeout")
+		}
+		// Catalog returns once the process has ended, so the record is whole. The box counts only
+		// when the fake got the request it never answers.
+		if _, got := find(readRecordSoFar(e.record), "session/new"); short && !got {
+			return false
+		}
+		if d > box+closeBox {
+			t.Fatalf("took %s in a box of %s", d, box)
+		}
+		if rs := readRecord(t, e.record); !rs[len(rs)-1].EOF {
+			t.Fatal("process not ended")
+		}
+		return true
+	})
 }
 
 // childUpdate is a session/update of the subagent session sid.
@@ -1193,6 +1265,7 @@ func subState(sid, state, errText string) fakeStep {
 var endTurn = fakeStep{Result: raw(`{"stopReason":"end_turn"}`)}
 
 func TestInitializeAdvertisesSubagents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, baseScript())
 	a := e.spawn(t, agent.SpawnOptions{})
 	until(t, a, isKind(agent.EvCatalog))
@@ -1212,6 +1285,7 @@ func TestInitializeAdvertisesSubagents(t *testing.T) {
 }
 
 func TestSubagentStream(t *testing.T) {
+	t.Parallel()
 	const call = "call_1\nfc_1"
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
@@ -1268,6 +1342,7 @@ func TestSubagentStream(t *testing.T) {
 // TestSubagentPromptSource: the Task call's full prompt wins over subagent_spawned's task, a short
 // preview; the preview is used only when the Task call has no prompt.
 func TestSubagentPromptSource(t *testing.T) {
+	t.Parallel()
 	const full = "You are in a coding workspace. Do the following in order:\n1. list the files\n2. count them"
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
@@ -1293,6 +1368,7 @@ func TestSubagentPromptSource(t *testing.T) {
 }
 
 func TestSubagentStateMapping(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		spawned("S1", "t1", "m"), spawned("S2", "t2", "m"), spawned("S3", "t3", "m"), spawned("S4", "t4", "m"),
@@ -1323,6 +1399,7 @@ func TestSubagentStateMapping(t *testing.T) {
 }
 
 func TestBackgroundTaskTool(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		taskCall("t1", "bg job", "P"),
@@ -1345,6 +1422,7 @@ func TestBackgroundTaskTool(t *testing.T) {
 }
 
 func TestCursorTaskRequest(t *testing.T) {
+	t.Parallel()
 	const call = "call_abc\nfc_def"
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
@@ -1379,12 +1457,17 @@ func TestCursorTaskRequest(t *testing.T) {
 
 func TestChildContextUsage(t *testing.T) {
 	needSQLite(t)
+	t.Parallel()
+	// The subagent runs until the poller has read its store once, and then for several ticks
+	// more; the turn goes on for several ticks after the store was changed.
+	running, complete := cue(t)
+	after, end := cue(t)
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		spawned("S1", "t1", "m"),
-		{Sleep: 500},
+		running,
 		subState("S1", "completed", ""),
-		{Sleep: 800},
+		after,
 		endTurn,
 	}
 	e := newEnv(t, s)
@@ -1400,6 +1483,7 @@ func TestChildContextUsage(t *testing.T) {
 		t.Fatalf("usage event %+v %+v", u, u.SubInfo)
 	}
 	// Polling repeats an unchanged result silently; the terminal state is followed by one last read.
+	time.AfterFunc(300*time.Millisecond, complete)
 	evs = until(t, a, func(ev agent.Event) bool { return ev.Kind == agent.EvSub && ev.SubInfo.Status == model.SubCompleted })
 	for _, ev := range evs {
 		if isUsage(ev) {
@@ -1410,9 +1494,8 @@ func TestChildContextUsage(t *testing.T) {
 
 	// The poller has stopped: a changed store is no longer read.
 	upd := "UPDATE blobs SET data = X'" + hex.EncodeToString(sampleRoot(20000, 272000)) + "' WHERE id = '" + testBlobID + "';"
-	if out, err := exec.Command("sqlite3", db, upd).CombinedOutput(); err != nil {
-		t.Fatalf("sqlite3: %v: %s", err, out)
-	}
+	writeStore(t, db, upd)
+	time.AfterFunc(400*time.Millisecond, end)
 	for _, ev := range until(t, a, isKind(agent.EvTurnEnd)) {
 		if isUsage(ev) {
 			t.Fatalf("child usage after the terminal state: %+v", ev.SubInfo)
@@ -1421,6 +1504,7 @@ func TestChildContextUsage(t *testing.T) {
 }
 
 func TestLoadDropsSubagentReplay(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, fakeScript{
 		"session/load": {
 			spawned("S1", "t1", "m"),
@@ -1442,6 +1526,7 @@ func TestLoadDropsSubagentReplay(t *testing.T) {
 }
 
 func TestChildPermission(t *testing.T) {
+	t.Parallel()
 	s := baseScript()
 	s["session/prompt"] = []fakeStep{
 		spawned("S1", "t1", "m"),

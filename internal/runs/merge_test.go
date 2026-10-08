@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // engConflictRun is a git run whose first turn adds n writing tasks that all change line two of
@@ -379,6 +380,12 @@ func TestMergeRestartPoints(t *testing.T) {
 	// 2. The server died while the merge agent worked: the same agent is resumed, in the same round.
 	t.Run("before the merge agent answered", func(t *testing.T) {
 		t.Parallel()
+		// One restart shows the resumed agent and its message; that three restarts are still one
+		// round is the full set's.
+		restarts := 1
+		if testset.Full() {
+			restarts = 3
+		}
 		e, r := engConflictRun(t, "r_rs2", 2, nil)
 		e.gates.block("T02-merge")
 		r.startEngine()
@@ -386,8 +393,13 @@ func TestMergeRestartPoints(t *testing.T) {
 		e.gates.open("T01-work")
 		engTask(t, r, "T01", model.TaskDone)
 		e.gates.open("T02-work")
-		engUntil(t, "the merge agent", func() bool { return len(e.host.sent("T02-merge")) == 1 })
-		for i := 0; i < 3; i++ { // three restarts inside one resolution are still one round
+		// The restart comes once the engine has recorded that the message was taken: before that
+		// the merge agent is started fresh, not resumed.
+		engUntil(t, "the merge agent", func() bool {
+			a, _ := r.engAgentNamed("T02-merge")
+			return len(e.host.sent("T02-merge")) == 1 && a.Resumable
+		})
+		for i := 0; i < restarts; i++ { // three restarts inside one resolution are still one round
 			r = e.restart("r_rs2")
 			e.conflictScript(r, 2, nil)
 			e.s.Boot()
@@ -509,6 +521,7 @@ func TestMergeRestartPoints(t *testing.T) {
 // Two tasks that finish together merge one after the other: the integration branch gets one
 // merge commit per task, each on top of the other.
 func TestMergesAreSerialised(t *testing.T) {
+	testset.SkipUnlessFull(t, "TestInv08MergesSerialised checks the same in the default set")
 	t.Parallel()
 	e := newEngEnv(t, true)
 	r := e.run("r_serial", func(m *model.RunMeta) { m.Settings.MaxParallel = 6 })

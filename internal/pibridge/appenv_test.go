@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,23 +18,7 @@ import (
 // TestAppEnvNode runs the dependency-free app-env unit tests under Node's type
 // stripping. Skipped when node is not installed.
 func TestAppEnvNode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping node test in short mode")
-	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not available")
-	}
-	testPath, err := filepath.Abs(filepath.Join("extension", "test", "app-env.test.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(node, "--test", "--experimental-strip-types", testPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node --test failed: %v\n%s", err, out)
-	}
-	t.Logf("node --test:\n%s", out)
+	runNodeTest(t, "app-env.test.ts")
 }
 
 // appEnvNames are the variables the extension takes out of pi's environment.

@@ -32,6 +32,7 @@ const (
 	envWrong  = "CLAUDE_FAKE_WRONGID" // set: the initialize answer carries another request id than the request's
 	envDup    = "CLAUDE_FAKE_DUP"     // set: the initialize answer is printed twice (same id)
 	envPad    = "CLAUDE_FAKE_PAD"     // bytes of padding added to the initialize answer
+	envPHold  = "CLAUDE_FAKE_PHOLD"   // file: as CLAUDE_FAKE_HOLD, but only for a run that is not `auth status`; that one answers as without it
 	envSleep  = "CLAUDE_FAKE_SLEEP"   // set: the test binary only sleeps 30 s (the child of envHold)
 	envRuns   = "CLAUDE_FAKE_RUNS"    // file the fake appends one line per invocation to: its pid and arguments
 	envAfter  = "CLAUDE_FAKE_AFTER"   // file whose lines the fake prints right after each initialize answer
@@ -51,7 +52,18 @@ func TestMain(m *testing.M) {
 		helperProcess()
 		os.Exit(0)
 	}
+	fakesExitAtOnce()
 	os.Exit(m.Run())
+}
+
+// fakesExitAtOnce sets GORACE for the processes the tests start, the fakes: a fake built with -race
+// would otherwise sleep 1 s before every exit (the race detector's atexit_sleep_ms). What GORACE
+// already holds is kept. The test binary itself read its GORACE when it started, so its own race
+// reporting is as it was.
+func fakesExitAtOnce() {
+	if old := os.Getenv("GORACE"); !strings.Contains(old, "atexit_sleep_ms") {
+		os.Setenv("GORACE", strings.TrimSpace(old+" atexit_sleep_ms=0"))
+	}
 }
 
 // helperProcess is the fake `claude`: it prints the scripted lines, records
@@ -64,7 +76,11 @@ func helperProcess() {
 			w.Close()
 		}
 	}
-	if f := os.Getenv(envHold); f != "" {
+	hold := os.Getenv(envHold)
+	if f := os.Getenv(envPHold); f != "" && !(len(os.Args) > 1 && os.Args[1] == "auth") {
+		hold = f
+	}
+	if f := hold; f != "" {
 		child := exec.Command(os.Args[0])
 		child.Env = append(os.Environ(), envSleep+"=1")
 		child.Stdout, child.Stderr = os.Stdout, os.Stderr
@@ -189,12 +205,18 @@ func helperProcess() {
 	}
 	out.Close()
 	if os.Getenv(envStay) != "" {
+		// The mark that stdin was read to its end: every line sent before it closed is recorded.
+		os.WriteFile(os.Getenv(envStdin)+stdinEOF, nil, 0o644)
 		time.Sleep(30 * time.Second)
 	}
 	if msg := os.Getenv(envStderr); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
 	}
 }
+
+// stdinEOF is what the fake adds to the path of its stdin record (envStdin) to name the file it
+// creates, in envStay mode, when it has read stdin to its end and recorded all of it.
+const stdinEOF = ".eof"
 
 // startStayChildren starts the two children of envStay. Neither holds the fake's output.
 func startStayChildren(file string) {
@@ -708,36 +730,57 @@ func TestCloseUnattendedEndsWhatItStarted(t *testing.T) {
 	t.Cleanup(func() { closeGraceNanos.Store(old) })
 
 	t.Run("unattended", func(t *testing.T) {
-		f := newFake(t)
-		pidFile := filepath.Join(f.dir, "pids")
-		t.Setenv(envStay, pidFile)
-		a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir(), Unattended: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		inGroup, ownGroup := stayPids(t, pidFile)
-		f.waitStdin(t, `"initialize"`)
-		a.Close()
-		exits := 0
-		for ev := range a.Events() {
-			if ev.Kind == agent.EvExit {
-				exits++
+		// The fake has to read its stdin to the end within the grace, before it is killed: only then
+		// does its record show what Close sent. It leaves a mark when it has (stdinEOF). An attempt
+		// with the mark counts, and in it the interrupt has to be the last line. A grace the fake
+		// left no mark in does not count and a longer one follows, which holds on a busy machine
+		// and only costs its time there.
+		graces := []time.Duration{300 * time.Millisecond, 3 * time.Second}
+		for i, grace := range graces {
+			old := closeGraceNanos.Swap(int64(grace))
+			t.Cleanup(func() { closeGraceNanos.Store(old) })
+			f := newFake(t)
+			pidFile := filepath.Join(f.dir, "pids")
+			t.Setenv(envStay, pidFile)
+			a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir(), Unattended: true})
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		if exits != 1 {
-			t.Errorf("%d exit events, want 1", exits)
-		}
-		waitGone(t, "the child in the process's group", inGroup)
-		waitGone(t, "the child that leads a group of its own", ownGroup)
-		// The turn was stopped before stdin closed.
-		b, _ := os.ReadFile(f.stdin)
-		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-		if last := lines[len(lines)-1]; !strings.Contains(last, `"subtype":"interrupt"`) {
-			t.Errorf("last stdin line %s, want the interrupt", last)
+			inGroup, ownGroup := stayPids(t, pidFile)
+			f.waitStdin(t, `"initialize"`)
+			a.Close()
+			exits := 0
+			for ev := range a.Events() {
+				if ev.Kind == agent.EvExit {
+					exits++
+				}
+			}
+			if exits != 1 {
+				t.Errorf("%d exit events, want 1", exits)
+			}
+			waitGone(t, "the child in the process's group", inGroup)
+			waitGone(t, "the child that leads a group of its own", ownGroup)
+			// The turn was stopped before stdin closed.
+			b, _ := os.ReadFile(f.stdin)
+			lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+			last := lines[len(lines)-1]
+			if _, err := os.Stat(f.stdin + stdinEOF); err == nil {
+				if !strings.Contains(last, `"subtype":"interrupt"`) {
+					t.Errorf("grace %s: last stdin line %s, want the interrupt", grace, last)
+				}
+				break
+			}
+			if i == len(graces)-1 {
+				t.Errorf("the fake never read its stdin to the end, not even within %s; last line %s", grace, last)
+			} else {
+				t.Logf("%s was too short on this machine now: the fake was killed before it read its stdin to the end", grace)
+			}
 		}
 	})
 
 	t.Run("a chat", func(t *testing.T) {
+		// The parent's grace: an interrupt sent by mistake has to reach the fake's record of stdin
+		// within it, before the fake is killed.
 		f := newFake(t)
 		pidFile := filepath.Join(f.dir, "pids")
 		t.Setenv(envStay, pidFile)
@@ -764,8 +807,9 @@ func TestCloseUnattendedEndsWhatItStarted(t *testing.T) {
 // it. Close does not wait behind that write: it closes stdin under it, Send returns an error, and
 // the process is killed after the grace period as always.
 func TestCloseReleasesABlockedSend(t *testing.T) {
-	oldClose := closeGraceNanos.Swap(int64(300 * time.Millisecond))
-	oldWrite := writeGraceNanos.Swap(int64(200 * time.Millisecond))
+	// Both graces are only waited out here: the fake never reads the write and never exits by itself.
+	oldClose := closeGraceNanos.Swap(int64(50 * time.Millisecond))
+	oldWrite := writeGraceNanos.Swap(int64(50 * time.Millisecond))
 	t.Cleanup(func() { closeGraceNanos.Store(oldClose); writeGraceNanos.Store(oldWrite) })
 
 	for _, unattended := range []bool{false, true} {
@@ -781,7 +825,7 @@ func TestCloseReleasesABlockedSend(t *testing.T) {
 		select {
 		case err := <-sent:
 			t.Fatalf("unattended %v: Send returned %v although nothing reads stdin", unattended, err)
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(100 * time.Millisecond): // Send is in its write by now: it only has to fill the pipe
 		}
 
 		closed := make(chan struct{})

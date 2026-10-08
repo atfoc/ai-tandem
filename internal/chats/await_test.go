@@ -8,6 +8,7 @@ import (
 // AwaitStart waits for whoever holds the id's creation lock, a creation call or a removal, and
 // leaves no lock behind; an id of another form makes no lock at all.
 func TestAwaitStart(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	unlock := e.m.ids.lock(idA) // as Start and a removal of this id hold it
 	done := make(chan struct{})
@@ -50,6 +51,7 @@ func TestAwaitStart(t *testing.T) {
 
 // A read that waited with AwaitStart finds the chat a creation call made.
 func TestAwaitStartSeesTheStartedChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	in, release := make(chan struct{}), make(chan struct{})
 	req := e.startReq(idA, clientX)

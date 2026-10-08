@@ -415,6 +415,7 @@ func asked(t *testing.T, seen chan rpcSeen, page string) map[string]any {
 
 // A call about a held board goes to that board's holder, whoever holds the chat's board.
 func TestCallGoesToTheHolderOfItsTarget(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	other := e.newBoard("other")
 	pages, seen := e.pages("P1", "P2")
@@ -454,6 +455,7 @@ func TestCallGoesToTheHolderOfItsTarget(t *testing.T) {
 // A call about a board nobody holds goes to the holder of the chat's board, which is given the
 // board first: held arrives before the call. A page that acted later is not asked.
 func TestCallForAFreeBoardGoesToTheHolderOfTheChatsBoard(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	other := e.newBoard("other")
 	pages, seen := e.pages("P1", "P2")
@@ -501,6 +503,7 @@ func TestCallForAFreeBoardGoesToTheHolderOfTheChatsBoard(t *testing.T) {
 
 // One page, which holds nothing, is asked every tool on every board once it has acted.
 func TestOnePageGetsEveryToolOnEveryBoard(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	other := e.newBoard("other")
 	_, seen := e.pages("P1")
@@ -534,6 +537,7 @@ func TestOnePageGetsEveryToolOnEveryBoard(t *testing.T) {
 // With no page, and with a page that has only opened its stream, a call that needs a page
 // fails at once with the text for the agent.
 func TestCallWithNoPageFailsAtOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	check := func(when string) {
 		t.Helper()
@@ -562,6 +566,7 @@ func TestCallWithNoPageFailsAtOnce(t *testing.T) {
 // list_boards is answered by the server, with no page: the boards that are not archived, by
 // name then id, each with its group path, and the chat's own marked.
 func TestListBoardsNeedsNoPage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if text, isErr := e.relay.Call(e.token, "list_boards", nil); isErr || text != "arch  ("+e.board.ID+")  [Ungrouped]  (this chat's board)" {
 		t.Fatalf("one board: %q isErr=%v", text, isErr)
@@ -618,9 +623,61 @@ func TestListBoardsNeedsNoPage(t *testing.T) {
 	}
 }
 
+// A board made by the agent of a chat on an API client's board is that client's too: it gets
+// the group and the mark of the chat's board, and names that board as its origin. The board of
+// a chat on an unmarked board has neither.
+func TestCreateBoardInheritsTheMark(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.addGroups()
+	own, made, err := e.relay.Boards.Make(boards.NewBoard{ID: "b_remote00", Name: "theirs", Group: "g_infra", Client: "inst_A"})
+	if err != nil || !made {
+		t.Fatal(made, err)
+	}
+	if _, err := e.relay.Chats.Create(model.Claude, "", own.ID); err != nil {
+		t.Fatal(err)
+	}
+	metas := e.relay.Chats.ChatsOfBoard(own.ID)
+	if len(metas) != 1 || metas[0].Token == "" {
+		t.Fatalf("board chats %+v", metas)
+	}
+	find := func(name string) model.Board {
+		for _, bd := range e.relay.Boards.List() {
+			if bd.Name == name {
+				return bd
+			}
+		}
+		t.Fatalf("no board %q", name)
+		return model.Board{}
+	}
+
+	text, isErr := e.relay.Call(metas[0].Token, "create_board", json.RawMessage(`{"name":"plan"}`))
+	plan := find("plan")
+	if isErr || text != "created plan ("+plan.ID+") in Work / Infra" {
+		t.Fatalf("got %q isErr=%v", text, isErr)
+	}
+	if plan.Group != "g_infra" || plan.Client != "inst_A" || plan.Origin != own.ID || !plan.New || !boards.ValidID(plan.ID) {
+		t.Fatalf("board %+v", plan)
+	}
+	if l := e.relay.Boards.ListOf("inst_A"); len(l) != 2 {
+		t.Fatalf("the client's boards %+v", l)
+	}
+
+	// The chat on an unmarked board: no mark, no origin.
+	text, isErr = e.relay.Call(e.token, "create_board", json.RawMessage(`{"name":"mine"}`))
+	mine := find("mine")
+	if isErr || text != "created mine ("+mine.ID+") in Ungrouped" {
+		t.Fatalf("got %q isErr=%v", text, isErr)
+	}
+	if mine.Client != "" || mine.Origin != "" || mine.Group != model.Ungrouped || !mine.New {
+		t.Fatalf("board %+v", mine)
+	}
+}
+
 // create_board is answered by the server, with no page: a board marked new in the group of the
 // chat's board, which no client holds.
 func TestCreateBoardNeedsNoPage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	text, isErr := e.relay.Call(e.token, "create_board", json.RawMessage(`{"name":"plan"}`))
 	var made model.Board
@@ -673,6 +730,7 @@ func TestCreateBoardNeedsNoPage(t *testing.T) {
 // A board argument that is not a string names no board: the call is refused as for an unknown
 // id and does not fall to the chat's own board. null is as no argument.
 func TestCallRefusesABoardThatIsNotAString(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, seen := e.pages("P1")
 	e.take("P1", e.board.ID)
@@ -700,6 +758,7 @@ func TestCallRefusesABoardThatIsNotAString(t *testing.T) {
 
 // The server checks the board a call is about and answers in the page's words; no page is asked.
 func TestCallChecksItsTargetBoard(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	old := e.newBoard("old")
 	if err := e.relay.Boards.SetArchive(old.ID, model.Archive{Archived: true, Op: "op1"}); err != nil {
@@ -740,6 +799,7 @@ func TestCallChecksItsTargetBoard(t *testing.T) {
 // get_view and show_board are about a screen: they go to the holder of the chat's board, also
 // when show_board names a board another page holds, and they move no board.
 func TestScreenCallsGoToTheHolderOfTheChatsBoard(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	other, free := e.newBoard("other"), e.newBoard("free")
 	pages, seen := e.pages("P1", "P2")

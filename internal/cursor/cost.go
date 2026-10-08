@@ -25,6 +25,8 @@ const costTimeout = 10 * time.Second
 type CostReader struct {
 	Bin  string // -cursor-cost flag, default "cursor-cost"
 	Home string // for ~/bin/<Bin> when Bin is not on PATH (an app launched from Finder has a short PATH)
+
+	timeout time.Duration // how long Usage waits for the program; zero is costTimeout (tests set it)
 }
 
 // CostArgs are the arguments for `cursor-cost`. -max-age 0: never "stale"; the popover shows how
@@ -54,7 +56,11 @@ func isFile(p string) bool {
 
 // Usage runs `cursor-cost` and returns the plan's limits.
 func (r *CostReader) Usage() (model.PlanUsage, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), costTimeout)
+	timeout := r.timeout
+	if timeout == 0 {
+		timeout = costTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.bin(), CostArgs()...)
 	cmd.Dir = os.TempDir()
@@ -65,7 +71,7 @@ func (r *CostReader) Usage() (model.PlanUsage, error) {
 			return model.PlanUsage{}, fmt.Errorf("cursor-cost: %s", firstLine(string(ee.Stderr)))
 		}
 		if ctx.Err() != nil {
-			return model.PlanUsage{}, fmt.Errorf("cursor-cost: no answer within %s", costTimeout)
+			return model.PlanUsage{}, fmt.Errorf("cursor-cost: no answer within %s", timeout)
 		}
 		if errors.Is(err, exec.ErrNotFound) {
 			return model.PlanUsage{}, errors.New("cursor-cost not found (set -cursor-cost)")

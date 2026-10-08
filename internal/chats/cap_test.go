@@ -583,6 +583,7 @@ func TestDeliveryNotStartedAtTheCap(t *testing.T) {
 // get the chat's view with the raised count of working branches. (The reservation of the slot
 // must not write the mirror the "counts changed" of that view is derived from.)
 func TestDeliveryOnANonCurrentBranchSendsTheCount(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, mainAg := e.talked(model.Claude, "", 2)
 	sa, child := e.waiting(id)

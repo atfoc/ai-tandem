@@ -39,6 +39,7 @@ func (e *env) draftRev(id, branch string) int64 {
 // A write that names the counter the draft has is stored and raises it; one that names another
 // is refused with the stored counter and the stored draft, and changes nothing.
 func TestDraftCounter(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if v.DraftRev != 0 || strings.Contains(string(e.file(v.ID, "chat.json")), "draftRevs") {
@@ -112,6 +113,7 @@ func TestDraftCounter(t *testing.T) {
 // A Send clears the draft of its branch, which is a change of it: the counter goes up, so a
 // save of the text that was just sent, still on its way, is refused.
 func TestSendRaisesDraftCounter(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	v := e.create(model.Claude, gOne, "")
 	if rev, _, err := e.m.SetDraft(v.ID, 0, model.Draft{Text: "one"}); err != nil || rev != 1 {
@@ -133,6 +135,7 @@ func TestSendRaisesDraftCounter(t *testing.T) {
 // Each branch has its own counter, kept with the top-level chat, and a Send on a branch raises
 // that branch's alone.
 func TestDraftCounterPerBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	branchFile := e.file(bid, "chat.json")
@@ -177,6 +180,7 @@ func TestDraftCounterPerBranch(t *testing.T) {
 // leaves it and its counter alone. The first message of a fork whose process is gone (here by a
 // restart) is such a Send: the chat is not locked while the agent makes the fork again.
 func TestSendKeepsDraftSavedSince(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	v, err := e.forkWith(id, 3, "", "")
@@ -252,6 +256,7 @@ func TestSendKeepsDraftSavedSince(t *testing.T) {
 // The same on a branch, whose draft is with its top-level chat: the drop takes the draft only on
 // the counter the message was taken at.
 func TestDropDraftOnItsCounter(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", exBranch)
 	if rev, _, err := e.m.SetDraftOf(id, exBranch, 0, model.Draft{Text: "sent"}); err != nil || rev != 1 {

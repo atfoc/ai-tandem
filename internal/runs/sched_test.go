@@ -741,7 +741,12 @@ func TestSchedTurnWithoutSession(t *testing.T) {
 		}
 	})
 	r.startEngine()
-	engUntil(t, "the turn's message", func() bool { return len(e.host.sent("turn-001")) == 1 })
+	// The stop comes once the engine has recorded that the message was taken: before that the
+	// turn's agent is started fresh, and nothing asks for the session that is gone.
+	engUntil(t, "the turn's message", func() bool {
+		a, _ := r.engAgentNamed("turn-001")
+		return len(e.host.sent("turn-001")) == 1 && a.Resumable
+	})
 	if err := r.halt(engUserStop); err != nil {
 		t.Fatal(err)
 	}

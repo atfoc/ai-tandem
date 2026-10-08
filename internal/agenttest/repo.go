@@ -42,9 +42,19 @@ func NewRepo(t testing.TB) *Repo {
 	r.env = []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "HOME=" + home, "XDG_CONFIG_HOME=" + home,
 		"GIT_TERMINAL_PROMPT=0"}
 	r.Git("init", "-q", "-b", "main")
-	r.Git("config", "user.name", "Run Tester")
-	r.Git("config", "user.email", "run-tester@localhost")
-	r.Git("config", "commit.gpgsign", "false")
+	// The identity and commit.gpgsign=false, written as three "git config" commands would write
+	// them: every process a test does not start is time for the tests beside it.
+	cfg, err := os.OpenFile(filepath.Join(r.dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = cfg.WriteString("[user]\n\tname = Run Tester\n\temail = run-tester@localhost\n[commit]\n\tgpgsign = false\n")
+	if cerr := cfg.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	return r
 }
 

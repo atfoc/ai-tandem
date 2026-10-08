@@ -11,6 +11,7 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // chatObj is the chat object with the server id id.
@@ -36,6 +37,7 @@ func (e *env) queued(c *Chat) outbox {
 // Nothing of a chat is sent after its chat_removed: what was queued for it, or for one of its
 // branches, before the chat was deleted is dropped when it is sent.
 func TestNothingSentAfterChatRemoved(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	plain := e.create(model.Claude, gOne, "")
 	e.send(plain.ID, "one", "")
@@ -90,6 +92,7 @@ func TestNothingSentAfterChatRemoved(t *testing.T) {
 // Only the drafts of the chat's registered branches count for hasDraft: one stored under another
 // id (a branch that was skipped at load) is left in chat.json and not counted.
 func TestHasDraftOnlyOfRegisteredBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	has := func(what string, want bool) {
@@ -178,6 +181,7 @@ func (e *env) published(when, id string) {
 // Every change of a chat's drafts is published for its branches' views, and a draft's pointer
 // stays the same until that draft changes.
 func TestDraftsPublished(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	draftOf := func(server string) *model.Draft {
@@ -259,6 +263,7 @@ func TestDraftsPublished(t *testing.T) {
 // a read of it and its record go through while the top-level chat's lock is held (as it is for
 // the whole start of main's process).
 func TestBranchDoesNotWaitForItsChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	_, branchAg := e.bothRunning(id)
@@ -325,6 +330,7 @@ func TestBranchDoesNotWaitForItsChat(t *testing.T) {
 // for that lock, being composed. A second chat event of the chat, which needs no lock that is
 // held, must wait behind it.
 func TestChatEventsOfAChatSentInOrder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 	_, branchAg := e.bothRunning(id) // the branch is current; both are idle
@@ -392,12 +398,13 @@ func TestChatEventsOfAChatSentInOrder(t *testing.T) {
 // did not in 2700 rounds without the lock). TestChatEventsOfAChatSentInOrder is the test of the
 // lock.
 func TestBranchesFlipTogether(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 	mainAg, branchAg := e.bothRunning(id) // the branch is current; both are idle
 	evs := e.listen()
 	rounds := 40
-	if testing.Short() {
+	if !testset.Full() {
 		rounds = 10
 	}
 	for i := 0; i < rounds; i++ {

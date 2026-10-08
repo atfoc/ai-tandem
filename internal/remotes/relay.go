@@ -20,10 +20,12 @@ import (
 // Local is what the relay asks of the chat manager: the chats that have a server and have not
 // started yet, whether an id is one of its own (Known: a record that another server names is
 // never made under such an id), and the removal of the unstarted chats on a run that was
-// deleted (DeleteOnRun). *chats.Manager is one.
+// deleted (DeleteOnRun) or on a board whose record went with its entry (DeleteOnBoard).
+// *chats.Manager is one.
 type Local interface {
 	Known(id string) bool
 	DeleteOnRun(run string)
+	DeleteOnBoard(board string)
 	RemoteUnstarted(id string) (meta model.ChatMeta, ok bool)
 	SetRemoteStart(id, state string) error
 	HandOver(id string) (model.ChatMeta, error)
@@ -52,12 +54,14 @@ type Options struct {
 type Limits struct {
 	Call, Start, Settle, Dirs, Usage, Unfollow, Flush time.Duration
 	Check, RunDelete                                  time.Duration
+	BoardCall, Scene                                  time.Duration
 }
 
 // DefaultLimits is what a zero Limits means.
 var DefaultLimits = Limits{Call: 15 * time.Second, Start: 45 * time.Second, Settle: 15 * time.Second,
 	Dirs: 10 * time.Second, Usage: 30 * time.Second, Unfollow: 5 * time.Second, Flush: 2 * time.Second,
-	Check: 5 * time.Second, RunDelete: 3 * time.Minute}
+	Check: 5 * time.Second, RunDelete: 3 * time.Minute,
+	BoardCall: 25 * time.Second, Scene: 60 * time.Second}
 
 // withDefaults fills every zero field from DefaultLimits.
 func (l Limits) withDefaults() Limits {
@@ -65,6 +69,7 @@ func (l Limits) withDefaults() Limits {
 		{&l.Call, &DefaultLimits.Call}, {&l.Start, &DefaultLimits.Start}, {&l.Settle, &DefaultLimits.Settle},
 		{&l.Dirs, &DefaultLimits.Dirs}, {&l.Usage, &DefaultLimits.Usage}, {&l.Unfollow, &DefaultLimits.Unfollow},
 		{&l.Flush, &DefaultLimits.Flush}, {&l.Check, &DefaultLimits.Check}, {&l.RunDelete, &DefaultLimits.RunDelete},
+		{&l.BoardCall, &DefaultLimits.BoardCall}, {&l.Scene, &DefaultLimits.Scene},
 	} {
 		if *f.v <= 0 {
 			*f.v = *f.def
@@ -177,18 +182,28 @@ const maxDropLog = 1024
 
 // Relay keeps the records and passes a remote server's events on to the pages.
 type Relay struct {
-	o        Options // Limits and Logf with their defaults
-	files    *files
-	runFiles *runFiles
-	ctx      context.Context // ends the workers, the flushes and the calls the relay makes itself
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	o          Options // Limits and Logf with their defaults
+	files      *files
+	runFiles   *runFiles
+	boardFiles *boardFiles
+	ctx        context.Context // ends the workers, the flushes and the calls the relay makes itself
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 
-	mu     sync.Mutex            // the four below; never held over I/O or a call of the bridge
-	recs   map[string]*record    // by chat id
-	runs   map[string]*runRecord // by run id
-	agents map[string]string     // the chat id of a learned agent of a run record -> the run's id
-	left   map[string]bool       // the entries that were removed: no record is adopted for one
+	mu     sync.Mutex              // the six below; never held over I/O or a call of the bridge
+	recs   map[string]*record      // by chat id
+	runs   map[string]*runRecord   // by run id
+	boards map[string]*boardRecord // by board id
+	making map[string]int          // the board ids whose creation call is on its way (see makingBoard)
+	agents map[string]string       // the chat id of a learned agent of a run record -> the run's id
+	left   map[string]bool         // the entries that were removed: no record is adopted for one
+
+	boardIdx sync.Map // boards again, board id -> *boardRecord: what BoardRev reads with no lock
+
+	// What the operations on a board keep: see boardhold.go, boardcall.go and boardops.go.
+	holds boardHolds
+	calls boardCalls
+	bops  boardOps
 
 	qmu     sync.Mutex // the workers and their queues: all that a hook takes
 	workers map[string]*worker
@@ -216,6 +231,13 @@ type Relay struct {
 
 	locks opLocks // of the operations on a chat: see ops.go
 
+	// Waits that are fixed outside the tests, which lower them. again is the wait before an
+	// archive change that got no answer is passed on again (see archiveLost): Limits.Call.
+	// agentEvery and agentWait are those of a read of a run agent's chat (see agentRead).
+	again      time.Duration
+	agentEvery time.Duration
+	agentWait  time.Duration
+
 	fmu    sync.Mutex
 	firsts map[string]firstText // by chat id: the text of the creation calls sent for it (see start.go)
 	goals  map[string]goalSent  // by run id: the goal of the start call sent last for it (see runstart.go)
@@ -233,10 +255,11 @@ func Open(o Options) (*Relay, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Relay{
-		o: o, files: newFiles(o.Root), runFiles: newRunFiles(o.Root), ctx: ctx, cancel: cancel,
-		recs: map[string]*record{}, runs: map[string]*runRecord{}, agents: map[string]string{}, left: map[string]bool{},
+		o: o, files: newFiles(o.Root), runFiles: newRunFiles(o.Root), boardFiles: newBoardFiles(o.Root), ctx: ctx, cancel: cancel,
+		recs: map[string]*record{}, runs: map[string]*runRecord{}, boards: map[string]*boardRecord{}, making: map[string]int{}, agents: map[string]string{}, left: map[string]bool{},
 		workers: map[string]*worker{}, dropLog: map[string]time.Time{},
 		firsts: map[string]firstText{}, goals: map[string]goalSent{},
+		again: o.Limits.Call, agentEvery: agentEvery, agentWait: agentWait,
 	}
 	r.settle, r.pending = r.settleStarts, r.passPending
 	r.settleRuns, r.pendingRuns = r.settleRunStarts, r.passPendingRuns
@@ -251,6 +274,7 @@ func Open(o Options) (*Relay, error) {
 		r.recs[d.ID] = newRecord(d)
 	}
 	r.loadRuns()
+	r.loadBoards()
 	r.wg.Add(1)
 	go r.flusher()
 	return r, nil
@@ -357,7 +381,7 @@ func (r *Relay) Views() []model.ChatView {
 	recs := r.all()
 	out := make([]model.ChatView, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, rec.pub.Load().view)
+		out = append(out, r.pageView(rec.pub.Load().view))
 	}
 	return out
 }
@@ -471,6 +495,7 @@ func (r *Relay) flush() {
 		rec.mu.Unlock()
 	}
 	r.flushRuns()
+	r.flushBoards()
 }
 
 // ---- events for the pages ----
@@ -478,7 +503,30 @@ func (r *Relay) flush() {
 // emitChat sends the record's view to every page. rec.mu held, as for every emit of a record:
 // the events of one chat leave in the order of its changes.
 func (r *Relay) emitChat(rec *record) {
-	r.o.Bridge.SendChat(rec.id, false, map[string]any{"type": "chat", "chat": viewOf(rec.d)})
+	r.o.Bridge.SendChat(rec.id, false, map[string]any{"type": "chat", "chat": r.pageView(viewOf(rec.d))})
+}
+
+// pageView is a record's view as a page gets it, in events and in answers alike: a chat on a
+// board keeps its board, whose id is the same here and there, when this server has a record of
+// that board, and is then shown under it. A board this server has no record of is none a page
+// can show the chat under. It takes no lock.
+func (r *Relay) pageView(v model.ChatView) model.ChatView {
+	if _, ok := r.boardIdx.Load(v.Board); !ok {
+		v.Board = ""
+	}
+	return v
+}
+
+// emitBoardChats sends the views of the records of the chats on the board again: a record of
+// the board was made after theirs, and their views name it from now on.
+func (r *Relay) emitBoardChats(board string) {
+	for _, rec := range r.all() {
+		rec.mu.Lock()
+		if !rec.removed && rec.d.View.Board == board {
+			r.emitChat(rec)
+		}
+		rec.mu.Unlock()
+	}
 }
 
 // emitState sends the state of one branch of the record, with that branch's draft. It sends
@@ -601,6 +649,8 @@ func (r *Relay) event(entry, typ string, raw json.RawMessage) {
 		r.runRemovedEvent(entry, raw)
 	case "run_detail", "run_activity":
 		r.runContentEvent(entry, typ, raw)
+	case "board", "board_removed", "held", "release_request", "superseded", "rpc":
+		r.boardEvent(entry, typ, raw)
 	default:
 		// Dropped: a type this build does not know.
 	}
@@ -763,6 +813,8 @@ func (r *Relay) tell(key string) bool {
 // in this process or again. The eight steps are in a fixed order; in each one the chats come
 // before the runs.
 func (r *Relay) snapshot(entry string, raw json.RawMessage) {
+	// Before all else, the board holds of the stream before end: see boardsNewStream.
+	r.boardsNewStream(entry)
 	// 1. The entry's lists.
 	r.sendLists(entry)
 
@@ -816,6 +868,8 @@ func (r *Relay) snapshot(entry string, raw json.RawMessage) {
 		rec.mu.Unlock()
 	}
 	r.emitRuns(runs)
+	// The boards: their records, their events and what the hooks of boardrelay.go do.
+	r.boardSnapshot(entry, raw)
 	// 7. The unstarted chats on the entry get an agent of its lists, then its draft runs.
 	if r.o.Local != nil {
 		r.o.Local.ServerUp(entry)
@@ -833,8 +887,9 @@ func (r *Relay) snapshot(entry string, raw json.RawMessage) {
 }
 
 // removed takes the removal of an entry: its records go with their files, the chats' before
-// the runs', and its unstarted chats and its draft runs go back to this computer. Nothing is
-// sent to that server.
+// the runs', and its unstarted chats and its draft runs go back to this computer. An unstarted
+// chat on one of its boards cannot: the board is nowhere now, so the chat is deleted, as the
+// chats on a deleted run are. Nothing is sent to that server.
 func (r *Relay) removed(entry string) {
 	r.mu.Lock()
 	r.left[entry] = true
@@ -848,10 +903,18 @@ func (r *Relay) removed(entry string) {
 		rec.mu.Unlock()
 	}
 	r.removedRuns(entry)
+	boards := r.boardsOn(entry)
+	r.removedBoards(entry)
 	r.sendNoLists(entry)
 	r.forgetFirsts(entry, true)
 	if r.o.Local != nil {
+		for _, rec := range boards {
+			r.o.Local.DeleteOnBoard(rec.id)
+		}
 		for _, meta := range r.o.Local.UnstartedOn(entry) {
+			if meta.Board != "" {
+				continue // on a board of the entry: deleted, not put back
+			}
 			if err := r.o.Local.ResetServer(meta.ID); err != nil {
 				r.o.Logf("remotes: the chat %s is not put back on this computer: %v", meta.ID, err)
 			}

@@ -172,6 +172,7 @@ func chatOf(t *testing.T, ev map[string]any) map[string]any {
 // ---- boot -----------------------------------------------------------------
 
 func TestBootRegistersBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 
@@ -216,6 +217,7 @@ func TestBootRegistersBranches(t *testing.T) {
 }
 
 func TestBootBoardChatBranchesAreNotListed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
@@ -232,6 +234,7 @@ func TestBootBoardChatBranchesAreNotListed(t *testing.T) {
 }
 
 func TestGroupOfBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	if g := e.m.GroupOf(e.meta(bid)); g != gOne {
@@ -246,6 +249,7 @@ func TestGroupOfBranch(t *testing.T) {
 }
 
 func TestBootSkipsWhatIsNotABranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 
@@ -305,6 +309,7 @@ func TestBootSkipsWhatIsNotABranch(t *testing.T) {
 }
 
 func TestBootUnreadableTreeRecord(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	tok := e.meta(bid).Token
@@ -331,6 +336,7 @@ func TestBootUnreadableTreeRecord(t *testing.T) {
 // ---- an unsplit chat ------------------------------------------------------
 
 func TestUnsplitChatHasNoBranchFields(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := e.listen()
 	v := e.create(model.Claude, gOne, "")
@@ -377,6 +383,7 @@ func TestUnsplitChatHasNoBranchFields(t *testing.T) {
 // ---- routing --------------------------------------------------------------
 
 func TestSendGoesToTheCurrentBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	e.setDefaults(model.Defaults{})
@@ -444,6 +451,7 @@ func TestSendGoesToTheCurrentBranch(t *testing.T) {
 
 // A branch that starts empty (D7) is unlocked, and its first Send still is not the chat's first.
 func TestFirstSendOnAnEmptyBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 	const b = "0e0e0e0e"
@@ -474,6 +482,7 @@ func TestFirstSendOnAnEmptyBranch(t *testing.T) {
 }
 
 func TestSessionCallsReachTheCurrentBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	if e.m.Busy(id) {
@@ -547,6 +556,7 @@ func TestSessionCallsReachTheCurrentBranch(t *testing.T) {
 // Each session call with a branch named acts on that branch, which need not be the current one,
 // and on no other.
 func TestSessionCallsReachANamedBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	mainAg, branchAg := e.bothRunning(id)
@@ -634,6 +644,7 @@ func TestSessionCallsReachANamedBranch(t *testing.T) {
 }
 
 func TestChatCallsReachTheTopLevelChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	branch := e.file(bid, "chat.json")
@@ -682,6 +693,7 @@ func TestChatCallsReachTheTopLevelChat(t *testing.T) {
 }
 
 func TestConfigureReachesTheCurrentBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	gone := filepath.Join(t.TempDir(), "gone")
@@ -769,6 +781,7 @@ func TestConfigureReachesTheCurrentBranch(t *testing.T) {
 // branch once started, and a fork after its first message. Until that message a fork with a
 // conversation still takes another model (see restart_test.go).
 func TestConfigureLockedOnceStarted(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b, _, ba := e.branchTo(id, newAt(3), "aside")
@@ -805,6 +818,7 @@ func TestConfigureLockedOnceStarted(t *testing.T) {
 // The folder is the chat's as far as the user can tell: a new folder for the missing one, picked
 // on the current branch, is the folder of every branch that had the missing one.
 func TestConfigureFolderFixReachesEveryBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b1, id1, a1 := e.branchTo(id, newAt(3), "one")
@@ -889,6 +903,7 @@ func TestConfigureFolderFixReachesEveryBranch(t *testing.T) {
 // The folder fix writes the new folder to a branch that has a process, and leaves the process
 // and its turn alone: the folder is used the next time the branch starts.
 func TestConfigureFolderFixLeavesProcessesAlone(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	_, bid, fa := e.branchTo(id, newAt(3), "aside")
@@ -934,6 +949,7 @@ func TestConfigureFolderFixLeavesProcessesAlone(t *testing.T) {
 // A branch that could not be started for its missing folder, and was not made current for it
 // (see SendTo), does not keep the error once the folder is fixed on another branch.
 func TestConfigureFolderFixClearsTheErrorOfOtherBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b, bid, fa := e.branchTo(id, newAt(3), "aside")
@@ -992,6 +1008,7 @@ func TestConfigureFolderFixClearsTheErrorOfOtherBranches(t *testing.T) {
 // The folder fix on a named branch that is not current reaches the current branch as any other:
 // its record is sent, and the chat's view, which holds its folder.
 func TestConfigureFolderFixFromANamedBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b, bid, fa := e.branchTo(id, newAt(3), "aside")
@@ -1035,6 +1052,7 @@ func TestConfigureFolderFixFromANamedBranch(t *testing.T) {
 // ---- the composed view ----------------------------------------------------
 
 func TestComposedView(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	top := e.meta(id)
@@ -1120,6 +1138,7 @@ func TestComposedView(t *testing.T) {
 // ---- events ---------------------------------------------------------------
 
 func TestBranchEvents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	if err := e.m.Rename(id, "Top", true); err != nil {
@@ -1275,6 +1294,7 @@ func TestBranchEvents(t *testing.T) {
 }
 
 func TestItemsOf(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	served, _, items, _, err := e.m.ItemsOf(id, model.MainBranch)
@@ -1311,6 +1331,7 @@ func TestItemsOf(t *testing.T) {
 // ---- the two stops --------------------------------------------------------
 
 func TestStopOneBranchAndStopTheChat(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	mainAg, branchAg := e.bothRunning(id)
@@ -1381,6 +1402,7 @@ func TestStopOneBranchAndStopTheChat(t *testing.T) {
 // ---- parent operations ----------------------------------------------------
 
 func TestArchiveCoversBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	tok := e.meta(bid).Token
@@ -1422,6 +1444,7 @@ func TestArchiveCoversBranches(t *testing.T) {
 }
 
 func TestDeleteCoversBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	mainAg, branchAg := e.bothRunning(id)
@@ -1482,6 +1505,7 @@ func TestDeleteCoversBranches(t *testing.T) {
 }
 
 func TestShutdownSavesBranches(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	e.send(id, "a long job", "")
@@ -1510,6 +1534,7 @@ func TestShutdownSavesBranches(t *testing.T) {
 // ---- forking a branch -----------------------------------------------------
 
 func TestForkFromABranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	if err := e.m.Rename(id, "Top", true); err != nil {
@@ -1575,6 +1600,7 @@ func TestForkFromABranch(t *testing.T) {
 // What a Send with a target builds on: an entry made under a branch's server id is its chat's
 // from the start, joins the registry, and becomes current.
 func TestAddBranchAndSetCurrent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	const b = "0badf00d"
@@ -1694,6 +1720,7 @@ func TestAddBranchAndSetCurrent(t *testing.T) {
 
 // An unreadable tree record is never written over: the current branch stays.
 func TestSetCurrentUnreadableRecord(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
 	bad := []byte(`{"branches":`)

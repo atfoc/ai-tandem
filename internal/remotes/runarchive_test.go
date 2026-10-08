@@ -26,6 +26,7 @@ func runArchiveRoutes(rg *rig) (archive, unarchive *script) {
 
 // TestRunArchiveConnected: archive and unarchive of a run record whose server answers.
 func TestRunArchiveConnected(t *testing.T) {
+	t.Parallel()
 	rg := seededRuns(t, rigOpt{limits: Limits{Call: 100 * time.Millisecond, Start: 3 * time.Second}}, runA, runB)
 	archive, unarchive := runArchiveRoutes(rg)
 	ctx := context.Background()
@@ -137,14 +138,17 @@ func TestRunArchiveConnected(t *testing.T) {
 // TestRunArchiveTriedAgain: an archive call that gets no answer on an entry that stays connected
 // is made again, with no reconnect and no action of the user: three calls in a row at most.
 func TestRunArchiveTriedAgain(t *testing.T) {
-	rg := seededRuns(t, rigOpt{limits: Limits{Call: 150 * time.Millisecond, Start: 150 * time.Millisecond}}, runA)
+	t.Parallel()
+	// The calls that get no answer end at once, and the wait before the next one is short: no
+	// limit is waited out, and the calls that are answered have the usual limits.
+	const again = 20 * time.Millisecond
+	rg := seededRuns(t, rigOpt{again: again}, runA)
 	archive, unarchive := runArchiveRoutes(rg)
 	ctx := context.Background()
 	var calls atomic.Int32
 	archive.set(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
-			<-r.Context().Done() // the first call is swallowed
-			return
+			panic(http.ErrAbortHandler) // the first call gets no answer
 		}
 		writeAnswer(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -168,13 +172,12 @@ func TestRunArchiveTriedAgain(t *testing.T) {
 		t.Errorf("the entry connected %d times: the second call was a reconnect's", n)
 	}
 	// A server that never answers gets three calls, and no more.
-	_, free := unarchive.hang()
-	defer free()
+	unarchive.drop()
 	if err := rg.r.UnarchiveRun(ctx, runA); err != nil {
 		t.Errorf("an unarchive without an answer: %v", err)
 	}
 	rg.until("the unarchive is sent three times", func() bool { return unarchive.count() == archiveTries })
-	time.Sleep(4 * 150 * time.Millisecond)
+	time.Sleep(quiet) // several times the wait before a next call
 	if n := unarchive.count(); n != archiveTries {
 		t.Errorf("%d unarchive calls, want %d", n, archiveTries)
 	}
@@ -186,6 +189,7 @@ func TestRunArchiveTriedAgain(t *testing.T) {
 // TestRunArchivePending: an archive made while the server is away stays pending, wins over the
 // snapshot of the return and is then passed on.
 func TestRunArchivePending(t *testing.T) {
+	t.Parallel()
 	rg := seededRuns(t, rigOpt{}, runA, runB)
 	archive, unarchive := runArchiveRoutes(rg)
 	ctx := context.Background()
@@ -264,6 +268,7 @@ func TestRunArchivePending(t *testing.T) {
 // TestRunArchivedThere: a mark made on the run's own server is taken, belongs to no archive
 // action here, and is kept at a reconnect, where nothing is sent for it.
 func TestRunArchivedThere(t *testing.T) {
+	t.Parallel()
 	rg := seededRuns(t, rigOpt{}, runA)
 	archive, unarchive := runArchiveRoutes(rg)
 	p, _ := rg.page("page-1")
@@ -299,6 +304,7 @@ func TestRunArchivedThere(t *testing.T) {
 
 // TestRunDelete: the delete of a record's run, with the chats on it.
 func TestRunDelete(t *testing.T) {
+	t.Parallel()
 	ids := []string{runN(1), runN(2), runN(3), runN(4), runN(5)}
 	on1a, on1b, on3, free := seedOf(chatN(1)), seedOf(chatN(2)), seedOf(chatN(3)), seedOf(chatN(4))
 	on1a.Run, on1a.Group, on1b.Run, on1b.Group, on3.Run, on3.Group = ids[0], "", ids[0], "", ids[2], ""
@@ -384,8 +390,7 @@ func TestRunDelete(t *testing.T) {
 		t.Errorf("a delete the server fails: %v, gone %v", err, gone(ids[2]))
 	}
 	// No answer: 504, and the record stays.
-	_, release := del.hang()
-	defer release()
+	del.drop()
 	err = rg.r.DeleteRun(ctx, ids[2], false)
 	check("a delete without an answer", err, http.StatusGatewayTimeout, "no_answer")
 	if !errors.Is(err, ErrNoAnswer) || gone(ids[2]) || !rg.r.Has(on3.ID) {
@@ -439,6 +444,7 @@ func TestRunDelete(t *testing.T) {
 // TestRunDeletableAndMove: the check before a group is deleted with its contents, with run
 // records, and the move of a run record.
 func TestRunDeletableAndMove(t *testing.T) {
+	t.Parallel()
 	inside, unnamed, outside, goneRec := runSeedOf(runN(1)), runSeedOf(runN(2)), runSeedOf(runN(3)), runSeedOf(runN(4))
 	inside.Group, inside.View.Name = "g_sub", "Paint the “fence”"
 	unnamed.Group, unnamed.View.Name = "g_top", ""

@@ -213,6 +213,7 @@ func chatCall(method, id, rest string) string { return method + " /api/chats/" +
 // The snapshot of a page has these keys, "lists" among them; without a relay the lists are an
 // empty object and the chats are this server's own.
 func TestSnapshotKeys(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.chat(model.Ungrouped, "")
 	var keys map[string]json.RawMessage
@@ -235,6 +236,7 @@ func TestSnapshotKeys(t *testing.T) {
 // the chats. An id that is a record's and a chat's of this server, as it is for a moment while
 // a chat starts on its server, is listed once: as the record.
 func TestSnapshotWithRecords(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	g := e.group("G")
 	own := e.chat(g, "")
@@ -292,6 +294,7 @@ func TestSnapshotWithRecords(t *testing.T) {
 // group's action, and fails for none; its unarchive brings back exactly those. A record that was
 // archived on its own server belongs to no action here and stays as it is (AC33).
 func TestArchiveGroupWithRecords(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	g := e.group("G")
 	sub := e.subgroup("Sub", g)
@@ -371,6 +374,7 @@ func TestArchiveGroupWithRecords(t *testing.T) {
 // The unarchive of one record brings back the archived groups it is nested in, as that of a
 // chat of this server does, and nothing else in them.
 func TestUnarchiveRecordBringsBackItsGroups(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	g := e.group("G")
 	sub := e.subgroup("Sub", g)
@@ -410,6 +414,7 @@ func TestUnarchiveRecordBringsBackItsGroups(t *testing.T) {
 // The delete of a group with its contents deletes the chats of its records on their servers
 // first, then what is this server's; without its contents the records move up (AC33).
 func TestDeleteGroupWithRecords(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	top := e.group("Top")
 	g := e.subgroup("G", top)
@@ -459,6 +464,7 @@ func TestDeleteGroupWithRecords(t *testing.T) {
 // While the server of one record is not connected, the delete of a group with its contents
 // deletes nothing: not the chats of the servers that are connected, and nothing here.
 func TestDeleteGroupWithAServerAway(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	g := e.group("G")
 	sub := e.subgroup("Sub", g)

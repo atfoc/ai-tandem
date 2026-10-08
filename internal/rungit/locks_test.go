@@ -5,11 +5,15 @@ import (
 	"errors"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"ai-whiteboard/internal/testset"
 )
 
 // runCheckout makes a checkout as a run has them: a linked work tree on a branch under ownRefs,
@@ -133,6 +137,10 @@ func TestStaleLocksOfARunCheckoutAreRemoved(t *testing.T) {
 func TestOtherLocksAreLeftAlone(t *testing.T) {
 	t.Parallel()
 	r, root := newRepo(t)
+	// Git waits for the lock of a ref (0.1 s) and of packed-refs (1 s) before it gives up or goes
+	// on without. The locks here stay for good, so the test does not sit through that each time.
+	git(t, root, "config", "core.filesRefLockTimeout", "0")
+	git(t, root, "config", "core.packedRefsTimeout", "0")
 	common := r.CommonDir()
 	isLocked := func(what string, err error, lock string) {
 		t.Helper()
@@ -228,6 +236,11 @@ func TestAYoungLockIsWaitedFor(t *testing.T) {
 	dir, gitDir := runCheckout(t, r, root, "T01")
 	lock := filepath.Join(gitDir, "index.lock")
 
+	// The rule is the same with a shorter staleAge, and the test does not sit through two
+	// seconds three times. It is still several writes of the writer below.
+	const staleAge = 800 * time.Millisecond
+	bg := withWaits(bg, waits{staleAge: staleAge})
+
 	// One that stays as it is: stale after staleAge.
 	leave(t, lock, 0)
 	write(t, dir, "a.txt", "a\n")
@@ -274,6 +287,7 @@ func TestAYoungLockIsWaitedFor(t *testing.T) {
 // While a git command of the package is at work in a checkout, in this server or another, no lock
 // is removed there: the command holds the flock of the guard file, and so does all it starts.
 func TestALockIsKeptWhileAGitCommandIsAtWork(t *testing.T) {
+	t.Parallel()
 	r, root := newRepo(t)
 	dir, gitDir := runCheckout(t, r, root, "T01")
 	lock := filepath.Join(gitDir, "index.lock")
@@ -286,7 +300,10 @@ func TestALockIsKeptWhileAGitCommandIsAtWork(t *testing.T) {
 	must(t, syscall.Flock(int(other.Fd()), syscall.LOCK_SH))
 	leave(t, lock, time.Hour)
 	write(t, dir, "a.txt", "a\n")
-	if _, err := r.CommitAll(bg, dir, "T01: a"); err == nil || !exists(lock) {
+	// The flock is held for as long as the call tries for it, however long that is: the test
+	// does not sit through flockWait each time.
+	held := withWaits(bg, waits{flockWait: 20 * time.Millisecond})
+	if _, err := r.CommitAll(held, dir, "T01: a"); err == nil || !exists(lock) {
 		t.Fatalf("CommitAll = %v while another git command is at work; the lock is there: %v", err, exists(lock))
 	}
 	must(t, syscall.Flock(int(other.Fd()), syscall.LOCK_UN))
@@ -316,7 +333,7 @@ func TestALockIsKeptWhileAGitCommandIsAtWork(t *testing.T) {
 	}
 	leave(t, lock, time.Hour)
 	write(t, dir, "c.txt", "c\n")
-	if _, err := r.CommitAll(bg, dir, "T01: c"); err == nil || !exists(lock) {
+	if _, err := r.CommitAll(held, dir, "T01: c"); err == nil || !exists(lock) {
 		t.Errorf("CommitAll = %v while a process of an earlier git command is alive; the lock is there: %v", err, exists(lock))
 	}
 	must(t, syscall.Kill(pid, syscall.SIGKILL))
@@ -330,10 +347,126 @@ func TestALockIsKeptWhileAGitCommandIsAtWork(t *testing.T) {
 	}
 }
 
+// The flock of a checkout is not always free the moment its last command ended: a process that
+// the server was starting just then has a copy of the open guard file until it runs its program.
+// So the flock is tried for flockWait before a lock is left where it is. Here a second open file
+// holds it, for a part of that time and for all of it.
+func TestTheFlockIsWaitedForBeforeALockIsLeft(t *testing.T) {
+	t.Parallel()
+	r, root := newRepo(t)
+	dir, gitDir := runCheckout(t, r, root, "T01")
+	lock := filepath.Join(gitDir, "index.lock")
+	other, err := os.Open(filepath.Join(gitDir, guardFile))
+	must(t, err)
+	defer other.Close()
+	hold := func() {
+		t.Helper()
+		must(t, syscall.Flock(int(other.Fd()), syscall.LOCK_SH))
+		leave(t, lock, time.Hour)
+	}
+
+	// Let go of within flockWait, which is long here so that a slow machine cannot use it up: the
+	// lock is removed, which it can be only after the flock was let go of.
+	hold()
+	write(t, dir, "a.txt", "a\n")
+	letGo := time.AfterFunc(300*time.Millisecond, func() { syscall.Flock(int(other.Fd()), syscall.LOCK_UN) })
+	defer letGo.Stop()
+	if _, err := r.CommitAll(withWaits(bg, waits{flockWait: time.Minute}), dir, "T01: a"); err != nil || exists(lock) {
+		t.Fatalf("CommitAll = %v with a flock that was let go of in time; the lock is there: %v", err, exists(lock))
+	}
+	if got := git(t, dir, "log", "-1", "--format=%s"); got != "T01: a" {
+		t.Errorf("the commit was not made: the head is %q", got)
+	}
+
+	// Held for all of flockWait: the lock stays, and git fails on it as it always did.
+	hold()
+	write(t, dir, "b.txt", "b\n")
+	const wait = 200 * time.Millisecond
+	start := time.Now()
+	_, err = r.CommitAll(withWaits(bg, waits{flockWait: wait}), dir, "T01: b")
+	var ge *Error
+	if !errors.As(err, &ge) || !strings.Contains(ge.Output, "File exists") || !exists(lock) {
+		t.Errorf("CommitAll = %v with a flock that is held, want git's own failure on the lock; the lock is there: %v", err, exists(lock))
+	}
+	if took := time.Since(start); took < wait {
+		t.Errorf("the flock was given up after %s, before flockWait", took)
+	}
+
+	// The wait ends with the context.
+	ctx, cancel := context.WithTimeout(withWaits(bg, waits{flockWait: time.Minute}), 100*time.Millisecond)
+	defer cancel()
+	if _, err := r.CommitAll(ctx, dir, "T01: b"); !errors.Is(err, context.DeadlineExceeded) || !exists(lock) {
+		t.Errorf("CommitAll = %v, want the context's error; the lock is there: %v", err, exists(lock))
+	}
+
+	// And nothing of this outlives the holder.
+	must(t, syscall.Flock(int(other.Fd()), syscall.LOCK_UN))
+	if _, err := r.CommitAll(bg, dir, "T01: b"); err != nil || exists(lock) {
+		t.Errorf("CommitAll when the holder is gone = %v; the lock is there: %v", err, exists(lock))
+	}
+}
+
+// The same with real processes: a stale lock that is met right after a command of the package
+// ended in the checkout is removed, while other goroutines start processes all the time. Each of
+// those has a copy of the guard file of the command that just ended until it runs its program,
+// and without the wait for the flock about one round in twenty failed with git's "File exists".
+func TestAStaleLockIsClearedWhileProcessesStart(t *testing.T) {
+	testset.SkipUnlessFull(t, "thousands of processes; TestTheFlockIsWaitedForBeforeALockIsLeft holds the flock without them")
+	r, root := newRepo(t)
+	dir, gitDir := runCheckout(t, r, root, "T01")
+	lock := filepath.Join(gitDir, "index.lock")
+
+	stop := make(chan struct{})
+	var starting sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		starting.Add(1)
+		go func() {
+			defer starting.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					exec.Command("true").Run()
+				}
+			}
+		}()
+	}
+	defer starting.Wait()
+	defer close(stop)
+
+	// Each CommitAll is the command that just ended for the next one.
+	if _, err := r.CommitAll(bg, dir, "T01: nothing"); err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+	failed := 0
+	for round := 0; round < staleRounds; round++ {
+		leave(t, lock, time.Hour)
+		if _, err := r.CommitAll(bg, dir, "T01: nothing"); err != nil {
+			if failed++; failed == 1 {
+				t.Errorf("round %d: CommitAll with a stale lock: %v", round, err)
+			}
+			must(t, os.Remove(lock))
+		}
+	}
+	if failed > 0 {
+		t.Errorf("the stale lock was not removed in %d of %d rounds", failed, staleRounds)
+	}
+}
+
+// staleRounds is the number of rounds of TestAStaleLockIsClearedWhileProcessesStart: enough for
+// several of them to fail without the wait for the flock.
+const staleRounds = 150
+
 // A git command that writes is not ended when the context is: it finishes, and what it did is
 // there. A commit with a hook that takes a moment stands for a commit that is in the middle of
 // its writing.
 func TestAWriteFinishesAfterTheCancel(t *testing.T) {
+	t.Parallel()
+	// What is left of the commit and of the merge after the cancel, the hook's 0.3 s and git's
+	// own writing, has to fit into settle. On a busy machine two seconds can be too few for it;
+	// the commands return when they are done, so more costs nothing.
+	bg := withWaits(bg, waits{settle: 20 * time.Second})
 	r, root := newRepo(t)
 	dir, _ := runCheckout(t, r, root, "T01")
 	started := filepath.Join(t.TempDir(), "started")
@@ -389,9 +522,9 @@ func TestAWriteFinishesAfterTheCancel(t *testing.T) {
 
 // Stops at any moment of a commit leave no lock file, and the next commit goes through.
 func TestCancelAtAnyMomentLeavesNoLock(t *testing.T) {
-	if testing.Short() {
-		t.Skip("many git commands")
-	}
+	testset.SkipUnlessFull(t, "100 commits, each stopped at another moment; "+
+		"TestAWriteFinishesAfterTheCancel covers a commit that is cancelled and leaves no lock, "+
+		"TestCancelEndsASlowGitCommand that the next commit goes through")
 	t.Parallel()
 	r, root := newRepo(t)
 	dir, _ := runCheckout(t, r, root, "T01")

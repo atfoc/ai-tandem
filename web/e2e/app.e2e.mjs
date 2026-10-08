@@ -2341,11 +2341,11 @@ async function run() {
       check(hereOf(rows) === "main" && v.branch === B && v.working === 2, '"● here" stays on main\'s end, the branch the page shows, although B is now the server\'s current branch', { here: hereOf(rows), current: v.branch, working: v.working });
       await waitCrumb(page, /^ALPHA/, "the chat under the popup still shows main (the crumb names it)");
 
-      // The agents in the folder: both in the popup's foot, the other one beside the composer.
-      const footHint = page.locator(".fk-nav-foot .fk-folder-agents"), chip = page.locator(".composer .folder-agents");
+      // The agents in the folder: both in the popup's foot. The composer says nothing of them.
+      const footHint = page.locator(".fk-nav-foot .fk-folder-agents");
       await waitFor('the popup\'s foot says "2 agents working in <folder>"', async () => (await footHint.count()) === 1 && /^2 agents working in \S/.test((await footHint.innerText()).trim()) || saw(await page.locator(".fk-nav-foot").innerText()), { timeout: 10_000 });
-      await waitFor('the composer says "1 other working here"', async () => (await chip.count()) === 1 && (await chip.innerText()).trim() === "1 other working here" || saw(await page.locator(".composer").innerText()), { timeout: 10_000 });
-      log(`    foot: "${(await footHint.innerText()).trim()}" (${await footHint.getAttribute("title")}); composer: "${(await chip.innerText()).trim()}" (${await chip.getAttribute("title")})`);
+      log(`    foot: "${(await footHint.innerText()).trim()}" (${await footHint.getAttribute("title")})`);
+      check(!/working here/.test(await page.locator(".composer").innerText()), 'the composer does not say "… working here"');
 
       // A fork made elsewhere is a link under the reply it left from.
       const forked = await call("POST", `/api/chats/${id}/fork`, { branch: "main", at });

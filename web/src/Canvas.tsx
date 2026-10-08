@@ -1,14 +1,18 @@
 // The canvas: one Excalidraw for the selected board, plus the layers that show
 // where an agent just worked, who is working on the board, and the point being
 // picked for a chat (⌘⇧L). A board another window holds shows the take-over
-// panel in its place.
+// panel in its place; a board on another server that is away, with no scene kept
+// here, the view that says so (BoardOff).
 import React, { useEffect, useRef, useState } from "react";
 import { Excalidraw, FONT_FAMILY } from "@excalidraw/excalidraw";
 import { useStore, setState, getState, flash, setRole, setDropped } from "./store.ts";
 import { chatBusy } from "./logic/status.ts";
 import { showsPanel } from "./logic/roles.ts";
-import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, takeBoard, scenes, type Scene } from "./board.ts";
-import { TakeoverPanel, DROPPED_TEXT } from "./TakeoverPanel.tsx";
+import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, takeBoard, scenes, droppedInOutage, type Scene } from "./board.ts";
+import { TakeoverPanel } from "./TakeoverPanel.tsx";
+import { BoardOff, SaveBanner } from "./BoardOff.tsx";
+import { boardView, droppedText, serverNameOf } from "./logic/boardsave.ts";
+import { ApiError } from "./api.ts";
 import { insertRef, pickPoint } from "./Composer.tsx";
 import { pointLabel } from "./logic/refs.ts";
 import { AgentGlyph } from "./icons.tsx";
@@ -48,6 +52,9 @@ export function Canvas({ board }: { board: string }) {
   const dropped = useStore((s) => !!s.dropped[board]);
   const [loaded, setLoaded] = useState<{ board: string; gen: number; scene: Scene } | null>(null);
   const [err, setErr] = useState("");
+  const [away, setAway] = useState(false); // the read of the scene was answered 503: the board's server is not connected
+  const connected = useStore((s) => { const on = s.boards[board]?.server; return !on || s.servers.find((v) => v.id === on)?.state === "connected"; });
+  const server = useStore((s) => serverNameOf(s.boards[board], s.servers));
   const known = !!b, archived = !!b?.archived;
   // An archived board is nobody's to write: it shows read-only whatever window held it last.
   const panel = known && !archived && showsPanel(role);
@@ -55,10 +62,10 @@ export function Canvas({ board }: { board: string }) {
   useEffect(() => {
     if (panel) return; // the panel shows in place of the canvas: no scene is read for it
     let gone = false;
-    setErr("");
+    setErr(""); setAway(false);
     loadScene(board).then(
       (scene) => { if (!gone) setLoaded({ board, gen, scene }); },
-      (e) => { if (!gone) setErr(e?.message ?? String(e)); },
+      (e) => { if (!gone) { setErr(e?.message ?? String(e)); setAway(e instanceof ApiError && e.status === 503); } },
     );
     return () => { gone = true; void flush(board); if (liveBoard === board) setLive(null, null); };
   }, [board, gen, panel]);
@@ -72,7 +79,12 @@ export function Canvas({ board }: { board: string }) {
   }, [board, known, archived, role]);
 
   if (!b) return <div className="canvas-empty" />;
+  // (a board of another server: gone there; or that server is away and this window keeps no scene of it. `server_back`
+  // reads the scene again: conn.ts)
+  const view = boardView(b, connected && !away, scenes.has(board));
+  if (view === "gone") return <BoardOff board={b} view="gone" />;
   if (panel) return <TakeoverPanel board={board} role={role} dropped={dropped} />;
+  if (view !== "canvas") return <BoardOff board={b} view={view} />;
   if (err) return <div className="canvas-empty"><p>Couldn't open this board: {err}</p></div>;
   if (!loaded || loaded.board !== board || loaded.gen !== gen) return <div className="canvas-empty" />;
   const { scene } = loaded;
@@ -111,9 +123,10 @@ export function Canvas({ board }: { board: string }) {
       <FlashLayer board={board} />
       <Presence board={board} />
       <PickLayer board={board} />
+      <SaveBanner board={board} />
       {dropped && role === "held" && !archived && (
         <div className="canvas-note" role="status">
-          <span>{DROPPED_TEXT}</span>
+          <span>{droppedText(droppedInOutage(board), server)}</span>
           <button className="icon-btn" title="Hide" aria-label="Hide" onClick={() => setDropped(board, false)}>×</button>
         </div>
       )}

@@ -8,3 +8,14 @@ func (m *Manager) DeleteOnRun(run string) {
 		m.Delete(meta.ID) // ErrNotFound: someone deleted it meanwhile
 	}
 }
+
+// DeleteOnBoard deletes every top-level chat whose Board is board. It is for a board on another
+// server whose record is gone: the chats on it here are the ones that have not started.
+func (m *Manager) DeleteOnBoard(board string) {
+	if board == "" {
+		return
+	}
+	for _, meta := range m.ChatsOfBoard(board) {
+		m.Delete(meta.ID) // ErrNotFound: someone deleted it meanwhile
+	}
+}

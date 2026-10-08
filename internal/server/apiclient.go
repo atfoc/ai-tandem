@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/model"
 )
@@ -43,13 +44,14 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiStart is POST /api/chats on the remote listener, the creation call: it finds the caller's
-// chat with the id or makes it in the group "Remote" (or on the run), gives it the call's values
+// chat with the id or makes it in the group "Remote" (or on the run, or on the board), gives it the call's values
 // and sends it the first message (chats.Manager.Start). The call can be repeated: of any number
 // of calls with one id one sends.
 //
-// Body: {"id", "agent", "cwd", "model", "effort", "name", "userNamed", "text", "run"}. id, agent
-// and text are required, cwd too unless run is given. A body that names a board or a group is
-// refused before anything else.
+// Body: {"id", "agent", "cwd", "model", "effort", "name", "userNamed", "text", "run", "board"}.
+// id, agent and text are required, cwd too unless run is given. A body that names a group, a
+// board that is not the caller's (or is archived), or both a run and a board is refused before
+// anything else.
 //
 // Every answer, an error too, holds {"started", "sent", "chat"}: whether the caller's chat has
 // had its first message, whether this call put the message into the thread, and the chat when
@@ -71,7 +73,12 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 		writeStart(w, http.StatusBadRequest, chats.StartResult{}, err.Error(), "bad_request")
 		return
 	}
-	if body.Board != "" {
+	if body.Board != "" && body.Run != "" {
+		writeStart(w, http.StatusBadRequest, chats.StartResult{}, "a chat is on a run or on a board, not on both", "bad_request")
+		return
+	}
+	// A board must be one the caller made, and not archived (apiboards.go).
+	if body.Board != "" && !s.marked(r, body.Board) {
 		writeStart(w, http.StatusBadRequest, chats.StartResult{}, boardRefused, "board_refused")
 		return
 	}
@@ -80,7 +87,7 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.App.Chats.Start(chats.StartReq{
-		ID: body.ID, Client: r.Header.Get(ClientHeader), Run: body.Run,
+		ID: body.ID, Client: r.Header.Get(ClientHeader), Run: body.Run, Board: body.Board,
 		Agent: body.Agent, Cwd: body.Cwd, Model: body.Model, Effort: body.Effort,
 		Name: body.Name, UserNamed: body.UserNamed, Text: body.Text,
 		Place: s.App.RemoteGroup,
@@ -90,6 +97,11 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 		fallback := http.StatusBadRequest
 		if res.Tried {
 			fallback = http.StatusInternalServerError
+		}
+		// The board went, or was archived, after the check above.
+		if body.Board != "" && (errors.Is(err, boards.ErrNotFound) || errors.Is(err, boards.ErrArchived)) {
+			writeStart(w, http.StatusBadRequest, res, boardRefused, "board_refused")
+			return
 		}
 		writeStart(w, statusOf(err, fallback), res, err.Error(), startCode(err))
 		return

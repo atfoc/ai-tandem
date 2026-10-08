@@ -1,0 +1,20 @@
+/* The server choice of a new whiteboard (BoardChoice.tsx) and its draft row in the sidebar. */
+.board-choice { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 40px; overflow: auto; }
+.board-choice-box { width: 100%; max-width: 360px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; color: var(--muted); }
+.board-choice-box .board-icon { color: var(--accent); }
+.board-choice-box h2 { margin: 6px 0 4px; color: var(--text); font-size: 18px; font-weight: 650; }
+.board-choice-list { width: 100%; display: flex; flex-direction: column; gap: 6px; }
+.board-choice-item { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%; text-align: left; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+.board-choice-item:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.board-choice-item:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.board-choice-item:disabled { color: var(--muted); cursor: default; }
+.board-choice-list.busy .board-choice-item { opacity: .6; cursor: default; }
+.board-choice-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 560; }
+.board-choice-reason { flex: none; font-size: 11px; color: var(--faint); }
+.board-choice-error { width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--danger); color: var(--danger); font-size: 12px; text-align: left; overflow-wrap: anywhere; user-select: text; }
+.board-choice-foot { min-height: 20px; display: flex; align-items: center; }
+/* the draft is what is on screen: the row of what was selected before it is not marked meanwhile */
+.side.drafting .side-row.on:not(.draft) { background: none; box-shadow: none; }
+.side.drafting .side-row.on:not(.draft):hover { background: var(--hover); }
+.side.drafting .side-row.within .side-name { color: inherit; }
+.side-row.draft .side-name { font-style: italic; }

@@ -12,6 +12,7 @@ import (
 
 // TestViewOf: every row of the table of what a page is handed.
 func TestViewOf(t *testing.T) {
+	t.Parallel()
 	main, side := &model.Draft{Text: "for main"}, &model.Draft{Text: "for b1"}
 	there := remoteView(chatA, model.StatusThinking)
 	there.Board, there.Run, there.Role = "b_there", "r_there", "worker"
@@ -28,8 +29,8 @@ func TestViewOf(t *testing.T) {
 	if v.Group != "g_here" || v.Run != "" {
 		t.Errorf("place: group %q, run %q", v.Group, v.Run)
 	}
-	if v.Board != "" {
-		t.Errorf("board %q", v.Board)
+	if v.Board != "b_there" {
+		t.Errorf("board %q: the record's view keeps the board its server names", v.Board)
 	}
 	if v.Role != "" {
 		t.Errorf("role %q: a record is never a run agent's chat", v.Role)
@@ -95,6 +96,7 @@ func TestViewOf(t *testing.T) {
 
 // TestStatesOf: each branch state gets its branch's draft and counter.
 func TestStatesOf(t *testing.T) {
+	t.Parallel()
 	main, side := &model.Draft{Text: "for main"}, &model.Draft{Text: "for b1"}
 	rec := Record{
 		ID: chatA, Entry: "s_entry",
@@ -131,6 +133,7 @@ func TestStatesOf(t *testing.T) {
 // TestApply: what a view from the chat's server does to the mark, to a pending change and to
 // the gone mark, in an event and in a snapshot.
 func TestApply(t *testing.T) {
+	t.Parallel()
 	view := func(archived bool) model.ChatView {
 		v := remoteView(chatA, model.StatusReady)
 		v.Archived = archived
@@ -184,6 +187,7 @@ func TestApply(t *testing.T) {
 
 // TestSetState: a state replaces its branch's, a new branch is added.
 func TestSetState(t *testing.T) {
+	t.Parallel()
 	rec := Record{States: []model.BranchState{{Chat: chatA, Branch: mainBranch, Status: model.StatusReady}}}
 	rec.setState(model.BranchState{Chat: chatA, Branch: "b1", Status: model.StatusTool})
 	rec.setState(model.BranchState{Chat: chatA, Branch: mainBranch, Status: model.StatusThinking})
@@ -207,6 +211,7 @@ func TestSetState(t *testing.T) {
 
 // TestRecordShape: the file's keys are the contract's, and it has no place for a secret.
 func TestRecordShape(t *testing.T) {
+	t.Parallel()
 	rec := Record{
 		ID: chatA, Entry: "s_entry", Group: "g", Run: "r", Archived: true, Op: "a_x", Pending: pendingArchive, Gone: true,
 		View: remoteView(chatA, model.StatusReady), States: []model.BranchState{{Chat: chatA, Branch: mainBranch}},
@@ -244,6 +249,7 @@ func TestRecordShape(t *testing.T) {
 
 // TestValidID: an id names a file and a part of a path.
 func TestValidID(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{chatA, "c_abc123", "A"} {
 		if !validID(id) {
 			t.Errorf("%q is refused", id)
@@ -258,6 +264,7 @@ func TestValidID(t *testing.T) {
 
 // TestFields: the members of an event that the relay routes by are read as a page reads them.
 func TestFields(t *testing.T) {
+	t.Parallel()
 	f, ok := fields([]byte(`{"type":"chat_items","chat":"x","version":3,"updates":[{"type":"y","chat":"z"}]}`), "type", "chat")
 	if !ok || text(f["type"]) != "chat_items" || text(f["chat"]) != "x" {
 		t.Errorf("fields: %v, %v", f, ok)
@@ -278,4 +285,54 @@ func TestFields(t *testing.T) {
 	if text(json.RawMessage(`7`)) != "" || text(nil) != "" {
 		t.Error("text of what is no string")
 	}
+}
+
+// A chat on a board reaches the pages with its board when this server has a record of that
+// board, and with none otherwise: in the snapshot's views and in the chat's event alike. A
+// record of the board that is made later sends the chat's view again.
+func TestPageViewKeepsTheBoardOfARecord(t *testing.T) {
+	t.Parallel()
+	onA, onNone := seedOf(chatA), seedOf(chatB)
+	onA.View.Board, onNone.View.Board = boardA, boardB
+	rg := newRig(t, rigOpt{seed: []Record{onA, onNone}, boardSeed: []BoardRecord{boardSeedOf(boardA)}})
+	p, _ := rg.page("page1")
+
+	boardsOf := func() map[string]string {
+		got := map[string]string{}
+		for _, v := range rg.r.Views() {
+			got[v.ID] = v.Board
+		}
+		return got
+	}
+	if got := boardsOf(); got[chatA] != boardA || got[chatB] != "" {
+		t.Fatalf("the boards of the views: %v", got)
+	}
+	for id, want := range map[string]string{chatA: boardA, chatB: ""} {
+		rec := rg.r.rec(id)
+		rec.mu.Lock()
+		rg.r.emitChat(rec)
+		rec.mu.Unlock()
+		if ev := p.Expect("chat"); field(ev, "chat", "id") != id || field(ev, "chat", "board") != nilOr(want) {
+			t.Fatalf("the event of %s: %v, want the board %q", id, ev, want)
+		}
+	}
+
+	// The board's record is made after the chat's: the chat's view is sent again, with the board.
+	if rg.r.adoptFrom(rg.entry, remoteBoard(boardB)) == nil {
+		t.Fatal("the board got no record")
+	}
+	if ev := p.Expect("chat"); field(ev, "chat", "id") != chatB || field(ev, "chat", "board") != boardB {
+		t.Fatalf("the event after the board's record: %v", ev)
+	}
+	if got := boardsOf(); got[chatB] != boardB {
+		t.Fatalf("the boards of the views after the board's record: %v", got)
+	}
+}
+
+// nilOr is what a decoded JSON object holds for a string field that is left out when empty.
+func nilOr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

@@ -266,6 +266,7 @@ func TestSvcRunRemoved(t *testing.T) {
 // Every event goes out as an event of its run (SendRun), so that it reaches the clients that run
 // concerns: the `run` and `run_detail` events of two runs, and the `run_removed` of a deleted one.
 func TestSvcEventsNameTheirRun(t *testing.T) {
+	t.Parallel()
 	x := newToolRun(t, false)
 	other := x.startRun("r_other001", "Another run", false)
 	x.turnStart("start")

@@ -7,6 +7,7 @@ import (
 )
 
 func TestReadSecret(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	f := FilesIn(root)
 	if _, err := ReadSecret(root); !errors.Is(err, ErrNoSecret) {
@@ -28,6 +29,7 @@ func TestReadSecret(t *testing.T) {
 }
 
 func TestNewSecret(t *testing.T) {
+	t.Parallel()
 	// Without a configuration: ErrNotSetUp, and nothing is written, not even over an old secret.
 	bare := t.TempDir()
 	write(t, FilesIn(bare).Secret, "old\n", 0o600)

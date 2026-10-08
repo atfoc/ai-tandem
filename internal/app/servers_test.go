@@ -10,6 +10,7 @@ import (
 
 // The snapshot of an app without a server list names this computer alone.
 func TestSnapshotServersWithoutAManager(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	got := e.a.Snapshot().Servers
 	if len(got) != 1 || got[0].ID != servers.LocalID || !got[0].Local || got[0].Name != servers.LocalName || got[0].State != servers.StateConnected {
@@ -23,6 +24,7 @@ func TestSnapshotServersWithoutAManager(t *testing.T) {
 
 // With a list the snapshot is the list's own view: the local entry first, and no secret.
 func TestSnapshotServers(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	m, err := servers.Open(servers.Options{Root: t.TempDir(), LocalID: "11111111-2222-4333-8444-555555555555", Version: "test"})
 	if err != nil {

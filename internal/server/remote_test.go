@@ -67,6 +67,7 @@ func wantReply(t *testing.T, w *httptest.ResponseRecorder, what string, status i
 }
 
 func TestRemoteSecretAndHost(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withRemote)
 	h := e.s.RemoteHandler()
 	loopback := strings.TrimPrefix(e.url, "http://")
@@ -127,6 +128,7 @@ func TestRemoteSecretAndHost(t *testing.T) {
 
 // The secret does not travel on to the route's handler.
 func TestRemoteSecretHeaderIsDropped(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withRemote)
 	req := httptest.NewRequest("GET", "/api/hello", nil)
 	req.Host = testHost
@@ -142,6 +144,7 @@ func TestRemoteSecretHeaderIsDropped(t *testing.T) {
 var pathWildcard = regexp.MustCompile(`\{[^}]*\}`)
 
 func TestRemoteServesOnlyTheTable(t *testing.T) {
+	t.Parallel()
 	client := t.TempDir()
 	for _, f := range []string{"index.html", "app.js"} {
 		if err := os.WriteFile(filepath.Join(client, f), []byte("x"), 0o644); err != nil {
@@ -211,8 +214,8 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(RemoteRoutes) || served != 40 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 40", served, len(RemoteRoutes))
+	if served != len(RemoteRoutes) || served != 51 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 51", served, len(RemoteRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)
@@ -228,6 +231,7 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 }
 
 func TestHelloInstanceID(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	out := decode[map[string]any](t, e.expect(200, "GET", "/api/hello", ""))
 	if _, ok := out["instanceId"]; ok {
@@ -246,6 +250,7 @@ func TestHelloInstanceID(t *testing.T) {
 }
 
 func TestRemoteHelloHasNoPid(t *testing.T) {
+	t.Parallel()
 	const id = "3f2b8c1e-7a4d-4e9b-9c55-0d1e2f3a4b5c"
 	e := newEnv(t, withRemote, func(s *Server) { s.InstanceID = id })
 	w := remoteDo(e.s.RemoteHandler(), "GET", "/api/hello", testHost, testSecret)
@@ -262,6 +267,7 @@ func TestRemoteHelloHasNoPid(t *testing.T) {
 }
 
 func TestRemoteStatusRoute(t *testing.T) {
+	t.Parallel()
 	// Off: no Remote.
 	e := newEnv(t)
 	if out := strings.TrimSpace(e.expect(200, "GET", "/api/remote/status", "")); out != `{"listening":false}` {
@@ -296,6 +302,7 @@ func TestRemoteStatusRoute(t *testing.T) {
 }
 
 func TestRefusedLog(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withRemote)
 	rm := e.s.Remote
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -373,6 +380,7 @@ func TestRefusedLog(t *testing.T) {
 }
 
 func TestRemoteSetSecret(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withRemote)
 	h := e.s.RemoteHandler()
 	next := strings.Repeat("ab", 32)
@@ -386,6 +394,7 @@ func TestRemoteSetSecret(t *testing.T) {
 }
 
 func TestServeRemote(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewTLSServer(nil)
 	pair := ts.TLS.Certificates[0]
 	ts.Close()
@@ -499,6 +508,7 @@ func TestServeRemote(t *testing.T) {
 
 // ServeRemote without a Remote fails instead of serving an open listener.
 func TestServeRemoteNeedsRemote(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -512,6 +522,9 @@ func TestServeRemoteNeedsRemote(t *testing.T) {
 
 // A wildcard entry of the table does not open a more specific route outside it: the gate asks the
 // routes themselves which pattern serves the request.
+//
+// Not parallel: the table is the package's, one for every server of the process. A serial test
+// ends (and its cleanup puts the table back) before the parallel tests go on.
 func TestRemoteWildcardEntryServesNoOtherRoute(t *testing.T) {
 	old := RemoteRoutes
 	RemoteRoutes = []string{"GET /api/hello", "GET /api/{x}"}

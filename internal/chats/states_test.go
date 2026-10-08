@@ -70,6 +70,7 @@ func (e *env) working(when string, evs *events, id string, working, approvals in
 // The state record of a change is sent ahead of the chat event of the same change, for the
 // current branch and for another one, and it is the record every read gives.
 func TestBranchStateEvents(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	evs := e.listen()
 
@@ -217,6 +218,7 @@ func TestBranchStateEvents(t *testing.T) {
 // States is what a snapshot lists: one record per registered branch of every listed chat, main
 // included, also for what was not loaded since the start.
 func TestStatesInSnapshot(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if sts := e.m.States(); sts == nil || len(sts) != 0 {
 		t.Fatalf("States with no chat: %#v", sts)
@@ -316,6 +318,7 @@ func TestStatesInSnapshot(t *testing.T) {
 // Working and Approvals count the branches of a chat that work and that wait for approval,
 // whichever is current, after each way a turn starts and ends.
 func TestAggregateCounts(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", "")
 	mainAg, branchAg := e.bothRunning(id) // the branch is current; both are idle
@@ -401,6 +404,7 @@ func TestAggregateCounts(t *testing.T) {
 // Nothing is sent of a new branch while it is unlisted; once it is listed its first state record
 // is sent, ahead of the chat event that names it.
 func TestNewBranchStateSentWhenListed(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, a := e.talked(model.Claude, "", 2)
 	evs := e.listen()
@@ -493,6 +497,7 @@ func TestNewBranchStateSentWhenListed(t *testing.T) {
 // The chat's view says fresh of its current branch, as it says locked: a branch started in a fresh
 // fork has a message of its own, while the fork's main still has none.
 func TestViewFreshIsTheCurrentBranchs(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	src, _ := e.talked(model.Claude, "", 2)
 	id := e.fork(src, 6).ID

@@ -80,6 +80,13 @@ func (s *script) hang() (arrived <-chan struct{}, release func()) {
 	return in, func() { once.Do(func() { close(out) }) }
 }
 
+// drop makes the route end every request at once with no answer, as hang does once it is
+// released. For the relay that is a call that got no answer, the same as one that waited out its
+// limit, so a test that only needs such a call does not sit the limit out.
+func (s *script) drop() {
+	s.set(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })
+}
+
 func (s *script) calls() []got {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -179,6 +186,7 @@ func noSecret(t *testing.T, what, text string) {
 
 // TestStartTable: every row of the table of the creation call's answers.
 func TestStartTable(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -308,6 +316,7 @@ func TestStartTable(t *testing.T) {
 // TestStartOnARun: the first message of a chat on a run names the run, and is refused before
 // the call when the run's record is archived or gone.
 func TestStartOnARun(t *testing.T) {
+	t.Parallel()
 	open, shut, lost := runSeedOf(runN(1)), runSeedOf(runN(2)), runSeedOf(runN(3))
 	shut.Archived, shut.View.Archived = true, true
 	lost.Gone = true
@@ -381,8 +390,55 @@ func TestStartOnARun(t *testing.T) {
 	}
 }
 
+// TestStartOnABoard: the creation call of a chat on a board of the entry names the board, and
+// the record is written with no group, as for a chat on a run: its place is the board.
+func TestStartOnABoard(t *testing.T) {
+	t.Parallel()
+	const board = "b_far00001"
+	rg := newRig(t, rigOpt{})
+	create := rg.script("POST /api/chats")
+	serveViews(rg.script("GET /api/chats/{id}"), model.StatusThinking)
+	meta := rg.unstarted(chatN(1), "")
+	meta.Board = board // a group in chat.json is not the chat's place: the record gets none
+	rg.local.mu.Lock()
+	rg.local.chats[chatN(1)] = meta
+	rg.local.mu.Unlock()
+
+	view := remoteView(chatN(1), model.StatusThinking)
+	view.Board = board
+	create.answer(http.StatusOK, startAnswerOf(true, true, &view, "", ""))
+	if got := rg.r.Start(context.Background(), chatN(1), "hello"); got != started {
+		t.Fatalf("the outcome: %+v", got)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(create.last(t).Body), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["board"] != board || body["id"] != chatN(1) || len(body) != 9 {
+		t.Errorf("the creation call: %v", body)
+	}
+	if _, has := body["run"]; has {
+		t.Errorf("the creation call of a chat on a board names a run: %v", body)
+	}
+	if d := rg.file(chatN(1)); d.Group != "" || d.Run != "" || d.Entry != rg.entry || d.View.Board != board {
+		t.Errorf("the record: %+v", d)
+	}
+
+	// A chat on no board sends no "board".
+	rg.unstarted(chatN(2), "")
+	plain := remoteView(chatN(2), model.StatusThinking)
+	create.answer(http.StatusOK, startAnswerOf(true, true, &plain, "", ""))
+	if got := rg.r.Start(context.Background(), chatN(2), "hello"); got != started {
+		t.Fatalf("the outcome of a plain chat: %+v", got)
+	}
+	if strings.Contains(create.last(t).Body, `"board"`) || rg.file(chatN(2)).Group != "g_here" {
+		t.Errorf("a plain chat: body %s, record %+v", create.last(t).Body, rg.file(chatN(2)))
+	}
+}
+
 // TestStartNotSent: the calls that send nothing, and the 401.
 func TestStartNotSent(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	create := rg.script("POST /api/chats")
 	ctx := context.Background()
@@ -438,11 +494,11 @@ func TestStartNotSent(t *testing.T) {
 // TestStartNoAnswer: a creation call that gets no answer, and the three answers of the read that
 // settles it, and the read that gets none either.
 func TestStartNoAnswer(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: Limits{Start: 150 * time.Millisecond, Settle: 150 * time.Millisecond}})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
-	_, release := create.hang()
-	defer release()
+	create.drop() // no answer at once; the limits themselves are waited out once, below
 	ctx := context.Background()
 	const (
 		notSent     = "Studio did not answer and the message was not sent. Send again."
@@ -491,6 +547,8 @@ func TestStartNoAnswer(t *testing.T) {
 	t.Run("the read gets no answer either", func(t *testing.T) {
 		id := chatN(4)
 		rg.unstarted(id, "")
+		_, release := create.hang()
+		defer release() // the route ends its requests with no answer from here on, as before
 		_, free := get.hang()
 		defer free()
 		start := time.Now()
@@ -520,6 +578,7 @@ func TestStartNoAnswer(t *testing.T) {
 // back with a snapshot that does not hold the chat yet; that snapshot does not settle the chat,
 // whose call is still under way. The call's own read does.
 func TestStartWhileTheStreamDrops(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -549,6 +608,7 @@ func TestStartWhileTheStreamDrops(t *testing.T) {
 // can be read: the first message is not confirmed, and server and agent of the chat stay fixed.
 // The snapshot of the return settles it.
 func TestStartWhileTheServerGoes(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	create := rg.script("POST /api/chats")
 	arrived, release := create.hang()
@@ -597,6 +657,7 @@ func TestStartWhileTheServerGoes(t *testing.T) {
 // is settled too when the snapshot holds it: its creation call was under way when this server's
 // process ended.
 func TestSettleAtSnapshot(t *testing.T) {
+	t.Parallel()
 	startedID, leftID, absentID, quietID, cutID, madeID := chatN(1), chatN(2), chatN(3), chatN(4), chatN(5), chatN(6)
 	startedView := remoteView(startedID, model.StatusTool)
 	leftView := remoteView(leftID, model.StatusReady)
@@ -671,6 +732,7 @@ func TestSettleAtSnapshot(t *testing.T) {
 // hand-over left a record and the chat object. The snapshot hands the object over, whatever it
 // tells of the chat, and settles nothing else for it.
 func TestSettleHandsOverAChatWithARecord(t *testing.T) {
+	t.Parallel()
 	there, absent := seedOf(chatA), seedOf(chatB)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(there.View), seed: []Record{there, absent}, hold: true, wire: func(rg *rig) {
 		rg.unstarted(chatA, "")
@@ -700,6 +762,7 @@ func TestSettleHandsOverAChatWithARecord(t *testing.T) {
 // makes the swap: a snapshot found the chat not started yet, or it has no mark at all. The
 // events that come before a chat's record are not logged as dropped.
 func TestStartedEvent(t *testing.T) {
+	t.Parallel()
 	made := remoteView(chatA, model.StatusReady)
 	made.Locked = false
 	get := (*script)(nil)
@@ -793,6 +856,7 @@ func TestStartedEvent(t *testing.T) {
 // nothing. When a call sent before had another text, the page is told so with a 409 and keeps
 // the text; a repeat of the same text, and a call with no earlier one known, are 200.
 func TestFirstTextKept(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: Limits{Start: 150 * time.Millisecond, Settle: 150 * time.Millisecond}})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -802,10 +866,8 @@ func TestFirstTextKept(t *testing.T) {
 	// lost sends text as a first message that gets no answer, to the call or to the read.
 	lost := func(id, text string) {
 		t.Helper()
-		_, free := create.hang()
-		_, freeGet := get.hang()
-		defer free()
-		defer freeGet()
+		create.drop()
+		get.drop()
 		if got := rg.r.Start(ctx, id, text); got.Status != http.StatusGatewayTimeout || got.Code != "start_unconfirmed" {
 			t.Fatalf("a first message with no answer: %+v", got)
 		}
@@ -945,6 +1007,7 @@ func TestFirstTextKept(t *testing.T) {
 
 // TestStartOnce: of many first messages of one chat at once, one is sent.
 func TestStartOnce(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -983,6 +1046,7 @@ func TestStartOnce(t *testing.T) {
 // TestSwapOrder: the swap as a page sees it, and its order here: the record is there before the
 // chat manager lets go of the chat.
 func TestSwapOrder(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -1065,10 +1129,8 @@ var quick = Limits{Start: 150 * time.Millisecond, Settle: 150 * time.Millisecond
 // the read: the chat is "unconfirmed" and the text is kept.
 func (rg *rig) lose(create, get *script, id, text string) {
 	rg.t.Helper()
-	_, free := create.hang()
-	_, freeGet := get.hang()
-	defer free()
-	defer freeGet()
+	create.drop()
+	get.drop()
 	if got := rg.r.Start(context.Background(), id, text); got.Status != http.StatusGatewayTimeout || got.Code != "start_unconfirmed" {
 		rg.t.Fatalf("a first message with no answer: %+v", got)
 	}
@@ -1113,6 +1175,7 @@ func (rg *rig) isSwapped(id string) bool {
 // list it, is no answer to its creation call, which may still wait there: the text of that call
 // stays kept, and a first message with another text that finds the chat started is answered 409.
 func TestFirstTextKeptAfterASnapshot(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: quick})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -1166,6 +1229,7 @@ func TestFirstTextKeptAfterASnapshot(t *testing.T) {
 // another text the page keeps this one (409), in each of the three ends of a call that are no
 // answer. A repeat of the same text, and a call with no earlier one, are 200.
 func TestFirstTextKeptByTheRead(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: quick})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -1177,7 +1241,7 @@ func TestFirstTextKeptByTheRead(t *testing.T) {
 		name string
 		set  func() (free func())
 	}{
-		{"no answer", func() func() { _, free := create.hang(); return free }},
+		{"no answer", func() func() { create.drop(); return func() {} }},
 		{"an answer that is not the creation call's", func() func() {
 			create.answer(http.StatusOK, map[string]any{"ok": true})
 			return func() {}
@@ -1218,6 +1282,7 @@ func TestFirstTextKeptByTheRead(t *testing.T) {
 // the creation call was under way raised the chat's counters. The record starts on the counters
 // the chat had when it was handed over, so a page's next save, on its own counter, is taken.
 func TestSwapTakesTheCountersOfTheHandOver(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -1280,6 +1345,7 @@ func TestSwapTakesTheCountersOfTheHandOver(t *testing.T) {
 // is another text than the one sent, and the pages are told. The text that was sent goes, and
 // so does any draft when nothing is kept of the call (as after a restart of this server).
 func TestSwapKeepsAnEditedDraft(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: quick})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -1417,6 +1483,7 @@ func TestSwapKeepsAnEditedDraft(t *testing.T) {
 // what Relay.States hands out during the hand-over is the state with the kept draft, or a state
 // with no draft on a lower counter than the one the draft ends on, which the pages are told.
 func TestSwapTellsAKeptDraftAsAChangeOfItsOwn(t *testing.T) {
+	t.Parallel()
 	const sent, edited = "first M1", "first M1 EDITED"
 	for _, how := range []struct {
 		name string
@@ -1432,6 +1499,7 @@ func TestSwapTellsAKeptDraftAsAChangeOfItsOwn(t *testing.T) {
 		}},
 	} {
 		t.Run(how.name, func(t *testing.T) {
+			t.Parallel()
 			rg := newRig(t, rigOpt{limits: quick})
 			create := rg.script("POST /api/chats")
 			get := rg.script("GET /api/chats/{id}")
@@ -1499,14 +1567,14 @@ func TestSwapTellsAKeptDraftAsAChangeOfItsOwn(t *testing.T) {
 // all, an event keeps a draft that was changed since, and a first message with another text is
 // answered 409. A chat that never arrived loses nothing: its next call sends its text.
 func TestFirstTextStaysWhileTheChatIsNotThere(t *testing.T) {
+	t.Parallel()
 	const sent, edited = "first N", "first N EDITED"
 	ctx := context.Background()
 	kept := StartOutcome{http.StatusConflict, "The first message had already arrived on Studio; this text was not sent.", "first_text_kept"}
 	notSent := StartOutcome{http.StatusBadGateway, "Studio did not answer and the message was not sent. Send again.", "not_sent"}
 	// byRead sends the first message of each chat with no answer to the call; the read is get's.
 	byRead := func(rg *rig, create *script, ids []string) {
-		_, free := create.hang()
-		defer free()
+		create.drop()
 		for _, id := range ids {
 			if got := rg.r.Start(ctx, id, sent); got != notSent {
 				t.Fatalf("a first message with no answer whose read finds nothing started: %+v", got)
@@ -1550,6 +1618,7 @@ func TestFirstTextStaysWhileTheChatIsNotThere(t *testing.T) {
 		}},
 	} {
 		t.Run(way.name, func(t *testing.T) {
+			t.Parallel()
 			rg := newRig(t, rigOpt{limits: quick})
 			create := rg.script("POST /api/chats")
 			get := rg.script("GET /api/chats/{id}")
@@ -1648,6 +1717,7 @@ func TestFirstTextStaysWhileTheChatIsNotThere(t *testing.T) {
 // sent to. After the chat was put on another server, a first message there is the first one
 // known: it is not compared with the text of before, at a call, at a read or at a swap.
 func TestFirstTextOfAnotherServer(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{limits: quick})
 	create := rg.script("POST /api/chats")
 	get := rg.script("GET /api/chats/{id}")
@@ -1661,8 +1731,7 @@ func TestFirstTextOfAnotherServer(t *testing.T) {
 		id := chatN(1)
 		rg.unstarted(id, "")
 		rg.keepFirst(id, elsewhere, before)
-		_, free := create.hang()
-		defer free()
+		create.drop()
 		serveViews(get, model.StatusThinking)
 		if got := rg.r.Start(ctx, id, text); got != started || !rg.isSwapped(id) {
 			t.Errorf("the outcome: %+v, swapped %v", got, rg.isSwapped(id))

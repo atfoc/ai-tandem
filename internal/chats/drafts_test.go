@@ -40,6 +40,7 @@ func draftIn(d *model.Draft) string {
 // Each branch of a chat has its own draft, kept with the top-level chat. It reaches clients in the
 // branch's state record, and a Send takes the draft of the branch it was sent on alone.
 func TestDraftPerBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	branchFile := e.file(bid, "chat.json")
@@ -191,6 +192,7 @@ func TestDraftPerBranch(t *testing.T) {
 // A chat.json written before drafts were per branch has one draft for the chat: it becomes the
 // draft of the chat's current branch when the chat is loaded, and is written at once.
 func TestDraftMigration(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, bid := e.branched(model.Claude, "", exBranch)
 	plain := e.create(model.Claude, gOne, "")
@@ -260,6 +262,7 @@ func TestDraftMigration(t *testing.T) {
 // takes its top-level chat's lock for the draft, after its own, and nothing else may take them the
 // other way round.
 func TestDraftsWhileABranchWorks(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", exBranch)
 	e.send(id, "on the branch", "")
@@ -315,6 +318,7 @@ func TestDraftsWhileABranchWorks(t *testing.T) {
 
 // The chat's view says whether any of its branches has a draft, whichever is current.
 func TestHasDraft(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", exBranch)
 	evs := e.listen()

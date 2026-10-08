@@ -130,6 +130,7 @@ func issuedPair(t *testing.T) tls.Certificate {
 // TestDialClassifies is the error table of dialTLS, each row from a real dial or handshake on
 // loopback but the two that need another network: those come through an injected DialFunc.
 func TestDialClassifies(t *testing.T) {
+	t.Parallel()
 	good := standin.Start(t, standin.Options{})
 	other := standin.Start(t, standin.Options{})
 	named := standin.Start(t, standin.Options{Names: []string{"elsewhere.example"}})
@@ -166,27 +167,31 @@ func TestDialClassifies(t *testing.T) {
 		{"issued by an unknown CA", nil, issued, Trust{Roots: x509.NewCertPool()}, testLimit, OutcomeCertUntrusted},
 		{"no common TLS version", nil, oldTLS, Trust{Roots: x509.NewCertPool()}, testLimit, OutcomeTLSError},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			p := problemOf(t, c.dial, c.url, c.trust, c.limit)
-			if p == nil {
-				t.Fatalf("connected; want %s", c.want)
-			}
-			if p.Outcome != c.want {
-				t.Fatalf("outcome %s (%s); want %s", p.Outcome, p.Detail, c.want)
-			}
-			if c.want == OutcomeCertChanged {
-				if p.Fingerprint != good.Fingerprint() || p.Pinned != c.trust.Pin {
-					t.Errorf("fingerprints %q, %q; want %q, %q", p.Fingerprint, p.Pinned, good.Fingerprint(), c.trust.Pin)
+	// The cases run in parallel, inside a group that ends when the last of them has.
+	t.Run("cases", func(t *testing.T) {
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				t.Parallel()
+				p := problemOf(t, c.dial, c.url, c.trust, c.limit)
+				if p == nil {
+					t.Fatalf("connected; want %s", c.want)
 				}
-			} else if p.Detail == "" || p.Fingerprint != "" || p.Pinned != "" {
-				t.Errorf("problem %+v; want Go's text in Detail and no fingerprint", *p)
-			}
-			if !strings.Contains(p.Error(), c.want.Message()) {
-				t.Errorf("Error() = %q; want the outcome's message in it", p.Error())
-			}
-		})
-	}
+				if p.Outcome != c.want {
+					t.Fatalf("outcome %s (%s); want %s", p.Outcome, p.Detail, c.want)
+				}
+				if c.want == OutcomeCertChanged {
+					if p.Fingerprint != good.Fingerprint() || p.Pinned != c.trust.Pin {
+						t.Errorf("fingerprints %q, %q; want %q, %q", p.Fingerprint, p.Pinned, good.Fingerprint(), c.trust.Pin)
+					}
+				} else if p.Detail == "" || p.Fingerprint != "" || p.Pinned != "" {
+					t.Errorf("problem %+v; want Go's text in Detail and no fingerprint", *p)
+				}
+				if !strings.Contains(p.Error(), c.want.Message()) {
+					t.Errorf("Error() = %q; want the outcome's message in it", p.Error())
+				}
+			})
+		}
+	})
 	if n := len(good.Requests()) + len(named.Requests()) + len(expired.Requests()); n != 0 {
 		t.Errorf("%d requests reached the stand-ins; want none", n)
 	}
@@ -194,6 +199,7 @@ func TestDialClassifies(t *testing.T) {
 
 // TestDialOrder checks the order of the table where one error fits two rows.
 func TestDialOrder(t *testing.T) {
+	t.Parallel()
 	timeout := &net.OpError{Op: "read", Err: syscall.ETIMEDOUT}
 	cases := []struct {
 		err  error
@@ -225,6 +231,7 @@ func TestDialOrder(t *testing.T) {
 
 // TestDialNoPinDialsNothing: the box on without a pin is refused before any dial.
 func TestDialNoPinDialsNothing(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	calls := 0
 	p := problemOf(t, failDial(errors.New("dialed"), &calls), s.URL(), Trust{SelfSigned: true}, testLimit)
@@ -239,6 +246,7 @@ func TestDialNoPinDialsNothing(t *testing.T) {
 // TestDialTrust: what connects. Under a pin names and dates are not checked; without the box
 // they are, against Roots.
 func TestDialTrust(t *testing.T) {
+	t.Parallel()
 	good := standin.Start(t, standin.Options{})
 	odd := standin.Start(t, standin.Options{
 		Names: []string{"elsewhere.example"}, NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Hour),
@@ -278,6 +286,7 @@ func TestDialTrust(t *testing.T) {
 // the answer is self_signed all the same, at the dial and in a test. Its name and its dates keep
 // their own answers where the verifier names them.
 func TestRealCertificateBoxOff(t *testing.T) {
+	t.Parallel()
 	listener := func(names []string, notBefore, notAfter time.Time) string {
 		certPEM, keyPEM, err := remote.GenerateCert(names, notBefore, notAfter)
 		if err != nil {
@@ -322,6 +331,7 @@ func TestRealCertificateBoxOff(t *testing.T) {
 // TestPinCheckedAtEveryHandshake: a certificate swapped on the same port is refused by the next
 // connection of the same transport.
 func TestPinCheckedAtEveryHandshake(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	pin := s.Fingerprint()
 	tr := newTransport(nil, Trust{SelfSigned: true, Pin: pin}, DefaultTiming)
@@ -347,6 +357,7 @@ func TestPinCheckedAtEveryHandshake(t *testing.T) {
 
 // TestReadCertificate: the fingerprint is read without a request, whatever the certificate.
 func TestReadCertificate(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{
 		Names: []string{"elsewhere.example"}, NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Hour),
 	})

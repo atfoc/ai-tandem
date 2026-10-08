@@ -34,6 +34,7 @@ func types(evs []map[string]any) []string {
 // TestEventTable: every row of the table of a remote server's events, as two pages see it: one
 // that read the chat and one that did not.
 func TestEventTable(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	seed.Drafts = map[string]*model.Draft{mainBranch: {Text: "for main"}, "b1": {Text: "for b1"}}
 	seed.DraftRevs = map[string]int64{mainBranch: 3, "b1": 5}
@@ -175,6 +176,7 @@ func TestEventTable(t *testing.T) {
 // TestUnknownChatDropped: an event of a chat without a record is dropped and counted, and
 // logged once for its id. A server's event never reaches the record of another server's chat.
 func TestUnknownChatDropped(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}})
 	rg.serveItems()
@@ -225,6 +227,7 @@ func TestUnknownChatDropped(t *testing.T) {
 // TestFollows: content events go to the page that read alone; the remote server is told to end
 // the follow when the last page's stream ends, and not while another page follows.
 func TestFollows(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}})
 	rg.serveItems()
@@ -274,6 +277,7 @@ func TestFollows(t *testing.T) {
 // TestUnfollowNeverOvertakesARead: the follow lock. While a read is passed on the unfollow call
 // waits, and while the unfollow call is out a read waits.
 func TestUnfollowNeverOvertakesARead(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}})
 	rec := rg.r.rec(chatA)
@@ -384,6 +388,7 @@ func TestUnfollowNeverOvertakesARead(t *testing.T) {
 // TestSnapshotSteps: the steps of a stream's start, in their order, as a page and the two hook
 // points see them. A chat that the snapshot does not have is gone.
 func TestSnapshotSteps(t *testing.T) {
+	t.Parallel()
 	there := remoteView(chatA, model.StatusThinking)
 	snap := snapshotWith(there)
 	snap["states"] = []model.BranchState{
@@ -483,6 +488,7 @@ func TestSnapshotSteps(t *testing.T) {
 // TestGoneAndBack: a chat that a snapshot does not have is gone, and is back when a later
 // snapshot has it. Each return is the same steps again.
 func TestGoneAndBack(t *testing.T) {
+	t.Parallel()
 	a, b := seedOf(chatA), seedOf(chatB)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(a.View, b.View), seed: []Record{a, b}})
 	p, _ := rg.page("page-1")
@@ -549,6 +555,7 @@ func TestGoneAndBack(t *testing.T) {
 // TestHooksDoNotBlock: a file write that hangs and a page that reads nothing do not hold the
 // stream's reader: every hook returns at once, and the events wait in the entry's queue.
 func TestHooksDoNotBlock(t *testing.T) {
+	t.Parallel()
 	const events = 300
 	seed := seedOf(chatA)
 	var calls atomic.Int64
@@ -629,6 +636,7 @@ func TestHooksDoNotBlock(t *testing.T) {
 // go, the pages are told, the unstarted chats go back to this computer, and the server is sent
 // nothing.
 func TestCountsAndRemoved(t *testing.T) {
+	t.Parallel()
 	a, b := seedOf(chatA), seedOf(chatB)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(a.View, b.View), seed: []Record{a, b}})
 	rg.serveItems()
@@ -716,6 +724,7 @@ func seedWith(id, entry string) Record {
 // TestAgentsReachPages: AC44. A change of the remote server's usable agents reaches the pages
 // as server_lists, and is what the chat manager is told of the entry.
 func TestAgentsReachPages(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	p, snap := rg.page("page-1")
 	if got := field(snap, "lists", rg.entry, "agents"); !reflect.DeepEqual(got, []any{"claude", "pi"}) {
@@ -743,6 +752,7 @@ func TestAgentsReachPages(t *testing.T) {
 // TestEntryAndLists: what the chat manager is told of an entry, by id and by key, and the lists
 // by server.
 func TestEntryAndLists(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{hold: true})
 	// Before the first connect: no key, no lists.
 	e, ok := rg.r.Entry(rg.entry)
@@ -803,6 +813,7 @@ func TestEntryAndLists(t *testing.T) {
 // TestOutageAndReturn: while the server is away its records stay listed with their last view
 // and a call answers at once that nothing was sent. The return is the steps of a snapshot.
 func TestOutageAndReturn(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}})
 	rg.serveItems()
@@ -869,6 +880,7 @@ func TestOutageAndReturn(t *testing.T) {
 
 // TestCall: the three ends of a call that is passed on.
 func TestCall(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	never := make(chan struct{})
 	t.Cleanup(func() { close(never) })
@@ -921,6 +933,7 @@ func TestCall(t *testing.T) {
 // TestStatesAreBounded: the other server names the branches of a chat. A record keeps the state
 // of maxStates of them; the state of a further one is dropped, and that is logged once.
 func TestStatesAreBounded(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	for i := 1; i < maxStates; i++ {
 		seed.States = append(seed.States, model.BranchState{Chat: chatA, Branch: fmt.Sprintf("b%d", i), Status: model.StatusReady})
@@ -965,6 +978,7 @@ func TestStatesAreBounded(t *testing.T) {
 // TestTake: an answer and an event of one chat can cross. A view that was read is taken only
 // if no view of the chat was taken since the read was sent.
 func TestTake(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}})
 	rec := rg.r.rec(chatA)
@@ -1027,6 +1041,7 @@ func TestTake(t *testing.T) {
 // TestSnapshotThatCannotBeRead: a snapshot whose chats are no list marks no record gone, and
 // the rest of the return goes on.
 func TestSnapshotThatCannotBeRead(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}})
 	p, _ := rg.page("page-1")
@@ -1048,6 +1063,7 @@ func TestSnapshotThatCannotBeRead(t *testing.T) {
 
 // TestClose: after Close no hook does anything, no goroutine starts, and a second Close is safe.
 func TestClose(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}})
 	p, _ := rg.page("page-1")
@@ -1072,6 +1088,7 @@ func TestClose(t *testing.T) {
 // TestOpenNeedsItsParts: Open refuses to run without the server list or the bridge, so that no
 // record is taken for one of an unknown entry.
 func TestOpenNeedsItsParts(t *testing.T) {
+	t.Parallel()
 	if _, err := Open(Options{Root: t.TempDir()}); err == nil {
 		t.Error("Open without a server list and a bridge")
 	}
@@ -1083,7 +1100,8 @@ func TestOpenNeedsItsParts(t *testing.T) {
 	}
 	if DefaultLimits != (Limits{Call: 15 * time.Second, Start: 45 * time.Second, Settle: 15 * time.Second,
 		Dirs: 10 * time.Second, Usage: 30 * time.Second, Unfollow: 5 * time.Second, Flush: 2 * time.Second,
-		Check: 5 * time.Second, RunDelete: 3 * time.Minute}) {
+		Check: 5 * time.Second, RunDelete: 3 * time.Minute,
+		BoardCall: 25 * time.Second, Scene: 60 * time.Second}) {
 		t.Errorf("DefaultLimits: %+v", DefaultLimits)
 	}
 }

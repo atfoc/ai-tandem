@@ -41,63 +41,41 @@ test("a busy branch is one agent, each running subagent one more", () => {
   assert.equal(agentsOf({ status: "tool", subsRunning: 2 }), 3);
   assert.equal(agentsOf({ status: "ready", subsRunning: 2 }), 2); // it waits for them; they work
   const fa = folderAgents({ chats: chats(chat("a")), states: [rec("a", "main", { status: "writing", subsRunning: 2 }), rec("a", "b1")], cwd: "/w", chat: "x" });
-  assert.deepEqual(fa, { total: 3, here: 0, elsewhere: 3, who: [{ chat: "a", branch: "main", agents: 3 }] });
-});
-
-test("self is left out, with its subagents", () => {
-  const states = [rec("a", "main", { status: "tool", subsRunning: 3 }), rec("a", "b1", { status: "thinking" }), rec("b", "main", { status: "tool" })];
-  const fa = folderAgents({ chats: chats(chat("a"), chat("b")), states, cwd: "/w", chat: "a", self: { chat: "a", branch: "main" } });
-  assert.deepEqual(fa, { total: 2, here: 1, elsewhere: 1, who: [{ chat: "a", branch: "b1", agents: 1 }, { chat: "b", branch: "main", agents: 1 }] });
-  // the same branch name in another chat is not self
-  assert.equal(folderAgents({ chats: chats(chat("a"), chat("b")), states, cwd: "/w", chat: "b", self: { chat: "b", branch: "main" } }).total, 5);
+  assert.deepEqual(fa, { total: 3, here: 0, elsewhere: 3 });
 });
 
 test("archived chats and unknown chats do not count", () => {
   const states = [rec("old", "main", { status: "tool" }), rec("gone", "main", { status: "tool", subsRunning: 1 }), rec("a", "main", { status: "tool" })];
   const fa = folderAgents({ chats: chats(chat("old", { archived: true }), chat("a")), states, cwd: "/w", chat: "x" });
-  assert.deepEqual(fa, { total: 1, here: 0, elsewhere: 1, who: [{ chat: "a", branch: "main", agents: 1 }] });
+  assert.deepEqual(fa, { total: 1, here: 0, elsewhere: 1 });
 });
 
 test("another folder does not count", () => {
   const states = [rec("a", "main", { status: "tool", cwd: "/other" }), rec("a", "b1", { status: "tool", cwd: "/w/app" }), rec("a", "b2", { status: "tool", cwd: "" }), rec("b", "main", { status: "tool", cwd: "/w/" })];
   const all = chats(chat("a"), chat("b"));
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "a" }), { total: 1, here: 0, elsewhere: 1, who: [{ chat: "b", branch: "main", agents: 1 }] });
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "a" }), { total: 1, here: 0, elsewhere: 1 });
   assert.equal(folderAgents({ chats: all, states, cwd: "", chat: "a" }).total, 0);
   assert.equal(folderAgents({ chats: all, states, chat: "a" }).total, 0);
 });
 
-test("here and elsewhere", () => {
+test("here and elsewhere: every branch counts, the asking chat's own too", () => {
   const states = [
     rec("c", "main", { status: "tool" }), rec("b", "b2", { status: "ready", subsRunning: 2 }), rec("b", "b1", { status: "writing" }),
-    rec("a", "main", { status: "thinking" }), rec("b", "main"), rec("a", "b1", { status: "approval", subsRunning: 1 }),
+    rec("a", "main", { status: "thinking" }), rec("b", "main", { status: "tool" }), rec("a", "b1", { status: "approval", subsRunning: 1 }),
   ];
-  const fa = folderAgents({ chats: chats(chat("a"), chat("b"), chat("c")), states, cwd: "/w", chat: "b", self: { chat: "b", branch: "main" } });
-  assert.deepEqual(fa, {
-    total: 7, here: 3, elsewhere: 4,
-    who: [ // this chat's first, then by chat id and branch
-      { chat: "b", branch: "b1", agents: 1 }, { chat: "b", branch: "b2", agents: 2 },
-      { chat: "a", branch: "b1", agents: 2 }, { chat: "a", branch: "main", agents: 1 }, { chat: "c", branch: "main", agents: 1 },
-    ],
-  });
-});
-
-test("with a pending move (self null) nothing is left out", () => {
-  const states = [rec("a", "main", { status: "tool", subsRunning: 1 }), rec("a", "b1", { status: "thinking" })];
-  const p = { chats: chats(chat("a")), states, cwd: "/w", chat: "a" };
-  assert.deepEqual(folderAgents({ ...p, self: null }), { total: 3, here: 3, elsewhere: 0, who: [{ chat: "a", branch: "b1", agents: 1 }, { chat: "a", branch: "main", agents: 2 }] });
-  assert.equal(folderAgents(p).total, 3); // no self at all is the same
-  assert.equal(folderAgents({ ...p, self: { chat: "a", branch: "main" } }).total, 1);
+  const all = chats(chat("a"), chat("b"), chat("c"));
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "b" }), { total: 8, here: 4, elsewhere: 4 });
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c" }), { total: 8, here: 1, elsewhere: 7 });
 });
 
 test("folderAgents: the same path on another server is another folder", () => {
   const all = chats(chat("c_1"), chat("c_2", { server: "s_1" }), chat("c_3", { server: "s_1" }), chat("c_4", { server: "s_2" }));
   const states = [rec("c_1", "main", { status: "thinking" }), rec("c_2", "main", { status: "tool" }), rec("c_3", "main", { status: "writing", subsRunning: 1 }), rec("c_4", "main", { status: "thinking" })];
   // seen from the local chat: the remote ones work on other machines
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_1", self: null }), { total: 1, here: 1, elsewhere: 0, who: [{ chat: "c_1", branch: "main", agents: 1 }] });
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_1" }), { total: 1, here: 1, elsewhere: 0 });
   // seen from a chat on s_1: its own and the other chat of s_1, not the local one and not s_2's
-  const there = folderAgents({ chats: all, states, cwd: "/w", chat: "c_2", self: { chat: "c_2", branch: "main" } });
-  assert.deepEqual([there.total, there.here, there.elsewhere, there.who.map((w) => w.chat)], [2, 0, 2, ["c_3"]]);
-  assert.equal(folderAgents({ chats: all, states, cwd: "/w", chat: "c_4", self: { chat: "c_4", branch: "main" } }).total, 0);
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_2" }), { total: 3, here: 1, elsewhere: 2 });
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_4" }), { total: 1, here: 1, elsewhere: 0 });
 });
 
 test("a chat of a run on another server is where the run is: it does not work in this computer's folder of the same path", () => {
@@ -105,21 +83,19 @@ test("a chat of a run on another server is where the run is: it does not work in
   const all = chats(chat("mine"), chat("far", { run: "r_far" }), chat("agent", { run: "r_far", role: "task" } as Partial<ChatView>), chat("near", { run: "r_here" }), chat("rec", { run: "r_far", server: "s_1" }));
   const states = [rec("mine", "main"), rec("far", "main", { status: "tool" }), rec("agent", "main", { status: "thinking", subsRunning: 2 }), rec("near", "main", { status: "tool" }), rec("rec", "main", { status: "tool" })];
   // from a chat of this computer: the local run's chat alone
-  const fa = folderAgents({ chats: all, states, cwd: "/w", chat: "mine", runs });
-  assert.deepEqual(fa.who, [{ chat: "near", branch: "main", agents: 1 }]);
-  assert.equal(fa.total, 1);
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "mine", runs }), { total: 1, here: 0, elsewhere: 1 });
   // from a chat on the remote run: that run's, on its server, and none of this computer's
-  const there = folderAgents({ chats: all, states, cwd: "/w", chat: "far", self: { chat: "far", branch: "main" }, runs });
-  assert.deepEqual(there.who.map((w) => w.chat), ["agent", "rec"]);
-  assert.equal(there.total, 4);
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "far", runs }), { total: 5, here: 1, elsewhere: 4 });
   // without the runs a view that names no server counts as this computer's (what the hint must not do)
   assert.equal(folderAgents({ chats: all, states, cwd: "/w", chat: "mine" }).total, 5);
   // a run that is not known leaves the chat's own server
   assert.equal(folderAgents({ chats: chats(chat("mine"), chat("x", { run: "r_gone" })), states: [rec("x", "main", { status: "tool" })], cwd: "/w", chat: "mine", runs }).total, 1);
 });
 
-test("the folder hints give the runs to folderAgents", () => {
+test("the folder hint gives the runs to folderAgents, and the composer shows none", () => {
   const src = readFileSync(new URL("../src/fork/FolderHint.tsx", import.meta.url), "utf8");
-  assert.equal(src.split("folderAgents({").length - 1, 2);
-  assert.equal((src.match(/self: [^\n]*, runs \}\)/g) ?? []).length, 2);
+  assert.equal(src.split("folderAgents({").length - 1, 1);
+  assert.equal((src.match(/chat: chatId, runs \}\)/g) ?? []).length, 1);
+  // the chip beside the composer's folder ("N others working here") is gone
+  assert.doesNotMatch(readFileSync(new URL("../src/Composer.tsx", import.meta.url), "utf8"), /FolderHint|working here/);
 });

@@ -235,11 +235,27 @@ func (r *Repo) RemoveWorktree(ctx context.Context, path string) error {
 	}
 	defer unlock()
 
+	want := resolve(abs)
+	defer r.forget(want, nil) // what tree remembers of it
+	// A folder that is a linked work tree of this repository says so itself, and git need not
+	// list them all. Anything else (a folder that is gone, the main work tree, a folder git has
+	// on record somewhere else) is for the list.
+	if exists(filepath.Join(abs, ".git")) {
+		if t, err := r.tree(ctx, abs); err == nil && t.linked && recordedAt(t.gitDir) == want {
+			// The lock a killed commit left on its branch would outlive the work tree, and the
+			// branch could not be deleted.
+			guarded, done, err := r.guard(ctx, t)
+			if err != nil {
+				return err
+			}
+			defer done()
+			return r.removeForced(guarded, abs)
+		}
+	}
 	list, err := r.worktrees(ctx)
 	if err != nil {
 		return err
 	}
-	want := resolve(abs)
 	for _, w := range list {
 		if resolve(w.path) != want {
 			continue
@@ -263,6 +279,20 @@ func (r *Repo) RemoveWorktree(ctx context.Context, path string) error {
 		return fmt.Errorf("%w: %s", ErrNotWorktree, path)
 	}
 	return nil
+}
+
+// recordedAt is the folder that git has on record for the linked work tree with the git dir
+// gitDir, symlinks resolved: what git worktree list shows for it. "" when it cannot be read.
+func recordedAt(gitDir string) string {
+	b, err := os.ReadFile(filepath.Join(gitDir, "gitdir"))
+	if err != nil {
+		return ""
+	}
+	link := strings.TrimRight(string(b), "\r\n")
+	if filepath.Base(link) != ".git" {
+		return ""
+	}
+	return resolve(filepath.Dir(absIn(gitDir, link)))
 }
 
 // ResetDetached puts the linked work tree at path at ref with a detached HEAD and throws away

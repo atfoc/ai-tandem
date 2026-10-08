@@ -7,7 +7,8 @@ import (
 )
 
 // APISnapshot is the state an API client gets: its own items and the server's lists. No group,
-// no board, no defaults, no data folder, and nothing of the servers this one connects to.
+// no board but its own, no defaults, no data folder, and nothing of the servers this one
+// connects to.
 type APISnapshot struct {
 	Agents     []model.AgentKind                  `json:"agents"`   // the agents this server can start, never nil
 	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"` // claude, cursor, pi; null while not known
@@ -16,6 +17,7 @@ type APISnapshot struct {
 	Chats      []model.ChatView                   `json:"chats"`  // the chats with the client's mark; never nil
 	States     []model.BranchState                `json:"states"` // one per branch of those chats; never nil
 	Runs       []model.RunView                    `json:"runs"`   // the runs with the client's mark; never nil
+	Boards     []model.Board                      `json:"boards"` // the boards with the client's mark; never nil
 }
 
 // APISnapshot builds the snapshot of the API client with this id. It changes nothing and sends
@@ -38,6 +40,7 @@ func (a *App) APISnapshot(client string) APISnapshot {
 		Chats:      a.Chats.ViewsOf(client),
 		States:     a.Chats.StatesOf(client),
 		Runs:       rs,
+		Boards:     a.Boards.ListOf(client),
 	}
 }
 

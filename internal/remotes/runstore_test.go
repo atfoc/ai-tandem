@@ -21,6 +21,7 @@ import (
 // adoption, the mark and the gone mark; a view or an agent alone waits for the flush, and Close
 // writes what waits.
 func TestRunFiles(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	rg := newRig(t, rigOpt{
 		snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed},
@@ -102,6 +103,7 @@ func TestRunFiles(t *testing.T) {
 
 // TestRunFlush: a view that changed is in the file within the flush's time, with no other change.
 func TestRunFlush(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed}})
 	rg.s.Send(map[string]any{"type": "run", "run": remoteRun(runA, model.RunStalled)})
@@ -111,6 +113,7 @@ func TestRunFlush(t *testing.T) {
 // TestRunWriteThatFails: a write that fails is logged once and made again at a flush; the pages
 // have the change meanwhile.
 func TestRunWriteThatFails(t *testing.T) {
+	t.Parallel()
 	seed := runSeedOf(runA)
 	var fail atomic.Bool
 	rg := newRig(t, rigOpt{snapshot: snapshotWithRuns(seed.View), runSeed: []RunRecord{seed}, wire: func(rg *rig) {
@@ -175,6 +178,7 @@ func TestRunWriteThatFails(t *testing.T) {
 // bad file is skipped, logged and left; what a cut write left is removed; a record whose entry
 // is not in the list is removed with its file.
 func TestRunLoad(t *testing.T) {
+	t.Parallel()
 	a, b := runSeedOf(runA), runSeedOf(runB)
 	a.Agents = []string{agent1, agent2}
 	a.Archived, a.Op, a.View.Archived = true, "a_here", true // archived from here, and confirmed there
@@ -285,6 +289,7 @@ func TestRunLoad(t *testing.T) {
 // entry of the list: its file is written and HasRun knows it. Anything else is refused, and
 // nothing is written.
 func TestAdoptRun(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	p, _ := rg.page("page-1")
 	first := runSeedOf(runA)

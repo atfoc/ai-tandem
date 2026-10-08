@@ -44,6 +44,7 @@ func mode(t *testing.T, path string) fs.FileMode {
 // TestFiles: where a record's file is and what it may be read by, and when it is written: at
 // once for what must not be lost, at the next flush and at Close for a view.
 func TestFiles(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{
 		snapshot: snapshotWith(seed.View), seed: []Record{seed},
@@ -118,6 +119,7 @@ func TestFiles(t *testing.T) {
 
 // TestFlush: a view that changed is in the file within the flush's time, with no other change.
 func TestFlush(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}, limits: Limits{Flush: 20 * time.Millisecond}})
 	rg.s.Send(map[string]any{"type": "chat", "chat": remoteView(chatA, model.StatusApproval)})
@@ -131,6 +133,7 @@ func TestFlush(t *testing.T) {
 // TestWriteThatFails: a write that fails is logged once and tried again at every flush; the
 // pages and the snapshot have the change meanwhile.
 func TestWriteThatFails(t *testing.T) {
+	t.Parallel()
 	seed := seedOf(chatA)
 	var fail atomic.Bool
 	rg := newRig(t, rigOpt{snapshot: snapshotWith(seed.View), seed: []Record{seed}, wire: func(rg *rig) {
@@ -164,6 +167,7 @@ func TestWriteThatFails(t *testing.T) {
 // TestRecordTooLarge: a record above the size a load reads is never written: the file that is
 // there stays, the pages have the change, and the failure is logged once.
 func TestRecordTooLarge(t *testing.T) {
+	t.Parallel()
 	f := newFiles(t.TempDir())
 	small := seedWith(chatB, "s_entry")
 	if err := f.save(small); err != nil {
@@ -224,6 +228,7 @@ func TestRecordTooLarge(t *testing.T) {
 // TestLoad: Open reads the folder. A file that is no record is skipped and logged, and stays; a
 // record whose entry is not in the list is removed.
 func TestLoad(t *testing.T) {
+	t.Parallel()
 	a := seedOf(chatA)
 	a.Archived, a.Op, a.Pending = true, "a_here", pendingUnarchive
 	a.Drafts, a.DraftRevs = map[string]*model.Draft{mainBranch: {Text: "for main"}}, map[string]int64{mainBranch: 4, "b1": 2}
@@ -331,6 +336,7 @@ func sameSet(a, b []string) bool {
 // TestAtomicWrite: a file is replaced whole. A reader never finds a part of a record, and no
 // temporary file is left.
 func TestAtomicWrite(t *testing.T) {
+	t.Parallel()
 	f := newFiles(t.TempDir())
 	small, large := seedOf(chatA), seedOf(chatA)
 	small.Entry, large.Entry = "s_entry", "s_entry"
@@ -379,6 +385,7 @@ func TestAtomicWrite(t *testing.T) {
 
 // TestAdopt: what makes a record, and what is refused with nothing written.
 func TestAdopt(t *testing.T) {
+	t.Parallel()
 	rg := newRig(t, rigOpt{})
 	for name, d := range map[string]Record{
 		"an id that is a path": seedWith("../"+chatA, rg.entry),

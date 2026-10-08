@@ -222,8 +222,9 @@ var (
 )
 
 // outputGrace is how long the stderr of a process that has exited is still read: a process it
-// started and Close did not reach can hold the pipe open for as long as it runs.
-const outputGrace = time.Second
+// started and Close did not reach can hold the pipe open for as long as it runs. A variable, as
+// the Close waits above are, so that a test can shorten it.
+var outputGrace = time.Second
 
 // Close ends the process and everything in its process group, and waits for it: stdin is closed;
 // what is still there a moment later gets SIGTERM, and what outlives that SIGKILL. The group is

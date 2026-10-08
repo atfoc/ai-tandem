@@ -153,6 +153,10 @@ func ctxRequests(lines []map[string]any) int {
 }
 
 func TestLiveContextSplit(t *testing.T) {
+	// The fake gives its answers in order however soon it is asked again, so the pause is only waited out.
+	old := splitRetry
+	splitRetry = 10 * time.Millisecond
+	t.Cleanup(func() { splitRetry = old })
 	f := newFake(t, `{"type":"system","subtype":"status","status":"requesting"}`)
 	fixture := string(readFixture(t))
 	// Asked early, the MCP tools are not counted yet: it asks again.

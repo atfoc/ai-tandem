@@ -1,6 +1,7 @@
 package rungit
 
 import (
+	"ai-whiteboard/internal/testset"
 	"context"
 	"errors"
 	"fmt"
@@ -154,7 +155,10 @@ func TestEnsureWorktreeRefusesWhatIsNotIt(t *testing.T) {
 func TestEnsureWorktreeConcurrently(t *testing.T) {
 	t.Parallel()
 	r, root := newRepo(t)
-	const n = 20
+	n := 20
+	if !testset.Full() {
+		n = 6 // still several at once, on a branch and detached
+	}
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {

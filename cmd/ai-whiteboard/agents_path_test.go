@@ -55,11 +55,13 @@ func refusedCall(t *testing.T, p *bridgetest.Page, code, method, path string, bo
 // default program names and a PATH that has none of them; then the stand-in agent appears there
 // as "claude", and is removed again.
 func TestUsableAgentsFollowThePath(t *testing.T) {
+	serverTest(t, "TestListFollowsThePath, TestWatchCallsOncePerChange (internal/usable)", "TestAgentsEventReachesAClient, TestAgentOutsideTheUsableOnes (internal/server)")
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH (the fake claude is a Node script)")
 	}
-	in := newInstance(t) // skips under -short: the test waits for two look-ups, 30 s apart
-	in.claude = "claude" // the default name: every command of the test finds it on PATH or not at all
+	in := newInstance(t)
+	in.setenv(fastest.env(t, "agents")) // the test waits for two look-ups: 1 s apart, for 30 s
+	in.claude = "claude"                // the default name: every command of the test finds it on PATH or not at all
 	scratch, nodeDir := t.TempDir(), t.TempDir()
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -80,16 +82,24 @@ func TestUsableAgentsFollowThePath(t *testing.T) {
 
 	serve := exec.Command(in.bin, append([]string{"serve", "-cwd", t.TempDir(),
 		"-cursor-cost", filepath.Join(scratch, "no-cursor-cost")}, in.flags()...)...)
-	serve.Env = append(os.Environ(), path)
+	serve.Env = append(in.environ(), path)
 	serve.Stdout, serve.Stderr = os.Stderr, os.Stderr
 	if err := serve.Start(); err != nil {
 		t.Fatal(err)
 	}
 	served := make(chan struct{})
 	go func() { serve.Wait(); close(served) }()
-	for deadline := time.Now().Add(20 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(100 * time.Millisecond) {
+	// The start has no limit that a loaded machine could decide: the wait ends when the server
+	// answers or its process is gone, and the two minutes only keep a hung start from the
+	// timeout of the whole test binary.
+	for deadline := time.Now().Add(2 * time.Minute); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(100 * time.Millisecond) {
+		select {
+		case <-served:
+			t.Fatal("the server process ended before it answered")
+		default:
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("the server did not answer within 20 s")
+			t.Fatal("the server did not answer within 2 minutes")
 		}
 	}
 	if pid := in.hello(t).Pid; pid != serve.Process.Pid {

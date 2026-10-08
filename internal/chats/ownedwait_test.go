@@ -164,6 +164,7 @@ func ownStart(t *testing.T) (*env, string, *fakeAgent, <-chan ownAnswer) {
 // ---- the thirteen cases of the spike, against WaitOwned ----------------------
 
 func TestSettledPlainTurnAndATurnWithoutText(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	ownNotYet(t, w, "mid-turn")
 	if err := e.m.SendOwned(id, "too early", OwnedSend{}); !errors.Is(err, ErrBusy) {
@@ -193,6 +194,7 @@ func TestSettledPlainTurnAndATurnWithoutText(t *testing.T) {
 }
 
 func TestSettledSubagentStillRunningAtTheTurnEnd(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, child := e.ownChild(id, "child work")
 	ag.emit(t, ownText("spawned, waiting", "p1")...)
@@ -217,6 +219,7 @@ func TestSettledSubagentStillRunningAtTheTurnEnd(t *testing.T) {
 }
 
 func TestSettledSubagentEndsDuringTheTurn(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, child := e.ownChild(id, "child work")
 	child.emit(t, ownText("child report", "")...)
@@ -233,6 +236,7 @@ func TestSettledSubagentEndsDuringTheTurn(t *testing.T) {
 }
 
 func TestSettledTwoSubagentsTwoDeliveries(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, c1 := e.ownChild(id, "one")
 	_, c2 := e.ownChild(id, "two")
@@ -250,6 +254,7 @@ func TestSettledTwoSubagentsTwoDeliveries(t *testing.T) {
 }
 
 func TestSettledErrorThenTheEngineRetries(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	ag.emit(t, agent.Event{Kind: agent.EvText, Text: "partial"}, agent.Event{Kind: agent.EvTurnEnd, Error: "overloaded"})
 	s := ownGot(t, w)
@@ -266,6 +271,7 @@ func TestSettledErrorThenTheEngineRetries(t *testing.T) {
 }
 
 func TestSettledErrorWhileASubagentRunsLeavesItsResultOwed(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, child := e.ownChild(id, "child work")
 	ag.emit(t, agent.Event{Kind: agent.EvTurnEnd, Error: "overloaded"})
@@ -294,6 +300,7 @@ func TestSettledErrorWhileASubagentRunsLeavesItsResultOwed(t *testing.T) {
 // The engine's stop of a running turn: the turn is interrupted, StopOwned waits for it to end, and
 // only then is the process closed.
 func TestSettledStopOwnedInterruptsARunningTurn(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, child := e.ownChild(id, "child work")
 	stopped := make(chan struct{})
@@ -328,6 +335,7 @@ func TestSettledStopOwnedInterruptsARunningTurn(t *testing.T) {
 
 // An agent that does not end its turn when it is interrupted is closed when the grace is over.
 func TestStopOwnedGraceEnds(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	start := time.Now()
 	e.m.StopOwned(id, 60*time.Millisecond)
@@ -348,6 +356,7 @@ func TestStopOwnedGraceEnds(t *testing.T) {
 }
 
 func TestSettledStopWhileOnlySubagentsRun(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, child := e.ownChild(id, "child work")
 	ag.emit(t, ownText("spawned", "p1")...)
@@ -364,6 +373,7 @@ func TestSettledStopWhileOnlySubagentsRun(t *testing.T) {
 }
 
 func TestSettledProcessExitMidTurn(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, child := e.ownChild(id, "child work")
 	ag.emit(t, agent.Event{Kind: agent.EvText, Text: "working"})
@@ -383,6 +393,7 @@ func TestSettledProcessExitMidTurn(t *testing.T) {
 }
 
 func TestSettledProcessExitWhileWaitingForASubagent(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	e.ownChild(id, "child work")
 	ag.emit(t, ownText("spawned", "p1")...)
@@ -394,6 +405,7 @@ func TestSettledProcessExitWhileWaitingForASubagent(t *testing.T) {
 }
 
 func TestSettledSelfStartedTurnBeforeTheChatSettled(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	_, child := e.ownChild(id, "child work")
 	ag.emit(t, ownText("spawned", "p1")...)
@@ -414,6 +426,7 @@ func TestSettledSelfStartedTurnBeforeTheChatSettled(t *testing.T) {
 // Changed from the spike: a turn the agent starts by itself after the chat settled is waited for,
 // because the answer is computed from the chat as it is.
 func TestSettledSelfStartedTurnAfterTheChatSettled(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	ag.emit(t, ownText("answer", "p1")...)
 	if s := ownGot(t, w); s.Text != "answer" || s.To != 3 {
@@ -434,6 +447,7 @@ func TestSettledSelfStartedTurnAfterTheChatSettled(t *testing.T) {
 
 // Changed from the spike: a chat deleted while it is waited for answers ErrNotFound.
 func TestSettledStopMidTurnDeleteWhileWaitingASecondSend(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	e.m.StopOwned(id, 0)
 	if s := ownGot(t, w); s.Outcome != EndAborted || s.Error != "stopped" {
@@ -472,6 +486,7 @@ func TestSettledStopMidTurnDeleteWhileWaitingASecondSend(t *testing.T) {
 // ---- the errors of WaitOwned --------------------------------------------------
 
 func TestWaitOwnedSuperseded(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	// The turn ends with an error while a subagent runs: not settled, and not busy either.
 	e.ownChild(id, "child work")
@@ -487,6 +502,7 @@ func TestWaitOwnedSuperseded(t *testing.T) {
 }
 
 func TestWaitOwnedErrors(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	if _, err := e.m.WaitOwned(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an unknown chat: %v", err)
@@ -522,6 +538,7 @@ func TestWaitOwnedErrors(t *testing.T) {
 
 // A change that wakes nobody is seen by the backstop: at most its period late, never a hang.
 func TestWaitOwnedBackstop(t *testing.T) {
+	t.Parallel()
 	e, id, _, w := ownStart(t)
 	ownNotYet(t, w, "mid-turn")
 	c, _ := e.m.get(id)
@@ -543,6 +560,7 @@ func TestWaitOwnedBackstop(t *testing.T) {
 // A process that goes away while the chat rests after a clean turn changes nothing of how that
 // turn ended.
 func TestSettledExitWhileIdleStaysClean(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	ag.emit(t, ownText("the answer", "p1")...)
 	s := ownGot(t, w)
@@ -562,6 +580,7 @@ func TestSettledExitWhileIdleStaysClean(t *testing.T) {
 
 // Claude's "no session": a turn end that says so, then the exit. The exit must not hide it.
 func TestSettledNoSessionSurvivesTheExit(t *testing.T) {
+	t.Parallel()
 	_, _, ag, w := ownStart(t)
 	text := "No conversation found with session ID: x"
 	ag.emit(t, agent.Event{Kind: agent.EvTurnEnd, Error: text, NoSession: true})
@@ -575,6 +594,7 @@ func TestSettledNoSessionSurvivesTheExit(t *testing.T) {
 
 // A start that fails leaves the wait of the message before as it was.
 func TestSendOwnedFailedStartKeepsTheWait(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	cwd := t.TempDir() + "/work"
 	if err := os.Mkdir(cwd, 0o700); err != nil {
@@ -615,6 +635,7 @@ func TestSendOwnedFailedStartKeepsTheWait(t *testing.T) {
 // Whatever an adapter's Send answers, the chat is left not busy and without a process, so the
 // next SendOwned is not refused as busy for ever.
 func TestSendOwnedRefusedLeavesTheChatFree(t *testing.T) {
+	t.Parallel()
 	e, id, ag, w := ownStart(t)
 	ag.emit(t, ownText("the answer", "p1")...)
 	ownGot(t, w)
@@ -688,6 +709,7 @@ func (s *stuckSpawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 // StopOwned reaches a SendOwned that is inside the adapter, and neither it nor the manager waits
 // for an adapter's Close that does not return.
 func TestStopOwnedReachesASendInFlightAndNeverWaitsForClose(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	sp := &stuckSpawner{inner: e.cursor}
 	e.m.Spawners[model.Cursor] = sp
@@ -742,6 +764,7 @@ func TestStopOwnedReachesASendInFlightAndNeverWaitsForClose(t *testing.T) {
 // does not go on before those closes have returned; a Close that never returns holds it up no
 // longer than its limit. The process of a person's chat is closed without waiting, as before.
 func TestShutdownClosesRunAgentsThroughTheirAdapters(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	log := &loggingSpawner{inner: e.claude}
 	e.m.Spawners[model.Claude] = log
@@ -769,9 +792,16 @@ func TestShutdownClosesRunAgentsThroughTheirAdapters(t *testing.T) {
 	sent := make(chan error, 1)
 	go func() { sent <- e2.m.SendOwned(id2, "the brief", OwnedSend{}) }()
 	waitFor(t, "the process", func() bool { sp.mu.Lock(); defer sp.mu.Unlock(); return sp.last != nil })
+	// The limit is lowered so that the test does not wait out the 2 s of the app; the manager
+	// has no other use of it.
+	if e2.m.ownedCloseWait != ownedCloseWait || ownedCloseWait != 2*time.Second {
+		t.Fatalf("a manager's limit for the closes is %v, the app's %v", e2.m.ownedCloseWait, ownedCloseWait)
+	}
+	const limit = 300 * time.Millisecond
+	e2.m.ownedCloseWait = limit
 	start := time.Now()
 	e2.m.Shutdown()
-	if d := time.Since(start); d < ownedCloseWait || d > ownedCloseWait+2*time.Second {
+	if d := time.Since(start); d < limit || d > limit+2*time.Second {
 		t.Fatalf("Shutdown with a Close that does not return took %v", d)
 	}
 	<-sent // the message in flight was let go by the close

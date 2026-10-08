@@ -58,6 +58,9 @@ type Manager struct {
 	naming   sync.WaitGroup   // the auto namer goroutines Send starts
 	handoffs sync.WaitGroup   // the deliveries of subagent results being given to an agent (handOff)
 	now      func() time.Time // the clock subagents' times come from; tests replace it
+	// ownedCloseWait is how long Shutdown waits for the closes of the runs' agents' processes
+	// (the constant of that name; tests lower it).
+	ownedCloseWait time.Duration
 
 	// extrasMu protects extras, extraBySID and used. Never take Chat.mu while holding extrasMu
 	// (issue/revoke run with Chat.mu then extrasMu).
@@ -138,9 +141,10 @@ type Chat struct {
 	gone atomic.Bool
 
 	// goneMu makes "check that the chat is still there, broadcast" one step (see cast), so that
-	// no state record and no view of a top-level chat follows its chat_removed, which Delete
-	// broadcasts under it. It is a top-level chat's only and a leaf: only the bridge's lock is
-	// taken under it, and it is never taken with a chat's mu or Manager.mu held.
+	// no state record, no view and no items or subagent event of a top-level chat follows its
+	// chat_removed, which Delete broadcasts under it. It is a top-level chat's only and a leaf:
+	// only the bridge's lock is taken under it, and it is never taken with a chat's mu or
+	// Manager.mu held.
 	goneMu sync.Mutex
 
 	// drafts publishes meta.Drafts of a top-level chat, which stays what is saved: a branch's
@@ -248,6 +252,8 @@ func New(d Deps) *Manager {
 		used:       map[string]struct{}{},
 		roots:      map[string]string{},
 		now:        time.Now,
+
+		ownedCloseWait: ownedCloseWait,
 	}
 }
 
@@ -263,11 +269,13 @@ type outbox []any
 // chat event is composed here, under its top-level chat's sendMu. The tree events are built and
 // sent after all the others, wherever they were queued, each under its top-level chat's
 // treeOutMu with no sendMu held: a part of the tree follows the state record and the view of the
-// change it is of. None of them, and no state record, is sent once its chat was deleted (see
-// cast). Each event goes to the clients it concerns (see editorbridge.Events). The events of a run
-// agent's chat go only to the clients that follow it, and are not handed to the bridge while
-// nobody does; no state record and no tree event of it ever: it has main alone, and its view
-// tells its state. The bridge's lock is taken under sendMu and goneMu, never the other way.
+// change it is of. None of them, no state record and no items or subagent event is sent once its
+// chat was deleted (see cast). Each event goes to the clients it concerns (see
+// editorbridge.Events). The events of a run agent's chat go only to the clients that follow it,
+// and are not handed to the bridge while nobody does; no state record and no tree event of it
+// ever: it has main alone, and its view tells its state. What is left for the default case is of
+// no chat (catalog, defaults). The bridge's lock is taken under sendMu and goneMu, never the other
+// way.
 func (m *Manager) send(out outbox) {
 	var trees []treeEvent
 	for _, ev := range out {
@@ -287,9 +295,11 @@ func (m *Manager) send(out outbox) {
 			if e.c.role == "" {
 				trees = append(trees, e)
 			}
+		case threadEvent:
+			m.cast(e.c, e.chat, e.ev)
 		case agentEvent:
-			if !e.unlisted || m.Bridge.Followed(editorbridge.Chat(e.chat)) {
-				m.Bridge.SendChat(e.chat, e.unlisted, e.ev)
+			if m.Bridge.Followed(editorbridge.Chat(e.chat)) {
+				m.Bridge.SendChat(e.chat, true, e.ev)
 			}
 		default:
 			m.Bridge.Broadcast(ev)
@@ -313,19 +323,30 @@ func (m *Manager) cast(c *Chat, chat string, ev any) {
 	}
 }
 
-// agentEvent is an items or subagent event of the top-level chat chat waiting in an outbox.
-// unlisted is true for a run agent's chat: whether its event is sent is decided when the outbox
-// is (send).
+// agentEvent is an items or subagent event of a run agent's chat waiting in an outbox: whether it
+// is sent is decided when the outbox is (send).
 type agentEvent struct {
-	chat     string
-	unlisted bool
-	ev       map[string]any
+	chat string
+	ev   map[string]any
+}
+
+// threadEvent is an items or subagent event of a person's chat waiting in an outbox: ev, of the
+// chat object c, whose top-level chat is chat. It is sent unless c or its chat was deleted
+// meanwhile (see send).
+type threadEvent struct {
+	c    *Chat
+	chat string
+	ev   map[string]any
 }
 
 // threadEvent queues ev, an event about c's thread or its subagents that names the top-level chat
 // as chat. c.mu held.
 func (o *outbox) threadEvent(c *Chat, chat string, ev map[string]any) {
-	*o = append(*o, agentEvent{chat: chat, unlisted: c.role != "", ev: ev})
+	if c.role != "" {
+		*o = append(*o, agentEvent{chat: chat, ev: ev})
+		return
+	}
+	*o = append(*o, threadEvent{c: c, chat: chat, ev: ev})
 }
 
 // The values of Chat.pub.
@@ -829,14 +850,15 @@ var chatID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-
 
 // CreateChat makes a chat. No agent starts: it starts on the first Send.
 //
-// The chat is in a group, on a board (its group is the board's) or on a run: it then has no group
+// The chat is in a group, on a board (its group is the board's; the board is one of this server,
+// or one RemoteServers.BoardOn knows, and must not be archived) or on a run: it then has no group
 // and no board, lives in runs/<run>/chats/<id> and is listed like any chat, with Run set. The run
 // must exist (ErrNoRun) and not be archived (ErrRunArchived), and a run that starts on another
 // server must have started (ErrRunNotStarted).
 //
 // An agent that is named must be one the server can use (a *usable.MissingError otherwise). With
-// none named the chat gets, on a run, the run's agent kind when that can be used, else the sticky
-// agent of its group (defaults.Agent), and no agent at all when the server can use none: the chat
+// none named the chat gets the sticky agent of its group (defaults.Agent; on a run the run's group,
+// and the run's agent kind where none was chosen before), and no agent at all when the server can use none: the chat
 // is made all the same, and waits for an agent (see ConfigureOf). Its folder, model and effort
 // are startChoice's, changed by the ones n names: the folder must be one (expandDir) outside the
 // app's own (ErrAppFolder), the model and effort ones the agent's catalog has (ErrBadChoice).
@@ -879,7 +901,7 @@ func (m *Manager) create(n NewChat, place func() (string, error)) (model.ChatVie
 	}
 	meta := model.ChatMeta{ID: n.ID, Client: n.Client, Name: strings.TrimSpace(n.Name), UserNamed: n.UserNamed, Created: time.Now()}
 	var ri *RunInfo
-	var group string
+	var group, boardOn string // boardOn: the entry of the server a board that is not here is on
 	switch {
 	case n.Run != "":
 		if !safeSegment(n.Run) {
@@ -895,14 +917,16 @@ func (m *Manager) create(n NewChat, place func() (string, error)) (model.ChatVie
 		ri, group, meta.Run = &r, r.Group, n.Run
 		place = nil
 	case n.Board != "":
-		bd, ok := m.Boards.Get(n.Board)
-		if !ok {
-			return none, boards.ErrNotFound
+		archived := false
+		if bd, ok := m.Boards.Get(n.Board); ok {
+			group, archived = bd.Group, bd.Archived
+		} else if boardOn, group, archived, ok = m.remoteBoard(n.Board); !ok || n.Client != "" {
+			return none, boards.ErrNotFound // an API client's chat is on a board of this server
 		}
-		if bd.Archived {
+		if archived {
 			return none, boards.ErrArchived
 		}
-		group, meta.Board = bd.Group, n.Board
+		meta.Board = n.Board
 		place = nil
 	case place != nil: // the group is asked for once the id is free
 	default:
@@ -911,7 +935,7 @@ func (m *Manager) create(n NewChat, place func() (string, error)) (model.ChatVie
 		}
 		group, meta.Group = n.Group, n.Group
 	}
-	on, err := m.newSide(n, ri, meta.Board != "", group)
+	on, err := m.newSide(n, ri, meta.Board != "", boardOn, group)
 	if err != nil {
 		return none, err
 	}
@@ -999,10 +1023,11 @@ func (m *Manager) idTaken(id string) bool {
 
 // startChoice is the folder, model and effort a chat of agent a starts with in group, or on the
 // run ri (nil for a chat that is on none; group is then the run's): the sticky ones of the group
-// for a (defaults.Resolve), and on a run the run's folder and, when a is the run's agent kind,
-// what its deep tier runs on. With no agent it is the folder alone. marked says the chat has a
-// client mark: no default is read for it, so it gets the server's default folder and the default
-// of a's catalog, whatever its group holds, and on a run what the run gives.
+// for a (defaults.Resolve), and on a run the run's folder and, when a is the run's agent kind and
+// no model was chosen for a before (defaults.Recorded), what its deep tier runs on. With no agent
+// it is the folder alone. marked says the chat has a client mark: no default is read for it, so it
+// gets the server's default folder and the default of a's catalog, whatever its group holds, and
+// on a run what the run gives.
 func (m *Manager) startChoice(group string, a model.AgentKind, ri *RunInfo, marked bool) (cwd string, mc model.ModelChoice) {
 	return m.startChoiceOn(side{}, group, a, ri, marked)
 }
@@ -1026,8 +1051,9 @@ func (m *Manager) startChoiceOn(on side, group string, a model.AgentKind, ri *Ru
 		cwd = ri.Cwd
 	}
 	// A chat of the run's agent kind starts on what the orchestrator runs on: its changes of the
-	// plan are decisions that nothing checks, as the orchestrator's are.
-	if a != "" && a == ri.Agent && ri.Model != "" {
+	// plan are decisions that nothing checks, as the orchestrator's are. A model chosen before, in
+	// a chat of the run's group or on a run in it, comes first: the choice is sticky on a run too.
+	if _, chosen := defaults.Recorded(d, group, on.key(), a, nil); !chosen && a != "" && a == ri.Agent && ri.Model != "" {
 		mc = model.ModelChoice{Model: ri.Model, Effort: ri.Effort}
 	}
 	return cwd, mc
@@ -1394,7 +1420,8 @@ func (m *Manager) SendBranch(id, text, context string, refs []model.Reference) (
 // message was taken from (see dropDraft): another branch's stays, and so does one saved while the
 // agent was started.
 //
-// A chat on a run feeds no sticky defaults, and every message of it starts with the run's
+// A chat on a run feeds the sticky defaults of the run's group with its agent, model and effort
+// (not its server and folder, which are the run's), and every message of it starts with the run's
 // context block (RunOwner.ChatContext), as a board chat's does with its board's. For a run
 // agent's chat it is SendOwned's: the wait of that message starts here, and nothing of the
 // human's (the namer, quotes, the draft) is touched.
@@ -1484,12 +1511,12 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	}
 	releaseHold(c)
 	first := !c.meta.Locked && c.top == nil
-	if first && c.meta.Run == "" && c.meta.ForkedFrom == "" {
+	if first && c.meta.ForkedFrom == "" {
 		// Sending the first message confirms the chat's settings as chosen, changed or not. Not
 		// a fork's, also one made at the start: its settings are its source's, and what was
 		// chosen for it since was recorded when it was chosen (Configure).
 		server, a := defaultsPlace(c)
-		m.recordDefaults(c, model.LocalServer, server, a, c.meta.Cwd, model.ModelChoice{Model: c.meta.Model, Effort: c.meta.Effort}, &out)
+		m.recordDefaults(c, model.LocalServer, server, a, defaultsCwd(c, c.meta.Cwd), model.ModelChoice{Model: c.meta.Model, Effort: c.meta.Effort}, &out)
 	}
 	c.meta.Locked = true
 	c.meta.Fresh, c.meta.SourceCtx = false, 0 // a fork has its own message from here, also one its agent refuses
@@ -1734,9 +1761,7 @@ func (m *Manager) configure(id, branch string, req ConfigReq, dir remoteDir) (as
 	if err := m.save(c); err != nil {
 		return fail(err)
 	}
-	if c.meta.Run == "" { // a chat on a run feeds no sticky defaults
-		m.recordDefaults(c, on.key(), "", changed, abs, defaultsChoice(c, model.ModelChoice{Model: req.Model, Effort: req.Effort}), &out)
-	}
+	m.recordDefaults(c, on.key(), "", changed, defaultsCwd(c, abs), defaultsChoice(c, model.ModelChoice{Model: req.Model, Effort: req.Effort}), &out)
 	out.emitChat(c)
 	unlock()
 	if fix {
@@ -1785,9 +1810,10 @@ func (m *Manager) fixFolder(c *Chat, gone, cwd string) {
 // the server c is on (model.LocalServer, or an entry's instance id), which is also what server
 // is when it is not empty. Nothing is stored and nothing queued for a chat object with a client
 // mark, in whatever group its chat is: what an API client chose is no default of this server;
-// and nothing while key is empty, which is a server that has not said who it is. c.mu held.
+// nothing for a run agent's chat, whose settings the run chose, not a person; and nothing while
+// key is empty, which is a server that has not said who it is. c.mu held.
 func (m *Manager) recordDefaults(c *Chat, key, server string, a model.AgentKind, cwd string, mc model.ModelChoice, out *outbox) {
-	if c.meta.Client != "" || key == "" {
+	if c.meta.Client != "" || c.role != "" || key == "" {
 		return
 	}
 	group := m.GroupOf(c.meta)
@@ -1816,14 +1842,24 @@ func defaultsChoice(c *Chat, mc model.ModelChoice) model.ModelChoice {
 }
 
 // defaultsPlace is what recordDefaults gets, at c's first message, of the server and the agent c
-// is on: no server for a chat on a board, which is where its board is. It is not asked for a fork,
-// whose first message records nothing, nor for a chat on another server, whose first message is
-// not sent here (see HandOver). c.mu held.
+// is on: no server for a chat on a board, which is where its board is, nor for a chat on a run,
+// which is where its run is. It is not asked for a fork, whose first message records nothing, nor
+// for a chat on another server, whose first message is not sent here (see HandOver). c.mu held.
 func defaultsPlace(c *Chat) (server string, a model.AgentKind) {
-	if c.meta.Board != "" {
+	if c.meta.Board != "" || c.meta.Run != "" {
 		return "", c.meta.Agent
 	}
 	return model.LocalServer, c.meta.Agent
+}
+
+// defaultsCwd is what recordDefaults gets of the folder cwd of c: none for a chat on a run, whose
+// folder is the run's and nobody's choice for a new chat of the group. Its agent, model and
+// effort are recorded as any chat's: a new chat on the run, or in its group, starts with them.
+func defaultsCwd(c *Chat, cwd string) string {
+	if c.meta.Run != "" {
+		return ""
+	}
+	return cwd
 }
 
 // canStart says whether a chat of agent a may be started now: a *usable.MissingError for an agent
@@ -2389,13 +2425,17 @@ func (m *Manager) ChatsOfBoard(boardID string) []model.ChatMeta {
 	return out
 }
 
-// GroupOf is the board's group for board chats and the run's for a run's chats, else meta.Group.
+// GroupOf is the board's group for board chats (of a board on another server the group its
+// record has here) and the run's for a run's chats, else meta.Group.
 // A chat whose board or run is gone counts as ungrouped. A branch's meta has no group: it is its
 // top-level chat's (whose mu must not be held).
 func (m *Manager) GroupOf(meta model.ChatMeta) string {
 	if meta.Board != "" {
 		if bd, ok := m.Boards.Get(meta.Board); ok {
 			return bd.Group
+		}
+		if _, group, _, ok := m.remoteBoard(meta.Board); ok {
+			return group
 		}
 		return model.Ungrouped
 	}
@@ -2482,7 +2522,7 @@ func (m *Manager) Shutdown() {
 		m.send(out)
 		closeAgents(toClose)
 	}
-	closeAndWait(owned, ownedCloseWait)
+	closeAndWait(owned, m.ownedCloseWait)
 }
 
 func uuid() string {

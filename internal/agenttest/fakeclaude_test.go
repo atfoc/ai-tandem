@@ -208,6 +208,7 @@ func TestFakeClaudeAskUnattended(t *testing.T) {
 
 // The Node fake through the real Claude adapter: a turn with a cost and a result block.
 func TestFakeClaudeCostAndBlock(t *testing.T) {
+	t.Parallel()
 	ag := startFakeClaude(t)
 	texts, end := claudeTurn(t, ag, "do the job [[cost 0.01]] [[block completed]]")
 	if end.Error != "" || end.Aborted {
@@ -246,6 +247,7 @@ func TestFakeClaudeCostAndBlock(t *testing.T) {
 
 // A task's prompt shows the block's layout; the reply to it must hold one block, the fake's own.
 func TestFakeClaudeBlockFailedInAPromptThatShowsABlock(t *testing.T) {
+	t.Parallel()
 	ag := startFakeClaude(t)
 	prompt := "You have one task.\n\n<result>\n<outcome>completed</outcome>\n<summary>two or three sentences</summary>\n<report>\nthe full report\n</report>\n</result>\n\nbrief: <<block failed>>"
 	texts, end := claudeTurn(t, ag, prompt)
@@ -264,6 +266,7 @@ func TestFakeClaudeBlockFailedInAPromptThatShowsABlock(t *testing.T) {
 // [[final]] keeps the block for the reply to the subagents' results; [[if]] gates directives;
 // [[fail]] ends a turn with an error and no block.
 func TestFakeClaudeFinalIfFail(t *testing.T) {
+	t.Parallel()
 	ag := startFakeClaude(t)
 	texts, end := claudeTurn(t, ag, "start [[final all done]] [[block completed]]")
 	if end.Error != "" || len(texts) == 0 || strings.Contains(texts[len(texts)-1], "<result>") {
@@ -290,6 +293,7 @@ func TestFakeClaudeFinalIfFail(t *testing.T) {
 // [[write]] changes a file in the process's working directory, in its conditional part only, and
 // a directive may hold a JSON array.
 func TestFakeClaudeWriteAndArrays(t *testing.T) {
+	t.Parallel()
 	cwd := t.TempDir()
 	ag := startFakeClaudeIn(t, cwd)
 	texts, end := claudeTurn(t, ag, `the job [[write notes/a.txt one\ntwo]] [[if not in the message]] [[write b.txt no]] [[if the job]] `+
@@ -319,6 +323,7 @@ func TestFakeClaudeWriteAndArrays(t *testing.T) {
 // The app passes --mcp-config as the path of a file (the token is not to be on the command line):
 // the fake reads it, and calls the endpoint with the header it names.
 func TestFakeClaudeMCPConfigFromAFile(t *testing.T) {
+	t.Parallel()
 	var auth atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth.Store(r.Header.Get("Authorization"))

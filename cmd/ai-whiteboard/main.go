@@ -162,6 +162,8 @@ func serve(o options, args []string) {
 	var a *app.App
 	var cm *chats.Manager
 	br := editorbridge.New(func() any { return a.Snapshot() })
+	waits := readTestWaits() // zero outside the tests
+	br.PingEvery = waits.ping
 	bs := boards.New(st, br)
 	br.SceneRev = bs.Rev
 	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
@@ -213,7 +215,7 @@ func serve(o options, args []string) {
 	go refreshPiCatalog(piSpawner, st, br)
 	go refreshClaudeCatalog(claudeSpawner, st, br)
 	// Never stopped: the server ends by exiting.
-	go agents.Watch(usable.Every, nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
+	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
 	a = &app.App{St: st, Boards: bs, Chats: cm, Runs: rs, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
@@ -227,7 +229,7 @@ func serve(o options, args []string) {
 		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load,
 		Restart: func() error { return startRelaunch(p, args) }}
 	mcpHandler := srv.MCPHandler(mcpBoundPort)
-	stopServers := startServers(p, br, cm, a, srv)
+	stopServers := startServers(p, br, cm, a, srv, waits)
 	mcpUp.Store(true)
 	go func() {
 		if err := http.Serve(mcpLn, mcpHandler); err != nil && err != http.ErrServerClosed {

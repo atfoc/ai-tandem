@@ -10,11 +10,12 @@ import { formatScene, formatElement, formatViewport, type FmtElement, type FmtVi
 import { contextBlock, boardRef } from "./logic/context.ts";
 import { resolveMentions, type Picked } from "./logic/mentions.ts";
 import { selectionRef, pointRef, plainText, type Ref } from "./logic/refs.ts";
-import { getState, setState, flash, markBusy, setRole, setDropped, reloadScene, type Box } from "./store.ts";
+import { getState, setState, flash, markBusy, setRole, setDropped, setOutage, reloadScene, type Box } from "./store.ts";
 import { api, ApiError } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { editLabel, branchNameFor } from "./logic/attribution.ts";
 import { afterReconnect, onGrant, onLost, onRefusal, onTake, type Cache, type Step } from "./logic/roles.ts";
+import { saveFailure, saveOutage } from "./logic/boardsave.ts";
 import type { AgentKind } from "./types.ts";
 
 /** rev counts the writes made here (read_board shows it); base is the revision the server stores the scene at, as this
@@ -34,7 +35,8 @@ export function setLive(board: string | null, api: any) { liveBoard = board; liv
 /** The scene of a board, read from the server when it is not kept. A read that was on its way when the board was
  *  granted to this window, or when its kept scene was dropped, may be of before what the window that held it wrote
  *  last: it is not kept, and the scene is read again. One that lands at the revision of the grant is the scene the
- *  board was granted at (a free board, taken as it is opened), and is kept. */
+ *  board was granted at (a free board, taken as it is opened), and is kept. A read that fails rejects with the error
+ *  as it came: the canvas tells a 503 (the board's server is away) from the rest. */
 export async function loadScene(id: string): Promise<Scene> {
   const have = scenes.get(id);
   if (have) return have;
@@ -84,13 +86,18 @@ export function forgetBoard(id: string) {
   scenes.delete(id);
   asking.delete(id);
   turns.delete(id);
+  outageDrops.delete(id);
+  setOutage(id, false);
 }
 
 // ---- autosave: debounced, one write in flight per board, in order, and only of a board this
 // window holds. A write names the revision it is based on. One that fails leaves the board
 // unsaved (`failed`) until a later write of it succeeds; there is no retry timer, the next change
 // or flush writes it again. One the server refuses (the scene was changed elsewhere, or another
-// window holds the board) drops the edit: see refused.
+// window holds the board) drops the edit: see refused. For a board on another server, a write this
+// computer's server could not pass on (503), or that got no answer from there (504), raises the
+// banner on the canvas (the store's outage) until a write of the board succeeds or its edit is
+// dropped.
 
 const SAVE_DEBOUNCE = 500;
 type SaveState = { timer?: any; running?: Promise<void>; again?: boolean; failed?: boolean };
@@ -116,7 +123,7 @@ async function runSave(id: string): Promise<void> {
     do {
       s.again = false;
       const sc = scenes.get(id); const b = getState().boards[id];
-      if (!sc || !b || b.archived) { s.failed = false; break; }
+      if (!sc || !b || b.archived) { s.failed = false; setOutage(id, false); break; }
       // A board this window does not hold is never written: its edit waits for the grant, which saves or drops it.
       if (getState().roles[id] !== "held") { s.failed = true; break; }
       sc.rev++;
@@ -127,12 +134,14 @@ async function runSave(id: string): Promise<void> {
           appState: { viewBackgroundColor: sc.appState.viewBackgroundColor ?? "#ffffff" }, files: sc.files ?? {},
         });
         s.failed = false;
+        setOutage(id, false);
       } catch (e) {
         if (saving.get(id) !== s) break; // the board was lost or forgotten meanwhile, and this edit with it
-        const code = e instanceof ApiError ? e.code : undefined;
+        const status = e instanceof ApiError ? e.status : undefined, code = e instanceof ApiError ? e.code : undefined;
         // (a `not_holder` for a write sent before the role last changed says nothing of the role now: the write failed)
-        if (code === "stale" || (code === "not_holder" && turnOf(id) === at)) { refused(id, code); break; }
+        if (saveFailure(status, code) === "drop" && (code === "stale" || (code === "not_holder" && turnOf(id) === at))) { refused(id, code); break; }
         s.failed = true; console.error(`saving board ${id}:`, e);
+        if (saveOutage(status, !!getState().boards[id]?.server)) setOutage(id, true); // the board's server is away: the edit waits for it
       }
     } while (s.again);
   })().finally(() => { s.running = undefined; });
@@ -174,11 +183,23 @@ function dropScene(id: string) {
   saving.delete(id);
   scenes.delete(id);
   voidLoad(id);
+  setOutage(id, false); // nothing waits for the board's server any more
   if (liveBoard === id) setLive(null, null); // the canvas of the scene that went: no tool call draws on it
   reloadScene(id);
 }
 
+/** Whether the edit of a board waits for the board's server: a board on another server, under an outage. Such an edit
+ *  outlives the loss of the board (the board's server answers `busy` at the return when the board is merely open
+ *  there): it stays, with the outage, until a grant saves or drops it by the revision. The banner does not show
+ *  meanwhile, the panel being in place of the canvas. */
+const waitsForServer = (id: string) => { const st = getState(); return !!st.boards[id]?.server && !!st.outage[id]; };
+
+/** The boards whose last dropped edit had waited for the board's server (the outage): the note says so. */
+const outageDrops = new Set<string>();
+export const droppedInOutage = (id: string) => outageDrops.has(id);
+
 function step(id: string, st: Step) {
+  if (st.dropped) { if (getState().outage[id]) outageDrops.add(id); else outageDrops.delete(id); }
   if (st.forget) dropScene(id);
   if (st.dropped) setDropped(id, true);
   setRole(id, st.role);
@@ -203,7 +224,9 @@ export function takeBoard(id: string, ifFree = false): Promise<void> {
     if (of !== stream) return;       // the stream it was made on ended, and what it gave with it
     if (turnOf(id) !== at) return;   // an event told the board's role meanwhile: that is the newer word
     if (a?.state === "held") { granted(id, a.rev ?? 0); return; }
-    const st = a && onTake(cacheOf(id), a, getState().roles[id] ?? null);
+    const role = getState().roles[id] ?? null;
+    // (an edit kept at the loss of the board stays kept when a take if free finds the board busy: `server_back` asks so)
+    const st = a && onTake(cacheOf(id), a, role, (role === "lost" || role === "other") && waitsForServer(id));
     if (st) step(id, st);
   })().finally(() => { if (asking.get(id)?.done === done) asking.delete(id); });
   asking.set(id, { ifFree, done });
@@ -219,11 +242,11 @@ export function granted(id: string, rev: number) {
 }
 
 /** `superseded`: the board went to another window (or the wait for it ended). Only this board's canvas gives way to the
- *  panel; the stream and the other boards stay. */
+ *  panel; the stream and the other boards stay. An edit that waits for the board's server is kept (waitsForServer). */
 export function boardLost(id: string) {
   if (!getState().boards[id]) return;
   turns.set(id, turnOf(id) + 1);
-  step(id, onLost(cacheOf(id)));
+  step(id, onLost(cacheOf(id), waitsForServer(id)));
 }
 
 /** A save the server refused, see logic/roles.ts onRefusal. */
@@ -263,6 +286,18 @@ export function takeAfterSnapshot() {
   const ids = new Set<string>(st.sel.board ? [st.sel.board] : []);
   for (const id of saving.keys()) if (unsaved(id)) ids.add(id);
   for (const id of ids) if (!st.roles[id]) void takeBoard(id, true);
+}
+
+/** `server_back`: a server is connected again. The board on screen, when it is on that server: with no scene kept
+ *  (the view that said the server is not connected showed) it is read now, and when this window does not hold it, it
+ *  is asked for, if free. A board it holds is taken there again by this computer's server, whose `held` event saves or
+ *  drops the edit that waited (granted). */
+export function serverBack(server: string) {
+  const st = getState(), id = st.sel.board, b = id ? st.boards[id] : undefined;
+  if (!id || !b || b.server !== server) return;
+  if (!scenes.has(id)) reloadScene(id);
+  const role = st.roles[id];
+  if (role !== "held" && role !== "taking") void takeBoard(id, true);
 }
 
 // ---- reading

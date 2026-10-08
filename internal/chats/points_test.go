@@ -67,6 +67,7 @@ func deliveryTurn() []model.Item {
 }
 
 func TestTurnEnd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		items []model.Item
@@ -99,6 +100,7 @@ func TestTurnEnd(t *testing.T) {
 }
 
 func TestCutBefore(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		items  []model.Item
@@ -129,6 +131,7 @@ func TestCutBefore(t *testing.T) {
 }
 
 func TestSessionEnd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		items []model.Item
@@ -155,6 +158,7 @@ func TestSessionEnd(t *testing.T) {
 }
 
 func TestNextMark(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		items  []model.Item
@@ -181,6 +185,7 @@ func TestNextMark(t *testing.T) {
 }
 
 func TestPointOK(t *testing.T) {
+	t.Parallel()
 	// The cut turn's next mark has no id.
 	cutNoID := cutTurn()
 	cutNoID[7] = pEnd("")
@@ -348,6 +353,7 @@ func TestPointOK(t *testing.T) {
 // The tree's rows carry the kind's point rule: pi has none where the next mark closes a later
 // turn (the rows web/test/forkpoints.test.ts expects of the same list).
 func TestTreeItemsCutTurn(t *testing.T) {
+	t.Parallel()
 	type row struct {
 		i, at int
 		ok    bool
@@ -410,6 +416,7 @@ func TestPointOKLiveFork(t *testing.T) {
 // pi forks the end of a turn with the id on the next turn's mark: before a delivery turn that is
 // the id of the message the app sent.
 func TestForkSourceBeforeDeliveryTurn(t *testing.T) {
+	t.Parallel()
 	meta := model.ChatMeta{ID: "c", SessionID: "s", Agent: model.Pi}
 	if src := forkSourceOf(meta, deliveryTurn(), 3, false); src.Point != "u1" || src.Next != "u2" || src.End {
 		t.Errorf("fork source at 3: %+v, want point u1, next u2, not the end", src)

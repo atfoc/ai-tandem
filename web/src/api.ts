@@ -101,7 +101,9 @@ export const api = {
   archive: (k: Kind, id: string) => call("POST", `/api/${k}/${id}/archive`),
   unarchive: (k: Kind, id: string) => call("POST", `/api/${k}/${id}/unarchive`),
   deleteGroup: (id: string, contents: "delete" | "keep") => call("DELETE", `/api/groups/${id}?contents=${contents}`),
-  newBoard: (group: string, name?: string, isNew = false) => call<Board>("POST", "/api/boards", { name, group, new: isNew }),
+  /** server: the entry id of the server the board is to live on ("local": this computer); without it this computer. */
+  newBoard: (group: string, name?: string, isNew = false, server?: string) =>
+    call<Board>("POST", "/api/boards", { name, group, new: isNew, ...(server === undefined ? {} : { server }) }),
   /** A board's drawing, and the revision it is stored at (0 for a board never written). */
   scene: async (id: string): Promise<{ scene: any; rev: number }> => {
     const r = await send("GET", `/api/boards/${id}/scene`);
@@ -121,7 +123,8 @@ export const api = {
   renameBoard: (id: string, name: string) => call<Board>("POST", `/api/boards/${id}/rename`, { name }),
   moveBoard: (id: string, group: string) => call("PATCH", `/api/boards/${id}`, { group }),
   seenBoard: (id: string) => call("POST", `/api/boards/${id}/seen`),
-  deleteBoard: (id: string) => call("DELETE", `/api/boards/${id}`),
+  /** local: for a board on another server, drops only what this computer keeps of it. */
+  deleteBoard: (id: string, local = false) => call("DELETE", `/api/boards/${id}${local ? "?local=1" : ""}`),
   reveal: (id: string) => call("POST", `/api/boards/${id}/reveal`),
   /** server: the entry id of the server the chat is to be on; without it the place's own. */
   newChat: (where: ({ group: string } | { board: string } | { run: string }) & { server?: string }) => call<ChatView>("POST", "/api/chats", where),

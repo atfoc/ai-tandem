@@ -1,6 +1,7 @@
 package rungit
 
 import (
+	"ai-whiteboard/internal/testset"
 	"errors"
 	"os"
 	"path/filepath"
@@ -41,10 +42,18 @@ func TestConflictProblems(t *testing.T) {
 	}
 	files := startResolution(t, c)
 
+	rounds := 0
 	refused := func(what, content string, files []string, wantInProblem ...string) {
 		t.Helper()
 		write(t, c.taskDir, "f.txt", content)
 		for _, staged := range []bool{false, true} {
+			// The first call stages the file. In the default set the others are looked at once
+			// each, with the file as they wrote it and the index as that left it. rounds is 1
+			// when the first call comes to its staged round.
+			if staged && rounds > 1 && !testset.Full() {
+				break
+			}
+			rounds++
 			if staged { // the agent ran `git add`: the path is no longer unmerged
 				git(t, c.taskDir, "add", "f.txt")
 			}

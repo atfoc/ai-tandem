@@ -7,7 +7,7 @@ import "./usage.css";
 import { useStore } from "../store.ts";
 import { effortLabel } from "../logic/labels.ts";
 import { fmtDuration } from "../logic/subagents.ts";
-import { TIER_ROWS } from "../logic/rungoal.ts";
+import { ORCHESTRATOR_ROW, TIER_ROWS } from "../logic/rungoal.ts";
 import { NO_TIER, costShare, manyQuiet, missingNote, runUsage, usageMoney, usageTokens, type UsageRow } from "../logic/runusage.ts";
 import type { AgentTier, Catalog, RunDetail, RunTiers } from "../types.ts";
 import { catalogFor } from "../logic/agentlist.ts";

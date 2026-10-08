@@ -35,10 +35,13 @@ type apiRunEnv struct {
 	l *listener
 }
 
-func newAPIRunEnv(t *testing.T) *apiRunEnv {
+func newAPIRunEnv(t *testing.T) *apiRunEnv { return newAPIRunEnvOn(t, nil) }
+
+// newAPIRunEnvOn is newAPIRunEnv with the run service on the clock given (nil is the wall clock).
+func newAPIRunEnvOn(t *testing.T, clock runs.Clock) *apiRunEnv {
 	t.Helper()
 	l := newListener(t)
-	e := newRunEnv(t)
+	e := newRunEnvOn(t, clock)
 	e.rs.Mark = func(run, client string) { e.s.Bridge.SetMark(editorbridge.Run(run), client) }
 	l.set(e.s)
 	l.serve(e.s)
@@ -148,6 +151,7 @@ func versions(evs []string, run string) (out []int) {
 // A start call over the TLS listener makes and starts the run with the given id; a repeat, at
 // once too, does nothing; an id that is not the caller's is taken; the run goes to its end.
 func TestRunStartCall(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	e.plan(nil)
 	p := e.page("P")
@@ -245,6 +249,7 @@ func TestRunStartCall(t *testing.T) {
 // Each refusal of the start call has its status and code, and leaves nothing: no run, no folder,
 // no group and no event on any stream.
 func TestRunStartCallRefusals(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	e.plan(nil)
 	p := e.page("P")
@@ -332,6 +337,7 @@ func TestRunStartCallRefusals(t *testing.T) {
 // AC44, the start-call clause: an agent whose program is not found refuses the start call with
 // the sentence that names the program; once the program is there the same call starts the run.
 func TestRunStartCallAgentMissing(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	e.plan(nil)
 	agents, path := agentsOf("cursor")
@@ -354,6 +360,7 @@ func TestRunStartCallAgentMissing(t *testing.T) {
 // The start call and the draft check are not there on loopback; a run's plain creation, today's
 // start route and the draft route are not there on the remote listener.
 func TestRunRoutesOfOneListenerOnly(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	e.plan(nil)
 	x, _ := e.l.api(apiX)
@@ -381,6 +388,7 @@ func TestRunRoutesOfOneListenerOnly(t *testing.T) {
 
 // Every run route of the table serves an API client, on its own run and on one it did not make.
 func TestRunTableRoutesServeAnAPIClient(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	e.plan(nil)
 	x, _ := e.l.api(apiX)
@@ -485,6 +493,7 @@ func TestRunTableRoutesServeAnAPIClient(t *testing.T) {
 // A patch from the remote listener changes the name alone; a start call, a rename, a stop and a
 // resume record no defaults.
 func TestRunRenameOnlyAndNoDefaults(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	e.fake.Script(func(t *agenttest.Turn) { t.Say("Looking."); t.Hang() })
 	p := e.page("P")
@@ -562,6 +571,7 @@ func TestRunRenameOnlyAndNoDefaults(t *testing.T) {
 // ---- the draft check --------------------------------------------------------------
 
 func TestRunDraftCheckRoute(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	p := e.page("P")
 	x, _ := e.l.api(apiX)
@@ -625,6 +635,7 @@ func TestRunDraftCheckRoute(t *testing.T) {
 // The first start call makes the group "Remote" at the top level, and the runs of both clients
 // sit in it. The page is told of the group; no API client is.
 func TestRunsOfAPIClientsSitInTheRemoteGroup(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	e.fake.Script(func(t *agenttest.Turn) { t.Say("Looking."); t.Hang() })
 	p := e.page("P")
@@ -757,6 +768,7 @@ func (e *apiRunEnv) gone(client, run string) {
 // run and run_removed go to the pages and to the client with the mark; run_detail and
 // run_activity to who read the detail; the events of a run agent's chat to who read that chat.
 func TestRunEventsOfAnAPIClient(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	st := newStepper(t, e)
 	p := e.page("P")
@@ -877,6 +889,7 @@ func TestRunEventsOfAnAPIClient(t *testing.T) {
 // run, makes a chat on it with a first message and stops that chat: the page keeps its board and
 // its events. The creation call that names a run puts the chat on the run.
 func TestAPIClientsRunBesideAPage(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	said, next := make(chan struct{}, 8), make(chan struct{})
 	e.fake.Script(func(t *agenttest.Turn) {
@@ -986,6 +999,7 @@ func TestAPIClientsRunBesideAPage(t *testing.T) {
 // An API client's read of a run waits for a start call of that id that is under way, and then
 // finds the run the call made. A page's read does not wait.
 func TestRemoteRunReadWaitsForAStartCall(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	req := decode[runs.StartReq](t, runBody(e.cwd))
 	req.ID, req.Client = run1, apiX
@@ -1040,6 +1054,7 @@ func TestRemoteRunReadWaitsForAStartCall(t *testing.T) {
 // A read of a run's detail or an unfollow that states the id of a client of the other listener
 // starts and ends nothing.
 func TestRunFollowIsOfTheListenersKind(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	newStepper(t, e)
 	e.page(pageUUID)
@@ -1083,6 +1098,7 @@ func TestRunFollowIsOfTheListenersKind(t *testing.T) {
 // client that started it is sent the run's events and lists it, another client gets nothing.
 // The delete comes before the start call, and at once with it.
 func TestRunMarkSurvivesDeleteThenStart(t *testing.T) {
+	t.Parallel()
 	e := newAPIRunEnv(t)
 	newStepper(t, e) // the run stays running
 	x, _ := e.l.api(apiX)
@@ -1134,7 +1150,8 @@ func TestRunMarkSurvivesDeleteThenStart(t *testing.T) {
 
 // run_activity reaches the client that read the run's detail, and no other.
 func TestRunActivityReachesAFollower(t *testing.T) {
-	e := newAPIRunEnv(t)
+	t.Parallel()
+	e := newAPIRunEnvOn(t, quickTicks{}) // the test waits for a tick
 	st := newStepper(t, e)
 	x, _ := e.l.api(apiX)
 	y, _ := e.l.api(apiY)
@@ -1147,7 +1164,7 @@ func TestRunActivityReachesAFollower(t *testing.T) {
 	}
 	do(t, x, "GET", "/api/runs/"+run1+"/detail", nil)
 	st.step(run1)
-	// The engine's ticker sends it, within two seconds of the step's tool call.
+	// The engine's ticker sends it, within two seconds of the step's tool call (sooner here).
 	xs := upTo(t, x, "run_activity", run1)
 	evs := e.reach(x, y)
 	if got := only(evs[1], "run_activity", "run_detail"); len(got) != 0 {
@@ -1158,6 +1175,7 @@ func TestRunActivityReachesAFollower(t *testing.T) {
 
 // A group "Remote" that cannot be made is the server's fault: 500, nothing started, no folder.
 func TestRunStartCallGroupCannotBeMade(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("root writes to a folder without the write bit")
 	}

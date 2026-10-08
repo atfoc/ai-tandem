@@ -116,6 +116,7 @@ func spawnCounts(fakes map[model.AgentKind]*agenttest.Fake) [3]int {
 // ---- AC29: the agent can be changed until the first message -----------------
 
 func TestAgentChangesUntilTheFirstMessage(t *testing.T) {
+	t.Parallel()
 	e, _, fakes := startEnv(t, model.Claude, model.Cursor, model.Pi)
 	v := e.newChat(NewChat{Group: gOne})
 	first := e.meta(v.ID)
@@ -199,6 +200,7 @@ func TestAgentChangesUntilTheFirstMessage(t *testing.T) {
 }
 
 func TestAgentChangeAfterAFailedStart(t *testing.T) {
+	t.Parallel()
 	e, _, fakes := startEnv(t, model.Claude, model.Cursor, model.Pi)
 	v := e.newChat(NewChat{Group: gOne})
 	fakes[model.Claude].FailSpawn(errors.New("claude: bad login"))
@@ -256,6 +258,7 @@ func TestAgentChangeAfterAFailedStart(t *testing.T) {
 }
 
 func TestAgentChangeOnARun(t *testing.T) {
+	t.Parallel()
 	e, p, fakes := startEnv(t, model.Claude, model.Cursor, model.Pi)
 	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "opus", Effort: "max"}}}
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
@@ -264,27 +267,24 @@ func TestAgentChangeOnARun(t *testing.T) {
 	}})
 	was := e.defaultsOf()
 
-	// With no agent named a chat on a run is of the run's kind, not of its group's sticky one,
-	// on what the run's deep tier runs on and in the run's folder.
+	// With no agent named a chat on a run is of its group's sticky kind, not of the run's, on
+	// the group's choice for that kind and in the run's folder. "+" records nothing.
 	v := e.newChat(NewChat{Run: ownRun})
 	first := e.metaOf(v)
-	if v.Agent != model.Claude || v.Model != "opus" || v.Effort != "max" || v.Cwd != e.cwd || v.Run != ownRun || v.Group != "" {
+	if v.Agent != model.Pi || v.Model != "pi-model" || v.Effort != "low" || v.Cwd != e.cwd || v.Run != ownRun || v.Group != "" {
 		t.Fatalf("a chat on a run: %+v", v)
 	}
-	// Another kind: the new-chat choice of the run's group for it. The folder stays the run's.
-	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Pi}); err != nil {
-		t.Fatal(err)
+	if got := e.defaultsOf(); !reflect.DeepEqual(got, was) {
+		t.Fatalf("the defaults after a new chat on a run: %+v, were %+v", got, was)
 	}
-	if m := e.metaOf(v); m.Agent != model.Pi || m.Model != "pi-model" || m.Effort != "low" || m.Cwd != e.cwd || m.SessionID == first.SessionID || m.SessionID == "" || m.Run != ownRun {
-		t.Fatalf("the chat on the run as pi's: %+v", m)
-	}
-	// The run's kind again: the deep tier's again, not the group's choice for Claude.
+	// The run's kind: the group's choice for it, not the deep tier's. The folder stays the run's.
 	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Claude}); err != nil {
 		t.Fatal(err)
 	}
-	if m := e.metaOf(v); m.Agent != model.Claude || m.Model != "opus" || m.Effort != "max" {
-		t.Fatalf("the chat on the run as Claude's again: %+v", m)
+	if m := e.metaOf(v); m.Agent != model.Claude || m.Model != "haiku" || m.Cwd != e.cwd || m.SessionID == first.SessionID || m.SessionID == "" || m.Run != ownRun {
+		t.Fatalf("the chat on the run as Claude's: %+v", m)
 	}
+	// A kind the group has no choice for: its catalog's default.
 	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Cursor}); err != nil {
 		t.Fatal(err)
 	}
@@ -293,15 +293,21 @@ func TestAgentChangeOnARun(t *testing.T) {
 	if n := spawnCounts(fakes); n != [3]int{0, 1, 0} {
 		t.Fatalf("spawns: %v, want one, of Cursor", n)
 	}
-	// A chat on a run feeds no defaults: not at "+", not at an agent change, not at its message.
-	if got := e.defaultsOf(); !reflect.DeepEqual(got, was) {
+	// A chat on a run feeds the defaults of its group with its agent, model and effort, as any
+	// chat does, and not with the run's folder: the next chat on the run starts as this one was.
+	got, cur := e.defaultsOf().Groups[gOne].On(model.LocalServer), e.metaOf(v)
+	if got.Agent != model.Cursor || got.ByAgent[model.Cursor] != (model.ModelChoice{Model: cur.Model, Effort: cur.Effort}) || cur.Model == "" ||
+		got.Cwd != was.Groups[gOne].On(model.LocalServer).Cwd || got.ByAgent[model.Claude].Model != "haiku" || e.defaultsOf().Groups[gOne].Server != "" {
 		t.Fatalf("the defaults after a chat on a run: %+v, were %+v", got, was)
 	}
+	if w := e.newChat(NewChat{Run: ownRun}); w.Agent != model.Cursor || w.Model != cur.Model || w.Effort != cur.Effort || w.Cwd != e.cwd {
+		t.Fatalf("the next chat on the run: %+v", w)
+	}
 
-	// The run's kind is not usable: the sticky agent of the run's group.
-	p.set(model.Cursor, model.Pi)
-	if w := e.newChat(NewChat{Run: ownRun}); w.Agent != model.Pi || w.Model != "pi-model" || w.Cwd != e.cwd {
-		t.Fatalf("a chat on a run whose kind is not usable: %+v", w)
+	// The sticky kind is not usable: the run's kind, when that is.
+	p.set(model.Claude, model.Pi)
+	if w := e.newChat(NewChat{Run: ownRun}); w.Agent != model.Claude || w.Model != "haiku" || w.Cwd != e.cwd {
+		t.Fatalf("a chat on a run whose group's kind is not usable: %+v", w)
 	}
 
 	// A run agent's chat is the run's: no agent change, and its start is the run's matter, which
@@ -319,6 +325,7 @@ func TestAgentChangeOnARun(t *testing.T) {
 // ---- AC30: fixed once started; the id of a new chat ----------------------------
 
 func TestAgentIsFixedOnceStarted(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	fixed := func(what, chat, branch string) {
@@ -388,6 +395,7 @@ func TestAgentIsFixedOnceStarted(t *testing.T) {
 }
 
 func TestCreateWithAnIDWhichForms(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	const good = "0b8f3c1e-5a4d-4e2b-9c7a-1f2e3d4c5b6a"
 	before := e.chatFolders()
@@ -434,6 +442,7 @@ func TestCreateWithAnIDWhichForms(t *testing.T) {
 }
 
 func TestCreateWithATakenID(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
@@ -496,6 +505,7 @@ func TestCreateWithATakenID(t *testing.T) {
 }
 
 func TestRefusedCreateLeavesNothing(t *testing.T) {
+	t.Parallel()
 	e, _, _ := startEnv(t, model.Claude)
 	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{
 		ownRun:  {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "sonnet"},
@@ -562,6 +572,7 @@ func TestRefusedCreateLeavesNothing(t *testing.T) {
 // ---- AC31: the choice is the group's ---------------------------------------------
 
 func TestSecondChatStartsAsTheFirst(t *testing.T) {
+	t.Parallel()
 	e, _, fakes := startEnv(t, model.Claude, model.Cursor, model.Pi)
 	local := func(g string) model.ServerDefaults { return e.defaultsOf().Groups[g].On(model.LocalServer) }
 	first := e.newChat(NewChat{Group: gOne})
@@ -629,6 +640,7 @@ func TestSecondChatStartsAsTheFirst(t *testing.T) {
 }
 
 func TestWhatTheFirstMessageRecords(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
@@ -650,21 +662,24 @@ func TestWhatTheFirstMessageRecords(t *testing.T) {
 		t.Fatalf("the defaults after a board chat's first message: %+v, want %+v", d, want)
 	}
 
-	// A chat on a run records nothing, in its run's group or anywhere.
+	// A chat on a run is where its run is, in the run's folder: it records its agent, model and
+	// effort in its run's group, and no server and no folder.
 	r := e.newChat(NewChat{Run: ownRun})
 	if err := e.m.Configure(r.ID, ConfigReq{Agent: model.Pi, Model: "pi-model"}); err != nil {
 		t.Fatal(err)
 	}
 	e.send(r.ID, "hello", "")
+	want.Groups[gOne] = model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "pi-model", Effort: e.metaOf(r).Effort}}})
 	if d := e.defaultsOf(); !reflect.DeepEqual(d, want) {
 		t.Fatalf("the defaults after a run chat's first message: %+v, want %+v", d, want)
 	}
 
 	// A chat in a group records the server too, with the agent it was made with.
-	g := e.newChat(NewChat{Group: gOne})
+	g := e.newChat(NewChat{Group: gOne, Agent: model.Claude})
 	e.send(g.ID, "hello", "")
 	entry := model.LocalDefaults(model.ServerDefaults{
-		Agent: model.Claude, Cwd: e.cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "sonnet", Effort: "high"}},
+		Agent: model.Claude, Cwd: e.cwd, ByAgent: map[model.AgentKind]model.ModelChoice{
+			model.Claude: {Model: "sonnet", Effort: "high"}, model.Pi: want.Groups[gOne].On(model.LocalServer).ByAgent[model.Pi]},
 	})
 	entry.Server = model.LocalServer
 	want.Groups[gOne] = entry
@@ -676,6 +691,7 @@ func TestWhatTheFirstMessageRecords(t *testing.T) {
 // ---- AC44: only the agents the server can use ------------------------------------
 
 func TestAgentOutsideTheList(t *testing.T) {
+	t.Parallel()
 	e, p, fakes := startEnv(t, model.Claude, model.Pi)
 	if got := e.m.UsableAgents(); !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Pi}) {
 		t.Fatalf("UsableAgents: %v", got)
@@ -749,6 +765,7 @@ func TestAgentOutsideTheList(t *testing.T) {
 }
 
 func TestChatWithNoAgent(t *testing.T) {
+	t.Parallel()
 	e, p, fakes := startEnv(t)
 	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "sonnet", Effort: "high"}}}
 	if got := e.m.UsableAgents(); got == nil || len(got) != 0 {
@@ -820,6 +837,7 @@ func TestChatWithNoAgent(t *testing.T) {
 }
 
 func TestStickyAgentThatIsGone(t *testing.T) {
+	t.Parallel()
 	e, p, _ := startEnv(t, model.Claude, model.Cursor, model.Pi)
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
 		gOne:            model.LocalDefaults(model.ServerDefaults{Agent: model.Cursor}),
@@ -851,6 +869,7 @@ func TestStickyAgentThatIsGone(t *testing.T) {
 }
 
 func TestSubagentOfAnUnusableKind(t *testing.T) {
+	t.Parallel()
 	e, p, fakes := startEnv(t, model.Claude, model.Pi)
 	v := e.newChat(NewChat{Group: gOne})
 	e.send(v.ID, "hello", "")
@@ -896,6 +915,7 @@ func TestSubagentOfAnUnusableKind(t *testing.T) {
 
 // With no look-up every kind is usable: what the tests of this package that give none rely on.
 func TestNoLookUpMeansEveryAgent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if got := e.m.UsableAgents(); !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Pi}) {
 		t.Fatalf("UsableAgents with no look-up: %v", got)

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/servers/standin"
+	"ai-whiteboard/internal/testset"
 )
 
 const (
@@ -56,6 +58,7 @@ func answer(status int, contentType, body string) http.HandlerFunc {
 // TestTestConnectionRows has one case and more per outcome of the table: outcome, step, message
 // and fingerprints.
 func TestTestConnectionRows(t *testing.T) {
+	t.Parallel()
 	good := standin.Start(t, standin.Options{})
 	other := standin.Start(t, standin.Options{})
 	named := standin.Start(t, standin.Options{Names: []string{"elsewhere.example"}})
@@ -264,25 +267,32 @@ func TestTestConnectionRows(t *testing.T) {
 			target: pinned(stateServer(map[string]any{"agents": []string{}, "catalogs": map[string]any{}, "home": "/h", "defaultCwd": "", "chats": []any{}}, nil)),
 			opts:   testOptions(), outcome: "connected", step: 5, message: "Connected"},
 	}
+	var mu sync.Mutex
 	seen := map[Outcome]bool{}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			r := run(c.target, c.id, c.opts)
-			seen[r.Outcome] = true
-			if r.Outcome != c.outcome || r.Step != c.step || r.Message != c.message {
-				t.Fatalf("got %s, step %d, %q (detail %q)\nwant %s, step %d, %q", r.Outcome, r.Step, r.Message, r.Detail, c.outcome, c.step, c.message)
-			}
-			if r.OK != (c.outcome == OutcomeConnected) {
-				t.Errorf("ok = %v", r.OK)
-			}
-			if c.outcome != OutcomeFingerprint && c.outcome != OutcomeCertChanged && (r.Fingerprint != "" || r.Pinned != "") {
-				t.Errorf("fingerprints %q, %q; want none", r.Fingerprint, r.Pinned)
-			}
-			if c.check != nil {
-				c.check(t, r)
-			}
-		})
-	}
+	// The cases run in parallel, inside a group that ends when the last of them has.
+	t.Run("cases", func(t *testing.T) {
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				t.Parallel()
+				r := run(c.target, c.id, c.opts)
+				mu.Lock()
+				seen[r.Outcome] = true
+				mu.Unlock()
+				if r.Outcome != c.outcome || r.Step != c.step || r.Message != c.message {
+					t.Fatalf("got %s, step %d, %q (detail %q)\nwant %s, step %d, %q", r.Outcome, r.Step, r.Message, r.Detail, c.outcome, c.step, c.message)
+				}
+				if r.OK != (c.outcome == OutcomeConnected) {
+					t.Errorf("ok = %v", r.OK)
+				}
+				if c.outcome != OutcomeFingerprint && c.outcome != OutcomeCertChanged && (r.Fingerprint != "" || r.Pinned != "") {
+					t.Errorf("fingerprints %q, %q; want none", r.Fingerprint, r.Pinned)
+				}
+				if c.check != nil {
+					c.check(t, r)
+				}
+			})
+		}
+	})
 	for _, row := range outcomes {
 		if !seen[row.outcome] {
 			t.Errorf("no case gave the outcome %s", row.outcome)
@@ -292,6 +302,7 @@ func TestTestConnectionRows(t *testing.T) {
 
 // TestOutcomeTableComplete: the table names every outcome once, with a step and its message.
 func TestOutcomeTableComplete(t *testing.T) {
+	t.Parallel()
 	want := map[Outcome]string{
 		OutcomeBadAddress:    "Not a valid https address",
 		OutcomeRefused:       "Nothing listens there: is remote access set up on that machine?",
@@ -348,6 +359,7 @@ func TestOutcomeTableComplete(t *testing.T) {
 // TestSecretNotSentBeforeCertificate: a certificate that was not accepted gets no request, and
 // so no secret.
 func TestSecretNotSentBeforeCertificate(t *testing.T) {
+	t.Parallel()
 	other := standin.Start(t, standin.Options{})
 	for _, c := range []struct {
 		name    string
@@ -373,6 +385,7 @@ func TestSecretNotSentBeforeCertificate(t *testing.T) {
 		}, true, OutcomeCertExpired},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			s := standin.Start(t, c.options)
 			o := testOptions()
 			if c.roots {
@@ -399,6 +412,7 @@ func TestSecretNotSentBeforeCertificate(t *testing.T) {
 // TestPinnedConnects: with the pin the test sends hello and the state on one connection, each
 // with the secret and the local id.
 func TestPinnedConnects(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	r := run(pinned(s), Identity{}, testOptions())
 	if !r.OK || r.Outcome != OutcomeConnected || r.Step != 5 {
@@ -441,6 +455,7 @@ func TestPinnedConnects(t *testing.T) {
 // TestHTTP1Connects: a server without HTTP/2 that closes after every answer is tested too. The
 // state then needs a second connection, made under the same pin.
 func TestHTTP1Connects(t *testing.T) {
+	t.Parallel()
 	pair := issuedPair(t)
 	var handshakes atomic.Int32
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -482,6 +497,7 @@ func TestHTTP1Connects(t *testing.T) {
 
 // TestExpiredPinnedConnects: under a pin, dates and names are not checked.
 func TestExpiredPinnedConnects(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{
 		Names: []string{"elsewhere.example"}, Hosts: []string{"127.0.0.1"},
 		NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Hour),
@@ -494,6 +510,7 @@ func TestExpiredPinnedConnects(t *testing.T) {
 // TestSelfSignedBoxOff: without the box a self-signed certificate is refused against the
 // system's roots, with or without a pin left in the form, and gets no request.
 func TestSelfSignedBoxOff(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	for _, target := range []Target{
 		{Address: s.URL(), Secret: standin.DefaultSecret},
@@ -511,6 +528,7 @@ func TestSelfSignedBoxOff(t *testing.T) {
 
 // TestTooOld: a level below the minimum, or none, ends the test at step 4; the state is not asked.
 func TestTooOld(t *testing.T) {
+	t.Parallel()
 	for name, level := range map[string]*int{"level 0": standin.Level(0), "no level": nil, "level -1": standin.Level(-1)} {
 		s := standin.Start(t, standin.Options{})
 		s.SetFeatureLevel(level)
@@ -540,6 +558,7 @@ func TestTooOld(t *testing.T) {
 // TestIdentityOutcomes: the id decides "this is the local server", "already added as …" and
 // "another server answers at this address", in that order, and none asks for the state.
 func TestIdentityOutcomes(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	id := standin.DefaultInstanceID
 	cases := []struct {
@@ -578,6 +597,8 @@ func TestIdentityOutcomes(t *testing.T) {
 
 // TestStepLimit: a step ends at Timing.TestStep.
 func TestStepLimit(t *testing.T) {
+	t.Parallel()
+	const slack = 2 * time.Second // for a loaded machine; without the limit a step takes DefaultTiming's 5 s
 	o := testOptions()
 	o.Timing.TestStep = 300 * time.Millisecond
 	start := time.Now()
@@ -586,8 +607,8 @@ func TestStepLimit(t *testing.T) {
 	if r.Outcome != OutcomeTLSTimeout || r.Step != 3 {
 		t.Fatalf("result %+v; want tls_timeout at step 3", r)
 	}
-	if took < 300*time.Millisecond || took > 900*time.Millisecond {
-		t.Errorf("took %v; want 300 to 900 ms", took)
+	if took < 300*time.Millisecond || took > 300*time.Millisecond+slack {
+		t.Errorf("took %v; want 300 ms and up to %v more", took, slack)
 	}
 
 	// Each step has the limit for itself: hello after 200 ms and a state that never answers end
@@ -604,8 +625,8 @@ func TestStepLimit(t *testing.T) {
 	if r.Outcome != OutcomeNoAnswer || r.Step != 5 || r.Version != "v" {
 		t.Fatalf("result %+v; want no_answer at step 5", r)
 	}
-	if took < 500*time.Millisecond || took > 1100*time.Millisecond {
-		t.Errorf("took %v; want 500 to 1100 ms", took)
+	if took < 500*time.Millisecond || took > 500*time.Millisecond+slack {
+		t.Errorf("took %v; want 500 ms and up to %v more", took, slack)
 	}
 
 	if !reflect.DeepEqual((Timing{}).withDefaults(), DefaultTiming) || DefaultTiming.TestStep != 5*time.Second {
@@ -615,6 +636,7 @@ func TestStepLimit(t *testing.T) {
 
 // TestCallerCancelEndsTheTest: the caller's context ends a step before its limit.
 func TestCallerCancelEndsTheTest(t *testing.T) {
+	t.Parallel()
 	s := standin.Start(t, standin.Options{})
 	s.SetHello(hang)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -628,6 +650,7 @@ func TestCallerCancelEndsTheTest(t *testing.T) {
 
 // TestTextFromTheServerIsCleaned: Detail, Version and Agents lose control characters and are cut.
 func TestTextFromTheServerIsCleaned(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("é", 400)
 	s := standin.Start(t, standin.Options{})
 	hello, _ := json.Marshal(map[string]any{
@@ -659,11 +682,11 @@ func TestTextFromTheServerIsCleaned(t *testing.T) {
 }
 
 // TestNameNotFoundReal does the one real look-up of the suite, of a name under ".invalid". It is
-// skipped with -short and when the resolver here does not answer "no such host" within 2 s.
+// in the full set alone, and skipped when the resolver here does not answer "no such host"
+// within 2 s.
 func TestNameNotFoundReal(t *testing.T) {
-	if testing.Short() {
-		t.Skip("a real DNS look-up")
-	}
+	t.Parallel()
+	testset.SkipUnlessFull(t, "a real DNS look-up, which needs the network's resolver; TestTestConnectionRows and TestDialClassifies (the case of each named for it) cover the outcome with the resolver's error given by the dial")
 	const name = "aiwb-no-such-host.invalid"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

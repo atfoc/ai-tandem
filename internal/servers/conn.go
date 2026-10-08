@@ -30,6 +30,7 @@ type Reply struct {
 	Status      int
 	ContentType string
 	Body        []byte
+	Header      http.Header // the answer's headers; nil for a Reply that came with an error
 }
 
 // The causes of an ending that no outcome of the test's table names.
@@ -551,7 +552,7 @@ func (c *conn) do(ctx context.Context, l *link, method, path string, body []byte
 	if len(b) > maxState {
 		return Reply{}, ErrTooLong
 	}
-	return Reply{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: b}, nil
+	return Reply{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: b, Header: resp.Header}, nil
 }
 
 // watched calls seen for every read that brought bytes: the stream's sign of life.

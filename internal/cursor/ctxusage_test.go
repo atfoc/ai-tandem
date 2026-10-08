@@ -82,6 +82,16 @@ func makeStoreAt(t *testing.T, db, sql string) {
 	}
 }
 
+// writeStore runs sql in the store at db while a process of the product may be reading it: the
+// write waits for the lock (up to a minute) where a plain sqlite3 is refused at once with
+// "database is locked".
+func writeStore(t *testing.T, db, sql string) {
+	t.Helper()
+	if out, err := exec.Command("sqlite3", "-cmd", ".timeout 60000", db, sql).CombinedOutput(); err != nil {
+		t.Fatalf("sqlite3: %v: %s", err, out)
+	}
+}
+
 func metaRow(json string) string {
 	return "INSERT INTO meta VALUES('0', '" + hex.EncodeToString([]byte(json)) + "');"
 }
@@ -94,7 +104,7 @@ func goodMeta() string { return metaRow(`{"latestRootBlobId":"` + testBlobID + `
 
 func TestReadContextUsage(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	home := t.TempDir()
 	makeStore(t, home, goodMeta()+blobRow(testBlobID, sampleRoot(15989, 272000)))
 
@@ -109,7 +119,7 @@ func TestReadContextUsage(t *testing.T) {
 
 func TestReadContextUsageErrors(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	const format = "Cursor session store has an unexpected format"
 	good := sampleRoot(15989, 272000)
 
@@ -133,6 +143,7 @@ func TestReadContextUsageErrors(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			home := t.TempDir()
 			if c.sql != "" {
 				makeStore(t, home, c.sql)
@@ -152,7 +163,7 @@ func TestReadContextUsageErrors(t *testing.T) {
 // root to read.
 func TestReadUsageRoot(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	const format = "Cursor session store has an unexpected format"
 	cases := []struct {
 		name     string
@@ -167,6 +178,7 @@ func TestReadUsageRoot(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			home := t.TempDir()
 			makeStore(t, home, c.sql)
 			u, root, err := readUsageRootAt("sqlite3", StorePath(home, testSessionID))
@@ -271,7 +283,7 @@ func splitRoot() []byte {
 
 func TestReadContextSplit(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	home := t.TempDir()
 	makeStore(t, home, goodMeta()+blobRow(testBlobID, splitRoot()))
 
@@ -292,7 +304,7 @@ func TestReadContextSplit(t *testing.T) {
 
 func TestReadContextSplitErrors(t *testing.T) {
 	needSQLite(t)
-	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Parallel()
 	const format = "Cursor session store has an unexpected format"
 	for name, root := range map[string][]byte{
 		"no breakdown":        sampleRoot(15989, 272000),
@@ -301,6 +313,7 @@ func TestReadContextSplitErrors(t *testing.T) {
 		"bad category":        cat(pbBytes(5, cat(pbUint(1, 10), pbUint(2, 100), pbBytes(3, pbBytes(3, cat(pbKey(1, wireBytes), pbVarint(50))))))),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			home := t.TempDir()
 			makeStore(t, home, goodMeta()+blobRow(testBlobID, root))
 			_, err := (&Spawner{Home: home}).ReadContextSplit(agent.SpawnOptions{SessionID: testSessionID})
@@ -316,6 +329,7 @@ func TestReadContextSplitErrors(t *testing.T) {
 }
 
 func TestReadContextUsageWithSplit(t *testing.T) {
+	t.Parallel()
 	// The meter's read is unchanged by the breakdown next to the counts.
 	u, ok := decodeTokenDetails(splitRoot())
 	if !ok || u != (ContextUsage{Used: 3421, Max: 272000}) {

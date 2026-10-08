@@ -67,6 +67,7 @@ func within(t *testing.T, what string, c <-chan struct{}) {
 // (ErrShutdown, not ErrBusy), one made after Shutdown, and with Fresh. Nor can a run agent start a
 // subagent, or a person's chat a process. Shutdown can be called again.
 func TestNoProcessStartsAfterShutdown(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	idle := e.agentChat("agent-idle", model.RoleTask, model.Claude)
 	working := e.agentChat("agent-working", model.RoleOrchestrator, model.Claude)
@@ -121,6 +122,7 @@ func TestNoProcessStartsAfterShutdown(t *testing.T) {
 // closes it through its adapter before it returns. Nothing is left alive, and the next message is
 // refused.
 func TestShutdownClosesAProcessThatWasStarting(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	log := &loggingSpawner{inner: e.claude}
 	held := &heldSpawner{inner: log}
@@ -162,6 +164,7 @@ func TestShutdownClosesAProcessThatWasStarting(t *testing.T) {
 // The same for a subagent a run agent starts: its start runs without the chat's lock. Shutdown
 // ends the subagent it finds recorded, and the process that starts afterwards is closed at once.
 func TestShutdownClosesARunAgentsSubagentThatWasStarting(t *testing.T) {
+	t.Parallel()
 	e, _ := runEnv(t)
 	held := &heldSpawner{inner: e.claude}
 	e.m.Spawners[model.Claude] = held
@@ -200,6 +203,7 @@ func TestShutdownClosesARunAgentsSubagentThatWasStarting(t *testing.T) {
 // held during that start, so Shutdown finds no process on the new chat. The one that then starts
 // is closed and the fork refused.
 func TestShutdownClosesAForkThatWasStarting(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	b, res := e.block(e.claude, func() error { return e.forkErr(id, 3) })

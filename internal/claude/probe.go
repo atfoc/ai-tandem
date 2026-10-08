@@ -22,8 +22,9 @@ import (
 var probeKillGrace = 3 * time.Second
 
 // probeReapGrace is how long the probe waits for a killed process to be reaped; a descendant that
-// escaped the process group and holds the pipes open is not waited for beyond it.
-const probeReapGrace = 500 * time.Millisecond
+// escaped the process group and holds the pipes open is not waited for beyond it. A variable so
+// that a test that waits it out can shorten it.
+var probeReapGrace = 500 * time.Millisecond
 
 // ProbeArgs are the arguments of the throwaway process that reads the model list: the stream-JSON
 // flags and the two throwaway flags, with no model and no session.

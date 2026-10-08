@@ -2,6 +2,7 @@ package pi
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -416,6 +417,15 @@ func TestSpawnForkNoProcessErrors(t *testing.T) {
 // model commands never ran. It returns the error, the commands pi read and the source file.
 func forkFails(t *testing.T, extra map[string]fakeReply, src agent.ForkSource, timeout time.Duration) (error, []string, string) {
 	t.Helper()
+	err, cmds, srcFile, _ := forkFailsAfter(t, extra, src, timeout, "")
+	return err, cmds, srcFile
+}
+
+// forkFailsAfter is forkFails for a start that fails because its time box ends: with need set, a
+// box that ended before pi read the command need (the fake had not got that far) does not count.
+// ok is then false and nothing else was checked.
+func forkFailsAfter(t *testing.T, extra map[string]fakeReply, src agent.ForkSource, timeout time.Duration, need string) (err error, cmds []string, srcFile string, ok bool) {
+	t.Helper()
 	f, s, reg, srcFile := forkFake(t, extra)
 	s.forkTimeout = timeout
 	pidFile := filepath.Join(f.dir, "child.json")
@@ -427,6 +437,9 @@ func forkFails(t *testing.T, extra map[string]fakeReply, src agent.ForkSource, t
 	}
 	if a != nil || id != "" {
 		t.Fatalf("a failed SpawnFork returned %v, %q", a, id)
+	}
+	if need != "" && !f.readCommand(need) {
+		return err, nil, srcFile, false
 	}
 	parent, child := childPids(t, pidFile)
 	if syscall.Kill(parent, 0) == nil {
@@ -445,7 +458,7 @@ func forkFails(t *testing.T, extra map[string]fakeReply, src agent.ForkSource, t
 			t.Errorf("commands %q: a model command ran in a failed fork", got)
 		}
 	}
-	return err, got, srcFile
+	return err, got, srcFile, true
 }
 
 func TestSpawnForkFailures(t *testing.T) {
@@ -501,16 +514,32 @@ func TestSpawnForkFailures(t *testing.T) {
 		}
 	})
 	t.Run("fork never answered", func(t *testing.T) {
-		start := time.Now()
-		err, cmds, _ := forkFails(t, map[string]fakeReply{"fork": {Silent: true}}, at, 300*time.Millisecond)
-		if !strings.Contains(err.Error(), "did not confirm the fork within 300ms") {
-			t.Errorf("error %q", err)
-		}
-		if took := time.Since(start); took < 300*time.Millisecond || took > handshakeTimeout/2 {
-			t.Errorf("SpawnFork took %s, want the shortened time box", took)
-		}
-		if !equalStrings(cmds, []string{"get_state", "fork"}) {
-			t.Errorf("commands %q", cmds)
+		// pi has to start and read the fork command within the time box. A box that ended before
+		// that does not count and a longer one follows; the last holds on a machine that is busy
+		// with several whole test suites, only costs its time there, and is still well below the
+		// handshake's own time box.
+		boxes := []time.Duration{300 * time.Millisecond, 1200 * time.Millisecond, 5 * time.Second, 10 * time.Second}
+		for i, box := range boxes {
+			need := "fork"
+			if i == len(boxes)-1 {
+				need = ""
+			}
+			start := time.Now()
+			err, cmds, _, ok := forkFailsAfter(t, map[string]fakeReply{"fork": {Silent: true}}, at, box, need)
+			if !ok {
+				t.Logf("%s was too short on this machine now", box)
+				continue
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("did not confirm the fork within %s", box)) {
+				t.Errorf("error %q", err)
+			}
+			if took := time.Since(start); took < box || took > handshakeTimeout/2 {
+				t.Errorf("SpawnFork took %s, want the shortened time box", took)
+			}
+			if !equalStrings(cmds, []string{"get_state", "fork"}) {
+				t.Errorf("commands %q", cmds)
+			}
+			break
 		}
 	})
 }

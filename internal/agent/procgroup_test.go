@@ -49,6 +49,9 @@ func TestExitedForgetsGroupOnceEmpty(t *testing.T) {
 		}
 	})
 
+	// Exited reads the interval before it starts looking, so this is no race with it.
+	defer func(d time.Duration) { forgetEvery = d }(forgetEvery)
+	forgetEvery = 20 * time.Millisecond
 	Exited(cmd)
 	if !registered(pgid) {
 		t.Fatalf("group %d was forgotten while a process is left in it: EndAll would not end it", pgid)

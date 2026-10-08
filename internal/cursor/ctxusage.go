@@ -31,8 +31,9 @@ const (
 	errStoreFormat    = "Cursor session store has an unexpected format"
 )
 
-// sqliteTimeout bounds each sqlite3 process.
-const sqliteTimeout = 2 * time.Second
+// sqliteTimeout bounds each sqlite3 process. A variable so that the tests, which start many
+// processes at the same moment on a machine that may be loaded, can give it more.
+var sqliteTimeout = 2 * time.Second
 
 var blobIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 

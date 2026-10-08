@@ -10,6 +10,7 @@ import (
 
 // DeleteOnRun takes the chats people made on one run, and nothing else.
 func TestDeleteOnRun(t *testing.T) {
+	t.Parallel()
 	const otherRun = "r_two"
 	e, fr := runEnv(t)
 	fr.mu.Lock()
@@ -72,5 +73,40 @@ func TestDeleteOnRun(t *testing.T) {
 	e.m.DeleteOnRun(ownRun) // nothing left: nothing happens
 	if got := evs.drain(t, e.br); len(got) != 0 {
 		t.Fatalf("a second DeleteOnRun sent %v", got)
+	}
+}
+
+// DeleteOnBoard takes the chats on one board, and nothing else.
+func TestDeleteOnBoard(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	one, err := e.bds.Create("one", gOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := e.bds.Create("two", gOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := e.create(model.Claude, "", one.ID), e.create(model.Claude, "", one.ID)
+	other, plain := e.create(model.Claude, "", two.ID), e.create(model.Claude, gOne, "")
+
+	e.m.DeleteOnBoard("") // no board: the chats on no board stay
+	e.m.DeleteOnBoard(one.ID)
+	for _, id := range []string{a.ID, b.ID} {
+		if _, err := e.m.View(id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("View of %s after DeleteOnBoard: %v", id, err)
+		}
+		if _, err := os.Stat(e.st.P.ChatDir(id)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the folder of %s after DeleteOnBoard: %v", id, err)
+		}
+	}
+	for _, id := range []string{other.ID, plain.ID} {
+		if _, err := e.m.View(id); err != nil {
+			t.Errorf("View of %s after DeleteOnBoard: %v", id, err)
+		}
+	}
+	if left := e.m.ChatsOfBoard(two.ID); len(left) != 1 || left[0].ID != other.ID {
+		t.Errorf("the chats of the other board after: %v", left)
 	}
 }

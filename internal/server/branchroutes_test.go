@@ -72,6 +72,7 @@ func (e *env) thread(id, branch string) thread {
 
 // Each session route takes ?branch= and reaches that branch, also when it is not the current one.
 func TestSessionRoutesTakeABranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	sp := &stopSpawner{}
 	e.a.Chats.Spawners[model.Claude] = sp
@@ -188,7 +189,7 @@ func TestSessionRoutesTakeABranch(t *testing.T) {
 
 	// POST /permission: main's request is not the other branch's.
 	ag.ask("p1")
-	for deadline := time.Now().Add(2 * time.Second); e.thread(id, "main").State.Status != model.StatusApproval; time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(waitLimit); e.thread(id, "main").State.Status != model.StatusApproval; time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("main is not waiting for approval")
 		}
@@ -232,6 +233,7 @@ func TestSessionRoutesTakeABranch(t *testing.T) {
 
 // GET /api/state and the snapshot event carry one state record per branch of every chat.
 func TestStateRoute(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.branchedChat()
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
@@ -284,6 +286,7 @@ func TestStateRoute(t *testing.T) {
 // POST /messages answers with the branch the message was put on, in each of its three forms, and
 // two branches of a chat take a message and work at the same time: busy is the branch's.
 func TestMessagesAnswerNamesTheBranch(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	id := e.branchedChat() // main and a1b2c3d4, which is current and has a session
 	const other = "a1b2c3d4"
@@ -413,6 +416,7 @@ func (s *holdSpawner) count() int {
 // PATCH on a fork that has had no message changes its model and effort, and answers once the
 // fork's process has been started again on them.
 func TestPatchFreshFork(t *testing.T) {
+	t.Parallel()
 	e, chat, pi := choiceEnv(t)
 	hs := &holdSpawner{flowSpawner: &flowSpawner{}}
 	e.a.Chats.Spawners[model.Claude] = hs

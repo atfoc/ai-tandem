@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/testset"
 )
 
 // The guards around a delivery: the result stays on a branch until it is on one of the person's
@@ -36,6 +37,9 @@ func delivManual(t *testing.T, id string) (e *engEnv, r *run, base, result strin
 func TestDeliverLookingIsNotApplying(t *testing.T) {
 	t.Parallel()
 	for _, how := range []string{"integration", "review", "detached"} {
+		if !testset.Full() && how == "review" {
+			continue // a whole run each
+		}
 		t.Run(how, func(t *testing.T) {
 			t.Parallel()
 			e, r, base, result := delivManual(t, "r_look")
