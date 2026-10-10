@@ -23,9 +23,10 @@ type Fake = {
   exports: any[];       // the arguments exportToBlob was called with
   png?: Uint8Array;     // the bytes exportToBlob returns
   exportError?: unknown; // exportToBlob throws this when set
+  canvases: { width: number; height: number }[]; // the canvases getDimensions let exportToBlob make
 };
 const fake: Fake = { scene: async () => ({ scene: {}, rev: 0 }), saveScene: async (_, base) => base + 1, take: async () => ({ state: "held", rev: 0 }),
-  release: async () => ({ state: "handed" }), log: [], selects: [], exports: [] };
+  release: async () => ({ state: "handed" }), log: [], selects: [], exports: [], canvases: [] };
 (globalThis as any).__saves = fake;
 
 const stubs: Record<string, string> = {
@@ -34,7 +35,40 @@ const stubs: Record<string, string> = {
     export const getSceneVersion = (els) => els.reduce((n, e) => n + (e.version ?? 1), 0);
     export const newElementWith = (e, p) => ({ ...e, ...p });
     export const convertToExcalidrawElements = (els) => els;
-    export const exportToBlob = async (o) => { globalThis.__saves.exports.push(o); if (globalThis.__saves.exportError !== undefined) throw globalThis.__saves.exportError; return new Blob([globalThis.__saves.png ?? new Uint8Array([137, 80, 78, 71])], { type: "image/png" }); };
+    // getCommonBounds: the box of x, y, width, height and points turned by angle around their centre, which is all the tests' elements have
+    export const getCommonBounds = (els) => {
+      const xs = [], ys = [];
+      for (const e of els) {
+        const pts = (e.points ?? [[0, 0], [e.width, 0], [e.width, e.height], [0, e.height]]).map(([px, py]) => [e.x + px, e.y + py]);
+        const px = pts.map((p) => p[0]), py = pts.map((p) => p[1]);
+        const cx = (Math.min(...px) + Math.max(...px)) / 2, cy = (Math.min(...py) + Math.max(...py)) / 2, c = Math.cos(e.angle ?? 0), n = Math.sin(e.angle ?? 0);
+        for (const [x, y] of pts) { xs.push(cx + (x - cx) * c - (y - cy) * n); ys.push(cy + (x - cx) * n + (y - cy) * c); }
+      }
+      return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    };
+    // exportToBlob: sizes the canvas as Excalidraw 0.18 does, draws nothing: restore() drops the elements that are invisibly small
+    // (a line, arrow or freedraw with under two points, any other with width and height 0), a label text goes above each frame
+    // (14 px at line height 1.25, 3 px above the frame, cut to the frame's width; its width here is a guess, only its top counts),
+    // and the size is that of the root elements (not inside a frame that is drawn) and the padding, through getDimensions
+    export const exportToBlob = async (o) => {
+      const f = globalThis.__saves;
+      f.exports.push(o);
+      const isFrame = (e) => e.type === "frame" || e.type === "magicframe";
+      const kept = o.elements.filter((e) => (e.points ? e.points.length >= 2 : e.width !== 0 || e.height !== 0));
+      const drawn = kept.flatMap((e) => {
+        if (!isFrame(e)) return [e];
+        const title = e.name ?? (e.type === "frame" ? "Frame" : "AI Frame");
+        const label = { id: e.id + "-label", type: "text", x: e.x, y: e.y - 3 - 14 * 1.25, width: Math.min(title.length * 8, e.width), height: 14 * 1.25 };
+        return [label, e];
+      });
+      const frames = new Set(drawn.filter(isFrame).map((e) => e.id));
+      const roots = drawn.filter((e) => frames.has(e.id) || !e.frameId || !frames.has(e.frameId));
+      const [x0, y0, x1, y1] = getCommonBounds(roots);
+      const [w, h] = [x1 - x0 + 2 * o.exportPadding, y1 - y0 + 2 * o.exportPadding];
+      f.canvases.push(o.getDimensions(w, h));
+      if (f.exportError !== undefined) throw f.exportError;
+      return new Blob([f.png ?? new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    };
     export const CaptureUpdateAction = {}; export const FONT_FAMILY = {}; export const ROUNDNESS = {};`,
   "./api.ts": `
     const f = globalThis.__saves;
@@ -109,7 +143,7 @@ const asked = () => fake.log.splice(0);
 
 beforeEach(() => {
   console.error = () => {};
-  fake.log.length = 0; fake.selects.length = 0; fake.exports.length = 0; fake.png = undefined; fake.exportError = undefined;
+  fake.log.length = 0; fake.selects.length = 0; fake.exports.length = 0; fake.canvases.length = 0; fake.png = undefined; fake.exportError = undefined;
   fake.scene = stored(0); fake.saveScene = async (_, base) => base + 1;
   fake.take = async () => ({ state: "held", rev: 0 }); fake.release = async () => ({ state: "handed" });
   board.setLive(null, null);
@@ -990,7 +1024,7 @@ test("get_image: an empty board, or one of only deleted elements, is EMPTY and d
   });
 });
 
-test("get_image: a picture above the limit is TOO_LARGE with the limit named, and draws nothing", async () => {
+test("get_image: a picture above the limit is TOO_LARGE with the limit named, and no canvas is made", async () => {
   await withoutLongTimers(async () => {
     const wide = await heldWith([rect("a", 0, 0, 9000, 10)]);
     await assert.rejects(image(wide), (e: any) => e.code === "TOO_LARGE" && /8192/.test(e.message) && /smaller scope/.test(e.message));
@@ -998,10 +1032,56 @@ test("get_image: a picture above the limit is TOO_LARGE with the limit named, an
     await assert.rejects(image(area), (e: any) => e.code === "TOO_LARGE" && /32 megapixels/.test(e.message));
     const half = await heldWith([rect("a", 0, 0, 4100, 100)]); // 4132 px wide: fine at scale 1, 8264 at scale 2
     await assert.rejects(image(half, { scale: 2 }), { code: "TOO_LARGE" });
-    assert.equal(fake.exports.length, 0);
+    assert.equal(fake.canvases.length, 0);
     await image(half);
-    assert.equal(fake.exports.length, 1);
+    assert.deepEqual(fake.canvases, [{ width: 4132, height: 132, scale: 1 }]);
     board.forgetBoard(wide); board.forgetBoard(area); board.forgetBoard(half);
+  });
+});
+
+test("get_image: the limit is checked on the size Excalidraw measures, and the bounds in the text are that size", async () => {
+  await withoutLongTimers(async () => {
+    // a frame at the top of a board: its name is drawn above it, so the box is taller than the elements' (here by 20.5, which the
+    // stand-in works out as Excalidraw does)
+    const frame = { id: "fr", type: "frame", x: 0, y: 100, width: 200, height: 100, version: 1, isDeleted: false, name: "Plan" };
+    const b = await heldWith([frame, rect("in", 10, 110, 50, 50, { frameId: "fr" })]);
+    const r = await image(b) as any;
+    assert.match(r.text, /bounds x=0 y=80 w=200 h=121 \(board coordinates\), 2 elements/); // y 79.5 (100 - 20.5), rounded
+    assert.deepEqual(fake.canvases, [{ width: 232, height: 153, scale: 1 }]); // 152.5 rounded up
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: an AI frame (magicframe) is measured like a frame: its name is above it and its children are clipped", async () => {
+  await withoutLongTimers(async () => {
+    const frame = { id: "mf", type: "magicframe", x: 0, y: 100, width: 200, height: 100, version: 1, isDeleted: false, name: null };
+    const b = await heldWith([frame, rect("out", 150, 150, 20000, 20, { frameId: "mf" })]);
+    const r = await image(b) as any;
+    assert.match(r.text, /bounds x=0 y=80 w=200 h=121 /);
+    assert.deepEqual(fake.canvases, [{ width: 232, height: 153, scale: 1 }]);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: a child of a frame that sticks out of it does not stretch the picture, as Excalidraw clips it", async () => {
+  await withoutLongTimers(async () => {
+    const frame = { id: "fr", type: "frame", x: 0, y: 0, width: 200, height: 100, version: 1, isDeleted: false, name: "F" };
+    const b = await heldWith([frame, rect("out", 150, 50, 20000, 20, { frameId: "fr" })]); // 20000 wide: would be TOO_LARGE by its own box
+    const r = await image(b) as any;
+    assert.match(r.text, /bounds x=0 y=-20 w=200 h=121 /); // the frame and its name above it (20.5); the child adds nothing
+    assert.deepEqual(fake.canvases, [{ width: 232, height: 153, scale: 1 }]);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: a scale that would make the picture under 1 px on a side is BAD_ARGS, and any other is rounded up to whole pixels", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith([rect("a", 0, 0, 10, 10)]);
+    await assert.rejects(image(b, { scale: 0.02 }), { code: "BAD_ARGS", message: /smaller than 1 px.*larger scale/ }); // 42 x 0.02 = 0.84 px
+    assert.equal(fake.canvases.length, 0);
+    await image(b, { scale: 0.15 }); // 6.3 px: seven
+    assert.deepEqual(fake.canvases, [{ width: 7, height: 7, scale: 0.15 }]);
+    board.forgetBoard(b);
   });
 });
 

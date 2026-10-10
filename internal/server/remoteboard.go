@@ -45,7 +45,8 @@ func boardOf(path string) (id string, ok bool) {
 }
 
 // peekBoardRoute serves the two routes of a remote board that name no id in their path, and
-// reports whether it did. Otherwise the request is the mux's, with its body as it came.
+// reports whether it did. Otherwise the request is the mux's, with its body as it came (an answer's
+// body is read up to rpcReplyMax, as the mux's handler reads it).
 //
 //   - POST /api/boards whose "server" is an entry of the server list: the board is made there
 //     (see createBoardThere). No "server", or "local", is a board of this server.
@@ -55,10 +56,20 @@ func (s *Server) peekBoardRoute(w http.ResponseWriter, r *http.Request) (served 
 	if s.Remotes == nil || r.Method != http.MethodPost || (r.URL.Path != "/api/boards" && r.URL.Path != "/api/rpc-reply") {
 		return false
 	}
-	body, err := io.ReadAll(r.Body)
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if err != nil {
-		return false // the mux's handler meets the same end of the body
+	var body []byte
+	if r.URL.Path == "/api/rpc-reply" {
+		var read bool
+		if body, read = s.readRPCReply(w, r); !read {
+			return true // too large, or unreadable: answered
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	} else {
+		var err error
+		body, err = io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if err != nil {
+			return false // the mux's handler meets the same end of the body
+		}
 	}
 	var named struct {
 		ID     string `json:"id"`

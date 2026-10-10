@@ -1,6 +1,6 @@
-// get_image, the parts that need no canvas: reading the arguments, the bounds of the elements to draw,
-// the size of the picture before it is rendered (and the refusal above the limit), and the result text.
-// DOM-free.
+// get_image, the parts that need no canvas: reading the arguments, the box of an element (for rect and refs), the size
+// of the picture from the size Excalidraw gives (and the refusals of a size above the limit or below a pixel), and the
+// result text. DOM-free.
 
 /** The first limits on a picture, after scale: its longest side in pixels, and its area. The agent's client may
  *  shrink what it gets anyway; these only keep a render (and the base64 that follows) from growing without bound. */
@@ -80,6 +80,23 @@ function rotated(pts: number[][], angle = 0): number[][] {
 /** The size of the picture in pixels: the bounds and the padding on both sides, times scale. */
 export function pixelSize(b: Bounds, scale: number, padding = EXPORT_PADDING): { width: number; height: number } {
   return { width: Math.ceil((b.width + 2 * padding) * scale), height: Math.ceil((b.height + 2 * padding) * scale) };
+}
+
+/** The elements Excalidraw sizes the picture by: those that are not inside a frame that is itself drawn (a child of a
+ *  frame is clipped to it, so it adds nothing), as its own getRootElements. */
+export function rootElements<T extends { id: string; type?: string; frameId?: string | null }>(els: readonly T[]): T[] {
+  const frames = new Set(els.filter((e) => e.type === "frame" || e.type === "magicframe").map((e) => e.id));
+  return els.filter((e) => frames.has(e.id) || !e.frameId || !frames.has(e.frameId));
+}
+
+/** The canvas for the box Excalidraw measured (`w` x `h` board units, the padding in): its pixel size at `scale`, or the
+ *  refusal. The size is rounded up as pixelSize does, and a scale that leaves a side under 1 px is BAD_ARGS, not a blank canvas. */
+export function pictureSize(w: number, h: number, scale: number): Parsed<{ width: number; height: number }> {
+  if (w * scale < 1 || h * scale < 1)
+    return bad(`scale ${scale} would make the picture smaller than 1 px (${w * scale} x ${h * scale}); use a larger scale`);
+  const size = { width: Math.ceil(w * scale), height: Math.ceil(h * scale) };
+  const tooLarge = checkLimit(size);
+  return tooLarge ? { ok: false, ...tooLarge } : { ok: true, value: size };
 }
 
 /** null when the picture may be drawn, else the TOO_LARGE refusal naming the size and the limit. */

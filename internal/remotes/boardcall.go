@@ -19,6 +19,17 @@ import (
 // page never has two calls with one id.
 const boardCallPrefix = "far_"
 
+// serverCallWait is how long the server that asked waits for its tool call (boardapi's callTimeout); an
+// answer that arrives later is of no use to it.
+const serverCallWait = 30 * time.Second
+
+// errorAnswerReserve is what a result's limit leaves of serverCallWait for the error answer that follows a result that
+// was not delivered, and resultFloor is the least a result gets when less than that is left.
+const (
+	errorAnswerReserve = 3 * time.Second
+	resultFloor        = 5 * time.Second
+)
+
 // noBoardWindow is the answer to a tool call that no page of this server can be asked.
 const noBoardWindow = "No window of this computer has the board open."
 
@@ -35,6 +46,7 @@ type boardCall struct {
 	there string // the call's id there
 	page  string // the page that was asked
 	board string // the board the page was chosen by
+	asked time.Time
 	timer *time.Timer
 }
 
@@ -99,9 +111,13 @@ func (r *Relay) ReplyBoardCall(ctx context.Context, page, rpcID string, body []b
 }
 
 // answerBoardCall posts the answer of the call to the server that asked: the error text, or
-// the result. It waits for that server's answer, at most Limits.Call, and reads nothing from it.
+// the result. It waits for that server's answer and reads nothing from it. An error text is
+// small and waits at most Limits.Call. A result may be a picture of megabytes: it gets
+// resultLimit. If it cannot be delivered, the call is answered with an error naming its size,
+// so that the agent hears that and not the server's timeout.
 func (r *Relay) answerBoardCall(k *boardCall, result json.RawMessage, errText string) {
 	reply := map[string]any{"id": k.there}
+	limit := r.o.Limits.Call
 	if errText != "" {
 		reply["error"] = errText
 	} else {
@@ -109,12 +125,32 @@ func (r *Relay) answerBoardCall(k *boardCall, result json.RawMessage, errText st
 			result = json.RawMessage("null")
 		}
 		reply["result"] = result
+		limit = resultLimit(r.o.Limits.Scene, time.Since(k.asked))
 	}
 	body, err := json.Marshal(reply)
 	if err != nil {
 		return
 	}
-	_, _ = r.call(r.ctx, k.entry, http.MethodPost, "/api/rpc-reply", body, r.o.Limits.Call)
+	if _, err := r.call(r.ctx, k.entry, http.MethodPost, "/api/rpc-reply", body, limit); err != nil && errText == "" {
+		msg := fmt.Sprintf("the answer (%s) could not be sent to the board's server in time; ask for a smaller scope or scale", byteSize(len(body)))
+		failed, _ := json.Marshal(map[string]any{"id": k.there, "error": msg})
+		_, _ = r.call(r.ctx, k.entry, http.MethodPost, "/api/rpc-reply", failed, r.o.Limits.Call)
+	}
+}
+
+// resultLimit is how long a result may take to be posted, scene being the most (Limits.Scene), when the call was asked
+// elapsed ago: what is left of the server's own wait, less errorAnswerReserve for the error answer, and never under
+// resultFloor.
+func resultLimit(scene, elapsed time.Duration) time.Duration {
+	return min(scene, max(serverCallWait-elapsed-errorAnswerReserve, resultFloor))
+}
+
+// byteSize is n bytes as KB, or as MB from one on.
+func byteSize(n int) string {
+	if n < 1<<20 {
+		return fmt.Sprintf("%d KB", (n+1023)>>10)
+	}
+	return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
 }
 
 // failBoardCall answers the call with an error, in a goroutine.
@@ -152,7 +188,7 @@ func (r *Relay) boardCallEvent(entry string, raw json.RawMessage) {
 		Target string `json:"target"`
 	}
 	_ = json.Unmarshal(ev.Params, &p)
-	k := &boardCall{entry: entry, there: ev.ID}
+	k := &boardCall{entry: entry, there: ev.ID, asked: time.Now()}
 	first := p.Target
 	if first == "" || p.Name == "get_view" || p.Name == "show_board" {
 		first = p.Board

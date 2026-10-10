@@ -51,7 +51,7 @@ coordinates, a rotated one by its rotated box, with the bound text of the contai
 arrows; `rect` compares exact coordinates while `read_board` prints rounded numbers, so leave a
 margin). `refs` and `rect` are used only with their own `scope`, otherwise they are ignored; without a `scope` the
 selection is drawn when the board is on screen and something is selected, else the whole board.
-`scale` is 1 by default and at most 2 (a larger value is used as 2); `background: false` makes the
+`scale` is 1 by default, above 0 and at most 2 (a larger value is used as 2; below 1 gives a smaller picture); `background: false` makes the
 picture transparent. A picture over 8192 px on its longest side or over 32 megapixels is refused
 (`TOO_LARGE`, with its size), and a result over 24 MB of base64 is refused by the server. The reply
 is the picture plus one line of text: the scope used, the bounds in board coordinates and the
@@ -63,8 +63,9 @@ private folder (`aiwb-images-<uid>`, mode 0700) under the system temp folder, ne
 folder, and the text names the file (`Image file: <path> (PNG). Open it with your file tools.`).
 Files older than an hour are removed, but only when the next picture is written for a Cursor chat,
 so with no further call they stay until then or until the system cleans its temp folder. Pictures
-are not stored in the board or in the chat. A remote server built before this tool answers
-`UNKNOWN_TOOL`; update it.
+are not stored in the board or in the chat. If the app or window that holds the board is older than
+this tool, the call fails with `UNKNOWN_TOOL`; update the app or reload the window. (A remote server
+built before this tool does not list `get_image` at all.)
 
 The agents' board edits go through the open window, so boards can only be changed while the app
 (or a browser tab) is open. pi runs as a long-lived `pi --mode rpc` process per chat; the UDS

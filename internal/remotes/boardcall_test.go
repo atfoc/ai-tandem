@@ -229,3 +229,59 @@ func TestBoardCallImageResult(t *testing.T) {
 		}
 	}
 }
+
+// TestResultLimit: with the production limits (Call 15 s, Scene 60 s) a result gets what is left of the server's 30 s
+// wait less the reserve for the error answer, not Limits.Call, and never less than the floor or more than Limits.Scene.
+func TestResultLimit(t *testing.T) {
+	t.Parallel()
+	d := DefaultLimits
+	if d.Call >= d.Scene {
+		t.Fatalf("this test needs Call < Scene, have %v and %v", d.Call, d.Scene)
+	}
+	for _, c := range []struct{ elapsed, want time.Duration }{
+		{0, 27 * time.Second},
+		{10 * time.Second, 17 * time.Second},
+		{25 * time.Second, resultFloor},
+		{29 * time.Second, resultFloor},
+		{time.Minute, resultFloor},
+	} {
+		if got := resultLimit(d.Scene, c.elapsed); got != c.want {
+			t.Errorf("resultLimit(Scene, %v) = %v, want %v", c.elapsed, got, c.want)
+		}
+	}
+	if got := resultLimit(2*time.Second, 0); got != 2*time.Second {
+		t.Errorf("a Scene under what is left: %v, want Scene", got)
+	}
+}
+
+// TestBoardCallResultNotDelivered: a result that the board's server does not take within the result's limit
+// (Limits.Scene, not Limits.Call) is answered with an error that names its size, not left to the server's timeout.
+// The limit is seconds, so that the whole result is read there before it runs out, on a slow machine too.
+func TestBoardCallResultNotDelivered(t *testing.T) {
+	t.Parallel()
+	rg, th := holdRig(t, rigOpt{limits: Limits{Call: time.Minute, Scene: 2 * time.Second}}, boardA)
+	p, _ := rg.page("page-1")
+	take(t, rg, p, boardA)
+	th.set(func() {
+		th.replyIn = func(r *http.Request, body []byte) { // a slow uplink: a result is not taken, an error is
+			if strings.Contains(string(body), `"result"`) {
+				if !json.Valid(body) {
+					t.Errorf("the result was cut before the stand-in had read it (%d bytes)", len(body))
+				}
+				<-r.Context().Done()
+			}
+		}
+	})
+	rg.s.Send(toolCall("rpc_3", "get_image", boardA, ""))
+	id, _ := role(t, p, "rpc")["id"].(string)
+	answer := []byte(`{"result":{"text":"t","image":{"mimeType":"image/png","data":"` + strings.Repeat("QUJD", 1<<19) + `"}}}`)
+	wantReply(t, "the page's answer", rg.r.ReplyBoardCall(t.Context(), p.ID, id, answer), http.StatusOK, map[string]any{"ok": true})
+	got := answers(t, th, 2)
+	if got[0]["id"] != "rpc_3" || got[0]["result"] == nil {
+		t.Errorf("the first answer: %v", got[0])
+	}
+	want := map[string]any{"id": "rpc_3", "error": "the answer (2.0 MB) could not be sent to the board's server in time; ask for a smaller scope or scale"}
+	if !reflect.DeepEqual(got[1], want) {
+		t.Errorf("the second answer %v, want %v", got[1], want)
+	}
+}

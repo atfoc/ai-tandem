@@ -4,7 +4,7 @@
 // answers the board tools the agents call (relayed by the server as `rpc`),
 // gathers the <ui-context> block for a board chat's message, and turns the
 // live selection or a clicked point into a reference for the composer.
-import { restoreElements, getSceneVersion, newElementWith, exportToBlob } from "@excalidraw/excalidraw";
+import { restoreElements, getSceneVersion, newElementWith, exportToBlob, getCommonBounds } from "@excalidraw/excalidraw";
 import { applyChanges, keyOf, RpcError, type El } from "./apply.ts";
 import { formatScene, formatElement, formatViewport, type FmtElement, type FmtViewport } from "./format.ts";
 import { contextBlock, boardRef } from "./logic/context.ts";
@@ -16,7 +16,7 @@ import { select } from "./Sidebar.tsx";
 import { editLabel, branchNameFor } from "./logic/attribution.ts";
 import { afterReconnect, onGrant, onLost, onRefusal, onTake, type Cache, type Step } from "./logic/roles.ts";
 import { saveFailure, saveOutage } from "./logic/boardsave.ts";
-import { parseImageArgs, parseRefs, parseRect, defaultScope, idsInsideRect, withBoundText, hasExtent, imageBounds, pixelSize, checkLimit, resultText, countElements, EXPORT_PADDING } from "./logic/image.ts";
+import { parseImageArgs, parseRefs, parseRect, defaultScope, idsInsideRect, withBoundText, hasExtent, rootElements, pictureSize, resultText, countElements, EXPORT_PADDING, type Bounds } from "./logic/image.ts";
 import type { AgentKind } from "./types.ts";
 
 /** rev counts the writes made here (read_board shows it); base is the revision the server stores the scene at, as this
@@ -552,17 +552,16 @@ async function getImage(call: ToolCall): Promise<ToolResult> {
   if (!withText.length) throw new RpcError("EMPTY", `${name} has no elements to draw`);
   // elements with no extent are left out before anything is measured or counted, as Excalidraw drops them: they would only stretch the bounds
   const els = withText.filter(hasExtent);
-  const bounds = imageBounds(els);
-  if (!bounds) throw new RpcError("EMPTY", `the chosen elements on ${name} have no extent (zero width and height), so there is nothing to draw`);
-  // the size is known before anything is rendered
-  const tooLarge = checkLimit(pixelSize(bounds, scale));
-  if (tooLarge) throw new RpcError(tooLarge.code, tooLarge.message);
+  if (!els.length) throw new RpcError("EMPTY", `the chosen elements on ${name} have no extent (zero width and height), so there is nothing to draw`);
   markBusy(id, call.chat, call.branch);
   const app = api ? api.getAppState() : sc.appState;
   const files = api ? api.getFiles() : sc.files;
   // render: after the fonts are ready, or the text is drawn in a fallback font
   try { await (globalThis as any).document?.fonts?.ready; } catch {}
   let data: string;
+  // Excalidraw measures the picture itself (a frame's name, the children clipped to a frame, an arrow by its curve); the limit
+  // is checked on the size it hands getDimensions, before the canvas exists, and the bounds in the text are that size
+  const drawn: { bounds?: Bounds } = {};
   try {
     const blob = await exportToBlob({
       elements: els as any,
@@ -570,13 +569,22 @@ async function getImage(call: ToolCall): Promise<ToolResult> {
       files,
       mimeType: "image/png",
       exportPadding: EXPORT_PADDING,
-      getDimensions: (w: number, h: number) => ({ width: w * scale, height: h * scale, scale }),
+      getDimensions: (w: number, h: number) => {
+        const size = pictureSize(w, h, scale);
+        if (!size.ok) throw new RpcError(size.code, size.message);
+        // the left edge and the bottom of what is drawn are the elements'; a frame's name adds to the top
+        const [x0, , , y1] = getCommonBounds(rootElements(els) as any);
+        drawn.bounds = { x: x0, y: y1 - (h - 2 * EXPORT_PADDING), width: w - 2 * EXPORT_PADDING, height: h - 2 * EXPORT_PADDING };
+        return { ...size.value, scale };
+      },
     });
     data = await base64Of(blob);
   } catch (err: any) {
+    if (err instanceof RpcError) throw err;
     throw new RpcError("RENDER_FAILED", `the picture could not be drawn: ${err?.message ?? String(err)}`);
   }
-  return { text: resultText(scope, bounds, countElements(els), name), image: { mimeType: "image/png", data } };
+  if (!drawn.bounds) throw new RpcError("RENDER_FAILED", "the picture could not be drawn: its size was never measured");
+  return { text: resultText(scope, drawn.bounds, countElements(els), name), image: { mimeType: "image/png", data } };
 }
 
 export async function runTool(call: ToolCall): Promise<ToolResult> {

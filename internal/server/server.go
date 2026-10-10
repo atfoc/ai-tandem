@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,6 +97,72 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// rpcReplyMax is the largest body of a page's answer to a tool call. A picture is at most
+// boardapi's 24 MB of base64 inside it; boardapi checks that once the body is read, so this keeps
+// a body from being read without end.
+const rpcReplyMax = 32 << 20
+
+// readRPCReply reads the body of POST /api/rpc-reply, at most rpcReplyMax. A larger one is
+// refused with 413, and the call it answers (its id read from the start of the body) is failed
+// with the size, so that the agent hears it and does not wait out the call's timeout.
+func (s *Server) readRPCReply(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, rpcReplyMax))
+	var tooBig *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooBig):
+		msg := fmt.Sprintf("the answer is larger than %d MB; ask for a smaller scope or scale", rpcReplyMax>>20)
+		s.failRPC(r, idAtStart(body), msg)
+		writeError(w, http.StatusRequestEntityTooLarge, msg)
+		return nil, false
+	case err != nil:
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	return body, true
+}
+
+// idAtStart is the top-level "id" of the JSON object that begins head, "" if it is not in there.
+// head may end in the middle of a value.
+func idAtStart(head []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(head))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return ""
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		if key == "id" {
+			var id string
+			if dec.Decode(&id) != nil {
+				return ""
+			}
+			return id
+		}
+		var skip json.RawMessage
+		if dec.Decode(&skip) != nil {
+			return ""
+		}
+	}
+	return ""
+}
+
+// failRPC answers the tool call rpcID of the client with an error, as the page would have: a
+// call of this server's bridge, or one the relay passed on to a page. The client is the request's.
+func (s *Server) failRPC(r *http.Request, rpcID, msg string) {
+	if rpcID == "" {
+		return
+	}
+	client := r.Header.Get(ClientHeader)
+	if s.Remotes != nil && s.Remotes.IsBoardCall(rpcID) {
+		body, _ := json.Marshal(map[string]string{"id": rpcID, "error": msg})
+		s.Remotes.ReplyBoardCall(r.Context(), client, rpcID, body)
+		return
+	}
+	s.Bridge.ReplyFrom(client, rpcID, editorbridge.RPCReply{Error: msg})
 }
 
 // readOptionalJSON is readJSON for a body that may be empty.
@@ -404,7 +471,12 @@ func (s *Server) routes() *routeMux {
 			ID string `json:"id"`
 			editorbridge.RPCReply
 		}
-		if !readJSON(w, r, &body) {
+		raw, read := s.readRPCReply(w, r)
+		if !read {
+			return
+		}
+		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if !s.Bridge.ReplyFrom(r.Header.Get(ClientHeader), body.ID, body.RPCReply) {

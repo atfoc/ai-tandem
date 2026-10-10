@@ -195,7 +195,7 @@ func TestGetImageDescription(t *testing.T) {
 		"refs is used only with scope refs and rect only with scope rect; with any other scope they are ignored",
 		"A selected frame is drawn without its children",
 		"Without scope: the selection if the board is on the user's screen and something is selected on it, else all",
-		"scale is 1 by default; a larger one is used as 2",
+		"scale is 1 by default, above 0 and at most 2 (a larger value is used as 2; below 1 gives a smaller picture)",
 		"background false makes the picture transparent",
 		"over 8192 px on its longest side or over 32 megapixels is refused with its size",
 		"ask again for a smaller scope or scale",

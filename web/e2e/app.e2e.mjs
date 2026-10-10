@@ -895,7 +895,7 @@ async function run() {
     const { items } = await waitTurn(ids.chat1, before);
     const reply = lastReply(items);
     check(/^\W*no\b/i.test(reply) || /\b(no|don't|do not|none)\b/i.test(reply.split("\n")[0]), 'the reply is "No"', reply);
-    check(!items.some((i) => i.kind === "tool" && /^mcp__board__(list_boards|read_board|get_view|apply|delete_elements|create_board|show_board)$/.test(i.name ?? "")), "no board tool was called", items);
+    check(!items.some((i) => i.kind === "tool" && /^mcp__board__(list_boards|read_board|get_view|apply|delete_elements|create_board|show_board|get_image)$/.test(i.name ?? "")), "no board tool was called", items);
     const named = await waitFor("the chat gets a name", async () => (await chatView(ids.chat1)).name || null, { timeout: 60_000 });
     await (await chatRow(page, ids.chat1)).waitFor();
     log(`    chat named "${named}"`);

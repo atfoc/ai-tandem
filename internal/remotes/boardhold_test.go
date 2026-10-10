@@ -28,6 +28,7 @@ type there struct {
 	leaving func()                                   // called by a release before its answer; nil = nothing
 	put     thereAnswer                              // zero = 200 {"ok":true,"rev":<base+1>}
 	scene   func(w http.ResponseWriter)              // nil = {"elements":[]} at revision 4
+	replyIn func(r *http.Request, body []byte)       // called by a tool call reply before its answer; nil = nothing
 }
 
 type thereAnswer struct {
@@ -159,6 +160,12 @@ func holdRig(t *testing.T, o rigOpt, ids ...string) (*rig, *there) {
 	rg.s.Handle("POST /api/rpc-reply", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		th.note("reply %s", b)
+		th.mu.Lock()
+		in := th.replyIn
+		th.mu.Unlock()
+		if in != nil {
+			in(r, b)
+		}
 		thereAnswer{body: map[string]any{"ok": true}}.write(w)
 	})
 	rg.start()

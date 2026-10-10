@@ -75,7 +75,7 @@ var Tools = []Tool{
 			"refs is used only with scope refs and rect only with scope rect; with any other scope they are ignored. " +
 			"A selected frame is drawn without its children: select or name them as well to see them. " +
 			"Without scope: the selection if the board is on the user's screen and something is selected on it, else all. " +
-			"scale is 1 by default; a larger one is used as 2; background false makes the picture transparent. " +
+			"scale is 1 by default, above 0 and at most 2 (a larger value is used as 2; below 1 gives a smaller picture); background false makes the picture transparent. " +
 			"A picture over 8192 px on its longest side or over 32 megapixels is refused with its size: ask again for a smaller scope or scale. " +
 			"Errors: NO_SELECTION, EMPTY, UNKNOWN_REF, TOO_LARGE, BAD_ARGS, RENDER_FAILED.",
 		Schema: obj(props{
@@ -92,10 +92,10 @@ var Tools = []Tool{
 				"width":  map[string]any{"type": "number"},
 				"height": map[string]any{"type": "number"},
 			}, "x", "y", "width", "height"),
-			"scale":      map[string]any{"type": "number", "description": "pixel scale, 1 by default, at most 2"},
+			"scale":      map[string]any{"type": "number", "description": "pixel scale, 1 by default, above 0 and at most 2"},
 			"background": map[string]any{"type": "boolean", "description": "draw the board background; true by default"},
 		}),
-		Summary: `{"board"?: "<board id>", "scope"?: "selection|all|refs|rect", "refs"?: [{"key"|"id": ...}], "rect"?: {x, y, width, height}, "scale"?: 1-2, "background"?: bool}`,
+		Summary: `{"board"?: "<board id>", "scope"?: "selection|all|refs|rect", "refs"?: [{"key"|"id": ...}], "rect"?: {x, y, width, height}, "scale"?: 0-2, "background"?: bool}`,
 	},
 	{
 		Name: "apply",

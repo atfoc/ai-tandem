@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseImageArgs, parseRect, parseRefs, defaultScope, insideRect, idsInsideRect, withBoundText, hasExtent, imageBounds, pixelSize, checkLimit, resultText, countElements, MAX_SIDE_PX, MAX_PIXELS, EXPORT_PADDING } from "../src/logic/image.ts";
+import { parseImageArgs, parseRect, parseRefs, defaultScope, insideRect, idsInsideRect, withBoundText, hasExtent, imageBounds, pixelSize, pictureSize, rootElements, checkLimit, resultText, countElements, MAX_SIDE_PX, MAX_PIXELS, EXPORT_PADDING } from "../src/logic/image.ts";
 
 const ok = (a: unknown) => { const p = parseImageArgs(a); assert.equal(p.ok, true, JSON.stringify(a)); return (p as any).value; };
 const bad = (a: unknown) => { const p = parseImageArgs(a); assert.equal(p.ok, false, JSON.stringify(a)); assert.equal((p as any).code, "BAD_ARGS"); return (p as any).message as string; };
@@ -210,4 +210,19 @@ test("hasExtent: what Excalidraw drops before it sizes the picture has none; a s
   assert.equal(hasExtent(box(0, 0, { points: [] })), false);
   assert.equal(hasExtent(box(0, 0, { points: [[0, 0]] })), false);
   assert.equal(hasExtent(box(0, 0, { points: [[0, 0], [0, 0]] })), false);
+});
+
+test("pictureSize rounds up, refuses under 1 px as BAD_ARGS and over the limit as TOO_LARGE", () => {
+  assert.deepEqual(pictureSize(100.2, 40, 1.5), { ok: true, value: { width: 151, height: 60 } });
+  const small = pictureSize(10, 10, 0.05) as any;
+  assert.equal(small.ok, false);
+  assert.equal(small.code, "BAD_ARGS");
+  assert.match(small.message, /scale 0\.05/);
+  assert.deepEqual(pictureSize(10, 10, 0.1), { ok: true, value: { width: 1, height: 1 } });
+  assert.equal((pictureSize(MAX_SIDE_PX + 1, 10, 1) as any).code, "TOO_LARGE");
+});
+
+test("rootElements drops the children of a frame and keeps the frame, the rest and a child of a frame that is not there", () => {
+  const els = [{ id: "f", type: "frame" }, { id: "c", type: "rectangle", frameId: "f" }, { id: "r", type: "rectangle" }, { id: "o", type: "rectangle", frameId: "gone" }];
+  assert.deepEqual(rootElements(els).map((e) => e.id), ["f", "r", "o"]);
 });
