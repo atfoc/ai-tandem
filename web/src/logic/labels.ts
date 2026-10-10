@@ -103,6 +103,7 @@ export function toolVerb(name: string, input: any, nameOf: BoardNames = noNames)
     case "list_boards": return "Listing boards";
     case "read_board": return `Reading ${board}`;
     case "get_view": return "Looking at your view";
+    case "get_image": return `Looking at ${board}`;
     case "apply": return `Editing ${board}`;
     case "delete_elements": return `Deleting on ${board}`;
     case "create_board": return input?.name ? `Creating ${input.name}` : "Creating a board";
@@ -125,6 +126,7 @@ export function toolDone(name: string, input: any, result: string | undefined, n
     case "list_boards": return "Listed boards";
     case "read_board": return `Read ${board}`;
     case "get_view": return "Looked at your view";
+    case "get_image": return `Looked at ${board}`;
     case "apply": {
       if (!r || typeof r !== "object") return `Edited ${board}`;
       const parts = [];

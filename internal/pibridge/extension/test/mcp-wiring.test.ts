@@ -401,6 +401,81 @@ test("mcpToolResultOrThrow: success is text, isError carries the board text", ()
   );
 });
 
+test("mcpToolResultOrThrow: image parts follow the text, malformed ones are skipped, errors never carry them", () => {
+  const png = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
+  const text = { type: "text", text: "bounds x=0 y=0 w=10 h=10" };
+  assert.deepEqual(mcpToolResultOrThrow({ text: text.text, isError: false, content: [text, png] }, "mcp__board__get_image"), {
+    content: [{ type: "text", text: text.text }, png],
+    details: {},
+  });
+  // The image is not moved ahead of the text, even when the server sent it first.
+  assert.deepEqual(mcpToolResultOrThrow({ text: text.text, isError: false, content: [png, text] }, "mcp__board__get_image").content, [
+    { type: "text", text: text.text },
+    png,
+  ]);
+  // Malformed image parts are skipped, not thrown; the text and good parts stay.
+  const bad = [
+    { type: "image", mimeType: "image/png" },
+    { type: "image", data: 5, mimeType: "image/png" },
+    { type: "image", data: "", mimeType: "image/png" },
+    { type: "image", data: "AAAA" },
+    { type: "image", data: "AAAA", mimeType: "text/plain" },
+    { type: "image", data: "AAAA", mimeType: 7 },
+    { type: "audio", data: "AAAA", mimeType: "audio/wav" },
+    null,
+    "image",
+  ];
+  assert.deepEqual(mcpToolResultOrThrow({ text: "t", isError: false, content: [{ type: "text", text: "t" }, ...bad, png] }, "x").content, [
+    { type: "text", text: "t" },
+    png,
+  ]);
+  // Text only: exactly the old shape.
+  assert.deepEqual(mcpToolResultOrThrow({ text: "t", isError: false, content: [{ type: "text", text: "t" }, ...bad] }, "x"), {
+    content: [{ type: "text", text: "t" }],
+    details: {},
+  });
+  // An error throws with the text; an image in it is ignored.
+  assert.throws(
+    () => mcpToolResultOrThrow({ text: "EMPTY: nothing to draw", isError: true, content: [text, png] }, "mcp__board__get_image"),
+    /EMPTY: nothing to draw/,
+  );
+});
+
+test("startMCP: the registered execute hands pi the text and the image part", async () => {
+  const png = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
+  const calls: { name: string; args: unknown }[] = [];
+  const client = {
+    protocolVersion: "2025-06-18",
+    serverInfo: undefined,
+    listTools: async () => [{ name: "get_image", description: "see the board", inputSchema: { type: "object" } }],
+    callTool: async (name: string, args: unknown) => {
+      calls.push({ name, args });
+      const text = { type: "text", text: "scope all, bounds x=0 y=0 w=10 h=10 (board coordinates), 1 element, B (b1)" };
+      return { text: text.text, isError: false, content: [text, png] };
+    },
+    ping: async () => {},
+    close: () => {},
+  };
+  const registered: any[] = [];
+  const bootstrap = await startMCP({
+    selection: selectionOf(JSON.stringify({ mcpServers: { board: { url: "http://127.0.0.1:1/mcp/x" } } })),
+    register: (tool) => registered.push(tool),
+    notice: (message) => assert.fail(message),
+    connect: async () => client,
+  });
+  try {
+    assert.deepEqual(bootstrap.boardToolNames, ["mcp__board__get_image"]);
+    const result = await registered[0].execute({ scope: "all" });
+    assert.deepEqual(calls, [{ name: "get_image", args: { scope: "all" } }]);
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "scope all, bounds x=0 y=0 w=10 h=10 (board coordinates), 1 element, B (b1)" }, png],
+      details: {},
+    });
+  } finally {
+    bootstrap.close();
+  }
+});
+
 test("piToolParameters: server schema passes through, absent becomes the empty object schema", () => {
   const schema = { type: "object", properties: { board: { type: "string" } }, required: ["board"] };
   assert.equal(piToolParameters(schema), schema);

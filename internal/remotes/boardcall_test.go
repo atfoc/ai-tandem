@@ -187,3 +187,45 @@ func TestBoardCallDropped(t *testing.T) {
 		t.Errorf("the server got %v", got)
 	}
 }
+
+// TestBoardCallImageResult: a get_image answer, an object with the text and the picture as base64, goes to the
+// board's server unchanged under the server's id, and so does a picture of some megabytes.
+func TestBoardCallImageResult(t *testing.T) {
+	t.Parallel()
+	rg, th := holdRig(t, rigOpt{}, boardA)
+	ctx := t.Context()
+	p1, _ := rg.page("page-1")
+	take(t, rg, p1, boardA)
+
+	pictures := []string{"iVBORw0KGgo=", strings.Repeat("QUJD", 1<<20)} // 8 bytes; 4 MiB of base64
+	for i, data := range pictures {
+		rpc := "rpc_" + string(rune('1'+i))
+		rg.s.Send(toolCall(rpc, "get_image", boardA, ""))
+		id, _ := role(t, p1, "rpc")["id"].(string)
+		result := map[string]any{"text": "scope all, bounds x=0 y=0 w=10 h=10 (board coordinates), 1 element, a (b_1)", "image": map[string]any{"mimeType": "image/png", "data": data}}
+		body := mustJSON(t, map[string]any{"id": id, "result": result})
+		wantReply(t, "the page's answer", rg.r.ReplyBoardCall(ctx, p1.ID, id, body), http.StatusOK, map[string]any{"ok": true})
+		lines := th.wait("reply", i+1)
+		var got struct {
+			ID     string
+			Result json.RawMessage
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(lines[i], "reply ")), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != rpc {
+			t.Errorf("answer %d is for %q, want %q", i, got.ID, rpc)
+		}
+		var want json.RawMessage = mustJSON(t, result)
+		var a, b any
+		_ = json.Unmarshal(want, &a)
+		if err := json.Unmarshal(got.Result, &b); err != nil || !reflect.DeepEqual(a, b) {
+			t.Errorf("answer %d: the result changed on the way (%d bytes, want %d)", i, len(got.Result), len(want))
+		}
+		obj, _ := b.(map[string]any)
+		img, _ := obj["image"].(map[string]any)
+		if img["data"] != data || img["mimeType"] != "image/png" {
+			t.Errorf("answer %d: the picture changed on the way", i)
+		}
+	}
+}

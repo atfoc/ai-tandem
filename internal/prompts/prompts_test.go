@@ -41,7 +41,7 @@ func TestBoardContext(t *testing.T) {
 
 func TestInstructionsDescribeReferences(t *testing.T) {
 	s := Claude()
-	for _, want := range []string{"active_board", "<selection ids=", "<point x=", "get_view"} {
+	for _, want := range []string{"active_board", "<selection ids=", "<point x=", "get_view", "get_image"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("instructions lack %q", want)
 		}

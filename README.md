@@ -13,7 +13,7 @@ agents run with the logins you already have.
 
 - **Server** (`cmd/`, `internal/`): a Go program on `127.0.0.1:4747`. It stores boards, chats and
   [runs](#runs), runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
-  `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
+  `get_image`, `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
   MCP: one fixed MCP endpoint, `http://localhost:6006/mcp`, carries the chat's token in
   the `Authorization` header (every chat). The spawn family (`spawn_subagent`, `stop_subagent`,
   `list_subagent_models`) is on every chat and replaces native Agent / Task / subagent on app chats;
@@ -40,6 +40,31 @@ process. It advertises exactly `http://localhost:6006/mcp` for every agent. That
 load-bearing: Cursor's org allowlist matches the full URL, so a query string, an extra path
 segment, a trailing slash, or the `127.0.0.1` or `[::1]` spelling is blocked by team policy. There
 is no user-facing MCP port option (see [Troubleshooting the board MCP](#troubleshooting-the-board-mcp)).
+
+**`get_image`** gives an agent a picture of a board (PNG), drawn by the open window that holds
+the board, so it shows colours, layout and overlaps that `read_board` does not. `scope` picks what
+is drawn: `selection` (what the user has selected; only for the board that is on their screen),
+`all`, `refs` (the elements named in `refs`, by `key` or `id`, with the bound text of the chosen
+shapes and arrows; a frame's children and the elements an arrow joins are not added, so a selected
+frame is drawn alone) and `rect` (the elements completely inside a rectangle in board
+coordinates, a rotated one by its rotated box, with the bound text of the contained shapes and
+arrows; `rect` compares exact coordinates while `read_board` prints rounded numbers, so leave a
+margin). `refs` and `rect` are used only with their own `scope`, otherwise they are ignored; without a `scope` the
+selection is drawn when the board is on screen and something is selected, else the whole board.
+`scale` is 1 by default and at most 2 (a larger value is used as 2); `background: false` makes the
+picture transparent. A picture over 8192 px on its longest side or over 32 megapixels is refused
+(`TOO_LARGE`, with its size), and a result over 24 MB of base64 is refused by the server. The reply
+is the picture plus one line of text: the scope used, the bounds in board coordinates and the
+element count. Errors read `CODE: message`: `NO_SELECTION`, `EMPTY`, `UNKNOWN_REF`, `TOO_LARGE`,
+`BAD_ARGS`, `RENDER_FAILED`. Claude and pi get the picture as an image part of the tool result (for
+pi the extension passes it on); whether their models receive it has not been checked with the real
+agents. Cursor chats get no image part: the server writes the PNG to a
+private folder (`aiwb-images-<uid>`, mode 0700) under the system temp folder, never under the data
+folder, and the text names the file (`Image file: <path> (PNG). Open it with your file tools.`).
+Files older than an hour are removed, but only when the next picture is written for a Cursor chat,
+so with no further call they stay until then or until the system cleans its temp folder. Pictures
+are not stored in the board or in the chat. A remote server built before this tool answers
+`UNKNOWN_TOOL`; update it.
 
 The agents' board edits go through the open window, so boards can only be changed while the app
 (or a browser tab) is open. pi runs as a long-lived `pi --mode rpc` process per chat; the UDS

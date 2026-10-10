@@ -64,6 +64,40 @@ var Tools = []Tool{
 		Summary:     "{}",
 	},
 	{
+		Name: "get_image",
+		Description: "Look at a board as a picture (PNG): what a human sees, with colours, layout and overlaps, which read_board does not show. " +
+			"The result is an image plus one line of text with the scope used, the bounds of what is drawn in board coordinates and the element count. " +
+			"scope picks what is drawn: selection (the elements the user has selected; only for the board on the user's screen, " +
+			"for any other board use all, refs or rect), all (everything on the board, the default when nothing is selected), " +
+			"refs (the elements in refs, with their bound text; a frame's children and the elements an arrow joins are not added), " +
+			"rect (the elements completely inside rect, in board coordinates, a rotated one by its rotated box; one that sticks out is left out; " +
+			"the bound text of a contained shape or arrow is drawn with it; rect compares exact coordinates while read_board prints rounded numbers, so leave a margin). " +
+			"refs is used only with scope refs and rect only with scope rect; with any other scope they are ignored. " +
+			"A selected frame is drawn without its children: select or name them as well to see them. " +
+			"Without scope: the selection if the board is on the user's screen and something is selected on it, else all. " +
+			"scale is 1 by default; a larger one is used as 2; background false makes the picture transparent. " +
+			"A picture over 8192 px on its longest side or over 32 megapixels is refused with its size: ask again for a smaller scope or scale. " +
+			"Errors: NO_SELECTION, EMPTY, UNKNOWN_REF, TOO_LARGE, BAD_ARGS, RENDER_FAILED.",
+		Schema: obj(props{
+			"board": str(boardDesc),
+			"scope": map[string]any{
+				"type":        "string",
+				"description": "selection | all | refs | rect; omit for the selection if there is one, else all",
+				"enum":        []any{"selection", "all", "refs", "rect"},
+			},
+			"refs": arr(ref),
+			"rect": obj(props{
+				"x":      map[string]any{"type": "number"},
+				"y":      map[string]any{"type": "number"},
+				"width":  map[string]any{"type": "number"},
+				"height": map[string]any{"type": "number"},
+			}, "x", "y", "width", "height"),
+			"scale":      map[string]any{"type": "number", "description": "pixel scale, 1 by default, at most 2"},
+			"background": map[string]any{"type": "boolean", "description": "draw the board background; true by default"},
+		}),
+		Summary: `{"board"?: "<board id>", "scope"?: "selection|all|refs|rect", "refs"?: [{"key"|"id": ...}], "rect"?: {x, y, width, height}, "scale"?: 1-2, "background"?: bool}`,
+	},
+	{
 		Name: "apply",
 		Description: "Create and update elements on a board in one atomic step (one undo step for the user). " +
 			"create items: {type: rectangle|ellipse|diamond|text|arrow|line|frame, key, x, y, width, height, label, text (text elements), " +

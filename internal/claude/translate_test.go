@@ -77,6 +77,32 @@ func TestTranslateSampleTurn(t *testing.T) {
 	}
 }
 
+// A tool_result whose content list holds a picture next to the text (the board's get_image) goes
+// out as its text alone: the image block adds nothing to the result, and its base64 never reaches
+// the transcript, in either order of the blocks.
+func TestTranslateToolResultWithImageBlock(t *testing.T) {
+	const text = "scope all, bounds x=0 y=0 w=10 h=10 (board coordinates), 1 element, B (b1)"
+	const image = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUg=="}}`
+	textBlock := `{"type":"text","text":"` + text + `"}`
+	for name, content := range map[string]string{
+		"text then image": textBlock + "," + image,
+		"image then text": image + "," + textBlock,
+	} {
+		line := `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_IMG","type":"tool_result","content":[` + content + `]}]},"tool_use_result":[]}`
+		got := translateLine(t, &proc{}, line)
+		want := []agent.Event{{Kind: agent.EvToolResult, ToolID: "toolu_IMG", Result: text}}
+		if !eventsEqual(got, want) {
+			t.Errorf("%s:\n got  %s\n want %s", name, dump(got), dump(want))
+		}
+	}
+	// only an image: an empty result, not a crash or the picture's bytes
+	line := `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_IMG","type":"tool_result","content":[` + image + `]}]}}`
+	got := translateLine(t, &proc{}, line)
+	if want := []agent.Event{{Kind: agent.EvToolResult, ToolID: "toolu_IMG"}}; !eventsEqual(got, want) {
+		t.Errorf("image only:\n got  %s\n want %s", dump(got), dump(want))
+	}
+}
+
 func TestTranslateParentContextWindow(t *testing.T) {
 	result := `{"type":"result","is_error":false,"num_turns":1,"terminal_reason":"completed","modelUsage":{"claude-haiku-4-5":{"contextWindow":200000},"claude-sonnet-5":{"contextWindow":1000000}}}`
 	p := &proc{}

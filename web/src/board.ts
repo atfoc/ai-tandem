@@ -4,7 +4,7 @@
 // answers the board tools the agents call (relayed by the server as `rpc`),
 // gathers the <ui-context> block for a board chat's message, and turns the
 // live selection or a clicked point into a reference for the composer.
-import { restoreElements, getSceneVersion, newElementWith } from "@excalidraw/excalidraw";
+import { restoreElements, getSceneVersion, newElementWith, exportToBlob } from "@excalidraw/excalidraw";
 import { applyChanges, keyOf, RpcError, type El } from "./apply.ts";
 import { formatScene, formatElement, formatViewport, type FmtElement, type FmtViewport } from "./format.ts";
 import { contextBlock, boardRef } from "./logic/context.ts";
@@ -16,6 +16,7 @@ import { select } from "./Sidebar.tsx";
 import { editLabel, branchNameFor } from "./logic/attribution.ts";
 import { afterReconnect, onGrant, onLost, onRefusal, onTake, type Cache, type Step } from "./logic/roles.ts";
 import { saveFailure, saveOutage } from "./logic/boardsave.ts";
+import { parseImageArgs, parseRefs, parseRect, defaultScope, idsInsideRect, withBoundText, hasExtent, imageBounds, pixelSize, checkLimit, resultText, countElements, EXPORT_PADDING } from "./logic/image.ts";
 import type { AgentKind } from "./types.ts";
 
 /** rev counts the writes made here (read_board shows it); base is the revision the server stores the scene at, as this
@@ -493,7 +494,92 @@ function writable(id: string) {
 
 const refMatch = (refs: any[]) => (e: El) => refs.some((r: any) => (r?.id && r.id === e.id) || (r?.key && keyOf(e) === r.key));
 
-export async function runTool(call: ToolCall): Promise<string> {
+/** What a board tool answers: its text, and for get_image a picture next to it (base64, no data: prefix). */
+export type ToolResult = string | { text: string; image: { mimeType: string; data: string } };
+
+/** A blob as base64, in pieces so that a large picture does not overflow the call stack. */
+async function base64Of(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** get_image: draws the elements chosen by the scope as a PNG. Nothing in the scene or the selection is changed. */
+async function getImage(call: ToolCall): Promise<ToolResult> {
+  const p = parseImageArgs(call.args);
+  if (!p.ok) throw new RpcError(p.code, p.message);
+  const { scale, background } = p.value;
+  const id = await heldTarget(call);
+  const sc = await heldScene(id);
+  const name = boardRef(getState().boards[id]);
+  // the canvas is read once: the board can leave the screen while the picture is drawn
+  const api = id === liveBoard ? liveApi : null;
+  const onScreen = !!api && getState().sel.board === id;
+  const all: El[] = live(engineFor(id).getSceneElementsIncludingDeleted());
+  const ids = onScreen ? api.getAppState().selectedElementIds ?? {} : {};
+  const selected = all.filter((e) => ids[e.id]);
+  // scope -> the elements to draw
+  const scope = defaultScope(p.value.scope, onScreen, selected.length);
+  let chosen: Set<string>;
+  if (scope === "selection") {
+    if (!onScreen) throw new RpcError("NO_SELECTION", `${name} is not on the user's screen, so it has no selection; use scope all, refs or rect`);
+    if (!selected.length) throw new RpcError("NO_SELECTION", `nothing is selected on ${name}; use scope all, refs or rect`);
+    chosen = new Set(selected.map((e) => e.id));
+  } else if (scope === "refs") {
+    const r = parseRefs(call.args?.refs);
+    if (!r.ok) throw new RpcError(r.code, r.message);
+    const refs: any[] = expandIds(id, { refs: r.value }).refs;
+    const unknown = refs.filter((ref) => !all.some(refMatch([ref])));
+    if (unknown.length) {
+      // an id that is the start of several ids was not expanded: say so, the agent needs a longer id and not another element
+      const ambiguous = unknown.filter((u) => typeof u?.id === "string" && u.id && all.filter((e) => e.id.startsWith(u.id)).length > 1);
+      const missing = unknown.filter((u) => !ambiguous.includes(u));
+      const list = (rs: any[]) => rs.map((u) => JSON.stringify(u)).join(", ");
+      throw new RpcError("UNKNOWN_REF", [
+        missing.length ? `no element on ${name} matches ${list(missing)}` : "",
+        ambiguous.length ? `${list(ambiguous)} ${ambiguous.length === 1 ? "is" : "are"} ambiguous: more than one id on ${name} starts with ${ambiguous.length === 1 ? "it" : "each"}, so give a longer id` : "",
+      ].filter(Boolean).join("; ") + "; call read_board for the keys and ids");
+    }
+    chosen = new Set(all.filter(refMatch(refs)).map((e) => e.id));
+  } else if (scope === "rect") {
+    const r = parseRect(call.args?.rect);
+    if (!r.ok) throw new RpcError(r.code, r.message);
+    chosen = idsInsideRect(all, r.value);
+    if (!chosen.size) throw new RpcError("EMPTY", `no element on ${name} lies completely inside x=${r.value.x} y=${r.value.y} w=${r.value.width} h=${r.value.height}; use read_board for where things are`);
+  } else chosen = new Set(all.map((e) => e.id));
+  const withText = withBoundText(all, chosen);
+  if (!withText.length) throw new RpcError("EMPTY", `${name} has no elements to draw`);
+  // elements with no extent are left out before anything is measured or counted, as Excalidraw drops them: they would only stretch the bounds
+  const els = withText.filter(hasExtent);
+  const bounds = imageBounds(els);
+  if (!bounds) throw new RpcError("EMPTY", `the chosen elements on ${name} have no extent (zero width and height), so there is nothing to draw`);
+  // the size is known before anything is rendered
+  const tooLarge = checkLimit(pixelSize(bounds, scale));
+  if (tooLarge) throw new RpcError(tooLarge.code, tooLarge.message);
+  markBusy(id, call.chat, call.branch);
+  const app = api ? api.getAppState() : sc.appState;
+  const files = api ? api.getFiles() : sc.files;
+  // render: after the fonts are ready, or the text is drawn in a fallback font
+  try { await (globalThis as any).document?.fonts?.ready; } catch {}
+  let data: string;
+  try {
+    const blob = await exportToBlob({
+      elements: els as any,
+      appState: { exportBackground: background, viewBackgroundColor: app?.viewBackgroundColor ?? "#ffffff", exportWithDarkMode: false },
+      files,
+      mimeType: "image/png",
+      exportPadding: EXPORT_PADDING,
+      getDimensions: (w: number, h: number) => ({ width: w * scale, height: h * scale, scale }),
+    });
+    data = await base64Of(blob);
+  } catch (err: any) {
+    throw new RpcError("RENDER_FAILED", `the picture could not be drawn: ${err?.message ?? String(err)}`);
+  }
+  return { text: resultText(scope, bounds, countElements(els), name), image: { mimeType: "image/png", data } };
+}
+
+export async function runTool(call: ToolCall): Promise<ToolResult> {
   const s = getState();
   const args = call.args ?? {};
   switch (call.name) {
@@ -517,6 +603,8 @@ export async function runTool(call: ToolCall): Promise<string> {
         sel.length ? `selection (${sel.length}):\n${sel.map((l) => "  " + l).join("\n")}` : "selection: none",
       ].join("\n");
     }
+
+    case "get_image": return getImage(call);
 
     case "apply": {
       const id = await heldTarget(call);

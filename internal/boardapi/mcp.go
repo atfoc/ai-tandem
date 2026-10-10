@@ -50,25 +50,37 @@ type Relay struct {
 	// Contacts is the last MCP contact per chat, read by GET /api/mcp/status. Its zero value is
 	// ready to use.
 	Contacts ContactLog
+	// ImageDir is where a picture is written for a Cursor agent (see imagefile.go). Empty means
+	// aiwb-images-<uid> in the OS temp dir. ImageMaxAge is how long such a file is kept; zero
+	// means imageMaxAge.
+	ImageDir    string
+	ImageMaxAge time.Duration
 }
 
-// Call runs a board tool for the chat with this token and returns the text for the agent.
+// Call runs a board tool for the chat with this token and returns the text for the agent; a
+// picture the tool returns is left out (see CallResult).
 // Errors come back as text too (isErr = true), so the agent can tell the user.
 // Spawn-family tools must not go through Call (that path is the 30s board-tool bridge).
 func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isErr bool) {
+	res := r.CallResult(token, tool, args)
+	return res.Text, res.IsErr
+}
+
+// CallResult is Call with the whole result: the text and, for a tool that draws, the picture.
+func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult {
 	caller, ok := r.Chats.ResolveToken(token)
 	if !ok {
-		return "unknown board token", true
+		return errResult("unknown board token")
 	}
 	meta := caller.Meta
 	if meta.Archived {
-		return "this chat is archived", true
+		return errResult("this chat is archived")
 	}
 	if meta.InstructionsSent {
-		return "this chat used the old board connection", true
+		return errResult("this chat used the old board connection")
 	}
 	if !boardtools.IsTool(tool) {
-		return "unknown tool " + tool, true
+		return errResult("unknown tool " + tool)
 	}
 	// The board the call is about: the one it names, else the chat's own.
 	var named struct {
@@ -78,13 +90,13 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 	var target string
 	if len(named.Board) > 0 && string(named.Board) != "null" && json.Unmarshal(named.Board, &target) != nil {
 		// Not a string: no board has such an id, and the call must not fall to the chat's own.
-		return "NO_BOARD: no board with id " + string(named.Board) + "; call list_boards to find ids", true
+		return errResult("NO_BOARD: no board with id " + string(named.Board) + "; call list_boards to find ids")
 	}
 	switch tool {
 	case "list_boards":
-		return r.listBoards(meta.Board), false
+		return textResult(r.listBoards(meta.Board), false)
 	case "create_board":
-		return r.createBoard(meta.Board, args)
+		return textResult(r.createBoard(meta.Board, args))
 	case "get_view": // about the screen, not about a board
 		target = ""
 	default:
@@ -94,11 +106,11 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 		bd, ok := r.Boards.Get(target)
 		switch {
 		case !ok && target == meta.Board:
-			return "NO_BOARD: this chat's board " + target + " no longer exists", true
+			return errResult("NO_BOARD: this chat's board " + target + " no longer exists")
 		case !ok:
-			return "NO_BOARD: no board with id " + target + "; call list_boards to find ids", true
+			return errResult("NO_BOARD: no board with id " + target + "; call list_boards to find ids")
 		case bd.Archived:
-			return "ARCHIVED: " + bd.Name + " is archived", true
+			return errResult("ARCHIVED: " + bd.Name + " is archived")
 		}
 	}
 	// The client knows the chat by its top-level id, also when a branch's agent calls; branch
@@ -116,15 +128,12 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 	}
 	out, err := r.Bridge.CallBoard(spec, callTimeout)
 	if errors.Is(err, editorbridge.ErrNoClient) {
-		return NoClientText, true
+		return errResult(NoClientText)
 	}
 	if err != nil {
-		return err.Error(), true
+		return errResult(err.Error())
 	}
-	if json.Unmarshal(out, &text) != nil {
-		text = string(out)
-	}
-	return text, false
+	return pageResult(tool, out)
 }
 
 // groupText is a board's group path as an agent reads it, "Work / Infra", or "Ungrouped".
@@ -388,10 +397,10 @@ func (r *Relay) serveRPC(w http.ResponseWriter, req *http.Request, token string)
 			Arguments json.RawMessage `json:"arguments"`
 		}
 		json.Unmarshal(rq.Params, &p)
-		text, isErr := r.dispatch(token, p.Name, p.Arguments)
-		r.logToolCall(token, p.Name, isErr)
-		res := map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
-		if isErr {
+		tr := r.dispatch(token, p.Name, p.Arguments)
+		r.logToolCall(token, p.Name, tr.IsErr)
+		res := map[string]any{"content": tr.content()}
+		if tr.IsErr {
 			res["isError"] = true
 		}
 		result = res
@@ -411,41 +420,45 @@ func (r *Relay) serveRPC(w http.ResponseWriter, req *http.Request, token string)
 }
 
 // dispatch authorizes and routes one tools/call. Spawn-family never goes through Relay.Call, and
-// neither do the run tools.
-func (r *Relay) dispatch(token, name string, args json.RawMessage) (text string, isErr bool) {
+// neither do the run tools; their results are text.
+func (r *Relay) dispatch(token, name string, args json.RawMessage) ToolResult {
 	caller, ok := r.Chats.ResolveToken(token)
 	if !ok {
-		return "unknown board token", true
+		return errResult("unknown board token")
 	}
 	if caller.Meta.Archived {
-		return "this chat is archived", true
+		return errResult("this chat is archived")
 	}
 	if caller.Meta.InstructionsSent {
-		return "this chat used the old board connection", true
+		return errResult("this chat used the old board connection")
 	}
 	if caller.Meta.Run != "" {
-		return r.runDispatch(caller, name, args)
+		return textResult(r.runDispatch(caller, name, args))
 	}
 	hasBoard := caller.Meta.Board != ""
 	if boardtools.IsSpawnFamily(name) {
 		if caller.Subagent {
-			return name + " is not available to subagents", true
+			return errResult(name + " is not available to subagents")
 		}
-		return r.callSpawnFamily(caller, name, args)
+		return textResult(r.callSpawnFamily(caller, name, args))
 	}
 	if boardtools.IsRunTool(name) { // a chat that is on no run has no run tool
 		if caller.Subagent {
-			return name + " is not available to subagents", true
+			return errResult(name + " is not available to subagents")
 		}
-		return name + " is not available on this chat", true
+		return errResult(name + " is not available on this chat")
 	}
 	if boardtools.IsTool(name) {
 		if !hasBoard {
-			return name + " is not available on this chat", true
+			return errResult(name + " is not available on this chat")
 		}
-		return r.Call(token, name, args)
+		res := r.CallResult(token, name, args)
+		if caller.Kind == model.Cursor { // Cursor is not handed an image part: a file it opens
+			res = r.imageToFile(name, res)
+		}
+		return res
 	}
-	return "unknown tool " + name, true
+	return errResult("unknown tool " + name)
 }
 
 // callSpawnFamily runs a spawn-family tool on the caller's own chat object: caller.Meta.ID, a

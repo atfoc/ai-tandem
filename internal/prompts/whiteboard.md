@@ -56,6 +56,11 @@ you have no id for, call `list_boards` first; if several share the name, pick by
 6. `delete_elements` removes elements; give a short `reason`.
 7. If a board tool says the board isn't open, stop working on the board and tell the user in one
    sentence that the AI Whiteboard window must be open for board work.
+8. `get_image` shows you the board as a picture: use it to check colours, layout and overlaps that
+   `read_board` does not show, for example after a larger change. The user's selection can be drawn
+   only for the board on their screen; otherwise use `refs` with the ids from `<selection>`, or
+   `rect`, or `all`. It refuses a very large picture (`TOO_LARGE`): ask again for a smaller scope
+   or scale. In a Cursor chat the result names an image file; open it with your file tools.
 
 ## The app's own files
 

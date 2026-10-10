@@ -184,7 +184,7 @@ func TestToolsList(t *testing.T) {
 	_, out := e.mcp(e.token, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	tools := out["result"].(map[string]any)["tools"].([]any)
 	want := append(append([]boardtools.Tool{}, boardtools.Tools...), boardtools.SpawnFamily...)
-	if len(tools) != len(want) || len(boardtools.Tools) != 7 {
+	if len(tools) != len(want) || len(boardtools.Tools) != 8 {
 		t.Fatalf("%d tools, boardtools.Tools=%d", len(tools), len(boardtools.Tools))
 	}
 	for i, x := range tools {
@@ -509,7 +509,7 @@ func TestOnePageGetsEveryToolOnEveryBoard(t *testing.T) {
 	_, seen := e.pages("P1")
 	e.relay.Bridge.Acted("P1")
 	for _, bd := range []model.Board{e.board, other} {
-		for _, tool := range []string{"read_board", "get_view", "apply", "delete_elements", "show_board"} {
+		for _, tool := range []string{"read_board", "get_view", "get_image", "apply", "delete_elements", "show_board"} {
 			text, isErr := e.relay.Call(e.token, tool, json.RawMessage(`{"board":"`+bd.ID+`"}`))
 			if isErr || text != "P1:"+tool {
 				t.Fatalf("%s on %s: %q isErr=%v", tool, bd.Name, text, isErr)
@@ -542,7 +542,7 @@ func TestCallWithNoPageFailsAtOnce(t *testing.T) {
 	check := func(when string) {
 		t.Helper()
 		start := time.Now()
-		for _, tool := range []string{"read_board", "get_view", "apply", "delete_elements", "show_board"} {
+		for _, tool := range []string{"read_board", "get_view", "get_image", "apply", "delete_elements", "show_board"} {
 			if text, isErr := e.relay.Call(e.token, tool, json.RawMessage(`{}`)); !isErr || text != NoClientText {
 				t.Fatalf("%s, %s: %q isErr=%v", when, tool, text, isErr)
 			}
@@ -734,7 +734,7 @@ func TestCallRefusesABoardThatIsNotAString(t *testing.T) {
 	e := newEnv(t)
 	_, seen := e.pages("P1")
 	e.take("P1", e.board.ID)
-	for _, tool := range []string{"read_board", "apply", "delete_elements", "show_board"} {
+	for _, tool := range []string{"read_board", "get_image", "apply", "delete_elements", "show_board"} {
 		for _, v := range []string{`123`, `{"a":1}`} {
 			text, isErr := e.relay.Call(e.token, tool, json.RawMessage(`{"board":`+v+`}`))
 			if want := "NO_BOARD: no board with id " + v + "; call list_boards to find ids"; !isErr || text != want {
@@ -766,7 +766,7 @@ func TestCallChecksItsTargetBoard(t *testing.T) {
 	}
 	_, seen := e.pages("P1")
 	e.take("P1", e.board.ID)
-	for _, tool := range []string{"read_board", "apply", "delete_elements", "show_board"} {
+	for _, tool := range []string{"read_board", "get_image", "apply", "delete_elements", "show_board"} {
 		text, isErr := e.relay.Call(e.token, tool, json.RawMessage(`{"board":"b_nope"}`))
 		if !isErr || text != "NO_BOARD: no board with id b_nope; call list_boards to find ids" {
 			t.Fatalf("%s on an unknown board: %q isErr=%v", tool, text, isErr)
@@ -784,7 +784,7 @@ func TestCallChecksItsTargetBoard(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "NO_BOARD: this chat's board " + e.board.ID + " no longer exists"
-	for _, tool := range []string{"read_board", "apply", "delete_elements", "show_board", "create_board"} {
+	for _, tool := range []string{"read_board", "get_image", "apply", "delete_elements", "show_board", "create_board"} {
 		for _, args := range []string{`{"name":"x"}`, `{"name":"x","board":"` + e.board.ID + `"}`} {
 			if text, isErr := e.relay.Call(e.token, tool, json.RawMessage(args)); !isErr || text != want {
 				t.Fatalf("%s %s with the chat's board gone: %q isErr=%v", tool, args, text, isErr)

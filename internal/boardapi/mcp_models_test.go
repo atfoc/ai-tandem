@@ -103,7 +103,7 @@ var claudeRows = []string{
 func TestListModelsListed(t *testing.T) {
 	e := newEnv(t)
 	last := func(names []string) string { return names[len(names)-1] }
-	if got := e.listNames(e.token); len(got) != 10 || last(got) != "list_subagent_models" {
+	if got := e.listNames(e.token); len(got) != 11 || last(got) != "list_subagent_models" {
 		t.Fatalf("board chat: %v", got)
 	}
 	for _, kind := range kinds {

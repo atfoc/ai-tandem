@@ -7,7 +7,7 @@ import (
 )
 
 func TestTools(t *testing.T) {
-	want := []string{"list_boards", "read_board", "get_view", "apply", "delete_elements", "create_board", "show_board"}
+	want := []string{"list_boards", "read_board", "get_view", "get_image", "apply", "delete_elements", "create_board", "show_board"}
 	if len(Tools) != len(want) {
 		t.Fatalf("len(Tools) = %d, want %d", len(Tools), len(want))
 	}
@@ -164,5 +164,79 @@ func TestSpawnPointsToModelList(t *testing.T) {
 	const summary = `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`
 	if spawn.Summary != summary {
 		t.Errorf("spawn_subagent summary = %q, want %q", spawn.Summary, summary)
+	}
+}
+
+func getImageTool(t *testing.T) Tool {
+	t.Helper()
+	for _, tool := range Tools {
+		if tool.Name == "get_image" {
+			return tool
+		}
+	}
+	t.Fatal("no get_image tool")
+	return Tool{}
+}
+
+// The description is all an agent knows about get_image: key phrases of each rule are pinned, not the whole text.
+func TestGetImageDescription(t *testing.T) {
+	d := getImageTool(t).Description
+	for _, want := range []string{
+		"selection (the elements the user has selected; only for the board on the user's screen",
+		"for any other board use all, refs or rect",
+		"all (everything on the board",
+		"refs (the elements in refs, with their bound text",
+		"a frame's children and the elements an arrow joins are not added",
+		"rect (the elements completely inside rect, in board coordinates",
+		"one that sticks out is left out",
+		"a rotated one by its rotated box",
+		"the bound text of a contained shape or arrow is drawn with it",
+		"rect compares exact coordinates while read_board prints rounded numbers, so leave a margin",
+		"refs is used only with scope refs and rect only with scope rect; with any other scope they are ignored",
+		"A selected frame is drawn without its children",
+		"Without scope: the selection if the board is on the user's screen and something is selected on it, else all",
+		"scale is 1 by default; a larger one is used as 2",
+		"background false makes the picture transparent",
+		"over 8192 px on its longest side or over 32 megapixels is refused with its size",
+		"ask again for a smaller scope or scale",
+		"Errors: NO_SELECTION, EMPTY, UNKNOWN_REF, TOO_LARGE, BAD_ARGS, RENDER_FAILED.",
+	} {
+		if !strings.Contains(d, want) {
+			t.Errorf("get_image description lost %q:\n%s", want, d)
+		}
+	}
+}
+
+func TestGetImageSchema(t *testing.T) {
+	tool := getImageTool(t)
+	props, _ := tool.Schema["properties"].(map[string]any)
+	scope, _ := props["scope"].(map[string]any)
+	if scope["type"] != "string" {
+		t.Errorf("scope type = %v", scope["type"])
+	}
+	enum, _ := scope["enum"].([]any)
+	if len(enum) != 4 || enum[0] != "selection" || enum[1] != "all" || enum[2] != "refs" || enum[3] != "rect" {
+		t.Errorf("scope enum = %v, want selection, all, refs, rect", enum)
+	}
+	for _, name := range []string{"board", "scope", "refs", "rect", "scale", "background"} {
+		if _, ok := props[name]; !ok {
+			t.Errorf("get_image has no %q property", name)
+		}
+	}
+	if req, ok := tool.Schema["required"]; ok && req != nil {
+		t.Errorf("get_image requires %v, every argument is optional", req)
+	}
+	rect, _ := props["rect"].(map[string]any)
+	if got, _ := rect["required"].([]string); len(got) != 4 {
+		t.Errorf("rect required = %v, want x, y, width, height", rect["required"])
+	}
+	scale, _ := props["scale"].(map[string]any)
+	if !strings.Contains(scale["description"].(string), "at most 2") {
+		t.Errorf("scale description = %v", scale["description"])
+	}
+	for _, want := range []string{"selection|all|refs|rect", "scale"} {
+		if !strings.Contains(tool.Summary, want) {
+			t.Errorf("Summary %q lost %q", tool.Summary, want)
+		}
 	}
 }

@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { EXPORT_PADDING } from "../src/logic/image.ts";
 
 type Take = { state: "held" | "waiting" | "busy"; rev?: number };
 type Fake = {
@@ -19,9 +20,12 @@ type Fake = {
   release: (id: string) => Promise<{ state: string }>;
   log: string[];        // what the page asked of the server, in order
   selects: unknown[][]; // the sidebar's select, as show_board calls it
+  exports: any[];       // the arguments exportToBlob was called with
+  png?: Uint8Array;     // the bytes exportToBlob returns
+  exportError?: unknown; // exportToBlob throws this when set
 };
 const fake: Fake = { scene: async () => ({ scene: {}, rev: 0 }), saveScene: async (_, base) => base + 1, take: async () => ({ state: "held", rev: 0 }),
-  release: async () => ({ state: "handed" }), log: [], selects: [] };
+  release: async () => ({ state: "handed" }), log: [], selects: [], exports: [] };
 (globalThis as any).__saves = fake;
 
 const stubs: Record<string, string> = {
@@ -30,6 +34,7 @@ const stubs: Record<string, string> = {
     export const getSceneVersion = (els) => els.reduce((n, e) => n + (e.version ?? 1), 0);
     export const newElementWith = (e, p) => ({ ...e, ...p });
     export const convertToExcalidrawElements = (els) => els;
+    export const exportToBlob = async (o) => { globalThis.__saves.exports.push(o); if (globalThis.__saves.exportError !== undefined) throw globalThis.__saves.exportError; return new Blob([globalThis.__saves.png ?? new Uint8Array([137, 80, 78, 71])], { type: "image/png" }); };
     export const CaptureUpdateAction = {}; export const FONT_FAMILY = {}; export const ROUNDNESS = {};`,
   "./api.ts": `
     const f = globalThis.__saves;
@@ -104,9 +109,10 @@ const asked = () => fake.log.splice(0);
 
 beforeEach(() => {
   console.error = () => {};
-  fake.log.length = 0; fake.selects.length = 0;
+  fake.log.length = 0; fake.selects.length = 0; fake.exports.length = 0; fake.png = undefined; fake.exportError = undefined;
   fake.scene = stored(0); fake.saveScene = async (_, base) => base + 1;
   fake.take = async () => ({ state: "held", rev: 0 }); fake.release = async () => ({ state: "handed" });
+  board.setLive(null, null);
   for (const b of Object.keys(st().boards)) board.forgetBoard(b); // what a failed test left
   board.streamOpened();
   store.setState({ boards: {}, roles: {}, dropped: {}, sceneGen: {}, outage: {}, sel: { board: null, run: null, chat: null } });
@@ -901,5 +907,507 @@ test("a tool call for a board this window was given without being told asks for 
     await assert.rejects(call(theirs), { code: "NOT_HOLDER" });
     assert.deepEqual(asked(), [`take if free ${theirs}`]); // nothing of it is read
     board.forgetBoard(made); board.forgetBoard(theirs);
+  });
+});
+
+// ---- get_image, with exportToBlob stubbed: the pixels are not asserted, what it is given and what comes back are
+
+const rect = (id: string, x: number, y: number, width: number, height: number, o: Record<string, unknown> = {}) =>
+  ({ id, type: "rectangle", x, y, width, height, version: 1, isDeleted: false, ...o });
+/** A board this window holds, whose stored scene is els. */
+async function heldWith(els: unknown[], appState: unknown = {}, files: unknown = {}) {
+  const b = fresh();
+  fake.scene = async () => ({ scene: { elements: els, appState, files }, rev: 0 });
+  store.setRole(b, "held");
+  await board.loadScene(b);
+  return b;
+}
+const image = (b: string, args: unknown = {}, o: Record<string, unknown> = {}) =>
+  board.runTool({ chat: "c_1", branch: "main", board: b, target: b, name: "get_image", args, ...o });
+
+test("get_image returns the text with the bounds and the count, and the PNG as base64", async () => {
+  await withoutLongTimers(async () => {
+    fake.png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    const b = await heldWith([
+      rect("a", 100, 50, 200, 100),
+      { id: "t", type: "text", x: 110, y: 60, width: 50, height: 20, version: 1, containerId: "a", text: "hi" }, // bound text: counts with its container
+      { id: "arr", type: "arrow", x: 300, y: 100, width: 100, height: 200, points: [[0, 0], [100, 200]], version: 1 },
+      rect("gone", -900, -900, 5, 5, { isDeleted: true }),
+    ], { viewBackgroundColor: "#ffeecc" }, { f1: { id: "f1" } });
+    const r = await image(b);
+    assert.equal(typeof r, "object");
+    const { text, image: img } = r as any;
+    assert.equal(text, `scope all, bounds x=100 y=50 w=300 h=250 (board coordinates), 2 elements, Board ${b} (${b})`);
+    assert.deepEqual(img, { mimeType: "image/png", data: Buffer.from(fake.png).toString("base64") });
+    assert.deepEqual(asked(), [`read ${b}`]);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image gives exportToBlob the live elements, the scene's files and the options, without the canvas", async () => {
+  await withoutLongTimers(async () => {
+    const files = { f1: { id: "f1", dataURL: "data:" } };
+    const b = await heldWith([rect("a", 0, 0, 10, 10), rect("gone", 0, 0, 10, 10, { isDeleted: true })], { viewBackgroundColor: "#ffeecc" }, files);
+    assert.equal(st().sel.board === b, false); // not on screen
+    await image(b, { scale: 1.5, background: false });
+    assert.equal(fake.exports.length, 1);
+    const o = fake.exports[0];
+    assert.deepEqual(o.elements.map((e: any) => e.id), ["a"]);
+    assert.equal(o.files, files);
+    assert.equal(o.mimeType, "image/png");
+    assert.equal(o.appState.exportBackground, false);
+    assert.equal(o.appState.viewBackgroundColor, "#ffeecc");
+    assert.equal(typeof o.exportPadding, "number");
+    assert.deepEqual(o.getDimensions(100, 40), { width: 150, height: 60, scale: 1.5 });
+    await image(b); // defaults
+    assert.equal(fake.exports[1].appState.exportBackground, true);
+    assert.deepEqual(fake.exports[1].getDimensions(100, 40), { width: 100, height: 40, scale: 1 });
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: scale above 2 is used as 2; a bad scale, background or scope is BAD_ARGS", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith([rect("a", 0, 0, 10, 10)]);
+    await image(b, { scale: 5 });
+    assert.deepEqual(fake.exports[0].getDimensions(10, 10), { width: 20, height: 20, scale: 2 });
+    for (const args of [{ scale: 0 }, { scale: -1 }, { scale: "2" }, { scale: NaN }, { background: "no" }, { scope: "nope" }])
+      await assert.rejects(image(b, args), { code: "BAD_ARGS" }, JSON.stringify(args));
+    await image(b, { scope: "all" });
+    assert.equal(fake.exports.length, 2); // the failures drew nothing
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: an empty board, or one of only deleted elements, is EMPTY and draws nothing", async () => {
+  await withoutLongTimers(async () => {
+    const empty = await heldWith([]);
+    const deleted = await heldWith([rect("a", 0, 0, 10, 10, { isDeleted: true })]);
+    await assert.rejects(image(empty), { code: "EMPTY" });
+    await assert.rejects(image(deleted), { code: "EMPTY" });
+    assert.equal(fake.exports.length, 0);
+    board.forgetBoard(empty); board.forgetBoard(deleted);
+  });
+});
+
+test("get_image: a picture above the limit is TOO_LARGE with the limit named, and draws nothing", async () => {
+  await withoutLongTimers(async () => {
+    const wide = await heldWith([rect("a", 0, 0, 9000, 10)]);
+    await assert.rejects(image(wide), (e: any) => e.code === "TOO_LARGE" && /8192/.test(e.message) && /smaller scope/.test(e.message));
+    const area = await heldWith([rect("a", 0, 0, 6000, 6000)]); // 6032x6032 = 36 MP, each side within 8192
+    await assert.rejects(image(area), (e: any) => e.code === "TOO_LARGE" && /32 megapixels/.test(e.message));
+    const half = await heldWith([rect("a", 0, 0, 4100, 100)]); // 4132 px wide: fine at scale 1, 8264 at scale 2
+    await assert.rejects(image(half, { scale: 2 }), { code: "TOO_LARGE" });
+    assert.equal(fake.exports.length, 0);
+    await image(half);
+    assert.equal(fake.exports.length, 1);
+    board.forgetBoard(wide); board.forgetBoard(area); board.forgetBoard(half);
+  });
+});
+
+test("get_image on a board this window does not hold is NOT_HOLDER, and on an unknown board NO_BOARD", async () => {
+  await withoutLongTimers(async () => {
+    const theirs = fresh();
+    fake.take = async () => ({ state: "busy" });
+    await assert.rejects(image(theirs), { code: "NOT_HOLDER" });
+    await assert.rejects(image("b_unknown"), { code: "NO_BOARD" });
+    assert.equal(fake.exports.length, 0);
+    board.forgetBoard(theirs);
+  });
+});
+
+// ---- get_image: the scopes refs, rect and selection
+
+/** A fake canvas for the board b: it shows els, has selected the ids, and records every write to it. */
+function goLive(b: string, els: any[], selected: string[] = [], files: unknown = { live: true }) {
+  const selectedElementIds = Object.fromEntries(selected.map((i) => [i, true]));
+  const calls: string[] = [];
+  const api = {
+    getAppState: () => ({ selectedElementIds, viewBackgroundColor: "#112233" }),
+    getSceneElementsIncludingDeleted: () => els,
+    getFiles: () => files,
+    updateScene: () => { calls.push("updateScene"); },
+    scrollToContent: () => { calls.push("scrollToContent"); },
+  };
+  board.setLive(b, api);
+  store.setState({ sel: { board: b, run: null, chat: null } });
+  return { api, calls, selectedElementIds };
+}
+const idsOf = (n = 0) => fake.exports[n].elements.map((e: any) => e.id);
+/** A scene of: boxes a (with a label ta, key "A") and b (key "B"), an arrow ab between them with a label tab, and c far away. */
+const scene = () => [
+  rect("a", 0, 0, 100, 50, { customData: { key: "A" } }),
+  { id: "ta", type: "text", x: 10, y: 10, width: 20, height: 10, version: 1, isDeleted: false, containerId: "a", text: "A" },
+  rect("b", 300, 0, 100, 50, { customData: { key: "B" } }),
+  { id: "ab", type: "arrow", x: 100, y: 25, width: 200, height: 0, points: [[0, 0], [200, 0]], version: 1, isDeleted: false, startBinding: { elementId: "a" }, endBinding: { elementId: "b" } },
+  { id: "tab", type: "text", x: 180, y: 10, width: 20, height: 10, version: 1, isDeleted: false, containerId: "ab", text: "to" },
+  rect("c_long_id_0001", 1000, 1000, 40, 40, { customData: { key: "C" } }),
+  rect("gone", 0, 0, 10, 10, { isDeleted: true, customData: { key: "G" } }),
+];
+
+test("get_image refs: a key and an id in one call draw exactly those elements and their bound text", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    const r = await image(b, { scope: "refs", refs: [{ key: "A" }, { id: "c_long_id_0001" }] }) as any;
+    assert.deepEqual(idsOf(), ["a", "ta", "c_long_id_0001"]);
+    assert.equal(r.text, `scope refs, bounds x=0 y=0 w=1040 h=1040 (board coordinates), 2 elements, Board ${b} (${b})`);
+    assert.equal(r.image.mimeType, "image/png");
+    await image(b, { scope: "refs", refs: [{ id: "ab" }] }); // an arrow brings its label, not the boxes it joins
+    assert.deepEqual(idsOf(1), ["ab", "tab"]);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image refs: an id shortened to a unique prefix works as in apply; an ambiguous or unknown one is UNKNOWN_REF", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    await image(b, { scope: "refs", refs: [{ id: "c_long" }] });
+    assert.deepEqual(idsOf(), ["c_long_id_0001"]);
+    await assert.rejects(image(b, { scope: "refs", refs: [{ id: "zz" }] }), { code: "UNKNOWN_REF", message: /\{"id":"zz"\}/ });
+    await assert.rejects(image(b, { scope: "refs", refs: [{ id: "t" }] }), { code: "UNKNOWN_REF" }); // ta, tab: not unique
+    assert.equal(fake.exports.length, 1);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image refs: any ref that matches nothing is UNKNOWN_REF, naming it, and nothing is drawn; a deleted element does not match", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    await assert.rejects(image(b, { scope: "refs", refs: [{ key: "A" }, { key: "nope" }, { id: "b" }] }),
+      (e: any) => e.code === "UNKNOWN_REF" && /\{"key":"nope"\}/.test(e.message) && !/"A"/.test(e.message) && /read_board/.test(e.message));
+    await assert.rejects(image(b, { scope: "refs", refs: [{ key: "G" }] }), { code: "UNKNOWN_REF" });
+    await assert.rejects(image(b, { scope: "refs", refs: [{ id: "gone" }] }), { code: "UNKNOWN_REF" });
+    assert.equal(fake.exports.length, 0);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image refs: no refs, or a ref without key and id, is BAD_ARGS", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    for (const args of [{ scope: "refs" }, { scope: "refs", refs: [] }, { scope: "refs", refs: "A" }, { scope: "refs", refs: [{}] }, { scope: "refs", refs: [{ key: "A" }, 3] }])
+      await assert.rejects(image(b, args), { code: "BAD_ARGS" }, JSON.stringify(args));
+    assert.equal(fake.exports.length, 0);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image rect: only elements completely inside are drawn, arrows by every point; none inside is EMPTY", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    const at = (x: number, y: number, width: number, height: number) => ({ scope: "rect", rect: { x, y, width, height } });
+    // a and its label fit; the arrow starts at x=100 and runs to 300, b is at 300..400
+    const r = await image(b, at(-10, -10, 120, 80)) as any;
+    assert.deepEqual(idsOf(0), ["a", "ta"]);
+    assert.equal(r.text, `scope rect, bounds x=0 y=0 w=100 h=50 (board coordinates), 1 element, Board ${b} (${b})`);
+    await image(b, at(0, 0, 400, 50)); // exactly the box around a, the arrow and b: all of them fit, c does not
+    assert.deepEqual(idsOf(1), ["a", "ta", "b", "ab", "tab"]);
+    await image(b, at(0, 0, 399, 50)); // b sticks out by 1
+    assert.deepEqual(idsOf(2), ["a", "ta", "ab", "tab"]);
+    await image(b, at(0, 0, 250, 50)); // the arrow's end point is outside
+    assert.deepEqual(idsOf(3), ["a", "ta"]);
+    await image(b, at(100, 0, 200, 50)); // a ends at x=100 and touches the rect from outside
+    assert.deepEqual(idsOf(4), ["ab", "tab"]);
+    const n = fake.exports.length;
+    await assert.rejects(image(b, at(100, 0, 150, 50)), { code: "EMPTY" }); // the arrow sticks out; a and b only touch / lie outside
+    await assert.rejects(image(b, at(5000, 5000, 10, 10)), { code: "EMPTY" });
+    await assert.rejects(image(b, at(-1000, -1000, 5, 5)), { code: "EMPTY" });
+    assert.equal(fake.exports.length, n);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image rect: a missing or invalid rect is BAD_ARGS", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    const rects: unknown[] = [undefined, {}, { x: 0, y: 0, width: 0, height: 10 }, { x: 0, y: 0, width: 10, height: -1 }, { x: NaN, y: 0, width: 10, height: 10 },
+      { x: 0, y: 0, width: Infinity, height: 10 }, { x: "0", y: 0, width: 10, height: 10 }];
+    for (const rect of rects) await assert.rejects(image(b, { scope: "rect", rect }), { code: "BAD_ARGS" }, JSON.stringify(rect));
+    assert.equal(fake.exports.length, 0);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image selection: draws the selected elements of the board on screen, with the bound text of the selected containers", async () => {
+  await withoutLongTimers(async () => {
+    const els = scene();
+    const b = await heldWith(els);
+    goLive(b, els, ["b", "ab", "gone", "nothing"]); // a deleted or unknown id in the selection draws nothing
+    const r = await image(b, { scope: "selection" }) as any;
+    assert.deepEqual(idsOf(), ["b", "ab", "tab"]);
+    assert.equal(r.text, `scope selection, bounds x=100 y=0 w=300 h=50 (board coordinates), 2 elements, Board ${b} (${b})`);
+    assert.equal(fake.exports[0].appState.viewBackgroundColor, "#112233"); // the live canvas' state and files
+    assert.deepEqual(fake.exports[0].files, { live: true });
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image selection: a selected frame is drawn alone; its children are not added", async () => {
+  await withoutLongTimers(async () => {
+    const els = [{ id: "fr", type: "frame", x: 0, y: 0, width: 200, height: 200, version: 1, isDeleted: false }, rect("kid", 10, 10, 20, 20, { frameId: "fr" })];
+    const b = await heldWith(els);
+    goLive(b, els, ["fr"]);
+    await image(b, { scope: "selection" });
+    assert.deepEqual(idsOf(), ["fr"]);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image selection: nothing selected, or the board is not on screen, is NO_SELECTION naming all, refs and rect", async () => {
+  await withoutLongTimers(async () => {
+    const els = scene();
+    const b = await heldWith(els);
+    const names = (e: any) => e.code === "NO_SELECTION" && /scope all, refs or rect/.test(e.message);
+    await assert.rejects(image(b, { scope: "selection" }), (e: any) => names(e) && /not on the user's screen/.test(e.message)); // stored scene only
+    goLive(b, els, []);
+    await assert.rejects(image(b, { scope: "selection" }), (e: any) => names(e) && /nothing is selected/.test(e.message));
+    goLive(b, els, ["a"]);
+    store.setState({ sel: { board: "b_other", run: null, chat: null } }); // the canvas is the board's but the user looks at another board
+    await assert.rejects(image(b, { scope: "selection" }), (e: any) => names(e) && /not on the user's screen/.test(e.message));
+    board.setLive("b_other", {} as any); // another board's canvas is on screen
+    store.setState({ sel: { board: b, run: null, chat: null } });
+    await assert.rejects(image(b, { scope: "selection" }), names);
+    assert.equal(fake.exports.length, 0);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image default scope: the selection when the board is on screen and something is selected, else all; the text says which", async () => {
+  await withoutLongTimers(async () => {
+    const els = scene();
+    const b = await heldWith(els);
+    const text = async (args: unknown = {}) => ((await image(b, args)) as any).text as string;
+    assert.match(await text(), /^scope all, /); // not on screen
+    goLive(b, els, []);
+    assert.match(await text(), /^scope all, /); // on screen, nothing selected
+    assert.deepEqual(idsOf(1), ["a", "ta", "b", "ab", "tab", "c_long_id_0001"]);
+    goLive(b, els, ["c_long_id_0001"]);
+    assert.match(await text(), /^scope selection, .* 1 element, /);
+    assert.deepEqual(idsOf(2), ["c_long_id_0001"]);
+    assert.match(await text({ scope: "all" }), /^scope all, /); // an explicit scope wins over the selection
+    assert.equal(idsOf(3).length, 6);
+    store.setState({ sel: { board: "b_other", run: null, chat: null } });
+    assert.match(await text(), /^scope all, /); // the canvas is still this board's, but the user looks at another one
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: all, refs and rect work on a board that is not on screen (its stored scene), while another board is live", async () => {
+  await withoutLongTimers(async () => {
+    const mine = await heldWith(scene());
+    const other = await heldWith([rect("o", 0, 0, 10, 10)]);
+    goLive(other, [rect("o", 0, 0, 10, 10)], ["o"]);
+    await image(mine, { scope: "all" });
+    await image(mine, { scope: "refs", refs: [{ key: "B" }] });
+    await image(mine, { scope: "rect", rect: { x: 0, y: 0, width: 120, height: 60 } });
+    await image(mine); // default: this board has no selection, whatever is selected on the other one
+    assert.deepEqual([0, 1, 2, 3].map((i) => idsOf(i).length), [6, 1, 2, 6]);
+    assert.deepEqual(idsOf(1), ["b"]);
+    board.forgetBoard(mine); board.forgetBoard(other);
+  });
+});
+
+test("get_image leaves the scene, its version, the selection and the autosave state alone", async () => {
+  await withoutLongTimers(async () => {
+    const els = scene();
+    const b = await heldWith(els);
+    const live = goLive(b, els, ["a", "b"]);
+    const before = { elements: JSON.stringify(els), version: board.scenes.get(b).version, rev: board.scenes.get(b).rev, selected: JSON.stringify(live.selectedElementIds) };
+    asked();
+    for (const args of [{}, { scope: "all" }, { scope: "selection" }, { scope: "refs", refs: [{ key: "C" }] }, { scope: "rect", rect: { x: 0, y: 0, width: 500, height: 100 } }])
+      await image(b, args);
+    for (const args of [{ scope: "refs", refs: [{ key: "X" }] }, { scope: "rect", rect: { x: 9e3, y: 9e3, width: 1, height: 1 } }])
+      await assert.rejects(image(b, args));
+    assert.equal(JSON.stringify(els), before.elements);
+    assert.equal(board.scenes.get(b).version, before.version);
+    assert.equal(board.scenes.get(b).rev, before.rev);
+    assert.equal(JSON.stringify(live.selectedElementIds), before.selected);
+    assert.deepEqual(live.calls, []); // no updateScene, no scrollToContent on the canvas
+    assert.equal(board.hasPendingSaves(), false);
+    await tick();
+    assert.deepEqual(asked(), []); // nothing was saved or read
+    assert.equal(fake.exports.length, 5);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: an exportToBlob that throws is a RENDER_FAILED text error, not a bare rejection", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    const was = fake.png;
+    fake.exportError = new Error("canvas is tainted");
+    try {
+      await assert.rejects(image(b), (e: any) => e.code === "RENDER_FAILED" && e.message === "the picture could not be drawn: canvas is tainted");
+      fake.exportError = "plain string";
+      await assert.rejects(image(b), { code: "RENDER_FAILED", message: "the picture could not be drawn: plain string" });
+    } finally { fake.exportError = undefined; fake.png = was; }
+    // the page turns it into the error text "RENDER_FAILED: ..." (conn.ts answer): the shape is {code, message}
+    await image(b); // and the next call works
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image waits for document.fonts.ready before it draws, and survives a fonts promise that rejects", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    const had = Object.getOwnPropertyDescriptor(globalThis, "document");
+    try {
+      let ready!: () => void;
+      (globalThis as any).document = { fonts: { ready: new Promise<void>((r) => { ready = r; }) } };
+      const p = image(b);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(fake.exports.length, 0); // still waiting for the fonts
+      ready();
+      await p;
+      assert.equal(fake.exports.length, 1);
+      (globalThis as any).document = { fonts: { ready: Promise.reject(new Error("no fonts")) } };
+      await image(b);
+      assert.equal(fake.exports.length, 2);
+    } finally {
+      if (had) Object.defineProperty(globalThis, "document", had); else delete (globalThis as any).document;
+    }
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: a board that leaves the screen while the fonts load still draws the selection it took", async () => {
+  await withoutLongTimers(async () => {
+    const els = scene();
+    const b = await heldWith(els);
+    goLive(b, els, ["a"]);
+    const had = Object.getOwnPropertyDescriptor(globalThis, "document");
+    try {
+      let ready!: () => void;
+      (globalThis as any).document = { fonts: { ready: new Promise<void>((r) => { ready = r; }) } };
+      const p = image(b);
+      await new Promise((r) => setTimeout(r, 20));
+      board.setLive(null, null); // the user switched boards
+      ready();
+      const r = await p as any;
+      assert.match(r.text, /^scope selection, /);
+      assert.deepEqual(idsOf(), ["a", "ta"]);
+      assert.deepEqual(fake.exports[0].files, { live: true });
+    } finally {
+      if (had) Object.defineProperty(globalThis, "document", had); else delete (globalThis as any).document;
+    }
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image pads the picture by EXPORT_PADDING", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    await image(b);
+    assert.equal(fake.exports[0].exportPadding, EXPORT_PADDING);
+    board.forgetBoard(b);
+  });
+});
+
+// ---- get_image: rotated elements, elements without extent, the UNKNOWN_REF wording
+
+test("get_image: a rotated element is sized, reported and tested for containment by its rotated box", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith([rect("r", 100, 50, 200, 100, { angle: Math.PI / 4 })]);
+    const t = ((await image(b)) as any).text as string;
+    assert.match(t, /bounds x=94 y=-6 w=212 h=212 /); // not x=100 y=50 w=200 h=100
+    // the limit is judged on the rotated size: 6000x100 turned 45deg is 4346 px a side, 18.9 MP; at 1.5x 6519 px a side and 42.5 MP
+    const big = await heldWith([rect("r", 0, 0, 6000, 100, { angle: Math.PI / 4 })]);
+    await image(big);
+    await assert.rejects(image(big, { scale: 1.5 }), (e: any) => e.code === "TOO_LARGE" && /6519x6519 px/.test(e.message));
+    // rect: the unrotated box fits in it, the rotated one does not
+    const n = fake.exports.length;
+    await assert.rejects(image(b, { scope: "rect", rect: { x: 90, y: 40, width: 220, height: 120 } }), { code: "EMPTY" });
+    await image(b, { scope: "rect", rect: { x: 80, y: -10, width: 240, height: 220 } });
+    assert.equal(fake.exports.length, n + 1);
+    board.forgetBoard(b); board.forgetBoard(big);
+  });
+});
+
+test("get_image: chosen elements that are all zero-size are EMPTY and exportToBlob is not called", async () => {
+  await withoutLongTimers(async () => {
+    const els = [rect("dot", 10, 10, 0, 0, { customData: { key: "DOT" } }), rect("dot2", 40, 40, 0, 0), rect("box", 500, 500, 50, 50)];
+    const b = await heldWith(els);
+    await assert.rejects(image(b, { scope: "refs", refs: [{ key: "DOT" }] }), { code: "EMPTY", message: /no extent/ });
+    await assert.rejects(image(b, { scope: "rect", rect: { x: 0, y: 0, width: 20, height: 20 } }), { code: "EMPTY", message: /no extent/ });
+    assert.equal(fake.exports.length, 0);
+    const live = goLive(b, els, ["dot"]);
+    await assert.rejects(image(b, { scope: "selection" }), { code: "EMPTY", message: /no extent/ });
+    assert.equal(fake.exports.length, 0);
+    assert.deepEqual(live.calls, []);
+    // two zero-size elements far apart are still nothing: their positions are not an extent
+    await assert.rejects(image(b, { scope: "refs", refs: [{ id: "dot" }, { id: "dot2" }] }), { code: "EMPTY", message: /no extent/ });
+    assert.equal(fake.exports.length, 0);
+    await image(b, { scope: "refs", refs: [{ id: "box" }] });
+    assert.equal(fake.exports.length, 1);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: a zero-size element among real ones is not drawn, not measured and not counted", async () => {
+  await withoutLongTimers(async () => {
+    // the dot sits far from the 50x50 box; Excalidraw draws only the box (82x82), and so must the bounds, the limit and the count say
+    const els = [
+      rect("dot", 10, 10, 0, 0),
+      { id: "a1", type: "arrow", x: 5000, y: 5000, width: 0, height: 0, points: [[0, 0], [0, 0]], version: 1, isDeleted: false }, // two equal points draw nothing
+      { id: "p1", type: "freedraw", x: 9000, y: 9000, width: 0, height: 0, points: [[0, 0]], version: 1, isDeleted: false },
+      rect("box", 500, 500, 50, 50),
+    ];
+    const b = await heldWith(els);
+    const r = (await image(b, { scope: "all" })) as any;
+    assert.match(r.text, /^scope all, bounds x=500 y=500 w=50 h=50 \(board coordinates\), 1 element, /);
+    assert.deepEqual(fake.exports[0].elements.map((e: any) => e.id), ["box"]);
+    // the same through refs and through rect, which holds the dot too
+    const r2 = (await image(b, { scope: "refs", refs: [{ id: "dot" }, { id: "box" }] })) as any;
+    assert.match(r2.text, /bounds x=500 y=500 w=50 h=50 .*, 1 element, /);
+    const r3 = (await image(b, { scope: "rect", rect: { x: 0, y: 0, width: 600, height: 600 } })) as any;
+    assert.match(r3.text, /bounds x=500 y=500 w=50 h=50 .*, 1 element, /);
+    assert.deepEqual(fake.exports.map((x: any) => x.elements.map((e: any) => e.id)), [["box"], ["box"], ["box"]]);
+    // the picture is judged on what is drawn: with the dot counted it would be 100000 px a side and refused, the box alone is 82
+    const far = await heldWith([rect("d", 0, 0, 0, 0), rect("far", 100000, 100000, 50, 50)]);
+    const r4 = (await image(far)) as any;
+    assert.match(r4.text, /bounds x=100000 y=100000 w=50 h=50 /);
+    board.forgetBoard(b); board.forgetBoard(far);
+  });
+});
+
+test("get_image: a straight line has an extent in one direction, so it passes the EMPTY check and is drawn", async () => {
+  await withoutLongTimers(async () => {
+    const line = (id: string, points: number[][], o = {}) => ({ id, type: "line", x: 100, y: 50, width: Math.max(...points.map((p) => p[0])), height: Math.max(...points.map((p) => p[1])), points, version: 1, isDeleted: false, ...o });
+    const b = await heldWith([line("h", [[0, 0], [200, 0]]), line("v", [[0, 0], [0, 120]], { x: 400 }), line("turned", [[0, 0], [200, 0]], { y: 300, angle: Math.PI / 2 })]);
+    const h = (await image(b, { scope: "refs", refs: [{ id: "h" }] })) as any;
+    assert.match(h.text, /bounds x=100 y=50 w=200 h=0 .*, 1 element, /);
+    const v = (await image(b, { scope: "refs", refs: [{ id: "v" }] })) as any;
+    assert.match(v.text, /bounds x=400 y=50 w=0 h=120 .*, 1 element, /);
+    const t = (await image(b, { scope: "refs", refs: [{ id: "turned" }] })) as any;
+    assert.match(t.text, /bounds x=200 y=200 w=0 h=200 .*, 1 element, /); // a horizontal line turned a quarter is vertical
+    assert.equal(fake.exports.length, 3);
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image: rotated text is measured by its rotated box", async () => {
+  await withoutLongTimers(async () => {
+    const text = { id: "t1", type: "text", x: 100, y: 50, width: 60, height: 20, text: "Hello", angle: Math.PI / 6, version: 1, isDeleted: false };
+    const b = await heldWith([text]);
+    // 60x20 turned 30deg: 61.96 x 47.32, around the centre (130, 60)
+    assert.match(((await image(b)) as any).text, /bounds x=99 y=36 w=62 h=47 .*, 1 element, /);
+    // rect: the unrotated 60x20 fits in this one, the rotated box does not
+    await assert.rejects(image(b, { scope: "rect", rect: { x: 100, y: 50, width: 60, height: 20 } }), { code: "EMPTY" });
+    await image(b, { scope: "rect", rect: { x: 95, y: 30, width: 70, height: 60 } });
+    board.forgetBoard(b);
+  });
+});
+
+test("get_image refs: an ambiguous id prefix says ambiguous, a missing one says no element matches, both can be in one message", async () => {
+  await withoutLongTimers(async () => {
+    const b = await heldWith(scene());
+    await assert.rejects(image(b, { scope: "refs", refs: [{ id: "t" }] }),
+      (e: any) => e.code === "UNKNOWN_REF" && /\{"id":"t"\} is ambiguous/.test(e.message) && !/no element/.test(e.message));
+    await assert.rejects(image(b, { scope: "refs", refs: [{ id: "zz" }] }),
+      (e: any) => e.code === "UNKNOWN_REF" && /no element on .* matches \{"id":"zz"\}/.test(e.message) && !/ambiguous/.test(e.message));
+    await assert.rejects(image(b, { scope: "refs", refs: [{ id: "t" }, { id: "zz" }, { key: "nope" }] }),
+      (e: any) => /no element on .* matches \{"id":"zz"\}, \{"key":"nope"\}/.test(e.message) && /\{"id":"t"\} is ambiguous/.test(e.message));
+    assert.equal(fake.exports.length, 0);
+    board.forgetBoard(b);
   });
 });

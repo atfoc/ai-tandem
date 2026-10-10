@@ -87,7 +87,7 @@ func TestNormalize(t *testing.T) {
 		t.Errorf("normalize(namespaced board name) = %q, want pass-through", got)
 	}
 	// Raw native board names are no longer rewritten.
-	for _, raw := range []string{"list_boards", "read_board", "get_view", "apply", "delete_elements", "create_board", "show_board"} {
+	for _, raw := range []string{"list_boards", "read_board", "get_view", "get_image", "apply", "delete_elements", "create_board", "show_board"} {
 		if got := normalize(raw); got != raw {
 			t.Errorf("normalize(%q) = %q, want pass-through", raw, got)
 		}

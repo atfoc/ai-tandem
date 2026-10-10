@@ -115,23 +115,48 @@ export function autoAllowedToolNames(input: {
   return input.appSourcedBoard ? [...input.boardMCPToolNames] : [];
 }
 
+/** One content part of a successful MCP tool call, as pi receives it. */
+export type PiToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 /** The pi-visible result shape for a successful MCP tool call. */
-export interface PiTextToolResult {
-  content: { type: "text"; text: string }[];
+export interface PiToolResult {
+  content: PiToolContent[];
   details: Record<string, unknown>;
+}
+
+/** Kept for callers of the text-only name. */
+export type PiTextToolResult = PiToolResult;
+
+/** imageParts returns the well-formed image parts of a tools/call content list
+ *  (string `data`, `image/*` mime type) in order; any other part is skipped. */
+function imageParts(content: readonly unknown[]): { type: "image"; data: string; mimeType: string }[] {
+  const parts: { type: "image"; data: string; mimeType: string }[] = [];
+  for (const part of content) {
+    if (typeof part !== "object" || part === null) continue;
+    const p = part as Record<string, unknown>;
+    if (p.type !== "image" || typeof p.data !== "string" || p.data === "") continue;
+    if (typeof p.mimeType !== "string" || !p.mimeType.startsWith("image/")) continue;
+    parts.push({ type: "image", data: p.data, mimeType: p.mimeType });
+  }
+  return parts;
 }
 
 /**
  * mcpToolResultOrThrow converts a tools/call result for pi (plan R6): a
- * successful result becomes text content, an isError result throws carrying the
- * board/MCP text so pi records a failed tool result. Empty error text falls
- * back to a message naming the tool.
+ * successful result becomes text content followed by any well-formed image
+ * parts (text first, so a result without an image is exactly one text part), an
+ * isError result throws carrying the board/MCP text so pi records a failed tool
+ * result. Empty error text falls back to a message naming the tool.
  */
-export function mcpToolResultOrThrow(result: MCPToolResult, toolName: string): PiTextToolResult {
+export function mcpToolResultOrThrow(result: MCPToolResult, toolName: string): PiToolResult {
   if (result.isError) {
     throw new Error(result.text.trim() !== "" ? result.text : `MCP tool ${toolName} failed`);
   }
-  return { content: [{ type: "text", text: result.text }], details: {} };
+  const content: PiToolContent[] = [{ type: "text", text: result.text }];
+  if (Array.isArray(result.content)) content.push(...imageParts(result.content));
+  return { content, details: {} };
 }
 
 /**
@@ -266,7 +291,7 @@ export interface MCPToolRegistration {
   parameters: Record<string, unknown>;
   executionMode: "sequential";
   /** Forwards to tools/call and throws on isError/failure. */
-  execute: (args: unknown, signal?: AbortSignal) => Promise<PiTextToolResult>;
+  execute: (args: unknown, signal?: AbortSignal) => Promise<PiToolResult>;
 }
 
 export interface StartMCPOptions {
