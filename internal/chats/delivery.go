@@ -123,6 +123,10 @@ type carry struct {
 	blocks  []agent.ContentBlock
 	handing bool // its message is being given to the agent: taken, and handOff's Send has not returned
 	stop    bool // Interrupt came while handing: the agent is signalled once it has the message
+
+	// A subagent's only (sub != ""): quiet counts the signs of a turn its process has given since
+	// the message was made, so a wait for its silence (subUnread) knows it was broken.
+	quiet int
 }
 
 // setHold makes the app start no turn on c until the human sends: the triggers do nothing, and the

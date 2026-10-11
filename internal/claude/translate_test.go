@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -388,6 +389,23 @@ func TestTranslateOrphanResults(t *testing.T) {
 			if ended != c.want[i] || (!ended && len(evs) != 0) {
 				t.Errorf("%s: line %d gave %s, want turn end = %v", c.name, i, dump(evs), c.want[i])
 			}
+		}
+	}
+}
+
+// A turn's end says whether the CLI began the turn by itself: its result line names an origin
+// that is no message (CLI 2.1.284 on). A line without an origin is a message's turn.
+func TestTranslateSelfBegunTurn(t *testing.T) {
+	const line = `{"type":"result","subtype":"success","is_error":false,"num_turns":2,"terminal_reason":"completed"%s}`
+	for origin, want := range map[string]bool{
+		"":                                       false,
+		`,"origin":{"kind":"human"}`:             false,
+		`,"origin":{"kind":"task-notification"}`: true,
+		`,"origin":{"kind":"something-new"}`:     true,
+	} {
+		evs := translateLine(t, &proc{}, fmt.Sprintf(line, origin))
+		if len(evs) != 2 || evs[1].Kind != agent.EvTurnEnd || evs[1].SelfBegun != want {
+			t.Errorf("origin %q gave %s, want a turn end with SelfBegun = %v", origin, dump(evs), want)
 		}
 	}
 }

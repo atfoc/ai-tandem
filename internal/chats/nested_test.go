@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
@@ -846,5 +847,147 @@ func TestWaitingSubagentStartsATurnItself(t *testing.T) {
 	e.m.handoffs.Wait()
 	if len(pa.sent()) != 2 || !reflect.DeepEqual(deliveredSids(pa.sent()[1]), []string{b.ID}) {
 		t.Fatalf("after that turn it got %d messages", len(pa.sent()))
+	}
+}
+
+// selfBegunEnd is the clean end of a turn a subagent's process began by itself, as Claude
+// reports the turn a finished background command starts.
+var selfBegunEnd = agent.Event{Kind: agent.EvTurnEnd, SelfBegun: true}
+
+// unread brings a subagent of a chat at depth 2 to where results were handed to it during a turn
+// its process had begun by itself, and that turn has ended: it waited for the one it started,
+// whose result went to it as its second message, and then came the output and the end of a turn
+// of its own. It returns the chat, the two records and the processes of the chat's agent and of
+// the subagent. quiet is the manager's subQuietWait for the test.
+func unread(t *testing.T, quiet time.Duration) (e *env, id string, a, b model.Subagent, parent, pa *fakeAgent) {
+	t.Helper()
+	e = newEnv(t)
+	e.m.subQuietWait = quiet
+	id, parent = e.nested(2)
+	a, pa = e.child(id, "", "delegate")
+	b, pb := e.child(id, a.ID, "one")
+	e.finish(pa, "I wait for one")
+	e.finish(pb, "report of b")
+	if len(pa.sent()) != 2 || !reflect.DeepEqual(deliveredSids(pa.sent()[1]), []string{b.ID}) {
+		t.Fatalf("the waiting subagent got %d messages", len(pa.sent()))
+	}
+	pa.emit(t, agent.Event{Kind: agent.EvText, Text: "my background command is done"}, selfBegunEnd)
+	return e, id, a, b, parent, pa
+}
+
+// Results handed to a subagent while its process was in a turn it had begun by itself are not
+// that turn's: its end does not finish the subagent, which would then report without them. The
+// turn the message starts is the one that finishes it.
+func TestResultsHandedInATurnOfItsOwn(t *testing.T) {
+	t.Parallel()
+	e, id, a, b, parent, pa := unread(t, time.Hour)
+	s := e.sub(id, a.ID)
+	if s.Status != model.SubRunning || s.Waiting || s.Ended != 0 || s.Delivery != model.SubNotOwed {
+		t.Fatalf("after the turn of its own: %+v", s)
+	}
+	if agentClosed(pa) || len(parent.sent()) != 1 || e.sub(id, b.ID).Delivery != model.SubSent {
+		t.Fatalf("closed %v, %d messages to the chat's agent, the result's delivery %q",
+			agentClosed(pa), len(parent.sent()), e.sub(id, b.ID).Delivery)
+	}
+	// The turn of the message: the process says it is thinking, the model answers, the turn ends.
+	pa.emit(t, agent.Event{Kind: agent.EvThinking}, agent.Event{Kind: agent.EvText, Text: "with what b found"}, agent.Event{Kind: agent.EvTurnEnd})
+	e.m.handoffs.Wait()
+	if s := e.sub(id, a.ID); s.Status != model.SubCompleted || s.Last != "with what b found" {
+		t.Fatalf("after the turn of the results: %+v", s)
+	}
+	if len(pa.sent()) != 2 || len(parent.sent()) != 2 || !reflect.DeepEqual(deliveredSids(parent.sent()[1]), []string{a.ID}) {
+		t.Fatalf("%d messages to the subagent, %d to the chat's agent", len(pa.sent()), len(parent.sent()))
+	}
+	closed(t, "its process", pa)
+}
+
+// A process that read the results in the turn of its own starts no further turn. When it has
+// given no sign of one for the manager's wait, the results count as read and the subagent
+// finishes, with what that turn said as its report.
+func TestResultsReadInATurnOfItsOwn(t *testing.T) {
+	t.Parallel()
+	e, id, a, b, parent, pa := unread(t, 50*time.Millisecond)
+	waitFor(t, "the subagent to finish after the silence", func() bool { return e.sub(id, a.ID).Status != model.SubRunning })
+	e.m.handoffs.Wait()
+	if s := e.sub(id, a.ID); s.Status != model.SubCompleted || s.Last != "my background command is done" || s.Error != "" {
+		t.Fatalf("after the silence: %+v", s)
+	}
+	if d := e.sub(id, b.ID).Delivery; d != model.SubSent {
+		t.Fatalf("the result's delivery %q", d)
+	}
+	waitFor(t, "its result to go to the chat's agent", func() bool { return len(parent.sent()) == 2 })
+	if !reflect.DeepEqual(deliveredSids(parent.sent()[1]), []string{a.ID}) {
+		t.Fatalf("the chat's agent got %q", texts(parent.sent()[1]))
+	}
+	closed(t, "its process", pa)
+}
+
+// A sign of a turn breaks the silence: a process that says it is thinking has begun the turn of
+// the message, however long the model then takes, and the subagent is finished by that turn.
+func TestThinkingBreaksTheSilence(t *testing.T) {
+	t.Parallel()
+	const quiet = 100 * time.Millisecond
+	e, id, a, _, parent, pa := unread(t, quiet)
+	pa.emit(t, agent.Event{Kind: agent.EvThinking})
+	time.Sleep(4 * quiet)
+	if s := e.sub(id, a.ID); s.Status != model.SubRunning || agentClosed(pa) || len(parent.sent()) != 1 {
+		t.Fatalf("while the model thinks: %+v, closed %v, %d messages to the chat's agent", s, agentClosed(pa), len(parent.sent()))
+	}
+	pa.emit(t, agent.Event{Kind: agent.EvText, Text: "with what b found"}, agent.Event{Kind: agent.EvTurnEnd})
+	e.m.handoffs.Wait()
+	if s := e.sub(id, a.ID); s.Status != model.SubCompleted || s.Last != "with what b found" {
+		t.Fatalf("after the turn of the results: %+v", s)
+	}
+}
+
+// The silence ends the turn, not the subagent: one that still has a subagent running waits for
+// it, and gets its result as any waiting subagent does.
+func TestSilenceLeavesAWaitingSubagentWaiting(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.m.subQuietWait = 50 * time.Millisecond
+	id, _ := e.nested(2)
+	a, pa := e.child(id, "", "delegate")
+	b, pb := e.child(id, a.ID, "one")
+	c, pc := e.child(id, a.ID, "two")
+	e.finish(pa, "I wait for two")
+	e.finish(pb, "report of b")
+	pa.emit(t, agent.Event{Kind: agent.EvText, Text: "my background command is done"}, selfBegunEnd)
+	waitFor(t, "the subagent to wait again after the silence", func() bool { return e.sub(id, a.ID).Waiting })
+	if s := e.sub(id, a.ID); s.Status != model.SubRunning || agentClosed(pa) {
+		t.Fatalf("with one still running: %+v, closed %v", s, agentClosed(pa))
+	}
+	e.finish(pc, "report of c")
+	if len(pa.sent()) != 3 || !reflect.DeepEqual(deliveredSids(pa.sent()[1]), []string{b.ID}) || !reflect.DeepEqual(deliveredSids(pa.sent()[2]), []string{c.ID}) {
+		t.Fatalf("the subagent got %d messages", len(pa.sent()))
+	}
+	e.finish(pa, "both are in")
+	if s := e.sub(id, a.ID); s.Status != model.SubCompleted || s.Last != "both are in" {
+		t.Fatalf("at the end: %+v", s)
+	}
+}
+
+// A turn of its own that ends while nothing was handed to it is a turn like any other: with one
+// still running the subagent waits again, and the results that came meanwhile go to it at once.
+func TestTurnOfItsOwnWithNothingHanded(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	id, _ := e.nested(2)
+	a, pa := e.child(id, "", "delegate")
+	b, pb := e.child(id, a.ID, "one")
+	e.finish(pa, "I wait for one")
+	pa.emit(t, agent.Event{Kind: agent.EvText, Text: "my background command is done"})
+	e.finish(pb, "report of b")
+	if len(pa.sent()) != 1 {
+		t.Fatalf("a result came in its turn: %d messages", len(pa.sent()))
+	}
+	pa.emit(t, selfBegunEnd)
+	e.m.handoffs.Wait()
+	if len(pa.sent()) != 2 || !reflect.DeepEqual(deliveredSids(pa.sent()[1]), []string{b.ID}) || e.sub(id, a.ID).Status != model.SubRunning {
+		t.Fatalf("after that turn: %d messages, %+v", len(pa.sent()), e.sub(id, a.ID))
+	}
+	e.finish(pa, "with what b found")
+	if s := e.sub(id, a.ID); s.Status != model.SubCompleted || s.Last != "with what b found" {
+		t.Fatalf("at the end: %+v", s)
 	}
 }

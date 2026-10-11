@@ -61,6 +61,9 @@ type Manager struct {
 	// ownedCloseWait is how long Shutdown waits for the closes of the runs' agents' processes
 	// (the constant of that name; tests lower it).
 	ownedCloseWait time.Duration
+	// subQuietWait is how long a subagent's process may stay silent before results it was handed
+	// during a turn of its own count as read in that turn (the constant of that name; tests lower it).
+	subQuietWait time.Duration
 
 	// extrasMu protects extras, extraBySID and used. Never take Chat.mu while holding extrasMu
 	// (issue/revoke run with Chat.mu then extrasMu).
@@ -286,6 +289,7 @@ func New(d Deps) *Manager {
 		now:        time.Now,
 
 		ownedCloseWait: ownedCloseWait,
+		subQuietWait:   subQuietWait,
 	}
 }
 

@@ -85,6 +85,7 @@ app remembers the choice for the next chat the way it remembers the other compos
 | D13 | A subagent started by a subagent takes the model and effort of the subagent that started it where none is named, not the chat's. | `[proposed]` |
 | D14 | A subagent can stop only the subagents it started itself. | `[proposed]` |
 | D15 | A result that cannot be delivered to a waiting subagent fails that subagent, and its parent is told of the failure. | `[proposed]` |
+| D16 | The cap is counted per branch: each branch of a chat counts its own running subagents against the chat's cap, and what runs on another branch does not count. | `[user]` |
 
 ### The popover
 

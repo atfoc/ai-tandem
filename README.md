@@ -25,7 +25,8 @@ agents run with the logins you already have.
   levels of subagents it may have: off (the agent has no spawn family), 1 (its subagents start
   none, the default), 2 or 3 (a subagent may start subagents, down to that level; the subagents
   at the deepest level have no spawn family). Its **cap** is the most subagents of the chat that
-  may run at once, at every level (100 by default): a spawn over it is refused, never queued. A
+  may run at once, at every level (100 by default): a spawn over it is refused, never queued.
+  Each branch of a chat counts its own: what runs on another branch does not count. A
   subagent that started subagents is not finished when its turn ends: it waits, still running,
   gets their results as messages that start further turns of it, and reports to whoever started
   it only after a turn that ends with none of them running. A result that cannot be given to a

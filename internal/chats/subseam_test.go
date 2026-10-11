@@ -169,3 +169,28 @@ func TestWaitingChainEndsWhole(t *testing.T) {
 		})
 	}
 }
+
+// The cap is counted per branch: a subagent that runs on main does not count on a branch of the
+// chat, which has the same cap for its own.
+func TestSubCapIsPerBranch(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	v := e.create(model.Claude, gOne, "")
+	e.configure(v.ID, ConfigReq{SubCap: numPtr(1)})
+	a := e.turn(v.ID, nil, 1)
+	e.turn(v.ID, a, 2)
+	e.m.naming.Wait()
+
+	var ce *SubCapError
+	e.spawn(v.ID, SpawnSubRequest{Prompt: "on main"})
+	if _, err := e.m.SpawnSubagent(v.ID, SpawnSubRequest{Prompt: "a second on main"}); !errors.As(err, &ce) || ce.Cap != 1 {
+		t.Fatalf("a second subagent on main at a cap of 1: %v", err)
+	}
+	_, bid, _ := e.branchTo(v.ID, newAt(3), "aside")
+	if _, err := e.m.SpawnSubagent(bid, SpawnSubRequest{Prompt: "on the branch"}); err != nil {
+		t.Fatalf("a subagent on the branch while one runs on main: %v", err)
+	}
+	if _, err := e.m.SpawnSubagent(bid, SpawnSubRequest{Prompt: "a second on the branch"}); !errors.As(err, &ce) || ce.Cap != 1 {
+		t.Fatalf("a second subagent on the branch at a cap of 1: %v", err)
+	}
+}

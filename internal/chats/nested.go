@@ -20,6 +20,7 @@
 //	its process exited                                  the same
 //	a clean end on pi with no model output              the subagent fails: a failed pi turn can look like it
 //	a clean end on Claude or Cursor                     delivered: the model took the message and said nothing
+//	a clean end of a turn its process began by itself   open: the next turn is the message's, or silence says it was read (subUnread)
 //
 // A subagent that ends, in whatever way, takes every subagent below it with it (stopBelow):
 // nobody is left to receive their results. A result that was owed to it, or that it was being
@@ -28,6 +29,7 @@ package chats
 
 import (
 	"log"
+	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
@@ -167,11 +169,9 @@ func (m *Manager) waitOver(c *Chat, p *sub, out *outbox, aft *after) {
 // take: a turn of it ends cleanly (subWaits), and a result becomes owed to it while it waits
 // (finalizeAppSub).
 //
-// Not closed: a waiting subagent's process can begin a turn by itself (Claude does when a
-// background command of it ends), and the manager knows of that turn only from its first model
-// output. A result handed over before that output is settled by it, and that turn's clean end
-// then finishes the subagent with the results message unread. Whether a real agent reads a
-// message that comes in mid-turn has not been checked.
+// A waiting subagent's process can be in a turn all the same: one it began by itself, which the
+// manager knows of only from its first model output. Results handed over before that output are
+// not that turn's, and its end does not finish the subagent (subUnread).
 func (m *Manager) deliverSub(c *Chat, s *sub, out *outbox) *carry {
 	if c.deleted || c.tr == nil || !s.app || s.meta.Status != model.SubRunning || !s.meta.Waiting || s.ag == nil || s.carry != nil {
 		return nil
@@ -204,6 +204,55 @@ func (m *Manager) deliverSub(c *Chat, s *sub, out *outbox) *carry {
 	out.emitSubItems(c, s.meta.ID, tr.Version(), ups)
 	out.emitSub(c, s.meta)
 	return d
+}
+
+// subTurnOver is the clean end of a turn of s that leaves nothing of a delivery open: what the
+// turn carried is delivered. It reports whether s goes on, waiting or in a further turn
+// (subWaits); if not, the caller finishes it. c.mu held.
+func (m *Manager) subTurnOver(c *Chat, s *sub, out *outbox, aft *after) bool {
+	s.carry = nil
+	return m.subWaits(c, s, out, aft)
+}
+
+// subQuietWait is how long the process of a subagent may stay silent, after a turn it began by
+// itself, before the results it was handed during that turn count as read in it. A process that
+// kept the message for a turn of its own starts that turn as soon as the other has ended, and
+// says so at once (it reports that it is thinking before the model has answered), so the silence
+// only has to outlast a slow machine. A manager has it as a field, for tests to lower.
+const subQuietWait = 30 * time.Second
+
+// subUnread is the clean end of a turn that the process of s began by itself (agent.Event.SelfBegun)
+// while s was being handed results: the message came into a turn that was already running, which
+// the manager could not know. Whether the agent read it in that turn cannot be told from here.
+// A process that did not read it starts the message's own turn now, and s must be alive for it:
+// finished here, s would report without the results, with nothing to show that they were lost.
+// So s stays as it is, running and in a turn as far as anyone can see, and the turn that follows
+// ends as any turn of it does. A process that did read the message starts no turn: when it has
+// given no sign of one for subQuietWait, the results count as read and the turn as over
+// (subTurnOver). c.mu held.
+func (m *Manager) subUnread(c *Chat, s *sub, out *outbox) {
+	if tr, err := m.subTr(c, s); err == nil {
+		out.emitSubItems(c, s.meta.ID, tr.Version(), tr.CloseOpen())
+	}
+	m.flushSub(c, s, false)
+	out.emitSub(c, s.meta)
+	d, sid, at := s.carry, s.meta.ID, s.carry.quiet
+	time.AfterFunc(m.subQuietWait, func() {
+		var out outbox
+		var aft after
+		c.mu.Lock()
+		// Still that delivery's, and no sign of a turn since: every other end of s has taken its
+		// carry (endSub), and a turn that began has counted (handleSubEv).
+		if s := c.subs[sid]; s != nil && s.carry == d && d.quiet == at && s.meta.Status == model.SubRunning && !c.deleted && c.tr != nil {
+			if !m.subTurnOver(c, s, &out, &aft) {
+				m.finalizeAppSub(c, s, model.SubCompleted, "", endTurn, &out, &aft)
+			}
+		}
+		out.emitCounts(c)
+		c.mu.Unlock()
+		m.send(out)
+		m.finish(c, &aft)
+	})
 }
 
 // subRefused is a delivery the process of a subagent did not accept. The subagent fails, with a

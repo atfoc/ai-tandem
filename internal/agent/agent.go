@@ -177,6 +177,11 @@ type Event struct {
 	Aborted                  bool
 	Error                    string
 	Point                    string // EvTurnEnd: the provider's fork-point id for the end of this turn; "" = none
+	// SelfBegun, EvTurnEnd: the agent began this turn itself, not with a message it was sent
+	// (Claude, when a background command or task of its own ended). A message sent meanwhile is
+	// not known to have been read in it. Only Claude reports it; pi and Cursor begin no turn
+	// themselves.
+	SelfBegun bool
 	// EvTurnEnd only, as far as the provider reports them: Claude from its result line, pi from
 	// get_session_stats, Cursor nothing. The numbers are raw: nothing is summed or subtracted here.
 	//

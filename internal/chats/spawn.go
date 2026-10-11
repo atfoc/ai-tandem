@@ -511,6 +511,9 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		return
 	}
 	before := s.meta
+	if s.carry != nil && (modelOutput(ev) || ev.Kind == agent.EvThinking) {
+		s.carry.quiet++ // its process is in a turn: not silent (subUnread)
+	}
 	if s.meta.Status == model.SubRunning && modelOutput(ev) {
 		if s.carry != nil {
 			s.carry.settled = true // the results it carries are delivered
@@ -577,9 +580,13 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 			// like it (see endCarry), and a subagent's results are not tried again.
 			st, why, errText = model.SubFailed, endFailed, "its turn ended with no reply: the subagent results were not received"
 			m.subErrorNote(c, s, "The subagent's turn ended with no reply: the subagent results were not received.", &out)
+		case s.carry != nil && ev.SelfBegun:
+			// The turn that ended is one its process began by itself, not the one of the results
+			// it was handed: it is not finished before it has had that one (subUnread).
+			m.subUnread(c, s, &out)
+			return
 		default:
-			s.carry = nil // a clean end: what the turn carried is delivered
-			if m.subWaits(c, s, &out, &aft) {
+			if m.subTurnOver(c, s, &out, &aft) {
 				return
 			}
 		}
