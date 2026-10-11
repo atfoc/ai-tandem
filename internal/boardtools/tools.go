@@ -176,8 +176,8 @@ var SpawnFamily = []Tool{
 	},
 	{
 		Name:        "stop_subagent",
-		Description: "Cancel one running subagent by sid.",
-		Schema:      obj(props{"sid": str("subagent id from spawn_subagent")}, "sid"),
+		Description: "Cancel one running subagent that you started, by sid. Every subagent it has started is cancelled with it.",
+		Schema:      obj(props{"sid": str("subagent id from your own spawn_subagent call")}, "sid"),
 		Summary:     `{"sid": "<sid>"}`,
 	},
 	{
