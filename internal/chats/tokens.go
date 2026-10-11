@@ -6,6 +6,7 @@ import "ai-whiteboard/internal/model"
 type extraCaller struct {
 	chatID string
 	sid    string
+	level  int // the subagent's level (subLevel); it never changes
 	kind   model.AgentKind
 	model  string
 	effort string
@@ -23,7 +24,20 @@ type Caller struct {
 	Kind     model.AgentKind
 	Model    string
 	Effort   string
+	// Level is how far the caller is from the chat: 0 for the chat's agent, 1 for a subagent it
+	// started. Depth is the chat's subagent depth as it holds for the caller (1 for a run's agent
+	// and its subagents): see MaySpawn.
+	Level int
+	Depth int
 }
+
+// MaySpawn reports whether the caller has the spawn family: its level is below the chat's depth.
+// What else decides (an orchestrator has none) is the endpoint's business.
+func (c Caller) MaySpawn() bool { return c.Level < c.Depth }
+
+// NoSpawnText is what the caller is told when it calls tool, one of the spawn family it does not
+// have (MaySpawn is false).
+func (c Caller) NoSpawnText(tool string) string { return noSpawnText(tool, c.Level, c.Depth) }
 
 // ResolveToken looks up a persisted chat token or a live extra token.
 // Extra tokens return the parent chat. Unknown/empty → false.
@@ -41,6 +55,7 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 		}
 		c.mu.Lock()
 		meta := c.meta
+		depth, _ := subLimits(c)
 		c.mu.Unlock()
 		meta, chat := m.callerMeta(c, meta)
 		return Caller{
@@ -52,11 +67,14 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 			Kind:     extra.kind,
 			Model:    extra.model,
 			Effort:   extra.effort,
+			Level:    extra.level,
+			Depth:    depth,
 		}, true
 	}
 	for _, c := range m.all() {
 		c.mu.Lock()
 		meta := c.meta
+		depth, _ := subLimits(c)
 		c.mu.Unlock()
 		if meta.Token == token {
 			meta, chat := m.callerMeta(c, meta)
@@ -69,6 +87,7 @@ func (m *Manager) ResolveToken(token string) (Caller, bool) {
 				Kind:     meta.Agent,
 				Model:    meta.Model,
 				Effort:   meta.Effort,
+				Depth:    depth,
 			}, true
 		}
 	}
@@ -151,9 +170,9 @@ func (m *Manager) ensureToken(c *Chat) {
 	m.logSave(c)
 }
 
-// issueExtraToken mints a per-caller extra token for one app-spawned sub, in memory only.
-// May be called with c.mu held (Chat.mu then extrasMu).
-func (m *Manager) issueExtraToken(c *Chat, sid string, kind model.AgentKind, modelID, effort string) string {
+// issueExtraToken mints a per-caller extra token for one app-spawned sub, in memory only; level
+// is the sub's (subLevel). May be called with c.mu held (Chat.mu then extrasMu).
+func (m *Manager) issueExtraToken(c *Chat, sid string, level int, kind model.AgentKind, modelID, effort string) string {
 	m.extrasMu.Lock()
 	defer m.extrasMu.Unlock()
 	if m.extras == nil {
@@ -163,7 +182,7 @@ func (m *Manager) issueExtraToken(c *Chat, sid string, kind model.AgentKind, mod
 		m.extraBySID = map[string]string{}
 	}
 	tok := m.uniqueTokenLocked()
-	m.extras[tok] = extraCaller{chatID: c.meta.ID, sid: sid, kind: kind, model: modelID, effort: effort}
+	m.extras[tok] = extraCaller{chatID: c.meta.ID, sid: sid, level: level, kind: kind, model: modelID, effort: effort}
 	m.extraBySID[c.meta.ID+"/"+sid] = tok
 	return tok
 }

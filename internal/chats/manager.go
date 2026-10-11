@@ -1287,6 +1287,8 @@ func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
 	if c.meta.Agent == model.Cursor && !c.meta.Locked {
 		opts.SessionID = ""
 	}
+	depth, _ := subLimits(c)
+	opts.NoSpawn = depth == 0 // subagents are off: the agent has no spawn family
 	runOptions(c, &opts, false)
 	return opts
 }

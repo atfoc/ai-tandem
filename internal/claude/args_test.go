@@ -97,7 +97,7 @@ func TestArgsBoardChat(t *testing.T) {
 
 func TestArgsSubProcessBoardParent(t *testing.T) {
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "sub-tok"}
-	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s4", Cwd: "/tmp", Model: "sonnet", MCP: mcp, BoardID: "b", Subagent: true})
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s4", Cwd: "/tmp", Model: "sonnet", MCP: mcp, BoardID: "b", Subagent: true, NoSpawn: true})
 	if _, ok := flag(args, "--mcp-config"); !ok {
 		t.Errorf("sub process missing --mcp-config: %q", args)
 	}
@@ -108,9 +108,33 @@ func TestArgsSubProcessBoardParent(t *testing.T) {
 	checkCommon(t, args)
 }
 
+// The agent of a chat whose subagents are off: no spawn tool is allowed, and its steering names
+// none.
+func TestArgsChatWithSubagentsOff(t *testing.T) {
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s6", Cwd: "/tmp", MCP: mcp, BoardID: "b", NoSpawn: true})
+	checkAllowed(t, args, boardtools.Tools, boardtools.SpawnFamily)
+	if v, _ := flag(args, "--disallowedTools"); !strings.Contains(v, ",Task,Agent") {
+		t.Errorf("--disallowedTools of a chat with subagents off: %q", v)
+	}
+	if v, _ := flag(args, "--append-system-prompt"); v != noSpawnSteering+"\n\nWHITEBOARD PROMPT" {
+		t.Errorf("--append-system-prompt of a board chat with subagents off: %q", v)
+	}
+	args = testSpawner.Args(agent.SpawnOptions{SessionID: "s7", Cwd: "/tmp", MCP: mcp, NoSpawn: true})
+	if _, ok := flag(args, "--allowedTools"); ok {
+		t.Errorf("a plain chat with subagents off has --allowedTools: %q", args)
+	}
+	if v, _ := flag(args, "--append-system-prompt"); v != noSpawnSteering {
+		t.Errorf("--append-system-prompt of a plain chat with subagents off: %q", v)
+	}
+	if strings.Contains(noSpawnSteering, "spawn_subagent") || !strings.Contains(noSpawnSteering, "Do not use native Task or Agent.") {
+		t.Errorf("the steering of a chat with subagents off: %q", noSpawnSteering)
+	}
+}
+
 func TestArgsSubProcessPlainParent(t *testing.T) {
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "sub-tok"}
-	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s5", Cwd: "/tmp", Model: "sonnet", MCP: mcp, Subagent: true})
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s5", Cwd: "/tmp", Model: "sonnet", MCP: mcp, Subagent: true, NoSpawn: true})
 	if _, ok := flag(args, "--mcp-config"); !ok {
 		t.Errorf("sub process missing --mcp-config: %q", args)
 	}
@@ -284,9 +308,9 @@ func TestArgsUnchangedWithoutTheNewOptions(t *testing.T) {
 		{"a board chat, resumed", agent.SpawnOptions{SessionID: "s2", Resume: true, Cwd: "/tmp", Model: "opus", MCP: mcp, BoardID: "b"},
 			pinned([]string{"--resume", "s2"}, []string{"--model", "opus"},
 				append(append([]boardtools.Tool{}, boardtools.Tools...), boardtools.SpawnFamily...), cfg, spawnSteering+"\n\nWHITEBOARD PROMPT")},
-		{"a subagent of a board chat", agent.SpawnOptions{SessionID: "s4", Cwd: "/tmp", Model: "sonnet", MCP: mcp, BoardID: "b", Subagent: true},
+		{"a subagent of a board chat", agent.SpawnOptions{SessionID: "s4", Cwd: "/tmp", Model: "sonnet", MCP: mcp, BoardID: "b", Subagent: true, NoSpawn: true},
 			pinned([]string{"--session-id", "s4"}, []string{"--model", "sonnet"}, boardtools.Tools, cfg, spawnSteering+"\n\nWHITEBOARD PROMPT")},
-		{"a subagent of a plain chat", agent.SpawnOptions{SessionID: "s5", Cwd: "/tmp", Model: "sonnet", MCP: mcp, Subagent: true},
+		{"a subagent of a plain chat", agent.SpawnOptions{SessionID: "s5", Cwd: "/tmp", Model: "sonnet", MCP: mcp, Subagent: true, NoSpawn: true},
 			pinned([]string{"--session-id", "s5"}, []string{"--model", "sonnet"}, nil, cfg, spawnSteering)},
 	}
 	for _, c := range cases {
@@ -366,7 +390,7 @@ func TestArgsUnattendedAndReadOnly(t *testing.T) {
 		}
 	}
 	// A chat has no such flag, with or without the app's MCP server, a board or a subagent.
-	for _, o := range []agent.SpawnOptions{{}, {MCP: mcp}, {MCP: mcp, BoardID: "b"}, {MCP: mcp, Subagent: true}, {MCP: mcp, MCPTools: []string{"get_run"}}} {
+	for _, o := range []agent.SpawnOptions{{}, {MCP: mcp}, {MCP: mcp, BoardID: "b"}, {MCP: mcp, Subagent: true, NoSpawn: true}, {MCP: mcp, MCPTools: []string{"get_run"}}} {
 		o.SessionID, o.Cwd = "s1", "/tmp"
 		if args := testSpawner.Args(o); slices.Contains(args, "--strict-mcp-config") {
 			t.Errorf("%+v: a chat got --strict-mcp-config: %q", o, args)

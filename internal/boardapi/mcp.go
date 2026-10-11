@@ -308,8 +308,11 @@ func mcpToolsOf(tools []boardtools.Tool) []map[string]any {
 
 // listedTools is the per-chat, per-caller tools/list. Missing, unknown, or revoked tokens
 // get an empty list (handshake still succeeds), and so do the callers dispatch refuses every
-// call: an archived chat and a legacy chat. Other live tokens follow the §2 matrix; a caller whose
-// chat belongs to a run follows the run's rule (runs.go) and is never listed a board tool.
+// call: an archived chat and a legacy chat. Other live tokens follow the §2 matrix: the board
+// tools for a caller whose chat has a board, and the spawn family for a caller the chat's
+// subagent depth gives it (chats.Caller.MaySpawn): the chat's agent unless subagents are off, and
+// a subagent above the chat's deepest level. A caller whose chat belongs to a run follows the
+// run's rule (runs.go) and is never listed a board tool.
 func (r *Relay) listedTools(token string) []map[string]any {
 	caller, ok := r.Chats.ResolveToken(token)
 	if !ok || caller.Meta.Archived || caller.Meta.InstructionsSent {
@@ -318,20 +321,14 @@ func (r *Relay) listedTools(token string) []map[string]any {
 	if caller.Meta.Run != "" {
 		return mcpToolsOf(r.runListed(caller))
 	}
-	hasBoard := caller.Meta.Board != ""
-	switch {
-	case caller.Subagent && hasBoard:
-		return mcpToolsOf(boardtools.Tools)
-	case caller.Subagent:
-		return mcpToolsOf(nil)
-	case hasBoard:
-		tools := make([]boardtools.Tool, 0, len(boardtools.Tools)+len(boardtools.SpawnFamily))
+	var tools []boardtools.Tool
+	if caller.Meta.Board != "" {
 		tools = append(tools, boardtools.Tools...)
-		tools = append(tools, r.spawnListed()...)
-		return mcpToolsOf(tools)
-	default:
-		return mcpToolsOf(r.spawnListed())
 	}
+	if caller.MaySpawn() {
+		tools = append(tools, r.spawnListed()...)
+	}
+	return mcpToolsOf(tools)
 }
 
 // ServeFixedMCP serves the fixed POST /mcp on the dedicated listener. The credential is the
@@ -437,8 +434,8 @@ func (r *Relay) dispatch(token, name string, args json.RawMessage) ToolResult {
 	}
 	hasBoard := caller.Meta.Board != ""
 	if boardtools.IsSpawnFamily(name) {
-		if caller.Subagent {
-			return errResult(name + " is not available to subagents")
+		if !caller.MaySpawn() {
+			return errResult(caller.NoSpawnText(name))
 		}
 		return textResult(r.callSpawnFamily(caller, name, args))
 	}

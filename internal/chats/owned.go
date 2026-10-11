@@ -183,14 +183,18 @@ func toolNames(ts []boardtools.Tool, more ...boardtools.Tool) []string {
 // runOptions sets what the process of a run's chat object c starts with, on top of what every
 // chat's does; sub says the process is an app-spawned subagent of c. Which tools a process may
 // call is decided by the MCP endpoint, per token; MCPTools only says which of them need no asking.
-// c.mu held.
+// A run's agents have subagents one level deep and no more; a chat people open on a run follows
+// its own subagent settings (o.NoSpawn, set by the caller, says whether the process has the spawn
+// family). c.mu held.
 //
 //	                          Unattended  ReadOnly  MCPTools                        NeedHistory
 //	orchestrator              yes         yes       the orchestrator's run tools    with Resume
 //	task, merge               yes         no        the spawn family                with Resume
 //	  their subagents         yes         no        none
-//	a person's chat on a run  no          no        its run tools, the spawn family no
-//	  its subagents           no          no        none
+//	a person's chat on a run  no          no        its run tools, and the spawn    no
+//	                                                family unless o.NoSpawn
+//	  its subagents           no          no        the spawn family unless
+//	                                                o.NoSpawn, else none
 //	any other chat            no          no        nil: derived by the adapter     no
 func runOptions(c *Chat, o *agent.SpawnOptions, sub bool) {
 	if c.meta.Run == "" {
@@ -198,6 +202,8 @@ func runOptions(c *Chat, o *agent.SpawnOptions, sub bool) {
 	}
 	o.Unattended = c.role != ""
 	switch {
+	case sub && c.role == "" && !o.NoSpawn:
+		o.MCPTools = toolNames(boardtools.SpawnFamily)
 	case sub:
 		o.MCPTools = []string{}
 	case c.role == model.RoleOrchestrator:
@@ -207,6 +213,8 @@ func runOptions(c *Chat, o *agent.SpawnOptions, sub bool) {
 	case c.role != "":
 		o.MCPTools = toolNames(boardtools.SpawnFamily)
 		o.NeedHistory = o.Resume
+	case o.NoSpawn:
+		o.MCPTools = toolNames(boardtools.RunChatTools())
 	default:
 		o.MCPTools = toolNames(boardtools.RunChatTools(), boardtools.SpawnFamily...)
 	}

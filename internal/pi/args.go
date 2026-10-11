@@ -85,7 +85,8 @@ func (s *Spawner) sessionArgs(o agent.SpawnOptions, sessionDir, appendPromptFile
 // readOnlyTools is the --tools list of a read-only process: pi's built-in tools that only read,
 // and the app's MCP tools the process may call, by the names the extension registers them under.
 // Those are o.MCPTools when set; else the board tools when board extras are on and the spawn
-// family when this is the chat agent, as for the other agents. Without MCP there are none.
+// family unless the process has none (o.NoSpawn), as for the other agents. Without MCP there are
+// none.
 func readOnlyTools(o agent.SpawnOptions) []string {
 	tools := []string{"read", "grep", "find", "ls"}
 	if o.MCP == nil || o.MCP.MCPURL == "" {
@@ -102,7 +103,7 @@ func readOnlyTools(o agent.SpawnOptions) []string {
 			tools = append(tools, "mcp__board__"+t.Name)
 		}
 	}
-	if !o.Subagent {
+	if !o.NoSpawn {
 		for _, t := range boardtools.SpawnFamily {
 			tools = append(tools, "mcp__board__"+t.Name)
 		}

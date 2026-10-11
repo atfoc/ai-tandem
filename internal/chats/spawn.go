@@ -95,6 +95,11 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		unlock()
 		return model.Subagent{}, ErrTurnOver
 	}
+	depth, limit := subLimits(c)
+	if depth < 1 {
+		unlock()
+		return model.Subagent{}, &SubDepthError{Depth: depth}
+	}
 	if req.Prompt == "" {
 		unlock()
 		return model.Subagent{}, errors.New("prompt is required")
@@ -103,6 +108,13 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	if err != nil {
 		unlock()
 		return model.Subagent{}, err
+	}
+	// The chat's cap on running subagents, last of the refusals: counting and recording the new
+	// one are one step under c.mu, so two spawns at once cannot both take the last place. A
+	// refused spawn leaves no record and starts no process, and is not queued.
+	if n := runningAppSubs(c); limit > 0 && n >= limit {
+		unlock()
+		return model.Subagent{}, &SubCapError{Cap: limit, Running: n}
 	}
 
 	sid := randHex(6)
@@ -136,7 +148,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	out.emitSub(c, s.meta)
 	out.emitCounts(c)
 	sa := s.meta
-	opts := m.subSpawnOptions(c, sid, kind, modelID, effort)
+	opts := m.subSpawnOptions(c, sid, 1 >= depth, kind, modelID, effort)
 	prompt := req.Prompt
 	unlock() // the claim retry and Spawn run unlocked; the receipt is returned after both
 
@@ -337,7 +349,9 @@ func notUsableError(kind model.AgentKind, can []model.AgentKind) error {
 	return fmt.Errorf("agent %q cannot be used on this server: its program was not found. Usable: %s", kind, list)
 }
 
-func (m *Manager) subSpawnOptions(c *Chat, sid string, kind model.AgentKind, modelID, effort string) agent.SpawnOptions {
+// subSpawnOptions are the options the process of c's subagent sid starts with; leaf says that
+// it is at the chat's deepest level and so has no spawn family. c.mu held.
+func (m *Manager) subSpawnOptions(c *Chat, sid string, leaf bool, kind model.AgentKind, modelID, effort string) agent.SpawnOptions {
 	m.ensureToken(c)
 	opts := agent.SpawnOptions{
 		ChatID:   c.meta.ID + "/subagents/" + sid,
@@ -345,9 +359,10 @@ func (m *Manager) subSpawnOptions(c *Chat, sid string, kind model.AgentKind, mod
 		Cwd:      c.meta.Cwd,
 		Model:    modelID,
 		Effort:   m.effortFor(kind, modelID, effort),
-		MCP:      &agent.BoardAccess{MCPURL: m.MCPURL, Token: m.issueExtraToken(c, sid, kind, modelID, effort)},
+		MCP:      &agent.BoardAccess{MCPURL: m.MCPURL, Token: m.issueExtraToken(c, sid, subLevel(c, sid), kind, modelID, effort)},
 		BoardID:  c.meta.Board,
 		Subagent: true,
+		NoSpawn:  leaf,
 	}
 	if kind == model.Claude || kind == model.Pi {
 		opts.SessionID = uuid()

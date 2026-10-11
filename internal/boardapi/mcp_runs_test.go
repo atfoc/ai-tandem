@@ -260,6 +260,7 @@ func TestRunToolsDispatchPerCaller(t *testing.T) {
 	}
 	refusedText := func(text, name string) bool {
 		return text == name+" is not available on this chat" || text == name+" is not available to this agent" || text == name+" is not available to subagents" ||
+			text == name+" is not available to a subagent at level 1: this chat's subagent depth is 1" ||
 			text == "the run service refuses "+name
 	}
 

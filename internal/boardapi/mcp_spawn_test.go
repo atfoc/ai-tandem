@@ -397,7 +397,7 @@ func TestSubagentSpawnFamilyRejected(t *testing.T) {
 		if status != 200 || !isErr || strings.Contains(got, "board isn't open") {
 			t.Fatalf("%s: %q isErr=%v status=%d", name, got, isErr, status)
 		}
-		if got != name+" is not available to subagents" {
+		if got != name+" is not available to a subagent at level 1: this chat's subagent depth is 1" {
 			t.Fatalf("%s text %q", name, got)
 		}
 	}

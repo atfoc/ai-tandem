@@ -46,8 +46,10 @@ func cwdSlug(cwd string) string {
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 // taskDenyCommand is a static echo of the preToolUse deny JSON. Matcher already restricts it to
-// Task; user_message is the only field the model receives.
-const taskDenyCommand = `echo '{"permission":"deny","user_message":"Native subagents (the Task tool) are disabled in this chat. To delegate, use spawn_subagent (asynchronous; it returns a receipt immediately, and the app sends you the result later as a message). Do not use native Task."}'`
+// Task; user_message is the only field the model receives. The file is one for every process in
+// a chat's folder, so the text cannot say whether the process that reads it has the spawn family
+// (a chat whose subagents are off and a subagent at the deepest level have none).
+const taskDenyCommand = `echo '{"permission":"deny","user_message":"Native subagents (the Task tool) are disabled in this chat. To delegate, use spawn_subagent if you have that tool (asynchronous; it returns a receipt immediately, and the app sends you the result later as a message). Do not use native Task."}'`
 
 // readOnlyDenied is what a read-only process is told when it calls a tool that changes files.
 const readOnlyDenied = "This agent is read-only: it cannot create, change or delete files or run shell commands. Use the read and search tools (Read, Grep)."

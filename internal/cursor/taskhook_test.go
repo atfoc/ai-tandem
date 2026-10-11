@@ -705,7 +705,7 @@ const chatHookFile = `{
   "hooks": {
     "preToolUse": [
       {
-        "command": "echo '{\"permission\":\"deny\",\"user_message\":\"Native subagents (the Task tool) are disabled in this chat. To delegate, use spawn_subagent (asynchronous; it returns a receipt immediately, and the app sends you the result later as a message). Do not use native Task.\"}'",
+        "command": "echo '{\"permission\":\"deny\",\"user_message\":\"Native subagents (the Task tool) are disabled in this chat. To delegate, use spawn_subagent if you have that tool (asynchronous; it returns a receipt immediately, and the app sends you the result later as a message). Do not use native Task.\"}'",
         "matcher": "^Task$",
         "failClosed": true
       },
