@@ -326,7 +326,7 @@ func (r *Relay) listedTools(token string) []map[string]any {
 		tools = append(tools, boardtools.Tools...)
 	}
 	if caller.MaySpawn() {
-		tools = append(tools, r.spawnListed()...)
+		tools = append(tools, r.spawnListed(caller)...)
 	}
 	return mcpToolsOf(tools)
 }
@@ -459,7 +459,8 @@ func (r *Relay) dispatch(token, name string, args json.RawMessage) ToolResult {
 }
 
 // callSpawnFamily runs a spawn-family tool on the caller's own chat object: caller.Meta.ID, a
-// branch's server id for a branch.
+// branch's server id for a branch. The caller is the chat's agent or one of its subagents
+// (caller.SID): a subagent it spawns is that one's, and it stops only its own.
 func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawMessage) (string, bool) {
 	switch name {
 	case "spawn_subagent":
@@ -467,6 +468,7 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 		if err != nil {
 			return err.Error(), true
 		}
+		req.From = caller.SID
 		sa, err := r.Chats.SpawnSubagent(caller.Meta.ID, req)
 		if err != nil {
 			return spawnErrorText(err), true
@@ -477,7 +479,7 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 		if err != nil {
 			return err.Error(), true
 		}
-		if err := r.Chats.StopSubagent(caller.Meta.ID, sid); err != nil {
+		if err := r.Chats.StopSubagentBy(caller.Meta.ID, caller.SID, sid); err != nil {
 			return err.Error(), true
 		}
 		return "stopped subagent " + sid, false

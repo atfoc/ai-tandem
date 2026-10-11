@@ -132,6 +132,42 @@ func TestArgsChatWithSubagentsOff(t *testing.T) {
 	}
 }
 
+// A subagent that has the spawn family (a chat whose subagents may spawn): the family is
+// allowed, and its steering is the one that is true of a subagent.
+func TestArgsSubProcessThatMaySpawn(t *testing.T) {
+	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "sub-tok"}
+	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s8", Cwd: "/tmp", MCP: mcp, Subagent: true})
+	checkAllowed(t, args, boardtools.SpawnFamily, boardtools.Tools)
+	if v, _ := flag(args, "--disallowedTools"); !strings.Contains(v, ",Task,Agent") { // nesting is spawn_subagent's alone
+		t.Errorf("--disallowedTools of a subagent that may spawn: %q", v)
+	}
+	if v, _ := flag(args, "--append-system-prompt"); v != subSpawnSteering {
+		t.Errorf("--append-system-prompt of a subagent that may spawn: %q", v)
+	}
+	for _, want := range []string{
+		"If you have the spawn_subagent tool, call it to start one",
+		"end your turn; do not poll, sleep or run commands to wait for them",
+		"<subagent-results>",
+		"it ends with the number of the subagents you spawned that are still running",
+		"You are a subagent yourself. While subagents you spawned are still running, ending your turn does not finish you",
+		"Do not use native Task or Agent.",
+	} {
+		if !strings.Contains(subSpawnSteering, want) {
+			t.Errorf("the steering of a subagent that may spawn lacks %q", want)
+		}
+	}
+	for _, not := range []string{"this chat's", "the user's next message"} {
+		if strings.Contains(subSpawnSteering, not) {
+			t.Errorf("the steering of a subagent that may spawn says %q", not)
+		}
+	}
+	// With the list a chat on a run gives its subagents, the steering is the same.
+	args = testSpawner.Args(agent.SpawnOptions{SessionID: "s9", Cwd: "/tmp", MCP: mcp, Subagent: true, MCPTools: []string{"spawn_subagent"}})
+	if v, _ := flag(args, "--append-system-prompt"); v != subSpawnSteering {
+		t.Errorf("--append-system-prompt of a subagent with a tool list: %q", v)
+	}
+}
+
 func TestArgsSubProcessPlainParent(t *testing.T) {
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "sub-tok"}
 	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s5", Cwd: "/tmp", Model: "sonnet", MCP: mcp, Subagent: true, NoSpawn: true})

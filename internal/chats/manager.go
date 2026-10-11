@@ -549,8 +549,8 @@ func view(c *Chat) model.ChatView {
 
 // subCounts are the two numbers of a chat's view that come from its subagents' records.
 type subCounts struct {
-	running int // app-spawned subagents still running
-	owed    int // results the agent has not received
+	running int // app-spawned subagents still running, at every level, waiting ones included
+	owed    int // results the chat's agent has not received (not those a subagent is owed)
 }
 
 // countSubs counts them. A chat whose subagents are not loaded has none of either: a restart
@@ -561,7 +561,7 @@ func countSubs(c *Chat) subCounts {
 		if s.app && s.meta.Status == model.SubRunning {
 			n.running++
 		}
-		if s.meta.Delivery.Owed() {
+		if s.meta.Delivery.Owed() && s.meta.Parent == "" {
 			n.owed++
 		}
 	}
@@ -1608,7 +1608,7 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	}
 	d, taken, ups := m.carryOwed(c, true, &out)
 	if d != nil {
-		blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningAppSubs(c), true)})
+		blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningKids(c, ""), true)})
 		c.carry = d
 	}
 	blocks = append(blocks, agent.ContentBlock{Text: withReferences(refs, text)})

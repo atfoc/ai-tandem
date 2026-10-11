@@ -17,7 +17,7 @@ func subLimits(c *Chat) (depth, limit int) {
 		return model.DefaultSubDepth, 0
 	}
 	l := c.meta.SubLimits()
-	return min(l.Depth, 1), l.Cap // one level until a subagent can receive results (the next step)
+	return l.Depth, l.Cap
 }
 
 // subLevel is the level of c's subagent sid: 1 for one the chat's agent started, and one more

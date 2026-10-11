@@ -672,7 +672,9 @@ const (
 
 // SubDelivery says what the app owes the parent agent for an app-spawned subagent's result. Only
 // a finished app-spawned subagent ever leaves SubNotOwed; a record written before the field
-// existed reads as SubNotOwed and is never delivered.
+// existed reads as SubNotOwed and is never delivered. The parent is whoever started the subagent
+// (Subagent.Parent): the chat's agent, or a subagent, which is handed a result once and never a
+// second time.
 type SubDelivery string
 
 const (
@@ -680,7 +682,7 @@ const (
 	SubOwed      SubDelivery = "owed"     // the parent has not received the result
 	SubOwedAgain SubDelivery = "retry"    // owed after one failed attempt: the turn that carried it failed before the agent answered
 	SubSent      SubDelivery = "sent"     // handed to the parent in a turn
-	SubGivenUp   SubDelivery = "given-up" // two attempts failed: not owed, never carried again; the report stays on the record
+	SubGivenUp   SubDelivery = "given-up" // not owed, never carried again: two attempts failed, or a subagent did not get it; the report stays on the record
 )
 
 // Owed reports whether the parent has yet to receive the result: owed, or owed after one failed
@@ -693,7 +695,7 @@ func (d SubDelivery) Owed() bool { return d == SubOwed || d == SubOwedAgain }
 type Subagent struct {
 	ID          string    `json:"id"`                    // the app's id, the folder's name
 	Tool        string    `json:"tool"`                  // the Agent/Task tool call that started it
-	Parent      string    `json:"parent,omitempty"`      // the subagent that started it, whose thread holds that call; "" = the chat's agent
+	Parent      string    `json:"parent,omitempty"`      // the subagent that started it, whose thread holds that call and which gets its result; "" = the chat's agent
 	AgentID     string    `json:"agentId,omitempty"`     // Claude task_id, Cursor subagentSessionId
 	Type        string    `json:"type,omitempty"`        // as reported: "general-purpose", "generalPurpose", "Explore", a custom name
 	Description string    `json:"description,omitempty"` // the name the parent gave it
@@ -716,7 +718,8 @@ type Subagent struct {
 	Delivery SubDelivery `json:"delivery,omitempty"`
 	// Carried is the item count of the chat's thread when the result was last taken for a turn,
 	// before what that turn added: the result reached the agent, if it did, past that count. 0 in
-	// a record that was never taken, or was written before the count was kept.
+	// a record that was never taken, or was written before the count was kept. For a subagent a
+	// subagent started (Parent) the thread is that subagent's.
 	Carried int `json:"carried,omitempty"`
 	// NotCarried marks a copy's record (a new branch's or a fork's) of a subagent that was still
 	// running in the source when the copy was made. It does not run in the copy: its status there

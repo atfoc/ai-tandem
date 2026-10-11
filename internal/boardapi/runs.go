@@ -61,7 +61,7 @@ func (r *Relay) runListed(caller chats.Caller) []boardtools.Tool {
 		}
 	case model.RoleTask, model.RoleMerge:
 		if !caller.Subagent {
-			return r.spawnListed()
+			return r.spawnListed(caller)
 		}
 	case "":
 		var tools []boardtools.Tool
@@ -69,20 +69,24 @@ func (r *Relay) runListed(caller chats.Caller) []boardtools.Tool {
 			tools = r.runToolsOf(caller)
 		}
 		if caller.MaySpawn() {
-			tools = append(tools, r.spawnListed()...)
+			tools = append(tools, r.spawnListed(caller)...)
 		}
 		return tools
 	}
 	return nil // a subagent of a run's agent, and a role this endpoint does not know, get nothing
 }
 
-// spawnListed is the spawn family as tools/list shows it: its agent parameter names only the
-// agents this server can start.
-func (r *Relay) spawnListed() []boardtools.Tool {
+// spawnListed is the spawn family as tools/list shows it to caller: its agent parameter names
+// only the agents this server can start, and a subagent reads of itself where the chat's agent
+// reads of its chat.
+func (r *Relay) spawnListed(caller chats.Caller) []boardtools.Tool {
 	usable := r.Chats.UsableAgents()
 	names := make([]string, len(usable))
 	for i, a := range usable {
 		names[i] = string(a)
+	}
+	if caller.Subagent {
+		return boardtools.SpawnFamilyForSub(names)
 	}
 	return boardtools.SpawnFamilyFor(names)
 }

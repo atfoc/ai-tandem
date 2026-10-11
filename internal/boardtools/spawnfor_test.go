@@ -2,6 +2,7 @@ package boardtools
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +74,56 @@ func TestSpawnFamilyFor(t *testing.T) {
 	}
 	if len(summaries) != 4 {
 		t.Fatalf("summaries: %v", summaries)
+	}
+}
+
+// What a subagent that may spawn is listed: the same tools and parameters, in words that are
+// true of it. Nothing of it says "this chat", and what the chat's agent is listed is unchanged.
+func TestSpawnFamilyForSub(t *testing.T) {
+	agents := []string{"claude", "pi"}
+	chat, sub := SpawnFamilyFor(agents), SpawnFamilyForSub(agents)
+	if len(sub) != len(chat) {
+		t.Fatalf("%d tools for a subagent, %d for the chat's agent", len(sub), len(chat))
+	}
+	texts := func(tl Tool) []string {
+		out := []string{tl.Description}
+		for _, p := range tl.Schema["properties"].(map[string]any) {
+			out = append(out, p.(map[string]any)["description"].(string))
+		}
+		return out
+	}
+	for i, tl := range sub {
+		if tl.Name != chat[i].Name || tl.Summary != chat[i].Summary {
+			t.Fatalf("tool %d: %s %q, the chat's %s %q", i, tl.Name, tl.Summary, chat[i].Name, chat[i].Summary)
+		}
+		got, want := tl.Schema["properties"].(map[string]any), chat[i].Schema["properties"].(map[string]any)
+		if len(got) != len(want) || !reflect.DeepEqual(tl.Schema["required"], chat[i].Schema["required"]) {
+			t.Fatalf("%s: parameters %v, the chat's %v", tl.Name, got, want)
+		}
+		for _, text := range texts(tl) {
+			if strings.Contains(text, "this chat") {
+				t.Errorf("%s tells a subagent of \"this chat\": %q", tl.Name, text)
+			}
+		}
+	}
+	if d := sub[0].Description; sub[0].Name != "spawn_subagent" || !strings.HasPrefix(d, chat[0].Description) || !strings.HasSuffix(d, subNote) {
+		t.Errorf("spawn_subagent for a subagent: %q", d)
+	}
+	ps := sub[0].Schema["properties"].(map[string]any)
+	for name, want := range map[string]string{
+		"agent":  "claude, or pi; omit for your own agent",
+		"model":  "omit for your own model when the agent is your own and that model and your own effort still fit its list",
+		"effort": "omit with a model named for your own effort, or the model's default effort when you have none",
+	} {
+		if d := ps[name].(map[string]any)["description"].(string); !strings.Contains(d, want) {
+			t.Errorf("%s for a subagent: %q", name, d)
+		}
+	}
+	if e := ps["agent"].(map[string]any)["enum"]; !reflect.DeepEqual(e, []any{"claude", "pi"}) {
+		t.Errorf("the agent enum for a subagent: %v", e)
+	}
+	// The lists it was made from are as they were.
+	if !reflect.DeepEqual(chat, SpawnFamilyFor(agents)) || strings.Contains(SpawnFamily[0].Description, "You are a subagent") {
+		t.Error("making a subagent's list changed the chat's")
 	}
 }

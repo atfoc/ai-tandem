@@ -154,20 +154,24 @@ func costTurnEnd(c *Chat, ev agent.Event) {
 	}
 }
 
-// costSubEnd counts the cost and the tokens ev, the turn end of an app-spawned subagent of c, reports: a
-// subagent is one process with one turn, so what it reports is what it cost. It reports whether
-// the record changed; the caller then writes chat.json. c.mu held.
-func costSubEnd(c *Chat, ev agent.Event) bool {
+// costSubEnd counts the cost and the tokens ev, a turn end of c's app-spawned subagent s, reports.
+// A subagent is one process on a session of its own, and both kinds that report count from that
+// start (Claude per process, pi per session): so a turn cost what the report has grown by since
+// the turn before, which s keeps, and all of it for the first turn. It reports whether the record
+// changed; the caller then writes chat.json. c.mu held.
+func costSubEnd(c *Chat, s *sub, ev agent.Event) bool {
 	k := costOf(c)
 	if k == nil || (!ev.HasCost && !ev.HasTokens) {
 		return false
 	}
 	if ev.HasCost {
-		k.Subs += ev.CostUSD
+		k.Subs += ev.CostUSD - s.cost
+		s.cost = ev.CostUSD
 		k.Known = true
 	}
 	if ev.HasTokens {
-		k.TokSubs = tokAdd(k.TokSubs, ev.CumTokens)
+		k.TokSubs = tokAdd(k.TokSubs, tokSub(ev.CumTokens, s.tok))
+		s.tok = ev.CumTokens
 		k.TokKnown = true
 	}
 	return true
@@ -187,8 +191,9 @@ func costLost(c *Chat, kind model.AgentKind) bool {
 }
 
 // costSubLost is costLost for an app-spawned subagent of c, of kind, that ended or was stopped
-// without a turn end: its one turn is all it has, so what it spent is lost for every kind that
-// reports a cost. c.mu held.
+// in a turn, without a turn end: nothing reports that turn any more, so what it spent is lost for
+// every kind that reports a cost. One that ended while it waited, between turns, lost nothing.
+// c.mu held.
 func costSubLost(c *Chat, kind model.AgentKind) bool {
 	k := costOf(c)
 	if k == nil || (kind != model.Claude && kind != model.Pi) {

@@ -5,6 +5,10 @@
 // what is owed along with it (Manager.Send). Whether the agent received them is settled once per
 // carrying turn: by its first model output, or else by how it ends. A completion whose turn failed
 // is tried once more, by the app, and given up when that fails too.
+//
+// That is the chat's agent, the parent of the subagents it started. A subagent that started
+// subagents is the parent of those, and is handed their results the same way, as a message that
+// starts a further turn of it; what differs for it (no second attempt, no hold) is in nested.go.
 package chats
 
 import (
@@ -61,12 +65,17 @@ func ended(s *sub, why subEnding) {
 	}
 }
 
-// owedSubs returns the subagents whose result the parent is owed, in completion order: by Ended,
-// then by id (Ended has millisecond resolution). c.mu held.
-func owedSubs(c *Chat) []*sub {
+// owedSubs returns the subagents whose result the chat's agent is owed, in completion order.
+// c.mu held.
+func owedSubs(c *Chat) []*sub { return owedTo(c, "") }
+
+// owedTo returns the subagents whose result parent is owed, the one that started them (a sid,
+// "" = the chat's agent), in completion order: by Ended, then by id (Ended has millisecond
+// resolution). c.mu held.
+func owedTo(c *Chat, parent string) []*sub {
 	var owed []*sub
 	for _, s := range c.subs {
-		if s.meta.Delivery.Owed() {
+		if s.meta.Parent == parent && s.meta.Delivery.Owed() {
 			owed = append(owed, s)
 		}
 	}
@@ -79,13 +88,31 @@ func owedSubs(c *Chat) []*sub {
 	return owed
 }
 
-// runningAppSubs counts the chat's app-spawned subagents still running. c.mu held.
+// runningAppSubs counts the chat's app-spawned subagents still running, at every level; a
+// waiting one runs. It is what the chat's cap is held against. c.mu held.
 func runningAppSubs(c *Chat) int { return countSubs(c).running }
+
+// runningKids counts the app-spawned subagents parent started (a sid, "" = the chat's agent)
+// that still run: those whose results it has yet to get, which is the count a result block gives
+// its reader. c.mu held.
+func runningKids(c *Chat, parent string) int {
+	n := 0
+	for _, s := range c.subs {
+		if s.app && s.meta.Parent == parent && s.meta.Status == model.SubRunning {
+			n++
+		}
+	}
+	return n
+}
 
 // carry is a turn that carries completions to the parent agent, started by the app (deliver) or by
 // the human's message (Send). Chat.carry holds it from the take until the turn is over. Its completions are settled once: as delivered when model output first
 // appears in the turn (modelOutput), or else by how the turn ends (endCarry).
+//
+// A turn that carries completions to a subagent (deliverSub) is one too, held by that subagent
+// (sub.carry) and named by sub; again, human, handing and stop are the chat's agent's only.
 type carry struct {
+	sub     string          // the subagent whose turn it is; "" = the chat's agent
 	sids    []string        // the subagents whose results it carries, in completion order
 	again   map[string]bool // those of them whose delivery had failed once before this turn
 	settled bool            // model output appeared: delivered, whatever happens later in the turn
@@ -274,7 +301,7 @@ func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 		}
 		blocks = append(blocks, agent.ContentBlock{Text: prompts.BoardContext(name, c.meta.Board)})
 	}
-	blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningAppSubs(c), false)})
+	blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningKids(c, ""), false)})
 	if err := c.tr.Flush(false); err != nil {
 		log.Printf("chats: flush %s: %v", c.meta.ID, err)
 	}
@@ -317,6 +344,9 @@ func (m *Manager) turnOver(c *Chat, ev agent.Event, out *outbox) *carry {
 // An Interrupt that came meanwhile is passed on once the agent has the message: pi drops an abort
 // that arrives before its Send. A refused delivery leaves no turn to stop, and the signal is
 // dropped.
+//
+// A delivery to a subagent is given the same way. One its process does not accept fails that
+// subagent (subRefused).
 func (m *Manager) handOff(c *Chat, d *carry) {
 	if d == nil {
 		return
@@ -325,6 +355,12 @@ func (m *Manager) handOff(c *Chat, d *carry) {
 	go func() {
 		defer m.handoffs.Done()
 		err := d.ag.Send(d.blocks)
+		if d.sub != "" {
+			if err != nil {
+				m.subRefused(c, d, err)
+			}
+			return
+		}
 		var out outbox
 		c.mu.Lock()
 		d.handing = false
@@ -441,14 +477,21 @@ func lateEvent(c *Chat, ev agent.Event) (late, counts bool) {
 // subResultsTag names the block a delivery's message is.
 const subResultsTag = "subagent-results"
 
-// subResultsBlock is what the agent gets for the completions a turn carries: one block written by
-// the app, with each subagent's sid and final status and, when it has them, its description, error,
-// summary and report, then how many of the chat's subagents still run. It is the whole message of
-// a turn the app starts; ahead of the human's text (withMessage) it says the user's message
-// follows. Everything a subagent supplied is escaped, so nothing in a report can close, reopen or
-// imitate the block. The spawn_subagent description (boardtools) and Claude's steering describe
-// this block to the agent.
+// subResultsBlock is what the chat's agent gets for the completions a turn carries: one block
+// written by the app, with each subagent's sid and final status and, when it has them, its
+// description, error, summary and report, then how many of the subagents the agent started still
+// run (runningKids: those a subagent of its started are that one's, and not counted). It is the
+// whole message of a turn the app starts; ahead of the human's text (withMessage) it says the
+// user's message follows. Everything a subagent supplied is escaped, so nothing in a report can
+// close, reopen or imitate the block. The spawn_subagent description (boardtools) and Claude's
+// steering describe this block to the agent.
 func subResultsBlock(subs []model.Subagent, running int, withMessage bool) string {
+	return resultsBlock(subs, running, withMessage, false)
+}
+
+// resultsBlock is subResultsBlock for either reader: toSub says the reader is a subagent, which
+// is told the count of its own in its own words. Nothing else differs.
+func resultsBlock(subs []model.Subagent, running int, withMessage, toSub bool) string {
 	var b strings.Builder
 	b.WriteString("<" + subResultsTag + ">\n")
 	if withMessage {
@@ -477,7 +520,11 @@ func subResultsBlock(subs []model.Subagent, running int, withMessage bool) strin
 		field("report", sa.Last)
 		b.WriteString("</subagent>\n")
 	}
-	fmt.Fprintf(&b, "\nSubagents of this chat still running: %d.\n", running)
+	if toSub {
+		fmt.Fprintf(&b, "\nSubagents you spawned still running: %d.\n", running)
+	} else {
+		fmt.Fprintf(&b, "\nSubagents of this chat still running: %d.\n", running)
+	}
 	b.WriteString("</" + subResultsTag + ">")
 	return b.String()
 }

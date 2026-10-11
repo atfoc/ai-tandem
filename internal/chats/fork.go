@@ -406,7 +406,7 @@ func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, er
 		c.meta.NoticeAt = src.meta.NoticeAt // the message that carried it is in the copy
 	}
 	for _, s := range c.subs {
-		if s.meta.Delivery != model.SubNotOwed && s.meta.Delivery != model.SubOwed &&
+		if s.meta.Parent == "" && s.meta.Delivery != model.SubNotOwed && s.meta.Delivery != model.SubOwed &&
 			(!tr.HasSubResult(s.meta.ID) || s.meta.Carried >= at) {
 			s.meta.Delivery = model.SubOwed
 			m.saveSub(c, s)

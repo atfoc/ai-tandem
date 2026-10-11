@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/transcript"
 )
 
 // spawnClaimRetry is how long SpawnSubagent waits for a racing tool_use item before
@@ -15,8 +16,8 @@ const spawnClaimRetry = 20 * time.Millisecond
 // spawnLinkWait is how long after its spawn a pending link is still tried against new tool items.
 const spawnLinkWait = 5 * time.Second
 
-// pendingSpawnLink is an app-spawned sub waiting for a matching spawn tool item in the
-// chat's own thread.
+// pendingSpawnLink is an app-spawned sub waiting for a matching spawn tool item in the thread of
+// whoever spawned it (spawnThread).
 type pendingSpawnLink struct {
 	sid   string
 	canon string
@@ -78,13 +79,28 @@ func canonicalToolInput(input json.RawMessage) string {
 	return string(b)
 }
 
-// findOldestSpawnClaim returns the tool id of the oldest pending, unclaimed spawn item
-// whose arguments canonically equal canon. c.mu held.
-func findOldestSpawnClaim(c *Chat, canon string) string {
-	if c.tr == nil || canon == "" {
+// spawnThread is the thread that holds the spawn call of s: the chat's own, or that of the
+// subagent that spawned s, by whose sid a client knows it (parent; "" = the chat's). nil when
+// there is none to look in. c.mu held.
+func (m *Manager) spawnThread(c *Chat, s *sub) (tr *transcript.Transcript, parent string) {
+	if s.meta.Parent == "" {
+		return c.tr, ""
+	}
+	if p := c.subs[s.meta.Parent]; p != nil {
+		if tr, err := m.subTr(c, p); err == nil {
+			return tr, s.meta.Parent
+		}
+	}
+	return nil, s.meta.Parent
+}
+
+// findOldestSpawnClaim returns the tool id of the oldest pending, unclaimed spawn item of the
+// thread tr whose arguments canonically equal canon. c.mu held.
+func findOldestSpawnClaim(tr *transcript.Transcript, canon string) string {
+	if tr == nil || canon == "" {
 		return ""
 	}
-	_, items := c.tr.Snapshot()
+	_, items := tr.Snapshot()
 	for _, it := range items {
 		if !isPendingSpawnItem(it) {
 			continue
@@ -97,7 +113,8 @@ func findOldestSpawnClaim(c *Chat, canon string) string {
 	return ""
 }
 
-// tryClaim links sid to the oldest matching unclaimed spawn item. c.mu held.
+// tryClaim links sid to the oldest matching unclaimed spawn item of the thread its spawn call is
+// in: the row of a subagent that a subagent spawned is linked from that one's thread. c.mu held.
 func (m *Manager) tryClaim(c *Chat, sid, canon string, out *outbox) bool {
 	s := c.subs[sid]
 	if s == nil {
@@ -106,7 +123,8 @@ func (m *Manager) tryClaim(c *Chat, sid, canon string, out *outbox) bool {
 	if s.meta.Tool != "" {
 		return true
 	}
-	toolID := findOldestSpawnClaim(c, canon)
+	tr, parent := m.spawnThread(c, s)
+	toolID := findOldestSpawnClaim(tr, canon)
 	if toolID == "" {
 		return false
 	}
@@ -115,7 +133,7 @@ func (m *Manager) tryClaim(c *Chat, sid, canon string, out *outbox) bool {
 		c.subByTool = map[string]string{}
 	}
 	c.subByTool[toolID] = sid
-	m.link(c, c.tr, "", toolID, sid, out)
+	m.link(c, tr, parent, toolID, sid, out)
 	m.saveSub(c, s)
 	out.emitSub(c, s.meta)
 	return true
@@ -146,7 +164,8 @@ func (m *Manager) retrySpawnClaim(chatID, sid, canon string) (tool string, gone 
 }
 
 // reconcileSpawnLinks re-attempts FIFO matching of pending unlinked spawns against new
-// spawn tool items in the chat's own thread. A spawn is tried for spawnLinkWait after it was
+// spawn tool items in the thread of whoever spawned them: it is called when an item was added to
+// the chat's thread or to a subagent's. A spawn is tried for spawnLinkWait after it was
 // made, whether its subagent still runs or has ended: its item can be late by the race with the
 // MCP call. After that, or when its subagent is gone, it is dropped unlinked, so that it does not
 // take the item of a later spawn with the same arguments. Within the wait a late item cannot be

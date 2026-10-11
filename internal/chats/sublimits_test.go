@@ -213,6 +213,19 @@ func TestSubLimitsOnARun(t *testing.T) {
 	if _, err := e.m.SpawnSubagent(off.ID, SpawnSubRequest{Prompt: "work"}); !errors.As(err, &de) {
 		t.Fatalf("spawn on a chat on a run with subagents off: %v", err)
 	}
+	// With depth 2 its subagent has the spawn family and nothing of the run; the one below has none.
+	deep := e.onRun(model.Claude)
+	e.limits(deep.ID, 2, 100)
+	e.send(deep.ID, "go", "")
+	one, pone := e.child(deep.ID, "", "level one")
+	if o := pone.opts; o.NoSpawn || !reflect.DeepEqual(o.MCPTools, toolNames(boardtools.SpawnFamily)) || o.Unattended {
+		t.Fatalf("a subagent that may spawn, of a chat on a run, started with %+v", o)
+	}
+	_, ptwo := e.child(deep.ID, one.ID, "level two")
+	if o := ptwo.opts; !o.NoSpawn || o.MCPTools == nil || len(o.MCPTools) != 0 {
+		t.Fatalf("a subagent at the deepest level, of a chat on a run, started with %+v", o)
+	}
+
 	capped := e.onRun(model.Claude)
 	e.limits(capped.ID, 1, 1)
 	e.send(capped.ID, "go", "")

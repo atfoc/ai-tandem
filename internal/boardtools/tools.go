@@ -147,7 +147,8 @@ var Tools = []Tool{
 // SpawnFamily is the MCP spawn-family list. These are MCP tools on the server named
 // "board", not board-engine operations: they must not go through Relay.Call / IsTool.
 // Listing is filtered per chat and caller at the MCP handler; Claude --allowedTools
-// reads the same names (mcp__board__<name>).
+// reads the same names (mcp__board__<name>). The texts here are what the chat's agent reads; a
+// subagent that has the family (a chat whose subagent depth is above 1) reads SpawnFamilyForSub.
 var SpawnFamily = []Tool{
 	{
 		Name: "spawn_subagent",
@@ -237,6 +238,58 @@ func SpawnFamilyFor(agents []string) []Tool {
 			schema[k] = v
 		}
 		schema["properties"] = ps
+		t.Schema = schema
+		out[i] = t
+	}
+	return out
+}
+
+// subWords are the words of the spawn family's texts that name the caller as "this chat", with
+// what a subagent reads in their place: what a spawn takes where it names nothing is the calling
+// subagent's own, not the chat's. Longer phrases come first.
+var subWords = strings.NewReplacer(
+	"omit for this chat's current model when the agent is this chat's own and that model and this chat's effort still fit its list",
+	"omit for your own model when the agent is your own and that model and your own effort still fit its list",
+	"omit with a model named for this chat's current effort, or the model's default effort when this chat has none",
+	"omit with a model named for your own effort, or the model's default effort when you have none",
+	"omit for this chat's agent", "omit for your own agent",
+)
+
+// subNote is what the spawn_subagent description adds for a subagent: when its own work counts
+// as finished.
+const subNote = " You are a subagent yourself: while subagents you spawned are still running, ending your turn does not finish you. " +
+	"Whoever started you gets your result only after you have had theirs, and it is the last message you write then."
+
+// SpawnFamilyForSub is SpawnFamilyFor as a subagent that may spawn is listed it: the same tools
+// and parameters, with the texts that speak of "this chat" speaking of the subagent itself.
+func SpawnFamilyForSub(agents []string) []Tool {
+	out := SpawnFamilyFor(agents)
+	for i, t := range out {
+		t.Description = subWords.Replace(t.Description)
+		if t.Name == "spawn_subagent" {
+			t.Description += subNote
+		}
+		schema := make(map[string]any, len(t.Schema))
+		for k, v := range t.Schema {
+			schema[k] = v
+		}
+		if old, ok := t.Schema["properties"].(map[string]any); ok {
+			ps := make(map[string]any, len(old))
+			for name, v := range old {
+				if p, ok := v.(map[string]any); ok {
+					if d, ok := p["description"].(string); ok {
+						q := make(map[string]any, len(p))
+						for k, v := range p {
+							q[k] = v
+						}
+						q["description"] = subWords.Replace(d)
+						v = q
+					}
+				}
+				ps[name] = v
+			}
+			schema["properties"] = ps
+		}
 		t.Schema = schema
 		out[i] = t
 	}

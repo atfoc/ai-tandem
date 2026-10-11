@@ -398,7 +398,7 @@ func TestListModelsDefaultsAndEffortRule(t *testing.T) {
 	if got := defaultsLine(model.Pi, piModels, "unlisted", "high"); got != "Model omitted -> unlisted, effort high." {
 		t.Fatalf("a model the list lacks: %q", got)
 	}
-	if got := effortRuleLine("xhigh"); got != "Effort omitted with a model named -> this chat's effort (xhigh) if the model offers it, else the model's default effort." {
+	if got := effortRuleLine("xhigh", ownWords(false)); got != "Effort omitted with a model named -> this chat's effort (xhigh) if the model offers it, else the model's default effort." {
 		t.Fatalf("effort rule: %q", got)
 	}
 }
@@ -464,7 +464,7 @@ func TestListModelsNotKnown(t *testing.T) {
 	}
 
 	// A chat with an effort and no model, asked about its own kind.
-	if got := unknownListLines(model.Cursor, true, "", "high")[2]; got != "Model omitted -> no model is named, so cursor uses its own default model; this chat's effort high is passed on unchecked." {
+	if got := unknownListLines(model.Cursor, true, "", "high", ownWords(false))[2]; got != "Model omitted -> no model is named, so cursor uses its own default model; this chat's effort high is passed on unchecked." {
 		t.Fatalf("effort, no model: %q", got)
 	}
 

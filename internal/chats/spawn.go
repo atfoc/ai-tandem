@@ -21,6 +21,10 @@ type SpawnSubRequest struct {
 	Kind        model.AgentKind // empty = the chat's kind
 	Model       string          // empty = the chat's model when Kind is the chat's and it still fits the list, else a new-chat default
 	Effort      string          // empty = the chat's effort for a named model or the chat's own unless the list rules it out, else a default
+	// From is the sid of the subagent that calls; "" = the chat's agent. The new subagent is its:
+	// recorded with it as Parent, linked from the spawn call in its thread, and where Kind, Model
+	// and Effort say "the chat's" above, it is the caller's own that is meant.
+	From string
 }
 
 // SpawnValueError is a model or effort that spawn_subagent rejected against a known model list.
@@ -61,9 +65,12 @@ func (e *folderMissingError) Error() string { return e.text }
 func (e *folderMissingError) Unwrap() error { return ErrFolderMissing }
 
 // SpawnSubagent starts one independent agent process and returns a receipt without waiting for it
-// to finish. Validation and lifecycle errors start nothing. chatID is the server id of the
-// caller's own chat object (a branch's for a branch), here and in StopSubagent: they are never
-// re-routed to the current branch.
+// to finish. Validation and lifecycle errors start nothing, and neither do the chat's two
+// subagent settings (sublimits.go): a caller at the chat's deepest level, or any caller of a chat
+// whose subagents are off, is refused (*SubDepthError), and so is a spawn that would take the
+// chat over its cap on running subagents (*SubCapError). chatID is the server id of the caller's
+// own chat object (a branch's for a branch), here and in StopSubagent: they are never re-routed
+// to the current branch.
 func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subagent, error) {
 	var out outbox
 	c, err := m.lock(chatID)
@@ -95,16 +102,26 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		unlock()
 		return model.Subagent{}, ErrTurnOver
 	}
+	// The caller: the chat's agent, or one of its subagents that still runs (its token is
+	// revoked when it ends, so another is a call that raced with its end).
+	var from *sub
+	if req.From != "" {
+		if from = c.subs[req.From]; from == nil || !from.app || from.meta.Status != model.SubRunning {
+			unlock()
+			return model.Subagent{}, errors.New("the calling subagent has ended")
+		}
+	}
 	depth, limit := subLimits(c)
-	if depth < 1 {
+	level := subLevel(c, req.From) + 1 // the level the new subagent would be at
+	if level > depth {
 		unlock()
-		return model.Subagent{}, &SubDepthError{Depth: depth}
+		return model.Subagent{}, &SubDepthError{Level: level - 1, Depth: depth}
 	}
 	if req.Prompt == "" {
 		unlock()
 		return model.Subagent{}, errors.New("prompt is required")
 	}
-	kind, modelID, effort, err := m.resolveSubSpawn(c, req)
+	kind, modelID, effort, err := m.resolveSubSpawn(c, spawnBaseOf(c, from), req)
 	if err != nil {
 		unlock()
 		return model.Subagent{}, err
@@ -124,6 +141,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 			Kind:        kind,
 			Model:       modelID,
 			Effort:      effort,
+			Parent:      req.From,
 			Description: req.Description,
 			Prompt:      req.Prompt,
 			Background:  true,
@@ -136,19 +154,13 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	}
 	c.subs[sid] = s
 	canon := canonicalSpawnArgs(req)
-	if toolID := findOldestSpawnClaim(c, canon); toolID != "" {
-		s.meta.Tool = toolID
-		if c.subByTool == nil {
-			c.subByTool = map[string]string{}
-		}
-		c.subByTool[toolID] = sid
-		m.link(c, c.tr, "", toolID, sid, &out)
+	if !m.tryClaim(c, sid, canon, &out) {
+		m.saveSub(c, s)
+		out.emitSub(c, s.meta)
 	}
-	m.saveSub(c, s)
-	out.emitSub(c, s.meta)
 	out.emitCounts(c)
 	sa := s.meta
-	opts := m.subSpawnOptions(c, sid, 1 >= depth, kind, modelID, effort)
+	opts := m.subSpawnOptions(c, sid, level >= depth, kind, modelID, effort)
 	prompt := req.Prompt
 	unlock() // the claim retry and Spawn run unlocked; the receipt is returned after both
 
@@ -197,8 +209,18 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	return sa, nil
 }
 
-// StopSubagent terminates one app-spawned process. Unknown or already-final sids are an error.
-func (m *Manager) StopSubagent(chatID, sid string) error {
+// ErrNotStarter is what stop_subagent answers a caller that names a subagent it did not start.
+var ErrNotStarter = errors.New("that subagent was not started by you: stop_subagent stops only the subagents you started yourself")
+
+// StopSubagent terminates one subagent the chat's agent started. Unknown or already-final sids
+// are an error.
+func (m *Manager) StopSubagent(chatID, sid string) error { return m.StopSubagentBy(chatID, "", sid) }
+
+// StopSubagentBy is StopSubagent for the caller by: the sid of a subagent, "" for the chat's
+// agent. A caller stops only what it started itself (ErrNotStarter for another's, the chat's
+// agent included: it stops a subagent of a subagent by stopping the one it started). Every
+// subagent below the stopped one is stopped with it.
+func (m *Manager) StopSubagentBy(chatID, by, sid string) error {
 	var out outbox
 	c, err := m.lock(chatID)
 	if err != nil {
@@ -215,48 +237,56 @@ func (m *Manager) StopSubagent(chatID, sid string) error {
 		m.send(out)
 		return ErrNoSubagent
 	}
+	if s.meta.Parent != by {
+		c.mu.Unlock()
+		m.send(out)
+		return ErrNotStarter
+	}
 	if s.meta.Status != model.SubRunning {
 		c.mu.Unlock()
 		m.send(out)
 		return fmt.Errorf("subagent %s is %s", sid, s.meta.Status)
 	}
-	var toClose []agent.Agent
-	if s.ag != nil {
-		m.denySubPerms(c, s)
-		toClose = append(toClose, s.ag)
-		s.ag = nil
-		if costSubLost(c, s.meta.Kind) { // stopped in its one turn: it reports no cost any more
-			m.logSave(c)
-		}
-	}
-	s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
-	ended(s, endStopTool)
-	leftApproval := m.endSub(c, s, &out)
-	m.revokeExtra(c.meta.ID, sid)
-	closeStop(s)
-	var d *carry
-	if leftApproval {
-		d = m.deliver(c, &out)
+	var aft after
+	ag, leftApproval := m.stopSub(c, s, endStopTool, &out)
+	aft.close = append(aft.close, ag)
+	if m.stopBelow(c, s, &out, &aft) || leftApproval {
+		aft.add(m.deliver(c, &out))
 	}
 	out.emitCounts(c)
 	c.mu.Unlock()
 	m.send(out)
-	closeAgents(toClose)
-	m.handOff(c, d)
+	m.finish(c, &aft)
 	return nil
 }
 
+// spawnBase is whose agent, model and effort a spawn takes where it names none: the chat's for
+// a spawn of the chat's agent, the calling subagent's for a spawn of a subagent.
+type spawnBase struct {
+	kind          model.AgentKind
+	model, effort string
+}
+
+// spawnBaseOf is the base of a spawn by from, nil for the chat's agent. c.mu held.
+func spawnBaseOf(c *Chat, from *sub) spawnBase {
+	if from != nil {
+		return spawnBase{from.meta.Kind, from.meta.Model, from.meta.Effort}
+	}
+	return spawnBase{c.meta.Agent, c.meta.Model, c.meta.Effort}
+}
+
 // resolveSubSpawn picks kind/model/effort. Explicit values are validated like Configure against
-// the requested kind's catalog. Inherited values fall back to new-chat defaults when they do not
-// fit, and always when the requested kind is not the chat's and no model was named: a model
-// is inherited only by a subagent of the chat's own kind, even if the other kind lists the same id;
+// the requested kind's catalog. Inherited values are the caller's (base: the chat's, or those of
+// the subagent that spawns). They fall back to new-chat defaults when they do not
+// fit, and always when the requested kind is not the caller's and no model was named: a model
+// is inherited only by a subagent of the caller's own kind, even if the other kind lists the same id;
 // a named effort there is validated against the model the rebase yields. That holds while the
 // other kind's catalog is unknown too: the defaults are then the model the user last picked for
 // that kind, or none, so the agent uses its own. c.mu held.
-func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.AgentKind, modelID, effort string, err error) {
+func (m *Manager) resolveSubSpawn(c *Chat, base spawnBase, req SpawnSubRequest) (kind model.AgentKind, modelID, effort string, err error) {
 	kind = req.Kind
 	if kind == "" {
-		kind = c.meta.Agent
+		kind = base.kind
 	}
 	if kind != model.Claude && kind != model.Cursor && kind != model.Pi {
 		return "", "", "", fmt.Errorf("unknown agent %q", kind)
@@ -267,7 +297,7 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 	cat := m.catalog(kind)
 	explicitModel := req.Model != ""
 	explicitEffort := req.Effort != ""
-	modelID, effort = c.meta.Model, c.meta.Effort
+	modelID, effort = base.model, base.effort
 	if explicitModel {
 		modelID = req.Model
 	}
@@ -287,9 +317,9 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 			}
 		}
 	}
-	// With no model named on a cross-kind spawn the chat's model is not used (below), so a named
+	// With no model named on a cross-kind spawn the caller's model is not used (below), so a named
 	// effort is checked only against the rebased model.
-	rebased := !explicitModel && cat != nil && kind != c.meta.Agent
+	rebased := !explicitModel && cat != nil && kind != base.kind
 	if explicitEffort && !rebased {
 		cm, err := findModel(cat, modelID)
 		if err != nil && explicitModel {
@@ -300,7 +330,7 @@ func (m *Manager) resolveSubSpawn(c *Chat, req SpawnSubRequest) (kind model.Agen
 		}
 	}
 
-	unfit := !explicitModel && kind != c.meta.Agent
+	unfit := !explicitModel && kind != base.kind
 	if cat != nil {
 		cm, mErr := findModel(cat, modelID)
 		if !explicitModel && mErr != nil {
@@ -383,45 +413,52 @@ func (m *Manager) finishAppSub(chatID, sid string, status model.SubStatus, errTe
 		c.mu.Unlock()
 		return model.Subagent{}
 	}
-	var toClose []agent.Agent
-	var d *carry
-	if s.meta.Status == model.SubRunning {
-		var ag agent.Agent
-		if ag, d = m.finalizeAppSub(c, s, status, errText, why, &out); ag != nil {
-			toClose = []agent.Agent{ag}
-		}
-	}
+	var aft after
+	m.finalizeAppSub(c, s, status, errText, why, &out, &aft)
 	meta := s.meta
 	out.emitCounts(c)
 	c.mu.Unlock()
 	m.send(out)
-	closeAgents(toClose)
-	m.handOff(c, d)
+	m.finish(c, &aft)
 	return meta
 }
 
-// finalizeAppSub marks s finished; why decides whether the parent is owed its result. The owed
-// results are delivered at once when the parent can take them: because this one became owed, or
-// because s ended with the chat's last open permission request. c.mu held. After unlock the caller
-// Closes the returned agent and hands off the returned delivery (nil when none started).
-func (m *Manager) finalizeAppSub(c *Chat, s *sub, status model.SubStatus, errText string, why subEnding, out *outbox) (agent.Agent, *carry) {
+// finalizeAppSub marks s finished; why decides whether whoever started it is owed its result.
+// Every subagent below s is stopped with it (stopBelow): one that ends has nobody left to receive
+// their results, and one that finishes has none running. The owed results are delivered at once
+// when their reader can take them: the subagent that started s, when it waits (deliverSub); the
+// chat's agent, because the result of s became owed to it or because s, or one below it, ended
+// with the chat's last open permission request (deliver). A subagent that waited for s alone and
+// is owed nothing for it has nothing left to wait for (waitOver). It does nothing to a subagent that is
+// final. c.mu held. After unlock the caller does what aft holds (finish): the processes to close
+// and the deliveries to hand off.
+func (m *Manager) finalizeAppSub(c *Chat, s *sub, status model.SubStatus, errText string, why subEnding, out *outbox, aft *after) {
 	if s.meta.Status != model.SubRunning {
-		return nil, nil
+		return
 	}
-	s.meta.Status, s.meta.Ended = status, m.nowMs()
+	s.meta.Status, s.meta.Ended, s.meta.Waiting = status, m.nowMs(), false
 	if errText != "" {
 		s.meta.Error = errText
 	}
 	ended(s, why)
 	leftApproval := m.endSub(c, s, out)
 	m.revokeExtra(c.meta.ID, s.meta.ID)
-	ag := s.ag
+	aft.close = append(aft.close, s.ag)
 	s.ag = nil
-	var d *carry
-	if leftApproval || s.meta.Delivery == model.SubOwed {
-		d = m.deliver(c, out)
+	if m.stopBelow(c, s, out, aft) {
+		leftApproval = true
 	}
-	return ag, d
+	owed := s.meta.Delivery == model.SubOwed
+	if p := c.subs[s.meta.Parent]; p != nil {
+		if owed {
+			aft.add(m.deliverSub(c, p, out))
+		} else {
+			m.waitOver(c, p, out, aft)
+		}
+	}
+	if leftApproval || (owed && s.meta.Parent == "") {
+		aft.add(m.deliver(c, out))
+	}
 }
 
 func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-chan struct{}) {
@@ -444,17 +481,20 @@ func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-cha
 	}
 }
 
+// handleSubEv applies one event of the process of c's app-spawned subagent sid. A subagent's
+// process has as many turns as it takes: the one its prompt starts, and one for each message that
+// carries it results of subagents it started (deliverSub). A turn that ends cleanly while
+// subagents it started still run, or while a result is owed to it, leaves it waiting (subWaits);
+// any other end of a turn, and a clean end with nothing below, finishes it.
 func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 	var out outbox
-	var toClose []agent.Agent
-	var d *carry
+	var aft after
 	c.mu.Lock()
 	defer func() {
 		out.emitCounts(c)
 		c.mu.Unlock()
 		m.send(out)
-		closeAgents(toClose)
-		m.handOff(c, d)
+		m.finish(c, &aft)
 	}()
 	if c.deleted || c.tr == nil {
 		return
@@ -467,10 +507,16 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 	// They must not patch or complete this app-spawned process; route them like pump does.
 	// EvPermRequest still lands on the parent transcript with the app-spawned sid.
 	if ev.Sub != "" && ev.Kind != agent.EvPermRequest {
-		d = m.routeSub(c, ev, &out)
+		aft.add(m.routeSub(c, ev, &out))
 		return
 	}
 	before := s.meta
+	if s.meta.Status == model.SubRunning && modelOutput(ev) {
+		if s.carry != nil {
+			s.carry.settled = true // the results it carries are delivered
+		}
+		s.meta.Waiting = false // a turn its process began by itself: it is working again
+	}
 
 	switch ev.Kind {
 	case agent.EvSub:
@@ -493,7 +539,6 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		if view(c) != beforeView {
 			out.emitChat(c)
 		}
-		return
 	case agent.EvSession:
 		if s.meta.Status != model.SubRunning {
 			return
@@ -517,20 +562,28 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		if s.meta.Status != model.SubRunning {
 			return
 		}
-		st, why := model.SubCompleted, endTurn
-		if ev.Aborted {
+		if costSubEnd(c, s, ev) {
+			m.logSave(c) // the chat's cost is in chat.json; a subagent's record does not hold it
+		}
+		st, why, errText := model.SubCompleted, endTurn, ev.Error
+		switch {
+		case ev.Aborted:
 			st, why = model.SubStopped, endAborted
-		} else if ev.Error != "" {
+		case ev.Error != "":
 			why = endTurnError
 			m.subErrorNote(c, s, ev.Error, &out)
+		case s.carry != nil && !s.carry.settled && s.meta.Kind == model.Pi:
+			// A turn that carried results and ended with no reply: on pi a failed turn can look
+			// like it (see endCarry), and a subagent's results are not tried again.
+			st, why, errText = model.SubFailed, endFailed, "its turn ended with no reply: the subagent results were not received"
+			m.subErrorNote(c, s, "The subagent's turn ended with no reply: the subagent results were not received.", &out)
+		default:
+			s.carry = nil // a clean end: what the turn carried is delivered
+			if m.subWaits(c, s, &out, &aft) {
+				return
+			}
 		}
-		if costSubEnd(c, ev) {
-			m.logSave(c) // the chat's cost is in chat.json; finishing the subagent writes its own record only
-		}
-		var ag agent.Agent
-		if ag, d = m.finalizeAppSub(c, s, st, ev.Error, why, &out); ag != nil {
-			toClose = append(toClose, ag)
-		}
+		m.finalizeAppSub(c, s, st, errText, why, &out, &aft)
 		return
 	case agent.EvExit:
 		if s.meta.Status != model.SubRunning {
@@ -543,13 +596,10 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		} else {
 			msg = "process ended"
 		}
-		if costSubLost(c, s.meta.Kind) { // it ended in its one turn without a turn end
+		if !before.Waiting && costSubLost(c, s.meta.Kind) { // it ended in a turn without a turn end
 			m.logSave(c)
 		}
-		var ag agent.Agent
-		if ag, d = m.finalizeAppSub(c, s, st, msg, why, &out); ag != nil {
-			toClose = append(toClose, ag)
-		}
+		m.finalizeAppSub(c, s, st, msg, why, &out, &aft)
 		return
 	default:
 		if s.meta.Status != model.SubRunning {
@@ -562,6 +612,9 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		}
 		ev.Sub = ""
 		ups := tr.Apply(ev)
+		if len(c.pendingLinks) > 0 {
+			m.reconcileSpawnLinks(c, &out) // a subagent this one spawned may wait for this item
+		}
 		out.emitSubItems(c, sid, tr.Version(), ups)
 		if ev.Kind == agent.EvToolResult || ev.Kind == agent.EvToolDenied {
 			m.flushSub(c, s, false)
