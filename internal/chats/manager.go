@@ -1673,7 +1673,8 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 // The subagent settings (req.SubDepth, req.SubCap) are, like the server and the agent, a chat's
 // that has not started and is neither a fork nor a branch: for any other chat a request that names
 // either is refused with ErrSubFixed, whatever else it holds, a fork that has had no message of
-// its own included. A value outside the range is refused (ErrSubRange), never brought into it.
+// its own included, and with ErrStartUnconfirmed while the chat's first message may have arrived
+// on its server. A value outside the range is refused (ErrSubRange), never brought into it.
 //
 // Another server than the chat has gives the chat what a new chat in its place starts with on
 // that server: the agent (the one the request names, else the sticky one), the folder, the model,
@@ -1745,6 +1746,10 @@ func (m *Manager) configure(id, branch string, req ConfigReq, dir remoteDir) (as
 	named := req.SubDepth != nil || req.SubCap != nil
 	if named && (c.meta.Locked || c.top != nil || c.meta.ForkedFrom != "") {
 		return fail(ErrSubFixed)
+	}
+	if named && c.meta.RemoteStart == model.RemoteUnconfirmed {
+		// The chat may be running on its server with the settings it was sent with.
+		return fail(ErrStartUnconfirmed)
 	}
 	onlyFolderFix := c.meta.Locked && c.folderMissing && req.Model == "" && req.Effort == "" && req.Cwd != ""
 	if c.meta.Fresh && !onlyFolderFix {

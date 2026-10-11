@@ -166,6 +166,12 @@ func (m *Manager) waitOver(c *Chat, p *sub, out *outbox, aft *after) {
 // It is called at the two moments a subagent becomes able to take a message with something to
 // take: a turn of it ends cleanly (subWaits), and a result becomes owed to it while it waits
 // (finalizeAppSub).
+//
+// Not closed: a waiting subagent's process can begin a turn by itself (Claude does when a
+// background command of it ends), and the manager knows of that turn only from its first model
+// output. A result handed over before that output is settled by it, and that turn's clean end
+// then finishes the subagent with the results message unread. Whether a real agent reads a
+// message that comes in mid-turn has not been checked.
 func (m *Manager) deliverSub(c *Chat, s *sub, out *outbox) *carry {
 	if c.deleted || c.tr == nil || !s.app || s.meta.Status != model.SubRunning || !s.meta.Waiting || s.ag == nil || s.carry != nil {
 		return nil

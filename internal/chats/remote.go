@@ -49,7 +49,7 @@ var (
 	ErrServerFixed       = errors.New("a chat on a run is on the run's server") // and one on a board of another server on the board's
 	ErrServerUnusable    = errors.New("no chat can be started on that server")
 	ErrServerUnreachable = errors.New("the server is not connected")
-	ErrStartUnconfirmed  = errors.New("the first message may have arrived: server and agent are fixed until that is known")
+	ErrStartUnconfirmed  = errors.New("the first message may have arrived: server, agent and subagent settings are fixed until that is known")
 	// ErrRemoteStart is what a call that would start an agent here answers for a chat that starts
 	// on another server: its messages do not come this way.
 	ErrRemoteStart = errors.New("the chat starts on another server")

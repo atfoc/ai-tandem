@@ -55,14 +55,15 @@ is no user-facing MCP port option (see [Troubleshooting the board MCP](#troubles
 **Subagent settings.** A chat has two: its *depth*, the deepest level a subagent of the chat may
 be at (0 = no subagents, 1 = the chat's agent starts subagents, 2 or 3 = those may start their
 own), and its *cap*, the most subagents of the chat that run at the same time (1 to 100). Both are
-chosen before the first message and fixed by it; a branch and a fork have their source's, and a
+chosen before the first message, with the **Subagents** chip of the composer's toolbar, and fixed by it; a branch and a fork have their source's, and a
 chat made before the settings has depth 1 and cap 100. They are kept in the chat's `chat.json`
 (`subagents`), and the last choice is remembered for the next new chat per group and per server,
 for all agents, in `state.json` (`defaults.groups.<group>.servers.<server>.subagents`, `<server>`
 being `local` or a remote server's instance id); a group with none uses the ungrouped group's,
 then depth 1 and cap 100. `PATCH /api/chats/{id}` takes them as `subDepth` (0 to 3) and `subCap`
 (1 to 100): a field that is absent changes nothing, a value outside the range is refused (400),
-and so is either field once the chat has started, and on a branch or a fork (409). A chat's JSON
+and so is either field once the chat has started, on a branch or a fork, and while a first
+message sent to a remote server has had no answer (409). A chat's JSON
 names them as `subDepth` and `subCap`, with `subOff: true` in place of a depth of 0. The creation
 call of an API client (`POST /api/chats` on the remote port) takes `subDepth` and `subCap` too;
 without them its chat has 1 and 100, and such a chat reads and feeds no remembered choice. A chat
