@@ -4,15 +4,15 @@
 
 /** The controls that can leave the toolbar for the popup. Send and Stop never leave, and the
  *  context meter stays as its ring. */
-export type Control = "server" | "agent" | "folder" | "model" | "effort";
+export type Control = "server" | "agent" | "folder" | "model" | "effort" | "subagents";
 
 /** Left to right in the toolbar, and top to bottom in the popup. model is the model picker, or
  *  what stands in its place: the fixed "model · effort" chip, "Loading models…". */
-export const CONTROLS: Control[] = ["server", "agent", "folder", "model", "effort"];
+export const CONTROLS: Control[] = ["server", "agent", "folder", "model", "effort", "subagents"];
 
 /** The order of leaving as room runs out, after the meter's text. Agent and model stay longest:
  *  they say whom the user talks to. */
-export const LEAVING: Control[] = ["server", "effort", "folder", "model", "agent"];
+export const LEAVING: Control[] = ["server", "subagents", "effort", "folder", "model", "agent"];
 
 /** What decides the width a control of the toolbar asks for: its kind, what it says, whether it is
  *  a fixed chip or a choice, whether a lock stands with it, and what else is drawn in it (a glyph).
@@ -38,6 +38,8 @@ export interface Row {
   fixed: (number | undefined)[];
   /** The controls the open "more" popup holds; null while it is closed. */
   held: Control[] | null;
+  /** A control of the toolbar whose list is open and stays open through a pick (Subagents). */
+  pinned?: Control;
 }
 
 /** Where each control is drawn. toolbar and popup are in the order of CONTROLS; more: the "more"
@@ -63,12 +65,15 @@ export function needs(r: Row, f: Fit): number {
  *  While the popup is open (held) nothing it holds returns to the toolbar, however wide the row,
  *  and one with no width stays in it (a pick has changed its label there); a control of the
  *  toolbar still leaves for it, and one the chat has got since is placed as any other. So the
- *  toolbar fits its row at every moment, and returns are for the call after the popup closed. */
+ *  toolbar fits its row at every moment, and returns are for the call after the popup closed.
+ *  A pinned control is the last to leave, whatever its place in LEAVING: a pick in its open list
+ *  can make its chip wider, and a control that changes place loses its list. */
 export function fit(r: Row): Fit {
   const has = CONTROLS.filter((id) => r.controls.some((c) => c.id === id));
   const known = (id: Control) => r.controls.find((c) => c.id === id)?.w !== undefined;
   const held = (r.held ?? []).filter((id) => has.includes(id));
-  const leaving = LEAVING.filter((id) => has.includes(id) && !held.includes(id) && known(id));
+  const leaves = LEAVING.filter((id) => has.includes(id) && !held.includes(id) && known(id));
+  const leaving = [...leaves.filter((id) => id !== r.pinned), ...leaves.filter((id) => id === r.pinned)];
   const place = (n: number, meter: Fit["meter"]): Fit => {
     const popup = has.filter((id) => held.includes(id) || leaving.slice(0, n).includes(id));
     return { toolbar: has.filter((id) => !popup.includes(id)), popup, more: popup.length > 0, meter };

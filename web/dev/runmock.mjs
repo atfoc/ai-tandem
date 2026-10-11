@@ -105,6 +105,13 @@
 //               its detail, no branch on its attempts, no merge phase, and its changes answer 404
 //   chats       c_plain (in the group), c_board (on the board); and one record with a role in the
 //               snapshot's chats on purpose (a_live_T28-work): the client must drop it
+//   subagent settings  c_new (in the group) and c_board_new (on the board) have had no message: the
+//               composer's Subagents chip is open on them. PATCH /api/chats/{id} takes subDepth (0 to 3)
+//               and subCap (1 to 100) as the server does: 400 outside the range, 409 on a chat that has
+//               started; the answer carries the chat; a chat made later starts with the last pick.
+//               c_nested has started at depth 3 with a cap of 25, and has subagents at three levels:
+//               sa1 waits for the two it started (sa1a at work, which started sa1a1, at work, and sa1a2,
+//               done, its result not sent yet; sa1b done, its result a row in sa1's thread), sa2 is done.
 //
 // Tiers, waits, usage and delivery (process v3):
 //   tiers       every run has `tiers` (Claude: deep opus/high, standard opus/medium, light sonnet/medium;
@@ -822,6 +829,9 @@ const chat = (id, o) => ({ id, agent: "claude", cwd: SHOP, model: "opus", effort
 const chats = {
   c_plain: chat("c_plain", { name: "Why is the build slow", group: "g_shop" }),
   c_board: chat("c_board", { name: "Draw the pipeline", board: "b_arch" }),
+  c_new: chat("c_new", { group: "g_shop", created: iso(T0 - 2 * MIN), ...fresh }),
+  c_board_new: chat("c_board_new", { board: "b_arch", created: iso(T0 - 2 * MIN), ...fresh }),
+  c_nested: chat("c_nested", { name: "Audit the checkout flow", group: "g_shop", created: iso(T0 - 12 * MIN), subDepth: 3, subCap: 25, subsRunning: 3 }),
   c_live_ask: chat("c_live_ask", { name: "What is it doing", run: "r_live", created: iso(T0 - 20 * MIN) }),
   c_live_new: chat("c_live_new", { run: "r_live", created: iso(T0 - 5 * MIN), ...fresh, draft: { text: "why did T07 take so long" } }),
   c_draft_ask: chat("c_draft_ask", { run: "r_draft", created: iso(T0 - MIN), ...fresh }),
@@ -831,7 +841,16 @@ const tool = (id, name, input, result, more) => ({ kind: "tool", toolId: id, nam
 const say = (text, done = true) => ({ kind: "text", done, text });
 const items = { // by chat id; an agent's are written when first asked for
   c_plain: [{ kind: "user", text: "Why is the build slow?" }, say("Because of the font copy step."), { kind: "end" }],
-  c_board: [], c_live_new: [], c_draft_ask: [],
+  c_board: [], c_live_new: [], c_draft_ask: [], c_new: [], c_board_new: [],
+  c_nested: [
+    { kind: "user", text: "Audit the checkout flow and fix what you find." },
+    say("I'll split this: one subagent audits the cart, another the payment step."),
+    { ...tool("n1", "mcp__board__spawn_subagent", { description: "Audit the cart", prompt: "Audit cart/ for wrong totals and coupon rules. Start subagents of your own for the parts." }, "Started."), subagent: "sa1" },
+    { ...tool("n2", "mcp__board__spawn_subagent", { description: "Audit the payment step", prompt: "Audit payment/ and report what is wrong." }, "Started."), subagent: "sa2" },
+    say("Both are at work. Their results come to me when they finish."), { kind: "end" },
+    { kind: "subresult", subagent: "sa2" },
+    say("The payment step is clean. The cart audit is still running."), { kind: "end" },
+  ],
   c_trouble_ask: [
     { kind: "user", text: "Cancel T09, add a task that documents the refund flow, and make T10's brief shorter." },
     tool("u1", "mcp__board__cancel_task", { id: "T09", reason: "The copy is reviewed elsewhere." }, "T09 is cancelled."),
@@ -859,6 +878,36 @@ const items = { // by chat id; an agent's are written when first asked for
 const versions = {};  // by thread key (chat id, "<chat>:<branch>" for a branch that is not main, or "<chat>/<sid>"): the version of its items
 const subs = {};      // by chat id: its subagents (main's)
 const subItems = {};  // by "<chat>/<sid>"
+{ // c_nested's subagents, three levels deep (parent: the sid of the one that started it)
+  const sa = (id, description, o) => ({ id, description, prompt: `${description}. Report what is wrong.`, kind: "claude", model: "sonnet", effort: "medium", background: true, window: 200000, ...o });
+  subs.c_nested = [
+    sa("sa1", "Audit the cart", { tool: "n1", status: "running", waiting: true, started: T0 - 9 * MIN, tokens: 48000, toolUses: 9 }),
+    sa("sa1a", "Check the cart totals", { tool: "a1", parent: "sa1", status: "running", started: T0 - 8 * MIN, tokens: 61000, toolUses: 14 }),
+    sa("sa1a1", "Trace the rounding in tax.go", { tool: "b1", parent: "sa1a", status: "running", started: T0 - 5 * MIN, tokens: 22000, toolUses: 5 }),
+    sa("sa1a2", "List the callers of roundCents", { tool: "b2", parent: "sa1a", status: "completed", started: T0 - 5 * MIN, ended: T0 - 3 * MIN, tokens: 15000, toolUses: 4, delivery: "owed", last: "Seven callers, two of them in tests." }),
+    sa("sa1b", "Check the coupon rules", { tool: "a2", parent: "sa1", status: "completed", started: T0 - 8 * MIN, ended: T0 - 6 * MIN, tokens: 27000, toolUses: 7, delivery: "sent", last: "The coupon rules match the spec." }),
+    sa("sa2", "Audit the payment step", { tool: "n2", status: "completed", started: T0 - 9 * MIN, ended: T0 - 7 * MIN, tokens: 33000, toolUses: 8, delivery: "sent", last: "Nothing wrong in payment/." }),
+  ];
+  const spawn = (id, sid, description) => ({ ...tool(id, "mcp__board__spawn_subagent", { description, prompt: `${description}. Report what is wrong.` }, "Started."), subagent: sid });
+  Object.assign(subItems, {
+    "c_nested/sa1": [say("The cart has two parts: the totals and the coupon rules."), spawn("a1", "sa1a", "Check the cart totals"), spawn("a2", "sa1b", "Check the coupon rules"),
+      say("Both parts are being checked."), { kind: "end" }, { kind: "subresult", subagent: "sa1b" }, say("The coupon rules are fine. The totals are still being checked."), { kind: "end" }],
+    "c_nested/sa1a": [say("The totals depend on the rounding."), spawn("b1", "sa1a1", "Trace the rounding in tax.go"), spawn("b2", "sa1a2", "List the callers of roundCents"),
+      tool("a1r", "Read", { file_path: "cart/totals.go" })],
+    "c_nested/sa1a1": [say("Reading tax.go."), tool("b1g", "Grep", { pattern: "math.Round" })],
+    "c_nested/sa1a2": [tool("b2g", "Grep", { pattern: "roundCents\\(" }, "7 matches"), say("Seven callers, two of them in tests.")],
+    "c_nested/sa1b": [tool("a2r", "Read", { file_path: "cart/coupons.go" }, "…"), say("The coupon rules match the spec.")],
+    "c_nested/sa2": [tool("n2r", "Read", { file_path: "payment/charge.go" }, "…"), say("Nothing wrong in payment/.")],
+  });
+}
+
+/** A chat's subagent settings as its view carries them: Off is a field of its own, and a depth of 0 is left out. */
+function setSubLimits(c, depth, cap) {
+  delete c.subOff; delete c.subDepth;
+  if (depth === 0) c.subOff = true; else c.subDepth = depth;
+  c.subCap = cap;
+}
+let lastSubLimits = null; // the last pick: what a chat made later starts with
 
 // ---- branches: a chat that has more than main keeps the other branches' lists and every branch's session
 // fields here. The seed (dev/runmock-ui.js) makes such chats, and so does a message with a target. A chat with
@@ -1734,6 +1783,14 @@ async function chatRoute(req, res, id, rest) {
   if (ag) return answer(res, fail(...ERR.runAgent)); // a run agent takes no message and no change
   if (rest === "" && M === "PATCH") { // the name and the group are the chat's; the rest goes to one branch (?branch=)
     if (b.group !== undefined && own.run) return answer(res, fail(400, "a run's chat moves with its run"));
+    if (b.subDepth !== undefined || b.subCap !== undefined) {
+      if (own.locked) return answer(res, fail(409, "the chat has started: its subagent settings are fixed"));
+      const depth = b.subDepth ?? (own.subOff ? 0 : own.subDepth ?? 1), cap = b.subCap ?? own.subCap ?? 100;
+      if (!Number.isInteger(depth) || depth < 0 || depth > 3) return answer(res, fail(400, `subagent depth ${depth} is out of range: 0 (off) to 3`));
+      if (!Number.isInteger(cap) || cap < 1 || cap > 100) return answer(res, fail(400, `subagent cap ${cap} is out of range: 1 to 100`));
+      setSubLimits(own, depth, cap); lastSubLimits = { depth, cap };
+      send({ type: "chat", chat: own }); return answer(res, { ok: true, chat: own });
+    }
     for (const k of ["name", "group"]) if (b[k] !== undefined) own[k] = b[k];
     if (b.name !== undefined) own.userNamed = true;
     const refused = b.server || b.agent || b.model || b.effort || b.cwd ? await configureChat(own, named || curOf(own), b) : void send({ type: "chat", chat: own });
@@ -1847,6 +1904,7 @@ const server = http.createServer(async (req, res) => {
       chats[id] = chat(id, { agent: b.agent, ...(b.run ? { run: b.run } : b.board ? { board: b.board } : { group: b.group }), cwd: R ? R.meta.cwd : SHOP,
         model: cat?.default.model ?? "", effort: cat?.default.effort, created: iso(Date.now()), ...fresh });
       items[id] = [];
+      if (lastSubLimits) setSubLimits(chats[id], lastSubLimits.depth, lastSubLimits.cap);
       send({ type: "chat", chat: chats[id] });
       return json(res, chats[id]);
     }

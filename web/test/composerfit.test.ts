@@ -120,9 +120,10 @@ test("a control with no width stays in the toolbar and counts nothing", () => {
   assert.deepEqual(fit(folder), { toolbar: ["folder"], popup: ["server", "agent", "model", "effort"], more: true, meter: "ring" });
   // none is: nothing leaves, whatever the room, and the row asks for its gaps alone
   const none: Row = { ...r, room: 7 * gap, controls: r.controls.map((c) => ({ id: c.id })), meter: {}, more: undefined, fixed: [undefined] };
-  assert.deepEqual(fit(none), { toolbar: CONTROLS, popup: [], more: false, meter: "full" });
+  const all = CONTROLS.filter((id) => r.controls.some((c) => c.id === id)); // (the state has no Subagents chip measured)
+  assert.deepEqual(fit(none), { toolbar: all, popup: [], more: false, meter: "full" });
   assert.equal(needs(none, fit(none)), 7 * gap);
-  assert.deepEqual(fit({ ...none, room: 0 }).toolbar, CONTROLS);
+  assert.deepEqual(fit({ ...none, room: 0 }).toolbar, all);
   // a meter whose text is not measured keeps it while the rest fits
   const wide = rowOf(s, 800);
   assert.equal(fit({ ...wide, meter: { ring: RING } }).meter, "full");
@@ -179,4 +180,23 @@ test("a width is kept by the control's kind, its label, fixed or choice, with or
   assert.equal(widthKey("folder", "shop", { fixed: false, lock: false }), widthKey("folder", "shop"));
   // a label with the separator in it is another label, not another kind
   assert.notEqual(widthKey("model", "a|b"), widthKey("model", "a", { mark: "b" }));
+});
+
+test("the Subagents chip leaves after the server and before the effort; pinned, it is the last to leave", () => {
+  assert.deepEqual(CONTROLS.at(-1), "subagents");
+  assert.ok(LEAVING.indexOf("server") < LEAVING.indexOf("subagents") && LEAVING.indexOf("subagents") < LEAVING.indexOf("effort"));
+  const s = fixture.states["plain-new"];
+  const withSubs = (box: number, pinned?: Control): Row => { const r = rowOf(s, box); return { ...r, controls: [...r.controls, { id: "subagents", w: 150 }], pinned }; };
+  const full = needs(withSubs(2000), fit(withSubs(2000)));
+  // as the box narrows, the chip goes into the popup second
+  let order: Control[] = [];
+  for (let box = full + chrome; box > 150; box -= 3) for (const id of fit(withSubs(box)).popup) if (!order.includes(id)) order.push(id);
+  assert.deepEqual(order, leavingOf(withSubs(0)));
+  assert.equal(order[1], "subagents");
+  // with its list open it stays while any other can leave, and the toolbar still fits its row
+  for (let box = full + chrome; box > 150; box -= 3) {
+    const r = withSubs(box, "subagents"), f = fit(r);
+    if (f.popup.includes("subagents")) assert.deepEqual(f.toolbar, [], `${box}: it left before ${f.toolbar}`);
+    else if (f.toolbar.length > 1) assert.ok(needs(r, f) <= r.room + 1e-6, `${box}: the row needs ${needs(r, f)} of ${r.room}`);
+  }
 });

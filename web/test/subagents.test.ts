@@ -4,7 +4,9 @@ import {
   NOT_CARRIED, subStatus,
   fmtDuration, isSubagentTool, showReport, subActivity, subagentOf, subBadge, subDurationMs, subKey,
   subLine, subList, subModelLabel, subReport, subResultLine, subToolCount,
+  subAncestors, subChildren, subTree, subWaiting, subWaitingText,
 } from "../src/logic/subagents.ts";
+import { subInPrefix } from "../src/logic/prefix.ts";
 import { branchKey, keyOfChat } from "../src/logic/branches.ts";
 import { quotable } from "../src/logic/quotes.ts";
 import { chatTitle } from "../src/logic/labels.ts";
@@ -284,4 +286,110 @@ test("notCarried: never running, and never a result that is not sent yet", () =>
   assert.deepEqual(subResultLine(sub({ status: "running", notCarried: true, error: "boom", delivery: "retry" })),
     { name: "Subagent", text: NOT_CARRIED, tone: "muted" });
   assert.deepEqual(subResultLine(sub({ status: "stopped", delivery: "owed" })), { name: "Subagent", text: "Stopped · not sent yet", tone: "muted" });
+});
+
+// ---- nesting: a subagent started by a subagent (parent), up to three levels
+
+/** Three levels: a started b and c, b started d and e; f is the chat's agent's second one. */
+const nested = (): Record<string, Subagent> => ({
+  f: sub({ id: "f", tool: "t2", started: 150, status: "completed" }),
+  e: sub({ id: "e", tool: "t6", started: 400, parent: "b", status: "completed" }),
+  d: sub({ id: "d", tool: "t5", started: 300, parent: "b" }),
+  c: sub({ id: "c", tool: "t4", started: 250, parent: "a", status: "completed" }),
+  b: sub({ id: "b", tool: "t3", started: 200, parent: "a" }),
+  a: sub({ id: "a", tool: "t1", started: 100, waiting: true }),
+});
+
+test("subChildren: the subagents one started, in the order they started", () => {
+  const subs = nested();
+  assert.deepEqual(subChildren(subs, "a").map((x) => x.id), ["b", "c"]);
+  assert.deepEqual(subChildren(subs, "b").map((x) => x.id), ["d", "e"]);
+  assert.deepEqual(subChildren(subs, "d"), []);
+  assert.deepEqual(subChildren(subs, "f"), []);
+  assert.deepEqual(subChildren(subs, ""), [], "a call not linked yet has no sid: nothing is under it");
+  assert.deepEqual(subChildren(undefined, "a"), []);
+  assert.deepEqual(subChildren({ x: sub({ id: "x", parent: "x" }) }, "x"), [], "a record that names itself");
+});
+
+test("subAncestors: the subagents above one, outermost first", () => {
+  const subs = nested();
+  assert.deepEqual(subAncestors(subs.a, subs), []);
+  assert.deepEqual(subAncestors(subs.b, subs).map((x) => x.id), ["a"]);
+  assert.deepEqual(subAncestors(subs.d, subs).map((x) => x.id), ["a", "b"]);
+  assert.deepEqual(subAncestors(undefined, subs), []);
+  assert.deepEqual(subAncestors(sub({ id: "z", parent: "gone" }), subs), [], "its parent is not known");
+  assert.deepEqual(subAncestors(subs.d, undefined), []);
+  // a loop in the records ends
+  const loop = { x: sub({ id: "x", parent: "y" }), y: sub({ id: "y", parent: "x" }) };
+  assert.deepEqual(subAncestors(loop.x, loop).map((x) => x.id), ["y"]);
+});
+
+test("subTree: each subagent is followed by the ones it started, with its level", () => {
+  assert.deepEqual(subTree(nested()).map((n) => `${n.sa.id}${n.level}`), ["a1", "b2", "d3", "e3", "c2", "f1"]);
+  assert.deepEqual(subTree(undefined), []);
+  // without nesting it is the order they started
+  const flat = { c: sub({ id: "c", started: 200 }), b: sub({ id: "b", started: 100 }), a: sub({ id: "a", started: 100 }) };
+  assert.deepEqual(subTree(flat).map((n) => `${n.sa.id}${n.level}`), ["a1", "b1", "c1"]);
+});
+
+test("subTree: a parent that is not known, a record that names itself and a loop lose nothing", () => {
+  const orphan = { a: sub({ id: "a", started: 100 }), z: sub({ id: "z", started: 50, parent: "gone" }) };
+  assert.deepEqual(subTree(orphan).map((n) => `${n.sa.id}${n.level}`), ["z1", "a1"]);
+  assert.deepEqual(subTree({ x: sub({ id: "x", parent: "x" }) }).map((n) => `${n.sa.id}${n.level}`), ["x1"]);
+  const loop = { x: sub({ id: "x", started: 1, parent: "y" }), y: sub({ id: "y", started: 2, parent: "x" }), a: sub({ id: "a", started: 3 }) };
+  assert.deepEqual(subTree(loop).map((n) => n.sa.id).sort(), ["a", "x", "y"]);
+  assert.equal(subTree(loop).length, 3);
+});
+
+test("subInPrefix: a nested subagent is in the prefix when the outermost one above it was started there", () => {
+  const subs = nested();
+  const items: Item[] = [{ kind: "user" }, call({ toolId: "t1", subagent: "a" }), { kind: "end" }, call({ toolId: "t2", subagent: "f" })];
+  assert.equal(subInPrefix(subs.d, subs, items, 2), true);
+  assert.equal(subInPrefix(subs.d, subs, items, 1), false);
+  assert.equal(subInPrefix(subs.f, subs, items, 2), false);
+});
+
+test("subWaiting: running, its own turn ended, its subagents not all back", () => {
+  assert.equal(subWaiting(sub({ waiting: true })), true);
+  assert.equal(subWaiting(sub()), false);
+  assert.equal(subWaiting(sub({ waiting: false })), false);
+  assert.equal(subWaiting(sub({ status: "completed", waiting: true })), false, "a finished one waits for nothing");
+  assert.equal(subWaiting(sub({ status: "stopped", waiting: true })), false);
+  assert.equal(subWaiting(sub({ waiting: true, notCarried: true })), false, "not carried over: stopped here");
+});
+
+test("subLine: a waiting subagent says what it waits on, neither working nor done", () => {
+  const subs = nested();
+  assert.deepEqual(subLine(call(), subs.a, undefined, undefined, subs), { text: "Waiting on 1 subagent", tone: "muted" });
+  const two: Record<string, Subagent> = { ...subs, c: sub({ id: "c", tool: "t4", started: 250, parent: "a" }) };
+  assert.deepEqual(subLine(call(), two.a, undefined, undefined, two), { text: "Waiting on 2 subagents", tone: "muted" });
+  // only the ones it started itself count, not theirs
+  assert.equal(subWaitingText(subs.a, subs), "Waiting on 1 subagent");
+  // none of them runs any more: a result has not reached it yet
+  const owed = { a: subs.a, b: sub({ id: "b", parent: "a", status: "completed", delivery: "owed" }) };
+  assert.deepEqual(subLine(call(), owed.a, undefined, undefined, owed), { text: "Waiting on its subagents' results", tone: "muted" });
+  assert.equal(subWaitingText(subs.a, undefined), "Waiting on its subagents' results");
+  // its thread and its progress line do not make it look at work
+  const its: Item[] = [{ kind: "tool", name: "Bash", input: { command: "ls" } }];
+  assert.deepEqual(subLine(call(), { ...subs.a, progress: "Reading files" }, its, undefined, subs), { text: "Waiting on 1 subagent", tone: "muted" });
+  // one that is not waiting is as before
+  assert.deepEqual(subLine(call(), subs.b, undefined, undefined, subs), { text: "Thinking…", tone: "live" });
+  // a finished record that still carries the mark is finished
+  assert.deepEqual(subLine(call(), sub({ status: "stopped", waiting: true }), undefined, undefined, subs), { text: "Stopped", tone: "muted" });
+});
+
+test("subagentOf: the linked state keeps waiting and parent", () => {
+  const sa = subagentOf(call({ subagent: "b" }), { b: sub({ id: "b", parent: "a", waiting: true }) }, false);
+  assert.equal(sa.waiting, true);
+  assert.equal(sa.parent, "a");
+  assert.equal(sa.status, "running");
+});
+
+test("subResultLine: a nested subagent's result goes to the subagent that started it", () => {
+  const done = sub({ status: "completed", description: "Count files", parent: "a" });
+  assert.deepEqual(subResultLine({ ...done, delivery: "sent" }), { name: "Count files", text: "Done · sent to the subagent that started it", tone: "muted" });
+  assert.deepEqual(subResultLine({ ...done, delivery: "owed" }), { name: "Count files", text: "Done · not sent yet", tone: "muted" });
+  assert.deepEqual(subResultLine({ ...done, delivery: "given-up" }), { name: "Count files", text: "Done · could not be delivered", tone: "muted" });
+  assert.deepEqual(subResultLine({ ...done, status: "failed", error: "boom", delivery: "sent" }),
+    { name: "Count files", text: "Failed · ended with an error · sent to the subagent that started it", tone: "error" });
 });
