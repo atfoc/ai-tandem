@@ -7,7 +7,8 @@ import { useStore, branchCount, branchState, shownBranch, statesOfChat, threadOf
 import { BranchIcon } from "../icons.tsx";
 import { buildTree, nameOfBranch, withLive, type ChatTree } from "../logic/forktree.ts";
 import { threadTree, viewFor } from "../logic/forkmessage.ts";
-import { bannerOf, bannerText } from "../logic/branchview.ts";
+import { bannerOf, bannerPlain, bannerText } from "../logic/branchview.ts";
+import { heldReason, sendHeld } from "../logic/waits.ts";
 import { alertsOf, alertText, otherBranches } from "../logic/labels.ts";
 import { goBack, openTree, viewBranch } from "./actions.ts";
 import type { ChatView } from "../types.ts";
@@ -42,8 +43,11 @@ function useLiveTree(chatId: string, branch: string): ChatTree | undefined {
 /** What the other branches of the chat need or do, in the chat's header: a branch that is not
  *  the one the chat is on waits for approval, or else one whose turn could not start or ended in
  *  an error (the button puts the chat on it) and, quietly, how many others work (the button opens
- *  the tree). Nothing when there is nothing to tell. */
+ *  the tree). Nothing when there is nothing to tell. While a message that starts a new branch is
+ *  on its way the chat stays where it is: the two that would put it on another branch are
+ *  disabled and say why (logic/waits.ts heldReason); the count still opens the tree. */
 export function BranchAlert({ chatId }: { chatId: string }) {
+  const held = useStore((s) => heldReason(s.waits[chatId], "alert"));
   const viewed = useStore((s) => viewedBranch(s, chatId));
   const states = useStore((s) => statesOfChat(s, chatId));
   const o = useMemo(() => otherBranches(states, viewed), [states, viewed]);
@@ -54,7 +58,7 @@ export function BranchAlert({ chatId }: { chatId: string }) {
       {alertsOf(o).map((kind) => {
         const to = kind === "asks" ? o.asks : kind === "failed" ? o.failed : null;
         return to !== null
-          ? <button key={kind} className={`fk-alert ${kind}`} title="Show that branch" onClick={() => void viewBranch(chatId, to)}>{alertText(o, kind, name)}</button>
+          ? <button key={kind} className={`fk-alert ${kind}`} disabled={!!held} title={held || "Show that branch"} onClick={() => void viewBranch(chatId, to)}>{alertText(o, kind, name)}</button>
           : <button key={kind} className="fk-alert quiet" title="Show the chat's tree" onClick={() => openTree(chatId)}>{alertText(o, kind, name)}</button>;
       })}
     </>
@@ -62,8 +66,9 @@ export function BranchAlert({ chatId }: { chatId: string }) {
 }
 
 /** The pending move, above the composer's box: where the next message goes, and Back. The branch
- *  the chat is on stays as it is: the Send stops nothing. Back does nothing while the move's own
- *  Send is in flight. When the branch the chat is on (the one Back returns to) waits for approval,
+ *  the chat is on stays as it is: the Send stops nothing. While the move's own Send is in flight
+ *  the banner says that the message is being sent, and Back, which does nothing then, is disabled
+ *  and says why. When the branch the chat is on (the one Back returns to) waits for approval,
  *  its card is not in the thread shown for the move, whichever branch the move's point is on: the
  *  banner says so (for a branch the chat is not on the header does). */
 export function BranchBanner({ chatId }: { chatId: string }) {
@@ -72,18 +77,20 @@ export function BranchBanner({ chatId }: { chatId: string }) {
   const items = useStore((s) => threadOf(s, chatId)?.items);
   const tree = useStore((s) => s.trees[chatId]);
   const asks = useStore((s) => { const m = s.moves[chatId]; return !!m && branchState(s, chatId, m.from)?.status === "approval"; });
+  const sending = useStore((s) => sendHeld(s.waits[chatId]));
+  const held = useStore((s) => heldReason(s.waits[chatId], "back"));
   const text = useMemo(() => {
     const view = move && viewFor(viewFor(tree, move.branch), move.from);
-    if (!c || !c.agent || !move || !items || !view) return "Your next message starts from here.";
+    if (!c || !c.agent || !move || !items || !view) return bannerPlain(sending);
     const t = buildTree(withLive(view, move.branch, c.agent, items), { branch: move.branch, count: move.at });
-    return bannerText(bannerOf(t, move, items, move.from, asks));
-  }, [c?.agent, asks, move, items, tree]);
+    return bannerText(bannerOf(t, move, items, move.from, asks), sending);
+  }, [c?.agent, asks, move, items, tree, sending]);
   if (!c || !move) return null;
   return (
-    <div className="fk-banner">
+    <div className={`fk-banner${sending ? " sending" : ""}`}>
       <BranchIcon size={12} />
       <span className="fk-banner-text">{text}</span>
-      <button className="btn ghost sm" onClick={() => goBack(chatId)} title="Go back to where you were">Back</button>
+      <button className="btn ghost sm" disabled={!!held} onClick={() => goBack(chatId)} title={held || "Go back to where you were"}>Back</button>
     </div>
   );
 }

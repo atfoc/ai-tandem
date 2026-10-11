@@ -4,7 +4,7 @@
 // (board.ts keeps the roles).
 import { api, clientId } from "./api.ts";
 import { setState, getState, applySnapshot, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
-  upsertState, setDrawer, setShown, setThreadError, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
+  upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   onRunEvent, removeRun, setRunError, type ThreadKey } from "./store.ts";
 import { runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot, serverBack as boardServerBack } from "./board.ts";
 import { subKey } from "./logic/subagents.ts";
@@ -228,11 +228,13 @@ async function loadThread(chat: string, branch: string, sid?: string, o: { repla
 }
 
 /** Fetches the list of a branch (the one its chat shows, when none is named), and keeps the fetch
- *  for who waits for the list. */
+ *  for who waits for the list. The store is told that the list is being fetched, until the newest
+ *  fetch of it has ended (State.waits: a thread that has no list yet says so meanwhile). */
 function loadList(chat: string, o?: { replace?: boolean }, branch = shownBranch(getState(), chat)): Promise<void> {
   const key = branchKey(chat, branch);
-  const done: Promise<void> = loadThread(chat, branch, undefined, o).finally(() => { if (lists.get(key) === done) lists.delete(key); });
+  const done: Promise<void> = loadThread(chat, branch, undefined, o).finally(() => { if (lists.get(key) === done) { lists.delete(key); setLoading(chat, branch, false); } });
   lists.set(key, done);
+  setLoading(chat, branch, true);
   return done;
 }
 
@@ -569,6 +571,7 @@ function forgetThread(chat: string, keep?: ThreadKey[]) {
   for (const k of [...pending.keys()]) if (keyOfChat(k, chat)) { pending.delete(k); loads.begin(k); }
   loads.begin(branchKey(chat));
   for (const k of [...lists.keys()]) if (keyOfChat(k, chat)) lists.delete(k); // of every branch: none is left for who asks next
+  dropLoading(chat); // (and none of them tells of its end any more)
   for (const k of [...stale]) if (keyOfChat(k, chat) && !keep?.includes(k)) stale.delete(k);
   const kept = <V,>(m: Record<string, V>): Record<string, V> => {
     const out = withoutChat(m, chat);

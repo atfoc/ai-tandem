@@ -6,11 +6,14 @@
 <meta name="color-scheme" content="light dark">
 <script>
   // The saved theme (localStorage "aiwb.theme"), set before the first paint so the page never
-  // flashes the other one. Same rule as src/logic/theme.ts resolveTheme; theme.ts takes over.
+  // flashes another one: light or dark in data-theme and, for a Catppuccin flavour, the flavour
+  // beside it. Same rule as src/logic/theme.ts resolveTheme and flavourOf (test/theme.test.ts runs
+  // this script against them); theme.ts takes over.
   try {
-    var t = localStorage.getItem("aiwb.theme");
-    if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    document.documentElement.dataset.theme = t;
+    var t = localStorage.getItem("aiwb.theme"), d = document.documentElement.dataset;
+    if (t === "latte" || t === "frappe" || t === "macchiato" || t === "mocha") { d.flavour = t; t = t === "latte" ? "light" : "dark"; }
+    else if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    d.theme = t;
   } catch (e) {}
 </script>
 <link rel="icon" href="/favicon.ico" sizes="any">

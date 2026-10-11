@@ -3,6 +3,8 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "@excalidraw/excalidraw/index.css";
 import "./styles.css";
+import "./flavours.css";
+import "./flavours-canvas.css";
 import { App } from "./App.tsx";
 import { connect } from "./conn.ts";
 import { flushAll, hasPendingSaves } from "./board.ts";

@@ -1,9 +1,9 @@
-// The window: the sidebar, and beside it the selected board or run (with its chat
-// panel, which beside a run also shows the transcripts of the run's own agents), the
-// selected plain chat, or the home screen.
+// The window: the sidebar (while it is hidden, the rail that shows it again), and beside it
+// the selected board or run (with its chat panel, which beside a run also shows the
+// transcripts of the run's own agents), the selected plain chat, or the home screen.
 import React, { useEffect } from "react";
 import { useStore, setState, getState, viewedBranch, closeRunAgent } from "./store.ts";
-import { Sidebar, newChat, addBoard, newRun, openBoard } from "./Sidebar.tsx";
+import { Sidebar, newChat, addBoard, newRun, openBoard, setSideHidden } from "./Sidebar.tsx";
 import { BoardChoice } from "./BoardChoice.tsx";
 import { ChatHeader, Thread } from "./ChatView.tsx";
 import { Composer, focusComposer } from "./Composer.tsx";
@@ -13,7 +13,7 @@ import { boardChats, groupPath } from "./logic/tree.ts";
 import { isDraft } from "./logic/run.ts";
 import { runPane } from "./logic/runview.ts";
 import { homeAgentsText, usableAgents } from "./logic/agentlist.ts";
-import { BoardIcon, ChatIcon, RunIcon } from "./icons.tsx";
+import { BoardIcon, ChatIcon, RunIcon, SideIcon } from "./icons.tsx";
 import { BoardTag } from "./BoardTag.tsx";
 import { RunBar } from "./run/RunBar.tsx";
 import { RunComposer } from "./run/RunComposer.tsx";
@@ -23,7 +23,7 @@ import { Resizer } from "./Resizer.tsx";
 import { Guard } from "./Guard.tsx";
 import { SubagentDrawer } from "./Subagents.tsx";
 import { TreePopup } from "./fork/TreePopup.tsx";
-import type { Pane as PaneKind } from "./logic/layout.ts";
+import { isSideKey, sideKeyName, sideNotice, type Pane as PaneKind } from "./logic/layout.ts";
 import { branchKey } from "./logic/branches.ts";
 import { isNewChatKey, newChatPlace } from "./logic/newchatwhere.ts";
 import { MAIN, UNGROUPED } from "./types.ts";
@@ -54,6 +54,19 @@ export function App() {
     window.addEventListener("keydown", k, true);
     return () => window.removeEventListener("keydown", k, true);
   }, []);
+  useEffect(() => {
+    // ⌘B: hides the sidebar, or shows it. Not under a dialog, as ⌘N; neither the canvas nor a text box hears the key.
+    const k = (e: KeyboardEvent) => {
+      if (!isSideKey(e, navigator.platform)) return;
+      const s = getState();
+      if (s.confirm || s.serversDialog || s.treeNav) return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.repeat) return;
+      setSideHidden(!s.sideHidden);
+    };
+    window.addEventListener("keydown", k, true);
+    return () => window.removeEventListener("keydown", k, true);
+  }, []);
   return <><Grouped /><TreePopup /><ConfirmDialog /></>;
 }
 
@@ -70,6 +83,7 @@ function Grouped() {
   const runAgent = useStore((s) => s.runAgent);
   const connecting = useStore((s) => s.role === "connecting" && !s.connected);
   const draft = useStore((s) => s.boardDraft);
+  const sideHidden = useStore((s) => s.sideHidden);
 
   let main: React.ReactNode;
   if (draft) {
@@ -131,7 +145,8 @@ function Grouped() {
   } else main = <Home />;
 
   return (
-    <div className="app">
+    <div className={`app ${sideHidden ? "side-hidden" : ""}`}>
+      {sideHidden && <SideRail />}
       <Pane pane="side" className="side-pane"><Side /></Pane>
       <Guard what="this page" resetKey={`${sel.board}|${sel.run}|${sel.chat}`}>{main}</Guard>
       <SubagentDrawer />
@@ -144,6 +159,20 @@ function Grouped() {
 function Side() {
   const key = useStore((s) => s.runs);
   return <Guard what="the sidebar" resetKey={key}><Sidebar /></Guard>;
+}
+
+/** What a hidden sidebar leaves at the window's left edge: a narrow rail with the one control that shows it again.
+ *  The views beside it have bars of different heights and three have none, so the control has a column of its own.
+ *  It has a dot while the sidebar has a notice that shows nowhere else: the page is not connected, or the update
+ *  banner is up. */
+function SideRail() {
+  const notice = useStore(sideNotice);
+  return (
+    <div className="side-rail">
+      <button className="icon-btn side-show" title={`Show sidebar (${sideKeyName(navigator.platform)})`} aria-label={notice ? "Show sidebar: it has a notice" : "Show sidebar"}
+        onClick={() => setSideHidden(false, true)}><SideIcon />{notice && <span className="side-rail-dot" />}</button>
+    </div>
+  );
 }
 
 /** A pane with its width from the store and a resize handle on its right edge. Only the pane

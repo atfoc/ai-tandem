@@ -102,8 +102,13 @@ export function bannerOf(t: ChatTree, move: Target, items: (Item | undefined)[],
   return { kind: "new", after, stays, ...(asks ? { asks: true as const } : {}) };
 }
 
-export function bannerText(b: Banner): string {
+/** sending: the move's message is on its way (logic/waits.ts sendHeld): the banner says that, and
+ *  not what Back shows, which is held meanwhile. */
+export function bannerText(b: Banner, sending = false): string {
   const stays = b.stays ? ` “${b.stays}” stays in the tree.` : "";
-  const asks = b.asks ? " The agent is waiting for your approval: Back shows it." : "";
-  return `New branch ${b.after === null ? "from the start" : `after “${b.after}”`}: your message starts it.${stays}${asks}`;
+  const asks = b.asks && !sending ? " The agent is waiting for your approval: Back shows it." : "";
+  return `New branch ${b.after === null ? "from the start" : `after “${b.after}”`}: your message ${sending ? "is being sent" : "starts it"}.${stays}${asks}`;
 }
+
+/** What the banner says of a move whose branch's list or tree is not here: the point cannot be named. */
+export const bannerPlain = (sending = false): string => (sending ? "Your message is being sent." : "Your next message starts from here.");

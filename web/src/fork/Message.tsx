@@ -5,7 +5,7 @@
 // entries stay its direct children (⌘L, quoteDom.ts). Their texts are drawn by CSS from
 // data-text, not as text nodes: quoteDom reads a message's text nodes to tell which messages a
 // selection takes text from, and the extras must never count.
-import { useRef, useState } from "react";
+import { useState } from "react";
 import "./fork.css";
 import "./message.css";
 import { useStore, isBusy, isLegacy, shownBranch, threadOf } from "../store.ts";
@@ -14,20 +14,24 @@ import { BranchIcon } from "../icons.tsx";
 import { messageActions } from "../logic/forkpoints.ts";
 import { labelAt, markerAt } from "../logic/forktree.ts";
 import { messageButtons, threadTree, viewFor, type MessageButton } from "../logic/forkmessage.ts";
+import { heldReason } from "../logic/waits.ts";
 import { forkChat, labelMessage, openTree, startMove } from "./actions.ts";
 import { LabelInput } from "./LabelInput.tsx";
 import type { ChatView, Item } from "../types.ts";
 
 const EMPTY: Item[] = [];
 
-/** A message's fork actions and label; the last child of the chat's own .msg.user and .msg.assistant. */
+/** A message's fork actions and label; the last child of the chat's own .msg.user and .msg.assistant.
+ *  An action that does nothing now is disabled and says why in its title (logic/waits.ts
+ *  heldReason): the two that branch, while a message that starts a new branch is on its way; the
+ *  two that fork, while a fork of the chat is being made. Label is never held. */
 export function MessageExtras({ chat, index, item }: { chat: ChatView; index: number; item: Item }) {
   // The shown branch's full list, even while the thread is shown cut for a pending move.
   const items = useStore((s) => threadOf(s, chat.id)?.items) ?? EMPTY;
   const shown = useStore((s) => shownBranch(s, chat.id));
   const view = useStore((s) => viewFor(s.trees[chat.id], shownBranch(s, chat.id)));
   const [labeling, setLabeling] = useState(false);
-  const running = useRef(false); // a fork or a move was asked for and has not answered yet
+  const waits = useStore((s) => s.waits[chat.id]);
 
   // chat is the view of the branch shown (shownView): its status is that branch's, not the chat's.
   // (a chat with no agent has no message: the kind given for it is never read)
@@ -37,15 +41,14 @@ export function MessageExtras({ chat, index, item }: { chat: ChatView; index: nu
   const buttons = messageButtons(acts, items, !!label);
   if (!marker && !label && !buttons.length && !labeling) return null;
 
-  const once = (p: Promise<void>) => { running.current = true; void p.finally(() => { running.current = false; }); };
   const run = (b: MessageButton) => {
     if (b.id === "label") return setLabeling(true);
-    if (running.current || b.at === undefined) return;
+    if (b.at === undefined || heldReason(waits, b.id)) return;
     switch (b.id) {
-      case "branchEdit": return once(startMove(chat.id, { branch: shown, at: b.at, new: true }, index));
-      case "branch": return once(startMove(chat.id, { branch: shown, at: b.at, new: true }));
-      case "forkEdit": return once(forkChat(chat.id, shown, b.at, index));
-      case "fork": return once(forkChat(chat.id, shown, b.at));
+      case "branchEdit": return void startMove(chat.id, { branch: shown, at: b.at, new: true }, index);
+      case "branch": return void startMove(chat.id, { branch: shown, at: b.at, new: true });
+      case "forkEdit": return void forkChat(chat.id, shown, b.at, index);
+      case "fork": return void forkChat(chat.id, shown, b.at);
     }
   };
   return (
@@ -61,11 +64,14 @@ export function MessageExtras({ chat, index, item }: { chat: ChatView; index: nu
       {label && <div className="fk-label-tag" title="Label" data-text={label} />}
       {buttons.length > 0 && !labeling && (
         <div className="fk-acts">
-          {buttons.map((b) => (
-            <button key={b.id} className={`fk-act k-${b.id}`} title={b.title} aria-label={b.text} data-text={b.text} onClick={() => run(b)}>
-              {(b.id === "branchEdit" || b.id === "branch") && <BranchIcon />}
-            </button>
-          ))}
+          {buttons.map((b) => {
+            const held = heldReason(waits, b.id);
+            return (
+              <button key={b.id} className={`fk-act k-${b.id}`} disabled={!!held} title={held || b.title} aria-label={b.text} data-text={b.text} onClick={() => run(b)}>
+                {(b.id === "branchEdit" || b.id === "branch") && <BranchIcon />}
+              </button>
+            );
+          })}
         </div>
       )}
       {labeling && (

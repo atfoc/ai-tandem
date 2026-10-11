@@ -1,0 +1,545 @@
+{
+ "about": "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/runmock-ui.js), as headless Chromium draws the page with the system font. Written by `WRITE=1 node dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160 px, the model choice's 76), and each state is measured in a pane wide enough for all of its controls.",
+ "gap": 4,
+ "chrome": 20,
+ "more": 28,
+ "ring": 28,
+ "icon": 25,
+ "legend": "gap: between two controls of the chat toolbar (its spacer is one of them, at no width); chrome: the box's padding and border, so a row of `sum` px needs a box of sum + chrome; more: the chip that opens the popup of the controls the row has no room for; ring: the context meter cut to its ring; icon: the error meter cut to its icon. A state: g1, the name of G1's case it is, where its names are short; composer, chat or goal (the goal composer wraps and is not fitted); pane, where it is shown; sum, its controls and gaps on one line; reason, it has a line under its controls; controls, left to right: kind, label, fixed (a chip that takes no pick), w, and margin where the control has one of its own (the lock): it needs w + margin.",
+ "states": {
+  "plain-started": {
+   "g1": "plain-started",
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_plain",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-new": {
+   "g1": "plain-new",
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_new",
+   "sum": 545.1,
+   "controls": [
+    { "kind": "server", "label": "This computer", "w": 108 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-new-long": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_new_long",
+   "sum": 699.5,
+   "controls": [
+    { "kind": "server", "label": "This computer", "w": 108 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "w": 202.4 },
+    { "kind": "model", "label": "Claude Opus 5.5 (1M context, extended thinking)", "w": 102.4 },
+    { "kind": "effort", "label": "EffortMax", "w": 87.5 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-started-long": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_long",
+   "sum": 539.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-busy": {
+   "g1": "plain-busy",
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_busy",
+   "sum": 370.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "stop", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-ctxerr": {
+   "g1": "plain-ctxerr",
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_ctxerr",
+   "sum": 349,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "Context unavailable", "w": 135.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-quotes": {
+   "g1": "plain-quotes",
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_quotes",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-remote-new": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_remote_new",
+   "sum": 623.5,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 186.4 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-remote-started": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_remote",
+   "sum": 512.5,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-remote-started-long": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_remote_long",
+   "sum": 713.8,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-move": {
+   "g1": "plain-move",
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_move",
+   "sum": 412.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-move-long": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_move_long",
+   "sum": 563.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model", "label": "Claude Opus 5.5 (1M context, extended thinking)", "w": 102.4 },
+    { "kind": "effort", "label": "EffortMax", "w": 87.5 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-loading": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_loading",
+   "sum": 526,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 186.4 },
+    { "kind": "agent", "label": "Cursor", "w": 80.4 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "loading", "label": "Loading models…", "fixed": true, "w": 109 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-noagent": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_noagent",
+   "sum": 332.2,
+   "reason": true,
+   "controls": [
+    { "kind": "server", "label": "This computer", "w": 108 },
+    { "kind": "agent", "label": "No agent", "w": 78 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-noagent-installed": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_bare",
+   "sum": 281.2,
+   "reason": true,
+   "controls": [
+    { "kind": "server", "label": "Bare box", "w": 76 },
+    { "kind": "agent", "label": "No agent", "fixed": true, "w": 61.5 },
+    { "kind": "folder", "label": "bare", "w": 67.7 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-off-new": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_off_new",
+   "sum": 314,
+   "reason": true,
+   "controls": [
+    { "kind": "server", "label": "Office Mac", "w": 88.1 },
+    { "kind": "agent", "label": "No agent", "fixed": true, "w": 61.5 },
+    { "kind": "folder", "label": "projects", "w": 88.4 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-off-started": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_off",
+   "sum": 432.4,
+   "controls": [
+    { "kind": "server", "label": "Office Mac", "fixed": true, "w": 71.7 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "projects", "fixed": true, "w": 72 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-fork-fresh": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_fork",
+   "sum": 412.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-fork-notice": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_notice",
+   "sum": 441.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Sonnet 5.5", "w": 87.4 },
+    { "kind": "effort", "label": "EffortMedium", "w": 109.3 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-branches": {
+   "composer": "chat",
+   "pane": "page",
+   "chat": "c_A2_two",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-started": {
+   "g1": "board-started",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_board",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-new": {
+   "g1": "board-new",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_A2_board_new",
+   "sum": 528.7,
+   "controls": [
+    { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-quotes": {
+   "g1": "board-quotes",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_A2_board_quotes",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-long": {
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_A2_board_long",
+   "sum": 539.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-move": {
+   "g1": "board-move",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_A2_board_move",
+   "sum": 412.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-longname": {
+   "g1": "board-longname",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_A2_longname",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-selected": {
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_A2_sketch",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "run-started": {
+   "g1": "run-started",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_live_ask",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "run-new": {
+   "g1": "run-new",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_live_new",
+   "sum": 528.7,
+   "controls": [
+    { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "run-quotes": {
+   "g1": "run-quotes",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_A2_run_quotes",
+   "sum": 338.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "run-busy": {
+   "g1": "run-busy",
+   "composer": "chat",
+   "pane": "panel",
+   "chat": "c_trouble_ask",
+   "sum": 370.5,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "stop", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "goal-draft": {
+   "g1": "goal-draft",
+   "composer": "goal",
+   "pane": "stage",
+   "sum": 722.6,
+   "controls": [
+    { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
+    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "goal-nogit": {
+   "composer": "goal",
+   "pane": "stage",
+   "sum": 753.5,
+   "controls": [
+    { "kind": "server", "label": "This computer", "w": 108 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "scratch", "w": 84.7 },
+    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
+    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "goal-missing": {
+   "composer": "goal",
+   "pane": "stage",
+   "sum": 792.1,
+   "controls": [
+    { "kind": "server", "label": "This computer", "w": 108 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "importer", "w": 90.6 },
+    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
+    { "kind": "limits", "label": "8 parallel · 60 turns · $20", "w": 169.5 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "goal-blocked": {
+   "composer": "goal",
+   "pane": "stage",
+   "sum": 777.9,
+   "controls": [
+    { "kind": "server", "label": "This computer", "w": 108 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "empty-repo", "w": 109.1 },
+    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
+    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "goal-draft-long": {
+   "composer": "goal",
+   "pane": "stage",
+   "sum": 1005.8,
+   "controls": [
+    { "kind": "server", "label": "This computer", "w": 108 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "w": 337 },
+    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
+    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "goal-remote": {
+   "composer": "goal",
+   "pane": "stage",
+   "sum": 835.1,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 204.1 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
+    { "kind": "folder", "label": "shop", "w": 70.2 },
+    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
+    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "goal-fixed": {
+   "composer": "goal",
+   "pane": "stage",
+   "sum": 755.1,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 187.7 },
+    { "kind": "agent", "label": "Claude Code", "fixed": true, "w": 99.8 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "fixed": true, "w": 241.4 },
+    { "kind": "limits", "label": "8 parallel · 60 turns", "fixed": true, "w": 120.4 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  }
+ }
+}

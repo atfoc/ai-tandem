@@ -21,11 +21,13 @@
   --warn-soft: #fffaf0;
   --danger: #e03131;
   --danger-fill: #e03131;
+  --on-danger: #ffffff;      /* text on --danger-fill */
   --danger-soft: #fdecec;
   --ok: #2f9e44;
   --hover: rgba(0, 0, 0, .04);
   --hover-2: rgba(0, 0, 0, .05);
   --knob: #ffffff;
+  --knob-on: var(--knob);    /* the knob of a switch that is on: a flavour's differs (flavours.css) */
   --backdrop: rgba(20, 20, 40, .28);
   --shadow-sm: 0 4px 16px rgba(20, 20, 40, .1);
   --shadow-md: 0 8px 28px rgba(20, 20, 40, .14);
@@ -110,7 +112,7 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line-2);
 .btn.sm { padding: 4px 10px; font-size: 12px; }
 .btn.primary { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
 .btn.primary:hover { filter: brightness(1.07); }
-.btn.danger { background: var(--danger-fill); border-color: var(--danger-fill); color: #fff; }
+.btn.danger { background: var(--danger-fill); border-color: var(--danger-fill); color: var(--on-danger); }
 .btn.ghost { border-color: transparent; background: transparent; }
 .btn.ghost:hover, .btn.ghost.on { background: var(--accent-soft); color: var(--accent); }
 .caret { font-size: 9px; opacity: .8; }
@@ -229,7 +231,9 @@ button.ref-chip { cursor: pointer; }
 button.ref-chip:hover { background: var(--accent-soft); }
 .mention { border: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); border-radius: 4px; padding: 0 3px; font-weight: 600; }
 .caret-blink { display: inline-block; width: 7px; height: 14px; background: var(--text); vertical-align: -2px; margin-left: 2px; animation: pulse .9s steps(1) infinite; }
-.typing { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; padding: 2px; }
+.typing, .wait-line { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; padding: 2px; }
+/* a message that was sent and is in no list yet (logic/waits.ts) */
+.msg.user.sending { opacity: .7; }
 .dots { display: inline-flex; gap: 3px; }
 .dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .4; animation: bounce 1.1s infinite; }
 .dots i:nth-child(2) { animation-delay: .15s; } .dots i:nth-child(3) { animation-delay: .3s; }
@@ -256,16 +260,45 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .chip { border: 1px solid var(--line-2); background: var(--bg); border-radius: 14px; padding: 4px 11px; font-size: 12px; color: var(--text); }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
 
-/* tool cards */
-.tool { border: 1px solid var(--line); border-radius: 7px; background: var(--panel); font-size: 12px; }
+/* tool cards (ToolCard.tsx). Closed: the row. The line beside the label (a command's first line, a file's path) takes
+   what the label leaves of the row and is cut with an ellipsis; a label too long for the row breaks, also inside a
+   word, so no card is wider than its pane. */
+.tool { border: 1px solid var(--line); border-radius: 7px; background: var(--panel); font-size: 12px; min-width: 0; }
 .tool-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; cursor: default; }
-.tool-icon { width: 14px; text-align: center; color: var(--ok); font-weight: 700; }
+.tool-icon { flex: none; width: 14px; text-align: center; color: var(--ok); font-weight: 700; }
 .tool.err .tool-icon { color: var(--danger); }
-.tool-label { flex: 1; color: var(--muted); }
+.tool-label { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
 .tool.running .tool-label { color: var(--text); }
+.tool-hint { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); color: var(--faint); }
+.tool-row > .link, .tool-chev { flex: none; }
 .tool-chev { color: var(--faint); font-size: 10px; }
-.tool-detail { border-top: 1px solid var(--line); padding: 6px 8px; }
-.tool-detail pre { margin: 2px 0 6px; font: 11px/1.4 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+/* open: its parts, one under the other. A text and a change are each a box of their own. A part that is cut is as
+   tall as what it holds, so its last line is in sight; with all of a long one shown the box scrolls. A long line
+   breaks, so nothing scrolls sideways. */
+.tool-detail { border-top: 1px solid var(--line); padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.tool-part { min-width: 0; }
+.tool-part > .tool-sub { overflow-wrap: anywhere; } /* (a tool named by a title with no space in it) */
+.tool-text, .tool-diff { margin-top: 3px; overflow: hidden; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; font: 11px/1.4 var(--mono); tab-size: 4; }
+.tool-text.all, .tool-diff.all { max-height: 480px; overflow-y: auto; }
+.tool-text { padding: 5px 7px; }
+.tool-text pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-text pre code { font: inherit; }
+.tool-part.failed .tool-text { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); background: color-mix(in srgb, var(--danger) 5%, var(--bg)); }
+.tool-flag { color: var(--danger); }
+.tool-lead { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
+.tool-path { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font: 11.5px var(--mono); color: var(--text); }
+.tool-path-name { min-width: 0; overflow-wrap: anywhere; }
+.tool-counts, .tool-lines { flex: none; font-variant-numeric: tabular-nums; }
+.tool-add { color: var(--ok); } .tool-del { color: var(--danger); } .tool-lines { color: var(--faint); }
+.tool-note { color: var(--muted); }
+.tool-omit { display: flex; align-items: center; gap: 8px; padding: 3px 0; font: 11px var(--font); color: var(--faint); user-select: none; }
+.tool-diff .tool-omit { padding: 3px 7px; }
+.diff-row { display: flex; }
+.diff-sign { flex: none; width: 2ch; text-align: center; white-space: pre; color: var(--faint); user-select: none; }
+.diff-text { flex: 1; min-width: 0; min-height: 1.4em; padding-right: 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-row.add { background: color-mix(in srgb, var(--ok) 15%, transparent); } .diff-row.add .diff-sign { color: var(--ok); }
+.diff-row.del { background: color-mix(in srgb, var(--danger) 13%, transparent); } .diff-row.del .diff-sign { color: var(--danger); }
+.diff-row.skip { padding: 2px 7px; font-family: var(--font); color: var(--faint); user-select: none; }
 .tool-sub { font-size: 10.5px; text-transform: uppercase; color: var(--faint); letter-spacing: .04em; }
 .spin { display: inline-block; width: 10px; height: 10px; border: 1.5px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
 
@@ -328,6 +361,7 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .send { width: 28px; height: 28px; flex: none; border-radius: 7px; border: 0; background: var(--accent-fill); color: var(--on-accent); font-size: 15px; font-weight: 700; display: grid; place-items: center; }
 .send:disabled { background: var(--line-2); color: var(--faint); cursor: default; }
 .send:disabled .sq { background: var(--faint); }
+.send.sending .spin { border-color: color-mix(in srgb, var(--muted) 30%, transparent); border-top-color: var(--muted); } /* a message is on its way (logic/waits.ts sendWait) */
 .send.stop { background: var(--text); }
 .send .sq { width: 9px; height: 9px; background: var(--bg); border-radius: 2px; }
 .mention-pop { position: absolute; left: 6px; bottom: calc(100% + 4px); min-width: 180px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-md); padding: 4px; z-index: 20; }
@@ -360,6 +394,14 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .composer-box.with-tools { flex-direction: column; align-items: stretch; padding: 8px 8px 6px 10px; }
 .composer-tools { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
 .composer-tools .grow { flex: 1; }
+/* a chat's toolbar fits its row (Composer.tsx, logic/composerfit.ts): no control of it is squeezed, and what the row
+   has no room for is in the popup of the "more" chip, a chip a row, each as wide as it is in the toolbar. The ruler
+   tells the toolbar of a change of the composer's width. */
+.composer-tools.fitted > :not(.grow) { flex: none; }
+.composer-ruler { height: 0; }
+.tchip.more-chip { width: 28px; padding: 0; justify-content: center; color: var(--muted); }
+.menu.up.more-pop { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; max-width: none; padding: 6px; }
+.more-row { display: flex; align-items: center; gap: 4px; }
 .tchip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: var(--panel); font-size: 12px; color: var(--text); white-space: nowrap; }
 button.tchip:hover { border-color: var(--line-2); }
 .tchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -367,6 +409,14 @@ button.tchip:hover { border-color: var(--line-2); }
 button.tchip[aria-disabled="true"] { opacity: .55; cursor: default; }
 button.tchip[aria-disabled="true"]:hover { border-color: transparent; }
 .tchip-pre { color: var(--faint); margin-right: 2px; }
+/* a chip's name (Composer.tsx ChipName): cut with an ellipsis where the chip has no room for it, while the icon, the
+   prefix and the caret stay whole. In a chat's toolbar and its "more" popup a name has a cap: the toolbar is fitted
+   on the chips' capped widths, so a long name sends chips into the popup and never past the box. The model's cap is
+   what lets agent and model stay in the default panel's box beside "more", the ring, Stop and Send. */
+.tchip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tchip > svg, .tchip > .caret, .tchip > .tchip-pre { flex: none; }
+.composer-tools.fitted .tchip-name { max-width: 160px; }
+.composer-tools.fitted .model-pick .tchip-name { max-width: 76px; }
 .menu.up { top: auto; bottom: calc(100% + 6px); left: 0; min-width: 220px; }
 .menu-item.pick { padding-left: 10px; gap: 6px; }
 .menu-item.pick > span:last-child:not(.menu-label) { flex: none; }
@@ -383,6 +433,10 @@ button.tchip[aria-disabled="true"]:hover { border-color: transparent; }
 .ctx-meter .muted { color: var(--faint); }
 button.ctx-meter { height: 24px; border: 0; border-radius: 6px; background: none; cursor: pointer; }
 button.ctx-meter:hover, button.ctx-meter.on { background: var(--panel); }
+/* the composer's meter where its toolbar has no room for the text: the ring alone, or the error meter's icon. The
+   text is not seen and still rendered, so the meter's text is read as before. */
+.ctx-meter.compact { position: relative; }
+.ctx-meter.compact .ctx-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .usage-pop { width: 300px; max-width: calc(100vw - 16px); padding: 4px 4px 6px; cursor: default; }
 .usage-pop .menu-head { padding-right: 2px; }
 .usage-pop .usage-refresh { width: 22px; height: 22px; font-size: 13px; text-transform: none; }
@@ -447,15 +501,23 @@ button.split-row { cursor: pointer; }
 .dir-foot { display: flex; justify-content: flex-end; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 6px; }
 .perm-what { margin: 6px 0 0; font: 11.5px/1.4 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 5px 7px; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow: auto; }
 .chat-head-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.composer-tools > svg { color: var(--muted); margin-left: 4px; }
+.composer-tools > svg, .more-row > svg { color: var(--muted); margin-left: 4px; }
 
 /* ---------------------------------------------------------------- app: sidebar, board, plain chat */
 .app { display: flex; height: 100%; }
 .app .grow { flex: 1; }
 .side-pane { position: relative; flex: none; display: flex; min-height: 0; }
+/* the sidebar hidden (⌘B): its pane is not drawn, and a rail with the control that shows it again is in its place */
+.app.side-hidden > .side-pane { display: none; }
+.side-rail { flex: none; width: 40px; display: flex; flex-direction: column; align-items: center; padding-top: 10px; background: var(--panel); border-right: 1px solid var(--line); }
+.side-hide, .side-show { position: relative; flex: none; display: grid; place-items: center; }
+.side-hide:focus-visible, .side-show:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.side-rail-dot { position: absolute; top: 1px; right: 1px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--panel); }
 .side { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); min-height: 0; }
 .side-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 8px 14px; min-height: 46px; }
-.side-head .brand { flex: 1; }
+.side-head .brand { flex: 1; min-width: 0; overflow: hidden; } /* in a narrow sidebar the name gives way to the notice and the two controls */
+.side-head .brand svg, .side-head .offline { flex: none; }
+.brand-name { overflow: hidden; text-overflow: ellipsis; }
 .side-tree { flex: 1; overflow-y: auto; padding: 2px 6px 16px; }
 .side-loose, .side-group { border-radius: 8px; padding: 1px 0; }
 .side-loose { min-height: 6px; }
@@ -551,16 +613,19 @@ body.resizing iframe { pointer-events: none; }
 .side-update-x { flex: none; width: 22px; height: 22px; font-size: 15px; }
 .side-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 7px 10px 7px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); user-select: none; }
 .side-archived { flex: 1 0 auto; display: flex; align-items: center; gap: 8px; white-space: nowrap; cursor: pointer; }
-.side-foot .seg { margin-left: auto; } /* on a line of its own in a narrow sidebar, it stays at the right */
-/* the theme switch: light, dark, system */
-.seg { display: inline-flex; flex: none; gap: 1px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
-.seg button { display: grid; place-items: center; width: 22px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--faint); }
-.seg button:hover { color: var(--text); }
-.seg button.on { background: var(--accent-soft); color: var(--accent); }
+/* the theme's picker: one button, and its menu, which opens upward. On a line of its own in a narrow sidebar it stays
+   at the right. It keeps the width the three-button switch had, so that the Servers button is where it was. */
+.theme-pick { flex: none; display: flex; justify-content: flex-end; min-width: 74px; margin-left: auto; }
+.theme-btn { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px 0 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--muted); }
+.theme-btn:hover, .theme-btn.open { color: var(--text); }
+/* (inside the window at the narrowest sidebar, and in a low window no taller than what is above the foot: it scrolls) */
+.theme-pick .menu { top: auto; bottom: calc(100% + 6px); min-width: 0; width: 168px; max-height: calc(100vh - 52px); overflow-y: auto; }
+.theme-pick .menu-item svg { flex: none; color: var(--muted); }
+.theme-pick .menu-item.on svg { color: var(--accent); }
 .switch { appearance: none; position: relative; width: 26px; height: 15px; margin: 0; border-radius: 8px; background: var(--line-2); cursor: pointer; transition: background .15s; flex: none; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--knob); transition: transform .15s; }
 .switch:checked { background: var(--accent-fill); }
-.switch:checked::after { transform: translateX(11px); }
+.switch:checked::after { transform: translateX(11px); background: var(--knob-on); }
 .home-glyphs { display: flex; gap: 10px; }
 .menu-item.plain { padding-left: 10px; }
 .menu-item.danger { color: var(--danger); }

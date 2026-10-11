@@ -28,7 +28,8 @@ const clip = (t: any, n = 48) => { const v = String(t ?? "").replace(/\s+/g, " "
 const host = (u: any) => { try { return new URL(String(u)).host; } catch { return clip(u, 30); } };
 
 /** Claude Code's and Pi's own tools, and other MCP servers', in the same one-line style. Pi's
- *  built-ins are lower-case (read, bash, edit, write, grep, find, ls) and take a `path`. */
+ *  built-ins are lower-case (read, bash, edit, write, grep, find, ls) and take a `path`. Delete is
+ *  Cursor's: a thread from before it had that name holds the call under its title, "Delete `path`". */
 export function genericTool(name: string, input: any, done: boolean): string | null {
   const i = input ?? {};
   switch (name) {
@@ -36,6 +37,7 @@ export function genericTool(name: string, input: any, done: boolean): string | n
     case "Read": case "read": return `${done ? "Read" : "Reading"} ${base(i.file_path ?? i.path) || "a file"}`;
     case "Write": case "write": return `${done ? "Wrote" : "Writing"} ${base(i.file_path ?? i.path) || "a file"}`;
     case "Edit": case "MultiEdit": case "NotebookEdit": case "edit": return `${done ? "Edited" : "Editing"} ${base(i.file_path ?? i.notebook_path ?? i.path) || "a file"}`;
+    case "Delete": return `${done ? "Deleted" : "Deleting"} ${base(i.file_path) || "a file"}`;
     case "Glob": case "find": return `${done ? "Found files" : "Finding files"}${i.pattern ? " " + clip(i.pattern, 30) : ""}`;
     case "Grep": case "grep": return `${done ? "Searched" : "Searching"}${i.pattern ? " for " + clip(i.pattern, 30) : ""}`;
     case "ls": return `${done ? "Listed" : "Listing"} ${base(i.path) || "a directory"}`;

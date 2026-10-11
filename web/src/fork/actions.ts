@@ -1,6 +1,7 @@
 // What the fork UI does: labels, forks to a new chat, the tree popup, and moves between branches.
 import { api } from "../api.ts";
-import { getState, setState, upsertChat, setMove, setShown, isBusy, isLegacy, branchState, currentBranch, shownBranch, shownView, viewedBranch, threadAt, threadOf, unsavedDraft } from "../store.ts";
+import { getState, setState, upsertChat, setMove, setShown, isBusy, isLegacy, branchState, currentBranch, shownBranch, shownView, viewedBranch, threadAt, threadOf, unsavedDraft,
+  beginWait, endWait, stepSend } from "../store.ts";
 import { keepBranch, showBranch } from "../conn.ts";
 import { openChat } from "../Sidebar.tsx";
 import { focusComposer, saveDraft } from "../Composer.tsx";
@@ -12,8 +13,9 @@ import { mergeQuotes } from "../logic/quotes.ts";
 import { branchKey } from "../logic/branches.ts";
 import { sameChoice, withModel, type Choice } from "../logic/models.ts";
 import { catalogFor } from "../logic/agentlist.ts";
-import type { Draft, Held, PendingMove, Target } from "../types.ts";
+import type { Draft, Held, PendingMove, Reference, Target } from "../types.ts";
 import { serverOf } from "../logic/serverlists.ts";
+import { loading, sendHeld, taken, unnamed } from "../logic/waits.ts";
 
 /** Sets (or, with blank text, removes) a label; puts the answer's labels into the loaded tree. An error is shown with reportError. */
 export async function labelMessage(chat: string, branch: string, item: number, text: string): Promise<void> {
@@ -26,13 +28,31 @@ export async function labelMessage(chat: string, branch: string, item: number, t
   } catch (e) { reportError("Couldn't set the label", e); }
 }
 
-/** Forks to a new chat and opens it. message: the user message that becomes its draft. An error is shown with reportError. */
+/** Forks to a new chat and opens it. message: the user message that becomes its draft. An error is shown with reportError.
+ *  The server answers once the fork's agent has started and tells nothing before: until the call
+ *  has ended, however it ends, the chat says that a fork of it is being made (State.waits), and
+ *  takes no second one: its Fork controls are held meanwhile. */
 export async function forkChat(chat: string, branch: string, at: number, message?: number): Promise<void> {
+  if (getState().waits[chat]?.fork) return;
+  const wait = beginWait(chat, "fork", {});
   try {
     const c = await api.fork(chat, branch, at, message);
     upsertChat(c);
     openChat(c);
   } catch (e) { reportError("Couldn't fork the chat", e); }
+  finally { endWait(chat, "fork", wait); }
+}
+
+/** A model or effort picked on a fork that has had no message of its own: the server starts the
+ *  fork's agent again on it and answers only then, and some agent kinds tell nothing of the start
+ *  before. Until the call has ended, however it ends, the chat says that its agent is starting on
+ *  `choice`, the model and effort the pick makes, which the page calls `label` (State.waits).
+ *  Rejects as the call does. */
+export async function pickOnFork(chat: string, p: { model?: string; effort?: string }, choice: Choice, label: string): Promise<void> {
+  const branch = shownBranch(getState(), chat);
+  const wait = beginWait(chat, "pick", { branch, model: choice.model, ...(choice.effort ? { effort: choice.effort } : {}), label });
+  try { await api.configure(chat, branch, p); }
+  finally { endWait(chat, "pick", wait); }
 }
 
 /** Opens the tree popup, focused on a message when given. It only sets treeNav: TreePopup loads the tree and shows a failed load. */
@@ -140,11 +160,12 @@ export function sendFailed(chat: string, branch: string, h: Held, err: unknown):
 
 const starts = new Map<string, number>(); // by chat id: its newest startMove or viewBranch call, the one that goes on after its list loaded
 let startSeq = 0;
-const sending = new Set<string>();        // chats whose move's Send is in flight
-const sent = new Map<string, string>();   // chats whose move's Send a server answered without naming the branch, until the view names another current branch: the one before the Send
 
-/** Whether a chat's pending move is being sent: nothing drops it, and Back does not undo it. */
-export const isSending = (chat: string) => sending.has(chat) || sent.has(chat);
+/** Whether a chat's pending move is being sent: nothing drops it, and Back does not undo it. It
+ *  is the store's to tell (State.waits; logic/waits.ts sendHeld): while the move's Send is in
+ *  flight, and after a server answered it without naming the branch, until the chat's view names
+ *  another current branch than before the Send. The page reads the same, and holds its controls. */
+export const isSending = (chat: string) => sendHeld(getState().waits[chat]);
 
 /** Puts a chat on another of its branches: the thread, the composer with that branch's draft and
  *  the session state shown are that branch's from then on. It is this client's state alone:
@@ -173,6 +194,15 @@ export async function viewBranch(chat: string, branch: string): Promise<void> {
   }
 }
 
+/** A branch's list is fetched before the chat can show it or a point of it: the chat says that the
+ *  branch is being opened (State.waits) until the caller's fetch has ended, however it ends, which
+ *  the function answered tells. needed false: the list is kept, and there is nothing to wait for. */
+function opening(chat: string, branch: string, needed: boolean): () => void {
+  if (!needed) return () => {};
+  const wait = beginWait(chat, "open", { branch });
+  return () => endWait(chat, "open", wait);
+}
+
 /** Starts a pending move to target. edit: the index, in target.branch's items, of the user message
  *  to put into the composer (Branch and edit). Nothing happens in an archived or legacy chat.
  *  A target that asks for no new branch at its branch's end is no move: that branch is looked at
@@ -180,7 +210,8 @@ export async function viewBranch(chat: string, branch: string): Promise<void> {
  *  branch, so a pending move never names a branch that is there as where the message goes.
  *  What other branches do does not matter, and the target's own branch may be in a turn when the
  *  agent kind can branch from a running source (LIVE_FORK): the point must then be a finished
- *  boundary, as checkMove judges once the list is there. */
+ *  boundary, as checkMove judges once the list is there. While a list has to be fetched for it
+ *  (a point of another branch, chosen in the tree) the chat says that the branch is being opened. */
 export async function startMove(chat: string, target: Target, edit?: number): Promise<void> {
   const ok = () => { const c = getState().chats[chat]; return !!c && !c.archived && !isLegacy(c) && !isSending(chat); };
   const live = () => { const a = getState().chats[chat]!.agent; return (!!a && LIVE_FORK[a]) || !sourceBusy(chat, target.branch); };
@@ -190,13 +221,14 @@ export async function startMove(chat: string, target: Target, edit?: number): Pr
   if (!target.new) {
     // Whether the point is the branch's end is read from its items: they are fetched for it when not kept.
     const key = branchKey(chat, target.branch);
+    const wait = opening(chat, target.branch, !threadAt(getState(), key));
     try {
       await keepBranch(chat, target.branch);
       if (starts.get(chat) === n && getState().chats[chat] && !threadAt(getState(), key)) throw new Error("its messages did not load");
     } catch (e) {
       if (starts.get(chat) === n) reportError("Couldn't open that branch", e);
       return;
-    }
+    } finally { wait(); }
     if (starts.get(chat) !== n || !ok()) return; // another point was chosen, or the chat changed meanwhile
     if (sessionEnd(threadAt(getState(), key)!.items, target.at)) { await viewBranch(chat, target.branch); focusComposer(); return; }
   }
@@ -210,13 +242,14 @@ export async function startMove(chat: string, target: Target, edit?: number): Pr
   if (prev?.model && prev.branch === target.branch) { move.model = prev.model; if (prev.effort) move.effort = prev.effort; }
   setMove(chat, move);
   const mine = () => starts.get(chat) === n && !!getState().moves[chat];
+  const wait = opening(chat, target.branch, !threadOf(getState(), chat));
   try {
     await showBranch(chat);
     if (mine() && !threadOf(getState(), chat)) throw new Error("its messages did not load");
   } catch (e) {
     if (mine()) { goBack(chat); reportError("Couldn't open that branch", e); }
     return;
-  }
+  } finally { wait(); }
   if (!mine()) return; // taken back, dropped or replaced meanwhile
   const items = threadOf(getState(), chat)!.items;
   checkMove(chat);
@@ -306,47 +339,68 @@ export function checkMove(chat: string): void {
  *  was put on, the new one: the move ends at once and the chat is on that branch (moveSent). When
  *  the POST fails the move stays and the error is thrown on. Nothing more is needed then: the
  *  server lists a new branch only once the agent took its message, so after a failure no branch
- *  was made, and the move, the banner and the message are there for the next try. */
-export async function sendAt(chat: string, post: (branch: string, target?: Target & { model?: string; effort?: string }) => Promise<unknown>): Promise<void> {
+ *  was made, and the move, the banner and the message are there for the next try.
+ *  message: what is sent, for the page to show while it is on its way (State.waits). The server
+ *  tells nothing of a new branch before it answers, which is after the agent has started on it:
+ *  the wait begins here and ends with the POST when that fails, else when the new branch's list
+ *  is here (moveSent). The first message of a fork that has had none of its own may have to wait
+ *  for the fork's agent to be started: it is shown the same way until the thread has it. */
+export async function sendAt(chat: string, post: (branch: string, target?: Target & { model?: string; effort?: string }) => Promise<unknown>, message?: { text: string; references: Reference[] }): Promise<void> {
   const s = getState(), move = s.moves[chat];
-  if (!move) { await post(viewedBranch(s, chat)); return; }
+  if (!move) {
+    const branch = viewedBranch(s, chat), list = threadOf(s, chat);
+    const wait = message && list && shownView(s, chat)?.fresh ? beginWait(chat, "send", { kind: "first", phase: "sending", ...message, branch, at: list.items.length }) : 0;
+    try { await post(branch); }
+    catch (e) { if (wait) endWait(chat, "send", wait); throw e; }
+    if (wait) stepSend(chat, wait, taken(threadAt(getState(), branchKey(chat, branch))?.items.length));
+    return;
+  }
   const before = currentBranch(s.chats[chat]);
   let answer: unknown;
-  sending.add(chat);
+  const wait = beginWait(chat, "send", { kind: "branch", phase: "sending", text: message?.text ?? "", references: message?.references ?? [], branch: move.branch, at: move.at });
   const target: Target & { model?: string; effort?: string } = { branch: move.branch, at: move.at, new: move.new };
   if (move.model) { target.model = move.model; if (move.effort) target.effort = move.effort; }
   try { answer = await post(move.branch, target); }
-  finally { sending.delete(chat); }
-  const to = (answer as { branch?: unknown } | null | undefined)?.branch;
-  if (typeof to === "string" && to) { moveSent(chat, to); return; }
-  sent.set(chat, before); // a server that does not name the branch: the chat's view will
-  moveSent(chat);
+  catch (e) { endWait(chat, "send", wait); throw e; }
+  try {
+    const to = (answer as { branch?: unknown } | null | undefined)?.branch;
+    if (typeof to === "string" && to) { moveSent(chat, to); return; }
+    stepSend(chat, wait, unnamed(before)); // a server that does not name the branch: the chat's view will
+    moveSent(chat);
+  } finally { stepSend(chat, wait, (w) => (w.phase === "sending" ? null : w)); } // the POST is over: whatever came of its answer, nothing is being sent
 }
 
 /** Ends a sent move without Back's restore. to: the branch the message was put on, as the POST's
  *  answer names it: the chat is on that branch from now, the drafts of it and of the branch left
- *  are set (setSentDrafts), and its list is fetched; the thread stays cut until then, so the
- *  branch left is never shown whole. The chat's own events decide nothing here: with several
- *  branches at work they come all the time.
+ *  are set (setSentDrafts), and its list is fetched. Until that list is here the thread shows what
+ *  it showed, the history before the point and the message, which the move's wait keeps
+ *  (logic/waits.ts loading): the thread is never empty in between, and the branch left is never
+ *  shown whole. The wait ends when that fetch has, also when it failed: the thread then shows what
+ *  a failed load shows. The list is fetched also for a chat that is not on screen by now, so that
+ *  it is there, or still shown as on its way, when the chat is opened again. The chat's own events
+ *  decide nothing here: with several branches at work they come all the time.
  *  Without to (called for a `chat` event, and after an answer that named no branch) only a move
  *  whose answer named none ends, once the chat's view names another current branch than before
  *  the Send, which is then the new one. */
 export function moveSent(chat: string, to?: string): void {
   const s = getState(), c = s.chats[chat], move = s.moves[chat];
+  const wait = s.waits[chat]?.send?.kind === "branch" ? s.waits[chat].send : undefined;
   if (to === undefined) {
-    const before = sent.get(chat);
+    const before = wait?.phase === "unnamed" ? wait.before : undefined;
     if (before === undefined) return;
     if (move && c && currentBranch(c) === before) return;
     if (c) to = currentBranch(c);
   }
-  sent.delete(chat);
   starts.delete(chat);
-  if (c && to !== undefined) {
-    if (move) setSentDrafts(chat, move, to);
-    setShown(chat, to);
+  const known = c && to !== undefined ? to : null;
+  if (wait) stepSend(chat, wait.id, known === null ? () => null : loading(known, threadAt(s, branchKey(chat, wait.branch))?.items));
+  if (known !== null) {
+    if (move) setSentDrafts(chat, move, known);
+    setShown(chat, known);
   }
   setMove(chat, null);
   void showBranch(chat).catch(() => {});
+  if (wait && known !== null) void keepBranch(chat, known).catch(() => {}).finally(() => endWait(chat, "send", wait.id));
 }
 
 /** Ends every sent move that still waits for its chat's view (the answer named no branch),
@@ -355,7 +409,8 @@ export function moveSent(chat: string, to?: string): void {
  *  is on no branch of its own choosing any more, so that it shows the server's current one, the
  *  new branch, as after a reload. */
 function endSent(): void {
-  for (const chat of sent.keys()) {
+  const waiting = Object.entries(getState().waits).flatMap(([chat, w]) => (w.send?.kind === "branch" && w.send.phase === "unnamed" ? [[chat, w.send.id] as const] : []));
+  for (const [chat] of waiting) {
     const move = getState().moves[chat];
     if (move) setSentDrafts(chat, move, null);
     setState((s) => {
@@ -364,7 +419,7 @@ function endSent(): void {
     });
     setMove(chat, null);
   }
-  sent.clear();
+  for (const [chat, wait] of waiting) endWait(chat, "send", wait);
 }
 // Before the composer's own listener (Composer.tsx), which then saves what the move's end left in it.
 if (typeof window !== "undefined") window.addEventListener("pagehide", endSent);

@@ -499,9 +499,15 @@ async function step7() {
   await box(page).first().waitFor();
   const e = await entry();
   const fixed = page.locator('.composer .tchip.static.server-chip[title^="Server"]');
+  // In the run's panel the toolbar has no room for the chip: it is in the "more" popup, which is opened to read it.
+  const more = page.locator(".composer .more-chip");
+  await waitFor("the server chip, or the toolbar's more", async () => (await fixed.count()) + (await more.count()) > 0).catch(() => {});
+  const inMore = !(await fixed.count()) && (await more.count()) > 0;
+  if (inMore) await more.click();
   const draft = await chatOn(A, runChat);
   await check('7 "+" on the run makes a chat of the run on B, with no server choice', draft?.run === run && draft?.server === e?.id && (await page.locator('.composer button.tchip[title^="Server"]').count()) === 0,
-    `A's chat: ${one(draft && { run: draft.run, server: draft.server, cwd: draft.cwd })}; fixed server chips ${await fixed.count()}: "${short(await fixed.innerText().catch(() => ""))}"`);
+    `A's chat: ${one(draft && { run: draft.run, server: draft.server, cwd: draft.cwd })}; fixed server chips ${await fixed.count()}: "${short(await fixed.first().innerText({ timeout: 2000 }).catch(() => ""))}"`);
+  if (inMore) await page.keyboard.press("Escape");
   const text = "hello from the run's chat";
   await send(page, text);
   const reply = await replied(page, text);

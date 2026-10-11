@@ -6,7 +6,7 @@ import { AGENT_ORDER, type AgentKind, type Board, type BranchState, type Catalog
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
 import { forgetBoard } from "./board.ts";
-import { parseWidths, type Widths } from "./logic/layout.ts";
+import { parseSideHidden, parseWidths, type Widths } from "./logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
 import { draftKey, draftKeyOf, legacyDraftKey, legacyDraftRenames, type Unsaved } from "./logic/drafts.ts";
 import type { UpdateBanner } from "./logic/version.ts";
@@ -21,6 +21,8 @@ import { listsFrom, withThreadError, type ThreadError } from "./logic/serverlist
 import { movedId, movedSel, withRunError } from "./logic/runserver.ts";
 import { keptRunStarts, movedRunStart, withRunStart, type RunStart } from "./logic/runcompose.ts";
 import { LOCAL_ENTRY, serversOf, type ServerForm, type ServerView } from "./logic/servers.ts";
+import { NO_MARK, type DropMark } from "./logic/dropmark.ts";
+import { afterThread, begun, ended, stepped, withLoad, withoutLoads, withoutChat as withoutWaits, type ChatWaits, type SendWait, type WaitKind, type Waits } from "./logic/waits.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
 export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind | string; tone: "edit" | "danger"; until: number };
@@ -61,12 +63,14 @@ export type State = {
   lists: Record<string, ServerLists>; // by entry id: what each other server offers (the snapshot's and the `server_lists` event's); read through logic/serverlists.ts
   threadErrors: Record<string, ThreadError>; // by chat id: why the last load of its list failed (conn.ts); absent after one that worked
   starting: Record<string, string>; // by chat id: the text of a first message on its way to the chat's server (Composer.tsx submit): the thread shows it
+  waits: Waits;                   // by chat id: what is on its way in the chat's fork flows (logic/waits.ts); in memory only, and not a snapshot's to drop
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
   panel: boolean;                 // board chat panel shown (⌘J)
   widths: Widths;                 // sidebar and board chat panel, persisted in localStorage "aiwb.widths"
+  sideHidden: boolean;            // the sidebar is hidden (⌘B): its pane is not drawn, Sidebar stays mounted; persisted in localStorage "aiwb.side"
   showArchived: boolean;          // persisted in localStorage "aiwb.archived"
-  themePref: ThemePref;           // light, dark or system; persisted in localStorage "aiwb.theme"
-  theme: Theme;                   // the theme shown (theme.ts keeps it current)
+  themePref: ThemePref;           // light, dark, system or a Catppuccin flavour; persisted in localStorage "aiwb.theme"
+  theme: Theme;                   // the theme shown, or the one the flavour shown is laid over (theme.ts keeps it current)
   selection: Selection;
   view: View;
   flashes: Flash[];               // keyed by board id
@@ -84,6 +88,7 @@ export type State = {
   sceneGen: Record<string, number>;   // by board id; raised to make the canvas load the scene again
   outage: Record<string, true>;       // the boards on another server whose last save did not reach it (the canvas says so)
   boardDraft: { group: string; busy?: boolean; error?: string } | null; // a board being made whose server is not chosen yet; never sent to the server
+  dropAt: DropMark;                   // the sidebar's drop mark during a drag (logic/dropmark.ts); in memory only
 };
 
 export function safeGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
@@ -101,14 +106,16 @@ let state: State = {
   home: "", defaultCwd: "", dataDir: "",
   groups: [], boards: {}, chats: {}, runs: {}, agents: {}, agentErrors: {}, runDetail: {}, runErrors: {}, runStarts: {}, items: {}, subs: {}, states: {}, subDrawer: null, runAgent: null,
   trees: {}, moves: {}, shown: {}, treeNav: null,
-  defaults: { groups: {} }, usable: [], catalogs: {}, lists: {}, threadErrors: {}, starting: {},
+  defaults: { groups: {} }, usable: [], catalogs: {}, lists: {}, threadErrors: {}, starting: {}, waits: {},
   sel: savedSel(), panel: true, widths: parseWidths(safeGet("aiwb.widths")), showArchived: safeGet("aiwb.archived") === "1",
+  sideHidden: parseSideHidden(safeGet("aiwb.side")),
   themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
   selection: { count: 0, lines: [] }, view: { scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 },
   flashes: [], busyOn: {}, confirm: null, picking: null,
   servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
   update: { banner: "none", hidden: false },
   roles: {}, dropped: {}, sceneGen: {}, outage: {}, boardDraft: null,
+  dropAt: NO_MARK,
 };
 const subs = new Set<() => void>();
 
@@ -173,6 +180,7 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
       // (a held run agent's stays: its chat is not among the snapshot's, and it has main alone)
       subDrawer: drawer && (st.agents[drawer.chat] || (chats[drawer.chat] && drawerStays(drawer, drawer.chat, shown[drawer.chat] ?? currentBranch(chats[drawer.chat])))) ? drawer : null,
       trees: {}, moves,
+      waits: Object.fromEntries(Object.entries(st.waits).filter(([id]) => chats[id] || st.agents[id])), // what is on its way stays, but for a chat that is gone
       ...serversOf(s),
       treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
       sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage),
@@ -345,7 +353,7 @@ export function upsertChat(c: ChatView) {
 }
 
 /** Clears sel.chat, the items, subagents (with their threads) and state of every branch of the chat, its tree
- *  and pending move, the branch it was on, the drawer and the tree popup on it, and the unsaved draft of every branch.
+ *  and pending move, the branch it was on, its waits, the drawer and the tree popup on it, and the unsaved draft of every branch.
  *  A run agent that was held goes the same way. */
 export function removeChat(id: string) {
   for (const k of safeKeys()) if (draftKeyOf(k, id)) safeRemove(k);
@@ -361,7 +369,7 @@ export function removeChat(id: string) {
     const { [id]: _____, ...shown } = s.shown;
     const treeNav = s.treeNav?.chat === id ? null : s.treeNav;
     return { chats, agents, items: withoutChat(s.items, id), subs: withoutChat(s.subs, id), states: withoutChat(s.states, id), sel, subDrawer, runAgent, trees, moves, shown, treeNav,
-      threadErrors: withThreadError(s.threadErrors, id, null), starting: withStarting(s.starting, id, null) };
+      threadErrors: withThreadError(s.threadErrors, id, null), starting: withStarting(s.starting, id, null), waits: withoutWaits(s.waits, id) };
   });
   ofChat.delete(id);
 }
@@ -369,9 +377,46 @@ export function removeChat(id: string) {
 // The writes of the per-branch maps: each takes the key as branchKey or subKey made it, never a
 // plain string, so that a chat id cannot be written where a branch's key belongs.
 
-/** Sets a thread: a branch's list, or a subagent's. */
+/** Sets a thread: a branch's list, or a subagent's. A fork's first message that waits for its
+ *  branch's list to have it ends with the list that does (logic/waits.ts afterThread). */
 export function setThread(key: ThreadKey, thread: Thread) {
-  setState((s) => ({ items: { ...s.items, [key]: thread } }));
+  setState((s) => {
+    let waits = s.waits;
+    for (const [chat, w] of Object.entries(waits)) if (w.send && branchKey(chat, w.send.branch) === key) waits = afterThread(waits, chat, w.send.branch, thread.items.length);
+    return { items: { ...s.items, [key]: thread }, waits };
+  });
+}
+
+// ---- waits: what is on its way in a chat's fork flows (State.waits). What a wait is and what the
+// page shows of it is logic/waits.ts; these only write.
+
+let waitSeq = 0;
+
+/** A wait of a chat begins; answers its id, with which the call that began it ends it. */
+export function beginWait<K extends WaitKind>(chat: string, kind: K, w: Omit<NonNullable<ChatWaits[K]>, "id">): number {
+  const id = ++waitSeq;
+  setState((s) => ({ waits: begun(s.waits, chat, kind, { ...w, id } as NonNullable<ChatWaits[K]>) }));
+  return id;
+}
+
+/** A wait ends: the one with this id (logic/waits.ts ended). */
+export function endWait(chat: string, kind: WaitKind, id: number) {
+  setState((s) => ({ waits: ended(s.waits, chat, kind, id) }));
+}
+
+/** A chat's message on its way goes on, or with null ends (logic/waits.ts stepped). */
+export function stepSend(chat: string, id: number, next: (w: SendWait) => SendWait | null) {
+  setState((s) => ({ waits: stepped(s.waits, chat, id, next) }));
+}
+
+/** The fetch of a branch's list begins (on) or has ended. */
+export function setLoading(chat: string, branch: string, on: boolean) {
+  setState((s) => ({ waits: withLoad(s.waits, chat, branch, on) }));
+}
+
+/** Every fetch of a chat's lists was given up. */
+export function dropLoading(chat: string) {
+  setState((s) => ({ waits: withoutLoads(s.waits, chat) }));
 }
 
 const withStarting = (m: Record<string, string>, chat: string, text: string | null): Record<string, string> => {

@@ -6,15 +6,15 @@ import { useStore, setState, setStarting, isBusy, isLegacy, chatTitle, boardName
 import { api } from "./api.ts";
 import { loadItems, retryAgent } from "./conn.ts";
 import { openServers } from "./Servers.tsx";
-import { select } from "./Sidebar.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
-import { toolVerb, toolDone, statusText, waitingText } from "./logic/labels.ts";
+import { statusText, waitingText } from "./logic/labels.ts";
 import { headStatus } from "./logic/status.ts";
 import { isSubagentTool } from "./logic/subagents.ts";
 import { REMOVE, SERVERS, TRY_AGAIN, remoteView } from "./logic/remoteview.ts";
 import { serverName, serverOf, serverState } from "./logic/serverlists.ts";
 import { emptyReason, sendOff, sendingLine } from "./logic/chatserver.ts";
 import { startingAfter } from "./logic/sendend.ts";
+import { threadWait } from "./logic/waits.ts";
 import { useWhere } from "./ChatChoices.tsx";
 import { quotable } from "./logic/quotes.ts";
 import { permAnswer } from "./logic/perms.ts";
@@ -23,12 +23,14 @@ import { agentLabel, configHint, usableAgents } from "./logic/agentlist.ts";
 import { inPrefix, prefixEnd, prefixMark, prefixText } from "./logic/prefix.ts";
 import { Markdown } from "./Markdown.tsx";
 import { SubagentRow, SubResultRow } from "./Subagents.tsx";
+import { ToolCard } from "./ToolCard.tsx";
 import { SentQuotes } from "./Quotes.tsx";
 import { AgentGlyph, BoardIcon, Pencil, RunIcon, agentClass } from "./icons.tsx";
 import { MessageExtras, ForkedFrom } from "./fork/Message.tsx";
 import { TreeButton } from "./fork/TreeButton.tsx";
 import { BranchAlert, BranchCrumb } from "./fork/Chrome.tsx";
 import type { ChatView, Item, Subagent } from "./types.ts";
+import { LOCAL_SERVER } from "./types.ts";
 
 const EMPTY: Item[] = [];
 const short = (n: string) => n.replace(/^mcp__board__/, "");
@@ -151,6 +153,12 @@ export const usePrefixEnd = (chatId: string): number =>
 /** A chat's thread: the items of the branch it shows, cut at the point of a pending move, with a
  *  mark where the part shared with its source ends. Nothing before the mark is live.
  *
+ *  What is on its way in the chat (State.waits) is drawn as logic/waits.ts threadWait decides: a
+ *  message that was sent and is not in a list yet, after the items, in the pending look; the
+ *  history a branch send keeps in the place of the new branch's list, read-only; and the lines at
+ *  the thread's foot (the agent is starting, a list is loading, a branch is being opened, a fork
+ *  is being made).
+ *
  *  readOnly: the transcript of a chat nobody can write to, which is how a run shows its own
  *  agents. The record is a held agent's (shownView; the caller holds the agent, conn.ts
  *  holdAgent). No message can be forked, labelled or quoted (ItemView gets no index), a permission
@@ -182,6 +190,7 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   const loadErr = useStore((s) => s.threadErrors[chatId]);
   // The first message of a chat on another server, while its call runs: shown in the empty thread's place.
   const starting = useStore((s) => (readOnly ? undefined : s.starting[chatId]));
+  const waits = useStore((s) => (readOnly ? undefined : s.waits[chatId]));
   // After a call that was taken the text stays until the thread read again has the message.
   useEffect(() => { if (starting !== undefined && !startingAfter(true, !!all.length)) setStarting(chatId, null); }, [starting, chatId, !all.length]);
   if (readOnly) {
@@ -209,7 +218,9 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   const markEl = <div className="prefix-end" data-at={end}><span>{prefixText(branch)}</span></div>;
   const busy = isBusy(c.status);
   const waiting = waitingText(c); // "" while busy
-  const remote = remoteView(c, serverIs, state, !!loaded, loadErr);
+  const wait = threadWait(waits, { shown: branch, loaded: !!loaded, count: all.length, move: cut !== undefined, busy, server: c.server && c.server !== LOCAL_SERVER ? serverIs : "", archived: !!c.archived });
+  // (the history a wait keeps stands for the list: what is said of a server that is not connected is said beside it)
+  const remote = remoteView(c, serverIs, state, !!loaded || !!wait.kept, loadErr);
   if (remote.kind !== "none" && remote.kind !== "bar") return (
     <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
       <div className={`remote-off ${remote.kind}`} role="status">
@@ -224,22 +235,29 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   return (
     <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
       <ForkedFrom chat={c} />
-      {loaded && !items.length && (starting !== undefined ? (
+      {loaded && !items.length && !wait.sent && (starting !== undefined ? (
         <>
           <div className="msg user starting"><Markdown text={starting} user board={c.board} agent={c.agent} /></div>
           <div className="typing starting-line"><Dots /> {sendingLine(serverIs)}</div>
         </>
       ) : <EmptyThread c={c} />)}
       {/* keyed by the branch: a message's own state does not carry over to another branch's */}
-      {items.map((it, i) => (
+      {wait.kept ? wait.kept.map((it, i) => (it ? <ItemView key={`kept:${i}`} item={it} chat={c} branch={branch} readOnly /> : null)) : items.map((it, i) => (
         <Fragment key={`${branch}:${i}`}>
           {i === mark && markEl}
           {it ? <ItemView item={it} chat={c} branch={branch} index={i} readOnly={inPrefix(i, end)} /> : null}
         </Fragment>
       ))}
       {mark === items.length && markEl}
-      {busy && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
+      {wait.sent && (
+        <div className="msg user sending">
+          {wait.sent.references.length > 0 && <SentQuotes chatId={chatId} refs={wait.sent.references} />}
+          {(wait.sent.text || !wait.sent.references.length) && <Markdown text={wait.sent.text} user board={c.board} agent={c.agent} />}
+        </div>
+      )}
+      {busy && !wait.quiet && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
       {!!waiting && <div className="typing waiting">{waiting}</div>}
+      {wait.lines.map((l) => <div key={l.id} className="wait-line" data-wait={l.id}><Dots /> {l.text}</div>)}
       {remote.kind === "bar" && (
         <div className={`remote-bar ${remote.gone ? "gone" : "off"}`} role="status">
           <span className="remote-bar-text">{remote.text}</span>
@@ -337,50 +355,6 @@ export function ItemView({ item, chat, branch, sub, index, readOnly }: { item: I
     case "end": return null; // the mark after a turn: never drawn
   }
   return null;
-}
-
-// ---- tool calls
-
-const safeParse = (s?: string) => { try { return s ? JSON.parse(s) : {}; } catch { return s ? { "…": s } : {}; } };
-
-/** A tool call. live is false in a subagent's thread once it ended: a call with no result was cut. */
-function ToolCard({ item, chat, live = true }: { item: Item; chat: ChatView; live?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const target = useStore((s) => {
-    const id = (item.input as any)?.board;
-    if (!id || !item.name?.startsWith("mcp__board__")) return undefined;
-    const b = s.boards[String(id)];
-    return b && !b.archived ? b.id : undefined;
-  });
-  const name = item.name ?? "";
-  const input: any = item.input ?? safeParse(item.partial);
-  const running = live && item.result === undefined && !item.denied;
-  const cut = !live && item.result === undefined && !item.denied; // its subagent ended mid-call
-  const label = item.denied ? `${toolVerb(name, input, boardName)} — denied`
-    : cut ? `${toolVerb(name, input, boardName)} — stopped`
-    : running ? toolVerb(name, input, boardName) + "…"
-    : toolDone(name, item.input, item.result, boardName);
-  const show = () => {
-    if (!target) return;
-    select({ board: target, run: null, chat: target === chat.board ? chat.id : null });
-  };
-  return (
-    <div className={`tool ${running ? "running" : ""} ${item.isError || item.denied ? "err" : ""}`}>
-      <div className="tool-row" onClick={() => setOpen(!open)}>
-        <span className="tool-icon">{running ? <span className="spin" /> : cut ? "■" : item.isError || item.denied ? "!" : "✓"}</span>
-        <span className="tool-label">{label}</span>
-        {target && !running && <button className="link" onClick={(e) => { e.stopPropagation(); show(); }}>Show</button>}
-        <span className="tool-chev">{open ? "▴" : "▾"}</span>
-      </div>
-      {open && (
-        <div className="tool-detail">
-          <div className="tool-sub">{short(name)}</div>
-          <pre>{JSON.stringify(input, null, 2)}</pre>
-          {item.result !== undefined && <><div className="tool-sub">result</div><pre>{item.result}</pre></>}
-        </div>
-      )}
-    </div>
-  );
 }
 
 /** A permission request. closed: it is in the copied part of the thread, where an undecided one

@@ -2,6 +2,7 @@
 // context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
 // until the first message is sent: of a new chat, of a fork that has had none of its own, and of the branch a pending move starts.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useStore, getState, setState, safeGet, safeSet, isLegacy, upsertChat, upsertState, unsavedDraft, draftRevOf, branchState, statesOfChat, shownBranch, shownKey, shownView, viewedBranch, setStarting, threadOf } from "./store.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
@@ -20,17 +21,19 @@ import { selectedOn } from "./logic/roles.ts";
 import { composerControls, refreshAfterRefusal } from "./logic/status.ts";
 import { LIVE_FORK } from "./logic/forkpoints.ts";
 import { mergeQuotes, toSend } from "./logic/quotes.ts";
+import { CONTROLS, fit, widthKey, type Control, type Fit } from "./logic/composerfit.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensText, width, type Segment } from "./logic/ctxsplit.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { useComposerQuotes } from "./Quotes.tsx";
 import { quoteSelection } from "./quoteDom.ts";
-import { BoardIcon, Chevron, Folder, Lock, RunIcon, WarnIcon, agentName } from "./icons.tsx";
+import { BoardIcon, Chevron, Folder, Lock, MoreIcon, RunIcon, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
-import { AgentPick, ServerPick, useWhere } from "./ChatChoices.tsx";
-import { isSending, leftByBack, registerComposer, sendAt, sendFailed, setMoveChoice } from "./fork/actions.ts";
+import { AgentPick, AgentReason, ServerPick, useAgentChip, useServerChip, useWhere } from "./ChatChoices.tsx";
+import { isSending, leftByBack, pickOnFork, registerComposer, sendAt, sendFailed, setMoveChoice } from "./fork/actions.ts";
+import { heldReason, pickOn, sendWait } from "./logic/waits.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
 import { LOCAL_SERVER } from "./types.ts";
 
@@ -79,13 +82,14 @@ const STARTING_LINGER = 10_000;
 
 /** Plain chats send the text alone; board chats send the <ui-context> with it. Quotes go with
  *  both. With a pending move the message goes to its point (the target), and a Send that
- *  succeeded ends the move. */
+ *  succeeded ends the move. The text and the quotes are told to sendAt as well: the thread shows
+ *  them while a message that starts a new branch, or a fork's first one, is on its way. */
 export async function sendMessage(chat: string, text: string, picked: Picked[] = [], references: Reference[] = []) {
   const c = getState().chats[chat];
   if (isLegacy(c)) return;
   const context = c?.board ? buildContext(chat, text, picked) : "";
   // The first message of a chat on another server is that server's creation call: it names no branch.
-  return sendAt(chat, (branch, target) => api.send(chat, c?.server && !c.locked ? "" : branch, text, context, references, target));
+  return sendAt(chat, (branch, target) => api.send(chat, c?.server && !c.locked ? "" : branch, text, context, references, target), { text, references });
 }
 
 // ---- drafts
@@ -164,6 +168,7 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   const onScreen = useStore((s) => s.sel.board);
   const role = useStore((s) => (c?.board ? s.roles[c.board] : undefined));
   const picking = useStore((s) => s.picking === chatId);
+  const waits = useStore((s) => s.waits[chatId]); // what is on its way in the chat: a composer opened again reads the same
   const [text, setText] = useState(() => draftToShow(chatId, branch)?.text ?? "");
   const [picked, setPicked] = useState<Picked[]>(() => draftToShow(chatId, branch)?.mentions ?? []);
   const [quotes, setQuotes] = useState<Reference[]>(() => draftToShow(chatId, branch)?.references ?? []);
@@ -174,6 +179,8 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   const [sending, setSending] = useState(false);
   const input = useRef<RefInputHandle>(null);
   const box = useRef<HTMLDivElement>(null);
+  // The toolbar's row, and what tells it of a change of the composer's width: kept as state, since the toolbar inside the row is put up before the row's own ref is set.
+  const [tools, setTools] = useState<HTMLDivElement | null>(null), [ruler, setRuler] = useState<HTMLDivElement | null>(null);
   const current = useRef(text); // the text now, for a failed send
   const now = useRef({ picked, quotes }); // with it, what the composer holds (for a move)
   now.current = { picked, quotes };
@@ -337,10 +344,13 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   const selected = canRef ? selectedOn(selection.count, board, onScreen, role) : 0;
   const off = sendOff(where, c); // an unstarted chat on a server that is not connected: its agents are not known
   const left = sendGone(c); // its server no longer has the chat
+  // A wait that concerns this composer's Send (logic/waits.ts): it takes no press, says why, and shows a spinner while a message is on its way.
+  const hold = sendWait(waits, branch);
 
   const submit = async () => {
     const t = text.trim();
     if ((!t && !quotes.length) || blocked || off || left || sending || isSending(chatId)) return; // no send while busy, or while the composer of the branch left sends the move
+    if (sendWait(getState().waits[chatId], branch)) return; // nor while a fork's first message is on its way, or its agent starts on another model
     setSending(true); setErr(""); errKept.current = false;
     // The saver is told that this composer's Send runs, until it is answered: the removal of the sent draft is then not taken as another window's.
     // A sent move goes to another branch, and removes no draft of this one.
@@ -446,6 +456,7 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       ) : null}
       <BranchBanner chatId={chatId} />
       <ModelNotice chatId={chatId} />
+      <div className="composer-ruler" ref={setRuler} />
       <div className="composer-box with-tools" ref={box}>
         {mention && matches.length > 0 && (
           <div className="mention-pop">
@@ -472,11 +483,15 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
             if (e.key === "Escape" && esc) void api.interrupt(chatId, shownBranch(getState(), chatId));
           }}
         />
-        <div className="composer-tools">
-          <Toolbar chatId={chatId} onError={setErr} sending={sending} />
+        <div className="composer-tools fitted" ref={setTools}>
+          <Toolbar chatId={chatId} onError={setErr} sending={sending} stop={stop} row={tools} ruler={ruler} />
           <span className="grow" />
           {stop && <button className="send stop" title={esc ? "Stop (Esc)" : "Stop the subagents"} onClick={() => api.interrupt(chatId, shownBranch(getState(), chatId)).catch((e) => setErr(e.message))}><span className="sq" /></button>}
-          <button className="send" title={sendTitleOn(where, usable, c, blocked)} disabled={blocked || off || left || sending || (!text.trim() && !quotes.length)} onClick={() => void submit()}>↑</button>
+          {hold && !off && !left ? (
+            <button className={`send${hold.spin ? " sending" : ""}`} title={hold.title} disabled>{hold.spin ? <span className="spin" /> : "↑"}</button>
+          ) : (
+            <button className="send" title={sendTitleOn(where, usable, c, blocked)} disabled={blocked || off || left || sending || (!text.trim() && !quotes.length)} onClick={() => void submit()}>↑</button>
+          )}
         </div>
       </div>
       {err ? <div className="composer-err">{err}</div> : c.status === "error" && c.error ? <div className="composer-err">{c.error}</div> : null}
@@ -487,63 +502,259 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
 
 // ---- toolbar
 
+/** The width each control of a toolbar asks for, in px, by what decides it (widthKey): kept while
+ *  the page is open, so a composer that opens measures only what none before it has shown. They
+ *  are the widths of one zoom of the page, and are dropped when it changes. */
+const widths = new Map<string, number>();
+let widthsZoom = 0;
+function widthOf(key: string): number | undefined {
+  if (widthsZoom !== window.devicePixelRatio) { widths.clear(); widthsZoom = window.devicePixelRatio; }
+  return widths.get(key);
+}
+const MORE = widthKey("more"), SEND = widthKey("send"), STOP = widthKey("stop");
+
+/** What a control's elements ask for side by side (a folder's lock stands before its chip): their
+ *  widths, their own margins and the gaps between them, rounded up to a tenth of a px. */
+function asked(els: Element[], gap: number): number {
+  let w = gap * (els.length - 1);
+  for (const e of els) {
+    const m = getComputedStyle(e);
+    w += e.getBoundingClientRect().width + (parseFloat(m.marginLeft) || 0) + (parseFloat(m.marginRight) || 0);
+  }
+  return Math.ceil(w * 10 - 1e-6) / 10;
+}
+
+/** The width of a toolbar's row and the gap between its children, read before a frame shows them:
+ *  when the toolbar is put up, and at each change of the composer's width. A ResizeObserver tells
+ *  of the change after the frame's layout and before its paint, and the new width is applied
+ *  there and then (flushSync): the toolbar is fitted to its row in the frame that shows the row.
+ *  What is observed is the composer's ruler and not the row: the ruler has no height, so what the
+ *  fit changes in the row does not call the observer again. zoom: the page's, whose change drops
+ *  the widths kept, also where the composer keeps its width: a media query on the resolution
+ *  tells of it, once, and is then asked again for the new one. */
+function useRoom(row: HTMLDivElement | null, ruler: HTMLDivElement | null) {
+  const [room, setRoom] = useState<{ w: number; gap: number; zoom: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!row || !ruler) return;
+    const read = () => {
+      const w = Math.floor(row.getBoundingClientRect().width * 10 + 1e-6) / 10, gap = parseFloat(getComputedStyle(row).columnGap) || 0, zoom = window.devicePixelRatio;
+      setRoom((r) => (r && r.w === w && r.gap === gap && r.zoom === zoom ? r : { w, gap, zoom }));
+    };
+    read();
+    const now = () => flushSync(read);
+    const ro = new ResizeObserver(now);
+    ro.observe(ruler);
+    let zoom: MediaQueryList;
+    const zoomed = () => { now(); watch(); };
+    const watch = () => { zoom = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`); zoom.addEventListener("change", zoomed, { once: true }); };
+    watch();
+    return () => { ro.disconnect(); zoom.removeEventListener("change", zoomed); };
+  }, [row, ruler]);
+  return room;
+}
+
 /** Server and agent while they can be changed (agentOpen; ChatChoices.tsx; a chat on another
  *  server keeps showing its server, showsServer), then folder, model,
  *  effort and context usage of the branch shown. Where the model and effort
  *  controls write is pickerMode's: with a pending move they show and set the move's choice, which
  *  goes with its message; on a new chat and on a fork without a message of its own they change the
  *  session (PATCH); else they are fixed. While the composer sends a message (sending) they take no
- *  pick: a move's choice has gone with the message, and the server refuses a fork's PATCH. */
-export function Toolbar({ chatId, onError, sending = false }: { chatId: string; onError: (msg: string) => void; sending?: boolean }) {
+ *  pick: a move's choice has gone with the message, and the server refuses a fork's PATCH. The
+ *  same holds while the chat's message is on its way and this composer was opened since
+ *  (State.waits): they are disabled and say why. A pick on a fork starts its agent again, which
+ *  the chat is told of (pickOnFork): until that call ends the model is a fixed chip that names the
+ *  choice the agent is starting on, whatever the agent kind tells meanwhile.
+ *  row: the composer's row of tools, which this fills up to the spacer; ruler: what tells of a
+ *  change of its width; stop: the row has Stop beside Send. */
+export function Toolbar({ chatId, ...p }: { chatId: string; onError: (msg: string) => void; sending?: boolean; stop?: boolean; row: HTMLDivElement | null; ruler: HTMLDivElement | null }) {
   const c = useStore((s) => shownView(s, chatId));
+  return c ? <Tools c={c} chatId={chatId} {...p} /> : null;
+}
+
+/** The toolbar of a chat that is there. The row never holds more than fits it (logic/composerfit.ts):
+ *  as room runs out the controls leave for the popup of a "more" chip, where each is the chip it
+ *  was, with its own list. Each control is drawn once, in the row or in the open popup; one that
+ *  changes place is made anew there, so it has no open list, and while the popup is open nothing
+ *  leaves it for the row (a pick made there keeps its chip, with the focus).
+ *  A control whose width is not kept is drawn where it is and measured before its frame is shown,
+ *  and the fit is applied in that same commit; a change of the row's width is applied in its frame
+ *  too (useRoom). */
+function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }: { c: ChatView; chatId: string; onError: (msg: string) => void; sending?: boolean; stop?: boolean; row: HTMLDivElement | null; ruler: HTMLDivElement | null }) {
   const move = useStore((s) => s.moves[chatId]);
-  const cat = useStore((s) => (c ? catalogFor(s, serverOf(c), c.agent) : undefined));
-  // One open menu at a time for Server, Agent, Model and Effort; their state used to live inside each Picker,
-  // which let both menus and both backdrops stack. DirPicker and the usage popover keep theirs.
-  const [openPicker, setOpenPicker] = useState<"server" | "agent" | "model" | "effort" | null>(null);
+  const cat = useStore((s) => catalogFor(s, serverOf(c), c.agent));
+  const waits = useStore((s) => s.waits[chatId]);
+  const pick = useStore((s) => pickOn(s.waits[chatId], shownBranch(s, chatId))); // the choice a fork's agent is being started on
+  const held = heldReason(waits, "choice"); // why the model and the effort take no pick now
+  // One open list at a time for Server, Agent, Folder, Model and Effort; their state used to live inside each
+  // picker, which let the menus and their backdrops stack. The usage popover keeps its own.
+  const [openPicker, setOpenPicker] = useState<Control | null>(null);
   const [patching, setPatching] = useState(false); // a fork's PATCH starts its agent again, which takes seconds
   const where = useWhere(c);
-  if (!c) return null;
-  const mode = pickerMode(c, !!move);
+  const serverKey = useServerChip(c), agentKey = useAgentChip(c);
+  const room = useRoom(row, ruler);
+  const [, setMeasured] = useState(0); // counts the commits that measured a control: the fit is made again with its width
+  const [more, setMore] = useState(false); // the "more" popup is open
+  const drawn = useRef<{ fit: Fit; more: boolean } | null>(null); // where the last commit drew each control, and whether the popup was open
+  const moreWrap = useRef<HTMLDivElement>(null), pop = useRef<HTMLDivElement>(null), moreChip = useRef<HTMLButtonElement>(null);
+  const toChip = useRef(false); // Esc closed the popup: its chip takes the focus
+  const picking = useRef(openPicker);
+  picking.current = openPicker;
+  const mode = pick ? "fixed" : pickerMode(c, !!move);
   const shown: Choice = mode === "move" ? moveChoice(move, c) : c;
-  const configure = (p: { model?: string; effort?: string }) => {
+  const fixed = pick ? { ...c, model: pick.model, effort: pick.effort } : c; // what the fixed chip names
+  // choice: what the pick makes of the model and effort shown, as the server resolves it.
+  const configure = (p: { model?: string; effort?: string }, choice: Choice) => {
     setPatching(true);
-    return api.configure(chatId, shownBranch(getState(), chatId), p).then(() => onError(""), (e) => onError(e.message)).finally(() => setPatching(false));
+    const call: Promise<unknown> = c.fresh ? pickOnFork(chatId, p, choice, subline({ ...c, model: choice.model, effort: choice.effort }, cat)) : api.configure(chatId, shownBranch(getState(), chatId), p);
+    return call.then(() => onError(""), (e) => onError(e.message)).finally(() => setPatching(false));
   };
   // A refusal's text was about the choice before this one.
   const setChoice = (ch: Choice) => { onError(""); setMoveChoice(chatId, ch); };
-  const pickModel = (id: string) => (mode === "move" ? setChoice(withModel(shown, id, cat)) : void configure({ model: id }));
-  const pickEffort = (id: string) => (mode === "move" ? setChoice(withEffort(shown, id)) : void configure({ effort: id }));
+  const pickModel = (id: string) => { const ch = withModel(shown, id, cat); if (mode === "move") setChoice(ch); else void configure({ model: id }, ch); };
+  const pickEffort = (id: string) => { const ch = withEffort(shown, id); if (mode === "move") setChoice(ch); else void configure({ effort: id }, ch); };
   const folderOpen = !c.locked || !!c.folderMissing;
   const m = modelOf(shown, cat);
-  return (
-    <>
-      {showsServer(c) && <ServerPick c={c} disabled={patching || sending} open={openPicker === "server"} onOpenChange={(o) => setOpenPicker(o ? "server" : null)} onBusy={setPatching} onError={onError} />}
-      {agentOpen(c) && <AgentPick c={c} disabled={patching || sending} open={openPicker === "agent"} onOpenChange={(o) => setOpenPicker(o ? "agent" : null)} onBusy={setPatching} onError={onError} />}
+  const choices = mode !== "fixed" && !!c.agent && !sendOff(where, c); // the model and the effort are choices, once their catalog is here
+  const fixedTitle = c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started";
+  const u = usageOf(c, cat);
+
+  // What the chat has, each with what decides its width.
+  const keys: Partial<Record<Control, string>> = { folder: widthKey("folder", base(c.cwd) || "/", { fixed: !folderOpen, lock: !folderOpen }) };
+  if (showsServer(c)) keys.server = serverKey;
+  if (agentOpen(c)) keys.agent = agentKey;
+  if (mode === "fixed") keys.model = widthKey("model", subline(fixed, cat), { fixed: true, lock: folderOpen });
+  else if (choices && cat) keys.model = widthKey("model", modelLabel(shown, cat));
+  else if (choices && where.connected) keys.model = widthKey("model", "Loading models…", { fixed: true });
+  if (choices && cat && m?.efforts?.length) keys.effort = widthKey("effort", effortLabel(shown.effort, m));
+  // The meter with its text, and cut to its ring (the error meter: to its icon).
+  const meterKey = u.error ? widthKey("meter", "Context unavailable", { fixed: true }) : widthKey("meter", ctxText(u.used, u.win));
+  const ringKey = widthKey("meter", "", { fixed: !!u.error, mark: u.error ? "icon" : "ring" });
+  const f = fit({
+    room: room?.w ?? Infinity, gap: room?.gap ?? 0, more: widthOf(MORE),
+    controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widthOf(keys[id]!) })),
+    meter: { full: widthOf(meterKey), ring: widthOf(ringKey) },
+    fixed: [...(stop ? [widthOf(STOP)] : []), widthOf(SEND)],
+    held: more ? drawn.current?.fit.popup ?? [] : null,
+  });
+  // A control that changes place has no open list: it is made anew where it goes, and its list would open there by
+  // itself, at once or, for one that went into the popup, when the popup is opened next.
+  const placeOf = (x: { fit: Fit; more: boolean }, id: Control) => (x.fit.toolbar.includes(id) ? "row" : x.fit.popup.includes(id) && x.more ? "popup" : "");
+  const open = openPicker && drawn.current && (!placeOf({ fit: f, more }, openPicker) || placeOf(drawn.current, openPicker) !== placeOf({ fit: f, more }, openPicker)) ? null : openPicker;
+  const opens = (id: Control) => ({ open: open === id, onOpenChange: (o: boolean) => setOpenPicker(o ? id : null) });
+
+  useLayoutEffect(() => {
+    drawn.current = { fit: f, more };
+    if (open !== openPicker) setOpenPicker(null);
+    if (more && !f.more) setMore(false); // nothing is left in it
+    // The popup is anchored at its chip's left edge: moved left by what its right edge passes the window's (less a 12px
+    // margin), never past the window's left edge, as a picker's menu is.
+    const menu = pop.current;
+    if (menu) {
+      menu.style.left = "";
+      const r = menu.getBoundingClientRect();
+      const over = Math.min(r.right - (window.innerWidth - 12), r.left);
+      if (over > 0) menu.style.left = `${-over}px`;
+    }
+    // What was drawn with no width kept is measured, and the toolbar is fitted again before the frame is shown. The
+    // row's children are this toolbar's up to the reason line or the spacer: the controls left to right (a lock is an
+    // element before its folder), the "more" chip, the meter.
+    const el = row, rows = [...(menu?.children ?? [])];
+    const shown = [...f.toolbar.map((id) => keys[id]!), ...(rows.length ? f.popup.map((id) => keys[id]!) : []), ...(f.more ? [MORE] : []), f.meter === "ring" ? ringKey : meterKey, SEND, ...(stop ? [STOP] : [])];
+    if (!el || !room || shown.every((key) => widthOf(key) !== undefined)) return;
+    let fresh = false;
+    const take = (key: string, els: (Element | null | undefined)[], gap = room.gap) => {
+      // (an element with no box, in a pane that is not laid out, has no width to keep)
+      if (!els.length || els.some((e) => !e?.getClientRects().length) || widthOf(key) !== undefined) return;
+      widths.set(key, asked(els as Element[], gap));
+      fresh = true;
+    };
+    const kids = [...el.children], parts = f.toolbar.map((id) => ({ key: keys[id]!, n: id === "folder" && !folderOpen ? 2 : 1 }));
+    const mine = parts.reduce((n, x) => n + x.n, 0) + (f.more ? 1 : 0) + 1;
+    if (kids[mine]?.matches(".agent-reason, .grow")) {
+      let i = 0;
+      for (const x of parts) take(x.key, kids.slice(i, (i += x.n)));
+      if (f.more) take(MORE, [kids[i++]]);
+      take(f.meter === "ring" ? ringKey : meterKey, [kids[i]]);
+    }
+    take(SEND, [el.querySelector(":scope > .send:not(.stop)")]);
+    if (stop) take(STOP, [el.querySelector(":scope > .send.stop")]);
+    if (rows.length === f.popup.length) f.popup.forEach((id, j) => take(keys[id]!, [...rows[j].children], parseFloat(getComputedStyle(rows[j]).columnGap) || 0));
+    if (fresh) setMeasured((n) => n + 1);
+  });
+  useEffect(() => {
+    if (!more) {
+      if (toChip.current) moreChip.current?.focus();
+      toChip.current = false;
+      return;
+    }
+    // Esc closes the popup before anything else sees it (the composer would stop the agent), and its chip has the focus
+    // again; a list opened from it closes first.
+    const k = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault(); e.stopPropagation();
+      if (picking.current) setOpenPicker(null); else { toChip.current = true; setMore(false); }
+    };
+    // A press anywhere else closes it, and does what it does there. The popup has no backdrop over the page, as a
+    // picker's list has: Send stays within reach while it is open. (A list opened from it is inside it, backdrop and all.)
+    const out = (e: MouseEvent) => { if (!moreWrap.current?.contains(e.target as Node)) setMore(false); };
+    window.addEventListener("keydown", k, true);
+    document.addEventListener("mousedown", out, true);
+    return () => { window.removeEventListener("keydown", k, true); document.removeEventListener("mousedown", out, true); };
+  }, [more]);
+
+  const chips: Record<Control, React.ReactNode> = {
+    server: <>
+      {showsServer(c) && <ServerPick c={c} disabled={patching || sending} {...opens("server")} onBusy={setPatching} onError={onError} />}
+    </>,
+    agent: <>
+      {agentOpen(c) && <AgentPick c={c} disabled={patching || sending} {...opens("agent")} onBusy={setPatching} onError={onError} />}
+    </>,
+    folder: <>
       {!folderOpen && <Lock />}
-      <DirPicker cwd={c.cwd} missing={c.folderMissing} locked={!folderOpen} server={where.server} onPick={(d) => api.configure(c.id, shownBranch(getState(), c.id), { cwd: d })} />
+      <DirPicker cwd={c.cwd} missing={c.folderMissing} locked={!folderOpen} server={where.server} onPick={(d) => api.configure(c.id, shownBranch(getState(), c.id), { cwd: d })} {...opens("folder")} />
+    </>,
+    model: <>
       {mode === "fixed" ? (
-        <span className="tchip static" title={c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started"}>
-          {folderOpen && <Lock />} {subline(c, cat)}
+        <span className="tchip static" title={fixedTitle}>
+          {folderOpen && <Lock />}<ChipName full={`${subline(fixed, cat)} — ${fixedTitle}`}>{subline(fixed, cat)}</ChipName>
         </span>
       ) : !c.agent || sendOff(where, c) ? null : !cat ? ( // (a server that is not connected shows no agent: none of its models either)
         // a server that is not connected sends no catalog
         where.connected ? <span className="tchip static">Loading models…</span> : null
       ) : (
-        <>
-          <Picker label={modelLabel(shown, cat)} title="Model" value={shown.model} searchable disabled={patching || sending}
-            options={cat.models}
-            open={openPicker === "model"} onOpenChange={(o) => setOpenPicker(o ? "model" : null)}
-            onPick={pickModel} />
-          {!!m?.efforts?.length && (
-            <Picker label={effortLabel(shown.effort, m)} title="Effort" prefix="Effort" value={shown.effort ?? ""} searchable={false} disabled={patching || sending}
-              options={m.efforts.map((e) => ({ id: e, label: effortLabel(e, m) }))}
-              open={openPicker === "effort"} onOpenChange={(o) => setOpenPicker(o ? "effort" : null)}
-              onPick={pickEffort} />
-          )}
-        </>
+        <Picker className="model-pick" label={modelLabel(shown, cat)} title="Model" value={shown.model} searchable disabled={patching || sending || !!held} hint={held || undefined}
+          options={cat.models}
+          {...opens("model")}
+          onPick={pickModel} />
       )}
-      <ContextMeter c={c} cat={cat} where={where} />
+    </>,
+    effort: <>
+      {choices && !!cat && !!m?.efforts?.length && (
+        <Picker label={effortLabel(shown.effort, m)} title="Effort" prefix="Effort" value={shown.effort ?? ""} searchable={false} disabled={patching || sending || !!held} hint={held || undefined}
+          options={m.efforts.map((e) => ({ id: e, label: effortLabel(e, m) }))}
+          {...opens("effort")}
+          onPick={pickEffort} />
+      )}
+    </>,
+  };
+  return (
+    <>
+      {f.toolbar.map((id) => <React.Fragment key={id}>{chips[id]}</React.Fragment>)}
+      {f.more && (
+        <div className="menu-wrap" ref={moreWrap}>
+          <button ref={moreChip} type="button" className="tchip more-chip" aria-expanded={more} aria-haspopup="dialog" onClick={() => setMore(!more)}
+            title={`More: ${f.popup.join(", ")}`}>
+            <MoreIcon />
+          </button>
+          {more && (
+            <div ref={pop} className="menu up more-pop" role="dialog" aria-label="More of the toolbar" onMouseDown={(e) => e.stopPropagation()}>
+              {f.popup.map((id) => <div key={id} className="more-row">{chips[id]}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+      <ContextMeter c={c} cat={cat} where={where} compact={f.meter === "ring"} />
+      {agentOpen(c) && <AgentReason c={c} />}
     </>
   );
 }
@@ -571,10 +782,17 @@ export type PickerOption = { id: string; label: string; note?: string; provider?
 /** What a setting's chip says about when it can be changed. */
 export const UNTIL_FIRST_MESSAGE = "can be changed until you send the first message";
 
+/** A chip's name, in an element of its own: where the chip has no room for it, or it is longer
+ *  than its cap in a chat's toolbar, it is cut with an ellipsis and the chip keeps its icon and
+ *  its caret (the chip itself is a flex box, on whose text an ellipsis does not act). full: the
+ *  title of a name whose chip's own title does not say it whole. */
+export const ChipName = ({ children, full }: { children: React.ReactNode; full?: string }) => <span className="tchip-name" title={full}>{children}</span>;
+
 /** The Model and Effort pickers. `searchable` (Model only) adds the search field and provider
  *  grouping; both modes share the keyboard highlight, listbox/option ARIA and single-open state.
  *  A run's goal composer (run/RunComposer.tsx) uses it too, also for the agent: icon goes before
- *  the chip's label, and hint is the title's second half.
+ *  the chip's label, and hint is the title's second half; the label is in the title whole, since
+ *  the chip may show it cut (ChipName).
  *  `disabled` (a change is being saved): the chip opens nothing, and keeps the focus a pick gave it.
  *  An option that is disabled is listed with its note as the reason and takes no pick. `more` is a
  *  last item under the list that is no option (the server choice's "Servers…"). */
@@ -707,8 +925,8 @@ export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE,
   return (
     <div className={`menu-wrap ${className}`} onKeyDown={onWrapKeyDown}>
       <button ref={chip} className="tchip" aria-expanded={open} aria-haspopup="listbox" aria-disabled={disabled || undefined}
-        onClick={() => { if (!disabled) onOpenChange(!open); }} title={`${title} — ${hint}`}>
-        {icon}{prefix && <span className="tchip-pre">{prefix}</span>}{label}<span className="caret">▾</span>
+        onClick={() => { if (!disabled) onOpenChange(!open); }} title={`${label ? `${title}: ${label}` : title} — ${hint}`}>
+        {icon}{prefix && <span className="tchip-pre">{prefix}</span>}{label && <ChipName>{label}</ChipName>}<span className="caret">▾</span>
       </button>
       {open && (
         <div ref={menu} className="menu up" onMouseDown={(e) => e.stopPropagation()}>
@@ -750,21 +968,26 @@ export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE,
 }
 
 /** The folder chip and its browser. onPick sets the folder (a chat's, a run's); a rejection shows
- *  in the browser. */
-export function DirPicker({ cwd, missing, locked, hint = UNTIL_FIRST_MESSAGE, server = LOCAL_SERVER, onPick }: {
+ *  in the browser. open, onOpenChange: whether the browser is open is the caller's to keep (a chat's
+ *  toolbar, which has one open list at a time); without them the chip keeps it. A pick hands the
+ *  focus back to the chip, as a picker's does: the button it was made with goes with the browser. */
+export function DirPicker({ cwd, missing, locked, hint = UNTIL_FIRST_MESSAGE, server = LOCAL_SERVER, onPick, open: openIs, onOpenChange }: {
   cwd: string; missing?: boolean; locked: boolean; hint?: string; server?: string; onPick: (dir: string) => Promise<unknown>;
+  open?: boolean; onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [own, setOwn] = useState(false);
+  const open = onOpenChange ? !!openIs : own, setOpen = onOpenChange ?? setOwn;
+  const chip = useRef<HTMLButtonElement>(null);
   const where = useWhere({ server });
   const name = base(cwd) || "/";
-  if (locked) return <span className="tchip static" title={folderTitle(where, cwd, { locked })}><Folder /> {name}</span>;
+  if (locked) return <span className="tchip static" title={folderTitle(where, cwd, { locked })}><Folder /><ChipName>{name}</ChipName></span>;
   return (
     <div className="menu-wrap">
-      <button className={`tchip ${missing ? "missing" : ""}`} onClick={() => setOpen(!open)}
+      <button ref={chip} className={`tchip ${missing ? "missing" : ""}`} onClick={() => setOpen(!open)}
         title={folderTitle(where, cwd, { missing, hint })}>
-        <Folder /> {name}<span className="caret">▾</span>
+        <Folder /><ChipName>{name}</ChipName><span className="caret">▾</span>
       </button>
-      {open && <DirBrowser start={cwd ?? ""} server={server} onPick={async (d) => { await onPick(d); rememberDir(d, server); setOpen(false); }} />}
+      {open && <DirBrowser start={cwd ?? ""} server={server} onPick={async (d) => { await onPick(d); rememberDir(d, server); setOpen(false); chip.current?.focus(); }} />}
       {open && <div className="menu-backdrop" onMouseDown={() => setOpen(false)} />}
     </div>
   );
@@ -832,7 +1055,16 @@ export function DirBrowser({ start, server = LOCAL_SERVER, onPick }: { start: st
 
 export const fmtK = (n: number) => n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${+(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
 
-function ContextMeter({ c, cat, where }: { c: ChatView; cat?: Catalog; where: Where }) {
+/** What a chat's context meter shows: the tokens used and the model's window, or why they are not known. */
+function usageOf(c: ChatView, cat?: Catalog): { used: number; win: number; error?: string } {
+  const u = c.usage ?? { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
+  return { used: (u.ctxIn ?? 0) + (u.ctxOut ?? 0), win: u.ctxWindow || modelOf(c, cat)?.contextWindow || 0, error: u.ctxError || undefined };
+}
+
+/** The composer's context meter. compact: the toolbar has no room for its text, which is then not
+ *  seen and still rendered: the ring alone shows, or the icon of the meter that says why the
+ *  context is not known. */
+function ContextMeter({ c, cat, where, compact = false }: { c: ChatView; cat?: Catalog; where: Where; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open) return;
@@ -841,19 +1073,17 @@ function ContextMeter({ c, cat, where }: { c: ChatView; cat?: Catalog; where: Wh
     window.addEventListener("keydown", k, true);
     return () => window.removeEventListener("keydown", k, true);
   }, [open]);
-  const u = c.usage ?? { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
-  if (u.ctxError) return (
-    <span className="ctx-meter error" title={u.ctxError}><WarnIcon /> Context unavailable</span>
-  );
-  const used = (u.ctxIn ?? 0) + (u.ctxOut ?? 0);
-  const win = u.ctxWindow || modelOf(c, cat)?.contextWindow || 0;
+  const { used, win, error } = usageOf(c, cat);
+  if (error) return compact
+    ? <span className="ctx-meter error compact" title={error}><WarnIcon /><span className="ctx-text">Context unavailable</span></span>
+    : <span className="ctx-meter error" title={error}><WarnIcon /> Context unavailable</span>;
   const lines = used
     ? [ctxTitle(used, win), "System prompt, tools, board reads and the conversation so far."]
     : [`${win ? `Context window: ${win.toLocaleString()} tokens. ` : ""}Usage shows after the first reply.`];
   // A click opens the context, split by category, and the agent's plan usage limits.
   return (
     <div className="menu-wrap">
-      <CtxRing used={used} win={win} open={open} onClick={() => setOpen(!open)} />
+      <CtxRing used={used} win={win} open={open} onClick={() => setOpen(!open)} ringOnly={compact} />
       {open && c.agent && <UsagePopover key={usageKey(where.server, c.agent)} agent={c.agent} where={where} context={<ContextSection key={c.id} c={c} lines={lines} />} />}
       {open && <div className="menu-backdrop" onMouseDown={() => setOpen(false)} />}
     </div>
@@ -863,23 +1093,34 @@ function ContextMeter({ c, cat, where }: { c: ChatView; cat?: Catalog; where: Wh
 export const ctxTitle = (used: number, win: number) =>
   `Context: ${used.toLocaleString()}${win ? ` of ${win.toLocaleString()}` : ""} tokens${win ? ` (${(Math.min(1, used / win) * 100).toFixed(1)}%)` : ""}`;
 
+/** The share of the window the ring's text ends with. */
+const ctxShare = (used: number, win: number) => { const pct = Math.min(1, used / win); return `${pct < 0.1 ? (pct * 100).toFixed(1) : Math.round(pct * 100)}%`; };
+/** What the ring says beside it, as one text: "used / window share", the tokens used alone with no window, nothing before the first reply. */
+const ctxText = (used: number, win: number) => (used ? `${fmtK(used)}${win ? ` / ${fmtK(win)} ${ctxShare(used, win)}` : ""}` : "");
+
 /** The ring with "used / window pct%": the composer's meter, and each subagent's. With onClick it
- * is a button (the composer's); without, a span with a hover title (each subagent's). */
-export function CtxRing({ used, win, title, className = "", open, onClick }: {
-  used: number; win: number; title?: string; className?: string; open?: boolean; onClick?: () => void;
+ * is a button (the composer's); without, a span with a hover title (each subagent's).
+ * ringOnly: the text is not seen, but it is rendered, in an element of its own (the composer's
+ * meter in a toolbar with no room for it): the meter is as wide as its ring, a script still reads
+ * the text as the meter's, and the title says it. */
+export function CtxRing({ used, win, title, className = "", open, onClick, ringOnly = false }: {
+  used: number; win: number; title?: string; className?: string; open?: boolean; onClick?: () => void; ringOnly?: boolean;
 }) {
   const pct = win ? Math.min(1, used / win) : 0;
   const r = 6, circ = 2 * Math.PI * r;
   const tone = pct > 0.8 ? "danger" : pct > 0.5 ? "warn" : "ok";
+  const text = used ? <>{fmtK(used)}{win ? <> / {fmtK(win)}<span className="ctx-pct">{ctxShare(used, win)}</span></> : null}</> : null;
+  const cut = ringOnly && !!used;
   const body = <>
     <svg width="16" height="16" viewBox="0 0 16 16">
       <circle cx="8" cy="8" r={r} className="ring-bg" />
       <circle cx="8" cy="8" r={r} className="ring" strokeDasharray={`${circ * pct} ${circ}`} transform="rotate(-90 8 8)" />
     </svg>
-    {used ? <>{fmtK(used)}{win ? <> / {fmtK(win)}<span className="ctx-pct">{pct < 0.1 ? (pct * 100).toFixed(1) : Math.round(pct * 100)}%</span></> : null}</> : null}
+    {cut ? <span className="ctx-text">{text}</span> : text}
   </>;
+  if (cut) { className += " compact"; title ??= ctxTitle(used, win); }
   if (onClick) return (
-    <button type="button" className={`ctx-meter ${tone} ${open ? "on" : ""} ${className}`} aria-expanded={!!open}
+    <button type="button" className={`ctx-meter ${tone} ${open ? "on" : ""} ${className}`} aria-expanded={!!open} title={title}
       onMouseDown={(e) => e.preventDefault()} onClick={onClick}>{body}</button>
   );
   return <span className={`ctx-meter ${tone} ${className}`} title={title}>{body}</span>;

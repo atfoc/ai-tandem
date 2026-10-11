@@ -24,11 +24,32 @@
 //   - guessed, the server's answer is not known: the status and body of an unreadable run's
 //     detail (500, {"error": …}), of a failed delete (500), of a goal that is too long (400 with a
 //     sentence over 200,000 characters; flags.start413: a bare 413)
+//   - chats: a message gets a canned reply (a Read, a sentence) on the branch it was sent to. A message with a
+//     target makes its branch as the server does (nothing is told of the branch until the message is on it,
+//     then `branch_state`, `chat`, `tree`, then the answer names it), but no point is checked: any `at` is
+//     taken, no message finds a branch busy, there is no cap, and a model or effort is taken as it is named. A chat with
+//     main alone has no state record here (the server sends one for every branch, main too, in each snapshot):
+//     its first new branch tells main's `branch_state` before its own. A turn's end mark gets a point only in a
+//     thread that has points already. A fork (POST …/fork) copies the items and starts nothing; a model or effort
+//     pick on a fork without a message of its own answers at once (the server starts the agent again first:
+//     flags.configure.delay stands in for that). The tree's labels cannot be set. Every chat answers as a chat of
+//     this computer, whatever server its view names: nothing is relayed
+//   - a folder, model or effort pick on a chat that has started is taken (the server refuses it, 409: they are
+//     fixed once the chat has started). PUT …/draft takes no ?rev= and answers no `rev` (the server refuses a
+//     call without it, answers {ok, rev}, and refuses a draft typed on an older one with the code "stale")
+//   - a server pick (PATCH {server}) takes the agent, folder, model and effort from the lists the seed gave
+//     that server; the server asks the other server for them
+//   - a board answers a take only when the seed gave it a scene (dev/runmock-ui.js); any other board is
+//     read-only with an empty scene, and no board is ever another window's
+//   - made up, with no counterpart on the server: T0 (the mock's own "now" at its start), flags.send,
+//     flags.items, flags.fork, flags.configure, flags.spawn, flags.hello, flags.streamDown, dropStreams(),
+//     seedUI() and what it adds to the snapshot
 //
 //   cd web && npm run build && node dev/runmock.mjs        then open http://127.0.0.1:4791
 //   PORT=4899 TICK=1000 node dev/runmock.mjs               another port, a live event every second
 //   PAUSED=1 node dev/runmock.mjs                          starts with the timers stopped (see /mock/tick)
 //   DIST=/some/folder node dev/runmock.mjs                 serves another build of the client
+//   T0=1768478400000 node dev/runmock.mjs                  the scenarios' times are told from that moment, not from now
 //
 // Everything is in memory: a restart is a reset. It binds 127.0.0.1 only.
 //
@@ -144,6 +165,57 @@
 //                    flags.stopDelay = ms (the stop's answer waits that long; its events do not)
 //   /mock/delay?ms=  answers GET /api/runs/{id}/detail that much later (0: at once), so that what a
 //                    view shows while its detail is fetched again can be seen; DETAIL_DELAY=ms sets it at start
+//
+// The states of the composer and chat UI work (plans/composer-ui-improvements.md, section 3) are not in the
+// scenarios above: dev/runmock-ui.js adds them when `seedUI()` is called through /mock/eval (`seedUI("A2")`: one
+// section). Until then the sidebar and the scenarios are as before. Its file lists the states. The chat routes
+// answer as the server does, seeded or not: POST …/messages {ok, branch}; the chat PATCH {ok, chat}, and it takes
+// `server` and `agent` too; GET …/items the list of the branch asked for, 404 for one the chat has not; GET …/tree
+// the messages and replies of each branch; POST …/fork the new chat.
+//
+// Knobs for the waits of the fork flows, set through /mock/eval and kept until deleted (`delete flags.send`). send,
+// items, fork, configure and spawn may name a `chat` (and `items` a `branch`) to hold for that one alone, and the
+// fields of one knob go together:
+//   flags.send = { delay: ms }                      POST …/messages answers that much later; the events of a new
+//                                                   branch still go out just before the answer
+//              = { hold: true }                     it waits until release("send") is called (through /mock/eval),
+//                                                   which answers how many calls it let go (release(): those of
+//                                                   every knob); `flags.send.held.length` tells how many wait.
+//                                                   items, fork, configure and spawn take `hold` in the place of
+//                                                   their `delay` the same way
+//              = { refuse: { status, code, error } } it is refused after the delay (409 and "busy" by default; the
+//                                                   code "" answers none). The server's refusals are listed below
+//              = { unknown: true }                  504 send_unknown, and no branch is made; "arrived": the branch is
+//                                                   made with its message all the same, and told 50 ms after the answer
+//              = { noBranch: true }                 the answer names no branch, as an older server's
+//              = { eventsAfter: ms }                the new branch's events go out that long after the answer. The
+//                                                   branch is there with its message at the answer, as on the server
+//              = { noReply: true }                  no canned reply: the branch stays "thinking"
+//   flags.items = { delay: ms } | { fail: status }  GET …/items of a chat's branch waits, or fails
+//   flags.fork = { delay: ms } | { refuse: { … } }  POST …/fork
+//   flags.configure = { delay: ms } | { refuse: { … } }   a PATCH of server, agent, model, effort or folder. On a
+//                                                   fork without a message of its own a model or effort pick
+//                                                   shows the choice and "thinking" meanwhile, but for pi, as on
+//                                                   the server; a second pick meanwhile is refused (409 "busy"),
+//                                                   and after a refusal the fork has its old choice again, as
+//                                                   after a start that failed (a refusal the server makes before
+//                                                   the start, "window", tells nothing there)
+//   flags.spawn = { delay: ms }                     the first message to such a fork finds no process: the fork is
+//                                                   "thinking" and still fresh for that long before the message is added
+//   flags.hello = { version, webVersion }           what GET /api/hello answers (the update notice needs a client
+//                                                   built with a version of its own: dev/shot.mjs buildDist)
+//   flags.streamDown = true; dropStreams()          cuts every open event stream and refuses new ones: the page
+//                                                   says it is reconnecting until the flag is deleted
+// What the server refuses these calls with, for a knob's `refuse` (internal/server/server.go statusOf, codeOf):
+//   { status: 409, code: "busy" }        the branch, the fork or a fork's source is working
+//   { status: 429, code: "cap" }         too many branches of the chat, or agents of the app, are working (a message)
+//   { status: 409, code: "window" }      the model's context window is too small for the conversation
+//   { status: 400, code: "bad_point" }   a branch or a fork cannot start at that place
+//   { status: 409, code: "" }            the chat is archived: no code
+// and a message another server did not answer with 504 "send_unknown" (flags.send.unknown).
+//
+// Seeding again is a reset. A chat the seed makes anew is another record: what was pending of the one it replaces
+// (a held call, a canned reply, a branch's late events) answers 404 or does nothing.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -156,7 +228,7 @@ const TICK_MS = Number(process.env.TICK || 3000);
 let detailDelay = Number(process.env.DETAIL_DELAY || 0); // ms before a detail is answered (/mock/delay)
 const REAL = JSON.parse(fs.readFileSync(path.resolve(HERE, "../test/fixtures/run-detail-qa.json"), "utf8"));
 
-const T0 = Date.now();
+const T0 = Number(process.env.T0) || Date.now();
 const MIN = 60000;
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const iso = (ms) => new Date(ms).toISOString();
@@ -367,7 +439,7 @@ function view(R) {
     attention = counts.failed + counts.blocked + (d.turns.at(-1)?.ops.filter((o) => o.error).length ?? 0);
   }
   const v = {
-    id: m.id, name: m.name, userNamed: m.userNamed, group: m.group, created: m.created,
+    id: m.id, name: m.name, userNamed: m.userNamed, group: m.group, created: m.created, server: m.server, start: m.start,
     agent: m.agent, tiers: m.tiers, tierDefaults: d ? undefined : tierDefaults(m.agent), cwd: m.cwd,
     folderMissing: !exists(m.cwd) || undefined,
     git: (d ? !!d.git : isGit(m.cwd)) || undefined, // omitted for a folder that is not a repository, as the server does
@@ -784,9 +856,88 @@ const items = { // by chat id; an agent's are written when first asked for
     { kind: "end" },
   ],
 };
-const versions = {};  // by thread key (chat id, or "<chat>/<sid>"): the version of its items
-const subs = {};      // by agent chat id: its subagents
+const versions = {};  // by thread key (chat id, "<chat>:<branch>" for a branch that is not main, or "<chat>/<sid>"): the version of its items
+const subs = {};      // by chat id: its subagents (main's)
 const subItems = {};  // by "<chat>/<sid>"
+
+// ---- branches: a chat that has more than main keeps the other branches' lists and every branch's session
+// fields here. The seed (dev/runmock-ui.js) makes such chats, and so does a message with a target. A chat with
+// main alone has neither, and its view tells its state, as before.
+
+const branches = {};  // by chat id: its branches besides main, in the order they were made: { id, from, at, items }
+const sessions = {};  // by chat id, once it has a second branch: each branch's session fields, by branch id ("main" too)
+const scenes = {};    // by board id: { rev, scene } of a board that answers a take (the seed's); any other is read-only
+const extra = {};     // what the seed adds to the snapshot: servers, lists (by server), agents
+const SESSION = ["cwd", "model", "effort", "locked", "usage", "status", "statusTool", "error", "fresh", "draft", "subsRunning"];
+const WORKING = ["thinking", "writing", "tool", "approval"];
+const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
+const session = (o) => Object.fromEntries(SESSION.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+const curOf = (c) => c.branch ?? "main";
+const threadKey = (id, branch) => (branch === "main" ? id : `${id}:${branch}`);
+/** The item list of a chat's branch; undefined for a branch the chat has not. */
+const listOf = (id, branch = "main") => (branch === "main" ? (items[id] ??= []) : branches[id]?.find((b) => b.id === branch)?.items);
+/** A branch's session fields: its own once the chat has a second branch, the view's until then. */
+const sessionOf = (id, branch) => sessions[id]?.[branch] ?? session(chats[id]);
+const branchState = (id, branch) => ({ chat: id, branch, ...sessionOf(id, branch) });
+
+/** Changes session fields of a chat's branch (undefined takes one away) and tells the clients: `branch_state` for a
+ *  chat that has branch records, then `chat`, whose view has the current branch's fields and the counts over all. */
+function setSession(id, branch, patch) {
+  const c = chats[id], all = sessions[id];
+  const put = (o) => { for (const [k, v] of Object.entries(patch)) { if (v === undefined) delete o[k]; else o[k] = v; } };
+  if (all) { put((all[branch] ??= {})); send({ type: "branch_state", state: branchState(id, branch) }); }
+  if (branch === curOf(c)) put(c);
+  if (all) Object.assign(c, { branches: Object.keys(all).length, working: Object.values(all).filter((st) => WORKING.includes(st.status)).length });
+  send({ type: "chat", chat: c });
+}
+
+/** Makes a branch of a chat at item count `at` of branch `from` and answers it: its list is the first `at` items of
+ *  `from`, its session fields are `from`'s with `st` over them. Nothing is sent. The chat's first branch gives main a
+ *  record of its own. */
+function addBranch(id, from, at, st = {}, bid = newId("b_")) {
+  sessions[id] ??= { main: session(chats[id]) };
+  const b = { id: bid, from, at, items: clone(listOf(id, from).slice(0, at)) };
+  (branches[id] ??= []).push(b);
+  sessions[id][bid] = { ...sessions[id][from], status: "ready", ...st };
+  for (const k of ["statusTool", "error", "draft", "fresh"]) if (st[k] === undefined) delete sessions[id][bid][k];
+  chats[id].branches = Object.keys(sessions[id]).length;
+  return b;
+}
+
+/** Makes `branch` the chat's current one: the view takes its session fields. Nothing is sent. */
+function setCurrent(id, branch) {
+  const c = chats[id], st = sessions[id]?.[branch];
+  if (!st) return;
+  if (branch === "main") delete c.branch; else c.branch = branch;
+  for (const k of SESSION) { if (st[k] === undefined) delete c[k]; else c[k] = st[k]; }
+}
+
+/** Whether item count n of a list is a point a message can be sent to (internal/chats/points.go pointOK, without
+ *  its rules for an agent that is working and for pi). */
+const pointOK = (list, n) => (n === 0 ? !!list.find((x) => x.kind === "end")?.point : list[n - 1]?.kind === "end" && !!list[n - 1].point);
+
+/** The messages and replies of a list from index `at` on, as the tree shows them (internal/chats/tree.go treeItems). */
+function treeItems(list, at) {
+  const out = [];
+  for (let i = Math.max(at, 0); i < list.length; i++) {
+    const it = list[i];
+    if (it.kind === "user") {
+      let before = 0, ok = true; // right after the last end mark before it; none when a reply or a tool call lies between
+      for (let m = i - 1; m >= 0; m--) { if (list[m].kind === "end") { before = m + 1; break; } if (list[m].kind === "text" || list[m].kind === "tool") { ok = false; break; } }
+      out.push({ i, kind: "user", text: it.text?.trim() || !it.references?.length ? it.text ?? "" : "❝ " + (it.references[0].comment?.trim() || it.references[0].quote), ...(ok ? { before, ...(pointOK(list, before) ? { ok: true } : {}) } : {}) });
+    } else if (it.kind === "text") {
+      let end = 0; // the item count after the turn this reply closes
+      if (it.done) for (let j = i + 1; j < list.length; j++) { if (list[j].kind === "note") continue; if (list[j].kind === "end") end = j + 1; break; }
+      out.push({ i, kind: "text", text: it.text ?? "", ...(it.done ? { done: true } : {}), ...(end ? { end, ...(pointOK(list, end) ? { ok: true } : {}) } : {}) });
+    }
+  }
+  return out;
+}
+const branchView = (b) => ({ id: b.id, ...(b.from ? { from: b.from } : {}), at: b.at, len: b.items.length, items: treeItems(b.items, b.at) });
+/** One branch's own part of a chat's tree. */
+const treePart = (id, branch) => (branch === "main" ? branchView({ id: "main", at: 0, items: listOf(id) }) : branchView(branches[id].find((b) => b.id === branch)));
+/** GET /api/chats/{id}/tree: main first, then the branches in the order they were made. */
+const treeOf = (id) => ({ current: curOf(chats[id]), branches: [treePart(id, "main"), ...(branches[id] ?? []).map(branchView)], labels: [] });
 
 /** The run and the record of a run agent, by its chat id. */
 function agentOf(id) {
@@ -843,7 +994,7 @@ function agentItems(id) {
       if (id === AG.sub) {
         out.push({ ...tool("w3", "mcp__board__spawn_subagent", { description: "Review the fork cut for off-by-one errors", prompt: "Check every index computation in internal/chats/fork.go against the branch model in docs and report mismatches." }), subagent: "s1" });
         out.push(say("The reviewer checks the cut points while I run the scenarios."));
-      } else if (task?.writes) out.push(tool("w3", "Edit", { file_path: "internal/chats/manager.go" }, "ok"));
+      } else if (task?.writes) out.push(tool("w3", "Edit", { file_path: "internal/chats/manager.go", old_string: "\tif at > len(items) {\n\t\treturn nil\n\t}", new_string: "\tif at >= len(items) {\n\t\treturn nil\n\t}" }, "ok"));
       if (running) out.push(tool("w4", "Bash", { command: "go test ./internal/chats/", description: "Run the chats tests" }));
       else out.push(tool("w4", "Bash", { command: "go test ./...", description: "Run the tests" }, "ok  \tai-whiteboard/internal/chats\t2.41s"), say(att?.result?.summary ?? a.error ?? "Stopped before a result."), { kind: "end" });
     }
@@ -870,7 +1021,11 @@ const snapshot = () => ({
   chats: [...Object.values(chats), agentChat(AG.listed) /* a server that lists an agent: the client must drop it */].filter(Boolean), // null once r_live is deleted
   runs: Object.values(runs).map(view),
   defaults: { last: {}, groups: {} }, catalogs, home: HOME, defaultCwd: SHOP, dataDir: DATA,
+  ...extra, // nothing until the seed ran
+  ...(Object.keys(sessions).length ? { states: Object.keys(sessions).filter((id) => chats[id]).flatMap((id) => Object.keys(sessions[id]).map((b) => branchState(id, b))) } : {}),
 });
+/** Cuts every open event stream. With flags.streamDown a new one is cut as it opens: the page stays "reconnecting". */
+function dropStreams() { for (const c of clients) c.res.destroy(); clients = []; }
 
 /** Sends `run` when the light view differs from the last one sent. */
 function sendRun(R) {
@@ -890,6 +1045,11 @@ function commit(R, patch) {
 
 // BIG=1: r_big, a running run of 297 tasks and 98 turns made of copies of r_live (also `touch(run, task)` for /mock/eval)
 if (process.env.BIG) eval(fs.readFileSync(path.resolve(HERE, "runmock-big.js"), "utf8"));
+
+/** Adds the states of the composer and chat UI work (dev/runmock-ui.js, read inside this file as runmock-big.js is):
+ *  all of its sections, or the ones named. It sends a snapshot and answers the list of its states. Called through
+ *  /mock/eval alone; calling it again puts its states back as they were made. */
+function seedUI(...sections) { return eval(fs.readFileSync(path.resolve(HERE, "runmock-ui.js"), "utf8"))(sections); }
 
 // ---- the engine: one step of a running run's life per call
 
@@ -1058,8 +1218,9 @@ const ERR = {
   archived: [409, "the run is archived"], started: [409, "the run has started: its agent, folder and settings are fixed"], notStarted: [409, "the run has not started"],
   finished: [409, "the run is finished"], going: [409, "the run is still going: its result can be applied when it has finished or is stopped"], notHalted: [409, "the run is not stopped"], notRunning: [409, "the run is not running"], stopping: [409, "the run is stopping; try again in a moment"],
   group: [404, "no such group"], chat: [404, "no such chat"], runAgent: [409, "this chat is one of a run's agents: it cannot be changed"],
+  busy: [409, "the agent is still working; wait for it to finish or stop it", "busy"],
 };
-const fail = (code, error) => ({ fail: [code, error] });
+const fail = (code, error, word) => ({ fail: [code, error, word] }); // word: the refusal's code, when it has one
 
 /** running → stopping now; a second later stopped, with an open stop. */
 function stopRun(R, then) {
@@ -1226,8 +1387,27 @@ const body = (req) => new Promise((ok) => { let b = ""; req.on("data", (d) => (b
 const json = (res, v, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(v)); };
 const answer = (res, v) => {
   if (v && v.bare) { res.writeHead(v.bare); return res.end(); } // a status with no body at all (a proxy's, a body limit's)
-  return v && v.fail ? json(res, { error: v.fail[1] }, v.fail[0]) : json(res, v ?? { ok: true });
+  return v && v.fail ? json(res, { error: v.fail[1], ...(v.fail[2] ? { code: v.fail[2] } : {}) }, v.fail[0]) : json(res, v ?? { ok: true });
 };
+/** The knob `name` of flags as it holds for a chat (and a branch): {} when it is not set, or names another one. */
+const knob = (name, chat, branch) => { const k = flags[name]; return k && (!k.chat || k.chat === chat) && (!k.branch || !branch || k.branch === branch) ? k : {}; };
+/** What a knob makes a call wait for: its `delay`, or with `hold` the release of the knob. */
+const holds = new Set(); // the knobs that hold a call
+const pause = (k) => (k.hold ? new Promise((ok) => { (k.held ??= []).push(ok); holds.add(k); }) : k.delay ? wait(k.delay) : undefined);
+/** Lets go the calls a knob holds (`hold`): those of flags[name], or with no name those of every knob, also of one
+ *  that was replaced or deleted since. Answers how many. */
+function release(name) {
+  let n = 0;
+  for (const k of name ? [flags[name]] : [...holds]) {
+    if (!k?.held) continue;
+    n += k.held.length;
+    for (const ok of k.held.splice(0)) ok();
+    holds.delete(k);
+  }
+  return n;
+}
+/** A knob's refusal as an answer: 409 "busy" unless it says otherwise. */
+const refusal = (r) => fail(r.status ?? 409, r.error ?? "the mock refused it", r.code ?? "busy");
 const mockState = () => ({ paused: !timers.length, tick: TICK_MS, detailDelay, texts: textHits, clients: clients.map((c) => ({ id: c.id, watched: [...c.watched] })),
   runs: Object.fromEntries(Object.values(runs).map((R) => [R.meta.id, { status: R.detail?.status ?? "draft", version: R.detail?.version, tasks: R.detail?.tasks.length, turns: R.detail?.turns.length, step: R.eng.step }])) });
 
@@ -1403,31 +1583,165 @@ async function runRoute(req, res, id, rest) {
   return answer(res, fail(404, "not found"));
 }
 
+/** A message as an item of a thread. */
+const message = (b) => ({ kind: "user", text: b.text, ...(b.references?.length ? { references: b.references } : {}) });
+
+/** Puts a message on the end of a chat's branch and plays the canned reply there: a tool call, a sentence, the
+ *  turn's end. first: what is done before the message's own events go out. made: the branch was made for this
+ *  message, which is its last item already and was there before anything was told of the branch: no `chat_items`
+ *  tells it, as on the server. The reply goes on only while the chat and the branch are the ones it started with: a
+ *  chat that was deleted, or made anew by the seed, gets nothing of it. */
+function reply(id, branch, b, first = () => {}, made = false) {
+  const own = chats[id], list = listOf(id, branch), key = threadKey(id, branch), at = list.length - (made ? 1 : 0);
+  const gone = () => chats[id] !== own || listOf(id, branch) !== list;
+  const points = list.some((x) => x.kind === "end" && x.point), k = knob("send", id);
+  const put = (i, item) => { list[i] = item; send({ type: "chat_items", chat: id, branch, version: (versions[key] = (versions[key] ?? 1) + 1), updates: [{ index: i, item }] }); };
+  const state = (status, more) => setSession(id, branch, { status, locked: true, draft: undefined, fresh: undefined, ...more });
+  const tree = (current) => { if (points || sessions[id]) send({ type: "tree", chat: id, branch: treePart(id, branch), ...(current ? { current: curOf(own) } : {}) }); };
+  if (!made) list[at] = message(b);
+  first();
+  if (!made) put(at, list[at]);
+  state("thinking"); tree(true);
+  if (k.noReply) return;
+  const read = (result) => tool("r" + at, own.run ? "mcp__board__get_run" : "Read", own.run ? {} : { file_path: "README.md" }, result);
+  setTimeout(() => { if (gone()) return; put(at + 1, read()); state("tool"); }, 500);
+  setTimeout(() => {
+    if (gone()) return;
+    put(at + 1, read("ok"));
+    put(at + 2, say(own.run ? `The run is ${view(runs[own.run]).status}. (A canned reply of the mock.)` : "A canned reply of the mock."));
+    put(at + 3, { kind: "end", ...(points ? { point: newId("p_") } : {}) });
+    const u = sessionOf(id, branch).usage; state("ready", { usage: { ...u, turns: u.turns + 1 } }); tree(false);
+  }, 1400);
+}
+
+/** POST /api/chats/{id}/messages. With no target the message goes to the end of the branch named (?branch=), or of
+ *  the current one. A target that asks for a new branch gets one, as the server makes it: the clients hear nothing of
+ *  the branch until the message is on it, then `branch_state`, `chat` and `tree`, and then the answer names the
+ *  branch. The first branch of a chat tells main's `branch_state` before its own: the clients have no record of main
+ *  until then. flags.send and flags.spawn (the header) delay, refuse and reorder that: whatever the order, the branch
+ *  is made, current and has its message when the call is answered, and only what is told of it comes later. A call
+ *  that was held while its chat was deleted or made anew answers 404 and changes nothing. */
+async function sendMessage(own, b, named) {
+  const id = own.id, tg = b.target, k = knob("send", id);
+  if (tg && tg.at === undefined) return fail(400, "at is missing");
+  if (tg && named) return fail(400, "branch and target together");
+  const from = tg?.branch ?? (named || curOf(own));
+  if (!listOf(id, from)) return fail(404, `no branch ${from}`);
+  await pause(k);
+  if (chats[id] !== own) return fail(...ERR.chat);
+  if (own.archived) return fail(409, "the chat is archived");
+  if (k.refuse) return refusal(k.refuse);
+  if (!tg?.new) { // the end of a branch, which becomes the current one
+    const cold = knob("spawn", id);
+    if ((cold.delay || cold.hold) && sessionOf(id, from).fresh) { setSession(id, from, { status: "thinking" }); await pause(cold); if (chats[id] !== own) return fail(...ERR.chat); }
+    reply(id, from, b, () => { if (sessions[id] && curOf(own) !== from) setCurrent(id, from); });
+    return k.noBranch ? { ok: true } : { ok: true, branch: from };
+  }
+  const lost = fail(504, "it is not known whether the message arrived", "send_unknown");
+  if (k.unknown && k.unknown !== "arrived") return lost;
+  const alone = !sessions[id];
+  const br = addBranch(id, from, tg.at, { status: "thinking", ...(tg.model ? { model: tg.model, effort: tg.effort || undefined } : {}) });
+  br.items.push(message(b)); setCurrent(id, br.id);
+  const tell = () => { if (chats[id] === own && listOf(id, br.id) === br.items) reply(id, br.id, b, () => { if (alone) send({ type: "branch_state", state: branchState(id, "main") }); }, true); };
+  if (k.unknown) { setTimeout(tell, 50); return lost; }
+  if (k.eventsAfter) setTimeout(tell, k.eventsAfter); else tell();
+  return k.noBranch ? { ok: true } : { ok: true, branch: br.id };
+}
+
+/** POST /api/chats/{id}/fork: a new chat with the first `at` items of a branch, in the place of its source; with
+ *  `message`, that user message is its draft, with its quotes of the items copied. A fork that starts with a
+ *  conversation is fresh: its model and effort are open until its first own message. Nothing is told of it before the
+ *  answer. flags.fork delays or refuses it. */
+async function forkChat(src, b) {
+  const k = knob("fork", src.id), branch = b.branch || "main", list = listOf(src.id, branch);
+  if (b.at === undefined) return fail(400, "at is missing");
+  if (!list) return fail(404, `no branch ${branch}`);
+  await pause(k);
+  if (chats[src.id] !== src) return fail(...ERR.chat);
+  if (k.refuse) return refusal(k.refuse);
+  const id = newId("c_"), st = sessionOf(src.id, branch), said = list.find((x) => x.kind === "user")?.text ?? "";
+  const title = src.name || (said.length > 40 ? said.slice(0, 40) + "…" : said) || "New chat", edit = list[b.message];
+  const quotes = (edit?.references ?? []).filter((r) => r.item < b.at); // those of what the copy lacks would name other items there
+  chats[id] = chat(id, { agent: src.agent, ...(src.server ? { server: src.server } : {}), ...(src.run ? { run: src.run } : src.board ? { board: src.board } : { group: src.group }),
+    cwd: st.cwd, model: st.model, effort: st.effort, usage: st.usage, name: `${title} (fork)`, created: iso(Date.now()), locked: b.at > 0, ...(b.at > 0 ? { fresh: true } : {}),
+    forkedFrom: src.id, forkedFromTitle: title, forkedBranch: branch, forkedAt: b.at,
+    ...(edit?.kind === "user" ? { draft: { text: edit.text ?? "", ...(quotes.length ? { references: quotes } : {}) } } : {}) });
+  items[id] = clone(list.slice(0, b.at));
+  send({ type: "chat", chat: chats[id] });
+  return chats[id];
+}
+
+/** What a server offers (its agents, their catalogs, its default folder): this computer's own, or what the seed gave
+ *  the entry. */
+const listsOn = (server) => (server && server !== "local" ? extra.lists?.[server] : null) ?? { agents: extra.agents ?? Object.keys(catalogs), catalogs, home: HOME, defaultCwd: SHOP };
+
+/** The server, agent, model, effort and folder of a PATCH, on one branch. A server gives the chat its own agent,
+ *  folder, model and effort; an agent its default model and effort; a model keeps the effort it offers, else takes
+ *  its default. A fork without a message of its own starts its agent again on a model or effort: it has the choice
+ *  and is "thinking" until the answer, and has its old choice again after a refusal, but for pi, which tells nothing
+ *  of it. While such a fork is working (this start, or its first message's) a second pick is refused: 409 "busy".
+ *  flags.configure delays or refuses the change. */
+async function configureChat(own, branch, b) {
+  const id = own.id, k = knob("configure", id), st = sessionOf(id, branch), pick = !!st.fresh && !!(b.model || b.effort), restart = pick && own.agent !== "pi";
+  if (pick && WORKING.includes(st.status)) return fail(...ERR.busy);
+  const was = { model: st.model, effort: st.effort }, modelsOf = () => listsOn(own.server).catalogs?.[own.agent];
+  /** The model and effort of the pick, over what p has. */
+  const choice = (p) => {
+    if (b.model) { const mm = modelsOf()?.models.find((x) => x.id === b.model), had = p.effort ?? sessionOf(id, branch).effort; p.model = b.model; p.effort = mm?.efforts?.includes(had) ? had : mm?.defaultEffort; }
+    if (b.effort) p.effort = b.effort;
+    return p;
+  };
+  if (restart) setSession(id, branch, { ...choice({}), status: "thinking" });
+  await pause(k);
+  if (chats[id] !== own) return fail(...ERR.chat);
+  if (k.refuse) { if (restart) setSession(id, branch, { ...was, status: "ready" }); return refusal(k.refuse); }
+  const p = {};
+  const byDefault = () => { const d = modelsOf()?.default; p.model = d?.model ?? ""; p.effort = d?.effort; };
+  if (b.server) {
+    if (b.server === "local") delete own.server; else own.server = b.server;
+    const l = listsOn(own.server);
+    if (!l.agents.includes(own.agent)) own.agent = l.agents[0] ?? "";
+    p.cwd = l.defaultCwd; byDefault();
+  }
+  if (b.agent) { own.agent = b.agent; byDefault(); }
+  choice(p);
+  if (b.cwd) p.cwd = b.cwd;
+  setSession(id, branch, { ...p, ...(restart ? { status: "ready" } : {}) });
+  return null;
+}
+
 async function chatRoute(req, res, id, rest) {
-  const M = req.method, own = chats[id], ag = own ? null : agentChat(id);
+  const M = req.method, own = chats[id], ag = own ? null : agentChat(id), named = new URL(req.url, "http://x").searchParams.get("branch");
   if (!own && !ag) { await body(req); return answer(res, fail(...ERR.chat)); }
   let m;
   if (rest === "" && M === "GET") return answer(res, own ?? ag);
   if (rest === "/items" && M === "GET") {
-    const list = own ? (items[id] ??= []) : agentItems(id);
+    const branch = own ? named || curOf(own) : "main", k = knob("items", id, branch), key = threadKey(id, branch);
+    const list = own ? listOf(id, branch) : agentItems(id);
     if (ag) for (const c of clients) if (c.id === req.headers["x-aiwb-client"]) c.watched.add(id); // from here on that connection gets the agent's events
-    return answer(res, { version: (versions[id] ??= 1), branch: "main", items: list, subagents: subs[id] ?? [] });
+    await pause(k);
+    if (k.fail) return answer(res, fail(k.fail === true ? 500 : k.fail, "the mock failed this read"));
+    if (!list) return answer(res, fail(404, `no branch ${branch}`));
+    // (a chat with main alone sends no record: its view tells its state, and only `chat` events change it)
+    return answer(res, { version: (versions[key] ??= 1), branch, items: list, subagents: (branch === "main" && subs[id]) || [], ...(sessions[id] ? { state: branchState(id, branch) } : {}) });
   }
   if ((m = /^\/subagents\/([^/]+)\/items$/.exec(rest)) && M === "GET") return answer(res, { version: 1, items: subItems[`${id}/${m[1]}`] ?? [] });
-  if (rest === "/tree" && M === "GET") return answer(res, { current: "main", branches: [{ id: "main", at: 0, len: ((own ? items[id] : agentItems(id)) ?? []).length, items: [] }], labels: [] });
+  if (rest === "/tree" && M === "GET") return answer(res, own ? treeOf(id) : { current: "main", branches: [{ id: "main", at: 0, len: (agentItems(id) ?? []).length, items: [] }], labels: [] });
   if (rest === "/context" && M === "GET") return answer(res, { atMessage: 0, atTurn: 0, total: 42900, window: 200000, categories: [{ id: "messages", label: "Messages", tokens: 42900, kind: "used" }, { id: "free", label: "Free space", tokens: 157100, kind: "free" }] });
   if (rest === "/open" && M === "POST") return answer(res);
   if (rest === "/permission" && M === "POST") { await body(req); return answer(res); }
   const b = await body(req);
   if (ag) return answer(res, fail(...ERR.runAgent)); // a run agent takes no message and no change
-  if (rest === "" && M === "PATCH") {
+  if (rest === "" && M === "PATCH") { // the name and the group are the chat's; the rest goes to one branch (?branch=)
     if (b.group !== undefined && own.run) return answer(res, fail(400, "a run's chat moves with its run"));
-    for (const k of ["name", "group", "model", "effort", "cwd"]) if (b[k] !== undefined) own[k] = b[k];
+    for (const k of ["name", "group"]) if (b[k] !== undefined) own[k] = b[k];
     if (b.name !== undefined) own.userNamed = true;
-    send({ type: "chat", chat: own }); return answer(res); // {"ok":true}, as the server
+    const refused = b.server || b.agent || b.model || b.effort || b.cwd ? await configureChat(own, named || curOf(own), b) : void send({ type: "chat", chat: own });
+    return answer(res, refused ?? { ok: true, chat: own }); // the chat as it is after the change, as the server
   }
   if (rest === "" && M === "DELETE") { delete chats[id]; send({ type: "chat_removed", id }); return answer(res); }
-  if (rest === "/draft" && M === "PUT") { if (b.text || b.references?.length) own.draft = b; else delete own.draft; send({ type: "chat", chat: own }); return answer(res); }
+  if (rest === "/draft" && M === "PUT") { setSession(id, named || curOf(own), { draft: b.text || b.references?.length ? b : undefined }); return answer(res); }
+  if (rest === "/fork" && M === "POST") return answer(res, await forkChat(own, b));
   if (rest === "/archive" || rest === "/unarchive") {
     if (rest === "/archive") Object.assign(own, { archived: true, archiveOp: newId("op_") }); else { delete own.archived; delete own.archiveOp; }
     send({ type: "chat", chat: own });
@@ -1435,20 +1749,7 @@ async function chatRoute(req, res, id, rest) {
     if (rest === "/unarchive" && R?.meta.archived) unarchiveRunOnly(R); // unarchiving a run's chat brings its run back, not the run's other chats
     return answer(res);
   }
-  if (rest === "/messages" && M === "POST") { // a canned reply, so that a chat can be tried
-    const list = (items[id] ??= []), v = () => (versions[id] = (versions[id] ?? 1) + 1), at = list.length;
-    const put = (i, item) => { list[i] = item; send({ type: "chat_items", chat: id, branch: "main", version: v(), updates: [{ index: i, item }] }); };
-    const state = (status) => { own.status = status; own.locked = true; delete own.draft; send({ type: "chat", chat: own }); };
-    put(at, { kind: "user", text: b.text, ...(b.references?.length ? { references: b.references } : {}) }); state("thinking");
-    setTimeout(() => { if (!chats[id]) return; put(at + 1, tool("r" + at, own.run ? "mcp__board__get_run" : "Read", own.run ? {} : { file_path: "README.md" })); state("tool"); }, 500);
-    setTimeout(() => {
-      if (!chats[id]) return;
-      put(at + 1, tool("r" + at, own.run ? "mcp__board__get_run" : "Read", own.run ? {} : { file_path: "README.md" }, "ok"));
-      put(at + 2, say(own.run ? `The run is ${view(runs[own.run]).status}. (A canned reply of the mock.)` : "A canned reply of the mock."));
-      put(at + 3, { kind: "end" }); own.usage = { ...own.usage, turns: own.usage.turns + 1 }; state("ready");
-    }, 1400);
-    return answer(res);
-  }
+  if (rest === "/messages" && M === "POST") return answer(res, await sendMessage(own, b, named)); // a canned reply, so that a chat can be tried
   return answer(res);
 }
 
@@ -1495,6 +1796,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === "/api/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+      if (flags.streamDown) return void req.socket.destroy(); // the browser tries again by itself
       const c = { id: u.searchParams.get("client") ?? "", res, watched: new Set() }; // every tab is "active": the mock has no takeover
       clients.push(c);
       write(c, { type: "hello", active: true }); write(c, { type: "snapshot", ...snapshot() });
@@ -1517,7 +1819,7 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, mockState());
     }
-    if (p === "/api/hello") return json(res, { app: "ai-whiteboard", version: "dev", pid: process.pid, webVersion: "dev" });
+    if (p === "/api/hello") return json(res, { app: "ai-whiteboard", version: flags.hello?.version ?? "dev", pid: process.pid, webVersion: flags.hello?.webVersion ?? "dev" });
     if (p === "/api/state") return json(res, snapshot());
     if (p === "/api/dirs") {
       const dir = expand(u.searchParams.get("path") || HOME);
@@ -1555,6 +1857,11 @@ const server = http.createServer(async (req, res) => {
     if ((m = /^\/api\/boards\/([^/]+)(\/.*)?$/.exec(p))) {
       const x = boards[m[1]], rest = m[2] ?? "", b = M === "GET" ? {} : await body(req);
       if (!x) return json(res, { error: "no such board" }, 404);
+      const sc = scenes[x.id]; // the seed's: a board that this window may hold, with a stored drawing
+      if (sc && rest === "/scene" && M === "GET") { res.writeHead(200, { "Content-Type": "application/json", "X-AIWB-Scene-Rev": String(sc.rev) }); return res.end(JSON.stringify(sc.scene)); }
+      if (sc && rest === "/scene" && M === "PUT") { sc.scene = b; return json(res, { rev: ++sc.rev }); }
+      if (sc && rest === "/take") return json(res, { state: "held", rev: sc.rev });
+      if (sc && rest === "/release") return json(res, { state: "free" });
       if (rest === "/scene" && M === "GET") return json(res, { type: "excalidraw", version: 2, elements: [], appState: {}, files: {} });
       if (rest === "/rename") { x.name = b.name; send({ type: "board", board: x }); return json(res, x); }
       if (rest === "" && M === "PATCH") { x.group = b.group; send({ type: "board", board: x }); return json(res, x); }

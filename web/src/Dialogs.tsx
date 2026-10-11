@@ -61,7 +61,8 @@ export function ConfirmDialog(): React.JSX.Element | null {
   );
 }
 
-export function Menu({ children, onClose, align = "left" }: { children: React.ReactNode; onClose: () => void; align?: "left" | "right" }) {
+/** label: the menu is one of choices (its items are menuitemradio), and this is its name. */
+export function Menu({ children, onClose, align = "left", label }: { children: React.ReactNode; onClose: () => void; align?: "left" | "right"; label?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
@@ -71,5 +72,5 @@ export function Menu({ children, onClose, align = "left" }: { children: React.Re
     document.addEventListener("keydown", k);
     return () => { clearTimeout(t); document.removeEventListener("mousedown", h); document.removeEventListener("keydown", k); };
   }, []);
-  return <div ref={ref} className={`menu ${align}`} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>{children}</div>;
+  return <div ref={ref} className={`menu ${align}`} role={label ? "menu" : undefined} aria-label={label} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>{children}</div>;
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -562,6 +563,330 @@ func TestTextItemsBetweenToolCalls(t *testing.T) {
 	}
 	if end := evs[len(evs)-1]; end.Aborted || end.Error != "" {
 		t.Fatalf("turn end %+v", end)
+	}
+}
+
+// fileCall is the tool_call of an edit or a delete as cursor-agent's code builds it: the path as
+// the location and in rawInput, and no content until the call has completed.
+func fileCall(id, kind, path string) map[string]any {
+	title := "Edit File"
+	if kind == "delete" {
+		title = "Delete `" + path + "`"
+	}
+	return map[string]any{"sessionUpdate": "tool_call", "toolCallId": id, "title": title, "kind": kind, "status": "pending",
+		"rawInput": map[string]any{"path": path}, "locations": []any{map[string]any{"path": path}}}
+}
+
+// fileUpdate is a tool_call_update of the call id with these fields.
+func fileUpdate(id string, fields map[string]any) map[string]any {
+	u := map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": id}
+	for k, v := range fields {
+		u[k] = v
+	}
+	return u
+}
+
+// diffContent is the content of an edit's or a delete's completed update: one diff block. old is
+// a string, or nil for the null of a new file.
+func diffContent(path string, old any, new string) []any {
+	return []any{map[string]any{"type": "diff", "path": path, "oldText": old, "newText": new}}
+}
+
+// toolEvents plays the updates as one turn of a fake Cursor and returns the turn's tool events.
+func toolEvents(t *testing.T, updates ...map[string]any) []agent.Event {
+	t.Helper()
+	s := baseScript()
+	for _, u := range updates {
+		s["session/prompt"] = append(s["session/prompt"], step("update", u))
+	}
+	s["session/prompt"] = append(s["session/prompt"], fakeStep{Result: raw(`{"stopReason":"end_turn"}`)})
+	a := newEnv(t, s).spawn(t, agent.SpawnOptions{})
+	send(t, a, "hi")
+	return without(until(t, a, isKind(agent.EvTurnEnd)), agent.EvUsage, agent.EvSession, agent.EvCatalog, agent.EvThinking, agent.EvTurnEnd)
+}
+
+// ofTool is the events of one tool call.
+func ofTool(evs []agent.Event, id string) []agent.Event {
+	var out []agent.Event
+	for _, e := range evs {
+		if e.ToolID == id {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// An edit's diff block gives the input its texts under Claude's names, whether the block comes
+// with an update or with the tool_call itself.
+func TestEditCarriesItsTexts(t *testing.T) {
+	t.Parallel()
+	late := fileCall("e2", "edit", "/x/b.go")
+	late["status"], late["content"] = "completed", diffContent("/x/b.go", "one\n", "two\n")
+	evs := toolEvents(t,
+		fileCall("e1", "edit", "/x/a.go"),
+		fileUpdate("e1", map[string]any{"status": "in_progress"}),
+		fileUpdate("e1", map[string]any{"status": "completed", "rawInput": map[string]any{"path": "/x/a.go"},
+			"content": diffContent("/x/a.go", "a\nb\n", "a\nc\n")}),
+		late,
+	)
+	if got := kinds(evs); got != "ToolStart,ToolInput,ToolResult,ToolStart,ToolResult" {
+		t.Fatalf("events %s", got)
+	}
+	if evs[0].ToolName != "Edit" || evs[1].ToolName != "Edit" || evs[3].ToolName != "Edit" {
+		t.Fatalf("names %q %q %q", evs[0].ToolName, evs[1].ToolName, evs[3].ToolName)
+	}
+	jsonEq(t, evs[0].Input, `{"file_path":"/x/a.go"}`)
+	jsonEq(t, evs[1].Input, `{"file_path":"/x/a.go","old_string":"a\nb\n","new_string":"a\nc\n"}`)
+	jsonEq(t, evs[3].Input, `{"file_path":"/x/b.go","old_string":"one\n","new_string":"two\n"}`)
+	for _, r := range []agent.Event{evs[2], evs[4]} {
+		if r.Result != "" || r.IsError {
+			t.Fatalf("result %+v", r)
+		}
+	}
+}
+
+// A new file is an edit without old text, null or absent: the input has no old_string, which an
+// empty file that is edited has.
+func TestEditOfNewFile(t *testing.T) {
+	t.Parallel()
+	evs := toolEvents(t,
+		fileCall("n1", "edit", "/x/new.go"),
+		fileUpdate("n1", map[string]any{"status": "completed", "content": diffContent("/x/new.go", nil, "package x\n")}),
+		fileCall("n2", "edit", "/x/new2.go"),
+		fileUpdate("n2", map[string]any{"status": "completed", "content": []any{map[string]any{"type": "diff", "path": "/x/new2.go", "newText": ""}}}),
+		fileCall("n3", "edit", "/x/empty.go"),
+		fileUpdate("n3", map[string]any{"status": "completed", "content": diffContent("/x/empty.go", "", "package x\n")}),
+	)
+	if got := kinds(evs); got != "ToolStart,ToolInput,ToolResult,ToolStart,ToolInput,ToolResult,ToolStart,ToolInput,ToolResult" {
+		t.Fatalf("events %s", got)
+	}
+	jsonEq(t, evs[1].Input, `{"file_path":"/x/new.go","new_string":"package x\n"}`)
+	jsonEq(t, evs[4].Input, `{"file_path":"/x/new2.go","new_string":""}`)
+	jsonEq(t, evs[7].Input, `{"file_path":"/x/empty.go","old_string":"","new_string":"package x\n"}`)
+}
+
+// A delete is the tool Delete with the file's path and, when its block has it, the deleted text.
+// The path is the location's, else the block's, else rawInput's.
+func TestDeleteTool(t *testing.T) {
+	t.Parallel()
+	bare := map[string]any{"sessionUpdate": "tool_call", "toolCallId": "d3", "title": "Delete `/x/c.txt`", "kind": "delete", "status": "pending",
+		"rawInput": map[string]any{"path": "/x/c.txt"}}
+	evs := toolEvents(t,
+		fileCall("d1", "delete", "/x/a.txt"),
+		fileUpdate("d1", map[string]any{"status": "completed", "content": diffContent("/x/a.txt", "gone\n", "")}),
+		fileCall("d2", "delete", "/x/b.txt"),
+		fileUpdate("d2", map[string]any{"status": "completed"}),
+		bare,
+		fileUpdate("d3", map[string]any{"status": "completed", "content": []any{map[string]any{"type": "diff", "path": "/x/c.txt", "newText": ""}}}),
+		map[string]any{"sessionUpdate": "tool_call", "toolCallId": "d4", "title": "Delete File", "kind": "delete", "status": "completed",
+			"content": diffContent("/x/d.txt", "last\n", "")},
+	)
+	if got := kinds(evs); got != "ToolStart,ToolInput,ToolResult,ToolStart,ToolResult,ToolStart,ToolInput,ToolResult,ToolStart,ToolResult" {
+		t.Fatalf("events %s", got)
+	}
+	for _, ev := range evs {
+		if ev.Kind != agent.EvToolResult && ev.ToolName != "Delete" {
+			t.Fatalf("name %q in %+v", ev.ToolName, ev)
+		}
+		if ev.Kind == agent.EvToolResult && (ev.Result != "" || ev.IsError) {
+			t.Fatalf("result %+v", ev)
+		}
+	}
+	jsonEq(t, evs[0].Input, `{"file_path":"/x/a.txt"}`)
+	jsonEq(t, evs[1].Input, `{"file_path":"/x/a.txt","old_string":"gone\n"}`)
+	jsonEq(t, evs[3].Input, `{"file_path":"/x/b.txt"}`)
+	jsonEq(t, evs[5].Input, `{"file_path":"/x/c.txt"}`)
+	jsonEq(t, evs[6].Input, `{"file_path":"/x/c.txt"}`)
+	jsonEq(t, evs[8].Input, `{"file_path":"/x/d.txt","old_string":"last\n"}`)
+}
+
+// A block that is not the diff block this reader knows leaves the edit as it was before the
+// texts were read: the name Edit, the path alone as the input, no input of its own for the update,
+// and the result the content gives.
+func TestEditBlockOfAnotherShape(t *testing.T) {
+	t.Parallel()
+	const path = "/x/a.go"
+	shapes := [][]any{
+		{map[string]any{"type": "diff", "path": path, "oldText": "a", "newText": 7}},
+		{map[string]any{"type": "diff", "path": path, "oldText": "a"}},
+		{map[string]any{"type": "diff", "path": path, "oldText": map[string]any{"text": "a"}, "newText": "b"}},
+		{map[string]any{"type": "diff", "path": path, "oldText": "a", "newText": nil}},
+		{map[string]any{"type": "diff", "path": path, "diff": "@@ -1 +1 @@\n-a\n+b\n"}},
+		{map[string]any{"type": "diff", "path": path, "oldText": "a", "newText": "b"}, map[string]any{"type": "diff", "path": path, "oldText": "c", "newText": "d"}},
+		{map[string]any{"type": "patch", "path": path, "oldText": "a", "newText": "b"}},
+		{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "edited"}}},
+		{"diff"},
+	}
+	results := []string{"", "", "", "", "", "", "", "edited", ""}
+	var updates []map[string]any
+	for i, content := range shapes {
+		id := "s" + strconv.Itoa(i)
+		updates = append(updates, fileCall(id, "edit", path), fileUpdate(id, map[string]any{"status": "completed", "content": content}))
+	}
+	evs := toolEvents(t, updates...)
+	for i := range shapes {
+		id := "s" + strconv.Itoa(i)
+		got := ofTool(evs, id)
+		if kinds(got) != "ToolStart,ToolResult" {
+			t.Fatalf("shape %d: events %s", i, kinds(got))
+		}
+		if got[0].ToolName != "Edit" || string(got[0].Input) != `{"file_path":"/x/a.go"}` {
+			t.Fatalf("shape %d: start %q %s", i, got[0].ToolName, got[0].Input)
+		}
+		if got[1].Result != results[i] || got[1].IsError {
+			t.Fatalf("shape %d: result %+v", i, got[1])
+		}
+	}
+}
+
+// Texts over maxDiffText, the old and the new together, are left out and the input says so; at
+// the bound they are kept.
+func TestEditTextsOverTheBound(t *testing.T) {
+	t.Parallel()
+	half := strings.Repeat("x", maxDiffText/2)
+	evs := toolEvents(t,
+		fileCall("b1", "edit", "/x/big.go"),
+		fileUpdate("b1", map[string]any{"status": "completed", "content": diffContent("/x/big.go", half, half+"y")}),
+		fileCall("b2", "edit", "/x/fits.go"),
+		fileUpdate("b2", map[string]any{"status": "completed", "content": diffContent("/x/fits.go", half, half)}),
+		fileCall("b3", "edit", "/x/new.go"),
+		fileUpdate("b3", map[string]any{"status": "completed", "content": diffContent("/x/new.go", nil, half+half+"y")}),
+		fileCall("b4", "delete", "/x/big.txt"),
+		fileUpdate("b4", map[string]any{"status": "completed", "content": diffContent("/x/big.txt", half+half+"y", "")}),
+	)
+	if got := kinds(evs); got != "ToolStart,ToolInput,ToolResult,ToolStart,ToolInput,ToolResult,ToolStart,ToolInput,ToolResult,ToolStart,ToolInput,ToolResult" {
+		t.Fatalf("events %s", got)
+	}
+	jsonEq(t, evs[1].Input, `{"file_path":"/x/big.go","texts_omitted":true}`)
+	var fits struct {
+		Old     string `json:"old_string"`
+		New     string `json:"new_string"`
+		Omitted bool   `json:"texts_omitted"`
+	}
+	if err := json.Unmarshal(evs[4].Input, &fits); err != nil || fits.Old != half || fits.New != half || fits.Omitted {
+		t.Fatalf("texts at the bound: %v, old %d bytes, new %d bytes, omitted %v", err, len(fits.Old), len(fits.New), fits.Omitted)
+	}
+	jsonEq(t, evs[7].Input, `{"file_path":"/x/new.go","texts_omitted":true}`)
+	if evs[10].ToolName != "Delete" {
+		t.Fatalf("delete name %q", evs[10].ToolName)
+	}
+	jsonEq(t, evs[10].Input, `{"file_path":"/x/big.txt","texts_omitted":true}`)
+}
+
+// An update with the block and no rawInput tells the input itself, and before the result: the
+// thread does not save an input that comes after its result.
+func TestEditBlockWithoutRawInput(t *testing.T) {
+	t.Parallel()
+	evs := toolEvents(t,
+		map[string]any{"sessionUpdate": "tool_call", "toolCallId": "e1", "title": "Edit File", "kind": "edit", "status": "pending",
+			"locations": []any{map[string]any{"path": "/x/a.go"}}},
+		fileUpdate("e1", map[string]any{"status": "completed", "content": diffContent("/x/a.go", "a\n", "b\n")}),
+	)
+	if got := kinds(evs); got != "ToolStart,ToolInput,ToolResult" {
+		t.Fatalf("events %s", got)
+	}
+	if evs[1].ToolName != "Edit" || evs[1].ToolID != "e1" {
+		t.Fatalf("input event %+v", evs[1])
+	}
+	jsonEq(t, evs[1].Input, `{"file_path":"/x/a.go","old_string":"a\n","new_string":"b\n"}`)
+}
+
+// The texts stay with the call: an update with rawInput and no block builds the input again, with
+// them, and an update with neither tells no input.
+func TestEditTextsStayAcrossUpdates(t *testing.T) {
+	t.Parallel()
+	evs := toolEvents(t,
+		fileCall("e1", "edit", "/x/a.go"),
+		fileUpdate("e1", map[string]any{"status": "in_progress", "content": diffContent("/x/a.go", "a\n", "b\n")}),
+		fileUpdate("e1", map[string]any{"status": "in_progress", "rawInput": map[string]any{"path": "/x/a.go"}}),
+		fileUpdate("e1", map[string]any{"status": "completed"}),
+		fileCall("d1", "delete", "/x/a.txt"),
+		fileUpdate("d1", map[string]any{"status": "in_progress", "content": diffContent("/x/a.txt", "gone\n", "")}),
+		fileUpdate("d1", map[string]any{"status": "completed", "rawInput": map[string]any{"path": "/x/a.txt"}}),
+	)
+	if got := kinds(evs); got != "ToolStart,ToolInput,ToolInput,ToolResult,ToolStart,ToolInput,ToolInput,ToolResult" {
+		t.Fatalf("events %s", got)
+	}
+	for _, i := range []int{1, 2} {
+		jsonEq(t, evs[i].Input, `{"file_path":"/x/a.go","old_string":"a\n","new_string":"b\n"}`)
+	}
+	for _, i := range []int{5, 6} {
+		if evs[i].ToolName != "Delete" {
+			t.Fatalf("delete name %q", evs[i].ToolName)
+		}
+		jsonEq(t, evs[i].Input, `{"file_path":"/x/a.txt","old_string":"gone\n"}`)
+	}
+}
+
+// The same completed update twice tells one input and one result, with or without rawInput in it.
+func TestEditSameCompletedUpdateTwice(t *testing.T) {
+	t.Parallel()
+	done := func(id, path string, rawInput bool) map[string]any {
+		f := map[string]any{"status": "completed", "content": diffContent(path, "a\n", "b\n")}
+		if rawInput {
+			f["rawInput"] = map[string]any{"path": path}
+		}
+		return fileUpdate(id, f)
+	}
+	evs := toolEvents(t,
+		fileCall("e1", "edit", "/x/a.go"), done("e1", "/x/a.go", false), done("e1", "/x/a.go", false),
+		fileCall("e2", "edit", "/x/b.go"), done("e2", "/x/b.go", true), done("e2", "/x/b.go", true),
+		fileCall("d1", "delete", "/x/c.txt"), done("d1", "/x/c.txt", false), done("d1", "/x/c.txt", false),
+	)
+	for _, id := range []string{"e1", "e2", "d1"} {
+		if got := kinds(ofTool(evs, id)); got != "ToolStart,ToolInput,ToolResult" {
+			t.Fatalf("%s: events %s", id, got)
+		}
+	}
+	jsonEq(t, ofTool(evs, "e1")[1].Input, `{"file_path":"/x/a.go","old_string":"a\n","new_string":"b\n"}`)
+}
+
+// A permission request shares the tool's name and input with the tool call and keeps the path
+// alone, whether the block is in the request's own toolCall or came with the call before it.
+func TestEditPermissionKeepsThePathAlone(t *testing.T) {
+	t.Parallel()
+	perm := func(id, kind, path string) fakeStep {
+		tc := fileCall(id, kind, path)
+		delete(tc, "sessionUpdate")
+		tc["content"] = diffContent(path, "a\n", "b\n")
+		return step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
+			"sessionId": testSessionID,
+			"toolCall":  tc,
+			"options": []any{
+				map[string]any{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+				map[string]any{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+			},
+		}})
+	}
+	first := fileCall("e1", "edit", "/x/a.go")
+	first["content"] = diffContent("/x/a.go", "a\n", "b\n")
+	s := baseScript()
+	s["session/prompt"] = []fakeStep{
+		step("update", first),
+		perm("e1", "edit", "/x/a.go"),
+		perm("d1", "delete", "/x/b.txt"),
+		{Result: raw(`{"stopReason":"end_turn"}`)},
+	}
+	a := newEnv(t, s).spawn(t, agent.SpawnOptions{})
+	send(t, a, "go")
+	var perms []agent.Event
+	until(t, a, func(ev agent.Event) bool {
+		if ev.Kind == agent.EvPermRequest {
+			perms = append(perms, ev)
+			if err := a.Decide(ev.PermID, true); err != nil {
+				t.Errorf("Decide: %v", err)
+			}
+		}
+		return ev.Kind == agent.EvTurnEnd
+	})
+	if len(perms) != 2 {
+		t.Fatalf("got %d permission events, want 2", len(perms))
+	}
+	if perms[0].ToolName != "Edit" || perms[0].ToolID != "e1" || string(perms[0].Input) != `{"file_path":"/x/a.go"}` {
+		t.Fatalf("edit request %q %s", perms[0].ToolName, perms[0].Input)
+	}
+	if perms[1].ToolName != "Delete" || perms[1].ToolID != "d1" || string(perms[1].Input) != `{"file_path":"/x/b.txt"}` {
+		t.Fatalf("delete request %q %s", perms[1].ToolName, perms[1].Input)
 	}
 }
 

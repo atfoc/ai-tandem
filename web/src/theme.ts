@@ -1,14 +1,17 @@
 // Applies the colour theme to the page: `data-theme` on <html>, which styles.css keys its colour
-// tokens on, and Excalidraw's `theme` prop (Canvas.tsx, from the store). index.html sets the
-// attribute before the first paint; this keeps it current when the choice or the system changes.
+// tokens on, `data-flavour` beside it while the choice is a Catppuccin flavour (flavours.css), and
+// Excalidraw's `theme` prop (Canvas.tsx, from the store). index.html sets the attributes before the
+// first paint; this keeps them current when the choice or the system changes.
 import { getState, setState, safeSet } from "./store.ts";
-import { resolveTheme, type ThemePref } from "./logic/theme.ts";
+import { flavourOf, resolveTheme, type ThemePref } from "./logic/theme.ts";
 
 const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : null;
 
 function apply() {
-  const theme = resolveTheme(getState().themePref, !!media?.matches);
-  document.documentElement.dataset.theme = theme;
+  const pref = getState().themePref, theme = resolveTheme(pref, !!media?.matches), flavour = flavourOf(pref);
+  const data = document.documentElement.dataset;
+  data.theme = theme;
+  if (flavour) data.flavour = flavour; else delete data.flavour;
   if (theme !== getState().theme) setState({ theme });
 }
 

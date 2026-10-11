@@ -601,6 +601,10 @@ async function stepFolderGone() {
 async function stepBoard() {
   await page.click("button.icon-btn.new");
   await menuItem(page, /^\s*New whiteboard\s*$/).click();
+  // With another server in the list the page asks first where the board lives.
+  const here = page.locator("main.board-choice .board-choice-item", { hasText: "This computer" });
+  await waitFor("the board's server choice, or the new board", async () => (await here.count()) > 0 || !!(await sel(page)).board);
+  if (await here.count()) await here.click();
   const board = await waitFor("the page selects its new board", async () => (await sel(page)).board ?? null);
   const input = page.locator(".side-row.is-board .name-input"); // the row opens in rename mode
   await input.waitFor();
@@ -612,7 +616,13 @@ async function stepBoard() {
   const id = await waitFor("the page selects the board's new chat", async () => { const c = (await sel(page)).chat; return c && !before.has(c) ? c : null; });
   await box(page).waitFor();
   const chip = page.locator(".composer .server-chip.static");
+  // In the board's panel the toolbar has no room for the chip: it is in the "more" popup, which is opened to read it.
+  const more = page.locator(".composer .more-chip");
+  await waitFor("the server chip, or the toolbar's more", async () => (await chip.count()) + (await more.count()) > 0).catch(() => {});
+  const inMore = !(await chip.count()) && (await more.count()) > 0;
+  if (inMore) await more.click();
   const seen = { chips: await chip.count(), text: (await chip.first().innerText().catch(() => "")).trim(), title: (await chip.first().getAttribute("title").catch(() => "")) ?? "", pickers: await page.locator(".composer .server-pick").count() };
+  if (inMore) await page.keyboard.press("Escape");
   const c = await chatOn(A, id);
   await check('W28 a chat on a board: one fixed server chip "This computer" with the board\'s reason, and no server choice',
     c?.board === board && !c?.server && seen.chips === 1 && seen.text === "This computer" && seen.title === "Server — Boards and their chats are on this computer" && seen.pickers === 0,

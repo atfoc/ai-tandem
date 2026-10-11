@@ -10,7 +10,7 @@ import { useStore, getState, upsertRun, answerRun, setRunStart, unsavedRunDraft 
 import { refreshRun, startRun, useFresh } from "./actions.ts";
 import { api } from "../api.ts";
 import { RefInput, type RefInputHandle } from "../RefInput.tsx";
-import { DirPicker, Picker, tildify } from "../Composer.tsx";
+import { ChipName, DirPicker, Picker, tildify } from "../Composer.tsx";
 import { DraftSaver, hasDraft } from "../logic/drafts.ts";
 import { limitsLabel, tiersLabel } from "../logic/run.ts";
 import { applies, applyResultOf, limitText, limitValue, settingsChange, setupValue, withoutGit,
@@ -204,7 +204,7 @@ function RunServer({ r, configure }: { r: RunView; configure: (p: Change) => Pro
   const w = useWhere(r);
   const [open, setOpen] = useState(false);
   const { options, fixed } = runServerChoice(servers, r, hasChats);
-  if (fixed) return <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${fixed}`}>{w.name}</span>;
+  if (fixed) return <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${fixed}`}><ChipName full={`${w.name} — ${fixed}`}>{w.name}</ChipName></span>;
   return <Picker className="server-pick" label={w.name} title="Server" hint={UNTIL_START} value={w.server}
     options={options.map((o) => ({ id: o.id, label: o.label, note: o.reason, disabled: o.disabled }))}
     more={{ label: "Servers…", onClick: () => openServers() }}

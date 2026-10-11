@@ -84,7 +84,7 @@ export const MoreIcon = () => (
 );
 
 export const Logo = () => (
-  <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="4" fill="var(--accent-fill)" /><path d="M5 12.5 8 5l2 5 1.2-2.2L13 12.5" stroke="#fff" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+  <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="4" fill="var(--accent-fill)" /><path d="M5 12.5 8 5l2 5 1.2-2.2L13 12.5" stroke="var(--on-accent)" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
 
 export const SunIcon = () => (
@@ -97,4 +97,14 @@ export const MoonIcon = () => (
 
 export const SystemIcon = () => (
   <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" /><path d="M5.5 14.5h5M8 11.5v3" /></svg>
+);
+
+/** A cup: a Catppuccin flavour, in the theme's picker. */
+export const CupIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 6.5h8.5v3.2a3.8 3.8 0 0 1-3.8 3.8h-.9a3.8 3.8 0 0 1-3.8-3.8z" /><path d="M11 7.5h1a1.75 1.75 0 0 1 0 3.5h-.3M5 2v2M8 2v2" /></svg>
+);
+
+/** A window with its sidebar: on the control that hides the sidebar, and on the rail's that shows it. */
+export const SideIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 2.5v11" /></svg>
 );

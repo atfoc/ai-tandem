@@ -1,7 +1,7 @@
 // The sidebar: groups the user made, each holding subgroups, whiteboards and runs (each with
 // its own chats) and plain chats, plus the ungrouped area. Also the selection helpers
 // every part of the app opens boards, runs and chats through.
-import React, { memo, useEffect, useRef, useState } from "react";
+import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore, getState, setState, safeSet, lastChat, setBoardDraft, upsertBoard, upsertChat, answerRun, isBusy, isLegacy, chatTitle, boardName, shownBranch, statesOfChat, threadOf, viewedBranch, type Sel } from "./store.ts";
 import { api } from "./api.ts";
 import { loadItems, loadTree, dropRun } from "./conn.ts";
@@ -11,6 +11,8 @@ import { NameInput } from "./ChatView.tsx";
 import { BranchBadge } from "./fork/Chrome.tsx";
 import { Menu, confirm, reportError, type ConfirmRequest } from "./Dialogs.tsx";
 import { buildTree, boardChats, contents, groupPath, subtree, type GroupTree } from "./logic/tree.ts";
+import { SOURCE_END, WINDOW_EVENTS, dropMark, type DropEvent } from "./logic/dropmark.ts";
+import { sideKeyName, sideSaved } from "./logic/layout.ts";
 import { dotState, rowLine } from "./logic/labels.ts";
 import { chatBusy, remoteRow, workingBranches, workingOn } from "./logic/status.ts";
 import { REMOVE, deleteAsk, deleteRefused, type DeleteAsk } from "./logic/remoteview.ts";
@@ -28,10 +30,10 @@ import { takeOnSelect } from "./logic/roles.ts";
 import { catalogFor } from "./logic/agentlist.ts";
 import { isDraft, runChats } from "./logic/run.ts";
 import { GROUP_ARCHIVE_RUN, GROUP_DELETE_RUN, groupCount, runArchiveConfirm, runDraftTag, runLightsGroup, workingRunIn } from "./logic/siderun.ts";
-import { AgentGlyph, BoardIcon, ChatIcon, Chevron, GroupIcon, Logo, MoonIcon, MoreIcon, RunIcon, SunIcon, SystemIcon, agentClass } from "./icons.tsx";
+import { AgentGlyph, BoardIcon, ChatIcon, Chevron, CupIcon, GroupIcon, Logo, MoonIcon, MoreIcon, RunIcon, SideIcon, SunIcon, SystemIcon, agentClass } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
 import { inDesktopApp, openServerLog, restartServer } from "./version.ts";
-import { THEME_PREFS, type ThemePref } from "./logic/theme.ts";
+import { themeMenu, themeTitle, type ThemePref } from "./logic/theme.ts";
 import { UNGROUPED, type Board, type ChatView, type Group, type RunView } from "./types.ts";
 import { ServersButton } from "./Servers.tsx";
 
@@ -116,7 +118,7 @@ export async function newBoard(group: string, server?: string): Promise<string> 
   return b.id;
 }
 
-let editRow: (key: string | null) => void = () => {}; // puts a row of the sidebar in rename mode (Sidebar sets it while it is mounted)
+let editRow: (key: string | null) => void = () => {}; // puts a row of the sidebar in rename mode (Sidebar sets it while it is mounted); nothing while the sidebar is hidden
 
 /** "New whiteboard": with no server but this computer the board is made here at once, its row in
  *  rename mode. Otherwise a draft: the row "Untitled" in the group and the server choice in the
@@ -286,16 +288,17 @@ function moveTo(key: string, group: string) {
   if (kind === "chat" && s.chats[id] && !s.chats[id].board && !s.chats[id].run && s.chats[id].group !== group) attempt("Couldn't move the chat", () => api.moveChat(id, group));
 }
 
-/** The group being dragged, so drop targets can refuse the group itself and its subgroups. */
-let draggingGroup: string | null = null;
+/** Tells the sidebar's one drop mark what a drag did (logic/dropmark.ts): the zone or the header that is lit, and
+ *  the group being dragged, so drop targets can refuse the group itself and its subgroups. */
+const markDrop = (e: DropEvent) => setState((s) => ({ dropAt: dropMark(s.dropAt, e) }));
 
 /** Whether the dragged group may go into (or before) target: not into an archived group, nor into itself. */
 function canTakeGroup(target: string, into: boolean): boolean {
-  const groups = getState().groups;
-  if (!draggingGroup) return false;
+  const { groups, dropAt: { group: dragged } } = getState();
+  if (!dragged) return false;
   if (into && target === UNGROUPED) return true;
   if (into && groups.find((g) => g.id === target)?.archived) return false;
-  return !subtree(groups, draggingGroup).has(target);
+  return !subtree(groups, dragged).has(target);
 }
 
 /** Nests a group in parent ("" = top level), before group before ("" = last among all groups). */
@@ -312,6 +315,27 @@ function moveGroup(dragged: string, parent: string, before = "") {
 
 // ---------------------------------------------------------------- sidebar
 
+/** Hides the sidebar or shows it: ⌘B, the control in its head, and the control of the rail a hidden one leaves
+ *  (App.tsx). Only its pane is not drawn: Sidebar stays mounted. The choice is saved in localStorage "aiwb.side".
+ *  A focus in the part that goes away moves to the control that undoes this, the rail's after a hiding and the
+ *  head's after a showing; focus: it goes there wherever it was (the click on one of the two controls). */
+export function setSideHidden(hidden: boolean, focus = false) {
+  if (getState().sideHidden === hidden) return;
+  const leaves = !!document.activeElement?.closest(hidden ? ".side-pane" : ".side-rail");
+  setState({ sideHidden: hidden }); safeSet("aiwb.side", sideSaved(hidden));
+  // (once the page is drawn anew: the control is not there before, and what the sidebar had open has ended)
+  if (focus || leaves) setTimeout(() => document.querySelector<HTMLElement>(hidden ? ".side-rail .side-show" : ".side-head .side-hide")?.focus());
+}
+
+/** Ends what a part of the sidebar has open (a menu, the row in rename mode) when the sidebar is hidden, by the
+ *  control or by the key: the one signal is the store's sideHidden being true, and each owner of something open
+ *  follows it with this. It runs before the page is painted and before the focus moves to the rail: a rename box is
+ *  gone, its text dropped as by Esc, before it can lose the focus, which would save the text. */
+function useSideHidden(end: () => void) {
+  const hidden = useStore((s) => s.sideHidden);
+  useLayoutEffect(() => { if (hidden) end(); }, [hidden]);
+}
+
 type Edit = { editing: string | null; setEditing: (k: string | null) => void };
 
 export function Sidebar() {
@@ -325,18 +349,25 @@ export function Sidebar() {
   const [menu, setMenu] = useState(false);
   const draft = useStore((s) => s.boardDraft?.group);
   const tree = buildTree({ groups, boards, chats, runs }, showArchived);
-  useEffect(() => { editRow = setEditing; return () => { editRow = () => {}; }; }, []);
+  // (what is made while the sidebar is hidden gets no rename box: nobody would see it, and hiding wins)
+  const edit = (key: string | null) => { if (!getState().sideHidden) setEditing(key); };
+  useEffect(() => { editRow = edit; return () => { editRow = () => {}; }; }, []);
+  useSideHidden(() => { setEditing(null); setMenu(false); });
   // a draft whose group is gone has no row: it ends
   useEffect(() => { if (draft !== undefined && draft !== UNGROUPED && !groups.some((g) => g.id === draft)) setBoardDraft(null); }, [draft, groups]);
+  useDropEnds();
 
-  const addGroup = (parent = "") => attempt("Couldn't create the group", async () => setEditing("group:" + await newGroup(parent)));
-  const addRun = (g: string) => attempt("Couldn't create the run", async () => setEditing("run:" + await newRun(g)));
+  const addGroup = (parent = "") => attempt("Couldn't create the group", async () => edit("group:" + await newGroup(parent)));
+  const addRun = (g: string) => attempt("Couldn't create the run", async () => edit("run:" + await newRun(g)));
 
   return (
     <nav className={`side ${draft !== undefined ? "drafting" : ""}`}>
       <div className="side-head">
-        <div className="brand"><Logo /> AI Whiteboard</div>
+        <div className="brand"><Logo /><span className="brand-name">AI Whiteboard</span></div>
         {!connected && <span className="offline">Reconnecting…</span>}
+        {/* (the press leaves the focus where it is: a rename box that lost it to the button would save its text before the click) */}
+        <button className="icon-btn side-hide" title={`Hide sidebar (${sideKeyName(navigator.platform)})`} aria-label="Hide sidebar"
+          onMouseDown={(e) => e.preventDefault()} onClick={() => setSideHidden(true, true)}><SideIcon /></button>
         <div className="menu-wrap">
           <button className="icon-btn new" title="New…" onClick={() => setMenu(!menu)}>+</button>
           {menu && (
@@ -371,7 +402,7 @@ export function Sidebar() {
           Show archived
         </label>
         <ServersButton />
-        <ThemeSwitch />
+        <ThemePicker />
       </div>
     </nav>
   );
@@ -425,43 +456,87 @@ function UpdateBanner() {
   );
 }
 
-const THEME_LABELS: Record<ThemePref, string> = { light: "Light", dark: "Dark", system: "System" };
-const THEME_ICONS: Record<ThemePref, () => React.JSX.Element> = { light: SunIcon, dark: MoonIcon, system: SystemIcon };
+const THEME_ICONS: Record<ThemePref, () => React.JSX.Element> = {
+  light: SunIcon, dark: MoonIcon, system: SystemIcon, latte: CupIcon, frappe: CupIcon, macchiato: CupIcon, mocha: CupIcon,
+};
 
-/** Light, dark, or the system's theme (theme.ts). */
-function ThemeSwitch() {
+/** The theme's picker (theme.ts): one button, which shows the choice's icon, and a menu that opens upward with the
+ *  three themes and the four Catppuccin flavours (logic/theme.ts themeMenu), the choice marked. The arrow keys, Home
+ *  and End move through it; a pick or Esc closes it and the focus is on the button again. */
+function ThemePicker() {
   const pref = useStore((s) => s.themePref);
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const items = () => [...(wrap.current?.querySelectorAll<HTMLElement>(".menu .menu-item") ?? [])];
+  // (the focus goes back to the button only from the menu: a press elsewhere on the page keeps what it focused)
+  const close = () => { if (wrap.current?.querySelector(".menu")?.contains(document.activeElement)) wrap.current.querySelector<HTMLElement>(".theme-btn")?.focus(); setOpen(false); };
+  useSideHidden(() => setOpen(false));
+  useEffect(() => { if (open) wrap.current?.querySelector<HTMLElement>(".menu .menu-item.on")?.focus(); }, [open]);
+  const keys = (e: React.KeyboardEvent) => {
+    const list = items(), at = list.indexOf(document.activeElement as HTMLElement);
+    const to = e.key === "ArrowDown" ? (at + 1) % list.length : e.key === "ArrowUp" ? (at + list.length - 1) % list.length : e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : -1;
+    if (!open || to < 0 || at < 0) return;
+    e.preventDefault(); list[to]?.focus();
+  };
+  const Icon = THEME_ICONS[pref];
   return (
-    <div className="seg" role="radiogroup" aria-label="Theme">
-      {THEME_PREFS.map((p) => {
-        const Icon = THEME_ICONS[p];
-        return (
-          <button key={p} role="radio" aria-checked={pref === p} className={pref === p ? "on" : ""}
-            title={p === "system" ? "Theme: System (follows the OS)" : `Theme: ${THEME_LABELS[p]}`}
-            onClick={() => setThemePref(p)}><Icon /></button>
-        );
-      })}
+    <div ref={wrap} className="menu-wrap theme-pick" onKeyDown={keys}>
+      <button className={`theme-btn ${open ? "open" : ""}`} title={themeTitle(pref)} aria-label={themeTitle(pref)} aria-haspopup="menu" aria-expanded={open}
+        onMouseDown={(e) => { if (open) e.stopPropagation(); /* (the menu does not close under the press, to be opened again by the click) */ }}
+        onClick={() => setOpen(!open)}><Icon /><span className="caret">▾</span></button>
+      {open && (
+        <Menu onClose={close} align="right" label="Theme">
+          {themeMenu(pref).map((g) => (
+            <React.Fragment key={g.head}>
+              <div className="menu-head">{g.head}</div>
+              {g.items.map((it) => {
+                const ItemIcon = THEME_ICONS[it.pref];
+                return (
+                  <button key={it.pref} role="menuitemradio" aria-checked={it.on} data-theme-pref={it.pref} className={`menu-item pick ${it.on ? "on" : ""}`}
+                    onClick={() => { setThemePref(it.pref); close(); }}>
+                    <ItemIcon /><span className="menu-label">{it.label}</span>{it.on && <span>✓</span>}
+                  </button>
+                );
+              })}
+            </React.Fragment>
+          ))}
+        </Menu>
+      )}
     </div>
   );
 }
 
-/** Takes boards, runs and chats (moved into group) and groups (nested in it; the ungrouped area: top level). */
+/** What ends a drag, or takes the pointer out of every zone, with no word to the zone that is lit: heard at the
+ *  window, each event in the phase logic/dropmark.ts gives it. */
+function useDropEnds() {
+  useEffect(() => {
+    const offs = WINDOW_EVENTS.map(({ type, capture, event }) => {
+      const hear = () => markDrop(event);
+      window.addEventListener(type, hear, capture);
+      return () => window.removeEventListener(type, hear, capture);
+    });
+    return () => offs.forEach((off) => off());
+  }, []);
+}
+
+/** Takes boards, runs and chats (moved into group) and groups (nested in it; the ungrouped area: top level). The zone
+ *  the pointer is in is lit, and it alone: the drop mark names one. */
 function DropZone({ group, className, children }: { group: string; className?: string; children: React.ReactNode }) {
-  const [over, setOver] = useState(false);
+  const over = useStore((s) => s.dropAt.zone === group);
   return (
     <div className={`${className ?? ""} ${over ? "drop" : ""}`}
       onDragOver={(e) => {
         const types = e.dataTransfer.types;
         if (!types.includes("text/x-aiwb") && !types.includes("text/x-aiwb-group")) return;
         e.stopPropagation();
-        if (types.includes("text/x-aiwb-group") && !canTakeGroup(group, true)) { setOver(false); return; }
-        e.preventDefault(); setOver(true);
+        if (types.includes("text/x-aiwb-group") && !canTakeGroup(group, true)) { markDrop({ type: "nowhere" }); return; }
+        e.preventDefault(); markDrop({ type: "in", zone: group });
       }}
-      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) markDrop({ type: "out", zone: group }); }}
       onDrop={(e) => {
         const k = e.dataTransfer.getData("text/x-aiwb");
         const gid = e.dataTransfer.getData("text/x-aiwb-group");
-        setOver(false);
+        markDrop({ type: "end" });
         if (!k && !gid) return;
         e.preventDefault(); e.stopPropagation();
         if (k) moveTo(k, group);
@@ -472,9 +547,13 @@ function DropZone({ group, className, children }: { group: string; className?: s
   );
 }
 
+/** The dragged row or header hears the end of its own drag (logic/dropmark.ts SOURCE_END): removed from the page in
+ *  mid-drag, it is the only one that is told. */
+const hearEnd = (e: React.DragEvent) => e.currentTarget.addEventListener(SOURCE_END.type, () => markDrop(SOURCE_END.event), { once: true });
+
 const drag = (key: string) => ({
   draggable: true,
-  onDragStart: (e: React.DragEvent) => { e.stopPropagation(); e.dataTransfer.setData("text/x-aiwb", key); e.dataTransfer.effectAllowed = "move"; },
+  onDragStart: (e: React.DragEvent) => { e.stopPropagation(); markDrop({ type: "start", group: null }); hearEnd(e); e.dataTransfer.setData("text/x-aiwb", key); e.dataTransfer.effectAllowed = "move"; },
 });
 
 type RowItem = { label: string; run: () => void; tone?: "danger" };
@@ -484,6 +563,7 @@ function RowMenu({ items, label }: { items: (RowItem & { sub?: RowItem[] })[]; l
   const [open, setOpen] = useState(false);
   const [sub, setSub] = useState<RowItem[] | null>(null);
   const close = () => { setOpen(false); setSub(null); };
+  useSideHidden(close);
   return (
     <div className="menu-wrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
       <button className={`side-hover icon-btn sm ${open ? "open" : ""}`} title={label} onClick={() => (open ? close() : setOpen(true))}><MoreIcon /></button>
@@ -504,6 +584,7 @@ function RowMenu({ items, label }: { items: (RowItem & { sub?: RowItem[] })[]; l
 
 function AddMenu({ title, head, children }: { title: string; head: string; children: (close: () => void) => React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  useSideHidden(() => setOpen(false));
   return (
     <div className="menu-wrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
       <button className={`side-hover icon-btn sm ${open ? "open" : ""}`} title={title} onClick={() => setOpen(!open)}>+</button>
@@ -538,7 +619,7 @@ function GroupNode({ n, depth, editing, setEditing, addBoard, addRun, addGroup }
   const groups = useStore((s) => s.groups);
   const showArchived = useStore((s) => s.showArchived);
   const draft = useStore((s) => s.boardDraft?.group === g.id);
-  const [dropBefore, setDropBefore] = useState(false);
+  const dropBefore = useStore((s) => s.dropAt.before === g.id);
   const collapsed = !!g.collapsed;
   const inside = contents(n);
   const count = groupCount(inside);
@@ -562,20 +643,19 @@ function GroupNode({ n, depth, editing, setEditing, addBoard, addRun, addGroup }
       {/* a group dropped on the top part of the header goes before this group; lower, into it (the DropZone) */}
       <div className={`side-group-head ${dropBefore ? "drop-before" : ""}`} title={groupPath(groups, g.id).join(" / ")}
         draggable={editing !== "group:" + g.id}
-        onDragStart={(e) => { e.stopPropagation(); draggingGroup = g.id; e.dataTransfer.setData("text/x-aiwb-group", g.id); e.dataTransfer.effectAllowed = "move"; }}
-        onDragEnd={() => { draggingGroup = null; }}
+        onDragStart={(e) => { e.stopPropagation(); markDrop({ type: "start", group: g.id }); hearEnd(e); e.dataTransfer.setData("text/x-aiwb-group", g.id); e.dataTransfer.effectAllowed = "move"; }}
         onDragOver={(e) => {
           if (!e.dataTransfer.types.includes("text/x-aiwb-group")) return;
           const r = e.currentTarget.getBoundingClientRect();
-          const before = e.clientY < r.top + r.height / 2 && canTakeGroup(g.id, false);
-          setDropBefore(before);
-          if (before) { e.preventDefault(); e.stopPropagation(); }
+          // lower, or refused: the group's zone, which hears the event next, lights itself or nothing
+          if (e.clientY >= r.top + r.height / 2 || !canTakeGroup(g.id, false)) return;
+          e.preventDefault(); e.stopPropagation(); markDrop({ type: "before", head: g.id });
         }}
-        onDragLeave={() => setDropBefore(false)}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) markDrop({ type: "off", head: g.id }); }}
         onDrop={(e) => {
-          if (!dropBefore) return;
+          if (getState().dropAt.before !== g.id) return;
           const id = e.dataTransfer.getData("text/x-aiwb-group");
-          setDropBefore(false);
+          markDrop({ type: "end" });
           if (!id) return;
           e.preventDefault(); e.stopPropagation();
           moveGroup(id, g.parent ?? "", g.id);

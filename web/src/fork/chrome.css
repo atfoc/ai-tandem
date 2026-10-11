@@ -3,6 +3,7 @@
 .fk-banner-text { flex: 1; min-width: 0; color: var(--text); }
 .fk-banner .btn.ghost { color: var(--accent); }
 .fk-banner .btn.ghost:hover { background: var(--bg); }
+.fk-banner .btn.ghost:disabled:hover { background: none; }
 
 /* header and sidebar */
 .fk-crumb { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
@@ -12,4 +13,5 @@
 .fk-alert.failed { border: 1px solid var(--danger); background: var(--danger-soft); color: var(--text); font-weight: 600; }
 .fk-alert.quiet { background: none; color: var(--muted); }
 .fk-alert:hover { text-decoration: underline; }
+.fk-alert:disabled { opacity: .55; cursor: default; text-decoration: none; }
 .fk-alert.failed:has(+ .fk-alert), .fk-alert + .fk-alert { max-width: 30%; } /* the error and the count beside it */

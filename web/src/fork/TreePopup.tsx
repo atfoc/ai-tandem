@@ -1,6 +1,9 @@
 // The tree popup: a chat's branches as one tree, shown while State.treeNav is set. A click picks
 // a row, a double click opens the chat there, a right click has the rest. The row a branch ends at
 // says what the branch is doing and has its Stop; a chat forked from this one is a link in the tree.
+// What a wait of the chat holds (logic/waits.ts heldReason) is drawn disabled and says why: opening
+// a row and "Branch and edit" while a message that starts a new branch is on its way, the two forks
+// while a fork is being made. Label, Stop and a fork's link stay live.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./fork.css";
 import "./popup.css";
@@ -18,6 +21,7 @@ import { busyBranches, escStep, isTreeKey, menuItems, modelNotes, pickedRow, row
 import { chatBusy } from "../logic/status.ts";
 import { catalogFor } from "../logic/agentlist.ts";
 import { serverOf } from "../logic/serverlists.ts";
+import { heldReason } from "../logic/waits.ts";
 import { closeTree, forkChat, labelMessage, openTree, startMove, viewBranch } from "./actions.ts";
 import { LabelInput } from "./LabelInput.tsx";
 import { TreeFolderHint } from "./FolderHint.tsx";
@@ -51,6 +55,7 @@ function Navigator({ nav }: { nav: Nav }) {
   const shown = useStore((s) => shownBranch(s, nav.chat));
   const move = useStore((s) => s.moves[nav.chat]);
   const states = useStore((s) => statesOfChat(s, nav.chat));
+  const waits = useStore((s) => s.waits[nav.chat]);
   const chats = useStore((s) => s.chats);
   const cat = useStore((s) => { const k = s.chats[nav.chat]; return k ? catalogFor(s, serverOf(k), k.agent) : undefined; });
   const [loading, setLoading] = useState(true);
@@ -133,9 +138,11 @@ function Navigator({ nav }: { nav: Nav }) {
   const n = branchCount(c);
 
   // Opens the chat at an entry: what is sent next branches off there; the end of a branch is just shown.
+  // Nothing is opened, and the popup stays, while the chat's message is on its way (the rows say so).
+  const noOpen = heldReason(waits, "open");
   const open = (id: string) => {
     const o = tree && rowActions(tree, id, { busy, readOnly }).open;
-    if (!o) return;
+    if (!o || noOpen) return;
     if ("view" in o) void viewBranch(nav.chat, o.view).then(focusComposer);
     else void startMove(nav.chat, o.target, o.edit);
     closeTree();
@@ -152,6 +159,7 @@ function Navigator({ nav }: { nav: Nav }) {
     setMenu(null);
     if (a.id === "note") return;
     if (a.id === "label") { setLabeling(e.id); return; }
+    if (heldReason(waits, a.id)) return;
     if (a.id === "branchEdit") void startMove(nav.chat, { branch: e.branch, at: a.at, new: true }, e.item.i);
     else void forkChat(nav.chat, e.branch, a.at, a.id === "forkEdit" ? e.item.i : undefined);
     closeTree();
@@ -198,7 +206,7 @@ function Navigator({ nav }: { nav: Nav }) {
               }
               const e = tree.entries[r.id];
               return (
-                <RowView key={r.id} r={r} e={e} on={r.id === selId} agent={c.agent} mark={marks[r.id] ?? null} note={notes[r.id]} end={ends[r.id]}
+                <RowView key={r.id} r={r} e={e} on={r.id === selId} agent={c.agent} mark={marks[r.id] ?? null} note={notes[r.id]} end={ends[r.id]} held={noOpen}
                   labeling={labeling === r.id} onLabel={(v) => doneLabel(e, v)} onStop={stop}
                   onClick={() => { setPicked(r.id); search.current?.focus(); }} onOpen={() => open(r.id)}
                   onMenu={(x, y) => {
@@ -211,16 +219,19 @@ function Navigator({ nav }: { nav: Nav }) {
         </div>
         <div className="fk-nav-foot">
           {readOnly ? <span>Right-click a message to label it.</span>
+            : noOpen ? <span className="fk-held">{noOpen}. Right-click to fork or label.</span>
             : <span>Double-click a message to open the chat there; what you send next branches off. Right-click to fork or label.</span>}
           <TreeFolderHint chatId={nav.chat} />
         </div>
         {menu && tree && acts.length > 0 && (
           <div className="fk-ctx" style={{ left: Math.min(menu.x, innerWidth - 230), top: Math.min(menu.y, innerHeight - 170) }}>
             <Menu onClose={() => setMenu(null)}>
-              {acts.map((a) => a.id === "note"
-                ? <div key={a.id} className="menu-note fk-ctx-note">{a.label}</div>
-                : <button key={a.id} className="menu-item plain" disabled={a.id !== "label" && a.disabled}
-                    title={a.id !== "label" && a.disabled ? "This branch is still working: fork from one of its finished turns, or wait for it" : undefined} onClick={() => run(tree.entries[menu.id], a)}>{a.label}</button>)}
+              {acts.map((a) => {
+                if (a.id === "note") return <div key={a.id} className="menu-note fk-ctx-note">{a.label}</div>;
+                const held = heldReason(waits, a.id), off = a.id !== "label" && a.disabled;
+                return <button key={a.id} className="menu-item plain" disabled={off || !!held}
+                  title={off ? "This branch is still working: fork from one of its finished turns, or wait for it" : held || undefined} onClick={() => run(tree.entries[menu.id], a)}>{a.label}</button>;
+              })}
             </Menu>
           </div>
         )}
@@ -241,20 +252,23 @@ function markText(m: MarkOf): { text: string; title?: string } {
   }
 }
 
-function RowView({ r, e, on, agent, mark, note, end, labeling, onLabel, onStop, onClick, onOpen, onMenu }: {
-  r: Row; e: Entry; on: boolean; agent: string; mark: MarkOf | null; note?: string; end?: string; labeling: boolean; onLabel: (v: string | null) => void;
+/** held: why a double click opens nothing now ("" when it does): the row says so in its title, and its text, which
+ *  is what a double click opens, is marked as disabled. The row itself is not: its Stop and its label stay live. */
+function RowView({ r, e, on, agent, mark, note, end, held, labeling, onLabel, onStop, onClick, onOpen, onMenu }: {
+  r: Row; e: Entry; on: boolean; agent: string; mark: MarkOf | null; note?: string; end?: string; held: string; labeling: boolean; onLabel: (v: string | null) => void;
   onStop: (branch: string) => void; onClick: () => void; onOpen: () => void; onMenu: (x: number, y: number) => void;
 }) {
   const kind = e.item.kind;
   const m = mark && markText(mark);
   // the label field keeps its own clicks and its own menu; so does Stop
   return (
-    <div className={`fk-row k-${kind} ${on ? "on" : ""} ${r.onPath ? "path" : "off"}${mark ? ` ${MARK_CLASS[mark.mark]}` : ""}`} data-end={end} onClick={onClick}
+    <div className={`fk-row k-${kind} ${on ? "on" : ""} ${r.onPath ? "path" : "off"}${mark ? ` ${MARK_CLASS[mark.mark]}` : ""}${held ? " held" : ""}`} data-end={end} onClick={onClick}
+      title={held || undefined}
       onDoubleClick={() => { if (!labeling) onOpen(); }}
       onContextMenu={(ev) => { if (labeling) return; ev.preventDefault(); onMenu(ev.clientX, ev.clientY); }}>
       <Gutter g={r.gutter} />
       <span className="fk-glyph">{kind === "user" ? <span className="fk-you">you</span> : <AgentGlyph agent={agent} size={10} />}</span>
-      {labeling ? <LabelInput initial={e.label ?? ""} onDone={onLabel} /> : <span className="fk-text">{preview(e.item.text, 110)}</span>}
+      {labeling ? <LabelInput initial={e.label ?? ""} onDone={onLabel} /> : <span className="fk-text" aria-disabled={held ? true : undefined}>{preview(e.item.text, 110)}</span>}
       {!labeling && e.label && <span className="fk-tag" title={e.label}>{e.label}</span>}
       {note && <span className="fk-model" title={`This branch runs on ${note}`}>{note}</span>}
       {m && <span className="fk-mark" title={m.title}>{m.text}</span>}

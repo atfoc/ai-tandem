@@ -96,6 +96,18 @@ test("Pi's own tools", () => {
   assert.equal(toolVerb("ls", {}), "Listing a directory");
 });
 
+test("Cursor's delete", () => {
+  assert.equal(toolVerb("Delete", { file_path: "/a/b/old.ts" }), "Deleting old.ts");
+  assert.equal(toolDone("Delete", { file_path: "/a/b/old.ts", old_string: "gone\n" }, ""), "Deleted old.ts");
+  assert.equal(toolVerb("Delete", {}), "Deleting a file");
+  assert.equal(toolDone("Delete", {}, ""), "Deleted a file");
+  assert.equal(toolVerb("Delete", null), "Deleting a file");
+  assert.equal(toolDone("Delete", undefined, undefined), "Deleted a file");
+  // A thread from before the tool had its name holds the call under its title, with rawInput as the input.
+  assert.equal(toolVerb("Delete `/a/b/old.ts`", { path: "/a/b/old.ts" }), "Delete `/a/b/old.ts`");
+  assert.equal(toolDone("Delete `/a/b/old.ts`", { path: "/a/b/old.ts" }, ""), "Delete `/a/b/old.ts`");
+});
+
 test("other MCP servers", () => {
   assert.equal(toolVerb("mcp__github__create_issue", {}), "github · create issue");
   assert.equal(toolDone("mcp__github__create_issue", {}, "x"), "github · create issue");

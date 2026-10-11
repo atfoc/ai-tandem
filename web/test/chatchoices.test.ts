@@ -50,7 +50,8 @@ test("the server choice lists this computer and every entry, and ends with Serve
   assert.ok(/const \{ options, fixed \} = serverChoice\(servers, c, useBoardServer\(c\)\);/.test(choices), "ServerPick lists serverChoice");
   assert.ok(choices.includes("options={options.map((o) => ({ id: o.id, label: o.label, note: o.reason, disabled: o.disabled }))}"));
   assert.ok(choices.includes('more={{ label: "Servers…", onClick: () => openServers() }}'));
-  assert.ok(choices.includes("if (fixed) return <span className={`tchip static server-chip ${w.connected ? \"\" : \"off\"}`} title={`Server — ${fixed}`}>{w.name}</span>;"));
+  // (the name in an element of its own, which is cut where it is long; the chip's title is the reason, the name's has the name whole)
+  assert.ok(choices.includes("if (fixed) return <span className={`tchip static server-chip ${w.connected ? \"\" : \"off\"}`} title={`Server — ${fixed}`}><ChipName full={`${w.name} — ${fixed}`}>{w.name}</ChipName></span>;"));
   // a disabled option takes no pick, by the mouse or by Enter
   assert.ok(composer.includes("if (!o || o.disabled) return;"));
   assert.ok(composer.includes("aria-disabled={o.disabled || undefined} title={o.disabled ? o.note : undefined}"));
@@ -112,6 +113,18 @@ test("the agent choice is in the toolbar only while agentOpen; the server also f
   assert.equal(agentOpen({ ...open, forkedFrom: "c_0" }), false); // a fork at its start
   assert.equal(agentOpen({ ...open, branch: "b_1" }), false); // a branch at its start
   assert.equal(agentOpen({ ...open, branches: 2 }), false);
+});
+
+test("each choice is drawn once, in the toolbar's row or in its popup, and the reason line is the row's own", () => {
+  // one node per control, placed by the fit: the row draws those that stay, the popup the rest
+  assert.ok(toolbar.includes("{f.toolbar.map((id) => <React.Fragment key={id}>{chips[id]}</React.Fragment>)}"));
+  assert.ok(toolbar.includes('{f.popup.map((id) => <div key={id} className="more-row">{chips[id]}</div>)}'));
+  assert.equal(count(toolbar, /chips\[id\]/g), 2);
+  // the line that says why a chat has no agent is not part of the agent's chip, which may be in the popup
+  const pick = choices.slice(choices.indexOf("export function AgentPick("), choices.indexOf("export function useAgentChip("));
+  assert.ok(pick.length > 0 && !pick.includes("agent-reason"));
+  assert.ok(/^\s*\{agentOpen\(c\) && <AgentReason c=\{c\} \/>\}$/m.test(toolbar));
+  assert.ok(toolbar.indexOf("<AgentReason ") > toolbar.indexOf("<ContextMeter "), "after the row's controls");
 });
 
 // ---- AC44: the usable agents alone, the agent the server lacks, the chat with no agent

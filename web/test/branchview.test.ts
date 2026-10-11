@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  afterBack, afterSent, bannerOf, bannerText, Loads, moveDropped, moveValid, quoteLimit, quotesBefore,
+  afterBack, afterSent, bannerOf, bannerPlain, bannerText, Loads, moveDropped, moveValid, quoteLimit, quotesBefore,
 } from "../src/logic/branchview.ts";
 import { buildTree, withLive } from "../src/logic/forktree.ts";
 import type { Held, Item, PendingMove, Reference, Target, TreeView } from "../src/types.ts";
@@ -411,6 +411,17 @@ test("bannerText: the approval the agent waits for is behind the cut, and Back s
   assert.equal(b(false), "New branch after “options”: your message starts it. “mem” stays in the tree.");
   // without a branch to name
   assert.equal(bannerText({ kind: "new", after: null, stays: null, asks: true }), "New branch from the start: your message starts it. The agent is waiting for your approval: Back shows it.");
+});
+
+test("bannerText, bannerPlain: while the move's message is on its way the banner says that it is being sent", () => {
+  assert.equal(bannerText({ kind: "new", after: "options", stays: "mem" }, true), "New branch after “options”: your message is being sent. “mem” stays in the tree.");
+  assert.equal(bannerText({ kind: "new", after: null, stays: null }, true), "New branch from the start: your message is being sent.");
+  // Back is held meanwhile: the banner does not send the user to it
+  assert.equal(bannerText({ kind: "new", after: "options", stays: "mem", asks: true }, true), "New branch after “options”: your message is being sent. “mem” stays in the tree.");
+  assert.equal(bannerText({ kind: "new", after: "options", stays: "mem" }, false), bannerText({ kind: "new", after: "options", stays: "mem" }));
+  // a move whose list or tree is not here (a snapshot dropped them) cannot name its point
+  assert.equal(bannerPlain(), "Your next message starts from here.");
+  assert.equal(bannerPlain(true), "Your message is being sent.");
 });
 
 test("bannerOf: the message before the point is previewed in 44 characters", () => {

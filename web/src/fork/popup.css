@@ -16,6 +16,7 @@
 .fk-row.on { background: var(--accent-soft); }
 .fk-row.off .fk-text { color: var(--muted); }
 .fk-row.path .fk-text { color: var(--text); font-weight: 500; }
+.fk-row.held .fk-text, .fk-row.held.path .fk-text { color: var(--faint); } /* a double click opens nothing now: the row's title and the popup's foot say why */
 .fk-gutter { flex: none; align-self: stretch; display: flex; }
 .fk-gutter .g { position: relative; width: 16px; flex: none; }
 .fk-gutter .g.pipe::before, .fk-gutter .g.tee::before, .fk-gutter .g.elbow::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; border-left: 1.5px solid color-mix(in srgb, var(--faint) 60%, transparent); }

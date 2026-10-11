@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -387,6 +388,8 @@ type toolCall struct {
 	Locations     []struct {
 		Path string `json:"path"`
 	} `json:"locations"`
+
+	diff *fileDiff // the diff block of the update, or the one an earlier update brought
 }
 
 type update struct {
@@ -467,19 +470,32 @@ func (p *proc) streamUpdate(st *stream, sub string, u update) {
 	case "tool_call", "tool_call_update":
 		tc := u.toolCall
 		json.Unmarshal(u.Content, &tc.Content)
+		tc.diff = diffBlock(tc.Content)
+		var was toolCall // the call as it was remembered, for an update
 		p.mu.Lock()
 		if u.SessionUpdate == "tool_call" {
 			st.inText = false
 			st.tools[tc.ToolCallID] = tc
 		} else {
-			tc = mergeTool(st.tools[tc.ToolCallID], tc)
+			was = st.tools[tc.ToolCallID]
+			tc = mergeTool(was, tc)
 			st.tools[tc.ToolCallID] = tc
 		}
 		p.mu.Unlock()
+		// An update that brings the texts of an edit or a delete tells the input itself, and before
+		// the result: an input that comes after its result is not saved. An update that leaves such
+		// a call as it was remembered is the same one again and tells nothing.
+		texts := false
+		if tc.Kind == "edit" || tc.Kind == "delete" {
+			if tc.diff != nil && reflect.DeepEqual(tc, was) {
+				return
+			}
+			texts = !reflect.DeepEqual(tc.diff, was.diff)
+		}
 		if u.SessionUpdate == "tool_call" {
 			name, input := p.normalizeTool(tc)
 			p.emit(agent.Event{Kind: agent.EvToolStart, ToolID: tc.ToolCallID, ToolName: name, Input: input, Sub: sub})
-		} else if present(u.RawInput) {
+		} else if present(u.RawInput) || texts {
 			name, input := p.normalizeTool(tc)
 			p.emit(agent.Event{Kind: agent.EvToolInput, ToolID: tc.ToolCallID, ToolName: name, Input: input, Sub: sub})
 		}
@@ -669,7 +685,8 @@ func (p *proc) taskToolID(id string) string {
 }
 
 // mergeTool fills an update's missing fields from the tool_call it updates, and remembers the
-// update's own fields for later updates.
+// update's own fields for later updates. The content stays the update's own, as the result is read
+// from it; the diff block read from an earlier one is kept.
 func mergeTool(base, u toolCall) toolCall {
 	if u.Title == "" {
 		u.Title = base.Title
@@ -683,7 +700,67 @@ func mergeTool(base, u toolCall) toolCall {
 	if len(u.Locations) == 0 {
 		u.Locations = base.Locations
 	}
+	if u.diff == nil {
+		u.diff = base.diff
+	}
 	return u
+}
+
+// maxDiffText is the most an edit's or a delete's texts may take in the item's input: the bytes
+// of the old and the new text together. Cursor may send the whole file twice.
+const maxDiffText = 512 << 10
+
+// fileDiff is the diff block of an edit or a delete: content [{type:"diff", path, oldText,
+// newText}], as read from cursor-agent's code (2026.10.01-e373342), not from a recorded run. An
+// edit carries the file before and after, or the hunks of each joined by "\n...\n", and no old
+// text (absent or null) for a new file; a delete carries the deleted file as the old text and ""
+// as the new one.
+type fileDiff struct {
+	path    string
+	old     *string // nil when the block has no old text
+	new     string
+	omitted bool // the texts were over maxDiffText and are not kept
+}
+
+// diffBlock reads the one diff block of a tool call's content. nil when there is none, more than
+// one, or one of another shape: the call then keeps the input it had without the block.
+func diffBlock(content []json.RawMessage) *fileDiff {
+	var d *fileDiff
+	for _, raw := range content {
+		var kind struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &kind) != nil || kind.Type != "diff" {
+			continue
+		}
+		var b struct {
+			Path    string  `json:"path"`
+			OldText *string `json:"oldText"`
+			NewText *string `json:"newText"`
+		}
+		if d != nil || json.Unmarshal(raw, &b) != nil || b.NewText == nil {
+			return nil
+		}
+		d = &fileDiff{path: b.Path, old: b.OldText, new: *b.NewText}
+		n := len(d.new)
+		if d.old != nil {
+			n += len(*d.old)
+		}
+		if n > maxDiffText {
+			d.old, d.new, d.omitted = nil, "", true
+		}
+	}
+	return d
+}
+
+// fileInput is the input of an Edit or a Delete under the names of Claude's Edit. Without a diff
+// block it is the path alone. An edit has no old_string for a new file; a delete has no
+// new_string. texts_omitted says that the block had texts over maxDiffText, which were left out.
+type fileInput struct {
+	FilePath     string  `json:"file_path"`
+	OldString    *string `json:"old_string,omitempty"`
+	NewString    *string `json:"new_string,omitempty"`
+	TextsOmitted bool    `json:"texts_omitted,omitempty"`
 }
 
 // command is the shell command of an execute tool call: rawInput.command, else the title
@@ -764,8 +841,30 @@ func (p *proc) normalizeTool(tc toolCall) (string, json.RawMessage) {
 		return "Bash", mustJSON(map[string]string{"command": command(tc)})
 	case "read":
 		return "Read", mustJSON(map[string]string{"file_path": path})
-	case "edit":
-		return "Edit", mustJSON(map[string]string{"file_path": path})
+	case "edit", "delete":
+		in := fileInput{FilePath: path}
+		if d := tc.diff; d != nil {
+			if in.FilePath == "" {
+				in.FilePath = d.path
+			}
+			in.OldString, in.TextsOmitted = d.old, d.omitted
+			if tc.Kind == "edit" && !d.omitted {
+				in.NewString = &d.new
+			}
+		}
+		if tc.Kind == "edit" {
+			return "Edit", mustJSON(in)
+		}
+		// A delete was named by its title, with rawInput {path} as its input: the path stays
+		// when there is no location and no block.
+		if in.FilePath == "" {
+			var raw struct {
+				Path string `json:"path"`
+			}
+			json.Unmarshal(tc.RawInput, &raw)
+			in.FilePath = raw.Path
+		}
+		return "Delete", mustJSON(in)
 	case "search":
 		return "Grep", mustJSON(map[string]string{"pattern": tc.Title})
 	case "fetch":

@@ -12,22 +12,8 @@ import React, { createContext, useContext, useMemo, useRef, useState } from "rea
 import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { createLowlight } from "lowlight";
-import bash from "highlight.js/lib/languages/bash";
-import css from "highlight.js/lib/languages/css";
-import diff from "highlight.js/lib/languages/diff";
-import go from "highlight.js/lib/languages/go";
-import javascript from "highlight.js/lib/languages/javascript";
-import json from "highlight.js/lib/languages/json";
-import markdown from "highlight.js/lib/languages/markdown";
-import python from "highlight.js/lib/languages/python";
-import rust from "highlight.js/lib/languages/rust";
-import shell from "highlight.js/lib/languages/shell";
-import sql from "highlight.js/lib/languages/sql";
-import typescript from "highlight.js/lib/languages/typescript";
-import xml from "highlight.js/lib/languages/xml";
-import yaml from "highlight.js/lib/languages/yaml";
 import { useStore } from "./store.ts";
+import { lowlight } from "./highlight.ts";
 import { openBoard } from "./Sidebar.tsx";
 import { resolveName, cleanName } from "./logic/mentions.ts";
 import { parseRef } from "./logic/refs.ts";
@@ -61,9 +47,7 @@ export function Markdown({ text, user = false, board, agent, streaming = false }
 
 const REMARK: Options["remarkPlugins"] = [remarkGfm];
 const REMARK_USER: Options["remarkPlugins"] = [remarkGfm, remarkBreaks];
-// Code colours for the languages agents write most (their aliases too: sh, js, ts, py, html,
-// yml, …). Only fences that name their language are highlighted: no guessing while streaming.
-const lowlight = createLowlight({ bash, css, diff, go, javascript, json, markdown, python, rust, shell, sql, typescript, xml, yaml });
+// Only fences that name their language are highlighted (highlight.ts): no guessing while streaming.
 
 /** A rehype plugin: `pre > code.language-x` gets highlight.js's spans when x is known. */
 function rehypeCode() {

@@ -10,6 +10,7 @@
 .thread > .msg:has(> .fk-marker:hover) > .fk-acts { display: none; }
 .fk-act { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--muted); font-size: 11.5px; line-height: 1.5; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
 .fk-act:hover { background: var(--accent-soft); color: var(--accent); }
+.fk-act:disabled, .fk-act:disabled:hover { background: none; color: var(--faint); cursor: default; }
 .fk-act:is(.k-fork, .k-forkEdit)::before { content: "⧉"; }
 
 /* the label: under a reply's text, and under your message's bubble, at its right */

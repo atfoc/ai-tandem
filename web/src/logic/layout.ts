@@ -1,4 +1,5 @@
-// Widths of the resizable panes: the sidebar, and a board's chat panel. DOM-free.
+// Widths of the resizable panes: the sidebar, and a board's chat panel; and whether the sidebar is
+// shown, with the shortcut that hides it. DOM-free.
 
 export type Pane = "side" | "panel";
 export type Widths = Record<Pane, number>;
@@ -30,3 +31,27 @@ export function parseWidths(saved: string | null): Widths {
   const one = (p: Pane) => (typeof v?.[p] === "number" ? clampWidth(p, v[p]) : PANES[p].def);
   return { side: one("side"), panel: one("panel") };
 }
+
+/** Whether the sidebar is hidden, as saved in localStorage "aiwb.side": only what sideSaved wrote for a hidden one
+ *  hides it. Nothing saved, or anything else, is a sidebar that shows. */
+export const parseSideHidden = (saved: string | null): boolean => saved === "hidden";
+
+/** What is saved for a sidebar that is hidden, or shown. */
+export const sideSaved = (hidden: boolean) => (hidden ? "hidden" : "shown");
+
+/** Whether the control that shows a hidden sidebar has its mark: the sidebar has a notice that shows nowhere else.
+ *  The page is not connected ("Reconnecting…"), or the update banner is up, of any kind, unless the user hid it. Not
+ *  for a server of the list that is not connected: that is the Servers button's own dot. */
+export const sideNotice = (s: { connected: boolean; update: { banner: string; hidden: boolean } }): boolean =>
+  !s.connected || (s.update.banner !== "none" && !s.update.hidden);
+
+const isMac = (platform: string) => /Mac|iPhone|iPad/.test(platform);
+
+/** ⌘B on macOS, Ctrl+B elsewhere, with nothing else held: hides the sidebar, or shows it. platform: navigator.platform.
+ *  Never with Shift: ⌘⇧B is the chat's tree (logic/treepopup.ts). Ctrl+B is not taken on macOS: there it moves the caret
+ *  a character back in a text field. */
+export const isSideKey = (e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; code: string }, platform: string) =>
+  e.code === "KeyB" && !e.shiftKey && !e.altKey && (isMac(platform) ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey);
+
+/** The shortcut's name, for titles. */
+export const sideKeyName = (platform: string) => (isMac(platform) ? "⌘B" : "Ctrl+B");
