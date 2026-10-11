@@ -403,3 +403,35 @@ func TestForkAndTreeJSON(t *testing.T) {
 		}
 	}
 }
+
+// A chat without stored subagent settings (one made before they existed, a run agent's) reads as
+// depth 1 and cap 100, and its view says so; depth 0 is a stored value of its own.
+func TestSubLimits(t *testing.T) {
+	var m ChatMeta
+	if got := m.SubLimits(); got != (SubLimits{Depth: 1, Cap: 100}) {
+		t.Fatalf("no stored settings: %+v", got)
+	}
+	if got := (ChatView{}).SubLimits(); got != (SubLimits{Depth: 1, Cap: 100}) {
+		t.Fatalf("a view that names none: %+v", got)
+	}
+	if got := ViewOf(m, StatusReady, "", "", false).SubLimits(); got != (SubLimits{Depth: 1, Cap: 100}) {
+		t.Fatalf("view of no stored settings: %+v", got)
+	}
+	for _, l := range []SubLimits{{0, 5}, {1, 100}, {3, 1}} {
+		m.Subagents = &l
+		v := ViewOf(m, StatusReady, "", "", false)
+		if got := v.SubLimits(); got != l || v.SubOff != (l.Depth == 0) {
+			t.Fatalf("view of %+v: %+v, off %v", l, got, v.SubOff)
+		}
+	}
+	for _, l := range []SubLimits{{0, 1}, {1, 100}, {MaxSubDepth, MaxSubCap}} {
+		if err := l.Check(); err != nil {
+			t.Errorf("%+v: %v", l, err)
+		}
+	}
+	for _, l := range []SubLimits{{-1, 100}, {MaxSubDepth + 1, 100}, {1, 0}, {1, MaxSubCap + 1}} {
+		if l.Check() == nil {
+			t.Errorf("%+v: accepted", l)
+		}
+	}
+}

@@ -1075,7 +1075,7 @@ func TestComposedView(t *testing.T) {
 	want := model.ChatView{ID: id, Agent: model.Claude, Name: "Top", UserNamed: true, Group: gOne,
 		Created: v.Created, Draft: v.Draft, Archive: top.Archive, ForkedFrom: "elsewhere", ForkedFromTitle: "Elsewhere",
 		Cwd: b.Cwd, Model: "opus", Effort: "max", Locked: true, Usage: b.Usage, Status: model.StatusStopped,
-		Branches: 2, Branch: exBranch, HasDraft: true}
+		SubDepth: model.DefaultSubDepth, SubCap: model.DefaultSubCap, Branches: 2, Branch: exBranch, HasDraft: true}
 	if v != want {
 		t.Fatalf("view\n got %+v\nwant %+v", v, want)
 	}
