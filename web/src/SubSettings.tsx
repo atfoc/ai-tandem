@@ -45,8 +45,9 @@ export function SubagentsPick({ c, fixed, disabled, open, onOpenChange, onBusy, 
   }, [shown]);
   // Placed once, when it opens: over the chip, at its left edge, moved left by what its right edge
   // would pass the window's (less a 12px margin), never past the window's left edge. It stays
-  // there while it is open: a pick can make the chip's label longer and wrap the toolbar in a
-  // narrow panel, and the rows must not move under the pointer.
+  // there while it is open: a pick can make the chip's label longer, which sends other controls
+  // of the toolbar into its "more" popup and moves the chip, and the rows must not move under
+  // the pointer. (The toolbar keeps the chip in its row meanwhile: logic/composerfit.ts, pinned.)
   React.useLayoutEffect(() => {
     const el = pop.current, at = chip.current;
     if (!el || !at) return;

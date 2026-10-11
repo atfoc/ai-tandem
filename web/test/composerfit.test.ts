@@ -16,12 +16,17 @@ const { gap, chrome, more: MORE, ring: RING } = fixture;
 const cut = (s: State) => (s.controls.some((c) => c.kind === "meter" && c.label === "Context unavailable") ? fixture.icon : RING);
 
 /** What stands in the model's place. */
-const KIND: Record<string, Control> = { server: "server", agent: "agent", folder: "folder", model: "model", "model-effort": "model", loading: "model", effort: "effort" };
+const KIND: Record<string, Control> = { server: "server", agent: "agent", folder: "folder", model: "model", "model-effort": "model", loading: "model", effort: "effort", subagents: "subagents" };
 
-/** A measured state as the toolbar gives it to the fit: the lock is counted into its folder, with its margin and the gap between the two. */
-function rowOf(s: State, box: number, held: Control[] | null = null): Row {
+/** The fixed Subagents chip of a chat on the default settings: the toolbar gives it to the fit as optional. */
+const spare = (c: Measured) => c.kind === "subagents" && !!c.fixed && c.label === "Subagents1 level";
+
+/** A measured state as the toolbar gives it to the fit: the lock is counted into its folder, with its margin and the gap between the two.
+ *  The optional chip is left out unless asked for (withSpare): the rules of the others are the same with it and without. */
+function rowOf(s: State, box: number, held: Control[] | null = null, withSpare = false): Row {
   const lock = s.controls.find((c) => c.kind === "lock");
-  const controls = s.controls.filter((c) => c.kind in KIND).map((c) => ({ id: KIND[c.kind], w: c.w + (c.kind === "folder" && lock ? lock.w + (lock.margin ?? 0) + gap : 0) }));
+  const controls = s.controls.filter((c) => c.kind in KIND && (withSpare || !spare(c))).map((c) => ({ id: KIND[c.kind], w: c.w + (c.kind === "folder" && lock ? lock.w + (lock.margin ?? 0) + gap : 0),
+    ...(spare(c) ? { optional: true } : {}) }));
   return {
     room: box - chrome, gap, controls, more: MORE, held,
     meter: { full: s.controls.find((c) => c.kind === "meter")!.w, ring: cut(s) },
@@ -43,8 +48,8 @@ test("the fixture's states are the toolbar's controls: each kind is one the fit 
     const ids = rowOf(s, 800).controls.map((c) => c.id);
     assert.equal(new Set(ids).size, ids.length, `${id}: ${ids}`);
     // all of it on one line is the sum the page measured
-    const all = rowOf(s, 800);
-    assert.ok(Math.abs(needs(all, { toolbar: ids, popup: [], more: false, meter: "full" }) - s.sum) < 0.35, `${id}: ${needs(all, { toolbar: ids, popup: [], more: false, meter: "full" })} against ${s.sum}`);
+    const all = rowOf(s, 800, null, true), every = all.controls.map((c) => c.id);
+    assert.ok(Math.abs(needs(all, { toolbar: every, popup: [], more: false, meter: "full" }) - s.sum) < 0.35, `${id}: ${needs(all, { toolbar: every, popup: [], more: false, meter: "full" })} against ${s.sum}`);
   }
 });
 
@@ -117,13 +122,13 @@ test("a control with no width stays in the toolbar and counts nothing", () => {
   assert.deepEqual(fit(r).toolbar, [], "all of them leave a 200 px box");
   // the folder is not measured yet: it stays, and what leaves before it and after it does
   const folder: Row = { ...r, controls: r.controls.map((c) => (c.id === "folder" ? { id: c.id } : c)) };
-  assert.deepEqual(fit(folder), { toolbar: ["folder"], popup: ["server", "agent", "model", "effort"], more: true, meter: "ring" });
+  assert.deepEqual(fit(folder), { toolbar: ["folder"], popup: ["server", "agent", "model", "effort", "subagents"], more: true, meter: "ring" });
   // none is: nothing leaves, whatever the room, and the row asks for its gaps alone
-  const none: Row = { ...r, room: 7 * gap, controls: r.controls.map((c) => ({ id: c.id })), meter: {}, more: undefined, fixed: [undefined] };
-  const all = CONTROLS.filter((id) => r.controls.some((c) => c.id === id)); // (the state has no Subagents chip measured)
-  assert.deepEqual(fit(none), { toolbar: all, popup: [], more: false, meter: "full" });
-  assert.equal(needs(none, fit(none)), 7 * gap);
-  assert.deepEqual(fit({ ...none, room: 0 }).toolbar, all);
+  // (the row's children: its six controls, the meter, the spacer and Send)
+  const none: Row = { ...r, room: 8 * gap, controls: r.controls.map((c) => ({ id: c.id })), meter: {}, more: undefined, fixed: [undefined] };
+  assert.deepEqual(fit(none), { toolbar: CONTROLS, popup: [], more: false, meter: "full" });
+  assert.equal(needs(none, fit(none)), 8 * gap);
+  assert.deepEqual(fit({ ...none, room: 0 }).toolbar, CONTROLS);
   // a meter whose text is not measured keeps it while the rest fits
   const wide = rowOf(s, 800);
   assert.equal(fit({ ...wide, meter: { ring: RING } }).meter, "full");
@@ -157,16 +162,16 @@ test("in the open popup a control with no width stays, one the chat lost is gone
   const s = fixture.states["plain-new"], r = rowOf(s, 800, ["server", "model"]);
   // a pick in the popup changed the model's label: not measured yet
   const relabelled: Row = { ...r, controls: r.controls.map((c) => (c.id === "model" ? { id: c.id } : c)) };
-  assert.deepEqual(fit(relabelled), { toolbar: ["agent", "folder", "effort"], popup: ["server", "model"], more: true, meter: "ring" });
+  assert.deepEqual(fit(relabelled), { toolbar: ["agent", "folder", "effort", "subagents"], popup: ["server", "model"], more: true, meter: "ring" });
   // the chat no longer has a server chip: the popup holds the model alone, and nothing else joins it
   const lost: Row = { ...r, controls: r.controls.filter((c) => c.id !== "server") };
   assert.deepEqual(fit(lost).popup, ["model"]);
   // it holds none of what the chat has: no popup, and the meter's text is back
-  assert.deepEqual(fit({ ...lost, held: ["server"] }), { toolbar: ["agent", "folder", "model", "effort"], popup: [], more: false, meter: "full" });
+  assert.deepEqual(fit({ ...lost, held: ["server"] }), { toolbar: ["agent", "folder", "model", "effort", "subagents"], popup: [], more: false, meter: "full" });
   // the effort chip arrives while the popup holds server and model: it goes where it fits
   const without: Row = { ...r, controls: r.controls.filter((c) => c.id !== "effort") };
-  assert.deepEqual(fit(without).toolbar, ["agent", "folder"]);
-  assert.deepEqual(fit(r).toolbar, ["agent", "folder", "effort"]);
+  assert.deepEqual(fit(without).toolbar, ["agent", "folder", "subagents"]);
+  assert.deepEqual(fit(r).toolbar, ["agent", "folder", "effort", "subagents"]);
   const narrow = rowOf(s, 300, ["server", "model"]);
   assert.ok(fit(narrow).popup.includes("effort"), "in a narrow box it joins the popup");
   // not measured yet, it is in the toolbar
@@ -182,21 +187,48 @@ test("a width is kept by the control's kind, its label, fixed or choice, with or
   assert.notEqual(widthKey("model", "a|b"), widthKey("model", "a", { mark: "b" }));
 });
 
-test("the Subagents chip leaves after the server and before the effort; pinned, it is the last to leave", () => {
+test("the Subagents chip is the first to leave; pinned, it is the last", () => {
   assert.deepEqual(CONTROLS.at(-1), "subagents");
-  assert.ok(LEAVING.indexOf("server") < LEAVING.indexOf("subagents") && LEAVING.indexOf("subagents") < LEAVING.indexOf("effort"));
+  assert.equal(LEAVING[0], "subagents");
   const s = fixture.states["plain-new"];
   const withSubs = (box: number, pinned?: Control): Row => { const r = rowOf(s, box); return { ...r, controls: [...r.controls, { id: "subagents", w: 150 }], pinned }; };
   const full = needs(withSubs(2000), fit(withSubs(2000)));
-  // as the box narrows, the chip goes into the popup second
+  // as the box narrows, the chip goes into the popup first
   let order: Control[] = [];
   for (let box = full + chrome; box > 150; box -= 3) for (const id of fit(withSubs(box)).popup) if (!order.includes(id)) order.push(id);
   assert.deepEqual(order, leavingOf(withSubs(0)));
-  assert.equal(order[1], "subagents");
+  assert.equal(order[0], "subagents");
   // with its list open it stays while any other can leave, and the toolbar still fits its row
   for (let box = full + chrome; box > 150; box -= 3) {
     const r = withSubs(box, "subagents"), f = fit(r);
     if (f.popup.includes("subagents")) assert.deepEqual(f.toolbar, [], `${box}: it left before ${f.toolbar}`);
     else if (f.toolbar.length > 1) assert.ok(needs(r, f) <= r.room + 1e-6, `${box}: the row needs ${needs(r, f)} of ${r.room}`);
   }
+});
+
+test("an optional control is beside the others when all of them are whole, in the popup when it holds another, else nowhere", () => {
+  let beside = 0, inPopup = 0, nowhere = 0;
+  for (const [id, s] of chats) {
+    if (!s.controls.some(spare)) continue;
+    for (let box = 260; box <= 800; box++) {
+      const r = rowOf(s, box, null, true), without = fit(rowOf(s, box)), f = fit(r), at = `${id} at ${box}`;
+      // the others are where they are without it, and the row still fits
+      assert.deepEqual({ ...f, toolbar: f.toolbar.filter((c) => c !== "subagents"), popup: f.popup.filter((c) => c !== "subagents") }, without, at);
+      assert.ok(needs(r, f) <= r.room + 1e-6, `${at}: needs ${needs(r, f)} of ${r.room}`);
+      if (f.toolbar.includes("subagents")) { beside++; assert.ok(f.meter === "full" && !f.more, at); }
+      else if (f.popup.includes("subagents")) { inPopup++; assert.ok(f.popup.length > 1, at); }
+      else { nowhere++; assert.equal(f.popup.length, 0, at); }
+    }
+    // while the popup is open with another control, it is there
+    const held = leavingOf(rowOf(s, 800)).slice(0, 1);
+    assert.ok(fit(rowOf(s, 800, held, true)).popup.includes("subagents"), id);
+    // not measured yet, it is in the toolbar like any other
+    const r = rowOf(s, 300, null, true);
+    assert.ok(fit({ ...r, controls: r.controls.map((c) => (c.id === "subagents" ? { id: c.id, optional: true } : c)) }).toolbar.includes("subagents"), id);
+  }
+  assert.ok(beside > 0 && inPopup > 0 && nowhere > 0, `${beside} beside, ${inPopup} in the popup, ${nowhere} nowhere`);
+  // a started chat in the default panel: its toolbar is whole and the chip is not drawn; in a wider pane it is there
+  const started = fixture.states["board-started"];
+  assert.deepEqual(fit(rowOf(started, 375, null, true)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" });
+  assert.deepEqual(fit(rowOf(started, 520, null, true)), { toolbar: ["folder", "model", "subagents"], popup: [], more: false, meter: "full" });
 });

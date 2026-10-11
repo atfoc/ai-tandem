@@ -33,7 +33,7 @@ import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
 import { AgentPick, AgentReason, ServerPick, useAgentChip, useServerChip, useWhere } from "./ChatChoices.tsx";
 import { SubagentsPick } from "./SubSettings.tsx";
-import { subChip, subChipLabel, subSettings } from "./logic/subsettings.ts";
+import { DEFAULT_SUB_CAP, DEFAULT_SUB_DEPTH, subChip, subChipLabel, subSettings } from "./logic/subsettings.ts";
 import { isSending, leftByBack, pickOnFork, registerComposer, sendAt, sendFailed, setMoveChoice } from "./fork/actions.ts";
 import { heldReason, pickOn, sendWait } from "./logic/waits.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
@@ -630,13 +630,16 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
   else if (choices && where.connected) keys.model = widthKey("model", "Loading models…", { fixed: true });
   if (choices && cat && m?.efforts?.length) keys.effort = widthKey("effort", effortLabel(shown.effort, m));
   const subs = subChip(c, !!move); // the subagent settings: a choice on a new chat alone, else fixed; none for a run's own agent
-  if (subs.kind !== "none") keys.subagents = widthKey("subagents", subChipLabel(subSettings(c)), { fixed: subs.kind === "fixed" });
+  const limits = subSettings(c);
+  if (subs.kind !== "none") keys.subagents = widthKey("subagents", subChipLabel(limits), { fixed: subs.kind === "fixed" });
+  // Fixed and on the default settings, the chip tells what every chat had before there were any: it gives way to the others.
+  const spare = subs.kind === "fixed" && limits.depth === DEFAULT_SUB_DEPTH && limits.cap === DEFAULT_SUB_CAP;
   // The meter with its text, and cut to its ring (the error meter: to its icon).
   const meterKey = u.error ? widthKey("meter", "Context unavailable", { fixed: true }) : widthKey("meter", ctxText(u.used, u.win));
   const ringKey = widthKey("meter", "", { fixed: !!u.error, mark: u.error ? "icon" : "ring" });
   const f = fit({
     room: room?.w ?? Infinity, gap: room?.gap ?? 0, more: widthOf(MORE),
-    controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widthOf(keys[id]!) })),
+    controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widthOf(keys[id]!), ...(id === "subagents" && spare ? { optional: true } : {}) })),
     meter: { full: widthOf(meterKey), ring: widthOf(ringKey) },
     fixed: [...(stop ? [widthOf(STOP)] : []), widthOf(SEND)],
     held: more ? drawn.current?.fit.popup ?? [] : null,

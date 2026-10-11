@@ -40,11 +40,14 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
     await ctx.close();
   }
   for (const s of seeded) {
-    // (a pane wide enough for most rows; a control of a row that still overflows is measured unsqueezed)
-    const { ctx, page } = await openPage({ url, browser, sel: s.sel, ...paneSize(s.pane[0], s.pane[0] === "panel" ? 760 : 1100), wait: ".composer-box" });
+    // (a pane wide enough for every row: a plain chat's column is 780 px at most, which the long names with the
+    // Subagents chip pass, so the column is let as wide as its page while it is measured)
+    const { ctx, page } = await openPage({ url, browser, sel: s.sel, ...paneSize(s.pane[0], s.pane[0] === "panel" ? 760 : 1400), wait: ".composer-box" });
+    await page.addStyleTag({ content: ".chat-col { max-width: none !important }" });
     await act(page, s.act);
     await page.locator(s.see).first().waitFor({ state: "visible", timeout: 8000 });
     await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok())))); // the toolbar is fitted to the wider row
     const t = await toolbarWidths(page);
     await ctx.close();
     if (t.controls.some((c) => c.kind === "other")) fail(`${s.id}: a control of the toolbar has no kind: ${JSON.stringify(t.controls.filter((c) => c.kind === "other"))}`);
@@ -59,9 +62,11 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
     states,
   };
 
+  // G1 measured the toolbar before it had the Subagents chip: its sums are held against the row without that chip and its gap.
+  const g1Sum = (st) => { const sub = st.controls.find((c) => c.kind === "subagents"); return Math.round((st.sum - (sub ? sub.w + now.gap : 0)) * 10) / 10; };
   for (const [id, sum] of Object.entries(G1_SUMS)) {
     if (!states[id]) fail(`the seed has no state for G1's case ${id}`);
-    else if (Math.abs(states[id].sum - sum) > NEAR_G1) fail(`${id}: the controls and gaps are ${states[id].sum} px on one line; G1 measured ${sum}`);
+    else if (Math.abs(g1Sum(states[id]) - sum) > NEAR_G1) fail(`${id}: the controls and gaps are ${g1Sum(states[id])} px on one line${states[id].sum === g1Sum(states[id]) ? "" : " without the Subagents chip"}; G1 measured ${sum}`);
   }
   for (const [id, kind, fixed, w, g1] of CAPPED) {
     const c = states[id]?.controls.find((x) => x.kind === kind && !!x.fixed === fixed);

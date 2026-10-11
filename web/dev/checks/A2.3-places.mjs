@@ -14,7 +14,7 @@ import { act, check, dragResizer, mockEval, openPage, paneSize, seed, until } fr
 const FIXTURE = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../test/fixtures/composer-widths.json", import.meta.url)), "utf8"));
 const SIDE = 264, RAIL = 40, HEIGHT = 640;
 const MORE = ".composer .more-chip", POP = ".composer .more-pop", ROW = ".composer .composer-tools";
-const CHOICE = { server: "server", agent: "agent", folder: "folder", model: "model", "model-effort": "model", loading: "model", effort: "effort" };
+const CHOICE = { server: "server", agent: "agent", folder: "folder", model: "model", "model-effort": "model", loading: "model", effort: "effort", subagents: "subagents" };
 
 /** In the page: the chips of the chat composer's toolbar, each with the choice it is (by its title, as the scripts
  *  address it), where it is (the row or the popup) and what it says; the lists open in the composer; where the focus is. */
@@ -27,6 +27,7 @@ function placesInPage() {
     if (t.startsWith("Agent")) return "agent";
     if (t.startsWith("Model") || t.startsWith("Starting the agent") || chip.textContent.includes("Loading models")) return "model";
     if (t.startsWith("Effort")) return "effort";
+    if (t.startsWith("Subagents")) return "subagents";
     if (/^(Working directory|Folder)/.test(t)) return "folder";
     return "";
   };
@@ -67,16 +68,24 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     const fixed = FIXTURE.states[s.id];
     if (!fixed) { fail(`${s.id}: not in the fixture of widths`); continue; }
     if (fixed.composer !== "chat") continue;
-    const want = fixed.controls.map((c) => CHOICE[c.kind]).filter(Boolean).sort();
+    // The fixed Subagents chip of a chat on the default settings gives way to the others: it is in the popup when the
+    // popup holds another control, in the row when the row has room for it with all the others whole, else not drawn.
+    const spare = fixed.controls.some((c) => c.kind === "subagents" && c.fixed && c.label === "Subagents1 level");
+    const firm = (kinds) => (spare ? kinds.filter((k) => k !== "subagents") : kinds);
+    const want = firm(fixed.controls.map((c) => CHOICE[c.kind]).filter(Boolean).sort());
     const [kind] = s.pane, p = await open(s, 300);
     try {
       for (const width of kind === "panel" ? [300, 400] : [300, 400, 560]) {
         const name = `${s.id} at ${width} px`;
         if (width !== 300) { if (kind === "panel") await dragResizer(p.page, ".board-panel .resizer", width - 300, 20); else await size(p.page, width); }
         const closed = await places(p.page), more = await openMore(p.page, name), all = await places(p.page);
-        const got = all.chips.map((c) => c.kind).sort();
+        const got = firm(all.chips.map((c) => c.kind).sort());
         if (got.some((k) => !k)) fail(`${name}: a chip of the toolbar is no choice the check knows: ${JSON.stringify(all.chips.filter((c) => !c.kind))}`);
         if (String(got) !== String(want)) fail(`${name}: the toolbar and the open popup have the chips ${got}; the state's choices are ${want}`);
+        if (spare) {
+          const subs = all.chips.filter((c) => c.kind === "subagents");
+          if (subs.length > 1 || (more ? subs[0]?.where !== "popup" : subs[0] && subs[0].where !== "row")) fail(`${name}: the fixed Subagents chip is ${subs.map((c) => c.where).join(" and ") || "not drawn"}, with${more ? "" : "out"} a "more" popup`);
+        }
         // closed, the row has what the open popup does not hold, and nothing of it is drawn
         if (closed.chips.some((c) => c.where === "popup") || String(closed.chips.map((c) => c.kind)) !== String(all.chips.filter((c) => c.where === "row").map((c) => c.kind))) fail(`${name}: opening the popup changed the row's chips: ${closed.chips.map((c) => c.kind)}, then ${all.chips.filter((c) => c.where === "row").map((c) => c.kind)}`);
         if (more !== all.chips.some((c) => c.where === "popup")) fail(`${name}: the "more" chip is ${more ? "there" : "not there"}, and the popup holds ${all.chips.filter((c) => c.where === "popup").length} chips`);
@@ -171,9 +180,10 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     note("a list and the folder's browser open in the toolbar: gone when the window sends the chip into the popup, and not back with it");
   }
   {
-    // The sidebar hidden, a window of 664 px: the page is 624 px, and 400 when ⌘B shows the sidebar.
+    // The sidebar hidden, a window of 720 px: the page is 680 px, where the row has room for the server's chip beside
+    // the "more" chip (the Subagents chip is in its popup), and 456 when ⌘B shows the sidebar.
     const s = state("plain-new"), name = "the server's list open, ⌘B";
-    const p = await open(s, 400, { ls: { ...paneSize("page", 400).ls, "aiwb.side": "hidden" } });
+    const p = await open(s, 456, { ls: { ...paneSize("page", 456).ls, "aiwb.side": "hidden" } });
     const railed = () => p.page.evaluate(() => !!document.querySelector(".app > .side-rail"));
     await p.page.locator(`${ROW} > .server-pick > button.tchip`).click();
     if (!(await places(p.page)).lists.some((l) => l.head === "Server" && l.where === "row")) fail(`${name}: the server's list did not open in the toolbar`);

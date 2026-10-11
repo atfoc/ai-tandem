@@ -11,8 +11,10 @@ export type Control = "server" | "agent" | "folder" | "model" | "effort" | "suba
 export const CONTROLS: Control[] = ["server", "agent", "folder", "model", "effort", "subagents"];
 
 /** The order of leaving as room runs out, after the meter's text. Agent and model stay longest:
- *  they say whom the user talks to. */
-export const LEAVING: Control[] = ["server", "subagents", "effort", "folder", "model", "agent"];
+ *  they say whom the user talks to. The Subagents chip is the first to go: a setting made once,
+ *  and the one control the toolbar did not always have, so the others are in the row wherever
+ *  they were without it. */
+export const LEAVING: Control[] = ["subagents", "server", "effort", "folder", "model", "agent"];
 
 /** What decides the width a control of the toolbar asks for: its kind, what it says, whether it is
  *  a fixed chip or a choice, whether a lock stands with it, and what else is drawn in it (a glyph).
@@ -28,8 +30,10 @@ export interface Row {
   room: number;
   /** Between two children of the row. */
   gap: number;
-  /** The controls the chat has, each with its width; a folder's is with its lock and the gap between the two. */
-  controls: { id: Control; w?: number }[];
+  /** The controls the chat has, each with its width; a folder's is with its lock and the gap between the two.
+   *  optional: the control only tells what a reader can do without (the fixed Subagents chip of a chat on the default
+   *  settings): it costs the others nothing. */
+  controls: { id: Control; w?: number; optional?: boolean }[];
   /** The context meter with its text, and cut to its ring (the error meter: to its icon). */
   meter: { full?: number; ring?: number };
   /** The "more" chip. */
@@ -43,7 +47,8 @@ export interface Row {
 }
 
 /** Where each control is drawn. toolbar and popup are in the order of CONTROLS; more: the "more"
- *  chip is shown; meter: the context meter has its text, or its ring alone. */
+ *  chip is shown; meter: the context meter has its text, or its ring alone. An optional control
+ *  can be in neither: it is not drawn. */
 export interface Fit { toolbar: Control[]; popup: Control[]; more: boolean; meter: "full" | "ring" }
 
 const sum = (ws: (number | undefined)[]) => ws.reduce<number>((n, w) => n + (w ?? 0), 0);
@@ -67,18 +72,33 @@ export function needs(r: Row, f: Fit): number {
  *  toolbar still leaves for it, and one the chat has got since is placed as any other. So the
  *  toolbar fits its row at every moment, and returns are for the call after the popup closed.
  *  A pinned control is the last to leave, whatever its place in LEAVING: a pick in its open list
- *  can make its chip wider, and a control that changes place loses its list. */
+ *  can make its chip wider, and a control that changes place loses its list.
+ *  An optional control is placed after the others, where they leave it room: in the toolbar when
+ *  every control is there with the meter's text and it fits beside them; in the popup when the
+ *  popup holds another; else nowhere. It never brings the "more" chip, sends a control to the
+ *  popup or takes the meter's text. (One with no width is in the toolbar like any other, to be
+ *  measured.) */
 export function fit(r: Row): Fit {
-  const has = CONTROLS.filter((id) => r.controls.some((c) => c.id === id));
+  const all = CONTROLS.filter((id) => r.controls.some((c) => c.id === id));
   const known = (id: Control) => r.controls.find((c) => c.id === id)?.w !== undefined;
+  const extra = all.filter((id) => known(id) && r.controls.find((c) => c.id === id)!.optional);
+  const f = place(r, all.filter((id) => !extra.includes(id)), known);
+  if (!extra.length) return f;
+  if (f.popup.length) return { ...f, popup: all.filter((id) => f.popup.includes(id) || extra.includes(id)) };
+  const beside: Fit = { ...f, toolbar: all.filter((id) => f.toolbar.includes(id) || extra.includes(id)) };
+  return f.meter === "full" && needs(r, beside) <= r.room + 1e-6 ? beside : f;
+}
+
+/** fit for the controls has, the row's that are not optional. */
+function place(r: Row, has: Control[], known: (id: Control) => boolean): Fit {
   const held = (r.held ?? []).filter((id) => has.includes(id));
   const leaves = LEAVING.filter((id) => has.includes(id) && !held.includes(id) && known(id));
   const leaving = [...leaves.filter((id) => id !== r.pinned), ...leaves.filter((id) => id === r.pinned)];
-  const place = (n: number, meter: Fit["meter"]): Fit => {
+  const step = (n: number, meter: Fit["meter"]): Fit => {
     const popup = has.filter((id) => held.includes(id) || leaving.slice(0, n).includes(id));
     return { toolbar: has.filter((id) => !popup.includes(id)), popup, more: popup.length > 0, meter };
   };
   // The meter's text is the first to go: it shows only with every control in the toolbar.
-  const steps = [...(held.length ? [] : [place(0, "full")]), ...leaving.map((_, n) => place(n, "ring")), place(leaving.length, "ring")];
+  const steps = [...(held.length ? [] : [step(0, "full")]), ...leaving.map((_, n) => step(n, "ring")), step(leaving.length, "ring")];
   return steps.find((f) => needs(r, f) <= r.room + 1e-6) ?? steps[steps.length - 1];
 }

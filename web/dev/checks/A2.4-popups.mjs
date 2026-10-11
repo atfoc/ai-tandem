@@ -105,6 +105,10 @@ await check("A2.4 the toolbar's popups at 300 px, and a chip's width in \"more\"
   let compared = 0, cut = 0;
   for (const id of ["plain-new-long", "plain-remote-new", "plain-remote-started-long", "plain-started-long", "plain-new"]) {
     const s = state(id), p = await open(s, 1100), name = `${id}`;
+    // (a plain chat's column is 780 px at most, which the long names with the Subagents chip pass: it is let as wide
+    // as its page while the row is measured)
+    await p.page.addStyleTag({ content: ".chat-col { max-width: none !important }" });
+    await frame(p.page);
     const wide = await chipsIn(p.page);
     if (Object.values(wide).some((c) => c.where !== "row")) fail(`${name}: at 1100 px a chip is not in the row: ${JSON.stringify(wide)}`);
     await p.page.setViewportSize({ width: SIDE + 300, height: HEIGHT });

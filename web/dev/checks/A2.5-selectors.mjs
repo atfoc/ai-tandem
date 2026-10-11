@@ -61,7 +61,13 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
     await one(p.page, name, chip("Folder on"));
     await close(p, name);
     const q = await open(state("plain-new-long"), { size: [1400, 800] }), long = "an unstarted chat with long names in a 1400 px window";
-    for (const title of ["Server", "Agent", "Working directory", "Model", "Effort"]) await one(q.page, long, chip(title));
+    for (const title of ["Agent", "Working directory", "Model", "Effort"]) await one(q.page, long, chip(title));
+    // (with these names the widest row has no room for all of the toolbar since it has the Subagents chip: that chip
+    // and the server's are in the "more" popup, the server's by the same selector)
+    await q.page.locator(".composer .more-chip").click();
+    if (!await until(() => q.page.locator(`.composer .more-pop button.tchip[title^="Server"]`).count(), 5000)) fail(`${long}: the server's chip is neither in the row nor in the "more" popup`);
+    if (await q.page.locator(chip("Server")).count() !== 1) fail(`${long}: ${await q.page.locator(chip("Server")).count()} elements match ${chip("Server")}`);
+    await q.page.keyboard.press("Escape");
     // (the paid script looks the model's chip up by the label it shows)
     if (!await q.page.locator(chip("Model"), { hasText: "Claude Opus 5.5 (1M context, extended thinking)" }).count()) fail(`${long}: the model's chip is not found by its whole label`);
     await close(q, long);
