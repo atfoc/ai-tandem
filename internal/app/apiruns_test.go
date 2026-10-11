@@ -236,23 +236,25 @@ func TestRunOfAnAPIClientLeavesTheDefaults(t *testing.T) {
 	if vs := e.a.APISnapshot(clientX).Chats; len(vs) != 0 {
 		t.Fatalf("the owner's chat on the run is in the client's snapshot: %+v", vs)
 	}
-	// The chat is a person's: its first message records its agent and model in the run's group, as
-	// any chat's does (the next chat on the run starts with them), and nothing else changes.
+	// The chat is a person's: its first message records its agent, model and subagent settings in
+	// the run's group, as any chat's does (the next chat on the run starts with them), and nothing
+	// else changes.
 	e.st.Read(func(s *model.State) {
 		sd := s.Defaults.Groups[g].On(model.LocalServer)
-		if sd.Agent != model.Claude || sd.ByAgent[model.Claude].Model != chat.Model || chat.Model == "" || len(sd.ByAgent) != 1 || sd.Cwd != "" || s.Defaults.Groups[g].Server != "" {
+		if sd.Agent != model.Claude || sd.ByAgent[model.Claude].Model != chat.Model || chat.Model == "" || len(sd.ByAgent) != 1 || sd.Cwd != "" || s.Defaults.Groups[g].Server != "" ||
+			sd.Subagents == nil || *sd.Subagents != model.DefaultSubLimits() {
 			t.Errorf("the defaults of the run's group after the chat's first message: %+v", s.Defaults.Groups[g])
 		}
 	})
 	e.must(e.st.Update(func(s *model.State) error {
 		gd := s.Defaults.Groups[g]
 		sd := gd.Servers[model.LocalServer]
-		sd.Agent, sd.ByAgent = "", nil
+		sd.Agent, sd.ByAgent, sd.Subagents = "", nil, nil
 		gd.Servers[model.LocalServer] = sd
 		s.Defaults.Groups[g] = gd
 		return nil
 	}))
-	same("the chat's first message, its agent and model taken away")
+	same("the chat's first message, its agent, model and subagent settings taken away")
 
 	// The sticky values are the ones recorded before, and the run still has its own.
 	e.st.Read(func(s *model.State) {

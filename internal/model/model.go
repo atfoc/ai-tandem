@@ -129,6 +129,9 @@ type ServerDefaults struct {
 	Cwd     string                    `json:"cwd,omitempty"`
 	ByAgent map[AgentKind]ModelChoice `json:"byAgent,omitempty"`
 	Run     *RunDefaults              `json:"run,omitempty"` // what the last run started in the group used
+	// Subagents is the subagent settings a new chat starts with, for all agents; nil = none stored.
+	// A value that is in a ServerDefaults is never changed: a change puts a new one there.
+	Subagents *SubLimits `json:"subagents,omitempty"`
 }
 
 type GroupDefaults struct {

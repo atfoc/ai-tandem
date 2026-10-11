@@ -289,7 +289,7 @@ func TestStartTable(t *testing.T) {
 		})
 	}
 
-	// The creation call: the eight values, and nothing else of the chat.
+	// The creation call: the ten values, and nothing else of the chat.
 	first := create.calls()[0]
 	var body map[string]any
 	if err := json.Unmarshal([]byte(first.Body), &body); err != nil {
@@ -297,7 +297,7 @@ func TestStartTable(t *testing.T) {
 	}
 	want := map[string]any{
 		"id": chatN(0), "agent": "claude", "cwd": "/home/standin/work", "model": "standin-model", "effort": "high",
-		"name": "First words", "userNamed": true, "text": "hello there",
+		"subDepth": float64(1), "subCap": float64(100), "name": "First words", "userNamed": true, "text": "hello there",
 	}
 	if first.Method != http.MethodPost || first.URI != "/api/chats" || !reflect.DeepEqual(body, want) {
 		t.Errorf("the creation call: %s %s %v", first.Method, first.URI, body)
@@ -344,7 +344,7 @@ func TestStartOnARun(t *testing.T) {
 	if err := json.Unmarshal([]byte(create.last(t).Body), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["run"] != open.ID || body["id"] != chatN(1) || len(body) != 9 {
+	if body["run"] != open.ID || body["id"] != chatN(1) || len(body) != 11 {
 		t.Errorf("the creation call: %v", body)
 	}
 	if d := rg.file(chatN(1)); d.Run != open.ID || d.Group != "" {
@@ -415,7 +415,7 @@ func TestStartOnABoard(t *testing.T) {
 	if err := json.Unmarshal([]byte(create.last(t).Body), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["board"] != board || body["id"] != chatN(1) || body["context"] != "the board" || len(body) != 10 {
+	if body["board"] != board || body["id"] != chatN(1) || body["context"] != "the board" || len(body) != 12 {
 		t.Errorf("the creation call: %v", body)
 	}
 	if _, has := body["run"]; has {

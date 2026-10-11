@@ -48,8 +48,11 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 // and sends it the first message (chats.Manager.Start). The call can be repeated: of any number
 // of calls with one id one sends.
 //
-// Body: {"id", "agent", "cwd", "model", "effort", "name", "userNamed", "text", "context", "run",
-// "board"}. id, agent and text are required, cwd too unless run is given; context is the
+// Body: {"id", "agent", "cwd", "model", "effort", "subDepth", "subCap", "name", "userNamed",
+// "text", "context", "run", "board"}. id, agent and text are required, cwd too unless run is
+// given; subDepth (0 to 3, 0 = no subagents) and subCap (1 to 100) are the chat's subagent
+// settings, 1 and 100 where the body does not name them, and a value outside the range is
+// refused ("bad_request"); context is the
 // <ui-context> of a first message on a board, and is left out off one. A body that names a group, a
 // board that is not the caller's (or is archived), or both a run and a board is refused before
 // anything else.
@@ -64,6 +67,8 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 		Agent         model.AgentKind
 		Cwd           string
 		Model, Effort string
+		SubDepth      *int
+		SubCap        *int
 		Name          string
 		UserNamed     bool
 		Text, Context string
@@ -90,6 +95,7 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 	res, err := s.App.Chats.Start(chats.StartReq{
 		ID: body.ID, Client: r.Header.Get(ClientHeader), Run: body.Run, Board: body.Board,
 		Agent: body.Agent, Cwd: body.Cwd, Model: body.Model, Effort: body.Effort,
+		SubDepth: body.SubDepth, SubCap: body.SubCap,
 		Name: body.Name, UserNamed: body.UserNamed, Text: body.Text, Context: body.Context,
 		Place: s.App.RemoteGroup,
 	})
@@ -116,7 +122,7 @@ const boardRefused = "an API client cannot make a chat on a board"
 // startCode is the "code" of a refused creation call: the codes of this call alone, and codeOf's.
 func startCode(err error) string {
 	switch {
-	case errors.Is(err, chats.ErrStartValue):
+	case errors.Is(err, chats.ErrStartValue), errors.Is(err, chats.ErrSubRange):
 		return "bad_request"
 	case errors.Is(err, chats.ErrBadID):
 		return "bad_id"

@@ -277,6 +277,7 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 
 // prefixMeta is what the chat.json of a new chat or branch that starts with the first at items
 // of the chat (src, items) takes from it (D11): the agent, its board and folder, its client mark,
+// its subagent settings (none stored where the source has none: both then read as the defaults),
 // a session id of its own, and what follows from the prefix. Its model and effort are mc, the source's or the ones
 // chosen for it (see choose); window is the context window of mc's model, 0 when it is not known,
 // and is taken only for a model other than the source's. It is never a copy of the file. The
@@ -285,6 +286,10 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 func prefixMeta(src model.ChatMeta, items []model.Item, at int, mc model.ModelChoice, window int) model.ChatMeta {
 	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Client: src.Client, Cwd: src.Cwd,
 		Model: mc.Model, Effort: mc.Effort, Created: time.Now()}
+	if src.Subagents != nil {
+		sub := *src.Subagents
+		meta.Subagents = &sub
+	}
 	if src.Agent == model.Claude || src.Agent == model.Pi {
 		meta.SessionID = uuid() // Cursor's comes from the fork start, or from session/new
 	}
