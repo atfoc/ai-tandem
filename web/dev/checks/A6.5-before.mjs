@@ -67,10 +67,13 @@ const THEMES = [
   { name: "System under a dark OS", ls: {}, scheme: "dark", theme: "dark" }, // (nothing saved: a page that never chose)
 ];
 const PICKER = [".side-foot .seg", ".side-foot .theme-pick"]; // the old switch, the new picker: the same place
+// (the two plain chats' rows have room for the fixed Subagents chip, which the toolbar got since: it is taken out of
+// the row for the comparison, as in A2.7)
+const NO_SUBS = ".composer .sub-chip { display: none }";
 const PAGES = [
   { name: "home", sel: {} },
-  { name: "chat", sel: { chat: "c_plain" }, wait: ".thread .msg.assistant" },
-  { name: "cards", sel: { chat: "c_A6_cards" }, seed: ["A6"], wait: ".thread .perm.pending .perm-actions" },
+  { name: "chat", sel: { chat: "c_plain" }, wait: ".thread .msg.assistant", style: NO_SUBS },
+  { name: "cards", sel: { chat: "c_A6_cards" }, seed: ["A6"], wait: ".thread .perm.pending .perm-actions", style: NO_SUBS },
   { name: "board", sel: { board: "b_arch", chat: "c_board" }, wait: ".excalidraw" },
   { name: "sketch", sel: { board: "b_ui", chat: "c_A6_sketch" }, seed: ["A6"], wait: ".excalidraw:not(.excalidraw--view-mode) .App-toolbar" },
   { name: "run", sel: { run: "r_live" }, wait: ".run-stage .tl" },

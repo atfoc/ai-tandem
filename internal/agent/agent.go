@@ -36,15 +36,20 @@ type SpawnOptions struct {
 	Effort    string
 	MCP       *BoardAccess // URL+token; set whenever the process should speak MCP (plain chats included)
 	BoardID   string       // non-empty → board extras on (whiteboard prompt, board-tool allow/auto-approve)
-	Subagent  bool         // app-spawned child: Claude --allowedTools omits the spawn family
-	Point     string       // Claude's ReadContextSplit only: the fork-point id the session is read up to ("" = all of it)
+	Subagent  bool         // app-spawned child (a subagent of ChatID's chat)
+	// NoSpawn: the process has no spawn family (spawn_subagent, stop_subagent,
+	// list_subagent_models): the agent of a chat whose subagents are off, or a subagent at the
+	// chat's deepest level. The adapters leave the family out of what the process may call unasked
+	// and of what it is told. The MCP endpoint decides, per token, what is listed and what runs.
+	NoSpawn bool
+	Point   string // Claude's ReadContextSplit only: the fork-point id the session is read up to ("" = all of it)
 
 	// Dir is the folder of the chat object ChatID names; "" = <AppRoot>/chats/<ChatID>, as before.
 	// (pi keeps its session files in <Dir>/pi and passes Dir as AIWB_CHAT_DIR.)
 	Dir string
 	// MCPTools, when not nil, is the exact list of this app's MCP tools (bare names such as
 	// "spawn_subagent" or "get_run") the process may call without being asked. nil = derived from
-	// BoardID and Subagent, as before. An empty non-nil list means none.
+	// BoardID and NoSpawn. An empty non-nil list means none.
 	MCPTools []string
 	// Unattended: nobody watches this process. It must never wait for a person (no permission
 	// request, no question, no plan approval), and Close ends everything it started that can be found.
@@ -172,6 +177,11 @@ type Event struct {
 	Aborted                  bool
 	Error                    string
 	Point                    string // EvTurnEnd: the provider's fork-point id for the end of this turn; "" = none
+	// SelfBegun, EvTurnEnd: the agent began this turn itself, not with a message it was sent
+	// (Claude, when a background command or task of its own ended). A message sent meanwhile is
+	// not known to have been read in it. Only Claude reports it; pi and Cursor begin no turn
+	// themselves.
+	SelfBegun bool
 	// EvTurnEnd only, as far as the provider reports them: Claude from its result line, pi from
 	// get_session_stats, Cursor nothing. The numbers are raw: nothing is summed or subtracted here.
 	//

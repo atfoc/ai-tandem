@@ -18,8 +18,13 @@ import (
 //	                                     without wait_for when the
 //	                                     wake mode is not declared)
 //	task agent, merge agent              none                         yes            no
-//	a person's chat on the run           RunService.Tools (9)         yes            no
-//	a subagent of any of them            none                         none           none
+//	  a subagent of any of the three     none                         none           none
+//	a person's chat on the run           RunService.Tools (9)         by its depth   no
+//	  a subagent of it                   none                         by its depth   none
+//
+// A run's agents have subagents one level deep, as they always had. A chat a person opens on the
+// run is an ordinary chat in this: it and its subagents have the spawn family as its own subagent
+// depth says (chats.Caller.MaySpawn).
 //
 // A caller whose chat is on no run is handled as it always was, and is refused every run tool.
 
@@ -49,28 +54,39 @@ func runCallerOf(c chats.Caller) RunCaller {
 
 // runListed is tools/list for a caller whose chat belongs to a run.
 func (r *Relay) runListed(caller chats.Caller) []boardtools.Tool {
-	if caller.Subagent {
-		return nil
-	}
 	switch caller.Meta.Role {
 	case model.RoleOrchestrator:
-		return r.runToolsOf(caller)
+		if !caller.Subagent {
+			return r.runToolsOf(caller)
+		}
 	case model.RoleTask, model.RoleMerge:
-		return r.spawnListed()
+		if !caller.Subagent {
+			return r.spawnListed(caller)
+		}
 	case "":
-		tools := r.runToolsOf(caller)
-		return append(tools, r.spawnListed()...)
+		var tools []boardtools.Tool
+		if !caller.Subagent {
+			tools = r.runToolsOf(caller)
+		}
+		if caller.MaySpawn() {
+			tools = append(tools, r.spawnListed(caller)...)
+		}
+		return tools
 	}
-	return nil // a role this endpoint does not know gets nothing
+	return nil // a subagent of a run's agent, and a role this endpoint does not know, get nothing
 }
 
-// spawnListed is the spawn family as tools/list shows it: its agent parameter names only the
-// agents this server can start.
-func (r *Relay) spawnListed() []boardtools.Tool {
+// spawnListed is the spawn family as tools/list shows it to caller: its agent parameter names
+// only the agents this server can start, and a subagent reads of itself where the chat's agent
+// reads of its chat.
+func (r *Relay) spawnListed(caller chats.Caller) []boardtools.Tool {
 	usable := r.Chats.UsableAgents()
 	names := make([]string, len(usable))
 	for i, a := range usable {
 		names[i] = string(a)
+	}
+	if caller.Subagent {
+		return boardtools.SpawnFamilyForSub(names)
 	}
 	return boardtools.SpawnFamilyFor(names)
 }
@@ -97,16 +113,19 @@ func (r *Relay) runDispatch(caller chats.Caller, name string, args json.RawMessa
 	if !spawn && !board && !run {
 		return "unknown tool " + name, true
 	}
-	if caller.Subagent {
+	role := caller.Meta.Role
+	if caller.Subagent && (role != "" || !spawn) {
 		return name + " is not available to subagents", true
 	}
-	role := caller.Meta.Role
 	switch {
 	case board:
 		return name + " is not available on this chat", true
 	case spawn:
 		if role != model.RoleTask && role != model.RoleMerge && role != "" {
 			return name + " is not available to this agent", true
+		}
+		if !caller.MaySpawn() { // only a person's chat and its subagents: a run's agent has depth 1
+			return caller.NoSpawnText(name), true
 		}
 		return r.callSpawnFamily(caller, name, args)
 	}

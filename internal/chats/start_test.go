@@ -657,19 +657,21 @@ func TestWhatTheFirstMessageRecords(t *testing.T) {
 	e.send(b.ID, "hello", "")
 	want := model.Defaults{Groups: map[string]model.GroupDefaults{gTwo: model.LocalDefaults(model.ServerDefaults{
 		Agent: model.Cursor, Cwd: e.cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "composer-2", Effort: "high"}},
+		Subagents: &model.SubLimits{Depth: 1, Cap: 100},
 	})}}
 	if d := e.defaultsOf(); !reflect.DeepEqual(d, want) {
 		t.Fatalf("the defaults after a board chat's first message: %+v, want %+v", d, want)
 	}
 
-	// A chat on a run is where its run is, in the run's folder: it records its agent, model and
-	// effort in its run's group, and no server and no folder.
+	// A chat on a run is where its run is, in the run's folder: it records its agent, model,
+	// effort and subagent settings in its run's group, and no server and no folder.
 	r := e.newChat(NewChat{Run: ownRun})
 	if err := e.m.Configure(r.ID, ConfigReq{Agent: model.Pi, Model: "pi-model"}); err != nil {
 		t.Fatal(err)
 	}
 	e.send(r.ID, "hello", "")
-	want.Groups[gOne] = model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "pi-model", Effort: e.metaOf(r).Effort}}})
+	want.Groups[gOne] = model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "pi-model", Effort: e.metaOf(r).Effort}},
+		Subagents: &model.SubLimits{Depth: 1, Cap: 100}})
 	if d := e.defaultsOf(); !reflect.DeepEqual(d, want) {
 		t.Fatalf("the defaults after a run chat's first message: %+v, want %+v", d, want)
 	}
@@ -680,6 +682,7 @@ func TestWhatTheFirstMessageRecords(t *testing.T) {
 	entry := model.LocalDefaults(model.ServerDefaults{
 		Agent: model.Claude, Cwd: e.cwd, ByAgent: map[model.AgentKind]model.ModelChoice{
 			model.Claude: {Model: "sonnet", Effort: "high"}, model.Pi: want.Groups[gOne].On(model.LocalServer).ByAgent[model.Pi]},
+		Subagents: &model.SubLimits{Depth: 1, Cap: 100},
 	})
 	entry.Server = model.LocalServer
 	want.Groups[gOne] = entry

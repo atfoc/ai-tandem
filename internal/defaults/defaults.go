@@ -1,6 +1,7 @@
 // Package defaults keeps the sticky per-group defaults for new chats and runs: the server (per
 // group) and, per group and server, the agent, the folder (for all agents), the model and effort
-// (per agent) and the run defaults. A group that has no value of its own takes the ungrouped group's.
+// (per agent), the subagent settings (for all agents) and the run defaults. A group that has no
+// value of its own takes the ungrouped group's.
 package defaults
 
 import (
@@ -105,6 +106,18 @@ func Resolve(d model.Defaults, g, server string, a model.AgentKind, fallbackCwd 
 	return cwd, mc
 }
 
+// Sub returns the subagent settings a new chat in group g on server starts with: the group's for
+// server, then the ungrouped group's, then model.DefaultSubLimits. A stored value outside the
+// range (model.SubLimits.Check) is skipped.
+func Sub(d model.Defaults, g, server string) model.SubLimits {
+	for _, l := range []*model.SubLimits{d.Groups[g].On(server).Subagents, d.Groups[model.Ungrouped].On(server).Subagents} {
+		if l != nil && l.Check() == nil {
+			return *l
+		}
+	}
+	return model.DefaultSubLimits()
+}
+
 // Run returns a copy of what the run started last in group g on server used, else of what the one
 // in the ungrouped group used; nil when none was.
 func Run(d model.Defaults, g, server string) *model.RunDefaults {
@@ -154,6 +167,18 @@ func RecordServer(d *model.Defaults, g, server string) {
 	}
 	gd := d.Groups[g]
 	gd.Server = server
+	d.Groups[g] = gd
+}
+
+// RecordSub stores l as the subagent settings a new chat in group g on server starts with.
+func RecordSub(d *model.Defaults, g, server string, l model.SubLimits) {
+	if d.Groups == nil {
+		d.Groups = map[string]model.GroupDefaults{}
+	}
+	gd := d.Groups[g]
+	sd := gd.Servers[server]
+	sd.Subagents = &l
+	setServer(&gd, server, sd)
 	d.Groups[g] = gd
 }
 
@@ -276,7 +301,7 @@ func setServer(gd *model.GroupDefaults, server string, sd model.ServerDefaults) 
 }
 
 func empty(sd model.ServerDefaults) bool {
-	return sd.Agent == "" && sd.Cwd == "" && len(sd.ByAgent) == 0 && sd.Run == nil
+	return sd.Agent == "" && sd.Cwd == "" && len(sd.ByAgent) == 0 && sd.Run == nil && sd.Subagents == nil
 }
 
 func copyGroup(g model.GroupDefaults) model.GroupDefaults {
@@ -292,6 +317,10 @@ func copyGroup(g model.GroupDefaults) model.GroupDefaults {
 
 func copyServer(sd model.ServerDefaults) model.ServerDefaults {
 	out := model.ServerDefaults{Agent: sd.Agent, Cwd: sd.Cwd, Run: copyRun(sd.Run)}
+	if sd.Subagents != nil {
+		l := *sd.Subagents
+		out.Subagents = &l
+	}
 	if sd.ByAgent != nil {
 		out.ByAgent = make(map[model.AgentKind]model.ModelChoice, len(sd.ByAgent))
 		for k, v := range sd.ByAgent {

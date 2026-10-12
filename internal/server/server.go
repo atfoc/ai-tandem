@@ -212,7 +212,8 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, chats.ErrNoRun):
 		return http.StatusNotFound
 	case errors.Is(err, chats.ErrBadReference), errors.Is(err, chats.ErrBadLabel), errors.Is(err, chats.ErrBadPoint),
-		errors.Is(err, chats.ErrBadChoice), errors.Is(err, chats.ErrBadID), errors.Is(err, chats.ErrServerUnknown):
+		errors.Is(err, chats.ErrBadChoice), errors.Is(err, chats.ErrBadID), errors.Is(err, chats.ErrServerUnknown),
+		errors.Is(err, chats.ErrSubRange):
 		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
@@ -224,6 +225,7 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, runs.ErrStopping), errors.Is(err, runs.ErrLimit), errors.Is(err, runs.ErrGroupArchived),
 		errors.Is(err, runs.ErrLive),
 		errors.Is(err, usable.ErrMissing), errors.Is(err, usable.ErrNone), errors.Is(err, chats.ErrAgentFixed), errors.Is(err, chats.ErrIDTaken),
+		errors.Is(err, chats.ErrSubFixed),
 		errors.Is(err, chats.ErrBoardLocal), errors.Is(err, chats.ErrServerFixed), errors.Is(err, chats.ErrServerUnusable),
 		errors.Is(err, chats.ErrStartUnconfirmed), errors.Is(err, chats.ErrRemoteStart),
 		errors.Is(err, chats.ErrRunNotStarted),
@@ -1059,7 +1061,10 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, map[string]any{"ok": true, "rev": rev})
 	})
 	// "name" and "group" are the chat's; "server", "agent", "model", "effort" and "cwd" go to one
-	// branch (?branch=). The answer holds the chat as it is after the change. On the remote
+	// branch (?branch=), as do "subDepth" (0 to 3, 0 = no subagents) and "subCap" (1 to 100), the
+	// subagent settings: a number, absent = unchanged, a chat's that has not started and is neither
+	// a fork nor a branch (409 otherwise), and refused outside the range (400).
+	// The answer holds the chat as it is after the change. On the remote
 	// listener a body with "group" or "server" is refused (400, "group_refused", "server_refused").
 	mux.HandleFunc("PATCH /api/chats/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -1068,6 +1073,7 @@ func (s *Server) routes() *routeMux {
 			Server             string
 			Agent              model.AgentKind
 			Model, Effort, Cwd string
+			SubDepth, SubCap   *int
 		}
 		if !readJSON(w, r, &body) {
 			return
@@ -1098,8 +1104,9 @@ func (s *Server) routes() *routeMux {
 				return
 			}
 		}
-		if body.Server != "" || body.Agent != "" || body.Model != "" || body.Effort != "" || body.Cwd != "" {
-			req := chats.ConfigReq{Server: body.Server, Agent: body.Agent, Model: body.Model, Effort: body.Effort, Cwd: body.Cwd}
+		if body.Server != "" || body.Agent != "" || body.Model != "" || body.Effort != "" || body.Cwd != "" || body.SubDepth != nil || body.SubCap != nil {
+			req := chats.ConfigReq{Server: body.Server, Agent: body.Agent, Model: body.Model, Effort: body.Effort, Cwd: body.Cwd,
+				SubDepth: body.SubDepth, SubCap: body.SubCap}
 			if err := a.Chats.ConfigureOf(id, branchOf(r), req); err != nil {
 				// A cwd that is no folder has the code the first message's refusal has: on the
 				// chat's server (agent.ErrFolderMissing) and on this computer, where the chat

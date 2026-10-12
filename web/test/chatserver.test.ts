@@ -225,7 +225,7 @@ test("errShown, errStays: which refusal's sentence is put under the composer, an
   assert.ok(composer.includes("if (refusalShown(e instanceof ApiError ? e.status : undefined, code, serverConnected(getState(), where.server))) { errKept.current = errStays(code); setErr("));
   // the sentence goes when the server is connected again, and with the chat's start and choices
   assert.ok(composer.includes("useEffect(() => { if (where.connected && !errKept.current) setErr(\"\"); }, [where.connected]);"));
-  assert.ok(composer.includes("useEffect(() => { if (!errKept.current) setErr(\"\"); }, [c?.locked, c?.start, c?.server, c?.agent, c?.cwd, c?.model, c?.effort]);"));
+  assert.ok(composer.includes("useEffect(() => { if (!errKept.current) setErr(\"\"); }, [c?.locked, c?.start, c?.server, c?.agent, c?.cwd, c?.model, c?.effort, c?.subOff, c?.subDepth, c?.subCap]);"));
 });
 
 test("startsThere, sendingLine: the first message of a chat on another server is shown while it is sent (F5)", () => {

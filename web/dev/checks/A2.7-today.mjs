@@ -24,7 +24,10 @@ const PAGES = [
   { name: "a started chat beside a board", sel: { board: "b_arch", chat: "c_board" }, ls: DEFAULT, ...PANEL },
   { name: "the same in the dark theme", sel: { board: "b_arch", chat: "c_board" }, ls: { ...DEFAULT, "aiwb.theme": "dark" }, ...PANEL },
   { name: "a started chat beside a run", sel: { run: "r_live", chat: "c_live_ask" }, ls: DEFAULT, ...PANEL },
-  { name: "a started plain chat", sel: { chat: "c_plain" }, ls: DEFAULT, wait: ".chat-page .composer-box .send", omit: [".side-pane", ".chat-head", ".thread"] },
+  // (a plain chat's row has room for the fixed Subagents chip, which the toolbar got after BASE: beside it the composer
+  // is as it was, so the chip is taken out of the row for the comparison. In the panels it is not drawn: a fixed chip
+  // on the default settings gives way to the others.)
+  { name: "a started plain chat", sel: { chat: "c_plain" }, ls: DEFAULT, wait: ".chat-page .composer-box .send", omit: [".side-pane", ".chat-head", ".thread"], style: ".composer .sub-chip { display: none }" },
 ];
 const AT_WORK = { name: "a chat at work beside a run", sel: { run: "r_trouble", chat: "c_trouble_ask" }, ls: DEFAULT, ...PANEL };
 

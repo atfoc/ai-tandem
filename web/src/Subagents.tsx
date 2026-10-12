@@ -1,13 +1,13 @@
 // Subagents in the chat: the one-line row in the thread and the drawer on the right. A run
 // agent's transcript beside its run opens its subagents in the same drawer.
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useStore, getState, boardName, isBusy, chatOf, setDrawer, shownView, subsOf, subThreadOf, threadOf } from "./store.ts";
 import { loadSubItems } from "./conn.ts";
 import { ItemView, usePrefixEnd, useStickToBottom } from "./ChatView.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { CtxRing, ctxTitle } from "./Composer.tsx";
 import { subagentOf, subBadge, subLine, subModelLabel, subToolCount, subDurationMs, fmtDuration,
-  subList, subReport, showReport, subResultLine, subStatus } from "./logic/subagents.ts";
+  subAncestors, subChildren, subReport, showReport, subResultLine, subStatus, subTree, subWaiting } from "./logic/subagents.ts";
 import { subInPrefix } from "./logic/prefix.ts";
 import { AgentGlyph } from "./icons.tsx";
 import { agentClass, agentShortName } from "./agents.ts";
@@ -30,11 +30,11 @@ function useSubNav(chat: string, sid: string): { on: boolean; toggle(): void } {
 }
 
 /** Whether a layer above the drawer takes this Esc: the confirm dialog, the point picker, the tree
- *  popup, the mention list, a quote float. */
+ *  popup, the mention list, a quote float, the composer's Subagents popover. */
 export function escTaken(e: KeyboardEvent): boolean {
   const s = getState();
   const box = e.target instanceof Element && e.target.closest(".composer-input"); // its Esc does not get to the float or the list
-  return !!(s.confirm || s.picking || s.treeNav || document.querySelector(box ? ".mention-pop" : ".mention-pop, .qfloat, .qlist"));
+  return !!(s.confirm || s.picking || s.treeNav || document.querySelector(box ? ".mention-pop, .sub-pop" : ".mention-pop, .qfloat, .qlist, .sub-pop"));
 }
 
 /** A subagent's own thread, fetched the first time it is wanted; undefined until loaded. */
@@ -55,8 +55,9 @@ export function useNow(active: boolean): number {
   return active ? now : Date.now();
 }
 
-export function SubMark({ status }: { status: SubStatus }) {
-  return <span className={`sub-mark st-${status}`}>{status === "running" ? <i className="sub-dot" /> : status === "completed" ? "✓" : status === "failed" ? "!" : "■"}</span>;
+/** waiting: it runs and waits for the subagents it started (subWaiting): a ring that stands still, not the dot of one at work. */
+export function SubMark({ status, waiting = false }: { status: SubStatus; waiting?: boolean }) {
+  return <span className={`sub-mark st-${status}${waiting ? " waiting" : ""}`}>{status === "running" ? <i className="sub-dot" /> : status === "completed" ? "✓" : status === "failed" ? "!" : "■"}</span>;
 }
 
 function SubName({ sa }: { sa: Subagent }) {
@@ -98,21 +99,51 @@ export function SubStats({ sa, items, now, server }: { sa: Subagent; items?: Ite
   );
 }
 
-/** The one-line row in the thread where the Agent/Task call is. A running one loads its thread
- *  for the live line; a finished one needs only its state. */
-export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
+/** How many levels of nested rows are drawn under a row: more than a chat's depth can be, a guard against a loop in the records. */
+const MAX_NESTED_ROWS = 8;
+
+/** The one-line row in the thread where the Agent/Task call is, and under it the rows of the
+ *  subagents that one started, each with its own under it. within: the subagent whose thread the
+ *  call is in (the drawer); none in the chat's thread. */
+export function SubagentRow({ item, chat, within }: { item: Item; chat: ChatView; within?: Subagent }) {
   const subs = useStore((s) => subsOf(s, chat.id));
-  const sa = subagentOf(item, subs, isBusy(chat.status));
+  // a call not linked yet runs only while its caller's turn does
+  const sa = subagentOf(item, subs, within ? within.status === "running" && !within.waiting : isBusy(chat.status));
+  return <SubBranch it={item} sa={sa} chat={chat} />;
+}
+
+/** A subagent's row with the rows of the ones it started under it. it: the call that started it,
+ *  or what is known of that call when its thread is not at hand (a nested one's is in its parent's). */
+function SubBranch({ it, sa, chat, level = 0 }: { it: Item; sa: Subagent; chat: ChatView; level?: number }) {
+  const subs = useStore((s) => subsOf(s, chat.id));
+  const started = level < MAX_NESTED_ROWS ? subChildren(subs, sa.id) : [];
+  const row = <SubRow it={it} sa={sa} chat={chat} />;
+  if (!started.length) return row;
+  return (
+    <div className="sub-tree">
+      {row}
+      <div className="sub-children">
+        {started.map((x) => <SubBranch key={x.id} it={{ kind: "tool", toolId: x.tool }} sa={{ ...x, status: subStatus(x) }} chat={chat} level={level + 1} />)}
+      </div>
+    </div>
+  );
+}
+
+/** One subagent's row. One at work loads its thread for the live line; a waiting or a finished
+ *  one needs only its state. */
+function SubRow({ it, sa, chat }: { it: Item; sa: Subagent; chat: ChatView }) {
+  const subs = useStore((s) => subsOf(s, chat.id));
   const { on, toggle } = useSubNav(chat.id, sa.id);
-  const items = useSubThread(chat.id, sa.id, sa.status === "running");
+  const waiting = subWaiting(sa);
+  const items = useSubThread(chat.id, sa.id, sa.status === "running" && !waiting);
   const now = useNow(sa.status === "running");
   const server = useStore((s) => serverOfChat(s, chat));
-  const line = subLine(item, sa, items, boardName);
+  const line = subLine(it, sa, items, boardName, subs);
   const open = () => { if (sa.id) toggle(); }; // not linked yet: nothing to open
   return (
-    <div className={`subagent st-${sa.status}${on ? " on" : ""}`} role="button" tabIndex={0} onClick={open}
+    <div className={`subagent st-${sa.status}${waiting ? " waiting" : ""}${on ? " on" : ""}`} role="button" tabIndex={0} onClick={open}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }}>
-      <SubMark status={sa.status} />
+      <SubMark status={sa.status} waiting={waiting} />
       <div className="sub-main">
         <SubName sa={sa} />
         <div className={`sub-line ${line.tone}`}>{line.text}</div>
@@ -122,8 +153,9 @@ export function SubagentRow({ item, chat }: { item: Item; chat: ChatView }) {
   );
 }
 
-/** The row of a subagent's result the app carried to the agent: a system line, not a message.
- *  Its state is the subagent's, so it follows a later change with no change to the item. */
+/** The row of a subagent's result the app carried to the agent, or in a subagent's thread to that
+ *  subagent: a system line, not a message. Its state is the subagent's, so it follows a later
+ *  change with no change to the item. A click opens the subagent whose result it is. */
 export function SubResultRow({ item, chat }: { item: Item; chat: ChatView }) {
   const sid = item.subagent ?? "";
   const sa = useStore((s) => subsOf(s, chat.id)?.[sid]);
@@ -176,21 +208,34 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
   const { subs, call, sa, readOnly } = useSub(chat.id, sid);
   const items = useSubThread(chat.id, sid, true);
   const server = useStore((s) => serverOfChat(s, chat)); // a run agent's subagent: the run's server names its model
-  const list = subList(subs);
+  const list = subTree(subs).map((n) => n.sa); // ‹ › goes through the tree: a subagent, then the ones it started
   const idx = sa ? list.findIndex((x) => x.id === sa.id) : -1;
+  const above = subAncestors(sa, subs); // of a nested one: whose subagent it is, and the way back
   const running = sa?.status === "running";
+  const waiting = !!sa && subWaiting(sa);
   const now = useNow(running);
   const ref = useRef<HTMLDivElement>(null);
   const onScroll = useStickToBottom(ref, running, sid);
   if (!sa) return null;
   const it: Item = call ?? { kind: "tool", toolId: sa.tool };
-  const line = subLine(it, sa, items, boardName);
+  const line = subLine(it, sa, items, boardName, subs);
   const step = (by: number) => { const n = list[(idx + by + list.length) % list.length]; if (n) onOpen(n.id); };
   return (
     <>
       <header className="sub-drawer-head">
+        {above.length > 0 && (
+          <div className="sub-crumbs">
+            Subagent of
+            {above.map((p, i) => (
+              <React.Fragment key={p.id}>
+                {i > 0 && <span className="sub-crumb-sep">›</span>}
+                <button className="link" title={i === above.length - 1 ? "Open the subagent that started this one" : "Open this subagent"} onClick={() => onOpen(p.id)}>{p.description || "Subagent"}</button>
+              </React.Fragment>
+            ))}
+          </div>
+        )}
         <div className="sub-drawer-top">
-          <SubMark status={sa.status} />
+          <SubMark status={sa.status} waiting={waiting} />
           <SubName sa={sa} />
           {list.length > 1 && (
             <span className="sub-nav">
@@ -208,7 +253,7 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
         {sa.prompt && <SubPrompt text={sa.prompt} />}
         {!items && <div className="typing"><span className="dots"><i /><i /><i /></span> Loading…</div>}
         {(items ?? []).map((x, i) => (x ? <ItemView key={i} item={x} chat={chat} branch={branch} sub={sa} readOnly={readOnly} /> : null))}
-        {running && items && !items.length && <div className="typing"><span className="dots"><i /><i /><i /></span> Starting…</div>}
+        {running && !waiting && items && !items.length && <div className="typing"><span className="dots"><i /><i /><i /></span> Starting…</div>}
         {items && showReport(it, sa, items) && (
           <div className="sub-report">
             <div className="tool-sub">Report</div>
@@ -247,7 +292,7 @@ export function SubagentDrawer() {
 
   if (!shown || !chat || !d || !sa) return null;
   return (
-    <aside className={`sub-drawer st-${sa.status}${readOnly ? " read-only" : ""}`}>
+    <aside className={`sub-drawer st-${sa.status}${subWaiting(sa) ? " waiting" : ""}${readOnly ? " read-only" : ""}`}>
       <SubThread chat={chat} sid={d.sub} branch={d.branch} onClose={closeSub} onOpen={(sid) => openSub(chat.id, sid)} />
     </aside>
   );

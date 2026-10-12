@@ -25,6 +25,8 @@ type StartReq struct {
 	Agent         model.AgentKind // required
 	Cwd           string          // required without Run; with Run the folder is the run's and Cwd is ignored
 	Model, Effort string          // "" = the agent's default from its catalog
+	SubDepth      *int            // the subagent depth; nil = model.DefaultSubDepth, whatever the sticky one is; ErrSubRange outside the range
+	SubCap        *int            // the subagent cap; nil = model.DefaultSubCap, as for the depth
 	Name          string
 	UserNamed     bool
 	Text          string // required, not blank: the first message
@@ -53,8 +55,8 @@ type StartResult struct {
 //     sent the message. A
 //     creation that is refused leaves nothing, and asks for no group.
 //   - The caller's chat, not started (a call before made it and its send failed before the agent
-//     took the message): it is given the agent, folder, model, effort and name of req, as a new
-//     chat would get them, and sent the message.
+//     took the message): it is given the agent, folder, model, effort, subagent settings and
+//     name of req, as a new chat would get them, and sent the message.
 //   - The caller's chat, started: nothing is changed and nothing is sent; Sent is false.
 //   - Any other chat with the id is ErrIDTaken: one without the caller's mark, a fork, a chat of
 //     another run than req.Run (or of one, when req names none), a chat of another board than
@@ -63,7 +65,8 @@ type StartResult struct {
 // The whole call holds the creation lock of the id: a repeat that arrives meanwhile waits, and
 // then finds the chat as this call left it. So of many calls with one id one sends.
 //
-// ErrBadID and ErrStartValue are answered before anything is looked at, with the zero result. A
+// ErrBadID, ErrStartValue and ErrSubRange are answered before anything is looked at, with the
+// zero result. A
 // folder that is no directory is agent.ErrFolderMissing to errors.Is, one inside the app's own is
 // ErrAppFolder. With every other outcome but ErrIDTaken the result says what there is after the
 // call: Exists and Chat when the caller's chat is there, Started when it has had its first
@@ -77,6 +80,10 @@ func (m *Manager) Start(req StartReq) (res StartResult, err error) {
 	if req.Client == "" || req.Agent == "" || strings.TrimSpace(req.Text) == "" ||
 		req.Run == "" && strings.TrimSpace(req.Cwd) == "" {
 		return res, ErrStartValue
+	}
+	sub, err := subChoice(model.DefaultSubLimits(), req.SubDepth, req.SubCap)
+	if err != nil {
+		return res, err
 	}
 	defer m.ids.lock(req.ID)()
 	defer func() {
@@ -101,7 +108,7 @@ func (m *Manager) Start(req StartReq) (res StartResult, err error) {
 	c, err := m.get(req.ID)
 	if err != nil {
 		n := NewChat{ID: req.ID, Client: req.Client, Run: req.Run, Board: req.Board, Agent: req.Agent, Group: model.Ungrouped,
-			Cwd: cwd, Model: req.Model, Effort: req.Effort, Name: req.Name, UserNamed: req.UserNamed}
+			Cwd: cwd, Model: req.Model, Effort: req.Effort, SubDepth: &sub.Depth, SubCap: &sub.Cap, Name: req.Name, UserNamed: req.UserNamed}
 		if _, err := m.create(n, req.Place); err != nil {
 			return res, err
 		}
@@ -117,7 +124,7 @@ func (m *Manager) Start(req StartReq) (res StartResult, err error) {
 		case meta.Locked:
 			return res, nil
 		}
-		if err := m.restart(req, cwd); err != nil {
+		if err := m.restart(req, cwd, sub); err != nil {
 			return res, err
 		}
 	}
@@ -148,9 +155,9 @@ func boardOf(req StartReq) string {
 
 // restart gives the caller's chat req.ID, which has not started, the values of req, as a new chat
 // would get them (see create): the agent, the folder cwd (none on a run, whose folder stays the
-// run's), the model and effort req names or else the default of the agent's catalog, and the
-// name with its mark. The chat's event is sent for what changed.
-func (m *Manager) restart(req StartReq, cwd string) error {
+// run's), the model and effort req names or else the default of the agent's catalog, the subagent
+// settings sub, and the name with its mark. The chat's event is sent for what changed.
+func (m *Manager) restart(req StartReq, cwd string, sub model.SubLimits) error {
 	a := req.Agent
 	if a != model.Claude && a != model.Cursor && a != model.Pi {
 		return fmt.Errorf("unknown agent %q", a)
@@ -168,7 +175,7 @@ func (m *Manager) restart(req StartReq, cwd string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.ConfigureOf(req.ID, "", ConfigReq{Agent: a, Model: mc.Model, Effort: mc.Effort, Cwd: cwd}); err != nil {
+	if err := m.ConfigureOf(req.ID, "", ConfigReq{Agent: a, Model: mc.Model, Effort: mc.Effort, Cwd: cwd, SubDepth: &sub.Depth, SubCap: &sub.Cap}); err != nil {
 		return err
 	}
 	var out outbox

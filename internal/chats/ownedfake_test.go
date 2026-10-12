@@ -117,7 +117,7 @@ func TestSpawnOptionsPerKindOfChat(t *testing.T) {
 		}
 		got := childOf(id, true)
 		same("a subagent of the "+string(role)+" agent", got, agent.SpawnOptions{ChatID: got.ChatID, SessionID: got.SessionID,
-			Cwd: e.cwd, Model: "sonnet", MCP: &agent.BoardAccess{MCPURL: url, Token: got.MCP.Token}, Subagent: true,
+			Cwd: e.cwd, Model: "sonnet", MCP: &agent.BoardAccess{MCPURL: url, Token: got.MCP.Token}, Subagent: true, NoSpawn: true,
 			Dir:        e.st.P.RunChatDir(ownRun, true, id) + "/subagents/" + strings.TrimPrefix(got.ChatID, id+"/subagents/"),
 			Unattended: true, MCPTools: []string{}})
 		if got.MCPTools == nil || got.MCP.Token == m.Token {
@@ -168,7 +168,7 @@ func TestSpawnOptionsPerKindOfChat(t *testing.T) {
 		same(what+", resume", sp[1], want)
 		got := childOf(v.ID, false)
 		same("a subagent of "+what, got, agent.SpawnOptions{ChatID: got.ChatID, SessionID: got.SessionID, Cwd: v.Cwd,
-			Model: v.Model, Effort: v.Effort, MCP: &agent.BoardAccess{MCPURL: url, Token: got.MCP.Token}, Subagent: true,
+			Model: v.Model, Effort: v.Effort, MCP: &agent.BoardAccess{MCPURL: url, Token: got.MCP.Token}, Subagent: true, NoSpawn: true,
 			Dir: dir + "/subagents/" + strings.TrimPrefix(got.ChatID, v.ID+"/subagents/"), MCPTools: wantSub})
 	}
 }

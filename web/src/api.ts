@@ -183,7 +183,7 @@ export const api = {
         ...(target.model ? { model: target.model } : {}), ...(target.effort ? { effort: target.effort } : {}) } } : {}),
     }),
   /** server: an entry id (LOCAL_SERVER for this computer); the answer's chat has that server's agent, folder, model and effort. */
-  configure: (id: string, branch: string, p: { server?: string; agent?: AgentKind; model?: string; effort?: string; cwd?: string }) => call<{ ok: boolean; chat?: ChatView }>("PATCH", `/api/chats/${id}${onBranch(branch)}`, p),
+  configure: (id: string, branch: string, p: { server?: string; agent?: AgentKind; model?: string; effort?: string; cwd?: string; subDepth?: number; subCap?: number }) => call<{ ok: boolean; chat?: ChatView }>("PATCH", `/api/chats/${id}${onBranch(branch)}`, p),
   /** Saves a branch's draft on the counter base and answers the new counter. Refused with the code "stale" when the draft was
    *  changed elsewhere: the error then has the server's counter (rev) and its draft. */
   saveDraft: (id: string, branch: string, d: Draft, base: number, keepalive = false): Promise<number> =>

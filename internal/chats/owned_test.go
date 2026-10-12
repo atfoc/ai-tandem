@@ -262,7 +262,8 @@ func TestCreateOnRun(t *testing.T) {
 	}
 
 	// The first message: the run's context block ahead of the text, on every message; the namer
-	// runs as for any chat; of the sticky defaults the agent is recorded, and the folder stays.
+	// runs as for any chat; of the sticky defaults the agent and the subagent settings are
+	// recorded, and the folder stays.
 	before := e.defaultsOf()
 	e.send(v.ID, "how far is it?", "<ui-context/>")
 	ag := e.claude.last(t)
@@ -279,7 +280,7 @@ func TestCreateOnRun(t *testing.T) {
 		t.Fatalf("namer calls: %v", calls)
 	}
 	after, want := e.defaultsOf(), before.Groups[gOne].On(model.LocalServer)
-	want.Agent = model.Claude
+	want.Agent, want.Subagents = model.Claude, &model.SubLimits{Depth: 1, Cap: 100}
 	if got := after.Groups[gOne]; !reflect.DeepEqual(got, model.LocalDefaults(want)) || want.Cwd != other || len(after.Groups) != 1 {
 		t.Fatalf("the sticky defaults changed: %+v -> %+v", before, after)
 	}

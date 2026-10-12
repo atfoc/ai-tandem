@@ -53,6 +53,17 @@ export function firstLine(text?: string): string {
 
 const lastText = (items?: Item[]) => [...(items ?? [])].reverse().find((i) => i?.kind === "text")?.text ?? "";
 
+/** A subagent that waits: it runs, and its own turn has ended while subagents it started still run
+ *  or their results have not reached it yet. Neither working nor finished. */
+export const subWaiting = (sa: Subagent): boolean => subStatus(sa) === "running" && !!sa.waiting;
+
+/** What a waiting subagent's line says: how many of the subagents it started still run, else that
+ *  their results have not reached it yet. subs: the chat's subagents. */
+export function subWaitingText(sa: Subagent, subs?: Record<string, Subagent>): string {
+  const n = subChildren(subs, sa.id).filter((x) => subStatus(x) === "running").length;
+  return n ? `Waiting on ${n} subagent${n === 1 ? "" : "s"}` : "Waiting on its subagents' results";
+}
+
 /** The live activity while it runs: the running tool, else Claude's progress line, else
  *  Writing…/Thinking… from its last item. items is its thread, when loaded. */
 export function subActivity(sa: Subagent, items?: Item[], nameOf?: BoardNames): string {
@@ -79,9 +90,10 @@ export function showReport(it: Item, sa: Subagent, items?: Item[]): boolean {
 }
 
 /** The row's summary line and its tone. One that was not carried over says so in place of its
- *  activity or result. */
-export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNames): { text: string; tone: "live" | "muted" | "error" } {
+ *  activity or result, and one that waits says what it waits on (subs: the chat's subagents). */
+export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNames, subs?: Record<string, Subagent>): { text: string; tone: "live" | "muted" | "error" } {
   if (sa.notCarried) return { text: NOT_CARRIED, tone: "muted" };
+  if (subWaiting(sa)) return { text: subWaitingText(sa, subs), tone: "muted" };
   switch (sa.status) {
     case "running": return { text: subActivity(sa, items, nameOf), tone: "live" };
     case "completed": { const f = firstLine(subReport(it, sa, items)); return { text: f ? `Done · ${f}` : "Done", tone: "muted" }; }
@@ -95,9 +107,12 @@ const RESULT_STATUS: Record<Subagent["status"], string> = { running: "Running", 
 const RESULT_DELIVERY: Record<NonNullable<Subagent["delivery"]>, string> = {
   owed: "not sent yet", retry: "not sent yet", sent: "sent to the agent", "given-up": "could not be delivered",
 };
+/** A nested subagent's result goes to the subagent that started it, not to the chat's agent. */
+const SENT_NESTED = "sent to the subagent that started it";
 
 /** A result row's text: the subagent's name, then its final status, that it ended with an error
- *  when its state carries one, and whether the result has reached the agent (nothing for a
+ *  when its state carries one, and whether the result has reached the agent, or for a nested
+ *  subagent the one that started it, in whose thread the row is (nothing for a
  *  delivery state a newer server added, the raw word for a status it added). One that was not carried
  *  over has no result and nothing is owed for it. sa is undefined until the chat's subagents are loaded. */
 export function subResultLine(sa: Subagent | undefined): { name: string; text: string; tone: "muted" | "error" } {
@@ -105,7 +120,7 @@ export function subResultLine(sa: Subagent | undefined): { name: string; text: s
   if (sa.notCarried) return { name: sa.description || "Subagent", text: NOT_CARRIED, tone: "muted" };
   const parts = [Object.hasOwn(RESULT_STATUS, sa.status) ? RESULT_STATUS[sa.status] : String(sa.status ?? "")].filter(Boolean);
   if (sa.error) parts.push("ended with an error");
-  const delivery = sa.delivery && RESULT_DELIVERY[sa.delivery];
+  const delivery = sa.delivery && (sa.delivery === "sent" && sa.parent ? SENT_NESTED : RESULT_DELIVERY[sa.delivery]);
   if (delivery) parts.push(delivery);
   return { name: sa.description || "Subagent", text: parts.join(" · "), tone: sa.error || sa.status === "failed" ? "error" : "muted" };
 }
@@ -155,6 +170,46 @@ export function fmtDuration(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
-/** A chat's subagents in the order they started (nested ones included), for ‹ n/N ›. */
+/** A chat's subagents in the order they started (nested ones included). */
 export const subList = (subs: Record<string, Subagent> | undefined): Subagent[] =>
   Object.values(subs ?? {}).sort((a, b) => (a.started ?? 0) - (b.started ?? 0) || a.id.localeCompare(b.id));
+
+// ---- nesting: a subagent names the one that started it (parent); none is the chat's agent.
+
+/** The subagents one started, by its sid, in the order they started. */
+export const subChildren = (subs: Record<string, Subagent> | undefined, sid: string): Subagent[] =>
+  sid ? subList(subs).filter((x) => x.parent === sid && x.id !== sid) : [];
+
+/** The subagents above one, outermost first: from the one the chat's agent started down to the one
+ *  that started it. None for a subagent of the chat's agent, and for one whose parent is not known. */
+export function subAncestors(sa: Subagent | undefined, subs: Record<string, Subagent> | undefined): Subagent[] {
+  const out: Subagent[] = [], seen = new Set([sa?.id]);
+  for (let p = sa?.parent ? subs?.[sa.parent] : undefined; p && !seen.has(p.id); p = p.parent ? subs?.[p.parent] : undefined) { // seen: a guard against a loop in the records
+    seen.add(p.id); out.unshift(p);
+  }
+  return out;
+}
+
+/** A subagent with its level: 1 for one the chat's agent started, 2 for one that subagent started. */
+export type SubNode = { sa: Subagent; level: number };
+
+/** A chat's subagents as a tree laid out flat, for ‹ n/N ›: each one is followed by the ones it
+ *  started, and theirs, before the next one of its own level; within a level in the order they
+ *  started. One whose parent is not known stands at level 1. */
+export function subTree(subs: Record<string, Subagent> | undefined): SubNode[] {
+  const all = subList(subs), by = new Map<string, Subagent[]>();
+  for (const x of all) {
+    const p = x.parent && x.parent !== x.id && subs?.[x.parent] ? x.parent : "";
+    by.set(p, [...(by.get(p) ?? []), x]);
+  }
+  const out: SubNode[] = [], seen = new Set<string>();
+  const walk = (parent: string, level: number) => {
+    for (const sa of by.get(parent) ?? []) {
+      if (seen.has(sa.id)) continue;
+      seen.add(sa.id); out.push({ sa, level }); walk(sa.id, level + 1);
+    }
+  };
+  walk("", 1);
+  for (const sa of all) if (!seen.has(sa.id)) { seen.add(sa.id); out.push({ sa, level: 1 }); walk(sa.id, 2); } // a loop in the records hangs on no root
+  return out;
+}

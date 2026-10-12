@@ -15,6 +15,10 @@ import (
 // agent, and what a spawn that omits model and effort uses. It reads the same catalog and the
 // same resolution spawn_subagent validates with, on every call, and holds nothing between calls.
 // It starts no probe and no process and never goes through the board-tool bridge.
+//
+// What a spawn uses for what it omits is the caller's own: the chat's for the chat's agent, and
+// for a subagent its own agent, model and effort (caller.Kind, Model and Effort), which the
+// answer then calls "your" where it calls the chat's "this chat's".
 func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (text string, isErr bool) {
 	var p struct {
 		Agent  string `json:"agent"`
@@ -25,7 +29,7 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 			return "invalid list_subagent_models arguments", true
 		}
 	}
-	kind := caller.Meta.Agent
+	kind := caller.Kind
 	if p.Agent != "" {
 		switch model.AgentKind(p.Agent) {
 		case model.Claude, model.Cursor, model.Pi:
@@ -35,12 +39,13 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 		}
 	}
 	cat := r.Chats.SpawnCatalog(kind)
-	_, dModel, dEffort, err := r.Chats.SpawnDefaults(caller.Meta.ID, kind)
+	_, dModel, dEffort, err := r.Chats.SpawnDefaultsFor(caller.Meta.ID, caller.SID, kind)
 	if err != nil {
 		return err.Error(), true
 	}
+	w := ownWords(caller.Subagent)
 	if cat == nil {
-		return strings.Join(unknownListLines(kind, kind == caller.Meta.Agent, dModel, dEffort), "\n"), false
+		return strings.Join(unknownListLines(kind, kind == caller.Kind, dModel, dEffort, w), "\n"), false
 	}
 
 	matches := matchModels(cat.Models, p.Filter)
@@ -63,7 +68,7 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 	lines := append([]string{
 		header,
 		defaultsLine(kind, cat, dModel, dEffort),
-		effortRuleLine(caller.Meta.Effort),
+		effortRuleLine(caller.Effort, w),
 	}, body...)
 	return strings.Join(lines, "\n"), false
 }
@@ -250,13 +255,27 @@ func defaultsLine(a model.AgentKind, cat *model.Catalog, dModel, dEffort string)
 	return fmt.Sprintf("Model omitted -> %s, effort %s.", dModel, dEffort)
 }
 
-// effortRuleLine says what spawn_subagent does with a named model and no effort. chatEffort is
-// the calling chat's own effort.
-func effortRuleLine(chatEffort string) string {
-	if chatEffort == "" {
-		return "Effort omitted with a model named -> the model's default effort (this chat has no effort of its own)."
+// whose are the words an answer names the caller's own agent, model and effort by: "this chat's"
+// for the chat's agent, "your" for a subagent, whose spawns take its own and not the chat's.
+type whose struct {
+	its  string // "this chat's" | "your"
+	none string // how it is said that the caller has no effort
+}
+
+func ownWords(subagent bool) whose {
+	if subagent {
+		return whose{its: "your", none: "you have no effort of your own"}
 	}
-	return fmt.Sprintf("Effort omitted with a model named -> this chat's effort (%s) if the model offers it, else the model's default effort.", chatEffort)
+	return whose{its: "this chat's", none: "this chat has no effort of its own"}
+}
+
+// effortRuleLine says what spawn_subagent does with a named model and no effort. effort is the
+// caller's own effort.
+func effortRuleLine(effort string, w whose) string {
+	if effort == "" {
+		return fmt.Sprintf("Effort omitted with a model named -> the model's default effort (%s).", w.none)
+	}
+	return fmt.Sprintf("Effort omitted with a model named -> %s effort (%s) if the model offers it, else the model's default effort.", w.its, effort)
 }
 
 // modelRow is one model of a known list: its id, its label, the efforts it accepts and its
@@ -278,24 +297,25 @@ func modelRow(m model.CatalogModel) string {
 
 // unknownListLines is the whole answer for an agent whose model list the app does not know yet
 // (Cursor's and pi's before the agent has reported it). spawn_subagent then checks nothing.
-// dModel and dEffort are what it passes on when none is named: for own, a subagent of the chat's
-// own agent, the chat's model and effort; for another agent never those, but the model and
-// effort last picked for a chat of that agent (never an effort without a model), or none.
-func unknownListLines(a model.AgentKind, own bool, dModel, dEffort string) []string {
+// dModel and dEffort are what it passes on when none is named: for same, a subagent of the
+// caller's own agent, the caller's model and effort (w says whose that is); for another agent
+// never those, but the model and effort last picked for a chat of that agent (never an effort
+// without a model), or none.
+func unknownListLines(a model.AgentKind, same bool, dModel, dEffort string, w whose) []string {
 	var d string
 	switch {
 	case dModel == "" && dEffort == "":
 		d = fmt.Sprintf("Model omitted -> no model or effort is named, so %s uses its own defaults.", a)
-	case !own && dEffort != "":
+	case !same && dEffort != "":
 		d = fmt.Sprintf("Model omitted -> %s and effort %s, last picked for a %s chat, are passed on unchecked.", dModel, dEffort, a)
-	case !own:
+	case !same:
 		d = fmt.Sprintf("Model omitted -> %s, last picked for a %s chat, is passed on unchecked; no effort is named, so %s uses its own default effort.", dModel, a, a)
 	case dModel != "" && dEffort != "":
-		d = fmt.Sprintf("Model omitted -> this chat's model %s and effort %s are passed on unchecked.", dModel, dEffort)
+		d = fmt.Sprintf("Model omitted -> %s model %s and effort %s are passed on unchecked.", w.its, dModel, dEffort)
 	case dModel != "":
-		d = fmt.Sprintf("Model omitted -> this chat's model %s is passed on unchecked; no effort is named, so %s uses its own default effort.", dModel, a)
+		d = fmt.Sprintf("Model omitted -> %s model %s is passed on unchecked; no effort is named, so %s uses its own default effort.", w.its, dModel, a)
 	default:
-		d = fmt.Sprintf("Model omitted -> no model is named, so %s uses its own default model; this chat's effort %s is passed on unchecked.", a, dEffort)
+		d = fmt.Sprintf("Model omitted -> no model is named, so %s uses its own default model; %s effort %s is passed on unchecked.", a, w.its, dEffort)
 	}
 	return []string{
 		fmt.Sprintf("%s: the model list is not known to the app yet. It becomes known when the app reads it at start or when a %s chat starts.", a, a),

@@ -167,7 +167,11 @@ func (r *Relay) runClosed(run string) *Error {
 
 // startBody is the body of the creation call for the chat meta: the one place it is made. A
 // chat on a run names the run, and one on a board the board: each is on that server under the
-// same id. context goes with a chat on a board alone.
+// same id. context goes with a chat on a board alone. The subagent settings are always named, the
+// depth 0 too: a server that knows them gives the chat these and no default of its own. A server
+// from before the settings reads past both (the creation call takes a body's unknown fields as
+// absent) and starts the chat as it starts every chat: with subagents one level deep and no cap,
+// which is what its view, naming neither, then reads as here (model.ChatView.SubLimits).
 func startBody(meta model.ChatMeta, text, context string) []byte {
 	if meta.Board == "" {
 		context = ""
@@ -178,13 +182,15 @@ func startBody(meta model.ChatMeta, text, context string) []byte {
 		Cwd       string          `json:"cwd"`
 		Model     string          `json:"model"`
 		Effort    string          `json:"effort"`
+		SubDepth  int             `json:"subDepth"`
+		SubCap    int             `json:"subCap"`
 		Name      string          `json:"name"`
 		UserNamed bool            `json:"userNamed"`
 		Text      string          `json:"text"`
 		Context   string          `json:"context,omitempty"`
 		Run       string          `json:"run,omitempty"`
 		Board     string          `json:"board,omitempty"`
-	}{meta.ID, meta.Agent, meta.Cwd, meta.Model, meta.Effort, meta.Name, meta.UserNamed, text, context, meta.Run, meta.Board})
+	}{meta.ID, meta.Agent, meta.Cwd, meta.Model, meta.Effort, meta.SubLimits().Depth, meta.SubLimits().Cap, meta.Name, meta.UserNamed, text, context, meta.Run, meta.Board})
 	return b
 }
 

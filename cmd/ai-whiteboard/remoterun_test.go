@@ -1318,9 +1318,9 @@ func TestRemoteRunChat(t *testing.T) {
 	if a := rp.do(t, "PATCH", "/api/chats/"+chat, map[string]any{"server": servers.LocalID}); a.Status != http.StatusConflict {
 		t.Fatalf("a change of the started chat's server: %s, want 409", a)
 	}
-	// The chat recorded its agent and model for the run's server, as a chat of the group does,
-	// so the next chat on the run starts with them; the group's sticky server, the folders and
-	// this computer's part are what the run's start left.
+	// The chat recorded its agent, model and subagent settings for the run's server, as a chat of
+	// the group does, so the next chat on the run starts with them; the group's sticky server, the
+	// folders and this computer's part are what the run's start left.
 	var was, now model.Defaults
 	after := defaults()
 	if err := json.Unmarshal([]byte(before), &was); err != nil {
@@ -1335,10 +1335,11 @@ func TestRemoteRunChat(t *testing.T) {
 		if key == servers.LocalID {
 			continue
 		}
-		far, sd.Agent, sd.ByAgent = sd, "", nil
+		far, sd.Agent, sd.ByAgent, sd.Subagents = sd, "", nil, nil
 		ng.Servers[key] = sd
 	}
-	if far.Agent != model.Claude || far.ByAgent[model.Claude].Model != "haiku" || len(far.ByAgent) != 1 || !reflect.DeepEqual(ng, wg) || len(now.Groups) != len(was.Groups) {
+	if far.Agent != model.Claude || far.ByAgent[model.Claude].Model != "haiku" || len(far.ByAgent) != 1 ||
+		far.Subagents == nil || *far.Subagents != model.DefaultSubLimits() || !reflect.DeepEqual(ng, wg) || len(now.Groups) != len(was.Groups) {
 		t.Fatalf("A's defaults after the chat on the run:\nbefore: %s\nafter:  %s", before, after)
 	}
 	if on := goes(); on != "" {

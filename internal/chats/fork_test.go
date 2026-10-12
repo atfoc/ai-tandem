@@ -462,7 +462,7 @@ func TestForkNewChat(t *testing.T) {
 	}
 	want := model.ChatView{ID: v.ID, Agent: model.Claude, Name: "Named title (fork)", Group: gOne,
 		Cwd: srcView.Cwd, Model: srcView.Model, Effort: srcView.Effort, Locked: true, Created: v.Created,
-		Usage: model.Usage{CtxWindow: 1000, Turns: 1}, Status: model.StatusReady,
+		Usage: model.Usage{CtxWindow: 1000, Turns: 1}, Status: model.StatusReady, SubDepth: model.DefaultSubDepth, SubCap: model.DefaultSubCap,
 		ForkedFrom: id, ForkedFromTitle: "Named title", ForkedBranch: model.MainBranch, ForkedAt: at, Fresh: true}
 	if v != want {
 		t.Fatalf("view %+v\nwant %+v", v, want)
@@ -722,7 +722,7 @@ func TestForkAndEditFirstMessage(t *testing.T) {
 	want := model.ChatView{ID: v.ID, Agent: model.Claude, Name: "Named title (fork)", Group: gTwo, Cwd: dir,
 		Model: "opus", Effort: "low", Created: v.Created, Usage: model.Usage{CtxWindow: src.Usage.CtxWindow},
 		Draft: &model.Draft{Text: "ask 1"}, HasDraft: true, Status: model.StatusReady, ForkedFrom: id, ForkedFromTitle: "Named title",
-		ForkedBranch: model.MainBranch}
+		ForkedBranch: model.MainBranch, SubDepth: model.DefaultSubDepth, SubCap: model.DefaultSubCap}
 	if !reflect.DeepEqual(v, want) {
 		t.Fatalf("view %+v\nwant %+v", v, want)
 	}

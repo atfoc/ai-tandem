@@ -306,7 +306,9 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
   }
   {
     const errors = [];
-    const { ctx, page } = await openPage({ url, browser, sel: { chat: "c_A2_new_long" }, errors, wait: ".composer .server-pick .tchip" });
+    // (with this chat's long names the row has no room for the server's chip beside the Subagents chip's "more": it is in that popup)
+    const { ctx, page } = await openPage({ url, browser, sel: { chat: "c_A2_new_long" }, errors, wait: ".composer .more-chip" });
+    await page.locator(".composer .more-chip").click();
     await page.locator(".composer .server-pick .tchip").click();
     await page.locator('.composer .server-pick .menu-item[data-option-id="s_lab"]').click();
     try {

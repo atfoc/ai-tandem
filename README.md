@@ -20,7 +20,19 @@ agents run with the logins you already have.
   `list_subagent_models` tells an agent which `model` and `effort` values `spawn_subagent` accepts
   for each agent. An agent does not wait for a subagent or fetch its result: it ends its turn, and
   when the subagent finishes the app sends the result to the agent as a message, in a turn of its
-  own once the agent is idle, or with the user's next message after a stop or a failed turn. For pi
+  own once the agent is idle, or with the user's next message after a stop or a failed turn.
+  A chat has two subagent settings, fixed at its first message. Its **depth** says how many
+  levels of subagents it may have: off (the agent has no spawn family), 1 (its subagents start
+  none, the default), 2 or 3 (a subagent may start subagents, down to that level; the subagents
+  at the deepest level have no spawn family). Its **cap** is the most subagents of the chat that
+  may run at once, at every level (100 by default): a spawn over it is refused, never queued.
+  Each branch of a chat counts its own: what runs on another branch does not count. A
+  subagent that started subagents is not finished when its turn ends: it waits, still running,
+  gets their results as messages that start further turns of it, and reports to whoever started
+  it only after a turn that ends with none of them running. A result that cannot be given to a
+  waiting subagent fails it. A subagent stops only the subagents it started, stopping one stops
+  everything below it, and what a subagent's spawn does not name (agent, model, effort) is taken
+  from that subagent. For pi
   the token travels only inside `AIWB_MCP_CONFIG` (never in argv or a URL); app-spawned subagents get
   their own extra token. The owner-only UDS bridge carries a per-run, non-secret handle for permission
   asks, subagent activity, abort and MCP failure notices. pi tool
@@ -40,6 +52,26 @@ process. It advertises exactly `http://localhost:6006/mcp` for every agent. That
 load-bearing: Cursor's org allowlist matches the full URL, so a query string, an extra path
 segment, a trailing slash, or the `127.0.0.1` or `[::1]` spelling is blocked by team policy. There
 is no user-facing MCP port option (see [Troubleshooting the board MCP](#troubleshooting-the-board-mcp)).
+
+**Subagent settings.** A chat has two: its *depth*, the deepest level a subagent of the chat may
+be at (0 = no subagents, 1 = the chat's agent starts subagents, 2 or 3 = those may start their
+own), and its *cap*, the most subagents of the chat that run at the same time (1 to 100). Both are
+chosen before the first message, with the **Subagents** chip of the composer's toolbar, and fixed by it; a branch and a fork have their source's, and a
+chat made before the settings has depth 1 and cap 100. They are kept in the chat's `chat.json`
+(`subagents`), and the last choice is remembered for the next new chat per group and per server,
+for all agents, in `state.json` (`defaults.groups.<group>.servers.<server>.subagents`, `<server>`
+being `local` or a remote server's instance id); a group with none uses the ungrouped group's,
+then depth 1 and cap 100. `PATCH /api/chats/{id}` takes them as `subDepth` (0 to 3) and `subCap`
+(1 to 100): a field that is absent changes nothing, a value outside the range is refused (400),
+and so is either field once the chat has started, on a branch or a fork, and while a first
+message sent to a remote server has had no answer (409). A chat's JSON
+names them as `subDepth` and `subCap`, with `subOff: true` in place of a depth of 0. The creation
+call of an API client (`POST /api/chats` on the remote port) takes `subDepth` and `subCap` too;
+without them its chat has 1 and 100, and such a chat reads and feeds no remembered choice. A chat
+that starts on a remote server takes its settings there with its first message. A remote server
+built before the settings ignores the two fields and runs the chat as it always did, with
+subagents one level deep and no cap; the chat then shows one level here, whatever was chosen.
+[Runs](#runs) have no such settings.
 
 **`get_image`** gives an agent a picture of a board (PNG), drawn by the open window that holds
 the board, so it shows colours, layout and overlaps that `read_board` does not. `scope` picks what
@@ -131,8 +163,10 @@ agent's transcript.
     files) and has no spawn family;
   - a chat you open on a run: `get_run`, `get_task`, `get_agent`, `get_notes`, `add_task`,
     `update_task`, `cancel_task`, `retry_task`, `tell_orchestrator` (a message for the
-    orchestrator), and the spawn family;
-  - task and merge agents: the spawn family only. They cannot see or change the run.
+    orchestrator), and the spawn family, as its own subagent settings say: it is an ordinary
+    chat in this;
+  - task and merge agents: the spawn family only. They cannot see or change the run. Their
+    subagents start none, and no cap holds for them.
 
   No chat of a run gets board tools. The run's agents run unattended: nothing they do raises a
   permission card, and a request that comes anyway is refused at once.

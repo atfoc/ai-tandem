@@ -1,4 +1,4 @@
-// The message box under a chat, and its toolbar: folder, model, effort and
+// The message box under a chat, and its toolbar: folder, model, effort, the subagent settings and
 // context usage (a click on it also shows the agent's plan usage limits). The pickers come from the server's catalogs and can be changed
 // until the first message is sent: of a new chat, of a fork that has had none of its own, and of the branch a pending move starts.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -32,6 +32,8 @@ import { BoardIcon, Chevron, Folder, Lock, MoreIcon, RunIcon, WarnIcon, agentNam
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
 import { AgentPick, AgentReason, ServerPick, useAgentChip, useServerChip, useWhere } from "./ChatChoices.tsx";
+import { SubagentsPick } from "./SubSettings.tsx";
+import { DEFAULT_SUB_CAP, DEFAULT_SUB_DEPTH, subChip, subChipLabel, subSettings } from "./logic/subsettings.ts";
 import { isSending, leftByBack, pickOnFork, registerComposer, sendAt, sendFailed, setMoveChoice } from "./fork/actions.ts";
 import { heldReason, pickOn, sendWait } from "./logic/waits.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
@@ -244,9 +246,9 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   }, [canRef, archived, legacy, chatId]);
   useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(""), 2500); return () => clearTimeout(t); }, [note]);
   // A refusal's sentence is about the server's state and the chat's choices it was given in: it goes when the server is connected again, when the chat
-  // starts or its start is settled, and when its server, agent, folder, model or effort changes.
+  // starts or its start is settled, and when its server, agent, folder, model, effort or subagent settings change.
   useEffect(() => { if (where.connected && !errKept.current) setErr(""); }, [where.connected]);
-  useEffect(() => { if (!errKept.current) setErr(""); }, [c?.locked, c?.start, c?.server, c?.agent, c?.cwd, c?.model, c?.effort]);
+  useEffect(() => { if (!errKept.current) setErr(""); }, [c?.locked, c?.start, c?.server, c?.agent, c?.cwd, c?.model, c?.effort, c?.subOff, c?.subDepth, c?.subCap]);
 
   // The draft: put into the box when it appears (on open, after unarchiving), saved as it
   // changes, and saved at once when the composer or the page goes away. A later draft from the
@@ -555,7 +557,8 @@ function useRoom(row: HTMLDivElement | null, ruler: HTMLDivElement | null) {
 
 /** Server and agent while they can be changed (agentOpen; ChatChoices.tsx; a chat on another
  *  server keeps showing its server, showsServer), then folder, model,
- *  effort and context usage of the branch shown. Where the model and effort
+ *  effort, the subagent settings (SubSettings.tsx: open on a new chat alone, else fixed; none for
+ *  a run's own agent) and context usage of the branch shown. Where the model and effort
  *  controls write is pickerMode's: with a pending move they show and set the move's choice, which
  *  goes with its message; on a new chat and on a fork without a message of its own they change the
  *  session (PATCH); else they are fixed. While the composer sends a message (sending) they take no
@@ -585,7 +588,7 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
   const waits = useStore((s) => s.waits[chatId]);
   const pick = useStore((s) => pickOn(s.waits[chatId], shownBranch(s, chatId))); // the choice a fork's agent is being started on
   const held = heldReason(waits, "choice"); // why the model and the effort take no pick now
-  // One open list at a time for Server, Agent, Folder, Model and Effort; their state used to live inside each
+  // One open list at a time for Server, Agent, Folder, Model, Effort and Subagents; their state used to live inside each
   // picker, which let the menus and their backdrops stack. The usage popover keeps its own.
   const [openPicker, setOpenPicker] = useState<Control | null>(null);
   const [patching, setPatching] = useState(false); // a fork's PATCH starts its agent again, which takes seconds
@@ -626,15 +629,22 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
   else if (choices && cat) keys.model = widthKey("model", modelLabel(shown, cat));
   else if (choices && where.connected) keys.model = widthKey("model", "Loading models…", { fixed: true });
   if (choices && cat && m?.efforts?.length) keys.effort = widthKey("effort", effortLabel(shown.effort, m));
+  const subs = subChip(c, !!move); // the subagent settings: a choice on a new chat alone, else fixed; none for a run's own agent
+  const limits = subSettings(c);
+  if (subs.kind !== "none") keys.subagents = widthKey("subagents", subChipLabel(limits), { fixed: subs.kind === "fixed" });
+  // Fixed and on the default settings, the chip tells what every chat had before there were any: it gives way to the others.
+  const spare = subs.kind === "fixed" && limits.depth === DEFAULT_SUB_DEPTH && limits.cap === DEFAULT_SUB_CAP;
   // The meter with its text, and cut to its ring (the error meter: to its icon).
   const meterKey = u.error ? widthKey("meter", "Context unavailable", { fixed: true }) : widthKey("meter", ctxText(u.used, u.win));
   const ringKey = widthKey("meter", "", { fixed: !!u.error, mark: u.error ? "icon" : "ring" });
   const f = fit({
     room: room?.w ?? Infinity, gap: room?.gap ?? 0, more: widthOf(MORE),
-    controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widthOf(keys[id]!) })),
+    controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widthOf(keys[id]!), ...(id === "subagents" && spare ? { optional: true } : {}) })),
     meter: { full: widthOf(meterKey), ring: widthOf(ringKey) },
     fixed: [...(stop ? [widthOf(STOP)] : []), widthOf(SEND)],
     held: more ? drawn.current?.fit.popup ?? [] : null,
+    // The Subagents popover stays open through a pick, which can make its chip longer: the others leave before it.
+    pinned: openPicker === "subagents" && drawn.current?.fit.toolbar.includes("subagents") ? "subagents" : undefined,
   });
   // A control that changes place has no open list: it is made anew where it goes, and its list would open there by
   // itself, at once or, for one that went into the popup, when the popup is opened next.
@@ -735,6 +745,10 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
           {...opens("effort")}
           onPick={pickEffort} />
       )}
+    </>,
+    subagents: <>
+      {subs.kind !== "none" && <SubagentsPick c={c} fixed={subs.kind === "fixed" ? subs.why : ""} disabled={patching || sending || !!held}
+        {...opens("subagents")} onBusy={setPatching} onError={onError} />}
     </>,
   };
   return (

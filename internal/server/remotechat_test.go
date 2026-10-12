@@ -1014,10 +1014,16 @@ func TestFirstMessageOfAChatOnAnotherServer(t *testing.T) {
 	if got := f.good(p, "POST", chat+"/fork", `{"branch":"main","at":1}`); got["id"] != forkID {
 		t.Fatalf("the fork: %v", got)
 	}
-	f.untouched("a change of server or agent", func() {
+	f.untouched("a change of server, agent or subagent settings", func() {
 		for _, path := range []string{chat, chat + "?branch=b1", "/api/chats/" + forkID} {
 			for _, body := range []string{`{"server":"local"}`, `{"server":"` + f.entry + `"}`, `{"agent":"pi"}`, `{"agent":"claude","model":"m"}`} {
 				if status, out := f.call(p, "PATCH", path, body); status != http.StatusConflict || !strings.Contains(out, chats.ErrAgentFixed.Error()) {
+					t.Errorf("PATCH %s %s: %d %s", path, body, status, out)
+				}
+			}
+			// And so are the subagent settings: a record is a started chat.
+			for _, body := range []string{`{"subDepth":0}`, `{"subCap":5}`, `{"subDepth":2,"subCap":10,"model":"m"}`, `{"subDepth":99}`} {
+				if status, out := f.call(p, "PATCH", path, body); status != http.StatusConflict || !strings.Contains(out, chats.ErrSubFixed.Error()) {
 					t.Errorf("PATCH %s %s: %d %s", path, body, status, out)
 				}
 			}

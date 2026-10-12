@@ -138,7 +138,7 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		}
 		return []agent.Event{
 			{Kind: agent.EvUsage, CtxWindow: win},
-			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText, Point: point,
+			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText, Point: point, SelfBegun: selfBegun(m),
 				CostUSD: num(m["total_cost_usd"]), HasCost: hasCost, NumTurns: int(num(m["num_turns"])),
 				OutTokens: int(num(obj(m["usage"])["output_tokens"])), CumOutTokens: cumOut,
 				CumTokens: cum, HasTokens: hasTok,
@@ -257,6 +257,15 @@ func (p *proc) subLine(tool string, m map[string]any) []agent.Event {
 		}
 	}
 	return nil
+}
+
+// selfBegun reports whether m, a turn's result line, ends a turn the CLI began by itself: its
+// origin (CLI 2.1.284 on) names something other than a message, as "task-notification" does for
+// the turn a finished background command or task starts. A line without an origin says nothing,
+// and counts as a message's turn.
+func selfBegun(m map[string]any) bool {
+	kind := str(obj(m["origin"])["kind"])
+	return kind != "" && kind != "human"
 }
 
 // windowFor is a model's context window: from the last result's modelUsage, else from the built-in

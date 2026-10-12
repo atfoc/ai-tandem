@@ -224,7 +224,7 @@ function composersInPage() {
 export const measureComposer = (page) => page.evaluate(composersInPage);
 
 /** In the page: the controls of the first composer's toolbar, left to right, each with its kind (server, agent, lock,
- *  folder, model, effort, model-effort: the fixed chip of both, loading, more: the chip of the popup that holds what
+ *  folder, model, effort, model-effort: the fixed chip of both, loading, subagents, more: the chip of the popup that holds what
  *  the row has no room for, meter, stop, send; the goal composer's tiers and limits), its label, whether it is a fixed chip, its width and its own margin (the lock has one); composer: "chat"
  *  or "goal"; gap: the row's; chrome: what the box takes besides the row (padding and border); sum: the controls with
  *  their margins and the gaps between them on one line, the row's spacer among them at no width; reason: the line
@@ -254,6 +254,7 @@ function toolbarInPage() {
     if (t.startsWith("Model and effort") || t.startsWith("Starting the agent")) return "model-effort";
     if (t.startsWith("Model")) return "model";
     if (t.startsWith("Effort")) return "effort";
+    if (t.startsWith("Subagents")) return "subagents";
     if (/^(Working directory|Folder)/.test(t)) return "folder";
     return chip.textContent.includes("Loading models") ? "loading" : "other";
   };
@@ -680,7 +681,8 @@ export const atRest = (page, frames = 24) => page.evaluate((frames) => new Promi
  *  (a and b: the PNG files, kept in `out` when it is given).
  *    a, b    a build each: a DIST folder (a mock is started for it on `port`, one after the other, timers stopped), a
  *            URL of a server that runs, or { dist, script } for a build served by another runmock.mjs
- *    pages   [{ name, sel, size, ls, wait, scheme, seed: [sections], mock: code run in the mock once the page is open, omit }]
+ *    pages   [{ name, sel, size, ls, wait, scheme, seed: [sections], mock: code run in the mock once the page is open, omit,
+ *            style: CSS added to the page in both builds before it is shot }]
  *    omit    selectors of regions left out of every page's comparison (a page's own `omit` adds to them): what they
  *            cover in either build is not compared
  *  Still pages: the caret is hidden and no animation runs (openPage's `still`); the pages' clock stands at `clock`, and
@@ -704,6 +706,7 @@ export async function compareShots({ a, b, pages, omit = [], port, out, clock = 
         const { ctx, page } = await openPage({ url, sel: p.sel, size: p.size, ls: p.ls, wait: p.wait, scheme: p.scheme, browser, clock: clock ?? undefined, still: true });
         try {
           if (p.mock) await mockEval(p.mock, url);
+          if (p.style) await page.addStyleTag({ content: p.style });
           await page.evaluate(() => document.fonts.ready);
           if (!await atRest(page)) throw new Error(`the page "${p.name}" did not come to rest: its document kept changing, or it kept loading`);
           const file = path.join(dir, `${p.name}-${tag}.png`);

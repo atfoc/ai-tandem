@@ -559,12 +559,13 @@ type PatchReq struct {
 	Server             string
 	Agent              model.AgentKind
 	Model, Effort, Cwd string
+	SubDepth, SubCap   *int
 }
 
 // Patch serves PATCH /api/chats/{id}?branch= for a record. The group is the chat's place here:
 // it must exist and not be archived, and nothing is sent for it. The name, and model, effort
 // and folder of the branch, are passed on in one call; the three are refused for an archived
-// record. Server and agent are fixed: the chat has started. Nothing is changed when any part is
+// record. Server and agent are fixed, and so are the subagent settings: the chat has started. Nothing is changed when any part is
 // refused here, and the place is not changed when the server refuses its part. The answer is
 // {"ok":true,"chat":…} with the record's view.
 func (r *Relay) Patch(ctx context.Context, id, branch string, p PatchReq) Reply {
@@ -574,6 +575,9 @@ func (r *Relay) Patch(ctx context.Context, id, branch string, p PatchReq) Reply 
 	}
 	if p.Server != "" || p.Agent != "" {
 		return (&Error{Status: http.StatusConflict, Text: chats.ErrAgentFixed.Error(), cause: chats.ErrAgentFixed}).Reply()
+	}
+	if p.SubDepth != nil || p.SubCap != nil {
+		return (&Error{Status: http.StatusConflict, Text: chats.ErrSubFixed.Error(), cause: chats.ErrSubFixed}).Reply()
 	}
 	if p.Group != nil {
 		if e := r.groupFor(*p.Group); e != nil {

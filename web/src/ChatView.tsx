@@ -325,7 +325,7 @@ function EmptyThread({ c }: { c: ChatView }) {
  *  from the thread's source (or in the thread of a subagent started there), so it offers no
  *  control that acts on the session. */
 export function ItemView({ item, chat, branch, sub, index, readOnly }: { item: Item; chat: ChatView; branch: string; sub?: Subagent; index?: number; readOnly?: boolean }) {
-  const live = sub ? sub.status === "running" : true;
+  const live = sub ? sub.status === "running" && !sub.waiting : true; // a waiting subagent's turn has ended
   const tag = sub ? undefined : index;
   switch (item.kind) {
     case "user": {
@@ -348,7 +348,7 @@ export function ItemView({ item, chat, branch, sub, index, readOnly }: { item: I
         </div>
       );
     }
-    case "tool": return isSubagentTool(item) ? <SubagentRow item={item} chat={chat} /> : <ToolCard item={item} chat={chat} live={live} />;
+    case "tool": return isSubagentTool(item) ? <SubagentRow item={item} chat={chat} within={sub} /> : <ToolCard item={item} chat={chat} live={live} />;
     case "perm": return <PermCard item={item} chat={chat} branch={branch} closed={readOnly} />;
     case "note": return item.text ? <div className={`note ${item.tone ?? ""}`}>{item.text}</div> : null;
     case "subresult": return <SubResultRow item={item} chat={chat} />;

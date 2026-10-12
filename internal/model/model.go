@@ -4,6 +4,7 @@ package model
 import (
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"time"
 )
@@ -128,6 +129,9 @@ type ServerDefaults struct {
 	Cwd     string                    `json:"cwd,omitempty"`
 	ByAgent map[AgentKind]ModelChoice `json:"byAgent,omitempty"`
 	Run     *RunDefaults              `json:"run,omitempty"` // what the last run started in the group used
+	// Subagents is the subagent settings a new chat starts with, for all agents; nil = none stored.
+	// A value that is in a ServerDefaults is never changed: a change puts a new one there.
+	Subagents *SubLimits `json:"subagents,omitempty"`
 }
 
 type GroupDefaults struct {
@@ -295,7 +299,67 @@ type ChatMeta struct {
 	// Cost is what the chat's agent and its subagents have cost so far; kept for a run agent's
 	// chat (and any chat whose agent reports cost). Never sent to clients.
 	Cost *ChatCost `json:"cost,omitempty"`
+	// Subagents is the chat's subagent settings, chosen in the composer and fixed at the first
+	// message; a branch and a fork carry their source's. nil in a chat made before the settings
+	// existed, and in a run agent's chat: read it with SubLimits, which gives those the defaults.
+	// A value that is in a ChatMeta is never changed: a change puts a new one there.
+	Subagents *SubLimits `json:"subagents,omitempty"`
 	Archive
+}
+
+// SubLimits is a chat's two subagent settings.
+type SubLimits struct {
+	// Depth is the deepest level a subagent of the chat may be at: a subagent the chat's agent
+	// started is at level 1, one that subagent started at level 2. 0 = off: no subagent tools.
+	Depth int `json:"depth"`
+	// Cap is the most subagents of the chat that may run at the same time, at every level,
+	// waiting ones (Subagent.Waiting) included.
+	Cap int `json:"cap"`
+}
+
+const (
+	DefaultSubDepth = 1   // what a chat had before the setting existed
+	MaxSubDepth     = 3   // no depth above it, from the composer or from an API client
+	DefaultSubCap   = 100 // the default and, as MaxSubCap, the most
+	MaxSubCap       = 100
+)
+
+// DefaultSubLimits is what a chat without stored settings has.
+func DefaultSubLimits() SubLimits { return SubLimits{Depth: DefaultSubDepth, Cap: DefaultSubCap} }
+
+// SubLimits returns the chat's subagent settings: the stored ones, else the defaults.
+func (m ChatMeta) SubLimits() SubLimits {
+	if m.Subagents == nil {
+		return DefaultSubLimits()
+	}
+	return *m.Subagents
+}
+
+// SubLimits returns the subagent settings the view shows: the defaults where it names none.
+func (v ChatView) SubLimits() SubLimits {
+	l := SubLimits{Depth: v.SubDepth, Cap: v.SubCap}
+	if l.Depth == 0 && !v.SubOff {
+		l.Depth = DefaultSubDepth
+	}
+	if v.SubOff {
+		l.Depth = 0
+	}
+	if l.Cap == 0 {
+		l.Cap = DefaultSubCap
+	}
+	return l
+}
+
+// Check reports a setting outside its range: a depth not in 0..MaxSubDepth, a cap not in
+// 1..MaxSubCap. Such a value is refused where it comes in, never brought into the range.
+func (l SubLimits) Check() error {
+	if l.Depth < 0 || l.Depth > MaxSubDepth {
+		return fmt.Errorf("subagent depth %d is out of range: 0 (off) to %d", l.Depth, MaxSubDepth)
+	}
+	if l.Cap < 1 || l.Cap > MaxSubCap {
+		return fmt.Errorf("subagent cap %d is out of range: 1 to %d", l.Cap, MaxSubCap)
+	}
+	return nil
 }
 
 // ChatCost is ChatMeta.Cost: what the chat's agent and its subagents have cost. Claude reports a
@@ -411,6 +475,12 @@ type ChatView struct {
 	// thread has not been read since the server started. They say what an idle chat waits on.
 	SubsRunning int `json:"subsRunning,omitempty"` // app-spawned subagents still running
 	SubsOwed    int `json:"subsOwed,omitempty"`    // finished ones whose result the agent has not received (SubDelivery.Owed)
+	// The chat's subagent settings (ChatMeta.SubLimits). A view with none of the three (a zero
+	// ChatView, one from a server without the settings) reads as the defaults, so "off" is a
+	// field of its own and not a depth of 0: read them with SubLimits.
+	SubOff   bool `json:"subOff,omitempty"`   // depth 0: no subagent tools
+	SubDepth int  `json:"subDepth,omitempty"` // 1..MaxSubDepth; absent = DefaultSubDepth, and with SubOff
+	SubCap   int  `json:"subCap,omitempty"`   // 1..MaxSubCap; absent = DefaultSubCap
 	// Scalars only: ChatView stays comparable with ==.
 	Branches        int    `json:"branches,omitempty"` // the number of branches once the chat has split (>= 2); 0 = one branch
 	Branch          string `json:"branch,omitempty"`   // the current branch's id; "" = main
@@ -490,6 +560,9 @@ func ViewOf(m ChatMeta, status Status, tool, errText string, folderMissing bool)
 		Cwd:              m.Cwd,
 		Model:            m.Model,
 		Effort:           m.Effort,
+		SubOff:           m.SubLimits().Depth == 0,
+		SubDepth:         m.SubLimits().Depth,
+		SubCap:           m.SubLimits().Cap,
 		Locked:           m.Locked,
 		InstructionsSent: m.InstructionsSent,
 		Created:          m.Created,
@@ -599,7 +672,9 @@ const (
 
 // SubDelivery says what the app owes the parent agent for an app-spawned subagent's result. Only
 // a finished app-spawned subagent ever leaves SubNotOwed; a record written before the field
-// existed reads as SubNotOwed and is never delivered.
+// existed reads as SubNotOwed and is never delivered. The parent is whoever started the subagent
+// (Subagent.Parent): the chat's agent, or a subagent, which is handed a result once and never a
+// second time.
 type SubDelivery string
 
 const (
@@ -607,7 +682,7 @@ const (
 	SubOwed      SubDelivery = "owed"     // the parent has not received the result
 	SubOwedAgain SubDelivery = "retry"    // owed after one failed attempt: the turn that carried it failed before the agent answered
 	SubSent      SubDelivery = "sent"     // handed to the parent in a turn
-	SubGivenUp   SubDelivery = "given-up" // two attempts failed: not owed, never carried again; the report stays on the record
+	SubGivenUp   SubDelivery = "given-up" // not owed, never carried again: two attempts failed, or a subagent did not get it; the report stays on the record
 )
 
 // Owed reports whether the parent has yet to receive the result: owed, or owed after one failed
@@ -620,7 +695,7 @@ func (d SubDelivery) Owed() bool { return d == SubOwed || d == SubOwedAgain }
 type Subagent struct {
 	ID          string    `json:"id"`                    // the app's id, the folder's name
 	Tool        string    `json:"tool"`                  // the Agent/Task tool call that started it
-	Parent      string    `json:"parent,omitempty"`      // the subagent whose thread holds that call; "" = the chat's
+	Parent      string    `json:"parent,omitempty"`      // the subagent that started it, whose thread holds that call and which gets its result; "" = the chat's agent
 	AgentID     string    `json:"agentId,omitempty"`     // Claude task_id, Cursor subagentSessionId
 	Type        string    `json:"type,omitempty"`        // as reported: "general-purpose", "generalPurpose", "Explore", a custom name
 	Description string    `json:"description,omitempty"` // the name the parent gave it
@@ -643,10 +718,16 @@ type Subagent struct {
 	Delivery SubDelivery `json:"delivery,omitempty"`
 	// Carried is the item count of the chat's thread when the result was last taken for a turn,
 	// before what that turn added: the result reached the agent, if it did, past that count. 0 in
-	// a record that was never taken, or was written before the count was kept.
+	// a record that was never taken, or was written before the count was kept. For a subagent a
+	// subagent started (Parent) the thread is that subagent's.
 	Carried int `json:"carried,omitempty"`
 	// NotCarried marks a copy's record (a new branch's or a fork's) of a subagent that was still
 	// running in the source when the copy was made. It does not run in the copy: its status there
 	// is stopped and nothing is owed for it. Its result goes to the source only.
 	NotCarried bool `json:"notCarried,omitempty"`
+	// Waiting is set on a running app-spawned subagent whose own turn has ended while subagents
+	// it started are still running, or while a result is still owed to it. Its Status stays
+	// running: it is not finished, counts against the chat's cap, and its own result goes to its
+	// parent only after it has had theirs.
+	Waiting bool `json:"waiting,omitempty"`
 }

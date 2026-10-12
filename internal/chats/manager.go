@@ -61,6 +61,9 @@ type Manager struct {
 	// ownedCloseWait is how long Shutdown waits for the closes of the runs' agents' processes
 	// (the constant of that name; tests lower it).
 	ownedCloseWait time.Duration
+	// subQuietWait is how long a subagent's process may stay silent before results it was handed
+	// during a turn of its own count as read in that turn (the constant of that name; tests lower it).
+	subQuietWait time.Duration
 
 	// extrasMu protects extras, extraBySID and used. Never take Chat.mu while holding extrasMu
 	// (issue/revoke run with Chat.mu then extrasMu).
@@ -204,6 +207,7 @@ var (
 	ErrLegacy        = errors.New("this chat used the old board connection; start a new chat")
 	ErrLocked        = errors.New("folder, model and effort are fixed once the chat has started")
 	ErrAgentFixed    = errors.New("server and agent can be changed only in a chat that has not started and is neither a fork nor a branch")
+	ErrSubFixed      = errors.New("subagent depth and cap can be changed only in a chat that has not started and is neither a fork nor a branch")
 	ErrBadID         = errors.New("a chat id must be a lowercase version 4 UUID")
 	ErrIDTaken       = errors.New("a chat with this id already exists")
 	ErrFolderMissing = agent.ErrFolderMissing
@@ -221,6 +225,34 @@ type ConfigReq struct {
 	Server             string          // empty = unchanged; model.LocalServer or the id of an entry of the server list
 	Agent              model.AgentKind // empty = unchanged
 	Model, Effort, Cwd string          // empty = unchanged
+	// SubDepth and SubCap are the chat's subagent settings (model.SubLimits); nil = unchanged.
+	SubDepth, SubCap *int
+}
+
+// ErrSubRange is what a subagent depth or cap outside its range is refused with (subRange).
+var ErrSubRange = errors.New("that subagent depth or cap can't be chosen")
+
+// subRange is a subagent depth or cap outside its range: err (of model.SubLimits.Check) with its
+// own text, which is ErrSubRange to errors.Is.
+type subRange struct{ err error }
+
+func (e subRange) Error() string        { return e.err.Error() }
+func (e subRange) Unwrap() error        { return e.err }
+func (e subRange) Is(target error) bool { return target == ErrSubRange }
+
+// subChoice is the subagent settings cur with the ones named (nil = cur's) in their place: an
+// ErrSubRange when the outcome is outside the range. Nothing is brought into the range.
+func subChoice(cur model.SubLimits, depth, limit *int) (model.SubLimits, error) {
+	if depth != nil {
+		cur.Depth = *depth
+	}
+	if limit != nil {
+		cur.Cap = *limit
+	}
+	if err := cur.Check(); err != nil {
+		return cur, subRange{err}
+	}
+	return cur, nil
 }
 
 // NewChat says what chat CreateChat makes. The place is one of Run, Board and Group (a group id
@@ -241,6 +273,9 @@ type NewChat struct {
 	Cwd, Model, Effort string
 	Name               string
 	UserNamed          bool
+	// SubDepth and SubCap are the chat's subagent settings when named; nil is what the place
+	// gives (subChoiceOn). A value outside the range is refused (ErrSubRange).
+	SubDepth, SubCap *int
 }
 
 func New(d Deps) *Manager {
@@ -254,6 +289,7 @@ func New(d Deps) *Manager {
 		now:        time.Now,
 
 		ownedCloseWait: ownedCloseWait,
+		subQuietWait:   subQuietWait,
 	}
 }
 
@@ -517,8 +553,8 @@ func view(c *Chat) model.ChatView {
 
 // subCounts are the two numbers of a chat's view that come from its subagents' records.
 type subCounts struct {
-	running int // app-spawned subagents still running
-	owed    int // results the agent has not received
+	running int // app-spawned subagents still running, at every level, waiting ones included
+	owed    int // results the chat's agent has not received (not those a subagent is owed)
 }
 
 // countSubs counts them. A chat whose subagents are not loaded has none of either: a restart
@@ -529,7 +565,7 @@ func countSubs(c *Chat) subCounts {
 		if s.app && s.meta.Status == model.SubRunning {
 			n.running++
 		}
-		if s.meta.Delivery.Owed() {
+		if s.meta.Delivery.Owed() && s.meta.Parent == "" {
 			n.owed++
 		}
 	}
@@ -862,6 +898,8 @@ var chatID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-
 // is made all the same, and waits for an agent (see ConfigureOf). Its folder, model and effort
 // are startChoice's, changed by the ones n names: the folder must be one (expandDir) outside the
 // app's own (ErrAppFolder), the model and effort ones the agent's catalog has (ErrBadChoice).
+// Its subagent settings are subChoiceOn's, changed by the ones n names (ErrSubRange outside the
+// range), and are stored in its chat.json.
 // Nothing is recorded as a default: a chat's first message does that.
 //
 // The chat is on the server newSide gives it. On another server than this one nothing is checked
@@ -870,8 +908,8 @@ var chatID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-
 // what is not named comes from the group's defaults for that server.
 //
 // A chat with a client mark (n.Client) must be given its agent (ErrStartValue), and takes nothing
-// from the sticky defaults: what n does not name is the agent's catalog default. The bridge is
-// told its mark before the chat is listed.
+// from the sticky defaults: what n does not name is the agent's catalog default, and
+// model.DefaultSubLimits. The bridge is told its mark before the chat is listed.
 //
 // An id that is named must have the form of the server's own (ErrBadID) and be no chat's and no
 // chat folder's (ErrIDTaken). A creation that is refused leaves nothing.
@@ -965,6 +1003,11 @@ func (m *Manager) create(n NewChat, place func() (string, error)) (model.ChatVie
 		}
 	}
 	meta.Model, meta.Effort = mc.Model, mc.Effort
+	sub, err := subChoice(m.subChoiceOn(on, group, n.Client != ""), n.SubDepth, n.SubCap)
+	if err != nil {
+		return none, err
+	}
+	meta.Subagents = &sub
 
 	if meta.ID == "" {
 		meta.ID = uuid()
@@ -1057,6 +1100,19 @@ func (m *Manager) startChoiceOn(on side, group string, a model.AgentKind, ri *Ru
 		mc = model.ModelChoice{Model: ri.Model, Effort: ri.Effort}
 	}
 	return cwd, mc
+}
+
+// subChoiceOn is the subagent settings a chat in group starts with on the server on: the sticky
+// ones of the group for that server (defaults.Sub; on a run group is the run's), which are the
+// same for every agent. marked says the chat has a client mark: no default is read for it, so it
+// gets model.DefaultSubLimits.
+func (m *Manager) subChoiceOn(on side, group string, marked bool) model.SubLimits {
+	if marked {
+		return model.DefaultSubLimits()
+	}
+	var l model.SubLimits
+	m.Store.Read(func(s *model.State) { l = defaults.Sub(s.Defaults, group, on.key()) })
+	return l
 }
 
 // UsableAgents lists the agents this server can use, as last looked up, in the fixed order
@@ -1235,6 +1291,8 @@ func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
 	if c.meta.Agent == model.Cursor && !c.meta.Locked {
 		opts.SessionID = ""
 	}
+	depth, _ := subLimits(c)
+	opts.NoSpawn = depth == 0 // subagents are off: the agent has no spawn family
 	runOptions(c, &opts, false)
 	return opts
 }
@@ -1516,7 +1574,8 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 		// a fork's, also one made at the start: its settings are its source's, and what was
 		// chosen for it since was recorded when it was chosen (Configure).
 		server, a := defaultsPlace(c)
-		m.recordDefaults(c, model.LocalServer, server, a, defaultsCwd(c, c.meta.Cwd), model.ModelChoice{Model: c.meta.Model, Effort: c.meta.Effort}, &out)
+		sub := c.meta.SubLimits()
+		m.recordDefaults(c, model.LocalServer, server, a, defaultsCwd(c, c.meta.Cwd), model.ModelChoice{Model: c.meta.Model, Effort: c.meta.Effort}, &sub, &out)
 	}
 	c.meta.Locked = true
 	c.meta.Fresh, c.meta.SourceCtx = false, 0 // a fork has its own message from here, also one its agent refuses
@@ -1553,7 +1612,7 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 	}
 	d, taken, ups := m.carryOwed(c, true, &out)
 	if d != nil {
-		blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningAppSubs(c), true)})
+		blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningKids(c, ""), true)})
 		c.carry = d
 	}
 	blocks = append(blocks, agent.ContentBlock{Text: withReferences(refs, text)})
@@ -1615,9 +1674,16 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference) 
 // before is taken back, but not that of a missing folder. The folder, token, id and name stay.
 // The chat's own agent changes nothing. Everything is checked before anything is written.
 //
+// The subagent settings (req.SubDepth, req.SubCap) are, like the server and the agent, a chat's
+// that has not started and is neither a fork nor a branch: for any other chat a request that names
+// either is refused with ErrSubFixed, whatever else it holds, a fork that has had no message of
+// its own included, and with ErrStartUnconfirmed while the chat's first message may have arrived
+// on its server. A value outside the range is refused (ErrSubRange), never brought into it.
+//
 // Another server than the chat has gives the chat what a new chat in its place starts with on
-// that server: the agent (the one the request names, else the sticky one), the folder, the model
-// and the effort, which the rest of the request then changes, and a session id of its own. What
+// that server: the agent (the one the request names, else the sticky one), the folder, the model,
+// the effort and the subagent settings, which the rest of the request then changes, and a session
+// id of its own. What
 // was known of a first message sent to the server before (ChatMeta.RemoteStart) is forgotten,
 // and a chat that was left there unstarted is dropped there (RemoteServers.DropLeftover). The
 // server is no default yet: a chat's first message records it.
@@ -1681,6 +1747,14 @@ func (m *Manager) configure(id, branch string, req ConfigReq, dir remoteDir) (as
 			return fail(ErrStartUnconfirmed)
 		}
 	}
+	named := req.SubDepth != nil || req.SubCap != nil
+	if named && (c.meta.Locked || c.top != nil || c.meta.ForkedFrom != "") {
+		return fail(ErrSubFixed)
+	}
+	if named && c.meta.RemoteStart == model.RemoteUnconfirmed {
+		// The chat may be running on its server with the settings it was sent with.
+		return fail(ErrStartUnconfirmed)
+	}
 	onlyFolderFix := c.meta.Locked && c.folderMissing && req.Model == "" && req.Effort == "" && req.Cwd != ""
 	if c.meta.Fresh && !onlyFolderFix {
 		// A fork that has had no message of its own: its model and effort can still be changed.
@@ -1725,7 +1799,8 @@ func (m *Manager) configure(id, branch string, req ConfigReq, dir remoteDir) (as
 			}
 			changed = req.Agent
 			cwd, mc := m.startChoiceOn(on, group, a, ri, c.meta.Client != "")
-			next.Server, next.RemoteStart = on.id(), ""
+			sub := m.subChoiceOn(on, group, c.meta.Client != "")
+			next.Server, next.RemoteStart, next.Subagents = on.id(), "", &sub
 			next.Agent, next.Cwd, next.Model, next.Effort, next.SessionID = a, cwd, mc.Model, mc.Effort, sessionFor(a)
 		case req.Agent != c.meta.Agent:
 			changed = req.Agent
@@ -1745,6 +1820,14 @@ func (m *Manager) configure(id, branch string, req ConfigReq, dir remoteDir) (as
 		return fail(err)
 	}
 	next.Model, next.Effort = mc.Model, mc.Effort
+	var chosen *model.SubLimits // the settings the request named, as the chat has them after it
+	if named {
+		sub, err := subChoice(next.SubLimits(), req.SubDepth, req.SubCap)
+		if err != nil {
+			return fail(err)
+		}
+		next.Subagents, chosen = &sub, &sub
+	}
 	// The folder fix: a new folder for the missing one, gone.
 	fix, gone := req.Cwd != "" && c.folderMissing, c.meta.Cwd
 	was := c.meta
@@ -1761,7 +1844,7 @@ func (m *Manager) configure(id, branch string, req ConfigReq, dir remoteDir) (as
 	if err := m.save(c); err != nil {
 		return fail(err)
 	}
-	m.recordDefaults(c, on.key(), "", changed, defaultsCwd(c, abs), defaultsChoice(c, model.ModelChoice{Model: req.Model, Effort: req.Effort}), &out)
+	m.recordDefaults(c, on.key(), "", changed, defaultsCwd(c, abs), defaultsChoice(c, model.ModelChoice{Model: req.Model, Effort: req.Effort}), chosen, &out)
 	out.emitChat(c)
 	unlock()
 	if fix {
@@ -1805,14 +1888,15 @@ func (m *Manager) fixFolder(c *Chat, gone, cwd string) {
 
 // recordDefaults stores what was chosen in c as the defaults of c's group, and queues a defaults
 // event: server as the server a new chat of the group starts on, a as the agent it starts with
-// there, and cwd and mc as the folder and, for c's agent, the model and effort. Empty fields are
-// left alone. key names the server whose part of the defaults a, cwd and mc go to: the key of
+// there, cwd and mc as the folder and, for c's agent, the model and effort, and sub as the
+// subagent settings, both of them. Empty fields and a nil sub are left alone. key names the
+// server whose part of the defaults a, cwd, mc and sub go to: the key of
 // the server c is on (model.LocalServer, or an entry's instance id), which is also what server
 // is when it is not empty. Nothing is stored and nothing queued for a chat object with a client
 // mark, in whatever group its chat is: what an API client chose is no default of this server;
 // nothing for a run agent's chat, whose settings the run chose, not a person; and nothing while
 // key is empty, which is a server that has not said who it is. c.mu held.
-func (m *Manager) recordDefaults(c *Chat, key, server string, a model.AgentKind, cwd string, mc model.ModelChoice, out *outbox) {
+func (m *Manager) recordDefaults(c *Chat, key, server string, a model.AgentKind, cwd string, mc model.ModelChoice, sub *model.SubLimits, out *outbox) {
 	if c.meta.Client != "" || c.role != "" || key == "" {
 		return
 	}
@@ -1822,6 +1906,9 @@ func (m *Manager) recordDefaults(c *Chat, key, server string, a model.AgentKind,
 		defaults.RecordServer(&s.Defaults, group, server)
 		defaults.RecordAgent(&s.Defaults, group, key, a)
 		defaults.RecordChange(&s.Defaults, group, key, c.meta.Agent, cwd, mc)
+		if sub != nil {
+			defaults.RecordSub(&s.Defaults, group, key, *sub)
+		}
 		defs, _ = json.Marshal(s.Defaults) // a copy, taken under the store's lock
 		return nil
 	}); err != nil {

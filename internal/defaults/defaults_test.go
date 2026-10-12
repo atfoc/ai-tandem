@@ -166,6 +166,9 @@ func sharesNothing(t *testing.T, what string, a, b model.GroupDefaults) {
 		if sa.Run != nil && sb.Run != nil && sa.Run.Tiers != nil && sa.Run.Tiers == sb.Run.Tiers {
 			t.Errorf("%s: %s's tiers are shared", what, k)
 		}
+		if sa.Subagents != nil && sa.Subagents == sb.Subagents {
+			t.Errorf("%s: %s's subagent settings are shared", what, k)
+		}
 	}
 }
 

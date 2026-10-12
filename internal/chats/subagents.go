@@ -24,6 +24,11 @@ type sub struct {
 	ag    agent.Agent            // app-spawned process; nil for native
 	stop  chan struct{}          // closed so the runner exits even if Events() stays open
 	app   bool                   // started by SpawnSubagent (has its own process)
+	carry *carry                 // the turn carrying it results of subagents it started; nil once that turn ended
+	// What its process last reported at a turn end (see costSubEnd): a process counts from its
+	// start, and a subagent can have several turns.
+	cost float64
+	tok  model.TokenCount
 }
 
 var ErrNoSubagent = errors.New("no such subagent")
@@ -34,8 +39,9 @@ func (m *Manager) subDir(chat, sid string) string {
 
 // loadSubs reads every subagents/<sid>/subagent.json of a chat whose transcript was just loaded.
 // A subagent still running belongs to a process that is gone (server restart, crash): it is marked
-// stopped and written; those are returned, in no order. Unreadable folders are logged and skipped.
-// c.mu held.
+// stopped and written, a waiting one and one a subagent started too; those are returned, in no
+// order. No subagent runs then, so a result that was owed to one is given up (giveUpOrphans).
+// Unreadable folders are logged and skipped. c.mu held.
 func (m *Manager) loadSubs(c *Chat) (cut []*sub) {
 	c.subs, c.subByTool = map[string]*sub{}, map[string]string{}
 	dir := filepath.Join(m.chatDir(c.meta.ID), "subagents")
@@ -62,12 +68,14 @@ func (m *Manager) loadSubs(c *Chat) (cut []*sub) {
 			c.subByTool[sa.Tool] = sa.ID
 		}
 		if sa.Status == model.SubRunning {
-			s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
+			s.meta.Status, s.meta.Ended, s.meta.Waiting = model.SubStopped, m.nowMs(), false
 			ended(s, endRestart)
 			m.saveSub(c, s)
 			cut = append(cut, s)
 		}
 	}
+	var none outbox // a chat that is being loaded has told clients nothing of its subagents yet
+	m.giveUpOrphans(c, &none)
 	return cut
 }
 
@@ -203,8 +211,16 @@ func (m *Manager) link(c *Chat, otr *transcript.Transcript, parent, tool, sid st
 // has open are closed as denied in the chat's thread, and only there: nothing is left to answer
 // (a stop path has told a live process no before this, denySubPerms). It reports whether that took
 // the chat out of approval; a caller that may start a turn then checks for owed results (deliver),
-// after endSub has returned, so the turn carries this subagent's finished record. c.mu held.
+// after endSub has returned, so the turn carries this subagent's finished record. The results a
+// turn of it was carrying when it ended, with no model output in that turn, are given up: they
+// are not known to have reached it, and nothing is tried twice for a subagent. c.mu held.
 func (m *Manager) endSub(c *Chat, s *sub, out *outbox) (leftApproval bool) {
+	if d := s.carry; d != nil {
+		s.carry = nil
+		if !d.settled {
+			m.giveUp(c, d.sids, out)
+		}
+	}
 	if c.tr != nil {
 		before := view(c)
 		leftApproval = m.permsClosed(c, before, c.tr.DenyPerms(s.meta.ID), out)
@@ -254,23 +270,37 @@ func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool) []agent.Ag
 		if appOnly && !s.app {
 			continue
 		}
-		if s.ag != nil {
-			m.denySubPerms(c, s)
-			ags = append(ags, s.ag)
-			s.ag = nil
-			if costSubLost(c, s.meta.Kind) { // stopped in its one turn: it reports no cost any more
-				m.logSave(c)
-			}
+		if ag, _ := m.stopSub(c, s, endParent, out); ag != nil {
+			ags = append(ags, ag)
 		}
-		s.meta.Status, s.meta.Ended = model.SubStopped, m.nowMs()
-		ended(s, endParent)
-		m.endSub(c, s, out)
-		if s.app {
-			m.revokeExtra(c.meta.ID, s.meta.ID)
-		}
-		closeStop(s)
 	}
+	m.giveUpOrphans(c, out)
 	return ags
+}
+
+// stopSub stops s, which is running, from outside: why is endStopTool (whoever started it asked)
+// or endParent. Its process is told no for the permission requests it has open and is detached
+// and returned, for the caller to Close after unlock (nil for a native subagent, and for one
+// whose process has not started); a turn it was in reports no cost any more. It reports whether
+// closing its permission cards took the chat out of approval. The subagents below s are the
+// caller's to stop (stopBelow, or a loop over all of them). c.mu held.
+func (m *Manager) stopSub(c *Chat, s *sub, why subEnding, out *outbox) (ag agent.Agent, leftApproval bool) {
+	if s.ag != nil {
+		m.denySubPerms(c, s)
+		ag = s.ag
+		s.ag = nil
+		if !s.meta.Waiting && costSubLost(c, s.meta.Kind) { // stopped in a turn: it reports no cost for it any more
+			m.logSave(c)
+		}
+	}
+	s.meta.Status, s.meta.Ended, s.meta.Waiting = model.SubStopped, m.nowMs(), false
+	ended(s, why)
+	leftApproval = m.endSub(c, s, out)
+	if s.app {
+		m.revokeExtra(c.meta.ID, s.meta.ID)
+	}
+	closeStop(s)
+	return ag, leftApproval
 }
 
 // denySubPerms tells s's process no for every permission request of s still open in the chat's

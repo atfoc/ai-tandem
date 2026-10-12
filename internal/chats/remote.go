@@ -49,7 +49,7 @@ var (
 	ErrServerFixed       = errors.New("a chat on a run is on the run's server") // and one on a board of another server on the board's
 	ErrServerUnusable    = errors.New("no chat can be started on that server")
 	ErrServerUnreachable = errors.New("the server is not connected")
-	ErrStartUnconfirmed  = errors.New("the first message may have arrived: server and agent are fixed until that is known")
+	ErrStartUnconfirmed  = errors.New("the first message may have arrived: server, agent and subagent settings are fixed until that is known")
 	// ErrRemoteStart is what a call that would start an agent here answers for a chat that starts
 	// on another server: its messages do not come this way.
 	ErrRemoteStart = errors.New("the chat starts on another server")
@@ -405,8 +405,8 @@ func (m *Manager) SetRemoteStart(id, state string) error {
 // out of this manager: it has started on its server, and whoever calls keeps a record of it
 // from here on, under the same id. meta is its chat.json as it was, token included.
 //
-// In one hold of the chat's lock, the chat's server, agent, folder, model and effort become the
-// defaults of its group, as a first message sent here makes them (of a chat on a run the agent,
+// In one hold of the chat's lock, the chat's server, agent, folder, model, effort and subagent
+// settings become the defaults of its group, as a first message sent here makes them (of a chat on a run the agent,
 // model and effort alone, of a chat on a board all but the server, and nothing while its server's key is unknown), and the chat object is retired. Then its token and
 // its folder go. Of the chat itself nothing is sent: no chat_removed, since the chat is still
 // there for the clients, and what is queued for the object is dropped (see cast). The bridge is
@@ -427,7 +427,8 @@ func (m *Manager) HandOver(id string) (model.ChatMeta, error) {
 		if meta.Run != "" || meta.Board != "" {
 			server = "" // the run's server or the board's, not one chosen for a new chat of the group
 		}
-		m.recordDefaults(c, on.key(), server, meta.Agent, defaultsCwd(c, meta.Cwd), model.ModelChoice{Model: meta.Model, Effort: meta.Effort}, &out)
+		sub := meta.SubLimits()
+		m.recordDefaults(c, on.key(), server, meta.Agent, defaultsCwd(c, meta.Cwd), model.ModelChoice{Model: meta.Model, Effort: meta.Effort}, &sub, &out)
 	}
 	// What retire does, in the hold that recorded: no change of the chat falls between the two.
 	c.deleted = true
@@ -479,8 +480,8 @@ func (m *Manager) ServerUp(entry string) {
 }
 
 // ResetServer puts the chat id, when it is one that will start on another server, on this
-// computer: with the agent, folder, model and effort a new chat in its place starts with here,
-// and nothing known of a first message. Its view is sent. It is for a server that left the
+// computer: with the agent, folder, model, effort and subagent settings a new chat in its place
+// starts with here, and nothing known of a first message. Its view is sent. It is for a server that left the
 // list: nothing is sent to that server. ErrNotFound for an id that is no chat's; a chat that is
 // on this computer already is left as it is.
 func (m *Manager) ResetServer(id string) error {
@@ -501,7 +502,7 @@ func (m *Manager) ResetServer(id string) error {
 
 // rechoose gives the chat object c, which will start on another server, what a new chat in its
 // place starts with on the side on. With all it is put on that side whole: server, agent, folder,
-// model and effort, and nothing known of a first message. Without, it stays where it is and gets
+// model, effort and subagent settings, and nothing known of a first message. Without, it stays where it is and gets
 // another agent, when on would give it another than it has, and a folder when it has none.
 // chat.json is written and the view queued when something changed. c.mu held.
 func (m *Manager) rechoose(c *Chat, on side, all bool, out *outbox) error {
@@ -516,7 +517,8 @@ func (m *Manager) rechoose(c *Chat, on side, all bool, out *outbox) error {
 	cwd, mc := m.startChoiceOn(on, group, a, ri, c.meta.Client != "")
 	next := c.meta
 	if all {
-		next.Server, next.RemoteStart, next.Cwd = on.id(), "", cwd
+		sub := m.subChoiceOn(on, group, c.meta.Client != "")
+		next.Server, next.RemoteStart, next.Cwd, next.Subagents = on.id(), "", cwd, &sub
 	} else if next.Cwd == "" {
 		next.Cwd = cwd
 	}

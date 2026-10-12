@@ -682,11 +682,14 @@ func TestRemoteDefaults(t *testing.T) {
 		t.Fatalf("a second chat on Bee: %+v", w)
 	}
 
-	// The hand-over, which is the first message, records all five.
+	// The hand-over, which is the first message, records all five, and the subagent settings.
 	if _, err := e.m.HandOver(v.ID); err != nil {
 		t.Fatal(err)
 	}
 	want.Server = keyB
+	onBee := want.Servers[keyB]
+	onBee.Subagents = &model.SubLimits{Depth: 1, Cap: 100}
+	want.Servers[keyB] = onBee
 	if d := e.defs().Groups[gOne]; !reflect.DeepEqual(d, want) {
 		t.Fatalf("the defaults after the hand-over: %+v", d)
 	}
@@ -770,7 +773,8 @@ func TestRemoteDefaultsWithoutAKeyAndOnARun(t *testing.T) {
 	}
 
 	// A run on Sea: its chats are there, with the run's folder, and feed the defaults of the
-	// run's group for Sea with their agent, model and effort alone: the next one starts with them.
+	// run's group for Sea with their agent, model, effort and subagent settings alone: the next
+	// one starts with them.
 	fr := &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: "/c/run", Agent: model.Cursor, Model: "gpt-5.4-mini", Server: entC}}}
 	e.m.Runs = fr
 	onRun := e.newChat(NewChat{Run: ownRun})
@@ -787,6 +791,7 @@ func TestRemoteDefaultsWithoutAKeyAndOnARun(t *testing.T) {
 	}
 	wantDefs := model.Defaults{Groups: map[string]model.GroupDefaults{gOne: {Servers: map[string]model.ServerDefaults{keyC: {
 		Agent: model.Cursor, ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "composer-2", Effort: "low"}},
+		Subagents: &model.SubLimits{Depth: 1, Cap: 100},
 	}}}}}
 	if d := e.defs(); !reflect.DeepEqual(d, wantDefs) {
 		t.Fatalf("the defaults a chat on a run on Sea fed: %+v, want %+v", d, wantDefs)

@@ -309,6 +309,11 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .sub-mark { width: 14px; flex: none; text-align: center; font-weight: 700; color: var(--muted); }
 .sub-mark.st-completed { color: var(--ok); } .sub-mark.st-failed { color: var(--danger); }
 .sub-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: pulse 1s infinite; }
+/* one that waits for the subagents it started: a ring that stands still */
+.sub-mark.waiting .sub-dot { background: none; box-shadow: inset 0 0 0 1.5px var(--muted); animation: none; }
+/* the rows of the subagents a subagent started, under its own row */
+.sub-tree { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sub-children { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin-left: 15px; padding-left: 8px; border-left: 1px solid var(--line); }
 .sub-main { flex: 1; min-width: 0; }
 .sub-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; color: var(--text); }
 .sub-agent { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--agent); }
@@ -326,6 +331,10 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .sub-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(700px, 58vw); z-index: 45; display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--line); box-shadow: var(--shadow-md); }
 .sub-drawer-head { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .sub-drawer-top { display: flex; align-items: center; gap: 8px; }
+/* a nested subagent: the ones above it, outermost first, each a way back */
+.sub-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; font-size: 11.5px; color: var(--muted); }
+.sub-crumbs .link { max-width: 240px; font-size: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-crumb-sep { color: var(--faint); }
 .sub-drawer-top .sub-name { flex: 1; font-size: 13px; }
 .sub-nav { display: inline-flex; align-items: center; gap: 2px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sub-drawer-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
@@ -646,6 +655,12 @@ body.resizing iframe { pointer-events: none; }
 /* ---------------------------------------------------------------- composer errors and states */
 .composer-err { color: var(--danger); font-size: 12px; padding: 5px 2px 0; }
 /* the model chosen for a new branch or a fork is not the conversation's so far (Composer.tsx ModelNotice) */
+/* the Subagents popover (SubSettings.tsx): two sections of rows; with depth Off the second takes no pick */
+.menu.up.sub-pop { min-width: 180px; }
+.sub-pop-cap.off { opacity: .5; }
+.sub-pop-cap.off .menu-item { cursor: default; }
+.sub-pop-cap.off .menu-item:hover { background: none; }
+.sub-pop-cap.off .menu-item.on:hover { background: var(--accent-soft); }
 .model-notice { margin-bottom: 6px; padding: 0 2px; font-size: 11.5px; color: var(--muted); }
 .model-notice.warn { color: var(--warn); }
 .ctx-meter.error { color: var(--warn); gap: 4px; }

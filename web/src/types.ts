@@ -198,6 +198,11 @@ export type ChatView = Archive & {
   // From the chat's subagent records; both absent (0) for a chat not opened since the server started.
   subsRunning?: number; // app-spawned subagents still running
   subsOwed?: number;    // finished ones whose result the agent has not received
+  // The chat's subagent settings, fixed at the first message; a branch and a fork have their source's. A view with none of the
+  // three (an older server) is depth 1 and cap 100, so Off is a field of its own: read them with subSettings (logic/subsettings.ts).
+  subOff?: boolean;  // depth Off: the agent has no subagent tools
+  subDepth?: number; // 1 to 3: the deepest level a subagent of the chat may be at; absent = 1, and with subOff
+  subCap?: number;   // 1 to 100: the most subagents of the chat running at the same time; absent = 100
   branches?: number;        // how many branches the chat has; absent when one
   branch?: string;          // the current branch; absent when it is MAIN
   forkedFrom?: string;      // the chat this one was forked from
@@ -315,7 +320,7 @@ export type SubDelivery = "owed" | "retry" | "sent" | "given-up";
 export type Subagent = {
   id: string;       // the app's sid
   tool: string;     // the Agent/Task tool call that started it
-  parent?: string;  // the sid whose thread holds that call
+  parent?: string;  // the sid of the subagent that started it, whose thread holds that call; absent = the chat's agent
   agentId?: string;
   type?: string;
   description?: string;
@@ -336,6 +341,7 @@ export type Subagent = {
   ended?: number;
   delivery?: SubDelivery;
   notCarried?: boolean; // a copy's record of one still running in the source when the copy was made: stopped, nothing owed
+  waiting?: boolean; // running, its own turn ended: subagents it started still run, or their results have not reached it yet
 };
 
 // ---- runs: mirror of the run types in internal/model/run.go, field for field, by json name.
