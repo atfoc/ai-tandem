@@ -3,6 +3,7 @@
 
 import type { AgentKind, Catalog, CatalogModel, ChatView } from "../types.ts";
 import { isBusy } from "./status.ts";
+import { hasTerms, searchTerms } from "./terms.ts";
 
 /** One provider section of the picker; provider "" is the provider-less group. */
 export type ModelGroup = { provider: string; models: CatalogModel[] };
@@ -40,16 +41,8 @@ const searchTexts = (m: CatalogModel): string[] =>
  *  order and without overlap; an empty or whitespace-only query matches everything.
  *  Case-insensitive because both sides are lowercased. */
 export function modelMatches(m: CatalogModel, query: string): boolean {
-  const terms = query.toLowerCase().split(/\s+/).filter((t) => t);
-  return searchTexts(m).some((text) => {
-    let cursor = 0;
-    for (const term of terms) {
-      const at = text.indexOf(term, cursor);
-      if (at < 0) return false;
-      cursor = at + term.length;
-    }
-    return true;
-  });
+  const terms = searchTerms(query);
+  return searchTexts(m).some((text) => hasTerms(text, terms));
 }
 
 /** The models matching the query, in catalog order. Empty/whitespace-only query keeps everything. */

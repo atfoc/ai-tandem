@@ -225,7 +225,7 @@ export const measureComposer = (page) => page.evaluate(composersInPage);
 
 /** In the page: the controls of the first composer's toolbar, left to right, each with its kind (server, agent, lock,
  *  folder, model, effort, model-effort: the fixed chip of both, loading, subagents, more: the chip of the popup that holds what
- *  the row has no room for, meter, stop, send; the goal composer's tiers and limits), its label, whether it is a fixed chip, its width and its own margin (the lock has one); composer: "chat"
+ *  the row has no room for, meter, insert: the button of the insert popup, stop, send; the goal composer's tiers and limits), its label, whether it is a fixed chip, its width and its own margin (the lock has one); composer: "chat"
  *  or "goal"; gap: the row's; chrome: what the box takes besides the row (padding and border); sum: the controls with
  *  their margins and the gaps between them on one line, the row's spacer among them at no width; reason: the line
  *  under the controls, when the toolbar has one.
@@ -237,10 +237,12 @@ function toolbarInPage() {
   const whole = document.createElement("style");
   whole.textContent = ".composer-tools { flex-wrap: nowrap !important } .composer-tools > * { flex-shrink: 0 !important; max-width: none !important }";
   document.head.append(whole);
-  const all = [...tools.children].filter((e) => !e.matches(".agent-reason, .menu-backdrop"));
+  // (the goal composer's Insert button and Send are in one element, so that they wrap together: each is a control here)
+  const all = [...tools.children].flatMap((e) => (e.matches(".run-send") ? [...e.children] : [e])).filter((e) => !e.matches(".agent-reason, .menu-backdrop"));
   const kindOf = (e) => {
     if (e.matches(".send.stop")) return "stop";
     if (e.matches(".send")) return "send";
+    if (e.matches(".insert-btn")) return "insert";
     if (e.tagName.toLowerCase() === "svg") return "lock";
     const chip = e.matches(".tchip, .ctx-meter") ? e : e.querySelector(".tchip, .ctx-meter");
     if (!chip) return "other";

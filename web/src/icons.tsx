@@ -83,6 +83,11 @@ export const MoreIcon = () => (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="13" cy="8" r="1.4" /></svg>
 );
 
+/** Lines of text and a plus: a prompt put into the message (the composers' Insert button). */
+export const InsertIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2.5 4h11M2.5 8h6M2.5 12h3.5M12 9v5.5M9.25 11.75h5.5" /></svg>
+);
+
 export const Logo = () => (
   <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="4" fill="var(--accent-fill)" /><path d="M5 12.5 8 5l2 5 1.2-2.2L13 12.5" stroke="var(--on-accent)" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );

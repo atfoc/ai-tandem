@@ -180,6 +180,13 @@
 // `server` and `agent` too; GET …/items the list of the branch asked for, 404 for one the chat has not; GET …/tree
 // the messages and replies of each branch; POST …/fork the new chat.
 //
+// The prompt library (plans/prompt-library.md): GET /api/library and the calls that change a library answer as the
+// server does, with its rules and its sentences, and every change goes to the pages as a `library` event before the
+// call's answer. This computer's library is there from the start, empty. Through /mock/eval: `setLibrary(id, {
+// groups, prompts, connected, notice })` gives a server of the list a library, or another one, and tells the pages
+// (null takes it away: `library_removed`); `libraries[id]` is what the mock holds, `sendLibrary(id)` tells the pages
+// of a change made to it by hand. flags.library = { delay | hold | refuse } holds or refuses the calls that change one.
+//
 // Knobs for the waits of the fork flows, set through /mock/eval and kept until deleted (`delete flags.send`). send,
 // items, fork, configure and spawn may name a `chat` (and `items` a `branch`) to hold for that one alone, and the
 // fields of one knob go together:
@@ -1071,6 +1078,7 @@ const snapshot = () => ({
   runs: Object.values(runs).map(view),
   defaults: { last: {}, groups: {} }, catalogs, home: HOME, defaultCwd: SHOP, dataDir: DATA,
   ...extra, // nothing until the seed ran
+  libraries: libraryList(),
   ...(Object.keys(sessions).length ? { states: Object.keys(sessions).filter((id) => chats[id]).flatMap((id) => Object.keys(sessions[id]).map((b) => branchState(id, b))) } : {}),
 });
 /** Cuts every open event stream. With flags.streamDown a new one is cut as it opens: the page stays "reconnecting". */
@@ -1845,6 +1853,86 @@ function groupRoute(req, res, id, rest, b, u) {
   return answer(res);
 }
 
+// ---- the prompt library (internal/library, internal/server/library.go): one library per server
+
+const libraries = { local: { groups: [], prompts: [] } }; // by server id: { groups, prompts, connected: false for a copy of a server that dropped, notice }
+const LIB = { name: 80, text: 100000 };
+const libraryName = (id) => (id === "local" ? "This computer" : extra.servers?.find((x) => x.id === id)?.name ?? id);
+const libraryView = (id) => ({ server: id, name: libraryName(id), connected: libraries[id].connected !== false, ...(libraries[id].notice ? { notice: libraries[id].notice } : {}), groups: libraries[id].groups, prompts: libraries[id].prompts });
+/** GET /api/library and the snapshot's list: this computer's first, then the servers' in the order of the server list. */
+const libraryList = () => ["local", ...(extra.servers ?? []).map((x) => x.id).filter((id) => id !== "local")].filter((id) => libraries[id]).map(libraryView);
+const sendLibrary = (id) => send({ type: "library", library: libraryView(id) });
+/** Gives a server a library, or another one, and tells the pages; null takes it away, as when its server leaves the list. */
+function setLibrary(id, lib) {
+  if (lib) { libraries[id] = { groups: [], prompts: [], ...lib }; return sendLibrary(id); }
+  delete libraries[id];
+  send({ type: "library_removed", server: id });
+}
+/** A name as the library keeps it, or its refusal: empty, too long, with "/" or a line break, or taken in its group whatever the case. */
+function libraryNameOf(lib, raw, parent, self) {
+  if (typeof raw !== "string") return fail(400, "A name must be text.", "bad_name");
+  const name = raw.trim();
+  if (!name) return fail(400, "A name cannot be empty.", "bad_name");
+  if ([...name].length > LIB.name) return fail(400, `A name can have at most ${LIB.name} characters.`, "bad_name");
+  if (name.includes("/")) return fail(400, 'A name cannot contain "/".', "bad_name");
+  if (/[\n\r]/.test(name)) return fail(400, "A name cannot contain a line break.", "bad_name");
+  const g = lib.groups.find((x) => x.id === parent), where = g ? `in the group "${g.name}"` : "at the top of the library";
+  const same = (x) => x.parent === parent && x.id !== self && x.name.toLowerCase() === name.toLowerCase();
+  const group = lib.groups.find(same), prompt = lib.prompts.find(same);
+  if (group || prompt) return fail(409, `There is already a ${group ? "group" : "prompt"} called "${(group ?? prompt).name}" ${where}.`, "name_taken");
+  return name;
+}
+/** The ids of a group and of every group below it. */
+function libraryBelow(lib, id) {
+  const ids = new Set([id]);
+  for (let grew = true; grew; ) { grew = false; for (const g of lib.groups) if (ids.has(g.parent) && !ids.has(g.id)) { ids.add(g.id); grew = true; } }
+  return ids;
+}
+/** The calls that change the library of `server`: kind "groups" or "prompts", id of the item for a change or a delete. */
+async function libraryRoute(req, res, server, kind, id) {
+  const M = req.method, b = await body(req), k = flags.library ?? {};
+  await pause(k);
+  if (k.refuse) return answer(res, refusal(k.refuse));
+  const lib = libraries[server], groups = kind === "groups", word = groups ? "group" : "prompt";
+  if (!lib) return answer(res, fail(404, "This server has no prompt library here.", "no_server"));
+  if (lib.connected === false) return answer(res, fail(503, `${libraryName(server)} is not connected: its prompts cannot be changed until it is back.`, "server_unreachable"));
+  const list = groups ? lib.groups : lib.prompts, hasGroup = (g) => g === "" || lib.groups.some((x) => x.id === g);
+  const tooLong = (text) => typeof text === "string" && [...text].length > LIB.text;
+  if (M === "POST" && !id) {
+    const parent = b.parent ?? "";
+    if (!hasGroup(parent)) return answer(res, fail(404, "The group it should be in no longer exists.", "no_group"));
+    const name = libraryNameOf(lib, b.name, parent, "");
+    if (name.fail) return answer(res, name);
+    if (!groups && tooLong(b.text)) return answer(res, fail(413, "The text of a prompt can have at most 100,000 characters.", "text_too_long"));
+    const item = { id: (groups ? "g_" : "p_") + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join(""), name, parent, ...(groups ? {} : { text: b.text ?? "" }) };
+    list.push(item);
+    sendLibrary(server);
+    return answer(res, { [word]: item });
+  }
+  const item = list.find((x) => x.id === id);
+  if (!item) return answer(res, fail(404, `This ${word} no longer exists.`, "not_found"));
+  if (M === "PATCH") {
+    const parent = b.parent ?? item.parent;
+    if (!hasGroup(parent)) return answer(res, fail(404, "The group it should be in no longer exists.", "no_group"));
+    if (groups && parent === id) return answer(res, fail(409, "A group cannot be moved into itself.", "bad_move"));
+    if (groups && libraryBelow(lib, id).has(parent)) return answer(res, fail(409, "A group cannot be moved into a group below it.", "bad_move"));
+    const name = libraryNameOf(lib, b.name ?? item.name, parent, id);
+    if (name.fail) return answer(res, name);
+    if (!groups && tooLong(b.text)) return answer(res, fail(413, "The text of a prompt can have at most 100,000 characters.", "text_too_long"));
+    Object.assign(item, { name, parent }, !groups && b.text !== undefined ? { text: b.text } : {});
+    sendLibrary(server);
+    return answer(res, { [word]: item });
+  }
+  if (M === "DELETE") {
+    const gone = groups ? libraryBelow(lib, id) : null;
+    if (gone) { lib.groups = lib.groups.filter((g) => !gone.has(g.id)); lib.prompts = lib.prompts.filter((p) => !gone.has(p.parent)); }
+    else lib.prompts = lib.prompts.filter((p) => p.id !== id);
+    sendLibrary(server);
+    return answer(res, { ok: true });
+  }
+  return answer(res, fail(405, "method not allowed"));
+}
+
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon" };
 
 const server = http.createServer(async (req, res) => {
@@ -1878,6 +1966,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/hello") return json(res, { app: "ai-whiteboard", version: flags.hello?.version ?? "dev", pid: process.pid, webVersion: flags.hello?.webVersion ?? "dev" });
     if (p === "/api/state") return json(res, snapshot());
+    if (p === "/api/library" && M === "GET") return json(res, { libraries: libraryList() });
+    if ((m = /^\/api\/library\/([^/]+)\/(groups|prompts)(?:\/([^/]+))?$/.exec(p))) return await libraryRoute(req, res, decodeURIComponent(m[1]), m[2], m[3] ? decodeURIComponent(m[3]) : "");
     if (p === "/api/dirs") {
       const dir = expand(u.searchParams.get("path") || HOME);
       if (!exists(dir)) return json(res, { error: `${dir} is not a directory` }, 400);

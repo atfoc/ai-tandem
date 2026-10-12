@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"ai-whiteboard/internal/app"
 	"ai-whiteboard/internal/chats"
@@ -37,7 +38,16 @@ func startServers(p store.Paths, br *editorbridge.Bridge, cm *chats.Manager, a *
 		log.Printf("instance id: %v", err)
 		id = ""
 	}
-	m, err := servers.Open(servers.Options{Root: p.Root, LocalID: id, Version: version.Version, Notify: br.Broadcast, Dial: testDial(), Timing: w.timing()})
+	// The manager's events go to the pages, and after each one the relay looks whether a server
+	// with a prompt library has another name now (the relay is made after the manager).
+	var listed atomic.Pointer[remotes.Relay]
+	notify := func(ev any) {
+		br.Broadcast(ev)
+		if relay := listed.Load(); relay != nil {
+			relay.ServersChanged()
+		}
+	}
+	m, err := servers.Open(servers.Options{Root: p.Root, LocalID: id, Version: version.Version, Notify: notify, Dial: testDial(), Timing: w.timing()})
 	if err != nil {
 		log.Printf("server list: %v", err) // the page shows this computer only
 		return func() {}
@@ -57,6 +67,7 @@ func startServers(p store.Paths, br *editorbridge.Bridge, cm *chats.Manager, a *
 		return m.Close
 	}
 	m.SetHooks(relay.Hooks())
+	listed.Store(relay)
 	m.Counts = relay.Counts
 	cm.Servers, a.Remotes, srv.Remotes = relay, relay, relay
 	if a.Runs != nil {

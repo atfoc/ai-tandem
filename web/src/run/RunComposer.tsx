@@ -10,7 +10,7 @@ import { useStore, getState, upsertRun, answerRun, setRunStart, unsavedRunDraft 
 import { refreshRun, startRun, useFresh } from "./actions.ts";
 import { api } from "../api.ts";
 import { RefInput, type RefInputHandle } from "../RefInput.tsx";
-import { ChipName, DirPicker, Picker, tildify } from "../Composer.tsx";
+import { ChipName, DirPicker, InsertButton, Picker, tildify } from "../Composer.tsx";
 import { DraftSaver, hasDraft } from "../logic/drafts.ts";
 import { limitsLabel, tiersLabel } from "../logic/run.ts";
 import { applies, applyResultOf, limitText, limitValue, settingsChange, setupValue, withoutGit,
@@ -129,6 +129,7 @@ export function RunComposer({ runId }: { runId: string }) {
             <RefInput
               ref={input}
               placeholder="What should this run achieve?"
+              locked={starting}
               onChange={(v) => { setText(v); current.current = v; }}
               onKeyDown={(e) => {
                 e.stopPropagation(); // as the chat composer: no shortcut of the page gets the keys typed here
@@ -139,9 +140,12 @@ export function RunComposer({ runId }: { runId: string }) {
             <div className="composer-tools">
               <RunToolbar r={r} onError={setErr} />
               <span className="grow" />
-              <button className="send" title={starting ? "Starting…" : block || "Start the run (Enter)"} disabled={!!block || starting} onClick={() => void submit()}>
-                {starting ? <span className="spin" /> : "↑"}
-              </button>
+              <span className="run-send">
+                <InsertButton disabled={starting} onClick={() => input.current?.openInsert()} />
+                <button className="send" title={starting ? "Starting…" : block || "Start the run (Enter)"} disabled={!!block || starting} onClick={() => void submit()}>
+                  {starting ? <span className="spin" /> : "↑"}
+                </button>
+              </span>
             </div>
           </div>
           {line && (line.tone === "error"

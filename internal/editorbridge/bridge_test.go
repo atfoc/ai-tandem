@@ -1039,6 +1039,17 @@ func TestEventsTable(t *testing.T) {
 				// mistake, which goes to every page.
 				b.Broadcast(ev)
 				sent(t, typ, true)
+			case rule.APIOnly:
+				// No page is sent one: each gets the mark that follows it and nothing before.
+				b.Broadcast(ev)
+				b.SendChat("c1", false, ev)
+				seq++
+				b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
+				for _, p := range []*bridgetest.Page{f, n} {
+					if got := p.Next(); got["type"] != "catalog" || got["mark"] != float64(seq) {
+						t.Fatalf("page %s was sent %v", p.ID, got)
+					}
+				}
 			case rule.Per == PerNone:
 				if rule.Class != List {
 					t.Fatalf("a %v type of no item", rule.Class)
@@ -1132,20 +1143,22 @@ func TestEventsTable(t *testing.T) {
 func TestEventsRows(t *testing.T) {
 	t.Parallel()
 	want := map[string]Rule{
-		"hello": {Role, PerNone, false}, "snapshot": {Role, PerNone, false},
-		"release_request": {Role, PerNone, false}, "superseded": {Role, PerNone, false}, "held": {Role, PerNone, false},
-		"rpc": {Role, PerNone, false}, "server_stopping": {Role, PerNone, false},
-		"groups": {List, PerNone, true}, "defaults": {List, PerNone, true},
-		"board": {List, PerBoard, false}, "board_removed": {List, PerBoard, false},
-		"catalog": {List, PerNone, false}, "agents": {List, PerNone, false},
-		"servers": {List, PerNone, true}, "server_state": {List, PerNone, true},
-		"server_lists": {List, PerNone, true}, "server_back": {List, PerNone, true},
-		"chat_reload": {Content, PerChat, true},
-		"chat":        {List, PerChat, false}, "chat_removed": {List, PerChat, false}, "branch_state": {List, PerChat, false},
-		"tree": {Content, PerChat, false}, "chat_items": {Content, PerChat, false},
-		"sub": {Content, PerChat, false}, "sub_items": {Content, PerChat, false},
-		"run": {List, PerRun, false}, "run_removed": {List, PerRun, false},
-		"run_detail": {Content, PerRun, false}, "run_activity": {Content, PerRun, false},
+		"hello": {Role, PerNone, false, false}, "snapshot": {Role, PerNone, false, false},
+		"release_request": {Role, PerNone, false, false}, "superseded": {Role, PerNone, false, false}, "held": {Role, PerNone, false, false},
+		"rpc": {Role, PerNone, false, false}, "server_stopping": {Role, PerNone, false, false},
+		"groups": {List, PerNone, true, false}, "defaults": {List, PerNone, true, false},
+		"board": {List, PerBoard, false, false}, "board_removed": {List, PerBoard, false, false},
+		"catalog": {List, PerNone, false, false}, "agents": {List, PerNone, false, false},
+		"servers": {List, PerNone, true, false}, "server_state": {List, PerNone, true, false},
+		"server_lists": {List, PerNone, true, false}, "server_back": {List, PerNone, true, false},
+		"library": {List, PerNone, true, false}, "library_removed": {List, PerNone, true, false},
+		"own_library": {List, PerNone, false, true},
+		"chat_reload": {Content, PerChat, true, false},
+		"chat":        {List, PerChat, false, false}, "chat_removed": {List, PerChat, false, false}, "branch_state": {List, PerChat, false, false},
+		"tree": {Content, PerChat, false, false}, "chat_items": {Content, PerChat, false, false},
+		"sub": {Content, PerChat, false, false}, "sub_items": {Content, PerChat, false, false},
+		"run": {List, PerRun, false, false}, "run_removed": {List, PerRun, false, false},
+		"run_detail": {Content, PerRun, false, false}, "run_activity": {Content, PerRun, false, false},
 	}
 	if len(Events) != len(want) {
 		t.Fatalf("%d rows, want %d", len(Events), len(want))

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/editorbridge"
+	"ai-whiteboard/internal/library"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/servers"
 )
@@ -162,6 +163,7 @@ const (
 	itemSnapshot = iota
 	itemEvent
 	itemRemoved
+	itemDown // the entry's connection is in a state other than connected
 )
 
 // item is one call of a hook, as the entry's worker takes it.
@@ -204,6 +206,8 @@ type Relay struct {
 	holds boardHolds
 	calls boardCalls
 	bops  boardOps
+
+	libs libraries // the copies of the entries' prompt libraries: see library.go
 
 	qmu     sync.Mutex // the workers and their queues: all that a hook takes
 	workers map[string]*worker
@@ -261,6 +265,7 @@ func Open(o Options) (*Relay, error) {
 		firsts: map[string]firstText{}, goals: map[string]goalSent{},
 		again: o.Limits.Call, agentEvery: agentEvery, agentWait: agentWait,
 	}
+	r.libs.of, r.libs.offers, r.libs.waiters, r.libs.wait = map[string]keptLibrary{}, map[string]bool{}, map[string][]*libraryWaiter{}, libraryWait
 	r.settle, r.pending = r.settleStarts, r.passPending
 	r.settleRuns, r.pendingRuns = r.settleRunStarts, r.passPendingRuns
 	for _, d := range r.files.load(o.Logf) {
@@ -283,9 +288,16 @@ func Open(o Options) (*Relay, error) {
 // Hooks are the relay's hooks for Manager.SetHooks, before Start. Each one only adds to the
 // queue of its entry: it does no I/O and takes no lock that is held over any. Back is not set:
 // the work of a return hangs on Snapshot, which every stream's start calls, the first too.
-// State is not set either: the pages get server_state from the manager.
+// State passes nothing on, since the pages get server_state from the manager: it tells the
+// entry's worker that the connection is not up, for the copy of the entry's prompt library, and
+// only an entry that has a worker, since one that never connected has no copy.
 func (r *Relay) Hooks() servers.Hooks {
 	return servers.Hooks{
+		State: func(entry string, _, to servers.State) {
+			if to != servers.StateConnected {
+				r.enqueueKnown(entry, item{kind: itemDown})
+			}
+		},
 		Snapshot: func(entry string, raw json.RawMessage) {
 			r.enqueue(entry, item{kind: itemSnapshot, raw: bytes.Clone(raw)})
 		},
@@ -578,6 +590,21 @@ func (r *Relay) enqueue(entry string, it item) {
 	}
 }
 
+// enqueueKnown is enqueue for an entry that has a worker; for any other the item is dropped.
+func (r *Relay) enqueueKnown(entry string, it item) {
+	r.qmu.Lock()
+	defer r.qmu.Unlock()
+	w := r.workers[entry]
+	if r.stopped || w == nil {
+		return
+	}
+	w.queue = append(w.queue, it)
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
 // spawn runs f in a goroutine that Close waits for. It reports false, and runs nothing, after Close.
 func (r *Relay) spawn(f func()) bool {
 	r.qmu.Lock()
@@ -616,6 +643,8 @@ func (r *Relay) work(entry string, w *worker) {
 				r.snapshot(entry, it.raw)
 			case itemEvent:
 				r.event(entry, it.typ, it.raw)
+			case itemDown:
+				r.libraryDown(entry)
 			case itemRemoved:
 				r.removed(entry)
 				r.qmu.Lock()
@@ -651,6 +680,8 @@ func (r *Relay) event(entry, typ string, raw json.RawMessage) {
 		r.runContentEvent(entry, typ, raw)
 	case "board", "board_removed", "held", "release_request", "superseded", "rpc":
 		r.boardEvent(entry, typ, raw)
+	case library.EventOwn:
+		r.libraryEvent(entry, raw)
 	default:
 		// Dropped: a type this build does not know.
 	}
@@ -817,6 +848,8 @@ func (r *Relay) snapshot(entry string, raw json.RawMessage) {
 	r.boardsNewStream(entry)
 	// 1. The entry's lists.
 	r.sendLists(entry)
+	// The entry's prompt library, which hangs on nothing of the rest: see library.go.
+	r.librarySnapshot(entry, raw)
 
 	var snap snapshot
 	if err := json.Unmarshal(raw, &snap); err != nil {
@@ -906,6 +939,7 @@ func (r *Relay) removed(entry string) {
 	boards := r.boardsOn(entry)
 	r.removedBoards(entry)
 	r.sendNoLists(entry)
+	r.dropLibrary(entry, nil, false)
 	r.forgetFirsts(entry, true)
 	if r.o.Local != nil {
 		for _, rec := range boards {

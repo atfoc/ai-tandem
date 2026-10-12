@@ -89,6 +89,27 @@ export function fit(r: Row): Fit {
   return f.meter === "full" && needs(r, beside) <= r.room + 1e-6 ? beside : f;
 }
 
+/** Where the way to the insert popup is drawn: "row", its button after the spacer, before Stop and Send; "more", an
+ *  entry of the "more" popup; "", nowhere: the popup is then opened by its key alone. */
+export type InsertPlace = "row" | "more" | "";
+
+/** fit, and where the way to the insert popup is (r.fixed is without its button). The button is drawn where the row
+ *  has room left for it: placed with the button, every control is where it is without it, the meter says what it
+ *  says without it, and all of it fits. So the button takes nothing from them, no control goes to the popup for it
+ *  and the meter keeps its text. Only an optional control gives way to it, which tells what a reader can do without.
+ *  Where the row has no room left, the "more" popup has the entry when the row has that chip anyway (a control is in
+ *  it): the entry costs the row nothing. A row that is whole and leaves the button no room has neither.
+ *  w: the button's width; one that is not known yet counts nothing, so the button is drawn, to be measured.
+ *  held: the open "more" popup has the entry. As a control it holds, the entry does not return to the row while the
+ *  popup is open, however wide the row. */
+export function fitWithInsert(r: Row, w?: number, held = false): { fit: Fit; insert: InsertPlace } {
+  const with_: Row = { ...r, fixed: [w, ...r.fixed] }, plain = fit(r), beside = fit(with_);
+  const spare = r.controls.filter((c) => c.optional).map((c) => c.id);
+  const firm = (f: Fit) => [f.meter, ...f.toolbar.filter((id) => !spare.includes(id)), "", ...f.popup.filter((id) => !spare.includes(id))].join();
+  if (!(held && plain.more) && firm(beside) === firm(plain) && needs(with_, beside) <= r.room + 1e-6) return { fit: beside, insert: "row" };
+  return { fit: plain, insert: plain.more ? "more" : "" };
+}
+
 /** fit for the controls has, the row's that are not optional. */
 function place(r: Row, has: Control[], known: (id: Control) => boolean): Fit {
   const held = (r.held ?? []).filter((id) => has.includes(id));

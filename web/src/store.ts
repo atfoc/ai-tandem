@@ -21,6 +21,8 @@ import { listsFrom, withThreadError, type ThreadError } from "./logic/serverlist
 import { movedId, movedSel, withRunError } from "./logic/runserver.ts";
 import { keptRunStarts, movedRunStart, withRunStart, type RunStart } from "./logic/runcompose.ts";
 import { LOCAL_ENTRY, serversOf, type ServerForm, type ServerView } from "./logic/servers.ts";
+import { librariesOf, type LibraryView } from "./logic/library.ts";
+import type { InsertTarget } from "./logic/insert.ts";
 import { NO_MARK, type DropMark } from "./logic/dropmark.ts";
 import { afterThread, begun, ended, stepped, withLoad, withoutLoads, withoutChat as withoutWaits, type ChatWaits, type SendWait, type WaitKind, type Waits } from "./logic/waits.ts";
 
@@ -79,6 +81,9 @@ export type State = {
   servers: ServerView[];          // the server list, the local entry first (logic/servers.ts)
   serversNotice: string;          // why the list file was set aside, or ""; read when the Servers dialog opens
   serversDialog: { form?: ServerForm } | null; // the Servers dialog (Servers.tsx): null = closed; form = the form it opens with
+  libraries: LibraryView[];       // the prompt libraries as they came (logic/library.ts); the popups show them in the order of the server list (logic/libraryview.ts)
+  libraryDialog: { back?: InsertTarget } | null; // the library popup (Library.tsx): null = closed; back = the text box whose insert popup it was opened from
+  insertPopup: InsertTarget | null; // the insert popup (Library.tsx): the text box it is open for; null = closed
   picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L)
   update: { banner: UpdateBanner; hidden: boolean }; // the version banner (version.ts); hidden = ×'d until the next reconnect
 
@@ -113,6 +118,7 @@ let state: State = {
   selection: { count: 0, lines: [] }, view: { scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 },
   flashes: [], busyOn: {}, confirm: null, picking: null,
   servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
+  libraries: [], libraryDialog: null, insertPopup: null,
   update: { banner: "none", hidden: false },
   roles: {}, dropped: {}, sceneGen: {}, outage: {}, boardDraft: null,
   dropAt: NO_MARK,
@@ -135,6 +141,8 @@ export function setState(patch: Partial<State> | ((s: State) => Partial<State>))
   state = { ...state, ...p };
   for (const f of subs) f();
 }
+/** Calls f after every change of the state, until the function it answers is called. */
+export function subscribe(f: () => void): () => void { subs.add(f); return () => { subs.delete(f); }; }
 export function useStore<T>(sel: (s: State) => T): T {
   return useSyncExternalStore((f) => { subs.add(f); return () => subs.delete(f); }, () => sel(state));
 }
@@ -182,6 +190,7 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
       trees: {}, moves,
       waits: Object.fromEntries(Object.entries(st.waits).filter(([id]) => chats[id] || st.agents[id])), // what is on its way stays, but for a chat that is gone
       ...serversOf(s),
+      libraries: librariesOf(s),
       treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
       sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage),
     };

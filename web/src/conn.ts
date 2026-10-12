@@ -20,6 +20,7 @@ import { checkVersion } from "./version.ts";
 import { patchTree, type TreePatch } from "./logic/treepatch.ts";
 import type { BranchState, ChatView, Item, RunDetail, Subagent, TreeView } from "./types.ts";
 import { LOCAL_ENTRY, upsertServer } from "./logic/servers.ts";
+import { removeLibrary, upsertLibrary } from "./logic/library.ts";
 import { onUnknownClient, streamGone } from "./logic/unknownclient.ts";
 import { chatReload, serverBack, threadError, withLists, withoutThread } from "./logic/serverlists.ts";
 import { Unfollows, runServerBack } from "./logic/runserver.ts";
@@ -58,6 +59,8 @@ async function handle(m: any, src: EventSource) {
     case "board_removed": removeBoard(m.id); return;
     case "servers": setState({ servers: m.servers ?? [LOCAL_ENTRY], serversNotice: m.notice ?? "" }); return;
     case "server_state": setState((s) => ({ servers: upsertServer(s.servers, m.server) })); return;
+    case "library": if (m.library?.server) setState((s) => ({ libraries: upsertLibrary(s.libraries, m.library) })); return; // one library, whole, after every change of it
+    case "library_removed": if (m.server) setState((s) => ({ libraries: removeLibrary(s.libraries, m.server) })); return; // its server left the server list
     case "run": if (m.run?.id) onRunEvent(m.run); return;
     case "run_removed": onRunRemoved(m.id); return;
     case "run_detail": onRunFeed(m.run, { version: m.version, patch: normPatch(m.patch, getState().runDetail[m.run]?.startedAt) }); return;

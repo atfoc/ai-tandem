@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -45,8 +46,15 @@ type pair struct {
 // relay's, as for a far.
 func newPair(t *testing.T, limits remotes.Limits) *pair {
 	t.Helper()
+	return newPairWith(t, limits, nil, nil)
+}
+
+// newPairWith is newPair with more for the two servers: withA is applied to A before it is
+// wired to B, withB to B.
+func newPairWith(t *testing.T, limits remotes.Limits, withA, withB []func(*Server)) *pair {
+	t.Helper()
 	pr := &pair{t: t, sp: &apiSpawner{}}
-	pr.b, pr.l = remoteEnv(t, withAgents(pr.sp))
+	pr.b, pr.l = remoteEnv(t, append([]func(*Server){withAgents(pr.sp)}, withB...)...)
 	// A dials the link whatever the entry's address is, so the address, the pin and the Host of
 	// its requests stay B's own.
 	pr.link = linksim.Start(t, pr.l.host, linksim.Good)
@@ -60,7 +68,14 @@ func newPair(t *testing.T, limits remotes.Limits) *pair {
 		// these tests are the link's alone.
 		timing := farTiming()
 		timing.Silence = 10 * time.Minute
-		m, err := servers.Open(servers.Options{Root: root, LocalID: testLocalID, Version: "test", Notify: s.Bridge.Broadcast,
+		var listed atomic.Pointer[remotes.Relay]
+		notify := func(ev any) {
+			s.Bridge.Broadcast(ev)
+			if rm := listed.Load(); rm != nil {
+				rm.ServersChanged()
+			}
+		}
+		m, err := servers.Open(servers.Options{Root: root, LocalID: testLocalID, Version: "test", Notify: notify,
 			Timing: timing, Dial: pr.link.Dial})
 		if err != nil {
 			t.Fatal(err)
@@ -96,13 +111,14 @@ func newPair(t *testing.T, limits remotes.Limits) *pair {
 			return ok
 		})
 		m.SetHooks(rm.Hooks())
+		listed.Store(rm)
 		t.Cleanup(func() { // the order of a shutdown
 			m.Close()
 			rm.Close()
 		})
 		m.Start()
 	}
-	pr.a = newEnv(t, wire)
+	pr.a = newEnv(t, append(slices.Clone(withA), wire)...)
 	pr.returned(1)
 	return pr
 }

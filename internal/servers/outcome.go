@@ -4,6 +4,11 @@ package servers
 // integer; a missing one counts as 0.
 const MinFeatureLevel = 1
 
+// LibraryLevel is the hello "featureLevel" from which a server offers its prompt library to an
+// API client: in its snapshot, in "own_library" events and with the library routes. Of a server
+// below it no library is taken, whatever it sends.
+const LibraryLevel = 3
+
 // The paths asked of a remote server.
 const (
 	HelloPath  = "/api/hello"

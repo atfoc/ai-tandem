@@ -28,11 +28,13 @@ const (
 
 // Rule is one row of the event table. PagesOnly types reach no client of another kind: route
 // does not read the field, the other kind's allow-list (APIEvents) leaves these types out, and a
-// test holds the two tables together.
+// test holds the two tables together. APIOnly types are the reverse: they are in APIEvents and
+// no page is sent one.
 type Rule struct {
 	Class     Class
 	Per       Per
 	PagesOnly bool
+	APIOnly   bool
 }
 
 // Events is the event table: every type a server sends, by its "type". Broadcast, SendChat,
@@ -57,6 +59,12 @@ var Events = map[string]Rule{
 	"server_lists":  {Class: List, PagesOnly: true},
 	"server_back":   {Class: List, PagesOnly: true},
 
+	// The prompt libraries (package library): a page gets the library of every server it shows,
+	// an API client this server's own and nothing of the others.
+	"library":         {Class: List, PagesOnly: true},
+	"library_removed": {Class: List, PagesOnly: true},
+	"own_library":     {Class: List, APIOnly: true},
+
 	"chat":         {Class: List, Per: PerChat},
 	"chat_removed": {Class: List, Per: PerChat},
 	"branch_state": {Class: List, Per: PerChat},
@@ -79,6 +87,7 @@ var APIEvents = map[string]bool{
 	"sub": true, "sub_items": true, "catalog": true, "agents": true,
 	"run": true, "run_removed": true, "run_detail": true, "run_activity": true,
 	"board": true, "board_removed": true,
+	"own_library": true,
 }
 
 // Item names a chat, a run or a board: what a client follows and what a per-item event is about.

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -901,5 +902,52 @@ func TestStateStopped(t *testing.T) {
 		if s.Stopped() && s.retries() {
 			t.Errorf("%q both stops and retries", s)
 		}
+	}
+}
+
+// TestManagerLevel: the level a server reported at its connect is what Level answers, for as
+// long as the entry is in the list: over a drop, a newer level at the next connect, and an edit
+// of the entry. It is known when the snapshot hook is called.
+func TestManagerLevel(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := standin.Start(t, standin.Options{FeatureLevel: standin.Level(LibraryLevel - 1)})
+	var r *rig
+	var atSnapshot atomic.Int64
+	r = startRig(t, func(o *Options) {})
+	r.m.mu.Lock()
+	r.m.hooks.Snapshot = func(entry string, _ json.RawMessage) { atSnapshot.Store(int64(r.m.Level(entry))) }
+	r.m.mu.Unlock()
+	if r.m.Level(LocalID) != 0 || r.m.Level("s_000000000000") != 0 {
+		t.Fatal("a level of the local entry or of no entry")
+	}
+	v, saved, _, err := r.m.Add(ctx, Input{Name: "Studio", Address: s.URL(), Secret: standin.DefaultSecret, SelfSigned: true, Pin: s.Fingerprint()}, true)
+	if err != nil || !saved {
+		t.Fatal(saved, err)
+	}
+	r.waitState(v.ID, StateConnected)
+	if got := r.m.Level(v.ID); got != LibraryLevel-1 || atSnapshot.Load() != int64(got) {
+		t.Fatalf("the level %d, at the snapshot %d", got, atSnapshot.Load())
+	}
+	// The server is updated and comes back.
+	s.SetFeatureLevel(standin.Level(LibraryLevel))
+	s.Stop()
+	r.waitState(v.ID, StateUnreachable)
+	if got := r.m.Level(v.ID); got != LibraryLevel-1 {
+		t.Fatalf("the level of a server that dropped: %d", got)
+	}
+	s.Restart()
+	waitFor(t, "the new level", func() bool { return r.m.Level(v.ID) == LibraryLevel && atSnapshot.Load() == LibraryLevel })
+	r.waitState(v.ID, StateConnected)
+	// An edit of the entry makes a new connection to the same server.
+	s.Stop()
+	if _, saved, _, err := r.m.Edit(ctx, v.ID, Patch{Secret: ptr(standin.DefaultSecret + "0")}, true); err != nil || !saved {
+		t.Fatal(saved, err)
+	}
+	if got := r.m.Level(v.ID); got != LibraryLevel {
+		t.Fatalf("the level after an edit: %d", got)
+	}
+	if err := r.m.Remove(v.ID); err != nil || r.m.Level(v.ID) != 0 {
+		t.Fatalf("the level of a removed entry: %d, %v", r.m.Level(v.ID), err)
 	}
 }

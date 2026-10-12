@@ -577,6 +577,7 @@ func (s *Server) routes() *routeMux {
 	})
 
 	s.serverRoutes(mux)
+	s.libraryRoutes(mux)
 
 	// ---- groups ----
 	mux.HandleFunc("POST /api/groups", func(w http.ResponseWriter, r *http.Request) {

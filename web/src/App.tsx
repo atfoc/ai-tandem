@@ -23,6 +23,7 @@ import { Resizer } from "./Resizer.tsx";
 import { Guard } from "./Guard.tsx";
 import { SubagentDrawer } from "./Subagents.tsx";
 import { TreePopup } from "./fork/TreePopup.tsx";
+import { LibraryPopups, useInsertPopup } from "./Library.tsx";
 import { isSideKey, sideKeyName, sideNotice, type Pane as PaneKind } from "./logic/layout.ts";
 import { branchKey } from "./logic/branches.ts";
 import { isNewChatKey, newChatPlace } from "./logic/newchatwhere.ts";
@@ -45,7 +46,7 @@ export function App() {
     const k = (e: KeyboardEvent) => {
       if (!isNewChatKey(e, navigator.platform)) return;
       const s = getState();
-      if (s.confirm || s.serversDialog || s.treeNav) return;
+      if (s.confirm || s.serversDialog || s.libraryDialog || s.insertPopup || s.treeNav) return;
       e.preventDefault(); e.stopPropagation();
       if (e.repeat) return;
       const where = newChatPlace(s);
@@ -59,7 +60,7 @@ export function App() {
     const k = (e: KeyboardEvent) => {
       if (!isSideKey(e, navigator.platform)) return;
       const s = getState();
-      if (s.confirm || s.serversDialog || s.treeNav) return;
+      if (s.confirm || s.serversDialog || s.libraryDialog || s.insertPopup || s.treeNav) return;
       e.preventDefault(); e.stopPropagation();
       if (e.repeat) return;
       setSideHidden(!s.sideHidden);
@@ -67,7 +68,8 @@ export function App() {
     window.addEventListener("keydown", k, true);
     return () => window.removeEventListener("keydown", k, true);
   }, []);
-  return <><Grouped /><TreePopup /><ConfirmDialog /></>;
+  useInsertPopup(); // ⌘P in a composer's text box, and a composer's Insert button
+  return <><Grouped /><TreePopup /><LibraryPopups /><ConfirmDialog /></>;
 }
 
 function Grouped() {

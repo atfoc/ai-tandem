@@ -114,6 +114,7 @@ type Manager struct {
 	conns   map[string]*conn // by entry id: the entry's current connection
 	before  map[string]bool  // the entries that were connected in this process
 	told    map[string]State // the state Hooks.State was last told, by entry id
+	levels  map[string]int   // hello's "featureLevel" at the entry's last connect in this process
 	queue   []any            // events for Notify, in order
 	wake    chan struct{}    // capacity 1: the queue is not empty
 }
@@ -128,7 +129,7 @@ func Open(o Options) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		o: o, list: list, ctx: ctx, cancel: cancel, started: make(chan struct{}),
-		conns: map[string]*conn{}, before: map[string]bool{}, told: map[string]State{},
+		conns: map[string]*conn{}, before: map[string]bool{}, told: map[string]State{}, levels: map[string]int{},
 		wake: make(chan struct{}, 1),
 	}
 	m.mu.Lock()
@@ -475,6 +476,7 @@ func (m *Manager) Remove(id string) error {
 	delete(m.conns, id)
 	delete(m.before, id)
 	delete(m.told, id)
+	delete(m.levels, id)
 	m.listChangedLocked()
 	return nil
 }
@@ -591,6 +593,17 @@ func (m *Manager) Do(ctx context.Context, id, method, path string, body []byte, 
 		return Reply{}, ErrNotConnected
 	}
 	return c.do(ctx, l, method, path, body, limit)
+}
+
+// Level is the "featureLevel" the entry's server reported when it last connected in this
+// process: what tells a server with a newer part (LibraryLevel) from one without. Unlike the
+// lists it stays over an edit of the entry, whose server is the same one. It is 0 for the local
+// entry, an unknown one and one that has not connected yet. It is set before Hooks.Snapshot is
+// called for that connect.
+func (m *Manager) Level(id string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.levels[id]
 }
 
 // Lists is what the entry's server offered when it was last connected; ok is false for the local

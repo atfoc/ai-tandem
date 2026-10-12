@@ -62,11 +62,11 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
     states,
   };
 
-  // G1 measured the toolbar before it had the Subagents chip: its sums are held against the row without that chip and its gap.
-  const g1Sum = (st) => { const sub = st.controls.find((c) => c.kind === "subagents"); return Math.round((st.sum - (sub ? sub.w + now.gap : 0)) * 10) / 10; };
+  // G1 measured the toolbar before it had the Subagents chip and the Insert button: its sums are held against the row without them and their gaps.
+  const g1Sum = (st) => Math.round((st.sum - st.controls.filter((c) => c.kind === "subagents" || c.kind === "insert").reduce((n, c) => n + c.w + now.gap, 0)) * 10) / 10;
   for (const [id, sum] of Object.entries(G1_SUMS)) {
     if (!states[id]) fail(`the seed has no state for G1's case ${id}`);
-    else if (Math.abs(g1Sum(states[id]) - sum) > NEAR_G1) fail(`${id}: the controls and gaps are ${g1Sum(states[id])} px on one line${states[id].sum === g1Sum(states[id]) ? "" : " without the Subagents chip"}; G1 measured ${sum}`);
+    else if (Math.abs(g1Sum(states[id]) - sum) > NEAR_G1) fail(`${id}: the controls and gaps are ${g1Sum(states[id])} px on one line${states[id].sum === g1Sum(states[id]) ? "" : " without the Subagents chip and the Insert button"}; G1 measured ${sum}`);
   }
   for (const [id, kind, fixed, w, g1] of CAPPED) {
     const c = states[id]?.controls.find((x) => x.kind === kind && !!x.fixed === fixed);

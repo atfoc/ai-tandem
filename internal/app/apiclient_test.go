@@ -83,7 +83,7 @@ func TestAPISnapshot(t *testing.T) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	if want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "runs", "states"}; !slices.Equal(names, want) {
+	if want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "library", "runs", "states"}; !slices.Equal(names, want) {
 		t.Fatalf("keys %v, want %v", names, want)
 	}
 	for _, k := range []string{"chats", "states", "runs", "boards"} {

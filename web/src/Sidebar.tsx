@@ -36,6 +36,7 @@ import { inDesktopApp, openServerLog, restartServer } from "./version.ts";
 import { themeMenu, themeTitle, type ThemePref } from "./logic/theme.ts";
 import { UNGROUPED, type Board, type ChatView, type Group, type RunView } from "./types.ts";
 import { ServersButton } from "./Servers.tsx";
+import { LibraryButton } from "./Library.tsx";
 
 // ---------------------------------------------------------------- selection
 
@@ -402,7 +403,7 @@ export function Sidebar() {
           Show archived
         </label>
         <ServersButton />
-        <ThemePicker />
+        <div className="side-foot-end"><LibraryButton /><ThemePicker /></div>
       </div>
     </nav>
   );

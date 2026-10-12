@@ -424,6 +424,7 @@ func (c *conn) attempt() ending {
 		return ending{}
 	}
 	c.lists, c.hasLists, c.link = lists, true, l
+	m.levels[id] = level
 	before, h := m.before[id], m.hooks
 	m.before[id] = true
 	m.mu.Unlock()

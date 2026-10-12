@@ -67,18 +67,18 @@ const THEMES = [
   { name: "System under a dark OS", ls: {}, scheme: "dark", theme: "dark" }, // (nothing saved: a page that never chose)
 ];
 const PICKER = [".side-foot .seg", ".side-foot .theme-pick"]; // the old switch, the new picker: the same place
-// (the two plain chats' rows have room for the fixed Subagents chip, which the toolbar got since: it is taken out of
-// the row for the comparison, as in A2.7)
-const NO_SUBS = ".composer .sub-chip { display: none }";
+// (the two plain chats' rows have room for the fixed Subagents chip, which the toolbar got since, and they and the
+// goal composer for the Insert button: both are taken out of the row for the comparison, as in A2.7)
+const SINCE = ".composer .sub-chip, .composer .insert-btn { display: none }";
 const PAGES = [
   { name: "home", sel: {} },
-  { name: "chat", sel: { chat: "c_plain" }, wait: ".thread .msg.assistant", style: NO_SUBS },
-  { name: "cards", sel: { chat: "c_A6_cards" }, seed: ["A6"], wait: ".thread .perm.pending .perm-actions", style: NO_SUBS },
+  { name: "chat", sel: { chat: "c_plain" }, wait: ".thread .msg.assistant", style: SINCE },
+  { name: "cards", sel: { chat: "c_A6_cards" }, seed: ["A6"], wait: ".thread .perm.pending .perm-actions", style: SINCE },
   { name: "board", sel: { board: "b_arch", chat: "c_board" }, wait: ".excalidraw" },
   { name: "sketch", sel: { board: "b_ui", chat: "c_A6_sketch" }, seed: ["A6"], wait: ".excalidraw:not(.excalidraw--view-mode) .App-toolbar" },
   { name: "run", sel: { run: "r_live" }, wait: ".run-stage .tl" },
   { name: "result", sel: { run: "r_done" }, wait: ".run-stage" },
-  { name: "goal", sel: { run: "r_draft" }, wait: ".run-composer" },
+  { name: "goal", sel: { run: "r_draft" }, wait: ".run-composer", style: SINCE },
 ];
 
 await check("A6.5 Light, Dark and System are as before the flavours; an old page takes a saved flavour for the system's theme", async ({ browser, mock, dist, fail, note }) => {

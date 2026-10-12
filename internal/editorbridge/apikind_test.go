@@ -100,6 +100,14 @@ func TestAPIEventsAgreeWithEvents(t *testing.T) {
 			t.Errorf("the API kind allows %s = %v, want %v", typ, got, want)
 		}
 	}
+	for typ, rule := range Events {
+		if got, want := b.kinds[KindPage].allow(typ), !rule.APIOnly; got != want {
+			t.Errorf("the page kind allows %s = %v, want %v", typ, got, want)
+		}
+		if rule.APIOnly && (rule.PagesOnly || rule.Class != List || rule.Per != PerNone) {
+			t.Errorf("%s is for API clients only, and its row is %+v", typ, rule)
+		}
+	}
 	if b.kinds[KindAPI].allow("brand_new") {
 		t.Error("the API kind allows a type outside the table")
 	}
@@ -160,6 +168,11 @@ func TestAPIEventRows(t *testing.T) {
 				// to every page and to no API client.
 				sent(t, typ, b.Broadcast, p)
 				sent(t, typ, chat("c1", false), p)
+			case rule.APIOnly:
+				// Every API client, whatever it has made or follows, and no page.
+				sent(t, typ, b.Broadcast, x, f, y)
+				sent(t, typ, chat("c1", false), x, f, y)
+				sent(t, typ, run("r1"), x, f, y)
 			case rule.Per == PerNone && rule.PagesOnly:
 				sent(t, typ, b.Broadcast, p)
 				sent(t, typ, chat("c1", false), p)

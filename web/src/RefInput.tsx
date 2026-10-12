@@ -2,9 +2,11 @@
 // A contenteditable div whose DOM is owned here, not by React: text nodes and
 // line breaks for the text, a non-editable <span> per reference carrying its
 // tag. Its value is the message text with the references as inline tags
-// (logic/refs.ts), so it goes to the server as is.
+// (logic/refs.ts), so it goes to the server as is. ⌘P in it opens the insert
+// popup, which puts a text in at the caret (logic/insert.ts).
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { parseRefs, serializeRef, parseRef, type Ref } from "./logic/refs.ts";
+import { insertText, isInsertKey, lines, openInsertPopup, sameBox } from "./logic/insert.ts";
 
 export type RefInputHandle = {
   /** Puts a reference chip at the caret (or where the caret last was, or at the end). */
@@ -13,6 +15,9 @@ export type RefInputHandle = {
   replaceBeforeCaret(n: number, s: string): void;
   /** Replaces everything with `text` (tags become chips). */
   set(text: string): void;
+  /** Opens the insert popup for the box, as ⌘P in it does: what the popup inserts goes where the caret or the
+   *  selection is now (or where the caret last was, or at the end). */
+  openInsert(): void;
   focus(): void;
 };
 
@@ -21,6 +26,8 @@ type Props = {
   /** The new value, and the text of the caret's line before the caret (for @ mentions). */
   onChange(value: string, beforeCaret: string): void;
   onKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void;
+  /** Nothing can be put into the box now (a run's start is on its way): the insert popup is not opened. */
+  locked?: boolean;
 };
 
 /** A reference's chip, as a DOM node (the thread draws the same with React, see RefChip). */
@@ -51,6 +58,38 @@ function valueOf(root: Node): string {
     else out += valueOf(n);
   });
   return out;
+}
+
+/** What a box is made of for `text`: text nodes, and a chip for each tag. */
+const nodesOf = (text: string) => parseRefs(text).map((s) => (typeof s === "string" ? document.createTextNode(s) : chipNode(s)));
+
+/** How much of the box's value is before a point in it. */
+function offsetOf(root: HTMLElement, node: Node, offset: number): number {
+  const r = document.createRange();
+  r.selectNodeContents(root); r.setEnd(node, offset);
+  const holder = document.createElement("div");
+  holder.append(r.cloneContents());
+  return valueOf(holder).length;
+}
+
+/** The end of what a box holds, as a caret. */
+function endOf(root: HTMLElement): Range {
+  const r = document.createRange();
+  r.selectNodeContents(root); r.collapse(false);
+  return r;
+}
+
+/** The point `offset` into the value of a box made of nodesOf, as a caret. */
+function caretAt(root: HTMLElement, offset: number): Range {
+  const r = endOf(root);
+  let left = offset;
+  for (const n of root.childNodes) {
+    if (isChip(n)) { left -= (n.dataset.ref ?? "").length; if (left <= 0) { r.setStartAfter(n); break; } }
+    else if (left <= (n.textContent ?? "").length) { r.setStart(n, left); break; }
+    else left -= (n.textContent ?? "").length;
+  }
+  r.collapse(true);
+  return r;
 }
 
 /** The text of the caret's node before the caret, when the caret is in text. */
@@ -89,9 +128,10 @@ function beside(range: Range, back: boolean): Node | null {
   return n;
 }
 
-export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ placeholder, onChange, onKeyDown }, ref) {
+export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ placeholder, onChange, onKeyDown, locked = false }, ref) {
   const box = useRef<HTMLDivElement>(null);
   const last = useRef<Range | null>(null); // the caret, kept while focus is on the canvas
+  const mark = useRef<Range | null>(null); // the caret or the selection the open insert popup was opened at
   const empty = useRef(true);
 
   const changed = () => {
@@ -121,15 +161,52 @@ export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ pl
     return () => document.removeEventListener("selectionchange", keep);
   }, []);
 
+  /** The caret or the selection in the box now, else where the caret last was, else the end of what the box holds. */
+  const where = (el: HTMLElement): Range => {
+    const sel = getSelection();
+    if (sel?.rangeCount && el.contains(sel.getRangeAt(0).startContainer)) return sel.getRangeAt(0).cloneRange();
+    if (last.current && el.contains(last.current.startContainer)) return last.current.cloneRange();
+    return endOf(el);
+  };
+
+  /** The insert popup (logic/insert.ts) is opened with what puts a text into the box, or leaves the box as it is. It
+   *  takes the focus, and the box's selection goes with the focus: where the caret or the selection is, is kept
+   *  here. A box filled anew meanwhile (set) has no such place left: the text then goes to its end. */
+  const openInsert = () => {
+    const el = box.current;
+    if (!el || locked) return;
+    mark.current = where(el);
+    const back = (): { el: HTMLDivElement; at: Range } | null => {
+      const el = box.current, at = mark.current;
+      mark.current = null;
+      if (!el) return null;
+      el.focus(); // (alone, it puts the caret at the start of the box)
+      return { el, at: at && el.contains(at.startContainer) ? at : endOf(el) };
+    };
+    openInsertPopup({
+      insert(text: string) {
+        const b = back();
+        if (!b) return;
+        const want = insertText(valueOf(b.el), { start: offsetOf(b.el, b.at.startContainer, b.at.startOffset), end: offsetOf(b.el, b.at.endContainer, b.at.endOffset) }, text);
+        place(b.at);
+        document.execCommand("insertText", false, lines(text)); // keeps the browser's undo
+        // What the browser did not do as told (a selection that ends inside a chip) is done here: the box is made anew.
+        if (!sameBox(valueOf(b.el), want.value)) { b.el.replaceChildren(...nodesOf(want.value)); place(caretAt(b.el, want.caret)); }
+        changed();
+      },
+      cancel() {
+        const b = back();
+        if (b) place(b.at);
+      },
+    });
+  };
+
   useImperativeHandle(ref, () => ({
     insertRef(r: Ref) {
       const el = box.current;
       if (!el) return;
-      const sel = getSelection();
-      const now = sel?.rangeCount && el.contains(sel.getRangeAt(0).startContainer) ? sel.getRangeAt(0).cloneRange() : null;
+      const range = where(el);
       el.focus();
-      let range = now ?? (last.current && el.contains(last.current.startContainer) ? last.current.cloneRange() : null);
-      if (!range) { range = document.createRange(); range.selectNodeContents(el); range.collapse(false); }
       range.deleteContents();
       const before = document.createRange(); before.selectNodeContents(el); before.setEnd(range.startContainer, range.startOffset);
       const after = document.createRange(); after.selectNodeContents(el); after.setStart(range.startContainer, range.startOffset);
@@ -160,14 +237,21 @@ export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ pl
     set(text: string) {
       const el = box.current;
       if (!el) return;
-      el.replaceChildren(...parseRefs(text).map((s) => (typeof s === "string" ? document.createTextNode(s) : chipNode(s))));
-      last.current = null;
+      el.replaceChildren(...nodesOf(text));
+      last.current = mark.current = null;
       changed();
     },
+    openInsert,
     focus() { box.current?.focus(); },
-  }), [onChange]);
+  }), [onChange, locked]);
 
   const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // ⌘P opens the insert popup, and the page is not printed.
+    if (isInsertKey(e, navigator.platform)) {
+      e.preventDefault(); e.stopPropagation();
+      openInsert();
+      return;
+    }
     // Backspace / Delete next to a chip remove the whole chip.
     if ((e.key === "Backspace" || e.key === "Delete") && !e.metaKey && !e.altKey && !e.ctrlKey) {
       const sel = getSelection();

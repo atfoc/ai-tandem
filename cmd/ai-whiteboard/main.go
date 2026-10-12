@@ -217,6 +217,11 @@ func serve(o options, args []string) {
 	// Never stopped: the server ends by exiting.
 	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
 	a = &app.App{St: st, Boards: bs, Chats: cm, Runs: rs, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
+	// The prompt library of this computer: a file that cannot be read was set aside by the open,
+	// which logged it, and the library starts empty.
+	if err := a.OpenLibrary(p.Root); err != nil {
+		log.Printf("prompt library: %v", err) // the pages show no library
+	}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
 	}

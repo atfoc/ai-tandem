@@ -367,6 +367,10 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .ctx-act:disabled { color: var(--faint); cursor: default; }
 .ctx-act kbd { font-size: 10px; padding: 0 3px; }
 .ctx-note { font-size: 11.5px; color: var(--warn); padding: 1px 5px; }
+/* the button of the insert popup, beside Send in a composer's toolbar (no chip: it is no choice of the chat's) */
+.insert-btn { display: grid; place-items: center; flex: none; }
+.insert-btn:disabled { opacity: .35; cursor: default; }
+.insert-btn:disabled:hover { background: transparent; color: var(--muted); }
 .send { width: 28px; height: 28px; flex: none; border-radius: 7px; border: 0; background: var(--accent-fill); color: var(--on-accent); font-size: 15px; font-weight: 700; display: grid; place-items: center; }
 .send:disabled { background: var(--line-2); color: var(--faint); cursor: default; }
 .send:disabled .sq { background: var(--faint); }
@@ -411,6 +415,12 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .tchip.more-chip { width: 28px; padding: 0; justify-content: center; color: var(--muted); }
 .menu.up.more-pop { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; max-width: none; padding: 6px; }
 .more-row { display: flex; align-items: center; gap: 4px; }
+/* the entry of the insert popup in it, where the row has no room for the button: as tall as a chip, and no chip */
+.more-insert { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: var(--panel); font-size: 12px; color: var(--text); white-space: nowrap; }
+.more-insert:hover { border-color: var(--line-2); }
+.more-insert:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.more-insert > svg { flex: none; color: var(--muted); }
+.more-insert-key { margin-left: 4px; color: var(--faint); }
 .tchip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: var(--panel); font-size: 12px; color: var(--text); white-space: nowrap; }
 button.tchip:hover { border-color: var(--line-2); }
 .tchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -625,6 +635,10 @@ body.resizing iframe { pointer-events: none; }
 /* the theme's picker: one button, and its menu, which opens upward. On a line of its own in a narrow sidebar it stays
    at the right. It keeps the width the three-button switch had, so that the Servers button is where it was. */
 .theme-pick { flex: none; display: flex; justify-content: flex-end; min-width: 74px; margin-left: auto; }
+/* the prompt library's button stands with it, in the room that width leaves: the two are at the right together, and
+   the Servers button is still where it was */
+.side-foot-end { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 74px; margin-left: auto; }
+.side-foot-end .theme-pick { min-width: 0; margin-left: 0; }
 .theme-btn { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px 0 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--muted); }
 .theme-btn:hover, .theme-btn.open { color: var(--text); }
 /* (inside the window at the narrowest sidebar, and in a low window no taller than what is above the foot: it scrolls) */

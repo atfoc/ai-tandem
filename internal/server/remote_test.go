@@ -214,8 +214,8 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(RemoteRoutes) || served != 51 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 51", served, len(RemoteRoutes))
+	if served != len(RemoteRoutes) || served != 58 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 58", served, len(RemoteRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)

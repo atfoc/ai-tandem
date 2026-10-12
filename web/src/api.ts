@@ -5,6 +5,7 @@ import type { AgentKind, AttemptChanges, AttemptReport, Board, BranchState, Cata
   RunDelivery, RunDetail, RunGoal, RunNotes, RunSettings, RunView, ServerLists, Subagent, Target, TaskBrief, Tier, TiersChange, TreeLabel, TreeView } from "./types.ts";
 import type { PermAnswer } from "./logic/perms.ts";
 import type { ServerView } from "./logic/servers.ts";
+import type { LibraryView } from "./logic/library.ts";
 import { UNKNOWN_CLIENT, unknownClient } from "./logic/unknownclient.ts";
 import { normBrief, normChanges, normDelivery, normGoal, normNotes, normReport } from "./logic/runnorm.ts";
 
@@ -15,6 +16,7 @@ export type Snapshot = {
   chats: ChatView[];
   runs?: RunView[]; // absent from a server that knows no runs
   servers?: ServerView[]; // the server list (logic/servers.ts); absent from a server without one
+  libraries?: LibraryView[]; // the prompt libraries, this computer's first (logic/library.ts); absent from a server before them
   defaults: Defaults;
   agents?: AgentKind[]; // the server's usable agents; absent from a server before the list
   catalogs: Partial<Record<AgentKind, Catalog | null>>;

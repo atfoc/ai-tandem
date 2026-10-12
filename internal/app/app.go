@@ -17,6 +17,7 @@ import (
 	"ai-whiteboard/internal/claude"
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/editorbridge"
+	"ai-whiteboard/internal/library"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remotes"
 	"ai-whiteboard/internal/runs"
@@ -37,6 +38,8 @@ type App struct {
 	// Remotes holds the chats of those servers, each a record with a place in a group of this
 	// one (see remote.go); nil: none.
 	Remotes *remotes.Relay
+	// Library is this computer's prompt library (see library.go); nil: none.
+	Library *library.Store
 
 	Agents *usable.Set // nil: every kind of agent is usable
 
@@ -62,6 +65,8 @@ type Snapshot struct {
 	Home       string                             `json:"home"`
 	DefaultCwd string                             `json:"defaultCwd"`
 	DataDir    string                             `json:"dataDir"`
+	// Libraries is the prompt libraries, this computer's first (see library.go); never nil.
+	Libraries []library.View `json:"libraries"`
 }
 
 var (
@@ -72,7 +77,8 @@ var (
 // Snapshot: groups, defaults and catalogs from the store; boards from Boards.List, and those of
 // other servers from Remotes; chats and their branches' states from Chats, and those of other
 // servers and the servers' lists from Remotes; runs from Runs, and those of other servers from
-// Remotes. They are read one after the other, not at one moment.
+// Remotes; the prompt libraries from Libraries. They are read one after the other, not at one
+// moment.
 func (a *App) Snapshot() Snapshot {
 	cl := claude.Catalog
 	snap := Snapshot{
@@ -101,6 +107,7 @@ func (a *App) Snapshot() Snapshot {
 		a.withBoardRecords(&snap)
 	}
 	snap.Servers = a.Servers.Views()
+	snap.Libraries = a.Libraries()
 	snap.Chats = a.Chats.Views()
 	snap.States = a.Chats.States()
 	snap.Lists = map[string]remotes.ServerLists{}

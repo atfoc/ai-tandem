@@ -8,7 +8,7 @@
 .run-composer .composer-tools .menu-wrap { min-width: 0; max-width: 100%; }
 .run-composer .composer-tools .tchip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .run-composer .tchip .caret { flex: none; }
-.run-composer .composer-tools .send { margin-left: auto; } /* stays at the right edge when it wraps onto a line of its own */
+.run-composer .run-send { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; } /* the Insert button and Send: together at the right edge when they wrap onto a line of their own */
 .run-agent-glyph { display: inline-grid; place-items: center; flex: none; }
 .run-composer.starting .composer-input { opacity: .6; pointer-events: none; }
 .run-composer.starting .composer-tools .menu-wrap { opacity: .6; pointer-events: none; }

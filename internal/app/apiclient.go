@@ -3,6 +3,7 @@ package app
 import (
 	"ai-whiteboard/internal/claude"
 	"ai-whiteboard/internal/defaults"
+	"ai-whiteboard/internal/library"
 	"ai-whiteboard/internal/model"
 )
 
@@ -18,6 +19,10 @@ type APISnapshot struct {
 	States     []model.BranchState                `json:"states"` // one per branch of those chats; never nil
 	Runs       []model.RunView                    `json:"runs"`   // the runs with the client's mark; never nil
 	Boards     []model.Board                      `json:"boards"` // the boards with the client's mark; never nil
+	// Library is this server's own prompt library, which every API client reads and changes
+	// (the library routes of server.RemoteRoutes); null for a server without one. After every
+	// change the client gets it whole in an "own_library" event (library.Own).
+	Library *library.Tree `json:"library"`
 }
 
 // APISnapshot builds the snapshot of the API client with this id. It changes nothing and sends
@@ -32,7 +37,13 @@ func (a *App) APISnapshot(client string) APISnapshot {
 	if a.Runs != nil {
 		rs = a.Runs.ViewsOf(client)
 	}
+	var lib *library.Tree
+	if a.Library != nil {
+		t := a.Library.Tree()
+		lib = &t
+	}
 	return APISnapshot{
+		Library:    lib,
 		Agents:     agents,
 		Catalogs:   a.catalogs(),
 		Home:       a.Home,

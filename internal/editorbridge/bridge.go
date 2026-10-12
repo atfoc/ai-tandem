@@ -158,7 +158,7 @@ func New(snapshot func() any) *Bridge {
 	}
 	b.kinds = map[Kind]kindRule{
 		KindPage: {
-			allow:  func(typ string) bool { _, ok := Events[typ]; return ok },
+			allow:  func(typ string) bool { rule, ok := Events[typ]; return ok && !rule.APIOnly },
 			lists:  func(*client, Item) bool { return true },
 			boards: true,
 			snapshot: func(*client) any {

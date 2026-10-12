@@ -12,13 +12,14 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_plain",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -27,7 +28,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_new",
-   "sum": 676.7,
+   "sum": 706.7,
    "controls": [
     { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
@@ -36,6 +37,7 @@
     { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -43,7 +45,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_new_long",
-   "sum": 831.1,
+   "sum": 861.1,
    "controls": [
     { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
@@ -52,6 +54,7 @@
     { "kind": "effort", "label": "EffortMax", "w": 87.5 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -59,13 +62,14 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_long",
-   "sum": 655,
+   "sum": 685,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
     { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -74,13 +78,14 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_busy",
-   "sum": 485.7,
+   "sum": 515.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "stop", "label": "", "w": 28 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
@@ -90,13 +95,14 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_ctxerr",
-   "sum": 464.2,
+   "sum": 494.2,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "Context unavailable", "w": 135.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -105,13 +111,14 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_quotes",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -119,7 +126,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_remote_new",
-   "sum": 755.1,
+   "sum": 785.1,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 186.4 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
@@ -128,6 +135,7 @@
     { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -135,7 +143,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_remote",
-   "sum": 627.7,
+   "sum": 657.7,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
@@ -143,6 +151,7 @@
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -150,7 +159,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_remote_long",
-   "sum": 829,
+   "sum": 859,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
@@ -158,6 +167,7 @@
     { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -166,7 +176,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_move",
-   "sum": 528,
+   "sum": 558,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -174,6 +184,7 @@
     { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -181,7 +192,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_move_long",
-   "sum": 678.9,
+   "sum": 708.9,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
@@ -189,6 +200,7 @@
     { "kind": "effort", "label": "EffortMax", "w": 87.5 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -196,7 +208,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_loading",
-   "sum": 657.6,
+   "sum": 687.6,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 186.4 },
     { "kind": "agent", "label": "Cursor", "w": 80.4 },
@@ -204,6 +216,7 @@
     { "kind": "loading", "label": "Loading models…", "fixed": true, "w": 109 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -211,7 +224,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_noagent",
-   "sum": 463.8,
+   "sum": 493.8,
    "reason": true,
    "controls": [
     { "kind": "server", "label": "This computer", "w": 108 },
@@ -219,6 +232,7 @@
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -226,7 +240,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_bare",
-   "sum": 412.8,
+   "sum": 442.8,
    "reason": true,
    "controls": [
     { "kind": "server", "label": "Bare box", "w": 76 },
@@ -234,6 +248,7 @@
     { "kind": "folder", "label": "bare", "w": 67.7 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -241,7 +256,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_off_new",
-   "sum": 445.6,
+   "sum": 475.6,
    "reason": true,
    "controls": [
     { "kind": "server", "label": "Office Mac", "w": 88.1 },
@@ -249,6 +264,7 @@
     { "kind": "folder", "label": "projects", "w": 88.4 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -256,7 +272,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_off",
-   "sum": 547.6,
+   "sum": 577.6,
    "controls": [
     { "kind": "server", "label": "Office Mac", "fixed": true, "w": 71.7 },
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
@@ -264,6 +280,7 @@
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -271,7 +288,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_fork",
-   "sum": 528,
+   "sum": 558,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -279,6 +296,7 @@
     { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -286,7 +304,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_notice",
-   "sum": 557,
+   "sum": 587,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -294,6 +312,7 @@
     { "kind": "effort", "label": "EffortMedium", "w": 109.3 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -301,13 +320,14 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_two",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -316,13 +336,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_board",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -331,7 +352,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_new",
-   "sum": 660.3,
+   "sum": 690.3,
    "controls": [
     { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
@@ -340,6 +361,7 @@
     { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -348,13 +370,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_quotes",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -362,13 +385,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_long",
-   "sum": 655,
+   "sum": 685,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
     { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -377,7 +401,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_move",
-   "sum": 528,
+   "sum": 558,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -385,6 +409,7 @@
     { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -393,13 +418,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_longname",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -407,13 +433,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_sketch",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -422,13 +449,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_live_ask",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -437,7 +465,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_live_new",
-   "sum": 660.3,
+   "sum": 690.3,
    "controls": [
     { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
@@ -446,6 +474,7 @@
     { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -454,13 +483,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_run_quotes",
-   "sum": 453.7,
+   "sum": 483.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -469,13 +499,14 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_trouble_ask",
-   "sum": 485.7,
+   "sum": 515.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "stop", "label": "", "w": 28 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
@@ -484,91 +515,98 @@
    "g1": "goal-draft",
    "composer": "goal",
    "pane": "stage",
-   "sum": 722.6,
+   "sum": 752.6,
    "controls": [
     { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
     { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "goal-nogit": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 753.5,
+   "sum": 783.5,
    "controls": [
     { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "scratch", "w": 84.7 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
     { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "goal-missing": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 792.1,
+   "sum": 822.1,
    "controls": [
     { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "importer", "w": 90.6 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
     { "kind": "limits", "label": "8 parallel · 60 turns · $20", "w": 169.5 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "goal-blocked": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 777.9,
+   "sum": 807.9,
    "controls": [
     { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "empty-repo", "w": 109.1 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
     { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "goal-draft-long": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 1005.8,
+   "sum": 1035.8,
    "controls": [
     { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "w": 337 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
     { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "goal-remote": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 835.1,
+   "sum": 865.1,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 204.1 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
     { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "goal-fixed": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 755.1,
+   "sum": 785.1,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 187.7 },
     { "kind": "agent", "label": "Claude Code", "fixed": true, "w": 99.8 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "fixed": true, "w": 241.4 },
     { "kind": "limits", "label": "8 parallel · 60 turns", "fixed": true, "w": 120.4 },
+    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   }

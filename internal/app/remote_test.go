@@ -211,7 +211,8 @@ func (f *far) refuseWith(call string, status int) {
 func chatCall(method, id, rest string) string { return method + " /api/chats/" + id + rest }
 
 // The snapshot of a page has these keys, "lists" among them; without a relay the lists are an
-// empty object and the chats are this server's own.
+// empty object and the chats are this server's own, and without a library the libraries are an
+// empty list.
 func TestSnapshotKeys(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -223,12 +224,12 @@ func TestSnapshotKeys(t *testing.T) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	want := []string{"agents", "boards", "catalogs", "chats", "dataDir", "defaultCwd", "defaults", "groups", "home", "lists", "runs", "servers", "states"}
+	want := []string{"agents", "boards", "catalogs", "chats", "dataDir", "defaultCwd", "defaults", "groups", "home", "libraries", "lists", "runs", "servers", "states"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("keys %v, want %v", names, want)
 	}
-	if string(keys["lists"]) != "{}" || len(e.a.Snapshot().Chats) != 1 {
-		t.Fatalf("lists %s, %d chats", keys["lists"], len(e.a.Snapshot().Chats))
+	if string(keys["lists"]) != "{}" || len(e.a.Snapshot().Chats) != 1 || string(keys["libraries"]) != "[]" {
+		t.Fatalf("lists %s, %d chats, libraries %s", keys["lists"], len(e.a.Snapshot().Chats), keys["libraries"])
 	}
 }
 

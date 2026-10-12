@@ -1,7 +1,9 @@
 // Proves A6.3: every part of the page the goal names is readable in each Catppuccin flavour: a chat with code, open
 // tool cards and permission cards; the tree popup; a board with its toolbar, properties panel, menu and export
 // dialog (and its context menu and help dialog); a run page with its timeline, each tab of its dock (the usage bar among them) and a finished run's result;
-// the goal composer; the Servers dialog; and the picker's own menu.
+// the goal composer; the Servers dialog; and the picker's own menu. The prompt library's two popups, which came after
+// the goal, are read the same way: the library popup with a prompt in its editor and a server that is not connected,
+// and the insert popup with its list.
 // Readable is measured, on computed colours: every text and every icon of the part (contrastAudit of dev/shot.mjs)
 // has 3:1 against what is behind it, the weakest floor the goal has. One that has less passes only if it has no
 // less than the same element has in the theme the flavour is laid over (Light under Latte, Dark under the others:
@@ -26,6 +28,9 @@ const FLAVOURS = {
 const FLOOR = 3, OUT = process.env.OUT;
 const CLAUDE = "#d97757"; // the Claude agent's colour in the light theme, which a flavour keeps
 const BOARD = { board: "b_ui", chat: "c_A6_sketch" }, EDIT = ".excalidraw:not(.excalidraw--view-mode) .App-toolbar";
+// In the mock: this computer's library and the one of the seed's server that is not connected, as it last sent it.
+const LIBRARIES = `setLibrary("local", { groups: [{ id: "g_git", name: "git", parent: "" }], prompts: [{ id: "p_review", name: "review", parent: "g_git", text: "Review this change.\\n\\n- say what is wrong" }, { id: "p_todo", name: "todo", parent: "", text: "" }] });
+  setLibrary(extra.servers.find((x) => x.state === "unreachable").id, { connected: false, groups: [], prompts: [{ id: "p_rules", name: "rules", parent: "", text: "Be kind." }] });`;
 const hex = (c) => (c ? "#" + c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("") : "none");
 
 /** The parts: a page each, and its stages, each shown by `do` and on screen when `see` matches. chrome: what of the
@@ -53,6 +58,11 @@ const PARTS = [
   { name: "result", sel: { run: "r_done" }, wait: ".run-stage .run-dock", stages: [{ name: "a finished run", see: ".run-stage .run-dock" }] },
   { name: "goal", sel: { run: "r_draft" }, wait: ".run-composer", stages: [{ name: "the goal composer", see: ".run-composer .composer-tools" }] },
   { name: "servers", sel: {}, wait: ".side-foot .servers-btn", stages: [{ name: "the Servers dialog", see: ".servers-dialog", do: (page) => page.locator(".side-foot .servers-btn").click() }] },
+  { name: "library", sel: { chat: "c_plain" }, wait: ".composer .composer-input", stages: [
+    { name: "the library popup", see: ".lib-dialog .lib-form textarea", count: [".lib-dialog .lib-off", 1],
+      do: async (page) => { await mockEval(LIBRARIES, new URL(page.url()).origin); await page.locator(".side-foot .library-btn").click(); await page.locator(".lib-dialog .lib-row.prompt").first().click(); } },
+    { name: "the insert popup", see: '.ins-dialog [role="option"] .lib-off',
+      do: async (page) => { await page.keyboard.press("Escape"); await page.waitForSelector(".lib-dialog", { state: "detached" }); await page.locator(".composer .composer-input").click(); await page.keyboard.press("ControlOrMeta+p"); } } ] },
   { name: "picker", sel: {}, wait: ".side-foot .theme-btn", stages: [{ name: "the picker's menu", see: '.side-foot [role="menu"][aria-label="Theme"]', do: (page) => page.locator(".side-foot .theme-btn").click() }] },
 ];
 

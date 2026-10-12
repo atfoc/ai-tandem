@@ -542,7 +542,7 @@ func TestAPIClientSnapshot(t *testing.T) {
 		}
 	}
 
-	want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "runs", "states"}
+	want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "library", "runs", "states"}
 	x, snapX := l.api(apiX)
 	// The boards are the client's own: none yet, and then an empty list, not null.
 	if !strings.Contains(snapX, `"boards":[]`) {
@@ -750,10 +750,11 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	if got := e.reach(x)[0]; count(got, "chat_removed", chat1) != 1 {
 		t.Errorf("after the delete the client was sent %v", types(got))
 	}
-	// The run routes of the table are called in apiruns_test.go, on a server with runs, and the
-	// board routes in apiboards_test.go (TestBoardRoutesOfAnAPIClient).
+	// The run routes of the table are called in apiruns_test.go, on a server with runs, the
+	// board routes in apiboards_test.go (TestBoardRoutesOfAnAPIClient) and the library routes in
+	// libraryremote_test.go (TestLibraryRoutesOfAnAPIClient).
 	for _, route := range RemoteRoutes {
-		if !called[route] && !strings.Contains(route, " /api/runs/") && !isBoardRoute(route) {
+		if !called[route] && !strings.Contains(route, " /api/runs/") && !isBoardRoute(route) && !isLibraryRoute(route) {
 			t.Errorf("the route %s of the table was not called", route)
 		}
 	}
@@ -1797,7 +1798,7 @@ func TestServersPackageAgainstTheListener(t *testing.T) {
 	if !ok || lists.Home != "/home/owner" || lists.DefaultCwd != e.a.DefaultCwd || len(lists.Catalogs) != 3 || lists.Catalogs[model.Claude] == nil || len(lists.Agents) != 3 {
 		t.Fatalf("the lists: %+v, %v", lists, ok)
 	}
-	if got := keysOf(t, h.snaps[0]); !slices.Equal(got, []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "runs", "states", "type"}) {
+	if got := keysOf(t, h.snaps[0]); !slices.Equal(got, []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "home", "library", "runs", "states", "type"}) {
 		t.Fatalf("the snapshot the hooks got: %v", got)
 	}
 	if !e.s.Bridge.Known(apiX) {

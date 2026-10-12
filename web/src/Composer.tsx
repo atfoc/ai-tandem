@@ -13,6 +13,7 @@ import { agentOpen, catalogFor, usableAgents } from "./logic/agentlist.ts";
 import { FIRST_TEXT_KEPT, errStays, folderHead, folderStarts, folderTitle, offPlaceholder, recentFrom, sendGone, sendOff, sendTitleOn, showsServer, startsThere, tildeBy, usageKey, usageTitleOn, withRecent } from "./logic/chatserver.ts";
 import { listsOf, recentKey, serverConnected, serverOf } from "./logic/serverlists.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
+import { insertKeyName } from "./logic/insert.ts";
 import type { BranchKey } from "./logic/branches.ts";
 import type { Where } from "./logic/chatserver.ts";
 import { DraftSaver, answerNewer, boxText, draftSet, hasDraft, revSet, staleOf, staleTaken, unsavedToShow } from "./logic/drafts.ts";
@@ -21,14 +22,14 @@ import { selectedOn } from "./logic/roles.ts";
 import { composerControls, refreshAfterRefusal } from "./logic/status.ts";
 import { LIVE_FORK } from "./logic/forkpoints.ts";
 import { mergeQuotes, toSend } from "./logic/quotes.ts";
-import { CONTROLS, fit, widthKey, type Control, type Fit } from "./logic/composerfit.ts";
+import { CONTROLS, fitWithInsert, widthKey, type Control, type Fit, type InsertPlace } from "./logic/composerfit.ts";
 import { effortLabel } from "./logic/labels.ts";
 import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "./logic/usage.ts";
 import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensText, width, type Segment } from "./logic/ctxsplit.ts";
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { useComposerQuotes } from "./Quotes.tsx";
 import { quoteSelection } from "./quoteDom.ts";
-import { BoardIcon, Chevron, Folder, Lock, MoreIcon, RunIcon, WarnIcon, agentName } from "./icons.tsx";
+import { BoardIcon, Chevron, Folder, InsertIcon, Lock, MoreIcon, RunIcon, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
 import { AgentPick, AgentReason, ServerPick, useAgentChip, useServerChip, useWhere } from "./ChatChoices.tsx";
@@ -39,7 +40,15 @@ import { heldReason, pickOn, sendWait } from "./logic/waits.ts";
 import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
 import { LOCAL_SERVER } from "./types.ts";
 
-export function focusComposer() { setTimeout(() => (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus(), 30); }
+/** Gives the focus to the composer's text box, a moment later. Not under a popup of the prompt library opened by
+ *  then: what is typed there is its search's, and the box has the focus again when the popup closes. */
+export function focusComposer() {
+  setTimeout(() => {
+    const s = getState();
+    if (s.insertPopup || s.libraryDialog) return;
+    (document.querySelector(".composer .composer-input") as HTMLElement | null)?.focus();
+  }, 30);
+}
 
 /** Puts the caret after what a composer's box holds, when the box has the focus. */
 function caretToEnd(box: HTMLElement | null) {
@@ -146,6 +155,18 @@ export const draftToShow = (chat: string, branch: string): Draft | undefined =>
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const KEY_REF = isMac ? "⌘L" : "Ctrl+L";
 export const KEY_POINT = isMac ? "⌘⇧L" : "Ctrl+Shift+L";
+export const KEY_INSERT = insertKeyName(typeof navigator !== "undefined" ? navigator.platform : "");
+
+/** The button of a composer's toolbar that opens the insert popup for its text box (RefInput's openInsert), as ⌘P in
+ *  the box does. A press with the mouse leaves the focus where it is: in the box, the caret says where the text goes. */
+export function InsertButton({ disabled = false, onClick }: { disabled?: boolean; onClick: () => void }) {
+  return (
+    <button type="button" className="icon-btn insert-btn" title={`Insert a prompt (${KEY_INSERT})`} aria-label="Insert a prompt" aria-haspopup="dialog" disabled={disabled}
+      onMouseDown={(e) => e.preventDefault()} onClick={onClick}>
+      <InsertIcon />
+    </button>
+  );
+}
 
 /** The open board chat composers, by chat id: where a picked point goes. */
 const inserters = new Map<string, (r: Ref) => void>();
@@ -486,8 +507,7 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
           }}
         />
         <div className="composer-tools fitted" ref={setTools}>
-          <Toolbar chatId={chatId} onError={setErr} sending={sending} stop={stop} row={tools} ruler={ruler} />
-          <span className="grow" />
+          <Toolbar chatId={chatId} onError={setErr} onInsert={() => input.current?.openInsert()} sending={sending} stop={stop} row={tools} ruler={ruler} />
           {stop && <button className="send stop" title={esc ? "Stop (Esc)" : "Stop the subagents"} onClick={() => api.interrupt(chatId, shownBranch(getState(), chatId)).catch((e) => setErr(e.message))}><span className="sq" /></button>}
           {hold && !off && !left ? (
             <button className={`send${hold.spin ? " sending" : ""}`} title={hold.title} disabled>{hold.spin ? <span className="spin" /> : "↑"}</button>
@@ -513,7 +533,7 @@ function widthOf(key: string): number | undefined {
   if (widthsZoom !== window.devicePixelRatio) { widths.clear(); widthsZoom = window.devicePixelRatio; }
   return widths.get(key);
 }
-const MORE = widthKey("more"), SEND = widthKey("send"), STOP = widthKey("stop");
+const MORE = widthKey("more"), INSERT = widthKey("insert"), SEND = widthKey("send"), STOP = widthKey("stop");
 
 /** What a control's elements ask for side by side (a folder's lock stands before its chip): their
  *  widths, their own margins and the gaps between them, rounded up to a tenth of a px. */
@@ -567,9 +587,12 @@ function useRoom(row: HTMLDivElement | null, ruler: HTMLDivElement | null) {
  *  (State.waits): they are disabled and say why. A pick on a fork starts its agent again, which
  *  the chat is told of (pickOnFork): until that call ends the model is a fixed chip that names the
  *  choice the agent is starting on, whatever the agent kind tells meanwhile.
- *  row: the composer's row of tools, which this fills up to the spacer; ruler: what tells of a
+ *  After them come the row's spacer and, where the row has room left for it (fitWithInsert), the
+ *  button of the insert popup (onInsert opens it); where it has none and has the "more" chip, the
+ *  chip's popup has an entry that does the same.
+ *  row: the composer's row of tools, which this fills up to Stop and Send; ruler: what tells of a
  *  change of its width; stop: the row has Stop beside Send. */
-export function Toolbar({ chatId, ...p }: { chatId: string; onError: (msg: string) => void; sending?: boolean; stop?: boolean; row: HTMLDivElement | null; ruler: HTMLDivElement | null }) {
+export function Toolbar({ chatId, ...p }: { chatId: string; onError: (msg: string) => void; onInsert: () => void; sending?: boolean; stop?: boolean; row: HTMLDivElement | null; ruler: HTMLDivElement | null }) {
   const c = useStore((s) => shownView(s, chatId));
   return c ? <Tools c={c} chatId={chatId} {...p} /> : null;
 }
@@ -582,7 +605,7 @@ export function Toolbar({ chatId, ...p }: { chatId: string; onError: (msg: strin
  *  A control whose width is not kept is drawn where it is and measured before its frame is shown,
  *  and the fit is applied in that same commit; a change of the row's width is applied in its frame
  *  too (useRoom). */
-function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }: { c: ChatView; chatId: string; onError: (msg: string) => void; sending?: boolean; stop?: boolean; row: HTMLDivElement | null; ruler: HTMLDivElement | null }) {
+function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, row, ruler }: { c: ChatView; chatId: string; onError: (msg: string) => void; onInsert: () => void; sending?: boolean; stop?: boolean; row: HTMLDivElement | null; ruler: HTMLDivElement | null }) {
   const move = useStore((s) => s.moves[chatId]);
   const cat = useStore((s) => catalogFor(s, serverOf(c), c.agent));
   const waits = useStore((s) => s.waits[chatId]);
@@ -597,7 +620,7 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
   const room = useRoom(row, ruler);
   const [, setMeasured] = useState(0); // counts the commits that measured a control: the fit is made again with its width
   const [more, setMore] = useState(false); // the "more" popup is open
-  const drawn = useRef<{ fit: Fit; more: boolean } | null>(null); // where the last commit drew each control, and whether the popup was open
+  const drawn = useRef<{ fit: Fit; more: boolean; insert: InsertPlace } | null>(null); // where the last commit drew each control and the way to the insert popup, and whether the popup was open
   const moreWrap = useRef<HTMLDivElement>(null), pop = useRef<HTMLDivElement>(null), moreChip = useRef<HTMLButtonElement>(null);
   const toChip = useRef(false); // Esc closed the popup: its chip takes the focus
   const picking = useRef(openPicker);
@@ -637,7 +660,7 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
   // The meter with its text, and cut to its ring (the error meter: to its icon).
   const meterKey = u.error ? widthKey("meter", "Context unavailable", { fixed: true }) : widthKey("meter", ctxText(u.used, u.win));
   const ringKey = widthKey("meter", "", { fixed: !!u.error, mark: u.error ? "icon" : "ring" });
-  const f = fit({
+  const { fit: f, insert } = fitWithInsert({
     room: room?.w ?? Infinity, gap: room?.gap ?? 0, more: widthOf(MORE),
     controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widthOf(keys[id]!), ...(id === "subagents" && spare ? { optional: true } : {}) })),
     meter: { full: widthOf(meterKey), ring: widthOf(ringKey) },
@@ -645,7 +668,7 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
     held: more ? drawn.current?.fit.popup ?? [] : null,
     // The Subagents popover stays open through a pick, which can make its chip longer: the others leave before it.
     pinned: openPicker === "subagents" && drawn.current?.fit.toolbar.includes("subagents") ? "subagents" : undefined,
-  });
+  }, widthOf(INSERT), more && drawn.current?.insert === "more");
   // A control that changes place has no open list: it is made anew where it goes, and its list would open there by
   // itself, at once or, for one that went into the popup, when the popup is opened next.
   const placeOf = (x: { fit: Fit; more: boolean }, id: Control) => (x.fit.toolbar.includes(id) ? "row" : x.fit.popup.includes(id) && x.more ? "popup" : "");
@@ -653,7 +676,7 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
   const opens = (id: Control) => ({ open: open === id, onOpenChange: (o: boolean) => setOpenPicker(o ? id : null) });
 
   useLayoutEffect(() => {
-    drawn.current = { fit: f, more };
+    drawn.current = { fit: f, more, insert };
     if (open !== openPicker) setOpenPicker(null);
     if (more && !f.more) setMore(false); // nothing is left in it
     // The popup is anchored at its chip's left edge: moved left by what its right edge passes the window's (less a 12px
@@ -668,8 +691,8 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
     // What was drawn with no width kept is measured, and the toolbar is fitted again before the frame is shown. The
     // row's children are this toolbar's up to the reason line or the spacer: the controls left to right (a lock is an
     // element before its folder), the "more" chip, the meter.
-    const el = row, rows = [...(menu?.children ?? [])];
-    const shown = [...f.toolbar.map((id) => keys[id]!), ...(rows.length ? f.popup.map((id) => keys[id]!) : []), ...(f.more ? [MORE] : []), f.meter === "ring" ? ringKey : meterKey, SEND, ...(stop ? [STOP] : [])];
+    const el = row, rows = [...(menu?.children ?? [])].filter((e) => !e.matches(".more-insert-row"));
+    const shown = [...f.toolbar.map((id) => keys[id]!), ...(rows.length ? f.popup.map((id) => keys[id]!) : []), ...(f.more ? [MORE] : []), f.meter === "ring" ? ringKey : meterKey, ...(insert === "row" ? [INSERT] : []), SEND, ...(stop ? [STOP] : [])];
     if (!el || !room || shown.every((key) => widthOf(key) !== undefined)) return;
     let fresh = false;
     const take = (key: string, els: (Element | null | undefined)[], gap = room.gap) => {
@@ -686,6 +709,7 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
       if (f.more) take(MORE, [kids[i++]]);
       take(f.meter === "ring" ? ringKey : meterKey, [kids[i]]);
     }
+    take(INSERT, [el.querySelector(":scope > .insert-btn")]);
     take(SEND, [el.querySelector(":scope > .send:not(.stop)")]);
     if (stop) take(STOP, [el.querySelector(":scope > .send.stop")]);
     if (rows.length === f.popup.length) f.popup.forEach((id, j) => take(keys[id]!, [...rows[j].children], parseFloat(getComputedStyle(rows[j]).columnGap) || 0));
@@ -757,18 +781,29 @@ function Tools({ c, chatId, onError, sending = false, stop = false, row, ruler }
       {f.more && (
         <div className="menu-wrap" ref={moreWrap}>
           <button ref={moreChip} type="button" className="tchip more-chip" aria-expanded={more} aria-haspopup="dialog" onClick={() => setMore(!more)}
-            title={`More: ${f.popup.join(", ")}`}>
+            title={`More: ${[...f.popup, ...(insert === "more" ? ["insert a prompt"] : [])].join(", ")}`}>
             <MoreIcon />
           </button>
           {more && (
             <div ref={pop} className="menu up more-pop" role="dialog" aria-label="More of the toolbar" onMouseDown={(e) => e.stopPropagation()}>
               {f.popup.map((id) => <div key={id} className="more-row">{chips[id]}</div>)}
+              {insert === "more" && (
+                // (no chip: it is no choice of the chat's. A press with the mouse leaves the focus where it is, as the button's does)
+                <div className="more-row more-insert-row">
+                  <button type="button" className="more-insert" title={`Insert a prompt (${KEY_INSERT})`} aria-haspopup="dialog"
+                    onMouseDown={(e) => e.preventDefault()} onClick={() => { setMore(false); onInsert(); }}>
+                    <InsertIcon />Insert a prompt<span className="more-insert-key">{KEY_INSERT}</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
       <ContextMeter c={c} cat={cat} where={where} compact={f.meter === "ring"} />
       {agentOpen(c) && <AgentReason c={c} />}
+      <span className="grow" />
+      {insert === "row" && <InsertButton onClick={onInsert} />}
     </>
   );
 }

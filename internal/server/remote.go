@@ -25,8 +25,10 @@ const SecretHeader = "X-AIWB-Secret"
 
 // FeatureLevel is hello's "featureLevel": what this server offers an API client. Level 1 is the
 // remote listener with the chat routes, the run routes and the reload of the secret. Level 2 adds
-// the boards of an API client (apiboards.go).
-const FeatureLevel = 2
+// the boards of an API client (apiboards.go). Level 3 adds the server's prompt library
+// (library.go): the library routes, "library" in the API snapshot and the "own_library" event.
+// A client takes a library only of a server of level 3 or above (servers.LibraryLevel).
+const FeatureLevel = 3
 
 // RemoteRoutes is the one table of the routes an API client may call, spelled as registered.
 // The remote listener answers every other route, the client files included, with 404.
@@ -82,6 +84,13 @@ var RemoteRoutes = []string{
 	"POST /api/boards/{id}/seen",
 	"DELETE /api/boards/{id}",
 	"POST /api/rpc-reply",
+	"GET /api/library",
+	"POST /api/library/{server}/groups",
+	"PATCH /api/library/{server}/groups/{id}",
+	"DELETE /api/library/{server}/groups/{id}",
+	"POST /api/library/{server}/prompts",
+	"PATCH /api/library/{server}/prompts/{id}",
+	"DELETE /api/library/{server}/prompts/{id}",
 }
 
 // helloRoute is the one route an API client may call with the server's own id.

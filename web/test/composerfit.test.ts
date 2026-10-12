@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CONTROLS, LEAVING, fit, needs, widthKey, type Control, type Fit, type Row } from "../src/logic/composerfit.ts";
+import { CONTROLS, LEAVING, fit, fitWithInsert, needs, widthKey, type Control, type Fit, type Row } from "../src/logic/composerfit.ts";
 
 type Measured = { kind: string; label: string; fixed?: boolean; w: number; margin?: number };
 type State = { composer: "chat" | "goal"; pane: string; sum: number; controls: Measured[] };
@@ -14,6 +14,9 @@ const chats = Object.entries(fixture.states).filter(([, s]) => s.composer === "c
 const { gap, chrome, more: MORE, ring: RING } = fixture;
 /** The meter that says why the context is not known is cut to its icon, not to a ring. */
 const cut = (s: State) => (s.controls.some((c) => c.kind === "meter" && c.label === "Context unavailable") ? fixture.icon : RING);
+
+/** The button of the insert popup, as the page measured it beside Send. */
+const INSERT = fixture.states["plain-started"].controls.find((c) => c.kind === "insert")!.w;
 
 /** What stands in the model's place. */
 const KIND: Record<string, Control> = { server: "server", agent: "agent", folder: "folder", model: "model", "model-effort": "model", loading: "model", effort: "effort", subagents: "subagents" };
@@ -44,11 +47,12 @@ test("the fixture's states are the toolbar's controls: each kind is one the fit 
   for (const id of ["plain-new-long", "plain-started-long", "plain-move-long", "plain-remote-started-long", "board-long"]) assert.ok(fixture.states[id], id);
   for (const [id, s] of chats) for (const c of s.controls) assert.ok(c.w < 210, `${id}: ${c.kind} "${c.label}" is ${c.w} px wide`);
   for (const [id, s] of chats) {
-    for (const c of s.controls) assert.ok(c.kind in KIND || ["lock", "meter", "stop", "send"].includes(c.kind), `${id}: ${c.kind}`);
+    for (const c of s.controls) assert.ok(c.kind in KIND || ["lock", "meter", "insert", "stop", "send"].includes(c.kind), `${id}: ${c.kind}`);
     const ids = rowOf(s, 800).controls.map((c) => c.id);
     assert.equal(new Set(ids).size, ids.length, `${id}: ${ids}`);
-    // all of it on one line is the sum the page measured
-    const all = rowOf(s, 800, null, true), every = all.controls.map((c) => c.id);
+    // all of it on one line is the sum the page measured, the Insert button among them: the page is measured where the row has room for it
+    assert.equal(s.controls.filter((c) => c.kind === "insert").length, 1, id);
+    const all = { ...rowOf(s, 800, null, true), fixed: s.controls.filter((c) => ["insert", "stop", "send"].includes(c.kind)).map((c) => c.w) }, every = all.controls.map((c) => c.id);
     assert.ok(Math.abs(needs(all, { toolbar: every, popup: [], more: false, meter: "full" }) - s.sum) < 0.35, `${id}: ${needs(all, { toolbar: every, popup: [], more: false, meter: "full" })} against ${s.sum}`);
   }
 });
@@ -132,6 +136,99 @@ test("a control with no width stays in the toolbar and counts nothing", () => {
   // a meter whose text is not measured keeps it while the rest fits
   const wide = rowOf(s, 800);
   assert.equal(fit({ ...wide, meter: { ring: RING } }).meter, "full");
+});
+
+test("the Insert button is drawn where the row has room left for it, and takes nothing from the others", () => {
+  assert.ok(INSERT > 0);
+  for (const [id, s] of chats) {
+    let drawn = 0;
+    for (let box = 260; box <= 1000; box++) {
+      for (const held of [null, leavingOf(rowOf(s, box)).slice(0, 1)]) {
+        const r = rowOf(s, box, held), { fit: f, insert } = fitWithInsert(r, INSERT), at = `${id} at ${box}${held ? `, the popup open with ${held}` : ""}`;
+        // every control is where it is without the button, and the meter says what it says without it
+        assert.deepEqual(f, fit(r), at);
+        // the button is there exactly where the row, placed so, has room for it and its gap besides
+        const room = needs(r, f) + INSERT + gap <= r.room + 1e-6;
+        assert.equal(insert === "row", room, `${at}: the row needs ${needs(r, f)} of ${r.room}`);
+        // where it has none, the "more" popup has the entry exactly where the row has that chip anyway
+        if (!room) assert.equal(insert, f.more ? "more" : "", at);
+        if (insert === "row" && !held) drawn++;
+      }
+    }
+    assert.ok(drawn > 300, `${id}: the button is drawn at ${drawn} of the 741 widths`);
+    assert.equal(fitWithInsert(rowOf(s, 1000), INSERT).insert, "row", `${id}: on a wide page`);
+  }
+});
+
+test("where the row has no room for the Insert button, the \"more\" popup has the entry when the chip is there, and holds it while it is open", () => {
+  // a row too narrow for the button beside the chip: the entry is in the popup, and the row is as it is without it
+  let inPopup = 0, nowhere = 0;
+  for (const [id, s] of chats) {
+    for (let box = 150; box <= 1000; box++) {
+      const r = rowOf(s, box), { fit: f, insert } = fitWithInsert(r, INSERT), at = `${id} at ${box}`;
+      if (insert === "more") { inPopup++; assert.equal(f.more, true, at); assert.deepEqual(f, fit(r), at); }
+      if (insert === "") { nowhere++; assert.equal(f.more, false, `${at}: the chip is there, and the entry is not in its popup`); }
+      // the entry is somewhere whenever the row has the chip: with a control in the popup the popup is never opened by the key alone
+      if (f.more) assert.notEqual(insert, "", at);
+    }
+  }
+  assert.ok(inPopup > 0, "no state of the fixture has a row with the chip and no room for the button");
+  assert.ok(nowhere > 0, "no state of the fixture has a whole row with no room for the button");
+  const narrow = rowOf(fixture.states["plain-busy"], 150);
+  assert.deepEqual(fitWithInsert(narrow, INSERT), { fit: fit(narrow), insert: "more" });
+  // open with the entry in it, the popup keeps the entry however wide the row gets, as it keeps its controls
+  const s = fixture.states["plain-new"], held = fit(rowOf(s, 260)).popup;
+  assert.ok(held.length > 0);
+  for (let box = 260; box <= 1000; box += 20) assert.equal(fitWithInsert(rowOf(s, box, held), INSERT, true).insert, "more", `at ${box}`);
+  assert.equal(fitWithInsert(rowOf(s, 1000, held), INSERT).insert, "row", "an entry that was in the row stays there");
+  // closed again, the entry returns to the row where it has room
+  assert.equal(fitWithInsert(rowOf(s, 1000), INSERT).insert, "row");
+  // a popup that lost what it held has no chip, and no entry to keep
+  assert.equal(fitWithInsert(rowOf(s, 1000), INSERT, true).insert, "row");
+});
+
+test("at the default panel the Insert button is there unless a started chat's whole row leaves it no room, and it never takes the meter's text", () => {
+  // (a whole row of short names: 16.5 px are left, and the button with its gap needs 30)
+  for (const id of ["board-started", "run-started", "board-quotes"]) {
+    const r = rowOf(fixture.states[id], 375);
+    // (the row is whole and has no "more" chip: the entry is nowhere, and the popup is opened by its key alone)
+    assert.deepEqual(fitWithInsert(r, INSERT), { fit: { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" }, insert: "" }, id);
+    assert.equal(fitWithInsert(rowOf(fixture.states[id], 375 + 14), INSERT).insert, "row", `${id}: 14 px wider`);
+  }
+  // where the meter is cut to its ring, by long names or by Stop, the text's room is the button's
+  for (const id of ["plain-busy", "run-busy"]) {
+    const { fit: f, insert } = fitWithInsert(rowOf(fixture.states[id], 375), INSERT);
+    assert.deepEqual([f.meter, f.popup, insert], ["ring", [], "row"], id);
+  }
+  // and where a control is in the popup, what the row has left
+  const long = fitWithInsert(rowOf(fixture.states["plain-started-long"], 375), INSERT);
+  assert.deepEqual([long.fit.popup, long.insert], [["folder"], "row"]);
+  // in the narrowest box, beside the "more" chip
+  assert.equal(fitWithInsert(rowOf(fixture.states["plain-started"], 260), INSERT).insert, "row");
+  // and a row that does not fit even at its last step has it in the popup of its "more" chip
+  assert.equal(fitWithInsert(rowOf(fixture.states["plain-busy"], 150), INSERT).insert, "more");
+});
+
+test("the Insert button whose width is not known is drawn, to be measured; an optional chip gives way to it", () => {
+  const s = fixture.states["plain-new"];
+  for (const box of [300, 800]) assert.deepEqual(fitWithInsert(rowOf(s, box)), { fit: fit(rowOf(s, box)), insert: "row" }, `at ${box}`);
+  // nothing is measured yet: every control is in the toolbar, and the button with them
+  const r = rowOf(s, 300), none: Row = { ...r, controls: r.controls.map((c) => ({ id: c.id })), meter: {}, more: undefined, fixed: [undefined] };
+  assert.deepEqual(fitWithInsert(none), { fit: { toolbar: r.controls.map((c) => c.id), popup: [], more: false, meter: "full" }, insert: "row" });
+  // the fixed Subagents chip of a chat on the default settings: where the row has room for one of the two, it is the button
+  const started = Object.entries(fixture.states).find(([, x]) => x.composer === "chat" && x.controls.some(spare))!;
+  const sub = started[1].controls.find(spare)!.w, bare = rowOf(started[1], 2000), whole = needs(bare, fit(bare)) + chrome;
+  const at = (box: number) => { const { fit: f, insert } = fitWithInsert(rowOf(started[1], box, null, true), INSERT); return [insert === "row", f.toolbar.includes("subagents")]; };
+  assert.ok(sub > INSERT, `${started[0]}: the chip is ${sub} px wide`);
+  assert.deepEqual(at(Math.ceil(whole + INSERT + gap) - 2), [false, false]);
+  assert.deepEqual(at(Math.ceil(whole + INSERT + gap)), [true, false]);
+  assert.deepEqual(at(Math.ceil(whole + sub + gap)), [true, false], "the chip alone would fit here");
+  assert.deepEqual(at(Math.ceil(whole + INSERT + gap + sub + gap)), [true, true]);
+  // with the chip or without, the others are where fit puts them
+  for (let box = 260; box <= 1000; box += 3) {
+    const r = rowOf(started[1], box, null, true), f = fitWithInsert(r, INSERT).fit, plain = fit(r), firm = (x: Fit) => [x.meter, x.more, x.toolbar.filter((c) => c !== "subagents"), x.popup.filter((c) => c !== "subagents")];
+    assert.deepEqual(firm(f), firm(plain), `${started[0]} at ${box}`);
+  }
 });
 
 test("while the popup is open nothing it holds returns, however wide the box, and the toolbar still gives to it", () => {
