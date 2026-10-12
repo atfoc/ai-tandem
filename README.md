@@ -190,13 +190,27 @@ A *prompt* is a name and a text; *groups* hold prompts and other groups.
 
 - **The library popup.** The book button at the foot of the sidebar, between **Servers** and
   the theme picker, opens it: a search box, the tree, and an editor for the chosen prompt (its
-  name, its group, its text). In a group, groups come before prompts and both are sorted by
-  name; there is no manual order and no drag and drop. A prompt or a group is moved by choosing
-  another group in the editor. Nothing is saved while you type: **Save** (or ⌘↵, Ctrl+↵) saves,
-  and leaving unsaved changes asks first. Deleting asks first too, and for a group the question
-  says how many prompts go with it. A save the server refuses (a name that is taken, a prompt
-  deleted meanwhile) shows why and keeps what you typed. Esc and a click beside the popup close
-  it.
+  name and its text). In a group, groups come before prompts and both are sorted by name; there
+  is no manual order. A prompt at the top level stands at the tree's left edge; what is in a
+  group is set in, beside a line that runs down from the group. Nothing is saved while you
+  type: **Save** (or ⌘↵, Ctrl+↵) saves, and leaving unsaved changes asks first. Deleting asks
+  first too, and for a group the question says how many prompts go with it. A save the server
+  refuses (a name that is taken, a prompt deleted meanwhile) shows why and keeps what you
+  typed. Esc and a click beside the popup close it.
+- **Where a prompt is.** The group of a prompt or of a group is set in the tree; the editor
+  only says where the item is. A right click in the tree offers **New prompt** and **New
+  group** for the place that was clicked: in the group that was clicked, beside the prompt that
+  was clicked, at the top level on the space under the rows. The buttons under the tree make
+  the new item in the chosen group, beside the chosen prompt, or at the top level with nothing
+  chosen. While you type its name, the tree shows the new item's row where it will be. To move
+  a prompt or a group, drag it onto a group (onto a prompt: it lands beside that prompt), or to
+  the top level: the space under the rows, a server's entry, or the **Move to the top level**
+  bar that stands in the buttons' place during a move. The place is lit before you let go, and
+  nothing is lit where the item cannot go: where it already is, a group's own contents,
+  another server's library. **Move…** of the right-click menu does the same with the keys: the
+  arrows choose the place, Enter moves the item there, Esc cancels. A move is saved at once and
+  leaves what is typed in the editor as it is; one the server refuses (a name that is taken
+  there, groups too deep) says why under the tree, and nothing has moved.
 - **Inserting.** ⌘P on a Mac, Ctrl+P elsewhere, in the text box of a chat or of a run's goal
   opens the insert popup: a search box and the list of prompts with their paths, nothing else.
   The arrow keys move the highlight, Enter or a click inserts, Esc closes with the box as it

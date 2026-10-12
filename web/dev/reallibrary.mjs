@@ -10,7 +10,11 @@
 // there all the same, and nothing is sent from it.
 //   A alone: the popup opens on an empty library with no level of servers; a group, a prompt in it; a second prompt
 //   of that name in another case is refused with the server's sentence and what was typed stays; a change made in a
-//   second window shows in the first; deleting the group asks with the number of its prompts.
+//   second window shows in the first; deleting the group asks with the number of its prompts. Where an item is, is
+//   the tree's: a right click on the space under the rows makes a group at the top level, one on a group a prompt in
+//   it; a drop on a group moves a prompt and a group there, and the bar of the top level takes a group back; a drop
+//   the server refuses for a name that is taken there, and for groups more than 16 deep, says the server's sentence
+//   under the tree and moves nothing.
 //   B joins A's list: its library is in the open popup under its name, and a search for the server's name and a
 //   prompt's name finds the prompt; a prompt made at its entry is in B's own library and not in A's; B refuses a
 //   name that is taken, with its sentence; a change B's owner makes shows in the editor here. ⌘P in a chat's
@@ -22,7 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { buildDist, loadPlaywright, onEnd, until } from "./shot.mjs";
+import { buildDist, loadPlaywright, onEnd, pointerDrag, until } from "./shot.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."), FIRST = Number(process.env.PORT) || 4811;
 const ROOT = fs.mkdtempSync(path.join(fs.existsSync("/tmp") ? "/tmp" : os.tmpdir(), "aiwb-real-")), BIN = path.join(ROOT, "ai-whiteboard");
@@ -68,13 +72,14 @@ const libraryOf = async (port) => (await (await fetch(`http://127.0.0.1:${port}/
 /** In the page: what the two popups show. */
 function seen() {
   const dlg = document.querySelector(".lib-dialog"), ins = document.querySelector(".ins-dialog"), text = (e) => e?.textContent ?? "";
-  const rows = [...(dlg?.querySelectorAll(".lib-list .lib-row") ?? [])], options = [...(ins?.querySelectorAll('[role="option"]') ?? [])], form = dlg?.querySelector(".lib-form");
+  const rows = [...(dlg?.querySelectorAll(".lib-list .lib-row:not(.new)") ?? [])], options = [...(ins?.querySelectorAll('[role="option"]') ?? [])], form = dlg?.querySelector(".lib-form");
   const line = (r) => (r.matches(".hit, [role=option]") ? text(r.querySelector(".lib-path")) + text(r.querySelector(".lib-pname")) : "  ".repeat(Number(r.getAttribute("aria-level")) - 1) + text(r.querySelector(".lib-name")));
   return {
     open: !!dlg, rows: rows.map(line), off: rows.filter((r) => r.querySelector(".lib-off")).map(line), says: text(dlg?.querySelector(".lib-list .menu-empty")),
-    form: form ? { head: text(form.querySelector(".lib-form-head")), name: form.querySelector("input").value, text: form.querySelector("textarea")?.value ?? null, fixed: form.querySelector("input").readOnly,
+    treeErr: text(dlg?.querySelector(".lib-side > .dialog-err")),
+    form: form ? { head: text(form.querySelector(".lib-form-head > span")), name: form.querySelector("input").value, text: form.querySelector("textarea")?.value ?? null, fixed: form.querySelector("input").readOnly,
       err: text(form.querySelector(".dialog-err")), notice: text(form.querySelector(".lib-notice")), off: [...form.querySelectorAll("button")].filter((b) => b.disabled).map((b) => b.textContent),
-      group: [...(form.querySelector("select")?.selectedOptions ?? [])].map((o) => (o.parentElement.matches("optgroup") ? o.parentElement.label + "|" : "") + o.label).join() } : null,
+      where: text(form.querySelector(".lib-where")) } : null,
     insert: ins ? { rows: options.map(line), off: options.filter((r) => r.querySelector(".lib-off")).map(line) } : null,
   };
 }
@@ -98,7 +103,7 @@ try {
     if (await until(async () => want((s = await page.evaluate(seen))), 30000)) pass(what); else fail(`${what}: the page shows ${JSON.stringify(s)}`);
     return s;
   };
-  const DLG = ".lib-dialog", row = (label) => page.locator(`${DLG} .lib-row:has(.lib-name:text-is("${label}"))`), button = (label) => page.locator(`${DLG} button:text-is("${label}")`);
+  const DLG = ".lib-dialog", row = (label) => page.locator(`${DLG} .lib-row:not(.new):has(.lib-name:text-is("${label}"))`), button = (label) => page.locator(`${DLG} button:text-is("${label}")`);
   const name = page.locator(`${DLG} .lib-form input`), text = page.locator(`${DLG} .lib-form textarea`), LONG = "a".repeat(80);
 
   // ---- this computer's library alone
@@ -107,7 +112,7 @@ try {
   await button("New group").click(); await name.fill("git"); await button("Save").click();
   await shows("a group is made", (s) => s.rows.join("|") === "git" && s.form?.head === "Group");
   await button("New prompt").click(); await name.fill("review"); await text.fill("Review this change.\n\n- say why"); await button("Save").click();
-  await shows("a prompt is made in the chosen group; the tree has no level of servers", (s) => s.rows.join("|") === "git|  review" && s.form?.head === "Prompt" && s.form.group === "git");
+  await shows("a prompt is made in the chosen group; the tree has no level of servers", (s) => s.rows.join("|") === "git|  review" && s.form?.head === "Prompt" && s.form.where === "In git");
   await button("New prompt").click(); await name.fill("REVIEW"); await text.fill("typed"); await button("Save").click();
   let s = await shows("a second prompt of that name in another case is refused, and what was typed stays", (x) => !!x.form?.err && x.form.name === "REVIEW" && x.form.text === "typed");
   note(`the server's sentence: ${s.form?.err}`);
@@ -128,6 +133,48 @@ try {
   if (asked === "“git” is deleted with everything in it: 2 prompts.") pass("deleting the group asks with the number of its prompts"); else fail(`the question before the group is deleted: ${JSON.stringify(asked)}`);
   await page.locator('.dialog-backdrop .dialog button:text-is("Cancel")').click();
 
+  // ---- where an item is, is the tree's: the menu of a right click, and a drag
+  const drag = pointerDrag(page), entryOf = (label) => page.locator(`${DLG} .lib-ctx .menu-item:text-is("${label}")`), bar = page.locator(`${DLG} .lib-top`);
+  const dragTo = async (label, to) => { await drag.start(await drag.at(row(label))); await drag.over(await drag.at(to)); await drag.drop(); };
+  const parentOf = async (label) => { const l = await libraryOf(A.port), x = [...l.prompts, ...l.groups].find((i) => i.name === label); return l.groups.find((q) => q.id === x?.parent)?.name ?? (x ? "" : null); };
+  const list = await page.locator(`${DLG} .lib-list`).boundingBox();
+  await page.mouse.click(list.x + list.width / 2, list.y + list.height - 10, { button: "right" });
+  await entryOf("New group").click(); await name.fill("misc"); await button("Save").click();
+  await shows("a right click on the space under the rows makes a group at the top level", (x) => x.rows.join("|") === ["git", "  " + LONG, "  review twice", "misc"].join("|") && x.form?.head === "Group" && x.form.where === "At the top level");
+  await row("misc").click({ button: "right" });
+  await entryOf("New prompt").click(); await name.fill("Review Twice"); await button("Save").click();
+  await shows("a right click on a group makes a prompt in it", (x) => x.rows.join("|") === ["git", "  " + LONG, "  review twice", "misc", "  Review Twice"].join("|") && x.form?.where === "In misc");
+  await dragTo("review twice", row("misc"));
+  s = await shows("a drop the server refuses for the name says so under the tree, and nothing moves", (x) => !!x.treeErr && x.rows.join("|") === ["git", "  " + LONG, "  review twice", "misc", "  Review Twice"].join("|"));
+  note(`the server's sentence: ${s.treeErr}`);
+  if (await parentOf("review twice") !== "git") fail(`after the refused drop the prompt is in ${JSON.stringify(await parentOf("review twice"))}`);
+  await dragTo(LONG, row("Review Twice")); // (on a prompt: beside it)
+  await shows("a drop on a prompt of another group moves the dragged prompt beside it", (x) => x.rows.join("|") === ["git", "  review twice", "misc", "  " + LONG, "  Review Twice"].join("|") && !x.treeErr);
+  await dragTo("git", row("misc"));
+  await shows("a drop on a group moves a group there, with what is in it", (x) => x.rows.join("|") === ["misc", "  git", "    review twice", "  " + LONG, "  Review Twice"].join("|"));
+  if (await parentOf(LONG) === "misc" && await parentOf("git") === "misc") pass("the server holds both where they were dropped"); else fail(`after the drops the server has them in ${JSON.stringify([await parentOf(LONG), await parentOf("git")])}`);
+  await dragTo("git", bar);
+  await dragTo(LONG, row("git"));
+  await shows("the bar of the top level takes the group back, and the prompt goes back into it", (x) => x.rows.join("|") === ["git", "  " + LONG, "  review twice", "misc", "  Review Twice"].join("|") && !x.treeErr);
+  // groups more than 16 deep: the server's own rule, for a group made there and for one moved there
+  const maker = await client(A.port, "real-m");
+  for (let i = 1, parent = ""; i <= 16; i++) parent = (await maker.call("POST", "/api/library/local/groups", { name: "d" + i, parent })).body?.group?.id ?? "";
+  await shows("16 groups inside one another are in the tree", (x) => x.rows.includes("  ".repeat(15) + "d16"));
+  await row("d16").click({ button: "right" });
+  await entryOf("New group").click(); await name.fill("d17"); await button("Save").click();
+  s = await shows("a 17th group in them is refused, and what was typed stays", (x) => !!x.form?.err && x.form.name === "d17");
+  note(`the server's sentence: ${s.form?.err}`);
+  await button("Cancel").click();
+  await dragTo("misc", row("d16"));
+  s = await shows("a group dropped into them is refused under the tree, and has not moved", (x) => !!x.treeErr && x.rows.at(-2) === "misc");
+  note(`the server's sentence: ${s.treeErr}`);
+  await dragTo("Review Twice", row("d16"));
+  await shows("a prompt dropped into the 16th group is taken", (x) => x.rows.includes("  ".repeat(16) + "Review Twice") && !x.treeErr);
+  const made = await libraryOf(A.port);
+  for (const id of [made.groups.find((x) => x.name === "d1")?.id, made.groups.find((x) => x.name === "misc")?.id]) await maker.call("DELETE", `/api/library/local/groups/${id}`);
+  maker.close();
+  await shows("the library as it was before the moves", (x) => x.rows.join("|") === ["git", "  " + LONG, "  review twice"].join("|"));
+
   // ---- another server joins the list
   const ofA = await client(A.port, "real-a"), ofB = await client(B.port, "real-b"), address = `https://127.0.0.1:${B.remote}`;
   await ofB.call("POST", "/api/library/local/prompts", { name: "standup", parent: "", text: "What did you do?" });
@@ -140,7 +187,7 @@ try {
   await shows("a search for the server's name and a prompt's name finds the prompt", (x) => x.rows.join("|") === "Studio/standup");
   await page.locator(`${DLG} .lib-search input`).fill("");
   await row("Studio").click(); await button("New prompt").click();
-  await shows("a new prompt at the server's entry is to go to that server", (x) => x.form?.head === "New prompt" && x.form.group === "Studio|Top of the library");
+  await shows("a new prompt at the server's entry is to go to that server", (x) => x.form?.head === "New prompt" && x.form.where === "In Studio");
   await name.fill("retro"); await text.fill("What went well?"); await button("Save").click();
   await shows("it is in the tree under the server", (x) => x.rows.includes("  retro") && x.form?.head === "Prompt" && x.form.name === "retro");
   const theirs = await libraryOf(B.port), retro = theirs.prompts.find((p) => p.name === "retro");

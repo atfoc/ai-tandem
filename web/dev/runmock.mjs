@@ -1856,7 +1856,7 @@ function groupRoute(req, res, id, rest, b, u) {
 // ---- the prompt library (internal/library, internal/server/library.go): one library per server
 
 const libraries = { local: { groups: [], prompts: [] } }; // by server id: { groups, prompts, connected: false for a copy of a server that dropped, notice }
-const LIB = { name: 80, text: 100000 };
+const LIB = { name: 80, text: 100000, depth: 16 };
 const libraryName = (id) => (id === "local" ? "This computer" : extra.servers?.find((x) => x.id === id)?.name ?? id);
 const libraryView = (id) => ({ server: id, name: libraryName(id), connected: libraries[id].connected !== false, ...(libraries[id].notice ? { notice: libraries[id].notice } : {}), groups: libraries[id].groups, prompts: libraries[id].prompts });
 /** GET /api/library and the snapshot's list: this computer's first, then the servers' in the order of the server list. */
@@ -1888,6 +1888,9 @@ function libraryBelow(lib, id) {
   for (let grew = true; grew; ) { grew = false; for (const g of lib.groups) if (ids.has(g.parent) && !ids.has(g.id)) { ids.add(g.id); grew = true; } }
   return ids;
 }
+/** How many groups deep a group is (0 for the top), and how many levels of groups a group and those below it have. */
+const libraryDepth = (lib, id) => { let d = 0; for (let g = lib.groups.find((x) => x.id === id); g && d <= lib.groups.length; g = lib.groups.find((x) => x.id === g.parent)) d++; return d; };
+const libraryHeight = (lib, id) => 1 + Math.max(0, ...lib.groups.filter((g) => g.parent === id).map((g) => libraryHeight(lib, g.id)));
 /** The calls that change the library of `server`: kind "groups" or "prompts", id of the item for a change or a delete. */
 async function libraryRoute(req, res, server, kind, id) {
   const M = req.method, b = await body(req), k = flags.library ?? {};
@@ -1904,6 +1907,7 @@ async function libraryRoute(req, res, server, kind, id) {
     const name = libraryNameOf(lib, b.name, parent, "");
     if (name.fail) return answer(res, name);
     if (!groups && tooLong(b.text)) return answer(res, fail(413, "The text of a prompt can have at most 100,000 characters.", "text_too_long"));
+    if (groups && libraryDepth(lib, parent) + 1 > LIB.depth) return answer(res, fail(409, `Groups can be at most ${LIB.depth} deep.`, "too_deep"));
     const item = { id: (groups ? "g_" : "p_") + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join(""), name, parent, ...(groups ? {} : { text: b.text ?? "" }) };
     list.push(item);
     sendLibrary(server);
@@ -1919,6 +1923,7 @@ async function libraryRoute(req, res, server, kind, id) {
     const name = libraryNameOf(lib, b.name ?? item.name, parent, id);
     if (name.fail) return answer(res, name);
     if (!groups && tooLong(b.text)) return answer(res, fail(413, "The text of a prompt can have at most 100,000 characters.", "text_too_long"));
+    if (groups && libraryDepth(lib, parent) + libraryHeight(lib, id) > LIB.depth) return answer(res, fail(409, `Groups can be at most ${LIB.depth} deep.`, "too_deep"));
     Object.assign(item, { name, parent }, !groups && b.text !== undefined ? { text: b.text } : {});
     sendLibrary(server);
     return answer(res, { [word]: item });

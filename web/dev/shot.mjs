@@ -19,6 +19,7 @@
 //   toolbarWidths(page)           the width each control of the composer's toolbar asks for
 //   startMove(page)               "Branch from here" on the first reply: a pending move; act(page, what): a seeded state's `act`
 //   dragger(page)                 real drags in the sidebar, with every ending
+//   pointerDrag(page)             real drags by the pointer anywhere else (the library's tree): start, over, drop, release
 //   toolCards(page, root)         the tool cards of a thread: each one's row and, open, its parts; openCards(page, root)
 //                                 opens them all; cardsFit(page, root) what of them passes its pane
 //   sampleFrames(page, probe)     a value per painted frame; composerProbe is the probe of the composer's fit;
@@ -438,6 +439,36 @@ export async function dragger(page) {
     lit: () => page.evaluate(() => window.__lit()),
     groupOf: (name) => page.evaluate((n) => window.__groupOf(window.__row(n)), name),
     parentOf: (name) => page.evaluate((n) => window.__groupOf(window.__head(n)?.parentElement), name),
+  };
+}
+
+/** Real drags by the pointer, in a page whose draggable rows are not the sidebar's (those are dragger's): the browser
+ *  starts the drag from the pointer's press and moves, and sends the page what a hand's drag sends it.
+ *    at(locator, fx, fy)   a point of an element, scrolled to first; the fractions are of its box, its middle by default
+ *    start(point)          press there and move until the drag has begun
+ *    over(point)           the pointer is there, and the page has drawn what it made of it
+ *    drop()                the release where the pointer is: a drop where the page takes one, the drag's end where not
+ *  No call waits a fixed time: each answers when the page has drawn two frames. What must come of it (a row lit, a row
+ *  in another group) is waited for by the check, with until(). */
+export function pointerDrag(page) {
+  const drawn = () => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
+  return {
+    drawn,
+    async at(locator, fx = 0.5, fy = 0.5) {
+      await locator.scrollIntoViewIfNeeded();
+      const b = await locator.boundingBox();
+      if (!b) throw new Error("the page does not show what the drag is to go to");
+      return { x: b.x + b.width * fx, y: b.y + b.height * fy };
+    },
+    // (a drag that the browser ends as it begins leaves the driver waiting for it: the bound is for that)
+    async start(p) {
+      const begin = async () => { await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x + 6, p.y + 3); await page.mouse.move(p.x + 14, p.y + 6); await drawn(); };
+      let late;
+      try { await Promise.race([begin(), new Promise((_, no) => { late = setTimeout(() => no(new Error("the drag did not begin: the browser ended it at once, or took none up")), 15000); })]); } finally { clearTimeout(late); }
+    },
+    // (a real drag sends dragover over and over, and React commits what one set a moment later)
+    async over(p) { for (let i = 0; i < 3; i++) { await page.mouse.move(p.x + i, p.y); await drawn(); } },
+    async drop() { await page.mouse.up(); await drawn(); },
   };
 }
 

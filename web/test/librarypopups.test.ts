@@ -2,7 +2,8 @@
 // as serversdialog.test.ts does and rendered to a string: there is no DOM here, so no click, key or focus is
 // checked (dev/checks/PL4.1-library.mjs and PL5.2-popup.mjs do that in a page). What is checked: the stream keeps
 // the store's libraries, both popups show them in the order of the server list, a server's level is there only
-// with a second library, a server that dropped is marked, and what a library says comes out as text.
+// with a second library, a server that dropped is marked, what a library says comes out as text, and how the rows
+// of the tree are set in and which of them can be dragged.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -63,6 +64,9 @@ const snapshot = (o: Record<string, unknown> = {}) => store.applySnapshot({ grou
 const texts = (h: string, cls: string): string[] => [...h.matchAll(new RegExp(`<(\\w+)[^>]*class="[^"]*\\b${cls}\\b[^"]*"[^>]*>(.*?)</\\1>`, "g"))].map((m) => m[2].replace(/<[^>]*>/g, ""));
 /** The prompts of a list as it shows them: each one's path and name. */
 const lines = (h: string): string[] => [...h.matchAll(/<span class="lib-line">(?:<span class="lib-path">(.*?)<\/span>)?<span class="lib-pname">(.*?)<\/span><\/span>/g)].map((m) => (m[1] ?? "") + m[2]);
+/** The rows of the library popup's tree: [name, level, what it is set in by (px), lines beside it, "twist" or "", "drag" or ""]. */
+const treeRows = (h: string): (string | number)[][] => [...h.matchAll(/<div data-key="[^"]*" role="treeitem" aria-level="(\d+)"([^>]*)>(.*?)<span class="lib-name">(.*?)<\/span>/g)].map((m) =>
+  [m[4], Number(m[1]), Number(/padding-left:(\d+)px/.exec(m[2])?.[1]), m[3].split('class="lib-guide"').length - 1, m[3].includes("lib-twist") ? "twist" : "", /draggable="true"/.test(m[2]) ? "drag" : ""]);
 const buttons = (h: string): string[] => [...h.matchAll(/<button[^>]*>(.*?)<\/button>/g)].map((m) => m[1].replace(/<[^>]*>/g, "")).filter((t) => t);
 const servers = () => store.getState().libraries.map((v: { server: string }) => v.server);
 const target = () => { const t = { said: [] as string[], insert(text: string) { t.said.push("insert " + text); }, cancel() { t.said.push("cancel"); } }; return t; };
@@ -123,6 +127,8 @@ test("the library popup with this computer's library alone: the tree, with no le
   assert.match(h, /role="tree"/);
   assert.deepEqual(buttons(h), ["New prompt", "New group", "Close"]);
   assert.match(h, /Choose a prompt to edit it/);
+  // where an item is, is the tree's alone: the popup has no choice of a group
+  assert.doesNotMatch(h, /<select/);
   // an empty library says so, and a new prompt can still be made
   store.setState({ libraries: [lib("local", "This computer")] });
   assert.match(html(), /The library has no prompts yet\./);
@@ -143,6 +149,16 @@ test("with another server each library is under its server's name, in the order 
   // and with its library gone there is no level of servers again
   store.setState({ libraries: [MINE] });
   assert.deepEqual(texts(html(), "lib-name"), ["git", "review", "scratch"]);
+});
+
+test("the tree is set in by depth alone: a prompt at the top is at the edge with no line, one in a group beside its group's line", () => {
+  store.setState({ libraries: [lib("local", "This computer", { groups: [g("g_git", "git"), g("g_hooks", "hooks", "g_git")], prompts: [p("p_pre", "pre-commit", "g_hooks"), p("p_review", "review", "g_git"), p("p_scratch", "scratch")] })], libraryDialog: {} });
+  // (a prompt has no empty place for a twist: "scratch" starts where "git" does, though it follows the rows of "git")
+  assert.deepEqual(treeRows(html()), [["git", 1, 4, 0, "twist", "drag"], ["hooks", 2, 22, 1, "twist", "drag"], ["pre-commit", 3, 40, 2, "", "drag"], ["review", 2, 22, 1, "", "drag"], ["scratch", 1, 4, 0, "", "drag"]]);
+  // under a server's entry everything is one level in; an entry is not dragged, nor is anything of a server that dropped
+  store.setState({ servers: [LOCAL, OFFICE], libraries: [MINE, lib("s_office", "Office", { connected: false, groups: [g("g_o", "ops")], prompts: [p("p_rules", "rules")] })] });
+  assert.deepEqual(treeRows(html()), [["This computer", 1, 4, 0, "twist", ""], ["git", 2, 22, 1, "twist", "drag"], ["review", 3, 40, 2, "", "drag"], ["scratch", 2, 22, 1, "", "drag"],
+    ["Office", 1, 4, 0, "twist", ""], ["ops", 2, 22, 1, "twist", ""], ["rules", 2, 22, 1, "", ""]]);
 });
 
 test("what a library says is shown as text, in both popups: names, texts, a server's name, the notice of a file set aside", () => {
