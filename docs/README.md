@@ -9,4 +9,3 @@ Reference pages for AI Whiteboard. The [main README](../README.md) is the short 
 - [Troubleshooting the board MCP](troubleshooting.md): checking the listener, probing the endpoint, the server log, Cursor showing no board tools, and port 6006 being taken.
 - [Limitations](limitations.md): what the app does not do, and the caps on running chats.
 - [Build and develop](development.md): prerequisites, running the app in the browser or as the desktop app, building the macOS app, and the tests.
-- [Concurrent branches, phase 0](concurrent-branches-phase0.md): the notes of the first phase of concurrent branches.
