@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the server folder for one target, for a machine that runs AI Whiteboard as a remote
-# server (README.md, "Use a server on another machine"):
+# server (docs/remote-servers.md, "Use a server on another machine"):
 #   scripts/build-server.sh [<os>/<arch>]      default: this machine's
 # The targets are darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64; the server compiles
 # for each on any of them, without cgo. It makes bin/ai-whiteboard-server-<os>-<arch>/:

@@ -23,8 +23,8 @@ import (
 	"ai-whiteboard/internal/servers"
 )
 
-// The scripts of scripts/remote, run through sh as the README calls them, on a scratch data folder
-// with its own ports.
+// The scripts of scripts/remote, run through sh as docs/remote-servers.md calls them, on a scratch
+// data folder with its own ports.
 
 // webMark is in the index.html of the stand-in web client: a server that serves it was given the
 // folder.
@@ -655,8 +655,8 @@ func TestBundleCarriesSetupScript(t *testing.T) {
 
 // AC20: scripts/build-server.sh makes the server folder for each of its four targets, with the
 // same files in each and a binary for the target's system and CPU, and refuses another target;
-// this machine's folder works as the README says: set-up, start, a test connection. It runs only
-// on request: it needs node and npm, builds the web client and writes bin/ of the repository
+// this machine's folder works as docs/remote-servers.md says: set-up, start, a test connection. It
+// runs only on request: it needs node and npm, builds the web client and writes bin/ of the repository
 // (its four folders are removed again).
 func TestBuildServerFolders(t *testing.T) {
 	if os.Getenv("AIWB_TEST_BUILD") != "1" {

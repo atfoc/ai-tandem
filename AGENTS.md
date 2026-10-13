@@ -1,7 +1,7 @@
 # Building and testing
 
-For agents and people who change this repository. What the app is and how it fits together is in
-`README.md`; this file is only about which tests to run, when, and how to write them.
+For agents and people who change this repository. What the app is is in `README.md` and how it fits together is in
+`docs/architecture.md`; this file is only about which tests to run, when, and how to write them.
 
 ## Two sets of Go tests
 

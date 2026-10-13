@@ -179,8 +179,8 @@ func TestTestWaits(t *testing.T) {
 // that can wait for an agent's start within 45, a drawing and an image within 60 and a delete
 // within 3 minutes, and gives the connections a Timing of zero, which asks a server that is too
 // old again every five minutes (servers.DefaultTiming; that a zero Timing means it is
-// TestTiming, internal/servers). The README states these values. A wait that is named is
-// lowered, and no other with it.
+// TestTiming, internal/servers). docs/remote-servers.md states these values. A wait that is named
+// is lowered, and no other with it.
 func TestSectionWaitsAreTheProductionOnesUnlessNamed(t *testing.T) {
 	t.Parallel()
 	unset, err := parseTestWaits("")
