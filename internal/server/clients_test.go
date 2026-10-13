@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
@@ -275,7 +274,6 @@ func TestKnownClientGuard(t *testing.T) {
 		{"POST", "/api/boards/" + bd.ID + "/take"},
 		{"POST", "/api/boards/" + bd.ID + "/release"},
 		{"POST", "/api/chats/" + c.ID + "/unfollow"},
-		{"POST", "/api/runs/r_x/unfollow"},
 		{"PUT", "/api/boards/" + bd.ID + "/scene?rev=0"},
 		{"PUT", "/api/boards/" + bd.ID + "/scene"},
 		{"POST", "/api/boards"},
@@ -1013,42 +1011,10 @@ func TestReadsFollow(t *testing.T) {
 	if got := followers(); len(got) != 2 {
 		t.Fatalf("followers after two clients' reads: %v", got)
 	}
-	// The unfollow of a chat or a run that is not there is answered the same, without runs too.
-	for _, path := range []string{"/api/chats/nope/unfollow", "/api/runs/r_nope/unfollow"} {
-		status, out := p.Do("POST", path, nil)
-		if got := answer(t, 200, status, out); got["ok"] != true {
-			t.Fatalf("POST %s: %s", path, out)
-		}
-	}
-}
-
-func TestRunDetailReadFollows(t *testing.T) {
-	t.Parallel()
-	e := newRunEnv(t)
-	said := make(chan struct{}, 1)
-	e.fake.Script(func(t *agenttest.Turn) {
-		t.Say("first")
-		said <- struct{}{}
-		<-t.Interrupted()
-	})
-	v := e.newRun()
-	e.view(200, "POST", "/api/runs/"+v.ID+"/start", `{"goal":"Look around."}`)
-	<-said
-	run := editorbridge.Run(v.ID)
-	if code, out := e.doAs("", "GET", "/api/runs/"+v.ID+"/detail", ""); code != 200 {
-		t.Fatalf("detail without an id: %d %s", code, out)
-	}
-	e.expect(200, "GET", "/api/runs/"+v.ID, "")
-	if got := e.s.Bridge.Followers(run); len(got) != 0 {
-		t.Fatalf("followers before the read: %v", got)
-	}
-	e.expect(200, "GET", "/api/runs/"+v.ID+"/detail", "")
-	if got := e.s.Bridge.Followers(run); !slices.Equal(got, []string{clientID}) {
-		t.Fatalf("followers after the read: %v", got)
-	}
-	e.expect(200, "POST", "/api/runs/"+v.ID+"/unfollow", "")
-	if got := e.s.Bridge.Followers(run); len(got) != 0 {
-		t.Fatalf("followers after the unfollow: %v", got)
+	// The unfollow of a chat that is not there is answered the same.
+	status, out := p.Do("POST", "/api/chats/nope/unfollow", nil)
+	if got := answer(t, 200, status, out); got["ok"] != true {
+		t.Fatalf("the unfollow of a chat that is not there: %s", out)
 	}
 }
 
@@ -1095,15 +1061,6 @@ func TestFailedChatReadLeavesNoFollow(t *testing.T) {
 	}
 	if got := e.s.Bridge.Followers(editorbridge.Chat(c.ID)); !slices.Equal(got, []string{"P"}) {
 		t.Fatalf("followers after a missing subagent's read: %v", got)
-	}
-}
-
-func TestFailedRunReadLeavesNoFollow(t *testing.T) {
-	t.Parallel()
-	e := newRunEnv(t)
-	e.expect(404, "GET", "/api/runs/r_nosuchrun/detail", "")
-	if got := e.s.Bridge.Followers(editorbridge.Run("r_nosuchrun")); len(got) != 0 {
-		t.Fatalf("followers after the detail of a missing run: %v", got)
 	}
 }
 

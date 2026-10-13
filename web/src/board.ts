@@ -680,7 +680,7 @@ export async function runTool(call: ToolCall): Promise<ToolResult> {
       // another board opens without a chat panel: the chat is not that board's
       const cur = getState().sel.chat;
       const keep = id === call.board && cur && getState().chats[cur]?.board === id ? cur : null;
-      select({ board: id, run: null, chat: keep }, { ifFree: true }); // an agent's wish takes the board from no other window
+      select({ board: id, chat: keep }, { ifFree: true }); // an agent's wish takes the board from no other window
       const refs: any[] = args.refs ?? [];
       if (refs.length) setTimeout(() => {
         if (liveBoard !== id || !liveApi) return;

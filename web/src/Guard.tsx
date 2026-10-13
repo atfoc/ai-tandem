@@ -2,8 +2,8 @@
 // not expect), that part says so in one line and the rest of the window stays as it is.
 import { Component, type ReactNode } from "react";
 
-/** what: the part's name in the line ("the timeline"). resetKey: when it changes (another sidebar
- *  row, another tab, the next version of the data) the content is drawn again. */
+/** what: the part's name in the line ("the sidebar"). resetKey: when it changes (another sidebar
+ *  row, the next version of the data) the content is drawn again. */
 export class Guard extends Component<{ what: string; resetKey?: unknown; children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
   static getDerivedStateFromError(e: unknown) { return { error: e instanceof Error ? e : new Error(String(e)) }; }

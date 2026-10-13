@@ -58,7 +58,7 @@ function page() {
   return { p, kept };
 }
 
-test("a kept draft is read from its localStorage entry as it was written; a run's goal and a chat's from before the branches are none", () => {
+test("a kept draft is read from its localStorage entry as it was written; a chat's from before the branches is none", () => {
   assert.deepEqual(keptOf(draftKey("c_1", "main"), '{"text":"hi","base":3}'), { chat: "c_1", branch: "main", draft: { text: "hi" }, base: 3, raw: '{"text":"hi","base":3}' });
   // every field of the draft stays, its images and the ones this code does not know too: it is handed on as it came
   const raw = JSON.stringify({ text: "see", images: [img(1)], references: [{ quote: "q", item: 1, start: 0, end: 1 }], later: { field: 1 }, base: 7 });
@@ -66,7 +66,7 @@ test("a kept draft is read from its localStorage entry as it was written; a run'
   // a draft of images alone is one: its text is "", as the composer writes it
   assert.deepEqual(keptOf(draftKey("c_1", "main"), JSON.stringify({ text: "", images: [img(1)], base: 2 }))?.draft, { text: "", images: [img(1)] });
   assert.deepEqual(keptOf(draftKey("c_1", "main"), '{"text":""}'), { chat: "c_1", branch: "main", draft: { text: "" }, raw: '{"text":""}' }); // an emptied composer; no base: a copy of a build before the counter
-  for (const [key, value] of [[legacyDraftKey("r_1"), '{"text":"a goal"}'], [legacyDraftKey("c_1"), '{"text":"old"}'], ["aiwb.sel", "{}"], ["aiwb.draft.:main", '{"text":"x"}'], [draftKey("c_1", ""), '{"text":"x"}'],
+  for (const [key, value] of [[legacyDraftKey("c_1"), '{"text":"old"}'], ["aiwb.sel", "{}"], ["aiwb.draft.:main", '{"text":"x"}'], [draftKey("c_1", ""), '{"text":"x"}'],
     [draftKey("c_1", "main"), "not json"], [draftKey("c_1", "main"), '{"base":3}'], [draftKey("c_1", "main"), "null"]] as const) assert.equal(keptOf(key, value), null, key + " " + value);
   assert.equal(keptOf(draftKey("c_1", "main"), null), null);
 });

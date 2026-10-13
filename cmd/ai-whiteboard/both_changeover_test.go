@@ -22,12 +22,12 @@ import (
 // as an entry. Each half alone, against a stand-in or a plain client, is
 // TestSectionChangeOverAtTheStart and TestLevel5ChangeOver.
 
-// thingFiles are the files of a data folder that are a chat's, a board's or a run's, or a
-// record's of the app of before: their paths, with "/", sorted.
+// thingFiles are the files of a data folder that are a chat's or a board's, or a record's of
+// the app of before: their paths, with "/", sorted.
 func thingFiles(files map[string][]byte) (out []string) {
 	for rel := range files {
 		rel = filepath.ToSlash(rel)
-		if top, _, _ := strings.Cut(rel, "/"); top == "chats" || top == "boards" || top == "runs" || top == "remote" {
+		if top, _, _ := strings.Cut(rel, "/"); top == "chats" || top == "boards" || top == "remote" {
 			out = append(out, rel)
 		}
 	}
@@ -48,27 +48,25 @@ func notHeld(files map[string][]byte, marks []string) (out []string) {
 
 // B is a remote server from before level 5: its state.json names a group as the one of its
 // clients ("remoteGroup"), which holds a chat with a message, an archived chat, a board with a
-// chat on it, a run that has not started and has a goal, and a nested group with a chat; beside
-// it is a group that is merely named "Remote", with a chat and a board. What a client made
-// carries the client's mark.
+// chat on it, and a nested group with a chat; beside it is a group that is merely named
+// "Remote", with a chat and a board. What a client made carries the client's mark.
 //
 // A is the app of before, with B as the entry of its list: the folder remote/ with the records
-// of B's chat, board and run, a draft kept with the chat's record, a record with an archive mark
+// of B's chat and board, a draft kept with the chat's record, a record with an archive mark
 // that B was never told of, and the memory of a make; a chat that never had a message, kept for
-// B with a draft, and one on B's board; a run that has not started and names B, with its goal;
-// a group that remembers B as its server with choices for it; and a group that held only things
-// of B.
+// B with a draft, and one on B's board; a group that remembers B as its server with choices for
+// it; and a group that held only things of B.
 //
 // A starts first, while B is still down: its change-over needs no server. Its data folder holds
-// the server list and nothing else of B, the chat and the run are this computer's with the draft
-// and the goal, the group that held only B's things is there, empty, and B's section has no
-// tree. Then B starts, for the first time since its update, and A connects by itself: the
-// section has B's whole tree, with what was in the clients' group in no group and the nested
-// group at the top level, and B's own page has the same tree. Nothing was deleted on B: not the
-// chat of the memory of makes, and the chat A had an archive mark for is not archived. A chat, a
-// board and a run are then made in the section, a draft is typed and sent, the board is drawn on
-// and the run gets its goal: B's own page is told of each, B's data folder holds each, and A's
-// gained no file and holds nothing of them, while it runs and after it was stopped.
+// the server list and nothing else of B, the chat is this computer's with the draft, the group
+// that held only B's things is there, empty, and B's section has no tree. Then B starts, for
+// the first time since its update, and A connects by itself: the section has B's whole tree,
+// with what was in the clients' group in no group and the nested group at the top level, and
+// B's own page has the same tree. Nothing was deleted on B: not the chat of the memory of
+// makes, and the chat A had an archive mark for is not archived. A chat and a board are then
+// made in the section, a draft is typed and sent and the board is drawn on: B's own page is
+// told of each, B's data folder holds each, and A's gained no file and holds nothing of them,
+// while it runs and after it was stopped.
 func TestBothChangeOvers(t *testing.T) {
 	serverTest(t, "TestSectionChangeOverAtTheStart (this package: the app's data folder, against a stand-in server)",
 		"TestLevel5DropRemoteGroup, TestLevel5DropRemoteGroupCorners (internal/app: the group of the API clients of a remote server)",
@@ -93,7 +91,6 @@ func TestBothChangeOvers(t *testing.T) {
 	}
 	const (
 		word      = "A message of before the update."
-		goal      = "a goal typed on the studio before the update"
 		boardName = "a-board-a-client-made" // a board's name has no spaces
 		nestName  = "Inside the clients' group"
 	)
@@ -108,8 +105,6 @@ func TestBothChangeOvers(t *testing.T) {
 	rp.b.must(t, pairOwnPage, "POST", "/api/chats/"+archived+"/archive", nil, nil)
 	board := made("/api/boards", map[string]any{"name": boardName, "group": named})
 	onBoard := made("/api/chats", map[string]any{"agent": "claude", "board": board})
-	run := made("/api/runs", map[string]any{"group": named, "name": "Not started"})
-	rp.b.must(t, pairOwnPage, "PUT", "/api/runs/"+run+"/draft", map[string]any{"text": goal}, nil)
 	inNested := made("/api/chats", map[string]any{"agent": "claude", "group": nested})
 	inPlain := made("/api/chats", map[string]any{"agent": "claude", "group": plain})
 	boardPlain := made("/api/boards", map[string]any{"name": "The owner's board", "group": plain})
@@ -135,7 +130,6 @@ func TestBothChangeOvers(t *testing.T) {
 		editJSON(t, fileOf(t, rp.b.home, id, "chat.json"), func(meta map[string]any) { meta["client"] = testClient })
 	}
 	editJSON(t, fileOf(t, rp.b.home, board, "board.json"), func(meta map[string]any) { meta["client"], meta["origin"] = testClient, boardPlain })
-	editJSON(t, fileOf(t, rp.b.home, run, "run.json"), func(meta map[string]any) { meta["client"] = testClient })
 
 	// The tree B's start must leave: what was there, with the named group gone, what was in it in
 	// no group, and the group nested in it at the top level.
@@ -153,7 +147,7 @@ func TestBothChangeOvers(t *testing.T) {
 		}
 		want = append(want, line)
 	}
-	if inNamed != 4 || len(before.Groups) != 3 || len(before.Chats) != 5 || len(before.Boards) != 2 || len(before.Runs) != 1 {
+	if inNamed != 3 || len(before.Groups) != 3 || len(before.Chats) != 5 || len(before.Boards) != 2 {
 		t.Fatalf("B's tree before the change-over, with %d things in the named group:\n%s", inNamed, strings.Join(before.lines(), "\n"))
 	}
 	// treeAsWanted checks one reading of B's tree: the lines, and each thing by its name.
@@ -173,7 +167,7 @@ func TestBothChangeOvers(t *testing.T) {
 		if _, has := x.Defaults.Groups[named]; has {
 			t.Errorf("the defaults of %s hold the removed group: %+v", who, x.Defaults.Groups)
 		}
-		place := map[string]string{chat: model.Ungrouped, archived: model.Ungrouped, inNested: nested, inPlain: plain, board: model.Ungrouped, boardPlain: plain, run: model.Ungrouped}
+		place := map[string]string{chat: model.Ungrouped, archived: model.Ungrouped, inNested: nested, inPlain: plain, board: model.Ungrouped, boardPlain: plain}
 		for _, c := range x.Chats {
 			if c.ID == onBoard {
 				if c.Board != board {
@@ -188,11 +182,6 @@ func TestBothChangeOvers(t *testing.T) {
 				t.Errorf("%s: the board %s is in %q, archived %v; want it in %q", who, b.ID, b.Group, b.Archived, g)
 			}
 		}
-		for _, r := range x.Runs {
-			if r.ID == run && (r.Group != model.Ungrouped || r.Status != model.RunDraft || r.Draft == nil || r.Draft.Text != goal) {
-				t.Errorf("%s: the run of before is %+v; want it in no group, not started, with its goal", who, r)
-			}
-		}
 	}
 
 	// ---- A, as the app of before left its data folder for B -------------------------------------
@@ -202,24 +191,24 @@ func TestBothChangeOvers(t *testing.T) {
 	if err := os.MkdirAll(rp.a.home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The group's folder on this computer is a real one: the chat and the run that become this
-	// computer's are in it.
-	oldFolderOf(t, rp.a.home, rp.work, list, oldThings{instance: instance, chat: chat, made: inNested, board: board, run: run})
-	// The folder's second group held only things of B: the records of the board and the run,
-	// and the record of a chat of B that was archived here while B was away. B was never told of
-	// that mark, nor of the run's.
+	// The group's folder on this computer is a real one: the chat that becomes this computer's is
+	// in it.
+	oldFolderOf(t, rp.a.home, rp.work, list, oldThings{instance: instance, chat: chat, made: inNested, board: board})
+	// The folder's second group held only things of B: the record of the board, and the record of
+	// a chat of B that was archived here while B was away. B was never told of that mark, nor of
+	// the board's.
 	pending := `{"id":"` + inPlain + `","entry":"` + savedEntryID + `","group":"` + onlyFar + `","archived":true,"archiveOp":"` + oldArchive + `2","pending":"archive","view":{"id":"` + inPlain + `","name":"Archived here, not yet there"}}`
 	if err := os.WriteFile(filepath.Join(rp.a.home, "remote", "chats", inPlain+".json"), []byte(pending), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// What is B's: no file of A but the list may hold one of these after A's start.
-	ofB := []string{named, nested, plain, chat, archived, board, onBoard, run, inNested, inPlain, boardPlain, instance, rp.b.secret,
-		word, goal, boardName, nestName, oldKeptDraft, oldSeen, "Archived here, not yet there"}
+	ofB := []string{named, nested, plain, chat, archived, board, onBoard, inNested, inPlain, boardPlain, instance, rp.b.secret,
+		word, boardName, nestName, oldKeptDraft, oldSeen, "Archived here, not yet there"}
 	// Before the start the folder does hold them: the checks below are of the start.
 	if missing := notHeld(folderFiles(t, rp.a.home), []string{chat, board, inNested, inPlain, instance, oldKeptDraft}); len(missing) != 0 {
 		t.Fatalf("the folder of the app of before holds no %v", missing)
 	}
-	if records := thingFiles(folderFiles(t, rp.a.home)); !slices.Contains(records, "remote/runs/"+run+".json") || !slices.Contains(records, "remote/makes.json") {
+	if records := thingFiles(folderFiles(t, rp.a.home)); !slices.Contains(records, "remote/boards/"+board+".json") || !slices.Contains(records, "remote/makes.json") {
 		t.Fatalf("the files of the app of before: %v", records)
 	}
 
@@ -229,8 +218,8 @@ func TestBothChangeOvers(t *testing.T) {
 	rp.page = watch(t, http.DefaultClient, strings.TrimSuffix(rp.a.in.url, "/"), pairPage, nil)
 	// The server answers: the change-over is over, since it comes before the first request.
 	changedOver(t, rp.a.home, list)
-	// localPart checks this computer's own lists in A's snapshot: the chat with its draft and
-	// the run with its goal, as things of this computer, the two groups, and nothing of B.
+	// localPart checks this computer's own lists in A's snapshot: the chat with its draft, as a
+	// thing of this computer, the two groups, and nothing of B.
 	localPart := func(when string) {
 		t.Helper()
 		var snap level5Tree
@@ -243,10 +232,6 @@ func TestBothChangeOvers(t *testing.T) {
 			snap.Chats[0].Draft == nil || snap.Chats[0].Draft.Text != oldDraft || snap.Chats[0].DraftRev != 2 || snap.Chats[0].Cwd != rp.work ||
 			len(snap.States) != 1 || snap.States[0].Chat != oldChat {
 			t.Errorf("%s: this computer's chats: %s, states %s; want the chat that was kept for the entry alone, with its draft, in %s", when, parts["chats"], parts["states"], rp.work)
-		}
-		if len(snap.Runs) != 1 || snap.Runs[0].ID != oldRun || snap.Runs[0].Status != model.RunDraft || snap.Runs[0].Group != oldGroup ||
-			snap.Runs[0].Draft == nil || snap.Runs[0].Draft.Text != oldGoal || !snap.Runs[0].Started.IsZero() || snap.Runs[0].Cwd != rp.work {
-			t.Errorf("%s: this computer's runs: %s; want the run that named the entry alone, not started, with its goal, in %s", when, parts["runs"], rp.work)
 		}
 		// The group that held only things of B stays, empty, for the user to delete.
 		if len(snap.Boards) != 0 || len(snap.Groups) != 2 || snap.Groups[0].ID != oldGroup || snap.Groups[1].ID != onlyFar || snap.Groups[1].Name != onlyFarName {
@@ -269,9 +254,8 @@ func TestBothChangeOvers(t *testing.T) {
 	if held := holders(folderFiles(t, rp.a.home), ofB); len(held) != 0 {
 		t.Fatalf("with B down, files of A's data folder hold something of B: %v", held)
 	}
-	// The chat and the run are this computer's: its own routes have them.
+	// The chat is this computer's: its own routes have it.
 	rp.ok(t, "GET", "/api/chats/"+oldChat, nil)
-	rp.ok(t, "GET", "/api/runs/"+oldRun, nil)
 
 	// ---- B starts: the first start of the updated server ----------------------------------------
 	mark := rp.page.mark()
@@ -316,26 +300,22 @@ func TestBothChangeOvers(t *testing.T) {
 	}
 	// What became this computer's is not on B, and what is B's is no thing of this computer.
 	rp.refused(t, http.StatusNotFound, "not_found", "GET", rp.on("/chats/"+oldChat), nil)
-	rp.refused(t, http.StatusNotFound, "not_found", "GET", rp.on("/runs/"+oldRun), nil)
 	rp.refused(t, http.StatusNotFound, "not_found", "GET", "/api/chats/"+chat, nil)
-	rp.refused(t, http.StatusNotFound, "not_found", "GET", "/api/runs/"+run, nil)
 	localPart("with B connected")
 	changedOver(t, rp.a.home, list)
 	if held := holders(folderFiles(t, rp.a.home), ofB); len(held) != 0 {
 		t.Fatalf("with B connected, files of A's data folder hold something of B: %v", held)
 	}
 	thingsOfA := thingFiles(folderFiles(t, rp.a.home))
-	if wantFiles := []string{"chats/" + oldChat + "/chat.json", "runs/" + oldRun + "/run.json"}; !slices.Equal(thingsOfA, wantFiles) {
-		t.Fatalf("the files of chats, boards and runs in A's data folder: %v, want %v", thingsOfA, wantFiles)
+	if wantFiles := []string{"chats/" + oldChat + "/chat.json"}; !slices.Equal(thingsOfA, wantFiles) {
+		t.Fatalf("the files of chats and boards in A's data folder: %v, want %v", thingsOfA, wantFiles)
 	}
 
 	// ---- afterwards: things are made in the section, and none is written on A -------------------
 	const (
-		typed     = "typed in the section after the update"
-		newGoal   = "a goal typed in the section after the update"
-		drawn     = "drawn-in-the-section"
-		newBoard  = "board-made-from-the-app"
-		newRunTxt = "Made from the app, a run"
+		typed    = "typed in the section after the update"
+		drawn    = "drawn-in-the-section"
+		newBoard = "board-made-from-the-app"
 	)
 	bPage = rp.ownPage(t)
 	pm, bm := rp.page.mark(), bPage.mark()
@@ -351,39 +331,30 @@ func TestBothChangeOvers(t *testing.T) {
 	if a := saveSceneAt(t, rp.a, pairPage, rp.on("/boards/"+bd.ID), 0, boardScene(drawn)); a.Status != http.StatusOK {
 		t.Fatalf("the save of the new board's drawing: %s", a)
 	}
-	var r model.RunView
-	rp.a.must(t, pairPage, "POST", rp.on("/runs"), map[string]any{"group": model.Ungrouped, "name": newRunTxt}, &r)
-	if r.ID == "" || r.Status != model.RunDraft {
-		t.Fatalf("the new run: %+v", r)
-	}
-	rp.ok(t, "PUT", rp.on("/runs/"+r.ID+"/draft"), map[string]any{"text": newGoal})
 	// The draft is sent: the chat starts on B.
 	rp.send(t, c.ID, typed)
 	rp.turns(t, c.ID, 1)
 	// B's own page was told of each, and so was A's page, with the entry as the server.
-	for _, ev := range [][2]string{{"chat", c.ID}, {"board", bd.ID}, {"run", r.ID}} {
+	for _, ev := range [][2]string{{"chat", c.ID}, {"board", bd.ID}} {
 		bPage.awaitEvent(t, bm, 20*time.Second, ev[0], ev[1])
 		rp.page.awaitEvent(t, pm, 20*time.Second, ev[0], rp.inSection(), ev[1])
 	}
 	more := []string{
 		fmt.Sprintf("board %s %q in %q archived %v %q", bd.ID, newBoard, plain, false, ""),
-		fmt.Sprintf("chat %s in %q on the board %q, on the run %q archived %v %q locked %v", c.ID, nested, "", "", false, "", true),
-		fmt.Sprintf("run %s %q in %q %s archived %v %q", r.ID, newRunTxt, model.Ungrouped, model.RunDraft, false, ""),
+		fmt.Sprintf("chat %s in %q on the board %q archived %v %q locked %v", c.ID, nested, "", false, "", true),
 	}
-	eventually(t, 20*time.Second, "the section has the started chat, the board and the run with its goal", func() bool {
+	eventually(t, 20*time.Second, "the section has the started chat and the board", func() bool {
 		tree := rp.tree(t)
 		v, _ := rp.listed(t, c.ID)
-		i := slices.IndexFunc(tree.Runs, func(x model.RunView) bool { return x.ID == r.ID })
-		return v.Locked && i >= 0 && tree.Runs[i].Draft != nil && tree.Runs[i].Draft.Text == newGoal &&
-			slices.ContainsFunc(tree.Boards, func(x model.Board) bool { return x.ID == bd.ID })
+		return v.Locked && slices.ContainsFunc(tree.Boards, func(x model.Board) bool { return x.ID == bd.ID })
 	})
 	treeAsWanted("the section of "+pairName+" after the makes", level5Tree(rp.tree(t)), more...)
 	treeAsWanted("B's own page after the makes", rp.ownTree(t), more...)
 	localPart("after the makes in the section")
 
-	// A's data folder gained no file of a chat, a board or a run, and holds nothing of what was
+	// A's data folder gained no file of a chat or a board, and holds nothing of what was
 	// made, typed, drawn or sent: while it runs, and after it was stopped as a quit stops it.
-	made4 := []string{c.ID, bd.ID, r.ID, typed, newGoal, drawn, newBoard, newRunTxt}
+	made4 := []string{c.ID, bd.ID, typed, drawn, newBoard}
 	folderOfA := func(when string) {
 		t.Helper()
 		files := folderFiles(t, rp.a.home)
@@ -391,7 +362,7 @@ func TestBothChangeOvers(t *testing.T) {
 			t.Errorf("%s, files of A's data folder hold something of B: %v", when, held)
 		}
 		if got := thingFiles(files); !slices.Equal(got, thingsOfA) {
-			t.Errorf("%s, the files of chats, boards and runs in A's data folder: %v, were %v", when, got, thingsOfA)
+			t.Errorf("%s, the files of chats and boards in A's data folder: %v, were %v", when, got, thingsOfA)
 		}
 		if _, err := os.Lstat(filepath.Join(rp.a.home, "remote")); !os.IsNotExist(err) {
 			t.Errorf("%s, the folder remote/ of A: %v", when, err)
@@ -408,7 +379,7 @@ func TestBothChangeOvers(t *testing.T) {
 	if missing := notHeld(folderFiles(t, rp.b.home), made4); len(missing) != 0 {
 		t.Fatalf("B's data folder holds no %v", missing)
 	}
-	if log := rp.a.out.String(); !strings.Contains(log, "are removed from "+rp.a.home) || !strings.Contains(log, "the chat "+oldChat) || !strings.Contains(log, "the run "+oldRun) {
+	if log := rp.a.out.String(); !strings.Contains(log, "are removed from "+rp.a.home) || !strings.Contains(log, "the chat "+oldChat) {
 		t.Errorf("A's output does not tell of the change-over:\n%s", log)
 	}
 }

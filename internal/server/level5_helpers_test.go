@@ -6,11 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/servers"
@@ -26,7 +26,6 @@ const (
 	l5Z = "6c1d8e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f"
 	// l5Owner and l5Owner2 are the ids of the owner's pages.
 	l5Owner  = "owner-page"
-	l5Run1   = "r_aaaaaaa1" // a run id of a client's making, as the start call of before took one
 	l5Owner2 = "owner-page-2"
 
 	// l5Sentence is what a client below level 5 is told, and l5TooOld the whole answer.
@@ -38,10 +37,29 @@ const (
 
 // l5List is the event types that tell a change of the tree: every client and every page of the
 // server is sent each of them.
-var l5List = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "run", "run_removed"}
+var l5List = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state"}
 
 // l5PageOnly is the event types no API client is ever sent.
 var l5PageOnly = []string{"servers", "server_state", "server_lists", "server_back", "library", "library_removed", "section", "chat_reload"}
+
+// l5Env is a server with a remote listener on stand-in agents, and a plain folder to work in.
+type l5Env struct {
+	*env
+	l   *listener
+	sp  *apiSpawner
+	cwd string
+}
+
+func newL5Env(t *testing.T) *l5Env {
+	t.Helper()
+	sp := &apiSpawner{}
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, l := remoteEnv(t, withAgents(sp), func(s *Server) { s.App.DefaultCwd, s.App.Chats.DefaultCwd = cwd, cwd })
+	return &l5Env{env: e, l: l, sp: sp, cwd: cwd}
+}
 
 // l5Req is one request to the remote listener's handler, asked without a connection. A field
 // left empty sends nothing for it; the Host is the listener's unless host names another.
@@ -149,8 +167,7 @@ func l5Types(evs []string) []string {
 }
 
 // l5UpTo reads the events of c up to the first of this type that holds every one of has, and
-// returns them, that one last. The events of a run come from the run service's queue, after the
-// call that caused them was answered: a test waits for them here.
+// returns them, that one last.
 func l5UpTo(t *testing.T, c *bridgetest.Page, typ string, has ...string) []string {
 	t.Helper()
 	var got []string
@@ -160,24 +177,6 @@ func l5UpTo(t *testing.T, c *bridgetest.Page, typ string, has ...string) []strin
 		if l5Count(got[len(got)-1:], typ, has...) == 1 {
 			return got
 		}
-	}
-}
-
-// l5Await asks c for path until the answer holds has, and returns that answer. What it waits
-// for is the work of an agent or of the run engine, which no call's answer waits for: the bound
-// is for a machine that runs several suites at once.
-func l5Await(t *testing.T, c *bridgetest.Page, path, has string) string {
-	t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		status, out := l5Call(c, "GET", path, nil)
-		if status == 200 && strings.Contains(out, has) {
-			return out
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("GET %s: no answer with %s within a minute; the last one was %d %s", path, has, status, out)
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -192,8 +191,8 @@ func l5Started(sp *apiSpawner) int {
 // or of any type outside the list and content types of the contract's 2.6.
 func l5NoPageEvents(t *testing.T, c *bridgetest.Page, evs []string) {
 	t.Helper()
-	allowed := append(slices.Clone(l5List), "catalog", "agents", "own_library", "tree", "chat_items", "sub", "sub_items",
-		"run_detail", "run_activity", "held", "release_request", "superseded", "rpc", "server_stopping")
+	allowed := append(slices.Clone(l5List), "catalog", "agents", "own_library", "tree", "chat_items", "sub", "sub_items", "held",
+		"release_request", "superseded", "rpc", "server_stopping")
 	for _, raw := range evs {
 		if typ := typeOf(raw); slices.Contains(l5PageOnly, typ) || !slices.Contains(allowed, typ) {
 			t.Errorf("the API client %s was sent %s: %s", c.ID, typ, raw)

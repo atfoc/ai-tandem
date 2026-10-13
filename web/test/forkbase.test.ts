@@ -115,7 +115,7 @@ test("send with a target adds only the target's branch, at and new", async () =>
 });
 
 test("the two calls that are about no thing name a server by its entry id in the query, and not at all for this computer; every other call names it by its thing's key", async () => {
-  const dirs = { path: "/w", parent: "/", dirs: [], git: false };
+  const dirs = { path: "/w", parent: "/", dirs: [] };
   const calls: [string, () => Promise<unknown>, string, string][] = [
     ["dirs", () => api.dirs("/w x"), "GET", "/api/dirs?path=%2Fw%20x"],
     ["dirs local", () => api.dirs("/w", "local"), "GET", "/api/dirs?path=%2Fw"],

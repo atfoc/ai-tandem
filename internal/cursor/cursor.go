@@ -94,9 +94,8 @@ type proc struct {
 	ready     chan struct{} // closed when the session is usable
 	readyErr  error
 	sessionID string
-	loading   atomic.Bool  // true during session/load: its replayed updates are dropped
-	replayed  atomic.Int64 // user_message_chunk updates session/load replayed: the turns the session holds
-	perms     sync.Map     // our request id string → permEntry
+	loading   atomic.Bool // true during session/load: its replayed updates are dropped
+	perms     sync.Map    // our request id string → permEntry
 	permSeq   atomic.Int64
 	ctx       ctxPoller // context usage reads (ctxusage.go)
 	s         *Spawner
@@ -110,9 +109,7 @@ type proc struct {
 	gate   sync.RWMutex // read-held by the handshake and each turn; EvExit waits for them
 }
 
-// Spawn starts `agent acp` in the chat's folder; the handshake continues in the background. An
-// unattended process is started as `agent --force acp`: only --force stops every permission
-// request whatever the user's approval mode is (--yolo does not).
+// Spawn starts `agent acp` in the chat's folder; the handshake continues in the background.
 func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	p, err := s.start(o, time.Time{})
 	if err != nil {
@@ -129,15 +126,14 @@ func (s *Spawner) start(o agent.SpawnOptions, deadline time.Time) (*proc, error)
 	}
 	// Hook file is read once when session/new or session/load builds session resources, so write
 	// it before Start. Isolate this process with an app-owned CURSOR_DATA_DIR (not ~/.cursor).
-	dataDir := s.dataDir(o.ReadOnly)
-	if err := s.writeHooks(dataDir, o); err != nil {
+	dataDir := s.cursorDataDir()
+	if err := s.writeHooks(dataDir, o.Cwd); err != nil {
 		return nil, fmt.Errorf("cannot write Cursor hooks: %w", err)
 	}
-	conn, err := Start(s.bin(), acpArgs(o), o.Cwd, "CURSOR_DATA_DIR="+dataDir)
+	conn, err := Start(s.bin(), []string{"acp"}, o.Cwd, "CURSOR_DATA_DIR="+dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("cannot start Cursor (%s): %w", s.bin(), err)
 	}
-	conn.EndStarted = o.Unattended
 	p := &proc{
 		conn:     conn,
 		o:        o,
@@ -170,14 +166,6 @@ func (s *Spawner) start(o agent.SpawnOptions, deadline time.Time) (*proc, error)
 		p.emu.Unlock()
 	}()
 	return p, nil
-}
-
-// acpArgs are the command-line arguments of one chat process.
-func acpArgs(o agent.SpawnOptions) []string {
-	if o.Unattended {
-		return []string{"--force", "acp"}
-	}
-	return []string{"acp"}
 }
 
 // emit sends an event unless the channel has been closed.
@@ -231,17 +219,7 @@ func (p *proc) doHandshake() error {
 		res, err := c.Call("session/load", map[string]any{"sessionId": p.o.SessionID, "cwd": p.o.Cwd, "mcpServers": mcpServers(p.o)})
 		p.loading.Store(false)
 		if err != nil {
-			// session/load: Invalid params {"message":"Session \"<id>\" not found"}. The text
-			// stays; the process stays too, for the caller to close.
-			if strings.Contains(err.Error(), "not found") {
-				return agent.NoSession(err.Error())
-			}
 			return err
-		}
-		// A session whose process ended early in its first turn loads without an error but with
-		// no history: nothing is replayed, and the agent would know nothing of its task.
-		if p.o.NeedHistory && p.replayed.Load() == 0 {
-			return agent.NoSession("session/load: Cursor has no history for session " + p.o.SessionID)
 		}
 		p.sessionID = p.o.SessionID
 		reported = reportedModel(res)
@@ -451,12 +429,7 @@ func (p *proc) onUpdate(method string, params json.RawMessage) {
 		return
 	}
 	if p.loading.Load() {
-		// session/load's replay (including its synthetic subagent lines) is dropped. Only the
-		// user messages are counted: a session that holds a turn replays at least one.
-		if u.SessionUpdate == "user_message_chunk" {
-			p.replayed.Add(1)
-		}
-		return
+		return // session/load's replay (including its synthetic subagent lines) is dropped
 	}
 	switch u.SessionUpdate {
 	case "subagent_spawned":
@@ -831,8 +804,6 @@ type mcpCallInput struct {
 // tool name and its arguments. Board-engine tools and the spawn family both qualify so a spawn
 // row normalizes to mcp__board__spawn_subagent whenever the server is attached. Every other MCP
 // call (another server, an unknown tool) keeps its normal tool presentation.
-//
-// With o.MCPTools set, the app's tools are exactly the names in that list.
 func (p *proc) boardMCPCall(tc toolCall) (string, json.RawMessage, bool) {
 	if !present(tc.RawInput) {
 		return "", nil, false
@@ -841,11 +812,7 @@ func (p *proc) boardMCPCall(tc toolCall) (string, json.RawMessage, bool) {
 	if json.Unmarshal(tc.RawInput, &in) != nil || in.ProviderIdentifier != "board" {
 		return "", nil, false
 	}
-	if p.o.MCPTools != nil {
-		if !contains(p.o.MCPTools, in.ToolName) {
-			return "", nil, false
-		}
-	} else if !(boardtools.IsTool(in.ToolName) || boardtools.IsSpawnFamily(in.ToolName)) {
+	if !(boardtools.IsTool(in.ToolName) || boardtools.IsSpawnFamily(in.ToolName)) {
 		return "", nil, false
 	}
 	args := in.Args
@@ -1011,30 +978,14 @@ func (p *proc) onRequest(id json.RawMessage, method string, params json.RawMessa
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": opt}}
 	}
 	if tool, _, ok := p.boardMCPCall(tc); ok {
-		// Spawn-family whenever MCP is attached; board tools only with board extras. With a list
-		// (MCPTools) the list alone decides, and boardMCPCall found the tool in it.
-		approve := (boardtools.IsSpawnFamily(tool) && p.o.MCP != nil) || (boardtools.IsTool(tool) && p.o.BoardID != "")
-		if p.o.MCPTools != nil {
-			approve = p.o.MCP != nil
-		}
-		if approve {
+		// Spawn-family whenever MCP is attached; board tools only with board extras.
+		if (boardtools.IsSpawnFamily(tool) && p.o.MCP != nil) || (boardtools.IsTool(tool) && p.o.BoardID != "") {
 			p.conn.Reply(id, selected(allow), nil)
 			return
 		}
 	}
 	if agent.TouchesAppDir(params, p.s.AppRoot, p.s.Home) {
 		p.conn.Reply(id, selected(reject), nil)
-		return
-	}
-	// Nobody would answer a card. --force raises no request and a read-only process's hook
-	// refuses what changes files, so this is the backstop for a request that comes anyway:
-	// answered at once, never left waiting.
-	if p.o.ReadOnly {
-		p.conn.Reply(id, selected(reject), nil)
-		return
-	}
-	if p.o.Unattended {
-		p.conn.Reply(id, selected(allow), nil)
 		return
 	}
 	rid := "p" + strconv.FormatInt(p.permSeq.Add(1), 10)
@@ -1063,13 +1014,8 @@ func (p *proc) Decide(requestID string, allow bool) error {
 	return p.conn.Reply(e.id, map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": opt}}, nil)
 }
 
-// Close ends the process and what it left in its group; for an unattended process also the
-// commands it started (Conn.Close). An unattended process is first told to stop its turn, so that
-// it starts no more commands while it is being ended.
+// Close ends the process and what it left in its group (Conn.Close).
 func (p *proc) Close() {
-	if p.o.Unattended {
-		p.Interrupt() // an error means there is no session yet, or the process is gone or going
-	}
 	p.ctx.stopPolling()
 	p.stopChildren()
 	p.conn.Close()

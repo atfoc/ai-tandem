@@ -68,7 +68,6 @@ test("a local thing's call is under /api, a section's under /api/on/<entry id>, 
   assert.equal(pathOf("chats", "c1"), "/api/chats/c1");
   assert.equal(pathOf("chats", keyOn(A, "c1")), `/api/on/${A}/chats/c1`);
   assert.equal(pathOf("boards", keyOn(A, "b_1")), `/api/on/${A}/boards/b_1`);
-  assert.equal(pathOf("runs", keyOn(B, "r_1")), `/api/on/${B}/runs/r_1`);
   assert.equal(pathOf("groups", keyOn(B, "g_1")), `/api/on/${B}/groups/g_1`);
 });
 

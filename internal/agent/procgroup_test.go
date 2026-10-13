@@ -70,43 +70,6 @@ func TestExitedForgetsGroupOnceEmpty(t *testing.T) {
 	}
 }
 
-// The groups of a process's descendants, from a process table: only groups one of them leads,
-// never the root's own, never one that is merely a member's.
-func TestStartedGroupsFromTable(t *testing.T) {
-	table := `
-    1     0     1
-  100     1   100
-  101   100   100
-  102   100   102
-  103   102   102
-  104   103   104
-  105   101   105
-  200     1   200
-  201   200   201
-  300   100    77
-  bad line
-`
-	// 100 leads the root's group, where 101 is too. 102 and (under it) 104 lead groups of shell
-	// commands, 105 one started by a member of the root's group. 200 and 201 are another
-	// program's. 300 is a descendant in a group that none of them leads.
-	got := startedGroups(table, 100)
-	want := map[int]bool{102: true, 104: true, 105: true}
-	if len(got) != len(want) {
-		t.Fatalf("groups %v, want %v", got, want)
-	}
-	for _, g := range got {
-		if !want[g] {
-			t.Fatalf("groups %v, want %v", got, want)
-		}
-	}
-	if got := startedGroups(table, 999); got != nil {
-		t.Errorf("groups of a process that is not in the table: %v", got)
-	}
-	if got := startedGroups(table, 201); got != nil {
-		t.Errorf("groups of a process without children: %v", got)
-	}
-}
-
 // startTree starts a leader with one child in its own group and one child that leads a group of
 // its own, and returns the three. When the test ends, what is left of the leader's group is ended
 // through SignalGroup, and the other child by its own pid while it still leads its group.
@@ -178,26 +141,12 @@ func zombie(pid int) bool {
 	return strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 }
 
-// SignalGroup reaches the leader's group, StartedGroups finds the group a child leads, and
-// SignalStarted reaches that one. Neither signals once its group is gone.
-func TestSignalGroupAndStarted(t *testing.T) {
+// SignalGroup reaches the leader's group and not the group a child leads. It does not signal once
+// its group is gone.
+func TestSignalGroup(t *testing.T) {
 	cmd, inGroup, ownGroup := startTree(t)
 	leader := cmd.Process.Pid
-	never := make(chan struct{})
 
-	started := StartedGroups(cmd, never)
-	if len(started) != 1 || started[0] != ownGroup {
-		t.Fatalf("StartedGroups = %v, want [%d]", started, ownGroup)
-	}
-	done := make(chan struct{})
-	close(done)
-	if got := StartedGroups(cmd, done); got != nil {
-		t.Errorf("StartedGroups of a process that was waited for: %v", got)
-	}
-
-	if !SignalStarted(started, 0) {
-		t.Error("SignalStarted(0) reports the child's group gone while it runs")
-	}
 	if !SignalGroup(cmd, 0) {
 		t.Error("SignalGroup(0) reports the leader's group gone while it runs")
 	}
@@ -217,21 +166,10 @@ func TestSignalGroupAndStarted(t *testing.T) {
 	if registered(leader) {
 		t.Error("the empty group is still remembered")
 	}
-
-	SignalStarted(started, syscall.SIGKILL)
-	gone(t, "after SignalStarted", ownGroup)
-	for deadline := time.Now().Add(5 * time.Second); SignalStarted(started, 0); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("SignalStarted still finds the child's group after it was killed")
-		}
-	}
 }
 
 // Numbers that name no single group of ours are never signalled.
 func TestSignalNeverReachesOtherGroups(t *testing.T) {
-	if SignalStarted([]int{0, 1, -5, syscall.Getpgrp()}, 0) {
-		t.Error("SignalStarted asked about 0, 1, a negative number or the test's own group")
-	}
 	// A command that StartGroup did not start has no remembered group.
 	cmd := exec.Command("sleep", "300")
 	if err := cmd.Start(); err != nil {

@@ -8,22 +8,20 @@
 // server's own. What such a call answers gets the page's keys before it is handed on
 // (logic/sectionwire.ts). Nothing else on the page builds a path or writes an id into a body.
 import { LOCAL_SERVER } from "./types.ts";
-import type { AgentKind, AttemptChanges, AttemptReport, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference,
-  RunDelivery, RunDetail, RunGoal, RunNotes, RunSettings, RunView, SectionTree, ServerLists, Subagent, Target, TaskBrief, TiersChange, TreeLabel, TreeView } from "./types.ts";
+import type { AgentKind, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference,
+  SectionTree, ServerLists, Subagent, Target, TreeLabel, TreeView } from "./types.ts";
 import type { PermAnswer } from "./logic/perms.ts";
 import type { ServerView } from "./logic/servers.ts";
 import type { LibraryView } from "./logic/library.ts";
 import { UNKNOWN_CLIENT, unknownClient } from "./logic/unknownclient.ts";
-import { normBrief, normChanges, normDelivery, normDetail, normGoal, normNotes, normReport, normRun } from "./logic/runnorm.ts";
 import { apiRoot, ownId, pathOf, sameServer, serverOfKey } from "./logic/keys.ts";
-import { boardIn, briefIn, chatIn, detailIn, draftIn, draftOut, groupIn, notesIn, runIn, stateIn } from "./logic/sectionwire.ts";
+import { boardIn, chatIn, draftIn, draftOut, groupIn, stateIn } from "./logic/sectionwire.ts";
 
-/** GET /api/state and the `snapshot` event. groups, boards, chats, states, runs and defaults are this computer's own, and nothing else. */
+/** GET /api/state and the `snapshot` event. groups, boards, chats, states and defaults are this computer's own, and nothing else. */
 export type Snapshot = {
   groups: Group[];
   boards: Board[];
   chats: ChatView[];
-  runs?: RunView[]; // absent from a server that knows no runs
   sections?: Record<string, SectionTree> | null; // by entry id: the tree of each server the local server holds one of (connected, its snapshot read); no key for any other entry
   servers?: ServerView[]; // the server list (logic/servers.ts); absent from a server without one
   libraries?: LibraryView[]; // the prompt libraries, this computer's first (logic/library.ts); absent from a server before them
@@ -40,7 +38,7 @@ export type Snapshot = {
 /** GET /api/hello: the running server's version and the web client's on disk. */
 export type Hello = { app: string; version: string; pid: number; webVersion: string };
 
-export type Dirs = { path: string; parent: string; dirs: string[]; git: boolean };
+export type Dirs = { path: string; parent: string; dirs: string[] };
 
 export const clientId: string = crypto.randomUUID(); // one per tab load
 
@@ -71,8 +69,8 @@ type Raw = { raw: Blob; type: string };
 const isRaw = (b: unknown): b is Raw => typeof Blob !== "undefined" && (b as Raw | null)?.raw instanceof Blob;
 
 /** One request; the answer as it came, for who reads more than its body. Throws an ApiError when the server refused.
- *  no-store: the browser's cache is left out, which holds a write back until a pending read of the same URL has ended (a run's
- *  Delete behind the page's own read of it, on a server that does not answer). */
+ *  no-store: the browser's cache is left out, which holds a write back until a pending read of the same URL has ended (a
+ *  Delete behind the page's own read of the same item, on a server that does not answer). */
 async function send(method: string, path: string, body?: unknown, keepalive = false, signal?: AbortSignal): Promise<Response> {
   const r = await fetch(path, {
     method, keepalive, signal, cache: "no-store",
@@ -98,7 +96,7 @@ async function send(method: string, path: string, body?: unknown, keepalive = fa
 /** The header of a scene's read that carries its revision. */
 const SCENE_REV = "X-AIWB-Scene-Rev";
 
-type Kind = "groups" | "boards" | "chats" | "runs";
+type Kind = "groups" | "boards" | "chats";
 
 /** The query part that names the server whose folders or plan usage a call reads (the two calls that are about no thing
  *  of a server): none for this computer. first: the query has no part before it. */
@@ -107,11 +105,11 @@ const onServer = (server?: string, first = false) => (server && server !== LOCAL
 /** The query that names the branch of a chat a session call is for. */
 const onBranch = (branch: string) => `?branch=${encodeURIComponent(branch)}`;
 
-/** Where a new chat is made: in a group, on a board or on a run. The key names the server too. */
-export type ChatPlace = { group: string } | { board: string } | { run: string };
-const placeKey = (w: ChatPlace): string => ("group" in w ? w.group : "board" in w ? w.board : w.run);
-/** The place as its server takes it: the group's, the board's or the run's own id. */
-const placeOut = (w: ChatPlace): ChatPlace => ("group" in w ? { group: ownId(w.group) } : "board" in w ? { board: ownId(w.board) } : { run: ownId(w.run) });
+/** Where a new chat is made: in a group or on a board. The key names the server too. */
+export type ChatPlace = { group: string } | { board: string };
+const placeKey = (w: ChatPlace): string => ("group" in w ? w.group : w.board);
+/** The place as its server takes it: the group's or the board's own id. */
+const placeOut = (w: ChatPlace): ChatPlace => ("group" in w ? { group: ownId(w.group) } : { board: ownId(w.board) });
 
 /** An id is unique on one server only: the id of a group of one server means nothing on another, or names another
  *  group there. A call that would carry one across is not made, whoever asks: nothing is moved or nested from one
@@ -120,9 +118,6 @@ const placeOut = (w: ChatPlace): ChatPlace => ("group" in w ? { group: ownId(w.g
 const ACROSS = "Nothing is moved from one server to another.";
 const across = (on: string, ...keys: string[]): boolean => keys.some((k) => !!k && serverOfKey(k) !== on);
 const notAcross = <T,>(): Promise<T> => Promise.reject(new Error(ACROSS));
-
-/** A run's view as the store keeps it: made whole (logic/runnorm.ts), then with the page's keys. */
-const runOf = (key: string) => (r: RunView): RunView => runIn(serverOfKey(key), normRun(r));
 
 export const api = {
   state: () => call<Snapshot>("GET", "/api/state"),
@@ -174,51 +169,13 @@ export const api = {
   deleteBoard: (id: string) => call("DELETE", pathOf("boards", id)),
   /** Shows a board's file in this computer's file manager: for a board of this computer only (400 `not_here` for a section's). */
   reveal: (id: string) => call("POST", `${pathOf("boards", id)}/reveal`),
-  /** A new chat that has not started, made where `where` is: in a group, on a board or on a run, on the server that group,
-   *  board or run is on. It starts with what that server remembers for the place. Refused with the server's sentence where
+  /** A new chat that has not started, made where `where` is: in a group or on a board, on the server that group
+   *  or board is on. It starts with what that server remembers for the place. Refused with the server's sentence where
    *  the chat cannot be made. */
   newChat: (where: ChatPlace) => {
     const server = serverOfKey(placeKey(where));
     return call<ChatView>("POST", `${apiRoot(server)}/chats`, placeOut(where)).then((c) => chatIn(server, c));
   },
-  /** A run that has not started, in a group: on the group's server from this moment on. */
-  newRun: (group: string, name?: string) => call<RunView>("POST", `${apiRoot(serverOfKey(group))}/runs`, { group: ownId(group), name }).then(runOf(group)),
-  /** The run's view, with its folder checked again (after a 409). */
-  run: (id: string) => call<RunView>("GET", pathOf("runs", id)).then(runOf(id)),
-  renameRun: (id: string, name: string) => call<RunView>("PATCH", pathOf("runs", id), { name }).then(runOf(id)),
-  /** group: a group of the run's own server. */
-  moveRun: (id: string, group: string) => (sameServer(id, group) ? call<RunView>("PATCH", pathOf("runs", id), { group: ownId(group) }).then(runOf(id)) : notAcross<RunView>()),
-  /** Until the run starts (409 after). Only the tiers and the fields given change; another agent: the
-   *  answer has that agent's defaults in all three tiers. settings are merged. */
-  configureRun: (id: string, p: { agent?: AgentKind; tiers?: TiersChange; cwd?: string; settings?: Partial<RunSettings> }) =>
-    call<RunView>("PATCH", pathOf("runs", id), p).then(runOf(id)),
-  /** The goal being typed; a started run ignores it. It has no counter: the last save wins. */
-  saveRunDraft: (id: string, d: Draft, keepalive = false) => call("PUT", `${pathOf("runs", id)}/draft`, draftOut(serverOfKey(id), d), keepalive),
-  /** Answers once the start is recorded, before any agent runs: the view has started, status running and no draft. */
-  startRun: (id: string, goal: string) => call<RunView>("POST", `${pathOf("runs", id)}/start`, { goal }).then(runOf(id)),
-  stopRun: (id: string) => call<RunView>("POST", `${pathOf("runs", id)}/stop`).then(runOf(id)),
-  /** raise: the new limit; a run stalled by its turn or cost limit resumes only with a higher one (409). */
-  resumeRun: (id: string, raise?: { maxTurns: number } | { maxCost: number }) => call<RunView>("POST", `${pathOf("runs", id)}/resume`, raise).then(runOf(id)),
-  deleteRun: (id: string) => call("DELETE", pathOf("runs", id)),
-  /** The detail's events are sent to this page no more (the read of the detail started that). */
-  unfollowRun: (id: string) => call("POST", `${pathOf("runs", id)}/unfollow`),
-  /** Puts the run's result into the folder's branch (`branch`: another one). The answer is what came of
-   *  it, also when that is "blocked" or "pending"; 409 while the run is going or before it started. */
-  applyRun: (id: string, branch?: string) => call<RunDelivery>("POST", `${pathOf("runs", id)}/apply`, branch ? { branch } : {}).then(normDelivery),
-  /** A dry run: what applying would do now. */
-  runDelivery: (id: string) => call<RunDelivery>("GET", `${pathOf("runs", id)}/delivery`).then(normDelivery),
-  /** A started run's detail at its version; `run_detail` events carry the later ones. */
-  runDetail: (id: string, signal?: AbortSignal) =>
-    call<RunDetail>("GET", `${pathOf("runs", id)}/detail`, undefined, false, signal).then((d) => detailIn(serverOfKey(id), normDetail(d))),
-  runGoal: (id: string) => call<RunGoal>("GET", `${pathOf("runs", id)}/goal`).then(normGoal),
-  /** A task's brief: revision rev, or without it the one in force. */
-  taskBrief: (run: string, task: string, rev?: number) =>
-    call<TaskBrief>("GET", `${pathOf("runs", run)}/tasks/${task}/brief${rev === undefined ? "" : `?rev=${rev}`}`).then((b) => briefIn(serverOfKey(run), normBrief(b))),
-  /** 404 while the attempt has no result. */
-  attemptReport: (run: string, task: string, n: number) => call<AttemptReport>("GET", `${pathOf("runs", run)}/tasks/${task}/attempts/${n}/report`).then(normReport),
-  /** 404 for a task that only reports, and while nothing is committed. */
-  attemptChanges: (run: string, task: string, n: number) => call<AttemptChanges>("GET", `${pathOf("runs", run)}/tasks/${task}/attempts/${n}/changes`).then(normChanges),
-  runNotes: (run: string, v: number) => call<RunNotes>("GET", `${pathOf("runs", run)}/notes/${v}`).then((n) => notesIn(serverOfKey(run), normNotes(n))),
   /** A branch's items and subagents. The answer names the branch served, and brings its record. */
   items: (id: string, branch: string) =>
     call<{ version: number; items: Item[]; subagents?: Subagent[]; branch?: string; state?: BranchState }>("GET", `${pathOf("chats", id)}/items${onBranch(branch)}`)
@@ -226,8 +183,6 @@ export const api = {
   subItems: (chat: string, branch: string, sid: string) =>
     call<{ version: number; items: Item[] }>("GET", `${pathOf("chats", chat)}/subagents/${sid}/items${onBranch(branch)}`),
   chat: (id: string) => call<ChatView>("GET", pathOf("chats", id)).then((c) => chatIn(serverOfKey(id), c)),
-  /** Ends this client's follow of a chat (a read of its items or tree started it): its content events stop. */
-  unfollowChat: (id: string) => call("POST", `${pathOf("chats", id)}/unfollow`),
   openChat: (id: string, branch: string) => call("POST", `${pathOf("chats", id)}/open${onBranch(branch)}`),
   /** target: the point the message goes to; without it, the end of branch. The server refuses
    *  a target together with the query, so the branch is named in one of the two only.
@@ -258,7 +213,7 @@ export const api = {
    *  passes on and answers as that server does. Refused with the codes "image_too_large" (413), "image_type" (415) and "image_cap"
    *  (409: too many images of the chat were never sent). For a chat of a section also as every call that cannot be made:
    *  "server_unreachable" (503: not connected, or too old; nothing was read or sent), "no_answer" (504), "bad_answer" (502) and
-   *  "not_found" (404: the chat is gone there). The chat of a run's agent takes none (409).
+   *  "not_found" (404: the chat is gone there).
    *  Whatever the refusal, the image leaves the strip and the error line says the server's sentence (uploads.ts). */
   uploadImage: (id: string, file: Blob, name: string, type: string, signal?: AbortSignal) =>
     call<ChatImage>("POST", `${pathOf("chats", id)}/images?name=${encodeURIComponent(name)}`, { raw: file, type }, false, signal),

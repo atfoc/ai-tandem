@@ -22,7 +22,7 @@ import (
 func TestSectionFollows(t *testing.T) {
 	t.Parallel()
 	rg := newRig(t, rigOpt{snapshot: snapshotOf(fullTree())})
-	chat, run := editorbridge.ChatOn(rg.entry, chatA), editorbridge.RunOn(rg.entry, runA)
+	chat := editorbridge.ChatOn(rg.entry, chatA)
 	// The page follows by the time its read is at the server.
 	var early atomic.Int32
 	items := rg.script("GET /api/chats/{id}/items")
@@ -32,13 +32,9 @@ func TestSectionFollows(t *testing.T) {
 		}
 		writeAnswer(w, http.StatusOK, map[string]any{"version": 1, "items": []any{}, "state": map[string]any{"draftRev": 3}})
 	})
-	detail := rg.script("GET /api/runs/{id}/detail")
-	detail.answer(http.StatusOK, map[string]any{"run": runA, "version": 1})
-	for _, pattern := range []string{"POST /api/chats/{id}/unfollow", "POST /api/runs/{id}/unfollow"} {
-		rg.s.Handle(pattern, func(w http.ResponseWriter, r *http.Request) {
-			writeAnswer(w, http.StatusOK, map[string]any{"ok": true})
-		})
-	}
+	rg.s.Handle("POST /api/chats/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
+		writeAnswer(w, http.StatusOK, map[string]any{"ok": true})
+	})
 	ctx := context.Background()
 	first, _ := rg.page("page-first")
 	second, _ := rg.page("page-second")
@@ -89,22 +85,12 @@ func TestSectionFollows(t *testing.T) {
 		t.Errorf("the unfollow calls: %+v", got)
 	}
 
-	// An unfollow by the page's own call does the same, for a chat and for a run.
+	// An unfollow by the page's own call does the same.
 	third, _ := rg.page("page-third")
 	rg.readChat(third, chatA)
-	rg.readRun(third, runA)
-	if g := detail.last(t); g.URI != "/api/runs/"+runA+"/detail" || !rg.b.Followed(run) {
-		t.Errorf("the read of the run: %+v, followed %v", g, rg.b.Followed(run))
-	}
-	rg.s.Send(map[string]any{"type": "run_detail", "run": runA, "version": 2})
-	if got := rg.barrier(third)[0]; len(got) != 1 || got[0]["type"] != "run_detail" || got[0]["server"] != rg.entry {
-		t.Errorf("the follower of the run got %v", got)
-	}
 	wantReply(t, "unfollow of the chat", rg.r.UnfollowChat(rg.entry, third.ID, chatA), http.StatusOK, map[string]any{"ok": true})
 	rg.until("the chat's unfollow call", func() bool { return len(rg.requests("POST", "/api/chats/"+chatA+"/unfollow")) == 2 })
-	wantReply(t, "unfollow of the run", rg.r.UnfollowRun(rg.entry, third.ID, runA), http.StatusOK, map[string]any{"ok": true})
-	rg.until("the run's unfollow call", func() bool { return len(rg.requests("POST", "/api/runs/"+runA+"/unfollow")) == 1 })
-	if rg.b.Followed(chat) || rg.b.Followed(run) {
+	if rg.b.Followed(chat) {
 		t.Error("a follow is left after its unfollow")
 	}
 
@@ -128,11 +114,9 @@ func TestSectionFollows(t *testing.T) {
 	n := len(rg.requests("POST", "/unfollow"))
 	rg.offline()
 	wantReply(t, "unfollow of a chat while not connected", rg.r.UnfollowChat(rg.entry, third.ID, chatA), http.StatusOK, map[string]any{"ok": true})
-	wantReply(t, "unfollow of a run while not connected", rg.r.UnfollowRun(rg.entry, third.ID, runA), http.StatusOK, map[string]any{"ok": true})
 	noServer := map[string]any{"code": "no_server", "error": "This server is not in the list."}
 	for _, entry := range []string{"s_000000000000", "local", ""} {
 		wantReply(t, "unfollow of a chat on "+entry, rg.r.UnfollowChat(entry, third.ID, chatA), http.StatusNotFound, noServer)
-		wantReply(t, "unfollow of a run on "+entry, rg.r.UnfollowRun(entry, third.ID, runA), http.StatusNotFound, noServer)
 	}
 	if got := rg.requests("POST", "/unfollow"); len(got) != n {
 		t.Errorf("a server that is not connected was told of an unfollow: %+v", got[n:])
@@ -216,7 +200,7 @@ func TestSectionUnfollowNeverOvertakesARead(t *testing.T) {
 	// A chat that a page follows by the time the hook runs is not unfollowed; an item of this
 	// server, which has no entry, is not the relay's, and nor is a board.
 	fast.Store(true)
-	rg.r.Unfollowed([]editorbridge.Item{chat, editorbridge.Chat(chatA), editorbridge.Run(runA), {Kind: "board", ID: boardA, Server: rg.entry}})
+	rg.r.Unfollowed([]editorbridge.Item{chat, editorbridge.Chat(chatA), {Kind: "board", ID: boardA, Server: rg.entry}})
 	time.Sleep(quiet)
 	if got := noted(); !reflect.DeepEqual(got, want) {
 		t.Errorf("an unfollow call for a chat that is followed, or is not of a section: %v", got)

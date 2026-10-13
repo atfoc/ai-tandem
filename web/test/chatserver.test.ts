@@ -51,7 +51,7 @@ test("the composer's Where is the chat's server, its name and whether it is conn
   assert.equal(serverConnected(store("connected", false), "s_1"), false, "connected, and its tree has not come yet");
   assert.equal(serverConnected(store("unreachable", true), "s_1"), true, "the state's event came before the tree went");
   assert.ok(choices.includes('const server = of && "server" in of ? of.server : serverOf(of);') && choices.includes("serverName(s, server)") && choices.includes("serverConnected(s, server)"));
-  // (a chat on a board or a run of a section is in that section: its own key says so, and no board or run is asked)
+  // (a chat on a board of a section is in that section: its own key says so, and no board is asked)
   assert.ok(choices.includes("export function useWhere(of?: { id?: string } | { server: string } | null): Where {"));
   assert.ok(!choices.includes("serverOnBoard") && !composer.includes("serverOnBoard") && !chatView.includes("serverOnBoard"));
   assert.ok(composer.includes("const where = useWhere(c);") && chatView.includes("const where = useWhere(c);"));

@@ -99,11 +99,11 @@ func TestNothingReachesATooOldServer(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newFar(t, farOpt{
-				chats: []model.ChatView{viewThere(farChatA)}, runs: []model.RunView{runThere(farRunA)}, boards: []model.Board{boardThere(farBoardA)},
+				chats: []model.ChatView{viewThere(farChatA)}, boards: []model.Board{boardThere(farBoardA)},
 				tooOld: 40 * time.Millisecond,
 			})
 			p := f.page("P")
-			chat, run, board := f.on("/chats/"+farChatA), f.on("/runs/"+farRunA), f.on("/boards/"+farBoardA)
+			chat, board := f.on("/chats/"+farChatA), f.on("/boards/"+farBoardA)
 			own := decode[model.ChatView](t, mustOK(t, f, p, "POST", "/api/chats", form("group", model.Ungrouped)))
 
 			gone := f.nulls.Load() + 1
@@ -117,15 +117,11 @@ func TestNothingReachesATooOldServer(t *testing.T) {
 			f.untouched("a server that is too old", func() {
 				for _, c := range [][3]string{
 					// Nothing is made on it.
-					{"POST", f.on("/chats"), form("group", farGroup)}, {"POST", f.on("/runs"), form("group", farGroup, "name", "Later")},
-					{"POST", f.on("/boards"), form("name", "New", "group", farGroup)}, {"POST", f.on("/groups"), form("name", "New", "parent", "")},
+					{"POST", f.on("/chats"), form("group", farGroup)}, {"POST", f.on("/boards"), form("name", "New", "group", farGroup)}, {"POST", f.on("/groups"), form("name", "New", "parent", "")},
 					// Its chats.
 					{"GET", chat, ""}, {"GET", chat + "/items", ""}, {"GET", chat + "/tree", ""}, {"GET", chat + "/context", ""}, {"POST", chat + "/open", ""},
 					{"POST", chat + "/messages", `{"text":"hi"}`}, {"POST", chat + "/fork", `{"at":1}`},
 					{"PUT", chat + "/draft?rev=0", `{"text":"typed"}`}, {"PATCH", chat, form("model", "standin-model")},
-					// Its runs: none is read, started or stopped.
-					{"GET", run, ""}, {"GET", run + "/detail", ""}, {"GET", run + "/goal", ""}, {"POST", run + "/start", form("goal", "Write the note")},
-					{"POST", run + "/stop", ""},
 					// Its whiteboards: no board is taken, and no drawing is read or stored.
 					{"POST", board + "/take", ""}, {"GET", board + "/scene", ""}, {"PUT", board + "/scene?rev=0", `{}`},
 					{"POST", board + "/rename", form("name", "Later")},
@@ -136,10 +132,9 @@ func TestNothingReachesATooOldServer(t *testing.T) {
 						t.Errorf("%s %s: %q", c[0], c[1], text)
 					}
 				}
-				// The three calls that are answered in every state: a page lets go of what it
+				// The calls that are answered in every state: a page lets go of what it
 				// showed, and a board on another machine has no file here.
 				f.good(p, "POST", chat+"/unfollow", "")
-				f.good(p, "POST", run+"/unfollow", "")
 				if got := f.good(p, "POST", board+"/release", ""); got["state"] != "none" {
 					t.Errorf("the release of a board while its server is too old: %v", got)
 				}
@@ -147,9 +142,9 @@ func TestNothingReachesATooOldServer(t *testing.T) {
 				// A chat of this server is not put on it.
 				f.refuses(p, http.StatusConflict, "server_fixed", "PATCH", "/api/chats/"+own.ID, form("server", f.entry))
 				// Its section has no tree, and this server's own lists hold nothing of it.
-				if snap := f.snapshotOf(p); len(snap.Sections) != 0 || len(snap.Chats) != 1 || len(snap.Runs) != 0 || len(snap.Boards) != 0 {
-					t.Errorf("the snapshot while the server is too old: sections %v, own chats %d, runs %d, boards %d",
-						snap.Sections, len(snap.Chats), len(snap.Runs), len(snap.Boards))
+				if snap := f.snapshotOf(p); len(snap.Sections) != 0 || len(snap.Chats) != 1 || len(snap.Boards) != 0 {
+					t.Errorf("the snapshot while the server is too old: sections %v, own chats %d, boards %d",
+						snap.Sections, len(snap.Chats), len(snap.Boards))
 				}
 			})
 			// The entry asked again meanwhile, and stayed too old: hello alone went out.
@@ -168,14 +163,13 @@ func TestNothingReachesATooOldServer(t *testing.T) {
 			f.returned(2)
 			f.wait("the entry is connected", func() bool { return f.state() == servers.StateConnected })
 			f.good(p, "GET", chat+"/items", "")
-			f.good(p, "GET", run+"/detail", "")
 			if status, out := f.call(p, "GET", board+"/scene", ""); status != http.StatusOK {
 				t.Errorf("the drawing after the update: %d %s", status, out)
 			}
 			if made := decode[model.ChatView](t, mustOK(t, f, p, "POST", f.on("/chats"), form("group", farGroup))); made.ID == "" || made.Locked {
 				t.Errorf("a new chat after the update: %+v", made)
 			}
-			if sec := f.section(p); sec == nil || len(sec.Chats) != 1 || len(sec.Runs) != 1 || len(sec.Boards) != 1 {
+			if sec := f.section(p); sec == nil || len(sec.Chats) != 1 || len(sec.Boards) != 1 {
 				t.Errorf("the section after the update: %+v", sec)
 			}
 		})

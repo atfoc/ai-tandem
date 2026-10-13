@@ -6,14 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 )
 
 // Several clients and the owner in one thing, with both halves real (goal 3.6; contract 2.7): a
 // chat that the owner's page and a page of each client have open, a board that one window holds
-// at a time among all of them, and the chat of a run's agent, which all read and none writes.
+// at a time among all of them.
 
 // open makes each user a follower of the chat, as an open chat view does: by a read of its
 // thread and of its tree.
@@ -48,7 +47,7 @@ func (bo *both) alike(what string, us ...*user) []string {
 // the first answer decides and a later one is refused; anyone stops the turn.
 func TestBothOneThreadForAll(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{noRuns: true})
+	bo := newBoth(t, bothOpt{})
 	us := bo.three()
 	owner, one, two := us[0], us[1], us[2]
 	chat := l5ID(t, owner.want(t, 200, "POST", "/chats", obj{"agent": "claude", "group": model.Ungrouped}))
@@ -208,7 +207,7 @@ func TestBothOneThreadForAll(t *testing.T) {
 // counter a page is shown never goes down; and nothing replaces a draft on any path.
 func TestBothTwoWritersInOneDraft(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{noRuns: true})
+	bo := newBoth(t, bothOpt{})
 	us := bo.three()
 	owner, one, two := us[0], us[1], us[2]
 	chat := l5ID(t, one.want(t, 200, "POST", "/chats", obj{"agent": "claude", "group": model.Ungrouped}))
@@ -343,7 +342,7 @@ func TestBothTwoWritersInOneDraft(t *testing.T) {
 // last change wins, and every change is told to all by the chat and its branch state.
 func TestBothSettingsBeforeTheFirstMessage(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{noRuns: true})
+	bo := newBoth(t, bothOpt{})
 	us := bo.three()
 	owner, one, two := us[0], us[1], us[2]
 	chat := l5ID(t, two.want(t, 200, "POST", "/chats", obj{"agent": "claude", "group": model.Ungrouped}))
@@ -381,66 +380,6 @@ func TestBothSettingsBeforeTheFirstMessage(t *testing.T) {
 	}
 }
 
-// The chat of a run's agent is read and followed by the owner and by every client, and written
-// by nobody (goal 3.6, last bullet; contract 2.7.10): every write is 409 for each of the three.
-func TestBothRunAgentsChatIsReadOnly(t *testing.T) {
-	t.Parallel()
-	bo := newBoth(t, bothOpt{})
-	us := bo.three()
-	owner, one, two := us[0], us[1], us[2]
-	run := l5ID(t, one.want(t, 200, "POST", "/runs", obj{"group": model.Ungrouped, "name": "Run"}))
-	if v := decode[model.RunView](t, one.want(t, 200, "POST", "/runs/"+run+"/start", obj{"goal": "Look around."})); v.Status == model.RunDraft {
-		t.Fatalf("the start: %+v", v)
-	}
-	// The other client, which did not make the run, finds the agent's chat in the run's detail.
-	bo.told("the start of the run", us, []string{"run", run, `"turns":1`})
-	orch := bo.orchestrator(two, run)
-	path := "/chats/" + orch
-	if v := decode[model.ChatView](t, two.want(t, 200, "GET", path, nil)); v.Run != run || v.Role != "orchestrator" {
-		t.Fatalf("the agent's chat for a client: %+v", v)
-	}
-	// It is in nobody's tree.
-	if tree := bo.level("with a run that works", us...); strings.Contains(tree, orch) || !strings.Contains(tree, run) {
-		t.Errorf("the tree with a run that works: %s", tree)
-	}
-	bo.open(orch, two, owner) // the reads make the two followers
-
-	// Every write is refused, for a client as for the owner's page, with the same answer.
-	for _, w := range []struct {
-		method, rest string
-		body         any
-	}{
-		{"POST", "/messages", obj{"text": "hello"}}, {"POST", "/messages?branch=main", obj{"text": "hello"}},
-		{"PATCH", "", obj{"name": "Mine"}}, {"PATCH", "", obj{"model": "opus"}}, {"PATCH", "", obj{"group": model.Ungrouped}},
-		{"PUT", "/draft?rev=0", obj{"text": "typed"}}, {"POST", "/interrupt", nil}, {"PUT", "/label", obj{"branch": "main", "item": 0, "text": "label"}},
-		{"POST", "/fork", obj{"branch": "main", "at": 1}}, {"POST", "/archive", nil}, {"POST", "/unarchive", nil}, {"DELETE", "", nil},
-	} {
-		_, first := owner.call(w.method, path+w.rest, w.body)
-		for _, u := range us {
-			if status, out := u.call(w.method, path+w.rest, w.body); status != 409 || out != first || !strings.Contains(out, "run") {
-				t.Errorf("%s %s of the agent's chat by %s: %d %s, want 409 %s", w.method, w.rest, u.who, status, out, first)
-			}
-		}
-	}
-	if v := decode[model.ChatView](t, one.want(t, 200, "GET", path, nil)); v.Name == "Mine" || v.Archived || v.Draft != nil {
-		t.Errorf("the agent's chat after the refused writes: %+v", v)
-	}
-
-	// The followers get what the agent says next, the client's page with the entry's id; the
-	// client that did not read the chat gets nothing of it.
-	bo.reach(us...)
-	emit(t, &bo.sp.of(t, orch).fakeAgent, agent.Event{Kind: agent.EvText, Text: "the agent's words"})
-	for _, u := range []*user{two, owner} {
-		u.upTo(t, "chat_items", orch, "the agent's words")
-	}
-	for _, raw := range bo.reach(one)[0] {
-		if strings.Contains(raw, orch) && typeOf(raw) != "run_detail" && typeOf(raw) != "run_activity" {
-			t.Errorf("the client that does not follow the agent's chat was sent %s", raw)
-		}
-	}
-	bo.stopRun(owner, run)
-}
-
 // A board has one holder among the owner's pages and the pages of every client (goal 3.6;
 // contract 2.7.7, 2.7.8 and 3.6): take, the request to let go, the grant with the remote
 // server's revision, and "superseded" for who lost the board or its place in the line. To the
@@ -448,7 +387,7 @@ func TestBothRunAgentsChatIsReadOnly(t *testing.T) {
 // tool call of an agent goes to the window that holds the board.
 func TestBothOneHolderOfABoard(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{noRuns: true})
+	bo := newBoth(t, bothOpt{})
 	c1, c2 := bo.c[0], bo.c[1]
 	o := bo.b.page("O")
 	p1, q1, p2 := c1.a.page("P1"), c1.a.page("Q1"), c2.a.page("P2")

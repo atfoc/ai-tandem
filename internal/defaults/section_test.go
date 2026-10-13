@@ -23,8 +23,7 @@ func TestSectionDefaultsKeepLocalAlone(t *testing.T) {
  "g_local":{"servers":{"local":{"cwd":"/two"}}},
  "g_empty":{}}}}`
 	const want = `{"groups":{
- "__ungrouped__":{"servers":{"local":{"agent":"pi","cwd":"/w","byAgent":{"claude":{"model":"opus","effort":"max"}},"subagents":{"depth":2,"cap":10},
-            "run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0}}}},
+ "__ungrouped__":{"servers":{"local":{"agent":"pi","cwd":"/w","byAgent":{"claude":{"model":"opus","effort":"max"}},"subagents":{"depth":2,"cap":10}}}},
  "g_far":{},
  "g_sticky":{"servers":{"local":{"cwd":"/one"}}},
  "g_local":{"servers":{"local":{"cwd":"/two"}}},

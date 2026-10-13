@@ -22,17 +22,15 @@ func TestBothRemovingTheEntry(t *testing.T) {
 	other := c1.page("Q") // a second page of client 1
 	entry := c1.entry
 
-	// What client 1 made on that server and has open: a chat it follows, a board it holds, a
-	// run that has not started.
+	// What client 1 made on that server and has open: a chat it follows, a board it holds.
 	group := l5ID(t, one.want(t, 200, "POST", "/groups", obj{"name": "Work", "parent": ""}))
 	chat := l5ID(t, one.want(t, 200, "POST", "/chats", obj{"agent": "claude", "group": group}))
 	bo.told("the new chat", us, []string{"chat", chat})
 	one.want(t, 200, "GET", "/chats/"+chat+"/items", nil)
-	run := l5ID(t, one.want(t, 200, "POST", "/runs", obj{"group": group, "name": "Run"}))
 	board := l5ID(t, one.want(t, 200, "POST", "/boards", obj{"name": "plan", "group": group}))
 	c1.holders(board, one.p.ID, bothID1)
 	c1.written(one.p, board, 0, drawing("client 1's"))
-	bo.told("the set-up", us, []string{"run", run})
+	bo.same("the set-up", us...)
 	before := bo.level("before the removal", us...)
 	// Nothing counts what is on that server: the route is gone.
 	if status, out := one.p.Do("GET", "/api/servers/"+entry+"/items", nil); status != 404 {
@@ -69,7 +67,7 @@ func TestBothRemovingTheEntry(t *testing.T) {
 		return len(snap.Sections) == 0 && len(snap.Lists) == 0
 	})
 	state := string(do(t, one.p, "GET", "/api/state", nil))
-	for _, part := range []string{entry, group, chat, run, board, c1.name} {
+	for _, part := range []string{entry, group, chat, board, c1.name} {
 		if strings.Contains(state, part) {
 			t.Errorf("the state of client 1 after the removal holds %s: %s", part, state)
 		}
@@ -79,7 +77,7 @@ func TestBothRemovingTheEntry(t *testing.T) {
 	}
 	for _, c := range [][2]string{
 		{"GET", "/chats/" + chat}, {"GET", "/chats/" + chat + "/items"}, {"POST", "/chats"}, {"DELETE", "/chats/" + chat},
-		{"POST", "/boards/" + board + "/take"}, {"PUT", "/boards/" + board + "/scene?rev=1"}, {"GET", "/runs/" + run + "/detail"}, {"DELETE", "/groups/" + group + "?contents=delete"},
+		{"POST", "/boards/" + board + "/take"}, {"PUT", "/boards/" + board + "/scene?rev=1"}, {"DELETE", "/groups/" + group + "?contents=delete"},
 	} {
 		if text := one.refused(t, 404, "no_server", c[0], c[1], obj{"group": group}); text != "This server is not in the list." {
 			t.Errorf("%s %s after the removal: %q", c[0], c[1], text)
@@ -103,7 +101,7 @@ func TestBothRemovingTheEntry(t *testing.T) {
 		t.Errorf("the removal of client 1's entry told the others %v", evs)
 	}
 	after := bo.level("after the removal", rest...)
-	for _, f := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+	for _, f := range []string{"groups", "boards", "chats", "states", "defaults"} {
 		if !l5SameList(t, after, before, f) {
 			t.Errorf("the %s of the remote server after the removal:\n%s\nbefore:\n%s", f, l5Field(t, after, f), l5Field(t, before, f))
 		}
@@ -114,7 +112,7 @@ func TestBothRemovingTheEntry(t *testing.T) {
 
 	// Client 2 and the owner work on, with what client 1 made.
 	bo.step(rest, two, "the rename of client 1's chat", "PATCH", "/chats/"+chat, obj{"name": "Renamed by client 2"}, "chat", chat, false, `"name":"Renamed by client 2"`)
-	bo.step(rest, owner, "the move of client 1's run", "PATCH", "/runs/"+run, obj{"group": model.Ungrouped}, "run", run, false, `"group":"`+model.Ungrouped+`"`)
+	bo.step(rest, owner, "the move of client 1's chat", "PATCH", "/chats/"+chat, obj{"group": model.Ungrouped}, "chat", chat, false, `"group":"`+model.Ungrouped+`"`)
 	if state, rev := c2.take(two.p, board, true); state != "held" || rev != 1 {
 		t.Fatalf("client 2's take of the board client 1 held: %s at %d", state, rev)
 	}

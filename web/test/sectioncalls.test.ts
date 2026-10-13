@@ -85,8 +85,8 @@ const LOCAL = { id: "local", local: true, name: "This computer", state: "connect
 const entry = (id: string, name: string) => ({ id, name, state: "connected" });
 // the same ids on this computer and on Lab: the groups g_1, g_2, g_3 and the chat c_1
 const groups = () => [{ id: "g_1", name: "Work" }, { id: "g_2", name: "Notes" }, { id: "g_3", name: "Old", parent: "g_2" }];
-const tree = (o: object = {}) => ({ groups: groups(), boards: [{ id: "b_1", name: "Plan", group: "g_1", created: "" }], chats: [chat("c_1", { name: "Lab chat", group: "g_1" })], states: [state("c_1")], runs: [], defaults: { groups: {} }, ...o });
-const snapshot = (o: object = {}) => ({ type: "snapshot", groups: groups(), boards: [], chats: [chat("c_1", { name: "My chat", group: "g_1" })], runs: [], states: [state("c_1")],
+const tree = (o: object = {}) => ({ groups: groups(), boards: [{ id: "b_1", name: "Plan", group: "g_1", created: "" }], chats: [chat("c_1", { name: "Lab chat", group: "g_1" })], states: [state("c_1")], defaults: { groups: {} }, ...o });
+const snapshot = (o: object = {}) => ({ type: "snapshot", groups: groups(), boards: [], chats: [chat("c_1", { name: "My chat", group: "g_1" })], states: [state("c_1")],
   defaults: { groups: {} }, agents: ["claude"], catalogs: {}, home: "/home/me", defaultCwd: "/home/me", dataDir: "/d",
   servers: [LOCAL, entry(LAB, "Lab"), entry(OFFICE, "Office")], lists: {}, sections: { [LAB]: tree(), [OFFICE]: tree() }, ...o });
 const names = (server: string): string[] => (server === "local" ? S().groups : S().sections[server].groups).map((g: Group) => `${g.id.split("~").pop()}:${g.name}${g.parent ? `<${g.parent.split("~").pop()}` : ""}`);
@@ -101,7 +101,7 @@ const REFUSALS: [number, string | undefined, string][] = [
 
 conn.connect();
 beforeEach(async () => {
-  store.setState({ sel: { board: null, run: null, chat: null }, gone: {}, collapsed: {}, items: {}, confirm: null });
+  store.setState({ sel: { board: null, chat: null }, gone: {}, collapsed: {}, items: {}, confirm: null });
   await ev({ type: "hello" });
   await ev(snapshot());
   for (const a of asked.splice(0)) await a.refuse(500, undefined, "left over");
@@ -231,7 +231,7 @@ test("a Send to a section's chat that is answered 404 not_found says that the ch
 // ---- an entry removed in the Servers dialog: the answer of the DELETE and the `servers` event come in no fixed order
 
 const open = async () => {
-  store.setState({ sel: { board: null, run: null, chat: k("c_1") } });
+  store.setState({ sel: { board: null, chat: k("c_1") } });
   store.setThread(`${k("c_1")}:main`, { version: 2, items: [{ kind: "user", text: "q" }, { kind: "text", text: "a", done: true }] });
   store.unsavedDraft(k("c_1"), "main").write({ text: "typed and not saved" });
 };
@@ -239,7 +239,7 @@ const without = () => ({ type: "servers", servers: [LOCAL, entry(OFFICE, "Office
 const nothingOfLab = (when: string) => {
   assert.deepEqual(S().servers.map((v: { id: string }) => v.id), ["local", OFFICE], when);
   assert.equal(S().sel.chat, null, `${when}: what was open of it is closed`);
-  for (const map of ["chats", "boards", "runs", "items", "states", "trees", "gone"]) assert.deepEqual(Object.keys(S()[map]).filter((key) => key.startsWith(LAB)), [], `${when}: ${map}`);
+  for (const map of ["chats", "boards", "items", "states", "trees", "gone"]) assert.deepEqual(Object.keys(S()[map]).filter((key) => key.startsWith(LAB)), [], `${when}: ${map}`);
   assert.equal(S().sections[LAB], undefined, when);
   assert.equal(store.unsavedDraft(k("c_1"), "main").read(), null, `${when}: what was typed in it is not kept`);
   assert.ok(S().chats.c_1 && S().chats[`${OFFICE}~c_1`], `${when}: the chats of the same id here and on the other server stay`);

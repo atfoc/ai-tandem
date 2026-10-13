@@ -17,7 +17,6 @@ import (
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/store"
 )
@@ -387,56 +386,36 @@ func TestBothSameIDHereAndInTwoSections(t *testing.T) {
 	}
 }
 
-// sameBoard and sameRun are the ids of a board and of a run that each of the three servers has.
-// A server makes these ids itself, so no call gives two servers the same one: each data folder
-// holds the board and the run from before the server reads it, as the folders of two machines
-// can.
-const (
-	sameBoard = "b_samesame"
-	sameRun   = "r_samesame"
-)
+// sameBoard is the id of a board that each of the three servers has. A server makes such an id
+// itself, so no call gives two servers the same one: each data folder holds the board from
+// before the server reads it, as the folders of two machines can.
+const sameBoard = "b_samesame"
 
-// withSameThings gives a server the board and the run every server of the twin has, in the
-// group every one has, under this name, and a run service that reads the run.
+// withSameThings gives a server the board every server of the twin has, in the group every one
+// has, under this name.
 func withSameThings(t *testing.T) func(name string) func(*Server) {
 	return func(name string) func(*Server) {
 		return func(s *Server) {
-			p := s.App.St.P
-			created := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
-			files := map[string]any{
-				filepath.Join(p.BoardDir(sameBoard), "board.json"): model.Board{ID: sameBoard, Name: "Board of " + name, Group: sameGroup, Created: created},
-				filepath.Join(p.RunDir(sameRun), "run.json"): model.RunMeta{ID: sameRun, Name: "Run of " + name, UserNamed: true, Group: sameGroup,
-					Created: created, Settings: model.DefaultRunSettings()},
+			path := filepath.Join(s.App.St.P.BoardDir(sameBoard), "board.json")
+			board := model.Board{ID: sameBoard, Name: "Board of " + name, Group: sameGroup, Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
 			}
-			for path, v := range files {
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := store.WriteJSONAtomic(path, v, 0o600); err != nil {
-					t.Fatal(err)
-				}
+			if err := store.WriteJSONAtomic(path, board, 0o600); err != nil {
+				t.Fatal(err)
 			}
 			if err := s.App.Boards.Load(); err != nil {
 				t.Fatal(err)
 			}
-			rs := runs.New(runs.Deps{Store: s.App.St, Emit: s.Bridge, DefaultCwd: s.App.DefaultCwd, HaltWait: 300 * time.Millisecond})
-			if err := rs.Load(); err != nil {
-				t.Fatal(err)
-			}
-			rs.Chats = s.App.Chats
-			s.App.Chats.Runs = rs
-			s.App.Runs, s.Relay.Runs = rs, rs
-			t.Cleanup(func() { rs.Shutdown(5 * time.Second) })
 		}
 	}
 }
 
-// The same for a board and a run: one board and one run with the same id on this server and in
-// two sections. Each is listed once, in its own tree; a page holds and draws on each board at
-// the same time, and reads back its own drawing; the goal typed for each run is that run's; a
-// change of one is told with its server and changes no other; and a delete of one leaves the
-// other two.
-func TestBothSameBoardAndRunHereAndInTwoSections(t *testing.T) {
+// The same for a board: one board with the same id on this server and in two sections. Each is
+// listed once, in its own tree; a page holds and draws on each board at the same time, and reads
+// back its own drawing; a change of one is told with its server and changes no other; and a
+// delete of one leaves the other two.
+func TestBothSameBoardHereAndInTwoSections(t *testing.T) {
 	t.Parallel()
 	tw := newTwin(t, withSameThings(t))
 	p, q, r := tw.a.page("P"), tw.a.page("Q"), tw.a.page("R")
@@ -451,68 +430,52 @@ func TestBothSameBoardAndRunHereAndInTwoSections(t *testing.T) {
 		return string(out)
 	}
 
-	// ---- the lists: each board and each run once, in its own tree, under its own name.
-	type lists struct {
-		boards []model.Board
-		runs   []model.RunView
-	}
-	listed := func(what string) [3]lists {
+	// ---- the lists: each board once, in its own tree, under its own name.
+	listed := func(what string) [3][]model.Board {
 		t.Helper()
 		snap := decode[pageSnapshot](t, string(do(t, p, "GET", "/api/state", nil)))
 		if len(snap.Sections) != 2 || snap.Sections[tw.entry[0]] == nil || snap.Sections[tw.entry[1]] == nil {
 			t.Fatalf("%s: the sections of the state: %v", what, snap.Sections)
 		}
 		one, two := snap.Sections[tw.entry[0]], snap.Sections[tw.entry[1]]
-		return [3]lists{{snap.Boards, snap.Runs}, {one.Boards, one.Runs}, {two.Boards, two.Runs}}
+		return [3][]model.Board{snap.Boards, one.Boards, two.Boards}
 	}
-	named := func(what string, board, run [3]string) {
+	named := func(what string, board [3]string) {
 		t.Helper()
 		for i, l := range listed(what) {
-			if len(l.boards) != 1 || l.boards[0].ID != sameBoard || l.boards[0].Name != board[i] || l.boards[0].Group != sameGroup {
-				t.Errorf("%s: the boards of %s: %+v, want the one named %q", what, tw.name[i], l.boards, board[i])
-			}
-			if len(l.runs) != 1 || l.runs[0].ID != sameRun || l.runs[0].Name != run[i] || l.runs[0].Status != model.RunDraft {
-				t.Errorf("%s: the runs of %s: %+v, want the one named %q", what, tw.name[i], l.runs, run[i])
+			if len(l) != 1 || l[0].ID != sameBoard || l[0].Name != board[i] || l[0].Group != sameGroup {
+				t.Errorf("%s: the boards of %s: %+v, want the one named %q", what, tw.name[i], l, board[i])
 			}
 		}
 	}
-	var boards, runsOf [3]string
+	var boards [3]string
 	for i, name := range tw.name {
-		boards[i], runsOf[i] = "Board of "+name, "Run of "+name
+		boards[i] = "Board of " + name
 	}
-	named("at the start", boards, runsOf)
+	named("at the start", boards)
 	tw.reach(pages...)
 
 	// ---- a change of one is that server's, told with that server, and no other's.
 	for i, at := range tw.place {
 		// A board's name is one word: the server joins the words of another.
 		want("the rename of the board on "+tw.name[i], p, 200, "POST", at+"/boards/"+sameBoard+"/rename", obj{"name": "drawn-on-" + strconv.Itoa(i)})
-		want("the rename of the run on "+tw.name[i], p, 200, "PATCH", at+"/runs/"+sameRun, obj{"name": "Planned on " + tw.name[i]})
-		want("the goal typed on "+tw.name[i], p, 200, "PUT", at+"/runs/"+sameRun+"/draft", obj{"text": "the goal of " + tw.name[i]})
-		boards[i], runsOf[i] = "drawn-on-"+strconv.Itoa(i), "Planned on "+tw.name[i]
+		boards[i] = "drawn-on-" + strconv.Itoa(i)
 	}
 	for n, got := range tw.reach(pages...) {
 		for i, evs := range got {
 			for j := range tw.place {
 				for _, raw := range evs {
-					if j != i && (strings.Contains(raw, boards[j]) || strings.Contains(raw, runsOf[j]) || strings.Contains(raw, "the goal of "+tw.name[j])) {
+					if j != i && strings.Contains(raw, boards[j]) {
 						t.Errorf("the page %s got, as an event of %s, what is of %s: %s", pages[n].ID, tw.name[i], tw.name[j], raw)
 					}
 				}
 			}
-			if count(evs, "board", sameBoard, `"name":"`+boards[i]+`"`) != 1 ||
-				count(evs, "run", sameRun, `"name":"Planned on `+tw.name[i]+`"`) == 0 || count(evs, "run", sameRun, `"text":"the goal of `+tw.name[i]+`"`) == 0 {
+			if count(evs, "board", sameBoard, `"name":"`+boards[i]+`"`) != 1 {
 				t.Errorf("the page %s got of %s: %v", pages[n].ID, tw.name[i], evs)
 			}
 		}
 	}
-	named("after the changes", boards, runsOf)
-	for i, at := range tw.place {
-		v := decode[model.RunView](t, want("the run of "+tw.name[i], p, 200, "GET", at+"/runs/"+sameRun, nil))
-		if v.Name != runsOf[i] || v.Draft == nil || v.Draft.Text != "the goal of "+tw.name[i] {
-			t.Errorf("the run of %s after the changes: %+v", tw.name[i], v)
-		}
-	}
+	named("after the changes", boards)
 
 	// ---- the holds: three pages hold the three boards at the same time, each draws on its
 	// own, and no page is the holder of another's.
@@ -571,19 +534,17 @@ func TestBothSameBoardAndRunHereAndInTwoSections(t *testing.T) {
 	holders("after Q let the first entry's board go", [3]string{"P", "", "R"})
 	tw.reach(pages...)
 
-	// ---- the delete: of the first entry's board and of the second entry's run. Each is told
-	// with its server, and leaves the others, which are still held and still listed.
+	// ---- the delete: of the first entry's board. It is told with its server, and leaves the
+	// others, which are still held and still listed.
 	want("the delete of the first entry's board", p, 200, "DELETE", tw.place[1]+"/boards/"+sameBoard, nil)
-	want("the delete of the second entry's run", p, 200, "DELETE", tw.place[2]+"/runs/"+sameRun, nil)
 	for n, got := range tw.reach(pages...) {
-		if count(got[1], "board_removed", `"id":"`+sameBoard+`"`) != 1 || count(got[0], "board_removed")+count(got[2], "board_removed") != 0 ||
-			count(got[2], "run_removed", `"id":"`+sameRun+`"`) != 1 || count(got[0], "run_removed")+count(got[1], "run_removed") != 0 {
-			t.Errorf("the deletes told the page %s: %v", pages[n].ID, got)
+		if count(got[1], "board_removed", `"id":"`+sameBoard+`"`) != 1 || count(got[0], "board_removed")+count(got[2], "board_removed") != 0 {
+			t.Errorf("the delete told the page %s: %v", pages[n].ID, got)
 		}
 	}
-	for i, l := range listed("after the deletes") {
-		if len(l.boards) != map[bool]int{true: 0, false: 1}[i == 1] || len(l.runs) != map[bool]int{true: 0, false: 1}[i == 2] {
-			t.Errorf("after the deletes %s has the boards %+v and the runs %+v", tw.name[i], l.boards, l.runs)
+	for i, l := range listed("after the delete") {
+		if len(l) != map[bool]int{true: 0, false: 1}[i == 1] {
+			t.Errorf("after the delete %s has the boards %+v", tw.name[i], l)
 		}
 	}
 	for i, at := range tw.place {
@@ -591,26 +552,22 @@ func TestBothSameBoardAndRunHereAndInTwoSections(t *testing.T) {
 		if i == 1 && (status != 404 || decode[refusal](t, string(out)).Code != "not_found") || i != 1 && status != 200 {
 			t.Errorf("the drawing of %s after the delete of the first entry's board: %d %s", tw.name[i], status, out)
 		}
-		status, out = p.Do("GET", at+"/runs/"+sameRun, nil)
-		if i == 2 && (status != 404 || decode[refusal](t, string(out)).Code != "not_found") || i != 2 && status != 200 {
-			t.Errorf("the run of %s after the delete of the second entry's run: %d %s", tw.name[i], status, out)
-		}
 	}
-	holders("after the deletes", [3]string{"P", "", "R"})
-	want("a save on the local board after the deletes", p, 200, "PUT", scene(tw.place[0], 1), drawing("element-of-0-again"))
-	want("a save on the second entry's board after the deletes", r, 200, "PUT", scene(tw.place[2], 1), drawing("element-of-2-again"))
+	holders("after the delete", [3]string{"P", "", "R"})
+	want("a save on the local board after the delete", p, 200, "PUT", scene(tw.place[0], 1), drawing("element-of-0-again"))
+	want("a save on the second entry's board after the delete", r, 200, "PUT", scene(tw.place[2], 1), drawing("element-of-2-again"))
 }
 
 // Nothing moves between servers (goal 3.5 and 7; contract 3.10): a move names one server, in
-// its path, and the group it names is looked up on that server alone. So a chat, a board, a run
-// and a group of one server that are moved into a group only another server has, from this
+// its path, and the group it names is looked up on that server alone. So a chat, a board and a
+// group of one server that are moved into a group only another server has, from this
 // server's part into a section, from a section into this server's part and from one section
 // into another, are refused by the server that was asked, and no tree changes.
 func TestBothNothingMovesBetweenServers(t *testing.T) {
 	t.Parallel()
 	tw := newTwin(t, withSameThings(t))
 	p := tw.a.page("P")
-	// On each server a chat, beside its board and its run, and a group no other server has.
+	// On each server a chat, beside its board, and a group no other server has.
 	var own [3]string
 	const chat = chat1
 	for i, at := range tw.place {
@@ -624,22 +581,22 @@ func TestBothNothingMovesBetweenServers(t *testing.T) {
 	}
 	trees := func() [3]string {
 		t.Helper()
-		type lists struct{ Groups, Boards, Chats, Runs json.RawMessage }
+		type lists struct{ Groups, Boards, Chats json.RawMessage }
 		snap := decode[struct {
 			lists
 			Sections map[string]lists
 		}](t, string(do(t, p, "GET", "/api/state", nil)))
-		out := [3]string{string(snap.Groups) + string(snap.Boards) + string(snap.Chats) + string(snap.Runs)}
+		out := [3]string{string(snap.Groups) + string(snap.Boards) + string(snap.Chats)}
 		for i, entry := range tw.entry {
 			sec := snap.Sections[entry]
-			out[i+1] = string(sec.Groups) + string(sec.Boards) + string(sec.Chats) + string(sec.Runs)
+			out[i+1] = string(sec.Groups) + string(sec.Boards) + string(sec.Chats)
 		}
 		return out
 	}
 	tw.reach(p)
 	before := trees()
 	for i, tree := range before {
-		for _, has := range []string{chat, sameBoard, sameRun, own[i], sameGroup} {
+		for _, has := range []string{chat, sameBoard, own[i], sameGroup} {
 			if !strings.Contains(tree, has) {
 				t.Fatalf("the tree of %s lacks %s: %s", tw.name[i], has, tree)
 			}
@@ -658,11 +615,9 @@ func TestBothNothingMovesBetweenServers(t *testing.T) {
 			}{
 				{"chat", "PATCH", "/chats/" + chat, obj{"group": own[to]}},
 				{"board", "PATCH", "/boards/" + sameBoard, obj{"group": own[to]}},
-				{"run", "PATCH", "/runs/" + sameRun, obj{"group": own[to]}},
 				{"group", "POST", "/groups/" + own[from] + "/move", obj{"parent": own[to], "before": ""}},
 				{"new chat", "POST", "/chats", obj{"agent": "claude", "group": own[to]}},
 				{"new board", "POST", "/boards", obj{"name": "moved", "group": own[to]}},
-				{"new run", "POST", "/runs", obj{"name": "moved", "group": own[to]}},
 				{"new group", "POST", "/groups", obj{"name": "moved", "parent": own[to]}},
 			} {
 				if status, out := p.Do(c.method, at+c.path, c.body); status < 400 || status >= 500 {
@@ -673,7 +628,7 @@ func TestBothNothingMovesBetweenServers(t *testing.T) {
 	}
 	// No tree changed, and no page was told of a change of one.
 	for i, evs := range tw.reach(p)[0] {
-		if got := only(evs, "chat", "board", "run", "groups", "chat_removed", "board_removed", "run_removed"); len(got) != 0 {
+		if got := only(evs, "chat", "board", "groups", "chat_removed", "board_removed"); len(got) != 0 {
 			t.Errorf("the refused moves told a change of %s: %v", tw.name[i], got)
 		}
 	}
@@ -688,14 +643,12 @@ func TestBothNothingMovesBetweenServers(t *testing.T) {
 	for i, at := range tw.place {
 		do(t, p, "PATCH", at+"/chats/"+chat, obj{"group": own[i]})
 		do(t, p, "PATCH", at+"/boards/"+sameBoard, obj{"group": own[i]})
-		do(t, p, "PATCH", at+"/runs/"+sameRun, obj{"group": own[i]})
 	}
 	for i, e := range []*env{tw.a, tw.b[0], tw.b[1]} {
 		v, err := e.a.Chats.View(chat)
 		bd, _ := e.a.Boards.Get(sameBoard)
-		rv, rerr := e.a.Runs.View(sameRun)
-		if err != nil || rerr != nil || v.Group != own[i] || bd.Group != own[i] || rv.Group != own[i] {
-			t.Errorf("after the moves inside %s its chat, board and run are in %q, %q and %q, want %q: %v %v", tw.name[i], v.Group, bd.Group, rv.Group, own[i], err, rerr)
+		if err != nil || v.Group != own[i] || bd.Group != own[i] {
+			t.Errorf("after the moves inside %s its chat and board are in %q and %q, want %q: %v", tw.name[i], v.Group, bd.Group, own[i], err)
 		}
 	}
 }

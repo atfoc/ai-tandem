@@ -47,7 +47,7 @@ export const apiRoot = (server: string | null | undefined): string =>
 
 /** The path of a call about a thing: "/api/<kind>/<id>" on this computer, "/api/on/<entry id>/<kind>/<id>" in a
  *  section. The one place a key becomes a path: the id in it is the server's own. */
-export function pathOf(kind: "groups" | "boards" | "chats" | "runs", key: string): string {
+export function pathOf(kind: "groups" | "boards" | "chats", key: string): string {
   const { server, id } = splitKey(key);
   return `${apiRoot(server)}/${kind}/${id}`;
 }

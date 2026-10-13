@@ -1,13 +1,12 @@
-// The agents a server can run and what an agent choice shows (src/logic/agentlist.ts): a chat's,
-// a chat's on a run, a draft run's and the empty state's list name usable agents only.
+// The agents a server can run and what an agent choice shows (src/logic/agentlist.ts): a chat's
+// and the empty state's list name usable agents only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NO_AGENT, agentChoice, agentOpen, catalogFor, homeAgentsText, usableAgents } from "../src/logic/agentlist.ts";
 import { LOCAL_ENTRY, type ServerState } from "../src/logic/servers.ts";
-import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type Catalog, type ChatView, type RunView } from "../src/types.ts";
+import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type Catalog, type ChatView } from "../src/types.ts";
 
 const chat = (o: Partial<ChatView> = {}) => ({ agent: "claude", locked: false, ...o }) as ChatView;
-const run = (o: Partial<RunView> = {}) => ({ agent: "claude", ...o }) as RunView;
 
 test("usableAgents: the local server's list, as the store holds it", () => {
   assert.equal(LOCAL_SERVER, "local");
@@ -39,28 +38,23 @@ test("usableAgents: another server's list by its entry id, only while it is conn
   assert.deepEqual(usableAgents(kept, "s_1"), []);
 });
 
-test("agentChoice: a chat, a chat on a run and a draft run are offered the usable agents alone", () => {
+test("agentChoice: a chat is offered the usable agents alone", () => {
   const usable: AgentKind[] = ["claude", "pi"];
-  for (const current of [chat().agent, chat({ run: "r_1" }).agent, run().agent]) {
-    assert.deepEqual(agentChoice(usable, current), { options: ["claude", "pi"], current: "claude", missing: false, reason: "" });
-  }
+  assert.deepEqual(agentChoice(usable, chat().agent), { options: ["claude", "pi"], current: "claude", missing: false, reason: "" });
   assert.ok(!agentChoice(usable, "claude").options.includes("cursor"));
 });
 
 test("agentChoice: a stored agent the server lacks is marked, is not among the options, and the reason names it", () => {
-  for (const current of [chat({ agent: "cursor" }).agent, chat({ agent: "cursor", run: "r_1" }).agent, run({ agent: "cursor" }).agent]) {
-    const c = agentChoice(["claude", "pi"], current);
-    assert.equal(c.missing, true);
-    assert.equal(c.current, "cursor");
-    assert.deepEqual(c.options, ["claude", "pi"]);
-    assert.match(c.reason, /^Cursor is not installed/);
-    assert.notEqual(c.reason, NO_AGENT);
-  }
+  const c = agentChoice(["claude", "pi"], chat({ agent: "cursor" }).agent);
+  assert.equal(c.missing, true);
+  assert.equal(c.current, "cursor");
+  assert.deepEqual(c.options, ["claude", "pi"]);
+  assert.match(c.reason, /^Cursor is not installed/);
+  assert.notEqual(c.reason, NO_AGENT);
 });
 
 test("agentChoice: with none usable there is no option and the reason is NO_AGENT", () => {
   assert.deepEqual(agentChoice([], ""), { options: [], current: "", missing: false, reason: NO_AGENT });
-  assert.deepEqual(agentChoice([], run({ agent: "" }).agent), { options: [], current: "", missing: false, reason: NO_AGENT });
   assert.deepEqual(agentChoice([], "pi"), { options: [], current: "pi", missing: true, reason: NO_AGENT });
 });
 
@@ -102,14 +96,12 @@ test("catalogFor: by server, and another server's also while it is not connected
   assert.equal(catalogFor(at("connected"), "s_1", ""), undefined);
 });
 
-test("agentOpen: only an unstarted chat that is neither a fork, a branch nor a run agent", () => {
+test("agentOpen: only an unstarted chat that is neither a fork nor a branch", () => {
   assert.equal(agentOpen(chat()), true);
   assert.equal(agentOpen(chat({ agent: "" })), true);
-  assert.equal(agentOpen(chat({ run: "r_1" })), true); // the user's chat on a run
   assert.equal(agentOpen(chat({ branches: 1 })), true);
   assert.equal(agentOpen(chat({ locked: true })), false); // started
   assert.equal(agentOpen(chat({ forkedFrom: "c_0", fresh: true })), false); // a fork at its start
   assert.equal(agentOpen(chat({ branch: "ab12cd34", branches: 2 })), false); // on a branch
   assert.equal(agentOpen(chat({ branches: 2 })), false); // on main, with a branch beside it
-  assert.equal(agentOpen(chat({ run: "r_1", role: "orchestrator" })), false); // a run's own agent
 });

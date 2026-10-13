@@ -13,19 +13,16 @@ const NEAR = 1.5, NEAR_G1 = 3; // px: the same page drawn again; another day's f
 // G1's cases (G1 §Q2) whose names are short: the seeded states that are one of them, with the sum G1 measured for the
 // chips and gaps on one line. (G1's long-name and long-server cases, sums of 520 to 1034, have capped chips now.)
 // (G1 measured an unstarted chat with the server's chip, 108 px as a choice and 91.6 as a fixed one, which a chat on this computer no longer
-// has: the chip and its gap are taken off its three sums, 545 and twice 528.6.)
+// has: the chip and its gap are taken off its two sums, 545 and 528.6.)
 const G1_SUMS = { "plain-started": 338.5, "plain-quotes": 338.5, "plain-ctxerr": 349, "plain-busy": 370.5, "plain-move": 412.7, "plain-new": 433,
-  "board-started": 338.5, "board-quotes": 338.5, "board-longname": 338.5, "run-started": 338.5, "run-quotes": 338.5, "run-busy": 370.5, "board-move": 412.7, "board-new": 433, "run-new": 433,
-  "goal-draft": 627 }; // (G1 gives the one sum for its four goal cases; the other three have other folders and limits. It measured 722.6
-// with the server's chip and its gap, 95.6 px together, which the goal composer of a run of this computer no longer has)
+  "board-started": 338.5, "board-quotes": 338.5, "board-longname": 338.5, "board-move": 412.7, "board-new": 433 };
 // G1's chip widths: [state, kind, whether the chip is a fixed one, width]
 const G1_CHIPS = [
   ["plain-new", "agent", false, 115.2], ["plain-new", "folder", false, 70.2], ["plain-started", "folder", true, 53.8], ["plain-new", "model", false, 77.3], ["plain-new", "effort", false, 90.4],
   ["plain-started", "model-effort", true, 97.4], ["plain-new", "meter", false, 28], ["plain-started", "meter", false, 125.3], ["plain-ctxerr", "meter", false, 135.8],
-  ["plain-started", "send", false, 28], ["plain-busy", "stop", false, 28], ["plain-started", "lock", false, 10], ["goal-draft", "tiers", false, 256.8], ["goal-draft", "limits", false, 136.8]];
+  ["plain-started", "send", false, 28], ["plain-busy", "stop", false, 28], ["plain-started", "lock", false, 10]];
 // The chips with a long name, each as wide as its name's cap lets it be (styles.css: 160 px, the model choice's 76):
-// [state, kind, fixed, width, what G1 measured for it uncapped]. The goal composer's chips have no cap of their own:
-// they are cut where the row ends, and are whole in a stage this wide.
+// [state, kind, fixed, width, what G1 measured for it uncapped].
 const CAPPED = [["plain-new-long", "folder", false, 202.4, 337], ["plain-new-long", "model", false, 102.4, 302.6], ["plain-started-long", "folder", true, 186, 320.6], ["plain-started-long", "model-effort", true, 170, 319.9],
   ["plain-remote-new", "server", true, 170, 188], ["plain-remote-started", "server", true, 170, 188]]; // (the server's chip is a fixed one, started or not)
 // What a narrow toolbar has beside its chips: [the fixture's field, the state and the page's width that show it, its selector]
@@ -56,14 +53,14 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
     const t = await toolbarWidths(page);
     await ctx.close();
     if (t.controls.some((c) => c.kind === "other")) fail(`${s.id}: a control of the toolbar has no kind: ${JSON.stringify(t.controls.filter((c) => c.kind === "other"))}`);
-    if (t.composer === "chat") { gaps.add(t.gap); chromes.add(t.chrome); }
-    states[s.id] = { ...(s.id in G1_SUMS ? { g1: s.id } : {}), composer: t.composer, pane: s.pane[0], chat: s.sel.chat, sum: t.sum, ...(t.reason ? { reason: true } : {}), controls: t.controls.map((c) => ({ kind: c.kind, label: c.label, ...(c.fixed ? { fixed: true } : {}), w: c.w, ...(c.margin ? { margin: c.margin } : {}) })) };
+    gaps.add(t.gap); chromes.add(t.chrome);
+    states[s.id] = { ...(s.id in G1_SUMS ? { g1: s.id } : {}), pane: s.pane[0], chat: s.sel.chat, sum: t.sum, ...(t.reason ? { reason: true } : {}), controls: t.controls.map((c) => ({ kind: c.kind, label: c.label, ...(c.fixed ? { fixed: true } : {}), w: c.w, ...(c.margin ? { margin: c.margin } : {}) })) };
   }
-  if (gaps.size !== 1 || chromes.size !== 1) fail(`the chat toolbars do not share one gap and one box chrome: gaps ${[...gaps]}, chromes ${[...chromes]}`);
+  if (gaps.size !== 1 || chromes.size !== 1) fail(`the toolbars do not share one gap and one box chrome: gaps ${[...gaps]}, chromes ${[...chromes]}`);
   const now = {
-    about: "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/runmock-ui.js), as headless Chromium draws the page with the system font. Written by `WRITE=1 node dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160 px, the model choice's 76), and each state is measured in a pane wide enough for all of its controls.",
+    about: "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/mock-ui.js), as headless Chromium draws the page with the system font. Written by `WRITE=1 node dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160 px, the model choice's 76), and each state is measured in a pane wide enough for all of its controls.",
     gap: [...gaps][0], chrome: [...chromes][0], ...narrow,
-    legend: "gap: between two controls of the chat toolbar (its spacer is one of them, at no width); chrome: the box's padding and border, so a row of `sum` px needs a box of sum + chrome; more: the chip that opens the popup of the controls the row has no room for; ring: the context meter cut to its ring; icon: the error meter cut to its icon. A state: g1, the name of G1's case it is, where its names are short; composer, chat or goal (the goal composer wraps and is not fitted); pane, where it is shown; sum, its controls and gaps on one line; reason, it has a line under its controls; controls, left to right: kind, label, fixed (a chip that takes no pick), w, and margin where the control has one of its own (the lock): it needs w + margin.",
+    legend: "gap: between two controls of the toolbar (its spacer is one of them, at no width); chrome: the box's padding and border, so a row of `sum` px needs a box of sum + chrome; more: the chip that opens the popup of the controls the row has no room for; ring: the context meter cut to its ring; icon: the error meter cut to its icon. A state: g1, the name of G1's case it is, where its names are short; pane, where it is shown; sum, its controls and gaps on one line; reason, it has a line under its controls; controls, left to right: kind, label, fixed (a chip that takes no pick), w, and margin where the control has one of its own (the lock): it needs w + margin.",
     states,
   };
 

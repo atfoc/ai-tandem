@@ -32,10 +32,5 @@ export const runningChats = (chats: Iterable<{ id?: string; status: Status; subs
   return n;
 };
 
-/** The restart confirmation's body for n running agent chats and the runs that work (logic/run.ts
- *  runningRuns): a restart ends the chats' turns; a run pauses and goes on by itself after it. */
-export const restartConfirmText = (n: number, runs = 0): string => {
-  const chats = `ends ${n} running agent chat${n === 1 ? "" : "s"}`;
-  const paused = `${runs} running run${runs === 1 ? " pauses and continues" : "s pause and continue"} after the restart.`;
-  return !runs ? `Restart ${chats}.` : !n ? paused : `Restart ${chats}. ${paused}`;
-};
+/** The restart confirmation's body for n running agent chats: a restart ends their turns. */
+export const restartConfirmText = (n: number): string => `Restart ends ${n} running agent chat${n === 1 ? "" : "s"}.`;

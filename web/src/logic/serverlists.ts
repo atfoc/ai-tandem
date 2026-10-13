@@ -22,7 +22,7 @@ export const THIS_COMPUTER = "This computer";
 /** The name of an entry the list no longer has. */
 export const UNKNOWN_SERVER = "Unknown server";
 
-/** The entry id of the server a chat, a board, a run or a group is on, which its key says (logic/keys.ts):
+/** The entry id of the server a chat, a board or a group is on, which its key says (logic/keys.ts):
  *  LOCAL_SERVER for a thing of this computer, and for none. */
 export const serverOf = (c?: { id?: string } | null): string => serverOfKey(c?.id);
 
@@ -62,14 +62,11 @@ export const serverName = (s: ListsState, server: string): string =>
 export const sectionName = (s: ListsState, key: string): string => (serverOfKey(key) === LOCAL_SERVER ? "" : serverName(s, serverOfKey(key)));
 
 export const BOARD_SERVER = "A chat on a board is on the board's server";
-export const RUN_SERVER = "A chat on a run is on the run's server";
 export const SERVER_FINAL = "A chat is on the server it was made on";
-/** What the chip that names a run's server says on hover. */
-export const RUN_SERVER_FINAL = "A run is on the server it was made on";
 
-/** What the chip that names a chat's server says on hover: a chat is on its board's or its run's
- *  server, and any other on the one it was made on. Nothing moves between servers. */
-export const serverFixed = (c: Pick<ChatView, "board" | "run">): string => (c.board ? BOARD_SERVER : c.run ? RUN_SERVER : SERVER_FINAL);
+/** What the chip that names a chat's server says on hover: a chat is on its board's server, and any
+ *  other on the one it was made on. Nothing moves between servers. */
+export const serverFixed = (c: Pick<ChatView, "board">): string => (c.board ? BOARD_SERVER : SERVER_FINAL);
 
 /** The localStorage key of this computer's recent folders. Another server's are not kept in the browser. */
 export const RECENT_KEY = "aiwb.dirs";

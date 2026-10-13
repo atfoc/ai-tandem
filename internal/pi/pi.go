@@ -266,8 +266,7 @@ func (p *proc) handshake() {
 
 // doHandshake: get_state (readiness + session) → get_available_models → set_model →
 // set_thinking_level → EvSession (when the reconciled id differs) + one EvCatalog. A fork start
-// forks right after get_state (forkSession) and always reports the new session's id. A resume
-// that needs the session's history fails right after get_state when there is none (noHistory).
+// forks right after get_state (forkSession) and always reports the new session's id.
 func (p *proc) doHandshake() error {
 	deadline := time.Now().Add(handshakeTimeout)
 	call := func(command string, fields map[string]any) (rpcResponse, error) {
@@ -289,8 +288,6 @@ func (p *proc) doHandshake() error {
 		if state, err = p.forkSession(call, state); err != nil {
 			return err
 		}
-	} else if p.o.Resume && p.o.NeedHistory && noHistory(state.Data) {
-		return agent.NoSession("pi has no messages in session " + p.o.SessionID)
 	}
 	models, err := call("get_available_models", nil)
 	if err != nil {
@@ -341,17 +338,6 @@ type piState struct {
 	SessionID   string          `json:"sessionId"`
 	SessionFile string          `json:"sessionFile"`
 	Model       json.RawMessage `json:"model"`
-}
-
-// noHistory reports whether the session get_state describes holds no message. pi gives no error
-// for a session id it does not know: it opens a new, empty session under that id, and only a
-// warning on stderr says so (the same one every first start prints). An agent "resumed" into it
-// knows nothing of its task.
-func noHistory(state []byte) bool {
-	var st struct {
-		MessageCount int `json:"messageCount"`
-	}
-	return json.Unmarshal(state, &st) == nil && st.MessageCount == 0
 }
 
 // applyState records the session and current model from get_state's data.

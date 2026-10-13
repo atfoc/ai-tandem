@@ -73,10 +73,9 @@ func TestBothWhatAClientCannotReach(t *testing.T) {
 	// The remote server's own things, made by a client.
 	group := l5ID(t, one.want(t, 200, "POST", "/groups", obj{"name": "Work", "parent": ""}))
 	chat := l5ID(t, one.want(t, 200, "POST", "/chats", obj{"agent": "claude", "group": group}))
-	run := l5ID(t, one.want(t, 200, "POST", "/runs", obj{"group": group, "name": "Run"}))
 	board := l5ID(t, one.want(t, 200, "POST", "/boards", obj{"name": "plan", "group": group}))
 	one.want(t, 200, "POST", "/boards/"+board+"/release", nil)
-	bo.told("the set-up", us, []string{"run", run})
+	bo.same("the set-up", us...)
 	// The owner's page has the third server: in its list, and as a section with that server's chat.
 	state := decode[struct {
 		Sections map[string]*remotes.Tree
@@ -149,7 +148,7 @@ func TestBothWhatAClientCannotReach(t *testing.T) {
 		{"POST", "/restart"}, {"GET", "/remote/status"}, {"GET", "/mcp/status"}, {"POST", "/client/flushed"}, {"PUT", "/groups/order"},
 		{"GET", "/state"}, {"GET", "/events"}, {"GET", "/hello"}, {"GET", "/dirs"}, {"GET", "/usage/claude"}, {"POST", "/rpc-reply"},
 		{"GET", "/library"}, {"POST", "/library/" + thirdEntry + "/groups"}, {"GET", ""}, {"GET", "/"}, {"GET", "/index.html"},
-		{"PUT", "/chats/" + chat}, {"PUT", "/runs/" + run}, {"PUT", "/boards/" + board}, {"GET", "/boards/" + board},
+		{"PUT", "/chats/" + chat}, {"PUT", "/boards/" + board}, {"GET", "/boards/" + board},
 	}
 	for _, route := range bo.b.s.routes().patterns {
 		method, path, found := strings.Cut(route, " ")
@@ -179,7 +178,7 @@ func TestBothWhatAClientCannotReach(t *testing.T) {
 	place := strings.NewReplacer("{board}", board, "{chat}", chat, "s_0123456789ab", thirdEntry)
 	asks := slices.Clone(l5Outside)
 	asks = append(asks, [2]string{"GET", "/api/on/" + thirdEntry + "/chats/" + farChatA + "/items"}, [2]string{"GET", "/api/on/" + thirdEntry + "/chats/" + farChatA + "/tree"},
-		[2]string{"POST", "/api/on/" + thirdEntry + "/chats/" + farChatA + "/messages"}, [2]string{"GET", "/api/on/" + thirdEntry + "/runs/" + farRunA + "/detail"})
+		[2]string{"POST", "/api/on/" + thirdEntry + "/chats/" + farChatA + "/messages"})
 	for _, a := range asks {
 		status, out := l5Call(x, a[0], place.Replace(a[1]), nil)
 		if a[0] == "HEAD" {
@@ -209,8 +208,8 @@ func TestBothWhatAClientCannotReach(t *testing.T) {
 	}
 	l5Code(t, x, 404, CodeNoServer, "POST", "/api/library/"+thirdEntry+"/groups", `{"name":"n"}`)
 	clean("the libraries of a client", l5Want(t, x, 200, "GET", "/api/library", nil))
-	// The app's own folder and the folder of the runs' checkouts are not listed to a client.
-	for _, dir := range []string{bo.b.a.DataDir, filepath.Join(bo.b.a.DataDir, "runs"), bo.b.st.P.RunWork} {
+	// The app's own folder is not listed to a client.
+	for _, dir := range []string{bo.b.a.DataDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -226,7 +225,7 @@ func TestBothWhatAClientCannotReach(t *testing.T) {
 
 	// Nothing of all that changed the remote server, and the third server was asked nothing
 	// since the remote server connected to it.
-	if after := owner.tree(t); !l5Same(t, l5Field(t, after, "groups"), l5Field(t, before, "groups")) || !l5SameList(t, after, before, "boards") || !l5SameList(t, after, before, "runs") {
+	if after := owner.tree(t); !l5Same(t, l5Field(t, after, "groups"), l5Field(t, before, "groups")) || !l5SameList(t, after, before, "boards") {
 		t.Errorf("the calls changed the remote server:\nbefore %s\nafter  %s", before, after)
 	}
 	if got := third.Requests(); len(got) != sent {

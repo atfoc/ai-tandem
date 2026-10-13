@@ -404,7 +404,7 @@ func TestForkAndTreeJSON(t *testing.T) {
 	}
 }
 
-// A chat without stored subagent settings (one made before they existed, a run agent's) reads as
+// A chat without stored subagent settings (one made before they existed) reads as
 // depth 1 and cap 100, and its view says so; depth 0 is a stored value of its own.
 func TestSubLimits(t *testing.T) {
 	var m ChatMeta

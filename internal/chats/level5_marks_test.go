@@ -64,7 +64,6 @@ func markOnDisk(t *testing.T, dir, client string) {
 // fromBefore is the chats of markedEnv: each has the mark clientX in its chat.json.
 type fromBefore struct {
 	plain   string // in gTwo, not started
-	onRun   string // on ownRun, whose group is gOne; not started
 	started string // in gOne, with one turn on main and a second branch, which is the current one
 	branch  string // that branch's id, and bid its server id
 	bid     string
@@ -74,21 +73,20 @@ type fromBefore struct {
 
 // tops are the ids of the chats people see.
 func (f fromBefore) tops() []string {
-	ids := []string{f.plain, f.onRun, f.started, f.fork}
+	ids := []string{f.plain, f.started, f.fork}
 	sort.Strings(ids)
 	return ids
 }
 
 // markedEnv is a server that starts on the data folder of one from before level 5: it holds a
-// plain chat, a chat on a run, a chat with a branch and a fork of that chat, all with the client
-// mark clientX in their chat.json, the branch's too. Every group has sticky defaults that are not
+// plain chat, a chat with a branch and a fork of that chat, all with the client mark clientX in
+// their chat.json, the branch's too. Every group has sticky defaults that are not
 // the catalogs' defaults: for Claude opus and low, for Cursor gpt-5.4-mini.
 func markedEnv(t *testing.T) (*env, fromBefore) {
 	t.Helper()
-	e, fr := runEnv(t)
+	e := newEnv(t)
 	var f fromBefore
 	f.plain = e.newChat(NewChat{Agent: model.Claude, Group: gTwo}).ID
-	f.onRun = e.onRun(model.Claude).ID
 	f.started, _ = e.talked(model.Claude, "", 1)
 	var a *fakeAgent
 	f.branch, f.bid, a = e.branchTo(f.started, newAt(3), "aside")
@@ -98,7 +96,6 @@ func markedEnv(t *testing.T) (*env, fromBefore) {
 
 	f.dirs = map[string]string{
 		f.plain:   e.st.P.ChatDir(f.plain),
-		f.onRun:   e.st.P.RunChatDir(ownRun, false, f.onRun),
 		f.started: e.st.P.ChatDir(f.started),
 		f.bid:     e.st.P.ChatDir(f.bid),
 		f.fork:    e.st.P.ChatDir(f.fork),
@@ -109,7 +106,7 @@ func markedEnv(t *testing.T) (*env, fromBefore) {
 	sd := model.LocalDefaults(model.ServerDefaults{ByAgent: map[model.AgentKind]model.ModelChoice{
 		model.Claude: {Model: "opus", Effort: "low"}, model.Cursor: {Model: "gpt-5.4-mini"}}})
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: sd, gTwo: sd, model.Ungrouped: sd}})
-	e.reboot(fr)
+	e.boot()
 	return e, f
 }
 
@@ -162,7 +159,7 @@ func TestNoChatIsLoadedWithAClientMark(t *testing.T) {
 	for _, s := range e.m.States() {
 		states[s.Chat]++
 	}
-	if want := map[string]int{f.plain: 1, f.onRun: 1, f.started: 2, f.fork: 1}; !reflect.DeepEqual(states, want) {
+	if want := map[string]int{f.plain: 1, f.started: 2, f.fork: 1}; !reflect.DeepEqual(states, want) {
 		t.Fatalf("States has the records %v, want %v", states, want)
 	}
 }
@@ -199,20 +196,9 @@ func TestChatThatHadAMarkReadsAndFeedsItsGroupsDefaults(t *testing.T) {
 		t.Fatalf("%d defaults events for an agent change, a model and a first message, want 3", len(got))
 	}
 
-	// A chat on a run reads and feeds the defaults of its run's group.
-	e.configure(f.onRun, ConfigReq{Agent: model.Cursor})
-	if v := e.view(f.onRun); v.Agent != model.Cursor || v.Model != "gpt-5.4-mini" {
-		t.Fatalf("after an agent change the chat on a run did not take its group's choice: %+v", v)
-	}
-	if got := local(gOne).Agent; got != model.Cursor {
-		t.Fatalf("after an agent change of a chat on a run its group's agent is %q", got)
-	}
-
 	// What was saved holds no mark.
-	for _, id := range []string{f.plain, f.onRun} {
-		if got, ok := diskMark(t, f.dirs[id]); ok {
-			t.Fatalf("the chat.json of %s was saved with the mark %q", id, got)
-		}
+	if got, ok := diskMark(t, f.dirs[f.plain]); ok {
+		t.Fatalf("the chat.json of %s was saved with the mark %q", f.plain, got)
 	}
 	e.m.naming.Wait()
 }

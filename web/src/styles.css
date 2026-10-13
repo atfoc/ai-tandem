@@ -254,7 +254,7 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .remote-bar { position: sticky; bottom: 0; margin-top: auto; flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; }
 .remote-bar-text { flex: 1; min-width: 0; }
 .remote-bar-state { color: var(--muted); }
-/* the warning over a chat or a run that is shown as it was: its server is not connected, or no longer has it */
+/* the warning over a chat that is shown as it was: its server is not connected, or no longer has it */
 .remote-bar.off, .remote-bar.gone { color: var(--text); background: var(--warn-soft); border-color: var(--warn); }
 .empty-thread { margin: auto 0; text-align: center; color: var(--muted); padding: 10px 8px 24px; }
 .big-glyph { width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 10px; display: grid; place-items: center; background: var(--agent-soft); }
@@ -362,7 +362,7 @@ button.ref-chip:hover { background: var(--accent-soft); }
 .ctx-chip.muted { color: var(--faint); }
 .composer-box { position: relative; display: flex; align-items: flex-end; gap: 6px; border: 1px solid var(--line-2); border-radius: 10px; padding: 6px 6px 6px 10px; background: var(--bg); }
 .composer-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-/* read-only: the server of the chat or the run is not connected, or no longer has it. The box keeps what it holds and takes no more. */
+/* read-only: the server of the chat is not connected, or no longer has it. The box keeps what it holds and takes no more. */
 .composer-box.read-only { background: var(--panel); }
 .composer-box.read-only:focus-within { border-color: var(--line-2); box-shadow: none; }
 .composer-box.read-only .composer-input { color: var(--muted); cursor: default; caret-color: transparent; }
@@ -519,7 +519,6 @@ button.split-row { cursor: pointer; }
 .dir-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .dir-err { color: var(--danger); font-size: 11.5px; padding: 0 4px 4px; }
 .dir-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); padding: 6px 6px 2px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dir-sub .git { font: 600 9.5px var(--font); color: var(--ok); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
 .dir-list { max-height: 220px; overflow-y: auto; }
 .menu-item.dir { padding: 4px 8px; justify-content: flex-start; gap: 7px; font-size: 12.5px; color: var(--text); }
 .menu-item.dir svg { color: var(--muted); flex: none; }
@@ -587,9 +586,6 @@ button.split-row { cursor: pointer; }
 .side-glyph { position: relative; width: 20px; height: 20px; flex: none; border-radius: 6px; display: grid; place-items: center; background: var(--agent-soft); }
 .side-glyph .crow-dot { width: 8px; height: 8px; }
 .side-board-icon { width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--accent); }
-.side-row.is-run .side-name { font-weight: 560; }
-.side-run-icon { position: relative; width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--accent); }
-.side-run-icon .crow-dot { width: 8px; height: 8px; right: 0; bottom: 1px; }
 .side-board-chats { position: relative; }
 .side-board-chats::before { content: ""; position: absolute; left: 21px; top: 0; bottom: 6px; width: 1px; background: var(--line-2); }
 .side-addgroup { display: flex; align-items: center; gap: 6px; margin-top: 10px; width: 100%; border: 1px dashed var(--line-2); background: none; color: var(--faint); border-radius: 7px; padding: 5px 10px; font-size: 12px; }

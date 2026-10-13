@@ -205,18 +205,12 @@ func helperProcess() {
 	}
 	out.Close()
 	if os.Getenv(envStay) != "" {
-		// The mark that stdin was read to its end: every line sent before it closed is recorded.
-		os.WriteFile(os.Getenv(envStdin)+stdinEOF, nil, 0o644)
 		time.Sleep(30 * time.Second)
 	}
 	if msg := os.Getenv(envStderr); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
 	}
 }
-
-// stdinEOF is what the fake adds to the path of its stdin record (envStdin) to name the file it
-// creates, in envStay mode, when it has read stdin to its end and recorded all of it.
-const stdinEOF = ".eof"
 
 // startStayChildren starts the two children of envStay. Neither holds the fake's output.
 func startStayChildren(file string) {
@@ -592,95 +586,6 @@ func TestMissingFolder(t *testing.T) {
 	}
 }
 
-// answers returns the fake's stdin lines that answer control requests, by request id.
-func answers(lines []map[string]any) map[string]map[string]any {
-	out := map[string]map[string]any{}
-	for _, l := range lines {
-		if l["type"] == "control_response" {
-			out[str(obj(l["response"])["request_id"])] = l
-		}
-	}
-	return out
-}
-
-// Nobody answers the requests of an unattended or a read-only process, so none becomes a card:
-// the adapter answers each at once. The app's folder is refused as always; beyond that an
-// unattended process is allowed and a read-only one refused, also when it is unattended too.
-func TestStrayPermissionRequestIsAnsweredAtOnce(t *testing.T) {
-	script := []string{
-		`{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cat ~/.ai-whiteboard/x"},"tool_use_id":"toolu_1"}}`,
-		`{"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch a.txt","description":"Create a.txt"},"tool_use_id":"toolu_2"}}`,
-		`{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_T","description":"d","task_type":"local_agent","prompt":"p"}`,
-		`{"type":"control_request","request_id":"r3","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[]},"tool_use_id":"toolu_3","agent_id":"a1","requires_user_interaction":true}}`,
-		`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok"}`,
-	}
-	cases := []struct {
-		name  string
-		o     agent.SpawnOptions
-		allow bool
-	}{
-		{"unattended", agent.SpawnOptions{Unattended: true}, true},
-		{"read-only", agent.SpawnOptions{ReadOnly: true}, false},
-		{"read-only and unattended", agent.SpawnOptions{ReadOnly: true, Unattended: true}, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			f := newFake(t, script...)
-			c.o.SessionID, c.o.Cwd = "s1", t.TempDir()
-			a, err := f.spawner().Spawn(c.o)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// The turn's end comes after the three requests: by then each was answered or raised.
-			for {
-				ev := next(t, a)
-				if ev.Kind == agent.EvPermRequest {
-					t.Fatalf("a permission request was raised: %+v", ev)
-				}
-				if ev.Kind == agent.EvTurnEnd {
-					break
-				}
-			}
-			for _, id := range []string{"r1", "r2", "r3"} {
-				if err := a.Decide(id, true); err == nil {
-					t.Errorf("request %s is waiting for a decision", id)
-				}
-			}
-			a.Close()
-			for ev := next(t, a); ev.Kind != agent.EvExit; ev = next(t, a) {
-			}
-			b, _ := os.ReadFile(f.stdin)
-			var lines []map[string]any
-			for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-				var m map[string]any
-				json.Unmarshal([]byte(l), &m)
-				lines = append(lines, m)
-			}
-			got := answers(lines)
-			if len(got) != 3 {
-				t.Fatalf("answers %v, want one for each of the 3 requests", got)
-			}
-			if r := response(got["r1"]); r["behavior"] != "deny" || r["message"] != agent.AppDirDenied {
-				t.Errorf("r1 (the app's folder): %v, want a deny with AppDirDenied", r)
-			}
-			for _, id := range []string{"r2", "r3"} {
-				r := response(got[id])
-				if c.allow && r["behavior"] != "allow" {
-					t.Errorf("%s: %v, want allow", id, r)
-				}
-				if !c.allow && (r["behavior"] != "deny" || r["message"] != readOnlyDenied) {
-					t.Errorf("%s: %v, want a deny that says read-only", id, r)
-				}
-			}
-			if c.allow {
-				if in := obj(response(got["r2"])["updatedInput"]); in["command"] != "touch a.txt" || in["description"] != "Create a.txt" {
-					t.Errorf("r2 updatedInput %v", in)
-				}
-			}
-		})
-	}
-}
-
 // stayPids reads the two child pids the fake wrote (envStay): the one in the fake's group and the
 // one that leads its own. Both are ended when the test ends, each by its own pid and only while
 // it is still a child the fake started (a sleeping copy of the test binary).
@@ -713,94 +618,33 @@ func alive(pid int) bool {
 	return err == nil && len(f) >= 2 && !strings.HasPrefix(f[0], "Z") && filepath.Base(f[len(f)-1]) == filepath.Base(os.Args[0])
 }
 
-func waitGone(t *testing.T, what string, pid int) {
-	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); alive(pid); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s (%d) is still running", what, pid)
-		}
-	}
-}
-
-// Close of an unattended process stops its turn first, and when the process is still there after
-// the grace period it ends its whole group and the groups of what it started. A chat's process is
-// killed alone, as before.
-func TestCloseUnattendedEndsWhatItStarted(t *testing.T) {
+// Close kills the process alone when it is still there after the grace period: what it started,
+// in its own group or in another, stays. It sends no interrupt first.
+func TestCloseKillsOnlyTheProcess(t *testing.T) {
+	// An interrupt sent by mistake has to reach the fake's record of stdin within the grace,
+	// before the fake is killed.
 	old := closeGraceNanos.Swap(int64(300 * time.Millisecond))
 	t.Cleanup(func() { closeGraceNanos.Store(old) })
 
-	t.Run("unattended", func(t *testing.T) {
-		// The fake has to read its stdin to the end within the grace, before it is killed: only then
-		// does its record show what Close sent. It leaves a mark when it has (stdinEOF). An attempt
-		// with the mark counts, and in it the interrupt has to be the last line. A grace the fake
-		// left no mark in does not count and a longer one follows, which holds on a busy machine
-		// and only costs its time there.
-		graces := []time.Duration{300 * time.Millisecond, 3 * time.Second}
-		for i, grace := range graces {
-			old := closeGraceNanos.Swap(int64(grace))
-			t.Cleanup(func() { closeGraceNanos.Store(old) })
-			f := newFake(t)
-			pidFile := filepath.Join(f.dir, "pids")
-			t.Setenv(envStay, pidFile)
-			a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir(), Unattended: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			inGroup, ownGroup := stayPids(t, pidFile)
-			f.waitStdin(t, `"initialize"`)
-			a.Close()
-			exits := 0
-			for ev := range a.Events() {
-				if ev.Kind == agent.EvExit {
-					exits++
-				}
-			}
-			if exits != 1 {
-				t.Errorf("%d exit events, want 1", exits)
-			}
-			waitGone(t, "the child in the process's group", inGroup)
-			waitGone(t, "the child that leads a group of its own", ownGroup)
-			// The turn was stopped before stdin closed.
-			b, _ := os.ReadFile(f.stdin)
-			lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-			last := lines[len(lines)-1]
-			if _, err := os.Stat(f.stdin + stdinEOF); err == nil {
-				if !strings.Contains(last, `"subtype":"interrupt"`) {
-					t.Errorf("grace %s: last stdin line %s, want the interrupt", grace, last)
-				}
-				break
-			}
-			if i == len(graces)-1 {
-				t.Errorf("the fake never read its stdin to the end, not even within %s; last line %s", grace, last)
-			} else {
-				t.Logf("%s was too short on this machine now: the fake was killed before it read its stdin to the end", grace)
-			}
-		}
-	})
-
-	t.Run("a chat", func(t *testing.T) {
-		// The parent's grace: an interrupt sent by mistake has to reach the fake's record of stdin
-		// within it, before the fake is killed.
-		f := newFake(t)
-		pidFile := filepath.Join(f.dir, "pids")
-		t.Setenv(envStay, pidFile)
-		a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
-		if err != nil {
-			t.Fatal(err)
-		}
-		inGroup, ownGroup := stayPids(t, pidFile)
-		f.waitStdin(t, `"initialize"`)
-		a.Close()
-		for range a.Events() {
-		}
-		if !alive(inGroup) || !alive(ownGroup) {
-			t.Error("Close of a chat's process ended more than the process")
-		}
-		b, _ := os.ReadFile(f.stdin)
-		if strings.Contains(string(b), `"subtype":"interrupt"`) {
-			t.Error("Close of a chat's process sent an interrupt")
-		}
-	})
+	f := newFake(t)
+	pidFile := filepath.Join(f.dir, "pids")
+	t.Setenv(envStay, pidFile)
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inGroup, ownGroup := stayPids(t, pidFile)
+	f.waitStdin(t, `"initialize"`)
+	a.Close()
+	for range a.Events() {
+	}
+	if !alive(inGroup) || !alive(ownGroup) {
+		t.Error("Close ended more than the process")
+	}
+	b, _ := os.ReadFile(f.stdin)
+	if strings.Contains(string(b), `"subtype":"interrupt"`) {
+		t.Error("Close sent an interrupt")
+	}
 }
 
 // Send writes to the process's stdin and so waits for as long as a stuck process does not read
@@ -812,46 +656,44 @@ func TestCloseReleasesABlockedSend(t *testing.T) {
 	oldWrite := writeGraceNanos.Swap(int64(50 * time.Millisecond))
 	t.Cleanup(func() { closeGraceNanos.Store(oldClose); writeGraceNanos.Store(oldWrite) })
 
-	for _, unattended := range []bool{false, true} {
-		f := newFake(t)
-		t.Setenv(envDeaf, "1")
-		a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir(), Unattended: unattended})
-		if err != nil {
-			t.Fatal(err)
-		}
-		sent := make(chan error, 1)
-		// Far more than a pipe holds.
-		go func() { sent <- a.Send([]agent.ContentBlock{{Text: strings.Repeat("x", 4<<20)}}) }()
-		select {
-		case err := <-sent:
-			t.Fatalf("unattended %v: Send returned %v although nothing reads stdin", unattended, err)
-		case <-time.After(100 * time.Millisecond): // Send is in its write by now: it only has to fill the pipe
-		}
+	f := newFake(t)
+	t.Setenv(envDeaf, "1")
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := make(chan error, 1)
+	// Far more than a pipe holds.
+	go func() { sent <- a.Send([]agent.ContentBlock{{Text: strings.Repeat("x", 4<<20)}}) }()
+	select {
+	case err := <-sent:
+		t.Fatalf("Send returned %v although nothing reads stdin", err)
+	case <-time.After(100 * time.Millisecond): // Send is in its write by now: it only has to fill the pipe
+	}
 
-		closed := make(chan struct{})
-		go func() { a.Close(); close(closed) }()
-		limit := time.After(2 * time.Second)
-		select {
-		case err := <-sent:
-			if err == nil {
-				t.Errorf("unattended %v: Send returned no error", unattended)
-			}
-		case <-limit:
-			t.Fatalf("unattended %v: Send did not return after Close", unattended)
+	closed := make(chan struct{})
+	go func() { a.Close(); close(closed) }()
+	limit := time.After(2 * time.Second)
+	select {
+	case err := <-sent:
+		if err == nil {
+			t.Error("Send returned no error")
 		}
-		select {
-		case <-closed:
-		case <-limit:
-			t.Fatalf("unattended %v: Close did not return", unattended)
+	case <-limit:
+		t.Fatal("Send did not return after Close")
+	}
+	select {
+	case <-closed:
+	case <-limit:
+		t.Fatal("Close did not return")
+	}
+	exits := 0
+	for ev := range a.Events() {
+		if ev.Kind == agent.EvExit {
+			exits++
 		}
-		exits := 0
-		for ev := range a.Events() {
-			if ev.Kind == agent.EvExit {
-				exits++
-			}
-		}
-		if exits != 1 {
-			t.Errorf("unattended %v: %d exit events, want 1", unattended, exits)
-		}
+	}
+	if exits != 1 {
+		t.Errorf("%d exit events, want 1", exits)
 	}
 }

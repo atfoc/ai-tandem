@@ -11,22 +11,20 @@ import (
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/testset"
 )
 
 // The routes of this server's own things, with a section connected: they serve this server's
 // things alone, and what they refuse of another server.
 
-// A call on /api/chats/…, /api/runs/…, /api/boards/… or /api/groups/… with the id of a thing of
+// A call on /api/chats/…, /api/boards/… or /api/groups/… with the id of a thing of
 // a section is a call for a thing this server does not have: it is not found, and the entry's
 // server is sent nothing.
 func TestLocalRoutesReachNoOtherServer(t *testing.T) {
 	t.Parallel()
-	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, runs: []model.RunView{runThere(farRunA)},
-		boards: []model.Board{boardThere(farBoardA)}, local: true})
+	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, boards: []model.Board{boardThere(farBoardA)}})
 	p := f.page("P")
-	chat, run, board, group := "/api/chats/"+farChatA, "/api/runs/"+farRunA, "/api/boards/"+farBoardA, "/api/groups/"+farGroup
+	chat, board, group := "/api/chats/"+farChatA, "/api/boards/"+farBoardA, "/api/groups/"+farGroup
 	image := imageIDOf(png("a"))
 	sent := len(f.st.Requests())
 	f.untouched("a local route with the id of a section's thing", func() {
@@ -37,12 +35,7 @@ func TestLocalRoutesReachNoOtherServer(t *testing.T) {
 			{"POST", chat + "/interrupt", ""}, {"POST", chat + "/open", ""}, {"POST", chat + "/fork", `{"branch":"main","at":0}`},
 			{"PUT", chat + "/label", `{"branch":"main","item":0,"text":"x"}`}, {"POST", chat + "/archive", ""}, {"POST", chat + "/unarchive", ""},
 			{"DELETE", chat, ""}, {"POST", chat + "/images?name=a.png", string(png("a"))}, {"GET", chat + "/images/" + image, ""},
-			{"POST", "/api/chats", `{"board":"` + farBoardA + `"}`}, {"POST", "/api/chats", `{"run":"` + farRunA + `"}`},
-
-			{"GET", run, ""}, {"GET", run + "/detail", ""}, {"GET", run + "/goal", ""}, {"GET", run + "/delivery", ""}, {"PATCH", run, `{"name":"Mine"}`},
-			{"PUT", run + "/draft", `{"text":"the goal"}`}, {"POST", run + "/start", `{"goal":"Go"}`}, {"POST", run + "/stop", ""},
-			{"POST", run + "/resume", ""}, {"POST", run + "/apply", ""}, {"POST", run + "/archive", ""}, {"DELETE", run, ""},
-			{"POST", "/api/runs", `{"group":"` + farGroup + `","name":"x"}`},
+			{"POST", "/api/chats", `{"board":"` + farBoardA + `"}`},
 
 			{"GET", board + "/scene", ""}, {"POST", board + "/take", ""}, {"PUT", board + "/scene?rev=3", `{"elements":[]}`},
 			{"POST", board + "/rename", `{"name":"Mine"}`}, {"PATCH", board, `{"group":"` + model.Ungrouped + `"}`}, {"POST", board + "/archive", ""},
@@ -66,7 +59,6 @@ func TestLocalRoutesReachNoOtherServer(t *testing.T) {
 		// The two that answer whatever the id is: an unfollow ends what is there to end, and a
 		// release by a page that holds nothing lets nothing go.
 		f.good(p, "POST", chat+"/unfollow", "")
-		f.good(p, "POST", run+"/unfollow", "")
 		if got := f.good(p, "POST", board+"/release", ""); got["state"] != "none" {
 			t.Errorf("the release of a board this server does not have: %v", got)
 		}
@@ -76,10 +68,10 @@ func TestLocalRoutesReachNoOtherServer(t *testing.T) {
 	}
 	// Nothing was made here by any of it, and the section is as it was.
 	snap := f.snapshotOf(p)
-	if len(snap.Chats) != 0 || len(snap.Runs) != 0 || len(snap.Boards) != 0 || len(snap.Groups) != 0 {
+	if len(snap.Chats) != 0 || len(snap.Boards) != 0 || len(snap.Groups) != 0 {
 		t.Errorf("this server's lists after the calls: %+v", snap)
 	}
-	if sec := snap.Sections[f.entry]; sec == nil || len(sec.Chats) != 1 || len(sec.Runs) != 1 || len(sec.Boards) != 1 || len(sec.Groups) != 1 {
+	if sec := snap.Sections[f.entry]; sec == nil || len(sec.Chats) != 1 || len(sec.Boards) != 1 || len(sec.Groups) != 1 {
 		t.Errorf("the section after the calls: %+v", sec)
 	}
 
@@ -98,18 +90,17 @@ func TestLocalRoutesReachNoOtherServer(t *testing.T) {
 }
 
 // What the routes of this server's own things refuse of another server: a body that names one
-// where a thing is made or a draft run is changed (400 "server_refused"), a server for a chat
+// where a thing is made (400 "server_refused"), a server for a chat
 // (409 "server_fixed"), and a delete of a record alone (400 "no_record"). Nothing is made,
 // changed, deleted or sent by any of them.
 func TestLocalRoutesRefuseAnotherServer(t *testing.T) {
 	t.Parallel()
-	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, local: true})
+	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}})
 	p := f.page("P")
 	g := f.group(p, "Mine", "")
 	own := decode[model.ChatView](t, mustOK(t, f, p, "POST", "/api/chats", form("group", g, "server", "local")))
 	bd := decode[model.Board](t, mustOK(t, f, p, "POST", "/api/boards", form("name", "Own", "group", g, "server", "local")))
-	run := decode[model.RunView](t, mustOK(t, f, p, "POST", "/api/runs", form("group", g, "name", "Own")))
-	counts := func() [3]int { return [3]int{len(f.a.Chats.Views()), len(f.a.Boards.List()), len(f.rs.Views())} }
+	counts := func() [2]int { return [2]int{len(f.a.Chats.Views()), len(f.a.Boards.List())} }
 	before := counts()
 
 	sent := len(f.st.Requests())
@@ -121,9 +112,6 @@ func TestLocalRoutesRefuseAnotherServer(t *testing.T) {
 				{"POST", "/api/chats", form("board", bd.ID, "server", server)},
 				{"POST", "/api/chats", form("server", server)}, // refused for the server before the place is looked at
 				{"POST", "/api/boards", form("name", "There", "group", g, "server", server)},
-				{"PATCH", "/api/runs/" + run.ID, form("server", server)},
-				{"PATCH", "/api/runs/" + run.ID, form("name", "Renamed", "server", server)},
-				{"PATCH", "/api/runs/r_nowhere", form("server", server)},
 			} {
 				if text := f.refuses(p, http.StatusBadRequest, "server_refused", c[0], c[1], c[2]); !strings.Contains(text, sectionPrefix) {
 					t.Errorf("%s %s %s: %q", c[0], c[1], c[2], text)
@@ -136,8 +124,8 @@ func TestLocalRoutesRefuseAnotherServer(t *testing.T) {
 		}
 		f.refuses(p, http.StatusConflict, "server_fixed", "PATCH", "/api/chats/"+own.ID, form("server", "local"))
 		// No record is removed alone: the thing stays, whichever server it is on.
-		for _, path := range []string{"/api/chats/" + own.ID, "/api/boards/" + bd.ID, "/api/runs/" + run.ID, "/api/chats/" + farChatA, "/api/chats/nowhere",
-			"/api/boards/" + farBoardA, "/api/runs/" + farRunA} {
+		for _, path := range []string{"/api/chats/" + own.ID, "/api/boards/" + bd.ID, "/api/chats/" + farChatA, "/api/chats/nowhere",
+			"/api/boards/" + farBoardA} {
 			if text := f.refuses(p, http.StatusBadRequest, "no_record", "DELETE", path+"?local=1", ""); text == "" {
 				t.Errorf("DELETE %s?local=1: no sentence", path)
 			}
@@ -153,10 +141,7 @@ func TestLocalRoutesRefuseAnotherServer(t *testing.T) {
 		t.Errorf("the stand-in was sent %+v", got[sent:])
 	}
 	if after := counts(); after != before {
-		t.Fatalf("the refused calls left %v chats, boards and runs, %v before", after, before)
-	}
-	if v, err := f.rs.View(run.ID); err != nil || v.Name != "Own" {
-		t.Errorf("the run after the refused changes: %+v, %v", v, err)
+		t.Fatalf("the refused calls left %v chats and boards, %v before", after, before)
 	}
 	if v, err := f.a.Chats.View(own.ID); err != nil || v.Name != "" {
 		t.Errorf("the chat after the refused changes: %+v, %v", v, err)
@@ -165,12 +150,9 @@ func TestLocalRoutesRefuseAnotherServer(t *testing.T) {
 		t.Errorf("a chat was made by a refused call: %v", err)
 	}
 
-	// "local" and no server are this server: made, changed and deleted here.
-	if v := decode[model.RunView](t, mustOK(t, f, p, "PATCH", "/api/runs/"+run.ID, form("name", "Renamed", "server", "local"))); v.Name != "Renamed" {
-		t.Errorf("a change of a run that names this server: %+v", v)
-	}
+	// "local" and no server are this server: made and deleted here.
 	release(t, p, bd.ID) // the page that made the board holds it: a delete would wait for it
-	for _, path := range []string{"/api/chats/" + own.ID, "/api/boards/" + bd.ID, "/api/runs/" + run.ID} {
+	for _, path := range []string{"/api/chats/" + own.ID, "/api/boards/" + bd.ID} {
 		f.good(p, "DELETE", path+"?local=0", "")
 	}
 	if _, err := f.a.Chats.View(own.ID); !errors.Is(err, chats.ErrNotFound) {
@@ -178,9 +160,6 @@ func TestLocalRoutesRefuseAnotherServer(t *testing.T) {
 	}
 	if _, ok := f.a.Boards.Get(bd.ID); ok {
 		t.Errorf("the board after its delete is still there")
-	}
-	if _, err := f.rs.View(run.ID); !errors.Is(err, runs.ErrNotFound) {
-		t.Errorf("the run after its delete: %v", err)
 	}
 
 	// Without a relay the refusals are the same: there is no other server to name.

@@ -1,15 +1,14 @@
 {
- "about": "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/runmock-ui.js), as headless Chromium draws the page with the system font. Written by `WRITE=1 node dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160 px, the model choice's 76), and each state is measured in a pane wide enough for all of its controls.",
+ "about": "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/mock-ui.js), as headless Chromium draws the page with the system font. Written by `WRITE=1 node dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160 px, the model choice's 76), and each state is measured in a pane wide enough for all of its controls.",
  "gap": 4,
  "chrome": 20,
  "more": 28,
  "ring": 28,
  "icon": 25,
- "legend": "gap: between two controls of the chat toolbar (its spacer is one of them, at no width); chrome: the box's padding and border, so a row of `sum` px needs a box of sum + chrome; more: the chip that opens the popup of the controls the row has no room for; ring: the context meter cut to its ring; icon: the error meter cut to its icon. A state: g1, the name of G1's case it is, where its names are short; composer, chat or goal (the goal composer wraps and is not fitted); pane, where it is shown; sum, its controls and gaps on one line; reason, it has a line under its controls; controls, left to right: kind, label, fixed (a chip that takes no pick), w, and margin where the control has one of its own (the lock): it needs w + margin.",
+ "legend": "gap: between two controls of the toolbar (its spacer is one of them, at no width); chrome: the box's padding and border, so a row of `sum` px needs a box of sum + chrome; more: the chip that opens the popup of the controls the row has no room for; ring: the context meter cut to its ring; icon: the error meter cut to its icon. A state: g1, the name of G1's case it is, where its names are short; pane, where it is shown; sum, its controls and gaps on one line; reason, it has a line under its controls; controls, left to right: kind, label, fixed (a chip that takes no pick), w, and margin where the control has one of its own (the lock): it needs w + margin.",
  "states": {
   "plain-started": {
    "g1": "plain-started",
-   "composer": "chat",
    "pane": "page",
    "chat": "c_plain",
    "sum": 513.7,
@@ -26,7 +25,6 @@
   },
   "plain-new": {
    "g1": "plain-new",
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_new",
    "sum": 624.7,
@@ -43,7 +41,6 @@
    ]
   },
   "plain-new-long": {
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_new_long",
    "sum": 779.1,
@@ -60,7 +57,6 @@
    ]
   },
   "plain-started-long": {
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_long",
    "sum": 715,
@@ -77,7 +73,6 @@
   },
   "plain-busy": {
    "g1": "plain-busy",
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_busy",
    "sum": 545.7,
@@ -95,7 +90,6 @@
   },
   "plain-ctxerr": {
    "g1": "plain-ctxerr",
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_ctxerr",
    "sum": 524.2,
@@ -112,7 +106,6 @@
   },
   "plain-quotes": {
    "g1": "plain-quotes",
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_quotes",
    "sum": 513.7,
@@ -128,7 +121,6 @@
    ]
   },
   "plain-remote-new": {
-   "composer": "chat",
    "pane": "page",
    "chat": "s_lab~c_A2_remote_new",
    "sum": 798.7,
@@ -146,7 +138,6 @@
    ]
   },
   "plain-remote-started": {
-   "composer": "chat",
    "pane": "page",
    "chat": "s_lab~c_A2_remote",
    "sum": 687.7,
@@ -163,7 +154,6 @@
    ]
   },
   "plain-remote-started-long": {
-   "composer": "chat",
    "pane": "page",
    "chat": "s_lab~c_A2_remote_long",
    "sum": 889,
@@ -181,7 +171,6 @@
   },
   "plain-move": {
    "g1": "plain-move",
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_move",
    "sum": 588,
@@ -198,7 +187,6 @@
    ]
   },
   "plain-move-long": {
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_move_long",
    "sum": 738.9,
@@ -215,7 +203,6 @@
    ]
   },
   "plain-loading": {
-   "composer": "chat",
    "pane": "page",
    "chat": "s_lab~c_A2_loading",
    "sum": 701.2,
@@ -232,7 +219,6 @@
    ]
   },
   "plain-noagent": {
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_noagent",
    "sum": 411.8,
@@ -248,7 +234,6 @@
    ]
   },
   "plain-noagent-installed": {
-   "composer": "chat",
    "pane": "page",
    "chat": "s_bare~c_A2_bare",
    "sum": 456.4,
@@ -265,7 +250,6 @@
    ]
   },
   "plain-off-new": {
-   "composer": "chat",
    "pane": "page",
    "chat": "s_lab~c_A2_off_new",
    "sum": 590.4,
@@ -283,7 +267,6 @@
    ]
   },
   "plain-off-started": {
-   "composer": "chat",
    "pane": "page",
    "chat": "s_lab~c_A2_off",
    "sum": 687.7,
@@ -301,7 +284,6 @@
    ]
   },
   "plain-fork-fresh": {
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_fork",
    "sum": 588,
@@ -318,7 +300,6 @@
    ]
   },
   "plain-fork-notice": {
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_notice",
    "sum": 617,
@@ -335,7 +316,6 @@
    ]
   },
   "plain-branches": {
-   "composer": "chat",
    "pane": "page",
    "chat": "c_A2_two",
    "sum": 513.7,
@@ -352,7 +332,6 @@
   },
   "board-started": {
    "g1": "board-started",
-   "composer": "chat",
    "pane": "panel",
    "chat": "c_board",
    "sum": 513.7,
@@ -369,7 +348,6 @@
   },
   "board-new": {
    "g1": "board-new",
-   "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_new",
    "sum": 624.7,
@@ -387,7 +365,6 @@
   },
   "board-quotes": {
    "g1": "board-quotes",
-   "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_quotes",
    "sum": 513.7,
@@ -403,7 +380,6 @@
    ]
   },
   "board-long": {
-   "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_long",
    "sum": 715,
@@ -420,7 +396,6 @@
   },
   "board-move": {
    "g1": "board-move",
-   "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_move",
    "sum": 588,
@@ -438,7 +413,6 @@
   },
   "board-longname": {
    "g1": "board-longname",
-   "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_longname",
    "sum": 513.7,
@@ -454,7 +428,6 @@
    ]
   },
   "board-selected": {
-   "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_sketch",
    "sum": 513.7,
@@ -469,63 +442,9 @@
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
-  "run-started": {
-   "g1": "run-started",
-   "composer": "chat",
+  "board-busy": {
    "pane": "panel",
-   "chat": "c_live_ask",
-   "sum": 513.7,
-   "controls": [
-    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
-    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
-    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
-    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
-    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "attach", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "run-new": {
-   "g1": "run-new",
-   "composer": "chat",
-   "pane": "panel",
-   "chat": "c_live_new",
-   "sum": 624.7,
-   "controls": [
-    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
-    { "kind": "folder", "label": "shop", "w": 70.2 },
-    { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
-    { "kind": "effort", "label": "EffortHigh", "w": 90.4 },
-    { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
-    { "kind": "meter", "label": "", "w": 28 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "attach", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "run-quotes": {
-   "g1": "run-quotes",
-   "composer": "chat",
-   "pane": "panel",
-   "chat": "c_A2_run_quotes",
-   "sum": 513.7,
-   "controls": [
-    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
-    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
-    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
-    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
-    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "attach", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "run-busy": {
-   "g1": "run-busy",
-   "composer": "chat",
-   "pane": "panel",
-   "chat": "c_trouble_ask",
+   "chat": "c_A2_board_busy",
    "sum": 545.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
@@ -536,100 +455,6 @@
     { "kind": "insert", "label": "", "w": 26 },
     { "kind": "attach", "label": "", "w": 26 },
     { "kind": "stop", "label": "", "w": 28 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "goal-draft": {
-   "g1": "goal-draft",
-   "composer": "goal",
-   "pane": "stage",
-   "sum": 657,
-   "controls": [
-    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
-    { "kind": "folder", "label": "shop", "w": 70.2 },
-    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
-    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "goal-nogit": {
-   "composer": "goal",
-   "pane": "stage",
-   "sum": 671.5,
-   "controls": [
-    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
-    { "kind": "folder", "label": "scratch", "w": 84.7 },
-    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
-    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "goal-missing": {
-   "composer": "goal",
-   "pane": "stage",
-   "sum": 710.1,
-   "controls": [
-    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
-    { "kind": "folder", "label": "importer", "w": 90.6 },
-    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
-    { "kind": "limits", "label": "8 parallel · 60 turns · $20", "w": 169.5 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "goal-blocked": {
-   "composer": "goal",
-   "pane": "stage",
-   "sum": 695.9,
-   "controls": [
-    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
-    { "kind": "folder", "label": "empty-repo", "w": 109.1 },
-    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
-    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "goal-draft-long": {
-   "composer": "goal",
-   "pane": "stage",
-   "sum": 923.8,
-   "controls": [
-    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
-    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "w": 337 },
-    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
-    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "goal-remote": {
-   "composer": "goal",
-   "pane": "stage",
-   "sum": 848.7,
-   "controls": [
-    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 187.7 },
-    { "kind": "agent", "label": "Claude Code", "w": 115.2 },
-    { "kind": "folder", "label": "shop", "w": 70.2 },
-    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
-    { "kind": "limits", "label": "8 parallel · 60 turns", "w": 136.8 },
-    { "kind": "insert", "label": "", "w": 26 },
-    { "kind": "send", "label": "↑", "w": 28 }
-   ]
-  },
-  "goal-fixed": {
-   "composer": "goal",
-   "pane": "stage",
-   "sum": 785.1,
-   "controls": [
-    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 187.7 },
-    { "kind": "agent", "label": "Claude Code", "fixed": true, "w": 99.8 },
-    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
-    { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "fixed": true, "w": 241.4 },
-    { "kind": "limits", "label": "8 parallel · 60 turns", "fixed": true, "w": 120.4 },
-    { "kind": "insert", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   }

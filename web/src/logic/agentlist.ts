@@ -1,5 +1,5 @@
 // The agents a server can run, and what an agent choice shows: every list of agents the page
-// offers (a chat's, a draft run's, the empty state's) reads the store through here, so none
+// offers (a chat's, the empty state's) reads the store through here, so none
 // names an agent the server lacks. An item with no agent has agent "" (no DOM, no React). The
 // lists are by server (logic/serverlists.ts): a chat's are those of the server it is on.
 import { agentName } from "../agents.ts";
@@ -18,9 +18,9 @@ export const catalogFor = (s: ListsState, server: string, agent: AgentKind | "")
   (agent && listsOf(s, server)?.catalogs?.[agent]) || undefined;
 
 /** Whether the chat's server and agent can still be changed: it has not started and is neither a
- *  fork, a branch nor a run's own agent. The server is the authority (it answers 409). */
-export const agentOpen = (c: Pick<ChatView, "locked" | "forkedFrom" | "branch" | "branches" | "role">): boolean =>
-  !c.locked && !c.forkedFrom && !c.branch && !((c.branches ?? 0) > 1) && !c.role;
+ *  fork nor a branch. The server is the authority (it answers 409). */
+export const agentOpen = (c: Pick<ChatView, "locked" | "forkedFrom" | "branch" | "branches">): boolean =>
+  !c.locked && !c.forkedFrom && !c.branch && !((c.branches ?? 0) > 1);
 
 export const NO_AGENT = "No agent is installed on this computer. Install Claude Code, Cursor or pi; a program outside the app's PATH is found after a restart.";
 const notInstalled = (a: AgentKind) => `${agentName(a)} is not installed on this computer: install it, or choose another agent.`;

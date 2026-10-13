@@ -46,7 +46,7 @@ export function toolbarLine(w: Where, usable: AgentKind[], c: Pick<ChatView, "ag
   return { text, tone: text && (c.agent || !usable.length) ? "missing" : "" };
 }
 
-type Opens = Pick<ChatView, "locked" | "forkedFrom" | "branch" | "branches" | "role">;
+type Opens = Pick<ChatView, "locked" | "forkedFrom" | "branch" | "branches">;
 
 /** Whether the chat's Send, its Stop and its choices are off for its server: it is not connected. The view stays as
  *  the page had it when the connection ended, read-only. */

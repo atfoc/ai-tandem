@@ -20,8 +20,8 @@ func (e *env) groups() []model.Group {
 	return gs
 }
 
-// The API snapshot holds the server's whole tree and the server's lists, under its own eleven
-// keys: every group, board, chat, branch state and run, archived ones included, as the page's
+// The API snapshot holds the server's whole tree and the server's lists, under its own ten
+// keys: every group, board, chat and branch state, archived ones included, as the page's
 // snapshot has them, and the defaults. It is the same for every client. Nothing of the servers
 // this one connects to is in it, and no data folder.
 func TestAPISnapshot(t *testing.T) {
@@ -50,10 +50,10 @@ func TestAPISnapshot(t *testing.T) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	if want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "runs", "states"}; !slices.Equal(names, want) {
+	if want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "states"}; !slices.Equal(names, want) {
 		t.Fatalf("keys %v, want %v", names, want)
 	}
-	for _, k := range []string{"groups", "boards", "chats", "states", "runs"} {
+	for _, k := range []string{"groups", "boards", "chats", "states"} {
 		if string(keys[k]) != "[]" {
 			t.Errorf("%s of a server with nothing on it: %s, want []", k, keys[k])
 		}
@@ -118,7 +118,6 @@ func TestAPISnapshot(t *testing.T) {
 		"boards":   reflect.DeepEqual(byID(x.Boards), byID(page.Boards)),
 		"chats":    reflect.DeepEqual(x.Chats, page.Chats),
 		"states":   reflect.DeepEqual(x.States, page.States),
-		"runs":     reflect.DeepEqual(x.Runs, page.Runs),
 	} {
 		if !same {
 			t.Errorf("%s of the API snapshot are not the page's:\nAPI  %s\npage %s", what, mustJSON(t, x), mustJSON(t, page))
@@ -175,7 +174,7 @@ func TestAPISnapshot(t *testing.T) {
 		t.Fatal("the snapshot's defaults are the store's own record")
 	}
 
-	// Nothing of the page's snapshot beyond the eleven keys: no data folder, no server list, no
+	// Nothing of the page's snapshot beyond the ten keys: no data folder, no server list, no
 	// lists or libraries of other servers, no sections, and no value of them either. No view
 	// says who made the thing.
 	raw := mustJSON(t, e.a.APISnapshot())

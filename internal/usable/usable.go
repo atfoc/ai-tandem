@@ -22,7 +22,7 @@ var (
 	// ErrMissing is what a *MissingError is to errors.Is.
 	ErrMissing = errors.New("the agent's program was not found")
 	ErrNone    = errors.New("no agent can be used on this server: none of the programs of Claude Code, Cursor and pi was found")
-	// ErrUnchosen is Check's answer for a == "" while some agent can be used: the chat or run has no
+	// ErrUnchosen is Check's answer for a == "" while some agent can be used: the chat has no
 	// agent and one can be chosen. errors.Is(ErrUnchosen, ErrNone) is true, so a caller that tests
 	// for ErrNone (status 409, code no_agent) keeps working; only the text differs.
 	ErrUnchosen error = unchosenError{}
@@ -156,8 +156,8 @@ func (s *Set) Refresh() []model.AgentKind {
 	return slices.Clone(s.list)
 }
 
-// Check looks now and says whether a can be used: nil, a *MissingError, or for a == "" (a chat or
-// run that has no agent, because none was usable when it was made) ErrNone while none is usable
+// Check looks now and says whether a can be used: nil, a *MissingError, or for a == "" (a chat
+// that has no agent, because none was usable when it was made) ErrNone while none is usable
 // and ErrUnchosen once one is.
 func (s *Set) Check(a model.AgentKind) error {
 	if s == nil {

@@ -53,9 +53,9 @@ await check("SEC.3 a section's head collapses and does nothing else; collapse is
   await collapsedIs("a press, a move and a release on the head", STUDIO, true);
   await head(STUDIO).click(); await collapsedIs("the next click", STUDIO, false);
 
-  // ---- nothing dragged onto a head is taken: a local run on Studio Mac's, a chat of Studio Mac on Empty box's
+  // ---- nothing dragged onto a head is taken: a local chat on Studio Mac's, a chat of Studio Mac on Empty box's
   const before = writes().length;
-  for (const [row, id] of [["New run", STUDIO], ["Take 14", "s_empty"], ["Take 14", STUDIO]]) {
+  for (const [row, id] of [["Why is the build slow", STUDIO], ["Take 14", "s_empty"], ["Take 14", STUDIO]]) {
     if (!await d.start(await d.row(row))) { fail(`the row "${row}" started no drag`); continue; }
     await d.over(await headPoint(id));
     const lit = await d.lit();

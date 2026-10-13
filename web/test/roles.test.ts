@@ -154,8 +154,8 @@ test("the sidebar's select takes its decision from takeOnSelect, and a chat is o
   const sidebar = readFileSync(new URL("../src/Sidebar.tsx", import.meta.url), "utf8");
   assert.ok(sidebar.includes("takeOnSelect(getState().roles[sel.board], sel.board === prev.board, !!o.ifFree, !!o.row)"));
   assert.ok(sidebar.includes('if (sel.board && take) void takeBoard(sel.board, take === "free");'));
-  assert.ok(/export function openChat\(c: ChatView\) \{\s+if \(c\.role\) return;\s+select\(selOf\(c\), \{ ifFree: true \}\);/.test(sidebar), "a chat's row and a chat reference");
-  assert.ok(/export function openBoard\(id: string, row = false\)[^}]+select\(\{ board: id, run: null, chat: [^}]+\}, \{ row \}\);/.test(sidebar), "a board's row takes as before");
+  assert.ok(/export function openChat\(c: ChatView\) \{\s+select\(selOf\(c\), \{ ifFree: true \}\);/.test(sidebar), "a chat's row and a chat reference");
+  assert.ok(/export function openBoard\(id: string, row = false\)[^}]+select\(\{ board: id, chat: [^}]+\}, \{ row \}\);/.test(sidebar), "a board's row takes as before");
 });
 
 test("only the board's own row in the sidebar opens it as a row click", () => {

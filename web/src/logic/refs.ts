@@ -16,7 +16,7 @@ export type Ref =
   | { kind: "point"; x: number; y: number; label: string; detail: string };
 
 /** A message split into its text and its references, in order. */
-export type Seg = string | Ref;
+type Seg = string | Ref;
 
 /** How many selected elements are written out in full; the rest are counted. */
 export const MAX_DETAIL = 30;

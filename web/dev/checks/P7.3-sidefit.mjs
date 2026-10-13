@@ -6,7 +6,7 @@
 //   the element at its own centre, the document does not scroll sideways, and Stop and Send have their width. A page
 //   gets the sidebar's width less the rail's and gives it back: what the wider toolbar took from "more" leaves it
 //   again, and the toolbar ends as it began. A panel keeps its width, and its toolbar every control, in every frame.
-//   Hidden and shown again, each also fits at rest, as A2.2 measures it; the goal composer, which wraps, at rest alone.
+//   Hidden and shown again, each also fits at rest, as A2.2 measures it.
 //   The least width beside the rail: every chat state is loaded with the sidebar hidden in a window that leaves its
 //   pane 300 px, and fits; five of them from the first frame that has the composer.
 //   With "more" open: the popup stays open through the round and no control leaves it for the toolbar.
@@ -30,7 +30,7 @@ const HOW = { key: "⌘B", control: "the head's control", rail: "the rail's cont
 const probe = { toString: () => `() => {
   const v = (${composerProbe})();
   if (!v) return null;
-  const t = document.querySelector(".composer:not(.run-composer) .composer-tools");
+  const t = document.querySelector(".composer .composer-tools");
   return { ...v, hidden: !!document.querySelector(".app > .side-rail"), more: !!t.querySelector(".more-pop"), held: t.querySelectorAll(".more-pop > .more-row").length,
     chips: t.querySelectorAll(":scope > .tchip, :scope > .menu-wrap > .tchip:not(.more-chip)").length, ring: !!t.querySelector(":scope > .menu-wrap > .ctx-meter.compact, :scope > .ctx-meter.compact"),
     out: Math.round(Math.max(...[...t.children].filter((e) => !e.matches(".grow, .menu-backdrop")).map((e) => e.getBoundingClientRect().right - t.getBoundingClientRect().right)) * 10) / 10,
@@ -40,7 +40,6 @@ const probe = { toString: () => `() => {
 await check("P7.3 the composer fits its box while the sidebar is shown and hidden", async ({ url, browser, fail, note }) => {
   const states = await seed(url, "A2");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
-  const chats = states.filter((s) => s.pane[0] !== "stage"), goals = states.filter((s) => s.pane[0] === "stage");
   const frame = (page) => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
   /** A state's page, its pane `width` px wide: beside the sidebar, or beside the rail of a hidden one. */
   const open = async (s, width, { hidden = false } = {}) => {
@@ -53,7 +52,7 @@ await check("P7.3 the composer fits its box while the sidebar is shown and hidde
   };
   const close = async ({ ctx, errors }, name) => { for (const e of errors) fail(`${name}: page error: ${e}`); await ctx.close(); };
   const hidden = (page) => page.evaluate(() => !!document.querySelector(".app > .side-rail") && !document.querySelector(".app > .side-pane").getClientRects().length);
-  const paneWidth = (page, kind) => page.evaluate((sel) => document.querySelector(sel)?.getBoundingClientRect().width, kind === "panel" ? ".board-panel" : kind === "page" ? ".chat-page" : ".app > main");
+  const paneWidth = (page, kind) => page.evaluate((sel) => document.querySelector(sel)?.getBoundingClientRect().width, kind === "panel" ? ".board-panel" : ".chat-page");
   /** Hides the sidebar or shows it, by ⌘B, the head's control or the rail's, and waits for the pane to have its width. */
   const toggle = async (page, name, how, want, kind, width) => {
     if (how === "key") await page.keyboard.press("ControlOrMeta+b"); else await page.locator(how === "rail" ? ".side-rail .side-show" : ".side-head .side-hide").click();
@@ -72,7 +71,7 @@ await check("P7.3 the composer fits its box while the sidebar is shown and hidde
     if (m.docScroll > 0) fail(`${name}: the document scrolls ${m.docScroll} px sideways`);
     if (m.boxOverPane > 0) fail(`${name}: the box is ${m.boxOverPane} px past its pane`);
     const row = await page.evaluate(() => {
-      const tools = document.querySelector(".composer:not(.run-composer) .composer-tools");
+      const tools = document.querySelector(".composer .composer-tools");
       if (!tools) return null;
       const kids = [...tools.children].filter((e) => !e.matches(".grow")), mid = kids.filter((e) => !e.matches(".agent-reason")).map((e) => { const r = e.getBoundingClientRect(); return r.top + r.height / 2; });
       return { lines: Math.round(Math.max(...mid) - Math.min(...mid)), out: Math.round(Math.max(...kids.map((e) => e.getBoundingClientRect().right - tools.getBoundingClientRect().right)) * 10) / 10,
@@ -96,7 +95,7 @@ await check("P7.3 the composer fits its box while the sidebar is shown and hidde
 
   // ---- every chat composer at its least width: hidden and shown, by the key and by the two controls
   let frames = 0, moved = 0;
-  for (const s of chats) {
+  for (const s of states) {
     const kind = s.pane[0], page = kind === "page", name = `${s.id}, a ${kind} of ${LEAST} px`, wide = LEAST + (page ? FREED : 0);
     const p = await open(s, LEAST);
     try {
@@ -130,24 +129,10 @@ await check("P7.3 the composer fits its box while the sidebar is shown and hidde
     await close(p, name);
   }
   if (moved < 5) fail(`only ${moved} chat pages had a richer toolbar beside the rail than beside the sidebar: the round moved too little to prove anything`);
-  note(`${chats.length} chat composers at ${LEAST} px, the sidebar hidden and shown twice each (⌘B; the head's control and the rail's): ${frames} frames, all fitted; ${moved} pages took controls back from "more" and gave them again`);
-
-  // ---- the goal composer, which wraps: at rest, hidden and shown
-  for (const s of goals) {
-    const name = `${s.id}, a stage of ${s.pane[1]} px`, p = await open(s, s.pane[1]);
-    try {
-      await fits(p.page, name);
-      await toggle(p.page, name, "key", true, "stage", s.pane[1] + FREED);
-      await fits(p.page, `${name}, the sidebar hidden`);
-      await toggle(p.page, name, "rail", false, "stage", s.pane[1]);
-      await fits(p.page, `${name}, the sidebar shown again`);
-    } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
-  }
-  note(`${goals.length} goal composers: nothing past the box beside the sidebar, beside the rail and beside the sidebar again`);
+  note(`${states.length} chat composers at ${LEAST} px, the sidebar hidden and shown twice each (⌘B; the head's control and the rail's): ${frames} frames, all fitted; ${moved} pages took controls back from "more" and gave them again`);
 
   // ---- the least width beside the rail: loaded with the sidebar hidden
-  for (const s of chats) {
+  for (const s of states) {
     const name = `${s.id}, loaded with the sidebar hidden, a ${s.pane[0]} of ${LEAST} px`, p = await open(s, LEAST, { hidden: true });
     try {
       if (!await hidden(p.page) || Math.abs(await paneWidth(p.page, s.pane[0]) - LEAST) > 1) fail(`${name}: the page opened with the sidebar ${await hidden(p.page) ? "hidden" : "shown"} and the ${s.pane[0]} at ${await paneWidth(p.page, s.pane[0])} px`);
@@ -155,7 +140,7 @@ await check("P7.3 the composer fits its box while the sidebar is shown and hidde
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
     await close(p, name);
   }
-  for (const id of ["plain-new", "plain-remote-started-long", "plain-noagent", "board-new", "run-busy"]) {
+  for (const id of ["plain-new", "plain-remote-started-long", "plain-noagent", "board-new", "board-busy"]) {
     const s = state(id), name = `${id}, a load with the sidebar hidden`, p = await open(s, LEAST, { hidden: true });
     const r = await sampled(p.page, name, async () => {
       await p.page.reload({ waitUntil: "domcontentloaded" });
@@ -165,7 +150,7 @@ await check("P7.3 the composer fits its box while the sidebar is shown and hidde
     if (r.values.some((v) => !v.hidden)) fail(`${name}: ${r.values.filter((v) => !v.hidden).length} of ${r.values.length} frames had no rail`);
     await close(p, name);
   }
-  note(`${chats.length} chat composers loaded beside the rail in a window that leaves them ${LEAST} px: each fits, five of them from the first frame that has the composer`);
+  note(`${states.length} chat composers loaded beside the rail in a window that leaves them ${LEAST} px: each fits, five of them from the first frame that has the composer`);
 
   // ---- with "more" open: the popup stays, and gives nothing back until it closes
   for (const id of ["plain-new", "plain-remote-new", "plain-move-long", "plain-started-long"]) {

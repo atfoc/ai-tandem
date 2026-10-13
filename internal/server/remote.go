@@ -25,7 +25,9 @@ import (
 const SecretHeader = "X-AIWB-Secret"
 
 // FeatureLevel is hello's "featureLevel": what this server offers an API client. Level 1 is the
-// remote listener with the chat routes, the run routes and the reload of the secret. Level 2 adds
+// remote listener with the chat routes and the reload of the secret (a server built while the app
+// had runs offered the run routes at this level too; this one answers them 404, as it does any
+// route it does not have). Level 2 adds
 // the boards of an API client (apiboards.go). Level 3 adds the server's prompt library
 // (library.go): the library routes, "library" in the API snapshot and the "own_library" event.
 // A client takes a library only of a server of level 3 or above (servers.LibraryLevel).
@@ -33,9 +35,9 @@ const SecretHeader = "X-AIWB-Secret"
 // the server (PUT /api/chats/{id}/draft), and the images of a message with their two routes
 // (images.go).
 // Level 5 serves an API client as the server's own page: its snapshot and its events are the
-// server's whole tree, whoever made what is in it, and the page's routes for groups, boards, runs
-// and new chats take the place of the calls that existed for a client alone (the creation call,
-// the make, the start call and the draft check, a board with an id of the client's making).
+// server's whole tree, whoever made what is in it, and the page's routes for groups, boards and
+// new chats take the place of the calls that existed for a client alone (the creation call, the
+// make, a board with an id of the client's making).
 // A client does not connect to a server below level 5 (servers.MinFeatureLevel), and a server of
 // level 5 serves no client below it (MinClientLevel).
 const FeatureLevel = 5
@@ -85,25 +87,6 @@ var RemoteRoutes = []string{
 	"POST /api/chats/{id}/unfollow",
 	"GET /api/dirs",
 	"GET /api/usage/{agent}",
-	"POST /api/runs",
-	"GET /api/runs/{id}",
-	"PATCH /api/runs/{id}",
-	"PUT /api/runs/{id}/draft",
-	"POST /api/runs/{id}/start",
-	"POST /api/runs/{id}/stop",
-	"POST /api/runs/{id}/resume",
-	"POST /api/runs/{id}/apply",
-	"GET /api/runs/{id}/delivery",
-	"DELETE /api/runs/{id}",
-	"GET /api/runs/{id}/detail",
-	"GET /api/runs/{id}/goal",
-	"GET /api/runs/{id}/tasks/{tid}/brief",
-	"GET /api/runs/{id}/tasks/{tid}/attempts/{n}/report",
-	"GET /api/runs/{id}/tasks/{tid}/attempts/{n}/changes",
-	"GET /api/runs/{id}/notes/{v}",
-	"POST /api/runs/{id}/archive",
-	"POST /api/runs/{id}/unarchive",
-	"POST /api/runs/{id}/unfollow",
 	"POST /api/boards",
 	"GET /api/boards/{id}/scene",
 	"PUT /api/boards/{id}/scene",

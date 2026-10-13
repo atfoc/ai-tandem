@@ -25,8 +25,8 @@ const ls = new Map<string, string>();
 const fake = { forgotten: [] as string[], unsaved: new Set<string>() };
 (globalThis as any).__sec = fake;
 ls.set("aiwb.collapsed", JSON.stringify([A, a("g_1")])); // what the browser kept from before the page loaded
-// and what a page of before sections kept: the unsaved drafts of chats and a run on another server, under ids this computer made for them, and that server's recent folders
-for (const [k2, v] of [["aiwb.draft.c_was_remote:main", { text: "remote words" }], ["aiwb.draft.r_was_remote", { text: "remote goal" }], ["aiwb.draft.c_mine:main", { text: "mine" }], ["aiwb.draft.r_mine", { text: "my goal" }]] as const) ls.set(k2, JSON.stringify(v));
+// and what a page of before sections kept: the unsaved drafts of chats on another server, under ids this computer made for them, and that server's recent folders
+for (const [k2, v] of [["aiwb.draft.c_was_remote:main", { text: "remote words" }], ["aiwb.draft.c_mine:main", { text: "mine" }]] as const) ls.set(k2, JSON.stringify(v));
 ls.set(`aiwb.dirs.${A}`, JSON.stringify(["/srv/lab"])); ls.set("aiwb.dirs", JSON.stringify(["/home/me/code"]));
 
 const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -54,24 +54,23 @@ const collapsedAtLoad = { ...S().collapsed };
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
 const chat = (id: string, o: object = {}) => ({ id, agent: "claude", cwd: "/w", model: "m", locked: false, created: "2026-01-01T00:00:00Z", usage, status: "ready", ...o });
 const board = (id: string, group = "__ungrouped__", o: object = {}) => ({ id, name: id, group, created: "", ...o });
-const run = (id: string, group = "__ungrouped__", o: object = {}) => ({ id, name: id, group, created: "2026-01-01T00:00:00Z", status: "draft", ...o });
 const state = (c: string, o: object = {}) => ({ chat: c, branch: "main", cwd: "", model: "", locked: false, usage, status: "ready", ...o });
 const servers = (...ids: string[]) => [{ id: "local", local: true, name: "This computer", state: "connected" }, ...ids.map((id) => ({ id, name: id === A ? "Lab" : "Office", state: "connected" }))];
-const snapshot = (o: object = {}) => ({ groups: [], boards: [], chats: [], runs: [], states: [], defaults: { groups: {} }, catalogs: {}, home: "/home/me", defaultCwd: "/home/me", dataDir: "/d", servers: servers(A, B), ...o });
+const snapshot = (o: object = {}) => ({ groups: [], boards: [], chats: [], states: [], defaults: { groups: {} }, catalogs: {}, home: "/home/me", defaultCwd: "/home/me", dataDir: "/d", servers: servers(A, B), ...o });
 const treeA = (o: object = {}) => ({
   groups: [{ id: "g_1", name: "Work", collapsed: true }], boards: [board("b_1", "g_1", { name: "Plan" })], chats: [chat("c_1", { group: "g_1", name: "theirs" }), chat("c_2")],
-  states: [state("c_1", { draftRev: 2 }), state("c_2")], runs: [run("r_1", "g_1")], defaults: { groups: {} }, ...o,
+  states: [state("c_1", { draftRev: 2 }), state("c_2")], defaults: { groups: {} }, ...o,
 });
 // The page's first snapshot, which has the two local things the old drafts are of.
-store.applySnapshot(snapshot({ chats: [chat("c_mine")], runs: [run("r_mine")], states: [state("c_mine")] }));
+store.applySnapshot(snapshot({ chats: [chat("c_mine")], states: [state("c_mine")] }));
 const firstSweep = new Map(ls);
-const select = (sel: object) => store.setState({ sel: { board: null, run: null, chat: null, ...sel } });
+const select = (sel: object) => store.setState({ sel: { board: null, chat: null, ...sel } });
 const thread = (key: string, n = 2) => store.setThread(key, { version: n, items: Array.from({ length: n }, (_, i) => ({ kind: "text", text: `m${i}` })) });
 
 beforeEach(() => {
   fake.unsaved.clear();
   select({});
-  store.setState({ collapsed: {}, gone: {}, runAgent: null, agents: {}, moves: {}, shown: {} });
+  store.setState({ collapsed: {}, gone: {}, moves: {}, shown: {} });
   for (const e of Object.keys(S().sections)) store.applySection(e, null);
   store.dropLeftBehind();
   store.applySnapshot(snapshot());
@@ -148,9 +147,9 @@ test("the names of an agent's boards and the boards a chat can mention are those
 test("a section's tree goes: its things go from the store, and the board layer forgets its boards", () => {
   store.applySection(A, treeA());
   const left = store.applySection(A, null);
-  assert.deepEqual(left.sort(), [a("b_1"), a("c_1"), a("c_2"), a("r_1")].sort());
+  assert.deepEqual(left.sort(), [a("b_1"), a("c_1"), a("c_2")].sort());
   assert.equal(A in S().sections, false);
-  assert.deepEqual([S().chats, S().boards, S().runs, S().states], [{}, {}, {}, {}]);
+  assert.deepEqual([S().chats, S().boards, S().states], [{}, {}, {}]);
   assert.ok(fake.forgotten.includes(a("b_1")));
 });
 
@@ -161,7 +160,7 @@ test("the tree goes with a chat open: the chat, its thread, its tree and its rec
   store.setState({ trees: { [a("c_1")]: { current: "main", branches: [], labels: [] } } });
   store.applySection(A, null);
   const kept = () => {
-    assert.deepEqual(S().sel, { board: null, run: null, chat: a("c_1") });
+    assert.deepEqual(S().sel, { board: null, chat: a("c_1") });
     assert.deepEqual(Object.keys(S().chats), [a("c_1")]);
     assert.equal(S().items[`${a("c_1")}:main`].items.length, 4);
     assert.ok(S().trees[a("c_1")]);
@@ -223,11 +222,18 @@ test("the selection is kept in the browser by key; after a reload during an outa
   store.applySection(A, treeA());
   select({ chat: a("c_1") });
   store.applySnapshot(snapshot()); // writes the selection it found valid
-  assert.deepEqual(JSON.parse(ls.get("aiwb.sel")!), { board: null, run: null, chat: a("c_1") });
+  assert.deepEqual(JSON.parse(ls.get("aiwb.sel")!), { board: null, chat: a("c_1") });
   // a fresh page: the saved selection, and no chat of that server in the store
   store.setState({ chats: {}, states: {}, sections: {} });
   store.applySnapshot(snapshot());
-  assert.deepEqual(S().sel, { board: null, run: null, chat: null });
+  assert.deepEqual(S().sel, { board: null, chat: null });
+});
+
+test("a selection of a chat of a run in a section's tree is dropped: a server that still has runs names it, and the page keeps none", () => {
+  select({ chat: a("c_run") });
+  store.applySnapshot(snapshot({ sections: { [A]: treeA({ chats: [chat("c_run", { run: "r_1" })], states: [state("c_run")] }) } }));
+  assert.equal(a("c_run") in S().chats, false);
+  assert.deepEqual(S().sel, { board: null, chat: null });
 });
 
 test("what is typed in a section's chat and not saved yet is kept in the page's memory alone; a local chat's is in the browser's storage", () => {
@@ -241,11 +247,6 @@ test("what is typed in a section's chat and not saved yet is kept in the page's 
   assert.deepEqual([...ls.keys()].filter((k) => k.startsWith("aiwb.draft")), ["aiwb.draft.c_1:main"]);
   assert.equal([...ls.values()].some((v) => v.includes("remote words")), false);
   assert.deepEqual(store.keptDrafts().map((k: any) => k.chat), ["c_1"], "only this computer's are kept for a later save");
-  store.unsavedRunDraft(a("r_1")).write({ text: "remote goal" });
-  store.unsavedRunDraft("r_1").write({ text: "local goal" });
-  assert.deepEqual(store.unsavedRunDraft(a("r_1")).read(), { text: "remote goal" });
-  assert.equal([...ls.values()].some((v) => v.includes("remote goal")), false);
-  assert.ok(ls.has("aiwb.draft.r_1"));
 });
 
 test("the memory copy of a section's draft goes with its chat, and a local chat's stored copy with its own", () => {
@@ -266,10 +267,8 @@ test("the memory copy of a section's draft goes with its chat, and a local chat'
 test("with the first snapshot the browser's storage is cleared of what it kept of other servers before: drafts of chats this computer does not have, and their recent folders", () => {
   // (the page of this test has had its first snapshot: what that one did is what stands here, in the bundle's own order)
   assert.equal(firstSweep.has("aiwb.draft.c_was_remote:main"), false, "a draft kept with the record of a chat on another server");
-  assert.equal(firstSweep.has("aiwb.draft.r_was_remote"), false, "the goal of a run that was to start there");
   assert.equal(firstSweep.has(`aiwb.dirs.${A}`), false, "another server's recent folders");
   assert.equal(firstSweep.get("aiwb.draft.c_mine:main"), JSON.stringify({ text: "mine" }), "a local chat's draft stays");
-  assert.equal(firstSweep.get("aiwb.draft.r_mine"), JSON.stringify({ text: "my goal" }), "and a local run's goal");
   assert.equal(firstSweep.get("aiwb.dirs"), JSON.stringify(["/home/me/code"]), "and this computer's recent folders");
   assert.deepEqual(JSON.parse(firstSweep.get("aiwb.collapsed")!), [A, a("g_1")]);
 });
@@ -318,30 +317,6 @@ test("a section's groups and defaults follow their events only while its tree is
   assert.deepEqual(S().sections[A].defaults, { groups: { g_1: { servers: { local: { agent: "pi" } } } } });
 });
 
-test("a run's start that failed while its server was away says it no more once the server is back", () => {
-  store.applySection(A, treeA());
-  store.setRunStart(a("r_1"), { error: "Lab is not connected." });
-  select({ run: a("r_1") });
-  store.applySection(A, null);
-  store.setRunStart(a("r_1"), { error: "Lab is not connected." });
-  assert.equal(S().runStarts[a("r_1")].error, "Lab is not connected.");
-  store.applySection(A, treeA());
-  assert.equal(a("r_1") in S().runStarts, false);
-});
-
-test("a section's run and its held agents go together, and a local run of the same id is untouched", () => {
-  store.applySnapshot(snapshot({ runs: [run("r_1")] }));
-  store.applySection(A, treeA());
-  const agent = chat(a("a_w"), { role: "task", run: a("r_1") });
-  store.setState({ agents: { [agent.id]: agent }, runDetail: { [a("r_1")]: { run: a("r_1"), version: 1 }, r_1: { run: "r_1", version: 1 } } });
-  thread(`${agent.id}:main`);
-  store.removeRun(a("r_1"));
-  assert.deepEqual(Object.keys(S().runs), ["r_1"]);
-  assert.deepEqual(Object.keys(S().runDetail), ["r_1"]);
-  assert.deepEqual(S().agents, {});
-  assert.deepEqual(S().items, {});
-});
-
 test("two sections with the same ids are apart: one's tree going leaves the other's", () => {
   store.applySection(A, treeA());
   store.applySection(B, treeA({ chats: [chat("c_1", { name: "office" })], states: [state("c_1")] }));
@@ -352,15 +327,14 @@ test("two sections with the same ids are apart: one's tree going leaves the othe
   assert.deepEqual(Object.keys(S().sections), [B]);
 });
 
-test("the chat a board or a run reopens with is kept by both keys: a board of the same id here and in two sections each have their own, and nothing of a chat is kept", () => {
+test("the chat a board reopens with is kept by both keys: a board of the same id here and in two sections each have their own, and nothing of a chat is kept", () => {
   store.lastChat.set("b_1", "c_1");
   store.lastChat.set(a("b_1"), a("c_1"));
   store.lastChat.set(b("b_1"), b("c_2"));
-  store.lastChat.set(a("r_1"), a("c_2"));
-  assert.deepEqual([store.lastChat.get("b_1"), store.lastChat.get(a("b_1")), store.lastChat.get(b("b_1")), store.lastChat.get(a("r_1")), store.lastChat.get("r_1")], ["c_1", a("c_1"), b("c_2"), a("c_2"), undefined]);
+  assert.deepEqual([store.lastChat.get("b_1"), store.lastChat.get(a("b_1")), store.lastChat.get(b("b_1"))], ["c_1", a("c_1"), b("c_2")]);
   // one changed leaves the others
   store.lastChat.set(a("b_1"), a("c_2"));
   assert.deepEqual([store.lastChat.get("b_1"), store.lastChat.get(a("b_1")), store.lastChat.get(b("b_1"))], ["c_1", a("c_2"), b("c_2")]);
   // what the browser holds for it: keys alone, the entry id and the id of each
-  assert.deepEqual(JSON.parse(ls.get("aiwb.lastChat")!), { b_1: "c_1", [a("b_1")]: a("c_2"), [b("b_1")]: b("c_2"), [a("r_1")]: a("c_2") });
+  assert.deepEqual(JSON.parse(ls.get("aiwb.lastChat")!), { b_1: "c_1", [a("b_1")]: a("c_2"), [b("b_1")]: b("c_2") });
 });

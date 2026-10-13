@@ -2,12 +2,10 @@ package chats
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
-	"ai-whiteboard/internal/boardtools"
 	"ai-whiteboard/internal/model"
 )
 
@@ -171,70 +169,5 @@ func TestSubCapConcurrentSpawns(t *testing.T) {
 	}
 	if started != 3 || len(e.subs(id)) != 3 || e.subsRunning(id) != 3 {
 		t.Fatalf("%d spawns went through, %d records, %d running; the cap is 3", started, len(e.subs(id)), e.subsRunning(id))
-	}
-}
-
-// Runs are not touched: a run's agent has its one level of subagents and no cap, whatever its
-// meta says. A chat a person opens on the run is an ordinary chat and follows its own settings.
-func TestSubLimitsOnARun(t *testing.T) {
-	t.Parallel()
-	e, _ := runEnv(t)
-	task := e.agentChat("agent-task", model.RoleTask, model.Claude)
-	e.limits(task, 0, 1) // no run gives its agents settings; these must not be read
-	e.sendOwned(task, "go")
-	agentProc := e.claude.last(t)
-	if o := agentProc.opts; o.NoSpawn || !reflect.DeepEqual(o.MCPTools, toolNames(boardtools.SpawnFamily)) {
-		t.Fatalf("a task agent started with %+v", o)
-	}
-	if c := e.callerOf(agentProc.opts.MCP.Token); !c.MaySpawn() || c.Depth != 1 {
-		t.Fatalf("a task agent's caller %+v", c)
-	}
-	for i := range 2 { // over the cap its meta names
-		if _, err := e.m.SpawnSubagent(task, SpawnSubRequest{Prompt: "work"}); err != nil {
-			t.Fatalf("spawn %d of a task agent: %v", i+1, err)
-		}
-	}
-	child := waitChild(t, e.claude, 3)
-	if o := child.opts; !o.NoSpawn || o.MCPTools == nil || len(o.MCPTools) != 0 {
-		t.Fatalf("a task agent's subagent started with %+v", o)
-	}
-	if c := e.callerOf(child.opts.MCP.Token); c.MaySpawn() || c.Level != 1 || c.Depth != 1 {
-		t.Fatalf("its caller %+v", c)
-	}
-
-	// A person's chat on the run with subagents off, then with a cap of 1.
-	off := e.onRun(model.Claude)
-	e.limits(off.ID, 0, 100)
-	e.send(off.ID, "go", "")
-	if o := e.claude.last(t).opts; !o.NoSpawn || !reflect.DeepEqual(o.MCPTools, toolNames(boardtools.RunChatTools())) {
-		t.Fatalf("a chat on a run with subagents off started with %+v", o)
-	}
-	var de *SubDepthError
-	if _, err := e.m.SpawnSubagent(off.ID, SpawnSubRequest{Prompt: "work"}); !errors.As(err, &de) {
-		t.Fatalf("spawn on a chat on a run with subagents off: %v", err)
-	}
-	// With depth 2 its subagent has the spawn family and nothing of the run; the one below has none.
-	deep := e.onRun(model.Claude)
-	e.limits(deep.ID, 2, 100)
-	e.send(deep.ID, "go", "")
-	one, pone := e.child(deep.ID, "", "level one")
-	if o := pone.opts; o.NoSpawn || !reflect.DeepEqual(o.MCPTools, toolNames(boardtools.SpawnFamily)) || o.Unattended {
-		t.Fatalf("a subagent that may spawn, of a chat on a run, started with %+v", o)
-	}
-	_, ptwo := e.child(deep.ID, one.ID, "level two")
-	if o := ptwo.opts; !o.NoSpawn || o.MCPTools == nil || len(o.MCPTools) != 0 {
-		t.Fatalf("a subagent at the deepest level, of a chat on a run, started with %+v", o)
-	}
-
-	capped := e.onRun(model.Claude)
-	e.limits(capped.ID, 1, 1)
-	e.send(capped.ID, "go", "")
-	if o := e.claude.last(t).opts; o.NoSpawn || !reflect.DeepEqual(o.MCPTools, toolNames(boardtools.RunChatTools(), boardtools.SpawnFamily...)) {
-		t.Fatalf("a chat on a run started with %+v", o)
-	}
-	e.spawn(capped.ID, SpawnSubRequest{Prompt: "work"})
-	var ce *SubCapError
-	if _, err := e.m.SpawnSubagent(capped.ID, SpawnSubRequest{Prompt: "more"}); !errors.As(err, &ce) || ce.Cap != 1 {
-		t.Fatalf("a second spawn on a chat on a run with a cap of 1: %v", err)
 	}
 }

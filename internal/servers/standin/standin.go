@@ -119,7 +119,7 @@ func Level(n int) *int { return &n }
 
 // DefaultSnapshot is the API snapshot of a remote server with nothing on it: every part of a
 // snapshot of level 5, with what a new chat is offered, no library, an empty tree (groups,
-// boards, chats, states and runs as empty lists, never null) and nothing remembered per group.
+// boards, chats and states as empty lists, never null) and nothing remembered per group.
 func DefaultSnapshot() map[string]any {
 	return map[string]any{
 		"agents": []model.AgentKind{model.Claude, model.Pi},
@@ -138,7 +138,6 @@ func DefaultSnapshot() map[string]any {
 		"boards":     []any{},
 		"chats":      []any{},
 		"states":     []any{},
-		"runs":       []any{},
 	}
 }
 

@@ -1,6 +1,6 @@
 // Proves the insert popup in the app (plans/prompt-library.md, section 5; section 10, lines 11 to 16, and lines 19 and
 // 22 as far as this popup goes). The text box's own side is PL5.1's; the library popup is PL4.1's.
-//   A chat's composer and a run's goal composer. ⌘P in the text box opens the popup with the focus in its search and
+//   A chat's composer. ⌘P in the text box opens the popup with the focus in its search and
 //   every prompt listed with its path, in the order of the tree, the first one highlighted; the page does not get the
 //   key (it would print), also not while it is held and not from the popup's button. ⌘P with the cursor elsewhere
 //   (nowhere, in a message, in another field) opens nothing and is left to the browser. The arrow keys move the
@@ -11,7 +11,7 @@
 //   its selection as they were. The focus stays in the open popup when the chat was picked in the sidebar just before
 //   (the composer is given the focus a moment after a pick). The popup has no field but the search and no button but
 //   the way to the library, and nothing done in it changes the library. The text is in the draft the server holds, in
-//   the box after a reload, and in the message (the goal) that is sent, as typed.
+//   the box after a reload, and in the message that is sent, as typed.
 //   A chat beside a board. A reference chip in the box is the element it was after an insertion beside it, and the
 //   saved draft still has its tag; a mention typed afterwards is completed from its list; the message sent has the
 //   reference, the mention and the text.
@@ -106,12 +106,12 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
     return { page, read, shows, holds, popup, caret, empty, close };
   };
 
-  // ---- a chat's composer and a run's goal composer
-  const draftOf = { chat: () => mockEval("return chats.c_plain.draft?.text ?? '';", url), run: () => mockEval("return runs.r_draft.meta.draft?.text ?? '';", url) };
-  for (const [name, kind, sel, elsewhere] of [["a chat's composer", "chat", selOf("plain-started"), ".thread .msg"], ["a run's goal composer", "run", selOf("goal-draft"), ".run-new-body"]]) {
-    const c = await open(name, sel, draftOf[kind]), { page } = c;
+  // ---- a chat's composer
+  const draftOf = () => mockEval("return chats.c_plain.draft?.text ?? '';", url);
+  for (const [name, sel, elsewhere] of [["a chat's composer", selOf("plain-started"), ".thread .msg"]]) {
+    const c = await open(name, sel, draftOf), { page } = c;
     try {
-      // (the goal composer opens with its saved draft: the box is emptied by hand, as a user would)
+      // (the box is emptied by hand, as a user would)
       await c.empty();
       await page.keyboard.type("Hello world");
       for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowLeft");
@@ -198,8 +198,7 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
 
       // the focus stays in the popup: picked in the sidebar, an item gives its composer the focus a moment later
       // (focusComposer, 30 ms), and ⌘P pressed before that moment has its popup open by then
-      // (the chat's row, picked again: a run's row would open the run's chat beside it)
-      if (kind === "chat") {
+      { // (the chat's row, picked again)
         const picked = await page.evaluate(() => {
           const row = document.querySelector(".side-row.is-chat.on"), box = document.querySelector(".composer .composer-input"), mac = /Mac|iPhone|iPad/.test(navigator.platform);
           if (!row || !box) return false;
@@ -230,7 +229,7 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
         await c.holds("the Insert button, the third prompt", text);
         await c.caret("the Insert button", text, REVIEW.length - 7 + TODO.length);
       }
-      text = bare(await draftOf[kind]());
+      text = bare(await draftOf());
 
       // elsewhere ⌘P is the browser's, and opens nothing
       const left = async (where) => {
@@ -261,7 +260,7 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
       text = "Before " + COMMIT;
       await c.holds("after a reload", text);
       await page.locator(".composer .send:not(.stop)").first().click();
-      const sent = () => mockEval(kind === "chat" ? "return items.c_plain.filter((x) => x.kind === 'user').at(-1)?.text ?? '';" : "return runs.r_draft.goal ?? '';", url);
+      const sent = () => mockEval("return items.c_plain.filter((x) => x.kind === 'user').at(-1)?.text ?? '';", url);
       let got;
       if (!await until(async () => (got = await sent()) === text, 10000)) fail(`${name}: what was sent is ${JSON.stringify(got)}, not ${JSON.stringify(text)}`);
       note(`${name}: ⌘P opens the popup and is never the browser's there, Enter and a click insert at the cursor, Esc leaves the box as it was, the draft and what is sent have the text`);

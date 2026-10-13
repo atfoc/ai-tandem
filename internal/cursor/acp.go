@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,10 +41,6 @@ type Conn struct {
 
 	OnNotify  func(method string, params json.RawMessage)
 	OnRequest func(id json.RawMessage, method string, params json.RawMessage)
-
-	// EndStarted: Close also ends the process groups the process's descendants lead (Cursor starts
-	// each shell command as the leader of a group of its own). Set before Close.
-	EndStarted bool
 
 	start   sync.Once
 	ending  sync.Once
@@ -229,14 +224,9 @@ var outputGrace = time.Second
 // Close ends the process and everything in its process group, and waits for it: stdin is closed;
 // what is still there a moment later gets SIGTERM, and what outlives that SIGKILL. The group is
 // signalled, not the process alone: Cursor's worker-server and its language servers run in it and
-// would otherwise stay for minutes. With EndStarted the groups led by the process's descendants
-// (shell commands, also ones running in the background) get the same signals.
-//
-// Only groups this process started are signalled: its own through agent.SignalGroup, which knows
-// the groups StartGroup made and forgets them when they are empty, and its descendants' as they
-// were found while the process was still there (agent.StartedGroups): when Close begins, and
-// again before each of the two signals, since a turn that is still running starts commands until
-// the process ends. A command that detached itself from the process is not found and stays.
+// would otherwise stay for minutes. The group is signalled through agent.SignalGroup, which knows
+// the groups StartGroup made and forgets them when they are empty. A shell command Cursor started
+// leads a group of its own and is not signalled.
 //
 // Close does not wait for such a survivor: if the process was killed and its output has still not
 // ended a moment later, the output is given up, so that the exit is reported.
@@ -247,25 +237,8 @@ func (c *Conn) Close() {
 }
 
 func (c *Conn) end() {
-	var started []int
-	// collect adds the groups the process's descendants lead now. Once the process has been waited
-	// for it finds none, so what was found earlier stays.
-	collect := func() {
-		if !c.EndStarted {
-			return
-		}
-		for _, pgid := range agent.StartedGroups(c.cmd, c.done) {
-			if !slices.Contains(started, pgid) {
-				started = append(started, pgid)
-			}
-		}
-	}
-	collect()
-	// signal reports whether anything it signalled is still there (signal 0 only asks).
-	signal := func(sig syscall.Signal) bool {
-		own := agent.SignalGroup(c.cmd, sig)
-		return agent.SignalStarted(started, sig) || own
-	}
+	// signal reports whether the group it signalled is still there (signal 0 only asks).
+	signal := func(sig syscall.Signal) bool { return agent.SignalGroup(c.cmd, sig) }
 	exited := func() bool {
 		select {
 		case <-c.done:
@@ -285,13 +258,11 @@ func (c *Conn) end() {
 	c.w.Close()
 	c.wmu.Unlock()
 	until(closeStdinGrace, exited)
-	collect()
 	if !signal(syscall.SIGTERM) && exited() {
 		return // the process exited by itself and left nothing
 	}
 	until(closeTermGrace, exited)
 	until(closeRestGrace, func() bool { return exited() && !signal(0) })
-	collect()
 	killed := signal(syscall.SIGKILL)
 	if killed {
 		until(closeKillGrace, func() bool { return exited() && !signal(0) })

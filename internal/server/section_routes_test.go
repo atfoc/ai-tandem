@@ -47,7 +47,6 @@ func (r sectionRow) there() string {
 func sectionRows() []sectionRow {
 	const (
 		chat  = "/chats/" + farChatA
-		run   = "/runs/" + farRunA
 		board = "/boards/" + farBoardA
 	)
 	return []sectionRow{
@@ -79,26 +78,6 @@ func sectionRows() []sectionRow {
 		{"POST /chats/{id}/images", chat + "/images", "name=a.png", "", "image", "image"},
 		{"GET /chats/{id}/images/{image}", chat + "/images/" + strings.Repeat("a", 64), "", "", "image", "image"},
 
-		{"POST /runs", "/runs", "", `{"group":"g_1","name":"A run"}`, "call", ""},
-		{"GET /runs/{id}", run, "", "", "call", ""},
-		{"PATCH /runs/{id}", run, "", `{"name":"mine","group":"g_2","cwd":"/srv/code","tiers":{"deep":{"model":"m"}}}`, "call", ""},
-		{"PUT /runs/{id}/draft", run + "/draft", "", `{"text":"the goal, typed"}`, "call", ""},
-		{"POST /runs/{id}/start", run + "/start", "", `{"goal":"Write the note"}`, "start", ""},
-		{"POST /runs/{id}/stop", run + "/stop", "", "", "start", ""},
-		{"POST /runs/{id}/resume", run + "/resume", "", `{"maxTurns":9}`, "start", ""},
-		{"POST /runs/{id}/apply", run + "/apply", "", `{"branch":"main"}`, "start", ""},
-		{"GET /runs/{id}/delivery", run + "/delivery", "", "", "call", ""},
-		{"GET /runs/{id}/goal", run + "/goal", "", "", "call", ""},
-		{"GET /runs/{id}/tasks/{tid}/brief", run + "/tasks/t1/brief", "rev=2", "", "call", ""},
-		{"GET /runs/{id}/tasks/{tid}/attempts/{n}/report", run + "/tasks/t1/attempts/2/report", "", "", "call", ""},
-		{"GET /runs/{id}/tasks/{tid}/attempts/{n}/changes", run + "/tasks/t1/attempts/2/changes", "", "", "call", ""},
-		{"GET /runs/{id}/notes/{v}", run + "/notes/3", "", "", "call", ""},
-		{"POST /runs/{id}/archive", run + "/archive", "", "", "start", ""},
-		{"POST /runs/{id}/unarchive", run + "/unarchive", "", "", "start", ""},
-		{"DELETE /runs/{id}", run, "", "", "delete", ""},
-		{"GET /runs/{id}/detail", run + "/detail", "", "", "call", "follow"},
-		{"POST /runs/{id}/unfollow", run + "/unfollow", "", "", "", "here"},
-
 		{"POST /boards", "/boards", "", `{"name":"Plans","group":"g_1","new":true}`, "call", "board"},
 		{"POST /boards/{id}/take", board + "/take", "", `{"ifFree":true}`, "call", "board"},
 		{"POST /boards/{id}/release", board + "/release", "", "", "", "here"},
@@ -125,7 +104,7 @@ func (f *far) at(r sectionRow) string {
 // newRowsFar is a far whose stand-in has the things the rows name.
 func newRowsFar(t *testing.T, limits remotes.Limits) *far {
 	t.Helper()
-	return newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, runs: []model.RunView{runThere(farRunA)},
+	return newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)},
 		boards: []model.Board{boardThere(farBoardA)}, limits: limits})
 }
 
@@ -144,8 +123,8 @@ func TestSectionTableIsTheContracts(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("the handler has the rows\n%s\nand the contract\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if len(got) != 57 {
-		t.Fatalf("%d rows, want the 57 of the contract's table", len(got))
+	if len(got) != 38 {
+		t.Fatalf("%d rows, want the 38 of the contract's table", len(got))
 	}
 	// The limits of production are the contract's.
 	if l := remotes.DefaultLimits; l.Call != 15*time.Second || l.Start != 45*time.Second || l.Scene != 60*time.Second ||
@@ -217,7 +196,7 @@ func TestSectionRoutesPassOn(t *testing.T) {
 		}
 	}
 	// Nothing of it is kept here.
-	if own := f.snapshotOf(p); len(own.Chats) != 0 || len(own.Runs) != 0 || len(own.Boards) != 0 || len(own.Groups) != 0 {
+	if own := f.snapshotOf(p); len(own.Chats) != 0 || len(own.Boards) != 0 || len(own.Groups) != 0 {
 		t.Errorf("this server's own lists after the calls: %+v", own)
 	}
 	// One connection carries everything of the entry: the stream, and every call that was passed
@@ -227,25 +206,23 @@ func TestSectionRoutesPassOn(t *testing.T) {
 	}
 }
 
-// The rows that are answered here in every state of the entry: the unfollow of a chat and of a
-// run, the release of a board no page holds, and the reveal of a board's file. Nothing is sent
+// The rows that are answered here in every state of the entry: the unfollow of a chat, the
+// release of a board no page holds, and the reveal of a board's file. Nothing is sent
 // for them. An id that is no entry is answered as in every other row: 404 "no_server".
 func TestSectionRoutesAnsweredHere(t *testing.T) {
 	t.Parallel()
 	f := newRowsFar(t, remotes.Limits{})
 	p := f.page("P")
-	rows := []string{"/chats/" + farChatA + "/unfollow", "/runs/" + farRunA + "/unfollow", "/boards/" + farBoardA + "/release", "/boards/" + farBoardA + "/reveal"}
+	rows := []string{"/chats/" + farChatA + "/unfollow", "/boards/" + farBoardA + "/release", "/boards/" + farBoardA + "/reveal"}
 	check := func(when string) {
 		t.Helper()
-		for _, rest := range rows[:2] {
-			if got := f.good(p, "POST", f.on(rest), ""); !reflect.DeepEqual(got, map[string]any{"ok": true}) {
-				t.Errorf("%s, %s: %v", when, rest, got)
-			}
+		if got := f.good(p, "POST", f.on(rows[0]), ""); !reflect.DeepEqual(got, map[string]any{"ok": true}) {
+			t.Errorf("%s, %s: %v", when, rows[0], got)
 		}
-		if got := f.good(p, "POST", f.on(rows[2]), ""); !reflect.DeepEqual(got, map[string]any{"state": "none"}) {
+		if got := f.good(p, "POST", f.on(rows[1]), ""); !reflect.DeepEqual(got, map[string]any{"state": "none"}) {
 			t.Errorf("%s, the release of a board no page holds: %v", when, got)
 		}
-		if text := f.refuses(p, http.StatusBadRequest, "not_here", "POST", f.on(rows[3]), ""); !strings.Contains(text, "no file on this computer") {
+		if text := f.refuses(p, http.StatusBadRequest, "not_here", "POST", f.on(rows[2]), ""); !strings.Contains(text, "no file on this computer") {
 			t.Errorf("%s, the reveal: %q", when, text)
 		}
 	}
@@ -269,7 +246,7 @@ func TestSectionRoutesAnsweredHere(t *testing.T) {
 
 	// Without a relay no entry but the local one is known: no id is an entry.
 	e := newEnv(t)
-	for _, path := range []string{"/chats/c/unfollow", "/runs/r/unfollow", "/boards/b/release", "/boards/b/reveal", "/boards/b/take", "/chats/c", "/nothing"} {
+	for _, path := range []string{"/chats/c/unfollow", "/boards/b/release", "/boards/b/reveal", "/boards/b/take", "/chats/c", "/nothing"} {
 		method, code := "POST", "no_server"
 		if path == "/chats/c" || path == "/nothing" {
 			method = "GET"
@@ -300,7 +277,7 @@ func TestSectionLimits(t *testing.T) {
 	for _, row := range sectionRows() {
 		counted[row.limit]++
 	}
-	if want := map[string]int{"call": 36, "start": 11, "delete": 2, "scene": 2, "image": 2, "": 4}; !reflect.DeepEqual(counted, want) {
+	if want := map[string]int{"call": 25, "start": 5, "delete": 1, "scene": 2, "image": 2, "": 3}; !reflect.DeepEqual(counted, want) {
 		t.Fatalf("the rows by their limit: %v, want %v", counted, want)
 	}
 	for kind, l := range limits {
@@ -354,7 +331,7 @@ func TestAnythingElseUnderThePrefixIsNotFound(t *testing.T) {
 	t.Parallel()
 	f := newRowsFar(t, remotes.Limits{})
 	p := f.page("P")
-	chat, run, board := "/chats/"+farChatA, "/runs/"+farRunA, "/boards/"+farBoardA
+	chat, run, board := "/chats/"+farChatA, "/runs/r_aaaa0001", "/boards/"+farBoardA
 	none := [][2]string{
 		{"GET", ""}, {"GET", "/"}, {"POST", ""},
 		// What a remote server serves a client, or its own page, and no section has.
@@ -371,9 +348,8 @@ func TestAnythingElseUnderThePrefixIsNotFound(t *testing.T) {
 		{"GET", "/chats"}, {"DELETE", "/chats"}, {"PUT", chat}, {"POST", chat}, {"GET", chat + "/messages"}, {"PUT", chat + "/messages"},
 		{"GET", chat + "/draft"}, {"POST", chat + "/draft"}, {"GET", chat + "/unfollow"}, {"POST", chat + "/items"}, {"GET", chat + "/nothing"},
 		{"GET", chat + "/items/1"}, {"GET", chat + "/images"}, {"POST", chat + "/images/" + strings.Repeat("a", 64)}, {"GET", chat + "/subagents/s1"},
-		// Runs: the start call of a client.
-		{"GET", "/runs"}, {"PUT", run}, {"POST", run}, {"GET", run + "/start"}, {"GET", run + "/tasks/t1"}, {"GET", run + "/notes"},
-		{"POST", run + "/detail"}, {"GET", run + "/tasks/t1/attempts/2"},
+		// Runs: this server has none, a server built with runs has them.
+		{"POST", "/runs"}, {"GET", run}, {"PATCH", run}, {"GET", run + "/detail"}, {"POST", run + "/start"}, {"POST", run + "/unfollow"},
 		// Boards: the creation call of a client.
 		{"GET", "/boards"}, {"PUT", board}, {"GET", board}, {"GET", board + "/take"}, {"DELETE", board + "/scene"}, {"POST", board + "/scene"},
 		{"GET", board + "/reveal"}, {"GET", board + "/release"},
@@ -441,8 +417,8 @@ func TestSectionWritesNeedAKnownClient(t *testing.T) {
 			t.Errorf("a write on a path that is no row, of no client: %d", status)
 		}
 	})
-	if writes != 42 {
-		t.Fatalf("%d rows that are no read, want 42", writes)
+	if writes != 31 {
+		t.Fatalf("%d rows that are no read, want 31", writes)
 	}
 	if got := f.st.Requests(); len(got) != sent {
 		t.Errorf("the stand-in was sent %+v", got[sent:])
@@ -550,7 +526,7 @@ func TestSectionRefusalsHere(t *testing.T) {
 func TestRemoteListenerHasNoSection(t *testing.T) {
 	t.Parallel()
 	l := newListener(t)
-	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, runs: []model.RunView{runThere(farRunA)}, boards: []model.Board{boardThere(farBoardA)},
+	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, boards: []model.Board{boardThere(farBoardA)},
 		with: []func(*Server){l.set, func(s *Server) { s.App.Home = "/home/owner" }}})
 	l.serve(f.s)
 	p := f.page("P")
@@ -569,7 +545,7 @@ func TestRemoteListenerHasNoSection(t *testing.T) {
 			}
 		}
 		// The things of a section are no things of this server, for a client as for a page.
-		for _, c := range [][2]string{{"GET", "/api/chats/" + farChatA}, {"GET", "/api/chats/" + farChatA + "/items"}, {"GET", "/api/runs/" + farRunA},
+		for _, c := range [][2]string{{"GET", "/api/chats/" + farChatA}, {"GET", "/api/chats/" + farChatA + "/items"},
 			{"GET", "/api/boards/" + farBoardA + "/scene"}} {
 			if status, out := l.call(apiX, testSecret, c[0], c[1], ""); status != http.StatusNotFound {
 				t.Errorf("an API client's %s %s: %d %s", c[0], c[1], status, out)

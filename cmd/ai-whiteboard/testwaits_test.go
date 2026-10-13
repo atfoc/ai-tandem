@@ -187,7 +187,7 @@ func TestSectionWaitsAreTheProductionOnesUnlessNamed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pr := wiredWaits(t, t.TempDir(), false, unset)
+	pr := wiredWaits(t, t.TempDir(), unset)
 	if l := pr.srv.Remotes.Limits(); l.Call != 15*time.Second || l.Start != 45*time.Second || l.Scene != 60*time.Second ||
 		l.Image != 60*time.Second || l.Delete != 3*time.Minute || l != remotes.DefaultLimits {
 		t.Errorf("the limits of a program with no override: %+v", l)
@@ -201,7 +201,7 @@ func TestSectionWaitsAreTheProductionOnesUnlessNamed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pr = wiredWaits(t, t.TempDir(), false, named)
+	pr = wiredWaits(t, t.TempDir(), named)
 	want := remotes.DefaultLimits
 	want.Start, want.Image = 4500*time.Millisecond, 6*time.Second
 	if l := pr.srv.Remotes.Limits(); l != want {

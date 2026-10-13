@@ -36,7 +36,7 @@ func TestSectionItemsAreKeyedByServerToo(t *testing.T) {
 		}
 	}
 	// The same event of the local chat c1: its followers, the API client among them.
-	b.SendChat("c1", false, map[string]any{"type": "chat_items", "chat": "c1"})
+	b.SendChat("c1", map[string]any{"type": "chat_items", "chat": "c1"})
 	s.send()
 	for _, c := range []*bridgetest.Page{local, x} {
 		if got := s.until(t, c); !reflect.DeepEqual(got, []string{"chat_items"}) {
@@ -49,15 +49,14 @@ func TestSectionItemsAreKeyedByServerToo(t *testing.T) {
 		}
 	}
 
-	// The list events of a section go to every page and to no API client, for a chat, a run, a
-	// board and for the section's groups.
+	// The list events of a section go to every page and to no API client, for a chat, a board
+	// and for the section's groups.
 	b.SendChatOn("s_1", "c1", false, map[string]any{"type": "chat", "server": "s_1"})
-	b.SendRunOn("s_1", "r1", map[string]any{"type": "run", "server": "s_1"})
 	b.SendBoardOn("s_1", "b1", map[string]any{"type": "board", "server": "s_1"})
 	b.BroadcastOn("s_1", map[string]any{"type": "groups", "server": "s_1"})
 	s.send()
 	for _, c := range []*bridgetest.Page{local, far, other} {
-		if got := s.until(t, c); !reflect.DeepEqual(got, []string{"chat", "run", "board", "groups"}) {
+		if got := s.until(t, c); !reflect.DeepEqual(got, []string{"chat", "board", "groups"}) {
 			t.Errorf("%s got %v", c.ID, got)
 		}
 	}
@@ -79,12 +78,11 @@ func TestForgetServer(t *testing.T) {
 	hook := hookOf(t, b)
 	open(t, srv, "P")
 	b.Follow("P", ChatOn("s_1", "c1"))
-	b.Follow("P", RunOn("s_1", "r1"))
 	b.Follow("P", ChatOn("s_2", "c1"))
 	b.Follow("P", Chat("c1"))
 	b.ForgetServer("s_1")
 	b.ForgetServer("")
-	if b.Followed(ChatOn("s_1", "c1")) || b.Followed(RunOn("s_1", "r1")) {
+	if b.Followed(ChatOn("s_1", "c1")) {
 		t.Fatal("a follow of s_1 is left")
 	}
 	if !b.Followed(ChatOn("s_2", "c1")) || !b.Followed(Chat("c1")) {

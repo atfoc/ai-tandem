@@ -1,5 +1,5 @@
-// Subagents of a chat: each in the chat's folder under subagents/<sid>/ (chats/<chat>/subagents/<sid>/,
-// or under its run for a run's chat), with its state in subagent.json and its own thread in
+// Subagents of a chat: each in the chat's folder under subagents/<sid>/
+// (chats/<chat>/subagents/<sid>/), with its state in subagent.json and its own thread in
 // items.jsonl. The manager routes events whose Sub is set here.
 package chats
 
@@ -25,10 +25,6 @@ type sub struct {
 	stop  chan struct{}          // closed so the runner exits even if Events() stays open
 	app   bool                   // started by SpawnSubagent (has its own process)
 	carry *carry                 // the turn carrying it results of subagents it started; nil once that turn ended
-	// What its process last reported at a turn end (see costSubEnd): a process counts from its
-	// start, and a subagent can have several turns.
-	cost float64
-	tok  model.TokenCount
 }
 
 var ErrNoSubagent = errors.New("no such subagent")
@@ -289,9 +285,6 @@ func (m *Manager) stopSub(c *Chat, s *sub, why subEnding, out *outbox) (ag agent
 		m.denySubPerms(c, s)
 		ag = s.ag
 		s.ag = nil
-		if !s.meta.Waiting && costSubLost(c, s.meta.Kind) { // stopped in a turn: it reports no cost for it any more
-			m.logSave(c)
-		}
 	}
 	s.meta.Status, s.meta.Ended, s.meta.Waiting = model.SubStopped, m.nowMs(), false
 	ended(s, why)

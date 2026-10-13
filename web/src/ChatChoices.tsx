@@ -20,7 +20,7 @@ import "./remotechat.css";
 type Menu = { disabled: boolean; open: boolean; onOpenChange: (open: boolean) => void };
 type Saves = { c: ChatView; onBusy: (busy: boolean) => void; onError: (msg: string) => void };
 
-/** A thing's server as its views read it (logic/chatserver.ts): of a chat, a board or a run, whose key names the
+/** A thing's server as its views read it (logic/chatserver.ts): of a chat or a board, whose key names the
  *  server it is on, or of a server named by its entry id (`server`: the folder browser's). connected: that server
  *  takes a call now, which for a section is while the local server holds its tree. */
 export function useWhere(of?: { id?: string } | { server: string } | null): Where {
@@ -31,7 +31,7 @@ export function useWhere(of?: { id?: string } | { server: string } | null): Wher
 }
 
 /** Why a chat takes no call now (logic/chatserver.ts offWhy): its server is not connected, or no longer has it; "" for
- *  a chat that takes one, which a chat of this computer always does. chat: its key; a run agent's too. */
+ *  a chat that takes one, which a chat of this computer always does. chat: its key. */
 export function useOffWhy(chat: string): string {
   const w = useWhere({ id: chat });
   const gone = useStore((s) => !!s.gone[chat]);

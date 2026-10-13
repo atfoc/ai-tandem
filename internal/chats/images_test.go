@@ -245,27 +245,6 @@ func TestImageUploadRefused(t *testing.T) {
 	}
 }
 
-// The chat of a run's agent takes no upload, as it takes no draft save.
-func TestImageUploadToRunAgent(t *testing.T) {
-	t.Parallel()
-	e, _ := runEnv(t)
-	if _, err := e.m.CreateOwned(OwnedSpec{ID: "agent-1", Run: ownRun, Role: model.RoleTask, Agent: model.Claude, Cwd: e.cwd}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.m.UploadImage("agent-1", "f", "image/png", pic("x")); !errors.Is(err, ErrRunAgent) {
-		t.Fatalf("an upload to a run agent's chat: %v", err)
-	}
-	if _, _, _, err := e.m.SaveDraft("agent-1", "", 0, model.Draft{Text: "x"}); !errors.Is(err, ErrRunAgent) {
-		t.Fatalf("a draft save of a run agent's chat: %v", err)
-	}
-	// A person's chat on the run takes images as any chat, in its own folder under the run.
-	v := e.onRun(model.Claude)
-	img := e.upload(v.ID, "a")
-	if want := filepath.Join(e.st.P.RunChatDir(ownRun, false, v.ID), "images", img.ID); !reflect.DeepEqual(e.imageFiles(v.ID), []string{img.ID}) || e.m.imagePath(v.ID, img.ID) != want {
-		t.Fatalf("the image of a chat on a run: %v at %s", e.imageFiles(v.ID), e.m.imagePath(v.ID, img.ID))
-	}
-}
-
 // At most 50 images of a chat were never sent. The cap is counted after the cleanup has run, an
 // image that is there already is taken at the cap, and sent images do not count.
 func TestImageCap(t *testing.T) {

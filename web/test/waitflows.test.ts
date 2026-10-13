@@ -125,7 +125,7 @@ async function answerList(branch: string, items: unknown[], chat = "c_1") {
 async function open(chat: Record<string, unknown> = {}, state: Record<string, unknown> = {}) {
   await ev(snapshot([view("c_1", { branches: 2, ...chat }), view("c_2")], [rec("c_1", "main", state), rec("c_1", B), rec("c_2", "main")]));
   for (const a of lists()) await a.fail(new Error("left over"));
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
+  store.setState({ sel: { board: null, chat: "c_1" } });
   void conn.loadItems("c_1");
   await answerList("main", MAIN_ITEMS);
   fake.errors.length = 0; fake.opened.length = 0;
@@ -149,7 +149,7 @@ beforeEach(async () => {
   console.error = () => {}; console.warn = () => {};
   conn.connect();
   await ev(snapshot([], [])); // (it has no section: the tree a test left goes)
-  store.setState({ sel: { board: null, run: null, chat: null }, waits: {} });
+  store.setState({ sel: { board: null, chat: null }, waits: {} });
   conn.dropLeft(); // and with it what stayed of one for being on screen
   for (const a of lists()) await a.fail(new Error("left over"));
   for (const k of Object.keys(storage)) delete storage[k];
@@ -388,23 +388,23 @@ test("the user opened another chat during the POST and came back: the same pictu
   const done = send();
   await settle();
   const before = { texts: texts(), drawn: drawn(), back: heldReason(waits(), "back"), send: sendWait(waits(), "main") };
-  store.setState({ sel: { board: null, run: null, chat: "c_2" } });
+  store.setState({ sel: { board: null, chat: "c_2" } });
   void conn.loadItems("c_2");
   await answerList("main", [], "c_2");
   assert.equal(actions.isSending("c_1"), true);
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
+  store.setState({ sel: { board: null, chat: "c_1" } });
   void conn.loadItems("c_1");
   await settle();
   assert.deepEqual({ texts: texts(), drawn: drawn(), back: heldReason(waits(), "back"), send: sendWait(waits(), "main") }, before);
   await answerList("main", MAIN_ITEMS); // (a chat that is opened reads its list again)
   assert.deepEqual({ texts: texts(), drawn: drawn(), back: heldReason(waits(), "back"), send: sendWait(waits(), "main") }, before);
   // away again when the answer comes
-  store.setState({ sel: { board: null, run: null, chat: "c_2" } });
+  store.setState({ sel: { board: null, chat: "c_2" } });
   await madeN();
   await fake.posts[0].answer({ ok: true, branch: N });
   assert.equal(await done, "sent");
   assert.equal(waits()?.send?.phase, "loading");
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
+  store.setState({ sel: { board: null, chat: "c_1" } });
   void conn.loadItems("c_1");
   await settle();
   assert.deepEqual(texts(), ["q1", "a1", "(another way)"], "back before the list is here: the history and the message");
@@ -634,7 +634,7 @@ const there = () => ({ chats: [view("c_1", { branches: 2 })], states: [rec("c_1"
 test("a section's tree that arrives gives up the fetches of its chats and reads the one on screen again: the fetch given up ends nothing", async () => {
   await ev({ ...snapshot([], []), sections: { [S1]: there() } });
   for (const a of lists()) await a.fail(new Error("left over"));
-  store.setState({ sel: { board: null, run: null, chat: K } });
+  store.setState({ sel: { board: null, chat: K } });
   void conn.loadItems(K);
   await settle();
   assert.deepEqual(waits(K)?.loads, ["main"]);
@@ -650,7 +650,7 @@ test("a section's tree that arrives gives up the fetches of its chats and reads 
 test("a section's tree that goes gives up the fetches of its chats: none of them is still told as running, and nothing is read", async () => {
   await ev({ ...snapshot([], []), sections: { [S1]: there() } });
   for (const a of lists()) await a.fail(new Error("left over"));
-  store.setState({ sel: { board: null, run: null, chat: K } });
+  store.setState({ sel: { board: null, chat: K } });
   void conn.loadItems(K);
   void conn.keepBranch(K, B).catch(() => {});
   await settle();

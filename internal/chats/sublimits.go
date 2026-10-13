@@ -3,21 +3,12 @@
 // subagents. The cap on running turns is another thing: cap.go.
 package chats
 
-import (
-	"fmt"
+import "fmt"
 
-	"ai-whiteboard/internal/model"
-)
-
-// subLimits returns the depth and the cap that hold for c: its own settings, and for a run
-// agent's chat depth 1 and no cap (0), whatever its meta says. A chat people open on a run is an
-// ordinary chat here. A branch is a chat object of its own with its source's settings, and the
-// cap is counted per branch, by decision: what runs on another branch of the chat does not count.
-// c.mu held.
+// subLimits returns the depth and the cap that hold for c: its own settings. A branch is a chat
+// object of its own with its source's settings, and the cap is counted per branch, by decision:
+// what runs on another branch of the chat does not count. c.mu held.
 func subLimits(c *Chat) (depth, limit int) {
-	if c.role != "" {
-		return model.DefaultSubDepth, 0
-	}
 	l := c.meta.SubLimits()
 	return l.Depth, l.Cap
 }

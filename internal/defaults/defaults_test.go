@@ -67,31 +67,6 @@ func TestResolveNothingRecorded(t *testing.T) {
 	check(t, "pi", cwd, mc, ds.fallback, model.ModelChoice{Model: "deepseek-flash"})
 }
 
-func TestRecorded(t *testing.T) {
-	var d model.Defaults
-	if a, c := Recorded(d, "g1", model.Claude, nil); a || c {
-		t.Fatalf("nothing recorded: %v %v", a, c)
-	}
-	RecordChange(&d, "g1", model.Claude, "/w", model.ModelChoice{}) // a folder alone is no choice
-	RecordAgent(&d, model.Ungrouped, model.Pi)
-	RecordChange(&d, model.Ungrouped, model.Cursor, "", model.ModelChoice{Model: "auto"})
-	for _, c := range []struct {
-		g         string
-		a         model.AgentKind
-		usable    []model.AgentKind
-		agent, mc bool
-	}{
-		{"g1", model.Claude, nil, true, false},                        // the ungrouped group's agent
-		{"g1", model.Cursor, nil, true, true},                         // and its model for Cursor
-		{"g1", "", []model.AgentKind{model.Claude}, false, false},     // an agent that cannot be used is none
-		{"g2", model.Cursor, []model.AgentKind{model.Pi}, true, true}, // a group with no entry
-	} {
-		if a, mc := Recorded(d, c.g, c.a, c.usable); a != c.agent || mc != c.mc {
-			t.Errorf("Recorded(%s, %q, %v) = %v %v, want %v %v", c.g, c.a, c.usable, a, mc, c.agent, c.mc)
-		}
-	}
-}
-
 func TestRecordChangeThenResolve(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
@@ -138,11 +113,6 @@ func TestRecordChangeEmptyFieldsLeftAlone(t *testing.T) {
 	}
 }
 
-func runDefaults(agent model.AgentKind, deep string) model.RunDefaults {
-	return model.RunDefaults{Agent: agent, MaxParallel: 3, MaxTurns: 20, MaxCost: 1.5, Setup: "make", SetupCwd: "/w",
-		Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: deep, Effort: "max"}, Standard: model.ModelChoice{Model: "sonnet"}, Light: model.ModelChoice{Model: "haiku"}}}
-}
-
 // sharesNothing fails when a and b share a map or a pointer: a write to one would reach the other.
 func sharesNothing(t *testing.T, what string, a, b model.GroupDefaults) {
 	t.Helper()
@@ -154,33 +124,25 @@ func sharesNothing(t *testing.T, what string, a, b model.GroupDefaults) {
 		if len(sa.ByAgent) > 0 && reflect.ValueOf(sa.ByAgent).Pointer() == reflect.ValueOf(sb.ByAgent).Pointer() {
 			t.Errorf("%s: %s's choices are shared", what, k)
 		}
-		if sa.Run != nil && sa.Run == sb.Run {
-			t.Errorf("%s: %s's run defaults are shared", what, k)
-		}
-		if sa.Run != nil && sb.Run != nil && sa.Run.Tiers != nil && sa.Run.Tiers == sb.Run.Tiers {
-			t.Errorf("%s: %s's tiers are shared", what, k)
-		}
 		if sa.Subagents != nil && sa.Subagents == sb.Subagents {
 			t.Errorf("%s: %s's subagent settings are shared", what, k)
 		}
 	}
 }
 
-// AC32: a new top-level group is a copy of the ungrouped group's whole entry, its run defaults and
-// their tiers included; a subgroup is a copy of its parent's.
+// AC32: a new top-level group is a copy of the ungrouped group's whole entry; a subgroup is a copy
+// of its parent's.
 func TestSeedGroup(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
 	RecordAgent(&d, model.Ungrouped, model.Pi)
 	RecordChange(&d, model.Ungrouped, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, runDefaults(model.Claude, "opus"))
 	// Another group's values are nobody's source.
 	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
 
 	SeedGroup(&d, "g3", "")
-	rd := runDefaults(model.Claude, "opus")
 	want := model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, Cwd: ds.a,
-		ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}, Run: &rd})
+		ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}})
 	if got := d.Groups["g3"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("g3 = %+v, want %+v", got, want)
 	}
@@ -221,14 +183,13 @@ func TestSeededGroupIsACopy(t *testing.T) {
 	var d model.Defaults
 	RecordAgent(&d, model.Ungrouped, model.Claude)
 	RecordChange(&d, model.Ungrouped, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, runDefaults(model.Claude, "opus"))
+	RecordSub(&d, model.Ungrouped, model.SubLimits{Depth: 2, Cap: 7})
 	SeedGroup(&d, "g1", "")
 	was := Copy(d).Groups["g1"]
 
 	RecordAgent(&d, model.Ungrouped, model.Cursor)
 	RecordChange(&d, model.Ungrouped, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
-	RecordRun(&d, model.Ungrouped, runDefaults(model.Cursor, "auto"))
-	d.Groups[model.Ungrouped].Servers[local].Run.Tiers.Deep.Model = "changed"
+	RecordSub(&d, model.Ungrouped, model.SubLimits{Depth: 3, Cap: 9})
 	if got := d.Groups["g1"]; !reflect.DeepEqual(got, was) {
 		t.Fatalf("g1 after a change in ungrouped = %+v, want %+v", got, was)
 	}
@@ -237,14 +198,14 @@ func TestSeededGroupIsACopy(t *testing.T) {
 	if got := Agent(d, "g1", nil); got != model.Claude {
 		t.Errorf("g1 agent = %q, want claude", got)
 	}
-	if got := Run(d, "g1"); got == nil || got.Agent != model.Claude || got.Tiers.Deep.Model != "opus" {
-		t.Errorf("g1 run = %+v, want the seeded one", got)
+	if got := Sub(d, "g1"); got != (model.SubLimits{Depth: 2, Cap: 7}) {
+		t.Errorf("g1 subagent settings = %+v, want the seeded ones", got)
 	}
 
 	// The other way round: the group's own changes stay in the group.
 	ungrouped := Copy(d).Groups[model.Ungrouped]
 	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
-	d.Groups["g1"].Servers[local].Run.Tiers.Deep.Model = "mine"
+	RecordSub(&d, "g1", model.SubLimits{Depth: 1, Cap: 1})
 	if got := d.Groups[model.Ungrouped]; !reflect.DeepEqual(got, ungrouped) {
 		t.Fatalf("ungrouped after a change in g1 = %+v, want %+v", got, ungrouped)
 	}
@@ -389,15 +350,11 @@ func TestGroupWithoutValueFollowsUngrouped(t *testing.T) {
 	var d model.Defaults
 	RecordAgent(&d, model.Ungrouped, model.Cursor)
 	RecordChange(&d, model.Ungrouped, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, runDefaults(model.Cursor, "auto"))
 
 	cwd, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
 	if got := Agent(d, "g1", nil); got != model.Cursor {
 		t.Errorf("g1 agent = %q, want ungrouped's cursor", got)
-	}
-	if got := Run(d, "g1"); got == nil || got.Agent != model.Cursor {
-		t.Errorf("g1 run = %+v, want ungrouped's", got)
 	}
 	if _, ok := d.Groups["g1"]; ok {
 		t.Errorf("reading made an entry for g1: %+v", d.Groups["g1"])
@@ -425,12 +382,10 @@ func TestGroupWithoutValueFollowsUngrouped(t *testing.T) {
 
 	// A group with its own values is not affected by a change in another group, the ungrouped one included.
 	RecordAgent(&d, "g1", model.Claude)
-	RecordRun(&d, "g1", runDefaults(model.Claude, "opus"))
 	RecordChange(&d, "g1", model.Claude, "", model.ModelChoice{Model: "haiku"})
 	was := Copy(d).Groups["g1"]
 	RecordAgent(&d, model.Ungrouped, model.Cursor)
 	RecordChange(&d, model.Ungrouped, model.Claude, ds.b, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, runDefaults(model.Pi, "p"))
 	RecordChange(&d, "g2", model.Claude, ds.b, model.ModelChoice{Model: "opus", Effort: "low"})
 	RecordAgent(&d, "g2", model.Pi)
 	if got := d.Groups["g1"]; !reflect.DeepEqual(got, was) {
@@ -440,9 +395,6 @@ func TestGroupWithoutValueFollowsUngrouped(t *testing.T) {
 	check(t, "g1 claude, own model", cwd, mc, ds.a, model.ModelChoice{Model: "haiku"})
 	if got := Agent(d, "g1", nil); got != model.Claude {
 		t.Errorf("g1 agent = %q, want its own claude", got)
-	}
-	if got := Run(d, "g1"); got == nil || got.Agent != model.Claude {
-		t.Errorf("g1 run = %+v, want its own", got)
 	}
 }
 
@@ -513,44 +465,6 @@ func TestResolveAFolderThatIsGoneAndWithNoAgent(t *testing.T) {
 	check(t, "no agent", cwd, mc, ds.a, model.ModelChoice{})
 }
 
-func TestRunDefaults(t *testing.T) {
-	t.Parallel()
-	var d model.Defaults
-	if got := Run(d, "g1"); got != nil {
-		t.Fatalf("nothing stored = %+v, want nil", got)
-	}
-	rd := runDefaults(model.Claude, "opus")
-	RecordRun(&d, model.Ungrouped, rd)
-	// What is stored is a copy: the caller's value can change afterwards.
-	rd.Tiers.Deep.Model, rd.Setup = "changed", "changed"
-	want := runDefaults(model.Claude, "opus")
-	if got := Run(d, "g1"); !reflect.DeepEqual(got, &want) {
-		t.Fatalf("g1 = %+v, want ungrouped's %+v", got, want)
-	}
-	// What is read is a copy too.
-	got := Run(d, "g1")
-	got.Tiers.Deep.Model, got.Agent = "changed", model.Pi
-	if again := Run(d, model.Ungrouped); !reflect.DeepEqual(again, &want) {
-		t.Fatalf("after a change of the answer = %+v, want %+v", again, want)
-	}
-
-	own := runDefaults(model.Cursor, "auto")
-	RecordRun(&d, "g1", own)
-	if got := Run(d, "g1"); !reflect.DeepEqual(got, &own) {
-		t.Fatalf("g1 own = %+v, want %+v", got, own)
-	}
-	if got := Run(d, "g2"); !reflect.DeepEqual(got, &want) {
-		t.Fatalf("g2 = %+v, want ungrouped's", got)
-	}
-	// Recording the run defaults keeps the rest of what the group remembers.
-	next := runDefaults(model.Pi, "p")
-	RecordAgent(&d, "g1", model.Pi)
-	RecordRun(&d, "g1", next)
-	if got := d.Groups["g1"].Local(); got.Agent != model.Pi || !reflect.DeepEqual(got.Run, &next) {
-		t.Fatalf("g1 = %+v, want pi with the new run defaults", got)
-	}
-}
-
 func TestCopy(t *testing.T) {
 	t.Parallel()
 	var d model.Defaults
@@ -559,7 +473,7 @@ func TestCopy(t *testing.T) {
 	}
 	RecordAgent(&d, "g1", model.Pi)
 	RecordChange(&d, "g1", model.Claude, "/w", model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, "g1", runDefaults(model.Claude, "opus"))
+	RecordSub(&d, "g1", model.SubLimits{Depth: 2, Cap: 7})
 	d.Groups["g_empty"] = model.GroupDefaults{}
 	cp := Copy(d)
 	if !reflect.DeepEqual(cp, d) {
@@ -573,7 +487,8 @@ func TestCopy(t *testing.T) {
 	}
 }
 
-// before is the state file of an older build: "last", and every group's values flat.
+// before is the state file of an older build: "last", and every group's values flat. Such a
+// build also kept what its runs last used, as "run": that is read past, and not carried over.
 const before = `{"version":1,"defaults":{
  "last":{"cwd":"/last","byAgent":{"claude":{"model":"opus","effort":"max"},"pi":{"model":"p"}},
          "run":{"agent":"cursor","maxParallel":2,"maxTurns":10,"maxCost":0}},
@@ -582,10 +497,9 @@ const before = `{"version":1,"defaults":{
            "g_empty":{}}}}`
 
 const after = `{"version":1,"defaults":{"groups":{
- "__ungrouped__":{"servers":{"local":{"cwd":"/own","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"}},
-                  "run":{"agent":"cursor","maxParallel":2,"maxTurns":10,"maxCost":0}}}},
+ "__ungrouped__":{"servers":{"local":{"cwd":"/own","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"}}}}},
  "g_empty":{},
- "g_one":{"servers":{"local":{"cwd":"/one","run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0,"setup":"make","setupCwd":"/one"}}}}}}}`
+ "g_one":{"servers":{"local":{"cwd":"/one"}}}}}}`
 
 // load reads a state file's defaults as store.Open does, and migrates them.
 func load(t *testing.T, raw string) (d model.Defaults, changed bool) {
@@ -620,7 +534,7 @@ func sameJSON(t *testing.T, what string, got any, want string) {
 }
 
 // AC32: the "last" of an old state file is merged into the ungrouped group once, in today's
-// shape, run defaults too, and every group's flat values move under its key "local".
+// shape, and every group's flat values move under its key "local".
 func TestMigrate(t *testing.T) {
 	t.Parallel()
 	// The ungrouped group keeps its own values and takes the missing ones; flat groups move; an
@@ -644,7 +558,7 @@ func TestMigrate(t *testing.T) {
 	if u.Cwd != "/own" || u.ByAgent[model.Claude] != (model.ModelChoice{Model: "haiku"}) {
 		t.Errorf("ungrouped's own values were overwritten: %+v", u)
 	}
-	if u.ByAgent[model.Pi] != (model.ModelChoice{Model: "p"}) || u.Run == nil || u.Run.Agent != model.Cursor {
+	if u.ByAgent[model.Pi] != (model.ModelChoice{Model: "p"}) {
 		t.Errorf("ungrouped did not take the missing values: %+v", u)
 	}
 
@@ -653,8 +567,8 @@ func TestMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), `"last"`) {
-		t.Errorf("the migrated file holds last: %s", b)
+	if strings.Contains(string(b), `"last"`) || strings.Contains(string(b), `"run"`) {
+		t.Errorf("the migrated file holds last or run: %s", b)
 	}
 	again, changed := load(t, string(b))
 	if changed {
@@ -670,15 +584,14 @@ func TestMigrate(t *testing.T) {
 		t.Error("a file with no defaults: changed = true")
 	}
 
-	// No ungrouped entry: last becomes it, tiers included.
+	// No ungrouped entry: last becomes it.
 	d, changed = load(t, `{"version":1,"defaults":{"last":{"cwd":"/last","byAgent":{"claude":{"model":"opus","effort":"max"}},
 	 "run":{"agent":"claude","maxParallel":4,"maxTurns":30,"maxCost":2.5,"tiers":{"deep":{"model":"opus","effort":"max"},"standard":{"model":"sonnet"},"light":{"model":"haiku"}}}},
 	 "groups":{}}}`)
 	if !changed {
 		t.Fatal("last alone: changed = false")
 	}
-	sameJSON(t, "last alone", d, `{"groups":{"__ungrouped__":{"servers":{"local":{"cwd":"/last","byAgent":{"claude":{"model":"opus","effort":"max"}},
-	 "run":{"agent":"claude","maxParallel":4,"maxTurns":30,"maxCost":2.5,"tiers":{"deep":{"model":"opus","effort":"max"},"standard":{"model":"sonnet"},"light":{"model":"haiku"}}}}}}}}`)
+	sameJSON(t, "last alone", d, `{"groups":{"__ungrouped__":{"servers":{"local":{"cwd":"/last","byAgent":{"claude":{"model":"opus","effort":"max"}}}}}}}`)
 
 	// An empty last holds nothing, but the file has to lose it.
 	d, changed = load(t, `{"version":1,"defaults":{"last":{},"groups":{}}}`)
@@ -710,7 +623,17 @@ func TestMigrate(t *testing.T) {
 		t.Error("a mixed file: changed = false")
 	}
 	sameJSON(t, "a mixed file", d, `{"groups":{"__ungrouped__":{"servers":{
-	 "local":{"agent":"pi","cwd":"/new","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"},"cursor":{"model":"auto"}},"run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0}}}}}}`)
+	 "local":{"agent":"pi","cwd":"/new","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"},"cursor":{"model":"auto"}}}}}}}`)
+
+	// What an older build kept of its runs is all a flat group or a part holds: nothing to move
+	// and nothing to write, and the defaults read from it hold none of it.
+	d, changed = load(t, `{"version":1,"defaults":{"groups":{
+	 "g_flat":{"run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0}},
+	 "g_part":{"servers":{"local":{"run":{"agent":"pi","maxParallel":1,"maxTurns":1,"maxCost":0,"tiers":{"deep":{"model":"p"}}}}}}}}}`)
+	if changed {
+		t.Error("run defaults alone: changed = true")
+	}
+	sameJSON(t, "run defaults alone", d, `{"groups":{"g_flat":{},"g_part":{"servers":{"local":{}}}}}`)
 
 	// A choice that holds an effort only has no model: the one with a model takes its place, as
 	// it did when the choice was read.

@@ -3,12 +3,14 @@
 // "Before" is a build of the commit before the flavours: BASE names it (a git revision), and without BASE it is the
 // parent of the commit that added src/logic/flavours.ts. Its web folder is taken out of git into a folder of its own
 // and built there; no worktree is made and nothing of the checkout is touched. BASE_DIST=/tmp/x/dist is such a build
-// made before.
+// made before. Both builds are served by this build's mock: the old page reads a snapshot that names no run as one
+// with no run.
 //   The same colours: in Light, in Dark, and in System under a light and under a dark OS, every colour token the
 //   old stylesheet sets on :root has the same computed value in the new page.
 //   The same pixels: screenshots of still pages of both builds (Home, a chat, a chat with code and cards, a board
-//   that is shown and one that is edited, a run, a finished run, the goal composer) differ in no pixel outside the
-//   picker, which stands where the three-button switch stood. As the comparison's own proof, the same pages do
+//   that is shown and one that is edited) differ in no pixel outside the
+//   picker, which stands where the three-button switch stood. Of Home the sidebar alone is compared: its own text
+//   and buttons are others since (the old page offers a third kind of item beside the chat and the whiteboard). As the comparison's own proof, the same pages do
 //   differ when the picker is not left out.
 //   The old page and a saved flavour: a flavour is picked in the new page, then the old build is served at the same
 //   address. The old page shows the system's theme, light or dark as the OS is, its switch marks System, and the
@@ -67,20 +69,16 @@ const THEMES = [
   { name: "System under a dark OS", ls: {}, scheme: "dark", theme: "dark" }, // (nothing saved: a page that never chose)
 ];
 const PICKER = [".side-foot .seg", ".side-foot .theme-pick"]; // the old switch, the new picker: the same place
-// (the two plain chats' rows have room for the fixed Subagents chip, which the toolbar got since, and they and the
-// goal composer for the Insert button: both are taken out of the row for the comparison, as in A2.7; so is the attach
-// button every chat composer got after them. The goal composer of the old page has the choice of a server, which went
-// away with the sections of the sidebar: it is taken out of the old row)
-const SINCE = ".composer .sub-chip, .composer .insert-btn, .composer .attach-btn, .run-composer .server-chip, .run-composer .server-pick { display: none }";
+// (the two plain chats' rows have room for the fixed Subagents chip and for the Insert button, which the toolbar got
+// since: both are taken out of the row for the comparison, as in A2.7; so is the attach button every chat composer got
+// after them)
+const SINCE = ".composer .sub-chip, .composer .insert-btn, .composer .attach-btn { display: none }";
 const PAGES = [
-  { name: "home", sel: {} },
+  { name: "home", sel: {}, omit: ["main.home"] },
   { name: "chat", sel: { chat: "c_plain" }, wait: ".thread .msg.assistant", style: SINCE },
   { name: "cards", sel: { chat: "c_A6_cards" }, seed: ["A6"], wait: ".thread .perm.pending .perm-actions", style: SINCE },
   { name: "board", sel: { board: "b_arch", chat: "c_board" }, wait: ".excalidraw" },
   { name: "sketch", sel: { board: "b_ui", chat: "c_A6_sketch" }, seed: ["A6"], wait: ".excalidraw:not(.excalidraw--view-mode) .App-toolbar" },
-  { name: "run", sel: { run: "r_live" }, wait: ".run-stage .tl" },
-  { name: "result", sel: { run: "r_done" }, wait: ".run-stage" },
-  { name: "goal", sel: { run: "r_draft" }, wait: ".run-composer", style: SINCE },
 ];
 
 await check("A6.5 Light, Dark and System are as before the flavours; an old page takes a saved flavour for the system's theme", async ({ browser, mock, dist, fail, note }) => {

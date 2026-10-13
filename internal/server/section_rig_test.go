@@ -21,7 +21,6 @@ import (
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/servers/standin"
 )
@@ -35,8 +34,6 @@ const (
 	farChatA  = "2a000000-0000-4000-8000-00000000000a"
 	farChatB  = "2b000000-0000-4000-8000-00000000000b"
 	farNewID  = "2c000000-0000-4000-8000-00000000000c"
-	farRunA   = "r_aaaa0001"
-	farRunB   = "r_bbbb0002"
 	farBoardA = "b_aaaa0001"
 	farBoardB = "b_bbbb0002"
 	farGroup  = "g_there"
@@ -61,16 +58,6 @@ func viewThere(id string) model.ChatView {
 		ID: id, Agent: model.Claude, Name: "Chat " + id[:2], Group: farGroup, Cwd: "/home/standin/work",
 		Model: "standin-model", Locked: true, Status: model.StatusReady,
 		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC),
-	}
-}
-
-// runThere is a run's view as its server sends it: started, in that server's group.
-func runThere(id string) model.RunView {
-	return model.RunView{
-		ID: id, Name: "Run " + id[2:4], Group: farGroup, Agent: model.Claude, Cwd: "/home/standin/work", Git: true,
-		Tiers:   model.RunTiers{Deep: model.ModelChoice{Model: "standin-model"}},
-		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC), Started: time.Date(2026, 10, 6, 9, 1, 0, 0, time.UTC),
-		Status: model.RunRunning, Turns: 1,
 	}
 }
 
@@ -99,7 +86,6 @@ type thereCall struct {
 type thereTree struct {
 	groups []model.Group
 	chats  []model.ChatView
-	runs   []model.RunView
 	boards []model.Board
 }
 
@@ -107,9 +93,7 @@ type thereTree struct {
 type farOpt struct {
 	groups []model.Group    // the groups the stand-in has; nil = the one group of the views
 	chats  []model.ChatView // the chats the stand-in has
-	runs   []model.RunView  // the runs the stand-in has
 	boards []model.Board    // the boards the stand-in has
-	local  bool             // this server has a run service
 	limits remotes.Limits   // zero fields: the defaults
 	with   []func(*Server)  // set up the server before the relay is made
 	tooOld time.Duration    // servers.Timing.TooOld; 0 = the five minutes, which no test sits out
@@ -123,8 +107,7 @@ type far struct {
 	m     *servers.Manager
 	rm    *remotes.Relay
 	entry string
-	root  string        // the folder of the server list
-	rs    *runs.Service // nil without runs
+	root  string // the folder of the server list
 
 	trees atomic.Int64 // the section events with a tree that every page was sent
 	nulls atomic.Int64 // those with null
@@ -147,7 +130,7 @@ func newFar(t *testing.T, o farOpt) *far {
 	t.Helper()
 	f := &far{revs: map[string]int64{}, drafts: map[string]thereDraft{}, images: map[string][]byte{}, answers: map[string]http.HandlerFunc{},
 		pages: map[string]*bridgetest.Page{}, root: t.TempDir(), usage: map[model.AgentKind]*atomic.Int64{model.Claude: {}}}
-	f.tree = thereTree{groups: o.groups, chats: o.chats, runs: o.runs, boards: o.boards}
+	f.tree = thereTree{groups: o.groups, chats: o.chats, boards: o.boards}
 	if f.tree.groups == nil {
 		f.tree.groups = []model.Group{groupThere(farGroup, "There")}
 	}
@@ -155,9 +138,6 @@ func newFar(t *testing.T, o farOpt) *far {
 	f.script()
 
 	wire := func(s *Server) {
-		if o.local {
-			f.wireRuns(t, s)
-		}
 		timing := farTiming()
 		timing.TooOld = o.tooOld
 		var listed atomic.Pointer[remotes.Relay]
@@ -225,20 +205,6 @@ func newFar(t *testing.T, o farOpt) *far {
 	return f
 }
 
-// wireRuns gives the server a run service, as the program wires it.
-func (f *far) wireRuns(t *testing.T, s *Server) {
-	t.Helper()
-	rs := runs.New(runs.Deps{Store: s.App.St, Emit: s.Bridge, DefaultCwd: s.App.DefaultCwd, HaltWait: 300 * time.Millisecond})
-	if err := rs.Load(); err != nil {
-		t.Fatal(err)
-	}
-	rs.Chats = s.App.Chats
-	s.App.Chats.Runs = rs
-	s.App.Runs, s.Relay.Runs = rs, rs
-	f.rs = rs
-	t.Cleanup(func() { rs.Shutdown(5 * time.Second) })
-}
-
 // watch opens a stream of its own and counts the section events on it: what tells that the
 // relay has taken a snapshot of the entry, or the end of its connection. The stream never calls,
 // so it is no page that acted.
@@ -292,7 +258,6 @@ func (f *far) snapshot() map[string]any {
 	}
 	snap["groups"] = list(f.tree.groups, len(f.tree.groups))
 	snap["chats"], snap["states"] = list(f.tree.chats, len(f.tree.chats)), states
-	snap["runs"] = list(f.tree.runs, len(f.tree.runs))
 	snap["boards"] = list(f.tree.boards, len(f.tree.boards))
 	return snap
 }
@@ -331,16 +296,6 @@ func (f *far) script() {
 			}
 		}
 		return model.ChatView{}, false
-	}
-	run := func(id string) (model.RunView, bool) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		for _, v := range f.tree.runs {
-			if v.ID == id {
-				return v, true
-			}
-		}
-		return model.RunView{}, false
 	}
 	board := func(id string) bool {
 		return has(id, func(t *thereTree) bool {
@@ -393,14 +348,13 @@ func (f *far) script() {
 				Agent model.AgentKind
 				Group string
 				Board string
-				Run   string
 			}
 			json.NewDecoder(r.Body).Decode(&body)
 			if body.ID == "" {
 				body.ID = farNewID
 			}
 			v := viewThere(body.ID)
-			v.Locked, v.Name, v.Group, v.Board, v.Run = false, "", body.Group, body.Board, body.Run
+			v.Locked, v.Name, v.Group, v.Board = false, "", body.Group, body.Board
 			writeJSON(w, v)
 		},
 		// The draft of the first branch, with its counter: a save on the counter it was typed on.
@@ -445,21 +399,6 @@ func (f *far) script() {
 			}
 			w.Header().Set("Content-Type", "image/png")
 			w.Write(data)
-		},
-		"GET /api/runs/{id}": func(w http.ResponseWriter, r *http.Request) {
-			v, ok := run(r.PathValue("id"))
-			if !ok {
-				notThere(w, "run")
-				return
-			}
-			writeJSON(w, v)
-		},
-		"GET /api/runs/{id}/detail": func(w http.ResponseWriter, r *http.Request) {
-			if _, ok := run(r.PathValue("id")); !ok {
-				notThere(w, "run")
-				return
-			}
-			writeJSON(w, map[string]any{"run": r.PathValue("id"), "version": 4, "agents": map[string]any{}})
 		},
 		// A server that makes the board of a creation call, grants a take and stores a drawing
 		// at the revision it is based on.
@@ -532,7 +471,7 @@ func (f *far) script() {
 		f.st.Handle(pat, noted(pat, usual[pat]))
 	}
 	// Everything else under the paths of a tree, and what a client must never be sent.
-	for _, under := range []string{"/api/groups", "/api/chats", "/api/runs", "/api/boards", "/api/on", "/api/servers", "/api/restart"} {
+	for _, under := range []string{"/api/groups", "/api/chats", "/api/boards", "/api/on", "/api/servers", "/api/restart"} {
 		none := noted("", func(w http.ResponseWriter, r *http.Request) { writeError(w, http.StatusNotFound, "not found") })
 		f.st.Handle(under, none)
 		f.st.Handle(under+"/", none)
@@ -774,7 +713,6 @@ type pageSnapshot struct {
 	Boards   []model.Board
 	Chats    []model.ChatView
 	States   []model.BranchState
-	Runs     []model.RunView
 	Sections map[string]*remotes.Tree
 	Lists    map[string]json.RawMessage
 }

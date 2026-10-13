@@ -232,9 +232,6 @@ func query(kv ...string) string {
 // chatPath is the path of the chat id on its server, with rest after it ("" or "/…").
 func chatPath(id, rest string) string { return "/api/chats/" + url.PathEscape(id) + rest }
 
-// runPath is the path of the run id on its server, with rest after it.
-func runPath(id, rest string) string { return "/api/runs/" + url.PathEscape(id) + rest }
-
 // boardPath is the path of the board id on its server, with rest after it.
 func boardPath(id, rest string) string { return "/api/boards/" + url.PathEscape(id) + rest }
 

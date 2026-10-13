@@ -5,10 +5,8 @@
 // what goes out gets that server's own ids back (the `…Out` functions, which api.ts uses for a
 // body). For this computer (no server, or LOCAL_SERVER) every function gives back what it was
 // given. DOM-free.
-import { LOCAL_SERVER, type Attempt, type Board, type BranchState, type ChatView, type Draft, type Group, type NotesVersion, type Op, type RunAgent, type RunDetail,
-  type RunEvent, type RunPatch, type RunView, type SectionTree, type Task, type TaskBrief, type Turn } from "../types.ts";
+import { LOCAL_SERVER, type Board, type BranchState, type ChatView, type Draft, type Group, type SectionTree } from "../types.ts";
 import { keyOn, ownId, serverOfKey } from "./keys.ts";
-import { normRun } from "./runnorm.ts";
 
 type Server = string | null | undefined;
 
@@ -39,7 +37,6 @@ export function chatIn(server: Server, c: ChatView): ChatView {
   const out: ChatView = { ...c, id: keyOn(server, c.id) };
   if (c.group) out.group = keyOn(server, c.group);
   if (c.board) out.board = keyOn(server, c.board);
-  if (c.run) out.run = keyOn(server, c.run);
   if (c.forkedFrom) out.forkedFrom = keyOn(server, c.forkedFrom);
   if (c.draft) out.draft = draftIn(server, c.draft);
   return out;
@@ -50,11 +47,6 @@ export function stateIn(server: Server, st: BranchState): BranchState {
   return { ...st, chat: keyOn(server, st.chat), ...(st.draft ? { draft: draftIn(server, st.draft) } : {}) };
 }
 
-export function runIn(server: Server, r: RunView): RunView {
-  if (local(server)) return r;
-  return { ...r, id: keyOn(server, r.id), ...(r.group ? { group: keyOn(server, r.group) } : {}), ...(r.draft ? { draft: draftIn(server, r.draft) } : {}) };
-}
-
 /** A section's tree with the page's keys. A list the server left out or sent as null is empty. The defaults are
  *  kept as they came: nothing on the page reads them by group. */
 export function treeIn(server: string, t: SectionTree) {
@@ -63,67 +55,9 @@ export function treeIn(server: string, t: SectionTree) {
     boards: (t.boards ?? []).map((b) => boardIn(server, b)),
     chats: (t.chats ?? []).map((c) => chatIn(server, c)),
     states: (t.states ?? []).filter((st) => st?.chat).map((st) => stateIn(server, st)),
-    runs: (t.runs ?? []).map((r) => runIn(server, normRun(r))), // made whole first: a run always has a group
     defaults: t.defaults ?? { groups: {} },
   };
 }
-
-// A run's detail names chats by id: its own agents' (the transcripts), and the user's chats on the run that
-// changed it.
-
-const eventIn = (server: Server) => (e: RunEvent): RunEvent => (e.chat ? { ...e, chat: keyOn(server, e.chat) } : e);
-const opIn = (server: Server) => (o: Op): Op => (o.chat ? { ...o, chat: keyOn(server, o.chat) } : o);
-const noteIn = (server: Server) => <N extends NotesVersion>(n: N): N => (n.chat ? { ...n, chat: keyOn(server, n.chat) } : n);
-
-const turnIn = (server: Server) => (t: Turn): Turn =>
-  ({ ...t, agent: opt(server, t.agent), wokenBy: (t.wokenBy ?? []).map(eventIn(server)), learned: (t.learned ?? []).map(eventIn(server)), ops: (t.ops ?? []).map(opIn(server)) });
-
-const attemptIn = (server: Server) => (a: Attempt): Attempt => {
-  const out: Attempt = { ...a, phases: (a.phases ?? []).map((p) => (p.chat ? { ...p, chat: keyOn(server, p.chat) } : p)), agents: {} };
-  if (a.queuedBy) out.queuedBy = keyOn(server, a.queuedBy);
-  if (a.cancel?.chat) out.cancel = { ...a.cancel, chat: keyOn(server, a.cancel.chat) };
-  if (a.agents?.work) out.agents.work = keyOn(server, a.agents.work);
-  if (a.agents?.merge) out.agents.merge = keyOn(server, a.agents.merge);
-  return out;
-};
-
-const taskIn = (server: Server) => (t: Task): Task => ({
-  ...t, ...(t.addedBy ? { addedBy: keyOn(server, t.addedBy) } : {}),
-  briefs: (t.briefs ?? []).map((b) => (b.chat ? { ...b, chat: keyOn(server, b.chat) } : b)),
-  attempts: (t.attempts ?? []).map(attemptIn(server)),
-});
-
-/** A map by agent chat id, with its records' own ids when they have one. */
-function agentsIn<A extends { id?: string }>(server: Server, m: Record<string, A>): Record<string, A> {
-  return Object.fromEntries(Object.entries(m).map(([id, a]) => [keyOn(server, id), a && typeof a === "object" && a.id ? { ...a, id: keyOn(server, a.id) } : a]));
-}
-
-/** A run's detail (GET …/detail), after logic/runnorm.ts made it whole. */
-export function detailIn(server: Server, d: RunDetail): RunDetail {
-  if (local(server)) return d;
-  return { ...d, run: opt(server, d.run), turns: d.turns.map(turnIn(server)), tasks: d.tasks.map(taskIn(server)), chatOps: d.chatOps.map(opIn(server)),
-    agents: agentsIn<RunAgent>(server, d.agents), notes: d.notes.map(noteIn(server)) };
-}
-
-/** A `run_detail` patch, after logic/runnorm.ts made it whole: only what it names. */
-export function patchIn(server: Server, p: RunPatch): RunPatch {
-  if (local(server)) return p;
-  const out: RunPatch = { ...p };
-  if (p.turns) out.turns = p.turns.map(turnIn(server));
-  if (p.tasks) out.tasks = p.tasks.map(taskIn(server));
-  if (p.chatOps) out.chatOps = p.chatOps.map(opIn(server));
-  if (p.agents) out.agents = agentsIn<RunAgent>(server, p.agents);
-  if (p.notes) out.notes = p.notes.map(noteIn(server));
-  return out;
-}
-
-/** The agents of a `run_activity` event, by their chat's key. */
-export const activityIn = <A extends object>(server: Server, agents: Record<string, A>): Record<string, A> =>
-  (local(server) ? agents : agentsIn(server, agents));
-
-/** A task's brief and a version of the notes name the chat that wrote them. */
-export const briefIn = (server: Server, b: TaskBrief): TaskBrief => (local(server) || !b.chat ? b : { ...b, chat: keyOn(server, b.chat) });
-export const notesIn = <N extends NotesVersion>(server: Server, n: N): N => (local(server) ? n : noteIn(server)(n));
 
 /** The call of a board tool (an `rpc` event's params): the calling chat, its board and the board the call is for. The
  *  arguments are the agent's own and stay: what they name of a board is elements. */

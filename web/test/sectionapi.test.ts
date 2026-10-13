@@ -26,7 +26,6 @@ const last = () => calls[calls.length - 1];
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
 const chatView = (id: string, o: object = {}) => ({ id, agent: "claude", cwd: "/w", model: "m", locked: false, created: "", usage, status: "ready", ...o });
-const runView = (id: string, o: object = {}) => ({ id, name: "R", group: "g_1", created: "", status: "draft", ...o });
 
 test("a new chat is made where it was asked for: the place's key names the server, and the body has the place's own id", async () => {
   answer = () => json(chatView("c_new", { group: "g_1" }));
@@ -38,23 +37,17 @@ test("a new chat is made where it was asked for: the place's key names the serve
   assert.deepEqual([last().path, last().body], [`${ON}/chats`, { group: UNGROUPED }], "from the section's head: outside any group");
   await api.newChat({ board: a("b_1") });
   assert.deepEqual([last().path, last().body], [`${ON}/chats`, { board: "b_1" }]);
-  await api.newChat({ run: a("r_1") });
-  assert.deepEqual([last().path, last().body], [`${ON}/chats`, { run: "r_1" }]);
   answer = () => json(chatView("c_local", { group: "g_1" }));
   const local = await api.newChat({ group: "g_1" });
   assert.deepEqual([last().path, last().body], ["/api/chats", { group: "g_1" }]);
   assert.equal(local.id, "c_local");
 });
 
-test("a new board, run and group are made on the server of the group, or of the section, they are made in", async () => {
+test("a new board and group are made on the server of the group, or of the section, they are made in", async () => {
   answer = () => json({ id: "b_new", name: "Untitled", group: "g_1", created: "" });
   const b = await api.newBoard(a("g_1"));
   assert.deepEqual([last().method, last().path, last().body], ["POST", `${ON}/boards`, { group: "g_1", new: false }]);
   assert.deepEqual([b.id, b.group], [a("b_new"), a("g_1")]);
-  answer = () => json(runView("r_new"));
-  const r = await api.newRun(a("g_1"));
-  assert.deepEqual([last().method, last().path, last().body], ["POST", `${ON}/runs`, { group: "g_1" }]);
-  assert.deepEqual([r.id, r.group, r.status], [a("r_new"), a("g_1"), "draft"]);
   answer = () => json({ id: "g_new", name: "New group", parent: "g_1", collapsed: true });
   const g = await api.newGroup(A, undefined, a("g_1"));
   assert.deepEqual([last().method, last().path, last().body], ["POST", `${ON}/groups`, { parent: "g_1" }]);
@@ -89,13 +82,9 @@ test("collapse is never sent for a section's group: there is no such call, and a
   assert.deepEqual([last().method, last().path, last().body], ["PATCH", "/api/groups/g_1", { collapsed: true }]);
 });
 
-test("moving a board, a run or a chat names a group of its own server by that group's own id", async () => {
+test("moving a board or a chat names a group of its own server by that group's own id", async () => {
   await api.moveBoard(a("b_1"), a("g_2"));
   assert.deepEqual([last().method, last().path, last().body], ["PATCH", `${ON}/boards/b_1`, { group: "g_2" }]);
-  answer = () => json(runView("r_1", { group: "g_2" }));
-  const r = await api.moveRun(a("r_1"), a(UNGROUPED));
-  assert.deepEqual([last().path, last().body], [`${ON}/runs/r_1`, { group: UNGROUPED }]);
-  assert.equal(r.id, a("r_1"));
   await api.moveChat(a("c_1"), a("g_2"));
   assert.deepEqual([last().path, last().body], [`${ON}/chats/c_1`, { group: "g_2" }]);
 });
@@ -124,8 +113,6 @@ test("a message, a draft, a fork and the session calls of a section's chat go to
   assert.equal(last().path, `${ON}/chats/c_1/open?branch=main`);
   await api.setLabel(a("c_1"), "main", 2, "x");
   assert.deepEqual([last().method, last().path, last().body], ["PUT", `${ON}/chats/c_1/label`, { branch: "main", item: 2, text: "x" }]);
-  await api.unfollowChat(a("c_1"));
-  assert.equal(last().path, `${ON}/chats/c_1/unfollow`);
   await api.renameChat(a("c_1"), "T");
   assert.deepEqual([last().path, last().body], [`${ON}/chats/c_1`, { name: "T" }]);
   await api.archive("chats", a("c_1"));
@@ -200,63 +187,8 @@ test("a section's board: take, release, the drawing with its revision, rename, s
   assert.deepEqual([last().method, last().path], ["DELETE", `${ON}/boards/b_1`]);
 });
 
-test("a section's run is on its server before it starts: its choices, its goal and its start go there; so do stop, resume, apply and delete", async () => {
-  answer = () => json(runView("r_1"));
-  await api.configureRun(a("r_1"), { agent: "cursor", cwd: "/w" });
-  assert.deepEqual([last().method, last().path, last().body], ["PATCH", `${ON}/runs/r_1`, { agent: "cursor", cwd: "/w" }]);
-  await api.renameRun(a("r_1"), "N");
-  assert.deepEqual(last().body, { name: "N" });
-  await api.saveRunDraft(a("r_1"), { text: "the goal" });
-  assert.deepEqual([last().method, last().path, last().body], ["PUT", `${ON}/runs/r_1/draft`, { text: "the goal" }]);
-  answer = () => json(runView("r_1", { status: "running", started: "2026-01-01T00:00:00Z" }));
-  const started = await api.startRun(a("r_1"), "the goal");
-  assert.deepEqual([last().method, last().path, last().body], ["POST", `${ON}/runs/r_1/start`, { goal: "the goal" }]);
-  assert.deepEqual([started.id, started.group, started.status], [a("r_1"), a("g_1"), "running"]);
-  await api.run(a("r_1"));
-  assert.deepEqual([last().method, last().path], ["GET", `${ON}/runs/r_1`]);
-  await api.stopRun(a("r_1"));
-  assert.equal(last().path, `${ON}/runs/r_1/stop`);
-  await api.resumeRun(a("r_1"), { maxTurns: 90 });
-  assert.deepEqual([last().path, last().body], [`${ON}/runs/r_1/resume`, { maxTurns: 90 }]);
-  await api.unfollowRun(a("r_1"));
-  assert.equal(last().path, `${ON}/runs/r_1/unfollow`);
-  await api.deleteRun(a("r_1"));
-  assert.deepEqual([last().method, last().path], ["DELETE", `${ON}/runs/r_1`]);
-  answer = () => json({ state: "applied" });
-  await api.applyRun(a("r_1"), "main");
-  assert.deepEqual([last().path, last().body], [`${ON}/runs/r_1/apply`, { branch: "main" }]);
-  await api.runDelivery(a("r_1"));
-  assert.equal(last().path, `${ON}/runs/r_1/delivery`);
-});
-
-test("a section's run is read with its detail and texts, and the detail's agents and chats come keyed", async () => {
-  answer = () => json({ run: "r_1", version: 1, status: "running", startedAt: 1, turns: [{ n: 1, agent: "a_t", reason: "start", status: "running", startedAt: 1 }], tasks: [], agents: { a_t: { id: "a_t", name: "turn-001", role: "orchestrator", status: "running" } } });
-  const d = await api.runDetail(a("r_1"));
-  assert.equal(last().path, `${ON}/runs/r_1/detail`);
-  assert.equal(d.run, a("r_1"));
-  assert.deepEqual(Object.keys(d.agents), [a("a_t")]);
-  assert.equal(d.turns[0].agent, a("a_t"));
-  assert.deepEqual(d.stops, [], "made whole, as a local one");
-  answer = () => json({ text: "goal" });
-  await api.runGoal(a("r_1"));
-  assert.equal(last().path, `${ON}/runs/r_1/goal`);
-  answer = () => json({ task: "T01", text: "b", rev: 2, at: 1, chat: "c_9", size: 1 });
-  const brief = await api.taskBrief(a("r_1"), "T01", 2);
-  assert.equal(last().path, `${ON}/runs/r_1/tasks/T01/brief?rev=2`);
-  assert.equal(brief.chat, a("c_9"));
-  answer = () => json({ task: "T01", attempt: 1, outcome: "completed", summary: "s", report: "r" });
-  await api.attemptReport(a("r_1"), "T01", 1);
-  assert.equal(last().path, `${ON}/runs/r_1/tasks/T01/attempts/1/report`);
-  answer = () => json({ task: "T01", attempt: 1, files: [], commits: [] });
-  await api.attemptChanges(a("r_1"), "T01", 1);
-  assert.equal(last().path, `${ON}/runs/r_1/tasks/T01/attempts/1/changes`);
-  answer = () => json({ v: 3, at: 1, chat: "c_9", size: 1, text: "n" });
-  assert.equal((await api.runNotes(a("r_1"), 3)).chat, a("c_9"));
-  assert.equal(last().path, `${ON}/runs/r_1/notes/3`);
-});
-
 test("a server's folders and plan usage are asked by its entry id in the query, and the answer of a tool call names no server", async () => {
-  answer = () => json({ path: "/", parent: "", dirs: [], git: false });
+  answer = () => json({ path: "/", parent: "", dirs: [] });
   await api.dirs("/w", A);
   assert.equal(last().path, `/api/dirs?path=%2Fw&server=${A}`);
   await api.dirs("/w");
@@ -283,7 +215,6 @@ test("an id of one server is never sent to another: a move, a nesting or a new g
   const refused = (p: Promise<unknown>) => assert.rejects(p, (e: unknown) => e instanceof Error && !(e instanceof ApiError) && e.message === "Nothing is moved from one server to another.");
   // the same ids here, in one section and in another: each pair below is of two servers
   for (const [thing, group] of [["b_1", a("g_1")], [a("b_1"), "g_1"], [a("b_1"), b("g_1")], [a("b_1"), UNGROUPED], ["b_1", a(UNGROUPED)]]) await refused(api.moveBoard(thing, group));
-  for (const [thing, group] of [["r_1", a("g_1")], [a("r_1"), "g_1"], [a("r_1"), b("g_1")]]) await refused(api.moveRun(thing, group));
   for (const [thing, group] of [["c_1", a("g_1")], [a("c_1"), "g_1"], [a("c_1"), b("g_1")]]) await refused(api.moveChat(thing, group));
   for (const [group, parent, before] of [["g_1", a("g_2"), ""], [a("g_1"), "g_2", ""], [a("g_1"), a("g_2"), "g_3"], [a("g_1"), "", b("g_3")], ["g_1", "", a("g_3")]]) await refused(api.moveGroup(group, parent, before));
   for (const [server, parent] of [["local", a("g_1")], [A, "g_1"], [A, b("g_1")]]) await refused(api.newGroup(server, "n", parent));
@@ -310,8 +241,6 @@ test("a draft is saved with the boards of its own server alone: a local board pi
   assert.deepEqual([last().path, last().body], [`${ON}/chats/c_1/draft?branch=main&rev=1`, { text: "@Here @There", mentions: [{ name: "There", id: "b_1" }] }]);
   await api.saveDraft("c_1", "main", { text: "@Here @There", mentions: picks }, 1);
   assert.deepEqual([last().path, last().body], ["/api/chats/c_1/draft?branch=main&rev=1", { text: "@Here @There", mentions: [{ name: "Here", id: "b_1" }] }]);
-  await api.saveRunDraft(a("r_1"), { text: "@Here", mentions: [picks[0]] });
-  assert.deepEqual([last().path, last().body], [`${ON}/runs/r_1/draft`, { text: "@Here" }]);
 });
 
 // The one rule under all of the above, asked of every method of the api at once: no key of the page reaches the wire.
@@ -322,13 +251,10 @@ test("whatever the call, nothing under /api/on/ carries the page's key, a `serve
     api.newGroup(A, "n", a("g_1")), api.renameGroup(a("g_1"), "n"), api.moveGroup(a("g_1"), a("g_2"), a("g_3")), api.archive("groups", a("g_1")), api.unarchive("groups", a("g_1")), api.deleteGroup(a("g_1"), "delete"),
     api.newBoard(a("g_1"), "n", true), api.scene(a("b_1")), api.saveScene(a("b_1"), 1, {}), api.takeBoard(a("b_1")), api.releaseBoard(a("b_1")), api.renameBoard(a("b_1"), "n"), api.moveBoard(a("b_1"), a("g_1")),
     api.seenBoard(a("b_1")), api.deleteBoard(a("b_1")), api.archive("boards", a("b_1")), api.unarchive("boards", a("b_1")),
-    api.newChat({ group: a("g_1") }), api.newChat({ board: a("b_1") }), api.newChat({ run: a("r_1") }), api.chat(a("c_1")), api.items(a("c_1"), "main"), api.subItems(a("c_1"), "main", "sa"), api.tree(a("c_1")),
-    api.unfollowChat(a("c_1")), api.openChat(a("c_1"), "main"), api.send(a("c_1"), "main", "t", "ctx"), api.configure(a("c_1"), "main", { cwd: "/w" }), api.saveDraft(a("c_1"), "main", draft, 1), api.renameChat(a("c_1"), "n"),
+    api.newChat({ group: a("g_1") }), api.newChat({ board: a("b_1") }), api.chat(a("c_1")), api.items(a("c_1"), "main"), api.subItems(a("c_1"), "main", "sa"), api.tree(a("c_1")),
+    api.openChat(a("c_1"), "main"), api.send(a("c_1"), "main", "t", "ctx"), api.configure(a("c_1"), "main", { cwd: "/w" }), api.saveDraft(a("c_1"), "main", draft, 1), api.renameChat(a("c_1"), "n"),
     api.moveChat(a("c_1"), a("g_1")), api.interrupt(a("c_1"), "main"), api.deleteChat(a("c_1")), api.setLabel(a("c_1"), "main", 1, "l"), api.fork(a("c_1"), "main", 1), api.contextSplit(a("c_1"), "main"),
     api.archive("chats", a("c_1")), api.unarchive("chats", a("c_1")),
-    api.newRun(a("g_1"), "n"), api.run(a("r_1")), api.renameRun(a("r_1"), "n"), api.moveRun(a("r_1"), a("g_1")), api.configureRun(a("r_1"), { cwd: "/w" }), api.saveRunDraft(a("r_1"), draft), api.startRun(a("r_1"), "g"),
-    api.stopRun(a("r_1")), api.resumeRun(a("r_1")), api.deleteRun(a("r_1")), api.unfollowRun(a("r_1")), api.applyRun(a("r_1")), api.runDelivery(a("r_1")), api.runGoal(a("r_1")), api.taskBrief(a("r_1"), "T01"),
-    api.attemptReport(a("r_1"), "T01", 1), api.attemptChanges(a("r_1"), "T01", 1), api.runNotes(a("r_1"), 1), api.archive("runs", a("r_1")), api.unarchive("runs", a("r_1")),
   ];
   await Promise.allSettled(all);
   assert.equal(calls.length, all.length);

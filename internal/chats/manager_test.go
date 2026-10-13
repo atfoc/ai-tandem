@@ -449,11 +449,10 @@ const listenID = "test"
 // managers has the manager of each test bridge (see boot), for followAll.
 var managers sync.Map // *editorbridge.Bridge → *Manager
 
-// followAll makes the listening client follow every chat people have, as a page does by reading
+// followAll makes the listening client follow every chat, as a page does by reading
 // a chat's thread: the content events of a chat (its items, subagents and tree) go only to the
 // clients that follow it. listen, drain and env.create call it, so a chat made in another way
-// after listen is followed from the next drain on. A run agent's chat is followed only by the
-// test that says so.
+// after listen is followed from the next drain on.
 func followAll(br *editorbridge.Bridge) {
 	v, ok := managers.Load(br)
 	if !ok {
@@ -463,7 +462,7 @@ func followAll(br *editorbridge.Bridge) {
 	var ids []string
 	m.mu.Lock()
 	for id, c := range m.chats {
-		if c.top == nil && c.role == "" {
+		if c.top == nil {
 			ids = append(ids, id)
 		}
 	}
@@ -473,7 +472,7 @@ func followAll(br *editorbridge.Bridge) {
 	}
 }
 
-// listen connects a client that follows every chat people have (see followAll).
+// listen connects a client that follows every chat (see followAll).
 func listen(t *testing.T, br *editorbridge.Bridge) *events {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(br.ServeSSE))

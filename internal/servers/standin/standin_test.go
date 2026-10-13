@@ -373,7 +373,7 @@ func TestState(t *testing.T) {
 	if _, ok := m["defaultCwd"].(string); !ok {
 		t.Error("defaultCwd is not a string")
 	}
-	for _, k := range []string{"groups", "boards", "chats", "states", "runs"} {
+	for _, k := range []string{"groups", "boards", "chats", "states"} {
 		if l, ok := m[k].([]any); !ok || len(l) != 0 {
 			t.Errorf("%s = %v, want an empty array", k, m[k])
 		}
@@ -386,8 +386,8 @@ func TestState(t *testing.T) {
 	} else if g, ok := d["groups"].(map[string]any); !ok || len(g) != 0 {
 		t.Errorf("defaults.groups = %v, want an empty object", d["groups"])
 	}
-	if len(m) != 11 {
-		t.Errorf("%d parts, want the eleven of a snapshot of level 5: %s", len(m), body)
+	if len(m) != 10 {
+		t.Errorf("%d parts, want the ten of a snapshot of level 5: %s", len(m), body)
 	}
 
 	s.SetSnapshot(map[string]any{"home": "/elsewhere"})

@@ -25,14 +25,12 @@ type Caller struct {
 	Model    string
 	Effort   string
 	// Level is how far the caller is from the chat: 0 for the chat's agent, 1 for a subagent it
-	// started. Depth is the chat's subagent depth as it holds for the caller (1 for a run's agent
-	// and its subagents): see MaySpawn.
+	// started. Depth is the chat's subagent depth as it holds for the caller: see MaySpawn.
 	Level int
 	Depth int
 }
 
 // MaySpawn reports whether the caller has the spawn family: its level is below the chat's depth.
-// What else decides (an orchestrator has none) is the endpoint's business.
 func (c Caller) MaySpawn() bool { return c.Level < c.Depth }
 
 // NoSpawnText is what the caller is told when it calls tool, one of the spawn family it does not

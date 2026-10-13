@@ -27,14 +27,14 @@ func boardScene(element string) string {
 
 // saveScene is a page's save, on the server s, of the drawing of a board of that server on the
 // revision base.
-func saveScene(t *testing.T, s *runServer, client, board string, base int, scene string) answer {
+func saveScene(t *testing.T, s *scriptedServer, client, board string, base int, scene string) answer {
 	t.Helper()
 	return saveSceneAt(t, s, client, "/api/boards/"+board, base, scene)
 }
 
 // saveSceneAt is saveScene for the board at this path of s: a board of s itself, or a board of
 // a section of s (remotePair.on).
-func saveSceneAt(t *testing.T, s *runServer, client, path string, base int, scene string) answer {
+func saveSceneAt(t *testing.T, s *scriptedServer, client, path string, base int, scene string) answer {
 	t.Helper()
 	status, raw := s.call(t, client, "PUT", path+"/scene?rev="+strconv.Itoa(base), json.RawMessage(scene), nil)
 	a := answer{}
@@ -146,7 +146,7 @@ func TestRemoteBoardOutage(t *testing.T) {
 	if held.Rev != 2 {
 		t.Fatalf("the take of B's page: %+v", held)
 	}
-	if a := saveScene(t, rp.b.runServer, pageOfB, bd.ID, 2, boardScene("B's own")); a.Status != http.StatusOK {
+	if a := saveScene(t, rp.b.scriptedServer, pageOfB, bd.ID, 2, boardScene("B's own")); a.Status != http.StatusOK {
 		t.Fatalf("the save of B's page: %s", a)
 	}
 	rp.b.must(t, pageOfB, "POST", path+"/release", nil, nil)

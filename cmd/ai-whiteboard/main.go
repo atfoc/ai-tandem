@@ -51,14 +51,10 @@ import (
 	"ai-whiteboard/internal/pi"
 	"ai-whiteboard/internal/pibridge"
 	"ai-whiteboard/internal/prompts"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/store"
 	"ai-whiteboard/internal/usable"
 )
-
-// The chat manager is the runs' chat host.
-var _ runs.ChatHost = (*chats.Manager)(nil)
 
 // options are the flags every command takes.
 type options struct {
@@ -168,15 +164,13 @@ func serve(o options, args []string) {
 	br.SceneRev = bs.Rev
 	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
 	agents := usable.New(bins) // the agents whose programs are found; looked up again every usable.Every
-	rs := runs.New(runs.Deps{Store: st, Emit: br, DefaultCwd: o.cwd, Clock: runs.RealClock{},
-		Bins: bins, Agents: agents})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
 	turnCaps()
-	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, Runs: rs, DefaultCwd: o.cwd, Agents: agents,
+	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd, Agents: agents,
 		MCPURL: boardapi.Endpoint(mcpBoundPort), ImageWait: waits.images,
 		Namers: map[model.AgentKind]chats.Namer{
 			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
@@ -191,17 +185,13 @@ func serve(o options, args []string) {
 	if err := bs.Load(); err != nil { // before chats: board chats look up their board
 		log.Fatalf("loading boards: %v", err)
 	}
-	if err := rs.Load(); err != nil { // before chats: a run's chats look up their run
-		log.Fatalf("loading runs: %v", err)
-	}
 	if err := cm.Load(); err != nil {
 		log.Fatalf("loading chats: %v", err)
 	}
 	// The cleanup of the images nobody uses any more: of what was left before this start, and
 	// then every few minutes. Never stopped: it ends with cm.Shutdown.
 	go cm.CleanImages(nil)
-	rs.Chats = cm
-	relay := &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs, Runs: rs}
+	relay := &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs}
 	extPath, err := pibridge.MaterializeExtension(filepath.Join(p.Root, "pi-extension"))
 	if err != nil {
 		log.Printf("pi extension: %v", err) // pi chats run without board tools
@@ -218,7 +208,7 @@ func serve(o options, args []string) {
 	go refreshClaudeCatalog(claudeSpawner, st, br)
 	// Never stopped: the server ends by exiting.
 	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
-	a = &app.App{St: st, Boards: bs, Chats: cm, Runs: rs, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
+	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
 	// The change-over of a server from before level 5: the group "Remote" goes, before any request.
 	if err := a.DropRemoteGroup(); err != nil {
 		log.Printf("the group \"Remote\" of before could not be removed, the next start tries again: %v", err)
@@ -253,7 +243,6 @@ func serve(o options, args []string) {
 		log.Printf("server.json: %v", err)
 	}
 	go onSignal(func() {
-		rs.Shutdown(2 * time.Second)     // runs halt (they continue at the next start); no agent, task or turn starts from here on
 		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
 		cm.Shutdown()                    // history written; agents end
 		stopServers()                    // the connections to other servers end; nothing of them is written
@@ -265,10 +254,6 @@ func serve(o options, args []string) {
 
 	log.Printf("AI Whiteboard: %s  (data in %s)", base, p.Root)
 	log.Printf("MCP endpoint: %s", boardapi.Endpoint(mcpBoundPort))
-	// Last, with the MCP endpoint up and before the first request is served: runs a dead server
-	// left are halted, and runs an orderly stop halted continue (their agents call the run tools
-	// at once).
-	rs.Boot()
 	log.Fatal(http.Serve(ln, srv.Handler()))
 }
 

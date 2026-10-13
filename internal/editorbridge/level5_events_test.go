@@ -9,14 +9,14 @@ import (
 )
 
 // What an API client is sent at level 5, type by type: the list types of the server's whole tree
-// go to every client, the content types to the clients that follow the chat or the run, and the
+// go to every client, the content types to the clients that follow the chat, and the
 // types of a page alone to none. A client that made nothing and follows nothing gets every list
-// event of a chat, a run and a board, and of the groups and the defaults.
+// event of a chat and a board, and of the groups and the defaults.
 func TestLevel5EventsOfAnAPIClient(t *testing.T) {
 	t.Parallel()
 	list := []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state",
-		"run", "run_removed", "catalog", "agents", "own_library"}
-	content := []string{"tree", "chat_items", "sub", "sub_items", "run_detail", "run_activity"}
+		"catalog", "agents", "own_library"}
+	content := []string{"tree", "chat_items", "sub", "sub_items"}
 	never := []string{"servers", "server_state", "server_lists", "library", "library_removed", "section", "server_back", "chat_reload",
 		"hello", "snapshot", "held", "release_request", "superseded", "rpc", "server_stopping"}
 
@@ -36,15 +36,13 @@ func TestLevel5EventsOfAnAPIClient(t *testing.T) {
 	p := open(t, srv, "P")
 	y, f := openAPI(t, api, "Y"), openAPI(t, api, "F")
 	s := &sentinel{b: b}
-	// send sends an event of the type as its sender would: of the chat c1, the run r1, the board
-	// b1, or of no item.
+	// send sends an event of the type as its sender would: of the chat c1, the board b1, or
+	// of no item.
 	send := func(typ string) {
 		ev := map[string]any{"type": typ}
 		switch Events[typ].Per {
 		case PerChat:
-			b.SendChat("c1", false, ev)
-		case PerRun:
-			b.SendRun("r1", ev)
+			b.SendChat("c1", ev)
 		case PerBoard:
 			b.SendBoard("b1", ev)
 		default:
@@ -62,8 +60,8 @@ func TestLevel5EventsOfAnAPIClient(t *testing.T) {
 			t.Errorf("%s: the page got %v", typ, ps)
 		}
 	}
-	// F follows the chat and the run from here on: their removal above would have ended it.
-	if !b.Follow("F", Chat("c1")) || !b.Follow("F", Run("r1")) {
+	// F follows the chat from here on: its removal above would have ended it.
+	if !b.Follow("F", Chat("c1")) {
 		t.Fatal("Follow refused a connected API client")
 	}
 	for _, typ := range content {

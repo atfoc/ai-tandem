@@ -25,9 +25,8 @@ import (
 // (A server started with serverEnv gets a folder of its own; this one is for whatever is not.)
 //
 // The tests that start servers run in parallel, at most agenttest.SpawnBound at once on macOS: they
-// mostly wait, and each starts a server, git commands and Node processes.
+// mostly wait, and each starts servers and Node processes.
 func TestMain(m *testing.M) {
-	agenttest.FastGit()
 	agenttest.LimitParallel()
 	dir, err := os.MkdirTemp("", "aiwb-cmd-cursor-")
 	if err != nil {

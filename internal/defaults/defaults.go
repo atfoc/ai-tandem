@@ -1,7 +1,7 @@
-// Package defaults keeps the sticky per-group defaults for new chats and runs: the agent, the
-// folder (for all agents), the model and effort (per agent), the subagent settings (for all
-// agents) and the run defaults. A group that has no value of its own takes the ungrouped group's.
-// They are this server's own: nothing is kept for another server.
+// Package defaults keeps the sticky per-group defaults for new chats: the agent, the folder (for
+// all agents), the model and effort (per agent) and the subagent settings (for all agents). A
+// group that has no value of its own takes the ungrouped group's. They are this server's own:
+// nothing is kept for another server.
 package defaults
 
 import (
@@ -30,22 +30,6 @@ func Agent(d model.Defaults, g string, usable []model.AgentKind) model.AgentKind
 		}
 	}
 	return ""
-}
-
-// Recorded reports what was chosen for a new chat in group g, in the group or in the ungrouped
-// group: agent, that an agent in usable (nil = all of AgentOrder) is stored, which is
-// then what Agent answers; choice, that a model is stored for a, which is then what Resolve starts
-// from. A run reads it: its chats start on what was chosen last, and on the run's own agent and
-// model only where nothing was.
-func Recorded(d model.Defaults, g string, a model.AgentKind, usable []model.AgentKind) (agent, choice bool) {
-	if usable == nil {
-		usable = AgentOrder
-	}
-	for _, sd := range []model.ServerDefaults{d.Groups[g].Local(), d.Groups[model.Ungrouped].Local()} {
-		agent = agent || sd.Agent != "" && slices.Contains(usable, sd.Agent)
-		choice = choice || a != "" && sd.ByAgent[a].Model != ""
-	}
-	return agent, choice
 }
 
 // Resolve returns the folder, model and effort for a new chat of agent a in group g.
@@ -101,15 +85,6 @@ func Sub(d model.Defaults, g string) model.SubLimits {
 	return model.DefaultSubLimits()
 }
 
-// Run returns a copy of what the run started last in group g used, else of what the one in the
-// ungrouped group used; nil when none was.
-func Run(d model.Defaults, g string) *model.RunDefaults {
-	if rd := d.Groups[g].Local().Run; rd != nil {
-		return copyRun(rd)
-	}
-	return copyRun(d.Groups[model.Ungrouped].Local().Run)
-}
-
 // RecordChange stores what the user just changed in a chat's composer, for group g. Empty fields
 // in the change are left alone.
 func RecordChange(d *model.Defaults, g string, a model.AgentKind, cwd string, change model.ModelChoice) {
@@ -152,18 +127,6 @@ func RecordSub(d *model.Defaults, g string, l model.SubLimits) {
 	d.Groups[g] = gd
 }
 
-// RecordRun stores a copy of rd as what the run started last in group g used.
-func RecordRun(d *model.Defaults, g string, rd model.RunDefaults) {
-	if d.Groups == nil {
-		d.Groups = map[string]model.GroupDefaults{}
-	}
-	gd := d.Groups[g]
-	sd := gd.Local()
-	sd.Run = copyRun(&rd)
-	setLocal(&gd, sd)
-	d.Groups[g] = gd
-}
-
 // SeedGroup gives a new group a copy of the ungrouped group's defaults, and a new subgroup
 // (parent != "") a copy of its parent's; a parent without defaults counts as the ungrouped group.
 // A copy: a later change in the source does not reach g.
@@ -192,11 +155,10 @@ func Copy(d model.Defaults) model.Defaults {
 type flatDefaults struct {
 	Cwd     string                                `json:"cwd"`
 	ByAgent map[model.AgentKind]model.ModelChoice `json:"byAgent"`
-	Run     *model.RunDefaults                    `json:"run"`
 	Server  json.RawMessage                       `json:"server"`
 }
 
-func (f flatDefaults) empty() bool { return f.Cwd == "" && len(f.ByAgent) == 0 && f.Run == nil }
+func (f flatDefaults) empty() bool { return f.Cwd == "" && len(f.ByAgent) == 0 }
 
 // LocalOnly takes out of d everything a group does not remember for this server: every key of a
 // group's Servers but model.LocalServer. changed reports that there was one.
@@ -216,7 +178,7 @@ func LocalOnly(d *model.Defaults) (changed bool) {
 }
 
 // Migrate brings the defaults of an old state file into d. raw is the file, d what was loaded from
-// it. Each group's flat folder, choices and run defaults move under its key model.LocalServer, and
+// it. Each group's flat folder and choices move under its key model.LocalServer, and
 // "last" (the choices used most recently anywhere) fills what the ungrouped group lacks there. A
 // value d already has is never overwritten. Each group is read on its own, as "last" is: a group
 // whose flat values cannot be read has none to move, and the others and "last" move all the same.
@@ -259,7 +221,7 @@ func Migrate(raw []byte, d *model.Defaults) (changed bool) {
 }
 
 // fill puts f's values into what group g remembers where it has none: the folder when empty, an
-// agent's choice when that agent has no model, the run defaults when nil.
+// agent's choice when that agent has no model.
 func fill(d *model.Defaults, g string, f flatDefaults) {
 	if d.Groups == nil {
 		d.Groups = map[string]model.GroupDefaults{}
@@ -280,9 +242,6 @@ func fill(d *model.Defaults, g string, f flatDefaults) {
 		}
 		sd.ByAgent[a] = c
 	}
-	if sd.Run == nil {
-		sd.Run = copyRun(f.Run)
-	}
 	if !empty(sd) {
 		setLocal(&gd, sd)
 	}
@@ -298,7 +257,7 @@ func setLocal(gd *model.GroupDefaults, sd model.ServerDefaults) {
 }
 
 func empty(sd model.ServerDefaults) bool {
-	return sd.Agent == "" && sd.Cwd == "" && len(sd.ByAgent) == 0 && sd.Run == nil && sd.Subagents == nil
+	return sd.Agent == "" && sd.Cwd == "" && len(sd.ByAgent) == 0 && sd.Subagents == nil
 }
 
 func copyGroup(g model.GroupDefaults) model.GroupDefaults {
@@ -313,7 +272,7 @@ func copyGroup(g model.GroupDefaults) model.GroupDefaults {
 }
 
 func copyServer(sd model.ServerDefaults) model.ServerDefaults {
-	out := model.ServerDefaults{Agent: sd.Agent, Cwd: sd.Cwd, Run: copyRun(sd.Run)}
+	out := model.ServerDefaults{Agent: sd.Agent, Cwd: sd.Cwd}
 	if sd.Subagents != nil {
 		l := *sd.Subagents
 		out.Subagents = &l
@@ -325,19 +284,6 @@ func copyServer(sd model.ServerDefaults) model.ServerDefaults {
 		}
 	}
 	return out
-}
-
-// copyRun is a deep copy of rd, its tiers included; nil for nil.
-func copyRun(rd *model.RunDefaults) *model.RunDefaults {
-	if rd == nil {
-		return nil
-	}
-	cp := *rd
-	if rd.Tiers != nil {
-		tiers := *rd.Tiers
-		cp.Tiers = &tiers
-	}
-	return &cp
 }
 
 func apply(t *model.ServerDefaults, a model.AgentKind, cwd string, change model.ModelChoice) {

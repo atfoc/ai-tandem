@@ -145,12 +145,12 @@ func TestRemoteSecretHeaderIsDropped(t *testing.T) {
 
 var pathWildcard = regexp.MustCompile(`\{[^}]*\}`)
 
-// goneRoutes is the four routes that left the table at level 5: the make, the start call, the
-// draft check and a client's creation of a board. None is registered any more.
-var goneRoutes = []string{"PUT /api/chats/{id}", "PUT /api/runs/{id}", "GET /api/runs/check", "PUT /api/boards/{id}"}
+// goneRoutes is the two routes that left the table at level 5: the make of a chat and a client's
+// creation of a board. None is registered any more.
+var goneRoutes = []string{"PUT /api/chats/{id}", "PUT /api/boards/{id}"}
 
 // The table of the remote listener against the routes the server has: every route of the table is
-// served to a client, every other registered route is 404 for it, and the four routes that left
+// served to a client, every other registered route is 404 for it, and the two routes that left
 // at level 5 are 404 on both listeners.
 func TestRemoteServesOnlyTheTable(t *testing.T) {
 	t.Parallel()
@@ -180,8 +180,7 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 	}
 	// What level 5 added to the table, and what it took out of it and out of the server.
 	for _, p := range []string{"POST /api/groups", "PATCH /api/groups/{id}", "POST /api/groups/{id}/move", "DELETE /api/groups/{id}",
-		"POST /api/groups/{id}/archive", "POST /api/groups/{id}/unarchive", "POST /api/runs", "PUT /api/runs/{id}/draft",
-		"POST /api/runs/{id}/start", "POST /api/boards", "PATCH /api/boards/{id}"} {
+		"POST /api/groups/{id}/archive", "POST /api/groups/{id}/unarchive", "POST /api/boards", "PATCH /api/boards/{id}"} {
 		if !slices.Contains(RemoteRoutes, p) {
 			t.Errorf("the table lacks %q", p)
 		}
@@ -248,27 +247,21 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(RemoteRoutes) || served != 69 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 69", served, len(RemoteRoutes))
+	if served != len(RemoteRoutes) || served != 50 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 50", served, len(RemoteRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)
 	}
 
-	// The four routes that left: 404 for a client and for the server's own page, and nothing is
-	// made. The path of the draft check is now the read of a run named "check", which is none.
+	// The two routes that left: 404 for a client and for the server's own page, and nothing is
+	// made.
 	for _, p := range goneRoutes {
 		method, path, _ := strings.Cut(p, " ")
 		path = strings.Replace(path, "{id}", "b_aaaa1111", 1)
 		const body = `{"agent":"claude","cwd":"/","name":"n","goal":"g"}`
 		w := remoteDoAs(h, testAPIClient, method, path, testHost, testSecret, body)
 		status, out := e.do(method, path, body)
-		if p == "GET /api/runs/check" {
-			if w.Code != 404 || !strings.Contains(w.Body.String(), `"error":"no such run"`) || status != 404 || !strings.Contains(out, `"error":"no such run"`) {
-				t.Errorf("%s: %d %s for a client, %d %s for the page; want 404 no such run", p, w.Code, w.Body, status, out)
-			}
-			continue
-		}
 		wantReply(t, w, p+" for a client", 404, "not found")
 		if status != 404 {
 			t.Errorf("%s for the server's own page: %d %s, want 404", p, status, out)

@@ -151,7 +151,7 @@ func TestSectionDefaultSnapshot(t *testing.T) {
 	}
 	want := map[string]string{
 		"library": "null", "groups": "[]", "defaults": `{"groups":{}}`,
-		"boards": "[]", "chats": "[]", "states": "[]", "runs": "[]",
+		"boards": "[]", "chats": "[]", "states": "[]",
 	}
 	for k, v := range want {
 		if string(parts[k]) != v {
@@ -176,7 +176,7 @@ func TestSectionDefaultSnapshot(t *testing.T) {
 	if !ok || snap["type"] != "snapshot" || len(snap) != len(parts)+1 {
 		t.Fatalf("the second event %v, %v; want the snapshot with its %d parts", snap, ok, len(parts))
 	}
-	for _, k := range []string{"groups", "boards", "chats", "states", "runs"} {
+	for _, k := range []string{"groups", "boards", "chats", "states"} {
 		if l, ok := snap[k].([]any); !ok || len(l) != 0 {
 			t.Errorf("the snapshot event's %s = %v; want an empty array", k, snap[k])
 		}

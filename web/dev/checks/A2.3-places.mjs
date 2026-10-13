@@ -16,10 +16,10 @@ const SIDE = 264, RAIL = 40, HEIGHT = 640;
 const MORE = ".composer .more-chip", POP = ".composer .more-pop", ROW = ".composer .composer-tools";
 const CHOICE = { server: "server", agent: "agent", folder: "folder", model: "model", "model-effort": "model", loading: "model", effort: "effort", subagents: "subagents" };
 
-/** In the page: the chips of the chat composer's toolbar, each with the choice it is (by its title, as the scripts
+/** In the page: the chips of the composer's toolbar, each with the choice it is (by its title, as the scripts
  *  address it), where it is (the row or the popup) and what it says; the lists open in the composer; where the focus is. */
 function placesInPage() {
-  const tools = document.querySelector(".composer:not(.run-composer) .composer-tools");
+  const tools = document.querySelector(".composer .composer-tools");
   if (!tools) return null;
   const kindOf = (chip) => {
     const t = chip.getAttribute("title") ?? "";
@@ -69,7 +69,6 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
   for (const s of states) {
     const fixed = FIXTURE.states[s.id];
     if (!fixed) { fail(`${s.id}: not in the fixture of widths`); continue; }
-    if (fixed.composer !== "chat") continue;
     // The fixed Subagents chip of a chat on the default settings gives way to the others: it is in the popup when the
     // popup holds another control, in the row when the row has room for it with all the others whole, else not drawn.
     const spare = fixed.controls.some((c) => c.kind === "subagents" && c.fixed && c.label === "Subagents1 level");

@@ -27,7 +27,7 @@ import (
 // where the default set has tests of the real binary at all.
 func serverTest(t *testing.T, cover ...string) {
 	t.Helper()
-	reason := "builds the binary and starts servers; the tests of the default set that build the binary and start it are the six that call smokeTest (relaunch_test.go), TestRunE2ENoGit a whole server among them"
+	reason := "builds the binary and starts servers; the tests of the default set that build the binary and start it are the six that call smokeTest (relaunch_test.go), TestRemotePairStartsAChat a chat on a pair of servers among them"
 	if len(cover) > 0 {
 		reason = "builds the binary and starts servers; in the default set: " + strings.Join(cover, "; ")
 	}
@@ -37,10 +37,10 @@ func serverTest(t *testing.T, cover ...string) {
 
 // smokeTest is serverTest for the tests of real server processes that the default set runs as
 // well, so that whoever works elsewhere in the repository notices when the server no longer builds,
-// starts or takes a run to its end. Each is the cheapest test of something that no test without a
-// server process covers:
+// starts or takes a chat's first message. Each is the cheapest test of something that no test
+// without a server process covers:
 //
-//	TestRunE2ENoGit                          a whole server and a run: some 2.5 s, no git repository
+//	TestServeOnADataFolderWithRunData        a whole server on a data folder that a build with runs left
 //	TestRemoteListenerServes                 the remote listener of a real server, over HTTPS
 //	TestRemotePairStartsAChat                two real servers, one an entry of the other's list
 //	TestReloadKeepsSecretWhenUnreadable      the signal that makes a real server read its secret again

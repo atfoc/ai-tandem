@@ -30,9 +30,8 @@ type Options struct {
 }
 
 // Limits are the time limits of the calls passed on to a remote server. Call is for a call that
-// starts nothing. Start is for one that can wait for an agent's start: a message, a fork, an
-// open and the start of a run. Delete is for the delete of a run, which waits there for the
-// run's agents and checkouts, and of a group with what is in it. Scene is for a board's drawing
+// starts nothing. Start is for one that can wait for an agent's start: a message, a fork and an
+// open. Delete is for the delete of a group with what is in it. Scene is for a board's drawing
 // and Image for an upload and a fetch of an image of a chat, which carry megabytes. BoardCall is
 // how long a page has to answer a tool call of an agent on another server.
 type Limits struct {
@@ -372,13 +371,10 @@ func (r *Relay) event(entry, typ string, raw json.RawMessage) {
 	switch typ {
 	case "groups", "defaults",
 		"board", "board_removed",
-		"chat", "chat_removed", "branch_state",
-		"run", "run_removed":
+		"chat", "chat_removed", "branch_state":
 		r.listEvent(entry, typ, raw)
 	case "chat_items", "tree", "sub", "sub_items":
-		r.contentEvent(entry, typ, "chat", raw)
-	case "run_detail", "run_activity":
-		r.contentEvent(entry, typ, "run", raw)
+		r.contentEvent(entry, typ, raw)
 	case "catalog", "agents":
 		// Not passed on as they come: the manager has taken the change into the entry's lists.
 		r.sendLists(entry)
@@ -389,7 +385,8 @@ func (r *Relay) event(entry, typ string, raw json.RawMessage) {
 	case library.EventOwn:
 		r.libraryEvent(entry, raw)
 	default:
-		// Dropped: a type this build does not know.
+		// Dropped: a type this build does not know. The events of the runs of a server that has
+		// them ("run", "run_removed", "run_detail", "run_activity") end here too.
 	}
 }
 

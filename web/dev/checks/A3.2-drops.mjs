@@ -2,12 +2,12 @@
 // .drop-before), and the move happened or not as the scenario says: where every row and group of the sidebar then is,
 // and which moves the page asked the server for (a group's place among its siblings is read there: the mock keeps no
 // order). Then one more ending, a cancel after the dragged row was removed, and the moves that must land as before
-// the one drop mark: a chat, a board and a run into a group, into a subgroup and to the ungrouped area; a group into
+// the one drop mark: a chat and a board into a group, into a subgroup and to the ungrouped area; a group into
 // a group and to the top level.
 // On the build before the mark, S2, S2c, S2d, S3, S3c, S5, S5b, S8 and S12b fail here: each leaves a group lit.
 import { check, dragger, mockEval, openPage, seed, until } from "../shot.mjs";
 
-// The sidebar as it is drawn: the group each row is in ("" ungrouped; rows nested under a board or a run go with
+// The sidebar as it is drawn: the group each row is in ("" ungrouped; rows nested under a board go with
 // it and are left out) and the group each group is in ("" at the top level).
 const treeOf = (page) => page.evaluate(() => {
   const nameOf = (g) => g?.querySelector(":scope > .side-group-head .side-group-name")?.textContent ?? "";
@@ -36,7 +36,7 @@ await check("A3.2 after every drag nothing is lit, and each move lands", async (
       await page.waitForSelector(".side-name >> text=Chat M");
       const asked = [];
       page.on("request", (r) => {
-        const m = /\/api\/(chats|boards|runs|groups)\/([^/?]+)(\/move)?$/.exec(new URL(r.url()).pathname);
+        const m = /\/api\/(chats|boards|groups)\/([^/?]+)(\/move)?$/.exec(new URL(r.url()).pathname);
         let b = null;
         try { b = r.postDataJSON(); } catch {}
         if (!m || !b) return;
@@ -155,15 +155,7 @@ await check("A3.2 after every drag nothing is lit, and each move lands", async (
   await run("M2", "a board into a group", { to: { rows: { arch: "Other" } }, asks: ['board b_arch into "g_other"'] }, drag("row", "arch", [row("Chat O")]));
   await run("M3", "a board into a subgroup", { to: { rows: { arch: "Sub" } }, asks: ['board b_arch into "g_sub"'] }, drag("row", "arch", [row("Chat B")]));
   await run("M4", "a board to the ungrouped area", { to: { rows: { arch: "" } }, asks: [`board b_arch into "${UNGROUPED}"`] }, drag("row", "arch", [row("Loose")]));
-  await run("M5", "a run into a group", { to: { rows: { "New run": "Shop" } }, asks: ['run r_draft into "g_shop"'] }, drag("row", "New run", [row("Chat A")]));
-  await run("M6", "a run into a subgroup", { to: { rows: { "New run": "Sub" } }, asks: ['run r_draft into "g_sub"'] }, drag("row", "New run", [row("Chat B")]));
-  await run("M7", "a run into a group and back to the ungrouped area", { asks: ['run r_draft into "g_other"', `run r_draft into "${UNGROUPED}"`] }, async (d) => {
-    const no = await drag("row", "New run", [row("Chat O")])(d);
-    if (no) return no;
-    if (!await until(async () => await d.groupOf("New run") === "Other")) return `New run is in "${await d.groupOf("New run")}" after the first drop, not in Other`;
-    return drag("row", "New run", [row("Loose")])(d);
-  });
-  await run("M8", "a group into a group, by its body", { to: { groups: { Other: "Shop" } }, asks: ['group g_other into "g_shop" before ""'] }, drag("head", "Other", [row("Chat A")]));
-  await run("M9", "a group into a group, by the lower half of its header", { to: { groups: { Leaf: "Shop" } }, asks: ['group g_leaf into "g_shop" before ""'] }, drag("head", "Leaf", [lower("Shop")]));
-  await run("M10", "a subgroup to the top level", { to: { groups: { Sub: "" } }, asks: ['group g_sub into "" before ""'] }, drag("head", "Sub", [row("Loose")]));
+  await run("M5", "a group into a group, by its body", { to: { groups: { Other: "Shop" } }, asks: ['group g_other into "g_shop" before ""'] }, drag("head", "Other", [row("Chat A")]));
+  await run("M6", "a group into a group, by the lower half of its header", { to: { groups: { Leaf: "Shop" } }, asks: ['group g_leaf into "g_shop" before ""'] }, drag("head", "Leaf", [lower("Shop")]));
+  await run("M7", "a subgroup to the top level", { to: { groups: { Sub: "" } }, asks: ['group g_sub into "" before ""'] }, drag("head", "Sub", [row("Loose")]));
 });

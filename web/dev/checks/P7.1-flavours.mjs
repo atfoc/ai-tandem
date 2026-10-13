@@ -4,8 +4,8 @@
 //   control opens (a picker's list, the folder's browser, the usage popover), from the toolbar or from "more"; and a
 //   branch send on its way: the message in its pending look, the line under it, the banner, the spinner in Send.
 //   The tool cards: the threads of seed A5 with every card open, in a chat page and in the panel beside a board of
-//   300 px, in a subagent's drawer and in the pane of a run's agent.
-//   The rail: beside a chat, a board with its panel, a run and Home; with the pointer on its control, with the
+//   300 px, and in a subagent's drawer.
+//   The rail: beside a chat, a board with its panel and Home; with the pointer on its control, with the
 //   keyboard's focus on it, and with its dot while the page is not connected.
 // Readable is measured as A6.3 measures it, on computed colours: every text and every icon of the part has 3:1
 // against what is behind it. One that has less passes only if it has no less than the same element has in the theme
@@ -53,7 +53,6 @@ const CARDS = [["claude"], ["cursor"], ["pi"], ["gaps"], ["big"], ["wide"], ["pa
 const VIEWS = [
   ["a chat", { chat: "c_plain" }, ".chat-page .chat-head"],
   ["a board with its panel", { board: "b_arch", chat: "c_board" }, ".board-panel .chat-head"],
-  ["a run", { run: "r_live" }, ".run-stage .tl"],
   ["Home", {}, "main.home h2"],
 ];
 const SYNTAX = ["--syn-keyword", "--syn-string", "--syn-number", "--syn-title", "--syn-type", "--syn-attr"];
@@ -256,19 +255,6 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
       } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
       finally { await ctx.close(); }
     }
-    // the pane of a run's agent: the merge agent of T27, whose command failed
-    const name = "the tool cards, a run agent's pane";
-    const { ctx, page } = await open({ sel: { run: "r_live" }, size: [1400, 900], wait: ".tl-row" });
-    try {
-      await page.locator(".tl-row", { has: page.locator(".tl-id", { hasText: /^T27$/ }) }).first().click();
-      const link = page.locator('button[data-agent$="T27-merge"]').first();
-      await link.waitFor({ timeout: 8000 });
-      await link.click();
-      await page.waitForSelector(".thread.read-only .tool", { timeout: 8000 });
-      await openCards(page, ".thread.read-only");
-      for (const theme of THEMES) { await pick(page, theme); await cardsOf(theme, name, page, ".thread.read-only"); }
-    } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    finally { await ctx.close(); }
   });
 
   // ---- the rail: the sidebar is hidden, and its picker with it, so the page is opened in each theme

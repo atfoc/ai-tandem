@@ -4,7 +4,7 @@
 // `sections` and the `section` event) and from nothing else. Here are the rules, with no DOM:
 // what a section says, what the store holds of a section when its tree comes and goes, what stays
 // on screen without a tree, and the collapse the browser keeps.
-import { LOCAL_SERVER, type Board, type BranchState, type ChatView, type Defaults, type Group, type RunView } from "../types.ts";
+import { LOCAL_SERVER, type Board, type BranchState, type ChatView, type Defaults, type Group } from "../types.ts";
 import { inSection, serverOfKey } from "./keys.ts";
 import { branchKey, chatOfKey } from "./branches.ts";
 import { stateLabel, type ServerView } from "./servers.ts";
@@ -15,7 +15,7 @@ import type { Sel } from "./sel.ts";
 export type Section = { groups: Group[]; defaults: Defaults };
 
 /** A server's tree with the page's keys (logic/sectionwire.ts treeIn). */
-export type KeyedTree = { groups: Group[]; boards: Board[]; chats: ChatView[]; states: BranchState[]; runs: RunView[]; defaults: Defaults };
+export type KeyedTree = { groups: Group[]; boards: Board[]; chats: ChatView[]; states: BranchState[]; defaults: Defaults };
 
 /** The entries that get a section, in the order of the server list: every one but this computer's. */
 export const sectionEntries = (servers: readonly ServerView[]): ServerView[] => servers.filter((v) => !v.local && v.id !== LOCAL_SERVER);
@@ -78,18 +78,13 @@ export type Things = {
   sections: Record<string, Section>;
   boards: Record<string, Board>;
   chats: Record<string, ChatView>;
-  runs: Record<string, RunView>;
-  agents: Record<string, ChatView>;   // the run agents whose transcript is shown, by chat key
   states: Record<string, BranchState>; // by branch key
   gone: Record<string, true>;
   sel: Sel;
-  runAgent: { run: string; agent: string } | null;
 };
 
-/** Whether a thing is on screen: the board, the run or the chat that is selected, and the run agent whose
- *  transcript the panel shows. */
-export const onScreen = (s: Pick<Things, "sel" | "runAgent">, key: string): boolean =>
-  key === s.sel.board || key === s.sel.run || key === s.sel.chat || key === s.runAgent?.agent;
+/** Whether a thing is on screen: the board or the chat that is selected. */
+export const onScreen = (s: Pick<Things, "sel">, key: string): boolean => key === s.sel.board || key === s.sel.chat;
 
 const byId = <T extends { id: string }>(xs: T[]): Record<string, T> => Object.fromEntries(xs.map((x) => [x.id, x]));
 
@@ -99,17 +94,16 @@ const byId = <T extends { id: string }>(xs: T[]): Record<string, T> => Object.fr
  *  stays, marked gone: the view says that it is no longer on that server, and no row is drawn for it.
  *
  *  With none: nothing of that server is known any more, and its section draws no row. What is on screen stays as the
- *  page has it, from the page's memory: an open chat and an open run view read-only under a warning, an open board
+ *  page has it, from the page's memory: an open chat read-only under a warning, an open board
  *  still drawn on. So does a board whose edit waits to be saved (unsaved), on screen or not: the drawing is in this
  *  window alone, and is saved or dropped by its revision when the server is back.
  *
- *  A run agent whose transcript is shown stays while its run does. left: the keys of the boards, chats, runs and run
- *  agents that went, whose threads, details and scenes the caller drops. */
+ *  left: the keys of the boards and chats that went, whose threads and scenes the caller drops. */
 export function withSection<S extends Things>(s: S, server: string, tree: KeyedTree | null, unsaved: (board: string) => boolean = () => false):
-  { next: Pick<S, "sections" | "boards" | "chats" | "runs" | "agents" | "states" | "gone">; left: string[] } {
+  { next: Pick<S, "sections" | "boards" | "chats" | "states" | "gone">; left: string[] } {
   const on = (key: string) => serverOfKey(key) === server;
-  const boards = byId(tree?.boards ?? []), runs = byId(tree?.runs ?? []);
-  const chats = byId((tree?.chats ?? []).filter((c) => !c.role)); // a run's own agents are in no list
+  const boards = byId(tree?.boards ?? []);
+  const chats = byId((tree?.chats ?? []).filter((c) => !c.run)); // (a server that still has runs: their chats are not kept)
   const left: string[] = [];
   const gone = { ...s.gone };
   /** One of the store's maps after the change: the other servers' as they are, this server's from the tree, and of
@@ -125,22 +119,17 @@ export function withSection<S extends Things>(s: S, server: string, tree: KeyedT
     return Object.assign(out, got);
   };
   const nextBoards = merge(s.boards, boards, (k) => onScreen(s, k) || (!tree && unsaved(k)));
-  const nextRuns = merge(s.runs, runs, (k) => onScreen(s, k));
   const nextChats = merge(s.chats, chats, (k) => onScreen(s, k));
-  const agents: Record<string, ChatView> = {};
-  for (const k in s.agents) {
-    if (!on(k) || (s.agents[k].run && nextRuns[s.agents[k].run!])) agents[k] = s.agents[k]; else left.push(k);
-  }
   // The branch records: the tree's own, and those of the chats that stay.
   const states: Record<string, BranchState> = {};
   for (const k in s.states) {
     const chat = chatOfKey(k);
-    if (!on(chat) || (nextChats[chat] && !chats[chat]) || agents[chat]) states[k] = s.states[k];
+    if (!on(chat) || (nextChats[chat] && !chats[chat])) states[k] = s.states[k];
   }
   for (const st of tree?.states ?? []) if (st?.chat) states[branchKey(st.chat, st.branch)] = st;
   const sections = { ...s.sections };
   if (tree) sections[server] = { groups: tree.groups, defaults: tree.defaults }; else delete sections[server];
-  return { next: { sections, boards: nextBoards, chats: nextChats, runs: nextRuns, agents, states, gone } as Pick<S, "sections" | "boards" | "chats" | "runs" | "agents" | "states" | "gone">, left };
+  return { next: { sections, boards: nextBoards, chats: nextChats, states, gone } as Pick<S, "sections" | "boards" | "chats" | "states" | "gone">, left };
 }
 
 /** The things of sections that are no longer kept once the user has left them: what is not on screen of a section
@@ -150,10 +139,7 @@ export function leftBehind(s: Things, unsaved: (board: string) => boolean = () =
   const out: string[] = [];
   const stale = (key: string) => inSection(key) && (!s.sections[serverOfKey(key)] || !!s.gone[key]);
   for (const k in s.boards) if (stale(k) && !onScreen(s, k) && !(unsaved(k) && !s.sections[serverOfKey(k)])) out.push(k);
-  for (const k in s.runs) if (stale(k) && !onScreen(s, k)) out.push(k);
   for (const k in s.chats) if (stale(k) && !onScreen(s, k)) out.push(k);
-  const going = new Set(out);
-  for (const k in s.agents) { const run = s.agents[k].run; if (run && going.has(run)) out.push(k); } // a run's agents go with their run
   return out;
 }
 
@@ -165,12 +151,12 @@ export function entriesGone(before: readonly ServerView[], after: readonly Serve
   return sectionEntries(before).map((v) => v.id).filter((id) => !now.has(id));
 }
 
-/** Everything the store has of one server (boards, chats, runs and run agents, by key): what goes when that
+/** Everything the store has of one server (boards and chats, by key): what goes when that
  *  server's entry is removed from the list, what is on screen and a board with an unsaved edit too. */
-export function thingsOf(s: Pick<Things, "boards" | "chats" | "runs" | "agents">, server: string): string[] {
+export function thingsOf(s: Pick<Things, "boards" | "chats">, server: string): string[] {
   const out: string[] = [];
   if (server === LOCAL_SERVER) return out; // this computer is no entry that can be removed
-  for (const m of [s.boards, s.chats, s.runs, s.agents]) for (const k in m) if (serverOfKey(k) === server) out.push(k);
+  for (const m of [s.boards, s.chats]) for (const k in m) if (serverOfKey(k) === server) out.push(k);
   return out;
 }
 

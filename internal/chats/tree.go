@@ -402,9 +402,6 @@ func treePart(t model.Tree, c *Chat) (v model.TreeBranchView, ok bool) {
 // chat's labels after the change (never nil); when the record changed they are sent to every
 // client as well, in a tree event (see emitTree).
 func (m *Manager) SetLabel(id, branch string, item int, text string) ([]model.TreeLabel, error) {
-	if err := m.person(id); err != nil {
-		return nil, err
-	}
 	if _, err := m.treeChat(id); err != nil {
 		return nil, err
 	}

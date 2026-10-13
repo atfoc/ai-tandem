@@ -2,7 +2,7 @@
 // A thread with an output of 3,000 lines, a written file of 4,000, a change of 600 and a card of 30 edits is small
 // while its cards are closed, and still small with all of them open: each long part is its first and its last part
 // with how much was left out, its last line in sight, and "Show all" brings the whole of it, in a box that scrolls;
-// "Show less" takes it back. In a chat page, in the panel beside a board and in the pane of a run's agent of 300 px,
+// "Show less" takes it back. In a chat page and in the panel beside a board of 300 px,
 // and in a subagent's drawer in a window that narrow, every card lies inside its thread, closed, open and with all
 // shown, nothing in a card ends past it, and nothing scrolls sideways: with the three agents' items, and with names
 // and lines that have nowhere to break. The line beside the label is one line, cut with an ellipsis.
@@ -14,9 +14,9 @@ const BOX = 480; // the most the box of a part shown whole is tall (styles.css):
 await check("A5.4 a large tool item is cut until asked for, and no card is wider than a 300 px pane", async ({ url, browser, fail, note }) => {
   const states = await seed(url, "A5");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
-  const open = async (sel, size, wait) => {
+  const open = async (sel, size) => {
     const errors = [];
-    const { ctx, page } = await openPage({ url, browser, errors, sel, ...size, wait });
+    const { ctx, page } = await openPage({ url, browser, errors, sel, ...size });
     return { ctx, page, errors };
   };
   const close = async ({ ctx, errors }, name) => { for (const e of errors) fail(`${name}: page error: ${e}`); await ctx.close(); };
@@ -119,17 +119,5 @@ await check("A5.4 a large tool item is cut until asked for, and no card is wider
     try { await act(p.page, s.act); await p.page.waitForSelector(s.see, { timeout: 8000 }); cards += await fits(p.page, ".sub-drawer-body", name); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
     await close(p, name);
   }
-  {
-    const p = await open({ run: "r_live" }, paneSize("panel", 300, 800), ".tl-row"), name = "a run agent's pane of 300 px";
-    try {
-      await p.page.locator(".tl-row", { has: p.page.locator(".tl-id", { hasText: /^T27$/ }) }).first().click();
-      const link = p.page.locator('button[data-agent$="T27-merge"]').first();
-      await link.waitFor({ timeout: 8000 });
-      await link.click();
-      await p.page.waitForSelector(".thread.read-only .tool", { timeout: 8000 });
-      cards += await fits(p.page, ".thread.read-only", name, [".board-panel", 300]);
-    } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
-  }
-  note(`${cards} cards in panes of 300 px (a chat page, a panel beside a board, a run agent's pane) and in a subagent's drawer: each inside its thread closed, open and with all shown; nothing scrolls sideways`);
+  note(`${cards} cards in panes of 300 px (a chat page, a panel beside a board) and in a subagent's drawer: each inside its thread closed, open and with all shown; nothing scrolls sideways`);
 });

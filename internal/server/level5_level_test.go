@@ -18,8 +18,8 @@ import (
 // values that are no integer.
 var l5Old = []string{"", "4", "1", "0", "-5", "4.9", "5.0", "five", "v5", "5x"}
 
-// l5Tree makes one group with a board, a chat and (when the app has runs) nothing else, as the
-// owner, and returns the three ids. Their names are ones no other answer holds by chance.
+// l5Tree makes one group with a board and a chat, as the owner, and returns the three ids. Their
+// names are ones no other answer holds by chance.
 func l5Tree(e *env) (group, board, chat string) {
 	e.t.Helper()
 	group = l5ID(e.t, e.expect(200, "POST", "/api/groups", `{"name":"The owners group"}`))
@@ -87,7 +87,7 @@ func TestLevel5RefusesAnOlderClient(t *testing.T) {
 	// method, and whether or not the thing named is there.
 	routes := append(slices.Clone(RemoteRoutes[1:]), "GET /api/mcp/status", "GET /api/remote/status", "POST /api/restart", "PUT /api/groups/order",
 		"GET /api/servers", "POST /api/servers", "GET /api/on/s_0123456789ab/chats/"+chat, "POST /api/client/flushed", "GET /", "GET /index.html",
-		"PUT /api/chats/{id}", "PUT /api/runs/{id}", "GET /api/runs/check", "PUT /api/boards/{id}", "GET /api/nothing", "DELETE /api/state")
+		"PUT /api/chats/{id}", "PUT /api/boards/{id}", "GET /api/nothing", "DELETE /api/state")
 	if RemoteRoutes[0] != "GET /api/hello" {
 		t.Fatalf("the table's first route is %q", RemoteRoutes[0])
 	}

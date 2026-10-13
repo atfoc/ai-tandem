@@ -129,7 +129,7 @@ func TestAPIEventRows(t *testing.T) {
 
 	// set puts the follows back: a removal ends them.
 	set := func() {
-		if !b.Follow("F", Chat("c1")) || !b.Follow("F", Run("r1")) || !b.Follow("F", Board("b1")) {
+		if !b.Follow("F", Chat("c1")) || !b.Follow("F", Board("b1")) {
 			t.Fatal("Follow refused a connected API client")
 		}
 	}
@@ -151,10 +151,7 @@ func TestAPIEventRows(t *testing.T) {
 			}
 		}
 	}
-	chat := func(id string, unlisted bool) func(any) {
-		return func(ev any) { b.SendChat(id, unlisted, ev) }
-	}
-	run := func(id string) func(any) { return func(ev any) { b.SendRun(id, ev) } }
+	chat := func(id string) func(any) { return func(ev any) { b.SendChat(id, ev) } }
 	board := func(id string) func(any) { return func(ev any) { b.SendBoard(id, ev) } }
 
 	for typ, rule := range Events {
@@ -164,71 +161,58 @@ func TestAPIEventRows(t *testing.T) {
 				// Only the bridge sends these. Through a sender it is a mistake, which goes
 				// to every page and to no API client.
 				sent(t, typ, b.Broadcast, p)
-				sent(t, typ, chat("c1", false), p)
+				sent(t, typ, chat("c1"), p)
 			case rule.APIOnly:
 				// Every API client, whatever it has made or follows, and no page.
 				sent(t, typ, b.Broadcast, x, f, y)
-				sent(t, typ, chat("c1", false), x, f, y)
-				sent(t, typ, run("r1"), x, f, y)
+				sent(t, typ, chat("c1"), x, f, y)
+				sent(t, typ, board("b1"), x, f, y)
 			case rule.Per == PerNone && rule.PagesOnly:
 				sent(t, typ, b.Broadcast, p)
-				sent(t, typ, chat("c1", false), p)
-				sent(t, typ, run("r1"), p)
+				sent(t, typ, chat("c1"), p)
+				sent(t, typ, board("b1"), p)
 			case rule.Per == PerNone:
 				sent(t, typ, b.Broadcast, all...)
-				sent(t, typ, chat("c1", true), all...)
-				sent(t, typ, run("r1"), all...)
+				sent(t, typ, chat("c1"), all...)
+				sent(t, typ, board("b1"), all...)
 			case rule.Per == PerChat && rule.PagesOnly:
 				if rule.Class != Content {
 					t.Fatalf("a %v type of a chat for pages only", rule.Class)
 				}
-				sent(t, typ, chat("c1", false)) // F follows the chat and is no page
+				sent(t, typ, chat("c1")) // F follows the chat and is no page
 				b.Follow("P", Chat("c1"))
-				sent(t, typ, chat("c1", false), p)
-				sent(t, typ, chat("c1", true), p)
-				sent(t, typ, chat("c2", false))
+				sent(t, typ, chat("c1"), p)
+				sent(t, typ, chat("c2"))
 				b.Unfollow("P", Chat("c1"))
-				sent(t, typ, run("c1"), p) // misdirected: every page, no API client
+				sent(t, typ, board("c1"), p) // misdirected: every page, no API client
 				sent(t, typ, b.Broadcast, p)
 			case rule.Per == PerChat && rule.Class == List:
-				sent(t, typ, chat("c1", false), all...) // every client
-				sent(t, typ, chat("c1", true), f)       // a run agent's chat: its followers only
-				sent(t, typ, chat("c2", false), all...) // a chat nobody follows
-				sent(t, typ, run("c1"), p)              // misdirected: every page, no API client
-				sent(t, typ, b.Broadcast, p)            // the same
+				sent(t, typ, chat("c1"), all...) // every client
+				sent(t, typ, chat("c2"), all...) // a chat nobody follows
+				sent(t, typ, board("c1"), p)     // misdirected: every page, no API client
+				sent(t, typ, b.Broadcast, p)     // the same
 			case rule.Per == PerChat:
-				sent(t, typ, chat("c1", false), f) // by follow
-				sent(t, typ, chat("c1", true), f)
-				sent(t, typ, chat("c2", false))
-				sent(t, typ, run("c1"), p)
+				sent(t, typ, chat("c1"), f) // by follow
+				sent(t, typ, chat("c2"))
+				sent(t, typ, board("c1"), p)
 				sent(t, typ, b.Broadcast, p)
 			case rule.Per == PerBoard:
 				if rule.Class != List {
 					t.Fatalf("a %v type of a board", rule.Class)
 				}
-				sent(t, typ, board("b1"), all...)  // every client
-				sent(t, typ, board("b2"), all...)  // a board nobody follows
-				sent(t, typ, b.Broadcast, p)       // misdirected: every page, no API client
-				sent(t, typ, chat("c1", false), p) // the same
-				sent(t, typ, run("r1"), p)
-			case rule.Class == List: // of a run
-				sent(t, typ, run("r1"), all...)
-				sent(t, typ, run("r2"), all...)
-				sent(t, typ, chat("r1", false), p)
-				sent(t, typ, b.Broadcast, p)
+				sent(t, typ, board("b1"), all...) // every client
+				sent(t, typ, board("b2"), all...) // a board nobody follows
+				sent(t, typ, b.Broadcast, p)      // misdirected: every page, no API client
+				sent(t, typ, chat("c1"), p)       // the same
 			default:
-				sent(t, typ, run("r1"), f)
-				sent(t, typ, run("r2"))
-				sent(t, typ, chat("r1", false), p)
-				sent(t, typ, b.Broadcast, p)
+				t.Fatalf("no case for the row %+v", rule)
 			}
 		})
 	}
 	t.Run("a type outside the table", func(t *testing.T) {
 		sent(t, "brand_new", b.Broadcast, p)
-		sent(t, "brand_new", chat("c1", false), p)
-		sent(t, "brand_new", chat("c1", true), p)
-		sent(t, "brand_new", run("r1"), p)
+		sent(t, "brand_new", chat("c1"), p)
+		sent(t, "brand_new", board("b1"), p)
 		b.Broadcast(struct{ N int }{1}) // no type at all
 		s.send()
 		for _, c := range all {
@@ -239,11 +223,10 @@ func TestAPIEventRows(t *testing.T) {
 	})
 	t.Run("a second client that follows", func(t *testing.T) {
 		b.Follow("X", Chat("c1"))
-		sent(t, "chat_items", chat("c1", false), x, f)
-		sent(t, "chat", chat("c1", false), all...)
-		sent(t, "chat", chat("c1", true), x, f)
+		sent(t, "chat_items", chat("c1"), x, f)
+		sent(t, "chat", chat("c1"), all...)
 		b.Unfollow("X", Chat("c1"))
-		sent(t, "chat_items", chat("c1", false), f)
+		sent(t, "chat_items", chat("c1"), f)
 	})
 	for _, c := range all {
 		if got := c.Drain(20 * time.Millisecond); len(got) != 0 {
@@ -261,8 +244,8 @@ func TestRemovalReachesEveryClientAfterForget(t *testing.T) {
 		it   Item
 		send func(b *Bridge, ev any)
 	}{
-		{"chat_removed", Chat("c1"), func(b *Bridge, ev any) { b.SendChat("c1", false, ev) }},
-		{"run_removed", Run("r1"), func(b *Bridge, ev any) { b.SendRun("r1", ev) }},
+		{"chat_removed", Chat("c1"), func(b *Bridge, ev any) { b.SendChat("c1", ev) }},
+		{"board_removed", Board("b1"), func(b *Bridge, ev any) { b.SendBoard("b1", ev) }},
 	} {
 		t.Run(tc.typ, func(t *testing.T) {
 			t.Parallel()
@@ -293,7 +276,7 @@ func TestAPIContentOnlyAfterFollow(t *testing.T) {
 	api := newAPIServer(t, b, nil)
 	x := openAPI(t, api, "X")
 	s := &sentinel{b: b}
-	items := func(n int) { b.SendChat("c1", false, map[string]any{"type": "chat_items", "n": n}) }
+	items := func(n int) { b.SendChat("c1", map[string]any{"type": "chat_items", "n": n}) }
 
 	if b.Follow("nobody", Chat("c1")) {
 		t.Fatal("Follow accepted an id with no stream")
@@ -320,7 +303,7 @@ func TestAPIContentOnlyAfterFollow(t *testing.T) {
 	x2 := openAPI(t, api, "X")
 	x.ExpectEnded()
 	items(3)
-	b.SendChat("c1", false, map[string]any{"type": "chat"})
+	b.SendChat("c1", map[string]any{"type": "chat"})
 	if ev := x2.Next(); ev["type"] != "chat" {
 		t.Fatalf("the new stream got %v, want the list event alone", ev)
 	}
@@ -345,7 +328,7 @@ func TestAPIFollowersGetTheSameBytes(t *testing.T) {
 	}
 	const n = 200
 	for i := range n {
-		b.SendChat("c1", false, map[string]any{"type": []string{"chat_items", "tree", "sub", "sub_items"}[i%4], "i": i, "text": strings.Repeat("é", i)})
+		b.SendChat("c1", map[string]any{"type": []string{"chat_items", "tree", "sub", "sub_items"}[i%4], "i": i, "text": strings.Repeat("é", i)})
 	}
 	for range n {
 		want := p.NextRaw()
@@ -693,12 +676,12 @@ func TestCloseKind(t *testing.T) {
 	if !b.Known("P") || !b.Holds("P", "b1") {
 		t.Fatal("the page's record changed")
 	}
-	b.SendChat("c1", false, map[string]any{"type": "chat_items"})
+	b.SendChat("c1", map[string]any{"type": "chat_items"})
 	p.Expect("chat_items")
 
 	// An API client connects again and gets the list events; the old streams get nothing.
 	x2 := openAPI(t, api, "X")
-	b.SendChat("c1", false, map[string]any{"type": "chat"})
+	b.SendChat("c1", map[string]any{"type": "chat"})
 	x2.Expect("chat")
 	p.Expect("chat")
 	if got := x.Drain(10 * time.Millisecond); len(got) != 0 {
@@ -818,10 +801,10 @@ func TestAPIAndPagesAtOnce(t *testing.T) {
 				return
 			default:
 			}
-			b.SendChat("c1", false, map[string]any{"type": "chat", "i": i})
-			b.SendChat("c1", false, map[string]any{"type": "chat_items", "i": i})
+			b.SendChat("c1", map[string]any{"type": "chat", "i": i})
+			b.SendChat("c1", map[string]any{"type": "chat_items", "i": i})
 			if i%7 == 0 {
-				b.SendChat("c1", false, map[string]any{"type": "chat_removed"})
+				b.SendChat("c1", map[string]any{"type": "chat_removed"})
 			}
 			b.Acted("X")
 			// A pause per round: a page that reads must not fall a whole send buffer behind,
@@ -868,10 +851,10 @@ func TestFollowAndUnfollowByKind(t *testing.T) {
 	p := bridgetest.Connect(t, srv.URL, "P")
 	p.Welcome()
 	openAPI(t, api, "X")
-	chat, run := Chat("c1"), Run("r1")
+	chat, board := Chat("c1"), Board("b1")
 	followers := func(want ...string) {
 		t.Helper()
-		for _, it := range []Item{chat, run} {
+		for _, it := range []Item{chat, board} {
 			if got := b.Followers(it); !reflect.DeepEqual(got, want) && (len(got) != 0 || len(want) != 0) {
 				t.Fatalf("followers of %v = %v, want %v", it, got, want)
 			}
@@ -879,7 +862,7 @@ func TestFollowAndUnfollowByKind(t *testing.T) {
 	}
 	both := func(f func(it Item)) {
 		f(chat)
-		f(run)
+		f(board)
 	}
 
 	// The other kind's id, and an id with no stream: no follow.

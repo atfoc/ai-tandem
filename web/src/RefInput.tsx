@@ -28,16 +28,16 @@ type Props = {
   /** The new value, and the text of the caret's line before the caret (for @ mentions). */
   onChange(value: string, beforeCaret: string): void;
   onKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void;
-  /** Nothing can be put into the box now, and nothing taken out of it (a run's start is on its way; the server of the
-   *  chat or the run is not connected): the insert popup is not opened, a reference is not inserted, and no chip is
-   *  removed by a key or cut. The owner of the box stops what the browser itself would type (its `beforeinput`). */
+  /** Nothing can be put into the box now, and nothing taken out of it (the server of the chat is not connected): the
+   *  insert popup is not opened, a reference is not inserted, and no chip is removed by a key or cut. The owner of the
+   *  box stops what the browser itself would type (its `beforeinput`). */
   locked?: boolean;
-  /** The box is read-only (the server of the chat or the run is not connected, or no longer has it): it shows what it
+  /** The box is read-only (the server of the chat is not connected, or no longer has it): it shows what it
    *  holds and is not editable at all, by a key, a paste, a drop or the page's own commands. Its text can still be
    *  selected and copied. */
   readOnly?: boolean;
   /** Image files were pasted, and the paste is theirs (logic/chatimage.ts pastedImages). A box without it takes no image:
-   *  its paste is the plain text, as it always was (a run's goal). */
+   *  its paste is the plain text. */
   onImages?(files: File[]): void;
 };
 

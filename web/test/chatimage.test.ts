@@ -243,8 +243,8 @@ test("a cancelled dialog, and an answer of another shape, give nothing", () => {
 
 const src = (f: string) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
-test("a chat's composer takes pasted images and has the attach button; a run's goal box keeps its paste and gets no button", () => {
-  const composer = src("Composer.tsx"), run = src("run/RunComposer.tsx"), box = src("RefInput.tsx"), strip = src("ComposerImages.tsx");
+test("a chat's composer takes pasted images and has the attach button", () => {
+  const composer = src("Composer.tsx"), box = src("RefInput.tsx"), strip = src("ComposerImages.tsx");
   // both ways go through the one check
   assert.ok(composer.includes("onImages={(files) => add(files.map((f) => ({ file: f, name: pastedName(f.name) })))}"));
   assert.ok(composer.includes("void pickImages().then((r) => { if (r.files.length || r.skipped.length) add(r.files, r.skipped); }"));
@@ -258,7 +258,6 @@ test("a chat's composer takes pasted images and has the attach button; a run's g
   // the box asks the paste rule only where images are taken, and a paste of images is consumed
   assert.ok(box.includes("if (onImages) {") && box.includes("if (images.length) { e.preventDefault(); onImages(images); return; }"));
   assert.ok(box.includes("rich: types.includes(\"text/html\") || types.includes(\"text/rtf\")"));
-  assert.doesNotMatch(run, /onImages|AttachButton|pickImages|ImageStrip|addImages/);
   // the desktop app's own dialog when the app has one, else the browser's picker
   assert.ok(strip.includes("if (typeof window.aiwbDesktop?.pickImages === \"function\") return fromDesktop(await window.aiwbDesktop.pickImages());"));
   assert.ok(strip.includes("input.type = \"file\"; input.multiple = true; input.accept = IMAGE_TYPES.join(\",\");"));

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"ai-whiteboard/internal/agent"
-	"ai-whiteboard/internal/boardtools"
 )
 
 // piMarkerEnv is the pi process-marker environment that must not leak into an app-run pi
@@ -35,11 +34,6 @@ var piMarkerEnv = map[string]bool{
 // hook still routes them through the bridge, where the adapter auto-approves them and refuses
 // only inputs touching the app's own folder. --no-extensions keeps user extensions out; the explicit
 // -e loads only the app's extension.
-//
-// A read-only process gets --tools, an allowlist: pi's read tools and the app's MCP tools it may
-// call (readOnlyTools). There is no bash, write or edit then, and every extension tool that is not
-// named is removed too. An unattended process needs nothing more: pi never asks, the bridge
-// approves every call (perm.go).
 //
 // A DeepSeek Flash model gets a second --append-system-prompt with the bash-timeout reminder:
 // those models tend to run bash commands without a timeout and can hang a run. pi accepts the
@@ -76,39 +70,7 @@ func (s *Spawner) sessionArgs(o agent.SpawnOptions, sessionDir, appendPromptFile
 	if isDeepSeekFlash(o.Model) {
 		args = append(args, "--append-system-prompt", bashTimeoutReminder)
 	}
-	if o.ReadOnly {
-		args = append(args, "--tools", strings.Join(readOnlyTools(o), ","))
-	}
 	return append(args, "--no-approve")
-}
-
-// readOnlyTools is the --tools list of a read-only process: pi's built-in tools that only read,
-// and the app's MCP tools the process may call, by the names the extension registers them under.
-// Those are o.MCPTools when set; else the board tools when board extras are on and the spawn
-// family unless the process has none (o.NoSpawn), as for the other agents. Without MCP there are
-// none.
-func readOnlyTools(o agent.SpawnOptions) []string {
-	tools := []string{"read", "grep", "find", "ls"}
-	if o.MCP == nil || o.MCP.MCPURL == "" {
-		return tools
-	}
-	if o.MCPTools != nil {
-		for _, name := range o.MCPTools {
-			tools = append(tools, "mcp__board__"+name)
-		}
-		return tools
-	}
-	if o.BoardID != "" {
-		for _, t := range boardtools.Tools {
-			tools = append(tools, "mcp__board__"+t.Name)
-		}
-	}
-	if !o.NoSpawn {
-		for _, t := range boardtools.SpawnFamily {
-			tools = append(tools, "mcp__board__"+t.Name)
-		}
-	}
-	return tools
 }
 
 // chatDir is the folder of a chat object: dir when the caller names it (SpawnOptions.Dir,

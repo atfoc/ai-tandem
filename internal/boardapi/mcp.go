@@ -44,9 +44,6 @@ type Relay struct {
 	Bridge *editorbridge.Bridge
 	Chats  *chats.Manager
 	Boards *boards.Service
-	// Runs answers the run tools and says which of them a caller is listed (runs.go). Nil means
-	// the server has no runs: a chat on a run is then listed and allowed no run tool.
-	Runs RunService
 	// Contacts is the last MCP contact per chat, read by GET /api/mcp/status. Its zero value is
 	// ready to use.
 	Contacts ContactLog
@@ -306,15 +303,11 @@ func mcpToolsOf(tools []boardtools.Tool) []map[string]any {
 // call: an archived chat and a legacy chat. Other live tokens follow the §2 matrix: the board
 // tools for a caller whose chat has a board, and the spawn family for a caller the chat's
 // subagent depth gives it (chats.Caller.MaySpawn): the chat's agent unless subagents are off, and
-// a subagent above the chat's deepest level. A caller whose chat belongs to a run follows the
-// run's rule (runs.go) and is never listed a board tool.
+// a subagent above the chat's deepest level.
 func (r *Relay) listedTools(token string) []map[string]any {
 	caller, ok := r.Chats.ResolveToken(token)
 	if !ok || caller.Meta.Archived || caller.Meta.InstructionsSent {
 		return mcpToolsOf(nil)
-	}
-	if caller.Meta.Run != "" {
-		return mcpToolsOf(r.runListed(caller))
 	}
 	var tools []boardtools.Tool
 	if caller.Meta.Board != "" {
@@ -324,6 +317,21 @@ func (r *Relay) listedTools(token string) []map[string]any {
 		tools = append(tools, r.spawnListed(caller)...)
 	}
 	return mcpToolsOf(tools)
+}
+
+// spawnListed is the spawn family as tools/list shows it to caller: its agent parameter names
+// only the agents this server can start, and a subagent reads of itself where the chat's agent
+// reads of its chat.
+func (r *Relay) spawnListed(caller chats.Caller) []boardtools.Tool {
+	usable := r.Chats.UsableAgents()
+	names := make([]string, len(usable))
+	for i, a := range usable {
+		names[i] = string(a)
+	}
+	if caller.Subagent {
+		return boardtools.SpawnFamilyForSub(names)
+	}
+	return boardtools.SpawnFamilyFor(names)
 }
 
 // ServeFixedMCP serves the fixed POST /mcp on the dedicated listener. The credential is the
@@ -411,8 +419,8 @@ func (r *Relay) serveRPC(w http.ResponseWriter, req *http.Request, token string)
 	json.NewEncoder(w).Encode(resp)
 }
 
-// dispatch authorizes and routes one tools/call. Spawn-family never goes through Relay.Call, and
-// neither do the run tools; their results are text.
+// dispatch authorizes and routes one tools/call. Spawn-family never goes through Relay.Call; its
+// results are text.
 func (r *Relay) dispatch(token, name string, args json.RawMessage) ToolResult {
 	caller, ok := r.Chats.ResolveToken(token)
 	if !ok {
@@ -424,21 +432,12 @@ func (r *Relay) dispatch(token, name string, args json.RawMessage) ToolResult {
 	if caller.Meta.InstructionsSent {
 		return errResult("this chat used the old board connection")
 	}
-	if caller.Meta.Run != "" {
-		return textResult(r.runDispatch(caller, name, args))
-	}
 	hasBoard := caller.Meta.Board != ""
 	if boardtools.IsSpawnFamily(name) {
 		if !caller.MaySpawn() {
 			return errResult(caller.NoSpawnText(name))
 		}
 		return textResult(r.callSpawnFamily(caller, name, args))
-	}
-	if boardtools.IsRunTool(name) { // a chat that is on no run has no run tool
-		if caller.Subagent {
-			return errResult(name + " is not available to subagents")
-		}
-		return errResult(name + " is not available on this chat")
 	}
 	if boardtools.IsTool(name) {
 		if !hasBoard {
@@ -542,24 +541,21 @@ func parseStopArgs(args json.RawMessage) (string, error) {
 
 // chatKey resolves a credential to its short chat id and tracker key: the top-level chat's, also
 // for a branch's credential. An unknown or empty credential maps to the constant unknown marker;
-// the credential itself is never returned. record is false for one of a run's agents: a run makes
-// a chat per agent, and the contact table is for the chats people have.
-func (r *Relay) chatKey(token string) (label, key string, record bool) {
+// the credential itself is never returned.
+func (r *Relay) chatKey(token string) (label, key string) {
 	if caller, ok := r.Chats.ResolveToken(token); ok {
-		return short(caller.Chat), caller.Chat, caller.Meta.Role == ""
+		return short(caller.Chat), caller.Chat
 	}
-	return unknownContact, unknownContact, true
+	return unknownContact, unknownContact
 }
 
 // logInitialize writes one structured MCP access line and records the contact. It never logs the
 // credential; the agent-supplied client name/version are cut short and quoted.
 func (r *Relay) logInitialize(token, name, version string) {
 	name, version = clipName(name), clipName(version)
-	label, key, record := r.chatKey(token)
+	label, key := r.chatKey(token)
 	log.Printf("mcp initialize chat=%s client=%q version=%q", label, name, version)
-	if record {
-		r.Contacts.recordInit(key, label, name, version)
-	}
+	r.Contacts.recordInit(key, label, name, version)
 }
 
 // logToolCall writes one structured MCP access line and records the contact. It is the only
@@ -571,9 +567,7 @@ func (r *Relay) logToolCall(token, tool string, isErr bool) {
 	if isErr {
 		outcome = "error"
 	}
-	label, key, record := r.chatKey(token)
+	label, key := r.chatKey(token)
 	log.Printf("mcp tools/call chat=%s tool=%q outcome=%s", label, tool, outcome)
-	if record {
-		r.Contacts.recordCall(key, label, tool, outcome)
-	}
+	r.Contacts.recordCall(key, label, tool, outcome)
 }

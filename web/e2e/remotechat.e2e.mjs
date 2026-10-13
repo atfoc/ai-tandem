@@ -31,7 +31,7 @@
 //     nothing of B on disk                                                              [3.1, 3.2, 3.12]
 //   2 the owner makes a group, chats and a board on B's own page: A's section shows the same tree
 //     with no reload, and no row names a server                                         [3.3, 3.11]
-//   3 a chat, a whiteboard, a run and a group from the section's "+", a chat and a group from a
+//   3 a chat, a whiteboard and a group from the section's "+", a chat and a group from a
 //     group's "+" inside the section: each is on B at once, in its place, nothing asks where it
 //     should live, and the owner's page shows it                                        [3.4]
 //   4 a group of the section is renamed, moved, archived, unarchived and deleted from the page,
@@ -303,7 +303,7 @@ const draftOn = async (id) => { const st = (await get(B, `/api/chats/${id}/items
 const entry = async () => ((await get(A, "/api/servers")).json?.servers ?? []).find((v) => v.name === B.name) ?? null;
 const connected = (timeout = 60000) => holds("A is connected to B", async () => (await entry())?.state === "connected" && !!(await stateOf(A))?.sections?.[ENTRY], { timeout, every: 200 });
 /** How many things B has: nothing of it may go by what a client's page does to its own list. */
-const census = async () => { const s = await stateOf(B); return { groups: s.groups.length, boards: s.boards.length, chats: s.chats.length, runs: (s.runs ?? []).length }; };
+const census = async () => { const s = await stateOf(B); return { groups: s.groups.length, boards: s.boards.length, chats: s.chats.length }; };
 
 let ENTRY = ""; // the id of B's entry in A's list, once it is added
 /** A thing's id on B, of the page's key of it ("<entry id>~<id>"). */
@@ -375,8 +375,8 @@ const sectionLook = (p = page) => p.evaluate((name) => {
   };
 }, B.name);
 
-/** The tree a page shows, as lines: of B's section (of: B.name), or of the page's local part (of: ""). A group, a
- *  board and a run are followed by what is in them, two spaces further in. The same code reads A's section and the
+/** The tree a page shows, as lines: of B's section (of: B.name), or of the page's local part (of: ""). A group and a
+ *  board are followed by what is in them, two spaces further in. The same code reads A's section and the
  *  owner's own sidebar, so "the same tree" is the same lines. */
 const outline = (p, of = "") => p.evaluate((of) => {
   const tops = of
@@ -395,9 +395,9 @@ const outline = (p, of = "") => p.evaluate((of) => {
       if (body) walk(body, depth + 1);
       return;
     }
-    if (el.matches(".side-board, .side-run")) {
+    if (el.matches(".side-board")) {
       const row = el.querySelector(":scope > .side-row");
-      out.push(`${pad}${el.matches(".side-board") ? "board" : "run"} ${named(row)}${tags(row)}`);
+      out.push(`${pad}board ${named(row)}${tags(row)}`);
       const chats = el.querySelector(":scope > .side-board-chats");
       if (chats) walk(chats, depth + 1);
       return;
@@ -435,7 +435,7 @@ async function more(p, row, item, then) {
   await menuItem(p, item).click();
   if (then) await menuItem(p, then).click();
 }
-/** Types a name into the rename box that is open in a scope (a new board, run or group opens with one). */
+/** Types a name into the rename box that is open in a scope (a new board or group opens with one). */
 async function nameIt(scope, name) {
   const input = scope.locator(".name-input").first();
   await input.waitFor();
@@ -473,11 +473,11 @@ const dialogDo = async (p, label) => { await p.locator(".dialog button", { hasTe
 const HERE = "Here", LOCAL_GROUP = "Local only";
 const FILMS = "Films", OWNER_CHAT = "Owner chat", OWNER_LOOSE = "Owner loose", OWNER_BOARD = "storyboard"; // one word: a board's name is also its folder's
 const TWO = "Two pages";
-const MY_CHAT = "Made by A", MY_BOARD = "plan", MY_RUN = "Night job", MY_GROUP = "Shared", INNER = "Inner", IN_GROUP = "In the group";
+const MY_CHAT = "Made by A", MY_BOARD = "plan", MY_GROUP = "Shared", INNER = "Inner", IN_GROUP = "In the group";
 const AWAY = `${B.name} is not connected`;
 const WHY = `${AWAY}: nothing can be sent or changed until it is back.`;
 const ONE_LINE = "Its chats show when the server is back.";
-let chat0 = "", chatLoose = "", chatGroup = "", boardKey = "", runKey = "";
+let chat0 = "", chatLoose = "", chatGroup = "", boardKey = "";
 
 async function step1() {
   // No server but this computer: no section, and the "+" of the head asks nothing and offers no server.
@@ -485,7 +485,7 @@ async function step1() {
   await page.click("button.icon-btn.new");
   const offered = (await page.locator(".menu .menu-item").allInnerTexts()).map((t) => t.trim());
   await page.keyboard.press("Escape");
-  await check("1 with no server in the list the sidebar has no section, and its \"+\" offers a chat, a whiteboard, a run and a group", none === 0 && one(offered) === one(["New chat", "New whiteboard", "New run", "New group"]),
+  await check("1 with no server in the list the sidebar has no section, and its \"+\" offers a chat, a whiteboard and a group", none === 0 && one(offered) === one(["New chat", "New whiteboard", "New group"]),
     `sections ${none}; "+" offers ${one(offered)}`);
   await shot("no-server-in-the-list", page);
   chat0 = await selected(page, "chat", async () => { await page.click("button.icon-btn.new"); await menuItem(page, "New chat").click(); });
@@ -539,7 +539,7 @@ async function step1() {
   const st = await stateOf(A);
   const files = fs.readdirSync(A.home, { recursive: true }).map(String).filter((f) => /remote|record|makes/i.test(f) && !/^servers/.test(f));
   await check("1 A's snapshot has B's tree under \"sections\" by the entry's id, no thing of A's own names a server, and A's data folder has no file of a remote thing",
-    !!ENTRY && !!st.sections?.[ENTRY] && Array.isArray(st.sections[ENTRY].chats) && [...st.chats, ...st.boards, ...(st.runs ?? [])].every((x) => !("server" in x)) && files.length === 0,
+    !!ENTRY && !!st.sections?.[ENTRY] && Array.isArray(st.sections[ENTRY].chats) && [...st.chats, ...st.boards].every((x) => !("server" in x)) && files.length === 0,
     `entry ${ENTRY}; sections ${one(Object.keys(st.sections ?? {}))}; files ${one(files)}`);
 }
 
@@ -572,7 +572,7 @@ async function step2() {
 
 async function step3() {
   const made = callsFrom(page);
-  // The section's "+": a chat, a whiteboard, a run and a group, each on B, outside any group.
+  // The section's "+": a chat, a whiteboard and a group, each on B, outside any group.
   await section().locator(".side-section-head").hover();
   await section().locator(".side-section-head button[title^='New on']").click();
   const offered = (await page.locator(".menu .menu-item").allInnerTexts()).map((t) => t.trim());
@@ -582,8 +582,8 @@ async function step3() {
   await box(page).waitFor();
   const asked1 = await asksWhere(page);
   const c1 = await chatOn(B, own(chatLoose));
-  await check("3 the section's \"+\" offers a chat, a whiteboard, a run and a group; \"Chat\" makes one on B at once, in no group, unstarted, and A has none of it",
-    one(offered) === one(["Chat", "Whiteboard", "Run", "Group"]) && inB(chatLoose) && !!c1 && c1.locked === false && (c1.group ?? "__ungrouped__") === "__ungrouped__" && !(await chatOn(A, own(chatLoose))) && asked1 === 0,
+  await check("3 the section's \"+\" offers a chat, a whiteboard and a group; \"Chat\" makes one on B at once, in no group, unstarted, and A has none of it",
+    one(offered) === one(["Chat", "Whiteboard", "Group"]) && inB(chatLoose) && !!c1 && c1.locked === false && (c1.group ?? "__ungrouped__") === "__ungrouped__" && !(await chatOn(A, own(chatLoose))) && asked1 === 0,
     `offered ${one(offered)}; key ${chatLoose}; B's chat ${one(c1 && { group: c1.group, locked: c1.locked })}; asked where: ${asked1}`);
   await renameChat(page, MY_CHAT);
 
@@ -592,13 +592,6 @@ async function step3() {
   await nameIt(section(), MY_BOARD);
   const b1 = await holds("B has the board under its name", async () => (await stateOf(B)).boards.some((b) => b.id === own(boardKey) && b.name === MY_BOARD && (b.group ?? "__ungrouped__") === "__ungrouped__"));
   await check("3 \"Whiteboard\" makes a board on B at once and asks nothing", inB(boardKey) && b1 === true && asked2 === 0 && (await stateOf(A)).boards.length === 0, `key ${boardKey}; on B: ${b1}; asked where: ${asked2}; boards of A: ${(await stateOf(A)).boards.length}`);
-
-  runKey = await selected(page, "run", () => plus(page, section().locator(".side-section-head"), "Run"));
-  await nameIt(section(), MY_RUN);
-  const r1 = await holds("B has the run, not started", async () => ((await stateOf(B)).runs ?? []).some((r) => r.id === own(runKey) && r.name === MY_RUN && !r.started && r.status === "draft"));
-  const choice = await page.locator(".run-composer .server-pick, .run-composer button.tchip[title^='Server']").count();
-  await check("3 \"Run\" makes a run on B at once, before it starts, and its composer offers no choice of a server", inB(runKey) && r1 === true && choice === 0 && ((await stateOf(A)).runs ?? []).length === 0,
-    `key ${runKey}; on B: ${r1}; server choices ${choice}; runs of A: ${((await stateOf(A)).runs ?? []).length}`);
 
   await plus(page, section().locator(".side-section-head"), "Group");
   await nameIt(section(), MY_GROUP);
@@ -619,12 +612,12 @@ async function step3() {
     `B's chat ${one(c2 && { group: c2.group })}, the group ${gid}; nested on B: ${g2}; asked where: ${asked3}`);
 
   // Every make was one call under /api/on/<entry>/ with B's own ids, and none named a server or a collapse.
-  const posts = made().filter((c) => c.method === "POST" && /\/(chats|boards|runs|groups)$/.test(c.path));
+  const posts = made().filter((c) => c.method === "POST" && /\/(chats|boards|groups)$/.test(c.path));
   const bad = made().filter((c) => c.method !== "GET" && (!c.path.startsWith(`/api/on/${ENTRY}/`) || /"(server|collapsed)"/.test(c.body) || c.body.includes(`${ENTRY}~`)));
-  await check("3 each was made by one call under /api/on/<entry id>/, with B's own ids, naming no server", posts.length === 6 && posts.every((c) => c.status === 200) && bad.length === 0,
+  await check("3 each was made by one call under /api/on/<entry id>/, with B's own ids, naming no server", posts.length === 5 && posts.every((c) => c.status === 200) && bad.length === 0,
     `makes ${one(posts.map((c) => `${c.method} ${c.path} ${c.status} ${c.body}`))}; others ${one(bad.map((c) => `${c.method} ${c.path} ${c.body}`))}`);
   const same = await sameTree();
-  await check("3 the owner's page shows what the client made, in the group it was made in, with no reload", same === true && plain(await outline(owner)).includes(`  chat ${IN_GROUP}`) && plain(await outline(owner)).includes(`run ${MY_RUN}`), await bothTrees());
+  await check("3 the owner's page shows what the client made, in the group it was made in, with no reload", same === true && plain(await outline(owner)).includes(`  chat ${IN_GROUP}`), await bothTrees());
   await shot("connected-a-tree-with-groups", page, true);
 }
 
@@ -1113,7 +1106,7 @@ async function step8() {
   await page.keyboard.press("Enter");
   await sleep(800);
   const kept = (await boxText(page)).trim();
-  const tried = during().filter((c) => c.method !== "GET" && !/\/unfollow$/.test(c.path));
+  const tried = during().filter((c) => c.method !== "GET");
   const ro = await box(page).getAttribute("aria-readonly");
   await check("8 the text typed before the drop stays in the box; the box is read-only and takes no more, and no call is made for it", kept === typed && ro === "true" && tried.length === 0 && (await msgs(page)).user.length === thread.user.length,
     `box "${kept}"; aria-readonly ${ro}; calls during the outage ${one(tried.map((c) => `${c.method} ${c.path} ${c.status}`))}`);
@@ -1227,14 +1220,14 @@ async function step9() {
   // A's own server restarts during the outage: it kept nothing of B, and the page that reloads knows nothing of B.
   await stop(A);
   const files = fs.readdirSync(A.home, { recursive: true }).map(String).filter((f) => !/^(servers|state|settings|server\.log|chats\/|library|instance|version)/.test(f));
-  const named = fs.readdirSync(A.home, { recursive: true }).map(String).filter((f) => f.includes(own(chatGroup)) || f.includes(own(boardKey)) || f.includes(own(runKey)) || /^remote\b/.test(f));
+  const named = fs.readdirSync(A.home, { recursive: true }).map(String).filter((f) => f.includes(own(chatGroup)) || f.includes(own(boardKey)) || /^remote\b/.test(f));
   await start(A);
   await page.reload();
   await page.waitForSelector("#root .side-tree");
   const blank = await awayLook();
   const st = await stateOf(A);
-  await check("9 A's server restarts during the outage: its data folder has no file of a chat, a board or a run of B, its snapshot has no tree of B, and the page shows the section with no row",
-    blank === true && named.length === 0 && !st.sections?.[ENTRY] && [...st.chats, ...st.boards, ...(st.runs ?? [])].every((x) => !("server" in x)) && (await page.locator(".thread .msg, .chat-head-server").count()) === 0,
+  await check("9 A's server restarts during the outage: its data folder has no file of a chat or a board of B, its snapshot has no tree of B, and the page shows the section with no row",
+    blank === true && named.length === 0 && !st.sections?.[ENTRY] && [...st.chats, ...st.boards].every((x) => !("server" in x)) && (await page.locator(".thread .msg, .chat-head-server").count()) === 0,
     `${one(await sectionLook())}; files that name a thing of B ${one(named)}; other files ${one(files.slice(0, 12))}`);
 
   // A server that is too old: a stand-in with B's certificate that reports level 4 and a version.
@@ -1352,7 +1345,7 @@ async function step10() {
   await check("10 the chat of that server that was open is closed with it: a removed entry is no outage, and nothing of it stays on screen", shut, `selection ${one(await sel(page))}; main: ${(await page.locator("main").first().innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 100)}`);
   await sleep(1500);
   const after = await census();
-  await check("10 B still has everything: its groups, boards, chats and runs", one(before) === one(after) && after.chats > 0, `before ${one(before)}; after ${one(after)}`);
+  await check("10 B still has everything: its groups, boards and chats", one(before) === one(after) && after.chats > 0, `before ${one(before)}; after ${one(after)}`);
   const local = await outline(page);
   await check("10 the local part is as it was", one(local) === one([`chat ${HERE}`, `group ${LOCAL_GROUP}`]) && (await stored(page, "aiwb.collapsed")) === "[]", `${lines(local)}; stored collapse ${await stored(page, "aiwb.collapsed")}`);
   const kept = await page.evaluate((entry) => Object.keys(localStorage).filter((k) => (localStorage.getItem(k) ?? "").includes(entry) || k.includes(entry)), ENTRY);

@@ -11,8 +11,8 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// A server that drops and comes back, through the routes, with a chat and a run a page follows
-// and with a board a page holds. What the page has open is its own matter; here it is told that
+// A server that drops and comes back, through the routes, with a chat a page follows and with a
+// board a page holds. What the page has open is its own matter; here it is told that
 // the section has no tree, every call is 503 until the tree is back, and then the page reads
 // again what it shows.
 
@@ -30,29 +30,27 @@ func (f *far) sectionEvent(p *bridgetest.Page) *pageSnapshot {
 	return ev.Tree
 }
 
-func TestServerDropsWithAChatAndARunFollowed(t *testing.T) {
+func TestServerDropsWithAChatFollowed(t *testing.T) {
 	t.Parallel()
 	for _, back := range []string{"unchanged", "changed", "deleted"} {
 		t.Run(back, func(t *testing.T) {
 			t.Parallel()
-			f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, runs: []model.RunView{runThere(farRunA)}})
+			f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}})
 			p, q := f.page("P"), f.page("Q")
-			chat, run := f.on("/chats/"+farChatA), f.on("/runs/"+farRunA)
-			chatItem, runItem := editorbridge.ChatOn(f.entry, farChatA), editorbridge.RunOn(f.entry, farRunA)
+			chat := f.on("/chats/" + farChatA)
+			chatItem := editorbridge.ChatOn(f.entry, farChatA)
 			content := func() {
 				f.st.Send(map[string]any{"type": "chat_items", "chat": farChatA, "branch": "main", "version": 9, "items": []any{}})
-				f.st.Send(map[string]any{"type": "run_detail", "run": farRunA, "version": 9})
 			}
 			f.good(p, "GET", chat+"/items", "")
 			f.good(p, "GET", chat+"/tree", "")
-			f.good(p, "GET", run+"/detail", "")
 			// contents are the content events each of the two pages got since the last call.
 			contents := func() (follower, other []string) {
 				got := f.events(p, q)
-				return only(got[0], "chat_items", "run_detail"), only(got[1], "chat_items", "run_detail")
+				return only(got[0], "chat_items"), only(got[1], "chat_items")
 			}
 			content()
-			if follower, other := contents(); len(follower) != 2 || len(other) != 0 {
+			if follower, other := contents(); len(follower) != 1 || len(other) != 0 {
 				t.Fatalf("before the drop the follower got %q and the other page %q", follower, other)
 			}
 
@@ -64,13 +62,13 @@ func TestServerDropsWithAChatAndARunFollowed(t *testing.T) {
 					t.Fatalf("the section event at the drop has a tree: %+v", tree)
 				}
 			}
-			if f.s.Bridge.Followed(chatItem) || f.s.Bridge.Followed(runItem) {
+			if f.s.Bridge.Followed(chatItem) {
 				t.Fatal("a follow outlived the tree")
 			}
 			for _, c := range [][3]string{
-				{"GET", chat, ""}, {"GET", chat + "/items", ""}, {"GET", chat + "/tree", ""}, {"GET", run, ""}, {"GET", run + "/detail", ""},
+				{"GET", chat, ""}, {"GET", chat + "/items", ""}, {"GET", chat + "/tree", ""},
 				{"POST", chat + "/messages", `{"text":"hello"}`}, {"PUT", chat + "/draft?rev=0", `{"text":"typed"}`}, {"POST", chat + "/interrupt", ""},
-				{"POST", run + "/stop", ""}, {"DELETE", chat, ""}, {"POST", f.on("/chats"), `{"group":"` + farGroup + `"}`},
+				{"DELETE", chat, ""}, {"POST", f.on("/chats"), `{"group":"` + farGroup + `"}`},
 			} {
 				if text := f.refuses(p, http.StatusServiceUnavailable, "server_unreachable", c[0], c[1], c[2]); text != "Studio is not connected." {
 					t.Errorf("%s %s while the server is away: %q", c[0], c[1], text)
@@ -78,19 +76,18 @@ func TestServerDropsWithAChatAndARunFollowed(t *testing.T) {
 			}
 			// The page lets go of what it shows no longer: answered here.
 			f.good(q, "POST", chat+"/unfollow", "")
-			f.good(q, "POST", run+"/unfollow", "")
 			if sec := f.section(p); sec != nil {
 				t.Fatalf("the section while the server is away: %+v", sec)
 			}
 
 			// What that server has when it is back.
-			renamed, stopped := viewThere(farChatA), runThere(farRunA)
-			renamed.Name, stopped.Status = "Renamed meanwhile", model.RunStopped
+			renamed := viewThere(farChatA)
+			renamed.Name = "Renamed meanwhile"
 			switch back {
 			case "changed":
-				f.change(func(tr *thereTree) { tr.chats, tr.runs = []model.ChatView{renamed}, []model.RunView{stopped} })
+				f.change(func(tr *thereTree) { tr.chats = []model.ChatView{renamed} })
 			case "deleted":
-				f.change(func(tr *thereTree) { tr.chats, tr.runs = nil, nil })
+				f.change(func(tr *thereTree) { tr.chats = nil })
 			}
 			f.up(2)
 			for _, page := range []*bridgetest.Page{p, q} {
@@ -98,11 +95,11 @@ func TestServerDropsWithAChatAndARunFollowed(t *testing.T) {
 				switch {
 				case tree == nil:
 					t.Fatal("the section event at the return has no tree")
-				case back == "deleted" && (len(tree.Chats) != 0 || len(tree.Runs) != 0):
+				case back == "deleted" && len(tree.Chats) != 0:
 					t.Fatalf("the tree at the return: %+v", tree)
-				case back == "changed" && (len(tree.Chats) != 1 || tree.Chats[0].Name != "Renamed meanwhile" || len(tree.Runs) != 1 || tree.Runs[0].Status != model.RunStopped):
+				case back == "changed" && (len(tree.Chats) != 1 || tree.Chats[0].Name != "Renamed meanwhile"):
 					t.Fatalf("the tree at the return: %+v", tree)
-				case back == "unchanged" && (len(tree.Chats) != 1 || tree.Chats[0].Name != "Chat 2a" || len(tree.Runs) != 1 || tree.Runs[0].Status != model.RunRunning):
+				case back == "unchanged" && (len(tree.Chats) != 1 || tree.Chats[0].Name != "Chat 2a"):
 					t.Fatalf("the tree at the return: %+v", tree)
 				}
 			}
@@ -116,25 +113,24 @@ func TestServerDropsWithAChatAndARunFollowed(t *testing.T) {
 
 			// The page reads again what it shows.
 			if back == "deleted" {
-				for _, path := range []string{chat, chat + "/items", chat + "/tree", run, run + "/detail"} {
+				for _, path := range []string{chat, chat + "/items", chat + "/tree"} {
 					f.refuses(p, http.StatusNotFound, "not_found", "GET", path, "")
 				}
-				if f.s.Bridge.Followed(chatItem) || f.s.Bridge.Followed(runItem) {
+				if f.s.Bridge.Followed(chatItem) {
 					t.Fatal("a read of a thing that is gone left a follow")
 				}
 				return
 			}
 			view := f.good(p, "GET", chat, "")
 			thread := f.good(p, "GET", chat+"/items", "")
-			detail := f.good(p, "GET", run+"/detail", "")
-			if want := map[string]string{"unchanged": "Chat 2a", "changed": "Renamed meanwhile"}[back]; view["name"] != want || thread["version"] != 3.0 || detail["run"] != farRunA {
-				t.Fatalf("the reads after the return: %v, %v, %v", view, thread, detail)
+			if want := map[string]string{"unchanged": "Chat 2a", "changed": "Renamed meanwhile"}[back]; view["name"] != want || thread["version"] != 3.0 {
+				t.Fatalf("the reads after the return: %v, %v", view, thread)
 			}
-			if !f.s.Bridge.Followed(chatItem) || !f.s.Bridge.Followed(runItem) {
+			if !f.s.Bridge.Followed(chatItem) {
 				t.Fatal("the reads after the return follow nothing")
 			}
 			content()
-			if follower, other := contents(); len(follower) != 2 || len(other) != 0 {
+			if follower, other := contents(); len(follower) != 1 || len(other) != 0 {
 				t.Fatalf("after the reads the follower got %q and the other page %q", follower, other)
 			}
 		})

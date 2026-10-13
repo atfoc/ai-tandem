@@ -77,27 +77,16 @@ func (e *env) newChat(n NewChat) model.ChatView {
 	return v
 }
 
-// metaOf is chat.json of a chat, wherever it lives.
-func (e *env) metaOf(v model.ChatView) model.ChatMeta {
-	e.t.Helper()
-	if v.Run != "" {
-		return e.runMeta(v.ID, false)
-	}
-	return e.meta(v.ID)
-}
-
-// chatFolders lists the chat folders there are: those in chats/ and those of ownRun.
+// chatFolders lists the chat folders there are, sorted.
 func (e *env) chatFolders() []string {
 	e.t.Helper()
+	ents, err := os.ReadDir(e.st.P.Chats)
+	if err != nil {
+		e.t.Fatal(err)
+	}
 	var out []string
-	for _, dir := range []string{e.st.P.Chats, filepath.Dir(e.st.P.RunChatDir(ownRun, false, "x"))} {
-		ents, err := os.ReadDir(dir)
-		if err != nil && !os.IsNotExist(err) {
-			e.t.Fatal(err)
-		}
-		for _, ent := range ents {
-			out = append(out, filepath.Join(dir, ent.Name()))
-		}
+	for _, ent := range ents {
+		out = append(out, filepath.Join(e.st.P.Chats, ent.Name()))
 	}
 	sort.Strings(out)
 	return out
@@ -256,71 +245,6 @@ func TestAgentChangeAfterAFailedStart(t *testing.T) {
 	}
 }
 
-func TestAgentChangeOnARun(t *testing.T) {
-	t.Parallel()
-	e, p, fakes := startEnv(t, model.Claude, model.Cursor, model.Pi)
-	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "opus", Effort: "max"}}}
-	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{
-		gOne: model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, Cwd: t.TempDir(), ByAgent: map[model.AgentKind]model.ModelChoice{
-			model.Claude: {Model: "haiku"}, model.Pi: {Model: "pi-model", Effort: "low"}}}),
-	}})
-	was := e.defaultsOf()
-
-	// With no agent named a chat on a run is of its group's sticky kind, not of the run's, on
-	// the group's choice for that kind and in the run's folder. "+" records nothing.
-	v := e.newChat(NewChat{Run: ownRun})
-	first := e.metaOf(v)
-	if v.Agent != model.Pi || v.Model != "pi-model" || v.Effort != "low" || v.Cwd != e.cwd || v.Run != ownRun || v.Group != "" {
-		t.Fatalf("a chat on a run: %+v", v)
-	}
-	if got := e.defaultsOf(); !reflect.DeepEqual(got, was) {
-		t.Fatalf("the defaults after a new chat on a run: %+v, were %+v", got, was)
-	}
-	// The run's kind: the group's choice for it, not the deep tier's. The folder stays the run's.
-	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Claude}); err != nil {
-		t.Fatal(err)
-	}
-	if m := e.metaOf(v); m.Agent != model.Claude || m.Model != "haiku" || m.Cwd != e.cwd || m.SessionID == first.SessionID || m.SessionID == "" || m.Run != ownRun {
-		t.Fatalf("the chat on the run as Claude's: %+v", m)
-	}
-	// A kind the group has no choice for: its catalog's default.
-	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Cursor}); err != nil {
-		t.Fatal(err)
-	}
-	e.send(v.ID, "hello", "")
-	waitFor(t, "the turn to end", func() bool { return e.view(v.ID).Usage.Turns == 1 })
-	if n := spawnCounts(fakes); n != [3]int{0, 1, 0} {
-		t.Fatalf("spawns: %v, want one, of Cursor", n)
-	}
-	// A chat on a run feeds the defaults of its group with its agent, model and effort, as any
-	// chat does, and not with the run's folder: the next chat on the run starts as this one was.
-	got, cur := e.defaultsOf().Groups[gOne].Local(), e.metaOf(v)
-	if got.Agent != model.Cursor || got.ByAgent[model.Cursor] != (model.ModelChoice{Model: cur.Model, Effort: cur.Effort}) || cur.Model == "" ||
-		got.Cwd != was.Groups[gOne].Local().Cwd || got.ByAgent[model.Claude].Model != "haiku" {
-		t.Fatalf("the defaults after a chat on a run: %+v, were %+v", got, was)
-	}
-	if w := e.newChat(NewChat{Run: ownRun}); w.Agent != model.Cursor || w.Model != cur.Model || w.Effort != cur.Effort || w.Cwd != e.cwd {
-		t.Fatalf("the next chat on the run: %+v", w)
-	}
-
-	// The sticky kind is not usable: the run's kind, when that is.
-	p.set(model.Claude, model.Pi)
-	if w := e.newChat(NewChat{Run: ownRun}); w.Agent != model.Claude || w.Model != "haiku" || w.Cwd != e.cwd {
-		t.Fatalf("a chat on a run whose group's kind is not usable: %+v", w)
-	}
-
-	// A run agent's chat is the run's: no agent change, and its start is the run's matter, which
-	// the first-message check of a person's chat does not look at.
-	id := e.agentChat("turn-001", model.RoleOrchestrator, model.Claude)
-	if err := e.m.Configure(id, ConfigReq{Agent: model.Pi}); !errors.Is(err, ErrRunAgent) {
-		t.Fatalf("an agent change of a run agent's chat: %v, want ErrRunAgent", err)
-	}
-	e.sendOwned(id, "go")
-	if n := len(fakes[model.Claude].Spawns()); n != 1 {
-		t.Fatalf("%d Claude spawns, want the run agent's", n)
-	}
-}
-
 // ---- AC30: fixed once started; the id of a new chat ----------------------------
 
 func TestAgentIsFixedOnceStarted(t *testing.T) {
@@ -395,7 +319,7 @@ func TestAgentIsFixedOnceStarted(t *testing.T) {
 
 func TestCreateWithAnIDWhichForms(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t)
+	e := newEnv(t)
 	const good = "0b8f3c1e-5a4d-4e2b-9c7a-1f2e3d4c5b6a"
 	before := e.chatFolders()
 	for _, id := range []string{
@@ -407,7 +331,7 @@ func TestCreateWithAnIDWhichForms(t *testing.T) {
 		strings.ReplaceAll(good, "-", ""),
 		good[:35], good + "0",
 	} {
-		for _, n := range []NewChat{{ID: id, Group: gOne}, {ID: id, Run: ownRun}, {ID: id, Agent: model.Pi, Group: gOne}} {
+		for _, n := range []NewChat{{ID: id, Group: gOne}, {ID: id, Agent: model.Pi, Group: gOne}} {
 			if _, err := e.m.CreateChat(n); !errors.Is(err, ErrBadID) {
 				t.Fatalf("CreateChat %+v: %v, want ErrBadID", n, err)
 			}
@@ -424,15 +348,10 @@ func TestCreateWithAnIDWhichForms(t *testing.T) {
 		}
 	}
 
-	// A good id is the chat's: in chats/, and under its run.
+	// A good id is the chat's.
 	v := e.newChat(NewChat{ID: good, Group: gOne})
 	if v.ID != good || e.meta(good).ID != good || v.Agent != model.Claude {
 		t.Fatalf("a chat with a given id: %+v", v)
-	}
-	const onRun = "7d1c9a52-3b6e-4f80-a1d4-9e8c7b6a5f40"
-	r := e.newChat(NewChat{ID: onRun, Run: ownRun})
-	if r.ID != onRun || e.runMeta(onRun, false).Run != ownRun {
-		t.Fatalf("a chat on a run with a given id: %+v", r)
 	}
 	e.send(good, "hello", "")
 	if e.claude.count() != 1 || e.claude.last(t).opts.ChatID != good {
@@ -442,7 +361,7 @@ func TestCreateWithAnIDWhichForms(t *testing.T) {
 
 func TestCreateWithATakenID(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t)
+	e := newEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
 		t.Fatal(err)
@@ -450,7 +369,7 @@ func TestCreateWithATakenID(t *testing.T) {
 	const id = "0b8f3c1e-5a4d-4e2b-9c7a-1f2e3d4c5b6a"
 	v := e.newChat(NewChat{ID: id, Agent: model.Pi, Group: gOne})
 	was, folders, tokens := e.meta(id), e.chatFolders(), e.tokens()
-	for _, n := range []NewChat{{ID: id, Group: gOne}, {ID: id, Agent: model.Claude, Group: gTwo}, {ID: id, Board: bd.ID}, {ID: id, Run: ownRun}} {
+	for _, n := range []NewChat{{ID: id, Group: gOne}, {ID: id, Agent: model.Claude, Group: gTwo}, {ID: id, Board: bd.ID}} {
 		if _, err := e.m.CreateChat(n); !errors.Is(err, ErrIDTaken) {
 			t.Fatalf("CreateChat %+v with a chat's id: %v, want ErrIDTaken", n, err)
 		}
@@ -459,9 +378,8 @@ func TestCreateWithATakenID(t *testing.T) {
 		t.Fatalf("the chat whose id was asked for again: %+v, was %+v", got, was)
 	}
 
-	// A chat on a run has its id too, and so has a folder that holds no chat that could be read.
-	const onRun, stray = "7d1c9a52-3b6e-4f80-a1d4-9e8c7b6a5f40", "c3a1f0e2-9b7d-4c5a-8e6f-0a1b2c3d4e5f"
-	e.newChat(NewChat{ID: onRun, Run: ownRun})
+	// A folder that holds no chat that could be read has its name as an id too.
+	const stray = "c3a1f0e2-9b7d-4c5a-8e6f-0a1b2c3d4e5f"
 	if err := os.Mkdir(e.st.P.ChatDir(stray), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +387,7 @@ func TestCreateWithATakenID(t *testing.T) {
 		t.Fatal(err)
 	}
 	folders, tokens = e.chatFolders(), e.tokens()
-	for _, n := range []NewChat{{ID: onRun, Group: gOne}, {ID: onRun, Run: ownRun}, {ID: stray, Group: gOne}, {ID: stray, Run: ownRun}} {
+	for _, n := range []NewChat{{ID: stray, Group: gOne}, {ID: stray, Agent: model.Claude, Group: gTwo}, {ID: stray, Board: bd.ID}} {
 		if _, err := e.m.CreateChat(n); !errors.Is(err, ErrIDTaken) {
 			t.Fatalf("CreateChat %+v: %v, want ErrIDTaken", n, err)
 		}
@@ -477,7 +395,7 @@ func TestCreateWithATakenID(t *testing.T) {
 	if raw, err := os.ReadFile(filepath.Join(e.st.P.ChatDir(stray), "notes.txt")); err != nil || string(raw) != "kept" {
 		t.Fatalf("the folder whose name was asked for: %q %v", raw, err)
 	}
-	if got := e.chatFolders(); !reflect.DeepEqual(got, folders) || e.tokens() != tokens || len(e.m.Views()) != 2 {
+	if got := e.chatFolders(); !reflect.DeepEqual(got, folders) || e.tokens() != tokens || len(e.m.Views()) != 1 {
 		t.Fatalf("the refused creations left folders %v (were %v), %d tokens (were %d), %d chats", got, folders, e.tokens(), tokens, len(e.m.Views()))
 	}
 
@@ -498,7 +416,7 @@ func TestCreateWithATakenID(t *testing.T) {
 			t.Fatalf("a creation that lost the id: %v, want ErrIDTaken", err)
 		}
 	}
-	if made != 1 || len(e.m.Views()) != 3 || e.tokens() != tokens+1 {
+	if made != 1 || len(e.m.Views()) != 2 || e.tokens() != tokens+1 {
 		t.Fatalf("%d creations got the id; %d chats, %d tokens (were %d)", made, len(e.m.Views()), e.tokens(), tokens)
 	}
 }
@@ -506,10 +424,6 @@ func TestCreateWithATakenID(t *testing.T) {
 func TestRefusedCreateLeavesNothing(t *testing.T) {
 	t.Parallel()
 	e, _, _ := startEnv(t, model.Claude)
-	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{
-		ownRun:  {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "sonnet"},
-		"r_old": {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Archived: true},
-	}}
 	const id, taken = "0b8f3c1e-5a4d-4e2b-9c7a-1f2e3d4c5b6a", "7d1c9a52-3b6e-4f80-a1d4-9e8c7b6a5f40"
 	e.newChat(NewChat{ID: taken, Group: gOne})
 	evs := e.listen()
@@ -525,11 +439,7 @@ func TestRefusedCreateLeavesNothing(t *testing.T) {
 		{NewChat{ID: id, Group: "g_none"}, func(err error) bool { return strings.Contains(err.Error(), "no such group") }},
 		{NewChat{ID: id}, func(err error) bool { return strings.Contains(err.Error(), "no such group") }},
 		{NewChat{ID: id, Board: "b_none"}, func(err error) bool { return err.Error() != "" && !errors.Is(err, ErrIDTaken) }},
-		{NewChat{ID: id, Run: "r_none"}, func(err error) bool { return errors.Is(err, ErrNoRun) }},
-		{NewChat{ID: id, Run: "../x"}, func(err error) bool { return errors.Is(err, ErrNoRun) }},
-		{NewChat{ID: id, Run: "r_old"}, func(err error) bool { return errors.Is(err, ErrRunArchived) }},
 		{NewChat{ID: id, Agent: model.Cursor, Group: gOne}, func(err error) bool { return errors.As(err, &missing) }},
-		{NewChat{Agent: model.Pi, Run: ownRun}, func(err error) bool { return errors.Is(err, usable.ErrMissing) }},
 		{NewChat{ID: taken, Group: gOne}, func(err error) bool { return errors.Is(err, ErrIDTaken) }},
 	} {
 		if _, err := e.m.CreateChat(tc.n); err == nil || !tc.want(err) {
@@ -640,7 +550,7 @@ func TestSecondChatStartsAsTheFirst(t *testing.T) {
 
 func TestWhatTheFirstMessageRecords(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t)
+	e := newEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
 		t.Fatal(err)
@@ -662,25 +572,11 @@ func TestWhatTheFirstMessageRecords(t *testing.T) {
 		t.Fatalf("the defaults after a board chat's first message: %+v, want %+v", d, want)
 	}
 
-	// A chat on a run is where its run is, in the run's folder: it records its agent, model,
-	// effort and subagent settings in its run's group, and no server and no folder.
-	r := e.newChat(NewChat{Run: ownRun})
-	if err := e.m.Configure(r.ID, ConfigReq{Agent: model.Pi, Model: "pi-model"}); err != nil {
-		t.Fatal(err)
-	}
-	e.send(r.ID, "hello", "")
-	want.Groups[gOne] = model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, ByAgent: map[model.AgentKind]model.ModelChoice{model.Pi: {Model: "pi-model", Effort: e.metaOf(r).Effort}},
-		Subagents: &model.SubLimits{Depth: 1, Cap: 100}})
-	if d := e.defaultsOf(); !reflect.DeepEqual(d, want) {
-		t.Fatalf("the defaults after a run chat's first message: %+v, want %+v", d, want)
-	}
-
 	// A chat in a group records the agent it was made with.
 	g := e.newChat(NewChat{Group: gOne, Agent: model.Claude})
 	e.send(g.ID, "hello", "")
 	entry := model.LocalDefaults(model.ServerDefaults{
-		Agent: model.Claude, Cwd: e.cwd, ByAgent: map[model.AgentKind]model.ModelChoice{
-			model.Claude: {Model: "sonnet", Effort: "high"}, model.Pi: want.Groups[gOne].Local().ByAgent[model.Pi]},
+		Agent: model.Claude, Cwd: e.cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "sonnet", Effort: "high"}},
 		Subagents: &model.SubLimits{Depth: 1, Cap: 100},
 	})
 	want.Groups[gOne] = entry
@@ -768,17 +664,13 @@ func TestAgentOutsideTheList(t *testing.T) {
 func TestChatWithNoAgent(t *testing.T) {
 	t.Parallel()
 	e, p, fakes := startEnv(t)
-	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: e.cwd, Agent: model.Claude, Model: "sonnet", Effort: "high"}}}
 	if got := e.m.UsableAgents(); got == nil || len(got) != 0 {
 		t.Fatalf("UsableAgents with no program: %#v, want an empty list", got)
 	}
-	// The chat is made all the same, in a group and on a run.
-	for _, n := range []NewChat{{Group: gOne}, {Run: ownRun}} {
-		v := e.newChat(n)
-		m := e.metaOf(v)
-		if v.Agent != "" || v.Model != "" || v.Effort != "" || v.Cwd != e.cwd || m.SessionID != "" || m.Token == "" || v.Status != model.StatusReady {
-			t.Fatalf("a chat made with no usable agent (%+v): %+v, chat.json %+v", n, v, m)
-		}
+	// The chat is made all the same.
+	first := e.newChat(NewChat{Group: gOne})
+	if m := e.meta(first.ID); first.Agent != "" || first.Model != "" || first.Effort != "" || first.Cwd != e.cwd || m.SessionID != "" || m.Token == "" || first.Status != model.StatusReady {
+		t.Fatalf("a chat made with no usable agent: %+v, chat.json %+v", first, m)
 	}
 	_, err := e.m.CreateChat(NewChat{Agent: model.Claude, Group: gOne})
 	if !errors.Is(err, usable.ErrMissing) {
@@ -924,7 +816,7 @@ func TestNoLookUpMeansEveryAgent(t *testing.T) {
 	if v := e.newChat(NewChat{Group: gOne}); v.Agent != model.Claude {
 		t.Fatalf("a chat with no agent named: %+v", v)
 	}
-	// Create and CreateOnRun are CreateChat: an agent is named or not.
+	// Create is CreateChat: an agent is named or not.
 	if v := e.create("", gOne, ""); v.Agent != model.Claude {
 		t.Fatalf("Create with no agent: %+v", v)
 	}

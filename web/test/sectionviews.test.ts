@@ -1,8 +1,8 @@
 // What is on screen of a section when its server drops and comes back, and when the thing is
-// deleted there (the real src/store.ts, src/conn.ts, src/ChatView.tsx, src/Composer.tsx, the run
-// views and src/Canvas.tsx, bundled with esbuild as sidebar.test.ts does and rendered to a string;
+// deleted there (the real src/store.ts, src/conn.ts, src/ChatView.tsx, src/Composer.tsx and
+// src/Canvas.tsx, bundled with esbuild as sidebar.test.ts does and rendered to a string;
 // the canvas library, the board layer and the api are stubs). There is no DOM here: what is checked
-// is what each view draws for the state the event layer left in the store. A local chat, run and
+// is what each view draws for the state the event layer left in the store. A local chat and
 // board never show any of it.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -41,7 +41,6 @@ const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-views-")), "vi
 await esbuild.build({
   stdin: {
     contents: `export * as chat from "./ChatView.tsx"; export * as composer from "./Composer.tsx"; export * as canvas from "./Canvas.tsx"; export * as side from "./Sidebar.tsx";
-      export { RunView } from "./run/RunView.tsx"; export { RunComposer } from "./run/RunComposer.tsx"; export { RunBar } from "./run/RunBar.tsx"; export { AgentPane } from "./run/AgentPane.tsx"; export { Delivery } from "./run/Delivery.tsx"; export { RunBarStatus } from "./run/RunBarStatus.tsx";
       export * as store from "./store.ts"; export * as conn from "./conn.ts";
       export { TreePopup } from "./fork/TreePopup.tsx"; export * as chrome from "./fork/Chrome.tsx"; export * as forks from "./fork/actions.ts"; export * as subs from "./Subagents.tsx";
       export { createElement } from "react"; export { renderToStaticMarkup } from "react-dom/server";`,
@@ -62,7 +61,7 @@ await esbuild.build({
     },
   }],
 });
-const { chat: chatUi, composer, canvas, side, RunView, RunComposer, RunBar, AgentPane, Delivery, RunBarStatus, TreePopup, chrome, forks, subs, store, conn, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
+const { chat: chatUi, composer, canvas, side, TreePopup, chrome, forks, subs, store, conn, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -77,27 +76,26 @@ const chat = (id: string, o: object = {}) => ({ id, agent: "claude", cwd: "/w", 
 const state = (c: string, o: object = {}) => ({ chat: c, branch: "main", cwd: "/w", model: "m", locked: true, usage, status: "ready", ...o });
 const LOCAL = { id: "local", local: true, name: "This computer", state: "connected" };
 const lab = (o: object = {}) => ({ id: LAB, name: "Lab", state: "connected", ...o });
-const run = (id: string, o: object = {}) => ({ id, name: "The run", group: "__ungrouped__", created: "2026-01-01T00:00:00Z", status: "draft", agent: "claude", cwd: "/w", ...o });
 const tree = (o: object = {}) => ({
   groups: [], boards: [{ id: "b_1", name: "Plan", group: "__ungrouped__", created: "" }],
   chats: [chat("c_1", { name: "Lab chat" }), chat("c_new", { name: "Unstarted", locked: false })], states: [state("c_1", { draftRev: 3 }), state("c_new", { locked: false })],
-  runs: [run("r_1"), run("r_2", { status: "running", started: "2026-01-01T00:00:00Z" })], defaults: { groups: {} }, ...o,
+  defaults: { groups: {} }, ...o,
 });
 const lists = { [LAB]: { agents: ["claude"], catalogs: { claude: { models: [{ id: "m", label: "Model M" }], default: { model: "m" } } }, home: "/home/lab", defaultCwd: "/home/lab" } };
-const snapshot = (o: object = {}) => ({ type: "snapshot", groups: [], boards: [{ id: "b_1", name: "Mine", group: "__ungrouped__", created: "" }], chats: [chat("c_1", { name: "My chat" })], runs: [run("r_1")], states: [state("c_1")],
+const snapshot = (o: object = {}) => ({ type: "snapshot", groups: [], boards: [{ id: "b_1", name: "Mine", group: "__ungrouped__", created: "" }], chats: [chat("c_1", { name: "My chat" })], states: [state("c_1")],
   defaults: { groups: {} }, agents: ["claude"], catalogs: { claude: { models: [{ id: "m", label: "Model M" }], default: { model: "m" } } }, home: "/home/me", defaultCwd: "/home/me", dataDir: "/d",
   servers: [LOCAL, lab()], lists, sections: { [LAB]: tree() }, ...o });
 const items = (n: number) => Array.from({ length: n }, (_, i) => (i % 2 ? { kind: "text", text: `answer ${i}`, done: true } : { kind: "user", text: `question ${i}` }));
 const drop = async () => { await ev({ type: "server_state", server: lab({ state: "unreachable" }) }); await ev({ type: "section", server: LAB, tree: null }); };
 const back = async (o: object = {}) => { await ev({ type: "section", server: LAB, tree: tree(o) }); await ev({ type: "server_state", server: lab() }); };
-const open = (sel: object) => store.setState({ sel: { board: null, run: null, chat: null, ...sel } });
+const open = (sel: object) => store.setState({ sel: { board: null, chat: null, ...sel } });
 const view = (id: string) => html(chatUi.Thread, { chatId: id }) + html(composer.Composer, { chatId: id, branch: "main" });
 const sendOf = (h: string) => /<button class="send"[^>]*>/.exec(h)?.[0] ?? "";
 
 conn.connect();
 beforeEach(async () => {
   open({});
-  store.setState({ gone: {}, collapsed: {}, items: {}, runDetail: {} });
+  store.setState({ gone: {}, collapsed: {}, items: {} });
   await ev({ type: "hello" });
   await ev(snapshot());
   asked.length = 0;
@@ -118,7 +116,7 @@ test("the server drops with a chat open: the chat stays on screen as it was, rea
   open({ chat: k("c_1") });
   store.setThread(`${k("c_1")}:main`, { version: 4, items: items(4) });
   await drop();
-  assert.deepEqual(S().sel, { board: null, run: null, chat: k("c_1") }, "the view does not close");
+  assert.deepEqual(S().sel, { board: null, chat: k("c_1") }, "the view does not close");
   const h = view(k("c_1"));
   for (const said of ["question 0", "answer 1", "question 2", "answer 3"]) assert.ok(h.includes(said), said);
   assert.match(h, /class="remote-bar off" role="status"><span class="remote-bar-text">Lab is not connected\. This chat is shown as it was when the connection ended\.</);
@@ -227,41 +225,6 @@ test("a section's chat that could not be read because it is gone there says so i
   assert.ok(failed.includes("Try again"));
 });
 
-test("a run that has not started is on its server: its composer names the server, offers no server choice, and is read-only while the server is away", async () => {
-  open({ run: k("r_1") });
-  const h = html(RunComposer, { runId: k("r_1") });
-  assert.ok(h.includes("server-chip") && h.includes(">Lab<"));
-  assert.equal(h.includes("server-pick"), false, "the server is no choice");
-  assert.equal(html(RunComposer, { runId: "r_1" }).includes("server-chip"), false, "a run of this computer names none");
-  await drop();
-  assert.equal(S().sel.run, k("r_1"));
-  const off = html(RunComposer, { runId: k("r_1") });
-  assert.ok(off.includes("Lab is not connected: nothing can be changed or started until it is back."));
-  assert.match(sendOf(off), /disabled/);
-  assert.ok(off.includes('data-fixed="settings"'), "its choices are fixed chips");
-});
-
-test("the server drops with a run view open: the run stays on screen as it was, under the warning; back, it is read again; deleted meanwhile, it says so", async () => {
-  open({ run: k("r_2") });
-  store.setState({ runDetail: { [k("r_2")]: { run: k("r_2"), version: 2, status: "running", startedAt: 1, goalSize: 4, stops: [], turns: [], tasks: [], chatOps: [], agents: {}, notes: [] } } });
-  assert.equal(html(RunView, { runId: k("r_2") }).includes("remote-bar"), false);
-  await drop();
-  assert.equal(S().sel.run, k("r_2"));
-  assert.ok(S().runDetail[k("r_2")], "the detail stays in the page's memory");
-  const h = html(RunView, { runId: k("r_2") });
-  assert.match(h, /class="remote-bar run-remote-bar off" role="status"><span class="remote-bar-text">Lab is not connected\. This run is shown as it was when the connection ended\.</);
-  assert.equal(html(RunBar, { run: k("r_2"), chatOpen: false }).includes("Chat on this run"), false, "no chat can be made on it");
-  assert.deepEqual([...asked], []);
-  await back();
-  assert.ok(asked.includes(`runDetail ${k("r_2")}`), "the detail is read again");
-  await drop();
-  store.setState({ runDetail: { [k("r_2")]: { run: k("r_2"), version: 2, status: "running", startedAt: 1, goalSize: 4, stops: [], turns: [], tasks: [], chatOps: [], agents: {}, notes: [] } } });
-  await back({ runs: [run("r_1")] });
-  const gone = html(RunView, { runId: k("r_2") });
-  assert.ok(gone.includes("This run is no longer on Lab."));
-  assert.equal(gone.includes("Remove from this sidebar"), false);
-});
-
 test("a section's board whose server is away and which this window keeps no drawing of says that it opens when the server is back; one deleted there says so", async () => {
   open({ board: k("b_1") });
   await drop();
@@ -282,7 +245,7 @@ test("once the user leaves what stayed on screen it cannot be opened again until
   open({ chat: k("c_1") });
   store.setThread(`${k("c_1")}:main`, { version: 2, items: items(2) });
   await drop();
-  side.select({ board: null, run: null, chat: "c_1" });
+  side.select({ board: null, chat: "c_1" });
   assert.equal(k("c_1") in S().chats, false);
   assert.deepEqual(Object.keys(S().items).filter((key) => key.startsWith(LAB)), []);
   await back();
@@ -413,22 +376,15 @@ test("an empty chat that is no longer on its server offers no message to send", 
   assert.ok(h.includes('<p class="empty-reason">This chat is no longer on Lab.</p>'), h);
 });
 
-test("an archived chat or run shown as it was is not unarchived from its composer: the bar says why", async () => {
-  const archived = { chats: [chat("c_1", { name: "Lab chat", archived: true })], runs: [run("r_1", { archived: true })] };
+test("an archived chat shown as it was is not unarchived from its composer: the bar says why", async () => {
+  const archived = { chats: [chat("c_1", { name: "Lab chat", archived: true })] };
   await back(archived);
   open({ chat: k("c_1") });
   assert.ok(html(composer.Composer, { chatId: k("c_1"), branch: "main" }).includes(">Unarchive<"), "connected, the bar unarchives");
-  assert.ok(html(RunComposer, { runId: k("r_1") }).includes(">Unarchive<"));
   await drop();
   const h = html(composer.Composer, { chatId: k("c_1"), branch: "main" });
   assert.equal(h.includes(">Unarchive<"), false);
   assert.ok(h.includes(WHY), h);
-  open({ run: k("r_1") });
-  await back(archived);
-  await drop();
-  const r = html(RunComposer, { runId: k("r_1") });
-  assert.equal(r.includes(">Unarchive<"), false);
-  assert.ok(r.includes("Lab is not connected: nothing can be changed or started until it is back."), r);
 });
 
 test("the composer of a chat shown as it was opens no prompt to insert, and a subagent whose thread the page does not have says why in place of loading", async () => {
@@ -448,9 +404,7 @@ test("the composer of a chat shown as it was opens no prompt to insert, and a su
 
 // ---- the entry while a thing of it is open: each state has its words, and an entry that leaves the list takes the view with it
 
-const detail = (id: string) => ({ run: id, version: 2, status: "running", startedAt: 1, goalSize: 4, stops: [], turns: [], tasks: [], chatOps: [], agents: {}, notes: [] });
-
-test("the warning over an open chat and an open run says why the server is not connected, in the server list's words: unreachable, too old, a state that waits for the user", async () => {
+test("the warning over an open chat says why the server is not connected, in the server list's words: unreachable, too old, a state that waits for the user", async () => {
   const states: [string, string][] = [["unreachable", "Unreachable"], ["too_old", "Too old: update the server on that machine"], ["certificate_changed", "Certificate changed"],
     ["secret_not_accepted", "Secret not accepted"], ["connecting", "Connecting…"]];
   for (const [st, words] of states) {
@@ -464,13 +418,6 @@ test("the warning over an open chat and an open run says why the server is not c
     assert.ok(h.includes(`<span class="remote-bar-text">Lab is not connected. This chat is shown as it was when the connection ended.</span><span class="remote-bar-state">${words}</span>`), `${st}: ${h.slice(h.indexOf("remote-bar"), h.indexOf("remote-bar") + 300)}`);
     assert.match(sendOf(h), /disabled/, st);
     assert.ok(h.includes("Servers…"), `${st}: and leads to the server list`);
-    open({ run: k("r_2") });
-    await back();
-    store.setState({ runDetail: { [k("r_2")]: detail(k("r_2")) } });
-    await ev({ type: "server_state", server: lab({ state: st }) });
-    await ev({ type: "section", server: LAB, tree: null });
-    const r = html(RunView, { runId: k("r_2") });
-    assert.ok(r.includes(`<span class="remote-bar-text">Lab is not connected. This run is shown as it was when the connection ended.</span><span class="remote-bar-state">${words}</span>`), `${st}, the run`);
     await back();
   }
   // the chat that is gone says that alone: the entry's state is not why
@@ -480,7 +427,7 @@ test("the warning over an open chat and an open run says why the server is not c
   assert.equal(view(k("c_1")).includes("remote-bar-state"), false);
 });
 
-test("a `section` with no tree that comes twice, and a `server_state` in any order with it, close nothing that is open: a chat, a run view, a board", async () => {
+test("a `section` with no tree that comes twice, and a `server_state` in any order with it, close nothing that is open: a chat, a board", async () => {
   const twice = async () => {
     asked.length = 0;
     await ev({ type: "section", server: LAB, tree: null });
@@ -493,15 +440,9 @@ test("a `section` with no tree that comes twice, and a `server_state` in any ord
   open({ chat: k("c_1") });
   store.setThread(`${k("c_1")}:main`, { version: 4, items: items(4) });
   await twice();
-  assert.deepEqual(S().sel, { board: null, run: null, chat: k("c_1") });
+  assert.deepEqual(S().sel, { board: null, chat: k("c_1") });
   assert.ok(view(k("c_1")).includes("question 0"));
   assert.equal(S().items[`${k("c_1")}:main`].items.length, 4, "the thread is still the page's");
-  await back();
-  open({ run: k("r_2") });
-  store.setState({ runDetail: { [k("r_2")]: detail(k("r_2")) } });
-  await twice();
-  assert.equal(S().sel.run, k("r_2"));
-  assert.ok(S().runDetail[k("r_2")] && html(RunView, { runId: k("r_2") }).includes("This run is shown as it was"));
   await back();
   open({ board: k("b_1") });
   await twice();
@@ -512,18 +453,17 @@ test("a `section` with no tree that comes twice, and a `server_state` in any ord
 test("an entry removed from the server list is no outage: what is open of that server closes with its section, whichever of the two events comes first", async () => {
   const removal = [{ type: "servers", servers: [LOCAL] }, { type: "section", server: LAB, tree: null }];
   for (const order of [removal, [...removal].reverse()]) {
-    for (const sel of [{ chat: k("c_1") }, { run: k("r_2") }, { board: k("b_1") }]) {
+    for (const sel of [{ chat: k("c_1") }, { board: k("b_1") }]) {
       await ev({ type: "hello" });
       await ev(snapshot());
       open(sel);
       store.setThread(`${k("c_1")}:main`, { version: 4, items: items(4) });
-      store.setState({ runDetail: { [k("r_2")]: detail(k("r_2")) } });
       for (const m of order) await ev(m);
-      assert.deepEqual(S().sel, { board: null, run: null, chat: null }, `the view closes: ${JSON.stringify(sel)}`);
-      const left = [...Object.keys(S().chats), ...Object.keys(S().runs), ...Object.keys(S().boards), ...Object.keys(S().items), ...Object.keys(S().runDetail), ...Object.keys(S().states)].filter((key) => key.startsWith(LAB));
+      assert.deepEqual(S().sel, { board: null, chat: null }, `the view closes: ${JSON.stringify(sel)}`);
+      const left = [...Object.keys(S().chats), ...Object.keys(S().boards), ...Object.keys(S().items), ...Object.keys(S().states)].filter((key) => key.startsWith(LAB));
       assert.deepEqual(left, [], "and nothing of that server is left in the page");
       assert.equal(html(side.Sidebar, {}).includes("Lab"), false, "its section is gone");
-      assert.ok(S().chats.c_1 && S().boards.b_1 && S().runs.r_1, "this computer's things of the same ids stay");
+      assert.ok(S().chats.c_1 && S().boards.b_1, "this computer's things of the same ids stay");
     }
   }
 });
@@ -592,9 +532,9 @@ test("the draft of a section's chat follows the other writers by that server's c
 // ---- deleted elsewhere (goal 3.5): whatever kind of view is open says that the thing is no longer on that server,
 // takes nothing, and goes when the user leaves it
 
-test("deleted on its server with its chat open: a chat on a board and a chat on a run say so with their board and their run, nothing can be sent, and leaving drops them", async () => {
-  const onBoard = chat("c_b", { name: "On the plan", board: "b_1" }), onRun = chat("c_r", { name: "On the run", run: "r_2" });
-  const with2 = { chats: [chat("c_1", { name: "Lab chat" }), onBoard, onRun], states: [state("c_1"), state("c_b"), state("c_r")] };
+test("deleted on its server with its chat open: a chat on a board says so with its board, nothing can be sent, and leaving drops it", async () => {
+  const onBoard = chat("c_b", { name: "On the plan", board: "b_1" });
+  const with2 = { chats: [chat("c_1", { name: "Lab chat" }), onBoard], states: [state("c_1"), state("c_b")] };
   const gone = (key: string) => { const h = view(key); assert.ok(h.includes("This chat is no longer on Lab."), key); assert.match(sendOf(h), /disabled/); assert.match(sendOf(h), /title="This chat is no longer on Lab\."/); };
   // a board is deleted there with what is on it: each thing is told, then the board
   await back(with2);
@@ -602,71 +542,10 @@ test("deleted on its server with its chat open: a chat on a board and a chat on 
   store.setThread(`${k("c_b")}:main`, { version: 2, items: items(2) });
   await ev({ type: "chat_removed", server: LAB, id: "c_b" });
   await ev({ type: "board_removed", server: LAB, id: "b_1" });
-  assert.deepEqual(S().sel, { board: k("b_1"), run: null, chat: k("c_b") }, "the view stays");
+  assert.deepEqual(S().sel, { board: k("b_1"), chat: k("c_b") }, "the view stays");
   assert.ok(html(canvas.Canvas, { board: k("b_1") }).includes("No longer on Lab"));
   gone(k("c_b"));
   assert.equal(html(side.Sidebar, {}).includes("On the plan"), false, "no row is left, greyed or not");
-  side.select({ board: null, run: null, chat: "c_1" });
+  side.select({ board: null, chat: "c_1" });
   assert.deepEqual([k("b_1") in S().boards, k("c_b") in S().chats, Object.keys(S().gone)], [false, false, []], "left, they are gone from the page");
-  // a run is deleted there with its chats, while a chat on it and one of its agents' transcripts are open
-  await back(with2);
-  open({ run: k("r_2"), chat: k("c_r") });
-  store.setThread(`${k("c_r")}:main`, { version: 2, items: items(2) });
-  store.setState({ runDetail: { [k("r_2")]: detail(k("r_2")) }, agents: { [k("a_1")]: chat(k("a_1"), { role: "work", run: k("r_2") }) }, runAgent: { run: k("r_2"), agent: k("a_1") } });
-  store.setThread(`${k("a_1")}:main`, { version: 1, items: [{ kind: "text", text: "what the agent wrote", done: true }] });
-  assert.ok(html(AgentPane, { runId: k("r_2"), agentId: k("a_1"), back: null }).includes("Read-only: this is the run&#x27;s own agent.</span>"), "on its server, the transcript's foot says no more");
-  asked.length = 0;
-  await ev({ type: "chat_removed", server: LAB, id: "c_r" });
-  await ev({ type: "run_removed", server: LAB, id: "r_2" });
-  assert.deepEqual([S().sel.run, S().sel.chat, S().runAgent?.agent], [k("r_2"), k("c_r"), k("a_1")], "the view stays, with the transcript");
-  assert.ok(html(RunView, { runId: k("r_2") }).includes("This run is no longer on Lab."));
-  gone(k("c_r"));
-  const pane = html(AgentPane, { runId: k("r_2"), agentId: k("a_1"), back: null });
-  assert.ok(pane.includes("what the agent wrote"), "the transcript is as the page had it");
-  assert.ok(pane.includes("Read-only: this is the run&#x27;s own agent. This run is no longer on Lab."), pane.slice(-300));
-  assert.equal(html(RunBar, { run: k("r_2"), chatOpen: true }).includes("Chat on this run"), false, "and no chat can be made on it");
-  assert.deepEqual([...asked], [], "nothing is asked for what is gone");
-  side.select({ board: null, run: null, chat: "c_1" });
-  assert.deepEqual([k("r_2") in S().runs, k("c_r") in S().chats, k("a_1") in S().agents, k("r_2") in S().runDetail, Object.keys(S().items).filter((key) => key.startsWith(LAB)), Object.keys(S().gone)],
-    [false, false, false, false, [], []], "left, the run goes with its chat, its detail and its agent's transcript");
-});
-
-test("the transcript of an agent of a run whose server dropped says so in its foot", async () => {
-  open({ run: k("r_2") });
-  store.setState({ runDetail: { [k("r_2")]: detail(k("r_2")) }, agents: { [k("a_1")]: chat(k("a_1"), { role: "work", run: k("r_2") }) }, runAgent: { run: k("r_2"), agent: k("a_1") } });
-  store.setThread(`${k("a_1")}:main`, { version: 1, items: [{ kind: "text", text: "what the agent wrote", done: true }] });
-  await drop();
-  assert.ok(S().agents[k("a_1")], "the transcript stays with its run");
-  const pane = html(AgentPane, { runId: k("r_2"), agentId: k("a_1"), back: null });
-  assert.ok(pane.includes("what the agent wrote") && pane.includes("Read-only: this is the run&#x27;s own agent. Lab is not connected."), pane.slice(-300));
-  store.setState({ runAgent: null });
-});
-
-// ---- every control of a run view that is shown as it was
-
-test("a run view shown as it was takes no Stop, no Resume and no Apply, and each says why; one that is deleted there offers neither Stop nor Resume", async () => {
-  const waiting = { ...detail(k("r_2")), status: "completed", delivery: { state: "pending", how: "merge", branch: "main" } };
-  const bar = () => html(RunBarStatus, { runId: k("r_2") });
-  const apply = () => /<button[^>]*rd-apply[^>]*>/.exec(html(Delivery, { runId: k("r_2"), detail: waiting }))?.[0] ?? "";
-  open({ run: k("r_2") });
-  store.setState({ runDetail: { [k("r_2")]: waiting } });
-  assert.match(bar(), /<button class="btn sm run-stop"(?![^>]*disabled)/, "connected, a running run is stopped from its bar");
-  assert.ok(apply() && !apply().includes("disabled"), `connected, a result that waits is applied: ${apply()}`);
-  await drop();
-  assert.match(bar(), /<button class="btn sm run-stop" disabled="" title="Lab is not connected">/);
-  assert.ok(apply().includes('disabled=""') && apply().includes('title="Lab is not connected"'), apply());
-  assert.deepEqual([...asked], [], "and nothing is asked of that server, the state of its folder neither");
-  // stopped there before the drop: Resume says the same
-  await back({ runs: [run("r_1"), run("r_2", { status: "stopped", started: "2026-01-01T00:00:00Z" })] });
-  store.setState({ runDetail: { [k("r_2")]: waiting } });
-  assert.match(bar(), /<button class="btn sm run-resume"(?![^>]*disabled)/);
-  await drop();
-  assert.match(bar(), /<button class="btn sm run-resume" disabled="" title="Lab is not connected">/);
-  // deleted there: no Stop and no Resume are offered, and Apply says that the run is gone
-  await back({ runs: [run("r_1"), run("r_2", { status: "stopped", started: "2026-01-01T00:00:00Z" })] });
-  store.setState({ runDetail: { [k("r_2")]: waiting } });
-  await ev({ type: "run_removed", server: LAB, id: "r_2" });
-  assert.equal(S().sel.run, k("r_2"));
-  assert.equal(/run-stop|run-resume/.test(bar()), false);
-  assert.ok(apply().includes('disabled=""') && apply().includes('title="This run is no longer on Lab."'), apply());
 });

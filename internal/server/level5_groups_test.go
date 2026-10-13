@@ -143,8 +143,8 @@ func TestLevel5ClientMakesRenamesAndMovesGroups(t *testing.T) {
 func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 	t.Parallel()
 	s := l5NewSite(t)
-	// fill makes a group by the owner with a group nested in it, and a chat, a board and a run
-	// in each of the two. It returns the two groups and the three things of each.
+	// fill makes a group by the owner with a group nested in it, and a chat and a board in each
+	// of the two. It returns the two groups and the two things of each.
 	fill := func(name, parent string) (outer, inner string, in, deep []string) {
 		t.Helper()
 		outer = l5ID(t, l5Want(t, s.p, 200, "POST", "/api/groups", `{"name":"`+name+`","parent":"`+parent+`"}`))
@@ -153,26 +153,25 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 			chat := l5ID(t, l5Want(t, s.p, 200, "POST", "/api/chats", `{"agent":"claude","group":"`+g+`"}`))
 			board := l5ID(t, l5Want(t, s.p, 200, "POST", "/api/boards", `{"name":"board","group":"`+g+`"}`))
 			l5Want(t, s.p, 200, "POST", "/api/boards/"+board+"/release", nil)
-			run := l5ID(t, l5Want(t, s.p, 200, "POST", "/api/runs", `{"group":"`+g+`","name":"Run"}`))
 			if g == outer {
-				in = []string{chat, board, run}
+				in = []string{chat, board}
 			} else {
-				deep = []string{chat, board, run}
+				deep = []string{chat, board}
 			}
 		}
-		s.told("a filled group", "run", deep[2])
+		s.told("a filled group", "board", deep[1])
 		return outer, inner, in, deep
 	}
-	// thing is the group, the archive mark and the archive of a chat, a board or a run.
+	// thing is the group, the archive mark and the archive of a chat or a board.
 	type thing struct {
 		ID, Group, ArchiveOp string
 		Archived             bool
 	}
 	things := func() map[string]thing {
 		t.Helper()
-		snap := decode[struct{ Boards, Chats, Runs []thing }](t, l5Want(t, s.x, 200, "GET", "/api/state", nil))
+		snap := decode[struct{ Boards, Chats []thing }](t, l5Want(t, s.x, 200, "GET", "/api/state", nil))
 		out := map[string]thing{}
-		for _, it := range slices.Concat(snap.Boards, snap.Chats, snap.Runs) {
+		for _, it := range slices.Concat(snap.Boards, snap.Chats) {
 			out[it.ID] = it
 		}
 		return out
@@ -187,10 +186,8 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 	if out := l5Want(t, s.x, 200, "POST", "/api/groups/"+outer+"/archive", nil); out != `{"ok":true}` {
 		t.Errorf("the archive of a group by a client: %s", out)
 	}
-	// The chats and the boards are told before the groups. The runs are told by the run
-	// service, from its own queue: before the groups or after, for a page as for a client.
-	evs := s.toldEach("the archive of a group by a client", []string{"groups", outer, `"archived":true`},
-		[]string{"run", in[2], `"archived":true`}, []string{"run", deep[2], `"archived":true`})
+	// The chats and the boards are told before the groups.
+	evs := s.told("the archive of a group by a client", "groups", outer, `"archived":true`)
 	groupsAt := slices.Index(l5Types(evs), "groups")
 	if l5Count(evs[groupsAt:], "chat")+l5Count(evs[groupsAt:], "board") != 0 || l5Count(evs, "groups") != 1 {
 		t.Errorf("the archive of a group told %v: the chats and the boards come before the groups", l5Types(evs))
@@ -204,7 +201,7 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 		if it := now[id]; !it.Archived || it.ArchiveOp != op {
 			t.Errorf("%s after the archive of its group: %+v, want the archive %s", id, it, op)
 		}
-		if l5Count(evs, "chat", id, op)+l5Count(evs, "board", id, op)+l5Count(evs, "run", id, op) == 0 {
+		if l5Count(evs, "chat", id, op)+l5Count(evs, "board", id, op) == 0 {
 			t.Errorf("the archive of %s was not told: %v", id, l5Types(evs))
 		}
 	}
@@ -220,7 +217,7 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 	if out := l5Want(t, s.y, 200, "POST", "/api/groups/"+outer+"/unarchive", nil); out != `{"ok":true}` {
 		t.Errorf("the unarchive of a group by a client: %s", out)
 	}
-	evs = s.toldEach("the unarchive of a group by a client", []string{"groups", outer}, []string{"run", in[2]}, []string{"run", deep[2]})
+	evs = s.told("the unarchive of a group by a client", "groups", outer)
 	if g, h := s.group(outer), s.group(inner); g.Archived || h.Archived || g.Op != "" || h.Op != "" {
 		t.Errorf("the groups after the unarchive: %+v, %+v", g, h)
 	}
@@ -242,7 +239,7 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 	if out := l5Want(t, s.x, 200, "DELETE", "/api/groups/"+inner+"?contents=keep", nil); out != `{"ok":true}` {
 		t.Errorf("the delete of a group by a client: %s", out)
 	}
-	evs = s.toldEach("the delete of a group with its contents kept", []string{"defaults"}, []string{"run", deep[2], `"group":"` + outer + `"`})
+	evs = s.told("the delete of a group with its contents kept", "defaults")
 	now = things()
 	for _, id := range deep {
 		if it, found := now[id]; !found || it.Group != outer {
@@ -252,7 +249,7 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 	if got := s.order(); !slices.Equal(got, []string{outer}) {
 		t.Errorf("the groups after the delete: %v", got)
 	}
-	if l5Count(evs, "chat_removed")+l5Count(evs, "board_removed")+l5Count(evs, "run_removed") != 0 {
+	if l5Count(evs, "chat_removed")+l5Count(evs, "board_removed") != 0 {
 		t.Errorf("a delete with the contents kept told a removal: %v", l5Types(evs))
 	}
 	if got := l5Types(only(evs, "groups", "defaults", "chat", "board")); len(got) < 4 || !slices.Equal(got[len(got)-2:], []string{"groups", "defaults"}) {
@@ -260,8 +257,7 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 	}
 	// A top-level group: everything goes to no group.
 	l5Want(t, s.y, 200, "DELETE", "/api/groups/"+outer+"?contents=keep", nil)
-	s.toldEach("the delete of a top-level group with its contents kept", []string{"defaults"},
-		[]string{"run", in[2], `"group":"` + model.Ungrouped + `"`}, []string{"run", deep[2], `"group":"` + model.Ungrouped + `"`})
+	s.told("the delete of a top-level group with its contents kept", "defaults")
 	now = things()
 	for _, id := range slices.Concat(in, deep) {
 		if it, found := now[id]; !found || it.Group != model.Ungrouped {
@@ -281,9 +277,8 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 	if out := l5Want(t, s.x, 200, "DELETE", "/api/groups/"+outer+"?contents=delete", nil); out != `{"ok":true}` {
 		t.Errorf("the delete of a group with its contents by a client: %s", out)
 	}
-	evs = s.toldEach("the delete of a group with its contents", []string{"defaults"}, []string{"run_removed", in[2]}, []string{"run_removed", deep[2]})
-	// The removals of the chats and the boards come before the groups, and the defaults after;
-	// the removals of the runs are the run service's, before the groups or after.
+	evs = s.told("the delete of a group with its contents", "defaults")
+	// The removals of the chats and the boards come before the groups, and the defaults after.
 	told := only(evs, "groups", "defaults", "chat_removed", "board_removed")
 	types := l5Types(told)
 	at := slices.Index(types, "groups")
@@ -291,7 +286,7 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 		t.Fatalf("the delete of a group with its contents told %v: the groups and the defaults come after the removals", l5Types(evs))
 	}
 	for i, id := range slices.Concat(in, deep) {
-		typ := []string{"chat_removed", "board_removed", "run_removed"}[i%3]
+		typ := []string{"chat_removed", "board_removed"}[i%2]
 		if n := l5Count(evs, typ, `"id":"`+id+`"`); n != 1 {
 			t.Errorf("the removal of %s was told %d times: %v", id, n, l5Types(evs))
 		}
@@ -304,8 +299,8 @@ func TestLevel5ClientArchivesAndDeletesGroups(t *testing.T) {
 		t.Errorf("the defaults after the delete with the contents: %s", evs[at+1])
 	}
 	now = things()
-	if _, found := now[stays]; len(now) != 7 || !found { // the six that were kept above, and the chat that stays
-		t.Errorf("after the delete with the contents the server has %d things, want 7 with the chat %s", len(now), stays)
+	if _, found := now[stays]; len(now) != 5 || !found { // the four that were kept above, and the chat that stays
+		t.Errorf("after the delete with the contents the server has %d things, want 5 with the chat %s", len(now), stays)
 	}
 	for _, id := range slices.Concat(in, deep) {
 		status, _ := l5Call(s.y, "GET", "/api/chats/"+id, nil)
@@ -332,8 +327,7 @@ func TestLevel5GroupRulesAreThePagesRules(t *testing.T) {
 	chat := l5ID(t, l5Want(t, s.p, 200, "POST", "/api/chats", `{"agent":"claude","group":"`+a+`"}`))
 	board := l5ID(t, l5Want(t, s.p, 200, "POST", "/api/boards", `{"name":"board","group":"`+a+`"}`))
 	l5Want(t, s.p, 200, "POST", "/api/boards/"+board+"/release", nil)
-	run := l5ID(t, l5Want(t, s.p, 200, "POST", "/api/runs", `{"group":"`+a+`","name":"Run"}`))
-	s.told("the set-up", "run", run)
+	s.told("the set-up", "board", board)
 	before := l5Want(t, s.p, 200, "GET", "/api/state", nil)
 
 	const (
@@ -367,14 +361,11 @@ func TestLevel5GroupRulesAreThePagesRules(t *testing.T) {
 		{"the delete of a group that is not there", "DELETE", "/api/groups/g_nothere?contents=delete", ``, 404, noGroup("g_nothere")},
 		{"the delete of a group that is not there, contents kept", "DELETE", "/api/groups/g_nothere?contents=keep", ``, 404, noGroup("g_nothere")},
 		// What names a group in its body: a chat and a board keep the page's answer for a group
-		// that is not there, a run has the code.
+		// that is not there.
 		{"a chat into a group that is not there", "PATCH", "/api/chats/" + chat, `{"group":"g_nothere"}`, 400, `{"error":"no such group \"g_nothere\""}`},
 		{"a new chat in a group that is not there", "POST", "/api/chats", `{"agent":"claude","group":"g_nothere"}`, 400, `{"error":"no such group \"g_nothere\""}`},
 		{"a board into a group that is not there", "PATCH", "/api/boards/" + board, `{"group":"g_nothere"}`, 400, `{"error":"no such group \"g_nothere\""}`},
 		{"a new board in a group that is not there", "POST", "/api/boards", `{"name":"b","group":"g_nothere"}`, 400, `{"error":"no such group \"g_nothere\""}`},
-		{"a run into a group that is not there", "PATCH", "/api/runs/" + run, `{"group":"g_nothere"}`, 404, ""},
-		{"a new run in a group that is not there", "POST", "/api/runs", `{"group":"g_nothere","name":"r"}`, 404, ""},
-		{"a new run in an archived group", "POST", "/api/runs", `{"group":"` + shut + `","name":"r"}`, 409, ""},
 	} {
 		var body any
 		if c.body != "" {

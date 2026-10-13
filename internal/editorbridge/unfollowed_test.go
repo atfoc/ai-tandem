@@ -97,7 +97,7 @@ func TestUnfollowedByUnfollow(t *testing.T) {
 	open(t, srv, "B")
 	openAPI(t, api, "X")
 	h := hookOf(t, b)
-	c1, r1 := Chat("c1"), Run("r1")
+	c1, b1 := Chat("c1"), Board("b1")
 
 	b.Unfollow("A", c1) // no follow ended
 	b.Unfollow("nobody", c1)
@@ -125,13 +125,13 @@ func TestUnfollowedByUnfollow(t *testing.T) {
 	b.UnfollowAs(KindAPI, "X", c1)
 	h.want(c1)
 
-	// An item of each kind, and a chat and a run with one id, are apart.
-	b.FollowAs(KindPage, "A", r1)
-	b.Follow("A", Chat("r1"))
-	b.UnfollowAs(KindPage, "A", r1)
-	h.want(r1)
-	b.Unfollow("A", Chat("r1"))
-	h.want(Chat("r1"))
+	// An item of each kind, and a chat and a board with one id, are apart.
+	b.FollowAs(KindPage, "A", b1)
+	b.Follow("A", Chat("b1"))
+	b.UnfollowAs(KindPage, "A", b1)
+	h.want(b1)
+	b.Unfollow("A", Chat("b1"))
+	h.want(Chat("b1"))
 
 	// With no hook nothing is called.
 	b.OnUnfollowed(nil)
@@ -151,13 +151,13 @@ func TestUnfollowedByStreamEnd(t *testing.T) {
 
 	b.Follow("A", Chat("c2"))
 	b.Follow("A", Chat("c1"))
-	b.Follow("A", Run("r1"))
+	b.Follow("A", Board("d1"))
 	b.Follow("A", Chat("shared"))
 	b.Follow("B", Chat("shared"))
 	b.Follow("A", Chat("api"))
 	b.Follow("X", Chat("api"))
 	a.Close()
-	h.want(Chat("c1"), Chat("c2"), Run("r1")) // one call, sorted; the two still followed are not in it
+	h.want(Board("d1"), Chat("c1"), Chat("c2")) // one call, sorted by kind and id; the two still followed are not in it
 	h.none(30 * time.Millisecond)
 
 	// An API client's stream ends: what a page still follows is not in the call.
@@ -226,11 +226,11 @@ func TestUnfollowedNotByForget(t *testing.T) {
 		t.Fatal("Forget left a follow")
 	}
 	b.Follow("A", Chat("c2"))
-	b.Follow("A", Run("r1"))
-	b.SendChat("c2", false, map[string]any{"type": "chat_removed", "chat": "c2"})
-	b.SendRun("r1", map[string]any{"type": "run_removed", "run": "r1"})
+	b.Follow("A", Board("b1"))
+	b.SendChat("c2", map[string]any{"type": "chat_removed", "chat": "c2"})
+	b.SendBoard("b1", map[string]any{"type": "board_removed", "board": "b1"})
 	a.Expect("chat_removed")
-	a.Expect("run_removed")
+	a.Expect("board_removed")
 	h.none(50 * time.Millisecond)
 
 	// The forgotten items are not reported at the stream's end either.
@@ -282,7 +282,7 @@ func TestUnfollowedOutsideTheLock(t *testing.T) {
 		t.Fatalf("in the hook: %+v", s)
 	}
 	// The first call still waits in the hook: the bridge works on, and a second call runs.
-	b.Follow("A", Run("r1"))
+	b.Follow("A", Board("b1"))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -294,7 +294,7 @@ func TestUnfollowedOutsideTheLock(t *testing.T) {
 	case <-time.After(bridgetest.Wait):
 		t.Fatal("the bridge waits for the hook")
 	}
-	if s := next(); !reflect.DeepEqual(s.items, []Item{Run("r1")}) || s.followed || !s.followOK {
+	if s := next(); !reflect.DeepEqual(s.items, []Item{Board("b1")}) || s.followed || !s.followOK {
 		t.Fatalf("at the stream's end, in the hook: %+v", s)
 	}
 	close(release)
@@ -331,7 +331,7 @@ func TestUnfollowedConcurrently(t *testing.T) {
 				b.Follow(id, Chat("shared"))
 				b.Unfollow(id, own)
 				b.UnfollowAs(KindPage, id, Chat("shared"))
-				b.Forget(Run("r"))
+				b.Forget(Board("b"))
 			}
 			b.Follow(id, own)
 			p.Close()

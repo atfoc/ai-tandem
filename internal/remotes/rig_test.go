@@ -27,7 +27,6 @@ const (
 	chatB       = "1b000000-0000-4000-8000-00000000000b"
 	agent1      = "3a000000-0000-4000-8000-000000000001" // the chat of a run's agent
 	runA        = "r_aaaa0001"
-	runB        = "r_bbbb0002"
 	boardA      = "b_aaaa0001"
 	boardB      = "b_bbbb0002"
 	boardC      = "b_cccc0003"
@@ -458,15 +457,6 @@ func farChat(id string, status model.Status) model.ChatView {
 	}
 }
 
-// farRun is a run's view as its server sends it.
-func farRun(id string, status model.RunStatus) model.RunView {
-	return model.RunView{
-		ID: id, Name: "Run " + id[2:4], Group: "g_there", Agent: model.Claude, Cwd: "/home/standin/work", Git: true,
-		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC), Started: time.Date(2026, 10, 6, 9, 1, 0, 0, time.UTC),
-		Status: status, Turns: 1,
-	}
-}
-
 // farBoard is a board as its server sends it.
 func farBoard(id string) model.Board {
 	return model.Board{ID: id, Name: "Board " + id[2:4], Group: "g_there", Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)}
@@ -480,7 +470,6 @@ type tree struct {
 	groups []model.Group
 	boards []model.Board
 	chats  []model.ChatView
-	runs   []model.RunView
 }
 
 // snapshotOf is the snapshot of a server with this tree, and the state of main of each chat.
@@ -498,9 +487,6 @@ func snapshotOf(tr tree) map[string]any {
 	}
 	if tr.chats != nil {
 		snap["chats"], snap["states"] = tr.chats, states
-	}
-	if tr.runs != nil {
-		snap["runs"] = tr.runs
 	}
 	return snap
 }

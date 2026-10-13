@@ -5,9 +5,9 @@
 // shows it; the panel's resizer drags, and stops where the stage would get narrower than its least (it reads the
 // stage as the child of .app). Home's "New whiteboard" makes a board of this computer and selects it at once, with no
 // server but this computer and with others in the list, and when the sidebar is shown the board's row is there, lit, and not in rename mode;
-// with the sidebar shown the same click puts the row in rename mode, so the check would see one. The same for a run
-// and a group made from the sidebar's own "+" and answered only after the sidebar was hidden: no rename box that
-// nobody sees waits in it.
+// with the sidebar shown the same click puts the row in rename mode, so the check would see one. The same for a
+// group made from the sidebar's own "+" and answered only after the sidebar was hidden: no rename box that nobody
+// sees waits in it.
 import { check, dragResizer, mockEval, openPage, seed, until } from "../shot.mjs";
 
 const SIDE = 264, PANEL = 400, HIDDEN = { "aiwb.side": "hidden" };
@@ -91,10 +91,7 @@ await check("A1.3 with the sidebar hidden the page works as before", async ({ ur
       if (await page.locator(".side .name-input").count()) fail(`${name}: its row is in rename mode when the sidebar is shown`);
     } else if (!await until(() => page.locator(".side .name-input").count(), 10000)) fail(`${name}: its row is not in rename mode: the check would not see one`);
   });
-  for (const hidden of [false, true]) {
-    await heldNew("a run", { hidden, item: "New run", path: "/api/runs", made: ".side-row.is-run" });
-    await heldNew("a group", { hidden, item: "New group", path: "/api/groups", made: ".side-group-head" });
-  }
+  for (const hidden of [false, true]) await heldNew("a group", { hidden, item: "New group", path: "/api/groups", made: ".side-group-head" });
 
   // ---- ⌘N: a chat of this computer, at once, with other servers in the list
   await open({ sel: { chat: "c_plain" }, ls: HIDDEN }, async (page) => {

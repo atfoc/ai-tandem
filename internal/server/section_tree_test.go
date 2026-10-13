@@ -27,7 +27,6 @@ type seen struct {
 	Board  json.RawMessage
 	Chat   json.RawMessage
 	State  json.RawMessage
-	Run    json.RawMessage
 	Groups []model.Group
 	raw    string
 }
@@ -47,11 +46,9 @@ func seenOf(t *testing.T, raws []string) (out []seen) {
 
 // idOf is the id of the thing a list event carries.
 func (s seen) idOf() string {
-	for _, raw := range []json.RawMessage{s.Chat, s.Run} {
-		var v struct{ ID string }
-		if json.Unmarshal(raw, &v) == nil && v.ID != "" {
-			return v.ID
-		}
+	var c struct{ ID string }
+	if json.Unmarshal(s.Chat, &c) == nil && c.ID != "" {
+		return c.ID
 	}
 	var b struct{ ID string }
 	if json.Unmarshal(s.Board, &b) == nil && b.ID != "" {
@@ -75,13 +72,12 @@ func TestSnapshotHasSections(t *testing.T) {
 	archived := viewThere(farChatB)
 	archived.Archived = true
 	f := newFar(t, farOpt{groups: []model.Group{there, inner}, chats: []model.ChatView{viewThere(farChatA), archived},
-		runs: []model.RunView{runThere(farRunA)}, boards: []model.Board{boardThere(farBoardA)}, local: true})
+		boards: []model.Board{boardThere(farBoardA)}})
 	p := f.page("P")
 	// This server has things of its own, one of them in a group with the id of that server's.
 	own := decode[model.ChatView](t, mustOK(t, f, p, "POST", "/api/chats", `{"group":"`+model.Ungrouped+`","server":"local"}`))
 	group := f.group(p, "Mine", "")
 	bd := decode[model.Board](t, mustOK(t, f, p, "POST", "/api/boards", form("name", "Own", "group", group)))
-	run := decode[model.RunView](t, mustOK(t, f, p, "POST", "/api/runs", form("group", group, "name", "Own")))
 
 	check := func(what, raw string) {
 		t.Helper()
@@ -98,7 +94,7 @@ func TestSnapshotHasSections(t *testing.T) {
 		for k := range sec {
 			parts = append(parts, k)
 		}
-		if len(parts) != 6 || sec["groups"] == nil || sec["boards"] == nil || sec["chats"] == nil || sec["states"] == nil || sec["runs"] == nil || sec["defaults"] == nil {
+		if len(parts) != 5 || sec["groups"] == nil || sec["boards"] == nil || sec["chats"] == nil || sec["states"] == nil || sec["defaults"] == nil {
 			t.Fatalf("%s: the tree has the parts %v", what, parts)
 		}
 		if strings.Contains(string(sec["groups"]), "collapsed") {
@@ -111,17 +107,16 @@ func TestSnapshotHasSections(t *testing.T) {
 			t.Errorf("%s: the section's groups %+v, want %+v", what, tree.Groups, want)
 		}
 		if len(tree.Chats) != 2 || tree.Chats[0].ID != farChatA || tree.Chats[1].ID != farChatB || !tree.Chats[1].Archived || tree.Chats[0].Group != farGroup ||
-			len(tree.States) != 2 || len(tree.Runs) != 1 || tree.Runs[0].ID != farRunA || len(tree.Boards) != 1 || tree.Boards[0].ID != farBoardA {
+			len(tree.States) != 2 || len(tree.Boards) != 1 || tree.Boards[0].ID != farBoardA {
 			t.Errorf("%s: the section's tree %+v", what, tree)
 		}
 		// This server's own lists are its own things, and nothing else.
 		if len(snap.Chats) != 1 || snap.Chats[0].ID != own.ID || len(snap.States) != 1 || snap.States[0].Chat != own.ID ||
-			len(snap.Boards) != 1 || snap.Boards[0].ID != bd.ID || len(snap.Runs) != 1 || snap.Runs[0].ID != run.ID ||
-			len(snap.Groups) != 1 || snap.Groups[0].ID != group {
-			t.Errorf("%s: this server's own lists: chats %+v, boards %+v, runs %+v, groups %+v", what, snap.Chats, snap.Boards, snap.Runs, snap.Groups)
+			len(snap.Boards) != 1 || snap.Boards[0].ID != bd.ID || len(snap.Groups) != 1 || snap.Groups[0].ID != group {
+			t.Errorf("%s: this server's own lists: chats %+v, boards %+v, groups %+v", what, snap.Chats, snap.Boards, snap.Groups)
 		}
-		for _, list := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
-			for _, word := range []string{`"server"`, `"gone"`, `"unmoved"`, `"moveError"`, `"was"`, f.entry, farChatA, farRunA, farBoardA, farGroup} {
+		for _, list := range []string{"groups", "boards", "chats", "states", "defaults"} {
+			for _, word := range []string{`"server"`, `"gone"`, `"unmoved"`, `"moveError"`, `"was"`, f.entry, farChatA, farBoardA, farGroup} {
 				if strings.Contains(string(keys[list]), word) {
 					t.Errorf("%s: this server's %s have %s: %s", what, list, word, keys[list])
 				}
@@ -150,15 +145,14 @@ func TestSnapshotHasSections(t *testing.T) {
 
 // The events of a section: a change of the tree, by whoever made it there, reaches every page
 // with the entry's id as "server" and is in the tree a page is handed next; the content of a
-// chat or a run reaches the pages that follow it; and an event of a thing of this server has no
+// chat reaches the pages that follow it; and an event of a thing of this server has no
 // "server".
 func TestSectionEventsHaveTheServer(t *testing.T) {
 	t.Parallel()
-	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, runs: []model.RunView{runThere(farRunA)}, boards: []model.Board{boardThere(farBoardA)}, local: true})
+	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}, boards: []model.Board{boardThere(farBoardA)}})
 	p, q := f.page("P"), f.page("Q")
-	// P follows the chat and the run; Q follows nothing.
+	// P follows the chat; Q follows nothing.
 	f.good(p, "GET", f.on("/chats/"+farChatA+"/items"), "")
-	f.good(p, "GET", f.on("/runs/"+farRunA+"/detail"), "")
 	f.events(p, q)
 
 	renamed := viewThere(farChatA)
@@ -167,7 +161,6 @@ func TestSectionEventsHaveTheServer(t *testing.T) {
 	made.Locked, made.Name = false, ""
 	state := model.StateOf(farChatA, "main", renamed)
 	state.DraftRev = 4
-	run := runThere(farRunB)
 	bd := boardThere(farBoardB)
 	groups := []model.Group{{ID: farGroup, Name: "There", Collapsed: true}, {ID: "g_new", Name: "New"}}
 	sent := []map[string]any{
@@ -176,16 +169,12 @@ func TestSectionEventsHaveTheServer(t *testing.T) {
 		{"type": "chat", "chat": renamed},
 		{"type": "branch_state", "state": state},
 		{"type": "chat", "chat": made},
-		{"type": "run", "run": run},
 		{"type": "board", "board": bd},
 		{"type": "chat_items", "chat": farChatA, "branch": "main", "version": 4, "items": []any{map[string]any{"kind": "assistant", "text": "more"}}},
 		{"type": "tree", "chat": farChatA, "version": 5},
 		{"type": "sub", "chat": farChatA, "branch": "main", "subagent": map[string]any{"id": "s1"}},
 		{"type": "sub_items", "chat": farChatA, "branch": "main", "sub": "s1", "version": 2, "items": []any{}},
-		{"type": "run_detail", "run": farRunA, "version": 5},
-		{"type": "run_activity", "run": farRunA, "task": "t1"},
 		{"type": "chat_removed", "id": farChatB},
-		{"type": "run_removed", "id": farRunB},
 		{"type": "board_removed", "id": farBoardB},
 		// What no page is to get of that server: its own server list, and a type of a later build.
 		{"type": "servers", "servers": []any{}},
@@ -206,11 +195,11 @@ func TestSectionEventsHaveTheServer(t *testing.T) {
 		}
 		return out
 	}
-	list := []string{"groups ", "defaults ", "chat " + farChatA, "branch_state " + farChatA, "chat " + farChatB, "run " + farRunB, "board " + farBoardB,
-		"chat_removed " + farChatB, "run_removed " + farRunB, "board_removed " + farBoardB}
-	follower := []string{"groups ", "defaults ", "chat " + farChatA, "branch_state " + farChatA, "chat " + farChatB, "run " + farRunB, "board " + farBoardB,
-		"chat_items ", "tree ", "sub ", "sub_items ", "run_detail ", "run_activity ",
-		"chat_removed " + farChatB, "run_removed " + farRunB, "board_removed " + farBoardB}
+	list := []string{"groups ", "defaults ", "chat " + farChatA, "branch_state " + farChatA, "chat " + farChatB, "board " + farBoardB,
+		"chat_removed " + farChatB, "board_removed " + farBoardB}
+	follower := []string{"groups ", "defaults ", "chat " + farChatA, "branch_state " + farChatA, "chat " + farChatB, "board " + farBoardB,
+		"chat_items ", "tree ", "sub ", "sub_items ",
+		"chat_removed " + farChatB, "board_removed " + farBoardB}
 	// ofSection are the events but this server's own word on the entry's connection, which
 	// comes whenever it comes.
 	ofSection := func(raws []string) (out []seen) {
@@ -232,12 +221,12 @@ func TestSectionEventsHaveTheServer(t *testing.T) {
 	if g := pGot[0].Groups; len(g) != 2 || g[0].Collapsed || strings.Contains(pGot[0].raw, "collapsed") {
 		t.Errorf("the groups event: %s", pGot[0].raw)
 	}
-	sameJSON(t, "a content event", decode[any](t, pGot[7].raw),
+	sameJSON(t, "a content event", decode[any](t, pGot[6].raw),
 		`{"server":"`+f.entry+`","type":"chat_items","chat":"`+farChatA+`","branch":"main","version":4,"items":[{"kind":"assistant","text":"more"}]}`)
 	// The tree a page is handed has what the events said.
 	tree := f.section(p)
 	if len(tree.Groups) != 2 || tree.Groups[1].ID != "g_new" || len(tree.Chats) != 1 || tree.Chats[0].Name != "Renamed there" ||
-		len(tree.States) != 1 || tree.States[0].DraftRev != 4 || len(tree.Runs) != 1 || len(tree.Boards) != 1 {
+		len(tree.States) != 1 || tree.States[0].DraftRev != 4 || len(tree.Boards) != 1 {
 		t.Errorf("the tree after the events: %+v", tree)
 	}
 
@@ -245,13 +234,11 @@ func TestSectionEventsHaveTheServer(t *testing.T) {
 	own := decode[model.ChatView](t, mustOK(t, f, p, "POST", "/api/chats", `{"id":"`+farChatA+`","group":"`+model.Ungrouped+`"}`))
 	g := f.group(p, "Mine", "")
 	mustOK(t, f, p, "POST", "/api/boards", form("name", "Own", "group", g))
-	mustOK(t, f, p, "POST", "/api/runs", form("group", g, "name", "Own"))
 	if own.ID != farChatA {
 		t.Fatalf("the chat of this server: %+v", own)
 	}
-	// Each kind is read as it comes: this server tells a change when it has made it, which for
-	// a run is after the call's answer.
-	missing := map[string]bool{"chat": true, "branch_state": true, "groups": true, "board": true, "run": true}
+	// Each kind is read as it comes.
+	missing := map[string]bool{"chat": true, "branch_state": true, "groups": true, "board": true}
 	f.throughIf(q, func(raw string) bool {
 		ev := seenOf(t, []string{raw})[0]
 		if ev.Server != "" || strings.Contains(raw, `"server"`) {
@@ -295,21 +282,19 @@ func TestSectionEventAtConnectDropAndRemoval(t *testing.T) {
 	// The entry connects again, by itself, to a server whose tree is another now.
 	f.change(func(tr *thereTree) {
 		tr.chats = []model.ChatView{viewThere(farChatB)}
-		tr.runs = []model.RunView{runThere(farRunA)}
 	})
 	for _, page := range []*bridgetest.Page{p, q} {
 		ev := section(page)
 		var tree struct {
 			Chats  []model.ChatView
-			Runs   []model.RunView
 			Boards []model.Board
 			Groups []model.Group
 		}
-		if err := json.Unmarshal(ev.Tree, &tree); err != nil || len(tree.Chats) != 1 || tree.Chats[0].ID != farChatB || len(tree.Runs) != 1 ||
+		if err := json.Unmarshal(ev.Tree, &tree); err != nil || len(tree.Chats) != 1 || tree.Chats[0].ID != farChatB ||
 			len(tree.Boards) != 1 || len(tree.Groups) != 1 {
 			t.Fatalf("the section event at the return: %s", ev.raw)
 		}
-		for _, part := range []string{`"groups"`, `"boards"`, `"chats"`, `"states"`, `"runs"`, `"defaults"`} {
+		for _, part := range []string{`"groups"`, `"boards"`, `"chats"`, `"states"`, `"defaults"`} {
 			if !strings.Contains(string(ev.Tree), part) {
 				t.Errorf("the tree of the section event lacks %s: %s", part, ev.Tree)
 			}

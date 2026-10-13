@@ -1,5 +1,5 @@
-// Proves A5.2: a tool card, closed and open, by its kind, for Claude, Cursor and Pi, in a chat's thread, in a
-// subagent's drawer and in the pane of a run's own agent. Closed, a card is one row: the label it had before, and
+// Proves A5.2: a tool card, closed and open, by its kind, for Claude, Cursor and Pi, in a chat's thread and in a
+// subagent's drawer. Closed, a card is one row: the label it had before, and
 // beside it the command's first line or the file's path, where the label does not say it already. Open, a shell card
 // shows "Command" (the whole command with its real line breaks, coloured, the agent's description before it) and
 // "Output", marked when the command failed, and between them what else its input holds (a timeout); an edit the
@@ -51,12 +51,12 @@ const THREADS = {
 const brief = (card) => card.parts.map((p) => (p.part === "path" ? ["path", p.path, p.counts, p.lines].filter(Boolean).join(" ") : p.part === "text" || p.part === "change" ? `${p.part} ${p.title}` : `${p.part} ${p.text}`));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-await check("A5.2 a tool card by its kind, for the three agents, in the thread, the drawer and a run agent's pane", async ({ url, browser, fail, note }) => {
+await check("A5.2 a tool card by its kind, for the three agents, in the thread and the drawer", async ({ url, browser, fail, note }) => {
   const states = await seed(url, "A5");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
-  const open = async (sel, { size = paneSize("page", 700, 900), theme, wait } = {}) => {
+  const open = async (sel, { size = paneSize("page", 700, 900), theme } = {}) => {
     const errors = [];
-    const { ctx, page } = await openPage({ url, browser, errors, sel, size: size.size, ls: { ...size.ls, ...(theme ? { "aiwb.theme": theme } : {}) }, wait });
+    const { ctx, page } = await openPage({ url, browser, errors, sel, size: size.size, ls: { ...size.ls, ...(theme ? { "aiwb.theme": theme } : {}) } });
     return { ctx, page, errors };
   };
   const close = async ({ ctx, errors }, name) => { for (const e of errors) fail(`${name}: page error: ${e}`); await ctx.close(); };
@@ -167,42 +167,5 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread, 
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
     await close(p, name);
   }
-
-  // ---- the pane of a run's own agent: the merge agent of T27 (a failed command, two edits with the path alone, the
-  // last one still running) and the work agent of T23 (an edit with its texts, a command that runs)
-  for (const [task, role, want, more] of [
-    ["T27", "merge", [["Merge the task branch", "git merge --no-ff", FAILED], ["Edited", "", null], ["Editing", "", null]], null],
-    ["T23", "work", null, (cards) => {
-      const edit = cards.find((c) => c.cls.includes("k-edit")), shell = cards.find((c) => c.cls.includes("k-shell"));
-      if (!edit || !same(brief(edit), ["path internal/chats/manager.go +1 −1", "change Change"]) || !same(edit.parts[1].rows, ["-\tif at > len(items) {", "+\tif at >= len(items) {", " \t\treturn nil", " \t}"])) return `its edit shows ${JSON.stringify(edit && [brief(edit), edit.parts[1]?.rows])}`;
-      if (!shell || brief(shell)[0] !== "text Command" || !/^note Still running|^text Output/.test(brief(shell)[1] ?? "")) return `its command shows ${JSON.stringify(shell && brief(shell))}`;
-      return "";
-    }],
-  ]) {
-    const p = await open({ run: "r_live" }, { size: { size: [1400, 900], ls: {} }, wait: ".tl-row" }), name = `the pane of the ${role} agent of ${task}`;
-    try {
-      await p.page.locator(".tl-row", { has: p.page.locator(".tl-id", { hasText: new RegExp(`^${task}$`) }) }).first().click();
-      const link = p.page.locator(`button[data-agent$="${task}-${role}"]`).first();
-      await link.waitFor({ timeout: 8000 });
-      await link.click();
-      await p.page.waitForSelector(".thread.read-only .tool", { timeout: 8000 });
-      await openCards(p.page, ".thread.read-only");
-      const cards = await toolCards(p.page, ".thread.read-only");
-      if (cards.some((c) => !c.open || !c.parts.length)) fail(`${name}: a card did not open, or is empty: ${JSON.stringify(cards.map((c) => [c.label, c.open, c.parts.length]))}`);
-      if (want) {
-        if (cards.length !== want.length) fail(`${name}: ${cards.length} cards, not ${want.length}`);
-        for (const [i, [label, hint, parts]] of want.entries()) {
-          const c = cards[i];
-          if (!c) continue;
-          if (!c.label.startsWith(label) || !c.hint.startsWith(hint)) fail(`${name}, card ${i + 1}: its row says "${c.label}" and "${c.hint}", not "${label}…" and "${hint}…"`);
-          if (parts && !same(brief(c), parts)) fail(`${name}, card ${i + 1}: it shows ${JSON.stringify(brief(c))}, not ${JSON.stringify(parts)}`);
-          if (!parts && (!c.cls.includes("k-edit") || !/^path /.test(brief(c)[0]) || !/^note (The change was not recorded\.|Still running)/.test(brief(c)[1] ?? ""))) fail(`${name}, card ${i + 1}: an edit with its path alone shows ${JSON.stringify(brief(c))}`);
-        }
-      }
-      const wrong = more?.(cards);
-      if (wrong) fail(`${name}: ${wrong}`);
-    } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
-  }
-  note("the same cards in a subagent's drawer and in the panes of a run's merge agent and work agent");
+  note("the same cards in a subagent's drawer");
 });

@@ -86,7 +86,7 @@ func TestSectionServerProcess(t *testing.T) {
 	}
 	// What it wrote is read now that it has exited: it told of each step of the change-over.
 	if log := srv.out.String(); !strings.Contains(log, "are removed from "+in.dir) || !strings.Contains(log, "the chat "+oldChat) ||
-		!strings.Contains(log, "the chat "+oldBoardChat) || !strings.Contains(log, "the run "+oldRun) {
+		!strings.Contains(log, "the chat "+oldBoardChat) {
 		t.Errorf("the server's log does not tell of the change-over:\n%s", log)
 	}
 	changedOver(t, in.dir, list)
@@ -94,16 +94,16 @@ func TestSectionServerProcess(t *testing.T) {
 	if held := holders(files, append(farMarks(), "Read there", "typed here into a chat there")); len(held) != 0 {
 		t.Errorf("files that hold something of the stand-in after the stop: %v", held)
 	}
-	// Of chats, boards and runs the folder has the two things that became this computer's.
+	// Of chats and boards the folder has the one thing that became this computer's.
 	var things []string
 	for rel := range files {
-		if top, _, _ := strings.Cut(filepath.ToSlash(rel), "/"); top == "chats" || top == "boards" || top == "runs" || top == "remote" {
+		if top, _, _ := strings.Cut(filepath.ToSlash(rel), "/"); top == "chats" || top == "boards" || top == "remote" {
 			things = append(things, filepath.ToSlash(rel))
 		}
 	}
 	slices.Sort(things)
-	if want := []string{"chats/" + oldChat + "/chat.json", "runs/" + oldRun + "/run.json"}; !slices.Equal(things, want) {
-		t.Errorf("the files of chats, boards and runs after the stop: %v, want %v", things, want)
+	if want := []string{"chats/" + oldChat + "/chat.json"}; !slices.Equal(things, want) {
+		t.Errorf("the files of chats and boards after the stop: %v, want %v", things, want)
 	}
 	if _, err := os.Lstat(filepath.Join(in.dir, "remote")); !os.IsNotExist(err) {
 		t.Errorf("the folder remote/ after the stop: %v", err)

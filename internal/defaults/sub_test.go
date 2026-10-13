@@ -95,11 +95,8 @@ func TestRecordSubAndTheOtherDefaults(t *testing.T) {
 
 	RecordAgent(&d, "g1", model.Pi)
 	RecordChange(&d, "g1", model.Claude, "/w", model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, "g1", runDefaults(model.Claude, "opus"))
 	want := model.ServerDefaults{Agent: model.Pi, Cwd: "/w", ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}},
 		Subagents: &model.SubLimits{Depth: 2, Cap: 10}}
-	rd := runDefaults(model.Claude, "opus")
-	want.Run = &rd
 	if got := d.Groups["g1"].Local(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the other records: %+v, want %+v", got, want)
 	}

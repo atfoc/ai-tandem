@@ -1,7 +1,7 @@
 // Proves what a section shows in each state of its server (plans/remote-server-sections-goal.md, 3.2, 3.3, 3.7, 3.10;
 // the contract's 3.10): connecting, it says so and has no rows; connected with nothing on the server, the one line;
 // connected with a tree, that server's tree as it has it (what is in no group first, the groups nested as given and
-// in their order, a board with its chats, a run with its chats), every group open whatever that server's own page
+// in their order, a board with its chats), every group open whatever that server's own page
 // shows; not connected, the words the server list has for the state and the one line, and no rows; too old, that with
 // the version it reports; a changed certificate and every other state of the list, its words. The head's "+" is
 // there only while the tree is held. Rows are decided by the tree and words by the state, in either order of the two
@@ -12,8 +12,8 @@ const J = JSON.stringify;
 const AWAY = "Its chats show when the server is back.", EMPTY = "Nothing on this server yet.";
 // Studio Mac's tree as its section draws it
 const TREE = [
-  "board Floor plan", "  chat Label the rooms", "run Nightly render", "chat Scratch", "chat Render queue is stuck",
-  "group Renders", "  group Nightly", "    chat Last night's failures", "  board Storyboard", "    chat Tighten act two", "  run Trailer cut", "    chat Which shots made it", "  chat Queue order",
+  "board Floor plan", "  chat Label the rooms", "chat Scratch", "chat Render queue is stuck",
+  "group Renders", "  group Nightly", "    chat Last night's failures", "  board Storyboard", "    chat Tighten act two", "  chat Queue order",
   "group Old takes", "  chat Take 14",
 ];
 // the words the server list has for each state that waits for the user or for the network (logic/servers.ts)

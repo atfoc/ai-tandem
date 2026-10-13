@@ -15,7 +15,7 @@ import (
 )
 
 // A server that drops and comes back, with both halves real (goal 3.7, 3.8 and 3.9; contract
-// 3.5, 3.6 and 3.7, and V1): a page of client 1 has a chat and a run view open and holds a
+// 3.5, 3.6 and 3.7, and V1): a page of client 1 has a chat open and holds a
 // board with an edit that is not saved, when the remote server is no longer reached. What the
 // page shows meanwhile is its own matter; here it is told that the section has no tree, every
 // call has its answer, and when the server is back the page reads again what it shows and the
@@ -23,8 +23,8 @@ import (
 
 // bothRows is the table of a section's routes (sectionRows) for the things of the rig's remote
 // server: its ids in the place of the stand-in's.
-func bothRows(group, chat, run, board string) []sectionRow {
-	fill := strings.NewReplacer(farChatA, chat, farRunA, run, farBoardA, board, "g_1", group, "g_2", group)
+func bothRows(group, chat, board string) []sectionRow {
+	fill := strings.NewReplacer(farChatA, chat, farBoardA, board, "g_1", group, "g_2", group)
 	rows := sectionRows()
 	for i := range rows {
 		rows[i].path, rows[i].body = fill.Replace(rows[i].path), fill.Replace(rows[i].body)
@@ -56,7 +56,7 @@ func (bo *both) start() {
 
 // TestBothServerDropsAndComesBack: the remote server drops in two ways, by the link of client 1
 // alone (client 2 and the owner work on) and by a real stop of its remote listener (every
-// client is cut off, the owner works on), and comes back with the chat, the run and the board
+// client is cut off, the owner works on), and comes back with the chat and the board
 // unchanged, changed there meanwhile, and deleted there meanwhile.
 func TestBothServerDropsAndComesBack(t *testing.T) {
 	t.Parallel()
@@ -81,31 +81,33 @@ func bothDrop(t *testing.T, cut bool, back string) {
 		other = owner
 	}
 
-	// ---- what client 1's page P has open: a chat that has started, a run that works, and a
-	// board it holds and has saved once. A second run has not started.
+	// ---- what client 1's page P has open: a chat that has started, and a board it holds and
+	// has saved once.
 	group := l5ID(t, p.want(t, 200, "POST", "/groups", obj{"name": "Work", "parent": ""}))
 	chat := l5ID(t, p.want(t, 200, "POST", "/chats", obj{"agent": "claude", "group": group}))
 	p.want(t, 200, "POST", "/chats/"+chat+"/messages", obj{"text": "the first message"})
 	ag := bo.sp.of(t, chat)
 	reply(t, &ag.fakeAgent, "the first answer", "point-1")
-	run := l5ID(t, p.want(t, 200, "POST", "/runs", obj{"group": group, "name": "Run"}))
-	p.want(t, 200, "POST", "/runs/"+run+"/start", obj{"goal": "Look around."})
-	bo.orchestrator(p, run)
-	fresh := l5ID(t, p.want(t, 200, "POST", "/runs", obj{"group": group, "name": "Not started"}))
 	board := l5ID(t, p.want(t, 200, "POST", "/boards", obj{"name": "plan", "group": group}))
 	c1.holders(board, "P", bothID1)
 	c1.written(p.p, board, 0, drawing("saved before the drop"))
-	chatPath, runPath, boardPath := "/chats/"+chat, "/runs/"+run, "/boards/"+board
-	for _, rest := range []string{chatPath + "/items", chatPath + "/tree", runPath + "/detail"} {
+	chatPath, boardPath := "/chats/"+chat, "/boards/"+board
+	for _, rest := range []string{chatPath + "/items", chatPath + "/tree"} {
 		p.want(t, 200, "GET", rest, nil)
 	}
-	// Every page was sent all of it.
-	for _, u := range []*user{owner, p, q, r} {
-		u.upTo(t, "run", run, `"turns":1`)
+	// The chat's turn has ended there, and every page was sent all of it.
+	for end := time.Now().Add(waitLimit); ; time.Sleep(5 * time.Millisecond) {
+		v, err := bo.b.a.Chats.View(chat)
+		if err == nil && v.Locked && v.Status == model.StatusReady {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the first turn of the chat did not end: %+v, %v", v, err)
+		}
 	}
 	bo.reach(owner, p, q, r)
 	kept := drawing("drawn and not saved") // the edit in P's window, on the revision 1
-	ids := []string{group, chat, run, fresh, board}
+	ids := []string{group, chat, board}
 
 	// ---- the drop.
 	if cut {
@@ -149,7 +151,7 @@ func bothDrop(t *testing.T, cut bool, back string) {
 	// Every route of a section has its answer (contract 3.5): 503 with the sentence that names
 	// the server, but for the three that are answered here. Nothing is sent to that server.
 	bo.untouched("the calls for a section whose server is not connected", func() {
-		for _, row := range bothRows(group, chat, run, board) {
+		for _, row := range bothRows(group, chat, board) {
 			rest, what := row.path, row.pattern+" while the server is away"
 			if row.query != "" {
 				rest += "?" + row.query
@@ -191,13 +193,11 @@ func bothDrop(t *testing.T, cut bool, back string) {
 	// ---- what happens on that server meanwhile.
 	switch back {
 	case "changed":
-		// A message in the chat, with its answer; the run renamed and the other one started;
-		// and the board drawn on by someone else, so that its revision moved.
+		// A message in the chat, with its answer; the chat renamed; and the board drawn on by
+		// someone else, so that its revision moved.
 		other.want(t, 200, "POST", chatPath+"/messages", obj{"text": "sent meanwhile"})
 		reply(t, &ag.fakeAgent, "answered meanwhile", "point-2")
-		other.want(t, 200, "PATCH", runPath, obj{"name": "Renamed meanwhile"})
-		other.want(t, 200, "POST", "/runs/"+fresh+"/start", obj{"goal": "Started meanwhile."})
-		bo.orchestrator(other, fresh)
+		other.want(t, 200, "PATCH", chatPath, obj{"name": "Renamed meanwhile"})
 		if got := decode[struct {
 			State string
 			Rev   int64
@@ -209,8 +209,7 @@ func bothDrop(t *testing.T, cut bool, back string) {
 			other.want(t, 200, "POST", boardPath+"/release", nil)
 		}
 	case "deleted":
-		bo.stopRun(other, run)
-		for _, rest := range []string{chatPath, runPath, boardPath} {
+		for _, rest := range []string{chatPath, boardPath} {
 			other.want(t, 200, "DELETE", rest, nil)
 		}
 	}
@@ -228,7 +227,7 @@ func bothDrop(t *testing.T, cut bool, back string) {
 		if tree == "null" {
 			t.Fatalf("the section event of %s at the return has no tree", u.who)
 		}
-		for _, f := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+		for _, f := range []string{"groups", "boards", "chats", "states", "defaults"} {
 			if !l5SameList(t, tree, want, f) {
 				t.Errorf("the %s of the tree %s is told at the return are\n%s\nand the remote server's\n%s", f, u.who, l5Field(t, tree, f), l5Field(t, want, f))
 			}
@@ -244,16 +243,13 @@ func bothDrop(t *testing.T, cut bool, back string) {
 			}
 		}
 	case "changed":
-		for _, part := range []string{`"name":"Renamed meanwhile"`, `"id":"` + fresh + `"`, chat, board} {
+		for _, part := range []string{`"name":"Renamed meanwhile"`, chat, board} {
 			if !strings.Contains(tree, part) {
 				t.Errorf("the tree after the return lacks %s: %s", part, tree)
 			}
 		}
-		if v := decode[model.RunView](t, p.want(t, 200, "GET", "/runs/"+fresh, nil)); v.Status == model.RunDraft {
-			t.Errorf("the run that was started meanwhile: %+v", v)
-		}
 	case "deleted":
-		for _, id := range []string{chat, run, board} {
+		for _, id := range []string{chat, board} {
 			if strings.Contains(tree, id) {
 				t.Errorf("the tree after the return has %s, which was deleted: %s", id, tree)
 			}
@@ -263,8 +259,8 @@ func bothDrop(t *testing.T, cut bool, back string) {
 	if back == "deleted" {
 		// The page reads again what it shows: each is gone there, with that server's answer.
 		for _, c := range [][2]string{
-			{"GET", chatPath}, {"GET", chatPath + "/items"}, {"GET", chatPath + "/tree"}, {"GET", runPath}, {"GET", runPath + "/detail"},
-			{"GET", boardPath + "/scene"}, {"POST", boardPath + "/take"}, {"PUT", chatPath + "/draft?rev=0"}, {"PATCH", runPath},
+			{"GET", chatPath}, {"GET", chatPath + "/items"}, {"GET", chatPath + "/tree"},
+			{"GET", boardPath + "/scene"}, {"POST", boardPath + "/take"}, {"PUT", chatPath + "/draft?rev=0"}, {"PATCH", chatPath},
 		} {
 			var body any
 			if c[0] != "GET" {
@@ -328,16 +324,16 @@ func bothDrop(t *testing.T, cut bool, back string) {
 		c1.refusal("the edit on the revision before the outage", 409, "stale", status, out)
 	}
 
-	// ---- the chat and the run view. Nothing is followed until the page reads again: that
+	// ---- the chat. Nothing is followed until the page reads again: that
 	// server forgot the follows with the stream. A message arrives meanwhile.
 	bo.reach(p)
 	owner.want(t, 200, "POST", chatPath+"/messages", obj{"text": "sent after the return"})
 	if evs := bo.reach(p)[0]; len(only(evs, bothContent...)) != 0 || l5Count(evs, "chat", chat, `"working":`) == 0 {
 		t.Errorf("before it read again, the page was sent %v", l5Types(evs))
 	}
-	// The page reads again what it shows, and is level with that server: the thread, the tree
-	// and the run's detail are the ones the owner's page reads.
-	for _, rest := range []string{chatPath, chatPath + "/items", chatPath + "/tree", runPath, runPath + "/detail"} {
+	// The page reads again what it shows, and is level with that server: the thread and the
+	// tree are the ones the owner's page reads.
+	for _, rest := range []string{chatPath, chatPath + "/items", chatPath + "/tree"} {
 		got, there := p.want(t, 200, "GET", rest, nil), owner.want(t, 200, "GET", rest, nil)
 		if !l5Same(t, got, there) {
 			t.Errorf("GET %s after the return: the page reads\n%s\nand the owner's page\n%s", rest, got, there)
@@ -346,16 +342,9 @@ func bothDrop(t *testing.T, cut bool, back string) {
 			t.Errorf("the thread after the return: %s", got)
 		}
 	}
-	// The reads follow again: what the agent answers now, and what the run does, reach the page.
+	// The reads follow again: what the agent answers now reaches the page.
 	reply(t, &ag.fakeAgent, "answered after the return", "point-3")
-	if evs := p.upTo(t, "chat_items", chat, "answered after the return"); l5Count(evs, "run_detail") != 0 {
-		t.Errorf("the page was sent %v", l5Types(evs))
-	}
-	bo.stopRun(owner, run)
-	p.upTo(t, "run_detail", run, `"status":"stopped"`)
-	if back == "changed" {
-		bo.stopRun(owner, fresh)
-	}
+	p.upTo(t, "chat_items", chat, "answered after the return")
 	// Typed text is saved now, on the counter the page has.
 	rev := decode[model.ChatView](t, p.want(t, 200, "GET", chatPath, nil)).DraftRev
 	if out := p.want(t, 200, "PUT", chatPath+"/draft?rev="+itoa(int(rev)), obj{"text": "typed during the outage"}); !strings.Contains(out, `"ok":true`) {
@@ -371,7 +360,7 @@ func bothDrop(t *testing.T, cut bool, back string) {
 // revision saves the edit, another one drops it.
 func TestBothLocalServerIsRebuiltDuringTheOutage(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{clients: 1, noRuns: true})
+	bo := newBoth(t, bothOpt{clients: 1})
 	c1, owner := bo.c[0], bo.owner("O")
 	p := c1.page("P")
 	group := l5ID(t, p.want(t, 200, "POST", "/groups", obj{"name": "Work", "parent": ""}))
@@ -475,7 +464,7 @@ func TestBothLocalServerIsRebuiltDuringTheOutage(t *testing.T) {
 // else, and nothing deletes it.
 func TestBothServerDropsInTheMiddleOfACall(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{noRuns: true})
+	bo := newBoth(t, bothOpt{})
 	c1, owner := bo.c[0], bo.owner("O")
 	p, r := c1.page("P"), bo.c[1].page("R")
 	group := l5ID(t, p.want(t, 200, "POST", "/groups", obj{"name": "Work", "parent": ""}))

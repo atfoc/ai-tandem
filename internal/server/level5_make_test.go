@@ -7,14 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
 )
 
-// What a client makes (contract 2.4, goal 3.4): a chat, a board and a run are made by the calls
-// of the server's own page, in the place the call names, with what the server remembers for
+// What a client makes (contract 2.4, goal 3.4): a chat and a board are made by the calls of the
+// server's own page, in the place the call names, with what the server remembers for
 // that place. A call that names a server is refused and makes nothing.
 
 // l5ServerRefused is the answer to a client's call that names a server, and l5ServerBodies what
@@ -24,7 +23,7 @@ const l5ServerRefused = `{"code":"server_refused","error":"an API client cannot 
 var l5ServerBodies = []string{`"server":"local"`, `"server":""`, `"server":null`, `"server":"s_0123456789ab"`, `"server":"` + ownID + `"`,
 	`"server":7`, `"server":{}`, `"Server":"local"`, `"SERVER":""`, `"sErVeR":null`}
 
-// l5Trio is the owner's page and the two clients of a server without runs. The set-up events
+// l5Trio is the owner's page and the two clients of a server. The set-up events
 // are read: reach returns what was sent from here on.
 func l5Trio(e *env, l *listener) (p, x, y *bridgetest.Page) {
 	p = e.page(l5Owner)
@@ -44,7 +43,7 @@ func l5AllSame(t *testing.T, e *env, what string, three ...*bridgetest.Page) []s
 // l5SameOf is l5AllSame for events that were read already, one list per client.
 func l5SameOf(t *testing.T, what string, evs [][]string, three ...*bridgetest.Page) []string {
 	t.Helper()
-	typs := append(slices.Clone(l5List), "tree", "chat_items", "sub", "sub_items", "run_detail", "run_activity")
+	typs := append(slices.Clone(l5List), "tree", "chat_items", "sub", "sub_items")
 	first := only(evs[0], typs...)
 	for i, c := range three {
 		if got := only(evs[i], typs...); !slices.Equal(got, first) {
@@ -91,7 +90,7 @@ func TestLevel5ClientMakesAChatInItsPlace(t *testing.T) {
 	if !remote.ValidID(made.ID) || !strings.Contains(out, `"locked":false`) {
 		t.Errorf("a client's chat: %s", out)
 	}
-	for _, k := range []string{"started", "sent", "chat", "ok", "server", "client", "board", "run"} {
+	for _, k := range []string{"started", "sent", "chat", "ok", "server", "client", "board"} {
 		if slices.Contains(keysOf(t, out), k) {
 			t.Errorf("the answer of a client's POST /api/chats has %q: %s", k, out)
 		}
@@ -252,24 +251,6 @@ func TestLevel5ClientMakesAChatInItsPlace(t *testing.T) {
 	}
 }
 
-// A chat on a run is made by the same call with "run": on a run a client made, before the run
-// starts and after.
-func TestLevel5ClientMakesAChatOnARun(t *testing.T) {
-	t.Parallel()
-	s := l5NewSite(t)
-	run := l5ID(t, s.step(s.x, "a new run", "POST", "/api/runs", `{"group":"`+model.Ungrouped+`","name":"Run"}`, "run", ""))
-	out := s.step(s.y, "a chat on a run", "POST", "/api/chats", `{"agent":"claude","run":"`+run+`"}`, "chat", "", `"run":"`+run+`"`, `"locked":false`)
-	if v := decode[model.ChatView](t, out); v.Run != run || v.Group != "" || v.Board != "" || v.Cwd != s.cwd {
-		t.Errorf("a client's chat on a run: %s", out)
-	}
-	status, out := l5Call(s.x, "POST", "/api/chats", `{"agent":"claude","run":"`+run+`","server":"local"}`)
-	l5Is(t, "a chat on a run that names a server", status, out, 400, l5ServerRefused)
-	// The owner's page sees it under the run, with the run's own chats.
-	if chats := l5Field(t, l5Want(t, s.p, 200, "GET", "/api/state", nil), "chats"); !strings.Contains(chats, `"run":"`+run+`"`) {
-		t.Errorf("the owner's chats: %s", chats)
-	}
-}
-
 func TestLevel5ClientMakesABoard(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
@@ -361,137 +342,4 @@ func TestLevel5ClientMakesABoard(t *testing.T) {
 	if evs := l5AllSame(t, e, "the refused calls", three...); len(evs) != 0 {
 		t.Errorf("the refused calls told %v", evs)
 	}
-}
-
-// A run exists on the server from the moment a client makes it, with its goal and its
-// settings, before it starts: the owner and the other client see it, change it and start it.
-func TestLevel5ClientMakesAndStartsARun(t *testing.T) {
-	t.Parallel()
-	s := l5NewSite(t)
-	s.fake.Script(func(turn *agenttest.Turn) { turn.Say("At work."); turn.Hang() })
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	g := l5ID(t, s.step(s.p, "a group", "POST", "/api/groups", `{"name":"Work"}`, "groups", ""))
-	h := l5ID(t, s.step(s.p, "a second group", "POST", "/api/groups", `{"name":"Later"}`, "groups", ""))
-	var answers []string // every answer of the test, to look for a code that is gone
-
-	// Made: the answer is the run's view, a draft in the group named.
-	out := s.step(s.x, "a new run", "POST", "/api/runs", `{"group":"`+g+`","name":"  Port the   importer "}`, "run", "", `"status":"draft"`, `"group":"`+g+`"`)
-	answers = append(answers, out)
-	made := decode[model.RunView](t, out)
-	if !strings.HasPrefix(made.ID, "r_") || made.Name != "Port the importer" || !made.UserNamed || made.Status != model.RunDraft || made.Group != g || made.Cwd != s.cwd || made.Agent != model.Claude {
-		t.Fatalf("a client's new run: %s", out)
-	}
-	for _, k := range []string{"ok", "made", "run", "server", "client"} {
-		if slices.Contains(keysOf(t, out), k) {
-			t.Errorf("the answer of a client's POST /api/runs has %q: %s", k, out)
-		}
-	}
-	path := "/api/runs/" + made.ID
-	// It exists on the server before it starts: the owner and the other client read it.
-	for _, c := range []*bridgetest.Page{s.p, s.y} {
-		if v := decode[model.RunView](t, l5Want(t, c, 200, "GET", path, nil)); v.Status != model.RunDraft || v.Name != "Port the importer" {
-			t.Errorf("%s reads the client's run as %+v", s.who(c), v)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(s.a.DataDir, "runs", made.ID)); err != nil {
-		t.Errorf("the folder of a run that has not started: %v", err)
-	}
-
-	// The page's whole patch, by the other client: name, group, agent, tiers, folder, settings.
-	patch := `{"name":"Renamed by Y","group":"` + h + `","agent":"claude","tiers":{"deep":{"model":"sonnet","effort":"low"},"light":{"model":"haiku"}},"cwd":"` + dir + `","settings":{"maxParallel":3,"maxTurns":7,"wake":"each"}}`
-	out = s.step(s.y, "the patch of a run", "PATCH", path, patch, "run", made.ID, `"name":"Renamed by Y"`, `"group":"`+h+`"`, `"cwd":"`+dir+`"`, `"maxParallel":3`)
-	answers = append(answers, out)
-	v := decode[model.RunView](t, out)
-	if v.Name != "Renamed by Y" || v.Group != h || v.Agent != model.Claude || v.Tiers.Deep.Model != "sonnet" || v.Tiers.Deep.Effort != "low" || v.Tiers.Light.Model != "haiku" ||
-		v.Tiers.Standard != made.Tiers.Standard || v.Cwd != dir || v.Settings.MaxParallel != 3 || v.Settings.MaxTurns != 7 || v.Settings.Wake != "each" || v.Status != model.RunDraft {
-		t.Errorf("the run after a client's patch: %s", out)
-	}
-	if got := l5Want(t, s.p, 200, "GET", path, nil); !l5Same(t, got, out) {
-		t.Errorf("the owner reads the patched run as %s, the patch answered %s", got, out)
-	}
-	// A patch that names a server, whatever else it holds: refused, nothing changed.
-	for _, server := range l5ServerBodies {
-		body := `{"name":"Not this","group":"` + g + `","settings":{"maxTurns":99},` + server + `}`
-		status, refusal := l5Call(s.x, "PATCH", path, body)
-		l5Is(t, "PATCH of a run with "+body, status, refusal, 400, l5ServerRefused)
-		answers = append(answers, refusal)
-	}
-	status, refusal := l5Call(s.x, "PATCH", "/api/runs/r_nothere1", `{"server":"local"}`)
-	l5Is(t, "PATCH of a missing run with a server", status, refusal, 400, l5ServerRefused)
-	if got := l5Want(t, s.y, 200, "GET", path, nil); !l5Same(t, got, out) {
-		t.Errorf("the run after the refused patches: %s, want %s", got, out)
-	}
-	for i, evs := range s.reach(s.all()...) {
-		if len(evs) != 0 {
-			t.Errorf("the refused patches sent %s %v", s.who(s.all()[i]), evs)
-		}
-	}
-
-	// The goal being typed has no counter: every save is taken, the last one wins, and each is
-	// told to all three with the run.
-	for i, c := range []*bridgetest.Page{s.x, s.y, s.p, s.x} {
-		goal := []string{"Port it.", "Port the importer to the new format.", "The owner's goal.", "The last goal typed."}[i]
-		if out := s.step(c, "the goal being typed", "PUT", path+"/draft", `{"text":"`+goal+`"}`, "run", made.ID, `"draft":{"text":"`+goal+`"}`); out != `{"ok":true}` {
-			t.Errorf("the save of the goal by %s: %s", s.who(c), out)
-		}
-	}
-	for _, c := range s.all() {
-		if v := decode[model.RunView](t, l5Want(t, c, 200, "GET", path, nil)); v.Draft == nil || v.Draft.Text != "The last goal typed." || v.Status != model.RunDraft {
-			t.Errorf("%s reads the goal being typed as %+v", s.who(c), v.Draft)
-		}
-	}
-
-	// The start, by the client that did not make the run: the answer is the run's view.
-	out = l5Want(t, s.y, 200, "POST", path+"/start", `{"goal":"Look around."}`)
-	answers = append(answers, out)
-	started := decode[model.RunView](t, out)
-	if started.ID != made.ID || started.Status != model.RunRunning || started.Name != "Renamed by Y" || started.Group != h || started.Cwd != dir {
-		t.Errorf("the start of a run by a client: %s", out)
-	}
-	for _, k := range []string{"ok", "made", "run"} {
-		if slices.Contains(keysOf(t, out), k) {
-			t.Errorf("the answer of the start has %q: %s", k, out)
-		}
-	}
-	evs := s.told("the start of a run", "run", made.ID, `"status":"running"`)
-	if l5Count(evs, "run", made.ID, `"status":"running"`) == 0 {
-		t.Errorf("the start told %v", l5Types(evs))
-	}
-	// The group remembers what the run was started with, as it does for the owner's run.
-	if defs := l5Field(t, l5Want(t, s.p, 200, "GET", "/api/state", nil), "defaults"); !strings.Contains(l5Field(t, l5Field(t, defs, "groups"), h), dir) {
-		t.Errorf("the defaults of the group after a client started a run in it: %s", defs)
-	}
-	if goal := l5Want(t, s.p, 200, "GET", path+"/goal", nil); !strings.Contains(goal, "Look around.") {
-		t.Errorf("the owner reads the goal of the started run as %s", goal)
-	}
-	// A started run is the page's started run: its settings are fixed, and it starts once.
-	const fixed = `{"error":"the run has started: its agent, folder and settings are fixed"}`
-	status, out = l5Call(s.x, "PATCH", path, `{"cwd":"`+s.cwd+`"}`)
-	l5Is(t, "the patch of a started run", status, out, 409, fixed)
-	answers = append(answers, out)
-	status, out = l5Call(s.x, "POST", path+"/start", `{"goal":"Again."}`)
-	l5Is(t, "a second start", status, out, 409, fixed)
-	answers = append(answers, out)
-	if out := l5Want(t, s.x, 200, "PATCH", path, `{"name":"Named while it runs"}`); !strings.Contains(out, `"name":"Named while it runs"`) {
-		t.Errorf("the rename of a started run: %s", out)
-	}
-	// The start's refusals are the page's.
-	second := l5ID(t, l5Want(t, s.x, 200, "POST", "/api/runs", `{"group":"`+g+`"}`))
-	for _, c := range s.all() {
-		status, out = l5Call(c, "POST", "/api/runs/"+second+"/start", `{"goal":"  "}`)
-		l5Is(t, "a start with no goal by "+s.who(c), status, out, 400, `{"error":"the goal is empty"}`)
-		answers = append(answers, out)
-	}
-	for _, a := range answers {
-		for _, code := range []string{"rename_only", "group_refused", "id_taken", `"made"`, "blocked"} {
-			if strings.Contains(a, `"code":"`+code+`"`) || (code == `"made"` && strings.Contains(a, code)) {
-				t.Errorf("an answer has %s, which is gone: %s", code, a)
-			}
-		}
-	}
-	l5Want(t, s.p, 200, "POST", path+"/stop", nil)
-	l5Await(t, s.p, path, `"status":"stopped"`)
 }

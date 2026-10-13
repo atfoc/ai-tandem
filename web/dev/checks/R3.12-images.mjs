@@ -8,7 +8,7 @@
 // 3.8); when the server is back a tile that could not be fetched is fetched again, an image can be removed, and what
 // is left is saved; and an unstarted chat of a section takes an image at once.
 // What the rules are is the unit tests' (test/chatimage.test.ts and beside it); here it is the page that does it,
-// against the mock (dev/runmock.mjs), which answers the calls of a chat of a server that is not connected as the
+// against the mock (dev/mock.mjs), which answers the calls of a chat of a server that is not connected as the
 // local server does (503). The composer of a local chat is IM3.2's.
 import crypto from "node:crypto";
 import { check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";

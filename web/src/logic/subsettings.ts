@@ -74,12 +74,10 @@ export const SUB_FIXED = {
 /** What the toolbar shows of the settings: a chip that opens the popover ("open") on a new chat,
  *  a fixed one with the reason on a started chat, a branch and a fork (also a fork without a
  *  message of its own, whose model and effort are still open, and while a move to a new branch is
- *  pending), and nothing for a run's own agent ("none"): runs have no such settings. The server is
- *  the authority: it refuses the change where the chip is fixed. */
-export type SubChip = { kind: "none" } | { kind: "open" } | { kind: "fixed"; why: string };
+ *  pending). The server is the authority: it refuses the change where the chip is fixed. */
+export type SubChip = { kind: "open" } | { kind: "fixed"; why: string };
 
 export function subChip(c: Parameters<typeof agentOpen>[0], move: boolean): SubChip {
-  if (c.role) return { kind: "none" };
   if (move || c.forkedFrom || c.branch) return { kind: "fixed", why: SUB_FIXED.copy };
   if (c.locked) return { kind: "fixed", why: SUB_FIXED.started };
   if (!agentOpen(c)) return { kind: "fixed", why: SUB_FIXED.copy }; // (whatever else closes a chat's first choices)

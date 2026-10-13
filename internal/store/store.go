@@ -67,7 +67,7 @@ func Open(p Paths) (*Store, error) {
 	if err := os.MkdirAll(p.Root, 0o700); err != nil {
 		return nil, err
 	}
-	for _, d := range []string{p.Boards, p.Chats, p.Runs} {
+	for _, d := range []string{p.Boards, p.Chats} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
 		}

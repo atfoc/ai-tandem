@@ -9,8 +9,8 @@ import (
 )
 
 // TestSectionListsKeepTheServersOrder: a section's lists are in the order its server has them
-// (goal 3.3), also after the events that add to them. That server lists its boards, chats and
-// runs oldest first, and two of one time by id, and its branch states by the id of their chat,
+// (goal 3.3), also after the events that add to them. That server lists its boards and chats
+// oldest first, and two of one time by id, and its branch states by the id of their chat,
 // a chat's own in the order of its branches. A new thing is told by an event and goes where the
 // next snapshot will have it; one that is known keeps its place.
 func TestSectionListsKeepTheServersOrder(t *testing.T) {
@@ -23,7 +23,6 @@ func TestSectionListsKeepTheServersOrder(t *testing.T) {
 		"boards": []model.Board{{ID: "b_m", Created: at(1)}, {ID: "b_c", Created: at(3)}},
 		"chats":  []model.ChatView{chat("m", 1), chat("c", 3)},
 		"states": []model.BranchState{state("c", "main"), state("m", "main"), state("m", "b_2")},
-		"runs":   []model.RunView{{ID: "r_m", Created: at(1)}, {ID: "r_c", Created: at(3)}},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +33,6 @@ func TestSectionListsKeepTheServersOrder(t *testing.T) {
 	for _, id := range []string{"z", "a", "d", "h"} {
 		minute := map[string]int{"z": 5, "a": 3, "d": 3, "h": 0}[id]
 		sec.putBoard(model.Board{ID: "b_" + id, Created: at(minute)})
-		sec.putRun(model.RunView{ID: "r_" + id, Created: at(minute)})
 		sec.putChat(chat(id, minute))
 		sec.putState(state(id, "main"))
 	}
@@ -52,27 +50,24 @@ func TestSectionListsKeepTheServersOrder(t *testing.T) {
 		}
 		return out
 	}
-	var boards, chats, runs, states []string
+	var boards, chats, states []string
 	for _, b := range sec.tree.Boards {
 		boards = append(boards, b.ID)
 	}
 	for _, v := range sec.tree.Chats {
 		chats = append(chats, v.ID)
 	}
-	for _, v := range sec.tree.Runs {
-		runs = append(runs, v.ID)
-	}
 	for _, st := range sec.tree.States {
 		states = append(states, st.Chat+"/"+st.Branch)
 	}
 	wantStates := []string{"a/main", "c/main", "c/b_1", "d/main", "h/main", "m/main", "m/b_2", "m/b_3", "z/main"}
-	if !slices.Equal(boards, ids("b_")) || !slices.Equal(chats, ids("")) || !slices.Equal(runs, ids("r_")) || !slices.Equal(states, wantStates) {
-		t.Errorf("the lists after the events:\nboards %v\nchats  %v\nruns   %v\nstates %v\nwant the order %v and the states %v", boards, chats, runs, states, want, wantStates)
+	if !slices.Equal(boards, ids("b_")) || !slices.Equal(chats, ids("")) || !slices.Equal(states, wantStates) {
+		t.Errorf("the lists after the events:\nboards %v\nchats  %v\nstates %v\nwant the order %v and the states %v", boards, chats, states, want, wantStates)
 	}
 	// Every item is found where it is: a change and a removal reach the right one.
 	for i, b := range sec.tree.Boards {
-		if sec.boards[b.ID] != i || sec.chats[sec.tree.Chats[i].ID] != i || sec.runs[sec.tree.Runs[i].ID] != i {
-			t.Errorf("the places of the items at %d are %d, %d and %d", i, sec.boards[b.ID], sec.chats[sec.tree.Chats[i].ID], sec.runs[sec.tree.Runs[i].ID])
+		if sec.boards[b.ID] != i || sec.chats[sec.tree.Chats[i].ID] != i {
+			t.Errorf("the places of the items at %d are %d and %d", i, sec.boards[b.ID], sec.chats[sec.tree.Chats[i].ID])
 		}
 	}
 	for i, st := range sec.tree.States {

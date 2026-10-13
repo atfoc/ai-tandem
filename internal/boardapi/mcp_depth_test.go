@@ -316,54 +316,32 @@ func TestNestedChainPerKind(t *testing.T) {
 	}
 }
 
-// A chat a person opens on a run follows its own settings: at depth 2 its subagent is listed
-// the spawn family and nothing of the run, and may call it; a run's own agents keep one level.
-func TestChatOnARunFollowsItsDepth(t *testing.T) {
-	rc := newRunCallers(t)
-	e := rc.e
-	e.limits(2, 100, rc.ids["chat on the run"])
-	e.relay.Runs = rc.runs
-	m := e.relay.Chats
-	sa, err := m.SpawnSubagent(rc.ids["chat on the run"], chats.SpawnSubRequest{Prompt: "help"})
-	if err != nil {
-		t.Fatal(err)
+// probeArgs are arguments with which a tool that is let through answers something of its own,
+// without starting anything.
+func probeArgs(name string) string {
+	switch name {
+	case "stop_subagent":
+		return `{"sid":"no-such-subagent"}`
+	case "spawn_subagent":
+		return `{}` // "prompt is required": it got as far as its own check
 	}
-	tok := e.claude.last(t).opts.MCP.Token
-	if got := e.listNames(tok); !joinEq(got, spawnNm) {
-		t.Fatalf("a subagent of a chat on a run at depth 2 is listed %v", got)
-	}
-	if text, isErr, _ := e.toolsCall(tok, "spawn_subagent", `{"prompt":"deeper"}`); isErr {
-		t.Fatalf("its spawn: %q", text)
-	}
-	for _, name := range []string{"get_run", "add_task", "read_board"} {
-		if text, isErr, _ := e.toolsCall(tok, name, `{}`); !isErr || text != name+" is not available to subagents" {
-			t.Fatalf("%s from a subagent of a chat on a run: %q", name, text)
+	return `{}`
+}
+
+// The endpoint has the board tools and the spawn family and nothing else: any other name is an
+// unknown tool for the chat's agent and for its subagent, on a board chat and on a plain one.
+func TestOtherToolNamesAreUnknown(t *testing.T) {
+	e := newEnv(t)
+	_, plainTok := e.createPlain()
+	for _, tok := range []string{e.token, plainTok} {
+		for _, name := range []string{"get_run", "add_task", "finish_run", "tell_orchestrator", "no_such_tool"} {
+			text, isErr, status := e.toolsCall(tok, name, `{}`)
+			if status != 200 || !isErr || text != "unknown tool "+name {
+				t.Fatalf("%s: %q isErr=%v status=%d", name, text, isErr, status)
+			}
 		}
 	}
-	under := e.claude.last(t).opts
-	if got := e.listNames(under.MCP.Token); len(got) != 0 {
-		t.Fatalf("a subagent at the deepest level of a chat on a run is listed %v", got)
-	}
-	if text, isErr, _ := e.toolsCall(under.MCP.Token, "spawn_subagent", `{"prompt":"x"}`); !isErr ||
-		text != "spawn_subagent is not available to a subagent at level 2: this chat's subagent depth is 2" {
-		t.Fatalf("a spawn at the deepest level: %q", text)
-	}
-	if got := e.sub(rc.ids["chat on the run"], sa.ID); got.Parent != "" {
-		t.Fatalf("the first subagent %+v", got)
-	}
-
-	// A task agent's subagent has no family, whatever depth a chat.json gives its chat.
-	e.limits(3, 100, rc.ids["task agent"])
-	e.relay.Runs = rc.runs
-	m = e.relay.Chats
-	if _, err := m.SpawnSubagent(rc.ids["task agent"], chats.SpawnSubRequest{Prompt: "help"}); err != nil {
-		t.Fatal(err)
-	}
-	tok = e.claude.last(t).opts.MCP.Token
-	if got := e.listNames(tok); len(got) != 0 {
-		t.Fatalf("a task agent's subagent is listed %v", got)
-	}
-	if text, isErr, _ := e.toolsCall(tok, "spawn_subagent", `{"prompt":"x"}`); !isErr || text != "spawn_subagent is not available to subagents" {
-		t.Fatalf("a spawn by a task agent's subagent: %q", text)
+	if n := e.claude.count(); n != 0 {
+		t.Fatalf("%d processes started", n)
 	}
 }

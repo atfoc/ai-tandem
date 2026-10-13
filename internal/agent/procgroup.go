@@ -2,9 +2,7 @@ package agent
 
 import (
 	"errors"
-	"fmt"
 	"os/exec"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -94,80 +92,6 @@ func SignalGroup(cmd *exec.Cmd, sig syscall.Signal) bool {
 		return false
 	}
 	return true
-}
-
-// StartedGroups lists the process groups that descendants of cmd's process lead, other than its
-// own. An agent CLI starts each shell command as the leader of a group of its own, which a
-// signal to the agent's group does not reach; a command that detached itself (its parent is no
-// longer in the agent's tree) is not found. waited is closed once cmd has been waited for: the
-// list is nil unless the process was still there, running or not yet waited for, when the
-// process table was read, since only until then is its pid certain to be its own.
-//
-// The groups are for SignalStarted, soon after: a group's number can become another program's
-// once the group is empty.
-func StartedGroups(cmd *exec.Cmd, waited <-chan struct{}) []int {
-	if cmd.Process == nil || cmd.Process.Pid <= 1 {
-		return nil
-	}
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,pgid=").Output()
-	select {
-	case <-waited:
-		return nil
-	default:
-	}
-	if err != nil {
-		return nil
-	}
-	return startedGroups(string(out), cmd.Process.Pid)
-}
-
-// startedGroups reads a process table of "pid ppid pgid" lines: the groups led by a descendant
-// of root, other than root's own group.
-func startedGroups(table string, root int) []int {
-	kids := map[int][]int{}
-	pgid := map[int]int{}
-	for _, line := range strings.Split(table, "\n") {
-		var pid, ppid, g int
-		if n, _ := fmt.Sscan(line, &pid, &ppid, &g); n != 3 {
-			continue
-		}
-		kids[ppid] = append(kids[ppid], pid)
-		pgid[pid] = g
-	}
-	own, ok := pgid[root]
-	if !ok {
-		return nil
-	}
-	var out []int
-	seen := map[int]bool{root: true}
-	for todo := []int{root}; len(todo) > 0; todo = todo[1:] {
-		for _, pid := range kids[todo[0]] {
-			if seen[pid] {
-				continue
-			}
-			seen[pid] = true
-			todo = append(todo, pid)
-			if pgid[pid] == pid && pid != own && pid > 1 {
-				out = append(out, pid)
-			}
-		}
-	}
-	return out
-}
-
-// SignalStarted sends sig to each group StartedGroups listed and reports whether any of them is
-// still there. Signal 0 only asks.
-func SignalStarted(pgids []int, sig syscall.Signal) bool {
-	left := false
-	for _, pgid := range pgids {
-		if pgid <= 1 || pgid == syscall.Getpgrp() {
-			continue
-		}
-		if err := syscall.Kill(-pgid, sig); !errors.Is(err, syscall.ESRCH) {
-			left = true
-		}
-	}
-	return left
 }
 
 // EndAll ends every group StartGroup started: SIGTERM, then SIGKILL to what is still there after

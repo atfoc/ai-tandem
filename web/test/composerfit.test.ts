@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 import { CONTROLS, LEAVING, fit, fitWithInsert, needs, widthKey, type Control, type Fit, type Row } from "../src/logic/composerfit.ts";
 
 type Measured = { kind: string; label: string; fixed?: boolean; w: number; margin?: number };
-type State = { composer: "chat" | "goal"; pane: string; sum: number; controls: Measured[] };
+type State = { pane: string; sum: number; controls: Measured[] };
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/composer-widths.json", import.meta.url), "utf8")) as { gap: number; chrome: number; more: number; ring: number; icon: number; states: Record<string, State> };
-const chats = Object.entries(fixture.states).filter(([, s]) => s.composer === "chat");
+const chats = Object.entries(fixture.states);
 const { gap, chrome, more: MORE, ring: RING } = fixture;
 /** The meter that says why the context is not known is cut to its icon, not to a ring. */
 const cut = (s: State) => (s.controls.some((c) => c.kind === "meter" && c.label === "Context unavailable") ? fixture.icon : RING);
@@ -42,7 +42,7 @@ const hidden = (f: Fit) => f.popup.length + (f.meter === "ring" ? 1 : 0);
 const leavingOf = (r: Row) => LEAVING.filter((id) => r.controls.some((c) => c.id === id));
 
 test("the fixture's states are the toolbar's controls: each kind is one the fit knows, at most once", () => {
-  assert.ok(chats.length >= 30, `${chats.length} chat states`);
+  assert.ok(chats.length >= 27, `${chats.length} chat states`);
   for (const w of [gap, chrome, MORE, RING, fixture.icon]) assert.ok(w > 0);
   // the long names are among them, capped: no chip is wider than the widest name's cap lets it be
   for (const id of ["plain-new-long", "plain-started-long", "plain-move-long", "plain-remote-started-long", "board-long"]) assert.ok(fixture.states[id], id);
@@ -108,21 +108,19 @@ test("agent and model stay in the default panel's box beside more, the ring, the
     assert.ok(needs(r, f) <= r.room, id);
     n++;
   }
-  assert.ok(n >= 5 && fixture.states["plain-new-long"].controls.some((c) => c.kind === "model" && c.label.length > 40), "the long model is among them");
+  assert.ok(n >= 4 && fixture.states["plain-new-long"].controls.some((c) => c.kind === "model" && c.label.length > 40), "the long model is among them");
 });
 
 test("at the default panel a started chat keeps its folder and model with the meter cut to its ring, and an unstarted one keeps agent and model", () => {
-  for (const id of ["board-started", "run-started", "board-quotes"]) {
+  for (const id of ["board-started", "board-quotes"]) {
     // (the attach button with its gap is 30 px, and a whole row of short names left 16.5: the meter's text is the first to go.
     // The row is whole in a box 14 px wider)
     assert.deepEqual(fit(rowOf(fixture.states[id], 375)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "ring" }, id);
     assert.deepEqual(fit(rowOf(fixture.states[id], 375 + 14)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" }, id);
   }
-  for (const id of ["board-new", "run-new"]) {
-    const f = fit(rowOf(fixture.states[id], 375));
-    assert.ok(f.toolbar.includes("agent") && f.toolbar.includes("model"), `${id}: ${f.toolbar}`);
-    assert.ok(![...f.toolbar, ...f.popup].includes("server"), `${id}: a chat on this computer has no server chip`);
-  }
+  const f = fit(rowOf(fixture.states["board-new"], 375));
+  assert.ok(f.toolbar.includes("agent") && f.toolbar.includes("model"), `board-new: ${f.toolbar}`);
+  assert.ok(![...f.toolbar, ...f.popup].includes("server"), "board-new: a chat on this computer has no server chip");
   // a chat on another server names its server: the chip is the first to give way
   const remote = fit(rowOf(fixture.states["plain-remote-new"], 375));
   assert.ok(remote.toolbar.includes("agent") && remote.toolbar.includes("model") && remote.popup.includes("server"), `plain-remote-new: ${remote.toolbar} | ${remote.popup}`);
@@ -196,7 +194,7 @@ test("where the row has no room for the Insert button, the \"more\" popup has th
 });
 
 test("the Insert button is there unless a started chat's whole row leaves it no room, and it never takes the meter's text", () => {
-  for (const id of ["board-started", "run-started", "board-quotes"]) {
+  for (const id of ["board-started", "board-quotes"]) {
     // at the default panel the meter is cut to its ring (the attach button has the room of its text): what is left is the button's
     assert.deepEqual(fitWithInsert(rowOf(fixture.states[id], 375), INSERT), { fit: { toolbar: ["folder", "model"], popup: [], more: false, meter: "ring" }, insert: "row" }, id);
     // (a whole row of short names, in a box 14 px wider: half a px is left, and the button with its gap needs 30. The row is whole and has
@@ -206,10 +204,8 @@ test("the Insert button is there unless a started chat's whole row leaves it no 
     assert.equal(fitWithInsert(rowOf(fixture.states[id], 375 + 14 + 30), INSERT).insert, "row", `${id}: 30 px wider still`);
   }
   // where the meter is cut to its ring, by long names or by Stop, the text's room is the button's
-  for (const id of ["plain-busy", "run-busy"]) {
-    const { fit: f, insert } = fitWithInsert(rowOf(fixture.states[id], 375), INSERT);
-    assert.deepEqual([f.meter, f.popup, insert], ["ring", [], "row"], id);
-  }
+  const { fit: busy, insert } = fitWithInsert(rowOf(fixture.states["plain-busy"], 375), INSERT);
+  assert.deepEqual([busy.meter, busy.popup, insert], ["ring", [], "row"]);
   // and where a control is in the popup, what the row has left
   const long = fitWithInsert(rowOf(fixture.states["plain-started-long"], 375), INSERT);
   assert.deepEqual([long.fit.popup, long.insert], [["folder"], "row"]);
@@ -227,7 +223,7 @@ test("the Insert button whose width is not known is drawn, to be measured; an op
   const r = rowOf(s, 300), none: Row = { ...r, controls: r.controls.map((c) => ({ id: c.id })), meter: {}, more: undefined, fixed: [undefined] };
   assert.deepEqual(fitWithInsert(none), { fit: { toolbar: r.controls.map((c) => c.id), popup: [], more: false, meter: "full" }, insert: "row" });
   // the fixed Subagents chip of a chat on the default settings: where the row has room for one of the two, it is the button
-  const started = Object.entries(fixture.states).find(([, x]) => x.composer === "chat" && x.controls.some(spare))!;
+  const started = Object.entries(fixture.states).find(([, x]) => x.controls.some(spare))!;
   const sub = started[1].controls.find(spare)!.w, bare = rowOf(started[1], 2000), whole = needs(bare, fit(bare)) + chrome;
   const at = (box: number) => { const { fit: f, insert } = fitWithInsert(rowOf(started[1], box, null, true), INSERT); return [insert === "row", f.toolbar.includes("subagents")]; };
   assert.ok(sub > INSERT, `${started[0]}: the chip is ${sub} px wide`);

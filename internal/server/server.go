@@ -4,7 +4,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/app"
@@ -26,8 +24,6 @@ import (
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/rungit"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/usable"
 )
@@ -194,18 +190,14 @@ func writeErrorCode(w http.ResponseWriter, status int, msg, code string) {
 func ok(w http.ResponseWriter) { writeJSON(w, map[string]any{"ok": true}) }
 
 // statusOf maps an error to its status: not found → 404; a model or effort that can't be chosen
-// → 400; archived, locked, folder missing, busy, a context window too small, a run in a state
-// the call does not fit, a run agent's chat, a server named for a chat → 409; file system and
-// process errors → 500; anything else → fallback (400 where the call validates the request's
-// input, 500 where it does not).
+// → 400; archived, locked, folder missing, busy, a context window too small, a server named for
+// a chat → 409; file system and process errors → 500; anything else → fallback (400 where the
+// call validates the request's input, 500 where it does not).
 func statusOf(err error, fallback int) int {
-	var blocked *runs.BlockedError
 	switch {
 	case errors.Is(err, boards.ErrNotFound), errors.Is(err, chats.ErrNotFound),
 		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, chats.ErrNoBranch), errors.Is(err, app.ErrGroupNotFound),
-		errors.Is(err, runs.ErrNotFound), errors.Is(err, runs.ErrNoTask), errors.Is(err, runs.ErrNoAttempt),
-		errors.Is(err, runs.ErrNoVersion), errors.Is(err, runs.ErrNoText), errors.Is(err, runs.ErrGroup),
-		errors.Is(err, chats.ErrNoRun), errors.Is(err, chats.ErrNoImage):
+		errors.Is(err, chats.ErrNoImage):
 		return http.StatusNotFound
 	case errors.Is(err, chats.ErrImageTooLarge):
 		return http.StatusRequestEntityTooLarge
@@ -220,16 +212,10 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
 		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived),
 		errors.Is(err, chats.ErrWindow),
-		errors.Is(err, chats.ErrRunAgent), errors.Is(err, chats.ErrRunArchived),
-		errors.Is(err, runs.ErrArchived), errors.Is(err, runs.ErrStarted), errors.Is(err, runs.ErrNotStarted),
-		errors.Is(err, runs.ErrFinished), errors.Is(err, runs.ErrNotHalted), errors.Is(err, runs.ErrNotRunning),
-		errors.Is(err, runs.ErrStopping), errors.Is(err, runs.ErrLimit), errors.Is(err, runs.ErrGroupArchived),
-		errors.Is(err, runs.ErrLive),
 		errors.Is(err, usable.ErrMissing), errors.Is(err, usable.ErrNone), errors.Is(err, chats.ErrAgentFixed), errors.Is(err, chats.ErrIDTaken),
 		errors.Is(err, chats.ErrSubFixed),
 		errors.Is(err, chats.ErrImageCap), errors.Is(err, chats.ErrImageMissing),
-		errors.Is(err, chats.ErrServerChosen),
-		errors.As(err, &blocked):
+		errors.Is(err, chats.ErrServerChosen):
 		return http.StatusConflict
 	case errors.Is(err, chats.ErrChatCap), errors.Is(err, chats.ErrAppCap):
 		// Not 409: a client takes a 409 on a message as "stale, wait for the turn's end".
@@ -250,9 +236,9 @@ func statusOf(err error, fallback int) int {
 // "busy", "cap", "bad_point", "window", "agent_missing" and "no_agent"; "server_fixed" for a
 // server named for a chat, whose server is the one it was made on; the ones about images
 // (images.go): "image_too_large", "image_type", "image_cap", "image_id", "image_missing",
-// "image_limit" and "image_model"; and "not_found" for a chat, a run, a board or a group that is
-// not there, which tells "the thing the call names is gone" from a part of it that is missing (a
-// branch, a subagent, an image, a task: other codes, or none). Every other error has none.
+// "image_limit" and "image_model"; and "not_found" for a chat, a board or a group that is not
+// there, which tells "the thing the call names is gone" from a part of it that is missing (a
+// branch, a subagent, an image: other codes, or none). Every other error has none.
 func codeOf(err error) string {
 	switch {
 	case errors.Is(err, chats.ErrImageTooLarge):
@@ -283,8 +269,7 @@ func codeOf(err error) string {
 		return "agent_missing"
 	case errors.Is(err, usable.ErrNone):
 		return "no_agent"
-	case errors.Is(err, chats.ErrNotFound), errors.Is(err, runs.ErrNotFound), errors.Is(err, boards.ErrNotFound),
-		errors.Is(err, app.ErrGroupNotFound), errors.Is(err, runs.ErrGroup), errors.Is(err, chats.ErrNoRun):
+	case errors.Is(err, chats.ErrNotFound), errors.Is(err, boards.ErrNotFound), errors.Is(err, app.ErrGroupNotFound):
 		return "not_found"
 	}
 	return ""
@@ -387,11 +372,6 @@ func expandDir(p string) (string, error) {
 	}
 	return abs, nil
 }
-
-// dirsGitWait is how long GET /api/dirs waits for git to say whether a folder is in a work tree.
-// A git that has not answered by then counts as "not in a work tree". A variable so that the
-// tests can wait longer on a loaded machine (TestMain); nothing else writes it.
-var dirsGitWait = 5 * time.Second
 
 // ---- routes ---------------------------------------------------------------
 
@@ -543,13 +523,9 @@ func (s *Server) routes() *routeMux {
 	mux.HandleFunc("POST /api/boards/{id}/release", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"state": s.Bridge.ReleaseBoard(r.Header.Get(ClientHeader), r.PathValue("id"))})
 	})
-	// Ends the events of a chat or a run that a read started for the client (see the reads).
+	// Ends the events of a chat that a read started for the client (see the reads).
 	mux.HandleFunc("POST /api/chats/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
 		s.unfollow(r, editorbridge.Chat(r.PathValue("id")))
-		ok(w)
-	})
-	mux.HandleFunc("POST /api/runs/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
-		s.unfollow(r, editorbridge.Run(r.PathValue("id")))
 		ok(w)
 	})
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
@@ -653,7 +629,7 @@ func (s *Server) routes() *routeMux {
 	for _, k := range []struct {
 		path string
 		kind app.Kind
-	}{{"groups", app.KindGroup}, {"boards", app.KindBoard}, {"chats", app.KindChat}, {"runs", app.KindRun}} {
+	}{{"groups", app.KindGroup}, {"boards", app.KindBoard}, {"chats", app.KindChat}} {
 		mux.HandleFunc("POST /api/"+k.path+"/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
 			if err := a.Archive(k.kind, r.PathValue("id")); err != nil {
 				fail(w, err, http.StatusInternalServerError)
@@ -797,10 +773,8 @@ func (s *Server) routes() *routeMux {
 		ok(w)
 	})
 
-	s.runRoutes(mux)
-
 	// ---- chats ----
-	// A new chat in a group, on a board, or on a run ({agent, run}: it has no group of its own).
+	// A new chat in a group or on a board.
 	// The chat is this server's: a page's body that names another one with "server" is refused
 	// (400 "server_refused") and nothing is made. On the remote listener it is the same call, for
 	// a chat of this server: a body with "server", whatever its value, is refused (400
@@ -814,16 +788,15 @@ func (s *Server) routes() *routeMux {
 			Agent  model.AgentKind
 			Group  string
 			Board  string
-			Run    string
 			Server string
 		}
 		if !readJSON(w, r, &body) || serverRefused(w, body.Server) {
 			return
 		}
-		if body.Run == "" && body.Board == "" && !checkGroup(w, body.Group) {
+		if body.Board == "" && !checkGroup(w, body.Group) {
 			return
 		}
-		cv, err := a.Chats.CreateChat(chats.NewChat{ID: body.ID, Agent: body.Agent, Group: body.Group, Board: body.Board, Run: body.Run})
+		cv, err := a.Chats.CreateChat(chats.NewChat{ID: body.ID, Agent: body.Agent, Group: body.Group, Board: body.Board})
 		if err != nil {
 			fail(w, err, http.StatusBadRequest)
 			return
@@ -839,9 +812,9 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, cv)
 	})
 	// The thread of one branch of the chat: ?branch=<branch id>, without it the current branch.
-	// "branch" in the answer is the branch served, "state" its state record as of these items. For
-	// the chat of a run's agent this also starts its chat events to the client: the follow comes
-	// first, so no change between the two is lost.
+	// "branch" in the answer is the branch served, "state" its state record as of these items. The
+	// read also starts the chat's content events to the client: the follow comes first, so no
+	// change between the two is lost.
 	mux.HandleFunc("GET /api/chats/{id}/items", func(w http.ResponseWriter, r *http.Request) {
 		s.follow(r, editorbridge.Chat(r.PathValue("id")))
 		t, err := a.Chats.ThreadOf(r.PathValue("id"), branchOf(r))
@@ -1145,8 +1118,7 @@ func (s *Server) routes() *routeMux {
 		ok(w)
 	})
 
-	// Folder browser for the working-directory picker of a chat and of a run. "git" says the
-	// folder is inside a git work tree: what decides whether a run there works with git. With
+	// Folder browser for the working-directory picker of a chat. With
 	// ?server=<entry> the folders are that server's, as it answers; an API client asks about this
 	// machine only.
 	mux.HandleFunc("GET /api/dirs", func(w http.ResponseWriter, r *http.Request) {
@@ -1165,9 +1137,8 @@ func (s *Server) routes() *routeMux {
 			return
 		}
 		// An API client does not list the app's own folder: the names there are the ids of
-		// every chat, board and run. Nor the folder of the runs' checkouts, which is outside it:
-		// the names there are the ids of the runs.
-		if fromRemote(r) && (a.Chats.Store.P.Contains(abs) || a.Chats.Store.P.InRunWork(abs)) {
+		// every chat and board.
+		if fromRemote(r) && a.Chats.Store.P.Contains(abs) {
 			writeError(w, http.StatusBadRequest, chats.ErrAppFolder.Error())
 			return
 		}
@@ -1178,9 +1149,7 @@ func (s *Server) routes() *routeMux {
 				dirs = append(dirs, e.Name())
 			}
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), dirsGitWait)
-		defer cancel()
-		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs, "git": rungit.IsWorkTree(ctx, abs)})
+		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs})
 	})
 
 	// An agent's plan usage limits, run on request and not stored. ?fresh=1 skips the cache. With
@@ -1208,212 +1177,4 @@ func (s *Server) routes() *routeMux {
 		mux.Handle("/", clientFiles(s.Client))
 	}
 	return mux
-}
-
-// ---- runs -------------------------------------------------------------------
-
-// runRoutes adds the routes of runs: thin handlers on runs.Service, and on the app for what
-// cascades (delete; archive and unarchive are in the table of every kind). A server whose app has
-// no runs answers each with 404.
-func (s *Server) runRoutes(mux *routeMux) {
-	a := s.App
-	// handle registers h, which gets the run service and the path's run id.
-	handle := func(pattern string, h func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string)) {
-		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			if a.Runs == nil {
-				writeError(w, http.StatusNotFound, runs.ErrNotFound.Error())
-				return
-			}
-			h(w, r, a.Runs, r.PathValue("id"))
-		})
-	}
-	// view writes a call's answer: the run's view, or its error.
-	view := func(w http.ResponseWriter, v model.RunView, err error, fallback int) {
-		if err != nil {
-			fail(w, err, fallback)
-			return
-		}
-		writeJSON(w, v)
-	}
-	// number reads a path value that counts from 1 (an attempt, a notes version).
-	number := func(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
-		n, err := strconv.Atoi(r.PathValue(name))
-		if err != nil || n < 1 {
-			writeError(w, http.StatusBadRequest, name+" must be a number, 1 or more")
-			return 0, false
-		}
-		return n, true
-	}
-
-	handle("POST /api/runs", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, _ string) {
-		var body struct{ Group, Name string }
-		if !readJSON(w, r, &body) {
-			return
-		}
-		v, err := rs.Create(body.Group, body.Name)
-		view(w, v, err, http.StatusBadRequest)
-	})
-	// The run's view, with what it says of its folder (git, folderMissing, blocked) checked again.
-	handle("GET /api/runs/{id}", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		v, err := rs.View(id)
-		view(w, v, err, http.StatusInternalServerError)
-	})
-	// Name and group in every status; agent, tiers, cwd and settings until the run starts. A
-	// page's body that names another server with "server" is refused (400 "server_refused"); on
-	// the remote listener a body with "server", whatever its value, is.
-	handle("PATCH /api/runs/{id}", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		var body runs.PatchReq
-		if fromRemote(r) && apiServerRefused(w, r) {
-			return
-		}
-		if !readRunPatch(w, r, &body) {
-			return
-		}
-		v, err := rs.Patch(id, body)
-		view(w, v, err, http.StatusBadRequest)
-	})
-	// The goal being typed. A started run ignores it.
-	handle("PUT /api/runs/{id}/draft", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		var body model.Draft
-		if !readJSON(w, r, &body) {
-			return
-		}
-		if err := rs.SetDraft(id, body); err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		ok(w)
-	})
-	// Answers when the start is recorded, before any agent runs.
-	handle("POST /api/runs/{id}/start", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		var body struct{ Goal string }
-		if !readJSON(w, r, &body) {
-			return
-		}
-		v, err := rs.Start(id, body.Goal)
-		view(w, v, err, http.StatusBadRequest)
-	})
-	handle("POST /api/runs/{id}/stop", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		v, err := rs.Stop(id)
-		view(w, v, err, http.StatusInternalServerError)
-	})
-	// The body may raise the limit that stalled the run: {maxTurns} or {maxCost}.
-	handle("POST /api/runs/{id}/resume", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		var body runs.ResumeReq
-		if !readOptionalJSON(w, r, &body) {
-			return
-		}
-		v, err := rs.Resume(id, body)
-		view(w, v, err, http.StatusBadRequest)
-	})
-	// Applies the result to the person's folder. The body may name the folder's branch ({branch},
-	// "HEAD" for a detached one): needed when it is not the branch the run started on. An outcome
-	// that is blocked or pending is an answer, not an error.
-	handle("POST /api/runs/{id}/apply", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		var body struct{ Branch string }
-		if !readOptionalJSON(w, r, &body) {
-			return
-		}
-		d, err := rs.Apply(id, body.Branch)
-		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, d)
-	})
-	// What an apply would do now: nothing changes and nothing is recorded.
-	handle("GET /api/runs/{id}/delivery", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		d, err := rs.Delivery(id)
-		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, d)
-	})
-	handle("DELETE /api/runs/{id}", func(w http.ResponseWriter, r *http.Request, _ *runs.Service, id string) {
-		if noRecord(w, r) {
-			return
-		}
-		if err := a.DeleteRun(id); err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		ok(w)
-	})
-
-	// What the run view reads on demand.
-	handle("GET /api/runs/{id}/detail", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		s.follow(r, editorbridge.Run(id))
-		d, err := rs.Detail(id)
-		if err != nil {
-			if errors.Is(err, runs.ErrNotFound) { // no follow of a run that is not there
-				s.unfollow(r, editorbridge.Run(id))
-			}
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, d)
-	})
-	handle("GET /api/runs/{id}/goal", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		g, err := rs.Goal(id)
-		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, g)
-	})
-	// A task's brief: ?rev=<n>, without it the one in force.
-	handle("GET /api/runs/{id}/tasks/{tid}/brief", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		rev := 0
-		if q := r.URL.Query().Get("rev"); q != "" {
-			n, err := strconv.Atoi(q)
-			if err != nil || n < 1 {
-				writeError(w, http.StatusBadRequest, "rev must be a number, 1 or more")
-				return
-			}
-			rev = n
-		}
-		b, err := rs.Brief(id, r.PathValue("tid"), rev)
-		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, b)
-	})
-	handle("GET /api/runs/{id}/tasks/{tid}/attempts/{n}/report", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		n, good := number(w, r, "n")
-		if !good {
-			return
-		}
-		rep, err := rs.Report(id, r.PathValue("tid"), n)
-		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, rep)
-	})
-	handle("GET /api/runs/{id}/tasks/{tid}/attempts/{n}/changes", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		n, good := number(w, r, "n")
-		if !good {
-			return
-		}
-		ch, err := rs.Changes(id, r.PathValue("tid"), n)
-		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, ch)
-	})
-	handle("GET /api/runs/{id}/notes/{v}", func(w http.ResponseWriter, r *http.Request, rs *runs.Service, id string) {
-		v, good := number(w, r, "v")
-		if !good {
-			return
-		}
-		notes, err := rs.Notes(id, v)
-		if err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, notes)
-	})
 }

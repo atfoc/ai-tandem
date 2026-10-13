@@ -524,8 +524,8 @@ func typesOf(evs []string) (types []string) {
 // snapshot: the list events, which go to every client, and the content events of what the client
 // follows. No event of the server's own pages is among them.
 var (
-	apiListEvents   = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "run", "run_removed", "catalog", "agents", "own_library"}
-	apiFollowEvents = []string{"tree", "chat_items", "sub", "sub_items", "run_detail", "run_activity"}
+	apiListEvents   = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "catalog", "agents", "own_library"}
+	apiFollowEvents = []string{"tree", "chat_items", "sub", "sub_items"}
 )
 
 // Across processes: a real server with the stand-in agent, a stand-in page on loopback that holds

@@ -145,7 +145,7 @@ test("the copies the browser keeps are this computer's chats' alone: a section's
 
 test("the page: conn.ts tells of `hello`, of a stream's snapshot and of a section's tree, and each composer adds its saver while it is open", () => {
   const src = (f: string) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-  const conn = src("conn.ts"), composer = src("Composer.tsx"), goal = src("run/RunComposer.tsx");
+  const conn = src("conn.ts"), composer = src("Composer.tsx");
   assert.ok(draftBacks instanceof DraftBacks);
   assert.ok(/case "hello": [^\n]*draftBacks\.opened\(\);/.test(conn));
   assert.equal(conn.split("draftBacks.snapshot();").length, 2);
@@ -156,6 +156,4 @@ test("the page: conn.ts tells of `hello`, of a stream's snapshot and of a sectio
   assert.ok(!conn.includes("server_back") && !conn.includes("chat_reload") && !conn.includes("serverBack("));
   assert.ok(composer.includes("useEffect(() => draftBacks.add({ server: () => on.current, back: () => drafts.current!.back() }), []);"));
   assert.ok(composer.includes("on.current = where.server;"), "the server is the chat's as the composer reads it: the one its key names");
-  // a run's goal typed while its server was away is saved the same way
-  assert.ok(goal.includes("useEffect(() => draftBacks.add({ server: () => on.current, back: () => drafts.current!.back() }), []);") && goal.includes("on.current = w.server;"));
 });

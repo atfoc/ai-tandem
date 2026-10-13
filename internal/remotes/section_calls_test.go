@@ -22,7 +22,7 @@ func TestSectionCallPassedOn(t *testing.T) {
 	routes := map[string]*script{}
 	for _, pattern := range []string{
 		"POST /api/groups", "DELETE /api/groups/{id}", "POST /api/chats", "PATCH /api/chats/{id}",
-		"POST /api/chats/{id}/messages", "PUT /api/chats/{id}/draft", "POST /api/runs/{id}/start", "DELETE /api/runs/{id}",
+		"POST /api/chats/{id}/messages", "PUT /api/chats/{id}/draft",
 		"POST /api/boards/{id}/rename",
 	} {
 		routes[pattern] = rg.script(pattern)
@@ -39,8 +39,6 @@ func TestSectionCallPassedOn(t *testing.T) {
 		{"PATCH /api/chats/{id}", "PATCH", "/api/chats/" + chatA + "?branch=b_2", `{"group":"g_in"}`, 200, `{"ok":true,"chat":{"id":"` + chatA + `"}}`},
 		{"POST /api/chats/{id}/messages", "POST", "/api/chats/" + chatA + "/messages?branch=main", `{"text":"hi","context":{"board":"` + boardA + `"}}`, 409, `{"error":"the agent is working","code":"busy"}`},
 		{"PUT /api/chats/{id}/draft", "PUT", "/api/chats/" + chatA + "/draft?rev=3", `{"text":"typed"}`, 409, `{"error":"the draft changed","code":"stale","rev":5,"draft":{"text":"theirs"}}`},
-		{"POST /api/runs/{id}/start", "POST", "/api/runs/" + runA + "/start", `{"goal":"ship"}`, 500, `{"error":"the run cannot start"}`},
-		{"DELETE /api/runs/{id}", "DELETE", "/api/runs/" + runA, "", 404, `{"error":"no such run","code":"not_found"}`},
 		{"POST /api/boards/{id}/rename", "POST", "/api/boards/" + boardA + "/rename", `{"name":"Plan"}`, 404, `{"error":"no such board","code":"not_found"}`},
 	} {
 		s := routes[c.pattern]

@@ -51,8 +51,8 @@ const (
 
 // remotePair is the two servers, the link between them and the stand-in page on A.
 type remotePair struct {
-	a     *runServer
-	b     *apiRunServer
+	a     *scriptedServer
+	b     *apiServer
 	link  *linksim.Link
 	entry string   // the id of B's entry in A's list; "" until addEntry
 	page  *watcher // the events of the stand-in page on A
@@ -72,9 +72,8 @@ func startRemotePair(t *testing.T, p linksim.Profile, bClaude string) *remotePai
 	return startRemotePairIn(t, p, bClaude, nil)
 }
 
-// startRemotePairIn is startRemotePair with more in the environment of both servers: the git
-// environment of a scratch repository (agenttest.Repo.Env()), for the pairs that run runs, and
-// the waits a test lowers (clock.env).
+// startRemotePairIn is startRemotePair with more in the environment of both servers: the waits a
+// test lowers (clock.env).
 func startRemotePairIn(t *testing.T, p linksim.Profile, bClaude string, env []string) *remotePair {
 	t.Helper()
 	rp := newPair(t, p, bClaude, env)
@@ -91,7 +90,7 @@ func startRemotePairIn(t *testing.T, p linksim.Profile, bClaude string, env []st
 func newPair(t *testing.T, p linksim.Profile, bClaude string, env []string) *remotePair {
 	t.Helper()
 	rp := &remotePair{}
-	rp.b = &apiRunServer{runServer: newRunServer(t, pairEnv(env...)), port: freePort(t)}
+	rp.b = &apiServer{scriptedServer: newScriptedServer(t, pairEnv(env...)), port: freePort(t)}
 	rp.b.in.setenv(loopbackBind)
 	if bClaude != "" {
 		rp.b.in.claude = bClaude
@@ -106,7 +105,7 @@ func newPair(t *testing.T, p linksim.Profile, bClaude string, env []string) *rem
 	rp.b.hc = &http.Client{Transport: tr, Timeout: 60 * time.Second}
 
 	rp.link = linksim.Start(t, fmt.Sprintf("127.0.0.1:%d", rp.b.port), p)
-	rp.a = newRunServer(t, pairEnv(append([]string{"AIWB_TEST_DIAL_VIA=" + rp.link.Addr()}, env...)...))
+	rp.a = newScriptedServer(t, pairEnv(append([]string{"AIWB_TEST_DIAL_VIA=" + rp.link.Addr()}, env...)...))
 	work, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -817,7 +816,7 @@ func (rp *remotePair) noText(t *testing.T, what, text string, w ...*watcher) {
 
 // The cheapest pair of real servers, which the default set runs too (smokeTest): B is an entry of
 // A's list, connected through the link to B's remote listener, and a group is made and a chat
-// started in B's section through A. Two servers and one turn of the stand-in agent, no run.
+// started in B's section through A. Two servers and one turn of the stand-in agent.
 // The owner of B sees the chat in the group it was made in, B's only group: there is no group
 // "Remote". A's own lists hold nothing of it.
 func TestRemotePairStartsAChat(t *testing.T) {
@@ -839,8 +838,70 @@ func TestRemotePairStartsAChat(t *testing.T) {
 	}
 	var here level5Tree
 	rp.a.must(t, pairPage, "GET", "/api/state", nil, &here)
-	if len(here.Groups)+len(here.Chats)+len(here.States)+len(here.Boards)+len(here.Runs) != 0 {
+	if len(here.Groups)+len(here.Chats)+len(here.States)+len(here.Boards) != 0 {
 		t.Fatalf("A's own lists hold something: %+v", here)
+	}
+}
+
+// AC29 and AC44, a server that lost its agent: B's Claude program goes away while B is connected.
+// A's page is told B's lists with no agent within 35 s. A chat that names the agent is then
+// refused by B with its own reason, which A hands on, and nothing is made.
+// B looks its programs up on the fastest clock, every second for every 30 s; the 35 s are the bound.
+func TestRemoteChatNoAgentProgram(t *testing.T) {
+	serverTest(t, "TestAgentsReachPages (internal/remotes)", "TestAgentsEventUpdatesView (internal/servers)", "TestListFollowsThePath (internal/usable)")
+	rp := connectedPair(t, linksim.Good, fastest.env(t, "agents"))
+	g := rp.group(t, "Work")
+	agentsOf := func(e seenEvent) (agents []model.AgentKind, ok bool) {
+		var ev struct {
+			Server string
+			Lists  *struct{ Agents []model.AgentKind }
+		}
+		if e.Type != "server_lists" || json.Unmarshal([]byte(e.Raw), &ev) != nil || ev.Server != rp.entry || ev.Lists == nil {
+			return nil, false
+		}
+		return ev.Lists.Agents, true
+	}
+	var made model.ChatView
+	if a := rp.ok(t, "POST", rp.on("/chats"), map[string]any{"group": g}); json.Unmarshal([]byte(a.Raw), &made) != nil || made.ID == "" || made.Agent != model.Claude || made.Group != g {
+		t.Fatalf("a chat made on %s with its program there: %s", pairName, a)
+	}
+
+	mark := rp.page.mark()
+	away := rp.b.in.claude + ".away"
+	if err := os.Rename(rp.b.in.claude, away); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Rename(away, rp.b.in.claude) })
+	began := time.Now()
+	rp.page.await(t, mark, 35*time.Second, "server_lists event of "+pairName+" with no agent", func(e seenEvent) bool {
+		agents, ok := agentsOf(e)
+		return ok && len(agents) == 0
+	})
+	t.Logf("the page was told %s has no agent %v after its program was gone", pairName, time.Since(began).Round(10*time.Millisecond))
+	if l, ok := rp.state(t).Lists[rp.entry]; !ok || len(l.Agents) != 0 {
+		t.Fatalf("%s's agents in A's snapshot: %v (lists there: %v), want none", pairName, l.Agents, ok)
+	}
+	if v := rp.entryView(t); v.State != servers.StateConnected {
+		t.Fatalf("%s is %q with its program gone, want connected", pairName, v.State)
+	}
+	// The section still shows B's tree, and what B refuses is refused as B says it.
+	before, ok := rp.section(t)
+	if !ok {
+		t.Fatalf("A holds no tree of %s with its program gone", pairName)
+	}
+	body := map[string]any{"agent": "claude", "group": g}
+	a := rp.refused(t, http.StatusConflict, "agent_missing", "POST", rp.on("/chats"), body)
+	if b := rp.atB(t, "POST", "/api/chats", body); b.Status != a.Status || b.Raw != a.Raw {
+		t.Fatalf("a chat for the agent that is gone: the refusal through A is not B's own:\nthrough A: %s\nat B:      %s", a, b)
+	}
+	t.Logf("a chat for the agent that is gone, through A: %s", a)
+	time.Sleep(300 * time.Millisecond) // an event of a chat that was made after all would have come
+	after, _ := rp.section(t)
+	if len(after.Chats) != len(before.Chats) {
+		t.Fatalf("A's tree of %s after the refusal: %d chats, %d before it", pairName, len(after.Chats), len(before.Chats))
+	}
+	if here := rp.state(t); len(here.Chats) != 0 {
+		t.Fatalf("A's own chats after the refusal: %+v", here.Chats)
 	}
 }
 
@@ -1539,7 +1600,7 @@ func TestRemoteChatRemoval(t *testing.T) {
 func standInWrap(t *testing.T) string {
 	t.Helper()
 	real := agenttest.FakeClaude(t)
-	path := real + "-wrap" // beside it: runServer.fakes lists the processes by this path too
+	path := real + "-wrap" // beside it: scriptedServer.fakes lists the processes by this path too
 	const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const real = () => require(__dirname + "/fake-claude");

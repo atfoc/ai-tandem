@@ -72,13 +72,13 @@ func TestArgsPlainChat(t *testing.T) {
 
 func TestArgsBoardChat(t *testing.T) {
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
-	// Dir: the chat's folder is named by the caller (a chat or an agent of a run, a subagent).
-	args := testSpawner.Args(agent.SpawnOptions{ChatID: "c2", Dir: "/Users/me/.ai-whiteboard/runs/r1/agents/c2",
+	// Dir: the chat's folder is named by the caller.
+	args := testSpawner.Args(agent.SpawnOptions{ChatID: "c2", Dir: "/Users/me/.ai-whiteboard/elsewhere/c2",
 		SessionID: "s2", Resume: true, Cwd: "/tmp", Model: "opus", MCP: mcp, BoardID: "b"})
 	if v, _ := flag(args, "--append-system-prompt"); !strings.Contains(v, "WHITEBOARD PROMPT") {
 		t.Errorf("--append-system-prompt missing whiteboard: %q", v)
 	}
-	if v, _ := flag(args, "--mcp-config"); v != "/Users/me/.ai-whiteboard/runs/r1/agents/c2/mcp.json" {
+	if v, _ := flag(args, "--mcp-config"); v != "/Users/me/.ai-whiteboard/elsewhere/c2/mcp.json" {
 		t.Errorf("--mcp-config = %q", v)
 	}
 	noToken(t, args, "tok")
@@ -160,11 +160,6 @@ func TestArgsSubProcessThatMaySpawn(t *testing.T) {
 		if strings.Contains(subSpawnSteering, not) {
 			t.Errorf("the steering of a subagent that may spawn says %q", not)
 		}
-	}
-	// With the list a chat on a run gives its subagents, the steering is the same.
-	args = testSpawner.Args(agent.SpawnOptions{SessionID: "s9", Cwd: "/tmp", MCP: mcp, Subagent: true, MCPTools: []string{"spawn_subagent"}})
-	if v, _ := flag(args, "--append-system-prompt"); v != subSpawnSteering {
-		t.Errorf("--append-system-prompt of a subagent with a tool list: %q", v)
 	}
 }
 
@@ -306,8 +301,7 @@ func TestAppDirRules(t *testing.T) {
 	}
 }
 
-// pinned is the argv of a chat, as it was before SpawnOptions had Unattended, ReadOnly and
-// MCPTools: with none of them set, nothing about it may change.
+// pinned is the whole argv of a process, argument by argument and in order.
 func pinned(session []string, model []string, allowed []boardtools.Tool, mcp, prompt string) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
 		"--verbose", "--include-partial-messages", "--permission-mode", "auto", "--permission-prompt-tool", "stdio",
@@ -329,7 +323,7 @@ func pinned(session []string, model []string, allowed []boardtools.Tool, mcp, pr
 	return append(args, "--append-system-prompt", prompt)
 }
 
-func TestArgsUnchangedWithoutTheNewOptions(t *testing.T) {
+func TestArgsWholeArgv(t *testing.T) {
 	const cfg = "/Users/me/.ai-whiteboard/chats/mcp.json" // no ChatID in these options
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
 	cases := []struct {
@@ -356,140 +350,12 @@ func TestArgsUnchangedWithoutTheNewOptions(t *testing.T) {
 	}
 }
 
-const appDirRules = "Read(~/.ai-whiteboard/**),Edit(~/.ai-whiteboard/**),Write(~/.ai-whiteboard/**),Bash(*.ai-whiteboard*)"
-
-// An unattended process never asks (bypassPermissions) and has no tool that waits for a person; a
-// read-only one refuses what no rule allows (dontAsk) and has no edit tool. Both have only the
-// app's MCP server, not the user's own. Read-only decides the mode when both are set.
-func TestArgsUnattendedAndReadOnly(t *testing.T) {
-	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
-	cases := []struct {
-		name             string
-		o                agent.SpawnOptions
-		mode, disallowed string
-		strict           bool
-	}{
-		{"unattended", agent.SpawnOptions{Unattended: true},
-			"bypassPermissions", appDirRules + ",Task,Agent,AskUserQuestion,EnterPlanMode,ExitPlanMode", true},
-		{"read-only", agent.SpawnOptions{ReadOnly: true},
-			"dontAsk", appDirRules + ",Task,Agent,Edit,Write,NotebookEdit,AskUserQuestion,EnterPlanMode,ExitPlanMode", true},
-		{"read-only and unattended", agent.SpawnOptions{ReadOnly: true, Unattended: true},
-			"dontAsk", appDirRules + ",Task,Agent,Edit,Write,NotebookEdit,AskUserQuestion,EnterPlanMode,ExitPlanMode", true},
-	}
-	for _, c := range cases {
-		c.o.SessionID, c.o.Cwd, c.o.Model, c.o.MCP, c.o.MCPTools = "s1", "/tmp", "haiku", mcp, []string{"get_run"}
-		args := testSpawner.Args(c.o)
-		if v, _ := flag(args, "--permission-mode"); v != c.mode {
-			t.Errorf("%s: --permission-mode = %q, want %q", c.name, v, c.mode)
-		}
-		if v, _ := flag(args, "--disallowedTools"); v != c.disallowed {
-			t.Errorf("%s: --disallowedTools = %q\n want %q", c.name, v, c.disallowed)
-		}
-		if _, ok := flag(args, "--strict-mcp-config"); ok != c.strict {
-			t.Errorf("%s: --strict-mcp-config present = %v, want %v", c.name, ok, c.strict)
-		}
-		// The request channel stays: a request that comes anyway is answered by the adapter.
-		if v, _ := flag(args, "--permission-prompt-tool"); v != "stdio" {
-			t.Errorf("%s: --permission-prompt-tool = %q", c.name, v)
-		}
-		// In dontAsk an MCP tool that is not allowed is refused, so the list has to be there.
-		if v, _ := flag(args, "--allowedTools"); v != "mcp__board__get_run" {
-			t.Errorf("%s: --allowedTools = %q", c.name, v)
-		}
-		if _, ok := flag(args, "--mcp-config"); !ok {
-			t.Errorf("%s: --mcp-config missing", c.name)
-		}
-		if n := len(args); args[n-2] != "--append-system-prompt" || args[n-1] != spawnSteering {
-			t.Errorf("%s: the prompt changed: %q", c.name, args[n-2:])
-		}
-	}
-	// The flag stands right after --disallowedTools, before --mcp-config, and is there without
-	// the app's MCP server too: the process then has no MCP server at all.
-	for _, o := range []agent.SpawnOptions{{Unattended: true}, {ReadOnly: true}, {Unattended: true, ReadOnly: true}} {
-		o.SessionID, o.Cwd, o.Model = "s1", "/tmp", "haiku"
-		for _, withMCP := range []bool{false, true} {
-			if withMCP {
-				o.MCP = mcp
-			}
-			args := testSpawner.Args(o)
-			i := slices.Index(args, "--strict-mcp-config")
-			if i < 2 || args[i-2] != "--disallowedTools" {
-				t.Errorf("%+v: --strict-mcp-config is not right after --disallowedTools: %q", o, args)
-				continue
-			}
-			if next := args[i+1]; withMCP && next != "--mcp-config" || !withMCP && next != "--append-system-prompt" {
-				t.Errorf("%+v: %q follows --strict-mcp-config", o, next)
-			}
-			if _, ok := flag(args, "--mcp-config"); ok != withMCP {
-				t.Errorf("%+v: --mcp-config present = %v", o, ok)
-			}
-		}
-	}
-	// A chat has no such flag, with or without the app's MCP server, a board or a subagent.
-	for _, o := range []agent.SpawnOptions{{}, {MCP: mcp}, {MCP: mcp, BoardID: "b"}, {MCP: mcp, Subagent: true, NoSpawn: true}, {MCP: mcp, MCPTools: []string{"get_run"}}} {
-		o.SessionID, o.Cwd = "s1", "/tmp"
-		if args := testSpawner.Args(o); slices.Contains(args, "--strict-mcp-config") {
-			t.Errorf("%+v: a chat got --strict-mcp-config: %q", o, args)
-		}
-	}
-	// Only the mode and the list differ from a chat's argv, plus the one flag.
-	plain := testSpawner.Args(agent.SpawnOptions{SessionID: "s1", Cwd: "/tmp", Model: "haiku"})
-	un := testSpawner.Args(agent.SpawnOptions{SessionID: "s1", Cwd: "/tmp", Model: "haiku", Unattended: true})
-	un = slices.DeleteFunc(un, func(a string) bool { return a == "--strict-mcp-config" })
-	if len(plain) != len(un) {
-		t.Fatalf("unattended argv has %d arguments besides the flag, a chat's %d", len(un), len(plain))
-	}
-	var differ []string
-	for i := range plain {
-		if plain[i] != un[i] {
-			differ = append(differ, plain[i-1])
-		}
-	}
-	if !slices.Equal(differ, []string{"--permission-mode", "--disallowedTools"}) {
-		t.Errorf("unattended argv differs from a chat's in %q", differ)
-	}
-}
-
-// MCPTools, when set, is the whole --allowedTools list; unset, the list is derived as before.
-func TestArgsMCPTools(t *testing.T) {
-	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
-	base := agent.SpawnOptions{SessionID: "s1", Cwd: "/tmp", MCP: mcp, BoardID: "b"}
-
-	checkAllowed(t, testSpawner.Args(base), append(append([]boardtools.Tool{}, boardtools.Tools...), boardtools.SpawnFamily...), nil)
-
-	none := base
-	none.MCPTools = []string{}
-	args := testSpawner.Args(none)
-	if _, ok := flag(args, "--allowedTools"); ok {
-		t.Errorf("an empty list still gives --allowedTools: %q", args)
-	}
-	if _, ok := flag(args, "--mcp-config"); !ok {
-		t.Errorf("an empty list removed --mcp-config: %q", args)
-	}
-
-	two := base
-	two.MCPTools = []string{"get_run", "spawn_subagent"}
-	if v, _ := flag(testSpawner.Args(two), "--allowedTools"); v != "mcp__board__get_run,mcp__board__spawn_subagent" {
-		t.Errorf("--allowedTools = %q", v)
-	}
-	// Neither the board nor the subagent setting adds to the list.
-	two.Subagent = true
-	if v, _ := flag(testSpawner.Args(two), "--allowedTools"); v != "mcp__board__get_run,mcp__board__spawn_subagent" {
-		t.Errorf("--allowedTools of a subagent = %q", v)
-	}
-	// Without the app's MCP server there is nothing to allow.
-	two.MCP = nil
-	if _, ok := flag(testSpawner.Args(two), "--allowedTools"); ok {
-		t.Error("--allowedTools without MCP")
-	}
-}
-
 // A started process gets its MCP configuration in a file only the user can read, in the chat's
 // folder, and no token in its arguments or its environment: both can be read by any process of
-// the user (ps), a run's task agent with a shell included.
+// the user (ps).
 func TestStartKeepsTheTokenOffTheCommandLine(t *testing.T) {
 	f := newFake(t)
-	dir := filepath.Join(t.TempDir(), "runs", "r1", "agents", "c1") // not made yet: a subagent's folder may not be
+	dir := filepath.Join(t.TempDir(), "elsewhere", "c1") // not made yet: a subagent's folder may not be
 	start := func(token string) []string {
 		t.Helper()
 		a, err := f.spawner().Spawn(agent.SpawnOptions{ChatID: "c1", Dir: dir, SessionID: "s1", Cwd: t.TempDir(),

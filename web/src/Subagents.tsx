@@ -1,7 +1,6 @@
-// Subagents in the chat: the one-line row in the thread and the drawer on the right. A run
-// agent's transcript beside its run opens its subagents in the same drawer.
+// Subagents in the chat: the one-line row in the thread and the drawer on the right.
 import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, boardNames, isBusy, chatOf, setDrawer, shownView, subsOf, subThreadOf, threadOf } from "./store.ts";
+import { useStore, getState, boardNames, isBusy, setDrawer, shownView, subsOf, subThreadOf, threadOf } from "./store.ts";
 import { loadSubItems } from "./conn.ts";
 import { ItemView, usePrefixEnd, useStickToBottom } from "./ChatView.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -32,7 +31,7 @@ function useSubNav(chat: string, sid: string): { on: boolean; toggle(): void } {
 
 /** Whether a layer above the drawer takes this Esc: the confirm dialog, the point picker, the tree
  *  popup, the mention list, a quote float, the composer's Subagents popover, an image shown large. */
-export function escTaken(e: KeyboardEvent): boolean {
+function escTaken(e: KeyboardEvent): boolean {
   const s = getState();
   const box = e.target instanceof Element && e.target.closest(".composer-input"); // its Esc does not get to the float or the list
   return !!(s.confirm || s.picking || s.treeNav || document.querySelector(box ? ".mention-pop, .sub-pop, .img-large" : ".mention-pop, .qfloat, .qlist, .sub-pop, .img-large"));
@@ -49,7 +48,7 @@ export function useSubThread(chat: string, sid: string, want: boolean): Item[] |
 }
 
 /** Date.now(), re-rendered every second while active. */
-export function useNow(active: boolean): number {
+function useNow(active: boolean): number {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!active) return;
@@ -202,17 +201,16 @@ function useSub(chat: string, sid: string) {
 
 /** A subagent's prompt, live thread and report, with its header: what the drawer shows, with no
  *  place of its own. It renders a header and a scroller side by side: its parent must be a flex
- *  column with a bounded height. chat: the chat or the run agent whose subagent it is. branch: the
- *  branch the thread is of, where a card in it answers ("": the chat's current one). onOpen:
- *  another subagent of the chat was chosen with ‹ ›. Nothing is rendered until the subagent is
- *  known. */
-export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle = "Close (Esc)" }: {
-  chat: ChatView; sid: string; branch?: string; onClose: () => void; onOpen: (sid: string) => void; closeTitle?: string;
+ *  column with a bounded height. chat: the chat whose subagent it is. branch: the branch the
+ *  thread is of, where a card in it answers. onOpen: another subagent of the chat was chosen with
+ *  ‹ ›. Nothing is rendered until the subagent is known. */
+function SubThread({ chat, sid, branch, onClose, onOpen }: {
+  chat: ChatView; sid: string; branch: string; onClose: () => void; onOpen: (sid: string) => void;
 }) {
   const { subs, call, sa, readOnly } = useSub(chat.id, sid);
   const items = useSubThread(chat.id, sid, true);
   const off = useOffWhy(chat.id); // why a thread the page does not keep is not being loaded
-  const server = serverOf(chat); // a run agent's subagent too: its chat's key names the run's server
+  const server = serverOf(chat);
   const list = subTree(subs).map((n) => n.sa); // ‹ › goes through the tree: a subagent, then the ones it started
   const idx = sa ? list.findIndex((x) => x.id === sa.id) : -1;
   const above = subAncestors(sa, subs); // of a nested one: whose subagent it is, and the way back
@@ -249,7 +247,7 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
               <button className="icon-btn" title="Next subagent" onClick={() => step(1)}>›</button>
             </span>
           )}
-          <button className="icon-btn" title={closeTitle} onClick={onClose}>×</button>
+          <button className="icon-btn" title="Close (Esc)" onClick={onClose}>×</button>
         </div>
         <div className={`sub-line ${line.tone}`}>{line.text}</div>
         <SubStats sa={sa} items={items} now={now} server={server} />
@@ -270,16 +268,13 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
   );
 }
 
-/** The drawer on the right: the open subagent of the chat on screen, or of a run agent whose
- *  transcript the selected run's page shows without a place of its own for subagents. */
+/** The drawer on the right: the open subagent of the chat on screen. */
 export function SubagentDrawer() {
   const d = useStore((s) => s.subDrawer);
   const shown = useStore((s) => {
-    const c = s.subDrawer && chatOf(s, s.subDrawer.chat);
-    if (!c) return false;
-    if (c.role) return s.sel.run === c.run; // a run agent's: while its run is on screen
-    if (s.sel.chat !== c.id) return false;
-    return !(c.board || c.run) || s.panel; // a board or run chat's drawer only while its panel shows
+    const c = s.subDrawer && s.chats[s.subDrawer.chat];
+    if (!c || s.sel.chat !== c.id) return false;
+    return !c.board || s.panel; // a board chat's drawer only while its panel shows
   });
   const chat = useStore((s) => (d ? shownView(s, d.chat) : undefined));
   const { sa, readOnly } = useSub(d?.chat ?? "", d?.sub ?? "");

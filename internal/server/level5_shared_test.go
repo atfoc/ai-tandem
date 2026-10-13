@@ -7,15 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 )
 
 // Several clients and the owner in one thing (contract 2.7, goal 3.6): a chat that the owner's
-// page and two clients have open, a board that one of them holds at a time, and the chat of a
-// run's agent, which all of them read and none writes.
+// page and two clients have open, and a board that one of them holds at a time.
 
 // l5Open makes each of the three a follower of the chat, as an open chat view does: by a read
 // of its thread.
@@ -627,87 +625,4 @@ func TestLevel5OneHolderOfABoard(t *testing.T) {
 	if items := l5Want(t, p, 200, "GET", "/api/chats/"+fork.ID+"/items", nil); !strings.Contains(items, "draw a plan") || !strings.Contains(items, "Drawn.") {
 		t.Errorf("the owner reads the fork as %s", items)
 	}
-}
-
-// The chat of a run's agent is read and followed by a client, and written by nobody: every
-// write is 409, on the remote port as on the server's own.
-func TestLevel5RunAgentsChatIsReadOnly(t *testing.T) {
-	t.Parallel()
-	s := l5NewSite(t)
-	said, next := make(chan struct{}, 4), make(chan struct{})
-	s.fake.Script(func(turn *agenttest.Turn) {
-		if !isOrchestrator(turn) {
-			turn.Say("At work.")
-			turn.Hang()
-			return
-		}
-		turn.Say("first words")
-		said <- struct{}{}
-		select {
-		case <-next:
-		case <-turn.Interrupted():
-			return
-		}
-		turn.Say("second words")
-		turn.Hang()
-	})
-	run := l5ID(t, l5Want(t, s.x, 200, "POST", "/api/runs", `{"group":"`+model.Ungrouped+`","name":"Run"}`))
-	l5Want(t, s.x, 200, "POST", "/api/runs/"+run+"/start", `{"goal":"Look around."}`)
-	<-said
-	// The other client, which did not make the run, finds the agent's chat in the run's detail.
-	orch := decode[model.RunDetail](t, l5Await(t, s.y, "/api/runs/"+run+"/detail", `"turns":[{`)).Turns[0].Agent
-	path := "/api/chats/" + orch
-	if v := decode[model.ChatView](t, l5Want(t, s.y, 200, "GET", path, nil)); v.Run != run || v.Role != "orchestrator" {
-		t.Fatalf("the agent's chat for a client: %+v", v)
-	}
-	l5Await(t, s.y, path+"/items", "first words") // the read makes the client a follower
-	if tree := l5Want(t, s.y, 200, "GET", path+"/tree", nil); !strings.Contains(tree, `"current":"main"`) {
-		t.Errorf("a client reads the agent's tree as %s", tree)
-	}
-	l5Want(t, s.p, 200, "GET", path+"/items", nil) // the owner's page follows it too
-	// It is in no list: not in the owner's, not in a client's.
-	for _, c := range s.all() {
-		if state := l5Want(t, c, 200, "GET", "/api/state", nil); strings.Contains(state, orch) {
-			t.Errorf("the state of %s lists the agent's chat", s.who(c))
-		}
-	}
-
-	// Every write is refused, for a client as for the owner's page.
-	const driven = `{"error":"this chat is one of a run's agents: the run drives it"}`
-	for _, w := range [][3]string{
-		{"POST", "/messages", `{"text":"hello"}`}, {"POST", "/messages?branch=main", `{"text":"hello"}`},
-		{"PATCH", "", `{"name":"Mine"}`}, {"PATCH", "", `{"model":"opus"}`}, {"PATCH", "", `{"group":"` + model.Ungrouped + `"}`},
-		{"PUT", "/draft?rev=0", `{"text":"typed"}`}, {"POST", "/interrupt", ``}, {"PUT", "/label", `{"branch":"main","item":0,"text":"label"}`},
-		{"POST", "/fork", `{"branch":"main","at":1}`}, {"POST", "/archive", ``}, {"POST", "/unarchive", ``}, {"DELETE", "", ``},
-	} {
-		var body any
-		if w[2] != "" {
-			body = w[2]
-		}
-		for _, c := range s.all() {
-			status, out := l5Call(c, w[0], path+w[1], body)
-			l5Is(t, w[0]+" "+w[1]+" of the agent's chat by "+s.who(c), status, out, 409, driven)
-		}
-	}
-	if v := decode[model.ChatView](t, l5Want(t, s.x, 200, "GET", path, nil)); v.Name == "Mine" || v.Archived || v.Draft != nil {
-		t.Errorf("the agent's chat after the refused writes: %+v", v)
-	}
-
-	// The followers get what the agent says next; the client that did not read the chat gets
-	// nothing of it.
-	s.reach(s.all()...)
-	close(next)
-	for _, c := range []*bridgetest.Page{s.y, s.p} {
-		evs := l5UpTo(t, c, "chat_items", orch, "second words")
-		if c == s.y {
-			l5NoPageEvents(t, c, evs)
-		}
-	}
-	for _, raw := range s.reach(s.x)[0] {
-		if strings.Contains(raw, orch) && typeOf(raw) != "run_detail" && typeOf(raw) != "run_activity" {
-			t.Errorf("the client that does not follow the agent's chat was sent %s", raw)
-		}
-	}
-	l5Want(t, s.p, 200, "POST", "/api/runs/"+run+"/stop", nil)
-	l5Await(t, s.p, "/api/runs/"+run, `"status":"stopped"`)
 }

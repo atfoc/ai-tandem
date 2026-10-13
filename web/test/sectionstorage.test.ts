@@ -2,7 +2,7 @@
 // section 5 "Nothing on disk": "the browser's storage holds the collapse of 3.13 and what it holds today for any
 // chat, and no content of a remote server"). Every source file under web/src is read: a write under a key that is
 // not in the list, or by another way than the store's safeSet, fails here until it is judged and listed.
-// What each key holds for a thing of a section is shown by sectionstore.test.ts (a draft, a run's goal, the
+// What each key holds for a thing of a section is shown by sectionstore.test.ts (a draft, the
 // selection, the collapse, the recent folders), by saves.test.ts (a drawing) and, in a browser, by
 // dev/checks/SEC.9-storage.mjs.
 import { test } from "node:test";
@@ -41,10 +41,9 @@ test("every key the page writes, by the place that writes it: a setting, a key o
   assert.deepEqual(writes, [
     "Composer.tsx RECENT_KEY",            // this computer's recent folders: content, of this computer alone (below)
     "Resizer.tsx \"aiwb.widths\"",        // a setting
-    "Sidebar.tsx \"aiwb.sel\"",           // what is selected: the keys of a board, a run and a chat (entry id and id)
+    "Sidebar.tsx \"aiwb.sel\"",           // what is selected: the keys of a board and a chat (entry id and id)
     "Sidebar.tsx \"aiwb.side\"",          // a setting
     "Sidebar.tsx \"aiwb.archived\"",      // a setting
-    "run/actions.ts KEY",                 // a setting: the height of the run view's dock, one for every run
     "store.ts \"aiwb.sel\"",
     "store.ts COLLAPSE_KEY",              // the collapse of 3.13: entry ids, and the keys of groups of sections
     "store.ts COLLAPSE_KEY",
@@ -52,21 +51,19 @@ test("every key the page writes, by the place that writes it: a setting, a key o
     "store.ts COLLAPSE_KEY",
     "store.ts \"aiwb.sel\"",
     "store.ts to",                        // an unsaved draft of before each branch had its own, under its branch's key: of this computer's chats (the snapshot's)
-    "store.ts \"aiwb.lastChat\"",         // the chat a board or a run reopens with: the owner's key and the chat's key
+    "store.ts \"aiwb.lastChat\"",         // the chat a board reopens with: the board's key and the chat's key
     "theme.ts \"aiwb.theme\"",            // a setting
   ]);
-  assert.deepEqual([COLLAPSE_KEY, RECENT_KEY, draftKey("c", "b"), legacyDraftKey("r")], ["aiwb.collapsed", "aiwb.dirs", "aiwb.draft.c:b", "aiwb.draft.r"]);
-  assert.ok(text["run/actions.ts"].includes('const KEY = "aiwb.run.ui";') && text["run/actions.ts"].includes("export type RunUi = { dockH?: number };"));
+  assert.deepEqual([COLLAPSE_KEY, RECENT_KEY, draftKey("c", "b"), legacyDraftKey("c")], ["aiwb.collapsed", "aiwb.dirs", "aiwb.draft.c:b", "aiwb.draft.c"]);
 });
 
-test("the two keys that hold content are written for this computer's things alone: an unsaved draft or goal, and the recent folders", () => {
+test("the two keys that hold content are written for this computer's things alone: an unsaved draft and the recent folders", () => {
   const store = text["store.ts"];
-  // an unsaved copy goes to the browser's storage or to the page's memory by the key of the chat or the run it is of
+  // an unsaved copy goes to the browser's storage or to the page's memory by the key of the chat it is of
   assert.ok(store.includes(`const copies = (of: string) => (inSection(of)
   ? { get: (k: string) => memory.get(k) ?? null, set: (k: string, v: string) => { memory.set(k, v); }, remove: (k: string) => { memory.delete(k); } }
   : { get: safeGet, set: safeSet, remove: safeRemove });`));
   assert.ok(store.includes("export const unsavedDraft = (chat: string, branch: string): Unsaved => unsavedAt(chat, draftKey(chat, branch), () => draftRevOf(chat, branch));"));
-  assert.ok(store.includes("export const unsavedRunDraft = (run: string): Unsaved => unsavedAt(run, legacyDraftKey(run));"));
   // and nothing else writes a draft's key: the two functions above are the only users of the keys' makers that write
   for (const f of Object.keys(text)) {
     if (f === "store.ts" || f === "logic/drafts.ts" || f === "logic/draftsback.ts") continue;

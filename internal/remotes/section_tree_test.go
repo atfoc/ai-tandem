@@ -9,24 +9,21 @@ import (
 	"strings"
 	"testing"
 
-	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 )
 
-// serveReads makes the stand-in answer the reads that follow, of every chat and every run, and
-// both unfollow calls.
+// serveReads makes the stand-in answer the reads that follow, of every chat, and the unfollow
+// call.
 func (f *far) serveReads() {
-	for _, pattern := range []string{"GET /api/chats/{id}/items", "GET /api/chats/{id}/tree", "GET /api/runs/{id}/detail"} {
+	for _, pattern := range []string{"GET /api/chats/{id}/items", "GET /api/chats/{id}/tree"} {
 		f.s.Handle(pattern, func(w http.ResponseWriter, r *http.Request) {
 			writeAnswer(w, http.StatusOK, map[string]any{"version": 1, "of": r.PathValue("id")})
 		})
 	}
-	for _, pattern := range []string{"POST /api/chats/{id}/unfollow", "POST /api/runs/{id}/unfollow"} {
-		f.s.Handle(pattern, func(w http.ResponseWriter, r *http.Request) {
-			writeAnswer(w, http.StatusOK, map[string]any{"ok": true})
-		})
-	}
+	f.s.Handle("POST /api/chats/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
+		writeAnswer(w, http.StatusOK, map[string]any{"ok": true})
+	})
 }
 
 // readChat makes the page read the chat's items through the relay, which makes it a follower.
@@ -34,14 +31,6 @@ func (f *far) readChat(p *bridgetest.Page, id string) {
 	f.rg.t.Helper()
 	if rep := f.rg.r.FollowChat(context.Background(), f.entry, p.ID, id, chatPath(id, "/items")); rep.Status != http.StatusOK {
 		f.rg.t.Fatalf("the read of the chat %s on %s: %d %s", id, f.name, rep.Status, rep.Body)
-	}
-}
-
-// readRun makes the page read the run's detail through the relay, which makes it a follower.
-func (f *far) readRun(p *bridgetest.Page, id string) {
-	f.rg.t.Helper()
-	if rep := f.rg.r.FollowRun(context.Background(), f.entry, p.ID, id, runPath(id, "/detail")); rep.Status != http.StatusOK {
-		f.rg.t.Fatalf("the read of the run %s on %s: %d %s", id, f.name, rep.Status, rep.Body)
 	}
 }
 
@@ -53,13 +42,12 @@ func fullTree() tree {
 		groups: []model.Group{farGroup("g_there", "Work"), {ID: "g_in", Name: "Inner", Parent: "g_there"}},
 		boards: []model.Board{farBoard(boardA)},
 		chats:  []model.ChatView{farChat(chatA, model.StatusReady), archived},
-		runs:   []model.RunView{farRun(runA, model.RunRunning)},
 	}
 }
 
 // TestSectionTreeFromSnapshot: the relay takes the tree of an entry from the snapshot of its
 // stream's start, as that server has it and in its order, and adds nothing. It drops "collapsed"
-// from every group, the chat of a run's agent and the state of a chat that is in no list. What
+// from every group and the state of a chat that is in no list. What
 // Sections gives, what a page's snapshot holds and what the section event carried are the same.
 func TestSectionTreeFromSnapshot(t *testing.T) {
 	t.Parallel()
@@ -67,11 +55,8 @@ func TestSectionTreeFromSnapshot(t *testing.T) {
 	snap := snapshotOf(tr)
 	groups := append([]model.Group(nil), tr.groups...)
 	groups[1].Collapsed = true
-	agent := farChat(agent1, model.StatusThinking)
-	agent.Role, agent.Run = "task", runA
 	snap["groups"] = groups
-	snap["chats"] = append(append([]model.ChatView(nil), tr.chats...), agent)
-	snap["states"] = append(snap["states"].([]model.BranchState), model.StateOf(agent1, mainBranch, agent))
+	snap["states"] = append(snap["states"].([]model.BranchState), model.StateOf(agent1, mainBranch, farChat(agent1, model.StatusThinking)))
 	snap["defaults"] = map[string]any{"groups": map[string]any{
 		"g_there": map[string]any{"servers": map[string]any{"local": map[string]any{"agent": "claude", "cwd": "/home/standin/work"}}},
 	}}
@@ -87,7 +72,7 @@ func TestSectionTreeFromSnapshot(t *testing.T) {
 		t.Fatal("the relay holds no tree of a connected entry")
 	}
 	want := map[string]any{
-		"groups": tr.groups, "boards": tr.boards, "chats": tr.chats, "runs": tr.runs,
+		"groups": tr.groups, "boards": tr.boards, "chats": tr.chats,
 		"states":   []model.BranchState{model.StateOf(chatA, mainBranch, tr.chats[0]), model.StateOf(chatB, mainBranch, tr.chats[1])},
 		"defaults": snap["defaults"],
 	}
@@ -128,7 +113,7 @@ func TestSectionOfAnEmptyServer(t *testing.T) {
 	delete(snap, "groups")
 	delete(snap, "defaults")
 	rg := newRig(t, rigOpt{snapshot: snap})
-	const empty = `{"groups":[],"boards":[],"chats":[],"states":[],"runs":[],"defaults":{"groups":{}}}`
+	const empty = `{"groups":[],"boards":[],"chats":[],"states":[],"defaults":{"groups":{}}}`
 	held, ok := rg.treeOf()
 	if got := string(mustJSON(t, held)); !ok || got != empty {
 		t.Errorf("the tree of an empty server: %s, held %v", got, ok)
@@ -161,8 +146,6 @@ func TestSectionEvents(t *testing.T) {
 	board := farBoard(boardB)
 	boardMoved := board
 	boardMoved.Name, boardMoved.Group = "Plan", "g_in"
-	run := farRun(runB, model.RunDraft)
-	runStarted := farRun(runB, model.RunRunning)
 	groups := []model.Group{{ID: "g_new", Name: "Made by a client"}, farGroup("g_there", "Work renamed"), {ID: "g_in", Name: "Inner", Parent: "g_new"}}
 	collapsed := append([]model.Group(nil), groups...)
 	collapsed[0].Collapsed = true
@@ -179,11 +162,8 @@ func TestSectionEvents(t *testing.T) {
 		{"type": "branch_state", "state": side},
 		{"type": "board", "board": board},
 		{"type": "board", "board": boardMoved},
-		{"type": "run", "run": run},
-		{"type": "run", "run": runStarted},
 		{"type": "chat_removed", "id": chatB},
 		{"type": "board_removed", "id": boardA},
-		{"type": "run_removed", "id": runA},
 	}
 	for _, ev := range sent {
 		rg.s.Send(ev)
@@ -215,7 +195,6 @@ func TestSectionEvents(t *testing.T) {
 		"boards": []model.Board{boardMoved},
 		"chats":  []model.ChatView{farChat(chatA, model.StatusReady), archived},
 		"states": []model.BranchState{working, side},
-		"runs":   []model.RunView{runStarted},
 	}
 	if !sameJSON(t, held, wantTree) {
 		t.Errorf("the tree after the events:\n%s\nwant\n%s", mustJSON(t, held), mustJSON(t, wantTree))
@@ -234,7 +213,6 @@ func TestSectionEvents(t *testing.T) {
 	rg.s.Send(map[string]any{"type": "chat", "chat": "no object"})
 	rg.s.Send(map[string]any{"type": "chat", "chat": map[string]any{}})
 	rg.s.Send(map[string]any{"type": "board_removed"})
-	rg.s.Send(map[string]any{"type": "run", "run": nil})
 	rg.s.Send(map[string]any{"type": "servers", "servers": []any{}})
 	rg.s.Send(map[string]any{"type": "section", "server": "s_000000000000", "tree": nil})
 	for i, got := range rg.barrier(p1, p2) {
@@ -284,82 +262,37 @@ func TestSectionStateBeforeItsChat(t *testing.T) {
 	})
 }
 
-// TestSectionRunAgentChat: the chat of a run's agent is in nobody's list. Its view never enters
-// the tree and goes, with the removal of a chat that is not in the tree, to the pages that
-// follow that chat alone.
-func TestSectionRunAgentChat(t *testing.T) {
-	t.Parallel()
-	rg := newRig(t, rigOpt{snapshot: snapshotOf(tree{runs: []model.RunView{farRun(runA, model.RunRunning)}})})
-	rg.serveReads()
-	follower, _ := rg.page("page-follower")
-	other, _ := rg.page("page-other")
-	rg.readChat(follower, agent1)
-
-	agent := farChat(agent1, model.StatusThinking)
-	agent.Role, agent.Run = "task", runA
-	rg.s.Send(map[string]any{"type": "chat", "chat": agent})
-	rg.s.Send(map[string]any{"type": "chat_items", "chat": agent1, "branch": mainBranch, "version": 2, "updates": []any{}})
-	rg.s.Send(map[string]any{"type": "chat_removed", "id": agent1})
-	got := rg.barrier(follower, other)
-	if len(got[1]) != 0 {
-		t.Errorf("a page that does not follow the agent's chat got %v", got[1])
-	}
-	if len(got[0]) != 3 || got[0][0]["type"] != "chat" || got[0][1]["type"] != "chat_items" || got[0][2]["type"] != "chat_removed" {
-		t.Fatalf("the follower got %v", got[0])
-	}
-	for _, ev := range got[0] {
-		if ev["server"] != rg.entry {
-			t.Errorf("an event without the entry: %v", ev)
-		}
-	}
-	if !sameJSON(t, got[0][0]["chat"], agent) {
-		t.Errorf("the agent's view: %v", got[0][0])
-	}
-	if held, _ := rg.treeOf(); len(held.Chats) != 0 || len(held.States) != 0 {
-		t.Errorf("the agent's chat is in the tree: %s", mustJSON(t, held))
-	}
-	// The removal ended the follow here.
-	if rg.b.Followed(editorbridge.ChatOn(rg.entry, agent1)) {
-		t.Error("a chat that was removed is still followed")
-	}
-}
-
 // chatN is the id of the n-th chat of a test.
 func chatN(n int) string { return fmt.Sprintf("2%07d-0000-4000-8000-000000000000", n) }
 
-// TestSectionContentEvents: the content events of a chat and of a run are passed on as they
-// came, with the entry's id as "server", to the pages that follow the thing and to no other.
-// One that names its type or its thing twice, or a server of its own, is dropped.
+// TestSectionContentEvents: the content events of a chat are passed on as they came, with the
+// entry's id as "server", to the pages that follow the chat and to no other. One that names its
+// type or its chat twice, or a server of its own, is dropped.
 func TestSectionContentEvents(t *testing.T) {
 	t.Parallel()
 	rg := newRig(t, rigOpt{snapshot: snapshotOf(fullTree())})
 	rg.serveReads()
 	chatPage, _ := rg.page("page-chat")
-	runPage, _ := rg.page("page-run")
+	other, _ := rg.page("page-other")
 	rg.readChat(chatPage, chatA)
-	rg.readRun(runPage, runA)
 
 	sent := []string{
 		`{"type":"tree","chat":"` + chatA + `","version":3,"nodes":[{"id":"n1"}],"more":{"kept":"as it came"}}`,
 		`{"type":"chat_items","chat":"` + chatA + `","branch":"main","version":4,"updates":[{"i":0}]}`,
 		`{"type":"sub","chat":"` + chatA + `","branch":"main","sub":{"id":"s1"}}`,
 		`{"type":"sub_items","chat":"` + chatA + `","branch":"main","sub":"s1","version":1,"updates":[]}`,
-		`{"type":"run_detail","run":"` + runA + `","version":7,"tasks":[]}`,
-		`{"type":"run_activity","run":"` + runA + `","agents":{}}`,
-		// Of things nobody follows.
+		// Of a chat nobody follows.
 		`{"type":"chat_items","chat":"` + chatB + `","branch":"main","version":1,"updates":[]}`,
-		`{"type":"run_detail","run":"` + runB + `","version":1}`,
 		// Not passed on: what a page would read is not what the event was routed by.
 		`{"type":"chat_items","type":"tree","chat":"` + chatA + `"}`,
 		`{"type":"chat_items","chat":"` + chatB + `","chat":"` + chatA + `"}`,
 		`{"type":"chat_items","chat":"` + chatA + `","server":"s_000000000000"}`,
-		`{"type":"run_detail","run":"` + runA + `","run":"` + runB + `"}`,
-		`{"type":"run_detail","run":7}`,
+		`{"type":"chat_items","chat":7}`,
 	}
 	for _, ev := range sent {
 		rg.s.Send(json.RawMessage(ev))
 	}
-	got := rg.barrier(chatPage, runPage)
+	got := rg.barrier(chatPage, other)
 	check := func(what string, got []map[string]any, want []string) {
 		t.Helper()
 		if len(got) != len(want) {
@@ -377,7 +310,7 @@ func TestSectionContentEvents(t *testing.T) {
 		}
 	}
 	check("the page that follows the chat", got[0], sent[:4])
-	check("the page that follows the run", got[1], sent[4:6])
+	check("the page that follows nothing", got[1], nil)
 	if n := rg.logs.count("cannot be passed on as it is"); n != 1 {
 		t.Errorf("%d log lines for the events that were dropped, want one a minute: %v", n, rg.logs.all())
 	}

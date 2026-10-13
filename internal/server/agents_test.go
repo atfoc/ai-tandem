@@ -123,13 +123,13 @@ func TestChatCreateAndConfigureRoutes(t *testing.T) {
 }
 
 // An agent whose program the server does not find is refused with 409 and "agent_missing" at
-// creation, configuration, a draft run's patch and the first message; a chat with no agent is
-// refused with "no_agent". The look-up changes while the server runs (AC44).
+// creation, configuration and the first message; a chat with no agent is refused with
+// "no_agent". The look-up changes while the server runs (AC44).
 func TestAgentOutsideTheUsableOnes(t *testing.T) {
 	t.Parallel()
-	e := newRunEnv(t)
+	e := newEnv(t)
 	set, path := agentsOf("claude")
-	e.cm.Agents, e.rs.Agents, e.a.Agents = set, set, set
+	e.a.Chats.Agents, e.a.Agents = set, set
 	group := `"group":"` + model.Ungrouped + `"`
 	snapAgents := func() []model.AgentKind {
 		return decode[struct{ Agents []model.AgentKind }](t, e.expect(200, "GET", "/api/state", "")).Agents
@@ -143,19 +143,13 @@ func TestAgentOutsideTheUsableOnes(t *testing.T) {
 		t.Fatalf("a new chat's agent = %q", cv.Agent)
 	}
 	chat := "/api/chats/" + cv.ID
-	run := e.newRun()
 
 	msg := e.refusedWith(409, "agent_missing", "POST", "/api/chats", `{`+group+`,"agent":"cursor"}`)
 	if !strings.Contains(msg, "Cursor") || !strings.Contains(msg, "not found") {
 		t.Fatalf("creation: %q", msg)
 	}
 	e.refusedWith(409, "agent_missing", "PATCH", chat, `{"agent":"cursor"}`)
-	e.refusedWith(409, "agent_missing", "PATCH", "/api/runs/"+run.ID, `{"agent":"cursor"}`)
-	runs := decode[struct{ Runs []model.RunView }](t, e.expect(200, "GET", "/api/state", "")).Runs
-	if len(runs) != 1 || runs[0].Agent != model.Claude {
-		t.Fatalf("the runs after the refused patch: %+v", runs)
-	}
-	if n := len(e.cm.Views()); n != 1 {
+	if n := len(e.a.Chats.Views()); n != 1 {
 		t.Fatalf("%d chats after the refused creation, want 1", n)
 	}
 
@@ -163,9 +157,6 @@ func TestAgentOutsideTheUsableOnes(t *testing.T) {
 	path.set("claude", "cursor")
 	if p := decode[patched](t, e.expect(200, "PATCH", chat, `{"agent":"cursor"}`)); p.Chat.Agent != model.Cursor {
 		t.Fatalf("PATCH agent answered %+v", p)
-	}
-	if v := e.view(200, "PATCH", "/api/runs/"+run.ID, `{"agent":"cursor"}`); v.Agent != model.Cursor {
-		t.Fatalf("the run's agent = %q", v.Agent)
 	}
 	if got := snapAgents(); !slices.Equal(got, []model.AgentKind{model.Claude, model.Cursor}) {
 		t.Fatalf("snapshot agents = %v", got)
@@ -202,9 +193,10 @@ func TestAgentOutsideTheUsableOnes(t *testing.T) {
 // event with the new list.
 func TestAgentsEventReachesAClient(t *testing.T) {
 	t.Parallel()
-	e := newRunEnv(t)
+	e := newEnv(t)
 	set, path := agentsOf("claude")
-	e.cm.Agents, e.rs.Agents, e.a.Agents = set, set, set
+	e.a.Chats.Agents, e.a.Agents = set, set
+	p := e.page("P")
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -215,20 +207,14 @@ func TestAgentsEventReachesAClient(t *testing.T) {
 	}()
 	t.Cleanup(func() { close(stop); <-done })
 
-	last := func(evs []runTestEvent) string {
-		for i := len(evs) - 1; i >= 0; i-- {
-			if evs[i].Type == "agents" {
-				return evs[i].Raw
-			}
-		}
-		return ""
-	}
+	// The look-up is read every 10 ms, and a page is sent the list only when it changed: the
+	// first agents event after a change is the one of that change.
 	path.set("claude", "pi")
-	e.await("the agents event with pi", func(evs []runTestEvent) bool {
-		return last(evs) == `{"agents":["claude","pi"],"type":"agents"}`
-	})
+	if got := upTo(t, p, "agents"); got[len(got)-1] != `{"agents":["claude","pi"],"type":"agents"}` {
+		t.Fatalf("the agents event with pi: %s", got[len(got)-1])
+	}
 	path.set()
-	e.await("the agents event with none", func(evs []runTestEvent) bool {
-		return last(evs) == `{"agents":[],"type":"agents"}`
-	})
+	if got := upTo(t, p, "agents"); got[len(got)-1] != `{"agents":[],"type":"agents"}` {
+		t.Fatalf("the agents event with none: %s", got[len(got)-1])
+	}
 }

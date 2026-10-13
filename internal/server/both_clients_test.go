@@ -50,14 +50,6 @@ var bothKinds = []bothKind{
 		move: func(id, group string) (string, string, obj) { return "PATCH", "/boards/" + id, obj{"group": group} },
 		del:  func(id string) string { return "/boards/" + id },
 	},
-	{ // a run that has not started: it is on its server from the moment it is made (D16)
-		name: "run", told: "run", gone: "run_removed",
-		make:   func(name, group string) (string, obj) { return "/runs", obj{"name": name, "group": group} },
-		path:   func(id string) string { return "/runs/" + id },
-		rename: func(id, name string) (string, string, obj) { return "PATCH", "/runs/" + id, obj{"name": name} },
-		move:   func(id, group string) (string, string, obj) { return "PATCH", "/runs/" + id, obj{"group": group} },
-		del:    func(id string) string { return "/runs/" + id },
-	},
 	{ // every change of a group is told by the whole list
 		name: "group", told: "groups",
 		make:   func(name, group string) (string, obj) { return "/groups", obj{"name": name, "parent": ""} },
@@ -96,7 +88,7 @@ func (bo *both) step(us []*user, by *user, what, method, rest string, body any, 
 		}
 	}
 	if !strings.HasSuffix(typ, "_removed") {
-		for _, removed := range []string{"chat_removed", "board_removed", "run_removed"} {
+		for _, removed := range []string{"chat_removed", "board_removed"} {
 			if l5Count(evs, removed) != 0 {
 				bo.t.Errorf("%s: sent %v", what, l5Types(evs))
 			}
@@ -108,8 +100,8 @@ func (bo *both) step(us []*user, by *user, what, method, rest string, body any, 
 	return out
 }
 
-// The table {who acts} x {kind} x {action}: the owner, client 1 and client 2; a chat, a board, a
-// run that has not started and a group; make, rename, move to another group, archive, unarchive
+// The table {who acts} x {kind} x {action}: the owner, client 1 and client 2; a chat, a board
+// and a group; make, rename, move to another group, archive, unarchive
 // and delete. In each round the three take turns, so that a thing one of them made is renamed
 // by the next and moved by the third. The default set runs one round, in which every kind
 // meets every action and each of the three acts on every kind; the full set runs the three
@@ -181,12 +173,12 @@ func TestBothEveryoneFollowsEveryChange(t *testing.T) {
 	for _, g := range decode[struct{ Groups []model.Group }](t, tree).Groups {
 		ids = append(ids, g.ID)
 	}
-	if !slices.Equal(ids, kept) || l5Field(t, tree, "boards") != "[]" || l5Field(t, tree, "chats") != "[]" || l5Field(t, tree, "runs") != "[]" {
+	if !slices.Equal(ids, kept) || l5Field(t, tree, "boards") != "[]" || l5Field(t, tree, "chats") != "[]" {
 		t.Errorf("the tree after the rounds: %s, want the groups %v and nothing else", tree, kept)
 	}
 	// Nothing of the remote server is among a client's own things, and nothing of it on its disk.
 	for _, sd := range bo.c {
-		if snap := decode[pageSnapshot](t, string(do(t, sd.a.page("after"), "GET", "/api/state", nil))); len(snap.Groups)+len(snap.Boards)+len(snap.Chats)+len(snap.Runs) != 0 {
+		if snap := decode[pageSnapshot](t, string(do(t, sd.a.page("after"), "GET", "/api/state", nil))); len(snap.Groups)+len(snap.Boards)+len(snap.Chats) != 0 {
 			t.Errorf("%s has things of its own after the rounds: %+v", sd.who, snap)
 		}
 		noFileHolds(t, sd.a.a.DataDir, kept[0])
@@ -281,10 +273,10 @@ func TestBothGroupActionsOfAClient(t *testing.T) {
 		t.Errorf("the refused calls told %v", evs)
 	}
 
-	// fill makes a chat, a board and a run in the group, by the client, and lets the board go.
+	// fill makes a chat and a board in the group, by the client, and lets the board go.
 	fill := func(g string) (ids []string) {
 		t.Helper()
-		for _, kind := range bothKinds[:3] {
+		for _, kind := range bothKinds[:2] {
 			rest, body := kind.make("in "+g, g)
 			id := l5ID(t, bo.step(us, one, "a new "+kind.name, "POST", rest, body, kind.told, "", false, `"group":"`+g+`"`))
 			if kind.name == "board" {
@@ -323,14 +315,13 @@ func TestBothGroupActionsOfAClient(t *testing.T) {
 	if out := one.want(t, 200, "DELETE", "/groups/"+d+"?contents=delete", nil); out != `{"ok":true}` {
 		t.Errorf("the delete of a group with everything in it: %s", out)
 	}
-	// The removals of the runs are the run service's, before the groups or after.
-	evs = bo.told("the delete of a group with everything in it", us, []string{"defaults"}, []string{"run_removed", inD[2]}, []string{"run_removed", inE[2]})
+	evs = bo.told("the delete of a group with everything in it", us, []string{"defaults"})
 	told := only(evs, "groups", "defaults", "chat_removed", "board_removed")
 	if types := l5Types(told); !slices.Equal(types[max(len(types)-2, 0):], []string{"groups", "defaults"}) || len(types) != 6 {
 		t.Fatalf("the delete of a group with everything in it told %v: the groups and the defaults come after the removals", l5Types(evs))
 	}
 	for i, id := range slices.Concat(inD, inE) {
-		typ := []string{"chat_removed", "board_removed", "run_removed"}[i%3]
+		typ := []string{"chat_removed", "board_removed"}[i%2]
 		if n := l5Count(evs, typ, `"id":"`+id+`"`); n != 1 {
 			t.Errorf("the removal of %s was told %d times: %v", id, n, l5Types(evs))
 		}
@@ -359,7 +350,7 @@ func TestBothGroupActionsOfAClient(t *testing.T) {
 // nothing is sent, and what the owner collapses changes nothing in a client's section.
 func TestBothCollapsedIsNoPartOfASection(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{noRuns: true})
+	bo := newBoth(t, bothOpt{})
 	us := bo.three()
 	owner, one, two := us[0], us[1], us[2]
 	g := l5ID(t, bo.step(us, two, "a new group", "POST", "/groups", obj{"name": "G", "parent": ""}, "groups", "", false))
@@ -409,7 +400,7 @@ func TestBothCollapsedIsNoPartOfASection(t *testing.T) {
 // told to the other client with the entry's id.
 func TestBothDefaultsAreTheServers(t *testing.T) {
 	t.Parallel()
-	bo := newBoth(t, bothOpt{noRuns: true})
+	bo := newBoth(t, bothOpt{})
 	us := bo.three()
 	owner, one, two := us[0], us[1], us[2]
 	dir, err := filepath.EvalSymlinks(t.TempDir())

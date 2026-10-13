@@ -1,7 +1,6 @@
 // Package agenttest is test support shared by the packages that drive agents: a scripted
-// agent.Spawner (Fake), a clock a test moves by hand (Clock), a temp git repository (Repo) and a
-// scripted stand-in for the claude program (FakeClaude). It imports only agent and model of the
-// project, so every package's tests can use it.
+// agent.Spawner (Fake) and a scripted stand-in for the claude program (FakeClaude). It imports
+// only agent and model of the project, so every package's tests can use it.
 package agenttest
 
 import (
@@ -14,7 +13,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
@@ -22,21 +20,16 @@ import (
 
 // Fake is an agent.Spawner whose processes are driven by a script. A process behaves toward the
 // chat manager as a real adapter's does: it emits the events of a turn on Events, ends a turn
-// with EvTurnEnd, ends itself with EvExit and then closes the channel, honours Interrupt and
-// Close, and reports a session that does not exist the way its Kind does.
+// with EvTurnEnd, ends itself with EvExit and then closes the channel, and honours Interrupt and
+// Close.
 type Fake struct {
 	Kind model.AgentKind
 	MCP  http.Handler // the app's /mcp handler; set by the test's environment
-	// NoSessionDelay is how long a Claude process that resumes a session marked with NoSession
-	// waits for a Send before it reports "no session" by itself (the real one takes about a
-	// second, and a Send always comes first). 0 = 200 ms.
-	NoSessionDelay time.Duration
 
 	mu        sync.Mutex
 	script    func(t *Turn)
 	spawns    []agent.SpawnOptions
 	failSpawn error
-	noSession map[string]bool
 	procs     []*proc
 	sessions  int
 }
@@ -44,7 +37,7 @@ type Fake struct {
 // New returns a Fake of the given kind whose turns end cleanly with no output until Script is
 // called.
 func New(kind model.AgentKind) *Fake {
-	return &Fake{Kind: kind, noSession: map[string]bool{}}
+	return &Fake{Kind: kind}
 }
 
 // Script sets what a process does with each message; it runs on its own goroutine and the turn
@@ -71,20 +64,6 @@ func (f *Fake) FailSpawn(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failSpawn = err
-}
-
-// NoSession makes a resume of this session report "no session" the way Kind does, until the
-// session is started again without Resume:
-//
-//   - Claude: the process emits EvTurnEnd{NoSession: true, Error: …} without doing anything with
-//     a message (after the first Send, or after NoSessionDelay when none comes), then EvExit.
-//   - Cursor: Send returns an error matching agent.ErrNoSession; nothing is emitted and the
-//     process stays alive until it is closed.
-//   - pi: Send returns that error, emits EvTurnEnd{Error: the same text}, and the process ends.
-func (f *Fake) NoSession(sessionID string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.noSession[sessionID] = true
 }
 
 // Live is the number of processes that were started and have not ended.
@@ -134,37 +113,15 @@ func (f *Fake) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 		return nil, agent.ErrFolderMissing
 	}
 	p := &proc{f: f, opts: o, ch: make(chan agent.Event, 1024), done: make(chan struct{}), session: o.SessionID}
-	if o.Resume && f.noSession[o.SessionID] {
-		p.noSession = true
-	} else if !o.Resume {
-		delete(f.noSession, o.SessionID) // the session exists from now on
-	}
 	if p.session == "" {
 		f.sessions++
 		p.session = fmt.Sprintf("fake-session-%d", f.sessions)
 	}
 	f.procs = append(f.procs, p)
-	delay := f.NoSessionDelay
 	f.mu.Unlock()
 
 	if o.SessionID == "" {
 		p.emit(agent.Event{Kind: agent.EvSession, SessionID: p.session})
-	}
-	if p.noSession && f.Kind == model.Claude {
-		if delay <= 0 {
-			delay = 200 * time.Millisecond
-		}
-		p.sent = make(chan struct{})
-		go func() {
-			select {
-			case <-p.sent:
-			case <-time.After(delay):
-			case <-p.done:
-				return
-			}
-			text := "No conversation found with session ID: " + o.SessionID
-			p.exit(text, agent.Event{Kind: agent.EvTurnEnd, Error: text, NoSession: true})
-		}()
 	}
 	return p, nil
 }
@@ -182,14 +139,11 @@ type proc struct {
 	emitMu sync.Mutex
 	exited bool
 
-	mu        sync.Mutex
-	queue     []*Turn // the turns not over yet; the first one runs
-	running   bool    // a goroutine works through queue
-	turns     int
-	tools     int
-	noSession bool
-	sent      chan struct{} // Claude with noSession: closed by the first Send
-	sentOnce  sync.Once
+	mu      sync.Mutex
+	queue   []*Turn // the turns not over yet; the first one runs
+	running bool    // a goroutine works through queue
+	turns   int
+	tools   int
 }
 
 func (p *proc) Events() <-chan agent.Event { return p.ch }
@@ -245,20 +199,6 @@ var errGone = errors.New("the agent's process has ended")
 func (p *proc) Send(blocks []agent.ContentBlock) error {
 	if p.gone() {
 		return errGone
-	}
-	if p.noSession {
-		switch p.f.Kind {
-		case model.Claude:
-			p.sentOnce.Do(func() { close(p.sent) })
-			return nil // the process says so itself, with a turn end
-		case model.Cursor:
-			return agent.NoSession(fmt.Sprintf(`session/load: Invalid params {"message":"Session \"%s\" not found"}`, p.opts.SessionID))
-		default:
-			err := agent.NoSession("pi has no messages in session " + p.opts.SessionID)
-			p.emit(agent.Event{Kind: agent.EvTurnEnd, Error: err.Error()})
-			go p.exit("")
-			return err
-		}
 	}
 	parts := make([]string, 0, len(blocks))
 	for _, b := range blocks {
@@ -592,12 +532,4 @@ func rawJSON(v any) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return b
-}
-
-// Block is a result block as a task or merge agent ends its last message with:
-// <result><outcome>…</outcome><summary>…</summary><report>…</report></result>, in the layout the
-// prompts ask for.
-func Block(outcome, summary, report string) string {
-	return "<result>\n<outcome>" + outcome + "</outcome>\n<summary>" + summary + "</summary>\n<report>\n" +
-		report + "\n</report>\n</result>"
 }

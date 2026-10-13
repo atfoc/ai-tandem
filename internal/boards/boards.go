@@ -185,8 +185,8 @@ func (b *Service) send(id string, ev any) {
 	b.bridge.Broadcast(ev)
 }
 
-// List returns every registered board, oldest first: the order of the chats and of the runs, and
-// the same at every call, for the server's own page and for every API client.
+// List returns every registered board, oldest first: the order of the chats, and the same at
+// every call, for the server's own page and for every API client.
 func (b *Service) List() []model.Board {
 	b.mu.Lock()
 	defer b.mu.Unlock()

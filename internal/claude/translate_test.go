@@ -196,25 +196,15 @@ func TestTranslateResultCost(t *testing.T) {
 }
 
 // --resume of a session Claude does not have: the result line Claude Code 2.1.284 writes about a
-// second after the start, before any message. Its only text is in errors[].
-func TestTranslateNoSession(t *testing.T) {
+// second after the start, before any message. Its only text is in errors[]: the turn end's error.
+func TestTranslateResumeOfUnknownSession(t *testing.T) {
 	line := `{"type":"result","subtype":"error_during_execution","duration_ms":0,"duration_api_ms":0,"is_error":true,"num_turns":0,"stop_reason":null,"session_id":"dfe38768","total_cost_usd":0,"modelUsage":{},"errors":["No conversation found with session ID: dfe38768"],"result_index":0}`
 	evs := translateLine(t, &proc{}, line)
-	want := agent.Event{Kind: agent.EvTurnEnd, Error: "No conversation found with session ID: dfe38768", NoSession: true, HasCost: true}
+	want := agent.Event{Kind: agent.EvTurnEnd, Error: "No conversation found with session ID: dfe38768", HasCost: true}
 	if len(evs) != 2 || !reflect.DeepEqual(evs[1], want) {
 		t.Errorf("turn end %s\nwant %s", dump(evs), dump([]agent.Event{want}))
 	}
 
-	for name, line := range map[string]string{
-		"another error":        `{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["Error: Session ID x is already in use."]}`,
-		"a turn that ran":      `{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":2,"errors":["No conversation found with session ID: x"]}`,
-		"not an error":         `{"type":"result","subtype":"success","is_error":false,"num_turns":0,"errors":["No conversation found with session ID: x"]}`,
-		"the text as a result": `{"type":"result","subtype":"success","is_error":true,"num_turns":0,"result":"No conversation found with session ID: x"}`,
-	} {
-		if evs := translateLine(t, &proc{}, line); len(evs) != 2 || evs[1].NoSession {
-			t.Errorf("%s: %s, want no NoSession", name, dump(evs))
-		}
-	}
 }
 
 // An errored result without result text takes its text from errors[], unless that is only a line

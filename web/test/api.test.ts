@@ -102,37 +102,17 @@ test("streamGone: only a stream the browser closed for good is opened again", ()
   assert.equal(streamGone(null), false);              // never connected
 });
 
-// ---- runs: a run is on the server it was made on, and is deleted there or not at all
-
-test("api.configureRun sends what is picked to the run's own server; a server is nothing that can be picked", async () => {
-  await api.configureRun("r_1", { agent: "pi" });
-  await api.configureRun("s_1~r_1", { agent: "pi", cwd: "/home/u/work" });
-  assert.deepEqual(calls.map((c) => [c.path, c.method, c.body]), [
-    ["/api/runs/r_1", "PATCH", { agent: "pi" }],
-    ["/api/on/s_1/runs/r_1", "PATCH", { agent: "pi", cwd: "/home/u/work" }],
-  ]);
-});
-
-test("api.deleteRun, deleteChat and deleteBoard have no query: there is no record to remove from this sidebar only", async () => {
-  await api.deleteRun("r_1");
-  await api.deleteRun("s_1~r_1");
+test("api.deleteChat and deleteBoard have no query: there is no record to remove from this sidebar only", async () => {
   await api.deleteChat("s_1~c_1");
   await api.deleteBoard("s_1~b_1");
   assert.deepEqual(calls.map((c) => [c.path, c.method, c.body]), [
-    ["/api/runs/r_1", "DELETE", undefined], ["/api/on/s_1/runs/r_1", "DELETE", undefined],
     ["/api/on/s_1/chats/c_1", "DELETE", undefined], ["/api/on/s_1/boards/b_1", "DELETE", undefined],
   ]);
   // (a second argument is not read: no call can ask for ?local=1)
   calls.length = 0;
-  await (api.deleteRun as (id: string, o?: unknown) => Promise<unknown>)("r_1", { local: true });
-  assert.equal(calls[0].path, "/api/runs/r_1");
-  assert.deepEqual([api.deleteRun.length, api.deleteChat.length, api.deleteBoard.length], [1, 1, 1]);
-});
-
-test("api.unfollowRun posts to the run's unfollow route with this page's client id", async () => {
-  await api.unfollowRun("r_1");
-  assert.deepEqual([calls[0].path, calls[0].method, calls[0].body], ["/api/runs/r_1/unfollow", "POST", undefined]);
-  assert.equal(calls[0].headers!["X-AIWB-Client"], clientId);
+  await (api.deleteBoard as (id: string, o?: unknown) => Promise<unknown>)("b_1", true);
+  assert.equal(calls[0].path, "/api/boards/b_1");
+  assert.deepEqual([api.deleteChat.length, api.deleteBoard.length], [1, 1]);
 });
 
 // ---- a thing of a section: the entry id is the path segment after /api/on/, and every id in a path or a body is that server's own
@@ -161,29 +141,9 @@ const SECTION: Record<keyof typeof api, [args: unknown[], method: string, path: 
   deleteBoard: [["s_1~b_1"], "DELETE", "/api/on/s_1/boards/b_1"],
   reveal: [["s_1~b_1"], "POST", "/api/on/s_1/boards/b_1/reveal"],
   newChat: [[{ board: "s_1~b_1" }], "POST", "/api/on/s_1/chats", { board: "b_1" }],
-  newRun: [["s_1~g_1", "Tidy"], "POST", "/api/on/s_1/runs", { group: "g_1", name: "Tidy" }],
-  run: [["s_1~r_1"], "GET", "/api/on/s_1/runs/r_1"],
-  renameRun: [["s_1~r_1", "Tidy"], "PATCH", "/api/on/s_1/runs/r_1", { name: "Tidy" }],
-  moveRun: [["s_1~r_1", "s_1~__ungrouped__"], "PATCH", "/api/on/s_1/runs/r_1", { group: "__ungrouped__" }],
-  configureRun: [["s_1~r_1", { settings: { maxParallel: 2 } }], "PATCH", "/api/on/s_1/runs/r_1", { settings: { maxParallel: 2 } }],
-  saveRunDraft: [["s_1~r_1", { text: "the goal @Plan", mentions: [{ name: "Plan", id: "s_1~b_1" }] }], "PUT", "/api/on/s_1/runs/r_1/draft", { text: "the goal @Plan", mentions: [{ name: "Plan", id: "b_1" }] }],
-  startRun: [["s_1~r_1", "the goal"], "POST", "/api/on/s_1/runs/r_1/start", { goal: "the goal" }],
-  stopRun: [["s_1~r_1"], "POST", "/api/on/s_1/runs/r_1/stop"],
-  resumeRun: [["s_1~r_1", { maxTurns: 9 }], "POST", "/api/on/s_1/runs/r_1/resume", { maxTurns: 9 }],
-  deleteRun: [["s_1~r_1"], "DELETE", "/api/on/s_1/runs/r_1"],
-  unfollowRun: [["s_1~r_1"], "POST", "/api/on/s_1/runs/r_1/unfollow"],
-  applyRun: [["s_1~r_1", "main"], "POST", "/api/on/s_1/runs/r_1/apply", { branch: "main" }],
-  runDelivery: [["s_1~r_1"], "GET", "/api/on/s_1/runs/r_1/delivery"],
-  runDetail: [["s_1~r_1"], "GET", "/api/on/s_1/runs/r_1/detail"],
-  runGoal: [["s_1~r_1"], "GET", "/api/on/s_1/runs/r_1/goal"],
-  taskBrief: [["s_1~r_1", "t1", 2], "GET", "/api/on/s_1/runs/r_1/tasks/t1/brief?rev=2"],
-  attemptReport: [["s_1~r_1", "t1", 1], "GET", "/api/on/s_1/runs/r_1/tasks/t1/attempts/1/report"],
-  attemptChanges: [["s_1~r_1", "t1", 1], "GET", "/api/on/s_1/runs/r_1/tasks/t1/attempts/1/changes"],
-  runNotes: [["s_1~r_1", 3], "GET", "/api/on/s_1/runs/r_1/notes/3"],
   items: [["s_1~c_1", "main"], "GET", "/api/on/s_1/chats/c_1/items?branch=main"],
   subItems: [["s_1~c_1", "main", "5f"], "GET", "/api/on/s_1/chats/c_1/subagents/5f/items?branch=main"],
   chat: [["s_1~c_1"], "GET", "/api/on/s_1/chats/c_1"],
-  unfollowChat: [["s_1~c_1"], "POST", "/api/on/s_1/chats/c_1/unfollow"],
   openChat: [["s_1~c_1", "main"], "POST", "/api/on/s_1/chats/c_1/open?branch=main"],
   send: [["s_1~c_1", "main", "hi", "ctx"], "POST", "/api/on/s_1/chats/c_1/messages?branch=main", { text: "hi", context: "ctx" }],
   configure: [["s_1~c_1", "main", { agent: "pi" }], "PATCH", "/api/on/s_1/chats/c_1?branch=main", { agent: "pi" }],
@@ -240,7 +200,6 @@ test("the entry id is the path's own segment: another section's call goes to tha
   assert.deepEqual(await request("newGroup", ["s_1"]), ["POST", "/api/on/s_1/groups", {}]);
   assert.deepEqual(await request("moveGroup", ["s_1~g_2", ""]), ["POST", "/api/on/s_1/groups/g_2/move", { parent: "", before: "" }], "to the top level, last");
   assert.deepEqual(await request("newBoard", ["s_1~__ungrouped__"]), ["POST", "/api/on/s_1/boards", { group: "__ungrouped__", new: false }], "outside any group, from the section's head");
-  assert.deepEqual(await request("newRun", ["s_1~__ungrouped__"]), ["POST", "/api/on/s_1/runs", { group: "__ungrouped__" }]);
   assert.deepEqual(await request("newChat", [{ group: "s_1~__ungrouped__" }]), ["POST", "/api/on/s_1/chats", { group: "__ungrouped__" }]);
 });
 
@@ -333,8 +292,8 @@ test("every api method that is not a GET carries this page's client id in X-AIWB
     writes.push(name);
     assert.equal(c.headers?.["X-AIWB-Client"], clientId, `${name} (${c.method} ${c.path})`);
   }
-  assert.ok(writes.length >= 35, `the writes were looked at: ${writes.length}`);
-  for (const name of ["send", "configure", "saveDraft", "startRun", "configureRun", "deleteRun", "deleteChat", "saveScene", "takeBoard", "rpcReply"])
+  assert.ok(writes.length >= 30, `the writes were looked at: ${writes.length}`);
+  for (const name of ["send", "configure", "saveDraft", "deleteChat", "saveScene", "takeBoard", "rpcReply"])
     assert.ok(writes.includes(name), name);
 });
 
@@ -349,6 +308,6 @@ test("every api method's request, a read or a write, has cache: \"no-store\"", a
     assert.equal(calls[0].cache, "no-store", `${name} (${calls[0].method} ${calls[0].path})`);
     seen.push(`${calls[0].method} ${calls[0].path.split("?")[0]}`);
   }
-  // the pair of the finding: the page's read of a run, and the Delete and the change of it
-  for (const pair of ["GET /api/runs/a", "DELETE /api/runs/a", "PATCH /api/runs/a"]) assert.ok(seen.includes(pair), pair);
+  // a read and the writes of one URL: a chat's view, its Delete and its change
+  for (const pair of ["GET /api/chats/a", "DELETE /api/chats/a", "PATCH /api/chats/a"]) assert.ok(seen.includes(pair), pair);
 });

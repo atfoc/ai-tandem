@@ -56,8 +56,8 @@ export type Kept = { chat: string; branch: string; draft: Draft; base?: number; 
 
 const PREFIX = legacyDraftKey("");
 
-/** The unsaved draft a localStorage entry holds; null for a key that is no branch's (a run's goal,
- *  a chat's from before each branch had its own, anything else) and for a value that is no draft. */
+/** The unsaved draft a localStorage entry holds; null for a key that is no branch's (a chat's
+ *  from before each branch had its own, anything else) and for a value that is no draft. */
 export function keptOf(key: string, raw: string | null): Kept | null {
   const at = key.startsWith(PREFIX) ? key.indexOf(":", PREFIX.length) : -1;
   if (at <= PREFIX.length || at === key.length - 1 || raw === null) return null; // (an id has no colon: what is before the first one is the chat)

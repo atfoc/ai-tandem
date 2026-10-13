@@ -50,7 +50,7 @@ test("remove: the entry by its id, with no body; nothing of that server is count
   answer = { ok: true };
   assert.deepEqual(await serversApi.remove("s_1"), { ok: true });
   assert.deepEqual(one(), ["DELETE", "/api/servers/s_1", undefined]);
-  // the route that counted an entry's chats and runs is gone (404 on the server): the page has no call for it
+  // the route that counted an entry's chats is gone (404 on the server): the page has no call for it
   assert.equal("items" in serversApi, false);
   assert.equal("items" in serversapi, false);
 });

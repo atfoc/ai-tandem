@@ -20,7 +20,7 @@ import (
 
 // The tests of this file are the change-over of a server from before level 5, on a real server
 // process. Such a server put everything an API client made into one group, "Remote", and kept
-// that group's id in state.json ("remoteGroup"); each chat, board and run of a client carried the
+// that group's id in state.json ("remoteGroup"); each chat and board of a client carried the
 // client's id as a mark ("client"). The updated server removes that group at its first start,
 // before it serves a request, and reads no mark.
 
@@ -76,12 +76,11 @@ type level5Tree struct {
 	Boards   []model.Board
 	Chats    []model.ChatView
 	States   []model.BranchState
-	Runs     []model.RunView
 	Defaults model.Defaults
 }
 
 // level5Fields are the fields of a state that are the tree.
-var level5Fields = []string{"groups", "boards", "chats", "states", "runs", "defaults"}
+var level5Fields = []string{"groups", "boards", "chats", "states", "defaults"}
 
 // treeOf decodes the tree of a state or of a snapshot event, and returns each of its fields as
 // it was sent too. A field that is missing fails the test.
@@ -119,7 +118,7 @@ func (in *instance) tree(t *testing.T) (map[string]json.RawMessage, level5Tree) 
 }
 
 // lines is the tree as lines, one for each thing with its place and its archive mark: the groups
-// in the server's order, then the boards, the chats and the runs by id.
+// in the server's order, then the boards and the chats by id.
 func (tr level5Tree) lines() []string {
 	var groups, rest []string
 	for _, g := range tr.Groups {
@@ -129,10 +128,7 @@ func (tr level5Tree) lines() []string {
 		rest = append(rest, fmt.Sprintf("board %s %q in %q archived %v %q", b.ID, b.Name, b.Group, b.Archived, b.Op))
 	}
 	for _, c := range tr.Chats {
-		rest = append(rest, fmt.Sprintf("chat %s in %q on the board %q, on the run %q archived %v %q locked %v", c.ID, c.Group, c.Board, c.Run, c.Archived, c.Op, c.Locked))
-	}
-	for _, r := range tr.Runs {
-		rest = append(rest, fmt.Sprintf("run %s %q in %q %s archived %v %q", r.ID, r.Name, r.Group, r.Status, r.Archived, r.Op))
+		rest = append(rest, fmt.Sprintf("chat %s in %q on the board %q archived %v %q locked %v", c.ID, c.Group, c.Board, c.Archived, c.Op, c.Locked))
 	}
 	slices.Sort(rest)
 	return append(groups, rest...)
@@ -173,7 +169,7 @@ func noMarks(t *testing.T, who string, raw map[string]json.RawMessage) {
 
 // sameLists checks that two readings of one server hold exactly the same tree, field by field
 // and each list in the same order: the server gives its own page and every client the groups in
-// its order, the boards, the chats and the runs oldest first and the branch states by their
+// its order, the boards and the chats oldest first and the branch states by their
 // chat, at every read and after a restart.
 func sameLists(t *testing.T, a, b string, ra, rb map[string]json.RawMessage) {
 	t.Helper()
@@ -195,7 +191,7 @@ func sameLists(t *testing.T, a, b string, ra, rb map[string]json.RawMessage) {
 
 // sameTree checks that the tree a section holds and the tree of its server are exactly the same,
 // field by field. The groups are in the server's order; the local server of a client keeps the
-// boards, the chats, their branch states and the runs of a section in the order they came, so
+// boards, the chats and their branch states of a section in the order they came, so
 // each of those is compared as the set of what it holds.
 func sameTree(t *testing.T, a, b string, ra, rb map[string]json.RawMessage) {
 	t.Helper()
@@ -225,7 +221,7 @@ func sameTree(t *testing.T, a, b string, ra, rb map[string]json.RawMessage) {
 }
 
 // fileOf finds the file <id>/<name> of a thing under the data folder: a chat's chat.json is
-// under chats/, or under its run.
+// under chats/.
 func fileOf(t *testing.T, dir, id, name string) string {
 	t.Helper()
 	var found string
@@ -270,10 +266,10 @@ func editJSON(t *testing.T, path string, edit func(obj map[string]any)) {
 // id of one group as "remoteGroup" in state.json, a group that has another name by now, and the
 // mark of an API client in the files of what is in it.
 //
-// The group holds a chat with a message, an archived chat, a board with a chat on it, a run that
-// has not started, and a group nested in it with a chat of its own. A second, ordinary group is
+// The group holds a chat with a message, an archived chat, a board with a chat on it, and a group
+// nested in it with a chat of its own. A second, ordinary group is
 // merely named "Remote" and holds a chat and a board. After the start the named group is gone;
-// its plain chats, its board and its run are in no group with their archive marks as they were;
+// its plain chats and its board are in no group with their archive marks as they were;
 // the chat on the board is on the board still; the nested group is at the top level with its
 // chat; the group named "Remote" is as it was. No view holds a mark, a second client sees
 // exactly the same tree and reads what the first one "made", and a restart changes nothing more.
@@ -314,7 +310,6 @@ func TestLevel5ChangeOver(t *testing.T) {
 	ok200(t, p, "POST", "/api/chats/"+archived+"/archive", nil)
 	board := made("/api/boards", map[string]any{"name": "A client's board", "group": named})
 	onBoard := made("/api/chats", map[string]any{"agent": "claude", "board": board})
-	run := made("/api/runs", map[string]any{"group": named, "name": "Not started"})
 	inNested := made("/api/chats", map[string]any{"agent": "claude", "group": nested})
 	inPlain := made("/api/chats", map[string]any{"agent": "claude", "group": plain})
 	boardPlain := made("/api/boards", map[string]any{"name": "The owner's board", "group": plain})
@@ -346,7 +341,6 @@ func TestLevel5ChangeOver(t *testing.T) {
 	editJSON(t, fileOf(t, in.dir, board, "board.json"), func(meta map[string]any) {
 		meta["client"], meta["origin"] = testClient, boardPlain
 	})
-	editJSON(t, fileOf(t, in.dir, run, "run.json"), func(meta map[string]any) { meta["client"] = testClient })
 
 	// The tree the start must leave: what was there, with the named group gone, what was in it in
 	// no group, and the group nested in it at the top level.
@@ -364,9 +358,9 @@ func TestLevel5ChangeOver(t *testing.T) {
 		}
 		want = append(want, line)
 	}
-	// The chat with a message, the archived one, the board and the run; the chat on the board is
-	// in no group of its own.
-	if inNamed != 4 || len(before.Groups) != 3 || len(before.Chats) != 5 || len(before.Boards) != 2 || len(before.Runs) != 1 {
+	// The chat with a message, the archived one and the board; the chat on the board is in no
+	// group of its own.
+	if inNamed != 3 || len(before.Groups) != 3 || len(before.Chats) != 5 || len(before.Boards) != 2 {
 		t.Fatalf("the tree before the change-over, with %d things in the named group:\n%s", inNamed, strings.Join(before.lines(), "\n"))
 	}
 	check := func(when string, x level5Tree) {
@@ -391,9 +385,6 @@ func TestLevel5ChangeOver(t *testing.T) {
 			if want := map[string]string{board: model.Ungrouped, boardPlain: plain}[b.ID]; b.Group != want || b.Archived {
 				t.Errorf("%s, the board %s is in %q, archived %v; want it in %q", when, b.ID, b.Group, b.Archived, want)
 			}
-		}
-		if len(x.Runs) != 1 || x.Runs[0].ID != run || x.Runs[0].Group != model.Ungrouped || x.Runs[0].Status != model.RunDraft || x.Runs[0].Archived {
-			t.Errorf("%s, the runs are %+v; want %s in no group, not started", when, x.Runs, run)
 		}
 		if len(x.Groups) != 2 || x.Groups[0].ID != nested || x.Groups[0].Parent != "" || x.Groups[0].Name != "Inside" ||
 			x.Groups[1].ID != plain || x.Groups[1].Parent != "" || x.Groups[1].Name != "Remote" {

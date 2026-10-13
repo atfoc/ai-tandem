@@ -151,84 +151,52 @@ func TestImageCapAfterCleanupByItself(t *testing.T) {
 }
 
 // Across a restart: the time of an image's last use and the drafts are known again before the
-// cleanup looks, so it takes what is due and nothing a draft names. A chat on a run and a branch
-// are among them.
+// cleanup looks, so it takes what is due and nothing a draft names. A branch is among them.
 func TestCleanImagesAfterRestart(t *testing.T) {
 	t.Parallel()
-	e, fr := runEnv(t)
+	e := newEnv(t)
 	id, _ := e.branched(model.Claude, "", "")
-	e.m.Runs = fr // branched restarted the manager
-	onRun := e.onRun(model.Claude).ID
 
 	orphan, dropped := e.upload(id, "orphan"), e.upload(id, "dropped")
 	onMain, onBranch := e.upload(id, "main"), e.upload(id, "branch")
 	e.saveDraft(id, model.MainBranch, model.Draft{Images: []model.Image{onMain, dropped}})
 	e.saveDraft(id, exBranch, model.Draft{Text: "b", Images: []model.Image{onBranch}})
 	e.saveDraft(id, model.MainBranch, model.Draft{Images: []model.Image{onMain}})
-	runOrphan, runDraft := e.upload(onRun, "run orphan"), e.upload(onRun, "run draft")
-	e.saveDraft(onRun, "", model.Draft{Text: "r", Images: []model.Image{runDraft}})
 
 	e.later(30 * time.Minute)
-	e.reboot(fr)
+	e.boot()
 	e.m.cleanImages()
 	for _, im := range []model.Image{orphan, dropped, onMain, onBranch} {
 		if !e.holds(id, im.ID) {
 			t.Fatalf("half an hour after its last use, after a restart, %s was deleted", im.Name)
 		}
 	}
-	if !e.holds(onRun, runOrphan.ID) || !e.holds(onRun, runDraft.ID) {
-		t.Fatal("half an hour after its last use, after a restart, an image of the chat on a run was deleted")
-	}
 
 	// The second half of the hour passes while the server is down. The cleanup of its start
 	// takes what is due, with no upload and no draft save.
-	e.reboot(fr)
+	e.boot()
 	e.later(31 * time.Minute)
 	e.m.cleanImages()
-	if e.holds(id, orphan.ID) || e.holds(id, dropped.ID) || e.holds(onRun, runOrphan.ID) {
-		t.Fatalf("past the hour, after a restart: the orphan held %v, the dropped image %v, the run chat's orphan %v",
-			e.holds(id, orphan.ID), e.holds(id, dropped.ID), e.holds(onRun, runOrphan.ID))
+	if e.holds(id, orphan.ID) || e.holds(id, dropped.ID) {
+		t.Fatalf("past the hour, after a restart: the orphan held %v, the dropped image %v",
+			e.holds(id, orphan.ID), e.holds(id, dropped.ID))
 	}
 	if got, want := e.imageFiles(id), sortedIDs(onMain, onBranch); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the chat's folder holds %v, want the two images its drafts name", got)
-	}
-	if got := e.imageFiles(onRun); !reflect.DeepEqual(got, []string{runDraft.ID}) {
-		t.Fatalf("the folder of the chat on a run holds %v, want the image its draft names", got)
 	}
 
 	// What the drafts name stays over any number of restarts, and the drafts still name it.
 	for i := 0; i < 2; i++ {
 		e.later(50 * time.Hour)
-		e.reboot(fr)
+		e.boot()
 		e.m.cleanImages()
 	}
-	if !e.holds(id, onMain.ID) || !e.holds(id, onBranch.ID) || !e.holds(onRun, runDraft.ID) {
-		t.Fatalf("an image a draft names was deleted after a restart: main's held %v, the branch's %v, the run chat's %v",
-			e.holds(id, onMain.ID), e.holds(id, onBranch.ID), e.holds(onRun, runDraft.ID))
-	}
-	if d := e.view(onRun).Draft; d == nil || d.Text != "r" || !reflect.DeepEqual(idsOf(d.Images), []string{runDraft.ID}) {
-		t.Fatalf("the draft of the chat on a run after the restarts: %+v", d)
+	if !e.holds(id, onMain.ID) || !e.holds(id, onBranch.ID) {
+		t.Fatalf("an image a draft names was deleted after a restart: main's held %v, the branch's %v",
+			e.holds(id, onMain.ID), e.holds(id, onBranch.ID))
 	}
 	if d, _ := draftAt(e.chatObj(id), exBranch); d == nil || !reflect.DeepEqual(idsOf(d.Images), []string{onBranch.ID}) {
 		t.Fatalf("the branch's draft after the restarts: %+v", d)
-	}
-}
-
-// The drafts of a chat on a run are published when the chat is loaded, as every chat's are: the
-// counter a page saves on is the stored one, and the cleanup knows what the drafts name.
-func TestRunChatDraftsAfterRestart(t *testing.T) {
-	t.Parallel()
-	e, fr := runEnv(t)
-	id := e.onRun(model.Claude).ID
-	e.saveDraft(id, "", model.Draft{Text: "one"})
-	e.saveDraft(id, "", model.Draft{Text: "two"})
-	rev := e.draftRev(id, "")
-	e.reboot(fr)
-	if got := e.draftRev(id, ""); got != rev || rev != 2 {
-		t.Fatalf("the draft's counter after a restart: %d, was %d", got, rev)
-	}
-	if drafts := draftsOf(e.chatObj(id)); len(drafts) != 1 || drafts[model.MainBranch] == nil || drafts[model.MainBranch].Text != "two" {
-		t.Fatalf("the drafts the chat publishes after a restart: %+v", drafts)
 	}
 }
 

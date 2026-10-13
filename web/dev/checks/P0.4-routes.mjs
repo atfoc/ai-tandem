@@ -244,7 +244,7 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
   expect("a path that is no call of a section is 404 not found for an id that is no entry too, not no_server", r.status === 404 && r.body?.error === "not found" && !r.body.code, r);
   r = await call("POST", `/api/on/s_nope/boards/b_x/reveal`);
   expect("reveal is 404 no_server for an id that is no entry", r.status === 404 && r.body?.code === "no_server", r);
-  r = await call("POST", `/api/on/s_nope/runs/r_x/unfollow`);
+  r = await call("POST", `/api/on/s_nope/chats/c_x/unfollow`);
   expect("an unfollow is 404 no_server for an id that is no entry", r.status === 404 && r.body?.code === "no_server", r);
   r = await call("POST", `/api/on/s_nope/boards/b_x/release`);
   expect("a release for an id that is no entry is 404 no_server", r.status === 404 && r.body?.code === "no_server", r);
@@ -260,10 +260,10 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
   // the snapshot, and a server that drops and is back
   const snap = (await call("GET", "/api/state")).body;
   expect("the snapshot has the tree of each server that is connected under `sections`, and no key for one that is not", JSON.stringify(Object.keys(snap.sections).sort()) === JSON.stringify(["s_bare", "s_lab"])
-    && snap.sections.s_lab.chats.some((c) => c.id === there) && ["groups", "boards", "chats", "states", "runs", "defaults"].every((k) => k in snap.sections.s_lab), Object.keys(snap.sections ?? {}));
+    && snap.sections.s_lab.chats.some((c) => c.id === there) && ["groups", "boards", "chats", "states", "defaults"].every((k) => k in snap.sections.s_lab), Object.keys(snap.sections ?? {}));
   const fields = (list) => [...new Set(list.flatMap((x) => Object.keys(x)))].filter((k) => ["server", "gone", "unmoved", "moveError", "start", "was"].includes(k));
-  expect("no thing of the snapshot, of this computer or of a section, has a field of what went away", !fields([...snap.chats, ...snap.boards, ...snap.runs, ...snap.groups, ...Object.values(snap.sections).flatMap((t) => [...t.chats, ...t.boards, ...t.runs, ...t.groups])]).length
-    && !snap.chats.some((c) => c.id === there) && !Object.values(snap.sections).some((t) => t.groups.some((g) => "collapsed" in g)), fields([...snap.chats, ...snap.boards, ...snap.runs]));
+  expect("no thing of the snapshot, of this computer or of a section, has a field of what went away", !fields([...snap.chats, ...snap.boards, ...snap.groups, ...Object.values(snap.sections).flatMap((t) => [...t.chats, ...t.boards, ...t.groups])]).length
+    && !snap.chats.some((c) => c.id === there) && !Object.values(snap.sections).some((t) => t.groups.some((g) => "collapsed" in g)), fields([...snap.chats, ...snap.boards]));
   n = events.length;
   await knob('setServerState("s_lab", "unreachable", { detail: "connection refused" });');
   r = await call("GET", `${LAB}/chats/${there}`);

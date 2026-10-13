@@ -1,8 +1,7 @@
 // The cap on running turns (4.4 of the concurrent branches plan). Branches of a chat work at the
 // same time, so the app limits how many chat objects work at once: maxTurnsPerChat of one
 // top-level chat (its main and its branches; a fork is a chat of its own) and maxTurns overall.
-// Subagents are not counted, and neither are the chats of runs' agents, which a run limits by
-// itself: they hold no slot and are never refused one. At the cap a human message is refused
+// Subagents are not counted. At the cap a human message is refused
 // (ErrChatCap, ErrAppCap) and a turn of the app's own (deliver) is not started: nothing waits in a
 // queue and nothing is retried.
 //
@@ -66,11 +65,11 @@ func SetCaps(chat, app string) (perChat, overall int) {
 // slots counts the chat objects that hold a slot, but left out: those of the top-level chat top,
 // and all of them. A chat object holds one while it is reserved, and while clients are shown it
 // as working, unless that is all that is left of a message its agent refused (Chat.noTurn). An
-// unlisted chat object is counted as a listed one is: a new branch works before it is listed. A
-// run agent's chat holds none. m.capMu held.
+// unlisted chat object is counted as a listed one is: a new branch works before it is listed.
+// m.capMu held.
 func (m *Manager) slots(top, but *Chat) (chat, all int) {
 	for _, o := range m.all() {
-		if o == but || o.role != "" || !(o.reserved || (o.pub.Load() != pubIdle && !o.noTurn.Load())) {
+		if o == but || !(o.reserved || (o.pub.Load() != pubIdle && !o.noTurn.Load())) {
 			continue
 		}
 		all++
@@ -96,15 +95,12 @@ func (m *Manager) capped(top, but *Chat) error {
 // reserveTurn admits a turn that is about to start on c, which is not busy, or refuses it at the
 // cap. Counting and reserving are one step under capMu, so two turns never take the last slot.
 // Admitted, c holds a slot from here on: the caller ends the reservation with releaseTurn once
-// emitChat has published c as working, and on every way out that starts no turn. A run agent's
-// chat is always admitted. c.mu held.
+// emitChat has published c as working, and on every way out that starts no turn. c.mu held.
 func (m *Manager) reserveTurn(c *Chat) error {
 	m.capMu.Lock()
 	defer m.capMu.Unlock()
-	if c.role == "" {
-		if err := m.capped(topOf(c), c); err != nil {
-			return err
-		}
+	if err := m.capped(topOf(c), c); err != nil {
+		return err
 	}
 	c.reserved = true
 	c.noTurn.Store(false)

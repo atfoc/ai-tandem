@@ -56,7 +56,7 @@ await check("A2.4 the toolbar's popups at 300 px, and a chip's width in \"more\"
   const gone = (page, sel) => until(async () => !await page.locator(sel).count(), 5000);
 
   let seen = 0;
-  for (const id of ["plain-new", "plain-remote-new", "plain-new-long", "plain-started", "board-new", "board-started", "run-new"]) {
+  for (const id of ["plain-new", "plain-remote-new", "plain-new-long", "plain-started", "board-new", "board-started"]) {
     const s = state(id), p = await open(s, 300), at = `${id}, a ${s.pane[0]} of 300 px`;
     try {
       const hasMore = await p.page.locator(MORE).count() > 0;

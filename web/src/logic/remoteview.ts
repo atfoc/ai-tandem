@@ -8,7 +8,7 @@ import type { ThreadError } from "./serverlists.ts";
 export const SERVERS = "Servers…";
 export const TRY_AGAIN = "Try again";
 
-/** The code of a call whose chat, run, board or group is not on its server (any more). */
+/** The code of a call whose chat, board or group is not on its server (any more). */
 export const NOT_FOUND = "not_found";
 
 export const goneText = (name: string): string => `This chat is no longer on ${name}.`;
@@ -37,7 +37,7 @@ export const stateSaid = (state: ServerState | undefined): string => (state ? st
  *  bar: the thread kept stays on screen, read-only, under a warning above the composer; `gone`
  *    when it says that the chat is no longer there, else that the server is not connected, with
  *    the entry's state (`state`: stateSaid) and "Servers…". */
-export type RemoteView =
+type RemoteView =
   | { kind: "none" }
   | { kind: "unreachable"; text: string; state: string }
   | { kind: "gone"; text: string }
@@ -55,8 +55,8 @@ export function remoteView(at: Remote, name: string, state: ServerState | undefi
   return err ? { kind: "failed", text: err.message } : NONE;
 }
 
-/** A dialog about deleting a chat or a run. */
-export type DeleteAsk = { title: string; body: string };
+/** A dialog about deleting a chat. */
+type DeleteAsk = { title: string; body: string };
 
 /** The dialog the row's Delete opens. name: the server's, "" for a chat of this computer. A chat of a section is
  *  deleted on its server, for its owner and every client of it. */

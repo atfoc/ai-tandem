@@ -112,9 +112,9 @@ test("formView: a fingerprint to accept for `fingerprint` and `cert_changed`, th
 
 test("removeText: names the entry, says that its section leaves the sidebar and that nothing is deleted on that server, and counts nothing", () => {
   assert.equal(removeText("Studio"),
-    `Remove "Studio"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats, whiteboards and runs stay there.`);
+    `Remove "Studio"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats and whiteboards stay there.`);
   assert.equal(removeText("Mac mini"),
-    `Remove "Mac mini"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats, whiteboards and runs stay there.`);
+    `Remove "Mac mini"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats and whiteboards stay there.`);
   assert.equal(removeText.length, 1, "the name alone");
   assert.doesNotMatch(removeText("Studio"), /\d|in this app|removed from this app/);
 });

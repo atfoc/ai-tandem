@@ -57,20 +57,9 @@ func startFakeClaude(t *testing.T) agent.Agent {
 	return startFakeClaudeIn(t, t.TempDir())
 }
 
-// startFakeClaudeIn starts the fake with cwd as its working directory.
+// startFakeClaudeIn starts the fake with cwd as its working directory. Its permission requests
+// reach the test, which answers them.
 func startFakeClaudeIn(t *testing.T, cwd string) agent.Agent {
-	t.Helper()
-	return spawnFakeClaude(t, cwd, true)
-}
-
-// startFakeClaudeAttended starts the fake as a chat's process: its permission requests reach the
-// test, which answers them.
-func startFakeClaudeAttended(t *testing.T) agent.Agent {
-	t.Helper()
-	return spawnFakeClaude(t, t.TempDir(), false)
-}
-
-func spawnFakeClaude(t *testing.T, cwd string, unattended bool) agent.Agent {
 	t.Helper()
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH")
@@ -81,7 +70,7 @@ func spawnFakeClaude(t *testing.T, cwd string, unattended bool) agent.Agent {
 	}
 	sp := &claude.Spawner{Bin: bin, AppRoot: t.TempDir(), Home: t.TempDir()}
 	ag, err := sp.Spawn(agent.SpawnOptions{ChatID: "c1", SessionID: "11111111-1111-4111-8111-111111111111",
-		Cwd: cwd, Model: "sonnet", Unattended: unattended})
+		Cwd: cwd, Model: "sonnet"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +137,7 @@ func turnEnd(t *testing.T, ag agent.Agent) agent.Event {
 // [[ask]] raises a permission request with the tool and its input, and the reply says what the
 // answer was; <<ask>> is the same directive.
 func TestFakeClaudeAskAllowAndDeny(t *testing.T) {
-	ag := startFakeClaudeAttended(t)
+	ag := startFakeClaude(t)
 	for _, c := range []struct {
 		msg, tool, input string
 		allow            bool
@@ -180,7 +169,7 @@ func TestFakeClaudeAskAllowAndDeny(t *testing.T) {
 // An interrupt while the fake waits for the answer ends the turn as aborted, and the process
 // takes the next turn.
 func TestFakeClaudeAskInterrupted(t *testing.T) {
-	ag := startFakeClaudeAttended(t)
+	ag := startFakeClaude(t)
 	askTurn(t, ag, `[[ask Bash {"command":"ls"}]] [[ask Bash {"command":"pwd"}]]`)
 	if err := ag.Interrupt(); err != nil {
 		t.Fatal(err)
@@ -194,23 +183,11 @@ func TestFakeClaudeAskInterrupted(t *testing.T) {
 	}
 }
 
-// An unattended process (a run's agent) is answered by the adapter at once: no request reaches
-// the test, and the turn ends allowed.
-func TestFakeClaudeAskUnattended(t *testing.T) {
-	ag := startFakeClaude(t)
-	if err := ag.Send([]agent.ContentBlock{{Text: `[[ask Bash {"command":"ls"}]]`}}); err != nil {
-		t.Fatal(err)
-	}
-	if end := turnEnd(t, ag); end.Error != "" || end.Aborted || !strings.HasSuffix(end.Final, "ask Bash -> allow") {
-		t.Errorf("turn end: %+v", end)
-	}
-}
-
-// The Node fake through the real Claude adapter: a turn with a cost and a result block.
-func TestFakeClaudeCostAndBlock(t *testing.T) {
+// The Node fake through the real Claude adapter: a turn with a cost.
+func TestFakeClaudeCost(t *testing.T) {
 	t.Parallel()
 	ag := startFakeClaude(t)
-	texts, end := claudeTurn(t, ag, "do the job [[cost 0.01]] [[block completed]]")
+	texts, end := claudeTurn(t, ag, "do the job [[cost 0.01]]")
 	if end.Error != "" || end.Aborted {
 		t.Fatalf("turn end: %+v", end)
 	}
@@ -221,12 +198,8 @@ func TestFakeClaudeCostAndBlock(t *testing.T) {
 		t.Fatal("the turn wrote no text")
 	}
 	last := texts[len(texts)-1]
-	const tail = "</report>\n</result>"
-	if !strings.HasSuffix(last, tail) || !strings.Contains(last, "<result>\n<outcome>completed</outcome>\n<summary>") {
-		t.Errorf("the final text does not end with a result block:\n%s", last)
-	}
-	if strings.Count(last, "<result>") != 1 {
-		t.Errorf("the final text has %d result blocks, want 1:\n%s", strings.Count(last, "<result>"), last)
+	if last != "FAKE(sonnet): do the job" {
+		t.Errorf("the final text:\n%s", last)
 	}
 	if end.Final != last {
 		t.Errorf("Final is not the last text:\n%s", end.Final)
@@ -245,38 +218,20 @@ func TestFakeClaudeCostAndBlock(t *testing.T) {
 	}
 }
 
-// A task's prompt shows the block's layout; the reply to it must hold one block, the fake's own.
-func TestFakeClaudeBlockFailedInAPromptThatShowsABlock(t *testing.T) {
-	t.Parallel()
-	ag := startFakeClaude(t)
-	prompt := "You have one task.\n\n<result>\n<outcome>completed</outcome>\n<summary>two or three sentences</summary>\n<report>\nthe full report\n</report>\n</result>\n\nbrief: <<block failed>>"
-	texts, end := claudeTurn(t, ag, prompt)
-	if end.Error != "" || len(texts) == 0 {
-		t.Fatalf("turn end %+v, texts %q", end, texts)
-	}
-	last := texts[len(texts)-1]
-	if strings.Count(last, "<result>") != 1 || !strings.Contains(last, "<outcome>failed</outcome>") || !strings.HasSuffix(last, "</result>") {
-		t.Errorf("reply:\n%s", last)
-	}
-	if !strings.HasPrefix(last, "FAKE(sonnet): You have one task.\n") {
-		t.Errorf("the reply does not start with the first line of the message:\n%s", last)
-	}
-}
-
-// [[final]] keeps the block for the reply to the subagents' results; [[if]] gates directives;
-// [[fail]] ends a turn with an error and no block.
+// [[final]] is the reply to the subagents' results; [[if]] gates directives; [[fail]] ends a turn
+// with an error.
 func TestFakeClaudeFinalIfFail(t *testing.T) {
 	t.Parallel()
 	ag := startFakeClaude(t)
-	texts, end := claudeTurn(t, ag, "start [[final all done]] [[block completed]]")
-	if end.Error != "" || len(texts) == 0 || strings.Contains(texts[len(texts)-1], "<result>") {
-		t.Fatalf("the first reply must have no block: %+v %q", end, texts)
+	texts, end := claudeTurn(t, ag, "start [[final all done]]")
+	if end.Error != "" || len(texts) == 0 || texts[len(texts)-1] != "FAKE(sonnet): start" {
+		t.Fatalf("the first reply: %+v %q", end, texts)
 	}
 	texts, end = claudeTurn(t, ag, "<subagent-results>\nThis message was written by the app.\n</subagent-results>")
 	if end.Error != "" || len(texts) == 0 {
 		t.Fatalf("turn end %+v", end)
 	}
-	if last := texts[len(texts)-1]; !strings.HasPrefix(last, "all done\n\n<result>\n<outcome>completed</outcome>") || !strings.HasSuffix(last, "</result>") {
+	if last := texts[len(texts)-1]; last != "all done" {
 		t.Errorf("reply to the results:\n%s", last)
 	}
 
@@ -284,7 +239,7 @@ func TestFakeClaudeFinalIfFail(t *testing.T) {
 	if end.Error != "" || end.OutTokens != 75000 {
 		t.Errorf("[[if]]: error %q, out tokens %d (want none, 75000); texts %q", end.Error, end.OutTokens, texts)
 	}
-	_, end = claudeTurn(t, ag, "[[fail it broke]] [[block completed]]")
+	_, end = claudeTurn(t, ag, "[[fail it broke]]")
 	if end.Error != "it broke" {
 		t.Errorf("[[fail]]: %+v", end)
 	}
@@ -297,7 +252,7 @@ func TestFakeClaudeWriteAndArrays(t *testing.T) {
 	cwd := t.TempDir()
 	ag := startFakeClaudeIn(t, cwd)
 	texts, end := claudeTurn(t, ag, `the job [[write notes/a.txt one\ntwo]] [[if not in the message]] [[write b.txt no]] [[if the job]] `+
-		`[[mcp add_task {"depends_on":["T01","T02"],"title":"x"}]] <<write c.txt three>> [[block completed]]`)
+		`[[mcp apply {"delete":["E01","E02"],"board":"x"}]] <<write c.txt three>>`)
 	if end.Error != "" || end.Aborted || len(texts) == 0 {
 		t.Fatalf("turn end: %+v, texts %q", end, texts)
 	}
@@ -312,11 +267,8 @@ func TestFakeClaudeWriteAndArrays(t *testing.T) {
 	last := texts[len(texts)-1]
 	// The whole [[mcp …]] directive was read, array and all: the process has no MCP endpoint and
 	// says so, and nothing of the directive is left in the reply.
-	if !strings.Contains(last, "add_task -> no --mcp-config") || strings.Contains(last, "T02") || !strings.Contains(last, "write notes/a.txt -> written") {
+	if !strings.Contains(last, "apply -> no --mcp-config") || strings.Contains(last, "E02") || !strings.Contains(last, "write notes/a.txt -> written") {
 		t.Errorf("the reply:\n%s", last)
-	}
-	if !strings.HasSuffix(last, "</report>\n</result>") {
-		t.Errorf("the reply does not end with the block:\n%s", last)
 	}
 }
 
@@ -338,7 +290,7 @@ func TestFakeClaudeMCPConfigFromAFile(t *testing.T) {
 	appRoot := t.TempDir()
 	sp := &claude.Spawner{Bin: agenttest.FakeClaude(t), AppRoot: appRoot, Home: t.TempDir()}
 	ag, err := sp.Spawn(agent.SpawnOptions{ChatID: "c1", SessionID: "11111111-1111-4111-8111-111111111111",
-		Cwd: t.TempDir(), Model: "sonnet", Unattended: true, MCP: &agent.BoardAccess{MCPURL: srv.URL, Token: "file-tok"}})
+		Cwd: t.TempDir(), Model: "sonnet", MCP: &agent.BoardAccess{MCPURL: srv.URL, Token: "file-tok"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +302,7 @@ func TestFakeClaudeMCPConfigFromAFile(t *testing.T) {
 	if fi, err := os.Stat(filepath.Join(appRoot, "chats", "c1", "mcp.json")); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("the --mcp-config file: %v, %v; want mode 600", fi, err)
 	}
-	texts, end := claudeTurn(t, ag, `[[mcp get_run {}]] [[block completed]]`)
+	texts, end := claudeTurn(t, ag, `[[mcp read_board {}]]`)
 	if end.Error != "" || len(texts) == 0 {
 		t.Fatalf("turn end: %+v, texts %q", end, texts)
 	}

@@ -3,7 +3,7 @@
 // thread's load error. The events through the real event layer are in conn.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BOARD_SERVER, RUN_SERVER, RUN_SERVER_FINAL, SERVER_FINAL, listsFrom, listsOf, offered, RECENT_KEY, sectionBack, sectionName, serverConnected, serverFixed,
+import { BOARD_SERVER, SERVER_FINAL, listsFrom, listsOf, offered, RECENT_KEY, sectionBack, sectionName, serverConnected, serverFixed,
   serverName, serverOf, serverState, threadError, withLists, withThreadError, withoutThread } from "../src/logic/serverlists.ts";
 import { readFileSync } from "node:fs";
 import { LOCAL_ENTRY, type ServerState, type ServerView } from "../src/logic/servers.ts";
@@ -95,7 +95,6 @@ test("RECENT_KEY: this computer's recent folders have the one key in the browser
 test("serverFixed: a chat's server is never a choice, and its chip says why", () => {
   assert.equal(SERVER_FINAL, "A chat is on the server it was made on");
   assert.equal(BOARD_SERVER, "A chat on a board is on the board's server");
-  assert.equal(RUN_SERVER, "A chat on a run is on the run's server");
   // unstarted or started, a fork or a branch: the same reason, the chat was made there
   for (const o of [{}, { locked: true }, { forkedFrom: "c_0" }, { branch: "ab12cd34" }, { branches: 2 }] as Partial<ChatView>[]) {
     assert.equal(serverFixed(far("s_1", o)), SERVER_FINAL, JSON.stringify(o));
@@ -104,13 +103,10 @@ test("serverFixed: a chat's server is never a choice, and its chip says why", ()
   // the place comes first
   assert.equal(serverFixed(far("s_1", { board: "s_1~b_1" })), BOARD_SERVER);
   assert.equal(serverFixed(far("s_1", { board: "s_1~b_1", locked: true })), BOARD_SERVER);
-  assert.equal(serverFixed(far("s_1", { run: "s_1~r_1" })), RUN_SERVER);
-  assert.equal(serverFixed(far("s_1", { run: "s_1~r_1", locked: true })), RUN_SERVER);
 });
 
-test("a run's server is no choice either: its chip says that it is on the server it was made on", () => {
-  assert.equal(RUN_SERVER_FINAL, "A run is on the server it was made on");
-  // (the choice of a server for a run that has not started is gone with the question where a chat should live)
+test("a chat's server is no choice: the lists hold nothing to choose one with", () => {
+  // (the choice of a server for a chat is gone with the question where a chat should live)
   const lists = readFileSync(new URL("../src/logic/serverlists.ts", import.meta.url), "utf8");
   for (const gone of ["serverOptions", "waitsForUser", "serverOfChat", "serverOnBoard", "serverBack", "chatReload"]) assert.ok(!lists.includes(gone), gone);
 });
@@ -204,14 +200,12 @@ test("a section's tree arrives: a chat that is no longer on that server is none 
 
 // ---- a subagent's chat is read by the server its chat's key names (Subagents.tsx)
 
-test("a subagent's model is named by the catalog of its chat's server, a run agent's too: the key of its chat names the run's server", () => {
+test("a subagent's model is named by the catalog of its chat's server", () => {
   const src = readFileSync(new URL("../src/Subagents.tsx", import.meta.url), "utf8");
   assert.equal(src.split("const server = serverOf(chat);").length, 3, "the row and the drawer");
   assert.equal(src.split("<SubStats sa={sa} items={items} now={now} server={server} />").length, 3);
   assert.doesNotMatch(src, /serverOfChat/);
   assert.match(src, /const cat = useStore\(\(s\) => catalogFor\(s, server, sa\.kind \?\? ""\)\);/);
-  // (a run agent's chat of a section is keyed as its run is: logic/sectionwire.ts)
-  assert.equal(serverOf({ id: keyOn("s_1", "c_agent") }), "s_1");
 });
 
 // ---- what a failed reload after a section's tree arrived takes away (conn.ts dropStale)

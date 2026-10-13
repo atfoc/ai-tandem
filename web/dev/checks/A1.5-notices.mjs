@@ -2,7 +2,7 @@
 // (either kind), and at no other time: not for a server that is not connected, not for a banner the user hid.
 // Hiding by the head's control, and by ⌘B with the focus in the sidebar, puts the focus on the rail's control;
 // showing from the rail puts it on the head's; a focus outside the sidebar stays where it is through ⌘B. Hiding
-// either way ends a rename box (a group's, a board's, a run's, a chat's) with its text not saved, though a box that
+// either way ends a rename box (a group's, a board's, a chat's) with its text not saved, though a box that
 // loses the focus saves: the check ends with one that does, heard by the same listener. And it closes the head's
 // "+" menu, a chat row's and a board row's menu, a group's "+" menu and a group's menu. With the sidebar shown its
 // head holds its two controls inside the pane, down to the pane's least width and beside "Reconnecting…".
@@ -209,14 +209,5 @@ await check("A1.5 the rail's dot, the focus, and what hiding the sidebar closes"
       if (!saved) fail("a rename box that lost the focus to a press on the sidebar's head saved nothing: the check would not see a save");
       else note(`a rename box that loses the focus saves (${saved.split(" ").slice(0, 2).join(" ")}); hidden by ⌘B and by the head's control, a group's, a board's and a chat's saved nothing`);
     }
-  });
-
-  // a draft run that is on screen: ending its box as Esc would send the focus to the goal box, which the rail keeps
-  await open({ sel: { run: "r_draft" } }, async (page) => {
-    await spy(page);
-    await page.waitForSelector(".run-stage .run-composer");
-    const run = page.locator(".side-row.is-run.on");
-    for (const how of ["key", "control"]) await dropped(page, "a draft run", run, ".side-name", how);
-    note("a draft run's rename box: ended by hiding, nothing saved, and the focus stayed on the rail's control");
   });
 });

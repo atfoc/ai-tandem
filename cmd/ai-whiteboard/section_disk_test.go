@@ -25,9 +25,9 @@ import (
 // server list, and nothing else of that server. (The relay alone: TestSectionNothingOnDisk,
 // internal/remotes.)
 
-// madeID is an id this server makes for a board or a run: it differs from start to start, so
+// madeID is an id this server makes for a board: it differs from start to start, so
 // two data folders are compared with it left out of their paths.
-var madeID = regexp.MustCompile(`\b[br]_[0-9a-z]{8}\b`)
+var madeID = regexp.MustCompile(`\bb_[0-9a-z]{8}\b`)
 
 // folderPaths are the paths of the files of a data folder, sorted, with the ids this server
 // makes left out: what two folders that went through the same steps have in common.
@@ -41,8 +41,7 @@ func folderPaths(files map[string][]byte) []string {
 }
 
 // localSteps makes, as the page id of the program, things of this computer: a group, a chat
-// with a draft and an image, a board with a drawing, a run with a goal and a prompt of the
-// library. Each call must be taken.
+// with a draft and an image, a board with a drawing and a prompt of the library. Each call must be taken.
 func localSteps(t *testing.T, pr *program, id string) {
 	t.Helper()
 	const chat = "1a000000-0000-4000-8000-00000000000a"
@@ -64,18 +63,16 @@ func localSteps(t *testing.T, pr *program, id string) {
 	var made struct{ ID string }
 	json.Unmarshal([]byte(must("POST", "/api/boards", map[string]any{"name": "Here", "group": model.Ungrouped}).Raw), &made)
 	must("PUT", "/api/boards/"+made.ID+"/scene?rev=0", json.RawMessage(boardScene("drawn-here")))
-	json.Unmarshal([]byte(must("POST", "/api/runs", map[string]any{"group": model.Ungrouped, "name": "Here"}).Raw), &made)
-	must("PUT", "/api/runs/"+made.ID+"/draft", map[string]any{"text": "a goal here"})
 }
 
 // The data folder of a program that is connected to another server holds what the folder of a
 // program with no entry holds after the same local steps, and the server list. The other server
-// has groups, what they remember for a new chat, boards, chats with drafts, branch states, runs
-// and a prompt library; it tells of a change of each kind and of the content of a chat and a
-// run that a page follows; the page saves a draft, sends a message, takes a board and saves its
-// drawing, uploads an image and fetches it, makes a group, a chat, a board and a run there,
-// types the run's goal, changes what a chat starts with and asks for that server's folders and
-// usage; the server drops, with two boards held here, a save of a drawing, of a draft and of an
+// has groups, what they remember for a new chat, boards, chats with drafts, branch states and a
+// prompt library; it tells of a change of each kind and of the content of a chat that a page
+// follows; the page saves a draft, sends a message, takes a board and saves its drawing,
+// uploads an image and fetches it, makes a group, a chat and a board there, changes what a chat
+// starts with and asks for that server's folders and usage; the server drops, with two boards
+// held here, a save of a drawing, of a draft and of an
 // image is tried meanwhile, and it comes back; and the program is stopped. No file but the list
 // holds an id, a name or a text of anything of that server, its entry or its secret, and from
 // the first call for that server to the stop no file but the list is written at all.
@@ -83,11 +80,11 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 	t.Parallel()
 	const entry = savedEntryID
 	const (
-		moreGroup, moreBoard, moreRun = "g_more", "b_bbbb0002", "r_bbbb0002"
-		moreChat                      = "2c000000-0000-4000-8000-00000000000c"
+		moreGroup, moreBoard = "g_more", "b_bbbb0002"
+		moreChat             = "2c000000-0000-4000-8000-00000000000c"
 		// What a page here makes there.
-		madeGroup, madeBoard, madeRun = "g_made", "b_cccc0003", "r_cccc0003"
-		madeChat                      = "2d000000-0000-4000-8000-00000000000d"
+		madeGroup, madeBoard = "g_made", "b_cccc0003"
+		madeChat             = "2d000000-0000-4000-8000-00000000000d"
 		// That server's prompt library.
 		libGroup, libPrompt, libSecond = "g_0000000000c1", "p_0000000000c1", "p_0000000000c2"
 	)
@@ -95,9 +92,9 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 	sum := sha256.Sum256(shot)
 	image := hex.EncodeToString(sum[:])
 	// What was typed, drawn and sent for that server here, and what that server told of.
-	marks := append(farMarks(), moreGroup, moreBoard, moreRun, moreChat, "More there", "Second board there", "another draft there",
+	marks := append(farMarks(), moreGroup, moreBoard, moreChat, "More there", "Second board there", "another draft there",
 		"said there", "typed here into a chat there", "sent from here to there", "drawn-here-for-there", "studio-shot", "a shot of the studio", image,
-		madeGroup, madeBoard, madeRun, madeChat, "Made from here", "made-from-here", "a goal typed here for a run there", "drawn-here-on-a-new-board-there",
+		madeGroup, madeBoard, madeChat, "Made from here", "made-from-here", "drawn-here-on-a-new-board-there",
 		libGroup, libPrompt, libSecond, "Studio prompts", "studio-review", "Look at the studio's work.", "studio-second", "A second prompt of the studio.",
 		"drawn-here-during-the-outage", "typed here during the outage", "a shot during the outage", "studio-folder", "studio-usage",
 		// The entry and its server, what that server offers for a new chat, and its folders.
@@ -121,7 +118,6 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 	for pattern, v := range map[string]any{
 		"GET /api/chats/{id}/items": map[string]any{"branch": "main", "version": 1, "items": []any{map[string]any{"kind": "user", "text": "said there"}},
 			"subagents": []any{}, "state": map[string]any{"chat": farChat, "branch": "main", "status": "ready"}},
-		"GET /api/runs/{id}/detail":     map[string]any{"run": farRun, "version": 1, "agents": map[string]any{}},
 		"PUT /api/chats/{id}/draft":     map[string]any{"ok": true, "rev": 2},
 		"POST /api/chats/{id}/messages": map[string]any{"branch": "main"},
 		"POST /api/chats/{id}/images":   model.Image{ID: image, Name: "studio-shot.png", Type: "image/png", Size: int64(len(shot))},
@@ -129,14 +125,11 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 		"PUT /api/boards/{id}/scene":    map[string]any{"ok": true, "rev": 4},
 		"POST /api/boards/{id}/release": map[string]any{"state": "free"},
 		"POST /api/chats/{id}/unfollow": map[string]any{"ok": true},
-		"POST /api/runs/{id}/unfollow":  map[string]any{"ok": true},
 		// What a page here makes there, and what it asks that server for.
 		"POST /api/groups":          model.Group{ID: madeGroup, Name: "Made from here"},
 		"POST /api/chats":           made,
 		"PATCH /api/chats/{id}":     map[string]any{"ok": true, "chat": made},
 		"POST /api/boards":          model.Board{ID: madeBoard, Name: "made-from-here", Group: madeGroup, Created: farTime},
-		"POST /api/runs":            model.RunView{ID: madeRun, Name: "Made from here", Group: madeGroup, Agent: model.Claude, Status: model.RunDraft, Created: farTime},
-		"PUT /api/runs/{id}/draft":  map[string]any{"ok": true},
 		"GET /api/dirs":             map[string]any{"path": "/home/standin", "dirs": []string{"studio-folder"}},
 		"GET /api/usage/{agent}":    map[string]any{"plan": "studio-usage"},
 		"POST /api/chats/{id}/open": map[string]any{"ok": true},
@@ -154,14 +147,14 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 	}
 	// alone is a program with no entry, which goes through the local steps and nothing else.
 	aloneRoot, root := t.TempDir(), t.TempDir()
-	alone := wiredWaits(t, aloneRoot, true, waits)
+	alone := wiredWaits(t, aloneRoot, waits)
 	alone.page(t, "page")
 	localSteps(t, alone, "page")
 
 	if err := os.WriteFile(filepath.Join(root, servers.FileName), []byte(savedEntry(st)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pr := wiredWaits(t, root, true, waits)
+	pr := wiredWaits(t, root, waits)
 	page := pr.page(t, "page")
 	localSteps(t, pr, "page")
 	until(t, "the relay has the entry's tree", func() bool { _, ok := pr.sectionOf(entry); return ok })
@@ -177,10 +170,9 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 		return got
 	}
 
-	// The page follows a chat and a run of that server, and that server tells of a change of
-	// each kind and of what the two hold.
+	// The page follows a chat of that server, and that server tells of a change of each kind and
+	// of what the chat holds.
 	must("GET", on("/chats/"+farChat+"/items"), nil)
-	must("GET", on("/runs/"+farRun+"/detail"), nil)
 	added := farView(moreChat, "Made there")
 	added.Locked, added.Draft, added.DraftRev, added.HasDraft = false, &model.Draft{Text: "another draft there"}, 1, true
 	mark := page.mark()
@@ -191,21 +183,17 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 		{"type": "board", "board": model.Board{ID: moreBoard, Name: "Second board there", Group: moreGroup, Created: farTime}},
 		{"type": "branch_state", "state": model.StateOf(moreChat, model.MainBranch, added)},
 		{"type": "chat", "chat": added},
-		{"type": "run", "run": model.RunView{ID: moreRun, Name: "More there", Group: moreGroup, Agent: model.Claude, Status: model.RunDraft, Created: farTime}},
 		{"type": "chat_items", "chat": farChat, "branch": "main", "version": 2, "items": []any{map[string]any{"kind": "assistant", "text": "said there"}}},
 		{"type": "tree", "chat": farChat, "version": 2, "branches": []any{}},
-		{"type": "run_detail", "run": farRun, "detail": map[string]any{"run": farRun, "version": 2}},
-		{"type": "run_activity", "run": farRun, "note": "said there"},
 		{"type": "board_removed", "id": moreBoard},
-		{"type": "run_removed", "id": moreRun},
 		{"type": "chat_removed", "id": moreChat},
 	} {
 		st.Send(ev)
 	}
-	for _, typ := range []string{"groups", "defaults", "board", "branch_state", "chat", "run", "chat_items", "tree", "run_detail", "run_activity", "board_removed", "run_removed", "chat_removed"} {
+	for _, typ := range []string{"groups", "defaults", "board", "branch_state", "chat", "chat_items", "tree", "board_removed", "chat_removed"} {
 		page.awaitEvent(t, mark, 10*time.Second, typ, `"server":"`+entry+`"`)
 	}
-	if tree, _ := pr.sectionOf(entry); len(tree.Groups) != 2 || len(tree.Chats) != 2 || len(tree.Boards) != 1 || len(tree.Runs) != 1 || tree.Defaults.Groups[moreGroup].Local().Cwd == "" {
+	if tree, _ := pr.sectionOf(entry); len(tree.Groups) != 2 || len(tree.Chats) != 2 || len(tree.Boards) != 1 || tree.Defaults.Groups[moreGroup].Local().Cwd == "" {
 		t.Fatalf("the tree after that server's events: %+v", tree)
 	}
 
@@ -227,7 +215,7 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 		t.Fatalf("the fetch of an image of a chat of that server: %d with %d bytes as %q", resp.StatusCode, len(raw), resp.Header.Get("Content-Type"))
 	}
 	// Things are made there from here: a group, a chat in it, a board, which the page that made
-	// it draws on, and a run with its goal. What a chat there starts with is changed, which that
+	// it draws on. What a chat there starts with is changed, which that
 	// server remembers and this one does not, and that server's folders and usage are asked for.
 	maker := pr.page(t, "maker")
 	mustAs := func(id, method, path string, body any) {
@@ -242,8 +230,6 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 	mustAs("maker", "POST", on("/boards"), map[string]any{"name": "made-from-here", "group": madeGroup})
 	// The page that made the board holds it: its drawing is taken.
 	mustAs("maker", "PUT", on("/boards/"+madeBoard+"/scene?rev=3"), json.RawMessage(boardScene("drawn-here-on-a-new-board-there")))
-	must("POST", on("/runs"), map[string]any{"group": madeGroup, "name": "Made from here"})
-	must("PUT", on("/runs/"+madeRun+"/draft"), map[string]any{"text": "a goal typed here for a run there"})
 	if got := must("GET", "/api/dirs?server="+entry+"&path=/home/standin", nil); !strings.Contains(got.Raw, "studio-folder") {
 		t.Fatalf("the folders of that server: %s", got)
 	}
@@ -286,7 +272,7 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 		"PUT /api/chats/" + farDrafted + "/draft", "POST /api/chats/" + farChat + "/messages", "POST /api/boards/" + farBoard + "/take",
 		"PUT /api/boards/" + farBoard + "/scene", "POST /api/chats/" + farChat + "/images", "GET /api/chats/" + farChat + "/images/" + image,
 		"POST /api/groups", "POST /api/chats", "PATCH /api/chats/" + madeChat, "POST /api/boards", "POST /api/boards/" + madeBoard + "/take",
-		"PUT /api/boards/" + madeBoard + "/scene", "POST /api/runs", "PUT /api/runs/" + madeRun + "/draft", "GET /api/dirs", "GET /api/usage/claude",
+		"PUT /api/boards/" + madeBoard + "/scene", "GET /api/dirs", "GET /api/usage/claude",
 	} {
 		if !slices.Contains(got, want) {
 			t.Fatalf("that server was not sent %s; it was sent %v", want, got)
@@ -331,7 +317,7 @@ func TestSectionNothingOfAnotherServerIsWritten(t *testing.T) {
 	}
 	compare("connected")
 
-	// That server drops, with a chat and a run followed and two boards held here. What a page
+	// That server drops, with a chat followed and two boards held here. What a page
 	// tries meanwhile is refused and kept nowhere: a save of a drawing, of a draft and of an
 	// image, and a make. The copy of its library stays in memory, marked as not connected.
 	mark = page.mark()

@@ -1,6 +1,7 @@
 package chats
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -196,4 +197,67 @@ func TestFakeStopFailAndSpawnError(t *testing.T) {
 	if !e.view(v.ID).FolderMissing {
 		t.Error("the chat does not show the failed start")
 	}
+}
+
+// spawnsOf are the options of the processes started for the chat object chatID, in order.
+func spawnsOf(f *agenttest.Fake, chatID string) []agent.SpawnOptions {
+	var out []agent.SpawnOptions
+	for _, o := range f.Spawns() {
+		if o.ChatID == chatID {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// What the manager starts a chat's processes with, whole structs compared: the first start, a
+// resume, and a subagent of the chat.
+func TestSpawnOptionsOfAChat(t *testing.T) {
+	t.Parallel()
+	e, f := fakeEnv(t, model.Claude)
+	f.Script(func(tn *agenttest.Turn) { tn.Say("ok") })
+	const url = "http://localhost:6006/mcp"
+	same := func(what string, got, want agent.SpawnOptions) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s:\n got %+v\nwant %+v", what, got, want)
+		}
+	}
+	v := e.create(model.Claude, gOne, "")
+	dir := e.st.P.ChatDir(v.ID)
+	turns := func(n int) {
+		t.Helper()
+		waitFor(t, "the turn to end", func() bool { return e.view(v.ID).Usage.Turns == n })
+	}
+	e.send(v.ID, "one", "")
+	turns(1)
+	e.m.Stop(v.ID)
+	e.send(v.ID, "two", "")
+	turns(2)
+	m := e.meta(v.ID)
+	sp := spawnsOf(f, v.ID)
+	if len(sp) != 2 {
+		t.Fatalf("%d processes", len(sp))
+	}
+	want := agent.SpawnOptions{ChatID: v.ID, SessionID: m.SessionID, Cwd: v.Cwd, Model: v.Model, Effort: v.Effort,
+		MCP: &agent.BoardAccess{MCPURL: url, Token: m.Token}, Dir: dir}
+	same("the first start", sp[0], want)
+	want.Resume = true
+	same("the resume", sp[1], want)
+
+	// A subagent, once its result has been delivered and the chat rests again.
+	sa := e.spawn(v.ID, SpawnSubRequest{Prompt: "child work"})
+	turns(3)
+	waitFor(t, "the subagent's result to be delivered", func() bool { return !e.m.Busy(v.ID) && e.view(v.ID).SubsOwed == 0 })
+	sp = spawnsOf(f, v.ID+"/subagents/"+sa.ID)
+	if len(sp) != 1 {
+		t.Fatalf("%d processes for the subagent", len(sp))
+	}
+	got := sp[0]
+	if got.MCP == nil || got.MCP.Token == "" || got.MCP.Token == m.Token || got.SessionID == "" || got.SessionID == m.SessionID {
+		t.Fatalf("the subagent's token and session: %+v", got)
+	}
+	same("the subagent", got, agent.SpawnOptions{ChatID: v.ID + "/subagents/" + sa.ID, SessionID: got.SessionID, Cwd: v.Cwd,
+		Model: v.Model, Effort: v.Effort, MCP: &agent.BoardAccess{MCPURL: url, Token: got.MCP.Token}, Subagent: true, NoSpawn: true,
+		Dir: dir + "/subagents/" + sa.ID})
 }

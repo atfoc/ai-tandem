@@ -70,16 +70,13 @@ func TestSectionStates(t *testing.T) {
 	}
 	wantReply(t, "a call while connected", call(), http.StatusOK, map[string]any{"ok": true})
 	rg.readChat(p, chatA)
-	rg.readRun(p, runA)
 
 	// The server drops.
 	rg.offline()
 	nullSection(t, p, rg.far)
 	noSection(t, rg.far, "after the drop")
-	for _, it := range []editorbridge.Item{editorbridge.ChatOn(rg.entry, chatA), editorbridge.RunOn(rg.entry, runA)} {
-		if rg.b.Followed(it) {
-			t.Errorf("%v is still followed after its tree went", it)
-		}
+	if it := editorbridge.ChatOn(rg.entry, chatA); rg.b.Followed(it) {
+		t.Errorf("%v is still followed after its tree went", it)
 	}
 	asked := len(rg.calls())
 	wantReply(t, "a call after the drop", call(), http.StatusServiceUnavailable, unreachable)
@@ -100,7 +97,7 @@ func TestSectionStates(t *testing.T) {
 	if ev["server"] != rg.entry || !sameJSON(t, ev["tree"], held) {
 		t.Errorf("the section event of the return: %v", ev)
 	}
-	if len(held.Chats) != 1 || held.Chats[0].ID != chatB || len(held.Runs) != 0 || len(held.Boards) != 0 || held.Groups[0].ID != "g_later" {
+	if len(held.Chats) != 1 || held.Chats[0].ID != chatB || len(held.Boards) != 0 || held.Groups[0].ID != "g_later" {
 		t.Errorf("the tree after the return: %s", mustJSON(t, held))
 	}
 	wantReply(t, "a call after the return", call(), http.StatusOK, map[string]any{"ok": true})

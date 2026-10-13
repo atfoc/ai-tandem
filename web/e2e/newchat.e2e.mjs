@@ -4,8 +4,8 @@
 // "+" makes a chat at once, with no agent menu: the agent is chosen in the chat's composer. A
 // group remembers the folder, the model and the agent of the last first message, and the next "+"
 // in that group starts with them; a "+" outside any group does not. The web unit tests read the
-// seven places as source (web/test/newchat.test.ts) and the paid suite (app.e2e.mjs) clicks some of
-// them; this script clicks all seven on the page itself in a headless Chrome (Playwright).
+// five places as source (web/test/newchat.test.ts) and the paid suite (app.e2e.mjs) clicks some of
+// them; this script clicks all five on the page itself in a headless Chrome (Playwright).
 //
 // It spends no money: the server runs the stand-in agent internal/agenttest/fake-claude and has no
 // Cursor and no pi. It never touches the installed app: the script builds its own binary into a
@@ -16,10 +16,10 @@
 //   node web/e2e/newchat.e2e.mjs
 //
 // Steps:
-//   1 the seven places that make a chat, each clicked: the empty state's "New chat", the sidebar's
-//     "+", a group's "+", a board row's "+", the board bar's "+ Chat on this board", a run row's
-//     "+" and the run bar's "+ Chat on this run". Checked at each: no menu item names an agent,
-//     exactly one chat is added, it is where the place says and it is the one on screen
+//   1 the five places that make a chat, each clicked: the empty state's "New chat", the sidebar's
+//     "+", a group's "+", a board row's "+" and the board bar's "+ Chat on this board". Checked at
+//     each: no menu item names an agent, exactly one chat is added, it is where the place says and
+//     it is the one on screen
 //   2 in the group: "+", a folder and a model picked in the composer, a first message answered by
 //     the stand-in. Checked: the next "+" in the group starts with that folder and model, a "+"
 //     outside any group starts with the server's default folder and model
@@ -193,7 +193,7 @@ const one = (o) => JSON.stringify(o);
 const box = (p) => p.locator(".composer .composer-input");
 const groupHead = (p, name) => p.locator(".side-group-head").filter({ has: p.locator(".side-group-name", { hasText: new RegExp(`^${name}$`) }) });
 const rowOf = (p, kind, name) => p.locator(`.side-row.is-${kind}`).filter({ has: p.locator(".side-name", { hasText: new RegExp(`^${name}$`) }) });
-/** The composer of the chat on screen: in the panel beside a board or a run, or on the chat's own page (a draft run has a composer of its own beside it). */
+/** The composer of the chat on screen: in the panel beside a board, or on the chat's own page. */
 const chatBox = (p) => p.locator(".board-panel .composer-input, .chat-col .composer-input");
 const assistant = (p) => p.locator(".thread .msg.assistant").allInnerTexts();
 
@@ -210,7 +210,7 @@ async function nameIt(p, where, name) {
   await input.waitFor({ state: "detached" });
 }
 
-// ---- step 1: the seven places
+// ---- step 1: the five places
 
 /** The names an agent menu would show (the agent choice's labels). */
 const AGENT_NAME = /^(Claude Code|Cursor|Pi)$/i;
@@ -241,16 +241,16 @@ async function place(p, name, { opener, menu = null, others = [], placed }) {
   const where = c ? await placed(c, st) : false;
   await check(`1 ${name}: exactly one chat is added, where the place says, and it is the one on screen`,
     added.length === 1 && !!id && c.id === id && now.chat === id && where === true && !c.locked && (await chatBox(p).count()) === 1,
-    `added ${added.length}; chat composers on screen ${await chatBox(p).count()}; selected ${one(now)}; the chat: ${c ? one({ id: c.id, group: c.group, board: c.board, run: c.run, agent: c.agent, locked: c.locked }) : "none"}`);
+    `added ${added.length}; chat composers on screen ${await chatBox(p).count()}; selected ${one(now)}; the chat: ${c ? one({ id: c.id, group: c.group, board: c.board, agent: c.agent, locked: c.locked }) : "none"}`);
   return id;
 }
 
-const GROUP = "Research", BOARD = "blueprint", RUN = "rollout"; // one word each: a board's name is also its folder's
+const GROUP = "Research", BOARD = "blueprint"; // one word each: a board's name is also its folder's
 let group = "";    // the group's id
 let groupChat = ""; // the chat step 1 made in the group: unstarted, with the defaults the group had then
 
 async function step1() {
-  const ungrouped = (c) => c.group === "__ungrouped__" && !c.board && !c.run;
+  const ungrouped = (c) => c.group === "__ungrouped__" && !c.board;
 
   // The empty state shows only while nothing is selected: a fresh page on a fresh server.
   const home = page.locator("main.home");
@@ -259,15 +259,15 @@ async function step1() {
   } else skipped('1 the empty state\'s "New chat"', "the fresh page did not show the empty state");
 
   await place(page, 'the sidebar\'s "+"', {
-    opener: () => page.click("button.icon-btn.new"), menu: "New chat", others: ["New whiteboard", "New run", "New group"], placed: ungrouped,
+    opener: () => page.click("button.icon-btn.new"), menu: "New chat", others: ["New whiteboard", "New group"], placed: ungrouped,
   });
 
   await page.locator(".side-addgroup").click();
   await nameIt(page, ".side-group-head", GROUP);
   group = (await waitFor("the group exists", async () => (await stateOf(A)).groups?.find((g) => g.name === GROUP) ?? null)).id;
   groupChat = await place(page, `a group's "+"`, {
-    opener: () => hoverClick(groupHead(page, GROUP), `button[title="New in ${GROUP}"]`), menu: "Chat", others: ["Whiteboard", "Run", "Group"],
-    placed: (c) => c.group === group && !c.board && !c.run,
+    opener: () => hoverClick(groupHead(page, GROUP), `button[title="New in ${GROUP}"]`), menu: "Chat", others: ["Whiteboard", "Group"],
+    placed: (c) => c.group === group && !c.board,
   });
 
   // A board: made through the sidebar's "+", its row opens in rename mode.
@@ -276,23 +276,12 @@ async function step1() {
   const board = await waitFor("the page selects its new board", async () => (await sel(page)).board ?? null);
   await nameIt(page, ".side-row.is-board", BOARD);
   await page.locator(".board-bar").waitFor();
-  const onBoard = (c) => c.board === board && !c.run;
+  const onBoard = (c) => c.board === board;
   await place(page, `a board row's "+"`, { opener: () => hoverClick(rowOf(page, "board", BOARD), 'button[title="New chat on this board"]'), placed: onBoard });
   await place(page, 'the board bar\'s "+ Chat on this board"', { opener: () => page.locator(".board-bar button", { hasText: /^\+ Chat on this board$/ }).click(), placed: onBoard });
 
-  // A run: a draft is enough, and the stand-in can make one. Its row opens in rename mode.
-  await page.click("button.icon-btn.new");
-  await menuItem(page, /^\s*New run\s*$/).click();
-  const run = await waitFor("the page selects its new run", async () => (await sel(page)).run ?? null);
-  await nameIt(page, ".side-row.is-run", RUN);
-  await page.locator(".run-bar").waitFor();
-  const onRun = (c) => c.run === run && !c.board;
-  await place(page, `a run row's "+"`, { opener: () => hoverClick(rowOf(page, "run", RUN), 'button[title="New chat on this run"]'), placed: onRun });
-  // The run bar's button reads "+ Chat" when the bar is tight (the chat panel is open beside it).
-  await place(page, 'the run bar\'s "+ Chat on this run"', { opener: () => page.locator(".run-bar button", { hasText: /^\+ Chat( on this run)?$/ }).click(), placed: onRun });
-
   const st = await stateOf(A);
-  await check("1 the seven places made seven chats, none with a menu of agents", st.chats.length === 7, `${st.chats.length} chats on the server`);
+  await check("1 the five places made five chats, none with a menu of agents", st.chats.length === 5, `${st.chats.length} chats on the server`);
 }
 
 // ---- step 2: the group's defaults
@@ -386,7 +375,7 @@ try {
   catch { throw new Error("playwright is not installed: cd web && npm install --no-save playwright && npx playwright install chromium"); }
   browser = await chromium.launch({ headless: true });
   page = await openPage();
-  await step("1 the seven places", step1);
+  await step("1 the five places", step1);
   await step("2 the group's defaults", step2);
   await check("the page's console has no error", page.errors.length === 0, [...new Set(page.errors)].slice(0, 5).join(" ; "));
   await check("no request of the page failed", page.failedRequests.length === 0, [...new Set(page.failedRequests)].slice(0, 5).join(" ; "));

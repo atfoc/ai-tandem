@@ -120,7 +120,7 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 			}
 		}
 		// The raw numbers of the line: total_cost_usd and modelUsage are cumulative for the
-		// process, num_turns and usage are this turn's. What a run has spent is the engine's sum.
+		// process, num_turns and usage are this turn's.
 		_, hasCost := m["total_cost_usd"].(float64)
 		cumOut := 0
 		var cum model.TokenCount
@@ -142,11 +142,7 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 				CostUSD: num(m["total_cost_usd"]), HasCost: hasCost, NumTurns: int(num(m["num_turns"])),
 				OutTokens: int(num(obj(m["usage"])["output_tokens"])), CumOutTokens: cumOut,
 				CumTokens: cum, HasTokens: hasTok,
-				Final: str(m["result"]),
-				// --resume of a session Claude does not have: this line comes about a second after
-				// the start, with no message sent, and the process then exits.
-				NoSession: isErr && num(m["num_turns"]) == 0 &&
-					strings.HasPrefix(str(first(m["errors"])), "No conversation found with session ID")},
+				Final: str(m["result"])},
 		}
 	}
 	return nil

@@ -172,7 +172,7 @@ export function formView(f: ServerForm, tested: ServerForm | null, r: TestResult
 /** The question before an entry is removed. This app keeps nothing of that server but the entry: its section leaves
  *  the sidebar, that server is told nothing, and everything on it stays there. */
 export function removeText(name: string): string {
-  return `Remove "${name}"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats, whiteboards and runs stay there.`;
+  return `Remove "${name}"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats and whiteboards stay there.`;
 }
 
 /** Whether the sidebar's button shows its dot. */

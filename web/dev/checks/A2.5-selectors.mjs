@@ -3,10 +3,10 @@
 // the toolbar's row, which says what it said and opens its list; so do the fixed chips of a started chat. A chat's
 // server is no choice: one on another server names it in the fixed chip .composer .tchip.static.server-chip, and one
 // on this computer has no such chip. In a board's
-// and a run's 400 px panel Agent and Model do, and the Agent chip opens its list there. innerText of
+// 400 px panel Agent and Model do, and the Agent chip opens its list there. innerText of
 // .composer .ctx-meter gives the share in percent while only the ring shows, and "Context unavailable", with no
-// number and the reason as its title, while only the icon shows. The composer's meter alone is cut so: the run
-// head's meters and a subagent's are as they were (the check seeds A5 too, for a thread with a subagent).
+// number and the reason as its title, while only the icon shows. The composer's meter alone is cut so: a
+// subagent's is as it was (the check seeds A5 too, for a thread with a subagent).
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { act, check, openPage, paneSize, seed, until } from "../shot.mjs";
@@ -21,7 +21,7 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
   const open = async (s, o) => {
     const errors = [];
-    const { ctx, page } = await openPage({ url, browser, errors, sel: s.sel, wait: s.pane?.[0] === "stage" ? ".run-composer .composer-box" : ".composer-box .send", ...o });
+    const { ctx, page } = await openPage({ url, browser, errors, sel: s.sel, wait: ".composer-box .send", ...o });
     await act(page, s.act);
     await page.evaluate(() => document.fonts.ready);
     return { ctx, page, errors };
@@ -80,8 +80,8 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
   }
 
   // a 400 px panel: Agent and Model, and the Agent chip opens its list
-  for (const id of ["board-new", "run-new"]) {
-    const s = state(id), p = await open(s, paneSize("panel", 400)), name = `${id} in a 400 px panel`;
+  {
+    const id = "board-new", s = state(id), p = await open(s, paneSize("panel", 400)), name = `${id} in a 400 px panel`;
     if (await one(p.page, name, chip("Agent")) !== "Claude Code") fail(`${name}: the agent's chip does not say "Claude Code"`);
     if (await one(p.page, name, chip("Model")) !== "Opus 5.5") fail(`${name}: the model's chip does not say "Opus 5.5"`);
     await opens(p.page, name, chip("Agent"));
@@ -98,7 +98,7 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
   });
   // (beside a board a started chat's row has room for the meter's text from a panel of 430 px on: in the default one,
   // of 400 px, the attach button takes the 30 px the text would need, and the meter is its ring)
-  for (const [id, pane, width, ringOnly] of [["board-started", "panel", 430, false], ["board-started", "panel", 400, true], ["board-started", "panel", 300, true], ["run-busy", "panel", 400, true], ["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]]) {
+  for (const [id, pane, width, ringOnly] of [["board-started", "panel", 430, false], ["board-started", "panel", 400, true], ["board-started", "panel", 300, true], ["board-busy", "panel", 400, true], ["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]]) {
     const p = await open(state(id), paneSize(pane, width)), name = `${id} in a ${pane} of ${width} px`, m = await meterIn(p.page);
     if (m.count !== 1) fail(`${name}: ${m.count} elements match .composer .ctx-meter`);
     if (!/\d+(\.\d+)?%/.test(m.inner)) fail(`${name}: innerText of the meter is "${m.inner}": no share in percent`);
@@ -121,16 +121,11 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
   /** In the page: every meter that is not the composer's. */
   const others = (page) => page.evaluate(() => [...document.querySelectorAll(".ctx-meter")].filter((e) => !e.closest(".composer")).map((e) => ({ cls: e.className, text: e.textContent.trim(), cut: e.classList.contains("compact") || !!e.querySelector(".ctx-text"), position: getComputedStyle(e).position, clipped: e.scrollWidth > e.clientWidth + 1, seen: e.getBoundingClientRect().width > 0 })));
   {
-    const p = await open({ sel: { run: "r_live" } }, { wait: ".run-meter" }), name = "the run head's meters";
-    const all = (await others(p.page)).filter((m) => m.cls.includes("run-meter"));
-    if (all.length < 3) fail(`${name}: ${all.length} of them on the run's page`);
-    for (const m of all) if (m.cut || m.position !== "static" || m.clipped || !m.seen || !m.text) fail(`${name}: one is not as it was: ${JSON.stringify(m)}`);
-    await close(p, name);
     const q = await open(state("sub"), {}), sub = "a subagent's meter";
     const subs = (await others(q.page)).filter((m) => m.cls.includes("sub-meter"));
     if (!subs.length) fail(`${sub}: none on the page of a thread with a subagent`);
     for (const m of subs) if (m.cut || m.clipped || !m.seen || !/\d+%/.test(m.text)) fail(`${sub}: it is not as it was: ${JSON.stringify(m)}`);
     await close(q, sub);
-    note(`${all.length} meters of the run's head and ${subs.length} of a subagent: with their text, none cut`);
+    note(`${subs.length} meters of a subagent: with their text, none cut`);
   }
 });

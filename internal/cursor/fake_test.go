@@ -52,8 +52,6 @@ type fakeScript map[string][]fakeStep
 //	FAKE_ACP_SLEEP     set: the test binary only sleeps, for fakeStays (a child of FAKE_ACP_CHILDREN)
 //	FAKE_ACP_HOLD      set: the child of FAKE_ACP_CHILDREN that leads its own group holds the
 //	                   fake's stdout and stderr open
-//	FAKE_ACP_LATE      file: once stdin has closed, the fake starts one more child that leads a
-//	                   group of its own (it holds none of the fake's pipes) and writes its pid there
 //	FAKE_ACP_TRAP      file: the fake and its children do not end on SIGTERM; the fake appends
 //	                   "TERM" to the file when it gets one
 func TestMain(m *testing.M) {
@@ -82,10 +80,6 @@ func TestMain(m *testing.M) {
 			startFakeChildren(f)
 		}
 		runFakeACP(path, os.Getenv("FAKE_ACP_RECORD"), os.Getenv("FAKE_ACP_STATE"))
-		if f := os.Getenv("FAKE_ACP_LATE"); f != "" {
-			pid := startFakeChild(true, false)
-			os.WriteFile(f, []byte(strconv.Itoa(pid)), 0o644)
-		}
 		if os.Getenv("FAKE_ACP_STAY") != "" {
 			time.Sleep(fakeStays)
 		}

@@ -13,15 +13,15 @@ import (
 // same order; contract 2.5): each list of a client's snapshot has one order, the same at every
 // read, and it is the order the owner's page is given.
 
-// l5Order is the ids of the five lists of a snapshot, each in the order it has there; a branch
+// l5Order is the ids of the four lists of a snapshot, each in the order it has there; a branch
 // state is named by its chat and its branch.
-type l5Order struct{ groups, boards, chats, states, runs []string }
+type l5Order struct{ groups, boards, chats, states []string }
 
 func l5OrderOf(t *testing.T, raw string) l5Order {
 	t.Helper()
 	snap := decode[struct {
-		Groups, Boards, Chats, Runs []struct{ ID string }
-		States                      []struct{ Chat, Branch string }
+		Groups, Boards, Chats []struct{ ID string }
+		States                []struct{ Chat, Branch string }
 	}](t, raw)
 	var o l5Order
 	for _, g := range snap.Groups {
@@ -36,21 +36,17 @@ func l5OrderOf(t *testing.T, raw string) l5Order {
 	for _, s := range snap.States {
 		o.states = append(o.states, s.Chat+"/"+s.Branch)
 	}
-	for _, r := range snap.Runs {
-		o.runs = append(o.runs, r.ID)
-	}
 	return o
 }
 
-// The owner's page and two clients make groups, boards, chats and runs by turns. The groups are
-// listed in the server's order, the boards, the chats and the runs oldest first, whoever made
-// them, and the branch states by their chat. Every read of the tree has that order: the owner's
+// The owner's page and two clients make groups, boards and chats by turns. The groups are
+// listed in the server's order, the boards and the chats oldest first, whoever made them, and the branch states by their chat. Every read of the tree has that order: the owner's
 // page, each client's GET /api/state, read again and again, and the snapshot of a client that
 // connects later. A rename, a move and an archive leave each thing where it is, and an order
 // of the groups that the owner sets is the clients' too.
 func TestLevel5ListsHaveOneOrder(t *testing.T) {
 	t.Parallel()
-	e := newAPIRunEnv(t)
+	e := newL5Env(t)
 	p := e.page(l5Owner)
 	x, _ := e.l.api(apiX)
 	y, _ := e.l.api(apiY)
@@ -84,7 +80,6 @@ func TestLevel5ListsHaveOneOrder(t *testing.T) {
 		chat := l5ID(t, l5Want(t, makers[(i+1)%3], 200, "POST", "/api/chats", `{"agent":"claude","group":"`+g+`"}`))
 		want.chats = append(want.chats, chat)
 		want.states = append(want.states, chat+"/"+model.MainBranch)
-		want.runs = append(want.runs, l5ID(t, l5Want(t, makers[(i+2)%3], 200, "POST", "/api/runs", fmt.Sprintf(`{"group":"%s","name":"Run %d"}`, g, i))))
 	}
 	slices.Sort(want.states)
 
@@ -105,7 +100,7 @@ func TestLevel5ListsHaveOneOrder(t *testing.T) {
 			for _, list := range []struct {
 				name      string
 				got, want []string
-			}{{"groups", got.groups, want.groups}, {"boards", got.boards, want.boards}, {"chats", got.chats, want.chats}, {"states", got.states, want.states}, {"runs", got.runs, want.runs}} {
+			}{{"groups", got.groups, want.groups}, {"boards", got.boards, want.boards}, {"chats", got.chats, want.chats}, {"states", got.states, want.states}} {
 				if !slices.Equal(list.got, list.want) {
 					t.Errorf("%s, %s: the %s are in the order\n%v\nwant\n%v", when, who, list.name, list.got, list.want)
 				}
@@ -121,9 +116,6 @@ func TestLevel5ListsHaveOneOrder(t *testing.T) {
 	l5Want(t, y, 200, "PATCH", "/api/chats/"+want.chats[10], `{"name":"Renamed"}`)
 	l5Want(t, p, 200, "PATCH", "/api/chats/"+want.chats[1], `{"group":"`+nested+`"}`)
 	l5Want(t, x, 200, "POST", "/api/chats/"+want.chats[4]+"/archive", nil)
-	l5Want(t, p, 200, "PATCH", "/api/runs/"+want.runs[11], `{"name":"Renamed"}`)
-	l5Want(t, x, 200, "PATCH", "/api/runs/"+want.runs[0], `{"group":"`+nested+`"}`)
-	l5Want(t, y, 200, "POST", "/api/runs/"+want.runs[6]+"/archive", nil)
 	l5Want(t, x, 200, "PATCH", "/api/groups/"+want.groups[0], `{"name":"Renamed"}`)
 	check("after a rename, a move and an archive of each kind")
 
@@ -148,8 +140,7 @@ func TestLevel5ListsHaveOneOrder(t *testing.T) {
 	// What is deleted leaves its list, and the rest stays as it was.
 	l5Want(t, y, 200, "DELETE", "/api/boards/"+want.boards[0], nil)
 	l5Want(t, p, 200, "DELETE", "/api/chats/"+want.chats[3], nil)
-	l5Want(t, x, 200, "DELETE", "/api/runs/"+want.runs[8], nil)
 	want.states = slices.DeleteFunc(want.states, func(s string) bool { return s == want.chats[3]+"/"+model.MainBranch })
-	want.boards, want.chats, want.runs = want.boards[1:], slices.Delete(want.chats, 3, 4), slices.Delete(want.runs, 8, 9)
+	want.boards, want.chats = want.boards[1:], slices.Delete(want.chats, 3, 4)
 	check("after a delete of each kind")
 }

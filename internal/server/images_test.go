@@ -22,7 +22,6 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/agenttest"
-	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/model"
 )
 
@@ -523,51 +522,5 @@ func TestForkAndEditCarriesImages(t *testing.T) {
 	e.expect(200, "DELETE", "/api/chats/"+forkID, "")
 	if _, err := os.Stat(e.st.P.ChatDir(forkID)); !os.IsNotExist(err) {
 		t.Fatalf("the deleted chat's folder: %v", err)
-	}
-}
-
-// A run's goal has no images: its draft keeps no image list, whatever it is sent.
-func TestRunGoalDraftKeepsNoImages(t *testing.T) {
-	t.Parallel()
-	e := newRunEnv(t)
-	run := e.newRun()
-	img := model.Image{ID: imageIDOf(png("a")), Name: "a.png", Type: "image/png", Size: 9}
-	e.expect(200, "PUT", "/api/runs/"+run.ID+"/draft", `{"text":"the goal","images":`+imagesJSON(img)+`}`)
-	v := e.get("/api/runs/" + run.ID)
-	sameJSON(t, "the goal's draft", v["draft"], `{"text":"the goal"}`)
-	e.expect(200, "PUT", "/api/runs/"+run.ID+"/draft", `{"text":"","images":`+imagesJSON(img)+`}`)
-	if v := e.get("/api/runs/" + run.ID); v["draft"] != nil {
-		t.Fatalf("a goal of images alone is a draft: %v", v["draft"])
-	}
-}
-
-// The chat of an agent of a run of this server is read, never written: it takes no upload, from
-// a page of this server or from an API client, the server a person reaches the run from.
-func TestRunAgentChatTakesNoImage(t *testing.T) {
-	t.Parallel()
-	e := newAPIRunEnv(t)
-	started := make(chan struct{}, 8)
-	e.fake.Script(func(t *agenttest.Turn) {
-		started <- struct{}{}
-		<-t.Interrupted()
-	})
-	v := e.newRun()
-	e.view(200, "POST", "/api/runs/"+v.ID+"/start", `{"goal":"Look around."}`)
-	<-started
-	agentChat := e.detail(v.ID).Turns[0].Agent
-	status, out := e.upload(clientID, agentChat, "f.png", "image/png", bytes.NewReader(png("x")))
-	if status != 409 || decode[refusal](t, out).Error != chats.ErrRunAgent.Error() {
-		t.Fatalf("an upload to a run agent's chat: %d %s", status, out)
-	}
-	e.expect(404, "GET", "/api/chats/"+agentChat+"/images/"+imageIDOf(png("x")), "")
-	resp, out := e.l.send(e.l.http, apiX, testSecret, "POST", "/api/chats/"+agentChat+"/images?name=f.png", "image/png", bytes.NewReader(png("x")))
-	if resp.StatusCode != 409 || decode[refusal](t, out).Error != chats.ErrRunAgent.Error() {
-		t.Fatalf("an API client's upload to a run agent's chat: %d %s", resp.StatusCode, out)
-	}
-	if resp, out = e.l.send(e.l.http, apiX, testSecret, "GET", "/api/chats/"+agentChat+"/images/"+imageIDOf(png("x")), "", nil); resp.StatusCode != 404 || decode[refusal](t, out).Error != chats.ErrNoImage.Error() {
-		t.Fatalf("an API client's fetch from a run agent's chat: %d %s", resp.StatusCode, out)
-	}
-	if got := e.imagesOf(agentChat); got != nil {
-		t.Fatalf("the agent's chat holds %v", got)
 	}
 }

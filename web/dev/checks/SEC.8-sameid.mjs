@@ -5,7 +5,7 @@
 // actions and by events from elsewhere; and every call goes to /api/chats/c_plain for the one and to
 // /api/on/<entry id>/chats/c_plain for the other. The selection that is saved names which of the two is open, and a
 // reload opens that one.
-// The group g_shop, the board b_arch and the run r_draft, which both machines have too, are SEC.3's, SEC.4's and SEC.5's.
+// The group g_shop and the board b_arch, which both machines have too, are SEC.3's, SEC.4's and SEC.5's.
 import { callsOf, check, mockEval, openPage, seed, sideMenu, sideSeen, until } from "../shot.mjs";
 
 const J = JSON.stringify;

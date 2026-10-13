@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"ai-whiteboard/internal/agent"
@@ -104,10 +103,6 @@ type proc struct {
 	s       *Spawner
 	done    chan struct{} // closed once the process has been waited for
 
-	// unattended, readOnly: the SpawnOptions of the same names. With either, nobody answers a
-	// can_use_tool request, so the read loop answers it itself (handleControl).
-	unattended, readOnly bool
-
 	// initID is the id of the initialize request this process wrote, until its answer has been
 	// taken (only touched by the read loop after start).
 	initID string
@@ -131,33 +126,10 @@ type proc struct {
 	point    string            // uuid of the turn's last own assistant or user line so far: its fork point
 }
 
-// interactiveTools are the tools that wait for a person even when the permission mode asks
-// nothing: each comes as a can_use_tool request that has to be answered.
-var interactiveTools = []string{"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"}
-
-// editTools are Claude's file-changing tools. Without them the shell can still write, so a
-// read-only process also runs in a mode that refuses what is not allowed (permissionMode).
-var editTools = []string{"Edit", "Write", "NotebookEdit"}
-
-// permissionMode is the --permission-mode of a process. A chat runs in auto. An unattended
-// process must never ask, whatever the model (with some models auto silently becomes default,
-// which asks for nearly everything): bypassPermissions, where the --disallowedTools rules still
-// hold. A read-only one runs in dontAsk, which refuses whatever no rule allows (every shell
-// command that writes, and every MCP tool that is not in --allowedTools) without asking.
-func permissionMode(o agent.SpawnOptions) string {
-	switch {
-	case o.ReadOnly:
-		return "dontAsk"
-	case o.Unattended:
-		return "bypassPermissions"
-	}
-	return "auto"
-}
-
 // Args are the command-line arguments for one chat process.
 func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--include-partial-messages", "--permission-mode", permissionMode(o), "--permission-prompt-tool", "stdio",
+		"--verbose", "--include-partial-messages", "--permission-mode", "auto", "--permission-prompt-tool", "stdio",
 		"--forward-subagent-text"}
 	if o.Resume {
 		args = append(args, "--resume", o.SessionID)
@@ -171,18 +143,7 @@ func (s *Spawner) Args(o agent.SpawnOptions) []string {
 		args = append(args, "--effort", o.Effort)
 	}
 	disallowed := append(AppDirRules(s.AppRoot, s.Home), "Task", "Agent")
-	if o.ReadOnly {
-		disallowed = append(disallowed, editTools...)
-	}
-	if o.Unattended || o.ReadOnly {
-		disallowed = append(disallowed, interactiveTools...)
-	}
 	args = append(args, "--disallowedTools", strings.Join(disallowed, ","))
-	if o.ReadOnly || o.Unattended {
-		// Only the --mcp-config server (none without one): the user's own MCP servers have tools
-		// that write, and nobody watches what an unattended process does with them.
-		args = append(args, "--strict-mcp-config")
-	}
 	if o.MCP != nil {
 		// The path of a file, never the configuration itself: it holds the token, and any process
 		// of the user can read another's arguments (ps). start writes the file.
@@ -199,17 +160,10 @@ func (s *Spawner) Args(o agent.SpawnOptions) []string {
 	return args
 }
 
-// allowedMCPTools is the Claude --allowedTools list for this process: exactly o.MCPTools when
-// that is set; else board tools when board extras are on, and the spawn family unless the process
-// has none (o.NoSpawn).
+// allowedMCPTools is the Claude --allowedTools list for this process: board tools when board
+// extras are on, and the spawn family unless the process has none (o.NoSpawn).
 func allowedMCPTools(o agent.SpawnOptions) []string {
 	var names []string
-	if o.MCPTools != nil {
-		for _, name := range o.MCPTools {
-			names = append(names, "mcp__board__"+name)
-		}
-		return names
-	}
 	if o.BoardID != "" {
 		for _, t := range boardtools.Tools {
 			names = append(names, "mcp__board__"+t.Name)
@@ -347,9 +301,6 @@ func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 		taskTool: map[string]string{},
 		subModel: map[string]string{},
 		windows:  map[string]int{},
-
-		unattended: o.Unattended,
-		readOnly:   o.ReadOnly,
 	}
 	cmd := exec.Command(bin, append(s.Args(o), extra...)...)
 	cmd.Dir = o.Cwd
@@ -460,25 +411,12 @@ func (p *proc) handleControl(m map[string]any) {
 		p.write(deny(id, agent.AppDirDenied)) // no card
 		return
 	}
-	// Nobody would answer a card. The permission modes of these processes raise no request, so
-	// this is the backstop for one that comes anyway: answered at once, never left waiting.
-	if p.readOnly {
-		p.write(deny(id, readOnlyDenied))
-		return
-	}
-	if p.unattended {
-		p.write(permit(id, req["input"]))
-		return
-	}
 	p.perms.Store(id, req)
 	toolName, _ := req["tool_name"].(string)
 	toolID, _ := req["tool_use_id"].(string)
 	p.events <- agent.Event{Kind: agent.EvPermRequest, PermID: id, ToolName: toolName, ToolID: toolID, Input: input,
 		Sub: p.taskTool[str(req["agent_id"])]} // "" for the parent's own requests (no agent_id)
 }
-
-// readOnlyDenied is what a read-only process is told when it asks for something.
-const readOnlyDenied = "This agent is read-only: it cannot create, change or delete files. Use the read and search tools."
 
 func deny(id, message string) map[string]any {
 	return map[string]any{"type": "control_response", "response": map[string]any{
@@ -544,23 +482,13 @@ func (p *proc) Interrupt() error {
 
 // Close closes stdin, then kills the process if it has not exited after 3 s.
 //
-// An unattended process is first told to stop its turn: only then does Claude exit when stdin
-// closes, and end the commands it runs in the background. If it is still there after the 3 s,
-// its whole group is killed, and with it the groups of the commands it started (each shell
-// command leads a group of its own), not only the process itself.
-//
 // A write the process does not read (a Send larger than the pipe takes, to a process that is
 // stuck) is not waited for beyond writeGrace: stdin is then closed under it, which fails that
 // write and so returns its Send.
 func (p *proc) Close() {
-	var started []int
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
-		if p.unattended {
-			p.Interrupt() // an error means the process is gone or going
-			started = agent.StartedGroups(p.cmd, p.done)
-		}
 		p.writeMu.Lock()
 		p.stdin.Close()
 		p.writeMu.Unlock()
@@ -575,14 +503,7 @@ func (p *proc) Close() {
 		select {
 		case <-p.done:
 		case <-time.After(time.Duration(closeGraceNanos.Load())):
-			if !p.unattended {
-				p.cmd.Process.Kill()
-				return
-			}
-			if !agent.SignalGroup(p.cmd, syscall.SIGKILL) {
-				p.cmd.Process.Kill()
-			}
-			agent.SignalStarted(started, syscall.SIGKILL)
+			p.cmd.Process.Kill()
 		}
 	}()
 }
@@ -591,8 +512,8 @@ func (p *proc) Close() {
 // Atomic so tests can shorten it without racing the goroutines of earlier closes.
 var closeGraceNanos atomic.Int64
 
-// writeGraceNanos is how long Close waits for a write to stdin that is under way (and for its own
-// interrupt) before it closes stdin regardless. Atomic for the same reason.
+// writeGraceNanos is how long Close waits for a write to stdin that is under way before it closes
+// stdin regardless. Atomic for the same reason.
 var writeGraceNanos atomic.Int64
 
 func init() {

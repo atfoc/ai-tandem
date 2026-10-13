@@ -63,17 +63,16 @@ const LAB = "s_aaaaaaaaaaaa", OFFICE = "s_bbbbbbbbbbbb";
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
 const chat = (id: string, o: object = {}) => ({ id, agent: "claude", cwd: "/w", model: "m", locked: true, created: "2026-01-01T00:00:00Z", usage, status: "ready", ...o });
 const board = (id: string, name: string, group = "__ungrouped__", o: object = {}) => ({ id, name, group, created: "", ...o });
-const run = (id: string, name: string, group = "__ungrouped__", o: object = {}) => ({ id, name, group, created: "2026-01-01T00:00:00Z", status: "draft", ...o });
 const LOCAL = { id: "local", local: true, name: "This computer", state: "connected" };
 const lab = (o: object = {}) => ({ id: LAB, name: "Lab", state: "connected", ...o });
 const office = (o: object = {}) => ({ id: OFFICE, name: "Office", state: "connected", ...o });
 const labTree = (o: object = {}) => ({
   groups: [{ id: "g_1", name: "Lab work" }, { id: "g_2", name: "Lab inner", parent: "g_1" }],
   boards: [board("b_1", "Lab plan", "g_1")],
-  chats: [chat("c_1", { name: "Lab loose chat" }), chat("c_2", { name: "Lab inner chat", group: "g_2" }), chat("c_3", { name: "Lab board chat", board: "b_1" }), chat("c_4", { name: "Lab run chat", run: "r_1" })],
-  states: [], runs: [run("r_1", "Lab run", "g_1")], defaults: { groups: {} }, ...o,
+  chats: [chat("c_1", { name: "Lab loose chat" }), chat("c_2", { name: "Lab inner chat", group: "g_2" }), chat("c_3", { name: "Lab board chat", board: "b_1" })],
+  states: [], defaults: { groups: {} }, ...o,
 });
-const snapshot = (o: object = {}) => ({ type: "snapshot", groups: [{ id: "g_1", name: "Mine" }], boards: [board("b_1", "My plan", "g_1")], chats: [chat("c_1", { name: "My chat" })], runs: [], states: [],
+const snapshot = (o: object = {}) => ({ type: "snapshot", groups: [{ id: "g_1", name: "Mine" }], boards: [board("b_1", "My plan", "g_1")], chats: [chat("c_1", { name: "My chat" })], states: [],
   defaults: { groups: {} }, catalogs: {}, home: "/home/me", defaultCwd: "/home/me", dataDir: "/d", servers: [LOCAL], ...o });
 
 /** The part of the sidebar's markup that is one section: from its opening tag to the next section, or the end of the tree. */
@@ -90,7 +89,7 @@ const groupsIn = (h: string): string[] => [...h.matchAll(/class="side-group-name
 
 conn.connect();
 beforeEach(async () => {
-  store.setState({ sel: { board: null, run: null, chat: null }, collapsed: {}, showArchived: false, sideHidden: false });
+  store.setState({ sel: { board: null, chat: null }, collapsed: {}, showArchived: false, sideHidden: false });
   await ev({ type: "hello" });
   await ev(snapshot());
 });
@@ -125,11 +124,11 @@ test("the local part holds only what lives on this computer: nothing of a sectio
   assert.equal(local.includes("Lab"), false);
 });
 
-test("a connected section shows that server's tree: loose items first, its groups nested, a board and a run with their chats", async () => {
+test("a connected section shows that server's tree: loose items first, its groups nested, a board with its chats", async () => {
   await ev(snapshot({ servers: [LOCAL, lab()], sections: { [LAB]: labTree() } }));
   const s = sectionOf(side(), LAB);
   assert.deepEqual(groupsIn(s), ["Lab work", "Lab inner"]);
-  assert.deepEqual(names(s), ["Lab loose chat", "Lab inner chat", "Lab plan", "Lab board chat", "Lab run", "Lab run chat"]);
+  assert.deepEqual(names(s), ["Lab loose chat", "Lab inner chat", "Lab plan", "Lab board chat"]);
   assert.ok(s.indexOf("Lab loose chat") < s.indexOf("Lab work"), "what is in no group stands first");
   assert.ok(s.indexOf("Lab work") < s.indexOf("Lab inner"));
   assert.equal(s.includes("My chat"), false);
@@ -176,7 +175,7 @@ test("a section says that it is connecting until its tree has come, and shows no
 });
 
 test("a connected server with nothing on it says so in a line", async () => {
-  await ev(snapshot({ servers: [LOCAL, lab()], sections: { [LAB]: { groups: [], boards: [], chats: [], states: [], runs: [], defaults: { groups: {} } } } }));
+  await ev(snapshot({ servers: [LOCAL, lab()], sections: { [LAB]: { groups: [], boards: [], chats: [], states: [], defaults: { groups: {} } } } }));
   const s = sectionOf(side(), LAB);
   assert.ok(s.includes("Nothing on this server yet."));
   assert.equal(s.includes("side-row"), false);
@@ -185,7 +184,7 @@ test("a connected server with nothing on it says so in a line", async () => {
 
 test("a connected server whose things are all archived says so, not that it has nothing; with Show archived its rows show and the line goes", async () => {
   const tree = { groups: [{ id: "g_1", name: "Old work", archived: true, archiveOp: "o1" }], boards: [board("b_1", "Old plan", "g_1", { archived: true, archiveOp: "o1" })],
-    chats: [chat("c_1", { name: "Old chat", archived: true, archiveOp: "o2" })], states: [], runs: [], defaults: { groups: {} } };
+    chats: [chat("c_1", { name: "Old chat", archived: true, archiveOp: "o2" })], states: [], defaults: { groups: {} } };
   await ev(snapshot({ servers: [LOCAL, lab()], sections: { [LAB]: tree } }));
   let s = sectionOf(side(), LAB);
   assert.ok(s.includes("Only archived things on this server."));
@@ -226,7 +225,7 @@ test("the tree goes (`section` with null): the rows go at once, no greyed row an
   assert.equal(s.includes("side-row"), false);
   assert.ok(s.includes("Its chats show when the server is back."));
   assert.deepEqual(names(localOf(side())), ["My chat", "My plan"], "the local part is as it was");
-  await ev({ type: "section", server: LAB, tree: labTree({ chats: [chat("c_9", { name: "Made meanwhile" })], boards: [], runs: [] }) });
+  await ev({ type: "section", server: LAB, tree: labTree({ chats: [chat("c_9", { name: "Made meanwhile" })], boards: [] }) });
   await ev({ type: "server_state", server: lab() });
   s = sectionOf(side(), LAB);
   assert.deepEqual(names(s), ["Made meanwhile"]);
@@ -251,11 +250,9 @@ test("what anyone changes on that server shows without a reload: a chat made, re
   assert.deepEqual(groupsIn(sectionOf(side(), LAB)), ["Lab work, renamed", "Made by a client"]);
   assert.deepEqual(groupsIn(localOf(side())), ["Mine"]);
   await ev({ type: "board", server: LAB, board: board("b_9", "A new board") });
-  await ev({ type: "run", server: LAB, run: run("r_9", "A new run") });
-  assert.ok(names(sectionOf(side(), LAB)).includes("A new board") && names(sectionOf(side(), LAB)).includes("A new run"));
+  assert.ok(names(sectionOf(side(), LAB)).includes("A new board"));
   await ev({ type: "board_removed", server: LAB, id: "b_9" });
-  await ev({ type: "run_removed", server: LAB, id: "r_9" });
-  assert.equal(names(sectionOf(side(), LAB)).includes("A new board") || names(sectionOf(side(), LAB)).includes("A new run"), false);
+  assert.equal(names(sectionOf(side(), LAB)).includes("A new board"), false);
 });
 
 test("an event of a section never changes the local thing of the same id, and a local event never a section's", async () => {
@@ -291,7 +288,7 @@ test("a collapsed section draws no row, and says how much it holds; a collapsed 
   s = sectionOf(side(), LAB);
   assert.equal(s.includes("side-row"), false);
   assert.equal(s.includes("side-section-body"), false);
-  assert.match(s, /class="side-count">4</, "its boards, runs and plain chats");
+  assert.match(s, /class="side-count">3</, "its boards and plain chats");
   assert.match(s, /aria-expanded="false"/);
   assert.deepEqual(names(localOf(side())), ["My chat", "My plan"], "the local part is not collapsed with it");
 });

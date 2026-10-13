@@ -1,6 +1,6 @@
 // Proves A1.2: hidden by the control in its head and by ⌘B, the sidebar's pane is not drawn, and the stage (with a
-// chat panel: the panel and the stage) is the window less the rail. In each view of G1's table (a board and a run,
-// each with the panel and alone, a run agent's transcript in the panel, a draft run, a plain chat, Home, the page
+// chat panel: the panel and the stage) is the window less the rail. In each view of G1's table that is left (a board
+// with the panel and alone, a plain chat, Home, the page
 // while it connects, a view that failed to draw) the rail's
 // control is the element at its own centre and lies over no glyph, crumb or bar of the view. Shown again, the pane
 // has its saved width. After a reload the sidebar is hidden in the first frame React draws, and in every frame after
@@ -13,12 +13,6 @@ const SIDE = 300, PANEL = 400, SIZE = [1280, 800];
 const VIEWS = [
   { name: "a board with its panel", sel: { board: "b_arch", chat: "c_board" }, see: ".board-panel .chat-head .crow-glyph", panel: true },
   { name: "a board alone", sel: { board: "b_arch" }, see: ".board-stage .board-bar .board-crumb" },
-  { name: "a run with its panel", sel: { run: "r_draft", chat: "c_draft_ask" }, see: ".board-panel .chat-head .crow-glyph", panel: true },
-  { name: "a run alone", sel: { run: "r_live" }, see: ".run-stage .run-bar .board-crumb" },
-  // (the transcript is of the page alone: after a reload the run is there without it)
-  { name: "a run agent's transcript", sel: { run: "r_live" }, see: ".board-panel .agent-foot", panel: true, reloaded: ".run-stage .run-bar .board-crumb",
-    open: async (page) => { await page.locator(".run-stage .tl-row", { hasText: "T11" }).first().click(); await page.locator('.run-stage button.link[title="Transcript of T11-work"]').first().click(); } },
-  { name: "a draft run", sel: { run: "r_draft" }, see: ".run-stage .run-composer" },
   { name: "a plain chat", sel: { chat: "c_plain" }, see: ".chat-page .chat-head .crow-glyph" },
   { name: "Home", sel: {}, see: "main.home h2" },
   // (the stream is cut before the page opens: it has no word of the server, and nothing to show but that it waits)

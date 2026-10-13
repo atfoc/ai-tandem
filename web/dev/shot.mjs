@@ -1,8 +1,8 @@
-// The driver of the browser checks: a page of the built client on the mock (dev/runmock.mjs), in a
+// The driver of the browser checks: a page of the built client on the mock (dev/mock.mjs), in a
 // headless Chromium. Playwright is no dependency of the repository: it is taken from PLAYWRIGHT,
 // node_modules or the npx cache (if it is gone: npx -y playwright install chromium).
 //
-// By hand, against a mock that runs (DIST=/tmp/x/dist PORT=4801 PAUSED=1 node dev/runmock.mjs):
+// By hand, against a mock that runs (DIST=/tmp/x/dist PORT=4801 node dev/mock.mjs):
 //   node dev/shot.mjs --sel '{"board":"b_arch","chat":"c_board"}' --size 1064x640 \
 //     --ls 'aiwb.widths={"side":264,"panel":300}' --ls aiwb.theme=dark --mock 'seedUI("A2")' \
 //     --eval 'return document.querySelector(".send").getBoundingClientRect().right' --out /tmp/x/board-300.png
@@ -115,11 +115,11 @@ export function buildDist(out = fs.mkdtempSync(path.join(TMP, "aiwb-dist-")), { 
   return out;
 }
 
-/** Starts a mock that serves `dist` on `port`, its timers stopped unless paused is false, and answers once it listens.
- *  script: another build's runmock.mjs. stop() ends it; restart() ends it and starts it anew, with nothing seeded. It
+/** Starts a mock that serves `dist` on `port`, and answers once it listens. script: another build's mock.
+ *  stop() ends it; restart() ends it and starts it anew, with nothing seeded. It
  *  is stopped too when the process is ended early (onEnd). down(): whether it has ended by itself (an error thrown in
  *  it), asked of the mock, since a call fails before the end of its process is heard of; log(): what it has printed. */
-export async function startMock({ dist, port, paused = true, env = {}, script = path.join(WEB, "dev/runmock.mjs") }) {
+export async function startMock({ dist, port, env = {}, script = path.join(WEB, "dev/mock.mjs") }) {
   if (!dist || !port) throw new Error("startMock needs a dist folder and a port");
   const url = `http://127.0.0.1:${port}`;
   let proc, log = "", ended = Promise.resolve(), off = () => {}, gone = false, stopped = false;
@@ -127,7 +127,7 @@ export async function startMock({ dist, port, paused = true, env = {}, script = 
   const start = async () => {
     await stop();
     off(); off = onEnd(stop);
-    const p = (proc = spawn(process.execPath, [script], { env: { ...process.env, DIST: dist, PORT: String(port), ...(paused ? { PAUSED: "1" } : {}), ...env }, stdio: ["ignore", "pipe", "pipe"] }));
+    const p = (proc = spawn(process.execPath, [script], { env: { ...process.env, DIST: dist, PORT: String(port), ...env }, stdio: ["ignore", "pipe", "pipe"] }));
     gone = stopped = false;
     log = "";
     p.stdout.on("data", (d) => (log += d)); p.stderr.on("data", (d) => (log += d));
@@ -148,7 +148,7 @@ export async function startMock({ dist, port, paused = true, env = {}, script = 
   return { url, port, dist, stop: async () => { await stop(); off(); }, restart: start, log: () => log, down };
 }
 
-/** Runs code inside the mock (an async function body): `chats`, `items`, `runs`, `boards`, `flags`, `send`, `snapshot`,
+/** Runs code inside the mock (an async function body): `chats`, `items`, `boards`, `groups`, `flags`, `send`, `snapshot`,
  *  `seedUI`, … are in scope. Answers what the code returned. */
 export async function mockEval(code, url = URL0) {
   const r = await fetch(url + "/mock/eval", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
@@ -157,7 +157,7 @@ export async function mockEval(code, url = URL0) {
   return j.r;
 }
 
-/** Seeds the UI states (dev/runmock-ui.js): every section, or the ones named ("A2", "A3", …). Answers the seed's
+/** Seeds the UI states (dev/mock-ui.js): every section, or the ones named ("A2", "A3", …). Answers the seed's
  *  list of states, each with where the page shows it: { id, section, sel, see, … }. */
 export const seed = (url, ...sections) => mockEval(`return seedUI(${sections.map((s) => JSON.stringify(s)).join(", ")});`, url);
 
@@ -173,7 +173,7 @@ export async function openPage({ url = URL0, sel, size = [1280, 800], ls = {}, w
   browser ??= await (await loadPlaywright()).chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: size[0], height: size[1] }, deviceScaleFactor: scale, ...(scheme ? { colorScheme: scheme } : {}) });
   const store = { ...ls };
-  if (sel) store["aiwb.sel"] = JSON.stringify({ board: null, run: null, chat: null, ...sel });
+  if (sel) store["aiwb.sel"] = JSON.stringify({ board: null, chat: null, ...sel });
   await ctx.addInitScript((kv) => { if (sessionStorage.getItem("__seeded")) return; for (const [k, v] of Object.entries(kv)) localStorage.setItem(k, v); sessionStorage.setItem("__seeded", "1"); }, store);
   if (still) await ctx.addInitScript((css) => {
     const add = () => { const st = document.createElement("style"); st.textContent = css; document.documentElement.append(st); };
@@ -195,8 +195,8 @@ export async function openPage({ url = URL0, sel, size = [1280, 800], ls = {}, w
 const STILL = "*, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; transition-delay: 0s !important }";
 
 const SIDE = 264;
-/** The window and the saved widths that give a pane its width: "panel", the chat panel beside a board or a run (the
- *  stage keeps 500 px); "page", a plain chat's page; "stage", a run's or a board's stage with no panel. */
+/** The window and the saved widths that give a pane its width: "panel", the chat panel beside a board (the stage
+ *  keeps 500 px); "page", a plain chat's page; "stage", a board's stage with no panel. */
 export function paneSize(kind, width, height = 640) {
   const panel = kind === "panel";
   return { size: [SIDE + width + (panel ? 500 : 0), height], ls: { "aiwb.widths": JSON.stringify({ side: SIDE, panel: panel ? width : 400 }) } };
@@ -214,7 +214,7 @@ function composersInPage() {
   return [...document.querySelectorAll(".composer")].map((comp) => {
     const box = comp.querySelector(".composer-box");
     if (!box) return { cls: comp.className, none: true };
-    const pane = comp.closest(".board-panel, .chat-page, .run-stage, .board-stage"), b = R(box);
+    const pane = comp.closest(".board-panel, .chat-page, .board-stage"), b = R(box);
     const kids = (sel) => [...(comp.querySelector(sel)?.children ?? [])].filter((e) => !e.matches(".grow, .menu-backdrop"));
     const one = (e, row) => ({ row, el: label(e), w: r1(R(e).width), overBox: r1(R(e).right - b.right) });
     const rows = [...kids(".composer-tools").map((e) => one(e, "tools")), ...kids(".context-row").map((e) => one(e, "context")), ...kids(".fk-banner").map((e) => one(e, "banner"))];
@@ -231,8 +231,8 @@ export const measureComposer = (page) => page.evaluate(composersInPage);
 
 /** In the page: the controls of the first composer's toolbar, left to right, each with its kind (server, agent, lock,
  *  folder, model, effort, model-effort: the fixed chip of both, loading, subagents, more: the chip of the popup that holds what
- *  the row has no room for, meter, insert: the button of the insert popup, attach: the button that adds images, stop, send; the goal composer's tiers and limits), its label, whether it is a fixed chip, its width and its own margin (the lock has one); composer: "chat"
- *  or "goal"; gap: the row's; chrome: what the box takes besides the row (padding and border); sum: the controls with
+ *  the row has no room for, meter, insert: the button of the insert popup, attach: the button that adds images, stop, send), its label, whether it is a fixed chip, its width and its own margin (the lock has one);
+ *  gap: the row's; chrome: what the box takes besides the row (padding and border); sum: the controls with
  *  their margins and the gaps between them on one line, the row's spacer among them at no width; reason: the line
  *  under the controls, when the toolbar has one.
  *  Each control has the width it asks for: none is squeezed, as the lock is in a row that overflows. */
@@ -243,8 +243,7 @@ function toolbarInPage() {
   const whole = document.createElement("style");
   whole.textContent = ".composer-tools { flex-wrap: nowrap !important } .composer-tools > * { flex-shrink: 0 !important; max-width: none !important }";
   document.head.append(whole);
-  // (the goal composer's Insert button and Send are in one element, so that they wrap together: each is a control here)
-  const all = [...tools.children].flatMap((e) => (e.matches(".run-send") ? [...e.children] : [e])).filter((e) => !e.matches(".agent-reason, .menu-backdrop"));
+  const all = [...tools.children].filter((e) => !e.matches(".agent-reason, .menu-backdrop"));
   const kindOf = (e) => {
     if (e.matches(".send.stop")) return "stop";
     if (e.matches(".send")) return "send";
@@ -256,8 +255,6 @@ function toolbarInPage() {
     if (chip.matches(".ctx-meter")) return "meter";
     if (chip.matches(".more-chip")) return "more";
     const t = chip.getAttribute("title") ?? "";
-    if (chip.querySelector(".run-tiers-label")) return "tiers";
-    if (t.startsWith("Run settings")) return "limits";
     if (t.startsWith("Server")) return "server";
     if (t.startsWith("Agent")) return "agent";
     if (t.startsWith("Model and effort") || t.startsWith("Starting the agent")) return "model-effort";
@@ -277,7 +274,7 @@ function toolbarInPage() {
   const gap = parseFloat(getComputedStyle(tools).columnGap) || 0;
   const chrome = ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"].reduce((n, k) => n + parseFloat(cs[k]), 0);
   whole.remove();
-  return { composer: tools.closest(".run-composer") ? "goal" : "chat", controls, gap, chrome: r1(chrome), sum: r1(controls.reduce((n, c) => n + c.w + c.margin, 0) + gap * (all.length - 1)), reason: tools.querySelector(".agent-reason")?.textContent ?? "" };
+  return { controls, gap, chrome: r1(chrome), sum: r1(controls.reduce((n, c) => n + c.w + c.margin, 0) + gap * (all.length - 1)), reason: tools.querySelector(".agent-reason")?.textContent ?? "" };
 }
 
 /** The widths the controls of the page's composer toolbar ask for (see toolbarInPage); null with no composer. */
@@ -293,13 +290,13 @@ export async function startMove(page) {
 /** The server a state has dropped, by the mock's address: put back when the next page opens on that mock (openPage). */
 const dropped = new Map();
 
-/** What a seeded state asks the page to do before it shows (its `act`, dev/runmock-ui.js). "drop:<entry id>": that
- *  server of the mock's list drops while the page has its chat or its run open; it is connected again before the next
- *  page opens. */
+/** What a seeded state asks the page to do before it shows (its `act`, dev/mock-ui.js). "drop:<entry id>": that
+ *  server of the mock's list drops while the page has its chat open; it is connected again before the next page
+ *  opens. */
 export async function act(page, what) {
   if (what?.startsWith("drop:")) {
     const id = what.slice(5), url = new URL(page.url()).origin;
-    await page.waitForSelector(".composer-box, .run-stage", { timeout: 10000 }); // (what is to stay on screen is on screen)
+    await page.waitForSelector(".composer-box", { timeout: 10000 }); // (what is to stay on screen is on screen)
     dropped.set(url, id);
     await mockEval(`setServerState(${JSON.stringify(id)}, "unreachable", { detail: "connection refused" });`, url);
     return page.waitForSelector(`.side-section[data-server="${id}"] .side-section-state.bad`, { state: "attached", timeout: 10000 }).catch(() => {}); // (attached: the sidebar may be hidden)
@@ -546,11 +543,11 @@ export const release = (url, knob, first = "") => mockEval(`${first}; return rel
 
 // ---- frames
 
-/** A probe for sampleFrames: the composer's fit in one frame. null while no chat composer is drawn; else how many
+/** A probe for sampleFrames: the composer's fit in one frame. null while no composer is drawn; else how many
  *  controls of the toolbar end past the box, by how much, whether Send is the element at its own centre, and whether
  *  the document scrolls sideways. bad: any of them. */
 export function composerProbe() {
-  const box = document.querySelector(".composer:not(.run-composer) .composer-box"), tools = box?.querySelector(".composer-tools");
+  const box = document.querySelector(".composer .composer-box"), tools = box?.querySelector(".composer-tools");
   if (!tools) return null;
   const right = box.getBoundingClientRect().right;
   let past = 0, by = 0;
@@ -732,15 +729,15 @@ export const atRest = (page, frames = 24) => page.evaluate((frames) => new Promi
 
 /** Compares screenshots of still pages of two builds and answers one entry per page: { name, pixels, differing, a, b }
  *  (a and b: the PNG files, kept in `out` when it is given).
- *    a, b    a build each: a DIST folder (a mock is started for it on `port`, one after the other, timers stopped), a
- *            URL of a server that runs, or { dist, script } for a build served by another runmock.mjs
+ *    a, b    a build each: a DIST folder (a mock is started for it on `port`, one after the other), a
+ *            URL of a server that runs, or { dist, script } for a build served by another build's mock
  *    pages   [{ name, sel, size, ls, wait, scheme, seed: [sections], mock: code run in the mock once the page is open, omit,
  *            style: CSS added to the page in both builds before it is shot }]
  *    omit    selectors of regions left out of every page's comparison (a page's own `omit` adds to them): what they
  *            cover in either build is not compared
  *  Still pages: the caret is hidden and no animation runs (openPage's `still`); the pages' clock stands at `clock`, and
  *  the mocks tell their times from it (T0), so that a label that tells a time is the same in both. clock: null leaves
- *  both on the real time, for a runmock.mjs from before T0. A page is shot once, when it has come to rest (atRest);
+ *  both on the real time, for a mock from before T0. A page is shot once, when it has come to rest (atRest);
  *  one that does not fails the comparison. */
 export async function compareShots({ a, b, pages, omit = [], port, out, clock = Date.UTC(2026, 0, 15, 12), browser }) {
   const own = !browser;
@@ -806,7 +803,7 @@ export async function compareShots({ a, b, pages, omit = [], port, out, clock = 
  *    outline    its rows, top to bottom, each "<kind> <name>" indented by two spaces a level: "group Renders",
  *               "  board Storyboard", "    chat Tighten act two"; a group that is collapsed ends with " [collapsed]", a
  *               row that is archived with " [archived]"
- *    rows       the names of its board, run and chat rows, in that order; subs: the line under each chat and run row
+ *    rows       the names of its board and chat rows, in that order; subs: the line under each chat row
  *    titles     the tooltip of each row and header */
 function sidePartInPage(id) {
   const root = id ? document.querySelector(`.side-section[data-server="${CSS.escape(id)}"]`) : document.querySelector(".side-tree");
@@ -823,8 +820,8 @@ function sidePartInPage(id) {
         outline.push(`${"  ".repeat(depth)}group ${text(head.querySelector(".side-group-name"))}${e.classList.contains("archived") ? " [archived]" : ""}${inner ? "" : " [collapsed]"}`);
         titles.push(head.getAttribute("title") ?? "");
         walk(inner, depth + 1);
-      } else if (e.matches(".side-board, .side-run")) {
-        row(e.querySelector(":scope > .side-row"), e.matches(".side-board") ? "board" : "run", depth);
+      } else if (e.matches(".side-board")) {
+        row(e.querySelector(":scope > .side-row"), "board", depth);
         for (const c of e.querySelectorAll(":scope > .side-board-chats > .side-row")) row(c, "chat", depth + 1);
       } else if (e.matches(".side-row.is-chat")) row(e, "chat", depth);
       else if (e.matches(".side-loose")) walk(e, depth);

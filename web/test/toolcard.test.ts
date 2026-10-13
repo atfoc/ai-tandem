@@ -35,7 +35,7 @@ test("the kind of a card, by the tool's name, for the three agents", () => {
   assert.equal(kind("write", { path: "doc.go", content: "x" }), "write");
   assert.equal(kind("Delete", { file_path: SUM }), "delete");
   for (const [name, input] of [["Read", { file_path: SUM }], ["NotebookEdit", { notebook_path: "/n.ipynb", new_source: "x" }], ["Grep", { pattern: "x" }],
-    ["mcp__board__get_run", {}], ["Delete `/x/old.go`", { path: "/x/old.go" }], ["Update todos", { todos: [] }], ["BASH", { command: "ls" }], ["toString", { command: "ls" }]] as const) {
+    ["mcp__board__list_boards", {}], ["Delete `/x/old.go`", { path: "/x/old.go" }], ["Update todos", { todos: [] }], ["BASH", { command: "ls" }], ["toString", { command: "ls" }]] as const) {
     assert.equal(kind(name, input), "other", name);
   }
 });
@@ -84,7 +84,7 @@ test("the line stands beside the label unless the label says all of it", () => {
   assert.equal(hintBeside("Ran `go test ./internal/calc/ -run TestSum -coun…`", "go test ./internal/calc/ -run TestSum -count=1"), "go test ./internal/calc/ -run TestSum -count=1");
   assert.equal(hintBeside("Edited sum.go", "internal/calc/sum.go"), "internal/calc/sum.go");
   assert.equal(hintBeside("Edited sum.go", "sum.go"), "");
-  assert.equal(hintBeside("Read the run", ""), "");
+  assert.equal(hintBeside("Read this board", ""), "");
 });
 
 // ---- the open card
@@ -238,7 +238,7 @@ test("an item with nothing but its id, and one with no input", () => {
   assert.deepEqual(parts({ kind: "tool", toolId: "i3" }), [{ part: "text", title: "tool", text: "" }, { part: "note", text: "The input was not recorded." }, { part: "note", text: "Still running: no result yet." }]);
   assert.deepEqual(cardRow({ kind: "tool", toolId: "i3" }, true), { kind: "other", state: "running", hint: "" });
   assert.deepEqual(brief(parts(tool("Bash", undefined, "", { isError: true }))), ["text Bash", "note The input was not recorded.", "note Ended with no result."]);
-  assert.equal(textOf(parts(tool("mcp__board__get_run", {}, "ok")), "get_run")?.text, "{}", "an empty input is an input");
+  assert.equal(textOf(parts(tool("mcp__board__list_boards", {}, "ok")), "list_boards")?.text, "{}", "an empty input is an input");
 });
 
 test("an input that is still arriving is read as far as it came", () => {

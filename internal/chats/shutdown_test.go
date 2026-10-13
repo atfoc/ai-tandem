@@ -62,41 +62,31 @@ func within(t *testing.T, what string, c <-chan struct{}) {
 	}
 }
 
-// After Shutdown the engine's message to a run agent's chat is refused with ErrShutdown and starts
-// nothing: for a chat that never had a process, one whose process Shutdown closed in its turn
-// (ErrShutdown, not ErrBusy), one made after Shutdown, and with Fresh. Nor can a run agent start a
-// subagent, or a person's chat a process. Shutdown can be called again.
+// After Shutdown a message is refused with ErrShutdown and starts nothing: for a chat that never
+// had a process, one whose process Shutdown closed in its turn (ErrShutdown, not ErrBusy) and one
+// made after Shutdown. Nor can a chat's agent start a subagent. Shutdown can be called again.
 func TestNoProcessStartsAfterShutdown(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t)
-	idle := e.agentChat("agent-idle", model.RoleTask, model.Claude)
-	working := e.agentChat("agent-working", model.RoleOrchestrator, model.Claude)
-	e.sendOwned(working, "the brief")
+	e := newEnv(t)
+	idle := e.create(model.Claude, gOne, "").ID
+	working := e.create(model.Claude, gOne, "").ID
+	e.send(working, "the brief", "")
 	ag := e.claude.last(t)
-	person := e.create(model.Claude, gOne, "")
 
 	e.m.Shutdown()
-	if !ag.isClosed() {
-		t.Fatal("Shutdown left the run agent's process")
-	}
-	late := e.agentChat("agent-late", model.RoleMerge, model.Claude) // a chat object is no process
+	waitFor(t, "the working chat's process to be closed", ag.isClosed)
+	late := e.create(model.Claude, gOne, "").ID // a chat object is no process
 	before := e.claude.count()
-	for _, c := range []struct {
-		id string
-		o  OwnedSend
-	}{{idle, OwnedSend{}}, {idle, OwnedSend{Fresh: true}}, {working, OwnedSend{}}, {working, OwnedSend{Fresh: true}}, {late, OwnedSend{}}} {
-		if err := e.m.SendOwned(c.id, "go on", c.o); !errors.Is(err, ErrShutdown) {
-			t.Fatalf("SendOwned %s %+v after Shutdown: %v", c.id, c.o, err)
+	for _, id := range []string{idle, working, late} {
+		if err := e.m.Send(id, "go on", "", nil); !errors.Is(err, ErrShutdown) {
+			t.Fatalf("Send to %s after Shutdown: %v", id, err)
 		}
 	}
 	if err := ErrShutdown.Error(); err != "the server is shutting down" {
 		t.Fatalf("ErrShutdown reads %q", err)
 	}
 	if _, err := e.m.SpawnSubagent(working, SpawnSubRequest{Prompt: "child work", Description: "child"}); !errors.Is(err, ErrShutdown) {
-		t.Fatalf("SpawnSubagent of a run agent after Shutdown: %v", err)
-	}
-	if err := e.m.Send(person.ID, "hi", "", nil); !errors.Is(err, ErrShutdown) {
-		t.Fatalf("Send to a person's chat after Shutdown: %v", err)
+		t.Fatalf("SpawnSubagent after Shutdown: %v", err)
 	}
 	if n := e.claude.count(); n != before {
 		t.Fatalf("%d processes started after Shutdown", n-before)
@@ -104,34 +94,33 @@ func TestNoProcessStartsAfterShutdown(t *testing.T) {
 	if subs := e.subs(working); len(subs) != 0 {
 		t.Fatalf("a subagent was recorded after Shutdown: %+v", subs)
 	}
-	if _, err := e.m.WaitOwned(t.Context(), idle); !errors.Is(err, ErrNothingSent) {
-		t.Fatalf("a refused message left a wait on the chat: %v", err)
+	if v := e.view(idle); v.Locked || len(e.items(idle)) != 0 {
+		t.Fatalf("a refused message left %+v, %d items", v, len(e.items(idle)))
 	}
 
 	e.m.Shutdown() // again: nothing to do, and still nothing starts
-	if err := e.m.SendOwned(idle, "go on", OwnedSend{}); !errors.Is(err, ErrShutdown) {
-		t.Fatalf("SendOwned after the second Shutdown: %v", err)
+	if err := e.m.Send(idle, "go on", "", nil); !errors.Is(err, ErrShutdown) {
+		t.Fatalf("Send after the second Shutdown: %v", err)
 	}
 	if n := e.claude.count(); n != before {
 		t.Fatalf("%d processes started after the second Shutdown", n-before)
 	}
 }
 
-// A message of the engine that is held just before its process starts, in the hold of the chat's
-// lock, while Shutdown begins: Shutdown waits for that lock, finds the process on the chat and
-// closes it through its adapter before it returns. Nothing is left alive, and the next message is
-// refused.
+// A message that is held just before its process starts, in the hold of the chat's lock, while
+// Shutdown begins: Shutdown waits for that lock, finds the process on the chat and closes it.
+// Nothing is left alive, and the next message is refused.
 func TestShutdownClosesAProcessThatWasStarting(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t)
+	e := newEnv(t)
 	log := &loggingSpawner{inner: e.claude}
 	held := &heldSpawner{inner: log}
 	e.m.Spawners[model.Claude] = held
-	id := e.agentChat("agent-1", model.RoleTask, model.Claude)
+	id := e.create(model.Claude, gOne, "").ID
 
 	reached, release := held.hold()
 	sent := make(chan struct{})
-	go func() { defer close(sent); _ = e.m.SendOwned(id, "the brief", OwnedSend{}) }()
+	go func() { defer close(sent); _ = e.m.Send(id, "the brief", "", nil) }()
 	within(t, "the start of the process", reached)
 	done := e.shutdownBegun()
 	select {
@@ -144,32 +133,30 @@ func TestShutdownClosesAProcessThatWasStarting(t *testing.T) {
 	}
 	release()
 	within(t, "Shutdown", done)
-	// Shutdown has returned: the close is done, not merely started.
+	within(t, "the message to return", sent)
 	if n := e.claude.count(); n != 1 {
 		t.Fatalf("%d processes started, want the one that was under way", n)
 	}
-	if got := strings.Join(log.last(t).ended(), ","); got != "interrupt,close" {
-		t.Fatalf("the process that was starting, at Shutdown: %q", got)
-	}
-	within(t, "the message to return", sent)
+	started := log.last(t)
+	waitFor(t, "the process that was starting to be closed", func() bool { return strings.Join(started.ended(), ",") == "close" })
 
-	if err := e.m.SendOwned(id, "again", OwnedSend{}); !errors.Is(err, ErrShutdown) {
-		t.Fatalf("SendOwned after Shutdown: %v", err)
+	if err := e.m.Send(id, "again", "", nil); !errors.Is(err, ErrShutdown) {
+		t.Fatalf("Send after Shutdown: %v", err)
 	}
 	if n := e.claude.count(); n != 1 {
 		t.Fatalf("%d processes after the refused message", n)
 	}
 }
 
-// The same for a subagent a run agent starts: its start runs without the chat's lock. Shutdown
+// The same for a subagent a chat's agent starts: its start runs without the chat's lock. Shutdown
 // ends the subagent it finds recorded, and the process that starts afterwards is closed at once.
-func TestShutdownClosesARunAgentsSubagentThatWasStarting(t *testing.T) {
+func TestShutdownClosesASubagentThatWasStarting(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t)
+	e := newEnv(t)
 	held := &heldSpawner{inner: e.claude}
 	e.m.Spawners[model.Claude] = held
-	id := e.agentChat("agent-1", model.RoleTask, model.Claude)
-	e.sendOwned(id, "the brief")
+	id := e.create(model.Claude, gOne, "").ID
+	e.send(id, "the brief", "")
 	parent := e.claude.last(t)
 
 	reached, release := held.hold()
@@ -180,9 +167,7 @@ func TestShutdownClosesARunAgentsSubagentThatWasStarting(t *testing.T) {
 	}()
 	within(t, "the start of the subagent's process", reached)
 	e.m.Shutdown()
-	if !parent.isClosed() {
-		t.Fatal("Shutdown left the run agent's process")
-	}
+	waitFor(t, "the chat's process to be closed", parent.isClosed)
 	subs := e.subs(id)
 	if len(subs) != 1 || subs[0].Status != model.SubStopped {
 		t.Fatalf("the subagent after Shutdown: %+v", subs)
@@ -199,7 +184,7 @@ func TestShutdownClosesARunAgentsSubagentThatWasStarting(t *testing.T) {
 	}
 }
 
-// A fork of a person's chat whose start is under way when Shutdown begins: the chat's lock is not
+// A fork of a chat whose start is under way when Shutdown begins: the chat's lock is not
 // held during that start, so Shutdown finds no process on the new chat. The one that then starts
 // is closed and the fork refused.
 func TestShutdownClosesAForkThatWasStarting(t *testing.T) {

@@ -4,10 +4,10 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// ServerLists is what a remote server offers for a new chat or run, as the pages get it: its
-// usable agents, their model lists, its home folder and its default folder. Nothing else of a
-// server is in it. The lists are kept by servers.Manager, in memory only, and stay while the
-// entry is unreachable.
+// ServerLists is what a remote server offers for a new chat, as the pages get it: its usable
+// agents, their model lists, its home folder and its default folder. Nothing else of a server
+// is in it. The lists are kept by servers.Manager, in memory only, and stay while the entry is
+// unreachable.
 type ServerLists struct {
 	Agents     []model.AgentKind                  `json:"agents"`
 	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"`

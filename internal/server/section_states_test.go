@@ -36,7 +36,6 @@ func stateCalls() []stateCall {
 		{"a write", "PATCH /api/chats/{id}", "PATCH", chat, `{"name":"Mine"}`},
 		{"a make", "POST /api/chats", "POST", "/chats", `{"group":"` + farGroup + `"}`},
 		{"a read that follows", "GET /api/chats/{id}/items", "GET", chat + "/items", ""},
-		{"a run's read that follows", "GET /api/runs/{id}/detail", "GET", "/runs/" + farRunA + "/detail", ""},
 		{"a message", "POST /api/chats/{id}/messages", "POST", chat + "/messages", `{"text":"hello"}`},
 		{"a draft save", "PUT /api/chats/{id}/draft", "PUT", chat + "/draft?rev=0", `{"text":"typed"}`},
 		{"a board's take", "POST /api/boards/{id}/take", "POST", board + "/take", ""},
@@ -164,7 +163,7 @@ func TestSectionCallsOfAnEntryThatCannotBeAsked(t *testing.T) {
 	if got := f.st.Requests(); len(got) != sent {
 		t.Errorf("the stand-in that is down was sent %+v", got[sent:])
 	}
-	if f.s.Bridge.Followed(editorbridge.ChatOn(f.entry, farChatA)) || f.s.Bridge.Followed(editorbridge.RunOn(f.entry, farRunA)) {
+	if f.s.Bridge.Followed(editorbridge.ChatOn(f.entry, farChatA)) {
 		t.Error("a read that was not sent left a follow")
 	}
 	if _, held := f.s.Bridge.HolderOf(editorbridge.BoardOn(f.entry, farBoardA)); held {
@@ -214,7 +213,7 @@ func TestSectionCallsOfAConnectedEntry(t *testing.T) {
 		c.refused(f, p, f.entry, "the thing is gone there", http.StatusNotFound, "not_found", "no such thing there")
 		f.handle(c.pattern, nil)
 	}
-	if f.s.Bridge.Followed(editorbridge.ChatOn(f.entry, farChatA)) || f.s.Bridge.Followed(editorbridge.RunOn(f.entry, farRunA)) {
+	if f.s.Bridge.Followed(editorbridge.ChatOn(f.entry, farChatA)) {
 		t.Error("a read of a thing that is gone left a follow")
 	}
 
@@ -441,7 +440,6 @@ func TestSectionWriteOutlivesThePageThatAsked(t *testing.T) {
 		what, pattern, method, rest, body string
 		outlives                          bool
 	}{
-		{"the start of a run", "POST /api/runs/{id}/start", "POST", "/runs/" + farRunA + "/start", `{"goal":"Write the note"}`, true},
 		{"a message", "POST /api/chats/{id}/messages", "POST", "/chats/" + farChatA + "/messages", `{"text":"hello"}`, true},
 		{"the delete of a group", "DELETE /api/groups/{id}", "DELETE", "/groups/" + farGroup + "?contents=delete", "", true},
 		{"a new board", "POST /api/boards", "POST", "/boards", `{"name":"Plans","group":"` + farGroup + `"}`, true},

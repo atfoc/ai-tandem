@@ -1,10 +1,10 @@
 // Proves, in the page, the composer's side of images in a chat (plans/composer-images-goal.md, sections 3.1 and 3.2):
 // the attach button of the toolbar's row and a paste both add an image, through one check; a file that passes is
 // uploaded at once, its thumbnail busy and Send off until the mock has answered; a file that fails is named in the
-// error line; a paste with plain text and rich text is the text's; a message of images alone is sent with them; a
-// draft's images are there again after a reload; and a run's goal box has no attach button and takes no image.
+// error line; a paste with plain text and rich text is the text's; a message of images alone is sent with them; and a
+// draft's images are there again after a reload.
 // What the rules are is test/chatimage.test.ts's, and what happens to an upload whose composer goes away is
-// test/actions.test.ts's; here it is the page that does it, against the mock's image routes (dev/runmock.mjs).
+// test/actions.test.ts's; here it is the page that does it, against the mock's image routes (dev/mock.mjs).
 import { check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";
 
 // A 1×1 PNG, and the same with another pixel: two pictures, so two images.
@@ -93,18 +93,5 @@ await check("IM3.2 images in a chat's composer: the attach button, a paste, the 
   await mockEval("delete flags.upload;", url);
   await ctx.close();
 
-  // ---- a run's goal box: no attach button, and a paste of an image is not taken
-  const goal = states.find((x) => x.id === "goal-draft");
-  const g = await openPage({ url, browser, sel: goal.sel, ...paneSize("stage", 900), wait: ".composer-input" });
-  if (await g.page.locator(".attach-btn").count()) fail("a run's goal box has an attach button");
-  const consumed = await g.page.evaluate((b64) => {
-    const dt = new DataTransfer();
-    dt.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
-    const box = document.querySelector(".composer-input");
-    box.focus();
-    return !box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
-  }, PNG_A.toString("base64"));
-  if (consumed || await g.page.locator(".img-thumb").count()) fail("a run's goal box took a pasted image");
-  await g.ctx.close();
-  note("the attach button and a paste add images through one check; busy thumbnail, Send off while it uploads; the text wins a paste with rich text; the draft keeps its images over a reload; a message of an image alone is sent; a refused upload is told; a run's goal box takes none");
+  note("the attach button and a paste add images through one check; busy thumbnail, Send off while it uploads; the text wins a paste with rich text; the draft keeps its images over a reload; a message of an image alone is sent; a refused upload is told");
 });

@@ -1,6 +1,6 @@
 package remotes
 
-// Who follows a chat or a run of a section. A page follows the thing here, keyed by the entry's
+// Who follows a chat of a section. A page follows the thing here, keyed by the entry's
 // id and the thing's; this server follows it on its server for all its pages together, as one
 // client there. A read that follows starts both, the page's follow here first; the last page
 // that unfollows here ends this server's follow there. So this server follows a thing there
@@ -73,11 +73,6 @@ func (r *Relay) FollowChat(ctx context.Context, entry, page, id, pathAndQuery st
 	return r.follow(ctx, editorbridge.ChatOn(entry, id), page, pathAndQuery)
 }
 
-// FollowRun is FollowChat for the run id of the section entry: for GET …/detail.
-func (r *Relay) FollowRun(ctx context.Context, entry, page, id, pathAndQuery string) Reply {
-	return r.follow(ctx, editorbridge.RunOn(entry, id), page, pathAndQuery)
-}
-
 // follow passes a read of the item on for the page, which follows the item from here on: the
 // item's lock is held shared over the follow and the call. The read makes this server a
 // follower there. When the page has no stream here, so that no page's follow will ever end, the
@@ -115,11 +110,6 @@ func (r *Relay) UnfollowChat(entry, page, id string) Reply {
 	return r.unfollowAs(page, editorbridge.ChatOn(entry, id))
 }
 
-// UnfollowRun is UnfollowChat for a run of the section entry.
-func (r *Relay) UnfollowRun(entry, page, id string) Reply {
-	return r.unfollowAs(page, editorbridge.RunOn(entry, id))
-}
-
 func (r *Relay) unfollowAs(page string, it editorbridge.Item) Reply {
 	if !r.Listed(it.Server) {
 		return noServer().Reply()
@@ -129,12 +119,12 @@ func (r *Relay) unfollowAs(page string, it editorbridge.Item) Reply {
 }
 
 // Unfollowed is the function for Bridge.OnUnfollowed: items lost their last follower here. For
-// each one that is a chat or a run of another server, that server is told to end this server's
+// each one that is a chat of another server, that server is told to end this server's
 // follow, unless a page follows the item again by then or the entry is not connected. An item
 // with no server is this server's own and is left alone.
 func (r *Relay) Unfollowed(items []editorbridge.Item) {
 	for _, it := range items {
-		if it.Server == "" || it.Kind != "chat" && it.Kind != "run" {
+		if it.Server == "" || it.Kind != "chat" {
 			continue
 		}
 		r.spawn(func() { r.unfollow(it) })
@@ -148,9 +138,6 @@ func (r *Relay) unfollow(it editorbridge.Item) {
 		return // followed again, or that server forgot the follow with its stream
 	}
 	path := chatPath(it.ID, "/unfollow")
-	if it.Kind == "run" {
-		path = runPath(it.ID, "/unfollow")
-	}
 	// Not through call: an entry that is not connected follows nothing, and is not woken for this.
 	rep, err := r.o.Servers.Do(r.ctx, it.Server, http.MethodPost, path, nil, r.o.Limits.Unfollow)
 	switch {

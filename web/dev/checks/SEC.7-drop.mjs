@@ -6,7 +6,6 @@
 // thread is level with that server, the warning is gone, Send works, the box takes text again, and the typed text is
 // saved by one PUT …/draft under /api/on/, on the counter the page had. Deleted there meanwhile, the view says so. Left during the outage, the chat is closed and cannot be opened
 // until the server is back.
-// A run view: the same warning, the view as it was; back, its detail is read again; deleted meanwhile, it says so.
 // A board that is open and held: it can still be drawn on, under the banner that it is not saved; back at the
 // revision the page has, the drawing is saved there; back at another one (the board was changed there meanwhile), it
 // is dropped with the notice, and that server's drawing is the one shown. While this computer's server is still
@@ -19,7 +18,7 @@ const J = JSON.stringify;
 const STUDIO = "s_studio", ON = `/api/on/${STUDIO}`, AWAY = "Studio Mac is not connected";
 const WHY = `${AWAY}: nothing can be sent or changed until it is back.`;
 
-await check("SEC.7 a chat, a run and a board that are open when their server drops, and when it is back", async ({ url, browser, fail, note }) => {
+await check("SEC.7 a chat and a board that are open when their server drops, and when it is back", async ({ url, browser, fail, note }) => {
   const drop = () => mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
   const back = (first = "") => mockEval(`${first}; setServerState("${STUDIO}", "connected");`, url);
   const there = (code) => mockEval(`return onServer("${STUDIO}", () => { ${code} });`, url);
@@ -121,40 +120,6 @@ await check("SEC.7 a chat, a run and a board that are open when their server dro
     await p.end();
   }
 
-  // ---- a run view
-  {
-    const p = await open({ run: `${STUDIO}~r_film`, chat: null }), { page } = p;
-    await page.waitForSelector(".run-stage");
-    // what the view shows of the run itself: from its counts on (its head also names the group it is in and offers a
-    // chat on it, which go with the section's tree)
-    const shown = () => page.evaluate(() => {
-      const flat = (e) => (e?.innerText ?? "").replace(/\s+/g, " ").trim(), bar = flat(document.querySelector(".run-stage .remote-bar")); // (less the warning itself)
-      const t = (bar ? flat(document.querySelector(".run-stage")).replace(bar, "") : flat(document.querySelector(".run-stage"))).replace(/\s+/g, " ");
-      return t.slice(Math.max(0, t.search(/\d+\/\d+ turns/))).slice(0, 600);
-    });
-    await page.waitForFunction(() => /\d+\/\d+ turns/.test(document.querySelector(".run-stage").innerText) && /53\/53 tasks/.test(document.querySelector(".run-stage").innerText), null, { timeout: 10000 }).catch(() => fail("the run view shows nothing of the run"));
-    const before = await shown(), rows = await p.rows(), reads = p.on(/\/runs\/r_film\/detail$/, "GET").length;
-    await drop();
-    await says("a run view, its server dropped", page, ".remote-bar.run-remote-bar.off .remote-bar-text", `${AWAY}. This run is shown as it was when the connection ended.`);
-    if (await shown() !== before) fail(`the run view changed when its server dropped: "${(await shown()).slice(0, 200)}", before "${before.slice(0, 200)}"`);
-    if (await page.locator('.run-stage button:has-text("Chat on this run"):not([disabled])').count()) fail("the run view offers a chat on the run while its server is not connected");
-    await noRows("a run view, its server dropped", p);
-    const writes = p.calls.filter((c) => c.method !== "GET").length;
-    await back();
-    if (!await until(async () => !await page.locator(".remote-bar").count(), 10000)) fail("back, the run view's warning stays");
-    if (!await until(() => p.on(/\/runs\/r_film\/detail$/, "GET").length > reads && p.on(/\/runs\/r_film\/detail$/, "GET").at(-1).status === 200, 10000)) fail("back, the run's detail was not read again");
-    if (!await until(async () => await shown() === before, 10000)) fail(`back, the run view is not what it was: "${(await shown()).slice(0, 200)}"`);
-    if (!await until(async () => J(await p.rows()) === J(rows), 10000)) fail("back, the section does not show the tree again");
-    if (p.calls.filter((c) => c.method !== "GET" && !/\/unfollow$/.test(c.path)).length !== writes) fail(`the run view made calls that change something over the outage: ${J(p.calls.filter((c) => c.method !== "GET").slice(writes).map((c) => `${c.method} ${c.path}`))}`);
-    // deleted there meanwhile
-    await drop();
-    await says("the run view, dropped again", page, ".remote-bar.run-remote-bar.off", AWAY);
-    await back(`await elsewhere("${STUDIO}", "DELETE", "/runs/r_film")`);
-    await says("a run deleted while its server was away", page, ".remote-bar.run-remote-bar.gone .remote-bar-text", "This run is no longer on Studio Mac.");
-    if ((await p.rows()).some((l) => l.includes("Trailer cut"))) fail("the run deleted meanwhile has a row again");
-    await p.end();
-  }
-
   // ---- a board, open and drawn on
   {
     const p = await open({ board: `${STUDIO}~b_loose`, chat: null }), { page } = p;
@@ -221,5 +186,5 @@ await check("SEC.7 a chat, a run and a board that are open when their server dro
     if (p.calls.some((c) => /^\/api\/boards\//.test(c.path))) fail("a call for the section's board went to this computer's routes");
     await p.end();
   }
-  note("a chat: read-only under the warning, Send off with the reason, the box read-only with the typed text kept and saved by one PUT on its counter when back; a run view the same; a board drawn on under the banner, saved at the same revision and dropped at another; deleted meanwhile, each view said so");
+  note("a chat: read-only under the warning, Send off with the reason, the box read-only with the typed text kept and saved by one PUT on its counter when back; a board drawn on under the banner, saved at the same revision and dropped at another; a chat deleted meanwhile, its view said so");
 });

@@ -94,7 +94,7 @@ test("the sidebar's board row: the menu by the board's key, the targets from the
   assert.ok(side.includes('const menu = boardMenu(b).filter((i) => i !== "move" || targets.length > 0)'), "no Move to… with nowhere to move to");
   assert.ok(side.includes("reveal: () => attempt(\"Couldn't reveal the board\", () => flush(b.id).then(() => api.reveal(b.id))),"));
   // a row inside a section carries no server name: the section says it
-  for (const gone of ["BoardTag", "board-tag", "boardRow(", "remoteRow(", "runRow("]) assert.ok(!side.includes(gone), gone);
+  for (const gone of ["BoardTag", "board-tag", "boardRow(", "remoteRow("]) assert.ok(!side.includes(gone), gone);
   for (const file of ["BoardTag.tsx", "boardrow.css", "BoardChoice.tsx", "boardchoice.css", "logic/boarddraft.ts"]) assert.equal(existsSync(new URL(`../src/${file}`, import.meta.url)), false, file);
   // the chat's choices read the server from the chat's own key, not from its board
   const choices = src("ChatChoices.tsx");

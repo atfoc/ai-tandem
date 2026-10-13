@@ -29,7 +29,7 @@ func (e *env) subIs(what, id string, want model.SubLimits) {
 	if v.SubLimits() != want || v.SubOff != (want.Depth == 0) || v.SubDepth != want.Depth || v.SubCap != want.Cap {
 		e.t.Fatalf("%s: the view has off %v, depth %d and cap %d, want %+v", what, v.SubOff, v.SubDepth, v.SubCap, want)
 	}
-	if m := e.metaOf(v); m.Subagents == nil || *m.Subagents != want {
+	if m := e.meta(v.ID); m.Subagents == nil || *m.Subagents != want {
 		e.t.Fatalf("%s: chat.json has %+v, want %+v", what, m.Subagents, want)
 	}
 }
@@ -62,11 +62,10 @@ func subDefaults(per map[string]model.SubLimits) model.Defaults {
 
 // A new chat is made with the settings of its place, stored in its chat.json: the group's for the
 // chat's server, then the ungrouped group's, then depth 1 and cap 100. A chat on a board uses the
-// board's group and a person's chat on a run the run's, as for the other defaults. Making a chat
-// records nothing.
+// board's group, as for the other defaults. Making a chat records nothing.
 func TestSubSettingsOfANewChat(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t) // ownRun is in gOne
+	e := newEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +86,6 @@ func TestSubSettingsOfANewChat(t *testing.T) {
 		"a group with its own":                {NewChat{Group: gTwo, Agent: model.Claude}, lim(0, 5)},
 		"another agent in that group":         {NewChat{Group: gTwo, Agent: model.Cursor}, lim(0, 5)},
 		"a board of that group":               {NewChat{Board: bd.ID, Agent: model.Pi}, lim(0, 5)},
-		"a run of a group with none":          {NewChat{Run: ownRun, Agent: model.Claude}, lim(2, 25)},
 		"a depth named":                       {NewChat{Group: gOne, Agent: model.Claude, SubDepth: numPtr(3)}, lim(3, 25)},
 		"a cap named":                         {NewChat{Group: gTwo, Agent: model.Claude, SubCap: numPtr(100)}, lim(0, 100)},
 		"both named, the lowest of each":      {NewChat{Group: gOne, Agent: model.Claude, SubDepth: numPtr(0), SubCap: numPtr(1)}, lim(0, 1)},
@@ -116,33 +114,6 @@ func TestSubSettingsOfANewChat(t *testing.T) {
 	}
 	if got := e.defaultsRaw(); got != was {
 		t.Fatalf("making chats changed the defaults:\n%s\nwant\n%s", got, was)
-	}
-}
-
-// D5: a run agent's chat gets no stored settings and reads as depth 1 and cap 100, whatever the
-// run's group remembers, and no person changes it.
-func TestSubSettingsLeaveRunAgentsAlone(t *testing.T) {
-	t.Parallel()
-	e, _ := runEnv(t)
-	e.setDefaults(subDefaults(map[string]model.SubLimits{model.Ungrouped: lim(3, 5), gOne: lim(0, 9)}))
-	was := e.defaultsRaw()
-	id := e.agentChat("a_task", model.RoleTask, model.Claude)
-	m := e.runMeta(id, true)
-	if m.Subagents != nil || m.SubLimits() != lim(1, 100) {
-		t.Fatalf("a run agent's chat.json: %+v, reads as %+v", m.Subagents, m.SubLimits())
-	}
-	if raw, err := os.ReadFile(filepath.Join(e.st.P.RunChatDir(ownRun, true, id), "chat.json")); err != nil || strings.Contains(string(raw), "subagents") {
-		t.Fatalf("a run agent's chat.json names the settings: %s, %v", raw, err)
-	}
-	if err := e.m.Configure(id, ConfigReq{SubDepth: numPtr(2)}); !errors.Is(err, ErrRunAgent) {
-		t.Fatalf("a change of a run agent's chat: %v, want ErrRunAgent", err)
-	}
-	e.sendOwned(id, "go")
-	if m := e.runMeta(id, true); m.Subagents != nil || !m.Locked {
-		t.Fatalf("a run agent's chat.json after its first message: %+v", m)
-	}
-	if got := e.defaultsRaw(); got != was {
-		t.Fatalf("a run agent's chat changed the defaults:\n%s\nwant\n%s", got, was)
 	}
 }
 
@@ -390,40 +361,38 @@ func TestSubSettingsAreSticky(t *testing.T) {
 	}
 	e.configure(other.ID, ConfigReq{SubDepth: numPtr(1)})
 	after := e.defaultsOf().Groups[gOne].Local()
-	if *after.Subagents != lim(1, 50) || after.Agent != part.Agent || after.Cwd != dir || !reflect.DeepEqual(after.ByAgent, now.ByAgent) || after.Run != nil {
+	if *after.Subagents != lim(1, 50) || after.Agent != part.Agent || after.Cwd != dir || !reflect.DeepEqual(after.ByAgent, now.ByAgent) {
 		t.Fatalf("the group's part after a choice of the depth: %+v, was %+v", after, now)
 	}
 }
 
-// A person's chat on a run is a chat like any other: it starts with the settings of the run's
-// group and feeds them there, at a choice and at its first message. A chat on a board uses the
-// board's group.
-func TestSubSettingsOnARunAndOnABoard(t *testing.T) {
+// A chat on a board uses the board's group: it starts with the settings of that group and feeds
+// them there, at a choice and at its first message.
+func TestSubSettingsOnABoard(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t) // ownRun is in gOne
+	e := newEnv(t)
 	bd, err := e.bds.Create("board", gTwo, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := e.newChat(NewChat{Run: ownRun, Agent: model.Claude})
-	e.configure(r.ID, ConfigReq{SubDepth: numPtr(3), SubCap: numPtr(8)})
-	e.subIs("a chat on a run", r.ID, lim(3, 8))
-	e.stickyIs("after a choice in a chat on a run", gOne, lim(3, 8))
-	e.subIs("the next chat on the run", e.newChat(NewChat{Run: ownRun, Agent: model.Claude}).ID, lim(3, 8))
-	e.subIs("a chat in the run's group", e.newChat(NewChat{Group: gOne, Agent: model.Claude}).ID, lim(3, 8))
+	g := e.newChat(NewChat{Group: gOne, Agent: model.Claude})
+	e.configure(g.ID, ConfigReq{SubDepth: numPtr(3), SubCap: numPtr(8)})
+	e.stickyIs("after a choice in a chat of another group", gOne, lim(3, 8))
 
 	b := e.newChat(NewChat{Board: bd.ID, Agent: model.Claude})
 	e.subIs("a chat on a board of another group", b.ID, lim(1, 100))
 	e.configure(b.ID, ConfigReq{SubDepth: numPtr(0)})
 	e.stickyIs("after a choice in a chat on a board", gTwo, lim(0, 100))
-	e.stickyIs("the run's group, after a choice on the board", gOne, lim(3, 8))
+	e.stickyIs("the other group, after a choice on the board", gOne, lim(3, 8))
+	e.subIs("the next chat on the board", e.newChat(NewChat{Board: bd.ID, Agent: model.Claude}).ID, lim(0, 100))
 
-	// The first message of each confirms its settings in the same group.
+	// The first message confirms the chat's settings in the board's group.
 	e.setDefaults(model.Defaults{})
-	e.send(r.ID, "hello", "")
 	e.send(b.ID, "hello", "")
-	e.stickyIs("after the first message of the chat on the run", gOne, lim(3, 8))
 	e.stickyIs("after the first message of the chat on the board", gTwo, lim(0, 100))
+	if got := e.stickySub(gOne); got != nil {
+		t.Fatalf("the first message of a chat on a board recorded %+v in another group", got)
+	}
 }
 
 // ---- a branch and a fork ------------------------------------------------------

@@ -168,11 +168,6 @@ func TestUsableAgentsFollowThePath(t *testing.T) {
 	waiting := newChat(map[string]any{"agent": "claude", "cwd": cwd})
 	refusedCall(t, p, "agent_missing", "POST", "/api/chats", map[string]any{"group": model.Ungrouped, "agent": "cursor"})
 	refusedCall(t, p, "agent_missing", "PATCH", "/api/chats/"+waiting, map[string]any{"agent": "cursor"})
-	draft, _ := ok200(t, p, "POST", "/api/runs", map[string]any{"group": model.Ungrouped})["id"].(string)
-	if draft == "" {
-		t.Fatal("the draft run has no id")
-	}
-	refusedCall(t, p, "agent_missing", "PATCH", "/api/runs/"+draft, map[string]any{"agent": "cursor"})
 
 	// A message is answered by the program found; the chat's tools name that agent alone.
 	ok200(t, p, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "hello"})
@@ -183,7 +178,7 @@ func TestUsableAgentsFollowThePath(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(store.NewPaths(in.dir).ChatDir(chat), "chat.json")); err != nil || json.Unmarshal(b, &meta) != nil || meta.Token == "" {
 		t.Fatalf("the chat's chat.json: %v, token %q", err, meta.Token)
 	}
-	mcp := &runServer{in: in}
+	mcp := &scriptedServer{in: in}
 	var listed struct {
 		Result struct {
 			Tools []struct {

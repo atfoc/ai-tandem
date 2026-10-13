@@ -8,8 +8,6 @@ const PAGES = [
   { name: "home", sel: {} },
   { name: "chat", sel: { chat: "c_plain" }, wait: ".thread .msg.assistant" },
   { name: "board", sel: { board: "b_arch", chat: "c_board" }, wait: ".excalidraw" },
-  { name: "run", sel: { run: "r_done" }, wait: ".run-stage" },
-  { name: "goal", sel: { run: "r_draft" }, wait: ".run-composer" },
   { name: "seeded", sel: { chat: "c_A6_cards" }, seed: ["A6"], wait: ".thread .perm" },
 ];
 

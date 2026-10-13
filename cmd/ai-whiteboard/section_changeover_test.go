@@ -21,13 +21,12 @@ import (
 // The change-over of the data folder at the start of the program (contract 3.9), through
 // startServers: what an app of before kept there of another server is gone or is this
 // computer's own before a page is served. The steps one by one are the section tests of
-// internal/store, internal/defaults, internal/chats and internal/runs.
+// internal/store, internal/defaults and internal/chats.
 
 // changedOver checks the files of a data folder that oldFolder wrote and the program then
 // started on: the folder remote/ is gone, the chat that never had a message is a chat with its
-// draft that names no server, the one on a board that is not here is deleted, the run names no
-// server and has its goal, the group's defaults hold this computer's alone, both groups are
-// there, the server list is the bytes list, and no other file names the entry or its server or
+// draft that names no server, the one on a board that is not here is deleted, the group's
+// defaults hold this computer's alone, both groups are there, the server list is the bytes list, and no other file names the entry or its server or
 // holds what a record held: the draft kept with it, its last view, its archive mark.
 func changedOver(t *testing.T, root string, list []byte) {
 	t.Helper()
@@ -55,11 +54,6 @@ func changedOver(t *testing.T, root string, list []byte) {
 	}
 	if _, err := os.Lstat(p.ChatDir(oldBoardChat)); !os.IsNotExist(err) {
 		t.Errorf("the folder of the chat on a board that is not here: %v", err)
-	}
-	run := fields(filepath.Join(p.RunDir(oldRun), "run.json"))
-	var goal *model.Draft
-	if json.Unmarshal(run["draft"], &goal); run["server"] != nil || run["remoteStart"] != nil || goal == nil || goal.Text != oldGoal {
-		t.Errorf("run.json of the run that named the entry: server %s, draft %s", run["server"], run["draft"])
 	}
 	var state struct {
 		Groups   []model.Group
@@ -92,11 +86,10 @@ func changedOver(t *testing.T, root string, list []byte) {
 }
 
 // changedOverSnapshot checks a page's snapshot of the program that started on oldFolder, once
-// the entry is connected: this computer's lists hold the chat with its draft and the run with
-// its goal, as things of this computer, and nothing else; the group that held only things of
-// the entry's server is there, with nothing in it; the group's defaults are this computer's
-// alone; what the stand-in has is in its section and nowhere else; and the draft that was kept
-// with a record is nowhere. agent is the agent a new chat of the group starts with on this
+// the entry is connected: this computer's lists hold the chat with its draft, as a thing of
+// this computer, and nothing else; the group that held only things of the entry's server is
+// there, with nothing in it; the group's defaults are this computer's alone; what the stand-in
+// has is in its section and nowhere else; and the draft that was kept with a record is nowhere. agent is the agent a new chat of the group starts with on this
 // server: none when it finds no agent's program.
 func changedOverSnapshot(t *testing.T, raw string, agent model.AgentKind) {
 	t.Helper()
@@ -105,7 +98,6 @@ func changedOverSnapshot(t *testing.T, raw string, agent model.AgentKind) {
 		Boards   []model.Board
 		Chats    []model.ChatView
 		States   []model.BranchState
-		Runs     []model.RunView
 		Defaults model.Defaults
 		Sections map[string]remotes.Tree
 	}
@@ -119,12 +111,8 @@ func changedOverSnapshot(t *testing.T, raw string, agent model.AgentKind) {
 		len(snap.States) != 1 || snap.States[0].Chat != oldChat {
 		t.Errorf("this computer's chats: %s, states %s; want the chat that was kept for the entry alone, with its draft and the agent %q", parts["chats"], parts["states"], agent)
 	}
-	if len(snap.Runs) != 1 || snap.Runs[0].ID != oldRun || snap.Runs[0].Status != model.RunDraft || snap.Runs[0].Group != oldGroup ||
-		snap.Runs[0].Name != "Port the importer" || snap.Runs[0].Draft == nil || snap.Runs[0].Draft.Text != oldGoal || !snap.Runs[0].Started.IsZero() {
-		t.Errorf("this computer's runs: %s; want the run that named the entry alone, not started, with its goal", parts["runs"])
-	}
-	// The place the board and the run of that server had in the second group is lost, and the
-	// group stays, empty: the chat and the run of this computer are in the first.
+	// The place the board of that server had in the second group is lost, and the group stays,
+	// empty: the chat of this computer is in the first.
 	if len(snap.Boards) != 0 || len(snap.Groups) != 2 || snap.Groups[0].ID != oldGroup || snap.Groups[1].ID != oldFarGroup || snap.Groups[1].Name != oldFarGroupName {
 		t.Errorf("this computer's boards %s and groups %s", parts["boards"], parts["groups"])
 	}
@@ -136,11 +124,11 @@ func changedOverSnapshot(t *testing.T, raw string, agent model.AgentKind) {
 	if g := snap.Defaults.Groups[oldGroup]; len(g.Servers) != 1 || g.Local().Agent != model.Claude {
 		t.Errorf("the defaults of the group: %s, want this computer's alone", parts["defaults"])
 	}
-	// The folder a new chat of the group starts in here is the chat's and the run's now.
-	if cwd := snap.Defaults.Groups[oldGroup].Local().Cwd; cwd == "" || snap.Chats[0].Cwd != cwd || snap.Runs[0].Cwd != cwd {
-		t.Errorf("the chat is in %q and the run in %q, want the group's folder on this computer, %q", snap.Chats[0].Cwd, snap.Runs[0].Cwd, cwd)
+	// The folder a new chat of the group starts in here is the chat's now.
+	if cwd := snap.Defaults.Groups[oldGroup].Local().Cwd; cwd == "" || snap.Chats[0].Cwd != cwd {
+		t.Errorf("the chat is in %q, want the group's folder on this computer, %q", snap.Chats[0].Cwd, cwd)
 	}
-	for _, list := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+	for _, list := range []string{"groups", "boards", "chats", "states", "defaults"} {
 		for _, word := range append(farMarks(), `"server"`, savedEntryID, standin.DefaultInstanceID) {
 			if bytes.Contains(parts[list], []byte(word)) {
 				t.Errorf("this computer's %s hold %s: %s", list, word, parts[list])
@@ -150,7 +138,7 @@ func changedOverSnapshot(t *testing.T, raw string, agent model.AgentKind) {
 	tree, ok := snap.Sections[savedEntryID]
 	if !ok || len(snap.Sections) != 1 || len(tree.Groups) != 1 || tree.Groups[0].ID != farGroup || len(tree.Boards) != 1 || tree.Boards[0].ID != farBoard ||
 		len(tree.Chats) != 2 || tree.Chats[0].ID != farChat || tree.Chats[1].ID != farDrafted || tree.Chats[1].Draft == nil || tree.Chats[1].Draft.Text != farDraft ||
-		len(tree.States) != 2 || len(tree.Runs) != 1 || tree.Runs[0].ID != farRun {
+		len(tree.States) != 2 {
 		t.Errorf("the section of the entry: %s", parts["sections"])
 	}
 }
@@ -188,9 +176,8 @@ func folderChanges(files map[string][]byte, times map[string]time.Time, again ma
 
 // A data folder as an app of before left it is brought to this computer's own by the start:
 // remote/ is gone, the chat that never had a message is a chat of this computer with its draft,
-// the one on a board of the other server is deleted, the run that had not started is a run of
-// this computer with its goal, the group's defaults are this computer's alone, and the server
-// list is untouched, so its entry connects and its section has that server's tree. That server
+// the one on a board of the other server is deleted, the group's defaults are this computer's
+// alone, and the server list is untouched, so its entry connects and its section has that server's tree. That server
 // is asked for nothing but what a connection reads. A second start writes no file.
 func TestSectionChangeOverAtTheStart(t *testing.T) {
 	t.Parallel()
@@ -226,62 +213,9 @@ func TestSectionChangeOverAtTheStart(t *testing.T) {
 	}
 }
 
-// A chat that never had a message on the run that had not started and named the entry stays on
-// that run, with its draft: the run is a run of this computer by the time the chat's place is
-// looked at, since the runs are put here before the chats (localOnly). The chat's folder is in
-// the run's, and its chat.json names no server.
-func TestSectionChangeOverKeepsAChatOnTheRunThatBecomesLocal(t *testing.T) {
-	t.Parallel()
-	const onRun, typed = "0c000000-0000-4000-8000-000000000003", "typed here on the run for the studio"
-	st := standin.Start(t, standin.Options{Snapshot: farTree()})
-	root := t.TempDir()
-	list := oldFolder(t, root, t.TempDir(), st)
-	p := store.NewPaths(root)
-	file := filepath.Join(p.RunChatDir(oldRun, false, onRun), "chat.json")
-	meta, err := json.Marshal(model.ChatMeta{ID: onRun, Agent: model.Claude, Run: oldRun, Cwd: "/home/standin/work", Model: "standin-model",
-		Token: "tok-" + onRun, Created: farTime,
-		Drafts: map[string]*model.Draft{model.MainBranch: {Text: typed}}, DraftRevs: map[string]int64{model.MainBranch: 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// As the app of before wrote it: with the entry as its "server".
-	meta = append([]byte(`{"server":"`+savedEntryID+`",`), meta[1:]...)
-	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(file, meta, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	pr := wired(t, root)
-	changedOver(t, root, list)
-	var v model.ChatView
-	got := pr.call(t, "", "GET", "/api/chats/"+onRun, nil)
-	if json.Unmarshal([]byte(got.Raw), &v); got.Status != http.StatusOK || v.Run != oldRun || v.Group != "" || v.Locked ||
-		v.Draft == nil || v.Draft.Text != typed || v.DraftRev != 1 || strings.Contains(got.Raw, `"server"`) {
-		t.Fatalf("the chat on the run that named the entry: %s; want it on that run, not started, with its draft", got)
-	}
-	// The run it is on is a run of this computer that has not started.
-	var r model.RunView
-	if got := pr.call(t, "", "GET", "/api/runs/"+oldRun, nil); json.Unmarshal([]byte(got.Raw), &r) != nil || got.Status != http.StatusOK || r.Status != model.RunDraft {
-		t.Fatalf("the run of the chat: %s", got)
-	}
-	// The chat is in the run's folder, as it was, and it is the chat that is left of the two
-	// that were kept for the entry outside a group.
-	raw, err := os.ReadFile(file)
-	if err != nil || bytes.Contains(raw, []byte(`"server"`)) || !bytes.Contains(raw, []byte(typed)) {
-		t.Fatalf("chat.json of the chat on the run (%v): %s", err, raw)
-	}
-	if _, err := os.Lstat(p.ChatDir(onRun)); !os.IsNotExist(err) {
-		t.Errorf("the chat on the run has a folder among the chats in groups: %v", err)
-	}
-	pr.stop()
-	changedOver(t, root, list)
-}
-
 // A data folder that never had another server: the start finds nothing to change over. What
-// this computer has, a chat with a draft and an image, a board with its drawing, a run with its
-// goal and what the groups remember, is in the snapshot as it was, no file is written or
+// this computer has, a chat with a draft and an image, a board with its drawing and what the
+// groups remember, is in the snapshot as it was, no file is written or
 // removed by a second start, and the folder has no remote/ and no server list.
 func TestSectionChangeOverLeavesAFolderOfThisComputerAlone(t *testing.T) {
 	t.Parallel()
@@ -298,7 +232,7 @@ func TestSectionChangeOverLeavesAFolderOfThisComputerAlone(t *testing.T) {
 			t.Errorf("the sections of a program with no entry: %s", parts["sections"])
 		}
 		out := map[string]string{}
-		for _, list := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+		for _, list := range []string{"groups", "boards", "chats", "states", "defaults"} {
 			out[list] = string(parts[list])
 		}
 		return out
@@ -308,7 +242,7 @@ func TestSectionChangeOverLeavesAFolderOfThisComputerAlone(t *testing.T) {
 	localSteps(t, first, "page")
 	was := lists(first)
 	first.stop()
-	for _, list := range []string{"boards", "chats", "states", "runs"} {
+	for _, list := range []string{"boards", "chats", "states"} {
 		if was[list] == "[]" {
 			t.Fatalf("this computer's %s before the second start: none", list)
 		}

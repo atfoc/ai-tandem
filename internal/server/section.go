@@ -15,7 +15,6 @@ import (
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/servers"
 )
 
@@ -27,18 +26,18 @@ import (
 // for it, with the method, the query and the body of that call. This server keeps nothing of
 // such a thing but the tree its relay holds in memory (internal/remotes), so a route here is
 // one of three: passed on to the entry's server as it came and answered as that server
-// answered, answered here (who follows a chat or a run, which page holds a board), or refused
+// answered, answered here (who follows a chat, which page holds a board), or refused
 // here. sectionRoutes is the table; a path under the prefix that is no row of it is 404, and
 // nothing is sent for it.
 //
 // The entry decides before anything else, in every row: an id that is no entry is 404
 // "no_server". Its state decides next, in every row but three: an entry whose tree the relay
 // does not hold, because it is not connected or too old, is 503 "server_unreachable". The three
-// are the unfollow of a chat and of a run, the release of a board, and the reveal of a board's
+// are the unfollow of a chat, the release of a board, and the reveal of a board's
 // file, which is refused in every state.
 //
 // None of it is in RemoteHandler: this server passes nothing on for its own API clients. The
-// routes /api/chats/…, /api/boards/…, /api/runs/… and /api/groups/… are for the things of this
+// routes /api/chats/…, /api/boards/… and /api/groups/… are for the things of this
 // server alone, whatever the id.
 
 // sectionPrefix is the path every route of a section starts with, before the entry's id.
@@ -161,8 +160,8 @@ type sectionLimit int
 
 const (
 	withinCall   sectionLimit = iota // a call that starts nothing
-	withinStart                      // a call that can wait for an agent's start, or for a live run to stop
-	withinDelete                     // a delete that waits for agents and checkouts
+	withinStart                      // a call that can wait for an agent's start
+	withinDelete                     // a delete of a group with what is in it
 )
 
 func (l sectionLimit) of(limits remotes.Limits) time.Duration {
@@ -200,24 +199,6 @@ var sectionPassed = []struct {
 	{"POST /chats/{id}/unarchive", withinCall},
 	{"PUT /chats/{id}/label", withinCall},
 	{"DELETE /chats/{id}", withinCall},
-
-	{"POST /runs", withinCall},
-	{"GET /runs/{id}", withinCall},
-	{"PATCH /runs/{id}", withinCall},
-	{"PUT /runs/{id}/draft", withinCall},
-	{"POST /runs/{id}/start", withinStart},
-	{"POST /runs/{id}/stop", withinStart},
-	{"POST /runs/{id}/resume", withinStart},
-	{"POST /runs/{id}/apply", withinStart},
-	{"GET /runs/{id}/delivery", withinCall},
-	{"GET /runs/{id}/goal", withinCall},
-	{"GET /runs/{id}/tasks/{tid}/brief", withinCall},
-	{"GET /runs/{id}/tasks/{tid}/attempts/{n}/report", withinCall},
-	{"GET /runs/{id}/tasks/{tid}/attempts/{n}/changes", withinCall},
-	{"GET /runs/{id}/notes/{v}", withinCall},
-	{"POST /runs/{id}/archive", withinStart},
-	{"POST /runs/{id}/unarchive", withinStart},
-	{"DELETE /runs/{id}", withinDelete},
 
 	{"POST /boards/{id}/rename", withinCall},
 	{"POST /boards/{id}/archive", withinCall},
@@ -271,23 +252,17 @@ func (s *Server) sectionRoutes() *routeMux {
 		writeReply(w, c.rm.Pass(lasting(r), c.entry, http.MethodPatch, c.there, body, c.rm.Limits().Call))
 	})
 
-	// The reads a page follows a chat or a run with: the page follows the thing here from before
+	// The reads a page follows a chat with: the page follows the thing here from before
 	// the read is passed on, and the read makes this server a follower there.
 	for _, read := range []string{"items", "tree", "subagents/{sid}/items"} {
 		t.row("GET /chats/{id}/"+read, func(w http.ResponseWriter, r *http.Request, c sectionCall) {
 			writeReply(w, c.rm.FollowChat(r.Context(), c.entry, c.page, id(r), c.there))
 		})
 	}
-	t.row("GET /runs/{id}/detail", func(w http.ResponseWriter, r *http.Request, c sectionCall) {
-		writeReply(w, c.rm.FollowRun(r.Context(), c.entry, c.page, id(r), c.there))
-	})
 	// The page's follow ends here, in every state of the entry; when it was the last one, the
 	// relay ends this server's follow there.
 	t.always("POST /chats/{id}/unfollow", func(w http.ResponseWriter, r *http.Request, c sectionCall) {
 		writeReply(w, c.rm.UnfollowChat(c.entry, c.page, id(r)))
-	})
-	t.always("POST /runs/{id}/unfollow", func(w http.ResponseWriter, r *http.Request, c sectionCall) {
-		writeReply(w, c.rm.UnfollowRun(c.entry, c.page, id(r)))
 	})
 
 	// A message is passed on with its body, a target too. Its images are the chat's server's to
@@ -522,20 +497,6 @@ func serverRefused(w http.ResponseWriter, server string) bool {
 		return false
 	}
 	writeErrorCode(w, http.StatusBadRequest, "this call is for this computer: a thing of another server is reached under "+sectionPrefix+"<server>", "server_refused")
-	return true
-}
-
-// readRunPatch reads a page's body of PATCH /api/runs/{id} into p, and reports whether it did:
-// one that names another server is refused, as serverRefused says.
-func readRunPatch(w http.ResponseWriter, r *http.Request, p *runs.PatchReq) bool {
-	var body struct {
-		runs.PatchReq
-		Server string `json:"server"`
-	}
-	if !readJSON(w, r, &body) || serverRefused(w, body.Server) {
-		return false
-	}
-	*p = body.PatchReq
 	return true
 }
 

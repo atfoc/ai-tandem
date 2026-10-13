@@ -11,13 +11,12 @@ AIWB_TEST_FULL=1 go test ./internal/<pkg>   # full set: every test, each in full
 ```
 
 - The **default set** starts few processes and is meant to pass on a loaded machine.
-- The **full set** adds what is too slow for every edit: exhaustive matrices (a restart at every
-  step of a run, every corner of delivering a result; the default set runs a representative
-  slice), tests that build the server binary and start real server processes
-  (`cmd/ai-whiteboard`: 69 such tests are in the full set only, six cheap ones run in the default
-  set too, `TestRunE2ENoGit` and five smoke tests), tests that need the real `pi` installed (`internal/pibridge`,
-  `internal/boardapi`), `openssl` (`internal/remote`) or the network's resolver
-  (`internal/servers`), and stress loops at their full number of rounds.
+- The **full set** adds what is too slow for every edit: tests that build the server binary and
+  start real server processes (`cmd/ai-whiteboard`: 49 such tests are in the full set only, six
+  cheap smoke tests run in the default set too), tests that need the real `pi` installed
+  (`internal/pibridge`, `internal/boardapi`), `openssl` (`internal/remote`) or the network's
+  resolver (`internal/servers`), and matrices and stress loops at their full number of cases and
+  rounds (the default set runs a representative slice).
 - The switch is `internal/testset`. `-short` never runs more than the default set, even with
   `AIWB_TEST_FULL=1`.
 - To see what a package leaves out of the default set:
@@ -36,8 +35,8 @@ unless the person asks.
 | When | Run |
 |---|---|
 | While working on a change | The default set of the packages you changed: `go test ./internal/<pkg>`, or one test with `-run '^TestName$'`. No `-count=1`. Not the whole suite after every edit. |
-| Before you finish a task | `go test ./...` once, and `AIWB_TEST_FULL=1 go test ./<pkg>` for each package whose code or tests you changed. If you changed `internal/rungit` or `internal/runs`, the full set of both (`runs` is the main user of `rungit`). |
-| Final check of a whole piece of work (the end of a run, before a release) | `AIWB_TEST_FULL=1 go test -timeout 20m ./...` once, while nothing else is testing on the machine. |
+| Before you finish a task | `go test ./...` once, and `AIWB_TEST_FULL=1 go test ./<pkg>` for each package whose code or tests you changed. |
+| Final check of a whole piece of work (before a merge, before a release) | `AIWB_TEST_FULL=1 go test -timeout 20m ./...` once, while nothing else is testing on the machine. |
 | You changed code where goroutines share state | Also `go test -race ./<pkg>` for that package. |
 | You changed only `web/` or `desktop/` | `cd web && npm test && npm run check`, `cd desktop && npm test` (a few seconds). No Go tests. |
 | You changed only documentation | No tests. |
@@ -46,29 +45,29 @@ unless the person asks.
 
 Measured on a 14-core Mac; the numbers move a little.
 
-| Command | Alone | With four agents testing at once |
+| Command | Alone | With four suites running at once |
 |---|---|---|
-| `go test ./...`, nothing cached | about 1 minute | about 3 minutes each |
-| `go test ./...` again, nothing changed | about 4 seconds | |
-| `AIWB_TEST_FULL=1 go test ./...`, nothing cached | about 2 minutes | about 7.5 minutes each, nearly all of it `internal/runs`, which can then hit Go's 10-minute test timeout |
-| `go test -race ./...` | about 1.5 minutes | |
-| `AIWB_TEST_FULL=1 go test -race ./...` | about 5 minutes | |
+| `go test ./...`, nothing cached | about 15 seconds | about 50 seconds each |
+| `go test ./...` again, nothing changed | about 2 seconds | |
+| `AIWB_TEST_FULL=1 go test ./...`, nothing cached | about 40 seconds | about 75 seconds each |
+| `go test -race ./...` | about 20 seconds | |
+| `AIWB_TEST_FULL=1 go test -race ./...` | about 40 seconds | |
 
-With eight agents testing at once, `go test ./...` takes about 6 minutes each.
+Per package, alone, default / full: `cmd/ai-whiteboard` 6 s / 37 s (it alone sets the time of the
+full set of `./...`), `internal/chats` 8 s / 9 s, `internal/cursor`, `internal/pi` and
+`internal/claude` about 5 s in either set, `internal/pibridge` 1.5 s / 3 s,
+`internal/servers/linksim` 1.5 s / 4 s; every other package (`internal/server`,
+`internal/remotes` and `internal/servers` among them) under 3 s in either set. Inside
+`go test ./...` the packages run side by side and each takes longer than alone:
+`internal/chats` 11 s, `internal/cursor` and `internal/pi` 8 s.
 
-Per package, alone, default / full: `internal/runs` about 37 s / 1.5 min (it alone sets the time of
-`./...`), `internal/rungit` 17 s / 30 s, `cmd/ai-whiteboard` 6 s / 67 s, `internal/server`
-2 s / 3 s, `internal/servers/linksim` 1.5 s / 4 s. `internal/chats`, `internal/cursor`,
-`internal/claude` and `internal/pi` take about 6 to 8 s in either set; every other package
-(`internal/remotes` and `internal/servers` among them) under 3 s. Inside `go test ./...` the
-packages run side by side and each takes longer than alone: `internal/runs` about 45 s / 2 min,
-`internal/rungit` 27 s / 60 s, `internal/chats` 12 s, `internal/cursor` and `internal/pi` 10 s.
-
-**Why.** The tests of `internal/runs` and `internal/rungit` work on real git repositories and
-start tens of thousands of git processes, and the machine starts only about 1,000 processes a
-second in total, however many cores it has. So tests that run at the same time do not run in
-parallel, they queue: four suites at once take four times as long each, and more `-p` or
-`-parallel` does not help.
+**Why.** The tests start processes (agent stand-ins, Node, real servers), and the machine starts
+only about 1,000 processes a second in total, however many cores it has. So suites that run at
+the same time do not run in parallel, they queue: four at once take three to four times as long
+each, and more `-p` or `-parallel` does not help. At that load the tests with short waits
+failed in some of the measured runs (`TestStepLimit` of `internal/servers`, `TestRoundTrip` of
+`internal/servers/linksim`, some tests of `internal/remotes`): see the rule
+below for a test your change cannot have touched.
 
 **The test cache.** `go test` without `-count=1` reuses the result of a package whose code and
 inputs did not change (inside one worktree). `-count=1` switches that off and makes every run pay
@@ -92,14 +91,6 @@ go test -count=1 -run '^TestName$' ./<pkg>
 If it passes alone, it is sensitive to load. Say so in your report, with the test's name and the
 failure line, and go on; do not investigate it at length.
 
-**Your command timeout is 10 minutes** and the full set of `internal/runs` may not fit on a busy
-machine. Split it in two:
-
-```sh
-AIWB_TEST_FULL=1 go test -run '^TestRestartAtEveryStep$' ./internal/runs
-AIWB_TEST_FULL=1 go test -skip '^TestRestartAtEveryStep$' ./internal/runs
-```
-
 ## Writing or changing a test
 
 - **Which set.** Never call `testing.Short()`; use `testset`. A test goes to the full set only if,
@@ -108,9 +99,9 @@ AIWB_TEST_FULL=1 go test -skip '^TestRestartAtEveryStep$' ./internal/runs
   a build of the server). Call `testset.SkipUnlessFull(t, reason)` with a reason that names the
   default-set test covering the same behaviour. Every distinct behaviour keeps at least one test
   in the default set: thin a matrix with `testset.Full()`, do not gate it whole.
-- **Process starts are the cost.** A whole run of the engine in a test is about 200 git processes.
-  Prefer one git command to several, share what can be built once per test binary, and do not add
-  a whole run where a cheaper test proves the same.
+- **Process starts are the cost.** Share what can be built once per test binary (the server
+  binary, a stand-in program), and do not start a real server or a process where a test in the
+  package proves the same.
 - **Do not wait out production waits.** Make the wait overridable (a field, an unexported
   variable, a context value) and let the test lower it; the production value stays as it is.
   A test of real server processes (`cmd/ai-whiteboard`) cannot reach into the server, so the
@@ -127,5 +118,5 @@ AIWB_TEST_FULL=1 go test -skip '^TestRestartAtEveryStep$' ./internal/runs
   a process has to start must not decide the test: wait for a sign that the process started, or
   count an attempt only when its precondition was seen and retry with a longer one.
 - **Parallelism.** Tests that share no state call `t.Parallel()` (not together with `t.Setenv`).
-  A package whose tests start git calls `agenttest.FastGit()` and `agenttest.LimitParallel()` in
-  its `TestMain`, before `m.Run()`; see `internal/rungit/rungit_test.go`.
+  A package whose tests mostly wait for processes they start calls `agenttest.LimitParallel()` in
+  its `TestMain`, before `m.Run()`; see `cmd/ai-whiteboard/main_test.go`.

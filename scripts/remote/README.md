@@ -14,7 +14,6 @@ to the machine's network and firewall.
 - macOS or Linux, on the processor this folder was built for (the folder's name says which).
 - At least one agent CLI, installed and logged in for the user that runs the server: `claude`
   (Claude Code), `agent` (Cursor CLI) or `pi`, on that user's `PATH`.
-- git 2.27 or newer for runs that use git.
 - Port 6006 free: the server's MCP listener is always there, so one server per machine.
 
 ## Install and set up

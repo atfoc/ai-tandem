@@ -218,16 +218,13 @@ test("a popup taken back after another came does not take that one away", () => 
   assert.deepEqual([first.length, second.length], [0, 1]);
 });
 
-test("the box holds the page against what insertText says, and both composers open the popup from their toolbar", () => {
+test("the box holds the page against what insertText says, and the composer opens the popup from its toolbar", () => {
   const box = readFileSync(new URL("../src/RefInput.tsx", import.meta.url), "utf8");
   assert.ok(box.includes("const want = insertText(valueOf(b.el), { start: offsetOf(b.el, b.at.startContainer, b.at.startOffset), end: offsetOf(b.el, b.at.endContainer, b.at.endOffset) }, text);"));
   assert.ok(box.includes("if (!sameBox(valueOf(b.el), want.value)) { b.el.replaceChildren(...nodesOf(want.value)); place(caretAt(b.el, want.caret)); }"));
-  const chat = readFileSync(new URL("../src/Composer.tsx", import.meta.url), "utf8"), run = readFileSync(new URL("../src/run/RunComposer.tsx", import.meta.url), "utf8");
+  const chat = readFileSync(new URL("../src/Composer.tsx", import.meta.url), "utf8");
   // (a chat's toolbar draws its button where its row has room for it, and has an entry in its "more" popup where the
   // row has that chip and no room: logic/composerfit.ts fitWithInsert, test/composerfit.test.ts)
   assert.ok(chat.includes("onInsert={() => input.current?.openInsert()}") && chat.includes('{insert === "row" && <InsertButton disabled={frozen} onClick={onInsert} />}'));
   assert.ok(chat.includes('{insert === "more" && (') && chat.includes("onClick={() => { setMore(false); onInsert(); }}"));
-  // closed: the start is on its way, or the run's server is not connected or no longer has the run
-  assert.ok(run.includes("const closed = starting || readOnly;") && run.includes("<InsertButton disabled={closed} onClick={() => input.current?.openInsert()} />"));
-  assert.ok(run.includes("locked={closed}"), "nothing is put into a goal whose run is starting, or whose server is away");
 });

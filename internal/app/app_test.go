@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -220,6 +221,27 @@ func TestArchiveChatSetsTheStateBeforeItStops(t *testing.T) {
 	}
 }
 
+// The kinds are group, board and chat: any other, "run" among them, is refused by Archive and
+// Unarchive as an unknown kind, also with the id of an item that exists, and that item stays as
+// it is.
+func TestArchiveAndUnarchiveRefuseAnUnknownKind(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	id := e.chat(model.Ungrouped, "")
+	for _, k := range []Kind{"run", "", "server"} {
+		for name, f := range map[string]func(Kind, string) error{"archive": e.a.Archive, "unarchive": e.a.Unarchive} {
+			for _, of := range []string{id, "r_1"} {
+				if err := f(k, of); err == nil || err.Error() != fmt.Sprintf("unknown kind %q", k) {
+					t.Errorf("%s of %q with the kind %q: %v, want the unknown kind error", name, of, k, err)
+				}
+			}
+		}
+	}
+	if ar := e.chatArchive(id); ar.Archived {
+		t.Errorf("the chat is archived: %+v", ar)
+	}
+}
+
 func TestArchiveBoardArchivesChatsWithOneOpAndStopsAgents(t *testing.T) {
 	e := newEnv(t)
 	g := e.group("G")
@@ -387,16 +409,98 @@ func TestDeleteGroupUngroupsContents(t *testing.T) {
 	}
 }
 
-// AC32: a new top-level group starts with a copy of the ungrouped group's values, its run
-// defaults included.
+// late makes beforeGroupChange call place once, as a start does that checked its group just
+// before the group is deleted or archived.
+func late(e *env, place func()) {
+	beforeGroupChange = func() {
+		beforeGroupChange = nil
+		place()
+	}
+	e.t.Cleanup(func() { beforeGroupChange = nil })
+}
+
+// A chat and a board placed in a group between the listing of the group's contents and its
+// removal go the way of the rest: nothing is left in a group that is gone.
+func TestDeleteGroupTakesWhatIsPlacedDuringTheDelete(t *testing.T) {
+	e := newEnv(t)
+	top := e.group("top")
+	kept := e.subgroup("kept", top)
+	var chat, board string
+	late(e, func() { chat, board = e.chat(kept, ""), e.board(kept) })
+	e.must(e.a.DeleteGroup(kept, false))
+	if chat == "" || board == "" {
+		t.Fatal("the hook did not run")
+	}
+	if b, ok := e.a.Boards.Get(board); e.groupOf(chat) != top || !ok || b.Group != top {
+		t.Fatalf("kept: the late chat is in %q and the late board in %q (there: %v), want %q", e.groupOf(chat), b.Group, ok, top)
+	}
+
+	gone := e.subgroup("gone", top)
+	chat, board = "", ""
+	late(e, func() { chat, board = e.chat(gone, ""), e.board(gone) })
+	e.must(e.a.DeleteGroup(gone, true))
+	if chat == "" || board == "" {
+		t.Fatal("the hook did not run at the delete with the contents")
+	}
+	if _, err := e.a.Chats.View(chat); !errors.Is(err, chats.ErrNotFound) {
+		t.Fatalf("with contents: the late chat after the delete: %v", err)
+	}
+	if _, ok := e.a.Boards.Get(board); ok {
+		t.Fatal("with contents: the late board is still there")
+	}
+	groups := map[string]bool{model.Ungrouped: true}
+	e.st.Read(func(s *model.State) {
+		for _, g := range s.Groups {
+			groups[g.ID] = true
+		}
+	})
+	for _, c := range e.a.Chats.Views() {
+		if !groups[e.groupOf(c.ID)] {
+			t.Errorf("chat %s names the group %s, which is gone", c.ID, e.groupOf(c.ID))
+		}
+	}
+	for _, b := range e.a.Boards.List() {
+		if !groups[b.Group] {
+			t.Errorf("board %s names the group %s, which is gone", b.ID, b.Group)
+		}
+	}
+}
+
+// The same at the archive of a group: no unarchived chat or board in an archived group, and what
+// was placed late has the group's archive action.
+func TestArchiveGroupTakesWhatIsPlacedDuringTheArchive(t *testing.T) {
+	e := newEnv(t)
+	g := e.group("G")
+	first := e.chat(g, "")
+	var chat, board string
+	late(e, func() { chat, board = e.chat(g, ""), e.board(g) })
+	e.must(e.a.Archive(KindGroup, g))
+	if chat == "" || board == "" {
+		t.Fatal("the hook did not run")
+	}
+	ga := e.groupArchive(g)
+	if !ga.Archived || ga.Op == "" {
+		t.Fatalf("the group after its archive: %+v", ga)
+	}
+	for what, ar := range map[string]model.Archive{"the first chat": e.chatArchive(first), "the late chat": e.chatArchive(chat), "the late board": e.boardArchive(board)} {
+		if ar != ga {
+			t.Errorf("%s in its archived group: %+v, want %+v", what, ar, ga)
+		}
+	}
+	// The unarchive of the group brings back what its archive took, the late ones too.
+	e.must(e.a.Unarchive(KindGroup, g))
+	if e.chatArchive(first).Archived || e.chatArchive(chat).Archived || e.boardArchive(board).Archived || e.groupArchive(g).Archived {
+		t.Errorf("after the unarchive: chats %+v and %+v, board %+v", e.chatArchive(first), e.chatArchive(chat), e.boardArchive(board))
+	}
+}
+
+// AC32: a new top-level group starts with a copy of the ungrouped group's values.
 func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	ungrouped := func() model.GroupDefaults {
 		return model.GroupDefaults{Servers: map[string]model.ServerDefaults{
-			model.LocalServer: {Agent: model.Cursor, Cwd: "/here", ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}},
-				Run: &model.RunDefaults{Agent: model.Claude, MaxParallel: 3, MaxTurns: 40, Setup: "make deps", SetupCwd: "/here",
-					Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: "opus", Effort: "max"}, Standard: model.ModelChoice{Model: "sonnet"}, Light: model.ModelChoice{Model: "haiku"}}}},
+			model.LocalServer: {Agent: model.Cursor, Cwd: "/here", ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}},
 		}}
 	}
 	other := e.group("Other")
@@ -422,8 +526,6 @@ func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
 	e.must(e.st.Update(func(s *model.State) error {
 		u := s.Defaults.Groups[model.Ungrouped]
 		u.Servers[model.LocalServer].ByAgent[model.Claude] = model.ModelChoice{Model: "haiku"}
-		u.Servers[model.LocalServer].Run.MaxParallel = 9
-		u.Servers[model.LocalServer].Run.Tiers.Deep.Model = "sonnet"
 		s.Defaults.Groups[model.Ungrouped] = u
 		return nil
 	}))
@@ -480,8 +582,7 @@ func TestCreateSubgroup(t *testing.T) {
 	cwd := t.TempDir()
 	e.must(e.st.Update(func(s *model.State) error {
 		s.Defaults.Groups[g] = model.GroupDefaults{Servers: map[string]model.ServerDefaults{model.LocalServer: {
-			Agent: model.Pi, Cwd: cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus"}},
-			Run: &model.RunDefaults{Agent: model.Pi, MaxParallel: 2, MaxTurns: 10}}}}
+			Agent: model.Pi, Cwd: cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus"}}}}}
 		s.Defaults.Groups[model.Ungrouped] = model.LocalDefaults(model.ServerDefaults{Cwd: t.TempDir()})
 		return nil
 	}))
@@ -491,7 +592,7 @@ func TestCreateSubgroup(t *testing.T) {
 		t.Fatalf("subgroup %+v, %v", sg, err)
 	}
 	snap := e.a.Snapshot()
-	if gd := snap.Defaults.Groups[s]; !reflect.DeepEqual(gd, snap.Defaults.Groups[g]) || gd.Local().Cwd != cwd || gd.Local().Run == nil {
+	if gd := snap.Defaults.Groups[s]; !reflect.DeepEqual(gd, snap.Defaults.Groups[g]) || gd.Local().Cwd != cwd || gd.Local().ByAgent[model.Claude].Model != "opus" {
 		t.Errorf("subgroup defaults %+v, want the parent's %+v", gd, snap.Defaults.Groups[g])
 	}
 

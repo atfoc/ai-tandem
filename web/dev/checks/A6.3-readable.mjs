@@ -1,7 +1,6 @@
 // Proves A6.3: every part of the page the goal names is readable in each Catppuccin flavour: a chat with code, open
 // tool cards and permission cards; the tree popup; a board with its toolbar, properties panel, menu and export
-// dialog (and its context menu and help dialog); a run page with its timeline, each tab of its dock (the usage bar among them) and a finished run's result;
-// the goal composer; the Servers dialog; and the picker's own menu. The prompt library's two popups, which came after
+// dialog (and its context menu and help dialog); the Servers dialog; and the picker's own menu. The prompt library's two popups, which came after
 // the goal, are read the same way: the library popup with a prompt in its editor and a server that is not connected,
 // and the insert popup with its list.
 // Readable is measured, on computed colours: every text and every icon of the part (contrastAudit of dev/shot.mjs)
@@ -54,9 +53,6 @@ const PARTS = [
         const b = await page.locator(".excalidraw canvas.interactive").boundingBox(); await page.mouse.click(b.x + b.width * 0.6, b.y + b.height * 0.8, { button: "right" }); } },
     { name: "a board's help dialog", see: ".excalidraw .HelpDialog", chrome: [".excalidraw .Modal__content", ".excalidraw .HelpDialog h3"],
       do: async (page) => { await page.keyboard.press("Escape"); await page.locator('.excalidraw [data-testid="main-menu-trigger"]').click(); await page.locator('.excalidraw [data-testid="help-menu-item"]').click(); } } ] },
-  { name: "run", sel: { run: "r_live" }, wait: ".run-stage .tl", tabs: true, stages: [{ name: "a run's timeline", see: ".run-stage .tl" }] },
-  { name: "result", sel: { run: "r_done" }, wait: ".run-stage .run-dock", stages: [{ name: "a finished run", see: ".run-stage .run-dock" }] },
-  { name: "goal", sel: { run: "r_draft" }, wait: ".run-composer", stages: [{ name: "the goal composer", see: ".run-composer .composer-tools" }] },
   { name: "servers", sel: {}, wait: ".side-foot .servers-btn", stages: [{ name: "the Servers dialog", see: ".servers-dialog", do: (page) => page.locator(".side-foot .servers-btn").click() }] },
   { name: "library", sel: { chat: "c_plain" }, wait: ".composer .composer-input", stages: [
     { name: "the library popup", see: ".lib-dialog .lib-form textarea", count: [".lib-dialog .lib-off", 1],
@@ -78,17 +74,11 @@ await check("A6.3 every part of the page is readable in each flavour", async ({ 
     for (const part of PARTS) {
       const { ctx, page } = await openPage({ url, browser, sel: part.sel, size: [1400, 900], ls: { "aiwb.theme": theme }, wait: part.wait, still: true, errors, clock });
       try {
-        // (a run's dock: one more stage for each of its tabs)
-        const stages = [...part.stages];
-        if (part.tabs) for (const tab of await page.locator(".run-dock .dock-tabs [role=tab]").all()) {
-          const key = await tab.getAttribute("data-tab");
-          stages.push({ name: `a run's dock: ${key}`, see: `.run-dock .dock-tabs [role=tab][data-tab="${key}"][aria-selected="true"]`, do: () => tab.click() });
-        }
-        for (const st of stages) {
+        for (const st of part.stages) {
           await st.do?.(page);
           await page.waitForSelector(st.see, { timeout: 15000 });
           if (st.count && await page.locator(st.count[0]).count() !== st.count[1]) fail(`${theme}, ${st.name}: ${await page.locator(st.count[0]).count()} elements match ${st.count[0]}, not ${st.count[1]}`);
-          // (a part is read once it is still: a dock that opens takes its height, and the timeline its rows, over some frames)
+          // (a part is read once it is still: a popup that opens takes its place over some frames)
           if (!await atRest(page, 8)) fail(`${theme}, ${st.name}: the page did not come to rest`);
           const rows = await contrastAudit(page, { canvas: dark ? [18, 18, 18] : [255, 255, 255] });
           const least = new Map();

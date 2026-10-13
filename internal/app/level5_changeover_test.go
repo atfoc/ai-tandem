@@ -31,13 +31,13 @@ func (e *env) stateFile() map[string]json.RawMessage {
 }
 
 // The change-over of a server from before level 5: the group state.json names in "remoteGroup"
-// is removed, whatever its name is now. Its board, its run and its plain chats go to no group
+// is removed, whatever its name is now. Its board and its plain chats go to no group
 // and keep their own archive marks; a chat on the board stays on it; a group nested in it goes
 // to the top level with what is in it; its defaults go; and the id is forgotten. A group that is
 // merely named "Remote" is an ordinary group and stays, with what is in it.
 func TestLevel5DropRemoteGroup(t *testing.T) {
 	t.Parallel()
-	e := newRunEnv(t)
+	e := newEnv(t)
 	first := e.group("First")
 	remote := e.group("Inbox") // the owner renamed it: the id decides, not the name
 	sub := e.subgroup("Sub", remote)
@@ -52,11 +52,9 @@ func TestLevel5DropRemoteGroup(t *testing.T) {
 	onBoard := e.chat("", bd)
 	bdOld := e.board(remote)
 	e.must(e.a.Archive(KindBoard, bdOld))
-	run := e.run(remote)
-	e.must(e.rs.SetDraft(run, model.Draft{Text: "the goal"}))
 	inSub, inDeep := e.chat(sub, ""), e.chat(deep, "")
 	bdSub := e.board(sub)
-	other, otherBoard, otherRun := e.chat(named, ""), e.board(named), e.run(named)
+	other, otherBoard := e.chat(named, ""), e.board(named)
 	elsewhere := e.chat(first, "")
 	e.must(e.st.Update(func(s *model.State) error {
 		defaults.RecordChange(&s.Defaults, remote, model.Claude, "/somewhere", model.ModelChoice{Model: "sonnet"})
@@ -101,9 +99,6 @@ func TestLevel5DropRemoteGroup(t *testing.T) {
 	if v, err := e.a.Chats.View(onBoard); err != nil || v.Board != bd || e.groupOf(onBoard) != model.Ungrouped {
 		t.Errorf("the chat on the board: %+v, %v", v, err)
 	}
-	if v := e.view(run); v.Group != model.Ungrouped || v.Status != model.RunDraft || v.Draft == nil || v.Draft.Text != "the goal" {
-		t.Errorf("the run: %+v", v)
-	}
 	// What was in the nested groups is still in them.
 	if e.groupOf(inSub) != sub || e.groupOf(inDeep) != deep {
 		t.Errorf("the chats of the nested groups are in %s and %s", e.groupOf(inSub), e.groupOf(inDeep))
@@ -112,8 +107,8 @@ func TestLevel5DropRemoteGroup(t *testing.T) {
 		t.Errorf("the board of the nested group is in %s", b.Group)
 	}
 	// The group merely named "Remote", and everything else, is untouched.
-	if b, _ := e.a.Boards.Get(otherBoard); e.groupOf(other) != named || b.Group != named || e.view(otherRun).Group != named || e.groupOf(elsewhere) != first {
-		t.Errorf("the group named Remote lost something: chat in %s, board in %s, run in %s", e.groupOf(other), b.Group, e.view(otherRun).Group)
+	if b, _ := e.a.Boards.Get(otherBoard); e.groupOf(other) != named || b.Group != named || e.groupOf(elsewhere) != first {
+		t.Errorf("the group named Remote lost something: chat in %s, board in %s", e.groupOf(other), b.Group)
 	}
 	// The defaults of the removed group are gone, the others stay; the id is forgotten, on disk.
 	e.st.Read(func(s *model.State) {
@@ -130,8 +125,8 @@ func TestLevel5DropRemoteGroup(t *testing.T) {
 	}
 	// The whole tree is every client's.
 	snap := e.a.APISnapshot()
-	if len(snap.Groups) != 5 || len(snap.Chats) != 7 || len(snap.Boards) != 4 || len(snap.Runs) != 2 {
-		t.Errorf("the API snapshot after the change-over: %d groups, %d chats, %d boards, %d runs", len(snap.Groups), len(snap.Chats), len(snap.Boards), len(snap.Runs))
+	if len(snap.Groups) != 5 || len(snap.Chats) != 7 || len(snap.Boards) != 4 {
+		t.Errorf("the API snapshot after the change-over: %d groups, %d chats, %d boards", len(snap.Groups), len(snap.Chats), len(snap.Boards))
 	}
 
 	// It runs once: a second call changes nothing, not even for a group that got the name.
@@ -204,7 +199,7 @@ func TestLevel5DropRemoteGroupCorners(t *testing.T) {
 }
 
 // defaultsOf is the defaults of a group as JSON.
-func defaultsOf(e *runEnv, group string) string {
+func defaultsOf(e *env, group string) string {
 	var b []byte
 	e.st.Read(func(s *model.State) { b, _ = json.Marshal(s.Defaults.Groups[group]) })
 	return string(b)

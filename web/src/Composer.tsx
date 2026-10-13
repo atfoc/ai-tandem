@@ -36,7 +36,7 @@ import { byTokens, deferred, freeTokens, partSegments, segments, share, tokensTe
 import { RefInput, type RefInputHandle } from "./RefInput.tsx";
 import { useComposerQuotes } from "./Quotes.tsx";
 import { quoteSelection } from "./quoteDom.ts";
-import { BoardIcon, Chevron, Folder, InsertIcon, Lock, MoreIcon, RunIcon, WarnIcon, agentName } from "./icons.tsx";
+import { BoardIcon, Chevron, Folder, InsertIcon, Lock, MoreIcon, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
 import { AgentPick, AgentReason, ServerChip, useAgentChip, useServerChip, useWhere } from "./ChatChoices.tsx";
@@ -90,7 +90,7 @@ const base = (p?: string) => String(p ?? "").split("/").filter(Boolean).pop() ??
 
 export { effortLabel };
 const modelOf = (c: Pick<ChatView, "model">, cat?: Catalog): CatalogModel | undefined => cat?.models.find((m) => m.id === c.model);
-export const modelLabel = (c: Pick<ChatView, "model">, cat?: Catalog) => modelOf(c, cat)?.label ?? c.model;
+const modelLabel = (c: Pick<ChatView, "model">, cat?: Catalog) => modelOf(c, cat)?.label ?? c.model;
 
 /** "model · effort", from the catalog's labels. */
 export function subline(c: ChatView, cat?: Catalog): string {
@@ -127,9 +127,9 @@ export const KEY_REF = isMac ? "⌘L" : "Ctrl+L";
 export const KEY_POINT = isMac ? "⌘⇧L" : "Ctrl+Shift+L";
 export const KEY_INSERT = insertKeyName(typeof navigator !== "undefined" ? navigator.platform : "");
 
-/** The button of a composer's toolbar that opens the insert popup for its text box (RefInput's openInsert), as ⌘P in
+/** The button of the composer's toolbar that opens the insert popup for its text box (RefInput's openInsert), as ⌘P in
  *  the box does. A press with the mouse leaves the focus where it is: in the box, the caret says where the text goes. */
-export function InsertButton({ disabled = false, onClick }: { disabled?: boolean; onClick: () => void }) {
+function InsertButton({ disabled = false, onClick }: { disabled?: boolean; onClick: () => void }) {
   return (
     <button type="button" className="icon-btn insert-btn" title={`Insert a prompt (${KEY_INSERT})`} aria-label="Insert a prompt" aria-haspopup="dialog" disabled={disabled}
       onMouseDown={(e) => e.preventDefault()} onClick={onClick}>
@@ -166,7 +166,6 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   const where = useWhere(c);
   const usable = useStore((s) => usableAgents(s, where.server)); // what a chat with no agent says depends on whether one can be chosen
   const boards = useStore((s) => boardsOn(s, where.server)); // what the chat can mention: the boards of its own server
-  const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined));
   const groups = useStore((s) => groupsOn(s, where.server));
   const left = useStore((s) => !!s.gone[chatId]); // its server no longer has the chat
   const selection = useStore((s) => s.selection);
@@ -472,7 +471,7 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
     setMention(m ? { ...m, i: 0 } : null);
   };
 
-  const placeholder = offPlaceholder(where, usable, c, left) || (c.board ? "Ask or tell… (@ to mention a board)" : c.run ? "Ask about this run…" : `Ask ${agentName(c.agent as AgentKind)}…`);
+  const placeholder = offPlaceholder(where, usable, c, left) || (c.board ? "Ask or tell… (@ to mention a board)" : `Ask ${agentName(c.agent as AgentKind)}…`);
   return (
     <div className="composer">
       {c.board && (
@@ -495,13 +494,7 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
           </>}
         </div>
       )}
-      {c.run && !c.board && (
-        <div className="context-row">
-          <span className="ctx-chip" title={`This chat can read and manage this run (${ownId(c.run)})`}><RunIcon /> {runName ?? "run"}</span>
-          {q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}
-        </div>
-      )}
-      {!c.board && !c.run && (q.count || note) ? (
+      {!c.board && (q.count || note) ? (
         <div className="context-row">{q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}</div>
       ) : null}
       <BranchBanner chatId={chatId} />
@@ -612,8 +605,8 @@ function useRoom(row: HTMLDivElement | null, ruler: HTMLDivElement | null) {
 
 /** The name of the server of a chat on another server (showsServer; it is no choice), the agent
  *  while it can be changed (agentOpen; ChatChoices.tsx), then folder, model,
- *  effort, the subagent settings (SubSettings.tsx: open on a new chat alone, else fixed; none for
- *  a run's own agent) and context usage of the branch shown. Where the model and effort
+ *  effort, the subagent settings (SubSettings.tsx: open on a new chat alone, else fixed) and
+ *  context usage of the branch shown. Where the model and effort
  *  controls write is pickerMode's: with a pending move they show and set the move's choice, which
  *  goes with its message; on a new chat and on a fork without a message of its own they change the
  *  session (PATCH); else they are fixed. While the composer sends a message (sending) they take no
@@ -693,10 +686,10 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
   else if (choices && cat) keys.model = widthKey("model", modelLabel(shown, cat));
   else if (choices) keys.model = widthKey("model", "Loading models…", { fixed: true });
   if (choices && cat && m?.efforts?.length) keys.effort = widthKey("effort", effortLabel(shown.effort, m));
-  const subsOf = subChip(c, !!move); // the subagent settings: a choice on a new chat alone, else fixed; none for a run's own agent
+  const subsOf = subChip(c, !!move); // the subagent settings: a choice on a new chat alone, else fixed
   const subs = frozen && subsOf.kind === "open" ? { kind: "fixed" as const, why: frozenWhy } : subsOf;
   const limits = subSettings(c);
-  if (subs.kind !== "none") keys.subagents = widthKey("subagents", subChipLabel(limits), { fixed: subs.kind === "fixed" });
+  keys.subagents = widthKey("subagents", subChipLabel(limits), { fixed: subs.kind === "fixed" });
   // Fixed and on the default settings, the chip tells what every chat had before there were any: it gives way to the others.
   const spare = subs.kind === "fixed" && limits.depth === DEFAULT_SUB_DEPTH && limits.cap === DEFAULT_SUB_CAP;
   // The meter with its text, and cut to its ring (the error meter: to its icon).
@@ -812,10 +805,8 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
           onPick={pickEffort} />
       )}
     </>,
-    subagents: <>
-      {subs.kind !== "none" && <SubagentsPick c={c} fixed={subs.kind === "fixed" ? subs.why : ""} disabled={patching || sending || !!held}
-        {...opens("subagents")} onBusy={setPatching} onError={onError} />}
-    </>,
+    subagents: <SubagentsPick c={c} fixed={subs.kind === "fixed" ? subs.why : ""} disabled={patching || sending || !!held}
+      {...opens("subagents")} onBusy={setPatching} onError={onError} />,
   };
   return (
     <>
@@ -881,9 +872,9 @@ export const ChipName = ({ children, full }: { children: React.ReactNode; full?:
 
 /** The Model and Effort pickers. `searchable` (Model only) adds the search field and provider
  *  grouping; both modes share the keyboard highlight, listbox/option ARIA and single-open state.
- *  A run's goal composer (run/RunComposer.tsx) uses it too, also for the agent: icon goes before
- *  the chip's label, and hint is the title's second half; the label is in the title whole, since
- *  the chip may show it cut (ChipName).
+ *  The agent choice (ChatChoices.tsx) uses it too: icon goes before the chip's label,
+ *  and hint is the title's second half; the label is in the title whole, since the chip may show
+ *  it cut (ChipName).
  *  `disabled` (a change is being saved): the chip opens nothing, and keeps the focus a pick gave it.
  *  An option that is disabled is listed with its note as the reason and takes no pick. */
 export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE, options, value, className = "", searchable = false, disabled = false, open, onOpenChange, onPick }: {
@@ -1052,16 +1043,14 @@ export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE,
   );
 }
 
-/** The folder chip and its browser. onPick sets the folder (a chat's, a run's); a rejection shows
- *  in the browser. open, onOpenChange: whether the browser is open is the caller's to keep (a chat's
- *  toolbar, which has one open list at a time); without them the chip keeps it. A pick hands the
- *  focus back to the chip, as a picker's does: the button it was made with goes with the browser. */
-export function DirPicker({ cwd, missing, locked, hint = UNTIL_FIRST_MESSAGE, server = LOCAL_SERVER, onPick, open: openIs, onOpenChange }: {
-  cwd: string; missing?: boolean; locked: boolean; hint?: string; server?: string; onPick: (dir: string) => Promise<unknown>;
-  open?: boolean; onOpenChange?: (open: boolean) => void;
+/** The folder chip and its browser. onPick sets the chat's folder; a rejection shows in the
+ *  browser. open, onOpenChange: whether the browser is open is the caller's to keep (the toolbar
+ *  has one open list at a time). A pick hands the focus back to the chip, as a picker's does: the
+ *  button it was made with goes with the browser. */
+function DirPicker({ cwd, missing, locked, server, onPick, open, onOpenChange: setOpen }: {
+  cwd: string; missing?: boolean; locked: boolean; server: string; onPick: (dir: string) => Promise<unknown>;
+  open: boolean; onOpenChange: (open: boolean) => void;
 }) {
-  const [own, setOwn] = useState(false);
-  const open = onOpenChange ? !!openIs : own, setOpen = onOpenChange ?? setOwn;
   const chip = useRef<HTMLButtonElement>(null);
   const where = useWhere({ server });
   const name = base(cwd) || "/";
@@ -1069,7 +1058,7 @@ export function DirPicker({ cwd, missing, locked, hint = UNTIL_FIRST_MESSAGE, se
   return (
     <div className="menu-wrap">
       <button ref={chip} className={`tchip ${missing ? "missing" : ""}`} onClick={() => setOpen(!open)}
-        title={folderTitle(where, cwd, { missing, hint })}>
+        title={folderTitle(where, cwd, { missing, hint: UNTIL_FIRST_MESSAGE })}>
         <Folder /><ChipName>{name}</ChipName><span className="caret">▾</span>
       </button>
       {open && <DirBrowser start={cwd ?? ""} server={server} onPick={async (d) => { await onPick(d); rememberDir(d, server); setOpen(false); chip.current?.focus(); }} />}
@@ -1100,7 +1089,7 @@ export function DirBrowser({ start, server = LOCAL_SERVER, onPick }: { start: st
   const use = async (p: string) => { try { await onPick(p); } catch (e: any) { setErr(e.message); } };
   const recent = recentDirs(server).filter((d) => d !== at?.path).slice(0, 4);
   // Anchored at the chip's left edge and of a fixed width: where the chip is near the window's
-  // right edge (a run's narrow stage) it is moved left as a picker's menu is, by what its right
+  // right edge it is moved left as a picker's menu is, by what its right
   // edge passes the window's (less a 12px margin), never past the window's left edge.
   const menu = useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
@@ -1122,7 +1111,7 @@ export function DirBrowser({ start, server = LOCAL_SERVER, onPick }: { start: st
         {recent.map((d) => <button key={d} className="menu-item dir" onClick={() => void go(d)}><Folder /> {tilde(d)}</button>)}
       </>}
       {at && <>
-        <div className="dir-sub">{tilde(at.path)}{at.git && <span className="git">git</span>}</div>
+        <div className="dir-sub">{tilde(at.path)}</div>
         <div className="dir-list">
           {at.path !== at.parent && <button className="menu-item dir" onClick={() => void go(at.parent)}>↰ ..</button>}
           {at.dirs.map((d) => <button key={d} className="menu-item dir" onClick={() => void go(at.path.replace(/\/$/, "") + "/" + d)}><Folder /> {d}</button>)}

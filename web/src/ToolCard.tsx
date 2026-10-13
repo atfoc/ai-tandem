@@ -1,5 +1,5 @@
-// A tool call's card: in a chat's thread, in a subagent's drawer, in the pane of a run's own agent
-// (all through ChatView's ItemView). Closed it is one row: the mark, the label, and beside it the
+// A tool call's card: in a chat's thread and in a subagent's drawer (both through ChatView's
+// ItemView). Closed it is one row: the mark, the label, and beside it the
 // command's first line or the file's path. Open it shows the call in parts, by its kind. What it
 // shows is decided from the item by logic/toolcard.ts (the diffs by logic/linediff.ts); this file
 // draws that. Nothing of an open card is made while the card is closed.
@@ -47,7 +47,7 @@ function Card({ item, chat, live = true }: { item: Item; chat: ChatView; live?: 
   const hint = hintBeside(label, row.hint);
   const show = () => {
     if (!target) return;
-    select({ board: target, run: null, chat: target === chat.board ? chat.id : null });
+    select({ board: target, chat: target === chat.board ? chat.id : null });
   };
   return (
     <div className={`tool ${running ? "running" : ""} ${item.isError || item.denied ? "err" : ""} k-${row.kind}`}>

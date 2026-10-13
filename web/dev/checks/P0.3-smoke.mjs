@@ -1,4 +1,4 @@
-// Proves that every state of the seed (dev/runmock-ui.js) is on screen where its entry says (its selector, its text,
+// Proves that every state of the seed (dev/mock-ui.js) is on screen where its entry says (its selector, its text,
 // its count, and each part of its `also`), with no page error, one thrown a moment after the state showed among
 // them: each section seeded alone on a mock of its own, then all of them together.
 import { act, check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";

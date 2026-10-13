@@ -8,7 +8,7 @@ import (
 )
 
 // APISnapshot is the state an API client gets: the server's whole tree (its groups, boards,
-// chats, runs and defaults, archived ones included) and the server's lists, as the server's own
+// chats and defaults, archived ones included) and the server's lists, as the server's own
 // page gets them. No data folder, and nothing of the servers this one connects to: not its server
 // list, not their lists, libraries or trees.
 type APISnapshot struct {
@@ -19,9 +19,8 @@ type APISnapshot struct {
 	Groups     []model.Group                      `json:"groups"`   // every group, in the server's order; never nil
 	Defaults   model.Defaults                     `json:"defaults"` // what the server remembers per group
 	Boards     []model.Board                      `json:"boards"`   // every board; never nil
-	Chats      []model.ChatView                   `json:"chats"`    // every chat but those of runs' agents; never nil
+	Chats      []model.ChatView                   `json:"chats"`    // every chat; never nil
 	States     []model.BranchState                `json:"states"`   // one per branch of those chats; never nil
-	Runs       []model.RunView                    `json:"runs"`     // every run, the ones that have not started too; never nil
 	// Library is this server's own prompt library, which every API client reads and changes
 	// (the library routes of server.RemoteRoutes); null for a server without one. After every
 	// change the client gets it whole in an "own_library" event (library.Own).
@@ -44,15 +43,11 @@ func (a *App) APISnapshot() APISnapshot {
 		Boards:     a.Boards.List(),
 		Chats:      a.Chats.Views(),
 		States:     a.Chats.States(),
-		Runs:       []model.RunView{},
 	}
 	a.St.Read(func(s *model.State) {
 		snap.Groups = append([]model.Group{}, s.Groups...)
 		snap.Defaults = defaults.Copy(s.Defaults)
 	})
-	if a.Runs != nil {
-		snap.Runs = a.Runs.Views()
-	}
 	if a.Library != nil {
 		t := a.Library.Tree()
 		snap.Library = &t

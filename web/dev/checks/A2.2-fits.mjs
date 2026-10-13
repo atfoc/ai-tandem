@@ -1,6 +1,6 @@
 // Proves A2.2: the composer fits its box. Every state of seed A2 at the widths G1 measured (the chat panel at 300,
-// 340, 400 and 480 px, a chat page at 300 to 560, the goal composer's stage at 320 to 520) and at a wide one (the
-// panel at its most, 760 px; a page and a stage of 900), and another branch's alert
+// 340, 400 and 480 px, a chat page at 300 to 560) and at a wide one (the
+// panel at its most, 760 px; a page of 900), and another branch's alert
 // in the header: no control ends past the box, Send is the element at its own centre, and the document does not
 // scroll sideways; a chat toolbar's controls are on one line, also where a reason line under them lets the row wrap,
 // and none ends past the row itself (the driver measures against the box's border, 9 px further: its padding would
@@ -18,7 +18,7 @@
 // held to be within reach in it (the frames of the pick itself, before its list closes), everything else is.
 import { act, check, composerProbe, dragResizer, measureComposer, mockEval, openPage, paneSize, sampleFrames, seed, until } from "../shot.mjs";
 
-const WIDTHS = { panel: [300, 340, 400, 480, 760], page: [300, 340, 400, 480, 560, 900], stage: [320, 360, 420, 520, 900] };
+const WIDTHS = { panel: [300, 340, 400, 480, 760], page: [300, 340, 400, 480, 560, 900] };
 const SIDE = 264, RAIL = 40, HEIGHT = 640;
 const SEND = 28; // px: Stop and Send (G1 §Q2), which never shrink
 const MORE = ".composer .more-chip", POP = ".composer .more-pop";
@@ -29,7 +29,7 @@ const MORE = ".composer .more-chip", POP = ".composer .more-pop";
 const probe = { toString: () => `() => {
   const v = (${composerProbe})();
   if (!v) return null;
-  const t = document.querySelector(".composer:not(.run-composer) .composer-tools");
+  const t = document.querySelector(".composer .composer-tools");
   return { ...v, more: !!t.querySelector(".more-pop"), held: t.querySelectorAll(".more-pop > .more-row").length, chips: t.querySelectorAll(":scope > .tchip, :scope > .menu-wrap > .tchip:not(.more-chip)").length,
     ring: !!t.querySelector(":scope > .menu-wrap > .ctx-meter.compact, :scope > .ctx-meter.compact"), list: !!t.querySelector(".menu-backdrop"),
     out: Math.round(Math.max(...[...t.children].filter((e) => !e.matches(".grow, .menu-backdrop")).map((e) => e.getBoundingClientRect().right - t.getBoundingClientRect().right)) * 10) / 10,
@@ -67,9 +67,9 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
     if (m.send !== "ok") fail(`${name}: Send is ${m.send}`);
     if (m.docScroll > 0) fail(`${name}: the document scrolls ${m.docScroll} px sideways`);
     if (m.boxOverPane > 0) fail(`${name}: the box is ${m.boxOverPane} px past its pane`);
-    // (the goal composer wraps by design; a chat's row wraps only for its reason line)
+    // (the row wraps only for its reason line)
     const row = await page.evaluate(() => {
-      const tools = document.querySelector(".composer:not(.run-composer) .composer-tools");
+      const tools = document.querySelector(".composer .composer-tools");
       if (!tools) return null;
       const kids = [...tools.children].filter((e) => !e.matches(".grow")), mid = kids.filter((e) => !e.matches(".agent-reason")).map((e) => { const r = e.getBoundingClientRect(); return r.top + r.height / 2; });
       return { lines: Math.round(Math.max(...mid) - Math.min(...mid)), out: Math.round(Math.max(...kids.map((e) => e.getBoundingClientRect().right - tools.getBoundingClientRect().right)) * 10) / 10,
@@ -80,8 +80,8 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
     if (row && (!row.send.length || row.send.some((w) => Math.abs(w - SEND) > 0.5))) fail(`${name}: Stop and Send are ${row.send.join(" and ") || "not in the row"} px wide, not ${SEND} each`);
     return m;
   };
-  const paneWidth = (page, kind) => page.evaluate((sel) => document.querySelector(sel)?.getBoundingClientRect().width, kind === "panel" ? ".board-panel" : kind === "page" ? ".chat-page" : ".board-stage");
-  /** Brings the pane to a width: the panel by its resizer, a page or a stage by the window. */
+  const paneWidth = (page, kind) => page.evaluate((sel) => document.querySelector(sel)?.getBoundingClientRect().width, kind === "panel" ? ".board-panel" : ".chat-page");
+  /** Brings the pane to a width: the panel by its resizer, a page by the window. */
   const widen = async (page, kind, to, name) => {
     // (the window grows first where the panel's most needs it: a drag leaves the stage its least)
     if (kind === "panel" && page.viewportSize().width < SIDE + to + 500) await page.setViewportSize({ width: SIDE + to + 500, height: HEIGHT });
@@ -138,7 +138,7 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   };
 
   // a drag of the panel's resizer, down to the least width and back up: 3 px a frame, then 45
-  for (const id of ["board-new", "board-started", "run-busy", "board-move", "board-long"]) {
+  for (const id of ["board-new", "board-started", "board-busy", "board-move", "board-long"]) {
     const s = state(id), p = await open(s, 480), name = `${id}, a drag of the panel's resizer`;
     await drawn(p.page, s, name);
     const r = await sampled(p.page, name, async () => { for (const step of [3, 45]) { await dragResizer(p.page, ".board-panel .resizer", -180, step); await dragResizer(p.page, ".board-panel .resizer", 180, step); } });
@@ -153,7 +153,7 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   note("a drag of the panel's resizer from 480 to 300 px and back, slowly and fast, five states: every frame fitted");
 
   // a load, from the page's first frame: the widths are taken before a frame is shown
-  for (const [id, width] of [["board-new", 300], ["plain-new", 300], ["plain-remote-started-long", 340], ["plain-noagent", 300], ["run-busy", 400]]) {
+  for (const [id, width] of [["board-new", 300], ["plain-new", 300], ["plain-remote-started-long", 340], ["plain-noagent", 300], ["board-busy", 400]]) {
     const s = state(id), p = await open(s, width), name = `${id} at ${width} px, a load`;
     const r = await sampled(p.page, name, async () => {
       await p.page.reload({ waitUntil: "domcontentloaded" });

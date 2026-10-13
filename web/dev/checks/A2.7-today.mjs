@@ -1,7 +1,7 @@
 // Proves A2.7: at the default widths a started chat's composer looks as it did before the toolbar was fitted to its
 // row, but for what the attach button takes, which the row got since. Screenshots of this build and of the build of
 // the commit this work began from, compared pixel by pixel on still pages: a started chat in the default 400 px panel
-// beside a board (light and dark) and beside a run, and a plain chat's page in the default window. Only the composer
+// beside a board (light and dark), and a plain chat's page in the default window. Only the composer
 // is compared: the sidebar (it has a control more), the stage, the chat's head and its thread are left out.
 // The plain chat's row has room for the button: with it taken out, no pixel differs. The panel's row has not: there
 // the button takes the room of the meter's text, which is the toolbar's own rule for a row that runs out of room
@@ -15,7 +15,9 @@
 // (G1 §Q2).
 //   BASE=<commit>           the commit whose build is "before" (default: where the branch of this work left main)
 //   BASE_DIST=/tmp/x/dist   a build of it made before, in place of one made now
-// The build of BASE is made from `git archive`, with this checkout's packages: the work added none.
+// The build of BASE is made from `git archive`, with this checkout's packages: the work added none. Both builds are
+// served by this build's mock: BASE has no seed of its own, and its page reads a snapshot that names no run as one
+// with no run.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,7 +34,6 @@ const PANEL = { wait: ".board-panel .composer-box .send", omit: [".side-pane", "
 const PANELS = [
   { name: "a started chat beside a board", sel: { board: "b_arch", chat: "c_board" }, theme: {} },
   { name: "the same in the dark theme", sel: { board: "b_arch", chat: "c_board" }, theme: { "aiwb.theme": "dark" } },
-  { name: "a started chat beside a run", sel: { run: "r_live", chat: "c_live_ask" }, theme: {} },
 ];
 // What the row got after BASE, taken out of it for the comparison. (Taking the attach button out does not give the
 // row its room back: its width is counted from the first frame on.)
@@ -52,7 +53,7 @@ const PAGES = [
 // The pages that must differ: the default panel as it is (the meter cut to its ring, the two buttons), and at work.
 const SEEN = [
   { name: "a started chat beside a board, as it is", sel: { board: "b_arch", chat: "c_board" }, ls: DEFAULT, ...PANEL, why: "where the meter had its text and the row no attach button" },
-  { name: "a chat at work beside a run", sel: { run: "r_trouble", chat: "c_trouble_ask" }, ls: DEFAULT, ...PANEL, why: "where the meter had its text beside Stop" },
+  { name: "a chat at work beside a board", sel: { board: "b_A2", chat: "c_A2_board_busy" }, seed: ["A2"], ls: DEFAULT, ...PANEL, why: "where the meter had its text beside Stop" },
 ];
 
 /** The client of a commit, built into a folder outside the checkout; answers the folder. */

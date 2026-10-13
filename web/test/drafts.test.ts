@@ -1313,9 +1313,9 @@ test("a composer that opens with an unsaved copy saves it, whatever it was told 
   assert.equal(e.puts.length, 0);
 });
 
-test("a saver with no counter names none and shows nothing (a run's goal)", async () => {
+test("a saver with no counter names none and shows nothing", async () => {
   const { puts, local, s } = saver();
-  s.change("goal");
+  s.change("typed");
   s.arrived(3, { text: "other" });
   await tick(30);
   assert.deepEqual([puts.length, local.d], [1, null]);

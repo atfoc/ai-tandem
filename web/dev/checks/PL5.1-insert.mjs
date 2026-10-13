@@ -1,7 +1,7 @@
 // Proves the text box's side of the insert popup (plans/prompt-library.md, section 5; section 10, lines 11 to 15), in
 // the page. What the box must hold afterwards is test/insert.test.ts's; here it is the page that holds it, with the
 // caret, the focus and undo. The popup itself, with its list and its keys, is PL5.2's.
-//   The app, a chat's composer and a run's goal composer. ⌘P in the text box is the box's: the page does not get it
+//   The app, a chat's composer. ⌘P in the text box is the box's: the page does not get it
 //   (it would print), and once the popup it opens is closed with Esc the box has the focus and its caret or its
 //   selection, so what is typed next goes where it would have gone. The toolbar has the Insert button, which does
 //   the same. ⌘P with the cursor elsewhere (nowhere, in a message, in another field) is left to the browser.
@@ -19,8 +19,7 @@
 //   is still completed. What the box tells its composer (the value that is saved as the draft and sent) has the text.
 //   Closed with nothing inserted, the box has the focus and the caret or the selection it had. A box filled anew
 //   while the popup is open gets the text at its end; a selection that ends inside a chip, and a browser that does
-//   not do the insertion, leave the box as test/insert.test.ts says all the same. A box that takes nothing (a run
-//   that is starting) opens no popup, and its ⌘P still does not print.
+//   not do the insertion, leave the box as test/insert.test.ts says all the same.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,15 +51,15 @@ const HARNESS = `
   import { RefInput } from "./RefInput.tsx";
   import { onInsertPopup } from "./logic/insert.ts";
   const h = (window.h = { values: [], targets: [], handle: null });
-  function Box({ locked }) {
+  function Box() {
     const ref = React.useRef(null);
     React.useEffect(() => { h.handle = ref.current; });
     return <div className="composer"><div className="composer-box with-tools">
-      <RefInput ref={ref} placeholder="Ask" locked={locked} onChange={(v) => { h.values.push(v); }} onKeyDown={(e) => { e.stopPropagation(); }} />
+      <RefInput ref={ref} placeholder="Ask" onChange={(v) => { h.values.push(v); }} onKeyDown={(e) => { e.stopPropagation(); }} />
     </div><input id="search" /></div>;
   }
   const root = createRoot(document.getElementById("root"));
-  h.render = (locked = false) => flushSync(() => root.render(<Box locked={locked} />));
+  h.render = () => flushSync(() => root.render(<Box />));
   h.value = () => h.values.at(-1) ?? "";
   onInsertPopup((t) => { h.targets.push(t); document.getElementById("search").focus(); });
   h.render();
@@ -70,13 +69,13 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
   // ---- the app
   const seeded = await seed(url, "A2");
   const selOf = (id) => seeded.find((s) => s.id === id)?.sel ?? fail(`the seed has no state ${id}`);
-  for (const [name, sel, elsewhere] of [["a chat's composer", selOf("plain-started"), ".thread .msg"], ["a run's goal composer", selOf("goal-draft"), ".run-new-body"]]) {
+  for (const [name, sel, elsewhere] of [["a chat's composer", selOf("plain-started"), ".thread .msg"]]) {
     const errors = [];
     const { ctx, page } = await openPage({ url, browser, sel, errors, wait: ".composer .composer-input" });
     try {
       await page.evaluate(watchKeys);
       const box = page.locator(".composer .composer-input").first();
-      // (the goal composer opens with its saved draft: the box is emptied by hand, as a user would)
+      // (the box is emptied by hand, as a user would)
       await box.click();
       await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
       await page.keyboard.type("Hello world");
@@ -311,17 +310,7 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
       await holds("a browser that inserts nothing", "Hello A\nB world", " A\nB");
     }
 
-    // a box that takes nothing opens no popup, and its ⌘P does not print
-    await page.evaluate(() => window.h.render(true));
-    await box.click();
-    const n = await page.evaluate(() => window.h.targets.length);
-    await page.keyboard.press(KEY);
-    const s = await page.evaluate(() => ({ n: window.h.targets.length, taken: window.__taken(), f: document.activeElement?.className }));
-    if (s.n !== n || !s.taken?.prevented || !/composer-input/.test(s.f)) fail(`a box that takes nothing: ⌘P opened ${s.n - n} popups, was ${s.taken?.prevented ? "" : "not "}kept from the browser, and the focus is in ${s.f}`);
-    await page.evaluate(() => window.h.handle.openInsert());
-    if (await page.evaluate(() => window.h.targets.length) !== n) fail("a box that takes nothing: its Insert button opened the popup");
-
     for (const e of errors) fail(`the box alone: page error: ${e}`);
-    note("the box alone: in typed text, over a selection, in an empty box, beside chips; undone, closed, filled anew, locked");
+    note("the box alone: in typed text, over a selection, in an empty box, beside chips; undone, closed, filled anew");
   } finally { await ctx.close(); }
 });

@@ -1,10 +1,9 @@
 // A chat's header and thread. Items come from the server (chat_items); this
-// file only renders them. Both also draw the transcript of one of a run's own agents, read-only:
-// ChatHeader with `agent`, Thread with `readOnly`.
-import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject, type UIEvent } from "react";
+// file only renders them.
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject, type UIEvent } from "react";
 import { useStore, setState, isBusy, isLegacy, chatTitle, boardNames, shownBranch, shownView, threadOf, subsOf } from "./store.ts";
 import { api } from "./api.ts";
-import { loadItems, retryAgent } from "./conn.ts";
+import { loadItems } from "./conn.ts";
 import { openServers } from "./Servers.tsx";
 import { reportError } from "./Dialogs.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
@@ -19,7 +18,6 @@ import { threadWait } from "./logic/waits.ts";
 import { useOffWhy, useWhere } from "./ChatChoices.tsx";
 import { quotable } from "./logic/quotes.ts";
 import { permAnswer } from "./logic/perms.ts";
-import { runChat } from "./logic/runchat.ts";
 import { agentLabel, configHint, usableAgents } from "./logic/agentlist.ts";
 import { inPrefix, prefixEnd, prefixMark, prefixText } from "./logic/prefix.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -28,7 +26,7 @@ import { ToolCard } from "./ToolCard.tsx";
 import { SentQuotes } from "./Quotes.tsx";
 import { MessageImages } from "./MessageImages.tsx";
 import { showsText, type Said } from "./logic/messageimages.ts";
-import { AgentGlyph, BoardIcon, Pencil, RunIcon, agentClass } from "./icons.tsx";
+import { AgentGlyph, BoardIcon, Pencil, agentClass } from "./icons.tsx";
 import { MessageExtras, ForkedFrom } from "./fork/Message.tsx";
 import { TreeButton } from "./fork/TreeButton.tsx";
 import { BranchAlert, BranchCrumb } from "./fork/Chrome.tsx";
@@ -66,34 +64,15 @@ export function NameInput({ chat, onDone }: { chat: ChatView; onDone: () => void
   );
 }
 
-/** What ChatHeader shows of a run agent's transcript in place of a chat's own name, sub-line and
- *  controls. title: what the run calls the agent ("T11 · work agent · attempt 2"); facts: the
- *  sub-line (tier, model, status, time, cost); onClose: the × ("Close transcript"). */
-export type AgentHead = { title: ReactNode; facts: ReactNode; onClose(): void };
-
-/** A chat's header. With `agent` it is the header of a run agent's transcript: the same markup and
- *  glyph, a name that is plain text (no rename), no branch crumb, no tree button. The agent's
- *  record may still be on its way: the header is drawn without the glyph until it is there. */
-export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHead }) {
-  const c = useStore((s) => shownView(s, chatId)); // a held run agent's record too
+export function ChatHeader({ chatId }: { chatId: string }) {
+  const c = useStore((s) => shownView(s, chatId));
   const items = useStore((s) => threadOf(s, chatId)?.items);
   const board = useStore((s) => (c?.board ? s.boards[c.board] : undefined));
-  const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined)); // not the record: it changes with every task of the run
   const server = serverOfKey(chatId);
   const on = useStore((s) => (inSection(chatId) ? serverName(s, server) : "")); // a chat of a section names its server
   const where = useWhere(c);
   const gone = useStore((s) => !!s.gone[chatId]); // it is no longer on its server
   const [editing, setEditing] = useState(false);
-  if (agent) return (
-    <div className="chat-head read-only" data-agent={chatId}>
-      {c && <span className={`crow-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={14} /></span>}
-      <div className="chat-head-main">
-        <div className="chat-head-name"><span>{agent.title}</span></div>
-        <div className="chat-head-sub">{agent.facts}</div>
-      </div>
-      <button className="icon-btn" title="Close transcript (Esc)" onClick={agent.onClose}>×</button>
-    </div>
-  );
   if (!c) return null;
   // (a chat whose server is not connected, or no longer has it, is shown as it was: it has no status now, and is not renamed)
   const frozen = sendOff(where) || gone;
@@ -110,7 +89,6 @@ export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHea
         )}
         <div className="chat-head-sub">
           {c.board && <><BoardIcon /> {board?.name ?? "board"} · </>}
-          {c.run && !c.board && <><RunIcon size={12} /> {runName ?? "run"} · </>}
           {agentLabel(c.agent)}
           {c.cwd ? <> · <span className="mono">{tildify(c.cwd, server)}</span></> : null}
           {on && <> · <span className="chat-head-server">{on}</span></>}
@@ -120,7 +98,7 @@ export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHea
       </div>
       <BranchAlert chatId={chatId} />
       <TreeButton chatId={chatId} />
-      {(c.board || c.run) && <button className="icon-btn" title="Hide chat (⌘J)" onClick={() => setState({ panel: false })}>×</button>}
+      {c.board && <button className="icon-btn" title="Hide chat (⌘J)" onClick={() => setState({ panel: false })}>×</button>}
     </div>
   );
 }
@@ -154,9 +132,6 @@ export function useStickToBottom(ref: RefObject<HTMLDivElement | null>, follow: 
   };
 }
 
-/** Whether the items drawn belong to a read-only thread: a permission card draws no buttons. */
-const ReadOnlyContext = createContext(false);
-
 const Dots = () => <span className="dots"><i /><i /><i /></span>;
 
 /** The item count the branch a chat shows shares with where it came from (logic/prefix.ts). */
@@ -170,31 +145,16 @@ export const usePrefixEnd = (chatId: string): number =>
  *  message that was sent and is not in a list yet, after the items, in the pending look; the
  *  history a branch send keeps in the place of the new branch's list, read-only; and the lines at
  *  the thread's foot (the agent is starting, a list is loading, a branch is being opened, a fork
- *  is being made).
- *
- *  readOnly: the transcript of a chat nobody can write to, which is how a run shows its own
- *  agents. The record is a held agent's (shownView; the caller holds the agent, conn.ts
- *  holdAgent). No message can be forked, labelled or quoted (ItemView gets no index), a permission
- *  card has no buttons, and there is no empty state with suggestions: `empty` is what an agent
- *  that is not busy and wrote nothing shows. A subagent row opens the app's drawer, as in a chat.
- *  It is the scroller: its parent must be a flex column with a bounded height. */
-export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?: boolean; empty?: ReactNode }) {
+ *  is being made). */
+export function Thread({ chatId }: { chatId: string }) {
   const c = useStore((s) => shownView(s, chatId));
   const loaded = useStore((s) => threadOf(s, chatId));
-  const failed = useStore((s) => (readOnly ? s.agentErrors[chatId] : undefined));
-  const branch = useStore((s) => (readOnly ? "" : shownBranch(s, chatId))); // an agent has one branch
-  const cut = useStore((s) => (readOnly ? undefined : s.moves[chatId]?.at));
-  // A snapshot drops every thread (store.ts applySnapshot): a read-only one on screen is fetched
-  // again here. (A chat's is fetched by whoever selects it.)
-  useEffect(() => { if (readOnly && !loaded) void loadItems(chatId); }, [readOnly, chatId, !loaded]);
-  // The last items stay on screen while that fetch runs, so the reader keeps the place.
-  const last = useRef<{ id: string; items: Item[] } | null>(null);
-  if (readOnly && loaded) last.current = { id: chatId, items: loaded.items };
-  const kept = readOnly && last.current?.id === chatId ? last.current.items : null;
-  const all = loaded?.items ?? kept ?? EMPTY;
+  const branch = useStore((s) => shownBranch(s, chatId));
+  const cut = useStore((s) => s.moves[chatId]?.at);
+  const all = loaded?.items ?? EMPTY;
   const items = useMemo(() => (cut === undefined ? all : all.slice(0, cut)), [all, cut]);
   const ref = useRef<HTMLDivElement>(null);
-  const onScroll = useStickToBottom(ref, true, readOnly ? chatId : `${chatId}:${branch}`);
+  const onScroll = useStickToBottom(ref, true, `${chatId}:${branch}`);
   const end = usePrefixEnd(chatId);
   // A chat of a section: what its thread's place shows while that server is not connected, or no longer has the chat.
   const server = serverOfKey(chatId);
@@ -203,27 +163,7 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   const connected = useStore((s) => serverConnected(s, server));
   const gone = useStore((s) => !!s.gone[chatId]);
   const loadErr = useStore((s) => s.threadErrors[chatId]);
-  const waits = useStore((s) => (readOnly ? undefined : s.waits[chatId]));
-  if (readOnly) {
-    const ready = !!c && (!!loaded || !!kept);
-    const busy = !!c && isBusy(c.status);
-    const subs = c?.subsRunning ?? 0;
-    return (
-      <div className="thread read-only" data-chat={chatId} ref={ref} onScroll={onScroll}>
-        {!ready && !failed && <div className="typing"><Dots /> Loading…</div>}
-        {!ready && failed && <div className="note error">Couldn't load this agent's transcript: {failed} <button type="button" className="link" onClick={() => retryAgent(chatId)}>Retry</button></div>}
-        {c && ready && !items.length && (busy
-          ? <div className="typing"><Dots /> Starting…</div>
-          : <div className="note">{empty ?? "This agent wrote nothing."}</div>)}
-        <ReadOnlyContext.Provider value={true}>
-          {c && ready && items.map((it, i) => (it ? <ItemView key={i} item={it} chat={c} branch={branch} /> : null))}
-        </ReadOnlyContext.Provider>
-        {c && ready && busy && !!items.length && c.status !== "approval" && c.status !== "writing" && <div className="typing"><Dots /> {statusText(c, boardNames(chatId))}</div>}
-        {c && ready && !busy && subs > 0 && <div className="typing waiting">Waiting on {subs} subagent{subs === 1 ? "" : "s"}</div>}
-        {c?.status === "error" && c.error && <div className="note error">{c.error}</div>}
-      </div>
-    );
-  }
+  const waits = useStore((s) => s.waits[chatId]);
   if (!c) return null;
   const mark = loaded ? prefixMark(end, items.length) : null;
   const markEl = <div className="prefix-end" data-at={end}><span>{prefixText(branch)}</span></div>;
@@ -278,9 +218,6 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
 /** gone: the chat is no longer on its server. */
 function EmptyThread({ c, gone }: { c: ChatView; gone: boolean }) {
   const board = useStore((s) => (c.board ? s.boards[c.board] : undefined));
-  const runName = useStore((s) => (c.run ? s.runs[c.run]?.name : undefined));
-  const runStatus = useStore((s) => (c.run ? s.runs[c.run]?.status : undefined));
-  const onRun = useMemo(() => runChat(runStatus, runName), [runStatus, runName]); // what a chat on a run says, by the run's state
   const usable = useStore((s) => usableAgents(s, serverOf(c)));
   const where = useWhere(c);
   const off = sendOff(where); // its server is not connected: no agent is shown, and nothing is to be picked
@@ -290,8 +227,6 @@ function EmptyThread({ c, gone }: { c: ChatView; gone: boolean }) {
   // (a chat with no agent, or whose server is not connected or no longer has it, takes no message: it says why, and offers none to send)
   const suggest = reason ? [] : c.board
     ? ["Sketch a 3-tier web architecture here", "Summarize what's on this board", "Tidy up the selected shapes into a row"]
-    : c.run
-    ? onRun.suggestions
     : ["What is this project?", "What changed in the last few commits?"];
   return (
     <div className="empty-thread">
@@ -301,8 +236,6 @@ function EmptyThread({ c, gone }: { c: ChatView; gone: boolean }) {
         ? <p className="empty-reason">{reason}</p>
         : c.board
         ? <p>Ask about or change <b>{board?.name ?? "this board"}</b>. Type <kbd>@</kbd> to point at other boards.</p>
-        : c.run
-        ? <p>{onRun.text.map((part, i) => (typeof part === "string" ? part : <b key={i}>{part.b}</b>))}</p>
         : <p>The same session you get in a terminal, started in <b className="mono">{base(c.cwd) || "/"}</b>.</p>}
       {!c.locked && !c.archived && !isLegacy(c) && hint && <p className="config-hint">{hint}</p>}
       {!c.archived && !isLegacy(c) && suggest.length > 0 && (
@@ -366,13 +299,11 @@ function UserSaid({ chat, said }: { chat: ChatView; said: Said }) {
 }
 
 /** A permission request. closed: it is in the copied part of the thread, where an undecided one
- *  cannot be answered (the server closes those in a copy; this is the same rule here). In a
- *  read-only thread it shows what was asked and how it was decided, with no buttons. In a chat that
+ *  cannot be answered (the server closes those in a copy; this is the same rule here). In a chat that
  *  is shown as it was (its server is not connected, or no longer has it: useOffWhy) an undecided
- *  one has no buttons either, and says why in their place: it may have been answered elsewhere
+ *  one has no buttons, and says why in their place: it may have been answered elsewhere
  *  meanwhile, and is shown as it is when the server is back. */
 function PermCard({ item, chat, branch, closed }: { item: Item; chat: ChatView; branch: string; closed?: boolean }) {
-  const readOnly = useContext(ReadOnlyContext);
   const off = useOffWhy(chat.id);
   const [err, setErr] = useState("");
   const asker = useStore((s) => (item.subagent ? subsOf(s, chat.id)?.[item.subagent] : undefined));
@@ -389,7 +320,7 @@ function PermCard({ item, chat, branch, closed }: { item: Item; chat: ChatView; 
         <div className="perm-done">{item.decided === "allow" ? "Approved" : "Denied"}</div>
       ) : closed ? (
         <div className="perm-done">Closed: it was asked in the thread this was copied from</div>
-      ) : readOnly || chat.archived || isLegacy(chat) || chat.role ? null : off ? (
+      ) : chat.archived || isLegacy(chat) ? null : off ? (
         <div className="perm-done">{off}</div>
       ) : (
         <div className="perm-actions">

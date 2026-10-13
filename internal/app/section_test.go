@@ -14,15 +14,14 @@ import (
 	"ai-whiteboard/internal/servers/standin"
 )
 
-// farTree is the snapshot of a stand-in server that has one group with a board, a chat and a
-// run in it. Its ids are given: a test makes them the ids of local things.
-func farTree(group, board, chat, run string) map[string]any {
+// farTree is the snapshot of a stand-in server that has one group with a board and a chat in it.
+// Its ids are given: a test makes them the ids of local things.
+func farTree(group, board, chat string) map[string]any {
 	snap := standin.DefaultSnapshot()
 	snap["groups"] = []model.Group{{ID: group, Name: "Far", Collapsed: true}}
 	snap["boards"] = []model.Board{{ID: board, Name: "far board", Group: group}}
 	snap["chats"] = []model.ChatView{{ID: chat, Agent: model.Claude, Name: "far chat", Group: group, Status: model.StatusReady}}
 	snap["states"] = []model.BranchState{{Chat: chat, Branch: model.MainBranch, Status: model.StatusReady}}
-	snap["runs"] = []model.RunView{{ID: run, Name: "far run", Group: group}}
 	return snap
 }
 
@@ -77,7 +76,7 @@ func TestSectionSnapshotHoldsTheTreeBesideTheLocalLists(t *testing.T) {
 	b := e.board(g)
 	c := e.chat(g, "")
 	// The far server uses the ids of the local group, board and chat for things of its own.
-	entry := e.withServer(standin.Start(t, standin.Options{Snapshot: farTree(g, b, c, "r_far")}))
+	entry := e.withServer(standin.Start(t, standin.Options{Snapshot: farTree(g, b, c)}))
 
 	snap := e.a.Snapshot()
 	tree, held := snap.Sections[entry]
@@ -88,12 +87,12 @@ func TestSectionSnapshotHoldsTheTreeBesideTheLocalLists(t *testing.T) {
 		t.Errorf("the section's groups: %+v", tree.Groups)
 	}
 	if len(tree.Boards) != 1 || tree.Boards[0].Name != "far board" || len(tree.Chats) != 1 || tree.Chats[0].Name != "far chat" ||
-		len(tree.States) != 1 || len(tree.Runs) != 1 || tree.Runs[0].ID != "r_far" || tree.Defaults.Groups == nil {
+		len(tree.States) != 1 || tree.Defaults.Groups == nil {
 		t.Errorf("the section's tree: %+v", tree)
 	}
 	if len(snap.Groups) != 1 || snap.Groups[0].Name != "Here" || len(snap.Boards) != 1 || snap.Boards[0].Name != "board" ||
-		len(snap.Chats) != 1 || snap.Chats[0].Name == "far chat" || len(snap.Runs) != 0 {
-		t.Errorf("the local lists: groups %+v, boards %+v, chats %+v, runs %+v", snap.Groups, snap.Boards, snap.Chats, snap.Runs)
+		len(snap.Chats) != 1 || snap.Chats[0].Name == "far chat" {
+		t.Errorf("the local lists: groups %+v, boards %+v, chats %+v", snap.Groups, snap.Boards, snap.Chats)
 	}
 	raw, err := json.Marshal(snap)
 	e.must(err)
@@ -101,7 +100,7 @@ func TestSectionSnapshotHoldsTheTreeBesideTheLocalLists(t *testing.T) {
 		Sections map[string]map[string]json.RawMessage `json:"sections"`
 	}
 	e.must(json.Unmarshal(raw, &shape))
-	for _, key := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+	for _, key := range []string{"groups", "boards", "chats", "states", "defaults"} {
 		if v, ok := shape.Sections[entry][key]; !ok || string(v) == "null" {
 			t.Errorf("the section's %q on the wire: %s", key, v)
 		}
@@ -120,7 +119,7 @@ func TestSectionLocalGroupReachesNoOtherServer(t *testing.T) {
 	g := e.group("Here")
 	b := e.board(g)
 	c := e.chat(g, "")
-	st := standin.Start(t, standin.Options{Snapshot: farTree(g, b, c, "r_far")})
+	st := standin.Start(t, standin.Options{Snapshot: farTree(g, b, c)})
 	entry := e.withServer(st)
 
 	e.must(e.a.Archive(KindGroup, g))
@@ -139,7 +138,7 @@ func TestSectionLocalGroupReachesNoOtherServer(t *testing.T) {
 		t.Errorf("the local lists after the delete: %+v %+v %+v", snap.Groups, snap.Boards, snap.Chats)
 	}
 	tree := snap.Sections[entry]
-	if len(tree.Groups) != 1 || len(tree.Boards) != 1 || len(tree.Chats) != 1 || len(tree.Runs) != 1 ||
+	if len(tree.Groups) != 1 || len(tree.Boards) != 1 || len(tree.Chats) != 1 ||
 		tree.Boards[0].Archived || tree.Chats[0].Archived {
 		t.Errorf("the section after the local changes: %+v", tree)
 	}

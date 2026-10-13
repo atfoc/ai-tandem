@@ -64,7 +64,6 @@ app remembers the choice for the next chat the way it remembers the other compos
 - The choice made in one new chat is what the next new chat in the same group on the same server starts
   with. A new group starts with the values a new group gets for the other defaults.
 - A chat that existed before this feature behaves as it did: depth 1, and a cap of 100.
-- Runs behave exactly as they do today.
 
 ## 4. Decisions
 
@@ -74,10 +73,9 @@ app remembers the choice for the next chat the way it remembers the other compos
 | D2 | Both are locked at the first message, to keep the same experience as the model and the effort. | `[user]` |
 | D3 | The cap's default is 100, and the cap is configurable next to the depth. | `[user]` |
 | D4 | One "Subagents" chip opens a popover that holds both settings; no two separate chips. | `[user]` |
-| D5 | Runs are out of scope. | `[user]` |
-| D6 | Depth values are Off, 1, 2 and 3. The default is 1, which is today's behaviour. 3 is the most. | `[proposed]` |
-| D7 | A spawn over the cap is refused, not queued. The calling agent reads why and can wait for a result, stop a subagent, or do the work itself. | `[proposed]` |
-| D8 | The cap counts every running subagent of the chat, at every level, waiting subagents included. | `[proposed]` |
+| D5 | Depth values are Off, 1, 2 and 3. The default is 1, which is today's behaviour. 3 is the most. | `[proposed]` |
+| D6 | A spawn over the cap is refused, not queued. The calling agent reads why and can wait for a result, stop a subagent, or do the work itself. | `[proposed]` |
+| D7 | The cap counts every running subagent of the chat, at every level, waiting subagents included. | `[proposed]` |
 | D9 | The cap is a whole number from 1 to 100. 100 is both the default and the most. The popover offers 5, 10, 25, 50 and 100. | `[proposed]` |
 | D10 | A branch and a fork carry their source's depth and cap and cannot change them. | `[proposed]` |
 | D11 | The sticky default is kept per group and per server, and is the same for all agents, like the folder. Where a group has none, the ungrouped group's is used, then depth 1 and cap 100. | `[proposed]` |
@@ -104,8 +102,6 @@ app remembers the choice for the next chat the way it remembers the other compos
 - **No value above the limits.** No depth above 3 and no cap above 100, from the composer or from an API
   client. A value outside the range is refused, not clamped.
 - **No change after the first message.** No way to raise or lower either setting on a started chat.
-- **Runs are not touched.** A run's agents keep depth 1 and get no cap. The run composer gets no chip, and
-  a run's settings get no new field.
 - **Existing chats are not migrated.** A chat without stored values reads as depth 1 and cap 100.
 - **Native subagents stay off.** The agents' own subagent tools remain disabled in app chats, at every
   level. Nesting is done with `spawn_subagent` only.
@@ -135,7 +131,6 @@ Two steps, each usable by itself. `[proposed]`
 
 ## 8. Not in this plan
 
-- Subagent depth and a cap for runs. `[user]`
 - A queue for spawns over the cap.
 - A cap per level or per subagent; the cap is one number for the whole chat.
 - Changing either setting on a started chat.

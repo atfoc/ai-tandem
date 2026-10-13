@@ -264,7 +264,10 @@ func TestTestConnectionRows(t *testing.T) {
 			outcome: "no_state", step: 5, message: "Connected, but the server's state could not be read"},
 		{name: "state with chats an object", target: pinned(stateServer(set("chats", map[string]any{}), nil)), opts: testOptions(),
 			outcome: "no_state", step: 5, message: "Connected, but the server's state could not be read"},
-		{name: "state without runs and states, defaultCwd empty",
+		{name: "state with the runs of a build that has them",
+			target: pinned(stateServer(set("runs", []any{map[string]any{"id": "r_1", "name": "A run", "status": "running"}}), nil)),
+			opts:   testOptions(), outcome: "connected", step: 5, message: "Connected"},
+		{name: "state without states, defaultCwd empty",
 			target: pinned(stateServer(map[string]any{"agents": []string{}, "catalogs": map[string]any{}, "home": "/h", "defaultCwd": "", "chats": []any{}}, nil)),
 			opts:   testOptions(), outcome: "connected", step: 5, message: "Connected"},
 	}

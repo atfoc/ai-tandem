@@ -69,7 +69,8 @@ func TestUpdatePersists(t *testing.T) {
 	})
 }
 
-// oldState is the state file of a build that kept "last" and every group's defaults flat.
+// oldState is the state file of a build that kept "last" and every group's defaults flat, and
+// with them what its runs last used ("run"), which is read past.
 const oldState = `{"version":1,"defaults":{
  "last":{"cwd":"/last","byAgent":{"claude":{"model":"opus","effort":"max"},"pi":{"model":"p"}},
          "run":{"agent":"cursor","maxParallel":2,"maxTurns":10,"maxCost":0}},
@@ -78,10 +79,9 @@ const oldState = `{"version":1,"defaults":{
            "g_empty":{}}}}`
 
 const migratedDefaults = `{"groups":{
- "__ungrouped__":{"servers":{"local":{"cwd":"/own","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"}},
-                  "run":{"agent":"cursor","maxParallel":2,"maxTurns":10,"maxCost":0}}}},
+ "__ungrouped__":{"servers":{"local":{"cwd":"/own","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"}}}}},
  "g_empty":{},
- "g_one":{"servers":{"local":{"cwd":"/one","run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0,"setup":"make","setupCwd":"/one"}}}}}}`
+ "g_one":{"servers":{"local":{"cwd":"/one"}}}}}`
 
 // AC32: the "last" of an old state file is merged into the ungrouped group once, at the load, in
 // today's shape, and is then gone from the file. The file is written at that load and at
@@ -113,8 +113,8 @@ func TestOpenMigratesOldDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), `"last"`) {
-		t.Errorf("state.json still holds last: %s", b)
+	if strings.Contains(string(b), `"last"`) || strings.Contains(string(b), `"run"`) {
+		t.Errorf("state.json still holds last or run: %s", b)
 	}
 	var onDisk struct {
 		Defaults map[string]json.RawMessage `json:"defaults"`
@@ -348,5 +348,59 @@ func TestContains(t *testing.T) {
 	}
 	if hp.Contains("~/Documents") {
 		t.Errorf("Contains(~/Documents) = true")
+	}
+}
+
+// A data folder that a build with runs has used: Open makes no runs folder, and what is in one
+// that is there, and beside the data folder, stays as it is. A state.json that holds what a run
+// last used loads, with the rest of its defaults.
+func TestOpenLeavesRunDataAlone(t *testing.T) {
+	base := t.TempDir()
+	p := NewPaths(filepath.Join(base, "data"))
+	if _, err := Open(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(p.Root, "runs")); !os.IsNotExist(err) {
+		t.Fatalf("Open made a runs folder (or it cannot be read): %v", err)
+	}
+
+	kept := map[string]string{
+		filepath.Join(p.Root, "runs", "r_1", "run.json"):                  `{"id":"r_1","name":"A run"}`,
+		filepath.Join(p.Root, "runs", "r_1", "journal.jsonl"):             "{}\n",
+		filepath.Join(p.Root, "runs", "r_1", "chats", "c1", "chat.json"):  `{"id":"c1","run":"r_1"}`,
+		filepath.Join(p.Root, "runs", "r_1", "agents", "a1", "chat.json"): `{"id":"a1","run":"r_1","role":"task"}`,
+		filepath.Join(p.Root, "remote", "runs", "r_2.json"):               `{"id":"r_2","entry":"srv_1"}`,
+		filepath.Join(base, "aiwb-run-work", "r_1", "T01", "file.txt"):    "work",
+	}
+	for path, text := range kept {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const state = `{"version":1,"groups":[{"id":"g_1","name":"One"}],"defaults":{"groups":{"g_1":{"server":"local","servers":{"local":` +
+		`{"agent":"pi","cwd":"/one","run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0,"tiers":{"deep":{"model":"opus"}}}}}}}}}`
+	if err := os.WriteFile(p.State, []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(p)
+	if err != nil {
+		t.Fatalf("Open with run data: %v", err)
+	}
+	want := model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, Cwd: "/one"})
+	st.Read(func(s *model.State) {
+		if len(s.Groups) != 1 || !reflect.DeepEqual(s.Defaults.Groups["g_1"], want) {
+			t.Errorf("the loaded state: %+v", s)
+		}
+	})
+	if err := st.Update(func(s *model.State) error { s.Groups[0].Name = "Renamed"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for path, text := range kept {
+		if b, err := os.ReadFile(path); err != nil || string(b) != text {
+			t.Errorf("%s: %q, %v; want it as it was", path, b, err)
+		}
 	}
 }

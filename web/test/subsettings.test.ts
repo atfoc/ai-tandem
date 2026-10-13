@@ -107,7 +107,6 @@ test("subChange: what a pick sends; nothing for the current value, or for a cap 
 test("subChip: open on a new chat alone", () => {
   assert.deepEqual(subChip(chat(), false), { kind: "open" });
   assert.deepEqual(subChip(chat({ board: "b1" }), false), { kind: "open" });
-  assert.deepEqual(subChip(chat({ run: "r1" }), false), { kind: "open" }, "a user's chat on a run is an ordinary chat");
   assert.deepEqual(subChip(chat({ id: "s_1~c_1" }), false), { kind: "open" });
   assert.deepEqual(subChip(chat({ agent: "" }), false), { kind: "open" });
 });
@@ -132,12 +131,6 @@ test("subChip: a chat of a section is as one of this computer: open until it sta
   assert.deepEqual(subChip(chat({ id: "s_1~c_1", locked: true }), false), { kind: "fixed", why: SUB_FIXED.started });
   assert.deepEqual(subChip(chat({ id: "s_1~c_1", locked: true, forkedFrom: "s_1~c_0" }), false), { kind: "fixed", why: SUB_FIXED.copy });
   assert.deepEqual(Object.keys(SUB_FIXED), ["started", "copy"]);
-});
-
-test("subChip: none for a run's own agent", () => {
-  assert.deepEqual(subChip(chat({ run: "r1", role: "orchestrator" as ChatView["role"] }), false), { kind: "none" });
-  assert.deepEqual(subChip(chat({ run: "r1", role: "task" as ChatView["role"], locked: true }), false), { kind: "none" });
-  assert.deepEqual(subChip(chat({ run: "r1", role: "task" as ChatView["role"] }), true), { kind: "none" });
 });
 
 test("pickSubs: sends the change alone and takes the chat the server answers with", async () => {

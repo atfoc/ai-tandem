@@ -240,9 +240,6 @@ test("a server that is not connected: the Send is off for every chat of it, star
   assert.ok(stop.includes('if (!readOnly || !el) return;') && stop.includes('el.addEventListener("beforeinput", stop, true);') && stop.includes("e.preventDefault()"));
   assert.ok(composer.includes("onRemove={readOnly ? undefined : (id) => setImages((now) => withoutImages(now, [id]))}"), "no image leaves a draft that cannot be saved");
   assert.ok(composer.includes("const canRef = !!board && !archived && !legacy && !readOnly && onScreen === board;"));
-  // the box of a run that has not started is the same: read-only while its server is not connected, or no longer has the run
-  const runComposer = readFileSync(new URL("../src/run/RunComposer.tsx", import.meta.url), "utf8");
-  assert.ok(runComposer.includes("const readOnly = !w.connected || left;") && runComposer.includes("const closed = starting || readOnly;") && runComposer.includes("locked={closed}") && runComposer.includes("readOnly={readOnly}"));
   // RefInput: locked, nothing is put in and nothing is taken out by its own code
   const refInput = readFileSync(new URL("../src/RefInput.tsx", import.meta.url), "utf8");
   for (const line of ["if (!el || locked) return;", "if (!el || locked || !sel?.rangeCount) return;", 'if (!locked && (e.key === "Backspace" || e.key === "Delete")', "if (copyValue(e) && !locked)", 'contentEditable={readOnly ? "false" : "plaintext-only"}', "aria-readonly={readOnly || undefined}"])
@@ -480,8 +477,6 @@ test("every answer of the servers to a Send with images that was not taken: the 
     { status: 503, body: { error: "Studio is too old: update the server on that machine.", code: "server_unreachable" }, refused: true, refresh: false },
     { status: 504, body: { error: "Studio did not answer: it is not known whether the message arrived.", code: "send_unknown" }, refused: false, refresh: false },
     { status: 502, body: { error: "Studio gave an answer that cannot be read.", code: "bad_answer" }, refused: false, refresh: false },
-    // a run agent's chat: nothing is sent for it
-    { status: 409, body: { error: "this chat is one of a run's agents: the run drives it" }, refused: true, refresh: true },
   ];
   for (const row of rows) {
     const what = `${row.status} ${row.body.code ?? ""}`;

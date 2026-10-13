@@ -25,15 +25,14 @@ type keptFor struct {
 //
 // Each of those chats gets the agent, folder, model, effort and subagent settings a new chat in
 // its place starts with here, and keeps its id, name, place, draft and archive mark. One on a
-// board that is not a board of this computer (boardHere says false), or on a run that is not a
-// run of this computer (runHere), has nowhere to be: it is deleted, with its folder. So the
-// boards and the runs must be loaded before the call. Either function may be nil: nothing is
-// here then.
+// board that is not a board of this computer (boardHere says false) has nowhere to be: it is
+// deleted, with its folder. So the boards must be loaded before the call. boardHere may be nil: no
+// board is here then.
 //
 // local are the ids of the chats that were put here, deleted of those that were deleted, both
 // sorted. A chat that could not be written or deleted is logged and left for the next start; err
 // is the first such error.
-func (m *Manager) LocalOnly(boardHere, runHere func(id string) bool) (local, deleted []string, err error) {
+func (m *Manager) LocalOnly(boardHere func(id string) bool) (local, deleted []string, err error) {
 	failed := func(id string, e error) {
 		log.Printf("chats: %s is not put on this computer: %v", id, e)
 		if err == nil {
@@ -43,7 +42,7 @@ func (m *Manager) LocalOnly(boardHere, runHere func(id string) bool) (local, del
 	for _, c := range m.all() {
 		c.mu.Lock()
 		meta := c.meta
-		skip := c.top != nil || c.role != "" || c.deleted || c.unlisted || meta.Locked || meta.ForkedFrom != ""
+		skip := c.top != nil || c.deleted || c.unlisted || meta.Locked || meta.ForkedFrom != ""
 		c.mu.Unlock()
 		if skip {
 			continue
@@ -56,8 +55,7 @@ func (m *Manager) LocalOnly(boardHere, runHere func(id string) bool) (local, del
 		if json.Unmarshal(raw, &old) != nil || old.Server == "" {
 			continue
 		}
-		if meta.Board != "" && (boardHere == nil || !boardHere(meta.Board)) ||
-			meta.Run != "" && (runHere == nil || !runHere(meta.Run)) {
+		if meta.Board != "" && (boardHere == nil || !boardHere(meta.Board)) {
 			if e := m.Delete(meta.ID); e != nil {
 				failed(meta.ID, e)
 				continue
@@ -82,15 +80,9 @@ func (m *Manager) LocalOnly(boardHere, runHere func(id string) bool) (local, del
 func (m *Manager) putHere(c *Chat) error {
 	var out outbox
 	c.mu.Lock()
-	var ri *RunInfo
-	if c.meta.Run != "" {
-		if r, ok := m.runOf(c.meta.Run); ok {
-			ri = &r
-		}
-	}
 	group := m.GroupOf(c.meta)
-	a := m.startAgent(group, ri)
-	cwd, mc := m.startChoice(group, a, ri)
+	a := m.startAgent(group)
+	cwd, mc := m.startChoice(group, a)
 	sub := m.startSub(group)
 	c.meta.Agent, c.meta.Model, c.meta.Effort, c.meta.SessionID = a, mc.Model, mc.Effort, sessionFor(a)
 	c.meta.Cwd, c.meta.Subagents = cwd, &sub

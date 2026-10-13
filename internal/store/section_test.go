@@ -46,7 +46,7 @@ func TestSectionRemoveRemote(t *testing.T) {
 	if _, err := os.Lstat(remote); !os.IsNotExist(err) {
 		t.Errorf("remote/ is still there: %v", err)
 	}
-	for _, path := range append(kept, p.Boards, p.Chats, p.Runs) {
+	for _, path := range append(kept, p.Boards, p.Chats) {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("%s went with it: %v", path, err)
 		}

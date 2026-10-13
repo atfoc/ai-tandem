@@ -23,14 +23,11 @@ func named(suffix string) tree {
 	for i := range tr.boards {
 		tr.boards[i].Name += suffix
 	}
-	for i := range tr.runs {
-		tr.runs[i].Name += suffix
-	}
 	return tr
 }
 
-// TestSectionSameIDsInTwoSections: an id is unique on one server only. A chat, a run and a
-// board with the same ids in two sections, and on this server, are told apart everywhere: in
+// TestSectionSameIDsInTwoSections: an id is unique on one server only. A chat and a board with
+// the same ids in two sections, and on this server, are told apart everywhere: in
 // the trees, in the events, in the follows, in the board holds, in the tool calls and in the
 // calls that are passed on.
 func TestSectionSameIDsInTwoSections(t *testing.T) {
@@ -62,20 +59,16 @@ func TestSectionSameIDsInTwoSections(t *testing.T) {
 
 	// The follows: one page per place, each of the thing with the same id.
 	studio.readChat(onStudio, chatA)
-	studio.readRun(onStudio, runA)
 	loft.readChat(onLoft, chatA)
-	loft.readRun(onLoft, runA)
-	for _, it := range []editorbridge.Item{editorbridge.Chat(chatA), editorbridge.Run(runA)} {
-		if !rg.b.FollowAs(editorbridge.KindPage, local.ID, it) {
-			t.Fatal("the page of this server's chat does not follow")
-		}
+	if !rg.b.FollowAs(editorbridge.KindPage, local.ID, editorbridge.Chat(chatA)) {
+		t.Fatal("the page of this server's chat does not follow")
 	}
-	// The content events of the thing in one place reach the page that follows it there, and no
+	// The content events of the chat in one place reach the page that follows it there, and no
 	// other: got is what each page got of them, by the place they named.
 	contents := func(got [][]map[string]any) (out [3][]any) {
 		for i, events := range got {
 			for _, ev := range events {
-				if ev["type"] == "chat_items" || ev["type"] == "run_detail" {
+				if ev["type"] == "chat_items" {
 					out[i] = append(out[i], ev["server"])
 				}
 			}
@@ -84,17 +77,15 @@ func TestSectionSameIDsInTwoSections(t *testing.T) {
 	}
 	for i, f := range []*far{studio, loft} {
 		f.s.Send(map[string]any{"type": "chat_items", "chat": chatA, "version": 2, "updates": []any{}})
-		f.s.Send(map[string]any{"type": "run_detail", "run": runA, "version": 2})
 		var want [3][]any
-		want[i] = []any{f.entry, f.entry}
+		want[i] = []any{f.entry}
 		if got := contents(f.barrier(pages...)); !reflect.DeepEqual(got, want) {
 			t.Errorf("the content events of %s reached %v, want %v", f.name, got, want)
 		}
 	}
-	rg.b.SendChat(chatA, false, map[string]any{"type": "chat_items", "chat": chatA, "version": 9, "updates": []any{}})
-	rg.b.SendRun(runA, map[string]any{"type": "run_detail", "run": runA, "version": 9})
-	if got, want := contents(studio.barrier(pages...)), ([3][]any{nil, nil, {nil, nil}}); !reflect.DeepEqual(got, want) {
-		t.Errorf("the content events of this server's chat and run reached %v, want %v", got, want)
+	rg.b.SendChat(chatA, map[string]any{"type": "chat_items", "chat": chatA, "version": 9, "updates": []any{}})
+	if got, want := contents(studio.barrier(pages...)), ([3][]any{nil, nil, {nil}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("the content events of this server's chat reached %v, want %v", got, want)
 	}
 
 	// A change of the chat on one server changes that server's tree alone, and every page is
@@ -182,7 +173,7 @@ func TestSectionSameIDsInTwoSections(t *testing.T) {
 	if _, ok := sections[studio.entry]; ok || len(sections[loft.entry].Chats) != 2 || len(sections[loft.entry].Boards) != 1 {
 		t.Errorf("the sections after the drop of one server: %s", mustJSON(t, sections))
 	}
-	if !rg.b.Followed(editorbridge.RunOn(loft.entry, runA)) || !rg.b.Followed(editorbridge.Run(runA)) || rg.b.Followed(editorbridge.RunOn(studio.entry, runA)) {
+	if !rg.b.Followed(editorbridge.ChatOn(loft.entry, chatA)) || !rg.b.Followed(editorbridge.Chat(chatA)) || rg.b.Followed(editorbridge.ChatOn(studio.entry, chatA)) {
 		t.Error("the drop of one server ended a follow of another's, or kept its own")
 	}
 	if h, _ := rg.b.HolderOf(boardA); holder(loft, boardA) != onLoft.ID || h != local.ID || holder(studio, boardA) != "" {
@@ -235,11 +226,9 @@ func TestSectionNothingOnDisk(t *testing.T) {
 	wantReply(t, "a chat is made", rg.r.Pass(ctx, rg.entry, http.MethodPost, "/api/chats", []byte(`{"group":"g_there"}`), rg.r.Limits().Call), http.StatusOK, nil)
 	rg.s.Send(map[string]any{"type": "branch_state", "state": model.StateOf(chatA, mainBranch, farChat(chatA, model.StatusReady))})
 	rg.s.Send(map[string]any{"type": "chat", "chat": farChat(chatA, model.StatusReady)})
-	rg.s.Send(map[string]any{"type": "run", "run": farRun(runA, model.RunDraft)})
 	rg.s.Send(map[string]any{"type": "groups", "groups": []model.Group{farGroup("g_there", "Work")}})
 	rg.s.Send(map[string]any{"type": "own_library", "groups": []any{}, "prompts": []any{}})
 	rg.readChat(p, chatA)
-	rg.readRun(p, runA)
 	wantReply(t, "a message", rg.r.PassMessage(ctx, rg.entry, chatPath(chatA, "/messages"), []byte(`{"text":"hi"}`)), http.StatusOK, nil)
 	wantReply(t, "an image", rg.r.UploadImage(ctx, rg.entry, chatA, "a.png", "image/png", []byte("\x89PNG\r\n\x1a\n")), http.StatusOK, nil)
 	take(t, rg, p, boardA)

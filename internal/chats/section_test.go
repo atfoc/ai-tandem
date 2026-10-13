@@ -17,14 +17,11 @@ import (
 const (
 	sectionPlain   = "0a000000-0000-4000-8000-000000000001" // in a group, with a draft
 	sectionFarBd   = "0a000000-0000-4000-8000-000000000002" // on a board that is not here
-	sectionFarRun  = "0a000000-0000-4000-8000-000000000003" // on a run that is not here
 	sectionOnBoard = "0a000000-0000-4000-8000-000000000004" // on a board of this computer
-	sectionOnRun   = "0a000000-0000-4000-8000-000000000005" // on a run of this computer
 	sectionOwn     = "0a000000-0000-4000-8000-000000000006" // of this computer
 	sectionSecond  = "0a000000-0000-4000-8000-000000000007" // in another group
 
 	sectionEntry  = "s_bbbbbbbbbbbb"
-	sectionNoRun  = "r_far00001"
 	sectionNoBd   = "b_far00001"
 	sectionFarCwd = "/home/bee/work" // a folder that is on no disk of the test's
 )
@@ -50,9 +47,6 @@ func (e *env) sectionOldChat(meta model.ChatMeta, server bool) string {
 		e.t.Fatal(err)
 	}
 	dir := e.st.P.ChatDir(meta.ID)
-	if meta.Run != "" {
-		dir = e.st.P.RunChatDir(meta.Run, false, meta.ID)
-	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		e.t.Fatal(err)
 	}
@@ -84,12 +78,10 @@ func sectionNoServer(t *testing.T, what string, v any) {
 	}
 }
 
-// sectionLocal calls LocalOnly with the boards and the runs the env has.
+// sectionLocal calls LocalOnly with the boards the env has.
 func (e *env) sectionLocal() (local, deleted []string) {
 	e.t.Helper()
-	local, deleted, err := e.m.LocalOnly(
-		func(id string) bool { _, ok := e.bds.Get(id); return ok },
-		func(id string) bool { _, ok := e.m.Runs.RunOf(id); return ok })
+	local, deleted, err := e.m.LocalOnly(func(id string) bool { _, ok := e.bds.Get(id); return ok })
 	if err != nil {
 		e.t.Fatalf("LocalOnly: %v", err)
 	}
@@ -99,12 +91,12 @@ func (e *env) sectionLocal() (local, deleted []string) {
 // The chats an earlier version of the app kept here for another server. One that never had a
 // message becomes a chat of this computer: with what a new chat in its place starts with here,
 // and with its draft, the draft's counter, its name and its archive mark. One on a board that is
-// not a board of this computer, or on a run that is not a run of this computer, is deleted with
-// its folder. A chat of this computer is not touched, and a second call finds nothing to do.
+// not a board of this computer is deleted with its folder. A chat of this computer is not
+// touched, and a second call finds nothing to do.
 func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	dirOne, runCwd := t.TempDir(), t.TempDir()
+	dirOne := t.TempDir()
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: model.LocalDefaults(model.ServerDefaults{
 		Cwd: dirOne, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "low"}},
 		Subagents: &model.SubLimits{Depth: 2, Cap: 10}})}})
@@ -126,9 +118,7 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 		m.DraftRevs = map[string]int64{model.MainBranch: 3}
 	}), true)
 	e.sectionOldChat(with(sectionFarBd, func(m *model.ChatMeta) { m.Board = sectionNoBd }), true)
-	e.sectionOldChat(with(sectionFarRun, func(m *model.ChatMeta) { m.Run = sectionNoRun }), true)
 	e.sectionOldChat(with(sectionOnBoard, func(m *model.ChatMeta) { m.Board = bd.ID }), true)
-	e.sectionOldChat(with(sectionOnRun, func(m *model.ChatMeta) { m.Run = ownRun }), true)
 	e.sectionOldChat(with(sectionSecond, func(m *model.ChatMeta) { m.Group = gTwo }), true)
 	ownFile := e.sectionOldChat(with(sectionOwn, func(m *model.ChatMeta) {
 		m.Group, m.Agent, m.Cwd, m.Model, m.Effort = gOne, model.Claude, e.cwd, "haiku", ""
@@ -140,13 +130,11 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 	}
 
 	e.boot()
-	runs := &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gTwo, Cwd: runCwd, Agent: model.Claude, Model: "opus", Effort: "high"}}}
-	e.m.Runs = runs
 	ev := listen(t, e.br)
 	ev.drain(t, e.br)
 	local, deleted := e.sectionLocal()
-	wantLocal := []string{sectionPlain, sectionOnBoard, sectionOnRun, sectionSecond}
-	wantDeleted := []string{sectionFarBd, sectionFarRun}
+	wantLocal := []string{sectionPlain, sectionOnBoard, sectionSecond}
+	wantDeleted := []string{sectionFarBd}
 	if !reflect.DeepEqual(local, wantLocal) || !reflect.DeepEqual(deleted, wantDeleted) {
 		t.Fatalf("LocalOnly: put here %v, deleted %v; want %v and %v", local, deleted, wantLocal, wantDeleted)
 	}
@@ -165,14 +153,10 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 	if m := e.meta(sectionPlain); m.Token != "tok-"+sectionPlain || m.SessionID == "" || m.SessionID == "session-of-before" {
 		t.Fatalf("chat.json of the chat put on this computer: %+v", m)
 	}
-	// On a board and on a run of this computer: there, with what that place gives.
+	// On a board of this computer: there, with what that place gives.
 	onBoard := e.view(sectionOnBoard)
 	if onBoard.Board != bd.ID || onBoard.Agent != model.Claude || onBoard.Cwd != e.cwd || onBoard.Model != "sonnet" || onBoard.Effort != "high" {
 		t.Fatalf("the chat on a board of this computer: %+v", onBoard)
-	}
-	onRun := e.view(sectionOnRun)
-	if onRun.Run != ownRun || onRun.Agent != model.Claude || onRun.Cwd != runCwd {
-		t.Fatalf("the chat on a run of this computer: %+v", onRun)
 	}
 	for _, id := range wantLocal {
 		view := e.view(id)
@@ -200,8 +184,7 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 		}
 	}
 
-	// On a board and on a run that are not here: gone, with the folder, and of the run nothing
-	// is left.
+	// On a board that is not here: gone, with the folder.
 	for _, id := range wantDeleted {
 		if _, err := e.m.View(id); !errors.Is(err, ErrNotFound) {
 			t.Errorf("the view of %s, which had nowhere to be: %v", id, err)
@@ -213,11 +196,8 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 	if _, err := os.Stat(e.st.P.ChatDir(sectionFarBd)); !os.IsNotExist(err) {
 		t.Errorf("the folder of the chat on a board that is not here: %v", err)
 	}
-	if _, err := os.Stat(e.st.P.RunDir(sectionNoRun)); !os.IsNotExist(err) {
-		t.Errorf("the folder of the run that is not here: %v", err)
-	}
-	if removed := ofType(evs, "chat_removed"); len(removed) != 2 {
-		t.Errorf("%d chat_removed events for two chats deleted", len(removed))
+	if removed := ofType(evs, "chat_removed"); len(removed) != 1 {
+		t.Errorf("%d chat_removed events for one chat deleted", len(removed))
 	}
 
 	// A chat of this computer is as it was, byte for byte.
@@ -233,7 +213,6 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 	for _, again := range []string{"at once", "after a restart"} {
 		if again == "after a restart" {
 			e.boot()
-			e.m.Runs = runs
 			ev = listen(t, e.br)
 		}
 		ev.drain(t, e.br)
@@ -262,9 +241,9 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 	}
 }
 
-// With nothing told of the boards and the runs, none is here: a chat kept for another server on
-// a board or on a run is deleted, and one in a group is put here all the same.
-func TestSectionChatsWithNoBoardsAndRuns(t *testing.T) {
+// With nothing told of the boards, none is here: a chat kept for another server on a board is
+// deleted, and one in a group is put here all the same.
+func TestSectionChatsWithNoBoards(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	bd, err := e.bds.Create("Board", gTwo, false)
@@ -273,10 +252,9 @@ func TestSectionChatsWithNoBoardsAndRuns(t *testing.T) {
 	}
 	e.sectionOldChat(model.ChatMeta{ID: sectionPlain, Group: gOne, Agent: model.Pi, Cwd: sectionFarCwd}, true)
 	e.sectionOldChat(model.ChatMeta{ID: sectionOnBoard, Board: bd.ID, Agent: model.Pi, Cwd: sectionFarCwd}, true)
-	e.sectionOldChat(model.ChatMeta{ID: sectionOnRun, Run: ownRun, Agent: model.Pi, Cwd: sectionFarCwd}, true)
 	e.boot()
-	local, deleted, err := e.m.LocalOnly(nil, nil)
-	if err != nil || !reflect.DeepEqual(local, []string{sectionPlain}) || !reflect.DeepEqual(deleted, []string{sectionOnBoard, sectionOnRun}) {
+	local, deleted, err := e.m.LocalOnly(nil)
+	if err != nil || !reflect.DeepEqual(local, []string{sectionPlain}) || !reflect.DeepEqual(deleted, []string{sectionOnBoard}) {
 		t.Fatalf("LocalOnly: put here %v, deleted %v, %v", local, deleted, err)
 	}
 	if v := e.view(sectionPlain); v.Agent != model.Claude || v.Cwd != e.cwd {
@@ -323,9 +301,6 @@ func TestSectionNewChatIsLocal(t *testing.T) {
 	if _, err := e.m.CreateChat(NewChat{Board: sectionNoBd}); !errors.Is(err, boards.ErrNotFound) {
 		t.Errorf("a chat on a board nobody has: %v, want boards.ErrNotFound", err)
 	}
-	if _, err := e.m.CreateChat(NewChat{Run: sectionNoRun}); !errors.Is(err, ErrNoRun) {
-		t.Errorf("a chat on a run nobody has: %v, want ErrNoRun", err)
-	}
 	if n := len(e.chatDirs()); n != made {
 		t.Fatalf("the refused creations left %d folders", n-made)
 	}
@@ -355,60 +330,4 @@ func mapKeys[V any](m map[string]V) []string {
 	}
 	slices.Sort(out)
 	return out
-}
-
-// A chat on a run lives in the run's folder. The folder of the run's chats goes with the last
-// chat in it; the run's own folder goes too when nothing else is in it, and stays with its
-// run.json, as the folder of a run does.
-func TestSectionRunFolderGoesWithItsLastChat(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	e.m.Runs = &fakeRuns{runs: map[string]RunInfo{ownRun: {Group: gOne, Cwd: t.TempDir(), Agent: model.Claude, Model: "opus"}}}
-	runDir := e.st.P.RunDir(ownRun)
-	there := func() bool {
-		t.Helper()
-		_, err := os.Stat(runDir)
-		if err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-		return err == nil
-	}
-	onRun := func() model.ChatView {
-		t.Helper()
-		v := e.newChat(NewChat{Run: ownRun})
-		if _, err := os.Stat(e.st.P.RunChatDir(ownRun, false, v.ID)); err != nil {
-			t.Fatalf("the folder of a chat on the run: %v", err)
-		}
-		return v
-	}
-
-	// The folder stays while another chat is in it, and goes with the last one.
-	first, second := onRun(), onRun()
-	if err := e.m.Delete(first.ID); err != nil || !there() {
-		t.Fatalf("the delete of one of two chats: %v, the run's folder is there: %v", err, there())
-	}
-	if _, err := os.Stat(e.st.P.RunChatDir(ownRun, false, second.ID)); err != nil {
-		t.Fatalf("the folder of the other chat: %v", err)
-	}
-	if err := e.m.Delete(second.ID); err != nil || there() {
-		t.Fatalf("the delete of the last chat: %v, the run's folder is there: %v", err, there())
-	}
-
-	// A folder with a run.json in it is a run's own: it stays, and so does the file.
-	third, fourth := onRun(), onRun()
-	runFile := filepath.Join(runDir, "run.json")
-	if err := os.WriteFile(runFile, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, v := range []model.ChatView{third, fourth} {
-		if err := e.m.Delete(v.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := os.Stat(runFile); err != nil {
-		t.Fatalf("the run's file after its chats went: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(runDir, "chats")); !os.IsNotExist(err) {
-		t.Fatalf("the folder of the run's chats after the last one went: %v", err)
-	}
 }

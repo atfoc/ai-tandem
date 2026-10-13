@@ -161,31 +161,6 @@ func TestRemoteDirsRefuseTheDataFolder(t *testing.T) {
 	if got := decode[struct{ Dirs []string }](t, e.expect(200, "GET", q(filepath.Join(data, "chats")), "")); !slices.Contains(got.Dirs, c.ID) {
 		t.Errorf("the page's list of the chats folder: %v", got.Dirs)
 	}
-	// The folder of the runs' checkouts is outside the data folder, and its names are run ids.
-	work := e.st.P.RunWork
-	if err := os.MkdirAll(filepath.Join(work, "r_x", "int"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(work) })
-	workLink := filepath.Join(outside, "work")
-	if err := os.Symlink(work, workLink); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []string{work, filepath.Join(work, "r_x"), filepath.Join(work, "r_x", "int"), workLink, filepath.Join(workLink, "r_x")} {
-		status, out := l.call(apiX, testSecret, "GET", q(p), "")
-		if got := decode[obj](t, out); status != 400 || got["error"] != chats.ErrAppFolder.Error() || len(got) != 1 {
-			t.Errorf("the API client's list of %s: %d %s", p, status, out)
-		}
-		if strings.Contains(out, "r_x") {
-			t.Errorf("the refusal for %s names a run: %s", p, out)
-		}
-		if got := decode[obj](t, e.expect(200, "GET", q(p), "")); got["dirs"] == nil {
-			t.Errorf("the page's list of %s: %v", p, got)
-		}
-	}
-	if got := decode[struct{ Dirs []string }](t, e.expect(200, "GET", q(work), "")); !slices.Contains(got.Dirs, "r_x") {
-		t.Errorf("the page's list of the runs' work folder: %v", got.Dirs)
-	}
 	// A folder outside is listed for both.
 	for _, p := range []string{outside, filepath.Join(outside, "sub"), filepath.Dir(data)} {
 		status, out := l.call(apiX, testSecret, "GET", q(p), "")

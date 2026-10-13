@@ -332,12 +332,12 @@ func (m *Manager) CleanImages(stop <-chan struct{}) {
 	}
 }
 
-// cleanImages runs the cleanup once in every top-level chat a person can upload to. A chat that
+// cleanImages runs the cleanup once in every top-level chat. A chat that
 // has no image the cleanup could ever take, which is nearly every chat, costs nothing after the
 // first time, when its store is read.
 func (m *Manager) cleanImages() {
 	for _, c := range m.all() {
-		if c.top != nil || c.role != "" {
+		if c.top != nil {
 			continue
 		}
 		c.mu.Lock()
@@ -372,12 +372,8 @@ func (m *Manager) cleanImagesOf(top *Chat, chat string) {
 }
 
 // uploadable returns the top-level chat id when it takes images: who may upload to a chat is who
-// may save its draft, so ErrRunAgent for the chat of a run's agent and ErrNotFound for an id that
-// is no chat's.
+// may save its draft, so ErrNotFound for an id that is no chat's.
 func (m *Manager) uploadable(id string) (*Chat, error) {
-	if err := m.person(id); err != nil {
-		return nil, err
-	}
 	top, err := m.lockTop(id)
 	if err != nil {
 		return nil, err

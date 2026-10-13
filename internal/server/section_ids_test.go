@@ -9,24 +9,23 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// An id is unique on one server only. A chat, a run and a board of this server and of a section
+// An id is unique on one server only. A chat and a board of this server and of a section
 // that have the same id are two things everywhere a page or this server names one: the local
 // route and the section's route each reach their own, the follows and the holds do not mix, and
 // the events are told apart by "server".
 func TestSameIDHereAndInASection(t *testing.T) {
 	t.Parallel()
-	f := newFar(t, farOpt{local: true})
+	f := newFar(t, farOpt{})
 	p, q := f.page("P"), f.page("Q")
 
 	// This server's things. The page that made the board holds it.
 	chat := decode[model.ChatView](t, mustOK(t, f, p, "POST", "/api/chats", `{"id":"`+farChatA+`","group":"`+model.Ungrouped+`"}`)).ID
 	board := decode[model.Board](t, mustOK(t, f, p, "POST", "/api/boards", form("name", "Here", "group", model.Ungrouped))).ID
-	run := decode[model.RunView](t, mustOK(t, f, p, "POST", "/api/runs", form("group", model.Ungrouped, "name", "Here"))).ID
-	// That server has a chat, a board and a run with the same ids: its tree comes anew.
-	there, runThereView, boardThereView := viewThere(chat), runThere(run), boardThere(board)
+	// That server has a chat and a board with the same ids: its tree comes anew.
+	there, boardThereView := viewThere(chat), boardThere(board)
 	there.Name = "There"
 	f.change(func(tr *thereTree) {
-		tr.chats, tr.runs, tr.boards = []model.ChatView{there}, []model.RunView{runThereView}, []model.Board{boardThereView}
+		tr.chats, tr.boards = []model.ChatView{there}, []model.Board{boardThereView}
 	})
 	f.st.DropStreams()
 	f.returned(2)
@@ -35,12 +34,10 @@ func TestSameIDHereAndInASection(t *testing.T) {
 	// ---- the lists: each thing once in its own, and no thing in the other's.
 	snap := f.snapshotOf(p)
 	sec := snap.Sections[f.entry]
-	if len(snap.Chats) != 1 || snap.Chats[0].Locked || snap.Chats[0].Name == "There" || len(snap.Boards) != 1 || snap.Boards[0].Name != "Here" ||
-		len(snap.Runs) != 1 || snap.Runs[0].Status != model.RunDraft {
-		t.Fatalf("this server's lists: %+v, %+v, %+v", snap.Chats, snap.Boards, snap.Runs)
+	if len(snap.Chats) != 1 || snap.Chats[0].Locked || snap.Chats[0].Name == "There" || len(snap.Boards) != 1 || snap.Boards[0].Name != "Here" {
+		t.Fatalf("this server's lists: %+v, %+v", snap.Chats, snap.Boards)
 	}
-	if sec == nil || len(sec.Chats) != 1 || sec.Chats[0].Name != "There" || len(sec.Boards) != 1 || sec.Boards[0].Name != boardThereView.Name ||
-		len(sec.Runs) != 1 || sec.Runs[0].Status != model.RunRunning {
+	if sec == nil || len(sec.Chats) != 1 || sec.Chats[0].Name != "There" || len(sec.Boards) != 1 || sec.Boards[0].Name != boardThereView.Name {
 		t.Fatalf("the section's lists: %+v", sec)
 	}
 
@@ -50,25 +47,17 @@ func TestSameIDHereAndInASection(t *testing.T) {
 		if v := f.good(p, "GET", "/api/chats/"+chat, ""); v["locked"] != false || v["name"] == "There" {
 			t.Errorf("this server's chat: %v", v)
 		}
-		if v := f.good(p, "GET", "/api/runs/"+run, ""); v["status"] != "draft" {
-			t.Errorf("this server's run: %v", v)
-		}
 		f.good(p, "PATCH", "/api/chats/"+chat, `{"name":"Renamed here"}`)
-		f.good(p, "PATCH", "/api/runs/"+run, `{"name":"Renamed here"}`)
 		f.good(p, "POST", "/api/boards/"+board+"/rename", `{"name":"Renamed"}`)
 		f.good(p, "PUT", "/api/chats/"+chat+"/draft?rev=0", `{"text":"typed here"}`)
 	})
 	if v := f.good(p, "GET", f.on("/chats/"+chat), ""); v["locked"] != true || v["name"] != "There" {
 		t.Errorf("the section's chat: %v", v)
 	}
-	if v := f.good(p, "GET", f.on("/runs/"+run), ""); v["status"] != "running" {
-		t.Errorf("the section's run: %v", v)
-	}
 	f.good(p, "PATCH", f.on("/chats/"+chat), `{"name":"Renamed there"}`)
-	f.good(p, "PATCH", f.on("/runs/"+run), `{"name":"Renamed there"}`)
 	f.good(p, "POST", f.on("/boards/"+board+"/rename"), `{"name":"Renamed there"}`)
 	f.good(p, "PUT", f.on("/chats/"+chat+"/draft?rev=0"), `{"text":"typed there"}`)
-	for pat, want := range map[string]string{"PATCH /api/chats/{id}": `{"name":"Renamed there"}`, "PATCH /api/runs/{id}": `{"name":"Renamed there"}`,
+	for pat, want := range map[string]string{"PATCH /api/chats/{id}": `{"name":"Renamed there"}`,
 		"POST /api/boards/{id}/rename": `{"name":"Renamed there"}`, "PUT /api/chats/{id}/draft": `{"text":"typed there"}`} {
 		if got := f.sent(pat); len(got) != 1 || got[0].Body != want {
 			t.Errorf("%s: the stand-in got %+v", pat, got)
@@ -77,35 +66,22 @@ func TestSameIDHereAndInASection(t *testing.T) {
 	if v, err := f.a.Chats.View(chat); err != nil || v.Name != "Renamed here" || v.Draft == nil || v.Draft.Text != "typed here" || v.DraftRev != 1 {
 		t.Errorf("this server's chat after the section's calls: %+v, %v", v, err)
 	}
-	if v, err := f.rs.View(run); err != nil || v.Name != "Renamed here" || v.Status != model.RunDraft {
-		t.Errorf("this server's run after the section's calls: %+v, %v", v, err)
-	}
 	if bd, _ := f.a.Boards.Get(board); bd.Name != "Renamed" {
 		t.Errorf("this server's board after the section's calls: %+v", bd)
 	}
 	f.events(p, q)
 
-	// ---- the follows: P follows this server's chat and run, Q the section's. Each gets the
-	// content of its own, and the end of one follow is not the end of the other.
+	// ---- the follows: P follows this server's chat, Q the section's. Each gets the content of
+	// its own, and the end of one follow is not the end of the other.
 	f.good(p, "GET", "/api/chats/"+chat+"/items", "")
-	// This server's run has not started and has no detail yet: the read is refused, and the
-	// page follows the run all the same, as it does for any run that is there.
-	if status, out := f.call(p, "GET", "/api/runs/"+run+"/detail", ""); status != http.StatusConflict {
-		t.Fatalf("the detail of this server's run: %d %s", status, out)
-	}
 	f.good(q, "GET", f.on("/chats/"+chat+"/items"), "")
-	f.good(q, "GET", f.on("/runs/"+run+"/detail"), "")
 	content := func(what string, pHas, qHas int) {
 		t.Helper()
-		f.s.Bridge.SendChat(chat, false, map[string]any{"type": "chat_items", "chat": chat, "branch": "main", "version": 7, "items": []any{}})
-		f.s.Bridge.SendRun(run, map[string]any{"type": "run_detail", "run": run, "version": 7})
+		f.s.Bridge.SendChat(chat, map[string]any{"type": "chat_items", "chat": chat, "branch": "main", "version": 7, "items": []any{}})
 		f.st.Send(map[string]any{"type": "chat_items", "chat": chat, "branch": "main", "version": 8, "items": []any{}})
-		f.st.Send(map[string]any{"type": "run_detail", "run": run, "version": 8})
-		// The content events alone: this server tells a change of a run of its own a moment
-		// after the call that made it, which may be now.
 		got := f.events(p, q)
 		for i := range got {
-			got[i] = only(got[i], "chat_items", "run_detail")
+			got[i] = only(got[i], "chat_items")
 		}
 		for _, raw := range got[0] {
 			if strings.Contains(raw, `"server"`) || !strings.Contains(raw, `"version":7`) {
@@ -121,17 +97,15 @@ func TestSameIDHereAndInASection(t *testing.T) {
 			t.Errorf("%s: the pages got %q and %q", what, got[0], got[1])
 		}
 	}
-	content("both follow", 2, 2)
+	content("both follow", 1, 1)
 	// A page's unfollow of the one is no unfollow of the other, whoever it is.
 	f.good(p, "POST", f.on("/chats/"+chat+"/unfollow"), "")
-	f.good(q, "POST", "/api/runs/"+run+"/unfollow", "")
-	content("after an unfollow of the thing the page does not follow", 2, 2)
+	f.good(q, "POST", "/api/chats/"+chat+"/unfollow", "")
+	content("after an unfollow of the thing the page does not follow", 1, 1)
 	f.good(q, "POST", f.on("/chats/"+chat+"/unfollow"), "")
-	f.good(p, "POST", "/api/runs/"+run+"/unfollow", "")
-	content("after each ended one follow", 1, 1)
-	if b := f.s.Bridge; !b.Followed(editorbridge.Chat(chat)) || b.Followed(editorbridge.ChatOn(f.entry, chat)) ||
-		b.Followed(editorbridge.Run(run)) || !b.Followed(editorbridge.RunOn(f.entry, run)) {
-		t.Error("the follows after the unfollows are not the two that are left")
+	content("after the end of the section's follow", 1, 0)
+	if b := f.s.Bridge; !b.Followed(editorbridge.Chat(chat)) || b.Followed(editorbridge.ChatOn(f.entry, chat)) {
+		t.Error("the follows after the unfollow are not the one that is left")
 	}
 
 	// ---- the holds: P holds this server's board, and Q takes the section's, which is free.
@@ -203,9 +177,8 @@ func TestSameIDHereAndInASection(t *testing.T) {
 	// ---- a delete of the one leaves the other.
 	f.untouched("the delete of this server's things", func() {
 		f.good(p, "DELETE", "/api/chats/"+chat, "")
-		f.good(p, "DELETE", "/api/runs/"+run, "")
 		f.good(p, "DELETE", "/api/boards/"+board, "")
-		for _, path := range []string{"/api/chats/" + chat, "/api/chats/" + chat + "/items", "/api/runs/" + run, "/api/boards/" + board + "/scene"} {
+		for _, path := range []string{"/api/chats/" + chat, "/api/chats/" + chat + "/items", "/api/boards/" + board + "/scene"} {
 			if status, out := f.call(p, "GET", path, ""); status != http.StatusNotFound {
 				t.Errorf("GET %s after the delete: %d %s", path, status, out)
 			}
@@ -215,7 +188,7 @@ func TestSameIDHereAndInASection(t *testing.T) {
 		t.Errorf("the section's chat after the delete of this server's: %v", v)
 	}
 	holders("after the delete of this server's board", "", "Q")
-	if sec := f.section(p); sec == nil || len(sec.Chats) != 1 || len(sec.Runs) != 1 || len(sec.Boards) != 1 {
+	if sec := f.section(p); sec == nil || len(sec.Chats) != 1 || len(sec.Boards) != 1 {
 		t.Errorf("the section after the delete of this server's things: %+v", sec)
 	}
 	f.good(p, "DELETE", f.on("/chats/"+chat), "")

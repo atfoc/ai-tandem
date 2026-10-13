@@ -27,11 +27,9 @@ const (
 	farChat    = "2a000000-0000-4000-8000-00000000000a" // started
 	farDrafted = "2b000000-0000-4000-8000-00000000000b" // not started, with a draft
 	farBoard   = "b_aaaa0001"
-	farRun     = "r_aaaa0001" // not started, with its goal
 
 	farGroupName = "Studio work"
 	farDraft     = "typed on the studio and not sent"
-	farGoal      = "a goal typed on the studio"
 )
 
 // farTime is when the stand-in's things were made.
@@ -45,7 +43,7 @@ func farView(id, name string) model.ChatView {
 
 // farTree is the snapshot of a stand-in with a tree: a group and what it remembers for a new
 // chat, a board, a started chat and one that has not started and has a draft, the state of each
-// chat's branch, and a run that has not started.
+// chat's branch.
 func farTree() map[string]any {
 	drafted := farView(farDrafted, "")
 	drafted.Locked, drafted.Draft, drafted.DraftRev, drafted.HasDraft = false, &model.Draft{Text: farDraft}, 1, true
@@ -60,28 +58,24 @@ func farTree() map[string]any {
 		farGroup: model.LocalDefaults(model.ServerDefaults{Agent: model.Claude, Cwd: "/home/standin/work"})}}
 	snap["boards"] = []model.Board{{ID: farBoard, Name: "Studio board", Group: farGroup, Created: farTime}}
 	snap["chats"], snap["states"] = chats, states
-	snap["runs"] = []model.RunView{{ID: farRun, Name: "Studio run", Group: farGroup, Agent: model.Claude, Cwd: "/home/standin/work",
-		Created: farTime, Status: model.RunDraft, Draft: &model.Draft{Text: farGoal}}}
 	return snap
 }
 
 // farMarks are the ids and texts of farTree, and the stand-in's secret: what a file of this
 // server's data folder must not hold, but for the secret in the server list.
 func farMarks() []string {
-	return []string{farGroup, farChat, farDrafted, farBoard, farRun, farGroupName, farDraft, farGoal, standin.DefaultSecret}
+	return []string{farGroup, farChat, farDrafted, farBoard, farGroupName, farDraft, standin.DefaultSecret}
 }
 
 // The ids and the texts of what an app of before left in the data folder (oldFolder).
 const (
 	oldChat      = "0c000000-0000-4000-8000-000000000001" // never had a message, kept here for the entry, with a draft
 	oldBoardChat = "0c000000-0000-4000-8000-000000000002" // the same, on a board that is not on this computer
-	oldRun       = "r_old00001"                           // had not started and named the entry, with its goal
 	oldGroup     = "g_old"                                // the group of both
 	oldFarGroup  = "g_onlyfar"                            // a group that held only things of the entry's server
 
 	oldFarGroupName = "Only the studio's"
 	oldDraft        = "typed here for the studio"
-	oldGoal         = "a goal typed here for the studio"
 	oldKeptDraft    = "a draft kept with the record" // of the started chat: not carried over, lost
 	oldSeen         = "As it was last seen"          // the name in the last view of a record
 	oldArchive      = "a_old0000"                    // the archive action of a mark that waited for the server, without its last digit
@@ -95,28 +89,27 @@ func oldMarks() []string {
 }
 
 // oldFolder writes into root what an app of before the sections left there with one entry in
-// its list, the stand-in: the folder remote/ with the record files of a chat, a board and a run
-// and the memory of makes; a chat that never had a message and names the entry, with a draft,
-// and one such chat on a board that is not on this computer; a run that has not started and
-// names the entry, with its goal; and a state.json whose group remembers that server as the one
-// it used last and has choices for it beside this computer's, whose folder is cwd. The record of
-// the chat, a started one, has a draft that was kept with it and not carried over. The records
-// of the board and the run have their place in a second group, which so holds only things of
-// that server, and the run's has an archive mark that was set here and that server was never
-// told of. It returns the bytes of the list file.
+// its list, the stand-in: the folder remote/ with the record files of a chat and a board and the
+// memory of makes; a chat that never had a message and names the entry, with a draft, and one
+// such chat on a board that is not on this computer; and a state.json whose group remembers that
+// server as the one it used last and has choices for it beside this computer's, whose folder is
+// cwd. The record of the chat, a started one, has a draft that was kept with it and not carried
+// over. The record of the board has its place in a second group, which so holds only things of
+// that server, and has an archive mark that was set here and that server was never told of. It
+// returns the bytes of the list file.
 func oldFolder(t *testing.T, root, cwd string, st *standin.Server) (list []byte) {
 	t.Helper()
 	// The list of an app that was connected to that server: it knows the server's instance id.
 	list = []byte(strings.Replace(savedEntry(st), `"selfSigned":true`, `"selfSigned":true,"instanceId":"`+standin.DefaultInstanceID+`"`, 1))
-	oldFolderOf(t, root, cwd, list, oldThings{instance: standin.DefaultInstanceID, chat: farChat, made: farDrafted, board: farBoard, run: farRun})
+	oldFolderOf(t, root, cwd, list, oldThings{instance: standin.DefaultInstanceID, chat: farChat, made: farDrafted, board: farBoard})
 	return list
 }
 
 // oldThings are what the app of before knew of the server of its entry: the server's instance
-// id, and the ids there of the chat, the board and the run it kept records of and of the chat
-// its memory of makes names.
+// id, and the ids there of the chat and the board it kept records of and of the chat its memory
+// of makes names.
 type oldThings struct {
-	instance, chat, made, board, run string
+	instance, chat, made, board string
 }
 
 // oldFolderOf is oldFolder for any server: list is the bytes of the list file, whose one entry
@@ -160,8 +153,7 @@ func oldFolderOf(t *testing.T, root, cwd string, list []byte, there oldThings) {
 	}
 	write(filepath.Join(remote, "chats", there.chat+".json"), record(there.chat, oldGroup, `,"drafts":{"main":{"text":"`+oldKeptDraft+`"}},"draftRevs":{"main":3}`))
 	write(filepath.Join(remote, "chats", there.chat+".draft.json"), []byte(`{"text":"`+oldKeptDraft+`"}`))
-	write(filepath.Join(remote, "boards", there.board+".json"), record(there.board, oldFarGroup, ""))
-	write(filepath.Join(remote, "runs", there.run+".json"), record(there.run, oldFarGroup, `,"archived":true,"archiveOp":"`+oldArchive+`1","pending":"archive"`))
+	write(filepath.Join(remote, "boards", there.board+".json"), record(there.board, oldFarGroup, `,"archived":true,"archiveOp":"`+oldArchive+`1","pending":"archive"`))
 	write(filepath.Join(remote, "makes.json"), []byte(`{"makes":[{"entry":"`+savedEntryID+`","id":"`+there.made+`"}]}`))
 
 	chat := model.ChatMeta{ID: oldChat, Agent: model.Claude, Group: oldGroup, Cwd: "/home/standin/work", Model: "standin-model",
@@ -171,12 +163,6 @@ func oldFolderOf(t *testing.T, root, cwd string, list []byte, there oldThings) {
 	onBoard := chat
 	onBoard.ID, onBoard.Token, onBoard.Group, onBoard.Board, onBoard.Drafts, onBoard.DraftRevs = oldBoardChat, "tok-"+oldBoardChat, "", there.board, nil, nil
 	write(filepath.Join(p.ChatDir(oldBoardChat), "chat.json"), named(onBoard))
-
-	far := model.ModelChoice{Model: "standin-model"}
-	run := model.RunMeta{ID: oldRun, Name: "Port the importer", UserNamed: true, Group: oldGroup, Created: farTime, Agent: model.Claude,
-		Tiers: model.RunTiers{Deep: far, Standard: far, Light: far}, Cwd: "/home/standin/work", Settings: model.DefaultRunSettings(),
-		Draft: &model.Draft{Text: oldGoal}}
-	write(filepath.Join(p.RunDir(oldRun), "run.json"), named(run))
 
 	state, err := json.Marshal(map[string]any{"version": 1, "groups": []model.Group{{ID: oldGroup, Name: "Mixed"}, {ID: oldFarGroup, Name: oldFarGroupName}},
 		"defaults": map[string]any{"groups": map[string]any{oldGroup: map[string]any{
@@ -189,6 +175,26 @@ func oldFolderOf(t *testing.T, root, cwd string, list []byte, there oldThings) {
 		t.Fatal(err)
 	}
 	write(p.State, state)
+}
+
+// filesUnder lists the files below dir, relative to it.
+func filesUnder(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			rel, _ := filepath.Rel(dir, path)
+			out = append(out, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // folderFiles reads every file under the data folder: its bytes by its path relative to root.

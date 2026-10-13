@@ -70,8 +70,7 @@ export function legacyDraftRenames(keys: readonly string[], current: (chat: stri
 }
 
 /** A branch's draft that the server may not have yet; null: nothing waiting. base: the draft
- *  counter the copy was typed on; none for a copy of a build before the counter, and for a run's
- *  goal, which has no counter. */
+ *  counter the copy was typed on; none for a copy of a build before the counter. */
 export type Unsaved = { read(): Draft | null; write(d: Draft | null, base?: number): void; base?(): number | undefined };
 
 /** The unsaved copy a composer opens with. rev: the server's counter of the branch's draft,

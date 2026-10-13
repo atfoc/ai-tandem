@@ -91,37 +91,24 @@ func startServers(p store.Paths, br *editorbridge.Bridge, cm *chats.Manager, a *
 }
 
 // localOnly makes the data folder hold nothing of another server but the server list, as it is
-// after the first start of a version that keeps no record of a chat, a board or a run of another
-// server. The folder remote/ goes with everything in it. A run that has not started and named
-// another server becomes a run of this computer that has not started, with its goal. A chat that
-// never had a message and was kept here for another server becomes a chat of this computer with
-// its draft; one on a board or a run that is not this computer's has nowhere to be and is
-// deleted. The defaults of state.json were brought to this computer's alone when the store
-// opened. Nothing is sent to any server. It runs at every start, before a page is served, and
-// does nothing when there is nothing of the kind; what fails is logged and tried at the next
-// start.
+// after the first start of a version that keeps no record of a chat or a board of another
+// server. The folder remote/ goes with everything in it. A chat that never had a message and was
+// kept here for another server becomes a chat of this computer with its draft; one on a board
+// that is not this computer's has nowhere to be and is deleted. The defaults of
+// state.json were brought to this computer's alone when the store opened. Nothing is sent to
+// any server. It runs at every start, before a page is served, and does nothing when there is
+// nothing of the kind; what fails is logged and tried at the next start.
 func localOnly(p store.Paths, cm *chats.Manager, a *app.App) {
 	if removed, err := store.RemoveRemote(p); err != nil {
 		log.Printf("the records of other servers' chats: %v", err)
 	} else if removed {
-		log.Printf("the records of other servers' chats, boards and runs are removed from %s: they show in their servers' sections", p.Root)
-	}
-	runHere := func(string) bool { return false }
-	if a.Runs != nil {
-		ids, err := a.Runs.LocalOnly()
-		if err != nil {
-			log.Printf("runs that named another server: %v", err)
-		}
-		for _, id := range ids {
-			log.Printf("the run %s, which had not started, is a run of this computer now", id)
-		}
-		runHere = func(id string) bool { _, ok := a.Runs.RunOf(id); return ok }
+		log.Printf("the records of other servers' chats and boards are removed from %s: they show in their servers' sections", p.Root)
 	}
 	boardHere := func(string) bool { return false }
 	if a.Boards != nil {
 		boardHere = func(id string) bool { _, ok := a.Boards.Get(id); return ok }
 	}
-	local, deleted, err := cm.LocalOnly(boardHere, runHere)
+	local, deleted, err := cm.LocalOnly(boardHere)
 	if err != nil {
 		log.Printf("chats that were kept for another server: %v", err)
 	}
@@ -129,7 +116,7 @@ func localOnly(p store.Paths, cm *chats.Manager, a *app.App) {
 		log.Printf("the chat %s, which had no message yet, is a chat of this computer now", id)
 	}
 	for _, id := range deleted {
-		log.Printf("the chat %s, which had no message yet, is deleted: its board or run is not on this computer", id)
+		log.Printf("the chat %s, which had no message yet, is deleted: its board is not on this computer", id)
 	}
 }
 

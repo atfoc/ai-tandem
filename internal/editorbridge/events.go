@@ -20,9 +20,8 @@ const (
 type Per int
 
 const (
-	PerNone Per = iota // no chat, no run and no board
+	PerNone Per = iota // no chat and no board
 	PerChat
-	PerRun
 	PerBoard
 )
 
@@ -37,8 +36,8 @@ type Rule struct {
 	APIOnly   bool
 }
 
-// Events is the event table: every type a server sends, by its "type". Broadcast, SendChat,
-// SendRun and SendBoard route by it. A type that is missing here goes to every page, and is logged.
+// Events is the event table: every type a server sends, by its "type". Broadcast, SendChat
+// and SendBoard route by it. A type that is missing here goes to every page, and is logged.
 var Events = map[string]Rule{
 	"hello":           {Class: Role},
 	"snapshot":        {Class: Role},
@@ -59,7 +58,7 @@ var Events = map[string]Rule{
 	"server_lists":  {Class: List, PagesOnly: true},
 	// The whole tree of another server, or null once this server holds none of it (package
 	// remotes). The events of a thing in such a tree are the types of this table with one more
-	// field, "server": SendChatOn, SendRunOn, SendBoardOn and BroadcastOn send them, to pages alone.
+	// field, "server": SendChatOn, SendBoardOn and BroadcastOn send them, to pages alone.
 	"section": {Class: List, PagesOnly: true},
 
 	// The prompt libraries (package library): a page gets the library of every server it shows,
@@ -75,11 +74,6 @@ var Events = map[string]Rule{
 	"chat_items":   {Class: Content, Per: PerChat},
 	"sub":          {Class: Content, Per: PerChat},
 	"sub_items":    {Class: Content, Per: PerChat},
-
-	"run":          {Class: List, Per: PerRun},
-	"run_removed":  {Class: List, Per: PerRun},
-	"run_detail":   {Class: Content, Per: PerRun},
-	"run_activity": {Class: Content, Per: PerRun},
 }
 
 // APIEvents is the allow-list of an API client: the list and content types it is sent at all.
@@ -89,12 +83,11 @@ var APIEvents = map[string]bool{
 	"groups": true, "defaults": true,
 	"chat": true, "chat_items": true, "chat_removed": true, "branch_state": true, "tree": true,
 	"sub": true, "sub_items": true, "catalog": true, "agents": true,
-	"run": true, "run_removed": true, "run_detail": true, "run_activity": true,
 	"board": true, "board_removed": true,
 	"own_library": true,
 }
 
-// Item names a chat, a run or a board: what a client follows and what a per-item event is about.
+// Item names a chat or a board: what a client follows and what a per-item event is about.
 // Server is "" for an item of this server, and for one of another server the id of its entry of
 // the server list: an id is unique on one server only, so the two values together name the item.
 type Item struct{ Kind, ID, Server string }
@@ -102,20 +95,14 @@ type Item struct{ Kind, ID, Server string }
 // Chat is the item of a top-level chat.
 func Chat(id string) Item { return Item{Kind: "chat", ID: id} }
 
-// Run is the item of a run.
-func Run(id string) Item { return Item{Kind: "run", ID: id} }
-
 // Board is the item of a board. It is not followed.
 func Board(id string) Item { return Item{Kind: "board", ID: id} }
 
 // ChatOn is the item of a top-level chat of another server, the entry server.
 func ChatOn(server, id string) Item { return Item{Kind: "chat", ID: id, Server: server} }
 
-// RunOn is the item of a run of another server, the entry server.
-func RunOn(server, id string) Item { return Item{Kind: "run", ID: id, Server: server} }
-
-// BroadcastOn sends ev, an event of the section of the entry server that is about no chat, no
-// run and no board ("groups", "defaults"), to every page. Like every event of a section it
+// BroadcastOn sends ev, an event of the section of the entry server that is about no chat and
+// no board ("groups", "defaults"), to every page. Like every event of a section it
 // reaches no client of another kind: a section is not part of this server's tree. The caller has
 // put "server" into ev. It never blocks.
 func (b *Bridge) BroadcastOn(server string, ev any) {
@@ -129,32 +116,20 @@ func (b *Bridge) SendChatOn(server, chat string, unlisted bool, ev any) {
 	b.route(ev, PerChat, ChatOn(server, chat), unlisted)
 }
 
-// SendRunOn is SendRun for the run of another server, the entry server.
-func (b *Bridge) SendRunOn(server, run string, ev any) {
-	b.route(ev, PerRun, RunOn(server, run), false)
-}
-
 // SendBoardOn is SendBoard for the board of another server, the entry server: to every page.
 func (b *Bridge) SendBoardOn(server, board string, ev any) {
 	b.route(ev, PerBoard, Item{Kind: "board", ID: board, Server: server}, false)
 }
 
-// Broadcast sends ev, an event about no chat, no run and no board, to the clients its type is for. It
+// Broadcast sends ev, an event about no chat and no board, to the clients its type is for. It
 // never blocks.
 func (b *Bridge) Broadcast(ev any) {
 	b.route(ev, PerNone, Item{}, false)
 }
 
-// SendChat sends ev, an event of the top-level chat with this id. unlisted is true for a run
-// agent's chat, which is in nobody's list: all its events go to its followers only. It never
-// blocks.
-func (b *Bridge) SendChat(chat string, unlisted bool, ev any) {
-	b.route(ev, PerChat, Chat(chat), unlisted)
-}
-
-// SendRun sends ev, an event of the run with this id. It never blocks.
-func (b *Bridge) SendRun(run string, ev any) {
-	b.route(ev, PerRun, Run(run), false)
+// SendChat sends ev, an event of the top-level chat with this id. It never blocks.
+func (b *Bridge) SendChat(chat string, ev any) {
+	b.route(ev, PerChat, Chat(chat), false)
 }
 
 // SendBoard sends ev, an event of the board with this id: to every page and every API client.
@@ -200,7 +175,7 @@ func (b *Bridge) route(ev any, per Per, it Item, unlisted bool) {
 		}
 		b.sendRawLocked(c, msg)
 	}
-	if typ == "chat_removed" || typ == "run_removed" || typ == "board_removed" {
+	if typ == "chat_removed" || typ == "board_removed" {
 		b.forgetLocked(it)
 	}
 }
@@ -353,7 +328,7 @@ func (b *Bridge) followedLocked(it Item) bool {
 }
 
 // Forget drops every follow of it: the item was removed. The bridge calls it itself after a
-// chat_removed, run_removed or board_removed sent through SendChat, SendRun or SendBoard.
+// chat_removed or board_removed sent through SendChat or SendBoard.
 func (b *Bridge) Forget(it Item) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -2,9 +2,7 @@ package chats
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
-	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,33 +32,6 @@ const (
 )
 
 // ---- a creation with an id --------------------------------------------------
-
-// The id of a run agent's chat, loaded or not, and of a folder among a run's chats is taken, as
-// the id of a chat is (TestCreateWithATakenID): the creation makes nothing and leaves no lock.
-func TestCreateWithTheIDOfARunAgentsChat(t *testing.T) {
-	t.Parallel()
-	e, _ := runEnv(t)
-	const agentID, unloaded, strayOnRun = "1f2e3d4c-5b6a-4c7d-8e9f-0a1b2c3d4e5f", "2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d",
-		"3b4c5d6e-7f8a-4b9c-8d0e-2f3a4b5c6d7e"
-	e.agentChat(agentID, model.RoleTask, model.Claude)
-	for _, dir := range []string{e.st.P.RunChatDir("r_two", true, unloaded), e.st.P.RunChatDir("r_two", false, strayOnRun)} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	folders, tokens := e.chatFolders(), e.tokens()
-	for _, id := range []string{agentID, unloaded, strayOnRun} {
-		for _, n := range []NewChat{{ID: id, Agent: model.Claude, Group: gOne}, {ID: id, Run: ownRun}} {
-			if _, err := e.m.CreateChat(n); !errors.Is(err, ErrIDTaken) {
-				t.Fatalf("CreateChat %+v: %v, want ErrIDTaken", n, err)
-			}
-		}
-	}
-	if got := e.chatFolders(); !reflect.DeepEqual(got, folders) || e.tokens() != tokens || len(e.m.Views()) != 0 || e.m.ids.held() != 0 {
-		t.Fatalf("the refused creations left folders %v (were %v), %d tokens (were %d), %d chats, %d locks",
-			got, folders, e.tokens(), tokens, len(e.m.Views()), e.m.ids.held())
-	}
-}
 
 // ---- a delete that crosses a creation ------------------------------------------
 

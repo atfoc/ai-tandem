@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 )
@@ -36,11 +35,6 @@ var l5Table = []string{
 	"POST /api/chats/{id}/fork",
 	"POST /api/chats/{id}/archive", "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow",
 	"GET /api/dirs", "GET /api/usage/{agent}",
-	"POST /api/runs", "GET /api/runs/{id}", "PATCH /api/runs/{id}", "PUT /api/runs/{id}/draft", "POST /api/runs/{id}/start",
-	"POST /api/runs/{id}/stop", "POST /api/runs/{id}/resume", "POST /api/runs/{id}/apply", "GET /api/runs/{id}/delivery", "DELETE /api/runs/{id}",
-	"GET /api/runs/{id}/detail", "GET /api/runs/{id}/goal", "GET /api/runs/{id}/tasks/{tid}/brief",
-	"GET /api/runs/{id}/tasks/{tid}/attempts/{n}/report", "GET /api/runs/{id}/tasks/{tid}/attempts/{n}/changes", "GET /api/runs/{id}/notes/{v}",
-	"POST /api/runs/{id}/archive", "POST /api/runs/{id}/unarchive", "POST /api/runs/{id}/unfollow",
 	"POST /api/boards",
 	"GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release",
 	"POST /api/boards/{id}/rename", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen",
@@ -51,7 +45,7 @@ var l5Table = []string{
 }
 
 // l5Outside is what the contract's 2.3 names as not in the table, each as a request, and the
-// four calls that went away at level 5.
+// two calls that went away at level 5.
 var (
 	l5Outside = [][2]string{
 		{"PUT", "/api/groups/order"}, {"POST", "/api/boards/{board}/reveal"}, {"POST", "/api/restart"},
@@ -62,10 +56,10 @@ var (
 		{"GET", "/api/on/s_0123456789ab/chats/{chat}"}, {"POST", "/api/on/s_0123456789ab/chats"}, {"GET", "/api/on/local/chats/{chat}"},
 		{"POST", "/api/on/s_0123456789ab/groups"}, {"GET", "/api/on"}, {"DELETE", "/api/on/s_0123456789ab/boards/{board}"},
 		{"GET", "/"}, {"GET", "/index.html"}, {"GET", "/version.json"}, {"GET", "/assets/app.js"}, {"HEAD", "/"},
-		{"GET", "/api"}, {"GET", "/api/"}, {"GET", "/api/chats"}, {"GET", "/api/groups"}, {"GET", "/api/boards"}, {"GET", "/api/runs"},
+		{"GET", "/api"}, {"GET", "/api/"}, {"GET", "/api/chats"}, {"GET", "/api/groups"}, {"GET", "/api/boards"},
 		{"POST", "/api/state"}, {"POST", "/api/events"}, {"DELETE", "/api/hello"}, {"GET", "/api/boards/{board}"},
 	}
-	l5Gone = []string{"PUT /api/chats/{id}", "PUT /api/runs/{id}", "GET /api/runs/check", "PUT /api/boards/{id}"}
+	l5Gone = []string{"PUT /api/chats/{id}", "PUT /api/boards/{id}"}
 )
 
 func TestLevel5TableIsTheContracts(t *testing.T) {
@@ -157,13 +151,11 @@ func (r *l5Rows) image(chat, image string) []byte {
 // made: each is answered by its handler, as for the server's own page.
 func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	t.Parallel()
-	e := newAPIRunEnv(t)
-	e.fake.Script(func(turn *agenttest.Turn) { turn.Say("At work."); turn.Hang() })
+	e := newL5Env(t)
 	group, board, chat := l5Tree(e.env)
-	// The chat gets a message below and its agent hangs: the chat is deleted before the server
-	// of the test stops, so that nothing writes into its folder while the folder is removed.
+	// The chat gets a message below: the chat is deleted before the server of the test stops, so
+	// that nothing writes into its folder while the folder is removed.
 	t.Cleanup(func() { e.a.DeleteChat(chat) })
-	run := l5ID(t, e.expect(200, "POST", "/api/runs", `{"group":"`+group+`","name":"The owners run"}`))
 	x, _ := e.l.api(apiX)
 	rows := &l5Rows{t: t, c: x, called: map[string]bool{"GET /api/events": true}} // the stream is the one x has open
 	ask := rows.ask
@@ -212,27 +204,6 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask("GET /api/dirs", "", "?path="+url.QueryEscape(e.cwd), nil, 200, `"path":"`+e.cwd+`"`)
 	ask("GET /api/usage/{agent}", "", "", nil, 404, `{"error":"usage not available"}`)
 
-	// Runs: the owner's run, which has not started.
-	rx := l5ID(t, ask("POST /api/runs", "", "", `{"group":"`+group+`","name":"Made by X"}`, 200, `"status":"draft"`))
-	ask("GET /api/runs/{id}", run, "", nil, 200, "The owners run")
-	ask("PATCH /api/runs/{id}", run, "", `{"name":"Renamed by X"}`, 200, `"name":"Renamed by X"`)
-	ask("PUT /api/runs/{id}/draft", run, "", `{"text":"The goal, typed by X."}`, 200, done)
-	ask("POST /api/runs/{id}/start", run, "", `{"goal":""}`, 400, `{"error":"the goal is empty"}`)
-	const notStarted = `{"error":"the run has not started"}`
-	for _, route := range []string{"POST /api/runs/{id}/stop", "POST /api/runs/{id}/resume", "POST /api/runs/{id}/apply", "GET /api/runs/{id}/delivery",
-		"GET /api/runs/{id}/detail", "GET /api/runs/{id}/goal"} {
-		ask(route, run, "", nil, 409, notStarted)
-	}
-	for _, route := range []string{"GET /api/runs/{id}/tasks/{tid}/brief", "GET /api/runs/{id}/tasks/{tid}/attempts/{n}/report",
-		"GET /api/runs/{id}/tasks/{tid}/attempts/{n}/changes"} {
-		ask(route, run, "", nil, 404, `{"error":"no such task"}`)
-	}
-	ask("GET /api/runs/{id}/notes/{v}", run, "", nil, 404, `{"error":"no such version"}`)
-	ask("POST /api/runs/{id}/unfollow", run, "", nil, 200, done)
-	ask("POST /api/runs/{id}/archive", run, "", nil, 200, done)
-	ask("POST /api/runs/{id}/unarchive", run, "", nil, 200, done)
-	ask("DELETE /api/runs/{id}", rx, "", nil, 200, done)
-
 	// Boards: the owner's board, which the client reads, takes, draws on and files.
 	bx := l5ID(t, ask("POST /api/boards", "", "", `{"name":"made-by-x","group":"`+group+`"}`, 200, `"name":"made-by-x"`))
 	ask("POST /api/boards/{id}/release", bx, "", nil, 200, `{"state":"free"}`) // the client held what it made
@@ -250,12 +221,12 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 
 	// What the client did is the server's state, the owner's too.
 	state := e.expect(200, "GET", "/api/state", "")
-	for _, part := range []string{`"name":"Renamed by X"`, `"name":"renamed-by-x"`, "typed by X", "The goal, typed by X.", `"group":"` + model.Ungrouped + `"`} {
+	for _, part := range []string{`"name":"Renamed by X"`, `"name":"renamed-by-x"`, `"group":"` + model.Ungrouped + `"`} {
 		if !strings.Contains(state, part) {
 			t.Errorf("the owner's state lacks %s: %s", part, state)
 		}
 	}
-	for _, id := range []string{gx, cx, rx, bx} {
+	for _, id := range []string{gx, cx, bx} {
 		if strings.Contains(state, id) {
 			t.Errorf("the owner's state still holds %s, which the client deleted", id)
 		}
@@ -362,30 +333,24 @@ func TestLevel5RoutesOutsideTheTable(t *testing.T) {
 	}
 }
 
-// The four calls that went away at level 5 are 404 on the remote port, with the bodies that
-// made a chat, a run and a board before, and they make nothing.
+// The two calls that went away at level 5 are 404 on the remote port, with the bodies that
+// made a chat and a board before, and they make nothing.
 func TestLevel5GoneCalls(t *testing.T) {
 	t.Parallel()
-	e := newAPIRunEnv(t)
-	group, board, chat := l5Tree(e.env)
-	run := l5ID(t, e.expect(200, "POST", "/api/runs", `{"group":"`+group+`"}`))
+	e := newL5Env(t)
+	_, board, chat := l5Tree(e.env)
 	x, _ := e.l.api(apiX)
 	before := e.expect(200, "GET", "/api/state", "")
 	const newBoard = "b_cccc3333"
 	for _, a := range [][3]string{
 		{"PUT", "/api/chats/" + chat1, `{"agent":"claude","cwd":"` + e.cwd + `"}`}, // the make
 		{"PUT", "/api/chats/" + chat, `{"agent":"claude","cwd":"` + e.cwd + `"}`},
-		{"PUT", "/api/runs/" + l5Run1, `{"agent":"claude","cwd":"` + e.cwd + `","goal":"Look around."}`}, // the start call
-		{"PUT", "/api/runs/" + run, `{"agent":"claude","cwd":"` + e.cwd + `","goal":"Look around."}`},
 		{"PUT", "/api/boards/" + newBoard, `{"name":"A client's board"}`}, // a client's creation of a board
 		{"PUT", "/api/boards/" + board, `{"name":"A client's board"}`},
 	} {
 		status, out := l5Call(x, a[0], a[1], a[2])
 		l5Is(t, a[0]+" "+a[1]+" on the remote port", status, out, 404, l5Gate)
 	}
-	// The draft check: its path is now a read of the run "check", which is not there.
-	status, out := l5Call(x, "GET", "/api/runs/check?agent=claude&cwd="+url.QueryEscape(e.cwd), nil)
-	l5Is(t, "the draft check on the remote port", status, out, 404, `{"code":"not_found","error":"no such run"}`)
 	// The creation call with a text is the page's call now: its "text" is ignored, no agent starts.
 	made := decode[model.ChatView](t, l5Want(t, x, 200, "POST", "/api/chats", `{"id":"`+chat2+`","agent":"claude","group":"`+model.Ungrouped+`","cwd":"`+e.cwd+`","text":"the first message"}`))
 	if made.ID != chat2 || made.Locked {
@@ -401,28 +366,23 @@ func TestLevel5GoneCalls(t *testing.T) {
 	if after := e.expect(200, "GET", "/api/state", ""); after != before {
 		t.Errorf("the calls that are gone changed the server:\nbefore %s\nafter  %s", before, after)
 	}
-	for _, dir := range []string{e.st.P.ChatDir(chat1), filepath.Join(e.a.DataDir, "runs", l5Run1)} {
-		if _, err := os.Stat(dir); err == nil {
-			t.Errorf("a call that is gone made %s", dir)
-		}
+	if _, err := os.Stat(e.st.P.ChatDir(chat1)); err == nil {
+		t.Errorf("a call that is gone made %s", e.st.P.ChatDir(chat1))
 	}
 	if _, found := e.a.Boards.Get(newBoard); found {
 		t.Error("a call that is gone made a board")
 	}
 }
 
-// The same four calls are not served on the owner's port either: nothing is registered for them
+// The same two calls are not served on the owner's port either: nothing is registered for them
 // there, so the answer is the mux's own, 404 or, where the path has other methods, 405.
 func TestLevel5GoneCallsOnTheOwnersPort(t *testing.T) {
 	t.Parallel()
-	e := newAPIRunEnv(t)
-	group, board, chat := l5Tree(e.env)
-	run := l5ID(t, e.expect(200, "POST", "/api/runs", `{"group":"`+group+`"}`))
+	e := newL5Env(t)
+	_, board, chat := l5Tree(e.env)
 	p := e.page(l5Owner)
 	for _, a := range [][2]string{
 		{"PUT", "/api/chats/" + chat1}, {"PUT", "/api/chats/" + chat},
-		{"PUT", "/api/runs/" + l5Run1}, {"PUT", "/api/runs/" + run},
-		{"GET", "/api/runs/check?agent=claude&cwd=" + url.QueryEscape(e.cwd)},
 		{"PUT", "/api/boards/b_cccc3333"}, {"PUT", "/api/boards/" + board},
 	} {
 		var body any
@@ -436,34 +396,25 @@ func TestLevel5GoneCallsOnTheOwnersPort(t *testing.T) {
 	if n := len(e.a.Chats.Views()); n != 1 {
 		t.Errorf("%d chats after the calls that are gone, want the one", n)
 	}
-	if n := len(e.rs.List()); n != 1 {
-		t.Errorf("%d runs after the calls that are gone, want the one", n)
-	}
 	if n := len(e.a.Boards.List()); n != 1 {
 		t.Errorf("%d boards after the calls that are gone, want the one", n)
 	}
 }
 
 // GET /api/dirs lists no folder of the app's own to a client: not the data folder, nothing in
-// it, not the folder of the runs' checkouts, by whatever path they are named. The owner's page
-// lists them.
+// it, by whatever path they are named. The owner's page lists them.
 func TestLevel5DirsKeepsTheDataFolderFromAClient(t *testing.T) {
 	t.Parallel()
-	e := newAPIRunEnv(t)
+	e := newL5Env(t)
 	_, _, chat := l5Tree(e.env)
 	x, _ := e.l.api(apiX)
 	p := e.page(l5Owner)
 	const refusal = `{"error":"the app's own folder can't be used as a working folder"}`
-	work := e.st.P.RunWorkDir(l5Run1)
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(e.a.DataDir, link); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{e.a.DataDir, e.st.P.ChatDir(chat), filepath.Dir(e.st.P.ChatDir(chat)), filepath.Join(e.a.DataDir, "runs"),
-		e.a.DataDir + "/", filepath.Join(e.a.DataDir, "runs", ".."), link, e.st.P.RunWork, work} {
+	for _, dir := range []string{e.a.DataDir, e.st.P.ChatDir(chat), filepath.Dir(e.st.P.ChatDir(chat)), e.a.DataDir + "/", link} {
 		status, out := l5Call(x, "GET", "/api/dirs?path="+url.QueryEscape(dir), nil)
 		l5Is(t, "the folder "+dir+" for a client", status, out, 400, refusal)
 		if strings.Contains(out, chat) || strings.Contains(out, `"dirs"`) {

@@ -87,15 +87,7 @@ test("the same id on two servers is two chats: `here` is the asking chat's own k
   assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "s_1~c_1" }), { total: 3, here: 3, elsewhere: 0 });
 });
 
-test("a chat on a run of a section is where the run is: the key of the chat says it, and no run is asked", () => {
-  // a chat on a section's run, and that run's own agent, are keyed with the run's server (logic/sectionwire.ts)
-  const all = chats(chat("mine"), chat("s_1~far", { run: "s_1~r_1" }), chat("s_1~agent", { run: "s_1~r_1", role: "task" } as Partial<ChatView>), chat("near", { run: "r_1" }));
-  const states = [rec("mine", "main"), rec("s_1~far", "main", { status: "tool" }), rec("s_1~agent", "main", { status: "thinking", subsRunning: 2 }), rec("near", "main", { status: "tool" })];
-  // from a chat of this computer: the local run's chat alone
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "mine" }), { total: 1, here: 0, elsewhere: 1 });
-  // from a chat on the section's run: that run's, on its server, and none of this computer's
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "s_1~far" }), { total: 4, here: 1, elsewhere: 3 });
-  // a view that still named a server in a field is on the server of its key
+test("a view that still named a server in a field is on the server of its key", () => {
   assert.equal(folderAgents({ chats: chats(chat("mine"), chat("x", { server: "s_1" } as Partial<ChatView>)), states: [rec("x", "main", { status: "tool" })], cwd: "/w", chat: "mine" }).total, 1);
 });
 
@@ -103,7 +95,6 @@ test("the folder hint gives folderAgents the chats and their records alone, and 
   const src = readFileSync(new URL("../src/fork/FolderHint.tsx", import.meta.url), "utf8");
   assert.equal(src.split("folderAgents({").length - 1, 1);
   assert.ok(src.includes("folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId })"));
-  assert.ok(!src.includes("runs"), "no run is read: the server is the chat key's");
   assert.equal(folderAgents.length, 1);
   // the chip beside the composer's folder ("N others working here") is gone
   assert.doesNotMatch(readFileSync(new URL("../src/Composer.tsx", import.meta.url), "utf8"), /FolderHint|working here/);

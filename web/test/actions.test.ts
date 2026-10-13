@@ -673,7 +673,7 @@ test("text typed in a section's chat whose server dropped is in its open compose
     assert.deepEqual([s().sel.chat, box!.chat, box!.held.text], [K, K, "half a thought"], "the chat stays open, with what was typed");
     assert.equal(store.unsavedDraft(K, "main").read()?.text, "half a thought", "in the page's memory");
     // the user leaves it: as the sidebar's select does, the selection first, then what was left behind goes, then the composer goes away
-    store.setState({ sel: { board: null, run: null, chat: "c_1" } });
+    store.setState({ sel: { board: null, chat: "c_1" } });
     conn.dropLeft();
     await settle();
     if (flying) { const w = fake.waiting!.splice(0); fake.waiting = null; for (const x of w) await x.done(false); }

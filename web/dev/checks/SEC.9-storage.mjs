@@ -1,4 +1,4 @@
-// Proves that the browser's storage holds nothing of a section's chat, run or whiteboard
+// Proves that the browser's storage holds nothing of a section's chat or whiteboard
 // (plans/remote-server-sections-goal.md, 3.8 "Text that was typed…", 3.12, section 5 "Nothing on disk"; the contract's
 // 3.10 "No content of a remote server in the browser's storage").
 // A chat: while a draft typed in a chat of a section is on its way to the server, when it is saved, while
@@ -7,9 +7,6 @@
 // its save is on its way, which shows that the check would see one. After all of it localStorage holds the selection,
 // the collapse, the widths and the page's other settings, and of the section only the keys that name what is selected
 // and what is collapsed. What was typed just before an outage and not saved is given up by a reload.
-// A run that has not started: the goal being typed in a section's run is in no storage either, on its way, saved,
-// during an outage and after a reload; the run of this computer with the same id (r_draft) keeps its own unsaved goal
-// under "aiwb.draft.r_draft" meanwhile, which holds nothing of the section's.
 // A whiteboard: what is drawn on a section's board is in no storage while its save is on its way, when it is saved, and
 // while it waits in the window for a server that is not connected; a reload during the outage gives it up.
 // Every storage a page has is read each time: localStorage, sessionStorage and every IndexedDB database.
@@ -17,11 +14,11 @@ import { check, dragResizer, mockEval, openPage, seed, until } from "../shot.mjs
 
 const J = JSON.stringify;
 const STUDIO = "s_studio", KEY = `${STUDIO}~c_note`;
-// what the page may keep: its settings, what is selected and collapsed, the chat a board or run reopens with (a key),
+// what the page may keep: its settings, what is selected and collapsed, the chat a board reopens with (a key),
 // and of this computer's chats and folders their unsaved drafts and the recent folders
-const SETTINGS = ["aiwb.sel", "aiwb.collapsed", "aiwb.widths", "aiwb.archived", "aiwb.side", "aiwb.theme", "aiwb.run.ui", "aiwb.lastChat", "aiwb.dirs"];
+const SETTINGS = ["aiwb.sel", "aiwb.collapsed", "aiwb.widths", "aiwb.archived", "aiwb.side", "aiwb.theme", "aiwb.lastChat", "aiwb.dirs"];
 
-await check("SEC.9 the browser's storage holds nothing of a section's chat, run or whiteboard", async ({ url, browser, fail, note }) => {
+await check("SEC.9 the browser's storage holds nothing of a section's chat or whiteboard", async ({ url, browser, fail, note }) => {
   await seed(url, "SEC");
   const p = await openPage({ url, browser, sel: { chat: KEY }, size: [1280, 900] }), { page } = p;
   const box = page.locator(".composer .composer-input");
@@ -44,7 +41,7 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat, run 
   });
   const typedSoFar = [];
   /** What the servers of the seed hold of the things this check opens: none of it is in a storage of the page. */
-  const THEIRS = ["remember the LUTs", "Render every scene at 4K", "sec_rect"];
+  const THEIRS = ["remember the LUTs", "sec_rect"];
   /** The page's storage now: no key of a section's thing but the selection and the collapse, no draft of one, nothing typed,
    *  nothing drawn, and nothing that server holds. pg: the page (the first one, when none is named). */
   const clean = async (when, pg = page) => {
@@ -135,65 +132,6 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat, run 
   for (const e of p.errors) fail(`page error: ${e}`);
   await p.ctx.close();
 
-  // ---- a run of a section that has not started: the goal being typed. This computer has a run with the same id.
-  const RUN = `${STUDIO}~r_draft`, THEIR_GOAL = "Render every scene at 4K and compare the frames with last night's.";
-  let runKeys = [];
-  {
-    await seed(url, "SEC");
-    const q = await openPage({ url, browser, sel: { run: RUN }, size: [1280, 900] }), pg = q.page;
-    const goal = pg.locator(".run-composer .composer-input");
-    const mine = `.side-tree > .side-loose .side-row.is-run:has(.side-name:text-is("New run"))`, theirs = `.side-section[data-server="${STUDIO}"] .side-row.is-run:has(.side-name:text-is("Nightly render"))`;
-    if (!await until(async () => (await goal.textContent().catch(() => "")) === THEIR_GOAL, 10000)) fail(`the section's run does not open with the goal its server has: "${await goal.textContent().catch(() => "")}"`);
-    await clean("the section's run open with its server's goal", pg);
-    let hold = null, held = 0;
-    await pg.route(/\/runs\/r_draft\/draft/, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue(); });
-    typedSoFar.push(" Then grade the audio.");
-    await goal.click(); await pg.keyboard.press("End"); await pg.keyboard.type(" Then grade the audio.");
-    if (!await until(() => held === 1, 10000)) fail("typing the goal of the section's run started no save of it");
-    const onWay = await clean("the save of the section's run's goal on its way", pg);
-    if (Object.keys(onWay).some((k) => k.startsWith("aiwb.draft."))) fail(`the goal typed in the section's run is kept in localStorage: ${J(Object.keys(onWay))} (aiwb.draft.r_draft is the key of this computer's run of the same id)`);
-    hold();
-    if (!await until(async () => await mockEval(`return onServer("${STUDIO}", () => runs.r_draft.meta.draft?.text);`, url) === THEIR_GOAL + " Then grade the audio.", 10000)) fail(`the goal was not saved on Studio Mac: ${J(await mockEval(`return onServer("${STUDIO}", () => runs.r_draft.meta.draft);`, url))}`);
-    await clean("the section's run's goal saved", pg);
-
-    // this computer's run with the same id: its unsaved goal is in the browser while its save is on its way, and is its own
-    await pg.locator(mine).click();
-    if (!await until(async () => (await goal.textContent().catch(() => "")).startsWith("Add a dark mode"), 10000)) fail(`this computer's run of the same id does not open with its own goal: "${await goal.textContent().catch(() => "")}"`);
-    await goal.click(); await pg.keyboard.press("End"); await pg.keyboard.type(" And a light one.");
-    if (!await until(() => held === 2, 10000)) fail("typing the goal of this computer's run started no save of it");
-    const local = await clean("this computer's run's goal on its way", pg);
-    if (!(local["aiwb.draft.r_draft"] ?? "").includes("And a light one.")) fail(`this computer's run has no unsaved goal in localStorage while its save is on its way: ${J(Object.keys(local))}`);
-    hold();
-    if (!await until(async () => (await mockEval("return runs.r_draft.meta.draft?.text ?? '';", url)).endsWith("And a light one."), 10000)) fail("the goal of this computer's run was not saved");
-    await pg.unroute(/\/runs\/r_draft\/draft/); // (after the held save went on: a route that is taken away is not continued)
-
-    // back in the section's run: its goal is its server's, not what the run of the same id here holds
-    await pg.locator(theirs).click();
-    if (!await until(async () => (await goal.textContent().catch(() => "")) === THEIR_GOAL + " Then grade the audio.", 10000)) fail(`back in the section's run, the goal box has "${await goal.textContent().catch(() => "")}"`);
-
-    // its server not connected: what was typed just before the drop is in the box alone, and a reload gives it up
-    held = 0; hold = null;
-    await pg.route(/\/runs\/r_draft\/draft/, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue().catch(() => {}); });
-    typedSoFar.push(" Typed before the dark.");
-    await goal.click(); await pg.keyboard.press("End"); await pg.keyboard.type(" Typed before the dark.");
-    if (!await until(() => held === 1, 10000)) fail("the save of the goal typed just before the drop was not made");
-    await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
-    hold();
-    await pg.waitForSelector(".run-composer .composer-box.read-only", { timeout: 10000 }); // the composer of a run whose server is away: as it was, read-only
-    await until(async () => Object.keys(await storeOf(pg)).some((k) => k.startsWith("aiwb.draft.") && k !== "aiwb.draft.r_draft"), 1500); // (what the page would keep, it has kept by then)
-    const dark = await clean("the goal typed just before the server dropped, and not saved", pg);
-    if (Object.keys(dark).some((k) => k.startsWith("aiwb.draft.") && k !== "aiwb.draft.r_draft")) fail(`the goal of the section's run is kept in localStorage during the outage: ${J(Object.keys(dark))}`);
-    if (!(await goal.textContent()).endsWith(" Typed before the dark.")) fail(`the goal box lost what was typed before the drop: "${await goal.textContent()}"`);
-    if (JSON.parse(dark["aiwb.sel"] ?? "{}").run !== RUN) fail(`the selection kept is ${dark["aiwb.sel"]}, not the section's run`);
-    await pg.unroute(/\/runs\/r_draft\/draft/);
-    await pg.reload(); await pg.waitForSelector(".side-tree .side-section");
-    if (await pg.locator(".run-composer, .remote-bar").count() || (await pg.content()).includes("Typed before the dark")) fail("after a reload during the outage the section's run, or the goal typed in it, is on the page");
-    runKeys = Object.keys(await clean("after a reload during the run's outage", pg)).sort();
-    await mockEval(`setServerState("${STUDIO}", "connected");`, url);
-    for (const e of q.errors) fail(`page error: ${e}`);
-    await q.ctx.close();
-  }
-
   // ---- a whiteboard of a section: what is drawn on it
   let boardKeys = [], boardOther = [];
   {
@@ -241,6 +179,5 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat, run 
     await q.ctx.close();
   }
   note(`localStorage at the end: ${Object.keys(end).sort().join(", ")}; no draft of the section's chat at any moment, a local chat's while its save was on its way. `
-    + `A section's run: ${runKeys.join(", ")}; its goal in no storage, this computer's run of the same id keeps its own under aiwb.draft.r_draft. `
     + `A section's board, drawn on and not saved: localStorage ${boardKeys.join(", ")}; sessionStorage and IndexedDB: ${boardOther.join(", ") || "nothing"}`);
 });

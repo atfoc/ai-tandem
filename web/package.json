@@ -7,7 +7,7 @@
     "watch": "node build.mjs --watch",
     "test": "node --test --experimental-strip-types 'test/*.test.ts'",
     "check": "tsc --noEmit",
-    "mock": "node dev/runmock.mjs",
+    "mock": "node dev/mock.mjs",
     "uicheck": "node dev/uicheck.mjs"
   },
   "dependencies": {

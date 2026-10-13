@@ -25,7 +25,6 @@ import (
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/servers/standin"
@@ -73,7 +72,7 @@ func savedEntry(st *standin.Server) string {
 }
 
 // program is a server wired in this process as serve wires it, on a scratch data folder: the
-// store, the bridge, the boards, the chats, the run service when it has one, this computer's
+// store, the bridge, the boards, the chats, this computer's
 // prompt library, and what startServers adds. Its routes are served on a loopback port, as a page reaches them.
 type program struct {
 	a    *app.App
@@ -83,22 +82,15 @@ type program struct {
 	stop func() // ends it as a quit ends the server; the test's end calls it too
 }
 
-// wired runs startServers on the data folder root, as serve does, and returns what it set. The
-// app has a run service, as serve's has.
+// wired runs startServers on the data folder root, as serve does, and returns what it set.
 func wired(t *testing.T, root string) *program {
 	t.Helper()
-	return wiredWith(t, root, true)
+	return wiredWaits(t, root, testWaits{})
 }
 
-// wiredWith is wired for an app with or without a run service.
-func wiredWith(t *testing.T, root string, withRuns bool) *program {
-	t.Helper()
-	return wiredWaits(t, root, withRuns, testWaits{})
-}
-
-// wiredWaits is wiredWith for a server that was given these waits (AIWB_TEST_WAITS). The boards,
-// the runs and the chats are loaded from the folder before startServers, in serve's order.
-func wiredWaits(t *testing.T, root string, withRuns bool, w testWaits) *program {
+// wiredWaits is wired for a server that was given these waits (AIWB_TEST_WAITS). The boards and
+// the chats are loaded from the folder before startServers, in serve's order.
+func wiredWaits(t *testing.T, root string, w testWaits) *program {
 	t.Helper()
 	p := store.NewPaths(root)
 	st, err := store.Open(p)
@@ -116,14 +108,6 @@ func wiredWaits(t *testing.T, root string, withRuns bool, w testWaits) *program 
 	if err := bs.Load(); err != nil {
 		t.Fatal(err)
 	}
-	if withRuns {
-		rs := runs.New(runs.Deps{Store: st, Emit: br, DefaultCwd: cwd, HaltWait: 300 * time.Millisecond})
-		if err := rs.Load(); err != nil {
-			t.Fatal(err)
-		}
-		rs.Chats, cm.Runs = cm, rs
-		a.Runs, relay.Runs = rs, rs
-	}
 	if err := cm.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -140,9 +124,6 @@ func wiredWaits(t *testing.T, root string, withRuns bool, w testWaits) *program 
 	hs.Start()
 	pr := &program{a: a, srv: srv, cm: cm, url: hs.URL}
 	pr.stop = sync.OnceFunc(func() { // in the order of serve's quit, and then the listener
-		if a.Runs != nil {
-			a.Runs.Shutdown(time.Second)
-		}
 		cm.Shutdown()
 		stopServers()
 		hs.CloseClientConnections() // the streams of the pages that are still open
@@ -252,7 +233,7 @@ func TestStartServersTooOldEntryConnectsAfterTheUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pr := wiredWaits(t, root, false, w)
+	pr := wiredWaits(t, root, w)
 	a := pr.a
 	state := func() servers.State {
 		v, _ := a.Servers.View(entry)
@@ -352,64 +333,6 @@ func TestStartServersConnectsSavedEntries(t *testing.T) {
 	for _, r := range reqs {
 		if r.Client != id || r.Secret != standin.DefaultSecret || r.Level != strconv.Itoa(servers.ClientLevel) {
 			t.Fatalf("request %+v, want the client %s and the level %d", r, id, servers.ClientLevel)
-		}
-	}
-}
-
-// startServers wires the relay the same for an app with a run service and for one without: the
-// runs of another server are in its section and are reached through the relay, which asks no
-// run service, and the runs of this computer are the run service's own, which knows nothing of
-// another server.
-func TestStartServersWiresRuns(t *testing.T) {
-	t.Parallel()
-	const entry, there = savedEntryID, "r_there001"
-	far := model.RunView{ID: there, Name: "There", Group: model.Ungrouped, Agent: model.Claude, Status: model.RunDraft}
-	snap := standin.DefaultSnapshot()
-	snap["runs"] = []model.RunView{far}
-	st := standin.Start(t, standin.Options{Snapshot: snap})
-	st.Handle("GET /api/runs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(far)
-	})
-	for _, withRuns := range []bool{true, false} {
-		root := t.TempDir()
-		if err := os.WriteFile(filepath.Join(root, servers.FileName), []byte(savedEntry(st)), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		pr := wiredWith(t, root, withRuns)
-		if (pr.a.Runs != nil) != withRuns || pr.a.Remotes == nil {
-			t.Fatalf("with a run service %v: runs %p, relay %p", withRuns, pr.a.Runs, pr.a.Remotes)
-		}
-		until(t, "the relay has the entry's tree", func() bool { _, ok := pr.sectionOf(entry); return ok })
-		if tree, _ := pr.sectionOf(entry); len(tree.Runs) != 1 || tree.Runs[0].ID != there {
-			t.Fatalf("with a run service %v: the runs of the section: %+v", withRuns, tree.Runs)
-		}
-		pr.page(t, "page")
-		if got := pr.call(t, "page", "GET", "/api/on/"+entry+"/runs/"+there, nil); got.Status != http.StatusOK || !strings.Contains(got.Raw, there) {
-			t.Fatalf("with a run service %v: the run of the section through the routes: %s", withRuns, got)
-		}
-		// The route of this computer's own runs finds no such run, and sends that server nothing.
-		sent := len(st.Requests())
-		if got := pr.call(t, "page", "GET", "/api/runs/"+there, nil); got.Status != http.StatusNotFound {
-			t.Fatalf("with a run service %v: the run of the section on the route of this computer's runs: %s", withRuns, got)
-		}
-		if got := st.Requests(); len(got) != sent {
-			t.Fatalf("with a run service %v: the stand-in was sent %+v for a run of this computer", withRuns, got[sent:])
-		}
-		var state struct{ Runs []model.RunView }
-		if withRuns {
-			here, err := pr.a.Runs.Create(model.Ungrouped, "Here")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := pr.call(t, "page", "GET", "/api/state", nil); json.Unmarshal([]byte(got.Raw), &state) != nil || len(state.Runs) != 1 || state.Runs[0].ID != here.ID {
-				t.Fatalf("this computer's runs in the snapshot: %s", got)
-			}
-		} else if got := pr.call(t, "page", "GET", "/api/state", nil); json.Unmarshal([]byte(got.Raw), &state) != nil || len(state.Runs) != 0 {
-			t.Fatalf("the runs in the snapshot of an app without runs: %s", got)
-		}
-		if tree, _ := pr.sectionOf(entry); len(tree.Runs) != 1 || tree.Runs[0].ID != there {
-			t.Fatalf("with a run service %v: the runs of the section at the end: %+v", withRuns, tree.Runs)
 		}
 	}
 }

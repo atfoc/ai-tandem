@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -20,15 +19,14 @@ import (
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/runs"
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/servers/linksim"
 )
 
 // The rig of the tests of both halves (plans/remote-server-sections-contract.md 4.6, point 2;
 // the files both_*_test.go): one remote server and two local servers that are each a client of
-// it, all of them real and in one process. The remote server is an env with a remote listener,
-// stand-in agents and a run service; its own port is the owner's. Each local server is the A of
+// it, all of them real and in one process. The remote server is an env with a remote listener
+// and stand-in agents; its own port is the owner's. Each local server is the A of
 // a pair (boardpair_test.go) whose B is that one server: wired as the program wires it, with
 // its own client id, its own entry for the remote server and its own link. The pages of all
 // three are stand-in pages on the real bridges. Nothing is scripted between the servers, and a
@@ -219,11 +217,10 @@ func (sd *side) notConnected() string { return sd.name + " is not connected." }
 // both is the rig: the remote server, and the local servers that are its clients.
 type both struct {
 	t     *testing.T
-	b     *env          // the remote server; its own port is the owner's
-	l     *listener     // its remote listener's address and certificate
-	fr    *front        // its remote listener
-	sp    *apiSpawner   // the agents of its chats
-	rs    *runs.Service // its runs
+	b     *env        // the remote server; its own port is the owner's
+	l     *listener   // its remote listener's address and certificate
+	fr    *front      // its remote listener
+	sp    *apiSpawner // the agents of its chats
 	c     []*side
 	marks atomic.Int64
 }
@@ -235,7 +232,6 @@ type bothOpt struct {
 	link    linksim.Profile // of every link; the zero value adds no time
 	withB   []func(*Server) // set up the remote server
 	withA   []func(*Server) // set up every local server, before it is wired
-	noRuns  bool            // the remote server has no run service
 }
 
 // newBoth starts the remote server and then its clients, and waits until each holds its tree.
@@ -246,12 +242,7 @@ func newBoth(t *testing.T, o bothOpt) *both {
 	// The consumer (internal/servers) requires a home that is not empty.
 	home := func(s *Server) { s.App.Home = "/home/owner" }
 	with := []func(*Server){bo.l.set, home, withAgents(bo.sp)}
-	if !o.noRuns {
-		with = append(with, bo.withRuns)
-	}
-	// The data folder has a name of its own: a run refuses a folder whose path holds that name,
-	// and the name of a test's folder is a number that a path may well hold.
-	bo.b = newEnvIn(t, filepath.Join(t.TempDir(), "aiwb-both-data"), append(with, o.withB...)...)
+	bo.b = newEnv(t, append(with, o.withB...)...)
 	bo.fr = &front{t: t, l: bo.l, h: bo.b.s.RemoteHandler()}
 	bo.fr.start(bo.l.ln)
 	t.Cleanup(bo.fr.stop)
@@ -269,20 +260,6 @@ func newBoth(t *testing.T, o bothOpt) *both {
 // pair is a pair of the rig's first client and the remote server, for its helpers that read a
 // page's events.
 func (bo *both) pair() *pair { return bo.c[0].pair }
-
-// withRuns gives the remote server a run service, as the program wires it. Its agents are the
-// chat manager's: the stand-ins of the rig.
-func (bo *both) withRuns(s *Server) {
-	rs := runs.New(runs.Deps{Store: s.App.St, Emit: s.Bridge, DefaultCwd: s.App.DefaultCwd, HaltWait: 300 * time.Millisecond})
-	if err := rs.Load(); err != nil {
-		bo.t.Fatal(err)
-	}
-	rs.Chats = s.App.Chats
-	s.App.Chats.Runs = rs
-	s.App.Runs, s.Relay.Runs = rs, rs
-	bo.rs = rs
-	bo.t.Cleanup(func() { rs.Shutdown(5 * time.Second) })
-}
 
 // join starts a local server that is a client of the remote server, and waits for its tree.
 func (bo *both) join(id, name, who string, o bothOpt) *side {
@@ -404,7 +381,7 @@ func (u *user) tree(t *testing.T) string {
 		return string(sections[u.entry])
 	}
 	tree := map[string]any{}
-	for _, k := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+	for _, k := range []string{"groups", "boards", "chats", "states", "defaults"} {
 		tree[k] = decode[any](t, string(state[k]))
 	}
 	for _, g := range tree["groups"].([]any) {
@@ -438,15 +415,15 @@ func (u *user) plain(t *testing.T, raw string) string {
 }
 
 // bothTree is the event types that tell a change of a server's tree, and bothContent the ones
-// that tell the content of a chat or a run to who follows it, and bothRole a board's.
+// that tell the content of a chat to who follows it, and bothRole a board's.
 var (
-	bothTree    = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "run", "run_removed"}
-	bothContent = []string{"tree", "chat_items", "sub", "sub_items", "run_detail", "run_activity"}
+	bothTree    = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state"}
+	bothContent = []string{"tree", "chat_items", "sub", "sub_items"}
 	bothRole    = []string{"held", "release_request", "superseded", "rpc"}
 )
 
 // next reads the page's events up to the next event of the remote server, and returns it made
-// plain: an event of the tree, of the content of a chat or a run, or of a board's hold. What a
+// plain: an event of the tree, of the content of a chat, or of a board's hold. What a
 // local server sends of its own (the states of its list, its own tree) is no event of the
 // remote server and is left out. With a mark, the event of that mark (reach) ends the read
 // instead: marked is true then.
@@ -518,8 +495,7 @@ func (bo *both) same(what string, users ...*user) []string {
 	return bo.told(what, users)
 }
 
-// told is same for a change that is told a moment after its call was answered: the events of a
-// run come from the run service's own queue. Each of waits is a type and what the event holds;
+// told is same for a change that is told a moment after its call was answered. Each of waits is a type and what the event holds;
 // each user is read until it was sent every one of them, and then up to the mark of reach.
 func (bo *both) told(what string, users []*user, waits ...[]string) []string {
 	bo.t.Helper()
@@ -563,8 +539,8 @@ func (bo *both) last(what string, evs []string, typ string, has ...string) strin
 }
 
 // level fails unless a fresh GET /api/state hands every user the same tree of the remote
-// server: the same groups in the same order, and the same boards, chats, branch states, runs
-// and defaults. No row says who made it. It returns that tree, as the first user has it.
+// server: the same groups in the same order, and the same boards, chats, branch states and
+// defaults. No row says who made it. It returns that tree, as the first user has it.
 func (bo *both) level(what string, users ...*user) string {
 	bo.t.Helper()
 	first := users[0].tree(bo.t)
@@ -575,54 +551,13 @@ func (bo *both) level(what string, users ...*user) string {
 			bo.t.Fatalf("%s: %s has no tree of the remote server", what, u.who)
 		}
 		l5Unmarked(bo.t, "the tree of "+u.who, tree)
-		for _, f := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+		for _, f := range []string{"groups", "boards", "chats", "states", "defaults"} {
 			if !l5SameList(bo.t, first, tree, f) {
 				bo.t.Fatalf("%s: the %s of %s are\n%s\nand of %s\n%s", what, f, u.who, l5Field(bo.t, tree, f), users[0].who, l5Field(bo.t, first, f))
 			}
 		}
 	}
 	return first
-}
-
-// orchestrator waits until the run has its first turn, and returns the chat of that turn's
-// agent, as the user reads it in the run's detail. The detail names the chat a moment before
-// the engine has made it: the chat is waited for too, so that a read of it finds it.
-func (bo *both) orchestrator(u *user, run string) string {
-	bo.t.Helper()
-	for end := time.Now().Add(waitLimit); ; time.Sleep(5 * time.Millisecond) {
-		status, out := u.call("GET", "/runs/"+run+"/detail", nil)
-		if status == 200 {
-			if d := decode[model.RunDetail](bo.t, out); len(d.Turns) > 0 && d.Turns[0].Agent != "" {
-				if status, out = u.call("GET", "/chats/"+d.Turns[0].Agent, nil); status == 200 {
-					return d.Turns[0].Agent
-				}
-			}
-		}
-		if time.Now().After(end) {
-			bo.t.Fatalf("the run %s has no turn: %d %s", run, status, out)
-		}
-	}
-}
-
-// stopRun stops a run that works, as the user, and waits until it has stopped. The stand-in
-// agent of its turn ends the turn when it is told to: without that the run would stop only when
-// the server does.
-func (bo *both) stopRun(u *user, run string) {
-	bo.t.Helper()
-	// The turn's program is waited for before the stop, so that the stop finds a turn that
-	// works, whose program can be told to end it.
-	ag := bo.sp.of(bo.t, bo.orchestrator(u, run))
-	u.want(bo.t, 200, "POST", "/runs/"+run+"/stop", nil)
-	reply(bo.t, &ag.fakeAgent, "Stopped.", "")
-	for end := time.Now().Add(waitLimit); ; time.Sleep(5 * time.Millisecond) {
-		v := decode[model.RunView](bo.t, u.want(bo.t, 200, "GET", "/runs/"+run, nil))
-		if v.Status == model.RunStopped {
-			return
-		}
-		if time.Now().After(end) {
-			bo.t.Fatalf("the run %s did not stop: %+v", run, v)
-		}
-	}
 }
 
 // untouched runs do and fails when the remote listener got a request meanwhile.

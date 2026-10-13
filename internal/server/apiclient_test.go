@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/agent"
-	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
@@ -289,7 +288,7 @@ func withAgents(sp *apiSpawner) func(*Server) {
 
 // unstartedBy is the client's new chat with this id, which has not started: the page's call, on
 // the listener the client is on. Without more it is a Claude chat in no group; more adds or
-// replaces fields of the body ("group", "board", "run", "agent"), nil removes one.
+// replaces fields of the body ("group", "board", "agent"), nil removes one.
 func unstartedBy(t *testing.T, c *bridgetest.Page, id string, more ...any) model.ChatView {
 	t.Helper()
 	body := map[string]any{"id": id, "agent": "claude", "group": model.Ungrouped}
@@ -521,8 +520,7 @@ func TestAPIClientID(t *testing.T) {
 
 // An API client's state and stream hold the server's whole tree, as the server's own page gets
 // it: every group, board, chat and branch state, whoever made it and archived ones too, and the
-// defaults. They hold nothing of the servers this one connects to, and not the data folder. (The
-// runs of the tree are in apiruns_test.go, on a server with runs.)
+// defaults. They hold nothing of the servers this one connects to, and not the data folder.
 func TestAPIClientSnapshot(t *testing.T) {
 	t.Parallel()
 	sp := &apiSpawner{}
@@ -549,7 +547,7 @@ func TestAPIClientSnapshot(t *testing.T) {
 		}
 	}
 
-	want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "runs", "states"}
+	want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "states"}
 	// tree fails unless an API client's state is the page's in every field the two share: the
 	// lists are what the server's own page gets, as it gets them.
 	tree := func(what, api string) {
@@ -588,9 +586,8 @@ func TestAPIClientSnapshot(t *testing.T) {
 		Boards     []model.Board
 		Chats      []model.ChatView
 		States     []model.BranchState
-		Runs       []json.RawMessage
 	}
-	if s := decode[snap](t, string(state)); len(s.Chats) != 2 || len(s.States) != 2 || s.Runs == nil || len(s.Runs) != 0 ||
+	if s := decode[snap](t, string(state)); len(s.Chats) != 2 || len(s.States) != 2 ||
 		len(s.Groups) != 1 || s.Groups[0].ID != g.ID || s.Groups[0].Name != "Mine" || s.Defaults == nil ||
 		len(s.Boards) != 1 || s.Boards[0].ID != bd.ID || s.Boards[0].Group != g.ID ||
 		s.Home != "/home/owner" || s.DefaultCwd != e.a.DefaultCwd || len(s.Agents) != 3 || len(s.Catalogs) != 3 || s.Catalogs["claude"] == nil {
@@ -842,20 +839,15 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	if got := e.reach(x)[0]; count(got, "chat_removed", chat1) != 1 {
 		t.Errorf("after the delete the client was sent %v", types(got))
 	}
-	// The run routes of the table are called in apiruns_test.go, on a server with runs, the
-	// board routes in apiboards_test.go (TestBoardRoutesOfAnAPIClient), the library routes in
-	// libraryremote_test.go (TestLibraryRoutesOfAnAPIClient) and the two image routes in
-	// remoteimages_test.go (TestImageRoutesOfAnAPIClient).
+	// The board routes of the table are called in apiboards_test.go
+	// (TestBoardRoutesOfAnAPIClient), the library routes in libraryremote_test.go
+	// (TestLibraryRoutesOfAnAPIClient) and the two image routes in remoteimages_test.go
+	// (TestImageRoutesOfAnAPIClient).
 	for _, route := range RemoteRoutes {
-		if !called[route] && !isRunRoute(route) && !isBoardRoute(route) && !isLibraryRoute(route) && !slices.Contains(imagePatterns, route) {
+		if !called[route] && !isBoardRoute(route) && !isLibraryRoute(route) && !slices.Contains(imagePatterns, route) {
 			t.Errorf("the route %s of the table was not called", route)
 		}
 	}
-}
-
-// isRunRoute reports whether the route of the table is one of a run.
-func isRunRoute(route string) bool {
-	return strings.Contains(route, " /api/runs/") || route == "POST /api/runs"
 }
 
 // ---- a new chat ------------------------------------------------------------------
@@ -901,7 +893,7 @@ func TestChatMadeByAnAPIClient(t *testing.T) {
 		{"a server", 400, "server_refused", body(chat1, "server", "local")},
 		{"a server that is blank", 400, "server_refused", body(chat1, "server", "")},
 		{"a server in other letters", 400, "server_refused", strings.Replace(body(chat1, "server", ownID), `"server"`, `"Server"`, 1)},
-		{"no group, board or run", 400, "", body(chat1, "group", nil)},
+		{"no group or board", 400, "", body(chat1, "group", nil)},
 		{"a group that is not there", 400, "", body(chat1, "group", "g_nowhere1")},
 		{"a board that is not there", 404, "not_found", body(chat1, "group", nil, "board", "b_zzzz9999")},
 		{"an id of another form", 400, "", body("c_12345678")},
@@ -933,7 +925,7 @@ func TestChatMadeByAnAPIClient(t *testing.T) {
 
 	// The chat is made where the call says: in a group of the server's, and in none.
 	v := unstartedBy(t, x, chat1, "group", mine.ID)
-	if v.Group != mine.ID || v.Agent != model.Claude || v.Cwd != e.a.DefaultCwd || v.Board != "" || v.Run != "" {
+	if v.Group != mine.ID || v.Agent != model.Claude || v.Cwd != e.a.DefaultCwd || v.Board != "" {
 		t.Fatalf("the new chat: %+v", v)
 	}
 	if loose := unstartedBy(t, x, chat2, "agent", "cursor"); loose.Group != model.Ungrouped || loose.Agent != model.Cursor {
@@ -1168,111 +1160,6 @@ func TestAPIClientWithNoPage(t *testing.T) {
 	st := decode[struct{ Chats []model.ChatView }](t, string(do(t, x, "GET", "/api/state", nil)))
 	if len(st.Chats) != 1 || st.Chats[0].ID != chat1 || !st.Chats[0].Locked {
 		t.Fatalf("the client's chats: %+v", st.Chats)
-	}
-}
-
-// A page that follows the chat of a run's agent still gets that chat's events after API clients
-// connected. An API client lists the run, as everyone does, and not the agent's chat: it gets
-// that chat's events only when it follows it. A client makes a chat on the run as a page does.
-func TestRunAgentsChatBesideAPIClients(t *testing.T) {
-	t.Parallel()
-	l := newListener(t)
-	e := newRunEnv(t)
-	l.set(e.s)
-	l.serve(e.s)
-	said, next := make(chan struct{}, 8), make(chan struct{})
-	e.fake.Script(func(t *agenttest.Turn) {
-		t.Say("first")
-		said <- struct{}{}
-		select {
-		case <-next:
-		case <-t.Interrupted():
-			return
-		}
-		t.Say("second")
-		said <- struct{}{}
-		<-t.Interrupted()
-	})
-	v := e.newRun()
-	e.expect(409, "GET", "/api/runs/"+v.ID+"/detail", "")
-	e.view(200, "POST", "/api/runs/"+v.ID+"/start", `{"goal":"Look around."}`)
-	<-said
-	orch := e.detail(v.ID).Turns[0].Agent
-	e.expect(200, "GET", "/api/chats/"+orch+"/items", "") // the page follows the agent's chat
-
-	x, snapX := l.api(apiX)
-	y, snapY := l.api(apiY)
-	for _, snap := range []string{snapX, snapY} {
-		got := decode[struct {
-			Runs   []model.RunView
-			Chats  []model.ChatView
-			States []model.BranchState
-		}](t, snap)
-		if len(got.Runs) != 1 || got.Runs[0].ID != v.ID || got.Runs[0].Status != model.RunRunning || len(got.Chats) != 0 || len(got.States) != 0 || strings.Contains(snap, orch) {
-			t.Fatalf("an API client's snapshot beside the owner's run: %s", snap)
-		}
-	}
-	// X reads the agent's items: it follows the chat.
-	if got := decode[struct{ Items []model.Item }](t, string(do(t, x, "GET", "/api/chats/"+orch+"/items", nil))); len(got.Items) < 2 {
-		t.Fatalf("the agent's items: %+v", got.Items)
-	}
-	if got := e.s.Bridge.Followers(editorbridge.Chat(orch)); !slices.Contains(got, clientID) || !slices.Contains(got, apiX) || len(got) != 2 {
-		t.Fatalf("the followers of the agent's chat: %v", got)
-	}
-	// The chat of a run's agent is read, never written, by a client as by a page.
-	for _, c := range [][3]string{{"POST", "/messages", `{"text":"hi"}`}, {"PUT", "/draft?rev=0", `{"text":"hi"}`}, {"PATCH", "", `{"name":"mine"}`}} {
-		status, out := x.Do(c[0], "/api/chats/"+orch+c[1], c[2])
-		if got := decode[refusal](t, string(out)); status != 409 || got.Error != chats.ErrRunAgent.Error() {
-			t.Fatalf("%s %s of a run agent's chat by a client: %d %s", c[0], c[1], status, out)
-		}
-	}
-	close(next)
-	<-said
-	e.await("the agent's chat_items at the page, after the API clients connected", func(evs []runTestEvent) bool {
-		return slices.ContainsFunc(evs, func(ev runTestEvent) bool {
-			return ev.Type == "chat_items" && strings.Contains(ev.Raw, orch) && strings.Contains(ev.Raw, "second")
-		})
-	})
-	xs := upTo(t, x, "chat_items", orch, "second")
-	e.expect(200, "POST", "/api/runs/"+v.ID+"/stop", "")
-	e.awaitRun(v.ID, "to stop", func(v model.RunView) bool { return v.Status == model.RunStopped })
-	ys := upTo(t, y, "run", v.ID, `"status":"stopped"`)
-	evs := e.reach(x, y)
-	xs, ys = append(xs, evs[0]...), append(ys, evs[1]...)
-	apiOnly(t, x, xs)
-	apiOnly(t, y, ys)
-	// The follower: the chat's own events, its view too. Both: the run, which every client
-	// lists, and nothing of what is in it, which neither follows.
-	if count(xs, "chat", orch) == 0 {
-		t.Errorf("X, a follower of the agent's chat, got no chat event of it: %v", types(xs))
-	}
-	for who, got := range map[string][]string{"X": xs, "Y": ys} {
-		if count(got, "run", v.ID, `"status":"stopped"`) == 0 {
-			t.Errorf("%s was not told that the owner's run stopped: %v", who, types(got))
-		}
-		for _, typ := range []string{"run_detail", "run_activity", "run_removed"} {
-			if n := count(got, typ); n != 0 {
-				t.Errorf("%s was sent %d %s", who, n, typ)
-			}
-		}
-	}
-	// The other client: nothing of the agent's chat, which is in no list.
-	for _, raw := range ys {
-		if strings.Contains(raw, orch) {
-			t.Errorf("Y, which does not follow the agent's chat, was sent %s", raw)
-		}
-	}
-	// A chat on a run: the new chat that names the run is on it, in the run's folder, with no
-	// group of its own and no mark. Both clients are told.
-	got := unstartedBy(t, x, chat1, "group", nil, "run", v.ID)
-	if got.Run != v.ID || got.Group != "" || got.Cwd != e.cwd {
-		t.Fatalf("the new chat on a run: %+v", got)
-	}
-	if out := do(t, x, "GET", "/api/chats/"+chat1, nil); strings.Contains(string(out), `"client"`) {
-		t.Fatalf("the chat on the run is served with a client mark: %s", out)
-	}
-	if evs := e.reach(x, y); count(evs[0], "chat", chat1) == 0 || count(evs[1], "chat", chat1) == 0 {
-		t.Errorf("after the new chat on a run X was sent %v, Y %v", types(evs[0]), types(evs[1]))
 	}
 }
 
@@ -1742,7 +1629,7 @@ func TestServersPackageAgainstTheListener(t *testing.T) {
 	if !ok || lists.Home != "/home/owner" || lists.DefaultCwd != e.a.DefaultCwd || len(lists.Catalogs) != 3 || lists.Catalogs[model.Claude] == nil || len(lists.Agents) != 3 {
 		t.Fatalf("the lists: %+v, %v", lists, ok)
 	}
-	if got := keysOf(t, h.snaps[0]); !slices.Equal(got, []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "runs", "states", "type"}) {
+	if got := keysOf(t, h.snaps[0]); !slices.Equal(got, []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "states", "type"}) {
 		t.Fatalf("the snapshot the hooks got: %v", got)
 	}
 	if !e.s.Bridge.Known(apiX) {

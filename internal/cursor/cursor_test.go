@@ -1880,3 +1880,88 @@ func TestChildPermission(t *testing.T) {
 		t.Fatalf("perm events %+v", perms)
 	}
 }
+
+// The process is `agent acp`, with no other argument.
+func TestArgv(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, baseScript())
+	a := e.spawn(t, agent.SpawnOptions{})
+	until(t, a, isKind(agent.EvCatalog))
+	b, err := os.ReadFile(e.fake.vars["FAKE_ACP_ARGS"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Split(string(b), "\n"), []string{"acp"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("argv %q, want %q", got, want)
+	}
+}
+
+// A tool of the app's server that the app does not know is not the app's: its call keeps Cursor's
+// presentation and its permission request becomes a card, like a call of another server's tool.
+// The spawn family is the app's whenever MCP is attached.
+func TestUnknownBoardToolIsNotTheApps(t *testing.T) {
+	t.Parallel()
+	var steps []fakeStep
+	for _, c := range [][3]string{{"m1", "board", "no_such_tool"}, {"m2", "board", "spawn_subagent"}, {"m3", "other", "no_such_tool"}} {
+		steps = append(steps,
+			step("update", map[string]any{"sessionUpdate": "tool_call", "toolCallId": c[0], "title": "MCP: tool", "kind": "other", "status": "pending", "rawInput": map[string]any{}}),
+			step("update", map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": c[0], "title": c[1] + ": " + c[2],
+				"rawInput": mcpRawInput(c[1], c[2], map[string]any{"x": "1"})}))
+	}
+	for _, c := range [][3]string{{"m1", "board", "no_such_tool"}, {"m2", "board", "spawn_subagent"}, {"m3", "other", "no_such_tool"}} {
+		steps = append(steps, step("request", map[string]any{"method": "session/request_permission", "params": map[string]any{
+			"sessionId": testSessionID,
+			"toolCall": map[string]any{"toolCallId": c[0], "title": c[1] + ": " + c[2], "kind": "other", "status": "pending",
+				"rawInput": mcpRawInput(c[1], c[2], map[string]any{"x": "1"})},
+			"options": []any{
+				map[string]any{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+				map[string]any{"optionId": "allow-always", "name": "Allow always", "kind": "allow_always"},
+				map[string]any{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+			},
+		}}))
+	}
+	s := baseScript()
+	s["session/prompt"] = append(steps, fakeStep{Result: raw(`{"stopReason":"end_turn"}`)})
+	e := newEnv(t, s)
+	a := e.spawn(t, agent.SpawnOptions{MCP: &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: boardToken}})
+	send(t, a, "go")
+	var perms []agent.Event
+	var names []string
+	until(t, a, func(ev agent.Event) bool {
+		switch ev.Kind {
+		case agent.EvToolInput:
+			names = append(names, ev.ToolName)
+		case agent.EvPermRequest:
+			perms = append(perms, ev)
+			a.Decide(ev.PermID, false)
+		}
+		return ev.Kind == agent.EvTurnEnd
+	})
+	if want := []string{"board: no_such_tool", "mcp__board__spawn_subagent", "other: no_such_tool"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("tool names %q, want %q", names, want)
+	}
+	if len(perms) != 2 || perms[0].ToolID != "m1" || perms[1].ToolID != "m3" {
+		t.Errorf("permission requests %+v, want those of m1 and m3", perms)
+	}
+}
+
+// Cursor's answer to session/load for an id it does not have (cursor-agent 2026.10.01).
+const loadNotFound = `{"code":-32602,"message":"Invalid params","data":{"message":"Session \"` + testSessionID + `\" not found"}}`
+
+// A resume of a session Cursor does not have fails Send with Cursor's own words. No event says so
+// and the process stays, for the caller to close.
+func TestResumeUnknownSession(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, fakeScript{"session/load": {{Error: raw(loadNotFound)}}})
+	a := e.spawn(t, agent.SpawnOptions{SessionID: testSessionID, Resume: true})
+	err := a.Send([]agent.ContentBlock{{Text: "hi"}})
+	const want = `session/load: Invalid params {"message":"Session \"` + testSessionID + `\" not found"}`
+	if err == nil || err.Error() != want {
+		t.Fatalf("Send error %v\nwant %s", err, want)
+	}
+	select {
+	case ev := <-a.Events():
+		t.Errorf("event %+v, want none", ev)
+	case <-time.After(100 * time.Millisecond):
+	}
+}

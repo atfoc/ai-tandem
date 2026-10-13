@@ -176,7 +176,7 @@ func TestSecondStreamWithConnectedIDReplacesFirst(t *testing.T) {
 	take(t, b, "A", "b2", false, "held")
 	take(t, b, "W", "b2", false, "waiting")
 	expectBoard(t, a1, "release_request", "b2")
-	if !b.Follow("A", Chat("c1")) || !b.Follow("A", Run("r1")) {
+	if !b.Follow("A", Chat("c1")) || !b.Follow("A", Board("b1")) {
 		t.Fatal("Follow refused a connected client")
 	}
 	done := goCall(b, CallSpec{Method: "tool", Board: "b1"}, 10*time.Second)
@@ -195,7 +195,7 @@ func TestSecondStreamWithConnectedIDReplacesFirst(t *testing.T) {
 	if b.Holds("A", "b1") || b.Holds("A", "b2") || !b.Holds("W", "b2") {
 		t.Fatal("the new stream holds a board of the old one")
 	}
-	if b.Followed(Chat("c1")) || b.Followed(Run("r1")) {
+	if b.Followed(Chat("c1")) || b.Followed(Board("b1")) {
 		t.Fatal("the new stream follows what the old one did")
 	}
 	if !b.Known("A") {
@@ -204,7 +204,7 @@ func TestSecondStreamWithConnectedIDReplacesFirst(t *testing.T) {
 	// The new stream is the client: it gets the events and can take the board again.
 	b.Broadcast(map[string]any{"type": "groups"})
 	a2.Expect("groups")
-	b.SendChat("c1", false, map[string]any{"type": "chat_items"})
+	b.SendChat("c1", map[string]any{"type": "chat_items"})
 	b.Broadcast(map[string]any{"type": "catalog"})
 	a2.Expect("catalog")
 	take(t, b, "A", "b1", true, "held")
@@ -1003,13 +1003,13 @@ func TestStreamEndFailsAllCalls(t *testing.T) {
 
 // ---- events (AC41) ----
 
-// One row of the table at a time, with a page that follows the chat and the run and one that
+// One row of the table at a time, with a page that follows the chat and the board and one that
 // does not.
 func TestEventsTable(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	f, n := open(t, srv, "F"), open(t, srv, "N")
-	if !b.Follow("F", Chat("c1")) || !b.Follow("F", Run("r1")) {
+	if !b.Follow("F", Chat("c1")) || !b.Follow("F", Board("b1")) {
 		t.Fatal("Follow refused a connected client")
 	}
 	seq := 0
@@ -1018,7 +1018,7 @@ func TestEventsTable(t *testing.T) {
 	sent := func(t *testing.T, typ string, both bool) {
 		t.Helper()
 		b.Follow("F", Chat("c1"))
-		b.Follow("F", Run("r1"))
+		b.Follow("F", Board("b1"))
 		seq++
 		b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
 		for _, p := range []*bridgetest.Page{f, n} {
@@ -1042,7 +1042,7 @@ func TestEventsTable(t *testing.T) {
 			case rule.APIOnly:
 				// No page is sent one: each gets the mark that follows it and nothing before.
 				b.Broadcast(ev)
-				b.SendChat("c1", false, ev)
+				b.SendChat("c1", ev)
 				seq++
 				b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
 				for _, p := range []*bridgetest.Page{f, n} {
@@ -1057,69 +1057,59 @@ func TestEventsTable(t *testing.T) {
 				b.Broadcast(ev)
 				sent(t, typ, true)
 				// Through the item senders it goes by its class too.
-				b.SendRun("r2", ev)
+				b.SendBoard("b2", ev)
 				sent(t, typ, true)
-				b.SendChat("c2", true, ev)
+				b.SendChat("c2", ev)
 				sent(t, typ, true)
 			case rule.Per == PerChat:
-				b.SendChat("c1", false, ev)
+				b.SendChat("c1", ev)
 				if typ == "chat_removed" && b.Followed(Chat("c1")) {
 					t.Fatal("the removed chat is still followed")
 				}
 				sent(t, typ, rule.Class == List)
-				b.SendChat("c1", true, ev) // a run agent's chat: its followers only
-				sent(t, typ, false)
 				// A chat that nobody follows.
-				b.SendChat("c2", false, ev)
+				b.SendChat("c2", ev)
 				if rule.Class == List {
 					sent(t, typ, true)
+				} else {
+					seq++
+					b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
+					f.Expect("catalog")
+					n.Expect("catalog")
 				}
-				b.SendChat("c2", true, ev)
-				seq++
-				b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
-				f.Expect("catalog")
-				n.Expect("catalog")
-				// Sent as an event of a run, or of no item, it goes to every page, and no
+				// Sent as an event of a board, or of no item, it goes to every page, and no
 				// follow ends.
-				b.SendRun("r1", ev)
+				b.SendBoard("b1", ev)
 				b.Broadcast(ev)
-				if !b.Followed(Chat("c1")) || !b.Followed(Run("r1")) {
+				if !b.Followed(Chat("c1")) || !b.Followed(Board("b1")) {
 					t.Fatal("a misdirected removal ended a follow")
 				}
 				for _, p := range []*bridgetest.Page{f, n} {
 					p.Expect(typ)
 				}
 				sent(t, typ, true)
-			case rule.Per == PerRun:
-				b.SendRun("r1", ev)
-				if typ == "run_removed" && b.Followed(Run("r1")) {
-					t.Fatal("the removed run is still followed")
-				}
-				sent(t, typ, rule.Class == List)
-				b.SendRun("r2", ev)
-				if rule.Class == List {
-					sent(t, typ, true)
-				}
-				b.SendChat("c1", false, ev)
-				sent(t, typ, true)
-				b.Broadcast(ev)
-				sent(t, typ, true)
 			case rule.Per == PerBoard:
 				if rule.Class != List {
 					t.Fatalf("a %v type of a board", rule.Class)
 				}
 				b.SendBoard("b1", ev) // every page has every board
+				if typ == "board_removed" && b.Followed(Board("b1")) {
+					t.Fatal("the removed board is still followed")
+				}
+				sent(t, typ, true)
+				// A board that nobody follows.
+				b.SendBoard("b2", ev)
 				sent(t, typ, true)
 				// Sent as an event of no item, or of a chat, it goes to every page too.
 				b.Broadcast(ev)
 				sent(t, typ, true)
-				b.SendChat("c1", true, ev)
+				b.SendChat("c1", ev)
 				sent(t, typ, true)
 			}
 		})
 	}
 	t.Run("a type outside the table", func(t *testing.T) {
-		for _, send := range []func(any){b.Broadcast, func(ev any) { b.SendChat("c2", true, ev) }, func(ev any) { b.SendRun("r2", ev) }} {
+		for _, send := range []func(any){b.Broadcast, func(ev any) { b.SendChat("c2", ev) }, func(ev any) { b.SendBoard("b2", ev) }} {
 			send(map[string]any{"type": "brand_new"})
 			sent(t, "brand_new", true)
 		}
@@ -1131,7 +1121,7 @@ func TestEventsTable(t *testing.T) {
 		}
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		if !b.logged["brand_new"] || !b.logged["chat_items"] || !b.logged["run"] || b.logged["groups"] || b.logged["catalog"] {
+		if !b.logged["brand_new"] || !b.logged["chat_items"] || !b.logged["board"] || b.logged["groups"] || b.logged["catalog"] {
 			t.Fatalf("logged = %v", b.logged)
 		}
 	})
@@ -1156,8 +1146,6 @@ func TestEventsRows(t *testing.T) {
 		"chat":        {List, PerChat, false, false}, "chat_removed": {List, PerChat, false, false}, "branch_state": {List, PerChat, false, false},
 		"tree": {Content, PerChat, false, false}, "chat_items": {Content, PerChat, false, false},
 		"sub": {Content, PerChat, false, false}, "sub_items": {Content, PerChat, false, false},
-		"run": {List, PerRun, false, false}, "run_removed": {List, PerRun, false, false},
-		"run_detail": {Content, PerRun, false, false}, "run_activity": {Content, PerRun, false, false},
 	}
 	if len(Events) != len(want) {
 		t.Fatalf("%d rows, want %d", len(Events), len(want))
@@ -1174,35 +1162,31 @@ func TestContentOnlyAfterFollow(t *testing.T) {
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
 	items := map[string]any{"type": "chat_items", "chat": "c1"}
-	detail := map[string]any{"type": "run_detail", "run": "r1"}
 	mark := map[string]any{"type": "groups"}
 
-	b.SendChat("c1", false, items)
-	b.SendRun("r1", detail)
+	b.SendChat("c1", items)
 	b.Broadcast(mark)
-	a.Expect("groups") // neither content event came first
+	a.Expect("groups") // the content event did not come first
 
 	b.Follow("A", Chat("c1"))
-	b.SendChat("c1", false, items)
-	b.SendChat("c2", false, items) // another chat
-	b.SendRun("c1", detail)        // a run with the chat's id
+	b.Follow("A", Board("c2")) // a board with the other chat's id: no follow of that chat
+	b.SendChat("c1", items)
+	b.SendChat("c2", items) // another chat
+	b.Broadcast(mark)
 	a.Expect("chat_items")
-	b.Follow("A", Run("r1"))
-	b.SendRun("r1", detail)
-	a.Expect("run_detail")
+	a.Expect("groups") // one content event, of the chat followed
 
 	// After a reconnect, only after a new follow.
 	a2 := open(t, srv, "A")
 	a.ExpectEnded()
-	b.SendChat("c1", false, items)
-	b.SendRun("r1", detail)
+	b.SendChat("c1", items)
 	b.Broadcast(mark)
 	a2.Expect("groups")
-	if b.Followed(Chat("c1")) || len(b.Followers(Run("r1"))) != 0 {
+	if b.Followed(Chat("c1")) || len(b.Followers(Board("c2"))) != 0 {
 		t.Fatal("a follow outlived its stream")
 	}
 	b.Follow("A", Chat("c1"))
-	b.SendChat("c1", false, items)
+	b.SendChat("c1", items)
 	a2.Expect("chat_items")
 
 	// A follow needs an open stream.
@@ -1230,9 +1214,9 @@ func TestTwoFollowersGetTheSameBytes(t *testing.T) {
 	}
 	for i := range 20 {
 		if i%2 == 0 {
-			b.SendChat("c1", false, items{"chat_items", "c1", []int{i}}) // a struct: the type is read from its JSON
+			b.SendChat("c1", items{"chat_items", "c1", []int{i}}) // a struct: the type is read from its JSON
 		} else {
-			b.SendChat("c1", true, map[string]any{"type": "sub_items", "chat": "c1", "n": i})
+			b.SendChat("c1", map[string]any{"type": "sub_items", "chat": "c1", "n": i})
 		}
 	}
 	for i := range 20 {
@@ -1253,19 +1237,20 @@ func TestUnfollow(t *testing.T) {
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	b.Follow("A", Chat("c1"))
 	b.Follow("B", Chat("c1"))
-	b.Follow("A", Run("c1"))
+	b.Follow("A", Board("c1"))
 	b.Unfollow("A", Chat("c1"))
 	b.Unfollow("A", Chat("c9")) // not followed
 	b.Unfollow("nobody", Chat("c1"))
-	b.SendChat("c1", false, map[string]any{"type": "tree"})
+	b.SendChat("c1", map[string]any{"type": "tree"})
 	c.Expect("tree")
-	b.SendRun("c1", map[string]any{"type": "run_activity"}) // the run's follow stays
-	a.Expect("run_activity")
+	if got := b.Followers(Board("c1")); len(got) != 1 || got[0] != "A" { // the board's follow stays
+		t.Fatalf("Followers of the board = %v", got)
+	}
 	if got := b.Followers(Chat("c1")); len(got) != 1 || got[0] != "B" {
 		t.Fatalf("Followers = %v", got)
 	}
 	b.Unfollow("B", Chat("c1"))
-	if b.Followed(Chat("c1")) || !b.Followed(Run("c1")) {
+	if b.Followed(Chat("c1")) || !b.Followed(Board("c1")) {
 		t.Fatal("Followed is wrong after the unfollows")
 	}
 	a.ExpectNone(50 * time.Millisecond)
@@ -1279,23 +1264,23 @@ func TestForget(t *testing.T) {
 	for _, id := range []string{"A", "B"} {
 		b.Follow(id, Chat("c1"))
 		b.Follow(id, Chat("c2"))
-		b.Follow(id, Run("r1"))
+		b.Follow(id, Board("b1"))
 	}
 	b.Forget(Chat("c1"))
-	if b.Followed(Chat("c1")) || !b.Followed(Chat("c2")) || !b.Followed(Run("r1")) {
+	if b.Followed(Chat("c1")) || !b.Followed(Chat("c2")) || !b.Followed(Board("b1")) {
 		t.Fatal("Forget dropped the wrong follows")
 	}
 	// A removal sent through the bridge forgets by itself, after the followers got it.
-	b.SendChat("c2", true, map[string]any{"type": "chat_removed", "id": "c2"})
+	b.SendChat("c2", map[string]any{"type": "chat_removed", "id": "c2"})
 	a.Expect("chat_removed")
 	c.Expect("chat_removed")
-	b.SendRun("r1", map[string]any{"type": "run_removed", "id": "r1"})
-	a.Expect("run_removed")
-	c.Expect("run_removed")
-	if b.Followed(Chat("c2")) || b.Followed(Run("r1")) {
+	b.SendBoard("b1", map[string]any{"type": "board_removed", "id": "b1"})
+	a.Expect("board_removed")
+	c.Expect("board_removed")
+	if b.Followed(Chat("c2")) || b.Followed(Board("b1")) {
 		t.Fatal("a removed item is still followed")
 	}
-	b.SendChat("c2", false, map[string]any{"type": "chat_items"})
+	b.SendChat("c2", map[string]any{"type": "chat_items"})
 	a.ExpectNone(50 * time.Millisecond)
 	c.ExpectNone(10 * time.Millisecond)
 }

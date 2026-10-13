@@ -190,7 +190,7 @@ function chatsOf(server: string) {
   };
 }
 /** A server's tree as the local server holds it while that server is connected. */
-const treeOf = (server: string) => ({ groups: [], boards: [], runs: [], defaults: { groups: {} }, ...chatsOf(server) });
+const treeOf = (server: string) => ({ groups: [], boards: [], defaults: { groups: {} }, ...chatsOf(server) });
 /** The snapshot: this computer's chats, the server list, and the tree of each server that is connected. */
 function world(o: { connected?: string[] } = {}) {
   const connected = o.connected ?? BOTH;
@@ -212,7 +212,7 @@ async function serverAway(server: string) {
 }
 /** The chat on screen, as Sidebar.tsx select sets it: what was kept of a section only for being on screen goes when it is left. */
 function show(chat: string | null) {
-  store.setState({ sel: { board: null, run: null, chat } });
+  store.setState({ sel: { board: null, chat } });
   conn.dropLeft();
 }
 
@@ -278,7 +278,7 @@ beforeEach(async () => {
   for (const k of Object.keys(storage)) delete storage[k];
   fake.away = new Set(); fake.down = false; fake.there.clear(); fake.held = null;
   fake.lost.clear(); fake.ups = null; fake.says = { upload: null, save: null };
-  store.setState({ sel: { board: null, run: null, chat: null }, moves: {} });
+  store.setState({ sel: { board: null, chat: null }, moves: {} });
   conn.connect();
   await ev({ type: "hello" });
   await ev(world()); // both servers are connected: the page has their trees, as they are now
@@ -473,12 +473,11 @@ test("the page's own connection opens again: the draft of a chat of this compute
 test("a page that was reloaded saves what the page before it kept of this computer's chats, and leaves what is no such chat's branch", async () => {
   localStorage.setItem(drafts.draftKey("c_5", "main"), JSON.stringify({ text: "kept by the page before", base: 0 }));
   localStorage.setItem(drafts.draftKey("c_gone", "main"), JSON.stringify({ text: "of a chat that is no more", base: 0 }));
-  localStorage.setItem(drafts.legacyDraftKey("r_1"), JSON.stringify({ text: "a run's goal" }));
   conn.connect(); // a new stream, as a page that loads opens it
   await streamBack();
   assert.deepEqual(puts(), [["c_5", "main", "kept by the page before", 0]]);
   assert.deepEqual([stored("c_5").draft, copy("c_5")], [{ text: "kept by the page before" }, null]);
-  assert.deepEqual([copy("c_gone")?.text, JSON.parse(localStorage.getItem(drafts.legacyDraftKey("r_1"))!)], ["of a chat that is no more", { text: "a run's goal" }], "what is no chat's branch is left");
+  assert.equal(copy("c_gone")?.text, "of a chat that is no more", "what is no chat's branch is left");
   // the chat is opened again: the composer has the text, and saves nothing more
   const again = open("c_5");
   await settle(DELAY + 5);
@@ -757,8 +756,7 @@ test("a kept draft names an image the server no longer holds: it is saved withou
 });
 
 // ---- the answers of the Go servers, as they are on the wire (plans/remote-server-sections-contract.md 3.5): each status, code and sentence a
-// page can get for an upload and for a draft save of a section's chat, with its server connected, not connected or too old, the chat gone there,
-// and for a run agent's chat
+// page can get for an upload and for a draft save of a section's chat, with its server connected, not connected or too old, or the chat gone there.
 
 test("every answer of the servers to an upload that is no image: the image leaves the strip, the line names the file with that server's sentence, nothing is in the draft, and it is not tried again", async () => {
   const answers: Said[] = [
@@ -768,7 +766,6 @@ test("every answer of the servers to an upload that is no image: the image leave
     [504, "no_answer", "Studio did not answer."],                                         // within the 60 seconds of an image call
     [502, "bad_answer", "Studio gave an answer that cannot be read."],
     [404, "not_found", "no such chat"],                                                   // the chat is gone there: that server's own answer
-    [409, "", "this chat is one of a run's agents: the run drives it"],                   // a run agent's chat, here and on a run's server
     [413, "image_too_large", "the image is too large"],                                   // that server's own refusals, handed on as they came
     [415, "image_type", "the image is of a type a chat does not take"],
     [409, "image_cap", "the chat holds too many images that were not sent"],
@@ -804,7 +801,6 @@ test("every answer of the servers to a draft save with images that was not taken
     [502, "bad_answer", "Studio gave an answer that cannot be read."],
     [404, "not_found", "no such chat"],
     [400, "replace_refused", "a draft is saved on its counter"],
-    [409, "", "this chat is one of a run's agents: the run drives it"],
     [400, "", "json: cannot unmarshal string into Go struct field .Images of type []model.Image"],
   ];
   show(K1);

@@ -3,7 +3,7 @@
 // client→server over plain POSTs routed here by the HTTP layer.
 //
 // The bridge keeps one record per open stream: the boards that client holds and waits for, the
-// chats and runs it follows, and the board calls it was asked. One client at a time holds a
+// chats it follows, and the board calls it was asked. One client at a time holds a
 // board. A client that takes a held board waits: the holder is asked to release (so it can save
 // its pending changes) and loses the board after a short handover delay if it does not answer.
 // Events go only to the clients they concern (see Events). An API client is sent the types of
@@ -95,7 +95,7 @@ type client struct {
 	acted   uint64           // the bridge's clock at its last call with the header; 0 = only opened a stream
 	holds   map[string]bool  // boards held
 	waits   map[string]bool  // boards waited for
-	follows map[Item]bool    // chats and runs followed
+	follows map[Item]bool    // chats followed
 	calls   map[string]*call // open board calls by rpc id
 	flushed bool             // answered server_stopping
 }

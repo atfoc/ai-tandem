@@ -95,13 +95,6 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		unlock()
 		return model.Subagent{}, ErrShutdown
 	}
-	// A run's agent calls this from inside its turn. Its token outlives the process (it is revoked
-	// with the chat), so a call that comes once the run has stopped the agent (StopOwned), or the
-	// turn has ended, would start a subagent nothing in the run stops any more.
-	if c.role != "" && !turnRunning(c) {
-		unlock()
-		return model.Subagent{}, ErrTurnOver
-	}
 	// The caller: the chat's agent, or one of its subagents that still runs (its token is
 	// revoked when it ends, so another is a call that raced with its end).
 	var from *sub
@@ -396,7 +389,6 @@ func (m *Manager) subSpawnOptions(c *Chat, sid string, leaf bool, kind model.Age
 		opts.SessionID = uuid()
 	}
 	opts.Dir = m.chatDir(opts.ChatID)
-	runOptions(c, &opts, true)
 	return opts
 }
 
@@ -529,13 +521,6 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		ev.Sub = sid
 		beforeView := view(c)
 		ups := c.tr.Apply(ev)
-		if c.role != "" {
-			// Nobody answers for a run agent's subagent either (see denyAtOnce).
-			ups = append(ups, denyAtOnce(c, sid, ev.PermID)...)
-			if err := c.tr.Flush(false); err != nil {
-				log.Printf("chats: flush %s: %v", c.meta.ID, err)
-			}
-		}
 		out.emitItems(c, ups)
 		if view(c) != beforeView {
 			out.emitChat(c)
@@ -562,9 +547,6 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 	case agent.EvTurnEnd:
 		if s.meta.Status != model.SubRunning {
 			return
-		}
-		if costSubEnd(c, s, ev) {
-			m.logSave(c) // the chat's cost is in chat.json; a subagent's record does not hold it
 		}
 		st, why, errText := model.SubCompleted, endTurn, ev.Error
 		switch {
@@ -600,9 +582,6 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 			st, why = model.SubFailed, endFailed
 		} else {
 			msg = "process ended"
-		}
-		if !before.Waiting && costSubLost(c, s.meta.Kind) { // it ended in a turn without a turn end
-			m.logSave(c)
 		}
 		m.finalizeAppSub(c, s, st, msg, why, &out, &aft)
 		return

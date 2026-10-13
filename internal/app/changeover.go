@@ -6,18 +6,17 @@ import (
 
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/runs"
 )
 
 // DropRemoteGroup is the change-over of a server from before level 5, which put everything an API
 // client made into one group, "Remote", and remembered that group's id in state.json
 // ("remoteGroup"). It removes the group the file names, whatever its name is now and whoever put
-// things in it: its boards, its runs and its plain chats go to no group and keep their own archive
-// marks (a chat on a board or on a run stays there), and a group nested in it goes to the top
+// things in it: its boards and its plain chats go to no group and keep their own archive
+// marks (a chat on a board stays there), and a group nested in it goes to the top
 // level with what is in it. Then the id is forgotten, so this runs once. A group that is merely
 // named "Remote" is an ordinary group and stays.
 //
-// It is called at the server's start, after boards, runs and chats are loaded and before a
+// It is called at the server's start, after boards and chats are loaded and before a
 // request is served: nobody is told. An error leaves the id in state.json and the next start
 // goes on where this one stopped: what was moved out stays out.
 func (a *App) DropRemoteGroup() error {
@@ -39,11 +38,6 @@ func (a *App) DropRemoteGroup() error {
 		}
 		for _, c := range a.plainChatsIn(in) {
 			if err := a.Chats.Move(c.ID, model.Ungrouped); err != nil && !errors.Is(err, chats.ErrNotFound) {
-				return err
-			}
-		}
-		for _, r := range a.runsIn(in) {
-			if err := a.Runs.Move(r.ID, model.Ungrouped); err != nil && !errors.Is(err, runs.ErrNotFound) {
 				return err
 			}
 		}

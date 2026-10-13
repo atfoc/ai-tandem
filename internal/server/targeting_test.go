@@ -9,16 +9,15 @@ import (
 	"testing"
 
 	"ai-whiteboard/internal/agent"
-	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 )
 
-// Which clients an event reaches, with the real senders (the app, the boards, the chat manager and
-// the run service) and stand-in pages (bridgetest) against the real handler: a list event goes to
-// every page, a content event of a chat or a run only to the pages that follow it, which a page
-// does by reading it. The env's own client "A" makes the calls the tests do not give to a page.
+// Which clients an event reaches, with the real senders (the app, the boards and the chat
+// manager) and stand-in pages (bridgetest) against the real handler: a list event goes to every
+// page, a content event of a chat only to the pages that follow it, which a page does by reading
+// it. The env's own client "A" makes the calls the tests do not give to a page.
 
 // typeOf is the "type" of an event as the server sent it.
 func typeOf(raw string) string {
@@ -50,7 +49,7 @@ func (e *env) sent(pages ...*bridgetest.Page) [][]string {
 }
 
 // upTo reads the page's events up to the first of this type that names all of has, and returns
-// them, that one last. The events of a run come from its queue, so a test waits for them here.
+// them, that one last. It waits for an event that is sent after the call that caused it answered.
 func upTo(t *testing.T, p *bridgetest.Page, typ string, has ...string) []string {
 	t.Helper()
 	var got []string
@@ -298,101 +297,5 @@ func TestAConnectLeavesTheFollowsOfOthers(t *testing.T) {
 	got := e.sent(p, q)
 	if count(got[0], "chat_items", id) == 0 || count(got[1], "chat_items") != 0 {
 		t.Fatalf("the first page: %v; the new one: %v", types(got[0]), types(got[1]))
-	}
-}
-
-// The rows of a run, with the real run service and engine: run and run_removed go to every
-// page, run_detail and run_activity to the page that read the run's detail. The chat of a run's
-// agent is in nobody's list: its view and its items go only to the page that read its items, and
-// a page that connects meanwhile takes nothing from it.
-func TestEventsOfARunReachWhoTheyConcern(t *testing.T) {
-	t.Parallel()
-	e := newRunEnvOn(t, quickTicks{}) // the test waits for a tick
-	said, next := make(chan struct{}, 8), make(chan struct{})
-	e.fake.Script(func(t *agenttest.Turn) {
-		t.Say("first")
-		t.Tool("Bash", map[string]any{"command": "ls -la"}, "total 0", false)
-		said <- struct{}{}
-		select {
-		case <-next:
-		case <-t.Interrupted():
-			return
-		}
-		t.Say("second")
-		said <- struct{}{}
-		<-t.Interrupted()
-	})
-	f, o := e.page("F"), e.page("O")
-	// ofAgent is how many of the events are of the chat of the run's agent.
-	ofAgent := func(evs []string, orch string) (n int) {
-		for _, typ := range []string{"chat", "chat_items", "sub", "sub_items", "branch_state", "tree"} {
-			n += count(evs, typ, orch)
-		}
-		return n
-	}
-
-	// run: every page.
-	v := e.newRun()
-	upTo(t, f, "run", v.ID)
-	upTo(t, o, "run", v.ID)
-
-	// The page reads the run's detail and so follows it; a draft has none to give yet.
-	if status, out := f.Do("GET", "/api/runs/"+v.ID+"/detail", nil); status != 409 {
-		t.Fatalf("the detail of a draft: %d %s", status, out)
-	}
-	e.view(200, "POST", "/api/runs/"+v.ID+"/start", `{"goal":"Look around."}`)
-	<-said
-	orch := e.detail(v.ID).Turns[0].Agent
-	// run_detail and run_activity: the follower. run, and the defaults the start records (sent
-	// from the runs' queue), go to every page.
-	fg := upTo(t, f, "run_activity", v.ID, orch)
-	og := e.sent(o)[0]
-	reached(t, "the start", fg, og, false, "run_activity", v.ID)
-	reached(t, "the start", fg, og, false, "run_detail", v.ID)
-	reached(t, "the start", fg, og, true, "run", v.ID)
-	reached(t, "the start", fg, og, true, "defaults")
-	if n, m := ofAgent(fg, orch), ofAgent(og, orch); n != 0 || m != 0 {
-		t.Fatalf("events of the agent's chat before its items were read: %d and %d", n, m)
-	}
-
-	// The follower reads the agent's items; another page connects.
-	open(t, f, orch)
-	q := e.page("Q")
-	if got := e.s.Bridge.Followers(editorbridge.Chat(orch)); !slices.Equal(got, []string{"F"}) {
-		t.Fatalf("followers of the agent's chat: %v", got)
-	}
-	close(next)
-	<-said
-	fg = upTo(t, f, "chat_items", orch, "second")
-	// The stop ends the agent's turn: its view changes.
-	e.expect(200, "POST", "/api/runs/"+v.ID+"/stop", "")
-	e.awaitRun(v.ID, "to stop", func(v model.RunView) bool { return v.Status == model.RunStopped })
-	fg = append(fg, upTo(t, f, "chat", orch)...)
-	fg = append(fg, e.sent(f)[0]...)
-	rest := e.sent(o, q)
-	for i, got := range rest {
-		if n := ofAgent(got, orch); n != 0 {
-			t.Errorf("page %d that did not read the agent's items got %d of its events", i, n)
-		}
-		if count(got, "run_detail") != 0 || count(got, "run_activity") != 0 {
-			t.Errorf("page %d that does not follow the run: %v", i, types(got))
-		}
-		if count(got, "run", v.ID) == 0 {
-			t.Errorf("page %d got no run event of the stop: %v", i, types(got))
-		}
-	}
-	if count(fg, "branch_state", orch) != 0 || count(fg, "tree", orch) != 0 {
-		t.Errorf("a state record or a tree event of the agent's chat: %v", types(fg))
-	}
-
-	// run_removed: every page, and the follows of the run and of its agent's chat end.
-	e.expect(200, "DELETE", "/api/runs/"+v.ID, "")
-	for _, p := range []*bridgetest.Page{f, o, q} {
-		upTo(t, p, "run_removed", v.ID)
-	}
-	for _, it := range []editorbridge.Item{editorbridge.Run(v.ID), editorbridge.Chat(orch)} {
-		if got := e.s.Bridge.Followers(it); len(got) != 0 {
-			t.Errorf("followers of %v after the delete: %v", it, got)
-		}
 	}
 }

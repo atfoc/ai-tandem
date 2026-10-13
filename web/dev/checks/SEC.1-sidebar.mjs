@@ -17,6 +17,7 @@ const footOf = (page) => page.evaluate(() => {
 
 await check("SEC.1 the sidebar: the local part, then one section per server of the list, and one foot", async ({ url, browser, fail, note }) => {
   // ---- no other server: no section
+  await mockEval('chats.c_old_experiment = chat("c_old_experiment", { name: "Old experiment", group: UNGROUPED, archived: true, archiveOp: "op_arch1" }); items.c_old_experiment = [];', url);
   const bare = await openPage({ url, browser });
   if ((await sectionsSeen(bare.page)).length) fail(`with no other server the sidebar has the sections ${J(await sectionsSeen(bare.page))}`);
   if (await bare.page.locator(".side-section").count()) fail("with no other server a .side-section is drawn");

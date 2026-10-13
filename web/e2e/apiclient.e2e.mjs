@@ -31,16 +31,15 @@
 //   rectangles are in the board's file, the API client's stream got no event that is a page's
 //   alone, the sidebar shows the API client's chat in the group it was made in and no group
 //   "Remote", and the page's console has no error.
-// Part 2: the page makes a run, starts it and opens its orchestrator's transcript. A second API
-//   client connects, follows that same chat and makes a chat of its own. Checked: the transcript
-//   on the page still gets its new items afterwards.
+// Part 2: the page sends a message in its chat whose turn takes about 20 s. A second API client
+//   connects, follows that same chat and makes a chat of its own. Checked: the thread on the
+//   page still gets its new items afterwards.
 //
 // It prints one line per check and exits with 1 when a check failed (2 when it could not run).
 //
 // Environment (all optional):
 //   AIWB_E2E_BIN       server binary                    (default: built into the temp folder)
 //   AIWB_E2E_CLIENT    built web client                 (default web/dist)
-//   AIWB_E2E_NO_RUN=1  leave part 2 out (reported as skipped, never silently dropped)
 //   AIWB_E2E_KEEP=1    keep the temp folder (server log, screenshots) after a run that passed;
 //                      after a failed run it is always kept, and its path is printed
 import { spawn, execFileSync } from "node:child_process";
@@ -54,14 +53,13 @@ import { fileURLToPath } from "node:url";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const CLIENT = path.resolve(process.env.AIWB_E2E_CLIENT || path.join(repo, "web/dist"));
-const WITH_RUN = process.env.AIWB_E2E_NO_RUN !== "1";
 
 // Everything the run makes: the binary, the data folder, the work folder, the log, screenshots.
 // realpath: on macOS the temp folder is a symlink, and the server reports folders resolved.
 const OUT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-apiclient-")));
 const BIN = path.resolve(process.env.AIWB_E2E_BIN || path.join(OUT, "aiwb"));
 const HOME = path.join(OUT, "home");
-const WORK = path.join(OUT, "work"); // the chats' and the run's folder: a git repository, outside the data folder
+const WORK = path.join(OUT, "work"); // the chats' folder, outside the data folder
 const FAKE = path.join(OUT, "bin", "fake-claude");
 const CURSOR_CFG = path.join(OUT, "cursor-config"); // empty: the server must not write into ~/.cursor
 const LOG = path.join(OUT, "server.log");
@@ -86,7 +84,6 @@ function check(name, pass, detail = "") {
   console.log(`${pass ? "ok  " : "FAIL"} - ${name}${d ? `  (${d})` : ""}`);
   return pass;
 }
-const skipped = (name, why) => console.log(`skip - ${name}  (${why})`);
 
 // ---- the scratch server
 
@@ -115,12 +112,7 @@ function prepare() {
   if (!process.env.AIWB_E2E_BIN) execFileSync("go", ["build", "-o", BIN, "./cmd/ai-whiteboard"], { cwd: repo, stdio: ["ignore", "inherit", "inherit"] });
   fs.copyFileSync(path.join(repo, "internal/agenttest/fake-claude"), FAKE);
   fs.chmodSync(FAKE, 0o755);
-  // A run starts only in a folder that is a git repository with a commit.
-  const git = (...args) => execFileSync("git", args, { cwd: WORK, stdio: ["ignore", "pipe", "pipe"] });
   fs.writeFileSync(path.join(WORK, "README.md"), "scratch\n");
-  git("init", "-q", "-b", "main");
-  git("add", ".");
-  git("-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "first");
 }
 
 async function startServer() {
@@ -294,16 +286,17 @@ async function pageChat(page) {
   await pageBox(page).waitFor();
   return id;
 }
+// pageReplies: the agent's messages in the thread of the chat on the page.
+const pageReplies = (page) => page.locator(".board-panel .thread .msg.assistant").allInnerTexts();
 // pageSays sends text in the chat on the page and waits for a new reply of the stand-in agent in
 // the thread on screen; returns that reply, or { err }.
 async function pageSays(page, text) {
-  const replies = () => page.locator(".board-panel .thread .msg.assistant").allInnerTexts();
-  const before = (await replies()).length;
+  const before = (await pageReplies(page)).length;
   await pageBox(page).click();
   await pageBox(page).fill(text);
   await pageBox(page).press("Enter");
   return waitFor(`the reply to "${text}" on the page`, async () => {
-    const now = await replies();
+    const now = await pageReplies(page);
     return now.length > before && now.slice(before).find((t) => /FAKE\(/.test(t) && t.includes(text)) || null;
   }, { timeout: 20000 }).then((reply) => ({ reply }), (e) => ({ err: e.message }));
 }
@@ -361,7 +354,7 @@ async function part1(page) {
     // The client sees the owner's things: the whole tree, as the owner's own page gets it.
     const got = await api.call("GET", "/api/state");
     const sees = (t) => !!t && t.groups?.some((g) => g.id === group && g.name === GROUP) && t.boards?.some((b) => b.id === board) && t.chats?.some((c) => c.id === own && c.board === board)
-      && t.states?.some((x) => x.chat === own) && Array.isArray(t.runs) && !!t.defaults;
+      && t.states?.some((x) => x.chat === own) && !!t.defaults;
     check("its snapshot, and GET /api/state, have the server's whole tree: the owner's group, the owner's board and the owner's chat with its branch state",
       sees(snap) && got.status === 200 && sees(got.json), `groups ${snap.groups?.map((g) => g.name).join(", ")}; boards ${snap.boards?.length}; chats ${snap.chats?.length}; states ${snap.states?.length}`);
     const extra = NEVER_IN_SNAPSHOT.filter((k) => k in snap || k in (got.json ?? {}));
@@ -457,82 +450,51 @@ async function part1(page) {
     check('the server has the chat in that group, off every board, with no mark of who made it, and has no group "Remote"',
       mine?.group === group && !mine?.board && !("client" in (mine ?? {})) && !st.groups?.some((g) => g.name === "Remote") && !("remoteGroup" in st), JSON.stringify(mine && { group: mine.group, board: mine.board ?? null, client: mine.client ?? null }));
     await shot(page, "part1");
-    return { board, rects };
+    return { board, rects, chat: own };
   } finally {
     api.close();
   }
 }
 
-// ---- part 2: a run's orchestrator transcript on the page, beside a new API client
-
-// transcript: what the run's agent pane shows on the page (null: no transcript on screen).
-const transcript = (page) => page.evaluate(() => {
-  const foot = document.querySelector(".agent-foot");
-  const t = foot?.parentElement?.querySelector(".thread");
-  return t ? { blocks: t.querySelectorAll("*").length, text: t.innerText } : null;
-});
+// ---- part 2: the chat the page follows, followed by a new API client too
 
 async function part2(page, held) {
-  // A run through the page: New run, the goal, Enter.
-  const before = new Set((await state()).runs.map((r) => r.id));
-  await page.click("button.icon-btn.new");
-  await menuItem(page, /^\s*New run\s*$/).click();
-  const run = await waitFor("the page selects its new run", async () => { const r = (await sel(page)).run; return r && !before.has(r) ? r : null; });
-  const goal = page.locator(".run-composer .composer-input");
-  await goal.waitFor();
-  // The orchestrator's first message holds the goal twice, so the stand-in agent sleeps twice:
-  // its first turn takes about 20 s.
-  await goal.fill("[[if This is turn 1.]] [[sleep 10]] work");
-  const send = page.locator(".run-composer button.send");
-  const ready = await waitFor("the run's start is not blocked", async () => !(await send.isDisabled()), { timeout: 15000 }).catch(() => false);
-  if (!ready) {
-    check("the page starts a run", false, `blocked: ${await send.getAttribute("title")}; folder: ${await page.locator(".run-composer .ctx-chip").innerText().catch(() => "?")}`);
-    await shot(page, "part2-blocked");
-    return;
-  }
-  await goal.press("Enter");
-  // The orchestrator's transcript: turn 1 in the timeline's lane, then "Transcript ›" in its detail.
-  const turn = page.locator('.tl button[data-turn="1"]');
-  const started = await turn.waitFor({ timeout: 20000 }).then(() => true, () => false);
-  check("the page starts a run and its first turn shows in the timeline", started, started ? `run ${run}` : (await page.locator(".composer-err, .run-note").allInnerTexts()).join(" ; "));
-  if (!started) { await shot(page, "part2-not-started"); return; }
-  await turn.click();
-  const link = page.locator("button.link[data-agent]", { hasText: "Transcript" });
-  await link.waitFor();
-  const orch = await link.getAttribute("data-agent");
-  // The turn shows before its agent's chat exists (internal/runs/turn.go: the turn is committed,
-  // the chat is made after). A click in that gap leaves the pane on "Couldn't load this agent's
-  // transcript: no such chat" until Retry, which is not what this script is about: wait for the chat.
-  await waitFor("the orchestrator's chat exists", async () => (await fetch(`${BASE}/api/chats/${orch}`)).ok, { timeout: 20000 });
-  await link.click();
-  const open = await waitFor("the transcript on the page", async () => (await transcript(page))?.text.includes("This is turn 1.")).catch(() => false);
-  check("the page opens the orchestrator's transcript", open === true, `chat ${orch}`);
-  if (!open) { await shot(page, "part2-no-transcript"); return; }
+  // The page's chat (part 1 made it) gets a message whose turn takes long: the stand-in agent
+  // sleeps 20 s before it answers.
+  const text = "page beside a second API client";
+  const status = async () => (await state()).chats.find((c) => c.id === held.chat)?.status;
+  await waitFor("the earlier turn of the page's chat has ended", async () => (await status()) === "ready").catch(() => {});
+  const before = (await pageReplies(page)).length;
+  await pageBox(page).click();
+  await pageBox(page).fill(`[[sleep 20]] ${text}`);
+  await pageBox(page).press("Enter");
+  const busy = await waitFor("the turn of the page's chat runs", async () => { const now = await status(); return now && now !== "ready" ? now : null; }).catch((e) => ({ err: e.message }));
+  check("the page sends a message in its chat and the turn runs", !busy.err, busy.err ?? `chat ${held.chat} is "${busy}"`);
+  if (busy.err) { await shot(page, "part2-not-started"); return; }
 
   // A new API client: a stream of its own, a follow of the very chat the page reads, a chat of its own.
   const api = apiClient();
   try {
     await api.connect();
-    const read = await api.call("GET", `/api/chats/${orch}/items`);
+    const read = await api.call("GET", `/api/chats/${held.chat}/items`);
     const chat = randomUUID();
     const made = await api.call("POST", "/api/chats", { id: chat, agent: "claude", group: "__ungrouped__" });
     const first = await api.call("POST", `/api/chats/${chat}/messages`, { text: "hello from the API client" });
     const answered = await waitFor("the API client's chat is answered", async () => /FAKE\([^)]*\): hello from the API client/.test(textOf(await items(api, chat)))).catch(() => false);
-    check("a second API client connects, reads the orchestrator's chat and makes a chat of its own, which is answered",
+    check("a second API client connects, reads the page's chat and makes a chat of its own, which is answered",
       read.status === 200 && made.status === 200 && made.json?.id === chat && first.status === 200 && answered === true,
       `items -> ${read.status} (${read.json?.items?.length ?? "?"} items), POST /api/chats -> ${made.status}, messages -> ${first.status}`);
 
-    // The orchestrator still sleeps here (about 20 s from its start). What the page shows from now on
-    // can only come over the page's own follow.
-    const at = await transcript(page);
-    check("the orchestrator's turn is still running when the API client is connected", !!at && !/FAKE\(/.test(at.text), `${at?.blocks} nodes in the transcript`);
-    const later = await waitFor("the transcript on the page gets the orchestrator's reply", async () => {
-      const t = await transcript(page);
-      return t && /FAKE\(/.test(t.text) && t.text !== at.text ? t : null;
-    }, { timeout: 40000, every: 250 }).catch((e) => ({ err: e.message }));
-    check("the transcript on the page still updates after the API client's connect", !later.err,
-      later.err ?? `${at.blocks} -> ${later.blocks} nodes, the reply came ${Math.round((Date.now() - api.connectedAt()) / 100) / 10} s after the connect`);
-    const seen = await waitFor("the API client's stream has events of the orchestrator's chat", () => api.events.some((e) => JSON.stringify(e).includes(orch) && e.type !== "snapshot"), { timeout: 3000 }).catch(() => false);
+    // The agent of the page's chat still sleeps here (20 s from its start). What the page shows
+    // from now on can only come over the page's own follow.
+    const at = await pageReplies(page);
+    check("the turn of the page's chat is still running when the API client is connected", at.length === before, `${at.length} replies in the thread, ${before} before the message`);
+    const later = await waitFor("the thread on the page gets the reply", async () =>
+      (await pageReplies(page)).slice(before).find((t) => /FAKE\(/.test(t) && t.includes(text)) || null,
+      { timeout: 40000, every: 250 }).then((reply) => ({ reply }), (e) => ({ err: e.message }));
+    check("the thread on the page still updates after the API client's connect", !later.err,
+      later.err ?? `the reply came ${Math.round((Date.now() - api.connectedAt()) / 100) / 10} s after the connect: ${later.reply}`);
+    const seen = await waitFor("the API client's stream has events of the page's chat", () => api.events.some((e) => JSON.stringify(e).includes(held.chat) && e.type !== "snapshot"), { timeout: 3000 }).catch(() => false);
     check("the API client got the same chat's events on its own stream", seen === true, `${api.events.length} events`);
 
     const tk = await takeover(page);
@@ -553,8 +515,7 @@ try {
   console.log(`# server on ${BASE}, remote listener on https://127.0.0.1:${REMOTE_PORT}, files in ${OUT}`);
   const page = await openPage();
   const held = await part1(page);
-  if (WITH_RUN) await part2(page, held);
-  else skipped("part 2: the run's transcript beside an API client", "AIWB_E2E_NO_RUN=1");
+  await part2(page, held);
   check("the page's console has no error", page.errors.length === 0, page.errors.slice(0, 5).join(" ; "));
   check("no request of the page failed", page.failedRequests.length === 0, page.failedRequests.slice(0, 5).join(" ; "));
   code = failed ? 1 : 0;

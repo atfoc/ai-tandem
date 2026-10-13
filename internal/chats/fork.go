@@ -49,9 +49,6 @@ var errForkGone = errors.New("this fork was made at a point Claude has no id for
 // while it starts, but no client sees the chat, and nothing is saved or emitted for it, until the
 // provider has confirmed the fork. When anything fails nothing is left of it.
 func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
-	if err := m.person(id); err != nil {
-		return model.ChatView{}, err
-	}
 	var loaded outbox // what loading the source's transcript sends
 	src, err := m.branchChat(id, req.Branch)
 	if err != nil {
@@ -202,11 +199,6 @@ func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*C
 			return nil, none, boards.ErrArchived
 		}
 	}
-	if parent.Run != "" { // the fork is a chat on the same run
-		if _, err := m.openRun(parent.Run); err != nil {
-			return nil, none, err
-		}
-	}
 
 	mc, cm, err := m.choose(src.meta.Agent, model.ModelChoice{Model: src.meta.Model, Effort: src.meta.Effort}, req.Model, req.Effort)
 	if err != nil {
@@ -226,8 +218,7 @@ func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*C
 	meta.SourceCtx = ctxOf(src.meta)
 	meta.ID = uuid()
 	meta.Board = parent.Board
-	meta.Run = parent.Run
-	meta.Group = parent.Group // empty for a board chat and for a chat on a run
+	meta.Group = parent.Group // empty for a board chat
 	meta.Name = title + " (fork)"
 	if draft != nil {
 		meta.Drafts = map[string]*model.Draft{model.MainBranch: draft}
@@ -277,10 +268,9 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 // a session id of its own, and what follows from the prefix. Its model and effort are mc, the source's or the ones
 // chosen for it (see choose); window is the context window of mc's model, 0 when it is not known,
 // and is taken only for a model other than the source's. It is never a copy of the file. The
-// caller sets the id and what differs between a fork and a branch; addUnlisted gives the token. A
-// fork or branch of a chat on a run is on that run.
+// caller sets the id and what differs between a fork and a branch; addUnlisted gives the token.
 func prefixMeta(src model.ChatMeta, items []model.Item, at int, mc model.ModelChoice, window int) model.ChatMeta {
-	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Cwd: src.Cwd,
+	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Cwd: src.Cwd,
 		Model: mc.Model, Effort: mc.Effort, Created: time.Now()}
 	if src.Subagents != nil {
 		sub := *src.Subagents
@@ -369,15 +359,12 @@ func sentPast(items []model.Item, count int) bool {
 // over either: unfinished text, a tool call without a result and an undecided permission request
 // in the copied items are closed in the copy (transcript.CloseAll). src's own stay as they are.
 func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, error) {
-	m.setRoot(meta) // before the copy makes the folder; a branch's id resolves through its chat's
 	if err := m.copyPrefix(src, meta.ID, at); err != nil {
-		m.dropRoot(meta.ID)
 		return nil, err
 	}
 	tr, err := transcript.Load(m.itemsPath(meta.ID))
 	if err != nil {
 		os.RemoveAll(m.chatDir(meta.ID))
-		m.dropRoot(meta.ID)
 		return nil, err
 	}
 	m.extrasMu.Lock()
@@ -514,7 +501,6 @@ func (m *Manager) dropUnlisted(c *Chat, forked bool) {
 	if err := os.RemoveAll(m.chatDir(id)); err != nil {
 		log.Printf("chats: remove %s: %v", id, err)
 	}
-	m.dropRoot(id) // a branch's id has none
 	fk, _ := m.Spawners[kind].(agent.Forker)
 	if !forked || fk == nil {
 		closeAgents([]agent.Agent{ag})

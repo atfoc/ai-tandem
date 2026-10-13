@@ -147,13 +147,7 @@ type env struct {
 // newEnv starts a server; each of with sets up the Server before its handler is built.
 func newEnv(t *testing.T, with ...func(*Server)) *env {
 	t.Helper()
-	return newEnvIn(t, t.TempDir(), with...)
-}
-
-// newEnvIn is newEnv with the data folder root: for a server whose runs start, which refuse a
-// folder whose path holds the data folder's name, so that name must be one no other path has.
-func newEnvIn(t *testing.T, root string, with ...func(*Server)) *env {
-	t.Helper()
+	root := t.TempDir()
 	st, err := store.Open(store.NewPaths(root))
 	if err != nil {
 		t.Fatal(err)

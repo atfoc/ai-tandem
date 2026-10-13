@@ -11,8 +11,8 @@ import (
 func TestSectionNoServerFields(t *testing.T) {
 	gone := map[string]bool{"server": true, "gone": true, "unmoved": true, "moveError": true, "start": true, "was": true,
 		"remoteStart": true, "draftReplaced": true}
-	for _, v := range []any{ChatView{}, BranchState{}, Board{}, RunView{}, Defaults{}, GroupDefaults{}, ServerDefaults{},
-		ChatMeta{}, RunMeta{}, Group{}} {
+	for _, v := range []any{ChatView{}, BranchState{}, Board{}, Defaults{}, GroupDefaults{}, ServerDefaults{},
+		ChatMeta{}, Group{}} {
 		typ := reflect.TypeOf(v)
 		for _, f := range reflect.VisibleFields(typ) {
 			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")

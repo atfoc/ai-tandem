@@ -132,10 +132,8 @@ func TestSectionInEveryOtherStateOfAnEntry(t *testing.T) {
 			for _, call := range stateCalls() {
 				call.refused(f, p, f.entry, when, http.StatusServiceUnavailable, "server_unreachable", c.sentence)
 			}
-			for _, rest := range []string{"/chats/" + farChatA + "/unfollow", "/runs/" + farRunA + "/unfollow"} {
-				if got := f.good(p, "POST", f.on(rest), ""); !reflect.DeepEqual(got, map[string]any{"ok": true}) {
-					t.Errorf("%s, %s: %v", when, rest, got)
-				}
+			if got := f.good(p, "POST", f.on("/chats/"+farChatA+"/unfollow"), ""); !reflect.DeepEqual(got, map[string]any{"ok": true}) {
+				t.Errorf("%s, the unfollow of a chat: %v", when, got)
 			}
 			if got := f.good(p, "POST", f.on("/boards/"+farBoardA+"/release"), ""); !reflect.DeepEqual(got, map[string]any{"state": "none"}) {
 				t.Errorf("%s, the release of a board no page holds: %v", when, got)

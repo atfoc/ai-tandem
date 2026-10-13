@@ -84,7 +84,7 @@ func TestSectionInEachState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pr := wiredWaits(t, root, true, w)
+	pr := wiredWaits(t, root, w)
 	page := pr.page(t, "page")
 	read := "/api/on/" + entry + "/chats/" + farChat
 	// refused checks that a read and a write for a thing of the entry are refused with the
@@ -124,14 +124,14 @@ func TestSectionInEachState(t *testing.T) {
 	// Connected, to a server with nothing on it: a tree, and no list of it is null.
 	close(answer)
 	empty := tree(0, "the tree of the server with nothing on it")
-	for _, list := range []string{`"groups":[]`, `"boards":[]`, `"chats":[]`, `"states":[]`, `"runs":[]`, `"defaults":{`} {
+	for _, list := range []string{`"groups":[]`, `"boards":[]`, `"chats":[]`, `"states":[]`, `"defaults":{`} {
 		if !strings.Contains(empty.Raw, list) {
 			t.Fatalf("the tree of a server with nothing on it lacks %s: %s", list, empty.Raw)
 		}
 	}
 	until(t, "the entry is connected", func() bool { return pr.shown(t, entry).view.State == servers.StateConnected })
-	if s := pr.shown(t, entry); s.tree == nil || s.tree.Groups == nil || s.tree.Boards == nil || s.tree.Chats == nil || s.tree.States == nil || s.tree.Runs == nil ||
-		len(s.tree.Groups)+len(s.tree.Boards)+len(s.tree.Chats)+len(s.tree.States)+len(s.tree.Runs) != 0 {
+	if s := pr.shown(t, entry); s.tree == nil || s.tree.Groups == nil || s.tree.Boards == nil || s.tree.Chats == nil || s.tree.States == nil ||
+		len(s.tree.Groups)+len(s.tree.Boards)+len(s.tree.Chats)+len(s.tree.States) != 0 {
 		t.Fatalf("the section of a server with nothing on it: %s", s.parts["sections"])
 	}
 	if got := pr.call(t, "page", "GET", read, nil); got.Status != http.StatusOK || !strings.Contains(got.Raw, "Read there") {
@@ -150,17 +150,16 @@ func TestSectionInEachState(t *testing.T) {
 	mark = page.mark()
 	st.Restart()
 	back := tree(mark, "the tree of the server that is back")
-	if !strings.Contains(back.Raw, farChat) || !strings.Contains(back.Raw, farDraft) || !strings.Contains(back.Raw, farRun) || strings.Contains(back.Raw, "collapsed") {
+	if !strings.Contains(back.Raw, farChat) || !strings.Contains(back.Raw, farDraft) || strings.Contains(back.Raw, "collapsed") {
 		t.Fatalf("the tree of the server that is back: %s", back.Raw)
 	}
 	until(t, "the entry is connected again", func() bool { return pr.shown(t, entry).view.State == servers.StateConnected })
 	s := pr.shown(t, entry)
 	if s.tree == nil || len(s.tree.Groups) != 1 || s.tree.Groups[0].Name != farGroupName || len(s.tree.Boards) != 1 || s.tree.Boards[0].ID != farBoard ||
-		len(s.tree.Chats) != 2 || s.tree.Chats[1].Draft == nil || s.tree.Chats[1].Draft.Text != farDraft || len(s.tree.States) != 2 ||
-		len(s.tree.Runs) != 1 || s.tree.Runs[0].Draft == nil || s.tree.Runs[0].Draft.Text != farGoal || len(s.tree.Defaults.Groups) != 1 {
+		len(s.tree.Chats) != 2 || s.tree.Chats[1].Draft == nil || s.tree.Chats[1].Draft.Text != farDraft || len(s.tree.States) != 2 || len(s.tree.Defaults.Groups) != 1 {
 		t.Fatalf("the section of the server that is back: %s", s.parts["sections"])
 	}
-	for _, list := range []string{"groups", "boards", "chats", "states", "runs", "defaults"} {
+	for _, list := range []string{"groups", "boards", "chats", "states", "defaults"} {
 		for _, mark := range farMarks() {
 			if bytes.Contains(s.parts[list], []byte(mark)) {
 				t.Errorf("this computer's %s hold %s of the entry's server: %s", list, mark, s.parts[list])

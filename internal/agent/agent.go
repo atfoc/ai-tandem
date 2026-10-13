@@ -13,20 +13,6 @@ import (
 // The chat manager re-exports it as chats.ErrFolderMissing.
 var ErrFolderMissing = errors.New("folder not found")
 
-// ErrNoSession: Resume was asked for a session the provider does not have (or, with NeedHistory,
-// one that holds nothing). Cursor's and pi's Send return an error for which
-// errors.Is(err, ErrNoSession) is true; Claude reports EvTurnEnd{NoSession: true} before any Send.
-var ErrNoSession = errors.New("no such session")
-
-// NoSession is an error that reads as text and matches ErrNoSession with errors.Is: an adapter
-// keeps the provider's own words and still gives the one signal.
-func NoSession(text string) error { return noSessionError(text) }
-
-type noSessionError string
-
-func (e noSessionError) Error() string        { return string(e) }
-func (e noSessionError) Is(target error) bool { return target == ErrNoSession }
-
 type SpawnOptions struct {
 	ChatID    string
 	SessionID string // Claude: the id to create or resume; Cursor: the id to load ("" = new session)
@@ -44,24 +30,9 @@ type SpawnOptions struct {
 	NoSpawn bool
 	Point   string // Claude's ReadContextSplit only: the fork-point id the session is read up to ("" = all of it)
 
-	// Dir is the folder of the chat object ChatID names; "" = <AppRoot>/chats/<ChatID>, as before.
+	// Dir is the folder of the chat object ChatID names; "" = <AppRoot>/chats/<ChatID>.
 	// (pi keeps its session files in <Dir>/pi and passes Dir as AIWB_CHAT_DIR.)
 	Dir string
-	// MCPTools, when not nil, is the exact list of this app's MCP tools (bare names such as
-	// "spawn_subagent" or "get_run") the process may call without being asked. nil = derived from
-	// BoardID and NoSpawn. An empty non-nil list means none.
-	MCPTools []string
-	// Unattended: nobody watches this process. It must never wait for a person (no permission
-	// request, no question, no plan approval), and Close ends everything it started that can be found.
-	// Not found, and so left running, is a process that a shell command detached from the agent
-	// (`cmd &` inside a command that has finished: its parent is then pid 1). That limit is accepted.
-	Unattended bool
-	// ReadOnly: the process cannot create, change or delete files. It can still read and call
-	// its MCP tools.
-	ReadOnly bool
-	// NeedHistory, with Resume: fail with ErrNoSession when the session exists but holds no turn
-	// (Cursor loads it empty; pi silently creates it). Without it such a resume behaves as before.
-	NeedHistory bool
 }
 
 type BoardAccess struct {
@@ -143,10 +114,10 @@ type Agent interface {
 	Interrupt() error
 	Decide(requestID string, allow bool) error
 	// Close ends the process: its input is closed, and what has not exited by itself after a grace
-	// period is signalled. Claude is killed after 3 s (an unattended one with its group and the
-	// groups of its commands) and Close does not wait for that. pi's group gets SIGTERM after 3 s
-	// and SIGKILL 3 s later; Close does not wait either. Cursor's group gets SIGTERM after 0.3 s
-	// and SIGKILL 3 s later, and Close returns only when the process has ended (within about 7 s).
+	// period is signalled. Claude is killed after 3 s and Close does not wait for that. pi's group
+	// gets SIGTERM after 3 s and SIGKILL 3 s later; Close does not wait either. Cursor's group gets
+	// SIGTERM after 0.3 s and SIGKILL 3 s later, and Close returns only when the process has ended
+	// (within about 7 s).
 	// A Send that has not returned when Close is called returns an error.
 	Close()
 }
@@ -218,9 +189,6 @@ type Event struct {
 	CumTokens model.TokenCount
 	HasTokens bool
 	Final     string // Claude: the result line's result text (the turn's final message)
-	// NoSession: the session to resume does not exist (Claude; it comes before any Send, with
-	// Error set, and the process then exits). Cursor and pi report it as Send's error, ErrNoSession.
-	NoSession bool
 	ExitErr   string
 	// Sub is the parent's tool call id (Claude's Agent tool_use, Cursor's Task tool_call) of the
 	// subagent this event belongs to. EvText*, EvTool*, EvThinking and EvSub with Sub set belong to

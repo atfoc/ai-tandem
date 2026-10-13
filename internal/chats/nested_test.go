@@ -632,57 +632,26 @@ func TestNestedPermissionRequest(t *testing.T) {
 	}
 }
 
-// A subagent with several turns: its context numbers follow its last turn, and its cost is what
-// its process came to, each turn counted once. One stopped while it waits lost no turn.
-func TestSeveralTurnsCostAndContext(t *testing.T) {
+// A subagent with several turns: its context numbers follow its last turn.
+func TestSeveralTurnsContext(t *testing.T) {
 	t.Parallel()
-	e, _ := runEnv(t)
-	v := e.onRun(model.Claude) // cost is kept for a chat on a run
-	e.limits(v.ID, 2, model.MaxSubCap)
-	e.send(v.ID, "go", "")
-	e.m.naming.Wait()
-	e.claude.last(t).emit(t, agent.Event{Kind: agent.EvTurnEnd})
-	id := v.ID
+	e := newEnv(t)
+	id, _ := e.nested(2)
 	a, pa := e.child(id, "", "delegate")
 	_, pb := e.child(id, a.ID, "one")
-	tok := func(in, out int64) model.TokenCount { return model.TokenCount{In: in, Out: out} }
 
-	pa.emit(t, agent.Event{Kind: agent.EvUsage, CtxIn: 1000, CtxWindow: 200000},
-		agent.Event{Kind: agent.EvTurnEnd, HasCost: true, CostUSD: 0.10, HasTokens: true, CumTokens: tok(100, 10)})
+	pa.emit(t, agent.Event{Kind: agent.EvUsage, CtxIn: 1000, CtxWindow: 200000}, agent.Event{Kind: agent.EvTurnEnd})
 	if s := e.sub(id, a.ID); !s.Waiting || s.Tokens != 1000 || s.Window != 200000 {
 		t.Fatalf("after its first turn: %+v", s)
 	}
-	if got := e.cost(id); got.USD != 0.10 || got.Tokens != tok(100, 10) {
-		t.Fatalf("cost after its first turn: %+v", got)
-	}
-	pb.emit(t, agent.Event{Kind: agent.EvText, Text: "b"}, agent.Event{Kind: agent.EvTurnEnd, HasCost: true, CostUSD: 0.02, HasTokens: true, CumTokens: tok(20, 2)})
+	pb.emit(t, agent.Event{Kind: agent.EvText, Text: "b"}, agent.Event{Kind: agent.EvTurnEnd})
 	e.m.handoffs.Wait()
-	// Its second turn: the process reports its total again, which has grown.
-	pa.emit(t, agent.Event{Kind: agent.EvUsage, CtxIn: 2500}, agent.Event{Kind: agent.EvText, Text: "all in"},
-		agent.Event{Kind: agent.EvTurnEnd, HasCost: true, CostUSD: 0.25, HasTokens: true, CumTokens: tok(260, 30)})
+	// Its second turn reports the context again, which has grown; the window is the one it named.
+	pa.emit(t, agent.Event{Kind: agent.EvUsage, CtxIn: 2500}, agent.Event{Kind: agent.EvText, Text: "all in"}, agent.Event{Kind: agent.EvTurnEnd})
 	e.m.handoffs.Wait()
 	s := e.sub(id, a.ID)
 	if s.Status != model.SubCompleted || s.Tokens != 2500 || s.Window != 200000 || s.Last != "all in" {
 		t.Fatalf("after its second turn: %+v", s)
-	}
-	got := e.cost(id)
-	if d := got.USD - 0.27; d > 1e-9 || d < -1e-9 || got.Tokens != tok(280, 32) || got.Partial {
-		t.Fatalf("cost of the chat: %+v, want 0.27 (0.25 and 0.02) and the tokens once", got)
-	}
-
-	// Stopped between turns, nothing is lost; stopped in a turn, that turn is.
-	w, pw := e.child(id, "", "waits")
-	e.child(id, w.ID, "under it")
-	pw.emit(t, agent.Event{Kind: agent.EvTurnEnd, HasCost: true, CostUSD: 0.05})
-	if !e.sub(id, w.ID).Waiting {
-		t.Fatal("it does not wait")
-	}
-	if err := e.m.StopSubagent(id, w.ID); err != nil {
-		t.Fatal(err)
-	}
-	// The one under it was in its turn: that turn's cost is lost, the waiting one's is not.
-	if lost := e.runMeta(id, false).Cost.Lost; lost != 1 {
-		t.Fatalf("%d lost turns after stopping a waiting subagent with one running under it, want that one's", lost)
 	}
 }
 

@@ -36,7 +36,7 @@ while :; do sleep 1; done
 // Claude chat, a Cursor chat, the Claude sign-in check (`auth status`, the first step of its
 // model-list probe) and the Cursor model-list probe the server starts at startup.
 func TestStopEndsAgentProcesses(t *testing.T) {
-	serverTest(t, "TestCloseUnattendedEndsWhatItStarted (internal/claude)", "TestCloseEndsTheGroup (internal/cursor)", "TestSignalGroupAndStarted (internal/agent)")
+	serverTest(t, "TestCloseKillsOnlyTheProcess (internal/claude)", "TestCloseEndsTheGroup (internal/cursor)", "TestSignalGroup (internal/agent)")
 	in := newInstance(t)
 	fakes := t.TempDir()
 	in.claude = filepath.Join(fakes, "claude")
