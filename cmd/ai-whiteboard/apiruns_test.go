@@ -21,6 +21,7 @@ import (
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/server"
+	"ai-whiteboard/internal/servers"
 )
 
 // ---- a whole server with a remote listener, for the runs of an API client -----------------------
@@ -85,6 +86,7 @@ func (a *apiRunServer) request(ctx context.Context, client, method, path string,
 	}
 	req.Header.Set(remote.SecretHeader, a.secret)
 	req.Header.Set(server.ClientHeader, client)
+	req.Header.Set(servers.LevelHeader, testLevel)
 	if rd != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -113,7 +115,7 @@ func (a *apiRunServer) api(t *testing.T, client, method, path string, body, out 
 	return status, string(raw)
 }
 
-// apiStarted is the answer of a start call.
+// apiStarted is the answer of the start call of before level 5.
 type apiStarted struct {
 	OK      bool           `json:"ok"`
 	Started bool           `json:"started"`
@@ -123,13 +125,15 @@ type apiStarted struct {
 	Code    string         `json:"code"`
 }
 
-// apiStartBody is the body of a start call for a Claude run in cwd with this goal.
+// apiStartBody is what a Claude run in cwd with this goal is made of: the body of the start call
+// of before, and the parts of the page's calls that make and start a run now (apiNewRun).
 func apiStartBody(cwd, goal string) map[string]any {
 	return map[string]any{"agent": "claude", "tiers": tiersOn("haiku"), "cwd": cwd,
 		"settings": map[string]any{"maxTurns": 12}, "goal": goal}
 }
 
-// startCall is PUT /api/runs/{id} by client.
+// startCall is PUT /api/runs/{id} by client: the start call of before level 5, which made a run
+// and started it in one call. No listener serves it any more.
 func (a *apiRunServer) startCall(t *testing.T, client, id string, body map[string]any) (int, apiStarted, string) {
 	t.Helper()
 	var got apiStarted
@@ -137,14 +141,54 @@ func (a *apiRunServer) startCall(t *testing.T, client, id string, body map[strin
 	return status, got, raw
 }
 
-// mustStart is a start call that has to answer 200 with the run started.
-func (a *apiRunServer) mustStart(t *testing.T, client, id string, body map[string]any) apiStarted {
+// apiDraft is POST /api/runs by client: a run that has not started, in no group, with the
+// choices of body (apiStartBody; its goal is left for the start).
+func (a *apiRunServer) apiDraft(t *testing.T, client, name string, body map[string]any) model.RunView {
 	t.Helper()
-	status, got, raw := a.startCall(t, client, id, body)
-	if status != http.StatusOK || !got.OK || !got.Started || got.Run == nil || got.Run.ID != id {
-		t.Fatalf("the start call of %s: status %d: %s", id, status, raw)
+	var v model.RunView
+	if status, raw := a.api(t, client, "POST", "/api/runs", map[string]any{"group": model.Ungrouped, "name": name}, &v); status != http.StatusOK || v.ID == "" || v.Status != model.RunDraft {
+		t.Fatalf("the new run of %s: status %d: %s", client, status, raw)
 	}
-	return got
+	patch := map[string]any{}
+	for k, val := range body {
+		if k != "goal" {
+			patch[k] = val
+		}
+	}
+	id := v.ID
+	if status, raw := a.api(t, client, "PATCH", "/api/runs/"+id, patch, &v); status != http.StatusOK || v.Status != model.RunDraft || v.Blocked != "" || v.FolderMissing || v.Cwd != body["cwd"] {
+		t.Fatalf("the choices of the run %s: status %d: %s", id, status, raw)
+	}
+	return v
+}
+
+// apiStart is POST /api/runs/{id}/start by client, with the answer decoded when it is a 200.
+func (a *apiRunServer) apiStart(t *testing.T, client, id, goal string) (int, model.RunView, string) {
+	t.Helper()
+	status, raw, err := a.request(context.Background(), client, "POST", "/api/runs/"+id+"/start", map[string]any{"goal": goal})
+	if err != nil {
+		t.Fatalf("the start of %s: %v", id, err)
+	}
+	var v model.RunView
+	if status == http.StatusOK {
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatalf("the start of %s: %v in %s", id, err, raw)
+		}
+	}
+	return status, v, string(raw)
+}
+
+// apiNewRun makes a run as a client does at level 5, with the page's calls: the run that has not
+// started, its choices, and its start with the goal of body. It returns the running run.
+func (a *apiRunServer) apiNewRun(t *testing.T, client, name string, body map[string]any) model.RunView {
+	t.Helper()
+	id := a.apiDraft(t, client, name, body).ID
+	goal, _ := body["goal"].(string)
+	status, v, raw := a.apiStart(t, client, id, goal)
+	if status != http.StatusOK || v.ID != id || v.Status != model.RunRunning || v.Group != model.Ungrouped {
+		t.Fatalf("the start of %s: status %d: %s", id, status, raw)
+	}
+	return v
 }
 
 // waitEnded reads the run on the remote listener, with no stream, until it is no longer live.
@@ -236,10 +280,11 @@ func (a *apiRunServer) pageState(t *testing.T) apiPageState {
 	return st
 }
 
-// apiState is GET /api/state of an API client: its own runs and chats.
+// apiState is GET /api/state of an API client: the server's groups, runs and chats.
 type apiState struct {
-	Runs  []model.RunView
-	Chats []model.ChatView
+	Groups []model.Group
+	Runs   []model.RunView
+	Chats  []model.ChatView
 }
 
 func (a *apiRunServer) apiState(t *testing.T, client string) apiState {
@@ -327,98 +372,158 @@ const apiHeld = "<<sleep 600>>"
 
 // ---- the tests ----------------------------------------------------------------------------------
 
-// A refused start call leaves nothing: no folder under <home>/runs, no group in state.json, no
-// run and no group in the page's state. The start call that is accepted afterwards makes the
-// group "Remote" and the one folder, which shows that the checks before it looked at the right
-// places.
-func TestAPIRunRefusedStartLeavesNothing(t *testing.T) {
-	serverTest(t, "TestRunStartCallRefusals, TestRunStartCallGroupCannotBeMade (internal/server)")
+// The calls of before level 5 are gone and leave nothing: the start call, the draft check, the
+// make of a chat and a client's creation of a board are not served, on the remote listener (404)
+// and on the server's own port, and neither they nor the refusals of the page's calls leave a
+// run, a chat, a board or a group. The run a client then makes with the page's calls is in no
+// group: no group "Remote" is made for it.
+func TestAPIRunCallsOfBeforeLeaveNothing(t *testing.T) {
+	serverTest(t, "TestRemoteServesOnlyTheTable, TestRunTableRoutesServeAnAPIClient (internal/server)")
 	repo, _ := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
-	goal := apiGoal(t, "Refused, then accepted.", "", "refused.txt", apiHeld)
-	with := func(k string, v any) map[string]any {
-		body := apiStartBody(repo.Dir(), goal)
-		body[k] = v
-		return body
+	const first = "Refused, then accepted."
+	goal := apiGoal(t, first, "", "refused.txt", apiHeld)
+	body := apiStartBody(repo.Dir(), goal)
+
+	// The calls that are gone. On the remote listener they are outside the table; the draft check
+	// is now a read of the run "check", which is not there.
+	gone := model.NewID("r_")
+	if status, got, raw := a.startCall(t, apiX, gone, body); status != http.StatusNotFound || got.Started || got.Made || got.OK || got.Run != nil {
+		t.Errorf("the start call of before: status %d: %s; want 404", status, raw)
 	}
-	id := model.NewID("r_")
+	var refusal struct{ Error, Code string }
 	for _, c := range []struct {
-		name, id string
-		body     map[string]any
-		status   int
-		code     string
+		name, method, path string
+		body               any
+		code               string
 	}{
-		{"a missing folder", id, with("cwd", filepath.Join(t.TempDir(), "no-such-folder")), 409, "folder_missing"},
-		{"an agent the server lacks", id, with("agent", "pi"), 409, "agent_missing"},
-		{"a named group", id, with("group", "g_12345678"), 400, "group_refused"},
-		{"a blank goal", id, with("goal", "  \n"), 400, "bad_request"},
-		{"a tier without a model", id, with("tiers", map[string]any{"deep": map[string]any{"model": "haiku"}}), 400, "bad_choice"},
-		{"a folder inside the data folder", id, with("cwd", a.home), 400, ""},
-		{"an id in upper case", "r_ABCDEFGH", apiStartBody(repo.Dir(), goal), 400, "bad_id"},
-		{"an id that is a UUID", apiY, apiStartBody(repo.Dir(), goal), 400, "bad_id"},
-		{"an id that leaves the folder", "..%2F..%2Fetc", apiStartBody(repo.Dir(), goal), 400, "bad_id"},
+		{"the draft check", "GET", "/api/runs/check?cwd=" + repo.Dir(), nil, "not_found"},
+		{"the make of a chat", "PUT", "/api/chats/" + apiY, map[string]any{"agent": "claude", "cwd": repo.Dir()}, ""},
+		{"a client's creation of a board", "PUT", "/api/boards/b_abcdefgh", map[string]any{"name": "A board"}, ""},
 	} {
-		status, got, raw := a.startCall(t, apiX, c.id, c.body)
-		if status != c.status || got.Code != c.code || got.Started || got.Made || got.OK || got.Run != nil || got.Error == "" {
-			t.Errorf("%s: status %d, %s; want %d with the code %q, started false and no run", c.name, status, raw, c.status, c.code)
+		refusal.Error, refusal.Code = "", ""
+		if status, raw := a.api(t, apiX, c.method, c.path, c.body, &refusal); status != http.StatusNotFound || refusal.Code != c.code || refusal.Error == "" {
+			t.Errorf("%s: status %d: %s; want 404 with the code %q", c.name, status, raw, c.code)
 		}
 	}
+	// The creation call of before, a chat with its first message in one call: the body is the
+	// page's now, which reads no text and wants a place.
+	if status, raw := a.api(t, apiX, "POST", "/api/chats", map[string]any{"id": apiY, "agent": "claude", "cwd": repo.Dir(), "text": "A first message."}, nil); status != http.StatusBadRequest {
+		t.Errorf("the creation call of before: status %d: %s; want 400", status, raw)
+	}
+	// On the server's own port, for a page with a stream: no route takes these calls either.
+	page := a.follow(t, apiPage)
+	for _, c := range []struct {
+		name, path string
+		body       any
+	}{
+		{"the start call of before", "api/runs/" + gone, body},
+		{"the make of a chat", "api/chats/" + apiY, map[string]any{"agent": "claude", "cwd": repo.Dir()}},
+		{"a client's creation of a board", "api/boards/b_abcdefgh", map[string]any{"name": "A board"}},
+	} {
+		if status, raw := a.call(t, apiPage, "PUT", c.path, c.body, nil); status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+			t.Errorf("%s on the server's own port: status %d: %s; want no route for it", c.name, status, raw)
+		}
+	}
+	nothing := func(when string) {
+		t.Helper()
+		if left := a.runFolders(t); len(left) != 0 {
+			t.Errorf("folders under %s/runs %s: %v", a.home, when, left)
+		}
+		if ents, _ := os.ReadDir(a.work); len(ents) != 0 {
+			t.Errorf("%d entries in %s %s", len(ents), a.work, when)
+		}
+		if groups := a.stateGroups(t); len(groups) != 0 {
+			t.Errorf("groups in state.json %s: %v", when, groups)
+		}
+		if st := a.pageState(t); len(st.Groups) != 0 || len(st.Runs) != 0 {
+			t.Errorf("the page's state %s: groups %+v, runs %+v", when, st.Groups, st.Runs)
+		}
+		if st := a.apiState(t, apiX); len(st.Groups) != 0 || len(st.Runs) != 0 || len(st.Chats) != 0 {
+			t.Errorf("the API client's state %s: %+v", when, st)
+		}
+	}
+	nothing("after the calls of before")
+	if status, raw := a.api(t, apiX, "POST", "/api/runs", map[string]any{"group": "g_12345678", "name": "Nowhere"}, &refusal); status != http.StatusNotFound || refusal.Code != "not_found" {
+		t.Errorf("a run in a group that is not there: status %d: %s; want 404 not_found", status, raw)
+	}
+	nothing("after a run for a group that is not there")
 
-	if left := a.runFolders(t); len(left) != 0 {
-		t.Errorf("folders under %s/runs after the refusals: %v", a.home, left)
+	// The run that has not started, and what is refused of it: each refusal leaves it as it was.
+	draft := a.apiDraft(t, apiX, "Asked for by a client", body)
+	id := draft.ID
+	if draft.Group != model.Ungrouped || draft.Name != "Asked for by a client" {
+		t.Fatalf("the run that has not started: %+v", draft)
 	}
-	if ents, _ := os.ReadDir(a.work); len(ents) != 0 {
-		t.Errorf("%d entries in %s after the refusals", len(ents), a.work)
+	for _, c := range []struct {
+		name, method, path string
+		body               map[string]any
+		status             int
+		code               string
+	}{
+		{"a server in the patch", "PATCH", "/api/runs/" + id, map[string]any{"name": "Renamed", "server": "local"}, 400, "server_refused"},
+		{"an empty server in the patch, in capitals", "PATCH", "/api/runs/" + id, map[string]any{"name": "Renamed", "SERVER": ""}, 400, "server_refused"},
+		{"a folder that is none", "PATCH", "/api/runs/" + id, map[string]any{"cwd": filepath.Join(t.TempDir(), "no-such-folder")}, 400, ""},
+		{"a folder inside the data folder", "PATCH", "/api/runs/" + id, map[string]any{"cwd": a.home}, 400, ""},
+		{"a group that is not there", "PATCH", "/api/runs/" + id, map[string]any{"group": "g_12345678"}, 404, "not_found"},
+		{"a start with a blank goal", "POST", "/api/runs/" + id + "/start", map[string]any{"goal": "  \n"}, 400, ""},
+		{"a start of a run that is not there", "POST", "/api/runs/" + gone + "/start", map[string]any{"goal": goal}, 404, "not_found"},
+	} {
+		refusal.Error, refusal.Code = "", ""
+		if status, raw := a.api(t, apiX, c.method, c.path, c.body, &refusal); status != c.status || refusal.Code != c.code || refusal.Error == "" {
+			t.Errorf("%s: status %d: %s; want %d with the code %q", c.name, status, raw, c.status, c.code)
+		}
+		var now model.RunView
+		if status, raw := a.api(t, apiY, "GET", "/api/runs/"+id, nil, &now); status != http.StatusOK || now.Status != model.RunDraft ||
+			now.Name != draft.Name || now.Cwd != draft.Cwd || now.Group != draft.Group {
+			t.Errorf("after %s the run is: status %d: %s", c.name, status, raw)
+		}
 	}
-	if groups := a.stateGroups(t); len(groups) != 0 {
-		t.Errorf("groups in state.json after the refusals: %v", groups)
+	if left := a.runFolders(t); !slices.Equal(left, []string{id}) {
+		t.Errorf("folders under %s/runs after the refusals: %v, want %s alone", a.home, left, id)
 	}
-	if st := a.pageState(t); len(st.Groups) != 0 || len(st.Runs) != 0 {
-		t.Errorf("the page's state after the refusals: groups %+v, runs %+v", st.Groups, st.Runs)
-	}
-	if st := a.apiState(t, apiX); len(st.Runs) != 0 {
-		t.Errorf("the API client's runs after the refusals: %+v", st.Runs)
-	}
-	if status, raw := a.api(t, apiX, "GET", "/api/runs/"+id, nil, nil); status != http.StatusNotFound {
-		t.Errorf("a read of the refused id: status %d: %s", status, raw)
-	}
-	if n := a.orchestrators(t, "Refused, then accepted."); n != 0 {
+	if n := a.orchestrators(t, first); n != 0 {
 		t.Errorf("%d orchestrators were started by refused calls", n)
 	}
 
-	// The same id is free: the accepted call makes the run, its folder and the group.
-	if got := a.mustStart(t, apiX, id, apiStartBody(repo.Dir(), goal)); !got.Made || got.Run.Status != model.RunRunning {
-		t.Fatalf("the accepted call: %+v, run %+v", got, got.Run)
+	// The start: the run works on this server, in no group, for the page and for every client.
+	status, started, raw := a.apiStart(t, apiX, id, goal)
+	if status != http.StatusOK || started.ID != id || started.Status != model.RunRunning || started.Group != model.Ungrouped {
+		t.Fatalf("the start: status %d: %s", status, raw)
+	}
+	a.waitFakeMessage(t, 0, first)
+	page.waitRun(t, id, e2eWait, "to run", func(v model.RunView) bool { return v.Status == model.RunRunning })
+	st := a.pageState(t)
+	if len(st.Groups) != 0 || len(st.Runs) != 1 || st.Runs[0].ID != id || st.Runs[0].Group != model.Ungrouped {
+		t.Fatalf("the page's state after the start: groups %+v, runs %+v", st.Groups, st.Runs)
+	}
+	for _, client := range []string{apiX, apiY} {
+		if st := a.apiState(t, client); len(st.Groups) != 0 || len(st.Runs) != 1 || st.Runs[0].ID != id || st.Runs[0].Status != model.RunRunning {
+			t.Errorf("the state of the client %s after the start: groups %+v, runs %+v", client, st.Groups, st.Runs)
+		}
+	}
+	if groups := a.stateGroups(t); len(groups) != 0 {
+		t.Errorf("groups in state.json after the start: %v, want none", groups)
 	}
 	if left := a.runFolders(t); !slices.Equal(left, []string{id}) {
-		t.Errorf("folders under %s/runs after the accepted call: %v, want %s alone", a.home, left, id)
-	}
-	st := a.pageState(t)
-	if len(st.Groups) != 1 || st.Groups[0].Name != "Remote" || len(st.Runs) != 1 || st.Runs[0].ID != id || st.Runs[0].Group != st.Groups[0].ID {
-		t.Fatalf("the page's state after the accepted call: groups %+v, runs %+v", st.Groups, st.Runs)
-	}
-	for deadline := time.Now().Add(e2eGone); ; time.Sleep(50 * time.Millisecond) {
-		if groups := a.stateGroups(t); slices.Equal(groups, []string{"Remote"}) {
-			break
-		} else if time.Now().After(deadline) {
-			t.Fatalf("groups in state.json after the accepted call: %v, want Remote alone", groups)
-		}
+		t.Errorf("folders under %s/runs after the start: %v, want %s alone", a.home, left, id)
 	}
 }
 
-// 24 start calls at once with one id start one orchestrator. A call whose request the client
-// cancels right after it was sent, repeated three times, starts one run too.
-func TestAPIRunStartCallsStartOneRun(t *testing.T) {
-	serverTest(t, "TestStartCallManyAtOnce (internal/runs)", "TestRunStartCall (internal/server)")
+// 24 starts at once of one run that has not started, by two clients, start one orchestrator:
+// one is answered with the running run, the others are refused. A start whose request the
+// client cancels right after it was sent starts the run once or not at all, and the run's view
+// says which.
+func TestAPIRunStartsAtOnceStartOneRun(t *testing.T) {
+	serverTest(t, "TestSvcStartInAGitRepository (a second start is refused) (internal/runs)", "TestRunTableRoutesServeAnAPIClient (internal/server)")
 	repo, _ := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
 
 	const calls, first = 24, "Started by many calls at once."
-	id := model.NewID("r_")
-	body := apiStartBody(repo.Dir(), apiGoal(t, first, "", "many.txt", ""))
+	goal := apiGoal(t, first, "", "many.txt", "")
+	id := a.apiDraft(t, apiX, "Many starts", apiStartBody(repo.Dir(), goal)).ID
 	type answer struct {
 		status int
-		got    apiStarted
 		raw    string
 	}
 	answers := make([]answer, calls)
@@ -429,28 +534,33 @@ func TestAPIRunStartCallsStartOneRun(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-gate
-			status, raw, err := a.request(context.Background(), apiX, "PUT", "/api/runs/"+id, body)
+			client := []string{apiX, apiY}[i%2]
+			status, raw, err := a.request(context.Background(), client, "POST", "/api/runs/"+id+"/start", map[string]any{"goal": goal})
 			if err != nil {
 				answers[i].raw = err.Error()
 				return
 			}
 			answers[i].status, answers[i].raw = status, string(raw)
-			json.Unmarshal(raw, &answers[i].got)
 		}()
 	}
 	close(gate)
 	wg.Wait()
-	made := 0
+	started := 0
 	for i, ans := range answers {
-		if ans.status != http.StatusOK || !ans.got.OK || !ans.got.Started || ans.got.Run == nil || ans.got.Run.ID != id {
-			t.Fatalf("call %d of %d at once: status %d: %s", i+1, calls, ans.status, ans.raw)
-		}
-		if ans.got.Made {
-			made++
+		switch ans.status {
+		case http.StatusOK:
+			var v model.RunView
+			if err := json.Unmarshal([]byte(ans.raw), &v); err != nil || v.ID != id || v.Status != model.RunRunning {
+				t.Fatalf("call %d of %d at once: status 200: %s", i+1, calls, ans.raw)
+			}
+			started++
+		case http.StatusConflict:
+		default:
+			t.Fatalf("call %d of %d at once: status %d: %s; want 200 or 409", i+1, calls, ans.status, ans.raw)
 		}
 	}
-	if made != 1 {
-		t.Errorf("%d of the %d calls at once say they made the run, want 1", made, calls)
+	if started != 1 {
+		t.Errorf("%d of the %d calls at once were answered with the started run, want 1", started, calls)
 	}
 	a.waitAchieved(t, apiX, id)
 	if n := a.orchestrators(t, first); n != 1 {
@@ -460,10 +570,11 @@ func TestAPIRunStartCallsStartOneRun(t *testing.T) {
 		t.Errorf("folders under %s/runs: %v, want %s alone", a.home, left, id)
 	}
 
-	// The cut call: the client gives up as soon as the request is written.
+	// The cut start: the client gives up as soon as the request is written, and reads the run to
+	// learn what became of it.
 	const cutFirst = "Started by a call that was cut."
-	cut := model.NewID("r_")
-	body = apiStartBody(repo.Dir(), apiGoal(t, cutFirst, "", "cut.txt", ""))
+	goal = apiGoal(t, cutFirst, "", "cut.txt", "")
+	cut := a.apiDraft(t, apiX, "A cut start", apiStartBody(repo.Dir(), goal)).ID
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wrote := false
@@ -471,25 +582,44 @@ func TestAPIRunStartCallsStartOneRun(t *testing.T) {
 		wrote = true
 		cancel()
 	}})
-	status, _, err := a.request(ctx, apiX, "PUT", "/api/runs/"+cut, body)
+	status, _, err := a.request(ctx, apiX, "POST", "/api/runs/"+cut+"/start", map[string]any{"goal": goal})
 	if !wrote {
-		t.Fatalf("the cut call was not sent: status %d, %v", status, err)
+		t.Fatalf("the cut start was not sent: status %d, %v", status, err)
 	}
-	t.Logf("the cut call: status %d, error %v", status, err)
-	made = 0
-	for i := range 3 {
-		if got := a.mustStart(t, apiX, cut, body); got.Made {
-			made++
-		} else if i == 0 {
-			t.Log("the cut call had made the run: the first repeat found it")
+	t.Logf("the cut start: status %d, error %v", status, err)
+	// The server may still be at the cut start: the starts that follow are refused while it is
+	// (409), and one is taken only if the cut one started nothing.
+	taken := 0
+	for deadline := time.Now().Add(e2eWait); ; time.Sleep(50 * time.Millisecond) {
+		var v model.RunView
+		if status, raw := a.api(t, apiX, "GET", "/api/runs/"+cut, nil, &v); status != http.StatusOK {
+			t.Fatalf("the read of the run after the cut start: status %d: %s", status, raw)
+		}
+		if v.Status != model.RunDraft {
+			break
+		}
+		switch status, _, raw := a.apiStart(t, apiX, cut, goal); status {
+		case http.StatusOK:
+			taken++
+		case http.StatusConflict:
+		default:
+			t.Fatalf("the start after the cut one: status %d: %s", status, raw)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run %s has not started %s after the cut start", cut, e2eWait)
 		}
 	}
-	if made > 1 {
-		t.Errorf("%d of the three repeats say they made the run", made)
+	if taken == 0 {
+		t.Log("the cut start had started the run")
+	}
+	for range 3 {
+		if status, _, raw := a.apiStart(t, apiY, cut, goal); status != http.StatusConflict {
+			t.Errorf("a start of the started run: status %d: %s; want 409", status, raw)
+		}
 	}
 	a.waitAchieved(t, apiX, cut)
 	if n := a.orchestrators(t, cutFirst); n != 1 {
-		t.Errorf("the cut call and its three repeats started %d orchestrators, want 1", n)
+		t.Errorf("the cut start and the starts after it started %d orchestrators, want 1", n)
 	}
 	if n := a.orchestrators(t, first); n != 1 {
 		t.Errorf("the first run has %d orchestrators now", n)
@@ -500,46 +630,39 @@ func TestAPIRunStartCallsStartOneRun(t *testing.T) {
 	if !slices.Equal(left, want) {
 		t.Errorf("folders under %s/runs: %v, want %v", a.home, left, want)
 	}
-	if st := a.apiState(t, apiX); len(st.Runs) != 2 {
-		t.Errorf("the API client's runs: %+v, want the two", st.Runs)
+	for _, client := range []string{apiX, apiY} {
+		if st := a.apiState(t, client); len(st.Runs) != 2 {
+			t.Errorf("the runs of the client %s: %+v, want the two", client, st.Runs)
+		}
 	}
 	a.stopClean(t)
 }
 
-// A clean restart of the server while the run of an API client works: the run continues by
-// itself, the repeat of its start call answers started and not made and starts nothing, and the
-// run is its client's still.
+// A clean restart of the server while the run a client started works: the run continues by
+// itself, a second start is refused and starts nothing, and the run is everyone's, as before the
+// restart: the client that made it and another one both list it.
 func TestAPIRunCleanRestart(t *testing.T) {
-	serverTest(t, "TestRunStartCall (the repeat of a start call) (internal/server)", "TestStopRestartResume, TestViewsOfAndClientOf (internal/runs)")
+	serverTest(t, "TestRunTableRoutesServeAnAPIClient (internal/server)", "TestStopRestartResume (internal/runs)")
 	repo, base := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
-	id := model.NewID("r_")
 	body := apiStartBody(repo.Dir(), e2eSlowGoal(t))
-	if got := a.mustStart(t, apiX, id, body); !got.Made || got.Run.Status != model.RunRunning {
-		t.Fatalf("the start call: %+v, run %+v", got, got.Run)
-	}
+	id := a.apiNewRun(t, apiX, "Across a restart", body).ID
 	a.waitFakeMessage(t, 0, e2eOnTask)
 
 	a.stopClean(t)
 	sent := a.fakeMessages(t)
 	a.up(t)
 
-	got := a.mustStart(t, apiX, id, body)
-	if got.Made || got.Run.Status != model.RunRunning {
-		t.Fatalf("the repeat after the restart: made %v, the run %s (%s); want not made and running", got.Made, got.Run.Status, got.Run.Reason)
-	}
-	// The mark was read from the run's folder: the run is X's, and another client's call is refused.
-	if st := a.apiState(t, apiX); len(st.Runs) != 1 || st.Runs[0].ID != id {
-		t.Errorf("X's runs after the restart: %+v", st.Runs)
-	}
-	if st := a.apiState(t, apiY); len(st.Runs) != 0 {
-		t.Errorf("Y's runs after the restart: %+v", st.Runs)
-	}
-	if status, other, raw := a.startCall(t, apiY, id, body); status != http.StatusConflict || other.Code != "id_taken" || other.Started || other.Run != nil {
-		t.Errorf("Y's call with the id of X's run: status %d: %s", status, raw)
+	for _, client := range []string{apiX, apiY} {
+		if st := a.apiState(t, client); len(st.Runs) != 1 || st.Runs[0].ID != id || st.Runs[0].Group != model.Ungrouped || len(st.Groups) != 0 {
+			t.Errorf("the state of the client %s after the restart: groups %+v, runs %+v", client, st.Groups, st.Runs)
+		}
+		if status, _, raw := a.apiStart(t, client, id, e2eSlowGoal(t)); status != http.StatusConflict {
+			t.Errorf("a start by %s after the restart: status %d: %s; want 409", client, status, raw)
+		}
 	}
 
-	done := a.waitAchieved(t, apiX, id)
+	done := a.waitAchieved(t, apiY, id)
 	e2eNoteDone(t, a.runServer, repo, apiPage, base, id, done, a.detail(t, apiPage, id), model.StopAppQuit)
 	if now := a.fakeMessages(t); now <= sent {
 		t.Errorf("%d messages to agents after the restart, %d before it: nothing was launched again", now, sent)
@@ -553,8 +676,8 @@ func TestAPIRunCleanRestart(t *testing.T) {
 	a.stopClean(t)
 }
 
-// A run to its end with no client connected: the API client closes its stream after the start
-// call, and no page was ever there. The run completes and applies its result to the scratch
+// A run to its end with no client connected: the API client closes its stream after the start,
+// and no page was ever there. The run completes and applies its result to the scratch
 // repository; the snapshot of a new stream lists it as completed.
 func TestAPIRunEndsWithNoClient(t *testing.T) {
 	serverTest(t, "TestAPIClientWithNoPage, TestStartOutlivesThePageThatAsked (internal/server)", "TestRunE2ENoGit (this package)")
@@ -567,10 +690,7 @@ func TestAPIRunEndsWithNoClient(t *testing.T) {
 	if runs, _ := x.Snapshot["runs"].([]any); runs == nil || len(runs) != 0 {
 		t.Fatalf("the first snapshot's runs: %v, want an empty list", x.Snapshot["runs"])
 	}
-	id := model.NewID("r_")
-	if got := a.mustStart(t, apiX, id, apiStartBody(repo.Dir(), e2eGoal(t))); !got.Made {
-		t.Fatalf("the start call: %+v", got)
-	}
+	id := a.apiNewRun(t, apiX, "With nobody there", apiStartBody(repo.Dir(), e2eGoal(t))).ID
 	x.await(t, "run", id, `"status":"running"`)
 	x.Close()
 
@@ -597,15 +717,16 @@ func TestAPIRunEndsWithNoClient(t *testing.T) {
 	}
 	a.waitNoFakes(t, true, e2eGone, "after the run ended")
 
-	x = a.stream(t, apiX)
-	raw, _ := json.Marshal(x.Snapshot["runs"])
+	// Another client's new stream: the run is in its snapshot too.
+	y := a.stream(t, apiY)
+	raw, _ := json.Marshal(y.Snapshot["runs"])
 	var listed []model.RunView
 	if err := json.Unmarshal(raw, &listed); err != nil || len(listed) != 1 || listed[0].ID != id ||
 		listed[0].Status != model.RunCompleted || listed[0].Outcome != model.Achieved {
 		t.Fatalf("the runs in the new stream's snapshot: %s (%v); want %s completed", raw, err, id)
 	}
-	if got := a.mustStart(t, apiX, id, apiStartBody(repo.Dir(), e2eGoal(t))); got.Made || got.Run.Status != model.RunCompleted {
-		t.Errorf("a repeat after the end: made %v, the run %s", got.Made, got.Run.Status)
+	if status, _, raw := a.apiStart(t, apiX, id, e2eGoal(t)); status != http.StatusConflict {
+		t.Errorf("a start after the end: status %d: %s; want 409", status, raw)
 	}
 	if n := a.orchestrators(t, "Paint the shared file in both colours."); n != 1 {
 		t.Errorf("%d orchestrators were started, want 1", n)
@@ -613,9 +734,9 @@ func TestAPIRunEndsWithNoClient(t *testing.T) {
 	a.stopClean(t)
 }
 
-// Two API clients: X, whose start call made the run, is sent `run`; Y is not. Both read the
-// detail and are sent the same `run_detail` events from then on. X reads the orchestrator's chat
-// and is sent its `chat_items`; Y, which did not read it, is sent none.
+// Two API clients: X makes the run and starts it, and both are sent the same `run` events. Both
+// read the detail and are sent the same `run_detail` events from then on. X reads the
+// orchestrator's chat and is sent its `chat_items`; Y, which did not read it, is sent none.
 func TestAPIRunTwoClients(t *testing.T) {
 	serverTest(t, "TestRunEventsOfAnAPIClient, TestRunTableRoutesServeAnAPIClient (internal/server)")
 	repo, _ := e2eNoteRepo(t)
@@ -625,9 +746,9 @@ func TestAPIRunTwoClients(t *testing.T) {
 	// The orchestrator's first turn waits before it does anything, so that a client can read its
 	// chat while it is at work; the task then only waits, and the run stays running.
 	const first = "Watched by two clients."
-	id := model.NewID("r_")
-	a.mustStart(t, apiX, id, apiStartBody(repo.Dir(), apiGoal(t, first, "[[sleep 5]]", "two.txt", apiHeld)))
+	id := a.apiNewRun(t, apiX, "Two clients", apiStartBody(repo.Dir(), apiGoal(t, first, "[[sleep 5]]", "two.txt", apiHeld))).ID
 	x.await(t, "run", id, `"status":"running"`)
+	y.await(t, "run", id, `"status":"running"`)
 
 	// Both read the detail, X the orchestrator's chat too.
 	var orch string
@@ -661,14 +782,15 @@ func TestAPIRunTwoClients(t *testing.T) {
 	}
 	from := max(dx.Version, dy.Version)
 
-	// The first turn goes on and adds the task; X then stops the run.
+	// The first turn goes on and adds the task; Y, which did not make the run, then stops it.
 	a.waitFakeMessage(t, 0, e2eOnTask)
 	x.await(t, "chat_items", orch)
 	var v model.RunView
-	if status, raw := a.api(t, apiX, "POST", "/api/runs/"+id+"/stop", nil, &v); status != http.StatusOK {
-		t.Fatalf("X's stop: status %d: %s", status, raw)
+	if status, raw := a.api(t, apiY, "POST", "/api/runs/"+id+"/stop", nil, &v); status != http.StatusOK {
+		t.Fatalf("Y's stop: status %d: %s", status, raw)
 	}
 	x.await(t, "run", id, `"status":"stopped"`)
+	y.await(t, "run", id, `"status":"stopped"`)
 	x.pump(time.Second)
 	y.pump(time.Second)
 
@@ -690,50 +812,55 @@ func TestAPIRunTwoClients(t *testing.T) {
 	if !slices.IsSorted(xv) {
 		t.Errorf("X's run_detail versions are out of order: %v", xv)
 	}
-	// By mark: `run` for X alone. By follow: the chat's events for X alone.
-	if n := len(y.of("run")) + len(y.of("run_removed")); n != 0 {
-		t.Errorf("Y, which did not make the run, was sent %d run events: %v", n, typesOf(y.got))
+	// To every client: the same `run` events, from the run that has not started to the stopped
+	// one. By follow: the chat's events for X alone.
+	xruns, yruns := x.of("run", id), y.of("run", id)
+	if len(xruns) < 3 || !slices.Equal(xruns, yruns) || !strings.Contains(xruns[0], `"status":"draft"`) {
+		t.Errorf("the run events: X was sent %d, Y %d; want the same ones, the first of a run that has not started:\n%s\n%s",
+			len(xruns), len(yruns), strings.Join(xruns, "\n"), strings.Join(yruns, "\n"))
 	}
 	if n := len(y.of("chat_items")) + len(y.of("chat")); n != 0 {
 		t.Errorf("Y, which did not read the orchestrator's chat, was sent %d events of a chat: %v", n, typesOf(y.got))
 	}
 	for _, s := range []*apiStream{x, y} {
 		for _, typ := range typesOf(s.got) {
-			if typ == "groups" || typ == "defaults" {
+			if !slices.Contains(apiListEvents, typ) && !slices.Contains(apiFollowEvents, typ) {
 				t.Errorf("%s was sent %s", s.ID, typ)
 			}
 		}
 	}
-	if st := a.apiState(t, apiY); len(st.Runs) != 0 {
-		t.Errorf("Y's runs: %+v", st.Runs)
+	for _, client := range []string{apiX, apiY} {
+		if st := a.apiState(t, client); len(st.Runs) != 1 || st.Runs[0].ID != id || st.Runs[0].Status != model.RunStopped {
+			t.Errorf("the runs of the client %s: %+v", client, st.Runs)
+		}
 	}
 	if n := a.orchestrators(t, first); n != 1 {
 		t.Errorf("%d orchestrators were started, want 1", n)
 	}
 }
 
-// A chat on the run that the start call made, created by the API client with a first message: the
-// client reads the chat, and the stand-in's reply reaches it afterwards as `chat_items`.
+// A chat on the run a client started, made by the client with the page's call and given its
+// first message with the message call: the client reads the chat, and the stand-in's reply
+// reaches it afterwards as `chat_items`. Another client lists the chat and the run too.
 func TestAPIRunChatOnTheRun(t *testing.T) {
 	serverTest(t, "TestAPIClientsRunBesideAPage, TestRunAgentsChatBesideAPIClients (internal/server)")
 	repo, _ := e2eNoteRepo(t)
 	a := newAPIRunServer(t, repo.Env())
 	x := a.stream(t, apiX)
-	id := model.NewID("r_")
-	a.mustStart(t, apiX, id, apiStartBody(repo.Dir(), apiGoal(t, "A run to talk about.", "", "talk.txt", apiHeld)))
+	id := a.apiNewRun(t, apiX, "A run to talk about", apiStartBody(repo.Dir(), apiGoal(t, "A run to talk about.", "", "talk.txt", apiHeld))).ID
 	a.waitFakeMessage(t, 0, e2eOnTask) // T01's agent waits: the run stays running
 
 	const chat, word = "c3e1f5a7-9b2d-4e6f-8a1c-3d5e7f9a1b2c", "A word on the run."
-	var made struct {
-		OK, Started, Sent bool
-		Chat              *model.ChatView
+	var made model.ChatView
+	status, raw := x.Do("POST", "/api/chats", map[string]any{"id": chat, "agent": "claude", "run": id})
+	if err := json.Unmarshal(raw, &made); status != http.StatusOK || err != nil {
+		t.Fatalf("the new chat: status %d: %s", status, raw)
 	}
-	status, raw := x.Do("POST", "/api/chats", map[string]any{"id": chat, "agent": "claude", "run": id, "text": word + " [[sleep 5]]"})
-	if err := json.Unmarshal(raw, &made); status != http.StatusOK || err != nil || !made.OK || !made.Started || !made.Sent || made.Chat == nil {
-		t.Fatalf("the creation call: status %d: %s", status, raw)
+	if made.ID != chat || made.Run != id || made.Group != "" || made.Cwd != repo.Dir() || made.Locked {
+		t.Fatalf("the chat on the run: %+v; want it on %s, in no group, in the run's folder", made, id)
 	}
-	if c := made.Chat; c.ID != chat || c.Run != id || c.Group != "" || c.Cwd != repo.Dir() {
-		t.Fatalf("the chat on the run: %+v; want it on %s, in no group, in the run's folder", c, id)
+	if status, raw := x.Do("POST", "/api/chats/"+chat+"/messages", map[string]any{"text": word + " [[sleep 5]]"}); status != http.StatusOK {
+		t.Fatalf("the first message: status %d: %s", status, raw)
 	}
 
 	// The client reads the chat while its agent still waits: the reply is not there yet.
@@ -751,17 +878,16 @@ func TestAPIRunChatOnTheRun(t *testing.T) {
 	if strings.Contains(reply, "[[sleep") {
 		t.Errorf("the reply holds the directive: %s", clipText(reply, 300))
 	}
-	x.await(t, "chat", chat) // by mark
+	x.await(t, "chat", chat) // a list event: to every client
 
-	// The chat is the client's, on the run, kept under the run's folder.
-	st := a.apiState(t, apiX)
-	if len(st.Chats) != 1 || st.Chats[0].ID != chat || st.Chats[0].Run != id || len(st.Runs) != 1 || st.Runs[0].ID != id {
-		t.Errorf("X's state: chats %+v, runs %+v", st.Chats, st.Runs)
+	// The chat is on the run, kept under the run's folder, and everyone's.
+	for _, client := range []string{apiX, apiY} {
+		st := a.apiState(t, client)
+		if len(st.Chats) != 1 || st.Chats[0].ID != chat || st.Chats[0].Run != id || len(st.Runs) != 1 || st.Runs[0].ID != id {
+			t.Errorf("the state of the client %s: chats %+v, runs %+v", client, st.Chats, st.Runs)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(a.home, "runs", id, "chats", chat, "chat.json")); err != nil {
 		t.Errorf("the chat's folder under the run: %v", err)
-	}
-	if st := a.apiState(t, apiY); len(st.Chats) != 0 || len(st.Runs) != 0 {
-		t.Errorf("Y's state: chats %+v, runs %+v", st.Chats, st.Runs)
 	}
 }

@@ -2,29 +2,33 @@
 // arrays) live outside it in board.ts `scenes`, because they change on every
 // stroke and nothing but the canvas renders from them.
 import { useSyncExternalStore } from "react";
-import { AGENT_ORDER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type RunDetail, type RunView, type ServerLists, type Subagent, type TreeView } from "./types.ts";
+import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type RunDetail, type RunView, type SectionTree, type ServerLists, type Subagent, type TreeView } from "./types.ts";
 import type { Snapshot } from "./api.ts";
 import type { ConfirmRequest } from "./Dialogs.tsx";
-import { forgetBoard } from "./board.ts";
+import { forgetBoard, boardUnsaved } from "./board.ts";
 import { parseSideHidden, parseWidths, type Widths } from "./logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
 import { draftKey, draftKeyOf, legacyDraftKey, legacyDraftRenames, type Unsaved } from "./logic/drafts.ts";
+import { keptOf, type Kept } from "./logic/draftsback.ts";
 import type { UpdateBanner } from "./logic/version.ts";
-import { branchCount, branchKey, currentBranch, keyOfChat, shownBranchOf, stateOf, viewOf, type BranchKey } from "./logic/branches.ts";
+import { branchCount, branchKey, chatOfKey, currentBranch, keyOfChat, shownBranchOf, stateOf, viewOf, type BranchKey } from "./logic/branches.ts";
 import { subKey, type SubKey } from "./logic/subagents.ts";
-import { drawerStays, statesByKey, withoutChat, type Thread } from "./logic/threads.ts";
+import { drawerStays, statesByKey, type Thread } from "./logic/threads.ts";
 import { NO_SEL, parseSel, validSel, type Sel } from "./logic/sel.ts";
 import { hideAgentIn, showAgentIn, type RunAgentRef } from "./logic/runview.ts";
 import { normRun } from "./logic/runnorm.ts";
 import type { BoardRole } from "./logic/roles.ts";
-import { listsFrom, withThreadError, type ThreadError } from "./logic/serverlists.ts";
-import { movedId, movedSel, withRunError } from "./logic/runserver.ts";
-import { keptRunStarts, movedRunStart, withRunStart, type RunStart } from "./logic/runcompose.ts";
+import { RECENT_KEY, listsFrom, serverConnected, withThreadError, type ThreadError } from "./logic/serverlists.ts";
+import { withRunError } from "./logic/runserver.ts";
+import { keptRunStarts, withRunStart, type RunStart } from "./logic/runcompose.ts";
+import { inSection, keyOn, serverOfKey } from "./logic/keys.ts";
+import { treeIn } from "./logic/sectionwire.ts";
+import { COLLAPSE_KEY, collapsedSaved, leftBehind, parseCollapsed, prunedCollapsed, thingsOf, thingsOn, withCollapsed, withSection, type Section } from "./logic/sections.ts";
 import { LOCAL_ENTRY, serversOf, type ServerForm, type ServerView } from "./logic/servers.ts";
 import { librariesOf, type LibraryView } from "./logic/library.ts";
 import type { InsertTarget } from "./logic/insert.ts";
 import { NO_MARK, type DropMark } from "./logic/dropmark.ts";
-import { afterThread, begun, ended, stepped, withLoad, withoutLoads, withoutChat as withoutWaits, type ChatWaits, type SendWait, type WaitKind, type Waits } from "./logic/waits.ts";
+import { afterThread, begun, ended, stepped, withLoad, withUpload, withoutLoads, type ChatWaits, type ComposerAt, type SendWait, type WaitKind, type Waits } from "./logic/waits.ts";
 
 export type Box = { x: number; y: number; width: number; height: number };
 export type Flash = { id: number; board: string; box: Box; label: string; agent: AgentKind | string; tone: "edit" | "danger"; until: number };
@@ -37,11 +41,18 @@ export type { Sel };
 export type ThreadKey = BranchKey | SubKey;
 export type { Thread };
 
+// Every map by a thing's id is by the page's key of the thing (logic/keys.ts): the id for a thing of
+// this computer, the entry id and the id for a thing of a section (a remote server). The boards,
+// chats, runs and branch records of this computer and of every section are in the same maps, each
+// under its key; which server a thing is on is read from its key.
 export type State = {
   connected: boolean;
   role: "connecting" | "active";      // the stream: before its first hello, and from then on
   home: string; defaultCwd: string; dataDir: string;
-  groups: Group[];
+  groups: Group[];                    // this computer's groups
+  sections: Record<string, Section>;  // by entry id: the tree of each remote server the local server holds one of (its groups and defaults; its things are in the maps below). No key: no tree, and the section draws no row
+  gone: Record<string, true>;         // the things of sections that are on screen and no longer on their server (removed there, or not in the tree that came back): their view says so, and no row is drawn; they go when the user leaves them
+  collapsed: Record<string, true>;    // the sections (by entry id) and the groups of sections (by key) shown collapsed; persisted in localStorage "aiwb.collapsed" and sent nowhere. A local group's collapse is its server's (Group.collapsed)
   boards: Record<string, Board>;
   chats: Record<string, ChatView>;    // the sidebar's chats: plain ones, a board's, a run's; never a run's own agents
   runs: Record<string, RunView>;
@@ -49,7 +60,7 @@ export type State = {
   agentErrors: Record<string, string>; // by agent chat id: why its view or thread could not be fetched (conn.ts)
   runDetail: Record<string, RunDetail>; // by run id; absent until loaded (conn.ts loadRun), dropped by every snapshot
   runErrors: Record<string, ThreadError>; // by run id: why the last load of its detail failed, with the server's code (conn.ts); absent after one that worked
-  runStarts: Record<string, RunStart>; // by run id: a draft's start that is on its way, and what the server said of the one that failed (run/actions.ts startRun; setState drops what is old); in memory only
+  runStarts: Record<string, RunStart>; // by run: a draft's start that is on its way, and what the server said of the one that failed (run/actions.ts startRun; setState drops what is old); in memory only
   items: Record<ThreadKey, Thread>;   // a branch's list by branchKey(chat, branch), a subagent's thread by subKey(that, sid); absent until loaded. A run agent's chat has main alone
   subs: Record<BranchKey, Record<string, Subagent>>; // branch → sid → the subagent's state (loaded with the branch's items)
   states: Record<BranchKey, BranchState>; // every branch's session state, as the server sends it; empty with a server that sends none
@@ -64,7 +75,6 @@ export type State = {
   catalogs: Partial<Record<AgentKind, Catalog>>;
   lists: Record<string, ServerLists>; // by entry id: what each other server offers (the snapshot's and the `server_lists` event's); read through logic/serverlists.ts
   threadErrors: Record<string, ThreadError>; // by chat id: why the last load of its list failed (conn.ts); absent after one that worked
-  starting: Record<string, string>; // by chat id: the text of a first message on its way to the chat's server (Composer.tsx submit): the thread shows it
   waits: Waits;                   // by chat id: what is on its way in the chat's fork flows (logic/waits.ts); in memory only, and not a snapshot's to drop
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
   panel: boolean;                 // board chat panel shown (⌘J)
@@ -91,8 +101,8 @@ export type State = {
   roles: Record<string, BoardRole>;   // by board id; absent = not asked for
   dropped: Record<string, true>;      // the boards whose pending edit was dropped (the take-over panel and the canvas say so)
   sceneGen: Record<string, number>;   // by board id; raised to make the canvas load the scene again
-  outage: Record<string, true>;       // the boards on another server whose last save did not reach it (the canvas says so)
-  boardDraft: { group: string; busy?: boolean; error?: string } | null; // a board being made whose server is not chosen yet; never sent to the server
+  outage: Record<string, true>;       // the boards of sections whose last save did not reach their server (the canvas says so)
+  saveSaid: Record<string, string>;   // by board: what its last save was refused with, when waiting does not mend it (logic/boardsave.ts saveRefusal); the canvas says so
   dropAt: DropMark;                   // the sidebar's drop mark during a drag (logic/dropmark.ts); in memory only
 };
 
@@ -109,9 +119,10 @@ const savedSel = (): Sel => parseSel(safeGet("aiwb.sel"));
 let state: State = {
   connected: false, role: "connecting",
   home: "", defaultCwd: "", dataDir: "",
-  groups: [], boards: {}, chats: {}, runs: {}, agents: {}, agentErrors: {}, runDetail: {}, runErrors: {}, runStarts: {}, items: {}, subs: {}, states: {}, subDrawer: null, runAgent: null,
+  groups: [], sections: {}, gone: {}, collapsed: parseCollapsed(safeGet(COLLAPSE_KEY)),
+  boards: {}, chats: {}, runs: {}, agents: {}, agentErrors: {}, runDetail: {}, runErrors: {}, runStarts: {}, items: {}, subs: {}, states: {}, subDrawer: null, runAgent: null,
   trees: {}, moves: {}, shown: {}, treeNav: null,
-  defaults: { groups: {} }, usable: [], catalogs: {}, lists: {}, threadErrors: {}, starting: {}, waits: {},
+  defaults: { groups: {} }, usable: [], catalogs: {}, lists: {}, threadErrors: {}, waits: {},
   sel: savedSel(), panel: true, widths: parseWidths(safeGet("aiwb.widths")), showArchived: safeGet("aiwb.archived") === "1",
   sideHidden: parseSideHidden(safeGet("aiwb.side")),
   themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
@@ -120,7 +131,7 @@ let state: State = {
   servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
   libraries: [], libraryDialog: null, insertPopup: null,
   update: { banner: "none", hidden: false },
-  roles: {}, dropped: {}, sceneGen: {}, outage: {}, boardDraft: null,
+  roles: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
   dropAt: NO_MARK,
 };
 const subs = new Set<() => void>();
@@ -129,10 +140,11 @@ export const getState = () => state;
 export function setState(patch: Partial<State> | ((s: State) => Partial<State>)) {
   let p = typeof patch === "function" ? patch(state) : patch;
   // A draft run's start (runStarts) is about its run and that run's server as they were: whatever
-  // changes a run or the server list drops what is old of it (logic/runcompose.ts keptRunStarts).
-  if (p.runs || p.servers) {
+  // changes a run or the sections drops what is old of it (logic/runcompose.ts keptRunStarts).
+  if (p.runs || p.sections) {
     const from = p.runStarts ?? state.runStarts;
-    const runStarts = keptRunStarts(from, state, { runs: p.runs ?? state.runs, servers: p.servers ?? state.servers });
+    const at = (sections: State["sections"]) => (run: string) => serverConnected({ sections }, serverOfKey(run));
+    const runStarts = keptRunStarts(from, { runs: state.runs, connected: at(state.sections) }, { runs: p.runs ?? state.runs, connected: at(p.sections ?? state.sections) });
     if (runStarts !== from) p = { ...p, runStarts };
   }
   let same = true;
@@ -152,74 +164,220 @@ const byId = <T extends { id: string }>(xs: T[] | null | undefined): Record<stri
 
 // ---- server state
 
-/** Replaces everything the server owns; drops selections that no longer exist. sending: the chats
- *  whose pending move is being sent, which keep it while they are still there. */
+/** A map by key with this computer's entries replaced by got; the sections' stay as they are. */
+const localPart = <V,>(had: Record<string, V>, got: Record<string, V>, chat = false): Record<string, V> => {
+  const out: Record<string, V> = {};
+  for (const k in had) if (inSection(chat ? chatOfKey(k) : k)) out[k] = had[k];
+  return Object.assign(out, got);
+};
+
+/** Replaces everything this computer's server owns; drops selections that no longer exist. sending: the chats
+ *  whose pending move is being sent, which keep it while they are still there. What the page has of the sections
+ *  is left as it is: each section's tree, or that there is none, follows by applySection (conn.ts, for every entry
+ *  the snapshot or the store names). */
 export function applySnapshot(s: Snapshot, sending: string[] = []) {
-  const boards = byId(s.boards);
-  const chats = byId((s.chats ?? []).filter((c) => !c.role)); // a run's own agents are not sidebar chats (State.agents)
-  const runs = byId((s.runs ?? []).map(normRun));
+  const ownBoards = byId(s.boards);
+  const ownChats = byId((s.chats ?? []).filter((c) => !c.role)); // a run's own agents are not sidebar chats (State.agents)
+  const ownRuns = byId((s.runs ?? []).map(normRun));
   runEpoch++;
   const catalogs: Partial<Record<AgentKind, Catalog>> = {};
   for (const [k, v] of Object.entries(s.catalogs ?? {})) if (v) catalogs[k as AgentKind] = v;
-  if (!legacyDrafts) { legacyDrafts = true; renameLegacyDrafts(chats); } // before a composer opens with one
+  if (!legacyDrafts) { legacyDrafts = true; renameLegacyDrafts(ownChats); sweepStorage(ownChats, ownRuns); } // before a composer opens with one
+  const before = state.boards;
   setState((st) => {
-    const sel = validSel(st.sel, { boards, runs, chats });
+    const boards = localPart(st.boards, ownBoards), chats = localPart(st.chats, ownChats), runs = localPart(st.runs, ownRuns);
+    // (the things of the sections this snapshot brings are in the store a moment later (conn.ts onSnapshot): the selection of one
+    // of them, saved before a reload, stays)
+    const coming = Object.entries(s.sections ?? {}).filter(([, tree]) => !!tree).map(([server, tree]) => treeIn(server, tree));
+    const known = <V extends { id: string }>(own: Record<string, V>, of: (t: (typeof coming)[number]) => V[]): Record<string, V> => Object.assign({}, ...coming.map((t) => byId(of(t))), own);
+    const sel = validSel(st.sel, { boards: known(boards, (t) => t.boards), runs: known(runs, (t) => t.runs), chats: known(chats, (t) => t.chats.filter((c) => !c.role)) });
     safeSet("aiwb.sel", JSON.stringify(sel));
     const kept = <V,>(m: Record<string, V>) => Object.fromEntries(Object.entries(m).filter(([k]) => boards[k]));
     const busyOn = kept(st.busyOn);
-    const states = statesByKey(s.states);
+    const states = localPart(st.states, statesByKey(s.states), true);
     // A chat stays on the branch it was on (a reconnect does not jump the view) while that branch is still there.
     const shown = Object.fromEntries(Object.entries(st.shown).filter(([id, b]) => chats[id] && states[branchKey(id, b)]));
     const drawer = st.subDrawer; // the moves go: its chat shows the branch it is on
     // But for one being sent: its POST still runs, and its answer ends it with the draft it put aside.
     const moves = Object.fromEntries(sending.filter((id) => chats[id] && st.moves[id]).map((id) => [id, st.moves[id]]));
+    const servers = serversOf(s).servers;
+    const collapsed = prunedCollapsed(st.collapsed, servers, st.sections);
+    if (collapsed !== st.collapsed) safeSet(COLLAPSE_KEY, collapsedSaved(collapsed));
     return {
       groups: s.groups ?? [], boards, chats, runs, catalogs,
       lists: listsFrom(s),
-      threadErrors: {}, // with the threads
-      runErrors: {}, // with the details
-      runDetail: {}, // refetched for the run on screen; agents stays: conn.ts refreshes the held ones
+      threadErrors: localPart(st.threadErrors, {}), // with the threads
+      runErrors: localPart(st.runErrors, {}), // with the details
+      runDetail: localPart(st.runDetail, {}), // refetched for the run on screen; agents stays: conn.ts refreshes the held ones
       defaults: s.defaults ?? { groups: {} },
       usable: s.agents ?? AGENT_ORDER, // a server before the list sends none
       home: s.home ?? "", defaultCwd: s.defaultCwd ?? "", dataDir: s.dataDir ?? "",
-      items: {}, // refetched when a chat is shown; updates missed while away are not replayed
-      subs: {},  // with them
+      items: localPart(st.items, {}, true), // refetched when a chat is shown; updates missed while away are not replayed
+      subs: localPart(st.subs, {}, true),   // with them
       states, shown,
       // (a held run agent's stays: its chat is not among the snapshot's, and it has main alone)
       subDrawer: drawer && (st.agents[drawer.chat] || (chats[drawer.chat] && drawerStays(drawer, drawer.chat, shown[drawer.chat] ?? currentBranch(chats[drawer.chat])))) ? drawer : null,
-      trees: {}, moves,
+      trees: localPart(st.trees, {}), moves,
       waits: Object.fromEntries(Object.entries(st.waits).filter(([id]) => chats[id] || st.agents[id])), // what is on its way stays, but for a chat that is gone
-      ...serversOf(s),
+      servers, collapsed,
       libraries: librariesOf(s),
       treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
-      sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage),
+      sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage), saveSaid: kept(st.saveSaid),
     };
   });
-  for (const id of Object.keys(boardsBefore)) if (!boards[id]) forgetBoard(id);
-  boardsBefore = boards;
+  for (const id of Object.keys(before)) if (!state.boards[id]) forgetBoard(id);
 }
-let boardsBefore: Record<string, Board> = {};
+
+// ---- sections: the tree of each remote server (logic/sections.ts has the rules)
+
+/** A section's tree arrives (a `section` event with a tree, or a snapshot that has the section), or the local server
+ *  holds none of it any more (null): logic/sections.ts withSection. Answers the keys of the things that went. */
+export function applySection(server: string, tree: SectionTree | null): string[] {
+  const keyed = tree ? treeIn(server, tree) : null;
+  let left: string[] = [];
+  setState((s) => {
+    const r = withSection(s, server, keyed, boardUnsaved);
+    left = r.left;
+    const next = { ...s, ...r.next };
+    const collapsed = prunedCollapsed(s.collapsed, s.servers, next.sections);
+    if (collapsed !== s.collapsed) safeSet(COLLAPSE_KEY, collapsedSaved(collapsed));
+    return { ...r.next, ...without(next, new Set(left)), collapsed };
+  });
+  forgetKeys(left);
+  return left;
+}
+
+/** The user left what was on screen: what the page kept of a section's things only because they were on screen goes
+ *  (logic/sections.ts leftBehind): a thing of a server that is not connected, or one that is no longer on its
+ *  server. Until that server is back there is nothing to open it from. */
+export function dropLeftBehind(): string[] {
+  const left = leftBehind(state, boardUnsaved);
+  if (left.length) dropThings(left);
+  return left;
+}
+
+/** An entry was removed from the server list: everything the page has of that server goes, what is on screen of it
+ *  too (logic/sections.ts thingsOf), with its tree. Answers the keys of what went. */
+export function dropServer(server: string): string[] {
+  const kept = applySection(server, null); // the tree, and what was not on screen
+  const left = thingsOf(state, server);    // what stayed for being on screen, or for an edit that waited
+  if (left.length) dropThings(left);
+  return [...kept, ...left];
+}
+
+/** Marks a thing of a section that is on screen as no longer on its server. */
+export function markGone(key: string) {
+  setState((s) => (s.gone[key] ? {} : { gone: { ...s.gone, [key]: true } }));
+}
+
+/** A section's groups (the `groups` event with `server`): the whole list, in that server's order. */
+export function setSectionGroups(server: string, groups: Group[]) {
+  setState((s) => (s.sections[server] ? { sections: { ...s.sections, [server]: { ...s.sections[server], groups } } } : {}));
+}
+
+/** A section's defaults (the `defaults` event with `server`). */
+export function setSectionDefaults(server: string, defaults: Defaults) {
+  setState((s) => (s.sections[server] ? { sections: { ...s.sections, [server]: { ...s.sections[server], defaults } } } : {}));
+}
+
+/** The server list (the `servers` event): the collapse of a section whose entry left the list goes with it. */
+export function setServers(servers: ServerView[], notice: string) {
+  setState((s) => {
+    const collapsed = prunedCollapsed(s.collapsed, servers, s.sections);
+    if (collapsed !== s.collapsed) safeSet(COLLAPSE_KEY, collapsedSaved(collapsed));
+    return { servers, serversNotice: notice, collapsed };
+  });
+}
+
+/** Collapses or expands a section (key: its entry id) or a group of a section (its key): kept in the browser's
+ *  storage, per browser, and sent nowhere. A local group's collapse is its server's (Sidebar.tsx). */
+export function setSectionCollapsed(key: string, on: boolean) {
+  setState((s) => {
+    const collapsed = withCollapsed(s.collapsed, key, on);
+    if (collapsed !== s.collapsed) safeSet(COLLAPSE_KEY, collapsedSaved(collapsed));
+    return collapsed === s.collapsed ? {} : { collapsed };
+  });
+}
+
+const NO_GROUPS: Group[] = [];
+
+/** The groups of one server: this computer's, or a section's (none while the local server holds no tree of it). */
+export const groupsOn = (s: Pick<State, "groups" | "sections">, server: string): Group[] =>
+  (server === LOCAL_SERVER ? s.groups : s.sections[server]?.groups ?? NO_GROUPS);
+
+const boardsBy = new Map<string, { boards: State["boards"]; on: Record<string, Board> }>(); // by entry id: what boardsOn gave last
+
+/** The boards of one server, by key: what a chat of that server can mention, and what its agent's board ids name.
+ *  The same object as long as the store's boards are the same. */
+export function boardsOn(s: Pick<State, "boards">, server: string): Record<string, Board> {
+  const was = boardsBy.get(server);
+  if (was && was.boards === s.boards) return was.on;
+  const on = thingsOn(s.boards, server);
+  boardsBy.set(server, { boards: s.boards, on });
+  return on;
+}
+
+/** The store without the things named (boards, chats, runs and run agents, by key) and without everything kept
+ *  of them: their threads, subagents, branch records, trees, moves, waits and load errors; a run's detail and its
+ *  start; a board's role and marks; and the selection, the drawer, the run agent's pane and the tree popup on them. */
+function without(s: State, dead: ReadonlySet<string>): Partial<State> {
+  if (!dead.size) return {};
+  const cut = <V,>(m: Record<string, V>, chat = false): Record<string, V> => {
+    let out: Record<string, V> | null = null;
+    for (const k in m) if (dead.has(chat ? chatOfKey(k) : k)) { out ??= { ...m }; delete out[k]; }
+    return out ?? m;
+  };
+  let sel = s.sel;
+  if ((sel.board && dead.has(sel.board)) || (sel.run && dead.has(sel.run))) sel = NO_SEL;
+  else if (sel.chat && dead.has(sel.chat)) sel = { ...sel, chat: null };
+  if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
+  return {
+    boards: cut(s.boards), busyOn: cut(s.busyOn), roles: cut(s.roles), dropped: cut(s.dropped), sceneGen: cut(s.sceneGen), outage: cut(s.outage), saveSaid: cut(s.saveSaid),
+    flashes: s.flashes.some((f) => dead.has(f.board)) ? s.flashes.filter((f) => !dead.has(f.board)) : s.flashes,
+    chats: cut(s.chats), agents: cut(s.agents), agentErrors: cut(s.agentErrors), trees: cut(s.trees), moves: cut(s.moves), shown: cut(s.shown),
+    threadErrors: cut(s.threadErrors), waits: cut(s.waits),
+    items: cut(s.items, true), subs: cut(s.subs, true), states: cut(s.states, true),
+    runs: cut(s.runs), runDetail: cut(s.runDetail), runErrors: cut(s.runErrors), runStarts: cut(s.runStarts),
+    gone: cut(s.gone), sel,
+    subDrawer: s.subDrawer && dead.has(s.subDrawer.chat) ? null : s.subDrawer,
+    runAgent: s.runAgent && (dead.has(s.runAgent.run) || dead.has(s.runAgent.agent)) ? null : s.runAgent,
+    treeNav: s.treeNav && dead.has(s.treeNav.chat) ? null : s.treeNav,
+    picking: s.picking && dead.has(s.picking) ? null : s.picking,
+  };
+}
+
+/** What is kept outside the store of things that went: a board's scene and its pending save, a chat's unsaved
+ *  drafts, a run's unsaved goal and its event count. */
+function forgetKeys(keys: readonly string[]) {
+  if (!keys.length) return;
+  const local = keys.filter((k) => !inSection(k));
+  if (local.length) for (const k of safeKeys()) if (local.some((id) => draftKeyOf(k, id))) safeRemove(k);
+  for (const k of [...memory.keys()]) if (keys.some((id) => draftKeyOf(k, id))) memory.delete(k);
+  for (const id of keys) { forgetBoard(id); ofChat.delete(id); runEvents.delete(id); }
+}
+
+/** Takes things out of the store, by key, with everything kept of them. */
+function dropThings(keys: readonly string[]) {
+  if (!keys.length) return;
+  const dead = new Set(keys);
+  setState((s) => without(s, dead));
+  forgetKeys(keys);
+}
 
 export function upsertBoard(b: Board) {
-  setState((s) => ({ boards: { ...s.boards, [b.id]: b } }));
-  boardsBefore = getState().boards;
+  setState((s) => ({ boards: { ...s.boards, [b.id]: b }, ...ungone(s, b.id) }));
 }
+
+/** A thing the server tells of is on its server: a mark that it was gone goes. */
+const ungone = (s: State, key: string): Partial<State> => {
+  if (!s.gone[key]) return {};
+  const { [key]: _, ...gone } = s.gone;
+  return { gone };
+};
 
 /** Clears sel.board, the scene, busyOn and the role for it. */
 export function removeBoard(id: string) {
-  forgetBoard(id);
-  setState((s) => {
-    const { [id]: _, ...boards } = s.boards;
-    const { [id]: __, ...busyOn } = s.busyOn;
-    const { [id]: _r, ...roles } = s.roles;
-    const { [id]: _d, ...dropped } = s.dropped;
-    const { [id]: _g, ...sceneGen } = s.sceneGen;
-    const { [id]: _o, ...outage } = s.outage;
-    const sel = s.sel.board === id ? NO_SEL : s.sel;
-    if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
-    return { boards, busyOn, roles, dropped, sceneGen, outage, sel, flashes: s.flashes.filter((f) => f.board !== id) };
-  });
-  boardsBefore = getState().boards;
+  dropThings([id]);
 }
 
 // ---- the role per board: board.ts decides, by logic/roles.ts
@@ -251,9 +409,13 @@ export function setOutage(board: string, on: boolean) {
   });
 }
 
-/** Sets the board being made whose server is not chosen yet, or with null ends it. */
-export function setBoardDraft(draft: State["boardDraft"]) {
-  setState({ boardDraft: draft });
+/** Notes what a board's save was refused with, when waiting does not mend it; "": a save worked, or the edit is gone. */
+export function setSaveSaid(board: string, text: string) {
+  setState((s) => {
+    if ((s.saveSaid[board] ?? "") === text) return {};
+    const { [board]: _, ...saveSaid } = s.saveSaid;
+    return { saveSaid: text ? { ...saveSaid, [board]: text } : saveSaid };
+  });
 }
 
 /** Makes the canvas load a board's scene again: the one it shows is no longer the one kept. */
@@ -263,16 +425,11 @@ export function reloadScene(board: string) {
 
 export function upsertRun(r: RunView) {
   r = normRun(r);
-  setState((s) => ({ runs: { ...s.runs, [r.id]: r } }));
+  setState((s) => ({ runs: { ...s.runs, [r.id]: r }, ...ungone(s, r.id) }));
 }
 
-const runEvents = new Map<string, number>(); // by run id: how many `run` events arrived
+const runEvents = new Map<string, number>(); // by run: how many `run` events arrived
 let runEpoch = 0;                            // how many snapshots
-const runMoves = new Map<string, string>();  // a draft's old id → the id it got (`run` with `was`)
-
-/** The id a run has now: a draft that got a new id while a call about it was on its way (its
- *  start) is found under the new one. An id that never changed is itself. */
-export const runNow = (id: string): string => movedId(runMoves, id);
 
 /** Sets a draft run's start (State.runStarts): `starting`, `error`, or both; null takes it out.
  *  Nothing is kept for a run the store does not have. */
@@ -280,23 +437,10 @@ export function setRunStart(id: string, patch: Partial<RunStart> | null) {
   setState((s) => ({ runStarts: withRunStart(s.runStarts, id, s.runs[id] ? patch : null) }));
 }
 
-/** A `run` event: the run as the server has it now. One with `was` is of a draft that got a new
- *  id (its `run_removed` of the old one follows): the selection, the unsaved goal and the start's
- *  state move to the new id here, so that the removal finds nothing of the run on screen to clear. */
-export function onRunEvent(ev: RunView) {
-  const { was, ...r } = ev;
+/** A `run` event: the run as the server has it now. */
+export function onRunEvent(r: RunView) {
   runEvents.set(r.id, (runEvents.get(r.id) ?? 0) + 1);
-  if (!was || was === r.id) { upsertRun(r); return; }
-  const from = unsavedRunDraft(was), goal = from.read();
-  if (goal && !unsavedRunDraft(r.id).read()) unsavedRunDraft(r.id).write(goal, from.base?.());
-  from.write(null);
-  runMoves.set(was, r.id);
-  const run = normRun(r);
-  setState((s) => {
-    const sel = movedSel(s.sel, was, r.id);
-    if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
-    return { runs: { ...s.runs, [r.id]: run }, sel, runStarts: movedRunStart(s.runStarts, was, r.id) };
-  });
+  upsertRun(r);
 }
 
 /** Why the last load of a run's detail failed, or null after one that worked. */
@@ -322,26 +466,7 @@ export async function answerRun(id: string, request: () => Promise<RunView>): Pr
  *  transcript shown beside it, and the run's agents that were held, with their threads. The user's chats on it go with their own
  *  `chat_removed`. */
 export function removeRun(id: string) {
-  unsavedRunDraft(id).write(null);
-  runEvents.delete(id);
-  for (const [was, now] of runMoves) if (now === id) runMoves.delete(was);
-  setState((s) => {
-    const { [id]: _, ...runs } = s.runs;
-    const { [id]: __, ...runDetail } = s.runDetail;
-    const runErrors = withRunError(s.runErrors, id, null);
-    const sel = s.sel.run === id ? NO_SEL : s.sel;
-    if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
-    const runAgent = s.runAgent?.run === id ? null : s.runAgent;
-    const gone = Object.values(s.agents).filter((a) => a.run === id).map((a) => a.id);
-    if (!gone.length) return { runs, runDetail, runErrors, sel, runAgent };
-    const without = <K extends string, V>(map: Record<K, V>) => gone.reduce((m, a) => withoutChat(m, a), map);
-    return {
-      runs, runDetail, runErrors, sel, runAgent,
-      agents: Object.fromEntries(Object.entries(s.agents).filter(([k]) => !gone.includes(k))),
-      items: without(s.items), subs: without(s.subs), states: without(s.states),
-      subDrawer: s.subDrawer && gone.includes(s.subDrawer.chat) ? null : s.subDrawer,
-    };
-  });
+  dropThings([id, ...Object.values(state.agents).filter((a) => a.run === id).map((a) => a.id)]);
 }
 
 /** Shows the transcript of one of a run's own agents in the panel beside the run, over the chat
@@ -358,29 +483,14 @@ export function closeRunAgent() {
 /** A sidebar chat's view. A run's own agent (a record with a role) is never one: it is dropped. */
 export function upsertChat(c: ChatView) {
   if (c.role) return;
-  setState((s) => ({ chats: { ...s.chats, [c.id]: c } }));
+  setState((s) => ({ chats: { ...s.chats, [c.id]: c }, ...ungone(s, c.id) }));
 }
 
 /** Clears sel.chat, the items, subagents (with their threads) and state of every branch of the chat, its tree
  *  and pending move, the branch it was on, its waits, the drawer and the tree popup on it, and the unsaved draft of every branch.
  *  A run agent that was held goes the same way. */
 export function removeChat(id: string) {
-  for (const k of safeKeys()) if (draftKeyOf(k, id)) safeRemove(k);
-  setState((s) => {
-    const { [id]: _, ...chats } = s.chats;
-    const { [id]: _a, ...agents } = s.agents;
-    const sel = s.sel.chat === id ? { ...s.sel, chat: null } : s.sel;
-    if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
-    const subDrawer = s.subDrawer?.chat === id ? null : s.subDrawer;
-    const runAgent = s.runAgent?.agent === id ? null : s.runAgent;
-    const { [id]: ___, ...trees } = s.trees;
-    const { [id]: ____, ...moves } = s.moves;
-    const { [id]: _____, ...shown } = s.shown;
-    const treeNav = s.treeNav?.chat === id ? null : s.treeNav;
-    return { chats, agents, items: withoutChat(s.items, id), subs: withoutChat(s.subs, id), states: withoutChat(s.states, id), sel, subDrawer, runAgent, trees, moves, shown, treeNav,
-      threadErrors: withThreadError(s.threadErrors, id, null), starting: withStarting(s.starting, id, null), waits: withoutWaits(s.waits, id) };
-  });
-  ofChat.delete(id);
+  dropThings([id]);
 }
 
 // The writes of the per-branch maps: each takes the key as branchKey or subKey made it, never a
@@ -423,22 +533,17 @@ export function setLoading(chat: string, branch: string, on: boolean) {
   setState((s) => ({ waits: withLoad(s.waits, chat, branch, on) }));
 }
 
+/** The uploads of images for the composer of a branch begin (on) or have all ended (uploads.ts). */
+export function setUploading(chat: string, branch: string, on: boolean) {
+  setState((s) => ({ waits: withUpload(s.waits, chat, branch, on) }));
+}
+
+/** Where a chat's composer is (logic/waits.ts ComposerAt), for what an upload of it holds. */
+export const composerAt = (s: State, chat: string): ComposerAt => ({ branch: viewedBranch(s, chat), move: !!s.moves[chat] });
+
 /** Every fetch of a chat's lists was given up. */
 export function dropLoading(chat: string) {
   setState((s) => ({ waits: withoutLoads(s.waits, chat) }));
-}
-
-const withStarting = (m: Record<string, string>, chat: string, text: string | null): Record<string, string> => {
-  if (text !== null) return m[chat] === text ? m : { ...m, [chat]: text };
-  if (!(chat in m)) return m;
-  const { [chat]: _, ...rest } = m;
-  return rest;
-};
-
-/** Notes the text of a chat's first message that is on its way to its server, or with null that
- *  the call is answered. */
-export function setStarting(chat: string, text: string | null) {
-  setState((s) => ({ starting: withStarting(s.starting, chat, text) }));
 }
 
 /** Notes why the load of a chat's list failed, or with null that it worked. */
@@ -463,19 +568,33 @@ export function upsertState(st: BranchState) {
   setState((s) => ({ states: { ...s.states, [key]: st } }));
 }
 
-/** rev: the counter a copy written with no base is on; none: its copies have no base. The base is kept with the draft, as its `base`. */
-const unsavedAt = (k: string, rev?: () => number | undefined): Unsaved => ({
-  read(): Draft | null {
-    try {
-      const d = JSON.parse(safeGet(k) ?? "null");
-      if (typeof d?.text !== "string") return null;
-      const { base: _, ...draft } = d;
-      return draft;
-    } catch { return null; }
-  },
-  base(): number | undefined { try { const b = JSON.parse(safeGet(k) ?? "null")?.base; return typeof b === "number" ? b : undefined; } catch { return undefined; } },
-  write(d: Draft | null, base = rev?.()) { if (d) safeSet(k, JSON.stringify(base === undefined ? d : { ...d, base })); else safeRemove(k); },
-});
+/** The unsaved copies of the drafts of sections' chats and runs, under the keys localStorage would have. Nothing of
+ *  a remote server is kept in the browser's storage: such a copy is in the page's memory, where it hands a draft from
+ *  one composer of the page to the next, and is lost with the page. */
+const memory = new Map<string, string>();
+
+/** Where an unsaved copy is kept: the browser's storage for a chat or a run of this computer, the page's memory for one of a section. */
+const copies = (of: string) => (inSection(of)
+  ? { get: (k: string) => memory.get(k) ?? null, set: (k: string, v: string) => { memory.set(k, v); }, remove: (k: string) => { memory.delete(k); } }
+  : { get: safeGet, set: safeSet, remove: safeRemove });
+
+/** of: the chat or the run the copy is of. rev: the counter a copy written with no base is on; none: its copies have no base.
+ *  The base is kept with the draft, as its `base`. */
+const unsavedAt = (of: string, k: string, rev?: () => number | undefined): Unsaved => {
+  const at = copies(of);
+  return {
+    read(): Draft | null {
+      try {
+        const d = JSON.parse(at.get(k) ?? "null");
+        if (typeof d?.text !== "string") return null;
+        const { base: _, ...draft } = d;
+        return draft;
+      } catch { return null; }
+    },
+    base(): number | undefined { try { const b = JSON.parse(at.get(k) ?? "null")?.base; return typeof b === "number" ? b : undefined; } catch { return undefined; } },
+    write(d: Draft | null, base = rev?.()) { if (d) at.set(k, JSON.stringify(base === undefined ? d : { ...d, base })); else at.remove(k); },
+  };
+};
 
 /** The server's counter of a branch's draft as known here; undefined for a branch with no record yet. */
 export const draftRevOf = (chat: string, branch: string): number | undefined => {
@@ -483,12 +602,19 @@ export const draftRevOf = (chat: string, branch: string): number | undefined => 
   return st ? st.draftRev ?? 0 : undefined;
 };
 
-/** A branch's draft the server may not have yet, in localStorage "aiwb.draft.<chat>:<branch>" (see logic/drafts.ts), with the
- *  counter it was typed on: the one known here when the writer names none. */
-export const unsavedDraft = (chat: string, branch: string): Unsaved => unsavedAt(draftKey(chat, branch), () => draftRevOf(chat, branch));
+/** A branch's draft the server may not have yet, with the counter it was typed on: the one known here when the writer names
+ *  none. For a chat of this computer in localStorage "aiwb.draft.<chat>:<branch>" (see logic/drafts.ts); for a chat of a section
+ *  in the page's memory alone. */
+export const unsavedDraft = (chat: string, branch: string): Unsaved => unsavedAt(chat, draftKey(chat, branch), () => draftRevOf(chat, branch));
 
-/** A run's goal the server may not have yet, in localStorage "aiwb.draft.<run>". */
-export const unsavedRunDraft = (run: string): Unsaved => unsavedAt(legacyDraftKey(run));
+/** Every branch's unsaved draft the browser keeps: of this computer's chats, whichever (logic/draftsback.ts KeptDrafts saves those whose composer is not open). */
+export const keptDrafts = (): Kept[] => safeKeys().map((k) => keptOf(k, safeGet(k))).filter((k): k is Kept => !!k);
+
+/** A branch's unsaved draft as it is stored; null: none. */
+export const keptRaw = (chat: string, branch: string): string | null => copies(chat).get(draftKey(chat, branch));
+
+/** A run's goal the server may not have yet: in localStorage "aiwb.draft.<run>" for a run of this computer, in the page's memory for one of a section. */
+export const unsavedRunDraft = (run: string): Unsaved => unsavedAt(run, legacyDraftKey(run));
 
 let legacyDrafts = false; // whether the unsaved drafts kept per chat were renamed: once, with the first snapshot
 
@@ -504,7 +630,22 @@ function renameLegacyDrafts(chats: Record<string, ChatView>) {
   }
 }
 
-/** The chat a board or a run reopens with, by board or run id, in localStorage. */
+/** Once, with the first snapshot: what the browser kept from before of things that are not this computer's goes.
+ *  The unsaved drafts of chats and runs the snapshot does not have: those of chats and runs on other servers, of
+ *  which the app kept records until remote servers became sections, and of chats deleted while no page was open.
+ *  And the recent folders of other servers ("aiwb.dirs.<entry id>"). Nothing of a remote server stays in the
+ *  browser's storage. */
+function sweepStorage(chats: Record<string, unknown>, runs: Record<string, unknown>) {
+  const drafts = legacyDraftKey("");
+  for (const k of safeKeys()) {
+    if (k.startsWith(`${RECENT_KEY}.`)) { safeRemove(k); continue; }
+    if (!k.startsWith(drafts)) continue;
+    const rest = k.slice(drafts.length), id = rest.includes(":") ? rest.slice(0, rest.indexOf(":")) : rest;
+    if (!chats[id] && !runs[id]) safeRemove(k);
+  }
+}
+
+/** The chat a board or a run reopens with, by the board's or the run's key, in localStorage: a key, never anything of the chat. */
 export const lastChat = {
   read(): Record<string, string> { try { return JSON.parse(safeGet("aiwb.lastChat") ?? "{}") ?? {}; } catch { return {}; } },
   get(owner: string): string | undefined { return this.read()[owner]; },
@@ -606,8 +747,17 @@ export function setMove(chat: string, move: PendingMove | null) {
   });
 }
 
-/** Board id → name, for tool labels. */
-export const boardName = (id: string) => state.boards[id]?.name;
+const names = new Map<string, (id: string) => string | undefined>(); // by entry id: what boardNames gave
+
+/** Board id → name, for the tool labels of a chat. An agent names a board by its id on its own server, so the id is
+ *  looked up among the boards of the chat's server. of: the chat's key (any key of that server). The same function
+ *  for the same server. */
+export function boardNames(of: string): (id: string) => string | undefined {
+  const server = serverOfKey(of);
+  let f = names.get(server);
+  if (!f) names.set(server, f = (id) => state.boards[keyOn(server, id)]?.name);
+  return f;
+}
 
 // ---- canvas feedback
 

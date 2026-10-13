@@ -5,7 +5,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useStore, getState, setState } from "./store.ts";
-import { confirm, reportError } from "./Dialogs.tsx";
+import { confirm } from "./Dialogs.tsx";
+import { entryRemoved } from "./conn.ts";
 import { serversApi, type ServerPatch } from "./serversapi.ts";
 import { anyNotConnected, formError, formView, heldResult, insertServer, removeText, resultHeading, rowActions, rowResult, serversOf, stateLabel, stepText,
   type HeldResult, type ServerForm as Form, type ServerView, type TestResult } from "./logic/servers.ts";
@@ -151,16 +152,12 @@ export function ServerRow({ v, onEdit, result = null }: { v: ServerView; onEdit?
     setHeld(null);
     answered(a?.server);
   });
-  const remove = async () => {
-    setBusy(true); setErr("");
-    try {
-      const n = await serversApi.items(v.id);
-      confirm({
-        title: "Remove server", body: removeText(v.name, n?.chats ?? 0, n?.runs ?? 0),
-        actions: [{ label: "Remove", tone: "danger", run: async () => { await serversApi.remove(v.id); setState((s) => ({ servers: s.servers.filter((x) => x.id !== v.id) })); } }],
-      });
-    } catch (e) { reportError("Couldn't remove the server", e); } finally { setBusy(false); }
-  };
+  // Removing an entry takes its section away and tells that server nothing: the question says so, and counts nothing.
+  // What is open of that server is closed with it, by the answer or by the `servers` event, whichever is here first.
+  const remove = () => confirm({
+    title: "Remove server", body: removeText(v.name),
+    actions: [{ label: "Remove", tone: "danger", run: async () => { await serversApi.remove(v.id); entryRemoved(v.id); } }],
+  });
   const tone = v.state === "connected" ? "ok" : v.state === "connecting" ? "wait" : "bad";
   const agents = texts(v.agents);
   // What the test's answer adds to the row's own lines: each fact is shown once.

@@ -76,8 +76,9 @@ func problemResult(err error, secret string) Result {
 // TestConnection tries t in five steps and says where it ended: the address, the dial, TLS,
 // hello and the state. Each step has Timing.TestStep. The secret is sent from step 4 on, so only
 // after the certificate was accepted: with the box on and no pin the test ends at step 3 with
-// the fingerprint of the certificate, read in a handshake that sends no request. No text of the
-// Result holds the secret, whatever the server answers.
+// the fingerprint of the certificate, read in a handshake that sends no request. Both requests
+// state this client's level (LevelHeader), as a connection's do. No text of the Result holds the
+// secret, whatever the server answers.
 func TestConnection(ctx context.Context, t Target, id Identity, o Options) Result {
 	step := o.Timing.withDefaults().TestStep
 	local := id.LocalID
@@ -133,8 +134,7 @@ func TestConnection(ctx context.Context, t Target, id Identity, o Options) Resul
 		if err != nil {
 			return 0, nil, err
 		}
-		req.Header.Set(remote.SecretHeader, t.Secret)
-		req.Header.Set(remote.ClientHeader, local)
+		identify(req, t.Secret, local)
 		resp, err := client.Do(req)
 		if err != nil {
 			return 0, nil, err

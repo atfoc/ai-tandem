@@ -157,7 +157,6 @@ func TestCallGivesAPIClientNoBoard(t *testing.T) {
 	}
 	x := openAPI(t, api, "X")
 	take(t, b, "X", "home", false, "held")
-	b.MarkBoard("b1", "X")
 
 	done := goCall(b, CallSpec{Method: "tool", Board: "b1", ChatBoard: "home"}, bridgetest.Wait)
 	rpc := x.Expect("rpc") // and no held before it
@@ -200,22 +199,22 @@ func TestCallGivesAPIClientNoBoard(t *testing.T) {
 		t.Fatal("the screen call gave a board")
 	}
 
-	// A free board that is not the API client's, the server's own or another client's, is not
-	// asked of it: the page that acted last is asked, and is given the target.
-	b.MarkBoard("other", "Y")
+	// The holder of the chat's board is asked about every board of the server, and the page
+	// that acted last is not.
 	p.OnRPC(func(map[string]any) (any, string) { return "from P", "" })
-	for _, target := range []string{"own", "other"} {
-		v, err := b.CallBoard(CallSpec{Method: "tool", Board: target, ChatBoard: "home"}, bridgetest.Wait)
-		if err != nil || string(v) != `"from P"` {
-			t.Fatalf("the call about the board %s = %s, %v", target, v, err)
+	for _, target := range []string{"plain", "second", "other"} {
+		done := goCall(b, CallSpec{Method: "tool", Board: target, ChatBoard: "home"}, bridgetest.Wait)
+		rpc := x.Expect("rpc")
+		if _, ok := b.HolderOf(target); ok {
+			t.Fatalf("the call about the board %s gave it to somebody", target)
 		}
-		expectBoard(t, p, "held", target)
-		if h, _ := b.HolderOf(target); h != "P" {
-			t.Fatalf("the board %s is held by %q, want P", target, h)
+		b.ReplyFrom("X", rpc["id"].(string), RPCReply{Result: json.RawMessage(`"from X"`)})
+		if r := expectResult(t, done); r.err != nil || string(r.v) != `"from X"` {
+			t.Fatalf("the call about the board %s = %s, %v", target, r.v, r.err)
 		}
 	}
-	if got := x.Drain(20 * time.Millisecond); len(got) != 0 {
-		t.Fatalf("the API client got %v", got)
+	if got := p.Drain(20 * time.Millisecond); len(got) != 0 {
+		t.Fatalf("the page got %v", got)
 	}
 
 	// A call about a board the API client holds is about that board: losing it fails the call.
@@ -236,11 +235,11 @@ func TestCallGivesAPIClientNoBoard(t *testing.T) {
 		t.Fatalf("the API client got %v", got)
 	}
 
-	// With no page that acted, a free board that is not the API client's has no client to ask.
-	take(t, b, "X", "home", false, "held")
+	// With no page that acted and the chat's board free there is no client to ask: a call never
+	// falls to an API client that holds nothing.
 	p.Close()
 	waitFor(t, func() bool { return !b.Acted("P") })
-	if _, err := b.CallBoard(CallSpec{Method: "tool", Board: "own2", ChatBoard: "home"}, bridgetest.Wait); !errors.Is(err, ErrNoClient) {
+	if _, err := b.CallBoard(CallSpec{Method: "tool", Board: "plain2", ChatBoard: "home"}, bridgetest.Wait); !errors.Is(err, ErrNoClient) {
 		t.Fatalf("the call with no page ended with %v, want ErrNoClient", err)
 	}
 	if got := x.Drain(20 * time.Millisecond); len(got) != 0 {
@@ -475,9 +474,9 @@ func TestOnBoardFree(t *testing.T) {
 	})
 }
 
-// A board event goes to every page, and to the API client whose mark the board carries. The
-// mark ends with the board's removal.
-func TestBoardMarksFilterEvents(t *testing.T) {
+// A board's events reach every page and every API client, whoever made the board: a follow
+// and a hold decide nothing about them.
+func TestBoardEventsReachEveryClient(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
@@ -503,39 +502,18 @@ func TestBoardMarksFilterEvents(t *testing.T) {
 		}
 	}
 
-	b.MarkBoard("b1", "X")
-	b.MarkBoard("b3", "Y")
-	if b.MarkOf(Board("b1")) != "X" || b.MarkOf(Chat("b1")) != "" {
-		t.Fatal("MarkBoard did not mark the board, or marked a chat")
-	}
-	sent("board", "b1", p, x)
-	sent("board", "b2", p) // a board of the owner's
-	sent("board", "b3", p, y)
-	// A chat's mark with the board's id is another item's.
-	b.SetMark(Chat("b2"), "X")
-	sent("board", "b2", p)
-	// A follow lists nothing, and holding the board does not either.
+	sent("board", "b1", all...)
+	sent("board", "b2", all...)
+	// A follow, or holding the board, changes nothing.
 	b.Follow("Y", Board("b1"))
 	take(t, b, "Y", "b1", false, "held")
-	sent("board", "b1", p, x)
+	sent("board", "b1", all...)
 
-	// The removal reaches the marked client and ends the mark.
-	sent("board_removed", "b1", p, x)
-	if got := b.MarkOf(Board("b1")); got != "" {
-		t.Fatalf("the mark of the removed board is %q", got)
-	}
-	sent("board", "b1", p)
-	sent("board_removed", "b1", p)
-	if b.MarkOf(Board("b3")) != "Y" {
-		t.Fatal("the removal ended another board's mark")
-	}
-	// The mark is of one client; "" removes it.
-	b.MarkBoard("b3", "X")
-	sent("board", "b3", p, x)
-	b.MarkBoard("b3", "")
-	sent("board", "b3", p)
+	// The removal reaches every client.
+	sent("board_removed", "b1", all...)
+	sent("board", "b1", all...)
+	sent("board_removed", "b2", all...)
 	// Through Broadcast, as before the boards knew SendBoard, it reaches the pages alone.
-	b.MarkBoard("b3", "X")
 	b.Broadcast(map[string]any{"type": "board", "id": "b3"})
 	s.send()
 	for _, c := range all {

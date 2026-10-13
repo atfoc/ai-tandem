@@ -1112,7 +1112,6 @@ func TestFirstSendRecordsDefaults(t *testing.T) {
 	// the chat's group. The ungrouped group keeps what it had.
 	want := model.LocalDefaults(model.ServerDefaults{Agent: model.Claude, Cwd: dir, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}},
 		Subagents: &model.SubLimits{Depth: 1, Cap: 100}})
-	want.Server = model.LocalServer
 	e.st.Read(func(s *model.State) {
 		if !reflect.DeepEqual(s.Defaults.Groups[gOne], want) || !reflect.DeepEqual(s.Defaults.Groups[model.Ungrouped], ungrouped) {
 			t.Fatalf("defaults after first Send %+v", s.Defaults)

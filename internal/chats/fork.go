@@ -12,7 +12,6 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/boards"
-	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/store"
 	"ai-whiteboard/internal/transcript"
@@ -40,9 +39,11 @@ func errNoForker(a model.AgentKind) error {
 var errForkGone = errors.New("this fork was made at a point Claude has no id for, and the chat it was forked from has gone on since: it can no longer be started")
 
 // Fork makes a new chat holding the first req.At items of a branch of the chat id, in a session
-// forked from that branch's at that point. The source chat is not stopped, changed or re-emitted,
-// also when a turn of that branch or of another is running: the point is then a finished boundary
-// of the branch (see forkEntry).
+// forked from that branch's at that point. It has its own copies of the images those items hold,
+// which count as sent in it, and of the images of the message that becomes its draft
+// (forkImages). The source chat is not stopped, changed or re-emitted, also when a turn of that
+// branch or of another is running: the point is then a finished boundary of the branch (see
+// forkEntry).
 //
 // The new chat is in the manager's map from the start, unlisted: its agent finds its MCP token
 // while it starts, but no client sees the chat, and nothing is saved or emitted for it, until the
@@ -69,20 +70,9 @@ func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
 	if err != nil {
 		return model.ChatView{}, err
 	}
-	// The fork of a chat with a client mark has it too: the bridge is told before the fork is
-	// listed, and with no chat's lock held.
-	c.mu.Lock()
-	forkID, mark := c.meta.ID, c.meta.Client
-	c.mu.Unlock()
-	if mark != "" {
-		m.Bridge.SetMark(editorbridge.Chat(forkID), mark)
-	}
 	forked := false
 	fail := func(err error) (model.ChatView, error) {
 		m.dropUnlisted(c, forked)
-		if mark != "" {
-			m.Bridge.SetMark(editorbridge.Chat(forkID), "") // no chat_removed takes it away
-		}
 		return model.ChatView{}, err
 	}
 
@@ -171,9 +161,6 @@ func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*C
 	if parent.InstructionsSent {
 		return nil, none, ErrLegacy
 	}
-	if remoteUnstarted(src) {
-		return nil, none, ErrRemoteStart // nothing of it is here to fork (see remote.go)
-	}
 	tr, err := m.trOf(src, out)
 	if err != nil {
 		return nil, none, err
@@ -196,9 +183,10 @@ func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*C
 		if at, ok := cutBefore(items, *req.Message); !ok || at != req.At {
 			return nil, none, ErrBadPoint
 		}
-		// The quotes of what the copy lacks would name other items there.
+		// The quotes of what the copy lacks would name other items there. The message's images
+		// come with it: the fork gets copies of its own below (forkImages).
 		msg := items[*req.Message]
-		draft = &model.Draft{Text: msg.Text}
+		draft = &model.Draft{Text: msg.Text, Images: m.heldImages(topOf(src), top, msg.Images)}
 		for _, r := range msg.References {
 			if r.Item < req.At {
 				draft.References = append(draft.References, r)
@@ -250,11 +238,16 @@ func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*C
 	if err != nil {
 		return nil, none, err
 	}
+	if err := m.forkImages(topOf(src), top, c, meta.ID, items[:req.At], draft); err != nil {
+		m.dropUnlisted(c, false)
+		return nil, none, err
+	}
 	return c, forkSourceOf(src.meta, items, req.At, running), nil
 }
 
 // titleOf is the chat's title as the client shows it (chatTitle in web/src/store.ts): its name,
-// else its first message cut to 40 characters, else "New chat".
+// else its first message cut to 40 characters, model.ImageWord for one that is images alone, else
+// "New chat".
 func titleOf(meta model.ChatMeta, items []model.Item) string {
 	if meta.Name != "" {
 		return meta.Name
@@ -265,6 +258,9 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 		}
 		t := strings.Join(strings.Fields(PlainText(it.Text)), " ")
 		if t == "" {
+			if len(it.Images) > 0 {
+				return model.ImageWord
+			}
 			break
 		}
 		if r := []rune(t); len(r) > 42 {
@@ -276,7 +272,7 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 }
 
 // prefixMeta is what the chat.json of a new chat or branch that starts with the first at items
-// of the chat (src, items) takes from it (D11): the agent, its board and folder, its client mark,
+// of the chat (src, items) takes from it (D11): the agent, its board and folder,
 // its subagent settings (none stored where the source has none: both then read as the defaults),
 // a session id of its own, and what follows from the prefix. Its model and effort are mc, the source's or the ones
 // chosen for it (see choose); window is the context window of mc's model, 0 when it is not known,
@@ -284,7 +280,7 @@ func titleOf(meta model.ChatMeta, items []model.Item) string {
 // caller sets the id and what differs between a fork and a branch; addUnlisted gives the token. A
 // fork or branch of a chat on a run is on that run.
 func prefixMeta(src model.ChatMeta, items []model.Item, at int, mc model.ModelChoice, window int) model.ChatMeta {
-	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Client: src.Client, Cwd: src.Cwd,
+	meta := model.ChatMeta{Agent: src.Agent, Board: src.Board, Run: src.Run, Cwd: src.Cwd,
 		Model: mc.Model, Effort: mc.Effort, Created: time.Now()}
 	if src.Subagents != nil {
 		sub := *src.Subagents

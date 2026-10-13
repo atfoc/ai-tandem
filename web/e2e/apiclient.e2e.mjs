@@ -1,10 +1,13 @@
-// The real page beside an API client (plans/multiple-remote-servers.md, phase 2, AC13).
+// The real page of a server's owner beside an API client (plans/remote-server-sections-goal.md,
+// sections 3.3, 3.6 and 3.11; plans/remote-server-sections-contract.md, section 2).
 //
 // An API client is another person's local server that uses this server's remote listener: HTTPS
-// with the secret and a client id, a table of named routes. AC13 says it takes nothing from a
-// page: the page keeps the board it holds and the chats it follows. The Go tests show that with
-// stand-in pages; this script shows it with the page itself in a headless Chrome (Playwright),
-// beside an API client written here in Node.
+// with the secret, a client id and its level (the header X-AIWB-Level: 5), on a table of named
+// routes. At level 5 it is served as the server's own page: it gets the server's whole tree, what
+// it makes is in the group it was made in, and the owner's page shows it there. There is no group
+// "Remote". It takes nothing from a page: the page keeps the board it holds and the chats it
+// follows. The Go tests show that with stand-in pages; this script shows it with the owner's
+// page itself in a headless Chrome (Playwright), beside an API client written here in Node.
 //
 // It spends no money: the server runs the stand-in agent internal/agenttest/fake-claude and has no
 // Cursor and no pi. It never touches the installed app: the script builds its own binary into a
@@ -14,17 +17,22 @@
 //   cd web && npm ci && npm run build && npm install --no-save playwright && npx playwright install chromium
 //   node web/e2e/apiclient.e2e.mjs
 //
-// Part 1: the page makes a board, draws a rectangle and sends a message in a chat of its own (on
-//   the board). The API client connects its stream, creates a chat whose first message asks
-//   permission, reads the items, answers the ask, sends a second message and interrupts it;
-//   meanwhile the page draws a second rectangle, a third after the second message and a fourth
-//   after the interrupt, and then sends a second message in its chat. Checked: both of the page's
-//   messages are answered on the page, the page never shows the take-over panel, the four
+// Part 1: the owner's page makes a group, a board with a rectangle and a chat of its own (on the
+//   board) with a message. A client that states no level, or one below 5, is refused on every
+//   route but hello (400 client_too_old). The API client at level 5 connects its stream: its
+//   snapshot has the owner's group, board and chat, and nothing of a page alone. It makes a chat
+//   in the owner's group with POST /api/chats (the page's call; the creation call with a first
+//   message and the make by PUT are gone, and a body that names a server is refused), sends its
+//   first message with the message call, reads the items, answers the permission ask, sends a
+//   second message and interrupts it; meanwhile the page draws a second rectangle, a third after
+//   the second message and a fourth after the interrupt, and then sends a second message in its
+//   chat. Checked: the client reads the owner's chat and follows what the owner does; both of the
+//   page's messages are answered on the page, the page never shows the take-over panel, the four
 //   rectangles are in the board's file, the API client's stream got no event that is a page's
-//   alone, the sidebar shows the group "Remote" with the API client's chat, the page's console
-//   has no error.
+//   alone, the sidebar shows the API client's chat in the group it was made in and no group
+//   "Remote", and the page's console has no error.
 // Part 2: the page makes a run, starts it and opens its orchestrator's transcript. A second API
-//   client connects, follows that same chat and creates a chat of its own. Checked: the transcript
+//   client connects, follows that same chat and makes a chat of its own. Checked: the transcript
 //   on the page still gets its new items afterwards.
 //
 // It prints one line per check and exits with 1 when a check failed (2 when it could not run).
@@ -151,7 +159,8 @@ const state = async () => (await fetch(`${BASE}/api/state`)).json();
 
 // ---- the API client: HTTPS on the remote listener, the server's certificate pinned
 
-function apiClient() {
+/** level: what the client states in X-AIWB-Level on every request (5: the level of this server); null: no header, as an app of before. */
+function apiClient(level = 5) {
   const id = randomUUID();
   const ca = fs.readFileSync(path.join(HOME, "remote-cert.pem"));
   const secret = fs.readFileSync(path.join(HOME, "remote-secret"), "utf8").trim();
@@ -159,7 +168,7 @@ function apiClient() {
   const agent = new https.Agent({ ca, keepAlive: false });
   const options = (method, p, extra = {}) => ({
     host: "127.0.0.1", port: REMOTE_PORT, path: p, method, agent,
-    headers: { "X-AIWB-Secret": secret, "X-AIWB-Client": id, ...extra },
+    headers: { "X-AIWB-Secret": secret, "X-AIWB-Client": id, ...(level === null ? {} : { "X-AIWB-Level": String(level) }), ...extra },
   });
   const events = [];
   let stream = null;
@@ -299,8 +308,13 @@ async function pageSays(page, text) {
   }, { timeout: 20000 }).then((reply) => ({ reply }), (e) => ({ err: e.message }));
 }
 
-// The events that go to a page alone: an API client's stream never carries them.
-const PAGE_ONLY = ["rpc", "held", "release_request", "superseded", "groups", "board"];
+// The events that go to a page alone, and those that go to the one client that holds or waits for a board: the
+// stream of an API client that holds none never carries them. (The list events, `groups` and `board` among them, go
+// to every client at level 5.)
+const PAGE_ONLY = ["servers", "server_state", "server_lists", "library", "library_removed", "section", "rpc", "held", "release_request", "superseded"];
+/** What a client's snapshot never has: the server's own server list, what its other servers offer, its sections, its data folder. */
+const NEVER_IN_SNAPSHOT = ["servers", "lists", "libraries", "sections", "dataDir"];
+const GROUP = "Workshop"; // the owner's group, which the API client makes its chat in
 
 // ---- what the API client reads
 
@@ -311,6 +325,12 @@ const chatOf = async (api, chat) => (await api.call("GET", `/api/chats/${chat}`)
 // ---- part 1: a board the page holds, beside an API client's chat
 
 async function part1(page) {
+  // The owner's group: made on the page, by its "New group".
+  await page.locator("button.side-addgroup").click();
+  const naming = page.locator(".side-tree .name-input").first();
+  await naming.fill(GROUP);
+  await naming.press("Enter");
+  const group = await waitFor("the server has the owner's group", async () => (await state()).groups?.find((g) => g.name === GROUP)?.id ?? null);
   const board = await newBoard(page);
   const first = await drawRect(page, board, 0.3, 0.3);
   check("the page made a board and its first rectangle is in the board's file", rectangles(board).some((e) => e.id === first), `board ${board}`);
@@ -320,19 +340,51 @@ async function part1(page) {
   const said1 = await pageSays(page, "page before the API client");
   check("the page sends a message in a chat of its own and the reply shows", !!said1.reply, said1.err ?? `chat ${own}: ${said1.reply}`);
 
+  // An app of before states no level: it gets hello, with the server's level, and is refused everywhere else with a reason.
+  for (const [what, old] of [["no level", apiClient(null)], ["level 4", apiClient(4)]]) {
+    try {
+      const hello = await old.call("GET", "/api/hello"), st = await old.call("GET", "/api/state"), make = await old.call("POST", "/api/chats", { group: "__ungrouped__" });
+      const stream = await old.connect().then(() => "a snapshot", (e) => e.message);
+      check(`a client that states ${what} gets hello with the level 5, and 400 client_too_old on the state, the stream and a make`,
+        hello.status === 200 && hello.json?.featureLevel === 5 && st.status === 400 && st.json?.code === "client_too_old" && make.status === 400 && make.json?.code === "client_too_old" && /-> 400/.test(stream),
+        `hello ${hello.status} level ${hello.json?.featureLevel}; state ${st.status} ${st.json?.code}: "${st.json?.error}"; make ${make.status} ${make.json?.code}; stream: ${stream}`);
+    } finally { old.close(); }
+  }
+  check("nothing was made for them", (await state()).chats.length === 1, `${(await state()).chats.length} chats`);
+
   const api = apiClient();
   try {
     const snap = await api.connect();
     check("the API client's stream gives hello with its id, then a snapshot",
       api.events[0]?.type === "hello" && api.events[0]?.client === api.id && api.events[1]?.type === "snapshot",
       `events: ${api.events.slice(0, 2).map((e) => e.type).join(", ")}; snapshot fields: ${Object.keys(snap).filter((k) => k !== "type").join(", ")}`);
+    // The client sees the owner's things: the whole tree, as the owner's own page gets it.
+    const got = await api.call("GET", "/api/state");
+    const sees = (t) => !!t && t.groups?.some((g) => g.id === group && g.name === GROUP) && t.boards?.some((b) => b.id === board) && t.chats?.some((c) => c.id === own && c.board === board)
+      && t.states?.some((x) => x.chat === own) && Array.isArray(t.runs) && !!t.defaults;
+    check("its snapshot, and GET /api/state, have the server's whole tree: the owner's group, the owner's board and the owner's chat with its branch state",
+      sees(snap) && got.status === 200 && sees(got.json), `groups ${snap.groups?.map((g) => g.name).join(", ")}; boards ${snap.boards?.length}; chats ${snap.chats?.length}; states ${snap.states?.length}`);
+    const extra = NEVER_IN_SNAPSHOT.filter((k) => k in snap || k in (got.json ?? {}));
+    check(`and nothing of the server's own matters (${NEVER_IN_SNAPSHOT.join(", ")})`, extra.length === 0, extra.join(", "));
+    const theirs = await api.call("GET", `/api/chats/${own}/items`);
+    check("the API client reads the thread of the owner's chat", theirs.status === 200 && /page before the API client/.test(textOf(theirs.json?.items ?? [])), `${theirs.status}, ${theirs.json?.items?.length ?? "?"} items`);
 
+    // The make: the page's call, in the owner's group. What is gone answers as a route that is not there, and a body that names a server is refused.
     const chat = randomUUID();
     const name = "API client chat";
-    const made = await api.call("POST", "/api/chats", { id: chat, agent: "claude", cwd: WORK, name, userNamed: true, text: '[[ask Bash {"command":"ls"}]] go' });
-    check("the API client creates a chat with its first message in one call",
-      made.status === 200 && made.json?.ok === true && made.json?.started === true && made.json?.sent === true && made.json?.chat?.id === chat,
-      `${made.status} ${made.text.slice(0, 160)}`);
+    const before = (await state()).chats.length;
+    const old = await api.call("PUT", `/api/chats/${chat}`, { agent: "claude", cwd: WORK, text: "hello" });
+    const named = await api.call("POST", "/api/chats", { id: chat, agent: "claude", group, server: "local" });
+    check("the make by PUT is gone (404), a body that names a server is refused (400 server_refused), and neither made a chat",
+      old.status === 404 && named.status === 400 && named.json?.code === "server_refused" && (await state()).chats.length === before, `PUT -> ${old.status} ${old.text.slice(0, 80)}; with "server" -> ${named.status} ${named.json?.code}`);
+    const made = await api.call("POST", "/api/chats", { id: chat, agent: "claude", group, text: "a text the call no longer takes" });
+    const fresh = (await state()).chats.find((c) => c.id === chat);
+    check("the API client makes a chat with POST /api/chats, in the owner's group: the answer is the chat, not started, and no message was sent for it",
+      made.status === 200 && made.json?.id === chat && made.json?.locked === false && made.json?.group === group && !("started" in (made.json ?? {})) && fresh?.group === group && (await items(api, chat)).length === 0,
+      `${made.status} ${made.text.slice(0, 200)}`);
+    const renamed = await api.call("PATCH", `/api/chats/${chat}`, { name });
+    const first1 = await api.call("POST", `/api/chats/${chat}/messages`, { text: '[[ask Bash {"command":"ls"}]] go' });
+    check("its first message is the message call", renamed.status === 200 && first1.status === 200, `rename -> ${renamed.status}; messages -> ${first1.status} ${first1.text.slice(0, 120)}`);
 
     // Meanwhile the page draws: it starts now and is awaited after the ask is answered.
     const second = drawRect(page, board, 0.55, 0.55).then((id) => ({ id }), (e) => ({ err: e.message }));
@@ -368,8 +420,18 @@ async function part1(page) {
     check("the stream gave the API client events of its chat", api.events.length > 2, `${api.events.length} events: ${[...new Set(api.events.map((e) => e.type))].join(", ")}`);
 
     // The page's own chat again, after the API client's work.
+    const at = api.events.length;
     const said2 = await pageSays(page, "page after the API client");
     check("the page sends a second message in its own chat and the new reply shows", !!said2.reply && said2.reply !== said1.reply, said2.err ?? `chat ${own}: ${said2.reply}`);
+    // What the owner does is told to every client: the list events of the owner's chat, and of a group the owner makes.
+    const heard = await waitFor("the API client's stream tells of the owner's chat at work", () => api.events.slice(at).some((e) => (e.type === "chat" && e.chat?.id === own) || (e.type === "branch_state" && e.state?.chat === own)), { timeout: 10000 }).catch(() => false);
+    await page.locator("button.side-addgroup").click();
+    const naming2 = page.locator(".side-tree .name-input").first();
+    await naming2.fill("Made later");
+    await naming2.press("Enter");
+    const told = await waitFor("the API client's stream tells of the owner's new group", () => api.events.slice(at).some((e) => e.type === "groups" && e.groups?.some((g) => g.name === "Made later")), { timeout: 10000 }).catch(() => false);
+    check("the API client follows what the owner does: its stream tells of the owner's chat at work and of a group the owner makes", heard === true && told === true,
+      `events since: ${[...new Set(api.events.slice(at).map((e) => e.type))].join(", ")}`);
 
     // The checks of AC13 on the page.
     const tk = await takeover(page);
@@ -383,14 +445,17 @@ async function part1(page) {
       `${api.events.length} events: ${[...new Set(api.events.map((e) => e.type))].join(", ")}${pageOnly.length ? `; of a page's alone: ${pageOnly.map((e) => e.type).join(", ")}` : ""}`);
     check("the page still shows its board", (await sel(page)).board === board && (await page.locator(".board-canvas").count()) === 1);
 
-    const group = page.locator(".side-group").filter({ has: page.locator(".side-group-name", { hasText: /^Remote$/ }) });
-    const row = group.locator(".side-row", { hasText: name });
-    const shown = await waitFor("the group and the chat in the sidebar", async () => (await group.count()) === 1 && (await row.count()) === 1, { timeout: 5000 }).catch(() => false);
-    check('the sidebar shows a group "Remote" with the API client\'s chat in it', shown === true,
-      `groups: ${(await page.locator(".side-group-name").allInnerTexts()).join(", ") || "none"}; rows in Remote: ${(await group.locator(".side-row").allInnerTexts().catch(() => [])).map((t) => t.replace(/\n/g, " ")).join(" | ") || "none"}`);
+    // The owner sees the client's chat in the group it was made in. There is no group "Remote".
+    const shownIn = page.locator(".side-group").filter({ has: page.locator(".side-group-name", { hasText: new RegExp(`^${GROUP}$`) }) });
+    const row = shownIn.locator(".side-row", { hasText: name });
+    const shown = await waitFor("the chat in the owner's group in the sidebar", async () => (await shownIn.count()) === 1 && (await row.count()) === 1, { timeout: 10000 }).catch(() => false);
+    const names = await page.locator(".side-group-name").allInnerTexts();
+    check(`the owner's sidebar shows the API client's chat in the group it was made in ("${GROUP}"), and no group "Remote"`, shown === true && !names.some((n) => /^remote$/i.test(n.trim())),
+      `groups: ${names.join(", ") || "none"}; rows in ${GROUP}: ${(await shownIn.locator(".side-row").allInnerTexts().catch(() => [])).map((t) => t.replace(/\n/g, " ")).join(" | ") || "none"}`);
     const st = await state();
-    const remote = st.groups?.find((g) => g.name === "Remote");
-    check('the server has the chat in the group "Remote", off every board', !!remote && st.chats.find((c) => c.id === chat)?.group === remote.id && !st.chats.find((c) => c.id === chat)?.board);
+    const mine = st.chats.find((c) => c.id === chat);
+    check('the server has the chat in that group, off every board, with no mark of who made it, and has no group "Remote"',
+      mine?.group === group && !mine?.board && !("client" in (mine ?? {})) && !st.groups?.some((g) => g.name === "Remote") && !("remoteGroup" in st), JSON.stringify(mine && { group: mine.group, board: mine.board ?? null, client: mine.client ?? null }));
     await shot(page, "part1");
     return { board, rects };
   } finally {
@@ -450,11 +515,12 @@ async function part2(page, held) {
     await api.connect();
     const read = await api.call("GET", `/api/chats/${orch}/items`);
     const chat = randomUUID();
-    const made = await api.call("POST", "/api/chats", { id: chat, agent: "claude", cwd: WORK, name: "Second API chat", userNamed: true, text: "hello from the API client" });
+    const made = await api.call("POST", "/api/chats", { id: chat, agent: "claude", group: "__ungrouped__" });
+    const first = await api.call("POST", `/api/chats/${chat}/messages`, { text: "hello from the API client" });
     const answered = await waitFor("the API client's chat is answered", async () => /FAKE\([^)]*\): hello from the API client/.test(textOf(await items(api, chat)))).catch(() => false);
-    check("a second API client connects, reads the orchestrator's chat and creates a chat of its own",
-      read.status === 200 && made.status === 200 && made.json?.sent === true && answered === true,
-      `items -> ${read.status} (${read.json?.items?.length ?? "?"} items), POST /api/chats -> ${made.status}`);
+    check("a second API client connects, reads the orchestrator's chat and makes a chat of its own, which is answered",
+      read.status === 200 && made.status === 200 && made.json?.id === chat && first.status === 200 && answered === true,
+      `items -> ${read.status} (${read.json?.items?.length ?? "?"} items), POST /api/chats -> ${made.status}, messages -> ${first.status}`);
 
     // The orchestrator still sleeps here (about 20 s from its start). What the page shows from now on
     // can only come over the page's own follow.

@@ -20,19 +20,21 @@ import (
 )
 
 // startServers opens the list of the remote servers this one connects to (servers.json in the
-// data folder) and the chats and runs this server keeps of them (the relay), gives both to the
-// app's snapshot, to the routes, to the chat manager and to the run service, and lets the entries
-// connect. The relay's hooks are set between the list's open and its start, so no event of a
-// first connection passes it by. The bridge is told of the boards of other servers there too: see
-// below. Without a run service the relay keeps no runs. This server's instance id is the client
-// id it states to a remote server. A list file that cannot be read was
+// data folder) and the relay, which holds in memory the tree of each of them that is connected,
+// gives both to the app's snapshot and to the routes, and lets the entries connect. The relay's
+// hooks are set between the list's open and its start, so no event of a first connection passes
+// it by. The bridge is told of the boards of other servers there too: see below. This server's
+// instance id is the client id it states to a remote server. A list file that cannot be read was
 // set aside by the open: the start goes on with this computer only, and the log says so. Without
 // entries nothing is dialed.
 //
-// stop ends the connections and then the relay, which writes the chats and runs whose view
-// changed since their last write. It is never nil. w is the hidden test-only override of some of
-// the waits (see testWaits): zero outside the tests.
+// Before all that it makes sure that the data folder holds nothing of another server but the
+// list (localOnly).
+//
+// stop ends the connections and then the relay. It is never nil. w is the hidden test-only
+// override of some of the waits (see testWaits): zero outside the tests.
 func startServers(p store.Paths, br *editorbridge.Bridge, cm *chats.Manager, a *app.App, srv *server.Server, w testWaits) (stop func()) {
+	localOnly(p, cm, a)
 	id, err := remote.EnsureInstanceID(p.Root)
 	if err != nil {
 		log.Printf("instance id: %v", err)
@@ -56,49 +58,78 @@ func startServers(p store.Paths, br *editorbridge.Bridge, cm *chats.Manager, a *
 	if n := m.Notice(); n != "" {
 		log.Print(n)
 	}
-	o := remotes.Options{Root: p.Root, Servers: m, Bridge: br, Local: cm, Group: a.GroupState, Limits: w.limits(), Logf: log.Printf}
-	if a.Runs != nil {
-		o.Runs = a.Runs // a nil *runs.Service in the interface would not be "no runs"
-	}
-	relay, err := remotes.Open(o)
+	relay, err := remotes.Open(remotes.Options{Servers: m, Bridge: br, Limits: w.limits(), Logf: log.Printf})
 	if err != nil {
-		log.Printf("remote chats: %v", err) // the list connects; the chats of its servers are not shown
+		log.Printf("remote servers: %v", err) // the list connects; the sections stay empty
 		m.Start()
 		return m.Close
 	}
 	m.SetHooks(relay.Hooks())
 	listed.Store(relay)
-	m.Counts = relay.Counts
-	cm.Servers, a.Remotes, srv.Remotes = relay, relay, relay
-	if a.Runs != nil {
-		a.Runs.Remote = relay
-		a.Runs.RemoteReady() // the runs were loaded before the other servers were known
-	}
+	a.Remotes, srv.Remotes = relay, relay
 	br.OnUnfollowed(relay.Unfollowed)
 	// A board of another server: the relay is told when no page here holds it any more, so that
-	// this server lets it go there too; the revision a grant names is the last one known of the
-	// board's server; and an id the relay makes for a new board is not a local board's.
+	// this server lets it go there too, and the revision a grant names is the last one known of
+	// the board's server. The bridge names such a board by its entry and its id (BoardOn).
 	br.OnBoardFree(relay.BoardFree)
 	ownRev := br.SceneRev // of this server's own boards, set by serve
-	br.SceneRev = func(id string) int64 {
-		if rev, ok := relay.BoardRev(id); ok {
+	br.SceneRev = func(key string) int64 {
+		if entry, _ := editorbridge.SplitBoard(key); entry != "" {
+			rev, _ := relay.BoardRev(key)
 			return rev
 		}
 		if ownRev == nil {
 			return 0
 		}
-		return ownRev(id)
-	}
-	if a.Boards != nil {
-		relay.SetLocalBoards(func(id string) bool {
-			_, ok := a.Boards.Get(id)
-			return ok
-		})
+		return ownRev(key)
 	}
 	m.Start()
 	return func() {
 		m.Close()
 		relay.Close()
+	}
+}
+
+// localOnly makes the data folder hold nothing of another server but the server list, as it is
+// after the first start of a version that keeps no record of a chat, a board or a run of another
+// server. The folder remote/ goes with everything in it. A run that has not started and named
+// another server becomes a run of this computer that has not started, with its goal. A chat that
+// never had a message and was kept here for another server becomes a chat of this computer with
+// its draft; one on a board or a run that is not this computer's has nowhere to be and is
+// deleted. The defaults of state.json were brought to this computer's alone when the store
+// opened. Nothing is sent to any server. It runs at every start, before a page is served, and
+// does nothing when there is nothing of the kind; what fails is logged and tried at the next
+// start.
+func localOnly(p store.Paths, cm *chats.Manager, a *app.App) {
+	if removed, err := store.RemoveRemote(p); err != nil {
+		log.Printf("the records of other servers' chats: %v", err)
+	} else if removed {
+		log.Printf("the records of other servers' chats, boards and runs are removed from %s: they show in their servers' sections", p.Root)
+	}
+	runHere := func(string) bool { return false }
+	if a.Runs != nil {
+		ids, err := a.Runs.LocalOnly()
+		if err != nil {
+			log.Printf("runs that named another server: %v", err)
+		}
+		for _, id := range ids {
+			log.Printf("the run %s, which had not started, is a run of this computer now", id)
+		}
+		runHere = func(id string) bool { _, ok := a.Runs.RunOf(id); return ok }
+	}
+	boardHere := func(string) bool { return false }
+	if a.Boards != nil {
+		boardHere = func(id string) bool { _, ok := a.Boards.Get(id); return ok }
+	}
+	local, deleted, err := cm.LocalOnly(boardHere, runHere)
+	if err != nil {
+		log.Printf("chats that were kept for another server: %v", err)
+	}
+	for _, id := range local {
+		log.Printf("the chat %s, which had no message yet, is a chat of this computer now", id)
+	}
+	for _, id := range deleted {
+		log.Printf("the chat %s, which had no message yet, is deleted: its board or run is not on this computer", id)
 	}
 }
 

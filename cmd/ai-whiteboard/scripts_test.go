@@ -177,13 +177,22 @@ func changed(before, after map[string]string) string {
 	return strings.Join(names, " ")
 }
 
-// testConnection is the test of the Servers dialog against the remote listener on 127.0.0.1.
+// testConnection is the test of the Servers dialog against the remote listener on 127.0.0.1. Its
+// callers run it in a subtest of its own: it is the client half of the program against a real
+// server, and what a test says of the scripts does not wait for it. The server is one of this
+// level, which answers nothing but its hello to a client that does not state the level: a test
+// that connected found a server of the level the app asks for, and stated its own in every
+// request.
 func testConnection(t *testing.T, port int, fingerprint, secret string) servers.Result {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	target := servers.Target{Address: fmt.Sprintf("https://127.0.0.1:%d", port), Secret: secret, SelfSigned: true, Pin: fingerprint}
-	return servers.TestConnection(ctx, target, servers.Identity{}, servers.Options{Root: t.TempDir(), LocalID: testClient, Version: "test"})
+	r := servers.TestConnection(ctx, target, servers.Identity{}, servers.Options{Root: t.TempDir(), LocalID: testClient, Version: "test"})
+	if r.OK && (r.FeatureLevel != servers.ClientLevel || r.InstanceID == "") {
+		t.Fatalf("the test connected to a server of level %d (instance %q), want the level %d of this app", r.FeatureLevel, r.InstanceID, servers.ClientLevel)
+	}
+	return r
 }
 
 // AC36: setup-remote.sh asks nothing and prints the names with the port, the fingerprint and the
@@ -449,9 +458,11 @@ func TestStartServerScriptAndStatus(t *testing.T) {
 		t.Fatalf("start-server.sh again: exit %d, printed %q", code, out)
 	}
 
-	if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
-		t.Fatalf("the test connection: %+v", r)
-	}
+	t.Run("the test connection", func(t *testing.T) {
+		if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
+			t.Fatalf("the test connection: %+v", r)
+		}
+	})
 
 	// Status, with a good set-up and with the key removed, against the running server and from
 	// the files alone. It never shows the secret.
@@ -599,9 +610,11 @@ func TestSetupRemoteScriptInTheBundle(t *testing.T) {
 		t.Fatalf("launch from the bundle: %v, printed %q", err, launched)
 	}
 	in.waitListening(t)
-	if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
-		t.Fatalf("the test connection: %+v", r)
-	}
+	t.Run("the test connection", func(t *testing.T) {
+		if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
+			t.Fatalf("the test connection: %+v", r)
+		}
+	})
 }
 
 // AC35: the packaging puts the set-up script into the bundle, where
@@ -792,7 +805,9 @@ func TestBuildServerFolders(t *testing.T) {
 		t.Fatalf("the web client: status %d, body %q", resp.StatusCode, page)
 	}
 	in.waitListening(t)
-	if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
-		t.Fatalf("the test connection: %+v", r)
-	}
+	t.Run("the test connection", func(t *testing.T) {
+		if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
+			t.Fatalf("the test connection: %+v", r)
+		}
+	})
 }

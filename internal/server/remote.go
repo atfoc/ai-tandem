@@ -17,6 +17,7 @@ import (
 
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/remote"
+	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/version"
 )
 
@@ -28,14 +29,40 @@ const SecretHeader = "X-AIWB-Secret"
 // the boards of an API client (apiboards.go). Level 3 adds the server's prompt library
 // (library.go): the library routes, "library" in the API snapshot and the "own_library" event.
 // A client takes a library only of a server of level 3 or above (servers.LibraryLevel).
-const FeatureLevel = 3
+// Level 4 adds a chat made on the server before its first message, the draft of a chat kept on
+// the server (PUT /api/chats/{id}/draft), and the images of a message with their two routes
+// (images.go).
+// Level 5 serves an API client as the server's own page: its snapshot and its events are the
+// server's whole tree, whoever made what is in it, and the page's routes for groups, boards, runs
+// and new chats take the place of the calls that existed for a client alone (the creation call,
+// the make, the start call and the draft check, a board with an id of the client's making).
+// A client does not connect to a server below level 5 (servers.MinFeatureLevel), and a server of
+// level 5 serves no client below it (MinClientLevel).
+const FeatureLevel = 5
+
+// MinClientLevel is the lowest level of a client (servers.LevelHeader: the feature level of the
+// app that calls) this server serves anything but hello to: an app of before would file the
+// server's whole tree as its own.
+const MinClientLevel = 5
+
+// clientTooOld is the refusal of a client below MinClientLevel, or of one that states no level.
+const clientTooOld = "This app is too old for this server: update AI Whiteboard on the machine that connects."
 
 // RemoteRoutes is the one table of the routes an API client may call, spelled as registered.
-// The remote listener answers every other route, the client files included, with 404.
+// The remote listener answers every other route, the client files included, with 404. What it
+// leaves out is what a client cannot reach: the server list and its secrets, the calls that pass
+// on to another server (/api/servers, /api/on), restart, the order of the groups, the reveal of a
+// file in this machine's file manager, the status routes and the client files.
 var RemoteRoutes = []string{
 	"GET /api/hello",
 	"GET /api/events",
 	"GET /api/state",
+	"POST /api/groups",
+	"PATCH /api/groups/{id}",
+	"POST /api/groups/{id}/move",
+	"DELETE /api/groups/{id}",
+	"POST /api/groups/{id}/archive",
+	"POST /api/groups/{id}/unarchive",
 	"POST /api/chats",
 	"GET /api/chats/{id}",
 	"GET /api/chats/{id}/items",
@@ -47,6 +74,9 @@ var RemoteRoutes = []string{
 	"POST /api/chats/{id}/interrupt",
 	"POST /api/chats/{id}/permission",
 	"PUT /api/chats/{id}/label",
+	"PUT /api/chats/{id}/draft",
+	"POST /api/chats/{id}/images",
+	"GET /api/chats/{id}/images/{image}",
 	"POST /api/chats/{id}/open",
 	"POST /api/chats/{id}/fork",
 	"POST /api/chats/{id}/archive",
@@ -55,10 +85,11 @@ var RemoteRoutes = []string{
 	"POST /api/chats/{id}/unfollow",
 	"GET /api/dirs",
 	"GET /api/usage/{agent}",
-	"PUT /api/runs/{id}",
-	"GET /api/runs/check",
+	"POST /api/runs",
 	"GET /api/runs/{id}",
 	"PATCH /api/runs/{id}",
+	"PUT /api/runs/{id}/draft",
+	"POST /api/runs/{id}/start",
 	"POST /api/runs/{id}/stop",
 	"POST /api/runs/{id}/resume",
 	"POST /api/runs/{id}/apply",
@@ -73,12 +104,13 @@ var RemoteRoutes = []string{
 	"POST /api/runs/{id}/archive",
 	"POST /api/runs/{id}/unarchive",
 	"POST /api/runs/{id}/unfollow",
-	"PUT /api/boards/{id}",
+	"POST /api/boards",
 	"GET /api/boards/{id}/scene",
 	"PUT /api/boards/{id}/scene",
 	"POST /api/boards/{id}/take",
 	"POST /api/boards/{id}/release",
 	"POST /api/boards/{id}/rename",
+	"PATCH /api/boards/{id}",
 	"POST /api/boards/{id}/archive",
 	"POST /api/boards/{id}/unarchive",
 	"POST /api/boards/{id}/seen",
@@ -191,9 +223,9 @@ func (rm *Remote) printf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-// logRefused logs a request refused with status (401 or 403), one line per source IP per minute.
-// It never logs a header value other than Host, and it cuts what the caller chose: the method at
-// 16 characters, the path and the Host at 80.
+// logRefused logs a request refused with status (401, 403, or 400 for a client that is too old),
+// one line per source IP per minute. It never logs a header value other than Host, and it cuts
+// what the caller chose: the method at 16 characters, the path and the Host at 80.
 func (rm *Remote) logRefused(status int, r *http.Request) {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -202,8 +234,12 @@ func (rm *Remote) logRefused(status int, r *http.Request) {
 	if !rm.once(ip) {
 		return
 	}
-	if status == http.StatusForbidden {
+	switch status {
+	case http.StatusForbidden:
 		rm.printf("remote listener: refused %d from %s: %s %q host=%q", status, ip, cut(r.Method, 16), cut(r.URL.Path, 80), cut(r.Host, 80))
+		return
+	case http.StatusBadRequest:
+		rm.printf("remote listener: refused %d from %s: %s %q: %s", status, ip, cut(r.Method, 16), cut(r.URL.Path, 80), clientTooOld)
 		return
 	}
 	rm.printf("remote listener: refused %d from %s: %s %q", status, ip, cut(r.Method, 16), cut(r.URL.Path, 80))
@@ -261,8 +297,12 @@ func fromRemote(r *http.Request) bool {
 //     id (400 with the code "bad_client" otherwise, on every path, one outside the table too; an
 //     id in the body or the query does not count). The server's own id is refused on every route
 //     but hello (400, code "own_client"): a server is not its own API client;
-//  4. the route must be in RemoteRoutes (404 {"error":"not found"}, for a wrong method too);
-//  5. the route itself, with fromRemote(r) true.
+//  4. the client's level: on every route but hello, X-AIWB-Level must hold an integer of
+//     MinClientLevel or more (400 with the code "client_too_old" otherwise, on a path outside the
+//     table too). Hello stays open to every app that has the secret, so an older app still shows
+//     the server's version;
+//  5. the route must be in RemoteRoutes (404 {"error":"not found"}, for a wrong method too);
+//  6. the route itself, with fromRemote(r) true.
 //
 // There is no known-client rule here: a write needs no open stream and marks nothing.
 func (s *Server) RemoteHandler() http.Handler {
@@ -302,12 +342,23 @@ func (s *Server) RemoteHandler() http.Handler {
 			writeErrorCode(w, http.StatusBadRequest, "this is the server's own id", "own_client")
 			return
 		}
+		if pat != helloRoute && !levelOK(r.Header.Get(servers.LevelHeader)) {
+			rm.logRefused(http.StatusBadRequest, r)
+			writeErrorCode(w, http.StatusBadRequest, clientTooOld, "client_too_old")
+			return
+		}
 		if !table[pat] {
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
 		routes.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), remoteKey{}, call)))
 	})
+}
+
+// levelOK reports whether v, the value of servers.LevelHeader, is an integer of MinClientLevel or more.
+func levelOK(v string) bool {
+	n, err := strconv.Atoi(v)
+	return err == nil && n >= MinClientLevel
 }
 
 // ServeRemote serves RemoteHandler over HTTPS on ln with the certificate pair, and blocks until

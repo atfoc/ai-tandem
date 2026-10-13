@@ -68,8 +68,10 @@ const THEMES = [
 ];
 const PICKER = [".side-foot .seg", ".side-foot .theme-pick"]; // the old switch, the new picker: the same place
 // (the two plain chats' rows have room for the fixed Subagents chip, which the toolbar got since, and they and the
-// goal composer for the Insert button: both are taken out of the row for the comparison, as in A2.7)
-const SINCE = ".composer .sub-chip, .composer .insert-btn { display: none }";
+// goal composer for the Insert button: both are taken out of the row for the comparison, as in A2.7; so is the attach
+// button every chat composer got after them. The goal composer of the old page has the choice of a server, which went
+// away with the sections of the sidebar: it is taken out of the old row)
+const SINCE = ".composer .sub-chip, .composer .insert-btn, .composer .attach-btn, .run-composer .server-chip, .run-composer .server-pick { display: none }";
 const PAGES = [
   { name: "home", sel: {} },
   { name: "chat", sel: { chat: "c_plain" }, wait: ".thread .msg.assistant", style: SINCE },

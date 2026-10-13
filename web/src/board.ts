@@ -1,6 +1,6 @@
 // A page is the only place a scene changes, and of the pages open on one server
 // the one that holds the board (its role, kept here). This file holds every
-// loaded scene (by board id), saves them back to the server (debounced autosave),
+// loaded scene (by the board's key: logic/keys.ts), saves them back to the server (debounced autosave),
 // answers the board tools the agents call (relayed by the server as `rpc`),
 // gathers the <ui-context> block for a board chat's message, and turns the
 // live selection or a clicked point into a reference for the composer.
@@ -10,19 +10,22 @@ import { formatScene, formatElement, formatViewport, type FmtElement, type FmtVi
 import { contextBlock, boardRef } from "./logic/context.ts";
 import { resolveMentions, type Picked } from "./logic/mentions.ts";
 import { selectionRef, pointRef, plainText, type Ref } from "./logic/refs.ts";
-import { getState, setState, flash, markBusy, setRole, setDropped, setOutage, reloadScene, type Box } from "./store.ts";
+import { getState, setState, flash, markBusy, markGone, setRole, setDropped, setOutage, setSaveSaid, reloadScene, boardsOn, type Box } from "./store.ts";
+import { inSection, ownId, sameServer, serverOfKey } from "./logic/keys.ts";
+import { reachable } from "./logic/sections.ts";
 import { api, ApiError } from "./api.ts";
 import { select } from "./Sidebar.tsx";
 import { editLabel, branchNameFor } from "./logic/attribution.ts";
 import { afterReconnect, onGrant, onLost, onRefusal, onTake, type Cache, type Step } from "./logic/roles.ts";
-import { saveFailure, saveOutage } from "./logic/boardsave.ts";
+import { saveFailure, saveOutage, saveRefusal } from "./logic/boardsave.ts";
+import { NOT_FOUND } from "./logic/remoteview.ts";
 import { parseImageArgs, parseRefs, parseRect, defaultScope, idsInsideRect, withBoundText, hasExtent, rootElements, pictureSize, resultText, countElements, EXPORT_PADDING, type Bounds } from "./logic/image.ts";
 import type { AgentKind } from "./types.ts";
 
 /** rev counts the writes made here (read_board shows it); base is the revision the server stores the scene at, as this
  *  window knows it: the one it was read at, then the one of each accepted save. */
 export type Scene = { elements: El[]; appState: any; files: any; version: number; rev: number; base: number };
-export const scenes = new Map<string, Scene>(); // key: board id
+export const scenes = new Map<string, Scene>(); // by the board's key
 const loading = new Map<string, Promise<Scene>>();
 const voided = new Map<string, number>(); // by board id: how often a read in flight was made void (a dropped scene)
 const voidLoad = (id: string) => { voided.set(id, (voided.get(id) ?? 0) + 1); };
@@ -37,7 +40,8 @@ export function setLive(board: string | null, api: any) { liveBoard = board; liv
  *  granted to this window, or when its kept scene was dropped, may be of before what the window that held it wrote
  *  last: it is not kept, and the scene is read again. One that lands at the revision of the grant is the scene the
  *  board was granted at (a free board, taken as it is opened), and is kept. A read that fails rejects with the error
- *  as it came: the canvas tells a 503 (the board's server is away) from the rest. */
+ *  as it came: the canvas tells a 503 (the board's server is away) from the rest. A board of a section whose read is
+ *  answered 404 `not_found` is no longer on its server: it is marked so, and its view says it (the canvas, BoardOff). */
 export async function loadScene(id: string): Promise<Scene> {
   const have = scenes.get(id);
   if (have) return have;
@@ -49,7 +53,10 @@ export async function loadScene(id: string): Promise<Scene> {
       let data: any, base = 0;
       try { ({ scene: data, rev: base } = await api.scene(id)); }
       catch (e: any) {
-        if (e instanceof ApiError && e.status === 404) throw new RpcError("NO_BOARD", `no board with id ${id}; call list_boards to find ids`);
+        if (e instanceof ApiError && e.status === 404) {
+          if (inSection(id) && e.code === NOT_FOUND && getState().boards[id]) markGone(id);
+          throw new RpcError("NO_BOARD", `no board with id ${ownId(id)}; call list_boards to find ids`);
+        }
         throw e;
       }
       if ((voided.get(id) ?? 0) !== at) continue;
@@ -89,16 +96,17 @@ export function forgetBoard(id: string) {
   turns.delete(id);
   outageDrops.delete(id);
   setOutage(id, false);
+  setSaveSaid(id, "");
 }
 
 // ---- autosave: debounced, one write in flight per board, in order, and only of a board this
 // window holds. A write names the revision it is based on. One that fails leaves the board
 // unsaved (`failed`) until a later write of it succeeds; there is no retry timer, the next change
 // or flush writes it again. One the server refuses (the scene was changed elsewhere, or another
-// window holds the board) drops the edit: see refused. For a board on another server, a write this
-// computer's server could not pass on (503), or that got no answer from there (504), raises the
-// banner on the canvas (the store's outage) until a write of the board succeeds or its edit is
-// dropped.
+// window holds the board) drops the edit: see refused. For a board of a section, a write this
+// computer's server could not pass on (503: that server is not connected), or that got no answer
+// from there (504), raises the banner on the canvas (the store's outage) until a write of the
+// board succeeds or its edit is dropped. The edit stays in this window meanwhile, and nowhere else.
 
 const SAVE_DEBOUNCE = 500;
 type SaveState = { timer?: any; running?: Promise<void>; again?: boolean; failed?: boolean };
@@ -109,6 +117,9 @@ const writableScene = (id: string) => { const st = getState(), b = st.boards[id]
 
 /** Whether an edit of a board still waits to be saved: a write that waits, runs or failed. */
 const unsaved = (id: string) => { const s = saving.get(id); return !!s && !!(s.timer || s.running || s.again || s.failed); };
+/** The same, for the store: a board of a section whose edit waits stays in the page's memory while its server is
+ *  away, on screen or not (logic/sections.ts). */
+export const boardUnsaved = (id: string): boolean => scenes.has(id) && unsaved(id);
 
 export function saveSoon(id: string, ms = SAVE_DEBOUNCE) {
   const s = saving.get(id) ?? {}; saving.set(id, s);
@@ -124,7 +135,7 @@ async function runSave(id: string): Promise<void> {
     do {
       s.again = false;
       const sc = scenes.get(id); const b = getState().boards[id];
-      if (!sc || !b || b.archived) { s.failed = false; setOutage(id, false); break; }
+      if (!sc || !b || b.archived) { s.failed = false; setOutage(id, false); setSaveSaid(id, ""); break; }
       // A board this window does not hold is never written: its edit waits for the grant, which saves or drops it.
       if (getState().roles[id] !== "held") { s.failed = true; break; }
       sc.rev++;
@@ -136,13 +147,15 @@ async function runSave(id: string): Promise<void> {
         });
         s.failed = false;
         setOutage(id, false);
+        setSaveSaid(id, "");
       } catch (e) {
         if (saving.get(id) !== s) break; // the board was lost or forgotten meanwhile, and this edit with it
         const status = e instanceof ApiError ? e.status : undefined, code = e instanceof ApiError ? e.code : undefined;
         // (a `not_holder` for a write sent before the role last changed says nothing of the role now: the write failed)
         if (saveFailure(status, code) === "drop" && (code === "stale" || (code === "not_holder" && turnOf(id) === at))) { refused(id, code); break; }
         s.failed = true; console.error(`saving board ${id}:`, e);
-        if (saveOutage(status, !!getState().boards[id]?.server)) setOutage(id, true); // the board's server is away: the edit waits for it
+        if (saveOutage(status, inSection(id))) setOutage(id, true); // the board's server is away: the edit waits for it
+        setSaveSaid(id, saveRefusal(inSection(id), status, code, e instanceof Error ? e.message : String(e), e instanceof ApiError && e.said)); // refused by the board's server for another reason: the canvas says it
       }
     } while (s.again);
   })().finally(() => { s.running = undefined; });
@@ -185,15 +198,16 @@ function dropScene(id: string) {
   scenes.delete(id);
   voidLoad(id);
   setOutage(id, false); // nothing waits for the board's server any more
+  setSaveSaid(id, "");
   if (liveBoard === id) setLive(null, null); // the canvas of the scene that went: no tool call draws on it
   reloadScene(id);
 }
 
-/** Whether the edit of a board waits for the board's server: a board on another server, under an outage. Such an edit
+/** Whether the edit of a board waits for the board's server: a board of a section, under an outage. Such an edit
  *  outlives the loss of the board (the board's server answers `busy` at the return when the board is merely open
  *  there): it stays, with the outage, until a grant saves or drops it by the revision. The banner does not show
  *  meanwhile, the panel being in place of the canvas. */
-const waitsForServer = (id: string) => { const st = getState(); return !!st.boards[id]?.server && !!st.outage[id]; };
+const waitsForServer = (id: string) => inSection(id) && !!getState().outage[id];
 
 /** The boards whose last dropped edit had waited for the board's server (the outage): the note says so. */
 const outageDrops = new Set<string>();
@@ -211,10 +225,12 @@ function step(id: string, st: Step) {
 /** Asks for a board. Not if free (the user picked the board, or pressed "Use here"): a window that holds it is asked to
  *  hand it over, and the panel shows the wait. If free (after a snapshot, for an agent's show_board): a board another
  *  window holds stays there, and the panel shows in place of its canvas. An archived board is not asked for: nobody
- *  writes it. Resolves when the server answered, and never rejects: after a failed take the role is as before. */
+ *  writes it. Nor is a board of a section whose server is not connected, or that is gone there: the take would be
+ *  refused, and the board is asked for when its section's tree arrives (sectionBack). Resolves when the server
+ *  answered, and never rejects: after a failed take the role is as before. */
 export function takeBoard(id: string, ifFree = false): Promise<void> {
   const b = getState().boards[id];
-  if (!b || b.archived) return Promise.resolve();
+  if (!b || b.archived || !reachable(getState(), id)) return Promise.resolve();
   const cur = asking.get(id);
   if (cur && (ifFree || !cur.ifFree)) return cur.done; // the take that runs asks for as much
   const of = stream, at = turnOf(id);
@@ -226,7 +242,7 @@ export function takeBoard(id: string, ifFree = false): Promise<void> {
     if (turnOf(id) !== at) return;   // an event told the board's role meanwhile: that is the newer word
     if (a?.state === "held") { granted(id, a.rev ?? 0); return; }
     const role = getState().roles[id] ?? null;
-    // (an edit kept at the loss of the board stays kept when a take if free finds the board busy: `server_back` asks so)
+    // (an edit kept at the loss of the board stays kept when a take if free finds the board busy: sectionBack asks so)
     const st = a && onTake(cacheOf(id), a, role, (role === "lost" || role === "other") && waitsForServer(id));
     if (st) step(id, st);
   })().finally(() => { if (asking.get(id)?.done === done) asking.delete(id); });
@@ -289,16 +305,22 @@ export function takeAfterSnapshot() {
   for (const id of ids) if (!st.roles[id]) void takeBoard(id, true);
 }
 
-/** `server_back`: a server is connected again. The board on screen, when it is on that server: with no scene kept
- *  (the view that said the server is not connected showed) it is read now, and when this window does not hold it, it
- *  is asked for, if free. A board it holds is taken there again by this computer's server, whose `held` event saves or
- *  drops the edit that waited (granted). */
-export function serverBack(server: string) {
-  const st = getState(), id = st.sel.board, b = id ? st.boards[id] : undefined;
-  if (!id || !b || b.server !== server) return;
-  if (!scenes.has(id)) reloadScene(id);
-  const role = st.roles[id];
-  if (role !== "held" && role !== "taking") void takeBoard(id, true);
+/** A section's tree arrived: its server is connected, for the first time or again. The board on screen, when it is
+ *  of that server: with no scene kept (the view that said the server is not connected showed) it is read now. It, and
+ *  every board of that server with an edit that waits, is asked for, if free, when this window does not hold it: after
+ *  a restart of this computer's server during the outage the new stream holds no board, and the window still has the
+ *  drawing and its revision. A board it holds is taken there again by this computer's server. Either way the `held`
+ *  that follows saves the edit that waited at the same revision, and drops it at another (granted). */
+export function sectionBack(server: string) {
+  const st = getState(), on = st.sel.board;
+  const ids = new Set<string>(on && serverOfKey(on) === server ? [on] : []);
+  for (const id of saving.keys()) if (serverOfKey(id) === server && unsaved(id)) ids.add(id);
+  for (const id of ids) {
+    if (!st.boards[id] || st.gone[id]) continue;
+    if (id === on && !scenes.has(id)) reloadScene(id);
+    const role = st.roles[id];
+    if (role !== "held" && role !== "taking") void takeBoard(id, true);
+  }
 }
 
 // ---- reading
@@ -379,8 +401,9 @@ export function buildContext(chat: string, text: string, picked: Picked[] = []):
   const c = s.chats[chat];
   const own = c?.board ? s.boards[c.board] : undefined;
   if (!c?.board) return "";
-  const referenced = resolveMentions(plainText(text), s.boards, picked).filter((b) => b.id !== c.board).map(boardRef);
-  return contextBlock({ board: own ? boardRef(own) : c.board, referenced });
+  // (the boards a chat names are of its own server, and go out under that server's own ids: boardRef)
+  const referenced = resolveMentions(plainText(text), boardsOn(s, serverOfKey(chat)), picked).filter((b) => b.id !== c.board).map(boardRef);
+  return contextBlock({ board: own ? boardRef(own) : ownId(c.board), referenced });
 }
 
 // ---- the engine for one board: the live canvas when it is on screen, else the stored scene
@@ -457,15 +480,17 @@ function expandIds(board: string, v: any): any {
 
 // ---- board tools
 
-// board = the chat's own board id; target = the board the call is for, resolved and checked by the server (get_view has
-// none); branch = the calling branch ("main" or a branch id). list_boards and create_board never come here: the server
-// answers them.
+// board = the chat's own board; target = the board the call is for, resolved and checked by the server (get_view has
+// none); branch = the calling branch ("main" or a branch id). chat, board and target are the page's keys: conn.ts makes
+// them of the ids an agent of a section's server sends (logic/sectionwire.ts toolCallIn). What a tool answers names a
+// board by its own id on its server, which is the one the agent knows. list_boards and create_board never come here:
+// the server answers them.
 type ToolCall = { chat: string; branch?: string; board: string; target?: string; name: string; args: any };
 
 /** The board a call is for, which the server named. */
 function targetOf(call: ToolCall): string {
   const id = call.target;
-  if (!id || !getState().boards[id]) throw new RpcError("NO_BOARD", `no board with id ${id ?? ""}; call list_boards to find ids`);
+  if (!id || !getState().boards[id]) throw new RpcError("NO_BOARD", `no board with id ${id ? ownId(id) : ""}; call list_boards to find ids`);
   return id;
 }
 
@@ -603,7 +628,9 @@ export async function runTool(call: ToolCall): Promise<ToolResult> {
     case "get_view": {
       const on = s.sel.board;
       const own = s.boards[call.board];
-      if (on !== call.board) return `The user is looking at ${on && s.boards[on] ? boardRef(s.boards[on]) : "no board"}, not ${own ? boardRef(own) : call.board}.`;
+      // (a board of another server is not named to this one's agent: its id means nothing there, or names another board)
+      const looking = !on || !s.boards[on] ? "no board" : sameServer(on, call.board) ? boardRef(s.boards[on]) : "a whiteboard that is not on this server";
+      if (on !== call.board) return `The user is looking at ${looking}, not ${own ? boardRef(own) : ownId(call.board)}.`;
       const sel = liveBoard === on ? selectionLines() : [];
       return [
         `active_board: ${boardRef(own)}`,
@@ -622,7 +649,7 @@ export async function runTool(call: ToolCall): Promise<ToolResult> {
       const a = expandIds(id, args);
       const res = applyChanges(engineFor(id), { create: a.create, update: a.update }, hooks(id));
       afterEdit(id, call.chat, call.branch, [...Object.values(res.created), ...res.updated]);
-      return JSON.stringify({ board: getState().boards[id].name, id, ...res });
+      return JSON.stringify({ board: getState().boards[id].name, id: ownId(id), ...res });
     }
 
     case "delete_elements": {
@@ -645,7 +672,7 @@ export async function runTool(call: ToolCall): Promise<ToolResult> {
       saveSoon(id, 50);
       const agent = getState().chats[call.chat]?.agent ?? "unknown";
       if (doomedBox && getState().sel.board === id) flash({ board: id, box: doomedBox, agent, label: "Removed", tone: "danger" }, 1600);
-      return JSON.stringify({ board: getState().boards[id].name, id, deleted: res.deleted });
+      return JSON.stringify({ board: getState().boards[id].name, id: ownId(id), deleted: res.deleted });
     }
 
     case "show_board": {

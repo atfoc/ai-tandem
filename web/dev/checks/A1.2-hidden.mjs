@@ -1,7 +1,7 @@
 // Proves A1.2: hidden by the control in its head and by ⌘B, the sidebar's pane is not drawn, and the stage (with a
 // chat panel: the panel and the stage) is the window less the rail. In each view of G1's table (a board and a run,
 // each with the panel and alone, a run agent's transcript in the panel, a draft run, a plain chat, Home, the page
-// while it connects, the server choice of a new whiteboard, a view that failed to draw) the rail's
+// while it connects, a view that failed to draw) the rail's
 // control is the element at its own centre and lies over no glyph, crumb or bar of the view. Shown again, the pane
 // has its saved width. After a reload the sidebar is hidden in the first frame React draws, and in every frame after
 // it: the frame sampler runs from the page's first frame. Once, as the sampler's own proof: a sidebar that is saved
@@ -23,8 +23,6 @@ const VIEWS = [
   { name: "Home", sel: {}, see: "main.home h2" },
   // (the stream is cut before the page opens: it has no word of the server, and nothing to show but that it waits)
   { name: "the page while it connects", sel: {}, see: "main.home > .spin", wait: ".app", mock: "flags.streamDown = true; dropStreams();", undo: "delete flags.streamDown;" },
-  // (a draft lives in the page alone: after a reload Home is there again)
-  { name: "the server choice", sel: {}, see: "main.board-choice .board-choice-box", open: (page) => page.locator("main.home button", { hasText: "New whiteboard" }).click(), reloaded: "main.home h2" },
   // (a message whose text is no text: the thread throws as it is drawn, and the view's guard stands in the stage's place)
   { name: "a view that failed to draw", sel: { chat: "c_A1_broken" }, see: ".app > .guard-fail",
     mock: 'chats.c_A1_broken = chat("c_A1_broken", { name: "Broken" }); items.c_A1_broken = [{ kind: "user", text: { no: "text" } }]; send({ type: "snapshot", ...snapshot() });',
@@ -39,7 +37,7 @@ function layout() {
   const at = c && document.elementFromPoint(c.l + c.w / 2, c.t + c.h / 2);
   const name = (e) => "." + String(e.className?.baseVal ?? e.className).trim().split(/\s+/).join(".");
   // what a view has at its top-left (G1's table), and the view itself
-  const over = c ? [...document.querySelectorAll(".crow-glyph, .board-crumb, .chat-head, .board-bar, .home-glyphs, .board-choice-box, .spin, .app > main, .app > .board-panel, .app > .guard-fail")]
+  const over = c ? [...document.querySelectorAll(".crow-glyph, .board-crumb, .chat-head, .board-bar, .home-glyphs, .spin, .app > main, .app > .board-panel, .app > .guard-fail")]
     .filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.left < c.r && r.right > c.l && r.top < c.b && r.bottom > c.t; }).map(name) : [];
   return {
     cls: document.querySelector(".app").className.trim(), first: name(document.querySelector(".app").firstElementChild),

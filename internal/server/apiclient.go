@@ -1,21 +1,19 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"io"
 	"net/http"
-
-	"ai-whiteboard/internal/agent"
-	"ai-whiteboard/internal/boards"
-	"ai-whiteboard/internal/chats"
-	"ai-whiteboard/internal/model"
+	"strings"
 )
 
 // What the routes of RemoteRoutes do for an API client, a caller on the remote listener, where
-// that differs from what they do for a page. RemoteHandler has checked the secret, the Host and
-// the client id before any of this runs: the id in X-AIWB-Client is a valid one, and not the
-// server's own.
+// that differs from what they do for a page: the client's stream and snapshot, and the refusals
+// that exist for a client alone. Everything else is the page's handler. RemoteHandler has checked
+// the secret, the Host, the client id and the client's level before any of this runs: the id in
+// X-AIWB-Client is a valid one, and not the server's own.
 
 // apiEvents is GET /api/events on the remote listener: the stream of the API client whose id the
 // header holds. A "client" in the query, which the stream of a page is named by, must be the same
@@ -39,118 +37,47 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 			cancel()
 			return nil
 		}
-		return s.App.APISnapshot(id)
+		return s.App.APISnapshot()
 	})
 }
 
-// apiStart is POST /api/chats on the remote listener, the creation call: it finds the caller's
-// chat with the id or makes it in the group "Remote" (or on the run, or on the board), gives it the call's values
-// and sends it the first message (chats.Manager.Start). The call can be repeated: of any number
-// of calls with one id one sends.
-//
-// Body: {"id", "agent", "cwd", "model", "effort", "subDepth", "subCap", "name", "userNamed",
-// "text", "context", "run", "board"}. id, agent and text are required, cwd too unless run is
-// given; subDepth (0 to 3, 0 = no subagents) and subCap (1 to 100) are the chat's subagent
-// settings, 1 and 100 where the body does not name them, and a value outside the range is
-// refused ("bad_request"); context is the
-// <ui-context> of a first message on a board, and is left out off one. A body that names a group, a
-// board that is not the caller's (or is archived), or both a run and a board is refused before
-// anything else.
-//
-// Every answer, an error too, holds {"started", "sent", "chat"}: whether the caller's chat has
-// had its first message, whether this call put the message into the thread, and the chat when
-// the caller has one with this id after the call. A success adds "ok": true, an error "error"
-// and, where a client tells it from others, "code".
-func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ID            string
-		Agent         model.AgentKind
-		Cwd           string
-		Model, Effort string
-		SubDepth      *int
-		SubCap        *int
-		Name          string
-		UserNamed     bool
-		Text, Context string
-		Run           string
-		Board, Group  string
+// apiServerRefused answers an API client's call whose body names a server, whatever the value, and
+// reports that it did: the server of what a client makes or changes is the one it called, and
+// this server passes no client's call on to another. Nothing is made or changed. The body is
+// left to be read again.
+func apiServerRefused(w http.ResponseWriter, r *http.Request) bool {
+	if !bodyNames(r, "server") {
+		return false
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeStart(w, http.StatusBadRequest, chats.StartResult{}, err.Error(), "bad_request")
-		return
-	}
-	if body.Board != "" && body.Run != "" {
-		writeStart(w, http.StatusBadRequest, chats.StartResult{}, "a chat is on a run or on a board, not on both", "bad_request")
-		return
-	}
-	// A board must be one the caller made, and not archived (apiboards.go).
-	if body.Board != "" && !s.marked(r, body.Board) {
-		writeStart(w, http.StatusBadRequest, chats.StartResult{}, boardRefused, "board_refused")
-		return
-	}
-	if body.Group != "" {
-		writeStart(w, http.StatusBadRequest, chats.StartResult{}, "an API client cannot name a group", "group_refused")
-		return
-	}
-	res, err := s.App.Chats.Start(chats.StartReq{
-		ID: body.ID, Client: r.Header.Get(ClientHeader), Run: body.Run, Board: body.Board,
-		Agent: body.Agent, Cwd: body.Cwd, Model: body.Model, Effort: body.Effort,
-		SubDepth: body.SubDepth, SubCap: body.SubCap,
-		Name: body.Name, UserNamed: body.UserNamed, Text: body.Text, Context: body.Context,
-		Place: s.App.RemoteGroup,
-	})
-	if err != nil {
-		// An error of the send is the server's or the agent's, not the request's.
-		fallback := http.StatusBadRequest
-		if res.Tried {
-			fallback = http.StatusInternalServerError
-		}
-		// The board went, or was archived, after the check above.
-		if body.Board != "" && (errors.Is(err, boards.ErrNotFound) || errors.Is(err, boards.ErrArchived)) {
-			writeStart(w, http.StatusBadRequest, res, boardRefused, "board_refused")
-			return
-		}
-		writeStart(w, statusOf(err, fallback), res, err.Error(), startCode(err))
-		return
-	}
-	writeStart(w, http.StatusOK, res, "", "")
+	writeErrorCode(w, http.StatusBadRequest, "an API client cannot name a server", "server_refused")
+	return true
 }
 
-// boardRefused is the text of the refusal "board_refused": of the creation call and of a fork.
-const boardRefused = "an API client cannot make a chat on a board"
-
-// startCode is the "code" of a refused creation call: the codes of this call alone, and codeOf's.
-func startCode(err error) string {
-	switch {
-	case errors.Is(err, chats.ErrStartValue), errors.Is(err, chats.ErrSubRange):
-		return "bad_request"
-	case errors.Is(err, chats.ErrBadID):
-		return "bad_id"
-	case errors.Is(err, chats.ErrIDTaken):
-		return "id_taken"
-	case errors.Is(err, agent.ErrFolderMissing):
-		return "folder_missing"
-	case errors.Is(err, chats.ErrBadChoice):
-		return "bad_choice"
+// collapsedRefused answers an API client's change of a group whose body has "collapsed", whatever
+// the value, and reports that it did: whether a group shows collapsed is this server's own matter
+// and each client's. Nothing is changed.
+func collapsedRefused(w http.ResponseWriter, r *http.Request) bool {
+	if !bodyNames(r, "collapsed") {
+		return false
 	}
-	return codeOf(err)
+	writeErrorCode(w, http.StatusBadRequest, "an API client cannot collapse a group", "collapsed_refused")
+	return true
 }
 
-// writeStart writes the answer of a creation call; errText "" is a success.
-func writeStart(w http.ResponseWriter, status int, res chats.StartResult, errText, code string) {
-	out := map[string]any{"started": res.Started, "sent": res.Sent}
-	if res.Exists {
-		out["chat"] = res.Chat
+// bodyNames reports whether r's body is a JSON object with the key, in any letter case (as the
+// handlers read their bodies). It reads the body and puts it back: a body that is no JSON object
+// names nothing, and the handler that reads it next says what is wrong with it.
+func bodyNames(r *http.Request, key string) bool {
+	raw, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw, &keys) != nil {
+		return false
 	}
-	if errText == "" {
-		out["ok"] = true
-	} else {
-		out["error"] = errText
-		if code != "" {
-			out["code"] = code
+	for k := range keys {
+		if strings.EqualFold(k, key) {
+			return true
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(out)
+	return false
 }

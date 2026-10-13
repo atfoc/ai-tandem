@@ -57,10 +57,6 @@ type Board struct {
 	Created time.Time `json:"created"`
 	New     bool      `json:"new,omitempty"` // made by an agent and not opened by the user yet
 	Archive
-	Client string `json:"client,omitempty"` // on the board's server: the API client that made it (its mark)
-	Origin string `json:"origin,omitempty"` // on the board's server: the board of the chat whose agent made it with create_board
-	Server string `json:"server,omitempty"` // in the view of a board on another server only: the entry id; absent = this computer
-	Gone   bool   `json:"gone,omitempty"`   // in that view only: the board is no longer on its server
 }
 
 // Archive marks an archived item. Op is the id of the archive action that archived it: every
@@ -78,8 +74,9 @@ type State struct {
 	// Cursor is the legacy Cursor catalog slot, kept for backward-compatible reads of older
 	// state.json files. It is never written after the generic Catalogs map exists.
 	Cursor *Catalog `json:"cursorCatalog,omitempty"`
-	// RemoteGroup is the id of the group "Remote", where what API clients make goes; "" until
-	// the first of them makes something. The group it names may be gone or archived.
+	// RemoteGroup is the id of the group "Remote" of a state.json from before level 5, where what
+	// API clients made went. It is read once, by the change-over that removes that group
+	// (app.DropRemoteGroup), which clears it; nothing sets it.
 	RemoteGroup string `json:"remoteGroup,omitempty"`
 }
 
@@ -113,17 +110,11 @@ type ModelChoice struct {
 	Effort string `json:"effort,omitempty"`
 }
 
-// LocalServer is the key of the local server's part of the defaults, and the wire value of
-// "server" for the local server. A remote server's key is its instance id.
+// LocalServer is the one key of GroupDefaults.Servers: what a group remembers, it remembers for
+// the server that keeps it.
 const LocalServer = "local"
 
-// The values of ChatMeta.RemoteStart other than "".
-const (
-	RemoteLeft        = "left"        // the chat was made on its server and did not start
-	RemoteUnconfirmed = "unconfirmed" // the first message got no answer: it may have arrived
-)
-
-// ServerDefaults is what a group remembers for one server.
+// ServerDefaults is what a group remembers.
 type ServerDefaults struct {
 	Agent   AgentKind                 `json:"agent,omitempty"` // the agent a new chat starts with
 	Cwd     string                    `json:"cwd,omitempty"`
@@ -135,18 +126,17 @@ type ServerDefaults struct {
 }
 
 type GroupDefaults struct {
-	Server  string                    `json:"server,omitempty"`  // sticky server; "" = none stored
-	Servers map[string]ServerDefaults `json:"servers,omitempty"` // key: LocalServer or an instance id
+	Servers map[string]ServerDefaults `json:"servers,omitempty"` // key: LocalServer alone
 }
 
 type Defaults struct {
 	Groups map[string]GroupDefaults `json:"groups"` // key: group id, or Ungrouped ("__ungrouped__")
 }
 
-// On is the group's part for server; the zero value when it has none.
-func (g GroupDefaults) On(server string) ServerDefaults { return g.Servers[server] }
+// Local is what the group remembers; the zero value when it remembers nothing.
+func (g GroupDefaults) Local() ServerDefaults { return g.Servers[LocalServer] }
 
-// LocalDefaults is a group's entry that holds sd for the local server and nothing else.
+// LocalDefaults is a group's entry that holds sd and nothing else.
 func LocalDefaults(sd ServerDefaults) GroupDefaults {
 	return GroupDefaults{Servers: map[string]ServerDefaults{LocalServer: sd}}
 }
@@ -165,6 +155,9 @@ type CatalogModel struct {
 	ContextWindow int               `json:"contextWindow,omitempty"`
 	DefaultEffort string            `json:"defaultEffort,omitempty"` // the effort value the model uses by default
 	EffortLabels  map[string]string `json:"effortLabels,omitempty"`  // effort value -> Cursor's display name, e.g. "xhigh" -> "Extra High"
+	// NoImages: the model takes no images. A model without the mark takes them, so a catalog
+	// from a server that does not know the mark reads as before.
+	NoImages bool `json:"noImages,omitempty"`
 }
 
 type Usage struct {
@@ -229,26 +222,14 @@ type UsageLimit struct {
 
 // ChatMeta is chat.json.
 type ChatMeta struct {
-	ID        string    `json:"id"` // uuid v4
-	Agent     AgentKind `json:"agent"`
-	Name      string    `json:"name,omitempty"`
-	UserNamed bool      `json:"userNamed,omitempty"`
-	Group     string    `json:"group,omitempty"` // plain chats (a group id or Ungrouped); empty for board chats, which use the board's group
-	Board     string    `json:"board,omitempty"` // board id for board chats
-	Run       string    `json:"run,omitempty"`   // run id: a chat on a run, or (with Role) one of the run's agents; Group stays empty
-	Role      AgentRole `json:"role,omitempty"`  // a run agent: "orchestrator" | "task" | "merge"; empty for a user's chat
-	// Client is the client mark: the client id of the API client that made the chat, "" for a
-	// chat made on this server. It is set at creation and never changes; a fork and a branch
-	// carry their source's. A chat with a mark feeds and reads no sticky defaults.
-	Client string `json:"client,omitempty"`
-	// Server is the server a chat that has not started will start on: the id of an entry of the
-	// server list, "" for this computer. A chat that started on another server is no chat object
-	// here any more (the local server keeps a record of it), so only an unstarted chat has one.
-	Server string `json:"server,omitempty"`
-	// RemoteStart says what is known of a first message sent to Server: "" (nothing was sent, or
-	// nothing is left there), "left" (the chat was made there and did not start) or "unconfirmed"
-	// (the message got no answer: it may have arrived).
-	RemoteStart         string    `json:"remoteStart,omitempty"`
+	ID                  string    `json:"id"` // uuid v4
+	Agent               AgentKind `json:"agent"`
+	Name                string    `json:"name,omitempty"`
+	UserNamed           bool      `json:"userNamed,omitempty"`
+	Group               string    `json:"group,omitempty"` // plain chats (a group id or Ungrouped); empty for board chats, which use the board's group
+	Board               string    `json:"board,omitempty"` // board id for board chats
+	Run                 string    `json:"run,omitempty"`   // run id: a chat on a run, or (with Role) one of the run's agents; Group stays empty
+	Role                AgentRole `json:"role,omitempty"`  // a run agent: "orchestrator" | "task" | "merge"; empty for a user's chat
 	Cwd                 string    `json:"cwd"`
 	Model               string    `json:"model"`
 	Effort              string    `json:"effort,omitempty"`
@@ -410,7 +391,34 @@ type Draft struct {
 	Mentions []Mention `json:"mentions,omitempty"` // boards picked from the @ menu
 	// the quotes the message will carry (⌘L on text in a message), with their comments
 	References []Reference `json:"references,omitempty"`
+	// the images the message will carry; their bytes are in the chat's image store. A run's goal
+	// has none.
+	Images []Image `json:"images,omitempty"`
 }
+
+// Image is a picture the user attached to a message, as a draft and a sent message hold it: by
+// id, never with its bytes, which are in the image store of the top-level chat. Not a picture of
+// a board (get_image).
+type Image struct {
+	ID   string `json:"id"`   // the SHA-256 of the bytes, 64 lower-case hex digits
+	Name string `json:"name"` // from the page: the file's name, or a fixed one for a pasted picture; only shown
+	Type string `json:"type"` // found from the bytes: one of ImageTypes
+	Size int64  `json:"size"` // in bytes
+}
+
+// The limits on images in chats, and the types taken.
+const (
+	ImageMaxBytes       = 5 << 20  // one image
+	ImagesPerMessage    = 10       // images in one message, and in one draft that can be sent
+	ImagesMessageBytes  = 20 << 20 // the images of one message together
+	ImagesUnsentPerChat = 50       // images of a top-level chat that were never sent
+	// ImageWord stands for the words of a message that is images alone, wherever a message is
+	// named by its words (the tree, the move banner, a chat's title).
+	ImageWord = "Image"
+)
+
+// ImageTypes are the image types a chat takes.
+var ImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 // Reference is part of an earlier message in the chat's thread that the user quoted (⌘L), with
 // their comment on it. The agent gets only the quote and the comment. Positions are in the
@@ -450,11 +458,8 @@ type ChatView struct {
 	UserNamed        bool      `json:"userNamed,omitempty"`
 	Group            string    `json:"group,omitempty"`
 	Board            string    `json:"board,omitempty"`
-	Run              string    `json:"run,omitempty"`    // a chat on a run, or (with Role) one of the run's agents
-	Role             AgentRole `json:"role,omitempty"`   // a run agent: never in the snapshot's chats
-	Server           string    `json:"server,omitempty"` // the entry id of the chat's server; absent = the local server
-	Start            string    `json:"start,omitempty"`  // "unconfirmed": a first message got no answer (unstarted chats)
-	Gone             bool      `json:"gone,omitempty"`   // a remote chat its server no longer has
+	Run              string    `json:"run,omitempty"`  // a chat on a run, or (with Role) one of the run's agents
+	Role             AgentRole `json:"role,omitempty"` // a run agent: never in the snapshot's chats
 	Cwd              string    `json:"cwd"`
 	Model            string    `json:"model"`
 	Effort           string    `json:"effort,omitempty"`
@@ -542,8 +547,7 @@ func StateOf(chat, branch string, v ChatView) BranchState {
 
 // ViewOf builds the client view of a chat. Token, SessionID, TurnActive, McpInstructionsSent,
 // ForkSource and Cost are left out; InstructionsSent is included because it is the curl-era disable marker.
-// Branches, Branch, Working and Approvals stay zero: the chat manager sets them, as it does Server
-// and Start (Gone is a record's, never a chat object's). Draft is the
+// Branches, Branch, Working and Approvals stay zero: the chat manager sets them. Draft is the
 // draft of main, which is what a top-level chat's meta is the meta of; a branch's meta has none,
 // and the chat manager fills it. HasDraft is over every entry of Drafts: the chat manager, which
 // knows the chat's branches, leaves out an entry that is under none of them.
@@ -592,6 +596,8 @@ type Item struct {
 	Context string `json:"context,omitempty"` // user: the <ui-context> sent with it (not shown)
 	// user: parts of earlier messages in this chat the user quoted, with a comment on each
 	References []Reference `json:"references,omitempty"`
+	// user: the images the message carries, shown above its text
+	Images []Image `json:"images,omitempty"`
 	// text
 	Done bool `json:"done,omitempty"`
 	// tool

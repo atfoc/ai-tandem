@@ -16,6 +16,8 @@ export const shownBranchOf = (move: PendingMove | undefined, c: ChatView | undef
 export type BranchKey = string & { readonly __branchKey: unique symbol };
 /** The key of a branch's state: "<chat>:<branch>"; a missing branch is main. */
 export const branchKey = (chat: string, branch?: string): BranchKey => `${chat}:${branch || MAIN}` as BranchKey;
+/** The chat a key (a BranchKey or a SubKey) belongs to: what is before the first colon, which no chat's key has. */
+export const chatOfKey = (key: string): string => { const at = key.indexOf(":"); return at < 0 ? key : key.slice(0, at); };
 /** Whether a key (a BranchKey or a SubKey) belongs to a chat. */
 export const keyOfChat = (key: string, chat: string): boolean => key.startsWith(chat + ":");
 
@@ -35,6 +37,7 @@ export function stateFromView(c: ChatView): BranchState {
   if (c.subsRunning !== undefined) st.subsRunning = c.subsRunning;
   if (c.subsOwed !== undefined) st.subsOwed = c.subsOwed;
   if (c.draft !== undefined) st.draft = c.draft;
+  if (c.draftRev !== undefined) st.draftRev = c.draftRev; // with its counter: a record that has none says 0, and a copy typed on the real one would count as older
   fromView.set(c, st);
   return st;
 }

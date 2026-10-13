@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { chatBusy, composerControls, headStatus, isBusy, isWorking, refreshAfterRefusal, starting, workingBranches, workingOn } from "../src/logic/status.ts";
+import { boardWorker, chatBusy, composerControls, headStatus, isBusy, isWorking, refreshAfterRefusal, starting, workingBranches, workingOn } from "../src/logic/status.ts";
 import type { BranchState, Status } from "../src/types.ts";
 
 const BUSY: Status[] = ["thinking", "writing", "tool", "approval"];
@@ -13,6 +13,25 @@ test("isBusy: the agent is in a turn or waits for approval", () => {
   for (const s of BUSY) assert.equal(isBusy(s), true, s);
   for (const s of QUIET) assert.equal(isBusy(s), false, s);
   assert.equal(isBusy(undefined), false);
+});
+
+test("boardWorker: the agent of a busy chat of the board, else of a chat that just edited it; none for a board whose server is not connected", () => {
+  const chats = {
+    c_idle: { board: "b_1", agent: "claude", status: "ready" as Status },
+    c_busy: { board: "b_1", agent: "cursor", status: "tool" as Status },
+    c_old: { board: "b_2", agent: "pi", status: "writing" as Status, archived: true },
+    "s_1~c_busy": { board: "s_1~b_1", agent: "claude", status: "writing" as Status },
+  };
+  assert.equal(boardWorker(chats, "b_1", undefined, true), "cursor");
+  assert.equal(boardWorker(chats, "b_1", "pi", true), "cursor", "the board's own busy chat comes first");
+  assert.equal(boardWorker(chats, "b_2", undefined, true), undefined, "an archived chat does not count");
+  assert.equal(boardWorker(chats, "b_2", "pi", true), "pi", "another chat that just edited the board");
+  assert.equal(boardWorker(chats, "b_3", undefined, true), undefined);
+  // a section's board with the id of a local one is its own
+  assert.equal(boardWorker(chats, "s_1~b_1", undefined, true), "claude");
+  // its server dropped while the chat worked: the view is as it was, and nothing is known since
+  assert.equal(boardWorker(chats, "s_1~b_1", undefined, false), undefined);
+  assert.equal(boardWorker(chats, "s_1~b_1", "cursor", false), undefined);
 });
 
 test("chatBusy: some branch of the chat is in a turn or waits for approval", () => {
@@ -157,13 +176,22 @@ test("refreshAfterRefusal: the chat is read again after a 409 that tells of stal
   assert.equal(refreshAfterRefusal(429), false);
   assert.equal(refreshAfterRefusal(400), false);
   assert.equal(refreshAfterRefusal(400, "busy"), false);
+  // what is no stale state: the message stays in the box, and nothing is read again
+  for (const code of ["cap", "window", "agent_missing", "no_agent", "image_missing"]) assert.equal(refreshAfterRefusal(409, code), false, code);
+  // the refusals of the move that carried a chat over to its server are no longer sent: a 409 with such a code is a 409 like another
+  for (const code of ["not_moved", "move_refused"]) assert.equal(refreshAfterRefusal(409, code), true, code);
+  const src = readFileSync(new URL("../src/logic/status.ts", import.meta.url), "utf8");
+  assert.ok(src.includes('const NOT_STALE = ["cap", "window", "agent_missing", "no_agent", "image_missing"];'));
+  for (const gone of ["not_moved", "move_refused", "remoteRow"]) assert.ok(!src.includes(gone), gone);
 });
 
 test("headStatus: a chat with no agent has no status word; an archived or disabled one says so", () => {
   assert.equal(headStatus({ agent: "claude" }, false, "Ready"), "Ready");
   assert.equal(headStatus({ agent: "claude" }, false, "Thinking…"), "Thinking…");
   assert.equal(headStatus({ agent: "" }, false, "Ready"), ""); // "No agent" stands alone: nothing can be sent
-  assert.equal(headStatus({ agent: "claude" }, false, "Ready", true), ""); // an unstarted chat whose server is not connected: no "Ready"
+  assert.equal(headStatus({ agent: "claude" }, false, "Ready", true), ""); // a chat whose server is not connected, or no longer has it: no "Ready"
+  assert.equal(headStatus({ agent: "claude" }, false, "Thinking…", true), "", "started or not, working or not when the connection ended");
+  assert.equal(headStatus({ agent: "claude" }, true, "Ready", true), "Disabled");
   assert.equal(headStatus({ agent: "claude", archived: true }, false, "Ready", true), "Archived");
   assert.equal(headStatus({ agent: "" }, false, "Idle"), "");
   assert.equal(headStatus({ agent: "claude", archived: true }, false, "Idle"), "Archived");
@@ -173,6 +201,7 @@ test("headStatus: a chat with no agent has no status word; an archived or disabl
 
 test("the chat's header takes its status from headStatus, and draws no separator for none", () => {
   const view = readFileSync(new URL("../src/ChatView.tsx", import.meta.url), "utf8");
-  assert.ok(view.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardName), sendOff(where, c));"));
+  assert.ok(view.includes("const frozen = sendOff(where) || gone;"));
+  assert.ok(view.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId)), frozen);"));
   assert.ok(view.includes('{status && <>{" · "}{status}</>}'));
 });

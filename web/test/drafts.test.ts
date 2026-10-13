@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   DraftSaver, answerNewer, boxText, staleTaken, chatHasDraft, draftKey, draftKeyOf, draftOf, draftSet, draftsAfterSent, hasDraft, heldOf, joinDrafts, legacyDraftKey,
-  legacyDraftRenames, otherDrafts, revSet, sameDraft, staleOf, unsavedToShow, type Unsaved,
+  legacyDraftRenames, ofHeld, otherDrafts, revSet, sameDraft, staleOf, unsavedToShow, type Unsaved,
 } from "../src/logic/drafts.ts";
+import { overLimit } from "../src/logic/chatimage.ts";
 import { stateFromView } from "../src/logic/branches.ts";
 import { putsBack } from "../src/logic/sendend.ts";
-import type { BranchState, ChatView, Draft, Held, Reference } from "../src/types.ts";
+import type { BranchState, ChatImage, ChatView, Draft, Held, Reference } from "../src/types.ts";
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -147,7 +148,7 @@ test("legacyDraftRenames: a draft kept per chat goes under the chat's current br
 });
 
 const q = (item: number, comment?: string): Reference => ({ quote: "q" + item, item, start: 0, end: 2, ...(comment ? { comment } : {}) });
-const held = (text: string, references: Reference[] = [], mentions: Held["mentions"] = []): Held => ({ text, mentions, references });
+const held = (text: string, references: Reference[] = [], mentions: Held["mentions"] = [], images: Held["images"] = []): Held => ({ text, mentions, references, images });
 const NOTHING = held("");
 
 test("heldOf and sameDraft: a draft as a composer holds it; no draft is the empty one", () => {
@@ -281,12 +282,12 @@ test("otherDrafts: a draft on a branch other than the one shown", () => {
 // elsewhere (another window) is not overwritten by a late save.
 
 type Put = { d: Draft; keepalive: boolean; base?: number; ok(rev: number): Promise<void>; stale(rev: number, draft: Draft | null): Promise<void>; fail(): Promise<void>;
-  refused(code: string): Promise<void> };
+  refused(code: string): Promise<void>; end(e: unknown): Promise<void> };
 
 /** A saver on the counter base, with a server the test answers for: puts are the saves it got. */
-function counted(base: number, initial?: Draft) {
+function counted(base: number, initial?: Draft, kept: Draft | null = null) {
   const puts: Put[] = [];
-  const local: { d: Draft | null; base?: number } = { d: null };
+  const local: { d: Draft | null; base?: number } = { d: kept, ...(kept ? { base } : {}) }; // kept: the unsaved copy the composer opened with
   const shown: Draft[] = [];
   const unsaved: Unsaved = { read: () => local.d, base: () => local.base, write: (d, b) => { local.d = d; local.base = d ? b : undefined; } };
   const put = (d: Draft, keepalive: boolean, b?: number) => new Promise<number>((resolve, reject) => {
@@ -297,6 +298,7 @@ function counted(base: number, initial?: Draft) {
       stale: (rev, draft) => end(() => reject(Object.assign(new Error("the draft was changed elsewhere"), { status: 409, code: "stale", rev, draft }))),
       fail: () => end(() => reject(new Error("offline"))),
       refused: (code) => end(() => reject(Object.assign(new Error("The connection to the server was interrupted."), { status: 409, code }))),
+      end: (e) => end(() => reject(e)),
     });
   });
   const s = new DraftSaver(put, initial, unsaved, 10, base, (d) => { shown.push(d); });
@@ -851,19 +853,6 @@ test("sending: what ends a Send answers whether the sent draft was removed on th
   await i.puts[0].ok(4);
   i.s.arrived(5, null);
   assert.equal(end(true), false);
-  // a held Send whose own text was never the server's (its save was refused as stale): nothing of it was removed
-  const f = counted(3);
-  f.s.change("hello");
-  end = f.s.sending(50, true);
-  f.s.change("");
-  await f.puts[0].stale(4, null);
-  assert.equal(end(true), false);
-  // a held Send whose draft the server removed (the chat started there): told, and the composer decides (putsBack)
-  const g = counted(3, { text: "first" });
-  end = g.s.sending(50, true);
-  g.s.change("");
-  g.s.arrived(4, null);
-  assert.equal(end(true), true);
   // a later Send starts anew
   const h = counted(3, { text: "first" });
   const first = h.s.sending(50);
@@ -975,213 +964,6 @@ test("sending: a Send that can have removed nothing is over with its answer, wit
   assert.deepEqual([e.shown, e.puts.length, e.puts[2].d, e.puts[2].base], [[], 3, { text: "next" }, 6]);
 });
 
-// ---- a held Send: the first message of a chat on another server (T87 F5)
-
-test("a held Send saves nothing: the sent text stays the draft, and no emptied copy is kept for a reload", async () => {
-  const { puts, local, shown, s } = counted(3, { text: "first" });
-  s.sending(5, true);
-  s.change(""); // the Send empties the composer
-  await tick(30);
-  assert.deepEqual([puts.length, local.d, shown], [0, null, []]);
-  s.flush(); s.flush(true); // the composer or the page goes away
-  assert.deepEqual([puts.length, local.d], [0, null]);
-});
-
-test("a held Send of text not saved yet saves it at once, and nothing after it", async () => {
-  const { puts, local, s } = counted(3);
-  s.change("hello"); // Enter within the pause
-  s.sending(5, true);
-  assert.deepEqual([puts.length, puts[0].d, puts[0].base], [1, { text: "hello" }, 3]);
-  s.change("");
-  assert.deepEqual(local.d, { text: "hello" }); // until the server has it
-  await puts[0].ok(4);
-  await tick(30);
-  assert.deepEqual([puts.length, local.d], [1, null]);
-});
-
-test("a held Send that is refused leaves the saved draft", async () => {
-  const { puts, local, shown, s } = counted(3, { text: "first" });
-  const answered = s.sending(5, true);
-  s.change("");
-  await tick(30);
-  answered(true);
-  s.change("first"); // the composer puts the text back
-  await tick(30);
-  assert.deepEqual([puts.length, local.d, shown], [0, null, []]);
-  // also when nothing puts it back (the composer went away): the emptied draft is not saved
-  const b = counted(3, { text: "first" });
-  const end = b.s.sending(5, true);
-  b.s.change("");
-  end(true);
-  await tick(30);
-  assert.deepEqual([b.puts.length, b.local.d], [0, null]);
-  // a later change is saved as ever
-  b.s.change("first!"); b.s.flush();
-  assert.deepEqual([b.puts.length, b.puts[0].d, b.puts[0].base], [1, { text: "first!" }, 3]);
-});
-
-test("a held Send that is accepted saves nothing, and the arrival of the next counter with no draft empties it", async () => {
-  for (const eventFirst of [true, false]) {
-    const { puts, local, shown, s } = counted(3, { text: "first" });
-    const answered = s.sending(5, true);
-    s.change("");
-    await tick(30);
-    if (eventFirst) s.arrived(4, null);
-    answered();
-    if (!eventFirst) s.arrived(4, null);
-    await tick(30);
-    assert.deepEqual([puts.length, local.d, shown.filter((d) => d.text)], [0, null, []], `event first: ${eventFirst}`);
-    s.change(""); // the composer is empty, and that is the saved draft now
-    await tick(30);
-    assert.equal(puts.length, 0);
-    s.change("next"); s.flush();
-    assert.deepEqual([puts.length, puts[0].d, puts[0].base], [1, { text: "next" }, 4]);
-  }
-});
-
-test("text typed during a held Send is saved after the answer", async () => {
-  for (const refused of [false, true]) {
-    const { puts, local, shown, s } = counted(3, { text: "first" });
-    const answered = s.sending(5, true);
-    s.change(""); s.change("next");
-    await tick(30);
-    assert.deepEqual([puts.length, local.d, local.base], [0, { text: "next" }, 3]);
-    if (!refused) s.arrived(4, null); // the server removed the sent draft
-    answered(refused);
-    await tick(30);
-    const base = refused ? 3 : 4;
-    assert.deepEqual([puts.length, puts[0].d, puts[0].base, shown], [1, { text: "next" }, base, []], `refused: ${refused}`);
-    await puts[0].ok(base + 1);
-    assert.equal(local.d, null);
-  }
-  // a page that goes away during the hold saves the text at once
-  const b = counted(3, { text: "first" });
-  b.s.sending(5, true);
-  b.s.change(""); b.s.change("next"); b.s.flush(true);
-  assert.deepEqual([b.puts.length, b.puts[0].d, b.puts[0].keepalive], [1, { text: "next" }, true]);
-});
-
-test("a held Send answered before the save of its own text is: the sent text is not saved again (the review T105, D2)", async () => {
-  // the chat started there: the save, on the counter of the chat that was not started, is refused as stale with no draft
-  const a = counted(3);
-  a.s.change("hello"); // Enter within the pause
-  let answered = a.s.sending(5, true);
-  a.s.change("");
-  answered();
-  await a.puts[0].stale(4, null);
-  await tick(30);
-  assert.deepEqual([a.puts.length, a.local.d, a.shown], [1, null, []]);
-  a.s.change("next"); a.s.flush();
-  assert.deepEqual([a.puts.length, a.puts[1].d, a.puts[1].base], [2, { text: "next" }, 4]);
-  // the text landed after all: the emptied draft is saved over it
-  const b = counted(3);
-  b.s.change("hello");
-  answered = b.s.sending(5, true);
-  b.s.change("");
-  answered();
-  await b.puts[0].ok(4);
-  assert.deepEqual([b.puts.length, b.puts[1].d, b.puts[1].base, b.shown], [2, { text: "" }, 4, []]);
-  await b.puts[1].ok(5);
-  await tick(30);
-  assert.deepEqual([b.puts.length, b.local.d], [2, null]);
-  // refused: the text is the draft, as it is being saved, and the composer puts it back
-  const c = counted(3);
-  c.s.change("hello");
-  answered = c.s.sending(5, true);
-  c.s.change("");
-  assert.equal(answered(true), false);
-  c.s.change("hello");
-  await c.puts[0].ok(4);
-  await tick(30);
-  assert.deepEqual([c.puts.length, c.local.d, c.shown], [1, null, []]);
-  // the same text typed again after the answer is text typed here: kept, and saved on the new counter
-  const d = counted(3);
-  d.s.change("hello");
-  answered = d.s.sending(5, true);
-  d.s.change("");
-  answered();
-  d.s.change("hello");
-  await d.puts[0].stale(4, null);
-  assert.deepEqual([d.puts.length, d.puts[1].d, d.puts[1].base, d.shown], [2, { text: "hello" }, 4, []]);
-});
-
-test("a first message whose text was kept (first_text_kept), told to the saver on a counter below the server's: the text put back is saved on the server's", async () => {
-  // (kept counts from the saver's counter, which can be behind the server's: the save refused as stale brings the counter)
-  const { puts, local, shown, s } = counted(3, { text: "second" });
-  const answered = s.sending(5, true);
-  s.change("");
-  s.kept(); // what the composer tells: the draft went on the next counter
-  assert.equal(putsBack(answered(true), "first_text_kept"), true);
-  s.change("second"); s.flush();
-  assert.deepEqual([puts.length, puts[0].d, puts[0].base], [1, { text: "second" }, 4]);
-  await puts[0].stale(6, null);
-  assert.deepEqual([puts.length, puts[1].d, puts[1].base, shown], [2, { text: "second" }, 6, []]);
-  await puts[1].ok(7);
-  assert.equal(local.d, null);
-});
-
-test("kept (first_text_kept) counts the removal from the saver's own counter, and only when none has come since the Send began (the review T123, N1)", async () => {
-  // The swap's removal has come, and after it another window's draft on the next counter (its saver saved its text again): the server is on that
-  // counter. Counted from the record, which has that draft, it was one more, which the server never reaches: the save was refused with a lower counter.
-  const { puts, local, shown, s } = counted(3, { text: "second" });
-  let answered = s.sending(5, true);
-  s.change("");
-  s.arrived(4, null);
-  s.arrived(5, { text: "theirs" });
-  s.kept();
-  assert.equal(putsBack(answered(true), "first_text_kept"), true);
-  s.change("second");
-  assert.deepEqual([local.d, local.base], [{ text: "second" }, 5], "the unsaved copy is on the server's counter: a reload shows it");
-  s.flush();
-  assert.deepEqual([puts.length, puts[0].d, puts[0].base], [1, { text: "second" }, 5]);
-  await puts[0].ok(6);
-  assert.deepEqual([local.d, shown], [null, [{ text: "theirs" }]]);
-
-  // the answer before the removal's event: the removal is counted, and its event is then no news
-  const a = counted(3, { text: "second" });
-  answered = a.s.sending(5, true);
-  a.s.change("");
-  a.s.kept();
-  assert.equal(answered(true), true);
-  a.s.change("second");
-  a.s.arrived(4, null);
-  a.s.flush();
-  assert.deepEqual([a.puts.length, a.puts[0].base, a.shown], [1, 4, []]);
-  // told twice, it is counted once
-  const twice = counted(3, { text: "second" });
-  answered = twice.s.sending(5, true);
-  twice.s.change("");
-  twice.s.kept(); twice.s.kept();
-  answered(true);
-  twice.s.change("second"); twice.s.flush();
-  assert.equal(twice.puts[0].base, 4);
-
-  // the removal's event came while the save of the sent text was in flight, and waits for that save's answer: it has come, and is not counted again
-  const b = counted(3);
-  b.s.change("second");
-  answered = b.s.sending(5, true); // (a held Send saves its text at once)
-  assert.deepEqual([b.puts.length, b.puts[0].base], [1, 3]);
-  b.s.change("");
-  b.s.arrived(4, { text: "second" }); // that save's echo
-  b.s.arrived(5, null);
-  b.s.kept();
-  answered(true);
-  await b.puts[0].ok(4);
-  b.s.change("typed after"); b.s.flush();
-  assert.deepEqual([b.puts.length, b.puts[1].d, b.puts[1].base], [2, { text: "typed after" }, 5]);
-
-  // with no Send of this composer's on its way, and for a draft with no counter, there is nothing to count
-  const idle = counted(3, { text: "second" });
-  idle.s.kept();
-  idle.s.change("more"); idle.s.flush();
-  assert.deepEqual([idle.puts[0].base, idle.shown], [3, []]);
-  const plain = saver({ text: "second" });
-  answered = plain.s.sending(5, true);
-  plain.s.kept();
-  answered(true);
-  assert.deepEqual(plain.puts, []);
-});
-
 test("boxText: the box gets the draft to show as it appears, else the text the composer holds unseen (the review T105, D3)", () => {
   assert.equal(boxText({ text: "draft" }, "held"), "draft");
   assert.equal(boxText({ text: "", references: [quote] }, "held"), ""); // a draft of quotes alone
@@ -1223,29 +1005,30 @@ test("answerNewer: a save's answer with a later counter than the record's brings
 
 test("the composer shows the text it holds when its box appears, takes a save's answer and a stale one by their counters, ends its Send for the saver whatever is thrown, and puts back by what the saver tells", () => {
   const composer = readFileSync(new URL("../src/Composer.tsx", import.meta.url), "utf8");
+  const save = readFileSync(new URL("../src/chatdraft.ts", import.meta.url), "utf8"); // the composer's saveDraft
+  assert.ok(composer.includes("import { draftToShow, saveDraft } from \"./chatdraft.ts\";") && composer.includes("saveDraft(chatId, branch, d, keepalive, base)"));
   // D3: after an unarchive the box has the composer's text when there is no draft to show
   assert.ok(composer.includes("    const d = draftToShow(chatId, branch), t = boxText(d, current.current);\n    if (t !== null) input.current?.set(t);\n    if (!hasDraft(d)) return;"));
-  assert.ok(composer.includes("if (stale && staleTaken(stale.rev, draftRevOf(chat, branch)) && storeDraft(chat, branch, stale.draft)) setDraftRev(chat, branch, stale.rev);"));
-  // a save's answer gives the record its counter together with the draft it counts
-  assert.ok(composer.includes("    if (answerNewer(rev, draftRevOf(chat, branch))) storeDraft(chat, branch, d);\n    setDraftRev(chat, branch, rev);"));
+  assert.ok(save.includes("if (stale && staleTaken(stale.rev, draftRevOf(chat, branch)) && storeDraft(chat, branch, stale.draft)) setDraftRev(chat, branch, stale.rev);"));
+  // a save's answer gives the record its counter together with the draft it counts: the one saved, without the images the server left out
+  assert.ok(save.includes("      if (answerNewer(rev, draftRevOf(chat, branch))) storeDraft(chat, branch, missing ? without(d, missing) : d);\n      setDraftRev(chat, branch, rev);"));
   // D4: the saver is told of the Send inside the try, and nothing that can throw stands between the two
-  assert.ok(composer.includes("    try {\n      answered = getState().moves[chatId] ? null : drafts.current!.sending(undefined, first);"));
+  assert.ok(composer.includes("    try {\n      answered = getState().moves[chatId] ? null : drafts.current!.sending();"));
   assert.equal(composer.split(".sending(").length, 2);
   assert.ok(composer.includes("    } finally {\n      answered?.(refused); setSending(false);"));
   // D1: the Send is ended before anything goes back, and nothing goes back when the saver tells of a removal
   const at = (t: string) => { const i = composer.indexOf(t); assert.ok(i >= 0, t); return i; };
-  const ended = at("const removed = answered?.(refused) ?? false;\n      answered = null;\n      if (putsBack(removed, code)) {");
+  const ended = at("const removed = answered?.(refused) ?? false;\n      answered = null;\n      if (putsBack(removed)) {");
   const closed = at("      }\n      // The chat is read again when its state here is stale");
-  for (const t of ["setQuotes((now) => mergeQuotes(qs, now));", "if (!current.current.trim()) input.current?.set(t);", "!current.current.trim()) setBox(t);", "drafts.current!.change(t, p, qs);"]) {
+  for (const t of ["setQuotes((now) => mergeQuotes(qs, now));", "setImages((now) => withImages(back, now));", "if (!current.current.trim()) input.current?.set(t);", "!current.current.trim()) setBox(t);", "drafts.current!.change(t, p, qs, back);"]) {
     assert.ok(at(t) > ended && at(t) < closed && composer.indexOf(t, at(t) + 1) < 0, t);
   }
-  assert.ok(at("if (code === FIRST_TEXT_KEPT) drafts.current!.kept();") < ended);
   // D4: a composer that went away is known as gone: its failed Send goes to the saver, not to a box
   assert.ok(composer.includes("    return () => {\n      gone.current = true;\n      window.removeEventListener(\"pagehide\", hide);"));
   assert.ok(composer.includes("    window.addEventListener(\"pagehide\", hide);\n    gone.current = false;"));
 });
 
-test("the composer sets a text also when it draws no box (an archived chat), puts a refused Send's text back so, and tells its saver of a refusal and of a held Send", () => {
+test("the composer sets a text also when it draws no box (an archived chat), puts a refused Send's text back so, and tells its saver of a refusal", () => {
   const composer = readFileSync(new URL("../src/Composer.tsx", import.meta.url), "utf8");
   // a draft from the server, and what a move sets: with no box the text is what the composer holds all the same
   assert.ok(composer.includes("    if (input.current) input.current.set(t);\n    else { current.current = t; setText(t); }"));
@@ -1253,10 +1036,10 @@ test("the composer sets a text also when it draws no box (an archived chat), put
   assert.ok(composer.includes("if (h.text !== current.current) { setBox(h.text); caretToEnd(box.current); }"));
   // a Send refused while the chat was archived: the composer is still there, without a box
   assert.ok(composer.includes("if (!gone.current && !input.current && !current.current.trim()) setBox(t);"));
-  assert.ok(composer.includes("if (gone.current && !sendFailed(chatId, branch, { text: t, mentions: p, references: qs }, e)) drafts.current!.change(t, p, qs);"));
-  // the first message of a chat on another server is held, and a refusal is told
-  assert.ok(composer.includes("const first = !getState().moves[chatId] && startsThere(c);") && composer.includes("drafts.current!.sending(undefined, first);"));
-  assert.ok(composer.includes("refused = e instanceof ApiError && e.status < 500;"));
+  assert.ok(composer.includes("if (gone.current && !sendFailed(chatId, branch, { text: t, mentions: p, references: qs, images: back }, e)) drafts.current!.change(t, p, qs, back);"));
+  // the first message of a chat on another server is a Send as any other: nothing is held for it, and a refusal is told
+  assert.ok(composer.includes("drafts.current!.sending();") && !composer.includes("drafts.current!.kept()"));
+  assert.ok(composer.includes("refused = e instanceof ApiError && sentNothing(e.status, e.code);"));
   assert.ok(composer.includes("answered?.(refused); setSending(false);"));
 });
 
@@ -1396,6 +1179,140 @@ test("a save that failed otherwise while a newer draft arrived, or with more typ
   assert.deepEqual([c.shown, c.local.d], [[{ text: "other window" }], null]);
 });
 
+// ---- a draft typed while its server was away (DraftSaver.back)
+
+test("a draft whose save failed while its server was away is saved by itself when the server is back, with no keystroke", async () => {
+  const away = () => Object.assign(new Error("Studio is not connected."), { status: 503, code: "server_unreachable" });
+  for (const how of ["offline", "unknown_client", "server_unreachable"] as const) {
+    const { puts, local, shown, s } = counted(3);
+    s.change("typed while it was away"); s.flush();
+    if (how === "offline") await puts[0].fail();
+    else if (how === "unknown_client") await puts[0].refused("unknown_client");
+    else await puts[0].end(away());
+    // the save failed: the page keeps the unsaved text, on its counter, and nothing is sent again by itself
+    assert.deepEqual([local.d, local.base, shown], [{ text: "typed while it was away" }, 3, []], how);
+    await tick(40);
+    assert.equal(puts.length, 1, how);
+    // the server is back
+    s.back();
+    assert.deepEqual([puts.length, puts[1].d, puts[1].base, puts[1].keepalive], [2, { text: "typed while it was away" }, 3, false], how);
+    await puts[1].ok(4);
+    assert.deepEqual([local.d, shown], [null, []], how);
+    // and the counter the next save names is that server's
+    s.change("more"); s.flush();
+    assert.equal(puts[2].base, 4, how);
+  }
+});
+
+test("back with nothing waiting saves nothing, and with a save in flight waits for its answer", async () => {
+  const a = counted(3, { text: "saved" });
+  a.s.back();
+  assert.equal(a.puts.length, 0);
+  a.s.change("saved!"); a.s.flush();
+  await a.puts[0].ok(4);
+  a.s.back();
+  assert.equal(a.puts.length, 1, "what the server has is not saved again");
+  // a save in flight (it was sent as the server went away, and fails late): the save when the server is back is the next one
+  const b = counted(3);
+  b.s.change("mine"); b.s.flush();
+  b.s.back();
+  assert.equal(b.puts.length, 1);
+  await b.puts[0].fail();
+  assert.deepEqual([b.puts.length, b.puts[1].d, b.puts[1].base], [2, { text: "mine" }, 3]);
+  await b.puts[1].ok(4);
+  assert.equal(b.local.d, null);
+  // a save in flight that lands after all leaves nothing to save again
+  const c = counted(3);
+  c.s.change("mine"); c.s.flush();
+  c.s.back();
+  await c.puts[0].ok(4);
+  await tick(30);
+  assert.deepEqual([c.puts.length, c.local.d], [1, null]);
+  c.s.change("mine, more");
+  await tick(30); // (saved after the pause, as any change)
+  assert.deepEqual([c.puts.length, c.puts[1].d, c.puts[1].base], [2, { text: "mine, more" }, 4]);
+});
+
+test("back saves what the composer holds now: text typed since the failed save, on the counter that server has by then", async () => {
+  const { puts, local, shown, s } = counted(3);
+  s.change("mine"); s.flush();
+  await puts[0].fail();
+  s.change("mine, and more"); // typed while it was still away: its timer has not fired
+  s.back();
+  assert.deepEqual([puts.length, puts[1].d, puts[1].base], [2, { text: "mine, and more" }, 3]);
+  await puts[1].ok(4);
+  assert.equal(local.d, null);
+  // the draft was changed on that server meanwhile (its own page): the save names the counter this page had, is refused as stale, and the
+  // counter rules go on as they are: the text typed here stays and is saved on that server's counter
+  const b = counted(3);
+  b.s.change("typed here"); b.s.flush();
+  await b.puts[0].fail();
+  b.s.back();
+  await b.puts[1].stale(7, { text: "typed there" });
+  assert.deepEqual([b.shown, b.puts.length, b.puts[2].d, b.puts[2].base], [[], 3, { text: "typed here" }, 7]);
+  await b.puts[2].ok(8);
+  assert.deepEqual([b.local.d, b.shown], [null, []]);
+  assert.deepEqual(shown, []);
+});
+
+test("back while the server is still away fails again and keeps the text for the next time", async () => {
+  const { puts, local, s } = counted(3);
+  s.change("mine"); s.flush();
+  await puts[0].fail();
+  s.back(); // the page's own connection opened, the chat's server is still away
+  await puts[1].end(Object.assign(new Error("Studio is not connected."), { status: 503, code: "server_unreachable" }));
+  assert.deepEqual([local.d, local.base], [{ text: "mine" }, 3]);
+  await tick(40);
+  assert.equal(puts.length, 2);
+  s.back(); // that server is back
+  await puts[2].ok(4);
+  assert.equal(local.d, null);
+});
+
+test("a composer that opens with an unsaved copy saves it, whatever it was told is saved: the store has a draft from before its save was answered", async () => {
+  // The save of "mine" failed while the server was away; the store kept the draft, and the composer opened again is told that it is the server's.
+  const a = counted(3, { text: "mine" }, { text: "mine" });
+  a.s.change("mine"); // the composer's first change: what it opened with
+  assert.deepEqual([a.local.d, a.local.base], [{ text: "mine" }, 3], "the copy is not dropped while it is not known that the server has it");
+  a.s.flush();
+  assert.deepEqual([a.puts.length, a.puts[0].d, a.puts[0].base], [1, { text: "mine" }, 3]);
+  await a.puts[0].fail(); // the server is still away: the text waits, and nothing is taken as saved
+  assert.deepEqual(a.local.d, { text: "mine" });
+  a.s.change("mine");
+  assert.deepEqual(a.local.d, { text: "mine" });
+  a.s.back(); // the server is back
+  await a.puts.at(-1)!.ok(4);
+  assert.equal(a.local.d, null);
+  // saved: from here on the same text is saved no more
+  const n = a.puts.length;
+  a.s.change("mine");
+  await tick(30);
+  assert.equal(a.puts.length, n);
+  // The server had it after all (the answer was lost): refused as stale with the same draft, and nothing more is saved or shown.
+  const b = counted(3, { text: "mine" }, { text: "mine" });
+  b.s.change("mine"); b.s.flush();
+  await b.puts[0].stale(4, { text: "mine" });
+  await tick(30);
+  assert.deepEqual([b.puts.length, b.local.d, b.shown], [1, null, []]);
+  // An emptied composer whose save failed: the empty draft is saved, so the text deleted here does not come back.
+  const c = counted(3, undefined, { text: "" });
+  c.s.change(""); c.s.flush();
+  assert.deepEqual([c.puts.length, c.puts[0].d], [1, { text: "" }]);
+  await c.puts[0].ok(4);
+  assert.equal(c.local.d, null);
+  // The draft arrives from the server before the composer's own save went: it is the server's now, and is not saved again.
+  const d = counted(3, { text: "mine" }, { text: "mine" });
+  d.s.change("mine");
+  d.s.arrived(4, { text: "mine" }); // the save that was on its way when the composer opened was taken
+  await tick(30);
+  assert.deepEqual([d.puts.length, d.local.d, d.shown], [0, null, []]);
+  // With no copy the saver is as before: what it was told is saved is not saved again.
+  const e = counted(3, { text: "mine" });
+  e.s.change("mine");
+  await tick(30);
+  assert.equal(e.puts.length, 0);
+});
+
 test("a saver with no counter names none and shows nothing (a run's goal)", async () => {
   const { puts, local, s } = saver();
   s.change("goal");
@@ -1440,4 +1357,146 @@ test("revSet: the record of a branch gets a later counter; an earlier one, or no
   assert.equal(revSet(c, [main, b], "main", 1), undefined);
   assert.equal(revSet(c, [main], "b1", 5), undefined);
   assert.equal(revSet(c, [stateFromView(c)], "main", 5), undefined); // a server without records
+});
+
+// ---- images: a draft names the images of its message, and every draft operation carries them
+
+const im = (n: number, size = 1000): ChatImage => ({ id: String(n).padStart(64, "0"), name: `i${n}.png`, type: "image/png", size });
+
+test("a draft of images alone is a draft, wherever the page asks whether a branch has one", () => {
+  const d = draftOf("", [], [], [im(1)]);
+  assert.deepEqual(d, { text: "", images: [im(1)] });
+  assert.equal(hasDraft(d), true);
+  assert.equal(hasDraft({ text: "", images: [] }), false);
+  assert.equal(hasDraft(draftOf("  ", [], [], [])), false);
+  assert.equal(chatHasDraft(view({ draft: d })), true);
+  assert.equal(otherDrafts([record("main"), record("ab12cd34", d)], "main"), true);
+  assert.equal(otherDrafts([record("main", d)], "main"), false);
+  // the store: the branch's record and the chat's view get it, and the view tells that a branch has a draft
+  const main = record("main"), other = record("ab12cd34");
+  const set = draftSet(view(), [main, other], "ab12cd34", d);
+  assert.deepEqual([set.state?.draft, set.view.hasDraft], [d, true]);
+  const cur = draftSet(view({ branch: "ab12cd34" }), [main, other], "ab12cd34", d);
+  assert.deepEqual([cur.view.draft, cur.view.hasDraft], [d, true]);
+  // a composer's box gets the draft's text, which is none, and not a text held from before
+  assert.equal(boxText(d, "held while archived"), "");
+  // mentions go with text only, as before; the images stay
+  assert.deepEqual(draftOf("", [{ name: "a", id: "b_1" }], [], [im(1)]), { text: "", images: [im(1)] });
+});
+
+test("a draft has no image bytes: an image is named by its id, name, type and size, whatever the composer holds of it", () => {
+  const fat = { ...im(1), data: new Uint8Array(8), src: "blob:preview" } as ChatImage;
+  const d = draftOf("see", [], [], [fat]);
+  assert.deepEqual(d.images, [im(1)]);
+  assert.equal(JSON.stringify(d), JSON.stringify({ text: "see", images: [im(1)] }));
+  // the unsaved copy in the browser is the same draft
+  const { local, s } = saver();
+  s.change("see", [], [], [fat]);
+  assert.equal(JSON.stringify(local.d), JSON.stringify({ text: "see", images: [im(1)] }));
+});
+
+test("what a composer holds and its draft are one another's, with the images; two drafts with other images are not the same", () => {
+  const d: Draft = { text: "t", references: [q(1)], images: [im(1), im(2)] };
+  assert.deepEqual(heldOf(d), held("t", [q(1)], [], [im(1), im(2)]));
+  assert.deepEqual(heldOf({ text: "t" }).images, []);
+  assert.deepEqual(ofHeld(heldOf(d)), d);
+  assert.equal(sameDraft(d, { ...d, images: [im(1), im(2)] }), true);
+  assert.equal(sameDraft(d, { ...d, images: [im(1)] }), false);
+  assert.equal(sameDraft(d, { text: "t", references: [q(1)] }), false);
+  assert.equal(sameDraft({ text: "", images: [im(1)] }, null), false);
+  assert.equal(sameDraft({ text: "", images: [] }, null), true);
+});
+
+test("joinDrafts: two drafts joined keep the images of both, each once, also past what one message takes", () => {
+  const a: Draft = { text: "a", images: [im(1), im(2)] }, b: Draft = { text: "b", images: [im(2), im(3)] };
+  assert.deepEqual(joinDrafts(a, b), { text: "a\n\nb", images: [im(1), im(2), im(3)] });
+  // one of images alone joins with one of text
+  assert.deepEqual(joinDrafts({ text: "", images: [im(1)] }, { text: "typed" }), { text: "typed", images: [im(1)] });
+  assert.deepEqual(joinDrafts({ text: "typed" }, { text: "", images: [im(1)] }), { text: "typed", images: [im(1)] });
+  assert.deepEqual(joinDrafts({ text: "" }, { text: "", images: [im(1)] }), { text: "", images: [im(1)] });
+  // over the limit: nothing is dropped, and the joined draft is one the composer holds its Send for
+  const seven = (from: number) => Array.from({ length: 7 }, (_, i) => im(from + i));
+  const joined = joinDrafts({ text: "a", images: seven(0) }, { text: "b", images: seven(10) });
+  assert.equal(joined.images!.length, 14);
+  assert.equal(overLimit(joined.images!), "A message takes 10 images: remove 4 to send");
+  const heavy = joinDrafts({ text: "", images: [im(1, 5 << 20), im(2, 5 << 20), im(3, 5 << 20)] }, { text: "", images: [im(4, 5 << 20), im(5, 5 << 20)] });
+  assert.equal(heavy.images!.length, 5);
+  assert.match(overLimit(heavy.images!), /^The images of a message can be 20 MB together/);
+});
+
+test("draftsAfterSent: the images go where the text goes", () => {
+  const aside = held("the draft put aside", [], [], [im(1)]), typed = held("typed after the Send", [], [], [im(2)]);
+  // moved: the branch left has what was put aside, the new branch what was typed
+  assert.deepEqual(draftsAfterSent(aside, typed, true), { left: { text: "the draft put aside", images: [im(1)] }, to: { text: "typed after the Send", images: [im(2)] } });
+  // images alone typed after the Send are a draft of the new branch
+  assert.deepEqual(draftsAfterSent(null, held("", [], [], [im(2)]), true), { left: { text: "" }, to: { text: "", images: [im(2)] } });
+  assert.deepEqual(draftsAfterSent(null, NOTHING, true), { left: { text: "" }, to: null });
+  // not moved: the two are joined in the branch left, with the images of both
+  assert.deepEqual(draftsAfterSent(aside, typed, false), { left: { text: "typed after the Send\n\nthe draft put aside", images: [im(2), im(1)] }, to: null });
+  assert.deepEqual(draftsAfterSent(held("", [], [], [im(1)]), held("", [], [], [im(1), im(3)]), false).left, { text: "", images: [im(1), im(3)] });
+});
+
+test("the saver saves a draft of images alone, a change of the images alone, and the empty draft when the last image is removed", async () => {
+  const { puts, local, s } = saver();
+  s.change("", [], [], [im(1)]);
+  assert.deepEqual(local.d, { text: "", images: [im(1)] }); // kept in the browser until the server has it, without bytes
+  await tick(30);
+  assert.deepEqual(puts, [[{ text: "", images: [im(1)] }, false]]);
+  assert.equal(local.d, null);
+  s.change("", [], [], [im(1)]); // the same again: nothing to save
+  await tick(30);
+  assert.equal(puts.length, 1);
+  s.change("", [], [], [im(1), im(2)]);
+  await tick(30);
+  assert.deepEqual(puts[1][0], { text: "", images: [im(1), im(2)] });
+  s.change("", [], [], []);
+  await tick(30);
+  assert.deepEqual(puts[2][0], { text: "" });
+});
+
+test("a saver that opens on a draft with images skips that draft, and saves it when the page goes away with an image more", async () => {
+  const { puts, s } = saver({ text: "hi", images: [im(1)] });
+  s.change("hi", [], [], [im(1)]);
+  await tick(30);
+  assert.equal(puts.length, 0);
+  s.change("hi", [], [], [im(1), im(2)]);
+  s.flush(true);
+  assert.deepEqual(puts, [[{ text: "hi", images: [im(1), im(2)] }, true]]);
+});
+
+test("a draft with images from another window is shown with them, and one typed here on images is kept over it", async () => {
+  const a = counted(2, { text: "", images: [im(1)] });
+  a.s.arrived(3, { text: "theirs", images: [im(1), im(2)] });
+  assert.deepEqual(a.shown, [{ text: "theirs", images: [im(1), im(2)] }]);
+  // the server took an image out (it no longer holds it): the composer shows the draft without it
+  a.s.arrived(4, { text: "theirs", images: [im(2)] });
+  assert.deepEqual(a.shown[1], { text: "theirs", images: [im(2)] });
+  const b = counted(2);
+  b.s.change("", [], [], [im(5)]); b.s.flush();
+  await b.puts[0].stale(4, { text: "theirs" });
+  assert.deepEqual(b.shown, []); // what was added here stays in the composer
+  assert.deepEqual([b.puts[1].d, b.puts[1].base], [{ text: "", images: [im(5)] }, 4]); // and is saved again on the new counter
+});
+
+test("a Send of images alone is a Send of a draft: one removed on the server meanwhile is not put back, one that was refused is", () => {
+  // the draft of images alone was removed while the Send ran (another window sent it, or the Send was taken after all): nothing goes back
+  const a = counted(3, { text: "", images: [im(1)] });
+  let end = a.s.sending(50);
+  a.s.change("", [], [], []);
+  a.s.arrived(4, null);
+  assert.equal(end(true), true);
+  assert.equal(putsBack(true), false);
+  // no removal: the images go back with the message
+  const b = counted(3, { text: "", images: [im(1)] });
+  end = b.s.sending(50);
+  b.s.change("", [], [], []);
+  assert.equal(end(true), false);
+  assert.equal(putsBack(false), true);
+  // images the server never had as a draft (added and sent within the pause) are no draft another window can send
+  const c = counted(3);
+  c.s.change("", [], [], [im(1)]);
+  end = c.s.sending(50);
+  c.s.change("", [], [], []);
+  c.s.arrived(4, null);
+  assert.equal(end(true), false);
 });

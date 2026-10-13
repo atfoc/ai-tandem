@@ -116,8 +116,8 @@ func TestAPIEventsAgreeWithEvents(t *testing.T) {
 	}
 }
 
-// One case per row of the event table: an API client with the item's mark (X), one that follows
-// the item without the mark (F), one with neither (Y), beside a page (P).
+// One case per row of the event table: an API client that follows the item (F) and two that do
+// not (X, Y), beside a page (P).
 func TestAPIEventRows(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
@@ -127,11 +127,8 @@ func TestAPIEventRows(t *testing.T) {
 	all := []*bridgetest.Page{p, x, f, y}
 	s := &sentinel{b: b}
 
-	// set puts the marks and the follows back: a removal ends both.
+	// set puts the follows back: a removal ends them.
 	set := func() {
-		b.SetMark(Chat("c1"), "X")
-		b.SetMark(Run("r1"), "X")
-		b.MarkBoard("b1", "X")
 		if !b.Follow("F", Chat("c1")) || !b.Follow("F", Run("r1")) || !b.Follow("F", Board("b1")) {
 			t.Fatal("Follow refused a connected API client")
 		}
@@ -194,14 +191,13 @@ func TestAPIEventRows(t *testing.T) {
 				sent(t, typ, run("c1"), p) // misdirected: every page, no API client
 				sent(t, typ, b.Broadcast, p)
 			case rule.Per == PerChat && rule.Class == List:
-				sent(t, typ, chat("c1", false), p, x) // by mark, not by follow
-				sent(t, typ, chat("c1", true), f)     // a run agent's chat: its followers only
-				sent(t, typ, chat("c2", false), p)    // a chat of the owner's
-				sent(t, typ, run("c1"), p)            // misdirected: every page, no API client
-				sent(t, typ, b.Broadcast, p)          // the same
-				sent(t, typ, chat("r1", false), p)    // a run's id is not a chat's
+				sent(t, typ, chat("c1", false), all...) // every client
+				sent(t, typ, chat("c1", true), f)       // a run agent's chat: its followers only
+				sent(t, typ, chat("c2", false), all...) // a chat nobody follows
+				sent(t, typ, run("c1"), p)              // misdirected: every page, no API client
+				sent(t, typ, b.Broadcast, p)            // the same
 			case rule.Per == PerChat:
-				sent(t, typ, chat("c1", false), f) // by follow, not by mark
+				sent(t, typ, chat("c1", false), f) // by follow
 				sent(t, typ, chat("c1", true), f)
 				sent(t, typ, chat("c2", false))
 				sent(t, typ, run("c1"), p)
@@ -210,18 +206,16 @@ func TestAPIEventRows(t *testing.T) {
 				if rule.Class != List {
 					t.Fatalf("a %v type of a board", rule.Class)
 				}
-				sent(t, typ, board("b1"), p, x)    // by mark, not by follow
-				sent(t, typ, board("b2"), p)       // a board of the owner's
-				sent(t, typ, board("c1"), p)       // a chat's id is not a board's
+				sent(t, typ, board("b1"), all...)  // every client
+				sent(t, typ, board("b2"), all...)  // a board nobody follows
 				sent(t, typ, b.Broadcast, p)       // misdirected: every page, no API client
 				sent(t, typ, chat("c1", false), p) // the same
 				sent(t, typ, run("r1"), p)
 			case rule.Class == List: // of a run
-				sent(t, typ, run("r1"), p, x)
-				sent(t, typ, run("r2"), p)
+				sent(t, typ, run("r1"), all...)
+				sent(t, typ, run("r2"), all...)
 				sent(t, typ, chat("r1", false), p)
 				sent(t, typ, b.Broadcast, p)
-				sent(t, typ, run("c1"), p)
 			default:
 				sent(t, typ, run("r1"), f)
 				sent(t, typ, run("r2"))
@@ -243,10 +237,10 @@ func TestAPIEventRows(t *testing.T) {
 			}
 		}
 	})
-	t.Run("a client with the mark that follows", func(t *testing.T) {
+	t.Run("a second client that follows", func(t *testing.T) {
 		b.Follow("X", Chat("c1"))
 		sent(t, "chat_items", chat("c1", false), x, f)
-		sent(t, "chat", chat("c1", false), p, x)
+		sent(t, "chat", chat("c1", false), all...)
 		sent(t, "chat", chat("c1", true), x, f)
 		b.Unfollow("X", Chat("c1"))
 		sent(t, "chat_items", chat("c1", false), f)
@@ -258,51 +252,9 @@ func TestAPIEventRows(t *testing.T) {
 	}
 }
 
-// A mark is of one client and one item, and "" removes it.
-func TestSetMark(t *testing.T) {
-	t.Parallel()
-	b, _ := newTestServer(t, nil)
-	api := newAPIServer(t, b, nil)
-	x, y := openAPI(t, api, "X"), openAPI(t, api, "Y")
-	s := &sentinel{b: b}
-	got := func() (xs, ys []string) {
-		t.Helper()
-		b.SendChat("c1", false, map[string]any{"type": "chat"})
-		s.send()
-		return s.until(t, x), s.until(t, y)
-	}
-
-	if m := b.MarkOf(Chat("c1")); m != "" {
-		t.Fatalf("MarkOf with no mark = %q", m)
-	}
-	if xs, ys := got(); len(xs)+len(ys) != 0 {
-		t.Fatalf("a chat without a mark reached %v, %v", xs, ys)
-	}
-	b.SetMark(Chat("c1"), "X")
-	if b.MarkOf(Chat("c1")) != "X" || b.MarkOf(Run("c1")) != "" || b.MarkOf(Chat("c2")) != "" {
-		t.Fatal("the mark is not of the one item")
-	}
-	if xs, ys := got(); len(xs) != 1 || len(ys) != 0 {
-		t.Fatalf("with X's mark: X got %v, Y got %v", xs, ys)
-	}
-	b.SetMark(Chat("c1"), "Y")
-	if xs, ys := got(); len(xs) != 0 || len(ys) != 1 {
-		t.Fatalf("with Y's mark: X got %v, Y got %v", xs, ys)
-	}
-	b.SetMark(Chat("c1"), "")
-	if xs, ys := got(); len(xs)+len(ys) != 0 || b.MarkOf(Chat("c1")) != "" {
-		t.Fatalf("with the mark removed: X got %v, Y got %v", xs, ys)
-	}
-	// A mark of a client that is not connected stays, and holds for its next stream.
-	b.SetMark(Chat("c1"), "Z")
-	z := openAPI(t, api, "Z")
-	b.SendChat("c1", false, map[string]any{"type": "chat"})
-	z.Expect("chat")
-}
-
-// The removal reaches the client with the mark although Forget ran before it, as the chat
-// manager's remove does. The mark is gone afterwards, and not before.
-func TestRemovalReachesMarkedClientAfterForget(t *testing.T) {
+// The removal reaches every client although Forget ran before it, as the chat manager's remove
+// does: the one that followed, the one that did not, and the page.
+func TestRemovalReachesEveryClientAfterForget(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		typ  string
@@ -317,53 +269,24 @@ func TestRemovalReachesMarkedClientAfterForget(t *testing.T) {
 			b, srv := newTestServer(t, nil)
 			api := newAPIServer(t, b, nil)
 			p, x, y := open(t, srv, "P"), openAPI(t, api, "X"), openAPI(t, api, "Y")
-			s := &sentinel{b: b}
-			b.SetMark(tc.it, "X")
-			b.Follow("X", tc.it)
 			b.Follow("Y", tc.it)
 
 			b.Forget(tc.it)
 			if b.Followed(tc.it) {
 				t.Fatal("Forget left a follow")
 			}
-			if b.MarkOf(tc.it) != "X" {
-				t.Fatal("Forget took the mark")
-			}
 			tc.send(b, map[string]any{"type": tc.typ, "id": tc.it.ID})
-			if ev := x.Expect(tc.typ); ev["id"] != tc.it.ID {
-				t.Fatalf("X got %v", ev)
-			}
-			p.Expect(tc.typ)
-			if b.MarkOf(tc.it) != "" {
-				t.Fatal("the mark outlived the removal")
-			}
-			// A follower without the mark is not told. An item made again with this id is
-			// nobody's until it is marked.
-			tc.send(b, map[string]any{"type": tc.typ, "id": tc.it.ID})
-			s.send()
-			if got := s.until(t, x); len(got) != 0 {
-				t.Fatalf("X got %v for an item without its mark", got)
-			}
-			if got := s.until(t, y); len(got) != 0 {
-				t.Fatalf("Y, which had followed, got %v", got)
+			for _, c := range []*bridgetest.Page{p, x, y} {
+				if ev := c.Expect(tc.typ); ev["id"] != tc.it.ID {
+					t.Fatalf("client %s got %v", c.ID, ev)
+				}
 			}
 		})
 	}
-	t.Run("a misdirected removal keeps the mark", func(t *testing.T) {
-		t.Parallel()
-		b, _ := newTestServer(t, nil)
-		b.SetMark(Chat("c1"), "X")
-		b.SendRun("c1", map[string]any{"type": "chat_removed"})
-		b.Broadcast(map[string]any{"type": "chat_removed"})
-		b.SendChat("c1", false, map[string]any{"type": "run_removed"})
-		if b.MarkOf(Chat("c1")) != "X" {
-			t.Fatal("the mark is gone")
-		}
-	})
 }
 
 // Content reaches an API client only after Follow, and after a new stream only after a new
-// Follow. A follow noted before the item is made holds when the item gets its mark.
+// Follow. A follow may be noted before the item is made.
 func TestAPIContentOnlyAfterFollow(t *testing.T) {
 	t.Parallel()
 	b, _ := newTestServer(t, nil)
@@ -378,20 +301,13 @@ func TestAPIContentOnlyAfterFollow(t *testing.T) {
 	if !b.Follow("X", Chat("c1")) { // a read of an id that no chat has yet
 		t.Fatal("Follow refused a connected API client")
 	}
-	b.SetMark(Chat("c1"), "X") // the chat is made
 	if got := b.Followers(Chat("c1")); !reflect.DeepEqual(got, []string{"X"}) {
-		t.Fatalf("followers after SetMark = %v", got)
+		t.Fatalf("followers = %v", got)
 	}
 	items(1)
 	if ev := x.Expect("chat_items"); ev["n"] != float64(1) {
 		t.Fatalf("got %v", ev)
 	}
-	b.SetMark(Chat("c1"), "")
-	if !b.Followed(Chat("c1")) {
-		t.Fatal("the mark's removal ended a follow")
-	}
-	b.SetMark(Chat("c1"), "X")
-
 	b.Unfollow("X", Chat("c1"))
 	items(2)
 	s.send()
@@ -399,7 +315,7 @@ func TestAPIContentOnlyAfterFollow(t *testing.T) {
 		t.Fatalf("after unfollow X got %v", got)
 	}
 
-	// A new stream follows nothing: the mark still lists the chat, its content waits for a read.
+	// A new stream follows nothing: the chat is in its list, its content waits for a read.
 	b.Follow("X", Chat("c1"))
 	x2 := openAPI(t, api, "X")
 	x.ExpectEnded()
@@ -424,7 +340,6 @@ func TestAPIFollowersGetTheSameBytes(t *testing.T) {
 	b, srv := newTestServer(t, nil)
 	api := newAPIServer(t, b, nil)
 	p, x, y := open(t, srv, "P"), openAPI(t, api, "X"), openAPI(t, api, "Y")
-	b.SetMark(Chat("c1"), "X")
 	for _, id := range []string{"P", "X", "Y"} {
 		b.Follow(id, Chat("c1"))
 	}
@@ -588,9 +503,9 @@ func TestClientIDOfAnotherKindIsRefused(t *testing.T) {
 	if !b.Holds("B", "b2") || !b.Followed(Chat("c2")) || b.Acted("B") {
 		t.Fatal("the refused page stream changed the API client's record")
 	}
-	b.Broadcast(map[string]any{"type": "groups"})
+	b.Broadcast(map[string]any{"type": "servers"})
 	b.Broadcast(map[string]any{"type": "agents"})
-	client.Expect("agents") // still an API client: no groups
+	client.Expect("agents") // still an API client: no servers
 
 	// Once the record ended the id is free for the other kind.
 	page.Close()
@@ -751,7 +666,6 @@ func TestCloseKind(t *testing.T) {
 	take(t, b, "P", "b1", false, "held") // the answer says so: no event
 	b.Follow("P", Chat("c1"))
 	x, y, z := openAPI(t, api, "X"), openAPI(t, api, "Y"), openAPI(t, api, "Z")
-	b.SetMark(Chat("c1"), "X")
 	b.Follow("Y", Chat("c1"))
 
 	b.Broadcast(map[string]any{"type": "agents", "last": true})
@@ -770,9 +684,6 @@ func TestCloseKind(t *testing.T) {
 	if got := b.Followers(Chat("c1")); !reflect.DeepEqual(got, []string{"P"}) {
 		t.Fatalf("followers = %v", got)
 	}
-	if b.MarkOf(Chat("c1")) != "X" {
-		t.Fatal("the close took a mark")
-	}
 	if n := b.CloseKind(KindAPI); n != 0 {
 		t.Fatalf("a second CloseKind = %d", n)
 	}
@@ -785,7 +696,7 @@ func TestCloseKind(t *testing.T) {
 	b.SendChat("c1", false, map[string]any{"type": "chat_items"})
 	p.Expect("chat_items")
 
-	// An API client connects again and gets what its mark lists; the old streams get nothing.
+	// An API client connects again and gets the list events; the old streams get nothing.
 	x2 := openAPI(t, api, "X")
 	b.SendChat("c1", false, map[string]any{"type": "chat"})
 	x2.Expect("chat")
@@ -891,8 +802,8 @@ func (c countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return c.rt.RoundTrip(r)
 }
 
-// The lists of the kinds table stay consistent under streams, marks and sends of both kinds at
-// once (run with -race).
+// The kinds table stays consistent under streams and sends of both kinds at once (run with
+// -race).
 func TestAPIAndPagesAtOnce(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, func() any { return map[string]any{"n": 1} })
@@ -907,13 +818,11 @@ func TestAPIAndPagesAtOnce(t *testing.T) {
 				return
 			default:
 			}
-			b.SetMark(Chat("c1"), []string{"X", "Y", ""}[i%3])
 			b.SendChat("c1", false, map[string]any{"type": "chat", "i": i})
 			b.SendChat("c1", false, map[string]any{"type": "chat_items", "i": i})
 			if i%7 == 0 {
 				b.SendChat("c1", false, map[string]any{"type": "chat_removed"})
 			}
-			b.MarkOf(Chat("c1"))
 			b.Acted("X")
 			// A pause per round: a page that reads must not fall a whole send buffer behind,
 			// or its stream is closed as too slow and its board freed under the assert below.

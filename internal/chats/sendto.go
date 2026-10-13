@@ -57,14 +57,17 @@ func (m *Manager) SendTo(id string, t Target, text, context string, refs []model
 // SendToBranch is SendTo, and returns the id of the branch the message was put on ("main" for
 // main): t.Branch when it is carried on, else the id of the new branch. It is "" with an error.
 func (m *Manager) SendToBranch(id string, t Target, text, context string, refs []model.Reference) (branch string, err error) {
-	if err := m.person(id); err != nil {
-		return "", err
-	}
+	return m.SendMessage(id, &t, Message{Text: text, Context: context, References: refs})
+}
+
+// sendToBranch is SendToBranch for a message whose images, imgs, are checked and held
+// (SendMessage); nil for none. A new branch copies no image: it shares the store of its chat.
+func (m *Manager) sendToBranch(id string, t Target, text, context string, refs []model.Reference, imgs *takenImages) (branch string, err error) {
 	top, err := m.topChat(id)
 	if err != nil {
 		return "", err
 	}
-	c, from, made, err := m.sendTarget(id, t, refs)
+	c, from, made, err := m.sendTarget(id, t, refs, imgs != nil)
 	if err != nil {
 		return "", err
 	}
@@ -76,7 +79,7 @@ func (m *Manager) SendToBranch(id string, t Target, text, context string, refs [
 			c.mu.Unlock()
 			return "", ErrNotFound
 		}
-		on, err := m.sendOn(c, text, context, refs)
+		on, err := m.sendOn(c, text, context, refs, imgs)
 		if on {
 			// The record first could not be undone when the start fails; after the message, a
 			// record that cannot be written leaves the chat opening on the branch it did before.
@@ -117,7 +120,7 @@ func (m *Manager) SendToBranch(id string, t Target, text, context string, refs [
 		c.mu.Unlock()
 		return fail(ErrNotFound)
 	}
-	if _, err := m.sendOn(c, text, context, refs); err != nil {
+	if _, err := m.sendOn(c, text, context, refs, imgs); err != nil {
 		return fail(err)
 	}
 	c.mu.Lock()
@@ -191,8 +194,9 @@ func (m *Manager) SendToBranch(id string, t Target, text, context string, refs [
 // the window guard may refuse (ErrWindow); a branch that is carried on takes none (ErrLocked,
 // before ErrBusy). Nothing is created when an error is returned. The branch
 // named is resolved before anything else is checked: an unknown one is ErrNoBranch whatever the
-// state of the chat.
-func (m *Manager) sendTarget(id string, t Target, refs []model.Reference) (c *Chat, from agent.ForkSource, made bool, err error) {
+// state of the chat. images says that the message has images: a new branch whose model takes
+// none is not made (ErrImageModel); for a branch that is carried on sendOn says so.
+func (m *Manager) sendTarget(id string, t Target, refs []model.Reference, images bool) (c *Chat, from agent.ForkSource, made bool, err error) {
 	none := agent.ForkSource{}
 	var loaded outbox // what loading the branch's transcript sends
 	src, err := m.branchChat(id, t.Branch)
@@ -213,8 +217,6 @@ func (m *Manager) sendTarget(id string, t Target, refs []model.Reference) (c *Ch
 		return nil, none, false, ErrArchived
 	case parent.InstructionsSent:
 		return nil, none, false, ErrLegacy
-	case remoteUnstarted(src):
-		return nil, none, false, ErrRemoteStart // its first message is its server's (see remote.go)
 	}
 	tr, err := m.trOf(src, &loaded)
 	if err != nil {
@@ -255,6 +257,11 @@ func (m *Manager) sendTarget(id string, t Target, refs []model.Reference) (c *Ch
 	}
 	if t.At > 0 { // at the start of the chat nothing is handed to the model
 		if err := windowGuard(src.meta.Agent, ctxOf(src.meta), src.meta.Model, mc.Model, cm); err != nil {
+			return nil, none, false, err
+		}
+	}
+	if images {
+		if err := noImagesErr(cm); err != nil {
 			return nil, none, false, err
 		}
 	}

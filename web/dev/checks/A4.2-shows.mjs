@@ -108,7 +108,7 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, br
     const name = "a branch send on another server", said = "Try it on the lab box";
     await seed(url, "A4");
     await knob(`flags.send = { chat: "${REMOTE}", hold: true, noReply: true };`);
-    const p = await open(REMOTE), { page } = p;
+    const p = await open(`s_lab~${REMOTE}`), { page } = p; // (the chat is the lab box's: the page names it by both)
     await startMove(page);
     await type(page, said);
     await page.keyboard.press("Enter");

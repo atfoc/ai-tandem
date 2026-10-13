@@ -77,26 +77,6 @@ func TestSubSettingsOfACopyReachItsProcess(t *testing.T) {
 	}
 }
 
-// While a chat's first message may have arrived on its server, its subagent settings are fixed
-// like its server and its agent: the chat may be running there with what it was sent with.
-func TestSubSettingsAreFixedWhileTheStartIsUnconfirmed(t *testing.T) {
-	t.Parallel()
-	e, _ := remoteEnv(t, model.Claude)
-	v := e.newChat(NewChat{Group: gOne})
-	e.configure(v.ID, ConfigReq{Server: entB, SubDepth: numPtr(2)})
-	if err := e.m.SetRemoteStart(v.ID, model.RemoteUnconfirmed); err != nil {
-		t.Fatal(err)
-	}
-	sticky := e.stickySub(gOne, keyB)
-	if err := e.m.Configure(v.ID, ConfigReq{SubDepth: numPtr(0), SubCap: numPtr(5)}); !errors.Is(err, ErrStartUnconfirmed) {
-		t.Fatalf("a change of the settings: %v, want ErrStartUnconfirmed", err)
-	}
-	e.subIs("after the refusal", v.ID, model.SubLimits{Depth: 2, Cap: model.DefaultSubCap})
-	if now := e.stickySub(gOne, keyB); (now == nil) != (sticky == nil) || now != nil && *now != *sticky {
-		t.Fatalf("the refused change was recorded: %+v, was %+v", now, sticky)
-	}
-}
-
 // Every way a waiting subagent at level 1 can end takes the levels below it: all processes are
 // closed, their tokens no longer resolve, none is left running or waiting, and no result stays
 // owed to a subagent that has ended.

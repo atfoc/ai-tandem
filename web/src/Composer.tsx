@@ -3,23 +3,30 @@
 // until the first message is sent: of a new chat, of a fork that has had none of its own, and of the branch a pending move starts.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { useStore, getState, setState, safeGet, safeSet, isLegacy, upsertChat, upsertState, unsavedDraft, draftRevOf, branchState, statesOfChat, shownBranch, shownKey, shownView, viewedBranch, setStarting, threadOf } from "./store.ts";
+import { useStore, getState, setState, safeGet, safeSet, isLegacy, unsavedDraft, branchState, shownBranch, shownKey, shownView, viewedBranch, boardsOn, groupsOn, markGone } from "./store.ts";
+import { inSection, ownId } from "./logic/keys.ts";
+import { goneText } from "./logic/remoteview.ts";
 import { api, ApiError, type Dirs } from "./api.ts";
 import { refreshChat } from "./conn.ts";
 import { buildContext, selectionRefOn } from "./board.ts";
 import { resolveMentions, mentionOptions, openMention, type Picked } from "./logic/mentions.ts";
 import { filterModels, groupModels, modelNotice, moveChoice, pickerMode, withEffort, withModel, type Choice } from "./logic/models.ts";
 import { agentOpen, catalogFor, usableAgents } from "./logic/agentlist.ts";
-import { FIRST_TEXT_KEPT, errStays, folderHead, folderStarts, folderTitle, offPlaceholder, recentFrom, sendGone, sendOff, sendTitleOn, showsServer, startsThere, tildeBy, usageKey, usageTitleOn, withRecent } from "./logic/chatserver.ts";
-import { listsOf, recentKey, serverConnected, serverOf } from "./logic/serverlists.ts";
+import { boxOff, folderHead, folderStarts, folderTitle, notConnectedLine, offPlaceholder, offWhy, recentFrom, sendOff, sendTitleOn, showsServer, tildeBy, usageKey, usageTitleOn, withRecent } from "./logic/chatserver.ts";
+import { RECENT_KEY, listsOf, serverConnected, serverOf } from "./logic/serverlists.ts";
 import { plainText, type Ref } from "./logic/refs.ts";
 import { insertKeyName } from "./logic/insert.ts";
 import type { BranchKey } from "./logic/branches.ts";
 import type { Where } from "./logic/chatserver.ts";
-import { DraftSaver, answerNewer, boxText, draftSet, hasDraft, revSet, staleOf, staleTaken, unsavedToShow } from "./logic/drafts.ts";
-import { putsBack, refusalShown, startingAfter } from "./logic/sendend.ts";
+import { DraftSaver, boxText, hasDraft } from "./logic/drafts.ts";
+import { draftBacks } from "./logic/draftsback.ts";
+import { draftToShow, saveDraft } from "./chatdraft.ts";
+import { addImages, imagesGone, setImageError, slotOf } from "./uploads.ts";
+import { AttachButton, ImageStrip, pickImages, useUploads } from "./ComposerImages.tsx";
+import { imagesHold, imagesOff, pastedName, withImages, withoutImages } from "./logic/chatimage.ts";
+import { goneBySend, putsBack, refusalShown, sentNothing, underComposer } from "./logic/sendend.ts";
 import { selectedOn } from "./logic/roles.ts";
-import { composerControls, refreshAfterRefusal } from "./logic/status.ts";
+import { composerControls, notConnected, refreshAfterRefusal } from "./logic/status.ts";
 import { LIVE_FORK } from "./logic/forkpoints.ts";
 import { mergeQuotes, toSend } from "./logic/quotes.ts";
 import { CONTROLS, fitWithInsert, widthKey, type Control, type Fit, type InsertPlace } from "./logic/composerfit.ts";
@@ -32,12 +39,12 @@ import { quoteSelection } from "./quoteDom.ts";
 import { BoardIcon, Chevron, Folder, InsertIcon, Lock, MoreIcon, RunIcon, WarnIcon, agentName } from "./icons.tsx";
 import { agentMeta } from "./agents.ts";
 import { BranchBanner } from "./fork/Chrome.tsx";
-import { AgentPick, AgentReason, ServerPick, useAgentChip, useServerChip, useWhere } from "./ChatChoices.tsx";
+import { AgentPick, AgentReason, ServerChip, useAgentChip, useServerChip, useWhere } from "./ChatChoices.tsx";
 import { SubagentsPick } from "./SubSettings.tsx";
 import { DEFAULT_SUB_CAP, DEFAULT_SUB_DEPTH, subChip, subChipLabel, subSettings } from "./logic/subsettings.ts";
 import { isSending, leftByBack, pickOnFork, registerComposer, sendAt, sendFailed, setMoveChoice } from "./fork/actions.ts";
 import { heldReason, pickOn, sendWait } from "./logic/waits.ts";
-import type { AgentKind, Catalog, CatalogModel, ChatView, ContextSplit, Draft, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
+import type { AgentKind, Catalog, CatalogModel, ChatImage, ChatView, ContextSplit, Held, PlanUsage, Reference, UsageLimit } from "./types.ts";
 import { LOCAL_SERVER } from "./types.ts";
 
 /** Gives the focus to the composer's text box, a moment later. Not under a popup of the prompt library opened by
@@ -66,9 +73,15 @@ let refocus: string | null = null;
 
 // ---- folders
 
-/** A server's recent folders: each server has its own list (recentKey). */
-export const recentDirs = (server: string = LOCAL_SERVER): string[] => recentFrom(safeGet(recentKey(server)));
-const rememberDir = (d: string, server: string) => safeSet(recentKey(server), JSON.stringify(withRecent(recentDirs(server), d)));
+/** The recent folders of the sections' servers, by entry id: folders of another machine, kept in the page's memory alone. */
+const recentThere = new Map<string, string[]>();
+/** A server's recent folders: each server has its own list. This computer's are kept in the browser (RECENT_KEY); nothing
+ *  of a remote server is. */
+export const recentDirs = (server: string = LOCAL_SERVER): string[] => (server === LOCAL_SERVER ? recentFrom(safeGet(RECENT_KEY)) : recentThere.get(server) ?? []);
+const rememberDir = (d: string, server: string) => {
+  const next = withRecent(recentDirs(server), d);
+  if (server === LOCAL_SERVER) safeSet(RECENT_KEY, JSON.stringify(next)); else recentThere.set(server, next);
+};
 /** A path of this computer, or of the server named, with that server's home as "~". */
 export const tildify = (p?: string, server: string = LOCAL_SERVER) => tildeBy(listsOf(getState(), server)?.home, p);
 const base = (p?: string) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
@@ -88,67 +101,24 @@ export function subline(c: ChatView, cat?: Catalog): string {
 
 // ---- sending
 
-/** How long the text of a first message that was taken stays in the thread's place when the thread read again does not bring it. */
-const STARTING_LINGER = 10_000;
-
-/** Plain chats send the text alone; board chats send the <ui-context> with it. Quotes go with
- *  both. With a pending move the message goes to its point (the target), and a Send that
- *  succeeded ends the move. The text and the quotes are told to sendAt as well: the thread shows
- *  them while a message that starts a new branch, or a fork's first one, is on its way. */
-export async function sendMessage(chat: string, text: string, picked: Picked[] = [], references: Reference[] = []) {
+/** Plain chats send the text alone; board chats send the <ui-context> with it. Quotes and images
+ *  go with both. With a pending move the message goes to its point (the target), and a Send that
+ *  succeeded ends the move. The text, the quotes and the images are told to sendAt as well: the
+ *  thread shows the message while one that starts a new branch, or a fork's first one, is on its way.
+ *  The first message of a chat on another server is an ordinary Send, as any other. */
+export async function sendMessage(chat: string, text: string, picked: Picked[] = [], references: Reference[] = [], images: ChatImage[] = []) {
   const c = getState().chats[chat];
   if (isLegacy(c)) return;
   const context = c?.board ? buildContext(chat, text, picked) : "";
-  // The first message of a chat on another server is that server's creation call: it names no branch.
-  return sendAt(chat, (branch, target) => api.send(chat, c?.server && !c.locked ? "" : branch, text, context, references, target), { text, references });
+  return sendAt(chat, (branch, target) => api.send(chat, branch, text, context, references, target, images),
+    { text, references, ...(images.length ? { images } : {}) });
 }
 
 // ---- drafts
 
-/** Saves a branch's draft on the server, and in the store at once (on the branch's record, and
- *  on the chat's view when the branch is its current one): a composer reopened before the
- *  server's events come back starts from it. base: the counter the draft was typed on, the one
- *  known here when the caller keeps none. Answers the new counter, which the branch's record
- *  gets, with the draft it counts when it is a later one than the record's (an event that came
- *  while the save was on its way has put the server's earlier draft there, and the composer's
- *  saver would take that one for the draft on the new counter); a save refused as stale puts the
- *  server's draft and counter there, unless the record has a later counter by then (staleTaken). */
-export async function saveDraft(chat: string, branch: string, d: Draft, keepalive = false, base?: number): Promise<number | undefined> {
-  if (!storeDraft(chat, branch, d)) return; // deleted
-  try {
-    const rev = await api.saveDraft(chat, branch, d, base ?? draftRevOf(chat, branch) ?? 0, keepalive);
-    if (answerNewer(rev, draftRevOf(chat, branch))) storeDraft(chat, branch, d);
-    setDraftRev(chat, branch, rev);
-    return rev;
-  } catch (e) {
-    console.warn(`draft of ${chat} on ${branch} not saved:`, e);
-    const stale = staleOf(e);
-    if (stale && staleTaken(stale.rev, draftRevOf(chat, branch)) && storeDraft(chat, branch, stale.draft)) setDraftRev(chat, branch, stale.rev);
-    throw e;
-  }
-}
-
-/** Sets a branch's draft in the store (draftSet); false for a chat that is not there. */
-function storeDraft(chat: string, branch: string, d: Draft): boolean {
-  const s = getState(), c = s.chats[chat];
-  if (!c) return false;
-  const { state, view } = draftSet(c, statesOfChat(s, chat), branch, d);
-  if (state) upsertState(state);
-  if (view !== c) upsertChat(view);
-  return true;
-}
-
-/** Sets the counter of a branch's draft on its record, when the server gave a later one. */
-function setDraftRev(chat: string, branch: string, rev: number) {
-  const s = getState(), c = s.chats[chat];
-  const st = c && typeof rev === "number" ? revSet(c, statesOfChat(s, chat), branch, rev) : undefined;
-  if (st) upsertState(st);
-}
-
-/** The draft a branch's composer opens with: one the server may not have yet, typed on the
- *  server's counter, else the server's. */
-export const draftToShow = (chat: string, branch: string): Draft | undefined =>
-  unsavedToShow(unsavedDraft(chat, branch), draftRevOf(chat, branch)) ?? branchState(getState(), chat, branch)?.draft;
+// The save of a branch's draft and the draft a composer opens with are chatdraft.ts's: they need no DOM, and the fork actions
+// and the uploads go through the same.
+export { draftToShow, saveDraft };
 
 // ---- references (⌘L, ⌘⇧L): text selected in a message, or the board's selection
 
@@ -178,26 +148,45 @@ export function insertRef(chat: string, r: Ref) { inserters.get(chat)?.(r); }
 export function pickPoint(chat: string | null) { setState({ picking: chat }); }
 
 /** The composer of one branch of a chat: branch is the one the chat is on, whose draft it holds.
- *  On another branch the chat gets another composer (its key in App.tsx names the branch). */
+ *  On another branch the chat gets another composer (its key in App.tsx names the branch).
+ *  Images come in by a paste into the box and by the attach button of the toolbar's row, both
+ *  through one check (uploads.ts addImages), and stand as thumbnails above the text. The composer
+ *  holds the uploaded ones, as part of its draft; the uploads that run are the branch's, and go on
+ *  when the composer goes away. A chat of a section has the same composer and makes the same
+ *  calls: its images are uploaded to, kept on and fetched from its server, through the local one.
+ *  While that server is not connected, or once it no longer has the chat, the composer is read-only
+ *  and says why: nothing is sent, stopped or changed, and no image can be added (logic/chatimage.ts
+ *  imagesOff; the images a draft has stay, with no remove control, and so do its quotes: Quotes.tsx). The box is read-only too (logic/chatserver.ts boxOff):
+ *  it keeps what it holds, and takes no typing, no paste and no drop; no prompt is inserted into it, and an archived chat is not unarchived from it. What was typed and not yet
+ *  taken by the server stays in it, in this page alone, and is saved when the server is connected
+ *  again (logic/draftsback.ts), on the draft counter the page has then. */
 export function Composer({ chatId, branch }: { chatId: string; branch: string }) {
   const c = useStore((s) => shownView(s, chatId));
   const move = useStore((s) => !!s.moves[chatId]); // the next message starts a new branch
   const where = useWhere(c);
   const usable = useStore((s) => usableAgents(s, where.server)); // what a chat with no agent says depends on whether one can be chosen
-  const boards = useStore((s) => s.boards);
+  const boards = useStore((s) => boardsOn(s, where.server)); // what the chat can mention: the boards of its own server
   const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined));
-  const groups = useStore((s) => s.groups);
+  const groups = useStore((s) => groupsOn(s, where.server));
+  const left = useStore((s) => !!s.gone[chatId]); // its server no longer has the chat
   const selection = useStore((s) => s.selection);
   const onScreen = useStore((s) => s.sel.board);
   const role = useStore((s) => (c?.board ? s.roles[c.board] : undefined));
   const picking = useStore((s) => s.picking === chatId);
   const waits = useStore((s) => s.waits[chatId]); // what is on its way in the chat: a composer opened again reads the same
+  // The model the message goes to, when it takes no images: the chat's, or the one chosen for a pending move's new branch. "": it takes them.
+  const noImages = useStore((s) => {
+    const v = shownView(s, chatId), id = s.moves[chatId]?.model ?? v?.model;
+    const m = v ? catalogFor(s, serverOf(v), v.agent)?.models.find((x) => x.id === id) : undefined;
+    return m?.noImages ? m.label || m.id : "";
+  });
   const [text, setText] = useState(() => draftToShow(chatId, branch)?.text ?? "");
   const [picked, setPicked] = useState<Picked[]>(() => draftToShow(chatId, branch)?.mentions ?? []);
   const [quotes, setQuotes] = useState<Reference[]>(() => draftToShow(chatId, branch)?.references ?? []);
+  const [images, setImages] = useState<ChatImage[]>(() => draftToShow(chatId, branch)?.images ?? []);
+  const up = useUploads(chatId, branch); // the uploads that run for this branch, and what the error line says of the images
   const [mention, setMention] = useState<{ q: string; at: number; i: number } | null>(null);
   const [err, setErr] = useState("");
-  const errKept = useRef(false); // the refusal shown stays when the chat's choices or its start change (errStays)
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const input = useRef<RefInputHandle>(null);
@@ -205,9 +194,9 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   // The toolbar's row, and what tells it of a change of the composer's width: kept as state, since the toolbar inside the row is put up before the row's own ref is set.
   const [tools, setTools] = useState<HTMLDivElement | null>(null), [ruler, setRuler] = useState<HTMLDivElement | null>(null);
   const current = useRef(text); // the text now, for a failed send
-  const now = useRef({ picked, quotes }); // with it, what the composer holds (for a move)
-  now.current = { picked, quotes };
-  const put = useRef<{ picked: Picked[]; quotes: Reference[] } | null>(null); // what a move set that no render has shown yet: the composer may go away before one does
+  const now = useRef({ picked, quotes, images }); // with it, what the composer holds (for a move)
+  now.current = { picked, quotes, images };
+  const put = useRef<{ picked: Picked[]; quotes: Reference[]; images: ChatImage[] } | null>(null); // what a move set that no render has shown yet: the composer may go away before one does
   const drafts = useRef<DraftSaver | null>(null);
   const gone = useRef(false); // this composer went away
   // Puts a text into the composer. An archived chat draws no box, and the text is then set as what the composer holds all the same: left as it was, it
@@ -223,12 +212,15 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       setBox(d.text);
       setPicked(d.mentions ?? []);
       setQuotes(d.references ?? []);
+      setImages(d.images ?? []);
     });
   const board = c?.board;
   const archived = !!c?.archived;
   const legacy = isLegacy(c);
-  const canRef = !!board && !archived && !legacy && onScreen === board;
-  const q = useComposerQuotes(chatId, quotes, setQuotes, box);
+  // The chat is shown as it was and takes no change (its server is not connected, or no longer has it): the box is read-only, and so is everything of the draft.
+  const readOnly = boxOff(where, left);
+  const canRef = !!board && !archived && !legacy && !readOnly && onScreen === board;
+  const q = useComposerQuotes(chatId, quotes, setQuotes, box, readOnly);
 
   // ⌘L quotes the text selected in a message; with none, it puts the selection on the board into
   // the message. ⌘⇧L waits for a point clicked on the board.
@@ -247,7 +239,8 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       const sel = e.shiftKey ? null : quoteSelection(chatId);
       if (sel) {
         e.preventDefault(); e.stopPropagation();
-        if ("error" in sel) setNote(sel.error); else { setNote(""); q.quote(sel.ref, sel.range); }
+        if (readOnly) setNote(left ? goneText(where.name) : notConnected(where.name)); // nothing is put into a draft that cannot be saved
+        else if ("error" in sel) setNote(sel.error); else { setNote(""); q.quote(sel.ref, sel.range); }
         return;
       }
       if (!canRef) {
@@ -264,12 +257,20 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       inserters.delete(chatId);
       if (getState().picking === chatId) pickPoint(null);
     };
-  }, [canRef, archived, legacy, chatId]);
+  }, [canRef, archived, legacy, chatId, readOnly, left, where.name]);
   useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(""), 2500); return () => clearTimeout(t); }, [note]);
+  // While the box is read-only nothing is typed, pasted or dropped into it, and nothing is deleted from it: what it holds stays as it is.
+  useEffect(() => {
+    const el = box.current;
+    if (!readOnly || !el) return;
+    const stop = (e: Event) => e.preventDefault();
+    el.addEventListener("beforeinput", stop, true);
+    return () => el.removeEventListener("beforeinput", stop, true);
+  }, [readOnly, archived, legacy]);
   // A refusal's sentence is about the server's state and the chat's choices it was given in: it goes when the server is connected again, when the chat
-  // starts or its start is settled, and when its server, agent, folder, model, effort or subagent settings change.
-  useEffect(() => { if (where.connected && !errKept.current) setErr(""); }, [where.connected]);
-  useEffect(() => { if (!errKept.current) setErr(""); }, [c?.locked, c?.start, c?.server, c?.agent, c?.cwd, c?.model, c?.effort, c?.subOff, c?.subDepth, c?.subCap]);
+  // starts, and when its agent, folder, model, effort or subagent settings change.
+  useEffect(() => { if (where.connected) setErr(""); }, [where.connected]);
+  useEffect(() => { setErr(""); }, [c?.locked, c?.agent, c?.cwd, c?.model, c?.effort, c?.subOff, c?.subDepth, c?.subCap]);
 
   // The draft: put into the box when it appears (on open, after unarchiving), saved as it
   // changes, and saved at once when the composer or the page goes away. A later draft from the
@@ -284,8 +285,13 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
     if (!hasDraft(d)) return;
     setPicked(d.mentions ?? []);
     setQuotes(d.references ?? []);
+    setImages(d.images ?? []);
   }, [c?.archived, c?.instructionsSent]);
   useEffect(() => { drafts.current!.arrived(draftRev, branchState(getState(), chatId, branch)?.draft); }, [draftRev]);
+  // A draft typed while its server was away is saved when that server is connected again (its section's tree arrives), and when the page's own connection opens again (logic/draftsback.ts).
+  const on = useRef(where.server);
+  on.current = where.server;
+  useEffect(() => draftBacks.add({ server: () => on.current, back: () => drafts.current!.back() }), []);
   // The typing goes on in the composer of the branch a sent move went to.
   useLayoutEffect(() => () => {
     const s = getState();
@@ -299,15 +305,24 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   // gives fresh lists, so the draft is looked at again also when nothing else changed. What it
   // set is what the composer holds at once, also for one that goes away before it renders again
   // (a sent move's end sets the draft of the branch left, and the chat is on another branch).
-  const held = (): Held => ({ text: current.current, mentions: put.current?.picked ?? now.current.picked, references: put.current?.quotes ?? now.current.quotes });
+  // images changes the images alone (an upload was answered, an image is no longer there): the text, the mentions and the quotes, with a comment
+  // being typed on one, stay as they are. Several changes before a render each see the one before.
+  const held = (): Held => ({ text: current.current, mentions: put.current?.picked ?? now.current.picked, references: put.current?.quotes ?? now.current.quotes,
+    images: put.current?.images ?? now.current.images });
   useEffect(() => {
     registerComposer(chatId, branch, {
       get: held,
       set: (h) => {
         if (h.text !== current.current) { setBox(h.text); caretToEnd(box.current); }
-        put.current = { picked: [...h.mentions], quotes: [...h.references] };
+        put.current = { picked: [...h.mentions], quotes: [...h.references], images: [...h.images] };
         setPicked(put.current.picked);
         setQuotes(put.current.quotes);
+        setImages(put.current.images);
+      },
+      images: (f) => {
+        if (put.current) put.current = { ...put.current, images: f(put.current.images) };
+        now.current = { ...now.current, images: f(now.current.images) };
+        setImages(f);
       },
     });
     return () => { now.current.quotes = q.kept(); registerComposer(chatId, branch, null); };
@@ -318,11 +333,11 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   // typed in an open float goes with what is saved when the composer or the page goes away.
   useEffect(() => {
     put.current = null; // shown
-    if (!getState().moves[chatId]) drafts.current!.change(text, picked, quotes);
-  }, [text, picked, quotes]);
+    if (!getState().moves[chatId]) drafts.current!.change(text, picked, quotes, images);
+  }, [text, picked, quotes, images]);
   useEffect(() => {
     const d = drafts.current!;
-    const save = (h: Held) => d.change(h.text, h.mentions, h.references);
+    const save = (h: Held) => d.change(h.text, h.mentions, h.references, h.images);
     const hide = () => {
       now.current.quotes = q.kept();
       const h = leftByBack(chatId, branch);
@@ -338,17 +353,21 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       now.current.quotes = q.kept();
       if (!getState().moves[chatId]) save(held());
       d.flush();
+      setImageError(chatId, branch, ""); // what the error line said of the images was for who saw it
     };
   }, []);
 
   if (!c) return null;
   if (c.archived) return (
     <div className="composer">
-      <div className="archived-bar">
-        Archived — unarchive to continue
-        <button className="btn sm" onClick={() => api.unarchive("chats", c.id).catch((e) => setErr(e.message))}>Unarchive</button>
-      </div>
-      {err && <div className="composer-err">{err}</div>}
+      {/* (shown as it was, it is not unarchived from here: the bar says why in the place of the button) */}
+      {readOnly ? <div className="archived-bar">Archived. {offWhy(where, left)}</div> : (
+        <div className="archived-bar">
+          Archived — unarchive to continue
+          <button className="btn sm" onClick={() => api.unarchive("chats", c.id).catch((e) => setErr(e.message))}>Unarchive</button>
+        </div>
+      )}
+      {err && !readOnly && <div className="composer-err">{err}</div>}
     </div>
   );
   if (legacy) return (
@@ -365,71 +384,79 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
   const refs = c.board ? resolveMentions(plainText(text), boards, picked).filter((b) => b.id !== c.board) : [];
   const matches = mention && c.board ? mentionOptions(mention.q, boards, groups) : [];
   const selected = canRef ? selectedOn(selection.count, board, onScreen, role) : 0;
-  const off = sendOff(where, c); // an unstarted chat on a server that is not connected: its agents are not known
-  const left = sendGone(c); // its server no longer has the chat
+  const off = sendOff(where); // its server is not connected: the chat is shown as it was, and nothing is sent, stopped or changed
+  const frozen = off || left;
   // A wait that concerns this composer's Send (logic/waits.ts): it takes no press, says why, and shows a spinner while a message is on its way.
   const hold = sendWait(waits, branch);
+  // Why the images hold the Send (logic/chatimage.ts imagesHold): an upload runs, the message is over what one takes (two drafts were joined),
+  // or its model takes no images. The strip says the last two under the thumbnails, until images are removed or another model is chosen.
+  const imagesHeld = imagesHold(images, up.uploads.length > 0, noImages);
+  // Why no image can be added now, by a paste or by the attach button (logic/chatimage.ts imagesOff): the chat's server is not connected, or the model
+  // takes none; nor to a chat its server no longer has. Nothing is uploaded then.
+  const noAdd = left ? { line: goneText(where.name), title: goneText(where.name) } : imagesOff({ server: where.name, connected: where.connected, model: noImages });
+  // The line under the composer (logic/sendend.ts underComposer): the last refusal's sentence with what the uploads say of the images, else the move's, else the chat's own error.
+  const under = underComposer([err, up.error].filter(Boolean).join(" "), c);
+
+  // Files on their way into the message, by a paste or from the picker: one check for both (uploads.ts addImages).
+  const add = (files: Parameters<typeof addImages>[2], skipped?: Parameters<typeof addImages>[3]["skipped"]) =>
+    addImages(chatId, branch, files, { has: held().images, off: noAdd?.line, skipped });
+  const attach = () => { void pickImages().then((r) => { if (r.files.length || r.skipped.length) add(r.files, r.skipped); }, (e) => setImageError(chatId, branch, `The files could not be picked: ${e?.message ?? e}`)); };
 
   const submit = async () => {
     const t = text.trim();
-    if ((!t && !quotes.length) || blocked || off || left || sending || isSending(chatId)) return; // no send while busy, or while the composer of the branch left sends the move
+    if ((!t && !quotes.length && !images.length) || blocked || off || left || sending || isSending(chatId)) return; // no send while busy, or while the composer of the branch left sends the move
+    if (imagesHold(images, slotOf(chatId, branch).uploads.length > 0, noImages)) return; // nor while an image is on its way, or with images the message cannot carry
     if (sendWait(getState().waits[chatId], branch)) return; // nor while a fork's first message is on its way, or its agent starts on another model
-    setSending(true); setErr(""); errKept.current = false;
+    setSending(true); setErr(""); setImageError(chatId, branch, "");
     // The saver is told that this composer's Send runs, until it is answered: the removal of the sent draft is then not taken as another window's.
     // A sent move goes to another branch, and removes no draft of this one.
-    // The first message of a chat on another server is one call that can take long: its saver saves nothing until the answer, so the text stays the draft
-    // on the server meanwhile, and a page that reloads shows it.
-    // The saver is told inside the try: whatever is thrown after it, the Send is ended there (finally), and neither its mark nor its hold stays.
-    const first = !getState().moves[chatId] && startsThere(c);
-    const p = picked, qs = quotes;
+    // The saver is told inside the try: whatever is thrown after it, the Send is ended there (finally), and its mark does not stay.
+    const p = picked, qs = quotes, im = images;
     let answered: ((refused?: boolean) => boolean) | null = null;
     let refused = false; // the server answered that it did not take the message: it removed no draft
-    let taken = false;
     try {
-      answered = getState().moves[chatId] ? null : drafts.current!.sending(undefined, first);
-      if (first) setStarting(chatId, t); // the thread shows the text while the call runs
+      answered = getState().moves[chatId] ? null : drafts.current!.sending();
       input.current?.set(""); setMention(null); // the server clears the draft of the branch sent on; the empty one saved after it undoes a save still in flight
       setQuotes([]);
-      await sendMessage(chatId, t, p, toSend(qs));
-      taken = true;
+      setImages([]);
+      await sendMessage(chatId, t, p, toSend(qs), im);
       // The sent message's mentions go; a draft that the sent move gave back keeps its own. The move's end set a copy of the list: the two are compared by what they hold.
       setPicked((now) => (now.length === p.length && now.every((x, i) => x === p[i]) ? [] : now));
       // A sent move saves nothing here: the Send cleared the draft of the branch sent to, not this composer's, and the move's end (moveSent) sets the
       // drafts of both, this branch's through this composer while it is open.
     } catch (e: any) {
-      refused = e instanceof ApiError && e.status < 500; // (a 5xx may hide a message that was taken)
+      refused = e instanceof ApiError && sentNothing(e.status, e.code); // (a 5xx may hide a message that was taken)
       const code = e instanceof ApiError ? e.code : undefined;
+      // A chat of a section that its server no longer has (404 `not_found`): its view says so from here on, and the composer takes no more. The
+      // `chat_removed` that tells the same may be on its way still.
+      if (goneBySend(inSection(chatId), code) && getState().chats[chatId]) markGone(chatId);
       // (the server's state is read now: the Send that was refused for a server not connected has woken the connection, and the news can be here already)
-      if (refusalShown(e instanceof ApiError ? e.status : undefined, code, serverConnected(getState(), where.server))) { errKept.current = errStays(code); setErr(e?.message ?? String(e)); }
-      // The chat had started on its server with an earlier text: it is a started chat by now, whose draft the server removed on a counter raised by one.
-      // The saver is told so, and takes that removal as come unless its event has (DraftSaver.kept): the text put back below is then saved as that
-      // chat's draft, and the event, coming after it, does not empty the box.
-      if (code === FIRST_TEXT_KEPT) drafts.current!.kept();
+      if (refusalShown(e instanceof ApiError ? e.status : undefined, code, serverConnected(getState(), where.server))) setErr(e?.message ?? String(e));
       // The Send is over for the saver, which tells whether the sent draft was removed on the server meanwhile: another window sent it, or this Send was
       // taken after all. The message is then not put back: it would be a draft of a sent message again, here, on the server and in the other window.
+      // A Send refused because the chat no longer holds some of its images (409 `image_missing`, which names them): those do not go back, and the
+      // error line says what must be added again.
+      const lost = e instanceof ApiError && e.images?.length ? im.filter((x) => e.images!.includes(x.id)) : [];
+      const back = withoutImages(im, lost.map((x) => x.id));
       const removed = answered?.(refused) ?? false;
       answered = null;
-      if (putsBack(removed, code)) {
+      if (putsBack(removed)) {
         setQuotes((now) => mergeQuotes(qs, now)); // with the quotes added while it was sent
+        setImages((now) => withImages(back, now)); // and the images, before the ones added meanwhile
         if (!current.current.trim()) input.current?.set(t); // nothing typed is lost
         // A chat archived while it was sent draws no box: the composer holds the text again all the same, so its saver keeps it as the draft (the emptied
         // one is not saved, or the text is saved again), and the box shows it after an unarchive.
         if (!gone.current && !input.current && !current.current.trim()) setBox(t);
         // This composer went away while it was sent (another chat or branch was opened): the message is its branch's draft again unless a pending move or a
         // composer of the branch opened since holds it. Its saver writes the unsaved copy and saves it: a save of the emptied draft still in flight then leaves that copy alone.
-        if (gone.current && !sendFailed(chatId, branch, { text: t, mentions: p, references: qs }, e)) drafts.current!.change(t, p, qs);
+        if (gone.current && !sendFailed(chatId, branch, { text: t, mentions: p, references: qs, images: back }, e)) drafts.current!.change(t, p, qs, back);
+        if (!gone.current) imagesGone(chatId, branch, lost);
       }
       // The chat is read again when its state here is stale (refreshAfterRefusal). Else the text is shown, and the message and a pending move with its
       // choice stay for a later Send.
       if (e instanceof ApiError && refreshAfterRefusal(e.status, e.code)) void refreshChat(chatId, e.code);
     } finally {
       answered?.(refused); setSending(false);
-      // The text shown in the thread's place goes with the call; after one that was taken it stays until the thread read again has the message (ChatView.tsx),
-      // or for good after a while when that read brings none.
-      if (first) {
-        if (!startingAfter(taken, !!threadOf(getState(), chatId)?.items.length)) setStarting(chatId, null);
-        else setTimeout(() => { if (getState().starting[chatId] === t) setStarting(chatId, null); }, STARTING_LINGER);
-      }
     }
   };
   const pick = (o: { board: { id: string; name: string } }) => {
@@ -445,15 +472,15 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
     setMention(m ? { ...m, i: 0 } : null);
   };
 
-  const placeholder = offPlaceholder(where, usable, c) || (c.board ? "Ask or tell… (@ to mention a board)" : c.run ? "Ask about this run…" : `Ask ${agentName(c.agent as AgentKind)}…`);
+  const placeholder = offPlaceholder(where, usable, c, left) || (c.board ? "Ask or tell… (@ to mention a board)" : c.run ? "Ask about this run…" : `Ask ${agentName(c.agent as AgentKind)}…`);
   return (
     <div className="composer">
       {c.board && (
         <div className="context-row">
-          <span className="ctx-chip" title={`Every message names this board to the agent (${c.board})`}>
+          <span className="ctx-chip" title={`Every message names this board to the agent (${ownId(c.board)})`}>
             <BoardIcon /> {own?.name ?? "board"}
           </span>
-          {refs.map((r) => <span key={r.id} className="ctx-chip ref" title={`Referenced board (${r.id})`}>@{r.name}</span>)}
+          {refs.map((r) => <span key={r.id} className="ctx-chip ref" title={`Referenced board (${ownId(r.id)})`}>@{r.name}</span>)}
           {q.count}
           <span className="grow" />
           {note ? <span className="ctx-note">{note}</span> : canRef && <>
@@ -470,7 +497,7 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       )}
       {c.run && !c.board && (
         <div className="context-row">
-          <span className="ctx-chip" title={`This chat can read and manage this run (${c.run})`}><RunIcon /> {runName ?? "run"}</span>
+          <span className="ctx-chip" title={`This chat can read and manage this run (${ownId(c.run)})`}><RunIcon /> {runName ?? "run"}</span>
           {q.count}<span className="grow" />{note && <span className="ctx-note">{note}</span>}
         </div>
       )}
@@ -480,8 +507,8 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       <BranchBanner chatId={chatId} />
       <ModelNotice chatId={chatId} />
       <div className="composer-ruler" ref={setRuler} />
-      <div className="composer-box with-tools" ref={box}>
-        {mention && matches.length > 0 && (
+      <div className={`composer-box with-tools${readOnly ? " read-only" : ""}`} ref={box}>
+        {mention && !readOnly && matches.length > 0 && (
           <div className="mention-pop">
             {matches.map((o, i) => (
               <button key={o.board.id} className={`menu-item ${i === mention.i ? "on" : ""}`} onMouseDown={(e) => { e.preventDefault(); pick(o); }}>
@@ -490,10 +517,15 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
             ))}
           </div>
         )}
+        <ImageStrip chat={chatId} branch={branch} images={images} uploads={up.uploads} note={up.uploads.length ? "" : imagesHeld} again={where.connected}
+          onRemove={readOnly ? undefined : (id) => setImages((now) => withoutImages(now, [id]))} />
         <RefInput
           ref={input}
           placeholder={placeholder}
+          locked={readOnly}
+          readOnly={readOnly}
           onChange={onChange}
+          onImages={(files) => add(files.map((f) => ({ file: f, name: pastedName(f.name) })))}
           onKeyDown={(e) => {
             e.stopPropagation(); // keep Excalidraw's shortcuts out of the text box
             if (mention && matches.length) {
@@ -503,20 +535,23 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
               if (e.key === "Escape") { setMention(null); return; }
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); }
-            if (e.key === "Escape" && esc) void api.interrupt(chatId, shownBranch(getState(), chatId));
+            if (e.key === "Escape" && esc && !frozen) void api.interrupt(chatId, shownBranch(getState(), chatId));
           }}
         />
         <div className="composer-tools fitted" ref={setTools}>
-          <Toolbar chatId={chatId} onError={setErr} onInsert={() => input.current?.openInsert()} sending={sending} stop={stop} row={tools} ruler={ruler} />
-          {stop && <button className="send stop" title={esc ? "Stop (Esc)" : "Stop the subagents"} onClick={() => api.interrupt(chatId, shownBranch(getState(), chatId)).catch((e) => setErr(e.message))}><span className="sq" /></button>}
+          <Toolbar chatId={chatId} onError={setErr} onInsert={() => input.current?.openInsert()} sending={sending} stop={stop && !frozen} row={tools} ruler={ruler} />
+          <AttachButton off={noAdd?.title ?? ""} onClick={attach} />
+          {stop && !frozen && <button className="send stop" title={esc ? "Stop (Esc)" : "Stop the subagents"} onClick={() => api.interrupt(chatId, shownBranch(getState(), chatId)).catch((e) => setErr(e.message))}><span className="sq" /></button>}
           {hold && !off && !left ? (
             <button className={`send${hold.spin ? " sending" : ""}`} title={hold.title} disabled>{hold.spin ? <span className="spin" /> : "↑"}</button>
+          ) : imagesHeld && !blocked && !off && !left ? (
+            <button className="send" title={imagesHeld} disabled>↑</button> // the images hold it: an upload runs, or the message cannot carry them
           ) : (
-            <button className="send" title={sendTitleOn(where, usable, c, blocked)} disabled={blocked || off || left || sending || (!text.trim() && !quotes.length)} onClick={() => void submit()}>↑</button>
+            <button className="send" title={sendTitleOn(where, usable, c, blocked, left)} disabled={blocked || off || left || sending || (!text.trim() && !quotes.length && !images.length)} onClick={() => void submit()}>↑</button>
           )}
         </div>
       </div>
-      {err ? <div className="composer-err">{err}</div> : c.status === "error" && c.error ? <div className="composer-err">{c.error}</div> : null}
+      {under && <div className="composer-err">{under}</div>}
       {q.float}
     </div>
   );
@@ -533,7 +568,7 @@ function widthOf(key: string): number | undefined {
   if (widthsZoom !== window.devicePixelRatio) { widths.clear(); widthsZoom = window.devicePixelRatio; }
   return widths.get(key);
 }
-const MORE = widthKey("more"), INSERT = widthKey("insert"), SEND = widthKey("send"), STOP = widthKey("stop");
+const MORE = widthKey("more"), INSERT = widthKey("insert"), ATTACH = widthKey("attach"), SEND = widthKey("send"), STOP = widthKey("stop");
 
 /** What a control's elements ask for side by side (a folder's lock stands before its chip): their
  *  widths, their own margins and the gaps between them, rounded up to a tenth of a px. */
@@ -575,8 +610,8 @@ function useRoom(row: HTMLDivElement | null, ruler: HTMLDivElement | null) {
   return room;
 }
 
-/** Server and agent while they can be changed (agentOpen; ChatChoices.tsx; a chat on another
- *  server keeps showing its server, showsServer), then folder, model,
+/** The name of the server of a chat on another server (showsServer; it is no choice), the agent
+ *  while it can be changed (agentOpen; ChatChoices.tsx), then folder, model,
  *  effort, the subagent settings (SubSettings.tsx: open on a new chat alone, else fixed; none for
  *  a run's own agent) and context usage of the branch shown. Where the model and effort
  *  controls write is pickerMode's: with a pending move they show and set the move's choice, which
@@ -589,9 +624,10 @@ function useRoom(row: HTMLDivElement | null, ruler: HTMLDivElement | null) {
  *  choice the agent is starting on, whatever the agent kind tells meanwhile.
  *  After them come the row's spacer and, where the row has room left for it (fitWithInsert), the
  *  button of the insert popup (onInsert opens it); where it has none and has the "more" chip, the
- *  chip's popup has an entry that does the same.
- *  row: the composer's row of tools, which this fills up to Stop and Send; ruler: what tells of a
- *  change of its width; stop: the row has Stop beside Send. */
+ *  chip's popup has an entry that does the same. Both are off in a chat that is shown as it was: nothing is put into its box.
+ *  row: the composer's row of tools, which this fills up to the attach button, Stop and Send (the
+ *  attach button never leaves the row, as they do not); ruler: what tells of a change of its width;
+ *  stop: the row has Stop beside Send. */
 export function Toolbar({ chatId, ...p }: { chatId: string; onError: (msg: string) => void; onInsert: () => void; sending?: boolean; stop?: boolean; row: HTMLDivElement | null; ruler: HTMLDivElement | null }) {
   const c = useStore((s) => shownView(s, chatId));
   return c ? <Tools c={c} chatId={chatId} {...p} /> : null;
@@ -611,11 +647,15 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
   const waits = useStore((s) => s.waits[chatId]);
   const pick = useStore((s) => pickOn(s.waits[chatId], shownBranch(s, chatId))); // the choice a fork's agent is being started on
   const held = heldReason(waits, "choice"); // why the model and the effort take no pick now
-  // One open list at a time for Server, Agent, Folder, Model, Effort and Subagents; their state used to live inside each
+  // One open list at a time for Agent, Folder, Model, Effort and Subagents; their state used to live inside each
   // picker, which let the menus and their backdrops stack. The usage popover keeps its own.
   const [openPicker, setOpenPicker] = useState<Control | null>(null);
   const [patching, setPatching] = useState(false); // a fork's PATCH starts its agent again, which takes seconds
   const where = useWhere(c);
+  // The chat is shown as it was, and takes no change: its server is not connected, or no longer has it. Every choice is then a fixed chip.
+  const gone = useStore((s) => !!s.gone[chatId]);
+  const frozen = sendOff(where) || gone;
+  const frozenWhy = gone ? goneText(where.name) : notConnectedLine(where.name);
   const serverKey = useServerChip(c), agentKey = useAgentChip(c);
   const room = useRoom(row, ruler);
   const [, setMeasured] = useState(0); // counts the commits that measured a control: the fit is made again with its width
@@ -625,7 +665,7 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
   const toChip = useRef(false); // Esc closed the popup: its chip takes the focus
   const picking = useRef(openPicker);
   picking.current = openPicker;
-  const mode = pick ? "fixed" : pickerMode(c, !!move);
+  const mode = pick || frozen ? "fixed" : pickerMode(c, !!move);
   const shown: Choice = mode === "move" ? moveChoice(move, c) : c;
   const fixed = pick ? { ...c, model: pick.model, effort: pick.effort } : c; // what the fixed chip names
   // choice: what the pick makes of the model and effort shown, as the server resolves it.
@@ -638,21 +678,23 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
   const setChoice = (ch: Choice) => { onError(""); setMoveChoice(chatId, ch); };
   const pickModel = (id: string) => { const ch = withModel(shown, id, cat); if (mode === "move") setChoice(ch); else void configure({ model: id }, ch); };
   const pickEffort = (id: string) => { const ch = withEffort(shown, id); if (mode === "move") setChoice(ch); else void configure({ effort: id }, ch); };
-  const folderOpen = !c.locked || !!c.folderMissing;
+  const folderOpen = !frozen && (!c.locked || !!c.folderMissing);
+  const agentPick = agentOpen(c) && !frozen;
   const m = modelOf(shown, cat);
-  const choices = mode !== "fixed" && !!c.agent && !sendOff(where, c); // the model and the effort are choices, once their catalog is here
-  const fixedTitle = c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started";
+  const choices = mode !== "fixed" && !!c.agent; // the model and the effort are choices, once their catalog is here
+  const fixedTitle = frozen ? frozenWhy : c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started";
   const u = usageOf(c, cat);
 
   // What the chat has, each with what decides its width.
   const keys: Partial<Record<Control, string>> = { folder: widthKey("folder", base(c.cwd) || "/", { fixed: !folderOpen, lock: !folderOpen }) };
-  if (showsServer(c)) keys.server = serverKey;
-  if (agentOpen(c)) keys.agent = agentKey;
+  if (showsServer(where)) keys.server = serverKey;
+  if (agentPick) keys.agent = agentKey;
   if (mode === "fixed") keys.model = widthKey("model", subline(fixed, cat), { fixed: true, lock: folderOpen });
   else if (choices && cat) keys.model = widthKey("model", modelLabel(shown, cat));
-  else if (choices && where.connected) keys.model = widthKey("model", "Loading models…", { fixed: true });
+  else if (choices) keys.model = widthKey("model", "Loading models…", { fixed: true });
   if (choices && cat && m?.efforts?.length) keys.effort = widthKey("effort", effortLabel(shown.effort, m));
-  const subs = subChip(c, !!move); // the subagent settings: a choice on a new chat alone, else fixed; none for a run's own agent
+  const subsOf = subChip(c, !!move); // the subagent settings: a choice on a new chat alone, else fixed; none for a run's own agent
+  const subs = frozen && subsOf.kind === "open" ? { kind: "fixed" as const, why: frozenWhy } : subsOf;
   const limits = subSettings(c);
   if (subs.kind !== "none") keys.subagents = widthKey("subagents", subChipLabel(limits), { fixed: subs.kind === "fixed" });
   // Fixed and on the default settings, the chip tells what every chat had before there were any: it gives way to the others.
@@ -664,7 +706,7 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
     room: room?.w ?? Infinity, gap: room?.gap ?? 0, more: widthOf(MORE),
     controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widthOf(keys[id]!), ...(id === "subagents" && spare ? { optional: true } : {}) })),
     meter: { full: widthOf(meterKey), ring: widthOf(ringKey) },
-    fixed: [...(stop ? [widthOf(STOP)] : []), widthOf(SEND)],
+    fixed: [widthOf(ATTACH), ...(stop ? [widthOf(STOP)] : []), widthOf(SEND)],
     held: more ? drawn.current?.fit.popup ?? [] : null,
     // The Subagents popover stays open through a pick, which can make its chip longer: the others leave before it.
     pinned: openPicker === "subagents" && drawn.current?.fit.toolbar.includes("subagents") ? "subagents" : undefined,
@@ -692,7 +734,7 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
     // row's children are this toolbar's up to the reason line or the spacer: the controls left to right (a lock is an
     // element before its folder), the "more" chip, the meter.
     const el = row, rows = [...(menu?.children ?? [])].filter((e) => !e.matches(".more-insert-row"));
-    const shown = [...f.toolbar.map((id) => keys[id]!), ...(rows.length ? f.popup.map((id) => keys[id]!) : []), ...(f.more ? [MORE] : []), f.meter === "ring" ? ringKey : meterKey, ...(insert === "row" ? [INSERT] : []), SEND, ...(stop ? [STOP] : [])];
+    const shown = [...f.toolbar.map((id) => keys[id]!), ...(rows.length ? f.popup.map((id) => keys[id]!) : []), ...(f.more ? [MORE] : []), f.meter === "ring" ? ringKey : meterKey, ...(insert === "row" ? [INSERT] : []), ATTACH, SEND, ...(stop ? [STOP] : [])];
     if (!el || !room || shown.every((key) => widthOf(key) !== undefined)) return;
     let fresh = false;
     const take = (key: string, els: (Element | null | undefined)[], gap = room.gap) => {
@@ -710,6 +752,7 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
       take(f.meter === "ring" ? ringKey : meterKey, [kids[i]]);
     }
     take(INSERT, [el.querySelector(":scope > .insert-btn")]);
+    take(ATTACH, [el.querySelector(":scope > .attach-btn")]);
     take(SEND, [el.querySelector(":scope > .send:not(.stop)")]);
     if (stop) take(STOP, [el.querySelector(":scope > .send.stop")]);
     if (rows.length === f.popup.length) f.popup.forEach((id, j) => take(keys[id]!, [...rows[j].children], parseFloat(getComputedStyle(rows[j]).columnGap) || 0));
@@ -738,10 +781,10 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
 
   const chips: Record<Control, React.ReactNode> = {
     server: <>
-      {showsServer(c) && <ServerPick c={c} disabled={patching || sending} {...opens("server")} onBusy={setPatching} onError={onError} />}
+      {showsServer(where) && <ServerChip c={c} />}
     </>,
     agent: <>
-      {agentOpen(c) && <AgentPick c={c} disabled={patching || sending} {...opens("agent")} onBusy={setPatching} onError={onError} />}
+      {agentPick && <AgentPick c={c} disabled={patching || sending} {...opens("agent")} onBusy={setPatching} onError={onError} />}
     </>,
     folder: <>
       {!folderOpen && <Lock />}
@@ -752,9 +795,8 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
         <span className="tchip static" title={fixedTitle}>
           {folderOpen && <Lock />}<ChipName full={`${subline(fixed, cat)} — ${fixedTitle}`}>{subline(fixed, cat)}</ChipName>
         </span>
-      ) : !c.agent || sendOff(where, c) ? null : !cat ? ( // (a server that is not connected shows no agent: none of its models either)
-        // a server that is not connected sends no catalog
-        where.connected ? <span className="tchip static">Loading models…</span> : null
+      ) : !c.agent ? null : !cat ? (
+        <span className="tchip static">Loading models…</span>
       ) : (
         <Picker className="model-pick" label={modelLabel(shown, cat)} title="Model" value={shown.model} searchable disabled={patching || sending || !!held} hint={held || undefined}
           options={cat.models}
@@ -790,7 +832,7 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
               {insert === "more" && (
                 // (no chip: it is no choice of the chat's. A press with the mouse leaves the focus where it is, as the button's does)
                 <div className="more-row more-insert-row">
-                  <button type="button" className="more-insert" title={`Insert a prompt (${KEY_INSERT})`} aria-haspopup="dialog"
+                  <button type="button" className="more-insert" title={`Insert a prompt (${KEY_INSERT})`} aria-haspopup="dialog" disabled={frozen}
                     onMouseDown={(e) => e.preventDefault()} onClick={() => { setMore(false); onInsert(); }}>
                     <InsertIcon />Insert a prompt<span className="more-insert-key">{KEY_INSERT}</span>
                   </button>
@@ -801,9 +843,9 @@ function Tools({ c, chatId, onError, onInsert, sending = false, stop = false, ro
         </div>
       )}
       <ContextMeter c={c} cat={cat} where={where} compact={f.meter === "ring"} />
-      {agentOpen(c) && <AgentReason c={c} />}
+      {(agentOpen(c) || frozen) && <AgentReason c={c} />}
       <span className="grow" />
-      {insert === "row" && <InsertButton onClick={onInsert} />}
+      {insert === "row" && <InsertButton disabled={frozen} onClick={onInsert} />}
     </>
   );
 }
@@ -843,11 +885,10 @@ export const ChipName = ({ children, full }: { children: React.ReactNode; full?:
  *  the chip's label, and hint is the title's second half; the label is in the title whole, since
  *  the chip may show it cut (ChipName).
  *  `disabled` (a change is being saved): the chip opens nothing, and keeps the focus a pick gave it.
- *  An option that is disabled is listed with its note as the reason and takes no pick. `more` is a
- *  last item under the list that is no option (the server choice's "Servers…"). */
-export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE, options, value, className = "", more, searchable = false, disabled = false, open, onOpenChange, onPick }: {
+ *  An option that is disabled is listed with its note as the reason and takes no pick. */
+export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE, options, value, className = "", searchable = false, disabled = false, open, onOpenChange, onPick }: {
   label: string; title: string; prefix?: string; icon?: React.ReactNode; hint?: string; options: PickerOption[]; value: string;
-  className?: string; more?: { label: string; onClick: () => void }; searchable?: boolean; disabled?: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPick: (id: string) => void;
+  className?: string; searchable?: boolean; disabled?: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPick: (id: string) => void;
 }) {
   const [query, setQuery] = useState(""); // searchable only; never touched by Effort
   const [hi, setHi] = useState(-1); // index into the flattened filtered rows; headings excluded
@@ -951,8 +992,7 @@ export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE,
     if (searchable || !open) return;
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter" && e.key !== "Escape") return;
     // Enter on a focused row is that row's own click, not a pick of the highlighted one.
-    // The same for the item under the list (more).
-    if (e.key === "Enter" && ((e.target as HTMLElement).getAttribute("role") === "option" || (e.target as HTMLElement).classList.contains("menu-more"))) return;
+    if (e.key === "Enter" && (e.target as HTMLElement).getAttribute("role") === "option") return;
     e.preventDefault(); e.stopPropagation();
     if (e.key === "ArrowDown") move(1);
     else if (e.key === "ArrowUp") move(-1);
@@ -1005,10 +1045,6 @@ export function Picker({ label, title, prefix, icon, hint = UNTIL_FIRST_MESSAGE,
               <React.Fragment key="__flat">{s.rows.map(row)}</React.Fragment>
             ))}
           </div>
-          {more && <>
-            <div className="menu-sep" />
-            <button type="button" className="menu-item menu-more" onClick={() => { onOpenChange(false); more.onClick(); }}>{more.label}</button>
-          </>}
         </div>
       )}
       {open && <div className="menu-backdrop" onMouseDown={() => onOpenChange(false)} />}

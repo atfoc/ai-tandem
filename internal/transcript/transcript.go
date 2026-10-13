@@ -172,9 +172,14 @@ func (t *Transcript) SetStatus(s model.Status) { t.status = s }
 
 // AddUser adds the user's message, with the quotes it carries; the chat starts thinking.
 func (t *Transcript) AddUser(text, context string, refs []model.Reference) []Update {
+	return t.AddUserImages(text, context, refs, nil)
+}
+
+// AddUserImages is AddUser for a message that also holds images, by id, name, type and size.
+func (t *Transcript) AddUserImages(text, context string, refs []model.Reference, images []model.Image) []Update {
 	ups := t.closeOpen()
 	t.status = model.StatusThinking
-	u := t.push(model.Item{Kind: "user", Text: text, Context: context, References: refs})
+	u := t.push(model.Item{Kind: "user", Text: text, Context: context, References: refs, Images: images})
 	t.dirty[u.Index] = true
 	return append(ups, u)
 }

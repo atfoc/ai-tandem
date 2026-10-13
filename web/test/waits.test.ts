@@ -4,8 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  FORKING_LINE, FORK_HELD, LOADING_LINE, OPENING_LINE, SENDING, SEND_HELD, STARTING_LINE,
-  afterThread, begun, ended, heldReason, loading, pickOn, sendHeld, sendWait, startingOn, stepped, taken, threadWait, unnamed, withLoad, withoutChat, withoutLoads,
+  FORKING_LINE, FORK_HELD, LOADING_LINE, OPENING_LINE, SENDING, SEND_HELD, STARTING_LINE, UPLOAD_HELD,
+  afterThread, begun, ended, heldReason, loading, pickOn, sendHeld, sendWait, startingOn, stepped, taken, threadWait, unnamed, uploadHeld, uploading, withLoad, withUpload, withoutChat, withoutLoads,
   type ChatWaits, type Control, type SendWait, type Waits,
 } from "../src/logic/waits.ts";
 import type { Item } from "../src/types.ts";
@@ -254,4 +254,63 @@ test("an archived chat shows nothing of a message on its way, a branch being ope
   const w: ChatWaits = { send: branchSend(), fork: { id: 1 }, open: { id: 2, branch: "b2" } };
   assert.deepEqual(threadWait(w, shown({ move: true, archived: true })), threadWait(undefined, shown()));
   assert.deepEqual(threadWait({ ...w, loads: ["main"] }, shown({ loaded: false, count: 0, archived: true })).lines, [{ id: "load", text: LOADING_LINE }]);
+});
+
+// ---- an image being uploaded for a branch's composer
+
+test("the uploads of a branch's composer begin with the first and end with the last; the chat's other waits stay", () => {
+  let all: Waits = of({ fork: { id: 1 } });
+  all = withUpload(all, "c_1", "main", true);
+  assert.deepEqual(all.c_1, { fork: { id: 1 }, uploads: ["main"] });
+  assert.equal(withUpload(all, "c_1", "main", true), all); // nothing changed: the same object
+  all = withUpload(all, "c_1", "b2", true);
+  assert.deepEqual([uploading(all.c_1, "main"), uploading(all.c_1, "b2"), uploading(all.c_1, "b3"), uploading(undefined, "main")], [true, true, false, false]);
+  all = withUpload(all, "c_1", "main", false);
+  assert.deepEqual(all.c_1, { fork: { id: 1 }, uploads: ["b2"] });
+  all = withUpload(all, "c_1", "b2", false);
+  assert.deepEqual(all.c_1, { fork: { id: 1 } });
+  assert.deepEqual(withUpload(withUpload({}, "c_2", "main", true), "c_2", "main", false), {}); // a chat with nothing on its way has no entry
+  assert.deepEqual(withoutChat(withUpload({}, "c_2", "main", true), "c_2"), {});
+});
+
+test("while the chat's composer uploads, Branch and edit and Back are held, and say why; nothing else is", () => {
+  const w = { uploads: ["main"] }, on = { branch: "main", move: false };
+  const heldOn = (x: ChatWaits | undefined, at?: { branch: string; move: boolean }) => CONTROLS.filter((c) => heldReason(x, c, at));
+  assert.deepEqual(heldOn(w, on), ["back", "branchEdit"]);
+  assert.equal(heldReason(w, "branchEdit", on), UPLOAD_HELD);
+  assert.equal(heldReason(w, "back", on), UPLOAD_HELD);
+  assert.match(UPLOAD_HELD, /^An image is being uploaded/);
+  // Branch (which puts nothing into the composer), the model, Send's own wait, Fork, Label, Stop and the tree are not the upload's to hold
+  for (const c of ["branch", "choice", "send", "fork", "forkEdit", "label", "stop", "tree", "alert", "open"] as Control[]) assert.equal(heldReason(w, c, on), "", c);
+  // with a move pending, what puts the chat on another branch is Back first: held too
+  assert.deepEqual(heldOn(w, { branch: "main", move: true }), ["back", "alert", "open", "branchEdit"]);
+  assert.equal(uploadHeld(w, { branch: "main", move: true }, "open"), true);
+});
+
+test("an upload that outlived its composer holds nothing: the chat is on another branch, whose composer uploads nothing", () => {
+  const w = { uploads: ["main"] };
+  for (const move of [false, true]) assert.deepEqual(CONTROLS.filter((c) => heldReason(w, c, { branch: "b2", move })), []);
+  // and where the composer is not told, no upload is looked at
+  assert.deepEqual(held(w), []);
+  assert.deepEqual(held({ uploads: [] }), []);
+});
+
+test("an upload and a branch send or a fork: each holds its own controls, and the send's reason comes first", () => {
+  const on = { branch: "main", move: true };
+  const both = { send: branchSend(), uploads: ["main"], fork: { id: 2 } };
+  assert.equal(heldReason(both, "back", on), SEND_HELD);
+  assert.equal(heldReason(both, "branchEdit", on), SEND_HELD);
+  assert.equal(heldReason(both, "fork", on), FORK_HELD);
+  assert.equal(heldReason({ uploads: ["main"], fork: { id: 2 } }, "back", on), UPLOAD_HELD);
+  // an upload does not make a message "being sent"
+  assert.equal(sendHeld({ uploads: ["main"] }), false);
+  assert.equal(sendWait({ uploads: ["main"] }, "main"), null);
+});
+
+test("a message on its way shows its images with its text and quotes, when it has any", () => {
+  const image = { id: "0".repeat(64), name: "a.png", type: "image/png", size: 10 };
+  const t = { shown: "main", loaded: true, count: 3, move: true, busy: false };
+  assert.deepEqual(threadWait({ send: branchSend({ images: [image], text: "" , references: [] }) }, t).sent, { text: "", references: [], images: [image] });
+  assert.deepEqual(threadWait({ send: branchSend() }, t).sent, { text: "another way", references: [QUOTE] }); // none: as before
+  assert.deepEqual(threadWait({ send: branchSend({ images: [] }) }, t).sent, { text: "another way", references: [QUOTE] });
 });

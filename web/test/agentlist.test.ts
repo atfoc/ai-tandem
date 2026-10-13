@@ -18,15 +18,25 @@ test("usableAgents: the local server's list, as the store holds it", () => {
   assert.equal(usableAgents(s), s.usable, "the store's own list: a selector gets the same one");
 });
 
-test("usableAgents: another server's list by its entry id, only while it is connected", () => {
+test("usableAgents: another server's list by its entry id, only while it is connected: the local server holds its tree", () => {
   const lists = { s_1: { agents: ["pi"] as AgentKind[], catalogs: {}, home: "/home/u", defaultCwd: "/home/u" } };
-  const at = (state: ServerState) => ({ usable: ["claude"] as AgentKind[], lists, servers: [LOCAL_ENTRY, { id: "s_1", name: "Studio", state }] });
+  // tree: a `section` event with that server's tree came, and none with null since
+  const at = (state: ServerState, tree = state === "connected") =>
+    ({ usable: ["claude"] as AgentKind[], lists, servers: [LOCAL_ENTRY, { id: "s_1", name: "Studio", state }], sections: tree ? { s_1: {} } : {} });
   assert.deepEqual(usableAgents(at("connected"), "s_1"), ["pi"]);
   assert.deepEqual(usableAgents(at("connected")), ["claude"]);
   for (const state of ["unreachable", "connecting", "too_old"] as ServerState[]) assert.deepEqual(usableAgents(at(state), "s_1"), [], state);
+  // the tree decides, not the entry's state: the two come in events of their own, in no fixed order
+  assert.deepEqual(usableAgents(at("connected", false), "s_1"), [], "connected, and its tree has not come yet");
+  assert.deepEqual(usableAgents(at("unreachable", true), "s_1"), ["pi"], "the state's event came before the tree went");
   assert.deepEqual(usableAgents(at("connected"), "s_2"), []); // no such entry
   assert.deepEqual(usableAgents({ ...at("connected"), lists: {} }, "s_1"), []); // connected, its lists not here yet
   assert.equal(usableAgents(at("unreachable"), "s_1"), usableAgents(at("unreachable"), "s_2"), "one empty list: a selector gets the same one");
+  // the catalog stays while the server is away: a chat on it still shows its model by name
+  const cat = { models: [], default: { model: "m" } } as Catalog;
+  const kept = { ...at("unreachable"), lists: { s_1: { ...lists.s_1, catalogs: { pi: cat } } } };
+  assert.equal(catalogFor(kept, "s_1", "pi"), cat);
+  assert.deepEqual(usableAgents(kept, "s_1"), []);
 });
 
 test("agentChoice: a chat, a chat on a run and a draft run are offered the usable agents alone", () => {

@@ -623,16 +623,15 @@ func TestListBoardsNeedsNoPage(t *testing.T) {
 	}
 }
 
-// A board made by the agent of a chat on an API client's board is that client's too: it gets
-// the group and the mark of the chat's board, and names that board as its origin. The board of
-// a chat on an unmarked board has neither.
-func TestCreateBoardInheritsTheMark(t *testing.T) {
+// A board made by the agent of a chat carries no mark of who made the chat's board and names no
+// board it came from: it is in the group of the chat's board, and everyone's like any board.
+func TestCreateBoardCarriesNoMark(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	e.addGroups()
-	own, made, err := e.relay.Boards.Make(boards.NewBoard{ID: "b_remote00", Name: "theirs", Group: "g_infra", Client: "inst_A"})
-	if err != nil || !made {
-		t.Fatal(made, err)
+	own, err := e.relay.Boards.Create("theirs", "g_infra", false)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if _, err := e.relay.Chats.Create(model.Claude, "", own.ID); err != nil {
 		t.Fatal(err)
@@ -641,36 +640,21 @@ func TestCreateBoardInheritsTheMark(t *testing.T) {
 	if len(metas) != 1 || metas[0].Token == "" {
 		t.Fatalf("board chats %+v", metas)
 	}
-	find := func(name string) model.Board {
-		for _, bd := range e.relay.Boards.List() {
-			if bd.Name == name {
-				return bd
-			}
-		}
-		t.Fatalf("no board %q", name)
-		return model.Board{}
-	}
-
 	text, isErr := e.relay.Call(metas[0].Token, "create_board", json.RawMessage(`{"name":"plan"}`))
-	plan := find("plan")
+	var plan model.Board
+	for _, bd := range e.relay.Boards.List() {
+		if bd.Name == "plan" {
+			plan = bd
+		}
+	}
 	if isErr || text != "created plan ("+plan.ID+") in Work / Infra" {
 		t.Fatalf("got %q isErr=%v", text, isErr)
 	}
-	if plan.Group != "g_infra" || plan.Client != "inst_A" || plan.Origin != own.ID || !plan.New || !boards.ValidID(plan.ID) {
+	if plan.Group != "g_infra" || !plan.New || plan.ID == "" || plan.ID == own.ID {
 		t.Fatalf("board %+v", plan)
 	}
-	if l := e.relay.Boards.ListOf("inst_A"); len(l) != 2 {
-		t.Fatalf("the client's boards %+v", l)
-	}
-
-	// The chat on an unmarked board: no mark, no origin.
-	text, isErr = e.relay.Call(e.token, "create_board", json.RawMessage(`{"name":"mine"}`))
-	mine := find("mine")
-	if isErr || text != "created mine ("+mine.ID+") in Ungrouped" {
-		t.Fatalf("got %q isErr=%v", text, isErr)
-	}
-	if mine.Client != "" || mine.Origin != "" || mine.Group != model.Ungrouped || !mine.New {
-		t.Fatalf("board %+v", mine)
+	if raw, err := json.Marshal(plan); err != nil || strings.Contains(string(raw), `"client"`) || strings.Contains(string(raw), `"origin"`) {
+		t.Fatalf("the board as it is served: %s %v", raw, err)
 	}
 }
 

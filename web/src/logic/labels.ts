@@ -6,6 +6,7 @@
 // The run tools come from the same server and name a task or an agent of the run.
 
 import type { BranchState, CatalogModel, ChatView, Item } from "../types.ts";
+import { IMAGE_WORD } from "./chatimage.ts";
 import { plainText } from "./refs.ts";
 import { isBusy, starting } from "./status.ts";
 
@@ -148,12 +149,13 @@ export function toolDone(name: string, input: any, result: string | undefined, n
   }
 }
 
-/** The chat's name, or its first message until it is named. */
+/** The chat's name, or its first message until it is named: its words, or the one fixed word
+ *  (IMAGE_WORD) for a message of images alone, which is given no name of its own. */
 export function chatTitle(c: Pick<ChatView, "name">, items?: Item[]): string {
   if (c.name) return c.name;
   const first = items?.find((i) => i.kind === "user");
-  if (!first?.text) return "New chat";
-  const t = plainText(first.text).replace(/\s+/g, " ").trim();
+  const t = plainText(first?.text ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return first?.images?.length ? IMAGE_WORD : "New chat";
   return t.length > 42 ? t.slice(0, 40) + "…" : t;
 }
 

@@ -21,8 +21,6 @@ func TestRunPaths(t *testing.T) {
 		p.RunChatDir("r_1", true, "c-agent"): filepath.Join(base, "data", "runs", "r_1", "agents", "c-agent"),
 		p.RunChatDir("r_1", false, "c-chat"): filepath.Join(base, "data", "runs", "r_1", "chats", "c-chat"),
 		p.RunWorkDir("r_1"):                  filepath.Join(base, "aiwb-run-work", "r_1"),
-		p.RemoteRuns:                         filepath.Join(base, "data", "remote", "runs"),
-		p.RemoteRunFile("r_1"):               filepath.Join(base, "data", "remote", "runs", "r_1.json"),
 	} {
 		if got != want {
 			t.Errorf("got %s, want %s", got, want)
@@ -74,8 +72,8 @@ func TestOpenCreatesRunsNotRunWork(t *testing.T) {
 	})
 }
 
-// The run defaults are kept in state.json, per group and per server, and are absent from it until a
-// run was started.
+// The run defaults are kept in state.json, per group, and are absent from it until a run was
+// started.
 func TestRunDefaultsPersist(t *testing.T) {
 	p := NewPaths(t.TempDir())
 	st, err := Open(p)
@@ -93,11 +91,10 @@ func TestRunDefaultsPersist(t *testing.T) {
 	}
 	want := model.RunDefaults{Agent: model.Cursor, MaxParallel: 3, MaxTurns: 40, MaxCost: 2.5, Setup: "npm ci", SetupCwd: "/tmp",
 		Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: "gpt-5.4", Effort: "high"}, Standard: model.ModelChoice{Model: "auto"}, Light: model.ModelChoice{Model: "auto"}}}
-	far := model.RunDefaults{Agent: model.Pi, MaxParallel: 1, MaxTurns: 5, Setup: "make", SetupCwd: "/srv/far"}
+	own := model.RunDefaults{Agent: model.Pi, MaxParallel: 1, MaxTurns: 5, Setup: "make", SetupCwd: "/srv/own"}
 	if err := st.Update(func(s *model.State) error {
-		defaults.RecordRun(&s.Defaults, model.Ungrouped, model.LocalServer, want)
-		defaults.RecordRun(&s.Defaults, model.Ungrouped, "srv_far", far)
-		defaults.RecordRun(&s.Defaults, "g_one", "srv_far", far)
+		defaults.RecordRun(&s.Defaults, model.Ungrouped, want)
+		defaults.RecordRun(&s.Defaults, "g_one", own)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -112,22 +109,18 @@ func TestRunDefaultsPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	st2.Read(func(s *model.State) {
-		// Per server: each part has its own, and a group's part for one server says nothing of another.
-		g := s.Defaults.Groups[model.Ungrouped]
-		if got := g.On(model.LocalServer); !reflect.DeepEqual(got.Run, &want) || got.Cwd != "/tmp" {
-			t.Errorf("the local part after reopen: %+v", got)
+		// Per group: each has its own, and a group with none takes the ungrouped group's.
+		if got := s.Defaults.Groups[model.Ungrouped].Local(); !reflect.DeepEqual(got.Run, &want) || got.Cwd != "/tmp" {
+			t.Errorf("the ungrouped group after reopen: %+v", got)
 		}
-		if got := g.On("srv_far"); !reflect.DeepEqual(got.Run, &far) || got.Cwd != "" {
-			t.Errorf("the other server's part after reopen: %+v", got)
+		if got := s.Defaults.Groups["g_one"].Local(); !reflect.DeepEqual(got.Run, &own) || got.Cwd != "" {
+			t.Errorf("g_one after reopen: %+v", got)
 		}
-		if got := defaults.Run(s.Defaults, "g_one", model.LocalServer); !reflect.DeepEqual(got, &want) {
-			t.Errorf("g_one on the local server: %+v, want the ungrouped group's", got)
+		if got := defaults.Run(s.Defaults, "g_one"); !reflect.DeepEqual(got, &own) {
+			t.Errorf("g_one: %+v, want its own", got)
 		}
-		if got := defaults.Run(s.Defaults, "g_one", "srv_far"); !reflect.DeepEqual(got, &far) {
-			t.Errorf("g_one on the other server: %+v, want its own", got)
-		}
-		if got := defaults.Run(s.Defaults, "g_two", "srv_none"); got != nil {
-			t.Errorf("a server nobody ran on: %+v, want none", got)
+		if got := defaults.Run(s.Defaults, "g_two"); !reflect.DeepEqual(got, &want) {
+			t.Errorf("g_two: %+v, want the ungrouped group's", got)
 		}
 	})
 	// A file in today's shape is not written again at the load.

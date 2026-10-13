@@ -31,6 +31,10 @@
 //   atRest(page, frames)          the page drew that many frames in a row with nothing changed in it
 //   contrastAudit(page)           the contrast of every text and icon the page shows (or a part of it: `only`), the weakest first;
 //                                 colourOf(page, selector, prop) the colour one element is drawn in, contrastOf(a, b)
+//   sideSeen(page, id)            what a section of the sidebar shows (its head's name and state, its rows as an outline),
+//                                 or with no id the local part; sectionsSeen(page): the sections drawn, in order;
+//                                 callsOf(page): the calls the page makes; sideMenu(page, root, button, …items): a pick
+//                                 in the menu of a row or a header
 //   until(fn)                     waits for a sign, in place of a fixed time; onEnd(fn): what to undo when the process
 //                                 is ended early, ending(): whether it is being; versions(): the Playwright and the
 //                                 Chromium that draw the pages
@@ -165,6 +169,7 @@ export const seed = (url, ...sections) => mockEval(`return seedUI(${sections.map
  *  from the page's first frame (for a picture: see STILL). scheme: the system's theme, "light" or "dark". The caller
  *  closes the context, or the browser when it gave none. */
 export async function openPage({ url = URL0, sel, size = [1280, 800], ls = {}, wait = ".side-tree", scale = 1, browser, errors = [], clock, still = false, scheme } = {}) {
+  if (dropped.has(url)) { const id = dropped.get(url); dropped.delete(url); await mockEval(`setServerState(${JSON.stringify(id)}, "connected");`, url).catch(() => {}); } // (the server a state of the page before dropped is back)
   browser ??= await (await loadPlaywright()).chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: size[0], height: size[1] }, deviceScaleFactor: scale, ...(scheme ? { colorScheme: scheme } : {}) });
   const store = { ...ls };
@@ -226,7 +231,7 @@ export const measureComposer = (page) => page.evaluate(composersInPage);
 
 /** In the page: the controls of the first composer's toolbar, left to right, each with its kind (server, agent, lock,
  *  folder, model, effort, model-effort: the fixed chip of both, loading, subagents, more: the chip of the popup that holds what
- *  the row has no room for, meter, insert: the button of the insert popup, stop, send; the goal composer's tiers and limits), its label, whether it is a fixed chip, its width and its own margin (the lock has one); composer: "chat"
+ *  the row has no room for, meter, insert: the button of the insert popup, attach: the button that adds images, stop, send; the goal composer's tiers and limits), its label, whether it is a fixed chip, its width and its own margin (the lock has one); composer: "chat"
  *  or "goal"; gap: the row's; chrome: what the box takes besides the row (padding and border); sum: the controls with
  *  their margins and the gaps between them on one line, the row's spacer among them at no width; reason: the line
  *  under the controls, when the toolbar has one.
@@ -244,6 +249,7 @@ function toolbarInPage() {
     if (e.matches(".send.stop")) return "stop";
     if (e.matches(".send")) return "send";
     if (e.matches(".insert-btn")) return "insert";
+    if (e.matches(".attach-btn")) return "attach";
     if (e.tagName.toLowerCase() === "svg") return "lock";
     const chip = e.matches(".tchip, .ctx-meter") ? e : e.querySelector(".tchip, .ctx-meter");
     if (!chip) return "other";
@@ -255,6 +261,8 @@ function toolbarInPage() {
     if (t.startsWith("Server")) return "server";
     if (t.startsWith("Agent")) return "agent";
     if (t.startsWith("Model and effort") || t.startsWith("Starting the agent")) return "model-effort";
+    // (the fixed chip of a chat whose server is not connected, or no longer has it, says that in its title)
+    if (chip.matches(".static:not(.server-chip):not(.sub-chip)") && /is not connected|is no longer on/.test(t)) return "model-effort";
     if (t.startsWith("Model")) return "model";
     if (t.startsWith("Effort")) return "effort";
     if (t.startsWith("Subagents")) return "subagents";
@@ -282,8 +290,20 @@ export async function startMove(page) {
   await page.waitForSelector(".fk-banner", { timeout: 5000 });
 }
 
-/** What a seeded state asks the page to do before it shows (its `act`, dev/runmock-ui.js). */
+/** The server a state has dropped, by the mock's address: put back when the next page opens on that mock (openPage). */
+const dropped = new Map();
+
+/** What a seeded state asks the page to do before it shows (its `act`, dev/runmock-ui.js). "drop:<entry id>": that
+ *  server of the mock's list drops while the page has its chat or its run open; it is connected again before the next
+ *  page opens. */
 export async function act(page, what) {
+  if (what?.startsWith("drop:")) {
+    const id = what.slice(5), url = new URL(page.url()).origin;
+    await page.waitForSelector(".composer-box, .run-stage", { timeout: 10000 }); // (what is to stay on screen is on screen)
+    dropped.set(url, id);
+    await mockEval(`setServerState(${JSON.stringify(id)}, "unreachable", { detail: "connection refused" });`, url);
+    return page.waitForSelector(`.side-section[data-server="${id}"] .side-section-state.bad`, { state: "attached", timeout: 10000 }).catch(() => {}); // (attached: the sidebar may be hidden)
+  }
   switch (what) {
     case undefined: return;
     case "move": return startMove(page);
@@ -771,6 +791,84 @@ export async function compareShots({ a, b, pages, omit = [], port, out, clock = 
     await page.close();
     return result;
   } finally { off(); await tidy(); }
+}
+
+// ---- the sections of the sidebar (plans/remote-server-sections-goal.md)
+
+/** In the page: one part of the sidebar as it is drawn. id: the entry id of a section's server, or "" for the local
+ *  part (the tree above the sections: what is in no group, the groups, "New group").
+ *    there      the part is drawn
+ *    name, state, tone   a section's head: the server's name, the words of its state, "ok" | "wait" | "bad"
+ *    collapsed  the section is collapsed; count: the number its head shows then, "" for none
+ *    add        its head has the "+"; menu: its head has a menu button (a group's has, a section's must not)
+ *    draggable  its head can be dragged
+ *    lines      what its body says in the place of rows, or under them
+ *    outline    its rows, top to bottom, each "<kind> <name>" indented by two spaces a level: "group Renders",
+ *               "  board Storyboard", "    chat Tighten act two"; a group that is collapsed ends with " [collapsed]", a
+ *               row that is archived with " [archived]"
+ *    rows       the names of its board, run and chat rows, in that order; subs: the line under each chat and run row
+ *    titles     the tooltip of each row and header */
+function sidePartInPage(id) {
+  const root = id ? document.querySelector(`.side-section[data-server="${CSS.escape(id)}"]`) : document.querySelector(".side-tree");
+  if (!root) return { there: false };
+  const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const body = id ? root.querySelector(":scope > .side-section-body") : root;
+  const outline = [], titles = [];
+  const row = (r, kind, depth) => { outline.push(`${"  ".repeat(depth)}${kind} ${text(r.querySelector(".side-name"))}${r.closest(".archived") && (kind !== "chat" || r.classList.contains("archived")) ? " [archived]" : ""}`); titles.push(r.getAttribute("title") ?? ""); };
+  const walk = (el, depth) => {
+    for (const e of el?.children ?? []) {
+      if (e.matches(".side-section")) continue; // (the local part ends where the sections begin)
+      if (e.matches(".side-group")) {
+        const head = e.querySelector(":scope > .side-group-head"), inner = e.querySelector(":scope > .side-group-body");
+        outline.push(`${"  ".repeat(depth)}group ${text(head.querySelector(".side-group-name"))}${e.classList.contains("archived") ? " [archived]" : ""}${inner ? "" : " [collapsed]"}`);
+        titles.push(head.getAttribute("title") ?? "");
+        walk(inner, depth + 1);
+      } else if (e.matches(".side-board, .side-run")) {
+        row(e.querySelector(":scope > .side-row"), e.matches(".side-board") ? "board" : "run", depth);
+        for (const c of e.querySelectorAll(":scope > .side-board-chats > .side-row")) row(c, "chat", depth + 1);
+      } else if (e.matches(".side-row.is-chat")) row(e, "chat", depth);
+      else if (e.matches(".side-loose")) walk(e, depth);
+    }
+  };
+  walk(body, 0);
+  const mine = (sel) => [...(body?.querySelectorAll(sel) ?? [])].filter((e) => id || !e.closest(".side-section"));
+  const head = id ? root.querySelector(":scope > .side-section-head") : null, st = head?.querySelector(".side-section-state");
+  return { there: true, outline, titles, rows: mine(".side-row .side-name").map(text), subs: mine(".side-row .side-sub").map(text), lines: mine(".side-section-line, .side-loose > .side-empty").map(text),
+    ...(id ? { name: text(head.querySelector(".side-section-name")), state: text(st), tone: ["ok", "wait", "bad"].find((t) => st?.classList.contains(t)) ?? "", collapsed: head.getAttribute("aria-expanded") === "false",
+      count: text(head.querySelector(".side-count")), add: !![...head.querySelectorAll("button")].find((b) => b.textContent.trim() === "+"), menu: !!head.querySelector('button[title="More"]'),
+      draggable: head.draggable === true || !!head.closest("[draggable=true]") } : {}) };
+}
+
+/** What one part of the sidebar shows (see sidePartInPage): a section, by its server's entry id, or the local part (""). */
+export const sideSeen = (page, id = "") => page.evaluate(sidePartInPage, id);
+
+/** The entry ids of the sections the sidebar draws, top to bottom. */
+export const sectionsSeen = (page) => page.evaluate(() => [...document.querySelectorAll(".side-tree .side-section")].map((s) => s.dataset.server));
+
+/** Records the calls a page makes of its server from now on, but its event stream and the files of the page itself:
+ *  [{ method, path (with its query), body (parsed, when it is JSON), status (once answered) }], in the order they
+ *  were made. A check reads it for where a call went: /api/chats/… for a thing of this computer, /api/on/<entry
+ *  id>/chats/… for one of a section. */
+export function callsOf(page) {
+  const calls = [];
+  page.on("request", (r) => {
+    const u = new URL(r.url());
+    if (!u.pathname.startsWith("/api/") || u.pathname === "/api/events") return;
+    let body; try { body = r.postData() ? JSON.parse(r.postData()) : undefined; } catch { body = r.postData(); }
+    const c = { method: r.method(), path: u.pathname + u.search, body };
+    calls.push(c);
+    r.response().then((res) => { c.status = res?.status(); }, () => {});
+  });
+  return calls;
+}
+
+/** Opens the menu of a row or a header of the sidebar (its "More" button, or its "+": `button` is the button's title
+ *  or its text) and clicks the item that says `item`; with more items named, each next one in the list the one before
+ *  opened ("Move to…", then a group). root: a locator of the row or the header. */
+export async function sideMenu(page, root, button, ...items) {
+  await root.hover();
+  await root.locator(`button[title="${button}"], button:text-is("${button}")`).first().click();
+  for (const item of items.filter(Boolean)) await page.locator(".menu .menu-item", { hasText: item }).first().click(); // (a "+" that makes a chat at once has no list)
 }
 
 // ---- the frame of a check

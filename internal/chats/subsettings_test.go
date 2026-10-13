@@ -14,8 +14,8 @@ import (
 
 // A chat's two subagent settings, the depth and the cap: what a new chat starts with, how they
 // are changed and when they no longer can be, what is remembered for the next chat, and what a
-// branch, a fork, an API client's chat and a chat from before the settings have. What the
-// settings do to a chat's subagents is not here: these tests are about the values alone.
+// branch, a fork and a chat from before the settings have. What the settings do to a chat's
+// subagents is not here: these tests are about the values alone.
 
 func numPtr(n int) *int { return &n }
 
@@ -34,17 +34,17 @@ func (e *env) subIs(what, id string, want model.SubLimits) {
 	}
 }
 
-// stickySub is the subagent settings stored for the group on the server key; nil = none.
-func (e *env) stickySub(group, key string) *model.SubLimits {
+// stickySub is the subagent settings stored for the group; nil = none.
+func (e *env) stickySub(group string) *model.SubLimits {
 	e.t.Helper()
-	return e.defs().Groups[group].On(key).Subagents
+	return e.defaultsOf().Groups[group].Local().Subagents
 }
 
-// stickyIs fails unless the settings stored for the group on the server key are want.
-func (e *env) stickyIs(what, group, key string, want model.SubLimits) {
+// stickyIs fails unless the settings stored for the group are want.
+func (e *env) stickyIs(what, group string, want model.SubLimits) {
 	e.t.Helper()
-	if got := e.stickySub(group, key); got == nil || *got != want {
-		e.t.Fatalf("%s: the defaults of %s on %s hold %+v, want %+v", what, group, key, got, want)
+	if got := e.stickySub(group); got == nil || *got != want {
+		e.t.Fatalf("%s: the defaults of %s hold %+v, want %+v", what, group, got, want)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestSubSettingsOfANewChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.subIs("with nothing recorded", e.newChat(NewChat{Group: gOne, Agent: model.Claude}).ID, lim(1, 100))
-	if d := e.defs(); len(d.Groups) != 0 {
+	if d := e.defaultsOf(); len(d.Groups) != 0 {
 		t.Fatalf("a new chat recorded defaults: %+v", d)
 	}
 
@@ -276,21 +276,20 @@ func TestSubSettingsAreFixed(t *testing.T) {
 		"a fork made at the start":         {early.ID, ""},
 	} {
 		for with, req := range map[string]ConfigReq{
-			"a depth":               {SubDepth: numPtr(0)},
-			"a cap":                 {SubCap: numPtr(5)},
-			"both":                  {SubDepth: numPtr(3), SubCap: numPtr(100)},
-			"the values it has":     {SubDepth: numPtr(2), SubCap: numPtr(40)},
-			"a depth and a model":   {SubDepth: numPtr(0), Model: "opus"},
-			"a cap and an effort":   {SubCap: numPtr(5), Effort: "low"},
-			"a value out of range":  {SubDepth: numPtr(99)},
-			"a depth and an agent":  {SubDepth: numPtr(0), Agent: model.Cursor},
-			"a cap and a folder":    {SubCap: numPtr(5), Cwd: t.TempDir()},
-			"a depth and the local": {SubDepth: numPtr(1), Server: model.LocalServer},
+			"a depth":              {SubDepth: numPtr(0)},
+			"a cap":                {SubCap: numPtr(5)},
+			"both":                 {SubDepth: numPtr(3), SubCap: numPtr(100)},
+			"the values it has":    {SubDepth: numPtr(2), SubCap: numPtr(40)},
+			"a depth and a model":  {SubDepth: numPtr(0), Model: "opus"},
+			"a cap and an effort":  {SubCap: numPtr(5), Effort: "low"},
+			"a value out of range": {SubDepth: numPtr(99)},
+			"a depth and an agent": {SubDepth: numPtr(0), Agent: model.Cursor},
+			"a cap and a folder":   {SubCap: numPtr(5), Cwd: t.TempDir()},
 		} {
 			err := e.m.ConfigureOf(to.chat, to.branch, req)
-			// The server and the agent are fixed for the same chats, and that refusal comes first.
+			// The agent is fixed for the same chats, and that refusal comes first.
 			fixed := ErrSubFixed
-			if req.Agent != "" || req.Server != "" {
+			if req.Agent != "" {
 				fixed = ErrAgentFixed
 			}
 			if !errors.Is(err, fixed) {
@@ -338,7 +337,7 @@ func TestSubSettingsAreSticky(t *testing.T) {
 	evs := e.listen()
 	e.configure(first.ID, ConfigReq{SubDepth: numPtr(2)})
 	// The whole pair is recorded, and nothing else: no agent, no folder, no model, no server.
-	if got, want := e.defs(), subDefaults(map[string]model.SubLimits{gOne: lim(2, 100)}); !reflect.DeepEqual(got, want) {
+	if got, want := e.defaultsOf(), subDefaults(map[string]model.SubLimits{gOne: lim(2, 100)}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the defaults after one choice: %+v, want %+v", got, want)
 	}
 	sent := ofType(evs.drain(t, e.br), "defaults")
@@ -347,7 +346,7 @@ func TestSubSettingsAreSticky(t *testing.T) {
 	}
 	raw, _ := json.Marshal(sent[0]["defaults"])
 	var told model.Defaults
-	if err := json.Unmarshal(raw, &told); err != nil || !reflect.DeepEqual(told, e.defs()) {
+	if err := json.Unmarshal(raw, &told); err != nil || !reflect.DeepEqual(told, e.defaultsOf()) {
 		t.Fatalf("the defaults event: %s, %v", raw, err)
 	}
 
@@ -355,7 +354,7 @@ func TestSubSettingsAreSticky(t *testing.T) {
 	e.subIs("the next chat of the group, of another agent", second.ID, lim(2, 100))
 	e.subIs("a chat of a group with none", e.create(model.Claude, gTwo, "").ID, lim(1, 100))
 	e.configure(second.ID, ConfigReq{SubCap: numPtr(10)})
-	e.stickyIs("after the cap was chosen in the second chat", gOne, model.LocalServer, lim(2, 10))
+	e.stickyIs("after the cap was chosen in the second chat", gOne, lim(2, 10))
 	e.subIs("the first chat, after a choice in the second", first.ID, lim(2, 100))
 
 	// The ungrouped group's is what a group with none of its own uses.
@@ -365,32 +364,32 @@ func TestSubSettingsAreSticky(t *testing.T) {
 	inTwo := e.create(model.Pi, gTwo, "")
 	e.subIs("a chat of a group with none, after the ungrouped group's choice", inTwo.ID, lim(0, 5))
 	e.subIs("a chat of the group with its own", e.create(model.Claude, gOne, "").ID, lim(2, 10))
-	if got := e.stickySub(gTwo, model.LocalServer); got != nil {
+	if got := e.stickySub(gTwo); got != nil {
 		t.Fatalf("a chat that was only made left its group %+v", got)
 	}
 
 	// The first message confirms what the chat has, changed or not: here the ungrouped group's.
 	e.send(inTwo.ID, "hello", "")
-	e.stickyIs("after the first message of a chat that changed nothing", gTwo, model.LocalServer, lim(0, 5))
+	e.stickyIs("after the first message of a chat that changed nothing", gTwo, lim(0, 5))
 	// The first chat was made before the group's choice changed and kept its own: its first
 	// message makes those the group's again.
 	e.send(first.ID, "hello", "")
-	e.stickyIs("after the first message of the first chat", gOne, model.LocalServer, lim(2, 100))
-	e.stickyIs("the ungrouped group, after two first messages elsewhere", model.Ungrouped, model.LocalServer, lim(0, 5))
+	e.stickyIs("after the first message of the first chat", gOne, lim(2, 100))
+	e.stickyIs("the ungrouped group, after two first messages elsewhere", model.Ungrouped, lim(0, 5))
 
 	// A choice of the other settings records neither number, and a choice of these two leaves the
 	// agent, the folder, the model and the effort that are recorded as they are.
 	other := e.create(model.Claude, gOne, "")
 	e.configure(other.ID, ConfigReq{SubDepth: numPtr(3), SubCap: numPtr(50)})
-	part := e.defs().Groups[gOne].On(model.LocalServer)
+	part := e.defaultsOf().Groups[gOne].Local()
 	dir := t.TempDir()
 	e.configure(other.ID, ConfigReq{Model: "opus", Effort: "max", Cwd: dir})
-	now := e.defs().Groups[gOne].On(model.LocalServer)
+	now := e.defaultsOf().Groups[gOne].Local()
 	if *now.Subagents != lim(3, 50) || now.Cwd != dir || now.ByAgent[model.Claude] != (model.ModelChoice{Model: "opus", Effort: "max"}) {
 		t.Fatalf("the group's part after a choice of the other settings: %+v", now)
 	}
 	e.configure(other.ID, ConfigReq{SubDepth: numPtr(1)})
-	after := e.defs().Groups[gOne].On(model.LocalServer)
+	after := e.defaultsOf().Groups[gOne].Local()
 	if *after.Subagents != lim(1, 50) || after.Agent != part.Agent || after.Cwd != dir || !reflect.DeepEqual(after.ByAgent, now.ByAgent) || after.Run != nil {
 		t.Fatalf("the group's part after a choice of the depth: %+v, was %+v", after, now)
 	}
@@ -409,205 +408,22 @@ func TestSubSettingsOnARunAndOnABoard(t *testing.T) {
 	r := e.newChat(NewChat{Run: ownRun, Agent: model.Claude})
 	e.configure(r.ID, ConfigReq{SubDepth: numPtr(3), SubCap: numPtr(8)})
 	e.subIs("a chat on a run", r.ID, lim(3, 8))
-	e.stickyIs("after a choice in a chat on a run", gOne, model.LocalServer, lim(3, 8))
+	e.stickyIs("after a choice in a chat on a run", gOne, lim(3, 8))
 	e.subIs("the next chat on the run", e.newChat(NewChat{Run: ownRun, Agent: model.Claude}).ID, lim(3, 8))
 	e.subIs("a chat in the run's group", e.newChat(NewChat{Group: gOne, Agent: model.Claude}).ID, lim(3, 8))
 
 	b := e.newChat(NewChat{Board: bd.ID, Agent: model.Claude})
 	e.subIs("a chat on a board of another group", b.ID, lim(1, 100))
 	e.configure(b.ID, ConfigReq{SubDepth: numPtr(0)})
-	e.stickyIs("after a choice in a chat on a board", gTwo, model.LocalServer, lim(0, 100))
-	e.stickyIs("the run's group, after a choice on the board", gOne, model.LocalServer, lim(3, 8))
+	e.stickyIs("after a choice in a chat on a board", gTwo, lim(0, 100))
+	e.stickyIs("the run's group, after a choice on the board", gOne, lim(3, 8))
 
 	// The first message of each confirms its settings in the same group.
 	e.setDefaults(model.Defaults{})
 	e.send(r.ID, "hello", "")
 	e.send(b.ID, "hello", "")
-	e.stickyIs("after the first message of the chat on the run", gOne, model.LocalServer, lim(3, 8))
-	e.stickyIs("after the first message of the chat on the board", gTwo, model.LocalServer, lim(0, 100))
-}
-
-// ---- another server -----------------------------------------------------------
-
-// The settings are kept per server. A chat whose server is changed before its first message
-// gets what a new chat of its group starts with on that server, as it gets that server's folder,
-// and what the same request names is then applied. The change of server itself records nothing
-// of them; a choice made on a server is recorded under that server's key, and the hand-over,
-// which is the first message there, confirms them under it.
-func TestSubSettingsFollowTheServer(t *testing.T) {
-	t.Parallel()
-	e, fs := remoteEnv(t, model.Claude)
-	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: {Servers: map[string]model.ServerDefaults{
-		model.LocalServer: {Subagents: &model.SubLimits{Depth: 2, Cap: 10}},
-		keyB:              {Subagents: &model.SubLimits{Depth: 3, Cap: 50}},
-	}}}})
-	was := e.defaultsRaw()
-	v := e.newChat(NewChat{Group: gOne})
-	e.subIs("made on this computer", v.ID, lim(2, 10))
-	e.configure(v.ID, ConfigReq{Server: entB})
-	e.subIs("moved to Bee", v.ID, lim(3, 50))
-	e.configure(v.ID, ConfigReq{Server: entC})
-	e.subIs("moved to Sea, which has none", v.ID, lim(1, 100))
-	e.configure(v.ID, ConfigReq{Server: model.LocalServer})
-	e.subIs("moved back", v.ID, lim(2, 10))
-	if got := e.defaultsRaw(); got != was {
-		t.Fatalf("three changes of server changed the defaults:\n%s\nwant\n%s", got, was)
-	}
-
-	// With a server, what the request names is applied to that server's settings.
-	e.configure(v.ID, ConfigReq{Server: entB, SubDepth: numPtr(0)})
-	e.subIs("moved to Bee with a depth", v.ID, lim(0, 50))
-	e.stickyIs("Bee's part after that", gOne, keyB, lim(0, 50))
-	e.stickyIs("this computer's part after that", gOne, model.LocalServer, lim(2, 10))
-	// A request whose settings are refused moves nothing.
-	if err := e.m.Configure(v.ID, ConfigReq{Server: model.LocalServer, SubCap: numPtr(0)}); !errors.Is(err, ErrSubRange) {
-		t.Fatalf("a move with a cap of 0: %v, want ErrSubRange", err)
-	}
-	if got := e.view(v.ID); got.Server != entB || got.SubLimits() != lim(0, 50) {
-		t.Fatalf("the chat after the refused move: %+v", got)
-	}
-
-	// A chat made on Bee starts with Bee's, is changed there like here, and its hand-over
-	// confirms what it has under Bee's key.
-	w := e.onBee(gOne)
-	e.subIs("made on Bee", w.ID, lim(0, 50))
-	e.configure(w.ID, ConfigReq{SubDepth: numPtr(1), SubCap: numPtr(5)})
-	e.subIs("changed on Bee", w.ID, lim(1, 5))
-	e.configure(v.ID, ConfigReq{SubCap: numPtr(77)}) // the group's choice moves on while w waits
-	e.stickyIs("Bee's part after another chat's choice", gOne, keyB, lim(0, 77))
-	meta, err := e.m.HandOver(w.ID)
-	if err != nil || meta.Subagents == nil || *meta.Subagents != lim(1, 5) {
-		t.Fatalf("the hand-over: %+v, %v", meta.Subagents, err)
-	}
-	e.stickyIs("Bee's part after the hand-over", gOne, keyB, lim(1, 5))
-	e.stickyIs("this computer's part after the hand-over", gOne, model.LocalServer, lim(2, 10))
-
-	// A server that left the list: its chat is put on this computer, with this computer's.
-	fs.mu.Lock()
-	delete(fs.entries, entB)
-	fs.mu.Unlock()
-	if err := e.m.ResetServer(v.ID); err != nil {
-		t.Fatal(err)
-	}
-	e.subIs("put back on this computer", v.ID, lim(2, 10))
-
-	// A server that has not said who it is has no part of the defaults: its chats start with
-	// depth 1 and cap 100, and a choice made there is the chat's alone.
-	fs.change(entC, func(en *RemoteEntry) { en.Key = "" })
-	sticky := e.defaultsRaw()
-	x := e.newChat(NewChat{Group: gOne, Server: entC})
-	e.subIs("made on a server with no key", x.ID, lim(1, 100))
-	e.configure(x.ID, ConfigReq{SubDepth: numPtr(3)})
-	e.subIs("changed on a server with no key", x.ID, lim(3, 100))
-	if got := e.defaultsRaw(); got != sticky {
-		t.Fatalf("a choice on a server with no key changed the defaults:\n%s\nwant\n%s", got, sticky)
-	}
-}
-
-// ---- an API client's chat -----------------------------------------------------
-
-// D12: a chat made by an API client gets depth 1 and cap 100 unless the call names values,
-// whatever the server remembers, and it feeds no default: not at its creation, not at a change
-// and not at its first message.
-func TestSubSettingsOfAnAPIClient(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	e.setDefaults(subDefaults(map[string]model.SubLimits{gOne: lim(3, 7), gTwo: lim(3, 7), model.Ungrouped: lim(3, 7)}))
-	was := e.defaultsRaw()
-	p := &places{g: gOne}
-	for id, c := range map[string]struct {
-		depth, limit *int
-		want         model.SubLimits
-	}{
-		idA: {nil, nil, lim(1, 100)},
-		idB: {numPtr(0), numPtr(7), lim(0, 7)},
-		idC: {numPtr(3), nil, lim(3, 100)},
-		idD: {nil, numPtr(1), lim(1, 1)},
-	} {
-		req := e.startReq(id, clientX)
-		req.SubDepth, req.SubCap, req.Place = c.depth, c.limit, p.place
-		res := e.start(req)
-		if !res.Started || !res.Sent || res.Chat.SubLimits() != c.want || res.Chat.SubOff != (c.want.Depth == 0) {
-			t.Fatalf("a creation call with %v and %v: %+v", c.depth, c.limit, res)
-		}
-		e.subIs("an API client's chat", id, c.want)
-	}
-
-	// A value outside the range is refused before anything is looked at.
-	n, asked := len(e.m.Views()), p.n.Load()
-	for what, change := range map[string]func(*StartReq){
-		"a depth above the most": func(r *StartReq) { r.SubDepth = numPtr(4) },
-		"a depth below 0":        func(r *StartReq) { r.SubDepth = numPtr(-1) },
-		"a cap of 0":             func(r *StartReq) { r.SubCap = numPtr(0) },
-		"a cap above the most":   func(r *StartReq) { r.SubCap = numPtr(101) },
-	} {
-		req := e.startReq(idE, clientX)
-		req.Place = p.place
-		change(&req)
-		if res, err := e.m.Start(req); !errors.Is(err, ErrSubRange) || res != (StartResult{}) {
-			t.Fatalf("a creation call with %s: %+v, %v, want ErrSubRange", what, res, err)
-		}
-		// The same for a chat that is there and started: the call is refused, not answered.
-		req.ID = idA
-		if res, err := e.m.Start(req); !errors.Is(err, ErrSubRange) || res != (StartResult{}) {
-			t.Fatalf("a repeated creation call with %s: %+v, %v, want ErrSubRange", what, res, err)
-		}
-	}
-	if len(e.m.Views()) != n || p.n.Load() != asked || e.m.ids.held() != 0 {
-		t.Fatalf("the refused calls left %d chats, %d questions for the group, %d locks", len(e.m.Views())-n, p.n.Load()-asked, e.m.ids.held())
-	}
-
-	// A marked chat that has not started is changed like any other, and records nothing.
-	v, err := e.m.CreateChat(NewChat{Client: clientY, Agent: model.Claude, Group: gTwo})
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.subIs("a marked chat that was only made", v.ID, lim(1, 100))
-	e.configure(v.ID, ConfigReq{SubDepth: numPtr(2), SubCap: numPtr(30)})
-	e.subIs("a marked chat after a change", v.ID, lim(2, 30))
-	e.send(v.ID, "hello", "")
-	if got := e.defaultsRaw(); got != was {
-		t.Fatalf("an API client's chats changed the defaults:\n%s\nwant\n%s", got, was)
-	}
-}
-
-// A creation call that is repeated for a chat that did not start gives the chat the settings of
-// the call, as a new chat would get them: what the call does not name is depth 1 and cap 100, not
-// what the call before named.
-func TestSubSettingsOfARepeatedStart(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	gone := &noStart{}
-	e.m.Spawners[model.Claude] = gone
-	req := e.startReq(idA, clientX)
-	req.SubDepth, req.SubCap = numPtr(3), numPtr(9)
-	if res, err := e.m.Start(req); err == nil || !res.Exists || res.Started || res.Chat.SubLimits() != lim(3, 9) {
-		t.Fatalf("a start whose program does not start: %+v, %v", res, err)
-	}
-	e.subIs("after the failed start", idA, lim(3, 9))
-	req.SubDepth, req.SubCap = nil, numPtr(4)
-	if res, err := e.m.Start(req); err == nil || res.Started || res.Chat.SubLimits() != lim(1, 4) {
-		t.Fatalf("the call again, with a cap alone: %+v, %v", res, err)
-	}
-	e.subIs("after the second failed start", idA, lim(1, 4))
-	req.SubDepth, req.SubCap = nil, nil
-	if res, err := e.m.Start(req); err == nil || res.Started || res.Chat.SubLimits() != lim(1, 100) {
-		t.Fatalf("the call again, with neither: %+v, %v", res, err)
-	}
-	e.m.Spawners[model.Claude] = e.claude
-	req.SubDepth = numPtr(0)
-	if res := e.start(req); !res.Started || !res.Sent || !res.Chat.SubOff || res.Chat.SubLimits() != lim(0, 100) {
-		t.Fatalf("the call that starts the chat: %+v", res)
-	}
-	e.subIs("after the start", idA, lim(0, 100))
-	// Started: a repeat changes nothing, whatever it names.
-	req.SubDepth, req.SubCap = numPtr(3), numPtr(3)
-	if res := e.start(req); res.Sent || res.Chat.SubLimits() != lim(0, 100) {
-		t.Fatalf("a repeat for the started chat: %+v", res)
-	}
-	if len(e.m.Views()) != 1 || len(e.defs().Groups) != 0 {
-		t.Fatalf("%d chats, the defaults %+v", len(e.m.Views()), e.defs())
-	}
+	e.stickyIs("after the first message of the chat on the run", gOne, lim(3, 8))
+	e.stickyIs("after the first message of the chat on the board", gTwo, lim(0, 100))
 }
 
 // ---- a branch and a fork ------------------------------------------------------
@@ -661,7 +477,7 @@ func TestSubSettingsOnForksAndBranches(t *testing.T) {
 	e.send(early.ID, "on the early fork", "")
 	e.subIs("a fork after its first message", fork.ID, lim(2, 7))
 	e.subIs("a fork made at the start, after its first message", early.ID, lim(2, 7))
-	e.stickyIs("the group after the forks' first messages", gOne, model.LocalServer, lim(1, 50))
+	e.stickyIs("the group after the forks' first messages", gOne, lim(1, 50))
 }
 
 // ---- a chat from before the settings ------------------------------------------
@@ -755,7 +571,7 @@ func TestSubSettingsOfAChatFromBefore(t *testing.T) {
 	}
 
 	// The defaults were not read for it, and not fed by its turn.
-	e.stickyIs("the group of the chat from before", gOne, model.LocalServer, lim(3, 9))
+	e.stickyIs("the group of the chat from before", gOne, lim(3, 9))
 
 	// An unstarted one: its first message confirms what it reads as, and before that it can be
 	// given settings like any chat that has not started.
@@ -763,11 +579,11 @@ func TestSubSettingsOfAChatFromBefore(t *testing.T) {
 	e.dropSub(other.ID)
 	e.boot()
 	e.send(unstarted.ID, "hello", "")
-	e.stickyIs("after the first message of an unstarted chat from before", gTwo, model.LocalServer, lim(1, 100))
+	e.stickyIs("after the first message of an unstarted chat from before", gTwo, lim(1, 100))
 	if e.named(unstarted.ID) {
 		t.Fatal("the first message gave the chat from before stored settings")
 	}
 	e.configure(other.ID, ConfigReq{SubCap: numPtr(5)})
 	e.subIs("an unstarted chat from before, after a choice", other.ID, lim(1, 5))
-	e.stickyIs("after that choice", gTwo, model.LocalServer, lim(1, 5))
+	e.stickyIs("after that choice", gTwo, lim(1, 5))
 }

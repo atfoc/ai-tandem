@@ -3,7 +3,7 @@
 // them: each section seeded alone on a mock of its own, then all of them together.
 import { act, check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";
 
-const SECTIONS = ["A1", "A2", "A3", "A4", "A5", "A6"];
+const SECTIONS = ["A1", "A2", "A3", "A4", "A5", "A6", "SEC"];
 const UNDO = "delete flags.streamDown; delete flags.hello;"; // what a state's `mock` may have set
 const MOMENT = 1000; // ms a page stays open after its state showed, so that an error thrown after the load is seen
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));

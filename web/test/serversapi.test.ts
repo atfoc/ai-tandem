@@ -46,13 +46,13 @@ test("edit: the patch as given, with force; no secret field when none is given",
   assert.deepEqual(one(), ["PATCH", "/api/servers/s_3f9a1c2b77de", { address: "https://mac.local:4749", secret: SECRET, selfSigned: false, pin: "", force: true }]);
 });
 
-test("remove and items", async () => {
-  await serversApi.remove("s_1");
+test("remove: the entry by its id, with no body; nothing of that server is counted first", async () => {
+  answer = { ok: true };
+  assert.deepEqual(await serversApi.remove("s_1"), { ok: true });
   assert.deepEqual(one(), ["DELETE", "/api/servers/s_1", undefined]);
-  calls.length = 0;
-  answer = { chats: 3, runs: 2 };
-  assert.deepEqual(await serversApi.items("s_1"), answer);
-  assert.deepEqual(one(), ["GET", "/api/servers/s_1/items", undefined]);
+  // the route that counted an entry's chats and runs is gone (404 on the server): the page has no call for it
+  assert.equal("items" in serversApi, false);
+  assert.equal("items" in serversapi, false);
 });
 
 test("test: an unsaved form, without its name", async () => {
@@ -95,10 +95,12 @@ test("the secret is in the request's body alone: never in a path or a header", a
   }
   // The calls that take no secret send none.
   calls.length = 0;
-  await serversApi.list(); await serversApi.items("s_1"); await serversApi.testSaved("s_1"); await serversApi.accept("s_1", "AB:CD"); await serversApi.remove("s_1");
+  await serversApi.list(); await serversApi.testSaved("s_1"); await serversApi.accept("s_1", "AB:CD"); await serversApi.remove("s_1");
+  assert.equal(calls.length, 4);
   for (const c of calls) assert.equal(JSON.stringify(c).includes(SECRET), false, c.path);
 });
 
-test("the eight functions are also exported by name", () => {
-  for (const k of ["list", "add", "edit", "remove", "items", "test", "testSaved", "accept"] as const) assert.equal(serversapi[k], serversApi[k], k);
+test("the seven functions are also exported by name", () => {
+  assert.deepEqual(Object.keys(serversApi).sort(), ["accept", "add", "edit", "list", "remove", "test", "testSaved"]);
+  for (const k of ["list", "add", "edit", "remove", "test", "testSaved", "accept"] as const) assert.equal(serversapi[k], serversApi[k], k);
 });

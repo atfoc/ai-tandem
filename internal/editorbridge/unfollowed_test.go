@@ -51,7 +51,7 @@ func (h *hookCalls) none(d time.Duration) {
 	}
 }
 
-// The three rows of the remote chats reach pages and no API client.
+// The rows about other servers reach pages and no API client.
 func TestServerRowsReachPagesOnly(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
@@ -59,23 +59,18 @@ func TestServerRowsReachPagesOnly(t *testing.T) {
 	p, q := open(t, srv, "P"), open(t, srv, "Q")
 	x := openAPI(t, api, "X")
 	s := &sentinel{b: b}
-	b.SetMark(Chat("c1"), "X")
 	for _, id := range []string{"P", "Q", "X"} {
 		if !b.Follow(id, Chat("c1")) {
 			t.Fatalf("Follow refused %s", id)
 		}
 	}
 
-	for _, typ := range []string{"server_lists", "server_back", "chat_reload"} {
+	for _, typ := range []string{"server_lists", "section"} {
 		rule, ok := Events[typ]
 		if !ok || !rule.PagesOnly || APIEvents[typ] {
 			t.Fatalf("%s: row %+v (in the table: %v), in APIEvents: %v", typ, rule, ok, APIEvents[typ])
 		}
-		if rule.Per == PerChat {
-			b.SendChat("c1", false, map[string]any{"type": typ, "chat": "c1"})
-		} else {
-			b.Broadcast(map[string]any{"type": typ, "server": "s_1"})
-		}
+		b.Broadcast(map[string]any{"type": typ, "server": "s_1"})
 		s.send()
 		for _, c := range []*bridgetest.Page{p, q} {
 			if got := s.until(t, c); !reflect.DeepEqual(got, []string{typ}) {
@@ -90,36 +85,6 @@ func TestServerRowsReachPagesOnly(t *testing.T) {
 	defer b.mu.Unlock()
 	if len(b.logged) != 0 {
 		t.Fatalf("logged as outside the table: %v", b.logged)
-	}
-}
-
-// chat_reload goes to the pages that follow its chat, and to no other.
-func TestChatReloadReachesFollowersOnly(t *testing.T) {
-	t.Parallel()
-	b, srv := newTestServer(t, nil)
-	f, n, o := open(t, srv, "F"), open(t, srv, "N"), open(t, srv, "O")
-	s := &sentinel{b: b}
-	b.Follow("F", Chat("c1"))
-	b.Follow("O", Chat("c2"))
-
-	b.SendChat("c1", false, map[string]any{"type": "chat_reload", "chat": "c1"})
-	s.send()
-	if ev := f.Expect("chat_reload"); ev["chat"] != "c1" {
-		t.Fatalf("the follower got %v", ev)
-	}
-	for _, c := range []*bridgetest.Page{f, n, o} {
-		if got := s.until(t, c); len(got) != 0 {
-			t.Errorf("page %s got %v", c.ID, got)
-		}
-	}
-
-	b.Unfollow("F", Chat("c1"))
-	b.SendChat("c1", false, map[string]any{"type": "chat_reload", "chat": "c1"})
-	s.send()
-	for _, c := range []*bridgetest.Page{f, n, o} {
-		if got := s.until(t, c); len(got) != 0 {
-			t.Errorf("after the unfollow page %s got %v", c.ID, got)
-		}
 	}
 }
 

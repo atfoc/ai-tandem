@@ -8,7 +8,7 @@
 // most of them to send away, and brought to the others by the window or the panel's resizer.
 // Then the same in every frame, read by the driver's frame sampler after the frame's paint: a drag of the panel's
 // resizer down and up, a load from the page's first frame, a branch change, a chip's arrival (the popup closed and
-// open), a window narrowed and widened with "more" open, a server pick in "more", and ⌘B with "more" closed and
+// open), a window narrowed and widened with "more" open, and ⌘B with "more" closed and
 // open. With "more" open the popup stays open, and no control leaves it for the toolbar, in any frame.
 // The box changes width in small steps, which show every width on the way, and in large ones: a fit that came a
 // frame late would be past the box by the step, and the box's own padding hides a small one from the measure.
@@ -191,7 +191,8 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   }
 
   // a chip's arrival: the server's Cursor catalog comes, and "Loading models…" becomes the model and effort choices
-  const arrival = `Object.assign(chats.c_A2_loading, cursor.default); extra.lists.s_lab.catalogs.cursor = cursor; send({ type: "chat", chat: chats.c_A2_loading }); send({ type: "server_lists", server: "s_lab", lists: extra.lists.s_lab });`;
+  // (the chat is the lab box's: its change is made on that machine, and reaches the page as that server's event)
+  const arrival = `extra.lists.s_lab.catalogs.cursor = cursor; onServer("s_lab", () => { Object.assign(chats.c_A2_loading, cursor.default); send({ type: "chat", chat: chats.c_A2_loading }); }); send({ type: "server_lists", server: "s_lab", lists: extra.lists.s_lab });`;
   for (const [width, more] of [[300, false], [400, false], [560, false], [300, true], [400, true], [480, true]]) {
     await seed(url, "A2");
     const s = state("plain-loading"), p = await open(s, width), name = `a chip's arrival at ${width} px${more ? ', "more" open' : ""}`;
@@ -230,24 +231,6 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
     await fits(p.page, `${name}, closed again`);
     await close(p, name);
     note(`the window narrowed from 560 to 300 px and widened again with "more" open: it held ${held}, then ${last.held} controls, all until it closed; every frame fitted`);
-  }
-
-  { // a server pick in "more": it relabels the toolbar's chips (the folder is that server's)
-    const s = state("plain-new"), p = await open(s, 400), name = 'a server pick in "more"';
-    await drawn(p.page, s, name);
-    await openMore(p.page, name);
-    const chip = p.page.locator(`${POP} .server-pick button.tchip`);
-    if (!await chip.count()) fail(`${name}: the server's chip is not in the popup at 400 px`);
-    const r = await sampled(p.page, name, async () => {
-      await chip.click();
-      await p.page.locator(`${POP} .server-pick .menu-item[data-option-id="s_lab"]`).click();
-      if (!await until(async () => (await chip.textContent().catch(() => ""))?.includes("lab-gpu-box") && await mockEval(`return chats.c_A2_new.server;`, url) === "s_lab", 10000)) fail(`${name}: the pick was not saved, or the chip does not name the server picked`);
-    });
-    kept(r, name);
-    await fits(p.page, `${name}, after it`);
-    await close(p, name);
-    await seed(url, "A2");
-    note('a server pick in "more": every frame fitted, the popup open throughout');
   }
 
   // ⌘B: the page gets wider by the sidebar less the rail, and narrower again

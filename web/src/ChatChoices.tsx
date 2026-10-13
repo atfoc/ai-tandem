@@ -1,17 +1,17 @@
-// The first two of a chat's five choices, before folder, model and effort in the composer's
-// toolbar: the server the chat is on and its agent. Both can be changed until the first message,
-// in a chat that is neither a fork nor a branch (agentOpen); the toolbar shows the agent only
-// then, and the server also for a chat on another server (showsServer). The toolbar draws each in
-// its row or in its "more" popup, and keeps the chip's width by what decides it (useServerChip,
-// useAgentChip); the line that says why a chat has no agent is a component of its own (AgentReason).
+// What stands before folder, model and effort in the composer's toolbar: the name of the chat's
+// server, for a chat of a section (showsServer), and the chat's agent. The server is where the
+// chat was made, and is no choice; the agent can be changed
+// until the first message, in a chat that is neither a fork nor a branch (agentOpen), and the
+// toolbar shows it only then. The toolbar draws each in its row or in its "more" popup, and keeps
+// the chip's width by what decides it (useServerChip, useAgentChip); the line that says why a
+// chat has no agent is a component of its own (AgentReason).
 import React from "react";
 import { useStore, getState, upsertChat, shownBranch } from "./store.ts";
 import { api } from "./api.ts";
 import { ChipName, Picker } from "./Composer.tsx";
-import { openServers } from "./Servers.tsx";
 import { pickAgent, usableAgents } from "./logic/agentlist.ts";
-import { AGENT_UNCONFIRMED, agentChoiceOn, pickServer, toolbarLine, type Where } from "./logic/chatserver.ts";
-import { serverChoice, serverConnected, serverName, serverOf } from "./logic/serverlists.ts";
+import { agentChoiceOn, offWhy, toolbarLine, type Where } from "./logic/chatserver.ts";
+import { serverConnected, serverFixed, serverName, serverOf } from "./logic/serverlists.ts";
 import { widthKey } from "./logic/composerfit.ts";
 import { AgentGlyph, WarnIcon, agentClass, agentName } from "./icons.tsx";
 import type { AgentKind, ChatView } from "./types.ts";
@@ -20,55 +20,42 @@ import "./remotechat.css";
 type Menu = { disabled: boolean; open: boolean; onOpenChange: (open: boolean) => void };
 type Saves = { c: ChatView; onBusy: (busy: boolean) => void; onError: (msg: string) => void };
 
-/** The entry id of the server a chat's board is on; none for a chat on no board and for a board
- *  of this computer. */
-const useBoardServer = (c?: { board?: string }): string | undefined => useStore((s) => (c?.board ? s.boards[c.board]?.server : undefined));
-
-/** A chat's server as its composer reads it (logic/chatserver.ts). A chat on a board of another
- *  server is on that server, also where its own record does not name it. */
-export function useWhere(c?: { server?: string; board?: string }): Where {
-  const onBoard = useBoardServer(c);
-  const server = serverOf(c?.server ? c : { server: onBoard });
+/** A thing's server as its views read it (logic/chatserver.ts): of a chat, a board or a run, whose key names the
+ *  server it is on, or of a server named by its entry id (`server`: the folder browser's). connected: that server
+ *  takes a call now, which for a section is while the local server holds its tree. */
+export function useWhere(of?: { id?: string } | { server: string } | null): Where {
+  const server = of && "server" in of ? of.server : serverOf(of);
   const name = useStore((s) => serverName(s, server));
   const connected = useStore((s) => serverConnected(s, server));
   return { server, name, connected };
 }
 
-/** The server choice: every entry of the server list, one that waits for the user disabled with
- *  its state, and "Servers…", which opens the Servers dialog. A pick is sent at once, and the
- *  answer is the chat with the agent, folder, model and effort the server chose for that server.
- *  Where the server cannot be changed (serverChoice's fixed) it is a chip with the reason; a chat
- *  on a board of another server is on that server. */
-export function ServerPick({ c, disabled, open, onOpenChange, onBusy, onError }: Menu & Saves) {
-  const servers = useStore((s) => s.servers);
-  const w = useWhere(c);
-  const { options, fixed } = serverChoice(servers, c, useBoardServer(c));
-  if (fixed) return <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${fixed}`}><ChipName full={`${w.name} — ${fixed}`}>{w.name}</ChipName></span>;
-  const pick = (id: string) => {
-    onBusy(true);
-    void pickServer((p) => api.configure(c.id, shownBranch(getState(), c.id), p), id, upsertChat)
-      .then(() => onError(""), (e) => onError(e.message)).finally(() => onBusy(false));
-  };
-  return <Picker className="server-pick" label={w.name} title="Server" value={w.server}
-    options={options.map((o) => ({ id: o.id, label: o.label, note: o.reason, disabled: o.disabled }))}
-    more={{ label: "Servers…", onClick: () => openServers() }}
-    disabled={disabled} open={open} onOpenChange={onOpenChange} onPick={pick} />;
+/** Why a chat takes no call now (logic/chatserver.ts offWhy): its server is not connected, or no longer has it; "" for
+ *  a chat that takes one, which a chat of this computer always does. chat: its key; a run agent's too. */
+export function useOffWhy(chat: string): string {
+  const w = useWhere({ id: chat });
+  const gone = useStore((s) => !!s.gone[chat]);
+  return offWhy(w, gone);
 }
 
-/** What decides the width of ServerPick's chip: the server's name, and whether it is a choice or a
- *  fixed chip. */
-export function useServerChip(c: ChatView): string {
-  const servers = useStore((s) => s.servers);
+/** The name of a chat's server: a chip that is no choice, with why in its title (serverFixed),
+ *  greyed while that server is not connected. */
+export function ServerChip({ c }: { c: ChatView }) {
   const w = useWhere(c);
-  return widthKey("server", w.name, { fixed: !!serverChoice(servers, c, useBoardServer(c)).fixed });
+  const fixed = serverFixed(c);
+  return <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${fixed}`}><ChipName full={`${w.name} — ${fixed}`}>{w.name}</ChipName></span>;
+}
+
+/** What decides the width of ServerChip: the server's name. */
+export function useServerChip(c: ChatView): string {
+  return widthKey("server", useWhere(c).name, { fixed: true });
 }
 
 /** The agent choice: only the agents the chat's server can run. A pick is sent at once, and the answer
  *  is the chat with the model and effort the server chose for that agent. An agent the chat has
  *  and the server lacks is marked and is not among the options; with none to offer, and on a
  *  server that is not connected, the chip says "No agent". The line under the toolbar
- *  (AgentReason) says why, as it does for a chat with no agent and for a first message that got
- *  no answer, whose agent is fixed.
+ *  (AgentReason) says why, as it does for a chat with no agent.
  *  onBusy: a pick is being saved, and the toolbar's pickers take none meanwhile. */
 export function AgentPick({ c, disabled, open, onOpenChange, onBusy, onError }: Menu & Saves) {
   const w = useWhere(c);
@@ -80,8 +67,7 @@ export function AgentPick({ c, disabled, open, onOpenChange, onBusy, onError }: 
     void pickAgent((p) => api.configure(c.id, shownBranch(getState(), c.id), p), id as AgentKind, upsertChat)
       .then(() => onError(""), (e) => onError(e.message)).finally(() => onBusy(false));
   };
-  return c.start === "unconfirmed" ? <span className="tchip static" title={`Agent — ${AGENT_UNCONFIRMED}`}>{c.agent ? <>{glyph(c.agent)}{agentName(c.agent)}</> : "No agent"}</span>
-    : !choice.options.length ? <span className="tchip static missing" title={`Agent — ${choice.reason}`}>No agent</span>
+  return !choice.options.length ? <span className="tchip static missing" title={`Agent — ${choice.reason}`}>No agent</span>
     : <Picker label={c.agent ? agentName(c.agent) : "No agent"} title="Agent" hint={choice.reason || undefined} value={c.agent}
       icon={!c.agent ? undefined : choice.missing ? <span className="agent-pick-glyph missing"><WarnIcon /></span> : glyph(c.agent)}
       options={choice.options.map((a) => ({ id: a, label: agentName(a), icon: glyph(a) }))}
@@ -94,18 +80,19 @@ export function useAgentChip(c: ChatView): string {
   const w = useWhere(c);
   const usable = useStore((s) => usableAgents(s, w.server));
   const choice = agentChoiceOn(w, usable, c.agent);
-  const fixed = c.start === "unconfirmed" || !choice.options.length;
-  const named = !!c.agent && (c.start === "unconfirmed" || !fixed);
+  const fixed = !choice.options.length;
+  const named = !!c.agent && !fixed;
   return widthKey("agent", named ? agentName(c.agent as AgentKind) : "No agent", { fixed, mark: !named ? "" : !fixed && choice.missing ? "warn" : "glyph" });
 }
 
 /** The line under the toolbar's controls of a chat whose agent can be chosen (toolbarLine): why it
- *  has none, or cannot use its own, or that its first message got no answer. A line of the
+ *  has none, or cannot use its own. A line of the
  *  toolbar's row, also while the agent's chip is in the "more" popup. */
 export function AgentReason({ c }: { c: ChatView }) {
   const w = useWhere(c);
   const usable = useStore((s) => usableAgents(s, w.server));
-  const line = toolbarLine(w, usable, c);
+  const gone = useStore((s) => !!s.gone[c.id]);
+  const line = toolbarLine(w, usable, c, gone);
   return (
     <>
       {/* not installed or not connected, as against still to be chosen */}

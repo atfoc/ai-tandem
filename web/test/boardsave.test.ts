@@ -1,11 +1,12 @@
-// A board on another server: what a failed save does, what shows for the board, and the texts (src/logic/boardsave.ts).
+// A board of a section: what a failed save does, what shows for the board, and the texts (src/logic/boardsave.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { saveFailure, saveOutage, notSaved, droppedText, DROPPED_TEXT, boardView, offText, takeoverText, serverNameOf } from "../src/logic/boardsave.ts";
-import type { Board } from "../src/types.ts";
+import { readFileSync } from "node:fs";
+import { saveFailure, saveOutage, saveRefusal, notSaved, notSavedYet, bannerText, droppedText, DROPPED_TEXT, boardView, offText, takeoverText, serverNameOf } from "../src/logic/boardsave.ts";
+import { inSection, keyOn } from "../src/logic/keys.ts";
 
-const local: Board = { id: "b_1", name: "Plan", group: "", created: "" };
-const far: Board = { ...local, id: "b_2", server: "s_1" };
+/** The board b_1 of this computer, and the board with the same id of the section s_1. */
+const LOCAL = "b_1", FAR = keyOn("s_1", "b_1");
 
 test("saveFailure: only a refusal drops the edit", () => {
   assert.equal(saveFailure(409, "stale"), "drop");
@@ -18,12 +19,42 @@ test("saveFailure: only a refusal drops the edit", () => {
   assert.equal(saveFailure(undefined, undefined), "keep"); // no answer at all
 });
 
-test("saveOutage: a 503 and a 504 of a board on another server raise the banner, nothing else does", () => {
+test("saveOutage: a 503 and a 504 of a board of a section raise the banner, nothing else does", () => {
   assert.equal(saveOutage(503, true), true);
   assert.equal(saveOutage(504, true), true);  // the link broke while the write was on its way: no_answer
   assert.equal(saveOutage(503, false), false); // a local board
   assert.equal(saveOutage(504, false), false);
   for (const status of [409, 413, 500, undefined]) assert.equal(saveOutage(status, true), false);
+});
+
+test("a save answered 503 not_held_there (the board is being taken again on its server) is \"not yet\": the edit is kept under the banner, which does not say that the server is unreachable", () => {
+  assert.equal(saveFailure(503, "not_held_there"), "keep"); // never a lost edit
+  assert.equal(saveOutage(503, true), true);                 // the banner: the edit waits for the board's server
+  assert.equal(bannerText("Studio", true), "Not saved yet, waiting for Studio"); // that server is connected: the held event that follows saves or drops by the revision
+  assert.equal(bannerText("Studio", false), notSaved("Studio"));
+  assert.equal(notSavedYet("Studio"), "Not saved yet, waiting for Studio");
+  // the banner reads whether the server is connected from the section's tree, and the held event writes the edit that waits
+  const off = readFileSync(new URL("../src/BoardOff.tsx", import.meta.url), "utf8"), board = readFileSync(new URL("../src/board.ts", import.meta.url), "utf8");
+  assert.ok(off.includes("const connected = useStore((s) => serverConnected(s, serverOfKey(board)));") && off.includes("{bannerText(name, connected)}"));
+  assert.ok(board.includes("if (saveOutage(status, inSection(id))) setOutage(id, true);"));
+  assert.ok(board.includes("step(id, onGrant(cacheOf(id), rev));"), "a held event saves the kept edit at its revision, and drops it at another");
+  assert.ok(board.includes("step(id, onLost(cacheOf(id), waitsForServer(id)));"), "superseded keeps an edit that waits for the board's server");
+});
+
+test("a save of a section's board that is refused for another reason than an outage (413 too_large, 502 bad_answer): the edit is kept, and the canvas says the server's sentence", () => {
+  assert.equal(saveFailure(413, "too_large"), "keep");
+  assert.equal(saveOutage(413, true), false, "it is no outage: waiting does not mend it");
+  assert.equal(saveRefusal(true, 413, "too_large", "the drawing is larger than 32 MB"), "Not saved: the drawing is larger than 32 MB");
+  assert.equal(saveRefusal(true, 502, "bad_answer", "Studio gave an answer that cannot be read."), "Not saved: Studio gave an answer that cannot be read.");
+  assert.equal(saveRefusal(true, 404, "not_found", "no such board"), "Not saved: no such board");
+  // an outage has its own banner, a dropped edit its notice, and a page with no stream its own sentence elsewhere; no answer, or one with no sentence, says nothing
+  for (const [status, code] of [[503, "server_unreachable"], [503, "not_held_there"], [504, "no_answer"], [409, "stale"], [409, "not_holder"], [409, "unknown_client"], [undefined, undefined]] as const)
+    assert.equal(saveRefusal(true, status, code, "x"), "", `${status} ${code}`);
+  assert.equal(saveRefusal(true, 500, undefined, "Internal Server Error", false), "", "a status line is no sentence of the server's");
+  assert.equal(saveRefusal(false, 413, "too_large", "x"), "", "a board of this computer has no such banner");
+  const board = readFileSync(new URL("../src/board.ts", import.meta.url), "utf8"), off = readFileSync(new URL("../src/BoardOff.tsx", import.meta.url), "utf8");
+  assert.ok(board.includes("setSaveSaid(id, saveRefusal(inSection(id), status, code, e instanceof Error ? e.message : String(e), e instanceof ApiError && e.said));"));
+  assert.ok(off.includes('if (said) return <div className="save-banner" role="status">{said}</div>;'));
 });
 
 test("the banner and the notice", () => {
@@ -34,36 +65,52 @@ test("the banner and the notice", () => {
 });
 
 test("boardView: a local board is always its canvas", () => {
+  assert.equal(inSection(LOCAL), false);
   for (const connected of [true, false]) for (const hasScene of [true, false]) {
-    assert.equal(boardView(local, connected, hasScene), "canvas");
-    assert.equal(boardView({ ...local, gone: true }, connected, hasScene), "canvas");
+    assert.equal(boardView({ remote: false, connected }, hasScene), "canvas");
+    assert.equal(boardView({ remote: false, connected, gone: true }, hasScene), "canvas");
   }
 });
 
-test("boardView: a board on another server", () => {
-  assert.equal(boardView(far, true, false), "canvas");       // it is read
-  assert.equal(boardView(far, true, true), "canvas");
-  assert.equal(boardView(far, false, true), "canvas");       // an outage: the scene kept here stays in use
-  assert.equal(boardView(far, false, false), "unreachable"); // never loaded in this window
+test("boardView: a board of a section", () => {
+  assert.equal(inSection(FAR), true);
+  const up = { remote: true, connected: true }, down = { remote: true, connected: false };
+  assert.equal(boardView(up, false), "canvas");       // it is read
+  assert.equal(boardView(up, true), "canvas");
+  assert.equal(boardView(down, true), "canvas");       // an outage: the scene kept here stays in use, and can still be drawn on
+  assert.equal(boardView(down, false), "unreachable"); // never loaded in this window: a board that is not open cannot be opened
+  assert.equal(boardView({ ...up, gone: false }, false), "canvas");
   for (const connected of [true, false]) for (const hasScene of [true, false])
-    assert.equal(boardView({ ...far, gone: true }, connected, hasScene), "gone");
+    assert.equal(boardView({ remote: true, connected, gone: true }, hasScene), "gone");
+});
+
+test("the canvas reads the three from the board's key, the section's tree and the page's mark", () => {
+  const canvas = readFileSync(new URL("../src/Canvas.tsx", import.meta.url), "utf8");
+  assert.ok(canvas.includes("const view = boardView({ remote: inSection(board), connected: connected && !away, gone }, scenes.has(board));"));
 });
 
 test("the view in place of the canvas", () => {
   assert.deepEqual(offText("unreachable", "Studio"),
     { title: "Studio is not connected", body: "This whiteboard is on Studio. It opens when the server is connected again." });
-  assert.match(offText("gone", "Studio").title, /Studio/);
+  assert.deepEqual(offText("gone", "Studio"), { title: "No longer on Studio", body: "This whiteboard was on Studio and is not there any more." });
 });
 
-test("takeoverText: local and remote", () => {
-  assert.deepEqual(takeoverText(local, "Studio"),
+test("takeoverText: a local board, and a board of a section, which another computer that uses that server may hold", () => {
+  assert.deepEqual(takeoverText(false, "Studio"),
     { title: "Open in another window", body: "This whiteboard is in use in another tab or window. Only one can draw on it at a time." });
-  assert.deepEqual(takeoverText(far, "Studio"),
+  assert.deepEqual(takeoverText(inSection(LOCAL), "This computer"),
+    { title: "Open in another window", body: "This whiteboard is in use in another tab or window. Only one can draw on it at a time." });
+  assert.deepEqual(takeoverText(true, "Studio"),
     { title: "In use elsewhere", body: "This whiteboard is in use in another window or on Studio. Only one can draw on it at a time." });
+  assert.deepEqual(takeoverText(inSection(FAR), "Studio"), takeoverText(true, "Studio"));
 });
 
-test("serverNameOf: the entry's name", () => {
+test("serverNameOf: the name of the entry the board's key names", () => {
   const servers = [{ id: "local", name: "This computer" }, { id: "s_1", name: "Studio" }];
-  assert.equal(serverNameOf(far, servers), "Studio");
-  assert.equal(serverNameOf({ ...far, server: "s_9" }, servers), "the server");
+  assert.equal(serverNameOf(FAR, servers), "Studio");
+  assert.equal(serverNameOf("s_1~b_9", servers), "Studio");
+  assert.equal(serverNameOf(LOCAL, servers), "This computer", "the same id on this computer");
+  assert.equal(serverNameOf(keyOn("s_9", "b_1"), servers), "the server", "an entry the list no longer has");
+  assert.equal(serverNameOf(undefined, servers), "This computer");
+  assert.equal(serverNameOf(FAR, []), "the server");
 });

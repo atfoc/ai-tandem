@@ -342,10 +342,8 @@ func (m *Manager) resolveSubSpawn(c *Chat, base spawnBase, req SpawnSubRequest) 
 	}
 	if unfit {
 		var d model.Defaults
-		if c.meta.Client == "" { // a chat with a client mark reads no defaults: the catalog's default
-			m.Store.Read(func(s *model.State) { d = s.Defaults })
-		}
-		_, mc := defaults.Resolve(d, m.GroupOf(c.meta), model.LocalServer, kind, c.meta.Cwd, cat)
+		m.Store.Read(func(s *model.State) { d = s.Defaults })
+		_, mc := defaults.Resolve(d, m.GroupOf(c.meta), kind, c.meta.Cwd, cat)
 		if !explicitModel {
 			modelID = mc.Model
 		}

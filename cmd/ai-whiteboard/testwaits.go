@@ -24,8 +24,15 @@ import (
 //	         keep their share of it
 //	start    remotes.Limits.Start
 //	agents   how often the agents' programs are looked up again (usable.Every)
+//	images   how long an image of a chat that was never sent and that no draft names is kept
+//	         after its last use (chats.Deps.ImageWait, an hour); the cleanup that takes such
+//	         images by itself looks twelve times in it (chats.Manager.CleanImages)
+//	tooold   servers.Timing.TooOld: how often a server that is too old is asked again
+//	imagecall  remotes.Limits.Image: how long an upload or a fetch of an image of a chat on
+//	         another server may take (60 s)
 type testWaits struct {
-	ping, silence, backoff, start, agents time.Duration
+	ping, silence, backoff, start, agents, images, tooOld time.Duration
+	imageCall                                             time.Duration
 }
 
 // readTestWaits is the AIWB_TEST_WAITS of this process; a value that cannot be read ends it.
@@ -42,12 +49,13 @@ func parseTestWaits(v string) (w testWaits, err error) {
 	if strings.TrimSpace(v) == "" {
 		return w, nil
 	}
-	fields := map[string]*time.Duration{"ping": &w.ping, "silence": &w.silence, "backoff": &w.backoff, "start": &w.start, "agents": &w.agents}
+	fields := map[string]*time.Duration{"ping": &w.ping, "silence": &w.silence, "backoff": &w.backoff, "start": &w.start, "agents": &w.agents, "images": &w.images, "tooold": &w.tooOld,
+		"imagecall": &w.imageCall}
 	for _, part := range strings.Split(v, ",") {
 		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
 		f := fields[name]
 		if !ok || f == nil {
-			return testWaits{}, fmt.Errorf("%q is not name=duration with one of the names ping, silence, backoff, start, agents", part)
+			return testWaits{}, fmt.Errorf("%q is not name=duration with one of the names ping, silence, backoff, start, agents, images, tooold, imagecall", part)
 		}
 		d, err := time.ParseDuration(value)
 		if err != nil || d <= 0 {
@@ -61,7 +69,7 @@ func parseTestWaits(v string) (w testWaits, err error) {
 // timing is the Timing of the connections to other servers: zero, which is DefaultTiming, but
 // for the waits that were lowered.
 func (w testWaits) timing() servers.Timing {
-	t := servers.Timing{Silence: w.silence}
+	t := servers.Timing{Silence: w.silence, TooOld: w.tooOld}
 	if w.backoff > 0 {
 		steps := servers.DefaultTiming.Backoff
 		last := steps[len(steps)-1]
@@ -75,7 +83,7 @@ func (w testWaits) timing() servers.Timing {
 
 // limits is the Limits of the relay: zero, which is DefaultLimits, but for the lowered ones.
 func (w testWaits) limits() remotes.Limits {
-	return remotes.Limits{Start: w.start}
+	return remotes.Limits{Start: w.start, Image: w.imageCall}
 }
 
 // agentsEvery is how often the agents' programs are looked up again.

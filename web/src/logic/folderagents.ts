@@ -2,8 +2,8 @@
 // client from every branch's record. Branches of one chat, and chats, may share a working folder,
 // and then they can change the same files.
 import { isBusy } from "./status.ts";
-import { serverOf } from "./serverlists.ts";
-import type { BranchState, ChatView, RunView } from "../types.ts";
+import { serverOfKey } from "./keys.ts";
+import type { BranchState, ChatView } from "../types.ts";
 
 /** The agents working in a folder: `here` in the branches of one chat, `elsewhere` in other chats. */
 export type FolderAgents = { total: number; here: number; elsewhere: number };
@@ -30,15 +30,13 @@ export function agentsOf(st: Pick<BranchState, "status" | "subsRunning">): numbe
 
 /** The agents working in `cwd`, seen from `chat`. A record counts when its chat is known and not
  *  archived, its folder is `cwd` and it is on the server `chat` is on (the same path on another
- *  machine is another folder). A chat of a run on another server (a chat on it, one of its
- *  agents) is where that run is, whatever its own view says: `runs` gives the runs. */
-export function folderAgents(p: { chats: Record<string, ChatView>; states: Iterable<BranchState>; cwd?: string; chat: string; runs?: Record<string, Pick<RunView, "server">> }): FolderAgents {
+ *  machine is another folder): a chat's key names its server. */
+export function folderAgents(p: { chats: Record<string, ChatView>; states: Iterable<BranchState>; cwd?: string; chat: string }): FolderAgents {
   let here = 0, elsewhere = 0;
-  const on = (c?: Pick<ChatView, "server" | "run">) => (c?.run && p.runs?.[c.run]?.server) || serverOf(c);
-  const server = on(p.chats[p.chat]);
+  const server = serverOfKey(p.chat);
   for (const st of p.states) {
     const c = p.chats[st.chat];
-    if (!c || c.archived || !sameFolder(st.cwd, p.cwd) || on(c) !== server) continue;
+    if (!c || c.archived || !sameFolder(st.cwd, p.cwd) || serverOfKey(st.chat) !== server) continue;
     const agents = agentsOf(st);
     if (st.chat === p.chat) here += agents; else elsewhere += agents;
   }

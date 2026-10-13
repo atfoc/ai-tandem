@@ -85,7 +85,9 @@ func TestSessionRoutesTakeABranch(t *testing.T) {
 		if out["error"] != err.Error() {
 			t.Fatalf("%s %s: error %q, want %q", method, path, out["error"], err)
 		}
-		if _, ok := out["code"]; ok && err != chats.ErrBusy {
+		// A draft call tells a branch that is not there from a chat that is not: "no_branch".
+		noBranch := err == chats.ErrNoBranch && strings.Contains(path, "/draft")
+		if code, ok := out["code"]; noBranch && code != "no_branch" || ok && !noBranch && err != chats.ErrBusy {
 			t.Fatalf("%s %s: code in %v", method, path, out)
 		}
 	}

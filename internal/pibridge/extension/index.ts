@@ -1,7 +1,8 @@
 // The app's pi extension. It wires the MCP lifecycle from --mcp-config /
 // AIWB_MCP_CONFIG_FILE / AIWB_MCP_CONFIG independently of the app bridge, so standalone
 // `pi -e index.ts --mcp-config '<json>'` works; the app-facing wiring
-// (the UDS permission gate, hello/abort) is gated on AIWB_BRIDGE_*. App chats
+// (the UDS permission gate, hello/abort, the attached images put before the
+// text of a model request) is gated on AIWB_BRIDGE_*. App chats
 // do not register the native `subagent` tool: the MCP spawn family replaces it.
 //
 // Wiring order (plan R1):
@@ -27,7 +28,7 @@
 // AIWB_MCP_CONFIG (the config itself in a variable) is kept for standalone use;
 // the app does not set it. The app handles are taken out of process.env on the
 // first read (app-env.ts) so the shell commands pi runs do not inherit them.
-// Protocol/mcp/mcp-wiring/app-env are dependency-free
+// Protocol/mcp/mcp-wiring/app-env/image-order are dependency-free
 // modules so they stay testable without pi or typebox.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -35,6 +36,7 @@ import { Type } from "typebox";
 import { callBridge, openControl } from "./protocol.ts";
 import { handleToolCall } from "./permissions.ts";
 import { takeAppEnv } from "./app-env.ts";
+import { imagesFirst } from "./image-order.ts";
 import {
   autoAllowedToolNames,
   makeNoticeSink,
@@ -233,6 +235,15 @@ export default function boardToolsExtension(pi: ExtensionAPI): void {
         ask: (frame, timeoutMs) => callBridge(socketPath, frame, timeoutMs),
       },
     );
+  });
+
+  // An attached image stands before the user's text in what the model gets:
+  // pi builds the user message of a `prompt` with the text first, and this
+  // handler, called before each model request with a copy of the conversation,
+  // puts the images first (image-order.ts). It edits in place and returns
+  // nothing, so pi keeps its system messages where they are.
+  pi.on("context", (event) => {
+    imagesFirst(event.messages);
   });
 
   // Best-effort control channel: hello now, abort pushes later. The socket keeps

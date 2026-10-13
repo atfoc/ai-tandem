@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/server"
+	"ai-whiteboard/internal/servers"
 )
 
 // newRemoteInstance is newInstance with remote access set up on a free port, with the name
@@ -177,7 +179,11 @@ func (in *instance) helloMap(t *testing.T) map[string]any {
 }
 
 // testClient is the client id the tests' API client states: an instance id of no server here.
-const testClient = "5f0c2a7e-3b1d-4c6a-9e2f-7a8b9c0d1e2f"
+// testLevel is the level it states (servers.LevelHeader): an app of level 5.
+const (
+	testClient = "5f0c2a7e-3b1d-4c6a-9e2f-7a8b9c0d1e2f"
+	testLevel  = "5"
+)
 
 // pinned is a transport that accepts the certificate with this fingerprint alone: it is
 // self-signed, so it is pinned and not verified.
@@ -194,9 +200,9 @@ func pinned(fingerprint string) *http.Transport {
 }
 
 // remoteHello asks the remote listener on 127.0.0.1:<port> for /api/hello over HTTPS, as an API
-// client does: the certificate is pinned by its fingerprint, the secret and the client id are in
-// their headers. host, when not "", replaces the Host value. It returns the status and the
-// decoded body.
+// client does: the certificate is pinned by its fingerprint, the secret, the client id and the
+// client's level are in their headers. host, when not "", replaces the Host value. It returns
+// the status and the decoded body.
 func remoteHello(t *testing.T, port int, fingerprint, secret, host string) (int, map[string]any) {
 	t.Helper()
 	tr := pinned(fingerprint)
@@ -212,6 +218,7 @@ func remoteHello(t *testing.T, port int, fingerprint, secret, host string) (int,
 		req.Header.Set(remote.SecretHeader, secret)
 	}
 	req.Header.Set(server.ClientHeader, testClient)
+	req.Header.Set(servers.LevelHeader, testLevel)
 	resp, err := (&http.Client{Transport: tr, Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("remote hello: %v", err)
@@ -222,6 +229,46 @@ func remoteHello(t *testing.T, port int, fingerprint, secret, host string) (int,
 		t.Fatalf("remote hello: status %d, body: %v", resp.StatusCode, err)
 	}
 	return resp.StatusCode, body
+}
+
+// remoteCall makes one request on the remote listener of 127.0.0.1:<port> as the API client id:
+// the certificate pinned, the secret and the client id in their headers, and the client's level
+// when level is not "" (an app of before level 5 states none). It returns the status and the
+// body. It is not for a stream that opens: that one never ends.
+func remoteCall(t *testing.T, port int, fingerprint, secret, id, level, method, path string, body any) (int, []byte) {
+	t.Helper()
+	tr := pinned(fingerprint)
+	defer tr.CloseIdleConnections()
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, fmt.Sprintf("https://127.0.0.1:%d%s", port, path), rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(remote.SecretHeader, secret)
+	req.Header.Set(server.ClientHeader, id)
+	if level != "" {
+		req.Header.Set(servers.LevelHeader, level)
+	}
+	if rd != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{Transport: tr, Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("%s %s on the remote listener: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("%s %s on the remote listener: status %d, %v", method, path, resp.StatusCode, err)
+	}
+	return resp.StatusCode, raw
 }
 
 // remoteOK asks for hello with the secret and must get it.
@@ -328,11 +375,15 @@ func TestHelloInstanceIDSurvivesRestart(t *testing.T) {
 }
 
 // With a set-up the start serves hello over HTTPS to a caller with the secret and a listed Host,
-// and to nobody else; the loopback listener is as before.
+// and to nobody else; the loopback listener is as before. Hello states level 5, and a client that
+// states no level, or one below 5, is served hello alone. The data folder is one a server from
+// before level 5 left: the group its state.json names as the one of the API clients is gone
+// when the server answers.
 func TestRemoteListenerServes(t *testing.T) {
 	smokeTest(t)
 	in, port := newRemoteInstance(t)
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
+	stateOfBefore(t, in.dir)
 
 	if got := in.run(t, "launch"); got != in.url+"\n" {
 		t.Fatalf("launch printed %q", got)
@@ -357,6 +408,9 @@ func TestRemoteListenerServes(t *testing.T) {
 	}
 	if body["instanceId"] != local["instanceId"] || body["instanceId"] == nil {
 		t.Fatalf("the remote hello's instanceId is %v, the loopback one's %v", body["instanceId"], local["instanceId"])
+	}
+	if body["featureLevel"] != float64(5) || local["featureLevel"] != float64(5) || server.FeatureLevel != 5 {
+		t.Fatalf("the feature level is %v in the remote hello, %v in the loopback one and %d in the server; want 5", body["featureLevel"], local["featureLevel"], server.FeatureLevel)
 	}
 
 	const wrong = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -383,6 +437,17 @@ func TestRemoteListenerServes(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("plain HTTP: status %d, want 400", resp.StatusCode)
+	}
+
+	// The state is read by a client of level 5 and by no other; the whole of it is
+	// TestLevel5RefusesAnOlderApp. (These come after the requests without the secret: the log
+	// holds one line a minute for an address, and it is the 401's that is looked for below.)
+	kept := noGroupOfBefore(t, in, port, fp, secret)
+	for _, level := range []string{"", "4", "five"} {
+		status, raw := remoteCall(t, port, fp, secret, testClient, level, "GET", "/api/state", nil)
+		if status != http.StatusBadRequest || !strings.Contains(string(raw), `"code":"client_too_old"`) || strings.Contains(string(raw), kept) {
+			t.Fatalf("the state for a client of the level %q: status %d: %s; want 400 client_too_old and nothing of the tree", level, status, raw)
+		}
 	}
 
 	log := serverLog(t, in.dir)

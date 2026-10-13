@@ -1,7 +1,7 @@
 // Subagents in the chat: the one-line row in the thread and the drawer on the right. A run
 // agent's transcript beside its run opens its subagents in the same drawer.
 import React, { useEffect, useRef, useState } from "react";
-import { useStore, getState, boardName, isBusy, chatOf, setDrawer, shownView, subsOf, subThreadOf, threadOf } from "./store.ts";
+import { useStore, getState, boardNames, isBusy, chatOf, setDrawer, shownView, subsOf, subThreadOf, threadOf } from "./store.ts";
 import { loadSubItems } from "./conn.ts";
 import { ItemView, usePrefixEnd, useStickToBottom } from "./ChatView.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -12,7 +12,8 @@ import { subInPrefix } from "./logic/prefix.ts";
 import { AgentGlyph } from "./icons.tsx";
 import { agentClass, agentShortName } from "./agents.ts";
 import { catalogFor } from "./logic/agentlist.ts";
-import { serverOfChat } from "./logic/serverlists.ts";
+import { serverOf } from "./logic/serverlists.ts";
+import { useOffWhy } from "./ChatChoices.tsx";
 import type { ChatView, Item, SubStatus, Subagent } from "./types.ts";
 
 export const openSub = (chat: string, sub: string) => setDrawer(chat, sub);
@@ -30,17 +31,20 @@ function useSubNav(chat: string, sid: string): { on: boolean; toggle(): void } {
 }
 
 /** Whether a layer above the drawer takes this Esc: the confirm dialog, the point picker, the tree
- *  popup, the mention list, a quote float, the composer's Subagents popover. */
+ *  popup, the mention list, a quote float, the composer's Subagents popover, an image shown large. */
 export function escTaken(e: KeyboardEvent): boolean {
   const s = getState();
   const box = e.target instanceof Element && e.target.closest(".composer-input"); // its Esc does not get to the float or the list
-  return !!(s.confirm || s.picking || s.treeNav || document.querySelector(box ? ".mention-pop, .sub-pop" : ".mention-pop, .qfloat, .qlist, .sub-pop"));
+  return !!(s.confirm || s.picking || s.treeNav || document.querySelector(box ? ".mention-pop, .sub-pop, .img-large" : ".mention-pop, .qfloat, .qlist, .sub-pop, .img-large"));
 }
 
-/** A subagent's own thread, fetched the first time it is wanted; undefined until loaded. */
+/** A subagent's own thread, fetched the first time it is wanted; undefined until loaded. Nothing is asked for a
+ *  chat that takes no call (its server is not connected, or no longer has it): a thread the page keeps shows, and one
+ *  it does not is fetched when the chat takes calls again. */
 export function useSubThread(chat: string, sid: string, want: boolean): Item[] | undefined {
   const items = useStore((s) => (sid ? subThreadOf(s, chat, sid)?.items : undefined));
-  useEffect(() => { if (want && sid && !items) void loadSubItems(chat, sid); }, [want, chat, sid, !items]);
+  const off = !!useOffWhy(chat);
+  useEffect(() => { if (want && sid && !items && !off) void loadSubItems(chat, sid); }, [want, chat, sid, !items, off]);
   return items;
 }
 
@@ -83,7 +87,7 @@ export function SubMeter({ sa }: { sa: Subagent }) {
   return <CtxRing used={used} win={win} title={ctxTitle(used, win)} className="sub-meter" />;
 }
 
-/** server: the entry id of the server of the subagent's chat (serverOfChat), whose catalog names its model. */
+/** server: the entry id of the server of the subagent's chat (serverOf), whose catalog names its model. */
 export function SubStats({ sa, items, now, server }: { sa: Subagent; items?: Item[]; now: number; server: string }) {
   const cat = useStore((s) => catalogFor(s, server, sa.kind ?? ""));
   const m = subModelLabel(sa.model, sa.kind, cat, sa.effort);
@@ -137,8 +141,8 @@ function SubRow({ it, sa, chat }: { it: Item; sa: Subagent; chat: ChatView }) {
   const waiting = subWaiting(sa);
   const items = useSubThread(chat.id, sa.id, sa.status === "running" && !waiting);
   const now = useNow(sa.status === "running");
-  const server = useStore((s) => serverOfChat(s, chat));
-  const line = subLine(it, sa, items, boardName, subs);
+  const server = serverOf(chat);
+  const line = subLine(it, sa, items, boardNames(chat.id), subs);
   const open = () => { if (sa.id) toggle(); }; // not linked yet: nothing to open
   return (
     <div className={`subagent st-${sa.status}${waiting ? " waiting" : ""}${on ? " on" : ""}`} role="button" tabIndex={0} onClick={open}
@@ -207,7 +211,8 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
 }) {
   const { subs, call, sa, readOnly } = useSub(chat.id, sid);
   const items = useSubThread(chat.id, sid, true);
-  const server = useStore((s) => serverOfChat(s, chat)); // a run agent's subagent: the run's server names its model
+  const off = useOffWhy(chat.id); // why a thread the page does not keep is not being loaded
+  const server = serverOf(chat); // a run agent's subagent too: its chat's key names the run's server
   const list = subTree(subs).map((n) => n.sa); // ‹ › goes through the tree: a subagent, then the ones it started
   const idx = sa ? list.findIndex((x) => x.id === sa.id) : -1;
   const above = subAncestors(sa, subs); // of a nested one: whose subagent it is, and the way back
@@ -218,7 +223,7 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
   const onScroll = useStickToBottom(ref, running, sid);
   if (!sa) return null;
   const it: Item = call ?? { kind: "tool", toolId: sa.tool };
-  const line = subLine(it, sa, items, boardName, subs);
+  const line = subLine(it, sa, items, boardNames(chat.id), subs);
   const step = (by: number) => { const n = list[(idx + by + list.length) % list.length]; if (n) onOpen(n.id); };
   return (
     <>
@@ -251,13 +256,13 @@ export function SubThread({ chat, sid, branch = "", onClose, onOpen, closeTitle 
       </header>
       <div className="sub-drawer-body" ref={ref} onScroll={onScroll}>
         {sa.prompt && <SubPrompt text={sa.prompt} />}
-        {!items && <div className="typing"><span className="dots"><i /><i /><i /></span> Loading…</div>}
+        {!items && (off ? <div className="note">{off}</div> : <div className="typing"><span className="dots"><i /><i /><i /></span> Loading…</div>)}
         {(items ?? []).map((x, i) => (x ? <ItemView key={i} item={x} chat={chat} branch={branch} sub={sa} readOnly={readOnly} /> : null))}
         {running && !waiting && items && !items.length && <div className="typing"><span className="dots"><i /><i /><i /></span> Starting…</div>}
         {items && showReport(it, sa, items) && (
           <div className="sub-report">
             <div className="tool-sub">Report</div>
-            <Markdown text={subReport(it, sa, items)} board={chat.board} agent={chat.agent} />
+            <Markdown text={subReport(it, sa, items)} board={chat.board} agent={chat.agent} of={chat.id} />
           </div>
         )}
       </div>

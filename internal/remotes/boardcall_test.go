@@ -37,7 +37,7 @@ func answers(t *testing.T, th *there, n int) []map[string]any {
 // take makes the page the holder of the board, on both servers.
 func take(t *testing.T, rg *rig, p *bridgetest.Page, id string) {
 	t.Helper()
-	wantReply(t, "take", rg.r.TakeBoard(t.Context(), p.ID, id, false), http.StatusOK, map[string]any{"state": "held"})
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p.ID, id, false), http.StatusOK, map[string]any{"state": "held"})
 }
 
 // TestBoardCall: a tool call of the board's server goes to the page that holds the board, under
@@ -53,7 +53,7 @@ func TestBoardCall(t *testing.T) {
 	rg.s.Send(toolCall("rpc_5", "draw", boardA, ""))
 	ev := role(t, p1, "rpc")
 	id, _ := ev["id"].(string)
-	if id != "far_1" || ev["method"] != "tool" || field(ev, "params", "board") != boardA || field(ev, "params", "args", "n") != 1.0 || len(ev) != 4 {
+	if id != "far_1" || ev["server"] != rg.entry || ev["method"] != "tool" || field(ev, "params", "board") != boardA || field(ev, "params", "args", "n") != 1.0 || len(ev) != 5 {
 		t.Fatalf("the page's call: %v", ev)
 	}
 	if !rg.r.IsBoardCall(id) || rg.r.IsBoardCall("rpc_5") {
@@ -95,19 +95,19 @@ func TestBoardCall(t *testing.T) {
 	role(t, p1, "rpc")
 	rg.s.Send(toolCall("rpc_10", "show_board", boardA, boardB))
 	role(t, p1, "rpc")
-	noRole(t, rg, p1, p2)
+	noRole(t, rg.far, p1, p2)
 
 	// No page holds the board, or the board is not the entry's: answered at once.
 	rg.s.Send(toolCall("rpc_11", "draw", boardC, ""))
 	if got := answers(t, th, 3); !reflect.DeepEqual(got[2], map[string]any{"id": "rpc_11", "error": noBoardWindow}) {
 		t.Errorf("the server got %v", got[2])
 	}
-	rg.r.boardCallEvent("s_other", mustJSON(t, toolCall("rpc_12", "draw", boardA, "")))
-	rg.r.boardCallEvent(rg.entry, json.RawMessage(`{"params":{"board":"`+boardA+`"}}`)) // no id: no call
-	noRole(t, rg, p1, p2)
+	rg.r.boardCallEvent("s_000000000000", mustJSON(t, toolCall("rpc_12", "draw", boardA, ""))) // no tree of that entry
+	rg.r.boardCallEvent(rg.entry, json.RawMessage(`{"params":{"board":"`+boardA+`"}}`))        // no id: no call
+	noRole(t, rg.far, p1, p2)
 
 	// The page loses the board: its calls by that board fail at once, the others stay.
-	wantReply(t, "release", rg.r.ReleaseBoard(ctx, p2.ID, boardB), http.StatusOK, map[string]any{"state": "free"})
+	wantReply(t, "release", rg.r.ReleaseBoard(rg.entry, p2.ID, boardB), http.StatusOK, map[string]any{"state": "free"})
 	if got := answers(t, th, 4); !reflect.DeepEqual(got[3], map[string]any{"id": "rpc_8", "error": noBoardWindow}) {
 		t.Errorf("the server got %v", got[3])
 	}

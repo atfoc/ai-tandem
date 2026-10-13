@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -133,7 +134,10 @@ func trip(t *testing.T, c net.Conn, msg string) time.Duration {
 	return time.Since(start)
 }
 
-// TestRoundTrip: the measured round trip is the profile's, within 20 % or a few milliseconds.
+// TestRoundTrip: a round trip takes the profile's time: never less, and no more than 20 % or a
+// few milliseconds over it. Load on the machine adds to a trip and never takes from it, so the
+// upper bound is asked of the fastest trip of a round, and a round that the machine slowed as a
+// whole is measured again.
 func TestRoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -150,15 +154,23 @@ func TestRoundTrip(t *testing.T) {
 			l := linksim.Start(t, startEcho(t).addr, c.p)
 			conn := dial(t, l)
 			trip(t, conn, "warm") // the connect to the target is not part of a round trip
-			const trips = 5
-			var sum time.Duration
-			for range trips {
-				sum += trip(t, conn, "ping")
-			}
-			got := sum / trips
+			const trips, rounds = 5, 4
 			slack := max(c.p.RTT/5, 8*time.Millisecond)
-			if got < c.p.RTT || got > c.p.RTT+slack {
-				t.Errorf("round trip %v; want %v, up to %v more", got, c.p.RTT, slack)
+			for round := 1; ; round++ {
+				best := time.Duration(math.MaxInt64)
+				for range trips {
+					got := trip(t, conn, "ping")
+					if got < c.p.RTT {
+						t.Fatalf("round trip %v; want %v or more", got, c.p.RTT)
+					}
+					best = min(best, got)
+				}
+				if best <= c.p.RTT+slack {
+					break
+				}
+				if round == rounds {
+					t.Fatalf("the fastest round trip of each of %d rounds was over %v: %v in the last; want %v, up to %v more", rounds, c.p.RTT+slack, best, c.p.RTT, slack)
+				}
 			}
 		})
 	}

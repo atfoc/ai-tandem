@@ -1,5 +1,5 @@
 // Proves A2.6: a long name of a composer's chip is cut with an ellipsis, and is whole in the tooltip and in the menu.
-// The seed's 47-character folder and model and its 31-character server, as a choice and as a fixed chip, in a wide
+// The seed's 47-character folder and model, as a choice and as a fixed chip, and its 31-character server, whose chip is always a fixed one, in a wide
 // chat toolbar, in the "more" popup of a 300 px page, and in the goal composer at its least stage (the folder, and
 // the models' chip with the long model): the name's element is narrower than its text, ends in an ellipsis and stays
 // on one line, inside its chip, and the chip's icon and caret are whole. The whole name is in the chip's tooltip, or
@@ -16,7 +16,6 @@ const FOLDER = "storefront-monorepo-with-a-very-long-folder-name", MODEL = "Clau
 const CHIPS = {
   folder: ['button.tchip[title^="Working directory"], button.tchip[title^="Folder on"]', ".menu.up.dirs", ".dir-foot .btn"],
   model: ['button.tchip[title^="Model"]', ".model-pick > .menu.up", '[role="option"] .menu-label'],
-  server: [".server-pick > button.tchip", ".server-pick > .menu.up", '[role="option"] .menu-label'],
   tiers: ['button.tchip[title^="Models"]', null, null],
   "folder, fixed": ['.tchip.static[title^="Working directory"], .tchip.static[title^="Folder on"]', null, null],
   "model, fixed": ['.tchip.static[title^="Model and effort"]', null, null],
@@ -26,8 +25,8 @@ const CHIPS = {
 const CASES = [
   ["plain-new-long", 1100, [["folder", FOLDER], ["model", MODEL]]],
   ["plain-new-long", 300, [["folder", FOLDER], ["model", MODEL]]],
-  ["plain-remote-new", 1100, [["server", SERVER]]],
-  ["plain-remote-new", 300, [["server", SERVER]]],
+  ["plain-remote-new", 1100, [["server, fixed", SERVER]]],
+  ["plain-remote-new", 300, [["server, fixed", SERVER]]],
   ["plain-started-long", 1100, [["folder, fixed", FOLDER], ["model, fixed", MODEL]]],
   ["plain-remote-started-long", 300, [["server, fixed", SERVER], ["folder, fixed", FOLDER], ["model, fixed", MODEL]]],
   ["board-long", 300, [["folder, fixed", FOLDER], ["model, fixed", MODEL]]],
@@ -107,7 +106,7 @@ await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip 
     const s = states.find((x) => x.id === "plain-new"), { ctx, page } = await openPage({ url, browser, sel: s.sel, ...paneSize("page", 1100, HEIGHT), wait: ".composer-box .send" });
     await page.evaluate(() => document.fonts.ready);
     await frame(page);
-    for (const kind of ["server", "folder", "model"]) {
+    for (const kind of ["folder", "model"]) {
       const c = await page.evaluate(chipInPage, [".composer:not(.run-composer)", CHIPS[kind][0]]);
       if (!c || c.none || c.cut) fail(`plain-new at 1100 px, the ${kind} chip: ${!c ? "is not on the page" : c.none ? "has no name element" : `its short name "${c.text}" is cut`}`);
     }

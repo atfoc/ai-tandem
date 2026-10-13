@@ -10,7 +10,9 @@
 //   pane   ["panel" | "page" | "stage", width]: the pane and its width, for a state measured at one
 //   act    what the page is told first: "move" (Branch from here on the first reply), "hover" (the pointer on the
 //          first reply), "select" (select all on the board), "drawer" (open the first subagent), "tree" (open the
-//          chat's tree)
+//          chat's tree), "drop:<entry id>" (that server of the list drops while the page has its chat or its run
+//          open: a thing of a server that is not connected is on screen only so; the driver connects the server
+//          again before it opens the next page)
 //   mock   code run in the mock once the page is open (a knob: the stream cut, another version)
 // The smoke check (dev/checks/P0.3-smoke.mjs) opens every one; a check of an item reads the ids it needs.
 //
@@ -21,14 +23,17 @@
 // servers (s_lab, connected, with a 31-character name and no Cursor catalog; s_off, not connected; s_bare, no
 // agent installed), pi's catalog, the long folder and model, and the board b_ui that answers a take (three shapes),
 // in a closed group "Shared" of its own.
+// A server of the list is another machine (runmock.mjs addServer, onServer): what a section seeds "on the lab box"
+// is in that machine's own tree, in a group of its own there (with the id the section's group has here), and shows in
+// that server's section of the sidebar. The page names such a thing "<entry id>~<id>": that is what its `sel` has.
 //
 //   A1  the servers; the stream cut ("Reconnecting…"); the update notice, both kinds; the board b_ui, whose canvas
 //       takes the keys
 //   A2  every toolbar state: plain chats (started, unstarted, busy, quotes, a context error, long names, on s_lab,
 //       a pending move, "Loading models…", no agent, a server not connected, a fresh fork, a model notice, two
 //       branches with unlike toolbars), chats on a board (the editable b_ui among them) and on a run, and the goal
-//       composer (on another server, with fixed chips, with a long folder). The names of G1's cases are kept where
-//       a state is one of them
+//       composer (of a run on another server, with fixed chips, with a long folder). The names of G1's cases are kept where
+//       a state is one of them. "A server not connected" is the lab box dropped while the chat or the run is open
 //   A3  the tree of G2: Shop > Sub and Other > Mid > Leaf, a chat in each level, one ungrouped; the runs moved
 //       into a closed group "Runs"
 //   A4  a thread whose turns end with a point; a chat with two branches; a fresh fork of each agent kind; a chat
@@ -40,6 +45,15 @@
 //   A6  a chat with code (every kind of word the page colours in code is in it), a tool card and a permission card;
 //       a chat with two branches for the tree popup. The
 //       board, the run pages, the goal composer and the Servers dialog are the mock's own and A1's
+//   SEC the sections of the sidebar (plans/remote-server-sections-goal.md, section 3), one server of the list per
+//       state of a section, each made anew by every seed: s_studio "Studio Mac", connected, with a tree (loose: the
+//       board b_loose that answers a take, with a chat; the unstarted run r_draft; the chats c_plain and c_note, the
+//       second with a saved draft at counter 2; the archived chat c_arch. The group g_shop "Renders", which that
+//       machine's own page shows collapsed: the board b_arch with a chat, the chat c_queue at work, the finished run
+//       r_film with a chat, and in it the group g_sub "Nightly" with a chat. The group g_old "Old takes" with a chat);
+//       s_empty "Empty box", connected, with nothing; s_wait "Slow link", connecting; s_away "Attic server", not
+//       connected; s_old "Old Mini", too old; s_cert "Cert box", whose certificate changed. The ids c_plain, g_shop,
+//       b_arch and r_draft are also ids of this computer's own things
 (only) => {
   const states = [];
   const state = (section, id, sel, see, more = {}) => { states.push({ id, section, sel, see, ...more }); };
@@ -64,18 +78,21 @@
     if (!TREE[SHOP].includes(LONG_NAME)) TREE[SHOP].push(LONG_NAME);
     if (!claude.models.some((m) => m.id === "long")) claude.models.push({ id: "long", label: "Claude Opus 5.5 (1M context, extended thinking)", efforts: ["low", "medium", "high", "max"], defaultEffort: "high", contextWindow: 1000000 });
   }
-  /** Three more servers in the list, and what each offers. */
+  /** Three more servers in the list, each a machine with a tree of its own, and what each offers. */
   function servers() {
     longNames();
-    extra.servers = [{ id: "local", local: true, name: "This computer", state: "connected" },
-      { id: LAB, name: LAB_NAME, address: `https://${LAB_NAME}:4790`, state: "connected", version: "dev" },
-      { id: OFF, name: "Office Mac", address: "https://office-mac.example:4790", state: "unreachable", detail: "connection refused" },
-      { id: BARE, name: "Bare box", address: "https://bare-box.example:4790", state: "connected", version: "dev" }];
-    extra.lists = { [LAB]: { agents: ["claude", "cursor", "pi"], catalogs: { claude, pi: PI }, home: LAB_HOME, defaultCwd: `${LAB_HOME}/projects` }, // no Cursor catalog yet: "Loading models…"
-      [OFF]: { agents: ["claude"], catalogs: { claude }, home: "/Users/office", defaultCwd: "/Users/office/projects" }, // as last heard
-      [BARE]: { agents: [], catalogs: {}, home: "/home/bare", defaultCwd: "/home/bare" } };
+    addServer({ id: LAB, name: LAB_NAME, address: `https://${LAB_NAME}:4790`, state: "connected", version: "dev" },
+      { lists: { agents: ["claude", "cursor", "pi"], catalogs: { claude, pi: PI }, home: LAB_HOME, defaultCwd: `${LAB_HOME}/projects` } }); // no Cursor catalog yet: "Loading models…"
+    addServer({ id: OFF, name: "Office Mac", address: "https://office-mac.example:4790", state: "unreachable", detail: "connection refused" });
+    addServer({ id: BARE, name: "Bare box", address: "https://bare-box.example:4790", state: "connected", version: "dev" }, { lists: { agents: [], catalogs: {}, home: "/home/bare", defaultCwd: "/home/bare" } });
     Object.assign(TREE, { [LAB_HOME]: ["projects"], [`${LAB_HOME}/projects`]: [LONG_NAME, "shop"], [`${LAB_HOME}/projects/shop`]: [], [LAB_LONG]: [] });
   }
+  /** What the page names a thing of another server by: its `sel` has that. */
+  const there = (server, id) => `${server}~${id}`;
+  /** A chat on the lab box, in that machine's own group with the id `o.group`; answers what the page names it by. */
+  const onLab = (id, o, list) => { onServer(LAB, () => add(id, { cwd: `${LAB_HOME}/projects/shop`, ...o }, list)); return there(LAB, id); };
+  /** The lab box drops while the state is on screen. */
+  const LAB_DROPS = { act: `drop:${LAB}` };
   /** A board this window may hold, with a drawing of three shapes: its canvas can be edited. */
   function sketch() {
     const shape = (id, type, x, y, more) => ({ id, type, x, y, width: 160, height: 90, ...more });
@@ -106,7 +123,8 @@
   function A2() {
     servers(); sketch();
     group("g_A2", "A2 composer", { collapsed: true });
-    const g = { group: "g_A2" }, long = { cwd: LONG_DIR, model: "long", effort: "max", usage: FULL }, lab = { server: LAB, cwd: `${LAB_HOME}/projects/shop` };
+    const g = { group: "g_A2" }, long = { cwd: LONG_DIR, model: "long", effort: "max", usage: FULL };
+    for (const id of [LAB, BARE]) onServer(id, () => group("g_A2", "A2 composer")); // those machines' own groups, with the id this computer's has
     const page = (name, chatId, see, more) => state("A2", name, { chat: chatId }, see, { pane: ["page", 300], ...more });
     const panel = (name, sel, see, more) => state("A2", name, sel, see, { pane: ["panel", 300], ...more });
     const SEND = ".composer .send:not(.stop)", AGENT = '.composer button.tchip[title^="Agent"]', FIXED = '.composer .tchip.static[title^="Model and effort"]';
@@ -121,17 +139,18 @@
     add("c_A2_busy", { name: "Busy", ...g, status: "tool", statusTool: "Bash" }, THREAD.slice(0, 2)); page("plain-busy", "c_A2_busy", ".composer .send.stop");
     add("c_A2_ctxerr", { name: "Context error", ...g, usage: { ...usage, ctxError: "the agent did not report its context" } }, THREAD); page("plain-ctxerr", "c_A2_ctxerr", ".composer .ctx-meter.error");
     add("c_A2_quotes", { name: "Quotes", ...g, draft: { text: "", references: REFS } }, THREAD); page("plain-quotes", "c_A2_quotes", ".composer .qcount");
-    add("c_A2_remote_new", { ...g, ...fresh, ...lab }); page("plain-remote-new", "c_A2_remote_new", HEAD_SERVER, ON_LAB);
-    add("c_A2_remote", { name: "On the lab box", ...g, ...lab }, THREAD); page("plain-remote-started", "c_A2_remote", HEAD_SERVER, ON_LAB);
-    add("c_A2_remote_long", { name: "On the lab box, long", ...g, ...lab, ...long, cwd: LAB_LONG }, THREAD); page("plain-remote-started-long", "c_A2_remote_long", HEAD_SERVER, ON_LAB);
+    page("plain-remote-new", onLab("c_A2_remote_new", { ...g, ...fresh }), HEAD_SERVER, ON_LAB);
+    page("plain-remote-started", onLab("c_A2_remote", { name: "On the lab box", ...g }, THREAD), HEAD_SERVER, ON_LAB);
+    page("plain-remote-started-long", onLab("c_A2_remote_long", { name: "On the lab box, long", ...g, ...long, cwd: LAB_LONG }, THREAD), HEAD_SERVER, ON_LAB);
     add("c_A2_move", { name: "Move", ...g }, clone(TURNS)); page("plain-move", "c_A2_move", ".composer .fk-banner", { act: "move" });
     add("c_A2_move_long", { name: "Move long", ...g, ...long }, clone(TURNS)); page("plain-move-long", "c_A2_move_long", ".composer .fk-banner", { act: "move" });
     // plain chats G1 did not see
-    add("c_A2_loading", { ...g, ...fresh, ...lab, agent: "cursor", model: "", effort: undefined }); page("plain-loading", "c_A2_loading", ".composer .tchip.static", { text: "Loading models" });
+    page("plain-loading", onLab("c_A2_loading", { ...g, ...fresh, agent: "cursor", model: "", effort: undefined }), ".composer .tchip.static", { text: "Loading models" });
     add("c_A2_noagent", { ...g, ...fresh, agent: "", model: "", effort: undefined }); page("plain-noagent", "c_A2_noagent", ".composer .agent-reason", { text: "Choose an agent" });
-    add("c_A2_bare", { ...g, ...fresh, server: BARE, cwd: "/home/bare", agent: "", model: "", effort: undefined }); page("plain-noagent-installed", "c_A2_bare", ".composer .agent-reason.missing", { text: "No agent is installed on Bare box" });
-    add("c_A2_off_new", { ...g, ...fresh, server: OFF, cwd: "/Users/office/projects" }); page("plain-off-new", "c_A2_off_new", ".composer .agent-reason.missing", { text: "Office Mac is not connected" });
-    add("c_A2_off", { name: "On the office Mac", ...g, server: OFF, cwd: "/Users/office/projects" }, THREAD); page("plain-off-started", "c_A2_off", ".composer .tchip.server-chip.off", { text: "Office Mac" });
+    onServer(BARE, () => add("c_A2_bare", { ...g, ...fresh, cwd: "/home/bare", agent: "", model: "", effort: undefined })); page("plain-noagent-installed", there(BARE, "c_A2_bare"), ".composer .agent-reason.missing", { text: "No agent is installed on Bare box" });
+    // (open as the lab box drops: the chat stays on screen as it was, and its composer says why it takes nothing)
+    page("plain-off-new", onLab("c_A2_off_new", { ...g, ...fresh }), ".composer .agent-reason.missing", { text: `${LAB_NAME} is not connected`, ...LAB_DROPS });
+    page("plain-off-started", onLab("c_A2_off", { name: "On the lab box, away", ...g }, THREAD), ".chat-page .remote-bar.off", { text: `${LAB_NAME} is not connected`, also: [{ see: ".composer .composer-tools .ctx-meter" }], ...LAB_DROPS });
     const fork = { ...g, fresh: true, forkedFrom: "c_A2_move", forkedFromTitle: "Move", forkedBranch: "main", forkedAt: 3 };
     add("c_A2_fork", { name: "Move (fork)", ...fork }, clone(TURNS.slice(0, 3))); page("plain-fork-fresh", "c_A2_fork", '.composer button.tchip[title^="Effort"]');
     add("c_A2_notice", { name: "Move (fork), another model", ...fork, model: "sonnet", effort: "medium" }, clone(TURNS.slice(0, 3))); page("plain-fork-notice", "c_A2_notice", ".composer .model-notice", { text: "Another model" });
@@ -162,8 +181,10 @@
     stage("goal-missing", "r_missing", ".run-composer .composer-box");
     stage("goal-blocked", "r_blocked", ".run-composer .composer-box");
     draft("r_A2_long", "Long folder", { cwd: LONG_DIR }); stage("goal-draft-long", "r_A2_long", '.run-composer .tchip[title*="storefront-monorepo"]');
-    draft("r_A2_remote", "On the lab box", { server: LAB, cwd: `${LAB_HOME}/projects/shop` }); stage("goal-remote", "r_A2_remote", ".run-composer .server-pick .tchip", { text: LAB_NAME });
-    draft("r_A2_fixed", "Start not confirmed", { server: LAB, cwd: `${LAB_HOME}/projects/shop`, start: "unconfirmed" }); stage("goal-fixed", "r_A2_fixed", '.run-composer .tchip.run-fixed[data-fixed="tiers"]');
+    // a run of the lab box that has not started: it is on that server from the moment it was made, and its server is no choice
+    onServer(LAB, () => draft("r_A2_remote", "On the lab box", { cwd: `${LAB_HOME}/projects/shop` })); stage("goal-remote", there(LAB, "r_A2_remote"), ".run-composer .tchip.server-chip", { text: "lab-gpu-box" });
+    // (open as the lab box drops: every choice of the goal composer is a fixed chip)
+    onServer(LAB, () => draft("r_A2_fixed", "On the lab box, away", { cwd: `${LAB_HOME}/projects/shop` })); stage("goal-fixed", there(LAB, "r_A2_fixed"), '.run-composer .tchip.run-fixed[data-fixed="tiers"]', LAB_DROPS);
   }
 
   // ---- A3: the drop highlight
@@ -194,7 +215,8 @@
     const g = { group: "g_A4" };
     add("c_A4_turns", { name: "Branch send", ...g }, clone(TURNS)); state("A4", "turns", { chat: "c_A4_turns" }, ".thread .fk-act.k-branch", { act: "hover" });
     twoBranches("c_A4_two", { name: "Two branches", ...g }); state("A4", "two-branches", { chat: "c_A4_two" }, ".fk-nav .fk-rows", { act: "tree" });
-    add("c_A4_remote", { name: "Branch send on the lab box", ...g, server: LAB, cwd: `${LAB_HOME}/projects/shop` }, clone(TURNS)); state("A4", "remote-turns", { chat: "c_A4_remote" }, ".thread .fk-act.k-branch", { act: "hover" });
+    onServer(LAB, () => group("g_A4", "A4 waits"));
+    state("A4", "remote-turns", { chat: onLab("c_A4_remote", { name: "Branch send on the lab box", ...g }, clone(TURNS)) }, ".thread .fk-act.k-branch", { act: "hover" });
     const fork = (kind, more) => {
       const id = `c_A4_fork_${kind}`, c = catalogs[kind].default;
       add(id, { name: `Branch send (fork, ${kind})`, ...g, agent: kind, model: c.model, effort: c.effort, fresh: true, forkedFrom: "c_A4_turns", forkedFromTitle: "Branch send", forkedBranch: "main", forkedAt: 3, ...more }, clone(TURNS.slice(0, 3)));
@@ -339,9 +361,50 @@
     add("c_A6_sketch", { name: "On the sketch", board: "b_ui" }, clone(THREAD)); state("A6", "board", { board: "b_ui", chat: "c_A6_sketch" }, ".excalidraw:not(.excalidraw--view-mode) .App-toolbar");
   }
 
-  const SECTIONS = { A1, A2, A3, A4, A5, A6 };
+  // ---- SEC: the sections of the sidebar
+
+  function SEC() {
+    const STUDIO = "s_studio", HOME_ = "/Users/studio", WORK = `${HOME_}/work`;
+    for (const id of [STUDIO, "s_empty", "s_wait", "s_away", "s_old", "s_cert"]) delete worlds[id]; // each machine anew
+    addServer({ id: STUDIO, name: "Studio Mac", address: "https://studio-mac.example:4790", state: "connected", version: "dev" }, { lists: { agents: ["claude"], catalogs: { claude }, home: HOME_, defaultCwd: WORK } });
+    addServer({ id: "s_empty", name: "Empty box", address: "https://empty-box.example:4790", state: "connected", version: "dev" }, { lists: { agents: ["claude"], catalogs: { claude }, home: "/home/empty", defaultCwd: "/home/empty" } });
+    addServer({ id: "s_wait", name: "Slow link", address: "https://slow-link.example:4790", state: "connecting" });
+    addServer({ id: "s_away", name: "Attic server", address: "https://attic.example:4790", state: "unreachable", detail: "connection refused" });
+    addServer({ id: "s_old", name: "Old Mini", address: "https://old-mini.example:4790", state: "too_old", version: "0.9.1" });
+    addServer({ id: "s_cert", name: "Cert box", address: "https://cert-box.example:4790", state: "certificate_changed" });
+    onServer(STUDIO, () => {
+      const at = (o) => ({ cwd: WORK, ...o });
+      groups.push({ id: "g_shop", name: "Renders", collapsed: true }, { id: "g_sub", name: "Nightly", parent: "g_shop" }, { id: "g_old", name: "Old takes" });
+      boards.b_loose = { id: "b_loose", name: "Floor plan", group: UNGROUPED, created: iso(T0 - 200 * MIN) };
+      scenes.b_loose = { rev: 3, scene: { type: "excalidraw", version: 2, elements: [{ id: "sec_rect", type: "rectangle", x: 120, y: 100, width: 180, height: 110 }], appState: {}, files: {} } };
+      boards.b_arch = { id: "b_arch", name: "Storyboard", group: "g_shop", created: iso(T0 - 300 * MIN) };
+      addRun({ id: "r_draft", name: "Nightly render", userNamed: true, group: UNGROUPED, cwd: WORK, created: iso(T0 - 6 * MIN), settings: { ...DEFAULT_SETTINGS }, draft: { text: "Render every scene at 4K and compare the frames with last night's." } });
+      addRun({ id: "r_film", name: "Trailer cut", userNamed: true, group: "g_shop", cwd: WORK, created: iso(T0 - 400 * MIN) }, derive("r_film", "film", T0 - 90 * MIN - REAL.endedAt), "Cut a ninety-second trailer from the dailies.");
+      add("c_plain", at({ name: "Render queue is stuck", group: UNGROUPED }), [{ kind: "user", text: "Why is the render queue stuck?" }, say("Two jobs hold the GPU lock."), { kind: "end" }]);
+      add("c_note", at({ name: "Scratch", group: UNGROUPED, created: iso(T0 - 3 * MIN), draft: { text: "remember the LUTs" }, draftRev: 2 }), clone(THREAD)); // (the newest: the first of the chats)
+      add("c_arch", at({ name: "Put away there", group: UNGROUPED, archived: true, archiveOp: "op_sec1" }), clone(THREAD));
+      add("c_on_floor", at({ name: "Label the rooms", board: "b_loose" }), clone(THREAD));
+      add("c_story", at({ name: "Tighten act two", board: "b_arch" }), clone(THREAD));
+      add("c_queue", at({ name: "Queue order", group: "g_shop", status: "tool", statusTool: "Bash" }), THREAD.slice(0, 2));
+      add("c_film_ask", at({ name: "Which shots made it", run: "r_film" }), clone(THREAD));
+      add("c_night", at({ name: "Last night's failures", group: "g_sub" }), clone(THREAD));
+      add("c_take", at({ name: "Take 14", group: "g_old" }), clone(THREAD));
+    });
+    const sec = (id) => `.side-section[data-server="${id}"]`, says = (id, text) => ({ see: `${sec(id)} .side-section-state`, text });
+    state("SEC", "sidebar", {}, `${sec(STUDIO)} .side-group .side-group .side-row`, { text: "Last night's failures",
+      also: [says(STUDIO, "Connected"), { see: `${sec("s_empty")} .side-section-line`, text: "Nothing on this server yet." }, says("s_wait", "Connecting"), { see: `${sec("s_away")} .side-section-line`, text: "when the server is back" },
+        says("s_old", "Too old"), { see: `${sec("s_old")} .side-section-line`, text: "Update the server on that machine." }, { see: `${sec("s_old")} .side-section-line:last-child`, text: "0.9.1" }, says("s_cert", "Certificate changed")] });
+    state("SEC", "chat", { chat: there(STUDIO, "c_plain") }, ".chat-head .chat-head-server", { text: "Studio Mac", also: [{ see: ".thread .msg.user", text: "render queue" }] });
+    state("SEC", "board", { board: there(STUDIO, "b_loose"), chat: there(STUDIO, "c_on_floor") }, ".excalidraw:not(.excalidraw--view-mode) .App-toolbar");
+    state("SEC", "run", { run: there(STUDIO, "r_film"), chat: there(STUDIO, "c_film_ask") }, ".run-stage");
+    const drops = { act: `drop:${STUDIO}` };
+    state("SEC", "chat-away", { chat: there(STUDIO, "c_plain") }, ".remote-bar.off", { text: "Studio Mac is not connected", ...drops });
+    state("SEC", "run-away", { run: there(STUDIO, "r_film") }, ".remote-bar.run-remote-bar.off", { text: "Studio Mac is not connected", ...drops });
+  }
+
+  const SECTIONS = { A1, A2, A3, A4, A5, A6, SEC };
   for (const name of only.length ? only : Object.keys(SECTIONS)) { if (!SECTIONS[name]) throw new Error(`the seed has no section ${name}`); SECTIONS[name](); }
-  for (const R of Object.values(runs)) R.sent = JSON.stringify(view(R));
+  allSent();
   send({ type: "snapshot", ...snapshot() });
   return states;
 }

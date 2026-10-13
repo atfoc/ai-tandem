@@ -44,9 +44,8 @@ func (m *Manager) chatDir(id string) string {
 
 // removeChatDir removes the folder of the top-level chat id with all that is in it; run is the
 // chat's run, "" for none. Of a chat on a run the folders around it go too, each only when it
-// is empty: the one of the run's chats, then the run's own. That one is empty when the run is on
-// another server and is a record here: nothing but its unstarted chats is ever kept in it, while
-// a run of this server has its run.json there. It is called before dropRoot.
+// is empty: the one of the run's chats, then the run's own. That one is empty only when it is
+// the folder of no run: a run has its run.json there. It is called before dropRoot.
 func (m *Manager) removeChatDir(id, run string) error {
 	dir := m.chatDir(id)
 	if err := os.RemoveAll(dir); err != nil {
@@ -85,9 +84,8 @@ func safeSegment(s string) bool {
 
 // loadRunChats is Load for the chats kept under the runs: runs/<run>/chats/<id> (the ones people
 // talk to) and runs/<run>/agents/<id> (the run's agents). A folder whose name, chat.json id, run
-// and role do not agree with where it is, is logged and skipped. The client marks of the chats
-// loaded are put in marks (see Load). m.mu held.
-func (m *Manager) loadRunChats(marks map[string]string) {
+// and role do not agree with where it is, is logged and skipped. m.mu held.
+func (m *Manager) loadRunChats() {
 	runs, err := os.ReadDir(m.Store.P.Runs)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -126,13 +124,11 @@ func (m *Manager) loadRunChats(marks map[string]string) {
 				}
 				m.setRoot(meta) // before loadBranches reads the tree record
 				c := &Chat{meta: meta, interrupted: meta.TurnActive, role: meta.Role}
+				setDrafts(c, meta.Drafts) // a chat on a run has drafts as any chat a person talks to
 				countInterrupted(c)
 				m.chats[meta.ID] = c
 				m.registerChatToken(meta.Token)
 				m.loadBranches(c, meta.ID)
-				if meta.Client != "" {
-					marks[meta.ID] = meta.Client
-				}
 			}
 		}
 	}
@@ -355,7 +351,7 @@ func (m *Manager) CreateOwned(s OwnedSpec) (created bool, err error) {
 	}
 	m.ownedMu.Lock()
 	defer m.ownedMu.Unlock()
-	// A creation with a client's id (create) looks for this id too: the two never make one id twice.
+	// A creation with a client's id (CreateChat) looks for this id too: the two never make one id twice.
 	m.createMu.Lock()
 	defer m.createMu.Unlock()
 	if c, err := m.get(s.ID); err == nil {
@@ -437,7 +433,7 @@ func (m *Manager) SendOwned(id, text string, o OwnedSend) error {
 		}
 		m.logSave(c)
 	}
-	_, err = m.sendOn(c, text, "", nil) // releases c.mu
+	_, err = m.sendOn(c, text, "", nil, nil) // releases c.mu
 	if err == nil || errors.Is(err, ErrBusy) {
 		return err
 	}

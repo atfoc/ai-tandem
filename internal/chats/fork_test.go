@@ -1045,7 +1045,7 @@ func TestUnlistedEntryIsNeverSavedOrEmitted(t *testing.T) {
 	evs := e.listen()
 
 	c.mu.Lock()
-	if _, err := e.m.sendOn(c, "on the branch", "", nil); err != nil {
+	if _, err := e.m.sendOn(c, "on the branch", "", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if e.claude.count() != 1 || len(e.claude.forkCalls()) != 1 || len(fa.sent()) != 1 {
@@ -1912,7 +1912,7 @@ func TestChoiceDoesNotRecordDefaults(t *testing.T) {
 	e := newEnv(t)
 	id, _ := e.talked(model.Claude, "", 2)
 	was := e.defaultsOf()
-	own := func(d model.Defaults) model.ServerDefaults { return d.Groups[gOne].On(model.LocalServer) }
+	own := func(d model.Defaults) model.ServerDefaults { return d.Groups[gOne].Local() }
 	if mc := own(was).ByAgent[model.Claude]; mc.Model != "sonnet" || mc.Effort != "high" || own(was).Cwd != e.cwd || len(was.Groups) != 1 {
 		t.Fatalf("the defaults the chat's first message recorded %+v", was)
 	}

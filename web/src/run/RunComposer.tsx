@@ -1,10 +1,12 @@
 // The goal composer: what a run's stage shows until its goal is sent. The chat composer's look
 // and parts (RefInput, DraftSaver, Picker, DirPicker, the same classes), bound to a run: the
 // agent can be picked here too, the three tiers' models and the settings have a chip each, and Send
-// starts the run. A draft run has a server (an entry of the server list): the server can be picked
-// first, and the agents, models and folders offered are that server's.
+// starts the run. A run is on the server it was made on, this computer or a section's, from the
+// moment it is made: the agents, models and folders offered are that server's, and a section's run
+// names its server in a chip that is no choice. While that server is not connected the composer
+// shows the run as it was, read-only: what is typed stays in the box, and is saved when the server
+// is back.
 import React, { useEffect, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import "./composer.css";
 import { useStore, getState, upsertRun, answerRun, setRunStart, unsavedRunDraft } from "../store.ts";
 import { refreshRun, startRun, useFresh } from "./actions.ts";
@@ -18,12 +20,13 @@ import { applies, applyResultOf, limitText, limitValue, settingsChange, setupVal
 import { RunTiers } from "./RunTiers.tsx";
 import { AgentGlyph, RunIcon, WarnIcon, agentClass, agentName } from "../icons.tsx";
 import { catalogFor, usableAgents } from "../logic/agentlist.ts";
-import { agentChoiceOn } from "../logic/chatserver.ts";
-import { runAgentReason, runServerChoice, runStartBlock } from "../logic/runserver.ts";
-import { changeFailure, runFixed, runFolderChip, runHasChats, runLine } from "../logic/runcompose.ts";
+import { agentChoiceOn, showsServer } from "../logic/chatserver.ts";
+import { runAgentReason, runGoneText, runOffLine, runStartBlock } from "../logic/runserver.ts";
+import { changeFailure, runFixed, runFolderChip, runLine } from "../logic/runcompose.ts";
 import { applySetting } from "../logic/runrows.ts";
+import { draftBacks } from "../logic/draftsback.ts";
+import { RUN_SERVER_FINAL } from "../logic/serverlists.ts";
 import { useWhere } from "../ChatChoices.tsx";
-import { openServers } from "../Servers.tsx";
 import { type AgentKind, type Draft, type RunSettings, type RunView } from "../types.ts";
 
 const UNTIL_START = "can be changed until you start the run";
@@ -45,14 +48,14 @@ export function RunComposer({ runId }: { runId: string }) {
   const r = useStore((s) => s.runs[runId]);
   const w = useWhere(r); // the run's server, as runWhere reads it
   const [text, setText] = useState(() => draftToShow(runId)?.text ?? "");
-  // The start's state is the store's, by run id (startRun, actions.ts): it follows a draft that
-  // gets a new id mid-start, for which this composer is made again, and the store drops the
-  // sentence when what it is about changed (the folder, what blocks the run, its server, its
-  // start mark, a server that is connected again).
+  // The start's state is the store's, by run (startRun, actions.ts), and the store drops the
+  // sentence when what it is about changed (the folder, what blocks the run, a server that is
+  // connected again).
   const starting = useStore((s) => !!s.runStarts[runId]?.starting);
   const err = useStore((s) => s.runStarts[runId]?.error ?? "");
   const setErr = (msg: string) => setRunStart(runId, { error: msg });
   const agentReason = useStore((s) => (r ? runAgentReason(w, usableAgents(s, w.server), r) : ""));
+  const left = useStore((s) => !!s.gone[runId]); // the run is no longer on its server
   const input = useRef<RefInputHandle>(null);
   const box = useRef<HTMLDivElement>(null);
   const current = useRef(text); // the text now
@@ -67,36 +70,41 @@ export function RunComposer({ runId }: { runId: string }) {
     input.current?.set(d.text);
   }, [r?.archived]);
   useEffect(() => { drafts.current!.change(text); }, [text]);
-  // The server checks the folder and what blocks a start only when it is asked.
-  useFresh(runId, true);
+  // The server checks the folder and what blocks a start only when it is asked: not while it is not connected, nor for a run it no longer has.
+  useFresh(runId, w.connected && !left);
+  // A goal typed while the run's server was away is saved when that server is connected again, and when the page's own connection opens again (logic/draftsback.ts).
+  const on = useRef(w.server);
+  on.current = w.server;
+  useEffect(() => draftBacks.add({ server: () => on.current, back: () => drafts.current!.back() }), []);
   useEffect(() => {
     const d = drafts.current!;
     const hide = () => { d.change(current.current); d.flush(true); };
     window.addEventListener("pagehide", hide);
     return () => { window.removeEventListener("pagehide", hide); d.change(current.current); d.flush(); };
   }, []);
-  // While the start is on its way nothing can be typed, pasted or dropped into the box.
+  // While the start is on its way nothing can be typed, pasted or dropped into the box. Nor while the run's server is
+  // not connected, or no longer has the run: the view is read-only, and the goal that was typed stays as it is (it is
+  // saved when the server is connected again, if the run is still open then).
+  const readOnly = !w.connected || left;
+  const closed = starting || readOnly;
   useEffect(() => {
     const el = box.current;
-    if (!starting || !el) return;
+    if (!closed || !el) return;
     const stop = (e: Event) => e.preventDefault();
     el.addEventListener("beforeinput", stop, true);
     return () => el.removeEventListener("beforeinput", stop, true);
-  }, [starting]);
+  }, [closed, r?.archived]);
 
   if (!r) return null;
-  const block = runStartBlock(w, r, text, agentReason);
+  const block = left ? runGoneText(w.name) : runStartBlock(w, r, text, agentReason);
   const submit = async () => {
     const goal = current.current.trim();
     if (block || starting) return;
     drafts.current!.flush(); // the server holds the text as the draft, should the start fail and the page go away
-    // The run started with an earlier goal and this composer goes away with the `run` event:
-    // the sentence and the text that was not sent are shown apart from it.
-    const kept = await startRun(runId, goal);
-    if (kept) showGoalKept(kept, goal);
+    await startRun(runId, goal);
   };
   const tilde = (p: string) => tildify(p, w.server);
-  const line = runLine(w, r, err, tilde, agentReason);
+  const line = left ? { tone: "error" as const, text: runGoneText(w.name) } : runLine(w, r, err, tilde, agentReason);
   const folder = runFolderChip(w, r, tilde);
 
   return (
@@ -111,11 +119,14 @@ export function RunComposer({ runId }: { runId: string }) {
       </div>
       {r.archived ? (
         <div className="composer">
-          <div className="archived-bar">
-            Archived — unarchive to start it
-            <button className="btn sm" onClick={() => api.unarchive("runs", r.id).then(() => setErr(""), (e) => setErr(e.message))}>Unarchive</button>
-          </div>
-          {err && <div className="composer-err">{err}</div>}
+          {/* (shown as it was, it is not unarchived from here: the bar says why in the place of the button) */}
+          {readOnly ? <div className="archived-bar">Archived. {left ? runGoneText(w.name) : runOffLine(w.name)}</div> : (
+            <div className="archived-bar">
+              Archived — unarchive to start it
+              <button className="btn sm" onClick={() => api.unarchive("runs", r.id).then(() => setErr(""), (e) => setErr(e.message))}>Unarchive</button>
+            </div>
+          )}
+          {err && !readOnly && <div className="composer-err">{err}</div>}
         </div>
       ) : (
         <div className={`composer run-composer${starting ? " starting" : ""}`}>
@@ -125,11 +136,12 @@ export function RunComposer({ runId }: { runId: string }) {
               {folder.git && <span className="git">git</span>}
             </span>
           </div>
-          <div className="composer-box with-tools" ref={box}>
+          <div className={`composer-box with-tools${readOnly ? " read-only" : ""}`} ref={box}>
             <RefInput
               ref={input}
               placeholder="What should this run achieve?"
-              locked={starting}
+              locked={closed}
+              readOnly={readOnly}
               onChange={(v) => { setText(v); current.current = v; }}
               onKeyDown={(e) => {
                 e.stopPropagation(); // as the chat composer: no shortcut of the page gets the keys typed here
@@ -141,7 +153,7 @@ export function RunComposer({ runId }: { runId: string }) {
               <RunToolbar r={r} onError={setErr} />
               <span className="grow" />
               <span className="run-send">
-                <InsertButton disabled={starting} onClick={() => input.current?.openInsert()} />
+                <InsertButton disabled={closed} onClick={() => input.current?.openInsert()} />
                 <button className="send" title={starting ? "Starting…" : block || "Start the run (Enter)"} disabled={!!block || starting} onClick={() => void submit()}>
                   {starting ? <span className="spin" /> : "↑"}
                 </button>
@@ -161,24 +173,25 @@ export function RunComposer({ runId }: { runId: string }) {
 
 type Change = Parameters<typeof api.configureRun>[1];
 
-/** Server, agent, folder, the tiers' models and the settings. Each change is sent at once and the
- *  answer is the run's view: after another server is picked, agent, tiers, folder and settings are
- *  what the server chose for it, and after another agent the three tiers. The agents, the models
- *  and the folders are the run's server's. While the start got no answer (runFixed) every choice
- *  is a chip with the reason. */
+/** The server's name for a section's run, then agent, folder, the tiers' models and the settings.
+ *  Each change is sent at once and the answer is the run's view: after another agent the three
+ *  tiers are what the server chose for it. The agents, the models and the folders are the run's
+ *  server's. While that server is not connected, or once it no longer has the run (runFixed),
+ *  every choice is a chip with the reason. */
 function RunToolbar({ r, onError }: { r: RunView; onError: (msg: string) => void }) {
   const w = useWhere(r);
   const cat = useStore((s) => catalogFor(s, w.server, r.agent));
   const usable = useStore((s) => usableAgents(s, w.server));
+  const left = useStore((s) => !!s.gone[r.id]);
   const choice = agentChoiceOn(w, usable, r.agent);
-  const fixed = runFixed(r);
+  const fixed = left ? runGoneText(w.name) : runFixed(w);
   const [open, setOpen] = useState(false);
   const failed = (e: unknown) => { if (changeFailure(e).reread) void refreshRun(r.id); };
   const configure = (p: Change) => answerRun(r.id, () => api.configureRun(r.id, p)).then(() => onError(""), (e) => { onError(changeFailure(e).text); failed(e); });
   const glyph = (a: AgentKind) => <span className={`run-agent-glyph agent-${agentClass(a)}`}><AgentGlyph agent={a} size={12} /></span>;
   return (
     <>
-      <RunServer r={r} configure={configure} />
+      {showsServer(w) && <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${RUN_SERVER_FINAL}`}><ChipName full={`${w.name} — ${RUN_SERVER_FINAL}`}>{w.name}</ChipName></span>}
       {/* Only the agents the server can run; one it lacks, or none at all, shows with the reason. */}
       {fixed ? <span className="tchip static run-fixed" data-fixed="agent" title={`Agent — ${fixed}`}>{r.agent ? <>{glyph(r.agent)}{agentName(r.agent)}</> : "No agent"}</span>
         : !choice.options.length ? <span className="tchip static missing" title={`Agent — ${choice.reason}`}>No agent</span>
@@ -195,48 +208,6 @@ function RunToolbar({ r, onError }: { r: RunView; onError: (msg: string) => void
       {fixed ? <span className="tchip static run-fixed" data-fixed="settings" title={`Run settings — ${fixed}`}>{limitsLabel(r.settings)}</span>
         : <RunLimits r={r} onError={onError} />}
     </>
-  );
-}
-
-/** The server choice: every entry of the server list by name, this computer first, one that waits
- *  for the user disabled with its state, and "Servers…", which opens the Servers dialog. A pick is
- *  sent at once. Where the server cannot be changed (runServerChoice's fixed: the start got no
- *  answer, or the run has chats) it is a chip with the reason. */
-function RunServer({ r, configure }: { r: RunView; configure: (p: Change) => Promise<unknown> }) {
-  const servers = useStore((s) => s.servers);
-  const hasChats = useStore((s) => runHasChats(s.chats, r.id));
-  const w = useWhere(r);
-  const [open, setOpen] = useState(false);
-  const { options, fixed } = runServerChoice(servers, r, hasChats);
-  if (fixed) return <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${fixed}`}><ChipName full={`${w.name} — ${fixed}`}>{w.name}</ChipName></span>;
-  return <Picker className="server-pick" label={w.name} title="Server" hint={UNTIL_START} value={w.server}
-    options={options.map((o) => ({ id: o.id, label: o.label, note: o.reason, disabled: o.disabled }))}
-    more={{ label: "Servers…", onClick: () => openServers() }}
-    open={open} onOpenChange={setOpen} onPick={(id) => configure({ server: id })} />;
-}
-
-// ---- a start whose text was not sent
-
-/** The notice of a start the server answered 409 goal_kept: the run had started with the goal of
- *  an earlier start, and the stage shows the run by now. It has a root of its own, since the
- *  composer is gone; it shows the server's sentence and the text that was not sent until it is
- *  dismissed. */
-function showGoalKept(sentence: string, text: string) {
-  document.querySelector(".goal-kept-host")?.remove();
-  const host = document.createElement("div");
-  host.className = "goal-kept-host";
-  document.body.appendChild(host);
-  const root = createRoot(host);
-  const close = () => { root.unmount(); host.remove(); };
-  root.render(
-    <div className="goal-kept" role="alert">
-      <div className="goal-kept-said"><WarnIcon /> <span>{sentence}</span></div>
-      <pre className="goal-kept-text">{text}</pre>
-      <div className="goal-kept-foot">
-        <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(text)}>Copy text</button>
-        <button className="btn sm" onClick={close}>Dismiss</button>
-      </div>
-    </div>,
   );
 }
 

@@ -28,6 +28,10 @@ type Timing struct {
 	// attempt. It belongs to Backoff: a Timing that sets Backoff and leaves Stable 0 starts the
 	// back-off again as soon as a stream was open; DefaultTiming's is taken with its Backoff.
 	Stable time.Duration
+
+	// TooOld is how long an entry whose server is too old waits before it asks hello again: the
+	// server may have been updated meanwhile.
+	TooOld time.Duration
 }
 
 // DefaultTiming is what a zero Timing means.
@@ -43,6 +47,7 @@ var DefaultTiming = Timing{
 	Backoff:    []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second},
 	Jitter:     0.2,
 	Stable:     30 * time.Second, // the last step of Backoff
+	TooOld:     5 * time.Minute,
 }
 
 // withDefaults fills every zero field from DefaultTiming; Stable only together with Backoff.
@@ -78,6 +83,9 @@ func (t Timing) withDefaults() Timing {
 		}
 	}
 	t.Stable = max(t.Stable, 0)
+	if t.TooOld <= 0 {
+		t.TooOld = DefaultTiming.TooOld
+	}
 	if t.Jitter == 0 {
 		t.Jitter = DefaultTiming.Jitter
 	}

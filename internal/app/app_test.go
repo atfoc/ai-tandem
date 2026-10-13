@@ -387,17 +387,16 @@ func TestDeleteGroupUngroupsContents(t *testing.T) {
 	}
 }
 
-// AC32: a new top-level group starts with a copy of the ungrouped group's values, the sticky
-// server and its run defaults for every server included.
+// AC32: a new top-level group starts with a copy of the ungrouped group's values, its run
+// defaults included.
 func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	ungrouped := func() model.GroupDefaults {
-		return model.GroupDefaults{Server: "srv_far", Servers: map[string]model.ServerDefaults{
+		return model.GroupDefaults{Servers: map[string]model.ServerDefaults{
 			model.LocalServer: {Agent: model.Cursor, Cwd: "/here", ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}},
 				Run: &model.RunDefaults{Agent: model.Claude, MaxParallel: 3, MaxTurns: 40, Setup: "make deps", SetupCwd: "/here",
 					Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: "opus", Effort: "max"}, Standard: model.ModelChoice{Model: "sonnet"}, Light: model.ModelChoice{Model: "haiku"}}}},
-			"srv_far": {Agent: model.Pi, Cwd: "/far", Run: &model.RunDefaults{Agent: model.Pi, MaxParallel: 2, MaxTurns: 10}},
 		}}
 	}
 	other := e.group("Other")
@@ -422,11 +421,9 @@ func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
 	// a deep copy: changing the ungrouped group later leaves the group alone
 	e.must(e.st.Update(func(s *model.State) error {
 		u := s.Defaults.Groups[model.Ungrouped]
-		u.Server = model.LocalServer
 		u.Servers[model.LocalServer].ByAgent[model.Claude] = model.ModelChoice{Model: "haiku"}
 		u.Servers[model.LocalServer].Run.MaxParallel = 9
 		u.Servers[model.LocalServer].Run.Tiers.Deep.Model = "sonnet"
-		u.Servers["srv_far"] = model.ServerDefaults{Cwd: "/elsewhere"}
 		s.Defaults.Groups[model.Ungrouped] = u
 		return nil
 	}))
@@ -482,7 +479,7 @@ func TestCreateSubgroup(t *testing.T) {
 	g := e.group("G")
 	cwd := t.TempDir()
 	e.must(e.st.Update(func(s *model.State) error {
-		s.Defaults.Groups[g] = model.GroupDefaults{Server: model.LocalServer, Servers: map[string]model.ServerDefaults{model.LocalServer: {
+		s.Defaults.Groups[g] = model.GroupDefaults{Servers: map[string]model.ServerDefaults{model.LocalServer: {
 			Agent: model.Pi, Cwd: cwd, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus"}},
 			Run: &model.RunDefaults{Agent: model.Pi, MaxParallel: 2, MaxTurns: 10}}}}
 		s.Defaults.Groups[model.Ungrouped] = model.LocalDefaults(model.ServerDefaults{Cwd: t.TempDir()})
@@ -494,7 +491,7 @@ func TestCreateSubgroup(t *testing.T) {
 		t.Fatalf("subgroup %+v, %v", sg, err)
 	}
 	snap := e.a.Snapshot()
-	if gd := snap.Defaults.Groups[s]; !reflect.DeepEqual(gd, snap.Defaults.Groups[g]) || gd.On(model.LocalServer).Cwd != cwd || gd.On(model.LocalServer).Run == nil {
+	if gd := snap.Defaults.Groups[s]; !reflect.DeepEqual(gd, snap.Defaults.Groups[g]) || gd.Local().Cwd != cwd || gd.Local().Run == nil {
 		t.Errorf("subgroup defaults %+v, want the parent's %+v", gd, snap.Defaults.Groups[g])
 	}
 

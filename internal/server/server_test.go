@@ -147,7 +147,13 @@ type env struct {
 // newEnv starts a server; each of with sets up the Server before its handler is built.
 func newEnv(t *testing.T, with ...func(*Server)) *env {
 	t.Helper()
-	root := t.TempDir()
+	return newEnvIn(t, t.TempDir(), with...)
+}
+
+// newEnvIn is newEnv with the data folder root: for a server whose runs start, which refuse a
+// folder whose path holds the data folder's name, so that name must be one no other path has.
+func newEnvIn(t *testing.T, root string, with ...func(*Server)) *env {
+	t.Helper()
 	st, err := store.Open(store.NewPaths(root))
 	if err != nil {
 		t.Fatal(err)
@@ -567,9 +573,13 @@ func TestCreateBoardAndSceneRoundTrip(t *testing.T) {
 
 // ---- error mapping --------------------------------------------------------
 
+// A call that names a chat, a board or a group that is not there is answered 404 with the code
+// "not_found", on the server's own port and for an API client alike: the code tells "the thing is
+// gone" from a part of it that is missing.
 func TestNotFound(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	e := newEnv(t, withRemote)
+	h := e.s.RemoteHandler()
 	for _, r := range [][3]string{
 		{"GET", "/api/boards/b_nope/scene", ""},
 		{"PUT", "/api/boards/b_nope/scene?rev=0", `{}`},
@@ -593,8 +603,25 @@ func TestNotFound(t *testing.T) {
 		{"POST", "/api/groups/g_nope/move", `{"parent":""}`},
 	} {
 		out := e.expect(404, r[0], r[1], r[2])
-		if decode[map[string]string](t, out)["error"] == "" {
-			t.Fatalf("%s %s: no error text in %s", r[0], r[1], out)
+		if got := decode[refusal](t, out); got.Error == "" || got.Code != "not_found" {
+			t.Fatalf("%s %s: %s, want an error text and the code not_found", r[0], r[1], out)
+		}
+		if w := remoteDoAs(h, testAPIClient, r[0], r[1], testHost, testSecret, r[2]); w.Code != 404 || w.Body.String() != out {
+			t.Fatalf("%s %s for an API client: %d %s, want the page's 404 %s", r[0], r[1], w.Code, w.Body, out)
+		}
+	}
+	// A part of a thing that is there keeps what it had: a branch its own code, a subagent none.
+	c := e.chat(`{"agent":"claude","group":"` + model.Ungrouped + `"}`)
+	for _, r := range [][4]string{
+		{"PUT", "/api/chats/" + c.ID + "/draft?rev=0&branch=b_nowhere", `{"text":"x"}`, "no_branch"},
+		{"GET", "/api/chats/" + c.ID + "/subagents/nope/items", "", ""},
+	} {
+		out := e.expect(404, r[0], r[1], r[2])
+		if got := decode[refusal](t, out); got.Error == "" || got.Code != r[3] {
+			t.Fatalf("%s %s: %s, want the code %q", r[0], r[1], out, r[3])
+		}
+		if w := remoteDoAs(h, testAPIClient, r[0], r[1], testHost, testSecret, r[2]); w.Code != 404 || w.Body.String() != out {
+			t.Fatalf("%s %s for an API client: %d %s, want the page's 404 %s", r[0], r[1], w.Code, w.Body, out)
 		}
 	}
 }

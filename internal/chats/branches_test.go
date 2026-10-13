@@ -750,11 +750,11 @@ func TestConfigureReachesTheCurrentBranch(t *testing.T) {
 	// A branch's model and effort are never a new chat's defaults; its folder is, as before.
 	e.st.Read(func(s *model.State) {
 		for name, g := range s.Defaults.Groups {
-			if mc := g.On(model.LocalServer).ByAgent[model.Claude]; mc.Model == "opus" || mc.Effort == "max" {
+			if mc := g.Local().ByAgent[model.Claude]; mc.Model == "opus" || mc.Effort == "max" {
 				t.Fatalf("the defaults of %s took the branch's choice: %+v", name, mc)
 			}
 		}
-		if own := s.Defaults.Groups[gOne].On(model.LocalServer); own.Cwd != dir2 {
+		if own := s.Defaults.Groups[gOne].Local(); own.Cwd != dir2 {
 			t.Fatalf("the group's defaults after configuring a branch %+v", own)
 		}
 	})

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/editorbridge"
+	"ai-whiteboard/internal/servers"
 )
 
 const (
@@ -41,7 +42,7 @@ func remoteDo(h http.Handler, method, path, host, secret string) *httptest.Respo
 }
 
 // remoteDoAs is remoteDo for the API client with this id ("" sends no client header) and with a
-// body.
+// body. The client states the server's own level, as every client of the tests does.
 func remoteDoAs(h http.Handler, client, method, path, host, secret, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Host = host
@@ -51,6 +52,7 @@ func remoteDoAs(h http.Handler, client, method, path, host, secret, body string)
 	if client != "" {
 		req.Header.Set(ClientHeader, client)
 	}
+	req.Header.Set(servers.LevelHeader, testLevel)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
@@ -143,6 +145,13 @@ func TestRemoteSecretHeaderIsDropped(t *testing.T) {
 
 var pathWildcard = regexp.MustCompile(`\{[^}]*\}`)
 
+// goneRoutes is the four routes that left the table at level 5: the make, the start call, the
+// draft check and a client's creation of a board. None is registered any more.
+var goneRoutes = []string{"PUT /api/chats/{id}", "PUT /api/runs/{id}", "GET /api/runs/check", "PUT /api/boards/{id}"}
+
+// The table of the remote listener against the routes the server has: every route of the table is
+// served to a client, every other registered route is 404 for it, and the four routes that left
+// at level 5 are 404 on both listeners.
 func TestRemoteServesOnlyTheTable(t *testing.T) {
 	t.Parallel()
 	client := t.TempDir()
@@ -158,18 +167,41 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 	if len(patterns) < 60 {
 		t.Fatalf("%d patterns recorded, want at least 60: %v", len(patterns), patterns)
 	}
-	for _, p := range RemoteRoutes {
+	for i, p := range RemoteRoutes {
 		if !slices.Contains(patterns, p) {
 			t.Errorf("table entry %q is not a registered route", p)
+		}
+		if slices.Index(RemoteRoutes, p) != i {
+			t.Errorf("table entry %q is there twice", p)
 		}
 	}
 	if !slices.Contains(patterns, "/") || !slices.Contains(patterns, "GET /api/remote/status") {
 		t.Fatalf("the client files or the status route were not recorded: %v", patterns)
 	}
+	// What level 5 added to the table, and what it took out of it and out of the server.
+	for _, p := range []string{"POST /api/groups", "PATCH /api/groups/{id}", "POST /api/groups/{id}/move", "DELETE /api/groups/{id}",
+		"POST /api/groups/{id}/archive", "POST /api/groups/{id}/unarchive", "POST /api/runs", "PUT /api/runs/{id}/draft",
+		"POST /api/runs/{id}/start", "POST /api/boards", "PATCH /api/boards/{id}"} {
+		if !slices.Contains(RemoteRoutes, p) {
+			t.Errorf("the table lacks %q", p)
+		}
+	}
+	for _, p := range goneRoutes {
+		if slices.Contains(RemoteRoutes, p) || slices.Contains(patterns, p) {
+			t.Errorf("%q is still in the table or registered", p)
+		}
+	}
+	// What a client cannot reach is registered and outside the table.
+	for _, p := range []string{"PUT /api/groups/order", "POST /api/boards/{id}/reveal", "POST /api/restart", "GET /api/remote/status",
+		"GET /api/mcp/status", "POST /api/client/flushed", "/"} {
+		if !slices.Contains(patterns, p) || slices.Contains(RemoteRoutes, p) {
+			t.Errorf("%q must be registered and outside the table", p)
+		}
+	}
 
 	// Without the secret, and with a wrong one, every route answers 401: one of the table, one
 	// outside it and one that is no route alike.
-	for _, p := range append(slices.Clone(patterns), "POST /mcp") {
+	for _, p := range append(slices.Clone(patterns), append(slices.Clone(goneRoutes), "POST /mcp")...) {
 		method, path, ok := strings.Cut(p, " ")
 		if !ok {
 			method, path = "GET", p
@@ -180,6 +212,7 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 		}
 	}
 
+	const gate = `{"error":"not found"}`
 	served := 0
 	for _, p := range append(slices.Clone(patterns), "POST /mcp", "GET /index.html", "GET /app.js") {
 		method, path, ok := strings.Cut(p, " ")
@@ -198,27 +231,51 @@ func TestRemoteServesOnlyTheTable(t *testing.T) {
 		req.Host = testHost
 		req.Header.Set(SecretHeader, testSecret)
 		req.Header.Set(ClientHeader, testAPIClient)
+		req.Header.Set(servers.LevelHeader, testLevel)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 		// The gate's answer is told by its body: a route of the table may answer 404 itself, as
 		// the read of a chat that is not there does.
-		gate := w.Code == 404 && strings.TrimSpace(w.Body.String()) == `{"error":"not found"}`
+		isGate := w.Code == 404 && strings.TrimSpace(w.Body.String()) == gate
 		if slices.Contains(RemoteRoutes, p) {
 			served++
-			if gate {
+			if isGate {
 				t.Errorf("%s (%s %s): the gate's 404 for a route of the table", p, method, path)
 			}
 			continue
 		}
-		if !gate {
+		if !isGate {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(RemoteRoutes) || served != 58 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 58", served, len(RemoteRoutes))
+	if served != len(RemoteRoutes) || served != 69 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 69", served, len(RemoteRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)
+	}
+
+	// The four routes that left: 404 for a client and for the server's own page, and nothing is
+	// made. The path of the draft check is now the read of a run named "check", which is none.
+	for _, p := range goneRoutes {
+		method, path, _ := strings.Cut(p, " ")
+		path = strings.Replace(path, "{id}", "b_aaaa1111", 1)
+		const body = `{"agent":"claude","cwd":"/","name":"n","goal":"g"}`
+		w := remoteDoAs(h, testAPIClient, method, path, testHost, testSecret, body)
+		status, out := e.do(method, path, body)
+		if p == "GET /api/runs/check" {
+			if w.Code != 404 || !strings.Contains(w.Body.String(), `"error":"no such run"`) || status != 404 || !strings.Contains(out, `"error":"no such run"`) {
+				t.Errorf("%s: %d %s for a client, %d %s for the page; want 404 no such run", p, w.Code, w.Body, status, out)
+			}
+			continue
+		}
+		wantReply(t, w, p+" for a client", 404, "not found")
+		if status != 404 {
+			t.Errorf("%s for the server's own page: %d %s, want 404", p, status, out)
+		}
+	}
+	if n := len(e.a.Chats.Views()) + len(e.a.Boards.List()); n != 0 {
+		t.Errorf("the routes that left made %d chats and boards", n)
 	}
 
 	// A listed path with another method is 404 too, not 405.
@@ -312,10 +369,14 @@ func TestRefusedLog(t *testing.T) {
 	h := e.s.RemoteHandler()
 	wrong := strings.Replace(testSecret, "0", "f", 1)
 
+	level := testLevel // what the caller states; "" states none
 	do := func(addr, method, path, host, secret string) int {
 		req := httptest.NewRequest(method, path, nil)
 		req.RemoteAddr, req.Host = addr, host
 		req.Header.Set(ClientHeader, testAPIClient)
+		if level != "" {
+			req.Header.Set(servers.LevelHeader, level)
+		}
 		if secret != "" {
 			req.Header.Set(SecretHeader, secret)
 		}
@@ -363,6 +424,29 @@ func TestRefusedLog(t *testing.T) {
 	want("a long method", 4, `remote listener: refused 401 from 10.0.0.4: `+strings.Repeat("M", 16)+` "/api/hello"`)
 	do("10.0.0.5:5000", method, "/api/hello", "evil.example:4748", testSecret)
 	want("a long method and a bad host", 5, `remote listener: refused 403 from 10.0.0.5: `+strings.Repeat("M", 16)+` "/api/hello" host="evil.example:4748"`)
+
+	// A client that is too old, or states no level, is logged as a refused request is: one line
+	// per address per minute, with the sentence it was answered. Its hello is served and not logged.
+	for _, level = range []string{"", "4"} {
+		if do("10.0.0.6:5000", "GET", "/api/hello", testHost, testSecret) != 200 {
+			t.Fatalf("hello of a client of the level %q was not served", level)
+		}
+	}
+	want("the hello of a client that is too old", 5, lines[4])
+	level = ""
+	if do("10.0.0.6:5000", "GET", "/api/state", testHost, testSecret) != 400 {
+		t.Fatal("a client that states no level was not refused")
+	}
+	const tooOld = `remote listener: refused 400 from 10.0.0.6: GET "/api/state": This app is too old for this server: update AI Whiteboard on the machine that connects.`
+	want("a client that states no level", 6, tooOld)
+	level = "4"
+	if do("10.0.0.6:5001", "POST", "/api/chats", testHost, testSecret) != 400 || do("10.0.0.6:5002", "GET", "/api/mcp/status", testHost, testSecret) != 400 {
+		t.Fatal("a client of level 4 was not refused, on a route of the table and on one outside it")
+	}
+	want("the same address within a minute", 6, tooOld)
+	do("10.0.0.7:5000", "POST", "/api/chats", testHost, testSecret)
+	want("a client of level 4 at another address", 7, `remote listener: refused 400 from 10.0.0.7: POST "/api/chats": This app is too old for this server: update AI Whiteboard on the machine that connects.`)
+	level = testLevel
 
 	for _, l := range lines {
 		if strings.Contains(l, testSecret) || strings.Contains(l, wrong) {
@@ -435,6 +519,7 @@ func TestServeRemote(t *testing.T) {
 		t.Helper()
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set(ClientHeader, testAPIClient)
+		req.Header.Set(servers.LevelHeader, testLevel)
 		if secret != "" {
 			req.Header.Set(SecretHeader, secret)
 		}
@@ -535,4 +620,55 @@ func TestRemoteWildcardEntryServesNoOtherRoute(t *testing.T) {
 	wantReply(t, remoteDo(h, "GET", "/api/remote/status", testHost, testSecret), "a deeper route outside the table", 404, "not found")
 	wantReply(t, remoteDo(h, "GET", "/api/hello", testHost, testSecret), "hello", 200, "")
 	wantReply(t, remoteDo(h, "GET", "/api//hello", testHost, testSecret), "a path to clean", 301, "")
+}
+
+// A path in another form than a route's serves nothing on the remote listener: the two with a
+// doubled slash are redirected with no data, the others are not found. (The test of before is
+// TestRemotePathForms of remotefixes_test.go; this one holds its statements at level 5.)
+func TestRemotePathFormsServeNothing(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, withRemote)
+	h := e.s.RemoteHandler()
+	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
+	leaks := func(what, body string) {
+		t.Helper()
+		for _, s := range []string{c.ID, `"chats"`, `"agents"`, `"listening"`, `"featureLevel"`} {
+			if strings.Contains(body, s) {
+				t.Errorf("%s: the answer holds data: %s", what, body)
+			}
+		}
+	}
+	for _, path := range []string{"//api/state", "/api//state"} {
+		w := remoteDo(h, "GET", path, testHost, testSecret)
+		if w.Code != 301 || w.Header().Get("Location") != "/api/state" {
+			t.Errorf("GET %s: %d to %q, want 301 to /api/state (%s)", path, w.Code, w.Header().Get("Location"), w.Body)
+		}
+		leaks("GET "+path, w.Body.String())
+		// Without the secret the redirect is not given either.
+		wantReply(t, remoteDo(h, "GET", path, testHost, ""), "GET "+path+" with no secret", 401, "unauthorized")
+	}
+	for _, rq := range [][2]string{
+		{"GET", "/api/state/"}, {"GET", "/API/STATE"}, {"GET", "/api/hello/"}, {"GET", "/api"}, {"GET", "/api/"},
+		{"GET", "//api/remote/status"}, {"GET", "/api/remote%2fstatus"}, {"HEAD", "/api/remote/status"}, {"OPTIONS", "/api/state"},
+	} {
+		w := remoteDo(h, rq[0], rq[1], testHost, testSecret)
+		what := rq[0] + " " + rq[1]
+		if rq[0] == "HEAD" { // an answer to HEAD is read by its status
+			if w.Code != 404 {
+				t.Errorf("%s: status %d, want 404", what, w.Code)
+			}
+		} else {
+			wantReply(t, w, what, 404, "not found")
+		}
+		leaks(what, w.Body.String())
+	}
+	// A chat id that is a path: no chat, and no file outside the chats folder is looked for.
+	w := remoteDo(h, "GET", "/api/chats/..%2F..%2Fetc/items", testHost, testSecret)
+	if w.Code != 404 || strings.TrimSpace(w.Body.String()) != `{"code":"not_found","error":"no such chat"}` {
+		t.Errorf("a chat id that is a path: %d %s", w.Code, w.Body)
+	}
+	// The routes themselves are served.
+	if w := remoteDo(h, "GET", "/api/state", testHost, testSecret); w.Code != 200 {
+		t.Errorf("GET /api/state: %d %s", w.Code, w.Body)
+	}
 }

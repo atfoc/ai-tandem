@@ -22,7 +22,8 @@
 //
 // The convention. A browser check is one file, dev/checks/<criterion>-<word>.mjs, named by the criterion of the plan
 // it proves (A2.2-fits.mjs; P0.n are the tooling's own, P7.n prove what needs two goals together, on the build that
-// has them all). Its first comment says what it proves, and which other check goes on from it, if one does. It calls check(title, body) of dev/shot.mjs once: that starts the check's own mock
+// has them all; SEC.n prove the sections of the sidebar, plans/remote-server-sections-goal.md section 3, on the mock's
+// servers: dev/runmock.mjs "Remote servers"). Its first comment says what it proves, and which other check goes on from it, if one does. It calls check(title, body) of dev/shot.mjs once: that starts the check's own mock
 // on PORT with the build in DIST, opens a browser, and ends the process with 0 and "ok <title>", or with 1 and a
 // line "FAIL <title>: <what failed>" for each failure. In the body the check seeds what it needs (seed(url, "A2"):
 // only its item's section), opens its pages (openPage) and calls fail(line) for what is wrong; a throw fails it too.

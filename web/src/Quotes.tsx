@@ -33,16 +33,20 @@ function withFloat(qs: Reference[], f: Float, enter: boolean): Reference[] {
 }
 
 /** The quotes of a chat's composer: quotes and setQuotes are the draft's, box is the composer's
- *  box, whose width and place the float takes. */
-export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes: Dispatch<SetStateAction<Reference[]>>, box: RefObject<HTMLElement | null>): ComposerQuotes {
+ *  box, whose width and place the float takes. readOnly: the composer is (the chat's server is not
+ *  connected, or no longer has the chat): the draft's quotes stay as they are, listed and shown at
+ *  their passages, and none is added, removed or commented on. A comment being typed as the
+ *  composer becomes read-only is kept as a click elsewhere would keep it. */
+export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes: Dispatch<SetStateAction<Reference[]>>, box: RefObject<HTMLElement | null>, readOnly = false): ComposerQuotes {
   const [float, setFloat] = useState<Float | null>(null);
   const [list, setList] = useState(false);
   const items = useStore((s) => threadOf(s, chatId)?.items);
-  const now = useRef({ quotes, float });
-  now.current = { quotes, float };
+  const now = useRef({ quotes, float, readOnly });
+  now.current = { quotes, float, readOnly };
 
   /** Opens the float at r: to edit it when it is in the draft already, else to add it. */
   const open = (r: Reference, range: Range | null) => {
+    if (now.current.readOnly) return;
     const q = now.current.quotes.find((q) => quoteKey(q) === quoteKey(r));
     const at = range ?? rangeForRef(chatId, r);
     if (!at) return;
@@ -54,6 +58,7 @@ export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes
     setFloat(null);
   };
   const remove = (r: Reference) => setQuotes((qs) => qs.filter((q) => quoteKey(q) !== quoteKey(r)));
+  useEffect(() => { if (readOnly && now.current.float) keep(now.current.float, false); }, [readOnly]);
 
   const latest = useRef((r: Reference, range: Range) => {});
   latest.current = (r, range) => {
@@ -97,7 +102,7 @@ export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes
         <span className="qmark">❝</span> {n}<span className="qcount-word"> comment{n === 1 ? "" : "s"}</span> <span className="qcount-chev">▾</span>
       </button>
       {list && (
-        <QuoteList quotes={quotes} onClose={() => setList(false)} onRemove={remove}
+        <QuoteList quotes={quotes} onClose={() => setList(false)} onRemove={readOnly ? undefined : remove}
           onPick={(q) => {
             setList(false);
             showQuote(chatId, q, false);
@@ -110,15 +115,16 @@ export function useComposerQuotes(chatId: string, quotes: Reference[], setQuotes
     quote,
     kept,
     count: count || null,
-    float: float && (
+    float: float && !readOnly && (
       <QuoteFloat f={float} box={box} onText={(text) => setFloat({ ...float, text })} onKeep={(enter) => keep(float, enter)}
         onCancel={() => setFloat(null)} onRemove={float.edit ? () => { remove(float.r); setFloat(null); } : undefined} />
     ),
   };
 }
 
-/** The list the count opens: every quote with its comment; a click edits it at its passage. */
-function QuoteList({ quotes, onPick, onRemove, onClose }: { quotes: Reference[]; onPick(q: Reference): void; onRemove(q: Reference): void; onClose(): void }) {
+/** The list the count opens: every quote with its comment; a click edits it at its passage. Without onRemove the
+ *  quotes are to be read only: a click shows the passage, and no quote has a remove control. */
+function QuoteList({ quotes, onPick, onRemove, onClose }: { quotes: Reference[]; onPick(q: Reference): void; onRemove?: (q: Reference) => void; onClose(): void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const down = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
@@ -129,15 +135,15 @@ function QuoteList({ quotes, onPick, onRemove, onClose }: { quotes: Reference[];
   }, []);
   return (
     <div ref={ref} className="qlist">
-      <div className="qlist-head">Quoted in this message <span className="hint">click one to edit it</span></div>
+      <div className="qlist-head">Quoted in this message <span className="hint">{onRemove ? "click one to edit it" : "click one to show it"}</span></div>
       <div className="qlist-body">
         {quotes.map((q) => (
-          <div key={quoteKey(q)} className="qlist-item" onClick={() => onPick(q)} title="Show and edit">
+          <div key={quoteKey(q)} className="qlist-item" onClick={() => onPick(q)} title={onRemove ? "Show and edit" : "Show"}>
             <div className="qlist-text">
               <div className="qlist-quote">{preview(q.quote, 120)}</div>
               <div className={`qlist-comment${q.comment ? "" : " none"}`}>{q.comment || "No comment"}</div>
             </div>
-            <button className="qlist-x" title="Remove" onClick={(e) => { e.stopPropagation(); onRemove(q); if (quotes.length === 1) onClose(); }}>×</button>
+            {onRemove && <button className="qlist-x" title="Remove" onClick={(e) => { e.stopPropagation(); onRemove(q); if (quotes.length === 1) onClose(); }}>×</button>}
           </div>
         ))}
       </div>

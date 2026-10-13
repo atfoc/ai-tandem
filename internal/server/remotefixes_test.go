@@ -15,7 +15,7 @@ import (
 
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
-	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/servers"
 )
 
 // What the reviews of the remote listener found: a follow by the listener's kind, the data folder
@@ -37,6 +37,7 @@ func (l *listener) try(id, secret, method, path string) (int, string) {
 	}
 	req.Header.Set(ClientHeader, id)
 	req.Header.Set(SecretHeader, secret)
+	req.Header.Set(servers.LevelHeader, testLevel)
 	resp, err := l.http.Do(req)
 	if err != nil {
 		return 0, err.Error()
@@ -200,122 +201,7 @@ func TestRemoteDirsRefuseTheDataFolder(t *testing.T) {
 
 // ---- a fork onto a board ---------------------------------------------------------------
 
-// The fork of a chat on a board is refused for an API client: it would make a chat on a board.
-func TestRemoteForkOfABoardChatIsRefused(t *testing.T) {
-	t.Parallel()
-	sp := &apiSpawner{}
-	e, l := remoteEnv(t, withAgents(sp))
-	p := e.page("P")
-	x, _ := l.api(apiX)
-	bd, _ := e.boardChat(p)
-	id := e.a.Chats.ChatsOfBoard(bd.ID)[0].ID
-	do(t, p, "POST", "/api/chats/"+id+"/messages", map[string]any{"text": "the first message"})
-	reply(t, &sp.of(t, id).fakeAgent, "done", "p1")
-	items := decode[struct{ Items []model.Item }](t, e.expect(200, "GET", "/api/chats/"+id+"/items", ""))
-	if len(items.Items) < 2 {
-		t.Fatalf("the items of the chat on the board: %+v", items.Items)
-	}
-	body := `{"branch":"main","at":` + itoa(len(items.Items)) + `}`
-	folders := func() []string {
-		t.Helper()
-		ents, err := os.ReadDir(e.st.P.Chats)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var names []string
-		for _, en := range ents {
-			names = append(names, en.Name())
-		}
-		return names
-	}
-	e.reach(p, x)
-	chatsBefore, foldersBefore, programs := len(e.a.Chats.Views()), folders(), sp.count()
-
-	status, out := x.Do("POST", "/api/chats/"+id+"/fork", body)
-	got := decode[obj](t, string(out))
-	if status != 400 || got["code"] != "board_refused" || got["error"] != boardRefused || len(got) != 2 {
-		t.Fatalf("the API client's fork of a chat on a board: %d %s", status, out)
-	}
-	// The creation call's refusal has the same text.
-	if made := start(t, x, 400, startBody(chat1, t.TempDir(), "board", bd.ID)); made.Code != "board_refused" || made.Error != got["error"] {
-		t.Fatalf("the creation call's refusal: %+v", made)
-	}
-	if n, names := len(e.a.Chats.Views()), folders(); n != chatsBefore || !slices.Equal(names, foldersBefore) || sp.count() != programs {
-		t.Fatalf("the refused fork left %d chats (%d before), the folders %v (%v before), %d programs (%d before)", n, chatsBefore, names, foldersBefore, sp.count(), programs)
-	}
-	if n := len(e.a.Chats.ChatsOfBoard(bd.ID)); n != 1 {
-		t.Fatalf("%d chats on the board after the refused fork", n)
-	}
-	if evs := e.reach(p, x); len(evs[0]) != 0 || len(evs[1]) != 0 {
-		t.Fatalf("the refused fork sent the page %v and the API client %v", evs[0], evs[1])
-	}
-	// A chat that is not there is answered as before, by the fork itself.
-	if status, out := x.Do("POST", "/api/chats/"+chat3+"/fork", body); status != 404 {
-		t.Fatalf("the fork of a chat that is not there: %d %s", status, out)
-	}
-
-	// The page's fork of the same chat is made, on the board.
-	fork := decode[model.ChatView](t, string(do(t, p, "POST", "/api/chats/"+id+"/fork", body)))
-	if fork.ID == id || fork.Board != bd.ID || len(e.a.Chats.ChatsOfBoard(bd.ID)) != 2 {
-		t.Fatalf("the page's fork: %+v", fork)
-	}
-}
-
 // ---- a read during a creation call ------------------------------------------------------
-
-// An API client's read of a chat waits for a creation call of that id that is under way, and
-// then finds what the call made. A page's read does not wait.
-func TestRemoteChatReadWaitsForACreationCall(t *testing.T) {
-	t.Parallel()
-	sp := &apiSpawner{}
-	e, l := remoteEnv(t, withAgents(sp))
-	in, release := make(chan struct{}), make(chan struct{})
-	started := make(chan error, 1)
-	go func() {
-		_, err := e.a.Chats.Start(chats.StartReq{ID: chat1, Client: apiX, Agent: model.Claude, Cwd: t.TempDir(), Text: "the first message",
-			Place: func() (string, error) {
-				close(in)
-				<-release
-				return e.a.RemoteGroup()
-			}})
-		started <- err
-	}()
-	<-in
-	type answer struct {
-		status int
-		body   string
-	}
-	read := make(chan answer, 1)
-	go func() {
-		status, out := l.try(apiX, testSecret, "GET", "/api/chats/"+chat1)
-		read <- answer{status, out}
-	}()
-	// The page's read is answered at once, and so is the API client's read of another id and of
-	// a string that is no chat id.
-	e.expect(404, "GET", "/api/chats/"+chat1, "")
-	for _, id := range []string{chat2, "nope"} {
-		if status, out := l.call(apiX, testSecret, "GET", "/api/chats/"+id, ""); status != 404 {
-			t.Fatalf("the read of %s during the creation call of another id: %d %s", id, status, out)
-		}
-	}
-	select {
-	case a := <-read:
-		t.Fatalf("the read did not wait for the creation call: %d %s", a.status, a.body)
-	case <-time.After(300 * time.Millisecond):
-	}
-	close(release)
-	if err := <-started; err != nil {
-		t.Fatalf("the creation call: %v", err)
-	}
-	select {
-	case a := <-read:
-		if v := decode[model.ChatView](t, a.body); a.status != 200 || v.ID != chat1 {
-			t.Fatalf("the read after the creation call: %d %s", a.status, a.body)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the read was not answered after the creation call")
-	}
-}
 
 // ---- a take of a board that is archived under it ---------------------------------------
 
@@ -407,6 +293,7 @@ func TestOldSecretIsRefusedBeforeTheStreamEnds(t *testing.T) {
 			}
 			req.Header.Set(ClientHeader, id)
 			req.Header.Set(SecretHeader, secret)
+			req.Header.Set(servers.LevelHeader, testLevel)
 			resp, err := l.http.Do(req)
 			if err != nil || resp.StatusCode != 200 {
 				t.Fatalf("round %d: the stream of %s: %v %v", round, id, resp, err)
@@ -486,7 +373,10 @@ func TestRemotePathForms(t *testing.T) {
 		leaks(what, w.Body.String())
 	}
 	// A chat id that is a path: no chat, and no file outside the chats folder is looked for.
-	wantReply(t, remoteDo(h, "GET", "/api/chats/..%2F..%2Fetc/items", testHost, testSecret), "a chat id that is a path", 404, chats.ErrNotFound.Error())
+	if w := remoteDo(h, "GET", "/api/chats/..%2F..%2Fetc/items", testHost, testSecret); w.Code != 404 ||
+		strings.TrimSpace(w.Body.String()) != `{"code":"not_found","error":"`+chats.ErrNotFound.Error()+`"}` {
+		t.Errorf("a chat id that is a path: %d %s, want 404 not_found", w.Code, w.Body)
+	}
 	// The routes themselves are served.
 	if w := remoteDo(h, "GET", "/api/state", testHost, testSecret); w.Code != 200 {
 		t.Errorf("GET /api/state: %d %s", w.Code, w.Body)

@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import "./run.css";
 import "../remotechat.css";
 import { useStore, getState, openRunAgent, closeRunAgent } from "../store.ts";
-import { api } from "../api.ts";
 import { loadRun, runLoadError } from "../conn.ts";
 import { Guard } from "../Guard.tsx";
 import { deleteRun } from "../Sidebar.tsx";
@@ -31,9 +30,10 @@ import { RunGoal } from "./RunGoal.tsx";
 import { RunUsage } from "./RunUsage.tsx";
 import { RunResult } from "./RunResult.tsx";
 import type { RunDetail, RunView as RunRecord } from "../types.ts";
-import { serverName, serverOf, serverState } from "../logic/serverlists.ts";
+import { serverConnected, serverName, serverOf, serverState } from "../logic/serverlists.ts";
+import { inSection, serverOfKey } from "../logic/keys.ts";
 import { runRemoteView } from "../logic/runserver.ts";
-import { REMOVE, SERVERS, type RemoteView } from "../logic/remoteview.ts";
+import { SERVERS, type RemoteView } from "../logic/remoteview.ts";
 import { openServers } from "../Servers.tsx";
 
 const AGAIN_MS = 3000; // a refetch that failed while the view shows its last detail is tried again this much later
@@ -52,18 +52,20 @@ export function RunView({ runId }: { runId: string }) {
   const [fails, setFails] = useState(0);
   const [why, setWhy] = useState("");
   const [again, setAgain] = useState(0);
-  // A run on another server: what shows while that server is not connected, and when the run is
-  // no longer there (runRemoteView). A load that failed for another reason is told as a local run's.
-  const server = serverOf(r);
+  // A run of a section: what shows while that server is not connected, and when the run is no
+  // longer there (runRemoteView). A load that failed for another reason is told as a local run's.
+  const server = serverOfKey(runId);
   const serverIs = useStore((s) => serverName(s, server));
   const state = useStore((s) => serverState(s, server));
   const loadErr = useStore((s) => s.runErrors[runId]);
-  // Its server is connected again: the failures before count no more, and the detail is asked for again.
-  const there = state === "connected";
+  const left = useStore((s) => !!s.gone[runId]); // the run is no longer on its server
+  // Its server is connected again (its section's tree is here): the failures before count no more, and the detail is asked for again.
+  const there = useStore((s) => serverConnected(s, server));
   useEffect(() => { if (there) setFails(0); }, [there]);
-  // on mount, and again whenever the detail went away
+  // on mount, and again whenever the detail went away; nothing is asked of a server that is not connected, or for a run it no longer has
   useEffect(() => {
     if (d) { setFails(0); return; }
+    if (!there || left) return;
     let gone = false, timer = 0;
     void loadRun(runId).then(() => {
       if (gone || getState().runDetail[runId]) return;
@@ -74,10 +76,10 @@ export function RunView({ runId }: { runId: string }) {
       else if (n < 2) timer = window.setTimeout(() => setAgain((k) => k + 1), FIRST_AGAIN_MS);
     });
     return () => { gone = true; clearTimeout(timer); };
-  }, [runId, !d, again, there]);
+  }, [runId, !d, again, there, left]);
   const detail = d ?? last.current;
   if (!r) return null;
-  const remote = runRemoteView(r, serverIs, state, !!detail, loadErr);
+  const remote = runRemoteView({ remote: inSection(runId), connected: there, gone: left }, serverIs, state, !!detail, loadErr);
   if (!detail) {
     const retry = () => { setFails(1); setAgain((k) => k + 1); };
     if (remote.kind === "unreachable" || remote.kind === "gone") return (
@@ -85,7 +87,7 @@ export function RunView({ runId }: { runId: string }) {
         <div className={`remote-off ${remote.kind}`} role="status">
           <p className="remote-off-text">{remote.text}</p>
           {remote.kind === "unreachable" && remote.state && <p className="remote-off-state">{remote.state}</p>}
-          {remote.kind === "unreachable" ? <button type="button" className="btn sm remote-servers" onClick={() => openServers()}>{SERVERS}</button> : <RemoveHere runId={runId} />}
+          {remote.kind === "unreachable" && <button type="button" className="btn sm remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
         </div>
       </div>
     );
@@ -106,17 +108,6 @@ export function RunView({ runId }: { runId: string }) {
     );
   }
   return <Follow key={runId} run={r} detail={detail} stale={!d && fails >= 2} remote={remote} />;
-}
-
-/** "Remove from this sidebar": the record of a run that is gone on its server is all there is to remove. */
-function RemoveHere({ runId }: { runId: string }) {
-  const [err, setErr] = useState("");
-  return (
-    <>
-      <button type="button" className="btn sm remote-remove" onClick={() => api.deleteRun(runId, { local: true }).then(() => setErr(""), (e) => setErr(e.message))}>{REMOVE}</button>
-      {err && <span className="dir-err">{err}</span>}
-    </>
-  );
 }
 
 /** The view of one run. Everything the user set here (selection, dock, zoom, filter) is its own
@@ -248,7 +239,8 @@ function Follow({ run: r, detail, stale, remote }: { run: RunRecord; detail: Run
       {remote.kind === "bar" && (
         <div className={`remote-bar run-remote-bar ${remote.gone ? "gone" : "off"}`} role="status">
           <span className="remote-bar-text">{remote.text}</span>
-          {remote.gone ? <RemoveHere runId={runId} /> : <button type="button" className="link remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
+          {remote.state && <span className="remote-bar-state">{remote.state}</span>}
+          {!remote.gone && <button type="button" className="link remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
         </div>
       )}
       {stale && connected && remote.kind !== "bar" && <div className="run-stale note" role="status">Not up to date: the run could not be reloaded. Retrying…</div>}

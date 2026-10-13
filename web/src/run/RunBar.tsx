@@ -2,7 +2,10 @@
 // pattern). What the follow view adds to it (meters, stop and resume) is RunBarStatus.
 import React, { useRef } from "react";
 import "./shell.css";
-import { useStore, getState, setState, closeRunAgent } from "../store.ts";
+import { useStore, getState, setState, closeRunAgent, groupsOn } from "../store.ts";
+import { serverOfKey } from "../logic/keys.ts";
+import { reachable } from "../logic/sections.ts";
+import { sectionName } from "../logic/serverlists.ts";
 import { newChat, openRun } from "../Sidebar.tsx";
 import { groupPath } from "../logic/tree.ts";
 import { runChats } from "../logic/run.ts";
@@ -16,17 +19,18 @@ export function RunBar({ run, chatOpen }: { run: string; chatOpen: boolean }) {
   const name = useStore((s) => s.runs[run]?.name);
   const group = useStore((s) => s.runs[run]?.group);
   const archived = useStore((s) => !!s.runs[run]?.archived);
-  // As the sidebar row's "+": no chat can be made on an archived run, on a draft on another server, or on a run its server no longer has.
-  const offersChat = useStore((s) => { const r = s.runs[run]; return !!r && offersChatOn(r) && !r.gone; });
+  // As the sidebar row's "+": no chat can be made on an archived run, nor on a run whose server is not connected or no longer has it.
+  const offersChat = useStore((s) => { const r = s.runs[run]; return !!r && offersChatOn(r) && reachable(s, run); });
   const count = useStore((s) => runChats(s.chats, run, s.showArchived).length);
-  const groups = useStore((s) => s.groups);
+  const groups = useStore((s) => groupsOn(s, serverOfKey(run))); // the run's path is in the groups of its own server
+  const section = useStore((s) => sectionName(s, run));
   const bar = useRef<HTMLDivElement>(null);
   // In a tight stage (the side panel open in a small window) the chat button says less, so that the status can stay.
   const tight = (useSize(bar, (el) => el.closest<HTMLElement>(".board-stage"), name !== undefined).w || 1000) < TIGHT;
   if (name === undefined) return null;
   const r = { name, archived };
   const chats = { length: count };
-  const path = groupPath(groups, group ?? "");
+  const path = [...(section ? [section] : []), ...groupPath(groups, group ?? "")];
   const showChats = () => {
     const { sel, chats: all } = getState();
     if (!(sel.chat && all[sel.chat]?.run === run)) openRun(run);

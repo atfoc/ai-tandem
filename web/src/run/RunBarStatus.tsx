@@ -28,8 +28,9 @@ export function RunBarStatus({ runId }: { runId: string }) {
   const doing = useStore((s) => { const v = s.runs[runId]; return v?.status === "running" ? runDoing(v, s.runDetail[runId]) : ""; });
   const loaded = useStore((s) => !!s.runDetail[runId]);
   const connected = useStore((s) => s.connected);
-  // A run on another server takes no Stop and no Resume while that server is not connected (the title says so).
+  // A run of a section takes no Stop and no Resume while that server is not connected (the title says so), and none once it is gone there.
   const off = useStore((s) => { const v = s.runs[runId]; return v ? runActBlock(runWhere(s, v)) : ""; });
+  const left = useStore((s) => !!s.gone[runId]);
   const ref = useRef<HTMLSpanElement>(null);
   const followed = !!r && !isDraft(r);
   const stage = useSize(ref, (el) => el.closest<HTMLElement>(".board-stage"), followed).w || 1000;
@@ -64,7 +65,7 @@ export function RunBarStatus({ runId }: { runId: string }) {
   if (!r) return null;
   if (isDraft(r)) return <span className="run-status st-draft">{runWord(r)}</span>;
 
-  const raise = resumeRaise(r), acts = !r.archived && !r.gone; // a run its server no longer has takes neither
+  const raise = resumeRaise(r), acts = !r.archived && !left; // a run its server no longer has takes neither
   const stop = acts && (r.status === "running" || r.status === "stopping");
   const resume = acts && canResume(r.status) && !unreadable;
   // A narrow stage says less: first what the run is at, then the buttons' words, then the status word.
@@ -109,7 +110,7 @@ export function RunBarStatus({ runId }: { runId: string }) {
             title={!connected ? "Reconnecting to the server…" : off ? off : r.blocked || (raise ? "Resume the run with a higher limit" : words ? "Resume the run where it stopped" : `${says} — Resume`)}>
             <span className="g">▶</span>{words && " Resume"}
           </button>
-          {menu && raise && <Menu onClose={() => setMenu(false)}><RaiseForm run={r} raise={raise} onDone={() => setMenu(false)} /></Menu>}
+          {menu && raise && !off && <Menu onClose={() => setMenu(false)}><RaiseForm run={r} raise={raise} onDone={() => setMenu(false)} /></Menu>}
         </span>
       )}
     </span>

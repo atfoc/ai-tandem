@@ -4,21 +4,33 @@ import { getState, setState, upsertChat, setMove, setShown, isBusy, isLegacy, br
   beginWait, endWait, stepSend } from "../store.ts";
 import { keepBranch, showBranch } from "../conn.ts";
 import { openChat } from "../Sidebar.tsx";
-import { focusComposer, saveDraft } from "../Composer.tsx";
+import { focusComposer } from "../Composer.tsx";
+import { putDraft } from "../chatdraft.ts";
+import { composerOpened } from "../uploads.ts";
 import { reportError } from "../Dialogs.tsx";
 import { LIVE_FORK, sessionEnd } from "../logic/forkpoints.ts";
 import { afterBack, afterSent, moveDropped, moveValid, quoteLimit, quotesBefore } from "../logic/branchview.ts";
-import { draftOf, draftsAfterSent, hasDraft, heldOf, sameDraft } from "../logic/drafts.ts";
+import { draftsAfterSent, hasDraft, heldOf, ofHeld } from "../logic/drafts.ts";
 import { mergeQuotes } from "../logic/quotes.ts";
+import { withImages } from "../logic/chatimage.ts";
 import { branchKey } from "../logic/branches.ts";
 import { sameChoice, withModel, type Choice } from "../logic/models.ts";
 import { catalogFor } from "../logic/agentlist.ts";
-import type { Draft, Held, PendingMove, Reference, Target } from "../types.ts";
+import type { ChatImage, Held, PendingMove, Reference, Target } from "../types.ts";
 import { serverOf } from "../logic/serverlists.ts";
-import { loading, sendHeld, taken, unnamed } from "../logic/waits.ts";
+import { loading, sendHeld, taken, unnamed, uploading } from "../logic/waits.ts";
+import { reachable } from "../logic/sections.ts";
 
-/** Sets (or, with blank text, removes) a label; puts the answer's labels into the loaded tree. An error is shown with reportError. */
+/** Whether a chat takes a call now: always one of this computer; one of a section while its server is connected and
+ *  has it (logic/sections.ts reachable). A chat that takes none is shown as it was: no action here asks its server,
+ *  and none changes the branch or the point it shows. The views draw these actions off, with the reason; this holds
+ *  for whatever reaches them all the same (a key, a popup opened before the server dropped). */
+const takesCalls = (chat: string): boolean => reachable(getState(), chat);
+
+/** Sets (or, with blank text, removes) a label; puts the answer's labels into the loaded tree. An error is shown with reportError.
+ *  Nothing is asked for a chat that takes no call (takesCalls). */
 export async function labelMessage(chat: string, branch: string, item: number, text: string): Promise<void> {
+  if (!takesCalls(chat)) return;
   try {
     const r = await api.setLabel(chat, branch, item, text);
     setState((s) => {
@@ -31,9 +43,9 @@ export async function labelMessage(chat: string, branch: string, item: number, t
 /** Forks to a new chat and opens it. message: the user message that becomes its draft. An error is shown with reportError.
  *  The server answers once the fork's agent has started and tells nothing before: until the call
  *  has ended, however it ends, the chat says that a fork of it is being made (State.waits), and
- *  takes no second one: its Fork controls are held meanwhile. */
+ *  takes no second one: its Fork controls are held meanwhile. A chat that takes no call (takesCalls) is not forked. */
 export async function forkChat(chat: string, branch: string, at: number, message?: number): Promise<void> {
-  if (getState().waits[chat]?.fork) return;
+  if (getState().waits[chat]?.fork || !takesCalls(chat)) return;
   const wait = beginWait(chat, "fork", {});
   try {
     const c = await api.fork(chat, branch, at, message);
@@ -68,7 +80,9 @@ export function closeTree(): void {
 // next message, kept in State.moves until Send or Back. A move is always to a branch that is not
 // there yet; its `from` is the branch the chat is on, whose draft the composer holds.
 
-type ComposerBridge = { get(): Held; set(h: Held): void };
+/** What a move reads from a composer and puts into it. images: changes its images alone, and leaves its text, its
+ *  mentions and its quotes as they are (an upload that was answered, an image that is no longer there). */
+type ComposerBridge = { get(): Held; set(h: Held): void; images(f: (now: ChatImage[]) => ChatImage[]): void };
 
 /** The open composers, by chat id: what a move reads from them and puts into them. A chat has
  *  one, of the branch it is on, whose draft it holds. */
@@ -78,7 +92,31 @@ const composerOf = (chat: string, branch: string): ComposerBridge | undefined =>
   const open = composers.get(chat);
   return open?.branch === branch ? open.b : undefined;
 };
-const NOTHING: Held = { text: "", mentions: [], references: [] };
+const NOTHING: Held = { text: "", mentions: [], references: [], images: [] };
+
+/** Whether a composer of a chat's branch is open: its own saver then has the branch's draft (keptdrafts.ts). */
+export const composerOpen = (chat: string, branch: string): boolean => !!composerOf(chat, branch);
+
+/** Whether the chat's composer, the one of the branch the chat is on here, uploads an image: what would change what
+ *  that composer holds is not started meanwhile (logic/waits.ts uploadHeld), as it is not while the composer sends. */
+const composerUploads = (chat: string): boolean => { const s = getState(); return uploading(s.waits[chat], viewedBranch(s, chat)); };
+
+/** Changes the images of what the composer of a chat's branch holds (uploads.ts: an upload was answered, an image is
+ *  no longer there). The open composer's, which saves them with its draft. With none open, under a pending move that
+ *  was started on the branch, the images of what its composer left (move.typed), which the composer's next opening or
+ *  the move's end takes up; the branch's unsaved draft is then again what Back would leave of it. false: neither, and
+ *  what the branch has is its draft, which is the caller's to change. */
+export function heldImages(chat: string, branch: string, f: (now: ChatImage[]) => ChatImage[]): boolean {
+  const b = composerOf(chat, branch);
+  if (b) { b.images(f); return true; }
+  const move = getState().moves[chat];
+  if (!move || move.from !== branch || !(move.typed || isSending(chat))) return false;
+  const was = move.typed ?? NOTHING, typed = { ...was, images: f(was.images) };
+  if (!move.typed && !hasDraft(ofHeld(typed))) return true; // nothing was left, and nothing is
+  setMove(chat, { ...move, typed });
+  if (!isSending(chat)) unsavedDraft(chat, branch).write(ofHeld(afterBack(move, typed, backLimit(chat, move))));
+  return true;
+}
 
 /** Puts h into a composer and tells what it then holds: its box may write the text its own way,
  *  and Back compares with what the box says. */
@@ -116,16 +154,16 @@ export function registerComposer(chat: string, branch: string, b: ComposerBridge
     const h = leftByBack(chat, branch), move = getState().moves[chat], typed = open.b.get();
     if (h) {
       setMove(chat, { ...move, typed });
-      unsavedDraft(chat, branch).write(draftOf(h.text, h.mentions, h.references));
-    } else if (move?.from === branch && isSending(chat) && hasDraft(draftOf(typed.text, typed.mentions, typed.references))) setMove(chat, { ...move, typed });
+      unsavedDraft(chat, branch).write(ofHeld(h));
+    } else if (move?.from === branch && isSending(chat) && hasDraft(ofHeld(typed))) setMove(chat, { ...move, typed });
     composers.delete(chat);
     return;
   }
   composers.set(chat, { branch, b });
   const move = getState().moves[chat];
-  if (!move || move.from !== branch || (isSending(chat) && !move.typed)) return;
+  if (!move || move.from !== branch || (isSending(chat) && !move.typed)) { composerOpened(chat, branch); return; }
   const { typed, ...rest } = move;
-  if (typed) { setMove(chat, rest); b.set(typed); return; }
+  if (typed) { setMove(chat, rest); b.set(typed); composerOpened(chat, branch); return; }
   const held = b.get();
   if (move.put) setMove(chat, { ...move, held, put: putInto(b, move.put) });
   else {
@@ -133,13 +171,14 @@ export function registerComposer(chat: string, branch: string, b: ComposerBridge
     setMove(chat, { ...move, held, hid: held.references.filter((r) => !kept.includes(r)) });
     b.set({ ...held, references: kept });
   }
+  composerOpened(chat, branch); // an image that waited for the branch's draft goes into what the composer holds now (uploads.ts)
 }
 
 /** A Send failed after its composer went away (another chat was opened meanwhile): a notice
  *  tells of it, and h, what was not sent, is kept. branch: the one of the composer that sent it.
  *  Only a composer of that branch that is open again gets h: under a pending move as what it
- *  holds, else as the one that sent it would (the text into an empty box, the quotes with its
- *  own). An open composer of another branch counts as none: it and its draft are left alone.
+ *  holds, else as the one that sent it would (the text into an empty box, the quotes and the
+ *  images with its own). An open composer of another branch counts as none: it and its draft are left alone.
  *  With none open, a pending move started on the branch (the failed Send left it) keeps h for the
  *  composer's next opening, and the branch's unsaved draft is what Back would leave of it.
  *  false: none open and no such move, so h is the draft of the branch it was typed on again: the
@@ -149,11 +188,11 @@ export function sendFailed(chat: string, branch: string, h: Held, err: unknown):
   if (!c) return true; // deleted meanwhile
   const move = s.moves[chat]?.from === branch ? s.moves[chat] : undefined;
   reportError(`Couldn't send your message in “${c.name || "the chat"}”`, err);
-  if (b) { const now = b.get(); b.set(move ? h : { ...(now.text.trim() ? now : h), references: mergeQuotes(h.references, now.references) }); }
+  if (b) { const now = b.get(); b.set(move ? h : { ...(now.text.trim() ? now : h), references: mergeQuotes(h.references, now.references), images: withImages(h.images, now.images) }); }
   else if (move) {
     const left = afterBack(move, h, backLimit(chat, move));
     setMove(chat, { ...move, typed: h });
-    unsavedDraft(chat, move.from).write(draftOf(left.text, left.mentions, left.references));
+    unsavedDraft(chat, move.from).write(ofHeld(left));
   }
   return !!b || !!move;
 }
@@ -170,10 +209,11 @@ export const isSending = (chat: string) => sendHeld(getState().waits[chat]);
 /** Puts a chat on another of its branches: the thread, the composer with that branch's draft and
  *  the session state shown are that branch's from then on. It is this client's state alone:
  *  nothing is sent but, the first time, the fetch of the branch's list. A pending move is undone
- *  first (Back); nothing happens while one is being sent. When the list cannot be fetched the
+ *  first (Back); nothing happens for a chat that takes no call (takesCalls), while a move is being sent, nor, with a move pending, while the
+ *  chat's composer uploads an image (Back is not started then). When the list cannot be fetched the
  *  chat is on the branch it was on again, and the error is shown with reportError. */
 export async function viewBranch(chat: string, branch: string): Promise<void> {
-  if (!getState().chats[chat] || isSending(chat)) return;
+  if (!getState().chats[chat] || !takesCalls(chat) || isSending(chat) || (getState().moves[chat] && composerUploads(chat))) return;
   goBack(chat);
   const before = viewedBranch(getState(), chat);
   const n = ++startSeq;
@@ -204,16 +244,18 @@ function opening(chat: string, branch: string, needed: boolean): () => void {
 }
 
 /** Starts a pending move to target. edit: the index, in target.branch's items, of the user message
- *  to put into the composer (Branch and edit). Nothing happens in an archived or legacy chat.
+ *  to put into the composer (Branch and edit). Nothing happens in an archived or legacy chat, nor in one that takes no call (takesCalls).
  *  A target that asks for no new branch at its branch's end is no move: that branch is looked at
  *  (viewBranch), and the next message carries it on. Every other target is a move to a new
  *  branch, so a pending move never names a branch that is there as where the message goes.
  *  What other branches do does not matter, and the target's own branch may be in a turn when the
  *  agent kind can branch from a running source (LIVE_FORK): the point must then be a finished
  *  boundary, as checkMove judges once the list is there. While a list has to be fetched for it
- *  (a point of another branch, chosen in the tree) the chat says that the branch is being opened. */
+ *  (a point of another branch, chosen in the tree) the chat says that the branch is being opened.
+ *  Branch and edit is not started while the chat's composer uploads an image: it puts a message in
+ *  the place of what the composer holds, and the image belongs to what it was added to. */
 export async function startMove(chat: string, target: Target, edit?: number): Promise<void> {
-  const ok = () => { const c = getState().chats[chat]; return !!c && !c.archived && !isLegacy(c) && !isSending(chat); };
+  const ok = () => { const c = getState().chats[chat]; return !!c && !c.archived && !isLegacy(c) && takesCalls(chat) && !isSending(chat) && !(edit !== undefined && composerUploads(chat)); };
   const live = () => { const a = getState().chats[chat]!.agent; return (!!a && LIVE_FORK[a]) || !sourceBusy(chat, target.branch); };
   if (!ok()) return;
   const n = ++startSeq;
@@ -257,7 +299,8 @@ export async function startMove(chat: string, target: Target, edit?: number): Pr
 
   const b = composerOf(chat, from);
   if (edit !== undefined) {
-    const put: Held = { text: items[edit]?.text ?? "", mentions: [], references: items[edit]?.references ?? [] };
+    if (composerUploads(chat)) { goBack(chat); return; } // an upload began while the branch's list was fetched
+    const put: Held = { text: items[edit]?.text ?? "", mentions: [], references: items[edit]?.references ?? [], images: items[edit]?.images ?? [] };
     setMove(chat, { ...getState().moves[chat], put: b ? putInto(b, put) : put });
   } else if (b) {
     // The composer's quotes point into the thread shown before: beyond what the two share, or past the point, an index names another message.
@@ -291,10 +334,17 @@ export function setMoveChoice(chat: string, choice: Choice | null): void {
   setMove(chat, choice.effort ? { ...rest, model: choice.model, effort: choice.effort } : { ...rest, model: choice.model });
 }
 
+/** The banner's Back: goBack, but not started while the chat's composer uploads an image, as it is
+ *  not while it sends; nor for a chat that takes no call, whose view and whose composer stay as they are. */
+export function back(chat: string): void {
+  if (takesCalls(chat) && !composerUploads(chat)) goBack(chat);
+}
+
 /** Undoes the pending move (Back), and drops it when it can no longer be sent: the chat shows the
  *  branch it is on again, and that branch's composer holds what it held before the move, or what
  *  was typed meanwhile without the quotes that name another message there. A move being sent
- *  stays. */
+ *  stays. An upload of the composer does not keep a move that has to go (the chat was archived,
+ *  the point is no longer one): the image then goes into what the composer holds after it. */
 export function goBack(chat: string): void {
   const move = getState().moves[chat];
   if (!move || isSending(chat)) return;
@@ -340,12 +390,12 @@ export function checkMove(chat: string): void {
  *  the POST fails the move stays and the error is thrown on. Nothing more is needed then: the
  *  server lists a new branch only once the agent took its message, so after a failure no branch
  *  was made, and the move, the banner and the message are there for the next try.
- *  message: what is sent, for the page to show while it is on its way (State.waits). The server
+ *  message: what is sent (its images only when it has any), for the page to show while it is on its way (State.waits). The server
  *  tells nothing of a new branch before it answers, which is after the agent has started on it:
  *  the wait begins here and ends with the POST when that fails, else when the new branch's list
  *  is here (moveSent). The first message of a fork that has had none of its own may have to wait
  *  for the fork's agent to be started: it is shown the same way until the thread has it. */
-export async function sendAt(chat: string, post: (branch: string, target?: Target & { model?: string; effort?: string }) => Promise<unknown>, message?: { text: string; references: Reference[] }): Promise<void> {
+export async function sendAt(chat: string, post: (branch: string, target?: Target & { model?: string; effort?: string }) => Promise<unknown>, message?: { text: string; references: Reference[]; images?: ChatImage[] }): Promise<void> {
   const s = getState(), move = s.moves[chat];
   if (!move) {
     const branch = viewedBranch(s, chat), list = threadOf(s, chat);
@@ -357,7 +407,7 @@ export async function sendAt(chat: string, post: (branch: string, target?: Targe
   }
   const before = currentBranch(s.chats[chat]);
   let answer: unknown;
-  const wait = beginWait(chat, "send", { kind: "branch", phase: "sending", text: message?.text ?? "", references: message?.references ?? [], branch: move.branch, at: move.at });
+  const wait = beginWait(chat, "send", { kind: "branch", phase: "sending", text: message?.text ?? "", references: message?.references ?? [], ...(message?.images?.length ? { images: message.images } : {}), branch: move.branch, at: move.at });
   const target: Target & { model?: string; effort?: string } = { branch: move.branch, at: move.at, new: move.new };
   if (move.model) { target.model = move.model; if (move.effort) target.effort = move.effort; }
   try { answer = await post(move.branch, target); }
@@ -439,19 +489,6 @@ function setSentDrafts(chat: string, move: PendingMove, to: string | null): void
   const typed = b?.get() ?? move.typed ?? NOTHING;
   const d = draftsAfterSent(afterSent(move, NOTHING, Infinity), typed, to !== null);
   if (b) b.set(heldOf(d.left));
-  else putDraft(chat, move.from, d.left);
-  if (to !== null && d.to) putDraft(chat, to, d.to);
-}
-
-/** Sets a branch's draft from outside its composer: as its unsaved draft, which the branch's next
- *  composer opens with and saves, and on the server. The unsaved copy goes when the server has
- *  the draft. When the save failed and the copy is gone (a composer of the branch took it), it is
- *  there again only when d is still the branch's draft here: a newer one is not replaced by it. */
-function putDraft(chat: string, branch: string, d: Draft): void {
-  const unsaved = unsavedDraft(chat, branch);
-  unsaved.write(d);
-  saveDraft(chat, branch, d).then(
-    () => { if (sameDraft(unsaved.read(), d)) unsaved.write(null); },
-    () => { if (!unsaved.read() && sameDraft(branchState(getState(), chat, branch)?.draft, d)) unsaved.write(d); },
-  );
+  else void putDraft(chat, move.from, d.left).catch(() => {});
+  if (to !== null && d.to) void putDraft(chat, to, d.to).catch(() => {}); // (chatdraft.ts: the unsaved copy keeps what the server did not take)
 }

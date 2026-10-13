@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type piModel struct {
 	Reasoning        bool                       `json:"reasoning"`
 	ThinkingLevelMap map[string]json.RawMessage `json:"thinkingLevelMap"`
 	ContextWindow    int                        `json:"contextWindow"`
+	Input            []string                   `json:"input"` // the kinds of input it takes: "text", "image"
 }
 
 // reasoningLevels is the base thinking-level list of a reasoning model; a level the model maps
@@ -40,7 +42,8 @@ func catalogFrom(stateData, modelsData json.RawMessage) *model.Catalog {
 	}
 	cat := &model.Catalog{Models: make([]model.CatalogModel, 0, len(answer.Models))}
 	for _, m := range answer.Models {
-		cm := model.CatalogModel{ID: qualifiedID(m.Provider, m.ID), Label: m.Name, Provider: m.Provider, ContextWindow: m.ContextWindow}
+		cm := model.CatalogModel{ID: qualifiedID(m.Provider, m.ID), Label: m.Name, Provider: m.Provider, ContextWindow: m.ContextWindow,
+			NoImages: noImages(m.Input)}
 		if cm.Label == "" {
 			cm.Label = m.ID
 		}
@@ -68,6 +71,13 @@ func catalogFrom(stateData, modelsData json.RawMessage) *model.Catalog {
 	}
 	cat.Default = model.ModelChoice{Model: chosen.ID, Effort: chosen.DefaultEffort}
 	return cat
+}
+
+// noImages reports whether a model's input list says it takes no images: the list names what the
+// model takes and "image" is not in it. A model with no list (a pi that reports none) is not
+// marked, so it takes images as before.
+func noImages(input []string) bool {
+	return len(input) > 0 && !slices.Contains(input, "image")
 }
 
 // qualifiedID is a model's provider-qualified catalog id: "provider/id", or just id when the

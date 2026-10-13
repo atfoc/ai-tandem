@@ -279,7 +279,7 @@ func TestCreateOnRun(t *testing.T) {
 	if calls := e.namer.callList(); len(calls) != 1 {
 		t.Fatalf("namer calls: %v", calls)
 	}
-	after, want := e.defaultsOf(), before.Groups[gOne].On(model.LocalServer)
+	after, want := e.defaultsOf(), before.Groups[gOne].Local()
 	want.Agent, want.Subagents = model.Claude, &model.SubLimits{Depth: 1, Cap: 100}
 	if got := after.Groups[gOne]; !reflect.DeepEqual(got, model.LocalDefaults(want)) || want.Cwd != other || len(after.Groups) != 1 {
 		t.Fatalf("the sticky defaults changed: %+v -> %+v", before, after)

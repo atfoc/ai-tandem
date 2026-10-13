@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTree, boardChats, contents, groupPath, subtree } from "../src/logic/tree.ts";
+import { readFileSync } from "node:fs";
+import { buildTree, boardChats, contents, groupPath, holdsAny, subtree, treeCount, treeEmpty } from "../src/logic/tree.ts";
 import type { Board, ChatView, Group, RunView } from "../src/types.ts";
 import { UNGROUPED } from "../src/types.ts";
+import { treeIn } from "../src/logic/sectionwire.ts";
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
 const arch = (x: boolean) => (x ? { archived: true, archiveOp: "op1" } : {});
@@ -222,4 +224,155 @@ test("a record with a role never appears anywhere", () => {
     assert.ok(all.length > 0);
     assert.ok(!all.some((c) => c.role), "no agent in a list");
   }
+});
+
+// ---- the tree of one server: the local part's, or a section's
+
+// What the store holds of the section s_1 beside this computer's own (above): its groups under their keys, with the ids
+// this computer's groups have too, and its boards, chats and runs in the store's one map of each, by key.
+const farGroups: Group[] = [{ id: "s_1~g_a", name: "Shared" }, { id: "s_1~g_sub", name: "Sub", parent: "s_1~g_a" }, { id: "s_1~g_x", name: "Old", archived: true, archiveOp: "op9" }];
+const farRun = (id: string, group: string, created: string): RunView => ({ id, name: id, group, created, status: "running" }) as RunView;
+const both = {
+  boards: { ...boards, ...byId([board("s_1~b_alpha", "alpha", "s_1~g_a"), board("s_1~b_loose", "there", "s_1~__ungrouped__"), board("s_1~b_sub", "deep", "s_1~g_sub"), board("s_2~b_alpha", "elsewhere", "s_2~__ungrouped__")]) },
+  chats: { ...chats, ...byId([
+    chat("s_1~c_new", "2026-09-03T00:00:00Z", { group: "s_1~g_a" }),
+    chat("s_1~c_loose", "2026-09-01T00:00:00Z", { group: "s_1~__ungrouped__" }),
+    chat("s_1~c_board", "2026-09-01T00:00:00Z", { board: "s_1~b_alpha" }),
+    chat("s_2~c_new", "2026-09-03T00:00:00Z", { group: "s_2~__ungrouped__" }),
+  ]) },
+  runs: byId([farRun("r_1", "g_a", "2026-09-01T00:00:00Z"), farRun("s_1~r_1", "s_1~g_sub", "2026-09-01T00:00:00Z"), farRun("s_1~r_2", "s_1~__ungrouped__", "2026-09-02T00:00:00Z")]),
+};
+
+test("the local part holds only what lives on this computer: nothing of a section is in it, in a group or loose", () => {
+  const t = buildTree({ groups, ...both }, false);
+  assert.deepEqual(ids(t.groups.map((n) => n.group)), ["g_b", "g_a"]);
+  const a = t.groups[1];
+  assert.deepEqual(ids(a.boards), ["b_alpha", "b_alpha2", "b_zeta"]);
+  assert.deepEqual(ids(a.chats), ["c_new", "c_mid", "c_old"]);
+  assert.deepEqual(ids(a.runs), ["r_1"]);
+  assert.deepEqual(ids(t.loose.boards), ["b_loose", "b_lost"], "a section's board is not a board of an unknown group here");
+  assert.deepEqual(ids(t.loose.chats), ["c_loose", "c_lost"]);
+  assert.deepEqual(ids(t.loose.runs), []);
+  // the same with the server named
+  assert.deepEqual(buildTree({ groups, ...both }, false, { server: "local" }), t);
+  assert.deepEqual(buildTree({ groups, ...both }, false, {}), t);
+});
+
+test("a section's tree holds that server's things alone, nested and ordered as the local part's", () => {
+  const t = buildTree({ groups: farGroups, ...both }, false, { server: "s_1" });
+  assert.deepEqual(ids(t.groups.map((n) => n.group)), ["s_1~g_a"]);
+  const a = t.groups[0];
+  assert.deepEqual([ids(a.boards), ids(a.chats), ids(a.runs)], [["s_1~b_alpha"], ["s_1~c_new"], []]);
+  assert.deepEqual(ids(a.children.map((n) => n.group)), ["s_1~g_sub"]);
+  assert.deepEqual([ids(a.children[0].boards), ids(a.children[0].runs)], [["s_1~b_sub"], ["s_1~r_1"]]);
+  // what is in no group of that server first: its ungrouped area's
+  assert.deepEqual([ids(t.loose.boards), ids(t.loose.runs), ids(t.loose.chats)], [["s_1~b_loose"], ["s_1~r_2"], ["s_1~c_loose"]]);
+  // a chat on a board of the section is under its board, there as here
+  assert.deepEqual(ids(boardChats(both.chats, "s_1~b_alpha", false)), ["s_1~c_board"]);
+  assert.deepEqual(ids(boardChats(both.chats, "b_alpha", false)), [], "the local board with the same id has none of them");
+  // another section's tree is its own
+  const other = buildTree({ groups: [], ...both }, false, { server: "s_2" });
+  assert.deepEqual([ids(other.loose.boards), ids(other.loose.chats), other.groups.length], [["s_2~b_alpha"], ["s_2~c_new"], 0]);
+  // and a server with nothing in the store has an empty tree
+  assert.deepEqual(buildTree({ groups: [], ...both }, false, { server: "s_9" }), { groups: [], loose: { boards: [], runs: [], chats: [] } });
+});
+
+test("a section shows its things in the order that server's own page shows them, whatever order the lists came in", () => {
+  // One server's tree, as its own page has it (under its own ids) and as a client's section has it (under its keys,
+  // from a tree whose lists came in another order: that server may send a list in no fixed one). The groups are in
+  // the server's order, which both keep. Names that are equal, and times that are equal, are told apart by the id.
+  const gs: Group[] = [{ id: "g_2", name: "Second" }, { id: "g_1", name: "First" }, { id: "g_in", name: "Inner", parent: "g_1" }];
+  const bs = [board("b_9", "zeta", "g_1"), board("b_2", "alpha", "g_1"), board("b_1", "alpha", "g_1"), board("b_5", "Beta", "g_1"), board("b_3", "loose", UNGROUPED), board("b_4", "deep", "g_in")];
+  const cs = [chat("c_1", "2026-09-01T00:00:00Z", { group: "g_1" }), chat("c_3", "2026-09-02T00:00:00Z", { group: "g_1" }), chat("c_2", "2026-09-02T00:00:00Z", { group: "g_1" }),
+    chat("c_4", "2026-09-03T00:00:00Z", {}), chat("c_5", "2026-09-01T00:00:00Z", { group: UNGROUPED }), chat("c_b1", "2026-09-01T00:00:00Z", { board: "b_9" }), chat("c_b2", "2026-09-04T00:00:00Z", { board: "b_9" })];
+  const rs = [farRun("r_1", "g_1", "2026-09-01T00:00:00Z"), farRun("r_3", "g_1", "2026-09-05T00:00:00Z"), farRun("r_2", "g_1", "2026-09-05T00:00:00Z"), farRun("r_4", UNGROUPED, "2026-09-02T00:00:00Z")];
+  /** A tree as lines of the things' own ids, in the order they are drawn. */
+  const outline = (t: ReturnType<typeof buildTree>, all: Record<string, ChatView>): string[] => {
+    const own = (id: string) => id.slice(id.indexOf("~") + 1);
+    const rows = (x: { boards: Board[]; runs: RunView[]; chats: ChatView[] }) =>
+      [...x.boards.flatMap((b) => [own(b.id), ...boardChats(all, b.id, true).map((c) => "  " + own(c.id))]), ...ids(x.runs).map(own), ...ids(x.chats).map(own)];
+    const node = (n: (typeof t.groups)[number]): string[] => [own(n.group.id), ...n.children.flatMap(node), ...rows(n)].map((l) => "  " + l);
+    return [...rows(t.loose), ...t.groups.flatMap(node)];
+  };
+  const mine = outline(buildTree({ groups: gs, boards: byId(bs), chats: byId(cs), runs: byId(rs) }, true), byId(cs));
+  assert.deepEqual(mine, ["b_3", "r_4", "c_4", "c_5", "  g_2", "  g_1", "    g_in", "    b_4", "  b_1", "  b_2", "  b_5", "  b_9", "    c_b2", "    c_b1", "  r_2", "  r_3", "  r_1", "  c_2", "  c_3", "  c_1"]);
+  const orders: (<T>(xs: T[]) => T[])[] = [(xs) => xs, (xs) => [...xs].reverse(), (xs) => [...xs.slice(2), ...xs.slice(0, 2)]];
+  for (const [i, order] of orders.entries()) {
+    const far = treeIn("s_1", { groups: gs, boards: order(bs), chats: order(cs), states: [], runs: order(rs), defaults: { groups: {} } });
+    // (the store's maps also hold this computer's things, some with the same ids: none of them is in the section)
+    const held = { boards: { ...boards, ...byId(far.boards) }, chats: { ...chats, ...byId(far.chats) }, runs: { ...both.runs, ...byId(far.runs) } };
+    assert.deepEqual(outline(buildTree({ groups: far.groups, ...held }, true, { server: "s_1" }), held.chats), mine, `order ${i}`);
+  }
+});
+
+test("what is no longer on its server has no row: it is on screen, and in no tree", () => {
+  const gone = { "s_1~b_alpha": true, "s_1~c_loose": true, "s_1~r_1": true } as Record<string, true>;
+  const t = buildTree({ groups: farGroups, ...both }, false, { server: "s_1", gone });
+  assert.deepEqual(ids(t.groups[0].boards), []);
+  assert.deepEqual(ids(t.groups[0].chats), ["s_1~c_new"]);
+  assert.deepEqual(ids(t.groups[0].children[0].runs), []);
+  assert.deepEqual([ids(t.loose.boards), ids(t.loose.runs), ids(t.loose.chats)], [["s_1~b_loose"], ["s_1~r_2"], []]);
+  // a mark under the id alone marks the thing of this computer, not the section's with that id
+  const local = buildTree({ groups: farGroups, ...both }, false, { server: "s_1", gone: { b_alpha: true, c_loose: true } });
+  assert.deepEqual([ids(local.groups[0].boards), ids(local.loose.chats)], [["s_1~b_alpha"], ["s_1~c_loose"]]);
+});
+
+test("a section's archived group and what is in it show only with the archived items, in place", () => {
+  const withOld = { ...both, boards: { ...both.boards, ...byId([board("s_1~b_old", "old", "s_1~g_x", true)]) } };
+  assert.deepEqual(ids(buildTree({ groups: farGroups, ...withOld }, false, { server: "s_1" }).groups.map((n) => n.group)), ["s_1~g_a"]);
+  const t = buildTree({ groups: farGroups, ...withOld }, true, { server: "s_1" });
+  assert.deepEqual(ids(t.groups.map((n) => n.group)), ["s_1~g_a", "s_1~g_x"]);
+  assert.deepEqual(ids(t.groups[1].boards), ["s_1~b_old"]);
+});
+
+test("treeEmpty and treeCount: what a section's head says of its tree", () => {
+  const none = buildTree({ groups: [], boards: {}, chats: {} }, false);
+  assert.equal(treeEmpty(none), true);
+  assert.equal(treeCount(none), 0);
+  // a group with nothing in it is something that shows, and counts nothing
+  const onlyGroup = buildTree({ groups: [{ id: "s_1~g_a", name: "Shared" }], boards: {}, chats: {} }, false, { server: "s_1" });
+  assert.equal(treeEmpty(onlyGroup), false);
+  assert.equal(treeCount(onlyGroup), 0);
+  // boards, runs and plain chats, in the groups, their subgroups and outside them; a chat on a board is its board's
+  const t = buildTree({ groups: farGroups, ...both }, false, { server: "s_1" });
+  assert.equal(treeEmpty(t), false);
+  assert.equal(treeCount(t), 3 + 2 + 2, "3 boards, 2 runs and 2 plain chats");
+  const loose = buildTree({ groups: [], ...both }, false, { server: "s_2" });
+  assert.deepEqual([treeEmpty(loose), treeCount(loose)], [false, 2]);
+  // the local part of the fixture above: every board and plain chat that shows
+  const local = buildTree(s, false);
+  assert.equal(treeCount(local), ids(local.loose.boards).length + ids(local.loose.chats).length + local.groups.map(contents).reduce((n, x) => n + x.boards.length + x.chats.length + x.runs.length, 0));
+  // an archived thing that does not show is not counted, and a tree of nothing but hidden things is empty
+  const hidden = buildTree({ groups: [], boards: byId([board("s_1~b_old", "old", "s_1~__ungrouped__", true)]), chats: {} }, false, { server: "s_1" });
+  assert.deepEqual([treeEmpty(hidden), treeCount(hidden)], [true, 0]);
+});
+
+test("holdsAny: whether a server has anything at all, archived or not, apart from what an empty tree shows", () => {
+  const far = { groups: [] as Group[], boards: { ...boards, ...byId([board("s_1~b_old", "old", "s_1~__ungrouped__", true)]) }, chats, runs: {} };
+  assert.equal(treeEmpty(buildTree(far, false, { server: "s_1" })), true, "its one board is archived: the tree shows nothing");
+  assert.equal(holdsAny(far, { server: "s_1" }), true);
+  assert.equal(holdsAny(far, { server: "s_1", gone: { "s_1~b_old": true } }), false, "what is no longer on its server is not held");
+  assert.equal(holdsAny(far, { server: "s_2" }), false, "this computer's things, and another section's, are not that server's");
+  assert.equal(holdsAny({ groups: [{ id: "s_2~g", name: "g", archived: true, archiveOp: "o" }], boards, chats }, { server: "s_2" }), true, "an archived group");
+  assert.equal(holdsAny({ groups: [], boards: {}, chats: byId([{ ...chat("s_2~c_agent", "2026-09-01T00:00:00Z", {}), run: "s_2~r_1", role: "task" } as ChatView]) }, { server: "s_2" }), false, "a run's own agent is in no tree");
+  assert.equal(holdsAny({ groups: [], boards: {}, chats: byId([chat("c_1", "2026-09-01T00:00:00Z", {}, true)]) }), true, "this computer's, with no server named");
+});
+
+test("groupPath: the path of a group among the groups of its own server; none for a server's ungrouped area", () => {
+  assert.deepEqual(groupPath(farGroups, "s_1~g_sub"), ["Shared", "Sub"]);
+  assert.deepEqual(groupPath(farGroups, "s_1~g_a"), ["Shared"]);
+  assert.deepEqual(groupPath(farGroups, "s_1~__ungrouped__"), []);
+  assert.deepEqual(groupPath(farGroups, UNGROUPED), []);
+  assert.deepEqual(groupPath(farGroups, "g_a"), [], "the local group with the same id is not among them");
+  assert.deepEqual(groupPath(groups, "s_1~g_a"), []);
+  assert.deepEqual([...subtree(farGroups, "s_1~g_a")].sort(), ["s_1~g_a", "s_1~g_sub"]);
+});
+
+test("the sidebar draws the local part and every section with the one tree: each from the groups of its own server", () => {
+  const side = readFileSync(new URL("../src/Sidebar.tsx", import.meta.url), "utf8");
+  assert.ok(side.includes("const tree = buildTree({ groups, boards, chats, runs }, showArchived);"));
+  assert.ok(side.includes("const tree = section ? buildTree({ groups: section.groups, boards, chats, runs }, showArchived, { server: v.id, gone }) : null;"));
+  assert.ok(side.includes("const view = sectionView(v, !!tree, empty, archived);"));
+  assert.ok(side.includes("const count = tree ? treeCount(tree) : 0;"));
+  assert.equal(side.split("buildTree(").length, 3, "the local part and a section, and no third tree");
 });

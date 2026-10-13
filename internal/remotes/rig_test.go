@@ -4,17 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"sort"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
@@ -26,8 +25,17 @@ const (
 	testLocalID = "0b0e6f52-1c3d-4a8e-b7f1-93a2c4d5e6f7" // this server's instance id
 	chatA       = "1a000000-0000-4000-8000-00000000000a"
 	chatB       = "1b000000-0000-4000-8000-00000000000b"
+	agent1      = "3a000000-0000-4000-8000-000000000001" // the chat of a run's agent
+	runA        = "r_aaaa0001"
+	runB        = "r_bbbb0002"
+	boardA      = "b_aaaa0001"
+	boardB      = "b_bbbb0002"
+	boardC      = "b_cccc0003"
 	wait        = 5 * time.Second
 	quiet       = 150 * time.Millisecond
+
+	// testLevel is the level of the stand-in servers: the one this relay is a client of.
+	testLevel = 5
 )
 
 // fastTiming has limits no healthy loopback request reaches and a back-off of 20 and 40 ms.
@@ -38,117 +46,6 @@ func fastTiming() servers.Timing {
 		TestStep: limit, Silence: limit,
 		Backoff: []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, Jitter: -1,
 	}
-}
-
-// fakeLocal stands in for the chat manager: it lists unstarted chats and notes what it is told.
-type fakeLocal struct {
-	mu        sync.Mutex
-	unstarted map[string][]string       // by entry: the ids of the unstarted chats on it
-	chats     map[string]model.ChatMeta // the unstarted chats that have all a chat has, by id
-	starts    []string                  // "id=state" for every SetRemoteStart
-	handed    []string                  // the ids HandOver was called for
-	ups       []string                  // the entries ServerUp was called for
-	resets    []string                  // the ids ResetServer was called for
-	known     map[string]bool           // the ids of the chats of this server that are not unstarted ones
-	onRuns    []string                  // the runs DeleteOnRun was called for
-	onBoards  []string                  // the boards DeleteOnBoard was called for
-	onUp      func(entry string)
-	onHand    func(id string)
-}
-
-func (f *fakeLocal) Known(id string) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	_, ok := f.chats[id]
-	return ok || f.known[id]
-}
-
-func (f *fakeLocal) DeleteOnRun(run string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.onRuns = append(f.onRuns, run)
-}
-
-func (f *fakeLocal) RemoteUnstarted(id string) (model.ChatMeta, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	meta, ok := f.chats[id]
-	return meta, ok
-}
-
-func (f *fakeLocal) SetRemoteStart(id, state string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	meta, ok := f.chats[id]
-	if !ok {
-		return chats.ErrNotFound
-	}
-	meta.RemoteStart = state
-	f.chats[id] = meta
-	f.starts = append(f.starts, id+"="+state)
-	return nil
-}
-
-func (f *fakeLocal) HandOver(id string) (model.ChatMeta, error) {
-	f.mu.Lock()
-	meta, ok := f.chats[id]
-	delete(f.chats, id)
-	f.handed = append(f.handed, id)
-	on := f.onHand
-	f.mu.Unlock()
-	if on != nil {
-		on(id)
-	}
-	if !ok {
-		return model.ChatMeta{}, chats.ErrNotFound
-	}
-	return meta, nil
-}
-
-func (f *fakeLocal) UnstartedOn(entry string) []model.ChatMeta {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []model.ChatMeta
-	for _, id := range f.unstarted[entry] {
-		out = append(out, model.ChatMeta{ID: id, Server: entry})
-	}
-	var own []model.ChatMeta
-	for _, meta := range f.chats {
-		if meta.Server == entry {
-			own = append(own, meta)
-		}
-	}
-	sort.Slice(own, func(i, j int) bool { return own[i].ID < own[j].ID })
-	return append(out, own...)
-}
-
-func (f *fakeLocal) ServerUp(entry string) {
-	f.mu.Lock()
-	f.ups = append(f.ups, entry)
-	on := f.onUp
-	f.mu.Unlock()
-	if on != nil {
-		on(entry)
-	}
-}
-
-func (f *fakeLocal) DeleteOnBoard(board string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.onBoards = append(f.onBoards, board)
-}
-
-func (f *fakeLocal) ResetServer(id string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.resets = append(f.resets, id)
-	return nil
-}
-
-func (f *fakeLocal) upCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.ups)
 }
 
 // logs collects the relay's log lines.
@@ -182,48 +79,54 @@ func (l *logs) count(part string) int {
 
 // rigOpt says how a rig differs from the usual one.
 type rigOpt struct {
-	snapshot  any                    // the stand-in's snapshot; nil = standin.DefaultSnapshot()
-	limits    Limits                 // zero fields: Flush 20 ms, the others DefaultLimits
-	root      string                 // "" = a new temp folder
-	seed      []Record               // adopted after Open, before the manager starts; "" as Entry = the rig's entry
-	runSeed   []RunRecord            // the same for run records
-	boardSeed []BoardRecord          // the same for board records
-	noRuns    bool                   // Options.Runs is nil: this server has no runs
-	prepare   func(rg *rig)          // after the entry was added, before Open
-	wire      func(rg *rig)          // after Open and the seed, before the hooks are set
-	hold      bool                   // do not start the manager: the test calls start
-	hooks     func(h *servers.Hooks) // may wrap the relay's hooks
-	again     time.Duration          // the relay's wait before an archive change is passed on again; 0 = Limits.Call
-	agent     [2]time.Duration       // the relay's agentEvery and agentWait; zero = as outside the tests
+	snapshot any                    // the stand-in's snapshot; nil = an empty tree
+	limits   Limits                 // zero fields: DefaultLimits
+	hold     bool                   // do not start the manager: the test calls start
+	hooks    func(h *servers.Hooks) // may wrap the relay's hooks
+	again    time.Duration          // the relay's wait before a hold call is made again; 0 = Limits.Call
+	backoff  []time.Duration        // the manager's back-off; nil = 20 and 40 ms
+	timing   func(t *servers.Timing)
+	level    *int // the first server's feature level; nil = testLevel
+	restart  *rig // a rig that stopped: this one starts on its data folder, with its server
 }
 
-// rig is a relay between a stand-in remote server, reached through a real servers.Manager, and
-// stand-in pages on a real bridge.
-type rig struct {
-	t     *testing.T
-	root  string
+// far is one stand-in server of a rig with its entry, and what the rig counts of it.
+type far struct {
+	rg    *rig
 	s     *standin.Server
-	m     *servers.Manager
-	b     *editorbridge.Bridge
-	web   *httptest.Server
-	local *fakeLocal
-	runs  *fakeRuns
-	logs  *logs
-	r     *Relay
 	entry string
+	name  string
 
-	relay  atomic.Pointer[Relay] // what the bridge's snapshot reads
-	noRuns bool                  // the relay has no run service
+	snaps atomic.Int64 // the snapshots the hooks gave the relay
+	items atomic.Int64 // those, and the ends of a connection that followed one: what counts a stream
+}
+
+// rig is a relay between stand-in remote servers, reached through a real servers.Manager, and
+// stand-in pages on a real bridge. Its data folder holds the server list, as the app's does.
+type rig struct {
+	t    *testing.T
+	root string // the data folder
+	m    *servers.Manager
+	b    *editorbridge.Bridge
+	web  *httptest.Server
+	logs *logs
+	r    *Relay
+	h    servers.Hooks // the hooks the manager has: a test may call one as the manager does
+
+	*far // the first server: "Studio"
+
+	mu   sync.Mutex
+	fars map[string]*far // by entry id
+
+	relay atomic.Pointer[Relay] // what the bridge's snapshot reads
 }
 
 func newRig(t *testing.T, o rigOpt) *rig {
 	t.Helper()
-	rg := &rig{t: t, root: o.root, local: &fakeLocal{unstarted: map[string][]string{}, chats: map[string]model.ChatMeta{}},
-		runs: &fakeRuns{drafts: map[string]model.RunMeta{}}, logs: &logs{}}
-	if rg.root == "" {
-		rg.root = t.TempDir()
+	rg := &rig{t: t, root: t.TempDir(), logs: &logs{}, fars: map[string]*far{}}
+	if o.restart != nil {
+		rg.root = o.restart.root
 	}
-	rg.s = standin.Start(t, standin.Options{Snapshot: o.snapshot})
 
 	// The page's snapshot is built with the bridge's lock held, from the relay, as the app does.
 	rg.b = editorbridge.New(func() any {
@@ -231,92 +134,142 @@ func newRig(t *testing.T, o rigOpt) *rig {
 		if r == nil {
 			return map[string]any{}
 		}
-		return map[string]any{"chats": r.Views(), "states": r.States(), "lists": r.Lists(), "runs": r.RunViews(), "boards": r.BoardViews()}
+		return map[string]any{"sections": r.Sections(), "lists": r.Lists(), "libraries": r.Libraries()}
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/events", rg.b.ServeSSE)
+	// A page's answer to a tool call, as the server routes it.
+	mux.HandleFunc("POST /api/rpc-reply", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var named struct{ ID string }
+		_ = json.Unmarshal(body, &named)
+		rep := notAsked()
+		if rg.r.IsBoardCall(named.ID) {
+			rep = rg.r.ReplyBoardCall(r.Context(), r.Header.Get(bridgetest.ClientHeader), named.ID, body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rep.Status)
+		_, _ = w.Write(rep.Body)
+	})
 	rg.web = httptest.NewServer(mux)
 	t.Cleanup(rg.web.Close)
 
-	m, err := servers.Open(servers.Options{Root: rg.root, LocalID: testLocalID, Version: "v-local", Timing: fastTiming()})
+	timing := fastTiming()
+	if o.backoff != nil {
+		timing.Backoff = o.backoff
+	}
+	if o.timing != nil {
+		o.timing(&timing)
+	}
+	m, err := servers.Open(servers.Options{Root: rg.root, LocalID: testLocalID, Version: "v-local", Timing: timing})
 	if err != nil {
 		t.Fatal(err)
 	}
 	rg.m = m
-	if views := m.Views(); len(views) > 1 {
-		rg.entry = views[1].ID // a root that has its list already
-	} else {
-		v, saved, _, err := m.Add(context.Background(), servers.Input{
-			Name: "Studio", Address: rg.s.URL(), Secret: standin.DefaultSecret, SelfSigned: true, Pin: rg.s.Fingerprint(),
-		}, true)
-		if err != nil || !saved {
-			t.Fatalf("the entry is not saved: %v", err)
-		}
-		rg.entry = v.ID
-	}
-	if o.prepare != nil {
-		o.prepare(rg)
-	}
-	if o.limits.Flush == 0 {
-		o.limits.Flush = 20 * time.Millisecond
-	}
-	opts := Options{Root: rg.root, Servers: m, Bridge: rg.b, Local: rg.local, Limits: o.limits, Logf: rg.logs.printf}
-	if rg.noRuns = o.noRuns; !o.noRuns {
-		opts.Runs = rg.runs
-	}
-	rg.r, err = Open(opts)
+	rg.r, err = Open(Options{Servers: m, Bridge: rg.b, Limits: o.limits, Logf: rg.logs.printf})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if o.again != 0 {
 		rg.r.again = o.again
 	}
-	if o.agent != [2]time.Duration{} {
-		rg.r.agentEvery, rg.r.agentWait = o.agent[0], o.agent[1]
-	}
 	rg.relay.Store(rg.r)
 	t.Cleanup(func() { // the order of a shutdown
 		m.Close()
 		rg.r.Close()
 	})
-	for _, d := range o.seed {
-		rg.adopt(d)
-	}
-	for _, d := range o.runSeed {
-		rg.adoptRun(d)
-	}
-	for _, d := range o.boardSeed {
-		rg.adoptBoard(d)
-	}
-	if o.wire != nil {
-		o.wire(rg)
-	}
+	// The bridge is wired to the relay as the server wires it.
 	rg.b.OnUnfollowed(rg.r.Unfollowed)
+	rg.b.OnBoardFree(rg.r.BoardFree)
+	rg.b.SceneRev = func(key string) int64 {
+		rev, _ := rg.r.BoardRev(key)
+		return rev
+	}
 	h := rg.r.Hooks()
+	rg.count(&h)
 	if o.hooks != nil {
 		o.hooks(&h)
 	}
+	rg.h = h
 	m.SetHooks(h)
+
+	if o.restart != nil {
+		// The list is the one of the rig before: its entry, and the server it names.
+		rg.far = &far{rg: rg, s: o.restart.s, entry: o.restart.entry, name: o.restart.name}
+		rg.fars[rg.entry] = rg.far
+	} else {
+		rg.far = rg.serverAt("Studio", o.snapshot, o.level)
+	}
 	if !o.hold {
 		rg.start()
 	}
 	return rg
 }
 
-// start starts the manager and waits until the relay has taken the first snapshot.
+// count makes the hooks count, for each server of the rig, what the relay's worker of its entry
+// has to take of a stream: its snapshots, and the ends of a connection that follow one.
+func (rg *rig) count(h *servers.Hooks) {
+	snapshot, state := h.Snapshot, h.State
+	h.Snapshot = func(entry string, raw json.RawMessage) {
+		snapshot(entry, raw)
+		if f := rg.farOf(entry); f != nil {
+			f.snaps.Add(1)
+			f.items.Add(1)
+		}
+	}
+	h.State = func(entry string, from, to servers.State) {
+		state(entry, from, to)
+		if f := rg.farOf(entry); f != nil && to != servers.StateConnected && f.snaps.Load() > 0 {
+			f.items.Add(1)
+		}
+	}
+}
+
+func (rg *rig) farOf(entry string) *far {
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
+	return rg.fars[entry]
+}
+
+// server starts one more stand-in server of the level of the tests and adds its entry. Before
+// start the entry connects with the others; after it, at once.
+func (rg *rig) server(name string, snapshot any) *far {
+	rg.t.Helper()
+	return rg.serverAt(name, snapshot, nil)
+}
+
+// serverAt is server for a stand-in that reports the feature level level; nil is testLevel.
+func (rg *rig) serverAt(name string, snapshot any, level *int) *far {
+	rg.t.Helper()
+	if snapshot == nil {
+		snapshot = emptySnapshot()
+	}
+	if level == nil {
+		level = standin.Level(testLevel)
+	}
+	f := &far{rg: rg, name: name}
+	// Each stand-in is another server: it has an instance id of its own.
+	id := fmt.Sprintf("5d0c3a1e-7b42-4f6a-9c1d-%012d", len(rg.fars)+1)
+	f.s = standin.Start(rg.t, standin.Options{Snapshot: snapshot, FeatureLevel: level, InstanceID: id})
+	// The lock is held over the add: a hook of the new entry finds its far.
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
+	v, saved, _, err := rg.m.Add(context.Background(), servers.Input{
+		Name: name, Address: f.s.URL(), Secret: standin.DefaultSecret, SelfSigned: true, Pin: f.s.Fingerprint(),
+	}, true)
+	if err != nil || !saved {
+		rg.t.Fatalf("the entry %s is not saved: %v", name, err)
+	}
+	f.entry = v.ID
+	rg.fars[f.entry] = f
+	return f
+}
+
+// start starts the manager and waits until the relay holds the tree of the first server.
 func (rg *rig) start() {
 	rg.t.Helper()
 	rg.m.Start()
 	rg.returned(1)
-}
-
-// returned waits until the relay has taken n snapshots up to the step that calls ServerUp, of
-// the chat manager and then of the run service.
-func (rg *rig) returned(n int) {
-	rg.t.Helper()
-	rg.until(fmt.Sprintf("snapshot %d is taken", n), func() bool {
-		return rg.local.upCount() >= n && (rg.noRuns || len(rg.runs.told(&rg.runs.ups)) >= n)
-	})
 }
 
 // until waits for ok.
@@ -329,26 +282,69 @@ func (rg *rig) until(what string, ok func() bool) {
 	}
 }
 
-// state waits until the entry is in the state.
-func (rg *rig) state(want servers.State) {
-	rg.t.Helper()
-	rg.until("the entry is "+string(want), func() bool {
-		v, ok := rg.m.View(rg.entry)
+// settled waits until the relay's worker has taken every snapshot and every end of a connection
+// that the hooks gave it for the server so far.
+func (f *far) settled() {
+	f.rg.t.Helper()
+	f.rg.until("the relay has taken what the hooks gave it for "+f.name, func() bool {
+		return int64(f.rg.r.stream(f.entry)) == f.items.Load()
+	})
+}
+
+// returned waits until the relay has taken the server's n-th snapshot, and holds its tree.
+func (f *far) returned(n int64) {
+	f.rg.t.Helper()
+	f.rg.until(fmt.Sprintf("snapshot %d of %s is taken", n, f.name), func() bool {
+		return f.snaps.Load() >= n && int64(f.rg.r.stream(f.entry)) == f.items.Load() && f.rg.r.held(f.entry)
+	})
+}
+
+// offline stops the stand-in server and waits until the relay holds no tree of it.
+func (f *far) offline() {
+	f.rg.t.Helper()
+	f.s.Stop()
+	f.away()
+}
+
+// away waits until the relay holds no tree of the server.
+func (f *far) away() {
+	f.rg.t.Helper()
+	f.rg.until("the tree of "+f.name+" is gone", func() bool {
+		return int64(f.rg.r.stream(f.entry)) == f.items.Load() && !f.rg.r.held(f.entry)
+	})
+}
+
+// state waits until the server's entry is in the state.
+func (f *far) state(want servers.State) {
+	f.rg.t.Helper()
+	f.rg.until("the entry of "+f.name+" is "+string(want), func() bool {
+		v, ok := f.rg.m.View(f.entry)
 		return ok && v.State == want
 	})
 }
 
-// adopt makes a record, on the rig's entry unless it names one.
-func (rg *rig) adopt(d Record) *record {
-	rg.t.Helper()
-	if d.Entry == "" {
-		d.Entry = rg.entry
+// requests are the stand-in's requests of the method whose path ends in suffix.
+func (f *far) requests(method, suffix string) []standin.Request {
+	var out []standin.Request
+	for _, q := range f.s.Requests() {
+		if q.Method == method && strings.HasSuffix(q.Path, suffix) {
+			out = append(out, q)
+		}
 	}
-	rec, err := rg.r.adopt(d)
-	if err != nil {
-		rg.t.Fatalf("adopt %s: %v", d.ID, err)
+	return out
+}
+
+// calls are the stand-in's requests but those of a connection: hello, the state and the stream.
+func (f *far) calls() []string {
+	var out []string
+	for _, q := range f.s.Requests() {
+		switch q.Path {
+		case servers.HelloPath, servers.StatePath, servers.StreamPath:
+		default:
+			out = append(out, q.Method+" "+q.Path)
+		}
 	}
-	return rec
+	return out
 }
 
 // page connects a stand-in page and reads its hello and snapshot.
@@ -358,41 +354,17 @@ func (rg *rig) page(id string) (p *bridgetest.Page, snapshot map[string]any) {
 	return p, p.Welcome()
 }
 
-// read makes the page read the chat's items through the relay, which makes it a follower.
-func (rg *rig) read(p *bridgetest.Page, id string) {
-	rg.t.Helper()
-	rec := rg.r.rec(id)
-	if rec == nil {
-		rg.t.Fatalf("no record %s", id)
-	}
-	rep, err := rg.r.follow(context.Background(), rec, p.ID, http.MethodGet, chatPath(id, "/items"), rg.r.o.Limits.Call)
-	if err != nil || rep.Status != http.StatusOK {
-		rg.t.Fatalf("the read of %s: status %d, %v", id, rep.Status, err)
-	}
-}
-
-// serveItems makes the stand-in answer the items read and the unfollow of every chat.
-func (rg *rig) serveItems() {
-	rg.s.Handle("GET /api/chats/{id}/items", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"version":1,"items":[]}`))
-	})
-	rg.s.Handle("POST /api/chats/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})
-}
-
-// barrier sends one agents event, which the relay turns into a server_lists event, and returns
-// what each page got before that event: all that the relay made of what was sent before.
-func (rg *rig) barrier(pages ...*bridgetest.Page) [][]map[string]any {
-	rg.t.Helper()
-	rg.s.Send(map[string]any{"type": "agents", "agents": []string{"claude", "pi"}})
+// barrier sends one agents event on the server, which the relay turns into a server_lists
+// event, and returns what each page got before that event: all that the relay made of what the
+// server sent before.
+func (f *far) barrier(pages ...*bridgetest.Page) [][]map[string]any {
+	f.rg.t.Helper()
+	f.s.Send(map[string]any{"type": "agents", "agents": []string{"claude", "pi"}})
 	out := make([][]map[string]any, len(pages))
 	for i, p := range pages {
 		for {
 			ev := p.Next()
-			if ev["type"] == "server_lists" {
+			if ev["type"] == "server_lists" && ev["server"] == f.entry {
 				break
 			}
 			out[i] = append(out[i], ev)
@@ -401,58 +373,14 @@ func (rg *rig) barrier(pages ...*bridgetest.Page) [][]map[string]any {
 	return out
 }
 
-// requests are the stand-in's requests of the method whose path ends in suffix.
-func (rg *rig) requests(method, suffix string) []standin.Request {
-	var out []standin.Request
-	for _, q := range rg.s.Requests() {
-		if q.Method == method && strings.HasSuffix(q.Path, suffix) {
-			out = append(out, q)
+// next returns the page's next event of the type typ, passing over the others.
+func next(t *testing.T, p *bridgetest.Page, typ string) map[string]any {
+	t.Helper()
+	for {
+		if ev := p.Next(); ev["type"] == typ {
+			return ev
 		}
 	}
-	return out
-}
-
-// file reads the record's file.
-func (rg *rig) file(id string) Record {
-	rg.t.Helper()
-	b, err := os.ReadFile(rg.r.files.path(id))
-	if err != nil {
-		rg.t.Fatal(err)
-	}
-	var d Record
-	if err := json.Unmarshal(b, &d); err != nil {
-		rg.t.Fatalf("the file of %s: %v", id, err)
-	}
-	return d
-}
-
-// remoteView is a chat's view as its server sends it: with that server's group.
-func remoteView(id string, status model.Status) model.ChatView {
-	return model.ChatView{
-		ID: id, Agent: model.Claude, Name: "Chat " + id[:2], Group: "g_there", Cwd: "/home/standin/work",
-		Model: "standin-model", Locked: true, Status: status,
-		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC),
-	}
-}
-
-// snapshotWith is the stand-in's snapshot with these chats and the state of main of each.
-func snapshotWith(views ...model.ChatView) map[string]any {
-	snap := standin.DefaultSnapshot()
-	states := []model.BranchState{}
-	for _, v := range views {
-		states = append(states, model.StateOf(v.ID, mainBranch, v))
-	}
-	if views == nil {
-		views = []model.ChatView{}
-	}
-	snap["chats"], snap["states"] = views, states
-	return snap
-}
-
-// seedOf is a record of the chat id in the local group g_here, with the view its server sends.
-func seedOf(id string) Record {
-	v := remoteView(id, model.StatusReady)
-	return Record{ID: id, Group: "g_here", View: v, States: []model.BranchState{model.StateOf(id, mainBranch, v)}}
 }
 
 // field walks the keys of nested JSON objects.
@@ -464,92 +392,74 @@ func field(v any, keys ...string) any {
 	return v
 }
 
-// The run ids of the tests, and the chat ids of two agents.
-const (
-	runA   = "r_aaaa0001"
-	runB   = "r_bbbb0002"
-	agent1 = "3a000000-0000-4000-8000-000000000001"
-	agent2 = "3b000000-0000-4000-8000-000000000002"
-)
-
-// adoptRun makes a run record, on the rig's entry unless it names one.
-func (rg *rig) adoptRun(d RunRecord) *runRecord {
-	rg.t.Helper()
-	if d.Entry == "" {
-		d.Entry = rg.entry
+// reply reads an answer of the relay.
+func reply(t *testing.T, rep Reply) (status int, body map[string]any) {
+	t.Helper()
+	if err := json.Unmarshal(rep.Body, &body); err != nil {
+		t.Fatalf("the answer %q: %v", rep.Body, err)
 	}
-	rec, err := rg.r.adoptRun(d)
-	if err != nil {
-		rg.t.Fatalf("adoptRun %s: %v", d.ID, err)
-	}
-	return rec
+	return rep.Status, body
 }
 
-// runFile reads the run record's file.
-func (rg *rig) runFile(id string) RunRecord {
-	rg.t.Helper()
-	b, err := os.ReadFile(rg.r.runFiles.path(id))
-	if err != nil {
-		rg.t.Fatal(err)
+// wantReply fails unless the answer has the status and these members.
+func wantReply(t *testing.T, what string, rep Reply, status int, members map[string]any) {
+	t.Helper()
+	got, body := reply(t, rep)
+	if got != status {
+		t.Errorf("%s: status %d, want %d: %s", what, got, status, rep.Body)
+		return
 	}
-	var d RunRecord
-	if err := json.Unmarshal(b, &d); err != nil {
-		rg.t.Fatalf("the file of %s: %v", id, err)
-	}
-	return d
-}
-
-// serveRuns makes the stand-in answer the detail read of every run with these agents, the items
-// read of every chat, and both unfollow calls.
-func (rg *rig) serveRuns(agents ...string) {
-	rg.serveItems()
-	rg.s.Handle("GET /api/runs/{id}/detail", func(w http.ResponseWriter, r *http.Request) {
-		as := map[string]any{}
-		for _, a := range agents {
-			as[a] = map[string]any{"role": "task"}
+	for k, v := range members {
+		if !reflect.DeepEqual(body[k], v) {
+			t.Errorf("%s: %q is %v, want %v: %s", what, k, body[k], v, rep.Body)
 		}
-		writeJSONTest(w, map[string]any{"run": r.PathValue("id"), "version": 1, "agents": as})
-	})
-	rg.s.Handle("POST /api/runs/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
-		writeJSONTest(w, map[string]any{"ok": true})
-	})
-}
-
-func writeJSONTest(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-// readRun makes the page read the run's detail through the relay, which makes it a follower,
-// and learns the agents of the answer, as the detail route does.
-func (rg *rig) readRun(p *bridgetest.Page, id string) {
-	rg.t.Helper()
-	rec := rg.r.runRec(id)
-	if rec == nil {
-		rg.t.Fatalf("no run record %s", id)
-	}
-	rep, err := rg.r.followRun(context.Background(), rec, p.ID, http.MethodGet, runPath(id, "/detail"), rg.r.o.Limits.Call)
-	if err != nil || rep.Status != http.StatusOK {
-		rg.t.Fatalf("the detail read of %s: status %d, %v", id, rep.Status, err)
-	}
-	rg.r.learnDetail(rec, rep.Body)
-}
-
-// readAgent makes the page read the items of a run agent's chat through the relay.
-func (rg *rig) readAgent(p *bridgetest.Page, chat string) {
-	rg.t.Helper()
-	rec := rg.r.agentRun(chat)
-	if rec == nil {
-		rg.t.Fatalf("%s is no agent chat of a run record", chat)
-	}
-	rep, err := rg.r.followAgent(context.Background(), rec, chat, p.ID, http.MethodGet, chatPath(chat, "/items"), rg.r.o.Limits.Call)
-	if err != nil || rep.Status != http.StatusOK {
-		rg.t.Fatalf("the items read of %s: status %d, %v", chat, rep.Status, err)
 	}
 }
 
-// remoteRun is a run's view as its server sends it: with that server's group.
-func remoteRun(id string, status model.RunStatus) model.RunView {
+// mustJSON is v as JSON.
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// sameJSON reports whether a and b are the same JSON value, whatever the order of their members.
+func sameJSON(t *testing.T, a, b any) bool {
+	t.Helper()
+	var x, y any
+	if err := json.Unmarshal(mustJSON(t, a), &x); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(mustJSON(t, b), &y); err != nil {
+		t.Fatal(err)
+	}
+	return reflect.DeepEqual(x, y)
+}
+
+// ---- what a server of the level of the tests sends ----
+
+// emptySnapshot is the snapshot of a server with nothing on it.
+func emptySnapshot() map[string]any {
+	snap := standin.DefaultSnapshot()
+	snap["groups"], snap["boards"] = []any{}, []any{}
+	snap["defaults"] = map[string]any{"groups": map[string]any{}}
+	return snap
+}
+
+// farChat is a chat's view as its server sends it.
+func farChat(id string, status model.Status) model.ChatView {
+	return model.ChatView{
+		ID: id, Agent: model.Claude, Name: "Chat " + id[:2], Group: "g_there", Cwd: "/home/standin/work",
+		Model: "standin-model", Locked: true, Status: status,
+		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC),
+	}
+}
+
+// farRun is a run's view as its server sends it.
+func farRun(id string, status model.RunStatus) model.RunView {
 	return model.RunView{
 		ID: id, Name: "Run " + id[2:4], Group: "g_there", Agent: model.Claude, Cwd: "/home/standin/work", Git: true,
 		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC), Started: time.Date(2026, 10, 6, 9, 1, 0, 0, time.UTC),
@@ -557,74 +467,46 @@ func remoteRun(id string, status model.RunStatus) model.RunView {
 	}
 }
 
-// runSeedOf is a record of the run id in the local group g_here, with the view its server sends.
-func runSeedOf(id string) RunRecord {
-	return RunRecord{ID: id, Group: "g_here", View: remoteRun(id, model.RunRunning)}
+// farBoard is a board as its server sends it.
+func farBoard(id string) model.Board {
+	return model.Board{ID: id, Name: "Board " + id[2:4], Group: "g_there", Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)}
 }
 
-// snapshotWithRuns is the stand-in's snapshot with these runs and no chats.
-func snapshotWithRuns(views ...model.RunView) map[string]any {
-	snap := standin.DefaultSnapshot()
-	if views == nil {
-		views = []model.RunView{}
+// farGroup is a group as its server sends it.
+func farGroup(id, name string) model.Group { return model.Group{ID: id, Name: name} }
+
+// tree is a snapshot's tree for snapshotOf.
+type tree struct {
+	groups []model.Group
+	boards []model.Board
+	chats  []model.ChatView
+	runs   []model.RunView
+}
+
+// snapshotOf is the snapshot of a server with this tree, and the state of main of each chat.
+func snapshotOf(tr tree) map[string]any {
+	snap := emptySnapshot()
+	states := []model.BranchState{}
+	for _, v := range tr.chats {
+		states = append(states, model.StateOf(v.ID, mainBranch, v))
 	}
-	snap["runs"] = views
+	if tr.groups != nil {
+		snap["groups"] = tr.groups
+	}
+	if tr.boards != nil {
+		snap["boards"] = tr.boards
+	}
+	if tr.chats != nil {
+		snap["chats"], snap["states"] = tr.chats, states
+	}
+	if tr.runs != nil {
+		snap["runs"] = tr.runs
+	}
 	return snap
 }
 
-// The board ids of the tests.
-const (
-	boardA = "b_aaaa0001"
-	boardB = "b_bbbb0002"
-	boardC = "b_cccc0003"
-)
-
-// adoptBoard makes a board record, on the rig's entry unless it names one.
-func (rg *rig) adoptBoard(d BoardRecord) *boardRecord {
-	rg.t.Helper()
-	if d.Entry == "" {
-		d.Entry = rg.entry
-	}
-	rec, err := rg.r.adoptBoard(d)
-	if err != nil {
-		rg.t.Fatalf("adoptBoard %s: %v", d.ID, err)
-	}
-	return rec
-}
-
-// boardFile reads the board record's file.
-func (rg *rig) boardFile(id string) BoardRecord {
-	rg.t.Helper()
-	b, err := os.ReadFile(rg.r.boardFiles.path(id))
-	if err != nil {
-		rg.t.Fatal(err)
-	}
-	var d BoardRecord
-	if err := json.Unmarshal(b, &d); err != nil {
-		rg.t.Fatalf("the file of %s: %v", id, err)
-	}
-	return d
-}
-
-// remoteBoard is a board as its server sends it: in that server's group, with this server's mark.
-func remoteBoard(id string) model.Board {
-	return model.Board{
-		ID: id, Name: "Board " + id[2:4], Group: "g_remote", Client: testLocalID,
-		Created: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC),
-	}
-}
-
-// boardSeedOf is a record of the board id in the local group g_here, with the board its server sends.
-func boardSeedOf(id string) BoardRecord {
-	return BoardRecord{ID: id, Group: "g_here", View: remoteBoard(id)}
-}
-
-// snapshotWithBoards is the stand-in's snapshot with these boards and no chats.
-func snapshotWithBoards(boards ...model.Board) map[string]any {
-	snap := standin.DefaultSnapshot()
-	if boards == nil {
-		boards = []model.Board{}
-	}
-	snap["boards"] = boards
-	return snap
+// treeOf is the tree of the server as the relay holds it; ok is false when it holds none.
+func (f *far) treeOf() (Tree, bool) {
+	t, ok := f.rg.r.Sections()[f.entry]
+	return t, ok
 }

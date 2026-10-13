@@ -63,7 +63,7 @@ func TestUpdatePersists(t *testing.T) {
 		if len(s.Groups) != 1 || s.Groups[0].Name != "One" {
 			t.Errorf("groups: %+v", s.Groups)
 		}
-		if s.Defaults.Groups[model.Ungrouped].On(model.LocalServer).ByAgent[model.Claude].Effort != "high" {
+		if s.Defaults.Groups[model.Ungrouped].Local().ByAgent[model.Claude].Effort != "high" {
 			t.Errorf("defaults: %+v", s.Defaults)
 		}
 	})
@@ -84,7 +84,7 @@ const migratedDefaults = `{"groups":{
  "g_one":{"servers":{"local":{"cwd":"/one","run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0,"setup":"make","setupCwd":"/one"}}}}}}`
 
 // AC32: the "last" of an old state file is merged into the ungrouped group once, at the load, in
-// the per-server shape, and is then gone from the file. The file is written at that load and at
+// today's shape, and is then gone from the file. The file is written at that load and at
 // no later one.
 func TestOpenMigratesOldDefaults(t *testing.T) {
 	p := NewPaths(filepath.Join(t.TempDir(), "data"))
@@ -235,7 +235,7 @@ func TestOpenMigrationWrite(t *testing.T) {
 		if len(s.Groups) != 1 || s.Groups[0].Name != "One" || !s.Groups[0].Collapsed {
 			t.Errorf("groups after the migration: %+v", s.Groups)
 		}
-		if s.Defaults.Groups["g_one"].On(model.LocalServer).Cwd != "/one" || s.Defaults.Groups[model.Ungrouped].On(model.LocalServer).Cwd != "/last" {
+		if s.Defaults.Groups["g_one"].Local().Cwd != "/one" || s.Defaults.Groups[model.Ungrouped].Local().Cwd != "/last" {
 			t.Errorf("defaults after the migration: %+v", s.Defaults)
 		}
 	})

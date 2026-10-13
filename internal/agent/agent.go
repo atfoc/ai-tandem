@@ -123,7 +123,19 @@ type ContextSplitter interface {
 	ContextSplit() (model.ContextSplit, error)
 }
 
-type ContentBlock struct{ Text string }
+// ContentBlock is one part of a user turn: a text, or with Image set an image the user attached
+// (Text is then not looked at). Each adapter hands an image on in the way that reaches its model.
+type ContentBlock struct {
+	Text  string
+	Image *Image
+}
+
+// Image is an attached image as an agent gets it, for the one Send only.
+type Image struct {
+	Name string // as the user sees it; only for a text that names the image
+	Type string // one of model.ImageTypes
+	Data []byte
+}
 
 type Agent interface {
 	Events() <-chan Event             // closed after EvExit

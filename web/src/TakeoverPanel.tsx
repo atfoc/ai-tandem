@@ -6,6 +6,7 @@ import { setDropped, useStore } from "./store.ts";
 import { takeBoard } from "./board.ts";
 import type { BoardRole } from "./logic/roles.ts";
 import { DROPPED_TEXT, serverNameOf, takeoverText } from "./logic/boardsave.ts";
+import { inSection } from "./logic/keys.ts";
 
 /** "Use here": the board is taken from the window that holds it. What the panel said of a dropped change is seen by then. */
 function useHere(board: string) {
@@ -14,15 +15,14 @@ function useHere(board: string) {
 }
 
 export function TakeoverPanel({ board, role, dropped }: { board: string; role: Exclude<BoardRole, "held">; dropped: boolean }): React.JSX.Element {
-  const b = useStore((s) => s.boards[board]);
-  const name = useStore((s) => serverNameOf(s.boards[board], s.servers));
+  const name = useStore((s) => serverNameOf(board, s.servers));
   if (role === "taking") return (
     <div className="takeover-panel quiet">
       <span className="spin" />
       <p>Taking over from the other window…</p>
     </div>
   );
-  const text = takeoverText(b ?? { id: board, name: "", group: "", created: "" }, name);
+  const text = takeoverText(inSection(board), name);
   return (
     <div className="takeover-panel">
       <h2>{text.title}</h2>

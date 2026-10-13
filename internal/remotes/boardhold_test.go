@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 )
@@ -19,7 +20,7 @@ import (
 // there is the board side of the stand-in server: it answers the take, the release, the scene
 // and the tool call replies as the test set them, and notes each call.
 type there struct {
-	rg *rig
+	f *far
 
 	mu      sync.Mutex
 	log     []string                                 // "take <id> ifFree=<bool>", "release <id>", "get <id>", "put <id> rev=<n> <body>", "reply <body>"
@@ -80,31 +81,31 @@ func (th *there) calls(prefix string) []string {
 
 // wait waits until n calls that start with prefix were noted, and returns them.
 func (th *there) wait(prefix string, n int) []string {
-	th.rg.t.Helper()
-	th.rg.until(fmt.Sprintf("%d calls %q", n, prefix), func() bool { return len(th.calls(prefix)) >= n })
+	th.f.rg.t.Helper()
+	th.f.rg.until(fmt.Sprintf("%d calls %q", n, prefix), func() bool { return len(th.calls(prefix)) >= n })
 	return th.calls(prefix)
 }
 
-// holdRig is a rig whose bridge is wired to the relay as the server wires it, with the board
-// routes of the stand-in server.
+// holdRig is a rig whose first server has these boards and the board routes of boardRoutes.
 func holdRig(t *testing.T, o rigOpt, ids ...string) (*rig, *there) {
 	t.Helper()
-	var views []model.Board
+	var boards []model.Board
 	for _, id := range ids {
-		o.boardSeed = append(o.boardSeed, boardSeedOf(id))
-		views = append(views, remoteBoard(id))
+		boards = append(boards, farBoard(id))
 	}
-	o.snapshot = snapshotWithBoards(views...)
-	o.wire = func(rg *rig) {
-		rg.b.SceneRev = func(id string) int64 {
-			rev, _ := rg.r.BoardRev(id)
-			return rev
-		}
-		rg.b.OnBoardFree(rg.r.BoardFree)
-	}
+	o.snapshot = snapshotOf(tree{boards: boards})
 	o.hold = true
 	rg := newRig(t, o)
-	th := &there{rg: rg}
+	th := boardRoutes(rg.far)
+	rg.start()
+	return rg, th
+}
+
+// boardRoutes gives the stand-in server the board routes of a server: the take, the release,
+// the drawing and the answer of a tool call.
+func boardRoutes(f *far) *there {
+	th := &there{f: f}
+	rg := f
 	rg.s.Handle("POST /api/boards/{id}/take", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ IfFree bool }
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -141,7 +142,7 @@ func holdRig(t *testing.T, o rigOpt, ids ...string) (*rig, *there) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set(sceneRevHeader, "4")
+		w.Header().Set(SceneRevHeader, "4")
 		_, _ = w.Write([]byte(`{"elements":[]}`))
 	})
 	rg.s.Handle("PUT /api/boards/{id}/scene", func(w http.ResponseWriter, r *http.Request) {
@@ -168,8 +169,7 @@ func holdRig(t *testing.T, o rigOpt, ids ...string) (*rig, *there) {
 		}
 		thereAnswer{body: map[string]any{"ok": true}}.write(w)
 	})
-	rg.start()
-	return rg, th
+	return th
 }
 
 // role returns the page's next role event (held, release_request, superseded, rpc), which must
@@ -189,7 +189,7 @@ func role(t *testing.T, p *bridgetest.Page, typ string) map[string]any {
 }
 
 // noRole fails when one of the pages got a role event by now.
-func noRole(t *testing.T, rg *rig, pages ...*bridgetest.Page) {
+func noRole(t *testing.T, rg *far, pages ...*bridgetest.Page) {
 	t.Helper()
 	for i, got := range rg.barrier(pages...) {
 		for _, ev := range got {
@@ -201,49 +201,38 @@ func noRole(t *testing.T, rg *rig, pages ...*bridgetest.Page) {
 	}
 }
 
-// reply reads an answer of the relay.
-func reply(t *testing.T, rep Reply) (status int, body map[string]any) {
-	t.Helper()
-	if err := json.Unmarshal(rep.Body, &body); err != nil {
-		t.Fatalf("the answer %q: %v", rep.Body, err)
+// holdOf is what the relay believes of the board's server.
+func holdOf(f *far, id string) (heldThere bool, want string) {
+	b := f.rg.r.boardOf(f.entry, id)
+	if b == nil {
+		return false, ""
 	}
-	return rep.Status, body
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.heldThere, b.want
 }
 
-// wantReply fails unless the answer has the status and these members.
-func wantReply(t *testing.T, what string, rep Reply, status int, members map[string]any) {
-	t.Helper()
-	got, body := reply(t, rep)
-	if got != status {
-		t.Errorf("%s: status %d, want %d: %s", what, got, status, rep.Body)
-		return
-	}
-	for k, v := range members {
-		if !reflect.DeepEqual(body[k], v) {
-			t.Errorf("%s: %q is %v, want %v: %s", what, k, body[k], v, rep.Body)
-		}
-	}
-}
-
-// holdOf is what the record believes of the board's server.
-func holdOf(rg *rig, id string) (heldThere bool, want string) {
-	rec := rg.r.boardRec(id)
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	return rec.heldThere, rec.want
-}
-
-// holder is the page that holds the board here, "" for none.
-func holder(rg *rig, id string) string {
-	h, _ := rg.b.HolderOf(id)
+// holder is the page that holds the server's board here, "" for none.
+func holder(f *far, id string) string {
+	h, _ := f.rg.b.HolderOf(editorbridge.BoardOn(f.entry, id))
 	return h
 }
 
-// offline stops the stand-in server and waits until the entry is no longer connected.
-func offline(rg *rig) {
-	rg.t.Helper()
-	rg.s.Stop()
-	rg.until("the entry is not connected", func() bool { return !rg.r.connected(rg.entry) })
+// unheldThere makes the relay believe that it does not hold the board on its server, as between
+// that server's return and the answer of the take.
+func unheldThere(f *far, id string) {
+	b := f.rg.r.boardOf(f.entry, id)
+	b.mu.Lock()
+	b.heldThere = false
+	b.mu.Unlock()
+}
+
+// noBoardThere is that server's answer for a board it does not have.
+var noBoardThere = thereAnswer{status: http.StatusNotFound, body: map[string]any{"error": "no such board", "code": "not_found"}}
+
+// onEntry reports whether ev is an event of the board id of the server.
+func onEntry(f *far, ev map[string]any, id string) bool {
+	return ev["server"] == f.entry && ev["board"] == id
 }
 
 // TestBoardTake: a free board is taken on its server for the page; two pages of this server
@@ -251,88 +240,100 @@ func offline(rg *rig) {
 func TestBoardTake(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{}, boardA)
-	ctx := t.Context()
 	p1, _ := rg.page("page-1")
 	p2, _ := rg.page("page-2")
 	th.set(func() { th.take = func(string, bool) thereAnswer { return heldThereAt(7) } })
 
-	wantReply(t, "no record", rg.r.TakeBoard(ctx, p1.ID, boardB, false), http.StatusNotFound, map[string]any{"error": "no such board"})
-	wantReply(t, "no record", rg.r.ReleaseBoard(ctx, p1.ID, boardB), http.StatusNotFound, nil)
-	wantReply(t, "unknown page", rg.r.TakeBoard(ctx, "page-9", boardA, false), http.StatusConflict, map[string]any{"error": "unknown_client"})
+	wantReply(t, "a release of a board nobody took", rg.r.ReleaseBoard(rg.entry, p1.ID, boardB), http.StatusOK, map[string]any{"state": "none"})
+	wantReply(t, "unknown page", rg.r.TakeBoard(rg.entry, "page-9", boardA, false), http.StatusConflict, map[string]any{"error": "unknown_client"})
+	for _, entry := range []string{"s_000000000000", "local"} {
+		wantReply(t, "a take on no entry", rg.r.TakeBoard(entry, p1.ID, boardA, false), http.StatusNotFound, map[string]any{"code": "no_server"})
+		wantReply(t, "a release on no entry", rg.r.ReleaseBoard(entry, p1.ID, boardA), http.StatusNotFound, map[string]any{"code": "no_server"})
+	}
 	if got := th.calls(""); got != nil {
 		t.Fatalf("the server was called: %v", got)
 	}
 
-	wantReply(t, "take", rg.r.TakeBoard(ctx, p1.ID, boardA, true), http.StatusOK, map[string]any{"state": "held", "rev": 7.0})
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p1.ID, boardA, true), http.StatusOK, map[string]any{"state": "held", "rev": 7.0})
 	if got := th.calls(""); !reflect.DeepEqual(got, []string{"take " + boardA + " ifFree=true"}) {
 		t.Errorf("the server got %v", got)
 	}
-	if there, want := holdOf(rg, boardA); !there || want != "" || holder(rg, boardA) != p1.ID {
-		t.Errorf("after the take: heldThere %v, want %q, holder %q", there, want, holder(rg, boardA))
+	if there, want := holdOf(rg.far, boardA); !there || want != "" || holder(rg.far, boardA) != p1.ID {
+		t.Errorf("after the take: heldThere %v, want %q, holder %q", there, want, holder(rg.far, boardA))
 	}
-	if rev, _ := rg.r.BoardRev(boardA); rev != 7 {
-		t.Errorf("the revision kept is %d", rev)
+	if rev, ok := rg.r.BoardRev(editorbridge.BoardOn(rg.entry, boardA)); rev != 7 || !ok {
+		t.Errorf("the revision kept is %d, %v", rev, ok)
 	}
-	wantReply(t, "take again", rg.r.TakeBoard(ctx, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 7.0})
+	if rev, ok := rg.r.BoardRev(boardA); rev != 0 || ok {
+		t.Errorf("the revision of the board of this server with the same id: %d, %v", rev, ok)
+	}
+	wantReply(t, "take again", rg.r.TakeBoard(rg.entry, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 7.0})
 
 	// A second page of this server: the hand-off is the bridge's, the server hears nothing.
-	wantReply(t, "busy here", rg.r.TakeBoard(ctx, p2.ID, boardA, true), http.StatusOK, map[string]any{"state": "busy"})
-	wantReply(t, "second page", rg.r.TakeBoard(ctx, p2.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
-	if ev := role(t, p1, "release_request"); ev["board"] != boardA {
+	wantReply(t, "busy here", rg.r.TakeBoard(rg.entry, p2.ID, boardA, true), http.StatusOK, map[string]any{"state": "busy"})
+	wantReply(t, "second page", rg.r.TakeBoard(rg.entry, p2.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
+	if ev := role(t, p1, "release_request"); !onEntry(rg.far, ev, boardA) {
 		t.Errorf("release_request: %v", ev)
 	}
-	wantReply(t, "release to the second", rg.r.ReleaseBoard(ctx, p1.ID, boardA), http.StatusOK, map[string]any{"state": "handed"})
-	role(t, p1, "superseded")
-	if ev := role(t, p2, "held"); ev["rev"] != 7.0 {
+	wantReply(t, "release to the second", rg.r.ReleaseBoard(rg.entry, p1.ID, boardA), http.StatusOK, map[string]any{"state": "handed"})
+	if ev := role(t, p1, "superseded"); !onEntry(rg.far, ev, boardA) {
+		t.Errorf("superseded: %v", ev)
+	}
+	if ev := role(t, p2, "held"); ev["rev"] != 7.0 || !onEntry(rg.far, ev, boardA) {
 		t.Errorf("the second page's held: %v", ev)
 	}
-	wantReply(t, "release of a page that holds nothing", rg.r.ReleaseBoard(ctx, p1.ID, boardA), http.StatusOK, map[string]any{"state": "none"})
+	wantReply(t, "release of a page that holds nothing", rg.r.ReleaseBoard(rg.entry, p1.ID, boardA), http.StatusOK, map[string]any{"state": "none"})
 	if got := th.calls(""); len(got) != 1 {
 		t.Errorf("two pages changed something on the server: %v", got)
 	}
-	if there, _ := holdOf(rg, boardA); !there || holder(rg, boardA) != p2.ID {
-		t.Errorf("after the hand-off: heldThere %v, holder %q", there, holder(rg, boardA))
+	if there, _ := holdOf(rg.far, boardA); !there || holder(rg.far, boardA) != p2.ID {
+		t.Errorf("after the hand-off: heldThere %v, holder %q", there, holder(rg.far, boardA))
 	}
 
 	// The last release releases there.
-	wantReply(t, "last release", rg.r.ReleaseBoard(ctx, p2.ID, boardA), http.StatusOK, map[string]any{"state": "free"})
+	wantReply(t, "last release", rg.r.ReleaseBoard(rg.entry, p2.ID, boardA), http.StatusOK, map[string]any{"state": "free"})
 	if got := th.calls("release"); len(got) != 1 {
 		t.Errorf("releases on the server: %v", got)
 	}
-	if there, _ := holdOf(rg, boardA); there || holder(rg, boardA) != "" {
-		t.Errorf("after the release: heldThere %v, holder %q", there, holder(rg, boardA))
+	if there, _ := holdOf(rg.far, boardA); there || holder(rg.far, boardA) != "" {
+		t.Errorf("after the release: heldThere %v, holder %q", there, holder(rg.far, boardA))
 	}
 
 	// The server handed the board to somebody who waited there: the page is told so.
 	th.set(func() { th.release = "handed" })
-	wantReply(t, "take", rg.r.TakeBoard(ctx, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held"})
-	wantReply(t, "release, handed there", rg.r.ReleaseBoard(ctx, p1.ID, boardA), http.StatusOK, map[string]any{"state": "handed"})
-	role(t, p1, "superseded")
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held"})
+	wantReply(t, "release, handed there", rg.r.ReleaseBoard(rg.entry, p1.ID, boardA), http.StatusOK, map[string]any{"state": "handed"})
+	if ev := role(t, p1, "superseded"); !onEntry(rg.far, ev, boardA) {
+		t.Errorf("superseded by a hand-over there: %v", ev)
+	}
 
-	// Busy there, and a refusal of the server.
+	// Busy there, and the refusals of the server, which are the page's as they came.
 	th.set(func() { th.take = func(string, bool) thereAnswer { return stateThere("busy") } })
-	wantReply(t, "busy there", rg.r.TakeBoard(ctx, p1.ID, boardA, true), http.StatusOK, map[string]any{"state": "busy"})
+	wantReply(t, "busy there", rg.r.TakeBoard(rg.entry, p1.ID, boardA, true), http.StatusOK, map[string]any{"state": "busy"})
 	th.set(func() {
 		th.take = func(string, bool) thereAnswer {
 			return thereAnswer{status: http.StatusConflict, body: map[string]any{"error": "the board is archived"}}
 		}
 	})
-	wantReply(t, "refused there", rg.r.TakeBoard(ctx, p1.ID, boardA, false), http.StatusConflict, map[string]any{"error": "the board is archived"})
-	if there, want := holdOf(rg, boardA); there || want != "" || holder(rg, boardA) != "" {
-		t.Errorf("after two takes that gave nothing: heldThere %v, want %q, holder %q", there, want, holder(rg, boardA))
+	wantReply(t, "refused there", rg.r.TakeBoard(rg.entry, p1.ID, boardA, false), http.StatusConflict, map[string]any{"error": "the board is archived"})
+	th.set(func() { th.take = func(string, bool) thereAnswer { return noBoardThere } })
+	wantReply(t, "gone there", rg.r.TakeBoard(rg.entry, p1.ID, boardB, false), http.StatusNotFound, map[string]any{"error": "no such board", "code": "not_found"})
+	for _, id := range []string{boardA, boardB} {
+		if there, want := holdOf(rg.far, id); there || want != "" || holder(rg.far, id) != "" {
+			t.Errorf("%s after the takes that gave nothing: heldThere %v, want %q, holder %q", id, there, want, holder(rg.far, id))
+		}
 	}
 	time.Sleep(quiet) // a BoardFree that is still on its way
 	if got := th.calls("release"); len(got) != 2 {
 		t.Errorf("releases on the server: %v", got)
 	}
-	noRole(t, rg, p1, p2)
+	noRole(t, rg.far, p1, p2)
 }
 
 // TestBoardRoleEvents: every row of the table of the events of the board's server.
 func TestBoardRoleEvents(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{}, boardA)
-	ctx := t.Context()
 	p1, _ := rg.page("page-1")
 	p2, _ := rg.page("page-2")
 	send := func(typ string, rev int64) {
@@ -345,43 +346,46 @@ func TestBoardRoleEvents(t *testing.T) {
 	waiting := func(p *bridgetest.Page) {
 		t.Helper()
 		th.set(func() { th.take = func(string, bool) thereAnswer { return stateThere("waiting") } })
-		wantReply(t, "take, waiting there", rg.r.TakeBoard(ctx, p.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
-		if there, want := holdOf(rg, boardA); there || want != p.ID || holder(rg, boardA) != "" {
-			t.Fatalf("while waiting: heldThere %v, want %q, holder %q", there, want, holder(rg, boardA))
+		wantReply(t, "take, waiting there", rg.r.TakeBoard(rg.entry, p.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
+		if there, want := holdOf(rg.far, boardA); there || want != p.ID || holder(rg.far, boardA) != "" {
+			t.Fatalf("while waiting: heldThere %v, want %q, holder %q", there, want, holder(rg.far, boardA))
 		}
 	}
 
 	// held, a page waits there: it gets the board here and the event.
 	waiting(p1)
 	send("held", 9)
-	if ev := role(t, p1, "held"); ev["board"] != boardA || ev["rev"] != 9.0 {
+	if ev := role(t, p1, "held"); !onEntry(rg.far, ev, boardA) || ev["rev"] != 9.0 || len(ev) != 4 {
 		t.Errorf("held for the page that waited: %v", ev)
 	}
-	if there, want := holdOf(rg, boardA); !there || want != "" || holder(rg, boardA) != p1.ID {
-		t.Errorf("after held: heldThere %v, want %q, holder %q", there, want, holder(rg, boardA))
+	if there, want := holdOf(rg.far, boardA); !there || want != "" || holder(rg.far, boardA) != p1.ID {
+		t.Errorf("after held: heldThere %v, want %q, holder %q", there, want, holder(rg.far, boardA))
 	}
 	// held, a page holds the board: the server's regrant is the page's.
 	send("held", 10)
 	if ev := role(t, p1, "held"); ev["rev"] != 10.0 {
 		t.Errorf("the regrant: %v", ev)
 	}
-	if rev, _ := rg.r.BoardRev(boardA); rev != 10 {
+	if rev, _ := rg.r.BoardRev(editorbridge.BoardOn(rg.entry, boardA)); rev != 10 {
 		t.Errorf("the revision kept is %d", rev)
 	}
 	// release_request, a page holds the board: passed to it, and nothing is released yet.
 	send("release_request", 0)
-	if ev := role(t, p1, "release_request"); ev["board"] != boardA {
+	if ev := role(t, p1, "release_request"); !onEntry(rg.far, ev, boardA) || len(ev) != 3 {
 		t.Errorf("release_request: %v", ev)
 	}
 	// superseded, a page holds the board, another waits for it here: both lose it.
-	wantReply(t, "second page", rg.r.TakeBoard(ctx, p2.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
+	wantReply(t, "second page", rg.r.TakeBoard(rg.entry, p2.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
 	role(t, p1, "release_request")
 	send("superseded", 0)
-	role(t, p1, "superseded")
-	role(t, p2, "superseded")
-	noRole(t, rg, p1, p2)
-	if there, _ := holdOf(rg, boardA); there || holder(rg, boardA) != "" {
-		t.Errorf("after superseded: heldThere %v, holder %q", there, holder(rg, boardA))
+	for _, p := range []*bridgetest.Page{p1, p2} {
+		if ev := role(t, p, "superseded"); !onEntry(rg.far, ev, boardA) || len(ev) != 3 {
+			t.Errorf("superseded: %v", ev)
+		}
+	}
+	noRole(t, rg.far, p1, p2)
+	if there, _ := holdOf(rg.far, boardA); there || holder(rg.far, boardA) != "" {
+		t.Errorf("after superseded: heldThere %v, holder %q", there, holder(rg.far, boardA))
 	}
 	time.Sleep(quiet) // the BoardFree of the lost board
 	if got := th.calls("release"); got != nil {
@@ -398,8 +402,8 @@ func TestBoardRoleEvents(t *testing.T) {
 	role(t, p1, "superseded")
 	send("superseded", 0)
 	role(t, p2, "superseded")
-	noRole(t, rg, p1, p2)
-	if _, want := holdOf(rg, boardA); want != "" {
+	noRole(t, rg.far, p1, p2)
+	if _, want := holdOf(rg.far, boardA); want != "" {
 		t.Errorf("a page still waits: %q", want)
 	}
 
@@ -414,15 +418,20 @@ func TestBoardRoleEvents(t *testing.T) {
 	rg.until("the page is gone", func() bool { return !rg.b.Known(p2.ID) })
 	send("held", 12)
 	th.wait("release", 3)
-	if there, want := holdOf(rg, boardA); there || want != "" || holder(rg, boardA) != "" {
-		t.Errorf("at the end: heldThere %v, want %q, holder %q", there, want, holder(rg, boardA))
+	if there, want := holdOf(rg.far, boardA); there || want != "" || holder(rg.far, boardA) != "" {
+		t.Errorf("at the end: heldThere %v, want %q, holder %q", there, want, holder(rg.far, boardA))
 	}
-	// An event for a board without a record, and one of another entry, do nothing.
+	// A board the server gives this one and no page here asked for is given back.
 	rg.s.Send(map[string]any{"type": "held", "board": boardB, "rev": 1})
-	rg.r.boardRoleEvent("s_other", "superseded", json.RawMessage(`{"board":"`+boardA+`"}`))
+	if got := th.wait("release "+boardB, 1); len(got) != 1 {
+		t.Errorf("releases of a board nobody asked for: %v", got)
+	}
+	// An event of an entry whose tree is not held, and one that names no board, do nothing.
+	rg.r.boardRoleEvent("s_000000000000", "held", json.RawMessage(`{"board":"`+boardA+`","rev":1}`))
 	rg.r.boardRoleEvent(rg.entry, "held", json.RawMessage(`{"board":7}`))
-	noRole(t, rg, p1)
-	if got := th.calls("release"); len(got) != 3 {
+	rg.r.boardRoleEvent(rg.entry, "superseded", json.RawMessage(`{"board":"`+boardC+`"}`))
+	noRole(t, rg.far, p1)
+	if got := th.calls("release"); len(got) != 4 || rg.r.boardOf("s_000000000000", boardA) != nil || rg.r.boardOf(rg.entry, boardC) != nil {
 		t.Errorf("releases on the server: %v", got)
 	}
 }
@@ -435,18 +444,18 @@ func TestBoardHeldBeforeWaiting(t *testing.T) {
 	th.set(func() {
 		th.take = func(string, bool) thereAnswer {
 			rg.s.Send(map[string]any{"type": "held", "board": boardA, "rev": 6})
-			rg.until("the event is taken", func() bool { there, _ := holdOf(rg, boardA); return there })
+			rg.until("the event is taken", func() bool { there, _ := holdOf(rg.far, boardA); return there })
 			return stateThere("waiting")
 		}
 	})
-	wantReply(t, "take", rg.r.TakeBoard(t.Context(), p.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p.ID, boardA, false), http.StatusOK, map[string]any{"state": "waiting"})
 	if ev := role(t, p, "held"); ev["rev"] != 6.0 {
 		t.Errorf("held: %v", ev)
 	}
-	if there, want := holdOf(rg, boardA); !there || want != "" || holder(rg, boardA) != p.ID {
-		t.Errorf("heldThere %v, want %q, holder %q", there, want, holder(rg, boardA))
+	if there, want := holdOf(rg.far, boardA); !there || want != "" || holder(rg.far, boardA) != p.ID {
+		t.Errorf("heldThere %v, want %q, holder %q", there, want, holder(rg.far, boardA))
 	}
-	noRole(t, rg, p)
+	noRole(t, rg.far, p)
 	if got := th.calls("release"); got != nil {
 		t.Errorf("released there: %v", got)
 	}
@@ -457,14 +466,13 @@ func TestBoardHeldBeforeWaiting(t *testing.T) {
 func TestBoardPageGone(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{}, boardA)
-	ctx := t.Context()
 	p1, _ := rg.page("page-1")
-	wantReply(t, "take", rg.r.TakeBoard(ctx, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 1.0})
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 1.0})
 	p1.Close()
 	th.wait("release", 1)
-	rg.until("the hold is ended", func() bool { there, _ := holdOf(rg, boardA); return !there })
-	if holder(rg, boardA) != "" {
-		t.Errorf("the board is held by %q", holder(rg, boardA))
+	rg.until("the hold is ended", func() bool { there, _ := holdOf(rg.far, boardA); return !there })
+	if holder(rg.far, boardA) != "" {
+		t.Errorf("the board is held by %q", holder(rg.far, boardA))
 	}
 
 	p2, _ := rg.page("page-2")
@@ -475,167 +483,122 @@ func TestBoardPageGone(t *testing.T) {
 			return heldThereAt(2)
 		}
 	})
-	wantReply(t, "take of a page that went away", rg.r.TakeBoard(ctx, p2.ID, boardA, false), http.StatusConflict, map[string]any{"error": "unknown_client"})
+	wantReply(t, "take of a page that went away", rg.r.TakeBoard(rg.entry, p2.ID, boardA, false), http.StatusConflict, map[string]any{"error": "unknown_client"})
 	if got := th.calls("release"); len(got) != 2 {
 		t.Errorf("releases on the server: %v", got)
 	}
-	if there, want := holdOf(rg, boardA); there || want != "" {
+	if there, want := holdOf(rg.far, boardA); there || want != "" {
 		t.Errorf("heldThere %v, want %q", there, want)
 	}
 }
 
-// TestBoardScene: the scene read and the saves that are refused here, refused there and stored.
+// TestBoardScene: the read of a drawing, and the saves that are refused here, refused there and
+// stored.
 func TestBoardScene(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{}, boardA, boardB)
 	ctx := t.Context()
 	p1, _ := rg.page("page-1")
 	p2, _ := rg.page("page-2")
+	key := editorbridge.BoardOn(rg.entry, boardA)
+	th.set(func() { th.take = func(string, bool) thereAnswer { return heldThereAt(4) } })
 
-	body, rev, e := rg.r.Scene(ctx, boardA)
-	if e != nil || string(body) != `{"elements":[]}` || rev != 4 {
-		t.Fatalf("Scene: %q at %d, %v", body, rev, e)
+	rep, rev := rg.r.Scene(ctx, rg.entry, boardA)
+	if rep.Status != http.StatusOK || string(rep.Body) != `{"elements":[]}` || rev != 4 {
+		t.Fatalf("Scene: %d %q at %d", rep.Status, rep.Body, rev)
 	}
-	if kept, _ := rg.r.BoardRev(boardA); kept != 4 {
-		t.Errorf("the revision kept is %d", kept)
-	}
-	if _, _, e := rg.r.Scene(ctx, boardC); e == nil || e.Status != http.StatusNotFound {
-		t.Errorf("Scene of no record: %v", e)
+	if rep, _ := rg.r.Scene(ctx, "s_000000000000", boardA); rep.Status != http.StatusNotFound || !strings.Contains(string(rep.Body), "no_server") {
+		t.Errorf("Scene of no entry: %d %s", rep.Status, rep.Body)
 	}
 
 	scene := []byte(`{"elements":[1]}`)
-	wantReply(t, "nobody holds", rg.r.SaveScene(ctx, p1.ID, boardA, 4, scene), http.StatusConflict,
+	wantReply(t, "nobody holds", rg.r.SaveScene(rg.entry, p1.ID, boardA, 4, scene), http.StatusConflict,
 		map[string]any{"code": "not_holder", "error": "this window does not hold the board"})
-	wantReply(t, "take", rg.r.TakeBoard(ctx, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 4.0})
-	wantReply(t, "another holds", rg.r.SaveScene(ctx, p2.ID, boardA, 4, scene), http.StatusConflict,
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p1.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 4.0})
+	wantReply(t, "another holds", rg.r.SaveScene(rg.entry, p2.ID, boardA, 4, scene), http.StatusConflict,
 		map[string]any{"code": "not_holder", "error": "another window holds this board"})
-	wantReply(t, "no record", rg.r.SaveScene(ctx, p1.ID, boardC, 4, scene), http.StatusNotFound, nil)
-	wantReply(t, "bad revision", rg.r.SaveScene(ctx, p1.ID, boardA, -1, scene), http.StatusBadRequest, map[string]any{"error": "rev is not a number"})
+	wantReply(t, "another board", rg.r.SaveScene(rg.entry, p1.ID, boardC, 4, scene), http.StatusConflict, map[string]any{"code": "not_holder"})
+	wantReply(t, "no entry", rg.r.SaveScene("s_000000000000", p1.ID, boardA, 4, scene), http.StatusNotFound, map[string]any{"code": "no_server"})
+	wantReply(t, "bad revision", rg.r.SaveScene(rg.entry, p1.ID, boardA, -1, scene), http.StatusBadRequest, map[string]any{"error": "rev is not a number"})
 	if got := th.calls("put"); got != nil {
 		t.Fatalf("a refused save reached the server: %v", got)
 	}
 
-	wantReply(t, "save", rg.r.SaveScene(ctx, p1.ID, boardA, 4, scene), http.StatusOK, map[string]any{"ok": true, "rev": 5.0})
+	wantReply(t, "save", rg.r.SaveScene(rg.entry, p1.ID, boardA, 4, scene), http.StatusOK, map[string]any{"ok": true, "rev": 5.0})
 	if got := th.calls("put"); !reflect.DeepEqual(got, []string{"put " + boardA + ` rev=4 {"elements":[1]}`}) {
 		t.Errorf("the server got %v", got)
 	}
-	if kept, _ := rg.r.BoardRev(boardA); kept != 5 {
+	if kept, _ := rg.r.BoardRev(key); kept != 5 {
 		t.Errorf("the revision kept is %d", kept)
 	}
 	// What the server refuses is the page's answer as it came.
 	th.set(func() {
 		th.put = thereAnswer{status: http.StatusConflict, body: map[string]any{"error": "the drawing changed", "code": "stale", "rev": 12}}
 	})
-	wantReply(t, "stale", rg.r.SaveScene(ctx, p1.ID, boardA, 4, scene), http.StatusConflict, map[string]any{"code": "stale", "rev": 12.0})
+	wantReply(t, "stale", rg.r.SaveScene(rg.entry, p1.ID, boardA, 4, scene), http.StatusConflict, map[string]any{"code": "stale", "rev": 12.0, "error": "the drawing changed"})
 	th.set(func() {
 		th.put = thereAnswer{status: http.StatusConflict, body: map[string]any{"error": "another window holds this board", "code": "not_holder"}}
 	})
 	// But for "not the holder there": the page keeps its edit, and the board is taken again
 	// (TestBoardSaveNotHolderThere).
-	wantReply(t, "not the holder there", rg.r.SaveScene(ctx, p1.ID, boardA, 5, scene), http.StatusServiceUnavailable, map[string]any{"code": "not_held_there"})
+	wantReply(t, "not the holder there", rg.r.SaveScene(rg.entry, p1.ID, boardA, 5, scene), http.StatusServiceUnavailable, map[string]any{"code": "not_held_there"})
 	role(t, p1, "held")
-	if kept, _ := rg.r.BoardRev(boardA); kept != 5 {
+	if kept, _ := rg.r.BoardRev(key); kept != 5 {
 		t.Errorf("a refused save changed the revision kept: %d", kept)
+	}
+	// A read of the drawing tells its revision, which a hand-over here then names.
+	th.set(func() {
+		th.scene = func(w http.ResponseWriter) {
+			w.Header().Set(SceneRevHeader, "9")
+			thereAnswer{body: map[string]any{"elements": []int{}}}.write(w)
+		}
+	})
+	if _, rev := rg.r.Scene(ctx, rg.entry, boardA); rev != 9 {
+		t.Errorf("the revision of the read: %d", rev)
+	}
+	if kept, _ := rg.r.BoardRev(key); kept != 9 {
+		t.Errorf("the revision kept after the read is %d", kept)
 	}
 
 	// The board is not held there, as between the server's return and the answer of the take.
-	rec := rg.r.boardRec(boardA)
-	rec.mu.Lock()
-	rec.heldThere = false
-	rec.mu.Unlock()
+	unheldThere(rg.far, boardA)
 	n := len(th.calls("put"))
-	wantReply(t, "not held there", rg.r.SaveScene(ctx, p1.ID, boardA, 5, scene), http.StatusServiceUnavailable,
+	wantReply(t, "not held there", rg.r.SaveScene(rg.entry, p1.ID, boardA, 5, scene), http.StatusServiceUnavailable,
 		map[string]any{"code": "not_held_there", "error": "The board is being taken again on Studio."})
+	role(t, p1, "held")
 
-	// A scene read whose answer has no revision, and one of a board the server no longer has.
+	// A read whose answer has no revision, one that is no JSON, and one of a board the server no
+	// longer has, which is that server's answer as it came.
 	th.set(func() {
 		th.scene = func(w http.ResponseWriter) { thereAnswer{body: map[string]any{}}.write(w) }
 	})
-	if _, _, e := rg.r.Scene(ctx, boardA); e == nil || e.Code != "bad_answer" {
-		t.Errorf("Scene without a revision: %v", e)
+	if rep, rev := rg.r.Scene(ctx, rg.entry, boardA); rep.Status != http.StatusBadGateway || !strings.Contains(string(rep.Body), "bad_answer") || rev != 0 {
+		t.Errorf("Scene without a revision: %d %s at %d", rep.Status, rep.Body, rev)
 	}
 	th.set(func() {
 		th.scene = func(w http.ResponseWriter) {
-			thereAnswer{status: http.StatusNotFound, body: map[string]any{"error": "no such board"}}.write(w)
+			w.Header().Set(SceneRevHeader, "4")
+			_, _ = w.Write([]byte("no drawing"))
 		}
 	})
-	if _, _, e := rg.r.Scene(ctx, boardB); e == nil || e.Code != "gone_there" {
-		t.Errorf("Scene of a board that is gone there: %v", e)
+	if rep, _ := rg.r.Scene(ctx, rg.entry, boardA); rep.Status != http.StatusBadGateway || !strings.Contains(string(rep.Body), "bad_answer") {
+		t.Errorf("Scene that is no JSON: %d %s", rep.Status, rep.Body)
 	}
-	if v, _ := rg.r.BoardView(boardB); !v.Gone {
-		t.Error("the board is not marked gone")
+	th.set(func() { th.scene = func(w http.ResponseWriter) { noBoardThere.write(w) } })
+	if rep, rev := rg.r.Scene(ctx, rg.entry, boardB); rep.Status != http.StatusNotFound || !sameJSON(t, json.RawMessage(rep.Body), noBoardThere.body) || rev != 0 {
+		t.Errorf("Scene of a board that is gone there: %d %s", rep.Status, rep.Body)
 	}
 
-	offline(rg)
-	wantReply(t, "not connected", rg.r.SaveScene(ctx, p1.ID, boardA, 5, scene), http.StatusServiceUnavailable,
+	rg.offline()
+	wantReply(t, "not connected", rg.r.SaveScene(rg.entry, p1.ID, boardA, 5, scene), http.StatusServiceUnavailable,
 		map[string]any{"code": "server_unreachable", "error": "Studio is not connected."})
-	if _, _, e := rg.r.Scene(ctx, boardA); e == nil || e.Status != http.StatusServiceUnavailable {
-		t.Errorf("Scene while not connected: %v", e)
+	wantReply(t, "not the holder, not connected", rg.r.SaveScene(rg.entry, p2.ID, boardA, 5, scene), http.StatusConflict, map[string]any{"code": "not_holder"})
+	if rep, _ := rg.r.Scene(ctx, rg.entry, boardA); rep.Status != http.StatusServiceUnavailable {
+		t.Errorf("Scene while not connected: %d %s", rep.Status, rep.Body)
 	}
 	if got := th.calls("put"); len(got) != n {
 		t.Errorf("a save that was refused here reached the server: %v", got)
 	}
-}
-
-// TestBoardReturnHeld: a take while the server is not connected is granted here alone; at the
-// return the board is taken there again, if free, and the page gets held with the server's
-// revision. A page that waited there is sent superseded.
-func TestBoardReturnHeld(t *testing.T) {
-	t.Parallel()
-	rg, th := holdRig(t, rigOpt{}, boardA, boardB)
-	ctx := t.Context()
-	p1, _ := rg.page("page-1")
-	p2, _ := rg.page("page-2")
-	th.set(func() {
-		th.take = func(id string, ifFree bool) thereAnswer {
-			if id == boardB && !ifFree {
-				return stateThere("waiting")
-			}
-			return heldThereAt(5)
-		}
-	})
-	wantReply(t, "take, waiting there", rg.r.TakeBoard(ctx, p2.ID, boardB, false), http.StatusOK, map[string]any{"state": "waiting"})
-	if _, _, e := rg.r.Scene(ctx, boardA); e != nil {
-		t.Fatal(e)
-	}
-
-	offline(rg)
-	n := len(th.calls(""))
-	wantReply(t, "take while not connected", rg.r.TakeBoard(ctx, p1.ID, boardA, true), http.StatusOK, map[string]any{"state": "held", "rev": 4.0})
-	if there, _ := holdOf(rg, boardA); there || holder(rg, boardA) != p1.ID {
-		t.Errorf("granted here alone: heldThere %v, holder %q", there, holder(rg, boardA))
-	}
-	// A page that waited on the server no longer waits once another takes the board here.
-	wantReply(t, "take while not connected", rg.r.TakeBoard(ctx, p1.ID, boardB, false), http.StatusOK, map[string]any{"state": "held", "rev": 0.0})
-	role(t, p2, "superseded")
-	wantReply(t, "release while not connected", rg.r.ReleaseBoard(ctx, p1.ID, boardB), http.StatusOK, map[string]any{"state": "free"})
-	if got := th.calls(""); len(got) != n {
-		t.Errorf("the server was called while it was stopped: %v", got[n:])
-	}
-
-	rg.s.Restart()
-	rg.returned(2)
-	if ev := role(t, p1, "held"); ev["board"] != boardA || ev["rev"] != 5.0 {
-		t.Errorf("held at the return: %v", ev)
-	}
-	if got := th.calls("take " + boardA); !reflect.DeepEqual(got, []string{"take " + boardA + " ifFree=true"}) {
-		t.Errorf("the takes of the return: %v", got)
-	}
-	if there, _ := holdOf(rg, boardA); !there || holder(rg, boardA) != p1.ID {
-		t.Errorf("after the return: heldThere %v, holder %q", there, holder(rg, boardA))
-	}
-	wantReply(t, "save after the return", rg.r.SaveScene(ctx, p1.ID, boardA, 5, []byte(`{}`)), http.StatusOK, map[string]any{"rev": 6.0})
-
-	// A page waits there when the stream ends: the new stream knows nothing of it.
-	wantReply(t, "take, waiting there", rg.r.TakeBoard(ctx, p2.ID, boardB, false), http.StatusOK, map[string]any{"state": "waiting"})
-	rg.s.DropStreams()
-	rg.returned(3)
-	role(t, p2, "superseded")
-	role(t, p1, "held")
-	if _, want := holdOf(rg, boardB); want != "" {
-		t.Errorf("a page still waits: %q", want)
-	}
-	noRole(t, rg, p1, p2)
 }
 
 // TestBoardReturnBusy: at the return the board is held there by another, or is archived or
@@ -644,10 +607,9 @@ func TestBoardReturnHeld(t *testing.T) {
 func TestBoardReturnBusy(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{}, boardA, boardB, boardC)
-	ctx := t.Context()
 	p, _ := rg.page("page-1")
 	for _, id := range []string{boardA, boardB, boardC} {
-		wantReply(t, "take", rg.r.TakeBoard(ctx, p.ID, id, false), http.StatusOK, map[string]any{"state": "held"})
+		wantReply(t, "take", rg.r.TakeBoard(rg.entry, p.ID, id, false), http.StatusOK, map[string]any{"state": "held"})
 	}
 	th.set(func() {
 		th.take = func(id string, ifFree bool) thereAnswer {
@@ -655,7 +617,7 @@ func TestBoardReturnBusy(t *testing.T) {
 			case boardA:
 				return stateThere("busy")
 			case boardB:
-				return thereAnswer{status: http.StatusNotFound, body: map[string]any{"error": "no such board"}}
+				return noBoardThere
 			}
 			return thereAnswer{status: http.StatusInternalServerError, body: map[string]any{"error": "no"}}
 		}
@@ -664,20 +626,21 @@ func TestBoardReturnBusy(t *testing.T) {
 	rg.returned(2)
 	lost := map[any]bool{}
 	for range 2 {
-		lost[role(t, p, "superseded")["board"]] = true
+		ev := role(t, p, "superseded")
+		if ev["server"] != rg.entry {
+			t.Errorf("superseded: %v", ev)
+		}
+		lost[ev["board"]] = true
 	}
 	if !lost[boardA] || !lost[boardB] {
 		t.Errorf("the boards lost: %v", lost)
 	}
 	th.wait("take", 6)
-	noRole(t, rg, p)
-	if holder(rg, boardA) != "" || holder(rg, boardB) != "" || holder(rg, boardC) != p.ID {
-		t.Errorf("the holders: %q, %q, %q", holder(rg, boardA), holder(rg, boardB), holder(rg, boardC))
+	noRole(t, rg.far, p)
+	if holder(rg.far, boardA) != "" || holder(rg.far, boardB) != "" || holder(rg.far, boardC) != p.ID {
+		t.Errorf("the holders: %q, %q, %q", holder(rg.far, boardA), holder(rg.far, boardB), holder(rg.far, boardC))
 	}
-	if v, _ := rg.r.BoardView(boardB); !v.Gone {
-		t.Error("the board the server no longer has is not marked gone")
-	}
-	wantReply(t, "save before the board is taken again", rg.r.SaveScene(ctx, p.ID, boardC, 1, []byte(`{}`)),
+	wantReply(t, "save before the board is taken again", rg.r.SaveScene(rg.entry, p.ID, boardC, 1, []byte(`{}`)),
 		http.StatusServiceUnavailable, map[string]any{"code": "not_held_there"})
 	th.wait("take", 7) // the save asks for the board there once more
 	time.Sleep(quiet)  // the BoardFree of the lost boards
@@ -693,7 +656,7 @@ func TestBoardReturnBusy(t *testing.T) {
 	})
 	rg.s.DropStreams()
 	rg.returned(3)
-	if ev := role(t, p, "superseded"); ev["board"] != boardC {
+	if ev := role(t, p, "superseded"); !onEntry(rg.far, ev, boardC) {
 		t.Errorf("superseded: %v", ev)
 	}
 	if got := th.calls("take"); len(got) != 8 {
@@ -718,10 +681,10 @@ func TestBoardTakeNoAnswer(t *testing.T) {
 			return heldThereAt(3)
 		}
 	})
-	wantReply(t, "take", rg.r.TakeBoard(t.Context(), p.ID, boardA, false), http.StatusGatewayTimeout, map[string]any{"code": "no_answer"})
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p.ID, boardA, false), http.StatusGatewayTimeout, map[string]any{"code": "no_answer"})
 	th.wait("release", 1)
-	if there, want := holdOf(rg, boardA); there || want != "" || holder(rg, boardA) != "" {
-		t.Errorf("heldThere %v, want %q, holder %q", there, want, holder(rg, boardA))
+	if there, want := holdOf(rg.far, boardA); there || want != "" || holder(rg.far, boardA) != "" {
+		t.Errorf("heldThere %v, want %q, holder %q", there, want, holder(rg.far, boardA))
 	}
 }
 
@@ -735,44 +698,41 @@ var notHolderThere = thereAnswer{status: http.StatusConflict, body: map[string]a
 func TestBoardSaveNotHolderThere(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{}, boardA)
-	ctx := t.Context()
 	p, _ := rg.page("page-1")
 	th.set(func() {
 		th.take = func(string, bool) thereAnswer { return heldThereAt(3) }
 		th.put = notHolderThere
 	})
-	wantReply(t, "take", rg.r.TakeBoard(ctx, p.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 3.0})
+	wantReply(t, "take", rg.r.TakeBoard(rg.entry, p.ID, boardA, false), http.StatusOK, map[string]any{"state": "held", "rev": 3.0})
 	scene := []byte(`{"elements":[1]}`)
-	wantReply(t, "save, not the holder there", rg.r.SaveScene(ctx, p.ID, boardA, 3, scene), http.StatusServiceUnavailable,
+	wantReply(t, "save, not the holder there", rg.r.SaveScene(rg.entry, p.ID, boardA, 3, scene), http.StatusServiceUnavailable,
 		map[string]any{"code": "not_held_there", "error": "The board is being taken again on Studio."})
-	if ev := role(t, p, "held"); ev["board"] != boardA || ev["rev"] != 3.0 {
+	if ev := role(t, p, "held"); !onEntry(rg.far, ev, boardA) || ev["rev"] != 3.0 {
 		t.Errorf("held after the re-take: %v", ev)
 	}
 	if got, want := th.calls("take"), []string{"take " + boardA + " ifFree=false", "take " + boardA + " ifFree=true"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("the takes: %v, want %v", got, want)
 	}
-	if there, _ := holdOf(rg, boardA); !there || holder(rg, boardA) != p.ID {
-		t.Errorf("after the re-take: heldThere %v, holder %q", there, holder(rg, boardA))
+	if there, _ := holdOf(rg.far, boardA); !there || holder(rg.far, boardA) != p.ID {
+		t.Errorf("after the re-take: heldThere %v, holder %q", there, holder(rg.far, boardA))
 	}
 	th.set(func() { th.put = thereAnswer{} })
-	wantReply(t, "save after the re-take", rg.r.SaveScene(ctx, p.ID, boardA, 3, scene), http.StatusOK, map[string]any{"rev": 4.0})
+	wantReply(t, "save after the re-take", rg.r.SaveScene(rg.entry, p.ID, boardA, 3, scene), http.StatusOK, map[string]any{"rev": 4.0})
 
 	// A "held" that answers a take sent under a stream that ended since is no hold.
-	rec := rg.r.boardRec(boardA)
-	old := rg.r.holds.stream(rg.entry)
+	rec := rg.r.boardOf(rg.entry, boardA)
+	old := rg.r.stream(rg.entry)
 	rg.s.DropStreams()
 	rg.returned(2)
 	role(t, p, "held")
-	rec.mu.Lock()
-	rec.heldThere = false
-	rec.mu.Unlock()
+	unheldThere(rg.far, boardA)
 	if rg.r.holdGranted(rec, old, 9, "") {
 		t.Error("a hold of the stream before was counted on")
 	}
-	if there, _ := holdOf(rg, boardA); there {
+	if there, _ := holdOf(rg.far, boardA); there {
 		t.Error("heldThere after a hold of the stream before")
 	}
-	if rev, _ := rg.r.BoardRev(boardA); rev != 4 {
+	if rev, _ := rg.r.BoardRev(editorbridge.BoardOn(rg.entry, boardA)); rev != 4 {
 		t.Errorf("the revision kept is %d", rev)
 	}
 }
@@ -782,19 +742,15 @@ func TestBoardSaveNotHolderThere(t *testing.T) {
 func TestBoardNotHeldThereEnds(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{}, boardA)
-	ctx := t.Context()
 	p, _ := rg.page("page-1")
 	take(t, rg, p, boardA)
-	rec := rg.r.boardRec(boardA)
-	rec.mu.Lock()
-	rec.heldThere = false
-	rec.mu.Unlock()
-	wantReply(t, "save, not held there", rg.r.SaveScene(ctx, p.ID, boardA, 1, []byte(`{}`)), http.StatusServiceUnavailable, map[string]any{"code": "not_held_there"})
+	unheldThere(rg.far, boardA)
+	wantReply(t, "save, not held there", rg.r.SaveScene(rg.entry, p.ID, boardA, 1, []byte(`{}`)), http.StatusServiceUnavailable, map[string]any{"code": "not_held_there"})
 	role(t, p, "held")
 	if got := th.calls("put"); got != nil {
 		t.Errorf("the refused save reached the server: %v", got)
 	}
-	wantReply(t, "save after the re-take", rg.r.SaveScene(ctx, p.ID, boardA, 1, []byte(`{}`)), http.StatusOK, map[string]any{"rev": 2.0})
+	wantReply(t, "save after the re-take", rg.r.SaveScene(rg.entry, p.ID, boardA, 1, []byte(`{}`)), http.StatusOK, map[string]any{"rev": 2.0})
 }
 
 // retakeRig is a rig with a page that holds boardA, on which the server answers the takes of a
@@ -832,14 +788,14 @@ func TestBoardRetakeAgain(t *testing.T) {
 	rg, th, p := retakeRig(t, none)
 	rg.s.DropStreams()
 	rg.returned(2)
-	if ev := role(t, p, "held"); ev["board"] != boardA || ev["rev"] != 7.0 {
+	if ev := role(t, p, "held"); !onEntry(rg.far, ev, boardA) || ev["rev"] != 7.0 {
 		t.Errorf("held after the second take: %v", ev)
 	}
 	if got := th.calls("take " + boardA + " ifFree=true"); len(got) != 2 {
 		t.Errorf("the takes of the return: %v", got)
 	}
-	if there, _ := holdOf(rg, boardA); !there || rg.local.upCount() != 2 {
-		t.Errorf("heldThere %v after %d snapshots", there, rg.local.upCount())
+	if there, _ := holdOf(rg.far, boardA); !there || rg.snaps.Load() != 2 {
+		t.Errorf("heldThere %v after %d snapshots", there, rg.snaps.Load())
 	}
 
 	// A server that never answers gets three calls, and no more; the page keeps the board.
@@ -851,10 +807,10 @@ func TestBoardRetakeAgain(t *testing.T) {
 	if got := th.calls("take " + boardA + " ifFree=true"); len(got) != holdTries {
 		t.Errorf("the takes of a server that does not answer: %v", got)
 	}
-	if there, _ := holdOf(rg, boardA); there || holder(rg, boardA) != p.ID {
-		t.Errorf("heldThere %v, holder %q", there, holder(rg, boardA))
+	if there, _ := holdOf(rg.far, boardA); there || holder(rg.far, boardA) != p.ID {
+		t.Errorf("heldThere %v, holder %q", there, holder(rg.far, boardA))
 	}
-	noRole(t, rg, p)
+	noRole(t, rg.far, p)
 }
 
 // TestBoardRetakeUnknownClient: the server answers the re-take with unknown_client, as it does
@@ -873,8 +829,8 @@ func TestBoardRetakeUnknownClient(t *testing.T) {
 	if got := th.calls("take " + boardA + " ifFree=true"); len(got) != 2 {
 		t.Errorf("the takes of the return: %v", got)
 	}
-	if there, _ := holdOf(rg, boardA); !there || holder(rg, boardA) != p.ID {
-		t.Errorf("heldThere %v, holder %q", there, holder(rg, boardA))
+	if there, _ := holdOf(rg.far, boardA); !there || holder(rg.far, boardA) != p.ID {
+		t.Errorf("heldThere %v, holder %q", there, holder(rg.far, boardA))
 	}
 }
 
@@ -884,7 +840,6 @@ func TestBoardRetakeUnknownClient(t *testing.T) {
 func TestBoardReleaseAgain(t *testing.T) {
 	t.Parallel()
 	rg, th := holdRig(t, rigOpt{again: 20 * time.Millisecond}, boardA, boardB)
-	ctx := t.Context()
 	p, _ := rg.page("page-1")
 	take(t, rg, p, boardA)
 	var n atomic.Int32
@@ -895,12 +850,12 @@ func TestBoardReleaseAgain(t *testing.T) {
 			}
 		}
 	})
-	wantReply(t, "release", rg.r.ReleaseBoard(ctx, p.ID, boardA), http.StatusOK, map[string]any{"state": "free"})
+	wantReply(t, "release", rg.r.ReleaseBoard(rg.entry, p.ID, boardA), http.StatusOK, map[string]any{"state": "free"})
 	if got := th.wait("release "+boardA, 2); len(got) != 2 {
 		t.Errorf("the releases: %v", got)
 	}
-	if there, _ := holdOf(rg, boardA); there || holder(rg, boardA) != "" {
-		t.Errorf("heldThere %v, holder %q", there, holder(rg, boardA))
+	if there, _ := holdOf(rg.far, boardA); there || holder(rg.far, boardA) != "" {
+		t.Errorf("heldThere %v, holder %q", there, holder(rg.far, boardA))
 	}
 
 	// A page has the board again before the release is repeated: it is not released. The
@@ -908,43 +863,15 @@ func TestBoardReleaseAgain(t *testing.T) {
 	take(t, rg, p, boardB)
 	th.set(func() {
 		th.leaving = func() {
-			if state, _, err := rg.b.TakeBoard(p.ID, boardB, false); err != nil || state != "held" {
+			if state, _, err := rg.b.TakeBoard(p.ID, editorbridge.BoardOn(rg.entry, boardB), false); err != nil || state != "held" {
 				t.Errorf("the page's take here: %s, %v", state, err)
 			}
 			panic(http.ErrAbortHandler)
 		}
 	})
-	wantReply(t, "release with no answer", rg.r.ReleaseBoard(ctx, p.ID, boardB), http.StatusOK, map[string]any{"state": "free"})
+	wantReply(t, "release with no answer", rg.r.ReleaseBoard(rg.entry, p.ID, boardB), http.StatusOK, map[string]any{"state": "free"})
 	time.Sleep(quiet)
 	if got := th.calls("release " + boardB); len(got) != 1 {
 		t.Errorf("released there while a page holds the board: %v", got)
-	}
-}
-
-// TestBoardRevKept: the scene revision that was seen last is in the record's file after a
-// flush, and a relay on the same folder knows it before its server connects: a take that is
-// granted here alone names it.
-func TestBoardRevKept(t *testing.T) {
-	t.Parallel()
-	rg, _ := holdRig(t, rigOpt{}, boardA)
-	if _, _, e := rg.r.Scene(t.Context(), boardA); e != nil {
-		t.Fatal(e)
-	}
-	rg.until("the revision is flushed", func() bool { return rg.boardFile(boardA).Rev == 4 })
-	if raw := mustRead(t, rg.r.boardFiles.path(boardA)); !strings.Contains(string(raw), `"rev": 4`) {
-		t.Errorf("the file: %s", raw)
-	}
-
-	again := newRig(t, rigOpt{root: rg.root, hold: true}) // its manager is not started: not connected
-	if rev, ok := again.r.BoardRev(boardA); rev != 4 || !ok {
-		t.Errorf("the revision after a restart: %d, %v", rev, ok)
-	}
-	p, _ := again.page("page-1")
-	wantReply(t, "take while not connected, after a restart", again.r.TakeBoard(t.Context(), p.ID, boardA, false), http.StatusOK,
-		map[string]any{"state": "held", "rev": 4.0})
-
-	// A record that never saw a revision has none in its file.
-	if b, err := json.Marshal(boardSeedOf(boardB)); err != nil || strings.Contains(string(b), `"rev"`) {
-		t.Errorf("a record without a revision: %s, %v", b, err)
 	}
 }

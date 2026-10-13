@@ -3,14 +3,15 @@
 import { useMemo } from "react";
 import "./fork.css";
 import "./chrome.css";
-import { useStore, branchCount, branchState, shownBranch, statesOfChat, threadOf, viewedBranch } from "../store.ts";
+import { useStore, branchCount, branchState, composerAt, shownBranch, statesOfChat, threadOf, viewedBranch } from "../store.ts";
 import { BranchIcon } from "../icons.tsx";
 import { buildTree, nameOfBranch, withLive, type ChatTree } from "../logic/forktree.ts";
 import { threadTree, viewFor } from "../logic/forkmessage.ts";
 import { bannerOf, bannerPlain, bannerText } from "../logic/branchview.ts";
 import { heldReason, sendHeld } from "../logic/waits.ts";
 import { alertsOf, alertText, otherBranches } from "../logic/labels.ts";
-import { goBack, openTree, viewBranch } from "./actions.ts";
+import { back, openTree, viewBranch } from "./actions.ts";
+import { useOffWhy } from "../ChatChoices.tsx";
 import type { ChatView } from "../types.ts";
 
 /** How many branches a chat has, on its sidebar row; nothing for a chat that was never split. */
@@ -45,9 +46,13 @@ function useLiveTree(chatId: string, branch: string): ChatTree | undefined {
  *  an error (the button puts the chat on it) and, quietly, how many others work (the button opens
  *  the tree). Nothing when there is nothing to tell. While a message that starts a new branch is
  *  on its way the chat stays where it is: the two that would put it on another branch are
- *  disabled and say why (logic/waits.ts heldReason); the count still opens the tree. */
+ *  disabled and say why (logic/waits.ts heldReason); the count still opens the tree. The same
+ *  with a pending move while the chat's composer uploads an image: they would undo the move first.
+ *  A chat that is shown as it was (useOffWhy) stays on the branch it shows, for the same two: the
+ *  other branch's list could not be read, and its card could not be answered. */
 export function BranchAlert({ chatId }: { chatId: string }) {
-  const held = useStore((s) => heldReason(s.waits[chatId], "alert"));
+  const off = useOffWhy(chatId);
+  const held = useStore((s) => heldReason(s.waits[chatId], "alert", composerAt(s, chatId))) || off;
   const viewed = useStore((s) => viewedBranch(s, chatId));
   const states = useStore((s) => statesOfChat(s, chatId));
   const o = useMemo(() => otherBranches(states, viewed), [states, viewed]);
@@ -68,7 +73,8 @@ export function BranchAlert({ chatId }: { chatId: string }) {
 /** The pending move, above the composer's box: where the next message goes, and Back. The branch
  *  the chat is on stays as it is: the Send stops nothing. While the move's own Send is in flight
  *  the banner says that the message is being sent, and Back, which does nothing then, is disabled
- *  and says why. When the branch the chat is on (the one Back returns to) waits for approval,
+ *  and says why; so it is while the chat's composer uploads an image, and in a chat that is shown as it was (useOffWhy:
+ *  its thread stays cut where it was, and its composer keeps what it holds). When the branch the chat is on (the one Back returns to) waits for approval,
  *  its card is not in the thread shown for the move, whichever branch the move's point is on: the
  *  banner says so (for a branch the chat is not on the header does). */
 export function BranchBanner({ chatId }: { chatId: string }) {
@@ -78,7 +84,8 @@ export function BranchBanner({ chatId }: { chatId: string }) {
   const tree = useStore((s) => s.trees[chatId]);
   const asks = useStore((s) => { const m = s.moves[chatId]; return !!m && branchState(s, chatId, m.from)?.status === "approval"; });
   const sending = useStore((s) => sendHeld(s.waits[chatId]));
-  const held = useStore((s) => heldReason(s.waits[chatId], "back"));
+  const off = useOffWhy(chatId);
+  const held = useStore((s) => heldReason(s.waits[chatId], "back", composerAt(s, chatId))) || off;
   const text = useMemo(() => {
     const view = move && viewFor(viewFor(tree, move.branch), move.from);
     if (!c || !c.agent || !move || !items || !view) return bannerPlain(sending);
@@ -90,7 +97,7 @@ export function BranchBanner({ chatId }: { chatId: string }) {
     <div className={`fk-banner${sending ? " sending" : ""}`}>
       <BranchIcon size={12} />
       <span className="fk-banner-text">{text}</span>
-      <button className="btn ghost sm" disabled={!!held} onClick={() => goBack(chatId)} title={held || "Go back to where you were"}>Back</button>
+      <button className="btn ghost sm" disabled={!!held} onClick={() => back(chatId)} title={held || "Go back to where you were"}>Back</button>
     </div>
   );
 }

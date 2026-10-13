@@ -62,23 +62,14 @@ func TestManagerViews(t *testing.T) {
 	if v, ok := r.m.View(LocalID); !ok || !reflect.DeepEqual(v, want) {
 		t.Errorf("View(local): %+v, %v", v, ok)
 	}
-	if v, ok := r.m.ByInstance(testLocalID); !ok || v.ID != LocalID {
-		t.Errorf("ByInstance of the local id: %+v, %v", v, ok)
-	}
-	if _, ok := r.m.ByInstance(""); ok {
-		t.Error("ByInstance of no id")
-	}
-	if _, ok := r.m.ByInstance(testOtherID); ok {
-		t.Error("ByInstance of an unknown id")
-	}
 	if _, ok := r.m.View("s_000000000000"); ok {
 		t.Error("View of an unknown id")
 	}
 	if _, ok := r.m.Lists(LocalID); ok {
 		t.Error("Lists of the local entry")
 	}
-	if r.m.Notice() != "" || r.m.Counts != nil {
-		t.Errorf("notice %q, Counts set %v", r.m.Notice(), r.m.Counts != nil)
+	if r.m.Notice() != "" {
+		t.Errorf("notice %q", r.m.Notice())
 	}
 	// The view is the wire shape, and nothing of it is a secret.
 	typ := reflect.TypeOf(View{})
@@ -896,10 +887,10 @@ func TestStateStopped(t *testing.T) {
 		t.Fatalf("%d states in the table; want the eleven", len(want))
 	}
 	for s, stopped := range want {
-		if s.Stopped() != stopped || s.Stopped() != s.stops() {
-			t.Errorf("%q: Stopped %v, stops %v; want %v", s, s.Stopped(), s.stops(), stopped)
+		if s.stops() != stopped {
+			t.Errorf("%q: stops %v; want %v", s, s.stops(), stopped)
 		}
-		if s.Stopped() && s.retries() {
+		if s.stops() && s.retries() {
 			t.Errorf("%q both stops and retries", s)
 		}
 	}
@@ -911,7 +902,7 @@ func TestStateStopped(t *testing.T) {
 func TestManagerLevel(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := standin.Start(t, standin.Options{FeatureLevel: standin.Level(LibraryLevel - 1)})
+	s := standin.Start(t, standin.Options{FeatureLevel: standin.Level(MinFeatureLevel)})
 	var r *rig
 	var atSnapshot atomic.Int64
 	r = startRig(t, func(o *Options) {})
@@ -926,25 +917,25 @@ func TestManagerLevel(t *testing.T) {
 		t.Fatal(saved, err)
 	}
 	r.waitState(v.ID, StateConnected)
-	if got := r.m.Level(v.ID); got != LibraryLevel-1 || atSnapshot.Load() != int64(got) {
+	if got := r.m.Level(v.ID); got != MinFeatureLevel || atSnapshot.Load() != int64(got) {
 		t.Fatalf("the level %d, at the snapshot %d", got, atSnapshot.Load())
 	}
 	// The server is updated and comes back.
-	s.SetFeatureLevel(standin.Level(LibraryLevel))
+	s.SetFeatureLevel(standin.Level(MinFeatureLevel + 1))
 	s.Stop()
 	r.waitState(v.ID, StateUnreachable)
-	if got := r.m.Level(v.ID); got != LibraryLevel-1 {
+	if got := r.m.Level(v.ID); got != MinFeatureLevel {
 		t.Fatalf("the level of a server that dropped: %d", got)
 	}
 	s.Restart()
-	waitFor(t, "the new level", func() bool { return r.m.Level(v.ID) == LibraryLevel && atSnapshot.Load() == LibraryLevel })
+	waitFor(t, "the new level", func() bool { return r.m.Level(v.ID) == MinFeatureLevel+1 && atSnapshot.Load() == MinFeatureLevel+1 })
 	r.waitState(v.ID, StateConnected)
 	// An edit of the entry makes a new connection to the same server.
 	s.Stop()
 	if _, saved, _, err := r.m.Edit(ctx, v.ID, Patch{Secret: ptr(standin.DefaultSecret + "0")}, true); err != nil || !saved {
 		t.Fatal(saved, err)
 	}
-	if got := r.m.Level(v.ID); got != LibraryLevel {
+	if got := r.m.Level(v.ID); got != MinFeatureLevel+1 {
 		t.Fatalf("the level after an edit: %d", got)
 	}
 	if err := r.m.Remove(v.ID); err != nil || r.m.Level(v.ID) != 0 {

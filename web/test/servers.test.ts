@@ -2,6 +2,7 @@
 // row, what the form offers after a test, and the list a snapshot gives.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { LOCAL_ENTRY, anyNotConnected, formError, formView, heldResult, insertServer, removeText, resultHeading, rowActions, rowResult, serversOf, stateLabel, stepText, upsertServer, validAddress, validHost,
   type ServerForm, type ServerState, type ServerView, type TestResult } from "../src/logic/servers.ts";
 
@@ -109,11 +110,23 @@ test("formView: a fingerprint to accept for `fingerprint` and `cert_changed`, th
   assert.equal(withDetail.detail, "x509: certificate has expired");
 });
 
-test("removeText: names the entry and both counts, and that nothing is deleted on that server", () => {
-  assert.equal(removeText("Studio", 3, 2),
-    `Remove "Studio"? It has 3 chats and 2 runs in this app. They are removed from this app; nothing is deleted or stopped on that server.`);
-  assert.match(removeText("Studio", 1, 1), /It has 1 chat and 1 run in this app\./);
-  assert.match(removeText("Studio", 0, 0), /It has 0 chats and 0 runs in this app\./);
+test("removeText: names the entry, says that its section leaves the sidebar and that nothing is deleted on that server, and counts nothing", () => {
+  assert.equal(removeText("Studio"),
+    `Remove "Studio"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats, whiteboards and runs stay there.`);
+  assert.equal(removeText("Mac mini"),
+    `Remove "Mac mini"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats, whiteboards and runs stay there.`);
+  assert.equal(removeText.length, 1, "the name alone");
+  assert.doesNotMatch(removeText("Studio"), /\d|in this app|removed from this app/);
+});
+
+test("the question before a removal asks the server for nothing: the entry is removed, and that server is told nothing", () => {
+  // This app keeps nothing of that server but the entry, so there is nothing to count: no call is made before the question.
+  const text = readFileSync(new URL("../src/Servers.tsx", import.meta.url), "utf8");
+  assert.ok(text.includes('title: "Remove server", body: removeText(v.name),'));
+  const remove = text.slice(text.indexOf("const remove = () => confirm({"), text.indexOf("const tone = "));
+  assert.ok(remove.length > 0 && !remove.includes("await serversApi.items") && !remove.includes("getState()") && !remove.includes("chats"), "nothing is counted on the page or by the local server");
+  assert.ok(remove.includes('actions: [{ label: "Remove", tone: "danger", run: async () => { await serversApi.remove(v.id); entryRemoved(v.id); } }],'));
+  assert.ok(!text.includes("serversApi.items") && !text.includes(".items("));
 });
 
 test("serversOf: a snapshot without the field gives the local entry alone", () => {

@@ -31,7 +31,7 @@ func TestAgentIsFixedOnABranchWhoseFirstSendFailed(t *testing.T) {
 	if len(tree.Branches) < 2 {
 		// The failed send left no branch: there is nothing whose agent could change. The chat
 		// itself is as fixed as before.
-		for _, req := range []ConfigReq{{Agent: model.Pi}, {Server: model.LocalServer}} {
+		for _, req := range []ConfigReq{{Agent: model.Pi}, {Agent: model.Claude}} {
 			if err := e.m.ConfigureOf(v.ID, "", req); !errors.Is(err, ErrAgentFixed) {
 				t.Fatalf("no branch stayed, Configure %+v: %v, want ErrAgentFixed", req, err)
 			}
@@ -49,7 +49,7 @@ func TestAgentIsFixedOnABranchWhoseFirstSendFailed(t *testing.T) {
 	}
 	was := e.meta(branchChatID(v.ID, b.ID))
 	for _, branch := range []string{b.ID, "", model.MainBranch} {
-		for _, req := range []ConfigReq{{Agent: model.Pi}, {Agent: model.Claude}, {Server: model.LocalServer}} {
+		for _, req := range []ConfigReq{{Agent: model.Pi}, {Agent: model.Claude}} {
 			if err := e.m.ConfigureOf(v.ID, branch, req); !errors.Is(err, ErrAgentFixed) {
 				t.Fatalf("branch %q, Configure %+v: %v, want ErrAgentFixed", branch, req, err)
 			}

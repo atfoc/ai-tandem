@@ -179,12 +179,13 @@ func (r *Relay) keepLibrary(entry string, t library.Tree, snapshot bool) {
 }
 
 // dropLibrary ends the copy of the entry and tells the pages, if there was one. why is what was
-// wrong with what the server sent, nil when it offers no library or is no longer in the list; it
-// is logged, cut, at most once a minute for an entry. offers says whether the server still
-// offers a library, so that its next one is taken.
+// wrong with what the server sent, nil when it offers no library or is no longer in the list.
+// That it was wrong is logged, at most once a minute for an entry, and not what: why names
+// groups and prompts of that server, and the log is a file of this machine. offers says whether
+// the server still offers a library, so that its next one is taken.
 func (r *Relay) dropLibrary(entry string, why error, offers bool) {
 	if why != nil && r.tell("library "+entry) {
-		r.o.Logf("remotes: the prompt library of the server %s is not shown: %s", entry, plain(why.Error(), saidMax))
+		r.o.Logf("remotes: the prompt library of the server %s is not shown: it breaks a rule of a library", entry)
 	}
 	l := &r.libs
 	l.change.Lock()

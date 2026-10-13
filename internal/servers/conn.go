@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,6 +146,10 @@ func (c *conn) run() {
 // retries it waits for the back-off; in a state that stops it waits for Retry. The back-off
 // starts again after a stream that stayed open for Timing.Stable: one that ended sooner counts
 // as one more failed attempt, so a server that drops every stream is asked ever less often.
+//
+// A too old server is the one stopped state that also tries again by itself, every
+// Timing.TooOld: it connects once it was updated on its machine. Such an attempt is made in the
+// state too_old, not in connecting, so that nothing is put on the entry meanwhile.
 func (c *conn) loop() {
 	tm := c.m.o.Timing
 	for n := 0; ; {
@@ -157,23 +162,26 @@ func (c *conn) loop() {
 		}
 		c.enter(e)
 		if e.state.stops() {
-			if !c.wait(0, true) {
+			asked, ok := c.wait(tm.TooOld, e.state != StateTooOld)
+			if !ok {
 				return
 			}
-			c.enter(ending{state: StateConnecting})
+			if asked {
+				c.enter(ending{state: StateConnecting})
+			}
 			n = 0
 			continue
 		}
-		if !c.wait(tm.backoff(n), false) {
+		if _, ok := c.wait(tm.backoff(n), false); !ok {
 			return
 		}
 		n++
 	}
 }
 
-// wait blocks for d, or without end when stopped is set. Retry ends it early. It returns false
-// when the conn was cancelled.
-func (c *conn) wait(d time.Duration, stopped bool) bool {
+// wait blocks for d, or without end when stopped is set. Retry ends it early: asked is then
+// true. ok is false when the conn was cancelled.
+func (c *conn) wait(d time.Duration, stopped bool) (asked, ok bool) {
 	m := c.m
 	m.mu.Lock()
 	c.waiting = true
@@ -195,17 +203,18 @@ func (c *conn) wait(d time.Duration, stopped bool) bool {
 	}
 	select {
 	case <-c.ctx.Done():
-		return false
+		return false, false
 	case <-c.retry:
-		return true
+		return true, true
 	case <-over:
-		return true
+		return false, true
 	}
 }
 
 // Retry makes a conn that waits try now: one in a stopped state goes to connecting, one in its
 // back-off keeps its state. A conn that is connected or in an attempt is left alone, and so is
-// one that only an accept or an edit gets going again.
+// one that only an accept or an edit gets going again. It is the user's retry: the wait of a
+// too old server ends by itself too, and that attempt keeps the state.
 func (c *conn) Retry() {
 	m := c.m
 	m.mu.Lock()
@@ -289,14 +298,23 @@ func headerLimit(ctx context.Context, cancel context.CancelFunc, limit time.Dura
 	}
 }
 
-// request is a request to the entry's server with the secret and this server's id as client id.
+// identify sets the headers every request to a remote server has: the secret, this server's id
+// as client id and the level of this client. It is the one place they are set, for a connection
+// and for a test.
+func identify(req *http.Request, secret, localID string) {
+	req.Header.Set(remote.SecretHeader, secret)
+	req.Header.Set(remote.ClientHeader, localID)
+	req.Header.Set(LevelHeader, strconv.Itoa(ClientLevel))
+}
+
+// request is a request to the entry's server with the secret, this server's id as client id and
+// the level.
 func (c *conn) request(ctx context.Context, method, pathAndQuery string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.entry.Address+pathAndQuery, body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set(remote.SecretHeader, c.entry.Secret)
-	req.Header.Set(remote.ClientHeader, c.m.o.LocalID)
+	identify(req, c.entry.Secret, c.m.o.LocalID)
 	return req, nil
 }
 
@@ -519,8 +537,9 @@ func (c *conn) keep(typ string, raw []byte) {
 	}
 }
 
-// do passes one call on through l's client. A 401 ends the stream: the secret is not accepted.
-func (c *conn) do(ctx context.Context, l *link, method, path string, body []byte, limit time.Duration) (Reply, error) {
+// do passes one call on through l's client; a body that is not nil is sent as contentType. A 401
+// ends the stream: the secret is not accepted.
+func (c *conn) do(ctx context.Context, l *link, method, path, contentType string, body []byte, limit time.Duration) (Reply, error) {
 	if limit <= 0 {
 		limit = c.m.o.Timing.Call
 	}
@@ -534,8 +553,8 @@ func (c *conn) do(ctx context.Context, l *link, method, path string, body []byte
 	if err != nil {
 		return Reply{}, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if body != nil && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := l.client.Do(req)
 	if err != nil {

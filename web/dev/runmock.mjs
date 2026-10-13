@@ -32,18 +32,26 @@
 //     its first new branch tells main's `branch_state` before its own. A turn's end mark gets a point only in a
 //     thread that has points already. A fork (POST …/fork) copies the items and starts nothing; a model or effort
 //     pick on a fork without a message of its own answers at once (the server starts the agent again first:
-//     flags.configure.delay stands in for that). The tree's labels cannot be set. Every chat answers as a chat of
-//     this computer, whatever server its view names: nothing is relayed
+//     flags.configure.delay stands in for that). The tree's labels cannot be set
 //   - a folder, model or effort pick on a chat that has started is taken (the server refuses it, 409: they are
-//     fixed once the chat has started). PUT …/draft takes no ?rev= and answers no `rev` (the server refuses a
-//     call without it, answers {ok, rev}, and refuses a draft typed on an older one with the code "stale")
-//   - a server pick (PATCH {server}) takes the agent, folder, model and effort from the lists the seed gave
-//     that server; the server asks the other server for them
+//     fixed once the chat has started). PUT …/draft with ?rev= is saved on that counter and answers {ok, rev}, and
+//     one typed on another counter is refused 409 with the code "stale", the counter and the draft there are, as
+//     on the server; a call that names no counter is taken (the server refuses it). A message takes its branch's
+//     draft with it, which raises the counter
+//   - images of a chat (POST …/images, GET …/images/{id}): kept in memory, never cleaned up, no cap of unsent ones.
+//     A draft that names an image its chat does not hold is saved without it, and the answer's `missing` lists it.
+//     The chat of a run's agent takes no upload (409). A message is not checked for its images otherwise (their
+//     ids, the limits, the model): it is taken with whatever it names. flags.upload = { hold: true } |
+//     { delay: ms } | { fail: [status, sentence, code] } holds, delays or fails an upload's answer
+//   - a run's goal has no images: its draft is kept without an image list, whatever it is sent, as on the server
 //   - a board answers a take only when the seed gave it a scene (dev/runmock-ui.js); any other board is
-//     read-only with an empty scene, and no board is ever another window's
+//     read-only with an empty scene, and no board is ever another window's. A scene is saved on the revision named
+//     (?rev=), and refused 409 "stale" on another
+//   - remote servers as sections: see "Remote servers" below for what is not as on the server
 //   - made up, with no counterpart on the server: T0 (the mock's own "now" at its start), flags.send,
-//     flags.items, flags.fork, flags.configure, flags.spawn, flags.hello, flags.streamDown, dropStreams(),
-//     seedUI() and what it adds to the snapshot
+//     flags.items, flags.fork, flags.configure, flags.spawn, flags.make, flags.hello, flags.streamDown, dropStreams(),
+//     addServer(), setServerState(), removeServer(), onServer(), elsewhere(), onCalls, seedUI() and what it adds
+//     to the snapshot
 //
 //   cd web && npm run build && node dev/runmock.mjs        then open http://127.0.0.1:4791
 //   PORT=4899 TICK=1000 node dev/runmock.mjs               another port, a live event every second
@@ -177,8 +185,60 @@
 // scenarios above: dev/runmock-ui.js adds them when `seedUI()` is called through /mock/eval (`seedUI("A2")`: one
 // section). Until then the sidebar and the scenarios are as before. Its file lists the states. The chat routes
 // answer as the server does, seeded or not: POST …/messages {ok, branch}; the chat PATCH {ok, chat}, and it takes
-// `server` and `agent` too; GET …/items the list of the branch asked for, 404 for one the chat has not; GET …/tree
-// the messages and replies of each branch; POST …/fork the new chat.
+// `agent` too and refuses `server` (409 `server_fixed`); GET …/items the list of the branch asked for, 404 for one
+// the chat has not; GET …/tree the messages and replies of each branch; POST …/fork the new chat.
+//
+// Remote servers (plans/remote-server-sections-contract.md, section 3). A server of the server list is another
+// machine: it has a tree of its own (groups, boards, chats, runs, with what the mock keeps per chat and board), and
+// ids of its own, which may be the ids of things of this computer. Until the seed ran there is none. The local
+// server holds the tree of an entry that is connected, and then:
+//   - the snapshot (GET /api/state, the `snapshot` event) has it under `sections[<entry id>]`: { groups, boards,
+//     chats, states, runs, defaults } with that server's own ids, and no group says whether it is collapsed. The
+//     snapshot's own groups, boards, chats and runs are this computer's alone, and nothing names a server
+//   - /api/on/<entry id>/<the path of the local call after /api> is the call for a thing of that server, answered
+//     by that machine's own routes: what is made is made there, and a thing it has not is its 404 `not_found`. The
+//     local server answers itself, in this order, as internal/server/section.go does: 404 {"error":"not found"}
+//     for a path that is no call of a section, whatever the id; 404 `no_server` for an id that is no other
+//     server of the list ("local" too), in every call; 400 `not_here` for a board's …/reveal and 200 for
+//     …/unfollow, in every state of the entry; 503 `server_unreachable` ("<name> is not connected.", or that it is
+//     too old) while it holds no tree of the entry, but 200 for a board's …/release; 400 `collapsed_refused` for a
+//     PATCH of a group with `collapsed`; 400 `replace_refused` for ?replace on a draft's save (a message with it
+//     is passed on); 503 `not_held_there` for a save of a board that is being taken again on its server
+//     (flags.retake)
+//   - every event about a thing of that server is the local event with the top-level `server`: <entry id>, sent
+//     only while the tree is held: what changes on a machine that is not connected is told to nobody here
+//   - the local routes serve this computer's things only: a make with another server in its body is 400
+//     `server_refused` (POST /api/chats, POST /api/boards, PATCH /api/runs/{id}), a delete with ?local=1 is 400
+//     `no_record`, and GET /api/servers/{id}/items is 404
+// Through /mock/eval:
+//   addServer(entry, { tree, lists })       puts { id, name, address, state, … } into the list, with a machine of its
+//                                           own; lists: what it offers a new chat or run. Nothing is told
+//   setServerState(id, state, { tree, sectionFirst, …fields })   the entry's state changes: the pages get
+//                                           `server_state`, and `section` with the whole tree when the local server
+//                                           holds it from now on (connected; tree: false for "connected, its snapshot
+//                                           not read yet"), or with null when it held one. sectionFirst: the two in the
+//                                           other order. A page that held a board of that server is told `held` with
+//                                           the revision the board has there when the tree is back: at once, or
+//                                           flags.retake.delay ms later, and a save of the board is 503
+//                                           `not_held_there` until then, as while the local server takes it again
+//   removeServer(id)                        the entry leaves the list: `servers`, `server_lists` and `section` with null
+//   onServer(id, () => { … })               runs code on that machine: `chats`, `items`, `runs`, `groups`, `boards`,
+//                                           `scenes`, `send`, `setSession`, … are that machine's in it, and what it
+//                                           sends goes to the pages as that server's events
+//   await elsewhere(id, method, path, body) a change made there by its owner or another client: that machine's own
+//                                           route ("/chats", "/groups/g_x/move", "/boards/b_x?…"), whose events reach
+//                                           the pages as that server's. id "local": another window of this computer.
+//                                           Answers { status, body }
+//   onCalls                                 every call that came under /api/on/: { server, method, path, body }
+//   worlds[id]                              a machine as the mock holds it ("local": this computer)
+// Not as on the server: a chat's content events (`chat_items`, `tree`, `sub`) go to every page while the tree is
+// held, followed or not (an agent's only to the pages that read it, as for this computer); a board is held by
+// whoever asks, and no `superseded`, `release_request` or `rpc` is sent; no call is ever answered 401, 502
+// `bad_answer` or 504 (but a make that waited on flags.make while its server dropped: 504 `no_answer`); an entry
+// that waits for its next try is not made to try by a call; `defaults` are always empty, and a new chat there
+// starts with that server's first agent, its default model and its default folder; a write needs no known client
+// (the server answers 409 "unknown_client" to a page with no open stream, under /api/on/ as everywhere); a save
+// of a board is taken from a page that does not hold it (the server: 409 `not_holder`).
 //
 // The prompt library (plans/prompt-library.md): GET /api/library and the calls that change a library answer as the
 // server does, with its rules and its sentences, and every change goes to the pages as a `library` event before the
@@ -207,7 +267,16 @@
 //              = { noReply: true }                  no canned reply: the branch stays "thinking"
 //   flags.items = { delay: ms } | { fail: status }  GET …/items of a chat's branch waits, or fails
 //   flags.fork = { delay: ms } | { refuse: { … } }  POST …/fork
-//   flags.configure = { delay: ms } | { refuse: { … } }   a PATCH of server, agent, model, effort or folder. On a
+//   flags.draft = { delay: ms } | { hold: true }    a save of a draft on another server (PUT /api/on/<entry id>/chats/
+//                                                   <id>/draft; `server`: of that entry alone) waits; one that waited
+//                                                   while its server dropped is 504 `no_answer`, and nothing is stored
+//   flags.retake = { delay: ms }                    after a server came back, the `held` of a board a page holds comes
+//                                                   that long after the tree, and a save of the board meanwhile is
+//                                                   503 `not_held_there` (setServerState)
+//   flags.make = { delay: ms } | { hold: true } | { refuse: { … } }   a make on another server (POST /api/on/<entry
+//                                                   id>/chats, …/boards, …/runs, …/groups; `server`: of that entry
+//                                                   alone): it waits, or is refused there and nothing is made
+//   flags.configure = { delay: ms } | { refuse: { … } }   a PATCH of agent, model, effort or folder. On a
 //                                                   fork without a message of its own a model or effort pick
 //                                                   shows the choice and "thinking" meanwhile, but for pi, as on
 //                                                   the server; a second pick meanwhile is refused (409 "busy"),
@@ -231,6 +300,9 @@
 // Seeding again is a reset. A chat the seed makes anew is another record: what was pending of the one it replaces
 // (a held call, a canned reply, a branch's late events) answers 404 or does nothing.
 import http from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { Readable } from "node:stream";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -415,7 +487,34 @@ function halt(d, at, reason, status) {
 }
 
 const flags = {}; // switches set through /mock/eval (see the header)
-const runs = {}; // id → { meta, detail?, goal?, eng, tag, sent }
+
+// ---- the machines: this computer, and one for every other server of the list. Each has a tree of its own, with ids
+// of its own: the same id can be a chat here and a chat there.
+
+/** What one machine holds: its groups, boards, chats and runs, and what the mock keeps per chat and per board. */
+const newWorld = (id) => ({ id, groups: [], boards: {}, chats: {}, items: {}, runs: {}, versions: {}, subs: {}, subItems: {}, branches: {}, sessions: {}, scenes: {}, images: {}, lastSubLimits: null });
+const worlds = { local: newWorld("local") }; // by entry id of the server list
+const here = new AsyncLocalStorage();        // the machine a call works on, with everything the call starts (a timer, a held answer)
+const world = () => here.getStore() ?? worlds.local;
+/** Runs fn on the machine of a server of the list: `chats`, `runs`, `groups`, … are that machine's in it, and what it
+ *  sends goes out as that server's events. */
+const onServer = (id, fn) => { if (!worlds[id]) throw new Error(`the mock has no server ${id}`); return here.run(worlds[id], fn); };
+/** Runs fn on every machine, this computer first. */
+const everywhere = (fn) => { for (const w of Object.values(worlds)) here.run(w, fn); };
+/** One part of the machine a call works on, under the name this file has always used for it: `chats` is this
+ *  computer's outside a call for another server, and that server's inside one. */
+function part(k) {
+  const at = () => world()[k];
+  return new Proxy(Array.isArray(worlds.local[k]) ? [] : {}, {
+    get: (_, p) => { const o = at(), v = o[p]; return typeof v === "function" ? v.bind(o) : v; },
+    set: (_, p, v) => { at()[p] = v; return true; },
+    has: (_, p) => p in at(),
+    deleteProperty: (_, p) => delete at()[p],
+    ownKeys: () => Reflect.ownKeys(at()),
+    getOwnPropertyDescriptor: (_, p) => Reflect.getOwnPropertyDescriptor(at(), p),
+  });
+}
+const runs = part("runs"); // id → { meta, detail?, goal?, eng, tag, sent }
 const SHA_ = () => Array.from({ length: 40 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("");
 const tagOf = (id) => id.slice(2);
 
@@ -453,7 +552,7 @@ function view(R) {
     attention = counts.failed + counts.blocked + (d.turns.at(-1)?.ops.filter((o) => o.error).length ?? 0);
   }
   const v = {
-    id: m.id, name: m.name, userNamed: m.userNamed, group: m.group, created: m.created, server: m.server, start: m.start,
+    id: m.id, name: m.name, userNamed: m.userNamed, group: m.group, created: m.created,
     agent: m.agent, tiers: m.tiers, tierDefaults: d ? undefined : tierDefaults(m.agent), cwd: m.cwd,
     folderMissing: !exists(m.cwd) || undefined,
     git: (d ? !!d.git : isGit(m.cwd)) || undefined, // omitted for a folder that is not a repository, as the server does
@@ -828,12 +927,13 @@ addRun({ id: "r_missing", name: "Port the importer", userNamed: true, created: i
 
 // ---- groups, boards, chats
 
-const groups = [{ id: "g_shop", name: "Shop" }];
-const boards = { b_arch: { id: "b_arch", name: "arch", group: "g_shop", created: iso(T0 - 5000 * MIN) } };
+const groups = part("groups"), boards = part("boards"), chats = part("chats"), items = part("items");
+groups.push({ id: "g_shop", name: "Shop" });
+boards.b_arch = { id: "b_arch", name: "arch", group: "g_shop", created: iso(T0 - 5000 * MIN) };
 const usage = { ctxIn: 42000, ctxOut: 900, ctxWindow: 200000, turns: 3 };
 const fresh = { locked: false, usage: { ...usage, ctxIn: 0, ctxOut: 0, turns: 0 } };
 const chat = (id, o) => ({ id, agent: "claude", cwd: SHOP, model: "opus", effort: "high", locked: true, created: iso(T0 - 30 * MIN), usage, status: "ready", ...o });
-const chats = {
+Object.assign(chats, {
   c_plain: chat("c_plain", { name: "Why is the build slow", group: "g_shop" }),
   c_board: chat("c_board", { name: "Draw the pipeline", board: "b_arch" }),
   c_new: chat("c_new", { group: "g_shop", created: iso(T0 - 2 * MIN), ...fresh }),
@@ -843,10 +943,10 @@ const chats = {
   c_live_new: chat("c_live_new", { run: "r_live", created: iso(T0 - 5 * MIN), ...fresh, draft: { text: "why did T07 take so long" } }),
   c_draft_ask: chat("c_draft_ask", { run: "r_draft", created: iso(T0 - MIN), ...fresh }),
   c_trouble_ask: chat("c_trouble_ask", { name: "Trim the refund work", run: "r_trouble", created: iso(T0 - 3 * MIN), status: "tool", statusTool: "mcp__board__update_task" }), // still replying: what it changed is held
-};
+});
 const tool = (id, name, input, result, more) => ({ kind: "tool", toolId: id, name, input, ...(result === undefined ? {} : { result }), ...more });
 const say = (text, done = true) => ({ kind: "text", done, text });
-const items = { // by chat id; an agent's are written when first asked for
+Object.assign(items, { // by chat id; an agent's are written when first asked for
   c_plain: [{ kind: "user", text: "Why is the build slow?" }, say("Because of the font copy step."), { kind: "end" }],
   c_board: [], c_live_new: [], c_draft_ask: [], c_new: [], c_board_new: [],
   c_nested: [
@@ -881,10 +981,10 @@ const items = { // by chat id; an agent's are written when first asked for
     say("Done: T07 is queued again as attempt 2 and T34 is added. There is no task T99, so nothing was cancelled. The orchestrator gets your note with its next turn."),
     { kind: "end" },
   ],
-};
-const versions = {};  // by thread key (chat id, "<chat>:<branch>" for a branch that is not main, or "<chat>/<sid>"): the version of its items
-const subs = {};      // by chat id: its subagents (main's)
-const subItems = {};  // by "<chat>/<sid>"
+});
+const versions = part("versions");  // by thread key (chat id, "<chat>:<branch>" for a branch that is not main, or "<chat>/<sid>"): the version of its items
+const subs = part("subs");          // by chat id: its subagents (main's)
+const subItems = part("subItems");  // by "<chat>/<sid>"
 { // c_nested's subagents, three levels deep (parent: the sid of the one that started it)
   const sa = (id, description, o) => ({ id, description, prompt: `${description}. Report what is wrong.`, kind: "claude", model: "sonnet", effort: "medium", background: true, window: 200000, ...o });
   subs.c_nested = [
@@ -914,17 +1014,17 @@ function setSubLimits(c, depth, cap) {
   if (depth === 0) c.subOff = true; else c.subDepth = depth;
   c.subCap = cap;
 }
-let lastSubLimits = null; // the last pick: what a chat made later starts with
+// (the last pick, what a chat made later starts with, is its machine's: world().lastSubLimits)
 
 // ---- branches: a chat that has more than main keeps the other branches' lists and every branch's session
 // fields here. The seed (dev/runmock-ui.js) makes such chats, and so does a message with a target. A chat with
 // main alone has neither, and its view tells its state, as before.
 
-const branches = {};  // by chat id: its branches besides main, in the order they were made: { id, from, at, items }
-const sessions = {};  // by chat id, once it has a second branch: each branch's session fields, by branch id ("main" too)
-const scenes = {};    // by board id: { rev, scene } of a board that answers a take (the seed's); any other is read-only
+const branches = part("branches");  // by chat id: its branches besides main, in the order they were made: { id, from, at, items }
+const sessions = part("sessions");  // by chat id, once it has a second branch: each branch's session fields, by branch id ("main" too)
+const scenes = part("scenes");      // by board id: { rev, scene } of a board that answers a take (the seed's); any other is read-only
 const extra = {};     // what the seed adds to the snapshot: servers, lists (by server), agents
-const SESSION = ["cwd", "model", "effort", "locked", "usage", "status", "statusTool", "error", "fresh", "draft", "subsRunning"];
+const SESSION = ["cwd", "model", "effort", "locked", "usage", "status", "statusTool", "error", "fresh", "draft", "draftRev", "subsRunning"];
 const WORKING = ["thinking", "writing", "tool", "approval"];
 const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const session = (o) => Object.fromEntries(SESSION.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
@@ -1067,20 +1167,44 @@ function agentItems(id) {
 
 // ---- the stream
 
-let clients = []; // the open streams: { id (the tab's client id), res, watched: the agents whose /items it fetched on this connection }
+let clients = []; // the open streams: { id (the tab's client id), res, watched: the agents whose /items it fetched on this connection, boards: the boards of other servers it holds }
 const write = (c, m) => c.res.write(`data: ${JSON.stringify(m)}\n\n`);
-const send = (m) => { for (const c of clients) write(c, m); };
+/** The events that are about a thing of a tree: one about a thing of another server carries that server's entry id. */
+const OF_A_THING = new Set(["groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "run", "run_removed", "tree", "chat_items", "sub", "sub_items",
+  "run_detail", "run_activity", "held", "release_request", "superseded", "rpc"]);
+const holding = new Set(); // the entries whose tree the local server holds: connected, and its snapshot read
+/** An event as the pages get it. One about a thing of another server has that server's ids and the top-level
+ *  `server`, its group list no `collapsed`, and goes out only while the local server holds that server's tree (null
+ *  otherwise: what changes on a machine that is not connected is heard of by nobody here). */
+function told(m) {
+  const id = world().id;
+  if (id === "local" || !OF_A_THING.has(m.type)) return m;
+  if (!holding.has(id)) return null;
+  return { ...m, ...(m.type === "groups" ? { groups: m.groups.map(({ collapsed: _, ...g }) => g) } : {}), server: id };
+}
+const send = (m) => { const out = told(m); if (out) for (const c of clients) write(c, out); };
+/** What a page names a thing of the machine a call works on by, in the mock's own lists of what a page follows and holds. */
+const pageKey = (id) => (world().id === "local" ? id : `${world().id}~${id}`);
+/** The ids of a list of such names that are of the machine a call works on. */
+const ofHere = (keys) => [...keys].flatMap((k) => { const at = k.indexOf("~"); return (at < 0 ? "local" : k.slice(0, at)) === world().id ? [k.slice(at + 1)] : []; });
 /** An agent's transcript event: to the clients that watch it, or to all for the one that streams always. */
-const sendAgent = (id, m) => { for (const c of clients) if (id === AG.always || c.watched.has(id)) write(c, m); };
-const snapshot = () => ({
-  groups, boards: Object.values(boards),
+const sendAgent = (id, m) => { const out = told(m); if (out) for (const c of clients) if ((id === AG.always && world().id === "local") || c.watched.has(pageKey(id))) write(c, out); };
+/** The branch records of the machine a call works on: one per branch of every chat that has more than main. */
+const statesNow = () => Object.keys(sessions).filter((id) => chats[id]).flatMap((id) => Object.keys(sessions[id]).map((b) => branchState(id, b)));
+/** A server's whole tree, as the local server holds it: that server's own ids, and no group says whether it is collapsed. */
+const sectionTree = (id) => onServer(id, () => ({ groups: groups.map(({ collapsed: _, ...g }) => g), boards: Object.values(boards), chats: Object.values(chats), states: statesNow(),
+  runs: Object.values(runs).map(view), defaults: { last: {}, groups: {} } }));
+/** GET /api/state and the `snapshot` event: this computer's own tree, and under `sections` the tree of each server held. */
+const snapshot = () => here.run(worlds.local, () => ({
+  groups: [...groups], boards: Object.values(boards),
   chats: [...Object.values(chats), agentChat(AG.listed) /* a server that lists an agent: the client must drop it */].filter(Boolean), // null once r_live is deleted
   runs: Object.values(runs).map(view),
   defaults: { last: {}, groups: {} }, catalogs, home: HOME, defaultCwd: SHOP, dataDir: DATA,
   ...extra, // nothing until the seed ran
+  sections: Object.fromEntries([...holding].filter((id) => worlds[id]).map((id) => [id, sectionTree(id)])),
   libraries: libraryList(),
-  ...(Object.keys(sessions).length ? { states: Object.keys(sessions).filter((id) => chats[id]).flatMap((id) => Object.keys(sessions[id]).map((b) => branchState(id, b))) } : {}),
-});
+  ...(Object.keys(sessions).length ? { states: statesNow() } : {}),
+}));
 /** Cuts every open event stream. With flags.streamDown a new one is cut as it opens: the page stays "reconnecting". */
 function dropStreams() { for (const c of clients) c.res.destroy(); clients = []; }
 
@@ -1090,7 +1214,9 @@ function sendRun(R) {
   if (R.sent !== s) { R.sent = s; send({ type: "run", run: v }); }
   return v;
 }
-for (const R of Object.values(runs)) R.sent = JSON.stringify(view(R));
+/** Takes every run's view as sent, on every machine: after a snapshot only what changes later is told. */
+const allSent = () => everywhere(() => { for (const R of Object.values(runs)) R.sent = JSON.stringify(view(R)); });
+allSent();
 
 /** One committed change of a started run: version +1, `run_detail` with the records it touched, then `run`. */
 function commit(R, patch) {
@@ -1249,7 +1375,7 @@ function activity(R) {
 let beat = 0;
 function stream() {
   beat++;
-  for (const id of new Set([...clients.flatMap((c) => [...c.watched]), AG.always])) {
+  everywhere(() => { for (const id of new Set([...ofHere(clients.flatMap((c) => [...c.watched])), ...(world().id === "local" ? [AG.always] : [])])) {
     const c = agentChat(id);
     if (!c || !agentOf(id) || agentOf(id).a.status !== "running") continue;
     const list = agentItems(id), at = list.length - (list.at(-1).kind === "text" && !list.at(-1).done ? 1 : 0);
@@ -1260,21 +1386,21 @@ function stream() {
     const sa = subs[id]?.[0];
     if (sa) { sa.toolUses++; sa.tokens += 400; sendAgent(id, { type: "sub", chat: id, branch: "main", subagent: sa }); }
     else if (id === AG.always) sendAgent(id, { type: "sub", chat: id, branch: "main", subagent: { id: "s9", tool: "w9", description: "A subagent nobody looks at", kind: "claude", status: "running", started: T0, toolUses: beat } });
-  }
+  } });
 }
 
 let timers = [];
-const startTimers = () => { if (!timers.length) timers = [setInterval(() => { for (const R of Object.values(runs)) step(R); }, TICK_MS), setInterval(() => { for (const R of Object.values(runs)) activity(R); }, 2000), setInterval(stream, 1000)]; };
+const startTimers = () => { if (!timers.length) timers = [setInterval(() => everywhere(() => { for (const R of Object.values(runs)) step(R); }), TICK_MS), setInterval(() => everywhere(() => { for (const R of Object.values(runs)) activity(R); }), 2000), setInterval(stream, 1000)]; };
 const stopTimers = () => { for (const t of timers) clearInterval(t); timers = []; };
 if (!process.env.PAUSED) startTimers();
 
 // ---- stop, resume, archive, delete
 
 const ERR = {
-  notFound: [404, "no such run"], noTask: [404, "no such task"], noAttempt: [404, "no such attempt"], noVersion: [404, "no such version"], noText: [404, "nothing recorded yet"],
+  notFound: [404, "no such run", "not_found"], noTask: [404, "no such task"], noAttempt: [404, "no such attempt"], noVersion: [404, "no such version"], noText: [404, "nothing recorded yet"],
   archived: [409, "the run is archived"], started: [409, "the run has started: its agent, folder and settings are fixed"], notStarted: [409, "the run has not started"],
   finished: [409, "the run is finished"], going: [409, "the run is still going: its result can be applied when it has finished or is stopped"], notHalted: [409, "the run is not stopped"], notRunning: [409, "the run is not running"], stopping: [409, "the run is stopping; try again in a moment"],
-  group: [404, "no such group"], chat: [404, "no such chat"], runAgent: [409, "this chat is one of a run's agents: it cannot be changed"],
+  group: [404, "no such group", "not_found"], chat: [404, "no such chat", "not_found"], board: [404, "no such board", "not_found"], runAgent: [409, "this chat is one of a run's agents: the run drives it"],
   busy: [409, "the agent is still working; wait for it to finish or stop it", "busy"],
 };
 const fail = (code, error, word) => ({ fail: [code, error, word] }); // word: the refusal's code, when it has one
@@ -1440,7 +1566,10 @@ function changesOf(R, t, a) {
 
 // ---- HTTP
 
-const body = (req) => new Promise((ok) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { try { ok(b ? JSON.parse(b) : {}); } catch { ok({}); } }); });
+/** A call's JSON body, {} for none; read once, and the same for whoever asks again. */
+const body = (req) => (req.parsed ??= new Promise((ok) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { try { ok(b ? JSON.parse(b) : {}); } catch { ok({}); } }); }));
+/** The page a call is of, by its client id: the stream it has open; undefined for a call of no page. */
+const clientOf = (req) => clients.find((c) => c.id === req.headers["x-aiwb-client"]);
 const json = (res, v, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(v)); };
 const answer = (res, v) => {
   if (v && v.bare) { res.writeHead(v.bare); return res.end(); } // a status with no body at all (a proxy's, a body limit's)
@@ -1471,6 +1600,7 @@ const mockState = () => ({ paused: !timers.length, tick: TICK_MS, detailDelay, t
 /** PATCH /api/runs/{id}: name, group, agent, tiers, cwd, settings, in that order. */
 function patchRun(R, b) {
   const m = R.meta, setup = ["agent", "tiers", "cwd", "settings"].some((k) => b[k] !== undefined);
+  if (namesServer(b)) return fail(...SERVER_REFUSED);
   if (setup && R.detail) return fail(...ERR.started);
   if (setup && m.archived) return fail(...ERR.archived);
   const next = { ...m };
@@ -1579,10 +1709,11 @@ async function runRoute(req, res, id, rest) {
   if (R.meta.unreadable && !(rest === "" && (M === "GET" || M === "DELETE")) && rest !== "/archive" && rest !== "/unarchive") { await body(req); return answer(res, fail(M === "GET" ? 500 : 409, UNREADABLE)); }
   if (rest === "" && M === "GET") return answer(res, view(R));
   if (rest === "" && M === "PATCH") return answer(res, patchRun(R, await body(req)));
-  if (rest === "" && M === "DELETE") { if (flags.delete500) return answer(res, fail(500, "the run's folder could not be removed: permission denied")); deleteRun(R); return answer(res); }
+  if (rest === "" && M === "DELETE") { if (new URL(req.url, "http://x").searchParams.has("local")) return answer(res, fail(...NO_RECORD)); if (flags.delete500) return answer(res, fail(500, "the run's folder could not be removed: permission denied")); deleteRun(R); return answer(res); }
   if (rest === "/draft" && M === "PUT") {
     const b = await body(req);
-    if (!d) { if (b.text || b.references?.length) R.meta.draft = b; else delete R.meta.draft; sendRun(R); } // a started run ignores it
+    const { images: _, ...goal } = b; // a run's goal has no images: its draft keeps no image list, whatever it is sent
+    if (!d) { if (goal.text || goal.references?.length) R.meta.draft = goal; else delete R.meta.draft; sendRun(R); } // a started run ignores it
     return answer(res);
   }
   if (rest === "/start" && M === "POST") return answer(res, await startRun(R, await body(req)));
@@ -1640,8 +1771,106 @@ async function runRoute(req, res, id, rest) {
   return answer(res, fail(404, "not found"));
 }
 
+// ---- the server list, and the trees the local server holds of it
+
+/** An entry of the server list that is another server; null for this computer's and for an id the list lacks. */
+const entryOf = (id) => extra.servers?.find((x) => x.id === id && !x.local) ?? null;
+/** What the local server answers a call for a thing of a server it holds no tree of (contract 3.5): that the server
+ *  is not connected, or, of one that is too old, that it is. */
+const awayAnswer = (entry) => fail(503, entry.state === "too_old" ? `${entry.name} is too old: update the server on that machine.` : `${entry.name} is not connected.`, "server_unreachable");
+
+/** Puts a server into the list, or changes the one with its id, and gives it a machine of its own if it has none: its
+ *  tree is empty until something is made on it (onServer). The local server holds the tree of an entry that is
+ *  connected; `tree: false` is one whose snapshot has not been read yet. lists: what that server offers a new chat or
+ *  run. Nothing is told: the seed sends a snapshot. */
+function addServer(entry, { tree = entry.state === "connected", lists } = {}) {
+  extra.servers ??= [{ id: "local", local: true, name: "This computer", state: "connected" }];
+  const at = extra.servers.findIndex((x) => x.id === entry.id);
+  if (at < 0) extra.servers.push(entry); else extra.servers[at] = entry;
+  worlds[entry.id] ??= newWorld(entry.id);
+  if (tree) holding.add(entry.id); else holding.delete(entry.id);
+  if (lists) { (extra.lists ??= {})[entry.id] = lists; for (const dir of [lists.home, lists.defaultCwd]) if (dir) TREE[dir] ??= []; }
+  else if (extra.lists) delete extra.lists[entry.id];
+  return entry;
+}
+
+/** Changes the state of an entry of the server list and tells the pages: `server_state`, and `section` with that
+ *  server's whole tree when the local server holds it from now on (connected; `tree: false`: connected, its snapshot
+ *  not read yet), or with null when it held one and holds none any more. sectionFirst: the two events in the other
+ *  order, which is not fixed. more: other fields of the entry (detail, version). With the tree back, each page that
+ *  held a board of that server through the outage is given it again, at the revision it has there (`held`). */
+function setServerState(id, state, { tree = state === "connected", sectionFirst = false, ...more } = {}) {
+  const entry = entryOf(id);
+  if (!entry || !worlds[id]) return false;
+  const had = holding.has(id);
+  Object.assign(entry, more, { state });
+  if (state === "connected") delete entry.detail;
+  if (tree) holding.add(id); else holding.delete(id);
+  const events = [{ type: "server_state", server: entry }, ...(tree ? [{ type: "section", server: id, tree: sectionTree(id) }] : had ? [{ type: "section", server: id, tree: null }] : [])];
+  for (const m of sectionFirst ? events.reverse() : events) send(m);
+  if (!tree) { for (const c of clients) for (const k of c.watched) if (k.startsWith(id + "~")) c.watched.delete(k); return true; } // that server has forgotten who followed what
+  // A board a page here holds is taken again on its server, and the page is told `held` with the revision the board
+  // has there: at once, or flags.retake.delay later. Until then a save of it is 503 `not_held_there` (sectionRoute).
+  const wait = Math.max(0, Number(flags.retake?.delay) || 0);
+  for (const c of clients) for (const k of c.boards) {
+    const board = k.startsWith(id + "~") ? k.slice(id.length + 1) : "", sc = board ? worlds[id].scenes[board] : null;
+    if (!board) continue;
+    if (!sc || !worlds[id].boards[board]) { c.boards.delete(k); continue; }
+    const held = () => { c.retaking.delete(k); if (holding.has(id) && c.boards.has(k) && worlds[id].boards[board]) write(c, { type: "held", server: id, board, rev: worlds[id].scenes[board].rev }); };
+    if (wait) { c.retaking.add(k); setTimeout(held, wait); } else held();
+  }
+  return true;
+}
+
+/** Takes an entry out of the server list, as its removal in the Servers dialog does, and tells the pages. That server
+ *  is told nothing: its machine stays as it is. */
+function removeServer(id) {
+  if (!entryOf(id)) return false;
+  extra.servers = extra.servers.filter((x) => x.id !== id);
+  holding.delete(id);
+  if (extra.lists) delete extra.lists[id];
+  send({ type: "servers", servers: extra.servers });
+  send({ type: "server_lists", server: id, lists: null });
+  if (libraries[id]) { delete libraries[id]; send({ type: "library_removed", server: id }); }
+  send({ type: "section", server: id, tree: null });
+  return true;
+}
+
+/** A change made on a server from elsewhere, as its owner or another client of it makes one: the call `method path`
+ *  (the path as under /api: "/chats", "/groups/g_x/move", …) with `body`, answered by that machine, whose events go
+ *  to the pages as that server's. `id` "local": on this computer, as another window does it. Answers { status, body }.
+ *  A server that is not connected takes it all the same: nothing is heard of it here until its tree is back. */
+async function elsewhere(id, method, path, body) {
+  const req = Object.assign(Readable.from(body === undefined ? [] : [JSON.stringify(body)]), { method, url: path, headers: {} });
+  const got = { status: 200, body: null };
+  const res = { headersSent: false, writeHead(code) { got.status = code; this.headersSent = true; }, end(text) { try { got.body = text ? JSON.parse(String(text)) : null; } catch { got.body = String(text); } } };
+  const u = new URL(path, "http://x");
+  if (await onServer(id, () => treeRoute(req, res, u.pathname, u)) === false) throw new Error(`the mock has no call ${method} ${path}`);
+  return got;
+}
+
 /** A message as an item of a thread. */
-const message = (b) => ({ kind: "user", text: b.text, ...(b.references?.length ? { references: b.references } : {}) });
+const message = (b) => ({ kind: "user", text: b.text, ...(b.references?.length ? { references: b.references } : {}), ...(b.images?.length ? { images: b.images } : {}) });
+
+/** The images uploaded to each chat, by the chat's id and the image's: { name, type, bytes }. */
+const images = part("images");
+const IMAGE_MAGIC = [["image/png", [0x89, 0x50, 0x4e, 0x47]], ["image/jpeg", [0xff, 0xd8, 0xff]], ["image/gif", [0x47, 0x49, 0x46, 0x38]], ["image/webp", [0x52, 0x49, 0x46, 0x46]]];
+/** POST /api/chats/{id}/images?name=: the body is the image's bytes. The type is found from the bytes, the id is their
+ *  SHA-256. flags.upload holds or delays the answer, or fails it ({ fail: [status, sentence, code] }). */
+async function uploadImage(id, req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const bytes = Buffer.concat(chunks), k = knob("upload", id);
+  await pause(k);
+  if (k.fail) return fail(...k.fail);
+  if (bytes.length > 5 * 1024 * 1024) return fail(413, "The image is over 5 MB.", "image_too_large");
+  const type = IMAGE_MAGIC.find(([, magic]) => magic.every((x, i) => bytes[i] === x))?.[0];
+  if (!type) return fail(415, "Not a PNG, JPEG, GIF or WebP image.", "image_type");
+  const name = (new URL(req.url, "http://x").searchParams.get("name") ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 200) || "image";
+  const image = { id: crypto.createHash("sha256").update(bytes).digest("hex"), name, type, size: bytes.length };
+  (images[id] ??= {})[image.id] ??= { ...image, bytes };
+  return image;
+}
 
 /** Puts a message on the end of a chat's branch and plays the canned reply there: a tool call, a sentence, the
  *  turn's end. first: what is done before the message's own events go out. made: the branch was made for this
@@ -1653,7 +1882,8 @@ function reply(id, branch, b, first = () => {}, made = false) {
   const gone = () => chats[id] !== own || listOf(id, branch) !== list;
   const points = list.some((x) => x.kind === "end" && x.point), k = knob("send", id);
   const put = (i, item) => { list[i] = item; send({ type: "chat_items", chat: id, branch, version: (versions[key] = (versions[key] ?? 1) + 1), updates: [{ index: i, item }] }); };
-  const state = (status, more) => setSession(id, branch, { status, locked: true, draft: undefined, fresh: undefined, ...more });
+  // (the message takes the branch's draft with it: a change of the draft, which raises its counter)
+  const state = (status, more) => { const st = sessionOf(id, branch); setSession(id, branch, { status, locked: true, draft: undefined, ...(st.draft ? { draftRev: (st.draftRev ?? 0) + 1 } : {}), fresh: undefined, ...more }); };
   const tree = (current) => { if (points || sessions[id]) send({ type: "tree", chat: id, branch: treePart(id, branch), ...(current ? { current: curOf(own) } : {}) }); };
   if (!made) list[at] = message(b);
   first();
@@ -1719,7 +1949,7 @@ async function forkChat(src, b) {
   const id = newId("c_"), st = sessionOf(src.id, branch), said = list.find((x) => x.kind === "user")?.text ?? "";
   const title = src.name || (said.length > 40 ? said.slice(0, 40) + "…" : said) || "New chat", edit = list[b.message];
   const quotes = (edit?.references ?? []).filter((r) => r.item < b.at); // those of what the copy lacks would name other items there
-  chats[id] = chat(id, { agent: src.agent, ...(src.server ? { server: src.server } : {}), ...(src.run ? { run: src.run } : src.board ? { board: src.board } : { group: src.group }),
+  chats[id] = chat(id, { agent: src.agent, ...(src.run ? { run: src.run } : src.board ? { board: src.board } : { group: src.group }),
     cwd: st.cwd, model: st.model, effort: st.effort, usage: st.usage, name: `${title} (fork)`, created: iso(Date.now()), locked: b.at > 0, ...(b.at > 0 ? { fresh: true } : {}),
     forkedFrom: src.id, forkedFromTitle: title, forkedBranch: branch, forkedAt: b.at,
     ...(edit?.kind === "user" ? { draft: { text: edit.text ?? "", ...(quotes.length ? { references: quotes } : {}) } } : {}) });
@@ -1728,20 +1958,21 @@ async function forkChat(src, b) {
   return chats[id];
 }
 
-/** What a server offers (its agents, their catalogs, its default folder): this computer's own, or what the seed gave
- *  the entry. */
-const listsOn = (server) => (server && server !== "local" ? extra.lists?.[server] : null) ?? { agents: extra.agents ?? Object.keys(catalogs), catalogs, home: HOME, defaultCwd: SHOP };
+/** What the machine a call works on offers (its agents, their catalogs, its default folder): this computer's own, or
+ *  what the seed gave the entry. */
+const listsHere = () => (world().id !== "local" ? extra.lists?.[world().id] : null) ?? { agents: extra.agents ?? Object.keys(catalogs), catalogs, home: HOME, defaultCwd: SHOP };
 
-/** The server, agent, model, effort and folder of a PATCH, on one branch. A server gives the chat its own agent,
- *  folder, model and effort; an agent its default model and effort; a model keeps the effort it offers, else takes
+/** The agent, model, effort and folder of a PATCH, on one branch. A server is refused (409 `server_fixed`: a chat is
+ *  on the server it was made on); an agent gives its default model and effort; a model keeps the effort it offers, else takes
  *  its default. A fork without a message of its own starts its agent again on a model or effort: it has the choice
  *  and is "thinking" until the answer, and has its old choice again after a refusal, but for pi, which tells nothing
  *  of it. While such a fork is working (this start, or its first message's) a second pick is refused: 409 "busy".
  *  flags.configure delays or refuses the change. */
 async function configureChat(own, branch, b) {
   const id = own.id, k = knob("configure", id), st = sessionOf(id, branch), pick = !!st.fresh && !!(b.model || b.effort), restart = pick && own.agent !== "pi";
+  if (b.server) return fail(409, "a chat is on the server it was made on: that cannot be changed", "server_fixed");
   if (pick && WORKING.includes(st.status)) return fail(...ERR.busy);
-  const was = { model: st.model, effort: st.effort }, modelsOf = () => listsOn(own.server).catalogs?.[own.agent];
+  const was = { model: st.model, effort: st.effort }, modelsOf = () => listsHere().catalogs?.[own.agent];
   /** The model and effort of the pick, over what p has. */
   const choice = (p) => {
     if (b.model) { const mm = modelsOf()?.models.find((x) => x.id === b.model), had = p.effort ?? sessionOf(id, branch).effort; p.model = b.model; p.effort = mm?.efforts?.includes(had) ? had : mm?.defaultEffort; }
@@ -1754,12 +1985,6 @@ async function configureChat(own, branch, b) {
   if (k.refuse) { if (restart) setSession(id, branch, { ...was, status: "ready" }); return refusal(k.refuse); }
   const p = {};
   const byDefault = () => { const d = modelsOf()?.default; p.model = d?.model ?? ""; p.effort = d?.effort; };
-  if (b.server) {
-    if (b.server === "local") delete own.server; else own.server = b.server;
-    const l = listsOn(own.server);
-    if (!l.agents.includes(own.agent)) own.agent = l.agents[0] ?? "";
-    p.cwd = l.defaultCwd; byDefault();
-  }
   if (b.agent) { own.agent = b.agent; byDefault(); }
   choice(p);
   if (b.cwd) p.cwd = b.cwd;
@@ -1767,15 +1992,21 @@ async function configureChat(own, branch, b) {
   return null;
 }
 
+/** What a delete that asks for the local record alone is answered: this computer keeps no record of a thing of another server. */
+const NO_RECORD = [400, "there is no record to remove: nothing of another server is kept here", "no_record"];
+/** What a make on this computer that names another server is answered: a thing is made on a server by the calls under /api/on/. */
+const SERVER_REFUSED = [400, "this call is for this computer: a thing of another server is reached under /api/on/<server>", "server_refused"];
+const namesServer = (b) => b.server !== undefined && b.server !== "local";
+
 async function chatRoute(req, res, id, rest) {
-  const M = req.method, own = chats[id], ag = own ? null : agentChat(id), named = new URL(req.url, "http://x").searchParams.get("branch");
+  const M = req.method, own = chats[id], ag = own ? null : agentChat(id), query = new URL(req.url, "http://x").searchParams, named = query.get("branch");
   if (!own && !ag) { await body(req); return answer(res, fail(...ERR.chat)); }
   let m;
   if (rest === "" && M === "GET") return answer(res, own ?? ag);
   if (rest === "/items" && M === "GET") {
     const branch = own ? named || curOf(own) : "main", k = knob("items", id, branch), key = threadKey(id, branch);
     const list = own ? listOf(id, branch) : agentItems(id);
-    if (ag) for (const c of clients) if (c.id === req.headers["x-aiwb-client"]) c.watched.add(id); // from here on that connection gets the agent's events
+    if (ag) for (const c of clients) if (c.id === req.headers["x-aiwb-client"]) c.watched.add(pageKey(id)); // from here on that connection gets the agent's events
     await pause(k);
     if (k.fail) return answer(res, fail(k.fail === true ? 500 : k.fail, "the mock failed this read"));
     if (!list) return answer(res, fail(404, `no branch ${branch}`));
@@ -1787,6 +2018,16 @@ async function chatRoute(req, res, id, rest) {
   if (rest === "/context" && M === "GET") return answer(res, { atMessage: 0, atTurn: 0, total: 42900, window: 200000, categories: [{ id: "messages", label: "Messages", tokens: 42900, kind: "used" }, { id: "free", label: "Free space", tokens: 157100, kind: "free" }] });
   if (rest === "/open" && M === "POST") return answer(res);
   if (rest === "/permission" && M === "POST") { await body(req); return answer(res); }
+  if (rest === "/images" && M === "POST") {
+    if (!own) { for await (const _ of req); return answer(res, fail(...ERR.runAgent)); }
+    return answer(res, await uploadImage(id, req));
+  }
+  if ((m = /^\/images\/([0-9a-f]{64})$/.exec(rest)) && M === "GET") {
+    const image = images[id]?.[m[1]];
+    if (!image) return answer(res, fail(404, "no such image"));
+    res.writeHead(200, { "Content-Type": image.type, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=31536000, immutable" });
+    return res.end(image.bytes);
+  }
   const b = await body(req);
   if (ag) return answer(res, fail(...ERR.runAgent)); // a run agent takes no message and no change
   if (rest === "" && M === "PATCH") { // the name and the group are the chat's; the rest goes to one branch (?branch=)
@@ -1796,7 +2037,7 @@ async function chatRoute(req, res, id, rest) {
       const depth = b.subDepth ?? (own.subOff ? 0 : own.subDepth ?? 1), cap = b.subCap ?? own.subCap ?? 100;
       if (!Number.isInteger(depth) || depth < 0 || depth > 3) return answer(res, fail(400, `subagent depth ${depth} is out of range: 0 (off) to 3`));
       if (!Number.isInteger(cap) || cap < 1 || cap > 100) return answer(res, fail(400, `subagent cap ${cap} is out of range: 1 to 100`));
-      setSubLimits(own, depth, cap); lastSubLimits = { depth, cap };
+      setSubLimits(own, depth, cap); world().lastSubLimits = { depth, cap };
       send({ type: "chat", chat: own }); return answer(res, { ok: true, chat: own });
     }
     for (const k of ["name", "group"]) if (b[k] !== undefined) own[k] = b[k];
@@ -1804,8 +2045,21 @@ async function chatRoute(req, res, id, rest) {
     const refused = b.server || b.agent || b.model || b.effort || b.cwd ? await configureChat(own, named || curOf(own), b) : void send({ type: "chat", chat: own });
     return answer(res, refused ?? { ok: true, chat: own }); // the chat as it is after the change, as the server
   }
-  if (rest === "" && M === "DELETE") { delete chats[id]; send({ type: "chat_removed", id }); return answer(res); }
-  if (rest === "/draft" && M === "PUT") { setSession(id, named || curOf(own), { draft: b.text || b.references?.length ? b : undefined }); return answer(res); }
+  if (rest === "" && M === "DELETE") {
+    if (query.has("local")) return answer(res, fail(...NO_RECORD));
+    delete chats[id]; send({ type: "chat_removed", id }); return answer(res);
+  }
+  if (rest === "/draft" && M === "PUT") {
+    // The draft's counter decides between writers: a save names the counter it was typed on (?rev=), and one typed on
+    // another is refused with the counter and the draft there are. A call that names none is taken.
+    const branch = named || curOf(own), was = sessionOf(id, branch), rev = was.draftRev ?? 0, base = query.get("rev");
+    if (base !== null && Number(base) !== rev) return json(res, { error: "the draft was changed elsewhere", code: "stale", rev, draft: was.draft ?? null }, 409);
+    // (a draft that names an image the chat does not hold is saved without it, and the answer names it)
+    const missing = (b.images ?? []).filter((x) => !images[id]?.[x.id]).map((x) => x.id), kept = (b.images ?? []).filter((x) => !missing.includes(x.id));
+    const { images: _, ...rest0 } = b, d = kept.length ? { ...rest0, images: kept } : rest0;
+    setSession(id, branch, { draft: d.text || d.references?.length || d.images?.length ? d : undefined, draftRev: rev + 1 });
+    return answer(res, { ok: true, rev: rev + 1, ...(missing.length ? { missing } : {}) });
+  }
   if (rest === "/fork" && M === "POST") return answer(res, await forkChat(own, b));
   if (rest === "/archive" || rest === "/unarchive") {
     if (rest === "/archive") Object.assign(own, { archived: true, archiveOp: newId("op_") }); else { delete own.archived; delete own.archiveOp; }
@@ -1938,6 +2192,132 @@ async function libraryRoute(req, res, server, kind, id) {
   return answer(res, fail(405, "method not allowed"));
 }
 
+
+/** The calls about the things of one machine's tree (its groups, boards, chats and runs), by their path after /api:
+ *  this computer's as they come, another server's inside onServer. Answers false for a path that is none of them. */
+async function treeRoute(req, res, p, u) {
+  const M = req.method, there = world().id === "local" ? null : extra.lists?.[world().id] ?? { agents: [], catalogs: {}, defaultCwd: "" }; // what another server offers a new chat or run
+  let m;
+  if (p === "/runs" && M === "POST") {
+    const b = await body(req);
+    if (!b.group) return json(res, { error: `group is empty (use "${UNGROUPED}" for ungrouped)` }, 400);
+    const g = groups.find((x) => x.id === b.group);
+    if (b.group !== UNGROUPED && !g) return answer(res, fail(...ERR.group));
+    if (g?.archived) return json(res, { error: "the group is archived" }, 409);
+    const name = b.name === undefined ? "New run" : cleanName(b.name);
+    if (name.fail) return answer(res, name);
+    // (a run made on another server is on it from this moment, unstarted, in that server's default folder)
+    const R = addRun({ id: newId("r_"), name, group: b.group, created: iso(Date.now()), settings: { ...DEFAULT_SETTINGS }, ...(there ? { cwd: there.defaultCwd } : {}) });
+    return json(res, sendRun(R));
+  }
+  if ((m = /^\/runs\/([^/]+)(\/.*)?$/.exec(p))) return await runRoute(req, res, m[1], m[2] ?? "");
+  if (p === "/chats" && M === "POST") {
+    const b = await body(req), R = b.run ? runs[b.run] : null;
+    if (namesServer(b)) return answer(res, fail(...SERVER_REFUSED));
+    if (b.run && !R) return answer(res, fail(...ERR.notFound));
+    if (R?.meta.archived) return json(res, { error: ERR.archived[1] }, 409);
+    if (b.group && b.group !== UNGROUPED && !groups.some((x) => x.id === b.group)) return answer(res, fail(...ERR.group));
+    // A chat is made on the machine the call is for. On another server it starts with what that server offers: its first agent, with that
+    // agent's default model and effort, in its default folder.
+    const agent = there ? there.agents[0] ?? "" : b.agent, cat = there ? there.catalogs?.[agent] ?? null : catalogOf(b.agent), id = newId("c_");
+    chats[id] = chat(id, { agent, ...(b.run ? { run: b.run } : b.board ? { board: b.board } : { group: b.group }), cwd: R ? R.meta.cwd : there ? there.defaultCwd : SHOP,
+      model: cat?.default.model ?? "", effort: cat?.default.effort, created: iso(Date.now()), ...fresh });
+    items[id] = [];
+    if (world().lastSubLimits) setSubLimits(chats[id], world().lastSubLimits.depth, world().lastSubLimits.cap);
+    send({ type: "chat", chat: chats[id] });
+    return json(res, chats[id]);
+  }
+  if ((m = /^\/chats\/([^/]+)(\/.*)?$/.exec(p))) return await chatRoute(req, res, m[1], m[2] ?? "");
+  if (p === "/groups" && M === "POST") {
+    const b = await body(req);
+    if (b.parent && !groups.some((x) => x.id === b.parent)) return answer(res, fail(...ERR.group));
+    const g = { id: newId("g_"), name: b.name || "New group", ...(b.parent ? { parent: b.parent } : {}) }; groups.push(g); send({ type: "groups", groups }); return json(res, g);
+  }
+  if ((m = /^\/groups\/([^/]+)(\/.*)?$/.exec(p))) return groupRoute(req, res, m[1], m[2] ?? "", await body(req), u);
+  if (p === "/boards" && M === "POST") {
+    const b = await body(req);
+    if (namesServer(b)) return answer(res, fail(...SERVER_REFUSED));
+    const x = { id: newId("b_"), name: b.name || "untitled", group: b.group, created: iso(Date.now()) }; boards[x.id] = x; send({ type: "board", board: x }); return json(res, x);
+  }
+  if ((m = /^\/boards\/([^/]+)(\/.*)?$/.exec(p))) {
+    const x = boards[m[1]], rest = m[2] ?? "", b = M === "GET" ? {} : await body(req);
+    if (!x) return answer(res, fail(...ERR.board));
+    const sc = scenes[x.id], mine = clientOf(req)?.boards; // the seed's: a board that this window may hold, with a stored drawing
+    if (sc && rest === "/scene" && M === "GET") { res.writeHead(200, { "Content-Type": "application/json", "X-AIWB-Scene-Rev": String(sc.rev) }); return res.end(JSON.stringify(sc.scene)); }
+    if (sc && rest === "/scene" && M === "PUT") { // on the revision the drawing was read at (?rev=): one stored at another is not replaced
+      const base = u.searchParams.get("rev");
+      if (base !== null && Number(base) !== sc.rev) return answer(res, fail(409, "the board was changed elsewhere", "stale"));
+      sc.scene = b; return json(res, { rev: ++sc.rev });
+    }
+    if (sc && rest === "/take") { mine?.add(pageKey(x.id)); return json(res, { state: "held", rev: sc.rev }); }
+    if (sc && rest === "/release") { mine?.delete(pageKey(x.id)); return json(res, { state: "free" }); }
+    if (rest === "/scene" && M === "GET") return json(res, { type: "excalidraw", version: 2, elements: [], appState: {}, files: {} });
+    if (rest === "/rename") { x.name = b.name; send({ type: "board", board: x }); return json(res, x); }
+    if (rest === "" && M === "PATCH") { x.group = b.group; send({ type: "board", board: x }); return json(res, x); }
+    if (rest === "/archive" || rest === "/unarchive") { if (rest === "/archive") Object.assign(x, { archived: true, archiveOp: newId("op_") }); else { delete x.archived; delete x.archiveOp; } send({ type: "board", board: x }); return json(res, { ok: true }); }
+    if (rest === "" && M === "DELETE") {
+      if (u.searchParams.has("local")) return answer(res, fail(...NO_RECORD));
+      for (const c of Object.values(chats)) if (c.board === x.id) { delete chats[c.id]; send({ type: "chat_removed", id: c.id }); }
+      delete boards[x.id]; delete scenes[x.id]; send({ type: "board_removed", id: x.id });
+    }
+    return json(res, { ok: true });
+  }
+  return false;
+}
+
+/** The calls of a section the local server knows (contract 3.4), by method and by the path after /api/on/{server}. */
+const ON_ROUTES = [
+  ["POST", /^\/(groups|chats|runs|boards)$/],
+  ["PATCH DELETE", /^\/groups\/[^/]+$/], ["POST", /^\/groups\/[^/]+\/(move|archive|unarchive)$/],
+  ["GET PATCH DELETE", /^\/chats\/[^/]+$/], ["GET", /^\/chats\/[^/]+\/(context|items|tree|subagents\/[^/]+\/items|images\/[^/]+)$/],
+  ["POST", /^\/chats\/[^/]+\/(unfollow|interrupt|permission|open|fork|archive|unarchive|messages|images)$/], ["PUT", /^\/chats\/[^/]+\/(label|draft)$/],
+  ["GET PATCH DELETE", /^\/runs\/[^/]+$/], ["PUT", /^\/runs\/[^/]+\/draft$/], ["POST", /^\/runs\/[^/]+\/(start|stop|resume|apply|archive|unarchive|unfollow)$/],
+  ["GET", /^\/runs\/[^/]+\/(delivery|goal|detail|tasks\/[^/]+\/brief|tasks\/[^/]+\/attempts\/\d+\/(report|changes)|notes\/\d+)$/],
+  ["POST", /^\/boards\/[^/]+\/(take|release|rename|archive|unarchive|seen|reveal)$/], ["GET PUT", /^\/boards\/[^/]+\/scene$/], ["PATCH DELETE", /^\/boards\/[^/]+$/],
+];
+
+/** /api/on/{server}/…: the call of a thing of a section. The local server answers some itself, and passes the others
+ *  on to that server, whose answer is the page's (contract 3.4 and 3.5): here that machine's own routes answer, with
+ *  its own ids. Every call counts in `onCalls`, as a check reads it: { server, method, path (with its query), body? }. */
+const onCalls = [];
+async function sectionRoute(req, res, id, p, u) {
+  const M = req.method, entry = entryOf(id);
+  const upload = /^\/chats\/[^/]+\/images$/.test(p) && M === "POST"; // (its body is bytes, read by its own route)
+  const drain = async () => { if (upload) for await (const _ of req); else await body(req); };
+  onCalls.push({ server: id, method: M, path: p + u.search, ...(M !== "GET" && !upload ? { body: await body(req) } : {}) });
+  // A path that is no row of the table is 404 before anything else, whatever the id names (internal/server/section.go sectionFirst).
+  if (!ON_ROUTES.some(([methods, path]) => methods.split(" ").includes(M) && path.test(p))) { await drain(); return json(res, { error: "not found" }, 404); }
+  let m;
+  // The entry decides next, in every row: an id that is no entry is 404 no_server (sectionTable.always).
+  if (!entry || !worlds[id]) { await drain(); return answer(res, fail(404, "This server is not in the list.", "no_server")); }
+  // answered here, whatever the entry's state
+  if (/^\/boards\/[^/]+\/reveal$/.test(p)) return answer(res, fail(400, "A board on another server has no file on this computer", "not_here"));
+  if ((m = /^\/(?:chats|runs)\/([^/]+)\/unfollow$/.exec(p))) { clientOf(req)?.watched.delete(`${id}~${m[1]}`); return json(res, { ok: true }); }
+  if (!holding.has(id)) { // not connected, or connected with its snapshot not read yet: nothing is sent
+    await drain();
+    if ((m = /^\/boards\/([^/]+)\/release$/.exec(p))) return json(res, { state: clientOf(req)?.boards.delete(`${id}~${m[1]}`) ? "free" : "none" });
+    return answer(res, awayAnswer(entry));
+  }
+  if (/^\/groups\/[^/]+$/.test(p) && M === "PATCH" && Object.keys(await body(req)).some((k) => k.toLowerCase() === "collapsed")) return answer(res, fail(400, "whether a group of another server shows collapsed is kept by the page alone", "collapsed_refused"));
+  // (a draft's save alone: a message with ?replace is passed on as any other, and that server does not read the word)
+  if (/^\/chats\/[^/]+\/draft$/.test(p) && M === "PUT" && u.searchParams.has("replace")) return answer(res, fail(400, "a draft is not replaced: save it on the counter it was typed on", "replace_refused"));
+  // flags.draft: a save of a draft on another server waits; one that waited while its server dropped never got there (504 `no_answer`).
+  if (/^\/chats\/[^/]+\/draft$/.test(p) && M === "PUT" && flags.draft && (!flags.draft.server || flags.draft.server === id)) {
+    await pause(flags.draft);
+    if (!holding.has(id)) { await drain(); return answer(res, fail(504, `${entry.name} did not answer.`, "no_answer")); }
+  }
+  // A save of a board that this computer's server is still taking again on its server, after that server came back
+  // (flags.retake): "not yet". The `held` that ends the re-take follows (setServerState).
+  if ((m = /^\/boards\/([^/]+)\/scene$/.exec(p)) && M === "PUT" && clientOf(req)?.retaking?.has(`${id}~${m[1]}`)) { await drain(); return answer(res, fail(503, `The board is being taken again on ${entry.name}.`, "not_held_there")); }
+  if (M === "POST" && /^\/(groups|chats|runs|boards)$/.test(p)) { // flags.make: a make on another server waits, or is refused by that server
+    const k = flags.make && (!flags.make.server || flags.make.server === id) ? flags.make : {};
+    await pause(k);
+    if (k.refuse) { await drain(); return answer(res, refusal(k.refuse)); }
+    if (!holding.has(id)) { await drain(); return answer(res, fail(504, `${entry.name} did not answer.`, "no_answer")); } // (it dropped while the make waited)
+  }
+  return await onServer(id, () => treeRoute(req, res, p, u));
+}
+
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon" };
 
 const server = http.createServer(async (req, res) => {
@@ -1947,7 +2327,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
       if (flags.streamDown) return void req.socket.destroy(); // the browser tries again by itself
-      const c = { id: u.searchParams.get("client") ?? "", res, watched: new Set() }; // every tab is "active": the mock has no takeover
+      const c = { id: u.searchParams.get("client") ?? "", res, watched: new Set(), boards: new Set(), retaking: new Set() }; // every tab is "active": the mock has no takeover
       clients.push(c);
       write(c, { type: "hello", active: true }); write(c, { type: "snapshot", ...snapshot() });
       req.on("close", () => { clients = clients.filter((x) => x !== c); });
@@ -1958,11 +2338,11 @@ const server = http.createServer(async (req, res) => {
         const mb = await body(req);
         if (p === "/mock/eval") { try { const r = await eval(`(async () => { ${mb.code} })()`); return json(res, { ok: true, r: r ?? null }); } catch (e) { return json(res, { error: String(e.stack ?? e) }, 500); } }
         else if (p === "/mock/gap") runs.r_live && runs.r_live.detail.version++;
-        else if (p === "/mock/snapshot") { for (const R of Object.values(runs)) R.sent = JSON.stringify(view(R)); send({ type: "snapshot", ...snapshot() }); }
+        else if (p === "/mock/snapshot") { allSent(); send({ type: "snapshot", ...snapshot() }); }
         else if (p === "/mock/pause") stopTimers();
         else if (p === "/mock/resume") startTimers();
-        else if (p === "/mock/tick") for (const R of Object.values(runs)) step(R);
-        else if (p === "/mock/activity") for (const R of Object.values(runs)) activity(R);
+        else if (p === "/mock/tick") everywhere(() => { for (const R of Object.values(runs)) step(R); });
+        else if (p === "/mock/activity") everywhere(() => { for (const R of Object.values(runs)) activity(R); });
         else if (p === "/mock/stream") stream();
         else if (p === "/mock/delay") detailDelay = Math.max(0, Number(u.searchParams.get("ms")) || 0);
         else return json(res, { error: "no such control" }, 404);
@@ -1979,49 +2359,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, { path: dir, parent: path.dirname(dir), dirs: TREE[dir], git: isGit(dir) });
     }
     if ((m = /^\/api\/usage\/([^/]+)$/.exec(p))) return json(res, { plan: false, note: "The mock has no plan limits.", limits: [], fetchedAt: iso(Date.now()) });
-    if (p === "/api/runs" && M === "POST") {
-      const b = await body(req);
-      if (!b.group) return json(res, { error: `group is empty (use "${UNGROUPED}" for ungrouped)` }, 400);
-      const g = groups.find((x) => x.id === b.group);
-      if (b.group !== UNGROUPED && !g) return json(res, { error: ERR.group[1] }, 404);
-      if (g?.archived) return json(res, { error: "the group is archived" }, 409);
-      const name = b.name === undefined ? "New run" : cleanName(b.name);
-      if (name.fail) return answer(res, name);
-      const R = addRun({ id: newId("r_"), name, group: b.group, created: iso(Date.now()), settings: { ...DEFAULT_SETTINGS } });
-      return json(res, sendRun(R));
-    }
-    if ((m = /^\/api\/runs\/([^/]+)(\/.*)?$/.exec(p))) return await runRoute(req, res, m[1], m[2] ?? "");
-    if (p === "/api/chats" && M === "POST") {
-      const b = await body(req), R = b.run ? runs[b.run] : null;
-      if (b.run && !R) return json(res, { error: ERR.notFound[1] }, 404);
-      if (R?.meta.archived) return json(res, { error: ERR.archived[1] }, 409);
-      const cat = catalogOf(b.agent), id = newId("c_");
-      chats[id] = chat(id, { agent: b.agent, ...(b.run ? { run: b.run } : b.board ? { board: b.board } : { group: b.group }), cwd: R ? R.meta.cwd : SHOP,
-        model: cat?.default.model ?? "", effort: cat?.default.effort, created: iso(Date.now()), ...fresh });
-      items[id] = [];
-      if (lastSubLimits) setSubLimits(chats[id], lastSubLimits.depth, lastSubLimits.cap);
-      send({ type: "chat", chat: chats[id] });
-      return json(res, chats[id]);
-    }
-    if ((m = /^\/api\/chats\/([^/]+)(\/.*)?$/.exec(p))) return await chatRoute(req, res, m[1], m[2] ?? "");
-    if (p === "/api/groups" && M === "POST") { const b = await body(req), g = { id: newId("g_"), name: b.name || "New group", ...(b.parent ? { parent: b.parent } : {}) }; groups.push(g); send({ type: "groups", groups }); return json(res, g); }
-    if ((m = /^\/api\/groups\/([^/]+)(\/.*)?$/.exec(p))) return groupRoute(req, res, m[1], m[2] ?? "", await body(req), u);
-    if (p === "/api/boards" && M === "POST") { const b = await body(req), x = { id: newId("b_"), name: b.name || "untitled", group: b.group, created: iso(Date.now()) }; boards[x.id] = x; send({ type: "board", board: x }); return json(res, x); }
-    if ((m = /^\/api\/boards\/([^/]+)(\/.*)?$/.exec(p))) {
-      const x = boards[m[1]], rest = m[2] ?? "", b = M === "GET" ? {} : await body(req);
-      if (!x) return json(res, { error: "no such board" }, 404);
-      const sc = scenes[x.id]; // the seed's: a board that this window may hold, with a stored drawing
-      if (sc && rest === "/scene" && M === "GET") { res.writeHead(200, { "Content-Type": "application/json", "X-AIWB-Scene-Rev": String(sc.rev) }); return res.end(JSON.stringify(sc.scene)); }
-      if (sc && rest === "/scene" && M === "PUT") { sc.scene = b; return json(res, { rev: ++sc.rev }); }
-      if (sc && rest === "/take") return json(res, { state: "held", rev: sc.rev });
-      if (sc && rest === "/release") return json(res, { state: "free" });
-      if (rest === "/scene" && M === "GET") return json(res, { type: "excalidraw", version: 2, elements: [], appState: {}, files: {} });
-      if (rest === "/rename") { x.name = b.name; send({ type: "board", board: x }); return json(res, x); }
-      if (rest === "" && M === "PATCH") { x.group = b.group; send({ type: "board", board: x }); return json(res, x); }
-      if (rest === "/archive" || rest === "/unarchive") { if (rest === "/archive") Object.assign(x, { archived: true, archiveOp: newId("op_") }); else { delete x.archived; delete x.archiveOp; } send({ type: "board", board: x }); return json(res, { ok: true }); }
-      if (rest === "" && M === "DELETE") { for (const c of Object.values(chats)) if (c.board === x.id) { delete chats[c.id]; send({ type: "chat_removed", id: c.id }); } delete boards[x.id]; send({ type: "board_removed", id: x.id }); }
-      return json(res, { ok: true });
-    }
+    if (/^\/api\/servers\/[^/]+\/items$/.test(p)) return json(res, { error: "not found" }, 404); // (what an entry's removal would take away is no longer counted)
+    if ((m = /^\/api\/on\/([^/]+)(\/.*)?$/.exec(p))) return await sectionRoute(req, res, decodeURIComponent(m[1]), m[2] ?? "", u);
+    if (p.startsWith("/api/") && await treeRoute(req, res, p.slice(4), u) !== false) return;
     if (p.startsWith("/api/")) { await body(req); return json(res, { ok: true }); }
     const f = path.join(DIST, p === "/" ? "index.html" : p);
     if (!inside(f, DIST) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end(); }

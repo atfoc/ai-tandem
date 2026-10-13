@@ -14,7 +14,7 @@ AIWB_TEST_FULL=1 go test ./internal/<pkg>   # full set: every test, each in full
 - The **full set** adds what is too slow for every edit: exhaustive matrices (a restart at every
   step of a run, every corner of delivering a result; the default set runs a representative
   slice), tests that build the server binary and start real server processes
-  (`cmd/ai-whiteboard`: 66 such tests are in the full set only, six cheap ones run in the default
+  (`cmd/ai-whiteboard`: 69 such tests are in the full set only, six cheap ones run in the default
   set too, `TestRunE2ENoGit` and five smoke tests), tests that need the real `pi` installed (`internal/pibridge`,
   `internal/boardapi`), `openssl` (`internal/remote`) or the network's resolver
   (`internal/servers`), and stress loops at their full number of rounds.
@@ -115,12 +115,13 @@ AIWB_TEST_FULL=1 go test -skip '^TestRestartAtEveryStep$' ./internal/runs
   variable, a context value) and let the test lower it; the production value stays as it is.
   A test of real server processes (`cmd/ai-whiteboard`) cannot reach into the server, so the
   server reads the hidden variable `AIWB_TEST_WAITS` (`cmd/ai-whiteboard/testwaits.go`): a list
-  such as `silence=3.5s,backoff=3s`, with the names `ping`, `silence`, `backoff`, `start` and
-  `agents`; unset, every wait is the production one. The test does not write the list by hand: it
-  picks a `clock` (`testwaits_test.go`; `fast` divides by 10), passes `fast.env(t, "silence")` as
-  the environment of its servers and divides its own times with `fast.of(60 * time.Second)`, so it
-  crosses the same waits in the same order. `AIWB_TEST_REAL_WAITS=1` runs these tests with the
-  production waits (some four minutes for the slowest), as a check against the real values.
+  such as `silence=3.5s,backoff=3s`, with the names `ping`, `silence`, `backoff`, `start`,
+  `agents`, `images`, `tooold` and `imagecall`; unset, every wait is the production one. The test does
+  not write the list by hand: it picks a `clock` (`testwaits_test.go`; `fast` divides by 10), passes
+  `fast.env(t, "silence")` as the environment of its servers and divides its own times with
+  `fast.of(60 * time.Second)`, so it crosses the same waits in the same order.
+  `AIWB_TEST_REAL_WAITS=1` runs these tests with the production waits (some four minutes for the
+  slowest), as a check against the real values.
 - **Tests must pass when the machine is four times slower than usual.** An upper bound for
   something that must happen is generous: seconds, not milliseconds. A short timeout inside which
   a process has to start must not decide the test: wait for a sign that the process started, or

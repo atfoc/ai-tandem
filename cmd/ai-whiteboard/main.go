@@ -169,8 +169,7 @@ func serve(o options, args []string) {
 	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
 	agents := usable.New(bins) // the agents whose programs are found; looked up again every usable.Every
 	rs := runs.New(runs.Deps{Store: st, Emit: br, DefaultCwd: o.cwd, Clock: runs.RealClock{},
-		Bins: bins, Agents: agents,
-		Mark: func(run, client string) { br.SetMark(editorbridge.Run(run), client) }})
+		Bins: bins, Agents: agents})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
@@ -178,7 +177,7 @@ func serve(o options, args []string) {
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
 	turnCaps()
 	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, Runs: rs, DefaultCwd: o.cwd, Agents: agents,
-		MCPURL: boardapi.Endpoint(mcpBoundPort),
+		MCPURL: boardapi.Endpoint(mcpBoundPort), ImageWait: waits.images,
 		Namers: map[model.AgentKind]chats.Namer{
 			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
 			model.Cursor: chats.ClaudeNamer{Bin: o.claudeBin},
@@ -198,6 +197,9 @@ func serve(o options, args []string) {
 	if err := cm.Load(); err != nil {
 		log.Fatalf("loading chats: %v", err)
 	}
+	// The cleanup of the images nobody uses any more: of what was left before this start, and
+	// then every few minutes. Never stopped: it ends with cm.Shutdown.
+	go cm.CleanImages(nil)
 	rs.Chats = cm
 	relay := &boardapi.Relay{Bridge: br, Chats: cm, Boards: bs, Runs: rs}
 	extPath, err := pibridge.MaterializeExtension(filepath.Join(p.Root, "pi-extension"))
@@ -217,6 +219,10 @@ func serve(o options, args []string) {
 	// Never stopped: the server ends by exiting.
 	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
 	a = &app.App{St: st, Boards: bs, Chats: cm, Runs: rs, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
+	// The change-over of a server from before level 5: the group "Remote" goes, before any request.
+	if err := a.DropRemoteGroup(); err != nil {
+		log.Printf("the group \"Remote\" of before could not be removed, the next start tries again: %v", err)
+	}
 	// The prompt library of this computer: a file that cannot be read was set aside by the open,
 	// which logged it, and the library starts empty.
 	if err := a.OpenLibrary(p.Root); err != nil {
@@ -250,7 +256,7 @@ func serve(o options, args []string) {
 		rs.Shutdown(2 * time.Second)     // runs halt (they continue at the next start); no agent, task or turn starts from here on
 		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
 		cm.Shutdown()                    // history written; agents end
-		stopServers()                    // the connections to other servers end; what is kept of their chats is written
+		stopServers()                    // the connections to other servers end; nothing of them is written
 		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
 		pb.Close()                       // the extension bridge: no more connections, socket removed
 		store.RemoveServerFile(p)

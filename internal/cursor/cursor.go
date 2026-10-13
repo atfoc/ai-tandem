@@ -24,6 +24,9 @@ type Spawner struct {
 	SQLite  string // sqlite3 binary for the context meter, default "sqlite3"
 	AppRoot string
 	Home    string
+	// Images is where an image attached to a message is written for Cursor to open (see Send).
+	// The zero value is the folder and the age get_image's pictures have.
+	Images agent.ImageFiles
 
 	// OnCatalog is not used; catalogs come back as EvCatalog.
 
@@ -318,14 +321,38 @@ func mcpServers(o agent.SpawnOptions) []any {
 }
 
 // Send runs one user turn; it waits for the handshake.
+//
+// An attached image is not sent as an image block (such a turn on a Claude model ended with a
+// stray error line): it is written to a file, as a get_image picture is, and a text block in its
+// place names the file and its type, which Cursor opens with its own Read tool. An image that
+// cannot be written fails the Send before anything is sent, and the files written for the same
+// message are removed. A text block that is empty is left out.
 func (p *proc) Send(blocks []agent.ContentBlock) error {
 	<-p.ready
 	if p.readyErr != nil {
 		return p.readyErr
 	}
 	prompt := make([]map[string]any, 0, len(blocks))
+	var files []string
 	for _, b := range blocks {
-		prompt = append(prompt, map[string]any{"type": "text", "text": b.Text})
+		text := b.Text
+		if b.Image != nil {
+			path, err := p.s.Images.Write(b.Image.Type, b.Image.Data)
+			if err != nil {
+				for _, f := range files {
+					os.Remove(f)
+				}
+				return fmt.Errorf("could not save the attached image for Cursor to open: %w", err)
+			}
+			files = append(files, path)
+			text = imageText(b.Image, path)
+		}
+		if text != "" {
+			prompt = append(prompt, map[string]any{"type": "text", "text": text})
+		}
+	}
+	if len(prompt) == 0 {
+		return errors.New("the message is empty")
 	}
 	p.mu.Lock()
 	p.main.inText = false
@@ -361,6 +388,15 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 		p.emit(e)
 	}()
 	return nil
+}
+
+// imageText is the text block that stands for an attached image: its name as the user sees it,
+// and the file it was written to with its type.
+func imageText(img *agent.Image, path string) string {
+	if img.Name == "" {
+		return "The user attached an image. " + agent.ImageFileText(path, img.Type)
+	}
+	return fmt.Sprintf("The user attached an image, %q. %s", img.Name, agent.ImageFileText(path, img.Type))
 }
 
 func (p *proc) Interrupt() error {

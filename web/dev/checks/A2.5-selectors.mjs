@@ -1,6 +1,8 @@
-// Proves A2.5: what the e2e scripts address is where they address it. In a 1400 px window each of the five chip
-// selectors (.composer button.tchip[title^="Agent"], and Model, Effort, Server and the folder) matches one chip of
-// the toolbar's row, which says what it said and opens its list; so do the fixed chips of a started chat. In a board's
+// Proves A2.5: what the e2e scripts address is where they address it. In a 1400 px window each of the four chip
+// selectors (.composer button.tchip[title^="Agent"], and Model, Effort and the folder) matches one chip of
+// the toolbar's row, which says what it said and opens its list; so do the fixed chips of a started chat. A chat's
+// server is no choice: one on another server names it in the fixed chip .composer .tchip.static.server-chip, and one
+// on this computer has no such chip. In a board's
 // and a run's 400 px panel Agent and Model do, and the Agent chip opens its list there. innerText of
 // .composer .ctx-meter gives the share in percent while only the ring shows, and "Context unavailable", with no
 // number and the reason as its title, while only the icon shows. The composer's meter alone is cut so: the run
@@ -12,6 +14,7 @@ import { act, check, openPage, paneSize, seed, until } from "../shot.mjs";
 const FIXTURE = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../test/fixtures/composer-widths.json", import.meta.url)), "utf8"));
 const ROW = ".composer .composer-tools";
 const chip = (title) => `.composer button.tchip[title^="${title}"]`;
+const SERVER = '.composer .tchip[title^="Server"]'; // the chip that names a chat's server, which is never a button
 
 await check("A2.5 the scripts' chip selectors and the meter's text", async ({ url, browser, fail, note }) => {
   const states = await seed(url, "A2", "A5");
@@ -41,14 +44,14 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
     if (!await until(async () => !await page.locator(".composer .menu.up").count(), 5000)) fail(`${name}: Esc did not close the list of ${sel}`);
   };
 
-  { // a 1400 px window: all five, as before
+  { // a 1400 px window: all four, as before
     const p = await open(state("plain-new"), { size: [1400, 800] }), name = "an unstarted chat in a 1400 px window";
-    for (const [title, says] of [["Server", "This computer"], ["Agent", "Claude Code"], ["Working directory", "shop"], ["Model", "Opus 5.5"], ["Effort", "EffortHigh"]]) {
+    for (const [title, says] of [["Agent", "Claude Code"], ["Working directory", "shop"], ["Model", "Opus 5.5"], ["Effort", "EffortHigh"]]) {
       const text = await one(p.page, name, chip(title));
       if (text !== undefined && text !== says) fail(`${name}: ${chip(title)} says "${text}", not "${says}"`);
       if (title !== "Working directory") await opens(p.page, name, chip(title));
     }
-    if (await one(p.page, name, ".composer .server-pick button.tchip") !== "This computer") fail(`${name}: .composer .server-pick button.tchip is not the server's chip`);
+    if (await p.page.locator(`${SERVER}, .composer .server-pick`).count()) fail(`${name}: a chat on this computer names a server in its toolbar`);
     if (await p.page.locator(".composer .more-chip").count()) fail(`${name}: the toolbar has a "more" chip`);
     // the folder's chip opens its browser
     await p.page.locator(chip("Working directory")).click();
@@ -57,17 +60,13 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
   }
   { // on another server, and with long names: the same selectors
     const p = await open(state("plain-remote-new"), { size: [1400, 800] }), name = "an unstarted chat on another server in a 1400 px window";
-    if (!(await one(p.page, name, chip("Server")) ?? "").startsWith("lab-gpu-box")) fail(`${name}: the server's chip does not name the server`);
+    if (!(await one(p.page, name, `${SERVER}.static.server-chip`) ?? "").startsWith("lab-gpu-box")) fail(`${name}: the server's chip does not name the server`);
+    if (await p.page.locator(chip("Server")).count() || await p.page.locator(".composer .server-pick").count()) fail(`${name}: the server's chip is a choice`);
     await one(p.page, name, chip("Folder on"));
     await close(p, name);
     const q = await open(state("plain-new-long"), { size: [1400, 800] }), long = "an unstarted chat with long names in a 1400 px window";
     for (const title of ["Agent", "Working directory", "Model", "Effort"]) await one(q.page, long, chip(title));
-    // (with these names the widest row has no room for all of the toolbar since it has the Subagents chip: that chip
-    // and the server's are in the "more" popup, the server's by the same selector)
-    await q.page.locator(".composer .more-chip").click();
-    if (!await until(() => q.page.locator(`.composer .more-pop button.tchip[title^="Server"]`).count(), 5000)) fail(`${long}: the server's chip is neither in the row nor in the "more" popup`);
-    if (await q.page.locator(chip("Server")).count() !== 1) fail(`${long}: ${await q.page.locator(chip("Server")).count()} elements match ${chip("Server")}`);
-    await q.page.keyboard.press("Escape");
+    if (await q.page.locator(SERVER).count()) fail(`${long}: a chat on this computer names a server in its toolbar`);
     // (the paid script looks the model's chip up by the label it shows)
     if (!await q.page.locator(chip("Model"), { hasText: "Claude Opus 5.5 (1M context, extended thinking)" }).count()) fail(`${long}: the model's chip is not found by its whole label`);
     await close(q, long);
@@ -97,7 +96,9 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
     const t = e.querySelector(".ctx-text"), r = t?.getBoundingClientRect();
     return { count: document.querySelectorAll(".composer .ctx-meter").length, inner: e.innerText, title: e.getAttribute("title") ?? "", w: Math.round(e.getBoundingClientRect().width * 10) / 10, compact: e.classList.contains("compact"), text: r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "" };
   });
-  for (const [id, pane, width, ringOnly] of [["board-started", "panel", 400, false], ["board-started", "panel", 300, true], ["run-busy", "panel", 400, true], ["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]]) {
+  // (beside a board a started chat's row has room for the meter's text from a panel of 430 px on: in the default one,
+  // of 400 px, the attach button takes the 30 px the text would need, and the meter is its ring)
+  for (const [id, pane, width, ringOnly] of [["board-started", "panel", 430, false], ["board-started", "panel", 400, true], ["board-started", "panel", 300, true], ["run-busy", "panel", 400, true], ["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]]) {
     const p = await open(state(id), paneSize(pane, width)), name = `${id} in a ${pane} of ${width} px`, m = await meterIn(p.page);
     if (m.count !== 1) fail(`${name}: ${m.count} elements match .composer .ctx-meter`);
     if (!/\d+(\.\d+)?%/.test(m.inner)) fail(`${name}: innerText of the meter is "${m.inner}": no share in percent`);

@@ -2,13 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { branchCount, currentBranch, shownBranchOf } from "../src/logic/branches.ts";
 import { api, ApiError } from "../src/api.ts";
+import { refreshAfterRefusal } from "../src/logic/status.ts";
 import { MAIN, type ChatView, type PendingMove, type TreeView } from "../src/types.ts";
 
 const view = (p: Partial<ChatView> = {}): ChatView => ({
   id: "c_1", agent: "claude", cwd: "/tmp", model: "m", locked: true, created: "2026-01-01T00:00:00Z",
   usage: { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 }, status: "ready", ...p,
 });
-const held = { text: "", mentions: [], references: [] };
+const held = { text: "", mentions: [], references: [], images: [] };
 const move = (p: Partial<PendingMove> = {}): PendingMove => ({ branch: MAIN, at: 3, new: true, from: MAIN, held, put: null, ...p });
 
 test("a view without the branch fields is one branch, main", () => {
@@ -113,7 +114,7 @@ test("send with a target adds only the target's branch, at and new", async () =>
     { method: "POST", path: "/api/chats/c_1/messages", body: { text: "hi", context: "", target: { branch: "a1b2c3d4", at: 6, new: false } } });
 });
 
-test("the calls that take a server name it by its entry id, and not at all for this computer", async () => {
+test("the two calls that are about no thing name a server by its entry id in the query, and not at all for this computer; every other call names it by its thing's key", async () => {
   const dirs = { path: "/w", parent: "/", dirs: [], git: false };
   const calls: [string, () => Promise<unknown>, string, string][] = [
     ["dirs", () => api.dirs("/w x"), "GET", "/api/dirs?path=%2Fw%20x"],
@@ -125,16 +126,18 @@ test("the calls that take a server name it by its entry id, and not at all for t
     ["usage there", () => api.usage("claude", false, "s_1"), "GET", "/api/usage/claude?server=s_1"],
     ["usage fresh there", () => api.usage("claude", true, "s_1"), "GET", "/api/usage/claude?fresh=1&server=s_1"],
     ["deleteChat", () => api.deleteChat("c_1"), "DELETE", "/api/chats/c_1"],
-    ["deleteChat here only", () => api.deleteChat("c_1", { local: true }), "DELETE", "/api/chats/c_1?local=1"],
-    ["deleteChat not here only", () => api.deleteChat("c_1", { local: false }), "DELETE", "/api/chats/c_1"],
+    ["deleteChat there", () => api.deleteChat("s_1~c_1"), "DELETE", "/api/on/s_1/chats/c_1"], // deleted on its server: there is no "here only"
   ];
   for (const [name, run, method, path] of calls) {
     const r = await asked(run, dirs);
     assert.deepEqual([r.method, r.path], [method, path], name);
   }
-  assert.deepEqual(await asked(() => api.configure("c_1", "main", { server: "s_1" })), { method: "PATCH", path: "/api/chats/c_1?branch=main", body: { server: "s_1" } });
-  assert.deepEqual((await asked(() => api.newChat({ group: "g_1", server: "s_1" }))).body, { group: "g_1", server: "s_1" });
-  assert.deepEqual((await asked(() => api.newChat({ group: "g_1" }))).body, { group: "g_1" });
+  // (a chat's server is no change a configure names: it is where the chat was made)
+  assert.deepEqual(await asked(() => api.configure("c_1", "main", { agent: "pi" })), { method: "PATCH", path: "/api/chats/c_1?branch=main", body: { agent: "pi" } });
+  assert.deepEqual(await asked(() => api.configure("s_1~c_1", "main", { agent: "pi" })), { method: "PATCH", path: "/api/on/s_1/chats/c_1?branch=main", body: { agent: "pi" } });
+  // nor does a new chat's body name one: the place it is made in says it
+  assert.deepEqual(await asked(() => api.newChat({ group: "s_1~g_1" })), { method: "POST", path: "/api/on/s_1/chats", body: { group: "g_1" } });
+  assert.deepEqual(await asked(() => api.newChat({ group: "g_1" })), { method: "POST", path: "/api/chats", body: { group: "g_1" } });
 });
 
 test("items and subItems ask for the branch they are given", async () => {
@@ -177,7 +180,10 @@ test("saveDraft names its base and answers the new counter; a stale refusal is a
     globalThis.fetch = (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
     try { return await run(); } finally { globalThis.fetch = real; }
   };
-  assert.equal(await answer(200, { ok: true, rev: 5 })(() => api.saveDraft("c_1", "main", { text: "d" }, 4)), 5);
+  assert.deepEqual(await answer(200, { ok: true, rev: 5 })(() => api.saveDraft("c_1", "main", { text: "d" }, 4)), { rev: 5 });
+  // a draft that named images the chat does not hold was saved without them, and the answer names them
+  assert.deepEqual(await answer(200, { ok: true, rev: 6, missing: ["a".repeat(64)] })(() => api.saveDraft("c_1", "main", { text: "d" }, 5)), { rev: 6, missing: ["a".repeat(64)] });
+  assert.deepEqual(await answer(200, { ok: true, rev: 7, missing: [] })(() => api.saveDraft("c_1", "main", { text: "d" }, 6)), { rev: 7 });
   for (const stored of [{ text: "theirs" }, null]) {
     const e = await answer(409, { error: "the draft was changed elsewhere", code: "stale", rev: 7, draft: stored })(() => api.saveDraft("c_1", "main", { text: "d" }, 4).catch((x) => x));
     assert.ok(e instanceof ApiError);
@@ -192,4 +198,62 @@ test("tree, label and fork use their routes", async () => {
   assert.deepEqual(await asked(() => api.fork("c_1", "main", 3, 3), view()),
     { method: "POST", path: "/api/chats/c_1/fork", body: { branch: "main", at: 3, message: 3 } });
   assert.deepEqual((await asked(() => api.fork("c_1", "main", 3), view())).body, { branch: "main", at: 3 });
+});
+
+// ---- images
+
+const IMG = { id: "ab".repeat(32), name: "a b.png", type: "image/png", size: 4 };
+
+test("a Send names its images as its draft did; one without images sends no list", async () => {
+  assert.deepEqual((await asked(() => api.send("c_1", "main", "", "", [], undefined, [IMG]))).body, { text: "", context: "", images: [IMG] });
+  assert.deepEqual((await asked(() => api.send("c_1", "main", "hi", "ctx", [{ quote: "q", item: 1, start: 0, end: 1 }], { branch: "main", at: 3, new: true }, [IMG]))).body,
+    { text: "hi", context: "ctx", references: [{ quote: "q", item: 1, start: 0, end: 1 }], images: [IMG], target: { branch: "main", at: 3, new: true } });
+  assert.equal("images" in ((await asked(() => api.send("c_1", "main", "hi", "", [], undefined, []))).body as object), false);
+});
+
+test("a draft is saved with its images, by id, name, type and size", async () => {
+  const r = await asked(() => api.saveDraft("c_1", "main", { text: "", images: [IMG] }, 2), { ok: true, rev: 3 });
+  assert.deepEqual([r.method, r.path, r.body], ["PUT", "/api/chats/c_1/draft?branch=main&rev=2", { text: "", images: [IMG] }]);
+});
+
+test("an upload posts the file's bytes as they are, with its type, to the chat, and answers the image", async () => {
+  const real = globalThis.fetch;
+  let req: { method?: string; path: string; type: string | null; client: string | null; body: unknown } | undefined;
+  globalThis.fetch = (async (path: string, init: RequestInit) => {
+    const h = new Headers(init.headers);
+    req = { method: init.method, path, type: h.get("Content-Type"), client: h.get("X-AIWB-Client"), body: init.body };
+    return new Response(JSON.stringify(IMG), { status: 200 });
+  }) as typeof fetch;
+  const file = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+  try {
+    assert.deepEqual(await api.uploadImage("c_1", file, "a b&c.png", "image/png"), IMG);
+  } finally { globalThis.fetch = real; }
+  assert.deepEqual([req!.method, req!.path, req!.type], ["POST", "/api/chats/c_1/images?name=a%20b%26c.png", "image/png"]);
+  assert.equal(req!.body, file); // the bytes, not JSON
+  assert.ok(req!.client); // the caller is this page, as for a draft's save
+});
+
+test("a refused upload and a refused Send are ApiErrors with the server's sentence and code; image_missing names the images", async () => {
+  const answer = (status: number, body: unknown) => async (run: () => Promise<unknown>) => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
+    try { return await run().catch((x) => x); } finally { globalThis.fetch = real; }
+  };
+  const file = new Blob(["x"], { type: "image/png" });
+  for (const [status, code] of [[413, "image_too_large"], [415, "image_type"], [409, "image_cap"]] as const) {
+    const e = await answer(status, { error: `refused: ${code}`, code })(() => api.uploadImage("c_1", file, "a.png", "image/png"));
+    assert.ok(e instanceof ApiError, code);
+    assert.deepEqual([e.status, e.code, e.message, e.said], [status, code, `refused: ${code}`, true]);
+  }
+  const gone = await answer(409, { error: "the chat no longer holds an image of the message", code: "image_missing", images: [IMG.id, 7] })(() => api.send("c_1", "main", "", "", [], undefined, [IMG]));
+  assert.ok(gone instanceof ApiError);
+  assert.deepEqual([gone.status, gone.code, gone.images], [409, "image_missing", [IMG.id]]);
+  for (const code of ["image_id", "image_limit", "image_model"]) {
+    const e = await answer(400, { error: `refused: ${code}`, code })(() => api.send("c_1", "main", "", "", [], undefined, [IMG]));
+    assert.ok(e instanceof ApiError);
+    assert.deepEqual([e.status, e.code, e.images], [400, code, undefined]);
+  }
+  // a refused Send of images leaves the chat's state as it is known here: the message stays in the box, and the chat is not read again
+  assert.equal(refreshAfterRefusal(409, "image_missing"), false);
+  assert.equal(refreshAfterRefusal(400, "image_limit"), false);
 });

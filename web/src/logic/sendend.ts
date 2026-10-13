@@ -1,10 +1,19 @@
-// What the end of a Send leaves under a chat's composer, in its box and in its thread's place.
-// DOM-free: Composer.tsx and ChatView.tsx ask here.
-
-import { FIRST_TEXT_KEPT, errShown } from "./chatserver.ts";
+// What the end of a Send leaves under a chat's composer and in its box. DOM-free: Composer.tsx asks here.
 
 /** The code of a Send refused because the chat's server is not connected: nothing was sent. */
 export const SERVER_UNREACHABLE = "server_unreachable";
+
+/** Whether a failed Send's answer tells that the message was not taken, so that the server removed
+ *  no draft for it (what the saver is told, DraftSaver.sending): any refusal below 500, and the 503
+ *  of a chat whose server is not connected, for which nothing was sent. Another 5xx may hide a
+ *  message that was taken (504 `send_unknown`: it was sent, and no answer came). */
+export const sentNothing = (status: number | undefined, code?: string): boolean =>
+  (status !== undefined && status < 500) || code === SERVER_UNREACHABLE;
+
+/** Whether a failed Send's answer tells that the chat is no longer on its server: 404 with the code `not_found`, for a
+ *  chat of a section (remote). The page then shows the chat as no longer on that server, as it does when a read of
+ *  it is answered so. Another 404 is of a part of the chat (`no_branch`), and says nothing of the chat. */
+export const goneBySend = (remote: boolean, code?: string): boolean => remote && code === "not_found";
 
 /** Whether a failed Send's sentence is shown under the composer. connected: whether the chat's
  *  server is connected now, as the answer is handled. A Send refused because the server was not
@@ -12,17 +21,15 @@ export const SERVER_UNREACHABLE = "server_unreachable";
  *  before the refusal is: its sentence would then say what is no longer so, with nothing left to
  *  take it away (the composer drops such a sentence when the server connects, which it has). */
 export const refusalShown = (status: number | undefined, code: string | undefined, connected: boolean): boolean =>
-  errShown(code) && !(status === 503 && code === SERVER_UNREACHABLE && connected);
+  !(status === 503 && code === SERVER_UNREACHABLE && connected);
 
 /** Whether a failed Send's message goes back into the composer. removed: the sent draft was
  *  removed on the server while the Send was on its way (what DraftSaver.sending answers):
- *  another window sent that draft, or the Send was taken after all, and the message is no draft
- *  again. But for a first message refused as `first_text_kept`: the removal is then the one of
- *  the chat's start with an earlier text, and this text was not sent. */
-export const putsBack = (removed: boolean, code?: string): boolean => !removed || code === FIRST_TEXT_KEPT;
+ *  another window sent that draft, or the Send was taken after all (a first message too, whose
+ *  answer never came), and the message is no draft again. */
+export const putsBack = (removed: boolean): boolean => !removed;
 
-/** Whether the text of a first message stays in the thread's place (the store's `starting`) once
- *  its call has ended. taken: the server took the message; hasItems: the thread has items. It
- *  stays only after a call that was taken, until the thread read again has the message; while the
- *  call runs nothing tells that it was refused, which counts as taken. */
-export const startingAfter = (taken: boolean, hasItems: boolean): boolean => taken && !hasItems;
+/** The line under a chat's composer: the sentence of the last refusal (err), else the chat's own
+ *  error; "" for none. */
+export const underComposer = (err: string, c: { status?: string; error?: string }): string =>
+  err || (c.status === "error" && c.error) || "";

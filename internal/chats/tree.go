@@ -221,8 +221,12 @@ func (m *Manager) branchItems(chat, branch string) (items []model.Item, running 
 }
 
 // treeText is what the tree shows of an item: its text, or, for a message that is only quotes,
-// its first quote after a quote mark: the comment, else the quoted words.
+// its first quote after a quote mark: the comment, else the quoted words. A message that is
+// images alone has no words: model.ImageWord stands for them.
 func treeText(it model.Item) string {
+	if strings.TrimSpace(it.Text) == "" && len(it.References) == 0 && len(it.Images) > 0 {
+		return model.ImageWord
+	}
 	if strings.TrimSpace(it.Text) != "" || len(it.References) == 0 {
 		return it.Text
 	}

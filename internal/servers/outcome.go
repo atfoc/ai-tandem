@@ -1,13 +1,29 @@
 package servers
 
 // MinFeatureLevel is the lowest hello "featureLevel" this server connects to. The field is an
-// integer; a missing one counts as 0.
-const MinFeatureLevel = 1
+// integer; a missing one counts as 0. Level 5 is the first whose clients are served the server's
+// whole tree, as its own page is: every group, board, chat and run of that machine in the
+// snapshot, their events to every client, and the page's routes to make and change them. A
+// section of the sidebar is that tree, so a server below it is too old (OutcomeTooOld) and has
+// to be updated on its machine.
+const MinFeatureLevel = 5
 
 // LibraryLevel is the hello "featureLevel" from which a server offers its prompt library to an
 // API client: in its snapshot, in "own_library" events and with the library routes. Of a server
-// below it no library is taken, whatever it sends.
+// below it no library is taken, whatever it sends. It is below MinFeatureLevel: every server
+// this one connects to offers its library.
 const LibraryLevel = 3
+
+// LevelHeader is the header in which a client states its level, and ClientLevel the level this
+// one states. It is on every request to a remote server: hello, the state, the stream, every
+// call passed on with Do and every request of a connection test. A server of level 5 refuses a
+// client that states none, or one below 5, on every route but hello (400 "client_too_old"): an
+// app of before would be sent a tree it files wrongly. internal/server reads the header by this
+// name.
+const (
+	LevelHeader = "X-AIWB-Level"
+	ClientLevel = 5
+)
 
 // The paths asked of a remote server.
 const (

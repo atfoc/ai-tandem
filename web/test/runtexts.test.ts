@@ -85,7 +85,7 @@ test("only the server's 404 means there is no text", () => {
   assert.equal(isNone(new Error("x")), false); assert.equal(isNone(null), false); assert.equal(isNone("404"), false);
 });
 
-// ---- what a view shows after a drop (`server_back` drops a run's texts under the dock that shows them)
+// ---- what a view shows after a drop (a section's tree that arrives drops a run's texts under the dock that shows them)
 
 test("a view that took its text from the cache keeps showing it after a drop; one that opens after it loads", async () => {
   const c = new TextCache(), goal = { s: "ok", value: "the goal" } as const;
@@ -95,7 +95,7 @@ test("a view that took its text from the cache keeps showing it after a drop; on
   assert.deepEqual(own, { key: "r_1/goal", state: goal });
   assert.deepEqual(c.shown("r_1/goal", own), goal);
 
-  c.drop("r_1/"); // server_back
+  c.drop("r_1/"); // its section's tree arrived
   assert.equal(c.peek("r_1/goal"), undefined);
   assert.deepEqual(c.shown("r_1/goal", own), goal, "the view on screen shows its copy: nothing would ask again");
   assert.deepEqual(c.shown("r_1/goal", null), { s: "loading" }, "a view with no copy is loading, and its effect loads");

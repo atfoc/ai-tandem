@@ -12,11 +12,14 @@ const FIXTURE = fileURLToPath(new URL("../../test/fixtures/composer-widths.json"
 const NEAR = 1.5, NEAR_G1 = 3; // px: the same page drawn again; another day's fonts
 // G1's cases (G1 §Q2) whose names are short: the seeded states that are one of them, with the sum G1 measured for the
 // chips and gaps on one line. (G1's long-name and long-server cases, sums of 520 to 1034, have capped chips now.)
-const G1_SUMS = { "plain-started": 338.5, "plain-quotes": 338.5, "plain-ctxerr": 349, "plain-busy": 370.5, "plain-move": 412.7, "plain-new": 545,
-  "board-started": 338.5, "board-quotes": 338.5, "board-longname": 338.5, "run-started": 338.5, "run-quotes": 338.5, "run-busy": 370.5, "board-move": 412.7, "board-new": 528.6, "run-new": 528.6,
-  "goal-draft": 722.6 }; // (G1 gives the one sum for its four goal cases; the other three have other folders and limits)
+// (G1 measured an unstarted chat with the server's chip, 108 px as a choice and 91.6 as a fixed one, which a chat on this computer no longer
+// has: the chip and its gap are taken off its three sums, 545 and twice 528.6.)
+const G1_SUMS = { "plain-started": 338.5, "plain-quotes": 338.5, "plain-ctxerr": 349, "plain-busy": 370.5, "plain-move": 412.7, "plain-new": 433,
+  "board-started": 338.5, "board-quotes": 338.5, "board-longname": 338.5, "run-started": 338.5, "run-quotes": 338.5, "run-busy": 370.5, "board-move": 412.7, "board-new": 433, "run-new": 433,
+  "goal-draft": 627 }; // (G1 gives the one sum for its four goal cases; the other three have other folders and limits. It measured 722.6
+// with the server's chip and its gap, 95.6 px together, which the goal composer of a run of this computer no longer has)
 // G1's chip widths: [state, kind, whether the chip is a fixed one, width]
-const G1_CHIPS = [["plain-new", "server", false, 108], ["board-new", "server", true, 91.6],
+const G1_CHIPS = [
   ["plain-new", "agent", false, 115.2], ["plain-new", "folder", false, 70.2], ["plain-started", "folder", true, 53.8], ["plain-new", "model", false, 77.3], ["plain-new", "effort", false, 90.4],
   ["plain-started", "model-effort", true, 97.4], ["plain-new", "meter", false, 28], ["plain-started", "meter", false, 125.3], ["plain-ctxerr", "meter", false, 135.8],
   ["plain-started", "send", false, 28], ["plain-busy", "stop", false, 28], ["plain-started", "lock", false, 10], ["goal-draft", "tiers", false, 256.8], ["goal-draft", "limits", false, 136.8]];
@@ -24,7 +27,7 @@ const G1_CHIPS = [["plain-new", "server", false, 108], ["board-new", "server", t
 // [state, kind, fixed, width, what G1 measured for it uncapped]. The goal composer's chips have no cap of their own:
 // they are cut where the row ends, and are whole in a stage this wide.
 const CAPPED = [["plain-new-long", "folder", false, 202.4, 337], ["plain-new-long", "model", false, 102.4, 302.6], ["plain-started-long", "folder", true, 186, 320.6], ["plain-started-long", "model-effort", true, 170, 319.9],
-  ["plain-remote-new", "server", false, 186.4, 204], ["plain-remote-started", "server", true, 170, 188]];
+  ["plain-remote-new", "server", true, 170, 188], ["plain-remote-started", "server", true, 170, 188]]; // (the server's chip is a fixed one, started or not)
 // What a narrow toolbar has beside its chips: [the fixture's field, the state and the page's width that show it, its selector]
 const NARROW = [["more", "plain-new", 300, ".composer .more-chip"], ["ring", "plain-started", 300, ".composer .ctx-meter.compact:not(.error)"], ["icon", "plain-ctxerr", 300, ".composer .ctx-meter.compact.error"]];
 
@@ -43,7 +46,9 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
     // (a pane wide enough for every row: a plain chat's column is 780 px at most, which the long names with the
     // Subagents chip pass, so the column is let as wide as its page while it is measured)
     const { ctx, page } = await openPage({ url, browser, sel: s.sel, ...paneSize(s.pane[0], s.pane[0] === "panel" ? 760 : 1400), wait: ".composer-box" });
-    await page.addStyleTag({ content: ".chat-col { max-width: none !important }" });
+    // (and the composer's own side padding is taken away: with it a panel at its most, 760 px, has no room for the six choices of a new chat
+    // on a board with the Insert button and the attach button; the controls are as wide with it as without)
+    await page.addStyleTag({ content: ".chat-col { max-width: none !important } .composer { padding-left: 0 !important; padding-right: 0 !important }" });
     await act(page, s.act);
     await page.locator(s.see).first().waitFor({ state: "visible", timeout: 8000 });
     await page.evaluate(() => document.fonts.ready);
@@ -62,11 +67,11 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
     states,
   };
 
-  // G1 measured the toolbar before it had the Subagents chip and the Insert button: its sums are held against the row without them and their gaps.
-  const g1Sum = (st) => Math.round((st.sum - st.controls.filter((c) => c.kind === "subagents" || c.kind === "insert").reduce((n, c) => n + c.w + now.gap, 0)) * 10) / 10;
+  // G1 measured the toolbar before it had the Subagents chip, the Insert button and the attach button: its sums are held against the row without them and their gaps.
+  const g1Sum = (st) => Math.round((st.sum - st.controls.filter((c) => c.kind === "subagents" || c.kind === "insert" || c.kind === "attach").reduce((n, c) => n + c.w + now.gap, 0)) * 10) / 10;
   for (const [id, sum] of Object.entries(G1_SUMS)) {
     if (!states[id]) fail(`the seed has no state for G1's case ${id}`);
-    else if (Math.abs(g1Sum(states[id]) - sum) > NEAR_G1) fail(`${id}: the controls and gaps are ${g1Sum(states[id])} px on one line${states[id].sum === g1Sum(states[id]) ? "" : " without the Subagents chip and the Insert button"}; G1 measured ${sum}`);
+    else if (Math.abs(g1Sum(states[id]) - sum) > NEAR_G1) fail(`${id}: the controls and gaps are ${g1Sum(states[id])} px on one line${states[id].sum === g1Sum(states[id]) ? "" : " without the Subagents chip, the Insert button and the attach button"}; G1 measured ${sum}`);
   }
   for (const [id, kind, fixed, w, g1] of CAPPED) {
     const c = states[id]?.controls.find((x) => x.kind === kind && !!x.fixed === fixed);

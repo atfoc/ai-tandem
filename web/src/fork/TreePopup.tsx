@@ -4,10 +4,13 @@
 // What a wait of the chat holds (logic/waits.ts heldReason) is drawn disabled and says why: opening
 // a row and "Branch and edit" while a message that starts a new branch is on its way, the two forks
 // while a fork is being made. Label, Stop and a fork's link stay live.
+// The tree of a chat that is shown as it was (its server is not connected, or no longer has it: useOffWhy) is to be
+// read only: no row opens, nothing branches, forks, is labelled or stopped, no branch shows a live mark, and the foot
+// says why.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./fork.css";
 import "./popup.css";
-import { useStore, getState, isLegacy, chatTitle, branchCount, shownBranch, statesOfChat, threadOf, type State } from "../store.ts";
+import { useStore, getState, isLegacy, chatTitle, branchCount, shownBranch, statesOfChat, threadOf, viewedBranch, type State } from "../store.ts";
 import { loadTree } from "../conn.ts";
 import { api } from "../api.ts";
 import { agentClass } from "../agents.ts";
@@ -25,6 +28,7 @@ import { heldReason } from "../logic/waits.ts";
 import { closeTree, forkChat, labelMessage, openTree, startMove, viewBranch } from "./actions.ts";
 import { LabelInput } from "./LabelInput.tsx";
 import { TreeFolderHint } from "./FolderHint.tsx";
+import { useOffWhy } from "../ChatChoices.tsx";
 
 type Nav = NonNullable<State["treeNav"]>;
 
@@ -56,8 +60,10 @@ function Navigator({ nav }: { nav: Nav }) {
   const move = useStore((s) => s.moves[nav.chat]);
   const states = useStore((s) => statesOfChat(s, nav.chat));
   const waits = useStore((s) => s.waits[nav.chat]);
+  const on = { branch: useStore((s) => viewedBranch(s, nav.chat)), move: !!move }; // where the chat's composer is: an upload of it holds Branch and edit, and with a move pending what opens another branch
   const chats = useStore((s) => s.chats);
   const cat = useStore((s) => { const k = s.chats[nav.chat]; return k ? catalogFor(s, serverOf(k), k.agent) : undefined; });
+  const off = useOffWhy(nav.chat); // why the chat takes no call now: its tree is then read only
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [tries, setTries] = useState(0); // counts the fetches asked for again
@@ -134,16 +140,17 @@ function Navigator({ nav }: { nav: Nav }) {
   }, [menu, query]);
 
   if (!c) return null;
-  const readOnly = !!c.archived || isLegacy(c);
+  const readOnly = !!c.archived || isLegacy(c) || !!off;
   const n = branchCount(c);
 
   // Opens the chat at an entry: what is sent next branches off there; the end of a branch is just shown.
   // Nothing is opened, and the popup stays, while the chat's message is on its way (the rows say so).
-  const noOpen = heldReason(waits, "open");
+  const noOpen = off || heldReason(waits, "open", on);
   const open = (id: string) => {
     const o = tree && rowActions(tree, id, { busy, readOnly }).open;
     if (!o || noOpen) return;
     if ("view" in o) void viewBranch(nav.chat, o.view).then(focusComposer);
+    else if (o.edit !== undefined && heldReason(waits, "branchEdit", on)) return; // a message's row is Branch and edit
     else void startMove(nav.chat, o.target, o.edit);
     closeTree();
   };
@@ -154,12 +161,12 @@ function Navigator({ nav }: { nav: Nav }) {
     closeTree();
   };
   // Stops a branch's turn, or its subagents when only they run: what the composer's Stop does for the branch shown.
-  const stop = (branch: string) => { api.interrupt(nav.chat, branch).catch((e) => reportError("Couldn't stop the branch", e)); };
+  const stop = (branch: string) => { if (!off) api.interrupt(nav.chat, branch).catch((e) => reportError("Couldn't stop the branch", e)); };
   const run = (e: Entry, a: MenuItem) => {
     setMenu(null);
-    if (a.id === "note") return;
+    if (a.id === "note" || off) return;
     if (a.id === "label") { setLabeling(e.id); return; }
-    if (heldReason(waits, a.id)) return;
+    if (heldReason(waits, a.id, on)) return;
     if (a.id === "branchEdit") void startMove(nav.chat, { branch: e.branch, at: a.at, new: true }, e.item.i);
     else void forkChat(nav.chat, e.branch, a.at, a.id === "forkEdit" ? e.item.i : undefined);
     closeTree();
@@ -169,7 +176,7 @@ function Navigator({ nav }: { nav: Nav }) {
     setLabeling(null);
     setTimeout(() => search.current?.focus(), 0);
   };
-  const acts = menu && tree ? menuItems(tree, menu.id, { busy, readOnly }) : [];
+  const acts = menu && tree && !off ? menuItems(tree, menu.id, { busy, readOnly }) : [];
 
   return (
     <div className="fk-nav-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) closeTree(); }}>
@@ -206,19 +213,20 @@ function Navigator({ nav }: { nav: Nav }) {
               }
               const e = tree.entries[r.id];
               return (
-                <RowView key={r.id} r={r} e={e} on={r.id === selId} agent={c.agent} mark={marks[r.id] ?? null} note={notes[r.id]} end={ends[r.id]} held={noOpen}
-                  labeling={labeling === r.id} onLabel={(v) => doneLabel(e, v)} onStop={stop}
+                <RowView key={r.id} r={r} e={e} on={r.id === selId} agent={c.agent} mark={off ? null : marks[r.id] ?? null} note={notes[r.id]} end={ends[r.id]} held={noOpen}
+                  labeling={!off && labeling === r.id} onLabel={(v) => doneLabel(e, v)} onStop={stop}
                   onClick={() => { setPicked(r.id); search.current?.focus(); }} onOpen={() => open(r.id)}
                   onMenu={(x, y) => {
                     setPicked(r.id); search.current?.focus();
-                    if (menuItems(tree, r.id, { busy, readOnly }).length) setMenu({ id: r.id, x, y });
+                    if (!off && menuItems(tree, r.id, { busy, readOnly }).length) setMenu({ id: r.id, x, y });
                   }} />
               );
             })}
           </div>
         </div>
         <div className="fk-nav-foot">
-          {readOnly ? <span>Right-click a message to label it.</span>
+          {off ? <span className="fk-held">{off}</span>
+            : readOnly ? <span>Right-click a message to label it.</span>
             : noOpen ? <span className="fk-held">{noOpen}. Right-click to fork or label.</span>
             : <span>Double-click a message to open the chat there; what you send next branches off. Right-click to fork or label.</span>}
           <TreeFolderHint chatId={nav.chat} />
@@ -228,7 +236,7 @@ function Navigator({ nav }: { nav: Nav }) {
             <Menu onClose={() => setMenu(null)}>
               {acts.map((a) => {
                 if (a.id === "note") return <div key={a.id} className="menu-note fk-ctx-note">{a.label}</div>;
-                const held = heldReason(waits, a.id), off = a.id !== "label" && a.disabled;
+                const held = heldReason(waits, a.id, on), off = a.id !== "label" && a.disabled;
                 return <button key={a.id} className="menu-item plain" disabled={off || !!held}
                   title={off ? "This branch is still working: fork from one of its finished turns, or wait for it" : held || undefined} onClick={() => run(tree.entries[menu.id], a)}>{a.label}</button>;
               })}

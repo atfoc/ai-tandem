@@ -1,52 +1,84 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { NO_MARK, SOURCE_END, WINDOW_EVENTS, dropMark, type DropEvent, type DropMark } from "../src/logic/dropmark.ts";
+import { NO_MARK, SOURCE_END, WINDOW_EVENTS, dropMark, takesFrom, type DropEvent, type DropMark } from "../src/logic/dropmark.ts";
+import { isUngrouped, keyOn, sameServer, serverOfKey, ungroupedOn } from "../src/logic/keys.ts";
+import { LOCAL_SERVER } from "../src/types.ts";
 
 // ---- the reducer
 
-test("a zone, a header's upper half and the dragged group make the mark", () => {
-  let m = dropMark(NO_MARK, { type: "start", group: "g" });
-  assert.deepEqual(m, { zone: null, before: null, group: "g" });
+test("a zone, a header's upper half, the dragged group and its server make the mark", () => {
+  assert.deepEqual(NO_MARK, { zone: null, before: null, group: null, server: null });
+  let m = dropMark(NO_MARK, { type: "start", group: "g", server: "local" });
+  assert.deepEqual(m, { zone: null, before: null, group: "g", server: "local" });
   m = dropMark(m, { type: "in", zone: "shop" });
-  assert.deepEqual(m, { zone: "shop", before: null, group: "g" });
+  assert.deepEqual(m, { zone: "shop", before: null, group: "g", server: "local" });
   m = dropMark(m, { type: "before", head: "shop" });
-  assert.deepEqual(m, { zone: null, before: "shop", group: "g" }, "the header takes the light from the zone");
+  assert.deepEqual(m, { zone: null, before: "shop", group: "g", server: "local" }, "the header takes the light from the zone");
   m = dropMark(m, { type: "in", zone: "sub" });
-  assert.deepEqual(m, { zone: "sub", before: null, group: "g" }, "and a zone from the header");
+  assert.deepEqual(m, { zone: "sub", before: null, group: "g", server: "local" }, "and a zone from the header");
   assert.deepEqual(dropMark(m, { type: "end" }), NO_MARK);
 });
 
 test("leaving empties only the zone or the header that was left", () => {
-  const inSub: DropMark = { zone: "sub", before: null, group: null }, onHead: DropMark = { zone: null, before: "shop", group: "g" };
-  assert.deepEqual(dropMark(inSub, { type: "out", zone: "sub" }), NO_MARK);
+  const inSub: DropMark = { zone: "sub", before: null, group: null, server: "local" }, onHead: DropMark = { zone: null, before: "shop", group: "g", server: "local" };
+  assert.deepEqual(dropMark(inSub, { type: "out", zone: "sub" }), { zone: null, before: null, group: null, server: "local" });
   assert.equal(dropMark(inSub, { type: "out", zone: "shop" }), inSub, "the leave of another zone, heard late");
   assert.equal(dropMark(inSub, { type: "off", head: "sub" }), inSub);
-  assert.deepEqual(dropMark(onHead, { type: "off", head: "shop" }), { zone: null, before: null, group: "g" });
+  assert.deepEqual(dropMark(onHead, { type: "off", head: "shop" }), { zone: null, before: null, group: "g", server: "local" });
   assert.equal(dropMark(onHead, { type: "off", head: "sub" }), onHead);
   assert.equal(dropMark(onHead, { type: "out", zone: "shop" }), onHead);
 });
 
-test("where nothing takes the drag nothing is lit, and the dragged group stays", () => {
-  assert.deepEqual(dropMark({ zone: "shop", before: null, group: "g" }, { type: "nowhere" }), { zone: null, before: null, group: "g" });
-  assert.deepEqual(dropMark({ zone: null, before: "shop", group: "g" }, { type: "nowhere" }), { zone: null, before: null, group: "g" });
+test("where nothing takes the drag nothing is lit, and the dragged group and its server stay", () => {
+  assert.deepEqual(dropMark({ zone: "shop", before: null, group: "g", server: "local" }, { type: "nowhere" }), { zone: null, before: null, group: "g", server: "local" });
+  assert.deepEqual(dropMark({ zone: null, before: "shop", group: "g", server: "local" }, { type: "nowhere" }), { zone: null, before: null, group: "g", server: "local" });
+  assert.deepEqual(dropMark({ zone: "s_1~far", before: null, group: null, server: "s_1" }, { type: "nowhere" }), { zone: null, before: null, group: null, server: "s_1" }, "a row's drag keeps its server");
 });
 
-test("a start sets the dragged group anew and lights nothing", () => {
-  const stale: DropMark = { zone: "shop", before: null, group: "old" };
-  assert.deepEqual(dropMark(stale, { type: "start", group: "g" }), { zone: null, before: null, group: "g" });
-  assert.deepEqual(dropMark(stale, { type: "start", group: null }), NO_MARK, "a row's drag: no group is dragged");
+test("a start sets the dragged group and the server anew and lights nothing", () => {
+  const stale: DropMark = { zone: "shop", before: null, group: "old", server: "s_1" };
+  assert.deepEqual(dropMark(stale, { type: "start", group: "g", server: "local" }), { zone: null, before: null, group: "g", server: "local" });
+  assert.deepEqual(dropMark(stale, { type: "start", group: null, server: "local" }), { zone: null, before: null, group: null, server: "local" }, "a row's drag: no group is dragged");
+  assert.deepEqual(dropMark(stale, { type: "start", group: "s_2~g", server: "s_2" }), { zone: null, before: null, group: "s_2~g", server: "s_2" }, "a group of another section");
+});
+
+test("only an end forgets the server of what is dragged", () => {
+  const m: DropMark = { zone: "s_1~far", before: null, group: null, server: "s_1" };
+  for (const e of [{ type: "in", zone: "shop" }, { type: "before", head: "shop" }, { type: "out", zone: "s_1~far" }, { type: "off", head: "shop" }, { type: "nowhere" }] as DropEvent[])
+    assert.equal(dropMark(m, e).server, "s_1", e.type);
+  assert.equal(dropMark(m, { type: "end" }).server, null);
 });
 
 test("an event that changes nothing gives the same mark back", () => {
-  const marks: DropMark[] = [NO_MARK, { zone: "shop", before: null, group: null }, { zone: null, before: "shop", group: "g" }, { zone: null, before: null, group: "g" }];
-  const events: DropEvent[] = [{ type: "start", group: "g" }, { type: "start", group: null }, { type: "in", zone: "shop" }, { type: "before", head: "shop" },
+  const marks: DropMark[] = [NO_MARK, { zone: "shop", before: null, group: null, server: "local" }, { zone: null, before: "shop", group: "g", server: "local" },
+    { zone: null, before: null, group: "g", server: "local" }, { zone: null, before: null, group: null, server: "s_1" }, { zone: "shop", before: null, group: null, server: null }];
+  const events: DropEvent[] = [{ type: "start", group: "g", server: "local" }, { type: "start", group: null, server: "local" }, { type: "start", group: null, server: "s_1" },
+    { type: "in", zone: "shop" }, { type: "before", head: "shop" },
     { type: "out", zone: "shop" }, { type: "off", head: "shop" }, { type: "nowhere" }, { type: "end" }];
   for (const m of marks) for (const e of events) {
     const once = dropMark(m, e);
     assert.equal(dropMark(once, e), once, `${JSON.stringify(e)} twice on ${JSON.stringify(m)}`);
     assert.equal(once === m, JSON.stringify(once) === JSON.stringify(m), `${JSON.stringify(e)} on ${JSON.stringify(m)}: a new mark only when it differs`);
   }
+});
+
+// ---- which server's zones take a drag
+
+test("a zone takes only what is dragged on its own server", () => {
+  const local = dropMark(NO_MARK, { type: "start", group: null, server: LOCAL_SERVER });
+  assert.equal(takesFrom(local, LOCAL_SERVER), true);
+  assert.equal(takesFrom(local, "s_1"), false, "nothing goes from the local part into a section");
+  const far = dropMark(NO_MARK, { type: "start", group: "s_1~g", server: "s_1" });
+  assert.equal(takesFrom(far, "s_1"), true);
+  assert.equal(takesFrom(far, LOCAL_SERVER), false, "nor from a section into the local part");
+  assert.equal(takesFrom(far, "s_2"), false, "nor from one section into another");
+});
+
+test("a drag that did not begin in this window is taken by every server's zones: its drop is judged by what it carries", () => {
+  assert.equal(takesFrom(NO_MARK, LOCAL_SERVER), true);
+  assert.equal(takesFrom(NO_MARK, "s_1"), true);
+  assert.equal(takesFrom({ server: null }, "s_2"), true);
 });
 
 // ---- the window
@@ -66,9 +98,17 @@ test("the sidebar keeps no highlight of its own and hears the window through the
   assert.match(side, /window\.addEventListener\(type, hear, capture\)/);
   assert.doesNotMatch(side, /setOver|setDropBefore|draggingGroup|onDragEnd/);
   assert.doesNotMatch(side, /pointercancel|pointerout|pointerleave/);
-  // every drag that starts in the sidebar says which group is dragged, or that none is
-  assert.ok(side.includes('onDragStart: (e: React.DragEvent) => { e.stopPropagation(); markDrop({ type: "start", group: null }); hearEnd(e);'));
-  assert.ok(side.includes('onDragStart={(e) => { e.stopPropagation(); markDrop({ type: "start", group: g.id }); hearEnd(e);'));
+  // every drag that starts in the sidebar says which group is dragged, or that none is, and which server it is on
+  assert.ok(side.includes('onDragStart: (e: React.DragEvent) => { e.stopPropagation(); markDrop({ type: "start", group: null, server: serverOfKey(key.slice(key.indexOf(":") + 1)) }); hearEnd(e);'));
+  assert.ok(side.includes('const server = serverOfKey(g.id);'));
+  assert.ok(side.includes('onDragStart={(e) => { e.stopPropagation(); markDrop({ type: "start", group: g.id, server }); hearEnd(e);'));
+  // a zone refuses what is dragged on another server before it looks at anything else, and lights nothing
+  assert.ok(side.includes('if (!takesFrom(getState().dropAt, serverOfKey(group)) || (types.includes("text/x-aiwb-group") && !canTakeGroup(group, true))) { markDrop({ type: "nowhere" }); return; }'));
+  assert.ok(side.includes("if (!dragged || !sameServer(dragged, target)) return false;"), "a header takes a group of its own server alone");
+  // and a drop that came all the same (from another window of the app) moves nothing across
+  assert.ok(side.includes("if (!sameServer(id, group)) return;"));
+  assert.ok(side.includes('else if (sameServer(gid, group)) moveGroup(gid, isUngrouped(group) ? "" : group);'));
+  assert.ok(side.includes("if ((parent && !sameServer(dragged, parent)) || (before && !sameServer(dragged, before))) return;"));
   // and the dragged element hears the end of its drag itself: the window does not, once the element has left the page
   assert.deepEqual(SOURCE_END, { type: "dragend", event: { type: "end" } });
   assert.ok(side.includes("const hearEnd = (e: React.DragEvent) => e.currentTarget.addEventListener(SOURCE_END.type, () => markDrop(SOURCE_END.event), { once: true });"));
@@ -76,10 +116,13 @@ test("the sidebar keeps no highlight of its own and hears the window through the
 
 // ---- G2's scenarios as the events a browser sends, in the order it sends them
 
-// G2's tree (§4): Shop > Sub and Other > Mid > Leaf, and the ungrouped area. A place is where the pointer is: in a
-// zone (on a row or the body of that group), on a half of a group's header, or outside every zone (PAGE).
-const PARENT: Record<string, string> = { Sub: "Shop", Mid: "Other", Leaf: "Mid" };
-const LOOSE = "__ungrouped__";
+// G2's tree (§4): Shop > Sub and Other > Mid > Leaf, and the ungrouped area. Below it the section of the server
+// s_1, with that server's own tree: Far > Deep, a group Shop of its own (the same id as the local one) and its
+// ungrouped area. A place is where the pointer is: in a zone (on a row or the body of that group), on a half of a
+// group's header, or outside every zone (PAGE). A zone is named by its key, as the sidebar names it.
+const FAR = keyOn("s_1", "Far"), DEEP = keyOn("s_1", "Deep"), FAR_SHOP = keyOn("s_1", "Shop");
+const PARENT: Record<string, string> = { Sub: "Shop", Mid: "Other", Leaf: "Mid", [DEEP]: FAR };
+const LOOSE = ungroupedOn(LOCAL_SERVER), FAR_LOOSE = ungroupedOn("s_1");
 type Place = { zone: string; head?: "upper" | "lower" } | null;
 const PAGE: Place = null;
 const on = (zone: string): Place => ({ zone });
@@ -88,6 +131,7 @@ const head = (zone: string, half: "upper" | "lower"): Place => ({ zone, head: ha
 const zonesOf = (g: string): string[] => [g, ...(PARENT[g] ? zonesOf(PARENT[g]) : [])];
 const within = (p: Place, zone: string) => !!p && zonesOf(p.zone).includes(zone);
 
+/** item: a row; it is on the server of the zone its drag starts in. foreign: text or a file. */
 type Dragged = { kind: "item" } | { kind: "group"; group: string } | { kind: "foreign" };
 type Moved = { into: string } | { before: string } | null;
 
@@ -97,6 +141,7 @@ type Moved = { into: string } | { before: string } | null;
 class Page {
   mark = NO_MARK;
   private dragged: Dragged | null = null;
+  private from = LOCAL_SERVER;  // the server what is dragged is on
   private here = false;         // the drag began in this page: a row or a header of it is the dragged element
   private at: Place = PAGE;
   private taken = false;        // the last dragover was taken: the browser will send a drop
@@ -107,15 +152,17 @@ class Page {
     const next = dropMark(this.mark, e);
     assert.ok(next.zone === null || next.before === null, `a zone and a header are lit at once: ${JSON.stringify(next)}`);
     if (this.here && this.dragged?.kind === "group" && e.type !== "end") assert.equal(next.group, this.dragged.group, `the dragged group left the mark at ${JSON.stringify(e)}`);
+    if (this.here && e.type !== "end") assert.equal(next.server, this.from, `the server of what is dragged left the mark at ${JSON.stringify(e)}`);
     this.mark = next;
   }
   private window(type: string, capture: boolean) { for (const w of WINDOW_EVENTS) if (w.type === type && w.capture === capture) this.tell(w.event); }
   /** An event that no handler of the sidebar takes: it passes the window twice, captured and bubbling. */
   plain(...types: string[]) { for (const t of types) { this.window(t, true); this.window(t, false); } }
+  /** canTakeGroup of Sidebar.tsx, with no archived group. */
   private canTake(target: string, into: boolean) {
     const g = this.mark.group;
-    if (!g) return false;
-    if (into && target === LOOSE) return true;
+    if (!g || !sameServer(g, target)) return false;
+    if (into && isUngrouped(target)) return true;
     return !zonesOf(target).includes(g);
   }
 
@@ -124,14 +171,15 @@ class Page {
   start(what: Dragged, from: Place) {
     this.plain("pointerdown", "mousedown", "pointermove", "mousemove");
     this.window("dragstart", true);
-    this.tell({ type: "start", group: what.kind === "group" ? what.group : null }); // the row's or the header's handler, which stops it
     this.dragged = what; this.here = true; this.at = from; this.taken = false;
+    this.from = serverOfKey(what.kind === "group" ? what.group : from!.zone);
+    this.tell({ type: "start", group: what.kind === "group" ? what.group : null, server: this.from }); // the row's or the header's handler, which stops it
     this.plain("pointercancel", "pointerout");
     return this;
   }
   /** A drag that comes from outside the page (text, a file; a row or a group of another window of the app): no
    *  press and no dragstart here. */
-  enter(what: Dragged) { this.dragged = what; this.here = false; this.at = PAGE; this.taken = false; return this; }
+  enter(what: Dragged, from = LOCAL_SERVER) { this.dragged = what; this.here = false; this.from = from; this.at = PAGE; this.taken = false; return this; }
 
   /** The pointer goes to a place and lingers: dragenter there, dragleave where it was, then dragovers. */
   over(to: Place, times = 3) {
@@ -160,7 +208,7 @@ class Page {
     if (p && d.kind !== "foreign") {
       if (p.head && d.kind === "group" && p.head === "upper" && this.canTake(p.zone, false)) { this.taken = true; return this.tell({ type: "before", head: p.zone }); }
       // the innermost zone stops the event, whether it takes the drag or not
-      if (d.kind === "group" && !this.canTake(p.zone, true)) return this.tell({ type: "nowhere" });
+      if (!takesFrom(this.mark, serverOfKey(p.zone)) || (d.kind === "group" && !this.canTake(p.zone, true))) return this.tell({ type: "nowhere" });
       this.taken = true;
       return this.tell({ type: "in", zone: p.zone });
     }
@@ -181,8 +229,11 @@ class Page {
     if (!this.taken) this.leave(p, undefined);
     else {
       this.window("drop", true);
-      // the header's handler when its upper half is lit, else the innermost zone's: each empties the mark and stops the event
-      moved = p!.head && this.mark.before === p!.zone ? { before: p!.zone } : { into: p!.zone };
+      // the header's handler when its upper half is lit, else the innermost zone's: each empties the mark and stops the
+      // event, and moves only what is on its own server (moveTo, moveGroup)
+      const before = !!p!.head && this.mark.before === p!.zone;
+      const carried = this.dragged!.kind === "group" ? this.dragged!.group : keyOn(this.from, "x");
+      if (sameServer(carried, p!.zone)) moved = before ? { before: p!.zone } : { into: p!.zone };
       this.tell({ type: "end" });
     }
     this.end();
@@ -291,11 +342,11 @@ test("a pointer move or a key in mid-drag empties what is lit and leaves the dra
     p.start(group("Other"), head("Other", "lower")).over(on("Shop"));
     assert.equal(p.lit(), "zone Shop");
     p.stray(type);
-    assert.deepEqual(p.mark, { zone: null, before: null, group: "Other" }, type);
+    assert.deepEqual(p.mark, { zone: null, before: null, group: "Other", server: "local" }, type);
     p.over(on("Shop"), 1);
     assert.equal(p.lit(), "zone Shop", "the next dragover lights the zone again");
     p.over(head("Shop", "upper")).stray(type);
-    assert.deepEqual(p.mark, { zone: null, before: null, group: "Other" }, type + " on a header");
+    assert.deepEqual(p.mark, { zone: null, before: null, group: "Other", server: "local" }, type + " on a header");
     p.over(head("Shop", "upper"), 1);
     assert.deepEqual(p.release(), { before: "Shop" }, "and the group still goes where it is dropped");
     assert.deepEqual(p.mark, NO_MARK);
@@ -320,7 +371,7 @@ test("a drag whose end reaches nobody: the first pointer event or key empties wh
   for (const after of ["pointermove", "pointerdown", "keydown"]) {
     const p = new Page();
     p.enter(ITEM).over(on("Shop")).over(on("Sub")).cancel(); // a row of another window of the app: its end is that window's, and no dragleave came
-    assert.deepEqual(p.mark, { zone: "Sub", before: null, group: null });
+    assert.deepEqual(p.mark, { zone: "Sub", before: null, group: null, server: null });
     p.plain(after);
     assert.deepEqual(p.mark, NO_MARK, after);
   }
@@ -329,10 +380,98 @@ test("a drag whose end reaches nobody: the first pointer event or key empties wh
   p.enter(group("Leaf")).over(on("Shop")).over(head("Mid", "upper")).cancel();
   assert.deepEqual(p.mark, NO_MARK);
   // and the dragged group of a mark that an end never emptied lights nothing, and is set anew by the next drag
-  p.mark = { zone: null, before: "Mid", group: "Leaf" };
+  p.mark = { zone: null, before: "Mid", group: "Leaf", server: "local" };
   p.moveOn();
-  assert.deepEqual(p.mark, { zone: null, before: null, group: "Leaf" });
+  assert.deepEqual(p.mark, { zone: null, before: null, group: "Leaf", server: "local" });
   assert.equal(p.lit(), "");
   p.start(ITEM, on("Shop"));
-  assert.deepEqual(p.mark, NO_MARK, "a row's drag: no group is dragged any more");
+  assert.deepEqual(p.mark, { zone: null, before: null, group: null, server: "local" }, "a row's drag: no group is dragged any more");
+});
+
+// ---- a section: nothing is dragged across
+
+test("inside a section a row and a group are dragged as in the local part", () => {
+  const p = new Page();
+  p.start(ITEM, on(FAR_LOOSE)).over(on(FAR));
+  assert.equal(p.lit(), `zone ${FAR}`);
+  assert.deepEqual(p.mark, { zone: FAR, before: null, group: null, server: "s_1" });
+  p.over(on(DEEP));
+  assert.equal(p.lit(), `zone ${DEEP}`, "the innermost zone alone");
+  assert.deepEqual(p.release(), { into: DEEP });
+  assert.deepEqual(p.mark, NO_MARK);
+  assert.deepEqual(p.start(ITEM, on(DEEP)).over(on(FAR_LOOSE)).release(), { into: FAR_LOOSE }, "to that server's ungrouped area");
+  assert.deepEqual(p.start(group(DEEP), head(DEEP, "lower")).over(head(FAR_SHOP, "upper")).release(), { before: FAR_SHOP });
+  assert.deepEqual(p.start(group(FAR_SHOP), head(FAR_SHOP, "lower")).over(on(DEEP)).release(), { into: DEEP });
+  assert.deepEqual(p.start(group(DEEP), head(DEEP, "lower")).over(on(FAR_LOOSE)).release(), { into: FAR_LOOSE }, "a group to the top level of its section");
+  p.start(group(FAR), head(FAR, "lower")).over(on(DEEP));
+  assert.equal(p.lit(), "", "a group is refused by its own subgroup there too");
+  assert.equal(p.release(), null);
+  assert.deepEqual(p.mark, NO_MARK);
+});
+
+test("a row dragged from the local part lights no zone of a section, and its drop there moves nothing", () => {
+  const p = new Page();
+  p.start(ITEM, on("Shop")).over(on("Shop"));
+  assert.equal(p.lit(), "zone Shop");
+  for (const zone of [FAR, DEEP, FAR_SHOP, FAR_LOOSE]) {
+    p.over(on(zone));
+    assert.equal(p.lit(), "", zone);
+    assert.deepEqual(p.mark, { zone: null, before: null, group: null, server: "local" }, zone);
+  }
+  assert.equal(p.release(), null, "no drop is offered: the drag ends with a leave");
+  assert.deepEqual(p.mark, NO_MARK);
+  p.start(ITEM, on(LOOSE)).over(on(FAR)).over(on("Sub"));
+  assert.equal(p.lit(), "zone Sub", "back over the local part its zones light again");
+  assert.deepEqual(p.release(), { into: "Sub" });
+});
+
+test("a row dragged from a section lights no zone of the local part or of another section", () => {
+  const other = keyOn("s_2", "Far");
+  const p = new Page();
+  p.start(ITEM, on(FAR)).over(on(FAR_SHOP));
+  assert.equal(p.lit(), `zone ${FAR_SHOP}`);
+  for (const zone of ["Shop", "Sub", LOOSE, other, ungroupedOn("s_2")]) {
+    p.over(on(zone));
+    assert.equal(p.lit(), "", zone);
+  }
+  assert.equal(p.release(), null);
+  assert.deepEqual(p.mark, NO_MARK);
+});
+
+test("a group is dragged neither into nor before a group of another server, the one with its own id included", () => {
+  const p = new Page();
+  p.start(group("Shop"), head("Shop", "lower")).over(on(FAR));
+  assert.equal(p.lit(), "");
+  p.over(head(FAR, "upper"));
+  assert.equal(p.lit(), "", "nor before its header");
+  p.over(on(FAR_LOOSE));
+  assert.equal(p.lit(), "", "nor to the top level of the section");
+  assert.equal(p.release(), null);
+  p.start(group(FAR_SHOP), head(FAR_SHOP, "lower")).over(on("Shop"));
+  assert.equal(p.lit(), "", "the section's Shop into the local Shop");
+  p.over(head("Shop", "upper"));
+  assert.equal(p.lit(), "");
+  p.over(on(LOOSE));
+  assert.equal(p.lit(), "");
+  assert.equal(p.release(), null);
+  assert.deepEqual(p.mark, NO_MARK);
+  p.start(group("Shop"), head("Shop", "lower")).over(on(FAR_SHOP));
+  assert.equal(p.lit(), "", "the local Shop into the section's Shop: the same id is another group");
+  p.over(on("Sub"));
+  assert.equal(p.lit(), "", "and its own subgroup still refuses it");
+  p.over(on("Other"));
+  assert.equal(p.lit(), "zone Other");
+  assert.deepEqual(p.release(), { into: "Other" });
+});
+
+test("a row of another window lights the zone it is over on any server, and is moved only where it is on that server", () => {
+  const p = new Page();
+  p.enter(ITEM, "s_1").over(on("Shop"));
+  assert.deepEqual(p.mark, { zone: "Shop", before: null, group: null, server: null }, "this window does not know its server");
+  assert.equal(p.release(), null, "the drop reads what it carries: a chat of s_1 goes into no local group");
+  assert.deepEqual(p.mark, NO_MARK);
+  assert.deepEqual(p.enter(ITEM, "s_1").over(on(FAR)).release(), { into: FAR });
+  assert.equal(p.enter(ITEM, LOCAL_SERVER).over(on(FAR)).release(), null);
+  assert.deepEqual(p.enter(ITEM, LOCAL_SERVER).over(on("Sub")).release(), { into: "Sub" });
+  assert.deepEqual(p.mark, NO_MARK);
 });

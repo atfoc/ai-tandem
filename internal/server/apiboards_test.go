@@ -3,6 +3,7 @@ package server
 import (
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,55 +13,34 @@ import (
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/servers"
 )
 
-// The boards of an API client on the remote listener: the real ServeRemote, stand-in API clients
-// and stand-in pages, as in apiclient_test.go.
+// The boards of the server for an API client on the remote listener: the real ServeRemote,
+// stand-in API clients and stand-in pages, as in apiclient_test.go. A client makes a board with
+// the page's call and reaches every board of the server, whoever made it.
 
-// Board ids as a client makes them.
-const (
-	board1 = "b_aaaa1111"
-	board2 = "b_bbbb2222"
-)
+// noSuchBoard is the answer of a board route for a board that is not there.
+const noSuchBoard = `{"code":"not_found","error":"no such board"}`
 
-// isBoardRoute reports whether the route of the table is one of the eleven that level 2 added.
+// isBoardRoute reports whether the route of the table is one of a board, or the answer to a
+// board tool call.
 func isBoardRoute(route string) bool {
-	return strings.Contains(route, " /api/boards/") || route == "POST /api/rpc-reply"
+	return strings.Contains(route, " /api/boards/") || route == "POST /api/boards" || route == "POST /api/rpc-reply"
 }
 
-type madeBoard struct {
-	OK    bool        `json:"ok"`
-	Made  bool        `json:"made"`
-	Board model.Board `json:"board"`
-	Error string      `json:"error"`
-	Code  string      `json:"code"`
-}
-
-// makeBoard is the client's creation of the board id, which must be answered with this status.
-func makeBoard(t *testing.T, c *bridgetest.Page, want int, id string, body any) madeBoard {
-	t.Helper()
-	status, out := c.Do("PUT", "/api/boards/"+id, body)
-	if status != want {
-		t.Fatalf("the creation of the board %s by %s: status %d, want %d (%s)", id, c.ID, status, want, out)
-	}
-	return decode[madeBoard](t, string(out))
-}
-
-// noBoard fails unless the answer is the gate's: 404 and nothing but "no such board".
-func noBoard(t *testing.T, what string, status int, out []byte) {
-	t.Helper()
-	if status != 404 || strings.TrimSpace(string(out)) != `{"error":"no such board"}` {
-		t.Errorf("%s: %d %s, want 404 no such board", what, status, out)
-	}
-}
-
-// Every board route of the table, for the client that made the board.
+// Every board route of the table, for a client, on a board it made.
 func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
 	x, _ := l.api(apiX)
 	y, _ := l.api(apiY)
+	g, err := e.a.CreateGroup("Mine", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	called := map[string]bool{}
+	var id string // the board the routes are called for
 	call := func(want int, route string, body any) obj {
 		t.Helper()
 		if !slices.Contains(RemoteRoutes, route) {
@@ -68,73 +48,60 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 		}
 		called[route] = true
 		method, p, _ := strings.Cut(route, " ")
-		status, out := x.Do(method, strings.Replace(p, "{id}", board1, 1), body)
+		status, out := x.Do(method, strings.Replace(p, "{id}", id, 1), body)
 		if status != want {
 			t.Fatalf("%s: status %d, want %d (%s)", route, status, want, out)
 		}
 		return decode[obj](t, string(out))
 	}
 
-	// The creation: in the group "Remote", with the caller's mark, held by nobody.
-	called["PUT /api/boards/{id}"] = true
-	first := makeBoard(t, x, 200, board1, obj{"name": "Untitled", "id": board1})
-	groups := e.remoteGroups()
-	if !first.OK || !first.Made || first.Board.ID != board1 || first.Board.Name != "Untitled" || first.Board.Client != apiX ||
-		len(groups) != 1 || first.Board.Group != groups[0] || first.Board.New {
-		t.Fatalf("the creation: %+v, the Remote groups %v", first, groups)
-	}
-	e.holder(board1, "")
-	// A repeat finds the board, its name untouched.
-	if again := makeBoard(t, x, 200, board1, obj{"name": "Other"}); !again.OK || again.Made || again.Board.Name != "Untitled" || again.Board.Client != apiX {
-		t.Fatalf("the repeat: %+v", again)
-	}
-	// Another client's creation with the id, and one with the id of a board of the server's own.
-	if got := makeBoard(t, y, 409, board1, obj{"name": "Untitled"}); got.Code != "id_taken" || got.Error == "" {
-		t.Fatalf("Y's creation with X's id: %+v", got)
-	}
-	own := e.board(model.Ungrouped)
-	if got := makeBoard(t, x, 409, own.ID, obj{"name": "Untitled"}); got.Code != "id_taken" {
-		t.Fatalf("the creation with the id of the server's own board: %+v", got)
-	}
-	// What is refused before anything is made.
+	// What is refused makes nothing: a body that names a server, which a page's may, and what a
+	// page is refused too.
 	for what, c := range map[string]struct {
-		id   string
-		body any
-		code string
+		status int
+		code   string
+		body   any
 	}{
-		"an id of another form":    {"b_SHOUTING", obj{"name": "n"}, "bad_id"},
-		"an id that is too short":  {"b_abc", obj{"name": "n"}, "bad_id"},
-		"an id that is not a b_":   {"c_aaaa1111", obj{"name": "n"}, "bad_id"},
-		"another id in the body":   {board2, obj{"name": "n", "id": board1}, "bad_id"},
-		"a group":                  {board2, obj{"name": "n", "group": model.Ungrouped}, "group_refused"},
-		"a name with a slash":      {board2, obj{"name": "a/b"}, "bad_request"},
-		"a name that is too long":  {board2, obj{"name": strings.Repeat("n", 81)}, "bad_request"},
-		"a body that is no object": {board2, "nothing", "bad_request"},
+		"a server":                  {400, "server_refused", obj{"name": "n", "group": model.Ungrouped, "server": "local"}},
+		"a server in other letters": {400, "server_refused", obj{"name": "n", "group": model.Ungrouped, "SERVER": ""}},
+		"no group":                  {400, "", obj{"name": "n"}},
+		"a name with a slash":       {400, "", obj{"name": "a/b", "group": model.Ungrouped}},
+		"a name that is too long":   {400, "", obj{"name": strings.Repeat("n", 81), "group": model.Ungrouped}},
+		"a body that is no object":  {400, "", "nothing"},
 	} {
-		if got := makeBoard(t, x, 400, c.id, c.body); got.Code != c.code || got.Error == "" || got.OK {
-			t.Errorf("%s: %+v, want the code %s", what, got, c.code)
+		status, out := x.Do("POST", "/api/boards", c.body)
+		if got := decode[refusal](t, string(out)); status != c.status || got.Code != c.code || got.Error == "" {
+			t.Errorf("a new board with %s: %d %s, want %d and the code %q", what, status, out, c.status, c.code)
 		}
 	}
-	if n := len(e.a.Boards.List()); n != 2 || len(e.remoteGroups()) != 1 {
-		t.Fatalf("%d boards and the Remote groups %v after the refused creations", n, e.remoteGroups())
-	}
-	// The route is the remote listener's alone.
-	if status, out := e.do("PUT", "/api/boards/"+board2, `{"name":"n"}`); status != 404 || strings.TrimSpace(out) != `{"error":"not found"}` {
-		t.Fatalf("the creation on the loopback listener: %d %s", status, out)
+	if n := len(e.a.Boards.List()); n != 0 {
+		t.Fatalf("%d boards after the refused creations", n)
 	}
 
-	// The snapshot and the state hold the client's boards, and no other client's.
+	// The creation: in the group the call names, with no mark, and held by the client that made
+	// it, as a page holds the board it makes.
+	made := do(t, x, "POST", "/api/boards", obj{"name": "Untitled", "group": g.ID})
+	first := decode[model.Board](t, string(made))
+	called["POST /api/boards"] = true
+	id = first.ID
+	if !regexp.MustCompile(`^b_[a-z0-9]{8}$`).MatchString(id) || first.Name != "Untitled" || first.Group != g.ID || first.New || first.Archived ||
+		strings.Contains(string(made), `"client"`) || strings.Contains(string(made), `"origin"`) {
+		t.Fatalf("the creation: %s", made)
+	}
+	e.holder(id, apiX)
+	e.st.Read(func(s *model.State) {
+		if len(s.Groups) != 1 || s.RemoteGroup != "" {
+			t.Fatalf("the groups after the creation: %+v, the group remembered as Remote %q", s.Groups, s.RemoteGroup)
+		}
+	})
+	// The snapshot and the state of every client hold the board.
 	for who, c := range map[string]*bridgetest.Page{apiX: x, apiY: y} {
 		_, state := c.Do("GET", "/api/state", nil)
-		got := decode[struct{ Boards []model.Board }](t, string(state))
-		if who == apiX && (len(got.Boards) != 1 || got.Boards[0].ID != board1 || got.Boards[0].Client != apiX) {
-			t.Fatalf("X's state: %s", state)
-		}
-		if who == apiY && (got.Boards == nil || len(got.Boards) != 0 || strings.Contains(string(state), board1)) {
-			t.Fatalf("Y's state: %s", state)
+		if got := decode[struct{ Boards []model.Board }](t, string(state)); len(got.Boards) != 1 || got.Boards[0].ID != id || got.Boards[0].Group != g.ID {
+			t.Fatalf("the state of %s: %s", who, state)
 		}
 	}
-	if _, snap := l.api(apiZ); !strings.Contains(snap, `"boards":[]`) {
+	if _, snap := l.api(apiZ); !strings.Contains(snap, id) {
 		t.Fatalf("Z's snapshot: %s", snap)
 	}
 
@@ -142,9 +109,10 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	scene := func() (string, string) {
 		t.Helper()
 		called["GET /api/boards/{id}/scene"] = true
-		req, _ := http.NewRequest("GET", l.base+"/api/boards/"+board1+"/scene", nil)
+		req, _ := http.NewRequest("GET", l.base+"/api/boards/"+id+"/scene", nil)
 		req.Header.Set(SecretHeader, testSecret)
 		req.Header.Set(ClientHeader, apiX)
+		req.Header.Set(servers.LevelHeader, testLevel)
 		resp, err := l.http.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -163,11 +131,14 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	writeAt := func(want int, rev string, body string) obj {
 		t.Helper()
 		called[write] = true
-		status, out := x.Do("PUT", "/api/boards/"+board1+"/scene"+rev, body)
+		status, out := x.Do("PUT", "/api/boards/"+id+"/scene"+rev, body)
 		if status != want {
 			t.Fatalf("the write with %q: status %d, want %d (%s)", rev, status, want, out)
 		}
 		return decode[obj](t, string(out))
+	}
+	if got := call(200, "POST /api/boards/{id}/release", nil); got["state"] != "free" {
+		t.Fatalf("the release of the new board: %v", got)
 	}
 	if got := writeAt(409, "?rev=0", drawing("early")); got["code"] != "not_holder" {
 		t.Fatalf("a write without the hold: %v", got)
@@ -175,7 +146,7 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	if got := call(200, "POST /api/boards/{id}/take", obj{"ifFree": true}); got["state"] != "held" || got["rev"] != 0.0 {
 		t.Fatalf("the take: %v", got)
 	}
-	e.holder(board1, apiX)
+	e.holder(id, apiX)
 	if got := writeAt(200, "?rev=0", drawing("one")); got["ok"] != true || got["rev"] != 1.0 {
 		t.Fatalf("the write: %v", got)
 	}
@@ -192,11 +163,20 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	if body, rev := scene(); body != drawing("one") || rev != "1" {
 		t.Fatalf("the drawing after the writes: revision %q, %s", rev, body)
 	}
-	e.onDisk(board1, drawing("one"))
+	e.onDisk(id, drawing("one"))
 
 	// The rest of the board's routes.
-	if got := call(200, "POST /api/boards/{id}/rename", obj{"name": "Plan"}); got["name"] != "Plan" || got["id"] != board1 || got["client"] != apiX {
+	if got := call(200, "POST /api/boards/{id}/rename", obj{"name": "Plan"}); got["name"] != "Plan" || got["id"] != id || got["client"] != nil {
 		t.Fatalf("the rename: %v", got)
+	}
+	if got := call(200, "PATCH /api/boards/{id}", obj{"group": model.Ungrouped}); got["ok"] != true {
+		t.Fatalf("the move out of the group: %v", got)
+	}
+	if bd, _ := e.a.Boards.Get(id); bd.Group != model.Ungrouped {
+		t.Fatalf("the board after the move: %+v", bd)
+	}
+	if got := call(400, "PATCH /api/boards/{id}", obj{"group": "g_nowhere1"}); got["error"] != `no such group "g_nowhere1"` || got["code"] != nil {
+		t.Fatalf("the move into a group that is not there: %v", got)
 	}
 	if got := call(200, "POST /api/boards/{id}/seen", nil); got["ok"] != true {
 		t.Fatalf("seen: %v", got)
@@ -210,7 +190,7 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	if got := call(200, "POST /api/boards/{id}/archive", nil); got["ok"] != true {
 		t.Fatalf("the archive: %v", got)
 	}
-	if bd, _ := e.a.Boards.Get(board1); !bd.Archived {
+	if bd, _ := e.a.Boards.Get(id); !bd.Archived {
 		t.Fatal("the board is not archived")
 	}
 	call(409, "POST /api/boards/{id}/take", nil)
@@ -223,13 +203,13 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	if got := call(409, "POST /api/rpc-reply", obj{"id": "rpc_99", "result": "x"}); got["error"] != "not_asked" || len(got) != 1 {
 		t.Fatalf("an answer that was not asked for: %v", got)
 	}
-	// A take needs an open stream: Z's own board, taken by a Z whose stream has ended.
+	// A take needs an open stream: Z, whose stream has ended, takes nothing.
 	z := bridgetest.ConnectWith(t, l.base, apiZ, l.options(apiZ, testSecret))
-	makeBoard(t, z, 200, board2, obj{"name": "Z"})
+	other := newBoard(t, z, "Z")
 	z.Close()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		status, out := l.call(apiZ, testSecret, "POST", "/api/boards/"+board2+"/take", "")
+		status, out := l.call(apiZ, testSecret, "POST", "/api/boards/"+other.ID+"/take", "")
 		if status == 409 && strings.TrimSpace(out) == `{"error":"unknown_client"}` {
 			break
 		}
@@ -239,72 +219,32 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// The delete, of a board nobody holds: a holder would be given its three seconds to let go.
+	// The delete, of a board nobody holds: a holder would be given its time to let go.
 	call(200, "POST /api/boards/{id}/release", nil)
 	if got := call(200, "DELETE /api/boards/{id}", nil); got["ok"] != true {
 		t.Fatalf("the delete: %v", got)
 	}
-	if _, found := e.a.Boards.Get(board1); found {
+	if _, found := e.a.Boards.Get(id); found {
 		t.Fatal("the board is still there after the delete")
 	}
-	e.holder(board1, "")
+	e.holder(id, "")
 	for _, route := range RemoteRoutes {
 		if isBoardRoute(route) && !called[route] {
 			t.Errorf("the route %s of the table was not called", route)
 		}
 	}
 	// What the table does not serve to an API client.
-	for _, r := range [][2]string{{"POST", "/api/boards"}, {"PATCH", "/api/boards/" + board2}, {"POST", "/api/boards/" + board2 + "/reveal"}, {"POST", "/api/client/flushed"}} {
+	for _, r := range [][2]string{{"PUT", "/api/boards/" + other.ID}, {"POST", "/api/boards/" + other.ID + "/reveal"}, {"POST", "/api/client/flushed"}} {
 		if status, out := x.Do(r[0], r[1], obj{"name": "n", "group": model.Ungrouped}); status != 404 || strings.TrimSpace(string(out)) != `{"error":"not found"}` {
 			t.Errorf("%s %s: %d %s, want 404 not found", r[0], r[1], status, out)
 		}
 	}
 }
 
-// A creation that is refused or repeated asks for no group "Remote": only one that makes a board
-// does.
-func TestRefusedOrRepeatedCreationMakesNoRemoteGroup(t *testing.T) {
-	t.Parallel()
-	e, l := remoteEnv(t)
-	x, _ := l.api(apiX)
-	own := e.board(model.Ungrouped)
-	if got := makeBoard(t, x, 409, own.ID, obj{"name": "Untitled"}); got.Code != "id_taken" {
-		t.Fatalf("the creation with the id of the server's own board: %+v", got)
-	}
-	if got := makeBoard(t, x, 400, "b_SHOUTING", obj{"name": "n"}); got.Code != "bad_id" {
-		t.Fatalf("the creation with a bad id: %+v", got)
-	}
-	if groups := e.remoteGroups(); len(groups) != 0 {
-		t.Fatalf("the refused creations made the Remote groups %v", groups)
-	}
-
-	first := makeBoard(t, x, 200, board1, obj{"name": "Untitled"})
-	groups := e.remoteGroups()
-	if !first.Made || len(groups) != 1 || first.Board.Group != groups[0] {
-		t.Fatalf("the creation: %+v, the Remote groups %v", first, groups)
-	}
-	// The owner archives the group: a repeat finds the board where it is, and so does a refusal.
-	e.expect(200, "POST", "/api/groups/"+groups[0]+"/archive", "")
-	if again := makeBoard(t, x, 200, board1, obj{"name": "Other"}); !again.OK || again.Made || again.Board.ID != board1 ||
-		again.Board.Name != "Untitled" || again.Board.Group != groups[0] {
-		t.Fatalf("the repeat after the group was archived: %+v", again)
-	}
-	y, _ := l.api(apiY)
-	if got := makeBoard(t, y, 409, board1, obj{"name": "Untitled"}); got.Code != "id_taken" {
-		t.Fatalf("Y's creation with X's id: %+v", got)
-	}
-	if got := e.remoteGroups(); len(got) != 1 {
-		t.Fatalf("the Remote groups after the repeat: %v, want the one %v", got, groups)
-	}
-	// A free id makes the board, in a new group "Remote".
-	if second := makeBoard(t, x, 200, board2, obj{"name": "Untitled"}); !second.Made || len(e.remoteGroups()) != 2 || second.Board.Group == groups[0] {
-		t.Fatalf("the creation after the group was archived: %+v, the Remote groups %v", second, e.remoteGroups())
-	}
-}
-
-// An API client reaches only the boards with its mark: a board of the server's own, one of
-// another client and one that is not there are answered alike, and nothing is done to them.
-func TestBoardGateOfAnAPIClient(t *testing.T) {
+// An API client reaches every board of the server: one of the server's own page and one of
+// another client are served to it as to a page that does not hold them. A board that is not there
+// is answered as that, and nothing is made.
+func TestBoardRoutesServeEveryBoard(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
 	p := e.page("P")
@@ -312,91 +252,155 @@ func TestBoardGateOfAnAPIClient(t *testing.T) {
 	y, _ := l.api(apiY)
 	own := newBoard(t, p, "own") // P holds it
 	written(t, p, own.ID, 0, drawing("the owner's"))
-	makeBoard(t, y, 200, board1, obj{"name": "Y"})
-	if state, _ := take(t, y, board1, false); state != "held" {
-		t.Fatalf("Y's take: %s", state)
-	}
-	written(t, y, board1, 0, drawing("Y's"))
+	theirs := newBoard(t, y, "Y") // Y holds it
+	written(t, y, theirs.ID, 0, drawing("Y's"))
 	e.reach(p, x, y)
 
-	for _, id := range []string{own.ID, board1, "b_zzzz9999"} {
-		for _, route := range RemoteRoutes {
-			if !strings.Contains(route, " /api/boards/") || route == "PUT /api/boards/{id}" {
-				continue
-			}
-			method, path, _ := strings.Cut(route, " ")
-			path = strings.Replace(path, "{id}", id, 1)
-			if strings.HasSuffix(path, "/scene") && method == "PUT" {
-				path += "?rev=1"
-			}
-			status, out := x.Do(method, path, obj{"name": "taken", "ifFree": false})
-			noBoard(t, route+" of "+id, status, out)
+	for id, holder := range map[string]*bridgetest.Page{own.ID: p, theirs.ID: y} {
+		at := "/api/boards/" + id
+		// The drawing is read, and not written without the hold.
+		if status, out := x.Do("GET", at+"/scene", nil); status != 200 || !strings.Contains(string(out), "rectangle") {
+			t.Fatalf("X's read of the drawing of %s: %d %s", id, status, out)
 		}
+		status, out := write(x, id, 1, drawing("X's"))
+		refused(t, "X's write of a board it does not hold", "not_holder", status, out)
+		// A take that leaves a held board where it is, and a release of what X does not hold.
+		if state, _ := take(t, x, id, true); state != "busy" {
+			t.Fatalf("X's take if free of %s: %s", id, state)
+		}
+		if got := release(t, x, id); got != "none" {
+			t.Fatalf("X's release of %s: %s", id, got)
+		}
+		e.holder(id, holder.ID)
+		// The name, the "new" mark and the place are every client's to change.
+		if bd := decode[model.Board](t, string(do(t, x, "POST", at+"/rename", obj{"name": "by-X"}))); bd.ID != id || bd.Name != "by-X" {
+			t.Fatalf("X's rename of %s: %+v", id, bd)
+		}
+		do(t, x, "POST", at+"/seen", nil)
+		// Its holder is not asked to let go, and its own calls are served.
+		written(t, holder, id, 1, drawing("the holder's next"))
+	}
+	evs := e.reach(p, x, y)
+	for i, c := range []*bridgetest.Page{p, x, y} {
+		// Two of each board: the rename, and the "new" mark's.
+		if count(evs[i], "board", own.ID, "by-X") != 2 || count(evs[i], "board", theirs.ID, "by-X") != 2 {
+			t.Errorf("of X's renames %s was sent %v", c.ID, types(evs[i]))
+		}
+		if got := only(evs[i], "release_request", "superseded", "held"); len(got) != 0 {
+			t.Errorf("X's calls sent %s %v", c.ID, got)
+		}
+	}
+	// The take of a held board, and the archive and the delete of one, are a page's too: its
+	// holder is asked to let go and does.
+	if state, _ := take(t, x, theirs.ID, false); state != "waiting" {
+		t.Fatalf("X's take of Y's board: %s", state)
+	}
+	until(t, y, "release_request", theirs.ID)
+	if got := release(t, y, theirs.ID); got != "handed" {
+		t.Fatalf("Y's release: %s", got)
+	}
+	if ev := until(t, x, "held", theirs.ID); ev["rev"] != 2.0 {
+		t.Fatalf("X's grant: %v", ev)
+	}
+	written(t, x, theirs.ID, 2, drawing("X's"))
+	if got := release(t, x, theirs.ID); got != "free" {
+		t.Fatalf("X's release: %s", got)
+	}
+	do(t, x, "POST", "/api/boards/"+theirs.ID+"/archive", nil)
+	do(t, x, "POST", "/api/boards/"+theirs.ID+"/unarchive", nil)
+	do(t, x, "DELETE", "/api/boards/"+theirs.ID, nil)
+	if _, found := e.a.Boards.Get(theirs.ID); found {
+		t.Fatal("Y's board is there after X's delete")
+	}
+	evs = e.reach(p, x, y)
+	for i, c := range []*bridgetest.Page{p, x, y} {
+		if count(evs[i], "board_removed", theirs.ID) != 1 {
+			t.Errorf("of X's delete of Y's board %s was sent %v", c.ID, types(evs[i]))
+		}
+	}
+
+	// A board that is not there: every route that names one says so, with the code, and the
+	// release, which ends a hold whatever the board is, says that there was none.
+	const missing = "b_zzzz9999"
+	for _, route := range RemoteRoutes {
+		if !strings.Contains(route, " /api/boards/") {
+			continue
+		}
+		method, path, _ := strings.Cut(route, " ")
+		path = strings.Replace(path, "{id}", missing, 1)
+		if strings.HasSuffix(path, "/scene") && method == "PUT" {
+			path += "?rev=0"
+		}
+		var body any = obj{"name": "taken", "ifFree": false, "group": model.Ungrouped}
+		if strings.HasSuffix(path, "/scene?rev=0") {
+			body = drawing("nowhere")
+		}
+		status, out := x.Do(method, path, body)
+		if route == "POST /api/boards/{id}/release" {
+			if status != 200 || strings.TrimSpace(string(out)) != `{"state":"none"}` {
+				t.Errorf("%s of a board that is not there: %d %s", route, status, out)
+			}
+			continue
+		}
+		if status != 404 || strings.TrimSpace(string(out)) != noSuchBoard {
+			t.Errorf("%s of a board that is not there: %d %s, want 404 %s", route, status, out, noSuchBoard)
+		}
+	}
+	if _, found := e.a.Boards.Get(missing); found || len(e.a.Boards.List()) != 1 {
+		t.Fatalf("the boards after the calls for one that is not there: %+v", e.a.Boards.List())
 	}
 	e.holder(own.ID, "P")
-	e.holder(board1, apiY)
-	e.onDisk(own.ID, drawing("the owner's"))
-	e.onDisk(board1, drawing("Y's"))
-	for _, id := range []string{own.ID, board1} {
-		if bd, found := e.a.Boards.Get(id); !found || bd.Archived || bd.Name == "taken" {
-			t.Errorf("the board %s after X's calls: %+v (found %v)", id, bd, found)
-		}
-	}
-	if evs := e.reach(p, x, y); len(evs[0])+len(evs[1])+len(evs[2]) != 0 {
-		t.Errorf("the refused calls sent %v", evs)
-	}
-	// The holder of the board is not asked to let go, and its own calls are served.
-	written(t, y, board1, 1, drawing("Y's next"))
-	written(t, p, own.ID, 1, drawing("the owner's next"))
+	e.onDisk(own.ID, drawing("the holder's next"))
 }
 
-// A board's events reach the pages and, of the API clients, the one whose mark the board has.
-func TestBoardEventsReachTheMarkOnly(t *testing.T) {
+// A board's events reach every page and every API client, whoever made the board and whoever
+// changed it.
+func TestBoardEventsReachEveryClient(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
 	p := e.page("P")
 	x, _ := l.api(apiX)
 	y, _ := l.api(apiY)
 	e.reach(p, x, y)
-	sent := func(what, typ string, toP, toX, toY int) {
+	// sent checks that the page, X and Y were each sent n events of this type, the same ones.
+	sent := func(what, typ string, n int, has ...string) {
 		t.Helper()
 		evs := e.reach(p, x, y)
 		apiOnly(t, x, evs[1])
 		apiOnly(t, y, evs[2])
-		if got := []int{count(evs[0], typ), count(evs[1], typ), count(evs[2], typ)}; !slices.Equal(got, []int{toP, toX, toY}) {
-			t.Errorf("%s: %s reached the page, X and Y %v times, want %v", what, typ, got, []int{toP, toX, toY})
+		if got := []int{count(evs[0], typ, has...), count(evs[1], typ, has...), count(evs[2], typ, has...)}; !slices.Equal(got, []int{n, n, n}) {
+			t.Errorf("%s: %s reached the page, X and Y %v times, want %d each", what, typ, got, n)
 		}
-		if len(only(evs[2], "board", "board_removed", "held", "superseded", "release_request")) != 0 {
-			t.Errorf("%s: Y was sent %v", what, types(evs[2]))
+		if a, b, c := only(evs[0], typ), only(evs[1], typ), only(evs[2], typ); !slices.Equal(a, b) || !slices.Equal(a, c) {
+			t.Errorf("%s: the %s events of the three differ:\nthe page %v\nX %v\nY %v", what, typ, a, b, c)
+		}
+		// Y holds no board and waits for none: nothing about a role reaches it.
+		if got := only(evs[2], "held", "superseded", "release_request"); len(got) != 0 {
+			t.Errorf("%s: Y was sent %v", what, got)
 		}
 	}
-	makeBoard(t, x, 200, board1, obj{"name": "X"})
-	sent("X's creation", "board", 1, 1, 0)
-	makeBoard(t, x, 200, board1, obj{"name": "X"})
-	sent("the repeat", "board", 0, 0, 0)
-	// The owner's page works on the marked board as on any: X is told.
-	e.expect(200, "POST", "/api/boards/"+board1+"/rename", `{"name":"by the page"}`)
-	sent("the page's rename", "board", 1, 1, 0)
-	do(t, x, "POST", "/api/boards/"+board1+"/rename", obj{"name": "by X"})
-	sent("X's rename", "board", 1, 1, 0)
-	e.expect(200, "POST", "/api/boards/"+board1+"/archive", "")
-	sent("the page's archive", "board", 1, 1, 0)
-	do(t, x, "POST", "/api/boards/"+board1+"/unarchive", nil)
-	sent("X's unarchive", "board", 1, 1, 0)
-	// A board of the server's own: no API client.
+	bd := newBoard(t, x, "X")
+	sent("X's creation", "board", 1, bd.ID, `"name":"X"`)
+	if got := release(t, x, bd.ID); got != "free" {
+		t.Fatalf("X's release of its new board: %s", got)
+	}
+	at := "/api/boards/" + bd.ID
+	e.expect(200, "POST", at+"/rename", `{"name":"by-the-page"}`)
+	sent("the page's rename", "board", 1, bd.ID, "by-the-page")
+	do(t, x, "POST", at+"/rename", obj{"name": "by-X"})
+	sent("X's rename", "board", 1, bd.ID, "by-X")
+	e.expect(200, "POST", at+"/archive", "")
+	sent("the page's archive", "board", 1, bd.ID, `"archived":true`)
+	do(t, y, "POST", at+"/unarchive", nil)
+	sent("Y's unarchive", "board", 1, bd.ID)
+	// A board of the server's own page.
 	own := e.board(model.Ungrouped)
 	e.expect(200, "POST", "/api/boards/"+own.ID+"/rename", `{"name":"mine"}`)
-	sent("the owner's board", "board", 2, 0, 0)
+	sent("the owner's board", "board", 2, own.ID)
 	e.expect(200, "DELETE", "/api/boards/"+own.ID, "")
-	sent("the delete of the owner's board", "board_removed", 1, 0, 0)
-	e.expect(200, "DELETE", "/api/boards/"+board1, "")
-	sent("the page's delete of X's board", "board_removed", 1, 1, 0)
-	// The id is free again, and the mark went with the board: Y's board of that id is Y's.
-	makeBoard(t, y, 200, board1, obj{"name": "Y"})
-	evs := e.reach(p, x, y)
-	if count(evs[0], "board") != 1 || len(evs[1]) != 0 || count(evs[2], "board") != 1 {
-		t.Errorf("Y's board with the id X's had: the page %v, X %v, Y %v", types(evs[0]), types(evs[1]), types(evs[2]))
-	}
+	sent("the delete of the owner's board", "board_removed", 1, own.ID)
+	do(t, y, "DELETE", at, nil)
+	sent("Y's delete of X's board", "board_removed", 1, bd.ID)
 }
 
 // A page of the server takes a board an API client holds ("Use here"): the client is asked to
@@ -410,7 +414,7 @@ func TestPageTakesTheBoardOfAnAPIClient(t *testing.T) {
 	e.s.Bridge.SetHandoverDelay(delay)
 	p := e.page("P")
 	x, _ := l.api(apiX)
-	makeBoard(t, x, 200, board1, obj{"name": "X"})
+	board1 := newBoard(t, x, "X").ID // X made the board, so it holds it
 	if state, rev := take(t, x, board1, true); state != "held" || rev != 0 {
 		t.Fatalf("X's take: %s at %d", state, rev)
 	}
@@ -467,77 +471,70 @@ func TestPageTakesTheBoardOfAnAPIClient(t *testing.T) {
 	e.holder(board1, "P")
 }
 
-// An agent's board tool on a chat of a marked board is asked of the API client that holds the
-// board, and answered through POST /api/rpc-reply on the remote listener. The chat is one the
-// client made on its board; on any other board the creation call is refused.
-func TestChatAndToolCallOnAMarkedBoard(t *testing.T) {
+// An agent's board tool on a chat of a board is asked of the API client that holds the board,
+// and answered through POST /api/rpc-reply on the remote listener. A client makes a chat on any
+// board of the server, and forks one, whoever made the board and the chat.
+func TestChatAndToolCallOnABoardOfAnAPIClient(t *testing.T) {
 	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	p := e.page("P")
 	x, _ := l.api(apiX)
 	y, _ := l.api(apiY)
-	made := makeBoard(t, x, 200, board1, obj{"name": "X"})
-	makeBoard(t, y, 200, board2, obj{"name": "Y"})
-	own := newBoard(t, p, "own")
-	cwd := t.TempDir()
+	board1 := newBoard(t, x, "X").ID // X holds it
+	own := newBoard(t, p, "own")     // the page's own, which the page holds
+	old := newBoard(t, y, "old")
+	if got := release(t, y, old.ID); got != "free" {
+		t.Fatalf("Y's release of its new board: %s", got)
+	}
+	do(t, y, "POST", "/api/boards/"+old.ID+"/archive", nil)
 
-	// The refusals: a board of the server's own, another client's, none, an archived one, and a
-	// run beside the board.
-	do(t, x, "POST", "/api/boards/"+board1+"/archive", nil)
-	for what, c := range map[string][2]string{
-		"the server's own board": {startBody(chat2, cwd, "board", own.ID), "board_refused"},
-		"another client's board": {startBody(chat2, cwd, "board", board2), "board_refused"},
-		"a board that is not":    {startBody(chat2, cwd, "board", "b_zzzz9999"), "board_refused"},
-		"an archived board":      {startBody(chat2, cwd, "board", board1), "board_refused"},
-		"a board and a run":      {startBody(chat2, cwd, "board", board1, "run", "r_00000001"), "bad_request"},
+	// The refusals are the page's own: a board that is not there, and an archived one.
+	for what, c := range map[string]struct {
+		status int
+		code   string
+		board  string
+	}{
+		"a board that is not there": {404, "not_found", "b_zzzz9999"},
+		"an archived board":         {409, "", old.ID},
 	} {
-		if got := start(t, x, 400, c[0]); got.Code != c[1] || got.Chat != nil || got.Started || got.Sent {
-			t.Errorf("%s: %+v, want the code %s", what, got, c[1])
+		status, out := x.Do("POST", "/api/chats", obj{"id": chat2, "agent": "claude", "board": c.board})
+		if got := decode[refusal](t, string(out)); status != c.status || got.Code != c.code || got.Error == "" {
+			t.Errorf("a new chat on %s: %d %s, want %d and the code %q", what, status, out, c.status, c.code)
 		}
 	}
 	if n := len(e.a.Chats.Views()); n != 0 || sp.count() != 0 {
 		t.Fatalf("%d chats and %d programs after the refused calls", n, sp.count())
 	}
-	do(t, x, "POST", "/api/boards/"+board1+"/unarchive", nil)
 
-	// The chat on the client's board: in the board's group, with the client's mark.
-	got := start(t, x, 200, startBody(chat1, cwd, "board", board1))
-	if !got.Started || !got.Sent || got.Chat == nil || got.Chat.Board != board1 {
-		t.Fatalf("the chat on the board: %+v", got)
+	// A chat on the board of another client, and one on the page's own board: each is on its
+	// board, in the board's place, with no mark.
+	startedBy(t, y, chat1, "group", nil, "board", board1)
+	if on := unstartedBy(t, x, chat2, "group", nil, "board", own.ID); on.Board != own.ID {
+		t.Fatalf("the chat on the page's board: %+v", on)
 	}
-	if again := start(t, x, 200, startBody(chat1, cwd, "board", board1)); again.Sent || again.Chat == nil {
-		t.Fatalf("the repeat: %+v", again)
-	}
-	start(t, x, 409, startBody(chat1, cwd)) // the same id with no board is another chat
 	metas := e.a.Chats.ChatsOfBoard(board1)
-	if len(metas) != 1 || metas[0].ID != chat1 || metas[0].Client != apiX || metas[0].Token == "" ||
-		e.a.Chats.GroupOf(metas[0]) != made.Board.Group || made.Board.Group != e.remoteGroups()[0] {
+	if len(metas) != 1 || metas[0].ID != chat1 || metas[0].Token == "" || e.a.Chats.GroupOf(metas[0]) != model.Ungrouped {
 		t.Fatalf("the chats of the board: %+v", metas)
 	}
-	if _, state := x.Do("GET", "/api/state", nil); !strings.Contains(string(state), chat1) || !strings.Contains(string(state), board1) {
-		t.Fatalf("X's state: %s", state)
+	for who, c := range map[string]*bridgetest.Page{"X": x, "Y": y} {
+		if _, state := c.Do("GET", "/api/state", nil); !strings.Contains(string(state), chat1) || !strings.Contains(string(state), chat2) || !strings.Contains(string(state), own.ID) {
+			t.Fatalf("the state of %s: %s", who, state)
+		}
 	}
 
-	// The fork of that chat: X's is made on the board; Y's, whose mark the board has not, is not.
+	// The fork of the chat is made on the board, by the client that made neither.
 	a := sp.of(t, chat1)
 	reply(t, &a.fakeAgent, "done", "p1")
 	items := decode[struct{ Items []model.Item }](t, string(do(t, x, "GET", "/api/chats/"+chat1+"/items", nil)))
-	body := `{"branch":"main","at":` + itoa(len(items.Items)) + `}`
-	status, out := y.Do("POST", "/api/chats/"+chat1+"/fork", body)
-	if refusal := decode[obj](t, string(out)); status != 400 || refusal["code"] != "board_refused" {
-		t.Fatalf("Y's fork of a chat on X's board: %d %s", status, out)
-	}
-	fork := decode[model.ChatView](t, string(do(t, x, "POST", "/api/chats/"+chat1+"/fork", body)))
+	fork := decode[model.ChatView](t, string(do(t, x, "POST", "/api/chats/"+chat1+"/fork", `{"branch":"main","at":`+itoa(len(items.Items))+`}`)))
 	if fork.ID == chat1 || fork.Board != board1 || fork.ForkedFrom != chat1 {
-		t.Fatalf("X's fork: %+v", fork)
+		t.Fatalf("X's fork of Y's chat: %+v", fork)
 	}
 
 	// The tool call: X holds the board and answers.
 	token := metas[0].Token
-	if state, _ := take(t, x, board1, true); state != "held" {
-		t.Fatalf("X's take: %s", state)
-	}
+	e.holder(board1, apiX)
 	asked := make(chan map[string]any, 1)
 	x.OnRPC(func(params map[string]any) (any, string) {
 		asked <- params
@@ -579,6 +576,7 @@ func TestChatAndToolCallOnAMarkedBoard(t *testing.T) {
 		t.Fatalf("a second answer to one call: %d", status)
 	}
 	e.holder(board1, apiX)
+	e.holder(own.ID, "P")
 }
 
 // An API client's drawing is cut at SceneMax; a page's is not.
@@ -587,7 +585,7 @@ func TestSceneCapIsTheAPIClientsAlone(t *testing.T) {
 	e, l := remoteEnv(t)
 	p := e.page("P")
 	x, _ := l.api(apiX)
-	makeBoard(t, x, 200, board1, obj{"name": "X"})
+	board1 := newBoard(t, x, "X").ID
 	if state, _ := take(t, x, board1, true); state != "held" {
 		t.Fatalf("X's take: %s", state)
 	}

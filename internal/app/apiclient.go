@@ -7,52 +7,57 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// APISnapshot is the state an API client gets: its own items and the server's lists. No group,
-// no board but its own, no defaults, no data folder, and nothing of the servers this one
-// connects to.
+// APISnapshot is the state an API client gets: the server's whole tree (its groups, boards,
+// chats, runs and defaults, archived ones included) and the server's lists, as the server's own
+// page gets them. No data folder, and nothing of the servers this one connects to: not its server
+// list, not their lists, libraries or trees.
 type APISnapshot struct {
 	Agents     []model.AgentKind                  `json:"agents"`   // the agents this server can start, never nil
 	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"` // claude, cursor, pi; null while not known
 	Home       string                             `json:"home"`
 	DefaultCwd string                             `json:"defaultCwd"`
-	Chats      []model.ChatView                   `json:"chats"`  // the chats with the client's mark; never nil
-	States     []model.BranchState                `json:"states"` // one per branch of those chats; never nil
-	Runs       []model.RunView                    `json:"runs"`   // the runs with the client's mark; never nil
-	Boards     []model.Board                      `json:"boards"` // the boards with the client's mark; never nil
+	Groups     []model.Group                      `json:"groups"`   // every group, in the server's order; never nil
+	Defaults   model.Defaults                     `json:"defaults"` // what the server remembers per group
+	Boards     []model.Board                      `json:"boards"`   // every board; never nil
+	Chats      []model.ChatView                   `json:"chats"`    // every chat but those of runs' agents; never nil
+	States     []model.BranchState                `json:"states"`   // one per branch of those chats; never nil
+	Runs       []model.RunView                    `json:"runs"`     // every run, the ones that have not started too; never nil
 	// Library is this server's own prompt library, which every API client reads and changes
 	// (the library routes of server.RemoteRoutes); null for a server without one. After every
 	// change the client gets it whole in an "own_library" event (library.Own).
 	Library *library.Tree `json:"library"`
 }
 
-// APISnapshot builds the snapshot of the API client with this id. It changes nothing and sends
-// nothing. It is built from its own fields, never from Snapshot: what is added to the page's
-// snapshot reaches no API client.
-func (a *App) APISnapshot(client string) APISnapshot {
+// APISnapshot builds the snapshot of an API client: the same for every one of them. It changes
+// nothing and sends nothing. It is built from its own fields, never from Snapshot: what is added
+// to the page's snapshot reaches no API client.
+func (a *App) APISnapshot() APISnapshot {
 	agents := a.Agents.List()
 	if agents == nil {
 		agents = []model.AgentKind{}
 	}
-	rs := []model.RunView{}
-	if a.Runs != nil {
-		rs = a.Runs.ViewsOf(client)
-	}
-	var lib *library.Tree
-	if a.Library != nil {
-		t := a.Library.Tree()
-		lib = &t
-	}
-	return APISnapshot{
-		Library:    lib,
+	snap := APISnapshot{
 		Agents:     agents,
 		Catalogs:   a.catalogs(),
 		Home:       a.Home,
 		DefaultCwd: a.DefaultCwd,
-		Chats:      a.Chats.ViewsOf(client),
-		States:     a.Chats.StatesOf(client),
-		Runs:       rs,
-		Boards:     a.Boards.ListOf(client),
+		Boards:     a.Boards.List(),
+		Chats:      a.Chats.Views(),
+		States:     a.Chats.States(),
+		Runs:       []model.RunView{},
 	}
+	a.St.Read(func(s *model.State) {
+		snap.Groups = append([]model.Group{}, s.Groups...)
+		snap.Defaults = defaults.Copy(s.Defaults)
+	})
+	if a.Runs != nil {
+		snap.Runs = a.Runs.Views()
+	}
+	if a.Library != nil {
+		t := a.Library.Tree()
+		snap.Library = &t
+	}
+	return snap
 }
 
 // catalogs returns each agent's model list as Snapshot gives it: Claude's built-in list until
@@ -69,47 +74,4 @@ func (a *App) catalogs() map[model.AgentKind]*model.Catalog {
 		}
 	})
 	return out
-}
-
-// remoteGroupName is the name the group of the API clients' items is made with.
-const remoteGroupName = "Remote"
-
-// RemoteGroup returns the id of the group "Remote", where what API clients make goes. It makes
-// the group, at the top level and seeded like any new group, when no id is remembered or the
-// remembered group is gone or archived (by itself or with a group it is nested in). Nothing else
-// makes it: no start and no set-up. The owner may rename, move, archive or delete it like any
-// group.
-func (a *App) RemoteGroup() (string, error) {
-	a.remoteMu.Lock()
-	defer a.remoteMu.Unlock()
-	// kept returns the remembered group's id while that group can take a new item.
-	kept := func(s *model.State) string {
-		if i := groupIndex(s.Groups, s.RemoteGroup); s.RemoteGroup != "" && i >= 0 && !s.Groups[i].Archived {
-			return s.RemoteGroup
-		}
-		return ""
-	}
-	var id string
-	a.St.Read(func(s *model.State) { id = kept(s) })
-	if id != "" {
-		return id, nil
-	}
-	made := false
-	if err := a.St.Update(func(s *model.State) error {
-		if id = kept(s); id != "" {
-			return nil
-		}
-		id, made = model.NewID("g_"), true
-		s.Groups = append(s.Groups, model.Group{ID: id, Name: remoteGroupName})
-		defaults.SeedGroup(&s.Defaults, id, "")
-		s.RemoteGroup = id
-		return nil
-	}); err != nil {
-		return "", err
-	}
-	if made {
-		a.broadcastGroups()
-		a.broadcastDefaults()
-	}
-	return id, nil
 }

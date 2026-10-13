@@ -94,10 +94,6 @@ var errBadPath = errors.New("servers: the path of a call begins with /")
 // Manager holds the server list and one connection per remote entry. Lock order: save, then mu,
 // then the list's own lock. Hooks and Options.Notify are called with none of them held.
 type Manager struct {
-	// Counts gives the number of chats and runs this app keeps for an entry. It is set by the
-	// code that keeps them, before the routes are served; nil counts as 0, 0.
-	Counts func(id string) (chats, runs int)
-
 	o       Options // Timing with its defaults
 	list    *List
 	ctx     context.Context // ends every connection and the sender
@@ -288,24 +284,6 @@ func (m *Manager) View(id string) (View, bool) {
 		return View{}, false
 	}
 	return m.viewLocked(e), true
-}
-
-// ByInstance is the entry whose server has the instance id: the local one for this server's own.
-func (m *Manager) ByInstance(instanceID string) (View, bool) {
-	if instanceID == "" {
-		return View{}, false
-	}
-	if instanceID == m.o.LocalID {
-		return m.local(), true
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, e := range m.list.Entries() {
-		if e.InstanceID == instanceID {
-			return m.viewLocked(e), true
-		}
-	}
-	return View{}, false
 }
 
 // identity is what a test of the entry except, or of an unsaved form when except is "", compares
@@ -553,8 +531,9 @@ func (m *Manager) TestSaved(ctx context.Context, id string, over Patch) (Result,
 }
 
 // Retry makes an entry that waits in its back-off try now. It does nothing in every other state:
-// for one that is connected or in an attempt, for one that waits for the user, for the local
-// entry and for an unknown id. The back-off's step stays as it is.
+// for one that is connected or in an attempt, for one that waits for the user (a call to a too
+// old server does not make it ask again), for the local entry and for an unknown id. The
+// back-off's step stays as it is.
 func (m *Manager) Retry(id string) {
 	if m == nil {
 		return
@@ -568,11 +547,17 @@ func (m *Manager) Retry(id string) {
 	}
 }
 
-// Do passes one call on to the entry's server, with the secret and this server's id, and returns
-// the answer whatever its status. limit 0 means Timing.Call. In any state but connected it
+// Do passes one call on to the entry's server, with the secret, this server's id and its level
+// (LevelHeader), and returns the answer whatever its status. limit 0 means Timing.Call. In any state but connected it
 // returns ErrNotConnected and sends nothing. path begins with "/" and may have a query; a body
 // that is not nil is sent as JSON. An answer of 401 puts the entry in secret_not_accepted.
 func (m *Manager) Do(ctx context.Context, id, method, path string, body []byte, limit time.Duration) (Reply, error) {
+	return m.DoAs(ctx, id, method, path, "application/json", body, limit)
+}
+
+// DoAs is Do for a body that is no JSON: the bytes of an image. body is sent as it is, with
+// contentType as its Content-Type, or with none when that is "".
+func (m *Manager) DoAs(ctx context.Context, id, method, path, contentType string, body []byte, limit time.Duration) (Reply, error) {
 	if id == LocalID {
 		return Reply{}, ErrLocalEntry
 	}
@@ -592,7 +577,7 @@ func (m *Manager) Do(ctx context.Context, id, method, path string, body []byte, 
 	if l == nil {
 		return Reply{}, ErrNotConnected
 	}
-	return c.do(ctx, l, method, path, body, limit)
+	return c.do(ctx, l, method, path, contentType, body, limit)
 }
 
 // Level is the "featureLevel" the entry's server reported when it last connected in this

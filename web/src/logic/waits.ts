@@ -1,14 +1,15 @@
 // What is on its way in a chat's fork flows: a message that starts a new branch, the first message
 // of a fork, a branch being opened or loaded, a fork being made, a fork's agent starting again on
-// another model. The waits are kept per chat in the store (State.waits), so that every part of the
+// another model, and an image being uploaded for a branch's composer. The waits are kept per chat in the store (State.waits), so that every part of the
 // page shows the same thing. Decided here: how a wait begins, goes on and ends, what the thread
 // draws for it, and which controls it holds, in which words. fork/actions.ts and conn.ts tell of
 // the calls; the components only draw. DOM-free.
 
-import type { Item, Reference } from "../types.ts";
+import type { ChatImage, Item, Reference } from "../types.ts";
 import { sendingLine } from "./chatserver.ts";
 
-/** A message on its way, with what the thread shows of it: its text and quotes.
+/** A message on its way, with what the thread shows of it: its text and quotes, and its images
+ *  when it has any.
  *  kind "branch": a message that starts a new branch, from Send until the new branch's list is here.
  *    sending: its POST runs. unnamed: the POST was answered without the branch's name (an older
  *    server), and the chat's view will name it; `before` is the chat's current branch before the
@@ -21,7 +22,7 @@ import { sendingLine } from "./chatserver.ts";
  *  at: the count of that thread's items the message comes after. */
 export type SendWait = {
   id: number; kind: "branch" | "first"; phase: "sending" | "unnamed" | "loading" | "taken";
-  text: string; references: Reference[]; branch: string; at: number;
+  text: string; references: Reference[]; images?: ChatImage[]; branch: string; at: number;
   before?: string; to?: string; kept?: readonly Item[];
 };
 /** A branch whose list is fetched before the chat shows it or a point of it (a move from the tree). */
@@ -33,8 +34,8 @@ export type ForkWait = { id: number };
 export type PickWait = { id: number; branch: string; model: string; effort?: string; label: string };
 
 /** What is on its way in one chat. Each kind is one wait at most; loads: the branches whose list
- *  is being fetched. */
-export type ChatWaits = { send?: SendWait; open?: OpenWait; fork?: ForkWait; pick?: PickWait; loads?: readonly string[] };
+ *  is being fetched; uploads: the branches for whose composer an image is being uploaded. */
+export type ChatWaits = { send?: SendWait; open?: OpenWait; fork?: ForkWait; pick?: PickWait; loads?: readonly string[]; uploads?: readonly string[] };
 export type Waits = Record<string, ChatWaits>;
 export type WaitKind = "send" | "open" | "fork" | "pick";
 
@@ -106,6 +107,15 @@ export function withLoad(all: Waits, chat: string, branch: string, on: boolean):
   return put(all, chat, loads.length ? { ...rest, loads } : rest);
 }
 
+/** The uploads for the composer of a branch begin (on: the first one runs) or have all ended. */
+export function withUpload(all: Waits, chat: string, branch: string, on: boolean): Waits {
+  const w = all[chat] ?? {}, had = w.uploads ?? [];
+  if (had.includes(branch) === on) return all;
+  const { uploads: _, ...rest } = w;
+  const uploads = on ? [...had, branch] : had.filter((b) => b !== branch);
+  return put(all, chat, uploads.length ? { ...rest, uploads } : rest);
+}
+
 /** Every fetch of a chat's lists was given up (conn.ts forgetThread): none of them will tell of its end. */
 export function withoutLoads(all: Waits, chat: string): Waits {
   const w = all[chat];
@@ -126,6 +136,8 @@ export const SENDING = "Your message is being sent";
 export const SEND_HELD = `${SENDING}: this works again once the server has answered`;
 /** Why Fork does nothing while a fork of the chat is being made. */
 export const FORK_HELD = "A fork of this chat is being made: this works again once it is there";
+/** Why a control does nothing while the chat's composer uploads an image. */
+export const UPLOAD_HELD = "An image is being uploaded: this works again once it is there";
 
 /** Whether a chat's pending move is being sent: from Send until the new branch is known. Nothing
  *  drops the move then, Back does not undo it, and the controls that would change where the
@@ -143,13 +155,32 @@ export type Control = "back" | "alert" | "open" | "branch" | "branchEdit" | "cho
 
 const BY_SEND: readonly Control[] = ["back", "alert", "open", "branch", "branchEdit", "choice", "send"];
 const BY_FORK: readonly Control[] = ["fork", "forkEdit"];
+const BY_UPLOAD: readonly Control[] = ["back", "branchEdit"];
+const BY_UPLOAD_IN_MOVE: readonly Control[] = ["alert", "open"];
+
+/** Whether an image is being uploaded for the composer of a chat's branch. */
+export const uploading = (w: ChatWaits | undefined, branch: string): boolean => !!w?.uploads?.includes(branch);
+
+/** Where a chat's composer is: the branch the chat is on here, whose composer it is, and whether a
+ *  move is pending. */
+export type ComposerAt = { branch: string; move: boolean };
+
+/** Whether an upload of the chat's composer holds what would change what the composer holds:
+ *  Branch and edit, which puts a message into it, and Back, which takes one out; with a pending
+ *  move also what puts the chat on another branch, which is Back first. The image goes where its
+ *  thumbnail stands when the upload is answered. An upload that outlived its composer (the chat is
+ *  on another branch by now) holds nothing. */
+export const uploadHeld = (w: ChatWaits | undefined, on: ComposerAt | undefined, control: Control): boolean =>
+  !!on && uploading(w, on.branch) && (BY_UPLOAD.includes(control) || (on.move && BY_UPLOAD_IN_MOVE.includes(control)));
 
 /** Why a control of a chat does nothing now: it is drawn disabled, with this as its title. "" for
  *  one that is live. A fork asked for during a branch send is not held by the send, nor a branch
- *  by a fork. */
-export function heldReason(w: ChatWaits | undefined, control: Control): string {
+ *  by a fork. on: where the chat's composer is, for what an upload of it holds (uploadHeld);
+ *  without it no upload is looked at. */
+export function heldReason(w: ChatWaits | undefined, control: Control, on?: ComposerAt): string {
   if (sendHeld(w) && BY_SEND.includes(control)) return SEND_HELD;
   if (w?.fork && BY_FORK.includes(control)) return FORK_HELD;
+  if (uploadHeld(w, on, control)) return UPLOAD_HELD;
   return "";
 }
 
@@ -185,7 +216,7 @@ export type WaitLine = { id: "send" | "load" | "open" | "pick" | "fork"; text: s
  *  lines: the lines at the thread's foot, each with dots.
  *  quiet: the status line of the branch shown is left out: that branch is the source of a new one,
  *    and the line of the message says what goes on. */
-export type ThreadWait = { kept: readonly Item[] | null; sent: { text: string; references: Reference[] } | null; lines: WaitLine[]; quiet: boolean };
+export type ThreadWait = { kept: readonly Item[] | null; sent: { text: string; references: Reference[]; images?: ChatImage[] } | null; lines: WaitLine[]; quiet: boolean };
 
 const NOTHING: ThreadWait = { kept: null, sent: null, lines: [], quiet: false };
 
@@ -208,7 +239,7 @@ export function threadWait(w: ChatWaits | undefined, t: { shown: string; loaded:
   if (!w) return NOTHING;
   const lines: WaitLine[] = [], s = t.archived ? undefined : w.send;
   let kept: ThreadWait["kept"] = null, sent: ThreadWait["sent"] = null, quiet = false;
-  const message = (m: SendWait) => ({ text: m.text, references: m.references });
+  const message = (m: SendWait) => ({ text: m.text, references: m.references, ...(m.images?.length ? { images: m.images } : {}) });
   if (s?.kind === "branch" && s.phase === "loading") {
     if (!t.loaded && t.shown === s.to) {
       kept = s.kept ?? [];

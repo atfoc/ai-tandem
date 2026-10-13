@@ -5,9 +5,12 @@
 // the selection and points on the board are sent only when the user puts them
 // in the message (⌘L, ⌘⇧L; see refs.ts).
 
-/** How a board is named to the agent everywhere: `name (id)`. */
+import { ownId } from "./keys.ts";
+
+/** How a board is named to the agent everywhere: `name (id)`, the id being the board's own on its server (b.id is
+ *  the page's key of it). */
 export function boardRef(b: { name: string; id: string }): string {
-  return `${b.name} (${b.id})`;
+  return `${b.name} (${ownId(b.id)})`;
 }
 
 export function contextBlock(o: { board: string; referenced: string[] }): string {

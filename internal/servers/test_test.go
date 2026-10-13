@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -215,10 +216,10 @@ func TestTestConnectionRows(t *testing.T) {
 				}
 			}},
 		{name: "something else, another app",
-			target: pinned(helloServer(answer(200, "application/json", `{"app":"other","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":1}`))),
+			target: pinned(helloServer(answer(200, "application/json", `{"app":"other","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":`+minLevel+`}`))),
 			opts:   testOptions(), outcome: "not_aiwb", step: 4, message: "Something else answers there"},
 		{name: "something else, an id that is none",
-			target: pinned(helloServer(answer(200, "application/json", `{"app":"ai-whiteboard","instanceId":"local","featureLevel":1}`))),
+			target: pinned(helloServer(answer(200, "application/json", `{"app":"ai-whiteboard","instanceId":"local","featureLevel":`+minLevel+`}`))),
 			opts:   testOptions(), outcome: "not_aiwb", step: 4, message: "Something else answers there"},
 		{name: "something else, a JSON array", target: pinned(helloServer(answer(200, "application/json", `[]`))), opts: testOptions(),
 			outcome: "not_aiwb", step: 4, message: "Something else answers there"},
@@ -237,7 +238,7 @@ func TestTestConnectionRows(t *testing.T) {
 		{name: "connected", target: pinned(good), id: Identity{Expect: standin.DefaultInstanceID, Others: map[string]string{testOtherID: "Studio"}}, opts: testOptions(),
 			outcome: "connected", step: 5, message: "Connected",
 			check: func(t *testing.T, r Result) {
-				if r.Version != standin.DefaultVersion || r.InstanceID != standin.DefaultInstanceID || r.FeatureLevel != 1 ||
+				if r.Version != standin.DefaultVersion || r.InstanceID != standin.DefaultInstanceID || r.FeatureLevel != standin.DefaultFeatureLevel ||
 					len(r.Agents) != 2 || r.Agents[0] != model.Claude || r.Agents[1] != model.Pi {
 					t.Errorf("result %+v; want the stand-in's version, id, level and agents", r)
 				}
@@ -351,7 +352,7 @@ func TestOutcomeTableComplete(t *testing.T) {
 	if Outcome("nonsense").Message() != "" || Outcome("nonsense").Step() != 0 {
 		t.Error("an unknown code has a message or a step")
 	}
-	if MinFeatureLevel != 1 || HelloPath != "/api/hello" || StatePath != "/api/state" || StreamPath != "/api/events" {
+	if MinFeatureLevel != 5 || HelloPath != "/api/hello" || StatePath != "/api/state" || StreamPath != "/api/events" {
 		t.Error("the level or a path changed")
 	}
 }
@@ -410,7 +411,7 @@ func TestSecretNotSentBeforeCertificate(t *testing.T) {
 }
 
 // TestPinnedConnects: with the pin the test sends hello and the state on one connection, each
-// with the secret and the local id.
+// with the secret, the local id and this client's level.
 func TestPinnedConnects(t *testing.T) {
 	t.Parallel()
 	s := standin.Start(t, standin.Options{})
@@ -419,8 +420,8 @@ func TestPinnedConnects(t *testing.T) {
 		t.Fatalf("result %+v; want connected", r)
 	}
 	want := []standin.Request{
-		{Method: "GET", Path: HelloPath, Secret: standin.DefaultSecret, Client: testLocalID},
-		{Method: "GET", Path: StatePath, Secret: standin.DefaultSecret, Client: testLocalID},
+		{Method: "GET", Path: HelloPath, Secret: standin.DefaultSecret, Client: testLocalID, Level: clientLevel},
+		{Method: "GET", Path: StatePath, Secret: standin.DefaultSecret, Client: testLocalID, Level: clientLevel},
 	}
 	got := s.Requests()
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
@@ -437,7 +438,7 @@ func TestPinnedConnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantJSON := `{"ok":true,"step":5,"outcome":"connected","message":"Connected","version":"standin",` +
-		`"instanceId":"` + standin.DefaultInstanceID + `","featureLevel":1,"agents":["claude","pi"]}`
+		`"instanceId":"` + standin.DefaultInstanceID + `","featureLevel":` + strconv.Itoa(standin.DefaultFeatureLevel) + `,"agents":["claude","pi"]}`
 	if string(b) != wantJSON {
 		t.Errorf("JSON %s\nwant %s", b, wantJSON)
 	}
@@ -467,7 +468,7 @@ func TestHTTP1Connects(t *testing.T) {
 			w.Header().Set("Connection", "close")
 			w.Header().Set("Content-Type", "application/json")
 			if r.URL.Path == HelloPath {
-				_, _ = io.WriteString(w, `{"app":"ai-whiteboard","version":"v","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":2}`)
+				_, _ = io.WriteString(w, `{"app":"ai-whiteboard","version":"v","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":`+strconv.Itoa(MinFeatureLevel+1)+`}`)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(standin.DefaultSnapshot())
@@ -487,8 +488,8 @@ func TestHTTP1Connects(t *testing.T) {
 
 	target := Target{Address: "https://" + ln.Addr().String(), Secret: "s", SelfSigned: true, Pin: remote.Fingerprint(pair.Certificate[0])}
 	r := run(target, Identity{}, testOptions())
-	if r.Outcome != OutcomeConnected || r.FeatureLevel != 2 || len(r.Agents) != 2 {
-		t.Fatalf("result %+v; want connected at level 2", r)
+	if r.Outcome != OutcomeConnected || r.FeatureLevel != MinFeatureLevel+1 || len(r.Agents) != 2 {
+		t.Fatalf("result %+v; want connected at level %d", r, MinFeatureLevel+1)
 	}
 	if n := handshakes.Load(); n != 2 {
 		t.Errorf("%d handshakes; want 2", n)
@@ -527,9 +528,14 @@ func TestSelfSignedBoxOff(t *testing.T) {
 }
 
 // TestTooOld: a level below the minimum, or none, ends the test at step 4; the state is not asked.
+// The level before the minimum is a server with the prompt library and without the chats made
+// on it before their first message: the last build before this level.
 func TestTooOld(t *testing.T) {
 	t.Parallel()
-	for name, level := range map[string]*int{"level 0": standin.Level(0), "no level": nil, "level -1": standin.Level(-1)} {
+	for name, level := range map[string]*int{
+		"level 0": standin.Level(0), "no level": nil, "level -1": standin.Level(-1),
+		"the level before": standin.Level(MinFeatureLevel - 1), "the library's level": standin.Level(LibraryLevel),
+	} {
 		s := standin.Start(t, standin.Options{})
 		s.SetFeatureLevel(level)
 		// Identity plays no part: the level is checked first.
@@ -545,13 +551,25 @@ func TestTooOld(t *testing.T) {
 		}
 	}
 	s := standin.Start(t, standin.Options{})
-	s.SetHello(answer(200, "application/json", `{"app":"ai-whiteboard","version":"v","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":"1"}`))
+	s.SetHello(answer(200, "application/json", `{"app":"ai-whiteboard","version":"v","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":"`+minLevel+`"}`))
 	if r := run(pinned(s), Identity{}, testOptions()); r.Outcome != OutcomeTooOld {
 		t.Errorf("a level that is no integer: %s; want too_old", r.Outcome)
 	}
 	s = standin.Start(t, standin.Options{FeatureLevel: standin.Level(7)})
 	if r := run(pinned(s), Identity{}, testOptions()); !r.OK || r.FeatureLevel != 7 {
 		t.Errorf("a higher level: %+v; want connected", r)
+	}
+	// The stand-in of the other suites is a server this one connects to.
+	if standin.DefaultFeatureLevel < MinFeatureLevel {
+		t.Errorf("the stand-in's level %d is below the minimum %d", standin.DefaultFeatureLevel, MinFeatureLevel)
+	}
+	s = standin.Start(t, standin.Options{})
+	if r := run(pinned(s), Identity{}, testOptions()); !r.OK || r.FeatureLevel != standin.DefaultFeatureLevel {
+		t.Errorf("the stand-in as it starts: %+v; want connected", r)
+	}
+	s = standin.Start(t, standin.Options{FeatureLevel: standin.Level(MinFeatureLevel)})
+	if r := run(pinned(s), Identity{}, testOptions()); !r.OK || r.FeatureLevel != MinFeatureLevel {
+		t.Errorf("the minimum itself: %+v; want connected", r)
 	}
 }
 
@@ -616,7 +634,7 @@ func TestStepLimit(t *testing.T) {
 	s := standin.Start(t, standin.Options{})
 	s.SetHello(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
-		answer(200, "application/json", `{"app":"ai-whiteboard","version":"v","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":1}`)(w, r)
+		answer(200, "application/json", `{"app":"ai-whiteboard","version":"v","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":`+minLevel+`}`)(w, r)
 	})
 	s.Handle("GET "+StatePath, hang)
 	start = time.Now()
@@ -654,7 +672,7 @@ func TestTextFromTheServerIsCleaned(t *testing.T) {
 	long := strings.Repeat("é", 400)
 	s := standin.Start(t, standin.Options{})
 	hello, _ := json.Marshal(map[string]any{
-		"app": "ai-whiteboard", "version": "1.2\x1b[31m\n\t3\u0000" + long, "instanceId": standin.DefaultInstanceID, "featureLevel": 1,
+		"app": "ai-whiteboard", "version": "1.2\x1b[31m\n\t3\u0000" + long, "instanceId": standin.DefaultInstanceID, "featureLevel": MinFeatureLevel,
 	})
 	s.SetHello(answer(200, "application/json", string(hello)))
 	s.SetSnapshot(map[string]any{

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -22,17 +23,18 @@ import (
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/server"
+	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/store"
 )
 
 // apiOptions is how the API client id reaches a remote listener with this secret: over HTTPS
-// with the certificate pinned, and the secret and its id in their headers.
+// with the certificate pinned, and the secret, its id and its level in their headers.
 func apiOptions(t *testing.T, fingerprint, secret, id string) bridgetest.Options {
 	t.Helper()
 	tr := pinned(fingerprint)
 	t.Cleanup(tr.CloseIdleConnections)
 	return bridgetest.Options{HTTP: &http.Client{Transport: tr},
-		Header: map[string]string{remote.SecretHeader: secret, server.ClientHeader: id}}
+		Header: map[string]string{remote.SecretHeader: secret, server.ClientHeader: id, servers.LevelHeader: testLevel}}
 }
 
 // apiClient opens the event stream of the API client id on the remote listener of 127.0.0.1:<port>.
@@ -518,9 +520,19 @@ func typesOf(evs []string) (types []string) {
 	return types
 }
 
+// apiListEvents and apiFollowEvents are what an API client's stream may hold after its hello and
+// snapshot: the list events, which go to every client, and the content events of what the client
+// follows. No event of the server's own pages is among them.
+var (
+	apiListEvents   = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "run", "run_removed", "catalog", "agents", "own_library"}
+	apiFollowEvents = []string{"tree", "chat_items", "sub", "sub_items", "run_detail", "run_activity"}
+)
+
 // Across processes: a real server with the stand-in agent, a stand-in page on loopback that holds
-// a board, and an API client over HTTPS that creates a chat, reads it, answers a permission ask,
-// sends a second message and stops it. The page keeps its board and saves it meanwhile.
+// a board, and an API client over HTTPS that makes a chat with the page's calls, sends its first
+// message, reads it, answers a permission ask, sends a second message and stops it. The page
+// keeps its board and saves it meanwhile. Each sees what the other made: the client the page's
+// board, the page the client's chat, in the group it was made in and in no group "Remote".
 func TestAPIClientBesideAPage(t *testing.T) {
 	serverTest(t, "TestAPIClientsTakeNothingFromAPage, TestTableRoutesServeAnAPIClient, TestEventsOfAnAPIClient (internal/server)")
 	if !agenttest.HasNode() {
@@ -556,11 +568,17 @@ func TestAPIClientBesideAPage(t *testing.T) {
 	save("one")
 	p.Drain(300 * time.Millisecond)
 
-	// The API client connects: its snapshot is its own, and the page is sent nothing.
+	// The API client connects: its snapshot is the server's tree, the page's board in it, and
+	// the page is sent nothing.
 	c := apiClient(t, port, fp, secret, testClient)
 	snap := c.Welcome()
-	if _, has := snap["groups"]; has || len(snap["chats"].([]any)) != 0 {
+	groups, hasGroups := snap["groups"].([]any)
+	boards, _ := snap["boards"].([]any)
+	if !hasGroups || len(groups) != 0 || len(snap["chats"].([]any)) != 0 || len(boards) != 1 || boards[0].(map[string]any)["id"] != board {
 		t.Fatalf("the API client's snapshot: %v", snap)
+	}
+	if _, has := snap["defaults"]; !has {
+		t.Fatalf("the API client's snapshot has no defaults: %v", snap)
 	}
 	// (A catalog that finishes loading just now goes to every client, whoever connects.)
 	for _, typ := range typesOf(p.Drain(300 * time.Millisecond)) {
@@ -569,13 +587,22 @@ func TestAPIClientBesideAPage(t *testing.T) {
 		}
 	}
 
-	// The creation call, with a permission ask in the first message.
+	// The chat is made with the page's call, in no group, and is given its folder; the first
+	// message, with a permission ask in it, is the message call.
 	const chat = "c3e1f5a7-9b2d-4e6f-8a1c-3d5e7f9a1b2c"
 	cwd := t.TempDir()
-	made := ok200(t, c, "POST", "/api/chats", map[string]any{"id": chat, "agent": "claude", "cwd": cwd,
-		"text": `first [[ask Bash {"command":"ls"}]]`})
-	if made["started"] != true || made["sent"] != true || made["ok"] != true {
-		t.Fatalf("the creation call: %v", made)
+	made := ok200(t, c, "POST", "/api/chats", map[string]any{"id": chat, "agent": "claude", "group": model.Ungrouped})
+	if made["id"] != chat || made["group"] != model.Ungrouped || made["locked"] == true {
+		t.Fatalf("the new chat: %v", made)
+	}
+	for _, gone := range []string{"started", "sent", "chat"} {
+		if _, has := made[gone]; has {
+			t.Fatalf("the new chat's answer has %q, a field of the creation call of before: %v", gone, made)
+		}
+	}
+	ok200(t, c, "PATCH", "/api/chats/"+chat, map[string]any{"cwd": cwd})
+	if sent := ok200(t, c, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": `first [[ask Bash {"command":"ls"}]]`}); sent["ok"] != true {
+		t.Fatalf("the first message: %v", sent)
 	}
 	items := awaitItems(t, c, chat, "the permission ask", func(items []model.Item) bool {
 		return len(items) > 0 && items[len(items)-1].Kind == "perm"
@@ -617,7 +644,8 @@ func TestAPIClientBesideAPage(t *testing.T) {
 	}
 	save("four")
 
-	// The page: its board is its own still, and it was told of the chat in the group "Remote".
+	// The page: its board is its own still, and it was told of the chat, for which no group was
+	// made.
 	held := ok200(t, p, "POST", "/api/boards/"+board+"/take", map[string]any{"ifFree": true})
 	if held["state"] != "held" || held["rev"] != float64(rev) {
 		t.Fatalf("the page's hold after the API client's work: %v, want held at revision %d", held, rev)
@@ -634,31 +662,35 @@ func TestAPIClientBesideAPage(t *testing.T) {
 		}
 		return n
 	}
-	for _, typ := range []string{"release_request", "superseded", "server_stopping"} {
+	for _, typ := range []string{"release_request", "superseded", "server_stopping", "groups"} {
 		if count(ps, typ) != 0 {
 			t.Errorf("the page was sent %s: %v", typ, ps)
 		}
 	}
-	if count(ps, "groups") == 0 || count(ps, "chat") == 0 || count(ps, "chat_items") != 0 {
+	if count(ps, "chat") == 0 || count(ps, "chat_items") != 0 {
 		t.Errorf("the page, which lists the chat and does not follow it, was sent %v", ps)
 	}
-	// The API client: the chat's list and content events, and nothing outside its allow-list.
+	// The API client: the chat's list and content events, and no event of a page alone.
 	cs := typesOf(c.Drain(500 * time.Millisecond))
 	if count(cs, "chat") == 0 || count(cs, "chat_items") == 0 || count(cs, "branch_state") == 0 {
 		t.Errorf("the API client was sent %v", cs)
 	}
 	for _, typ := range cs {
-		switch typ {
-		case "chat", "chat_items", "branch_state", "tree", "sub", "sub_items", "catalog", "agents":
-		default:
+		if !slices.Contains(apiListEvents, typ) && !slices.Contains(apiFollowEvents, typ) {
 			t.Errorf("the API client was sent %s", typ)
 		}
 	}
 
-	// Its state lists the chat; the server's log holds no secret.
+	// Both states list the chat, in no group, and no group was made for it; the server's log
+	// holds no secret.
 	state := ok200(t, c, "GET", "/api/state", nil)
-	if chats, _ := state["chats"].([]any); len(chats) != 1 {
-		t.Fatalf("the API client's state: %v", state)
+	own := ok200(t, p, "GET", "/api/state", nil)
+	for who, st := range map[string]map[string]any{"the API client": state, "the page": own} {
+		chats, _ := st["chats"].([]any)
+		groups, _ := st["groups"].([]any)
+		if len(chats) != 1 || chats[0].(map[string]any)["id"] != chat || chats[0].(map[string]any)["group"] != model.Ungrouped || len(groups) != 0 {
+			t.Fatalf("the state of %s: chats %v, groups %v; want the one chat in no group and no group", who, st["chats"], st["groups"])
+		}
 	}
 	noSecret(t, secret, serverLog(t, in.dir))
 }

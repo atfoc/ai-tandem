@@ -18,6 +18,7 @@ const {
   attachLinkHandlers,
   attachCloseFlush,
   resumeAfterCancelledQuit,
+  pickImages,
 } = require('./lib');
 
 const logPath = serverLogPath(os.homedir());
@@ -189,6 +190,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   ipcMain.handle('aiwb:open-server-log', () => shell.openPath(logPath));
+  // The composer's attach button: the app's own open dialog. Only the main window's page, on the
+  // server's origin, gets an answer, and only files the dialog returned are read.
+  ipcMain.handle('aiwb:pick-images', (event) =>
+    pickImages({ event, win: mainWindow, appURL: mainURL, dialog }));
 
   app.whenReady().then(() => {
     startUp();

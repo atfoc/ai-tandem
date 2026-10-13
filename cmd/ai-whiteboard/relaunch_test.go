@@ -42,7 +42,7 @@ func serverTest(t *testing.T, cover ...string) {
 //
 //	TestRunE2ENoGit                          a whole server and a run: some 2.5 s, no git repository
 //	TestRemoteListenerServes                 the remote listener of a real server, over HTTPS
-//	TestRemoteRunGroupServer                 two real servers, one an entry of the other's list
+//	TestRemotePairStartsAChat                two real servers, one an entry of the other's list
 //	TestReloadKeepsSecretWhenUnreadable      the signal that makes a real server read its secret again
 //	TestStartCheckComesBeforeTheBinds        a start that the check of remote access ends
 //	TestSetupRemoteScriptRefusesEmptyValues  a script of the server folder, run through sh

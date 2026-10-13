@@ -43,13 +43,11 @@ func withLibrary(lib any) map[string]any {
 	return snap
 }
 
-// libraryRig is a rig whose stand-in reports the level of a server with a library and sends
-// this snapshot.
+// libraryRig is a rig whose stand-in sends this snapshot. Its level is that of a server of
+// today: one with a library.
 func libraryRig(t *testing.T, snapshot any) *rig {
 	t.Helper()
-	return newRig(t, rigOpt{snapshot: snapshot, prepare: func(rg *rig) {
-		rg.s.SetFeatureLevel(standin.Level(servers.LibraryLevel))
-	}})
+	return newRig(t, rigOpt{snapshot: snapshot})
 }
 
 // shown lists the copies as "name connected: path | path".
@@ -90,26 +88,25 @@ func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
 const gitShown = "Studio connected: git/ review=Look at it.\nTwice."
 
-// Line 24 of section 10: a server built before the feature connects as before and shows no
-// library and no error, whatever it sends; so does a later one that has no library.
+// Line 24 of section 10: a server that has no library connects as before and shows no library
+// and no error. A server built before the feature is no longer connected to (it is below
+// servers.MinFeatureLevel), so the level below which no library is taken is one no connected
+// server has: TestLibraryOfAServerThatIsTooOld.
 func TestLibraryOfAServerWithoutOne(t *testing.T) {
 	t.Parallel()
 	for name, c := range map[string]struct {
 		level    *int
 		snapshot any
 	}{
-		"an older server":                        {standin.Level(servers.LibraryLevel - 1), standin.DefaultSnapshot()},
-		"a server that reports no level it has":  {standin.Level(servers.MinFeatureLevel), withLibrary(gitLibrary())},
-		"an older server that sends a library":   {standin.Level(servers.LibraryLevel - 1), withLibrary(gitLibrary())},
-		"a server of today without a library":    {standin.Level(servers.LibraryLevel), withLibrary(nil)},
-		"a server of today that leaves it out":   {standin.Level(servers.LibraryLevel), standin.DefaultSnapshot()},
-		"a later server without a library":       {standin.Level(servers.LibraryLevel + 4), withLibrary(nil)},
-		"a server whose library is no library":   {standin.Level(servers.LibraryLevel - 1), withLibrary("none")},
-		"a server of today, library of no shape": {standin.Level(servers.LibraryLevel), withLibrary(nil)},
+		"the lowest level that connects":         {standin.Level(servers.MinFeatureLevel), withLibrary(nil)},
+		"a server of today without a library":    {standin.Level(testLevel), withLibrary(nil)},
+		"a server of today that leaves it out":   {standin.Level(testLevel), standin.DefaultSnapshot()},
+		"a later server without a library":       {standin.Level(testLevel + 4), withLibrary(nil)},
+		"a server of today, library of no shape": {standin.Level(testLevel), withLibrary(nil)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			rg := newRig(t, rigOpt{snapshot: c.snapshot, prepare: func(rg *rig) { rg.s.SetFeatureLevel(c.level) }})
+			rg := newRig(t, rigOpt{snapshot: c.snapshot, level: c.level})
 			p, _ := rg.page("P")
 			rg.state(servers.StateConnected)
 			// What such a server sends later is not taken either.
@@ -125,6 +122,30 @@ func TestLibraryOfAServerWithoutOne(t *testing.T) {
 			}
 			if v, _ := rg.m.View(rg.entry); v.State != servers.StateConnected || v.Detail != "" {
 				t.Fatalf("the entry: %+v", v)
+			}
+			if n := rg.logs.count("prompt library"); n != 0 {
+				t.Fatalf("logged: %v", rg.logs.all())
+			}
+		})
+	}
+}
+
+// A server that is too old shows no library and no error, whatever its snapshot would hold:
+// one built before the library, and the last build before the level this server asks for.
+func TestLibraryOfAServerThatIsTooOld(t *testing.T) {
+	t.Parallel()
+	for name, level := range map[string]int{"before the library": servers.LibraryLevel - 1, "with the library": servers.MinFeatureLevel - 1} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// The rig is held: such an entry never gives the snapshot a start waits for.
+			rg := newRig(t, rigOpt{snapshot: withLibrary(gitLibrary()), hold: true, level: standin.Level(level)})
+			rg.m.Start()
+			rg.state(servers.StateTooOld)
+			if got := rg.r.Libraries(); got == nil || len(got) != 0 {
+				t.Fatalf("the copies: %+v", got)
+			}
+			if _, ok := rg.r.Library(context.Background(), rg.entry); ok {
+				t.Fatal("a library to change")
 			}
 			if n := rg.logs.count("prompt library"); n != 0 {
 				t.Fatalf("logged: %v", rg.logs.all())
@@ -226,7 +247,7 @@ func TestLibraryThatBreaksARule(t *testing.T) {
 
 	// In a snapshot: a stream that starts with such a library shows none.
 	rg.s.SetSnapshot(withLibrary(bad["a name with a slash"]))
-	n := rg.local.upCount()
+	n := rg.snaps.Load()
 	rg.s.DropStreams()
 	rg.returned(n + 1)
 	if got := rg.shown(); got != "" {
@@ -515,7 +536,7 @@ func TestLibraryCopyIsInMemoryOnly(t *testing.T) {
 	}
 
 	// It starts again, with the same list; the other server is still down.
-	again := newRig(t, rigOpt{root: rg.root, hold: true})
+	again := newRig(t, rigOpt{restart: rg, hold: true})
 	again.m.Start()
 	again.state(servers.StateUnreachable)
 	if got := again.r.Libraries(); len(got) != 0 {

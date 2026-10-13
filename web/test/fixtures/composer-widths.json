@@ -12,7 +12,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_plain",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -20,6 +20,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -28,9 +29,8 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_new",
-   "sum": 706.7,
+   "sum": 624.7,
    "controls": [
-    { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
@@ -38,6 +38,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -45,9 +46,8 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_new_long",
-   "sum": 861.1,
+   "sum": 779.1,
    "controls": [
-    { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "w": 202.4 },
     { "kind": "model", "label": "Claude Opus 5.5 (1M context, extended thinking)", "w": 102.4 },
@@ -55,6 +55,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -62,7 +63,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_long",
-   "sum": 685,
+   "sum": 715,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
@@ -70,6 +71,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -78,7 +80,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_busy",
-   "sum": 515.7,
+   "sum": 545.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -86,6 +88,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "stop", "label": "", "w": 28 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
@@ -95,7 +98,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_ctxerr",
-   "sum": 494.2,
+   "sum": 524.2,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -103,6 +106,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "Context unavailable", "w": 135.8 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -111,7 +115,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_quotes",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -119,16 +123,17 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "plain-remote-new": {
    "composer": "chat",
    "pane": "page",
-   "chat": "c_A2_remote_new",
-   "sum": 785.1,
+   "chat": "s_lab~c_A2_remote_new",
+   "sum": 798.7,
    "controls": [
-    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 186.4 },
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
@@ -136,14 +141,15 @@
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "plain-remote-started": {
    "composer": "chat",
    "pane": "page",
-   "chat": "c_A2_remote",
-   "sum": 657.7,
+   "chat": "s_lab~c_A2_remote",
+   "sum": 687.7,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
@@ -152,14 +158,15 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "plain-remote-started-long": {
    "composer": "chat",
    "pane": "page",
-   "chat": "c_A2_remote_long",
-   "sum": 859,
+   "chat": "s_lab~c_A2_remote_long",
+   "sum": 889,
    "controls": [
     { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
@@ -168,6 +175,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -176,7 +184,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_move",
-   "sum": 558,
+   "sum": 588,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -185,6 +193,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -192,7 +201,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_move_long",
-   "sum": 708.9,
+   "sum": 738.9,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
@@ -201,22 +210,24 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "plain-loading": {
    "composer": "chat",
    "pane": "page",
-   "chat": "c_A2_loading",
-   "sum": 687.6,
+   "chat": "s_lab~c_A2_loading",
+   "sum": 701.2,
    "controls": [
-    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 186.4 },
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
     { "kind": "agent", "label": "Cursor", "w": 80.4 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "loading", "label": "Loading models…", "fixed": true, "w": 109 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -224,63 +235,68 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_noagent",
-   "sum": 493.8,
+   "sum": 411.8,
    "reason": true,
    "controls": [
-    { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "No agent", "w": 78 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "plain-noagent-installed": {
    "composer": "chat",
    "pane": "page",
-   "chat": "c_A2_bare",
-   "sum": 442.8,
+   "chat": "s_bare~c_A2_bare",
+   "sum": 456.4,
    "reason": true,
    "controls": [
-    { "kind": "server", "label": "Bare box", "w": 76 },
+    { "kind": "server", "label": "Bare box", "fixed": true, "w": 59.6 },
     { "kind": "agent", "label": "No agent", "fixed": true, "w": 61.5 },
     { "kind": "folder", "label": "bare", "w": 67.7 },
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "plain-off-new": {
    "composer": "chat",
    "pane": "page",
-   "chat": "c_A2_off_new",
-   "sum": 475.6,
+   "chat": "s_lab~c_A2_off_new",
+   "sum": 590.4,
    "reason": true,
    "controls": [
-    { "kind": "server", "label": "Office Mac", "w": 88.1 },
-    { "kind": "agent", "label": "No agent", "fixed": true, "w": 61.5 },
-    { "kind": "folder", "label": "projects", "w": 88.4 },
-    { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
   "plain-off-started": {
    "composer": "chat",
    "pane": "page",
-   "chat": "c_A2_off",
-   "sum": 577.6,
+   "chat": "s_lab~c_A2_off",
+   "sum": 687.7,
+   "reason": true,
    "controls": [
-    { "kind": "server", "label": "Office Mac", "fixed": true, "w": 71.7 },
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
-    { "kind": "folder", "label": "projects", "fixed": true, "w": 72 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
     { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -288,7 +304,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_fork",
-   "sum": 558,
+   "sum": 588,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -297,6 +313,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -304,7 +321,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_notice",
-   "sum": 587,
+   "sum": 617,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -313,6 +330,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -320,7 +338,7 @@
    "composer": "chat",
    "pane": "page",
    "chat": "c_A2_two",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -328,6 +346,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -336,7 +355,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_board",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -344,6 +363,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -352,9 +372,8 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_new",
-   "sum": 690.3,
+   "sum": 624.7,
    "controls": [
-    { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
@@ -362,6 +381,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -370,7 +390,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_quotes",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -378,6 +398,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -385,7 +406,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_long",
-   "sum": 685,
+   "sum": 715,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
@@ -393,6 +414,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -401,7 +423,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_board_move",
-   "sum": 558,
+   "sum": 588,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -410,6 +432,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -418,7 +441,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_longname",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -426,6 +449,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -433,7 +457,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_sketch",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -441,6 +465,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -449,7 +474,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_live_ask",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -457,6 +482,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -465,9 +491,8 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_live_new",
-   "sum": 690.3,
+   "sum": 624.7,
    "controls": [
-    { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "model", "label": "Opus 5.5", "w": 77.3 },
@@ -475,6 +500,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "w": 127.6 },
     { "kind": "meter", "label": "", "w": 28 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -483,7 +509,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_A2_run_quotes",
-   "sum": 483.7,
+   "sum": 513.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -491,6 +517,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
   },
@@ -499,7 +526,7 @@
    "composer": "chat",
    "pane": "panel",
    "chat": "c_trouble_ask",
-   "sum": 515.7,
+   "sum": 545.7,
    "controls": [
     { "kind": "lock", "label": "", "w": 10, "margin": 4 },
     { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
@@ -507,6 +534,7 @@
     { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
     { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
     { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
     { "kind": "stop", "label": "", "w": 28 },
     { "kind": "send", "label": "↑", "w": 28 }
    ]
@@ -515,9 +543,8 @@
    "g1": "goal-draft",
    "composer": "goal",
    "pane": "stage",
-   "sum": 752.6,
+   "sum": 657,
    "controls": [
-    { "kind": "server", "label": "This computer", "fixed": true, "w": 91.6 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
@@ -529,9 +556,8 @@
   "goal-nogit": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 783.5,
+   "sum": 671.5,
    "controls": [
-    { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "scratch", "w": 84.7 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
@@ -543,9 +569,8 @@
   "goal-missing": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 822.1,
+   "sum": 710.1,
    "controls": [
-    { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "importer", "w": 90.6 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
@@ -557,9 +582,8 @@
   "goal-blocked": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 807.9,
+   "sum": 695.9,
    "controls": [
-    { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "empty-repo", "w": 109.1 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
@@ -571,9 +595,8 @@
   "goal-draft-long": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 1035.8,
+   "sum": 923.8,
    "controls": [
-    { "kind": "server", "label": "This computer", "w": 108 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "w": 337 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },
@@ -585,9 +608,9 @@
   "goal-remote": {
    "composer": "goal",
    "pane": "stage",
-   "sum": 865.1,
+   "sum": 848.7,
    "controls": [
-    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "w": 204.1 },
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 187.7 },
     { "kind": "agent", "label": "Claude Code", "w": 115.2 },
     { "kind": "folder", "label": "shop", "w": 70.2 },
     { "kind": "tiers", "label": "ModelsOpus 5.5 · Opus 5.5 · Sonnet 5.5", "w": 256.8 },

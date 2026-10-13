@@ -109,19 +109,19 @@ func TestSnapshotRuns(t *testing.T) {
 	}
 
 	e.must(e.st.Update(func(s *model.State) error {
-		defaults.RecordRun(&s.Defaults, g, model.LocalServer, model.RunDefaults{Agent: model.Claude, MaxParallel: 3, MaxTurns: 40, Setup: "make deps", SetupCwd: "/repo",
+		defaults.RecordRun(&s.Defaults, g, model.RunDefaults{Agent: model.Claude, MaxParallel: 3, MaxTurns: 40, Setup: "make deps", SetupCwd: "/repo",
 			Tiers: &model.RunTiers{Deep: model.ModelChoice{Model: "opus"}}})
-		defaults.RecordRun(&s.Defaults, model.Ungrouped, model.LocalServer, model.RunDefaults{Agent: model.Cursor, MaxParallel: 2, MaxTurns: 10})
+		defaults.RecordRun(&s.Defaults, model.Ungrouped, model.RunDefaults{Agent: model.Cursor, MaxParallel: 2, MaxTurns: 10})
 		return nil
 	}))
 	snap = e.a.Snapshot()
-	got, ungrouped := snap.Defaults.Groups[g].On(model.LocalServer).Run, snap.Defaults.Groups[model.Ungrouped].On(model.LocalServer).Run
+	got, ungrouped := snap.Defaults.Groups[g].Local().Run, snap.Defaults.Groups[model.Ungrouped].Local().Run
 	if got == nil || got.MaxParallel != 3 || got.Setup != "make deps" || ungrouped == nil || ungrouped.Agent != model.Cursor {
 		t.Fatalf("the snapshot's run defaults: %+v, %+v", got, ungrouped)
 	}
 	got.MaxParallel, got.Tiers.Deep.Model, ungrouped.MaxTurns = 99, "changed", 99
 	e.st.Read(func(s *model.State) {
-		in, un := s.Defaults.Groups[g].On(model.LocalServer).Run, s.Defaults.Groups[model.Ungrouped].On(model.LocalServer).Run
+		in, un := s.Defaults.Groups[g].Local().Run, s.Defaults.Groups[model.Ungrouped].Local().Run
 		if in.MaxParallel != 3 || in.Tiers.Deep.Model != "opus" || un.MaxTurns != 10 {
 			t.Error("changing the snapshot's run defaults changed the store's")
 		}

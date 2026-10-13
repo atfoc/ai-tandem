@@ -6,8 +6,9 @@ import { api } from "../api.ts";
 import { useStore } from "../store.ts";
 import { deliveryCard, type SayPart } from "../logic/rundelivery.ts";
 import { listsOf, serverOf } from "../logic/serverlists.ts";
-import { runWhere } from "../logic/runserver.ts";
-import { applyLabel, deliveryTitle } from "../logic/runrows.ts";
+import { runGoneText, runWhere } from "../logic/runserver.ts";
+import { reachable } from "../logic/sections.ts";
+import { applyLabel, deliveryTitle, runActBlock } from "../logic/runrows.ts";
 import type { RunDelivery, RunDetail } from "../types.ts";
 
 /** A sentence, its folders, branches and commits as code. */
@@ -22,6 +23,8 @@ export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }
   const home = useStore((s) => listsOf(s, serverOf(r))?.home);
   const serverIs = useStore((s) => runWhere(s, r ?? {}).name);
   const where = { server: serverOf(r), name: serverIs, connected: true };
+  const can = useStore((s) => reachable(s, runId)); // a run whose server is not connected, or no longer has it, is asked nothing and applies nothing
+  const off = useStore((s) => (s.gone[runId] ? runGoneText(serverIs) : runActBlock(runWhere(s, r ?? {})))); // why, as the bar's Stop and Resume say it
   const recorded = detail.delivery;
   const live = detail.status === "running" || detail.status === "stopping";
   // What the server last answered (an apply, a dry run), shown in place of the record until the
@@ -41,7 +44,7 @@ export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }
   // While the result waits, the folder is asked what applying would do now: when the tab opens and
   // when the window gets the focus back (the person may have committed or switched branch).
   useEffect(() => {
-    if (!waits) return;
+    if (!waits || !can) return;
     const ask = () => {
       if (now.current.busy) return;
       const mine = ++asked.current, of = now.current.recorded;
@@ -50,7 +53,7 @@ export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }
     ask();
     window.addEventListener("focus", ask);
     return () => { window.removeEventListener("focus", ask); asked.current++; };
-  }, [runId, waits]);
+  }, [runId, waits, can]);
 
   useEffect(() => {
     if (!still) return;
@@ -93,7 +96,7 @@ export function Delivery({ runId, detail }: { runId: string; detail: RunDetail }
         <div className="rd-deliver-btns">
           {card.files && <button type="button" className="btn ghost sm" aria-expanded={files} onClick={() => setFiles(!files)}>{files ? "Hide" : "Show"} {card.files.label}</button>}
           {card.action && (
-            <button type="button" className="btn primary sm rd-apply" disabled={!card.canApply || busy} aria-busy={busy || undefined} title={card.applyTitle} onClick={apply}>
+            <button type="button" className="btn primary sm rd-apply" disabled={!card.canApply || busy || !can} aria-busy={busy || undefined} title={can ? card.applyTitle : off} onClick={apply}>
               {busy && <span className="spin" />}{busy ? "Applying…" : applyLabel(where)}
             </button>
           )}

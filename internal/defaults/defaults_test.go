@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -59,37 +58,36 @@ func check(t *testing.T, what, gotCwd string, gotMC model.ModelChoice, wantCwd s
 func TestResolveNothingRecorded(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	cwd, mc := Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "claude", cwd, mc, ds.fallback, model.ModelChoice{Model: "sonnet", Effort: "high"})
-	cwd, mc = Resolve(d, "g1", local, model.Cursor, ds.fallback, cursorCat())
+	cwd, mc = Resolve(d, "g1", model.Cursor, ds.fallback, cursorCat())
 	check(t, "cursor", cwd, mc, ds.fallback, model.ModelChoice{Model: "auto"})
 	pi := &model.Catalog{Models: []model.CatalogModel{{ID: "deepseek-flash", Label: "DeepSeek Flash"}}, Default: model.ModelChoice{Model: "deepseek-flash"}}
-	cwd, mc = Resolve(d, "g1", local, model.Pi, ds.fallback, pi)
+	cwd, mc = Resolve(d, "g1", model.Pi, ds.fallback, pi)
 	check(t, "pi", cwd, mc, ds.fallback, model.ModelChoice{Model: "deepseek-flash"})
 }
 
 func TestRecorded(t *testing.T) {
 	var d model.Defaults
-	if a, c := Recorded(d, "g1", local, model.Claude, nil); a || c {
+	if a, c := Recorded(d, "g1", model.Claude, nil); a || c {
 		t.Fatalf("nothing recorded: %v %v", a, c)
 	}
-	RecordChange(&d, "g1", local, model.Claude, "/w", model.ModelChoice{}) // a folder alone is no choice
-	RecordAgent(&d, model.Ungrouped, local, model.Pi)
-	RecordChange(&d, model.Ungrouped, local, model.Cursor, "", model.ModelChoice{Model: "auto"})
+	RecordChange(&d, "g1", model.Claude, "/w", model.ModelChoice{}) // a folder alone is no choice
+	RecordAgent(&d, model.Ungrouped, model.Pi)
+	RecordChange(&d, model.Ungrouped, model.Cursor, "", model.ModelChoice{Model: "auto"})
 	for _, c := range []struct {
-		g, server string
+		g         string
 		a         model.AgentKind
 		usable    []model.AgentKind
 		agent, mc bool
 	}{
-		{"g1", local, model.Claude, nil, true, false},                        // the ungrouped group's agent
-		{"g1", local, model.Cursor, nil, true, true},                         // and its model for Cursor
-		{"g1", local, "", []model.AgentKind{model.Claude}, false, false},     // an agent that cannot be used is none
-		{"g1", "inst-far", model.Cursor, nil, false, false},                  // another server's part
-		{"g2", local, model.Cursor, []model.AgentKind{model.Pi}, true, true}, // a group with no entry
+		{"g1", model.Claude, nil, true, false},                        // the ungrouped group's agent
+		{"g1", model.Cursor, nil, true, true},                         // and its model for Cursor
+		{"g1", "", []model.AgentKind{model.Claude}, false, false},     // an agent that cannot be used is none
+		{"g2", model.Cursor, []model.AgentKind{model.Pi}, true, true}, // a group with no entry
 	} {
-		if a, mc := Recorded(d, c.g, c.server, c.a, c.usable); a != c.agent || mc != c.mc {
-			t.Errorf("Recorded(%s, %s, %q, %v) = %v %v, want %v %v", c.g, c.server, c.a, c.usable, a, mc, c.agent, c.mc)
+		if a, mc := Recorded(d, c.g, c.a, c.usable); a != c.agent || mc != c.mc {
+			t.Errorf("Recorded(%s, %q, %v) = %v %v, want %v %v", c.g, c.a, c.usable, a, mc, c.agent, c.mc)
 		}
 	}
 }
@@ -97,48 +95,44 @@ func TestRecorded(t *testing.T) {
 func TestRecordChangeThenResolve(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordChange(&d, "g1", local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
 
-	cwd, mc := Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
 
 	// Folder is shared across agents; model is per agent.
-	cwd, mc = Resolve(d, "g1", local, model.Cursor, ds.fallback, cursorCat())
+	cwd, mc = Resolve(d, "g1", model.Cursor, ds.fallback, cursorCat())
 	check(t, "g1 cursor", cwd, mc, ds.a, model.ModelChoice{Model: "auto"})
 
 	// The change is the group's only: g2 was never set and the ungrouped group has nothing either.
-	cwd, mc = Resolve(d, "g2", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc = Resolve(d, "g2", model.Claude, ds.fallback, claudeCat())
 	check(t, "g2 claude", cwd, mc, ds.fallback, model.ModelChoice{Model: "sonnet", Effort: "high"})
 	if len(d.Groups) != 1 {
 		t.Errorf("groups = %+v, want g1 alone", d.Groups)
 	}
-
-	// Another server's part of the same group is its own.
-	cwd, mc = Resolve(d, "g1", "srv_other", model.Claude, ds.fallback, claudeCat())
-	check(t, "g1 claude elsewhere", cwd, mc, ds.fallback, model.ModelChoice{Model: "sonnet", Effort: "high"})
 }
 
 func TestRecordChangeEmptyFieldsLeftAlone(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordChange(&d, "g1", local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordChange(&d, "g1", local, model.Claude, "", model.ModelChoice{Effort: "low"})
-	RecordChange(&d, "g1", local, model.Claude, ds.b, model.ModelChoice{})
+	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordChange(&d, "g1", model.Claude, "", model.ModelChoice{Effort: "low"})
+	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{})
 
-	cwd, mc := Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude", cwd, mc, ds.b, model.ModelChoice{Model: "opus", Effort: "low"})
 
 	// A folder-only change in a group doesn't hide the ungrouped group's model for that group.
-	RecordChange(&d, model.Ungrouped, local, model.Claude, "", model.ModelChoice{Model: "opus", Effort: "low"})
-	RecordChange(&d, "g2", local, model.Claude, ds.a, model.ModelChoice{})
-	cwd, mc = Resolve(d, "g2", local, model.Claude, ds.fallback, claudeCat())
+	RecordChange(&d, model.Ungrouped, model.Claude, "", model.ModelChoice{Model: "opus", Effort: "low"})
+	RecordChange(&d, "g2", model.Claude, ds.a, model.ModelChoice{})
+	cwd, mc = Resolve(d, "g2", model.Claude, ds.fallback, claudeCat())
 	check(t, "g2 claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "low"})
-	if got := d.Groups["g2"].On(local); got.ByAgent != nil {
+	if got := d.Groups["g2"].Local(); got.ByAgent != nil {
 		t.Errorf("g2 = %+v, want no choice stored", got)
 	}
 
 	// A change of nothing stores no part for the server.
-	RecordChange(&d, "g3", local, model.Claude, "", model.ModelChoice{})
+	RecordChange(&d, "g3", model.Claude, "", model.ModelChoice{})
 	if got := d.Groups["g3"]; got.Servers != nil {
 		t.Errorf("g3 = %+v, want no server part", got)
 	}
@@ -172,40 +166,35 @@ func sharesNothing(t *testing.T, what string, a, b model.GroupDefaults) {
 	}
 }
 
-// AC32: a new top-level group is a copy of the ungrouped group's whole entry, the sticky server and
-// every server's run defaults and tiers included; a subgroup is a copy of its parent's.
+// AC32: a new top-level group is a copy of the ungrouped group's whole entry, its run defaults and
+// their tiers included; a subgroup is a copy of its parent's.
 func TestSeedGroup(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordServer(&d, model.Ungrouped, "srv_far")
-	RecordAgent(&d, model.Ungrouped, local, model.Pi)
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, local, runDefaults(model.Claude, "opus"))
-	RecordChange(&d, model.Ungrouped, "srv_far", model.Cursor, "/far", model.ModelChoice{Model: "auto"})
-	RecordRun(&d, model.Ungrouped, "srv_far", runDefaults(model.Cursor, "auto"))
+	RecordAgent(&d, model.Ungrouped, model.Pi)
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordRun(&d, model.Ungrouped, runDefaults(model.Claude, "opus"))
 	// Another group's values are nobody's source.
-	RecordChange(&d, "g1", local, model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
+	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
 
 	SeedGroup(&d, "g3", "")
-	rd, far := runDefaults(model.Claude, "opus"), runDefaults(model.Cursor, "auto")
-	want := model.GroupDefaults{Server: "srv_far", Servers: map[string]model.ServerDefaults{
-		local:     {Agent: model.Pi, Cwd: ds.a, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}, Run: &rd},
-		"srv_far": {Cwd: "/far", ByAgent: map[model.AgentKind]model.ModelChoice{model.Cursor: {Model: "auto"}}, Run: &far},
-	}}
+	rd := runDefaults(model.Claude, "opus")
+	want := model.LocalDefaults(model.ServerDefaults{Agent: model.Pi, Cwd: ds.a,
+		ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "max"}}, Run: &rd})
 	if got := d.Groups["g3"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("g3 = %+v, want %+v", got, want)
 	}
 	sharesNothing(t, "g3 and ungrouped", d.Groups["g3"], d.Groups[model.Ungrouped])
 
 	// A subgroup takes its parent's entry, not the ungrouped group's.
-	RecordChange(&d, "g3", local, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
-	RecordAgent(&d, "g3", local, model.Cursor)
+	RecordChange(&d, "g3", model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
+	RecordAgent(&d, "g3", model.Cursor)
 	SeedGroup(&d, "g3a", "g3")
 	if got := d.Groups["g3a"]; !reflect.DeepEqual(got, d.Groups["g3"]) {
 		t.Fatalf("g3a = %+v, want a copy of g3 %+v", got, d.Groups["g3"])
 	}
 	sharesNothing(t, "g3a and g3", d.Groups["g3a"], d.Groups["g3"])
-	if got := Agent(d, "g3a", local, nil); got != model.Cursor {
+	if got := Agent(d, "g3a", nil); got != model.Cursor {
 		t.Errorf("g3a agent = %q, want the parent's cursor", got)
 	}
 
@@ -230,32 +219,31 @@ func TestSeededGroupIsACopy(t *testing.T) {
 	t.Parallel()
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordServer(&d, model.Ungrouped, local)
-	RecordAgent(&d, model.Ungrouped, local, model.Claude)
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, local, runDefaults(model.Claude, "opus"))
+	RecordAgent(&d, model.Ungrouped, model.Claude)
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordRun(&d, model.Ungrouped, runDefaults(model.Claude, "opus"))
 	SeedGroup(&d, "g1", "")
 	was := Copy(d).Groups["g1"]
 
-	RecordAgent(&d, model.Ungrouped, local, model.Cursor)
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
-	RecordRun(&d, model.Ungrouped, local, runDefaults(model.Cursor, "auto"))
+	RecordAgent(&d, model.Ungrouped, model.Cursor)
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
+	RecordRun(&d, model.Ungrouped, runDefaults(model.Cursor, "auto"))
 	d.Groups[model.Ungrouped].Servers[local].Run.Tiers.Deep.Model = "changed"
 	if got := d.Groups["g1"]; !reflect.DeepEqual(got, was) {
 		t.Fatalf("g1 after a change in ungrouped = %+v, want %+v", got, was)
 	}
-	cwd, mc := Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	if got := Agent(d, "g1", local, nil); got != model.Claude {
+	if got := Agent(d, "g1", nil); got != model.Claude {
 		t.Errorf("g1 agent = %q, want claude", got)
 	}
-	if got := Run(d, "g1", local); got == nil || got.Agent != model.Claude || got.Tiers.Deep.Model != "opus" {
+	if got := Run(d, "g1"); got == nil || got.Agent != model.Claude || got.Tiers.Deep.Model != "opus" {
 		t.Errorf("g1 run = %+v, want the seeded one", got)
 	}
 
 	// The other way round: the group's own changes stay in the group.
 	ungrouped := Copy(d).Groups[model.Ungrouped]
-	RecordChange(&d, "g1", local, model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
+	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
 	d.Groups["g1"].Servers[local].Run.Tiers.Deep.Model = "mine"
 	if got := d.Groups[model.Ungrouped]; !reflect.DeepEqual(got, ungrouped) {
 		t.Fatalf("ungrouped after a change in g1 = %+v, want %+v", got, ungrouped)
@@ -263,46 +251,46 @@ func TestSeededGroupIsACopy(t *testing.T) {
 
 	// A subgroup is a copy of its parent in the same way.
 	SeedGroup(&d, "g1a", "g1")
-	RecordChange(&d, "g1", local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "low"})
-	cwd, mc = Resolve(d, "g1a", local, model.Claude, ds.fallback, claudeCat())
+	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "low"})
+	cwd, mc = Resolve(d, "g1a", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1a claude", cwd, mc, ds.b, model.ModelChoice{Model: "haiku"})
 }
 
 func TestSeedSubgroupFromParent(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordChange(&d, "g1", local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
+	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
 	SeedGroup(&d, "g1a", "g1")
-	cwd, mc := Resolve(d, "g1a", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc := Resolve(d, "g1a", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1a claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
 
 	// a deep copy: changing the parent later leaves the subgroup alone
-	RecordChange(&d, "g1", local, model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
-	cwd, mc = Resolve(d, "g1a", local, model.Claude, ds.fallback, claudeCat())
+	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{Model: "haiku"})
+	cwd, mc = Resolve(d, "g1a", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1a claude after", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
 }
 
 func TestUngroupedIsItsOwnGroup(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordChange(&d, "g1", local, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordChange(&d, "g1", model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
 
-	cwd, mc := Resolve(d, model.Ungrouped, local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc := Resolve(d, model.Ungrouped, model.Claude, ds.fallback, claudeCat())
 	check(t, "ungrouped", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	cwd, mc = Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc = Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1", cwd, mc, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
 }
 
 func TestMissingFolderFallsBack(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordChange(&d, "g1", local, model.Claude, ds.a, model.ModelChoice{})
+	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{})
 	if err := os.Remove(ds.a); err != nil {
 		t.Fatal(err)
 	}
-	cwd, _ := Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, _ := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	if cwd != ds.fallback {
 		t.Errorf("cwd = %q, want fallback %q", cwd, ds.fallback)
 	}
@@ -311,14 +299,14 @@ func TestMissingFolderFallsBack(t *testing.T) {
 func TestModelNotInCatalogAndEffortCleared(t *testing.T) {
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordChange(&d, "g1", local, model.Claude, ds.a, model.ModelChoice{Model: "gone-model", Effort: "max"})
-	_, mc := Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	RecordChange(&d, "g1", model.Claude, ds.a, model.ModelChoice{Model: "gone-model", Effort: "max"})
+	_, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	if mc != (model.ModelChoice{Model: "sonnet", Effort: "high"}) {
 		t.Errorf("missing model: got %+v, want catalog default", mc)
 	}
 
-	RecordChange(&d, "g1", local, model.Claude, "", model.ModelChoice{Model: "haiku"})
-	_, mc = Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	RecordChange(&d, "g1", model.Claude, "", model.ModelChoice{Model: "haiku"})
+	_, mc = Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	if mc != (model.ModelChoice{Model: "haiku"}) {
 		t.Errorf("haiku: got %+v, want effort cleared", mc)
 	}
@@ -331,12 +319,12 @@ func TestAgentOrder(t *testing.T) {
 	}
 	// Using Cursor last changes nothing about the order.
 	var d model.Defaults
-	RecordChange(&d, "g1", local, model.Cursor, "", model.ModelChoice{Model: "gpt-5.4-mini"})
+	RecordChange(&d, "g1", model.Cursor, "", model.ModelChoice{Model: "gpt-5.4-mini"})
 	if !reflect.DeepEqual(AgentOrder, want) {
 		t.Fatalf("AgentOrder after using Cursor = %v, want %v", AgentOrder, want)
 	}
 	// Nor does pi.
-	RecordChange(&d, "g1", local, model.Pi, "", model.ModelChoice{Model: "deepseek-flash"})
+	RecordChange(&d, "g1", model.Pi, "", model.ModelChoice{Model: "deepseek-flash"})
 	if !reflect.DeepEqual(AgentOrder, want) {
 		t.Fatalf("AgentOrder after using pi = %v, want %v", AgentOrder, want)
 	}
@@ -369,8 +357,8 @@ func TestResolveEffortFitsModel(t *testing.T) {
 	}
 	for _, c := range cases {
 		var d model.Defaults
-		RecordChange(&d, "g1", local, model.Cursor, ds.a, c.stored)
-		_, mc := Resolve(d, "g1", local, model.Cursor, ds.fallback, effortCat())
+		RecordChange(&d, "g1", model.Cursor, ds.a, c.stored)
+		_, mc := Resolve(d, "g1", model.Cursor, ds.fallback, effortCat())
 		if mc != c.want {
 			t.Errorf("%s: got %+v, want %+v", c.what, mc, c.want)
 		}
@@ -380,15 +368,15 @@ func TestResolveEffortFitsModel(t *testing.T) {
 	cat := effortCat()
 	cat.Default = model.ModelChoice{Model: "glm-5.2", Effort: "low"}
 	var d model.Defaults
-	RecordChange(&d, "g1", local, model.Cursor, ds.a, model.ModelChoice{Model: "gone", Effort: "low"})
-	if _, mc := Resolve(d, "g1", local, model.Cursor, ds.fallback, cat); mc != (model.ModelChoice{Model: "glm-5.2", Effort: "high"}) {
+	RecordChange(&d, "g1", model.Cursor, ds.a, model.ModelChoice{Model: "gone", Effort: "low"})
+	if _, mc := Resolve(d, "g1", model.Cursor, ds.fallback, cat); mc != (model.ModelChoice{Model: "glm-5.2", Effort: "high"}) {
 		t.Errorf("missing model, bad default effort: got %+v", mc)
 	}
 
 	// With no catalog, the stored choice is returned as is.
 	d = model.Defaults{}
-	RecordChange(&d, "g1", local, model.Cursor, ds.a, model.ModelChoice{Model: "gpt-5.4-mini", Effort: "max"})
-	if _, mc := Resolve(d, "g1", local, model.Cursor, ds.fallback, nil); mc != (model.ModelChoice{Model: "gpt-5.4-mini", Effort: "max"}) {
+	RecordChange(&d, "g1", model.Cursor, ds.a, model.ModelChoice{Model: "gpt-5.4-mini", Effort: "max"})
+	if _, mc := Resolve(d, "g1", model.Cursor, ds.fallback, nil); mc != (model.ModelChoice{Model: "gpt-5.4-mini", Effort: "max"}) {
 		t.Errorf("no catalog: got %+v", mc)
 	}
 }
@@ -399,16 +387,16 @@ func TestGroupWithoutValueFollowsUngrouped(t *testing.T) {
 	t.Parallel()
 	ds := mkdirs(t)
 	var d model.Defaults
-	RecordAgent(&d, model.Ungrouped, local, model.Cursor)
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, local, runDefaults(model.Cursor, "auto"))
+	RecordAgent(&d, model.Ungrouped, model.Cursor)
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordRun(&d, model.Ungrouped, runDefaults(model.Cursor, "auto"))
 
-	cwd, mc := Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude", cwd, mc, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	if got := Agent(d, "g1", local, nil); got != model.Cursor {
+	if got := Agent(d, "g1", nil); got != model.Cursor {
 		t.Errorf("g1 agent = %q, want ungrouped's cursor", got)
 	}
-	if got := Run(d, "g1", local); got == nil || got.Agent != model.Cursor {
+	if got := Run(d, "g1"); got == nil || got.Agent != model.Cursor {
 		t.Errorf("g1 run = %+v, want ungrouped's", got)
 	}
 	if _, ok := d.Groups["g1"]; ok {
@@ -416,52 +404,45 @@ func TestGroupWithoutValueFollowsUngrouped(t *testing.T) {
 	}
 
 	// Live: a later change in the ungrouped group reaches the group that has none.
-	RecordAgent(&d, model.Ungrouped, local, model.Pi)
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
-	cwd, mc = Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	RecordAgent(&d, model.Ungrouped, model.Pi)
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
+	cwd, mc = Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude, later", cwd, mc, ds.b, model.ModelChoice{Model: "sonnet", Effort: "low"})
-	if got := Agent(d, "g1", local, nil); got != model.Pi {
+	if got := Agent(d, "g1", nil); got != model.Pi {
 		t.Errorf("g1 agent, later = %q, want pi", got)
 	}
 
 	// Value by value: a folder of its own leaves the model to the ungrouped group, and an own
 	// model for one agent leaves the other agent's to it.
-	RecordChange(&d, "g1", local, model.Cursor, ds.a, model.ModelChoice{Model: "gpt-5.4-mini", Effort: "high"})
-	cwd, mc = Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	RecordChange(&d, "g1", model.Cursor, ds.a, model.ModelChoice{Model: "gpt-5.4-mini", Effort: "high"})
+	cwd, mc = Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude, own folder", cwd, mc, ds.a, model.ModelChoice{Model: "sonnet", Effort: "low"})
-	cwd, mc = Resolve(d, "g1", local, model.Cursor, ds.fallback, cursorCat())
+	cwd, mc = Resolve(d, "g1", model.Cursor, ds.fallback, cursorCat())
 	check(t, "g1 cursor, own model", cwd, mc, ds.a, model.ModelChoice{Model: "gpt-5.4-mini", Effort: "high"})
-	if got := Agent(d, "g1", local, nil); got != model.Pi {
+	if got := Agent(d, "g1", nil); got != model.Pi {
 		t.Errorf("g1 agent with an own folder = %q, want ungrouped's pi", got)
 	}
 
 	// A group with its own values is not affected by a change in another group, the ungrouped one included.
-	RecordAgent(&d, "g1", local, model.Claude)
-	RecordRun(&d, "g1", local, runDefaults(model.Claude, "opus"))
-	RecordChange(&d, "g1", local, model.Claude, "", model.ModelChoice{Model: "haiku"})
+	RecordAgent(&d, "g1", model.Claude)
+	RecordRun(&d, "g1", runDefaults(model.Claude, "opus"))
+	RecordChange(&d, "g1", model.Claude, "", model.ModelChoice{Model: "haiku"})
 	was := Copy(d).Groups["g1"]
-	RecordAgent(&d, model.Ungrouped, local, model.Cursor)
-	RecordChange(&d, model.Ungrouped, local, model.Claude, ds.b, model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, model.Ungrouped, local, runDefaults(model.Pi, "p"))
-	RecordChange(&d, "g2", local, model.Claude, ds.b, model.ModelChoice{Model: "opus", Effort: "low"})
-	RecordAgent(&d, "g2", local, model.Pi)
+	RecordAgent(&d, model.Ungrouped, model.Cursor)
+	RecordChange(&d, model.Ungrouped, model.Claude, ds.b, model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordRun(&d, model.Ungrouped, runDefaults(model.Pi, "p"))
+	RecordChange(&d, "g2", model.Claude, ds.b, model.ModelChoice{Model: "opus", Effort: "low"})
+	RecordAgent(&d, "g2", model.Pi)
 	if got := d.Groups["g1"]; !reflect.DeepEqual(got, was) {
 		t.Fatalf("g1 = %+v, want %+v", got, was)
 	}
-	cwd, mc = Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
+	cwd, mc = Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
 	check(t, "g1 claude, own model", cwd, mc, ds.a, model.ModelChoice{Model: "haiku"})
-	if got := Agent(d, "g1", local, nil); got != model.Claude {
+	if got := Agent(d, "g1", nil); got != model.Claude {
 		t.Errorf("g1 agent = %q, want its own claude", got)
 	}
-	if got := Run(d, "g1", local); got == nil || got.Agent != model.Claude {
+	if got := Run(d, "g1"); got == nil || got.Agent != model.Claude {
 		t.Errorf("g1 run = %+v, want its own", got)
-	}
-
-	// Agent, folder, model and effort are kept per server: nothing of the local part is another server's.
-	cwd, mc = Resolve(d, "g1", "srv_far", model.Claude, "/home/far", claudeCat())
-	check(t, "g1 claude on another server", cwd, mc, "/home/far", model.ModelChoice{Model: "sonnet", Effort: "high"})
-	if got := Run(d, "g1", "srv_far"); got != nil {
-		t.Errorf("g1 run on another server = %+v, want none", got)
 	}
 }
 
@@ -471,174 +452,102 @@ func TestAgentOrderOfFallback(t *testing.T) {
 	t.Parallel()
 	all := []model.AgentKind{model.Claude, model.Cursor, model.Pi}
 	var d model.Defaults
-	if got := Agent(d, "g1", local, nil); got != model.Claude {
+	if got := Agent(d, "g1", nil); got != model.Claude {
 		t.Errorf("nothing stored = %q, want claude", got)
 	}
-	if got := Agent(d, "g1", local, []model.AgentKind{model.Pi, model.Cursor}); got != model.Cursor {
+	if got := Agent(d, "g1", []model.AgentKind{model.Pi, model.Cursor}); got != model.Cursor {
 		t.Errorf("nothing stored, no claude = %q, want cursor (the fixed order, not the list's)", got)
 	}
 
-	RecordAgent(&d, model.Ungrouped, local, model.Pi)
-	if got := Agent(d, "g1", local, all); got != model.Pi {
+	RecordAgent(&d, model.Ungrouped, model.Pi)
+	if got := Agent(d, "g1", all); got != model.Pi {
 		t.Errorf("ungrouped's = %q, want pi", got)
 	}
-	RecordAgent(&d, "g1", local, model.Cursor)
-	if got := Agent(d, "g1", local, all); got != model.Cursor {
+	RecordAgent(&d, "g1", model.Cursor)
+	if got := Agent(d, "g1", all); got != model.Cursor {
 		t.Errorf("the group's = %q, want cursor", got)
 	}
-	if got := Agent(d, "g2", local, nil); got != model.Pi {
+	if got := Agent(d, "g2", nil); got != model.Pi {
 		t.Errorf("another group = %q, want ungrouped's pi", got)
 	}
 
 	// Unusable ones are skipped: the group's, then the ungrouped group's, then the order.
-	if got := Agent(d, "g1", local, []model.AgentKind{model.Claude, model.Pi}); got != model.Pi {
+	if got := Agent(d, "g1", []model.AgentKind{model.Claude, model.Pi}); got != model.Pi {
 		t.Errorf("group's unusable = %q, want ungrouped's pi", got)
 	}
-	if got := Agent(d, "g1", local, []model.AgentKind{model.Claude}); got != model.Claude {
+	if got := Agent(d, "g1", []model.AgentKind{model.Claude}); got != model.Claude {
 		t.Errorf("both unusable = %q, want claude", got)
 	}
-	if got := Agent(d, "g1", local, []model.AgentKind{}); got != "" {
+	if got := Agent(d, "g1", []model.AgentKind{}); got != "" {
 		t.Errorf("none usable = %q, want none", got)
 	}
 
-	// Per server: another server's part has no agent stored.
-	if got := Agent(d, "g1", "srv_far", []model.AgentKind{model.Cursor, model.Pi}); got != model.Cursor {
-		t.Errorf("another server = %q, want the first usable of the order", got)
-	}
-	RecordAgent(&d, "g1", "srv_far", model.Pi)
-	if got := Agent(d, "g1", "srv_far", nil); got != model.Pi {
-		t.Errorf("another server, stored = %q, want pi", got)
-	}
-	if got := Agent(d, "g1", local, nil); got != model.Cursor {
-		t.Errorf("local after a record elsewhere = %q, want cursor", got)
-	}
-
 	// No agent is not recorded, and a stored kind nobody knows is skipped.
-	RecordAgent(&d, "g1", local, "")
-	if got := d.Groups["g1"].On(local).Agent; got != model.Cursor {
+	RecordAgent(&d, "g1", "")
+	if got := d.Groups["g1"].Local().Agent; got != model.Cursor {
 		t.Errorf("after recording none = %q, want cursor kept", got)
 	}
-	RecordAgent(&d, "g3", local, "nobody")
-	if got := Agent(d, "g3", local, nil); got != model.Pi {
+	RecordAgent(&d, "g3", "nobody")
+	if got := Agent(d, "g3", nil); got != model.Pi {
 		t.Errorf("unknown kind stored = %q, want ungrouped's pi", got)
 	}
 	var e model.Defaults
-	RecordAgent(&e, "g1", local, "")
+	RecordAgent(&e, "g1", "")
 	if e.Groups != nil {
 		t.Errorf("recording none made an entry: %+v", e.Groups)
 	}
 }
 
-// AC31: the server is the group's, then the ungrouped group's, then the local one; a stored
-// server that is not known falls back the same way.
-func TestServerFallsBackToLocal(t *testing.T) {
-	t.Parallel()
-	var d model.Defaults
-	if got := Server(d, "g1", nil); got != local {
-		t.Errorf("nothing stored = %q, want local", got)
-	}
-	known := func(ids ...string) func(string) bool {
-		return func(s string) bool { return slices.Contains(ids, s) }
-	}
-
-	RecordServer(&d, model.Ungrouped, "srv_a")
-	RecordServer(&d, "g1", "srv_b")
-	if got := Server(d, "g1", known(local, "srv_a", "srv_b")); got != "srv_b" {
-		t.Errorf("the group's = %q, want srv_b", got)
-	}
-	if got := Server(d, "g2", known(local, "srv_a", "srv_b")); got != "srv_a" {
-		t.Errorf("a group without one = %q, want ungrouped's srv_a", got)
-	}
-	if got := Server(d, "g1", known(local, "srv_a")); got != "srv_a" {
-		t.Errorf("the group's is gone = %q, want ungrouped's srv_a", got)
-	}
-	if got := Server(d, "g1", known(local)); got != local {
-		t.Errorf("both gone = %q, want local", got)
-	}
-	// With no list of servers only the local one is known.
-	if got := Server(d, "g1", nil); got != local {
-		t.Errorf("known nil = %q, want local", got)
-	}
-	RecordServer(&d, "g1", local)
-	if got := Server(d, "g1", nil); got != local {
-		t.Errorf("local stored = %q, want local", got)
-	}
-	// Recording the server touches nothing else, and none is not recorded.
-	RecordAgent(&d, "g1", local, model.Pi)
-	RecordServer(&d, "g1", "srv_b")
-	RecordServer(&d, "g1", "")
-	if got, want := d.Groups["g1"], (model.GroupDefaults{Server: "srv_b", Servers: map[string]model.ServerDefaults{local: {Agent: model.Pi}}}); !reflect.DeepEqual(got, want) {
-		t.Errorf("g1 = %+v, want %+v", got, want)
-	}
-}
-
-func TestResolveOnAnotherServerAndWithNoAgent(t *testing.T) {
+func TestResolveAFolderThatIsGoneAndWithNoAgent(t *testing.T) {
 	t.Parallel()
 	ds := mkdirs(t)
 	var d model.Defaults
-	// A folder of another machine is not looked for on this one.
-	RecordChange(&d, "g1", "srv_far", model.Claude, "/nowhere/on/this/machine", model.ModelChoice{Model: "opus", Effort: "max"})
-	cwd, mc := Resolve(d, "g1", "srv_far", model.Claude, "/home/far", claudeCat())
-	check(t, "remote folder", cwd, mc, "/nowhere/on/this/machine", model.ModelChoice{Model: "opus", Effort: "max"})
-	// The same folder stored for the local server is checked, and falls back.
-	RecordChange(&d, "g1", local, model.Claude, "/nowhere/on/this/machine", model.ModelChoice{})
-	cwd, _ = Resolve(d, "g1", local, model.Claude, ds.fallback, claudeCat())
-	if cwd != ds.fallback {
-		t.Errorf("local folder = %q, want the fallback", cwd)
-	}
+	// A stored folder is looked for on this machine, and falls back; the model stays.
+	RecordChange(&d, "g1", model.Claude, "/nowhere/on/this/machine", model.ModelChoice{Model: "opus", Effort: "max"})
+	cwd, mc := Resolve(d, "g1", model.Claude, ds.fallback, claudeCat())
+	check(t, "a folder that is gone", cwd, mc, ds.fallback, model.ModelChoice{Model: "opus", Effort: "max"})
 
 	// No agent: the folder only, whatever the catalog says.
-	RecordChange(&d, "g2", local, model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
-	cwd, mc = Resolve(d, "g2", local, "", ds.fallback, claudeCat())
+	RecordChange(&d, "g2", model.Claude, ds.a, model.ModelChoice{Model: "opus", Effort: "max"})
+	cwd, mc = Resolve(d, "g2", "", ds.fallback, claudeCat())
 	check(t, "no agent", cwd, mc, ds.a, model.ModelChoice{})
 }
 
-func TestRunDefaultsPerServer(t *testing.T) {
+func TestRunDefaults(t *testing.T) {
 	t.Parallel()
 	var d model.Defaults
-	if got := Run(d, "g1", local); got != nil {
+	if got := Run(d, "g1"); got != nil {
 		t.Fatalf("nothing stored = %+v, want nil", got)
 	}
 	rd := runDefaults(model.Claude, "opus")
-	RecordRun(&d, model.Ungrouped, local, rd)
+	RecordRun(&d, model.Ungrouped, rd)
 	// What is stored is a copy: the caller's value can change afterwards.
 	rd.Tiers.Deep.Model, rd.Setup = "changed", "changed"
 	want := runDefaults(model.Claude, "opus")
-	if got := Run(d, "g1", local); !reflect.DeepEqual(got, &want) {
+	if got := Run(d, "g1"); !reflect.DeepEqual(got, &want) {
 		t.Fatalf("g1 = %+v, want ungrouped's %+v", got, want)
 	}
 	// What is read is a copy too.
-	got := Run(d, "g1", local)
+	got := Run(d, "g1")
 	got.Tiers.Deep.Model, got.Agent = "changed", model.Pi
-	if again := Run(d, model.Ungrouped, local); !reflect.DeepEqual(again, &want) {
+	if again := Run(d, model.Ungrouped); !reflect.DeepEqual(again, &want) {
 		t.Fatalf("after a change of the answer = %+v, want %+v", again, want)
 	}
 
 	own := runDefaults(model.Cursor, "auto")
-	RecordRun(&d, "g1", local, own)
-	if got := Run(d, "g1", local); !reflect.DeepEqual(got, &own) {
+	RecordRun(&d, "g1", own)
+	if got := Run(d, "g1"); !reflect.DeepEqual(got, &own) {
 		t.Fatalf("g1 own = %+v, want %+v", got, own)
 	}
-	if got := Run(d, "g2", local); !reflect.DeepEqual(got, &want) {
+	if got := Run(d, "g2"); !reflect.DeepEqual(got, &want) {
 		t.Fatalf("g2 = %+v, want ungrouped's", got)
 	}
-	// Per server: the local part's run defaults are not another server's.
-	if got := Run(d, "g1", "srv_far"); got != nil {
-		t.Fatalf("g1 on another server = %+v, want nil", got)
-	}
-	far := runDefaults(model.Pi, "p")
-	RecordRun(&d, "g1", "srv_far", far)
-	if got := Run(d, "g1", "srv_far"); !reflect.DeepEqual(got, &far) {
-		t.Fatalf("g1 on srv_far = %+v, want %+v", got, far)
-	}
-	if got := Run(d, "g1", local); !reflect.DeepEqual(got, &own) {
-		t.Fatalf("g1 local after a record elsewhere = %+v, want %+v", got, own)
-	}
-	// Recording the run defaults keeps the rest of the part.
-	RecordAgent(&d, "g1", local, model.Pi)
-	RecordRun(&d, "g1", local, far)
-	if got := d.Groups["g1"].On(local); got.Agent != model.Pi || !reflect.DeepEqual(got.Run, &far) {
-		t.Fatalf("g1 local = %+v, want pi with the new run defaults", got)
+	// Recording the run defaults keeps the rest of what the group remembers.
+	next := runDefaults(model.Pi, "p")
+	RecordAgent(&d, "g1", model.Pi)
+	RecordRun(&d, "g1", next)
+	if got := d.Groups["g1"].Local(); got.Agent != model.Pi || !reflect.DeepEqual(got.Run, &next) {
+		t.Fatalf("g1 = %+v, want pi with the new run defaults", got)
 	}
 }
 
@@ -648,11 +557,9 @@ func TestCopy(t *testing.T) {
 	if got := Copy(d); got.Groups == nil || len(got.Groups) != 0 {
 		t.Fatalf("copy of nothing = %+v, want an empty map", got)
 	}
-	RecordServer(&d, "g1", local)
-	RecordAgent(&d, "g1", local, model.Pi)
-	RecordChange(&d, "g1", local, model.Claude, "/w", model.ModelChoice{Model: "opus", Effort: "max"})
-	RecordRun(&d, "g1", local, runDefaults(model.Claude, "opus"))
-	RecordRun(&d, "g1", "srv_far", runDefaults(model.Pi, "p"))
+	RecordAgent(&d, "g1", model.Pi)
+	RecordChange(&d, "g1", model.Claude, "/w", model.ModelChoice{Model: "opus", Effort: "max"})
+	RecordRun(&d, "g1", runDefaults(model.Claude, "opus"))
 	d.Groups["g_empty"] = model.GroupDefaults{}
 	cp := Copy(d)
 	if !reflect.DeepEqual(cp, d) {
@@ -712,8 +619,8 @@ func sameJSON(t *testing.T, what string, got any, want string) {
 	}
 }
 
-// AC32: the "last" of an old state file is merged into the ungrouped group once, in the per-server
-// shape, run defaults too, and every group's flat values move under the local server.
+// AC32: the "last" of an old state file is merged into the ungrouped group once, in today's
+// shape, run defaults too, and every group's flat values move under its key "local".
 func TestMigrate(t *testing.T) {
 	t.Parallel()
 	// The ungrouped group keeps its own values and takes the missing ones; flat groups move; an
@@ -733,7 +640,7 @@ func TestMigrate(t *testing.T) {
 	if _, ok := d.Groups["g_empty"]; !ok {
 		t.Error("the empty group lost its entry")
 	}
-	u := d.Groups[model.Ungrouped].On(local)
+	u := d.Groups[model.Ungrouped].Local()
 	if u.Cwd != "/own" || u.ByAgent[model.Claude] != (model.ModelChoice{Model: "haiku"}) {
 		t.Errorf("ungrouped's own values were overwritten: %+v", u)
 	}
@@ -792,7 +699,8 @@ func TestMigrate(t *testing.T) {
 	}
 	sameJSON(t, "a flat group", d, `{"groups":{"g_one":{"servers":{"local":{"byAgent":{"cursor":{"model":"auto"}}}}}}}`)
 
-	// Never an overwrite: what the new shape already holds stays, flat values and last fill the rest.
+	// Never an overwrite: what the new shape already holds stays, flat values and last fill the
+	// rest. What the group held for another server is not carried along.
 	d, changed = load(t, `{"version":1,"defaults":{
 	 "last":{"cwd":"/last","byAgent":{"claude":{"model":"opus"},"cursor":{"model":"auto"}},"run":{"agent":"pi","maxParallel":1,"maxTurns":1,"maxCost":0}},
 	 "groups":{"__ungrouped__":{"server":"local","cwd":"/flat","byAgent":{"claude":{"model":"sonnet"},"pi":{"model":"p"}},
@@ -801,9 +709,8 @@ func TestMigrate(t *testing.T) {
 	if !changed {
 		t.Error("a mixed file: changed = false")
 	}
-	sameJSON(t, "a mixed file", d, `{"groups":{"__ungrouped__":{"server":"local","servers":{
-	 "local":{"agent":"pi","cwd":"/new","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"},"cursor":{"model":"auto"}},"run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0}},
-	 "srv_far":{"cwd":"/far"}}}}}`)
+	sameJSON(t, "a mixed file", d, `{"groups":{"__ungrouped__":{"servers":{
+	 "local":{"agent":"pi","cwd":"/new","byAgent":{"claude":{"model":"haiku"},"pi":{"model":"p"},"cursor":{"model":"auto"}},"run":{"agent":"claude","maxParallel":8,"maxTurns":60,"maxCost":0}}}}}}`)
 
 	// A choice that holds an effort only has no model: the one with a model takes its place, as
 	// it did when the choice was read.

@@ -3,27 +3,32 @@
 // by one of them, which hands it over after it has written its pending save
 // (board.ts keeps the roles).
 import { api, clientId } from "./api.ts";
-import { setState, getState, applySnapshot, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
+import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
   upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   onRunEvent, removeRun, setRunError, type ThreadKey } from "./store.ts";
-import { runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot, serverBack as boardServerBack } from "./board.ts";
+import { runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot, sectionBack as boardSectionBack } from "./board.ts";
 import { subKey } from "./logic/subagents.ts";
 import { branchKey, keyOfChat, type BranchKey } from "./logic/branches.ts";
 import { Loads } from "./logic/branchview.ts";
 import { afterAnswer, answerStateTaken, applyUpdates, drawerStays, withoutChat, type Queued, type Update } from "./logic/threads.ts";
 import { RunLoads, type RunFeedEvent } from "./logic/rundetail.ts";
-import { normDetail, normPatch } from "./logic/runnorm.ts";
+import { normPatch, normRun } from "./logic/runnorm.ts";
 import { dropTexts } from "./run/texts.ts";
 import { Holds } from "./logic/holds.ts";
 import { checkMove, dropMoves, goBack, moveSent } from "./fork/actions.ts";
 import { checkVersion } from "./version.ts";
 import { patchTree, type TreePatch } from "./logic/treepatch.ts";
-import type { BranchState, ChatView, Item, RunDetail, Subagent, TreeView } from "./types.ts";
-import { LOCAL_ENTRY, upsertServer } from "./logic/servers.ts";
+import { LOCAL_SERVER, type BranchState, type ChatView, type Item, type RunDetail, type SectionTree, type Subagent, type TreeView } from "./types.ts";
+import { LOCAL_ENTRY, upsertServer, type ServerView } from "./logic/servers.ts";
 import { removeLibrary, upsertLibrary } from "./logic/library.ts";
 import { onUnknownClient, streamGone } from "./logic/unknownclient.ts";
-import { chatReload, serverBack, threadError, withLists, withoutThread } from "./logic/serverlists.ts";
-import { Unfollows, runServerBack } from "./logic/runserver.ts";
+import { sectionBack, threadError, withLists, withoutThread } from "./logic/serverlists.ts";
+import { Unfollows, runSectionBack } from "./logic/runserver.ts";
+import { draftBacks } from "./logic/draftsback.ts";
+import { inSection, keyOn, serverOfKey } from "./logic/keys.ts";
+import { activityIn, boardIn, chatIn, groupIn, patchIn, runIn, stateIn, toolCallIn } from "./logic/sectionwire.ts";
+import { entriesGone, onScreen } from "./logic/sections.ts";
+import { NOT_FOUND } from "./logic/remoteview.ts";
 
 let es: EventSource | null = null;
 
@@ -44,61 +49,86 @@ export function connect() {
 // closed for good is opened again; one that is open or reconnecting is left to the browser.
 onUnknownClient(() => { if (streamGone(es)) connect(); });
 
+/** The events that are about a thing: with a top-level `server` (an entry id of the server list) the thing is of that
+ *  section, and every id in the event is that server's own; without it the thing is this computer's. In `server_state`,
+ *  `server_lists`, `library_removed` and `section` the field is the event's own subject. */
+const OF_A_THING = new Set(["groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "run", "run_removed", "tree", "chat_items", "sub",
+  "sub_items", "run_detail", "run_activity", "held", "release_request", "superseded", "rpc"]);
+
 async function handle(m: any, src: EventSource) {
   if (es !== src) return;
+  // on: the section the event's thing is of ("": this computer). The local server sends an event with `server` only
+  // while it holds that entry's tree: one that names an entry this page has no tree of is dropped.
+  const on: string = OF_A_THING.has(m.type) && typeof m.server === "string" ? m.server : "";
+  if (on && !getState().sections[on]) return;
+  const key = (id: string) => keyOn(on, id);
   switch (m.type) {
-    case "hello": streamOpened(); setState({ connected: true, role: "active" }); void checkVersion(); return; // a new stream holds no board
-    case "snapshot": applySnapshot(m, dropMoves()); afterSnapshot(); return; // the open composers end up as after Back; a move being sent stays
-    case "release_request": if (m.board) await handOver(m.board); return; // another window asks for one board
-    case "superseded": if (m.board) boardLost(m.board); return; // that board's canvas gives way to the panel (TakeoverPanel); the stream stays
-    case "held": if (m.board) granted(m.board, m.rev ?? 0); return; // a board handed over to this window, or given to it for a tool call
+    case "hello": streamOpened(); setState({ connected: true, role: "active" }); void checkVersion(); draftBacks.opened(); return; // a new stream holds no board; a draft that could not be saved without one is saved
+    case "snapshot": onSnapshot(m); return;
+    case "section": if (typeof m.server === "string" && m.server) onSection(m.server, m.tree ?? null); return; // a server's whole tree as it is now, or none: it takes the place of what the page had for the entry
+    case "release_request": if (m.board) await handOver(key(m.board)); return; // another window asks for one board
+    case "superseded": if (m.board) boardLost(key(m.board)); return; // that board's canvas gives way to the panel (TakeoverPanel); the stream stays
+    case "held": if (m.board) granted(key(m.board), m.rev ?? 0); return; // a board handed over to this window, or given to it for a tool call; for a board of a section also after its server is back
     case "server_stopping": await flushAll(); await api.flushed().catch(() => {}); return;
-    case "rpc": return answer(m);
-    case "groups": setState({ groups: m.groups ?? [] }); return;
-    case "board": upsertBoard(m.board); return;
-    case "board_removed": removeBoard(m.id); return;
-    case "servers": setState({ servers: m.servers ?? [LOCAL_ENTRY], serversNotice: m.notice ?? "" }); return;
+    case "rpc": return answer(on ? { ...m, params: toolCallIn(on, m.params) } : m);
+    case "groups": if (on) setSectionGroups(on, (m.groups ?? []).map((g: any) => groupIn(on, g))); else setState({ groups: m.groups ?? [] }); return;
+    case "board": if (m.board?.id) upsertBoard(boardIn(on, m.board)); return;
+    case "board_removed": if (m.id) onBoardRemoved(key(m.id)); return;
+    case "servers": { const before = getState().servers; setServers(m.servers ?? [LOCAL_ENTRY], m.notice ?? ""); dropRemoved(before); return; } // an entry that left the list takes what is open of its server with it
     case "server_state": setState((s) => ({ servers: upsertServer(s.servers, m.server) })); return;
     case "library": if (m.library?.server) setState((s) => ({ libraries: upsertLibrary(s.libraries, m.library) })); return; // one library, whole, after every change of it
     case "library_removed": if (m.server) setState((s) => ({ libraries: removeLibrary(s.libraries, m.server) })); return; // its server left the server list
-    case "run": if (m.run?.id) onRunEvent(m.run); return;
-    case "run_removed": onRunRemoved(m.id); return;
-    case "run_detail": onRunFeed(m.run, { version: m.version, patch: normPatch(m.patch, getState().runDetail[m.run]?.startedAt) }); return;
-    case "run_activity": onRunFeed(m.run, { agents: m.agents ?? {} }); return;
-    case "chat": if (m.chat?.role) onAgent(m.chat); else onChat(m.chat); return; // a run's own agent is kept only while held
-    case "chat_removed": removed.add(m.id); treeQueue.delete(m.id); treeLoads.delete(m.id); removeChat(m.id); return;
-    case "branch_state": applyState(m.state); return; // before the `chat` event of the same change, and for any branch
-    case "tree": applyTree(m); return; // after the `branch_state` and `chat` events of the same change
-    case "chat_items": applyItems(m.chat, branchKey(m.chat, m.branch), m.version, m.updates ?? []); return;
-    case "sub": return applySub(branchKey(m.chat, m.branch), m.subagent); // queued while its branch's list loads
-    case "sub_items": applyItems(m.chat, subKey(branchKey(m.chat, m.branch), m.sub), m.version, m.updates ?? []); return;
-    case "defaults": setState({ defaults: m.defaults }); return;
+    case "run": if (m.run?.id) onRunEvent(runIn(on, normRun(m.run))); return;
+    case "run_removed": if (m.id) onRunRemoved(key(m.id)); return;
+    case "run_detail": if (m.run) { const run = key(m.run); onRunFeed(run, { version: m.version, patch: patchIn(on, normPatch(m.patch, getState().runDetail[run]?.startedAt)) }); } return;
+    case "run_activity": if (m.run) onRunFeed(key(m.run), { agents: activityIn(on, m.agents ?? {}) }); return;
+    case "chat": if (m.chat?.id) { const c = chatIn(on, m.chat); if (c.role) onAgent(c); else onChat(c); } return; // a run's own agent is kept only while held
+    case "chat_removed": if (m.id) onChatRemoved(key(m.id)); return;
+    case "branch_state": if (m.state?.chat) applyState(stateIn(on, m.state)); return; // before the `chat` event of the same change, and for any branch
+    case "tree": if (m.chat) applyTree({ ...m, chat: key(m.chat) }); return; // after the `branch_state` and `chat` events of the same change
+    case "chat_items": if (m.chat) { const chat = key(m.chat); applyItems(chat, branchKey(chat, m.branch), m.version, m.updates ?? []); } return;
+    case "sub": if (m.chat) return applySub(branchKey(key(m.chat), m.branch), m.subagent); return; // queued while its branch's list loads
+    case "sub_items": if (m.chat) { const chat = key(m.chat); applyItems(chat, subKey(branchKey(chat, m.branch), m.sub), m.version, m.updates ?? []); } return;
+    case "defaults": if (on) setSectionDefaults(on, m.defaults ?? { groups: {} }); else setState({ defaults: m.defaults }); return;
     case "catalog": setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
     case "agents": setState({ usable: m.agents ?? [] }); return; // the local server's usable agents changed
     case "server_lists": if (m.server) setState((s) => ({ lists: withLists(s.lists, m.server, m.lists) })); return; // what another server offers; null: its entry is gone
-    case "server_back": if (m.server) { onServerBack(m.server); onRunServerBack(m.server); boardServerBack(m.server); } return; // before the `branch_state` and `chat` events of that server's chats
-    case "chat_reload": onChatReload(m.chat); return;
   }
 }
 
-/** A fresh snapshot drops every thread, tree and run detail kept; the chat on screen gets its
+/** A snapshot: this computer's own part first (the open composers end up as after Back; a move being sent stays), then
+ *  each section the snapshot or the page names, with its tree or with none; then the drafts kept of the composers that
+ *  are not open are saved. */
+function onSnapshot(m: any) {
+  const had = Object.keys(getState().sections), listed = getState().servers;
+  applySnapshot(m, dropMoves());
+  afterSnapshot();
+  const trees: Record<string, SectionTree> = m.sections && typeof m.sections === "object" ? m.sections : {};
+  for (const server of new Set([...had, ...Object.keys(trees)])) onSection(server, trees[server] ?? null);
+  dropRemoved(listed); // (an entry that left the list while the stream was down)
+  draftBacks.snapshot();
+}
+
+/** A fresh snapshot drops every thread, tree and run detail kept of this computer's things; the chat on screen gets its
  *  history and its tree again, the run on screen its detail, and the run agents that are held
  *  their view and thread. The tree fetches that run are of before it: their answers are not
  *  applied, and what was queued behind them is dropped. A tree fetch that fails is made once more
- *  a little later, when the chat is still the one on screen and no snapshot came since. */
+ *  a little later, when the chat is still the one on screen and no snapshot came since. What is on
+ *  screen of a section is read again when that section's tree arrives (onSection), and is left as
+ *  it is while there is none. */
 function afterSnapshot() {
   treeLoads.clear();
   treeQueue.clear();
   if (treeRetry !== null) { clearTimeout(treeRetry); treeRetry = null; }
   const snap = ++snapshots;
-  stale.clear(); // the snapshot dropped every thread
+  stale.clear(); // the snapshot dropped every thread of this computer's; a section's are judged anew when its tree follows
   runLoads.reset(); runFetches.clear();
   const { chat, run } = getState().sel;
-  const r = run ? getState().runs[run] : undefined;
+  const r = run && !inSection(run) ? getState().runs[run] : undefined;
   if (r?.started) void fetchRun(r.id);
   refreshAgents();
   takeAfterSnapshot(); // the board on screen and those with an unsaved edit, if no other window holds them
-  if (!chat) return;
+  if (!chat || inSection(chat)) return;
   void api.openChat(chat, shownBranch(getState(), chat)).catch(() => {});
   void loadList(chat).catch(() => {}); // a new fetch, and not one that runs: a read made while the stream was down started no follow
   void loadTree(chat, true).catch(() => {
@@ -108,6 +138,92 @@ function afterSnapshot() {
       if (getState().sel.chat === chat && getState().chats[chat]) void loadTree(chat).catch(() => {});
     }, TREE_RETRY_MS);
   });
+}
+
+// ---- sections: a remote server's tree comes and goes (`section`, and a snapshot's `sections`)
+
+/** A section's tree arrived (tree), or the local server holds none of it any more (null).
+ *
+ *  With a tree the server is connected, for the first time or again, and this is its whole tree as it is now: it takes
+ *  the place of what the page had for the entry, and from here on the entry's calls work. What is on screen of it is
+ *  brought level with its server: the thread, the tree of the chat and the run's detail are read again (which follows
+ *  them again: the local server ended this page's follows with the connection), the open board is taken if this window
+ *  does not hold it, and the draft that waited in the open composer is saved. What is on screen and not in the new
+ *  tree says that it is no longer on that server.
+ *
+ *  With none, the section shows no rows from here on. What is on screen stays as the page has it (store.ts
+ *  applySection): nothing of it is read, and what was being read is given up. */
+function onSection(server: string, tree: SectionTree | null) {
+  if (!server || server === LOCAL_SERVER) return; // this computer is no section: its things come in the snapshot and in events with no `server`
+  const left = applySection(server, tree);
+  for (const id of left) forgetThing(id);
+  if (!tree) { givenUp(server); return; }
+  for (const id of [...removed]) if (serverOfKey(id) === server) removed.delete(id); // what the tree has is there
+  onSectionBack(server);
+  onRunSectionBack(server);
+  boardSectionBack(server);
+  draftBacks.sectionBack(server);
+}
+
+/** The server list changed (before: the list the page had): an entry that left it was removed in the Servers dialog,
+ *  which is no outage. That server never comes back to bring a view level, or to take a draft or a drawing, so
+ *  everything the page has of it goes, what is on screen too. The `section` event with no tree of the same removal
+ *  comes in no fixed order with the list's: before it, it left what was on screen, which goes here; after it, it finds
+ *  nothing. */
+function dropRemoved(before: ServerView[]) {
+  for (const server of entriesGone(before, getState().servers)) {
+    givenUp(server);
+    for (const id of dropServer(server)) forgetThing(id);
+    for (const id of [...removed]) if (serverOfKey(id) === server) removed.delete(id);
+  }
+}
+
+/** This page removed an entry from the server list (the Servers dialog), and the local server answered that it is
+ *  removed. The list is without the entry from here on, and what the page has of its server goes, as at the `servers`
+ *  event of the same removal: the answer and the event come in no fixed order, the first of the two does it, and the
+ *  other finds the entry gone already. */
+export function entryRemoved(id: string) {
+  const before = getState().servers;
+  if (!before.some((v) => v.id === id)) return; // the `servers` event was here first
+  setServers(before.filter((v) => v.id !== id), getState().serversNotice);
+  dropRemoved(before);
+}
+
+/** The user left what was on screen (Sidebar.tsx select): what the page kept of a section's things only because they
+ *  were on screen goes, from the store (store.ts dropLeftBehind) and from here. */
+export function dropLeft() {
+  for (const id of dropLeftBehind()) forgetThing(id);
+}
+
+/** What the event layer keeps of a thing that went: the fetches that run, what is queued behind them, and for a run
+ *  its texts. */
+function forgetThing(id: string) {
+  treeQueue.delete(id); treeLoads.delete(id);
+  forgetThreadLoads(id);
+  runLoads.drop(id); runFetches.delete(id);
+  runAborts.get(id)?.abort(); runAborts.delete(id);
+  dropTexts(id);
+}
+
+/** A section's tree went: the reads of its things that run are given up (their answers are not waited for: the server
+ *  is not connected), and nothing waits behind them. What is kept on screen stays. */
+function givenUp(server: string) {
+  const s = getState();
+  for (const id of [...Object.keys(s.chats), ...Object.keys(s.agents)]) if (serverOfKey(id) === server) { forgetThreadLoads(id); treeLoads.delete(id); treeQueue.delete(id); }
+  for (const run of [...runFetches.keys()]) if (serverOfKey(run) === server) { runLoads.drop(run); runFetches.delete(run); runAborts.get(run)?.abort(); runAborts.delete(run); }
+}
+
+/** `board_removed`. A board of a section that is on screen stays there, and its view says that it is no longer on that
+ *  server; its row is gone with the others. */
+function onBoardRemoved(id: string) {
+  if (inSection(id) && onScreen(getState(), id)) markGone(id); else removeBoard(id);
+}
+
+/** `chat_removed`. A chat of a section that is on screen stays there, read-only, and its view says that it is no longer
+ *  on that server; its row is gone with the others. */
+function onChatRemoved(id: string) {
+  removed.add(id); treeQueue.delete(id); treeLoads.delete(id);
+  if (inSection(id) && onScreen(getState(), id)) { forgetThreadLoads(id); markGone(id); } else removeChat(id);
 }
 
 async function answer(m: any) {
@@ -133,7 +249,7 @@ const pending = new Map<ThreadKey, Queued[]>();     // by thread key: what arriv
 const loads = new Loads();                          // by thread key: its newest fetch, whose answer is the one kept
 const lists = new Map<BranchKey, Promise<void>>();  // by branch key: the fetch of its list that runs
 const removed = new Set<string>();                  // the chats removed in this session: what still comes for one is dropped
-const stale = new Set<ThreadKey>();                 // the threads `server_back` left on screen until a read of them answers
+const stale = new Set<ThreadKey>();                 // the threads a section's return left on screen until a read of them answers
 
 function apply(key: ThreadKey, version: number, updates: Update[]) {
   const cur = threadAt(getState(), key), next = applyUpdates(cur, version, updates);
@@ -190,7 +306,7 @@ function flush(key: ThreadKey, list: BranchKey | null) {
  *  one by then. A list's answer also brings the branch's subagents and its record. A fetch begun
  *  later takes the thread over: the answer of an older one is discarded, and so is the answer for
  *  a chat that is gone by then. replace: the answer replaces the list whatever its version, as it
- *  does for a thread `server_back` left on screen (stale); a fetch of such a thread that fails
+ *  does for a thread a section's return left on screen (stale); a fetch of such a thread that fails
  *  takes it away. The first list of a chat that loads puts the chat on the server's current
  *  branch (setShown): from then on only this client changes the branch it is on. Rejects when the
  *  fetch fails. */
@@ -213,6 +329,7 @@ async function loadThread(chat: string, branch: string, sid?: string, o: { repla
     flush(key, sid ? null : list);
     console.error(`loading thread ${key}:`, failed);
     if (!sid && getState().chats[chat]) setThreadError(chat, threadError(failed)); // the chat's view says so in place of the thread (a run agent has agentErrors)
+    if (!sid && inSection(chat) && threadError(failed).code === NOT_FOUND && getState().chats[chat]) markGone(chat); // the chat is no longer on its server: its view says so, and its row goes
     throw failed ?? new Error("not loaded");
   }
   if (!sid) setThreadError(chat, null);
@@ -369,23 +486,25 @@ export async function refreshChat(chat: string, code?: string) {
   if (shownKey(getState(), chat) !== was) try { await loadList(chat, { replace: true }); } catch {}
 }
 
-/** `server_back`: a server is connected again. It may have restarted, and its thread versions
- *  then start again: a thread kept at version 10 would drop every event up to 10. So everything
- *  kept of that server's chats goes (threads, subagents, trees, the fetches that run and what is
- *  queued behind them, branch states, load errors), and the chat on screen is read again; another
- *  one is when it is opened next. The local server ended this page's follows of them: the reads
- *  are the new ones.
+/** A section's tree arrived: its server is connected, for the first time or again. It may have
+ *  restarted, and its thread versions then start again: a thread kept at version 10 would drop
+ *  every event up to 10. So everything kept of that server's chats goes (threads, subagents, trees,
+ *  the fetches that run and what is queued behind them, load errors; the branch records are the new
+ *  tree's), and the chat on screen is read again; another one is when it is opened next. The local
+ *  server ended this page's follows of them with the connection: the reads are the new ones.
  *  The chat on screen keeps the list it shows, its subagents and an open subagent pane with its
  *  thread until the reads answer, so the reader keeps the place: the reads start here, what
  *  arrives meanwhile waits behind them, and their answers replace what is kept whatever its
  *  version. What is kept is marked (stale) until a read of it answers: the newest read of it that
- *  fails takes it away, also when that is not the read started here (a `chat_reload` or a refused
- *  Send began a newer one, and this one's answer was then discarded). Only what was kept goes: the
- *  read of another branch the chat shows by then keeps its place.
+ *  fails takes it away, also when that is not the read started here (a refused Send began a newer
+ *  one, and this one's answer was then discarded). Only what was kept goes: the read of another
+ *  branch the chat shows by then keeps its place.
  *  The pane's thread is read whenever a pane is open, kept or not: the read of it that ran was
- *  given up with the others, and the pane asks only once (Subagents.tsx useSubThread). */
-function onServerBack(server: string) {
-  const back = serverBack(getState(), server);
+ *  given up with the others, and the pane asks only once (Subagents.tsx useSubThread).
+ *  A chat on screen that the new tree does not have is left as it is: its view says that it is no
+ *  longer on that server (logic/serverlists.ts sectionBack names no such chat). */
+function onSectionBack(server: string) {
+  const back = sectionBack(getState(), server);
   const chat = back.load, s = getState();
   const list = chat ? shownKey(s, chat) : null;
   const pane = chat && list && s.subDrawer?.chat === chat && drawerStays(s.subDrawer, chat, shownBranch(s, chat)) ? s.subDrawer.sub : "";
@@ -396,12 +515,13 @@ function onServerBack(server: string) {
   setState(back.patch);
   if (!chat) return;
   const branch = shownBranch(getState(), chat);
+  void api.openChat(chat, branch).catch(() => {});
   void loadList(chat, { replace: true }).catch(() => {});
   if (pane) void loadThread(chat, branch, pane, { replace: true }).catch(() => {});
   void loadTree(chat, true).catch(() => {});
 }
 
-/** Takes away a thread `server_back` left on screen, whose read failed: a list with its subagents,
+/** Takes away a thread a section's return left on screen, whose read failed: a list with its subagents,
  *  their threads and the pane on one of them; a subagent's thread alone (the pane reads it
  *  again). Nothing else of the chat is touched, and no fetch is given up. */
 function dropStale(chat: string, key: ThreadKey) {
@@ -410,16 +530,6 @@ function dropStale(chat: string, key: ThreadKey) {
     const pane = s.subDrawer?.chat === chat && branchKey(chat, s.subDrawer.branch) === key ? null : s.subDrawer;
     return { items, subs, subDrawer: pane };
   });
-}
-
-/** `chat_reload`: what this page holds of a chat is no longer the chat's (its first message
- *  started it on another server): the view and the list shown are read again, and the tree when
- *  one is kept. */
-function onChatReload(chat: string) {
-  const { refresh, tree } = chatReload(getState(), chat);
-  if (!refresh) return;
-  void refreshChat(chat);
-  if (tree) void loadTree(chat, true).catch(() => {});
 }
 
 // ---- runs: the detail of the run on screen (State.runDetail), kept current by `run_detail` and
@@ -466,8 +576,13 @@ function fetchRun(run: string): Promise<void> {
     const gone = runUnfollows.wait(run);
     if (gone) await gone;
     if (!ctl.signal.aborted) {
-      try { got = normDetail(await api.runDetail(run, ctl.signal)); setRunError(run, null); }
-      catch (e) { if (!ctl.signal.aborted) { console.error(`loading run ${run}:`, e); setRunError(run, threadError(e)); } }
+      try { got = await api.runDetail(run, ctl.signal); setRunError(run, null); }
+      catch (e) {
+        if (!ctl.signal.aborted) {
+          console.error(`loading run ${run}:`, e); setRunError(run, threadError(e));
+          if (inSection(run) && threadError(e).code === NOT_FOUND && getState().runs[run]) markGone(run); // the run is no longer on its server: its view says so, and its row goes
+        }
+      }
     }
     if (runAborts.get(run) === ctl) runAborts.delete(run);
     const r = runLoads.end(run, ticket, got);
@@ -507,29 +622,35 @@ export function dropRun(run: string) {
   if (followed) runUnfollows.start(run, () => api.unfollowRun(run));
 }
 
-/** `server_back` for runs: the local server ended this page's follows of that server's runs and
- *  of their agents' chats, so a detail kept would stay as it is while the run goes on. What is
- *  kept of those runs goes (detail, the fetch that runs and what is queued behind it, texts, load
- *  errors), and the thread of each of their agents that is kept; then the run on screen is read
- *  again, and each of those agents that is still held. A run of another server and a local one
- *  keep what they have. */
-function onRunServerBack(server: string) {
-  const back = runServerBack(getState(), server, [...runFetches.keys()]);
-  for (const run of back.runs) forgetRun(run);
-  for (const id of back.agents) {
+/** A section's tree arrived, for runs: the local server ended this page's follows of that server's
+ *  runs and of their agents' chats with the connection, so a detail kept would stay as it is while
+ *  the run goes on. What is kept of those runs goes (detail, the fetch that runs and what is queued
+ *  behind it, texts, load errors), and the thread of each of their agents that is kept; then the run
+ *  on screen is read again, and each of those agents that is still held. A run of another server and
+ *  a local one keep what they have, and so does a run on screen that the new tree does not have: its
+ *  view says that it is no longer on that server. */
+function onRunSectionBack(server: string) {
+  const gone = getState().gone;
+  const back = runSectionBack(getState(), server, [...runFetches.keys()]);
+  for (const run of back.runs) if (!gone[run]) forgetRun(run);
+  const agents = back.agents.filter((id) => !gone[getState().agents[id]?.run ?? ""]);
+  for (const id of agents) {
     forgetThread(id);
     setState((s) => ({ agentErrors: without(s.agentErrors, id) }));
   }
-  if (back.load) void fetchRun(back.load);
-  for (const id of back.agents) if (agentHolds.has(id)) readAgent(id, false, true);
+  if (back.load && !gone[back.load]) void fetchRun(back.load);
+  for (const id of agents) if (agentHolds.has(id)) readAgent(id, false, true);
 }
 
-/** `run_removed`: the run goes with its detail and with its agents that were held. */
+/** `run_removed`: the run goes with its detail and with its agents that were held. A run of a section that is on
+ *  screen stays there, as it was, and its view says that it is no longer on that server; its row is gone with the
+ *  others. */
 function onRunRemoved(run: string) {
-  for (const a of Object.values(getState().agents)) if (a.run === run) forgetThread(a.id);
   runLoads.drop(run);
   runFetches.delete(run);
   runAborts.get(run)?.abort(); runAborts.delete(run);
+  if (inSection(run) && onScreen(getState(), run)) { markGone(run); return; }
+  for (const a of Object.values(getState().agents)) if (a.run === run) forgetThread(a.id);
   dropTexts(run);
   removeRun(run);
 }
@@ -571,17 +692,23 @@ async function fetchAgent(id: string) {
  *  list, with its subagents, and a subagent's thread) that stay until the caller's reads of them
  *  answer, and with them the subagent pane. */
 function forgetThread(chat: string, keep?: ThreadKey[]) {
-  for (const k of [...pending.keys()]) if (keyOfChat(k, chat)) { pending.delete(k); loads.begin(k); }
-  loads.begin(branchKey(chat));
-  for (const k of [...lists.keys()]) if (keyOfChat(k, chat)) lists.delete(k); // of every branch: none is left for who asks next
-  dropLoading(chat); // (and none of them tells of its end any more)
-  for (const k of [...stale]) if (keyOfChat(k, chat) && !keep?.includes(k)) stale.delete(k);
+  forgetThreadLoads(chat, keep);
   const kept = <V,>(m: Record<string, V>): Record<string, V> => {
     const out = withoutChat(m, chat);
     for (const k of keep ?? []) if (k in m) out[k] = m[k];
     return out;
   };
   setState((s) => ({ items: kept(s.items), subs: kept(s.subs), subDrawer: !keep && s.subDrawer?.chat === chat ? null : s.subDrawer }));
+}
+
+/** Gives up the fetches of a chat's threads and what is queued behind them: a fetch that runs is discarded when it
+ *  answers. What the store keeps of the chat stays as it is. keep: the threads whose mark (stale) stays. */
+function forgetThreadLoads(chat: string, keep?: ThreadKey[]) {
+  for (const k of [...pending.keys()]) if (keyOfChat(k, chat)) { pending.delete(k); loads.begin(k); }
+  loads.begin(branchKey(chat));
+  for (const k of [...lists.keys()]) if (keyOfChat(k, chat)) lists.delete(k); // of every branch: none is left for who asks next
+  dropLoading(chat); // (and none of them tells of its end any more)
+  for (const k of [...stale]) if (keyOfChat(k, chat) && !keep?.includes(k)) stale.delete(k);
 }
 
 /** The linger after an agent's last release passed: its view and its thread go, and the server
@@ -637,8 +764,9 @@ const without = (m: Record<string, string>, id: string): Record<string, string> 
   return rest;
 };
 
-/** After a snapshot (it dropped every thread): the view and the thread of each agent that is held
- *  or lingers, again. */
+/** After a snapshot (it dropped every thread of this computer's): the view and the thread of each agent
+ *  of a run of this computer that is held or lingers, again. An agent of a section's run is read again
+ *  when that section's tree arrives (onRunSectionBack), and is left as it is while there is none. */
 function refreshAgents() {
-  for (const id of agentHolds.ids()) readAgent(id, false, true);
+  for (const id of agentHolds.ids()) if (!inSection(id)) readAgent(id, false, true);
 }

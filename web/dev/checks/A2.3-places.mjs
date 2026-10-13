@@ -1,6 +1,6 @@
 // Proves A2.3: where a chat toolbar's controls are. Every choice of a state (the controls the fixture of widths lists
 // for it) is a chip in the toolbar or in the open "more" popup, at a narrow width and at a wider one, and never in
-// both. A pick from a chip in the popup (each of the five choices) is saved, and the focus is on that chip afterwards,
+// both. A pick from a chip in the popup (each of the four choices) is saved, and the focus is on that chip afterwards,
 // in the popup, also when the pick made its label so short that it would fit the toolbar: it returns when the popup
 // closes. A control that
 // changes place has no open list: a list or the folder's browser open in the toolbar is gone when the window, or
@@ -26,6 +26,8 @@ function placesInPage() {
     if (t.startsWith("Server")) return "server";
     if (t.startsWith("Agent")) return "agent";
     if (t.startsWith("Model") || t.startsWith("Starting the agent") || chip.textContent.includes("Loading models")) return "model";
+    // (the fixed chip of a chat whose server is not connected says that in its title)
+    if (chip.matches(".static:not(.server-chip):not(.sub-chip)") && /is not connected|is no longer on/.test(t)) return "model";
     if (t.startsWith("Effort")) return "effort";
     if (t.startsWith("Subagents")) return "subagents";
     if (/^(Working directory|Folder)/.test(t)) return "folder";
@@ -116,8 +118,9 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     return after;
   };
   {
-    // The long model, in the popup of a 370 px page: "Opus 5.5" is so much shorter that its chip fits the row.
-    const s = state("plain-new-long"), p = await open(s, 370), name = "a model pick in the popup that shortens the label";
+    // The long model, in the popup of a 400 px page: "Opus 5.5" is so much shorter that its chip fits the row.
+    // (370 px before the row had the attach button, which takes 30)
+    const s = state("plain-new-long"), p = await open(s, 400), name = "a model pick in the popup that shortens the label";
     if (await pickInPopup(p, name, "model", 'button.tchip[title^="Model"]', /^Opus 5\.5/, 'return chats.c_A2_new_long.model !== "long";', "Opus 5.5")) {
       await closeMore(p.page, name);
       const closed = await places(p.page);
@@ -129,8 +132,6 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
   {
     const s = state("plain-new"), p = await open(s, 300), name = "an effort pick in the popup";
     if (await pickInPopup(p, name, "effort", 'button.tchip[title^="Effort"]', /^Low/, 'return chats.c_A2_new.effort === "low";', "Low")) note("an effort pick in the popup: saved, the focus on its chip");
-    const again = "a server pick in the popup";
-    if (await pickInPopup(p, again, "server", ".server-pick button.tchip", "lab-gpu-box", 'return chats.c_A2_new.server === "s_lab";', "lab-gpu-box")) note("a server pick in the popup: saved, the focus on its chip");
     await close(p, name);
   }
   await seed(url, "A2");
@@ -180,49 +181,51 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     note("a list and the folder's browser open in the toolbar: gone when the window sends the chip into the popup, and not back with it");
   }
   {
-    // The sidebar hidden, a window of 720 px: the page is 680 px, where the row has room for the server's chip beside
-    // the "more" chip (the Subagents chip is in its popup), and 456 when ⌘B shows the sidebar.
-    const s = state("plain-new"), name = "the server's list open, ⌘B";
+    // The sidebar hidden, a window of 720 px: the page is 680 px, where the row has room for the effort's chip, and 456
+    // when ⌘B shows the sidebar, where that chip is in the "more" popup.
+    const s = state("plain-new"), name = "the effort's list open, ⌘B";
     const p = await open(s, 456, { ls: { ...paneSize("page", 456).ls, "aiwb.side": "hidden" } });
     const railed = () => p.page.evaluate(() => !!document.querySelector(".app > .side-rail"));
-    await p.page.locator(`${ROW} > .server-pick > button.tchip`).click();
-    if (!(await places(p.page)).lists.some((l) => l.head === "Server" && l.where === "row")) fail(`${name}: the server's list did not open in the toolbar`);
+    await p.page.locator(`${ROW} > .menu-wrap > button.tchip[title^="Effort"]`).click();
+    if (!(await places(p.page)).lists.some((l) => l.head === "Effort" && l.where === "row")) fail(`${name}: the effort's list did not open in the toolbar`);
     await p.page.keyboard.press("ControlOrMeta+b");
     if (!await until(async () => !await railed(), 10000)) fail(`${name}: ⌘B did not show the sidebar`);
     await frame(p.page);
-    if (inRow(await places(p.page), "server")) fail(`${name}: beside the sidebar the server's chip is still in the row`);
+    if (inRow(await places(p.page), "effort")) fail(`${name}: beside the sidebar the effort's chip is still in the row`);
     await quiet(p.page, name, "its chip gone into the popup");
     await p.page.keyboard.press("ControlOrMeta+b");
     if (!await until(async () => await railed(), 10000)) fail(`${name}: ⌘B did not hide the sidebar again`);
     await frame(p.page);
-    if (!inRow(await places(p.page), "server")) fail(`${name}: the sidebar hidden again, the server's chip is not back in the row`);
+    if (!inRow(await places(p.page), "effort")) fail(`${name}: the sidebar hidden again, the effort's chip is not back in the row`);
     await quiet(p.page, name, "its chip back in the row");
     await close(p, name);
     note("a list open in the toolbar: gone when ⌘B sends its chip into the popup, and not back with it");
   }
   for (const by of ["the window", "⌘B"]) {
-    // "more" open with the server's list open from it; then the toolbar gives more controls to the popup.
+    // "more" open with the effort's list open from it (a page of 486 px, or one of 524 beside the rail: the popup has
+    // the effort's chip and the Subagents chip); then the toolbar gives more controls to the popup.
     const s = state("plain-new"), name = `a list open from "more", ${by} narrows the page`;
-    const p = await open(s, by === "⌘B" ? 300 : 560, by === "⌘B" ? { ls: { ...paneSize("page", 300).ls, "aiwb.side": "hidden" } } : {});
+    const p = await open(s, by === "⌘B" ? 300 : 486, by === "⌘B" ? { ls: { ...paneSize("page", 300).ls, "aiwb.side": "hidden" } } : {});
     await openMore(p.page, name);
     const before = await places(p.page);
-    await p.page.locator(`${POP} .server-pick button.tchip`).click();
-    if (!(await places(p.page)).lists.some((l) => l.head === "Server" && l.where === "popup")) fail(`${name}: the server's list did not open from the popup`);
+    await p.page.locator(`${POP} button.tchip[title^="Effort"]`).click();
+    if (!(await places(p.page)).lists.some((l) => l.head === "Effort" && l.where === "popup")) fail(`${name}: the effort's list did not open from the popup`);
     if (by === "⌘B") { await p.page.keyboard.press("ControlOrMeta+b"); if (!await until(() => p.page.evaluate(() => !document.querySelector(".app > .side-rail")), 10000)) fail(`${name}: ⌘B did not show the sidebar`); await frame(p.page); }
-    else await size(p.page, 400);
+    else await size(p.page, 430);
     const now = await places(p.page), held = (x) => x.chips.filter((c) => c.where === "popup").length;
     if (held(now) <= held(before)) fail(`${name}: the popup holds ${held(now)} chips, ${held(before)} before: nothing left the toolbar for it`);
     if (!now.more) fail(`${name}: the popup closed`);
-    if (now.lists.length !== 1 || now.lists[0].head !== "Server" || now.lists[0].where !== "popup") fail(`${name}: the lists open are ${JSON.stringify(now.lists)}, not the server's alone, in the popup`);
+    if (now.lists.length !== 1 || now.lists[0].head !== "Effort" || now.lists[0].where !== "popup") fail(`${name}: the lists open are ${JSON.stringify(now.lists)}, not the effort's alone, in the popup`);
     await close(p, name);
   }
   note('a control that leaves the toolbar for the open popup, by the window and by ⌘B: the popup and the list opened from it stay, and it has no list');
   {
     // The popup closed by its own chip, from the keyboard, under a list opened from it: the list does not come back with the popup.
-    const s = state("plain-new"), p = await open(s, 400), name = 'a list open from "more", the popup closed by its chip';
+    // (a page of 486 px: the effort's chip is the popup's first; 456 before the row had the attach button, which takes 30)
+    const s = state("plain-new"), p = await open(s, 486), name = 'a list open from "more", the popup closed by its chip';
     await openMore(p.page, name);
-    await p.page.locator(`${POP} .server-pick button.tchip`).click();
-    if (!(await places(p.page)).lists.some((l) => l.head === "Server" && l.where === "popup")) fail(`${name}: the server's list did not open from the popup`);
+    await p.page.locator(`${POP} button.tchip[title^="Effort"]`).click();
+    if (!(await places(p.page)).lists.some((l) => l.head === "Effort" && l.where === "popup")) fail(`${name}: the effort's list did not open from the popup`);
     await p.page.keyboard.press("Shift+Tab");
     if ((await places(p.page)).focus !== "more") fail(`${name}: Shift+Tab from the popup's first chip did not reach the "more" chip, but ${(await places(p.page)).focus || "the page"}`);
     await p.page.keyboard.press("Enter");
@@ -235,10 +238,10 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
   }
 
   // ---- the reason line
-  for (const [id, width, popup] of [["plain-noagent", 300, false], ["plain-noagent", 220, true], ["plain-off-new", 300, false], ["plain-off-new", 200, true], ["plain-noagent-installed", 200, true]]) {
+  for (const [id, width, popup] of [["plain-noagent", 300, false], ["plain-noagent", 220, true], ["plain-off-new", 300, null], ["plain-off-new", 200, null], ["plain-noagent-installed", 200, true]]) { // (null: the chat's server dropped, and its toolbar has no agent chip)
     const s = state(id), p = await open(s, width), name = `${id} at ${width} px`;
     const more = await openMore(p.page, name), now = await places(p.page);
-    if (inPopup(now, "agent") !== popup) fail(`${name}: the agent's chip is ${inPopup(now, "agent") ? "in the popup" : "in the row"}: the check wants it ${popup ? "in the popup" : "in the row"} at this width`);
+    if (popup !== null && inPopup(now, "agent") !== popup) fail(`${name}: the agent's chip is ${inPopup(now, "agent") ? "in the popup" : "in the row"}: the check wants it ${popup ? "in the popup" : "in the row"} at this width`);
     const line = await p.page.evaluate(() => {
       const tools = document.querySelector(".composer .composer-tools"), lines = [...document.querySelectorAll(".composer .agent-reason")], l = lines[0];
       if (!l) return null;

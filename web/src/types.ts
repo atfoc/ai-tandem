@@ -1,5 +1,9 @@
 // TypeScript mirror of internal/model (field for field, by json name).
 // Go's omitempty fields are optional here; time.Time is an RFC 3339 string.
+//
+// No record names the server it is on. In the store every id of a thing of a section (a remote
+// server) is the page's key of it (logic/keys.ts): the record's own `id`, and every id it holds
+// of another thing of that server (`group`, `board`, `run`, `chat`, `parent`, …).
 
 export type AgentKind = "claude" | "cursor" | "pi";
 
@@ -32,8 +36,6 @@ export type Board = Archive & {
   group: string; // group id or UNGROUPED
   created: string;
   new?: boolean;
-  server?: string; // entry id of the server the board lives on; absent = this computer
-  gone?: boolean;  // no longer on its server
 };
 
 export type State = {
@@ -51,8 +53,8 @@ export type ModelChoice = {
   effort?: string;
 };
 
-/** The key of the local server's part of the defaults (model.LocalServer), and the wire value of
- *  "server" for the local server. */
+/** The key of a server's own part of its defaults (model.LocalServer), and the page's name for this
+ *  computer where an entry id of the server list is asked for (logic/keys.ts). */
 export const LOCAL_SERVER = "local";
 
 export type ServerDefaults = {
@@ -63,8 +65,7 @@ export type ServerDefaults = {
 };
 
 export type GroupDefaults = {
-  server?: string; // the sticky server; absent: none stored
-  servers?: Record<string, ServerDefaults>; // key: LOCAL_SERVER or an instance id
+  servers?: Record<string, ServerDefaults>; // the key LOCAL_SERVER alone: in a section's defaults it means that server
 };
 
 export type Defaults = {
@@ -89,6 +90,7 @@ export type CatalogModel = {
   contextWindow?: number;
   defaultEffort?: string;
   effortLabels?: Record<string, string>;
+  noImages?: boolean; // the model takes no images; absent: it takes them
 };
 
 export type Usage = {
@@ -176,9 +178,6 @@ export type ChatView = Archive & {
   board?: string;
   run?: string;      // a chat on a run, or (with role) one of the run's agents
   role?: AgentRole;  // a run agent: never in the snapshot's chats, never in the sidebar
-  server?: string;   // the entry id of the chat's server (logic/serverlists.ts serverOf); absent = this computer
-  start?: "unconfirmed"; // an unstarted chat on another server whose first message got no answer: it may have arrived
-  gone?: boolean;    // a chat on another server that the server no longer has
   cwd: string;
   model: string;
   effort?: string;
@@ -240,6 +239,16 @@ export type Draft = {
   text: string;                               // the composer's value, with its reference tags
   mentions?: { name: string; id: string }[];  // boards picked from the @ menu
   references?: Reference[];                   // the quotes the message will carry (⌘L)
+  images?: ChatImage[];                       // the images the message will carry; a run's goal has none
+};
+
+/** model.Image: a picture the user attached to a message, as a draft and a sent message hold it. The bytes are on the
+ *  server, in the image store of the top-level chat (logic/chatimage.ts imageUrl). */
+export type ChatImage = {
+  id: string;   // the SHA-256 of the bytes, 64 lower-case hex digits
+  name: string; // the file's name, or a fixed one for a pasted picture; only shown
+  type: string; // one of IMAGE_TYPES (logic/chatimage.ts), as the server found it from the bytes
+  size: number; // in bytes
 };
 
 /** model.Reference: part of an earlier message in the chat that the user quoted (⌘L), with a
@@ -258,6 +267,7 @@ export type Item = {
   text?: string;
   context?: string;
   references?: Reference[]; // user
+  images?: ChatImage[];     // user: the images the message carries
   done?: boolean;
   toolId?: string;
   name?: string;
@@ -293,11 +303,12 @@ export type TreeView = { current: string; branches: TreeBranchView[]; labels: Tr
 /** A point a message is sent to: a branch, an item count, and whether a new branch is asked for. */
 export type Target = { branch: string; at: number; new: boolean };
 
-/** What a composer holds. */
-export type Held = { text: string; mentions: { name: string; id: string }[]; references: Reference[] };
+/** What a composer holds: its text, the boards picked in it, its quotes and its images (the uploaded ones: an upload that
+ *  runs is not held yet). */
+export type Held = { text: string; mentions: { name: string; id: string }[]; references: Reference[]; images: ChatImage[] };
 
 /** A move chosen and not sent yet: held is what the composer held before it (for Back), put what
- *  the move put there (Branch and edit: the message and its quotes), null when it put nothing.
+ *  the move put there (Branch and edit: the message, its quotes and its images), null when it put nothing.
  *  typed: what the composer held when it went away (another chat was opened), until it opens again;
  *  while the move is being sent, only when it held anything: the move's end makes that the chat's
  *  draft. After a Send that failed with no composer open it is the message that was not sent.
@@ -461,10 +472,6 @@ export type RunView = Archive & {
   cost: number | null;   // USD of the run's agents; null: this agent kind reports no cost
   costPartial?: boolean; // the sum is known to miss something
   attention: number;     // failed tasks + blocked tasks + refused calls in the latest turn
-  server?: string;       // the entry id of the run's server; absent = this computer
-  start?: "unconfirmed"; // a draft on another server whose start got no answer: its choices are fixed until that is known
-  gone?: boolean;        // a run on another server that the server no longer has
-  was?: string;          // only in a `run` event: the id the draft had before it got this one (the store moves to it and drops the field)
 };
 
 // ---- run detail: GET /api/runs/{id}/detail, kept current by `run_detail` events
@@ -682,6 +689,11 @@ export type AttemptChanges = {
 };
 /** GET /api/runs/{id}/notes/{v} */
 export type RunNotes = NotesVersion & { text: string };
+
+/** A server's tree: its groups in its order, with its boards, chats, branch records, runs and defaults. What the
+ *  snapshot's `sections` holds by entry id and a `section` event brings, with that server's own ids
+ *  (logic/sectionwire.ts makes the page's keys of them). */
+export type SectionTree = { groups?: Group[] | null; boards?: Board[] | null; chats?: ChatView[] | null; states?: BranchState[] | null; runs?: RunView[] | null; defaults?: Defaults | null };
 
 /** What a new run in a group starts with (GroupDefaults.run). */
 export type RunDefaults = { agent: AgentKind; tiers?: RunTiers; maxParallel: number; maxTurns: number; maxCost: number; setup?: string; setupCwd?: string };

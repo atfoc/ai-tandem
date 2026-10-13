@@ -34,10 +34,6 @@ type RunInfo struct {
 	Agent    model.AgentKind // the run's agent kind
 	Model    string          // what its deep tier runs on: a new chat of that kind starts on it
 	Effort   string
-	// Server is the server the run is on: the id of an entry of the server list, "" for this
-	// computer. A chat on the run is on that server.
-	Server string
-	Draft  bool // the run has not started
 }
 
 var (

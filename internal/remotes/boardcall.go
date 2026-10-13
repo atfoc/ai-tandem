@@ -1,9 +1,10 @@
 package remotes
 
 // The tool calls a board's server asks a page of this one: the server's rpc event is passed to
-// the page that holds the board under an id of the relay's own, and the page's answer is passed
-// back under the server's id. There is one wait, the server's; the relay's own limit
-// (Limits.BoardCall) is shorter, so the agent there gets the relay's answer and not a timeout.
+// the page that holds the board under an id of the relay's own, with the entry's id as "server",
+// and the page's answer is passed back under the server's id. Every board id in the call is that
+// server's. There is one wait, the server's; the relay's own limit (Limits.BoardCall) is shorter,
+// so the agent there gets the relay's answer and not a timeout.
 
 import (
 	"context"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ai-whiteboard/internal/editorbridge"
 )
 
 // boardCallPrefix starts the ids of the passed-on calls. A bridge's own ids are "rpc_<n>", so a
@@ -45,7 +48,7 @@ type boardCall struct {
 	entry string // the server that asked
 	there string // the call's id there
 	page  string // the page that was asked
-	board string // the board the page was chosen by
+	board string // the key of the board the page was chosen by (editorbridge.BoardOn)
 	asked time.Time
 	timer *time.Timer
 }
@@ -87,10 +90,11 @@ func notAsked() Reply {
 	return jsonReply(http.StatusConflict, map[string]string{"error": "not_asked"})
 }
 
-// ReplyBoardCall takes a page's answer to a passed-on tool call: body is the page's
+// ReplyBoardCall serves POST /api/rpc-reply for an id of IsBoardCall: body is the page's
 // {"id","result"} or {"id","error"}. Only the page that was asked may answer, and once: an
-// answer that names no page is nobody's. The answer is passed to the server that asked, and the
-// page gets {"ok":true} whatever that server says.
+// answer that names no page is nobody's, and so is one to a call that is no longer open (409
+// "not_asked"); a body that is no JSON is 400. The answer is passed to the server that asked,
+// and the page gets 200 {"ok":true} whatever that server says.
 func (r *Relay) ReplyBoardCall(ctx context.Context, page, rpcID string, body []byte) Reply {
 	var ans struct {
 		Result json.RawMessage `json:"result"`
@@ -158,10 +162,10 @@ func (r *Relay) failBoardCall(k *boardCall, text string) {
 	r.spawn(func() { r.answerBoardCall(k, nil, text) })
 }
 
-// failBoardCalls fails the open calls that were passed to a page by its hold of the board,
-// except those of the page keep: the page lost the board. It calls no server itself.
-func (r *Relay) failBoardCalls(board, keep string) {
-	for _, k := range r.calls.takeAll(func(k *boardCall) bool { return k.board == board && k.page != keep }) {
+// failBoardCalls fails the open calls that were passed to a page by its hold of the board with
+// this key, except those of the page keep: the page lost the board. It calls no server itself.
+func (r *Relay) failBoardCalls(key, keep string) {
+	for _, k := range r.calls.takeAll(func(k *boardCall) bool { return k.board == key && k.page != keep }) {
 		r.failBoardCall(k, noBoardWindow)
 	}
 }
@@ -172,14 +176,15 @@ func (r *Relay) failBoardCalls(board, keep string) {
 // The page asked is the one that holds the board the call is about: the calling chat's board
 // for get_view and show_board, otherwise the target board, and the chat's board when no page
 // holds the target (that page then takes the target itself). Only the boards of the entry
-// count. With no such page the server is answered at once.
+// count: a page that holds a board of this server or of another section with the same id is not
+// asked. With no such page the server is answered at once.
 func (r *Relay) boardCallEvent(entry string, raw json.RawMessage) {
 	var ev struct {
 		ID     string          `json:"id"`
 		Method json.RawMessage `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	if json.Unmarshal(raw, &ev) != nil || ev.ID == "" {
+	if json.Unmarshal(raw, &ev) != nil || ev.ID == "" || !r.held(entry) {
 		return
 	}
 	var p struct {
@@ -194,11 +199,12 @@ func (r *Relay) boardCallEvent(entry string, raw json.RawMessage) {
 		first = p.Board
 	}
 	for _, board := range []string{first, p.Board} {
-		if board == "" || r.boardOf(entry, board) == nil {
+		if board == "" {
 			continue
 		}
-		if page, held := r.o.Bridge.HolderOf(board); held {
-			k.page, k.board = page, board
+		key := editorbridge.BoardOn(entry, board)
+		if page, held := r.o.Bridge.HolderOf(key); held {
+			k.page, k.board = page, key
 			break
 		}
 	}
@@ -221,7 +227,7 @@ func (r *Relay) boardCallEvent(entry string, raw json.RawMessage) {
 		}
 	})
 	c.mu.Unlock()
-	call := map[string]any{"type": "rpc", "id": id}
+	call := map[string]any{"type": "rpc", "server": entry, "id": id}
 	if len(ev.Method) > 0 {
 		call["method"] = ev.Method
 	}
@@ -233,9 +239,8 @@ func (r *Relay) boardCallEvent(entry string, raw json.RawMessage) {
 	}
 }
 
-// dropBoardCalls is step 2 of the board part of a snapshot: the tool calls of the entry that
-// are open are dropped, since its server has failed them itself. It is called on the entry's
-// worker and must not call the server itself.
+// dropBoardCalls drops the tool calls of the entry that are open: its stream ended, and its
+// server has failed them itself. It is called on the entry's worker and calls no server.
 func (r *Relay) dropBoardCalls(entry string) {
 	r.calls.takeAll(func(k *boardCall) bool { return k.entry == entry })
 }

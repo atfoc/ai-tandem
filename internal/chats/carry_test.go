@@ -77,7 +77,7 @@ func TestHumanSendCarriesOwedResults(t *testing.T) {
 	e.send(id, "go on", "")
 	sent := parent.sent()
 	if len(sent) != 2 || len(sent[1]) != 2 || sent[1][1].Text != "go on" {
-		t.Fatalf("sends %q, want the results block and the text", sent)
+		t.Fatalf("sends %+v, want the results block and the text", sent)
 	}
 	block := sent[1][0].Text
 	if !strings.HasPrefix(block, humanBlock+"Subagents you spawned have finished") ||

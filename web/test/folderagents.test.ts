@@ -69,33 +69,42 @@ test("here and elsewhere: every branch counts, the asking chat's own too", () =>
 });
 
 test("folderAgents: the same path on another server is another folder", () => {
-  const all = chats(chat("c_1"), chat("c_2", { server: "s_1" }), chat("c_3", { server: "s_1" }), chat("c_4", { server: "s_2" }));
-  const states = [rec("c_1", "main", { status: "thinking" }), rec("c_2", "main", { status: "tool" }), rec("c_3", "main", { status: "writing", subsRunning: 1 }), rec("c_4", "main", { status: "thinking" })];
-  // seen from the local chat: the remote ones work on other machines
+  // c_1 is a chat of this computer, of the section s_1 and of the section s_2; c_3 is another chat of s_1
+  const all = chats(chat("c_1"), chat("s_1~c_1"), chat("s_1~c_3"), chat("s_2~c_1"));
+  const states = [rec("c_1", "main", { status: "thinking" }), rec("s_1~c_1", "main", { status: "tool" }), rec("s_1~c_3", "main", { status: "writing", subsRunning: 1 }), rec("s_2~c_1", "main", { status: "thinking" })];
+  // seen from the local chat: the sections' ones work on other machines
   assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_1" }), { total: 1, here: 1, elsewhere: 0 });
-  // seen from a chat on s_1: its own and the other chat of s_1, not the local one and not s_2's
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_2" }), { total: 3, here: 1, elsewhere: 2 });
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_4" }), { total: 1, here: 1, elsewhere: 0 });
+  // seen from a chat of s_1: its own and the other chat of s_1, not the local one and not s_2's
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "s_1~c_1" }), { total: 3, here: 1, elsewhere: 2 });
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "s_1~c_3" }), { total: 3, here: 2, elsewhere: 1 });
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "s_2~c_1" }), { total: 1, here: 1, elsewhere: 0 });
 });
 
-test("a chat of a run on another server is where the run is: it does not work in this computer's folder of the same path", () => {
-  const runs = { r_far: { server: "s_1" }, r_here: {} };
-  const all = chats(chat("mine"), chat("far", { run: "r_far" }), chat("agent", { run: "r_far", role: "task" } as Partial<ChatView>), chat("near", { run: "r_here" }), chat("rec", { run: "r_far", server: "s_1" }));
-  const states = [rec("mine", "main"), rec("far", "main", { status: "tool" }), rec("agent", "main", { status: "thinking", subsRunning: 2 }), rec("near", "main", { status: "tool" }), rec("rec", "main", { status: "tool" })];
+test("the same id on two servers is two chats: `here` is the asking chat's own key alone", () => {
+  const all = chats(chat("c_1"), chat("s_1~c_1"));
+  const states = [rec("c_1", "main", { status: "tool" }), rec("c_1", "b1", { status: "tool" }), rec("s_1~c_1", "main", { status: "tool", subsRunning: 2 })];
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "c_1" }), { total: 2, here: 2, elsewhere: 0 });
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "s_1~c_1" }), { total: 3, here: 3, elsewhere: 0 });
+});
+
+test("a chat on a run of a section is where the run is: the key of the chat says it, and no run is asked", () => {
+  // a chat on a section's run, and that run's own agent, are keyed with the run's server (logic/sectionwire.ts)
+  const all = chats(chat("mine"), chat("s_1~far", { run: "s_1~r_1" }), chat("s_1~agent", { run: "s_1~r_1", role: "task" } as Partial<ChatView>), chat("near", { run: "r_1" }));
+  const states = [rec("mine", "main"), rec("s_1~far", "main", { status: "tool" }), rec("s_1~agent", "main", { status: "thinking", subsRunning: 2 }), rec("near", "main", { status: "tool" })];
   // from a chat of this computer: the local run's chat alone
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "mine", runs }), { total: 1, here: 0, elsewhere: 1 });
-  // from a chat on the remote run: that run's, on its server, and none of this computer's
-  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "far", runs }), { total: 5, here: 1, elsewhere: 4 });
-  // without the runs a view that names no server counts as this computer's (what the hint must not do)
-  assert.equal(folderAgents({ chats: all, states, cwd: "/w", chat: "mine" }).total, 5);
-  // a run that is not known leaves the chat's own server
-  assert.equal(folderAgents({ chats: chats(chat("mine"), chat("x", { run: "r_gone" })), states: [rec("x", "main", { status: "tool" })], cwd: "/w", chat: "mine", runs }).total, 1);
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "mine" }), { total: 1, here: 0, elsewhere: 1 });
+  // from a chat on the section's run: that run's, on its server, and none of this computer's
+  assert.deepEqual(folderAgents({ chats: all, states, cwd: "/w", chat: "s_1~far" }), { total: 4, here: 1, elsewhere: 3 });
+  // a view that still named a server in a field is on the server of its key
+  assert.equal(folderAgents({ chats: chats(chat("mine"), chat("x", { server: "s_1" } as Partial<ChatView>)), states: [rec("x", "main", { status: "tool" })], cwd: "/w", chat: "mine" }).total, 1);
 });
 
-test("the folder hint gives the runs to folderAgents, and the composer shows none", () => {
+test("the folder hint gives folderAgents the chats and their records alone, and the composer shows none", () => {
   const src = readFileSync(new URL("../src/fork/FolderHint.tsx", import.meta.url), "utf8");
   assert.equal(src.split("folderAgents({").length - 1, 1);
-  assert.equal((src.match(/chat: chatId, runs \}\)/g) ?? []).length, 1);
+  assert.ok(src.includes("folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId })"));
+  assert.ok(!src.includes("runs"), "no run is read: the server is the chat key's");
+  assert.equal(folderAgents.length, 1);
   // the chip beside the composer's folder ("N others working here") is gone
   assert.doesNotMatch(readFileSync(new URL("../src/Composer.tsx", import.meta.url), "utf8"), /FolderHint|working here/);
 });

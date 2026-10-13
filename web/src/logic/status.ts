@@ -16,6 +16,15 @@ export const starting = (c: Pick<ChatView, "status" | "fresh">): boolean => !!c.
  *  is absent when 0 and from an older server, and then the current branch's status tells. */
 export const chatBusy = (c: Pick<ChatView, "status" | "working">): boolean => (c.working ?? 0) > 0 || isBusy(c.status);
 
+/** The agent the canvas says is working on a board: that of one of the board's chats that is busy, else that of
+ *  another chat that just edited it (other). None for a board that takes no call now (live false: its server is not
+ *  connected, or no longer has it): what is on screen of it is as it was when the connection ended, and nothing of
+ *  it is known since, so nothing says that an agent works. */
+export function boardWorker<A extends string>(chats: Record<string, Pick<ChatView, "board" | "archived" | "status" | "working"> & { agent: A }>, board: string, other: A | undefined, live: boolean): A | undefined {
+  if (!live) return undefined;
+  return Object.values(chats).find((c) => c.board === board && !c.archived && chatBusy(c))?.agent ?? other;
+}
+
 /** One branch has work that a stop ends: its agent is busy, or the subagents it spawned still run
  *  while it waits for them. Results not sent yet do not count: they are kept, and go to the agent
  *  with the next message. */
@@ -72,26 +81,12 @@ export const sendTitle = (c: Pick<ChatView, "status" | "fresh"> & Partial<Pick<C
 
 /** A Send was refused: whether the chat is read again. 409: the branch the message goes to is busy
  *  by now. 429 `cap` (too many turns run), 409 `window` (the model chosen cannot take the
- *  conversation), and 409 `agent_missing` and `no_agent` (the server lacks the chat's agent, or the
- *  chat has none) are no stale state: the message stays in the box. */
-const NOT_STALE = ["cap", "window", "agent_missing", "no_agent"];
+ *  conversation), 409 `agent_missing` and `no_agent` (the server lacks the chat's agent, or the
+ *  chat has none) and 409 `image_missing` (the chat no longer holds an image the message named)
+ *  are no stale state: the message stays in the box. */
+const NOT_STALE = ["cap", "window", "agent_missing", "no_agent", "image_missing"];
 export const refreshAfterRefusal = (status: number, code?: string): boolean => status === 409 && !NOT_STALE.includes(code ?? "");
 
-/** "<Name> is not connected." / "No longer on <Name>": what the page says of a chat on another
- *  server (an entry of the server list) that cannot be reached, or that the server no longer has. */
+/** "<Name> is not connected": what the page says of a thing of a section (a remote server of the server list)
+ *  whose server cannot be reached. */
 export const notConnected = (name: string): string => `${name} is not connected`;
-export const noLongerOn = (name: string): string => `No longer on ${name}`;
-
-/** A sidebar row of a chat on another server: line and dot are those of a local chat (rowLine and
- *  dotState, labels.ts), so working, approval, finished and archived show the same.
- *  line: the server's name follows it; a chat its server no longer has (gone) says that alone.
- *  dot: "off" (grey) while the server is not connected or the chat is gone, whatever it did last.
- *  off, gone: the row's classes. title: the row's own title, "" for the usual one.
- *  A chat with no server (this computer's) is given back as it is. */
-export function remoteRow<D extends string>(c: Pick<ChatView, "server" | "gone">, name: string, connected: boolean, line: string, dot: D):
-  { line: string; dot: D | "off"; off: boolean; gone: boolean; title: string } {
-  if (!c.server) return { line, dot, off: false, gone: false, title: "" };
-  if (c.gone) return { line: noLongerOn(name), dot: "off", off: false, gone: true, title: noLongerOn(name) };
-  const sub = line ? `${line} · ${name}` : name;
-  return connected ? { line: sub, dot, off: false, gone: false, title: "" } : { line: sub, dot: "off", off: true, gone: false, title: notConnected(name) };
-}

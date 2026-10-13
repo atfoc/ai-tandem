@@ -1,16 +1,19 @@
 // A branch's unsent message, kept on the server (PUT /api/chats/{id}/draft?branch=) so it
 // survives switching chats and branches, reloads and restarts. Each branch of a chat has its
 // own. DOM-free: Composer keeps one DraftSaver per open composer and gives it every change.
+// A draft names the images of its message (id, name, type and size); their bytes are in the
+// chat's image store on the server, and never in a draft or in the unsaved copy of one.
 //
 // A page that reloads or closes is no longer a client the server knows once its event stream
 // drops, so a save sent while the page goes away can be refused (`unknown_client`). Each change
 // is therefore also kept in an Unsaved copy (localStorage) until the server has it; the composer
 // opens with that copy over the server's draft and saves it again.
 
-import { MAIN, type BranchState, type ChatView, type Draft, type Held, type Reference } from "../types.ts";
+import { MAIN, type BranchState, type ChatImage, type ChatView, type Draft, type Held, type Reference } from "../types.ts";
 import type { Picked } from "./mentions.ts";
 import { currentBranch, stateFromView } from "./branches.ts";
 import { mergeQuotes } from "./quotes.ts";
+import { plainImage, withImages } from "./chatimage.ts";
 
 /** How long typing pauses before the draft is saved. */
 export const DRAFT_DELAY = 400;
@@ -19,17 +22,19 @@ export const DRAFT_DELAY = 400;
  *  the event that tells of it can reach the page just after the answer. */
 export const SEND_GRACE = 1000;
 
-/** The draft for a composer's value and quotes: blank text and no quotes is no draft, and
- *  mentions only go with text. */
-export function draftOf(text: string, picked: Picked[] = [], references: Reference[] = []): Draft {
+/** The draft for a composer's value, quotes and images: blank text, no quotes and no images is no
+ *  draft, and mentions only go with text. An image is named by its id, name, type and size, never
+ *  with its bytes (plainImage). */
+export function draftOf(text: string, picked: Picked[] = [], references: Reference[] = [], images: readonly ChatImage[] = []): Draft {
   const d: Draft = { text: text.trim() ? text : "" };
   if (d.text && picked.length) d.mentions = picked;
   if (references.length) d.references = references;
+  if (images.length) d.images = images.map(plainImage);
   return d;
 }
 
-/** Whether a draft has anything to keep. */
-export const hasDraft = (d?: Draft | null): d is Draft => !!(d?.text || d?.references?.length);
+/** Whether a draft has anything to keep: text, quotes or images. One of images alone is a draft. */
+export const hasDraft = (d?: Pick<Draft, "text" | "references" | "images"> | null): d is Draft => !!(d?.text || d?.references?.length || d?.images?.length);
 
 /** Whether any branch of a chat has a draft: the server's count over its branches, else the
  *  current branch's own draft. */
@@ -91,7 +96,9 @@ export function staleOf(e: unknown): { rev: number; draft: Draft } | null {
 const key = (d: Draft) => JSON.stringify(d);
 const NONE: Draft = { text: "" };
 const EMPTY = key(NONE);
-const ofHeld = (h: Held): Draft => draftOf(h.text, h.mentions, h.references);
+const UNSURE = "?"; // what a saver takes as saved while it is not known what the server has: no draft's key
+/** What a composer holds, as a draft. */
+export const ofHeld = (h: Held): Draft => draftOf(h.text, h.mentions, h.references, h.images);
 
 /** Whether what a save refused as stale tells (the server's counter and its draft) goes into the
  *  store: not when the counter known here is a later one, whose draft an event brought since. */
@@ -109,18 +116,20 @@ export const answerNewer = (rev: unknown, known?: number): rev is number => type
 export const boxText = (d: Draft | null | undefined, held: string): string | null => (hasDraft(d) ? d.text : held || null);
 
 /** A draft as what a composer holds. */
-export const heldOf = (d: Draft): Held => ({ text: d.text, mentions: d.mentions ?? [], references: d.references ?? [] });
+export const heldOf = (d: Draft): Held => ({ text: d.text, mentions: d.mentions ?? [], references: d.references ?? [], images: d.images ?? [] });
 
 /** Whether two drafts are the same; none is the empty one. */
 export const sameDraft = (a?: Draft | null, b?: Draft | null): boolean => key(ofHeld(heldOf(a ?? NONE))) === key(ofHeld(heldOf(b ?? NONE)));
 
 /** Two drafts in the one place there is for both: the texts one after the other, with the
- *  mentions and the quotes of both. The same draft twice, or one with nothing, is one draft. */
+ *  mentions, the quotes and the images of both, each image once. The same draft twice, or one with
+ *  nothing, is one draft. Nothing is dropped: the images of both can pass what one message takes
+ *  (chatimage.ts overLimit), and the composer then holds its Send until some are removed. */
 export function joinDrafts(a: Draft, b?: Draft | null): Draft {
   if (!hasDraft(b) || sameDraft(a, b)) return a;
   if (!hasDraft(a)) return b;
   const mentions = [...(a.mentions ?? []), ...(b.mentions ?? []).filter((m) => !a.mentions?.some((x) => x.id === m.id && x.name === m.name))];
-  return draftOf(a.text && b.text ? `${a.text}\n\n${b.text}` : a.text || b.text, mentions, mergeQuotes(a.references ?? [], b.references ?? []));
+  return draftOf(a.text && b.text ? `${a.text}\n\n${b.text}` : a.text || b.text, mentions, mergeQuotes(a.references ?? [], b.references ?? []), withImages(a.images ?? [], b.images ?? []));
 }
 
 /** The drafts a sent move leaves. A move makes a new branch, which has no draft, and the server
@@ -200,15 +209,6 @@ export function revSet(c: ChatView, states: readonly BranchState[], branch: stri
  *  And the Send is over at once, with no grace, when its answer tells that it removed nothing: it
  *  was refused, or the server had no draft when it began and this composer saved none while it ran.
  *
- *  A held Send (sending with hold: the first message of a chat on another server, one call that
- *  can take long) saves nothing until it is answered: the text is saved at once if it was not
- *  yet, and stays the draft on the server while the composer is empty, so a page that reloads
- *  meanwhile shows it. The emptied draft is never saved: accepted, the server removed the sent
- *  draft itself; refused, the text is the draft still. Only when the Send is answered before the
- *  save of its own text is, the emptied draft waits for that save's answer: it is dropped when
- *  that tells of the removal, and saved when the text landed after all. Text typed meanwhile is
- *  saved after the answer, or at once by a page that goes away.
- *
  *  A Send that fails puts its message back into the composer, but not one whose draft was removed
  *  on the server while the Send was on its way (mine, gone): another window sent that very draft,
  *  or the Send was taken after all, and put back it would be a draft of a sent message in every
@@ -228,7 +228,6 @@ export class DraftSaver {
   private sent: object | null = null;   // this composer's Send is on its way (sending), and no removal of a draft has come since it started
   private own: string | null = null;    // the text this composer saved since that Send began: what a removal taken as the Send's leaves to save again
   private had = false;                  // the server had a draft, or a save was in flight, when that Send began: it has one to remove
-  private wait: object | null = null;   // a held Send is on its way: nothing is saved until it is answered
   private mine: string | null = null;   // the draft that Send sent, while it is the server's (saved, or its save in flight): null once the server has another, or never had it
   private gone: object | null = null;   // the Send whose draft (mine) was removed on the server while it was on its way
 
@@ -240,32 +239,32 @@ export class DraftSaver {
     this.put = put;
     this.unsaved = unsaved;
     this.delay = delay;
-    this.saved = key(draftOf(saved?.text ?? "", saved?.mentions, saved?.references));
+    this.saved = key(draftOf(saved?.text ?? "", saved?.mentions, saved?.references, saved?.images));
     this.base = base;
     this.show = show;
+    // A copy that is there when the saver is made is a draft the server may not have, whatever saved tells: a save sets the store before its answer, and one
+    // that failed left its draft there. Nothing is taken as saved then, so the composer's first change is saved and the copy is not dropped unsaved.
+    if (unsaved?.read()) this.saved = UNSURE;
   }
 
   /** This composer's Send is on its way: the server removes the sent draft, and that removal,
    *  when it arrives over text typed and saved since, is not another window's (the class's
-   *  comment). hold: nothing is saved until the Send is answered (a held Send). Answers what to
+   *  comment). Answers what to
    *  call once the Send's POST is answered; refused: the server answered that it did not take the
    *  message, so it removed nothing. The Send is then over after grace, unless a later one runs,
    *  and at once when it can have removed nothing. That call answers whether the sent draft was
    *  removed on the server while the Send was on its way: a Send that failed then puts nothing
    *  back (the class's comment). */
-  sending(grace = SEND_GRACE, hold = false): (refused?: boolean) => boolean {
+  sending(grace = SEND_GRACE): (refused?: boolean) => boolean {
     const mark = {};
-    if (hold) this.flush(); // text typed just before the Send: the server has it while the Send waits
     this.sent = mark;
     this.own = null;
     this.had = this.saved !== EMPTY || this.flying !== null;
     this.mine = !this.pending && this.saved !== EMPTY ? this.saved : null; // text not saved yet is no draft another window can send
     this.gone = null;
-    if (hold) this.wait = mark;
     return (refused = false) => {
       const removed = this.gone === mark;
       if (removed) this.gone = null;
-      if (this.wait === mark) this.release(refused);
       if (this.sent !== mark) return removed;
       const saving = this.own !== null || (this.flying !== null && this.flying !== EMPTY); // text of this composer's that the Send can have found
       if (refused || (!this.had && !saving)) this.sent = null;
@@ -274,35 +273,15 @@ export class DraftSaver {
     };
   }
 
-  /** The held Send is answered. The emptied draft is not saved: see the class's comment. Text
-   *  typed meanwhile is saved after the pause, when the removal of the sent draft has come. */
-  private release(refused: boolean) {
-    this.wait = null;
-    if (!this.pending) return;
-    clearTimeout(this.timer);
-    if (!hasDraft(this.pending)) {
-      // Answered before the save of the sent text is: the emptied draft waits for that answer. Dropped here, a save refused as stale would take the
-      // sent text as what the composer holds still, and save it again.
-      if (!refused && this.flying !== null && this.flying !== EMPTY) { this.held = true; return; }
-      this.pending = null; this.held = false;
-      return;
-    }
-    this.timer = setTimeout(() => this.flush(false), this.delay);
-  }
-
-  /** Keeps the unsaved copy of what is pending. A held Send's emptied draft is none to keep: the
-   *  copy is then the text whose save is still in flight, else none, and a page that reloads
-   *  shows the server's draft, the sent text. */
+  /** Keeps the unsaved copy of what is pending. */
   private note(base = this.base) {
     const d = this.pending;
-    if (!d) return;
-    if (this.wait && !hasDraft(d)) this.unsaved?.write(this.flying !== null && this.flying !== EMPTY ? JSON.parse(this.flying) as Draft : null, base);
-    else this.unsaved?.write(d, base);
+    if (d) this.unsaved?.write(d, base);
   }
 
-  change(text: string, picked: Picked[] = [], references: Reference[] = []) {
+  change(text: string, picked: Picked[] = [], references: Reference[] = [], images: readonly ChatImage[] = []) {
     clearTimeout(this.timer);
-    const d = draftOf(text, picked, references);
+    const d = draftOf(text, picked, references, images);
     if (key(d) === this.saved) {
       this.pending = null;
       this.unsaved?.write(null);
@@ -315,13 +294,11 @@ export class DraftSaver {
 
   /** Saves the pending draft now, if there is one. While a save is in flight it waits for that
    *  one's answer, which has the counter to name; a page that goes away cannot wait, and names
-   *  the counter that save leaves. While a held Send is on its way nothing is saved, but text by
-   *  a page that goes away. */
+   *  the counter that save leaves. */
   flush(keepalive = false) {
     clearTimeout(this.timer);
     const d = this.pending;
     if (!d) return;
-    if (this.wait && !(keepalive && hasDraft(d))) return;
     if (this.flying !== null && !keepalive) { this.held = true; return; }
     const k = key(d), before = this.saved, mark = this.sent;
     const base = this.base !== undefined && this.flying !== null ? this.base + 1 : this.base;
@@ -360,6 +337,15 @@ export class DraftSaver {
     );
   }
 
+  /** The chat's server is connected again, or the page's own connection to the local server opened
+   *  again (logic/draftsback.ts): a draft whose save failed while it was away is pending with no
+   *  timer, and is saved now, without waiting for the next change. A save in flight can still
+   *  fail for the time the server was away: what it then leaves pending is saved after it. */
+  back() {
+    if (this.flying !== null) this.held = true;
+    else this.flush();
+  }
+
   /** The server's draft has the counter rev (a `branch_state` event). A newer one than this
    *  composer's is shown when nothing is pending and nothing is in flight; else what was typed
    *  stays and the next save names the new counter. One that equals the save in flight is its echo.
@@ -376,20 +362,6 @@ export class DraftSaver {
     }
     this.newer(n);
     this.next();
-  }
-
-  /** This composer's first message was answered `first_text_kept`: the chat started on its server
-   *  with an earlier text during the call, which removed the draft and raised its counter by one.
-   *  That removal is told here as if its event had come, so that the text the composer puts back
-   *  is saved as the started chat's draft, and the event, coming after it, does not empty the box.
-   *  Only while no removal has come since the Send began (sent; one that waits for a save in
-   *  flight is in late): it was that one then, and the counter has it already. It counts from
-   *  this saver's own counter, the one its saves name, and not from the store's record: that can
-   *  have a later draft of another window's by now, and one counter too high is never corrected,
-   *  where one too low is by the save refused as stale. */
-  kept() {
-    if (!this.sent || this.base === undefined || (this.late && !hasDraft(this.late))) return;
-    this.arrived(this.base + 1, null);
   }
 
   /** The newer draft kept while a save was in flight, once none is. */

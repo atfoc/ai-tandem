@@ -5,7 +5,8 @@
 // popover opens from there inside the window, a pick is saved with the popover and the popup still open, Esc closes
 // the popover first and the popup next. On a started chat the chip is fixed and opens nothing; in the default panel
 // beside a board, where the row has no room for it, a fixed chip on the default settings is not drawn at all, and
-// the toolbar has no "more" chip for it.
+// the toolbar has no "more" chip for it. Nor does it take the meter's text: in a panel of 430 px, where the row is
+// whole with that text (in the default one the attach button takes the room of it), the chip is not drawn either.
 import { act, check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";
 
 const HEIGHT = 640;
@@ -92,10 +93,14 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
     await frame(p.page);
     if ((await at(p.page)).open) fail(`${name}: the fixed chip opened a popover`);
     await close(p, name);
-    const q = await open(state("board-started"), 400), panel = "a started chat in the default panel beside a board";
-    if (await q.page.locator(CHIP).count() || await q.page.locator(MORE).count()) fail(`${panel}: ${await q.page.locator(CHIP).count()} Subagents chips and ${await q.page.locator(MORE).count()} "more" chips`);
-    if (await q.page.locator(".composer .ctx-meter.compact").count()) fail(`${panel}: the meter is cut to its ring`);
-    await close(q, panel);
-    note("a started chat: the chip is fixed and opens nothing; in the default panel a fixed chip on the default settings is not drawn, and costs no \"more\" chip");
+    // (400 px is the default panel, where the attach button has the room of the meter's text; at 430 px the row has
+    // all of its controls and that text, with less to spare than the chip is wide)
+    for (const [width, panel, whole] of [[400, "a started chat in the default panel beside a board", false], [430, "a started chat in a 430 px panel beside a board", true]]) {
+      const q = await open(state("board-started"), width);
+      if (await q.page.locator(CHIP).count() || await q.page.locator(MORE).count()) fail(`${panel}: ${await q.page.locator(CHIP).count()} Subagents chips and ${await q.page.locator(MORE).count()} "more" chips`);
+      if (whole && await q.page.locator(".composer .ctx-meter.compact").count()) fail(`${panel}: the meter is cut to its ring`);
+      await close(q, panel);
+    }
+    note("a started chat: the chip is fixed and opens nothing; in the default panel a fixed chip on the default settings is not drawn, and costs no \"more\" chip, nor the meter's text where the row has it");
   }
 });

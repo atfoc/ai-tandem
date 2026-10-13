@@ -432,7 +432,10 @@ func untouched(t *testing.T) (port int, check func(what string)) {
 // The status reports a running server only when it is this data folder's: another folder's
 // server on the port is not it, and no port but the given one, or else server.json's, is asked.
 func TestRemoteStatusOfThisFolderOnly(t *testing.T) {
-	t.Parallel()
+	// Not in parallel with the other tests: one of its cases puts a transport of its own in
+	// http.DefaultTransport, a value of the whole process that the HTTP clients of the tests
+	// that run in parallel read (as TestSecretNewAsksNoDefaultPort does, which is not parallel
+	// either).
 	const listening = `{"listening":true,"port":5123,"names":["mac.local"],"fingerprint":"AB:CD"}`
 	const otherID = "7b1e9d40-2c5a-4f38-a6d7-0e1f2a3b4c5d"
 	mine := t.TempDir()

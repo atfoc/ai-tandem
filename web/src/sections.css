@@ -1,0 +1,18 @@
+/* The sections of the sidebar: one per remote server of the server list, under the local part (Sidebar.tsx
+   SectionNode). A section is not a group: its head is set apart by a line above it, names the server and says
+   its state, and has no menu. Its rows are the rows of the local part. */
+.side-section { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--line); }
+.side-section-head { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 2px 0 4px; border-radius: 6px; font-size: 12.5px; font-weight: 650; color: var(--text); cursor: pointer; user-select: none; }
+.side-section-head:hover { background: var(--hover); }
+.side-section-head:hover .side-hover, .side-section-head.hold .side-hover { visibility: visible; }
+/* The name and the state share the head's line. Where both do not fit, the state gives way first, down to the width
+   of "Connected", and only then the name: the short states are never cut, and a long one ("Not an AI Whiteboard
+   server") has all the room the name leaves. What is cut is whole in the head's title. */
+.side-section-name { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-section-state { flex: 0 1000 auto; min-width: 6.2em; font-size: 11px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-section-state::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; background: var(--faint); vertical-align: 1px; }
+.side-section-state.ok::before { background: var(--ok); }
+.side-section-state.bad { color: var(--danger); }
+.side-section-state.bad::before { background: var(--danger); }
+.side-section-body { padding-left: 2px; }
+.side-section-line { padding-left: 20px; }

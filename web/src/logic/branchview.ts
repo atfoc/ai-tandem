@@ -8,6 +8,7 @@ import { hasDraft } from "./drafts.ts";
 import { pointOK, sessionEnd } from "./forkpoints.ts";
 import { nameOfBranch, preview, sharedCount, type ChatTree } from "./forktree.ts";
 import { nameText, quoteKey } from "./quotes.ts";
+import { sameImages, withImages, withoutImages } from "./chatimage.ts";
 
 /** One load per key at a time, the newest wins: begin returns a ticket; current tells whether it is still the newest. */
 export class Loads {
@@ -58,13 +59,18 @@ export function moveDropped(p: { archived: boolean; valid: boolean; sending: boo
  *  typed. A move that put nothing left the composer its own draft: what was typed gets back the
  *  quotes the moves hid, a quote whose comment was edited meanwhile keeps the edit, and a quote
  *  that was removed meanwhile stays removed (one the moves hid was not removed).
+ *  The images go with the text. What was typed keeps the images the composer holds now. What it
+ *  held before a move that put a message (Branch and edit) has its own images again, and after
+ *  them the ones added meanwhile: those the composer has now that the message put did not bring.
+ *  A move that put nothing took no image out: the composer's images are as they are now.
  *  limit: the count below which an index names the same message in the branch returned to. */
 export function afterBack(move: PendingMove, now: Held, limit: number): Held {
   const same = (a: Reference) => (b: Reference) => quoteKey(a) === quoteKey(b);
   const below = quotesBefore(now.references, limit);
   // What the moves took out of the composer, without what it has again. A move that does not say: the quotes past the limit.
   const hid = (move.put ? [] : move.hid ?? move.held.references.filter((r) => r.item >= limit)).filter((h) => !below.some(same(h)));
-  if (now.text !== (move.put?.text ?? move.held.text)) return { text: now.text, mentions: now.mentions, references: [...below, ...hid] };
+  if (now.text !== (move.put?.text ?? move.held.text)) return { text: now.text, mentions: now.mentions, references: [...below, ...hid], images: now.images };
+  const images = move.put ? withImages(move.held.images, withoutImages(now.images, move.put.images.map((x) => x.id))) : now.images;
   const had = new Set([...(move.put ?? move.held).references, ...move.held.references].map(quoteKey));
   const added = [...below, ...hid].filter((r) => !had.has(quoteKey(r)));
   const mine = move.put ? move.held.references : move.held.references.flatMap((h) => {
@@ -72,14 +78,14 @@ export function afterBack(move: PendingMove, now: Held, limit: number): Held {
     return r ? [r.comment !== h.comment ? r : h] : hid.some(same(h)) || now.references.some(same(h)) ? [h] : []; // in neither: the user removed it
   });
   const whole = mine.length === move.held.references.length && mine.every((r, i) => r === move.held.references[i]);
-  return added.length || !whole ? { ...move.held, references: [...mine, ...added] } : move.held;
+  return added.length || !whole || !sameImages(images, move.held.images) ? { ...move.held, references: [...mine, ...added], images } : move.held;
 }
 
 /** What an empty composer gets back after a sent move that had put a message into it (Branch and
  *  edit): the draft it held before, which the Send did not use. null: nothing to give back.
  *  limit: the count below which an index names the same message in the branch sent to. */
 export function afterSent(move: PendingMove, now: Held, limit: number): Held | null {
-  if (!move.put || now.text.trim() || now.references.length) return null;
+  if (!move.put || now.text.trim() || now.references.length || now.images.length) return null;
   const h = { ...move.held, references: quotesBefore(move.held.references, limit) };
   return hasDraft(h) ? h : null;
 }

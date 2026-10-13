@@ -1,18 +1,20 @@
-// The sidebar's one drop mark: where a drag would land, and which group is being dragged. DOM-free.
+// The sidebar's one drop mark: where a drag would land, which group is being dragged, and which
+// server what is dragged is on. DOM-free.
 //
 // One mark for the whole sidebar, and not a flag per zone: a drop that an inner zone handles, or a
 // drag that ends with no word to the zone it was over, then leaves nothing lit behind.
 
 export type DropMark = {
-  zone: string | null;   // the zone the pointer is in: a group's id, or UNGROUPED
+  zone: string | null;   // the zone the pointer is in: a group's key, or the key of a server's ungrouped area
   before: string | null; // the group whose header's upper half it is on: a dragged group goes before it
   group: string | null;  // the group being dragged, so that a target can refuse the group itself and its subgroups
+  server: string | null; // the entry id of the server what is dragged is on ("local": this computer); null: no drag that began in this window
 };
 
-export const NO_MARK: DropMark = { zone: null, before: null, group: null };
+export const NO_MARK: DropMark = { zone: null, before: null, group: null, server: null };
 
 export type DropEvent =
-  | { type: "start"; group: string | null } // a drag began in the sidebar: of a group's header, or of a row (null)
+  | { type: "start"; group: string | null; server: string } // a drag began in the sidebar: of a group's header, or of a row (null), on that server
   | { type: "in"; zone: string }            // the zone takes what is dragged over it
   | { type: "before"; head: string }        // the upper half of a group's header takes the dragged group
   | { type: "out"; zone: string }           // the pointer left the zone
@@ -24,18 +26,23 @@ export type DropEvent =
  *  time, and a new mark asks every selector of the page. At most one place is lit, a zone or a header. "nowhere"
  *  empties what is lit and keeps the dragged group, which only a start and an end change. */
 export function dropMark(m: DropMark, e: DropEvent): DropMark {
-  const to = (zone: string | null, before: string | null, group = m.group): DropMark =>
-    (zone === m.zone && before === m.before && group === m.group ? m : { zone, before, group });
+  const to = (zone: string | null, before: string | null, group = m.group, server = m.server): DropMark =>
+    (zone === m.zone && before === m.before && group === m.group && server === m.server ? m : { zone, before, group, server });
   switch (e.type) {
-    case "start": return to(null, null, e.group);
+    case "start": return to(null, null, e.group, e.server);
     case "in": return to(e.zone, null);
     case "before": return to(null, e.head);
     case "out": return to(m.zone === e.zone ? null : m.zone, m.before);
     case "off": return to(m.zone, m.before === e.head ? null : m.before);
     case "nowhere": return to(null, null);
-    case "end": return to(null, null, null);
+    case "end": return to(null, null, null, null);
   }
 }
+
+/** Whether a zone or a header of a server takes what is dragged: only what is on that same server. Nothing is moved
+ *  from one section to another, or between a section and the local part: such a drop is not offered. A drag that did
+ *  not begin in this window (server null: another window of the app) is judged when it is dropped, by what it carries. */
+export const takesFrom = (m: Pick<DropMark, "server">, server: string): boolean => m.server === null || m.server === server;
 
 /** What the window is listened to for besides the zones' own handlers, and what each event is to the mark.
  *

@@ -1,0 +1,45 @@
+/* The thumbnail of an image attached to a message (ImageThumb.tsx): a square tile, 64px in the composer's strip, and
+   --img-thumb where that is set (a sent message, below). The tile is --bg with --muted and --text on it, pairs every
+   theme and flavour holds to its contrast floor, whatever the tile stands on. Its ring is drawn over the picture, so
+   that a picture of the page's own colour still has an edge. */
+.img-thumb { --img-thumb: 64px; position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: var(--img-thumb); height: var(--img-thumb); border-radius: 7px; background: var(--bg); color: var(--muted); vertical-align: top; user-select: none; -webkit-user-select: none; }
+.img-thumb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 18%, transparent); pointer-events: none; }
+.img-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.img-thumb.busy img { opacity: .45; }
+.img-thumb-open { display: block; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: zoom-in; }
+.img-thumb-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.img-thumb:has(.img-thumb-open:hover)::after { box-shadow: inset 0 0 0 2px var(--accent); }
+/* The plain tile of an image that cannot be fetched: its name, cut to the lines that fit. */
+.img-thumb.broken::after { box-shadow: none; border: 1px dashed color-mix(in srgb, var(--text) 34%, transparent); }
+.img-thumb-name { display: block; width: 100%; padding: 4px; }
+.img-thumb-name::before { content: attr(data-text); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; font-size: 10.5px; line-height: 1.25; text-align: center; overflow-wrap: anywhere; }
+/* The busy mark: a ring that turns, on a disc of the tile's colour so that it reads over any picture. */
+.img-thumb-busy { position: absolute; inset: 0; z-index: 1; margin: auto; width: 24px; height: 24px; border-radius: 50%; background: color-mix(in srgb, var(--bg) 88%, transparent); }
+.img-thumb-busy::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--accent); animation: img-thumb-spin .8s linear infinite; }
+.img-thumb-remove { position: absolute; top: -6px; right: -6px; z-index: 1; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid var(--line-2); background: var(--bg); color: var(--text); }
+.img-thumb-remove:hover { color: var(--danger); border-color: currentColor; }
+.img-thumb-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@keyframes img-thumb-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .img-thumb-busy::after { animation: none; } }
+
+/* A sent message's images, above its text (MessageImages.tsx). alone: the message has no words under them. */
+.msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 7px; }
+.msg-images.alone { margin-bottom: 2px; }
+.msg-images .img-thumb { --img-thumb: 88px; }
+.msg-images .img-thumb-name::before { -webkit-line-clamp: 5; font-size: 11px; }
+
+/* An image shown large (ImageLarge.tsx), over the page and under its dialogs. The scrim and what stands on it are the
+   same in every theme: a picture is looked at on dark, with light texts. A picture with clear parts gets a chequered
+   ground, so that it shows whatever its own colours are. */
+.img-large { position: fixed; inset: 0; z-index: 180; display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: center; align-items: center; gap: 10px; padding: 48px 60px 16px; background: rgba(14, 14, 18, .88); color: #f1f1f4; cursor: zoom-out; }
+.img-large-pic { min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; background: repeating-conic-gradient(#e3e3e8 0 25%, #ffffff 0 50%) 0 0 / 16px 16px; box-shadow: 0 18px 48px rgba(0, 0, 0, .55); cursor: default; }
+.img-large-off { padding: 28px 36px; border: 1px dashed rgba(255, 255, 255, .36); border-radius: 8px; color: rgba(255, 255, 255, .8); cursor: default; }
+.img-large-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: rgba(255, 255, 255, .8); cursor: default; }
+.img-large-btn { position: absolute; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .14); color: inherit; }
+.img-large-btn:hover:not([aria-disabled="true"]) { background: rgba(255, 255, 255, .28); }
+.img-large-btn:focus-visible { outline: 2px solid #ffffff; outline-offset: 2px; }
+.img-large-btn[aria-disabled="true"] { opacity: .3; cursor: default; }
+.img-large-close { top: 10px; right: 12px; }
+.img-large-prev, .img-large-next { top: 50%; transform: translateY(-50%); }
+.img-large-prev { left: 12px; }
+.img-large-next { right: 12px; }

@@ -6,9 +6,11 @@
 //   selection, so what is typed next goes where it would have gone. The toolbar has the Insert button, which does
 //   the same. ⌘P with the cursor elsewhere (nowhere, in a message, in another field) is left to the browser.
 //   A chat's toolbar draws the button only where its row has room left (logic/composerfit.ts fitWithInsert): beside
-//   a board at the default panel width a started chat's whole row leaves none and has no "more" chip, so there is
-//   no button, the meter has its text as before, and ⌘P is the box's all the same; in a pane of 300 px the composer
-//   fits its box, with the button or without.
+//   a board, in a panel of 430 px, a started chat's whole row leaves none and has no "more" chip, so there is no
+//   button, the meter has its text as before, and ⌘P is the box's all the same. (That was the default panel, of
+//   400 px, before the row had the attach button, which takes 30 px. There the row is no longer whole: the attach
+//   button has the room of the meter's text, and the Insert button stands in what the ring leaves, still with no
+//   "more" chip.) In a pane of 300 px the composer fits its box, with the button or without.
 //   The box alone (src/RefInput.tsx, bundled here with a stand-in for the popup that takes the focus as the popup's
 //   search field will). A text goes in where the caret was when the popup opened: in the middle of typed text, in
 //   place of a selection, in an empty box, with its line breaks; what was before and after is unchanged, the box has
@@ -135,7 +137,8 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
     } finally { await ctx.close(); }
   }
   // a chat's toolbar draws the button where its row has room left, and the composer fits its box
-  for (const [name, id, kind, width, button] of [["a started chat beside a board, at the default panel width", "board-started", "panel", 400, false], ["a chat's page of 300 px", "plain-started", "page", 300, null]]) {
+  // (button: false, a whole row with no room for it; true, a row whose meter is its ring anyway; null, either)
+  for (const [name, id, kind, width, button] of [["a started chat beside a board, in a panel of 430 px", "board-started", "panel", 430, false], ["a started chat beside a board, at the default panel width", "board-started", "panel", 400, true], ["a chat's page of 300 px", "plain-started", "page", 300, null]]) {
     const { ctx, page } = await openPage({ url, browser, sel: selOf(id), ...paneSize(kind, width), wait: ".composer .composer-box .send" });
     try {
       await page.evaluate(watchKeys);
@@ -145,7 +148,8 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
       if (!m || m.past || m.send !== "ok" || m.docScroll > 0) fail(`${name}: the composer does not fit: ${JSON.stringify(m && { past: m.past, over: m.over, send: m.send })}`);
       const has = await page.locator(".composer .composer-tools .insert-btn").count(), text = await page.locator(".composer .ctx-meter:not(.compact)").count();
       if (button === false && (has || !text)) fail(`${name}: the toolbar has ${has ? "the" : "no"} Insert button and the meter has ${text ? "its text" : "no text"}: a whole row leaves the button no room, and keeps the meter's text`);
-      if (button === false && await page.locator(".composer .more-chip").count()) fail(`${name}: the toolbar has a "more" chip: the way to the insert popup must cost a whole row nothing`);
+      if (button === true && (!has || text)) fail(`${name}: the toolbar has ${has ? "the" : "no"} Insert button and the meter has ${text ? "its text" : "no text"}: the attach button leaves the meter's text no room, and the ring leaves room for the button`);
+      if (button !== null && await page.locator(".composer .more-chip").count()) fail(`${name}: the toolbar has a "more" chip: the way to the insert popup must cost ${button ? "the row no control" : "a whole row nothing"}`);
       await page.locator(".composer .composer-input").click();
       await page.keyboard.press(KEY);
       const k = await page.evaluate(() => window.__taken());

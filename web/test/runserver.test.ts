@@ -1,21 +1,24 @@
-// A run by its server (src/logic/runserver.ts): the draft run's server choice and what its
-// composer reads through that server, the view and the delete dialog of a run on another server,
-// and the rules of `run` with `was`, of `server_back` for runs and of the unfollow of a dropped run.
+// A run by its server (src/logic/runserver.ts): what a draft run's composer reads through the server its key
+// names, the view and the delete dialog of a section's run, and the rules of what is read again when a section's
+// tree arrives and of the unfollow of a dropped run.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RUN_DELETE_UNKNOWN, RUN_HAS_CHATS, RUN_START_UNCONFIRMED, Unfollows, folderOn, movedId, movedSel, offersChatOn, runDeleteAsk, runDeleteRefused, runOffLine, runOffersLocalOnly,
-  runRemoteView, runServerBack, runServerChoice, runStartBlock, runUnconfirmedLine, runWhere, withRunError } from "../src/logic/runserver.ts";
-import { RUN_SERVER, listsOf, serverChoice, type ListsState } from "../src/logic/serverlists.ts";
+import { readFileSync } from "node:fs";
+import { Unfollows, folderOn, offersChatOn, runAgentReason, runAwayText, runDeleteAsk, runGoneText, runOffLine,
+  runRemoteView, runSectionBack, runStartBlock, runUnreachableText, runWhere, withRunError } from "../src/logic/runserver.ts";
+import { RUN_SERVER, RUN_SERVER_FINAL, listsOf, serverFixed, type ListsState } from "../src/logic/serverlists.ts";
 import { agentChoiceOn, folderStarts, folderTitle, notConnectedLine, tildeBy } from "../src/logic/chatserver.ts";
 import { catalogFor, usableAgents } from "../src/logic/agentlist.ts";
-import { REMOVE_ONLY } from "../src/logic/remoteview.ts";
+import { NOT_FOUND, type Remote } from "../src/logic/remoteview.ts";
+import { keyOn } from "../src/logic/keys.ts";
 import { startBlock } from "../src/logic/run.ts";
-import { ApiError } from "../src/api.ts";
 import type { ServerView } from "../src/logic/servers.ts";
 import type { Catalog } from "../src/types.ts";
 
+const src = (f: string) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 const entry = (id: string, name: string, state: ServerView["state"]): ServerView => ({ id, name, state } as ServerView);
 const cat = (model: string): Catalog => ({ models: [], default: { model } } as unknown as Catalog);
+// Studio is connected: the local server holds its tree. Mini and Old are not, and keep the lists they sent last.
 const state: ListsState = {
   usable: ["claude", "pi"], catalogs: { claude: cat("local"), pi: cat("local-pi") }, home: "/Users/me", defaultCwd: "/Users/me/code",
   servers: [{ id: "local", name: "This computer", state: "connected", local: true } as ServerView, entry("s_1", "Studio", "connected"), entry("s_2", "Mini", "unreachable"), entry("s_3", "Old", "too_old")],
@@ -23,62 +26,72 @@ const state: ListsState = {
     s_1: { agents: ["pi"], catalogs: { pi: cat("studio-pi") }, home: "/home/u", defaultCwd: "/home/u/work" },
     s_2: { agents: ["claude"], catalogs: { claude: cat("mini") }, home: "/home/m", defaultCwd: "/home/m" },
   },
+  sections: { s_1: {} },
 };
+/** The run r_1 of a section, and the run of this computer with the same id. */
+const on = (server: string) => ({ id: keyOn(server, "r_1") });
+const LOCAL = { id: "r_1" };
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-test("runWhere: a run with no server is on this computer; another server's has the entry's name and whether it is connected", () => {
+test("runWhere: a run is on the server its key names, with the entry's name and whether the local server holds that server's tree", () => {
+  assert.deepEqual(runWhere(state, LOCAL), { server: "local", name: "This computer", connected: true });
   assert.deepEqual(runWhere(state, {}), { server: "local", name: "This computer", connected: true });
-  assert.deepEqual(runWhere(state, { server: "s_1" }), { server: "s_1", name: "Studio", connected: true });
-  assert.deepEqual(runWhere(state, { server: "s_2" }), { server: "s_2", name: "Mini", connected: false });
-  assert.deepEqual(runWhere(state, { server: "s_9" }), { server: "s_9", name: "Unknown server", connected: false });
+  assert.deepEqual(runWhere(state, { id: "s_1~r_1" }), { server: "s_1", name: "Studio", connected: true });
+  assert.deepEqual(runWhere(state, on("s_2")), { server: "s_2", name: "Mini", connected: false });
+  assert.deepEqual(runWhere(state, on("s_3")), { server: "s_3", name: "Old", connected: false });
+  assert.deepEqual(runWhere(state, on("s_9")), { server: "s_9", name: "Unknown server", connected: false });
+  // by the tree, not by the entry's state: connected before its tree came is not connected yet
+  assert.deepEqual(runWhere({ ...state, sections: {} }, on("s_1")), { server: "s_1", name: "Studio", connected: false });
+  assert.deepEqual(runWhere({ ...state, sections: { s_2: {} } }, on("s_2")), { server: "s_2", name: "Mini", connected: true });
 });
 
-test("runServerChoice: this computer first, every entry by name; one that is not connected has its state, and a too_old one is disabled (AC5)", () => {
-  const { options, fixed } = runServerChoice(state.servers!, {}, false);
-  assert.equal(fixed, "");
-  assert.deepEqual(options.map((o) => [o.id, o.label, !!o.disabled, !!o.reason]), [
-    ["local", "This computer", false, false], ["s_1", "Studio", false, false], ["s_2", "Mini", false, true], ["s_3", "Old", true, true]]);
-  assert.deepEqual(options, serverChoice(state.servers!, { locked: false }).options, "the options of a chat's choice");
-});
-
-test("runServerChoice: fixed with its reason while the start is unconfirmed, and while the draft has chats", () => {
-  assert.equal(runServerChoice(state.servers!, { start: "unconfirmed" }, false).fixed, RUN_START_UNCONFIRMED);
-  assert.equal(runServerChoice(state.servers!, {}, true).fixed, RUN_HAS_CHATS);
-  assert.equal(runServerChoice(state.servers!, { start: "unconfirmed" }, true).fixed, RUN_START_UNCONFIRMED);
-  assert.equal(runServerChoice(state.servers!, { start: "unconfirmed" }, true).options.length, 4);
-});
-
-test("the server choice of a chat on a run is fixed with its reason, started or not (AC34)", () => {
-  assert.equal(serverChoice(state.servers!, { run: "r_1", locked: false }).fixed, RUN_SERVER);
-  assert.equal(serverChoice(state.servers!, { run: "r_1", locked: true }).fixed, RUN_SERVER);
-  assert.equal(serverChoice(state.servers!, { run: "r_1", locked: false, start: "unconfirmed" }).fixed, RUN_SERVER);
+test("a run's server is no choice: a run is on the server it was made on, and a chat on a run on the run's (AC34)", () => {
+  assert.equal(RUN_SERVER_FINAL, "A run is on the server it was made on");
+  assert.equal(serverFixed({ run: "r_1" }), RUN_SERVER);
+  assert.equal(serverFixed({ run: "s_1~r_1", board: undefined }), RUN_SERVER);
+  // the choice of a server for a run that has not started, and all that followed a run to another server, are gone
+  const logic = src("logic/runserver.ts");
+  for (const gone of ["runServerChoice", "runOffersLocalOnly", "runDeleteRefused", "movedSel", "movedId", "runUnconfirmedLine", "RUN_START_UNCONFIRMED", "RUN_HAS_CHATS",
+    "RUN_DELETE_UNKNOWN", "runStaysText", "runServerBack", "unconfirmed"]) assert.ok(!logic.includes(gone), gone);
 });
 
 test("runStartBlock: a server that is not connected comes first; then the folder, what blocks the run, the agent, the goal", () => {
-  const on = runWhere(state, { server: "s_1" }), off = runWhere(state, { server: "s_2" });
+  const up = runWhere(state, on("s_1")), off = runWhere(state, on("s_2"));
   const r = { cwd: "/home/u/work", agent: "pi" as const };
   assert.equal(runStartBlock(off, { cwd: "", agent: "" }, ""), "Mini is not connected");
   assert.equal(runStartBlock(off, r, "the goal"), "Mini is not connected");
-  assert.equal(runStartBlock(on, r, "the goal"), "");
-  assert.equal(runStartBlock(on, r, "  "), startBlock(r, "  "));
-  assert.equal(runStartBlock(on, { ...r, cwd: "" }, "g"), startBlock({ cwd: "" }, "g"));
-  assert.equal(runStartBlock(on, { ...r, folderMissing: true }, "g"), startBlock({ cwd: "/x", folderMissing: true }, "g"));
-  assert.equal(runStartBlock(on, { ...r, agent: "", blocked: "Studio has no agent." }, "g"), "Studio has no agent.");
-  assert.equal(runStartBlock(on, { ...r, agent: "" }, ""), "Choose an agent first.");
-  assert.equal(runStartBlock(runWhere(state, {}), { cwd: "/w", agent: "claude" }, "g"), "", "a run of this computer is as before");
-  assert.equal(runStartBlock(runWhere(state, {}), { cwd: "/w", agent: "claude", blocked: "b" }, "g"), "b");
+  assert.equal(runStartBlock(off, r, "the goal", "No agent is installed on Mini."), "Mini is not connected", "before the agent's reason too");
+  assert.equal(runStartBlock(up, r, "the goal"), "");
+  assert.equal(runStartBlock(up, r, "  "), startBlock(r, "  "));
+  assert.equal(runStartBlock(up, { ...r, cwd: "" }, "g"), startBlock({ cwd: "" }, "g"));
+  assert.equal(runStartBlock(up, { ...r, folderMissing: true }, "g"), startBlock({ cwd: "/x", folderMissing: true }, "g"));
+  assert.equal(runStartBlock(up, { ...r, agent: "", blocked: "Studio has no agent." }, "g"), "Studio has no agent.");
+  assert.equal(runStartBlock(up, { ...r, agent: "" }, ""), "Choose an agent first.");
+  assert.equal(runStartBlock(runWhere(state, LOCAL), { cwd: "/w", agent: "claude" }, "g"), "", "a run of this computer is as before");
+  assert.equal(runStartBlock(runWhere(state, LOCAL), { cwd: "/w", agent: "claude", blocked: "b" }, "g"), "b");
 });
 
-test("the lines of a draft run on another server, and its folder with the server's name", () => {
-  assert.equal(runOffLine("Mini"), "Mini is not connected: its folders and agents are not known.");
-  assert.equal(runUnconfirmedLine("Mini"), "Mini did not answer: it is not known whether the run started. Start again: it starts only once.");
-  assert.equal(folderOn(runWhere(state, { server: "s_1" }), "~/work"), "~/work on Studio");
-  assert.equal(folderOn(runWhere(state, {}), "~/code"), "~/code");
-  assert.equal(folderOn(runWhere(state, { server: "s_1" }), ""), "");
+test("runAgentReason: why a section's draft run has no agent that can run it, in that server's name, and before what the view says blocks it", () => {
+  const up = runWhere(state, on("s_1")), off = runWhere(state, on("s_2")), here = runWhere(state, LOCAL);
+  assert.equal(runAgentReason(up, ["pi"], { agent: "pi" }), "");
+  assert.equal(runAgentReason(up, ["pi"], { agent: "claude" }), "Claude Code is not installed on Studio: install it there, or choose another agent.");
+  assert.equal(runAgentReason(up, [], { agent: "" }), "No agent is installed on Studio. Install Claude Code, Cursor or pi on that machine.");
+  assert.equal(runAgentReason(off, [], { agent: "claude" }), "", "not connected: the line says that");
+  assert.equal(runAgentReason(here, [], { agent: "claude" }), "", "a run of this computer: the view's own `blocked` says it");
+  const reason = runAgentReason(up, ["pi"], { agent: "claude" });
+  assert.equal(runStartBlock(up, { cwd: "/home/u/work", agent: "claude", blocked: "claude is not installed on this server" }, "g", reason), reason);
+});
+
+test("the lines of a draft run of a section, and its folder with the server's name", () => {
+  assert.equal(runOffLine("Mini"), "Mini is not connected: nothing can be changed or started until it is back.");
+  assert.equal(folderOn(runWhere(state, on("s_1")), "~/work"), "~/work on Studio");
+  assert.equal(folderOn(runWhere(state, on("s_2")), "~/work"), "~/work on Mini", "connected or not");
+  assert.equal(folderOn(runWhere(state, LOCAL), "~/code"), "~/code");
+  assert.equal(folderOn(runWhere(state, on("s_1")), ""), "");
 });
 
 test("a draft run reads agents, catalog, home and default folder through its server (AC18, AC44)", () => {
-  const studio = runWhere(state, { server: "s_1" }), mini = runWhere(state, { server: "s_2" });
+  const studio = runWhere(state, on("s_1")), mini = runWhere(state, on("s_2"));
   // connected: that server's agents; the run's agent that it lacks is marked with a reason that names it
   assert.deepEqual(usableAgents(state, studio.server), ["pi"]);
   const ch = agentChoiceOn(studio, usableAgents(state, studio.server), "claude");
@@ -98,124 +111,107 @@ test("a draft run reads agents, catalog, home and default folder through its ser
   assert.equal(folderTitle(studio, "~/work", { locked: true }), "Folder on Studio: ~/work");
 });
 
-test("runRemoteView: a run of this computer, and a remote one that is connected or loading, show the detail", () => {
-  assert.deepEqual(runRemoteView({}, "This computer", "connected", false, { message: "x" }), { kind: "none" });
-  assert.deepEqual(runRemoteView({ server: "s_1" }, "Studio", "connected", true), { kind: "none" });
-  assert.deepEqual(runRemoteView({ server: "s_1" }, "Studio", "unreachable", false), { kind: "none" });
+const UP: Remote = { remote: true, connected: true }, DOWN: Remote = { remote: true, connected: false }, HERE: Remote = { remote: false, connected: true };
+
+test("the sentences of a section's run name the server", () => {
+  assert.equal(runGoneText("Studio"), "This run is no longer on Studio.");
+  assert.equal(runUnreachableText("Studio"), "Studio is not connected. This run shows again when it is back.");
+  assert.equal(runAwayText("Studio"), "Studio is not connected. This run is shown as it was when the connection ended.");
 });
 
-test("runRemoteView: no detail and a failed load: unreachable with the entry's state, gone, or the server's sentence", () => {
+test("runRemoteView: a run of this computer, and a section's whose server is connected, loaded or loading, show the detail", () => {
+  assert.deepEqual(runRemoteView(HERE, "This computer", "connected", false, { message: "x" }), { kind: "none" });
+  assert.deepEqual(runRemoteView({ remote: false, connected: false, gone: true }, "This computer", undefined, false, { code: NOT_FOUND, message: "x" }), { kind: "none" });
+  assert.deepEqual(runRemoteView(UP, "Studio", "connected", true), { kind: "none" });
+  assert.deepEqual(runRemoteView(UP, "Studio", "connected", false), { kind: "none" });
+  assert.deepEqual(runRemoteView(UP, "Studio", "unreachable", false), { kind: "none" }, "the tree decides, not the entry's state");
+});
+
+test("runRemoteView: no detail: unreachable with the entry's state, with or without a load error; gone by not_found or the page's mark; or the server's sentence", () => {
   const err = { code: "server_unreachable", message: "Studio is not connected." };
-  assert.deepEqual(runRemoteView({ server: "s_1" }, "Studio", "unreachable", false, err),
-    { kind: "unreachable", text: "Studio is not connected. This run shows again when it is back.", state: "Unreachable" });
-  assert.equal((runRemoteView({ server: "s_1" }, "Studio", undefined, false, err) as { state: string }).state, "");
-  assert.deepEqual(runRemoteView({ server: "s_1" }, "Studio", "connected", false, { code: "gone_there", message: "x" }), { kind: "gone", text: "This run is no longer on Studio." });
-  assert.deepEqual(runRemoteView({ server: "s_1", gone: true }, "Studio", "unreachable", false), { kind: "gone", text: "This run is no longer on Studio." });
-  assert.deepEqual(runRemoteView({ server: "s_1" }, "Studio", "connected", false, { code: "no_answer", message: "Studio did not answer." }), { kind: "failed", text: "Studio did not answer." });
+  const away = { kind: "unreachable", text: "Studio is not connected. This run shows again when it is back.", state: "Unreachable" };
+  assert.deepEqual(runRemoteView(DOWN, "Studio", "unreachable", false, err), away);
+  assert.deepEqual(runRemoteView(DOWN, "Studio", "unreachable", false), away, "no load is made while the server is not connected");
+  assert.equal((runRemoteView(DOWN, "Studio", undefined, false, err) as { state: string }).state, "");
+  assert.equal((runRemoteView(DOWN, "Studio", "too_old", false) as { state: string }).state, "Too old: update the server on that machine");
+  const gone = { kind: "gone", text: "This run is no longer on Studio." };
+  assert.deepEqual(runRemoteView(UP, "Studio", "connected", false, { code: "not_found", message: "run not found" }), gone);
+  assert.deepEqual(runRemoteView({ ...DOWN, gone: true }, "Studio", "unreachable", false), gone, "gone goes before not connected");
+  assert.deepEqual(runRemoteView({ ...UP, gone: true }, "Studio", "connected", false), gone);
+  assert.deepEqual(runRemoteView(UP, "Studio", "connected", false, { code: "no_answer", message: "Studio did not answer." }), { kind: "failed", text: "Studio did not answer." });
+  // gone_there is no code any more
+  assert.deepEqual(runRemoteView(UP, "Studio", "connected", false, { code: "gone_there", message: "x" }), { kind: "failed", text: "x" });
 });
 
-test("runRemoteView: a detail on screen stays, with a bar", () => {
-  assert.deepEqual(runRemoteView({ server: "s_1" }, "Studio", "unreachable", true), { kind: "bar", text: "Studio is not connected.", gone: false });
-  assert.deepEqual(runRemoteView({ server: "s_1", gone: true }, "Studio", "connected", true), { kind: "bar", text: "This run is no longer on Studio.", gone: true });
-  assert.deepEqual(runRemoteView({ server: "s_1" }, "Studio", "connected", true, { code: "gone_there", message: "x" }), { kind: "bar", text: "This run is no longer on Studio.", gone: true });
+test("runRemoteView: a detail on screen stays, read-only, under a warning", () => {
+  assert.deepEqual(runRemoteView(DOWN, "Studio", "unreachable", true), { kind: "bar", text: "Studio is not connected. This run is shown as it was when the connection ended.", gone: false, state: "Unreachable" });
+  assert.deepEqual(runRemoteView(DOWN, "Studio", "connecting", true, { message: "x" }), { kind: "bar", text: runAwayText("Studio"), gone: false, state: "Connecting…" });
+  assert.deepEqual(runRemoteView({ ...UP, gone: true }, "Studio", "connected", true), { kind: "bar", text: "This run is no longer on Studio.", gone: true });
+  assert.deepEqual(runRemoteView({ ...DOWN, gone: true }, "Studio", "unreachable", true), { kind: "bar", text: "This run is no longer on Studio.", gone: true });
+  assert.deepEqual(runRemoteView(UP, "Studio", "connected", true, { code: "not_found", message: "x" }), { kind: "bar", text: "This run is no longer on Studio.", gone: true });
+  assert.deepEqual(runRemoteView(UP, "Studio", "connected", true, { message: "boom" }), { kind: "none" });
 });
 
-test("runDeleteAsk: a local run's dialog is as before; a remote one names its server beside the folder; a gone one offers this sidebar only", () => {
-  assert.deepEqual(runDeleteAsk({ started: "t", status: "completed" }, "Tidy", "This computer", "~/code"),
-    { title: "Delete Tidy?", body: "The run's tasks, reports, notes, agent transcripts and chats are removed. What its agents changed in ~/code stays. This can't be undone.", action: "Delete", local: false });
-  assert.deepEqual(runDeleteAsk({ server: "s_1", started: "t", status: "running" }, "Tidy", "Studio", "~/work"),
-    { title: "Delete Tidy?", body: "This run is working: its agents are stopped. The run's tasks, reports, notes, agent transcripts and chats are removed on Studio. What its agents changed in ~/work on Studio stays. This can't be undone.", action: "Delete", local: false });
-  assert.equal(runDeleteAsk({ server: "s_1", status: "draft" }, "Tidy", "Studio", "~/work").body, "The run's tasks, reports, notes, agent transcripts and chats are removed on Studio. This can't be undone.");
-  assert.equal(runDeleteAsk({ server: "s_1", started: "t", status: "running", archived: true }, "Tidy", "Studio").body.startsWith("The run's"), true);
-  assert.deepEqual(runDeleteAsk({ server: "s_1", gone: true, started: "t", status: "running" }, "Tidy", "Studio", "~/work"),
-    { title: "Remove Tidy from this sidebar?", body: "This run is no longer on Studio.", action: REMOVE_ONLY, local: true });
+test("runDeleteAsk: a local run's dialog is as before; a section's names its server, says that it is removed for everyone, and names the server beside the folder", () => {
+  assert.deepEqual(runDeleteAsk({ started: "t", status: "completed" }, "Tidy", "", "~/code"),
+    { title: "Delete Tidy?", body: "The run's tasks, reports, notes, agent transcripts and chats are removed. What its agents changed in ~/code stays. This can't be undone." });
+  assert.deepEqual(runDeleteAsk({ started: "t", status: "running" }, "Tidy", "Studio", "~/work"),
+    { title: "Delete Tidy?", body: "This run is working: its agents are stopped. The run's tasks, reports, notes, agent transcripts and chats are removed on Studio, for everyone who uses that server. What its agents changed in ~/work on Studio stays. This can't be undone." });
+  // a run that has not started changed nothing there
+  assert.equal(runDeleteAsk({ status: "draft" }, "Tidy", "Studio", "~/work").body, "The run's tasks, reports, notes, agent transcripts and chats are removed on Studio, for everyone who uses that server. This can't be undone.");
+  assert.equal(runDeleteAsk({ status: "draft" }, "Tidy", "", "~/code").body, "The run's tasks, reports, notes, agent transcripts and chats are removed. This can't be undone.");
+  // an archived run is not working; a run with no folder names none
+  assert.equal(runDeleteAsk({ started: "t", status: "running", archived: true }, "Tidy", "Studio").body, "The run's tasks, reports, notes, agent transcripts and chats are removed on Studio, for everyone who uses that server. This can't be undone.");
+  assert.deepEqual(runDeleteAsk({}, "Tidy"), { title: "Delete Tidy?", body: "The run's tasks, reports, notes, agent transcripts and chats are removed. This can't be undone." });
+  // the sidebar names the server of a section's run alone, and shortens the folder by that server's home
+  assert.ok(src("Sidebar.tsx").includes("const ask = runDeleteAsk(r, r.name, there(r.id), tildify(r.cwd, serverOf(r)));"));
+  assert.deepEqual(Object.keys(runDeleteAsk({}, "Tidy", "Studio")).sort(), ["body", "title"], "no action of its own and no `local`: a run is deleted on its server or not at all");
 });
 
-test("runDeleteRefused: after a 503 the offer of this sidebar only; nothing after another refusal, for a local run or a gone one", () => {
-  const r = { server: "s_1" };
-  assert.deepEqual(runDeleteRefused(r, "Tidy", "Studio", new ApiError(503, "Studio is not connected.", true, "server_unreachable"), false),
-    { title: "Remove Tidy from this sidebar?", body: "Studio is not connected. The run was not deleted. Removing it from this sidebar leaves the run on Studio.", action: REMOVE_ONLY, local: true });
-  // connected again by the time the refusal is read: the local server would refuse ?local=1 (409 server_connected), so the first dialog stays with the sentence
-  assert.equal(runDeleteRefused(r, "Tidy", "Studio", new ApiError(503, "Studio is not connected.", true, "server_unreachable"), true), null);
-  assert.equal(runDeleteRefused(r, "Tidy", "Studio", new ApiError(409, "Studio is connected: delete the run there.", true, "server_connected"), true), null);
-  assert.equal(runDeleteRefused(r, "Tidy", "Studio", new ApiError(409, "The run is being started.", true, "busy"), true), null);
-  assert.equal(runDeleteRefused({}, "Tidy", "This computer", new ApiError(503, "x"), false), null);
-  assert.equal(runDeleteRefused({ server: "s_1", gone: true }, "Tidy", "Studio", new ApiError(503, "x"), false), null);
-  assert.deepEqual([runOffersLocalOnly(r), runOffersLocalOnly({ server: "s_1", gone: true }), runOffersLocalOnly({ gone: true })], [false, true, false]);
-});
-
-test("runDeleteRefused: a delete that got no answer (504) may have happened: it is not known, and this sidebar only is offered only while the server is not connected", () => {
-  const r = { server: "s_1" }, none = new ApiError(504, "Studio did not answer.", true, "no_answer");
-  assert.equal(RUN_DELETE_UNKNOWN, "It is not known whether the run was deleted.");
-  // connected: no offer (the local server refuses to remove the record alone); the same Delete can be made again
-  assert.deepEqual(runDeleteRefused(r, "Tidy", "Studio", none, true),
-    { title: "Delete Tidy?", body: "Studio did not answer. It is not known whether the run was deleted.", action: "Delete", local: false });
-  assert.equal(runOffersLocalOnly(r, none, true), false);
-  // not connected: the offer, with the same sentence
-  assert.deepEqual(runDeleteRefused(r, "Tidy", "Studio", none, false),
-    { title: "Remove Tidy from this sidebar?", body: "Studio did not answer. It is not known whether the run was deleted. Removing it from this sidebar leaves the run on Studio.", action: REMOVE_ONLY, local: true });
-  assert.equal(runOffersLocalOnly(r, none, false), true);
-  for (const connected of [true, false]) assert.doesNotMatch(runDeleteRefused(r, "Tidy", "Studio", none, connected)!.body, /was not deleted/);
-  // by the status alone, and never for a run of this computer
-  assert.equal(runDeleteRefused(r, "Tidy", "Studio", new ApiError(504, "Gateway Timeout", false), true)?.local, false);
-  assert.equal(runDeleteRefused({}, "Tidy", "This computer", none, true), null);
-});
-
-test("movedId: the id a draft has now, through every new id it got", () => {
-  const moves = new Map([["r_a", "r_b"], ["r_b", "r_c"], ["r_x", "r_y"]]);
-  assert.deepEqual(["r_a", "r_b", "r_c", "r_x", "r_q"].map((id) => movedId(moves, id)), ["r_c", "r_c", "r_c", "r_y", "r_q"]);
-  assert.ok(movedId(new Map([["r_a", "r_b"], ["r_b", "r_a"]]), "r_a"), "a ring ends");
-});
-
-test("offersChatOn: not on an archived run, and not on a draft of another server", () => {
-  assert.equal(offersChatOn({}), true, "a local draft takes a chat, as before");
-  assert.equal(offersChatOn({ started: "t" }), true);
-  assert.equal(offersChatOn({ server: "s_1" }), false);
-  assert.equal(offersChatOn({ server: "s_1", started: "t" }), true);
-  assert.equal(offersChatOn({ server: "s_1", started: "t", archived: true }), false);
+test("offersChatOn: not on an archived run; a section's run takes a chat before it starts, as a local one", () => {
+  assert.equal(offersChatOn({}), true, "a draft takes a chat");
+  assert.equal(offersChatOn({ archived: false }), true);
   assert.equal(offersChatOn({ archived: true }), false);
+  // (a run made in a section is on that server from the moment it is made: nothing of it is asked but its archive mark)
+  assert.ok(src("logic/runserver.ts").includes('export const offersChatOn = (r: Pick<RunView, "archived">): boolean => !r.archived;'));
 });
 
-test("movedSel: the selection follows a draft to its new id, with the rest kept; another selection is the same object", () => {
-  const sel = { board: null, run: "r_old", chat: null };
-  assert.deepEqual(movedSel(sel, "r_old", "r_new"), { board: null, run: "r_new", chat: null });
-  const other = { board: null, run: "r_x", chat: "c_1" };
-  assert.equal(movedSel(other, "r_old", "r_new"), other);
-  assert.equal(movedSel(sel, "", "r_new"), sel);
-  const none = { board: "b_1", run: null, chat: null };
-  assert.equal(movedSel(none, "r_old", "r_new"), none);
-});
-
+// r_1 is a run of this computer, of s_1 and of s_2: three runs
 const back = {
-  runs: { r_1: { server: "s_1", started: "t" }, r_2: { server: "s_1", started: "t" }, r_3: { started: "t" }, r_4: { server: "s_2", started: "t" }, r_5: { server: "s_1" }, r_6: { server: "s_1", started: "t" } },
-  runDetail: { r_1: {}, r_3: {}, r_4: {} },
-  runErrors: { r_6: { message: "x" }, r_4: { message: "y" } },
-  agents: { a_1: { run: "r_1" }, a_2: { run: "r_3" }, a_3: { run: "r_4" }, a_4: { run: "r_2" } },
-  sel: { run: "r_1" as string | null },
+  runs: { "s_1~r_1": { started: "t" }, "s_1~r_2": { started: "t" }, r_1: { started: "t" }, "s_2~r_1": { started: "t" }, "s_1~r_5": {}, "s_1~r_6": { started: "t" } },
+  runDetail: { "s_1~r_1": {}, r_1: {}, "s_2~r_1": {} },
+  runErrors: { "s_1~r_6": { message: "x" }, "s_2~r_1": { message: "y" } },
+  agents: { "s_1~a_1": { run: "s_1~r_1" }, a_1: { run: "r_1" }, "s_2~a_1": { run: "s_2~r_1" }, "s_1~a_4": { run: "s_1~r_2" } },
+  sel: { run: "s_1~r_1" as string | null },
 };
 
-test("runServerBack: the runs of that server with a detail, a load error or a fetch; their kept agents; the run on screen to read again", () => {
-  assert.deepEqual(runServerBack(back, "s_1", ["r_2", "r_3"]), { runs: ["r_1", "r_2", "r_6"], agents: ["a_1", "a_4"], load: "r_1" });
-  assert.deepEqual(runServerBack(back, "s_1"), { runs: ["r_1", "r_6"], agents: ["a_1", "a_4"], load: "r_1" });
-  assert.deepEqual(runServerBack(back, "s_2"), { runs: ["r_4"], agents: ["a_3"], load: null });
-  assert.deepEqual(runServerBack(back, "s_9"), { runs: [], agents: [], load: null });
+test("runSectionBack: the runs of that server with a detail, a load error or a fetch; their kept agents; the run on screen to read again", () => {
+  assert.deepEqual(runSectionBack(back, "s_1", ["s_1~r_2", "r_1"]), { runs: ["s_1~r_1", "s_1~r_2", "s_1~r_6"], agents: ["s_1~a_1", "s_1~a_4"], load: "s_1~r_1" });
+  assert.deepEqual(runSectionBack(back, "s_1"), { runs: ["s_1~r_1", "s_1~r_6"], agents: ["s_1~a_1", "s_1~a_4"], load: "s_1~r_1" });
+  assert.deepEqual(runSectionBack(back, "s_2"), { runs: ["s_2~r_1"], agents: ["s_2~a_1"], load: null });
+  assert.deepEqual(runSectionBack(back, "s_9"), { runs: [], agents: [], load: null });
+  // the run of this computer with the same id is none of a section's
+  assert.deepEqual(runSectionBack(back, "local"), { runs: ["r_1"], agents: ["a_1"], load: null });
+  // a run the page no longer has is none of them, whatever is still kept under its key
+  assert.deepEqual(runSectionBack({ ...back, runDetail: { ...back.runDetail, "s_1~r_9": {} } }, "s_1").runs, ["s_1~r_1", "s_1~r_6"]);
 });
 
-test("runServerBack: nothing is read for a draft on screen, a run of another server, or none; the agent the panel shows counts before its view came", () => {
-  assert.equal(runServerBack({ ...back, sel: { run: "r_5" } }, "s_1").load, null);
-  assert.equal(runServerBack({ ...back, sel: { run: "r_3" } }, "s_1").load, null);
-  assert.equal(runServerBack({ ...back, sel: { run: null } }, "s_1").load, null);
-  assert.equal(runServerBack({ ...back, sel: { run: "r_2" } }, "s_1").load, "r_2", "a run with nothing kept yet is read too");
-  assert.deepEqual(runServerBack({ ...back, runAgent: { run: "r_2", agent: "a_9" } }, "s_1").agents, ["a_1", "a_4", "a_9"]);
-  assert.deepEqual(runServerBack({ ...back, runAgent: { run: "r_1", agent: "a_1" } }, "s_1").agents, ["a_1", "a_4"]);
-  assert.deepEqual(runServerBack({ ...back, runAgent: { run: "r_3", agent: "a_9" } }, "s_1").agents, ["a_1", "a_4"]);
+test("runSectionBack: nothing is read for a draft on screen, a run of another server, or none; the agent the panel shows counts before its view came", () => {
+  assert.equal(runSectionBack({ ...back, sel: { run: "s_1~r_5" } }, "s_1").load, null);
+  assert.equal(runSectionBack({ ...back, sel: { run: "r_1" } }, "s_1").load, null, "the local run with the same id");
+  assert.equal(runSectionBack({ ...back, sel: { run: "s_2~r_1" } }, "s_1").load, null);
+  assert.equal(runSectionBack({ ...back, sel: { run: null } }, "s_1").load, null);
+  assert.equal(runSectionBack({ ...back, sel: { run: "s_1~r_2" } }, "s_1").load, "s_1~r_2", "a run with nothing kept yet is read too");
+  assert.deepEqual(runSectionBack({ ...back, runAgent: { run: "s_1~r_2", agent: "s_1~a_9" } }, "s_1").agents, ["s_1~a_1", "s_1~a_4", "s_1~a_9"]);
+  assert.deepEqual(runSectionBack({ ...back, runAgent: { run: "s_1~r_1", agent: "s_1~a_1" } }, "s_1").agents, ["s_1~a_1", "s_1~a_4"]);
+  assert.deepEqual(runSectionBack({ ...back, runAgent: { run: "r_1", agent: "a_9" } }, "s_1").agents, ["s_1~a_1", "s_1~a_4"]);
 });
 
 test("withRunError: set with its code, cleared, and the same map when nothing changes", () => {
-  const one = withRunError({}, "r_1", { code: "gone_there", message: "m" });
-  assert.deepEqual(one, { r_1: { code: "gone_there", message: "m" } });
-  assert.deepEqual(withRunError(one, "r_1", null), {});
-  assert.equal(withRunError(one, "r_2", null), one);
+  const one = withRunError({}, "s_1~r_1", { code: "not_found", message: "m" });
+  assert.deepEqual(one, { "s_1~r_1": { code: "not_found", message: "m" } });
+  assert.deepEqual(withRunError(one, "s_1~r_1", null), {});
+  assert.equal(withRunError(one, "r_1", null), one, "the local run with the same id has no error");
 });
 
 test("Unfollows: a read waits for the unfollow of the same id that is under way, the last one started; another id's does not", async () => {

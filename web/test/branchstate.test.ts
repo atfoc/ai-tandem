@@ -32,6 +32,10 @@ test("stateFromView: the current branch's record from the view's session fields"
   assert.deepEqual(stateFromView(c), { chat: "c_1", branch: "ab12cd34", cwd: "/w", model: "opus", effort: "high", locked: true, usage,
     status: "tool", statusTool: "Bash", error: "e", folderMissing: true, subsRunning: 2, subsOwed: 1, draft });
   assert.equal(stateFromView(c), stateFromView(c));
+  // the draft's counter goes with the draft: a record without it would say 0, and an unsaved copy typed on the real counter would count as an older one
+  assert.equal(stateFromView(chat({ draft, draftRev: 4 })).draftRev, 4);
+  assert.equal(stateFromView(chat({ draftRev: 2 })).draftRev, 2, "a counter and no draft: the draft was removed");
+  assert.equal("draftRev" in stateFromView(chat({ draft })), false);
 });
 
 test("stateOf: the record kept, else the view's own for the current branch, else none", () => {

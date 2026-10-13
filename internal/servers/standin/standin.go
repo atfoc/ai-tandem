@@ -1,7 +1,8 @@
 // Package standin is a stand-in for a remote AI Whiteboard server, for tests: a TLS listener on
 // loopback that answers the hello, the state and the event stream a remote server answers, behind
-// the secret and Host checks. It is not a _test package, so the tests of other packages import it.
-// It must not import internal/servers: that package's tests import this one.
+// the checks of the real listener: the secret, the Host, the client id and the client's level.
+// It is not a _test package, so the tests of other packages import it. It must not import
+// internal/servers: that package's tests import this one.
 package standin
 
 import (
@@ -13,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,12 +30,26 @@ const (
 	DefaultInstanceID = "5d0c3a1e-7b42-4f6a-9c1d-2e8f0a6b4c37"
 	DefaultVersion    = "standin"
 	DefaultPingEvery  = 50 * time.Millisecond
+
+	// DefaultFeatureLevel is the level of a server of today (server.FeatureLevel): one a client
+	// connects to, whose clients are served its whole tree. This package cannot import either
+	// constant; a test of each side holds it to them.
+	DefaultFeatureLevel = 5
 )
 
 const (
 	helloPath  = "/api/hello"
 	statePath  = "/api/state"
 	streamPath = "/api/events"
+)
+
+// The level check of a server of level 5. The header's name and the lowest level are the ones
+// of servers.LevelHeader and servers.ClientLevel, which this package cannot import: a test of
+// that package holds a request of its client to this check.
+const (
+	levelHeader    = "X-AIWB-Level"
+	minClientLevel = 5
+	clientTooOld   = "This app is too old for this server: update AI Whiteboard on the machine that connects."
 )
 
 // Options configures Start. The zero value gives a server that a client with DefaultSecret and
@@ -44,8 +60,8 @@ type Options struct {
 
 	Secret, InstanceID, Version string // defaults: DefaultSecret, DefaultInstanceID, DefaultVersion
 
-	// FeatureLevel is hello's "featureLevel". nil here means the default, 1; to leave the field
-	// out of hello, call SetFeatureLevel(nil) after Start.
+	// FeatureLevel is hello's "featureLevel". nil here means DefaultFeatureLevel; to leave the
+	// field out of hello, call SetFeatureLevel(nil) after Start.
 	FeatureLevel *int
 
 	// Hosts are the accepted Host values, each "host:port" or a host for any port. Default: the
@@ -57,9 +73,10 @@ type Options struct {
 	PingEvery time.Duration // the stream's ": ping" interval; default DefaultPingEvery
 }
 
-// Request is one request the server received, refused ones too.
+// Request is one request the server received, refused ones too. Level is the level header as
+// it came, "" for a request without one.
 type Request struct {
-	Method, Path, Secret, Client string
+	Method, Path, Secret, Client, Level string
 }
 
 // Server is a running stand-in. All methods are safe for concurrent use.
@@ -83,6 +100,7 @@ type Server struct {
 	hosts      []string
 	snapshot   any
 	hello      http.HandlerFunc
+	levelCheck bool
 	pings      bool
 	streams    map[*stream]struct{}
 	requests   []Request
@@ -99,8 +117,9 @@ type stream struct {
 // Level returns a pointer to n, for Options.FeatureLevel and SetFeatureLevel.
 func Level(n int) *int { return &n }
 
-// DefaultSnapshot is the minimal API snapshot of a remote server: every part a client requires,
-// and empty lists of chats, states and runs.
+// DefaultSnapshot is the API snapshot of a remote server with nothing on it: every part of a
+// snapshot of level 5, with what a new chat is offered, no library, an empty tree (groups,
+// boards, chats, states and runs as empty lists, never null) and nothing remembered per group.
 func DefaultSnapshot() map[string]any {
 	return map[string]any{
 		"agents": []model.AgentKind{model.Claude, model.Pi},
@@ -113,6 +132,10 @@ func DefaultSnapshot() map[string]any {
 		},
 		"home":       "/home/standin",
 		"defaultCwd": "/home/standin/work",
+		"library":    nil,
+		"groups":     []any{},
+		"defaults":   model.Defaults{Groups: map[string]model.GroupDefaults{}},
+		"boards":     []any{},
 		"chats":      []any{},
 		"states":     []any{},
 		"runs":       []any{},
@@ -153,7 +176,7 @@ func start(t testing.TB, o Options, html bool) *Server {
 		o.Version = DefaultVersion
 	}
 	if o.FeatureLevel == nil {
-		o.FeatureLevel = Level(1)
+		o.FeatureLevel = Level(DefaultFeatureLevel)
 	}
 	if o.Snapshot == nil {
 		o.Snapshot = DefaultSnapshot()
@@ -165,7 +188,7 @@ func start(t testing.TB, o Options, html bool) *Server {
 		t: t, html: html, mux: http.NewServeMux(), every: o.PingEvery,
 		secret: o.Secret, instanceID: o.InstanceID, version: o.Version, level: o.FeatureLevel,
 		hosts: append([]string(nil), o.Hosts...), snapshot: o.Snapshot,
-		pings: true, streams: map[*stream]struct{}{},
+		levelCheck: true, pings: true, streams: map[*stream]struct{}{},
 	}
 	s.SwapCert(o.Names, o.NotBefore, o.NotAfter)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -242,6 +265,12 @@ func (s *Server) SetSnapshot(v any) { s.set(func() { s.snapshot = v }) }
 // brings the built-in answer back.
 func (s *Server) SetHello(h http.HandlerFunc) { s.set(func() { s.hello = h }) }
 
+// SetLevelCheck turns the level check on (the start's state) or off. With it on, a request for
+// anything but GET /api/hello whose level header is missing, or holds no integer of 5 or more,
+// is answered 400 "client_too_old", as a server of level 5 answers it. Off, the stand-in serves
+// a client of any level, as a server of before did; Requests() shows the header either way.
+func (s *Server) SetLevelCheck(on bool) { s.set(func() { s.levelCheck = on }) }
+
 // SetPings turns the streams' ": ping" lines on (the start's state) or off, open streams included.
 func (s *Server) SetPings(on bool) { s.set(func() { s.pings = on }) }
 
@@ -251,8 +280,9 @@ func (s *Server) set(f func()) {
 	f()
 }
 
-// Handle adds a route behind the secret and Host checks, with http.ServeMux's patterns. A
-// pattern that matches one of the built-in paths replaces it.
+// Handle adds a route behind the checks of every route (the secret, the Host, the client id and
+// the level), with http.ServeMux's patterns. A pattern that matches one of the built-in paths
+// replaces it.
 func (s *Server) Handle(pattern string, h http.HandlerFunc) { s.mux.HandleFunc(pattern, h) }
 
 // Send writes ev as one event to every open stream, after that stream's snapshot and in the
@@ -372,9 +402,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.requests = append(s.requests, Request{
 		Method: r.Method, Path: r.URL.Path,
 		Secret: r.Header.Get(remote.SecretHeader), Client: r.Header.Get(remote.ClientHeader),
+		Level: r.Header.Get(levelHeader),
 	})
 	hostOK, secretOK, hello := s.hostOKLocked(r.Host), r.Header.Get(remote.SecretHeader) == s.secret, s.hello
-	own := s.instanceID
+	own, levelCheck := s.instanceID, s.levelCheck
 	s.mu.Unlock()
 
 	if s.html {
@@ -382,7 +413,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "<!doctype html><title>Something else</title><p>Not AI Whiteboard.</p>\n")
 		return
 	}
-	// the real listener's order: the secret, the Host, the client id
+	// the real listener's order: the secret, the Host, the client id, the level
 	if !secretOK {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
@@ -396,8 +427,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad client id", "code": "bad_client"})
 		return
 	}
-	if client == own && !(r.Method == http.MethodGet && r.URL.Path == helloPath) {
+	isHello := r.Method == http.MethodGet && r.URL.Path == helloPath
+	if client == own && !isHello {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "this is the server's own id", "code": "own_client"})
+		return
+	}
+	// Hello stays open to a client of any level: an app of before still shows the server's version.
+	if levelCheck && !isHello && !levelOK(r.Header.Get(levelHeader)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": clientTooOld, "code": "client_too_old"})
 		return
 	}
 	if _, pattern := s.mux.Handler(r); pattern != "" {
@@ -428,6 +465,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+// levelOK reports whether a level header holds an integer of minClientLevel or more.
+func levelOK(header string) bool {
+	n, err := strconv.Atoi(header)
+	return err == nil && n >= minClientLevel
 }
 
 // hostOKLocked reports whether the request's Host is accepted.

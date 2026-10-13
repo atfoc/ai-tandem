@@ -2,6 +2,8 @@
 package store
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,37 +18,31 @@ type Paths struct {
 	RunWork string // <parent of Root>/aiwb-run-work: the checkouts run agents work in; never inside Root
 	State   string // Root/state.json
 	Server  string // Root/server.json
-	// RemoteChats holds what this server keeps of the chats that run on other servers, one file
-	// each (Root/remote/chats). It is created on first use, not by Open.
-	RemoteChats string
-	// RemoteRuns holds what this server keeps of the runs that run on other servers, one file
-	// each (Root/remote/runs). It is created on first use, not by Open.
-	RemoteRuns string
-	// RemoteBoards holds what this server keeps of the boards that live on other servers, one
-	// file each (Root/remote/boards). It is created on first use, not by Open.
-	RemoteBoards string
 }
 
 func NewPaths(root string) Paths {
 	return Paths{Root: root, Boards: filepath.Join(root, "boards"), Chats: filepath.Join(root, "chats"),
 		Runs: filepath.Join(root, "runs"), RunWork: filepath.Join(filepath.Dir(filepath.Clean(root)), "aiwb-run-work"),
-		State: filepath.Join(root, "state.json"), Server: filepath.Join(root, "server.json"),
-		RemoteChats: filepath.Join(root, "remote", "chats"), RemoteRuns: filepath.Join(root, "remote", "runs"),
-		RemoteBoards: filepath.Join(root, "remote", "boards")}
+		State: filepath.Join(root, "state.json"), Server: filepath.Join(root, "server.json")}
 }
 
 func (p Paths) BoardDir(id string) string  { return filepath.Join(p.Boards, id) }
 func (p Paths) BoardFile(id string) string { return filepath.Join(p.Boards, id, "drawing.excalidraw") }
 func (p Paths) ChatDir(id string) string   { return filepath.Join(p.Chats, id) }
 
-// RemoteChatFile is the file of the remote chat id (RemoteChats/<id>.json).
-func (p Paths) RemoteChatFile(id string) string { return filepath.Join(p.RemoteChats, id+".json") }
-
-// RemoteRunFile is the file of the remote run id (RemoteRuns/<id>.json).
-func (p Paths) RemoteRunFile(id string) string { return filepath.Join(p.RemoteRuns, id+".json") }
-
-// RemoteBoardFile is the file of the remote board id (RemoteBoards/<id>.json).
-func (p Paths) RemoteBoardFile(id string) string { return filepath.Join(p.RemoteBoards, id+".json") }
+// RemoveRemote removes the folder Root/remote with everything in it: an earlier version of the app
+// kept there what it knew of the chats, boards and runs on other servers. Nothing is kept of them
+// now, so the folder is never made again. removed is false when there was none.
+func RemoveRemote(p Paths) (removed bool, err error) {
+	dir := filepath.Join(p.Root, "remote")
+	if _, err := os.Lstat(dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, os.RemoveAll(dir)
+}
 
 // RunDir is a run's folder: run.json, the journal, the checkpoint and text files, and the folders
 // of its chats.

@@ -124,14 +124,13 @@ func TestAgentChangesUntilTheFirstMessage(t *testing.T) {
 		t.Fatalf("a chat made with no agent named: %+v, chat.json %+v", v, first)
 	}
 
-	// The requests that are refused change nothing: an unknown kind, an unknown server, and a
-	// model of the agent before, which is checked against the new agent's list.
+	// The requests that are refused change nothing: an unknown kind, and a model of the agent
+	// before, which is checked against the new agent's list.
 	for _, tc := range []struct {
 		req  ConfigReq
 		want string
 	}{
 		{ConfigReq{Agent: "nobody"}, `unknown agent "nobody"`},
-		{ConfigReq{Server: "elsewhere"}, `unknown server "elsewhere"`},
 		{ConfigReq{Agent: model.Cursor, Model: "sonnet"}, `unknown model "sonnet"`},
 		{ConfigReq{Agent: model.Cursor, Effort: "max"}, `no effort "max"`},
 	} {
@@ -145,12 +144,12 @@ func TestAgentChangesUntilTheFirstMessage(t *testing.T) {
 	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Cursor, Model: "sonnet"}); !errors.Is(err, ErrBadChoice) {
 		t.Fatalf("a model the new agent lacks: %v, want ErrBadChoice", err)
 	}
-	// The local server is the only one there is, and the chat's own agent is no change.
-	if err := e.m.Configure(v.ID, ConfigReq{Server: model.LocalServer, Agent: model.Claude}); err != nil {
+	// The chat's own agent is no change.
+	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Claude}); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.meta(v.ID); !reflect.DeepEqual(got, first) {
-		t.Fatalf("the chat's own agent and server changed it: %+v, was %+v", got, first)
+		t.Fatalf("the chat's own agent changed it: %+v, was %+v", got, first)
 	}
 
 	// Cursor: its default model and effort, and no session id.
@@ -295,9 +294,9 @@ func TestAgentChangeOnARun(t *testing.T) {
 	}
 	// A chat on a run feeds the defaults of its group with its agent, model and effort, as any
 	// chat does, and not with the run's folder: the next chat on the run starts as this one was.
-	got, cur := e.defaultsOf().Groups[gOne].On(model.LocalServer), e.metaOf(v)
+	got, cur := e.defaultsOf().Groups[gOne].Local(), e.metaOf(v)
 	if got.Agent != model.Cursor || got.ByAgent[model.Cursor] != (model.ModelChoice{Model: cur.Model, Effort: cur.Effort}) || cur.Model == "" ||
-		got.Cwd != was.Groups[gOne].On(model.LocalServer).Cwd || got.ByAgent[model.Claude].Model != "haiku" || e.defaultsOf().Groups[gOne].Server != "" {
+		got.Cwd != was.Groups[gOne].Local().Cwd || got.ByAgent[model.Claude].Model != "haiku" {
 		t.Fatalf("the defaults after a chat on a run: %+v, were %+v", got, was)
 	}
 	if w := e.newChat(NewChat{Run: ownRun}); w.Agent != model.Cursor || w.Model != cur.Model || w.Effort != cur.Effort || w.Cwd != e.cwd {
@@ -332,8 +331,8 @@ func TestAgentIsFixedOnceStarted(t *testing.T) {
 		t.Helper()
 		was := e.meta(chat)
 		for _, req := range []ConfigReq{
-			{Agent: model.Pi}, {Agent: model.Claude}, {Server: model.LocalServer},
-			{Agent: model.Pi, Model: "opus"}, {Server: model.LocalServer, Cwd: e.cwd},
+			{Agent: model.Pi}, {Agent: model.Claude},
+			{Agent: model.Pi, Model: "opus"}, {Agent: model.Claude, Cwd: e.cwd},
 		} {
 			if err := e.m.ConfigureOf(chat, branch, req); !errors.Is(err, ErrAgentFixed) {
 				t.Fatalf("%s, Configure %+v: %v, want ErrAgentFixed", what, req, err)
@@ -383,7 +382,7 @@ func TestAgentIsFixedOnceStarted(t *testing.T) {
 	ba.emit(t, reply("q1")...)
 	was := e.meta(bid)
 	for _, branch := range []string{b, "", model.MainBranch} {
-		for _, req := range []ConfigReq{{Agent: model.Pi}, {Server: model.LocalServer}} {
+		for _, req := range []ConfigReq{{Agent: model.Pi}, {Agent: model.Claude}} {
 			if err := e.m.ConfigureOf(id, branch, req); !errors.Is(err, ErrAgentFixed) {
 				t.Fatalf("branch %q, Configure %+v: %v, want ErrAgentFixed", branch, req, err)
 			}
@@ -574,7 +573,7 @@ func TestRefusedCreateLeavesNothing(t *testing.T) {
 func TestSecondChatStartsAsTheFirst(t *testing.T) {
 	t.Parallel()
 	e, _, fakes := startEnv(t, model.Claude, model.Cursor, model.Pi)
-	local := func(g string) model.ServerDefaults { return e.defaultsOf().Groups[g].On(model.LocalServer) }
+	local := func(g string) model.ServerDefaults { return e.defaultsOf().Groups[g].Local() }
 	first := e.newChat(NewChat{Group: gOne})
 	if first.Agent != model.Claude || first.Cwd != e.cwd || first.Model != "sonnet" {
 		t.Fatalf("the first chat of the group: %+v", first)
@@ -622,18 +621,18 @@ func TestSecondChatStartsAsTheFirst(t *testing.T) {
 		// An effort alone is no choice of a model: Cursor's default one, with its own effort.
 		t.Fatalf("the third chat of the group: %+v", v)
 	}
-	if d := e.defaultsOf(); len(d.Groups) != 1 || d.Groups[gOne].Server != "" {
+	if d := e.defaultsOf(); len(d.Groups) != 1 {
 		t.Fatalf("the defaults before any message: %+v", d)
 	}
 
-	// The first message confirms the lot, and the server with it.
+	// The first message confirms the lot.
 	e.send(first.ID, "hello", "")
 	waitFor(t, "the turn to end", func() bool { return e.view(first.ID).Usage.Turns == 1 })
 	if n := spawnCounts(fakes); n != [3]int{0, 0, 1} {
 		t.Fatalf("spawns: %v", n)
 	}
 	d := e.defaultsOf()
-	if sd := d.Groups[gOne].On(model.LocalServer); d.Groups[gOne].Server != model.LocalServer || sd.Agent != model.Pi || sd.Cwd != dir ||
+	if sd := d.Groups[gOne].Local(); sd.Agent != model.Pi || sd.Cwd != dir ||
 		sd.ByAgent[model.Pi] != (model.ModelChoice{Model: "pi-model", Effort: "low"}) || len(d.Groups) != 1 {
 		t.Fatalf("the defaults after the first message: %+v", d)
 	}
@@ -676,15 +675,14 @@ func TestWhatTheFirstMessageRecords(t *testing.T) {
 		t.Fatalf("the defaults after a run chat's first message: %+v, want %+v", d, want)
 	}
 
-	// A chat in a group records the server too, with the agent it was made with.
+	// A chat in a group records the agent it was made with.
 	g := e.newChat(NewChat{Group: gOne, Agent: model.Claude})
 	e.send(g.ID, "hello", "")
 	entry := model.LocalDefaults(model.ServerDefaults{
 		Agent: model.Claude, Cwd: e.cwd, ByAgent: map[model.AgentKind]model.ModelChoice{
-			model.Claude: {Model: "sonnet", Effort: "high"}, model.Pi: want.Groups[gOne].On(model.LocalServer).ByAgent[model.Pi]},
+			model.Claude: {Model: "sonnet", Effort: "high"}, model.Pi: want.Groups[gOne].Local().ByAgent[model.Pi]},
 		Subagents: &model.SubLimits{Depth: 1, Cap: 100},
 	})
-	entry.Server = model.LocalServer
 	want.Groups[gOne] = entry
 	if d := e.defaultsOf(); !reflect.DeepEqual(d, want) {
 		t.Fatalf("the defaults after a group chat's first message: %+v, want %+v", d, want)
@@ -819,7 +817,7 @@ func TestChatWithNoAgent(t *testing.T) {
 	if err := e.m.Configure(v.ID, ConfigReq{Cwd: dir}); err != nil {
 		t.Fatal(err)
 	}
-	if sd := e.defaultsOf().Groups[gTwo].On(model.LocalServer); sd.Cwd != dir || sd.Agent != "" || len(sd.ByAgent) != 0 {
+	if sd := e.defaultsOf().Groups[gTwo].Local(); sd.Cwd != dir || sd.Agent != "" || len(sd.ByAgent) != 0 {
 		t.Fatalf("the defaults after a folder for a chat with no agent: %+v", sd)
 	}
 	if err := e.m.Configure(v.ID, ConfigReq{Agent: model.Pi, Model: "pi-model"}); err != nil {

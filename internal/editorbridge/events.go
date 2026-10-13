@@ -12,7 +12,7 @@ type Class int
 
 const (
 	Role    Class = iota // the one client concerned; only the bridge sends these
-	List                 // every client that has the item in its list
+	List                 // every client
 	Content              // the clients that follow the item
 )
 
@@ -48,8 +48,8 @@ var Events = map[string]Rule{
 	"rpc":             {Class: Role},
 	"server_stopping": {Class: Role},
 
-	"groups":        {Class: List, PagesOnly: true},
-	"defaults":      {Class: List, PagesOnly: true},
+	"groups":        {Class: List},
+	"defaults":      {Class: List},
 	"board":         {Class: List, Per: PerBoard},
 	"board_removed": {Class: List, Per: PerBoard},
 	"catalog":       {Class: List},
@@ -57,7 +57,10 @@ var Events = map[string]Rule{
 	"servers":       {Class: List, PagesOnly: true},
 	"server_state":  {Class: List, PagesOnly: true},
 	"server_lists":  {Class: List, PagesOnly: true},
-	"server_back":   {Class: List, PagesOnly: true},
+	// The whole tree of another server, or null once this server holds none of it (package
+	// remotes). The events of a thing in such a tree are the types of this table with one more
+	// field, "server": SendChatOn, SendRunOn, SendBoardOn and BroadcastOn send them, to pages alone.
+	"section": {Class: List, PagesOnly: true},
 
 	// The prompt libraries (package library): a page gets the library of every server it shows,
 	// an API client this server's own and nothing of the others.
@@ -72,7 +75,6 @@ var Events = map[string]Rule{
 	"chat_items":   {Class: Content, Per: PerChat},
 	"sub":          {Class: Content, Per: PerChat},
 	"sub_items":    {Class: Content, Per: PerChat},
-	"chat_reload":  {Class: Content, Per: PerChat, PagesOnly: true},
 
 	"run":          {Class: List, Per: PerRun},
 	"run_removed":  {Class: List, Per: PerRun},
@@ -81,8 +83,10 @@ var Events = map[string]Rule{
 }
 
 // APIEvents is the allow-list of an API client: the list and content types it is sent at all.
-// A type added to Events alone reaches no API client.
+// A type added to Events alone reaches no API client. An API client is sent the list types of
+// everything the server has, as a page is: the server's whole tree is every client's.
 var APIEvents = map[string]bool{
+	"groups": true, "defaults": true,
 	"chat": true, "chat_items": true, "chat_removed": true, "branch_state": true, "tree": true,
 	"sub": true, "sub_items": true, "catalog": true, "agents": true,
 	"run": true, "run_removed": true, "run_detail": true, "run_activity": true,
@@ -91,7 +95,9 @@ var APIEvents = map[string]bool{
 }
 
 // Item names a chat, a run or a board: what a client follows and what a per-item event is about.
-type Item struct{ Kind, ID string }
+// Server is "" for an item of this server, and for one of another server the id of its entry of
+// the server list: an id is unique on one server only, so the two values together name the item.
+type Item struct{ Kind, ID, Server string }
 
 // Chat is the item of a top-level chat.
 func Chat(id string) Item { return Item{Kind: "chat", ID: id} }
@@ -99,8 +105,39 @@ func Chat(id string) Item { return Item{Kind: "chat", ID: id} }
 // Run is the item of a run.
 func Run(id string) Item { return Item{Kind: "run", ID: id} }
 
-// Board is the item of a board. It carries a client mark and is not followed.
+// Board is the item of a board. It is not followed.
 func Board(id string) Item { return Item{Kind: "board", ID: id} }
+
+// ChatOn is the item of a top-level chat of another server, the entry server.
+func ChatOn(server, id string) Item { return Item{Kind: "chat", ID: id, Server: server} }
+
+// RunOn is the item of a run of another server, the entry server.
+func RunOn(server, id string) Item { return Item{Kind: "run", ID: id, Server: server} }
+
+// BroadcastOn sends ev, an event of the section of the entry server that is about no chat, no
+// run and no board ("groups", "defaults"), to every page. Like every event of a section it
+// reaches no client of another kind: a section is not part of this server's tree. The caller has
+// put "server" into ev. It never blocks.
+func (b *Bridge) BroadcastOn(server string, ev any) {
+	b.route(ev, PerNone, Item{Server: server}, false)
+}
+
+// SendChatOn is SendChat for the chat of another server, the entry server: a list event goes to
+// every page, a content event and every event of an unlisted chat to the pages that follow
+// ChatOn(server, chat). The caller has put "server" into ev.
+func (b *Bridge) SendChatOn(server, chat string, unlisted bool, ev any) {
+	b.route(ev, PerChat, ChatOn(server, chat), unlisted)
+}
+
+// SendRunOn is SendRun for the run of another server, the entry server.
+func (b *Bridge) SendRunOn(server, run string, ev any) {
+	b.route(ev, PerRun, RunOn(server, run), false)
+}
+
+// SendBoardOn is SendBoard for the board of another server, the entry server: to every page.
+func (b *Bridge) SendBoardOn(server, board string, ev any) {
+	b.route(ev, PerBoard, Item{Kind: "board", ID: board, Server: server}, false)
+}
 
 // Broadcast sends ev, an event about no chat, no run and no board, to the clients its type is for. It
 // never blocks.
@@ -120,15 +157,10 @@ func (b *Bridge) SendRun(run string, ev any) {
 	b.route(ev, PerRun, Run(run), false)
 }
 
-// SendBoard sends ev, an event of the board with this id: to every page, and to the API client
-// whose mark the board carries. It never blocks.
+// SendBoard sends ev, an event of the board with this id: to every page and every API client.
+// It never blocks.
 func (b *Bridge) SendBoard(board string, ev any) {
 	b.route(ev, PerBoard, Board(board), false)
-}
-
-// MarkBoard records the client mark of a board: SetMark for Board(board).
-func (b *Bridge) MarkBoard(board, client string) {
-	b.SetMark(Board(board), client)
 }
 
 // route marshals ev once and queues it for the clients the table names. per and it say which
@@ -160,47 +192,17 @@ func (b *Bridge) route(ev any, per Per, it Item, unlisted bool) {
 	}
 	for _, c := range b.clients {
 		k := b.kinds[c.kind]
-		if !k.allow(typ) {
+		if !k.allow(typ) || (it.Server != "" && c.kind != KindPage) {
 			continue
 		}
-		switch {
-		case rule.Per == PerNone:
-		case rule.Class == Content || unlisted:
-			if !c.follows[it] {
-				continue
-			}
-		default:
-			if !k.lists(c, it) {
-				continue
-			}
+		if rule.Per != PerNone && (rule.Class == Content || unlisted) && !c.follows[it] {
+			continue
 		}
 		b.sendRawLocked(c, msg)
 	}
 	if typ == "chat_removed" || typ == "run_removed" || typ == "board_removed" {
 		b.forgetLocked(it)
-		delete(b.marks, it) // after the send: the client with the mark was told
 	}
-}
-
-// SetMark records the client mark of it: the id of the API client that made the item, in whose
-// list the item then is. "" removes it. Whoever makes or loads the item calls it before the
-// item's first event. The mark ends when the item's chat_removed, run_removed or board_removed
-// was sent; Forget keeps it. A follow of the item is left as it is: a client may follow an id before it is made.
-func (b *Bridge) SetMark(it Item, client string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if client == "" {
-		delete(b.marks, it)
-		return
-	}
-	b.marks[it] = client
-}
-
-// MarkOf returns the client mark of it, "" for none.
-func (b *Bridge) MarkOf(it Item) string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.marks[it]
 }
 
 // typeOf returns the "type" of an event. msg is its JSON.
@@ -351,8 +353,7 @@ func (b *Bridge) followedLocked(it Item) bool {
 }
 
 // Forget drops every follow of it: the item was removed. The bridge calls it itself after a
-// chat_removed, run_removed or board_removed sent through SendChat, SendRun or SendBoard. The item's client mark stays
-// until that event was sent.
+// chat_removed, run_removed or board_removed sent through SendChat, SendRun or SendBoard.
 func (b *Bridge) Forget(it Item) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -362,5 +363,23 @@ func (b *Bridge) Forget(it Item) {
 func (b *Bridge) forgetLocked(it Item) {
 	for _, c := range b.clients {
 		delete(c.follows, it)
+	}
+}
+
+// ForgetServer drops every follow of an item of another server, the entry server: this server
+// holds that server's tree no more, and that server forgot the follows with the stream. Like
+// Forget it calls no hook.
+func (b *Bridge) ForgetServer(server string) {
+	if server == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, c := range b.clients {
+		for it := range c.follows {
+			if it.Server == server {
+				delete(c.follows, it)
+			}
+		}
 	}
 }

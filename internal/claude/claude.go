@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -515,11 +516,22 @@ func (p *proc) write(v any) error {
 	return err
 }
 
-// Send posts one user turn.
+// Send posts one user turn. An attached image goes as an image part of the message, in its
+// place among the texts. A text block that is empty is left out: the API refuses an empty text
+// part, and a message of images alone has no words.
 func (p *proc) Send(blocks []agent.ContentBlock) error {
 	content := make([]map[string]any, 0, len(blocks))
 	for _, b := range blocks {
-		content = append(content, map[string]any{"type": "text", "text": b.Text})
+		switch {
+		case b.Image != nil:
+			content = append(content, map[string]any{"type": "image", "source": map[string]any{
+				"type": "base64", "media_type": b.Image.Type, "data": base64.StdEncoding.EncodeToString(b.Image.Data)}})
+		case b.Text != "":
+			content = append(content, map[string]any{"type": "text", "text": b.Text})
+		}
+	}
+	if len(content) == 0 {
+		return errors.New("the message is empty")
 	}
 	return p.write(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
 }

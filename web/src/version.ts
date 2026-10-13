@@ -7,13 +7,16 @@ import { confirm } from "./Dialogs.tsx";
 import { bannerFor, restartConfirmText, runningChats, type UpdateBanner } from "./logic/version.ts";
 import { runningRuns } from "./logic/run.ts";
 import { localRuns } from "./logic/runrows.ts";
+import type { DesktopPick } from "./logic/chatimage.ts";
 
 declare const __APP_VERSION__: string; // build.mjs: AIWB_VERSION, "dev" by default
 
 declare global {
   interface Window {
     aiwbFlush?: () => Promise<boolean>;                // main.tsx
-    aiwbDesktop?: { openServerLog: () => void };       // the desktop app's preload; absent in a browser tab
+    // The desktop app's preload; absent in a browser tab. pickImages: its own open dialog for images (ComposerImages.tsx); an
+    // older app has none.
+    aiwbDesktop?: { openServerLog: () => void; pickImages?: () => Promise<DesktopPick> };
   }
 }
 

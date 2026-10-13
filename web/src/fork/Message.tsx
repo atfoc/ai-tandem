@@ -8,7 +8,7 @@
 import { useState } from "react";
 import "./fork.css";
 import "./message.css";
-import { useStore, isBusy, isLegacy, shownBranch, threadOf } from "../store.ts";
+import { useStore, isBusy, isLegacy, shownBranch, threadOf, viewedBranch } from "../store.ts";
 import { openChat } from "../Sidebar.tsx";
 import { BranchIcon } from "../icons.tsx";
 import { messageActions } from "../logic/forkpoints.ts";
@@ -16,6 +16,7 @@ import { labelAt, markerAt } from "../logic/forktree.ts";
 import { messageButtons, threadTree, viewFor, type MessageButton } from "../logic/forkmessage.ts";
 import { heldReason } from "../logic/waits.ts";
 import { forkChat, labelMessage, openTree, startMove } from "./actions.ts";
+import { useOffWhy } from "../ChatChoices.tsx";
 import { LabelInput } from "./LabelInput.tsx";
 import type { ChatView, Item } from "../types.ts";
 
@@ -24,7 +25,10 @@ const EMPTY: Item[] = [];
 /** A message's fork actions and label; the last child of the chat's own .msg.user and .msg.assistant.
  *  An action that does nothing now is disabled and says why in its title (logic/waits.ts
  *  heldReason): the two that branch, while a message that starts a new branch is on its way; the
- *  two that fork, while a fork of the chat is being made. Label is never held. */
+ *  two that fork, while a fork of the chat is being made; Branch and edit, while the chat's
+ *  composer uploads an image. Label is never held. A chat that is shown as it was (its server is not connected, or no
+ *  longer has it: useOffWhy) offers none of them, Label neither: the thread is as the page had it, and nothing in it
+ *  asks the server. Its marker, which opens the tree, and its label stay. */
 export function MessageExtras({ chat, index, item }: { chat: ChatView; index: number; item: Item }) {
   // The shown branch's full list, even while the thread is shown cut for a pending move.
   const items = useStore((s) => threadOf(s, chat.id)?.items) ?? EMPTY;
@@ -32,18 +36,21 @@ export function MessageExtras({ chat, index, item }: { chat: ChatView; index: nu
   const view = useStore((s) => viewFor(s.trees[chat.id], shownBranch(s, chat.id)));
   const [labeling, setLabeling] = useState(false);
   const waits = useStore((s) => s.waits[chat.id]);
+  const on = { branch: useStore((s) => viewedBranch(s, chat.id)), move: useStore((s) => !!s.moves[chat.id]) }; // where the chat's composer is: an upload of it holds Branch and edit
+  const off = !!useOffWhy(chat.id);
 
   // chat is the view of the branch shown (shownView): its status is that branch's, not the chat's.
   // (a chat with no agent has no message: the kind given for it is never read)
   const acts = messageActions({ agent: chat.agent || "claude", items, index, busy: isBusy(chat.status), readOnly: !!chat.archived || isLegacy(chat) });
   const label = labelAt(view, shown, index);
   const marker = view && chat.agent ? markerAt(threadTree(view, shown, chat.agent, items), shown, index) : null;
-  const buttons = messageButtons(acts, items, !!label);
-  if (!marker && !label && !buttons.length && !labeling) return null;
+  const buttons = off ? [] : messageButtons(acts, items, !!label);
+  const typing = labeling && !off; // a label being typed as the server dropped goes: it could not be set
+  if (!marker && !label && !buttons.length && !typing) return null;
 
   const run = (b: MessageButton) => {
     if (b.id === "label") return setLabeling(true);
-    if (b.at === undefined || heldReason(waits, b.id)) return;
+    if (b.at === undefined || heldReason(waits, b.id, on)) return;
     switch (b.id) {
       case "branchEdit": return void startMove(chat.id, { branch: shown, at: b.at, new: true }, index);
       case "branch": return void startMove(chat.id, { branch: shown, at: b.at, new: true });
@@ -62,10 +69,10 @@ export function MessageExtras({ chat, index, item }: { chat: ChatView; index: nu
         </button>
       )}
       {label && <div className="fk-label-tag" title="Label" data-text={label} />}
-      {buttons.length > 0 && !labeling && (
+      {buttons.length > 0 && !typing && (
         <div className="fk-acts">
           {buttons.map((b) => {
-            const held = heldReason(waits, b.id);
+            const held = heldReason(waits, b.id, on);
             return (
               <button key={b.id} className={`fk-act k-${b.id}`} disabled={!!held} title={held || b.title} aria-label={b.text} data-text={b.text} onClick={() => run(b)}>
                 {(b.id === "branchEdit" || b.id === "branch") && <BranchIcon />}
@@ -74,7 +81,7 @@ export function MessageExtras({ chat, index, item }: { chat: ChatView; index: nu
           })}
         </div>
       )}
-      {labeling && (
+      {typing && (
         <div className="fk-label-float">
           <LabelInput initial={label ?? ""} onDone={(v) => { if (v !== null && v !== (label ?? "")) void labelMessage(chat.id, shown, index, v); setLabeling(false); }} />
         </div>

@@ -4,12 +4,13 @@
 // shows is decided from the item by logic/toolcard.ts (the diffs by logic/linediff.ts); this file
 // draws that. Nothing of an open card is made while the card is closed.
 import { useMemo, useState, type ReactNode } from "react";
-import { useStore, boardName } from "./store.ts";
+import { useStore, boardNames } from "./store.ts";
+import { keyOn, serverOfKey } from "./logic/keys.ts";
 import { select } from "./Sidebar.tsx";
 import { Guard } from "./Guard.tsx";
 import { lowlight } from "./highlight.ts";
 import { toolVerb, toolDone } from "./logic/labels.ts";
-import { listsOf, serverOfChat } from "./logic/serverlists.ts";
+import { listsOf, serverOf } from "./logic/serverlists.ts";
 import { cardParts, cardRow, clipRows, clipText, hintBeside, leftText, shownParts, type Left, type Part, type Where } from "./logic/toolcard.ts";
 import type { DiffRow } from "./logic/linediff.ts";
 import type { ChatView, Item } from "./types.ts";
@@ -29,10 +30,11 @@ function Card({ item, chat, live = true }: { item: Item; chat: ChatView; live?: 
   const target = useStore((s) => {
     const id = (item.input as any)?.board;
     if (!id || !name.startsWith("mcp__board__")) return undefined;
-    const b = s.boards[String(id)];
+    const b = s.boards[keyOn(serverOfKey(chat.id), String(id))]; // the agent names a board by its id on the chat's own server
     return b && !b.archived ? b.id : undefined;
   });
-  const home = useStore((s) => listsOf(s, serverOfChat(s, chat))?.home);
+  const boardName = boardNames(chat.id);
+  const home = useStore((s) => listsOf(s, serverOf(chat))?.home);
   const where = useMemo<Where>(() => ({ cwd: chat.cwd, home }), [chat.cwd, home]);
   const input: any = item.input ?? safeParse(item.partial);
   const running = live && item.result === undefined && !item.denied;

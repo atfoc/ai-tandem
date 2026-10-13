@@ -17,6 +17,7 @@ const cut = (s: State) => (s.controls.some((c) => c.kind === "meter" && c.label 
 
 /** The button of the insert popup, as the page measured it beside Send. */
 const INSERT = fixture.states["plain-started"].controls.find((c) => c.kind === "insert")!.w;
+const ATTACH = fixture.states["plain-started"].controls.find((c) => c.kind === "attach")!.w;
 
 /** What stands in the model's place. */
 const KIND: Record<string, Control> = { server: "server", agent: "agent", folder: "folder", model: "model", "model-effort": "model", loading: "model", effort: "effort", subagents: "subagents" };
@@ -33,7 +34,7 @@ function rowOf(s: State, box: number, held: Control[] | null = null, withSpare =
   return {
     room: box - chrome, gap, controls, more: MORE, held,
     meter: { full: s.controls.find((c) => c.kind === "meter")!.w, ring: cut(s) },
-    fixed: s.controls.filter((c) => c.kind === "stop" || c.kind === "send").map((c) => c.w),
+    fixed: s.controls.filter((c) => c.kind === "attach" || c.kind === "stop" || c.kind === "send").map((c) => c.w), // (the attach button never leaves the row, as Stop and Send do not)
   };
 }
 const hidden = (f: Fit) => f.popup.length + (f.meter === "ring" ? 1 : 0);
@@ -47,12 +48,13 @@ test("the fixture's states are the toolbar's controls: each kind is one the fit 
   for (const id of ["plain-new-long", "plain-started-long", "plain-move-long", "plain-remote-started-long", "board-long"]) assert.ok(fixture.states[id], id);
   for (const [id, s] of chats) for (const c of s.controls) assert.ok(c.w < 210, `${id}: ${c.kind} "${c.label}" is ${c.w} px wide`);
   for (const [id, s] of chats) {
-    for (const c of s.controls) assert.ok(c.kind in KIND || ["lock", "meter", "insert", "stop", "send"].includes(c.kind), `${id}: ${c.kind}`);
+    for (const c of s.controls) assert.ok(c.kind in KIND || ["lock", "meter", "insert", "attach", "stop", "send"].includes(c.kind), `${id}: ${c.kind}`);
+    assert.equal(s.controls.filter((c) => c.kind === "attach").length, 1, id); // every chat composer has the attach button, in its row
     const ids = rowOf(s, 800).controls.map((c) => c.id);
     assert.equal(new Set(ids).size, ids.length, `${id}: ${ids}`);
     // all of it on one line is the sum the page measured, the Insert button among them: the page is measured where the row has room for it
     assert.equal(s.controls.filter((c) => c.kind === "insert").length, 1, id);
-    const all = { ...rowOf(s, 800, null, true), fixed: s.controls.filter((c) => ["insert", "stop", "send"].includes(c.kind)).map((c) => c.w) }, every = all.controls.map((c) => c.id);
+    const all = { ...rowOf(s, 800, null, true), fixed: s.controls.filter((c) => ["insert", "attach", "stop", "send"].includes(c.kind)).map((c) => c.w) }, every = all.controls.map((c) => c.id);
     assert.ok(Math.abs(needs(all, { toolbar: every, popup: [], more: false, meter: "full" }) - s.sum) < 0.35, `${id}: ${needs(all, { toolbar: every, popup: [], more: false, meter: "full" })} against ${s.sum}`);
   }
 });
@@ -85,23 +87,23 @@ test("at every box of 260 to 800 px what stays needs no more than the box, and l
   }
 });
 
-test("the last step is the more chip, the ring, Stop and Send, and it fits the narrowest box", () => {
+test("the last step is the more chip, the ring, the attach button, Stop and Send, and it fits the narrowest box", () => {
   const busy = fixture.states["plain-busy"], r = rowOf(busy, 100), f = fit(r);
   assert.deepEqual(f, { toolbar: [], popup: ["folder", "model"], more: true, meter: "ring" });
-  // (the row's children: the chip, the ring, the spacer, Stop and Send; 148 px, as the plan counted)
-  assert.equal(needs(r, f) + chrome, MORE + RING + 2 * 28 + 4 * gap + chrome);
-  assert.equal(needs(r, f) + chrome, 148);
+  // (the row's children: the chip, the ring, the spacer, the attach button, Stop and Send; 148 px as the plan counted, and 30 for the attach button with its gap)
+  assert.equal(needs(r, f) + chrome, MORE + RING + ATTACH + 2 * 28 + 5 * gap + chrome);
+  assert.equal(needs(r, f) + chrome, 178);
   assert.ok(needs(r, f) + chrome <= 260, `the last step needs a box of ${needs(r, f) + chrome}`);
 });
 
-test("agent and model stay in the default panel's box beside more, the ring, Stop and Send, whatever the model's name", () => {
-  const send = fixture.states["plain-busy"].controls.filter((c) => c.kind === "stop" || c.kind === "send").map((c) => c.w);
-  assert.equal(send.length, 2);
+test("agent and model stay in the default panel's box beside more, the ring, the attach button and Send, whatever the model's name", () => {
   let n = 0;
   for (const [id, s] of chats) {
     if (!s.controls.some((c) => c.kind === "agent") || !s.controls.some((c) => c.kind === "model")) continue;
-    // (the state at work: Stop beside its Send)
-    const r: Row = { ...rowOf(s, 375), fixed: send }, f = fit(r);
+    // (a chat whose agent is a choice has not started: nothing of it works, so its row has no Stop)
+    assert.ok(!s.controls.some((c) => c.kind === "stop"), id);
+    const r = rowOf(s, 375), f = fit(r);
+    assert.equal(r.fixed.length, 2, id);
     assert.ok(f.toolbar.includes("agent") && f.toolbar.includes("model"), `${id}: ${f.toolbar} stay`);
     assert.ok(needs(r, f) <= r.room, id);
     n++;
@@ -109,19 +111,25 @@ test("agent and model stay in the default panel's box beside more, the ring, Sto
   assert.ok(n >= 5 && fixture.states["plain-new-long"].controls.some((c) => c.kind === "model" && c.label.length > 40), "the long model is among them");
 });
 
-test("at the default panel a started chat is whole, and an unstarted one keeps agent and model", () => {
+test("at the default panel a started chat keeps its folder and model with the meter cut to its ring, and an unstarted one keeps agent and model", () => {
   for (const id of ["board-started", "run-started", "board-quotes"]) {
-    assert.deepEqual(fit(rowOf(fixture.states[id], 375)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" }, id);
+    // (the attach button with its gap is 30 px, and a whole row of short names left 16.5: the meter's text is the first to go.
+    // The row is whole in a box 14 px wider)
+    assert.deepEqual(fit(rowOf(fixture.states[id], 375)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "ring" }, id);
+    assert.deepEqual(fit(rowOf(fixture.states[id], 375 + 14)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" }, id);
   }
   for (const id of ["board-new", "run-new"]) {
     const f = fit(rowOf(fixture.states[id], 375));
     assert.ok(f.toolbar.includes("agent") && f.toolbar.includes("model"), `${id}: ${f.toolbar}`);
-    assert.ok(f.popup.includes("server"), `${id}: ${f.popup}`);
+    assert.ok(![...f.toolbar, ...f.popup].includes("server"), `${id}: a chat on this computer has no server chip`);
   }
+  // a chat on another server names its server: the chip is the first to give way
+  const remote = fit(rowOf(fixture.states["plain-remote-new"], 375));
+  assert.ok(remote.toolbar.includes("agent") && remote.toolbar.includes("model") && remote.popup.includes("server"), `plain-remote-new: ${remote.toolbar} | ${remote.popup}`);
 });
 
 test("a control with no width stays in the toolbar and counts nothing", () => {
-  const s = fixture.states["plain-new"];
+  const s = fixture.states["plain-remote-new"]; // (an unstarted chat on another server: the state with all six controls)
   const r = rowOf(s, 200);
   assert.deepEqual(fit(r).toolbar, [], "all of them leave a 200 px box");
   // the folder is not measured yet: it stays, and what leaves before it and after it does
@@ -187,13 +195,15 @@ test("where the row has no room for the Insert button, the \"more\" popup has th
   assert.equal(fitWithInsert(rowOf(s, 1000), INSERT, true).insert, "row");
 });
 
-test("at the default panel the Insert button is there unless a started chat's whole row leaves it no room, and it never takes the meter's text", () => {
-  // (a whole row of short names: 16.5 px are left, and the button with its gap needs 30)
+test("the Insert button is there unless a started chat's whole row leaves it no room, and it never takes the meter's text", () => {
   for (const id of ["board-started", "run-started", "board-quotes"]) {
-    const r = rowOf(fixture.states[id], 375);
-    // (the row is whole and has no "more" chip: the entry is nowhere, and the popup is opened by its key alone)
+    // at the default panel the meter is cut to its ring (the attach button has the room of its text): what is left is the button's
+    assert.deepEqual(fitWithInsert(rowOf(fixture.states[id], 375), INSERT), { fit: { toolbar: ["folder", "model"], popup: [], more: false, meter: "ring" }, insert: "row" }, id);
+    // (a whole row of short names, in a box 14 px wider: half a px is left, and the button with its gap needs 30. The row is whole and has
+    // no "more" chip: the entry is nowhere, and the popup is opened by its key alone)
+    const r = rowOf(fixture.states[id], 375 + 14);
     assert.deepEqual(fitWithInsert(r, INSERT), { fit: { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" }, insert: "" }, id);
-    assert.equal(fitWithInsert(rowOf(fixture.states[id], 375 + 14), INSERT).insert, "row", `${id}: 14 px wider`);
+    assert.equal(fitWithInsert(rowOf(fixture.states[id], 375 + 14 + 30), INSERT).insert, "row", `${id}: 30 px wider still`);
   }
   // where the meter is cut to its ring, by long names or by Stop, the text's room is the button's
   for (const id of ["plain-busy", "run-busy"]) {
@@ -203,8 +213,9 @@ test("at the default panel the Insert button is there unless a started chat's wh
   // and where a control is in the popup, what the row has left
   const long = fitWithInsert(rowOf(fixture.states["plain-started-long"], 375), INSERT);
   assert.deepEqual([long.fit.popup, long.insert], [["folder"], "row"]);
-  // in the narrowest box, beside the "more" chip
-  assert.equal(fitWithInsert(rowOf(fixture.states["plain-started"], 260), INSERT).insert, "row");
+  // in the narrowest box the folder is in the popup of the "more" chip, and what the row has left is under the button's 30 px: the entry is in that popup
+  assert.deepEqual(fitWithInsert(rowOf(fixture.states["plain-started"], 260), INSERT), { fit: { toolbar: ["model"], popup: ["folder"], more: true, meter: "ring" }, insert: "more" });
+  assert.equal(fitWithInsert(rowOf(fixture.states["plain-started"], 260 + 18), INSERT).insert, "row");
   // and a row that does not fit even at its last step has it in the popup of its "more" chip
   assert.equal(fitWithInsert(rowOf(fixture.states["plain-busy"], 150), INSERT).insert, "more");
 });
@@ -256,7 +267,7 @@ test("while the popup is open nothing it holds returns, however wide the box, an
 });
 
 test("in the open popup a control with no width stays, one the chat lost is gone, and one it got is placed", () => {
-  const s = fixture.states["plain-new"], r = rowOf(s, 800, ["server", "model"]);
+  const s = fixture.states["plain-remote-new"], r = rowOf(s, 800, ["server", "model"]);
   // a pick in the popup changed the model's label: not measured yet
   const relabelled: Row = { ...r, controls: r.controls.map((c) => (c.id === "model" ? { id: c.id } : c)) };
   assert.deepEqual(fit(relabelled), { toolbar: ["agent", "folder", "effort", "subagents"], popup: ["server", "model"], more: true, meter: "ring" });
@@ -324,8 +335,9 @@ test("an optional control is beside the others when all of them are whole, in th
     assert.ok(fit({ ...r, controls: r.controls.map((c) => (c.id === "subagents" ? { id: c.id, optional: true } : c)) }).toolbar.includes("subagents"), id);
   }
   assert.ok(beside > 0 && inPopup > 0 && nowhere > 0, `${beside} beside, ${inPopup} in the popup, ${nowhere} nowhere`);
-  // a started chat in the default panel: its toolbar is whole and the chip is not drawn; in a wider pane it is there
+  // a started chat in the default panel, and in a box where its toolbar is whole: the chip is not drawn; in a wider pane it is there
   const started = fixture.states["board-started"];
-  assert.deepEqual(fit(rowOf(started, 375, null, true)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" });
+  assert.deepEqual(fit(rowOf(started, 375, null, true)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "ring" });
+  assert.deepEqual(fit(rowOf(started, 389, null, true)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" });
   assert.deepEqual(fit(rowOf(started, 520, null, true)), { toolbar: ["folder", "model", "subagents"], popup: [], more: false, meter: "full" });
 });

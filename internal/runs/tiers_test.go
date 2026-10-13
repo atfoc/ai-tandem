@@ -249,7 +249,7 @@ func TestSvcTiersAcrossAgentsAndRuns(t *testing.T) {
 	}
 	var defs model.Defaults
 	e.s.Store.Read(func(s *model.State) { defs = s.Defaults })
-	if own := defs.Groups[model.Ungrouped].On(model.LocalServer); own.Run == nil || own.Run.Tiers == nil || *own.Run.Tiers != want ||
+	if own := defs.Groups[model.Ungrouped].Local(); own.Run == nil || own.Run.Tiers == nil || *own.Run.Tiers != want ||
 		len(own.ByAgent) != 0 || len(defs.Groups) != 1 {
 		t.Fatalf("defaults: %+v", defs)
 	}

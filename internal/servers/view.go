@@ -28,14 +28,13 @@ func (s State) retries() bool {
 	return s == StateUnreachable || s == StateCertificateNotAccepted
 }
 
-// stops reports whether a connection in s sends nothing more until the user does something.
+// stops reports whether a connection in s sends nothing more until the user does something: an
+// edit, an accept or a test gets it going again.
+// The one thing a too_old one still sends is its hello, every Timing.TooOld: the user's part is
+// done on the other machine, where this server learns of it in no other way.
 func (s State) stops() bool {
 	return s != StateConnecting && s != StateConnected && !s.retries()
 }
-
-// Stopped reports whether an entry in s waits for the user: nothing is sent until an edit, an
-// accept or a test gets it going again.
-func (s State) Stopped() bool { return s.stops() }
 
 // stateOf is the state a connection enters when an attempt ended with o.
 func stateOf(o Outcome) State {

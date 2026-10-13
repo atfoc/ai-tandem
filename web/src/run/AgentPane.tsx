@@ -3,7 +3,7 @@
 // read-only, and one line where a chat has its composer. The agent is held while this is mounted.
 import { useRef } from "react";
 import "./shell.css";
-import { useStore, closeRunAgent, chatTitle, isBusy, boardName, threadOf } from "../store.ts";
+import { useStore, closeRunAgent, chatTitle, isBusy, boardNames, threadOf } from "../store.ts";
 import { ChatHeader, Thread } from "../ChatView.tsx";
 import { modelLabel, effortLabel } from "../Composer.tsx";
 import { useNow } from "../Subagents.tsx";
@@ -12,7 +12,10 @@ import { statusText } from "../logic/labels.ts";
 import { AGENT_ENDED, agentMs, agentTitle, money, tokensShort } from "../logic/runview.ts";
 import { useAgent } from "./useAgent.ts";
 import { catalogFor } from "../logic/agentlist.ts";
-import { serverOf } from "../logic/serverlists.ts";
+import { serverConnected, serverName, serverOf } from "../logic/serverlists.ts";
+import { serverOfKey } from "../logic/keys.ts";
+import { runGoneText } from "../logic/runserver.ts";
+import { notConnected } from "../logic/status.ts";
 
 /** The header: what the run calls the agent, and under it one line: what it is doing (or how it
  *  ended) and how long it ran first, so that what changes stays in view when the line is cut, then
@@ -30,23 +33,25 @@ function Head({ runId, agentId }: { runId: string; agentId: string }) {
   const now = useNow(running);
   const m = a && cat?.models.find((x) => x.id === a.model);
   const facts = !a ? "" : [
-    running ? (held && isBusy(held.status) ? statusText(held, boardName) : "Running") : AGENT_ENDED[a.status] ?? "",
+    running ? (held && isBusy(held.status) ? statusText(held, boardNames(agentId)) : "Running") : AGENT_ENDED[a.status] ?? "",
     fmtDuration(agentMs(a, now)),
     a.tier, modelLabel(a, cat), a.effort ? effortLabel(a.effort, m) : "", typeof a.cost === "number" ? money(a.cost) : "", a.peakContext ? `peak ${tokensShort(a.peakContext)}` : "",
   ].filter(Boolean).join(" · ");
   return <ChatHeader chatId={agentId} agent={{ title: a ? agentTitle(a) : held?.name ?? agentId, facts: <span title={facts}>{facts}</span>, onClose: closeRunAgent }} />;
 }
 
-/** back: the chat of the run the transcript lies over (its id), which the foot leads back to. */
+/** back: the chat of the run the transcript lies over (its id), which the foot leads back to. The foot also says
+ *  when the transcript is only what the page had: its run is no longer on its server, or that server is not connected. */
 export function AgentPane({ runId, agentId, back }: { runId: string; agentId: string; back: string | null }) {
   useAgent(agentId);
   const chat = useStore((s) => (back && s.chats[back] ? chatTitle(s.chats[back], threadOf(s, back)?.items) : null));
+  const was = useStore((s) => { const server = serverOfKey(runId), name = serverName(s, server); return s.gone[runId] ? runGoneText(name) : serverConnected(s, server) ? "" : `${notConnected(name)}.`; });
   return (
     <>
       <Head runId={runId} agentId={agentId} />
       <Thread chatId={agentId} readOnly />
       <div className="agent-foot">
-        <span>Read-only: this is the run's own agent.</span>
+        <span>Read-only: this is the run's own agent.{was && ` ${was}`}</span>
         {chat != null && <button type="button" className="link" title="Close the transcript (Esc)" onClick={closeRunAgent}>‹ Back to {chat}</button>}
       </div>
     </>

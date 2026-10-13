@@ -5,26 +5,27 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remotes"
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/servers/linksim"
-	"ai-whiteboard/internal/store"
 )
 
-// Remote boards between two real stacks in one process. B is a server with a remote listener
-// (remoteEnv: the real ServeRemote over TLS); A is a server wired as the program wires it, with
-// B as the one entry of its server list, a real servers.Manager and a real relay. The pages of
-// both are stand-in pages on the real bridges, and B's agents are stand-ins. Nothing is scripted
-// between the two: what A sends is what B's routes get. A's connections pass a link simulator,
-// which a test cuts for an outage; B's listener stays as it is, on its port.
+// The boards of a section between two real stacks in one process. B is a server with a remote
+// listener (remoteEnv: the real ServeRemote over TLS); A is a server wired as the program wires
+// it, with B as the one entry of its server list, a real servers.Manager and a real relay. The
+// pages of both are stand-in pages on the real bridges, and B's agents are stand-ins. Nothing is
+// scripted between the two: what A sends is what B's routes get. A's connections pass a link
+// simulator, which a test cuts for an outage; B's listener stays as it is, on its port.
 
 // pair is A and B.
 type pair struct {
@@ -37,9 +38,9 @@ type pair struct {
 	m     *servers.Manager
 	rm    *remotes.Relay
 	entry string        // B in A's list
-	root  string        // where A keeps its list and its records
+	root  string        // where A keeps its list
 	link  *linksim.Link // the way from A to B: cut, it ends A's connections and refuses new ones
-	ups   atomic.Int64  // the snapshots of B that A's relay took
+	ups   atomic.Int64  // the snapshots of B that A's relay was given
 }
 
 // newPair starts B and then A, and waits until A's relay has B's first snapshot. limits are the
@@ -60,9 +61,6 @@ func newPairWith(t *testing.T, limits remotes.Limits, withA, withB []func(*Serve
 	pr.link = linksim.Start(t, pr.l.host, linksim.Good)
 	root := t.TempDir()
 	pr.root = root
-	if limits.Flush == 0 {
-		limits.Flush = 20 * time.Millisecond
-	}
 	wire := func(s *Server) { // as newFar, and as startServers of cmd/ai-whiteboard
 		// B's bridge sends no pings here, so a quiet stream is no dead one: the outages of
 		// these tests are the link's alone.
@@ -86,31 +84,30 @@ func newPairWith(t *testing.T, limits remotes.Limits, withA, withB []func(*Serve
 		if err != nil || !saved {
 			t.Fatalf("the entry is not saved: %v", err)
 		}
-		rm, err := remotes.Open(remotes.Options{
-			Root: root, Servers: m, Bridge: s.Bridge, Local: upCounter{s.App.Chats, &pr.ups},
-			Group: s.App.GroupState, Limits: limits, Logf: t.Logf,
-		})
+		rm, err := remotes.Open(remotes.Options{Servers: m, Bridge: s.Bridge, Limits: limits, Logf: t.Logf})
 		if err != nil {
 			t.Fatal(err)
 		}
 		pr.m, pr.rm, pr.entry = m, rm, v.ID
-		s.App.Chats.Servers = rm
 		s.Servers, s.App.Servers = m, m
 		s.Remotes, s.App.Remotes = rm, rm
 		s.Bridge.OnUnfollowed(rm.Unfollowed)
 		s.Bridge.OnBoardFree(rm.BoardFree)
 		ownRev := s.Bridge.SceneRev
-		s.Bridge.SceneRev = func(id string) int64 {
-			if rev, ok := rm.BoardRev(id); ok {
+		s.Bridge.SceneRev = func(key string) int64 {
+			if rev, ok := rm.BoardRev(key); ok {
 				return rev
 			}
-			return ownRev(id)
+			return ownRev(key)
 		}
-		rm.SetLocalBoards(func(id string) bool {
-			_, ok := s.App.Boards.Get(id)
-			return ok
-		})
-		m.SetHooks(rm.Hooks())
+		// The snapshots A's relay is given are counted: what tells that B is back.
+		hooks := rm.Hooks()
+		snapshot := hooks.Snapshot
+		hooks.Snapshot = func(entry string, raw json.RawMessage) {
+			snapshot(entry, raw)
+			pr.ups.Add(1)
+		}
+		m.SetHooks(hooks)
 		listed.Store(rm)
 		t.Cleanup(func() { // the order of a shutdown
 			m.Close()
@@ -133,11 +130,18 @@ func (pr *pair) wait(what string, good func() bool) {
 	}
 }
 
-// returned waits until A's relay has taken n snapshots of B.
+// returned waits until A's relay was given n snapshots of B and holds B's tree.
 func (pr *pair) returned(n int64) {
 	pr.t.Helper()
-	pr.wait("snapshot "+itoa(int(n))+" of B is taken", func() bool { return pr.ups.Load() >= n })
+	pr.wait("snapshot "+itoa(int(n))+" of B is taken", func() bool {
+		_, held := pr.rm.Sections()[pr.entry]
+		return pr.ups.Load() >= n && held
+	})
 }
+
+// on is the path of a section's route for B: rest is the path of the same call for a thing of
+// this server, after /api.
+func (pr *pair) on(rest string) string { return sectionPrefix + pr.entry + rest }
 
 // cut cuts the link and waits until both ends know: A's entry is not connected, and B has no
 // stream of A, so that nothing of A holds a board there.
@@ -164,7 +168,7 @@ func (pr *pair) holders(board, onA, onB string) {
 	pr.t.Helper()
 	var gotA, gotB string
 	for end := time.Now().Add(waitLimit); ; time.Sleep(2 * time.Millisecond) {
-		gotA, _ = pr.a.s.Bridge.HolderOf(board)
+		gotA, _ = pr.a.s.Bridge.HolderOf(editorbridge.BoardOn(pr.entry, board))
 		gotB, _ = pr.b.s.Bridge.HolderOf(board)
 		if gotA == onA && gotB == onB {
 			return
@@ -173,6 +177,46 @@ func (pr *pair) holders(board, onA, onB string) {
 			pr.t.Fatalf("the board %s is held by %q on A and %q on B, want %q and %q", board, gotA, gotB, onA, onB)
 		}
 	}
+}
+
+// take is a take of the board of B by a page of A: the state, and the revision when it is held.
+func (pr *pair) take(p *bridgetest.Page, board string, ifFree bool) (state string, rev int64) {
+	pr.t.Helper()
+	var body any
+	if ifFree {
+		body = obj{"ifFree": true}
+	}
+	got := decode[struct {
+		State string
+		Rev   int64
+	}](pr.t, string(do(pr.t, p, "POST", pr.on("/boards/"+board+"/take"), body)))
+	return got.State, got.Rev
+}
+
+// release is a release of the board of B by a page of A.
+func (pr *pair) release(p *bridgetest.Page, board string) string {
+	pr.t.Helper()
+	return decode[struct{ State string }](pr.t, string(do(pr.t, p, "POST", pr.on("/boards/"+board+"/release"), nil))).State
+}
+
+// write is a save of the drawing of the board of B by a page of A, on the revision base.
+func (pr *pair) write(p *bridgetest.Page, board string, base int64, scene string) (int, []byte) {
+	return p.Do("PUT", pr.on("/boards/"+board+"/scene")+"?rev="+itoa(int(base)), scene)
+}
+
+// written is a write that must be taken.
+func (pr *pair) written(p *bridgetest.Page, board string, base int64, scene string) {
+	pr.t.Helper()
+	if status, out := pr.write(p, board, base, scene); status != 200 {
+		pr.t.Fatalf("the write of %s on revision %d: %d %s", p.ID, base, status, out)
+	}
+}
+
+// until reads the events of a page of A up to the next role event of this type for the board
+// of B, and returns it.
+func (pr *pair) until(p *bridgetest.Page, typ, board string) map[string]any {
+	pr.t.Helper()
+	return pr.event(p, typ, func(ev map[string]any) bool { return ev["board"] == board && ev["server"] == pr.entry })
 }
 
 // event reads the page's events up to the next one of this type that is good, and returns it.
@@ -208,33 +252,36 @@ func (pr *pair) refusal(what string, want int, code string, status int, out []by
 	return got
 }
 
-// create makes a board on B from A's page, in a group of A, and checks both ends.
+// create makes a board on B from A's page, in a new group of B, and checks what the page got.
 func (pr *pair) create(p *bridgetest.Page, name string) (bd model.Board, group string) {
 	pr.t.Helper()
-	group = decode[obj](pr.t, string(do(pr.t, p, "POST", "/api/groups", obj{"name": "Work " + name, "parent": ""})))["id"].(string)
-	bd = decode[model.Board](pr.t, string(do(pr.t, p, "POST", "/api/boards", obj{"name": name, "group": group, "server": pr.entry})))
-	if bd.Name != name || bd.Group != group || bd.Server != pr.entry || bd.Client != "" {
+	group = decode[obj](pr.t, string(do(pr.t, p, "POST", pr.on("/groups"), obj{"name": "Work " + name, "parent": ""})))["id"].(string)
+	bd = decode[model.Board](pr.t, string(do(pr.t, p, "POST", pr.on("/boards"), obj{"name": name, "group": group})))
+	if bd.Name != name || bd.Group != group {
 		pr.t.Fatalf("the board A's page got: %+v", bd)
 	}
 	return bd, group
 }
 
-// boardChat makes a chat on the board from A's page and sends its first message, which starts
-// it on B. The message goes with the <ui-context> the page puts in front of every message of a
-// board chat, and B's thread has it. It returns the chat's id and the token of its agent on B.
+// boardChat makes a chat on the board from A's page, which makes it on B at once, and sends its
+// first message, an ordinary message that starts it there. The message goes with the
+// <ui-context> the page puts in front of every message of a board chat, and B's thread has it. It returns the chat's id and the token of its agent on B.
 func (pr *pair) boardChat(p *bridgetest.Page, board string) (chat, token string) {
 	pr.t.Helper()
-	cv := decode[model.ChatView](pr.t, string(do(pr.t, p, "POST", "/api/chats", obj{"agent": "claude", "board": board})))
-	if cv.Board != board || cv.Server != pr.entry || cv.Locked {
+	cv := decode[model.ChatView](pr.t, string(do(pr.t, p, "POST", pr.on("/chats"), obj{"agent": "claude", "board": board})))
+	if _, err := pr.a.a.Chats.View(cv.ID); cv.Board != board || cv.Locked || err == nil {
 		pr.t.Fatalf("the new chat on the board: %+v", cv)
 	}
+	if metas := pr.b.a.Chats.ChatsOfBoard(board); len(metas) != 1 || metas[0].ID != cv.ID || metas[0].Locked {
+		pr.t.Fatalf("the chats of the board on B before the first message: %+v", metas)
+	}
 	ctx := "<ui-context>\nactive_board: the board (" + board + ")\nreferenced_boards: another (b_other001)\n</ui-context>"
-	do(pr.t, p, "POST", "/api/chats/"+cv.ID+"/messages", obj{"text": "hello", "context": ctx})
+	do(pr.t, p, "POST", pr.on("/chats/"+cv.ID+"/messages"), obj{"text": "hello", "context": ctx})
 	if _, items, _, err := pr.b.a.Chats.Items(cv.ID); err != nil || len(items) == 0 || items[0].Kind != "user" || items[0].Context != ctx {
 		pr.t.Fatalf("the first message on B: %+v, %v", items, err)
 	}
 	metas := pr.b.a.Chats.ChatsOfBoard(board)
-	if len(metas) != 1 || metas[0].ID != cv.ID || metas[0].Client != testLocalID || metas[0].Token == "" {
+	if len(metas) != 1 || metas[0].ID != cv.ID || metas[0].Token == "" {
 		pr.t.Fatalf("the chats of the board on B: %+v", metas)
 	}
 	return cv.ID, metas[0].Token
@@ -248,16 +295,14 @@ func TestBoardPair(t *testing.T) {
 	a, b := pr.a, pr.b
 	p := a.page("P")
 
-	// ---- create: the board is B's, in B's "Remote" group, with A's mark; A keeps a record and
-	// no drawing. The page that made it holds it, and so A holds it on B.
+	// ---- create: the board is B's, in the group of B it was made in; A keeps nothing of it,
+	// on disk or among its own boards, and shows it in B's section. The page that made it holds
+	// it, and so A holds it on B.
 	bd, group := pr.create(p, "Untitled")
-	id, path := bd.ID, "/api/boards/"+bd.ID
+	id, path := bd.ID, pr.on("/boards/"+bd.ID)
 	there := pr.boardThere(id)
-	if remote := b.remoteGroups(); len(remote) != 1 || there.Group != remote[0] || there.Client != testLocalID || there.Name != "Untitled" {
-		t.Fatalf("the board on B: %+v, B's Remote groups %v", there, remote)
-	}
-	if !pr.rm.HasBoard(id) {
-		t.Fatal("A has no record of the board")
+	if there.Group != group || there.Name != "Untitled" {
+		t.Fatalf("the board on B: %+v, made in the group %s", there, group)
 	}
 	if _, ok := a.a.Boards.Get(id); ok {
 		t.Fatal("the board was made on A too")
@@ -265,30 +310,30 @@ func TestBoardPair(t *testing.T) {
 	if _, err := os.Stat(a.st.P.BoardFile(id)); !os.IsNotExist(err) {
 		t.Fatalf("A has a drawing file of the board: %v", err)
 	}
-	if _, err := os.Stat(store.NewPaths(pr.root).RemoteBoardFile(id)); err != nil {
-		t.Fatalf("A's record file: %v", err)
+	if _, err := os.Stat(filepath.Join(pr.root, "remote")); !os.IsNotExist(err) {
+		t.Fatalf("A keeps a folder of the things of other servers: %v", err)
 	}
 	if _, err := os.Stat(b.st.P.BoardFile(id)); err != nil {
 		t.Fatalf("B's drawing file: %v", err)
 	}
-	var snap struct{ Boards []model.Board }
-	json.Unmarshal(do(t, p, "GET", "/api/state", nil), &snap)
-	if len(snap.Boards) != 1 || snap.Boards[0].ID != id || snap.Boards[0].Server != pr.entry || snap.Boards[0].Group != group {
-		t.Fatalf("the boards of A's snapshot: %+v", snap.Boards)
+	var snap pageSnapshot
+	pr.wait("the board is in B's section on A", func() bool {
+		snap = pageSnapshot{}
+		json.Unmarshal(do(t, p, "GET", "/api/state", nil), &snap)
+		sec := snap.Sections[pr.entry]
+		return sec != nil && len(sec.Boards) == 1
+	})
+	if sec := snap.Sections[pr.entry]; len(snap.Boards) != 0 || sec.Boards[0].ID != id || sec.Boards[0].Group != group {
+		t.Fatalf("the boards of A's snapshot: its own %+v, B's %+v", snap.Boards, sec.Boards)
 	}
 	pr.holders(id, "P", testLocalID)
-	// The creation again, as A repeats it after a lost answer: the same board, not made again.
-	status, out := pr.l.call(testLocalID, testSecret, "PUT", path, `{"name":"Another name"}`)
-	if again := decode[madeBoard](t, out); status != 200 || again.Made || again.Board.ID != id || again.Board.Name != "Untitled" {
-		t.Fatalf("the repeated creation: %d %s", status, out)
-	}
 
 	// ---- hold chain. The page lets go: B is free. It takes: B's holder is A.
-	if got := release(t, p, id); got != "free" {
+	if got := pr.release(p, id); got != "free" {
 		t.Fatalf("P's release: %s", got)
 	}
 	pr.holders(id, "", "")
-	if state, rev := take(t, p, id, false); state != "held" || rev != 0 {
+	if state, rev := pr.take(p, id, false); state != "held" || rev != 0 {
 		t.Fatalf("P's take: %s at %d", state, rev)
 	}
 	pr.holders(id, "P", testLocalID)
@@ -296,11 +341,11 @@ func TestBoardPair(t *testing.T) {
 	// ---- save: refused from a page of A that does not hold the board and at an old revision;
 	// the holder's is stored on B.
 	q := a.page("Q")
-	status, raw := write(q, id, 0, drawing("Q's"))
+	status, raw := pr.write(q, id, 0, drawing("Q's"))
 	pr.refusal("the write of a page that does not hold the board", 409, "not_holder", status, raw)
-	written(t, p, id, 0, drawing("P's first"))
+	pr.written(p, id, 0, drawing("P's first"))
 	b.stored(id, drawing("P's first"), 1)
-	status, raw = write(p, id, 0, drawing("on an old revision"))
+	status, raw = pr.write(p, id, 0, drawing("on an old revision"))
 	if got := pr.refusal("a write on an old revision", 409, "stale", status, raw); got["rev"] != 1.0 {
 		t.Fatalf("a write on an old revision: %s", raw)
 	}
@@ -320,23 +365,23 @@ func TestBoardPair(t *testing.T) {
 
 	// ---- hold chain, two pages of A: the second one's take is A's own hand-off, at B's
 	// revision, and changes nothing on B.
-	if state, _ := take(t, q, id, false); state != "waiting" {
+	if state, _ := pr.take(q, id, false); state != "waiting" {
 		t.Fatalf("Q's take of P's board: %s", state)
 	}
-	until(t, p, "release_request", id)
-	if got := release(t, p, id); got != "handed" {
+	pr.until(p, "release_request", id)
+	if got := pr.release(p, id); got != "handed" {
 		t.Fatalf("P's release to Q: %s", got)
 	}
-	if ev := until(t, q, "held", id); ev["rev"] != 1.0 {
+	if ev := pr.until(q, "held", id); ev["rev"] != 1.0 {
 		t.Fatalf("Q's grant: %v, want B's revision 1", ev)
 	}
-	until(t, p, "superseded", id)
+	pr.until(p, "superseded", id)
 	pr.holders(id, "Q", testLocalID)
-	written(t, q, id, 1, drawing("Q's"))
+	pr.written(q, id, 1, drawing("Q's"))
 	// The holding page's stream ends: A lets the board go on B.
 	q.Close()
 	pr.holders(id, "", "")
-	if state, rev := take(t, p, id, true); state != "held" || rev != 2 {
+	if state, rev := pr.take(p, id, true); state != "held" || rev != 2 {
 		t.Fatalf("P's take after Q left: %s at %d", state, rev)
 	}
 	pr.holders(id, "P", testLocalID)
@@ -347,16 +392,22 @@ func TestBoardPair(t *testing.T) {
 	if metas := b.a.Chats.ChatsOfBoard(id); b.a.Chats.GroupOf(metas[0]) != there.Group {
 		t.Fatalf("the chat's group on B is not the board's: %+v", metas[0])
 	}
-	var state struct{ Chats []model.ChatView }
-	json.Unmarshal(do(t, p, "GET", "/api/state", nil), &state)
-	if len(state.Chats) != 1 || state.Chats[0].ID != chat || state.Chats[0].Board != id || state.Chats[0].Server != pr.entry || !state.Chats[0].Locked {
-		t.Fatalf("the chats of A's snapshot: %+v", state.Chats)
+	// That it has started is told by B's event, which follows the answer to the message.
+	var state pageSnapshot
+	pr.wait("B's section on A lists the chat as started", func() bool {
+		state = pageSnapshot{}
+		json.Unmarshal(do(t, p, "GET", "/api/state", nil), &state)
+		sec := state.Sections[pr.entry]
+		return sec != nil && len(sec.Chats) == 1 && sec.Chats[0].Locked
+	})
+	if sec := state.Sections[pr.entry]; len(state.Chats) != 0 || sec.Chats[0].ID != chat || sec.Chats[0].Board != id {
+		t.Fatalf("the chats of A's snapshot: its own %+v, B's %+v", state.Chats, sec.Chats)
 	}
 	reply(t, &pr.sp.of(t, chat).fakeAgent, "an answer", "p1") // B's agent ends its turn: the chat's event reaches A's page
 	ev := pr.event(p, "chat", func(ev map[string]any) bool {
 		return field(ev, "chat", "id") == chat && field(ev, "chat", "status") == "ready"
 	})
-	if field(ev, "chat", "board") != id || field(ev, "chat", "server") != pr.entry {
+	if field(ev, "chat", "board") != id || ev["server"] != pr.entry {
 		t.Fatalf("the chat's event on A's page: %v", ev)
 	}
 
@@ -380,12 +431,11 @@ func TestBoardPair(t *testing.T) {
 	pr.holders(id, "P", testLocalID)
 
 	// ---- outage. The page keeps the board on A; nothing of it is held on B. A save, a rename
-	// and a delete are refused with 503 and change nothing; the group and the archive mark are
-	// A's own matter.
+	// and a delete are refused with 503 and change nothing.
 	pr.cut()
 	pr.holders(id, "P", "")
 	kept := drawing("drawn while B was away")
-	status, raw = write(p, id, 2, kept)
+	status, raw = pr.write(p, id, 2, kept)
 	pr.refusal("a write while B is unreachable", 503, "server_unreachable", status, raw)
 	status, raw = p.Do("DELETE", path, nil)
 	if got := pr.refusal("a delete while B is unreachable", 503, "server_unreachable", status, raw); got["error"] != "Studio is not connected." {
@@ -393,7 +443,7 @@ func TestBoardPair(t *testing.T) {
 	}
 	status, raw = p.Do("POST", path+"/rename", obj{"name": "Renamed"})
 	pr.refusal("a rename while B is unreachable", 503, "server_unreachable", status, raw)
-	if !pr.rm.HasBoard(id) || pr.boardThere(id).Name != "Untitled" {
+	if pr.boardThere(id).Name != "Untitled" {
 		t.Fatal("the refused calls changed the board")
 	}
 	b.stored(id, drawing("Q's"), 2)
@@ -401,11 +451,11 @@ func TestBoardPair(t *testing.T) {
 	// ---- return at the same revision: A takes the board again for its page, which is told the
 	// revision; it is the one the edit was made on, so the page saves, and the edit is on B.
 	pr.mend()
-	if ev := until(t, p, "held", id); ev["rev"] != 2.0 {
+	if ev := pr.until(p, "held", id); ev["rev"] != 2.0 {
 		t.Fatalf("P's grant at the return: %v", ev)
 	}
 	pr.holders(id, "P", testLocalID)
-	written(t, p, id, 2, kept)
+	pr.written(p, id, 2, kept)
 	b.stored(id, kept, 3)
 
 	// ---- return at another revision: B's own page drew meanwhile. A's page is told the new
@@ -420,11 +470,11 @@ func TestBoardPair(t *testing.T) {
 		t.Fatalf("the release of B's page: %s", got)
 	}
 	pr.mend()
-	if ev := until(t, p, "held", id); ev["rev"] != 4.0 {
+	if ev := pr.until(p, "held", id); ev["rev"] != 4.0 {
 		t.Fatalf("P's grant at the return, after B's page drew: %v", ev)
 	}
 	pr.holders(id, "P", testLocalID)
-	status, raw = write(p, id, 3, drawing("drawn on the old revision"))
+	status, raw = pr.write(p, id, 3, drawing("drawn on the old revision"))
 	if got := pr.refusal("the edit on the revision before the outage", 409, "stale", status, raw); got["rev"] != 4.0 {
 		t.Fatalf("the edit on the revision before the outage: %s", raw)
 	}
@@ -437,37 +487,37 @@ func TestBoardPair(t *testing.T) {
 	if state, _ := take(t, bp, id, false); state != "waiting" {
 		t.Fatalf("the take of B's page: %s", state)
 	}
-	until(t, p, "release_request", id)
-	written(t, p, id, 4, drawing("P's last"))
-	if got := release(t, p, id); got != "handed" {
+	pr.until(p, "release_request", id)
+	pr.written(p, id, 4, drawing("P's last"))
+	if got := pr.release(p, id); got != "handed" {
 		t.Fatalf("P's release to B's page: %s", got)
 	}
-	until(t, p, "superseded", id)
+	pr.until(p, "superseded", id)
 	if ev := until(t, bp, "held", id); ev["rev"] != 5.0 {
 		t.Fatalf("the grant of B's page: %v", ev)
 	}
 	pr.holders(id, "", "BP")
-	status, raw = write(p, id, 5, drawing("late"))
+	status, raw = pr.write(p, id, 5, drawing("late"))
 	pr.refusal("P's write after it lost the board", 409, "not_holder", status, raw)
 	// And back: A's page takes it from B's page, which lets go.
-	if state, _ := take(t, p, id, false); state != "waiting" {
+	if state, _ := pr.take(p, id, false); state != "waiting" {
 		t.Fatalf("P's take of the board of B's page: %s", state)
 	}
 	until(t, bp, "release_request", id)
 	if got := release(t, bp, id); got != "handed" {
 		t.Fatalf("the release of B's page to A: %s", got)
 	}
-	if ev := until(t, p, "held", id); ev["rev"] != 5.0 {
+	if ev := pr.until(p, "held", id); ev["rev"] != 5.0 {
 		t.Fatalf("P's grant from B's page: %v", ev)
 	}
 	pr.holders(id, "P", testLocalID)
-	if got := release(t, p, id); got != "free" {
+	if got := pr.release(p, id); got != "free" {
 		t.Fatalf("P's last release: %s", got)
 	}
 	pr.holders(id, "", "")
 
 	// ---- rename and archive pass through.
-	if got := decode[model.Board](t, string(do(t, p, "POST", path+"/rename", obj{"name": "Plans"}))); got.Name != "Plans" || got.Server != pr.entry || got.Group != group {
+	if got := decode[model.Board](t, string(do(t, p, "POST", path+"/rename", obj{"name": "Plans"}))); got.Name != "Plans" || got.Group != group {
 		t.Fatalf("the renamed board: %+v", got)
 	}
 	if got := pr.boardThere(id); got.Name != "Plans" {
@@ -478,15 +528,19 @@ func TestBoardPair(t *testing.T) {
 	do(t, p, "POST", path+"/unarchive", nil)
 	pr.wait("the board is no longer archived on B", func() bool { return !pr.boardThere(id).Archived })
 
-	// ---- delete when connected: the board is gone on B, and A's record with it.
+	// ---- delete when connected: the board is gone on B, and from B's section on A.
 	do(t, p, "DELETE", path, nil)
-	if _, ok := b.a.Boards.Get(id); ok || pr.rm.HasBoard(id) {
-		t.Fatalf("after the delete: on B %v, A's record %v", ok, pr.rm.HasBoard(id))
+	if _, ok := b.a.Boards.Get(id); ok {
+		t.Fatal("after the delete the board is still on B")
 	}
-	pr.event(p, "board_removed", func(ev map[string]any) bool { return ev["id"] == id })
-	if len(b.a.Chats.ChatsOfBoard(id)) != 0 || pr.rm.Has(chat) {
+	pr.event(p, "board_removed", func(ev map[string]any) bool { return ev["id"] == id && ev["server"] == pr.entry })
+	if len(b.a.Chats.ChatsOfBoard(id)) != 0 {
 		t.Fatal("the board's chat outlived the board")
 	}
+	pr.wait("B's section on A has no board and no chat", func() bool {
+		sec := pr.rm.Sections()[pr.entry]
+		return len(sec.Boards) == 0 && len(sec.Chats) == 0
+	})
 }
 
 // The limit of a passed-on tool call: A's page does not answer, and B's agent has A's answer

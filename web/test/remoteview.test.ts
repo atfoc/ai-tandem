@@ -1,115 +1,123 @@
+// A chat of a section where its thread is, and in the delete dialog (src/logic/remoteview.ts): what is shown
+// while that server is not connected, and when the chat is no longer on it. The view through the real event
+// layer is in remotechat.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { remoteRow, notConnected, noLongerOn } from "../src/logic/status.ts";
-import { dotState, rowLine } from "../src/logic/labels.ts";
-import { REMOVE_ONLY, deleteAsk, deleteRefused, offersLocalOnly, remoteView } from "../src/logic/remoteview.ts";
-import { ApiError } from "../src/api.ts";
-import type { ChatView } from "../src/types.ts";
+import { readFileSync } from "node:fs";
+import { notConnected } from "../src/logic/status.ts";
+import { NOT_FOUND, SERVERS, TRY_AGAIN, awayText, deleteAsk, goneText, remoteView, stateSaid, unreachableText, type Remote } from "../src/logic/remoteview.ts";
+import { stateLabel, type ServerState } from "../src/logic/servers.ts";
 
-const usage = { turns: 0 } as ChatView["usage"];
-const settings = "Opus · ~/work";
-type V = Parameters<typeof rowLine>[0] & Pick<ChatView, "server" | "gone" | "archived">;
-const row = (c: V, connected: boolean) => remoteRow(c, "Studio", connected, rowLine(c, settings), dotState(c));
+const src = (f: string) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
-test("remoteRow: a chat of this computer is given back as it is", () => {
-  const c: V = { status: "thinking", usage };
-  assert.deepEqual(row(c, true), { line: "Thinking…", dot: "thinking", off: false, gone: false, title: "" });
-  assert.deepEqual(remoteRow({}, "This computer", true, settings, "ready"), { line: settings, dot: "ready", off: false, gone: false, title: "" });
-});
+/** A chat of a section: its server holds its tree (UP), or not (DOWN). */
+const UP: Remote = { remote: true, connected: true };
+const DOWN: Remote = { remote: true, connected: false };
+const HERE: Remote = { remote: false, connected: true };
 
-test("remoteRow: connected, the server's name follows the line and the dot is a local chat's", () => {
-  assert.deepEqual(row({ status: "ready", usage, server: "s_1" }, true), { line: `${settings} · Studio`, dot: "ready", off: false, gone: false, title: "" });
-  // working, approval and finished (AC17)
-  assert.deepEqual(row({ status: "thinking", usage, server: "s_1" }, true), { line: "Thinking… · Studio", dot: "thinking", off: false, gone: false, title: "" });
-  assert.deepEqual(row({ status: "approval", usage, approvals: 1, working: 1, server: "s_1" }, true), { line: "Needs your approval · Studio", dot: "approval", off: false, gone: false, title: "" });
-  assert.deepEqual(row({ status: "stopped", usage, server: "s_1" }, true), { line: "Stopped · Studio", dot: "stopped", off: false, gone: false, title: "" });
-  // archived: the settings line, as a local chat's
-  assert.deepEqual(row({ status: "ready", usage, subsOwed: 1, archived: true, server: "s_1" }, true), { line: `${settings} · Studio`, dot: "ready", off: false, gone: false, title: "" });
-  assert.equal(remoteRow({ server: "s_1" }, "Studio", true, "", "ready").line, "Studio");
-});
-
-test("remoteRow: not connected, the row is off with a grey dot and says so in its title", () => {
-  assert.deepEqual(row({ status: "ready", usage, server: "s_1" }, false), { line: `${settings} · Studio`, dot: "off", off: true, gone: false, title: "Studio is not connected" });
-  // what the chat did last stays in the line; the dot is grey whatever it was
-  const busy = row({ status: "thinking", usage, server: "s_1" }, false);
-  assert.equal(busy.line, "Thinking… · Studio");
-  assert.equal(busy.dot, "off");
-  assert.equal(row({ status: "approval", usage, approvals: 1, server: "s_1" }, false).dot, "off");
-  assert.equal(row({ status: "ready", usage, archived: true, server: "s_1" }, false).off, true);
+test("the sentences name the server", () => {
   assert.equal(notConnected("Studio"), "Studio is not connected");
+  assert.equal(goneText("Studio"), "This chat is no longer on Studio.");
+  assert.equal(unreachableText("Studio"), "Studio is not connected. This chat shows again when it is back.");
+  assert.equal(awayText("Studio"), "Studio is not connected. This chat is shown as it was when the connection ended.");
+  assert.equal(SERVERS, "Servers…");
+  assert.equal(TRY_AGAIN, "Try again");
 });
 
-test("remoteRow: a chat its server no longer has says that alone, connected or not", () => {
-  for (const connected of [true, false])
-    assert.deepEqual(row({ status: "thinking", usage, server: "s_1", gone: true }, connected), { line: "No longer on Studio", dot: "off", off: false, gone: true, title: "No longer on Studio" });
-  assert.equal(noLongerOn("Studio"), "No longer on Studio");
+test("remoteView: a chat of this computer shows the thread, whatever else is said of it", () => {
+  assert.deepEqual(remoteView(HERE, "This computer", "connected", false, { message: "x" }), { kind: "none" });
+  assert.deepEqual(remoteView(HERE, "This computer", "connected", true), { kind: "none" });
+  assert.deepEqual(remoteView({ remote: false, connected: false, gone: true }, "This computer", undefined, false, { code: NOT_FOUND, message: "x" }), { kind: "none" }, "it is never away and never gone");
 });
 
-const R = { server: "s_1" };
-
-test("remoteView: a chat of this computer, and a remote one that is connected or loading, show the thread", () => {
-  assert.deepEqual(remoteView({}, "This computer", "connected", false, { message: "x" }), { kind: "none" });
-  assert.deepEqual(remoteView(R, "Studio", "connected", true), { kind: "none" });
-  assert.deepEqual(remoteView(R, "Studio", "connected", false), { kind: "none" });
-  assert.deepEqual(remoteView(R, "Studio", "unreachable", false), { kind: "none" }); // the load has not answered yet
+test("remoteView: a section's chat whose server is connected shows the thread, loaded or loading", () => {
+  assert.deepEqual(remoteView(UP, "Studio", "connected", true), { kind: "none" });
+  assert.deepEqual(remoteView(UP, "Studio", "connected", false), { kind: "none" });
+  assert.deepEqual(remoteView({ ...UP, gone: false }, "Studio", "connected", true), { kind: "none" });
+  // the tree decides, not the entry's state: its event comes in no fixed order with the tree's
+  assert.deepEqual(remoteView(UP, "Studio", "unreachable", false), { kind: "none" });
+  assert.deepEqual(remoteView(UP, "Studio", "unreachable", true), { kind: "none" });
 });
 
-test("remoteView: not connected with no thread", () => {
+test("remoteView: not connected with no thread says so with the entry's state, with or without a load error", () => {
   const err = { code: "server_unreachable", message: "Studio is not connected." };
-  assert.deepEqual(remoteView(R, "Studio", "unreachable", false, err),
-    { kind: "unreachable", text: "Studio is not connected. This chat shows again when it is back.", state: "Unreachable" });
-  assert.equal((remoteView(R, "Studio", "connecting", false, err) as { state: string }).state, "Connecting…");
+  const want = { kind: "unreachable", text: "Studio is not connected. This chat shows again when it is back.", state: "Unreachable" };
+  assert.deepEqual(remoteView(DOWN, "Studio", "unreachable", false, err), want);
+  assert.deepEqual(remoteView(DOWN, "Studio", "unreachable", false), want, "no load is made while the server is not connected: no error is waited for");
+  assert.deepEqual(remoteView(DOWN, "Studio", "unreachable", false, { code: "no_answer", message: "Studio did not answer." }), want, "whatever the load said");
+  assert.equal((remoteView(DOWN, "Studio", "connecting", false, err) as { state: string }).state, "Connecting…");
+  for (const state of ["connecting", "unreachable", "secret_not_accepted", "certificate_changed", "too_old"] as ServerState[])
+    assert.deepEqual(remoteView(DOWN, "Studio", state, false), { kind: "unreachable", text: unreachableText("Studio"), state: stateLabel(state) }, state);
+  // the entry's state came before its tree: it is connecting, as its section says, never "is not connected … Connected"
+  assert.deepEqual(remoteView(DOWN, "Studio", "connected", false), { kind: "unreachable", text: unreachableText("Studio"), state: "Connecting…" });
   // an entry the list no longer has
-  assert.deepEqual(remoteView(R, "Unknown server", undefined, false, err),
+  assert.deepEqual(remoteView(DOWN, "Unknown server", undefined, false, err),
     { kind: "unreachable", text: "Unknown server is not connected. This chat shows again when it is back.", state: "" });
 });
 
-test("remoteView: gone, by the load's code or the view's mark", () => {
+test("remoteView: gone, by the load's code not_found or the page's mark", () => {
+  assert.equal(NOT_FOUND, "not_found");
   const gone = { kind: "gone", text: "This chat is no longer on Studio." };
-  assert.deepEqual(remoteView(R, "Studio", "connected", false, { code: "gone_there", message: "This chat is no longer on Studio." }), gone);
-  assert.deepEqual(remoteView({ ...R, gone: true }, "Studio", "connected", false), gone);
-  assert.deepEqual(remoteView({ ...R, gone: true }, "Studio", "unreachable", false, { code: "server_unreachable", message: "x" }), gone);
+  assert.deepEqual(remoteView(UP, "Studio", "connected", false, { code: "not_found", message: "chat not found" }), gone, "the sentence is the page's, not the server's");
+  assert.deepEqual(remoteView({ ...UP, gone: true }, "Studio", "connected", false), gone);
+  assert.deepEqual(remoteView({ ...DOWN, gone: true }, "Studio", "unreachable", false, { code: "server_unreachable", message: "x" }), gone, "gone goes before not connected");
+  assert.deepEqual(remoteView(DOWN, "Studio", "unreachable", false, { code: "not_found", message: "x" }), gone);
 });
 
-test("remoteView: a thread on screen stays, with a bar", () => {
-  assert.deepEqual(remoteView(R, "Studio", "unreachable", true), { kind: "bar", text: "Studio is not connected.", gone: false });
-  assert.deepEqual(remoteView(R, "Studio", "secret_not_accepted", true, { message: "x" }), { kind: "bar", text: "Studio is not connected.", gone: false });
-  assert.deepEqual(remoteView({ ...R, gone: true }, "Studio", "connected", true), { kind: "bar", text: "This chat is no longer on Studio.", gone: true });
+test("remoteView: gone_there is no code any more: such a load is a failed load like another", () => {
+  assert.deepEqual(remoteView(UP, "Studio", "connected", false, { code: "gone_there", message: "This chat is no longer on Studio." }), { kind: "failed", text: "This chat is no longer on Studio." });
+  assert.deepEqual(remoteView(UP, "Studio", "connected", true, { code: "gone_there", message: "x" }), { kind: "none" });
+  assert.ok(!src("logic/remoteview.ts").includes("gone_there"));
+});
+
+test("remoteView: a thread on screen stays, read-only, under a warning that says the entry's state in the server list's words", () => {
+  const away = { kind: "bar", text: "Studio is not connected. This chat is shown as it was when the connection ended.", gone: false };
+  assert.deepEqual(remoteView(DOWN, "Studio", "unreachable", true), { ...away, state: "Unreachable" });
+  assert.deepEqual(remoteView(DOWN, "Studio", "secret_not_accepted", true, { message: "x" }), { ...away, state: "Secret not accepted" }, "whatever the last load said");
+  // a server that was replaced by an older one, and a state that waits for the user: waiting mends neither, and the warning says which it is
+  assert.deepEqual(remoteView(DOWN, "Studio", "too_old", true), { ...away, state: "Too old: update the server on that machine" });
+  assert.deepEqual(remoteView(DOWN, "Studio", "certificate_changed", true), { ...away, state: "Certificate changed" });
+  assert.deepEqual(remoteView(DOWN, "Studio", "connecting", true), { ...away, state: "Connecting…" });
+  assert.deepEqual(remoteView(DOWN, "Studio", undefined, true), { ...away, state: "" }, "an entry the list no longer has");
+  for (const state of ["connecting", "unreachable", "secret_not_accepted", "fingerprint_not_accepted", "certificate_changed", "certificate_not_accepted", "name_not_known", "not_aiwb", "too_old", "another_server"] as ServerState[])
+    assert.equal(stateSaid(state), stateLabel(state), `${state}: the server list's own words`);
+  assert.equal(stateSaid("connected"), "Connecting…");
+  assert.equal(stateSaid(undefined), "");
+  const gone = { kind: "bar", text: "This chat is no longer on Studio.", gone: true };
+  assert.deepEqual(remoteView({ ...UP, gone: true }, "Studio", "connected", true), gone);
+  assert.deepEqual(remoteView({ ...DOWN, gone: true }, "Studio", "unreachable", true), gone, "gone goes before not connected");
+  assert.deepEqual(remoteView(UP, "Studio", "connected", true, { code: "not_found", message: "chat not found" }), gone, "a read answered not_found");
 });
 
 test("remoteView: a load that failed while the server is connected shows the server's sentence", () => {
-  assert.deepEqual(remoteView(R, "Studio", "connected", false, { code: "no_answer", message: "Studio did not answer." }), { kind: "failed", text: "Studio did not answer." });
+  assert.deepEqual(remoteView(UP, "Studio", "connected", false, { code: "no_answer", message: "Studio did not answer." }), { kind: "failed", text: "Studio did not answer." });
+  assert.deepEqual(remoteView(UP, "Studio", "connected", false, { message: "boom" }), { kind: "failed", text: "boom" });
+  assert.deepEqual(remoteView(UP, "Studio", "connected", true, { message: "boom" }), { kind: "none" }, "a thread that is kept stays");
 });
 
-test("offersLocalOnly: for a gone chat, and after a delete answered 503", () => {
-  assert.equal(offersLocalOnly(R), false);
-  assert.equal(offersLocalOnly({ ...R, gone: true }), true);
-  assert.equal(offersLocalOnly(R, new ApiError(503, "Studio is not connected.", true, "server_unreachable")), true);
-  assert.equal(offersLocalOnly(R, new ApiError(503, "Service Unavailable", false)), true);
-  // no answer, the refusal of "this sidebar only", any other error
-  assert.equal(offersLocalOnly(R, new ApiError(504, "Studio did not answer.", true, "no_answer")), false);
-  assert.equal(offersLocalOnly(R, new ApiError(409, "the server is connected: delete the chat there", true, "server_connected")), false);
-  assert.equal(offersLocalOnly(R, new Error("network")), false);
-  // never for a chat of this computer
-  assert.equal(offersLocalOnly({}, new ApiError(503, "x", true, "server_unreachable")), false);
-  assert.equal(offersLocalOnly({ gone: true }), false);
+test("the chat view reads the three from the chat's key, the section's tree and the page's mark", () => {
+  const view = src("ChatView.tsx");
+  assert.ok(view.includes("const remote = remoteView({ remote: inSection(chatId), connected, gone }, serverIs, state, !!loaded || !!wait.kept, loadErr);"));
+  assert.ok(view.includes("const connected = useStore((s) => serverConnected(s, server));"));
+  assert.ok(view.includes("const gone = useStore((s) => !!s.gone[chatId]);"));
+  assert.ok(view.includes("{!remote.gone && <button type=\"button\" className=\"link remote-servers\" onClick={() => openServers()}>{SERVERS}</button>}"));
 });
 
 test("deleteAsk: the dialog a chat's Delete opens", () => {
-  assert.deepEqual(deleteAsk({}, "Notes", "This computer"), { title: "Delete Notes?", body: "Its history is removed. This can't be undone.", action: "Delete", local: false });
-  assert.deepEqual(deleteAsk(R, "Notes", "Studio"), { title: "Delete Notes?", body: "Its history is removed on Studio. This can't be undone.", action: "Delete", local: false });
-  assert.deepEqual(deleteAsk({ ...R, gone: true }, "Notes", "Studio"),
-    { title: "Remove Notes from this sidebar?", body: "This chat is no longer on Studio.", action: REMOVE_ONLY, local: true });
+  assert.deepEqual(deleteAsk("Notes"), { title: "Delete Notes?", body: "Its history is removed. This can't be undone." });
+  assert.deepEqual(deleteAsk("Notes", ""), { title: "Delete Notes?", body: "Its history is removed. This can't be undone." });
+  assert.deepEqual(deleteAsk("Notes", "Studio"), { title: "Delete Notes?", body: "Its history is removed on Studio, for everyone who uses that server. This can't be undone." });
+  // the sidebar names the server of a section's chat alone
+  const side = src("Sidebar.tsx");
+  assert.ok(side.includes('const there = (key: string): string => (inSection(key) ? serverName(getState(), serverOfKey(key)) : "");'));
+  assert.ok(side.includes("const ask = deleteAsk(chatTitle(c, threadOf(getState(), c.id)?.items), there(c.id));"));
 });
 
-test("deleteRefused: what follows a refused delete", () => {
-  assert.deepEqual(deleteRefused(R, "Notes", "Studio", new ApiError(503, "Studio is not connected.", true, "server_unreachable")), {
-    title: "Remove Notes from this sidebar?",
-    body: "Studio is not connected. The chat was not deleted. Removing it from this sidebar leaves the chat on Studio.",
-    action: "Remove from this sidebar only", local: true,
-  });
-  assert.equal(deleteRefused(R, "Notes", "Studio", new ApiError(504, "Studio did not answer.", true, "no_answer")), null);
-  assert.equal(deleteRefused(R, "Notes", "Studio", new ApiError(409, "the server is connected: delete the chat there", true, "server_connected")), null);
-  assert.equal(deleteRefused({}, "Notes", "This computer", new ApiError(503, "x", true)), null);
-  assert.equal(deleteRefused({ ...R, gone: true }, "Notes", "Studio", new ApiError(503, "x", true)), null);
+test("a chat is deleted on its server or not at all: nothing offers to remove it from this sidebar only", () => {
+  const logic = src("logic/remoteview.ts"), side = src("Sidebar.tsx");
+  for (const gone of ["REMOVE_ONLY", "offersLocalOnly", "deleteRefused", "staysText", "this sidebar"]) {
+    assert.ok(!logic.includes(gone), `logic/remoteview.ts has ${gone}`);
+    assert.ok(!side.includes(gone), `Sidebar.tsx has ${gone}`);
+  }
+  assert.deepEqual(Object.keys(deleteAsk("Notes", "Studio")).sort(), ["body", "title"], "no action of its own and no `local`");
 });

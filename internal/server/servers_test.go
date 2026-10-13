@@ -24,8 +24,7 @@ const (
 )
 
 // withServers gives the server a list in a folder of its own, as serve does: its events go to the
-// bridge, and the app's snapshot reads it. An entry other than the local one counts 2 chats and
-// 1 run.
+// bridge, and the app's snapshot reads it.
 func withServers(t *testing.T) (func(*Server), *string) {
 	root := t.TempDir()
 	return func(s *Server) {
@@ -35,12 +34,6 @@ func withServers(t *testing.T) (func(*Server), *string) {
 		m, err := servers.Open(servers.Options{Root: root, LocalID: testLocalID, Version: "test", Notify: s.Bridge.Broadcast, Timing: quick})
 		if err != nil {
 			t.Fatal(err)
-		}
-		m.Counts = func(id string) (int, int) {
-			if id == servers.LocalID {
-				return 0, 0
-			}
-			return 2, 1
 		}
 		t.Cleanup(m.Close)
 		s.Servers, s.App.Servers = m, m
@@ -245,14 +238,10 @@ func TestServerRoutes(t *testing.T) {
 	}
 	e.expect(404, "PATCH", "/api/servers/"+noSuchServer, form("name", "x"))
 
-	// Items: the counts this app keeps for the entry.
-	if got := e.expect(200, "GET", "/api/servers/"+id+"/items", ""); strings.TrimSpace(got) != `{"chats":2,"runs":1}` {
-		t.Fatalf("items: %s", got)
+	// Nothing of an entry is counted: this app keeps nothing of a server's things.
+	for _, of := range []string{id, "local", noSuchServer} {
+		e.expect(404, "GET", "/api/servers/"+of+"/items", "")
 	}
-	if got := e.expect(200, "GET", "/api/servers/local/items", ""); strings.TrimSpace(got) != `{"chats":0,"runs":0}` {
-		t.Fatalf("items of the local entry: %s", got)
-	}
-	e.expect(404, "GET", "/api/servers/"+noSuchServer+"/items", "")
 
 	// The test of a saved entry: as stored, and with a field of the form in its place.
 	r = decode[servers.Result](t, e.expect(200, "POST", "/api/servers/"+id+"/test", ""))
@@ -318,7 +307,7 @@ func TestServerRoutesWithoutAManager(t *testing.T) {
 	}
 	for _, c := range [][2]string{
 		{"POST", "/api/servers"}, {"PATCH", "/api/servers/local"}, {"DELETE", "/api/servers/local"},
-		{"GET", "/api/servers/local/items"}, {"POST", "/api/servers/test"},
+		{"POST", "/api/servers/test"},
 		{"POST", "/api/servers/local/test"}, {"POST", "/api/servers/local/accept"},
 	} {
 		e.expect(404, c[0], c[1], "{}")
@@ -361,11 +350,9 @@ func TestServerRoutesNeedAClient(t *testing.T) {
 	if l := e.serverList(); len(l.Servers) != 2 || l.Servers[1].Name != "Kept" || l.Servers[1].Pin != "" {
 		t.Fatalf("list: %+v", l)
 	}
-	// The reads need no header.
-	for _, path := range []string{"/api/servers", "/api/servers/" + kept + "/items"} {
-		if code, out := e.doAs("", "GET", path, ""); code != 200 {
-			t.Fatalf("GET %s without a client: %d %s", path, code, out)
-		}
+	// The read needs no header.
+	if code, out := e.doAs("", "GET", "/api/servers", ""); code != 200 {
+		t.Fatalf("GET /api/servers without a client: %d %s", code, out)
 	}
 }
 
@@ -401,7 +388,6 @@ func TestNoAnswerOrEventHoldsTheSecret(t *testing.T) {
 		t.Helper()
 		call("GET", "/api/servers", "")
 		call("GET", "/api/state", "")
-		call("GET", "/api/servers/"+id+"/items", "")
 	}
 	full := []any{"name", "Studio", "address", st.URL(), "secret", standin.DefaultSecret, "selfSigned", true, "pin", fp}
 
@@ -563,8 +549,8 @@ func TestServersAnswer404OnRemoteHandler(t *testing.T) {
 		wantReply(t, remoteDo(h, method, path, testHost, testSecret), p, 404, "")
 		wantReply(t, remoteDo(h, method, strings.ReplaceAll(path, id, servers.LocalID), testHost, testSecret), p, 404, "")
 	}
-	if n != 8 {
-		t.Fatalf("%d list routes registered, want 8", n)
+	if n != 7 {
+		t.Fatalf("%d list routes registered, want 7", n)
 	}
 	if l := e.serverList(); len(l.Servers) != 2 {
 		t.Fatalf("list after the calls: %+v", l)

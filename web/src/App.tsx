@@ -2,9 +2,9 @@
 // the selected board or run (with its chat panel, which beside a run also shows the
 // transcripts of the run's own agents), the selected plain chat, or the home screen.
 import React, { useEffect } from "react";
-import { useStore, setState, getState, viewedBranch, closeRunAgent } from "./store.ts";
+import { useStore, setState, getState, viewedBranch, closeRunAgent, groupsOn } from "./store.ts";
+import { sectionName } from "./logic/serverlists.ts";
 import { Sidebar, newChat, addBoard, newRun, openBoard, setSideHidden } from "./Sidebar.tsx";
-import { BoardChoice } from "./BoardChoice.tsx";
 import { ChatHeader, Thread } from "./ChatView.tsx";
 import { Composer, focusComposer } from "./Composer.tsx";
 import { Canvas } from "./Canvas.tsx";
@@ -14,7 +14,6 @@ import { isDraft } from "./logic/run.ts";
 import { runPane } from "./logic/runview.ts";
 import { homeAgentsText, usableAgents } from "./logic/agentlist.ts";
 import { BoardIcon, ChatIcon, RunIcon, SideIcon } from "./icons.tsx";
-import { BoardTag } from "./BoardTag.tsx";
 import { RunBar } from "./run/RunBar.tsx";
 import { RunComposer } from "./run/RunComposer.tsx";
 import { RunView } from "./run/RunView.tsx";
@@ -27,6 +26,8 @@ import { LibraryPopups, useInsertPopup } from "./Library.tsx";
 import { isSideKey, sideKeyName, sideNotice, type Pane as PaneKind } from "./logic/layout.ts";
 import { branchKey } from "./logic/branches.ts";
 import { isNewChatKey, newChatPlace } from "./logic/newchatwhere.ts";
+import { reachable } from "./logic/sections.ts";
+import { serverOfKey } from "./logic/keys.ts";
 import { MAIN, UNGROUPED } from "./types.ts";
 
 export function App() {
@@ -49,7 +50,7 @@ export function App() {
       if (s.confirm || s.serversDialog || s.libraryDialog || s.insertPopup || s.treeNav) return;
       e.preventDefault(); e.stopPropagation();
       if (e.repeat) return;
-      const where = newChatPlace(s);
+      const where = newChatPlace({ sel: s.sel, chats: s.chats, boards: s.boards, runs: s.runs, groups: [...s.groups, ...Object.values(s.sections).flatMap((x) => x.groups)], reachable: (key) => reachable(s, key) });
       if (where) void newChat(where);
     };
     window.addEventListener("keydown", k, true);
@@ -84,13 +85,10 @@ function Grouped() {
   const panel = useStore((s) => s.panel);
   const runAgent = useStore((s) => s.runAgent);
   const connecting = useStore((s) => s.role === "connecting" && !s.connected);
-  const draft = useStore((s) => s.boardDraft);
   const sideHidden = useStore((s) => s.sideHidden);
 
   let main: React.ReactNode;
-  if (draft) {
-    main = <BoardChoice draft={draft} />; // a new board whose server is not chosen yet; what is selected shows again when it is left
-  } else if (board) {
+  if (board) {
     const boardChat = chat && chat.board === board.id ? chat : undefined;
     main = (
       <>
@@ -188,7 +186,9 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
   const b = useStore((s) => s.boards[board]);
   const all = useStore((s) => s.chats);
   const showArchived = useStore((s) => s.showArchived);
-  const groups = useStore((s) => s.groups);
+  const groups = useStore((s) => groupsOn(s, serverOfKey(board))); // the board's path is in the groups of its own server
+  const section = useStore((s) => sectionName(s, board)); // the server of a section's board, before its path
+  const can = useStore((s) => reachable(s, board)); // a board whose server is not connected, or no longer has it, takes no new chat
   const selChat = useStore((s) => s.sel.chat);
   if (!b) return null;
   const chats = boardChats(all, board, showArchived);
@@ -198,7 +198,7 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
   };
   return (
     <div className="board-bar">
-      <span className="board-crumb">{groupPath(groups, b.group).map((name, i) => <React.Fragment key={i}>{name} <span className="sep">/</span> </React.Fragment>)}<BoardIcon /> <b>{b.name}</b><BoardTag board={b} /></span>
+      <span className="board-crumb">{[...(section ? [section] : []), ...groupPath(groups, b.group)].map((name, i) => <React.Fragment key={i}>{name} <span className="sep">/</span> </React.Fragment>)}<BoardIcon /> <b>{b.name}</b></span>
       {b.archived && <span className="archived-note">Archived — read-only</span>}
       <span className="grow" />
       {!chatOpen && chats.length > 0 && (
@@ -206,7 +206,7 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
           Chats <span className="pill">{chats.length}</span>
         </button>
       )}
-      {!b.archived && (
+      {!b.archived && can && (
         <button className="btn sm" onClick={() => void newChat({ board })}>+ Chat on this board</button>
       )}
     </div>

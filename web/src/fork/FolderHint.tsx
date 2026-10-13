@@ -21,9 +21,8 @@ function allStates(chats: Record<string, ChatView>, states: State["states"]): Br
 export function TreeFolderHint({ chatId }: { chatId: string }) {
   const chats = useStore((s) => s.chats);
   const states = useStore((s) => s.states);
-  const runs = useStore((s) => s.runs);
   const cwd = useStore((s) => stateOf(s.states, s.chats[chatId], viewedBranch(s, chatId))?.cwd ?? s.chats[chatId]?.cwd);
-  const fa = useMemo(() => folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId, runs }), [chats, states, cwd, chatId, runs]);
+  const fa = useMemo(() => folderAgents({ chats, states: allStates(chats, states), cwd, chat: chatId }), [chats, states, cwd, chatId]);
   if (fa.total < 2 || !cwd) return null;
   return (
     <span className="fk-folder-agents" title={cwd}>

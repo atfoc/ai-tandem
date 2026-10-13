@@ -717,7 +717,7 @@ func TestForkWhileSubagentRuns(t *testing.T) {
 	}
 	e.delivery("delivered to the source", id, sa.ID, model.SubSent)
 	if len(fa.sent()) != 0 {
-		t.Fatalf("the fork's agent was sent %q", fa.sent())
+		t.Fatalf("the fork's agent was sent %+v", fa.sent())
 	}
 	e.send(f.ID, "hello fork", "")
 	// The fork's agent is told once that the subagent does not run here; no result comes.

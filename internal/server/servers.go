@@ -134,18 +134,6 @@ func (s *Server) serverRoutes(mux interface {
 		}
 		ok(w)
 	}))
-	mux.HandleFunc("GET /api/servers/{id}/items", with(func(m *servers.Manager, w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if _, found := m.View(id); !found {
-			serverFail(w, servers.ErrNotFound, "")
-			return
-		}
-		chats, runs := 0, 0
-		if m.Counts != nil {
-			chats, runs = m.Counts(id)
-		}
-		writeJSON(w, map[string]int{"chats": chats, "runs": runs})
-	}))
 	mux.HandleFunc("POST /api/servers/test", with(func(m *servers.Manager, w http.ResponseWriter, r *http.Request) {
 		limitBody(w, r)
 		var in serverForm

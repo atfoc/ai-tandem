@@ -20,7 +20,7 @@ export const isNone = (e: unknown): boolean => typeof e === "object" && e !== nu
  * version, the report of an attempt that has its result). What can still change is asked for again
  * every time: a running attempt's changes, and the absence of a text (a 404). A failure is never
  * kept. At most `max` answers are kept, and a run's go when the run is left (drop) or its server
- * is back (`server_back`, conn.ts forgetRun). Callers that ask for the same key while its request
+ * is back (its section's tree arrives: conn.ts forgetRun). Callers that ask for the same key while its request
  * runs share that request.
  *
  * A view holds its own copy of the answer it shows (open, or the answer of its load), so a drop

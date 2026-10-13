@@ -1,76 +1,65 @@
-// A chat on another server (an entry of the server list) where its thread is, and in the delete
+// A chat of a section (a remote server of the server list) where its thread is, and in the delete
 // dialog: what is shown while that server is not connected, and when the chat is no longer on it.
 // DOM-free.
-import type { ChatView } from "../types.ts";
 import { stateLabel, type ServerState } from "./servers.ts";
 import { notConnected } from "./status.ts";
 import type { ThreadError } from "./serverlists.ts";
 
-export const REMOVE = "Remove from this sidebar";
-export const REMOVE_ONLY = "Remove from this sidebar only";
 export const SERVERS = "Servers…";
 export const TRY_AGAIN = "Try again";
 
-/** The code of a call the remote server answered "no such chat" to. */
-const GONE_THERE = "gone_there";
+/** The code of a call whose chat, run, board or group is not on its server (any more). */
+export const NOT_FOUND = "not_found";
 
 export const goneText = (name: string): string => `This chat is no longer on ${name}.`;
 export const unreachableText = (name: string): string => `${notConnected(name)}. This chat shows again when it is back.`;
-export const staysText = (name: string): string => `Removing it from this sidebar leaves the chat on ${name}.`;
+/** The warning over a chat that is on screen while its server is not connected. */
+export const awayText = (name: string): string => `${notConnected(name)}. This chat is shown as it was when the connection ended.`;
 
-type Remote = Pick<ChatView, "server" | "gone">;
+/** What these read of a thing: whether it is of a section, whether its server takes a call now (the local server
+ *  holds its tree), and whether the page knows that the thing is no longer on its server (it was removed there, or
+ *  was not in the tree that came back). */
+export type Remote = { remote: boolean; connected: boolean; gone?: boolean };
 
-/** What a remote chat shows where its thread is.
+/** The server list's words for the state of an entry that is not connected, as the view of one of its things says
+ *  them after its own sentence: why it is not ("Unreachable", "Too old: update the server on that machine",
+ *  "Certificate changed", any state that waits for the user), which the sentence alone does not tell. An entry whose
+ *  state is connected while the local server holds no tree of it yet is connecting, as its section says. "" for an
+ *  entry the list lacks. */
+export const stateSaid = (state: ServerState | undefined): string => (state ? stateLabel(state === "connected" ? "connecting" : state) : "");
+
+/** What a section's chat shows where its thread is.
  *  none: the thread as usual (always for a chat of this computer, and while a load runs).
- *  unreachable: no thread is kept and its load failed while the server is not connected: the
- *    sentence, the entry's state (`state`, "" for an entry the list lacks) and "Servers…".
- *  gone: no thread is kept and the chat is no longer there: the sentence and "Remove from this sidebar".
+ *  unreachable: no thread is kept while the server is not connected: the sentence, the entry's
+ *    state (`state`: stateSaid) and "Servers…".
+ *  gone: no thread is kept and the chat is no longer there: the sentence.
  *  failed: no thread is kept and its load failed for another reason: the server's sentence and "Try again".
- *  bar: the thread kept stays on screen, with a bar above the composer; `gone` when the bar says
- *    the chat is no longer there (it then has the remove button). */
+ *  bar: the thread kept stays on screen, read-only, under a warning above the composer; `gone`
+ *    when it says that the chat is no longer there, else that the server is not connected, with
+ *    the entry's state (`state`: stateSaid) and "Servers…". */
 export type RemoteView =
   | { kind: "none" }
   | { kind: "unreachable"; text: string; state: string }
   | { kind: "gone"; text: string }
   | { kind: "failed"; text: string }
-  | { kind: "bar"; text: string; gone: boolean };
+  | { kind: "bar"; text: string; gone: boolean; state?: string };
 
 const NONE: RemoteView = { kind: "none" };
 
-export function remoteView(c: Remote, name: string, state: ServerState | undefined, hasThread: boolean, err?: ThreadError): RemoteView {
-  if (!c.server) return NONE;
-  const connected = state === "connected";
-  const gone = !!c.gone || err?.code === GONE_THERE;
-  if (hasThread) return gone ? { kind: "bar", text: goneText(name), gone: true } : connected ? NONE : { kind: "bar", text: `${notConnected(name)}.`, gone: false };
+export function remoteView(at: Remote, name: string, state: ServerState | undefined, hasThread: boolean, err?: ThreadError): RemoteView {
+  if (!at.remote) return NONE;
+  const gone = !!at.gone || err?.code === NOT_FOUND;
+  if (hasThread) return gone ? { kind: "bar", text: goneText(name), gone: true } : at.connected ? NONE : { kind: "bar", text: awayText(name), gone: false, state: stateSaid(state) };
   if (gone) return { kind: "gone", text: goneText(name) };
-  if (!err) return NONE;
-  return connected ? { kind: "failed", text: err.message } : { kind: "unreachable", text: unreachableText(name), state: state ? stateLabel(state) : "" };
+  if (!at.connected) return { kind: "unreachable", text: unreachableText(name), state: stateSaid(state) };
+  return err ? { kind: "failed", text: err.message } : NONE;
 }
 
-/** Whether "Remove from this sidebar only" is offered for a chat: it is on another server and is
- *  gone, or its delete was answered 503 (`server_unreachable`: nothing was sent). Never for a chat
- *  of this computer, and not after another refusal (no answer, a 409). */
-export function offersLocalOnly(c: Remote, err?: unknown): boolean {
-  if (!c.server) return false;
-  if (c.gone) return true;
-  const e = err as { status?: unknown; code?: unknown } | null | undefined;
-  return e?.status === 503 || e?.code === "server_unreachable";
-}
+/** A dialog about deleting a chat or a run. */
+export type DeleteAsk = { title: string; body: string };
 
-/** A dialog about deleting a chat. local: its one action removes this sidebar's record only. */
-export type DeleteAsk = { title: string; body: string; action: string; local: boolean };
-
-/** The dialog the row's Delete (or, for a gone chat, "Remove from this sidebar") opens. */
-export function deleteAsk(c: Remote, title: string, name: string): DeleteAsk {
-  if (offersLocalOnly(c)) return { title: `Remove ${title} from this sidebar?`, body: goneText(name), action: REMOVE_ONLY, local: true };
-  return { title: `Delete ${title}?`, body: c.server ? `Its history is removed on ${name}. This can't be undone.` : "Its history is removed. This can't be undone.", action: "Delete", local: false };
-}
-
-/** The dialog that follows a refused delete: the offer of this sidebar only, with the server's
- *  sentence and one saying the chat stays there; null when the refusal offers nothing (the
- *  dialog then shows the server's sentence, as for any error). */
-export function deleteRefused(c: Remote, title: string, name: string, err: unknown): DeleteAsk | null {
-  if (c.gone || !offersLocalOnly(c, err)) return null;
-  const said = err instanceof Error && err.message ? err.message : `${notConnected(name)}.`;
-  return { title: `Remove ${title} from this sidebar?`, body: `${said} The chat was not deleted. ${staysText(name)}`, action: REMOVE_ONLY, local: true };
+/** The dialog the row's Delete opens. name: the server's, "" for a chat of this computer. A chat of a section is
+ *  deleted on its server, for its owner and every client of it. */
+export function deleteAsk(title: string, name = ""): DeleteAsk {
+  return { title: `Delete ${title}?`, body: name ? `Its history is removed on ${name}, for everyone who uses that server. This can't be undone.` : "Its history is removed. This can't be undone." };
 }

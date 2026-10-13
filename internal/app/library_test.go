@@ -37,7 +37,7 @@ func TestLibraries(t *testing.T) {
 	}
 
 	// An API client gets this computer's library alone, without the notice.
-	api, err := json.Marshal(e.a.APISnapshot("0e5ac1f3-6d2b-4b7a-8f10-9a1b2c3d4e5f"))
+	api, err := json.Marshal(e.a.APISnapshot())
 	if err != nil || !strings.Contains(string(api), `"library":{"groups":[{"id":"`+g.ID+`","name":"git","parent":""}],"prompts":[{"id":"`) || strings.Contains(string(api), "notice") {
 		t.Fatalf("the API snapshot: %s, %v", api, err)
 	}
@@ -50,7 +50,7 @@ func TestLibraries(t *testing.T) {
 func TestNoLibrary(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	api, err := json.Marshal(e.a.APISnapshot("0e5ac1f3-6d2b-4b7a-8f10-9a1b2c3d4e5f"))
+	api, err := json.Marshal(e.a.APISnapshot())
 	if err != nil || !strings.Contains(string(api), `"library":null`) {
 		t.Fatalf("the API snapshot: %s, %v", api, err)
 	}

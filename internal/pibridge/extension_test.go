@@ -75,7 +75,7 @@ func TestMaterializeExtension(t *testing.T) {
 		t.Fatal("materialized index.ts differs from the embedded asset")
 	}
 
-	for _, rel := range []string{"index.ts", "protocol.ts", "mcp.ts", "mcp-wiring.ts", "permissions.ts", "subagent.ts", "test/protocol.test.ts", "test/mcp.test.ts", "test/mcp-wiring.test.ts"} {
+	for _, rel := range []string{"index.ts", "protocol.ts", "mcp.ts", "mcp-wiring.ts", "permissions.ts", "app-env.ts", "image-order.ts", "subagent.ts", "test/protocol.test.ts", "test/mcp.test.ts", "test/mcp-wiring.test.ts"} {
 		p := filepath.Join(dir, rel)
 		fi, err := os.Stat(p)
 		if err != nil {
@@ -119,6 +119,12 @@ func TestMCPWiringNode(t *testing.T) {
 // stripping. Skipped when node is not installed.
 func TestPermissionsNode(t *testing.T) {
 	runNodeTest(t, "permissions.test.ts")
+}
+
+// TestImageOrderNode runs the unit tests of the order of an attached image and the text in a
+// model request under Node's type stripping. Skipped when node is not installed.
+func TestImageOrderNode(t *testing.T) {
+	runNodeTest(t, "image-order.test.ts")
 }
 
 // TestSubagentNode runs the subagent-tool unit tests under Node's type

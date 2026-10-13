@@ -10,7 +10,6 @@ const SIDE = 264, HEIGHT = 640;
 const MORE = ".composer .more-chip", POP = ".composer .more-pop", ROW = ".composer .composer-tools";
 // What opens a popup: [name, the chip's selector under the row or the popup, the popup's selector under the composer]
 const OPENERS = [
-  ["the server's list", ".server-pick > button.tchip", ".server-pick > .menu.up"],
   ["the agent's list", 'button.tchip[title^="Agent"]', '.menu-wrap:has(> button.tchip[title^="Agent"]) > .menu.up'],
   ["the folder's browser", 'button.tchip[title^="Working directory"], button.tchip[title^="Folder on"]', ".menu.up.dirs"],
   ["the model's list", 'button.tchip[title^="Model"]', ".model-pick > .menu.up"],

@@ -659,7 +659,7 @@ func TestDeliveryOnBoardChat(t *testing.T) {
 
 	sent := parent.sent()
 	if len(sent) != 2 || len(sent[1]) != 2 {
-		t.Fatalf("sends %q", sent)
+		t.Fatalf("sends %+v", sent)
 	}
 	if sent[1][0].Text != prompts.BoardContext("Arch", bd.ID) {
 		t.Fatalf("first block %q", sent[1][0].Text)

@@ -1,15 +1,16 @@
-// The draft run's composer with a server (src/run/RunComposer.tsx): what it reads through the
-// run's server (logic/runserver.ts, logic/runcompose.ts) as pure functions, and its source for
-// what only the component holds.
+// The draft run's composer by the run's server (src/run/RunComposer.tsx): what it reads through the
+// server the run's key names (logic/runserver.ts, logic/runcompose.ts) as pure functions, and its
+// source for what only the component holds.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { GOAL_TOO_LONG, RUN_FIXED_UNCONFIRMED, changeFailure, keptRunStarts, movedRunStart, runFixed, runFolderChip, runHasChats, runLine, startErrorOld, startFailure, withRunStart,
+import { GOAL_TOO_LONG, changeFailure, keptRunStarts, runFixed, runFolderChip, runLine, startErrorOld, startFailure, withRunStart,
   type RunStart, type StartFacts } from "../src/logic/runcompose.ts";
-import { RUN_HAS_CHATS, RUN_START_UNCONFIRMED, runAgentReason, runDeleteRefused, runOffLine, runServerChoice, runStartBlock, runUnconfirmedLine, runWhere } from "../src/logic/runserver.ts";
-import { agentChoiceOn, folderStarts, folderTitle, tildeBy } from "../src/logic/chatserver.ts";
+import { runAgentReason, runGoneText, runOffLine, runStartBlock, runWhere } from "../src/logic/runserver.ts";
+import { agentChoiceOn, folderStarts, folderTitle, showsServer, tildeBy } from "../src/logic/chatserver.ts";
 import { catalogFor, usableAgents } from "../src/logic/agentlist.ts";
-import { listsOf, type ListsState } from "../src/logic/serverlists.ts";
+import { RUN_SERVER_FINAL, listsOf, serverConnected, type ListsState } from "../src/logic/serverlists.ts";
+import { serverOfKey } from "../src/logic/keys.ts";
 import { NOT_GIT, UNCOMMITTED } from "../src/logic/rungoal.ts";
 import { ApiError } from "../src/api.ts";
 import type { ServerView } from "../src/logic/servers.ts";
@@ -26,29 +27,22 @@ const state: ListsState = {
     s_1: { agents: ["pi"], catalogs: { pi: cat("studio-pi") }, home: "/home/u", defaultCwd: "/home/u/work" },
     s_2: { agents: ["claude"], catalogs: { claude: cat("mini") }, home: "/home/m", defaultCwd: "/home/m" },
   },
+  sections: { s_1: {} }, // the local server holds Studio's tree: it is connected. Mini's and Old's it does not hold
 };
-const local = runWhere(state, {}), studio = runWhere(state, { server: "s_1" }), mini = runWhere(state, { server: "s_2" });
+// The run r_1 of this computer, of the section Studio and of the section Mini: the same id on three servers.
+const local = runWhere(state, { id: "r_1" }), studio = runWhere(state, { id: "s_1~r_1" }), mini = runWhere(state, { id: "s_2~r_1" });
 const tildeOn = (server: string) => (p: string) => tildeBy(listsOf(state, server)?.home, p);
 const repo = { cwd: "/home/u/work/app", git: true, agent: "pi" as const };
 
-test("the server choice: every entry by name, this computer first, one that waits for the user disabled with its state", () => {
-  const { options, fixed } = runServerChoice(state.servers!, {}, false);
-  assert.equal(fixed, "");
-  assert.deepEqual(options.map((o) => o.label), ["This computer", "Studio", "Mini", "Old"]);
-  assert.deepEqual(options.map((o) => !!o.disabled), [false, false, false, true]);
-  assert.ok(options[3].reason, "the disabled entry says its state");
-});
-
-test("the server choice is fixed with its reason while the start is unconfirmed or the draft has chats", () => {
-  assert.equal(runServerChoice(state.servers!, { start: "unconfirmed" }, false).fixed, RUN_START_UNCONFIRMED);
-  assert.equal(runServerChoice(state.servers!, {}, true).fixed, RUN_HAS_CHATS);
-  assert.equal(runServerChoice(state.servers!, { start: "unconfirmed" }, true).fixed, RUN_START_UNCONFIRMED);
-});
-
-test("runHasChats: the user's chats on the run count, its own agents' and other runs' do not", () => {
-  assert.equal(runHasChats({}, "r_1"), false);
-  assert.equal(runHasChats({ a: { run: "r_2" }, b: { run: "r_1", role: "orchestrator" } as any, c: {} }, "r_1"), false);
-  assert.equal(runHasChats({ a: { run: "r_1" } }, "r_1"), true);
+test("the run's server is the one its key names, and is no choice: a section's run names it in a chip", () => {
+  assert.deepEqual(local, { server: "local", name: "This computer", connected: true });
+  assert.deepEqual(studio, { server: "s_1", name: "Studio", connected: true });
+  assert.deepEqual(mini, { server: "s_2", name: "Mini", connected: false });
+  assert.deepEqual([showsServer(local), showsServer(studio), showsServer(mini)], [false, true, true]);
+  assert.equal(RUN_SERVER_FINAL, "A run is on the server it was made on");
+  assert.ok(src.includes('{showsServer(w) && <span className={`tchip static server-chip ${w.connected ? "" : "off"}`} title={`Server — ${RUN_SERVER_FINAL}`}><ChipName full={`${w.name} — ${RUN_SERVER_FINAL}`}>{w.name}</ChipName></span>}'));
+  // no server is picked for a run that has not started, and none is sent with a change
+  for (const gone of ["runServerChoice", "serverOptions", "configure({ server", "hasChats", "Servers…", "openServers"]) assert.ok(!src.includes(gone), gone);
 });
 
 test("the agent choice, the catalog and the default folder are the run's server's (AC44, AC18)", () => {
@@ -82,13 +76,16 @@ test("the folder chip: ~ by the run's server's home, \" on <Name>\" for another 
   assert.equal(folderTitle(studio, "/home/u/work", { hint: "h" }), "Folder on Studio: /home/u/work — h");
 });
 
-test("the line under the box: the start's error, else not connected, else unconfirmed, else the folder's line", () => {
-  const all = { cwd: "/home/m/x", folderMissing: true, blocked: "Blocked.", dirty: true, start: "unconfirmed" as const };
+test("the line under the box: the start's error, else not connected, else the folder's line", () => {
+  const all = { cwd: "/home/m/x", folderMissing: true, blocked: "Blocked.", dirty: true };
   assert.deepEqual(runLine(mini, all, "The start failed."), { tone: "error", text: "The start failed." });
-  assert.deepEqual(runLine(mini, all, ""), { tone: "error", text: runOffLine("Mini") });
-  assert.deepEqual(runLine(studio, all, ""), { tone: "note", text: runUnconfirmedLine("Studio") });
-  assert.deepEqual(runLine(studio, { ...all, start: undefined, cwd: "/home/u/gone" }, "", tildeOn("s_1")),
+  assert.deepEqual(runLine(mini, all, ""), { tone: "error", text: "Mini is not connected: nothing can be changed or started until it is back." });
+  assert.equal(runOffLine("Mini"), "Mini is not connected: nothing can be changed or started until it is back.");
+  assert.deepEqual(runLine(studio, all, ""), { tone: "error", text: "Folder not found: /home/m/x. Pick another one." });
+  assert.deepEqual(runLine(studio, { ...all, cwd: "/home/u/gone" }, "", tildeOn("s_1")),
     { tone: "error", text: "Folder not found: ~/gone. Pick another one." });
+  // a view that still carried the mark of a start with no answer has no line of its own for it
+  assert.deepEqual(runLine(studio, { cwd: "/home/u/x", git: true, start: "unconfirmed" } as Parameters<typeof runLine>[1], ""), null);
   assert.deepEqual(runLine(studio, { cwd: "/home/u/x", blocked: "Studio cannot run runs: update it." }, ""), { tone: "error", text: "Studio cannot run runs: update it." });
   assert.deepEqual(runLine(studio, { cwd: "/home/u/x" }, ""), { tone: "note", text: NOT_GIT });
   assert.deepEqual(runLine(local, { cwd: "/x", git: true, dirty: true }, ""), { tone: "note", text: UNCOMMITTED });
@@ -102,24 +99,31 @@ test("Send is disabled by runStartBlock: a server that is not connected first", 
   assert.ok(runStartBlock(studio, { ...repo, folderMissing: true }, "goal"));
   assert.equal(runStartBlock(studio, { ...repo, blocked: "Studio cannot run runs: update it." }, "goal"), "Studio cannot run runs: update it.");
   assert.equal(runStartBlock(studio, repo, " "), "Type a goal first");
-  // a start that got no answer can be made again
-  assert.equal(runStartBlock(studio, { ...repo, start: "unconfirmed" } as any, "goal"), "");
+  // a run its server no longer has: the composer says that before anything else
+  assert.ok(src.includes("const block = left ? runGoneText(w.name) : runStartBlock(w, r, text, agentReason);"));
+  assert.ok(src.includes('const line = left ? { tone: "error" as const, text: runGoneText(w.name) } : runLine(w, r, err, tilde, agentReason);'));
+  assert.equal(runGoneText("Studio"), "This run is no longer on Studio.");
 });
 
-test("while the start is unconfirmed agent, folder, tiers and settings are fixed chips", () => {
-  assert.equal(runFixed({ start: "unconfirmed" }), RUN_FIXED_UNCONFIRMED);
-  assert.equal(runFixed({}), "");
+test("while its server is not connected, or once that server no longer has the run, agent, folder, tiers and settings are fixed chips", () => {
+  assert.equal(runFixed(mini), "Mini is not connected");
+  assert.equal(runFixed(studio), "");
+  assert.equal(runFixed(local), "");
+  assert.equal(runFixed({ ...local, connected: false }), "This computer is not connected", "by the Where alone: nothing of the run is read");
   for (const chip of ['data-fixed="agent" title={`Agent — ${fixed}`}', 'data-fixed="tiers" title={`Models — ${fixed}`}', 'data-fixed="settings" title={`Run settings — ${fixed}`}', "locked={!!fixed}"])
     assert.ok(src.includes(chip), chip);
-  assert.ok(src.includes("const fixed = runFixed(r);"));
+  assert.ok(src.includes("const fixed = left ? runGoneText(w.name) : runFixed(w);"));
+  assert.ok(src.includes("const left = useStore((s) => !!s.gone[r.id]);"));
+  // nor is the server asked for the folder and what blocks a start meanwhile
+  assert.ok(src.includes("useFresh(runId, w.connected && !left);"));
 });
 
-test("a refused start: the sentence, a 409 reads the run again, goal_kept is shown apart", () => {
-  assert.deepEqual(startFailure(new ApiError(504, "Studio did not answer: it is not known whether the run started. Start again: it starts only once.", true, "start_unconfirmed")),
-    { text: "Studio did not answer: it is not known whether the run started. Start again: it starts only once.", reread: false, kept: false });
-  assert.deepEqual(startFailure(new ApiError(409, "Folder not found: /x", true, "folder_missing")), { text: "Folder not found: /x", reread: true, kept: false });
-  const kept = "Studio had already started the run with the earlier goal; this text was not sent.";
-  assert.deepEqual(startFailure(new ApiError(409, kept, true, "goal_kept")), { text: kept, reread: true, kept: true });
+test("a refused start: the sentence, and a 409 reads the run again", () => {
+  assert.deepEqual(startFailure(new ApiError(504, "Studio did not answer.", true, "no_answer")), { text: "Studio did not answer.", reread: false });
+  assert.deepEqual(startFailure(new ApiError(503, "Studio is not connected.", true, "server_unreachable")), { text: "Studio is not connected.", reread: false });
+  assert.deepEqual(startFailure(new ApiError(409, "Folder not found: /x", true, "folder_missing")), { text: "Folder not found: /x", reread: true });
+  // (no refusal is shown apart from the others: what `goal_kept` once was is a 409 like another)
+  assert.deepEqual(Object.keys(startFailure(new ApiError(409, "x", true, "goal_kept"))).sort(), ["reread", "text"]);
   assert.equal(startFailure(new ApiError(413, "413 Request Entity Too Large", false)).text, GOAL_TOO_LONG);
   assert.equal(startFailure(new ApiError(413, "Too long, says the server.")).text, "Too long, says the server.");
   assert.equal(startFailure(new Error("Failed to fetch")).text, "Failed to fetch");
@@ -137,26 +141,23 @@ test("the component reads through the run's server", () => {
     "runStartBlock(w, r, text, agentReason)",
     "runLine(w, r, err, tilde, agentReason)",
     "runFolderChip(w, r, tilde)",
-    "runServerChoice(servers, r, hasChats)",
-    'more={{ label: "Servers…", onClick: () => openServers() }}',
-    "onPick={(id) => configure({ server: id })}",
     "answerRun(r.id, () => api.configureRun(r.id, p))",
-    "title={`Server — ${fixed}`}",
-    "const kept = await startRun(runId, goal);",
-    "if (kept) showGoalKept(kept, goal);",
+    "title={`Server — ${RUN_SERVER_FINAL}`}",
+    "await startRun(runId, goal);",
   ]) assert.ok(src.includes(part), part);
+  assert.ok(!src.includes("showGoalKept") && !actions.includes("GOAL_KEPT") && !actions.includes("f.kept") && !actions.includes("goal_kept"), "a start answers nothing but that it started");
   assert.ok(!src.includes("LOCAL_SERVER"), "nothing is read from this computer by name");
   assert.ok(!/tildify\(r\.cwd\)|usableAgents\(s\)/.test(src));
   // the text of a failed start is never taken out of the box: only a start that worked clears the unsaved goal
   assert.ok(!/unsavedRunDraft\([^)]*\)\.write\(null\)/.test(src));
   assert.equal(actions.split(".write(null)").length, 2);
-  assert.match(actions, /const started = await api\.startRun\(id, goal\);\s*unsavedRunDraft\(runNow\(id\)\)\.write\(null\);/);
+  assert.match(actions, /const started = await api\.startRun\(id, goal\);\s*unsavedRunDraft\(id\)\.write\(null\);/);
   assert.ok(!/input\.current\?\.set\(""\)/.test(src));
 });
 
-// ---- a draft on another server with no agent that can run it (the view's `blocked` says "this server")
+// ---- a draft of a section with no agent that can run it (the view's `blocked` says "this server")
 
-test("a draft on another server with no agent: the line and Send's title take the agent choice's reason before the view's `blocked`", () => {
+test("a draft of a section with no agent: the line and Send's title take the agent choice's reason before the view's `blocked`", () => {
   const blocked = "No agent can be used on this server: none of the programs of Claude Code, Cursor and pi was found.";
   const none = runAgentReason(studio, [], { agent: "" });
   assert.equal(none, "No agent is installed on Studio. Install Claude Code, Cursor or pi on that machine.");
@@ -177,106 +178,113 @@ test("a draft on another server with no agent: the line and Send's title take th
   assert.equal(runAgentReason(local, [], { agent: "" }), "");
   assert.equal(runAgentReason(mini, [], { agent: "" }), "");
   assert.deepEqual(runLine(local, { ...r, cwd: "/x" }, "", (p) => p, runAgentReason(local, [], r)), { tone: "error", text: blocked });
-  // what comes before it stays before it: the start's error, a folder that is gone, an unconfirmed start
+  // what comes before it stays before it: the start's error, a folder that is gone
   assert.equal(runLine(studio, r, "The start failed.", (p) => p, none)!.text, "The start failed.");
   assert.match(runLine(studio, { ...r, folderMissing: true }, "", (p) => p, none)!.text, /^Folder not found/);
   assert.equal(runStartBlock(studio, { ...r, folderMissing: true }, "goal", none), "Pick a folder that exists first");
-  assert.equal(runLine(studio, { ...r, start: "unconfirmed" }, "", (p) => p, none)!.text, runUnconfirmedLine("Studio"));
 });
 
 // ---- refusals the start route and a draft's PATCH and DELETE answer while the run is being started
 
 test("a start refused with run_changed, busy or a code the page does not know: the server's sentence once under the box, the goal kept", () => {
   const changed = "The run was changed while it was being started; it was not started on Studio.";
-  assert.deepEqual(startFailure(new ApiError(409, changed, true, "run_changed")), { text: changed, reread: true, kept: false });
-  assert.deepEqual(startFailure(new ApiError(409, "The run is being started.", true, "busy")), { text: "The run is being started.", reread: true, kept: false });
-  assert.deepEqual(startFailure(new ApiError(409, "Something new.", true, "a_code_of_tomorrow")), { text: "Something new.", reread: true, kept: false });
-  assert.deepEqual(startFailure(new ApiError(502, "Studio could not start the run.", true, "another_new_code")), { text: "Studio could not start the run.", reread: false, kept: false });
+  assert.deepEqual(startFailure(new ApiError(409, changed, true, "run_changed")), { text: changed, reread: true });
+  assert.deepEqual(startFailure(new ApiError(409, "The run is being started.", true, "busy")), { text: "The run is being started.", reread: true });
+  assert.deepEqual(startFailure(new ApiError(409, "Something new.", true, "a_code_of_tomorrow")), { text: "Something new.", reread: true });
+  assert.deepEqual(startFailure(new ApiError(502, "Studio could not start the run.", true, "another_new_code")), { text: "Studio could not start the run.", reread: false });
   // once: the sentence is the one line under the box, before anything the view says
-  const r = { cwd: "/home/u/x", git: true, blocked: "Blocked.", start: "unconfirmed" as const };
+  const r = { cwd: "/home/u/x", git: true, blocked: "Blocked." };
   assert.deepEqual(runLine(studio, r, changed), { tone: "error", text: changed });
+  assert.deepEqual(runLine(mini, r, changed), { tone: "error", text: changed }, "also before the server that is not connected");
   // kept: startRun puts the sentence in the store and takes nothing out of the box or of the unsaved goal
-  assert.match(actions, /setRunStart\(now, \{ starting: false, error: f\.kept \? "" : f\.text \}\);/);
-  assert.match(actions, /if \(f\.reread\) void refreshRun\(now\);/);
+  assert.match(actions, /setRunStart\(id, \{ starting: false, error: f\.text \}\);/);
+  assert.match(actions, /if \(f\.reread\) void refreshRun\(id\);/);
   const failed = actions.slice(actions.indexOf("} catch (e) {", actions.indexOf("export async function startRun")), actions.indexOf("/** Asks again while"));
   assert.doesNotMatch(failed, /unsavedRunDraft|write\(/);
 });
 
-test("a change (PATCH) or a delete of a draft refused 409 busy shows its sentence where the other refusals of that action show", () => {
+test("a change (PATCH) of a draft refused 409 busy shows its sentence where the other refusals of that action show", () => {
   const busy = new ApiError(409, "The run is being started.", true, "busy");
   // a change: the sentence, shown as any refused change's (under the box, or in the settings form), and the run is read again
+  assert.equal(changeFailure, startFailure, "a refused change leaves what a refused start leaves");
   assert.deepEqual(changeFailure(busy), { text: "The run is being started.", reread: true });
   assert.deepEqual(changeFailure(new ApiError(503, "Studio is not connected.", true, "server_unreachable")), { text: "Studio is not connected.", reread: false });
   assert.ok(src.includes("(e) => { onError(changeFailure(e).text); failed(e); }"));
   assert.ok(src.includes("const failed = (e: unknown) => { if (changeFailure(e).reread) void refreshRun(r.id); };"));
   assert.ok(src.includes("if (shown.current) setErr(e.message); else onError(e.message);"));
-  // a delete: no other dialog takes its place, so the delete dialog shows the sentence, as for any error
-  for (const connected of [true, false]) assert.equal(runDeleteRefused({ server: "s_1" }, "Tidy", "Studio", busy, connected), null);
-  assert.equal(runDeleteRefused({}, "Tidy", "This computer", busy, true), null);
 });
 
 // ---- the start's state is the store's, by run id (State.runStarts)
 
-const facts = (o: Partial<StartFacts> = {}): StartFacts => ({ cwd: "/home/u/x", server: "s_1", connected: true, ...o });
+const facts = (o: Partial<StartFacts> = {}): StartFacts => ({ cwd: "/home/u/x", connected: true, ...o });
 
-test("what the server said about a start is old when the run's folder, what blocks it, its server or its start mark changed, or its server is connected again", () => {
+test("what the server said about a start is old when the run's folder or what blocks it changed, or its server is connected again", () => {
   assert.equal(startErrorOld(facts(), facts()), false);
-  assert.equal(startErrorOld(facts({ folderMissing: false, blocked: "", start: undefined }), facts()), false, "absent and empty are the same");
+  assert.equal(startErrorOld(facts({ folderMissing: false, blocked: "" }), facts()), false, "absent and empty are the same");
+  assert.equal(startErrorOld(facts(), facts({ folderMissing: false, blocked: "" })), false);
   assert.equal(startErrorOld(facts(), facts({ cwd: "/home/u/y" })), true);
   assert.equal(startErrorOld(facts(), facts({ folderMissing: true })), true);
+  assert.equal(startErrorOld(facts({ folderMissing: true }), facts()), true);
   assert.equal(startErrorOld(facts(), facts({ blocked: "Blocked." })), true);
-  assert.equal(startErrorOld(facts(), facts({ server: "s_2" })), true);
-  assert.equal(startErrorOld(facts({ server: undefined }), facts({ server: "local" })), false);
-  // the start mark leaving "unconfirmed": a start that got no answer is known now, either way
-  assert.equal(startErrorOld(facts({ start: "unconfirmed" }), facts()), true);
-  // the mark becoming "unconfirmed" is not old: it says what the sentence of that start says, and its event can come after the start's answer (T128;
-  // T114 had this as old, which dropped the sentence in that order)
-  assert.equal(startErrorOld(facts(), facts({ start: "unconfirmed" })), false);
-  assert.equal(startErrorOld(facts({ start: undefined }), facts({ start: "unconfirmed" })), false);
-  assert.equal(startErrorOld(facts({ start: "unconfirmed" }), facts({ start: "unconfirmed" })), false);
-  assert.equal(startErrorOld(facts({ connected: false }), facts({ start: "unconfirmed" })), true, "with its server back the sentence is old all the same");
-  assert.equal(startErrorOld(facts(), facts({ start: "unconfirmed", cwd: "/home/u/y" })), true, "and with another folder");
+  assert.equal(startErrorOld(facts({ blocked: "Blocked." }), facts({ blocked: "Blocked otherwise." })), true);
   // the run's server: back, not away
   assert.equal(startErrorOld(facts({ connected: false }), facts()), true);
   assert.equal(startErrorOld(facts(), facts({ connected: false })), false);
+  assert.equal(startErrorOld(facts({ connected: false }), facts({ connected: false })), false);
+  assert.equal(startErrorOld(facts({ connected: false }), facts({ connected: false, cwd: "/home/u/y" })), true, "another folder, with the server still away");
+  // nothing else of the run is compared: neither a server (its key says it, and a key does not change) nor a start mark
+  assert.equal(startErrorOld(facts({ server: "s_1", start: "unconfirmed" } as Partial<StartFacts>), facts({ server: "s_2" } as Partial<StartFacts>)), false);
 });
 
-test("the starts by run id: set, cleared, moved to a draft's new id, and dropped when old", () => {
+test("the starts by run: set, cleared, and dropped when old", () => {
   const none: Record<string, RunStart> = {};
-  const going = withRunStart(none, "r_1", { starting: true, error: "" });
-  assert.deepEqual(going, { r_1: { starting: true, error: "" } });
-  assert.equal(withRunStart(going, "r_1", { starting: true }), going, "the map itself when nothing changes");
-  const failed = withRunStart(going, "r_1", { starting: false, error: "Studio did not answer." });
-  assert.deepEqual(failed, { r_1: { starting: false, error: "Studio did not answer." } });
-  assert.deepEqual(withRunStart(failed, "r_1", { error: "" }), {}, "nothing left to say: no entry");
-  assert.deepEqual(withRunStart(failed, "r_1", null), {});
-  assert.equal(withRunStart(none, "r_1", null), none);
-  assert.deepEqual(withRunStart(going, "r_1", { error: "x" }), { r_1: { starting: true, error: "x" } });
-  // a new id
-  assert.deepEqual(movedRunStart({ ...going, r_2: failed.r_1 }, "r_1", "r_9"), { r_2: failed.r_1, r_9: going.r_1 });
-  assert.equal(movedRunStart(going, "r_3", "r_9"), going);
-  assert.equal(movedRunStart(going, "r_1", "r_1"), going);
+  const going = withRunStart(none, "s_1~r_1", { starting: true, error: "" });
+  assert.deepEqual(going, { "s_1~r_1": { starting: true, error: "" } });
+  assert.equal(withRunStart(going, "s_1~r_1", { starting: true }), going, "the map itself when nothing changes");
+  const failed = withRunStart(going, "s_1~r_1", { starting: false, error: "Studio did not answer." });
+  assert.deepEqual(failed, { "s_1~r_1": { starting: false, error: "Studio did not answer." } });
+  assert.deepEqual(withRunStart(failed, "s_1~r_1", { error: "" }), {}, "nothing left to say: no entry");
+  assert.deepEqual(withRunStart(failed, "s_1~r_1", null), {});
+  assert.equal(withRunStart(none, "s_1~r_1", null), none);
+  assert.deepEqual(withRunStart(going, "s_1~r_1", { error: "x" }), { "s_1~r_1": { starting: true, error: "x" } });
+  // the run of this computer with the same id has a start of its own
+  assert.deepEqual(withRunStart(failed, "r_1", { starting: true }), { "s_1~r_1": failed["s_1~r_1"], r_1: { starting: true, error: "" } });
 
-  // what the store does whenever a run or the server list changes
-  const off = [entry("s_1", "Studio", "unreachable")], on = [entry("s_1", "Studio", "connected")];
-  const draft = { cwd: "/home/u/x", server: "s_1" };
-  const starts = { r_1: failed.r_1, r_2: going.r_1 };
-  const before = { runs: { r_1: draft, r_2: draft }, servers: on };
-  assert.equal(keptRunStarts(starts, before, before), starts);
-  assert.equal(keptRunStarts(starts, before, { runs: { r_1: { ...draft }, r_2: draft }, servers: on }), starts, "the same facts in another object");
-  // the T109 case: the red line of a start that got no answer goes when the start mark changes, and when the server is back
-  const lost = { runs: { r_1: { ...draft, start: "unconfirmed" as const }, r_2: draft }, servers: off };
-  assert.deepEqual(keptRunStarts(starts, lost, { ...lost, servers: on }), { r_2: going.r_1 }, "the server is connected again");
-  assert.deepEqual(keptRunStarts(starts, lost, { ...before, servers: off }), { r_2: going.r_1 }, "the start mark changed");
-  assert.equal(keptRunStarts(starts, { ...before, servers: on }, { ...before, servers: off }), starts, "a server that goes away drops nothing");
-  // the start's answer first, the mark's event second (T128): the sentence stays, and goes as in the other order
-  assert.equal(keptRunStarts(starts, { ...before, servers: off }, lost), starts, "the mark becomes what the sentence says");
-  assert.equal(keptRunStarts(starts, before, { ...lost, servers: on }), starts, "also on a server still shown connected");
-  assert.deepEqual(keptRunStarts(starts, before, { runs: { r_1: { ...draft, cwd: "/home/u/y" }, r_2: { ...draft, cwd: "/home/u/y" } }, servers: on }), { r_2: going.r_1 },
-    "a start on its way stays: its answer ends it");
-  // a run that is gone takes its start with it; one that is new under its id keeps what was moved to it
-  assert.deepEqual(keptRunStarts(starts, before, { runs: { r_1: draft }, servers: on }), { r_1: failed.r_1 });
-  assert.equal(keptRunStarts({ r_9: failed.r_1 }, before, { runs: { ...before.runs, r_9: { ...draft, start: "unconfirmed" } }, servers: on })["r_9"], failed.r_1);
+  // what the store does whenever a run or the sections change: r_1 failed, r_2 is on its way, both of the section s_1
+  const A = "s_1~r_1", B = "s_1~r_2";
+  const draft = { cwd: "/home/u/x" };
+  const starts = { [A]: failed[A], [B]: going[A] };
+  const runs = { [A]: draft, [B]: draft };
+  const up = { runs, connected: () => true }, down = { runs, connected: () => false };
+  assert.equal(keptRunStarts(starts, up, up), starts);
+  assert.equal(keptRunStarts(starts, up, { runs: { [A]: { ...draft }, [B]: draft }, connected: () => true }), starts, "the same facts in another object");
+  // the red line of a start that got no answer goes when the server is back
+  assert.deepEqual(keptRunStarts(starts, down, up), { [B]: going[A] }, "the server is connected again");
+  assert.equal(keptRunStarts(starts, up, down), starts, "a server that goes away drops nothing");
+  assert.equal(keptRunStarts(starts, down, down), starts, "nor one that stays away");
+  // connected is asked by run: the tree of another section coming back drops nothing of this one
+  const asked: string[] = [];
+  const other = { runs, connected: (run: string) => { asked.push(run); return serverOfKey(run) !== "s_1"; } };
+  assert.equal(keptRunStarts(starts, down, other), starts);
+  assert.deepEqual(asked, [A], "only for a run with a sentence to drop");
+  const changed = { [A]: { ...draft, cwd: "/home/u/y" }, [B]: { ...draft, cwd: "/home/u/y" } };
+  assert.deepEqual(keptRunStarts(starts, up, { runs: changed, connected: () => true }), { [B]: going[A] }, "a start on its way stays: its answer ends it");
+  assert.deepEqual(keptRunStarts(starts, up, { runs: { ...runs, [A]: { ...draft, blocked: "Blocked." } }, connected: () => true }), { [B]: going[A] });
+  // a run that is gone takes its start with it; one that is new under its key keeps what was set for it
+  assert.deepEqual(keptRunStarts(starts, up, { runs: { [A]: draft }, connected: () => true }), { [A]: failed[A] });
+  assert.deepEqual(keptRunStarts(starts, up, { runs: {}, connected: () => true }), {});
+  assert.equal(keptRunStarts({ "s_1~r_9": failed[A] }, up, { runs: { ...runs, "s_1~r_9": draft }, connected: () => true })["s_1~r_9"], failed[A]);
+});
+
+test("the store asks whether a run's server is connected by the run's key, against the sections before and after", () => {
+  const sections = { s_1: {} };
+  const at = (s: Record<string, unknown>) => (run: string) => serverConnected({ sections: s }, serverOfKey(run));
+  assert.deepEqual([at(sections)("s_1~r_1"), at(sections)("s_2~r_1"), at(sections)("r_1"), at({})("s_1~r_1"), at({})("r_1")], [true, false, true, false, true]);
+  const starts = { "s_1~r_1": { starting: false, error: "Studio is not connected." }, r_1: { starting: false, error: "Folder not found: /x" } };
+  const runs = { "s_1~r_1": { cwd: "/home/u/x" }, r_1: { cwd: "/x" } };
+  // the section's tree arrives: the sentence of the section's run goes, the local run's stays
+  assert.deepEqual(keptRunStarts(starts, { runs, connected: at({}) }, { runs, connected: at(sections) }), { r_1: starts.r_1 });
+  assert.equal(keptRunStarts(starts, { runs, connected: at(sections) }, { runs, connected: at({}) }), starts, "and nothing goes when the tree does");
 });
 
 test("the composer reads the start's state from the store and holds none of its own", () => {
@@ -288,6 +296,7 @@ test("the composer reads the start's state from the store and holds none of its 
   assert.ok(!/useState\(false\);\s*\/\/ starting|setStarting\(/.test(src));
   assert.doesNotMatch(src, /useEffect\(\(\) => \{ setErr\(""\); \}/, "the store drops a sentence that is old, not an effect of the composer");
   const store = readFileSync(new URL("../src/store.ts", import.meta.url), "utf8");
-  assert.match(store, /if \(p\.runs \|\| p\.servers\) \{\s*const from = p\.runStarts \?\? state\.runStarts;\s*const runStarts = keptRunStarts\(from, state, \{ runs: p\.runs \?\? state\.runs, servers: p\.servers \?\? state\.servers \}\);/);
-  assert.match(store, /runStarts: movedRunStart\(s\.runStarts, was, r\.id\)/);
+  assert.match(store, /if \(p\.runs \|\| p\.sections\) \{\s*const from = p\.runStarts \?\? state\.runStarts;\s*const at = \(sections: State\["sections"\]\) => \(run: string\) => serverConnected\(\{ sections \}, serverOfKey\(run\)\);\s*const runStarts = keptRunStarts\(from, \{ runs: state\.runs, connected: at\(state\.sections\) \}, \{ runs: p\.runs \?\? state\.runs, connected: at\(p\.sections \?\? state\.sections\) \}\);/);
+  // a run keeps its key from the moment it is made: no start is moved to another id
+  assert.ok(!store.includes("movedRunStart") && !readFileSync(new URL("../src/logic/runcompose.ts", import.meta.url), "utf8").includes("movedRunStart"));
 });

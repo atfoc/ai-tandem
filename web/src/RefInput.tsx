@@ -3,10 +3,12 @@
 // line breaks for the text, a non-editable <span> per reference carrying its
 // tag. Its value is the message text with the references as inline tags
 // (logic/refs.ts), so it goes to the server as is. ⌘P in it opens the insert
-// popup, which puts a text in at the caret (logic/insert.ts).
+// popup, which puts a text in at the caret (logic/insert.ts). Image files
+// pasted into a box that takes them are handed on, and are no part of its value.
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { parseRefs, serializeRef, parseRef, type Ref } from "./logic/refs.ts";
 import { insertText, isInsertKey, lines, openInsertPopup, sameBox } from "./logic/insert.ts";
+import { pastedImages } from "./logic/chatimage.ts";
 
 export type RefInputHandle = {
   /** Puts a reference chip at the caret (or where the caret last was, or at the end). */
@@ -26,8 +28,17 @@ type Props = {
   /** The new value, and the text of the caret's line before the caret (for @ mentions). */
   onChange(value: string, beforeCaret: string): void;
   onKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void;
-  /** Nothing can be put into the box now (a run's start is on its way): the insert popup is not opened. */
+  /** Nothing can be put into the box now, and nothing taken out of it (a run's start is on its way; the server of the
+   *  chat or the run is not connected): the insert popup is not opened, a reference is not inserted, and no chip is
+   *  removed by a key or cut. The owner of the box stops what the browser itself would type (its `beforeinput`). */
   locked?: boolean;
+  /** The box is read-only (the server of the chat or the run is not connected, or no longer has it): it shows what it
+   *  holds and is not editable at all, by a key, a paste, a drop or the page's own commands. Its text can still be
+   *  selected and copied. */
+  readOnly?: boolean;
+  /** Image files were pasted, and the paste is theirs (logic/chatimage.ts pastedImages). A box without it takes no image:
+   *  its paste is the plain text, as it always was (a run's goal). */
+  onImages?(files: File[]): void;
 };
 
 /** A reference's chip, as a DOM node (the thread draws the same with React, see RefChip). */
@@ -128,7 +139,7 @@ function beside(range: Range, back: boolean): Node | null {
   return n;
 }
 
-export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ placeholder, onChange, onKeyDown, locked = false }, ref) {
+export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ placeholder, onChange, onKeyDown, locked = false, readOnly = false, onImages }, ref) {
   const box = useRef<HTMLDivElement>(null);
   const last = useRef<Range | null>(null); // the caret, kept while focus is on the canvas
   const mark = useRef<Range | null>(null); // the caret or the selection the open insert popup was opened at
@@ -204,7 +215,7 @@ export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ pl
   useImperativeHandle(ref, () => ({
     insertRef(r: Ref) {
       const el = box.current;
-      if (!el) return;
+      if (!el || locked) return;
       const range = where(el);
       el.focus();
       range.deleteContents();
@@ -226,7 +237,7 @@ export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ pl
     },
     replaceBeforeCaret(n: number, s: string) {
       const el = box.current, sel = getSelection();
-      if (!el || !sel?.rangeCount) return;
+      if (!el || locked || !sel?.rangeCount) return;
       const node = sel.anchorNode, off = sel.anchorOffset;
       if (!node || node.nodeType !== Node.TEXT_NODE || !el.contains(node) || off < n) return;
       const r = document.createRange(); r.setStart(node, off - n); r.setEnd(node, off);
@@ -253,7 +264,7 @@ export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ pl
       return;
     }
     // Backspace / Delete next to a chip remove the whole chip.
-    if ((e.key === "Backspace" || e.key === "Delete") && !e.metaKey && !e.altKey && !e.ctrlKey) {
+    if (!locked && (e.key === "Backspace" || e.key === "Delete") && !e.metaKey && !e.altKey && !e.ctrlKey) {
       const sel = getSelection();
       if (sel?.rangeCount && sel.isCollapsed) {
         const n = beside(sel.getRangeAt(0), e.key === "Backspace");
@@ -280,9 +291,10 @@ export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ pl
     <div
       ref={box}
       className="composer-input is-empty"
-      contentEditable="plaintext-only"
+      contentEditable={readOnly ? "false" : "plaintext-only"}
       role="textbox"
       aria-multiline="true"
+      aria-readonly={readOnly || undefined}
       data-placeholder={placeholder}
       spellCheck
       suppressContentEditableWarning
@@ -292,9 +304,14 @@ export const RefInput = forwardRef<RefInputHandle, Props>(function RefInput({ pl
       onMouseUp={changed}
       onBlur={keep}
       onCopy={(e) => copyValue(e)}
-      onCut={(e) => { if (copyValue(e)) { document.execCommand("delete"); changed(); } }}
+      onCut={(e) => { if (copyValue(e) && !locked) { document.execCommand("delete"); changed(); } }}
       onPaste={(e) => {
         const t = e.clipboardData.getData("text/plain");
+        if (onImages) {
+          const types = [...e.clipboardData.types];
+          const images = pastedImages({ plain: !!t, rich: types.includes("text/html") || types.includes("text/rtf"), files: [...e.clipboardData.files] });
+          if (images.length) { e.preventDefault(); onImages(images); return; }
+        }
         if (!t) return;
         e.preventDefault();
         pasteValue(t, box.current);

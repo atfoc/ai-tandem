@@ -21,8 +21,6 @@ export const serversApi = {
     call<SaveAnswer>("POST", "/api/servers", { name: f.name, address: f.address, secret: f.secret, selfSigned: f.selfSigned, pin: f.pin, force }),
   edit: (id: string, patch: ServerPatch, force: boolean) => call<SaveAnswer>("PATCH", at(id), { ...patch, force }),
   remove: (id: string) => call<{ ok: boolean }>("DELETE", at(id)),
-  /** The entry's chats and runs in this app. */
-  items: (id: string) => call<{ chats: number; runs: number }>("GET", `${at(id)}/items`),
   /** Tests a form that is not saved. */
   test: (f: ServerForm) => call<TestResult>("POST", "/api/servers/test", { address: f.address, secret: f.secret, selfSigned: f.selfSigned, pin: f.pin }),
   /** Tests a saved entry; without `over` the entry also tries to connect again. */
@@ -30,4 +28,4 @@ export const serversApi = {
   accept: (id: string, fingerprint: string) => call<{ server: ServerView }>("POST", `${at(id)}/accept`, { fingerprint }),
 };
 
-export const { list, add, edit, remove, items, test, testSaved, accept } = serversApi;
+export const { list, add, edit, remove, test, testSaved, accept } = serversApi;

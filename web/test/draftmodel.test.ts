@@ -1,8 +1,9 @@
 // A model check of a chat's draft in two windows: random scripts of typing, Sends, refusals and
 // archiving, run with the real DraftSaver under a virtual clock, against a model of the server's
-// counter rule and of what Composer.tsx does around its saver (the rules it asks the logic for
+// counter rule and of what Composer.tsx does around its saver, a server that comes back among it (the rules it asks the logic for
 // are the real ones: boxText, staleTaken, putsBack). Three families: a local chat, a chat archived
-// during a Send, and the held first Send of a chat on another server.
+// during a Send, and a chat of a section (a remote server) from before its first message, whose Sends are
+// ordinary ones that can end with no answer.
 //
 // DRAFT_MODEL_SCRIPTS sets the scripts per family and prints the classes they ended in; the
 // default is what runs in a few seconds. DRAFT_MODEL_SEEDS=1 prints the first scripts of each
@@ -12,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DraftSaver, answerNewer, boxText, hasDraft, staleOf, staleTaken, unsavedToShow, type Unsaved } from "../src/logic/drafts.ts";
-import { putsBack } from "../src/logic/sendend.ts";
+import { putsBack, sentNothing } from "../src/logic/sendend.ts";
 import type { Draft } from "../src/types.ts";
 
 type Family = "local" | "archive" | "remote";
@@ -75,9 +76,9 @@ async function script(family: Family, seed: number, old: Old = {}, trace?: strin
   const sleep = (ms: number) => new Promise<void>((r) => { c.set(r, ms); });
   const lag = () => (chance(0.2) ? int(20, 120) : int(0, 15));
   const initial: Draft | null = chance(0.6) ? { text: "t0" } : null;
-  const srv = { rev: int(0, 3), draft: initial, archived: false, started: false, starting: false, lock: null as Promise<void> | null };
+  const srv = { rev: int(0, 3), draft: initial, archived: false, started: false, lock: null as Promise<void> | null };
   const saves: { w: number; text: string; at: number; ok: boolean }[] = [];
-  const takes: { w: number; text: string; at: number; held: boolean; dropped?: number; was?: string }[] = []; // dropped: the counter on which that Send removed the draft, which was `was`
+  const takes: { w: number; text: string; at: number; first: boolean; dropped?: number; was?: string }[] = []; // dropped: the counter on which that Send removed the draft, which was `was`
   // from: when the Send it ends began; taken: that Send was taken; heard: the last counter the window had heard of, and heard0 the one as the Send began
   const backs: { w: number; text: string; from: number; at: number; taken: boolean; heard: number; heard0: number }[] = [];
   const typed: { w: number; text: string; at: number }[] = [];
@@ -103,27 +104,12 @@ async function script(family: Family, seed: number, old: Old = {}, trace?: strin
     emit({ rev: srv.rev, draft: srv.draft });
     return srv.rev;
   };
-  const send = async (w: number, text: string, held: boolean, plan: Plan, did: { taken: boolean }) => {
+  const send = async (w: number, text: string, first: boolean, plan: Plan, did: { taken: boolean }) => {
     await sleep(plan.wait);
     if (srv.archived) throw refusal(409, "archived");
-    if (family === "remote" && !srv.started) {
-      // The creation call on the chat's server: one at a time. Taken, the chat is swapped for the started one, whose draft counter is the one at
-      // the hand-over plus one, with no draft.
-      if (srv.starting) throw refusal(409, "busy");
-      if (plan.how === "refuse") throw refusal(409, "refused");
-      srv.starting = true;
-      await sleep(plan.dur);
-      srv.starting = false;
-      if (plan.how === "fail") throw refusal(503, "server_unreachable");
-      const was = srv.draft?.text;
-      srv.rev++; srv.draft = null; srv.started = true;
-      takes.push({ w, text, at: c.now(), held, dropped: srv.rev, was });
-      did.taken = true;
-      say(`w${w} started with`, text);
-      emit({ rev: srv.rev, draft: null, started: true });
-      if (plan.how === "lost") throw refusal(504, "start_unconfirmed");
-      return;
-    }
+    // A chat of a section: a Send to a server that is not connected is refused before anything is sent, the first message's too.
+    // (The chat is on its server from the moment it is made: its first message is refused as any other is.)
+    if (family === "remote" && plan.how === "fail") { await sleep(plan.dur); throw refusal(503, "server_unreachable"); }
     if (plan.how === "refuse") throw refusal(409, "refused");
     if (plan.how === "fail") { await sleep(plan.dur); throw refusal(502, "down"); }
     while (srv.lock) await srv.lock;
@@ -132,14 +118,15 @@ async function script(family: Family, seed: number, old: Old = {}, trace?: strin
     const at = srv.rev;
     let free = () => {};
     if (plan.lock) srv.lock = new Promise<void>((r) => { free = r; });
-    const take: (typeof takes)[number] = { w, text, at: c.now(), held };
+    const take: (typeof takes)[number] = { w, text, at: c.now(), first };
     takes.push(take);
     did.taken = true;
     say(`w${w} taken`, text);
     await sleep(plan.dur);
     if (srv.draft && srv.rev === at) { take.was = srv.draft.text; srv.rev++; srv.draft = null; take.dropped = srv.rev; emit({ rev: srv.rev, draft: null }); }
+    if (family === "remote" && !srv.started) { srv.started = true; emit({ started: true }); } // the first message: the chat has started there
     if (plan.lock) { srv.lock = null; free(); }
-    if (plan.how === "lost") throw refusal(502, "down"); // taken, and the answer never came
+    if (plan.how === "lost") throw family === "remote" ? refusal(504, "send_unknown") : refusal(502, "down"); // taken, and the answer never came
   };
   /** A request: the way there, the server, the way back. */
   const call = async <T>(f: () => Promise<T>): Promise<T> => {
@@ -214,22 +201,22 @@ async function script(family: Family, seed: number, old: Old = {}, trace?: strin
         if (!t || w.box === null || w.sending) return;
         w.sending = true;
         say(`w${i} sends`, t, plan);
-        const first = family === "remote" && !w.store.started;
+        const first = family === "remote" && !w.store.started; // a first message: sent as any other
         const span = { w: i, from: c.now(), to: Infinity }, heard0 = w.heard;
         sends.push(span);
         let answered: ((refused?: boolean) => boolean) | null = null;
         let refused = false;
         const did = { taken: false };
         try {
-          answered = w.s.sending(undefined, first);
+          answered = w.s.sending();
           w.input("");
           await call(() => send(i, t, first, plan, did));
         } catch (e: any) {
-          refused = e.status < 500;
+          refused = sentNothing(e.status, e.code);
           const removed = answered?.(refused) ?? false;
           say(`w${i} send failed`, e.code, removed ? "removed" : "");
           answered = null;
-          if (old.back || putsBack(removed, e.code)) {
+          if (old.back || putsBack(removed)) {
             if (!w.text.trim()) { backs.push({ w: i, text: t, from: span.from, at: c.now(), taken: did.taken, heard: w.heard, heard0 }); w.setBox(t); } // into the box, or what the composer holds when none is drawn
           }
         } finally {
@@ -283,6 +270,7 @@ async function script(family: Family, seed: number, old: Old = {}, trace?: strin
       const w = wins[int(0, 1)], p = rnd();
       if (family === "archive" && p < 0.2) archive(!srv.archived);
       else if (p < 0.5) void w.submit(plan());
+      else if (p < 0.54) { say(`w${w.i} back`); w.s.back(); } // the chat's server is connected again, or the page's own stream opened
       else if (p < 0.6) w.type("");
       else w.type(`t${++n}`);
       await turn();
@@ -311,7 +299,7 @@ async function script(family: Family, seed: number, old: Old = {}, trace?: strin
       else if (b?.taken) out.push(OWN);
       else if (b && theirs.some((k) => k.dropped !== undefined && k.was === back && k.dropped <= b.heard)) out.push(D1); // (it removed that very draft)
       else if (theirs.length) out.push(HIDDEN);
-      else if (mine.some((k) => k.held && !backs.some((x) => x.text === back && x.w === k.w) && saves.some((x) => x.ok && x.text === back && x.w === k.w && x.at >= k.at))) out.push(D2);
+      else if (mine.some((k) => k.first && !backs.some((x) => x.text === back && x.w === k.w) && saves.some((x) => x.ok && x.text === back && x.w === k.w && x.at >= k.at))) out.push(D2);
       else out.push(OTHER);
     }
     // The text typed last, with no message taken since, is the draft at the end, unless something else went on close to it.
@@ -345,7 +333,7 @@ const COUNT = Number(process.env.DRAFT_MODEL_SCRIPTS) || 1000;
 const D1 = "put back after the other window sent it, the removal of the draft having come (D1)";
 const HIDDEN = "put back after the other window sent it, the removal being unknown here";
 const OWN = "put back after this window's own Send, taken with no answer";
-const D2 = "a held Send's text saved again with nothing put back (D2)";
+const D2 = "a first message's text saved again with nothing put back (D2)";
 const OTHER = "a draft again otherwise";
 const D3 = "box≠state (D3)";
 const NEVER = ["loop", "saves>4", "diverged", D1, D2, D3, "text typed last is not the draft, nothing being close"];

@@ -1,5 +1,6 @@
 // The event layer (src/conn.ts with the real src/store.ts): threads and branch records kept by
-// chat plus branch. conn.ts pulls in the board, the fork actions and the api, so it is bundled
+// chat plus branch, for the chats of this computer and of the sections (the remote servers of the
+// server list). conn.ts pulls in the board, the fork actions and the api, so it is bundled
 // with esbuild with those stubbed (as saves.test.ts does for board.ts); the stubs read the
 // test's fake server from globalThis.__conn, and events are pushed through a fake EventSource.
 import { test, beforeEach } from "node:test";
@@ -15,12 +16,14 @@ type TreeAsked = { chat: string; answer(r: unknown): Promise<void>; fail(e: unkn
 /** What the event layer asked of the board layer (src/board.ts, stubbed): the calls, in order. */
 type BoardCall = [what: string, ...args: unknown[]];
 type Unfollow = { chat: string; done(): Promise<void> };
+/** unsaved: the boards whose edit waits to be saved, as the board layer tells the store (boardUnsaved). */
 type Fake = { asked: Asked[]; checked: string[]; opened: string[]; trees: string[]; holdTrees: boolean; treeAsked: TreeAsked[];
   board: BoardCall[]; tool: (params: unknown) => Promise<unknown>; reply: (id: string, reply: unknown) => Promise<void>; replies: unknown[];
-  views: string[]; unfollows: Unfollow[]; holdUnfollows: boolean; runAsked: RunAsked[]; runUnfollows: Unfollow[]; starts: (RunAsked & { goal: string })[]; runReads: string[] };
+  views: string[]; unfollows: Unfollow[]; holdUnfollows: boolean; runAsked: RunAsked[]; runUnfollows: Unfollow[]; starts: (RunAsked & { goal: string })[]; runReads: string[];
+  unsaved: string[] };
 type RunAsked = { run: string; answer(r: unknown): Promise<void>; fail(e: unknown): Promise<void> };
 const fake: Fake = { asked: [], checked: [], opened: [], trees: [], holdTrees: false, treeAsked: [],
-  board: [], tool: async () => ({}), reply: async () => {}, replies: [], views: [], unfollows: [], holdUnfollows: false, runAsked: [], runUnfollows: [], starts: [], runReads: [] };
+  board: [], tool: async () => ({}), reply: async () => {}, replies: [], views: [], unfollows: [], holdUnfollows: false, runAsked: [], runUnfollows: [], starts: [], runReads: [], unsaved: [] };
 /** A fetch the test answers when it chooses to. */
 function ask(chat: string, branch: string | undefined, sid?: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -70,7 +73,8 @@ const stubs: Record<string, string> = {
     export const flushAll = async () => { fake.board.push(["flushAll"]); };
     export const forgetBoard = () => {};
     export const handOver = async (id) => { fake.board.push(["handOver", id]); };
-    export const boardLost = told("boardLost"), granted = told("granted"), streamOpened = told("streamOpened"), takeAfterSnapshot = told("takeAfterSnapshot"), serverBack = told("serverBack");`,
+    export const boardLost = told("boardLost"), granted = told("granted"), streamOpened = told("streamOpened"), takeAfterSnapshot = told("takeAfterSnapshot"), sectionBack = told("sectionBack");
+    export const boardUnsaved = (id) => fake.unsaved.includes(id);`,
   "./version.ts": `export const checkVersion = async () => {};`,
   "./api.ts": `
     const { fake, ask, askTree, unfollow, askRun, unfollowRun, askStart } = globalThis.__conn;
@@ -101,7 +105,7 @@ const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const src = path.join(web, "src");
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-conn-")), "conn.mjs");
 await esbuild.build({
-  stdin: { contents: `export * as conn from "./conn.ts"; export * as store from "./store.ts"; export * as unknown from "./logic/unknownclient.ts"; export * as actions from "./run/actions.ts";`, resolveDir: src, loader: "ts" },
+  stdin: { contents: `export * as conn from "./conn.ts"; export * as store from "./store.ts"; export * as unknown from "./logic/unknownclient.ts"; export * as actions from "./run/actions.ts"; export * as backs from "./logic/draftsback.ts";`, resolveDir: src, loader: "ts" },
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
   plugins: [{
     name: "stubs",
@@ -115,7 +119,7 @@ await esbuild.build({
     },
   }],
 });
-const { conn, store, unknown, actions } = await import(pathToFileURL(out).href);
+const { conn, store, unknown, actions, backs } = await import(pathToFileURL(out).href);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -132,6 +136,13 @@ const up = (index: number, t: string) => ({ index, item: text(t) });
 const sub = (id: string, status = "running") => ({ id, tool: "t_" + id, status });
 const snapshot = (chats: unknown[], states?: unknown[]) =>
   ({ type: "snapshot", groups: [], boards: [], chats, defaults: { groups: {} }, catalogs: {}, home: "", defaultCwd: "", dataDir: "", ...(states ? { states } : {}) });
+/** Two entries of the server list, and the page's key of a thing of one of them (src/logic/keys.ts). */
+const S1 = "s_aaaaaaaaaaaa", S2 = "s_bbbbbbbbbbbb";
+const on = (server: string, id: string) => `${server}~${id}`;
+/** A server's tree as the local server hands it on, with that server's own ids. */
+const treeOf = (o: Record<string, unknown> = {}) => ({ groups: [], boards: [], chats: [], states: [], runs: [], defaults: { groups: {} }, ...o });
+/** The `section` event: an entry's whole tree, or null when the local server holds none of it any more. */
+const section = (server: string, tree: unknown) => ev({ type: "section", server, tree });
 
 const s = () => store.getState();
 const keys = (map: object) => Object.keys(map).sort();
@@ -161,7 +172,7 @@ async function openMain(items = ["m0"], version = 3, more: Record<string, unknow
 }
 /** A pending move to a point of a branch, as startMove sets it; the list is not answered. */
 function moveTo(branch: string) {
-  store.setMove("c_1", { branch, at: 1, new: true, from: store.viewedBranch(s(), "c_1"), held: { text: "", mentions: [], references: [] }, put: null });
+  store.setMove("c_1", { branch, at: 1, new: true, from: store.viewedBranch(s(), "c_1"), held: { text: "", mentions: [], references: [], images: [] }, put: null });
   return conn.showBranch("c_1");
 }
 function back() { store.setMove("c_1", null); return conn.showBranch("c_1"); }
@@ -174,11 +185,13 @@ beforeEach(async () => {
   fake.holdTrees = false;
   for (const t of fake.treeAsked.splice(0)) await t.fail(new Error("left over"));
   conn.connect();
-  await ev(snapshot([]));
-  store.setState({ sel: { board: null, chat: null }, subDrawer: null });
+  await ev(snapshot([])); // (it has no section: the tree of every entry a test left goes)
+  store.setState({ sel: { board: null, run: null, chat: null }, subDrawer: null, runAgent: null });
+  fake.unsaved.length = 0;
+  conn.dropLeft(); // and with it what stayed of one for being on screen
   for (const a of asked()) await a.fail(new Error("left over"));
   await tick();
-  fake.trees.length = 0;
+  fake.trees.length = 0; fake.opened.length = 0;
   fake.board.length = 0; fake.replies.length = 0; fake.views.length = 0; fake.unfollows.length = 0;
   for (const a of fake.runAsked.splice(0)) await a.fail(new Error("left over"));
   fake.runUnfollows.length = 0; fake.starts.length = 0; fake.runReads.length = 0;
@@ -888,15 +901,6 @@ test("`superseded` loses one board: the stream stays open, and the events that f
   assert.deepEqual(fake.board, [["boardLost", "b_1"], ["granted", "b_2", 7]]);
 });
 
-test("`server_back` is told to the board layer, which reads and takes the board on screen of that server", async () => {
-  fake.board.length = 0;
-  await ev({ type: "server_back", server: "s_1" });
-  assert.deepEqual(fake.board, [["serverBack", "s_1"]]);
-  fake.board.length = 0;
-  await ev({ type: "server_back" });
-  assert.deepEqual(fake.board, []);
-});
-
 test("`server_stopping` writes every board and says so", async () => {
   await ev({ type: "server_stopping" });
   assert.deepEqual(fake.board, [["flushAll"], ["flushed"]]);
@@ -1021,62 +1025,730 @@ test("a hold waits for the unfollow of the same agent that is under way, and the
   });
 });
 
-// ---- chats on another server: the lists by server, a thread's load error, `server_lists`,
-// `server_back` and `chat_reload` (the rules are in logic/serverlists.ts, tested in serverlists.test.ts)
+// ---- sections: the things of a remote server (an entry of the server list). The local server sends an entry's whole
+// tree in the snapshot's `sections` and in the `section` event, and names the entry in the top-level `server` of every
+// event about one of its things; every id in them is that server's own. The page keys such a thing by both
+// (logic/keys.ts). The rules are in logic/sections.ts, logic/serverlists.ts and logic/runserver.ts, tested in
+// sections.test.ts, serverlists.test.ts and runserver.test.ts.
 
 const LISTS = { agents: ["pi"], catalogs: { pi: { models: [], default: { model: "m" } } }, home: "/home/u", defaultCwd: "/home/u/work" };
-const STUDIO = { id: "s_1", name: "Studio", state: "connected" };
-const refusal = (code: string, message: string) => Object.assign(new Error(message), { status: 503, code });
+const LOCAL = { id: "local", local: true, name: "This computer", state: "connected" };
+const STUDIO = { id: S1, name: "Studio", state: "connected" };
+const SERVERS = [LOCAL, STUDIO];
+const NONE = { board: null, run: null, chat: null };
+const refusal = (code: string, message: string, status = 503) => Object.assign(new Error(message), { status, code });
+/** The answer of a call for a thing that is not on its server (any more). */
+const notFound = (what: string) => refusal("not_found", `No such ${what}.`, 404);
+/** k_1 of the server S1, as the page names it. */
+const K1 = on(S1, "k_1");
+const names = (thread: { items: { text: string }[] } | undefined) => thread?.items.map((it) => it.text);
+
+const run = (id: string, o: Record<string, unknown> = {}) =>
+  ({ id, name: id, group: "", created: "2026-01-01T00:00:00Z", agent: "claude", tiers: {}, cwd: "/w", settings: {}, status: "running", started: "2026-01-01T00:00:00Z", ...o });
+const draftRun = (id: string, o: Record<string, unknown> = {}) => run(id, { status: "draft", started: undefined, ...o });
+/** A run's detail as api.ts hands it on: made whole, and for a section's run with the page's keys. */
+const detail = (id: string, version: number) => ({ run: id, version, status: "running", startedAt: 1, turns: [], tasks: [], agents: {} });
+const runSnapshot = (runs: unknown[], chats: unknown[] = []) => ({ ...snapshot(chats), runs });
+const runAsked = () => fake.runAsked.splice(0);
+/** Opens a run as its view does, and answers the fetch of its detail. */
+async function openRun(id: string, version = 3) {
+  store.setState({ sel: { board: null, run: id, chat: null } });
+  void conn.loadRun(id);
+  await tick();
+  const [a] = runAsked();
+  await a.answer(detail(id, version));
+}
+/** localStorage, while `f` runs: what is stored are the object's own keys, as the store lists them. */
+async function withStorage(f: (kept: Record<string, string>) => Promise<void>) {
+  const kept: Record<string, string> = {}, had = (globalThis as any).localStorage;
+  Object.defineProperties(kept, {
+    getItem: { value: (k: string) => (Object.hasOwn(kept, k) ? kept[k] : null) },
+    setItem: { value: (k: string, v: string) => { kept[k] = String(v); } },
+    removeItem: { value: (k: string) => { delete kept[k]; } },
+  });
+  (globalThis as any).localStorage = kept;
+  try { await f(kept); } finally { (globalThis as any).localStorage = had; }
+}
 
 test("the snapshot's lists by server go to the store; a snapshot without the field has none", async () => {
-  await ev({ ...snapshot([]), lists: { s_1: LISTS } });
-  assert.deepEqual(s().lists, { s_1: LISTS });
+  await ev({ ...snapshot([]), lists: { [S1]: LISTS } });
+  assert.deepEqual(s().lists, { [S1]: LISTS });
   await ev(snapshot([]));
   assert.deepEqual(s().lists, {});
 });
 
-test("server_lists sets an entry's lists, and null removes them", async () => {
-  await ev({ type: "server_lists", server: "s_1", lists: LISTS });
-  await ev({ type: "server_lists", server: "s_2", lists: { ...LISTS, agents: [] } });
-  assert.deepEqual(keys(s().lists), ["s_1", "s_2"]);
-  assert.deepEqual(s().lists.s_1, LISTS);
-  await ev({ type: "server_lists", server: "s_1", lists: { ...LISTS, agents: ["pi", "claude"] } });
-  assert.deepEqual(s().lists.s_1.agents, ["pi", "claude"]);
-  await ev({ type: "server_lists", server: "s_1", lists: null });
-  assert.deepEqual(keys(s().lists), ["s_2"]);
+test("server_lists sets an entry's lists, and null removes them: the event's `server` is its own subject, tree or none", async () => {
+  await ev({ type: "server_lists", server: S1, lists: LISTS });
+  await ev({ type: "server_lists", server: S2, lists: { ...LISTS, agents: [] } });
+  assert.deepEqual(s().sections, {});
+  assert.deepEqual(keys(s().lists), [S1, S2]);
+  assert.deepEqual(s().lists[S1], LISTS);
+  await ev({ type: "server_lists", server: S1, lists: { ...LISTS, agents: ["pi", "claude"] } });
+  assert.deepEqual(s().lists[S1].agents, ["pi", "claude"]);
+  await ev({ type: "server_lists", server: S1, lists: null });
+  assert.deepEqual(keys(s().lists), [S2]);
   assert.deepEqual(s().usable.length > 0, true, "the local server's own list is another field");
 });
 
+test("a snapshot's `sections` go to the store under the page's keys, beside this computer's things of the same ids", async () => {
+  const defaults = { groups: { g_1: { servers: { local: { agent: "pi" } } } } };
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), groups: [{ id: "g_1", name: "Mine" }], boards: [boardRow("b_1")], runs: [run("r_1")], servers: SERVERS,
+    sections: { [S1]: treeOf({
+      groups: [{ id: "g_1", name: "Theirs", collapsed: true }, { id: "g_2", name: "In it", parent: "g_1" }],
+      boards: [boardRow("b_1", { group: "g_1" })],
+      chats: [view("c_2", { group: "g_2" }), view("c_3", { board: "b_1" }), view("c_4", { run: "r_1" }), view("a_1", { role: "task", run: "r_1" })],
+      states: [rec("c_2", "main", { status: "thinking" }), rec("c_3", "main")],
+      runs: [run("r_1", { group: "g_1" })],
+      defaults,
+    }) } });
+  assert.deepEqual(keys(s().sections), [S1]);
+  assert.deepEqual(s().sections[S1].groups, [{ id: on(S1, "g_1"), name: "Theirs" }, { id: on(S1, "g_2"), name: "In it", parent: on(S1, "g_1") }], "that server's collapse is never taken");
+  assert.deepEqual(s().sections[S1].defaults, defaults, "the defaults are kept as they came");
+  assert.deepEqual(s().groups, [{ id: "g_1", name: "Mine" }]);
+  assert.deepEqual([store.groupsOn(s(), "local"), store.groupsOn(s(), S1), store.groupsOn(s(), S2)], [s().groups, s().sections[S1].groups, []]);
+  assert.deepEqual(keys(s().boards), ["b_1", on(S1, "b_1")]);
+  assert.equal(s().boards[on(S1, "b_1")].group, on(S1, "g_1"));
+  assert.deepEqual(keys(store.boardsOn(s(), S1)), [on(S1, "b_1")]);
+  assert.deepEqual(keys(s().chats), ["c_2", on(S1, "c_2"), on(S1, "c_3"), on(S1, "c_4")], "a run's own agent is in no list");
+  assert.deepEqual([s().chats[on(S1, "c_2")].group, s().chats[on(S1, "c_3")].board, s().chats[on(S1, "c_4")].run], [on(S1, "g_2"), on(S1, "b_1"), on(S1, "r_1")]);
+  assert.deepEqual(keys(s().states), ["c_2:main", `${on(S1, "c_2")}:main`, `${on(S1, "c_3")}:main`]);
+  assert.deepEqual([store.branchState(s(), "c_2", "main").status, store.branchState(s(), on(S1, "c_2"), "main").status], ["ready", "thinking"]);
+  assert.deepEqual(keys(s().runs), ["r_1", on(S1, "r_1")]);
+  assert.equal(s().runs[on(S1, "r_1")].group, on(S1, "g_1"));
+  assert.deepEqual(asked(), [], "nothing is on screen: nothing is read");
+
+  // a snapshot that has no tree of the entry any more: its things go, this computer's are the snapshot's
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), groups: [{ id: "g_1", name: "Mine" }], servers: SERVERS });
+  assert.deepEqual(s().sections, {});
+  assert.deepEqual([keys(s().chats), keys(s().boards), keys(s().runs), keys(s().states)], [["c_2"], [], [], ["c_2:main"]]);
+});
+
+test("the list events with `server` change that section alone, under the page's keys: `groups`, `defaults`, `board`, `chat`, `branch_state`, `run`", async () => {
+  await ev({ ...snapshot([view("c_1")], [rec("c_1", "main")]), groups: [{ id: "g_1", name: "Mine" }], boards: [boardRow("b_1")], runs: [run("r_1")], servers: SERVERS, sections: { [S1]: treeOf() } });
+  await ev({ type: "groups", server: S1, groups: [{ id: "g_1", name: "Theirs", collapsed: true }, { id: "g_2", name: "In it", parent: "g_1" }] });
+  const groups = [{ id: on(S1, "g_1"), name: "Theirs" }, { id: on(S1, "g_2"), name: "In it", parent: on(S1, "g_1") }];
+  assert.deepEqual(s().sections[S1].groups, groups, "the whole list, never with that server's collapse");
+  assert.deepEqual(s().groups, [{ id: "g_1", name: "Mine" }]);
+  await ev({ type: "groups", groups: [{ id: "g_1", name: "Mine, renamed", collapsed: true }] });
+  assert.deepEqual(s().groups, [{ id: "g_1", name: "Mine, renamed", collapsed: true }], "a local group's collapse is its server's");
+  assert.deepEqual(s().sections[S1].groups, groups);
+
+  const defaults = { groups: { g_1: { servers: { local: { agent: "pi" } } } } };
+  await ev({ type: "defaults", server: S1, defaults });
+  assert.deepEqual([s().sections[S1].defaults, s().defaults], [defaults, { groups: {} }]);
+  await ev({ type: "defaults", defaults: { groups: { g_1: {} } } });
+  assert.deepEqual([s().sections[S1].defaults, s().defaults], [defaults, { groups: { g_1: {} } }]);
+
+  await ev({ type: "board", server: S1, board: boardRow("b_1", { name: "theirs", group: "g_2" }) });
+  assert.deepEqual([s().boards.b_1.name, s().boards[on(S1, "b_1")].name, s().boards[on(S1, "b_1")].id, s().boards[on(S1, "b_1")].group], ["b_1", "theirs", on(S1, "b_1"), on(S1, "g_2")]);
+  await ev({ type: "chat", server: S1, chat: view("c_1", { name: "theirs", board: "b_1" }) });
+  await ev({ type: "branch_state", server: S1, state: rec("c_1", "main", { status: "thinking" }) });
+  assert.deepEqual([s().chats.c_1.name, s().chats[on(S1, "c_1")].name, s().chats[on(S1, "c_1")].board], ["c_1", "theirs", on(S1, "b_1")]);
+  assert.deepEqual([s().states["c_1:main"].status, s().states[`${on(S1, "c_1")}:main`].status, s().states[`${on(S1, "c_1")}:main`].chat], ["ready", "thinking", on(S1, "c_1")]);
+  await ev({ type: "run", server: S1, run: run("r_1", { name: "theirs", group: "g_1" }) });
+  assert.deepEqual([s().runs.r_1.name, s().runs[on(S1, "r_1")].name, s().runs[on(S1, "r_1")].group], ["r_1", "theirs", on(S1, "g_1")]);
+
+  // removed there, and not on screen here: they go, and this computer's of the same ids stay
+  await ev({ type: "board_removed", server: S1, id: "b_1" });
+  await ev({ type: "chat_removed", server: S1, id: "c_1" });
+  await ev({ type: "run_removed", server: S1, id: "r_1" });
+  assert.deepEqual([keys(s().boards), keys(s().chats), keys(s().runs), keys(s().states)], [["b_1"], ["c_1"], ["r_1"], ["c_1:main"]]);
+  assert.deepEqual(s().gone, {});
+});
+
+test("an event with `server` for an entry the page has no tree of is dropped", async () => {
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), boards: [boardRow("b_1")], runs: [run("r_1")], servers: SERVERS });
+  store.setState({ sel: { board: null, run: null, chat: "c_2" } });
+  void conn.loadItems("c_2");
+  await asked()[0].answer({ branch: "main", version: 3, items: [text("m0")], subagents: [] });
+  await conn.loadTree("c_2");
+  fake.board.length = 0; fake.trees.length = 0;
+  let called = 0;
+  fake.tool = async () => { called++; return "x"; };
+  const events: Record<string, unknown>[] = [
+    { type: "groups", groups: [{ id: "g_1", name: "Theirs" }] },
+    { type: "defaults", defaults: { groups: { g_1: {} } } },
+    { type: "board", board: boardRow("b_1", { name: "theirs" }) },
+    { type: "board", board: boardRow("b_2") },
+    { type: "board_removed", id: "b_1" },
+    { type: "chat", chat: view("c_2", { name: "theirs" }) },
+    { type: "chat", chat: view("c_3") },
+    { type: "branch_state", state: rec("c_2", "main", { status: "thinking" }) },
+    { type: "tree", chat: "c_2", current: "ffff0000" },
+    { type: "chat_items", chat: "c_2", branch: "main", version: 4, updates: [up(1, "theirs")] },
+    { type: "sub", chat: "c_2", branch: "main", subagent: sub("5f") },
+    { type: "sub_items", chat: "c_2", branch: "main", sub: "5f", version: 1, updates: [up(0, "s0")] },
+    { type: "chat_removed", id: "c_2" },
+    { type: "run", run: run("r_1", { name: "theirs" }) },
+    { type: "run_detail", run: "r_1", version: 2, patch: { status: "stopping" } },
+    { type: "run_activity", run: "r_1", agents: {} },
+    { type: "run_removed", id: "r_1" },
+    { type: "held", board: "b_1", rev: 3 },
+    { type: "release_request", board: "b_1" },
+    { type: "superseded", board: "b_1" },
+    { type: "rpc", id: "far_1", method: "tool", params: { chat: "c_2", branch: "main", board: "b_1", target: "b_1", name: "read_board", args: {} } },
+  ];
+  const before = s();
+  for (const e of events) await ev({ ...e, server: S1 });
+  assert.equal(s(), before, "the store is as it was");
+  assert.deepEqual([fake.board, fake.replies, called, asked(), fake.trees], [[], [], 0, [], []], "and nothing was asked, of the board layer or of the server");
+
+  // the same events without `server` are this computer's
+  await ev({ type: "chat_items", chat: "c_2", branch: "main", version: 4, updates: [up(1, "mine")] });
+  assert.deepEqual(texts("c_2"), ["m0", "mine"]);
+  // and with the tree there they are that section's
+  await section(S1, treeOf());
+  fake.board.length = 0;
+  await ev({ type: "chat", server: S1, chat: view("c_3") });
+  await ev({ type: "held", server: S1, board: "b_1", rev: 3 });
+  assert.deepEqual(keys(s().chats), ["c_2", on(S1, "c_3")]);
+  assert.deepEqual(fake.board, [["granted", on(S1, "b_1"), 3]], "under the key of that section's board");
+  // once the tree went, they are dropped again
+  await section(S1, null);
+  await ev({ type: "chat", server: S1, chat: view("c_4") });
+  await ev({ type: "branch_state", server: S1, state: rec("c_4", "main") });
+  assert.deepEqual([keys(s().chats), keys(s().states)], [["c_2"], ["c_2:main"]]);
+});
+
+test("the same id on this computer and in a section is two chats: their threads, records, trees and events never mix", async () => {
+  const THERE = on(S1, "c1");
+  assert.equal(THERE, "s_aaaaaaaaaaaa~c1");
+  await ev({ ...snapshot([view("c1", { name: "here" })], [rec("c1", "main")]), servers: SERVERS,
+    sections: { [S1]: treeOf({ chats: [view("c1", { name: "there" })], states: [rec("c1", "main", { status: "thinking" })] }) } });
+  assert.deepEqual(keys(s().chats), ["c1", THERE]);
+  assert.deepEqual([s().chats.c1.name, s().chats[THERE].name], ["here", "there"]);
+  assert.deepEqual([store.branchState(s(), "c1", "main").status, store.branchState(s(), THERE, "main").status], ["ready", "thinking"]);
+  assert.deepEqual([store.statesOfChat(s(), "c1").length, store.statesOfChat(s(), THERE).length], [1, 1]);
+
+  store.setState({ sel: { board: null, run: null, chat: "c1" } });
+  void conn.loadItems("c1");
+  void conn.loadItems(THERE);
+  const [here, there, ...rest] = asked();
+  assert.deepEqual([here.chat, there.chat, rest.length], ["c1", THERE, 0]);
+  // each event waits behind the read of its own chat
+  await ev({ type: "chat_items", chat: "c1", branch: "main", version: 4, updates: [up(1, "here 1")] });
+  await ev({ type: "chat_items", server: S1, chat: "c1", branch: "main", version: 8, updates: [up(1, "there 1")] });
+  await there.answer({ branch: "main", version: 7, items: [text("there 0")], subagents: [sub("5f")] });
+  assert.deepEqual([texts("c1"), texts(THERE)], [undefined, ["there 0", "there 1"]]);
+  await here.answer({ branch: "main", version: 3, items: [text("here 0")], subagents: [] });
+  assert.deepEqual([texts("c1"), texts(THERE)], [["here 0", "here 1"], ["there 0", "there 1"]]);
+  assert.deepEqual(keys(s().items), ["c1:main", `${THERE}:main`]);
+
+  await ev({ type: "chat_items", chat: "c1", version: 5, updates: [up(2, "here 2")] });
+  await ev({ type: "chat_items", server: S1, chat: "c1", version: 9, updates: [up(2, "there 2")] });
+  assert.deepEqual([texts("c1"), texts(THERE)], [["here 0", "here 1", "here 2"], ["there 0", "there 1", "there 2"]]);
+  assert.deepEqual([store.threadOf(s(), "c1").version, store.threadOf(s(), THERE).version], [5, 9]);
+  await ev({ type: "sub", server: S1, chat: "c1", branch: "main", subagent: sub("9a") });
+  assert.deepEqual([keys(store.subsOf(s(), "c1")), keys(store.subsOf(s(), THERE))], [[], ["5f", "9a"]]);
+  await ev({ type: "branch_state", state: rec("c1", "main", { status: "tool" }) });
+  await ev({ type: "branch_state", server: S1, state: rec("c1", "main", { status: "stopped" }) });
+  assert.deepEqual([store.branchState(s(), "c1", "main").status, store.branchState(s(), THERE, "main").status], ["tool", "stopped"]);
+  assert.deepEqual(keys(s().states), ["c1:main", `${THERE}:main`]);
+  await ev({ type: "chat", server: S1, chat: view("c1", { name: "there, renamed" }) });
+  assert.deepEqual([s().chats.c1.name, s().chats[THERE].name], ["here", "there, renamed"]);
+
+  await conn.loadTree("c1");
+  await conn.loadTree(THERE);
+  assert.deepEqual(fake.trees.slice(-2), ["c1", THERE]);
+  await ev({ type: "tree", server: S1, chat: "c1", branch: mainPart(4) });
+  assert.deepEqual([s().trees.c1.branches, s().trees[THERE].branches], [[], [mainPart(4)]]);
+  await tree("c1", { current: B });
+  assert.deepEqual([s().trees.c1.current, s().trees[THERE].current], [B, "main"]);
+
+  // the section's chat is removed there: this computer's keeps everything it has, and goes on
+  await ev({ type: "chat_removed", server: S1, id: "c1" });
+  assert.deepEqual([keys(s().chats), keys(s().items), keys(s().subs), keys(s().states), keys(s().trees), s().sel.chat], [["c1"], ["c1:main"], ["c1:main"], ["c1:main"], ["c1"], "c1"]);
+  await ev({ type: "chat_items", chat: "c1", version: 6, updates: [up(3, "here 3")] });
+  await ev({ type: "chat_items", server: S1, chat: "c1", version: 10, updates: [up(3, "there 3")] });
+  assert.deepEqual(texts("c1"), ["here 0", "here 1", "here 2", "here 3"]);
+  assert.deepEqual(keys(s().items), ["c1:main"]);
+});
+
+test("a `section` with a tree replaces the entry's things and reads again what is on screen: the list, the tree, the run's detail and a held agent", async () => {
+  await withLinger(async (waits) => {
+    const R1 = on(S1, "r_1"), A1 = on(S1, "a_1"), OLD = on(S1, "k_old"), NEW = on(S1, "k_new");
+    await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), boards: [boardRow("b_9")], servers: SERVERS, sections: { [S1]: treeOf({
+      groups: [{ id: "g_1", name: "Old group" }], boards: [boardRow("b_1")], runs: [run("r_1")],
+      chats: [view("k_1", { run: "r_1" }), view("k_old")], states: [rec("k_1", "main"), rec("k_old", "main")] }) } });
+    store.setState({ sel: { board: null, run: R1, chat: K1 } });
+    // what the page keeps: the lists and the trees of three chats, the run's detail, and the transcript of one of its agents
+    for (const id of [K1, OLD, "c_2"]) {
+      void conn.loadItems(id);
+      await asked()[0].answer({ branch: "main", version: 10, items: [text("old")], subagents: [] });
+      await conn.loadTree(id);
+    }
+    void conn.loadRun(R1);
+    await tick();
+    await runAsked()[0].answer(detail(R1, 13));
+    const release = conn.holdAgent(A1);
+    await tick();
+    await asked()[0].answer({ branch: "main", version: 7, items: [text("agent")], subagents: [] });
+    await ev({ type: "chat", server: S1, chat: view("a_1", { role: "task", run: "r_1" }) });
+    assert.deepEqual(keys(s().agents), [A1]);
+    const told: string[] = [];
+    const closed = backs.draftBacks.add({ server: () => S1, back: () => told.push("save") });
+    fake.trees.length = 0; fake.views.length = 0; fake.opened.length = 0; fake.board.length = 0;
+    fake.holdTrees = true;
+
+    await section(S1, treeOf({
+      groups: [{ id: "g_2", name: "New group" }], boards: [boardRow("b_2", { group: "g_2" })], runs: [run("r_1", { name: "renamed" })],
+      chats: [view("k_1", { run: "r_1", name: "renamed" }), view("k_new", { group: "g_2" })], states: [rec("k_1", "main", { status: "thinking" }), rec("k_new", "main")] }));
+    // the entry's things are the new tree's, and this computer's are as they were
+    assert.deepEqual(s().sections[S1].groups, [{ id: on(S1, "g_2"), name: "New group" }]);
+    assert.deepEqual(keys(s().boards), ["b_9", on(S1, "b_2")]);
+    assert.deepEqual(keys(s().chats), ["c_2", K1, NEW]);
+    assert.deepEqual([s().chats[K1].name, s().runs[R1].name], ["renamed", "renamed"]);
+    assert.deepEqual(keys(s().states), ["c_2:main", `${K1}:main`, `${NEW}:main`]);
+    assert.equal(s().states[`${K1}:main`].status, "thinking", "the branch records are the new tree's");
+    assert.deepEqual([s().gone, s().sel], [{}, { board: null, run: R1, chat: K1 }]);
+    // what was kept of that server's things goes, but for the list on screen, which stays until its read answers
+    assert.deepEqual(keys(s().items), ["c_2:main", `${K1}:main`]);
+    assert.deepEqual(texts(K1), ["old"]);
+    assert.deepEqual(keys(s().trees), ["c_2"]);
+    assert.equal(s().runDetail[R1], undefined);
+    assert.deepEqual(keys(s().agents), [A1], "the agent's view stays until its read answers");
+    // what is on screen is read again, which follows it again: the local server ended the follows with the connection
+    assert.deepEqual(fake.opened, [K1]);
+    const reads = asked();
+    assert.deepEqual(reads.map((r) => [r.chat, r.branch]), [[K1, "main"], [A1, "main"]], "the list of the chat and the held agent's thread");
+    const [t, ...moreTrees] = treeAsked();
+    assert.deepEqual([t.chat, moreTrees.length], [K1, 0]);
+    assert.deepEqual(runAsked().map((r) => r.run), [R1]);
+    assert.deepEqual(fake.views, [A1]);
+    assert.deepEqual([fake.unfollows, fake.runUnfollows], [[], []], "nothing is unfollowed");
+    assert.deepEqual(fake.board, [["sectionBack", S1]], "the board layer takes the open board, if this window does not hold it (saves.test.ts)");
+    assert.deepEqual(told, ["save"], "and the open composer saves the draft that waited");
+
+    // the answers replace what was kept, whatever their version
+    await reads[0].answer({ branch: "main", version: 2, items: [text("new")], subagents: [] });
+    await reads[1].answer({ branch: "main", version: 1, items: [text("agent, new")], subagents: [] });
+    await t.answer({ current: "main", branches: [mainPart(1)], labels: [] });
+    assert.deepEqual([texts(K1), names(s().items[`${A1}:main`])], [["new"], ["agent, new"]]);
+    assert.deepEqual(s().trees[K1].branches, [mainPart(1)]);
+    await ev({ type: "chat_items", server: S1, chat: "k_1", branch: "main", version: 3, updates: [up(1, "next")] });
+    assert.deepEqual(texts(K1), ["new", "next"]);
+    assert.deepEqual(texts("c_2"), ["old"], "a chat of this computer keeps its thread");
+
+    closed(); release();
+    for (const w of waits.splice(0)) w.run();
+    await tick();
+  });
+});
+
+test("a `section` with null leaves the open chat, its thread and the open run's detail in the store, and makes no call", async () => {
+  const R1 = on(S1, "r_1"), OFF = on(S1, "k_off");
+  await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: treeOf({
+    groups: [{ id: "g_1", name: "Group" }], boards: [boardRow("b_1")], runs: [run("r_1"), run("r_off")],
+    chats: [view("k_1", { run: "r_1", branches: 2 }), view("k_off")], states: [rec("k_1", "main"), rec("k_1", B), rec("k_off", "main")] }) } });
+  store.setState({ sel: { board: null, run: R1, chat: K1 } });
+  void conn.loadItems(K1);
+  await asked()[0].answer({ branch: "main", version: 10, items: [text("m0")], subagents: [sub("5f")] });
+  void conn.loadItems(OFF);
+  await asked()[0].answer({ branch: "main", version: 4, items: [text("off")], subagents: [] });
+  await conn.loadTree(K1);
+  void conn.loadRun(R1);
+  await tick();
+  await runAsked()[0].answer(detail(R1, 13));
+  void conn.keepBranch(K1, B).catch(() => {}); // a read that is on its way when the connection ends
+  const [late] = asked();
+  fake.trees.length = 0; fake.opened.length = 0; fake.board.length = 0; fake.views.length = 0;
+  const told: string[] = [];
+  const closed = backs.draftBacks.add({ server: () => S1, back: () => told.push("save") });
+
+  await section(S1, null);
+  assert.deepEqual(s().sections, {}, "the section draws no row from here on");
+  assert.deepEqual([keys(s().chats), keys(s().runs), keys(s().boards)], [[K1], [R1], []], "what is on screen stays; the rest of that server goes");
+  assert.deepEqual(texts(K1), ["m0"]);
+  assert.deepEqual([keys(s().items), keys(s().subs)], [[`${K1}:main`], [`${K1}:main`]]);
+  assert.deepEqual(keys(s().states), [`${K1}:${B}`, `${K1}:main`]);
+  assert.ok(s().trees[K1]);
+  assert.equal(s().runDetail[R1].version, 13);
+  assert.deepEqual([s().sel, s().gone], [{ board: null, run: R1, chat: K1 }, {}], "a server that is not connected is not a thing that is gone");
+  assert.deepEqual([asked(), runAsked(), treeAsked(), fake.trees, fake.opened, fake.views, fake.unfollows, fake.runUnfollows, fake.board, told], [[], [], [], [], [], [], [], [], [], []]);
+
+  // the read that ran is given up: its answer is not kept
+  await late.answer({ branch: B, version: 1, items: [text("b0")], subagents: [] });
+  assert.deepEqual(keys(s().items), [`${K1}:main`]);
+  // and what still comes for the entry is dropped
+  await ev({ type: "chat_items", server: S1, chat: "k_1", branch: "main", version: 11, updates: [up(1, "m1")] });
+  await ev({ type: "run_detail", server: S1, run: "r_1", version: 14, patch: { status: "stopping" } });
+  await ev({ type: "chat_removed", server: S1, id: "k_1" });
+  assert.deepEqual([texts(K1), s().runDetail[R1].version, s().gone], [["m0"], 13, {}]);
+  closed();
+});
+
+test("what stayed on screen of a section goes once the user has left it: of an entry without a tree, and what is no longer on its server", async () => {
+  const R1 = on(S1, "r_1"), GONE = on(S1, "k_gone");
+  const there = () => treeOf({ runs: [run("r_1")], chats: [view("k_1", { run: "r_1" }), view("k_gone")], states: [rec("k_1", "main"), rec("k_gone", "main")] });
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), servers: SERVERS, sections: { [S1]: there() } });
+  store.setState({ sel: { board: null, run: R1, chat: K1 } });
+  void conn.loadItems(K1);
+  await asked()[0].answer({ branch: "main", version: 10, items: [text("m0")], subagents: [] });
+  await conn.loadTree(K1);
+  void conn.loadRun(R1);
+  await tick();
+  await runAsked()[0].answer(detail(R1, 13));
+  await section(S1, null);
+  conn.dropLeft();
+  assert.deepEqual([keys(s().chats), keys(s().runs)], [["c_2", K1], [R1]], "still on screen: nothing goes");
+
+  store.setState({ sel: { board: null, run: null, chat: "c_2" } }); // as Sidebar.tsx select does, before it calls dropLeft
+  conn.dropLeft();
+  assert.deepEqual([keys(s().chats), keys(s().runs), keys(s().items), keys(s().states), keys(s().trees), keys(s().runDetail)], [["c_2"], [], [], ["c_2:main"], [], []]);
+  assert.deepEqual([asked(), runAsked(), fake.unfollows, fake.runUnfollows], [[], [], [], []], "nothing is told to a server that is not connected");
+
+  // the tree is back: the chat is in the section again, and is read when it is opened
+  await section(S1, there());
+  assert.deepEqual(keys(s().chats), ["c_2", K1, GONE]);
+  assert.deepEqual(asked(), []);
+  // a chat that is removed there while it is on screen stays until it is left
+  store.setState({ sel: { board: null, run: null, chat: GONE } });
+  void conn.loadItems(GONE);
+  await asked()[0].answer({ branch: "main", version: 2, items: [text("g0")], subagents: [] });
+  await ev({ type: "chat_removed", server: S1, id: "k_gone" });
+  conn.dropLeft();
+  assert.deepEqual([s().gone, texts(GONE)], [{ [GONE]: true }, ["g0"]]);
+  store.setState({ sel: { board: null, run: null, chat: K1 } });
+  conn.dropLeft();
+  assert.deepEqual([s().gone, keys(s().chats), keys(s().items)], [{}, ["c_2", K1], []], "the chat of that server that is still there stays");
+});
+
+test("a snapshot is this computer's part: what is on screen of a section without a tree stays as it is, and is read again when the tree is in one", async () => {
+  const R1 = on(S1, "r_1");
+  const there = () => treeOf({ runs: [run("r_1")], chats: [view("k_1", { run: "r_1" }), view("k_off")], states: [rec("k_1", "main"), rec("k_off", "main")] });
+  const own = () => snapshot([view("c_2")], [rec("c_2", "main")]);
+  await ev({ ...own(), servers: SERVERS, sections: { [S1]: there() } });
+  store.setState({ sel: { board: null, run: R1, chat: K1 } });
+  for (const id of [K1, "c_2"]) {
+    void conn.loadItems(id);
+    await asked()[0].answer({ branch: "main", version: 10, items: [text("m0")], subagents: [] });
+    await conn.loadTree(id);
+  }
+  void conn.loadRun(R1);
+  await tick();
+  await runAsked()[0].answer(detail(R1, 13));
+  fake.trees.length = 0; fake.opened.length = 0;
+
+  // this computer's server restarted while that server was away: the new stream's snapshot has no tree of the entry
+  await ev({ type: "hello", client: "test" });
+  await ev({ ...own(), servers: [LOCAL, { ...STUDIO, state: "connecting" }] });
+  assert.deepEqual(s().sections, {});
+  assert.deepEqual([keys(s().chats), keys(s().runs)], [["c_2", K1], [R1]]);
+  assert.deepEqual(keys(s().items), [`${K1}:main`], "this computer's threads go with every snapshot; the one on screen of the section stays");
+  assert.deepEqual([texts(K1), keys(s().trees), s().runDetail[R1].version], [["m0"], [K1], 13]);
+  assert.deepEqual(keys(s().states), ["c_2:main", `${K1}:main`]);
+  assert.deepEqual([s().sel, s().gone], [{ board: null, run: R1, chat: K1 }, {}]);
+  assert.deepEqual([asked(), runAsked(), fake.opened, fake.trees], [[], [], [], []], "nothing of it is read");
+  await ev({ ...own(), servers: SERVERS, sections: {} }); // connected, its tree not read yet
+  assert.deepEqual([texts(K1), s().runDetail[R1].version, asked(), runAsked()], [["m0"], 13, [], []]);
+
+  // the snapshot that has the tree: as a `section` event with it
+  await ev({ ...own(), servers: SERVERS, sections: { [S1]: there() } });
+  assert.deepEqual(keys(s().sections), [S1]);
+  assert.deepEqual(keys(s().chats), ["c_2", K1, on(S1, "k_off")]);
+  assert.deepEqual(texts(K1), ["m0"], "the list on screen stays until its read answers");
+  const [a, ...rest] = asked();
+  assert.deepEqual([a.chat, a.branch, rest.length], [K1, "main", 0]);
+  assert.deepEqual([fake.opened, fake.trees, runAsked().map((r) => r.run)], [[K1], [K1], [R1]]);
+  await a.answer({ branch: "main", version: 1, items: [text("n0")], subagents: [] });
+  assert.deepEqual(texts(K1), ["n0"]);
+});
+
+// Suspected omission in src/conn.ts: afterSnapshot (line 128) calls refreshAgents (lines 743-745), which reads the view and the
+// thread of every held agent again, also of one whose section the local server holds no tree of. Expected: such an agent is
+// left as it is, as the chat and the run on screen are, and is read when the section's tree arrives (onRunSectionBack).
+test("a `section` event that names this computer is ignored: its things come in the snapshot, and none of them is replaced or dropped", async () => {
+  await ev({ type: "snapshot", groups: [], boards: [], chats: [{ id: "c_mine", agent: "claude", cwd: "", model: "", locked: true, created: "", usage: { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 }, status: "ready" }], runs: [], states: [], defaults: { groups: {} }, catalogs: {}, home: "", defaultCwd: "", dataDir: "" });
+  await ev({ type: "section", server: "local", tree: { groups: [], boards: [], chats: [], states: [], runs: [], defaults: { groups: {} } } });
+  await ev({ type: "section", server: "local", tree: null });
+  assert.deepEqual(Object.keys(store.getState().chats), ["c_mine"]);
+  assert.deepEqual(store.getState().sections, {});
+});
+
+test("a snapshot makes no call for a held agent of a section the local server holds no tree of", async () => {
+  await withLinger(async (waits) => {
+    const R1 = on(S1, "r_1"), A1 = on(S1, "a_1");
+    await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: treeOf({ runs: [run("r_1")] }) } });
+    await openRun(R1);
+    const release = conn.holdAgent(A1);
+    await tick();
+    await asked()[0].answer({ branch: "main", version: 7, items: [text("agent")], subagents: [] });
+    await ev({ type: "chat", server: S1, chat: view("a_1", { role: "task", run: "r_1" }) });
+    store.openRunAgent(R1, A1);
+    fake.views.length = 0;
+
+    await ev({ ...snapshot([]), servers: [LOCAL, { ...STUDIO, state: "unreachable" }] });
+    assert.deepEqual([keys(s().agents), names(s().items[`${A1}:main`])], [[A1], ["agent"]], "the transcript on screen stays");
+    assert.deepEqual([asked().map((a) => a.chat), fake.views], [[], []], "and nothing is asked of a server that is not connected");
+
+    release();
+    for (const w of waits.splice(0)) w.run();
+    await tick();
+  });
+});
+
+test("`chat_removed` with `server`: the chat on screen is marked gone and kept as it is, one off screen is removed", async () => {
+  const OFF = on(S1, "k_off");
+  await ev({ ...snapshot([view("k_1")], [rec("k_1", "main")]), servers: SERVERS,
+    sections: { [S1]: treeOf({ chats: [view("k_1"), view("k_off")], states: [rec("k_1", "main"), rec("k_off", "main")] }) } });
+  store.setState({ sel: { board: null, run: null, chat: K1 } });
+  for (const id of [K1, OFF, "k_1"]) {
+    void conn.loadItems(id);
+    await asked()[0].answer({ branch: "main", version: 3, items: [text(id)], subagents: [] });
+    await conn.loadTree(id);
+  }
+  fake.trees.length = 0; fake.opened.length = 0;
+
+  await ev({ type: "chat_removed", server: S1, id: "k_off" });
+  assert.deepEqual([keys(s().chats), keys(s().items), keys(s().states), keys(s().trees)], [["k_1", K1], ["k_1:main", `${K1}:main`], ["k_1:main", `${K1}:main`], ["k_1", K1]]);
+  assert.deepEqual(s().gone, {});
+
+  await ev({ type: "chat_removed", server: S1, id: "k_1" });
+  assert.deepEqual(s().gone, { [K1]: true }, "its view says that it is no longer on that server");
+  assert.deepEqual(keys(s().chats), ["k_1", K1], "it stays, and so does this computer's chat of the same id");
+  assert.deepEqual([texts(K1), texts("k_1"), s().sel.chat], [[K1], ["k_1"], K1]);
+  assert.deepEqual([keys(s().states), keys(s().trees)], [["k_1:main", `${K1}:main`], ["k_1", K1]]);
+  assert.deepEqual([asked(), fake.unfollows], [[], []]);
+  // what still comes for it is dropped
+  await ev({ type: "branch_state", server: S1, state: rec("k_1", "main", { status: "thinking" }) });
+  await ev({ type: "tree", server: S1, chat: "k_1", current: B });
+  assert.deepEqual([s().states[`${K1}:main`].status, s().trees[K1].current], ["ready", "main"]);
+
+  // a tree that comes without it: it stays gone, and nothing of it is read
+  await section(S1, treeOf());
+  assert.deepEqual([s().gone, texts(K1), s().sel.chat], [{ [K1]: true }, [K1], K1]);
+  assert.deepEqual([asked(), fake.trees, fake.opened], [[], [], []]);
+  // the server tells of it again: it is on its server
+  await ev({ type: "chat", server: S1, chat: view("k_1") });
+  assert.deepEqual(s().gone, {});
+});
+
+test("a `section` with a tree that lacks the chat and the run on screen marks them gone, keeps what the page shows of them and reads nothing", async () => {
+  const R1 = on(S1, "r_1");
+  await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: treeOf({ runs: [run("r_1")], chats: [view("k_1", { run: "r_1" })], states: [rec("k_1", "main")] }) } });
+  store.setState({ sel: { board: null, run: R1, chat: K1 } });
+  void conn.loadItems(K1);
+  await asked()[0].answer({ branch: "main", version: 10, items: [text("m0")], subagents: [] });
+  await conn.loadTree(K1);
+  void conn.loadRun(R1);
+  await tick();
+  await runAsked()[0].answer(detail(R1, 13));
+  fake.trees.length = 0; fake.opened.length = 0;
+
+  await section(S1, null);
+  await section(S1, treeOf({ chats: [view("k_2")], states: [rec("k_2", "main")] })); // both were deleted there meanwhile
+  assert.deepEqual(s().gone, { [K1]: true, [R1]: true });
+  assert.deepEqual([keys(s().chats), keys(s().runs)], [[K1, on(S1, "k_2")], [R1]]);
+  assert.deepEqual([texts(K1), keys(s().trees), s().runDetail[R1].version, keys(s().states)], [["m0"], [K1], 13, [`${K1}:main`, `${on(S1, "k_2")}:main`]]);
+  assert.deepEqual(s().sel, { board: null, run: R1, chat: K1 });
+  assert.deepEqual([asked(), runAsked(), fake.trees, fake.opened], [[], [], [], []]);
+
+  // a tree that has them again takes the marks away and reads them
+  await section(S1, treeOf({ runs: [run("r_1")], chats: [view("k_1", { run: "r_1" })], states: [rec("k_1", "main")] }));
+  assert.deepEqual(s().gone, {});
+  assert.deepEqual([asked().map((a) => a.chat), runAsked().map((r) => r.run), fake.trees, fake.opened], [[K1], [R1], [K1], [K1]]);
+});
+
+test("a read of a section's chat or run answered 404 `not_found` marks it gone; another failure, a subagent's thread and a chat of this computer do not", async () => {
+  const R1 = on(S1, "r_1");
+  await ev({ ...runSnapshot([run("r_9")], [view("c_2")]), servers: SERVERS, sections: { [S1]: treeOf({ runs: [run("r_1")], chats: [view("k_1")], states: [rec("k_1", "main")] }) } });
+  store.setState({ sel: { board: null, run: null, chat: K1 } });
+  void conn.loadItems(K1);
+  await asked()[0].fail(refusal("server_unreachable", "Studio is not connected."));
+  void conn.loadSubItems(K1, "5f");
+  await asked()[0].fail(notFound("subagent"));
+  void conn.loadItems("c_2");
+  await asked()[0].fail(notFound("chat"));
+  assert.deepEqual(s().gone, {});
+  assert.deepEqual(s().threadErrors.c_2, { code: "not_found", message: "No such chat." });
+
+  void conn.loadItems(K1);
+  await asked()[0].fail(notFound("chat"));
+  assert.deepEqual(s().gone, { [K1]: true });
+  assert.deepEqual(s().threadErrors[K1], { code: "not_found", message: "No such chat." });
+  assert.deepEqual([keys(s().chats), s().sel.chat], [["c_2", K1], K1], "it stays on screen: its view says that it is no longer there");
+
+  store.setState({ sel: { board: null, run: R1, chat: null } });
+  const done = conn.loadRun(R1);
+  await tick();
+  await runAsked()[0].fail(refusal("server_unreachable", "Studio is not connected."));
+  await done;
+  assert.equal(s().gone[R1], undefined);
+  void conn.loadRun("r_9");
+  await tick();
+  await runAsked()[0].fail(notFound("run"));
+  assert.equal(s().gone.r_9, undefined);
+  const again = conn.loadRun(R1);
+  await tick();
+  await runAsked()[0].fail(notFound("run"));
+  await again;
+  assert.deepEqual(s().gone, { [K1]: true, [R1]: true });
+  assert.deepEqual(s().runErrors[R1], { code: "not_found", message: "No such run." });
+  assert.ok(s().runs[R1]);
+});
+
+test("`run_removed` and `board_removed` with `server`: what is on screen is marked gone and kept, the run with its detail; what is off screen is removed", async () => {
+  const R1 = on(S1, "r_1"), B1 = on(S1, "b_1");
+  await ev({ ...runSnapshot([run("r_1")]), boards: [boardRow("b_1")], servers: SERVERS, sections: { [S1]: treeOf({ boards: [boardRow("b_1"), boardRow("b_2")], runs: [run("r_1"), run("r_2")] }) } });
+  await openRun(R1, 5);
+  await ev({ type: "run_removed", server: S1, id: "r_2" });
+  assert.deepEqual([keys(s().runs), s().gone], [["r_1", R1], {}]);
+  await ev({ type: "run_removed", server: S1, id: "r_1" });
+  assert.deepEqual(s().gone, { [R1]: true });
+  assert.deepEqual([keys(s().runs), s().runDetail[R1].version, s().sel.run], [["r_1", R1], 5, R1], "the run stays as it was, and this computer's run of the same id is not touched");
+  assert.deepEqual(fake.runUnfollows, [], "nothing is told to its server: the run is not there");
+
+  store.setState({ sel: { board: B1, run: null, chat: null } });
+  conn.dropLeft();
+  assert.deepEqual([keys(s().runs), keys(s().runDetail), s().gone], [["r_1"], [], {}]);
+  await ev({ type: "board_removed", server: S1, id: "b_2" });
+  await ev({ type: "board_removed", server: S1, id: "b_1" });
+  assert.deepEqual([keys(s().boards), s().gone, s().sel.board], [["b_1", B1], { [B1]: true }, B1]);
+
+  // a board of this computer that is removed goes at once, also from the screen
+  store.setState({ sel: { board: "b_1", run: null, chat: null } });
+  conn.dropLeft();
+  await ev({ type: "board_removed", id: "b_1" });
+  assert.deepEqual([keys(s().boards), s().gone, s().sel.board], [[], {}, null]);
+});
+
+test("a `section` with null keeps a board of that server whose edit waits to be saved, on screen or not; a tree that comes without it takes it away", async () => {
+  const B1 = on(S1, "b_1"), B2 = on(S1, "b_2"), B3 = on(S1, "b_3");
+  const there = (...ids: string[]) => treeOf({ boards: ids.map((id) => boardRow(id)) });
+  await ev({ ...snapshot([]), boards: [boardRow("b_1")], servers: SERVERS, sections: { [S1]: there("b_1", "b_2", "b_3") } });
+  store.setState({ sel: { board: B3, run: null, chat: null } });
+  fake.unsaved.push(B1); // as the board layer says: the drawing is in this window alone (boardUnsaved)
+  await section(S1, null);
+  assert.deepEqual(keys(s().boards), ["b_1", B1, B3], "the one with the edit and the one on screen stay; the third goes with the tree");
+  assert.deepEqual(s().gone, {});
+  store.setState({ sel: { board: null, run: null, chat: null } });
+  conn.dropLeft();
+  assert.deepEqual(keys(s().boards), ["b_1", B1], "left, the board on screen goes; the edit still waits for its server");
+  // the server is back and no longer has the board: nothing is left to save the edit to
+  await section(S1, there("b_2"));
+  assert.deepEqual([keys(s().boards), s().gone], [["b_1", B2], {}]);
+});
+
+test("the events about one board of a section go to the board layer with the board's key", async () => {
+  await ev({ ...snapshot([]), boards: [boardRow("b_1")], servers: SERVERS, sections: { [S1]: treeOf({ boards: [boardRow("b_1")] }) } });
+  fake.board.length = 0;
+  await ev({ type: "held", server: S1, board: "b_1", rev: 7 });
+  await ev({ type: "release_request", server: S1, board: "b_1" });
+  await ev({ type: "superseded", server: S1, board: "b_1" });
+  await ev({ type: "held", board: "b_1", rev: 2 });
+  assert.deepEqual(fake.board, [["granted", on(S1, "b_1"), 7], ["handOver", on(S1, "b_1")], ["boardLost", on(S1, "b_1")], ["granted", "b_1", 2]]);
+});
+
+test("a tool call with `server` reaches the board layer with the page's keys of the chat, its board and the target; the arguments stay the agent's own", async () => {
+  await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: treeOf({ boards: [boardRow("b_1"), boardRow("b_2")], chats: [view("c_1", { board: "b_1" })], states: [rec("c_1", "main")] }) } });
+  const got: any[] = [];
+  fake.tool = async (p) => { got.push(p); return "the board"; };
+  const args = { refs: [{ id: "b_1" }], create: [{ type: "rectangle", key: "c_1" }] };
+  await ev({ type: "rpc", server: S1, id: "far_1", method: "tool", params: { chat: "c_1", branch: "main", board: "b_1", target: "b_2", name: "read_board", args } });
+  assert.deepEqual(got[0], { chat: on(S1, "c_1"), branch: "main", board: on(S1, "b_1"), target: on(S1, "b_2"), name: "read_board", args });
+  assert.deepEqual(fake.replies, [{ id: "far_1", result: "the board" }], "the answer names the call, whatever server the agent is on");
+  // get_view names no target
+  await ev({ type: "rpc", server: S1, id: "far_2", method: "tool", params: { chat: "c_1", branch: "main", board: "b_1", name: "get_view", args: {} } });
+  assert.deepEqual([got[1].chat, got[1].board, got[1].target, got[1].name], [on(S1, "c_1"), on(S1, "b_1"), undefined, "get_view"]);
+  // a call of an agent of this computer is passed on as it came
+  const own = { chat: "c_1", branch: "main", board: "b_1", target: "b_2", name: "read_board", args };
+  await ev({ type: "rpc", id: "rpc_3", method: "tool", params: own });
+  assert.deepEqual(got[2], own);
+});
+
+test("a `section` with a tree is told to the board layer, which reads and takes the board on screen of that server; one with none is not", async () => {
+  fake.board.length = 0;
+  await section(S1, treeOf());
+  assert.deepEqual(fake.board, [["sectionBack", S1]]);
+  fake.board.length = 0;
+  await section(S1, null);
+  await ev({ type: "section", tree: treeOf() }); // an event that names no server
+  assert.deepEqual(fake.board, []);
+  assert.deepEqual(s().sections, {});
+  // a snapshot's tree is told the same, after the snapshot's own takes
+  await ev({ ...snapshot([]), sections: { [S2]: treeOf() } });
+  assert.deepEqual(fake.board, [["takeAfterSnapshot"], ["sectionBack", S2]]);
+});
+
+test("a `section` with a tree and the stream's `hello` tell the open composers to save a draft that waits (logic/draftsback.ts)", async () => {
+  const there = () => treeOf({ chats: [view("c_1")], states: [rec("c_1", "main")] });
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), sections: { [S1]: there() } });
+  const told: string[] = [];
+  const gone = [backs.draftBacks.add({ server: () => S1, back: () => told.push("remote") }), backs.draftBacks.add({ server: () => "local", back: () => told.push("local") })];
+  await section(S1, there());
+  assert.deepEqual(told.splice(0), ["remote"]);
+  await section(S2, treeOf());                   // another server's tree
+  await section(S1, null);                       // the tree went: nothing can be saved
+  await ev({ type: "section", tree: there() });  // an event that names no server tells nobody
+  assert.deepEqual(told.splice(0), []);
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), sections: { [S1]: there() } }); // the tree in a snapshot
+  assert.deepEqual(told.splice(0), ["remote"]);
+  // the page's own stream opened again: every composer, whatever its chat's server
+  await ev({ type: "hello" });
+  assert.deepEqual(told.splice(0), ["remote", "local"]);
+  for (const g of gone) g();
+  await ev({ type: "hello" });
+  await section(S1, there());
+  assert.deepEqual(told, []);
+});
+
+test("the unsaved copy of a draft of a section's chat or run is kept in the page's memory, never in the browser's storage", async () => {
+  await withStorage(async (kept) => {
+    const R1 = on(S1, "r_1");
+    await ev({ ...snapshot([view("c_2")], [rec("c_2", "main", { draftRev: 2 })]), servers: SERVERS,
+      sections: { [S1]: treeOf({ runs: [draftRun("r_1")], chats: [view("k_1")], states: [rec("k_1", "main", { draftRev: 4 })] }) } });
+    const draft = (t: string) => ({ text: t, mentions: [], references: [] });
+    store.unsavedDraft(K1, "main").write(draft("typed there"));
+    store.unsavedDraft("c_2", "main").write(draft("typed here"));
+    store.unsavedRunDraft(R1).write(draft("a goal there"));
+    assert.deepEqual(Object.keys(kept).filter((k) => k.startsWith("aiwb.draft")), ["aiwb.draft.c_2:main"]);
+    assert.equal(Object.values(kept).some((v) => v.includes("there")), false, "no content of a remote server is in the browser's storage");
+    assert.deepEqual([store.unsavedDraft(K1, "main").read(), store.unsavedDraft(K1, "main").base()], [draft("typed there"), 4], "another composer of the page reads it, with the counter it was typed on");
+    assert.deepEqual([store.unsavedDraft("c_2", "main").read(), store.unsavedDraft("c_2", "main").base()], [draft("typed here"), 2]);
+    assert.deepEqual(store.unsavedRunDraft(R1).read(), draft("a goal there"));
+    assert.deepEqual(store.keptDrafts().map((k: { chat: string }) => k.chat), ["c_2"], "the drafts saved when the stream is back are this computer's alone");
+    assert.equal(typeof store.keptRaw(K1, "main"), "string");
+
+    // the copies go with their things
+    await ev({ type: "chat_removed", server: S1, id: "k_1" });
+    await ev({ type: "run_removed", server: S1, id: "r_1" });
+    assert.deepEqual([store.unsavedDraft(K1, "main").read(), store.unsavedRunDraft(R1).read()], [null, null]);
+    assert.equal(store.unsavedDraft("c_2", "main").read()?.text, "typed here");
+  });
+});
+
 test("a failed load of a chat's list is kept with its code, and a load that works clears it", async () => {
-  await ev(snapshot([view("c_1", { server: "s_1" }), view("c_2")], [rec("c_1", "main"), rec("c_2", "main")]));
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
-  void conn.loadItems("c_1");
+  const C1 = on(S1, "c_1");
+  const there = () => treeOf({ chats: [view("c_1")], states: [rec("c_1", "main")] });
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), sections: { [S1]: there() } });
+  store.setState({ sel: { board: null, run: null, chat: C1 } });
+  void conn.loadItems(C1);
   let [a] = asked();
   await a.fail(refusal("server_unreachable", "Studio is not connected."));
-  assert.deepEqual(s().threadErrors, { c_1: { code: "server_unreachable", message: "Studio is not connected." } });
-  assert.equal(store.threadOf(s(), "c_1"), undefined);
+  assert.deepEqual(s().threadErrors, { [C1]: { code: "server_unreachable", message: "Studio is not connected." } });
+  assert.equal(store.threadOf(s(), C1), undefined);
 
   void conn.loadItems("c_2");
   [a] = asked();
   await a.fail(new Error("no code"));
   assert.deepEqual(s().threadErrors.c_2, { message: "no code" });
 
-  void conn.loadItems("c_1");
+  void conn.loadItems(C1);
   [a] = asked();
   await a.answer({ branch: "main", version: 2, items: [text("m0")], subagents: [] });
   assert.deepEqual(keys(s().threadErrors), ["c_2"]);
-  assert.deepEqual(texts("c_1"), ["m0"]);
+  assert.deepEqual(texts(C1), ["m0"]);
 
   // a subagent's thread that fails says nothing about the chat's
-  void conn.loadSubItems("c_1", "5f");
+  void conn.loadSubItems(C1, "5f");
   [a] = asked();
   await a.fail(refusal("server_unreachable", "Studio is not connected."));
   assert.deepEqual(keys(s().threadErrors), ["c_2"]);
 
   // the answer of a fetch that a newer one took over sets nothing
-  void conn.loadItems("c_1");
+  void conn.loadItems(C1);
   const [old] = asked();
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, there());
   const [fresh] = asked();
   await old.fail(refusal("server_unreachable", "late"));
   assert.deepEqual(keys(s().threadErrors), ["c_2"]);
@@ -1096,477 +1768,348 @@ test("a snapshot drops the load errors with the threads", async () => {
   assert.deepEqual(s().threadErrors, {});
 });
 
-test("server_back: a thread kept at a high version is replaced by the restarted server's, and its events are applied again", async () => {
-  await ev({ ...snapshot([view("k_1", { server: "s_1" }), view("k_2")], [rec("k_1", "main"), rec("k_2", "main")]), servers: [{ id: "local", local: true, name: "This computer", state: "connected" }, STUDIO] });
-  store.setState({ sel: { board: null, run: null, chat: "k_1" } });
-  void conn.loadItems("k_1");
+// ---- a `section` with a tree, for the chat on screen: that server is connected, for the first time or again
+
+test("a `section` with a tree: a thread kept at a high version is replaced by the restarted server's, and its events are applied again", async () => {
+  await ev({ ...snapshot([view("k_2")], [rec("k_2", "main")]), servers: SERVERS, sections: { [S1]: treeOf({ chats: [view("k_1")], states: [rec("k_1", "main")] }) } });
+  store.setState({ sel: { board: null, run: null, chat: K1 } });
+  void conn.loadItems(K1);
   let [a] = asked();
   await a.answer({ branch: "main", version: 10, items: [text("old0"), text("old1")], subagents: [sub("5f")] });
-  await conn.loadTree("k_1");
+  await conn.loadTree(K1);
   fake.trees.length = 0;
-  assert.ok(s().trees.k_1);
+  assert.ok(s().trees[K1]);
 
   // without the event the restarted server's first versions would all be dropped
-  await ev({ type: "chat_items", chat: "k_1", branch: "main", version: 3, updates: [up(2, "lost")] });
-  assert.deepEqual(texts("k_1"), ["old0", "old1"]);
+  await ev({ type: "chat_items", server: S1, chat: "k_1", branch: "main", version: 3, updates: [up(2, "lost")] });
+  assert.deepEqual(texts(K1), ["old0", "old1"]);
 
   fake.holdTrees = true;
-  store.setDrawer("k_1", "5f"); // an open subagent pane, whose thread was not read yet
-  await ev({ type: "server_back", server: "s_1" });
-  assert.deepEqual(texts("k_1"), ["old0", "old1"], "the thread on screen stays until the read answers");
-  assert.deepEqual(keys(s().subs), ["k_1:main"], "and its subagents");
-  assert.deepEqual(s().subDrawer, { chat: "k_1", branch: "main", sub: "5f" }, "the pane stays open");
-  assert.equal(s().trees.k_1, undefined);
+  store.setDrawer(K1, "5f"); // an open subagent pane, whose thread was not read yet
+  await section(S1, treeOf({ chats: [view("k_1", { status: "stopped" })], states: [rec("k_1", "main", { status: "stopped" })] }));
+  assert.deepEqual(texts(K1), ["old0", "old1"], "the thread on screen stays until the read answers");
+  assert.deepEqual(keys(s().subs), [`${K1}:main`], "and its subagents");
+  assert.deepEqual(s().subDrawer, { chat: K1, branch: "main", sub: "5f" }, "the pane stays open");
+  assert.equal(s().trees[K1], undefined);
   const [t] = treeAsked();
-  assert.deepEqual(keys(s().states), ["k_2:main"], "its branch states go; the events that follow bring them again");
+  assert.deepEqual(keys(s().states), ["k_2:main", `${K1}:main`]);
+  assert.deepEqual([s().states[`${K1}:main`].status, s().chats[K1].status], ["stopped", "stopped"], "its branch records and its view are the new tree's");
   [a] = asked();
-  assert.deepEqual([a.chat, a.branch], ["k_1", "main"], "the chat on screen is read again");
-  assert.deepEqual(fake.trees, ["k_1"], "and its tree");
-  // what the local server sends next: the states and the view
-  await ev({ type: "branch_state", state: rec("k_1", "main", { status: "stopped" }) });
-  await ev({ type: "chat", chat: view("k_1", { server: "s_1", status: "stopped" }) });
-  await ev({ type: "chat_items", chat: "k_1", branch: "main", version: 4, updates: [up(1, "n1")] }); // while the read runs: after its answer
-  assert.deepEqual(texts("k_1"), ["old0", "old1"], "an event of the restarted server waits behind the read: the kept thread's version is above it");
+  assert.deepEqual([a.chat, a.branch], [K1, "main"], "the chat on screen is read again");
+  assert.deepEqual(fake.trees, [K1], "and its tree");
+  await ev({ type: "chat_items", server: S1, chat: "k_1", branch: "main", version: 4, updates: [up(1, "n1")] }); // while the read runs: after its answer
+  assert.deepEqual(texts(K1), ["old0", "old1"], "an event of the restarted server waits behind the read: the kept thread's version is above it");
   await a.answer({ branch: "main", version: 3, items: [text("n0")], subagents: [sub("9a")] });
   await t.answer({ current: "main", branches: [mainPart(1)], labels: [] });
-  assert.deepEqual(texts("k_1"), ["n0", "n1"], "the answer replaces the kept thread although its version is lower");
-  assert.deepEqual(keys(s().subs["k_1:main"]), ["9a"], "and its subagents");
-  assert.equal(store.threadOf(s(), "k_1").version, 4);
-  assert.deepEqual(keys(s().states), ["k_1:main", "k_2:main"]);
-  assert.ok(s().trees.k_1, "the tree is kept again");
-  await ev({ type: "chat_items", chat: "k_1", branch: "main", version: 5, updates: [up(2, "n2")] });
-  assert.deepEqual(texts("k_1"), ["n0", "n1", "n2"]);
+  assert.deepEqual(texts(K1), ["n0", "n1"], "the answer replaces the kept thread although its version is lower");
+  assert.deepEqual(keys(s().subs[`${K1}:main`]), ["9a"], "and its subagents");
+  assert.equal(store.threadOf(s(), K1).version, 4);
+  assert.ok(s().trees[K1], "the tree is kept again");
+  await ev({ type: "chat_items", server: S1, chat: "k_1", branch: "main", version: 5, updates: [up(2, "n2")] });
+  assert.deepEqual(texts(K1), ["n0", "n1", "n2"]);
 });
 
-test("server_back: the read of the chat on screen fails: the kept thread goes, with the pane, and the error is stored", async () => {
-  await ev({ ...snapshot([view("k_1", { server: "s_1" })], [rec("k_1", "main")]), servers: [{ id: "local", local: true, name: "This computer", state: "connected" }, STUDIO] });
-  store.setState({ sel: { board: null, run: null, chat: "k_1" } });
-  void conn.loadItems("k_1");
-  let [a] = asked();
-  await a.answer({ branch: "main", version: 10, items: [text("old0")], subagents: [sub("5f")] });
-  store.setDrawer("k_1", "5f");
+/** k_1 of the server S1 with main and the branch B, selected; main's list kept at version 10 with the subagent 5f. */
+const studio = () => treeOf({ chats: [view("k_1", { branches: 2 })], states: [rec("k_1", "main"), rec("k_1", B)] });
+async function keptAtTen() {
+  await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: studio() } });
+  store.setState({ sel: { board: null, run: null, chat: K1 } });
+  void conn.loadItems(K1);
+  const [a] = asked();
+  await a.answer({ branch: "main", version: 10, items: [text("old0"), text("old1")], subagents: [sub("5f")] });
+}
+/** The thread of the subagent 5f of k_1's main. */
+const PANE = `${K1}:main/5f`;
 
-  await ev({ type: "server_back", server: "s_1" });
-  [a] = asked();
-  assert.deepEqual(texts("k_1"), ["old0"]);
+test("a `section` with a tree: the read of the chat on screen fails: the kept thread goes, with the pane, and the error is stored", async () => {
+  await keptAtTen();
+  store.setDrawer(K1, "5f");
+
+  await section(S1, studio());
+  let [a] = asked();
+  assert.deepEqual(texts(K1), ["old0", "old1"]);
   await a.fail(refusal("server_unreachable", "Studio is not connected."));
   await tick();
-  assert.equal(store.threadOf(s(), "k_1"), undefined, "kept, it would stay at its old version");
+  assert.equal(store.threadOf(s(), K1), undefined, "kept, it would stay at its old version");
   assert.deepEqual(keys(s().subs), []);
   assert.equal(s().subDrawer, null);
-  assert.deepEqual(s().threadErrors.k_1, { code: "server_unreachable", message: "Studio is not connected." });
+  assert.deepEqual(s().threadErrors[K1], { code: "server_unreachable", message: "Studio is not connected." });
+  assert.deepEqual(s().gone, {});
   // read again, it loads as a chat never loaded
-  void conn.loadItems("k_1");
+  void conn.loadItems(K1);
   [a] = asked();
   await a.answer({ branch: "main", version: 1, items: [text("n0")], subagents: [] });
-  assert.deepEqual(texts("k_1"), ["n0"]);
+  assert.deepEqual(texts(K1), ["n0"]);
 });
 
-test("server_back: an open subagent pane stays, and its thread is read again and replaced", async () => {
-  await ev({ ...snapshot([view("k_1", { server: "s_1" })], [rec("k_1", "main")]), servers: [{ id: "local", local: true, name: "This computer", state: "connected" }, STUDIO] });
-  store.setState({ sel: { board: null, run: null, chat: "k_1" } });
-  void conn.loadItems("k_1");
-  let [a] = asked();
+test("a `section` with a tree: an open subagent pane stays, and its thread is read again and replaced", async () => {
+  await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: studio() } });
+  store.setState({ sel: { board: null, run: null, chat: K1 } });
+  void conn.loadItems(K1);
+  const [a] = asked();
   await a.answer({ branch: "main", version: 10, items: [text("old0")], subagents: [sub("5f"), sub("6a")] });
-  store.setDrawer("k_1", "5f");
-  void conn.loadSubItems("k_1", "5f");
-  void conn.loadSubItems("k_1", "6a");
+  store.setDrawer(K1, "5f");
+  void conn.loadSubItems(K1, "5f");
+  void conn.loadSubItems(K1, "6a");
   let reads = asked();
   await reads[0].answer({ version: 8, items: [text("s-old")] });
   await reads[1].answer({ version: 8, items: [text("other")] });
-  assert.deepEqual(keys(s().items), ["k_1:main", "k_1:main/5f", "k_1:main/6a"]);
+  assert.deepEqual(keys(s().items), [`${K1}:main`, PANE, `${K1}:main/6a`]);
 
-  await ev({ type: "server_back", server: "s_1" });
-  assert.deepEqual(s().subDrawer, { chat: "k_1", branch: "main", sub: "5f" });
-  assert.deepEqual(keys(s().items), ["k_1:main", "k_1:main/5f"], "the list on screen and the pane's thread stay; another subagent's goes");
+  await section(S1, studio());
+  assert.deepEqual(s().subDrawer, { chat: K1, branch: "main", sub: "5f" });
+  assert.deepEqual(keys(s().items), [`${K1}:main`, PANE], "the list on screen and the pane's thread stay; another subagent's goes");
   reads = asked();
-  assert.deepEqual(reads.map((r: { chat: string; sid?: string }) => [r.chat, r.sid ?? ""]), [["k_1", ""], ["k_1", "5f"]], "the list and the pane's thread are read again");
+  assert.deepEqual(reads.map((r: { chat: string; sid?: string }) => [r.chat, r.sid ?? ""]), [[K1, ""], [K1, "5f"]], "the list and the pane's thread are read again");
   await reads[0].answer({ branch: "main", version: 2, items: [text("n0")], subagents: [sub("5f")] });
   await reads[1].answer({ version: 1, items: [text("s-new")] });
-  assert.deepEqual(s().items["k_1:main/5f"].items.map((it: { text: string }) => it.text), ["s-new"], "replaced, although its version is lower");
-  assert.deepEqual(s().subDrawer, { chat: "k_1", branch: "main", sub: "5f" });
+  assert.deepEqual(names(s().items[PANE]), ["s-new"], "replaced, although its version is lower");
+  assert.deepEqual(s().subDrawer, { chat: K1, branch: "main", sub: "5f" });
 
   // a read of the pane's thread that fails drops that thread: the pane reads it again
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, studio());
   reads = asked();
   await reads[0].answer({ branch: "main", version: 1, items: [text("n0")], subagents: [sub("5f")] });
   await reads[1].fail(new Error("down"));
   await tick();
-  assert.deepEqual(keys(s().items), ["k_1:main"]);
-  assert.deepEqual(s().subDrawer, { chat: "k_1", branch: "main", sub: "5f" });
+  assert.deepEqual(keys(s().items), [`${K1}:main`]);
+  assert.deepEqual(s().subDrawer, { chat: K1, branch: "main", sub: "5f" });
 });
 
-test("server_back: the chats of another server and the local ones keep what they have; one not on screen loads when it is opened", async () => {
-  await ev(snapshot([view("c_1", { server: "s_1" }), view("c_2"), view("c_3", { server: "s_2" })], [rec("c_1", "main"), rec("c_2", "main"), rec("c_3", "main")]));
-  for (const id of ["c_1", "c_2", "c_3"]) {
+test("a `section` with a tree: the chats of another server and the local ones keep what they have; one not on screen loads when it is opened", async () => {
+  const C1 = on(S1, "c_1"), C3 = on(S2, "c_3");
+  const there = (status = "ready") => treeOf({ chats: [view("c_1")], states: [rec("c_1", "main", { status })] });
+  await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), sections: { [S1]: there(), [S2]: treeOf({ chats: [view("c_3")], states: [rec("c_3", "main")] }) } });
+  for (const id of [C1, "c_2", C3]) {
     void conn.loadItems(id);
     const [a] = asked();
     await a.answer({ branch: "main", version: 9, items: [text(id)], subagents: [] });
     await conn.loadTree(id);
   }
-  store.setState({ sel: { board: null, run: null, chat: "c_2" }, threadErrors: { c_1: { message: "x" }, c_3: { message: "y" } } });
+  store.setState({ sel: { board: null, run: null, chat: "c_2" }, threadErrors: { [C1]: { message: "x" }, [C3]: { message: "y" } } });
   fake.trees.length = 0;
 
-  await ev({ type: "server_back", server: "s_1" });
-  assert.deepEqual(keys(s().items), ["c_2:main", "c_3:main"]);
-  assert.deepEqual(keys(s().trees), ["c_2", "c_3"]);
-  assert.deepEqual(keys(s().states), ["c_2:main", "c_3:main"]);
-  assert.deepEqual(s().threadErrors, { c_3: { message: "y" } });
+  await section(S1, there("stopped"));
+  assert.deepEqual(keys(s().items), ["c_2:main", `${C3}:main`]);
+  assert.deepEqual(keys(s().trees), ["c_2", C3]);
+  assert.deepEqual(keys(s().states), ["c_2:main", `${C1}:main`, `${C3}:main`]);
+  assert.equal(s().states[`${C1}:main`].status, "stopped", "the records of that server's chats are the new tree's");
+  assert.deepEqual(s().threadErrors, { [C3]: { message: "y" } });
   assert.deepEqual(asked(), [], "the chat on screen is not of that server: nothing is read");
   assert.deepEqual(fake.trees, []);
 
   // opened next: its list is fetched, as for a chat never loaded
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
-  void conn.loadItems("c_1");
+  store.setState({ sel: { board: null, run: null, chat: C1 } });
+  void conn.loadItems(C1);
   const [a] = asked();
   await a.answer({ branch: "main", version: 1, items: [text("new")], subagents: [] });
-  assert.deepEqual(texts("c_1"), ["new"]);
+  assert.deepEqual(texts(C1), ["new"]);
 });
 
-test("server_back: the fetches that run are given up, list and tree, and what was queued behind them goes", async () => {
-  await ev(snapshot([view("c_1", { server: "s_1" })], [rec("c_1", "main")]));
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
+test("a `section` with a tree: the fetches that run are given up, list and tree, and what was queued behind them goes", async () => {
+  const C1 = on(S1, "c_1");
+  const there = () => treeOf({ chats: [view("c_1")], states: [rec("c_1", "main")] });
+  await ev({ ...snapshot([]), sections: { [S1]: there() } });
+  store.setState({ sel: { board: null, run: null, chat: C1 } });
   fake.holdTrees = true;
-  const waits = conn.loadItems("c_1");
+  const waits = conn.loadItems(C1);
   const [old] = asked();
-  void conn.loadTree("c_1").catch(() => {});
+  void conn.loadTree(C1).catch(() => {});
   const [oldTree] = treeAsked();
-  await ev({ type: "chat_items", chat: "c_1", branch: "main", version: 12, updates: [up(0, "queued before")] });
-  await tree("c_1", { current: "main", branch: mainPart(5) });
+  await ev({ type: "chat_items", server: S1, chat: "c_1", branch: "main", version: 12, updates: [up(0, "queued before")] });
+  await ev({ type: "tree", server: S1, chat: "c_1", current: "main", branch: mainPart(5) });
 
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, there());
   const [fresh] = asked(), [freshTree] = treeAsked();
   assert.ok(fresh && freshTree, "both are asked for anew");
   await old.answer({ branch: "main", version: 11, items: [text("old")], subagents: [] });
   await oldTree.answer({ current: "main", branches: [mainPart(9)], labels: [] });
-  assert.equal(store.threadOf(s(), "c_1"), undefined, "the old list's answer is not kept");
-  assert.equal(s().trees.c_1, undefined, "nor the old tree's");
+  assert.equal(store.threadOf(s(), C1), undefined, "the old list's answer is not kept");
+  assert.equal(s().trees[C1], undefined, "nor the old tree's");
   await fresh.answer({ branch: "main", version: 2, items: [text("n0")], subagents: [] });
   await freshTree.answer({ current: "main", branches: [mainPart(1)], labels: [] });
   await waits; // who waited for the old fetch is not left hanging
-  assert.deepEqual(texts("c_1"), ["n0"], "what was queued for the old fetch is not applied");
-  assert.equal(s().trees.c_1.branches[0].len, 1);
+  assert.deepEqual(texts(C1), ["n0"], "what was queued for the old fetch is not applied");
+  assert.equal(s().trees[C1].branches[0].len, 1);
 });
 
-/** k_1 on the server s_1 with main and the branch B, selected; main's list kept at version 10 with the subagent 5f. */
-async function keptAtTen() {
-  await ev({ ...snapshot([view("k_1", { server: "s_1", branches: 2 })], [rec("k_1", "main"), rec("k_1", B)]), servers: [{ id: "local", local: true, name: "This computer", state: "connected" }, STUDIO] });
-  store.setState({ sel: { board: null, run: null, chat: "k_1" } });
-  void conn.loadItems("k_1");
-  const [a] = asked();
-  await a.answer({ branch: "main", version: 10, items: [text("old0"), text("old1")], subagents: [sub("5f")] });
-}
-
-test("server_back: a newer read of the kept list that fails takes the list away, although the reload's own answer is then discarded", async () => {
+test("a `section` with a tree: a newer read of the kept list that fails takes the list away, although the reload's own answer is then discarded", async () => {
   await keptAtTen();
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, studio());
   const [l1] = asked();
-  await ev({ type: "chat_reload", chat: "k_1" }); // as a refused Send: a newer read of the same list
+  void conn.refreshChat(K1); // as after a refused Send: a newer read of the same list
   await tick();
   const [l2, ...rest] = asked();
-  assert.deepEqual([l2.chat, l2.branch, rest.length], ["k_1", "main", 0]);
-  await ev({ type: "chat_items", chat: "k_1", branch: "main", version: 11, updates: [up(2, "queued")] }); // waits behind the reads
-  assert.deepEqual(texts("k_1"), ["old0", "old1"]);
+  assert.deepEqual([l2.chat, l2.branch, rest.length], [K1, "main", 0]);
+  await ev({ type: "chat_items", server: S1, chat: "k_1", branch: "main", version: 11, updates: [up(2, "queued")] }); // waits behind the reads
+  assert.deepEqual(texts(K1), ["old0", "old1"]);
 
   await l2.fail(refusal("server_unreachable", "Studio is not connected."));
-  assert.equal(store.threadOf(s(), "k_1"), undefined, "kept, it would stay at its old version with no sign");
+  assert.equal(store.threadOf(s(), K1), undefined, "kept, it would stay at its old version with no sign");
   assert.deepEqual(keys(s().subs), []);
-  assert.deepEqual(s().threadErrors.k_1, { code: "server_unreachable", message: "Studio is not connected." });
+  assert.deepEqual(s().threadErrors[K1], { code: "server_unreachable", message: "Studio is not connected." });
   await l1.answer({ branch: "main", version: 2, items: [text("n0")], subagents: [] });
-  assert.equal(store.threadOf(s(), "k_1"), undefined, "the answer of the older read is discarded");
+  assert.equal(store.threadOf(s(), K1), undefined, "the answer of the older read is discarded");
 
   // an ordinary read made later is taken, although its version is below the old one
-  void conn.loadItems("k_1");
+  void conn.loadItems(K1);
   const [a] = asked();
   await a.answer({ branch: "main", version: 3, items: [text("n0"), text("n1")], subagents: [] });
-  assert.deepEqual(texts("k_1"), ["n0", "n1"]);
-  assert.equal(s().threadErrors.k_1, undefined);
-  await ev({ type: "chat_items", chat: "k_1", branch: "main", version: 4, updates: [up(2, "n2")] });
-  assert.deepEqual(texts("k_1"), ["n0", "n1", "n2"]);
+  assert.deepEqual(texts(K1), ["n0", "n1"]);
+  assert.equal(s().threadErrors[K1], undefined);
+  await ev({ type: "chat_items", server: S1, chat: "k_1", branch: "main", version: 4, updates: [up(2, "n2")] });
+  assert.deepEqual(texts(K1), ["n0", "n1", "n2"]);
 });
 
-test("server_back: the kept list is marked only until a read of it answers: a later read is judged by its version again", async () => {
+test("a `section` with a tree: the kept list is marked only until a read of it answers: a later read is judged by its version again", async () => {
   await keptAtTen();
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, studio());
   const [l1] = asked();
   await l1.answer({ branch: "main", version: 3, items: [text("n0")], subagents: [] });
-  assert.deepEqual(texts("k_1"), ["n0"]);
-  void conn.loadItems("k_1");
+  assert.deepEqual(texts(K1), ["n0"]);
+  void conn.loadItems(K1);
   const [a] = asked();
   await a.answer({ branch: "main", version: 2, items: [text("older")], subagents: [] });
-  assert.deepEqual(texts("k_1"), ["n0"], "an answer below the list's version is not taken");
+  assert.deepEqual(texts(K1), ["n0"], "an answer below the list's version is not taken");
 });
 
-test("server_back: the reload of the list that was shown fails after the chat went to another branch: that branch's read keeps its place", async () => {
+test("a `section` with a tree: the reload of the list that was shown fails after the chat went to another branch: that branch's read keeps its place", async () => {
   await keptAtTen();
-  store.setDrawer("k_1", "5f");
-  await ev({ type: "server_back", server: "s_1" });
+  store.setDrawer(K1, "5f");
+  await section(S1, studio());
   const [main] = asked(); // (and the pane's thread)
-  store.setShown("k_1", B); // the user opens the branch B meanwhile
-  const shown = conn.showBranch("k_1");
+  store.setShown(K1, B); // the user opens the branch B meanwhile
+  const shown = conn.showBranch(K1);
   const [b, ...rest] = asked();
-  assert.deepEqual([b.chat, b.branch, rest.length], ["k_1", B, 0]);
+  assert.deepEqual([b.chat, b.branch, rest.length], [K1, B, 0]);
   assert.equal(s().subDrawer, null, "the pane was on main");
 
   await main.fail(refusal("server_unreachable", "Studio is not connected."));
   assert.deepEqual(keys(s().items), [], "what was kept goes");
   await b.answer({ branch: B, version: 1, items: [text("b0")], subagents: [] });
   await shown;
-  assert.deepEqual(texts("k_1"), ["b0"], "the other branch's answer is not discarded");
-  assert.deepEqual(keys(s().items), ["k_1:" + B]);
-  assert.equal(s().threadErrors.k_1, undefined, "and its answer clears the error");
+  assert.deepEqual(texts(K1), ["b0"], "the other branch's answer is not discarded");
+  assert.deepEqual(keys(s().items), [`${K1}:${B}`]);
+  assert.equal(s().threadErrors[K1], undefined, "and its answer clears the error");
 });
 
-test("server_back: an open subagent pane whose thread is not loaded is read again, a read of it in flight or failed before", async () => {
+test("a `section` with a tree: an open subagent pane whose thread is not loaded is read again, a read of it in flight or failed before", async () => {
   await keptAtTen();
-  store.setDrawer("k_1", "5f");
-  void conn.loadSubItems("k_1", "5f"); // the pane's read, in flight
+  store.setDrawer(K1, "5f");
+  void conn.loadSubItems(K1, "5f"); // the pane's read, in flight
   const [old] = asked();
   assert.equal(old.sid, "5f");
 
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, studio());
   let reads = asked();
-  assert.deepEqual(reads.map((r: { chat: string; sid?: string }) => [r.chat, r.sid ?? ""]), [["k_1", ""], ["k_1", "5f"]], "the list and the pane's thread are asked for");
+  assert.deepEqual(reads.map((r: { chat: string; sid?: string }) => [r.chat, r.sid ?? ""]), [[K1, ""], [K1, "5f"]], "the list and the pane's thread are asked for");
   await old.answer({ version: 8, items: [text("s-old")] });
-  assert.deepEqual(keys(s().items), ["k_1:main"], "the answer of the read given up is not kept");
+  assert.deepEqual(keys(s().items), [`${K1}:main`], "the answer of the read given up is not kept");
   await reads[0].answer({ branch: "main", version: 1, items: [text("n0")], subagents: [sub("5f")] });
   await reads[1].fail(new Error("down")); // the pane's read has failed: nothing of it is kept
-  assert.deepEqual(keys(s().items), ["k_1:main"]);
-  assert.deepEqual(s().subDrawer, { chat: "k_1", branch: "main", sub: "5f" });
+  assert.deepEqual(keys(s().items), [`${K1}:main`]);
+  assert.deepEqual(s().subDrawer, { chat: K1, branch: "main", sub: "5f" });
 
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, studio());
   reads = asked();
-  assert.deepEqual(reads.map((r: { chat: string; sid?: string }) => [r.chat, r.sid ?? ""]), [["k_1", ""], ["k_1", "5f"]]);
+  assert.deepEqual(reads.map((r: { chat: string; sid?: string }) => [r.chat, r.sid ?? ""]), [[K1, ""], [K1, "5f"]]);
   await reads[0].answer({ branch: "main", version: 1, items: [text("n0")], subagents: [sub("5f")] });
   await reads[1].answer({ version: 1, items: [text("s-new")] });
-  assert.deepEqual(s().items["k_1:main/5f"].items.map((it: { text: string }) => it.text), ["s-new"]);
+  assert.deepEqual(names(s().items[PANE]), ["s-new"]);
 
   // no pane: no subagent's thread is asked for
-  store.setDrawer("k_1", null);
-  await ev({ type: "server_back", server: "s_1" });
+  store.setDrawer(K1, null);
+  await section(S1, studio());
   assert.deepEqual(asked().map((r: { sid?: string }) => r.sid ?? ""), [""]);
 });
 
-test("chat_reload reads the chat and the list it shows again, and its tree when one is kept", async () => {
-  await ev(snapshot([view("c_1"), view("c_2")], [rec("c_1", "main"), rec("c_2", "main")]));
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
-  void conn.loadItems("c_1");
-  let [a] = asked();
-  await a.answer({ branch: "main", version: 7, items: [text("typed here")], subagents: [] });
-  await conn.loadTree("c_1");
-  fake.trees.length = 0; fake.views.length = 0;
+// ---- runs of a section: a draft's start, the unfollow of a dropped run, the load error with its code, and what is
+// read again when the section's tree arrives (the rules are in logic/runserver.ts and logic/runcompose.ts)
 
-  await ev({ type: "chat_reload", chat: "c_1" });
-  assert.deepEqual(fake.views, ["c_1"]);
-  assert.deepEqual(fake.trees, ["c_1"]);
-  [a] = asked();
-  assert.deepEqual([a.chat, a.branch], ["c_1", "main"]);
-  await a.answer({ branch: "main", version: 3, items: [text("from there")], subagents: [] });
-  assert.deepEqual(texts("c_1"), ["from there"], "the answer replaces the list whatever its version");
-
-  // no tree kept: none is fetched
-  fake.trees.length = 0; fake.views.length = 0;
-  await ev({ type: "chat_reload", chat: "c_2" });
-  assert.deepEqual(fake.views, ["c_2"]);
-  assert.deepEqual(fake.trees, []);
-  for (const x of asked()) await x.fail(new Error("not in this test"));
-
-  // a chat this page does not know, or one that was removed: nothing
-  fake.views.length = 0;
-  await ev({ type: "chat_reload", chat: "c_9" });
-  await ev({ type: "chat_removed", id: "c_2" });
-  await ev({ type: "chat_reload", chat: "c_2" });
-  assert.deepEqual(fake.views, []);
-  assert.deepEqual(asked(), []);
-});
-
-// ---- runs on another server: `run` with `was`, `server_back`, the unfollow of a dropped run and
-// the load error with its code (the rules are in logic/runserver.ts, tested in runserver.test.ts)
-
-const run = (id: string, o: Record<string, unknown> = {}) =>
-  ({ id, name: id, group: "", created: "2026-01-01T00:00:00Z", agent: "claude", tiers: {}, cwd: "/w", settings: {}, status: "running", started: "2026-01-01T00:00:00Z", ...o });
-const draftRun = (id: string, o: Record<string, unknown> = {}) => run(id, { status: "draft", started: undefined, ...o });
-const detail = (id: string, version: number) => ({ run: id, version, status: "running", startedAt: 1, turns: [], tasks: [], agents: {} });
-const runSnapshot = (runs: unknown[], chats: unknown[] = []) => ({ ...snapshot(chats), runs });
-const runAsked = () => fake.runAsked.splice(0);
-/** Opens a run as its view does, and answers the fetch of its detail. */
-async function openRun(id: string, version = 3) {
-  store.setState({ sel: { board: null, run: id, chat: null } });
-  void conn.loadRun(id);
-  await tick();
-  const [a] = runAsked();
-  await a.answer(detail(id, version));
-}
-
-test("a `run` event with `was`: the selection and the unsaved goal move to the new id before the old one is removed", async () => {
-  const kept = new Map<string, string>(), had = (globalThis as any).localStorage;
-  (globalThis as any).localStorage = { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => { kept.set(k, v); }, removeItem: (k: string) => { kept.delete(k); } };
-  try {
-    await ev(runSnapshot([draftRun("r_old", { server: "s_1" }), draftRun("r_x")]));
-    store.setState({ sel: { board: null, run: "r_old", chat: null } });
-    store.unsavedRunDraft("r_old").write({ text: "the goal", mentions: [], references: [] });
-
-    await ev({ type: "run", run: draftRun("r_new", { server: "s_1", was: "r_old" }) });
-    assert.deepEqual(s().sel, { board: null, run: "r_new", chat: null });
-    assert.equal(store.unsavedRunDraft("r_new").read()?.text, "the goal");
-    assert.equal(store.unsavedRunDraft("r_old").read(), null);
-    assert.equal(JSON.parse(kept.get("aiwb.sel")!).run, "r_new");
-    assert.equal("was" in s().runs.r_new, false, "the store keeps the run, not where it came from");
-
-    await ev({ type: "run_removed", id: "r_old" });
-    assert.deepEqual(keys(s().runs), ["r_new", "r_x"]);
-    assert.deepEqual(s().sel, { board: null, run: "r_new", chat: null }, "the removal of the old id clears nothing on screen");
-    assert.equal(store.unsavedRunDraft("r_new").read()?.text, "the goal");
-
-    // another run is on screen: the selection stays, the goal still moves
-    store.setState({ sel: { board: null, run: "r_x", chat: null } });
-    store.unsavedRunDraft("r_new").write({ text: "again", mentions: [], references: [] });
-    await ev({ type: "run", run: draftRun("r_3", { was: "r_new" }) });
-    assert.equal(s().sel.run, "r_x");
-    assert.equal(store.unsavedRunDraft("r_3").read()?.text, "again");
-  } finally { (globalThis as any).localStorage = had; }
-});
-
-const SERVERS = [{ id: "local", local: true, name: "This computer", state: "connected" }, STUDIO];
 const refused = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
-/** localStorage for the unsaved goal, while `f` runs. */
-async function withStorage(f: (kept: Map<string, string>) => Promise<void>) {
-  const kept = new Map<string, string>(), had = (globalThis as any).localStorage;
-  (globalThis as any).localStorage = { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => { kept.set(k, v); }, removeItem: (k: string) => { kept.delete(k); } };
-  try { await f(kept); } finally { (globalThis as any).localStorage = had; }
-}
 
-test("a draft gets a new id while its start is on its way: the start's state moves with it, and a refusal leaves its sentence, and reads the run again, under the new id", async () => {
-  await withStorage(async () => {
-    await ev({ ...runSnapshot([draftRun("r_was", { server: "s_1" })]), servers: SERVERS });
-    store.setState({ sel: { board: null, run: "r_was", chat: null } });
-    store.unsavedRunDraft("r_was").write({ text: "the goal", mentions: [], references: [] });
-    const done = actions.startRun("r_was", "the goal");
-    assert.deepEqual(s().runStarts, { r_was: { starting: true, error: "" } });
+test("a start that is refused leaves its sentence under the run's key and reads the run again; one that works clears the start and the unsaved goal", async () => {
+  await withStorage(async (kept) => {
+    const R = on(S1, "r_d");
+    await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: treeOf({ runs: [draftRun("r_d")] }) } });
+    store.setState({ sel: { board: null, run: R, chat: null } });
+    store.unsavedRunDraft(R).write({ text: "the goal", mentions: [], references: [] });
+    const done = actions.startRun(R, "the goal");
+    assert.deepEqual(s().runStarts, { [R]: { starting: true, error: "" } });
     const [start] = fake.starts.splice(0);
-    assert.deepEqual([start.run, start.goal], ["r_was", "the goal"]);
-
-    // the remote server had the id: the local one gives the draft a new one and repeats the start
-    await ev({ type: "run", run: draftRun("r_now", { server: "s_1", was: "r_was" }) });
-    await ev({ type: "run_removed", id: "r_was" });
-    assert.equal(s().sel.run, "r_now");
-    assert.deepEqual(s().runStarts, { r_now: { starting: true, error: "" } }, "the composer of the new id shows the start still running");
-    assert.equal(store.runNow("r_was"), "r_now");
-    assert.equal(await actions.startRun("r_now", "the goal"), "", "a second Send while it runs asks nothing");
+    assert.deepEqual([start.run, start.goal], [R, "the goal"]);
+    await actions.startRun(R, "the goal"); // a second Send while it runs asks nothing
     assert.equal(fake.starts.length, 0);
+    await ev({ type: "run", server: S1, run: draftRun("r_d", { name: "Renamed" }) }); // the run changes while its start is on its way
+    assert.deepEqual(s().runStarts, { [R]: { starting: true, error: "" } });
 
     await start.fail(refused(409, "agent_missing", "Claude Code is not installed on Studio."));
-    assert.equal(await done, "");
-    assert.deepEqual(s().runStarts, { r_now: { starting: false, error: "Claude Code is not installed on Studio." } }, "the sentence is under the id the run has now");
-    assert.deepEqual(fake.runReads, ["r_now"], "and that id is read again, not the one that is gone");
-    assert.equal(store.unsavedRunDraft("r_now").read()?.text, "the goal", "the goal is kept");
+    assert.equal(await done, undefined);
+    assert.deepEqual(s().runStarts, { [R]: { starting: false, error: "Claude Code is not installed on Studio." } });
+    assert.deepEqual(fake.runReads, [R], "a 409: what the page shows of the run may be old, so it is read again");
+    assert.equal(store.unsavedRunDraft(R).read()?.text, "the goal", "the goal is kept");
+    assert.deepEqual(Object.keys(kept).filter((k) => k.startsWith("aiwb.draft")), [], "in the page's memory: the goal of a section's run is not in the browser's storage");
 
-    // started again, and this time it starts: under the new id nothing is left of the start or of the unsaved goal
-    const again = actions.startRun("r_now", "the goal");
-    assert.deepEqual(s().runStarts, { r_now: { starting: true, error: "" } }, "a new start takes the old sentence away");
-    await fake.starts.splice(0)[0].answer(run("r_now", { server: "s_1" }));
-    assert.equal(await again, "");
+    // started again, and this time it starts: nothing is left of the start or of the unsaved goal
+    const again = actions.startRun(R, "the goal");
+    assert.deepEqual(s().runStarts, { [R]: { starting: true, error: "" } }, "a new start takes the old sentence away");
+    await fake.starts.splice(0)[0].answer(run(R)); // (api.ts answers the run with the page's key)
+    await again;
     assert.deepEqual(s().runStarts, {});
-    assert.ok(s().runs.r_now.started);
-    assert.equal(store.unsavedRunDraft("r_now").read(), null);
+    assert.ok(s().runs[R].started);
+    assert.equal(store.unsavedRunDraft(R).read(), null);
+    assert.deepEqual(fake.runReads, [R]);
   });
 });
 
-test("a start that works after the draft got a new id clears the unsaved goal under the new id; goal_kept is given back and leaves no sentence", async () => {
-  await withStorage(async () => {
-    await ev({ ...runSnapshot([draftRun("r_a", { server: "s_1" }), draftRun("r_k", { server: "s_1" })]), servers: SERVERS });
-    store.unsavedRunDraft("r_a").write({ text: "the goal", mentions: [], references: [] });
-    const done = actions.startRun("r_a", "the goal");
-    const [start] = fake.starts.splice(0);
-    await ev({ type: "run", run: draftRun("r_b", { server: "s_1", was: "r_a" }) });
-    await ev({ type: "run_removed", id: "r_a" });
-    assert.equal(store.unsavedRunDraft("r_b").read()?.text, "the goal");
-    await start.answer(run("r_b", { server: "s_1" }));
-    await done;
-    assert.deepEqual(s().runStarts, {});
-    assert.equal(store.unsavedRunDraft("r_b").read(), null);
-    assert.deepEqual(keys(s().runs), ["r_b", "r_k"]);
-
-    const kept = actions.startRun("r_k", "typed later");
-    const sentence = "Studio had already started the run with the earlier goal; this text was not sent.";
-    await fake.starts.splice(0)[0].fail(refused(409, "goal_kept", sentence));
-    assert.equal(await kept, sentence, "the composer shows it apart, with the text");
-    assert.deepEqual(s().runStarts, {});
-    assert.deepEqual(fake.runReads, ["r_k"]);
-  });
-});
-
-test("the sentence of a start that got no answer goes when the draft's start mark changes and when its server is connected again; another change keeps it", async () => {
-  const lost = "Studio did not answer: it is not known whether the run started. Start again: it starts only once.";
-  await ev({ ...runSnapshot([draftRun("r_1", { server: "s_1" }), draftRun("r_2", { server: "s_1" })]), servers: SERVERS });
-  const fail = async (id: string) => {
+test("the sentence of a failed start goes when the run's folder changes and when its server is connected again; another change keeps it, and a run that goes takes it along", async () => {
+  const lost = "Studio did not answer.";
+  const R1 = on(S1, "r_1"), R2 = on(S1, "r_2");
+  const there = (o: Record<string, unknown> = {}) => treeOf({ runs: [draftRun("r_1", o), draftRun("r_2")] });
+  await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: there() } });
+  store.setState({ sel: { board: null, run: R1, chat: null } });
+  const fail = async (id: string, e = refused(504, "no_answer", lost)) => {
     const done = actions.startRun(id, "goal");
-    await fake.starts.splice(0)[0].fail(refused(504, "start_unconfirmed", lost));
+    await fake.starts.splice(0)[0].fail(e);
     await done;
   };
-  await ev({ type: "server_state", server: { ...STUDIO, state: "unreachable" } });
-  await ev({ type: "run", run: draftRun("r_1", { server: "s_1", start: "unconfirmed" }) }); // the mark, before the answer
-  await fail("r_1");
-  await fail("r_2");
-  assert.deepEqual(s().runStarts, { r_1: { starting: false, error: lost }, r_2: { starting: false, error: lost } });
+  await fail(R1);
+  await fail(R2);
+  assert.deepEqual(s().runStarts, { [R1]: { starting: false, error: lost }, [R2]: { starting: false, error: lost } });
   assert.deepEqual(fake.runReads, [], "a 504 reads nothing again");
-  await ev({ type: "run", run: draftRun("r_1", { server: "s_1", start: "unconfirmed", name: "Renamed" }) });
-  await ev({ type: "server_state", server: { id: "s_9", name: "Other", state: "connected" } });
-  assert.equal(s().runStarts.r_1.error, lost, "a change that is not what the sentence is about keeps it");
-
-  await ev({ type: "run", run: draftRun("r_1", { server: "s_1", name: "Renamed" }) }); // the mark is gone: the start is known now
-  assert.deepEqual(keys(s().runStarts), ["r_2"]);
-  await ev({ type: "server_state", server: STUDIO }); // connected again
-  assert.deepEqual(s().runStarts, {});
-
-  // the whole list, a snapshot and a removal do the same
-  await ev({ type: "servers", servers: [SERVERS[0], { ...STUDIO, state: "unreachable" }] });
-  await fail("r_1");
-  await ev({ type: "servers", servers: SERVERS });
-  assert.deepEqual(s().runStarts, {});
-  await fail("r_1");
-  await fail("r_2");
-  await ev({ ...runSnapshot([draftRun("r_1", { server: "s_1" }), draftRun("r_2", { server: "s_1", cwd: "/other" })]), servers: SERVERS });
-  assert.deepEqual(keys(s().runStarts), ["r_1"], "a snapshot with the run as it was keeps the sentence");
-  await ev({ type: "run_removed", id: "r_1" });
-  assert.deepEqual(s().runStarts, {});
-  store.setRunStart("r_1", { error: "x" });
-  assert.deepEqual(s().runStarts, {}, "nothing is kept for a run the store does not have");
-});
-
-// The server sets the mark and answers the start at the same moment, on two connections (T128): the page can get the answer first.
-test("the sentence of a start that got no answer stays when the mark's event comes after the answer, and goes as in the other order", async () => {
-  const lost = "Studio did not answer: it is not known whether the run started. Start again: it starts only once.";
-  await ev({ ...runSnapshot([draftRun("r_1", { server: "s_1" }), draftRun("r_2", { server: "s_1" })]), servers: SERVERS });
-  const fail = async (id: string) => {
-    const done = actions.startRun(id, "goal");
-    await fake.starts.splice(0)[0].fail(refused(504, "start_unconfirmed", lost));
-    await done;
-  };
-  const mark = (id: string, o: Record<string, unknown> = {}) => ev({ type: "run", run: draftRun(id, { server: "s_1", start: "unconfirmed", ...o }) });
-  await fail("r_1"); // the answer, before the mark
-  await mark("r_1");
-  assert.deepEqual(s().runStarts, { r_1: { starting: false, error: lost } }, "the mark says what the sentence says");
+  await ev({ type: "run", server: S1, run: draftRun("r_1", { name: "Renamed" }) });
   await ev({ type: "server_state", server: { ...STUDIO, state: "unreachable" } });
-  await mark("r_2"); // the other order
-  await fail("r_2");
-  assert.deepEqual(s().runStarts, { r_1: { starting: false, error: lost }, r_2: { starting: false, error: lost } }, "both orders end the same");
+  await ev({ type: "server_state", server: STUDIO });
+  assert.equal(s().runStarts[R1].error, lost, "a change that is not what the sentence is about keeps it: the entry's state says the words, the tree whether a call works");
+  await ev({ type: "run", server: S1, run: draftRun("r_2", { cwd: "/other" }) });
+  assert.deepEqual(keys(s().runStarts), [R1], "another folder: the sentence was about the run as it was");
 
-  await ev({ type: "server_state", server: STUDIO }); // connected again
+  // the connection ends: the run on screen stays with its sentence, the other one goes with its own
+  await fail(R2);
+  await section(S1, null);
+  assert.deepEqual(s().runStarts, { [R1]: { starting: false, error: lost } });
+  // connected again: the line under the box says what is the case now
+  await section(S1, there({ name: "Renamed" }));
   assert.deepEqual(s().runStarts, {});
-  await fail("r_1");
-  assert.equal(s().runStarts.r_1.error, lost);
-  await ev({ type: "run", run: draftRun("r_1", { server: "s_1" }) }); // the mark is gone: the start is known now
+
+  // a start that was refused because the server was away
+  await section(S1, null);
+  await fail(R1, refused(503, "server_unreachable", "Studio is not connected."));
+  assert.deepEqual(s().runStarts, { [R1]: { starting: false, error: "Studio is not connected." } });
+  await section(S1, there());
   assert.deepEqual(s().runStarts, {});
-  // the mark's event with another folder: the sentence was about the run as it was
-  await ev({ type: "run", run: draftRun("r_2", { server: "s_1" }) });
-  await fail("r_2");
-  await mark("r_2", { cwd: "/other" });
+
+  // a run that is removed takes its start along, and none is kept for a run the store does not have
+  await fail(R2);
+  await ev({ type: "run_removed", server: S1, id: "r_2" });
+  assert.deepEqual(s().runStarts, {});
+  store.setRunStart(R2, { error: "x" });
   assert.deepEqual(s().runStarts, {});
 });
 
 test("a run that is dropped is unfollowed, and a draft, whose detail was never read, is not", async () => {
-  await ev(runSnapshot([run("r_1"), draftRun("r_2")]));
+  const R1 = on(S1, "r_1");
+  await ev({ ...runSnapshot([run("r_1"), draftRun("r_2")]), sections: { [S1]: treeOf({ runs: [run("r_1")] }) } });
   await openRun("r_1");
   assert.equal(s().runDetail.r_1.version, 3);
   conn.dropRun("r_1");
@@ -1574,6 +2117,10 @@ test("a run that is dropped is unfollowed, and a draft, whose detail was never r
   assert.deepEqual(fake.runUnfollows.map((u) => u.chat), ["r_1"]);
   conn.dropRun("r_2");
   assert.deepEqual(fake.runUnfollows.map((u) => u.chat), ["r_1"]);
+  // a section's run is unfollowed under its key, which api.ts splits into the entry and that server's id
+  await openRun(R1);
+  conn.dropRun(R1);
+  assert.deepEqual([s().runDetail[R1], fake.runUnfollows.map((u) => u.chat)], [undefined, ["r_1", R1]]);
   await tick();
 });
 
@@ -1605,81 +2152,91 @@ test("a fetch of a run's detail waits for the unfollow of that run that is under
 });
 
 test("a failed load of a run's detail is kept with the server's code, and cleared by one that works", async () => {
-  await ev(runSnapshot([run("r_1", { server: "s_1" })]));
-  store.setState({ sel: { board: null, run: "r_1", chat: null } });
-  const done = conn.loadRun("r_1");
+  const R1 = on(S1, "r_1");
+  await ev({ ...runSnapshot([]), sections: { [S1]: treeOf({ runs: [run("r_1")] }) } });
+  store.setState({ sel: { board: null, run: R1, chat: null } });
+  const done = conn.loadRun(R1);
   await tick();
   await runAsked()[0].fail(refusal("server_unreachable", "Studio is not connected."));
   await done;
-  assert.deepEqual(s().runErrors, { r_1: { code: "server_unreachable", message: "Studio is not connected." } });
-  assert.equal(conn.runLoadError("r_1"), "Studio is not connected.");
-  assert.equal(s().runDetail.r_1, undefined);
+  assert.deepEqual(s().runErrors, { [R1]: { code: "server_unreachable", message: "Studio is not connected." } });
+  assert.equal(conn.runLoadError(R1), "Studio is not connected.");
+  assert.equal(s().runDetail[R1], undefined);
+  assert.deepEqual(s().gone, {});
 
-  void conn.loadRun("r_1");
+  void conn.loadRun(R1);
   await tick();
-  await runAsked()[0].answer(detail("r_1", 2));
+  await runAsked()[0].answer(detail(R1, 2));
   assert.deepEqual(s().runErrors, {});
-  assert.equal(conn.runLoadError("r_1"), "");
+  assert.equal(conn.runLoadError(R1), "");
 });
 
-test("server_back: the detail of that server's run on screen is dropped and read again, and what arrives meanwhile is applied after the answer", async () => {
-  await ev(runSnapshot([run("r_1", { server: "s_1" }), run("r_2")]));
-  await openRun("r_1", 13);
-  await ev({ type: "server_back", server: "s_1" });
-  assert.equal(s().runDetail.r_1, undefined);
+test("a `section` with a tree: the detail of that server's run on screen is dropped and read again, and what arrives meanwhile is applied after the answer", async () => {
+  const R1 = on(S1, "r_1");
+  const there = () => treeOf({ runs: [run("r_1")] });
+  await ev({ ...runSnapshot([run("r_2")]), sections: { [S1]: there() } });
+  await openRun(R1, 13);
+  await section(S1, there());
+  assert.equal(s().runDetail[R1], undefined);
   assert.deepEqual(fake.runUnfollows, [], "the local server ended the follow: nothing is told");
   const [a] = runAsked();
-  assert.equal(a.run, "r_1");
-  await ev({ type: "run_detail", run: "r_1", version: 16, patch: { status: "stopping" } });
-  await a.answer(detail("r_1", 15)); // the versions do not start again at a restart
-  assert.deepEqual([s().runDetail.r_1.version, s().runDetail.r_1.status], [16, "stopping"]);
+  assert.equal(a.run, R1);
+  await ev({ type: "run_detail", server: S1, run: "r_1", version: 16, patch: { status: "stopping" } });
+  await ev({ type: "run_detail", run: "r_1", version: 16, patch: { status: "failed" } }); // of this computer's run of the same id: not this one's
+  await a.answer(detail(R1, 15)); // the versions do not start again at a restart
+  assert.deepEqual([s().runDetail[R1].version, s().runDetail[R1].status], [16, "stopping"]);
 });
 
-test("server_back: a fetch that runs is given up and made again; a load error goes; another server's run and a local one keep what they have", async () => {
-  await ev(runSnapshot([run("r_1", { server: "s_1" }), run("r_2"), run("r_3", { server: "s_2" }), run("r_4", { server: "s_1" })]));
+test("a `section` with a tree: a fetch that runs is given up and made again; a load error goes; another server's run and a local one keep what they have", async () => {
+  const R1 = on(S1, "r_1"), R3 = on(S2, "r_3"), R4 = on(S1, "r_4");
+  const there = () => treeOf({ runs: [run("r_1"), run("r_4")] }), other = () => treeOf({ runs: [run("r_3")] });
+  await ev({ ...runSnapshot([run("r_2")]), sections: { [S1]: there(), [S2]: other() } });
   await openRun("r_2", 4);
-  store.setState({ runErrors: { r_3: { message: "y" }, r_4: { code: "server_unreachable", message: "x" } } });
-  store.setState({ sel: { board: null, run: "r_1", chat: null } });
-  void conn.loadRun("r_1");
+  store.setState({ runErrors: { [R3]: { message: "y" }, [R4]: { code: "server_unreachable", message: "x" } } });
+  store.setState({ sel: { board: null, run: R1, chat: null } });
+  void conn.loadRun(R1);
   await tick();
   const [old] = runAsked();
 
-  await ev({ type: "server_back", server: "s_1" });
+  await section(S1, there());
   const [anew, ...rest] = runAsked();
-  assert.deepEqual([anew.run, rest.length], ["r_1", 0]);
-  assert.deepEqual(s().runErrors, { r_3: { message: "y" } });
+  assert.deepEqual([anew.run, rest.length], [R1, 0]);
+  assert.deepEqual(s().runErrors, { [R3]: { message: "y" } });
   assert.equal(s().runDetail.r_2.version, 4);
-  await old.answer(detail("r_1", 9)); // made before the server was back: it started no follow that lasts
-  assert.equal(s().runDetail.r_1, undefined);
-  await anew.answer(detail("r_1", 10));
-  assert.equal(s().runDetail.r_1.version, 10);
+  await old.answer(detail(R1, 9)); // made before the server was back: it started no follow that lasts
+  assert.equal(s().runDetail[R1], undefined);
+  await anew.answer(detail(R1, 10));
+  assert.equal(s().runDetail[R1].version, 10);
 
   // the run on screen is of another server: nothing is read
-  await ev({ type: "server_back", server: "s_2" });
+  await section(S2, other());
   assert.deepEqual(runAsked(), []);
-  assert.equal(s().runDetail.r_1.version, 10);
+  assert.equal(s().runDetail[R1].version, 10);
 });
 
-test("server_back: a held agent of that server's run loses its thread and is read again; another run's agent keeps its own", async () => {
+test("a `section` with a tree: a held agent of that server's run loses its thread and is read again; another run's agent keeps its own", async () => {
   await withLinger(async (waits) => {
-    await ev(runSnapshot([run("r_1", { server: "s_1" }), run("r_2")]));
-    await openRun("r_1");
-    const releases = [conn.holdAgent("a_1"), conn.holdAgent("a_2")];
+    const R1 = on(S1, "r_1"), A1 = on(S1, "a_1");
+    const there = () => treeOf({ runs: [run("r_1")] });
+    await ev({ ...runSnapshot([run("r_2")]), sections: { [S1]: there() } });
+    await openRun(R1);
+    const releases = [conn.holdAgent(A1), conn.holdAgent("a_2")];
     await tick();
     for (const a of asked()) await a.answer({ branch: "main", version: 7, items: [text(a.chat)], subagents: [] });
-    await ev({ type: "chat", chat: view("a_1", { role: "task", run: "r_1" }) });
+    await ev({ type: "chat", server: S1, chat: view("a_1", { role: "task", run: "r_1" }) });
     await ev({ type: "chat", chat: view("a_2", { role: "task", run: "r_2" }) });
+    assert.equal(s().agents[A1].run, R1);
     fake.views.length = 0;
 
-    await ev({ type: "server_back", server: "s_1" });
+    await section(S1, there());
     assert.deepEqual(keys(s().items), ["a_2:main"]);
-    assert.deepEqual(keys(s().agents), ["a_1", "a_2"], "the view shown stays until its read answers");
-    assert.deepEqual(fake.views, ["a_1"]);
+    assert.deepEqual(keys(s().agents), ["a_2", A1], "the view shown stays until its read answers");
+    assert.deepEqual(fake.views, [A1]);
     const [a, ...rest] = asked();
-    assert.deepEqual([a.chat, rest.length], ["a_1", 0]);
+    assert.deepEqual([a.chat, rest.length], [A1, 0]);
     await a.answer({ branch: "main", version: 1, items: [text("new")], subagents: [] }); // a thread kept at 7 would drop this
-    assert.deepEqual(s().items["a_1:main"].items.map((it: { text: string }) => it.text), ["new"]);
-    assert.deepEqual(runAsked().map((r) => r.run), ["r_1"]);
+    assert.deepEqual(names(s().items[`${A1}:main`]), ["new"]);
+    assert.deepEqual(runAsked().map((r) => r.run), [R1]);
 
     for (const r of releases) r();
     for (const w of waits.splice(0)) w.run();

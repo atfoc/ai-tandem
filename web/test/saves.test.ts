@@ -149,7 +149,7 @@ beforeEach(() => {
   board.setLive(null, null);
   for (const b of Object.keys(st().boards)) board.forgetBoard(b); // what a failed test left
   board.streamOpened();
-  store.setState({ boards: {}, roles: {}, dropped: {}, sceneGen: {}, outage: {}, sel: { board: null, run: null, chat: null } });
+  store.setState({ boards: {}, sections: {}, gone: {}, roles: {}, dropped: {}, sceneGen: {}, outage: {}, sel: { board: null, run: null, chat: null } });
 });
 test.after(() => { console.error = quiet; });
 
@@ -657,13 +657,30 @@ test("a take's `waiting` that arrives after the `held` event does not undo the g
   assert.equal(st().roles[b], "held");
 });
 
-// ---- a board on another server (Board.server): the outage and the return
+// ---- a board of a section (a remote server of the server list: the board's key names the entry, logic/keys.ts): the
+// outage and the return. The local server holds the server's tree while that server is connected (State.sections).
 
+const S1 = "s_aaaaaaaaaaaa", S2 = "s_bbbbbbbbbbbb";
+const ownId = (key: string) => key.slice(key.indexOf("~") + 1);
+const row = (b: string) => ({ id: ownId(b), name: `Board ${ownId(b)}`, group: "" });
+/** A board of a section on its server at the revision rev, in the tree the local server holds, and not asked for. */
+function remote(rev = 0, server = S1) {
+  const b = `${server}~b_${++id}`;
+  store.setState((s: any) => ({ sections: { ...s.sections, [server]: s.sections[server] ?? { groups: [], defaults: { groups: {} } } } }));
+  setBoard(b, { name: `Board ${ownId(b)}` });
+  fake.scene = stored(rev);
+  return b;
+}
+/** A `section` event as conn.ts handles it for the boards: the store takes the tree with these boards, or that there is none
+ *  (null), and the board layer is told of a tree. */
+function section(server: string, boards: string[] | null) {
+  store.applySection(server, boards && { boards: boards.map(row) });
+  if (boards) board.sectionBack(server);
+}
 const away = (code = "server_unreachable") => { fake.saveScene = async () => { throw new ApiError(503, "Studio is not connected.", true, code); }; };
-/** A loaded board on the server s_1 this window holds, with one edit that the server's absence kept from being saved. */
+/** A loaded board of the section S1 this window holds, with one edit that the server's absence kept from being saved. */
 async function outage(rev: number, code?: string) {
-  const b = fresh(rev);
-  setBoard(b, { server: "s_1" });
+  const b = remote(rev);
   store.setRole(b, "held");
   await board.loadScene(b);
   edit(b);
@@ -678,18 +695,18 @@ test("a save answered 503 keeps the edit and sets the outage, for either code", 
     const b = await outage(3, code);
     assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.has(b)], [true, "held", undefined, true]);
     assert.equal(board.hasPendingSaves(), true);
+    assert.equal(board.boardUnsaved(b), true);
     edit(b); // the canvas stays in use: the next change is tried, and kept again
     await board.flush(b);
     assert.deepEqual(asked(), [`save ${b} on 3`]);
     assert.deepEqual([st().outage[b], board.scenes.get(b).base], [true, 3]);
     board.forgetBoard(b);
-    assert.equal(st().outage[b], undefined);
+    assert.deepEqual([st().outage[b], board.boardUnsaved(b)], [undefined, false]);
   }
 });
 
 test("a save answered 504 (the link broke while it was on its way) keeps the edit and sets the outage", async () => {
-  const b = fresh(3);
-  setBoard(b, { server: "s_1" });
+  const b = remote(3);
   store.setRole(b, "held");
   await board.loadScene(b);
   edit(b);
@@ -698,20 +715,19 @@ test("a save answered 504 (the link broke while it was on its way) keeps the edi
   assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.has(b)], [true, "held", undefined, true]);
   assert.equal(board.hasPendingSaves(), true);
   board.forgetBoard(b);
-  const l = await edited(3); // a local board: no banner
+  const l = await edited(3); // a board of this computer: no banner
   await board.flush(l);
   assert.deepEqual([st().outage[l], board.hasPendingSaves()], [undefined, true]);
   board.forgetBoard(l);
 });
 
-test("a 503 for a local board, and a save that got no answer, raise no banner", async () => {
+test("a 503 for a board of this computer, and a save that got no answer, raise no banner", async () => {
   const b = await edited(3);
   away();
   await board.flush(b);
   assert.deepEqual([st().outage[b], board.hasPendingSaves()], [undefined, true]);
   board.forgetBoard(b);
-  const r = fresh(3);
-  setBoard(r, { server: "s_1" });
+  const r = remote(3);
   store.setRole(r, "held");
   await board.loadScene(r);
   edit(r);
@@ -719,6 +735,159 @@ test("a 503 for a local board, and a save that got no answer, raise no banner", 
   await board.flush(r);
   assert.deepEqual([st().outage[r], board.hasPendingSaves()], [undefined, true]);
   board.forgetBoard(r);
+});
+
+test("a board of a section through an outage: the 503 keeps the edit and sets the outage, the board stays while there is no tree, and `held` at the same revision after the `section` saves it", async () => {
+  const b = await outage(3);
+  const clean = remote(1); // another board of that server, with nothing unsaved; neither is on screen
+  store.setRole(clean, "held");
+  await board.loadScene(clean);
+  asked();
+  assert.deepEqual([board.boardUnsaved(b), board.boardUnsaved(clean)], [true, false]);
+
+  section(S1, null); // the local server holds no tree of that server any more
+  assert.deepEqual(Object.keys(st().boards), [b], "the drawing is in this window alone: the board stays; the other one goes with the tree");
+  assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.has(b), board.scenes.has(clean)], [true, "held", undefined, true, false]);
+  assert.deepEqual(asked(), []);
+  edit(b); // it is still drawn on: the change is tried, and kept again
+  await board.flush(b);
+  assert.deepEqual(asked(), [`save ${b} on 3`]);
+  assert.deepEqual([st().outage[b], board.scenes.get(b).base, board.boardUnsaved(b)], [true, 3, true]);
+
+  section(S1, [b]); // the server is back: this window holds the board here, and the local server takes it there again
+  await tick();
+  assert.deepEqual(asked(), [], "nothing is asked, and nothing is written before the `held` event tells the revision");
+  assert.deepEqual([st().outage[b], st().roles[b]], [true, "held"]);
+  const writes: string[] = [];
+  up(writes);
+  board.granted(b, 3); // `held` with that server's revision: nobody changed the board there meanwhile
+  await tick(); await tick();
+  assert.deepEqual(asked(), [`save ${b} on 3`]);
+  assert.deepEqual(writes, [b]);
+  assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.get(b).base], [undefined, "held", undefined, 4]);
+  assert.deepEqual([board.hasPendingSaves(), board.boardUnsaved(b)], [false, false]);
+  board.forgetBoard(b);
+});
+
+test("a board of a section without a tree: one on screen stays, one with an unsaved edit stays off screen too, and both go once nothing holds them", async () => {
+  const shown = remote(3), dirty = await outage(3), other = remote(3, S2);
+  store.setState({ sel: { board: shown, run: null, chat: null } });
+  section(S1, null);
+  assert.deepEqual(Object.keys(st().boards).sort(), [shown, dirty, other].sort());
+  assert.deepEqual(st().gone, {}, "a server that is not connected is not a board that is gone");
+  // the user leaves the board on screen: it goes; the one with the edit waits for its server
+  store.setState({ sel: { board: null, run: null, chat: null } });
+  assert.deepEqual(store.dropLeftBehind(), [shown]);
+  assert.deepEqual(Object.keys(st().boards).sort(), [dirty, other].sort());
+  assert.deepEqual([st().outage[dirty], board.scenes.has(dirty)], [true, true]);
+  // the tree comes back without it (it was deleted there): what was kept of it goes
+  section(S1, []);
+  assert.deepEqual([Object.keys(st().boards), board.scenes.has(dirty), st().outage[dirty], board.hasPendingSaves()], [[other], false, undefined, false]);
+  board.forgetBoard(other);
+});
+
+test("a board that is not reachable is not asked for: its section has no tree, or it is gone from its server", async () => {
+  const b = remote(3), l = fresh(3);
+  store.setState({ sel: { board: b, run: null, chat: null } });
+  section(S1, null);
+  await board.takeBoard(b);
+  await board.takeBoard(b, true);
+  board.takeAfterSnapshot();
+  await tick();
+  assert.deepEqual([asked(), st().roles[b]], [[], undefined]);
+  section(S1, [b]); // reachable again: the board on screen is asked for, if free
+  await tick();
+  assert.deepEqual([asked(), st().roles[b]], [[`take if free ${b}`], "held"]);
+
+  store.setRole(b, null);
+  const gen = st().sceneGen[b];
+  store.markGone(b); // removed there while it is on screen (conn.ts)
+  await board.takeBoard(b);
+  board.sectionBack(S1);
+  await tick();
+  assert.deepEqual([asked(), st().roles[b], st().sceneGen[b]], [[], undefined, gen], "nothing is asked, and the canvas reads no scene again");
+  await board.takeBoard(l); // a board of this computer is always asked for
+  assert.deepEqual(asked(), [`take ${l}`]);
+  board.forgetBoard(b); board.forgetBoard(l);
+});
+
+test("a board whose read is answered 404 not_found is no longer on its server: a section's is marked gone, and the local board of the same id is not", async () => {
+  const b = `${S1}~b_same`, l = "b_same"; // the same id on this computer and in the section
+  store.setState((s: any) => ({ sections: { ...s.sections, [S1]: s.sections[S1] ?? { groups: [], defaults: { groups: {} } } } }));
+  setBoard(b); setBoard(l);
+  store.setState({ sel: { board: b, run: null, chat: null } });
+  const gone = new ApiError(404, "board not found", true, "not_found");
+  fake.scene = async () => { throw gone; };
+  // the section's: its view says that it is no longer on that server (Canvas.tsx reads State.gone), and nothing more is asked of it
+  await assert.rejects(board.loadScene(b), { code: "NO_BOARD" });
+  assert.deepEqual([st().gone[b], st().gone[l], !!st().boards[b], board.scenes.has(b)], [true, undefined, true, false]);
+  asked();
+  await board.takeBoard(b);
+  assert.deepEqual(asked(), [], "a board that is gone there is not asked for");
+  // this computer's board with that id is untouched by it; its own failed read marks nothing (it is no thing of a section)
+  await assert.rejects(board.loadScene(l), { code: "NO_BOARD" });
+  assert.deepEqual([st().gone[l], !!st().boards[l]], [undefined, true]);
+  // a 404 that does not say the board is gone (no code, or another), and a read that fails otherwise, mark nothing
+  const other = remote(3);
+  for (const e of [new ApiError(404, "not found"), new ApiError(404, "no such branch", true, "no_branch"), new ApiError(502, "Studio gave an answer that cannot be read.", true, "bad_answer"),
+    new ApiError(504, "Studio did not answer.", true, "no_answer"), new ApiError(503, "Studio is not connected.", true, "server_unreachable")]) {
+    fake.scene = async () => { throw e; };
+    await assert.rejects(board.loadScene(other));
+    assert.equal(st().gone[other], undefined, `${e.status} ${e.code}`);
+  }
+  // one the page no longer has is not marked: nothing would take the mark away
+  setBoard(b, null);
+  store.setState({ gone: {} });
+  fake.scene = async () => { throw gone; };
+  await assert.rejects(board.loadScene(b), { code: "NO_BOARD" });
+  assert.equal(st().gone[b], undefined);
+  board.forgetBoard(b); board.forgetBoard(l); board.forgetBoard(other);
+});
+
+test("what is drawn on a section's board is in the window's memory alone: nothing of it is in the browser's storage, saved, waiting for its server, or dropped", async () => {
+  // the browser's storage, for this test: what the store writes of anything is seen here
+  const ls = new Map<string, string>();
+  (globalThis as any).localStorage = new Proxy({ getItem: (k: string) => ls.get(k) ?? null, setItem: (k: string, v: string) => { ls.set(k, String(v)); }, removeItem: (k: string) => { ls.delete(k); } },
+    { ownKeys: () => [...ls.keys()], getOwnPropertyDescriptor: (_t, k) => (ls.has(String(k)) ? { enumerable: true, configurable: true, value: ls.get(String(k)) } : undefined) });
+  try {
+    const kept = (when: string) => {
+      for (const [k, v] of ls) {
+        assert.ok(["aiwb.sel", "aiwb.collapsed"].includes(k), `${when}: the browser's storage has the key ${k}`);
+        assert.equal(/elements|rectangle|"e1"|scene|files/.test(v), false, `${when}: ${k} holds a drawing: ${v}`);
+      }
+    };
+    const b = remote(3);
+    store.setSectionCollapsed(S1, true); // (what the page does keep is seen here: the collapse of the board's section)
+    assert.deepEqual([...ls], [["aiwb.collapsed", JSON.stringify([S1])]]);
+    store.setState({ sel: { board: b, run: null, chat: null } });
+    store.setRole(b, "held");
+    await board.loadScene(b);
+    kept("the board read");
+    edit(b);
+    await board.flush(b); // saved there
+    assert.equal(board.scenes.get(b).base, 4);
+    kept("a drawing saved");
+    edit(b);
+    away();
+    await board.flush(b); // its server is not connected: the edit waits in this window
+    assert.deepEqual([st().outage[b], board.boardUnsaved(b)], [true, true]);
+    kept("a drawing that waits for its server");
+    section(S1, null); // the section's tree goes: the board stays, from the page's memory
+    assert.ok(st().boards[b] && board.scenes.has(b));
+    kept("the tree gone, the board kept on screen");
+    store.setState({ sel: { board: null, run: null, chat: null } });
+    store.dropLeftBehind(); // left: an unsaved drawing still waits in the window, and nowhere else
+    assert.ok(board.scenes.has(b));
+    kept("the board left with its drawing unsaved");
+    section(S1, [b]);
+    board.granted(b, 9); // back at another revision: the edit is dropped
+    await tick();
+    assert.equal(st().dropped[b], true);
+    kept("the drawing dropped");
+    assert.deepEqual([...ls.keys()], ["aiwb.collapsed"], "the collapse, and nothing of the board");
+    board.forgetBoard(b);
+    store.setSectionCollapsed(S1, false);
+  } finally { delete (globalThis as any).localStorage; }
 });
 
 test("`held` at the same revision saves the edit and clears the outage", async () => {
@@ -768,6 +937,7 @@ test("a drop with no outage keeps the plain notice, also after one with an outag
 test("under an outage `stale` and `not_holder` drop the edit and clear the outage", async () => {
   for (const code of ["stale", "not_holder"]) {
     const b = await outage(3);
+    assert.equal(st().outage[b], true);
     fake.saveScene = async () => { throw refusal(code); };
     await board.flush(b);
     assert.deepEqual([st().dropped[b], st().outage[b], board.scenes.has(b), st().roles[b]], [true, undefined, false, code === "stale" ? "held" : "other"]);
@@ -781,7 +951,7 @@ test("superseded under an outage: the panel, and the edit is kept, unwritten, wi
   const writes: string[] = [];
   up(writes);
   board.boardLost(b); // the board's server answered `busy` at the return: the board is merely open there
-  assert.deepEqual([st().roles[b], st().dropped[b], board.scenes.has(b)], ["lost", undefined, true]); // TakeoverPanel: no DROPPED_TEXT
+  assert.deepEqual([st().roles[b], st().dropped[b], board.scenes.has(b), st().outage[b]], ["lost", undefined, true, true]); // TakeoverPanel: no DROPPED_TEXT
   await board.flushAll();
   await tick();
   assert.deepEqual([asked(), writes], [[], []]); // a board that is not held is never written
@@ -825,12 +995,12 @@ test("superseded under an outage, then \"Use here\" at another revision: the kep
   board.forgetBoard(b);
 });
 
-test("an edit kept at the loss stays kept when a take if free finds the board busy (server_back), and is saved at the grant", async () => {
+test("an edit kept at the loss stays kept when a take if free finds the board busy (a `section` with a tree), and is saved at the grant", async () => {
   const b = await outage(3);
   board.boardLost(b);
   store.setState({ sel: { board: b, run: null, chat: null } });
   fake.take = async () => ({ state: "busy" });
-  board.serverBack("s_1");
+  section(S1, [b]);
   await tick(); await tick();
   assert.deepEqual(asked(), [`take if free ${b}`]);
   assert.deepEqual([st().roles[b], st().dropped[b], board.scenes.has(b)], ["other", undefined, true]);
@@ -842,9 +1012,8 @@ test("an edit kept at the loss stays kept when a take if free finds the board bu
   board.forgetBoard(b);
 });
 
-test("superseded with no outage drops the unsaved edit as before: a board on another server, and a local one that got a 503", async () => {
-  const r = fresh(3);
-  setBoard(r, { server: "s_1" });
+test("superseded with no outage drops the unsaved edit as before: a board of a section, and one of this computer that got a 503", async () => {
+  const r = remote(3);
   store.setRole(r, "held");
   await board.loadScene(r);
   edit(r);
@@ -863,44 +1032,76 @@ test("superseded with no outage drops the unsaved edit as before: a board on ano
 });
 
 test("a scene read answered 503 rejects with it, and keeps nothing", async () => {
-  const b = fresh();
-  setBoard(b, { server: "s_1" });
+  const b = remote();
   fake.scene = async () => { throw new ApiError(503, "Studio is not connected.", true, "server_unreachable"); };
   await assert.rejects(board.loadScene(b), (e: any) => e instanceof ApiError && e.status === 503);
   assert.equal(board.scenes.has(b), false);
 });
 
-test("server_back: the board on screen of that server is read again when no scene is kept, and asked for if free", async () => {
-  const b = fresh(3);
-  setBoard(b, { server: "s_1" });
+test("a scene read answered 404 names the board by its own id on its server", async () => {
+  const b = remote();
+  fake.scene = async () => { throw new ApiError(404, "No such board.", true, "not_found"); };
+  await assert.rejects(board.loadScene(b), { code: "NO_BOARD", message: `no board with id ${ownId(b)}; call list_boards to find ids` });
+});
+
+test("a `section` with a tree: the board on screen of that server is read again when no scene is kept, and asked for if free", async () => {
+  const b = remote(3);
   store.setState({ sel: { board: b, run: null, chat: null } });
   const gen = st().sceneGen[b] ?? 0;
   fake.take = async () => ({ state: "held", rev: 3 });
-  board.serverBack("s_2"); // another server: nothing
+  remote(0, S2);
+  section(S2, []); // another server's tree: nothing
   assert.deepEqual([asked(), st().sceneGen[b] ?? 0], [[], gen]);
-  board.serverBack("s_1");
+  section(S1, [b]);
   await tick(); await tick();
   assert.deepEqual(asked(), [`take if free ${b}`]);
   assert.deepEqual([st().sceneGen[b], st().roles[b]], [gen + 1, "held"]);
   board.forgetBoard(b);
 });
 
-test("server_back: a kept scene is not read again, a held board not asked for, a board off screen and a local one left alone", async () => {
+test("a `section` with a tree: a kept scene is not read again, a board this window holds or waits for is not asked for, nor one off screen with nothing unsaved, nor one of this computer", async () => {
   const b = await outage(3);
   store.setState({ sel: { board: b, run: null, chat: null } });
   const gen = st().sceneGen[b] ?? 0;
-  board.serverBack("s_1");
+  section(S1, [b]);
   await tick();
   assert.deepEqual([asked(), st().sceneGen[b] ?? 0, st().outage[b]], [[], gen, true]); // the `held` event of the return decides
-  store.setState({ sel: { board: null, run: null, chat: null } });
-  store.setRole(b, null);
-  board.serverBack("s_1");
+  store.setRole(b, "taking"); // "Use here" was pressed: its `held` event follows
+  board.sectionBack(S1);
+  await tick();
   assert.deepEqual(asked(), []);
   board.forgetBoard(b);
+
+  const clean = remote(3); // off screen, loaded, nothing unsaved
+  await board.loadScene(clean);
   const l = fresh();
   store.setState({ sel: { board: l, run: null, chat: null } });
-  board.serverBack("local"); board.serverBack("s_1");
-  assert.deepEqual(asked(), []);
+  asked();
+  board.sectionBack(S1); // the board on screen is this computer's
+  await tick();
+  assert.deepEqual([asked(), st().roles[l], st().sceneGen[l] ?? 0], [[], undefined, 0]);
+  board.forgetBoard(clean);
+});
+
+test("after a restart of this computer's server during the outage the board with the edit is asked for when the tree arrives, on screen or not, and the revision decides", async () => {
+  const same = await outage(3), other = await outage(3);
+  section(S1, null);
+  board.streamOpened(); // the new stream holds no board: the window still has both drawings and their revisions
+  board.takeAfterSnapshot();
+  await tick();
+  assert.deepEqual(asked(), [], "the section has no tree yet: nothing is asked");
+  assert.deepEqual([st().roles[same], st().roles[other], board.scenes.has(same), board.scenes.has(other), st().outage[same], st().outage[other]], [undefined, undefined, true, true, true, true]);
+
+  const writes: string[] = [];
+  up(writes);
+  fake.take = async (b) => ({ state: "held", rev: b === same ? 3 : 5 }); // the other one was drawn on there meanwhile
+  section(S1, [same, other]);
+  await tick(); await tick();
+  assert.deepEqual(asked().sort(), [`take if free ${same}`, `take if free ${other}`, `save ${same} on 3`].sort());
+  assert.deepEqual(writes, [same]);
+  assert.deepEqual([st().roles[same], st().dropped[same], st().outage[same], board.scenes.get(same).base], ["held", undefined, undefined, 4]);
+  assert.deepEqual([st().roles[other], st().dropped[other], st().outage[other], board.scenes.has(other), board.droppedInOutage(other)], ["held", true, undefined, false, true]);
+  board.forgetBoard(same); board.forgetBoard(other);
 });
 
 // ---- board tools: the server names the target and asks the window that holds it
@@ -942,6 +1143,69 @@ test("a tool call for a board this window was given without being told asks for 
     assert.deepEqual(asked(), [`take if free ${theirs}`]); // nothing of it is read
     board.forgetBoard(made); board.forgetBoard(theirs);
   });
+});
+
+test("the tools of a section's agent name a board by its own id on that server, never by the page's key", async () => {
+  await withoutLongTimers(async () => {
+    const own = remote(2), target = remote(2);
+    store.setRole(own, "held"); store.setRole(target, "held");
+    const chat = `${S1}~c_1`;
+    const call = (name: string, o: Record<string, unknown> = {}) => board.runTool({ chat, branch: "main", board: own, target, name, args: {}, ...o });
+    const text: string = await call("read_board");
+    assert.match(text, new RegExp(`^Board ${ownId(target)} \\(${ownId(target)}\\) \\(rev 0, 1 elements\\)`));
+    assert.equal(text.includes("~"), false);
+    assert.deepEqual(asked(), [`read ${target}`], "the call itself is made for the key, which api.ts splits");
+    const applied = JSON.parse(await call("apply", { args: { update: [{ ref: { id: "e1" }, x: 5 }] } }));
+    assert.deepEqual([applied.board, applied.id], [`Board ${ownId(target)}`, ownId(target)]);
+    const deleted = JSON.parse(await call("delete_elements", { args: { refs: [{ id: "e1" }] } }));
+    assert.deepEqual([deleted.board, deleted.id], [`Board ${ownId(target)}`, ownId(target)]);
+    assert.equal(await call("show_board"), `showing Board ${ownId(target)}`);
+    assert.deepEqual(fake.selects, [[{ board: target, run: null, chat: null }, { ifFree: true }]], "the page selects it by its key");
+    // a board the page does not have: the id the agent gave, as it gave it
+    await assert.rejects(call("read_board", { target: `${S1}~b_none` }), { code: "NO_BOARD", message: "no board with id b_none; call list_boards to find ids" });
+    // the same id on this computer is another board: a call of that server's agent never reaches it
+    setBoard(ownId(target));
+    assert.match(await call("read_board"), new RegExp(`^Board ${ownId(target)} \\(${ownId(target)}\\)`));
+    assert.deepEqual(asked().filter((l) => l.startsWith("read")), []);
+    board.forgetBoard(own); board.forgetBoard(target); board.forgetBoard(ownId(target));
+  });
+});
+
+test("get_view names the board on screen to an agent of the same server only: a board of another server is not named", async () => {
+  const own = remote(), near = remote(), far = remote(0, S2), here = fresh();
+  const view = (b: string) => board.runTool({ chat: `${S1}~c_1`, branch: "main", board: b, name: "get_view", args: {} });
+  const name = (b: string) => `Board ${ownId(b)} (${ownId(b)})`;
+  assert.equal(await view(own), `The user is looking at no board, not ${name(own)}.`);
+  store.setState({ sel: { board: near, run: null, chat: null } });
+  assert.equal(await view(own), `The user is looking at ${name(near)}, not ${name(own)}.`);
+  for (const b of [far, here]) { // its id means nothing on the agent's server, or names another board there
+    store.setState({ sel: { board: b, run: null, chat: null } });
+    assert.equal(await view(own), `The user is looking at a whiteboard that is not on this server, not ${name(own)}.`);
+  }
+  store.setState({ sel: { board: own, run: null, chat: null }, view: { scrollX: 0, scrollY: 0, zoom: 1, width: 800, height: 600 } });
+  assert.match(await view(own), new RegExp(`^active_board: Board ${ownId(own)} \\(${ownId(own)}\\)\\n`));
+  // an agent of this computer, with a section's board on screen
+  store.setState({ sel: { board: near, run: null, chat: null } });
+  assert.equal(await board.runTool({ chat: "c_1", branch: "main", board: here, name: "get_view", args: {} }),
+    `The user is looking at a whiteboard that is not on this server, not Board ${here} (${here}).`);
+});
+
+test("the context block of a section's board chat names its board and the boards mentioned by their own ids, and mentions only boards of that server", async () => {
+  const own = remote(), near = remote(), far = remote(0, S2), here = fresh();
+  for (const b of [near, far, here]) setBoard(b, { name: "plan" }); // one name, on three servers
+  const chat = `${S1}~c_1`;
+  store.setState((s: any) => ({ chats: { ...s.chats, [chat]: { id: chat, board: own, agent: "claude", name: "c" } } }));
+  const block = (referenced?: string) => `<ui-context>\nactive_board: Board ${ownId(own)} (${ownId(own)})\n${referenced ? `referenced_boards: ${referenced}\n` : ""}</ui-context>`;
+  assert.equal(board.buildContext(chat, "nothing mentioned"), block());
+  assert.equal(board.buildContext(chat, "see @plan"), block(`plan (${ownId(near)})`), "a typed name is every board of the chat's server with that name");
+  assert.equal(board.buildContext(chat, "see @plan", [{ name: "plan", id: near }]), block(`plan (${ownId(near)})`));
+  assert.equal(board.buildContext(chat, "see @plan", [{ name: "plan", id: far }]), block(), "a board of another server is not named to this one's agent");
+  // a chat of this computer mentions this computer's board
+  store.setState((s: any) => ({ chats: { ...s.chats, c_1: { id: "c_1", board: here, agent: "claude", name: "c" } } }));
+  const mine = fresh();
+  setBoard(mine, { name: "plan" });
+  assert.equal(board.buildContext("c_1", "see @plan"), `<ui-context>\nactive_board: plan (${here})\nreferenced_boards: plan (${mine})\n</ui-context>`);
+  store.setState({ chats: {} });
 });
 
 // ---- get_image, with exportToBlob stubbed: the pixels are not asserted, what it is given and what comes back are

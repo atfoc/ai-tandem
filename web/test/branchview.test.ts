@@ -43,7 +43,7 @@ const CURRENT = "a1b2c3d4";
 const RUNNING: Item[] = [{ kind: "user", text: "more" }, { kind: "text", text: "on it" }];
 
 const q = (item: number, quote = "x"): Reference => ({ quote, item, start: 0, end: quote.length });
-const held = (text: string, references: Reference[] = [], mentions: Held["mentions"] = []): Held => ({ text, mentions, references });
+const held = (text: string, references: Reference[] = [], mentions: Held["mentions"] = [], images: Held["images"] = []): Held => ({ text, mentions, references, images });
 const move = (t: Target, h: Held, put: Held | null = null): PendingMove => ({ ...t, from: "main", held: h, put });
 
 /** The banner of a move on the example, built as the composer builds it. */
@@ -444,4 +444,45 @@ test("bannerOf: a message that is only quotes is named by its first quote", () =
   };
   assert.equal(after([{ ...r, comment: "make it longer" }, r]), "❝ make it longer");
   assert.equal(after([r]), "❝ options");
+});
+
+// ---- images: they go with the text through a move
+
+const im = (n: number): Held["images"][number] => ({ id: String(n).padStart(64, "0"), name: `i${n}.png`, type: "image/png", size: 1000 });
+
+test("afterBack: Branch and edit put a message with its images; Back gives the composer its own draft and images again", () => {
+  const mine = held("my draft", [], [], [im(1)]), put = held("the message", [], [], [im(7), im(8)]);
+  const m = move({ branch: "main", at: 3, new: true }, mine, put);
+  // untouched: exactly what it held
+  assert.equal(afterBack(m, put, 3), mine);
+  // an image added during the move (an upload that was answered, a paste) comes along, after its own
+  assert.deepEqual(afterBack(m, { ...put, images: [im(7), im(8), im(9)] }, 3), held("my draft", [], [], [im(1), im(9)]));
+  // one of the message's images removed meanwhile changes nothing of the draft it gets back
+  assert.equal(afterBack(m, { ...put, images: [im(8)] }, 3), mine);
+  // an image that both have is one image
+  assert.deepEqual(afterBack(m, { ...put, images: [im(7), im(1)] }, 3).images, [im(1)]);
+});
+
+test("afterBack: what was typed during the move keeps the images the composer holds now", () => {
+  const mine = held("my draft", [], [], [im(1)]), put = held("the message", [], [], [im(7)]);
+  const m = move({ branch: "main", at: 3, new: true }, mine, put);
+  assert.deepEqual(afterBack(m, held("the message, edited", [], [], [im(7), im(9)]), 3), held("the message, edited", [], [], [im(7), im(9)]));
+  assert.deepEqual(afterBack(m, held("", [], [], []), 3), held(""));
+});
+
+test("afterBack: a move that put nothing took no image out, so the composer's images are as they are now", () => {
+  const mine = held("my draft", [q(1)], [], [im(1), im(2)]);
+  const m = move({ branch: "main", at: 3, new: true }, mine);
+  assert.equal(afterBack(m, mine, 3), mine);
+  assert.deepEqual(afterBack(m, { ...mine, images: [im(2)] }, 3), held("my draft", [q(1)], [], [im(2)])); // one removed during the move stays removed
+  assert.deepEqual(afterBack(m, { ...mine, images: [im(1), im(2), im(3)] }, 3), held("my draft", [q(1)], [], [im(1), im(2), im(3)])); // one added stays
+  assert.deepEqual(afterBack(m, held("", [], [], [im(1)]), 3), held("", [], [], [im(1)])); // the text emptied: the image is still what it holds
+});
+
+test("afterSent: a draft of images alone that was put aside comes back; a composer that holds an image again gets nothing", () => {
+  const aside = held("", [], [], [im(1)]), put = held("the message", [], [], [im(7)]);
+  const m = move({ branch: "main", at: 3, new: true }, aside, put);
+  assert.deepEqual(afterSent(m, held(""), 3), aside); // images alone are a draft to give back
+  assert.equal(afterSent(m, held("", [], [], [im(9)]), 3), null); // an image was added after the Send: the composer holds something
+  assert.equal(afterSent(move({ branch: "main", at: 3, new: true }, held(""), put), held(""), 3), null);
 });

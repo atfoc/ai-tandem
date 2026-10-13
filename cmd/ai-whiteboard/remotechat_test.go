@@ -21,6 +21,7 @@ import (
 	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
+	"ai-whiteboard/internal/remotes"
 	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/servers/linksim"
@@ -35,6 +36,10 @@ import (
 //	B  the remote server, with remote access set up on 127.0.0.1. It is an entry of A's server
 //	   list, added through A's POST /api/servers with its pin and its secret. An API client of
 //	   its own (pairDirect, another client id) reads it directly: what it reads is "B's own".
+//
+// B shows on A as a section: what is on B is made, read, changed and deleted through A's routes
+// under /api/on/<entry> (remotePair.on), with B's own ids, and B's tree is the entry's part of
+// "sections" in A's snapshot (remotePair.section). A keeps nothing of it.
 //
 // Neither is the person's server: no request goes to a port this file did not pick.
 
@@ -72,6 +77,19 @@ func startRemotePair(t *testing.T, p linksim.Profile, bClaude string) *remotePai
 // the waits a test lowers (clock.env).
 func startRemotePairIn(t *testing.T, p linksim.Profile, bClaude string, env []string) *remotePair {
 	t.Helper()
+	rp := newPair(t, p, bClaude, env)
+	rp.b.up(t)
+	rp.a.start(t)
+	rp.page = watch(t, http.DefaultClient, strings.TrimSuffix(rp.a.in.url, "/"), pairPage, nil)
+	return rp
+}
+
+// newPair is the two servers of startRemotePairIn and the link between them, with neither
+// started: B has its data folder, with remote access set up in it, and A has none yet. A test
+// that needs a data folder of before on either side writes it and then starts the two itself
+// (rp.b.up, rp.a.start and the page's watch).
+func newPair(t *testing.T, p linksim.Profile, bClaude string, env []string) *remotePair {
+	t.Helper()
 	rp := &remotePair{}
 	rp.b = &apiRunServer{runServer: newRunServer(t, pairEnv(env...)), port: freePort(t)}
 	rp.b.in.setenv(loopbackBind)
@@ -86,28 +104,15 @@ func startRemotePairIn(t *testing.T, p linksim.Profile, bClaude string, env []st
 	tr := pinned(rp.b.fpr)
 	t.Cleanup(tr.CloseIdleConnections)
 	rp.b.hc = &http.Client{Transport: tr, Timeout: 60 * time.Second}
-	rp.b.up(t)
 
 	rp.link = linksim.Start(t, fmt.Sprintf("127.0.0.1:%d", rp.b.port), p)
 	rp.a = newRunServer(t, pairEnv(append([]string{"AIWB_TEST_DIAL_VIA=" + rp.link.Addr()}, env...)...))
-	rp.a.start(t)
-	rp.page = watch(t, http.DefaultClient, strings.TrimSuffix(rp.a.in.url, "/"), pairPage, nil)
 	work, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	rp.work = work
 	return rp
-}
-
-// aID is A's instance id: the client id it states to B.
-func (rp *remotePair) aID(t *testing.T) string {
-	t.Helper()
-	id, _ := rp.a.in.helloMap(t)["instanceId"].(string)
-	if id == "" {
-		t.Fatal("A's hello has no instance id")
-	}
-	return id
 }
 
 // connectedPair is startRemotePair with B added to A's list and connected. env is more in the
@@ -145,15 +150,16 @@ func (rp *remotePair) addEntry(t *testing.T) {
 	}
 }
 
-// pairState is what the tests read of A's snapshot.
+// pairState is what the tests read of A's snapshot. Chats are A's own, the chats of this
+// computer; what is on B is in Sections, under the entry's id, while A holds B's tree.
 type pairState struct {
-	Groups  []struct{ ID string }
 	Chats   []model.ChatView
 	Servers []servers.View
 	Lists   map[string]struct {
 		Agents   []model.AgentKind
 		Catalogs map[model.AgentKind]*model.Catalog
 	}
+	Sections map[string]*remotes.Tree
 }
 
 // state is A's snapshot, as its page reads it.
@@ -214,11 +220,64 @@ func (rp *remotePair) back(t *testing.T, limit time.Duration) time.Duration {
 	}
 }
 
-// group makes a group on A and returns its id.
+// on is the path, on A, of a call for a thing of B: the path of the same call for a thing of
+// this computer (path, which begins with "/" after "/api"), under the entry's section.
+func (rp *remotePair) on(path string) string { return "/api/on/" + rp.entry + path }
+
+// inSection is the text every event of a thing of B holds on A's page: the entry's id as the
+// event's "server".
+func (rp *remotePair) inSection() string { return `"server":"` + rp.entry + `"` }
+
+// section is B's tree as A's snapshot has it under the entry's id; ok is false while A holds no
+// tree of the entry (it is not connected, or was removed).
+func (rp *remotePair) section(t *testing.T) (tree remotes.Tree, ok bool) {
+	t.Helper()
+	if tr := rp.state(t).Sections[rp.entry]; tr != nil {
+		return *tr, true
+	}
+	return remotes.Tree{}, false
+}
+
+// tree is section for an entry that must have a tree.
+func (rp *remotePair) tree(t *testing.T) remotes.Tree {
+	t.Helper()
+	tree, ok := rp.section(t)
+	if !ok {
+		t.Fatalf("A's snapshot has no tree of %s (the entry is %q)", pairName, rp.entryView(t).State)
+	}
+	return tree
+}
+
+// noTree checks what a page has of an entry that is not connected: no tree, so no row, and a
+// read and a write for a thing of it are refused at once with the entry's name.
+func (rp *remotePair) noTree(t *testing.T, when string) {
+	t.Helper()
+	if tree, ok := rp.section(t); ok {
+		t.Fatalf("%s: A's snapshot has a tree of %s: %+v", when, pairName, tree)
+	}
+	for _, c := range []struct {
+		method, path string
+		body         any
+	}{{"GET", "/chats/00000000-0000-4000-8000-000000000000", nil}, {"POST", "/chats", map[string]any{"group": model.Ungrouped}}} {
+		if a := rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", c.method, rp.on(c.path), c.body); !strings.Contains(a.Error, pairName) {
+			t.Fatalf("%s: %s %s: %s, want the name %s in the sentence", when, c.method, c.path, a, pairName)
+		}
+	}
+}
+
+// ownTree is B's tree as B's own page has it: what the owner of the remote server sees.
+func (rp *remotePair) ownTree(t *testing.T) level5Tree {
+	t.Helper()
+	_, tree := rp.b.in.tree(t)
+	return tree
+}
+
+// group makes a group in the section, at its top level: it is made on B through A, and its id is
+// B's.
 func (rp *remotePair) group(t *testing.T, name string) string {
 	t.Helper()
 	var g struct{ ID string }
-	rp.a.must(t, pairPage, "POST", "/api/groups", map[string]any{"name": name}, &g)
+	rp.a.must(t, pairPage, "POST", rp.on("/groups"), map[string]any{"name": name, "parent": ""}, &g)
 	if g.ID == "" {
 		t.Fatalf("the group %q has no id", name)
 	}
@@ -277,49 +336,58 @@ func (rp *remotePair) atB(t *testing.T, method, path string, body any) answer {
 	return a
 }
 
-// newChat makes an unstarted chat on A in the group, with B as its server, the stand-in as its
-// agent and the pair's work folder, which A checks with B.
+// newChat makes a chat from A's page in the group of the section, with the stand-in as its
+// agent: the chat is made on B at once, unstarted, with B's id. It then gets the pair's work
+// folder, a change A passes on to B.
 func (rp *remotePair) newChat(t *testing.T, group string) string {
 	t.Helper()
 	var v model.ChatView
-	rp.a.must(t, pairPage, "POST", "/api/chats", map[string]any{"agent": "claude", "group": group, "server": rp.entry}, &v)
-	if v.ID == "" || v.Server != rp.entry || v.Locked {
+	rp.a.must(t, pairPage, "POST", rp.on("/chats"), map[string]any{"agent": "claude", "group": group}, &v)
+	if v.ID == "" || v.Locked || v.Group != group {
 		t.Fatalf("the new chat: %+v", v)
 	}
-	if a := rp.ok(t, "PATCH", "/api/chats/"+v.ID, map[string]any{"cwd": rp.work}); a.Chat == nil || a.Chat.Cwd != rp.work {
+	if a := rp.ok(t, "PATCH", rp.on("/chats/"+v.ID), map[string]any{"cwd": rp.work}); a.Chat == nil || a.Chat.Cwd != rp.work {
 		t.Fatalf("the folder of the new chat: %s", a)
 	}
 	return v.ID
 }
 
-// startChat is newChat and its first message, which must start the chat on B.
+// startChat is newChat and its first message, an ordinary message, which must start the chat on
+// B. A learns that the chat has started from B's event, after the answer to the message: the
+// chat is waited for until the section's tree has it as started.
 func (rp *remotePair) startChat(t *testing.T, group, text string) string {
 	t.Helper()
 	id := rp.newChat(t, group)
 	rp.send(t, id, text)
+	eventually(t, 20*time.Second, "the section has the chat as started", func() bool {
+		v, ok := rp.listed(t, id)
+		return ok && v.Locked
+	})
 	return id
 }
 
 // send sends a message of the page to the chat through A; it must be accepted.
 func (rp *remotePair) send(t *testing.T, chat, text string) {
 	t.Helper()
-	if a := rp.ok(t, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": text}); a.Branch != "main" {
+	if a := rp.ok(t, "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": text}); a.Branch != "main" {
 		t.Fatalf("the send to %s: %s", chat, a)
 	}
 }
 
-// view is the chat's view as A answers it.
+// view is the chat's view as A answers it for the section.
 func (rp *remotePair) view(t *testing.T, chat string) model.ChatView {
 	t.Helper()
 	var v model.ChatView
-	rp.a.must(t, pairPage, "GET", "/api/chats/"+chat, nil, &v)
+	rp.a.must(t, pairPage, "GET", rp.on("/chats/"+chat), nil, &v)
 	return v
 }
 
-// listed is the chat's view in A's snapshot.
+// listed is the chat's view in the section's tree of A's snapshot; ok is false when the tree has
+// no such chat, and when A holds no tree of the entry.
 func (rp *remotePair) listed(t *testing.T, chat string) (model.ChatView, bool) {
 	t.Helper()
-	for _, v := range rp.state(t).Chats {
+	tree, _ := rp.section(t)
+	for _, v := range tree.Chats {
 		if v.ID == chat {
 			return v, true
 		}
@@ -389,7 +457,7 @@ func (th thread) has(t *testing.T, text string) bool {
 // through reads the chat's items through A as the page, which follows the chat from then on.
 func (rp *remotePair) through(t *testing.T, chat string) thread {
 	t.Helper()
-	a := rp.ok(t, "GET", "/api/chats/"+chat+"/items", nil)
+	a := rp.ok(t, "GET", rp.on("/chats/"+chat+"/items"), nil)
 	th, err := threadOf(a.Raw)
 	if err != nil {
 		t.Fatalf("the items of %s through A: %v in %s", chat, err, a.Raw)
@@ -640,11 +708,48 @@ func (w *watcher) awaitChat(t *testing.T, mark int, limit time.Duration, chat, w
 	}))
 }
 
+// awaitChat waits until A's page was sent a chat event of this chat of the section, with the
+// entry as its "server", whose view ok accepts.
+func (rp *remotePair) awaitChat(t *testing.T, mark int, limit time.Duration, chat, what string, ok func(model.ChatView) bool) model.ChatView {
+	t.Helper()
+	return chatOf(rp.page.await(t, mark, limit, "chat event of "+chat+" in the section with "+what, func(e seenEvent) bool {
+		if !e.holds("chat", rp.inSection()) {
+			return false
+		}
+		v := chatOf(e)
+		return v.ID == chat && ok(v)
+	}))
+}
+
+// asOwn is an event A's page was sent for a thing of the section as B sent it: the same JSON
+// value without the "server" A adds. What B sent a client of its own is brought to the same
+// form, so that the two compare.
+func asOwn(raw string) string {
+	var ev map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &ev) != nil {
+		return raw
+	}
+	delete(ev, "server")
+	out, _ := json.Marshal(ev)
+	return string(out)
+}
+
+// clientHeaders are the headers of an API client of B beside its id: the secret and the level.
+func (rp *remotePair) clientHeaders() map[string]string {
+	return map[string]string{remote.SecretHeader: rp.b.secret, servers.LevelHeader: testLevel}
+}
+
 // direct opens the event stream of the direct API client on B.
 func (rp *remotePair) direct(t *testing.T) *watcher {
 	t.Helper()
-	return watch(t, rp.b.hc, fmt.Sprintf("https://127.0.0.1:%d", rp.b.port), pairDirect,
-		map[string]string{remote.SecretHeader: rp.b.secret})
+	return watch(t, rp.b.hc, fmt.Sprintf("https://127.0.0.1:%d", rp.b.port), pairDirect, rp.clientHeaders())
+}
+
+// ownPage opens the event stream of B's own page, on B's loopback listener: the owner's page is
+// open from then on.
+func (rp *remotePair) ownPage(t *testing.T) *watcher {
+	t.Helper()
+	return watch(t, http.DefaultClient, strings.TrimSuffix(rp.b.in.url, "/"), pairOwnPage, nil)
 }
 
 // ownState is what the tests read of B's snapshot for the direct API client.
@@ -668,8 +773,8 @@ func (rp *remotePair) ownState(t *testing.T) ownState {
 }
 
 // noSecret is AC6 between the two servers: B's secret is in no event the watchers were sent, in
-// no answer of A's routes that tell of B (the snapshot, the list of servers, the entry's counts,
-// the view and the items of every chat on B that A lists) and in nothing A wrote to its output.
+// no answer of A's routes that tell of B (the snapshot, the list of servers, the view and the
+// items of every started chat of the section) and in nothing A wrote to its output.
 func (rp *remotePair) noSecret(t *testing.T, w ...*watcher) {
 	t.Helper()
 	rp.noText(t, "B's secret", rp.b.secret, w...)
@@ -688,10 +793,12 @@ func (rp *remotePair) noText(t *testing.T, what, text string, w ...*watcher) {
 			}
 		}
 	}
-	paths := []string{"/api/state", "/api/servers", "/api/servers/" + rp.entry + "/items"}
-	for _, v := range rp.state(t).Chats {
-		if v.Server == rp.entry && v.Locked {
-			paths = append(paths, "/api/chats/"+v.ID, "/api/chats/"+v.ID+"/items")
+	paths := []string{"/api/state", "/api/servers"}
+	if tree, ok := rp.section(t); ok {
+		for _, v := range tree.Chats {
+			if v.Locked {
+				paths = append(paths, rp.on("/chats/"+v.ID), rp.on("/chats/"+v.ID+"/items"))
+			}
 		}
 	}
 	for _, path := range paths {
@@ -708,59 +815,98 @@ func (rp *remotePair) noText(t *testing.T, what, text string, w ...*watcher) {
 	}
 }
 
-// AC15, AC17 and AC29 on the good link: two servers, a chat chosen and started through A's
-// routes, a permission ask raised on B, and the times of a send's acknowledgement and of a
-// content event.
+// The cheapest pair of real servers, which the default set runs too (smokeTest): B is an entry of
+// A's list, connected through the link to B's remote listener, and a group is made and a chat
+// started in B's section through A. Two servers and one turn of the stand-in agent, no run.
+// The owner of B sees the chat in the group it was made in, B's only group: there is no group
+// "Remote". A's own lists hold nothing of it.
+func TestRemotePairStartsAChat(t *testing.T) {
+	smokeTest(t)
+	rp := connectedPair(t, linksim.Good)
+	g := rp.group(t, "Work")
+	chat := rp.startChat(t, g, "hi")
+	if th := rp.turns(t, chat, 1); th.users(t, "hi") != 1 {
+		t.Fatalf("the thread of the chat at B: %s", joinThread(th))
+	}
+	rp.same(t, chat, "after its first turn")
+	own := rp.ownTree(t)
+	if len(own.Groups) != 1 || own.Groups[0].ID != g || own.Groups[0].Name != "Work" || own.Groups[0].Parent != "" ||
+		len(own.Chats) != 1 || own.Chats[0].ID != chat || own.Chats[0].Group != g || !own.Chats[0].Locked {
+		t.Fatalf("the tree of B's own page:\n%s", strings.Join(own.lines(), "\n"))
+	}
+	if tree := rp.tree(t); len(tree.Groups) != 1 || tree.Groups[0].ID != g || len(tree.Chats) != 1 || tree.Chats[0].ID != chat || tree.Chats[0].Group != g {
+		t.Fatalf("the section of %s on A: %+v", pairName, tree)
+	}
+	var here level5Tree
+	rp.a.must(t, pairPage, "GET", "/api/state", nil, &here)
+	if len(here.Groups)+len(here.Chats)+len(here.States)+len(here.Boards)+len(here.Runs) != 0 {
+		t.Fatalf("A's own lists hold something: %+v", here)
+	}
+}
+
+// AC15, AC17 and AC29 on the good link: two servers, a chat made, configured and started in B's
+// section through A's routes, a permission ask raised on B, and the times of a send's
+// acknowledgement and of a content event.
 func TestRemoteChatLive(t *testing.T) {
-	serverTest(t, "TestStartTable, TestFollows, TestEventTable (internal/remotes)", "TestServersPackageAgainstTheListener (internal/server)")
+	serverTest(t, "TestSectionCallPassedOn, TestSectionFollows, TestSectionContentEvents (internal/remotes)", "TestServersPackageAgainstTheListener (internal/server)")
 	rp := connectedPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 
-	// AC29: configure with the server, then agents, several times; the first message starts the
-	// agent chosen last.
+	// AC29: where the chat is made decides where it lives: made in the section, it is on B at
+	// once; then agents and settings, several times, each of them on B; the first message starts
+	// the agent chosen last.
 	t.Run("AC29 the agent chosen last starts", func(t *testing.T) {
-		var v model.ChatView
-		rp.a.must(t, pairPage, "POST", "/api/chats", map[string]any{"agent": "claude", "group": g}, &v)
-		if v.Server != "" {
-			t.Fatalf("a new chat in a group without a sticky server is on %q", v.Server)
-		}
-		chat := v.ID
-		configure := func(body map[string]any) model.ChatView {
-			t.Helper()
-			a := rp.ok(t, "PATCH", "/api/chats/"+chat, body)
-			if a.Chat == nil {
-				t.Fatalf("configure %v: %s", body, a)
-			}
-			return *a.Chat
-		}
-		// The change of server sets the other four values: the agent, and B's default folder and
-		// the default model and effort of B's catalog, as B itself states them.
+		// The make gives the chat B's default folder and the default model and effort of B's
+		// catalog, as B itself states them: the group remembers nothing for B.
 		own := rp.ownState(t)
 		cat := own.Catalogs[model.Claude]
 		if own.DefaultCwd == "" || cat == nil || cat.Default.Model == "" {
 			t.Fatalf("B's default folder and catalog: %+v", own)
 		}
-		onB := func(v model.ChatView, when string) {
+		var v model.ChatView
+		// The question about the place is gone: a call for this computer that names B is refused
+		// and makes nothing, here or there.
+		rp.refused(t, http.StatusBadRequest, "server_refused", "POST", "/api/chats", map[string]any{"agent": "claude", "group": model.Ungrouped, "server": rp.entry})
+		// And B's group is no group of this computer.
+		if a := rp.do(t, "POST", "/api/chats", map[string]any{"agent": "claude", "group": g}); a.Status != http.StatusBadRequest || !strings.Contains(a.Error, "no such group") {
+			t.Fatalf("a chat of this computer in a group of %s: %s, want 400 for a group that is not here", pairName, a)
+		}
+		if st, tree := rp.state(t), rp.tree(t); len(st.Chats) != 0 || len(tree.Chats) != 0 || len(rp.ownTree(t).Chats) != 0 {
+			t.Fatalf("the refused makes left a chat: %+v on A, %+v in the section", st.Chats, tree.Chats)
+		}
+		mark := rp.page.mark()
+		rp.a.must(t, pairPage, "POST", rp.on("/chats"), map[string]any{"agent": "claude", "group": g}, &v)
+		if v.Agent != model.Claude || v.Cwd != own.DefaultCwd || v.Model != cat.Default.Model || v.Effort != cat.Default.Effort || v.Locked || v.Group != g {
+			t.Fatalf("the new chat: %+v, want the agent claude, the folder %s and the model %+v of %s", v, own.DefaultCwd, cat.Default, pairName)
+		}
+		chat := v.ID
+		if made, there := rp.ownView(t, chat); !there || made.Locked || made.Cwd != own.DefaultCwd || made.Group != g {
+			t.Fatalf("the chat at B before any message: %+v (there: %v)", made, there)
+		}
+		if got := rp.view(t, chat); got.Locked || got.Group != g {
+			t.Fatalf("the chat read through A: %+v", got)
+		}
+		// It shows in the section by B's event, and is no chat of this computer.
+		rp.awaitChat(t, mark, 10*time.Second, chat, "the group it was made in", func(v model.ChatView) bool { return v.Group == g && !v.Locked })
+		rp.refused(t, http.StatusNotFound, "not_found", "GET", "/api/chats/"+chat, nil)
+		configure := func(body map[string]any) model.ChatView {
 			t.Helper()
-			if v.Server != rp.entry || v.Agent != model.Claude || v.Cwd != own.DefaultCwd || v.Model != cat.Default.Model || v.Effort != cat.Default.Effort {
-				t.Fatalf("%s: %+v, want the agent claude, the folder %s and the model %+v of %s", when, v, own.DefaultCwd, cat.Default, pairName)
+			a := rp.ok(t, "PATCH", rp.on("/chats/"+chat), body)
+			if a.Chat == nil {
+				t.Fatalf("configure %v: %s", body, a)
 			}
+			return *a.Chat
 		}
-		local := v
-		onB(configure(map[string]any{"server": rp.entry}), "after the change to "+pairName)
-		onB(rp.view(t, chat), "the chat read through A after the change to "+pairName)
-		if v = configure(map[string]any{"server": servers.LocalID}); v.Server != "" || v.Cwd != local.Cwd || v.Model != local.Model || v.Effort != local.Effort {
-			t.Fatalf("after the change back to this computer: %+v, want the values of %+v", v, local)
-		}
-		v = configure(map[string]any{"server": rp.entry})
-		onB(v, "after the second change to "+pairName)
+		// The place is final: B refuses a change that names a server, whichever it names.
+		rp.refused(t, http.StatusBadRequest, "server_refused", "PATCH", rp.on("/chats/"+chat), map[string]any{"server": servers.LocalID})
+		rp.refused(t, http.StatusBadRequest, "server_refused", "PATCH", rp.on("/chats/"+chat), map[string]any{"server": rp.entry})
 		// An agent B cannot run is refused and changes nothing; the stand-in is chosen again.
-		rp.refused(t, http.StatusConflict, "agent_missing", "PATCH", "/api/chats/"+chat, map[string]any{"agent": "pi"})
-		rp.refused(t, http.StatusConflict, "agent_missing", "PATCH", "/api/chats/"+chat, map[string]any{"agent": "cursor"})
+		rp.refused(t, http.StatusConflict, "agent_missing", "PATCH", rp.on("/chats/"+chat), map[string]any{"agent": "pi"})
+		rp.refused(t, http.StatusConflict, "agent_missing", "PATCH", rp.on("/chats/"+chat), map[string]any{"agent": "cursor"})
 		v = configure(map[string]any{"agent": "claude", "model": "haiku"})
 		v = configure(map[string]any{"agent": "claude", "model": "sonnet", "effort": "high"})
 		v = configure(map[string]any{"cwd": rp.work})
-		if v.Server != rp.entry || v.Agent != model.Claude || v.Model != "sonnet" || v.Effort != "high" || v.Cwd != rp.work || v.Locked {
+		if v.Agent != model.Claude || v.Model != "sonnet" || v.Effort != "high" || v.Cwd != rp.work || v.Locked {
 			t.Fatalf("the chat before its first message: %+v", v)
 		}
 		before := len(rp.b.agentFakes(t))
@@ -770,7 +916,7 @@ func TestRemoteChatLive(t *testing.T) {
 			t.Fatalf("the reply is not the agent's chosen last: %s", joinThread(th))
 		}
 		rp.same(t, chat, "after the first message")
-		if got := rp.view(t, chat); !got.Locked || got.Server != rp.entry || got.Model != "sonnet" || got.Effort != "high" || got.Group != g {
+		if got := rp.view(t, chat); !got.Locked || got.Model != "sonnet" || got.Effort != "high" || got.Group != g {
 			t.Fatalf("the started chat through A: %+v", got)
 		}
 		// One agent process was started for it on B, and none on A.
@@ -781,54 +927,22 @@ func TestRemoteChatLive(t *testing.T) {
 			t.Fatalf("A started an agent for a chat on B: %v", left)
 		}
 		// Server and agent of a started chat are fixed.
-		if a := rp.do(t, "PATCH", "/api/chats/"+chat, map[string]any{"server": servers.LocalID}); a.Status != http.StatusConflict {
-			t.Fatalf("a server change of a started chat: %s", a)
+		rp.refused(t, http.StatusBadRequest, "server_refused", "PATCH", rp.on("/chats/"+chat), map[string]any{"server": servers.LocalID})
+		if a := rp.do(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"agent": "pi"}); a.Status != http.StatusConflict {
+			t.Fatalf("an agent change of a started chat: %s", a)
 		}
 	})
 
-	// AC38 and AC16 (b): A states its instance id to B, and the chat is that client's. The same
-	// creation call by another client is refused and sends nothing; by A's id it is the repeat
-	// that finds the chat started and sends nothing either.
-	t.Run("AC38 the creation repeated at B by another client", func(t *testing.T) {
-		chat := rp.startChat(t, g, "mine alone")
-		rp.turns(t, chat, 1)
-		own, ok := rp.ownView(t, chat)
-		if !ok || !own.Locked {
-			t.Fatalf("the chat at B after A's first message: %+v (there: %v)", own, ok)
-		}
-		const other = "3f2b9c1e-7a4d-4e8b-b6c5-1d2e3f4a5b6c"
-		if other == rp.aID(t) || other == pairDirect {
-			t.Fatalf("the other client id %s is one of the pair's", other)
-		}
-		body := map[string]any{"id": chat, "agent": "claude", "cwd": rp.work, "model": own.Model, "effort": own.Effort, "text": "mine alone"}
-		var got struct {
-			Started, Sent bool
-			Chat          *model.ChatView
-			Code          string
-		}
-		if status, raw := rp.b.api(t, other, "POST", "/api/chats", body, &got); status != http.StatusConflict || got.Code != "id_taken" || got.Started || got.Sent || got.Chat != nil {
-			t.Fatalf("the creation repeated by another client: %d %s, want 409 id_taken and nothing of the chat", status, raw)
-		}
-		got.Code = ""
-		if status, raw := rp.b.api(t, rp.aID(t), "POST", "/api/chats", body, &got); status != http.StatusOK || !got.Started || got.Sent || got.Chat == nil || got.Chat.ID != chat {
-			t.Fatalf("the creation repeated by A's own id: %d %s, want 200, started and not sent", status, raw)
-		}
-		time.Sleep(300 * time.Millisecond) // a message that was sent after all has reached the thread
-		if th := rp.same(t, chat, "after the repeated creations"); th.users(t, "mine alone") != 1 || th.ends() != 1 {
-			t.Fatalf("the thread after the repeated creations: %s", joinThread(th))
-		}
-	})
-
-	// AC17: a permission ask raised on B shows in the record's view and in A's chat event, then
-	// the chat is ready again after the answer through A.
+	// AC17: a permission ask raised on B shows in the section's tree and in the chat event of A's
+	// page, then the chat is ready again after the answer through A.
 	t.Run("AC17 approval and ready", func(t *testing.T) {
 		mark := rp.page.mark()
 		chat := rp.startChat(t, g, `first [[ask Bash {"command":"ls"}]]`)
-		rp.page.awaitChat(t, mark, 10*time.Second, chat, "the status approval", func(v model.ChatView) bool {
-			return v.Status == model.StatusApproval && v.Server == rp.entry && v.Group == g
+		rp.awaitChat(t, mark, 10*time.Second, chat, "the status approval", func(v model.ChatView) bool {
+			return v.Status == model.StatusApproval && v.Group == g
 		})
 		if v, ok := rp.listed(t, chat); !ok || v.Status != model.StatusApproval || v.Approvals != 1 {
-			t.Fatalf("the record's view at the ask: %+v (listed: %v)", v, ok)
+			t.Fatalf("the chat in the section at the ask: %+v (listed: %v)", v, ok)
 		}
 		th := rp.through(t, chat)
 		ask := th.items(t)[len(th)-1]
@@ -836,12 +950,12 @@ func TestRemoteChatLive(t *testing.T) {
 			t.Fatalf("the items at the ask through A: %s", joinThread(th))
 		}
 		mark = rp.page.mark()
-		rp.ok(t, "POST", "/api/chats/"+chat+"/permission", map[string]any{"requestId": ask.RequestID, "allow": true})
-		rp.page.awaitChat(t, mark, 10*time.Second, chat, "the status ready", func(v model.ChatView) bool {
+		rp.ok(t, "POST", rp.on("/chats/"+chat+"/permission"), map[string]any{"requestId": ask.RequestID, "allow": true})
+		rp.awaitChat(t, mark, 10*time.Second, chat, "the status ready", func(v model.ChatView) bool {
 			return v.Status == model.StatusReady && v.Approvals == 0
 		})
 		if v, _ := rp.listed(t, chat); v.Status != model.StatusReady {
-			t.Fatalf("the record's view after the answer: %+v", v)
+			t.Fatalf("the chat in the section after the answer: %+v", v)
 		}
 		if th := rp.same(t, chat, "after the permission answer"); !th.has(t, "ask Bash -> allow") {
 			t.Fatalf("the thread after the answer: %s", joinThread(th))
@@ -863,20 +977,24 @@ func TestRemoteChatLive(t *testing.T) {
 			t.Errorf("the second message was acknowledged after %v, want under 1 s", ack)
 		}
 		last := func(e seenEvent) bool { return e.holds("chat_items", chat, "FAKE(sonnet): two") }
-		atPage := rp.page.await(t, pm, 10*time.Second, "content event with the reply", last)
+		atPage := rp.page.await(t, pm, 10*time.Second, "content event with the reply", func(e seenEvent) bool { return last(e) && e.holds("chat_items", rp.inSection()) })
 		atB := d.await(t, dm, 10*time.Second, "content event with the reply", last)
 		lag := atPage.At.Sub(atB.At)
 		if lag >= time.Second {
 			t.Errorf("the reply reached A's page %v after B's own client, want under 1 s", lag)
 		}
 		t.Logf("AC15 on the good link (40 ms round trip): the send was acknowledged in %v; the reply's chat_items event reached A's page %v after B's direct client", ack.Round(time.Millisecond), lag.Round(time.Millisecond))
-		// Every content event of the turn came to both, the same bytes in the same order.
+		// Every content event of the turn came to both, the same event in the same order: A's
+		// page got B's, each with the entry as its "server" and nothing else added.
 		rp.turns(t, chat, 2)
 		time.Sleep(300 * time.Millisecond)
 		content := func(w *watcher, mark int) (out []string) {
 			for _, e := range w.since(mark) {
 				if (e.Type == "chat_items" || e.Type == "tree") && strings.Contains(e.Raw, chat) {
-					out = append(out, e.Raw)
+					if w == rp.page && !strings.Contains(e.Raw, rp.inSection()) {
+						t.Errorf("a content event of the section's chat names no server: %s", clipText(e.Raw, 300))
+					}
+					out = append(out, asOwn(e.Raw))
 				}
 			}
 			return out
@@ -928,62 +1046,38 @@ func (rp *remotePair) reconnect(t *testing.T) {
 	rp.waitState(t, servers.StateUnreachable, 5*time.Second)
 	rp.link.Uncut()
 	rp.back(t, 45*time.Second)
-	rp.page.awaitEvent(t, mark, 10*time.Second, "server_back", rp.entry)
+	rp.treeBack(t, mark)
 }
 
-// AC33: one case per row of the plan's table of what each action on a remote chat does, and the
-// archive marks that are made on B itself.
+// treeBack waits until the page was sent B's tree again after the mark: the section event of the
+// entry that carries a tree, which every page is sent when the entry's connection is up again.
+func (rp *remotePair) treeBack(t *testing.T, mark int) {
+	t.Helper()
+	rp.page.await(t, mark, 20*time.Second, "section event with the tree of "+pairName, func(e seenEvent) bool {
+		return e.holds("section", rp.entry) && !strings.Contains(e.Raw, `"tree":null`)
+	})
+}
+
+// AC33: one case per action on a chat of a section. Each is made on B, through A's route of the
+// section, and shows for everyone: in the section of A's page by B's event, and on B's own page.
+// The archive marks that are made on B itself show in the section as B has them.
 func TestRemoteChatActions(t *testing.T) {
-	serverTest(t, "TestArchiveConnected, TestArchivePending, TestDelete, TestSend, TestPatch, TestFork, TestPassedOn (internal/remotes)")
+	serverTest(t, "TestSectionCallPassedOn, TestSectionEvents (internal/remotes)", "TestSectionRoutesPassOn (internal/server)")
 	rp := connectedPair(t, linksim.Good)
 	g, g2 := rp.group(t, "Work"), rp.group(t, "Other")
 	d := rp.direct(t)
 
-	// The automatic name is made on B after the first message and reaches the page as a relayed
-	// chat event.
+	// The automatic name is made on B after the first message and reaches the page as a chat
+	// event of the section.
 	t.Run("automatic name", func(t *testing.T) {
 		mark := rp.page.mark()
 		chat := rp.startChat(t, g, "name me")
-		v := rp.page.awaitChat(t, mark, 15*time.Second, chat, "the name Fake title", func(v model.ChatView) bool { return v.Name == "Fake title" })
-		if v.UserNamed || v.Server != rp.entry || v.Group != g {
+		v := rp.awaitChat(t, mark, 15*time.Second, chat, "the name Fake title", func(v model.ChatView) bool { return v.Name == "Fake title" })
+		if v.UserNamed || v.Group != g {
 			t.Fatalf("the named chat's event: %+v", v)
 		}
 		if own, _ := rp.ownView(t, chat); own.Name != "Fake title" {
 			t.Fatalf("B's name of the chat: %+v", own)
-		}
-	})
-
-	// A move is the record's place alone: it answers while nothing can reach B, and B's client
-	// is sent nothing of it.
-	t.Run("move", func(t *testing.T) {
-		chat := rp.startChat(t, g, "move me")
-		rp.turns(t, chat, 1)
-		eventually(t, 10*time.Second, "the chat's automatic name", func() bool { return rp.view(t, chat).Name != "" })
-		time.Sleep(300 * time.Millisecond)
-		before, _ := rp.ownView(t, chat)
-		pm, dm := rp.page.mark(), d.mark()
-		rp.link.Stall(false, true) // nothing travels to B
-		start := time.Now()
-		a := rp.ok(t, "PATCH", "/api/chats/"+chat, map[string]any{"group": g2})
-		took := time.Since(start)
-		if a.Chat == nil || a.Chat.Group != g2 || took > 2*time.Second {
-			t.Fatalf("the move with nothing reaching B: %s after %v", a, took)
-		}
-		rp.page.awaitChat(t, pm, 5*time.Second, chat, "the new group", func(v model.ChatView) bool { return v.Group == g2 })
-		rp.link.Stall(false, false)
-		time.Sleep(500 * time.Millisecond) // what was held back, if anything, has arrived
-		if evs := d.of(dm, "chat", chat); len(evs) != 0 {
-			t.Fatalf("B sent its client %d chat events at the move: %v", len(evs), evs)
-		}
-		if after, _ := rp.ownView(t, chat); after != before {
-			t.Fatalf("the move changed the chat at B:\n%+v\n%+v", before, after)
-		}
-		if v, ok := rp.listed(t, chat); !ok || v.Group != g2 {
-			t.Fatalf("the moved chat in A's list: %+v", v)
-		}
-		// A group that does not exist is refused.
-		if a := rp.do(t, "PATCH", "/api/chats/"+chat, map[string]any{"group": "g_none"}); a.Status == http.StatusOK {
-			t.Fatalf("a move to a group that does not exist: %s", a)
 		}
 	})
 
@@ -992,26 +1086,24 @@ func TestRemoteChatActions(t *testing.T) {
 		chat := rp.startChat(t, g, "rename me")
 		rp.turns(t, chat, 1)
 		// The automatic name is B's event of its own: the rename waits until A has it.
-		eventually(t, 15*time.Second, "the chat's automatic name in A's list", func() bool {
+		eventually(t, 15*time.Second, "the chat's automatic name in the section", func() bool {
 			v, _ := rp.listed(t, chat)
 			return v.Name == "Fake title"
 		})
 		mark := rp.page.mark()
-		// The answer is the record's view. An event of B that A applied between the rename's send
-		// and its answer makes A answer what its record has, which may be the name before: the
-		// name is read in B's chat event of the rename, and through A after it.
-		if a := rp.ok(t, "PATCH", "/api/chats/"+chat, map[string]any{"name": "Mine"}); a.Chat == nil || a.Chat.ID != chat {
+		// The name is read in B's chat event of the rename, and through A after it.
+		if a := rp.ok(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"name": "Mine"}); a.Chat == nil || a.Chat.ID != chat {
 			t.Fatalf("the rename's answer: %s", a)
 		}
 		if own, _ := rp.ownView(t, chat); own.Name != "Mine" || !own.UserNamed {
 			t.Fatalf("B's name after the rename: %+v", own)
 		}
-		rp.page.awaitChat(t, mark, 5*time.Second, chat, "the name Mine", func(v model.ChatView) bool { return v.Name == "Mine" && v.UserNamed })
+		rp.awaitChat(t, mark, 5*time.Second, chat, "the name Mine", func(v model.ChatView) bool { return v.Name == "Mine" && v.UserNamed })
 		if v := rp.view(t, chat); v.Name != "Mine" || !v.UserNamed {
 			t.Fatalf("the chat through A after the rename: %+v", v)
 		}
 		if v, ok := rp.listed(t, chat); !ok || v.Name != "Mine" || !v.UserNamed {
-			t.Fatalf("the chat in A's list after the rename: %+v (listed: %v)", v, ok)
+			t.Fatalf("the chat in the section after the rename: %+v (listed: %v)", v, ok)
 		}
 		// The namer does not replace it.
 		rp.send(t, chat, "again")
@@ -1022,8 +1114,8 @@ func TestRemoteChatActions(t *testing.T) {
 		}
 	})
 
-	// Archive and unarchive are recorded here and passed on; at B the chat's agent stops and no
-	// message is accepted.
+	// Archive and unarchive are passed on; at B the chat's agent stops and no message is
+	// accepted.
 	t.Run("archive and unarchive", func(t *testing.T) {
 		skip := rp.b.fakeMessages(t)
 		chat := rp.startChat(t, g, "archive me")
@@ -1036,26 +1128,30 @@ func TestRemoteChatActions(t *testing.T) {
 			t.Fatalf("the chat's agent (pid %d) does not run at B before the archive", pid)
 		}
 		mark := rp.page.mark()
-		rp.ok(t, "POST", "/api/chats/"+chat+"/archive", nil)
-		rp.page.awaitChat(t, mark, 5*time.Second, chat, "the archived mark", func(v model.ChatView) bool { return v.Archived })
+		rp.ok(t, "POST", rp.on("/chats/"+chat+"/archive"), nil)
+		rp.awaitChat(t, mark, 5*time.Second, chat, "the archived mark", func(v model.ChatView) bool { return v.Archived })
 		eventually(t, 5*time.Second, "the chat archived at B", func() bool { v, _ := rp.ownView(t, chat); return v.Archived })
 		eventually(t, 10*time.Second, "the chat's agent at B stopped", func() bool { return !running() })
-		if v, _ := rp.listed(t, chat); !v.Archived || v.Op == "" {
-			t.Fatalf("the archived record in A's list: %+v", v)
+		// The mark in the section is B's own, with the archive action B gave it: A keeps none.
+		there, _ := rp.ownView(t, chat)
+		if v, _ := rp.listed(t, chat); !v.Archived || v.Op == "" || v.Op != there.Op {
+			t.Fatalf("the archived chat in the section: %+v, at B the action %q", v, there.Op)
 		}
-		// A refuses a send and a configure itself; B would refuse the send too.
-		if a := rp.do(t, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "to the archive"}); a.Status != http.StatusConflict || !strings.Contains(a.Error, "archived") {
-			t.Fatalf("a send to the archived chat through A: %s", a)
+		// A send and a configure are B's to refuse: what B says to a client of its own is what
+		// the page is told through A.
+		atB := rp.atB(t, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "to the archive"})
+		if atB.Status != http.StatusConflict {
+			t.Fatalf("a send to the archived chat at B: %s", atB)
 		}
-		if a := rp.do(t, "PATCH", "/api/chats/"+chat, map[string]any{"model": "haiku"}); a.Status != http.StatusConflict {
+		if a := rp.do(t, "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "to the archive"}); a.Status != http.StatusConflict || !strings.Contains(a.Error, "archived") || a.Raw != atB.Raw {
+			t.Fatalf("a send to the archived chat through A: %s, at B: %s", a, atB)
+		}
+		if a := rp.do(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"model": "haiku"}); a.Status != http.StatusConflict {
 			t.Fatalf("a configure of the archived chat through A: %s", a)
 		}
-		if a := rp.atB(t, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "to the archive"}); a.Status != http.StatusConflict {
-			t.Fatalf("a send to the archived chat at B: %s", a)
-		}
 		mark = rp.page.mark()
-		rp.ok(t, "POST", "/api/chats/"+chat+"/unarchive", nil)
-		rp.page.awaitChat(t, mark, 5*time.Second, chat, "no archived mark", func(v model.ChatView) bool { return !v.Archived })
+		rp.ok(t, "POST", rp.on("/chats/"+chat+"/unarchive"), nil)
+		rp.awaitChat(t, mark, 5*time.Second, chat, "no archived mark", func(v model.ChatView) bool { return !v.Archived })
 		eventually(t, 5*time.Second, "the chat unarchived at B", func() bool { v, _ := rp.ownView(t, chat); return !v.Archived })
 		rp.send(t, chat, "back again")
 		if th := rp.turns(t, chat, 2); !th.has(t, "FAKE(sonnet): back again") || th.users(t, "to the archive") != 0 {
@@ -1064,29 +1160,27 @@ func TestRemoteChatActions(t *testing.T) {
 		rp.same(t, chat, "after the unarchive")
 	})
 
-	// An archive made on B itself shows at A, as B's mark and no local archive action, and is
-	// still there after A connects again; the connect of another client changes no mark.
+	// An archive made on B's own page shows in the section, as B has it, and is in the tree A is
+	// sent when it connects again; the connect of another client changes no mark.
 	t.Run("archive made at B", func(t *testing.T) {
 		chat := rp.startChat(t, g, "archived there")
 		other := rp.startChat(t, g, "left alone")
 		rp.turns(t, chat, 1)
 		rp.turns(t, other, 1)
-		own := watch(t, http.DefaultClient, strings.TrimSuffix(rp.b.in.url, "/"), pairOwnPage, nil) // B's page is open
+		own := rp.ownPage(t) // B's page is open
 		defer own.close()
 		mark := rp.page.mark()
 		rp.b.must(t, pairOwnPage, "POST", "/api/chats/"+chat+"/archive", nil, nil)
-		v := rp.page.awaitChat(t, mark, 5*time.Second, chat, "the archived mark", func(v model.ChatView) bool { return v.Archived })
-		if v.Op != "" {
-			t.Fatalf("the mark from B came with the archive action %q: B's own action is not A's", v.Op)
-		}
+		rp.awaitChat(t, mark, 5*time.Second, chat, "the archived mark", func(v model.ChatView) bool { return v.Archived })
 		marks := func(when string) {
 			t.Helper()
 			for id, want := range map[string]bool{chat: true, other: false} {
-				if v, ok := rp.listed(t, id); !ok || v.Archived != want || v.Op != "" {
-					t.Fatalf("%s: the chat %s in A's list: %+v, want archived %v", when, id, v, want)
+				there, ok := rp.ownView(t, id)
+				if !ok || there.Archived != want {
+					t.Fatalf("%s: the chat %s at B: %+v, want archived %v", when, id, there, want)
 				}
-				if v, ok := rp.ownView(t, id); !ok || v.Archived != want {
-					t.Fatalf("%s: the chat %s at B: %+v, want archived %v", when, id, v, want)
+				if v, ok := rp.listed(t, id); !ok || v.Archived != want || v.Op != there.Op {
+					t.Fatalf("%s: the chat %s in the section: %+v, want archived %v with B's action %q", when, id, v, want, there.Op)
 				}
 			}
 		}
@@ -1096,22 +1190,22 @@ func TestRemoteChatActions(t *testing.T) {
 		marks("after A connected again")
 		// Another client connects to B, and a second time.
 		for range 2 {
-			w := watch(t, rp.b.hc, fmt.Sprintf("https://127.0.0.1:%d", rp.b.port), apiX, map[string]string{remote.SecretHeader: rp.b.secret})
+			w := watch(t, rp.b.hc, fmt.Sprintf("https://127.0.0.1:%d", rp.b.port), apiX, rp.clientHeaders())
 			time.Sleep(200 * time.Millisecond)
 			w.close()
 		}
 		marks("after another client connected")
-		if a := rp.do(t, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "no"}); a.Status != http.StatusConflict {
+		if a := rp.do(t, "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "no"}); a.Status != http.StatusConflict {
 			t.Fatalf("a send to the chat archived at B: %s", a)
 		}
 		// The unarchive made at B shows too.
 		mark = rp.page.mark()
 		rp.b.must(t, pairOwnPage, "POST", "/api/chats/"+chat+"/unarchive", nil, nil)
-		rp.page.awaitChat(t, mark, 5*time.Second, chat, "no archived mark", func(v model.ChatView) bool { return !v.Archived })
+		rp.awaitChat(t, mark, 5*time.Second, chat, "no archived mark", func(v model.ChatView) bool { return !v.Archived })
 	})
 
-	// A fork is made at B; its record is in the source's local group, and "fork and edit" leaves
-	// the message as the record's draft.
+	// A fork is made at B, in the source's group, where B's own page has it too, and "fork and
+	// edit" leaves the message as the new chat's draft.
 	t.Run("fork", func(t *testing.T) {
 		chat := rp.startChat(t, g2, "fork one")
 		rp.turns(t, chat, 1)
@@ -1119,16 +1213,17 @@ func TestRemoteChatActions(t *testing.T) {
 		src := rp.turns(t, chat, 2)
 		first := slices.Index(src.kinds(), "end") + 1 // the items of the first turn
 		var fork model.ChatView
-		rp.a.must(t, pairPage, "POST", "/api/chats/"+chat+"/fork", map[string]any{"branch": "main", "at": first}, &fork)
-		if fork.ID == "" || fork.ID == chat || fork.Server != rp.entry || fork.Group != g2 || fork.ForkedFrom != chat || !fork.Locked {
+		rp.a.must(t, pairPage, "POST", rp.on("/chats/"+chat+"/fork"), map[string]any{"branch": "main", "at": first}, &fork)
+		if fork.ID == "" || fork.ID == chat || fork.Group != g2 || fork.ForkedFrom != chat || !fork.Locked {
 			t.Fatalf("the fork's view through A: %+v", fork)
 		}
-		if _, ok := rp.ownView(t, fork.ID); !ok {
-			t.Fatal("B has no chat with the fork's id")
+		if there, ok := rp.ownView(t, fork.ID); !ok || there.Group != g2 {
+			t.Fatalf("B's chat with the fork's id: %+v (there: %v), want it in the source's group", there, ok)
 		}
-		if v, ok := rp.listed(t, fork.ID); !ok || v.Group != g2 || v.Server != rp.entry {
-			t.Fatalf("the fork in A's list: %+v (listed: %v)", v, ok)
-		}
+		eventually(t, 10*time.Second, "the fork in the section, in the source's group", func() bool {
+			v, ok := rp.listed(t, fork.ID)
+			return ok && v.Group == g2
+		})
 		if th := rp.same(t, fork.ID, "after the fork"); len(th) != first || th.users(t, "fork two") != 0 {
 			t.Fatalf("the fork's items: %s", joinThread(th))
 		}
@@ -1136,21 +1231,25 @@ func TestRemoteChatActions(t *testing.T) {
 		rp.awaitOwn(t, fork.ID, "the fork's reply", func(th thread) bool { return th.has(t, "FAKE(sonnet): on the fork") && th.ends() >= 2 })
 		rp.same(t, fork.ID, "after a message on the fork")
 		rp.same(t, chat, "the source after the fork")
-		// A fork of a fork's server and agent are fixed too.
-		if a := rp.do(t, "PATCH", "/api/chats/"+fork.ID, map[string]any{"agent": "pi"}); a.Status != http.StatusConflict {
+		// A fork's agent is fixed too.
+		if a := rp.do(t, "PATCH", rp.on("/chats/"+fork.ID), map[string]any{"agent": "pi"}); a.Status != http.StatusConflict {
 			t.Fatalf("an agent change of the fork: %s", a)
 		}
 
 		// Fork and edit: the second user message becomes the new chat's draft.
 		second := slices.IndexFunc(src.items(t), func(it model.Item) bool { return it.Kind == "user" && strings.Contains(it.Text, "fork two") })
 		var edit model.ChatView
-		rp.a.must(t, pairPage, "POST", "/api/chats/"+chat+"/fork", map[string]any{"branch": "main", "at": second, "message": second}, &edit)
-		if edit.Draft == nil || !strings.Contains(edit.Draft.Text, "fork two") || edit.DraftRev != 1 || edit.Group != g2 {
-			t.Fatalf("the fork-and-edit's view through A: %+v (draft %+v)", edit, edit.Draft)
+		rp.a.must(t, pairPage, "POST", rp.on("/chats/"+chat+"/fork"), map[string]any{"branch": "main", "at": second, "message": second}, &edit)
+		// The draft is the fork's on B, with B's counter: A keeps none of its own.
+		there, _ := rp.ownView(t, edit.ID)
+		if edit.Draft == nil || !strings.Contains(edit.Draft.Text, "fork two") || there.Draft == nil || there.Draft.Text != edit.Draft.Text ||
+			edit.DraftRev != there.DraftRev || edit.Group != g2 {
+			t.Fatalf("the fork-and-edit's view through A: %+v (draft %+v); at B the draft %+v on %d", edit, edit.Draft, there.Draft, there.DraftRev)
 		}
-		if v, _ := rp.listed(t, edit.ID); v.Draft == nil || !strings.Contains(v.Draft.Text, "fork two") {
-			t.Fatalf("the record of the fork-and-edit in A's list: %+v", v)
-		}
+		eventually(t, 10*time.Second, "the fork-and-edit in the section, with its draft", func() bool {
+			v, _ := rp.listed(t, edit.ID)
+			return v.Draft != nil && strings.Contains(v.Draft.Text, "fork two")
+		})
 	})
 
 	// A branch is made with the same routes and their branch parameter.
@@ -1162,15 +1261,15 @@ func TestRemoteChatActions(t *testing.T) {
 		first := slices.Index(main.kinds(), "end") + 1
 		rp.through(t, chat) // the page follows the chat
 		mark := rp.page.mark()
-		a := rp.ok(t, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "the other way",
+		a := rp.ok(t, "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "the other way",
 			"target": map[string]any{"branch": "main", "at": first, "new": true}})
 		br := a.Branch
 		if br == "" || br == "main" {
 			t.Fatalf("the send to a point of main: %s", a)
 		}
-		rp.page.awaitChat(t, mark, 10*time.Second, chat, "two branches", func(v model.ChatView) bool { return v.Branches == 2 && v.Branch == br })
-		rp.page.awaitEvent(t, mark, 10*time.Second, "branch_state", chat, `"branch":"`+br+`"`)
-		rp.page.awaitEvent(t, mark, 10*time.Second, "tree", chat)
+		rp.awaitChat(t, mark, 10*time.Second, chat, "two branches", func(v model.ChatView) bool { return v.Branches == 2 && v.Branch == br })
+		rp.page.awaitEvent(t, mark, 10*time.Second, "branch_state", rp.inSection(), chat, `"branch":"`+br+`"`)
+		rp.page.awaitEvent(t, mark, 10*time.Second, "tree", rp.inSection(), chat)
 		read := func(side func(*testing.T, string, string, any) answer, what string) thread {
 			t.Helper()
 			var th thread
@@ -1184,22 +1283,27 @@ func TestRemoteChatActions(t *testing.T) {
 			})
 			return th
 		}
+		// throughA is a call for the section's chat, by the path of the same call on B.
+		throughA := func(t *testing.T, method, path string, body any) answer {
+			t.Helper()
+			return rp.do(t, method, rp.on(strings.TrimPrefix(path, "/api")), body)
+		}
 		atB := read(rp.atB, "at B")
-		through := read(rp.do, "through A")
+		through := read(throughA, "through A")
 		if diff := sameThread(through, atB); diff != "" || through.users(t, "branch two") != 0 {
 			t.Fatalf("the branch's items through A against B's: %s\n%s\n%s", diff, joinThread(through), joinThread(atB))
 		}
 		// The tree through A is B's, and main is as it was.
-		ta, tb := rp.ok(t, "GET", "/api/chats/"+chat+"/tree", nil), rp.atB(t, "GET", "/api/chats/"+chat+"/tree", nil)
+		ta, tb := rp.ok(t, "GET", rp.on("/chats/"+chat+"/tree"), nil), rp.atB(t, "GET", "/api/chats/"+chat+"/tree", nil)
 		if ta.Raw != tb.Raw || !strings.Contains(ta.Raw, br) {
 			t.Fatalf("the tree through A against B's:\n%s\n%s", ta.Raw, tb.Raw)
 		}
-		ma := rp.ok(t, "GET", "/api/chats/"+chat+"/items?branch=main", nil)
+		ma := rp.ok(t, "GET", rp.on("/chats/"+chat+"/items?branch=main"), nil)
 		if th, _ := threadOf(ma.Raw); sameThread(th, main) != "" {
 			t.Fatalf("main after the branch: %s, was %s", joinThread(th), joinThread(main))
 		}
-		// A send to the branch's end by its parameter, and a draft kept for the branch at A.
-		if a := rp.ok(t, "POST", "/api/chats/"+chat+"/messages?branch=main", map[string]any{"text": "main goes on"}); a.Branch != "main" {
+		// A send to the branch's end by its parameter.
+		if a := rp.ok(t, "POST", rp.on("/chats/"+chat+"/messages?branch=main"), map[string]any{"text": "main goes on"}); a.Branch != "main" {
 			t.Fatalf("the send to main by its parameter: %s", a)
 		}
 		rp.turns(t, chat, 3) // B's current branch is the new one; main is read below
@@ -1207,7 +1311,7 @@ func TestRemoteChatActions(t *testing.T) {
 			th, _ := threadOf(rp.atB(t, "GET", "/api/chats/"+chat+"/items?branch=main", nil).Raw)
 			return th.ends() >= 3
 		})
-		ma, mb := rp.ok(t, "GET", "/api/chats/"+chat+"/items?branch=main", nil), rp.atB(t, "GET", "/api/chats/"+chat+"/items?branch=main", nil)
+		ma, mb := rp.ok(t, "GET", rp.on("/chats/"+chat+"/items?branch=main"), nil), rp.atB(t, "GET", "/api/chats/"+chat+"/items?branch=main", nil)
 		x, _ := threadOf(ma.Raw)
 		y, _ := threadOf(mb.Raw)
 		if diff := sameThread(x, y); diff != "" || !x.has(t, "FAKE(sonnet): main goes on") {
@@ -1223,14 +1327,14 @@ func TestRemoteChatActions(t *testing.T) {
 		rp.same(t, chat, "before the subagent") // both follow
 		pm, dm := rp.page.mark(), d.mark()
 		rp.send(t, chat, `with help [[mcp spawn_subagent {"prompt":"the helper's job","description":"helper"}]]`)
-		sub := rp.page.awaitEvent(t, pm, 15*time.Second, "sub", chat)
+		sub := rp.page.awaitEvent(t, pm, 15*time.Second, "sub", rp.inSection(), chat)
 		var ev struct{ Subagent model.Subagent }
 		json.Unmarshal([]byte(sub.Raw), &ev)
 		sid := ev.Subagent.ID
 		if sid == "" || ev.Subagent.Description != "helper" {
 			t.Fatalf("the sub event at A's page: %s", sub.Raw)
 		}
-		rp.page.awaitEvent(t, pm, 15*time.Second, "sub_items", chat, sid)
+		rp.page.awaitEvent(t, pm, 15*time.Second, "sub_items", rp.inSection(), chat, sid)
 		var sa, sb answer
 		eventually(t, 20*time.Second, "the subagent's reply at B", func() bool {
 			sb = rp.atB(t, "GET", "/api/chats/"+chat+"/subagents/"+sid+"/items", nil)
@@ -1241,7 +1345,7 @@ func TestRemoteChatActions(t *testing.T) {
 			return v.Status == model.StatusReady && v.SubsRunning == 0 && v.SubsOwed == 0
 		})
 		sb = rp.atB(t, "GET", "/api/chats/"+chat+"/subagents/"+sid+"/items", nil)
-		sa = rp.ok(t, "GET", "/api/chats/"+chat+"/subagents/"+sid+"/items", nil)
+		sa = rp.ok(t, "GET", rp.on("/chats/"+chat+"/subagents/"+sid+"/items"), nil)
 		x, _ := threadOf(sa.Raw)
 		y, _ := threadOf(sb.Raw)
 		if diff := sameThread(x, y); diff != "" || len(x) == 0 {
@@ -1252,7 +1356,7 @@ func TestRemoteChatActions(t *testing.T) {
 		subs := func(w *watcher, mark int) (out []string) {
 			for _, e := range w.since(mark) {
 				if (e.Type == "sub" || e.Type == "sub_items") && strings.Contains(e.Raw, chat) {
-					out = append(out, e.Raw)
+					out = append(out, asOwn(e.Raw)) // A's page got B's, with the entry as its "server"
 				}
 			}
 			return out
@@ -1262,161 +1366,165 @@ func TestRemoteChatActions(t *testing.T) {
 		}
 	})
 
-	// A delete is passed on; the record goes when B has confirmed.
+	// A delete is passed on; the chat leaves the section by B's event. No row stays behind: a
+	// call for it is B's "not found". A delete with the "local" of before, on this computer's
+	// route, has no record to remove.
 	t.Run("delete", func(t *testing.T) {
 		chat := rp.startChat(t, g, "delete me")
 		rp.turns(t, chat, 1)
-		// While B is connected and has the chat, "this sidebar only" is refused.
-		rp.refused(t, http.StatusConflict, "server_connected", "DELETE", "/api/chats/"+chat+"?local=1", nil)
+		rp.refused(t, http.StatusBadRequest, "no_record", "DELETE", "/api/chats/"+chat+"?local=1", nil)
+		if _, ok := rp.ownView(t, chat); !ok {
+			t.Fatal("B lost the chat to a delete on this computer's route")
+		}
 		mark := rp.page.mark()
-		rp.ok(t, "DELETE", "/api/chats/"+chat, nil)
-		rp.page.awaitEvent(t, mark, 5*time.Second, "chat_removed", chat)
+		rp.ok(t, "DELETE", rp.on("/chats/"+chat), nil)
+		rp.page.awaitEvent(t, mark, 5*time.Second, "chat_removed", rp.inSection(), chat)
 		if _, ok := rp.listed(t, chat); ok {
-			t.Fatal("the deleted chat is still in A's list")
+			t.Fatal("the deleted chat is still in the section")
 		}
 		if _, ok := rp.ownView(t, chat); ok {
 			t.Fatal("B still has the deleted chat")
 		}
-		if a := rp.do(t, "GET", "/api/chats/"+chat+"/items", nil); a.Status != http.StatusNotFound {
-			t.Fatalf("the deleted chat's items through A: %s", a)
+		for _, c := range [][2]string{{"GET", "/chats/" + chat + "/items"}, {"GET", "/chats/" + chat}, {"DELETE", "/chats/" + chat},
+			{"POST", "/chats/" + chat + "/archive"}} {
+			rp.refused(t, http.StatusNotFound, "not_found", c[0], rp.on(c[1]), nil)
 		}
-		if _, err := os.Stat(filepath.Join(rp.a.home, "remote", "chats", chat+".json")); !os.IsNotExist(err) {
-			t.Fatalf("the record's file after the delete: %v", err)
-		}
+		rp.refused(t, http.StatusNotFound, "not_found", "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "to nobody"})
 	})
 
-	// The delete of a group with its contents deletes its remote chats on B with the rest.
+	// A chat that B's owner deletes on B's own page leaves the section at once, by B's event,
+	// and a call for it through A is B's "not found": no greyed row, and no code of A's own.
+	t.Run("deleted at B", func(t *testing.T) {
+		chat := rp.startChat(t, g, "deleted there")
+		rp.turns(t, chat, 1)
+		rp.same(t, chat, "before the delete") // the page follows the chat
+		own := rp.ownPage(t)
+		defer own.close()
+		mark := rp.page.mark()
+		rp.b.must(t, pairOwnPage, "DELETE", "/api/chats/"+chat, nil, nil)
+		rp.page.awaitEvent(t, mark, 5*time.Second, "chat_removed", rp.inSection(), chat)
+		if v, ok := rp.listed(t, chat); ok {
+			t.Fatalf("the chat deleted at B is still in the section: %+v", v)
+		}
+		for _, c := range [][2]string{{"GET", "/chats/" + chat + "/items"}, {"GET", "/chats/" + chat}, {"DELETE", "/chats/" + chat}} {
+			rp.refused(t, http.StatusNotFound, "not_found", c[0], rp.on(c[1]), nil)
+		}
+		rp.refused(t, http.StatusNotFound, "not_found", "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "to nobody"})
+	})
+
+	// A chat is moved between the groups of its section, on B: B's own page has it there.
+	t.Run("move", func(t *testing.T) {
+		chat := rp.newChat(t, g)
+		mark := rp.page.mark()
+		if a := rp.ok(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"group": g2}); a.Chat == nil || a.Chat.Group != g2 {
+			t.Fatalf("the move's answer: %s", a)
+		}
+		rp.awaitChat(t, mark, 5*time.Second, chat, "the other group", func(v model.ChatView) bool { return v.Group == g2 })
+		if v, ok := rp.ownView(t, chat); !ok || v.Group != g2 {
+			t.Fatalf("the moved chat at B: %+v (there: %v)", v, ok)
+		}
+		// A group of this computer is no place for it: B knows no such group.
+		var here struct{ ID string }
+		rp.a.must(t, pairPage, "POST", "/api/groups", map[string]any{"name": "Here", "parent": ""}, &here)
+		if a := rp.do(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"group": here.ID}); a.Status == http.StatusOK {
+			t.Fatalf("the move of a chat of the section into a group of this computer: %s", a)
+		}
+		if v, _ := rp.ownView(t, chat); v.Group != g2 {
+			t.Fatalf("the chat at B after the refused move: %+v", v)
+		}
+		rp.a.must(t, pairPage, "DELETE", "/api/groups/"+here.ID+"?contents=delete", nil, nil)
+	})
+
+	// The delete of a group of the section with its contents deletes its chats on B, the one
+	// that has not started too: each removed thing is told, and then the groups without it. The
+	// same call on this computer's route finds no such group and deletes nothing.
 	t.Run("group delete", func(t *testing.T) {
 		gd := rp.group(t, "Gone soon")
 		chat := rp.startChat(t, gd, "in the group")
 		unstarted := rp.newChat(t, gd)
-		var local model.ChatView
-		rp.a.must(t, pairPage, "POST", "/api/chats", map[string]any{"agent": "claude", "group": gd, "server": servers.LocalID}, &local)
 		rp.turns(t, chat, 1)
+		rp.refused(t, http.StatusNotFound, "not_found", "DELETE", "/api/groups/"+gd+"?contents=delete", nil)
 		mark := rp.page.mark()
-		rp.ok(t, "DELETE", "/api/groups/"+gd+"?contents=delete", nil)
-		for _, id := range []string{chat, unstarted, local.ID} {
-			rp.page.awaitEvent(t, mark, 5*time.Second, "chat_removed", id)
+		rp.ok(t, "DELETE", rp.on("/groups/"+gd+"?contents=delete"), nil)
+		for _, id := range []string{chat, unstarted} {
+			rp.page.awaitEvent(t, mark, 5*time.Second, "chat_removed", rp.inSection(), id)
 			if _, ok := rp.listed(t, id); ok {
-				t.Fatalf("the chat %s of the deleted group is still in A's list", id)
+				t.Fatalf("the chat %s of the deleted group is still in the section", id)
 			}
 		}
-		if _, ok := rp.ownView(t, chat); ok {
-			t.Fatal("B still has the chat of the deleted group")
+		rp.page.await(t, mark, 5*time.Second, "groups event of the section without the group", func(e seenEvent) bool {
+			return e.holds("groups", rp.inSection()) && !strings.Contains(e.Raw, gd)
+		})
+		for _, id := range []string{chat, unstarted} {
+			if _, ok := rp.ownView(t, id); ok {
+				t.Fatalf("B still has the chat %s of the deleted group", id)
+			}
+		}
+		own, tree := rp.ownTree(t), rp.tree(t)
+		for _, groups := range [][]model.Group{own.Groups, tree.Groups} {
+			if slices.ContainsFunc(groups, func(x model.Group) bool { return x.ID == gd }) {
+				t.Fatalf("the deleted group is still there: %+v at B, %+v in the section", own.Groups, tree.Groups)
+			}
 		}
 	})
 }
 
-// AC27, the removal: an entry with two started chats and one that has not started. The
-// confirmation's counts are the records; the removal takes the records away and gives the
-// unstarted chat back to this computer; B keeps both chats.
+// AC27, the removal: an entry with two started chats and one that has not started in its
+// section. The removal takes the section away from this app (the tree, the lists, the routes)
+// and tells B nothing: B keeps the three chats, where its owner sees them.
 func TestRemoteChatRemoval(t *testing.T) {
-	serverTest(t, "TestCountsAndRemoved (internal/remotes)", "TestManagerRemove (internal/servers)")
+	serverTest(t, "TestSectionOfAnEntryThatIsRemoved (internal/remotes)", "TestSectionEventAtConnectDropAndRemoval (internal/server)", "TestManagerRemove (internal/servers)")
 	rp := connectedPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	one, two := rp.startChat(t, g, "one"), rp.startChat(t, g, "two")
 	rp.turns(t, one, 1)
 	rp.turns(t, two, 1)
 	unstarted := rp.newChat(t, g)
+	// The removal no longer counts what is on the server.
+	if a := rp.do(t, "GET", "/api/servers/"+rp.entry+"/items", nil); a.Status != http.StatusNotFound {
+		t.Fatalf("the count of what is on %s: %s, want 404", pairName, a)
+	}
 
-	// First, A is stopped and started again: at its stop it wrote what it keeps of B's chats,
-	// and after its start they are listed from those files and read from B as before.
-	rp.send(t, one, "before the stop")
-	rp.turns(t, one, 2)
-	var atStop model.ChatView
-	eventually(t, 5*time.Second, "A's view of the chat is B's", func() bool {
-		a, _ := rp.listed(t, one)
-		atStop, _ = rp.ownView(t, one)
-		return a.Status == atStop.Status && a.Usage == atStop.Usage && a.Name == atStop.Name && a.Status == model.StatusReady
-	})
-	firstPage := rp.page // its events are kept after its close
-	rp.page.close()
-	rp.a.stop(t)
-	var rec struct {
-		Entry, Group string
-		View         model.ChatView
-	}
-	raw, err := os.ReadFile(filepath.Join(rp.a.home, "remote", "chats", one+".json"))
-	if err != nil || json.Unmarshal(raw, &rec) != nil {
-		t.Fatalf("the record's file after A's stop: %v: %s", err, raw)
-	}
-	if rec.Entry != rp.entry || rec.Group != g || rec.View != atStop {
-		t.Fatalf("the record written at A's stop:\n%+v\nB's view of the chat:\n%+v", rec, atStop)
-	}
-	if strings.Contains(string(raw), rp.b.secret) {
-		t.Fatal("the record's file holds B's secret")
-	}
-	rp.a.start(t)
-	rp.page = watch(t, http.DefaultClient, strings.TrimSuffix(rp.a.in.url, "/"), pairPage, nil)
-	if v, ok := rp.listed(t, one); !ok || v.Server != rp.entry || v.Group != g || !v.Locked {
-		t.Fatalf("the chat in A's list after A's start: %+v (listed: %v)", v, ok)
-	}
-	rp.waitState(t, servers.StateConnected, 10*time.Second)
-	rp.same(t, one, "after A's restart") // the page follows it from here on
-	rp.send(t, one, "after the start")
-	rp.turns(t, one, 3)
-	rp.same(t, one, "after a message that followed A's restart")
-
-	var counts struct{ Chats, Runs int }
-	rp.a.must(t, pairPage, "GET", "/api/servers/"+rp.entry+"/items", nil, &counts)
-	if counts.Chats != 2 || counts.Runs != 0 {
-		t.Fatalf("the confirmation's counts: %+v, want 2 chats and no run", counts)
-	}
-	rp.noSecret(t, firstPage, rp.page)
+	rp.noSecret(t, rp.page)
 	mark := rp.page.mark()
 	rp.ok(t, "DELETE", "/api/servers/"+rp.entry, nil)
-	for _, id := range []string{one, two} {
-		rp.page.awaitEvent(t, mark, 5*time.Second, "chat_removed", id)
-		if _, err := os.Stat(filepath.Join(rp.a.home, "remote", "chats", id+".json")); !os.IsNotExist(err) {
-			t.Fatalf("the file of the record %s after the removal: %v", id, err)
-		}
-		if a := rp.do(t, "GET", "/api/chats/"+id, nil); a.Status != http.StatusNotFound {
-			t.Fatalf("the chat %s through A after the removal: %s", id, a)
-		}
-	}
-	v := rp.page.awaitChat(t, mark, 5*time.Second, unstarted, "this computer as its server", func(v model.ChatView) bool { return v.Server == "" })
-	if v.Locked || v.Group != g {
-		t.Fatalf("the unstarted chat after the removal: %+v", v)
-	}
-	if evs := rp.page.of(mark, "chat_removed", unstarted); len(evs) != 0 {
-		t.Fatalf("the unstarted chat was removed: %v", evs)
-	}
+	rp.page.await(t, mark, 5*time.Second, "section event without a tree", func(e seenEvent) bool {
+		return e.holds("section", rp.inSection(), `"tree":null`)
+	})
 	rp.page.await(t, mark, 5*time.Second, "server_lists event without lists", func(e seenEvent) bool {
 		return e.holds("server_lists", rp.entry, `"lists":null`)
 	})
+	for _, id := range []string{one, two, unstarted} {
+		rp.refused(t, http.StatusNotFound, "no_server", "GET", rp.on("/chats/"+id), nil)
+		rp.refused(t, http.StatusNotFound, "not_found", "GET", "/api/chats/"+id, nil)
+	}
+	rp.refused(t, http.StatusNotFound, "no_server", "POST", rp.on("/chats"), map[string]any{"group": g})
 	st := rp.state(t)
-	if len(st.Servers) != 1 || st.Servers[0].ID != servers.LocalID || len(st.Lists) != 0 {
-		t.Fatalf("A's servers and lists after the removal: %+v, %v", st.Servers, st.Lists)
+	if len(st.Servers) != 1 || st.Servers[0].ID != servers.LocalID || len(st.Lists) != 0 || st.Sections == nil || len(st.Sections) != 0 {
+		t.Fatalf("A's servers, lists and sections after the removal: %+v, %v, %v", st.Servers, st.Lists, st.Sections)
 	}
-	var left []string
-	for _, c := range st.Chats {
-		left = append(left, c.ID)
+	if len(st.Chats) != 0 {
+		t.Fatalf("A's chats after the removal: %+v", st.Chats)
 	}
-	if len(left) != 1 || left[0] != unstarted || st.Chats[0].Server != "" {
-		t.Fatalf("A's chats after the removal: %v", left)
-	}
-	rp.noSecret(t, firstPage, rp.page)
-	// It is a chat of this computer now: its first message starts the local agent.
-	rp.ok(t, "PATCH", "/api/chats/"+unstarted, map[string]any{"cwd": rp.work})
-	rp.send(t, unstarted, "here now")
-	eventually(t, 20*time.Second, "the reply of the local agent", func() bool {
-		th, _ := threadOf(rp.ok(t, "GET", "/api/chats/"+unstarted+"/items", nil).Raw)
-		return th.has(t, "here now") && th.ends() >= 1
-	})
+	rp.noSecret(t, rp.page)
 
 	// B was told nothing: it has both chats, started and not archived, with their threads.
 	time.Sleep(300 * time.Millisecond)
 	for id, text := range map[string]string{one: "FAKE(sonnet): one", two: "FAKE(sonnet): two"} {
 		v, ok := rp.ownView(t, id)
-		if !ok || !v.Locked || v.Archived {
+		if !ok || !v.Locked || v.Archived || v.Group != g {
 			t.Fatalf("the chat %s at B after the removal: %+v (there: %v)", id, v, ok)
 		}
 		if th := rp.own(t, id); !th.has(t, text) {
 			t.Fatalf("the thread of %s at B after the removal: %s", id, joinThread(th))
 		}
 	}
-	if _, ok := rp.ownView(t, unstarted); ok {
-		t.Fatal("B has the chat that never started")
+	// The chat that never started stays there too, as it was made.
+	if v, ok := rp.ownView(t, unstarted); !ok || v.Locked || v.Group != g {
+		t.Fatalf("the chat that never started at B after the removal: %+v (there: %v)", v, ok)
+	}
+	if own := rp.ownTree(t); len(own.Chats) != 3 || len(own.Groups) != 1 || own.Groups[0].ID != g {
+		t.Fatalf("the tree of B's own page after the removal:\n%s", strings.Join(own.lines(), "\n"))
 	}
 }
 
@@ -1487,18 +1595,19 @@ func (rp *remotePair) folder(t *testing.T, mark, content string) string {
 func (rp *remotePair) newChatIn(t *testing.T, group, dir string) string {
 	t.Helper()
 	id := rp.newChat(t, group)
-	if a := rp.ok(t, "PATCH", "/api/chats/"+id, map[string]any{"cwd": dir}); a.Chat == nil || a.Chat.Cwd != dir {
+	if a := rp.ok(t, "PATCH", rp.on("/chats/"+id), map[string]any{"cwd": dir}); a.Chat == nil || a.Chat.Cwd != dir {
 		t.Fatalf("the folder %s of the chat: %s", dir, a)
 	}
 	return id
 }
 
-// AC16 (c) and (d), on the good and on the poor link: a first message that B refuses before the agent started leaves the chat
-// unstarted on both sides with the reason in the answer, and a retry with another folder starts
-// it; a change of server after it deletes what the failed start left on B; and an agent that
-// starts and then refuses the message leaves the chat started on both sides.
+// AC16 (c), on the good and on the poor link: a first message that B refuses before the agent
+// started leaves the chat unstarted on both sides with the reason in the answer, and a retry
+// with another folder starts it; a delete after it takes the chat away on B; and an agent that
+// starts and then refuses the message leaves the chat started on both sides. The first message
+// is an ordinary message to a chat that is on B from the moment it was made in the section.
 func TestRemoteChatFailedStart(t *testing.T) {
-	serverTest(t, "TestStartTable, TestStartNotSent (internal/remotes)")
+	serverTest(t, "TestSectionCallAnswers (internal/remotes)", "TestSectionCallsOfAConnectedEntry (internal/server)")
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH (the fake claude is a Node script)")
 	}
@@ -1514,19 +1623,19 @@ func TestRemoteChatFailedStart(t *testing.T) {
 			g := rp.group(t, "Work")
 			first := func(chat, text string) answer {
 				t.Helper()
-				return rp.do(t, "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": text})
+				return rp.do(t, "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": text})
 			}
 			unstarted := func(chat, when string) model.ChatView {
 				t.Helper()
 				v := rp.view(t, chat)
-				if v.Locked || v.Server != rp.entry || v.Start != "" {
+				if v.Locked {
 					t.Fatalf("%s: the chat through A: %+v, want it unstarted on %s", when, v, pairName)
 				}
 				if l, ok := rp.listed(t, chat); !ok || l.Locked {
-					t.Fatalf("%s: the chat in A's list: %+v", when, l)
+					t.Fatalf("%s: the chat in the section: %+v", when, l)
 				}
-				if _, err := os.Stat(filepath.Join(rp.a.home, "remote", "chats", chat+".json")); !os.IsNotExist(err) {
-					t.Fatalf("%s: a record's file of the unstarted chat: %v", when, err)
+				if _, err := os.Stat(filepath.Join(rp.a.home, "chats", chat)); !os.IsNotExist(err) {
+					t.Fatalf("%s: A keeps a chat of its own for the chat on %s: %v", when, pairName, err)
 				}
 				return v
 			}
@@ -1543,7 +1652,7 @@ func TestRemoteChatFailedStart(t *testing.T) {
 				}
 				t.Logf("a program that does not start: %s", a)
 				unstarted(chat, "after the failed start")
-				// B has what the failed start left: the chat, which has not started.
+				// B has the chat as before, and it has not started.
 				if v, ok := rp.ownView(t, chat); !ok || v.Locked {
 					t.Fatalf("the chat at B after the failed start: %+v (there: %v)", v, ok)
 				}
@@ -1551,7 +1660,7 @@ func TestRemoteChatFailedStart(t *testing.T) {
 					t.Fatalf("B's thread after the failed start holds the message: %s", joinThread(th))
 				}
 				// A retry in another folder and with another model starts it, with both.
-				if a := rp.ok(t, "PATCH", "/api/chats/"+chat, map[string]any{"cwd": rp.work, "model": "haiku"}); a.Chat == nil || a.Chat.Cwd != rp.work || a.Chat.Model != "haiku" {
+				if a := rp.ok(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"cwd": rp.work, "model": "haiku"}); a.Chat == nil || a.Chat.Cwd != rp.work || a.Chat.Model != "haiku" {
 					t.Fatalf("the change of folder and model after the failed start: %s", a)
 				}
 				if a := first(chat, "now it starts"); a.Status != http.StatusOK {
@@ -1580,20 +1689,21 @@ func TestRemoteChatFailedStart(t *testing.T) {
 				if err := os.Remove(gone); err != nil {
 					t.Fatal(err)
 				}
-				a := rp.refused(t, http.StatusConflict, "folder_missing", "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "nowhere"})
-				if a.Error == "" {
-					t.Fatalf("the refusal names no reason: %s", a)
+				// B's refusal of the message, as B gives it to its own page.
+				a := first(chat, "nowhere")
+				if a.Status != http.StatusConflict || a.Error == "" {
+					t.Fatalf("the first message in a folder that is gone: %s, want B's 409 with its reason", a)
 				}
 				t.Logf("a folder that is missing: %s", a)
 				unstarted(chat, "after the refusal")
-				if _, ok := rp.ownView(t, chat); ok {
-					t.Fatal("B has the chat whose folder is missing")
+				if v, ok := rp.ownView(t, chat); !ok || v.Locked {
+					t.Fatalf("the chat at B after the refusal: %+v (there: %v)", v, ok)
 				}
 				// A folder that is not there cannot be chosen; another one starts the chat.
-				if a := rp.do(t, "PATCH", "/api/chats/"+chat, map[string]any{"cwd": gone}); a.Status == http.StatusOK {
+				if a := rp.do(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"cwd": gone}); a.Status == http.StatusOK {
 					t.Fatalf("the choice of a folder that is not on B: %s", a)
 				}
-				rp.ok(t, "PATCH", "/api/chats/"+chat, map[string]any{"cwd": rp.work})
+				rp.ok(t, "PATCH", rp.on("/chats/"+chat), map[string]any{"cwd": rp.work})
 				if a := first(chat, "somewhere"); a.Status != http.StatusOK {
 					t.Fatalf("the retry in another folder: %s", a)
 				}
@@ -1603,35 +1713,7 @@ func TestRemoteChatFailedStart(t *testing.T) {
 				}
 			})
 
-			// (d): after a failed start, a change of server deletes what it left on B.
-			t.Run("a change of server after a failed start", func(t *testing.T) {
-				bad, shut := rp.closedFolder(t)
-				chat := rp.newChatIn(t, g, bad)
-				shut()
-				if a := first(chat, "will not start"); a.Status < 400 {
-					t.Fatalf("the first message with a program that does not start: %s", a)
-				}
-				if _, ok := rp.ownView(t, chat); !ok {
-					t.Fatal("B does not have what the failed start left")
-				}
-				a := rp.ok(t, "PATCH", "/api/chats/"+chat, map[string]any{"server": servers.LocalID})
-				if a.Chat == nil || a.Chat.Server != "" || a.Chat.Locked {
-					t.Fatalf("the change to this computer: %s", a)
-				}
-				eventually(t, 30*time.Second, "B no longer has the chat", func() bool { _, ok := rp.ownView(t, chat); return !ok })
-				// It starts here, with A's own agent.
-				rp.ok(t, "PATCH", "/api/chats/"+chat, map[string]any{"cwd": rp.work})
-				rp.send(t, chat, "here instead")
-				eventually(t, 30*time.Second, "the reply of the local agent", func() bool {
-					th, _ := threadOf(rp.ok(t, "GET", "/api/chats/"+chat+"/items", nil).Raw)
-					return th.has(t, "here instead") && th.ends() >= 1
-				})
-				if _, ok := rp.ownView(t, chat); ok {
-					t.Fatal("B has the chat that started on A")
-				}
-			})
-
-			// The same with the delete of the local chat: what the failed start left on B goes too.
+			// A delete after a failed start deletes the chat on B.
 			t.Run("a delete after a failed start", func(t *testing.T) {
 				bad, shut := rp.closedFolder(t)
 				chat := rp.newChatIn(t, g, bad)
@@ -1639,8 +1721,9 @@ func TestRemoteChatFailedStart(t *testing.T) {
 				if a := first(chat, "will not start"); a.Status < 400 {
 					t.Fatalf("the first message with a program that does not start: %s", a)
 				}
-				rp.ok(t, "DELETE", "/api/chats/"+chat, nil)
+				rp.ok(t, "DELETE", rp.on("/chats/"+chat), nil)
 				eventually(t, 30*time.Second, "B no longer has the chat", func() bool { _, ok := rp.ownView(t, chat); return !ok })
+				eventually(t, 30*time.Second, "the chat left the section", func() bool { _, ok := rp.listed(t, chat); return !ok })
 			})
 
 			// (c), second case: the agent starts and then refuses the message. The chat is started and
@@ -1662,11 +1745,10 @@ func TestRemoteChatFailedStart(t *testing.T) {
 					t.Fatalf("the first message that the agent refused: %s, want the refusal", a)
 				}
 				v := rp.view(t, chat)
-				if !v.Locked || v.Server != rp.entry {
+				if !v.Locked {
 					t.Fatalf("the chat through A after the refusal: %+v", v)
 				}
-				rp.page.awaitChat(t, mark, 30*time.Second, chat, "the lock", func(v model.ChatView) bool { return v.Locked })
-				rp.page.awaitEvent(t, mark, 30*time.Second, "chat_reload", chat)
+				rp.awaitChat(t, mark, 30*time.Second, chat, "the lock", func(v model.ChatView) bool { return v.Locked })
 				th := rp.same(t, chat, "after the refusal")
 				if th.users(t, "refused after the start") != 1 {
 					t.Fatalf("the thread after the refusal: %s", joinThread(th))
@@ -1689,7 +1771,7 @@ func TestRemoteChatFailedStart(t *testing.T) {
 // followUnstarted reads an unstarted chat's items through A, so that the page follows it.
 func (rp *remotePair) followUnstarted(t *testing.T, chat string) {
 	t.Helper()
-	if a := rp.do(t, "GET", "/api/chats/"+chat+"/items", nil); a.Status != http.StatusOK {
+	if a := rp.do(t, "GET", rp.on("/chats/"+chat+"/items"), nil); a.Status != http.StatusOK {
 		t.Fatalf("the items of the unstarted chat %s: %s", chat, a)
 	}
 }
@@ -1732,9 +1814,10 @@ func took(t *testing.T, what string, ch <-chan answer, limit time.Duration) answ
 
 // AC16 (a), (b) and (e): answers that are lost on the way and a cut in the middle of a turn, on
 // the good and on the poor link. Nothing is sent twice, and what the page reads through A after
-// the return is B's own.
+// the return is B's own. While the link is cut the section has no tree and every call for a
+// thing of it is refused; the tree A's page is sent at the return is B's as it is then.
 func TestRemoteChatLostAnswers(t *testing.T) {
-	serverTest(t, "TestStartNoAnswer, TestStartOnce, TestStartWhileTheStreamDrops, TestGoneAndBack (internal/remotes)")
+	serverTest(t, "TestSectionServerDropsInACall (internal/remotes)", "TestSectionCallsThatGetNoAnswer, TestServerDropsWithAChatAndARunFollowed (internal/server)")
 	for _, link := range []struct {
 		name string
 		p    linksim.Profile
@@ -1750,11 +1833,11 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				rp.link.Stall(false, false)
 				rp.link.Uncut()
 				d := rp.back(t, 60*time.Second)
-				rp.page.awaitEvent(t, mark, 10*time.Second, "server_back", rp.entry)
+				rp.treeBack(t, mark)
 				return d
 			}
 			message := func(chat, text string) <-chan answer {
-				return rp.later("POST", "/api/chats/"+chat+"/messages", map[string]any{"text": text})
+				return rp.later("POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": text})
 			}
 
 			// (a) A send in a started chat: its body arrives, its answer does not.
@@ -1770,7 +1853,9 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				if a.Status != http.StatusGatewayTimeout || a.Code != "send_unknown" || !strings.Contains(a.Error, pairName) {
 					t.Fatalf("the send whose answer was lost: %s, want 504 send_unknown", a)
 				}
-				rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "not sent"})
+				rp.waitState(t, servers.StateUnreachable, 5*time.Second)
+				rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "not sent"})
+				rp.noTree(t, "after the lost answer")
 				back := restore(t)
 				rp.turns(t, chat, 2)
 				th := rp.same(t, chat, "after the return")
@@ -1780,9 +1865,10 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				t.Logf("%s, (a): 504 send_unknown; connected again %v after the link was back; the message is in the thread once", link.name, back.Round(time.Millisecond))
 			})
 
-			// (b) The same at a first message: the chat is "start not confirmed", server and agent
-			// are fixed, a repeat while B cannot be reached sends nothing, and the chat is settled
-			// as started at the reconnect with no repeat.
+			// (b) The same at a first message, which is an ordinary message to a chat that is on B
+			// already: it is not known whether it arrived, as for any message. While B cannot be
+			// reached the section has no tree, so nothing says whether the chat started, and a
+			// repeat sends nothing; the tree of the reconnect has the chat as started, in its group.
 			t.Run("a first message whose answer is lost", func(t *testing.T) {
 				chat := rp.newChat(t, g)
 				rp.followUnstarted(t, chat)
@@ -1791,57 +1877,37 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				eventually(t, 20*time.Second, "the chat started at B", func() bool { v, ok := rp.ownView(t, chat); return ok && v.Locked })
 				rp.link.Cut()
 				a := took(t, "the first message", sent, 10*time.Second)
-				if a.Status != http.StatusGatewayTimeout || a.Code != "start_unconfirmed" {
-					t.Fatalf("the first message whose answer was lost: %s, want 504 start_unconfirmed", a)
+				if a.Status != http.StatusGatewayTimeout || a.Code != "send_unknown" || !strings.Contains(a.Error, pairName) {
+					t.Fatalf("the first message whose answer was lost: %s, want 504 send_unknown", a)
 				}
-				unconfirmed := func(when string) {
-					t.Helper()
-					if v := rp.view(t, chat); v.Start != "unconfirmed" || v.Locked || v.Server != rp.entry {
-						t.Fatalf("%s: the chat through A: %+v, want start unconfirmed", when, v)
-					}
-					if v, ok := rp.listed(t, chat); !ok || v.Start != "unconfirmed" {
-						t.Fatalf("%s: the chat in A's list: %+v", when, v)
-					}
-				}
-				unconfirmed("after the lost answer")
-				rp.refused(t, http.StatusConflict, "start_unconfirmed", "PATCH", "/api/chats/"+chat, map[string]any{"server": servers.LocalID})
-				rp.refused(t, http.StatusConflict, "start_unconfirmed", "PATCH", "/api/chats/"+chat, map[string]any{"agent": "claude", "model": "haiku"})
-				// Repeats while B cannot be reached send nothing and settle nothing.
+				rp.waitState(t, servers.StateUnreachable, 5*time.Second)
+				rp.noTree(t, "after the lost answer")
+				rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "PATCH", rp.on("/chats/"+chat), map[string]any{"agent": "claude", "model": "haiku"})
+				// Repeats while B cannot be reached send nothing.
 				for range 2 {
-					rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "first lost"})
+					rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "first lost"})
 				}
-				unconfirmed("after two repeats without a connection")
+				rp.noTree(t, "after two repeats without a connection")
 				mark := rp.page.mark()
 				back := restore(t)
-				v := rp.page.awaitChat(t, mark, 10*time.Second, chat, "the lock", func(v model.ChatView) bool { return v.Locked })
-				if v.Start != "" || v.Server != rp.entry || v.Group != g {
-					t.Fatalf("the chat's event at the reconnect: %+v", v)
+				// The tree of the return says that the chat started: no event of the chat is needed.
+				tree := rp.page.await(t, mark, 10*time.Second, "section event with the started chat", func(e seenEvent) bool {
+					return e.holds("section", rp.inSection(), chat) && !strings.Contains(e.Raw, `"tree":null`)
+				})
+				var ev struct{ Tree remotes.Tree }
+				json.Unmarshal([]byte(tree.Raw), &ev)
+				if i := slices.IndexFunc(ev.Tree.Chats, func(v model.ChatView) bool { return v.ID == chat }); i < 0 || !ev.Tree.Chats[i].Locked || ev.Tree.Chats[i].Group != g {
+					t.Fatalf("the chat in the tree of the reconnect: %s", clipText(tree.Raw, 600))
 				}
-				rp.page.awaitEvent(t, mark, 10*time.Second, "chat_reload", chat)
-				if _, err := os.Stat(filepath.Join(rp.a.home, "remote", "chats", chat+".json")); err != nil {
-					t.Fatalf("the record's file of the settled chat: %v", err)
+				if v, ok := rp.listed(t, chat); !ok || !v.Locked || v.Group != g {
+					t.Fatalf("the chat in the section after the return: %+v (listed: %v)", v, ok)
 				}
 				rp.turns(t, chat, 1)
 				th := rp.same(t, chat, "after the return")
 				if th.users(t, "first lost") != 1 || len(rp.own(t, chat).items(t)) == 0 {
 					t.Fatalf("the thread after the return: %s", joinThread(th))
 				}
-				// The creation call repeated twice at B itself, as A sends it (A's client id, the
-				// chat's values and the text): B answers that the chat has started and sends
-				// nothing, so its thread still holds the message once.
-				body := map[string]any{"id": chat, "agent": v.Agent, "cwd": v.Cwd, "model": v.Model, "effort": v.Effort,
-					"name": "", "userNamed": false, "text": "first lost"}
-				for range 2 {
-					var again struct{ OK, Sent, Started bool }
-					if status, raw := rp.b.api(t, rp.aID(t), "POST", "/api/chats", body, &again); status != http.StatusOK || !again.Started || again.Sent {
-						t.Fatalf("the creation call repeated at B: %d %s, want started and not sent", status, raw)
-					}
-				}
-				time.Sleep(300 * time.Millisecond)
-				if th := rp.same(t, chat, "after two repeats of the creation call"); th.users(t, "first lost") != 1 || th.ends() != 1 {
-					t.Fatalf("the thread after two repeats of the creation call: %s", joinThread(th))
-				}
-				t.Logf("%s, (b): 504 start_unconfirmed, server and agent refused with 409, two repeats without a connection 503; settled as started %v after the link was back; one user message at B", link.name, back.Round(time.Millisecond))
+				t.Logf("%s, (b): 504 send_unknown, two repeats without a connection 503; seen started %v after the link was back; one user message at B", link.name, back.Round(time.Millisecond))
 			})
 
 			// (e) A cut of 15 s in the middle of a turn, on the clock of the test: A's tries to
@@ -1856,15 +1922,20 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 				rp.b.waitFakeMessage(t, skip, "through the cut")
 				// The user's message is content B sends before the cut: the page has it before
 				// the mark, so that what comes after the mark is the reply's alone.
-				rp.page.awaitEvent(t, sent, 3*time.Second, "chat_items", chat, "through the cut")
+				rp.page.awaitEvent(t, sent, 3*time.Second, "chat_items", rp.inSection(), chat, "through the cut")
 				mark := rp.page.mark()
 				rp.link.Cut()
 				cut := time.Now()
 				rp.waitState(t, servers.StateUnreachable, 2*time.Second)
+				// The page is told that the tree is gone: the section shows no row from here on.
+				rp.page.await(t, mark, 5*time.Second, "section event without a tree", func(e seenEvent) bool {
+					return e.holds("section", rp.inSection(), `"tree":null`)
+				})
 				rp.turns(t, chat, 2) // the turn ends at B while A cannot be told
 				if evs := rp.page.of(mark, "chat_items", chat); len(evs) != 0 {
 					t.Fatalf("the page was sent content events through a cut link: %v", evs)
 				}
+				rp.noTree(t, "while the link is cut")
 				away := fast.of(15 * time.Second)
 				time.Sleep(time.Until(cut.Add(away)))
 				back := restore(t)
@@ -1881,18 +1952,148 @@ func TestRemoteChatLostAnswers(t *testing.T) {
 	}
 }
 
-// A first message whose creation call is under way when A's process is killed: B has started
-// the chat, and A's chat.json says nothing of a first message, since the mark is written only
-// when a call has ended. A's next start settles the chat from the snapshot of its connect: it is
-// a record, listed as started, and its thread through A is B's with the message once.
-func TestRemoteChatKilledInAStart(t *testing.T) {
-	serverTest(t, "TestSettleAtSnapshot, TestAdopt (internal/remotes)")
+// A make whose answer was lost (the goal's 3.4): if the thing was made it shows in the section
+// like anything else, no clean-up looks for it, and nothing is deleted on its account.
+//
+// First with the connection up all the while: nothing comes from B for longer than A waits for
+// the answer of a fork, and less long than the silence that ends a connection. A answers that B
+// did not answer and keeps no memory of the call; when B's answer and events arrive after all,
+// the fork is in the section by B's chat event. The wait for a fork is the one of the fast
+// clock, 4.5 s for 45 s; the silence is the production one, 35 s, so the connection stays.
+// (With AIWB_TEST_REAL_WAITS=1 the wait is the longer of the two, and the fork comes with the
+// tree of the connection that is made again.)
+//
+// Then with a cut: a new chat is made, B's answer waits, and the link is cut. The chat is in
+// the tree A's page is sent when the connection is back.
+//
+// Both are still there after A has been stopped and started again: no start cleans up.
+func TestRemoteChatLostMake(t *testing.T) {
+	serverTest(t, "TestSectionCallsThatGetNoAnswer (internal/server)", "TestSectionServerDropsInACall, TestSectionEvents (internal/remotes)")
+	rp := connectedPair(t, linksim.Good, fast.env(t, "start", "backoff"))
+	g := rp.group(t, "Work")
+	src := rp.startChat(t, g, "fork me")
+	th := rp.turns(t, src, 1)
+	chatsAtB := func() map[string]model.ChatView {
+		t.Helper()
+		out := map[string]model.ChatView{}
+		for _, v := range rp.ownTree(t).Chats {
+			out[v.ID] = v
+		}
+		return out
+	}
+	// madeAtB waits until B has a chat that was not there before, and returns it.
+	madeAtB := func(before map[string]model.ChatView, what string) (made model.ChatView) {
+		t.Helper()
+		eventually(t, 20*time.Second, what+" is made at B", func() bool {
+			for id, v := range chatsAtB() {
+				if _, was := before[id]; !was {
+					made = v
+					return true
+				}
+			}
+			return false
+		})
+		return made
+	}
+
+	// The fork: its answer and its event wait at the link until A has given up on the answer.
+	before := chatsAtB()
+	mark := rp.page.mark()
+	rp.link.Stall(true, false) // what B sends waits
+	sent := time.Now()
+	a := took(t, "the fork", rp.later("POST", rp.on("/chats/"+src+"/fork"), map[string]any{"branch": "main", "at": len(th)}), 80*time.Second)
+	if a.Status != http.StatusGatewayTimeout || a.Code != "no_answer" || !strings.Contains(a.Error, pairName) {
+		t.Fatalf("the fork whose answer did not come: %s, want 504 no_answer", a)
+	}
+	t.Logf("the fork: 504 no_answer after %v", time.Since(sent).Round(100*time.Millisecond))
+	fork := madeAtB(before, "the fork")
+	if fork.ForkedFrom != src || fork.Group != g {
+		t.Fatalf("the fork at B: %+v", fork)
+	}
+	if v, ok := rp.listed(t, fork.ID); ok {
+		t.Fatalf("the fork is in the section before B's event came: %+v", v)
+	}
+	// On the production clock the wait for a fork, 45 s, is longer than the silence that ends a
+	// connection, 35 s: there the connection is gone by now, and the fork comes with the tree.
+	if v := rp.entryView(t); v.State != servers.StateConnected && !realWaits() {
+		t.Fatalf("%s is %q (%s) after the lost answer, want it connected still: the test is of an answer that is lost on a connection that stays", pairName, v.State, v.Detail)
+	}
+	rp.link.Stall(false, false)
+	if realWaits() {
+		rp.back(t, 60*time.Second)
+		eventually(t, 20*time.Second, "the fork is in the section", func() bool { _, ok := rp.listed(t, fork.ID); return ok })
+	} else {
+		rp.awaitChat(t, mark, 20*time.Second, fork.ID, "the fork", func(v model.ChatView) bool { return v.ForkedFrom == src && v.Group == g })
+		if evs := rp.page.of(mark, "section"); len(evs) != 0 {
+			t.Fatalf("the connection was made again on the way: the fork came with a tree, not by its event: %v", evs)
+		}
+	}
+	if v, ok := rp.listed(t, fork.ID); !ok || v.Group != g || !v.Locked {
+		t.Fatalf("the fork in the section: %+v (listed: %v)", v, ok)
+	}
+
+	// The new chat: its answer waits, and the link is cut.
+	before = chatsAtB()
+	rp.link.Stall(true, false)
+	making := rp.later("POST", rp.on("/chats"), map[string]any{"agent": "claude", "group": g})
+	made := madeAtB(before, "the new chat")
+	rp.link.Cut()
+	if a := took(t, "the make", making, 10*time.Second); a.Status != http.StatusGatewayTimeout || a.Code != "no_answer" || !strings.Contains(a.Error, pairName) {
+		t.Fatalf("the make whose answer was lost: %s, want 504 no_answer", a)
+	}
+	rp.waitState(t, servers.StateUnreachable, 5*time.Second)
+	rp.noTree(t, "after the lost answer of the make")
+	mark = rp.page.mark()
+	rp.link.Stall(false, false)
+	rp.link.Uncut()
+	rp.back(t, 60*time.Second)
+	rp.treeBack(t, mark)
+	if v, ok := rp.listed(t, made.ID); !ok || v.Group != g || v.Locked {
+		t.Fatalf("the chat of the lost make in the section: %+v (listed: %v)", v, ok)
+	}
+	// Each is a chat like any other: a message through A starts the one and goes on in the other.
+	for _, id := range []string{made.ID, fork.ID} {
+		ends := rp.own(t, id).ends()
+		rp.send(t, id, "after the lost answer")
+		rp.awaitOwn(t, id, "the reply", func(th thread) bool { return th.ends() > ends && th.has(t, "FAKE(sonnet): after the lost answer") })
+		rp.same(t, id, "after a message")
+	}
+
+	// A keeps no memory of the two calls, so its next start has nothing to clean up: B has both
+	// chats after it, and the section shows them.
+	if held := holders(folderFiles(t, rp.a.home), []string{made.ID, fork.ID, src, g}); len(held) != 0 {
+		t.Fatalf("files of A's data folder that hold something of the chats on %s: %v", pairName, held)
+	}
+	rp.page.close()
+	rp.a.stop(t)
+	rp.a.start(t)
+	rp.page = watch(t, http.DefaultClient, strings.TrimSuffix(rp.a.in.url, "/"), pairPage, nil)
+	rp.back(t, 60*time.Second)
+	eventually(t, 20*time.Second, "the section has both chats after A's restart", func() bool {
+		_, one := rp.listed(t, made.ID)
+		_, two := rp.listed(t, fork.ID)
+		return one && two
+	})
+	time.Sleep(500 * time.Millisecond) // a clean-up at the connect would have reached B
+	for _, id := range []string{made.ID, fork.ID, src} {
+		if v, ok := rp.ownView(t, id); !ok || v.Archived {
+			t.Fatalf("the chat %s at B after A's restart: %+v (there: %v)", id, v, ok)
+		}
+	}
+}
+
+// A first message that is under way when A's process is killed: B has started the chat, and A
+// has not been told. A keeps nothing of the chat: no file of its data folder names it. After A's
+// next start nothing looks for the chat and nothing is cleaned up: the tree of its connection
+// lists the chat as started, in its group, and its thread through A is B's, with the message once.
+func TestRemoteChatKilledInAFirstMessage(t *testing.T) {
+	serverTest(t, "TestSectionTreeFromSnapshot, TestSectionNothingOnDisk (internal/remotes)")
 	rp := connectedPair(t, linksim.Good)
 	g := rp.group(t, "Work")
 	chat := rp.newChat(t, g)
 	rp.followUnstarted(t, chat)
-	rp.link.Stall(true, false) // what B sends waits: the creation call stays under way at A
-	sent := rp.later("POST", "/api/chats/"+chat+"/messages", map[string]any{"text": "cut by a kill"})
+	rp.link.Stall(true, false) // what B sends waits: the message stays under way at A
+	sent := rp.later("POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": "cut by a kill"})
 	eventually(t, 20*time.Second, "the chat started at B", func() bool { v, ok := rp.ownView(t, chat); return ok && v.Locked })
 	select {
 	case a := <-sent:
@@ -1903,12 +2104,13 @@ func TestRemoteChatKilledInAStart(t *testing.T) {
 	if a := took(t, "the first message", sent, 10*time.Second); a.Status != 0 {
 		t.Fatalf("the first message of a killed server was answered: %s", a)
 	}
-	meta, err := os.ReadFile(filepath.Join(rp.a.home, "chats", chat, "chat.json"))
-	if err != nil {
-		t.Fatalf("the unstarted chat's file after the kill: %v", err)
+	if _, err := os.Stat(filepath.Join(rp.a.home, "chats", chat)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("A keeps a chat of its own for the chat on %s: %v", pairName, err)
 	}
-	if strings.Contains(string(meta), "remoteStart") {
-		t.Fatalf("the kill came after the call had ended: chat.json has a mark: %s", meta)
+	// Nothing of the chat, of its group or of its message is in a file of A: there is no record
+	// and no memory of a make that a next start could act on.
+	if held := holders(folderFiles(t, rp.a.home), []string{chat, g, "cut by a kill"}); len(held) != 0 {
+		t.Fatalf("files of A's data folder that hold something of the chat on %s: %v", pairName, held)
 	}
 
 	rp.link.Stall(false, false)
@@ -1917,62 +2119,56 @@ func TestRemoteChatKilledInAStart(t *testing.T) {
 	back := rp.back(t, 60*time.Second)
 	eventually(t, 10*time.Second, "the chat is listed as started", func() bool {
 		v, ok := rp.listed(t, chat)
-		return ok && v.Locked && v.Server == rp.entry && v.Start == "" && v.Group == g
+		return ok && v.Locked && v.Group == g
 	})
-	if _, err := os.Stat(filepath.Join(rp.a.home, "remote", "chats", chat+".json")); err != nil {
-		t.Fatalf("the record's file of the settled chat: %v", err)
+	if _, ok := rp.ownView(t, chat); !ok {
+		t.Fatalf("B lost the chat at A's start: nothing may be deleted for a make or a message whose answer was lost")
 	}
-	// The hand-over follows the record: the chat object goes with its folder.
-	eventually(t, 10*time.Second, "the unstarted chat's folder is gone", func() bool {
-		_, err := os.Stat(filepath.Join(rp.a.home, "chats", chat))
-		return errors.Is(err, fs.ErrNotExist)
-	})
 	rp.turns(t, chat, 1)
 	if th := rp.same(t, chat, "after A's restart"); th.users(t, "cut by a kill") != 1 || !th.has(t, "FAKE(sonnet): cut by a kill") {
 		t.Fatalf("the thread after A's restart: %s", joinThread(th))
 	}
-	// The chat is a started one for the page: its next message is a send, not a first message.
+	// Its next message is a message like the first.
 	rp.send(t, chat, "after the restart")
 	rp.turns(t, chat, 2)
 	if th := rp.same(t, chat, "after a send"); th.users(t, "cut by a kill") != 1 || th.users(t, "after the restart") != 1 {
 		t.Fatalf("the thread after a send: %s", joinThread(th))
 	}
-	t.Logf("killed with the creation call under way; connected %v after A's start; settled as started, one first message at B", back.Round(time.Millisecond))
+	t.Logf("killed with the first message under way; connected %v after A's start; seen started, one first message at B", back.Round(time.Millisecond))
 }
 
 // AC12: B is stopped for 60 s during a turn, and in a second round restarted at once; then the
 // link stalls. The entry's state is read with its times, a chat of this computer is used
 // meanwhile, and after each return the chat on screen and a second chat are compared with B's.
+// While B is away its section has no tree (no row, no last view) and every call for a thing of
+// it is refused at once; at the return the page is sent B's tree as it is then, and reads work.
 //
 // The 60 s, the back-off of A's connection and the silence that ends a stream are those of the
 // fast clock: B is away for 6 s, which is past the last step of a back-off of 0.1 to 3 s as 60 s
 // are past the last of 1 to 30 s, and the stall is found after 3.5 s. AIWB_TEST_REAL_WAITS=1
 // runs the test on the production values (see clock).
 func TestRemoteChatOutage(t *testing.T) {
-	serverTest(t, "TestOutageAndReturn (internal/remotes)", "TestConnReconnects, TestConnSilence (internal/servers)")
+	serverTest(t, "TestSectionStates (internal/remotes)", "TestServerDropsWithAChatAndARunFollowed (internal/server)", "TestConnReconnects, TestConnSilence (internal/servers)")
 	rp := connectedPair(t, linksim.Good, fast.env(t, "silence", "backoff"))
-	g, kept := rp.group(t, "Work"), rp.group(t, "Kept")
+	g := rp.group(t, "Work")
 	onScreen, second := rp.startChat(t, g, "one"), rp.startChat(t, g, "two")
-	inGroup, toArchive := rp.startChat(t, kept, "three"), rp.startChat(t, g, "four")
-	records := []string{onScreen, second, inGroup, toArchive}
-	sidebarOnly := rp.startChat(t, g, "five") // removed from A's sidebar while B is away
-	for _, id := range append([]string{sidebarOnly}, records...) {
+	both := []string{onScreen, second}
+	for _, id := range both {
 		rp.turns(t, id, 1)
 	}
-	var local, localKept model.ChatView
-	rp.a.must(t, pairPage, "POST", "/api/chats", map[string]any{"agent": "claude", "group": g, "server": servers.LocalID}, &local)
-	rp.a.must(t, pairPage, "POST", "/api/chats", map[string]any{"agent": "claude", "group": kept, "server": servers.LocalID}, &localKept)
+	var local model.ChatView
+	rp.a.must(t, pairPage, "POST", "/api/chats", map[string]any{"agent": "claude", "group": model.Ungrouped}, &local)
 	rp.ok(t, "PATCH", "/api/chats/"+local.ID, map[string]any{"cwd": rp.work})
 	localTurns := 0
 	rp.same(t, second, "before the outage") // opened before the outage, and after it
 	rp.same(t, onScreen, "before the outage")
 
-	// down stops B during a turn of the chat on screen, checks what holds while it is away, runs
-	// during (when not nil), starts B again after the time away, and checks the return.
+	// down stops B during a turn of the chat on screen, checks what holds while it is away, starts
+	// B again after the time away, and checks the return.
 	// prod says how the return is waited for: with calls of a page that make A's connection try
 	// at once (back), or, when false, by reading the list of servers alone, so that A connects
 	// again with no action at all.
-	down := func(t *testing.T, name string, away time.Duration, prod bool, during func(t *testing.T)) {
+	down := func(t *testing.T, name string, away time.Duration, prod bool) {
 		skip := rp.b.fakeMessages(t)
 		rp.send(t, onScreen, name+" [[sleep 600]]")
 		rp.b.waitFakeMessage(t, skip, name)
@@ -1987,38 +2183,43 @@ func TestRemoteChatOutage(t *testing.T) {
 		if d := told.At.Sub(exited); d > 2*time.Second {
 			t.Fatalf("the page was told of the outage %v after B was gone, want within 2 s", d)
 		}
+		// And that the section has no tree any more: its rows go, the one on screen too.
+		rp.page.await(t, mark, 10*time.Second, "section event without a tree", func(e seenEvent) bool {
+			return e.holds("section", rp.inSection(), `"tree":null`)
+		})
 		t.Logf("AC12, %s: the page was told that %s is unreachable %v after B's process was gone (%v after its stop began)",
 			name, pairName, max(told.At.Sub(exited), 0).Round(time.Millisecond), told.At.Sub(signalled).Round(time.Millisecond))
 
-		// The chats stay listed as they were last seen; a send and a read answer at once that
-		// the server is not connected; a chat of this computer works.
+		// A send and a read answer at once that the server is not connected, and the section has
+		// no tree: nothing of B is listed, the chats that were open neither; a chat of this
+		// computer works.
 		whileAway := func(when string) {
 			t.Helper()
 			if v := rp.entryView(t); v.State != servers.StateUnreachable {
 				t.Fatalf("%s: %s is %q", when, pairName, v.State)
 			}
-			for _, id := range records {
-				if v, ok := rp.listed(t, id); !ok || v.Server != rp.entry || !v.Locked || v.Gone {
-					t.Fatalf("%s: the chat %s in A's list: %+v (listed: %v)", when, id, v, ok)
-				}
-			}
 			start := time.Now()
-			rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", "/api/chats/"+onScreen+"/messages", map[string]any{"text": "while away"})
-			rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "GET", "/api/chats/"+second+"/items", nil)
+			rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", rp.on("/chats/"+onScreen+"/messages"), map[string]any{"text": "while away"})
+			rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "GET", rp.on("/chats/"+second+"/items"), nil)
 			if d := time.Since(start); d > 2*time.Second {
 				t.Fatalf("%s: the two refusals took %v", when, d)
 			}
+			rp.noTree(t, when)
+			for _, id := range both {
+				if v, ok := rp.listed(t, id); ok {
+					t.Fatalf("%s: the chat %s is listed: %+v", when, id, v)
+				}
+			}
+			// Leaving a chat that was open needs no server.
+			rp.ok(t, "POST", rp.on("/chats/"+second+"/unfollow"), nil)
 		}
 		whileAway("while B is away")
-		rp.send(t, local.ID, name+" here")
+		rp.ok(t, "POST", "/api/chats/"+local.ID+"/messages", map[string]any{"text": name + " here"})
 		localTurns++
 		eventually(t, 20*time.Second, "the reply of the chat on this computer", func() bool {
 			th, _ := threadOf(rp.ok(t, "GET", "/api/chats/"+local.ID+"/items", nil).Raw)
 			return th.has(t, "FAKE(sonnet): "+name+" here") && th.ends() >= localTurns
 		})
-		if during != nil {
-			during(t)
-		}
 		time.Sleep(time.Until(exited.Add(away)))
 		whileAway(fmt.Sprintf("after %s without B", away))
 
@@ -2030,20 +2231,20 @@ func TestRemoteChatOutage(t *testing.T) {
 		} else {
 			back = rp.waitState(t, servers.StateConnected, 45*time.Second)
 		}
-		rp.page.awaitEvent(t, mark, 10*time.Second, "server_back", rp.entry)
+		rp.treeBack(t, mark)
 		t.Logf("AC12, %s: connected again %v after B answered (%v after B's process was gone)", name, back.Round(time.Millisecond), time.Since(exited).Round(time.Millisecond))
-		// What the page reads at server_back is B's own: the chat on screen, with the turn the
+		// What the page reads when the tree is back is B's own: the chat on screen, with the turn the
 		// stop ended, and the second chat when it is opened next.
 		th := rp.same(t, onScreen, "after the return")
 		if th.users(t, name) != 1 || th.users(t, "while away") != 0 {
 			t.Fatalf("the thread on screen after the return: %s", joinThread(th))
 		}
 		rp.same(t, second, "after the return")
-		for _, id := range records {
+		for _, id := range both {
 			a, _ := rp.listed(t, id)
 			b, there := rp.ownView(t, id)
-			if !there || a.Status != b.Status || a.Gone || a.Name != b.Name {
-				t.Fatalf("the chat %s after the return: %+v in A's list, %+v at B (there: %v)", id, a, b, there)
+			if !there || a.Status != b.Status || a.Name != b.Name || a.Group != g {
+				t.Fatalf("the chat %s after the return: %+v in the section, %+v at B (there: %v)", id, a, b, there)
 			}
 		}
 		// And it goes on: a message through A is answered, and its events reach the page.
@@ -2051,74 +2252,56 @@ func TestRemoteChatOutage(t *testing.T) {
 		ends := th.ends()
 		rp.send(t, onScreen, name+" and on")
 		rp.page.await(t, mark, 20*time.Second, "content event with the reply", func(e seenEvent) bool {
-			return e.holds("chat_items", onScreen, "FAKE(sonnet): "+name+" and on")
+			return e.holds("chat_items", rp.inSection(), onScreen, "FAKE(sonnet): "+name+" and on")
 		})
 		rp.awaitOwn(t, onScreen, "the turn after the return", func(th thread) bool { return th.ends() > ends && th.has(t, "FAKE(sonnet): "+name+" and on") })
 		rp.same(t, onScreen, "after a message that followed the return")
 	}
 
 	t.Run("stopped for 60 s", func(t *testing.T) {
-		down(t, "stopped", fast.of(60*time.Second), false, func(t *testing.T) {
-			// An archive made while B is away shows at once and waits to be passed on.
-			mark := rp.page.mark()
-			rp.ok(t, "POST", "/api/chats/"+toArchive+"/archive", nil)
-			rp.page.awaitChat(t, mark, 5*time.Second, toArchive, "the archived mark", func(v model.ChatView) bool { return v.Archived })
-			// The delete of a group with a chat on B deletes nothing while B is away.
-			a := rp.refused(t, http.StatusConflict, "server_unreachable", "DELETE", "/api/groups/"+kept+"?contents=delete", nil)
-			if !strings.Contains(a.Error, pairName) || !strings.Contains(a.Error, "Nothing was deleted") {
-				t.Fatalf("the refusal of the group's delete: %s", a)
-			}
-			st := rp.state(t)
-			if !slices.ContainsFunc(st.Groups, func(gr struct{ ID string }) bool { return gr.ID == kept }) {
-				t.Fatal("the group is gone after the refused delete")
-			}
-			for _, id := range []string{inGroup, localKept.ID} {
-				if !slices.ContainsFunc(st.Chats, func(v model.ChatView) bool { return v.ID == id && v.Group == kept }) {
-					t.Fatalf("the chat %s of the group is gone after the refused delete", id)
-				}
-			}
-			// A delete cannot be passed on; "this sidebar only" takes the record and nothing else.
-			rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "DELETE", "/api/chats/"+sidebarOnly, nil)
-			mark = rp.page.mark()
-			rp.ok(t, "DELETE", "/api/chats/"+sidebarOnly+"?local=1", nil)
-			rp.page.awaitEvent(t, mark, 5*time.Second, "chat_removed", sidebarOnly)
-		})
-		// B still has the chat that left A's sidebar, and A did not take it back at the connect.
-		if v, ok := rp.ownView(t, sidebarOnly); !ok || !v.Locked {
-			t.Fatalf("the chat removed from A's sidebar alone, at B: %+v (there: %v)", v, ok)
-		}
-		if _, ok := rp.listed(t, sidebarOnly); ok {
-			t.Fatal("the chat removed from A's sidebar is listed again after the connect")
-		}
-		// The archive was passed on at the connect, and B's mark is the record's.
-		eventually(t, 10*time.Second, "the archive passed on to B", func() bool { v, _ := rp.ownView(t, toArchive); return v.Archived })
-		if v, _ := rp.listed(t, toArchive); !v.Archived || v.Op == "" {
-			t.Fatalf("the record archived while B was away: %+v", v)
-		}
-		if _, ok := rp.ownView(t, inGroup); !ok {
-			t.Fatal("B lost the chat of the group whose delete was refused")
-		}
-		rp.ok(t, "POST", "/api/chats/"+toArchive+"/unarchive", nil)
-		eventually(t, 10*time.Second, "the unarchive passed on to B", func() bool { v, ok := rp.ownView(t, toArchive); return ok && !v.Archived })
+		down(t, "stopped", fast.of(60*time.Second), false)
 	})
 
 	t.Run("restarted", func(t *testing.T) {
-		down(t, "restarted", 0, false, nil)
+		down(t, "restarted", 0, false)
 	})
 
-	// A link that stalls keeps its connections: the outage is found by the silence.
+	// A link that stalls keeps its connections: the outage is found by the silence. B is up all
+	// the while, and its owner renames one chat and deletes another: at the return the section
+	// is B's tree as it is then, with the new name and without the deleted chat, whose calls are
+	// B's "not found". No event told of either.
 	t.Run("stalled link", func(t *testing.T) {
+		renamed, deleted := rp.newChat(t, g), rp.newChat(t, g)
+		own := rp.ownPage(t)
+		defer own.close()
 		mark := rp.page.mark()
 		rp.link.Stall(true, true)
 		found := rp.waitState(t, servers.StateUnreachable, 40*time.Second)
 		rp.page.await(t, mark, 2*time.Second, "server_state event: unreachable", func(e seenEvent) bool {
 			return e.holds("server_state", rp.entry, `"unreachable"`)
 		})
-		rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", "/api/chats/"+onScreen+"/messages", map[string]any{"text": "stalled"})
+		rp.page.await(t, mark, 10*time.Second, "section event without a tree", func(e seenEvent) bool {
+			return e.holds("section", rp.inSection(), `"tree":null`)
+		})
+		rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "POST", rp.on("/chats/"+onScreen+"/messages"), map[string]any{"text": "stalled"})
+		rp.noTree(t, "while the link stalls")
+		rp.b.must(t, pairOwnPage, "PATCH", "/api/chats/"+renamed, map[string]any{"name": "Named meanwhile"}, nil)
+		rp.b.must(t, pairOwnPage, "DELETE", "/api/chats/"+deleted, nil, nil)
 		mark = rp.page.mark()
 		rp.link.Stall(false, false)
 		back := rp.back(t, 45*time.Second)
-		rp.page.awaitEvent(t, mark, 10*time.Second, "server_back", rp.entry)
+		rp.treeBack(t, mark)
+		if v, ok := rp.listed(t, renamed); !ok || v.Name != "Named meanwhile" || v.Group != g {
+			t.Fatalf("the chat that was renamed at B meanwhile, in the section: %+v (listed: %v)", v, ok)
+		}
+		if v, ok := rp.listed(t, deleted); ok {
+			t.Fatalf("the chat that was deleted at B meanwhile is in the section: %+v", v)
+		}
+		rp.refused(t, http.StatusNotFound, "not_found", "GET", rp.on("/chats/"+deleted), nil)
+		rp.refused(t, http.StatusNotFound, "not_found", "GET", rp.on("/chats/"+deleted+"/items"), nil)
+		if evs := append(rp.page.of(mark, "chat_removed", deleted), rp.page.of(mark, "chat", renamed)...); len(evs) != 0 {
+			t.Fatalf("the page was sent events of what happened during the outage: %v", evs)
+		}
 		t.Logf("AC12, a stalled link: %s was unreachable %v after the stall began, and connected again %v after it ended", pairName, found.Round(time.Millisecond), back.Round(time.Millisecond))
 		if th := rp.same(t, onScreen, "after the stall"); th.users(t, "stalled") != 0 {
 			t.Fatalf("the thread after the stall: %s", joinThread(th))
@@ -2153,114 +2336,89 @@ func (rp *remotePair) continueB(t *testing.T) {
 	}
 }
 
-// A first message sent while B's process is frozen: the creation call is in B's socket and gets
-// no answer, so A answers 504 start_unconfirmed and marks B unreachable. The person edits the
-// text that is back in the box; then B goes on, takes the call and starts the chat with what was
-// sent. With no call but reads of A's snapshot the chat becomes a record with the message once,
-// and the edited text is still its draft; a draft left as it was sent is none afterwards.
+// A first message sent while B's process is frozen: the message is in B's socket and gets no
+// answer, so A answers 504 send_unknown, as for any message, and marks B unreachable: the
+// section has no tree from then on. What the person types meanwhile cannot be saved, since the
+// draft is B's: the save fails and the page keeps the text. Then B goes on, takes the message
+// and starts the chat. With no call but reads of A's snapshot the section has B's tree again,
+// with the chat as started and the message once, and its draft can be saved again, on B.
 //
-// A's limit for the creation call and the silence that ends its stream before that are those of
-// the fast clock: 4.5 s and 3.5 s for 45 s and 35 s.
+// A's limit for a message and the silence that ends its stream before that are those of the
+// fast clock: 4.5 s and 3.5 s for 45 s and 35 s.
 func TestRemoteChatFrozenFirstMessage(t *testing.T) {
-	serverTest(t, "TestStartNoAnswer, TestFirstTextKept, TestSwapKeepsAnEditedDraft (internal/remotes)")
+	serverTest(t, "TestSectionCallsThatGetNoAnswer, TestSectionCallsOfAnEntryThatCannotBeAsked, TestTwoPagesInOneDraftOfASectionsChat (internal/server)")
 	rp := connectedPair(t, linksim.Good, fast.env(t, "silence", "start"))
 	g := rp.group(t, "Work")
-	const sentText = "first M1"
-	for _, c := range []struct {
-		name, draft string
-		kept        bool
-	}{{"the draft edited", sentText + " EDITED", true}, {"the draft as it was sent", sentText, false}} {
-		t.Run(c.name, func(t *testing.T) {
-			rp.waitState(t, servers.StateConnected, 60*time.Second)
-			chat := rp.newChat(t, g)
-			rp.followUnstarted(t, chat)
-			mark := rp.page.mark()
-			rp.freezeB(t)
-			began := time.Now()
-			a := took(t, "the first message", rp.later("POST", "/api/chats/"+chat+"/messages", map[string]any{"text": sentText}), 80*time.Second)
-			if a.Status != http.StatusGatewayTimeout || a.Code != "start_unconfirmed" {
-				t.Fatalf("the first message to a frozen B: %s, want 504 start_unconfirmed", a)
-			}
-			t.Logf("504 start_unconfirmed %v after the send; %s is %q", time.Since(began).Round(100*time.Millisecond), pairName, rp.entryView(t).State)
-			v, ok := rp.listed(t, chat)
-			if !ok || v.Start != "unconfirmed" || v.Locked || v.Server != rp.entry {
-				t.Fatalf("the chat after the lost answer: %+v (listed: %v)", v, ok)
-			}
-			// The page puts the text back in the box and saves what the person makes of it.
-			var saved struct {
-				OK  bool
-				Rev int64
-			}
-			if status, raw := rp.a.call(t, pairPage, "PUT", fmt.Sprintf("/api/chats/%s/draft?rev=%d", chat, v.DraftRev), map[string]any{"text": c.draft}, &saved); status != http.StatusOK || !saved.OK {
-				t.Fatalf("the save of the draft on counter %d: %d %s", v.DraftRev, status, raw)
-			}
-			if v, _ := rp.listed(t, chat); v.Draft == nil || v.Draft.Text != c.draft || v.DraftRev != saved.Rev {
-				t.Fatalf("the unstarted chat's draft after its save: %+v (rev %d), want %q on %d", v.Draft, v.DraftRev, c.draft, saved.Rev)
-			}
-
-			// B goes on. From here nothing is sent through A: its snapshot alone is read.
-			rp.continueB(t)
-			continued := time.Now()
-			var l model.ChatView
-			eventually(t, 30*time.Second, "the chat is listed as started on "+pairName, func() bool {
-				l, ok = rp.listed(t, chat)
-				return ok && l.Locked && l.Server == rp.entry && l.Start == ""
-			})
-			t.Logf("listed as started %v after B went on", time.Since(continued).Round(10*time.Millisecond))
-			// The swap is not one step for a reader of the snapshot: the record is listed before
-			// its file is written and before it has the draft it keeps. A draft that is to go is
-			// never listed; the end state is waited for, and the asserts below judge that read.
-			first := l
-			if !c.kept && first.Draft != nil {
-				t.Fatalf("A's draft of the chat when it is first listed as started: %+v, want none: it is the text that was sent", first.Draft)
-			}
-			file := filepath.Join(rp.a.home, "remote", "chats", chat+".json")
-			eventually(t, 10*time.Second, "the record's file of the chat is there and its kept draft is listed", func() bool {
-				if _, err := os.Stat(file); err != nil {
-					return false
-				}
-				l, ok = rp.listed(t, chat)
-				return ok && (!c.kept || l.Draft != nil && l.Draft.Text == c.draft)
-			})
-			if !l.Locked || l.Server != rp.entry || l.Start != "" {
-				t.Fatalf("the started chat in A's list after the swap: %+v", l)
-			}
-			t.Logf("the draft counter: %d when first listed as started (with a draft: %v), %d after the swap (with a draft: %v); %d on the unstarted chat",
-				first.DraftRev, first.Draft != nil, l.DraftRev, l.Draft != nil, saved.Rev)
-			// A page that read the record before it had its draft takes the draft: the counter is another.
-			if c.kept && first.Draft == nil && l.DraftRev <= first.DraftRev {
-				t.Fatalf("the kept draft is on the counter %d, and the chat was listed with no draft on %d: a page that read it keeps an empty box", l.DraftRev, first.DraftRev)
-			}
-			if l.Group != g || l.Gone {
-				t.Fatalf("the started chat in A's list: %+v", l)
-			}
-			if c.kept {
-				if l.Draft == nil || l.Draft.Text != c.draft {
-					t.Fatalf("A's draft of the started chat: %+v, want %q", l.Draft, c.draft)
-				}
-			} else if l.Draft != nil {
-				t.Fatalf("A's draft of the started chat: %+v, want none: it is the text that was sent", l.Draft)
-			}
-			if evs := rp.page.of(mark, "chat_removed", chat); len(evs) != 0 {
-				t.Fatalf("the chat was removed on the way: %v", evs)
-			}
-			// B has the message once, and what A hands on is B's thread.
-			rp.turns(t, chat, 1)
-			if th := rp.own(t, chat); th.users(t, sentText) != 1 || !th.has(t, "FAKE(sonnet): "+sentText) {
-				t.Fatalf("B's thread: %s, want %q once and its reply", joinThread(th), sentText)
-			}
-			if th := rp.same(t, chat, "after B went on"); th.users(t, sentText) != 1 || len(th.items(t)) == 0 {
-				t.Fatalf("the thread through A: %s, want %q once", joinThread(th), sentText)
-			}
-			// The reads of the thread changed nothing of the draft, in the view and in the list.
-			for what, got := range map[string]model.ChatView{"view": rp.view(t, chat), "list": func() model.ChatView { v, _ := rp.listed(t, chat); return v }()} {
-				if c.kept && (got.Draft == nil || got.Draft.Text != c.draft) || !c.kept && got.Draft != nil {
-					t.Fatalf("A's draft of the chat in its %s after the reads: %+v, want %q kept: %v", what, got.Draft, c.draft, c.kept)
-				}
-				if !got.Locked || got.Start != "" {
-					t.Fatalf("the chat in A's %s: %+v", what, got)
-				}
-			}
-		})
+	const sentText, typed = "first M1", "first M1 EDITED"
+	chat := rp.newChat(t, g)
+	rp.followUnstarted(t, chat)
+	// The counter the page has for the chat's draft: the one it types on while B is away.
+	v, ok := rp.listed(t, chat)
+	if !ok || v.Locked || v.Group != g {
+		t.Fatalf("the chat before the message: %+v (listed: %v)", v, ok)
 	}
+	mark := rp.page.mark()
+	rp.freezeB(t)
+	began := time.Now()
+	a := took(t, "the first message", rp.later("POST", rp.on("/chats/"+chat+"/messages"), map[string]any{"text": sentText}), 80*time.Second)
+	if a.Status != http.StatusGatewayTimeout || a.Code != "send_unknown" {
+		t.Fatalf("the first message to a frozen B: %s, want 504 send_unknown", a)
+	}
+	t.Logf("504 send_unknown %v after the send; %s is %q", time.Since(began).Round(100*time.Millisecond), pairName, rp.entryView(t).State)
+	// The page puts the text back in the box. What the person makes of it cannot be saved while
+	// B is away: the draft lives there, and A keeps none. The section has no tree: nothing says
+	// whether the chat started.
+	rp.waitState(t, servers.StateUnreachable, 20*time.Second)
+	rp.page.await(t, mark, 20*time.Second, "section event without a tree", func(e seenEvent) bool {
+		return e.holds("section", rp.inSection(), `"tree":null`)
+	})
+	rp.refused(t, http.StatusServiceUnavailable, "server_unreachable", "PUT", rp.on(fmt.Sprintf("/chats/%s/draft?rev=%d", chat, v.DraftRev)), map[string]any{"text": typed})
+	rp.noTree(t, "while "+pairName+" is frozen")
+	if held := holders(folderFiles(t, rp.a.home), []string{chat, typed, sentText}); len(held) != 0 {
+		t.Fatalf("files of A's data folder that hold something of the chat while %s is away: %v", pairName, held)
+	}
+
+	// B goes on. From here nothing is sent through A: its snapshot alone is read.
+	rp.continueB(t)
+	continued := time.Now()
+	var l model.ChatView
+	eventually(t, 60*time.Second, "the chat is listed as started on "+pairName, func() bool {
+		l, ok = rp.listed(t, chat)
+		return ok && l.Locked
+	})
+	t.Logf("listed as started %v after B went on", time.Since(continued).Round(10*time.Millisecond))
+	if l.Group != g || l.Draft != nil {
+		t.Fatalf("the started chat in the section: %+v (draft %+v)", l, l.Draft)
+	}
+	if evs := rp.page.of(mark, "chat_removed", chat); len(evs) != 0 {
+		t.Fatalf("the chat was removed on the way: %v", evs)
+	}
+	// The page was sent B's tree again, with the chat in it.
+	rp.page.await(t, mark, 20*time.Second, "section event with the chat", func(e seenEvent) bool {
+		return e.holds("section", rp.inSection(), chat) && !strings.Contains(e.Raw, `"tree":null`)
+	})
+	// B has the message once, and what A hands on is B's thread.
+	rp.turns(t, chat, 1)
+	if th := rp.own(t, chat); th.users(t, sentText) != 1 || !th.has(t, "FAKE(sonnet): "+sentText) {
+		t.Fatalf("B's thread: %s, want %q once and its reply", joinThread(th), sentText)
+	}
+	if th := rp.same(t, chat, "after B went on"); th.users(t, sentText) != 1 || len(th.items(t)) == 0 {
+		t.Fatalf("the thread through A: %s, want %q once", joinThread(th), sentText)
+	}
+	// The text the page kept is saved now, on B, on the counter B has for the branch.
+	l, _ = rp.listed(t, chat)
+	var saved struct {
+		OK  bool
+		Rev int64
+	}
+	if status, raw := rp.a.call(t, pairPage, "PUT", rp.on(fmt.Sprintf("/chats/%s/draft?rev=%d", chat, l.DraftRev)), map[string]any{"text": typed}, &saved); status != http.StatusOK || !saved.OK {
+		t.Fatalf("the save of the draft on counter %d: %d %s", l.DraftRev, status, raw)
+	}
+	if own, _ := rp.ownView(t, chat); own.Draft == nil || own.Draft.Text != typed || own.DraftRev != saved.Rev {
+		t.Fatalf("the draft at B after its save through A: %+v on %d, want %q on %d", own.Draft, own.DraftRev, typed, saved.Rev)
+	}
+	eventually(t, 10*time.Second, "the section has B's draft", func() bool {
+		v, _ := rp.listed(t, chat)
+		return v.Draft != nil && v.Draft.Text == typed && v.DraftRev == saved.Rev
+	})
 }

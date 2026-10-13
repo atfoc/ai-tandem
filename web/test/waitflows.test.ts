@@ -37,7 +37,8 @@ let source: { onmessage?: (e: { data: string }) => void; close(): void } | undef
 
 const stubs: Record<string, string> = {
   "board.ts": `export const runTool = async () => ({}); export const flushAll = async () => {}; export const forgetBoard = () => {};
-    export const boardLost = () => {}, granted = () => {}, handOver = async () => {}, streamOpened = () => {}, takeAfterSnapshot = () => {}, serverBack = () => {};`,
+    export const boardLost = () => {}, granted = () => {}, handOver = async () => {}, streamOpened = () => {}, takeAfterSnapshot = () => {}, sectionBack = () => {};
+    export const boardUnsaved = () => false;`,
   "version.ts": `export const checkVersion = async () => {};`,
   "api.ts": `
     const { fake, held } = globalThis.__waits;
@@ -49,7 +50,7 @@ const stubs: Record<string, string> = {
       openChat: async (chat) => { fake.opened.push(chat); },
       tree: async () => fake.tree,
       chat: async () => { throw new Error("not in this test"); },
-      saveDraft: async () => 1,
+      saveDraft: async () => ({ rev: 1 }),
       fork: (chat, branch, at, message) => held(fake.forks, chat, branch, { at, message }),
       configure: (chat, branch, p) => held(fake.picks, chat, branch, p),
     };`,
@@ -147,8 +148,9 @@ const quiet = console.error, quietWarn = console.warn;
 beforeEach(async () => {
   console.error = () => {}; console.warn = () => {};
   conn.connect();
-  await ev(snapshot([], []));
+  await ev(snapshot([], [])); // (it has no section: the tree a test left goes)
   store.setState({ sel: { board: null, run: null, chat: null }, waits: {} });
+  conn.dropLeft(); // and with it what stayed of one for being on screen
   for (const a of lists()) await a.fail(new Error("left over"));
   for (const k of Object.keys(storage)) delete storage[k];
   fake.forks.length = 0; fake.picks.length = 0; fake.posts.length = 0; fake.errors.length = 0; fake.opened.length = 0;
@@ -625,18 +627,40 @@ test("a move on the branch shown, whose list is kept, opens nothing and draws no
   assert.equal(waits(), undefined);
 });
 
-test("a server that is back gives up the fetches of its chats: none of them is still told as running", async () => {
-  await ev(snapshot([view("c_1", { branches: 2, server: "s_1" })], [rec("c_1", "main"), rec("c_1", B)]));
+// A chat of a section (a remote server of the server list) is named by the entry id and its id on that server (src/logic/keys.ts).
+const S1 = "s_aaaaaaaaaaaa", K = `${S1}~c_1`;
+const there = () => ({ chats: [view("c_1", { branches: 2 })], states: [rec("c_1", "main"), rec("c_1", B)] });
+
+test("a section's tree that arrives gives up the fetches of its chats and reads the one on screen again: the fetch given up ends nothing", async () => {
+  await ev({ ...snapshot([], []), sections: { [S1]: there() } });
   for (const a of lists()) await a.fail(new Error("left over"));
-  store.setState({ sel: { board: null, run: null, chat: "c_1" } });
-  void conn.loadItems("c_1");
+  store.setState({ sel: { board: null, run: null, chat: K } });
+  void conn.loadItems(K);
   await settle();
-  assert.deepEqual(waits()?.loads, ["main"]);
+  assert.deepEqual(waits(K)?.loads, ["main"]);
   const [old] = lists();
-  await ev({ type: "server_back", server: "s_1" });
-  assert.deepEqual(waits()?.loads, ["main"], "the chat on screen is read again");
+  await ev({ type: "section", server: S1, tree: there() });
+  assert.deepEqual(waits(K)?.loads, ["main"], "the chat on screen is read again");
   await old.answer({ branch: "main", version: 9, items: MAIN_ITEMS, subagents: [] });
-  assert.deepEqual(waits()?.loads, ["main"], "the fetch that was given up ends nothing");
-  await answerList("main", MAIN_ITEMS);
-  assert.equal(waits(), undefined);
+  assert.deepEqual(waits(K)?.loads, ["main"], "the fetch that was given up ends nothing");
+  await answerList("main", MAIN_ITEMS, K);
+  assert.equal(waits(K), undefined);
+});
+
+test("a section's tree that goes gives up the fetches of its chats: none of them is still told as running, and nothing is read", async () => {
+  await ev({ ...snapshot([], []), sections: { [S1]: there() } });
+  for (const a of lists()) await a.fail(new Error("left over"));
+  store.setState({ sel: { board: null, run: null, chat: K } });
+  void conn.loadItems(K);
+  void conn.keepBranch(K, B).catch(() => {});
+  await settle();
+  assert.deepEqual(waits(K)?.loads, ["main", B]);
+  const [main, b] = lists();
+  await ev({ type: "section", server: S1, tree: null });
+  assert.ok(s().chats[K], "the chat on screen stays");
+  assert.equal(waits(K), undefined, "the server is not connected: no answer is waited for");
+  assert.deepEqual(lists(), []);
+  await main.answer({ branch: "main", version: 9, items: MAIN_ITEMS, subagents: [] });
+  await b.fail(new Error("Studio is not connected."));
+  assert.deepEqual([waits(K), store.threadOf(s(), K), s().threadErrors[K]], [undefined, undefined, undefined], "what the fetches given up answer is not kept");
 });

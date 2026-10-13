@@ -9,6 +9,7 @@ import { App } from "./App.tsx";
 import { connect } from "./conn.ts";
 import { flushAll, hasPendingSaves } from "./board.ts";
 import { initTheme } from "./theme.ts";
+import { watchKeptDrafts } from "./keptdrafts.ts";
 
 // Autosave is always written before the tab goes away.
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void flushAll(); });
@@ -19,5 +20,6 @@ window.addEventListener("beforeunload", (e) => { if (hasPendingSaves()) { void f
 (window as any).aiwbFlush = () => flushAll().then(() => !hasPendingSaves());
 
 initTheme();
+watchKeptDrafts(); // before the stream opens: its first snapshot saves the drafts a page before this one could not save
 connect();
 createRoot(document.getElementById("root")!).render(<App />);

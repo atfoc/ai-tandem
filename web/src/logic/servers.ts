@@ -169,11 +169,10 @@ export function formView(f: ServerForm, tested: ServerForm | null, r: TestResult
   return v;
 }
 
-const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
-
-/** The question before an entry is removed. */
-export function removeText(name: string, chats: number, runs: number): string {
-  return `Remove "${name}"? It has ${count(chats, "chat")} and ${count(runs, "run")} in this app. They are removed from this app; nothing is deleted or stopped on that server.`;
+/** The question before an entry is removed. This app keeps nothing of that server but the entry: its section leaves
+ *  the sidebar, that server is told nothing, and everything on it stays there. */
+export function removeText(name: string): string {
+  return `Remove "${name}"? Its section leaves the sidebar. Nothing is deleted or stopped on that server: its chats, whiteboards and runs stay there.`;
 }
 
 /** Whether the sidebar's button shows its dot. */

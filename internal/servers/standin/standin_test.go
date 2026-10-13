@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,6 +21,9 @@ import (
 
 // testClient is the client id the tests send: a lowercase version 4 UUID, as the server asks.
 const testClient = "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+
+// testLevel is the level the tests state: the lowest one the level check lets through.
+var testLevel = strconv.Itoa(minClientLevel)
 
 // plainClient is a client that skips verification; fp, when set, receives the fingerprint of
 // each certificate it was shown.
@@ -51,6 +55,7 @@ func get(t *testing.T, c *http.Client, url, secret string, edit func(*http.Reque
 		req.Header.Set(remote.SecretHeader, secret)
 	}
 	req.Header.Set(remote.ClientHeader, testClient)
+	req.Header.Set(levelHeader, testLevel)
 	if edit != nil {
 		edit(req)
 	}
@@ -97,6 +102,7 @@ func openStream(t *testing.T, c *http.Client, s *Server) *events {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.URL()+"/api/events?client="+testClient, nil)
 	req.Header.Set(remote.SecretHeader, DefaultSecret)
 	req.Header.Set(remote.ClientHeader, testClient)
+	req.Header.Set(levelHeader, testLevel)
 	res, err := (&http.Client{Transport: c.Transport}).Do(req) // no time-out: the stream stays open
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -152,7 +158,7 @@ func TestHello(t *testing.T) {
 	m := object(t, body)
 	want := map[string]any{
 		"app": "ai-whiteboard", "version": DefaultVersion, "webVersion": DefaultVersion,
-		"instanceId": DefaultInstanceID, "featureLevel": float64(1),
+		"instanceId": DefaultInstanceID, "featureLevel": float64(DefaultFeatureLevel),
 	}
 	for k, v := range want {
 		if m[k] != v {
@@ -367,10 +373,21 @@ func TestState(t *testing.T) {
 	if _, ok := m["defaultCwd"].(string); !ok {
 		t.Error("defaultCwd is not a string")
 	}
-	for _, k := range []string{"chats", "states", "runs"} {
+	for _, k := range []string{"groups", "boards", "chats", "states", "runs"} {
 		if l, ok := m[k].([]any); !ok || len(l) != 0 {
 			t.Errorf("%s = %v, want an empty array", k, m[k])
 		}
+	}
+	if v, has := m["library"]; !has || v != nil {
+		t.Errorf("library = %v, %v; want null", v, has)
+	}
+	if d, _ := m["defaults"].(map[string]any); len(d) != 1 {
+		t.Errorf("defaults = %v, want an object with its groups alone", m["defaults"])
+	} else if g, ok := d["groups"].(map[string]any); !ok || len(g) != 0 {
+		t.Errorf("defaults.groups = %v, want an empty object", d["groups"])
+	}
+	if len(m) != 11 {
+		t.Errorf("%d parts, want the eleven of a snapshot of level 5: %s", len(m), body)
 	}
 
 	s.SetSnapshot(map[string]any{"home": "/elsewhere"})
@@ -644,9 +661,9 @@ func TestRequestsAndHandshakes(t *testing.T) {
 	}
 	res.Body.Close()
 	want := []Request{
-		{"GET", "/api/hello", DefaultSecret, testClient},
-		{"GET", "/api/state", "wrong", testClient},
-		{"POST", "/api/things", "", ""},
+		{"GET", "/api/hello", DefaultSecret, testClient, testLevel},
+		{"GET", "/api/state", "wrong", testClient, testLevel},
+		{"POST", "/api/things", "", "", ""},
 	}
 	got := s.Requests()
 	if len(got) != len(want) {
@@ -681,6 +698,7 @@ func TestHandle(t *testing.T) {
 		if client != "" {
 			req.Header.Set(remote.ClientHeader, client)
 		}
+		req.Header.Set(levelHeader, testLevel)
 		if host != "" {
 			req.Host = host
 		}

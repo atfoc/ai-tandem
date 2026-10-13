@@ -60,8 +60,8 @@ type patched struct {
 	Chat model.ChatView
 }
 
-// A chat is made without an agent or with a given id, and its agent and server are chosen with
-// PATCH until its first message (AC30).
+// A chat is made without an agent or with a given id, and its agent is chosen with PATCH until
+// its first message (AC30). Its server is fixed from the moment it is made.
 func TestChatCreateAndConfigureRoutes(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -80,18 +80,21 @@ func TestChatCreateAndConfigureRoutes(t *testing.T) {
 	if got := decode[model.ChatView](t, e.expect(200, "GET", chat, "")); got.Agent != model.Cursor {
 		t.Fatalf("agent after PATCH = %q", got.Agent)
 	}
-	// The local server is the only one, and naming it changes nothing.
-	if p := decode[patched](t, e.expect(200, "PATCH", chat, `{"server":"local"}`)); p.Chat.Agent != model.Cursor {
-		t.Fatalf("PATCH server answered %+v", p)
+	// The server of a chat cannot be changed: naming one is refused, the chat's own too, and
+	// nothing else of the request is done.
+	for _, body := range []string{`{"server":"local"}`, `{"server":"elsewhere"}`, `{"server":"local","agent":"claude","name":"not taken"}`} {
+		if msg := e.refusedWith(409, "server_fixed", "PATCH", chat, body); !strings.Contains(msg, "chosen when the chat is made") {
+			t.Fatalf("PATCH %s: %q", body, msg)
+		}
+	}
+	if got := decode[model.ChatView](t, e.expect(200, "GET", chat, "")); got.Agent != model.Cursor || got.Name != "" {
+		t.Fatalf("the chat after the refused changes of its server: %+v", got)
 	}
 	// A change of the name alone answers with the chat too.
 	if p := decode[patched](t, e.expect(200, "PATCH", chat, `{"name":"mine"}`)); !p.OK || p.Chat.Name != "mine" {
 		t.Fatalf("PATCH name answered %+v", p)
 	}
 	e.refusedWith(400, "", "PATCH", chat, `{"agent":"nobody"}`)
-	if msg := e.refusedWith(400, "", "PATCH", chat, `{"server":"elsewhere"}`); !strings.Contains(msg, `unknown server "elsewhere"`) {
-		t.Fatalf("unknown server: %q", msg)
-	}
 	e.refusedWith(400, "", "POST", "/api/chats", `{`+group+`,"agent":"nobody"}`)
 
 	// A given id: a lowercase version 4 UUID that no chat has.
@@ -107,13 +110,12 @@ func TestChatCreateAndConfigureRoutes(t *testing.T) {
 		t.Fatalf("%d chats after the refused creations, want 2", n)
 	}
 
-	// After the first message the agent and the server are fixed; the name is not.
+	// After the first message the agent is fixed too; the name is not.
 	e.expect(200, "POST", chat+"/messages", `{"text":"hello"}`)
-	for _, body := range []string{`{"agent":"claude"}`, `{"server":"local"}`} {
-		if msg := e.refusedWith(409, "", "PATCH", chat, body); !strings.Contains(msg, "has not started") {
-			t.Fatalf("PATCH %s after a message: %q", body, msg)
-		}
+	if msg := e.refusedWith(409, "", "PATCH", chat, `{"agent":"claude"}`); !strings.Contains(msg, "has not started") {
+		t.Fatalf("PATCH of the agent after a message: %q", msg)
 	}
+	e.refusedWith(409, "server_fixed", "PATCH", chat, `{"server":"local"}`)
 	if got := decode[model.ChatView](t, e.expect(200, "GET", chat, "")); got.Agent != model.Cursor {
 		t.Fatalf("agent after the refused PATCH = %q", got.Agent)
 	}

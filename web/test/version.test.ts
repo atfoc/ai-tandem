@@ -32,14 +32,20 @@ test("runningChats counts thinking, writing, tool and approval", () => {
   assert.equal(runningChats(chats), 2);
   assert.equal(restartConfirmText(runningChats(chats)), "Restart ends 2 running agent chats.");
   assert.equal(runningChats([{ status: "writing" }, { status: "approval" }, { status: "ready" }]), 2);
-  // a chat on another server is not this server's to stop
-  assert.equal(runningChats([{ status: "writing", server: "s_1" }, { status: "ready", server: "s_1", subsRunning: 2 }]), 0);
-  assert.equal(runningChats([{ id: "c_1", status: "ready", server: "s_1" }, { status: "tool" }], () => [{ status: "thinking" }]), 1);
   assert.equal(runningChats([{ status: "ready" }, { status: "stopped" }, { status: "error" }]), 0);
   assert.equal(runningChats([]), 0);
   // a chat whose current branch is idle while other branches work is one chat
   assert.equal(runningChats([{ status: "ready", working: 2 }, { status: "stopped", working: 1 }, { status: "ready", working: 0 }, { status: "tool", working: 3 }]), 3);
   assert.equal(runningChats([{ status: "ready", working: 1, approvals: 1 } as { status: Status; working: number }]), 1);
+});
+
+// src/logic/version.ts:30 still tells a chat of another server by a `server` field (`!c.server`), which no chat has any
+// more: a chat's key names its server (logic/keys.ts), as runrows.ts localRuns reads it for the runs. So a working chat
+// of a section is counted among the chats this restart ends.
+test("runningChats counts no chat of a section: its turns are not this server's to end", () => {
+  assert.equal(runningChats([{ id: "s_1~c_1", status: "writing" }, { id: "s_1~c_2", status: "ready", subsRunning: 2 }]), 0);
+  assert.equal(runningChats([{ id: "s_1~c_1", status: "ready" }, { id: "c_1", status: "tool" }], (chat) => (chat === "s_1~c_1" ? [{ status: "thinking" }] : [])), 1, "the local chat with the same id counts");
+  assert.equal(runningChats([{ id: "s_1~c_1", status: "ready", working: 2 }, { id: "s_2~c_1", status: "approval" }]), 0);
 });
 
 test("runningChats counts an idle chat whose subagents run, not one that only holds results", () => {
@@ -84,11 +90,13 @@ test("the restart confirmation counts the chats the store has through runningCha
 test("the restart confirmation counts the runs of this computer only", async () => {
   const { localRuns } = await import("../src/logic/runrows.ts");
   const { runningRuns } = await import("../src/logic/run.ts");
-  const runs = [{ status: "running" as const }, { status: "running" as const, server: "s_1" }, { status: "stopping" as const, server: "s_1" }, { status: "stopped" as const }];
+  // r_1 is a run of this computer and a run of the section s_1: the key says which
+  const runs = [{ id: "r_1", status: "running" as const }, { id: "s_1~r_1", status: "running" as const }, { id: "s_1~r_2", status: "stopping" as const }, { id: "r_2", status: "stopped" as const }];
   assert.equal(runningRuns(runs), 3);
-  assert.equal(runningRuns(localRuns(runs)), 1); // a run on another server goes on through this restart
-  assert.equal(runningRuns(localRuns([{ status: "running" as const, server: "s_1" }])), 0);
-  assert.equal(restartConfirmText(0, 0), restartConfirmText(0, runningRuns(localRuns([{ status: "running" as const, server: "s_1" }]))));
+  assert.deepEqual(localRuns(runs).map((r) => r.id), ["r_1", "r_2"]);
+  assert.equal(runningRuns(localRuns(runs)), 1); // a run of a section goes on through this restart
+  assert.equal(runningRuns(localRuns([{ id: "s_1~r_1", status: "running" as const }])), 0);
+  assert.equal(restartConfirmText(0, 0), restartConfirmText(0, runningRuns(localRuns([{ id: "s_1~r_1", status: "running" as const }]))));
   const src = readFileSync(new URL("../src/version.ts", import.meta.url), "utf8");
   assert.match(src, /runningRuns\(localRuns\(Object\.values\(getState\(\)\.runs\)\)\)/);
 });

@@ -19,7 +19,7 @@ const subres = (): Item => ({ kind: "subresult", subagent: "s1" });
 const acts = (items: Items, index: number, busy = false) => messageActions({ agent: "claude", items, index, busy, readOnly: false });
 
 const q = (item: number, comment?: string): Reference => ({ quote: "x", item, start: 0, end: 1, ...(comment ? { comment } : {}) });
-const held = (t: string, references: Reference[] = []): Held => ({ text: t, mentions: [], references });
+const held = (t: string, references: Reference[] = []): Held => ({ text: t, mentions: [], references, images: [] });
 const move = (t: Target, h: Held, put: Held | null = null): PendingMove => ({ ...t, from: "main", held: h, put });
 
 // ---- points: stopped turns, subagent rows, a thread from before the feature

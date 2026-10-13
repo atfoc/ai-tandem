@@ -52,7 +52,7 @@ type Relay struct {
 	Contacts ContactLog
 	// ImageDir is where a picture is written for a Cursor agent (see imagefile.go). Empty means
 	// aiwb-images-<uid> in the OS temp dir. ImageMaxAge is how long such a file is kept; zero
-	// means imageMaxAge.
+	// means an hour. Both are agent.ImageFiles' own.
 	ImageDir    string
 	ImageMaxAge time.Duration
 }
@@ -186,12 +186,7 @@ func (r *Relay) createBoard(chatBoard string, args json.RawMessage) (text string
 	}
 	json.Unmarshal(args, &p)
 	name, _ := p.Name.(string)
-	// A board of an API client's board is that client's too, and names the board it came from.
-	n := boards.NewBoard{Name: name, Group: own.Group, New: true}
-	if own.Client != "" {
-		n.Client, n.Origin = own.Client, own.ID
-	}
-	bd, _, err := r.Boards.Make(n)
+	bd, err := r.Boards.Create(name, own.Group, true)
 	if err != nil {
 		return err.Error(), true
 	}

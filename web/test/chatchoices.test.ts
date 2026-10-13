@@ -1,4 +1,4 @@
-// The server and agent choices of a chat's composer and the chat with no agent: the logic the
+// The server's name and the agent choice of a chat's composer and the chat with no agent: the logic the
 // components use (src/logic/agentlist.ts, src/logic/status.ts), the body api.configure sends for
 // an agent pick (src/api.ts with a stubbed global fetch), and the toolbar read as source (the unit
 // tests have no DOM).
@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { api, ApiError } from "../src/api.ts";
 import { CHOOSE_AGENT, NO_AGENT, agentChoice, agentLabel, agentLine, agentOpen, configHint, noAgentPlaceholder, noAgentReason, pickAgent } from "../src/logic/agentlist.ts";
-import { pickServer, showsServer } from "../src/logic/chatserver.ts";
-import { serverChoice } from "../src/logic/serverlists.ts";
+import { showsServer } from "../src/logic/chatserver.ts";
+import { SERVER_FINAL } from "../src/logic/serverlists.ts";
 import { composerControls, refreshAfterRefusal, sendTitle } from "../src/logic/status.ts";
 import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type ChatView } from "../src/types.ts";
 
@@ -26,50 +26,38 @@ globalThis.fetch = (async (path: string, init: RequestInit = {}) => {
 }) as typeof fetch;
 beforeEach(() => { calls.length = 0; answer = { status: 200, body: { ok: true } }; });
 
-// ---- AC29: the five choices
+// ---- the toolbar: the server's name, then the four choices
 
-test("the toolbar's choices are server, agent, folder, model, effort, in this order", () => {
-  const at = ["<ServerPick ", "<AgentPick ", "<DirPicker ", 'title="Model"', 'title="Effort"'].map((mark) => {
+test("the toolbar has the server's name, then agent, folder, model, effort, in this order", () => {
+  const at = ["<ServerChip ", "<AgentPick ", "<DirPicker ", 'title="Model"', 'title="Effort"'].map((mark) => {
     assert.equal(toolbar.split(mark).length, 2, `${mark} is in the toolbar once`);
     return toolbar.indexOf(mark);
   });
   assert.deepEqual(at, [...at].sort((a, b) => a - b));
-  // the selectors of the two new choices are their titles'
-  assert.equal(count(choices, /title="Server"/g), 1);
   assert.equal(count(choices, /title="Agent"/g), 1);
 });
 
-test("the server choice lists this computer and every entry, and ends with Servers…", () => {
-  const c = { locked: false } as ChatView;
-  assert.deepEqual(serverChoice([], c), { options: [{ id: "local", label: "This computer" }], fixed: "" });
-  assert.equal(serverChoice([], c).options[0].id, LOCAL_SERVER);
-  const got = serverChoice([{ id: "s_1", name: "Studio", state: "unreachable" }, { id: "s_2", name: "Old", state: "too_old" }], c);
-  assert.deepEqual(got.options.map((o) => [o.id, o.label, !!o.disabled]), [["local", "This computer", false], ["s_1", "Studio", false], ["s_2", "Old", true]]);
-  assert.ok(got.options[2].reason, "a disabled entry says why");
-  // the component: the options with the reason as the note, the last item, and a fixed chip in place of the choice
-  assert.ok(/const \{ options, fixed \} = serverChoice\(servers, c, useBoardServer\(c\)\);/.test(choices), "ServerPick lists serverChoice");
-  assert.ok(choices.includes("options={options.map((o) => ({ id: o.id, label: o.label, note: o.reason, disabled: o.disabled }))}"));
-  assert.ok(choices.includes('more={{ label: "Servers…", onClick: () => openServers() }}'));
+test("the server picker is gone from the toolbar: the server is a chip that opens nothing and sends nothing", () => {
+  // no list of servers, no pick, no call that names a server, in the toolbar or in what it draws
+  for (const [name, text] of [["Composer.tsx", composer], ["ChatChoices.tsx", choices]] as const) {
+    for (const gone of ["ServerPick", "serverChoice", "pickServer", "serverOptions", 'title="Server"', "server-pick", "{ server: id }", "server: id"]) assert.ok(!text.includes(gone), `${name} has ${gone}`);
+  }
+  assert.ok(!choices.includes("openServers"), "no Servers… item");
+  const chip = choices.slice(choices.indexOf("export function ServerChip("), choices.indexOf("export function useServerChip("));
+  assert.ok(chip.length > 0 && !chip.includes("<Picker") && !chip.includes("api.") && !chip.includes("onClick"), "the chip is no control");
   // (the name in an element of its own, which is cut where it is long; the chip's title is the reason, the name's has the name whole)
-  assert.ok(choices.includes("if (fixed) return <span className={`tchip static server-chip ${w.connected ? \"\" : \"off\"}`} title={`Server — ${fixed}`}><ChipName full={`${w.name} — ${fixed}`}>{w.name}</ChipName></span>;"));
-  // a disabled option takes no pick, by the mouse or by Enter
+  assert.ok(chip.includes("return <span className={`tchip static server-chip ${w.connected ? \"\" : \"off\"}`} title={`Server — ${fixed}`}><ChipName full={`${w.name} — ${fixed}`}>{w.name}</ChipName></span>;"));
+  assert.ok(chip.includes("const fixed = serverFixed(c);"));
+  assert.equal(SERVER_FINAL, "A chat is on the server it was made on");
+  // the api's configure takes no server
+  const apiSrc = src("api.ts");
+  const configure = apiSrc.slice(apiSrc.indexOf("  configure: ("), apiSrc.indexOf("  /** Saves a branch's draft"));
+  assert.ok(configure.includes("p: { agent?: AgentKind; model?: string; effort?: string; cwd?: string; subDepth?: number; subCap?: number }"));
+  assert.ok(!/\bserver\??:/.test(configure), "no field of the change names a server: the chat's key says where the call goes");
+  assert.ok(configure.includes('call<{ ok: boolean; chat?: ChatView }>("PATCH", `${pathOf("chats", id)}${onBranch(branch)}`, p)'));
+  // a list that stays for the others: a disabled option takes no pick, by the mouse or by Enter
   assert.ok(composer.includes("if (!o || o.disabled) return;"));
   assert.ok(composer.includes("aria-disabled={o.disabled || undefined} title={o.disabled ? o.note : undefined}"));
-});
-
-test("a server pick sends the server alone and takes the chat the server answers with; a refusal takes nothing", async () => {
-  const chat = { id: "c_1", agent: "pi", server: "s_1", locked: false } as ChatView;
-  answer = { status: 200, body: { ok: true, chat } };
-  const taken: ChatView[] = [];
-  await pickServer((p) => api.configure("c_1", "main", p), "s_1", (c) => taken.push(c));
-  assert.deepEqual(calls, [{ path: "/api/chats/c_1?branch=main", method: "PATCH", body: { server: "s_1" } }]);
-  assert.deepEqual(taken, [chat]);
-  answer = { status: 409, body: { error: "no chat can be started on that server", code: "server_unusable" } };
-  await assert.rejects(pickServer((p) => api.configure("c_1", "main", p), "s_2", (c) => taken.push(c)),
-    (e: unknown) => e instanceof ApiError && e.code === "server_unusable" && e.message === "no chat can be started on that server");
-  assert.equal(taken.length, 1);
-  // the component gives it the store's upsertChat, and the refusal goes where the composer shows the other configure refusals
-  assert.ok(/pickServer\(\(p\) => api\.configure\(c\.id, shownBranch\(getState\(\), c\.id\), p\), id, upsertChat\)\s+\.then\(\(\) => onError\(""\), \(e\) => onError\(e\.message\)\)/.test(choices));
 });
 
 test("an agent pick sends the agent alone and takes the chat the server answers with", async () => {
@@ -79,6 +67,11 @@ test("an agent pick sends the agent alone and takes the chat the server answers 
   await pickAgent((p) => api.configure("c_1", "main", p), "cursor", (c) => taken.push(c));
   assert.deepEqual(calls, [{ path: "/api/chats/c_1?branch=main", method: "PATCH", body: { agent: "cursor" } }]);
   assert.deepEqual(taken, [chat]); // with the model the server chose for that agent
+  // a chat of a section: the same call under its entry, and the chat it answers gets the page's key
+  calls.length = 0; taken.length = 0;
+  await pickAgent((p) => api.configure("s_1~c_1", "main", p), "cursor", (c) => taken.push(c));
+  assert.deepEqual(calls, [{ path: "/api/on/s_1/chats/c_1?branch=main", method: "PATCH", body: { agent: "cursor" } }]);
+  assert.deepEqual(taken, [{ ...chat, id: "s_1~c_1" }]);
   // the component gives it the store's upsertChat
   assert.ok(/pickAgent\(\(p\) => api\.configure\(c\.id, shownBranch\(getState\(\), c\.id\), p\), id as AgentKind, upsertChat\)/.test(choices));
 });
@@ -94,18 +87,21 @@ test("an agent pick the server refuses takes nothing, and an older server's answ
   assert.deepEqual(calls.map((c) => c.body), [{ agent: "cursor" }, { agent: "pi" }]);
 });
 
-// ---- AC30: the two choices are shown only while they can be changed
+// ---- AC30: the agent choice is shown only while it can be changed; the server's name for a chat on another server
 
-test("the agent choice is in the toolbar only while agentOpen; the server also for a chat on another server", () => {
-  for (const [name, cond] of [["ServerPick", "showsServer"], ["AgentPick", "agentOpen"]]) {
-    assert.equal(count(composer, new RegExp(`<${name}\\b`, "g")), 1, `${name} is rendered in one place`);
-    assert.ok(new RegExp(`^\\s*\\{${cond}\\(c\\) && <${name} `, "m").test(toolbar), `${name} is under ${cond}(c)`);
-  }
-  assert.equal(showsServer({ locked: false }), true);
-  assert.equal(showsServer({ locked: true }), false); // a started chat on this computer: as before
-  assert.equal(showsServer({ locked: true, server: "local" }), false);
-  assert.equal(showsServer({ locked: true, server: "s_1" }), true); // a started chat on another server names it
-  assert.equal(showsServer({ locked: false, forkedFrom: "c_0", server: "s_1" }), true);
+test("the agent choice is in the toolbar only while agentOpen and the chat takes a change; the server's name only for a chat of a section, started or not", () => {
+  assert.equal(count(composer, /<AgentPick\b/g), 1);
+  assert.ok(/^\s*\{agentPick && <AgentPick /m.test(toolbar), "AgentPick is under agentPick");
+  // (not while the chat's server is not connected, or no longer has the chat: it is shown as it was, and takes no change)
+  assert.ok(toolbar.includes("const agentPick = agentOpen(c) && !frozen;") && toolbar.includes("const frozen = sendOff(where) || gone;"));
+  assert.ok(toolbar.includes("if (agentPick) keys.agent = agentKey;"), "and it has its place in the fit only then");
+  assert.equal(count(composer, /<ServerChip\b/g), 1);
+  assert.ok(/^\s*\{showsServer\(where\) && <ServerChip c=\{c\} \/>\}$/m.test(toolbar), "ServerChip is under showsServer(where)");
+  assert.ok(toolbar.includes("if (showsServer(where)) keys.server = serverKey;"), "and it has its place in the fit only then");
+  const here = { server: LOCAL_SERVER, name: "This computer", connected: true };
+  assert.equal(showsServer(here), false); // a chat on this computer names no server, new or started: there is nothing to pick
+  assert.equal(showsServer({ server: "s_1", name: "Studio", connected: true }), true); // a chat of a section shows the name of its server
+  assert.equal(showsServer({ server: "s_1", name: "Studio", connected: false }), true);
   const open = { locked: false } as ChatView;
   assert.equal(agentOpen(open), true);
   assert.equal(agentOpen({ ...open, agent: "" } as ChatView), true); // a chat with no agent chooses one here
@@ -123,7 +119,8 @@ test("each choice is drawn once, in the toolbar's row or in its popup, and the r
   // the line that says why a chat has no agent is not part of the agent's chip, which may be in the popup
   const pick = choices.slice(choices.indexOf("export function AgentPick("), choices.indexOf("export function useAgentChip("));
   assert.ok(pick.length > 0 && !pick.includes("agent-reason"));
-  assert.ok(/^\s*\{agentOpen\(c\) && <AgentReason c=\{c\} \/>\}$/m.test(toolbar));
+  // (shown while the agent can be chosen, and whenever the chat takes no change: the line then says that its server is not connected, or no longer has it)
+  assert.ok(/^\s*\{\(agentOpen\(c\) \|\| frozen\) && <AgentReason c=\{c\} \/>\}$/m.test(toolbar));
   assert.ok(toolbar.indexOf("<AgentReason ") > toolbar.indexOf("<ContextMeter "), "after the row's controls");
 });
 
@@ -141,7 +138,7 @@ test("the agent choice offers the usable agents alone; one the server lacks is m
   // its Send is not blocked by the page: the server looks again, and refuses with the reason
   assert.equal(composerControls({ status: "ready", agent: "cursor" }).blocked, false);
   // the component takes options, mark and line from these
-  assert.ok(/agentChoiceOn\(w, usable, c\.agent\)/.test(choices) && /toolbarLine\(w, usable, c\)/.test(choices) && /usableAgents\(s, w\.server\)/.test(choices));
+  assert.ok(/agentChoiceOn\(w, usable, c\.agent\)/.test(choices) && /toolbarLine\(w, usable, c, gone\)/.test(choices) && /usableAgents\(s, w\.server\)/.test(choices));
   assert.ok(!choices.includes("AGENT_ORDER"), "ChatChoices.tsx lists no fixed agents");
 });
 
@@ -176,11 +173,14 @@ test("a chat with no agent shows the reason, and its Send is blocked with the re
   assert.equal(sendTitle({ status: "thinking", agent: "claude", fresh: true }, true, NO_AGENT), "The agent is starting");
 
   // the composer reads all of it from here
-  assert.ok(composer.includes("title={sendTitleOn(where, usable, c, blocked)} disabled={blocked || off || left || sending ||"));
-  assert.ok(composer.includes("const placeholder = offPlaceholder(where, usable, c) || (c.board"));
+  assert.ok(composer.includes("title={sendTitleOn(where, usable, c, blocked, left)} disabled={blocked || off || left || sending ||"));
+  assert.ok(composer.includes("const placeholder = offPlaceholder(where, usable, c, left) || (c.board"));
   assert.ok(/\{line\.text && <div className=\{`agent-reason /.test(choices), "the line is under the toolbar");
   assert.ok(/>No agent</.test(choices) && /: "No agent"\}/.test(choices), "the chip says No agent");
-  assert.ok(/\) : !c\.agent \|\| sendOff\(where, c\) \? null : !cat \? \(/.test(toolbar), "no model choice without an agent, or for a server that is not connected");
+  assert.ok(/\) : !c\.agent \? null : !cat \? \(/.test(toolbar), "no model choice without an agent");
+  // nor for a server that is not connected: the model is then a fixed chip that says why
+  assert.ok(toolbar.includes('const mode = pick || frozen ? "fixed" : pickerMode(c, !!move);'));
+  assert.ok(toolbar.includes("const frozenWhy = gone ? goneText(where.name) : notConnectedLine(where.name);"));
 });
 
 test("a Send refused for the agent keeps the typed text: the chat is not read again", () => {

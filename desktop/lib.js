@@ -2,6 +2,7 @@
 // load this file.
 
 const path = require('node:path');
+const fsPromises = require('node:fs/promises');
 
 const LAUNCH_TIMEOUT_MS = 40_000;
 
@@ -399,6 +400,142 @@ function resumeAfterCancelledQuit({ win, url, reconnector }) {
   return true;
 }
 
+// The limits on the images of a chat message, as the server has them (model.ImageMaxBytes and
+// model.ImagesPerMessage), and the types taken, by file extension.
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const IMAGES_PER_MESSAGE = 10;
+const IMAGE_TYPES = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+};
+
+// imageType is the MIME type a file name's extension stands for, or null when it is not one of
+// IMAGE_TYPES.
+function imageType(name) {
+  const ext = path.extname(name).slice(1).toLowerCase();
+  return Object.hasOwn(IMAGE_TYPES, ext) ? IMAGE_TYPES[ext] : null;
+}
+
+// fromAppWindow says whether an IPC call (event is what ipcMain hands its handler) comes from the
+// main frame of win, the app's main window, while that frame is on the origin of appURL, the
+// server URL the window loaded. False for another window, a frame inside the page, a frame that is
+// gone or has navigated since the call, another origin, and when there is no window or no URL.
+function fromAppWindow({ event, win, appURL }) {
+  if (!win || win.isDestroyed() || !appURL) return false;
+  const frame = event.senderFrame;
+  if (!frame || event.sender !== win.webContents || frame !== win.webContents.mainFrame) return false;
+  let appOrigin;
+  try {
+    appOrigin = new URL(appURL).origin;
+  } catch {
+    return false;
+  }
+  return appOrigin !== 'null' && frame.origin === appOrigin;
+}
+
+// readUpTo reads the file open as handle to its end and resolves to its bytes, or to null once it
+// has more than maxBytes: no more than maxBytes + 1 bytes are ever read.
+async function readUpTo(handle, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const chunk = Buffer.allocUnsafe(Math.min(1 << 20, maxBytes + 1 - total));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+    chunks.push(chunk.subarray(0, bytesRead));
+    total += bytesRead;
+    if (total > maxBytes) return null;
+  }
+  // A Uint8Array on a buffer of its own, which is what crosses to the page.
+  const data = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, at);
+    at += chunk.length;
+  }
+  return data;
+}
+
+// readImage reads the image file at filePath and resolves to { data } with its bytes, or to
+// { reason } when it is left out: 'size' when it is over maxBytes (seen from its size, or while
+// reading when it grew since), 'read' when it is not a file or cannot be opened or read.
+async function readImage({ fs, filePath, maxBytes }) {
+  let handle;
+  try {
+    handle = await fs.open(filePath, 'r');
+    const stat = await handle.stat();
+    if (!stat.isFile()) return { reason: 'read' };
+    if (stat.size > maxBytes) return { reason: 'size' };
+    const data = await readUpTo(handle, maxBytes);
+    return data ? { data } : { reason: 'size' };
+  } catch {
+    return { reason: 'read' };
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+// pickImages answers the page's window.aiwbDesktop.pickImages(): it opens the app's own open
+// dialog on win for several image files and resolves to
+//
+//   { files: [{ name, type, data }], skipped: [{ name, reason }] }
+//
+// in the order the dialog gave them. name is the file's base name, never its path; type is the MIME
+// type its extension stands for (the server finds the real one from the bytes); data is a
+// Uint8Array. A cancelled dialog answers both lists empty.
+//
+// The only files read are those the dialog returned: the call carries no argument, so the page
+// names no path. A call that fromAppWindow does not accept is refused (it rejects) before the
+// dialog opens, and again after it, when the page went away while the dialog was open: nothing is
+// read then.
+//
+// A file is left out, and named in skipped with the reason, in this order:
+//
+//   - 'type': its extension is none of IMAGE_TYPES. Not opened.
+//   - 'count': maxFiles files are in the answer already. Not opened.
+//   - 'read': it is not a file, or cannot be opened or read.
+//   - 'size': it is over maxBytes. Its bytes are not read.
+async function pickImages({
+  event, win, appURL, dialog,
+  fs = fsPromises,
+  maxBytes = IMAGE_MAX_BYTES,
+  maxFiles = IMAGES_PER_MESSAGE,
+}) {
+  const refuse = () => {
+    throw new Error('pickImages: the call is not from the app window');
+  };
+  if (!fromAppWindow({ event, win, appURL })) refuse();
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Add images',
+    buttonLabel: 'Add',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Images', extensions: Object.keys(IMAGE_TYPES) }],
+  });
+  const files = [];
+  const skipped = [];
+  if (canceled || !filePaths || filePaths.length === 0) return { files, skipped };
+  if (!fromAppWindow({ event, win, appURL })) refuse();
+  for (const filePath of filePaths) {
+    const name = path.basename(filePath);
+    const type = imageType(name);
+    if (!type) {
+      skipped.push({ name, reason: 'type' });
+      continue;
+    }
+    if (files.length >= maxFiles) {
+      skipped.push({ name, reason: 'count' });
+      continue;
+    }
+    const { data, reason } = await readImage({ fs, filePath, maxBytes });
+    if (reason) skipped.push({ name, reason });
+    else files.push({ name, type, data });
+  }
+  return { files, skipped };
+}
+
 module.exports = {
   LAUNCH_TIMEOUT_MS,
   serverBin,
@@ -420,4 +557,10 @@ module.exports = {
   FLUSH_TIMEOUT_MS,
   attachCloseFlush,
   resumeAfterCancelledQuit,
+  IMAGE_MAX_BYTES,
+  IMAGES_PER_MESSAGE,
+  IMAGE_TYPES,
+  imageType,
+  fromAppWindow,
+  pickImages,
 };

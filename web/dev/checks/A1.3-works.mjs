@@ -1,8 +1,10 @@
-// Proves A1.3: with the sidebar hidden, what does not need it works as before. ⌘N makes a chat and opens it; the
-// composer's "Servers…" opens the dialog, which the hidden sidebar's button still draws; ⌘J hides the chat panel and
+// Proves A1.3: with the sidebar hidden, what does not need it works as before. ⌘N makes a chat of this computer at
+// once and opens it, also with other servers in the list: nothing asks where it should live. The "Servers…" of the
+// warning over a chat whose server dropped opens the dialog, which the hidden sidebar's button still draws, and whose
+// Escape leaves the chat under it; ⌘J hides the chat panel and
 // shows it; the panel's resizer drags, and stops where the stage would get narrower than its least (it reads the
-// stage as the child of .app). Home's "New whiteboard" makes a board and selects it, with no server but this computer
-// and through the server choice, and when the sidebar is shown the board's row is there, lit, and not in rename mode;
+// stage as the child of .app). Home's "New whiteboard" makes a board of this computer and selects it at once, with no
+// server but this computer and with others in the list, and when the sidebar is shown the board's row is there, lit, and not in rename mode;
 // with the sidebar shown the same click puts the row in rename mode, so the check would see one. The same for a run
 // and a group made from the sidebar's own "+" and answered only after the sidebar was hidden: no rename box that
 // nobody sees waits in it.
@@ -22,21 +24,19 @@ await check("A1.3 with the sidebar hidden the page works as before", async ({ ur
   };
   const boardCount = () => mockEval("return Object.keys(boards).length;", url);
 
-  /** Home's "New whiteboard": pick is what the server choice is answered with (none: the board is made at once). The
+  /** Home's "New whiteboard": the board is made at once, on this computer, and nothing asks where it should live. The
    *  row is looked at with the sidebar shown: at once when it was never hidden, else after ⌘B. */
-  const newBoard = async (name, { hidden, pick }) => open({ sel: {}, ls: hidden ? HIDDEN : {} }, async (page) => {
+  const newBoard = async (name, { hidden }) => open({ sel: {}, ls: hidden ? HIDDEN : {} }, async (page) => {
     const before = await boardCount();
     await page.waitForSelector("main.home h2");
     if (await railThere(page) !== hidden) return fail(`${name}: the sidebar is ${hidden ? "shown" : "hidden"} when the page opens`);
     await page.locator("main.home button", { hasText: "New whiteboard" }).click();
-    if (pick) {
-      await page.waitForSelector("main.board-choice .board-choice-item", { timeout: 10000 });
-      await page.locator("main.board-choice .board-choice-item", { hasText: pick }).click();
-    }
     // the board is selected: its stage is on screen and the selection names it
     const board = await until(async () => (await page.locator(".app > main.board-stage").count()) && (await saved(page, "aiwb.sel"))?.board, 15000);
     if (!board) return fail(`${name}: no board was selected after "New whiteboard": the selection is ${JSON.stringify(await saved(page, "aiwb.sel"))}`);
-    if (await boardCount() !== before + 1) fail(`${name}: the mock has ${await boardCount()} boards, ${before} before`);
+    if (await boardCount() !== before + 1) fail(`${name}: the mock has ${await boardCount()} boards of this computer, ${before} before`);
+    if (await page.locator("main.board-choice, .board-choice-box").count()) fail(`${name}: the page asks where the board should live`);
+    if (String(board).includes("~")) fail(`${name}: the board selected is one of a section: ${board}`);
     await frames(page);
     if (hidden) {
       if (!await railThere(page)) fail(`${name}: making the board showed the sidebar`);
@@ -53,16 +53,17 @@ await check("A1.3 with the sidebar hidden the page works as before", async ({ ur
   });
 
   // ---- nothing seeded: no server but this computer, and "New whiteboard" makes the board at once
-  if (await mockEval("return !!extra.servers?.some((s) => !s.local);", url)) note("(a board with no server choice: not run, this mock has other servers already)");
+  if (await mockEval("return !!extra.servers?.some((s) => !s.local);", url)) note("(a board with no other server: not run, this mock has other servers already)");
   else {
-    await newBoard("a board with no server choice, sidebar shown", { hidden: false });
-    await newBoard("a board with no server choice", { hidden: true });
+    await newBoard("a board with no other server, sidebar shown", { hidden: false });
+    await newBoard("a board with no other server", { hidden: true });
   }
 
+  // ---- with other servers in the list: the same, on this computer, and no server gets a board
   await seed(url, "A1");
-  await newBoard("a board by the server choice, sidebar shown", { hidden: false, pick: "This computer" });
-  await newBoard("a board by the server choice", { hidden: true, pick: "This computer" });
-  await newBoard("a board by the server choice, on another server", { hidden: true, pick: "lab-gpu-box" });
+  await newBoard("a board with other servers in the list, sidebar shown", { hidden: false });
+  await newBoard("a board with other servers in the list", { hidden: true });
+  if (await mockEval('return Object.keys(worlds).filter((id) => id !== "local").reduce((n, id) => n + Object.keys(worlds[id].boards).length, 0);', url)) fail('"New whiteboard" made a board on another server');
 
   // ---- made from the sidebar's "+", the answer held until the sidebar is hidden (hidden: false: it is not hidden)
   const heldNew = async (what, { hidden, item, path, made }) => open({ sel: {}, wait: ".side-tree" }, async (page) => {
@@ -95,28 +96,38 @@ await check("A1.3 with the sidebar hidden the page works as before", async ({ ur
     await heldNew("a group", { hidden, item: "New group", path: "/api/groups", made: ".side-group-head" });
   }
 
-  // ---- ⌘N, and the composer's "Servers…" of the chat it made
+  // ---- ⌘N: a chat of this computer, at once, with other servers in the list
   await open({ sel: { chat: "c_plain" }, ls: HIDDEN }, async (page) => {
     await page.waitForSelector(".chat-page .composer-box");
     const before = await mockEval("return Object.keys(chats).length;", url);
     await page.keyboard.press("ControlOrMeta+n");
     const chat = await until(async () => { const c = (await saved(page, "aiwb.sel"))?.chat; return c && c !== "c_plain" ? c : null; }, 15000);
     if (!chat) return fail(`⌘N: no new chat was opened: the selection is ${JSON.stringify(await saved(page, "aiwb.sel"))}`);
-    if (await mockEval("return Object.keys(chats).length;", url) !== before + 1) fail(`⌘N: the mock has ${await mockEval("return Object.keys(chats).length;", url)} chats, ${before} before`);
-    if (!await railThere(page)) fail("⌘N showed the sidebar");
-    const chip = page.locator('.chat-page .composer button.tchip[title^="Server"]');
-    await chip.waitFor({ state: "visible", timeout: 10000 });
-    await chip.click();
-    await page.locator(".composer .menu-item.menu-more", { hasText: "Servers…" }).click();
+    if (await page.locator("main.board-choice, .board-choice-box").count()) fail("⌘N asks where the chat should live");
+    if (String(chat).includes("~") || await mockEval("return Object.keys(chats).length;", url) !== before + 1) fail(`⌘N: the new chat is ${chat}, and this computer has ${await mockEval("return Object.keys(chats).length;", url)} chats, ${before} before`);
+    if (!await railThere(page)) fail("the new chat showed the sidebar");
+    note(`⌘N made ${chat} on this computer and opened it, with other servers in the list and no question`);
+  });
+
+  // ---- the "Servers…" of the warning over a chat whose server dropped: the dialog the hidden sidebar's button draws
+  await mockEval('onServer("s_lab", () => { chats.c_A1_lab = chat("c_A1_lab", { name: "On the lab box", group: "__ungrouped__" }); items.c_A1_lab = [{ kind: "user", text: "Is the GPU free?" }, say("It is."), { kind: "end" }]; }); send({ type: "snapshot", ...snapshot() });', url);
+  await open({ sel: { chat: "s_lab~c_A1_lab" }, ls: HIDDEN }, async (page) => {
+    await page.waitForSelector(".chat-page .thread .msg.user");
+    await mockEval('setServerState("s_lab", "unreachable", { detail: "connection refused" });', url);
+    const bar = page.locator(".chat-page .remote-bar.off");
+    if (!await until(() => bar.count(), 10000)) return fail("the chat whose server dropped shows no warning");
+    await bar.locator("button", { hasText: "Servers…" }).click();
     const dialog = page.locator('.servers-dialog[role="dialog"]');
-    if (!await until(() => dialog.isVisible(), 10000)) return fail('the composer\'s "Servers…" opened no dialog');
+    if (!await until(() => dialog.isVisible(), 10000)) return fail('the warning\'s "Servers…" opened no dialog');
     const hit = await dialog.evaluate((d) => { const r = d.getBoundingClientRect(); return r.width > 200 && r.height > 100 && d.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 20)); });
     if (!hit) fail("the Servers dialog is not what is at its own place on screen");
     if (await dialog.locator("text=Office Mac").count() < 1) fail("the Servers dialog does not list the seeded servers");
     await page.keyboard.press("Escape");
     if (!await until(async () => await dialog.count() === 0, 10000)) fail("Esc did not close the Servers dialog");
     if (!await railThere(page)) fail("the Servers dialog showed the sidebar");
-    note(`⌘N made ${chat} and opened it; its composer's "Servers…" opened the dialog`);
+    if (!await bar.count() || !await page.locator(".chat-page .thread .msg.user").count()) fail("the dialog's Escape dropped the chat under it");
+    await mockEval('setServerState("s_lab", "connected");', url);
+    note('the "Servers…" of a dropped server\'s warning opened the dialog with the sidebar hidden, and Esc left the chat');
   });
 
   // ---- ⌘J and the panel's resizer, in a window where the stage's least is what stops the drag

@@ -400,10 +400,12 @@ func TestRunRoutesBeforeTheStart(t *testing.T) {
 	}
 }
 
-// Every run route answers 404 for a run that does not exist.
+// Every run route answers 404 for a run that does not exist, with the code "not_found", on the
+// server's own port and for an API client alike.
 func TestRunRoutesOfAMissingRun(t *testing.T) {
 	t.Parallel()
-	e := newRunEnv(t)
+	e := newAPIRunEnv(t)
+	const noRun = `{"code":"not_found","error":"no such run"}`
 	for _, c := range [][3]string{
 		{"GET", "", ""}, {"PATCH", "", `{"name":"x"}`}, {"DELETE", "", ""},
 		{"PUT", "/draft", `{"text":"x"}`}, {"POST", "/start", `{"goal":"x"}`}, {"POST", "/stop", ""}, {"POST", "/resume", ""},
@@ -411,7 +413,20 @@ func TestRunRoutesOfAMissingRun(t *testing.T) {
 		{"GET", "/detail", ""}, {"GET", "/goal", ""}, {"GET", "/tasks/T01/brief", ""},
 		{"GET", "/tasks/T01/attempts/1/report", ""}, {"GET", "/tasks/T01/attempts/1/changes", ""}, {"GET", "/notes/1", ""},
 	} {
-		e.refused(404, "no such run", c[0], "/api/runs/r_nope"+c[1], c[2])
+		if out := e.expect(404, c[0], "/api/runs/r_nope"+c[1], c[2]); strings.TrimSpace(out) != noRun {
+			t.Errorf("%s /api/runs/r_nope%s: %s, want %s", c[0], c[1], out, noRun)
+		}
+		if status, out := e.l.call(apiX, testSecret, c[0], "/api/runs/r_nope"+c[1], c[2]); status != 404 || strings.TrimSpace(out) != noRun {
+			t.Errorf("%s /api/runs/r_nope%s for an API client: %d %s, want 404 %s", c[0], c[1], status, out, noRun)
+		}
+	}
+	// A new run in a group that is not there says the same of the group.
+	const noGroup = `{"code":"not_found","error":"no such group \"g_nope\""}`
+	if out := e.expect(404, "POST", "/api/runs", `{"group":"g_nope"}`); strings.TrimSpace(out) != noGroup {
+		t.Errorf("a new run in a group that is not there: %s, want %s", out, noGroup)
+	}
+	if status, out := e.l.call(apiX, testSecret, "POST", "/api/runs", `{"group":"g_nope"}`); status != 404 || strings.TrimSpace(out) != noGroup {
+		t.Errorf("a new run in a group that is not there, for an API client: %d %s, want 404 %s", status, out, noGroup)
 	}
 	e.refused(404, "no such run", "POST", "/api/chats", `{"agent":"claude","run":"r_nope"}`)
 }

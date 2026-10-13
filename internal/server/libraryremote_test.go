@@ -79,7 +79,7 @@ func TestLibraryRoutesOfAnAPIClient(t *testing.T) {
 		t.Fatalf("the library of the snapshot: %s", snapX)
 	}
 	_, hello := l.call(apiX, testSecret, "GET", "/api/hello", "")
-	if got := decode[obj](t, hello); got["featureLevel"] != float64(servers.LibraryLevel) || FeatureLevel < servers.LibraryLevel {
+	if got := decode[obj](t, hello); got["featureLevel"] != float64(FeatureLevel) || FeatureLevel < servers.LibraryLevel {
 		t.Fatalf("hello: %s; a client takes a library from level %d", hello, servers.LibraryLevel)
 	}
 

@@ -262,11 +262,13 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 	}
 	parts := make([]string, 0, len(blocks))
 	for _, b := range blocks {
-		parts = append(parts, b.Text)
+		if b.Image == nil { // an image block has no text: Text and Blocks are the text blocks
+			parts = append(parts, b.Text)
+		}
 	}
 	p.mu.Lock()
 	p.turns++
-	t := &Turn{Opts: p.opts, Text: strings.Join(parts, "\n\n"), Blocks: parts, N: p.turns, p: p, intr: make(chan struct{})}
+	t := &Turn{Opts: p.opts, Text: strings.Join(parts, "\n\n"), Blocks: parts, Raw: blocks, N: p.turns, p: p, intr: make(chan struct{})}
 	p.queue = append(p.queue, t)
 	start := !p.running
 	p.running = true
@@ -340,10 +342,11 @@ func (p *proc) Close() {
 // the script's goroutine. Once the turn is over (Fail, Exit), was interrupted, or its process has
 // ended, they show nothing more and Call calls nothing.
 type Turn struct {
-	Opts   agent.SpawnOptions // what the turn's process was started with
-	Text   string             // the message: its blocks joined by a blank line
-	Blocks []string           // the message's blocks, as the manager sent them
-	N      int                // its number in this process, from 1
+	Opts   agent.SpawnOptions   // what the turn's process was started with
+	Text   string               // the message: its blocks joined by a blank line
+	Blocks []string             // the message's text blocks, as the manager sent them
+	Raw    []agent.ContentBlock // every block of the message, image blocks included, in order
+	N      int                  // its number in this process, from 1
 
 	p    *proc
 	intr chan struct{} // closed by an interrupt and by the end of the process

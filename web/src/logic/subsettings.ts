@@ -69,7 +69,6 @@ export function subChange(s: SubSettings, section: "depth" | "cap", value: numbe
 export const SUB_FIXED = {
   started: "fixed once the chat has started",
   copy: "a branch and a fork keep the settings of the chat they came from",
-  unconfirmed: "the first message may have arrived: they cannot be changed until that is known",
 } as const;
 
 /** What the toolbar shows of the settings: a chip that opens the popover ("open") on a new chat,
@@ -79,12 +78,11 @@ export const SUB_FIXED = {
  *  the authority: it refuses the change where the chip is fixed. */
 export type SubChip = { kind: "none" } | { kind: "open" } | { kind: "fixed"; why: string };
 
-export function subChip(c: Parameters<typeof agentOpen>[0] & Pick<ChatView, "start">, move: boolean): SubChip {
+export function subChip(c: Parameters<typeof agentOpen>[0], move: boolean): SubChip {
   if (c.role) return { kind: "none" };
   if (move || c.forkedFrom || c.branch) return { kind: "fixed", why: SUB_FIXED.copy };
   if (c.locked) return { kind: "fixed", why: SUB_FIXED.started };
   if (!agentOpen(c)) return { kind: "fixed", why: SUB_FIXED.copy }; // (whatever else closes a chat's first choices)
-  if (c.start === "unconfirmed") return { kind: "fixed", why: SUB_FIXED.unconfirmed };
   return { kind: "open" };
 }
 

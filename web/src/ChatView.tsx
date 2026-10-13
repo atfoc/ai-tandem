@@ -2,20 +2,21 @@
 // file only renders them. Both also draw the transcript of one of a run's own agents, read-only:
 // ChatHeader with `agent`, Thread with `readOnly`.
 import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject, type UIEvent } from "react";
-import { useStore, setState, setStarting, isBusy, isLegacy, chatTitle, boardName, shownBranch, shownView, threadOf, subsOf } from "./store.ts";
+import { useStore, setState, isBusy, isLegacy, chatTitle, boardNames, shownBranch, shownView, threadOf, subsOf } from "./store.ts";
 import { api } from "./api.ts";
 import { loadItems, retryAgent } from "./conn.ts";
 import { openServers } from "./Servers.tsx";
+import { reportError } from "./Dialogs.tsx";
 import { sendMessage, tildify } from "./Composer.tsx";
 import { statusText, waitingText } from "./logic/labels.ts";
 import { headStatus } from "./logic/status.ts";
 import { isSubagentTool } from "./logic/subagents.ts";
-import { REMOVE, SERVERS, TRY_AGAIN, remoteView } from "./logic/remoteview.ts";
-import { serverName, serverOf, serverState } from "./logic/serverlists.ts";
-import { emptyReason, sendOff, sendingLine } from "./logic/chatserver.ts";
-import { startingAfter } from "./logic/sendend.ts";
+import { SERVERS, TRY_AGAIN, remoteView } from "./logic/remoteview.ts";
+import { inSection, serverOfKey } from "./logic/keys.ts";
+import { serverConnected, serverName, serverOf, serverState } from "./logic/serverlists.ts";
+import { emptyReason, sendOff } from "./logic/chatserver.ts";
 import { threadWait } from "./logic/waits.ts";
-import { useWhere } from "./ChatChoices.tsx";
+import { useOffWhy, useWhere } from "./ChatChoices.tsx";
 import { quotable } from "./logic/quotes.ts";
 import { permAnswer } from "./logic/perms.ts";
 import { runChat } from "./logic/runchat.ts";
@@ -25,18 +26,27 @@ import { Markdown } from "./Markdown.tsx";
 import { SubagentRow, SubResultRow } from "./Subagents.tsx";
 import { ToolCard } from "./ToolCard.tsx";
 import { SentQuotes } from "./Quotes.tsx";
+import { MessageImages } from "./MessageImages.tsx";
+import { showsText, type Said } from "./logic/messageimages.ts";
 import { AgentGlyph, BoardIcon, Pencil, RunIcon, agentClass } from "./icons.tsx";
 import { MessageExtras, ForkedFrom } from "./fork/Message.tsx";
 import { TreeButton } from "./fork/TreeButton.tsx";
 import { BranchAlert, BranchCrumb } from "./fork/Chrome.tsx";
 import type { ChatView, Item, Subagent } from "./types.ts";
-import { LOCAL_SERVER } from "./types.ts";
 
 const EMPTY: Item[] = [];
 const short = (n: string) => n.replace(/^mcp__board__/, "");
 const base = (p?: string) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
 
 // ---- header
+
+/** Renames a chat on its server; the same name, or none, asks nothing. The name shows when the chat's server tells
+ *  it (a `chat` event): nothing is shown ahead. A section's server that refuses the rename, or does not answer, is
+ *  said: no event would. */
+export function renameChat(chat: ChatView, name: string, title = chatTitle(chat)) {
+  if (!name || name === title) return;
+  void api.renameChat(chat.id, name).catch((e) => { console.error(e); if (inSection(chat.id)) reportError("Couldn't rename the chat", e); });
+}
 
 export function NameInput({ chat, onDone }: { chat: ChatView; onDone: () => void }) {
   const items = useStore((s) => threadOf(s, chat.id)?.items);
@@ -46,8 +56,7 @@ export function NameInput({ chat, onDone }: { chat: ChatView; onDone: () => void
   useEffect(() => { ref.current?.select(); }, []);
   const commit = () => {
     if (done.current) return; done.current = true;
-    const n = v.trim();
-    if (n && n !== chatTitle(chat, items)) void api.renameChat(chat.id, n).catch((e) => console.error(e));
+    renameChat(chat, v.trim(), chatTitle(chat, items));
     onDone();
   };
   return (
@@ -70,9 +79,10 @@ export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHea
   const items = useStore((s) => threadOf(s, chatId)?.items);
   const board = useStore((s) => (c?.board ? s.boards[c.board] : undefined));
   const runName = useStore((s) => (c?.run ? s.runs[c.run]?.name : undefined)); // not the record: it changes with every task of the run
-  const server = serverOf(c);
-  const on = useStore((s) => (c?.server ? serverName(s, server) : "")); // a chat on another server names it
+  const server = serverOfKey(chatId);
+  const on = useStore((s) => (inSection(chatId) ? serverName(s, server) : "")); // a chat of a section names its server
   const where = useWhere(c);
+  const gone = useStore((s) => !!s.gone[chatId]); // it is no longer on its server
   const [editing, setEditing] = useState(false);
   if (agent) return (
     <div className="chat-head read-only" data-agent={chatId}>
@@ -85,14 +95,17 @@ export function ChatHeader({ chatId, agent }: { chatId: string; agent?: AgentHea
     </div>
   );
   if (!c) return null;
-  const status = headStatus(c, isLegacy(c), statusText(c, boardName), sendOff(where, c));
+  // (a chat whose server is not connected, or no longer has it, is shown as it was: it has no status now, and is not renamed)
+  const frozen = sendOff(where) || gone;
+  const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId)), frozen);
+  const named = !c.archived && !isLegacy(c) && !frozen;
   return (
     <div className="chat-head">
       <span className={`crow-glyph agent-${agentClass(c.agent)}`}><AgentGlyph agent={c.agent} size={14} /></span>
       <div className="chat-head-main">
-        {editing ? <NameInput chat={c} onDone={() => setEditing(false)} /> : (
-          <button className="chat-head-name" onClick={() => !c.archived && !isLegacy(c) && setEditing(true)} title={c.archived || isLegacy(c) ? undefined : "Rename"}>
-            <span className={c.name ? "" : "unnamed"}>{chatTitle(c, items)}</span>{!c.archived && !isLegacy(c) && <Pencil />}
+        {editing && named ? <NameInput chat={c} onDone={() => setEditing(false)} /> : (
+          <button className="chat-head-name" onClick={() => named && setEditing(true)} title={named ? "Rename" : undefined}>
+            <span className={c.name ? "" : "unnamed"}>{chatTitle(c, items)}</span>{named && <Pencil />}
           </button>
         )}
         <div className="chat-head-sub">
@@ -183,16 +196,14 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   const ref = useRef<HTMLDivElement>(null);
   const onScroll = useStickToBottom(ref, true, readOnly ? chatId : `${chatId}:${branch}`);
   const end = usePrefixEnd(chatId);
-  // A chat on another server: what its thread's place shows while that server is not connected.
-  const server = serverOf(c);
+  // A chat of a section: what its thread's place shows while that server is not connected, or no longer has the chat.
+  const server = serverOfKey(chatId);
   const serverIs = useStore((s) => serverName(s, server));
   const state = useStore((s) => serverState(s, server));
+  const connected = useStore((s) => serverConnected(s, server));
+  const gone = useStore((s) => !!s.gone[chatId]);
   const loadErr = useStore((s) => s.threadErrors[chatId]);
-  // The first message of a chat on another server, while its call runs: shown in the empty thread's place.
-  const starting = useStore((s) => (readOnly ? undefined : s.starting[chatId]));
   const waits = useStore((s) => (readOnly ? undefined : s.waits[chatId]));
-  // After a call that was taken the text stays until the thread read again has the message.
-  useEffect(() => { if (starting !== undefined && !startingAfter(true, !!all.length)) setStarting(chatId, null); }, [starting, chatId, !all.length]);
   if (readOnly) {
     const ready = !!c && (!!loaded || !!kept);
     const busy = !!c && isBusy(c.status);
@@ -207,7 +218,7 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
         <ReadOnlyContext.Provider value={true}>
           {c && ready && items.map((it, i) => (it ? <ItemView key={i} item={it} chat={c} branch={branch} /> : null))}
         </ReadOnlyContext.Provider>
-        {c && ready && busy && !!items.length && c.status !== "approval" && c.status !== "writing" && <div className="typing"><Dots /> {statusText(c, boardName)}</div>}
+        {c && ready && busy && !!items.length && c.status !== "approval" && c.status !== "writing" && <div className="typing"><Dots /> {statusText(c, boardNames(chatId))}</div>}
         {c && ready && !busy && subs > 0 && <div className="typing waiting">Waiting on {subs} subagent{subs === 1 ? "" : "s"}</div>}
         {c?.status === "error" && c.error && <div className="note error">{c.error}</div>}
       </div>
@@ -218,9 +229,13 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
   const markEl = <div className="prefix-end" data-at={end}><span>{prefixText(branch)}</span></div>;
   const busy = isBusy(c.status);
   const waiting = waitingText(c); // "" while busy
-  const wait = threadWait(waits, { shown: branch, loaded: !!loaded, count: all.length, move: cut !== undefined, busy, server: c.server && c.server !== LOCAL_SERVER ? serverIs : "", archived: !!c.archived });
+  const wait = threadWait(waits, { shown: branch, loaded: !!loaded, count: all.length, move: cut !== undefined, busy, server: inSection(chatId) ? serverIs : "", archived: !!c.archived });
   // (the history a wait keeps stands for the list: what is said of a server that is not connected is said beside it)
-  const remote = remoteView(c, serverIs, state, !!loaded || !!wait.kept, loadErr);
+  const remote = remoteView({ remote: inSection(chatId), connected, gone }, serverIs, state, !!loaded || !!wait.kept, loadErr);
+  // Under the warning the thread is as the page had it when the connection ended (or when the chat went there): nothing
+  // in it is live, and nothing in it takes a click that would ask the server: a message's actions and a permission
+  // request's answer are off by the chat's own state (useOffWhy), here and in the subagent pane.
+  const frozen = remote.kind === "bar";
   if (remote.kind !== "none" && remote.kind !== "bar") return (
     <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
       <div className={`remote-off ${remote.kind}`} role="status">
@@ -228,19 +243,13 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
         {remote.kind === "unreachable" && remote.state && <p className="remote-off-state">{remote.state}</p>}
         {remote.kind === "unreachable" && <button type="button" className="btn sm remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
         {remote.kind === "failed" && <button type="button" className="btn sm remote-retry" onClick={() => void loadItems(chatId)}>{TRY_AGAIN}</button>}
-        {remote.kind === "gone" && <RemoveHere chatId={chatId} />}
       </div>
     </div>
   );
   return (
     <div className="thread" data-chat={chatId} ref={ref} onScroll={onScroll}>
       <ForkedFrom chat={c} />
-      {loaded && !items.length && !wait.sent && (starting !== undefined ? (
-        <>
-          <div className="msg user starting"><Markdown text={starting} user board={c.board} agent={c.agent} /></div>
-          <div className="typing starting-line"><Dots /> {sendingLine(serverIs)}</div>
-        </>
-      ) : <EmptyThread c={c} />)}
+      {loaded && !items.length && !wait.sent && <EmptyThread c={c} gone={gone} />}
       {/* keyed by the branch: a message's own state does not carry over to another branch's */}
       {wait.kept ? wait.kept.map((it, i) => (it ? <ItemView key={`kept:${i}`} item={it} chat={c} branch={branch} readOnly /> : null)) : items.map((it, i) => (
         <Fragment key={`${branch}:${i}`}>
@@ -250,47 +259,35 @@ export function Thread({ chatId, readOnly, empty }: { chatId: string; readOnly?:
       ))}
       {mark === items.length && markEl}
       {wait.sent && (
-        <div className="msg user sending">
-          {wait.sent.references.length > 0 && <SentQuotes chatId={chatId} refs={wait.sent.references} />}
-          {(wait.sent.text || !wait.sent.references.length) && <Markdown text={wait.sent.text} user board={c.board} agent={c.agent} />}
-        </div>
+        <div className="msg user sending"><UserSaid chat={c} said={wait.sent} /></div>
       )}
-      {busy && !wait.quiet && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardName)}</div>}
-      {!!waiting && <div className="typing waiting">{waiting}</div>}
+      {busy && !frozen && !wait.quiet && c.status !== "approval" && c.status !== "writing" && <div className="typing"><span className="dots"><i /><i /><i /></span> {statusText(c, boardNames(chatId))}</div>}
+      {!!waiting && !frozen && <div className="typing waiting">{waiting}</div>}
       {wait.lines.map((l) => <div key={l.id} className="wait-line" data-wait={l.id}><Dots /> {l.text}</div>)}
       {remote.kind === "bar" && (
         <div className={`remote-bar ${remote.gone ? "gone" : "off"}`} role="status">
           <span className="remote-bar-text">{remote.text}</span>
-          {remote.gone ? <RemoveHere chatId={chatId} /> : <button type="button" className="link remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
+          {remote.state && <span className="remote-bar-state">{remote.state}</span>}
+          {!remote.gone && <button type="button" className="link remote-servers" onClick={() => openServers()}>{SERVERS}</button>}
         </div>
       )}
     </div>
   );
 }
 
-/** "Remove from this sidebar": drops this server's record of a chat its own server no longer has. */
-function RemoveHere({ chatId }: { chatId: string }) {
-  const [err, setErr] = useState("");
-  return (
-    <>
-      <button type="button" className="btn sm remote-remove" onClick={() => api.deleteChat(chatId, { local: true }).then(() => setErr(""), (e) => setErr(e.message))}>{REMOVE}</button>
-      {err && <span className="dir-err">{err}</span>}
-    </>
-  );
-}
-
-function EmptyThread({ c }: { c: ChatView }) {
+/** gone: the chat is no longer on its server. */
+function EmptyThread({ c, gone }: { c: ChatView; gone: boolean }) {
   const board = useStore((s) => (c.board ? s.boards[c.board] : undefined));
   const runName = useStore((s) => (c.run ? s.runs[c.run]?.name : undefined));
   const runStatus = useStore((s) => (c.run ? s.runs[c.run]?.status : undefined));
   const onRun = useMemo(() => runChat(runStatus, runName), [runStatus, runName]); // what a chat on a run says, by the run's state
   const usable = useStore((s) => usableAgents(s, serverOf(c)));
   const where = useWhere(c);
-  const off = sendOff(where, c); // its server is not connected: no agent is shown, and nothing is to be picked
-  const reason = emptyReason(where, usable, c);
+  const off = sendOff(where); // its server is not connected: no agent is shown, and nothing is to be picked
+  const reason = emptyReason(where, usable, c, gone);
   const agent = off ? "" : c.agent;
   const hint = off ? "" : configHint(usable, c.agent);
-  // (a chat with no agent, or whose server is not connected, takes no message: it says why, and offers none to send)
+  // (a chat with no agent, or whose server is not connected or no longer has it, takes no message: it says why, and offers none to send)
   const suggest = reason ? [] : c.board
     ? ["Sketch a 3-tier web architecture here", "Summarize what's on this board", "Tidy up the selected shapes into a row"]
     : c.run
@@ -328,21 +325,17 @@ export function ItemView({ item, chat, branch, sub, index, readOnly }: { item: I
   const live = sub ? sub.status === "running" && !sub.waiting : true; // a waiting subagent's turn has ended
   const tag = sub ? undefined : index;
   switch (item.kind) {
-    case "user": {
-      const refs = item.references ?? [];
-      return (
-        <div className="msg user" data-item={tag} data-quotable={tag === undefined ? undefined : String(quotable(item))}>
-          {refs.length > 0 && <SentQuotes chatId={chat.id} refs={refs} />}
-          {(item.text || !refs.length) && <Markdown text={item.text ?? ""} user board={chat.board} agent={chat.agent} />}
-          {tag !== undefined && <MessageExtras chat={chat} index={tag} item={item} />}
-        </div>
-      );
-    }
+    case "user": return (
+      <div className="msg user" data-item={tag} data-quotable={tag === undefined ? undefined : String(quotable(item))}>
+        <UserSaid chat={chat} said={item} />
+        {tag !== undefined && <MessageExtras chat={chat} index={tag} item={item} />}
+      </div>
+    );
     case "text": {
       const streaming = !item.done && (sub ? live : chat.status === "writing");
       return (
         <div className={`msg assistant${streaming ? " streaming" : ""}`} data-item={tag} data-quotable={tag === undefined ? undefined : String(quotable(item))}>
-          <Markdown text={item.text ?? ""} board={chat.board} agent={chat.agent} streaming={streaming} />
+          <Markdown text={item.text ?? ""} board={chat.board} agent={chat.agent} of={chat.id} streaming={streaming} />
           {streaming && !item.text?.trim() && <span className="caret-blink" />}
           {tag !== undefined && <MessageExtras chat={chat} index={tag} item={item} />}
         </div>
@@ -357,11 +350,30 @@ export function ItemView({ item, chat, branch, sub, index, readOnly }: { item: I
   return null;
 }
 
+/** What a user message says, top to bottom: its quotes, its images, its words. A message of quotes or of images alone
+ *  draws no words (showsText). The images are fetched from the chat's own address, whichever server the chat is on;
+ *  one that could not be fetched while that server was not connected is fetched when it is back. */
+function UserSaid({ chat, said }: { chat: ChatView; said: Said }) {
+  const refs = said.references ?? [], images = said.images ?? [], words = showsText(said);
+  const connected = useWhere(chat).connected;
+  return (
+    <>
+      {refs.length > 0 && <SentQuotes chatId={chat.id} refs={refs} />}
+      {images.length > 0 && <MessageImages chat={chat.id} images={images} alone={!words} again={connected} />}
+      {words && <Markdown text={said.text ?? ""} user board={chat.board} agent={chat.agent} of={chat.id} />}
+    </>
+  );
+}
+
 /** A permission request. closed: it is in the copied part of the thread, where an undecided one
  *  cannot be answered (the server closes those in a copy; this is the same rule here). In a
- *  read-only thread it shows what was asked and how it was decided, with no buttons. */
+ *  read-only thread it shows what was asked and how it was decided, with no buttons. In a chat that
+ *  is shown as it was (its server is not connected, or no longer has it: useOffWhy) an undecided
+ *  one has no buttons either, and says why in their place: it may have been answered elsewhere
+ *  meanwhile, and is shown as it is when the server is back. */
 function PermCard({ item, chat, branch, closed }: { item: Item; chat: ChatView; branch: string; closed?: boolean }) {
   const readOnly = useContext(ReadOnlyContext);
+  const off = useOffWhy(chat.id);
   const [err, setErr] = useState("");
   const asker = useStore((s) => (item.subagent ? subsOf(s, chat.id)?.[item.subagent] : undefined));
   const input: any = item.input ?? {};
@@ -377,7 +389,9 @@ function PermCard({ item, chat, branch, closed }: { item: Item; chat: ChatView; 
         <div className="perm-done">{item.decided === "allow" ? "Approved" : "Denied"}</div>
       ) : closed ? (
         <div className="perm-done">Closed: it was asked in the thread this was copied from</div>
-      ) : readOnly || chat.archived || isLegacy(chat) || chat.role ? null : (
+      ) : readOnly || chat.archived || isLegacy(chat) || chat.role ? null : off ? (
+        <div className="perm-done">{off}</div>
+      ) : (
         <div className="perm-actions">
           <button className="btn danger sm" onClick={() => decide(true)}>Allow</button>
           <button className="btn sm" onClick={() => decide(false)}>Don't</button>

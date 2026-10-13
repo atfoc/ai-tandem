@@ -1,23 +1,27 @@
 // The canvas: one Excalidraw for the selected board, plus the layers that show
 // where an agent just worked, who is working on the board, and the point being
 // picked for a chat (⌘⇧L). A board another window holds shows the take-over
-// panel in its place; a board on another server that is away, with no scene kept
-// here, the view that says so (BoardOff).
+// panel in its place; a board of a section whose server is not connected, with no
+// scene kept here, or that is no longer on that server, the view that says so
+// (BoardOff). A board that is open when its server drops stays open and is drawn
+// on: its edit waits in this window, under the banner (SaveBanner).
 import React, { useEffect, useRef, useState } from "react";
 import { Excalidraw, FONT_FAMILY } from "@excalidraw/excalidraw";
 import { useStore, setState, getState, flash, setRole, setDropped } from "./store.ts";
-import { chatBusy } from "./logic/status.ts";
+import { boardWorker } from "./logic/status.ts";
+import { reachable } from "./logic/sections.ts";
 import { showsPanel } from "./logic/roles.ts";
 import { loadScene, sceneChanged, setLive, flush, liveBoard, pointRefOn, takeBoard, scenes, droppedInOutage, type Scene } from "./board.ts";
 import { TakeoverPanel } from "./TakeoverPanel.tsx";
 import { BoardOff, SaveBanner } from "./BoardOff.tsx";
 import { boardView, droppedText, serverNameOf } from "./logic/boardsave.ts";
 import { ApiError } from "./api.ts";
+import { inSection, serverOfKey } from "./logic/keys.ts";
+import { serverConnected } from "./logic/serverlists.ts";
 import { insertRef, pickPoint } from "./Composer.tsx";
 import { pointLabel } from "./logic/refs.ts";
 import { AgentGlyph } from "./icons.tsx";
 import { agentClass, agentShortName } from "./agents.ts";
-import type { ChatView } from "./types.ts";
 
 // ---- drawing style (section 6)
 
@@ -53,8 +57,9 @@ export function Canvas({ board }: { board: string }) {
   const [loaded, setLoaded] = useState<{ board: string; gen: number; scene: Scene } | null>(null);
   const [err, setErr] = useState("");
   const [away, setAway] = useState(false); // the read of the scene was answered 503: the board's server is not connected
-  const connected = useStore((s) => { const on = s.boards[board]?.server; return !on || s.servers.find((v) => v.id === on)?.state === "connected"; });
-  const server = useStore((s) => serverNameOf(s.boards[board], s.servers));
+  const connected = useStore((s) => serverConnected(s, serverOfKey(board))); // the local server holds the tree of the board's server
+  const gone = useStore((s) => !!s.gone[board]); // the board is no longer on its server
+  const server = useStore((s) => serverNameOf(board, s.servers));
   const known = !!b, archived = !!b?.archived;
   // An archived board is nobody's to write: it shows read-only whatever window held it last.
   const panel = known && !archived && showsPanel(role);
@@ -79,12 +84,12 @@ export function Canvas({ board }: { board: string }) {
   }, [board, known, archived, role]);
 
   if (!b) return <div className="canvas-empty" />;
-  // (a board of another server: gone there; or that server is away and this window keeps no scene of it. `server_back`
-  // reads the scene again: conn.ts)
-  const view = boardView(b, connected && !away, scenes.has(board));
-  if (view === "gone") return <BoardOff board={b} view="gone" />;
+  // (a board of a section: gone there; or that server is away and this window keeps no scene of it. When the section's
+  // tree arrives the scene is read again: board.ts sectionBack)
+  const view = boardView({ remote: inSection(board), connected: connected && !away, gone }, scenes.has(board));
+  if (view === "gone") return <BoardOff board={board} view="gone" />;
   if (panel) return <TakeoverPanel board={board} role={role} dropped={dropped} />;
-  if (view !== "canvas") return <BoardOff board={b} view={view} />;
+  if (view !== "canvas") return <BoardOff board={board} view={view} />;
   if (err) return <div className="canvas-empty"><p>Couldn't open this board: {err}</p></div>;
   if (!loaded || loaded.board !== board || loaded.gen !== gen) return <div className="canvas-empty" />;
   const { scene } = loaded;
@@ -153,12 +158,11 @@ function FlashLayer({ board }: { board: string }) {
   );
 }
 
-/** "<Agent> is working on <board>" while one of the board's chats is busy, or another chat just edited it. */
+/** "<Agent> is working on <board>" while one of the board's chats is busy, or another chat just edited it (logic/status.ts boardWorker). */
 function Presence({ board }: { board: string }) {
   const name = useStore((s) => s.boards[board]?.name ?? "");
-  const own = useStore((s) => Object.values(s.chats).find((c: ChatView) => c.board === board && !c.archived && chatBusy(c))?.agent);
-  const other = useStore((s) => s.busyOn[board]?.agent);
-  const agent = own ?? other;
+  // (of a section's board whose server is not connected nothing is known: the pill is not left standing from before)
+  const agent = useStore((s) => boardWorker(s.chats, board, s.busyOn[board]?.agent, reachable(s, board)));
   if (!agent) return null;
   return (
     <div className={`presence agent-${agentClass(agent)}`}>

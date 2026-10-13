@@ -96,28 +96,27 @@ func svcTierOf(t *model.RunTiers, tier model.Tier) *model.ModelChoice {
 	return &t.Standard
 }
 
-// svcBaseTiers is svcDefaultTiers for a run of kind a in group on the side on, with that side's
-// catalogue and the group's new-chat choice for that server as they are now (defaults.Resolve with
-// the side's key): the base of a draft on another server is that server's, never an empty one.
-func (s *Service) svcBaseTiers(on svcSide, group string, a model.AgentKind) model.RunTiers {
-	cat := s.svcCatalogOn(on, a)
+// svcBaseTiers is svcDefaultTiers for a run of kind a in group, with the catalogue and the group's
+// new-chat choice as they are now (defaults.Resolve).
+func (s *Service) svcBaseTiers(group string, a model.AgentKind) model.RunTiers {
+	cat := s.svcCatalog(a)
 	var mc model.ModelChoice
 	s.Store.Read(func(st *model.State) {
-		_, mc = defaults.Resolve(st.Defaults, group, on.key(), a, on.defaultCwd(s), cat)
+		_, mc = defaults.Resolve(st.Defaults, group, a, s.DefaultCwd, cat)
 	})
 	return svcDefaultTiers(a, cat, mc)
 }
 
-// svcNewTiers is the tier map a run of kind a in group begins with on the side on: that of the run
-// started last there (rd) when it was of the same kind and its models still exist in the side's
-// catalogue, else the defaults.
-func (s *Service) svcNewTiers(on svcSide, group string, a model.AgentKind, rd *model.RunDefaults) model.RunTiers {
+// svcNewTiers is the tier map a run of kind a in group begins with: that of the run started last
+// there (rd) when it was of the same kind and its models still exist in the catalogue, else the
+// defaults.
+func (s *Service) svcNewTiers(group string, a model.AgentKind, rd *model.RunDefaults) model.RunTiers {
 	if rd != nil && rd.Agent == a && rd.Tiers != nil {
-		if t, err := svcCheckTiers(s.svcCatalogOn(on, a), *rd.Tiers); err == nil {
+		if t, err := svcCheckTiers(s.svcCatalog(a), *rd.Tiers); err == nil {
 			return t
 		}
 	}
-	return s.svcBaseTiers(on, group, a)
+	return s.svcBaseTiers(group, a)
 }
 
 // apply puts the tiers that are set into t, checked against cat. A new model keeps the tier's

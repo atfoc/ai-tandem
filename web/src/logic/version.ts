@@ -4,6 +4,7 @@
 // from the newest install, so they tell which side is stale.
 import type { Status } from "../types.ts";
 import { isWorking, type StatesOf } from "./status.ts";
+import { inSection } from "./keys.ts";
 
 export type Banner = "none" | "restart" | "reload";
 
@@ -23,11 +24,11 @@ export function bannerFor(page: string, server: string, disk: string): Banner {
 
 /** How many chats have an agent running on some branch, or subagents running while their agent
  *  waits for them: a restart ends them. A chat that only holds results not sent yet is not counted.
- *  `statesOf` gives a chat's records, to count the branches that are not the current one. A chat on
- *  another server is not counted: its turns are not this server's to end. */
-export const runningChats = (chats: Iterable<{ id?: string; server?: string; status: Status; subsRunning?: number; subsOwed?: number; working?: number }>, statesOf?: StatesOf): number => {
+ *  `statesOf` gives a chat's records, to count the branches that are not the current one. A chat of
+ *  a section (its key says so) is not counted: its turns are not this server's to end. */
+export const runningChats = (chats: Iterable<{ id?: string; status: Status; subsRunning?: number; subsOwed?: number; working?: number }>, statesOf?: StatesOf): number => {
   let n = 0;
-  for (const c of chats) if (!c.server && isWorking(c, c.id !== undefined ? statesOf?.(c.id) : undefined)) n++;
+  for (const c of chats) if (!inSection(c.id) && isWorking(c, c.id !== undefined ? statesOf?.(c.id) : undefined)) n++;
   return n;
 };
 

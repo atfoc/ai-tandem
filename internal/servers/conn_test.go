@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,12 @@ const (
 	waitLimit = 10 * time.Second       // what a test waits for at most
 	quiet     = 150 * time.Millisecond // long enough for several back-offs of fastTiming
 )
+
+// minLevel is MinFeatureLevel as a hello written by hand has it.
+var minLevel = strconv.Itoa(MinFeatureLevel)
+
+// clientLevel is ClientLevel as the level header of a request has it.
+var clientLevel = strconv.Itoa(ClientLevel)
 
 // fastTiming has limits no healthy loopback request reaches and a back-off of 20 and 40 ms.
 func fastTiming() Timing {
@@ -489,7 +496,7 @@ func TestConnConnecting(t *testing.T) {
 		case <-r.Context().Done():
 		}
 		answer(http.StatusOK, "application/json",
-			`{"app":"ai-whiteboard","version":"held","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":1}`)(w, r)
+			`{"app":"ai-whiteboard","version":"held","instanceId":"`+standin.DefaultInstanceID+`","featureLevel":`+minLevel+`}`)(w, r)
 	})
 	r := startRig(t, nil)
 	id := r.add(form("Studio", s))
@@ -563,7 +570,7 @@ func TestConnNoPinSendsNothing(t *testing.T) {
 	}
 	r.waitState(id, StateConnected)
 	for _, q := range s.Requests() {
-		if q.Secret != standin.DefaultSecret || q.Client != testLocalID {
+		if q.Secret != standin.DefaultSecret || q.Client != testLocalID || q.Level != clientLevel {
 			t.Errorf("request %+v", q)
 		}
 	}
@@ -743,9 +750,6 @@ func TestConnOneIDTwoAddresses(t *testing.T) {
 	if v := r.view(first); v.State != StateConnected || s.Streams() != 1 {
 		t.Errorf("the first entry is %q with %d streams", v.State, s.Streams())
 	}
-	if v, ok := r.m.ByInstance(standin.DefaultInstanceID); !ok || v.ID != first {
-		t.Errorf("ByInstance: %+v, %v", v, ok)
-	}
 }
 
 // TestConnTwoForcedEntriesOneServer: two entries saved anyway for one server, connecting at the
@@ -800,8 +804,9 @@ func TestConnOtherIDAtReconnect(t *testing.T) {
 	}
 }
 
-// TestConnTooOld: a level below the minimum, or none, is not connected to and not retried; a
-// test after the update on that machine connects.
+// TestConnTooOld: a level below the minimum, or none, is not connected to, and not asked again
+// before Timing.TooOld is over (five minutes here); a call does not make it ask. A test after
+// the update on that machine connects.
 func TestConnTooOld(t *testing.T) {
 	t.Parallel()
 	for name, level := range map[string]*int{"lower": standin.Level(MinFeatureLevel - 1), "missing": nil} {
@@ -827,6 +832,12 @@ func TestConnTooOld(t *testing.T) {
 			if _, ok := r.m.Lists(id); ok {
 				t.Error("Lists of a server that was never connected")
 			}
+			// What a refused call does for an entry in its back-off does nothing here.
+			r.m.Retry(id)
+			staysQuiet(t, s)
+			if got := r.callsOf(id); !slices.Equal(got, []string{"state connecting > too_old"}) {
+				t.Errorf("hooks %q; want too_old alone", got)
+			}
 
 			// A test of the saved entry tries again; the level decides again.
 			res, err := r.m.TestSaved(context.Background(), id, Patch{})
@@ -844,6 +855,113 @@ func TestConnTooOld(t *testing.T) {
 			r.waitState(id, StateConnected)
 		})
 	}
+}
+
+// TestConnTooOldAsksAgain: an entry whose server is too old asks hello again by itself, every
+// Timing.TooOld, and connects once that server reports the level, with nobody doing anything
+// here. Until then it stays too old through every attempt: no hook and no page is told another
+// state, nothing but hello is sent, and a call is refused without a request.
+func TestConnTooOldAsksAgain(t *testing.T) {
+	t.Parallel()
+	for name, level := range map[string]*int{"lower": standin.Level(MinFeatureLevel - 1), "missing": nil} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := standin.Start(t, standin.Options{Version: "0.9"})
+			s.SetFeatureLevel(level)
+			r := startRig(t, func(o *Options) { o.Timing.TooOld = 30 * time.Millisecond })
+			id := r.add(form("Studio", s))
+			r.waitState(id, StateTooOld)
+			waitFor(t, "the entry asks again, and again", func() bool { return len(s.Requests()) >= 4 })
+			if _, err := r.m.Do(context.Background(), id, http.MethodPost, "/api/chats", []byte(`{}`), 0); !errors.Is(err, ErrNotConnected) {
+				t.Errorf("Do: %v", err)
+			}
+			if _, ok := r.m.Lists(id); ok {
+				t.Error("Lists of a server that was never connected")
+			}
+			if v := r.view(id); v.State != StateTooOld || !v.State.stops() || v.Version != "0.9" || len(v.Agents) != 0 {
+				t.Errorf("view %+v; want too old, with the old server's version", v)
+			}
+			for _, p := range paths(s) {
+				if p != HelloPath {
+					t.Fatalf("requests %q; want hello alone", paths(s))
+				}
+			}
+			if got := r.callsOf(id); !slices.Equal(got, []string{"state connecting > too_old"}) {
+				t.Errorf("hooks %q; want too_old once", got)
+			}
+			r.wantStateEvents(id, "too_old")
+
+			// The server is updated on its machine. Nothing is done here.
+			s.SetFeatureLevel(standin.Level(MinFeatureLevel))
+			if v := r.waitState(id, StateConnected); len(v.Agents) == 0 {
+				t.Errorf("view %+v; want the server's agents", v)
+			}
+			if got := r.callsOf(id); !slices.Equal(got, []string{"state connecting > too_old", "snapshot", "state too_old > connected"}) {
+				t.Errorf("hooks %q; want connected straight from too_old", got)
+			}
+			r.wantStateEvents(id, "too_old", "connected")
+			if rep, err := r.m.Do(context.Background(), id, http.MethodGet, StatePath, nil, 0); err != nil || rep.Status != http.StatusOK {
+				t.Errorf("Do after the update: %d, %v", rep.Status, err)
+			}
+			if got := r.m.Level(id); got != MinFeatureLevel {
+				t.Errorf("the level %d; want %d", got, MinFeatureLevel)
+			}
+		})
+	}
+}
+
+// TestConnTooOldTriesAtOnce: an edit of the entry and a start of the app do not wait for
+// Timing.TooOld, which is five minutes here. (A test of the entry: TestConnTooOld.)
+func TestConnTooOldTriesAtOnce(t *testing.T) {
+	t.Parallel()
+	t.Run("an edit", func(t *testing.T) {
+		t.Parallel()
+		s := standin.Start(t, standin.Options{FeatureLevel: standin.Level(MinFeatureLevel - 1)})
+		r := startRig(t, nil)
+		id := r.add(form("Studio", s))
+		r.waitState(id, StateTooOld)
+		// An edit of the name alone is no retry.
+		if _, saved, _, err := r.m.Edit(context.Background(), id, Patch{Name: ptr("Atelier")}, true); err != nil || !saved {
+			t.Fatal(saved, err)
+		}
+		staysQuiet(t, s)
+		s.SetFeatureLevel(standin.Level(MinFeatureLevel))
+		staysQuiet(t, s)
+		if got := r.view(id).State; got != StateTooOld {
+			t.Fatalf("state %q before anything asked again", got)
+		}
+		// The form gave the secret again: the entry tries now.
+		if _, saved, _, err := r.m.Edit(context.Background(), id, Patch{Secret: ptr(standin.DefaultSecret)}, true); err != nil || !saved {
+			t.Fatal(saved, err)
+		}
+		r.waitState(id, StateConnected)
+	})
+	t.Run("a start of the app", func(t *testing.T) {
+		t.Parallel()
+		s := standin.Start(t, standin.Options{FeatureLevel: standin.Level(MinFeatureLevel - 1)})
+		root := t.TempDir()
+		r := openRig(t, root, nil)
+		r.m.Start()
+		id := r.add(form("Studio", s))
+		r.waitState(id, StateTooOld)
+		r.m.Close()
+
+		// Still too old at the next start: asked once, at once.
+		requests := len(s.Requests())
+		r = openRig(t, root, nil)
+		r.m.Start()
+		r.waitState(id, StateTooOld)
+		staysQuiet(t, s)
+		if got := paths(s)[requests:]; !slices.Equal(got, []string{HelloPath}) {
+			t.Errorf("requests of the second start %q; want one hello", got)
+		}
+		r.m.Close()
+
+		s.SetFeatureLevel(standin.Level(MinFeatureLevel))
+		r = openRig(t, root, nil)
+		r.m.Start()
+		r.waitState(id, StateConnected)
+	})
 }
 
 // TestConnReconnects: the server stops and comes back: unreachable, then connected again, with
@@ -1029,7 +1147,7 @@ func TestDoHeadersAndLimit(t *testing.T) {
 	if got.Load() != `application/json x=1 {"a":1}` {
 		t.Errorf("the server got %q", got.Load())
 	}
-	if q := s.Requests()[requests]; q != (standin.Request{Method: http.MethodPost, Path: "/api/echo", Secret: standin.DefaultSecret, Client: testLocalID}) {
+	if q := s.Requests()[requests]; q != (standin.Request{Method: http.MethodPost, Path: "/api/echo", Secret: standin.DefaultSecret, Client: testLocalID, Level: clientLevel}) {
 		t.Errorf("request %+v", q)
 	}
 
@@ -1211,7 +1329,7 @@ func TestTiming(t *testing.T) {
 	const s = time.Second
 	d := (Timing{}).withDefaults()
 	if d.Dial != 3*s || d.Handshake != 3*s || d.Headers != 3*s || d.Hello != 10*s || d.FirstEvent != 10*s ||
-		d.Call != 15*s || d.TestStep != 5*s || d.Silence != 35*s || d.Jitter != 0.2 || d.Stable != 30*s ||
+		d.Call != 15*s || d.TestStep != 5*s || d.Silence != 35*s || d.Jitter != 0.2 || d.Stable != 30*s || d.TooOld != 5*time.Minute ||
 		!slices.Equal(d.Backoff, []time.Duration{1 * s, 2 * s, 5 * s, 10 * s, 30 * s}) {
 		t.Errorf("defaults %+v", d)
 	}
@@ -1236,6 +1354,58 @@ func TestTiming(t *testing.T) {
 	if got := (Timing{Backoff: []time.Duration{s}, Stable: 2 * s}).withDefaults().Stable; exact.Stable != 0 || got != 2*s {
 		t.Errorf("Stable of a Timing with Backoff: %v and %v; want 0 and 2s", exact.Stable, got)
 	}
+	// The wait of a too old server is the default's whatever else is set, and a test's when set.
+	if got := (Timing{TooOld: 3 * s}).withDefaults().TooOld; exact.TooOld != 5*time.Minute || got != 3*s {
+		t.Errorf("TooOld: %v and %v; want 5m and 3s", exact.TooOld, got)
+	}
 }
 
 func bufioReader(s string) *bufio.Reader { return bufio.NewReaderSize(bytes.NewReader([]byte(s)), 16) }
+
+// TestDoAs: a call whose body is no JSON goes out as the bytes it is, under the type given, and
+// Do sends its body as JSON, as before.
+func TestDoAs(t *testing.T) {
+	t.Parallel()
+	s := standin.Start(t, standin.Options{})
+	type call struct{ typ, body string }
+	got := make(chan call, 4)
+	s.Handle("POST /api/chats/{id}/images", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got <- call{r.Header.Get("Content-Type"), string(b)}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(b)
+	})
+	r := startRig(t, nil)
+	id := r.add(form("Studio", s))
+	r.waitState(id, StateConnected)
+
+	data := []byte("\x89PNG\r\n\x1a\n\x00\xff\xfe not text, and no JSON")
+	for _, c := range []struct {
+		typ  string
+		send func() (Reply, error)
+	}{
+		{"image/png", func() (Reply, error) {
+			return r.m.DoAs(context.Background(), id, http.MethodPost, "/api/chats/c/images", "image/png", data, 0)
+		}},
+		{"", func() (Reply, error) {
+			return r.m.DoAs(context.Background(), id, http.MethodPost, "/api/chats/c/images", "", data, 0)
+		}},
+		{"application/json", func() (Reply, error) {
+			return r.m.Do(context.Background(), id, http.MethodPost, "/api/chats/c/images", data, 0)
+		}},
+	} {
+		rep, err := c.send()
+		if err != nil || rep.Status != http.StatusOK || !bytes.Equal(rep.Body, data) || rep.ContentType != "image/png" {
+			t.Fatalf("a call sent as %q: %d %q as %q, %v", c.typ, rep.Status, rep.Body, rep.ContentType, err)
+		}
+		if g := <-got; g.typ != c.typ || g.body != string(data) {
+			t.Errorf("a call sent as %q arrived as %q with %q", c.typ, g.typ, g.body)
+		}
+	}
+	// As Do, it sends nothing to an entry that is not connected.
+	s.Stop()
+	r.waitState(id, StateUnreachable)
+	if _, err := r.m.DoAs(context.Background(), id, http.MethodPost, "/api/chats/c/images", "image/png", data, 0); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("DoAs while not connected: %v", err)
+	}
+}

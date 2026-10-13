@@ -2,6 +2,7 @@ package pi
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -443,9 +444,15 @@ func killGroup(pgid int, grace time.Duration) {
 }
 
 // Send posts one user turn. It waits for the handshake, joins the blocks' texts and writes one
-// prompt command, returning its rejection. The caller counts the turn as begun, so a Send that
-// fails ends it: with a turn end, or by the exit of the process. A prompt pi did not answer but
-// whose turn it settled was taken: Send returns nil and the turn's end is pi's own (sendFailed).
+// prompt command, returning its rejection. The attached images go in the command's `images` list
+// (pi's ImageContent: type, data as base64, mimeType), never as files. The command has no way to
+// say where they stand: pi itself builds the user message as the text and then the images. The
+// app's extension puts the images before the text in every model request (its `context` handler,
+// pibridge/extension/image-order.ts), so a process started without the extension gives its model
+// the text first. For a model whose input has no "image" pi sends a line that says an image was
+// left out in their place. The caller counts the turn as begun, so a Send that fails ends it:
+// with a turn end, or by the exit of the process. A prompt pi did not answer but whose turn it
+// settled was taken: Send returns nil and the turn's end is pi's own (sendFailed).
 func (p *proc) Send(blocks []agent.ContentBlock) error {
 	select {
 	case <-p.ready:
@@ -463,17 +470,26 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 	p.abortPending = false
 	p.abortMu.Unlock()
 	parts := make([]string, 0, len(blocks))
+	var images []map[string]any
 	for _, b := range blocks {
-		if b.Text != "" {
+		switch {
+		case b.Image != nil:
+			images = append(images, map[string]any{"type": "image", "mimeType": b.Image.Type,
+				"data": base64.StdEncoding.EncodeToString(b.Image.Data)})
+		case b.Text != "":
 			parts = append(parts, b.Text)
 		}
+	}
+	fields := map[string]any{"message": strings.Join(parts, "\n\n")}
+	if len(images) > 0 {
+		fields["images"] = images
 	}
 	p.emit(agent.Event{Kind: agent.EvThinking})
 	timeout := p.s.promptTimeout
 	if timeout <= 0 {
 		timeout = rpcTimeout
 	}
-	resp, err := p.rpc.call("prompt", map[string]any{"message": strings.Join(parts, "\n\n")}, timeout)
+	resp, err := p.rpc.call("prompt", fields, timeout)
 	if err != nil {
 		return p.sendFailed(err)
 	}

@@ -93,8 +93,8 @@ func (RealClock) Now() time.Time                         { return time.Now() }
 func (RealClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // Emitter sends an event to the clients; editorbridge.Bridge is one. SendRun sends an event of
-// the run with this id to the clients it concerns: the list events to every client that lists the
-// run, the content events to those that follow it. Neither is called with a run's lock held.
+// the run with this id to the clients it concerns: the list events to every client, the
+// content events to those that follow it. Neither is called with a run's lock held.
 type Emitter interface {
 	Broadcast(ev any)
 	SendRun(run string, ev any)
@@ -116,12 +116,6 @@ type Deps struct {
 	// HaltWait is how long an archive and a delete wait for a run's workers to let go. 0 = 30 s;
 	// the server leaves it so, tests shorten it.
 	HaltWait time.Duration
-	// Mark tells whoever routes the events the client mark of a run; "" removes it. nil = nobody.
-	// It is called with no run's lock held, and before the run's first event: when the runs are
-	// loaded, and by a start call before the run's first `run` event (entry 1's `run_detail`, which
-	// goes to followers and not by the mark, is sent before it). Nothing calls it with "": a mark
-	// is dropped by whoever keeps it, after the run's `run_removed`.
-	Mark func(run, client string)
 }
 
 // nowMs is the clock's time in unix milliseconds, the unit of every recorded time.

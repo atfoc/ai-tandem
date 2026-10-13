@@ -4,23 +4,18 @@
 // this computer are the ones of logic/agentlist.ts (no DOM, no React).
 import { agentName } from "../agents.ts";
 import { LOCAL_SERVER, type AgentKind, type ChatView } from "../types.ts";
-import { CHOOSE_AGENT, NO_AGENT, agentChoice, agentOpen, noAgentPlaceholder, type AgentChoice } from "./agentlist.ts";
+import { CHOOSE_AGENT, NO_AGENT, agentChoice, noAgentPlaceholder, type AgentChoice } from "./agentlist.ts";
 import { goneText } from "./remoteview.ts";
 import { sendTitle } from "./status.ts";
 
-/** A chat's server as the composer reads it: the entry id, its name, and whether it is connected. */
+/** A thing's server as its views read it: the entry id, its name, and whether it takes a call now (the local server
+ *  holds its tree: logic/serverlists.ts serverConnected). This computer always does. */
 export type Where = { server: string; name: string; connected: boolean };
 
 const remote = (w: Where) => w.server !== LOCAL_SERVER;
 
-/** Why a chat on a server that is not connected offers no agent and takes no first message. */
-export const notConnectedLine = (name: string): string => `${name} is not connected: its agents are not known.`;
-
-/** The line of a chat whose first message got no answer. */
-export const unconfirmedLine = (name: string): string =>
-  `${name} did not answer: it is not known whether the first message arrived. Send again: it is sent only once.`;
-
-export const AGENT_UNCONFIRMED = "The first message may have arrived: the agent cannot be changed until that is known";
+/** Why a chat on a server that is not connected takes no message and no change: what its composer says. */
+export const notConnectedLine = (name: string): string => `${name} is not connected: nothing can be sent or changed until it is back.`;
 
 /** Why no agent can be chosen on a server that has none. */
 export const noAgentOn = (w: Where): string =>
@@ -28,8 +23,8 @@ export const noAgentOn = (w: Where): string =>
 
 const notInstalledOn = (w: Where, a: AgentKind) => `${agentName(a)} is not installed on ${w.name}: install it there, or choose another agent.`;
 
-/** agentChoice by the chat's server: a server that is not connected offers none and marks none,
- *  since its agents are not known; another server's reasons name it. */
+/** agentChoice by the chat's server: a server that is not connected offers none and marks none;
+ *  another server's reasons name it. */
 export function agentChoiceOn(w: Where, usable: AgentKind[], current: AgentKind | ""): AgentChoice {
   if (!w.connected) return { options: [], current, missing: false, reason: notConnectedLine(w.name) };
   const ch = agentChoice(usable, current);
@@ -41,72 +36,54 @@ export function agentChoiceOn(w: Where, usable: AgentKind[], current: AgentKind 
 export const noAgentReasonOn = (w: Where, usable: AgentKind[]): string =>
   !w.connected ? notConnectedLine(w.name) : usable.length ? CHOOSE_AGENT : noAgentOn(w);
 
-/** The line under the toolbar of a chat whose server and agent are shown, and whether it is about
- *  something that stops a Send ("missing") or a first message to send again ("unconfirmed"); text
- *  "" for none. An unconfirmed start comes first: its server and agent are fixed. */
-export function toolbarLine(w: Where, usable: AgentKind[], c: Pick<ChatView, "agent" | "start">): { text: string; tone: "" | "missing" | "unconfirmed" } {
-  if (c.start === "unconfirmed") return { text: unconfirmedLine(w.name), tone: "unconfirmed" };
+/** The line under the toolbar: why the chat takes no message and no change (its server no longer has it: gone; its
+ *  server is not connected), else what is said of its agent while that can be chosen; and whether it is about
+ *  something that stops a Send ("missing"); text "" for none. */
+export function toolbarLine(w: Where, usable: AgentKind[], c: Pick<ChatView, "agent">, gone = false): { text: string; tone: "" | "missing" } {
+  if (gone) return { text: goneText(w.name), tone: "missing" };
   if (!w.connected) return { text: notConnectedLine(w.name), tone: "missing" };
   const text = c.agent ? agentChoiceOn(w, usable, c.agent).reason : noAgentReasonOn(w, usable);
   return { text, tone: text && (c.agent || !usable.length) ? "missing" : "" };
 }
 
-type Opens = Pick<ChatView, "locked" | "forkedFrom" | "branch" | "branches" | "role" | "start">;
+type Opens = Pick<ChatView, "locked" | "forkedFrom" | "branch" | "branches" | "role">;
 
-/** Whether the chat's Send is off for its server: an unstarted chat on a server that is not
- *  connected has no agent to show. Not a started one (the server answers its send, 503, and tries
- *  the connection again) and not one whose first message is to be sent again. */
-export const sendOff = (w: Where, c: Opens): boolean => !w.connected && agentOpen(c) && c.start !== "unconfirmed";
+/** Whether the chat's Send, its Stop and its choices are off for its server: it is not connected. The view stays as
+ *  the page had it when the connection ended, read-only. */
+export const sendOff = (w: Where): boolean => !w.connected;
 
-/** Whether the chat's Send is off because its server no longer has the chat. */
-export const sendGone = (c: Pick<ChatView, "server" | "gone">): boolean => !!c.server && !!c.gone;
+/** Whether the composer's box is read-only: the chat's server is not connected, or no longer has the chat (gone). The
+ *  box keeps what it holds and takes no more: what was typed and not yet taken by the server stays in it, and is
+ *  saved when the server is connected again, if the chat is still open then. Nothing is typed into a chat that
+ *  nothing can be sent to. */
+export const boxOff = (w: Where, gone = false): boolean => gone || sendOff(w);
 
-/** The title of a chat's Send, by its server. */
-export const sendTitleOn = (w: Where, usable: AgentKind[], c: Opens & Pick<ChatView, "status" | "fresh"> & Partial<Pick<ChatView, "agent" | "server" | "gone">>, blocked: boolean): string =>
-  sendGone(c) ? goneText(w.name) : sendOff(w, c) ? notConnectedLine(w.name) : sendTitle(c, blocked, noAgentReasonOn(w, usable));
+/** Why a chat takes no call now: its server no longer has it (gone), or is not connected; "" for a chat that takes
+ *  one. Every control of the chat's view that would ask its server, or change what the view shows of it, is off then
+ *  and says this: the actions of a message, the tree's, the way to another branch, Back, a permission request's answer. */
+export const offWhy = (w: Where, gone = false): string => (gone ? goneText(w.name) : sendOff(w) ? notConnectedLine(w.name) : "");
 
-/** What an empty thread says in place of its usual text, by the chat's server: why an unstarted
- *  chat on a server that is not connected shows no agent, or why a chat with no agent takes no
- *  message; "" for a chat that takes one. Where it says something, the thread offers no
- *  suggestions: a click would send a message that is refused. */
-export const emptyReason = (w: Where, usable: AgentKind[], c: Opens & Pick<ChatView, "agent">): string =>
-  sendOff(w, c) ? notConnectedLine(w.name) : !c.agent ? noAgentReasonOn(w, usable) : "";
+/** The title of a chat's Send, by its server. gone: its server no longer has the chat. */
+export const sendTitleOn = (w: Where, usable: AgentKind[], c: Opens & Pick<ChatView, "status" | "fresh"> & Partial<Pick<ChatView, "agent">>, blocked: boolean, gone = false): string =>
+  gone ? goneText(w.name) : sendOff(w) ? notConnectedLine(w.name) : sendTitle(c, blocked, noAgentReasonOn(w, usable));
 
-/** The line of a first message that is on its way to the chat's server. */
+/** What an empty thread says in place of its usual text, by the chat's server: why a chat that its
+ *  server no longer has (gone), or one on a server that is not connected, takes no message, or why
+ *  a chat with no agent takes none; "" for a chat that takes one. Where it says something, the
+ *  thread offers no suggestions: a click would send a message that is refused. */
+export const emptyReason = (w: Where, usable: AgentKind[], c: Opens & Pick<ChatView, "agent">, gone = false): string =>
+  offWhy(w, gone) || (!c.agent ? noAgentReasonOn(w, usable) : "");
+
+/** The line of a message that starts a fork or a branch, while it is on its way to the chat's server (logic/waits.ts). */
 export const sendingLine = (name: string): string => `Sending to ${name}…`;
 
-/** Whether a Send is the first message of a chat on another server: one call that can take long,
- *  during which the thread shows the text (the store's `starting`) and the draft is held. */
-export const startsThere = (c: Opens & Pick<ChatView, "server">): boolean => !!c.server && c.server !== LOCAL_SERVER && agentOpen(c);
+/** What the box of a chat that takes no message says; "" for one that does. gone: its server no longer has the chat. */
+export const offPlaceholder = (w: Where, usable: AgentKind[], c: Opens & Pick<ChatView, "agent">, gone = false): string =>
+  gone ? goneText(w.name) : sendOff(w) ? `${w.name} is not connected` : !c.agent ? noAgentPlaceholder(usable) : "";
 
-/** The code of a first message refused because the chat had started there with an earlier text:
- *  the chat is a started one by then, and the text was not sent. */
-export const FIRST_TEXT_KEPT = "first_text_kept";
-
-/** Whether a refused Send's sentence is shown under the composer. Not that of a first message
- *  with no answer: the line under the toolbar (unconfirmedLine) says the same. */
-export const errShown = (code?: string): boolean => code !== "start_unconfirmed";
-
-/** Whether a refusal's sentence stays under the composer when the chat's choices or its start
- *  change: the one of `first_text_kept` is about a chat that starts with that very answer. Any
- *  other is about the choices and the state it was refused in, and goes with them. */
-export const errStays = (code?: string): boolean => code === FIRST_TEXT_KEPT;
-
-/** What the box of a chat that takes no message says; "" for one that does. */
-export const offPlaceholder = (w: Where, usable: AgentKind[], c: Opens & Pick<ChatView, "agent">): string =>
-  sendOff(w, c) ? `${w.name} is not connected` : !c.agent ? noAgentPlaceholder(usable) : "";
-
-/** Whether the toolbar shows the chat's server: while it can be chosen, and for a chat on another
- *  server also after that. */
-export const showsServer = (c: Parameters<typeof agentOpen>[0] & { server?: string }): boolean =>
-  agentOpen(c) || (!!c.server && c.server !== LOCAL_SERVER);
-
-/** A server picked for a chat: configure sends the server alone (the server sets agent, folder,
- *  model and effort from its own part), and the chat it answers with goes to take (the store). */
-export async function pickServer(configure: (p: { server: string }) => Promise<{ chat?: ChatView }>, server: string, take: (c: ChatView) => void): Promise<void> {
-  const r = await configure({ server });
-  if (r.chat) take(r.chat);
-}
+/** Whether the toolbar names the chat's server: only for a chat of a section. The server is where
+ *  the chat was made, and is no choice of the toolbar's. */
+export const showsServer = (w: Where): boolean => remote(w);
 
 // ---- folders
 
@@ -127,7 +104,7 @@ export const folderHead = (w: Where): string => (remote(w) ? `Folder on ${w.name
 export const folderStarts = (lists?: { home?: string; defaultCwd?: string }): string[] =>
   [lists?.defaultCwd || lists?.home || "", lists?.home || ""];
 
-/** The recent folders as stored (under recentKey(server)); none for anything else than a list of paths. */
+/** The recent folders as stored (under RECENT_KEY); none for anything else than a list of paths. */
 export function recentFrom(raw: string | null | undefined): string[] {
   try {
     const v = JSON.parse(raw ?? "[]");

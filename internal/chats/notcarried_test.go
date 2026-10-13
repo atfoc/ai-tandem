@@ -168,7 +168,7 @@ func TestNotCarriedNoticeGoesOnce(t *testing.T) {
 			t.Fatalf("the source's agent got %v", got)
 		}
 		if len(ba.sent()) != 2 {
-			t.Fatalf("the branch's agent was sent %q", ba.sent())
+			t.Fatalf("the branch's agent was sent %+v", ba.sent())
 		}
 		e.marked("after the source's result", bid, sa.ID)
 	})

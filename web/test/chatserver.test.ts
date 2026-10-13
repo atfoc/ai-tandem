@@ -6,12 +6,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { CHOOSE_AGENT, NO_AGENT, agentChoice, agentLine, noAgentReason, usableAgents } from "../src/logic/agentlist.ts";
-import { DraftSaver } from "../src/logic/drafts.ts";
 import { goneText } from "../src/logic/remoteview.ts";
-import { FIRST_TEXT_KEPT, emptyReason, errShown, errStays, sendGone, sendingLine, startsThere } from "../src/logic/chatserver.ts";
-import { AGENT_UNCONFIRMED, agentChoiceOn, folderHead, folderStarts, folderTitle, noAgentOn, noAgentReasonOn, notConnectedLine, offPlaceholder, recentFrom, sendOff,
-  sendTitleOn, tildeBy, toolbarLine, unconfirmedLine, usageKey, usageTitleOn, withRecent, type Where } from "../src/logic/chatserver.ts";
-import { listsOf, recentKey, serverConnected, serverName, serverOf } from "../src/logic/serverlists.ts";
+import { emptyReason, offWhy, sendingLine, showsServer } from "../src/logic/chatserver.ts";
+import { agentChoiceOn, folderHead, folderStarts, folderTitle, noAgentOn, noAgentReasonOn, notConnectedLine, offPlaceholder, recentFrom, sendOff,
+  sendTitleOn, tildeBy, toolbarLine, usageKey, usageTitleOn, withRecent, type Where } from "../src/logic/chatserver.ts";
+import { RECENT_KEY, listsOf, serverConnected, serverName, serverOf } from "../src/logic/serverlists.ts";
+import { keyOn } from "../src/logic/keys.ts";
 import type { ServerState } from "../src/logic/servers.ts";
 import { LOCAL_SERVER, type AgentKind, type ChatView, type ServerLists } from "../src/types.ts";
 
@@ -22,21 +22,45 @@ const HERE: Where = { server: LOCAL_SERVER, name: "This computer", connected: tr
 const THERE: Where = { server: "s_1", name: "Studio", connected: true };
 const DOWN: Where = { ...THERE, connected: false };
 const chat = (o: Partial<ChatView> = {}) => ({ id: "c_1", agent: "claude", status: "ready", locked: false, ...o }) as ChatView;
+/** A chat of the section s_1: its key names the server, and its own id there is the one a local chat has too. */
+const FAR = keyOn("s_1", "c_1");
+const far = (o: Partial<ChatView> = {}) => chat({ id: FAR, ...o });
 const LISTS: ServerLists = { agents: ["pi"], catalogs: {}, home: "/home/u", defaultCwd: "/home/u/work" };
-const store = (state: ServerState) => ({
+/** tree: the local server holds that server's tree (a `section` event with a tree came). */
+const store = (state: ServerState, tree = state === "connected") => ({
   usable: ["claude"] as AgentKind[], catalogs: {}, home: "/Users/me", defaultCwd: "/Users/me/code",
-  lists: { s_1: LISTS }, servers: [{ id: "s_1", name: "Studio", state }],
+  lists: { s_1: LISTS }, servers: [{ id: "s_1", name: "Studio", state }], sections: tree ? { s_1: {} } : {},
+});
+
+test("every message names its branch, the first one of a section's chat too", () => {
+  assert.ok(src("fork/actions.ts").includes("try { await post(branch); }"));
+  assert.ok(src("api.ts").includes('call("POST", `${pathOf("chats", id)}/messages${target ? "" : onBranch(branch)}`, {'));
+  for (const [name, text] of [["fork/actions.ts", src("fork/actions.ts")], ["api.ts", src("api.ts")], ["logic/chatserver.ts", src("logic/chatserver.ts")]] as const) assert.ok(!text.includes("firstThere"), name);
 });
 
 test("the composer's Where is the chat's server, its name and whether it is connected", () => {
   const s = store("unreachable");
-  const c = { server: "s_1" };
+  const c = { id: FAR };
+  assert.equal(FAR, "s_1~c_1");
   assert.deepEqual({ server: serverOf(c), name: serverName(s, serverOf(c)), connected: serverConnected(s, serverOf(c)) }, DOWN);
+  assert.deepEqual({ server: serverOf({ id: "c_1" }), name: serverName(s, serverOf({ id: "c_1" })), connected: serverConnected(s, serverOf({ id: "c_1" })) }, HERE, "the same id on this computer");
   assert.deepEqual({ server: serverOf({}), name: serverName(s, serverOf({})), connected: serverConnected(s, serverOf({})) }, HERE);
-  assert.ok(choices.includes("const server = serverOf(c?.server ? c : { server: onBoard });") && choices.includes("serverName(s, server)") && choices.includes("serverConnected(s, server)"));
+  const up = store("connected");
+  assert.deepEqual({ server: serverOf(c), name: serverName(up, serverOf(c)), connected: serverConnected(up, serverOf(c)) }, THERE);
+  // connected is "the local server holds that server's tree", whatever the entry's state says meanwhile
+  assert.equal(serverConnected(store("connected", false), "s_1"), false, "connected, and its tree has not come yet");
+  assert.equal(serverConnected(store("unreachable", true), "s_1"), true, "the state's event came before the tree went");
+  assert.ok(choices.includes('const server = of && "server" in of ? of.server : serverOf(of);') && choices.includes("serverName(s, server)") && choices.includes("serverConnected(s, server)"));
+  // (a chat on a board or a run of a section is in that section: its own key says so, and no board or run is asked)
+  assert.ok(choices.includes("export function useWhere(of?: { id?: string } | { server: string } | null): Where {"));
+  assert.ok(!choices.includes("serverOnBoard") && !composer.includes("serverOnBoard") && !chatView.includes("serverOnBoard"));
+  assert.ok(composer.includes("const where = useWhere(c);") && chatView.includes("const where = useWhere(c);"));
+  // the toolbar names the server of a section's chat alone
+  assert.deepEqual([showsServer(HERE), showsServer(THERE), showsServer(DOWN)], [false, true, true]);
   // the agents are the chat's server's: none while it is not connected
   assert.deepEqual(usableAgents(s, "s_1"), []);
   assert.deepEqual(usableAgents(store("connected"), "s_1"), ["pi"]);
+  assert.deepEqual(usableAgents(store("connected", false), "s_1"), [], "nor before its tree came");
   assert.ok(composer.includes("usableAgents(s, where.server)") && choices.includes("usableAgents(s, w.server)"));
   // model and effort come from that server's catalog
   assert.equal(composer.split("catalogFor(s, serverOf(c), c.agent)").length, 3);
@@ -72,7 +96,7 @@ test("on another server the not installed and no agent texts name the server", (
 });
 
 test("a server that is not connected: no agent is offered, the line says why, and Send is off with that title", () => {
-  const line = "Studio is not connected: its agents are not known.";
+  const line = "Studio is not connected: nothing can be sent or changed until it is back.";
   assert.equal(notConnectedLine("Studio"), line);
   // also with an agent the chat has from before, and with a list kept from before
   for (const agent of ["", "pi"] as (AgentKind | "")[]) {
@@ -80,44 +104,63 @@ test("a server that is not connected: no agent is offered, the line says why, an
     assert.deepEqual(toolbarLine(DOWN, [], { agent }), { text: line, tone: "missing" });
   }
   assert.equal(noAgentReasonOn(DOWN, []), line);
-  const c = chat({ server: "s_1", agent: "pi" });
-  assert.equal(sendOff(DOWN, c), true);
+  const c = far({ agent: "pi" });
+  assert.equal(sendOff(DOWN), true);
   assert.equal(sendTitleOn(DOWN, [], c, false), line);
-  assert.equal(sendTitleOn(DOWN, [], chat({ server: "s_1", agent: "" }), true), line);
+  assert.equal(sendTitleOn(DOWN, [], far({ agent: "" }), true), line);
   assert.equal(offPlaceholder(DOWN, [], c), "Studio is not connected");
+  assert.equal(offPlaceholder(DOWN, [], far({ agent: "" })), "Studio is not connected", "before the agent's own placeholder");
   // connected: as any chat
-  assert.equal(sendOff(THERE, c), false);
+  assert.equal(sendOff(THERE), false);
   assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send (Enter)");
   assert.equal(sendTitleOn(THERE, [], chat({ agent: "" }), true), noAgentOn(THERE));
   assert.equal(sendTitleOn(THERE, ["pi"], chat({ status: "thinking" }), true), "The agent is working");
   assert.equal(offPlaceholder(THERE, ["pi"], c), "");
   assert.equal(offPlaceholder(THERE, ["pi"], chat({ agent: "" })), "Choose an agent…");
-  assert.equal(sendOff(HERE, chat()), false);
-  // a started chat's send is not off: the server answers it (503 server_unreachable), and the text stays in the box
-  for (const started of [{ locked: true }, { forkedFrom: "c_0" }, { branch: "b_1" }, { branches: 2 }] as Partial<ChatView>[]) {
-    assert.equal(sendOff(DOWN, chat({ server: "s_1", ...started })), false);
-    assert.equal(sendTitleOn(DOWN, [], chat({ server: "s_1", ...started }), false), "Send (Enter)");
-  }
+  assert.equal(sendOff(HERE), false);
+  assert.equal(sendOff({ ...HERE, connected: false }), true, "by the Where alone");
   // the composer: Send's button and Enter
-  assert.ok(composer.includes("const off = sendOff(where, c);"));
-  assert.ok(composer.includes("if ((!t && !quotes.length) || blocked || off || left || sending || isSending(chatId)) return;"));
-  assert.ok(composer.includes("disabled={blocked || off || left || sending || (!text.trim() && !quotes.length)}"));
-  // no "Loading models…" for a server that sends none
-  assert.ok(composer.includes('where.connected ? <span className="tchip static">Loading models…</span> : null'));
+  assert.ok(composer.includes("const off = sendOff(where);"));
+  assert.ok(composer.includes("if ((!t && !quotes.length && !images.length) || blocked || off || left || sending || isSending(chatId)) return;"));
+  assert.ok(composer.includes("disabled={blocked || off || left || sending || (!text.trim() && !quotes.length && !images.length)}"));
+  // no choice of a model and no "Loading models…" while it is not connected: every choice of the toolbar is a fixed chip that says why
+  assert.ok(composer.includes("const frozen = sendOff(where) || gone;"));
+  assert.ok(composer.includes("const frozenWhy = gone ? goneText(where.name) : notConnectedLine(where.name);"));
+  assert.ok(composer.includes('const mode = pick || frozen ? "fixed" : pickerMode(c, !!move);'));
+  assert.ok(composer.includes('const fixedTitle = frozen ? frozenWhy : c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started";'));
+  assert.ok(composer.includes("const folderOpen = !frozen && (!c.locked || !!c.folderMissing);") && composer.includes("const agentPick = agentOpen(c) && !frozen;"));
+  // nor a Stop: the button is not drawn, and Esc stops nothing
+  assert.ok(composer.includes("{stop && !frozen && <button className=\"send stop\""));
+  assert.ok(composer.includes('if (e.key === "Escape" && esc && !frozen) void api.interrupt(chatId, shownBranch(getState(), chatId));'));
 });
 
-test("a first message with no answer: the line says to send again, the agent is fixed, and Send stays on", () => {
-  const line = "Studio did not answer: it is not known whether the first message arrived. Send again: it is sent only once.";
-  assert.equal(unconfirmedLine("Studio"), line);
-  const c = chat({ server: "s_1", agent: "pi", start: "unconfirmed" });
-  for (const w of [THERE, DOWN]) {
-    assert.deepEqual(toolbarLine(w, w.connected ? ["pi"] : [], c), { text: line, tone: "unconfirmed" });
-    assert.equal(sendOff(w, c), false); // sending again is how it is settled; a server that is not connected answers 503
-    assert.equal(sendTitleOn(w, [], c, false), "Send (Enter)");
-    assert.equal(offPlaceholder(w, [], c), "");
+test("a started chat's Send is off too while its server is not connected: the view is read-only as it was", () => {
+  for (const started of [{ locked: true }, { forkedFrom: "c_0" }, { branch: "b_1" }, { branches: 2 }, { status: "thinking" }] as Partial<ChatView>[]) {
+    const c = far({ agent: "pi", ...started });
+    assert.equal(sendTitleOn(DOWN, [], c, false), notConnectedLine("Studio"));
+    assert.equal(sendTitleOn(DOWN, [], c, true), notConnectedLine("Studio"), "before what else blocks it");
+    assert.equal(offPlaceholder(DOWN, [], c), "Studio is not connected");
+    assert.deepEqual(toolbarLine(DOWN, [], c), { text: notConnectedLine("Studio"), tone: "missing" });
+    assert.equal(emptyReason(DOWN, [], c), notConnectedLine("Studio"));
   }
-  assert.ok(choices.includes('c.start === "unconfirmed" ? <span className="tchip static" title={`Agent — ${AGENT_UNCONFIRMED}`}>'));
-  assert.match(AGENT_UNCONFIRMED, /agent cannot be changed/);
+  // (sendOff reads nothing of the chat: whether it has started is no question any more)
+  assert.equal(sendOff.length, 1);
+  assert.ok(src("logic/chatserver.ts").includes("export const sendOff = (w: Where): boolean => !w.connected;"));
+});
+
+test("a chat of a section before its first message is a chat like any other: no line of its own, its agent open, its Send by the connection", () => {
+  {
+    const c = far({ agent: "pi" });
+    assert.deepEqual(toolbarLine(THERE, ["pi"], c), { text: "", tone: "" });
+    assert.deepEqual(toolbarLine(DOWN, [], c), { text: notConnectedLine("Studio"), tone: "missing" });
+    assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send (Enter)");
+    assert.equal(offPlaceholder(THERE, ["pi"], c), "");
+    assert.deepEqual(agentChoiceOn(THERE, ["pi", "claude"], c.agent).options, ["pi", "claude"]); // its agent can be changed until it starts
+  }
+  for (const [name, text] of [["ChatChoices.tsx", choices], ["Composer.tsx", composer], ["ChatView.tsx", chatView], ["logic/chatserver.ts", src("logic/chatserver.ts")],
+    ["logic/sendend.ts", src("logic/sendend.ts")], ["logic/subsettings.ts", src("logic/subsettings.ts")], ["logic/serverlists.ts", src("logic/serverlists.ts")], ["store.ts", src("store.ts")]] as const) {
+    for (const gone of ["unconfirmed", "sent only once", "first_text_kept", "FIRST_TEXT_KEPT", "start_unconfirmed", "startsThere", "setStarting"]) assert.ok(!text.includes(gone), `${name} has ${gone}`);
+  }
   // the text stays in the box after a send with no answer (504) or to a server that is not connected (503): the failed send's path
   assert.ok(composer.includes("setErr(e?.message ?? String(e));"));
   assert.ok(composer.includes("if (!current.current.trim()) input.current?.set(t); // nothing typed is lost"));
@@ -158,17 +201,18 @@ test("the folder picker reads the chat's server, is titled by it and starts at i
   assert.ok(composer.includes('<DirBrowser start={cwd ?? ""} server={server}'));
 });
 
-test("recent folders are kept per server", () => {
+test("recent folders are kept per server: this computer's in the browser, a section's in the page's memory alone", () => {
   assert.deepEqual(recentFrom(null), []);
   assert.deepEqual(recentFrom("not json"), []);
   assert.deepEqual(recentFrom('{"a":1}'), []);
   assert.deepEqual(recentFrom('["/a","/b",3]'), ["/a", "/b"]);
   assert.deepEqual(withRecent(["/a", "/b"], "/b"), ["/b", "/a"]);
   assert.deepEqual(withRecent(["1", "2", "3", "4", "5", "6"], "7"), ["7", "1", "2", "3", "4", "5"]);
-  assert.notEqual(recentKey("s_1"), recentKey(LOCAL_SERVER));
-  // the key in use: read and written under the server's, and the chat's server is the one handed down
-  assert.ok(composer.includes("recentFrom(safeGet(recentKey(server)))"));
-  assert.ok(composer.includes("safeSet(recentKey(server), JSON.stringify(withRecent(recentDirs(server), d)))"));
+  assert.equal(RECENT_KEY, "aiwb.dirs");
+  // the list in use: this computer's is read and written under the one key, another server's in a map of the page, and the chat's server is the one handed down
+  assert.ok(composer.includes("(server === LOCAL_SERVER ? recentFrom(safeGet(RECENT_KEY)) : recentThere.get(server) ?? [])"));
+  assert.ok(composer.includes("if (server === LOCAL_SERVER) safeSet(RECENT_KEY, JSON.stringify(next)); else recentThere.set(server, next);"));
+  assert.equal(composer.split("safeSet(RECENT_KEY").length, 2, "the one write to the browser's storage, behind the test for this computer");
   assert.ok(composer.includes("rememberDir(d, server); setOpen(false);") && composer.includes("recentDirs(server).filter("));
   assert.ok(!composer.includes('"aiwb.dirs"'));
 });
@@ -195,93 +239,77 @@ test("emptyReason: what an empty thread says of a chat that takes no message, by
   assert.equal(emptyReason(HERE, ["claude"], chat({ agent: "" })), CHOOSE_AGENT);
   assert.equal(emptyReason(HERE, [], chat({ agent: "" })), NO_AGENT);
   // another server, connected: it is named
-  assert.equal(emptyReason(THERE, ["pi"], chat({ server: "s_1", agent: "pi" })), "");
-  assert.equal(emptyReason(THERE, ["pi"], chat({ server: "s_1", agent: "" })), CHOOSE_AGENT);
-  assert.equal(emptyReason(THERE, [], chat({ server: "s_1", agent: "" })), "No agent is installed on Studio. Install Claude Code, Cursor or pi on that machine.");
-  // not connected: its agents are not known, whether the chat has one or not
-  assert.equal(emptyReason(DOWN, [], chat({ server: "s_1", agent: "" })), notConnectedLine("Studio"));
-  assert.equal(emptyReason(DOWN, [], chat({ server: "s_1", agent: "claude" })), notConnectedLine("Studio"));
-  // a started chat and an unconfirmed start show their thread or take the message again
-  assert.equal(emptyReason(DOWN, [], chat({ server: "s_1", locked: true })), "");
-  assert.equal(emptyReason(DOWN, [], chat({ server: "s_1", start: "unconfirmed" })), "");
+  assert.equal(emptyReason(THERE, ["pi"], far({ agent: "pi" })), "");
+  assert.equal(emptyReason(THERE, ["pi"], far({ agent: "" })), CHOOSE_AGENT);
+  assert.equal(emptyReason(THERE, [], far({ agent: "" })), "No agent is installed on Studio. Install Claude Code, Cursor or pi on that machine.");
+  // not connected: nothing can be sent, whether the chat has an agent or not, and whether it has started or not
+  assert.equal(emptyReason(DOWN, [], far({ agent: "" })), notConnectedLine("Studio"));
+  assert.equal(emptyReason(DOWN, [], far({ agent: "claude" })), notConnectedLine("Studio"));
+  assert.equal(emptyReason(DOWN, [], far({ locked: true })), notConnectedLine("Studio"));
+  // no longer on its server: nothing can be sent either, connected or not, and that is what is said
+  assert.equal(emptyReason(THERE, ["pi"], far({ agent: "pi" }), true), goneText("Studio"));
+  assert.equal(emptyReason(DOWN, [], far({ agent: "" }), true), goneText("Studio"));
+  assert.equal(emptyReason(HERE, ["claude"], chat(), false), "");
   // the empty thread uses it, offers no suggestion with it, and shows no agent and no hint for a server that is not connected
-  assert.ok(chatView.includes("const reason = emptyReason(where, usable, c);") && chatView.includes("const suggest = reason ? []"));
+  assert.ok(chatView.includes("const reason = emptyReason(where, usable, c, gone);") && chatView.includes("const suggest = reason ? []"));
   assert.ok(chatView.includes("const agent = off ? \"\" : c.agent;") && chatView.includes("const hint = off ? \"\" : configHint(usable, c.agent);"));
   assert.ok(!chatView.includes("noAgentReason(usable)"));
   // the header says no "Ready" for it, and the toolbar offers no model and no effort
-  assert.ok(chatView.includes("headStatus(c, isLegacy(c), statusText(c, boardName), sendOff(where, c))"));
-  assert.ok(composer.includes(") : !c.agent || sendOff(where, c) ? null : !cat ? ("));
+  assert.ok(chatView.includes("const frozen = sendOff(where) || gone;"));
+  assert.ok(chatView.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId)), frozen);"));
+  assert.ok(composer.includes(") : !c.agent ? null : !cat ? ("));
 });
 
 test("the chat header shortens the folder with the home of the chat's server (F2)", () => {
   assert.ok(chatView.includes("tildify(c.cwd, server)") && !chatView.includes("tildify(c.cwd)"));
 });
 
-test("errShown, errStays: which refusal's sentence is put under the composer, and which stays (F3, F4, F6)", () => {
-  assert.equal(errShown("start_unconfirmed"), false); // the line under the toolbar says it
-  for (const code of [undefined, "server_unreachable", "not_sent", "send_unknown", "busy", FIRST_TEXT_KEPT]) assert.equal(errShown(code), true, String(code));
-  assert.equal(errStays(FIRST_TEXT_KEPT), true); // the chat starts with that answer: the sentence is not about what it was before
-  for (const code of [undefined, "server_unreachable", "not_sent", "busy"]) assert.equal(errStays(code), false, String(code));
-  assert.ok(composer.includes("if (refusalShown(e instanceof ApiError ? e.status : undefined, code, serverConnected(getState(), where.server))) { errKept.current = errStays(code); setErr("));
-  // the sentence goes when the server is connected again, and with the chat's start and choices
-  assert.ok(composer.includes("useEffect(() => { if (where.connected && !errKept.current) setErr(\"\"); }, [where.connected]);"));
-  assert.ok(composer.includes("useEffect(() => { if (!errKept.current) setErr(\"\"); }, [c?.locked, c?.start, c?.server, c?.agent, c?.cwd, c?.model, c?.effort, c?.subOff, c?.subDepth, c?.subCap]);"));
+test("a refusal's sentence under the composer goes when the server is connected again, and with the chat's start and choices (F3, F4)", () => {
+  assert.ok(composer.includes("if (refusalShown(e instanceof ApiError ? e.status : undefined, code, serverConnected(getState(), where.server))) setErr(e?.message ?? String(e));"));
+  assert.ok(composer.includes("useEffect(() => { if (where.connected) setErr(\"\"); }, [where.connected]);"));
+  assert.ok(composer.includes("useEffect(() => { setErr(\"\"); }, [c?.locked, c?.agent, c?.cwd, c?.model, c?.effort, c?.subOff, c?.subDepth, c?.subCap]);"));
 });
 
-test("startsThere, sendingLine: the first message of a chat on another server is shown while it is sent (F5)", () => {
-  assert.equal(startsThere(chat({ server: "s_1" })), true);
-  assert.equal(startsThere(chat({ server: "s_1", start: "unconfirmed" })), true); // sent again
-  assert.equal(startsThere(chat()), false);
-  assert.equal(startsThere(chat({ server: LOCAL_SERVER })), false);
-  for (const o of [{ locked: true }, { forkedFrom: "c_0" }, { branch: "ab12cd34" }, { branches: 2 }]) assert.equal(startsThere(chat({ server: "s_1", ...o })), false, JSON.stringify(o));
+test("sendingLine: the line of a fork's or a branch's first message on its way to another server", () => {
   assert.equal(sendingLine("Studio"), "Sending to Studio…");
-  assert.ok(composer.includes("if (first) setStarting(chatId, t);") && composer.includes("drafts.current!.sending(undefined, first)"));
-  assert.ok(chatView.includes("{sendingLine(serverIs)}") && chatView.includes("starting !== undefined ? ("));
+  // (the first message of a chat is an ordinary Send: the thread shows it when the server's event brings it, and nothing in its place meanwhile)
+  assert.ok(!chatView.includes("sendingLine") && chatView.includes("{loaded && !items.length && !wait.sent && <EmptyThread c={c} gone={gone} />}"));
 });
 
-test("sendGone: a chat its server no longer has takes no Send, and the Send says so", () => {
-  assert.equal(sendGone({ server: "s_1", gone: true }), true);
-  assert.equal(sendGone({ server: "s_1" }), false);
-  assert.equal(sendGone({ gone: true }), false); // a chat of this computer is never gone
-  assert.equal(sendTitleOn(THERE, ["pi"], chat({ server: "s_1", locked: true, gone: true }), false), "This chat is no longer on Studio.");
-  assert.equal(sendTitleOn(DOWN, [], chat({ server: "s_1", locked: true, gone: true }), false), goneText("Studio"));
-  assert.equal(sendTitleOn(THERE, ["pi"], chat({ server: "s_1", locked: true }), false), "Send (Enter)");
-  assert.ok(composer.includes("disabled={blocked || off || left || sending ||") && composer.includes("const left = sendGone(c);"));
+test("offWhy: why a chat takes no call, which every control of its view that is off says", () => {
+  assert.equal(offWhy(HERE), "", "a chat of this computer always takes one");
+  assert.equal(offWhy(THERE), "");
+  assert.equal(offWhy(DOWN), notConnectedLine("Studio"));
+  assert.equal(offWhy(THERE, true), goneText("Studio"));
+  assert.equal(offWhy(DOWN, true), goneText("Studio"), "gone comes first: the server coming back mends nothing for it");
+  // the controls read it through one hook, by the chat's key: a message's actions, the header's way to another branch,
+  // Back, the tree popup, a permission request, a subagent's thread
+  assert.ok(choices.includes("export function useOffWhy(chat: string): string {") && choices.includes("return offWhy(w, gone);"));
+  for (const f of ["fork/Message.tsx", "fork/Chrome.tsx", "fork/TreePopup.tsx", "ChatView.tsx", "Subagents.tsx"]) assert.ok(src(f).includes("useOffWhy("), f);
+  // and the actions themselves do nothing for such a chat, whatever reaches them
+  const acts = src("fork/actions.ts");
+  assert.ok(acts.includes("const takesCalls = (chat: string): boolean => reachable(getState(), chat);"));
+  assert.equal(acts.split("takesCalls(chat)").length - 1, 5, "label, fork, another branch, a move, Back");
 });
 
-// A first message answered 409 first_text_kept (F6): the chat started on its server with an earlier text, the server removed the draft (the sent text)
-// on a counter raised by one, and the text of this Send must end in the box and be saved as the started chat's draft. The composer's steps, as submit
-// takes them, over a real saver: the Send is held, the box is emptied, the refusal comes, the saver is told of it (DraftSaver.kept, which counts from
-// its own counter; keptRev, which counted from the store's record, is gone: the review T123, N1), the text is put back.
-test("the saver and first_text_kept: a text refused so is saved as the started chat's draft, whichever of the answer and the event comes first", async () => {
-  const T = { text: "second text" };
-
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  for (const eventFirst of [true, false]) {
-    const puts: { text: string; base?: number }[] = [], shown: string[] = [];
-    let rev = 3, stored: { text: string } | undefined = T; // the server's
-    const saver = new DraftSaver(async (d, _k, base) => {
-      puts.push({ text: d.text, base });
-      if (base !== rev) throw Object.assign(new Error("stale"), { code: "stale", rev, draft: stored });
-      stored = d.text ? { text: d.text } : undefined;
-      return ++rev;
-    }, T, undefined, 5, 3, (d) => shown.push(d.text));
-    const answered = saver.sending(20, true);
-    saver.change("");                                   // the box is emptied at Enter
-    await wait(15);
-    assert.deepEqual(puts, [], "a held Send saves nothing");
-    rev = 4; stored = undefined;                           // the swap: no draft, the counter raised by one
-    if (eventFirst) saver.arrived(4, null);             // the branch_state event of the swap
-    // the 409: submit's catch, then its finally
-    saver.kept();
-    saver.change(T.text);                               // the text is back in the box
-    answered(true);
-    if (!eventFirst) saver.arrived(4, null);            // the event comes after the answer
-    await wait(30);
-    assert.deepEqual(puts, [{ text: "second text", base: 4 }], `event first: ${eventFirst}`);
-    assert.deepEqual([rev, stored], [5, T]);
-    assert.deepEqual(shown, [], "nothing replaces the text in the box");
-  }
-  assert.ok(composer.includes("if (code === FIRST_TEXT_KEPT) drafts.current!.kept();"));
-  assert.ok(!composer.includes("keptRev"));
+test("a chat its server no longer has takes no Send and no change, and the Send, the box and the toolbar's line say so", () => {
+  const c = far({ agent: "pi", locked: true });
+  assert.equal(goneText("Studio"), "This chat is no longer on Studio.");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, false, true), "This chat is no longer on Studio.");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, true, true), goneText("Studio"), "before what else blocks it");
+  assert.equal(sendTitleOn(DOWN, [], c, false, true), goneText("Studio"), "and before the server that is not connected");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, false, false), "Send (Enter)");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send (Enter)");
+  assert.equal(offPlaceholder(THERE, ["pi"], c, true), goneText("Studio"));
+  assert.equal(offPlaceholder(DOWN, [], c, true), goneText("Studio"));
+  assert.equal(offPlaceholder(THERE, ["pi"], far({ agent: "" }), true), goneText("Studio"));
+  assert.equal(offPlaceholder(THERE, ["pi"], c, false), "");
+  assert.deepEqual(toolbarLine(THERE, ["pi"], c, true), { text: goneText("Studio"), tone: "missing" });
+  assert.deepEqual(toolbarLine(DOWN, [], c, true), { text: goneText("Studio"), tone: "missing" });
+  assert.deepEqual(toolbarLine(THERE, ["pi"], c, false), { text: "", tone: "" });
+  // the page knows it by the chat's key (store.gone), not by a field of the chat
+  assert.ok(composer.includes("const left = useStore((s) => !!s.gone[chatId]); // its server no longer has the chat"));
+  assert.ok(composer.includes("title={sendTitleOn(where, usable, c, blocked, left)} disabled={blocked || off || left || sending ||"));
+  assert.ok(choices.includes("const gone = useStore((s) => !!s.gone[c.id]);") && choices.includes("const line = toolbarLine(w, usable, c, gone);"));
+  assert.ok(!composer.includes("sendGone") && !src("logic/chatserver.ts").includes("sendGone"));
 });

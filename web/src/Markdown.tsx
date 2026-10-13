@@ -12,7 +12,9 @@ import React, { createContext, useContext, useMemo, useRef, useState } from "rea
 import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { useStore } from "./store.ts";
+import { useStore, boardsOn } from "./store.ts";
+import { serverOfKey } from "./logic/keys.ts";
+import { LOCAL_SERVER } from "./types.ts";
 import { lowlight } from "./highlight.ts";
 import { openBoard } from "./Sidebar.tsx";
 import { resolveName, cleanName } from "./logic/mentions.ts";
@@ -22,8 +24,9 @@ import { showRef } from "./board.ts";
 import { RefChip } from "./RefInput.tsx";
 import type { AgentKind } from "./types.ts";
 
-/** Where a chip shows its reference: the chat's board, drawn in its agent's colour. */
-const Where = createContext<{ board?: string; agent?: AgentKind | "" }>({});
+/** Where a chip shows its reference: the chat's board, drawn in its agent's colour. server: the entry id of the server
+ *  the text is of, among whose boards an @mention is looked up. */
+const Where = createContext<{ board?: string; agent?: AgentKind | ""; server?: string }>({});
 
 type Props = {
   text: string;
@@ -31,13 +34,16 @@ type Props = {
   user?: boolean;
   board?: string;
   agent?: AgentKind | "";
+  /** The chat the text is of (its key): it names the server whose boards an @mention links to. Without it, the board's. */
+  of?: string;
   /** The agent is still writing it: a reference tag cut off at the end is not shown yet. */
   streaming?: boolean;
 };
 
-export function Markdown({ text, user = false, board, agent, streaming = false }: Props) {
+export function Markdown({ text, user = false, board, agent, of, streaming = false }: Props) {
   const blocks = useMemo(() => splitBlocks(streaming ? trimPartialRef(text ?? "") : text ?? ""), [text, streaming]);
-  const where = useMemo(() => ({ board, agent }), [board, agent]);
+  const server = serverOfKey(of ?? board);
+  const where = useMemo(() => ({ board, agent, server }), [board, agent, server]);
   return (
     <Where.Provider value={where}>
       <div className="md">{blocks.map((b, i) => <Block key={i} text={b} user={user} />)}</div>
@@ -81,7 +87,8 @@ function Chip({ tag, after }: { tag: string; after?: React.ReactNode }) {
 }
 
 function Mention({ raw }: { raw: string }) {
-  const boards = useStore((s) => s.boards);
+  const { server } = useContext(Where);
+  const boards = useStore((s) => boardsOn(s, server ?? LOCAL_SERVER)); // a board of the text's own server, never one of that name elsewhere
   const name = cleanName(raw.slice(1));
   const b = resolveName(name, boards)[0];
   if (!b) return <>{raw}</>;

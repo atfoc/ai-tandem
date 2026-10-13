@@ -1,0 +1,7 @@
+/* The images of a chat composer (ComposerImages.tsx): the strip of thumbnails above the text, and the attach button of the toolbar's row. */
+.composer-images { padding: 4px 0 6px; }
+.composer-images-row { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px 6px 0 0; } /* (a thumbnail's remove control stands 6px out of its corner) */
+.composer-images-note { color: var(--muted); font-size: 12px; padding: 6px 0 0; }
+.attach-btn { display: grid; place-items: center; flex: none; }
+.attach-btn:disabled { opacity: .35; cursor: default; }
+.attach-btn:disabled:hover { background: transparent; color: var(--muted); }

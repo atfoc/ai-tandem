@@ -6,6 +6,7 @@
 // selection's own text (the quote) has line breaks between blocks, so quotes are compared with
 // whitespace left out.
 
+import { IMAGE_WORD } from "./chatimage.ts";
 import type { Item, Reference } from "../types.ts";
 
 export type Span = { start: number; end: number };
@@ -70,8 +71,10 @@ export const mergeQuotes = (sent: Reference[], now: Reference[]) =>
   [...sent.filter((s) => !now.some((n) => quoteKey(n) === quoteKey(s))), ...now];
 
 /** What names a message in one line: its text, or, for a message that is only quotes, its first
- *  quote after a quote mark: the comment, else the quoted words (treeText in tree.go). */
-export const nameText = (it: Pick<Item, "text" | "references">): string => {
+ *  quote after a quote mark: the comment, else the quoted words (treeText in tree.go). A message
+ *  of images alone has no words: the one fixed word names it (IMAGE_WORD). */
+export const nameText = (it: Pick<Item, "text" | "references" | "images">): string => {
   const r = it.references?.[0];
-  return it.text?.trim() || !r ? it.text ?? "" : `❝ ${r.comment?.trim() || r.quote}`;
+  if (it.text?.trim() || (!r && !it.images?.length)) return it.text ?? "";
+  return r ? `❝ ${r.comment?.trim() || r.quote}` : IMAGE_WORD;
 };

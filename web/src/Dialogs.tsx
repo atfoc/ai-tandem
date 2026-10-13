@@ -4,10 +4,8 @@ import { useStore, setState } from "./store.ts";
 
 export type ConfirmRequest = {
   title: string; body?: string;
-  /** refused: what an action's failure is answered with: another dialog in this one's place (a
-   *  chat on a server that is not connected can be removed from this sidebar only), or null to
-   *  show the error's sentence here. */
-  actions: { label: string; tone?: "danger" | "primary"; run: () => Promise<void> | void; refused?: (err: unknown) => ConfirmRequest | null }[]; // plus Cancel
+  /** An action that fails leaves the dialog open, with the error's sentence in it. */
+  actions: { label: string; tone?: "danger" | "primary"; run: () => Promise<void> | void }[]; // plus Cancel
 };
 
 export function confirm(req: ConfirmRequest): void { setState({ confirm: req }); }
@@ -37,11 +35,7 @@ export function ConfirmDialog(): React.JSX.Element | null {
   if (!req) return null;
   const run = async (a: ConfirmRequest["actions"][number]) => {
     setBusy(true); setErr("");
-    try { await a.run(); close(); } catch (e: any) {
-      const next = a.refused?.(e);
-      if (next) setState({ confirm: next }); else setErr(e?.message ?? String(e));
-      setBusy(false);
-    }
+    try { await a.run(); close(); } catch (e: any) { setErr(e?.message ?? String(e)); setBusy(false); }
   };
   return (
     <div className="dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
@@ -66,7 +60,7 @@ export function Menu({ children, onClose, align = "left", label }: { children: R
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
-    // (the Escape is marked as taken: the server choice of a new whiteboard under the menu does not drop its draft for it)
+    // (the Escape is marked as taken: it closes the menu, and nothing under it)
     const k = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
     const t = setTimeout(() => document.addEventListener("mousedown", h));
     document.addEventListener("keydown", k);
