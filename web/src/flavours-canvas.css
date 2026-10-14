@@ -1,14 +1,26 @@
-/* The canvas's own chrome (Excalidraw's toolbar, panels, menus and dialogs) in a Catppuccin flavour. Excalidraw
+/* The canvas in a theme: its own chrome (Excalidraw's toolbar, panels, menus and dialogs) and the drawing. Excalidraw
    takes only "light" or "dark" (Canvas.tsx gives it the theme the flavour is laid over) and colours its chrome from
    custom properties set on .excalidraw and .excalidraw.theme--dark, which are set here from the app's tokens and the
    flavour's palette (flavours.css). The container of its dialogs is a .excalidraw of its own, outside the canvas:
    these rules reach it too.
-   The drawing is not touched: the canvas stays as Excalidraw renders it (in a dark theme, the scene's own colours
-   under its filter), so --theme-filter, --color-selection and --default-bg-color keep Excalidraw's values. A colour
-   that is fixed in Excalidraw's own stylesheet, and no variable, stays off the palette. */
+   The drawing is a view of the board, not a change of it: the board file holds the colours Excalidraw draws by
+   default (a white ground, a #1e1e1e stroke), whatever the theme, and the theme shows them through a filter. Excalidraw
+   does that in its dark theme with --theme-filter, which it puts on the canvases, on its colour swatches and on the
+   text editor; --theme-filter is set here to the theme's SVG filter (CanvasFilters.tsx makes them, logic/canvastheme.ts
+   says what each does) in plain dark and in every flavour. Latte is a light theme, where Excalidraw filters no canvas:
+   its canvases get the filter here. Plain light has none. A colour that is fixed in Excalidraw's own stylesheet, and no
+   variable, stays off the palette. */
+:root[data-theme="dark"]:not([data-flavour]) .excalidraw { --theme-filter: url(#aiwb-canvas-dark); }
+:root[data-flavour="latte"] .excalidraw { --theme-filter: url(#aiwb-canvas-latte); }
+:root[data-flavour="frappe"] .excalidraw { --theme-filter: url(#aiwb-canvas-frappe); }
+:root[data-flavour="macchiato"] .excalidraw { --theme-filter: url(#aiwb-canvas-macchiato); }
+:root[data-flavour="mocha"] .excalidraw { --theme-filter: url(#aiwb-canvas-mocha); }
+:root[data-flavour="latte"] .excalidraw canvas { filter: var(--theme-filter); }
 :root[data-flavour] .excalidraw {
   /* islands, popups, the side panel; text and icons on them */
   --island-bg-color: var(--bg);
+  /* the islands are on Base like the ground, so Excalidraw's own shadow has no edge to show: a ring of the app's line, and its shadow (the same in light and dark) */
+  --shadow-island: 0 0 0 1px var(--line), 0px 0px .9310142993927002px 0px rgba(0, 0, 0, .17), 0px 0px 3.1270833015441895px 0px rgba(0, 0, 0, .08), 0px 7px 14px 0px rgba(0, 0, 0, .05);
   --popup-secondary-bg-color: var(--bg); /* the context menu: a menu as the others */
   --color-on-surface: var(--text);
   --popup-text-color: var(--text);
@@ -49,6 +61,8 @@
   --color-icon-white: var(--on-accent);
   --focus-highlight-color: var(--accent);
   --select-highlight-color: var(--accent);
+  /* the strip of the library sidebar's tabs and the ground behind an export's preview: the app's ground, not Excalidraw's */
+  --default-bg-color: var(--bg);
   /* danger */
   --color-danger: var(--danger);
   --color-danger-dark: var(--danger-fill);
@@ -58,6 +72,8 @@
   --button-destructive-bg-color: var(--danger-soft);
   --button-destructive-color: var(--danger);
 }
+/* The zoom, undo, library, menu and help buttons are islands of their own, with a ring of --color-surface-lowest (Base here) in place of --shadow-island: the same ring of line. */
+:root[data-flavour] .excalidraw :where(.zoom-actions, .undo-redo-buttons, .sidebar-trigger, .main-menu-trigger, .help-icon):not(:active) { box-shadow: 0 0 0 1px var(--line); }
 /* Excalidraw's greys are fixed steps from near white (10) to near black (100), which its rules pick by theme: in
    light 30 is a border, 40 and 50 a hint, a shortcut or a close button, 60 and up text; in dark 60 is the hint and 40
    and down text. Each step is the palette's colour of that part, and a hint is the app's faint text, which has its

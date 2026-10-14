@@ -9,8 +9,8 @@
 // a count's pill, a control that shows on hover, are that weak today), or if the goal accepts it: in Latte, the
 // Claude agent's glyph. What passed that way is printed.
 // It also proves that the canvas's chrome follows the flavour (the toolbar, the properties panel, the menu and the
-// export dialog are on Base with Text, and Excalidraw has the theme the flavour is laid over) while the drawing
-// stays as the canvas renders it (its filter is Excalidraw's own).
+// export dialog are on Base with Text, and Excalidraw has the theme the flavour is laid over) and that the drawing
+// is shown through the flavour's own filter (--theme-filter, flavours-canvas.css); P7.5 reads what that makes of it.
 // OUT=/tmp/x keeps a screenshot of every part in every flavour there, for a person's look.
 // The tool cards of every kind, the composer's states and a wait in the thread are read in each flavour by P7.1.
 import fs from "node:fs";
@@ -84,7 +84,7 @@ await check("A6.3 every part of the page is readable in each flavour", async ({ 
           if (st.count && await page.locator(st.count[0]).count() !== st.count[1]) fail(`${theme}, ${st.name}: ${await page.locator(st.count[0]).count()} elements match ${st.count[0]}, not ${st.count[1]}`);
           // (a part is read once it is still: a popup that opens takes its place over some frames)
           if (!await atRest(page, 8)) fail(`${theme}, ${st.name}: the page did not come to rest`);
-          const rows = await contrastAudit(page, { canvas: dark ? [18, 18, 18] : [255, 255, 255] });
+          const rows = await contrastAudit(page, { canvas: P ? [1, 3, 5].map((i) => parseInt(P.base.slice(i, i + 2), 16)) : dark ? [28, 28, 33] : [255, 255, 255] }); // (the canvas's ground: the flavour's Base, in Dark the page's)
           const least = new Map();
           for (const r of rows) { const key = `${r.kind} "${r.what}" (${r.where})`, was = least.get(key); if (!was || r.ratio < was.ratio) least.set(key, r); }
           found[st.name] = least;
@@ -95,10 +95,10 @@ await check("A6.3 every part of the page is readable in each flavour", async ({ 
             if (fg !== P.text) fail(`${theme}, ${st.name}: ${on} is drawn in ${fg}, not in Text ${P.text}`);
           }
         }
-        if (P && part.name === "board") { // Excalidraw has the theme under the flavour, and draws as it does in it
+        if (P && part.name === "board") { // Excalidraw has the theme under the flavour, and draws through the flavour's filter
           const c = await page.evaluate(() => ({ dark: document.querySelector(".canvas .excalidraw").classList.contains("theme--dark"), filter: getComputedStyle(document.querySelector(".excalidraw canvas.static")).filter }));
           if (c.dark !== dark) fail(`${theme}: the canvas has ${c.dark ? "the dark" : "the light"} theme of Excalidraw under a flavour laid over ${P.under}`);
-          if (c.filter !== (dark ? "invert(0.93) hue-rotate(180deg)" : "none")) fail(`${theme}: the drawing's filter is "${c.filter}", not Excalidraw's own for ${P.under}`);
+          if (c.filter !== `url("#aiwb-canvas-${theme}")`) fail(`${theme}: the drawing's filter is "${c.filter}", not the flavour's`);
         }
       } catch (e) { fail(`${theme}, ${part.name}: ${e.message.split("\n")[0]}`); }
       finally { await ctx.close(); }

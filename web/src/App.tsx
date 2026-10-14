@@ -7,6 +7,7 @@ import { Sidebar, newChat, addBoard, openBoard, setSideHidden } from "./Sidebar.
 import { ChatHeader, Thread } from "./ChatView.tsx";
 import { Composer } from "./Composer.tsx";
 import { Canvas } from "./Canvas.tsx";
+import { CanvasFilters } from "./CanvasFilters.tsx";
 import { ConfirmDialog } from "./Dialogs.tsx";
 import { boardChats, groupPath } from "./logic/tree.ts";
 import { homeAgentsText, usableAgents } from "./logic/agentlist.ts";
@@ -109,12 +110,15 @@ function Grouped() {
   } else main = <Home />;
 
   return (
-    <div className={`app ${sideHidden ? "side-hidden" : ""}`}>
-      {sideHidden && <SideRail />}
-      <Pane pane="side" className="side-pane"><Side /></Pane>
-      <Guard what="this page" resetKey={`${sel.board}|${sel.chat}`}>{main}</Guard>
-      <SubagentDrawer />
-    </div>
+    <>
+      <CanvasFilters />
+      <div className={`app ${sideHidden ? "side-hidden" : ""}`}>
+        {sideHidden && <SideRail />}
+        <Pane pane="side" className="side-pane"><Side /></Pane>
+        <Guard what="this page" resetKey={`${sel.board}|${sel.chat}`}>{main}</Guard>
+        <SubagentDrawer />
+      </div>
+    </>
   );
 }
 

@@ -150,8 +150,8 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line-2);
 .mono { font-family: var(--mono); font-size: 11px; }
 
 /* ---------------------------------------------------------------- canvas */
-.canvas { position: absolute; inset: 0; }
-.canvas-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); gap: 8px; }
+.canvas { position: absolute; inset: 0; background: var(--bg); }
+.canvas-empty { position: absolute; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); gap: 8px; }
 .flash-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 3; }
 .flash { position: absolute; border: 2px solid var(--agent); border-radius: 10px; background: color-mix(in srgb, var(--agent) 6%, transparent); animation: flash-in .25s ease-out, flash-out .6s ease-in 2s forwards; }
 .flash.danger { --agent: var(--danger); border-style: dashed; background: color-mix(in srgb, var(--danger) 8%, transparent); animation: flash-in .25s ease-out, pulse 1.2s ease-in-out infinite; }

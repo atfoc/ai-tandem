@@ -108,8 +108,8 @@ connects an app gives access to everything on that server. Set-up is in
 - **A desktop app.** On macOS the app is an Electron window. The server runs on its own:
   quitting the app does not stop it or the chats that are working; open the app again and they
   are there. There is no page to open in a browser tab.
-- **Themes.** Light, dark, follow the system, or one of the four Catppuccin flavours. The board
-  follows the theme.
+- **Themes.** Light, dark, follow the system, or one of the four Catppuccin flavours. The board's
+  canvas follows the theme too, and the board file does not change.
 
 ![The same window in the dark theme](docs/screenshots/hero-dark.png)
 

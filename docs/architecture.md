@@ -36,6 +36,15 @@ How AI Whiteboard fits together: the server, the web client and the desktop app,
   auto-approved too (no permission card). Plain (non-board) chats get no board tools.
 - **Web client** (`web/`): React + Excalidraw, built with esbuild. It is the page of the desktop
   app and ships inside it: no server serves it. The page and the app are one build.
+- **The canvas follows the theme as a view of the board, never as a change of it.** The board file
+  holds the colours Excalidraw draws by default (a white ground, a `#1e1e1e` stroke) whatever the
+  theme, because agents read it, the image export draws it and other windows show it. A theme is
+  an SVG filter (`web/src/CanvasFilters.tsx`, made by `web/src/logic/canvastheme.ts`) that replaces
+  Excalidraw's own dark-mode `--theme-filter`: it puts the theme's ground where the stored white
+  lands and the theme's ink where the stored default stroke lands. Excalidraw has no prop for the
+  colour quick picks of its properties panel and its code is not patched, so they stay Excalidraw's
+  own in every theme; they are drawn with `filter: var(--theme-filter)`, so they show as the theme's
+  versions of its colours.
 - **Desktop app** (`desktop/`): an Electron app, the client of every server. Its main process holds
   the server list and the secrets and keeps one connection to each server, this computer's
   included; its window shows the page. The app starts this computer's server, or finds the one

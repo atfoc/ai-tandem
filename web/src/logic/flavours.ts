@@ -42,8 +42,8 @@ export const PALETTE: Record<Flavour, Record<Colour, string>> = {
 
 // ---- colour arithmetic (sRGB, as WCAG 2 and CSS color-mix(in srgb) do it)
 
-const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-const hex = (c: number[]) => "#" + c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+export const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+export const hex = (c: number[]) => "#" + c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
 
 /** The relative luminance of a colour, 0 (black) to 1 (white). */
 export function luminance(colour: string): number {
