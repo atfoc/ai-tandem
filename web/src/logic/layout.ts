@@ -1,5 +1,7 @@
 // Widths of the resizable panes: the sidebar, and a board's chat panel; and whether the sidebar is
 // shown, with the shortcut that hides it. DOM-free.
+import type { ServerView } from "./servers.ts";
+import { localNotice, type Restart } from "./localsection.ts";
 
 export type Pane = "side" | "panel";
 export type Widths = Record<Pane, number>;
@@ -39,11 +41,10 @@ export const parseSideHidden = (saved: string | null): boolean => saved === "hid
 /** What is saved for a sidebar that is hidden, or shown. */
 export const sideSaved = (hidden: boolean) => (hidden ? "hidden" : "shown");
 
-/** Whether the control that shows a hidden sidebar has its mark: the sidebar has a notice that shows nowhere else.
- *  The page is not connected ("Reconnecting…"), or the update banner is up, of any kind, unless the user hid it. Not
- *  for a server of the list that is not connected: that is the Servers button's own dot. */
-export const sideNotice = (s: { connected: boolean; update: { banner: string; hidden: boolean } }): boolean =>
-  !s.connected || (s.update.banner !== "none" && !s.update.hidden);
+/** Whether the control that shows a hidden sidebar has its mark: the sidebar has a notice that shows nowhere else, which
+ *  is this computer's section having something to say (logic/localsection.ts localNotice). Not for another server of the
+ *  list that is not connected: that is the Servers button's own dot. page: the page's version. */
+export const sideNotice = (s: { servers: readonly ServerView[]; restart: Restart }, page: string): boolean => localNotice(s, page);
 
 const isMac = (platform: string) => /Mac|iPhone|iPad/.test(platform);
 

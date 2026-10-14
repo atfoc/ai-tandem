@@ -131,8 +131,8 @@ func TestLevel5DropRemoteGroup(t *testing.T) {
 
 	// It runs once: a second call changes nothing, not even for a group that got the name.
 	before := string(mustJSON(t, e.a.APISnapshot()))
-	e.must(e.a.UpdateGroup(sub, ptr("Remote"), nil))
-	e.must(e.a.UpdateGroup(sub, ptr("Sub"), nil))
+	e.must(e.a.UpdateGroup(sub, ptr("Remote")))
+	e.must(e.a.UpdateGroup(sub, ptr("Sub")))
 	e.must(e.a.DropRemoteGroup())
 	if after := string(mustJSON(t, e.a.APISnapshot())); after != before {
 		t.Errorf("a second change-over changed the tree:\nbefore %s\nafter  %s", before, after)

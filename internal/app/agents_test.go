@@ -16,7 +16,7 @@ import (
 func TestSnapshotAgentsFollowTheSet(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	if got := e.a.Snapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Pi}) {
+	if got := e.a.APISnapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Pi}) {
 		t.Fatalf("agents with no set = %v", got)
 	}
 
@@ -29,18 +29,18 @@ func TestSnapshotAgentsFollowTheSet(t *testing.T) {
 	}
 	set := usable.NewWith(map[model.AgentKind]string{model.Claude: "claude", model.Cursor: "cursor", model.Pi: "pi"}, look)
 	e.a.Agents = set
-	if got := e.a.Snapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Pi}) {
+	if got := e.a.APISnapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Pi}) {
 		t.Fatalf("agents = %v", got)
 	}
 	have["cursor"] = true
 	delete(have, "claude")
 	set.Refresh()
-	if got := e.a.Snapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Cursor, model.Pi}) {
+	if got := e.a.APISnapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Cursor, model.Pi}) {
 		t.Fatalf("agents after a change = %v", got)
 	}
 	have = map[string]bool{}
 	set.Refresh()
-	b, err := json.Marshal(e.a.Snapshot())
+	b, err := json.Marshal(e.a.APISnapshot())
 	if err != nil {
 		t.Fatal(err)
 	}

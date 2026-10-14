@@ -1,9 +1,18 @@
-// A mock of the server for the browser checks (dev/checks, run by dev/uicheck.mjs) and for working on the client
-// without the Go server and without an agent. Plain Node, no dependency; it serves web/dist.
+// A mock of the servers for the browser checks (dev/checks, run by dev/uicheck.mjs) and for working on the client
+// without a Go server and without an agent. Plain Node, no dependency; it serves web/dist.
+//
+// What it is: a fake client with the API of the connection module of the app (desktop/conn: subscribe, call, picture,
+// app, localInfo, close; createMockClient below), behind the same HTTP face as the test host (dev/hostface.mjs). The page
+// in a headless browser reaches it through its transport over HTTP (/host/call, /host/events, /host/picture, /host/app),
+// as it reaches a real server through the host. A server of the list is a "world" of the mock (this computer's is
+// "local"), and each world answers the client API (internal/server, ClientRoutes) as a server does. The mock has no
+// route of its own under /api/: the only paths that are not the face's are the controls under /mock/.
 //
 // IT IS NOT THE CONTRACT. The Go server is (internal/server, internal/chats): where the two differ, the server is
 // right and this file is wrong. Known differences:
-//   - the active-client header (X-AIWB-Client) is not required, and several tabs are all served (there is no takeover)
+//   - the app's headers (X-AIWB-Secret, -Client, -Level) are not asked for: the fake client stands in for the module that
+//     sends them. The checks of the module (a server not in the list, a path that is no call of the client API, the size
+//     of a body, a server that is not connected) are made, with its answers; its time limits are not
 //   - chats: a message gets a canned reply (a Read, a sentence) on the branch it was sent to. A message with a
 //     target makes its branch as the server does (nothing is told of the branch until the message is on it,
 //     then `branch_state`, `chat`, `tree`, then the answer names it), but no point is checked: any `at` is
@@ -26,21 +35,22 @@
 //   - a board answers a take only when the seed gave it a scene (dev/mock-ui.js); any other board is
 //     read-only with an empty scene, and no board is ever another window's. A scene is saved on the revision named
 //     (?rev=), and refused 409 "stale" on another
-//   - remote servers as sections: see "Remote servers" below for what is not as on the server
+//   - remote servers: see "Remote servers" below for what is not as on the server
 //   - a subagent's record and thread stay as they were written: nothing moves by itself, and no `sub` event goes out
 //   - a call under /api/ that has no route here answers {ok: true}
 //   - made up, with no counterpart on the server: T0 (the mock's own "now" at its start), flags.send,
-//     flags.items, flags.fork, flags.configure, flags.spawn, flags.make, flags.hello, flags.streamDown, dropStreams(),
-//     addServer(), setServerState(), removeServer(), onServer(), elsewhere(), onCalls, seedUI() and what it adds
-//     to the snapshot
+//     flags.items, flags.fork, flags.configure, flags.spawn, flags.make, flags.hello, flags.restart, flags.start, flags.mcp,
+//     flags.streamDown, dropStreams(), addServer(), setServerState(), removeServer(), resync(), onServer(), elsewhere(),
+//     onCalls, seedUI() and what it adds to the snapshot
 //
 //   cd web && npm run build && node dev/mock.mjs           then open http://127.0.0.1:4791
 //   PORT=4899 node dev/mock.mjs                            another port
 //   DIST=/some/folder node dev/mock.mjs                    serves another build of the client
 //   T0=1768478400000 node dev/mock.mjs                     the times of what it starts with are told from that moment, not from now
 //
-// Everything is in memory: a restart is a reset. It binds 127.0.0.1 only. Nothing changes by itself: but for a
-// canned reply, which plays out over a second and a half, the mock moves only when it is called.
+// Everything is in memory: a restart is a reset. It binds 127.0.0.1 only, and answers a request whose Host is not a loopback
+// name or whose Origin is not its own with 403. Nothing changes by itself: but for a canned reply, which plays out over
+// a second and a half, the mock moves only when it is called.
 //
 // What it starts with (one group "Shop" g_shop, one board b_arch in it):
 //   chats       c_plain (in the group, one turn), c_board (on the board, no message)
@@ -55,12 +65,12 @@
 // delete take its boards and chats with it (DELETE ?contents=keep moves them up instead). GET /api/dirs lists the
 // folders of a small made-up tree under /Users/demo.
 //
-// Controls (they answer the mock's state: the tabs that are connected):
+// Controls (they answer the mock's state: its pid, whether a page has the stream open and for which servers):
 //   GET  /mock/state
-//   POST /mock/snapshot   sends the snapshot again on the open stream
+//   POST /mock/snapshot   tells the list and the snapshot of every server that is connected again on the open stream (resync)
 //   POST /mock/eval       body {"code": "…"}: runs the code inside this file (an async function body; `chats`, `items`,
 //                         `boards`, `groups`, `subs`, `flags`, `send`, `snapshot`, `setSession`, `addBranch`, `seedUI`,
-//                         `setLibrary`, `release`, … are in scope) and answers {ok, r: what it returned}. Examples:
+//                         `setLibrary`, `setServers`, `release`, … are in scope) and answers {ok, r: what it returned}. Examples:
 //                           a chat at work:        setSession("c_plain", "main", { status: "tool", statusTool: "Bash" })
 //                           a chat with a name:    chats.c_new.name = "Named"; send({ type: "chat", chat: chats.c_new })
 //                           every seeded state:    return seedUI()
@@ -72,63 +82,60 @@
 // `agent` too and refuses `server` (409 `server_fixed`); GET …/items the list of the branch asked for, 404 for one
 // the chat has not; GET …/tree the messages and replies of each branch; POST …/fork the new chat.
 //
-// Remote servers (plans/remote-server-sections-contract.md, section 3). A server of the server list is another
-// machine: it has a tree of its own (groups, boards, chats, with what the mock keeps per chat and board), and
-// ids of its own, which may be the ids of things of this computer. Until the seed ran there is none. The local
-// server holds the tree of an entry that is connected, and then:
-//   - the snapshot (GET /api/state, the `snapshot` event) has it under `sections[<entry id>]`: { groups, boards,
-//     chats, states, defaults } with that server's own ids, and no group says whether it is collapsed. The
-//     snapshot's own groups, boards and chats are this computer's alone, and nothing names a server
-//   - /api/on/<entry id>/<the path of the local call after /api> is the call for a thing of that server, answered
-//     by that machine's own routes: what is made is made there, and a thing it has not is its 404 `not_found`. The
-//     local server answers itself, in this order, as internal/server/section.go does: 404 {"error":"not found"}
-//     for a path that is no call of a section, whatever the id; 404 `no_server` for an id that is no other
-//     server of the list ("local" too), in every call; 400 `not_here` for a board's …/reveal and 200 for
-//     …/unfollow, in every state of the entry; 503 `server_unreachable` ("<name> is not connected.", or that it is
-//     too old) while it holds no tree of the entry, but 200 for a board's …/release; 400 `collapsed_refused` for a
-//     PATCH of a group with `collapsed`; 400 `replace_refused` for ?replace on a draft's save (a message with it
-//     is passed on); 503 `not_held_there` for a save of a board that is being taken again on its server
-//     (flags.retake)
-//   - every event about a thing of that server is the local event with the top-level `server`: <entry id>, sent
-//     only while the tree is held: what changes on a machine that is not connected is told to nobody here
-//   - the local routes serve this computer's things only: a make with another server in its body is 400
-//     `server_refused` (POST /api/chats, POST /api/boards), a delete with ?local=1 is 400
-//     `no_record`, and GET /api/servers/{id}/items is 404
+// The servers. The list has this computer ("local", first, always there) and the servers the seed adds; each is a machine
+// ("world") with a tree of its own (groups, boards, chats, with what the mock keeps per chat and board) and ids of its own,
+// which may be the ids of things of another. Until the seed ran there is only this computer. The fake client holds one
+// subscription, which is the page's stream of all servers (contract C3.4): the list (`{app: servers}`), each entry's state
+// (`{app: server_state}`), and for each entry that is connected its stream, `hello` and `snapshot` and then the entry as
+// connected, and every later event of that machine as `{server: <entry id>, event}`. An entry that is not connected sends
+// nothing: what changes on its machine is told to nobody until its stream opens again. A call is `client.call` (the face's
+// POST /host/call): a server that is not in the list is 404 `no_server`, a path that is no row of the client API
+// (internal/server ClientRoutes) 400 `not_client_api`, a server that is not connected 503 `server_unreachable` (but …/unfollow
+// is 200 and a board's …/release 200 {"state":"none"}), and else that machine's own route answers. The snapshot is the API
+// snapshot (app.APISnapshot): agents, catalogs, home, defaultCwd, groups (none says whether it is collapsed), boards, chats,
+// states, defaults and `library` (null for a server that offers none), with `libraryNotice` when the library has a `notice`.
+//   - a make that names a server in its body is 400 `server_refused`; a PATCH of a group with `collapsed` is 400
+//     `collapsed_refused` (every server); a PATCH of a chat with a server is 409 `server_fixed`
+//   - the app operations (client.app, POST /host/app/<op>): servers.list/add/edit/remove/test/testSaved/accept keep the list
+//     (an added server is connecting, and 30 ms later connected, with a tree of its own that is empty; a secret is never
+//     kept or told), owner.restart (this computer connecting meanwhile, flags.restart = { delay, fail, version }),
+//     owner.retry (flags.start = { delay, fail: "reason" }: this computer's start fails, "Not started"), owner.status
+//     (flags.mcp = { up: false }), owner.openLog and owner.reveal (501 `not_here`, as the module's)
 // Through /mock/eval:
 //   addServer(entry, { tree, lists })       puts { id, name, address, state, … } into the list, with a machine of its
-//                                           own; lists: what it offers a new chat. Nothing is told
-//   setServerState(id, state, { tree, sectionFirst, …fields })   the entry's state changes: the pages get
-//                                           `server_state`, and `section` with the whole tree when the local server
-//                                           holds it from now on (connected; tree: false for "connected, its snapshot
-//                                           not read yet"), or with null when it held one. sectionFirst: the two in the
-//                                           other order. A page that held a board of that server is told `held` with
-//                                           the revision the board has there when the tree is back: at once, or
-//                                           flags.retake.delay ms later, and a save of the board is 503
-//                                           `not_held_there` until then, as while the local server takes it again
-//   removeServer(id)                        the entry leaves the list: `servers`, `server_lists` and `section` with null
+//                                           own (this computer's entry too); lists: what it offers a new chat. Nothing is
+//                                           told: resync() tells it. tree: false is a server connecting
+//   setServerState(id, state, { tree, …fields })   the entry's state changes ("local" too: "not_started", "too_old", …) and
+//                                           the page is told `server_state`; into "connected" its stream opens (`hello`, the
+//                                           snapshot, then the state); out of it the stream ends. A board the client held
+//                                           there is held no more. tree: false: connecting
+//   removeServer(id)                        the entry leaves the list: `servers`
+//   setServers(entries)                     the servers besides this computer's are these, in this order; the page is told (resync)
+//   resync()                                tells the list and the snapshots again; a stream of an entry added or connected
+//                                           since opens (seedUI() does it)
 //   onServer(id, () => { … })               runs code on that machine: `chats`, `items`, `groups`, `boards`,
 //                                           `scenes`, `send`, `setSession`, … are that machine's in it, and what it
-//                                           sends goes to the pages as that server's events
+//                                           sends goes to the page as that server's events
 //   await elsewhere(id, method, path, body) a change made there by its owner or another client: that machine's own
 //                                           route ("/chats", "/groups/g_x/move", "/boards/b_x?…"), whose events reach
-//                                           the pages as that server's. id "local": another window of this computer.
+//                                           the page as that server's. id "local": another window of this computer.
 //                                           Answers { status, body }
-//   onCalls                                 every call that came under /api/on/: { server, method, path, body }
+//   onCalls                                 every call the client was asked for: { server, method, path, body? }
 //   worlds[id]                              a machine as the mock holds it ("local": this computer)
-// Not as on the server: a chat's content events (`chat_items`, `tree`) go to every page while the tree is held,
-// followed or not; a board is held by whoever asks, and no `superseded`, `release_request` or `rpc` is sent; no call is ever answered 401, 502
-// `bad_answer` or 504 (but a make that waited on flags.make while its server dropped: 504 `no_answer`); an entry
-// that waits for its next try is not made to try by a call; `defaults` are always empty, and a new chat there
-// starts with that server's first agent, its default model and its default folder; a write needs no known client
-// (the server answers 409 "unknown_client" to a page with no open stream, under /api/on/ as everywhere); a save
-// of a board is taken from a page that does not hold it (the server: 409 `not_holder`).
+// Not as on the server: a chat's content events (`chat_items`, `tree`) go to the page for every chat, followed or not; a
+// board is held by whoever asks, and no `superseded`, `release_request` or `rpc` is sent; no call is ever answered 401 or
+// 502 `bad_answer` or 504 (but a make that waited on flags.make while its server dropped: 504 `no_answer`); an entry
+// that waits for its next try is not made to try by a call; `defaults` are always empty, and a new chat on another machine
+// starts with that server's first agent, its default model and its default folder; a save of a board is taken from a
+// client that does not hold it (the server: 409 `not_holder`).
 //
 // The prompt library (plans/prompt-library.md): GET /api/library and the calls that change a library answer as the
-// server does, with its rules and its sentences, and every change goes to the pages as a `library` event before the
-// call's answer. This computer's library is there from the start, empty. Through /mock/eval: `setLibrary(id, {
-// groups, prompts, connected, notice })` gives a server of the list a library, or another one, and tells the pages
-// (null takes it away: `library_removed`); `libraries[id]` is what the mock holds, `sendLibrary(id)` tells the pages
-// of a change made to it by hand. flags.library = { delay | hold | refuse } holds or refuses the calls that change one.
+// server does, with its rules and its sentences, and every change goes to the page as an `own_library` event of that
+// server before the call's answer. A server's library is its own, and a call names it as `local`. This computer's library
+// is there from the start, empty; another server has none until setLibrary gives it one. Through /mock/eval: `setLibrary(id, {
+// groups, prompts, notice })` gives a server of the list a library, or another one, and tells the page (null takes it away:
+// its next snapshot has none); `libraries[id]` is what the mock holds, `sendLibrary(id)` tells the page of a change made to it
+// by hand. flags.library = { delay | hold | refuse } holds or refuses the calls that change one.
 //
 // Knobs for the waits of the fork flows, set through /mock/eval and kept until deleted (`delete flags.send`). send,
 // items, fork, configure and spawn may name a `chat` (and `items` a `branch`) to hold for that one alone, and the
@@ -150,15 +157,12 @@
 //              = { noReply: true }                  no canned reply: the branch stays "thinking"
 //   flags.items = { delay: ms } | { fail: status }  GET …/items of a chat's branch waits, or fails
 //   flags.fork = { delay: ms } | { refuse: { … } }  POST …/fork
-//   flags.draft = { delay: ms } | { hold: true }    a save of a draft on another server (PUT /api/on/<entry id>/chats/
-//                                                   <id>/draft; `server`: of that entry alone) waits; one that waited
-//                                                   while its server dropped is 504 `no_answer`, and nothing is stored
-//   flags.retake = { delay: ms }                    after a server came back, the `held` of a board a page holds comes
-//                                                   that long after the tree, and a save of the board meanwhile is
-//                                                   503 `not_held_there` (setServerState)
-//   flags.make = { delay: ms } | { hold: true } | { refuse: { … } }   a make on another server (POST /api/on/<entry
-//                                                   id>/chats, …/boards, …/groups; `server`: of that entry
-//                                                   alone): it waits, or is refused there and nothing is made
+//   flags.draft = { delay: ms } | { hold: true }    a save of a draft on another server (PUT …/chats/<id>/draft; `server`: of that
+//                                                   entry alone) waits; one that waited while its server dropped is 504
+//                                                   `no_answer`, and nothing is stored
+//   flags.make = { delay: ms } | { hold: true } | { refuse: { … } }   a make on another server (POST /api/chats, /boards,
+//                                                   /groups; `server`: of that entry alone): it waits, or is refused there
+//                                                   and nothing is made
 //   flags.configure = { delay: ms } | { refuse: { … } }   a PATCH of agent, model, effort or folder. On a
 //                                                   fork without a message of its own a model or effort pick
 //                                                   shows the choice and "thinking" meanwhile, but for pi, as on
@@ -168,10 +172,12 @@
 //                                                   the start, "window", tells nothing there)
 //   flags.spawn = { delay: ms }                     the first message to such a fork finds no process: the fork is
 //                                                   "thinking" and still fresh for that long before the message is added
-//   flags.hello = { version, webVersion }           what GET /api/hello answers (the update notice needs a client
-//                                                   built with a version of its own: dev/shot.mjs buildDist)
-//   flags.streamDown = true; dropStreams()          cuts every open event stream and refuses new ones: the page
-//                                                   says it is reconnecting until the flag is deleted
+//   flags.hello = { version }                      what GET /api/hello answers, and the version this computer's entry shows (the page
+//                                                   compares it with its own build's)
+//   flags.streamDown = true; dropStreams()          cuts the stream the page has open and refuses a new one (503, so that the
+//                                                   page's transport is told it is closed for good); the page opens it again
+//                                                   when the flag is deleted. dropStreams() alone cuts it, and the page's
+//                                                   stream tries again by itself and starts over from its beginning
 // What the server refuses these calls with, for a knob's `refuse` (internal/server/server.go statusOf, codeOf):
 //   { status: 409, code: "busy" }        the branch, the fork or a fork's source is working
 //   { status: 429, code: "cap" }         too many branches of the chat, or agents of the app, are working (a message)
@@ -188,7 +194,8 @@ import { Readable } from "node:stream";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createHostFace, ownRequest } from "./hostface.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(process.env.DIST || path.resolve(HERE, "../dist"));
@@ -395,40 +402,38 @@ const treeOf = (id) => ({ current: curOf(chats[id]), branches: [treePart(id, "ma
 
 // ---- the stream
 
-let clients = []; // the open streams: { id (the tab's client id), res, boards: the boards of other servers it holds }
-const write = (c, m) => c.res.write(`data: ${JSON.stringify(m)}\n\n`);
-/** The events that are about a thing of a tree: one about a thing of another server carries that server's entry id. */
-const OF_A_THING = new Set(["groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "tree", "chat_items", "sub", "sub_items", "held", "release_request", "superseded", "rpc"]);
-const holding = new Set(); // the entries whose tree the local server holds: connected, and its snapshot read
-/** An event as the pages get it. One about a thing of another server has that server's ids and the top-level
- *  `server`, its group list no `collapsed`, and goes out only while the local server holds that server's tree (null
- *  otherwise: what changes on a machine that is not connected is heard of by nobody here). */
-function told(m) {
+// The fake client's one subscription (createMockClient().subscribe): { cb, opened }. `opened` holds the entries whose
+// stream has been opened for it (hello, snapshot, and then `connected`): a machine tells the subscription nothing before.
+let sub = null;
+const up = new Set(["local"]);  // the entries that are connected: their streams are open for a subscription
+const heldBoards = new Set();   // the boards the client holds (a take), by pageKey: a server forgets them when its stream ends
+const CLIENT_ID = "6d6f636b-0000-4000-8000-000000000001"; // the app's id as the mock states it
+/** Hands an envelope to the subscription; a copy, so that what changes later in the mock does not change what was told. */
+const emit = (env) => { if (sub) sub.cb(clone(env)); };
+/** Tells the subscription an event of the machine a call works on, as that server's: only once its stream is open. */
+const send = (m) => {
   const id = world().id;
-  if (id === "local" || !OF_A_THING.has(m.type)) return m;
-  if (!holding.has(id)) return null;
-  return { ...m, ...(m.type === "groups" ? { groups: m.groups.map(({ collapsed: _, ...g }) => g) } : {}), server: id };
-}
-const send = (m) => { const out = told(m); if (out) for (const c of clients) write(c, out); };
-/** What a page names a thing of the machine a call works on by, in the mock's own lists of what a page holds. */
+  if (sub?.opened.has(id)) emit({ server: id, event: m.type === "groups" ? { ...m, groups: m.groups.map(({ collapsed: _, ...g }) => g) } : m }); // (no group says whether it is collapsed)
+};
+/** What a page names a thing of the machine a call works on by, in the mock's own lists of what a client holds. */
 const pageKey = (id) => (world().id === "local" ? id : `${world().id}~${id}`);
 /** The branch records of the machine a call works on: one per branch of every chat that has more than main. */
 const statesNow = () => Object.keys(sessions).filter((id) => chats[id]).flatMap((id) => Object.keys(sessions[id]).map((b) => branchState(id, b)));
-/** A server's whole tree, as the local server holds it: that server's own ids, and no group says whether it is collapsed. */
-const sectionTree = (id) => onServer(id, () => ({ groups: groups.map(({ collapsed: _, ...g }) => g), boards: Object.values(boards), chats: Object.values(chats), states: statesNow(),
-  defaults: { last: {}, groups: {} } }));
-/** GET /api/state and the `snapshot` event: this computer's own tree, and under `sections` the tree of each server held. */
-const snapshot = () => here.run(worlds.local, () => ({
-  groups: [...groups], boards: Object.values(boards),
-  chats: Object.values(chats),
-  defaults: { last: {}, groups: {} }, catalogs, home: HOME, defaultCwd: SHOP, dataDir: DATA,
-  ...extra, // nothing until the seed ran
-  sections: Object.fromEntries([...holding].filter((id) => worlds[id]).map((id) => [id, sectionTree(id)])),
-  libraries: libraryList(),
-  ...(Object.keys(sessions).length ? { states: statesNow() } : {}),
-}));
-/** Cuts every open event stream. With flags.streamDown a new one is cut as it opens: the page stays "reconnecting". */
-function dropStreams() { for (const c of clients) c.res.destroy(); clients = []; }
+/** The snapshot of the machine a call works on, as its stream starts with it and GET /api/state answers it (app.APISnapshot):
+ *  its tree, its lists and its prompt library. No group says whether it is collapsed. */
+const snapshot = () => {
+  const lib = libraries[world().id], lists = listsHere();
+  return {
+    agents: lists.agents, catalogs: lists.catalogs, home: lists.home, defaultCwd: lists.defaultCwd,
+    groups: groups.map(({ collapsed: _, ...g }) => g), boards: Object.values(boards), chats: Object.values(chats),
+    defaults: { last: {}, groups: {} }, states: statesNow(),
+    library: lib ? { groups: lib.groups, prompts: lib.prompts } : null,
+    ...(lib?.notice ? { libraryNotice: lib.notice } : {}),
+  };
+};
+/** Cuts the stream the page has open (the face of the mock's server): the page connects again by itself, and the stream
+ *  starts from its beginning. With flags.streamDown a new one is refused: the transport is told it is closed for good. */
+function dropStreams() { for (const f of faces) f.drop(); }
 
 /** Adds the states of the composer and chat UI work (dev/mock-ui.js, read and evaluated inside this file): all of
  *  its sections, or the ones named. It sends a snapshot and answers the list of its states. Called through
@@ -445,8 +450,6 @@ const fail = (code, error, word) => ({ fail: [code, error, word] }); // word: th
 const subtree = (id) => { const out = new Set([id]); for (let grew = true; grew;) { grew = false; for (const g of groups) if (!out.has(g.id) && g.parent && out.has(g.parent)) { out.add(g.id); grew = true; } } return out; };
 /** A call's JSON body, {} for none; read once, and the same for whoever asks again. */
 const body = (req) => (req.parsed ??= new Promise((ok) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { try { ok(b ? JSON.parse(b) : {}); } catch { ok({}); } }); }));
-/** The page a call is of, by its client id: the stream it has open; undefined for a call of no page. */
-const clientOf = (req) => clients.find((c) => c.id === req.headers["x-aiwb-client"]);
 const json = (res, v, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(v)); };
 const answer = (res, v) => (v && v.fail ? json(res, { error: v.fail[1], ...(v.fail[2] ? { code: v.fail[2] } : {}) }, v.fail[0]) : json(res, v ?? { ok: true }));
 /** The knob `name` of flags as it holds for a chat (and a branch): {} when it is not set, or names another one. */
@@ -468,70 +471,118 @@ function release(name) {
 }
 /** A knob's refusal as an answer: 409 "busy" unless it says otherwise. */
 const refusal = (r) => fail(r.status ?? 409, r.error ?? "the mock refused it", r.code ?? "busy");
-const mockState = () => ({ clients: clients.map((c) => ({ id: c.id })) });
+const mockState = () => ({ pid: process.pid, subscribed: !!sub, streams: sub ? [...sub.opened] : [] });
 
-// ---- the server list, and the trees the local server holds of it
+// ---- the server list
 
-/** An entry of the server list that is another server; null for this computer's and for an id the list lacks. */
-const entryOf = (id) => extra.servers?.find((x) => x.id === id && !x.local) ?? null;
-/** What the local server answers a call for a thing of a server it holds no tree of (contract 3.5): that the server
- *  is not connected, or, of one that is too old, that it is. */
+const LOCAL = { id: "local", local: true, name: "This computer", state: "connected", version: "dev" };
+extra.servers = [LOCAL];
+/** An entry of the list, this computer's included; null for an id the list lacks. */
+const entryById = (id) => extra.servers.find((x) => x.id === id) ?? null;
+/** An entry of the list that is another server; null for this computer's and for an id the list lacks. */
+const entryOf = (id) => (id === "local" ? null : entryById(id));
+/** An entry as the page is told of it (a ServerView): what the list holds, and the agents the server offers. Never a secret. */
+const viewOf = (e) => {
+  const { secret: _, ...v } = e;
+  if (e.id === "local" && flags.hello?.version) v.version = flags.hello.version; // (the version this computer's server reports)
+  const agents = extra.lists?.[e.id]?.agents ?? (e.id === "local" ? extra.agents ?? Object.keys(catalogs) : undefined);
+  return { ...v, ...(agents && !v.agents ? { agents } : {}) };
+};
+/** The entry as the subscription is told of it now: one whose stream is not open for it yet is still connecting. */
+const shown = (e) => ({ ...viewOf(e), ...(sub && up.has(e.id) && !sub.opened.has(e.id) ? { state: "connecting" } : {}) });
+const serversEvent = () => ({ app: { type: "servers", servers: extra.servers.map(shown), notice: extra.notice ?? "" } });
+/** What a call of a server that is not connected answers (contract C3.7): that it is not connected, or, of one that is too
+ *  old, that it is. */
 const awayAnswer = (entry) => fail(503, entry.state === "too_old" ? `${entry.name} is too old: update the server on that machine.` : `${entry.name} is not connected.`, "server_unreachable");
 
+/** The stream of a connected entry opens for the subscription, in the order the module keeps (C3.4): hello and the snapshot, as
+ *  the server sent them, and then the entry as connected. */
+function openStream(id) {
+  if (!sub || sub.opened.has(id) || !up.has(id) || !worlds[id]) return;
+  emit({ server: id, event: { type: "hello", client: CLIENT_ID } });
+  onServer(id, () => emit({ server: id, event: { type: "snapshot", ...snapshot() } }));
+  sub.opened.add(id);
+  emit({ app: { type: "server_state", server: viewOf(entryById(id)) } });
+}
+/** The stream of an entry ends: the server forgets the boards the client held, and nothing of it is told until it opens again. */
+function closeStream(id) {
+  sub?.opened.delete(id);
+  for (const k of [...heldBoards]) if (id === "local" ? !k.includes("~") : k.startsWith(id + "~")) heldBoards.delete(k);
+}
+
 /** Puts a server into the list, or changes the one with its id, and gives it a machine of its own if it has none: its
- *  tree is empty until something is made on it (onServer). The local server holds the tree of an entry that is
- *  connected; `tree: false` is one whose snapshot has not been read yet. lists: what that server offers a new chat.
- *  Nothing is told: the seed sends a snapshot. */
-function addServer(entry, { tree = entry.state === "connected", lists } = {}) {
-  extra.servers ??= [{ id: "local", local: true, name: "This computer", state: "connected" }];
+ *  tree is empty until something is made on it (onServer). An entry that is connected has its stream open, for a
+ *  subscription, from the next resync(); `tree: false` is a server that is connecting (its snapshot not read yet): the
+ *  entry is `connecting` whatever state it was given. lists: what that server offers a new chat. Nothing is told:
+ *  the seed calls resync(). */
+function addServer(entry, { tree = true, lists } = {}) {
   const at = extra.servers.findIndex((x) => x.id === entry.id);
+  if (!tree && entry.state === "connected") entry = { ...entry, state: "connecting" };
   if (at < 0) extra.servers.push(entry); else extra.servers[at] = entry;
   worlds[entry.id] ??= newWorld(entry.id);
-  if (tree) holding.add(entry.id); else holding.delete(entry.id);
+  if (entry.state === "connected") up.add(entry.id); else { up.delete(entry.id); closeStream(entry.id); }
   if (lists) { (extra.lists ??= {})[entry.id] = lists; for (const dir of [lists.home, lists.defaultCwd]) if (dir) TREE[dir] ??= []; }
   else if (extra.lists) delete extra.lists[entry.id];
   return entry;
 }
 
-/** Changes the state of an entry of the server list and tells the pages: `server_state`, and `section` with that
- *  server's whole tree when the local server holds it from now on (connected; `tree: false`: connected, its snapshot
- *  not read yet), or with null when it held one and holds none any more. sectionFirst: the two events in the other
- *  order, which is not fixed. more: other fields of the entry (detail, version). With the tree back, each page that
- *  held a board of that server through the outage is given it again, at the revision it has there (`held`). */
-function setServerState(id, state, { tree = state === "connected", sectionFirst = false, ...more } = {}) {
-  const entry = entryOf(id);
+/** Replaces the servers of the list besides this computer's by `entries`, in that order (each as addServer takes it), and
+ *  tells the subscription (resync). */
+function setServers(entries) {
+  for (const e of extra.servers) if (e.id !== "local") { up.delete(e.id); closeStream(e.id); }
+  extra.servers = [extra.servers[0]];
+  for (const e of entries) addServer(e);
+  resync();
+}
+
+/** Tells the subscription the whole list and every machine's snapshot again (a seed or a hand-made change): the list first,
+ *  then for each entry that is connected its snapshot, and its stream opens if it was not open. A stream of an entry
+ *  that is not connected any more is ended. */
+function resync() {
+  if (!sub) return;
+  for (const id of [...sub.opened]) if (!up.has(id) || !entryById(id)) closeStream(id);
+  const fresh = extra.servers.filter((e) => up.has(e.id) && !sub.opened.has(e.id) && worlds[e.id]);
+  emit(serversEvent());
+  for (const id of sub.opened) onServer(id, () => emit({ server: id, event: { type: "snapshot", ...snapshot() } }));
+  for (const e of fresh) openStream(e.id);
+}
+
+/** By entry id: the version an entry showed before setServerState made it too old. */
+const beforeTooOld = new Map();
+
+/** Changes the state of an entry of the server list (this computer's too) and tells the subscription. Into `connected`
+ *  its stream opens: hello, the snapshot, then the entry as connected; out of it the stream ends and the entry is told
+ *  as it is now (`server_state`), and nothing of that server follows. `tree: false`: connecting. more: other fields of
+ *  the entry (detail, version; the version a `too_old` gives is shown only while it is too old). With the stream back, a board the client held is held no more: the page takes it again. */
+function setServerState(id, state, { tree = true, ...more } = {}) {
+  const entry = entryById(id);
   if (!entry || !worlds[id]) return false;
-  const had = holding.has(id);
+  if (state === "connected" && !tree) state = "connecting";
+  // The version a too-old server reports is shown while it is too old; in any other state the entry shows the version it had before
+  // (or the one the call gives).
+  if (state === "too_old") { if (more.version !== undefined && !beforeTooOld.has(id)) beforeTooOld.set(id, entry.version); }
+  else if (beforeTooOld.has(id)) { if (!("version" in more)) more.version = beforeTooOld.get(id); beforeTooOld.delete(id); }
   Object.assign(entry, more, { state });
   if (state === "connected") delete entry.detail;
-  if (tree) holding.add(id); else holding.delete(id);
-  const events = [{ type: "server_state", server: entry }, ...(tree ? [{ type: "section", server: id, tree: sectionTree(id) }] : had ? [{ type: "section", server: id, tree: null }] : [])];
-  for (const m of sectionFirst ? events.reverse() : events) send(m);
-  if (!tree) return true;
-  // A board a page here holds is taken again on its server, and the page is told `held` with the revision the board
-  // has there: at once, or flags.retake.delay later. Until then a save of it is 503 `not_held_there` (sectionRoute).
-  const wait = Math.max(0, Number(flags.retake?.delay) || 0);
-  for (const c of clients) for (const k of c.boards) {
-    const board = k.startsWith(id + "~") ? k.slice(id.length + 1) : "", sc = board ? worlds[id].scenes[board] : null;
-    if (!board) continue;
-    if (!sc || !worlds[id].boards[board]) { c.boards.delete(k); continue; }
-    const held = () => { c.retaking.delete(k); if (holding.has(id) && c.boards.has(k) && worlds[id].boards[board]) write(c, { type: "held", server: id, board, rev: worlds[id].scenes[board].rev }); };
-    if (wait) { c.retaking.add(k); setTimeout(held, wait); } else held();
+  if (state === "connected") {
+    const was = sub?.opened.has(id);
+    up.add(id);
+    if (was) emit({ app: { type: "server_state", server: viewOf(entry) } }); else openStream(id);
+  } else {
+    up.delete(id); closeStream(id);
+    emit({ app: { type: "server_state", server: viewOf(entry) } });
   }
   return true;
 }
 
-/** Takes an entry out of the server list, as its removal in the Servers dialog does, and tells the pages. That server
+/** Takes an entry out of the server list, as its removal in the Servers dialog does, and tells the subscription. That server
  *  is told nothing: its machine stays as it is. */
 function removeServer(id) {
   if (!entryOf(id)) return false;
   extra.servers = extra.servers.filter((x) => x.id !== id);
-  holding.delete(id);
+  up.delete(id); closeStream(id);
   if (extra.lists) delete extra.lists[id];
-  send({ type: "servers", servers: extra.servers });
-  send({ type: "server_lists", server: id, lists: null });
-  if (libraries[id]) { delete libraries[id]; send({ type: "library_removed", server: id }); }
-  send({ type: "section", server: id, tree: null });
+  emit(serversEvent());
   return true;
 }
 
@@ -691,11 +742,9 @@ async function configureChat(own, branch, b) {
   return null;
 }
 
-/** What a delete that asks for the local record alone is answered: this computer keeps no record of a thing of another server. */
-const NO_RECORD = [400, "there is no record to remove: nothing of another server is kept here", "no_record"];
-/** What a make on this computer that names another server is answered: a thing is made on a server by the calls under /api/on/. */
-const SERVER_REFUSED = [400, "this call is for this computer: a thing of another server is reached under /api/on/<server>", "server_refused"];
-const namesServer = (b) => b.server !== undefined && b.server !== "local";
+/** What a make that names a server is answered: a client makes a thing on the server it called, whatever the body says. */
+const SERVER_REFUSED = [400, "an API client cannot name a server", "server_refused"];
+const namesServer = (b) => b.server !== undefined;
 
 async function chatRoute(req, res, id, rest) {
   const M = req.method, own = chats[id], query = new URL(req.url, "http://x").searchParams, named = query.get("branch");
@@ -739,7 +788,6 @@ async function chatRoute(req, res, id, rest) {
     return answer(res, refused ?? { ok: true, chat: own }); // the chat as it is after the change, as the server
   }
   if (rest === "" && M === "DELETE") {
-    if (query.has("local")) return answer(res, fail(...NO_RECORD));
     delete chats[id]; send({ type: "chat_removed", id }); return answer(res);
   }
   if (rest === "/draft" && M === "PUT") {
@@ -768,7 +816,12 @@ function groupRoute(req, res, id, rest, b, u) {
   const M = req.method, g = groups.find((x) => x.id === id);
   if (!g) return answer(res, fail(...ERR.group));
   const ids = subtree(id), within = (x) => ids.has(x.group);
-  if (rest === "" && M === "PATCH") { for (const k of ["name", "collapsed"]) if (b[k] !== undefined) g[k] = b[k]; send({ type: "groups", groups }); return answer(res); }
+  if (rest === "" && M === "PATCH") {
+    if (Object.keys(b).some((k) => k.toLowerCase() === "collapsed")) return answer(res, fail(400, "an API client cannot collapse a group", "collapsed_refused"));
+    if (b.name !== undefined) g.name = b.name;
+    send({ type: "groups", groups });
+    return answer(res);
+  }
   if (rest === "/move") { if (b.parent) g.parent = b.parent; else delete g.parent; send({ type: "groups", groups }); return answer(res); }
   if (rest === "/archive" || rest === "/unarchive") {
     const arch = rest === "/archive", op = arch ? newId("op_") : g.archiveOp;
@@ -796,20 +849,19 @@ function groupRoute(req, res, id, rest, b, u) {
   return answer(res);
 }
 
-// ---- the prompt library (internal/library, internal/server/library.go): one library per server
+// ---- the prompt library (internal/library, internal/server/library.go): one library per server, its own
 
-const libraries = { local: { groups: [], prompts: [] } }; // by server id: { groups, prompts, connected: false for a copy of a server that dropped, notice }
+const libraries = { local: { groups: [], prompts: [] } }; // by server id: { groups, prompts, notice }. A server with none offers none
 const LIB = { name: 80, text: 100000, depth: 16 };
-const libraryName = (id) => (id === "local" ? "This computer" : extra.servers?.find((x) => x.id === id)?.name ?? id);
-const libraryView = (id) => ({ server: id, name: libraryName(id), connected: libraries[id].connected !== false, ...(libraries[id].notice ? { notice: libraries[id].notice } : {}), groups: libraries[id].groups, prompts: libraries[id].prompts });
-/** GET /api/library and the snapshot's list: this computer's first, then the servers' in the order of the server list. */
-const libraryList = () => ["local", ...(extra.servers ?? []).map((x) => x.id).filter((id) => id !== "local")].filter((id) => libraries[id]).map(libraryView);
-const sendLibrary = (id) => send({ type: "library", library: libraryView(id) });
-/** Gives a server a library, or another one, and tells the pages; null takes it away, as when its server leaves the list. */
+/** A library as a server answers GET /api/library with it: its own, named for what a client of it calls it. */
+const libraryView = (id) => ({ server: "local", name: "This computer", connected: true, groups: libraries[id].groups, prompts: libraries[id].prompts });
+/** After every change the client gets the library whole, in an `own_library` event of its server. */
+const sendLibrary = (id) => onServer(id, () => send({ type: "own_library", groups: libraries[id].groups, prompts: libraries[id].prompts }));
+/** Gives a server a library, or another one, and tells the subscription (`own_library`). null takes it away: the next
+ *  snapshot of that server has none (a server never takes its library away while it runs). */
 function setLibrary(id, lib) {
-  if (lib) { libraries[id] = { groups: [], prompts: [], ...lib }; return sendLibrary(id); }
+  if (lib) { const { connected: _, ...rest } = lib; libraries[id] = { groups: [], prompts: [], ...rest }; return sendLibrary(id); }
   delete libraries[id];
-  send({ type: "library_removed", server: id });
 }
 /** A name as the library keeps it, or its refusal: empty, too long, with "/" or a line break, or taken in its group whatever the case. */
 function libraryNameOf(lib, raw, parent, self) {
@@ -834,14 +886,13 @@ function libraryBelow(lib, id) {
 /** How many groups deep a group is (0 for the top), and how many levels of groups a group and those below it have. */
 const libraryDepth = (lib, id) => { let d = 0; for (let g = lib.groups.find((x) => x.id === id); g && d <= lib.groups.length; g = lib.groups.find((x) => x.id === g.parent)) d++; return d; };
 const libraryHeight = (lib, id) => 1 + Math.max(0, ...lib.groups.filter((g) => g.parent === id).map((g) => libraryHeight(lib, g.id)));
-/** The calls that change the library of `server`: kind "groups" or "prompts", id of the item for a change or a delete. */
+/** The calls that change the library of the machine a call works on: kind "groups" or "prompts", id of the item for a change or a delete. */
 async function libraryRoute(req, res, server, kind, id) {
   const M = req.method, b = await body(req), k = flags.library ?? {};
   await pause(k);
   if (k.refuse) return answer(res, refusal(k.refuse));
-  const lib = libraries[server], groups = kind === "groups", word = groups ? "group" : "prompt";
+  const lib = server === "local" ? libraries[world().id] : null, groups = kind === "groups", word = groups ? "group" : "prompt"; // ({server} is "local" only: a server's library is its own)
   if (!lib) return answer(res, fail(404, "This server has no prompt library here.", "no_server"));
-  if (lib.connected === false) return answer(res, fail(503, `${libraryName(server)} is not connected: its prompts cannot be changed until it is back.`, "server_unreachable"));
   const list = groups ? lib.groups : lib.prompts, hasGroup = (g) => g === "" || lib.groups.some((x) => x.id === g);
   const tooLong = (text) => typeof text === "string" && [...text].length > LIB.text;
   if (M === "POST" && !id) {
@@ -853,7 +904,7 @@ async function libraryRoute(req, res, server, kind, id) {
     if (groups && libraryDepth(lib, parent) + 1 > LIB.depth) return answer(res, fail(409, `Groups can be at most ${LIB.depth} deep.`, "too_deep"));
     const item = { id: (groups ? "g_" : "p_") + Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join(""), name, parent, ...(groups ? {} : { text: b.text ?? "" }) };
     list.push(item);
-    sendLibrary(server);
+    sendLibrary(world().id);
     return answer(res, { [word]: item });
   }
   const item = list.find((x) => x.id === id);
@@ -868,14 +919,14 @@ async function libraryRoute(req, res, server, kind, id) {
     if (!groups && tooLong(b.text)) return answer(res, fail(413, "The text of a prompt can have at most 100,000 characters.", "text_too_long"));
     if (groups && libraryDepth(lib, parent) + libraryHeight(lib, id) > LIB.depth) return answer(res, fail(409, `Groups can be at most ${LIB.depth} deep.`, "too_deep"));
     Object.assign(item, { name, parent }, !groups && b.text !== undefined ? { text: b.text } : {});
-    sendLibrary(server);
+    sendLibrary(world().id);
     return answer(res, { [word]: item });
   }
   if (M === "DELETE") {
     const gone = groups ? libraryBelow(lib, id) : null;
     if (gone) { lib.groups = lib.groups.filter((g) => !gone.has(g.id)); lib.prompts = lib.prompts.filter((p) => !gone.has(p.parent)); }
     else lib.prompts = lib.prompts.filter((p) => p.id !== id);
-    sendLibrary(server);
+    sendLibrary(world().id);
     return answer(res, { ok: true });
   }
   return answer(res, fail(405, "method not allowed"));
@@ -915,7 +966,7 @@ async function treeRoute(req, res, p, u) {
   if ((m = /^\/boards\/([^/]+)(\/.*)?$/.exec(p))) {
     const x = boards[m[1]], rest = m[2] ?? "", b = M === "GET" ? {} : await body(req);
     if (!x) return answer(res, fail(...ERR.board));
-    const sc = scenes[x.id], mine = clientOf(req)?.boards; // the seed's: a board that this window may hold, with a stored drawing
+    const sc = scenes[x.id], mine = heldBoards; // the seed's: a board that this client may hold, with a stored drawing
     if (sc && rest === "/scene" && M === "GET") { res.writeHead(200, { "Content-Type": "application/json", "X-AIWB-Scene-Rev": String(sc.rev) }); return res.end(JSON.stringify(sc.scene)); }
     if (sc && rest === "/scene" && M === "PUT") { // on the revision the drawing was read at (?rev=): one stored at another is not replaced
       const base = u.searchParams.get("rev");
@@ -929,7 +980,6 @@ async function treeRoute(req, res, p, u) {
     if (rest === "" && M === "PATCH") { x.group = b.group; send({ type: "board", board: x }); return json(res, x); }
     if (rest === "/archive" || rest === "/unarchive") { if (rest === "/archive") Object.assign(x, { archived: true, archiveOp: newId("op_") }); else { delete x.archived; delete x.archiveOp; } send({ type: "board", board: x }); return json(res, { ok: true }); }
     if (rest === "" && M === "DELETE") {
-      if (u.searchParams.has("local")) return answer(res, fail(...NO_RECORD));
       for (const c of Object.values(chats)) if (c.board === x.id) { delete chats[c.id]; send({ type: "chat_removed", id: c.id }); }
       delete boards[x.id]; delete scenes[x.id]; send({ type: "board_removed", id: x.id });
     }
@@ -938,102 +988,282 @@ async function treeRoute(req, res, p, u) {
   return false;
 }
 
-/** The calls of a section the local server knows (contract 3.4), by method and by the path after /api/on/{server}. */
-const ON_ROUTES = [
-  ["POST", /^\/(groups|chats|boards)$/],
-  ["PATCH DELETE", /^\/groups\/[^/]+$/], ["POST", /^\/groups\/[^/]+\/(move|archive|unarchive)$/],
-  ["GET PATCH DELETE", /^\/chats\/[^/]+$/], ["GET", /^\/chats\/[^/]+\/(context|items|tree|subagents\/[^/]+\/items|images\/[^/]+)$/],
-  ["POST", /^\/chats\/[^/]+\/(unfollow|interrupt|permission|open|fork|archive|unarchive|messages|images)$/], ["PUT", /^\/chats\/[^/]+\/(label|draft)$/],
-  ["POST", /^\/boards\/[^/]+\/(take|release|rename|archive|unarchive|seen|reveal)$/], ["GET PUT", /^\/boards\/[^/]+\/scene$/], ["PATCH DELETE", /^\/boards\/[^/]+$/],
-];
+// ---- the client API: the fake client behind the face (the API of desktop/conn, C3.2)
 
-/** /api/on/{server}/…: the call of a thing of a section. The local server answers some itself, and passes the others
- *  on to that server, whose answer is the page's (contract 3.4 and 3.5): here that machine's own routes answer, with
- *  its own ids. Every call counts in `onCalls`, as a check reads it: { server, method, path (with its query), body? }. */
-const onCalls = [];
-async function sectionRoute(req, res, id, p, u) {
-  const M = req.method, entry = entryOf(id);
-  const upload = /^\/chats\/[^/]+\/images$/.test(p) && M === "POST"; // (its body is bytes, read by its own route)
-  const drain = async () => { if (upload) for await (const _ of req); else await body(req); };
-  onCalls.push({ server: id, method: M, path: p + u.search, ...(M !== "GET" && !upload ? { body: await body(req) } : {}) });
-  // A path that is no row of the table is 404 before anything else, whatever the id names (internal/server/section.go sectionFirst).
-  if (!ON_ROUTES.some(([methods, path]) => methods.split(" ").includes(M) && path.test(p))) { await drain(); return json(res, { error: "not found" }, 404); }
-  let m;
-  // The entry decides next, in every row: an id that is no entry is 404 no_server (sectionTable.always).
-  if (!entry || !worlds[id]) { await drain(); return answer(res, fail(404, "This server is not in the list.", "no_server")); }
-  // answered here, whatever the entry's state
-  if (/^\/boards\/[^/]+\/reveal$/.test(p)) return answer(res, fail(400, "A board on another server has no file on this computer", "not_here"));
-  if (/^\/chats\/[^/]+\/unfollow$/.test(p)) return json(res, { ok: true });
-  if (!holding.has(id)) { // not connected, or connected with its snapshot not read yet: nothing is sent
-    await drain();
-    if ((m = /^\/boards\/([^/]+)\/release$/.exec(p))) return json(res, { state: clientOf(req)?.boards.delete(`${id}~${m[1]}`) ? "free" : "none" });
-    return answer(res, awayAnswer(entry));
-  }
-  if (/^\/groups\/[^/]+$/.test(p) && M === "PATCH" && Object.keys(await body(req)).some((k) => k.toLowerCase() === "collapsed")) return answer(res, fail(400, "whether a group of another server shows collapsed is kept by the page alone", "collapsed_refused"));
-  // (a draft's save alone: a message with ?replace is passed on as any other, and that server does not read the word)
-  if (/^\/chats\/[^/]+\/draft$/.test(p) && M === "PUT" && u.searchParams.has("replace")) return answer(res, fail(400, "a draft is not replaced: save it on the counter it was typed on", "replace_refused"));
-  // flags.draft: a save of a draft on another server waits; one that waited while its server dropped never got there (504 `no_answer`).
-  if (/^\/chats\/[^/]+\/draft$/.test(p) && M === "PUT" && flags.draft && (!flags.draft.server || flags.draft.server === id)) {
-    await pause(flags.draft);
-    if (!holding.has(id)) { await drain(); return answer(res, fail(504, `${entry.name} did not answer.`, "no_answer")); }
-  }
-  // A save of a board that this computer's server is still taking again on its server, after that server came back
-  // (flags.retake): "not yet". The `held` that ends the re-take follows (setServerState).
-  if ((m = /^\/boards\/([^/]+)\/scene$/.exec(p)) && M === "PUT" && clientOf(req)?.retaking?.has(`${id}~${m[1]}`)) { await drain(); return answer(res, fail(503, `The board is being taken again on ${entry.name}.`, "not_held_there")); }
-  if (M === "POST" && /^\/(groups|chats|boards)$/.test(p)) { // flags.make: a make on another server waits, or is refused by that server
-    const k = flags.make && (!flags.make.server || flags.make.server === id) ? flags.make : {};
-    await pause(k);
-    if (k.refuse) { await drain(); return answer(res, refusal(k.refuse)); }
-    if (!holding.has(id)) { await drain(); return answer(res, fail(504, `${entry.name} did not answer.`, "no_answer")); } // (it dropped while the make waited)
-  }
-  return await onServer(id, () => treeRoute(req, res, p, u));
+/** The calls of the client API (plans/app-as-client-plan.md, C1.4), as the module checks them before it sends one. */
+export const CLIENT_ROUTES = [
+  "GET /api/hello", "GET /api/events", "GET /api/state", "POST /api/client/flushed",
+  "POST /api/groups", "PATCH /api/groups/{id}", "POST /api/groups/{id}/move", "DELETE /api/groups/{id}", "POST /api/groups/{id}/archive", "POST /api/groups/{id}/unarchive",
+  "POST /api/chats", "GET /api/chats/{id}", "GET /api/chats/{id}/items", "GET /api/chats/{id}/tree", "GET /api/chats/{id}/context", "GET /api/chats/{id}/subagents/{sid}/items",
+  "PATCH /api/chats/{id}", "POST /api/chats/{id}/messages", "POST /api/chats/{id}/interrupt", "POST /api/chats/{id}/permission", "PUT /api/chats/{id}/label", "PUT /api/chats/{id}/draft",
+  "POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}", "POST /api/chats/{id}/open", "POST /api/chats/{id}/fork", "POST /api/chats/{id}/archive",
+  "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow", "GET /api/dirs", "GET /api/usage/{agent}",
+  "POST /api/boards", "GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release", "POST /api/boards/{id}/rename",
+  "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}", "POST /api/rpc-reply",
+  "GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}", "DELETE /api/library/{server}/groups/{id}",
+  "POST /api/library/{server}/prompts", "PATCH /api/library/{server}/prompts/{id}", "DELETE /api/library/{server}/prompts/{id}",
+];
+const CALL_ROWS = CLIENT_ROUTES.filter((r) => r !== "GET /api/events").map((r) => { const [method, pat] = r.split(" "); return [method, new RegExp("^" + pat.replace(/\{[^}]+\}/g, "([^/]+)") + "$")]; });
+/** Whether `method pathname` is a call of the client API: a row of the table, whose segments are none of "." and "..". */
+const isCall = (method, pathname) => CALL_ROWS.some(([m, re]) => m === method && re.test(pathname)) && !/(^|\/)(\.|%2e){1,2}(\/|$)/i.test(pathname);
+
+/** A call's answer the fake client makes up itself, as the module's are: the sentence and the code in JSON. */
+const synth = (status, error, code) => ({ status, text: JSON.stringify({ error, ...(code ? { code } : {}) }), sceneRev: null });
+const synthFail = (f) => synth(...f.fail);
+const MIB = 1 << 20;
+const onCalls = []; // every call the client was asked to make: { server, method, path (with its query), body? }
+const aborted = () => Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+/** Waits for p, or ends with an AbortError when the signal aborts first (the call goes on in the mock, as it does in a server). */
+const unlessAborted = (p, signal) => (!signal ? p : new Promise((ok, no) => {
+  if (signal.aborted) return no(aborted());
+  signal.addEventListener("abort", () => no(aborted()), { once: true });
+  p.then(ok, no);
+}));
+
+/** A request for the routes above: the method, the path and query, the body as the client was given it. */
+function fakeReq(method, url, body) {
+  const bytes = body === undefined ? null : body.json !== undefined ? Buffer.from(body.json) : Buffer.from(body.bytes);
+  const type = body === undefined ? undefined : body.json !== undefined ? "application/json" : body.type;
+  return Object.assign(Readable.from(bytes ? [bytes] : []), { method, url, headers: type ? { "content-type": type } : {} });
+}
+/** A response that collects what a route writes: status, headers (lower-cased) and the bytes. */
+function fakeRes() {
+  const r = { status: 200, headers: {}, chunks: [], headersSent: false,
+    writeHead(code, headers = {}) { r.status = code; r.headersSent = true; for (const [k, v] of Object.entries(headers)) r.headers[k.toLowerCase()] = String(v); return r; },
+    write(d) { r.chunks.push(Buffer.from(d)); return true; },
+    end(d) { if (d !== undefined) r.chunks.push(Buffer.from(d)); r.headersSent = true; } };
+  return r;
 }
 
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon" };
-
-const server = http.createServer(async (req, res) => {
-  const u = new URL(req.url, "http://x"), p = u.pathname, M = req.method;
+/** The routes of the client API of the machine a call works on, by the path with /api (a call that is a row of the table). */
+async function apiRoute(req, res, u) {
+  const p = u.pathname, M = req.method;
   let m;
-  try {
-    if (p === "/api/events") {
-      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
-      if (flags.streamDown) return void req.socket.destroy(); // the browser tries again by itself
-      const c = { id: u.searchParams.get("client") ?? "", res, boards: new Set(), retaking: new Set() }; // every tab is "active": the mock has no takeover
-      clients.push(c);
-      write(c, { type: "hello", active: true }); write(c, { type: "snapshot", ...snapshot() });
-      req.on("close", () => { clients = clients.filter((x) => x !== c); });
-      return;
-    }
-    if (p.startsWith("/mock/")) {
-      if (M === "POST") {
-        const mb = await body(req);
-        if (p === "/mock/eval") { try { const r = await eval(`(async () => { ${mb.code} })()`); return json(res, { ok: true, r: r ?? null }); } catch (e) { return json(res, { error: String(e.stack ?? e) }, 500); } }
-        else if (p === "/mock/snapshot") send({ type: "snapshot", ...snapshot() });
-        else return json(res, { error: "no such control" }, 404);
-      }
-      return json(res, mockState());
-    }
-    if (p === "/api/hello") return json(res, { app: "ai-whiteboard", version: flags.hello?.version ?? "dev", pid: process.pid, webVersion: flags.hello?.webVersion ?? "dev" });
-    if (p === "/api/state") return json(res, snapshot());
-    if (p === "/api/library" && M === "GET") return json(res, { libraries: libraryList() });
-    if ((m = /^\/api\/library\/([^/]+)\/(groups|prompts)(?:\/([^/]+))?$/.exec(p))) return await libraryRoute(req, res, decodeURIComponent(m[1]), m[2], m[3] ? decodeURIComponent(m[3]) : "");
-    if (p === "/api/dirs") {
-      const dir = expand(u.searchParams.get("path") || HOME);
-      if (!exists(dir)) return json(res, { error: `${dir} is not a directory` }, 400);
-      return json(res, { path: dir, parent: path.dirname(dir), dirs: TREE[dir] });
-    }
-    if ((m = /^\/api\/usage\/([^/]+)$/.exec(p))) return json(res, { plan: false, note: "The mock has no plan limits.", limits: [], fetchedAt: iso(Date.now()) });
-    if (/^\/api\/servers\/[^/]+\/items$/.test(p)) return json(res, { error: "not found" }, 404); // (what an entry's removal would take away is no longer counted)
-    if ((m = /^\/api\/on\/([^/]+)(\/.*)?$/.exec(p))) return await sectionRoute(req, res, decodeURIComponent(m[1]), m[2] ?? "", u);
-    if (p.startsWith("/api/") && await treeRoute(req, res, p.slice(4), u) !== false) return;
-    if (p.startsWith("/api/")) { await body(req); return json(res, { ok: true }); }
-    const f = path.join(DIST, p === "/" ? "index.html" : p);
-    if (!inside(f, DIST) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end(); }
-    res.writeHead(200, { "Content-Type": TYPES[path.extname(f)] ?? "application/octet-stream" });
-    fs.createReadStream(f).pipe(res);
-  } catch (err) {
-    console.error(`${M} ${p}:`, err);
-    if (!res.headersSent) json(res, { error: String(err?.message ?? err) }, 500); else res.end();
+  if (p === "/api/hello") return json(res, { app: "ai-whiteboard", version: flags.hello?.version ?? entryById(world().id)?.version ?? "dev", featureLevel: 6, instanceId: `mock-${world().id}` });
+  if (p === "/api/state") return json(res, snapshot());
+  if (p === "/api/client/flushed") { await body(req); return json(res, { ok: true }); }
+  if (p === "/api/library" && M === "GET") return json(res, { libraries: libraries[world().id] ? [libraryView(world().id)] : [] });
+  if ((m = /^\/api\/library\/([^/]+)\/(groups|prompts)(?:\/([^/]+))?$/.exec(p))) return await libraryRoute(req, res, decodeURIComponent(m[1]), m[2], m[3] ? decodeURIComponent(m[3]) : "");
+  if (p === "/api/dirs") {
+    const dir = expand(u.searchParams.get("path") || HOME);
+    if (!exists(dir)) return json(res, { error: `${dir} is not a directory` }, 400);
+    return json(res, { path: dir, parent: path.dirname(dir), dirs: TREE[dir] });
   }
-});
-server.listen(PORT, "127.0.0.1", () => console.log(`mock on http://127.0.0.1:${PORT} (pid ${process.pid}); serving ${DIST}`));
+  if (/^\/api\/usage\/[^/]+$/.test(p)) return json(res, { plan: false, note: "The mock has no plan limits.", limits: [], fetchedAt: iso(Date.now()) });
+  if (await treeRoute(req, res, p.slice(4), u) !== false) return;
+  await body(req);
+  return json(res, { ok: true }); // (a call of the table that has no route here)
+}
+
+/** Runs a call on the machine of `id`: the res it filled. */
+async function runRoute(id, method, url, b) {
+  const req = fakeReq(method, url, b), res = fakeRes();
+  await onServer(id, () => apiRoute(req, res, new URL(url, "http://x")));
+  if (!res.headersSent) res.writeHead(500);
+  return res;
+}
+
+/** client.call (C3.7): the checks of the module in their order, then the machine's own route. */
+async function call({ server, method, path: p, body: b, signal }) {
+  if (signal?.aborted) throw aborted();
+  const entry = entryById(server);
+  if (!entry || !worlds[server]) return synth(404, "This server is not in the list.", "no_server");
+  let u = null;
+  try { u = new URL(p, "http://x"); } catch {}
+  if (!u || typeof p !== "string" || !p.startsWith("/api/") || p.includes("#") || !isCall(method, p.split("?")[0])) return synth(400, "not a call of the client API", "not_client_api");
+  const size = !b ? 0 : b.json !== undefined ? Buffer.byteLength(b.json) : b.bytes.length;
+  const image = method === "POST" && /^\/api\/chats\/[^/]+\/images$/.test(u.pathname), scene = method === "PUT" && /^\/api\/boards\/[^/]+\/scene$/.test(u.pathname);
+  if (image ? size > 5 * MIB : size > (scene ? 128 : 2) * MIB) return image ? synth(413, "The image is over 5 MB.", "image_too_large") : synth(413, "The body is too large.", "too_large");
+  let parsed;
+  if (b?.json !== undefined) try { parsed = JSON.parse(b.json); } catch { parsed = b.json; }
+  onCalls.push({ server, method, path: p, ...(parsed !== undefined ? { body: parsed } : {}) });
+  if (!up.has(server)) { // not connected: two calls are answered whatever the state, every other is refused (C3.7 step 4)
+    if (method === "POST" && /^\/api\/chats\/[^/]+\/unfollow$/.test(u.pathname)) return { status: 200, text: '{"ok":true}', sceneRev: null };
+    if (method === "POST" && /^\/api\/boards\/[^/]+\/release$/.test(u.pathname)) return { status: 200, text: '{"state":"none"}', sceneRev: null };
+    return synthFail(awayAnswer(entry));
+  }
+  const dropped = () => synth(504, `${entry.name} did not answer.`, "no_answer"); // (the server dropped while the call waited)
+  const other = server !== "local";
+  if (other && method === "PUT" && /^\/api\/chats\/[^/]+\/draft$/.test(u.pathname) && flags.draft && (!flags.draft.server || flags.draft.server === server)) { // flags.draft: a save of a draft waits
+    await unlessAborted(pause(flags.draft) ?? Promise.resolve(), signal);
+    if (!up.has(server)) return dropped();
+  }
+  if (other && method === "POST" && /^\/api\/(groups|chats|boards)$/.test(u.pathname)) { // flags.make: a make waits, or is refused there
+    const k = flags.make && (!flags.make.server || flags.make.server === server) ? flags.make : {};
+    await unlessAborted(pause(k) ?? Promise.resolve(), signal);
+    if (k.refuse) return synthFail(refusal(k.refuse));
+    if (!up.has(server)) return dropped();
+  }
+  const res = await unlessAborted(runRoute(server, method, p, b), signal);
+  const rev = res.headers["x-aiwb-scene-rev"];
+  return { status: res.status, text: Buffer.concat(res.chunks).toString("utf8"), sceneRev: rev === undefined ? null : Number(rev) };
+}
+
+/** The type of an image from its first bytes alone, or "" for what the app takes for none (C3.8). */
+function sniff(b) {
+  const at = (i, ...v) => v.every((x, k) => b[i + k] === x);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (at(0, 0x47, 0x49, 0x46, 0x38) && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61) return "image/gif";
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+  return "";
+}
+/** client.picture (C3.8): the same two checks as a call, the ids, the fetch, and the type found from the bytes. */
+async function picture({ server, chat, image, signal }) {
+  if (signal?.aborted) throw aborted();
+  const entry = entryById(server);
+  if (!entry || !worlds[server]) return { ok: false, ...synth(404, "This server is not in the list.", "no_server") };
+  if (!up.has(server)) return { ok: false, ...synthFail(awayAnswer(entry)) };
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(chat) || !/^[0-9a-f]{64}$/.test(image)) return { ok: false, ...synth(400, "That is not the address of a picture.", "image_id") };
+  const res = await unlessAborted(runRoute(server, "GET", `/api/chats/${chat}/images/${image}`), signal);
+  const data = Buffer.concat(res.chunks);
+  if (res.status !== 200) return { ok: false, status: res.status, text: data.toString("utf8") };
+  const type = data.length <= 5 * MIB ? sniff(data) : "";
+  if (!type) return { ok: false, ...synth(502, `${entry.name} gave an answer that cannot be read.`, "bad_answer") };
+  return { ok: true, type, data: new Uint8Array(data) };
+}
+
+// The app operations (C3.10): the server list the mock keeps, and the owner's things of this computer.
+const hex12 = () => Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+const FINGERPRINT = /^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$/;
+const OFFERS = { agents: ["claude"], catalogs: { claude }, home: HOME, defaultCwd: SHOP };
+/** What the form of an add or an edit is refused with, or null: the rules of the server list (internal/servers/list.go). */
+function badForm(f, whole) {
+  if (whole || f.name !== undefined) { const n = String(f.name ?? "").trim(); if (!n || [...n].length > 80) return ["A name has 1 to 80 characters.", "bad_name"]; }
+  if (whole || f.address !== undefined) { if (!/^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(String(f.address ?? "").trim())) return ["An address looks like https://host:port.", "bad_address"]; }
+  if (whole && !/^[\x21-\x7e]{1,256}$/.test(String(f.secret ?? ""))) return ["A secret has 1 to 256 characters, none of them a space.", "bad_secret"];
+  if (f.pin && !FINGERPRINT.test(f.pin)) return ["A fingerprint is 32 pairs of hex digits.", "bad_pin"];
+  return null;
+}
+const wait2 = (k, ms) => wait(k?.delay ?? ms);
+const refusedBody = (status, error, code) => ({ status, body: { error, ...(code ? { code } : {}) } });
+const NOT_HERE = refusedBody(501, "This is done by the app, which is not here.", "not_here");
+
+/** client.app (C3.10): the answers of the servers.* and owner.* operations. A secret of a form is never kept or told. */
+async function app(op, args) {
+  const a = args ?? {}, ok = (body) => ({ status: 200, body });
+  const local = (e, verb) => (e?.local ? refusedBody(409, `this computer cannot be ${verb}`, "local_entry") : null);
+  const find = (id) => entryById(id) ?? null;
+  switch (op) {
+    case "servers.list": return ok({ servers: extra.servers.map(shown), notice: extra.notice ?? "" });
+    case "servers.add": {
+      const f = a.form ?? {}, bad = badForm(f, true);
+      if (bad) return refusedBody(400, bad[0], bad[1]);
+      const address = f.address.trim().toLowerCase(), twin = extra.servers.find((x) => x.address?.toLowerCase() === address);
+      if (twin) return refusedBody(409, `${twin.name} is already in the list at that address.`, "duplicate");
+      const entry = { id: "s_" + hex12(), name: f.name.trim(), address: f.address.trim(), selfSigned: !!f.selfSigned, ...(f.pin ? { pin: f.pin.toUpperCase() } : {}), state: "connecting" };
+      addServer(entry, { lists: OFFERS });
+      emit(serversEvent());
+      setTimeout(() => setServerState(entry.id, "connected", { version: "dev" }), 30);
+      return ok({ saved: true, server: viewOf(entry) });
+    }
+    case "servers.edit": {
+      const e = find(a.id);
+      if (!e) return refusedBody(404, "This server is not in the list.");
+      if (local(e, "edited")) return local(e, "edited");
+      const f = a.patch ?? {}, bad = badForm(f, false);
+      if (bad) return refusedBody(400, bad[0], bad[1]);
+      for (const k of ["name", "address", "selfSigned", "pin"]) if (f[k] !== undefined) e[k] = typeof f[k] === "string" ? f[k].trim() : f[k];
+      emit({ app: { type: "server_state", server: viewOf(e) } });
+      return ok({ saved: true, server: viewOf(e) });
+    }
+    case "servers.remove": {
+      const e = find(a.id);
+      if (!e) return refusedBody(404, "This server is not in the list.");
+      if (local(e, "removed")) return local(e, "removed");
+      removeServer(e.id);
+      return ok({ ok: true });
+    }
+    case "servers.test": case "servers.testSaved": {
+      const e = op === "servers.testSaved" ? find(a.id) : null;
+      if (op === "servers.testSaved") { if (!e) return refusedBody(404, "This server is not in the list."); if (local(e, "tested")) return local(e, "tested"); }
+      else if (badForm(a.form ?? {}, true)?.[1] === "bad_address") return ok({ ok: false, step: 1, outcome: "bad_address", message: "That is not an address of the form https://host:port." });
+      return ok({ ok: true, step: 5, outcome: "connected", message: "Connected.", version: "dev", agents: ["claude"] });
+    }
+    case "servers.accept": {
+      const e = find(a.id);
+      if (!e) return refusedBody(404, "This server is not in the list.");
+      if (local(e, "accepted")) return local(e, "accepted");
+      if (!FINGERPRINT.test(String(a.fingerprint ?? ""))) return refusedBody(400, "A fingerprint is 32 pairs of hex digits.", "bad_pin");
+      e.pin = a.fingerprint.toUpperCase(); delete e.fingerprint;
+      setServerState(e.id, "connected", { version: e.version ?? "dev" });
+      return ok({ server: viewOf(e) });
+    }
+    case "owner.restart": {
+      setServerState("local", "connecting", { detail: "Restarting…" });
+      await wait2(flags.restart, 50);
+      if (flags.restart?.fail) { setServerState("local", "not_started", { detail: String(flags.restart.fail) }); return refusedBody(500, String(flags.restart.fail), "restart_failed"); }
+      setServerState("local", "connected", { version: flags.restart?.version ?? LOCAL.version });
+      return ok({ ok: true });
+    }
+    case "owner.retry": {
+      setServerState("local", "connecting");
+      await wait2(flags.start, 30);
+      if (flags.start?.fail) setServerState("local", "not_started", { detail: String(flags.start.fail) }); else setServerState("local", "connected");
+      return ok({ ok: true });
+    }
+    case "owner.status": return ok({
+      running: { build: "this", version: LOCAL.version, pid: process.pid, featureLevel: 6, instanceId: "mock-local",
+        client: { listening: true, address: "https://127.0.0.1:4748", port: 4748, names: ["localhost"], fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89", secretReloads: 0 },
+        mcp: { listener: { port: 6006, url: "http://localhost:6006/mcp", up: flags.mcp?.up !== false }, chats: [] } },
+      files: { setUp: true, ok: true, port: 4748, names: ["localhost"], fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89", notes: [] } });
+    case "owner.openLog": case "owner.reveal": return NOT_HERE;
+    default: return refusedBody(404, `There is no operation ${op}.`, "no_op");
+  }
+}
+
+/** The fake client behind the face: the API of desktop/conn (C3.2) over the mock's worlds. One subscription at a time; a new
+ *  one ends the old. The mock keeps its state in this module, so every client made here is the same one. */
+export function createMockClient() {
+  return {
+    clientId: CLIENT_ID,
+    /** The list first, then each entry's state and, for each that is connected, its stream: hello, snapshot, connected (C3.4). */
+    subscribe(cb) {
+      const mine = { cb, opened: new Set() };
+      sub = mine;
+      emit(serversEvent());
+      for (const e of extra.servers) emit({ app: { type: "server_state", server: shown(e) } });
+      for (const e of extra.servers) openStream(e.id);
+      return { close() { if (sub === mine) { sub = null; heldBoards.clear(); } } };
+    },
+    call, picture, app,
+    localInfo: () => ({ home: DATA, address: "https://127.0.0.1:4748", version: LOCAL.version, pid: process.pid }),
+    async close() { sub = null; heldBoards.clear(); },
+  };
+}
+
+// ---- the server: the face, and the controls
+
+const faces = new Set();
+/** Starts the mock's server on `port`, serving the client of `dist` through the face. Answers the http.Server. */
+export function startMock({ port = PORT, dist = DIST } = {}) {
+  const face = createHostFace({ client: createMockClient(), distDir: dist, log: (line) => console.error(line) });
+  faces.add(face);
+  const server = http.createServer(async (req, res) => {
+    const u = new URL(req.url, "http://x"), p = u.pathname, M = req.method;
+    try {
+      if (p.startsWith("/mock/")) {
+        if (!ownRequest(req)) { res.writeHead(403); return res.end(); }
+        if (M === "POST") {
+          const mb = await body(req);
+          if (p === "/mock/eval") { try { const r = await eval(`(async () => { ${mb.code} })()`); return json(res, { ok: true, r: r ?? null }); } catch (e) { return json(res, { error: String(e.stack ?? e) }, 500); } }
+          else if (p === "/mock/snapshot") resync();
+          else return json(res, { error: "no such control" }, 404);
+        }
+        return json(res, mockState());
+      }
+      if (p === "/host/events" && flags.streamDown) return json(res, { error: "the stream is down", code: "stream_down" }, 503); // (the page's stream is closed for good)
+      return await face.handle(req, res);
+    } catch (err) {
+      console.error(`${M} ${p}:`, err);
+      if (!res.headersSent) json(res, { error: String(err?.message ?? err) }, 500); else res.end();
+    }
+  });
+  server.on("close", () => { face.close(); faces.delete(face); });
+  return new Promise((ok) => server.listen(port, "127.0.0.1", () => ok(server)));
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  const server = await startMock();
+  console.log(`mock on http://127.0.0.1:${server.address().port} (pid ${process.pid}); serving ${DIST}`);
+}

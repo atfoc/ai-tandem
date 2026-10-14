@@ -1,29 +1,29 @@
-// ai-whiteboard: a local server that keeps Excalidraw boards and chats with coding agents
-// (Claude Code, Cursor) that read and edit them. The web client is a separate program; the
-// server serves its built folder for convenience.
+// ai-whiteboard: a server that keeps Excalidraw boards and chats with coding agents (Claude
+// Code, Cursor, pi) that read and edit them. It serves no page: the desktop app is its client,
+// over HTTPS with a secret, on this machine as on any other.
 //
 // Commands:
 //
-//	ai-whiteboard [serve] [flags]  run the server in the foreground (or print the running one's URL)
-//	ai-whiteboard launch [flags]   start the server in the background if needed, print its URL, exit
-//	ai-whiteboard relaunch [flags] stop the running server if any, then launch; prints the URL
-//	ai-whiteboard stop [flags]     stop the running server
-//	ai-whiteboard remote setup [-port N] [-name X]... [-server-port N] [-new-cert]
-//	                               set up remote access (HTTPS with a secret); makes what is missing
-//	ai-whiteboard remote status [-server-port N]
-//	                               what a running server serves and what the next start will do
-//	ai-whiteboard remote off       turn remote access off at the next start; keeps secret and certificate
-//	ai-whiteboard secret [-new]    print the secret of remote access, or replace it and print the new one
+//	ai-whiteboard [serve] [flags]  run the server in the foreground (refuses when not set up)
+//	ai-whiteboard launch [flags] [-json]    start the server in the background if needed; print its
+//	                               address and certificate fingerprint, exit
+//	ai-whiteboard relaunch [flags] [-json]  stop the running server if any, then launch
+//	ai-whiteboard stop [-home DIR] stop the running server
+//	ai-whiteboard status [-home DIR] [-json]  what the running server serves, and what the next
+//	                               start will do
+//	ai-whiteboard remote setup [-port N] [-name X]... [-new-cert]
+//	                               set up access for clients (HTTPS with a secret); makes what is
+//	                               missing. A server that was never set up does not start.
+//	ai-whiteboard secret [-new]    print the secret, or replace it and print the new one
 //
-// The remote and secret commands take their own flags after the sub-command, and -home <dir>.
+// The remote, secret, status and stop commands take their own flags after the command, and -home <dir>.
 //
-// The program never opens a browser or a window: the Electron app does that. To use a browser tab,
-// run launch (or serve) and open the printed URL.
+// The program never opens a browser or a window: the Electron app is the client.
 package main
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -58,12 +58,15 @@ import (
 
 // options are the flags every command takes.
 type options struct {
-	port                 int
-	home, client, cwd    string
+	home, cwd            string
 	claudeBin, cursorBin string
 	cursorCostBin        string
 	piBin, piNamerModel  string
+	json                 bool // launch and relaunch: write one JSON line for the app
 	paths                store.Paths
+	// serveArgs are the flags the server that launch starts gets: the data folder, and every flag
+	// that was given, as it was.
+	serveArgs []string
 }
 
 func main() {
@@ -71,19 +74,20 @@ func main() {
 	if code, ok := ownCommand(cmd, args, os.Stdout, os.Stderr); ok {
 		os.Exit(code)
 	}
+	switch cmd {
+	case "serve", "launch", "relaunch":
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q (serve, launch, relaunch, stop, status, remote, secret)\n", cmd)
+		os.Exit(2)
+	}
 	o := parseFlags(cmd, args)
 	switch cmd {
 	case "serve":
-		serve(o, args)
+		serve(o)
 	case "launch":
-		launch(o, args, os.Stdout)
+		os.Exit(launch(o, os.Stdout, os.Stderr))
 	case "relaunch":
-		relaunch(o, args, os.Stdout)
-	case "stop":
-		stop(o)
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (serve, launch, relaunch, stop, remote, secret)\n", cmd)
-		os.Exit(2)
+		os.Exit(relaunch(o, os.Stdout, os.Stderr))
 	}
 }
 
@@ -97,21 +101,18 @@ func command(args []string) (string, []string) {
 
 func parseFlags(cmd string, args []string) options {
 	here, _ := os.Getwd()
-	client := "web/dist"
-	if res := bundleResources(); res != "" {
-		client = filepath.Join(res, "web")
-	}
 	var o options
 	fs := flag.NewFlagSet("ai-whiteboard "+cmd, flag.ExitOnError)
-	fs.IntVar(&o.port, "port", 4747, "listen port")
 	fs.StringVar(&o.home, "home", "~/.ai-whiteboard", "data folder")
-	fs.StringVar(&o.client, "client", client, `built web client to serve ("" = serve none)`)
 	fs.StringVar(&o.cwd, "cwd", here, "default working folder for new chats")
 	fs.StringVar(&o.claudeBin, "claude", "claude", "Claude Code binary")
 	fs.StringVar(&o.cursorBin, "cursor", "agent", "Cursor agent binary")
 	fs.StringVar(&o.cursorCostBin, "cursor-cost", "cursor-cost", "cursor-cost binary, for the Cursor plan's usage (~/bin is tried too)")
 	fs.StringVar(&o.piBin, "pi", "pi", "pi binary")
 	fs.StringVar(&o.piNamerModel, "pi-namer-model", "", "pi model for chat titles (empty = pi's default)")
+	if cmd != "serve" {
+		fs.BoolVar(&o.json, "json", false, "write one JSON line for the app")
+	}
 	fs.Parse(args)
 
 	home, _ := os.UserHomeDir()
@@ -120,26 +121,32 @@ func parseFlags(cmd string, args []string) options {
 		log.Fatalf("data folder: %v", err)
 	}
 	o.paths = store.NewPaths(root)
+	o.serveArgs = []string{"-home", root}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name != "home" && f.Name != "json" {
+			o.serveArgs = append(o.serveArgs, "-"+f.Name+"="+f.Value.String())
+		}
+	})
 	return o
 }
 
-// serve runs the server in the foreground until SIGINT or SIGTERM. args are its flags, which
-// POST /api/restart passes on to relaunch.
-func serve(o options, args []string) {
+// serve runs the server in the foreground until SIGINT or SIGTERM.
+func serve(o options) {
 	home, _ := os.UserHomeDir()
 	p := o.paths
 
-	if url, ok := findRunning(p, o.port); ok {
-		fmt.Println("AI Whiteboard is already running at", url)
+	if run, ok := findRunning(p); ok {
+		fmt.Printf("AI Whiteboard is already running (pid %d)\n", run.hello.Pid)
 		return
 	}
 	rem := checkRemote(o)
-
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", o.port))
-	if err != nil {
-		log.Fatalf("cannot listen on port %d (port in use by another program?): %v", o.port, err)
+	// The server list of an earlier version is deleted before any listener: a server keeps none,
+	// and the secrets in it are the app's now.
+	if removed, err := store.RemoveServerList(p); err != nil {
+		log.Printf("the server list of an earlier version could not be removed: %v", err)
+	} else if removed {
+		log.Printf("the server list of an earlier version is removed from %s: servers are added in the app", p.Root)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
 
 	// The MCP listener is bound here, before server.json is written: a 6006 conflict is fatal
 	// and must not leave a server.json behind (plan D11).
@@ -150,6 +157,7 @@ func serve(o options, args []string) {
 	}
 	mcpBoundPort := mcpLn.Addr().(*net.TCPAddr).Port
 	rem.bind()
+	port := rem.rep.Config.Port
 
 	st, err := store.Open(p)
 	if err != nil {
@@ -157,14 +165,14 @@ func serve(o options, args []string) {
 	}
 	var a *app.App
 	var cm *chats.Manager
-	br := editorbridge.New(func() any { return a.Snapshot() })
+	br := editorbridge.New()
 	waits := readTestWaits() // zero outside the tests
 	br.PingEvery = waits.ping
 	bs := boards.New(st, br)
 	br.SceneRev = bs.Rev
 	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
 	agents := usable.New(bins) // the agents whose programs are found; looked up again every usable.Every
-	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	base := fmt.Sprintf("https://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	probePiVersion(o.piBin)
@@ -209,28 +217,28 @@ func serve(o options, args []string) {
 	// Never stopped: the server ends by exiting.
 	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
 	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
-	// The change-over of a server from before level 5: the group "Remote" goes, before any request.
+	// The change-overs of a server from before: nothing of another server is kept, and the group
+	// "Remote" of before level 5 goes, before any request.
+	localOnly(p, cm, a)
 	if err := a.DropRemoteGroup(); err != nil {
 		log.Printf("the group \"Remote\" of before could not be removed, the next start tries again: %v", err)
 	}
-	// The prompt library of this computer: a file that cannot be read was set aside by the open,
+	// The prompt library of this server: a file that cannot be read was set aside by the open,
 	// which logged it, and the library starts empty.
 	if err := a.OpenLibrary(p.Root); err != nil {
-		log.Printf("prompt library: %v", err) // the pages show no library
+		log.Printf("prompt library: %v", err) // the clients show no library
 	}
 	if err := cursor.EnsureDenyRules(p.Root); err != nil {
 		log.Printf("cursor deny rules: %v", err)
 	}
-	var mcpUp atomic.Bool // read by GET /api/mcp/status
+	var mcpUp atomic.Bool // read by the control socket's /status
 	srv := &server.Server{App: a, Relay: relay, Bridge: br,
-		Client: o.client, Port: port, Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
+		Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
 			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
 		},
-		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load,
-		Restart: func() error { return startRelaunch(p, args) }}
+		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load}
 	mcpHandler := srv.MCPHandler(mcpBoundPort)
-	stopServers := startServers(p, br, cm, a, srv, waits)
 	mcpUp.Store(true)
 	go func() {
 		if err := http.Serve(mcpLn, mcpHandler); err != nil && err != http.ErrServerClosed {
@@ -239,22 +247,74 @@ func serve(o options, args []string) {
 		}
 	}()
 	rem.attach(srv)
-	if err := store.WriteServerFile(p, port); err != nil {
+	ctl, controlPath, err := bindControl(p.Root)
+	if errors.Is(err, errControlAnswers) {
+		fmt.Printf("AI Whiteboard is already running (its control socket %s answers)\n", controlPath)
+		return
+	} else if err != nil {
+		log.Fatalf("control socket: %v", err)
+	}
+	if err := store.WriteServerFile(p, port, controlPath); err != nil {
 		log.Printf("server.json: %v", err)
 	}
+	go func() {
+		if err := http.Serve(ctl, srv.ControlHandler(p.Root)); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("control socket: %v", err)
+		}
+	}()
 	go onSignal(func() {
 		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
 		cm.Shutdown()                    // history written; agents end
-		stopServers()                    // the connections to other servers end; nothing of them is written
 		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
 		pb.Close()                       // the extension bridge: no more connections, socket removed
 		store.RemoveServerFile(p)
+		ctl.Close() // removes the socket file; the control socket answers until here
+		store.RemoveControlSocket(controlPath)
 		os.Exit(0)
 	}, syscall.SIGINT, syscall.SIGTERM)
 
 	log.Printf("AI Whiteboard: %s  (data in %s)", base, p.Root)
 	log.Printf("MCP endpoint: %s", boardapi.Endpoint(mcpBoundPort))
-	log.Fatal(http.Serve(ln, srv.Handler()))
+	err = rem.serve(srv)
+	store.RemoveServerFile(p)
+	ctl.Close()
+	store.RemoveControlSocket(controlPath)
+	log.Fatal(err)
+}
+
+// errControlAnswers is bindControl's refusal when the control socket answers: another server runs.
+var errControlAnswers = errors.New("the control socket answers")
+
+// bindControl binds the control socket in the data folder, mode 0600: the Unix socket that only
+// the user of this machine can open and that the server program's commands ask. A socket file
+// that is there and answers nobody is the leftover of a server that died, and is replaced; one
+// that answers is another running server.
+func bindControl(root string) (net.Listener, string, error) {
+	path := store.ControlSocketPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, path, err
+	}
+	ln, err := net.Listen("unix", path)
+	if errors.Is(err, syscall.EADDRINUSE) {
+		if c, derr := net.DialTimeout("unix", path, time.Second); derr == nil {
+			c.Close()
+			return nil, path, errControlAnswers
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, path, err
+		}
+		ln, err = net.Listen("unix", path)
+	}
+	if err == nil {
+		if err = os.Chmod(path, 0o600); err != nil {
+			ln.Close()
+		}
+	}
+	if err != nil {
+		store.RemoveControlFolder(path) // a fallback folder made for nothing; a file in it keeps it
+		return nil, path, err
+	}
+	return ln, path, nil
 }
 
 // mcpPort returns the MCP listener port: the fixed production port, or the hidden test-only
@@ -308,63 +368,6 @@ func onSignal(f func(), sigs ...os.Signal) {
 	signal.Notify(ch, sigs...)
 	<-ch
 	f()
-}
-
-// findRunning looks for an AI Whiteboard server already running for this data folder: the port in
-// server.json first, then the -port flag. A port counts only when GET /api/hello answers within 1 s
-// with app == "ai-whiteboard", so a stale server.json or another program on the port is ignored.
-func findRunning(p store.Paths, port int) (string, bool) {
-	var ports []int
-	if _, sp, ok := store.ReadServerFile(p); ok {
-		ports = append(ports, sp)
-	}
-	if port > 0 && (len(ports) == 0 || ports[0] != port) {
-		ports = append(ports, port)
-	}
-	c := httpClient()
-	for _, pt := range ports {
-		base := fmt.Sprintf("http://127.0.0.1:%d", pt)
-		if isOurs(c, base) {
-			return base + "/", true
-		}
-	}
-	return "", false
-}
-
-// httpClient is for asking a local server /api/hello: it must answer within 1 s.
-func httpClient() *http.Client { return &http.Client{Timeout: time.Second} }
-
-func isOurs(c *http.Client, base string) bool {
-	_, ok := helloOf(c, base)
-	return ok
-}
-
-// helloReply is a server's answer to GET /api/hello.
-type helloReply struct {
-	App     string `json:"app"`
-	Version string `json:"version"`
-	Pid     int    `json:"pid"`
-	// FeatureLevel is 0 for a build that reports none; from level 1 on a running server reads its
-	// secret again when it is sent SIGUSR1.
-	FeatureLevel int    `json:"featureLevel"`
-	InstanceID   string `json:"instanceId"`
-}
-
-// helloOf asks base for /api/hello; ok only when an AI Whiteboard server answers.
-func helloOf(c *http.Client, base string) (helloReply, bool) {
-	var h helloReply
-	resp, err := c.Get(base + "/api/hello")
-	if err != nil {
-		return h, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return h, false
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&h); err != nil {
-		return h, false
-	}
-	return h, h.App == "ai-whiteboard"
 }
 
 // probePiVersion logs the pi binary and version at boot. It never fails startup: a missing or
@@ -434,4 +437,33 @@ func refreshClaudeCatalog(sp *claude.Spawner, st *store.Store, br *editorbridge.
 		log.Printf("claude model list: saving: %v", err)
 	}
 	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Claude), "catalog": cat})
+}
+
+// localOnly makes the data folder hold nothing of another server, as it is after the first start of
+// a version that keeps no record of a chat or a board of another server. The folder remote/ goes
+// with everything in it. A chat that never had a message and was kept here for another server
+// becomes a chat of this server with its draft; one on a board that is not this server's has
+// nowhere to be and is deleted. The defaults of state.json were brought to this server's alone
+// when the store opened. It runs at every start, before a request is served, and does nothing
+// when there is nothing of the kind; what fails is logged and tried at the next start.
+func localOnly(p store.Paths, cm *chats.Manager, a *app.App) {
+	if removed, err := store.RemoveRemote(p); err != nil {
+		log.Printf("the records of other servers' chats: %v", err)
+	} else if removed {
+		log.Printf("the records of other servers' chats and boards are removed from %s: they show in their servers' sections", p.Root)
+	}
+	boardHere := func(string) bool { return false }
+	if a.Boards != nil {
+		boardHere = func(id string) bool { _, ok := a.Boards.Get(id); return ok }
+	}
+	local, deleted, err := cm.LocalOnly(boardHere)
+	if err != nil {
+		log.Printf("chats that were kept for another server: %v", err)
+	}
+	for _, id := range local {
+		log.Printf("the chat %s, which had no message yet, is a chat of this server now", id)
+	}
+	for _, id := range deleted {
+		log.Printf("the chat %s, which had no message yet, is deleted: its board is not on this server", id)
+	}
 }

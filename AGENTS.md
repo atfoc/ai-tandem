@@ -12,11 +12,11 @@ AIWB_TEST_FULL=1 go test ./internal/<pkg>   # full set: every test, each in full
 
 - The **default set** starts few processes and is meant to pass on a loaded machine.
 - The **full set** adds what is too slow for every edit: tests that build the server binary and
-  start real server processes (`cmd/ai-whiteboard`: 49 such tests are in the full set only, six
+  start real server processes (`cmd/ai-whiteboard`: 38 such tests are in the full set only, six
   cheap smoke tests run in the default set too), tests that need the real `pi` installed
-  (`internal/pibridge`, `internal/boardapi`), `openssl` (`internal/remote`) or the network's
-  resolver (`internal/servers`), and matrices and stress loops at their full number of cases and
-  rounds (the default set runs a representative slice).
+  (`internal/pibridge`, `internal/boardapi`) or `openssl` (`internal/remote`), and matrices and
+  stress loops at their full number of cases and rounds (the default set runs a representative
+  slice).
 - The switch is `internal/testset`. `-short` never runs more than the default set, even with
   `AIWB_TEST_FULL=1`.
 - To see what a package leaves out of the default set:
@@ -28,7 +28,8 @@ grep -rn 'testset.Full()' cmd internal                    # matrices that run fe
 
 **Paid tests are a different thing.** `AIWB_CLAUDE_E2E=1`, `AIWB_CURSOR_E2E=1` and `AIWB_PI_E2E=1`
 call paid models, and so does `web/e2e/app.e2e.mjs`. They are off by default. Never run them
-unless the person asks.
+unless the person asks. The other scripts of `web/e2e` and `desktop/e2e` spend no money; they are
+under "The JavaScript tests" below.
 
 ## Which set to run when
 
@@ -38,8 +39,36 @@ unless the person asks.
 | Before you finish a task | `go test ./...` once, and `AIWB_TEST_FULL=1 go test ./<pkg>` for each package whose code or tests you changed. |
 | Final check of a whole piece of work (before a merge, before a release) | `AIWB_TEST_FULL=1 go test -timeout 20m ./...` once, while nothing else is testing on the machine. |
 | You changed code where goroutines share state | Also `go test -race ./<pkg>` for that package. |
-| You changed only `web/` or `desktop/` | `cd web && npm test && npm run check`, `cd desktop && npm test` (a few seconds). No Go tests. |
+| You changed only `web/` or `desktop/` | `cd web && npm test && npm run check`, `cd desktop && npm test` (a few seconds). No Go tests. If the change is to what the page shows or does: also `cd web && npm run uicheck`. |
+| You changed `web/dev/host.mjs`, `web/dev/hostface.mjs` or `desktop/conn` | Also `node --test web/dev/host.test.mjs`, and the free scripts of `web/e2e` that touch what you changed. |
 | You changed only documentation | No tests. |
+
+## The JavaScript tests
+
+```sh
+cd web && npm test && npm run check      # the page's unit tests and its type check
+cd desktop && npm test                   # the main process, the connection module, the IPC face
+node --test web/dev/host.test.mjs        # the test host alone; `cd web && npm test` runs it too
+```
+
+These run in a few seconds and need no built page. The ones below need Playwright, which is no
+dependency of the repository (`npm install --no-save playwright && npx playwright install chromium`
+in `web/`). `newchat`, `twopages`, `remotechat` and the desktop one serve or load `web/dist`, so run
+`cd web && npm run build` first; the others build the page they need. None of them calls a paid
+model, and each says in its header how it runs.
+
+| Command | What it does | Alone |
+|---|---|---|
+| `cd web && npm run uicheck` | the browser checks of `web/dev/checks` on the mock (`web/dev/mock.mjs`); builds its own page, so no `npm run build` first | minutes |
+| `node web/e2e/newchat.e2e.mjs` | the page against a real server through the test host | about 7 s |
+| `node web/e2e/localserver.e2e.mjs` | this computer's server in every state it can be in; builds two binaries and two builds of the page itself | about 20 s |
+| `node web/e2e/twopages.e2e.mjs` | two apps on one server | about 45 s |
+| `node web/e2e/remotechat.e2e.mjs` | this computer's server and a remote one, an outage and the return | about 60 s |
+| `cd desktop && npm run e2e` | the app itself (Electron, a window is opened for a few seconds): the page over IPC, a stream that is cut, a picture from the app's own scheme | a few seconds |
+| `node web/dev/reallibrary.mjs` | the prompt library's popups on real servers; builds what it needs | |
+
+`web/e2e/app.e2e.mjs` is the paid one: real Claude and Cursor. It is never run unless the person
+asks.
 
 ## What it costs
 
@@ -55,9 +84,8 @@ Measured on a 14-core Mac; the numbers move a little.
 
 Per package, alone, default / full: `cmd/ai-whiteboard` 6 s / 37 s (it alone sets the time of the
 full set of `./...`), `internal/chats` 8 s / 9 s, `internal/cursor`, `internal/pi` and
-`internal/claude` about 5 s in either set, `internal/pibridge` 1.5 s / 3 s,
-`internal/servers/linksim` 1.5 s / 4 s; every other package (`internal/server`,
-`internal/remotes` and `internal/servers` among them) under 3 s in either set. Inside
+`internal/claude` about 5 s in either set, `internal/pibridge` 1.5 s / 3 s; every other
+package (`internal/server` among them) under 3 s in either set. Inside
 `go test ./...` the packages run side by side and each takes longer than alone:
 `internal/chats` 11 s, `internal/cursor` and `internal/pi` 8 s.
 
@@ -65,9 +93,7 @@ full set of `./...`), `internal/chats` 8 s / 9 s, `internal/cursor`, `internal/p
 only about 1,000 processes a second in total, however many cores it has. So suites that run at
 the same time do not run in parallel, they queue: four at once take three to four times as long
 each, and more `-p` or `-parallel` does not help. At that load the tests with short waits
-failed in some of the measured runs (`TestStepLimit` of `internal/servers`, `TestRoundTrip` of
-`internal/servers/linksim`, some tests of `internal/remotes`): see the rule
-below for a test your change cannot have touched.
+can fail: see the rule below for a test your change cannot have touched.
 
 **The test cache.** `go test` without `-count=1` reuses the result of a package whose code and
 inputs did not change (inside one worktree). `-count=1` switches that off and makes every run pay
@@ -106,13 +132,20 @@ failure line, and go on; do not investigate it at length.
   variable, a context value) and let the test lower it; the production value stays as it is.
   A test of real server processes (`cmd/ai-whiteboard`) cannot reach into the server, so the
   server reads the hidden variable `AIWB_TEST_WAITS` (`cmd/ai-whiteboard/testwaits.go`): a list
-  such as `silence=3.5s,backoff=3s`, with the names `ping`, `silence`, `backoff`, `start`,
-  `agents`, `images`, `tooold` and `imagecall`; unset, every wait is the production one. The test does
-  not write the list by hand: it picks a `clock` (`testwaits_test.go`; `fast` divides by 10), passes
-  `fast.env(t, "silence")` as the environment of its servers and divides its own times with
-  `fast.of(60 * time.Second)`, so it crosses the same waits in the same order.
-  `AIWB_TEST_REAL_WAITS=1` runs these tests with the production waits (some four minutes for the
-  slowest), as a check against the real values.
+  such as `ping=500ms,images=2s`, with the names `ping`, `agents` and `images`; unset, every wait is
+  the production one. The test does not write the list by hand: it picks a `clock`
+  (`testwaits_test.go`; `fast` divides by 10), passes `fast.env(t, "ping")` as the environment of
+  its servers and divides its own times with `fast.of(60 * time.Second)`, so it crosses the same
+  waits in the same order. `AIWB_TEST_REAL_WAITS=1` runs these tests with the production waits, as
+  a check against the real values.
+  The waits of the app's connection to a server (`desktop/conn`: the silence after which a stream
+  counts as ended, the intervals of the retries, the time a too-old server waits before it is
+  asked again, the time limits of a call) are lowered the same way, through the hidden variable
+  `AIWB_APP_WAITS` (`desktop/conn/timing.js`): a list such as `silence=3.5s,backoff=3s`, with the
+  names `silence`, `backoff`, `tooold`, `call`, `start`, `scene`, `imagecall`, `delete`,
+  `firstevent` and `hello`. The test host (`web/dev/host.mjs`) and the app read it; a script that
+  starts a host in its own process gives the same values as the `timing` option
+  (`parseAppWaits("backoff=3s")`).
 - **Tests must pass when the machine is four times slower than usual.** An upper bound for
   something that must happen is generous: seconds, not milliseconds. A short timeout inside which
   a process has to start must not decide the test: wait for a sign that the process started, or

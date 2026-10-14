@@ -1,6 +1,6 @@
 // Read by mock.mjs when seedUI() is called through /mock/eval (evaluated inside it): the states of the composer
 // and chat UI work (plans/composer-ui-improvements.md, section 3), one section per item. `seedUI()` makes all of
-// them, `seedUI("A2", "A3")` the ones named; then it sends a snapshot. It answers the list of its states, each
+// them, `seedUI("A2", "A3")` the ones named; then it tells the page the list and the snapshots again (resync). It answers the list of its states, each
 // with where the page shows it:
 //   { id, section, sel, see, text?, count?, also?, pane?, act?, mock? }
 //   sel    the selection that shows the state (the page's aiwb.sel)
@@ -27,8 +27,8 @@
 // is in that machine's own tree, in a group of its own there (with the id the section's group has here), and shows in
 // that server's section of the sidebar. The page names such a thing "<entry id>~<id>": that is what its `sel` has.
 //
-//   A1  the servers; the stream cut ("Reconnecting…"); the update notice, both kinds; the board b_ui, whose canvas
-//       takes the keys
+//   A1  the servers; the stream closed for good (every entry connecting, this computer's too); this computer's server
+//       of another build, not started (with the reason), too old; the board b_ui, whose canvas takes the keys
 //   A2  every toolbar state: plain chats (started, unstarted, busy, quotes, a context error, long names, on s_lab,
 //       a pending move, "Loading models…", no agent, a server not connected, a fresh fork, a model notice, two
 //       branches with unlike toolbars) and chats on a board (the editable b_ui among them, and one at work). The
@@ -111,9 +111,13 @@
   function A1() {
     servers(); sketch();
     state("A1", "servers", {}, '.side-foot .servers-btn[title*="not connected"]'); // (the dot of Office Mac: with no seed the button has none)
-    state("A1", "stream-down", {}, ".side .offline", { text: "Reconnecting", mock: "flags.streamDown = true; dropStreams();" });
-    state("A1", "update-restart", {}, ".side-update-text", { text: "still running the old one", mock: 'flags.hello = { version: "old", webVersion: "uicheck" }; dropStreams();' });
-    state("A1", "update-reload", {}, ".side-update-text", { text: "out of date", mock: 'flags.hello = { version: "new", webVersion: "new" }; dropStreams();' });
+    const here = '.side-section[data-server="local"]';
+    state("A1", "stream-down", {}, `${here} .side-section-state.wait`, { text: "Connecting", mock: "flags.streamDown = true; dropStreams();" });
+    state("A1", "local-other-build", {}, `${here} .side-section-extra`, { text: "another build", also: [{ see: `${here} .side-section-extra .btn`, text: "Restart server" }], mock: 'flags.hello = { version: "old" }; dropStreams();' });
+    state("A1", "local-not-started", {}, `${here} .side-section-reason`, { text: "not set up", also: [{ see: `${here} .side-section-extra .btn`, text: "Retry" }],
+      mock: 'setServerState("local", "not_started", { detail: "AI Whiteboard is not set up on this machine.\\nSet it up once with: ai-whiteboard remote setup" });' });
+    state("A1", "local-too-old", {}, `${here} .side-section-extra .btn`, { text: "Restart server", also: [{ see: `${here} .side-section-line`, text: "older than the app" }],
+      mock: 'setServerState("local", "too_old", { version: "0.9.1" });' });
   }
 
   // ---- A2: the composer
@@ -380,6 +384,6 @@
 
   const SECTIONS = { A1, A2, A3, A4, A5, A6, SEC };
   for (const name of only.length ? only : Object.keys(SECTIONS)) { if (!SECTIONS[name]) throw new Error(`the seed has no section ${name}`); SECTIONS[name](); }
-  send({ type: "snapshot", ...snapshot() });
+  resync();
   return states;
 }

@@ -2,14 +2,16 @@
 // (plans/remote-server-sections-goal.md, section 5 "An id is unique on one server only"): the seed's chat c_plain of
 // this computer and chat c_plain of Studio Mac are two rows, each in its own part; they open as two chats with their
 // own titles and threads; a message, a draft, a rename and a delete of one never touch the other, by the page's own
-// actions and by events from elsewhere; and every call goes to /api/chats/c_plain for the one and to
-// /api/on/<entry id>/chats/c_plain for the other. The selection that is saved names which of the two is open, and a
+// actions and by events from elsewhere; and every call goes to /api/chats/c_plain of "local" for the one and to
+// /api/chats/c_plain of the entry id for the other. The selection that is saved names which of the two is open, and a
 // reload opens that one.
 // The group g_shop and the board b_arch, which both machines have too, are SEC.3's, SEC.4's and SEC.5's.
 import { callsOf, check, mockEval, openPage, seed, sideMenu, sideSeen, until } from "../shot.mjs";
 
 const J = JSON.stringify;
-const STUDIO = "s_studio", HERE = "/api/chats/c_plain", THERE = `/api/on/${STUDIO}/chats/c_plain`;
+const STUDIO = "s_studio", HERE = "local /api/chats/c_plain", THERE = `${STUDIO} /api/chats/c_plain`;
+/** A call as "<server> <path>": what HERE and THERE are the starts of. */
+const at = (c) => `${c.server} ${c.path}`;
 const LOCAL = { name: "Why is the build slow", asks: "Why is the build slow?", says: "Because of the font copy step." };
 const FAR = { name: "Render queue is stuck", asks: "Why is the render queue stuck?", says: "Two jobs hold the GPU lock." };
 
@@ -17,16 +19,16 @@ await check("SEC.8 a chat of this computer and a chat of a section with the same
   await seed(url, "SEC");
   const sec = `.side-section[data-server="${STUDIO}"]`;
   const p = await openPage({ url, browser, size: [1280, 1500] }), { page } = p, calls = callsOf(page);
-  const localRow = (name) => page.locator(`.side-tree > .side-group .side-row:has(.side-name:text-is("${name}"))`);
+  const localRow = (name) => page.locator(`.side-section[data-server="local"] > .side-section-body > .side-group .side-row:has(.side-name:text-is("${name}"))`);
   const farRow = (name) => page.locator(`${sec} .side-row:has(.side-name:text-is("${name}"))`);
   const thread = () => page.locator(".thread .msg").allTextContents();
   const box = page.locator(".composer .composer-input");
   /** What the two machines hold of their chat c_plain: its name, its messages, its draft. */
   const held = () => mockEval(`const of = () => (chats.c_plain ? [chats.c_plain.name, items.c_plain.filter((x) => x.kind === "user").map((x) => x.text), chats.c_plain.draft?.text ?? ""] : null); return [of(), onServer("${STUDIO}", of)];`, url);
   /** The calls since `from` that are about a chat c_plain: those of this computer's, and those of Studio Mac's. */
-  const split = (from) => { const mine = calls.slice(from).filter((c) => /\/chats\/c_plain(\/|\?|$)/.test(c.path)); return { here: mine.filter((c) => c.path.startsWith(HERE)), there: mine.filter((c) => c.path.startsWith(THERE)), other: mine.filter((c) => !c.path.startsWith(HERE) && !c.path.startsWith(THERE)) }; };
+  const split = (from) => { const mine = calls.slice(from).filter((c) => /\/chats\/c_plain(\/|\?|$)/.test(c.path)); return { here: mine.filter((c) => at(c).startsWith(HERE)), there: mine.filter((c) => at(c).startsWith(THERE)), other: mine.filter((c) => !at(c).startsWith(HERE) && !at(c).startsWith(THERE)) }; };
   /** (a call is heard of a moment after it was made: the calls of the right kind are waited for, the others read then) */
-  const only = async (name, from, which) => { await until(() => split(from)[which].length, 5000); const s = split(from), wrong = which === "here" ? s.there : s.here; if (wrong.length || s.other.length || !s[which].length) fail(`${name}: the calls were ${J(calls.slice(from).filter((c) => /c_plain/.test(c.path)).map((c) => `${c.method} ${c.path}`))}, not all under ${which === "here" ? HERE : THERE}`); };
+  const only = async (name, from, which) => { await until(() => split(from)[which].length, 5000); const s = split(from), wrong = which === "here" ? s.there : s.here; if (wrong.length || s.other.length || !s[which].length) fail(`${name}: the calls were ${J(calls.slice(from).filter((c) => /c_plain/.test(c.path)).map((c) => `${c.method} ${at(c)}`))}, not all under ${which === "here" ? HERE : THERE}`); };
   /** The chat on screen is one of the two: its title, its server in the head or none, and its own thread. */
   const open = async (name, row, want, server) => {
     const from = calls.length;
@@ -44,13 +46,13 @@ await check("SEC.8 a chat of this computer and a chat of a section with the same
   await page.waitForSelector(`${sec} .side-row`);
 
   // ---- two rows, each in its own part, and each opens as itself
-  const local = await sideSeen(page), far = await sideSeen(page, STUDIO);
+  const local = await sideSeen(page, "local"), far = await sideSeen(page, STUDIO);
   if (local.rows.filter((n) => n === LOCAL.name).length !== 1 || local.rows.includes(FAR.name) || far.rows.filter((n) => n === FAR.name).length !== 1 || far.rows.includes(LOCAL.name)) fail(`the two chats are not one row each in their own part: local ${J(local.rows.filter((n) => [LOCAL.name, FAR.name].includes(n)))}, Studio Mac ${J(far.rows.filter((n) => [LOCAL.name, FAR.name].includes(n)))}`);
   let from = await open("this computer's chat", localRow(LOCAL.name), LOCAL, "");
-  if (!await until(() => split(from).here.some((c) => c.method === "GET" && c.path.startsWith(`${HERE}/items`)), 10000)) fail("this computer's chat was not read at /api/chats/c_plain/items");
+  if (!await until(() => split(from).here.some((c) => c.method === "GET" && at(c).startsWith(`${HERE}/items`)), 10000)) fail("this computer's chat was not read at /api/chats/c_plain/items");
   await only("opening this computer's chat", from, "here");
   from = await open("Studio Mac's chat", farRow(FAR.name), FAR, "Studio Mac");
-  if (!await until(() => split(from).there.some((c) => c.method === "GET" && c.path.startsWith(`${THERE}/items`)), 10000)) fail(`Studio Mac's chat was not read at ${THERE}/items`);
+  if (!await until(() => split(from).there.some((c) => c.method === "GET" && at(c).startsWith(`${THERE}/items`)), 10000)) fail(`Studio Mac's chat was not read at ${THERE}/items`);
   await only("opening Studio Mac's chat", from, "there");
   if (await farRow(FAR.name).evaluate((r) => r.classList.contains("on")) !== true || await localRow(LOCAL.name).evaluate((r) => r.classList.contains("on"))) fail("with Studio Mac's chat open, the lit row is not its own alone");
 
@@ -69,7 +71,7 @@ await check("SEC.8 a chat of this computer and a chat of a section with the same
   from = calls.length;
   await box.click(); await page.keyboard.type("ping this computer"); await page.keyboard.press("Enter");
   if (!await until(async () => (await thread()).some((x) => x.includes("A canned reply of the mock.")), 15000)) fail("the message to this computer's chat got no reply");
-  if (!await until(() => split(from).here.some((c) => c.method === "POST" && c.path.startsWith(`${HERE}/messages`)), 5000)) fail("the message to this computer's chat did not go to /api/chats/c_plain/messages");
+  if (!await until(() => split(from).here.some((c) => c.method === "POST" && at(c).startsWith(`${HERE}/messages`)), 5000)) fail("the message to this computer's chat did not go to /api/chats/c_plain/messages");
   await only("a message to this computer's chat", from, "here");
   if (J((await held())[1][1]) !== J([FAR.asks])) fail(`Studio Mac's chat got the message: ${J((await held())[1][1])}`);
   from = await open("Studio Mac's chat again", farRow(FAR.name), FAR, "Studio Mac");
@@ -78,7 +80,7 @@ await check("SEC.8 a chat of this computer and a chat of a section with the same
   from = calls.length;
   await box.click(); await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.type("ping the studio"); await page.keyboard.press("Enter");
   if (!await until(async () => (await thread()).some((x) => x.includes("A canned reply of the mock.")), 15000)) fail("the message to Studio Mac's chat got no reply");
-  if (!await until(() => split(from).there.some((c) => c.method === "POST" && c.path.startsWith(`${THERE}/messages`)), 5000)) fail(`the message to Studio Mac's chat did not go to ${THERE}/messages`);
+  if (!await until(() => split(from).there.some((c) => c.method === "POST" && at(c).startsWith(`${THERE}/messages`)), 5000)) fail(`the message to Studio Mac's chat did not go to ${THERE}/messages`);
   if (split(from).here.length) fail(`a message to Studio Mac's chat made calls for this computer's: ${J(split(from).here.map((c) => `${c.method} ${c.path}`))}`);
   if (J((await held())[0][1]) !== J([LOCAL.asks, "ping this computer"]) || J((await held())[1][1]) !== J([FAR.asks, "ping the studio"])) fail(`the two chats hold the messages ${J((await held()).map((h) => h[1]))}`);
   await open("this computer's chat a third time", localRow(LOCAL.name), { ...LOCAL, says: "A canned reply of the mock." }, "");
@@ -97,7 +99,7 @@ await check("SEC.8 a chat of this computer and a chat of a section with the same
   await only("a rename of this computer's chat", from, "here");
   if (J((await held()).map((h) => h[0])) !== J(["Build is slow", "Render queue fixed"]) || !await farRow("Render queue fixed").count()) fail(`after both renames the chats are named ${J((await held()).map((h) => h[0]))}`);
   await mockEval(`await elsewhere("${STUDIO}", "PATCH", "/chats/c_plain", { name: "Named by its owner" }); await elsewhere("local", "PATCH", "/chats/c_plain", { name: "Named in another window" });`, url);
-  if (!await until(async () => await farRow("Named by its owner").count() === 1 && await localRow("Named in another window").count() === 1, 10000)) fail(`the renames from elsewhere did not each reach their own row: ${J([(await sideSeen(page)).rows.filter((n) => /Named/.test(n)), (await sideSeen(page, STUDIO)).rows.filter((n) => /Named/.test(n))])}`);
+  if (!await until(async () => await farRow("Named by its owner").count() === 1 && await localRow("Named in another window").count() === 1, 10000)) fail(`the renames from elsewhere did not each reach their own row: ${J([(await sideSeen(page, "local")).rows.filter((n) => /Named/.test(n)), (await sideSeen(page, STUDIO)).rows.filter((n) => /Named/.test(n))])}`);
 
   // ---- a reload opens the one that was open
   await farRow("Named by its owner").click();
@@ -111,7 +113,7 @@ await check("SEC.8 a chat of this computer and a chat of a section with the same
   await sideMenu(page, farRow("Named by its owner"), "More", "Delete");
   await page.locator(".dialog[role=dialog] button", { hasText: "Delete" }).click();
   if (!await until(async () => !await farRow("Named by its owner").count() && (await held())[1] === null, 10000)) fail("Studio Mac's chat was not deleted");
-  if (!await until(() => calls2.some((c) => c.method === "DELETE" && c.path === THERE), 5000) || calls2.some((c) => c.method === "DELETE" && c.path.startsWith(HERE))) fail(`the delete of Studio Mac's chat made the calls ${J(calls2.filter((c) => c.method === "DELETE").map((c) => c.path))}`);
+  if (!await until(() => calls2.some((c) => c.method === "DELETE" && at(c) === THERE), 5000) || calls2.some((c) => c.method === "DELETE" && at(c).startsWith(HERE))) fail(`the delete of Studio Mac's chat made the calls ${J(calls2.filter((c) => c.method === "DELETE").map((c) => c.path))}`);
   if (!(await held())[0] || await localRow("Named in another window").count() !== 1) fail("the delete of Studio Mac's chat took this computer's chat with it");
   await localRow("Named in another window").click();
   if (!await until(async () => (await thread()).some((x) => x.includes(LOCAL.asks)), 10000)) fail("after the other was deleted, this computer's chat does not open with its thread");
@@ -123,7 +125,7 @@ await check("SEC.8 a chat of this computer and a chat of a section with the same
   await sideMenu(page, localRow("Named in another window"), "More", "Delete");
   await page.locator(".dialog[role=dialog] button", { hasText: "Delete" }).click();
   if (!await until(async () => !await localRow("Named in another window").count() && (await held())[0] === null, 10000)) fail("this computer's chat was not deleted");
-  if (!await until(() => calls3.some((c) => c.method === "DELETE" && c.path === HERE), 5000) || calls3.some((c) => c.method === "DELETE" && c.path.startsWith("/api/on/"))) fail(`the delete of this computer's chat made the calls ${J(calls3.filter((c) => c.method === "DELETE").map((c) => c.path))}`);
+  if (!await until(() => calls3.some((c) => c.method === "DELETE" && at(c) === HERE), 5000) || calls3.some((c) => c.method === "DELETE" && c.server !== "local")) fail(`the delete of this computer's chat made the calls ${J(calls3.filter((c) => c.method === "DELETE").map((c) => c.path))}`);
   if (!(await held())[1] || await farRow(FAR.name).count() !== 1) fail("the delete of this computer's chat took Studio Mac's chat with it");
   await farRow(FAR.name).click();
   if (!await until(async () => (await thread()).some((x) => x.includes(FAR.asks)) && (await thread()).some((x) => x.includes(FAR.says)), 10000)) fail("after the other was deleted, Studio Mac's chat does not open with its thread");

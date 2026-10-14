@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
-    "test": "node --test --experimental-strip-types 'test/*.test.ts'",
+    "test": "node --test --experimental-strip-types 'test/*.test.ts' dev/hostface.test.mjs dev/host.test.mjs",
     "check": "tsc --noEmit",
     "mock": "node dev/mock.mjs",
     "uicheck": "node dev/uicheck.mjs"

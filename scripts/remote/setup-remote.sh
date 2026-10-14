@@ -3,8 +3,7 @@
 # machine connects to over HTTPS, with a secret and the fingerprint of this server's certificate.
 # It asks nothing. Run again, it changes nothing and prints the same.
 #
-#   sh setup-remote.sh [--name NAME]... [--port N] [--new-cert] [--new-secret]
-#                      [--home DIR] [--server-port N]
+#   sh setup-remote.sh [--name NAME]... [--port N] [--new-cert] [--new-secret] [--home DIR]
 #
 #   --name NAME       a DNS name or IPv4 address clients reach this machine by; may be repeated.
 #                     Without it set-up takes every name and address the machine has.
@@ -13,7 +12,6 @@
 #                     fingerprint
 #   --new-secret      replace the secret: every client needs the new one
 #   --home DIR        the data folder (default ~/.ai-whiteboard)
-#   --server-port N   the server's own port, when it is not the running server's or 4747
 #
 # It finds the server program beside itself (the server folder of scripts/build-server.sh) or in
 # the app bundle it is part of (Contents/Resources/remote/ and Contents/MacOS/ai-whiteboard), and
@@ -28,7 +26,6 @@ usage() {
 dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 
 home=
-server_port=
 new_secret=
 # The arguments of `remote setup` are collected in "$@".
 n=$#
@@ -38,7 +35,7 @@ while [ "$n" -gt 0 ]; do
   n=$((n - 1))
   opt=
   case $arg in
-    --name | --port | --home | --server-port)
+    --name | --port | --home)
       if [ "$n" -eq 0 ]; then
         echo "setup-remote.sh: $arg needs a value" >&2
         exit 2
@@ -48,7 +45,7 @@ while [ "$n" -gt 0 ]; do
       shift
       n=$((n - 1))
       ;;
-    --name=* | --port=* | --home=* | --server-port=*)
+    --name=* | --port=* | --home=*)
       val=${arg#*=}
       arg=${arg%%=*}
       opt=$arg
@@ -63,7 +60,6 @@ while [ "$n" -gt 0 ]; do
     --name) set -- "$@" -name "$val" ;;
     --port) set -- "$@" -port "$val" ;;
     --home) home=$val ;;
-    --server-port) server_port=$val ;;
     --new-cert) set -- "$@" -new-cert ;;
     --new-secret) new_secret=1 ;;
     -h | --help)
@@ -93,10 +89,6 @@ else
 fi
 [ -n "$restart" ] || restart="\"$bin\" relaunch"
 
-if [ -n "$server_port" ]; then
-  set -- "$@" -server-port "$server_port"
-fi
-
 # `remote setup` exits 1 also when it wrote its files and the start's check then found a fault:
 # its message is on stderr, and what it printed says that set-up was done.
 code=0
@@ -110,18 +102,10 @@ if [ -z "$out" ]; then
   exit "$code"
 fi
 
-# The restart line gets the data folder and the server's own port as `remote setup` printed them:
-# the folder's full path, and the port also when it is the running server's and was not given.
+# The restart line gets the data folder as `remote setup` printed it: the folder's full path.
 if [ -n "$home" ]; then
   folder=$(printf '%s\n' "$out" | sed -n '1s/^Remote access is set up in \(.*\)\.$/\1/p')
   restart="$restart -home \"${folder:-$home}\""
-fi
-if [ -z "$server_port" ]; then
-  server_port=$(printf '%s\n' "$out" | sed -n 's/^Server port: //p')
-  [ "$server_port" != 4747 ] || server_port=
-fi
-if [ -n "$server_port" ]; then
-  restart="$restart -port $server_port"
 fi
 
 if [ -n "$new_secret" ]; then

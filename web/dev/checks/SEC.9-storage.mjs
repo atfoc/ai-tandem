@@ -10,7 +10,9 @@
 // A whiteboard: what is drawn on a section's board is in no storage while its save is on its way, when it is saved, and
 // while it waits in the window for a server that is not connected; a reload during the outage gives it up.
 // Every storage a page has is read each time: localStorage, sessionStorage and every IndexedDB database.
-import { check, dragResizer, mockEval, openPage, seed, until } from "../shot.mjs";
+import { callMatcher, check, dragResizer, mockEval, openPage, seed, until } from "../shot.mjs";
+
+const DRAFT = callMatcher(/\/draft\?/), SCENE = callMatcher(/\/boards\/b_loose\/scene\?/); // (the page's calls, held on their way)
 
 const J = JSON.stringify;
 const STUDIO = "s_studio", KEY = `${STUDIO}~c_note`;
@@ -67,7 +69,7 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat or wh
 
   // ---- typed, the save held on its way: no copy in the browser; and then saved
   let hold = null, held = 0;
-  await page.route(/\/draft\?/, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue(); });
+  await page.route(DRAFT, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue(); });
   typedSoFar.push(" and the gamma");
   await box.click(); await page.keyboard.press("End"); await page.keyboard.type(" and the gamma");
   if (!await until(() => held === 1, 10000)) fail("typing in the section's chat started no save of its draft");
@@ -77,7 +79,7 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat or wh
   await clean("the section's draft saved");
 
   // the same in a chat of this computer: its unsaved copy is in the browser while the save is on its way (so the check sees one)
-  await page.locator('.side-tree > .side-group .side-row:has(.side-name:text-is("Why is the build slow"))').click();
+  await page.locator('.side-section[data-server="local"] > .side-section-body > .side-group .side-row:has(.side-name:text-is("Why is the build slow"))').click();
   await page.waitForFunction(() => !document.querySelector(".chat-head .chat-head-server") && document.querySelector(".thread .msg.user"), null, { timeout: 10000 });
   await box.click(); await page.keyboard.type("a local thought");
   if (!await until(() => held === 2, 10000)) fail("typing in this computer's chat started no save of its draft");
@@ -85,7 +87,7 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat or wh
   if (!Object.keys(localCopy).some((k) => k.startsWith("aiwb.draft.c_plain") && localCopy[k].includes("a local thought"))) fail(`a chat of this computer has no unsaved copy in localStorage while its save is on its way: ${J(Object.keys(localCopy))}`);
   hold();
   if (!await until(async () => !Object.keys(await store()).some((k) => k.startsWith("aiwb.draft.")), 10000)) fail(`the local chat's unsaved copy stays after its save: ${J(Object.keys(await store()))}`);
-  await page.unroute(/\/draft\?/);
+  await page.unroute(DRAFT);
 
   // ---- a reload: the section's chat opens again from the selection, with the draft its server has
   await page.locator(`.side-section[data-server="${STUDIO}"] .side-row:has(.side-name:text-is("Scratch"))`).click();
@@ -151,13 +153,13 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat or wh
     };
     await clean("the section's board open with its server's drawing", pg);
     let hold = null, held = 0;
-    await pg.route(/\/boards\/b_loose\/scene\?/, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue(); });
+    await pg.route(SCENE, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue(); });
     await draw();
     if (!await until(() => held === 1, 15000)) fail("drawing on the section's board started no save of it");
     await clean("the save of the section's drawing on its way", pg);
     hold();
     if (!await until(async () => await count() === 2, 15000)) fail(`the drawing was not saved on Studio Mac: it has ${await count()} shapes, not 2`);
-    await pg.unroute(/\/boards\/b_loose\/scene\?/);
+    await pg.unroute(SCENE);
     await clean("the section's drawing saved", pg);
     // its server not connected: the drawing waits in the window, under the banner, and in no storage
     await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);

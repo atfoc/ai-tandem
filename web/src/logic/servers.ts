@@ -1,10 +1,11 @@
-// The list of servers this app connects to (the Servers dialog): the shapes the local server
-// sends, and what the dialog shows and offers for them. The local server holds the list and
+// The list of servers this app connects to (the Servers dialog): the shapes the app
+// gives, and what the dialog shows and offers for them. The app holds the list and
 // the secrets; the page never gets a secret back.
 
-/** The state of one entry's connection, as the local server holds it. */
+/** The state of one entry's connection, as the app holds it. */
 export type ServerState = "connecting" | "connected" | "unreachable" | "secret_not_accepted" | "fingerprint_not_accepted" | "certificate_changed"
-  | "certificate_not_accepted" | "name_not_known" | "not_aiwb" | "too_old" | "another_server";
+  | "certificate_not_accepted" | "name_not_known" | "not_aiwb" | "too_old" | "another_server"
+  | "not_started"; // this computer's entry only: the last start of its server failed (`detail` is the reason)
 
 /** One entry of the list. pin = the accepted fingerprint; fingerprint = the one the server presented when the pin refused it. */
 export type ServerView = { id: string; local?: boolean; name: string; address?: string; selfSigned?: boolean; pin?: string; instanceId?: string;
@@ -17,8 +18,8 @@ export type TestResult = { ok: boolean; step: number; outcome: string; message: 
 /** The add and edit form. id = the entry edited; without it the form adds one. */
 export type ServerForm = { id?: string; name: string; address: string; secret: string; selfSigned: boolean; pin: string };
 
-/** The entry for the server the page talks to: always first, never edited or removed. */
-export const LOCAL_ENTRY: ServerView = { id: "local", local: true, name: "This computer", state: "connected" };
+/** The entry for this computer's server: always first, never edited or removed. The page starts with it connecting. */
+export const LOCAL_ENTRY: ServerView = { id: "local", local: true, name: "This computer", state: "connecting" };
 
 /** A snapshot's list; a server that sends none has the local entry alone. */
 export function serversOf(s: { servers?: ServerView[] | null }): { servers: ServerView[] } {
@@ -49,9 +50,18 @@ const STATE_LABELS: Record<ServerState, string> = {
   not_aiwb: "Not an AI Whiteboard server",
   too_old: "Too old: update the server on that machine",
   another_server: "Another server",
+  not_started: "Not started",
 };
 
 export function stateLabel(s: ServerState): string { return STATE_LABELS[s] ?? String(s); }
+
+/** The line on this computer's MCP listener, from the answer of `owner.status` (the server's `status -json`): "MCP listener: <url> (up)",
+ *  or "" when the answer has no listener (no server of this build runs). */
+export function mcpLine(status: unknown): string {
+  const l = (status as { running?: { mcp?: { listener?: { url?: unknown; up?: unknown } } } } | null)?.running?.mcp?.listener;
+  if (!l || typeof l.url !== "string" || !l.url) return "";
+  return `MCP listener: ${l.url} (${l.up === false ? "down" : "up"})`;
+}
 
 /** The five steps of "Test connection", by the answer's `step`. */
 const STEP_NAMES = ["the address", "the connection", "the certificate", "the secret and the server's answer", "the first events"];
@@ -75,19 +85,19 @@ export function rowActions(v: ServerView): RowAction[] {
   return all;
 }
 
-/** Whether s is a host the local server takes (remote.NormalName): an IPv4 literal or a DNS name, [a-z0-9.-] after
+/** Whether s is a host the app takes (remote.NormalName): an IPv4 literal or a DNS name, [a-z0-9.-] after
  *  lower-casing, 253 characters at most, no dot or hyphen at either end and no "..". */
 export function validHost(s: string): boolean {
   return s.length <= 253 && /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(s) && !s.includes("..");
 }
 
-/** Whether s is an address the local server takes (servers.ParseAddress): https, such a host, a port of 1 to 65535, a path of "" or "/". */
+/** Whether s is an address the app takes (servers.ParseAddress): https, such a host, a port of 1 to 65535, a path of "" or "/". */
 export function validAddress(s: string): boolean {
   const m = /^https:\/\/([^/:]+):([0-9]+)\/?$/i.exec(s.trim());
   return !!m && validHost(m[1]) && +m[2] >= 1 && +m[2] <= 65535;
 }
 
-/** "" or the form's first problem. The local server checks the same again; in an edit an empty secret keeps the stored one. */
+/** "" or the form's first problem. The app checks the same again; in an edit an empty secret keeps the stored one. */
 export function formError(f: ServerForm): string {
   const name = f.name.trim();
   if (!name) return "Give the server a name";

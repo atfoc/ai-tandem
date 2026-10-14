@@ -2,6 +2,7 @@
 // plain chat alone. DOM-free; store.ts keeps it in localStorage "aiwb.sel" and Sidebar.tsx
 // select() changes it.
 import type { ChatView } from "../types.ts";
+import { serverOfKey } from "./keys.ts";
 
 export type Sel = { board: string | null; chat: string | null }; // board id, chat id
 
@@ -33,4 +34,15 @@ export function validSel(sel: Sel, s: Known): Sel {
   const c = sel.chat ? s.chats[sel.chat] : undefined;
   const ok = !!c && (c.board || null) === board;
   return { board, chat: ok ? sel.chat : null };
+}
+
+/** sel with what no longer exists dropped, for the things of one server (an entry id) alone: a board or a chat of another
+ *  server stays as it is, for that server's own tree to judge when it comes. */
+export function validSelOn(sel: Sel, server: string, s: Known): Sel {
+  const mine = (id: string | null) => !!id && serverOfKey(id) === server;
+  if (!mine(sel.board) && !mine(sel.chat)) return sel;
+  const board = mine(sel.board) ? (s.boards[sel.board!] ? sel.board : null) : sel.board;
+  let chat = sel.chat;
+  if (mine(chat)) { const c = s.chats[chat!]; chat = c && (c.board || null) === board ? chat : null; }
+  return board === sel.board && chat === sel.chat ? sel : { board, chat };
 }

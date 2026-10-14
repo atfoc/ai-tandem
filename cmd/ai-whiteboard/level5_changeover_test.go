@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -11,63 +12,17 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"ai-whiteboard/internal/agenttest"
-	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 )
 
-// The tests of this file are the change-over of a server from before level 5, on a real server
+// The test of this file is the change-over of a server from before level 5, on a real server
 // process. Such a server put everything an API client made into one group, "Remote", and kept
 // that group's id in state.json ("remoteGroup"); each chat and board of a client carried the
 // client's id as a mark ("client"). The updated server removes that group at its first start,
-// before it serves a request, and reads no mark.
-
-// The ids of stateOfBefore: the group the file names as the one of the API clients, which has
-// another name by now, and a group that is merely named "Remote".
-const (
-	beforeNamed = "g_clients1"
-	beforePlain = "g_remote01"
-)
-
-// stateOfBefore writes, into a data folder no server has started in yet, the state.json of a
-// server from before level 5 with two groups and nothing in them: the one of the API clients,
-// with what the server remembered for it, and one named "Remote".
-func stateOfBefore(t *testing.T, dir string) {
-	t.Helper()
-	state := `{"version":1,"groups":[{"id":"` + beforeNamed + `","name":"Clients"},{"id":"` + beforePlain + `","name":"Remote"}],` +
-		`"defaults":{"groups":{"` + beforeNamed + `":{"servers":{"local":{"cwd":"/"}}}}},"remoteGroup":"` + beforeNamed + `"}`
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(state), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// noGroupOfBefore checks what the first start made of stateOfBefore: for the server's own page
-// and for an API client the one group is the one named "Remote", and state.json no longer names
-// a group of the API clients nor holds anything of the one it named. It returns the id of the
-// group that stayed.
-func noGroupOfBefore(t *testing.T, in *instance, port int, fingerprint, secret string) string {
-	t.Helper()
-	_, own := in.tree(t)
-	status, raw := remoteCall(t, port, fingerprint, secret, testClient, testLevel, "GET", "/api/state", nil)
-	if status != http.StatusOK {
-		t.Fatalf("the state of an API client: status %d: %s", status, raw)
-	}
-	_, client := treeOf(t, raw)
-	for who, tree := range map[string]level5Tree{"the server's own page": own, "an API client": client} {
-		if len(tree.Groups) != 1 || tree.Groups[0].ID != beforePlain || tree.Groups[0].Name != "Remote" || tree.Groups[0].Parent != "" {
-			t.Fatalf("the groups of %s after the start: %+v; want the group named \"Remote\" alone", who, tree.Groups)
-		}
-		if _, has := tree.Defaults.Groups[beforeNamed]; has {
-			t.Fatalf("the defaults of %s still hold the removed group: %+v", who, tree.Defaults)
-		}
-	}
-	if b, err := os.ReadFile(filepath.Join(in.dir, "state.json")); err != nil || bytes.Contains(b, []byte(beforeNamed)) || bytes.Contains(b, []byte("remoteGroup")) || !bytes.Contains(b, []byte(beforePlain)) {
-		t.Fatalf("state.json after the start (%v):\n%s", err, b)
-	}
-	return beforePlain
-}
+// before it serves a request, and reads no mark. (The server's own page is a client now, like
+// the others.)
 
 // level5Tree is a server's tree, as the snapshot of an API client of level 5 and the state of
 // the server's own page hold it.
@@ -102,19 +57,30 @@ func treeOf(t *testing.T, state []byte) (map[string]json.RawMessage, level5Tree)
 	return raw, tree
 }
 
-// tree is the tree in the state of the server's own page.
-func (in *instance) tree(t *testing.T) (map[string]json.RawMessage, level5Tree) {
+// treeAs is the tree in the state that the client reads.
+func (in *instance) treeAs(t *testing.T, client string) (map[string]json.RawMessage, level5Tree) {
 	t.Helper()
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(in.url + "api/state")
+	status, raw := getAs(t, in, client, "GET", "/api/state", nil)
+	if status != http.StatusOK {
+		t.Fatalf("the state of the client %s: status %d: %s", client, status, raw)
+	}
+	return treeOf(t, raw)
+}
+
+// apiY is the id of the tests' second client.
+const apiY = "8d3e6b1c-2f4a-4b7d-a9c1-0e5f6a7b8c9d"
+
+// apiZ is the id of the tests' third client.
+const apiZ = "1c9b7a5d-3e2f-4a6b-8c0d-9e1f2a3b4c5d"
+
+// getAs makes one call of the client and returns the status and the body.
+func getAs(t *testing.T, in *instance, client, method, path string, body any) (int, []byte) {
+	t.Helper()
+	status, raw, err := in.request(context.Background(), client, method, path, body)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	defer resp.Body.Close()
-	var b bytes.Buffer
-	if _, err := b.ReadFrom(resp.Body); err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("the state of the server's own page: status %d, %v", resp.StatusCode, err)
-	}
-	return treeOf(t, b.Bytes())
+	return status, raw
 }
 
 // lines is the tree as lines, one for each thing with its place and its archive mark: the groups
@@ -274,18 +240,16 @@ func editJSON(t *testing.T, path string, edit func(obj map[string]any)) {
 // chat; the group named "Remote" is as it was. No view holds a mark, a second client sees
 // exactly the same tree and reads what the first one "made", and a restart changes nothing more.
 func TestLevel5ChangeOver(t *testing.T) {
-	serverTest(t, "TestRemoteListenerServes (the group that state.json names is gone after a start, for the page and for a client) (this package)")
+	serverTest(t, "TestLevel5DropRemoteGroup, TestLevel5DropRemoteGroupCorners (internal/app: the group of the API clients of a remote server)")
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH (the fake claude is a Node script)")
 	}
-	in, port := newRemoteInstance(t)
+	in := newInstance(t)
 	in.claude = agenttest.FakeClaude(t)
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
-	in.run(t, "launch")
-	in.waitListening(t)
+	in.launchJSON(t, "launch")
 
-	// The server as it is used: its own page makes the groups and what is in them.
-	p := bridgetest.Connect(t, strings.TrimSuffix(in.url, "/"), "level5-changeover-page")
+	// The server as it is used: a client makes the groups and what is in them.
+	p := in.page(t, "6c8f2a1d-3e4b-4f5a-8b7c-9d0e1f2a3b4c")
 	p.Welcome()
 	made := func(path string, body map[string]any) string {
 		t.Helper()
@@ -314,7 +278,7 @@ func TestLevel5ChangeOver(t *testing.T) {
 	inPlain := made("/api/chats", map[string]any{"agent": "claude", "group": plain})
 	boardPlain := made("/api/boards", map[string]any{"name": "The owner's board", "group": plain})
 
-	_, before := in.tree(t)
+	_, before := in.treeAs(t, apiZ)
 	p.Close()
 	if out := in.run(t, "stop"); !strings.Contains(out, "AI Whiteboard stopped") {
 		t.Fatalf("stop printed %q", out)
@@ -420,40 +384,35 @@ func TestLevel5ChangeOver(t *testing.T) {
 	}
 
 	// The first start of the updated server.
-	in.run(t, "launch")
-	in.waitListening(t)
-	x := apiClient(t, port, fp, secret, testClient)
+	in.launchJSON(t, "launch")
+	x := in.page(t, testClient)
 	snapshot, err := json.Marshal(x.Welcome())
 	if err != nil {
 		t.Fatal(err)
 	}
 	xRaw, xTree := treeOf(t, snapshot)
 	check("in the snapshot of the client whose mark the files hold", xTree)
-	status, state := remoteCall(t, port, fp, secret, apiY, testLevel, "GET", "/api/state", nil)
-	if status != http.StatusOK {
-		t.Fatalf("the state of a second client: status %d: %s", status, state)
-	}
-	yRaw, yTree := treeOf(t, state)
+	yRaw, yTree := in.treeAs(t, apiY)
 	check("in the state of a second client", yTree)
-	ownRaw, ownTree := in.tree(t)
-	check("in the state of the server's own page", ownTree)
+	ownRaw, ownTree := in.treeAs(t, apiZ)
+	check("in the state of a third client", ownTree)
 	sameLists(t, "the first client", "a second client", xRaw, yRaw)
-	sameLists(t, "the first client", "the server's own page", xRaw, ownRaw)
+	sameLists(t, "the first client", "a third client", xRaw, ownRaw)
 	noMarks(t, "the first client", xRaw)
 	noMarks(t, "a second client", yRaw)
-	noMarks(t, "the server's own page", ownRaw)
+	noMarks(t, "a third client", ownRaw)
 	stateFile("after the first start")
 
 	// What the files say the first client made is everyone's: the second client reads the chat,
 	// and puts the board into the group named "Remote".
-	status, raw := remoteCall(t, port, fp, secret, apiY, testLevel, "GET", "/api/chats/"+chat+"/items", nil)
+	status, raw := getAs(t, in, apiY, "GET", "/api/chats/"+chat+"/items", nil)
 	if status != http.StatusOK || !strings.Contains(string(raw), word) {
 		t.Fatalf("the second client's read of the chat: status %d: %s", status, raw)
 	}
-	if status, raw := remoteCall(t, port, fp, secret, apiY, testLevel, "PATCH", "/api/boards/"+board, map[string]any{"group": plain}); status != http.StatusOK {
+	if status, raw := getAs(t, in, apiY, "PATCH", "/api/boards/"+board, map[string]any{"group": plain}); status != http.StatusOK {
 		t.Fatalf("the second client's move of the board: status %d: %s", status, raw)
 	}
-	if status, raw := remoteCall(t, port, fp, secret, apiY, testLevel, "PATCH", "/api/boards/"+board, map[string]any{"group": model.Ungrouped}); status != http.StatusOK {
+	if status, raw := getAs(t, in, apiY, "PATCH", "/api/boards/"+board, map[string]any{"group": model.Ungrouped}); status != http.StatusOK {
 		t.Fatalf("the second client's move of the board back: status %d: %s", status, raw)
 	}
 	x.Close()
@@ -461,21 +420,17 @@ func TestLevel5ChangeOver(t *testing.T) {
 	// A restart: the change-over ran once, and nothing more changes.
 	old := in.hello(t).Pid
 	in.run(t, "relaunch")
-	in.waitListening(t)
+	in.waitServing(t)
 	if pid := in.hello(t).Pid; pid == old {
-		t.Fatalf("/api/hello still reports the old pid %d", old)
+		t.Fatalf("hello still reports the old pid %d", old)
 	}
-	status, state = remoteCall(t, port, fp, secret, testClient, testLevel, "GET", "/api/state", nil)
-	if status != http.StatusOK {
-		t.Fatalf("the state after the restart: status %d: %s", status, state)
-	}
-	againRaw, againTree := treeOf(t, state)
+	againRaw, againTree := in.treeAs(t, testClient)
 	check("after a restart", againTree)
 	sameLists(t, "the first start", "the restart", xRaw, againRaw)
 	noMarks(t, "a client after the restart", againRaw)
-	ownRaw, ownTree = in.tree(t)
-	check("in the state of the server's own page after a restart", ownTree)
-	noMarks(t, "the server's own page after a restart", ownRaw)
+	ownRaw, ownTree = in.treeAs(t, apiZ)
+	check("in the state of a third client after a restart", ownTree)
+	noMarks(t, "a third client after a restart", ownRaw)
 	stateFile("after a restart")
 	if log := serverLog(t, in.dir); strings.Contains(log, "could not be removed") {
 		t.Fatalf("the log speaks of a change-over that failed:\n%s", log)

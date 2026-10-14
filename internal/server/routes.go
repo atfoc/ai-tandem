@@ -3,7 +3,7 @@ package server
 import "net/http"
 
 // routeMux is an http.ServeMux that keeps the pattern of every route registered on it, in order,
-// so that a test can ask the remote listener for each of them (see RemoteRoutes).
+// so that a test can ask the client listener for each of them (see ClientRoutes).
 type routeMux struct {
 	*http.ServeMux
 	patterns []string

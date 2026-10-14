@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { fakeStream } from "./fixtures/stream.ts";
 import type { Catalog, ChatImage, Draft, Held, Reference, Target } from "../src/types.ts";
 import { moveChoice, sameChoice, withEffort, withModel, type Choice } from "../src/logic/models.ts";
 
@@ -79,8 +80,7 @@ Object.defineProperty(globalThis, "localStorage", {
   }),
 });
 
-let source: { onmessage?: (e: { data: string }) => void; close(): void } | undefined;
-(globalThis as any).EventSource = class { constructor() { source = this; } close() {} };
+const stream = fakeStream();
 
 const stubs: Record<string, string> = {
   "board.ts": `export const runTool = async () => ({}); export const flushAll = async () => {}; export const forgetBoard = () => {};
@@ -111,7 +111,7 @@ const src = path.join(web, "src");
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-actions-")), "actions.mjs");
 await esbuild.build({
   stdin: {
-    contents: `export * as actions from "./fork/actions.ts"; export * as conn from "./conn.ts"; export * as store from "./store.ts";
+    contents: `export * as actions from "./fork/actions.ts"; export * as conn from "./conn.ts"; export * as tr from "./transport/index.ts"; export * as store from "./store.ts";
       export * as composer from "./Composer.tsx"; export * as drafts from "./logic/drafts.ts"; export * as uploads from "./uploads.ts"; export * as apimod from "./api.ts";`,
     resolveDir: src, loader: "ts",
   },
@@ -127,11 +127,12 @@ await esbuild.build({
     },
   }],
 });
-const { actions, conn, store, composer, drafts, uploads, apimod } = await import(pathToFileURL(out).href);
+const { actions, conn, tr, store, composer, drafts, uploads, apimod } = await import(pathToFileURL(out).href);
+tr.useTransport(stream.transport);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 /** An event from the server. */
-async function ev(m: Record<string, unknown>) { source!.onmessage!({ data: JSON.stringify(m) }); await settle(); }
+async function ev(m: Record<string, unknown>) { stream.push(m, { servers: store.getState().servers, sections: Object.keys(store.getState().sections) }); await settle(); }
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
 const view = (id: string, o: Record<string, unknown> = {}) =>
@@ -944,7 +945,7 @@ test("a snapshot while a move is being sent keeps the move: the branch left keep
   assert.equal(box!.held.text, "my draft");
 });
 
-test("a snapshot without the chat of a move being sent drops the move", async () => {
+test("a snapshot without the chat of a move being sent drops the move; the chat on screen stays, gone", async () => {
   await open();
   await actions.startMove("c_1", { branch: "main", at: 3, new: true });
   await settle();
@@ -952,7 +953,7 @@ test("a snapshot without the chat of a move being sent drops the move", async ()
   const sent = box!.submit();
   await settle();
   await ev(snapshot([view("c_2")], [rec("c_2", "main")]));
-  assert.deepEqual([s().moves, s().sel.chat], [{}, null]);
+  assert.deepEqual([s().moves, s().sel.chat, s().gone], [{}, "c_1", { c_1: true }]);
   await fake.posts[0].fail(new Error("no such chat"));
   await sent;
   assert.deepEqual(s().moves, {});
@@ -1804,7 +1805,7 @@ test("the thumbnail kept of an uploaded picture is its own chat's: the same pict
     const theirs = uploads.previewOf(K, id);
     assert.ok(theirs?.startsWith("blob:") && theirs !== mine, "its own file, not the local chat's");
     // each waits for its own chat's address, and goes when that one has loaded
-    assert.deepEqual(made.map((m) => m.src), [`/api/chats/c_1/images/${id}`, `/api/on/${S1}/chats/c_1/images/${id}`]);
+    assert.deepEqual(made.map((m) => m.src), [`aiwb-picture://p/local/c_1/${id}`, `aiwb-picture://p/${S1}/c_1/${id}`]);
     made[1].onload!();
     assert.deepEqual([uploads.previewOf("c_1", id), uploads.previewOf(K, id)], [mine, undefined]);
     made[0].onerror!();

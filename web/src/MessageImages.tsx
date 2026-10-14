@@ -1,6 +1,6 @@
 // A sent message's images, above its text (ChatView.tsx): a thumbnail each, and a click shows the image large. The
-// images are fetched from the chat's own address (imageUrl), whichever server the chat is on: the local server passes
-// the fetch on. One that cannot be fetched is the plain tile, and is tried again when the chat's server is back.
+// images are fetched from the chat's own address (imageUrl), whichever server the chat is on: the app fetches it from that
+// server and looks at its bytes. One that cannot be fetched is the plain tile, and is tried again when the chat's server is back.
 import React, { useMemo, useState } from "react";
 import "./chatimage.css";
 import { ImageThumb } from "./ImageThumb.tsx";

@@ -6,14 +6,13 @@ import (
 	"net/http"
 
 	"ai-whiteboard/internal/library"
-	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/servers"
+	"ai-whiteboard/internal/model"
 )
 
-// The prompt library: the routes behind the library popup and the insert popup. A page talks to
-// this server only: it reads the libraries of every server in one list and names the server in
-// each call that changes one, by the id the server has in the server list ("local" = this
-// computer). The shapes are in package library (View, Group, Prompt, the bodies and the events).
+// The prompt library: the routes behind the library popup and the insert popup. Every client
+// reads this server's library and changes it; each call that changes one names the server as
+// {server}, which is "local": a library is its server's own. The shapes are in package library
+// (View, Group, Prompt, the bodies and the events).
 //
 //	GET    /api/library                        → libraryList
 //	POST   /api/library/{server}/groups        library.NewGroup     → groupReply
@@ -23,28 +22,14 @@ import (
 //	PATCH  /api/library/{server}/prompts/{id}  library.PromptChange → promptReply
 //	DELETE /api/library/{server}/prompts/{id}                       → {"ok":true}
 //
-// The list is also the snapshot's "libraries", and after every change the pages get the changed
-// library whole in a "library" event (library.Event): a page needs no read after a call.
-//
-// On the loopback listener the routes that change something are non-GET routes under /api, so
-// the guard's known-client rule covers them. The library's own server checks every rule of the
-// library. A call that breaks one is refused with {"error": <a sentence the popup shows>,
-// "code": <a library.Code…>}; the status is libraryStatus's.
-//
-// A call for another server is passed on to that server over the connection this one holds to
-// it (remotes.RemoteLibrary), and that server checks the rules. Beside its refusals such a call
-// has three answers of its own, each with a sentence to show: 503 "server_unreachable" (the
-// server is not connected: its library cannot be changed until it is back), 504 "no_answer" and
-// 502 (its answer cannot be used).
-//
-// The routes are on the remote listener too (RemoteRoutes): there they are what an API client
-// may do with this server's own library, and with no other. Its list holds that one library,
-// without the notice, and {server} must be "local". The API client gets the library by itself,
-// in its snapshot and in "own_library" events (app.APISnapshot).
+// The library is also the snapshot's "library", and after every change the clients get it whole
+// in an "own_library" event (library.Own): a client needs no read after a call. The library's
+// own store checks every rule of the library. A call that breaks one is refused with {"error":
+// <a sentence the popup shows>, "code": <a library.Code…>}; the status is libraryStatus's.
 
 // libraryList is the answer of GET /api/library.
 type libraryList struct {
-	Libraries []library.View `json:"libraries"` // this computer's first; never null
+	Libraries []library.View `json:"libraries"` // this server's library alone, none without one; never null
 }
 
 // groupReply is the answer of a call that makes or changes a group: the group as it is now.
@@ -77,18 +62,12 @@ func libraryStatus(code string) int {
 	return http.StatusBadRequest // bad_name, bad_text
 }
 
-// libraryFail writes an error of a library: a refusal with its sentence and code, a call to
-// another server that could not be made as it says itself (remotes.Error), anything else (the
-// file could not be written) as 500.
+// libraryFail writes an error of a library: a refusal with its sentence and code, anything else
+// (the file could not be written) as 500.
 func libraryFail(w http.ResponseWriter, err error) {
 	var r *library.Refusal
 	if errors.As(err, &r) {
 		writeErrorCode(w, libraryStatus(r.Code), r.Text, r.Code)
-		return
-	}
-	var re *remotes.Error
-	if errors.As(err, &re) {
-		writeReply(w, re.Reply())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, err.Error())
@@ -109,9 +88,8 @@ func readLibraryBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// libraryCalls are the calls that change one library: of this computer's (*library.Store) or of
-// another server's (*remotes.RemoteLibrary). An error is a *library.Refusal, a *remotes.Error or
-// a failure of the file system.
+// libraryCalls are the calls that change this server's library (*library.Store). An error is a
+// *library.Refusal or a failure of the file system.
 type libraryCalls interface {
 	CreateGroup(name, parent string) (library.Group, error)
 	ChangeGroup(id string, c library.GroupChange) (library.Group, error)
@@ -121,36 +99,21 @@ type libraryCalls interface {
 	DeletePrompt(id string) error
 }
 
-// libraryOf returns the library the call changes: the one of the server {server} of its path.
-// A call for a server that has no library here is refused: one that is not in the list, one
-// that offers none, one that has not connected since this server started. An API client reaches
-// this server's own library only.
+// libraryOf returns the library the call changes: this server's own, whose {server} is "local".
+// A call for another server, or on a server without a library, is refused.
 func (s *Server) libraryOf(w http.ResponseWriter, r *http.Request) (libraryCalls, bool) {
-	id := r.PathValue("server")
-	switch {
-	case id == servers.LocalID:
-		if s.App.Library != nil {
-			return s.App.Library, true
-		}
-	case fromRemote(r) || s.Remotes == nil:
-	default:
-		if l, ok := s.Remotes.Library(r.Context(), id); ok {
-			return l, true
-		}
+	if r.PathValue("server") == model.LocalServer && s.App.Library != nil {
+		return s.App.Library, true
 	}
 	writeErrorCode(w, http.StatusNotFound, "This server has no prompt library here.", CodeNoServer)
 	return nil, false
 }
 
-// libraryListOf is the list of the libraries for the caller: all of them for a page, this
-// server's own for an API client, without the notice, which names the data folder.
-func (s *Server) libraryListOf(r *http.Request) libraryList {
-	if !fromRemote(r) {
-		return libraryList{Libraries: s.App.Libraries()}
-	}
+// libraryListOf is the list of the libraries: this server's own, without a notice (the snapshot's
+// "libraryNotice" has it).
+func (s *Server) libraryListOf() libraryList {
 	out := libraryList{Libraries: []library.View{}}
 	if own, ok := s.App.OwnLibrary(); ok {
-		own.Notice = ""
 		out.Libraries = append(out.Libraries, own)
 	}
 	return out
@@ -191,7 +154,7 @@ func (s *Server) libraryRoutes(mux interface {
 	}
 
 	mux.HandleFunc("GET /api/library", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, s.libraryListOf(r))
+		writeJSON(w, s.libraryListOf())
 	})
 	mux.HandleFunc("POST /api/library/{server}/groups", with(func(l libraryCalls, w http.ResponseWriter, r *http.Request) {
 		var in library.NewGroup

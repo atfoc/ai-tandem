@@ -62,7 +62,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
   const seeded = await seed(url, "A2");
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const lib = (server = "local") => mockEval(`return libraries[${JSON.stringify(server)}] ?? null;`, url);
-  const servers = (list) => mockEval(`extra.servers = ${JSON.stringify([{ id: "local", local: true, name: "This computer", state: "connected" }, ...list])}; send({ type: "servers", servers: extra.servers, notice: "" });`, url);
+  const servers = (list) => mockEval(`setServers(${JSON.stringify(list)});`, url);
   // (the seed's servers leave the list: this computer's library is the only one until Studio joins)
   await servers([]);
   await mockEval(`setLibrary("local", ${JSON.stringify(EXAMPLE)});`, url);
@@ -349,7 +349,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
 
     // the server drops: its prompts stay, marked; nothing of it can be changed, and nothing new goes there
     await a.field.text.fill("Typed before the server dropped.");
-    await mockEval(`libraries.s_studio.connected = false; sendLibrary("s_studio"); extra.servers[1].state = "unreachable"; send({ type: "server_state", server: extra.servers[1] });`, url);
+    await mockEval(`setServerState("s_studio", "unreachable");`, url);
     s = await a.shows("a server that dropped", (x) => x.off.join("|") === "Studio" && x.form?.fixed === true);
     if (s.rows.join("|") !== [...BOTH, "  retro"].join("|")) fail(`with the server dropped the tree is ${JSON.stringify(s.rows)}`);
     if (!["Save", "Delete"].every((l) => s.form.off.includes(l)) || !/^Studio is not connected/.test(s.form.notice) || s.form.text !== "Typed before the server dropped.") fail(`a prompt of a server that dropped shows ${JSON.stringify(s.form)}`);
@@ -363,7 +363,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     if (s.form.where !== "In This computer") fail(`with the server dropped a new prompt goes to ${JSON.stringify(s.form.where)}`);
     await a.button("Cancel").click();
     // back, it can be changed again
-    await mockEval(`libraries.s_studio.connected = true; sendLibrary("s_studio"); extra.servers[1].state = "connected"; send({ type: "server_state", server: extra.servers[1] });`, url);
+    await mockEval(`setServerState("s_studio", "connected");`, url);
     s = await a.shows("the server back", (x) => !x.off.length && x.form?.name === "standup" && x.form.fixed === false && !x.form.notice);
     await a.field.text.fill("What will you do today?");
     await a.save();

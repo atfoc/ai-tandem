@@ -1,5 +1,6 @@
-// Package server is the HTTP API (the prototype main.go's handlers). Handlers are thin: decode,
-// call App / Chats / Boards / Relay / Bridge, encode, and map errors to statuses.
+// Package server is the HTTP API: the client API on the client listener, the MCP listener's
+// handler and the control socket's. Handlers are thin: decode, call App / Chats / Boards / Relay /
+// Bridge, encode, and map errors to statuses.
 package server
 
 import (
@@ -23,8 +24,6 @@ import (
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/usable"
 )
 
@@ -32,55 +31,22 @@ type Server struct {
 	App    *app.App
 	Relay  *boardapi.Relay
 	Bridge *editorbridge.Bridge
-	Client string // static client folder, "" = none
-	Port   int
 
-	// Servers is the list of the remote servers this one connects to (see servers.go); nil = the
-	// local entry alone, and no route to change the list.
-	Servers *servers.Manager
-	// Remotes holds the trees of those servers and passes a page's calls for their things on (see
-	// section.go); nil = none: no server has a section.
-	Remotes *remotes.Relay
-
-	// MCP listener identity for GET /api/mcp/status. MCPPort/MCPURL are zero when this server
-	// has no MCP listener; MCPUp reports whether it is serving (nil = down).
+	// MCP listener identity for the control socket's /status. MCPPort/MCPURL are zero when this
+	// server has no MCP listener; MCPUp reports whether it is serving (nil = down).
 	MCPPort int
 	MCPURL  string
 	MCPUp   func() bool
-	// InstanceID is this installation's id, given in hello ("" = left out). Remote is the remote
-	// listener (see remote.go); nil = remote access is off.
+	// InstanceID is this installation's id, given in hello ("" = left out). Clients is the client
+	// listener (see clients.go); nil only in tests of the routes, which then serve nothing.
 	InstanceID string
-	Remote     *Remote
+	Clients    *ClientListener
 	// Usage returns an agent's plan usage limits (agent.UsageCache.Get); a missing agent = not available.
 	Usage map[model.AgentKind]func(fresh bool) (model.PlanUsage, error)
-	// Restart starts `relaunch` of this program detached, for POST /api/restart; it must not stop
-	// this server itself. An error wrapping ErrBinaryMissing means the program is gone (the app was
-	// moved or deleted). nil = restart not available.
-	Restart func() error
 
 	// beforeTake is a test's hook: the take route calls it with the board's id between its check
 	// of the board and the grant. nil outside tests.
 	beforeTake func(board string)
-}
-
-// ErrBinaryMissing is what Restart reports when this server's program is no longer on disk.
-var ErrBinaryMissing = errors.New("binary_missing")
-
-// webVersion is the version of the web client on disk: version.json ({"version": "<v>"}) in the
-// client folder, "dev" when there is no client folder or the file is missing or unreadable.
-func (s *Server) webVersion() string {
-	if s.Client == "" {
-		return "dev"
-	}
-	b, err := os.ReadFile(filepath.Join(s.Client, "version.json"))
-	if err != nil {
-		return "dev"
-	}
-	var v struct{ Version string }
-	if json.Unmarshal(b, &v) != nil || v.Version == "" {
-		return "dev"
-	}
-	return v.Version
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -93,7 +59,7 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// rpcReplyMax is the largest body of a page's answer to a tool call. A picture is at most
+// rpcReplyMax is the largest body of a client's answer to a tool call. A picture is at most
 // boardapi's 24 MB of base64 inside it; boardapi checks that once the body is read, so this keeps
 // a body from being read without end.
 const rpcReplyMax = 32 << 20
@@ -144,20 +110,13 @@ func idAtStart(head []byte) string {
 	return ""
 }
 
-// failRPC answers the tool call rpcID of the client with an error, as the page would have: a
-// call of this server's bridge, or one the relay passed on to a page. The client is the request's.
-// An API client answers a call of this server's bridge alone: nothing of it goes to another server.
+// failRPC answers the tool call rpcID of the client with an error, as the client would have. The
+// client is the request's.
 func (s *Server) failRPC(r *http.Request, rpcID, msg string) {
 	if rpcID == "" {
 		return
 	}
-	client := r.Header.Get(ClientHeader)
-	if s.Remotes != nil && !fromRemote(r) && s.Remotes.IsBoardCall(rpcID) {
-		body, _ := json.Marshal(map[string]string{"id": rpcID, "error": msg})
-		s.Remotes.ReplyBoardCall(r.Context(), client, rpcID, body)
-		return
-	}
-	s.Bridge.ReplyFrom(client, rpcID, editorbridge.RPCReply{Error: msg})
+	s.Bridge.ReplyFrom(r.Header.Get(ClientHeader), rpcID, editorbridge.RPCReply{Error: msg})
 }
 
 // readOptionalJSON is readJSON for a body that may be empty.
@@ -190,8 +149,7 @@ func writeErrorCode(w http.ResponseWriter, status int, msg, code string) {
 func ok(w http.ResponseWriter) { writeJSON(w, map[string]any{"ok": true}) }
 
 // statusOf maps an error to its status: not found → 404; a model or effort that can't be chosen
-// → 400; archived, locked, folder missing, busy, a context window too small, a server named for
-// a chat → 409; file system and process errors → 500; anything else → fallback (400 where the
+// → 400; archived, locked, folder missing, busy, a context window too small → 409; file system and process errors → 500; anything else → fallback (400 where the
 // call validates the request's input, 500 where it does not).
 func statusOf(err error, fallback int) int {
 	switch {
@@ -214,8 +172,7 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, chats.ErrWindow),
 		errors.Is(err, usable.ErrMissing), errors.Is(err, usable.ErrNone), errors.Is(err, chats.ErrAgentFixed), errors.Is(err, chats.ErrIDTaken),
 		errors.Is(err, chats.ErrSubFixed),
-		errors.Is(err, chats.ErrImageCap), errors.Is(err, chats.ErrImageMissing),
-		errors.Is(err, chats.ErrServerChosen):
+		errors.Is(err, chats.ErrImageCap), errors.Is(err, chats.ErrImageMissing):
 		return http.StatusConflict
 	case errors.Is(err, chats.ErrChatCap), errors.Is(err, chats.ErrAppCap):
 		// Not 409: a client takes a 409 on a message as "stale, wait for the turn's end".
@@ -233,8 +190,7 @@ func statusOf(err error, fallback int) int {
 }
 
 // codeOf is the "code" of a refusal a client tells apart from the others with the same status:
-// "busy", "cap", "bad_point", "window", "agent_missing" and "no_agent"; "server_fixed" for a
-// server named for a chat, whose server is the one it was made on; the ones about images
+// "busy", "cap", "bad_point", "window", "agent_missing" and "no_agent"; the ones about images
 // (images.go): "image_too_large", "image_type", "image_cap", "image_id", "image_missing",
 // "image_limit" and "image_model"; and "not_found" for a chat, a board or a group that is not
 // there, which tells "the thing the call names is gone" from a part of it that is missing (a
@@ -255,8 +211,6 @@ func codeOf(err error) string {
 		return "image_limit"
 	case errors.Is(err, chats.ErrImageModel):
 		return "image_model"
-	case errors.Is(err, chats.ErrServerChosen):
-		return "server_fixed"
 	case errors.Is(err, chats.ErrBusy):
 		return "busy"
 	case errors.Is(err, chats.ErrChatCap), errors.Is(err, chats.ErrAppCap):
@@ -275,15 +229,9 @@ func codeOf(err error) string {
 	return ""
 }
 
-// fail writes err with the status statusOf gives it and the code codeOf gives it. An error of a
-// call to another server says itself what the page gets (remotes.Error). A message refused for
-// images the chat does not hold names them, as "images".
+// fail writes err with the status statusOf gives it and the code codeOf gives it. A message
+// refused for images the chat does not hold names them, as "images".
 func fail(w http.ResponseWriter, err error, fallback int) {
-	var re *remotes.Error
-	if errors.As(err, &re) {
-		writeReply(w, re.Reply())
-		return
-	}
 	var missing *chats.MissingImages
 	if errors.As(err, &missing) {
 		w.Header().Set("Content-Type", "application/json")
@@ -295,8 +243,8 @@ func fail(w http.ResponseWriter, err error, fallback int) {
 }
 
 // replaceRefused answers a draft call with ?replace=, and reports that it did: no draft is
-// replaced whatever its counter is, on either listener and for a chat of a section too. A draft
-// is saved on the counter it was typed on, and nothing is stored for this call.
+// replaced whatever its counter is. A draft is saved on the counter it was typed on, and nothing
+// is stored for this call.
 func replaceRefused(w http.ResponseWriter, r *http.Request) bool {
 	if !r.URL.Query().Has("replace") {
 		return false
@@ -315,24 +263,13 @@ func failDraft(w http.ResponseWriter, err error) {
 	fail(w, err, http.StatusInternalServerError)
 }
 
-// kindOf is the kind of the client a request states: an API client's on the remote listener, a
-// page's on the loopback one.
-func kindOf(r *http.Request) editorbridge.Kind {
-	if fromRemote(r) {
-		return editorbridge.KindAPI
-	}
-	return editorbridge.KindPage
-}
-
-// follow notes that the request's client follows it, when its record is of the listener's kind:
-// a page's id stated on the remote listener, or an API client's on the loopback one, follows
-// nothing. unfollow ends a follow under the same rule.
+// follow notes that the request's client follows it; unfollow ends a follow.
 func (s *Server) follow(r *http.Request, it editorbridge.Item) bool {
-	return s.Bridge.FollowAs(kindOf(r), r.Header.Get(ClientHeader), it)
+	return s.Bridge.Follow(r.Header.Get(ClientHeader), it)
 }
 
 func (s *Server) unfollow(r *http.Request, it editorbridge.Item) {
-	s.Bridge.UnfollowAs(kindOf(r), r.Header.Get(ClientHeader), it)
+	s.Bridge.Unfollow(r.Header.Get(ClientHeader), it)
 }
 
 // unfollowMissing ends the follow a read of the chat {id} noted before it read, when err says
@@ -375,81 +312,35 @@ func expandDir(p string) (string, error) {
 
 // ---- routes ---------------------------------------------------------------
 
-// mcpStatus is GET /api/mcp/status: the MCP listener identity and the last MCP contact per
-// chat (chat id, client, method/tool, outcome, time). It carries no token and no board content.
-type mcpStatus struct {
-	Listener mcpListener        `json:"listener"`
-	Chats    []boardapi.Contact `json:"chats"`
-}
-
-type mcpListener struct {
-	Port int    `json:"port"`
-	URL  string `json:"url"`
-	Up   bool   `json:"up"`
-}
-
 // MCPHandler is the handler of the second, MCP-only listener: it serves exactly POST /mcp,
 // guarded by the loopback Host check for mcpPort. The credential travels in the Authorization
-// header, so no active-client check applies and no CORS headers are added. This listener serves
-// no client files and no /api/* routes (plan D2/D4).
+// header and no CORS headers are added. This listener serves no /api/* routes.
 func (s *Server) MCPHandler(mcpPort int) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mcp", s.Relay.ServeFixedMCP)
-	return guard(s.Bridge, mcpPort, mux)
+	return guard(mcpPort, mux)
 }
 
-// Handler is the handler of the loopback listener: the routes of the HTTP API, with the routes
-// of the things of other servers in front of them (sectionFirst), wrapped in guard().
-func (s *Server) Handler() http.Handler { return guard(s.Bridge, s.Port, s.sectionFirst(s.routes())) }
-
-// routes builds the mux of the HTTP API, without a guard: Handler and RemoteHandler each put
-// their own checks in front of it.
+// routes builds the mux of the client API, without the checks ClientHandler puts in front of it.
+// Every route of it is a row of ClientRoutes, and the other way round.
 func (s *Server) routes() *routeMux {
 	mux := newRouteMux()
 	a := s.App
 
 	// ---- client and events ----
 	mux.HandleFunc("GET /api/hello", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, s.hello(r))
+		writeJSON(w, s.hello())
 	})
-	mux.HandleFunc("GET /api/remote/status", s.remoteStatus)
-	// The server only starts `relaunch` (stop + launch) and keeps running: relaunch stops it.
-	mux.HandleFunc("POST /api/restart", func(w http.ResponseWriter, r *http.Request) {
-		if s.Restart == nil {
-			writeError(w, http.StatusInternalServerError, "restart not available")
-			return
-		}
-		if err := s.Restart(); err != nil {
-			if errors.Is(err, ErrBinaryMissing) {
-				writeError(w, http.StatusConflict, "binary_missing")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]any{"ok": true})
-	})
-	// A page's stream; on the remote listener an API client's (apiclient.go).
-	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
-		if fromRemote(r) {
-			s.apiEvents(w, r)
-			return
-		}
-		s.Bridge.ServeSSE(w, r)
-	})
-	// The client of each call below is the one of its X-AIWB-Client header, which guard() has
-	// checked: a "client" in a body is ignored.
+	mux.HandleFunc("GET /api/events", s.apiEvents)
+	// The client of each call below is the one of its X-AIWB-Client header, which ClientHandler
+	// has checked: a "client" in a body is ignored.
 	//
 	// The client's answer to server_stopping: its pending saves are written.
 	mux.HandleFunc("POST /api/client/flushed", func(w http.ResponseWriter, r *http.Request) {
 		s.Bridge.FlushedBy(r.Header.Get(ClientHeader))
 		ok(w)
 	})
-	// The answer to an rpc event, taken only from the client that was asked. A page's answer to
-	// a tool call of an agent on another server, which the relay passed on to it under an id of
-	// its own, goes to that server.
+	// The answer to an rpc event, taken only from the client that was asked.
 	mux.HandleFunc("POST /api/rpc-reply", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ID string `json:"id"`
@@ -461,10 +352,6 @@ func (s *Server) routes() *routeMux {
 		}
 		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if s.Remotes != nil && !fromRemote(r) && s.Remotes.IsBoardCall(body.ID) {
-			writeReply(w, s.Remotes.ReplyBoardCall(r.Context(), r.Header.Get(ClientHeader), body.ID, raw))
 			return
 		}
 		if !s.Bridge.ReplyFrom(r.Header.Get(ClientHeader), body.ID, body.RPCReply) {
@@ -529,30 +416,9 @@ func (s *Server) routes() *routeMux {
 		ok(w)
 	})
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
-		if fromRemote(r) {
-			writeJSON(w, a.APISnapshot())
-			return
-		}
-		writeJSON(w, a.Snapshot())
-	})
-	// Read-only MCP diagnostics. GET is exempt from the active-client check (guard.go), so this
-	// is readable from the page and with curl; it exposes no token and no board content.
-	mux.HandleFunc("GET /api/mcp/status", func(w http.ResponseWriter, r *http.Request) {
-		up := false
-		if s.MCPUp != nil {
-			up = s.MCPUp()
-		}
-		chats := []boardapi.Contact{}
-		if s.Relay != nil {
-			chats = s.Relay.Contacts.Snapshot()
-		}
-		writeJSON(w, mcpStatus{
-			Listener: mcpListener{Port: s.MCPPort, URL: s.MCPURL, Up: up},
-			Chats:    chats,
-		})
+		writeJSON(w, a.APISnapshot())
 	})
 
-	s.serverRoutes(mux)
 	s.libraryRoutes(mux)
 
 	// ---- groups ----
@@ -579,30 +445,16 @@ func (s *Server) routes() *routeMux {
 		}
 		ok(w)
 	})
-	mux.HandleFunc("PUT /api/groups/order", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ IDs []string }
-		if !readJSON(w, r, &body) {
-			return
-		}
-		if err := a.ReorderGroups(body.IDs); err != nil {
-			fail(w, err, http.StatusBadRequest)
-			return
-		}
-		ok(w)
-	})
-	// On the remote listener a body with "collapsed" is refused (400, "collapsed_refused").
+	// A body with "collapsed" is refused (400, "collapsed_refused").
 	mux.HandleFunc("PATCH /api/groups/{id}", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Name      *string
-			Collapsed *bool
-		}
-		if fromRemote(r) && collapsedRefused(w, r) {
+		var body struct{ Name *string }
+		if collapsedRefused(w, r) {
 			return
 		}
 		if !readJSON(w, r, &body) {
 			return
 		}
-		if err := a.UpdateGroup(r.PathValue("id"), body.Name, body.Collapsed); err != nil {
+		if err := a.UpdateGroup(r.PathValue("id"), body.Name); err != nil {
 			fail(w, err, http.StatusBadRequest)
 			return
 		}
@@ -647,18 +499,17 @@ func (s *Server) routes() *routeMux {
 	}
 
 	// ---- boards ----
-	// On the remote listener a body with "server" is refused (400, "server_refused").
+	// A body with "server" is refused (400, "server_refused").
 	mux.HandleFunc("POST /api/boards", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name   string
-			Group  string
-			New    bool
-			Server string
+			Name  string
+			Group string
+			New   bool
 		}
-		if fromRemote(r) && apiServerRefused(w, r) {
+		if apiServerRefused(w, r) {
 			return
 		}
-		if !readJSON(w, r, &body) || serverRefused(w, body.Server) || !checkGroup(w, body.Group) {
+		if !readJSON(w, r, &body) || !checkGroup(w, body.Group) {
 			return
 		}
 		bd, err := a.Boards.Create(body.Name, body.Group, body.New)
@@ -765,32 +616,21 @@ func (s *Server) routes() *routeMux {
 		}
 		ok(w)
 	})
-	mux.HandleFunc("POST /api/boards/{id}/reveal", func(w http.ResponseWriter, r *http.Request) {
-		if err := a.Boards.Reveal(r.PathValue("id")); err != nil {
-			fail(w, err, http.StatusInternalServerError)
-			return
-		}
-		ok(w)
-	})
-
 	// ---- chats ----
-	// A new chat in a group or on a board.
-	// The chat is this server's: a page's body that names another one with "server" is refused
-	// (400 "server_refused") and nothing is made. On the remote listener it is the same call, for
-	// a chat of this server: a body with "server", whatever its value, is refused (400
-	// "server_refused"), and the first message is the message call.
+	// A new chat in a group or on a board. The chat is this server's: a body with "server",
+	// whatever its value, is refused (400 "server_refused") and nothing is made, and the first
+	// message is the message call.
 	mux.HandleFunc("POST /api/chats", func(w http.ResponseWriter, r *http.Request) {
-		if fromRemote(r) && apiServerRefused(w, r) {
+		if apiServerRefused(w, r) {
 			return
 		}
 		var body struct {
-			ID     string
-			Agent  model.AgentKind
-			Group  string
-			Board  string
-			Server string
+			ID    string
+			Agent model.AgentKind
+			Group string
+			Board string
 		}
-		if !readJSON(w, r, &body) || serverRefused(w, body.Server) {
+		if !readJSON(w, r, &body) {
 			return
 		}
 		if body.Board == "" && !checkGroup(w, body.Group) {
@@ -929,8 +769,7 @@ func (s *Server) routes() *routeMux {
 	// The answer names the branch the message was put on: {"ok":true,"branch":"<branch id>"},
 	// "main" for main, the new id for a new branch, and without ?branch= and "target" the branch
 	// that was current when the message was sent.
-	// On the remote listener the first message of a chat an API client made is this same call:
-	// the agent starts here.
+	// The first message of a chat a client made is this same call: the agent starts here.
 	// "images" are the images the message carries, as a draft holds them; only "id" and "name"
 	// are looked at. A message is refused, and nothing is left of it, for an id of the wrong form
 	// (400 "image_id"), for images the chat does not hold (409 "image_missing", which names them
@@ -979,8 +818,7 @@ func (s *Server) routes() *routeMux {
 	// none. rev is the counter of the draft this one was typed on (ChatView.DraftRev,
 	// BranchState.DraftRev; 0 when there is none yet): a save on an older one is refused (409,
 	// "stale", with the stored counter and draft). A branch the chat does not have is 404,
-	// "no_branch". On the remote listener it is the same call, for whichever client saves: the
-	// page of this server and an API client save into one draft, and the counter decides.
+	// "no_branch". Whichever client saves, they save into one draft, and the counter decides.
 	//
 	// With ?replace= the call is refused (400 "replace_refused") and nothing is stored.
 	mux.HandleFunc("PUT /api/chats/{id}/draft", func(w http.ResponseWriter, r *http.Request) {
@@ -1024,27 +862,21 @@ func (s *Server) routes() *routeMux {
 	// branch (?branch=), as do "subDepth" (0 to 3, 0 = no subagents) and "subCap" (1 to 100), the
 	// subagent settings: a number, absent = unchanged, a chat's that has not started and is neither
 	// a fork nor a branch (409 otherwise), and refused outside the range (400).
-	// The answer holds the chat as it is after the change. A "server" is refused for every chat
-	// (409, "server_fixed"): a chat's server is the one it was made on. On the remote
-	// listener a body with "server", whatever its value, is refused (400, "server_refused")
-	// before anything is written, and everything else is as for a page.
+	// The answer holds the chat as it is after the change. A body with "server", whatever its
+	// value, is refused (400, "server_refused") before anything is written: a chat's server is
+	// the one it was made on.
 	mux.HandleFunc("PATCH /api/chats/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if fromRemote(r) && apiServerRefused(w, r) {
+		if apiServerRefused(w, r) {
 			return
 		}
 		var body struct {
 			Name               *string
 			Group              *string
-			Server             string
 			Agent              model.AgentKind
 			Model, Effort, Cwd string
 			SubDepth, SubCap   *int
 		}
 		if !readJSON(w, r, &body) {
-			return
-		}
-		if body.Server != "" {
-			fail(w, chats.ErrServerChosen, http.StatusConflict)
 			return
 		}
 		if body.Group != nil && !checkGroup(w, *body.Group) {
@@ -1118,15 +950,8 @@ func (s *Server) routes() *routeMux {
 		ok(w)
 	})
 
-	// Folder browser for the working-directory picker of a chat. With
-	// ?server=<entry> the folders are that server's, as it answers; an API client asks about this
-	// machine only.
+	// Folder browser for the working-directory picker of a chat: the folders of this machine.
 	mux.HandleFunc("GET /api/dirs", func(w http.ResponseWriter, r *http.Request) {
-		if s.onAskedEntry(w, r, func(rm *remotes.Relay, entry string) remotes.Reply {
-			return rm.Dirs(r.Context(), entry, r.URL.Query().Get("path"))
-		}) {
-			return
-		}
 		p := r.URL.Query().Get("path")
 		if p == "" {
 			p = a.DefaultCwd
@@ -1136,9 +961,9 @@ func (s *Server) routes() *routeMux {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// An API client does not list the app's own folder: the names there are the ids of
-		// every chat and board.
-		if fromRemote(r) && a.Chats.Store.P.Contains(abs) {
+		// A client does not list the app's own folder: the names there are the ids of every chat
+		// and board.
+		if a.Chats.Store.P.Contains(abs) {
 			writeError(w, http.StatusBadRequest, chats.ErrAppFolder.Error())
 			return
 		}
@@ -1152,14 +977,8 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs})
 	})
 
-	// An agent's plan usage limits, run on request and not stored. ?fresh=1 skips the cache. With
-	// ?server=<entry> they are the agent's on that server, as it answers.
+	// An agent's plan usage limits, run on request and not stored. ?fresh=1 skips the cache.
 	mux.HandleFunc("GET /api/usage/{agent}", func(w http.ResponseWriter, r *http.Request) {
-		if s.onAskedEntry(w, r, func(rm *remotes.Relay, entry string) remotes.Reply {
-			return rm.Usage(r.Context(), entry, r.PathValue("agent"), r.URL.Query().Get("fresh") == "1")
-		}) {
-			return
-		}
 		get := s.Usage[model.AgentKind(r.PathValue("agent"))]
 		if get == nil {
 			writeError(w, http.StatusNotFound, "usage not available")
@@ -1173,8 +992,5 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, u)
 	})
 
-	if s.Client != "" {
-		mux.Handle("/", clientFiles(s.Client))
-	}
 	return mux
 }

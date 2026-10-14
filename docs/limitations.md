@@ -2,6 +2,20 @@
 
 What the app does not do, or does not do fully, and the limits it enforces.
 
+- The app is the only client. AI Whiteboard is not used in a browser tab, a machine without the app
+  cannot show it whatever server runs on it, and the app is built for macOS only, so a server on
+  Linux is used from a Mac.
+- With the app closed nothing is connected, to any server. Servers and their agents run on; each
+  section fills again when the app opens.
+- Every server that runs listens on its network, behind its secret alone. A server never starts
+  before its set-up, which is a command you run by hand, once, on the machine. This computer's
+  server is no exception: a laptop that never used remote access is reachable on its network once
+  it is set up. Keeping the port off the internet is up to the machine's network and firewall.
+- The secret of this computer's server can be read by any program of the same user, since the
+  command that prints it can be run by one.
+- The server list and the secrets are a file in the app's folder, not in the system's keychain.
+- The old local port 4747 is gone: a script or a bookmark that called it stops working, and so do
+  `remote off` and `remote status` (which is `status`).
 - Your own pi extensions are not loaded: pi runs with `--no-extensions` plus the app's extension,
   so pi behaves the same in every chat of the app.
 - A data folder that an earlier build with *runs* has used keeps what that build wrote for them:
@@ -10,7 +24,7 @@ What the app does not do, or does not do fully, and the limits it enforces.
   show, change or delete any of it; delete it yourself when you no longer want it. The run
   defaults in `state.json` are not read and are gone from the file at its next write. The folder
   `remote/`, with `remote/runs/`, is removed at the first start of a build with sections (see
-  [the update from a version without sections](remote-servers.md#use-a-server-on-another-machine)); that is not
+  [the update from a version without sections](remote-servers.md#updating-from-the-version-before)); that is not
   about the runs.
 - The guard on pi's tool calls is not a sandbox. It refuses a tool input that names the app's own
   folder, which stops accidental access; a shell command that reaches the folder without naming it

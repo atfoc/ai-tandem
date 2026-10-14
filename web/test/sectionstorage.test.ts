@@ -44,9 +44,11 @@ test("every key the page writes, by the place that writes it: a setting, a key o
     "Sidebar.tsx \"aiwb.sel\"",           // what is selected: the keys of a board and a chat (entry id and id)
     "Sidebar.tsx \"aiwb.side\"",          // a setting
     "Sidebar.tsx \"aiwb.archived\"",      // a setting
-    "store.ts \"aiwb.sel\"",
-    "store.ts COLLAPSE_KEY",              // the collapse of 3.13: entry ids, and the keys of groups of sections
+    "store.ts \"aiwb.sel\"",              // this computer's snapshot, the tree of a section (applySection) and an entry that left (dropServer) judge the selection
+    "store.ts COLLAPSE_KEY",              // the collapse of 3.13: entry ids (and "local"), and the keys of groups
     "store.ts COLLAPSE_KEY",
+    "store.ts \"aiwb.sel\"",
+    "store.ts \"aiwb.sel\"",
     "store.ts COLLAPSE_KEY",
     "store.ts COLLAPSE_KEY",
     "store.ts \"aiwb.sel\"",

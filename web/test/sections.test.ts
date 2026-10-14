@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { COLLAPSE_KEY, SECTION_ARCHIVED, SECTION_AWAY, SECTION_CONNECTING, SECTION_EMPTY, collapsedSaved, entriesGone, leftBehind, onScreen, parseCollapsed, prunedCollapsed, reachable, sectionEntries, sectionView,
-  thingsOf, thingsOn, withCollapsed, withSection, type KeyedTree, type Things } from "../src/logic/sections.ts";
+  prunedLocalGroups, thingsOf, thingsOn, withCollapsed, withSection, type KeyedTree, type Things } from "../src/logic/sections.ts";
 import { buildTree, treeCount, treeEmpty } from "../src/logic/tree.ts";
 import { treeIn } from "../src/logic/sectionwire.ts";
 import { stateLabel, LOCAL_ENTRY, type ServerState, type ServerView } from "../src/logic/servers.ts";
@@ -259,7 +259,29 @@ test("onScreen: the selected board and chat", () => {
   assert.equal(onScreen({ sel: NO_SEL }, "c_1"), false);
 });
 
-test("reachable: a thing of this computer always; a section's while its tree is held and the thing is there", () => {
+test("this computer is a server like the others: its things are left behind when its tree is not held, except a board with an edit and a chat with a draft kept", () => {
+  const s = things({
+    chats: { c_1: chat("c_1"), c_2: chat("c_2"), c_3: chat("c_3") }, boards: { b_1: board("b_1", UNGROUPED), b_2: board("b_2", UNGROUPED) },
+    gone: {}, sel: { board: null, chat: "c_1" },
+  });
+  assert.deepEqual(leftBehind(s), [], "its tree is held: nothing is left behind");
+  const away = { ...s, connected: false };
+  assert.deepEqual(leftBehind(away).sort(), ["b_1", "b_2", "c_2", "c_3"], "away: all but the chat on screen");
+  assert.deepEqual(leftBehind(away, (k) => k === "b_1", (k) => k === "c_2").sort(), ["b_2", "c_3"], "the board with an edit and the chat with a draft stay");
+  assert.deepEqual(leftBehind({ ...s, gone: { c_3: true } }), ["c_3"], "held, a thing that is gone from this computer");
+});
+
+test("reachable: a thing of any server while its tree is held and the thing is there; this computer's tree is `connected`", () => {
+  const own = { sections: {}, gone: { c_gone: true as const } };
+  assert.equal(reachable(own, "c_1"), true, "a state that says nothing of it counts as held");
+  assert.equal(reachable({ ...own, connected: true }, "c_1"), true);
+  assert.equal(reachable({ ...own, connected: false }, "c_1"), false);
+  assert.equal(reachable({ ...own, connected: true }, "c_gone"), false);
+  assert.equal(reachable({ ...own, connected: false }, a("c_1")), false, "and another server's is judged by its own tree");
+  assert.equal(reachable({ sections: { [A]: { groups: [], defaults: { groups: {} } } }, gone: {}, connected: false }, a("c_1")), true);
+});
+
+test("reachable: a section's while its tree is held and the thing is there", () => {
   const s = { sections: { [A]: { groups: [], defaults: { groups: {} } } }, gone: { [a("c_gone")]: true as const } };
   assert.equal(reachable(s, "c_1"), true);
   assert.equal(reachable(s, a("c_1")), true);
@@ -319,10 +341,18 @@ test("an entry leaves the server list: everything the page has of its server goe
   assert.deepEqual(thingsOf(s, A).sort(), [a("b_1"), a("c_open")].sort(), "the open chat and the board");
   assert.deepEqual(thingsOf(s, B), [b("c_1")]);
   assert.deepEqual(thingsOf(s, "local"), [], "this computer is no entry that leaves");
-  // the page asks at the `servers` event and after a snapshot, each against the list it had before
+  // the page asks at the app's `servers` event, against the list it had before
   const conn = readFileSync(new URL("../src/conn.ts", import.meta.url), "utf8"), store = readFileSync(new URL("../src/store.ts", import.meta.url), "utf8");
-  assert.ok(conn.includes('case "servers": { const before = getState().servers; setServers(m.servers ?? [LOCAL_ENTRY], m.notice ?? ""); dropRemoved(before); return; }'));
-  assert.ok(conn.includes("dropRemoved(listed); // (an entry that left the list while the stream was down)"));
+  assert.ok(conn.includes('case "servers": { const before = getState().servers; setServers(e.servers ?? [LOCAL_ENTRY], e.notice ?? ""); dropRemoved(before); return; }'));
   assert.ok(conn.includes("for (const server of entriesGone(before, getState().servers)) {"));
   assert.ok(store.includes("const left = thingsOf(state, server);") && store.includes("if (left.length) dropThings(left);"), "with the selection, the threads, the scenes and the drafts kept of them");
+});
+
+test("prunedLocalGroups: this computer's snapshot drops the groups it no longer has, and keeps the entries of the list, whatever their ids", () => {
+  const c = { local: true, g_1: true, g_gone: true, [a("g_1")]: true, s_studio: true, [A]: true } as const;
+  const groups = [{ id: "g_1", name: "One" }];
+  assert.deepEqual(Object.keys(prunedLocalGroups(c, groups)).sort(), ["g_1", "local", A, a("g_1")].sort(), "without the list, an id that is not of the form of an entry id is a group, and this snapshot does not have it");
+  assert.deepEqual(Object.keys(prunedLocalGroups(c, groups, [LOCAL_ENTRY, { id: "s_studio", name: "Studio Mac", state: "connected" }])).sort(), ["g_1", "local", A, a("g_1"), "s_studio"].sort());
+  const same = { g_1: true } as const;
+  assert.equal(prunedLocalGroups(same, groups), same, "the same map when nothing goes");
 });

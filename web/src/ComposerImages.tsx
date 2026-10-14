@@ -1,11 +1,12 @@
 // What a chat's composer draws of its images: the strip of thumbnails above the text, and the attach button of its
 // toolbar's row. The images a composer holds are its own state (Composer.tsx); the uploads that run are the branch's
 // (uploads.ts), so a composer opened again shows them again. The same for a chat on this computer and on another
-// server: an image's address is the chat's own, and the local server passes its fetch on.
+// server: an image's address is the chat's own, and the app fetches it from that server.
 import React, { useSyncExternalStore } from "react";
 import "./composerimages.css";
 import { ImageThumb } from "./ImageThumb.tsx";
 import { IMAGE_TYPES, fromDesktop, imageUrl, type Refused } from "./logic/chatimage.ts";
+import { transport } from "./transport/index.ts";
 import { cancelUpload, previewOf, previewsAt, slotOf, subscribe, type Picked, type Slot } from "./uploads.ts";
 import type { ChatImage } from "./types.ts";
 
@@ -42,10 +43,11 @@ const AttachIcon = () => (
 );
 
 /** The files the user picks: with the desktop app's own dialog when the app has one, else with the browser's picker
- *  (a browser tab, and an older desktop app showing this page). skipped: what the desktop app's dialog left out. A
+ *  (the page in a headless browser, which has no dialog of the app). skipped: what the desktop app's dialog left out. A
  *  cancelled dialog answers no files. */
 export async function pickImages(): Promise<{ files: Picked[]; skipped: Refused[] }> {
-  if (typeof window.aiwbDesktop?.pickImages === "function") return fromDesktop(await window.aiwbDesktop.pickImages());
+  const t = transport();
+  if (t.pickImages) return fromDesktop(await t.pickImages());
   return { files: (await browserPick()).map((f) => ({ file: f, name: f.name })), skipped: [] };
 }
 

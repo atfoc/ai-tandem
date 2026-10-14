@@ -42,11 +42,10 @@ func NewID(prefix string) string {
 }
 
 type Group struct {
-	ID        string `json:"id"` // "g_" + 8 random base36 chars
-	Name      string `json:"name"`
-	Parent    string `json:"parent,omitempty"` // the group it is nested in; "" at the top level
-	Collapsed bool   `json:"collapsed,omitempty"`
-	Archive          // embedded, see below
+	ID      string `json:"id"` // "g_" + 8 random base36 chars
+	Name    string `json:"name"`
+	Parent  string `json:"parent,omitempty"` // the group it is nested in; "" at the top level
+	Archive        // embedded, see below
 }
 
 // Board is board.json.

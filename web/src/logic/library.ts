@@ -1,11 +1,10 @@
-// The prompt library: the shapes the local server sends (Go: internal/library), and how a page
-// keeps the list of libraries up to date. Every server has one library; the page gets them all
-// from the local server, each under its server's id in the server list (logic/servers.ts).
+// The prompt library: the shapes a server sends (Go: internal/library), and how a page keeps the list of libraries
+// up to date. Every server has one library; the page holds them all, each under its server's id in the server list
+// (logic/servers.ts).
 //
-// A page has the list from the snapshot (`libraries`) or from GET /api/library, and then one
-// `library` event for every library that changes (upsertLibrary) and one `library_removed` for
-// a server that left the server list (removeLibrary). It never polls. The calls that change a
-// library are in libraryapi.ts.
+// A page has a server's library from its snapshot (`library`, with `libraryNotice`), and then one `own_library` event
+// for every change of it (upsertLibrary of libraryOf); a server that leaves the server list takes its library with it
+// (removeLibrary). It never polls. The calls that change a library are in libraryapi.ts.
 
 /** A group: a name, and the prompts and groups whose `parent` it is. */
 export type LibraryGroup = {
@@ -33,10 +32,20 @@ export type LibraryView = {
   prompts: LibraryPrompt[];
 };
 
-/** The `library` event: one library as it is now, whole. */
-export type LibraryEvent = { type: "library"; library: LibraryView };
-/** The `library_removed` event: the library of this server is gone. */
-export type LibraryRemovedEvent = { type: "library_removed"; server: string };
+/** A server's library as it sends it: in its snapshot's `library`, and whole in the `own_library` event after every change of it. */
+export type LibraryTree = { groups: LibraryGroup[]; prompts: LibraryPrompt[] };
+
+/** The view of a server's library from the tree it sent: connected, as the server is while it sends. notice: why the
+ *  library's file was set aside at the server's start. name: the server's name in the server list. */
+export function libraryOf(server: string, name: string, t: Partial<LibraryTree> | null | undefined, notice = ""): LibraryView {
+  return { server, name, connected: true, ...(notice ? { notice } : {}), groups: t?.groups ?? [], prompts: t?.prompts ?? [] };
+}
+
+/** The list with this server's library marked as not connected (the copy last received stays; it cannot be changed until
+ *  the server is back); the list itself when it has none or it is so already. */
+export function libraryAway(list: LibraryView[], server: string): LibraryView[] {
+  return list.some((x) => x.server === server && x.connected) ? list.map((x) => (x.server === server ? { ...x, connected: false } : x)) : list;
+}
 
 /** The limits a server holds a library to. A page's own checks are a convenience: the server refuses what breaks a rule. */
 export const LIBRARY_LIMITS = {
@@ -57,17 +66,12 @@ export const LIBRARY_LIMITS = {
 export type LibraryCode = "bad_name" | "name_taken" | "not_found" | "no_group" | "bad_move" | "bad_text" | "text_too_long" | "library_full" | "too_deep" | "no_server"
   | "server_unreachable" | "no_answer" | "bad_answer";
 
-/** A snapshot's libraries; a server before the feature sends none. */
-export function librariesOf(s: { libraries?: LibraryView[] | null }): LibraryView[] {
-  return s.libraries ?? [];
-}
-
-/** The list with this library in the place of the one of its server, or at the end. For a `library` event. */
+/** The list with this library in the place of the one of its server, or at the end. For a snapshot's library and an `own_library` event. */
 export function upsertLibrary(list: LibraryView[], v: LibraryView): LibraryView[] {
   return list.some((x) => x.server === v.server) ? list.map((x) => (x.server === v.server ? v : x)) : [...list, v];
 }
 
-/** The list without the library of this server. For a `library_removed` event. */
+/** The list without the library of this server. For a server that left the server list. */
 export function removeLibrary(list: LibraryView[], server: string): LibraryView[] {
   return list.some((x) => x.server === server) ? list.filter((x) => x.server !== server) : list;
 }

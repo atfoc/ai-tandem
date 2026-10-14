@@ -23,6 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { fakeStream } from "./fixtures/stream.ts";
 import type { ChatImage, Draft } from "../src/types.ts";
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -102,8 +103,7 @@ Object.defineProperty(globalThis, "localStorage", {
   }),
 });
 
-let source: { onmessage?: (e: { data: string }) => void; close(): void } | undefined;
-(globalThis as any).EventSource = class { constructor() { source = this; } close() {} };
+const stream = fakeStream();
 
 const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const src = path.join(web, "src");
@@ -136,7 +136,7 @@ const stubs: Record<string, { contents: string; loader: "js" | "ts" }> = {
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-kept-")), "kept.mjs");
 await esbuild.build({
   stdin: {
-    contents: `export * as actions from "./fork/actions.ts"; export * as conn from "./conn.ts"; export * as store from "./store.ts"; export * as composer from "./Composer.tsx";
+    contents: `export * as actions from "./fork/actions.ts"; export * as conn from "./conn.ts"; export * as tr from "./transport/index.ts"; export * as store from "./store.ts"; export * as composer from "./Composer.tsx";
       export * as drafts from "./logic/drafts.ts"; export * as backs from "./logic/draftsback.ts"; export * as kept from "./keptdrafts.ts";
       export * as uploads from "./uploads.ts"; export * as chatimage from "./logic/chatimage.ts"; export * as lists from "./logic/serverlists.ts";`,
     resolveDir: src, loader: "ts",
@@ -153,11 +153,12 @@ await esbuild.build({
     },
   }],
 });
-const { actions, conn, store, composer, drafts, backs, kept, uploads, chatimage, lists } = await import(pathToFileURL(out).href);
+const { actions, conn, tr, store, composer, drafts, backs, kept, uploads, chatimage, lists } = await import(pathToFileURL(out).href);
+tr.useTransport(stream.transport);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 /** An event from the server. */
-async function ev(m: Record<string, unknown>) { source!.onmessage!({ data: JSON.stringify(m) }); await settle(); }
+async function ev(m: Record<string, unknown>) { stream.push(m, { servers: store.getState().servers, sections: Object.keys(store.getState().sections) }); await settle(); }
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
 const view = (id: string, o: Record<string, unknown> = {}) =>
@@ -877,12 +878,12 @@ test("a draft that another client of that server saved on a higher counter, with
   c.close();
 });
 
-test("the page starts watching before its stream opens, and conn.ts tells draftBacks of a stream's `hello`, of a snapshot and of a section's tree", () => {
+test("the page starts watching before its stream opens, and conn.ts tells draftBacks of this computer's stream `hello`, of its snapshot and of a section's tree", () => {
   const main = read("main.tsx"), connSrc = read("conn.ts");
   assert.ok(main.indexOf("watchKeptDrafts();") > 0 && main.indexOf("watchKeptDrafts();") < main.indexOf("connect();"));
-  assert.ok(/case "hello": [^\n]*draftBacks\.opened\(\);/.test(connSrc));
-  assert.ok(/function onSnapshot\(m: any\) \{\n(?:  .*\n)*?  applySnapshot\(m, dropMoves\(\)\);\n(?:  .*\n)*?  for \(const server of .*\) onSection\(server, .*\);\n  dropRemoved\(listed\);.*\n  draftBacks\.snapshot\(\);\n\}/.test(connSrc),
-    "after the snapshot and its sections are in the store");
+  assert.ok(/case "hello": [^\n]*if \(!on\) \{[^\n]*draftBacks\.opened\(\); \}/.test(connSrc), "this computer's hello alone: drafts of its chats");
+  assert.ok(/function onSnapshot\(m: any\) \{\n(?:  .*\n)*?  applySnapshot\(m, dropMoves\(\)\);\n(?:  .*\n)*?  draftBacks\.snapshot\(\);\n\}/.test(connSrc),
+    "after this computer's snapshot is in the store");
   assert.ok(/function onSection\(server: string, tree: SectionTree \| null\) \{[\s\S]*?if \(!tree\) \{ givenUp\(server\); return; \}[\s\S]*?draftBacks\.sectionBack\(server\);\n\}/.test(connSrc), "of a tree, and not of none");
   assert.ok(backs.draftBacks.kept instanceof backs.KeptDrafts);
 });

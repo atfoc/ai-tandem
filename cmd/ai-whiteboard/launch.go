@@ -2,11 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,76 +13,152 @@ import (
 	"syscall"
 	"time"
 
-	"ai-whiteboard/internal/server"
+	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/store"
 )
 
-// bundleResources returns Contents/Resources when this program runs from inside an app bundle
-// (X.app/Contents/MacOS/ai-whiteboard), else "".
-func bundleResources() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
-	}
-	return resourcesFor(exe)
-}
-
-func resourcesFor(exe string) string {
-	macos := filepath.Dir(exe)
-	contents := filepath.Dir(macos)
-	if filepath.Base(macos) != "MacOS" || filepath.Base(contents) != "Contents" ||
-		!strings.HasSuffix(filepath.Dir(contents), ".app") {
-		return ""
-	}
-	return filepath.Join(contents, "Resources")
+// launchOut is the one line `launch -json` and `relaunch -json` write, for the app: the running
+// server's address and certificate fingerprint, or the build before's version.
+type launchOut struct {
+	State        string `json:"state"` // "running" | "old_build"
+	Address      string `json:"address,omitempty"`
+	Fingerprint  string `json:"fingerprint,omitempty"`
+	Version      string `json:"version"`
+	FeatureLevel int    `json:"featureLevel"`
+	InstanceID   string `json:"instanceId,omitempty"`
+	PID          int    `json:"pid"`
+	Home         string `json:"home"`
 }
 
 // launch finds the running server, or starts `serve` with launch's flags detached from this
 // process (its own session, output to server.log, working folder the home folder) and waits for it
-// to answer. Either way it writes the server's URL to out as its only line, so the Electron app and
-// scripts can read it, and exits: the server must outlive it.
-func launch(o options, args []string, out io.Writer) {
+// to serve. Either way it writes where the server is (its address and certificate fingerprint, or
+// with -json one line for the app) to out and exits 0: the server must outlive it. A server of the
+// build before is kept, never stopped, and said to be so. A failure writes its title and detail to
+// errOut and returns 1. A server that was never set up is not started: the start's check runs
+// first.
+func launch(o options, out, errOut io.Writer) int {
+	unlock, err := lockLaunch(o.paths)
+	if err != nil {
+		return failure(errOut, "cannot start the server", err.Error())
+	}
+	defer unlock()
+	return launchLocked(o, out, errOut)
+}
+
+func launchLocked(o options, out, errOut io.Writer) int {
 	p := o.paths
-	if url, ok := findRunning(p, o.port); ok {
-		fmt.Fprintln(out, url)
-		return
+	if _, ok := findRunning(p); ok {
+		return waitServing(o, nil, "", 0, out, errOut)
+	}
+	if rep := remote.Check(p.Root, mcpPort()); !rep.OK() {
+		return failure(errOut, "the server was not started", rep.Message(exePath(), messageHome(p.Root)))
 	}
 
 	usePath(loginPath()) // apps started by Finder or Spotlight get only /usr/bin:/bin:/usr/sbin:/sbin
 	exe, err := os.Executable()
 	if err != nil {
-		fail("cannot find its own program", err.Error())
+		return failure(errOut, "cannot find its own program", err.Error())
 	}
-	cmd, logPath, from, err := startDetached(p, exe, "serve", args, "launch")
+	cmd, logPath, from, err := startDetached(p, exe, "serve", o.serveArgs, "launch")
 	if err != nil {
-		fail("cannot start the server", err.Error())
+		return failure(errOut, "cannot start the server", err.Error())
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
+	return waitServing(o, exited, logPath, from, out, errOut)
+}
 
-	// When another launcher raced this one, this serve exits (it saw the other server, or could not
-	// bind the port) while the other server may still be starting: keep polling for as long as
-	// something accepts connections on the port.
+// waitServing waits up to 30 s for a server to serve (the one found, or the one just started,
+// whose process ends on exited) and writes where it is. A server of the build before is
+// reported at once. The process that ends before the server serves is a start that failed, with
+// the end of the log.
+func waitServing(o options, exited <-chan error, logPath string, from int64, out, errOut io.Writer) int {
+	p := o.paths
 	var stopped bool
 	var stopErr error
 	deadline := time.After(30 * time.Second)
 	for {
-		if url, ok := findRunning(p, o.port); ok {
-			fmt.Fprintln(out, url)
-			return
+		found, foundAny := findRunning(p)
+		if foundAny {
+			if info, ok := serving(o, found); ok {
+				return writeLaunch(o, info, out)
+			}
 		}
-		if stopped && !listening(o.port) {
-			fail("the server stopped while starting", fmt.Sprintf("%v\n\n%s", stopErr, logTail(logPath, from)))
+		// A process that ended with no error saw a server running, and that one may still be starting.
+		if stopped && (stopErr != nil || !foundAny) {
+			return failure(errOut, "the server stopped while starting", fmt.Sprintf("%v\n\n%s", stopErr, logTail(logPath, from)))
 		}
 		select {
 		case err := <-exited:
 			stopped, stopErr = true, err
+			continue // look once more: the process may have seen another start win the race
 		case <-deadline:
-			fail("the server did not answer within 30 seconds", "See "+logPath)
+			return failure(errOut, "the server did not answer within 30 seconds", "See "+filepath.Join(p.Root, "server.log"))
 		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// serving is what a found server answers launch with: for the build before, its hello; for this
+// build, hello and the client listener's address and fingerprint once it serves.
+func serving(o options, run runningServer) (launchOut, bool) {
+	l := launchOut{State: "old_build", Version: run.hello.Version, FeatureLevel: run.hello.FeatureLevel, PID: run.hello.Pid, Home: o.paths.Root}
+	if run.build == olderBuild {
+		return l, true
+	}
+	st, ok := run.statusOf()
+	if !ok || !st.Client.Listening || st.Client.Fingerprint == "" {
+		return l, false
+	}
+	l.State, l.Address, l.Fingerprint, l.InstanceID = "running", st.Client.Address, st.Client.Fingerprint, run.hello.InstanceID
+	return l, true
+}
+
+// writeLaunch writes launch's answer: one JSON line for the app, else the words for a person.
+func writeLaunch(o options, l launchOut, out io.Writer) int {
+	switch {
+	case o.json:
+		b, _ := json.Marshal(l)
+		fmt.Fprintf(out, "%s\n", b)
+	case l.State == "running":
+		fmt.Fprintf(out, "AI Whiteboard is running.\nAddress: %s\nFingerprint: %s\n", l.Address, l.Fingerprint)
+	default:
+		fmt.Fprintf(out, "An AI Whiteboard server of an older build (version %s, pid %d) is running. Restart it with: %s\n",
+			l.Version, l.PID, programCommand("relaunch", o.paths.Root))
+	}
+	return 0
+}
+
+// programCommand is a command line for a message: this program, the words and the data folder
+// when it is not the default one.
+func programCommand(words, root string) string {
+	s := fmt.Sprintf("%q %s", exePath(), words)
+	if home := messageHome(root); home != "" {
+		s += fmt.Sprintf(" -home %q", home)
+	}
+	return s
+}
+
+// lockLaunch takes the data folder's launch lock, which makes two launchers (the app's and a
+// person's) take turns: the second finds the server the first started, and starts none. It waits
+// up to a minute. The lock ends with the process; unlock ends it earlier.
+func lockLaunch(p store.Paths) (unlock func(), err error) {
+	if err := os.MkdirAll(p.Root, 0o700); err != nil {
+		return nil, fmt.Errorf("cannot create the data folder %s: %w", p.Root, err)
+	}
+	f, err := os.OpenFile(filepath.Join(p.Root, "launch.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(50 * time.Millisecond) {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { f.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) || time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("another start of the server did not finish within a minute (%v)", err)
 		}
 	}
 }
@@ -116,86 +191,72 @@ func startDetached(p store.Paths, exe, command string, args []string, what strin
 	return cmd, logPath, from, nil
 }
 
-// relaunch is stop + launch: it stops the server running for this data folder, if any, then does
-// everything launch does. Like launch, it writes only the server's URL to out; the stop step writes
-// nothing there.
-func relaunch(o options, args []string, out io.Writer) {
-	refuseBadRemote(o)
-	if url, ok := findRunning(o.paths, o.port); ok {
-		stopServer(strings.TrimSuffix(url, "/"))
+// relaunch is stop + launch: it stops the server running for this data folder, of this build or
+// the one before, if any, then does everything launch does. It refuses before it stops anything
+// when the start's check would end the new server's start.
+func relaunch(o options, out, errOut io.Writer) int {
+	if rep := remote.Check(o.paths.Root, mcpPort()); !rep.OK() {
+		return failure(errOut, "the server was not restarted", rep.Message(exePath(), messageHome(o.paths.Root)))
 	}
-	launch(o, args, out)
+	unlock, err := lockLaunch(o.paths)
+	if err != nil {
+		return failure(errOut, "cannot start the server", err.Error())
+	}
+	defer unlock()
+	if run, ok := findRunning(o.paths); ok {
+		if title, detail := stopServer(o.paths, run); title != "" {
+			return failure(errOut, title, detail)
+		}
+	}
+	return launchLocked(o, out, errOut)
 }
 
-// stopServer sends SIGTERM to the server answering at base (the pid its /api/hello reports) and
-// waits up to 10 s for it to stop answering. It takes its normal SIGTERM path: flush the boards,
-// end the agents, remove server.json, exit.
-func stopServer(base string) {
-	h, ok := helloOf(httpClient(), base)
+// stopServer sends SIGTERM to the running server (the pid its hello reports) and waits up to 10 s
+// for it to stop answering. It takes its normal SIGTERM path: flush the boards, end the agents,
+// remove server.json, exit. title is "" when the server is gone, else the title and detail of the
+// failure.
+func stopServer(p store.Paths, run runningServer) (title, detail string) {
+	pid := run.hello.Pid
+	if pid <= 0 {
+		return "cannot stop the running server", fmt.Sprintf("it reports pid %d", pid)
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Sprintf("cannot stop the running server (pid %d)", pid), err.Error()
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		if again, ok := findRunning(p); !ok || again.hello.Pid != pid {
+			break
+		}
+		if time.Now().After(deadline) {
+			return "the running server did not stop within 10 seconds", fmt.Sprintf("pid %d", pid)
+		}
+	}
+	// The server stops answering just before it exits, and the new server binds the ports it held.
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			break
+		}
+	}
+	return "", ""
+}
+
+// stopCommand is `stop`: SIGTERM to the running server and a wait for it to finish shutting down.
+func stopCommand(args []string, stdout, stderr io.Writer) int {
+	f := newOwnFlags("stop", stderr)
+	if code, ok := f.parse(args, stderr); !ok {
+		return code
+	}
+	p := store.NewPaths(f.root)
+	run, ok := findRunning(p)
 	if !ok {
-		return // it stopped meanwhile
+		fmt.Fprintln(stdout, "AI Whiteboard is not running")
+		return 0
 	}
-	if h.Pid <= 0 {
-		fail("cannot stop the running server", fmt.Sprintf("%s reports pid %d", base, h.Pid))
+	if title, detail := stopServer(p, run); title != "" {
+		return failure(stderr, title, detail)
 	}
-	if err := syscall.Kill(h.Pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-		fail(fmt.Sprintf("cannot stop the running server (pid %d)", h.Pid), err.Error())
-	}
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if !isOurs(httpClient(), base) {
-			return
-		}
-	}
-	fail("the running server did not stop within 10 seconds", fmt.Sprintf("pid %d at %s", h.Pid, base))
-}
-
-// startRelaunch starts `<this program> relaunch <args>` detached, for POST /api/restart: the new
-// process stops this server and starts the program now on disk, which after an in-place install is
-// the new build. It reports server.ErrBinaryMissing when the program is no longer there.
-func startRelaunch(p store.Paths, args []string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(exe); err != nil {
-		return fmt.Errorf("%w: %v", server.ErrBinaryMissing, err)
-	}
-	cmd, _, _, err := startDetached(p, exe, "relaunch", args, "restart requested by the page")
-	if err != nil {
-		return err
-	}
-	go cmd.Wait() // reap it
-	return nil
-}
-
-// listening reports whether something accepts connections on the local port.
-func listening(port int) bool {
-	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
-	if err != nil {
-		return false
-	}
-	c.Close()
-	return true
-}
-
-// stop sends SIGTERM to the running server and waits for it to finish shutting down.
-func stop(o options) {
-	pid, port, ok := store.ReadServerFile(o.paths)
-	if !ok || !isOurs(httpClient(), fmt.Sprintf("http://127.0.0.1:%d", port)) {
-		fmt.Println("AI Whiteboard is not running")
-		return
-	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		log.Fatalf("stopping pid %d: %v", pid, err)
-	}
-	for i := 0; i < 100; i++ { // shutdown flushes boards (up to 2 s) and ends the agents
-		if !isOurs(httpClient(), fmt.Sprintf("http://127.0.0.1:%d", port)) {
-			fmt.Println("AI Whiteboard stopped")
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	log.Fatalf("pid %d did not stop within 10 seconds", pid)
+	fmt.Fprintln(stdout, "AI Whiteboard stopped")
+	return 0
 }
 
 // loginPath returns PATH as the user's login shell sets it, or "" if the shell doesn't answer.
@@ -250,8 +311,9 @@ func logTail(path string, from int64) string {
 	return strings.Join(lines, "\n")
 }
 
-// fail reports a launch error on stderr and exits 1.
-func fail(title, detail string) {
-	fmt.Fprintf(os.Stderr, "AI Whiteboard: %s\n%s\n", title, detail)
-	os.Exit(1)
+// failure reports a command's failure on w: "AI Whiteboard: <title>" and the detail. It returns 1,
+// the exit code of a command that failed.
+func failure(w io.Writer, title, detail string) int {
+	fmt.Fprintf(w, "AI Whiteboard: %s\n%s\n", title, detail)
+	return 1
 }

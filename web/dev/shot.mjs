@@ -32,8 +32,10 @@
 //   contrastAudit(page)           the contrast of every text and icon the page shows (or a part of it: `only`), the weakest first;
 //                                 colourOf(page, selector, prop) the colour one element is drawn in, contrastOf(a, b)
 //   sideSeen(page, id)            what a section of the sidebar shows (its head's name and state, its rows as an outline),
-//                                 or with no id the local part; sectionsSeen(page): the sections drawn, in order;
-//                                 callsOf(page): the calls the page makes; sideMenu(page, root, button, …items): a pick
+//                                 or with no id this computer's ("local"); sectionsSeen(page): the sections drawn, in order;
+//                                 callsOf(page): the calls the page makes; callMatcher(re, server) and callOfRequest(r): a page.route
+//                                 predicate for them, and the call a request carries; hostCall(url, method, path, body, server): a call made on the mock as the page's
+//                                 transport makes it; sideMenu(page, root, button, …items): a pick
 //                                 in the menu of a row or a header
 //   until(fn)                     waits for a sign, in place of a fixed time; onEnd(fn): what to undo when the process
 //                                 is ended early, ending(): whether it is being; versions(): the Playwright and the
@@ -98,7 +100,7 @@ export async function versions() {
 
 /** Builds the client of `web` (this checkout's, or another worktree's web folder) into `out`, a folder outside the
  *  checkout, and answers `out`. web/dist is not touched: build.mjs runs in a folder of links to the sources. The version
- *  is not "dev", so that the page can show the update notice (the mock's flags.hello). nodeModules: where a worktree
+ *  is not "dev", so that the page can show the update notice (the mock's flags.hello or the local entry's version). nodeModules: where a worktree
  *  that has none takes its packages from. */
 export function buildDist(out = fs.mkdtempSync(path.join(TMP, "aiwb-dist-")), { web = WEB, version = "uicheck", nodeModules = path.join(web, "node_modules") } = {}) {
   const work = fs.mkdtempSync(path.join(TMP, "aiwb-build-"));
@@ -134,7 +136,7 @@ export async function startMock({ dist, port, env = {}, script = path.join(WEB, 
     ended = new Promise((ok) => p.on("exit", () => { if (p === proc) gone = true; ok(); }));
     for (let i = 0; i < 600 && !gone; i++) { // (half a minute at most: it listens within a second, and ends at once when the port is taken)
       // (the pid tells this mock from another server that holds the port)
-      if (await fetch(url + "/api/hello").then((r) => r.json()).then((h) => h.pid === p.pid, () => false)) return;
+      if (await fetch(url + "/mock/state").then((r) => r.json()).then((h) => h.pid === p.pid, () => false)) return;
       await sleep(50);
     }
     await stop(); off();
@@ -142,7 +144,7 @@ export async function startMock({ dist, port, env = {}, script = path.join(WEB, 
   };
   await start();
   const down = async () => {
-    if (!gone && !stopped && !await fetch(url + "/api/hello", { signal: AbortSignal.timeout(5000) }).then(() => true, () => false)) await Promise.race([ended, sleep(5000)]);
+    if (!gone && !stopped && !await fetch(url + "/mock/state", { signal: AbortSignal.timeout(5000) }).then(() => true, () => false)) await Promise.race([ended, sleep(5000)]);
     return gone && !stopped;
   };
   return { url, port, dist, stop: async () => { await stop(); off(); }, restart: start, log: () => log, down };
@@ -792,8 +794,7 @@ export async function compareShots({ a, b, pages, omit = [], port, out, clock = 
 
 // ---- the sections of the sidebar (plans/remote-server-sections-goal.md)
 
-/** In the page: one part of the sidebar as it is drawn. id: the entry id of a section's server, or "" for the local
- *  part (the tree above the sections: what is in no group, the groups, "New group").
+/** In the page: one section of the sidebar as it is drawn. id: the entry id of the section's server, "local" for this computer's.
  *    there      the part is drawn
  *    name, state, tone   a section's head: the server's name, the words of its state, "ok" | "wait" | "bad"
  *    collapsed  the section is collapsed; count: the number its head shows then, "" for none
@@ -806,15 +807,14 @@ export async function compareShots({ a, b, pages, omit = [], port, out, clock = 
  *    rows       the names of its board and chat rows, in that order; subs: the line under each chat row
  *    titles     the tooltip of each row and header */
 function sidePartInPage(id) {
-  const root = id ? document.querySelector(`.side-section[data-server="${CSS.escape(id)}"]`) : document.querySelector(".side-tree");
+  const root = document.querySelector(`.side-section[data-server="${CSS.escape(id)}"]`);
   if (!root) return { there: false };
   const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim();
-  const body = id ? root.querySelector(":scope > .side-section-body") : root;
+  const body = root.querySelector(":scope > .side-section-body");
   const outline = [], titles = [];
   const row = (r, kind, depth) => { outline.push(`${"  ".repeat(depth)}${kind} ${text(r.querySelector(".side-name"))}${r.closest(".archived") && (kind !== "chat" || r.classList.contains("archived")) ? " [archived]" : ""}`); titles.push(r.getAttribute("title") ?? ""); };
   const walk = (el, depth) => {
     for (const e of el?.children ?? []) {
-      if (e.matches(".side-section")) continue; // (the local part ends where the sections begin)
       if (e.matches(".side-group")) {
         const head = e.querySelector(":scope > .side-group-head"), inner = e.querySelector(":scope > .side-group-body");
         outline.push(`${"  ".repeat(depth)}group ${text(head.querySelector(".side-group-name"))}${e.classList.contains("archived") ? " [archived]" : ""}${inner ? "" : " [collapsed]"}`);
@@ -828,35 +828,54 @@ function sidePartInPage(id) {
     }
   };
   walk(body, 0);
-  const mine = (sel) => [...(body?.querySelectorAll(sel) ?? [])].filter((e) => id || !e.closest(".side-section"));
-  const head = id ? root.querySelector(":scope > .side-section-head") : null, st = head?.querySelector(".side-section-state");
+  const mine = (sel) => [...(body?.querySelectorAll(sel) ?? [])];
+  const head = root.querySelector(":scope > .side-section-head"), st = head.querySelector(".side-section-state");
   return { there: true, outline, titles, rows: mine(".side-row .side-name").map(text), subs: mine(".side-row .side-sub").map(text), lines: mine(".side-section-line, .side-loose > .side-empty").map(text),
-    ...(id ? { name: text(head.querySelector(".side-section-name")), state: text(st), tone: ["ok", "wait", "bad"].find((t) => st?.classList.contains(t)) ?? "", collapsed: head.getAttribute("aria-expanded") === "false",
-      count: text(head.querySelector(".side-count")), add: !![...head.querySelectorAll("button")].find((b) => b.textContent.trim() === "+"), menu: !!head.querySelector('button[title="More"]'),
-      draggable: head.draggable === true || !!head.closest("[draggable=true]") } : {}) };
+    name: text(head.querySelector(".side-section-name")), state: text(st), tone: ["ok", "wait", "bad"].find((t) => st?.classList.contains(t)) ?? "", collapsed: head.getAttribute("aria-expanded") === "false",
+    count: text(head.querySelector(".side-count")), add: !![...head.querySelectorAll("button")].find((b) => b.textContent.trim() === "+"), menu: !!head.querySelector('button[title="More"]'),
+    draggable: head.draggable === true || !!head.closest("[draggable=true]") };
 }
 
-/** What one part of the sidebar shows (see sidePartInPage): a section, by its server's entry id, or the local part (""). */
-export const sideSeen = (page, id = "") => page.evaluate(sidePartInPage, id);
+/** What one section of the sidebar shows (see sidePartInPage): by its server's entry id, this computer's ("local") by default. */
+export const sideSeen = (page, id = "local") => page.evaluate(sidePartInPage, id);
 
 /** The entry ids of the sections the sidebar draws, top to bottom. */
 export const sectionsSeen = (page) => page.evaluate(() => [...document.querySelectorAll(".side-tree .side-section")].map((s) => s.dataset.server));
 
-/** Records the calls a page makes of its server from now on, but its event stream and the files of the page itself:
- *  [{ method, path (with its query), body (parsed, when it is JSON), status (once answered) }], in the order they
- *  were made. A check reads it for where a call went: /api/chats/… for a thing of this computer, /api/on/<entry
- *  id>/chats/… for one of a section. */
+/** Records the calls a page makes from now on, but its event stream, its pictures and the files of the page itself:
+ *  [{ server, method, path (with its query), body (parsed, when it is JSON), status (once answered) }], in the order they
+ *  were made. The page sends a call to the face of the mock as POST /host/call?server=&method=&path=; a check reads
+ *  where it went: server "local" for a thing of this computer, the entry id for one of a section. */
 export function callsOf(page) {
   const calls = [];
   page.on("request", (r) => {
-    const u = new URL(r.url());
-    if (!u.pathname.startsWith("/api/") || u.pathname === "/api/events") return;
+    const call = callOfRequest(r);
+    if (!call) return;
     let body; try { body = r.postData() ? JSON.parse(r.postData()) : undefined; } catch { body = r.postData(); }
-    const c = { method: r.method(), path: u.pathname + u.search, body };
+    const c = { ...call, body };
     calls.push(c);
     r.response().then((res) => { c.status = res?.status(); }, () => {});
   });
   return calls;
+}
+
+/** The call a page's request carries: { server, method, path } for a POST /host/call (the path is `/api/…`, with its
+ *  query), null for any other request. */
+export const callOfURL = (u) => (u.pathname === "/host/call" ? { server: u.searchParams.get("server"), method: u.searchParams.get("method"), path: u.searchParams.get("path") } : null);
+export const callOfRequest = (r) => callOfURL(new URL(r.url()));
+/** A predicate for page.route (and page.unroute, with the same function) that matches a call of the page whose
+ *  "<method> <path>" matches `re`; server: the call's server ("local", an entry id), any when it is left out. */
+export const callMatcher = (re, server) => (u) => { const c = callOfURL(u); return !!c && re.test(`${c.method} ${c.path}`) && (server === undefined || c.server === server); };
+
+/** Makes a call of the client API on a server of the mock, over the face's HTTP, as a page's transport does: another
+ *  client's change, or a read. Answers { status, body (parsed JSON, or the text), text }. server: "local" or an entry id. */
+export async function hostCall(url, method, path, body, server = "local") {
+  const r = await fetch(`${url}/host/call?server=${encodeURIComponent(server)}&method=${method}&path=${encodeURIComponent(path)}`,
+    { method: "POST", ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+  const text = await r.text();
+  let parsed = text;
+  try { parsed = text ? JSON.parse(text) : null; } catch {}
+  return { status: r.status, body: parsed, text, sceneRev: r.headers.get("x-aiwb-scene-rev") === null ? null : Number(r.headers.get("x-aiwb-scene-rev")) };
 }
 
 /** Opens the menu of a row or a header of the sidebar (its "More" button, or its "+": `button` is the button's title

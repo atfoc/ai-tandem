@@ -1,40 +1,36 @@
-// The version banner's side (logic/version.ts decides): compares the page's, the server's and the
-// on-disk version on every connect, and runs "Restart server". The server only starts `relaunch`
-// (stop + launch); the page then waits for a server with a new version and reloads.
-import { api, ApiError } from "./api.ts";
+// The owner's things of this computer's section, which the app does with the server program it carries (the app's
+// `owner.*` operations): "Restart server" (also to bring the server to the app's build), "Retry" after a start that failed,
+// and "Open server log". The page and the app are one build, so the page is never loaded again: a restart makes this
+// computer's entry connecting, and its section fills again when the server answers. The section says what it shows of them
+// (logic/localsection.ts).
+import { ApiError, appCall } from "./api.ts";
 import { getState, setState, statesOfChat } from "./store.ts";
 import { confirm } from "./Dialogs.tsx";
-import { bannerFor, restartConfirmText, runningChats, type UpdateBanner } from "./logic/version.ts";
-import type { DesktopPick } from "./logic/chatimage.ts";
+import { NO_RESTART } from "./logic/localsection.ts";
+import { restartConfirmText, runningChats } from "./logic/version.ts";
+import { LOCAL_SERVER } from "./types.ts";
+import { transport } from "./transport/index.ts";
 
 declare const __APP_VERSION__: string; // build.mjs: AIWB_VERSION, "dev" by default
 
 declare global {
   interface Window {
     aiwbFlush?: () => Promise<boolean>;                // main.tsx
-    // The desktop app's preload; absent in a browser tab. pickImages: its own open dialog for images (ComposerImages.tsx); an
-    // older app has none.
-    aiwbDesktop?: { openServerLog: () => void; pickImages?: () => Promise<DesktopPick> };
   }
 }
 
-const POLL_MS = 500;
-const WAIT_MS = 45_000;
+/** How long a restart waits for the server to be connected again, and how often it looks (a test lowers both). */
+export const restartWaits = { pollMs: 500, giveUpMs: 45_000 };
 let busy = false; // a restart runs (from its start, before "Restarting…" shows)
 
-const show = (banner: UpdateBanner) => setState({ update: { banner, hidden: false } });
-const restarting = () => getState().update.banner === "restarting";
+/** The page's version, which is the app's. */
+export const pageVersion = (): string => __APP_VERSION__;
 
-/** On every connect and reconnect: the banner for page, server and disk versions. A restart in
- *  progress keeps its "Restarting…". */
-export async function checkVersion() {
-  let h;
-  try { h = await api.hello(); } catch { return; }
-  if (restarting()) return;
-  show(bannerFor(__APP_VERSION__, h.version || "dev", h.webVersion || "dev"));
-}
+const restarting = () => getState().restart.phase === "restarting";
+const localEntry = () => getState().servers.find((v) => v.id === LOCAL_SERVER);
+const connectedAgain = () => localEntry()?.state === "connected" && getState().connected;
 
-/** "Restart server" and "Retry": confirms when agents are running, then restarts. */
+/** "Restart server" and "Retry" of a restart: confirms when agents are running, then restarts. */
 export function restartServer() {
   if (busy || restarting()) return;
   const n = runningChats(Object.values(getState().chats), (chat) => statesOfChat(getState(), chat));
@@ -52,26 +48,26 @@ async function restart() {
 }
 
 async function run() {
-  let old: string;
-  try { old = (await api.hello()).version; } catch { show("failed"); return; }
   await window.aiwbFlush?.().catch(() => false); // drafts are already on the server
-  show("restarting");
+  setState({ restart: { phase: "restarting", why: "" } });
   try {
-    await api.restart();
+    await appCall("owner.restart");
   } catch (e) {
-    show(e instanceof ApiError && e.status === 409 ? "missing" : "failed");
+    setState({ restart: { phase: "failed", why: e instanceof Error ? e.message : String(e) } });
     return;
   }
-  const until = Date.now() + WAIT_MS;
+  const until = Date.now() + restartWaits.giveUpMs;
   while (Date.now() < until) {
-    await new Promise((r) => setTimeout(r, POLL_MS));
-    try {
-      if ((await api.hello()).version !== old) { location.reload(); return; }
-    } catch {} // down between the old server and the new one
+    await new Promise((r) => setTimeout(r, restartWaits.pollMs));
+    if (connectedAgain()) { setState({ restart: NO_RESTART }); return; }
   }
-  show("failed");
+  setState({ restart: { phase: "failed", why: "The server did not come back in time." } });
 }
 
-/** "Open log": the desktop app opens server.log. */
-export const openServerLog = () => window.aiwbDesktop?.openServerLog();
-export const inDesktopApp = () => !!window.aiwbDesktop;
+/** "Retry" after a start that failed: the app starts the server again at once (it tries again by itself at growing intervals). */
+export function startAgain() { void appCall("owner.retry").catch((e) => { if (!(e instanceof ApiError)) console.error(e); }); }
+
+/** "Open server log": the app opens this computer's server.log. */
+export const openServerLog = () => { void appCall("owner.openLog").catch(() => {}); };
+/** Whether the page is in the desktop app, which does the owner's things. */
+export const inDesktopApp = (): boolean => transport().way === "ipc";

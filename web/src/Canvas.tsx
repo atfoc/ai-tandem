@@ -57,7 +57,7 @@ export function Canvas({ board }: { board: string }) {
   const [loaded, setLoaded] = useState<{ board: string; gen: number; scene: Scene } | null>(null);
   const [err, setErr] = useState("");
   const [away, setAway] = useState(false); // the read of the scene was answered 503: the board's server is not connected
-  const connected = useStore((s) => serverConnected(s, serverOfKey(board))); // the local server holds the tree of the board's server
+  const connected = useStore((s) => serverConnected(s, serverOfKey(board))); // the page holds the tree of the board's server
   const gone = useStore((s) => !!s.gone[board]); // the board is no longer on its server
   const server = useStore((s) => serverNameOf(board, s.servers));
   const known = !!b, archived = !!b?.archived;
@@ -86,7 +86,7 @@ export function Canvas({ board }: { board: string }) {
   if (!b) return <div className="canvas-empty" />;
   // (a board of a section: gone there; or that server is away and this window keeps no scene of it. When the section's
   // tree arrives the scene is read again: board.ts sectionBack)
-  const view = boardView({ remote: inSection(board), connected: connected && !away, gone }, scenes.has(board));
+  const view = boardView({ connected: connected && !away, gone }, scenes.has(board));
   if (view === "gone") return <BoardOff board={board} view="gone" />;
   if (panel) return <TakeoverPanel board={board} role={role} dropped={dropped} />;
   if (view !== "canvas") return <BoardOff board={board} view={view} />;

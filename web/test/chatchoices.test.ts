@@ -1,10 +1,11 @@
 // The server's name and the agent choice of a chat's composer and the chat with no agent: the logic the
 // components use (src/logic/agentlist.ts, src/logic/status.ts), the body api.configure sends for
-// an agent pick (src/api.ts with a stubbed global fetch), and the toolbar read as source (the unit
+// an agent pick (src/api.ts through a fake transport), and the toolbar read as source (the unit
 // tests have no DOM).
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { installFake } from "./fixtures/faketransport.ts";
 import { api, ApiError } from "../src/api.ts";
 import { CHOOSE_AGENT, NO_AGENT, agentChoice, agentLabel, agentLine, agentOpen, configHint, noAgentPlaceholder, noAgentReason, pickAgent } from "../src/logic/agentlist.ts";
 import { showsServer } from "../src/logic/chatserver.ts";
@@ -18,13 +19,11 @@ const composer = src("Composer.tsx"), choices = src("ChatChoices.tsx");
 /** The source of Composer.tsx's Toolbar. */
 const toolbar = composer.slice(composer.indexOf("export function Toolbar("), composer.indexOf("function ModelNotice("));
 
-const calls: { path: string; method?: string; body: unknown }[] = [];
+const fake = installFake();
+const calls = fake.calls;
 let answer: { status: number; body: unknown } = { status: 200, body: { ok: true } };
-globalThis.fetch = (async (path: string, init: RequestInit = {}) => {
-  calls.push({ path, method: init.method, body: JSON.parse(init.body as string) });
-  return new Response(JSON.stringify(answer.body), { status: answer.status });
-}) as typeof fetch;
-beforeEach(() => { calls.length = 0; answer = { status: 200, body: { ok: true } }; });
+fake.handler = () => ({ status: answer.status, text: JSON.stringify(answer.body), sceneRev: null });
+beforeEach(() => { fake.reset(); answer = { status: 200, body: { ok: true } }; });
 
 // ---- the toolbar: the server's name, then the four choices
 
@@ -54,7 +53,7 @@ test("the server picker is gone from the toolbar: the server is a chip that open
   const configure = apiSrc.slice(apiSrc.indexOf("  configure: ("), apiSrc.indexOf("  /** Saves a branch's draft"));
   assert.ok(configure.includes("p: { agent?: AgentKind; model?: string; effort?: string; cwd?: string; subDepth?: number; subCap?: number }"));
   assert.ok(!/\bserver\??:/.test(configure), "no field of the change names a server: the chat's key says where the call goes");
-  assert.ok(configure.includes('call<{ ok: boolean; chat?: ChatView }>("PATCH", `${pathOf("chats", id)}${onBranch(branch)}`, p)'));
+  assert.ok(configure.includes('thing<{ ok: boolean; chat?: ChatView }>("chats", id, "PATCH", onBranch(branch), p)'));
   // a list that stays for the others: a disabled option takes no pick, by the mouse or by Enter
   assert.ok(composer.includes("if (!o || o.disabled) return;"));
   assert.ok(composer.includes("aria-disabled={o.disabled || undefined} title={o.disabled ? o.note : undefined}"));
@@ -65,12 +64,12 @@ test("an agent pick sends the agent alone and takes the chat the server answers 
   answer = { status: 200, body: { ok: true, chat } };
   const taken: ChatView[] = [];
   await pickAgent((p) => api.configure("c_1", "main", p), "cursor", (c) => taken.push(c));
-  assert.deepEqual(calls, [{ path: "/api/chats/c_1?branch=main", method: "PATCH", body: { agent: "cursor" } }]);
+  assert.deepEqual(calls, [{ server: "local", path: "/api/chats/c_1?branch=main", method: "PATCH", body: { agent: "cursor" } }]);
   assert.deepEqual(taken, [chat]); // with the model the server chose for that agent
-  // a chat of a section: the same call under its entry, and the chat it answers gets the page's key
+  // a chat of a section: the same call to its entry's server, and the chat it answers gets the page's key
   calls.length = 0; taken.length = 0;
   await pickAgent((p) => api.configure("s_1~c_1", "main", p), "cursor", (c) => taken.push(c));
-  assert.deepEqual(calls, [{ path: "/api/on/s_1/chats/c_1?branch=main", method: "PATCH", body: { agent: "cursor" } }]);
+  assert.deepEqual(calls, [{ server: "s_1", path: "/api/chats/c_1?branch=main", method: "PATCH", body: { agent: "cursor" } }]);
   assert.deepEqual(taken, [{ ...chat, id: "s_1~c_1" }]);
   // the component gives it the store's upsertChat
   assert.ok(/pickAgent\(\(p\) => api\.configure\(c\.id, shownBranch\(getState\(\), c\.id\), p\), id as AgentKind, upsertChat\)/.test(choices));

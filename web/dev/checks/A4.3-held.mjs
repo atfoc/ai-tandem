@@ -5,7 +5,7 @@
 // "N other branches working" stay live, and a fork asked for meanwhile holds its own controls and ends by itself. The
 // same picture shows after another chat was opened and this one again. While a fork is being made, Fork and "Fork and
 // edit" of that chat are disabled with the reason, on a message and in the tree, and nothing else is.
-import { check, holds, mockEval, openPage, release, seed, startMove, until, waitsSeen } from "../shot.mjs";
+import { callOfRequest, check, holds, mockEval, openPage, release, seed, startMove, until, waitsSeen } from "../shot.mjs";
 
 const T = "c_A4_turns", TWO = "c_A4_two";
 const SEND_HELD = "Your message is being sent: this works again once the server has answered";
@@ -43,7 +43,7 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, bro
   /** The right-click menu of a row of the open tree. */
   const menuOf = async (page, kind, has) => { await page.locator(`.fk-nav .fk-row.k-${kind}`, { hasText: has }).first().click({ button: "right" }); await page.waitForSelector(".fk-ctx .menu-item"); return (await tree(page)).menu; };
   const item = (menu, label) => menu.find((m) => m.text === label);
-  const posts = (page, part) => { const seen = []; page.on("request", (r) => { if (r.method() === "POST" && r.url().includes(part)) seen.push(r.url()); }); return seen; };
+  const posts = (page, part) => { const seen = []; page.on("request", (r) => { const c = callOfRequest(r); if (c?.method === "POST" && c.path.includes(part)) seen.push(c.path); }); return seen; };
 
   // ---- a branch send that waits for its answer. main, the branch the message leaves, is in a turn; alt ended in an
   // error; a third branch works.

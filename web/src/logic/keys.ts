@@ -6,7 +6,7 @@
 // so a local thing and a section's can never be taken for each other.
 //
 // The key is the page's own. On the wire the two values stay apart: logic/sectionwire.ts makes
-// the keys of what comes in, and api.ts splits a key into the path's entry id and the server's
+// the keys of what comes in, and api.ts splits a key into the server a call goes to and the server's
 // own id, and writes that server's own ids into every body. DOM-free.
 import { LOCAL_SERVER, UNGROUPED } from "../types.ts";
 
@@ -41,13 +41,9 @@ export const ungroupedOn = (server: string | null | undefined): string => keyOn(
 /** Whether a group key is a server's ungrouped area. */
 export const isUngrouped = (group: string): boolean => ownId(group) === UNGROUPED;
 
-/** Where the local server answers for a server: "/api" for this computer, "/api/on/<entry id>" for a section. */
-export const apiRoot = (server: string | null | undefined): string =>
-  (server && server !== LOCAL_SERVER ? `/api/on/${encodeURIComponent(server)}` : "/api");
-
-/** The path of a call about a thing: "/api/<kind>/<id>" on this computer, "/api/on/<entry id>/<kind>/<id>" in a
- *  section. The one place a key becomes a path: the id in it is the server's own. */
-export function pathOf(kind: "groups" | "boards" | "chats", key: string): string {
+/** The call about a thing: the entry id of its server and the path "/api/<kind>/<id>", with the id the server's own.
+ *  The one place a key becomes a path. */
+export function pathOf(kind: "groups" | "boards" | "chats", key: string): { server: string; path: string } {
   const { server, id } = splitKey(key);
-  return `${apiRoot(server)}/${kind}/${id}`;
+  return { server, path: `/api/${kind}/${id}` };
 }

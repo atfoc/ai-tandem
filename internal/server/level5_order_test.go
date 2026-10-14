@@ -119,24 +119,6 @@ func TestLevel5ListsHaveOneOrder(t *testing.T) {
 	l5Want(t, x, 200, "PATCH", "/api/groups/"+want.groups[0], `{"name":"Renamed"}`)
 	check("after a rename, a move and an archive of each kind")
 
-	// The owner puts the groups in another order, which no client can ask for: the clients are
-	// told the new order by the same event as the owner's page, and read it from then on.
-	e.reach(p, x, y)
-	slices.Reverse(want.groups)
-	l5Want(t, p, 200, "PUT", "/api/groups/order", map[string]any{"ids": want.groups})
-	for i, evs := range e.reach(p, x, y) {
-		var told []string
-		if groups := only(evs, "groups"); len(groups) == 1 {
-			for _, g := range decode[struct{ Groups []struct{ ID string } }](t, groups[0]).Groups {
-				told = append(told, g.ID)
-			}
-		}
-		if !slices.Equal(told, want.groups) {
-			t.Errorf("after the owner's new order of the groups %s was told the order %v by %v, want %v", makers[i].ID, told, l5Types(evs), want.groups)
-		}
-	}
-	check("after the owner's new order of the groups")
-
 	// What is deleted leaves its list, and the rest stays as it was.
 	l5Want(t, y, 200, "DELETE", "/api/boards/"+want.boards[0], nil)
 	l5Want(t, p, 200, "DELETE", "/api/chats/"+want.chats[3], nil)

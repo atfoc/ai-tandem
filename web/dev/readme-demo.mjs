@@ -102,7 +102,8 @@ export function installCode() {
   const wipe = (o) => { for (const k of Object.keys(o)) delete o[k]; };
   for (const o of [chats, items, boards, scenes, subs, subItems, versions, branches, sessions]) wipe(o);
   groups.length = 0;
-  flags.hello = { version: "uicheck", webVersion: "uicheck" };
+  flags.hello = { version: "uicheck" };
+  extra.servers[0].version = "uicheck"; // (the version the page is built with: this computer's server runs the app's build)
   const model = claude.models.find((m) => m.id === "haiku"); model.label = "Haiku 5.5"; model.efforts = ["low", "medium", "high"]; model.defaultEffort = "medium";
   catalogs.pi = { default: { model: "claude-sonnet-5-5", effort: "medium" }, models: [
     { id: "claude-sonnet-5-5", label: "Sonnet 5.5", provider: "anthropic", efforts: ["low", "medium", "high"], defaultEffort: "medium", contextWindow: 200000 },
@@ -180,6 +181,7 @@ export function installCode() {
     scenes.b_net = { rev: 1, scene: { type: "excalidraw", version: 2, elements: [], appState: {}, files: {} } };
     add("c_ingest", "Tune the ingest worker", { board: "b_net" }, 120, THREADS.regex, { ...piChat, cwd: "/home/dev/projects", usage: used(15000, 1) });
   });
+  resync();
   return 1;`;
 }
 

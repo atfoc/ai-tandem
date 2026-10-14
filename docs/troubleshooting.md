@@ -1,18 +1,23 @@
 # Troubleshooting the board MCP
 
-How to check that the board MCP listener is up and an agent has connected, how to probe the endpoint by hand, what the server log says, and what to do when Cursor shows no board tools or port 6006 is taken.
+How to check that the board MCP listener is up and an agent has connected, how to probe the endpoint by hand, what the server log says, and what to do when Cursor shows no board tools, port 6006 is taken, or this computer's server does not start.
 
 The board tools reach agents over one fixed MCP endpoint. Cursor hides MCP load failures in its
 ACP layer, so check the app side first.
 
 ## Is the listener up and has an agent connected?
 
+The listener's state is on this computer's row in **Servers** (`MCP listener: http://localhost:6006/mcp (up)`),
+and the server program prints it. With the app installed, from a terminal:
+
 ```sh
-curl -s http://127.0.0.1:4747/api/mcp/status | python3 -m json.tool
+~/Applications/AI\ Whiteboard.app/Contents/MacOS/ai-whiteboard status          # the line "MCP listener: ... (up)"
+~/Applications/AI\ Whiteboard.app/Contents/MacOS/ai-whiteboard status -json | python3 -m json.tool
 ```
 
-The reply has the listener (`port`, the exact advertised `url`, `up`) and one entry per chat that
-has contacted MCP, most recent first. `chat` is the first 8 characters of the chat's id (a UUID),
+(`bin/ai-whiteboard` of a checkout does the same; add `-home DIR` for a server whose data folder is
+not `~/.ai-whiteboard`.) The JSON has, under `running.mcp`, the listener (`port`, the exact
+advertised `url`, `up`) and one entry per chat that has contacted MCP, most recent first. `chat` is the first 8 characters of the chat's id (a UUID),
 so it is a bare short id with no prefix. It is read-only and exposes no token and no board
 content; an entry with `"chat": "unknown"` means a client connected with a credential that
 resolves to no board chat, and no entry for a chat after a prompt means its agent never loaded the
@@ -27,6 +32,8 @@ MCP server, or never used a board tool.
   ]
 }
 ```
+
+That is the value of `running.mcp`.
 
 ## Probe the endpoint by hand
 
@@ -62,7 +69,7 @@ are not logged.
 
 ## Cursor shows no board tools (silent ACP failure)
 
-1. `GET /api/mcp/status` (or the `mcp initialize` log line) shows no contact for the chat: the
+1. `ai-whiteboard status -json` (or the `mcp initialize` log line) shows no contact for the chat: the
    MCP server was never loaded, or the prompt never used a board tool.
 2. Cursor's own debug log is at `$TMPDIR/cursor-agent-logs-<uid>/latest.log`. Search it for
    `Failed to load ACP session MCP server` and `Blocked by team policy`. A `Blocked by team
@@ -84,6 +91,23 @@ Port 6006 is probably held by another AI Whiteboard instance (for a different da
 Stop that instance or free port 6006, then start AI Whiteboard again.
 ```
 
-`launch`/`relaunch` report the server stopped while starting with that message in the log tail.
+`launch`/`relaunch` report the server stopped while starting with that message in the log tail,
+and this computer's section of the sidebar shows it as the reason the server did not start.
 Because the port is fixed, exactly one instance can serve MCP per machine, so stop a running app
 before the default e2e run (see [Development](development.md)).
+
+## This computer's server does not start
+
+This computer's section of the sidebar says **Not started** and gives the reason the start gave;
+**Open server log** opens `server.log` in the data folder. The app tries again by itself, and
+**Retry** tries at once. The usual reasons:
+
+- **AI Whiteboard is not set up on this machine.** A server never starts before its set-up. Run
+  the command the reason names, once (`ai-whiteboard remote setup`; see
+  [Use a server on another machine](remote-servers.md#use-a-server-on-another-machine)), then
+  press **Retry**.
+- **Port 6006 is taken**, by another AI Whiteboard instance or another program (see above).
+- **A set-up that is broken**, a missing or unreadable file or a port in use: the message names the
+  file or port and the command that repairs it. `ai-whiteboard status` shows the same.
+- **The server is of another build** than the app, or older: the section says so and offers
+  **Restart server**.

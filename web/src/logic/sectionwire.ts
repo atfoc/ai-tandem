@@ -1,6 +1,5 @@
-// A section's things between the wire and the page. The local server hands on a remote server's
-// tree, events and answers with that server's own ids, and names the server apart: the entry id
-// is a path segment or an event's top-level `server`. The page keys everything by both
+// A section's things between the wire and the page. A remote server's tree, events and answers come with that server's own ids, and the
+// transport names the server apart: the entry id is a call's server or an envelope's `server`. The page keys everything by both
 // (logic/keys.ts), so what comes in gets its keys here, in one place, before it enters the store;
 // what goes out gets that server's own ids back (the `…Out` functions, which api.ts uses for a
 // body). For this computer (no server, or LOCAL_SERVER) every function gives back what it was
@@ -22,11 +21,10 @@ export function draftIn<D extends Draft | null | undefined>(server: Server, d: D
   return { ...d, mentions: d.mentions.map((m) => ({ ...m, id: keyOn(server, m.id) })) };
 }
 
-/** A group of a section: `collapsed` is that server's own matter and is dropped (the page keeps its own, in the browser). */
+/** A group of a section (whether it is collapsed is the page's own matter, kept in the browser). */
 export function groupIn(server: Server, g: Group): Group {
   if (local(server)) return g;
-  const { collapsed: _, ...rest } = g;
-  return { ...rest, id: keyOn(server, g.id), ...(g.parent ? { parent: keyOn(server, g.parent) } : {}) };
+  return { ...g, id: keyOn(server, g.id), ...(g.parent ? { parent: keyOn(server, g.parent) } : {}) };
 }
 
 export const boardIn = (server: Server, b: Board): Board =>

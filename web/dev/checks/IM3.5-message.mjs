@@ -52,7 +52,7 @@ const first = '.msg.user[data-item="0"]', second = '.msg.user[data-item="3"]', t
 const caption = (page) => page.evaluate(() => document.querySelector(".img-large-name")?.textContent ?? null);
 const closed = (page) => until(() => page.evaluate(() => !document.querySelector(".img-large")));
 /** Answers a context's image fetches: the PNG of an id that has one, 404 for any other. */
-const serve = (ctx) => ctx.route("**/api/chats/*/images/*", (route) => {
+const serve = (ctx) => ctx.route("**/host/picture/local/*/*", (route) => {
   const bytes = BYTES[route.request().url().split("/").pop()];
   return bytes ? route.fulfill({ status: 200, contentType: "image/png", body: bytes }) : route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
 });

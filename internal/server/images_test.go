@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,13 +51,66 @@ func (e *env) upload(client, chat, name, stated string, body io.Reader) (int, st
 	// As a browser does not, the test waits for the server's go-ahead before it sends the body:
 	// an upload that is refused unread is then answered, and not cut while its body is written.
 	req.Header.Set("Expect", "100-continue")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := e.send(req, client)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
+}
+
+// patient is a client that waits a minute for a server's go-ahead before it sends the body of a
+// request that asks for one (Expect: 100-continue). A server gives the go-ahead when it starts
+// to read the body, so a body this client was never asked for is one the server did not read.
+func patient(t *testing.T) *http.Client {
+	tr := &http.Transport{ExpectContinueTimeout: time.Minute, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, ForceAttemptHTTP2: true}
+	t.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr}
+}
+
+// marked says whether anything was read from it.
+type marked struct {
+	io.Reader
+	read atomic.Bool
+}
+
+func (m *marked) Read(p []byte) (int, error) {
+	m.read.Store(true)
+	return m.Reader.Read(p)
+}
+
+// uploadAsked posts data as an upload of a PNG with c, with the headers hdr, and says whether the
+// server asked for the bytes before it answered.
+func uploadAsked(t *testing.T, c *http.Client, at string, hdr map[string]string, data []byte) (status int, out string, read bool) {
+	t.Helper()
+	body := &marked{Reader: bytes.NewReader(data)}
+	req, _ := http.NewRequest("POST", at, body)
+	req.ContentLength = int64(len(data)) // known, so that nothing is read to find it out
+	req.Header.Set("Content-Type", "image/png")
+	req.Header.Set("Expect", "100-continue")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", at, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b), body.read.Load()
+}
+
+// field is the value at the keys in a decoded JSON value, nil when a key is not there.
+func field(v any, keys ...string) any {
+	for _, k := range keys {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		v = m[k]
+	}
+	return v
 }
 
 // uploaded uploads png(seed) under the name <seed>.png and returns the image.
@@ -108,8 +162,7 @@ func TestImageUploadAndFetch(t *testing.T) {
 		`{"id":"`+imageIDOf(data)+`","name":"my shot.png","type":"image/png","size":`+strconv.Itoa(len(data))+`}`)
 	img := decode[model.Image](t, out)
 
-	// The fetch: the bytes, with the stored type, not to be guessed at, for the app's own origin
-	// alone, and cacheable for good.
+	// The fetch: the bytes, with the stored type, not to be guessed at, and cacheable for good.
 	path := "/api/chats/" + chat + "/images/" + img.ID
 	resp, body := e.getClient(path, nil)
 	if resp.StatusCode != 200 || body != string(data) {
@@ -130,29 +183,11 @@ func TestImageUploadAndFetch(t *testing.T) {
 	if resp.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Error("the fetch allows another origin")
 	}
-	// The page's own fetch, and the address typed by the user, are served; a page of another
-	// site, or of another port of this machine, is not, whatever it knows of the address.
-	own := "http://" + strings.TrimPrefix(e.url, "http://")
-	for _, c := range []struct {
-		what string
-		hdr  map[string]string
-		want int
-	}{
-		{"the app's own page", map[string]string{"Sec-Fetch-Site": "same-origin"}, 200},
-		{"the address typed", map[string]string{"Sec-Fetch-Site": "none"}, 200},
-		{"the app's own origin named", map[string]string{"Origin": own}, 200},
-		{"another site", map[string]string{"Sec-Fetch-Site": "cross-site"}, 403},
-		{"another port of this machine", map[string]string{"Sec-Fetch-Site": "same-site"}, 403},
-		{"another origin named", map[string]string{"Origin": "http://evil.example"}, 403},
-		{"another port named", map[string]string{"Origin": "http://127.0.0.1:1"}, 403},
-		{"no origin named", map[string]string{"Origin": "null"}, 403},
-	} {
-		resp, body := e.getClient(path, c.hdr)
-		if resp.StatusCode != c.want {
-			t.Errorf("a fetch from %s: %d, want %d", c.what, resp.StatusCode, c.want)
-		}
-		if c.want == 403 && (strings.Contains(body, "PNG") || decode[refusal](t, body).Code != "image_origin") {
-			t.Errorf("a fetch from %s was answered %q", c.what, body)
+	// Every client with the secret is served, whatever origin it states: the picture's address
+	// of the app is checked in the app, and the server has no page to be told apart from.
+	for _, hdr := range []map[string]string{{"Sec-Fetch-Site": "cross-site"}, {"Origin": "http://evil.example"}, {"Origin": "null"}} {
+		if resp, body := e.getClient(path, hdr); resp.StatusCode != 200 || body != string(data) {
+			t.Errorf("a fetch with %v: %d %q", hdr, resp.StatusCode, body)
 		}
 	}
 
@@ -213,11 +248,9 @@ func TestImageUploadRefusals(t *testing.T) {
 			t.Errorf("%s: %d %s, want %d %s", c.what, status, out, c.status, c.code)
 		}
 	}
-	// Who may upload is who may save the draft: a known client, to a chat that is there.
-	for _, client := range []string{"", "nobody"} {
-		if status, out := e.upload(client, chat, "f.png", "image/png", bytes.NewReader(png("x"))); status != 409 || decode[refusal](t, out).Error != "unknown_client" {
-			t.Errorf("an upload of the client %q: %d %s", client, status, out)
-		}
+	// Who may upload is who may save the draft: a client, to a chat that is there.
+	if status, out := e.upload("", chat, "f.png", "image/png", bytes.NewReader(png("x"))); status != 400 || decode[refusal](t, out).Code != "bad_client" {
+		t.Errorf("an upload of no client: %d %s", status, out)
 	}
 	if status, out := e.upload(clientID, "nope", "f.png", "image/png", bytes.NewReader(png("x"))); status != 404 {
 		t.Errorf("an upload to no chat: %d %s", status, out)
@@ -231,7 +264,7 @@ func TestImageUploadRefusals(t *testing.T) {
 	req.Header.Set(ClientHeader, clientID)
 	req.Header.Set("Content-Type", "image/png")
 	req.ContentLength = 1 << 20
-	if resp, err := http.DefaultClient.Do(req); err == nil {
+	if resp, err := e.send(req, clientID); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == 200 {
 			t.Fatal("a cut upload was answered 200")
@@ -284,7 +317,7 @@ func TestImageUploadIsCutBeforeItIsRead(t *testing.T) {
 	e := newEnv(t)
 	chat := e.chat(`{"agent":"claude","group":"__ungrouped__"}`).ID
 	at := e.url + "/api/chats/" + chat + "/images"
-	hdr := map[string]string{ClientHeader: clientID}
+	hdr := map[string]string{ClientHeader: clientID, SecretHeader: testSecret, LevelHeader: testLevel}
 	c := patient(t)
 
 	big := append(png("big"), make([]byte, model.ImageMaxBytes)...)
@@ -306,7 +339,7 @@ func TestImageUploadIsCutBeforeItIsRead(t *testing.T) {
 	req, _ := http.NewRequest("POST", at+"?name=endless.png", noLength{body})
 	req.Header.Set(ClientHeader, clientID)
 	req.Header.Set("Content-Type", "image/png")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := e.send(req, clientID)
 	if err == nil { // (a client may see its connection closed before it reads the answer)
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()

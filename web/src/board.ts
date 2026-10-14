@@ -20,7 +20,7 @@ import { afterReconnect, onGrant, onLost, onRefusal, onTake, type Cache, type St
 import { saveFailure, saveOutage, saveRefusal } from "./logic/boardsave.ts";
 import { NOT_FOUND } from "./logic/remoteview.ts";
 import { parseImageArgs, parseRefs, parseRect, defaultScope, idsInsideRect, withBoundText, hasExtent, rootElements, pictureSize, resultText, countElements, EXPORT_PADDING, type Bounds } from "./logic/image.ts";
-import type { AgentKind } from "./types.ts";
+import { LOCAL_SERVER, type AgentKind } from "./types.ts";
 
 /** rev counts the writes made here (read_board shows it); base is the revision the server stores the scene at, as this
  *  window knows it: the one it was read at, then the one of each accepted save. */
@@ -54,7 +54,7 @@ export async function loadScene(id: string): Promise<Scene> {
       try { ({ scene: data, rev: base } = await api.scene(id)); }
       catch (e: any) {
         if (e instanceof ApiError && e.status === 404) {
-          if (inSection(id) && e.code === NOT_FOUND && getState().boards[id]) markGone(id);
+          if (e.code === NOT_FOUND && getState().boards[id]) markGone(id);
           throw new RpcError("NO_BOARD", `no board with id ${ownId(id)}; call list_boards to find ids`);
         }
         throw e;
@@ -154,8 +154,8 @@ async function runSave(id: string): Promise<void> {
         // (a `not_holder` for a write sent before the role last changed says nothing of the role now: the write failed)
         if (saveFailure(status, code) === "drop" && (code === "stale" || (code === "not_holder" && turnOf(id) === at))) { refused(id, code); break; }
         s.failed = true; console.error(`saving board ${id}:`, e);
-        if (saveOutage(status, inSection(id))) setOutage(id, true); // the board's server is away: the edit waits for it
-        setSaveSaid(id, saveRefusal(inSection(id), status, code, e instanceof Error ? e.message : String(e), e instanceof ApiError && e.said)); // refused by the board's server for another reason: the canvas says it
+        if (saveOutage(status)) setOutage(id, true); // the board's server is away: the edit waits for it
+        setSaveSaid(id, saveRefusal(status, code, e instanceof Error ? e.message : String(e), e instanceof ApiError && e.said)); // refused by the board's server for another reason: the canvas says it
       }
     } while (s.again);
   })().finally(() => { s.running = undefined; });
@@ -171,7 +171,8 @@ export async function flush(id: string) {
   else if (s.failed) await runSave(id);
 }
 
-export async function flushAll() { await Promise.all([...saving.keys()].map(flush)); }
+/** server: only the boards of that server (an entry id); without it all of them. */
+export async function flushAll(server?: string) { await Promise.all([...saving.keys()].filter((id) => !server || serverOfKey(id) === server).map(flush)); }
 /** True while a board this window holds has a write waiting, in flight, or failed (and not yet written since). */
 export const hasPendingSaves = () => [...saving].some(([id, s]) => (s.timer || s.running || s.failed) && writableScene(id));
 
@@ -182,7 +183,8 @@ export const hasPendingSaves = () => [...saving].some(([id, s]) => (s.timer || s
 // another window). What each does to the kept scene and its waiting edit is decided in
 // logic/roles.ts; step carries it out.
 
-let stream = 0;                                                              // the streams opened: a take's answer is of its own stream only
+const streams = new Map<string, number>();                                   // by entry id: the streams of that server opened; a take's answer is of its own stream only
+const streamOf = (server: string) => streams.get(server) ?? 0;
 const turns = new Map<string, number>();                                     // by board id: how often its role was told anew (a grant, a loss)
 const asking = new Map<string, { ifFree: boolean; done: Promise<void> }>();  // by board id: the take that runs
 
@@ -203,11 +205,11 @@ function dropScene(id: string) {
   reloadScene(id);
 }
 
-/** Whether the edit of a board waits for the board's server: a board of a section, under an outage. Such an edit
+/** Whether the edit of a board waits for the board's server: a board under an outage. Such an edit
  *  outlives the loss of the board (the board's server answers `busy` at the return when the board is merely open
  *  there): it stays, with the outage, until a grant saves or drops it by the revision. The banner does not show
  *  meanwhile, the panel being in place of the canvas. */
-const waitsForServer = (id: string) => inSection(id) && !!getState().outage[id];
+const waitsForServer = (id: string) => !!getState().outage[id];
 
 /** The boards whose last dropped edit had waited for the board's server (the outage): the note says so. */
 const outageDrops = new Set<string>();
@@ -233,12 +235,12 @@ export function takeBoard(id: string, ifFree = false): Promise<void> {
   if (!b || b.archived || !reachable(getState(), id)) return Promise.resolve();
   const cur = asking.get(id);
   if (cur && (ifFree || !cur.ifFree)) return cur.done; // the take that runs asks for as much
-  const of = stream, at = turnOf(id);
+  const of = streamOf(serverOfKey(id)), at = turnOf(id);
   const done: Promise<void> = (async () => {
     let a: Awaited<ReturnType<typeof api.takeBoard>>;
     try { a = await api.takeBoard(id, ifFree); }
     catch (e) { console.error(`taking board ${id}:`, e); return; }
-    if (of !== stream) return;       // the stream it was made on ended, and what it gave with it
+    if (of !== streamOf(serverOfKey(id))) return; // the stream it was made on ended, and what it gave with it
     if (turnOf(id) !== at) return;   // an event told the board's role meanwhile: that is the newer word
     if (a?.state === "held") { granted(id, a.rev ?? 0); return; }
     const role = getState().roles[id] ?? null;
@@ -285,12 +287,17 @@ export async function handOver(id: string) {
   void takeBoard(id, true);
 }
 
-/** `hello`: a new stream. The server keeps nothing of the one before, so no board is held and none is waited for. */
-export function streamOpened() {
-  stream++;
-  asking.clear();
-  for (const id of Object.keys(getState().roles)) turns.set(id, turnOf(id) + 1);
-  setState((s) => ({ roles: afterReconnect(s.roles) }));
+/** `hello` of a server's stream: a new stream of that server (an entry id; this computer's by default). The server keeps nothing
+ *  of the one before, so no board of it is held and none is waited for. The boards of the other servers are not touched. */
+export function streamOpened(server: string = LOCAL_SERVER) {
+  streams.set(server, streamOf(server) + 1);
+  for (const id of [...asking.keys()]) if (serverOfKey(id) === server) asking.delete(id);
+  const mine = (id: string) => serverOfKey(id) === server;
+  for (const id of Object.keys(getState().roles)) if (mine(id)) turns.set(id, turnOf(id) + 1);
+  setState((s) => {
+    const kept = afterReconnect(Object.fromEntries(Object.entries(s.roles).filter(([id]) => mine(id))));
+    return { roles: { ...Object.fromEntries(Object.entries(s.roles).filter(([id]) => !mine(id))), ...kept } };
+  });
 }
 
 /** After a snapshot (the page loaded, or its stream came back): the board on screen and every board with an edit that

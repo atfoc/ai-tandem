@@ -1,29 +1,8 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bannerFor, runningChats, restartConfirmText } from "../src/logic/version.ts";
+import { runningChats, restartConfirmText } from "../src/logic/version.ts";
 import type { Status } from "../src/types.ts";
-
-test("bannerFor: all equal → none", () => {
-  assert.equal(bannerFor("v1", "v1", "v1"), "none");
-});
-
-test("bannerFor: any of the three dev → none", () => {
-  assert.equal(bannerFor("dev", "v1", "v2"), "none");
-  assert.equal(bannerFor("v1", "dev", "v2"), "none");
-  assert.equal(bannerFor("v1", "v2", "dev"), "none");
-  assert.equal(bannerFor("dev", "dev", "dev"), "none");
-});
-
-test("bannerFor: page = disk ≠ server → restart", () => {
-  assert.equal(bannerFor("v2", "v1", "v2"), "restart");
-});
-
-test("bannerFor: page ≠ disk → reload", () => {
-  assert.equal(bannerFor("v1", "v2", "v2"), "reload"); // page ≠ disk = server: the server was replaced
-  assert.equal(bannerFor("v1", "v1", "v2"), "reload"); // page = server ≠ disk
-  assert.equal(bannerFor("v1", "v2", "v3"), "reload"); // all different
-});
 
 test("runningChats counts thinking, writing, tool and approval", () => {
   const chats: { status: Status }[] = [
@@ -39,9 +18,6 @@ test("runningChats counts thinking, writing, tool and approval", () => {
   assert.equal(runningChats([{ status: "ready", working: 1, approvals: 1 } as { status: Status; working: number }]), 1);
 });
 
-// src/logic/version.ts:30 still tells a chat of another server by a `server` field (`!c.server`), which no chat has any
-// more: a chat's key names its server (logic/keys.ts). So a working chat
-// of a section is counted among the chats this restart ends.
 test("runningChats counts no chat of a section: its turns are not this server's to end", () => {
   assert.equal(runningChats([{ id: "s_1~c_1", status: "writing" }, { id: "s_1~c_2", status: "ready", subsRunning: 2 }]), 0);
   assert.equal(runningChats([{ id: "s_1~c_1", status: "ready" }, { id: "c_1", status: "tool" }], (chat) => (chat === "s_1~c_1" ? [{ status: "thinking" }] : [])), 1, "the local chat with the same id counts");
@@ -72,6 +48,11 @@ test("runningChats counts an idle chat whose subagents run, not one that only ho
 test("restartConfirmText", () => {
   assert.equal(restartConfirmText(2), "Restart ends 2 running agent chats.");
   assert.equal(restartConfirmText(1), "Restart ends 1 running agent chat.");
+});
+
+test("the restart is the app's owner thing, and the page is not loaded again after it", () => {
+  const src = readFileSync(new URL("../src/version.ts", import.meta.url), "utf8");
+  assert.ok(src.includes('"owner.restart"') && !src.includes("location.reload"));
 });
 
 test("the restart confirmation counts the chats the store has through runningChats", () => {

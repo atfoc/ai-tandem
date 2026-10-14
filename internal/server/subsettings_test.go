@@ -2,14 +2,11 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
-	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/remotes"
 )
 
 // A chat's subagent settings on the wire: "subDepth" and "subCap" of PATCH /api/chats/{id}, from
@@ -78,7 +75,7 @@ func TestChatPatchSubSettings(t *testing.T) {
 	if got := defaults.Sub(d, model.Ungrouped); got != (model.SubLimits{Depth: 2, Cap: 1}) {
 		t.Fatalf("the sticky settings: %+v", got)
 	}
-	if raw, _ := json.Marshal(e.a.Snapshot()); !strings.Contains(string(raw), `"subagents":{"depth":2,"cap":1}`) {
+	if raw, _ := json.Marshal(e.a.APISnapshot()); !strings.Contains(string(raw), `"subagents":{"depth":2,"cap":1}`) {
 		t.Fatalf("the snapshot's defaults lack the settings: %s", raw)
 	}
 	if next := e.chat(`{"agent":"cursor","group":"__ungrouped__"}`); next.SubLimits() != (model.SubLimits{Depth: 2, Cap: 1}) {
@@ -184,93 +181,5 @@ func TestSubSettingsOfAnAPIClientsChat(t *testing.T) {
 	do(t, x, "POST", path+"/messages", obj{"text": "the first message"})
 	if status, out := x.Do("PATCH", path, `{"subDepth":2}`); status != 409 {
 		t.Fatalf("an API client's change of a started chat: %d %s", status, out)
-	}
-}
-
-// TestSubSettingsReachTheOtherServer: between two real stacks. A chat of B's section is made on
-// B at once; its settings are changed from A's page, on B, where the chat is, and B remembers
-// the choice for the chat's group, as it does for its own page. A second chat in that group,
-// which names nothing, starts with what B remembers. A remembers nothing for B.
-func TestSubSettingsReachTheOtherServer(t *testing.T) {
-	t.Parallel()
-	pr := newPair(t, remotes.Limits{})
-	a, b := pr.a, pr.b
-	p := a.page("P")
-	group := decode[obj](t, string(do(t, p, "POST", pr.on("/groups"), obj{"name": "Work", "parent": ""})))["id"].(string)
-	chosen := model.SubLimits{Depth: 0, Cap: 7}
-	sticky := func(e *env) (out map[string]model.SubLimits) {
-		out = map[string]model.SubLimits{}
-		e.st.Read(func(s *model.State) {
-			for g, gd := range s.Defaults.Groups {
-				for key, sd := range gd.Servers {
-					if sd.Subagents != nil {
-						out[g+" on "+key] = *sd.Subagents
-					}
-				}
-			}
-		})
-		return out
-	}
-
-	first := decode[model.ChatView](t, string(do(t, p, "POST", pr.on("/chats"), obj{"agent": "claude", "group": group})))
-	if first.Locked || first.SubLimits() != model.DefaultSubLimits() {
-		t.Fatalf("the new chat: %+v", first)
-	}
-	// The chat is on B from the start, and is no chat of A: the change is made on B.
-	if there, err := b.a.Chats.View(first.ID); err != nil || there.Locked || there.SubLimits() != model.DefaultSubLimits() {
-		t.Fatalf("the chat on B before its first message: %+v, %v", there, err)
-	}
-	if _, err := a.a.Chats.View(first.ID); !errors.Is(err, chats.ErrNotFound) {
-		t.Fatalf("the new chat is a chat of A: %v", err)
-	}
-	ans := decode[struct{ Chat model.ChatView }](t, string(do(t, p, "PATCH", pr.on("/chats/"+first.ID), obj{"subDepth": 0, "subCap": 7})))
-	if ans.Chat.SubLimits() != chosen || !ans.Chat.SubOff || ans.Chat.Locked {
-		t.Fatalf("the chat after the change: %+v", ans.Chat)
-	}
-	if there, err := b.a.Chats.View(first.ID); err != nil || there.SubLimits() != chosen || !there.SubOff {
-		t.Fatalf("the chat on B after the change: %+v, %v", there, err)
-	}
-	// A value outside the range is B's to refuse: its answer, as it came.
-	if status, out := p.Do("PATCH", pr.on("/chats/"+first.ID), `{"subDepth":99}`); status != 400 {
-		t.Fatalf("a depth outside the range: %d %s", status, out)
-	}
-
-	for i, id := range []string{first.ID, ""} {
-		if id == "" { // the second chat: it names nothing, and starts with what B remembers for the group
-			next := decode[model.ChatView](t, string(do(t, p, "POST", pr.on("/chats"), obj{"agent": "claude", "group": group})))
-			if next.SubLimits() != chosen {
-				t.Fatalf("the next new chat on B: %+v", next.SubLimits())
-			}
-			id = next.ID
-			if there, err := b.a.Chats.View(id); err != nil || there.Locked || there.SubLimits() != chosen {
-				t.Fatalf("the next new chat, on B: %+v, %v", there, err)
-			}
-		}
-		do(t, p, "POST", pr.on("/chats/"+id+"/messages"), obj{"text": "hello"})
-		there, err := b.a.Chats.View(id)
-		if err != nil || !there.Locked || there.SubLimits() != chosen || !there.SubOff {
-			t.Fatalf("chat %d on B: %+v, %v", i, there, err)
-		}
-		// On A the chat is no chat of its own, and B's section shows what B says.
-		if _, err := a.a.Chats.View(id); !errors.Is(err, chats.ErrNotFound) {
-			t.Fatalf("chat %d is a chat of A: %v", i, err)
-		}
-		pr.wait("A shows the started chat with B's settings", func() bool {
-			status, out := p.Do("GET", pr.on("/chats/"+id), "")
-			v := decode[model.ChatView](t, string(out))
-			return status == 200 && v.Locked && v.SubOff && v.SubLimits() == chosen
-		})
-		// The settings of a chat that has started are fixed: B says so.
-		if status, out := p.Do("PATCH", pr.on("/chats/"+id), `{"subDepth":2}`); status != 409 || !strings.Contains(string(out), chats.ErrSubFixed.Error()) {
-			t.Fatalf("a change of the started chat %d: %d %s", i, status, out)
-		}
-	}
-
-	// B remembers the choice for the group, as its own; A remembers nothing for B.
-	if got := sticky(b); len(got) != 1 || got[group+" on "+model.LocalServer] != chosen {
-		t.Fatalf("B's sticky settings after the chats of A's page: %+v", got)
-	}
-	if got := sticky(a); len(got) != 0 {
-		t.Fatalf("A's sticky settings: %+v", got)
 	}
 }

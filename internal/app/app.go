@@ -1,7 +1,5 @@
 // Package app ties the stores together: groups and their subgroups, moves, and the archive /
-// unarchive / delete cascades across groups, boards and chats. All of it is this
-// computer's own: of another server the snapshot holds the tree the relay has in memory
-// (Snapshot.Sections), and nothing here reaches into it.
+// unarchive / delete cascades across groups, boards and chats. All of it is this server's own.
 package app
 
 import (
@@ -14,13 +12,10 @@ import (
 
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
-	"ai-whiteboard/internal/claude"
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/library"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/remotes"
-	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/store"
 	"ai-whiteboard/internal/usable"
 )
@@ -31,11 +26,7 @@ type App struct {
 	Chats  *chats.Manager
 	Bridge *editorbridge.Bridge
 
-	// Servers is the list of remote servers; nil: this computer alone.
-	Servers *servers.Manager
-	// Remotes holds, in memory, the tree of each of those servers that is connected; nil: none.
-	Remotes *remotes.Relay
-	// Library is this computer's prompt library (see library.go); nil: none.
+	// Library is this server's prompt library (see library.go); nil: none.
 	Library *library.Store
 
 	Agents *usable.Set // nil: every kind of agent is usable
@@ -46,72 +37,10 @@ type App struct {
 	DataDir    string // the data folder (~/.ai-whiteboard)
 }
 
-type Snapshot struct {
-	Groups     []model.Group                      `json:"groups"`
-	Boards     []model.Board                      `json:"boards"`
-	Servers    []servers.View                     `json:"servers"`
-	Chats      []model.ChatView                   `json:"chats"`
-	States     []model.BranchState                `json:"states"` // one per branch of every chat in Chats, main included
-	Lists      map[string]remotes.ServerLists     `json:"lists"`  // what each other server offers for a new chat, by entry id; never nil
-	Defaults   model.Defaults                     `json:"defaults"`
-	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"`
-	Agents     []model.AgentKind                  `json:"agents"` // the agents this server can start, never nil
-	Home       string                             `json:"home"`
-	DefaultCwd string                             `json:"defaultCwd"`
-	DataDir    string                             `json:"dataDir"`
-	// Libraries is the prompt libraries, this computer's first (see library.go); never nil.
-	Libraries []library.View `json:"libraries"`
-	// Sections is the tree of every other server that is connected and whose snapshot was read,
-	// by entry id: its groups, boards, chats, branch states and defaults, as that server
-	// has them. An entry in any other state has no key. Never nil. Groups, Boards, Chats, States
-	// and Defaults above are this computer's own and hold nothing of another server.
-	Sections map[string]remotes.Tree `json:"sections"`
-}
-
 var (
 	ErrGroupNotFound = errors.New("no such group")
 	ErrGroupArchived = errors.New("the group is archived")
 )
-
-// Snapshot: groups, defaults and catalogs from the store; boards from Boards.List; chats and their
-// branches' states from Chats; the prompt libraries from Libraries; the lists and the trees of the
-// other servers from Remotes. They are read one after the other, not at one moment.
-func (a *App) Snapshot() Snapshot {
-	cl := claude.Catalog
-	snap := Snapshot{
-		Catalogs: map[model.AgentKind]*model.Catalog{
-			model.Claude: &cl,
-			model.Cursor: nil, // known only after Cursor reports its list
-			model.Pi:     nil, // known only after pi reports its list
-		},
-		Agents:     a.Agents.List(),
-		Home:       a.Home,
-		DefaultCwd: a.DefaultCwd,
-		DataDir:    a.DataDir,
-	}
-	a.St.Read(func(s *model.State) {
-		snap.Groups = append([]model.Group{}, s.Groups...)
-		snap.Defaults = defaults.Copy(s.Defaults)
-		for _, kind := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
-			if c := s.Catalog(kind); c != nil {
-				cp := *c
-				snap.Catalogs[kind] = &cp
-			}
-		}
-	})
-	snap.Boards = a.Boards.List()
-	snap.Servers = a.Servers.Views()
-	snap.Libraries = a.Libraries()
-	snap.Chats = a.Chats.Views()
-	snap.States = a.Chats.States()
-	snap.Lists = map[string]remotes.ServerLists{}
-	snap.Sections = map[string]remotes.Tree{}
-	if a.Remotes != nil {
-		snap.Lists = a.Remotes.Lists()
-		snap.Sections = a.Remotes.Sections()
-	}
-	return snap
-}
 
 // ---- broadcasting ---------------------------------------------------------
 
@@ -219,8 +148,8 @@ func (a *App) CreateGroup(name, parent string) (model.Group, error) {
 	return g, nil
 }
 
-// UpdateGroup renames (trimmed, non-empty) and/or collapses a group. nil leaves a field alone.
-func (a *App) UpdateGroup(id string, name *string, collapsed *bool) error {
+// UpdateGroup renames a group (trimmed, non-empty). nil leaves the name alone.
+func (a *App) UpdateGroup(id string, name *string) error {
 	var n string
 	if name != nil {
 		n = strings.TrimSpace(*name)
@@ -232,37 +161,6 @@ func (a *App) UpdateGroup(id string, name *string, collapsed *bool) error {
 		if name != nil {
 			g.Name = n
 		}
-		if collapsed != nil {
-			g.Collapsed = *collapsed
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	a.broadcastGroups()
-	return nil
-}
-
-// ReorderGroups puts the groups in the order of ids, which must be a permutation of the group ids.
-func (a *App) ReorderGroups(ids []string) error {
-	if err := a.St.Update(func(s *model.State) error {
-		if len(ids) != len(s.Groups) {
-			return errors.New("the order must list every group exactly once")
-		}
-		byID := make(map[string]model.Group, len(s.Groups))
-		for _, g := range s.Groups {
-			byID[g.ID] = g
-		}
-		out := make([]model.Group, 0, len(ids))
-		for _, id := range ids {
-			g, ok := byID[id]
-			if !ok {
-				return errors.New("the order must list every group exactly once")
-			}
-			delete(byID, id)
-			out = append(out, g)
-		}
-		s.Groups = out
 		return nil
 	}); err != nil {
 		return err

@@ -25,19 +25,14 @@ const (
 	PerBoard
 )
 
-// Rule is one row of the event table. PagesOnly types reach no client of another kind: route
-// does not read the field, the other kind's allow-list (APIEvents) leaves these types out, and a
-// test holds the two tables together. APIOnly types are the reverse: they are in APIEvents and
-// no page is sent one.
+// Rule is one row of the event table.
 type Rule struct {
-	Class     Class
-	Per       Per
-	PagesOnly bool
-	APIOnly   bool
+	Class Class
+	Per   Per
 }
 
 // Events is the event table: every type a server sends, by its "type". Broadcast, SendChat
-// and SendBoard route by it. A type that is missing here goes to every page, and is logged.
+// and SendBoard route by it. A type that is missing here goes to no client, and is logged.
 var Events = map[string]Rule{
 	"hello":           {Class: Role},
 	"snapshot":        {Class: Role},
@@ -53,19 +48,9 @@ var Events = map[string]Rule{
 	"board_removed": {Class: List, Per: PerBoard},
 	"catalog":       {Class: List},
 	"agents":        {Class: List},
-	"servers":       {Class: List, PagesOnly: true},
-	"server_state":  {Class: List, PagesOnly: true},
-	"server_lists":  {Class: List, PagesOnly: true},
-	// The whole tree of another server, or null once this server holds none of it (package
-	// remotes). The events of a thing in such a tree are the types of this table with one more
-	// field, "server": SendChatOn, SendBoardOn and BroadcastOn send them, to pages alone.
-	"section": {Class: List, PagesOnly: true},
 
-	// The prompt libraries (package library): a page gets the library of every server it shows,
-	// an API client this server's own and nothing of the others.
-	"library":         {Class: List, PagesOnly: true},
-	"library_removed": {Class: List, PagesOnly: true},
-	"own_library":     {Class: List, APIOnly: true},
+	// This server's prompt library (package library).
+	"own_library": {Class: List},
 
 	"chat":         {Class: List, Per: PerChat},
 	"chat_removed": {Class: List, Per: PerChat},
@@ -76,50 +61,14 @@ var Events = map[string]Rule{
 	"sub_items":    {Class: Content, Per: PerChat},
 }
 
-// APIEvents is the allow-list of an API client: the list and content types it is sent at all.
-// A type added to Events alone reaches no API client. An API client is sent the list types of
-// everything the server has, as a page is: the server's whole tree is every client's.
-var APIEvents = map[string]bool{
-	"groups": true, "defaults": true,
-	"chat": true, "chat_items": true, "chat_removed": true, "branch_state": true, "tree": true,
-	"sub": true, "sub_items": true, "catalog": true, "agents": true,
-	"board": true, "board_removed": true,
-	"own_library": true,
-}
-
 // Item names a chat or a board: what a client follows and what a per-item event is about.
-// Server is "" for an item of this server, and for one of another server the id of its entry of
-// the server list: an id is unique on one server only, so the two values together name the item.
-type Item struct{ Kind, ID, Server string }
+type Item struct{ Kind, ID string }
 
 // Chat is the item of a top-level chat.
 func Chat(id string) Item { return Item{Kind: "chat", ID: id} }
 
 // Board is the item of a board. It is not followed.
 func Board(id string) Item { return Item{Kind: "board", ID: id} }
-
-// ChatOn is the item of a top-level chat of another server, the entry server.
-func ChatOn(server, id string) Item { return Item{Kind: "chat", ID: id, Server: server} }
-
-// BroadcastOn sends ev, an event of the section of the entry server that is about no chat and
-// no board ("groups", "defaults"), to every page. Like every event of a section it
-// reaches no client of another kind: a section is not part of this server's tree. The caller has
-// put "server" into ev. It never blocks.
-func (b *Bridge) BroadcastOn(server string, ev any) {
-	b.route(ev, PerNone, Item{Server: server}, false)
-}
-
-// SendChatOn is SendChat for the chat of another server, the entry server: a list event goes to
-// every page, a content event and every event of an unlisted chat to the pages that follow
-// ChatOn(server, chat). The caller has put "server" into ev.
-func (b *Bridge) SendChatOn(server, chat string, unlisted bool, ev any) {
-	b.route(ev, PerChat, ChatOn(server, chat), unlisted)
-}
-
-// SendBoardOn is SendBoard for the board of another server, the entry server: to every page.
-func (b *Bridge) SendBoardOn(server, board string, ev any) {
-	b.route(ev, PerBoard, Item{Kind: "board", ID: board, Server: server}, false)
-}
 
 // Broadcast sends ev, an event about no chat and no board, to the clients its type is for. It
 // never blocks.
@@ -132,7 +81,7 @@ func (b *Bridge) SendChat(chat string, ev any) {
 	b.route(ev, PerChat, Chat(chat), false)
 }
 
-// SendBoard sends ev, an event of the board with this id: to every page and every API client.
+// SendBoard sends ev, an event of the board with this id: to every client.
 // It never blocks.
 func (b *Bridge) SendBoard(board string, ev any) {
 	b.route(ev, PerBoard, Board(board), false)
@@ -140,8 +89,8 @@ func (b *Bridge) SendBoard(board string, ev any) {
 
 // route marshals ev once and queues it for the clients the table names. per and it say which
 // send function was called: a type of no item goes by its class whichever that was; a type of
-// another kind of item, a role type and a type outside the table go to every page and to no
-// other kind, so that a mistake shows as too much and never as a stale page.
+// another kind of item, a role type and a type outside the table go to no client, and are logged
+// once.
 func (b *Bridge) route(ev any, per Per, it Item, unlisted bool) {
 	msg, err := json.Marshal(ev)
 	if err != nil {
@@ -156,20 +105,11 @@ func (b *Bridge) route(ev any, per Per, it Item, unlisted bool) {
 	if !fits {
 		if !b.logged[typ] {
 			b.logged[typ] = true
-			log.Printf("editorbridge: event %q was sent outside the event table: it goes to every page", typ)
-		}
-		for _, c := range b.clients {
-			if c.kind == KindPage {
-				b.sendRawLocked(c, msg)
-			}
+			log.Printf("editorbridge: event %q was sent outside the event table: it goes to no client", typ)
 		}
 		return
 	}
 	for _, c := range b.clients {
-		k := b.kinds[c.kind]
-		if !k.allow(typ) || (it.Server != "" && c.kind != KindPage) {
-			continue
-		}
 		if rule.Per != PerNone && (rule.Class == Content || unlisted) && !c.follows[it] {
 			continue
 		}
@@ -231,70 +171,9 @@ func (b *Bridge) Follow(clientID string, it Item) bool {
 func (b *Bridge) Unfollow(clientID string, it Item) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if c := b.clients[clientID]; c != nil && c.follows[it] {
+	if c := b.clients[clientID]; c != nil {
 		delete(c.follows, it)
-		b.unfollowedLocked([]Item{it})
 	}
-}
-
-// FollowAs is Follow for a caller of a known kind: when clientID's record is of another kind it
-// does nothing and returns false.
-func (b *Bridge) FollowAs(kind Kind, clientID string, it Item) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	c := b.clients[clientID]
-	if c == nil || c.kind != kind {
-		return false
-	}
-	c.follows[it] = true
-	return true
-}
-
-// UnfollowAs is Unfollow under the same rule.
-func (b *Bridge) UnfollowAs(kind Kind, clientID string, it Item) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if c := b.clients[clientID]; c != nil && c.kind == kind && c.follows[it] {
-		delete(c.follows, it)
-		b.unfollowedLocked([]Item{it})
-	}
-}
-
-// OnUnfollowed is called, never under the bridge's lock and from a goroutine of its own, with the
-// items that lost their last follower by Unfollow or by a stream's end. Not by Forget.
-//
-// A follower is a client of any kind. There is one call for each Unfollow, UnfollowAs or ended
-// record that left an item with no follower, and none with an empty list. The calls of two such
-// events may run in either order, and an item may be followed again by the time f runs: f asks
-// Followed for what holds now. Nil sets no hook.
-func (b *Bridge) OnUnfollowed(f func(items []Item)) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.unfollowed = f
-}
-
-// unfollowedLocked hands the hook those of items, whose follows of one client just ended, that
-// no client follows now.
-func (b *Bridge) unfollowedLocked(items []Item) {
-	if b.unfollowed == nil {
-		return
-	}
-	var lost []Item
-	for _, it := range items {
-		if !b.followedLocked(it) {
-			lost = append(lost, it)
-		}
-	}
-	if len(lost) == 0 {
-		return
-	}
-	sort.Slice(lost, func(i, j int) bool {
-		if lost[i].Kind != lost[j].Kind {
-			return lost[i].Kind < lost[j].Kind
-		}
-		return lost[i].ID < lost[j].ID
-	})
-	go b.unfollowed(lost)
 }
 
 // Followers returns the ids of the clients that follow it, sorted.
@@ -338,23 +217,5 @@ func (b *Bridge) Forget(it Item) {
 func (b *Bridge) forgetLocked(it Item) {
 	for _, c := range b.clients {
 		delete(c.follows, it)
-	}
-}
-
-// ForgetServer drops every follow of an item of another server, the entry server: this server
-// holds that server's tree no more, and that server forgot the follows with the stream. Like
-// Forget it calls no hook.
-func (b *Bridge) ForgetServer(server string) {
-	if server == "" {
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, c := range b.clients {
-		for it := range c.follows {
-			if it.Server == server {
-				delete(c.follows, it)
-			}
-		}
 	}
 }

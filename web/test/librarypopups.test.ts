@@ -11,15 +11,19 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { fakeStream } from "./fixtures/stream.ts";
 
-let source: { onmessage?: (e: { data: string }) => void } | undefined;
-(globalThis as any).EventSource = class { onmessage?: (e: { data: string }) => void; constructor() { source = this; } close() {} };
+const stream = fakeStream();
 
 const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const src = path.join(web, "src");
 const nothing = `module.exports = new Proxy({}, { get: (_, k) => (k === "__esModule" ? false : k === "clientId" ? "test" : () => {}) });`;
+const names = (...ns: string[]) => ns.map((n) => `export const ${n} = () => {};`).join("\n");
 const stubs: Record<string, string> = {
-  "./board.ts": nothing, "./version.ts": nothing, "./api.ts": nothing, "./fork/actions.ts": nothing,
+  // (what conn.ts asks of the board layer and of the fork actions when a snapshot comes)
+  "./board.ts": names("runTool", "flushAll", "boardLost", "granted", "handOver", "streamOpened", "takeAfterSnapshot", "sectionBack", "forgetBoard", "boardUnsaved"),
+  "./fork/actions.ts": `${names("checkMove", "goBack", "moveSent")} export const dropMoves = () => [];`,
+  "./version.ts": nothing, "./api.ts": nothing,
   "./store.ts": `
     export * from ${JSON.stringify(path.join(src, "store.ts"))};
     import { getState } from ${JSON.stringify(path.join(src, "store.ts"))};
@@ -28,7 +32,7 @@ const stubs: Record<string, string> = {
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-library-")), "library.mjs");
 await esbuild.build({
   stdin: {
-    contents: `export * as ui from "./Library.tsx"; export * as store from "./store.ts"; export * as conn from "./conn.ts"; export * as insert from "./logic/insert.ts";
+    contents: `export * as ui from "./Library.tsx"; export * as store from "./store.ts"; export * as conn from "./conn.ts"; export * as tr from "./transport/index.ts"; export * as insert from "./logic/insert.ts";
       export { createElement } from "react"; export { renderToStaticMarkup } from "react-dom/server";`,
     resolveDir: src, loader: "ts",
   },
@@ -42,12 +46,13 @@ await esbuild.build({
     },
   }],
 });
-const { ui, store, conn, insert, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
+const { ui, store, conn, tr, insert, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
+tr.useTransport(stream.transport);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 const html = (): string => renderToStaticMarkup(createElement(ui.LibraryPopups));
 const tick = () => new Promise((r) => setTimeout(r, 0));
-async function ev(m: Record<string, unknown>) { source!.onmessage!({ data: JSON.stringify(m) }); await tick(); }
+async function ev(m: Record<string, unknown>) { stream.push(m, { servers: store.getState().servers, sections: Object.keys(store.getState().sections) }); await tick(); }
 
 const EVIL = "<img src=x onerror=1>", ESCAPED = "&lt;img src=x onerror=1&gt;";
 const LOCAL = { id: "local", local: true, name: "This computer", state: "connected" };
@@ -58,8 +63,6 @@ const p = (id: string, name: string, parent = "", text = "Text of " + name) => (
 const lib = (server: string, name: string, o: Record<string, unknown> = {}) => ({ server, name, connected: true, groups: [], prompts: [], ...o });
 const MINE = lib("local", "This computer", { groups: [g("g_git", "git")], prompts: [p("p_review", "review", "g_git"), p("p_scratch", "scratch")] });
 const THEIRS = lib("s_studio", "Studio", { groups: [g("g_team", "team")], prompts: [p("p_stand", "standup", "g_team")] });
-// (a snapshot is given to the store as conn.ts gives it: what else conn.ts does with one is the board's and the threads')
-const snapshot = (o: Record<string, unknown> = {}) => store.applySnapshot({ groups: [], boards: [], chats: [], defaults: { groups: {} }, catalogs: {}, home: "", defaultCwd: "", dataDir: "", ...o });
 /** The texts of the elements with a class, in the order of the page. */
 const texts = (h: string, cls: string): string[] => [...h.matchAll(new RegExp(`<(\\w+)[^>]*class="[^"]*\\b${cls}\\b[^"]*"[^>]*>(.*?)</\\1>`, "g"))].map((m) => m[2].replace(/<[^>]*>/g, ""));
 /** The prompts of a list as it shows them: each one's path and name. */
@@ -74,36 +77,55 @@ const target = () => { const t = { said: [] as string[], insert(text: string) { 
 conn.connect();
 beforeEach(() => { store.setState({ servers: [LOCAL], libraries: [], libraryDialog: null, insertPopup: null, serversDialog: null, confirm: null }); });
 
-test("the stream keeps the libraries: the snapshot's list, one library with each event, none of a server that left", async () => {
+const own = (o: Record<string, unknown> = {}) => ({ type: "snapshot", groups: [], boards: [], chats: [], states: [], defaults: { groups: {} }, catalogs: {}, home: "", defaultCwd: "", ...o });
+const tree = () => ({ groups: [], boards: [], chats: [], states: [], defaults: { groups: {} } });
+
+test("the stream keeps the libraries: each server's snapshot gives its library, an event of it the whole library again, none of a server that left", async () => {
   assert.deepEqual(store.getState().libraries, []);
-  snapshot({ servers: [LOCAL, STUDIO], libraries: [MINE, THEIRS] });
+  await ev({ type: "servers", servers: [LOCAL, STUDIO], notice: "" });
+  await ev(own({ libraries: [MINE, THEIRS], servers: [LOCAL, STUDIO], sections: { s_studio: tree() } }));
   assert.deepEqual(servers(), ["local", "s_studio"]);
+  assert.deepEqual(store.getState().libraries.map((v: { name: string }) => v.name), ["This computer", "Studio"], "each under the name the server list has");
   // one library, whole: its place in the list is kept, the others are the objects they were
   const before = store.getState().libraries[0];
   await ev({ type: "library", library: { ...THEIRS, prompts: [p("p_stand", "standup", "g_team", "Changed by its owner.")] } });
   assert.deepEqual(servers(), ["local", "s_studio"]);
   assert.equal(store.getState().libraries[1].prompts[0].text, "Changed by its owner.");
+  assert.equal(store.getState().libraries[1].connected, true);
   assert.equal(store.getState().libraries[0], before);
   // a server that drops: its copy stays, marked
-  await ev({ type: "library", library: { ...THEIRS, connected: false } });
+  await ev({ type: "server_state", server: { ...STUDIO, state: "unreachable" } });
   assert.equal(store.getState().libraries[1].connected, false);
   assert.equal(store.getState().libraries[1].prompts.length, 1);
+  assert.equal(store.getState().libraries[0], before, "this computer's is not touched");
+  // a snapshot of the server that is back, without a library (a server without one): it has none
+  await ev({ type: "section", server: "s_studio", tree: tree() });
+  assert.deepEqual(servers(), ["local"], "a snapshot without a library gives none");
+  await ev({ type: "servers", servers: [LOCAL, STUDIO, OFFICE], notice: "" });
+  await ev(own({ libraries: [MINE, THEIRS], servers: [LOCAL, STUDIO, OFFICE], sections: { s_studio: tree() } }));
+  assert.deepEqual(servers(), ["local", "s_studio"]);
+  assert.equal(store.getState().libraries[1].connected, true);
   // a library the page did not have is added
   await ev({ type: "library", library: lib("s_office", "Office") });
   assert.deepEqual(servers(), ["local", "s_studio", "s_office"]);
-  // a server that left the list takes its library with it; one the page has not is no error
-  await ev({ type: "library_removed", server: "s_studio" });
-  await ev({ type: "library_removed", server: "s_never" });
+  // a server that left the list takes its library with it
+  await ev({ type: "servers", servers: [LOCAL, OFFICE], notice: "" });
   assert.deepEqual(servers(), ["local", "s_office"]);
-  // an event that names no library changes nothing
-  await ev({ type: "library" });
-  await ev({ type: "library_removed" });
+  // the next snapshot of a server replaces its library; one without a library (a server without one) has none, and that is no error
+  await ev(own({ libraries: [MINE] }));
   assert.deepEqual(servers(), ["local", "s_office"]);
-  // the next snapshot replaces the list; a server built before the feature sends none, and that is no error
-  snapshot({ libraries: [MINE] });
-  assert.deepEqual(servers(), ["local"]);
-  snapshot();
-  assert.deepEqual(store.getState().libraries, []);
+  await ev(own());
+  assert.deepEqual(servers(), ["s_office"]);
+});
+
+test("the notice of a library set aside comes with the server's snapshot and stays with its library", async () => {
+  await ev({ type: "servers", servers: [LOCAL], notice: "" });
+  await ev(own({ libraries: [MINE], libraryNotice: "The library file was set aside." }));
+  assert.equal(store.getState().libraries[0].notice, "The library file was set aside.");
+  await ev({ type: "library", library: { ...MINE, prompts: [] } });
+  assert.equal(store.getState().libraries[0].notice, "The library file was set aside.", "an own_library event is the library whole and brings no notice: the snapshot's stays");
+  await ev(own({ libraries: [MINE] }));
+  assert.equal("notice" in store.getState().libraries[0], false);
 });
 
 test("both popups are closed until they are opened, and the sidebar's button says what it opens", () => {

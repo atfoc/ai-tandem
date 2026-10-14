@@ -8,15 +8,22 @@
 //   cd web && npm install --no-save playwright && npx playwright install chromium
 //   node web/e2e/app.e2e.mjs
 //
-// Stop any running AI Whiteboard app first: the default run needs port 6006 exclusively for the
+// Stop any running AI Whiteboard app and server first: the default run needs port 6006 exclusively for the
 // real-Cursor MCP steps (Cursor's org allowlist approves only http://localhost:6006/mcp). If 6006
 // is taken, the run fails fast with an explicit message instead of timing out.
+//
+// The pages are served by the test host (web/dev/host.mjs), which does for the page what the app's main process does: it
+// finds or starts the server with the server program (--local-bin), holds the secret, and passes the page's calls, events
+// and pictures on over HTTPS with the pinned certificate. A restart of the server in a step (steps 1, 7, 11, 20, 25, 26) is
+// made with the host closed, so that the app does not start the server again by itself with the old environment, and the
+// host opened anew on the same port, so that the page's stream reconnects. The server is set up once (`remote setup`) before
+// its first start, as a user does it.
 //
 // Environment (all optional):
 //   AIWB_E2E_BIN     server binary        (default bin/ai-whiteboard)
 //   AIWB_E2E_CLIENT  built web client     (default web/dist)
 //   AIWB_E2E_HOME    data folder          (default a new temp folder)
-//   AIWB_E2E_PORT    app port             (default 4749)
+//   AIWB_E2E_PORT    the server's client port (default a free one)
 //   AIWB_E2E_SKIP_CURSOR_MCP=1  skip the real-Cursor-over-MCP steps (reported as skipped, never
 //                               silently dropped) and start the app on the hidden test-only MCP
 //                               port override, so a normal app instance may keep 6006.
@@ -88,18 +95,18 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { Scratch, callOf, hostApp, hostCall, hostFor, portFree } from "./lib/rig.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const BIN = path.resolve(process.env.AIWB_E2E_BIN || path.join(repo, "bin/ai-whiteboard"));
 const CLIENT = path.resolve(process.env.AIWB_E2E_CLIENT || path.join(repo, "web/dist"));
 const HOME = path.resolve(process.env.AIWB_E2E_HOME || fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-home-")));
-const PORT = Number(process.env.AIWB_E2E_PORT || 4749);
-const BASE = `http://127.0.0.1:${PORT}`;
+const PORT = Number(process.env.AIWB_E2E_PORT || 0); // the server's client port; 0: a free one, found at the set-up
 
 // Everything the run makes besides the data folder: work folders, screenshots, the server log.
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-run-"));
 const WORK = path.join(OUT, "work");
-const LOG = path.join(OUT, "server.log");
+const LOG = path.join(HOME, "server.log"); // the server's own log (`launch` writes it)
 const dir = (...p) => { const d = path.join(WORK, ...p); fs.mkdirSync(d, { recursive: true }); return d; };
 // Step 18's long-running subagent loops in a shell until this file exists; the run makes it once
 // the Stop part is over, and again at the end, so a loop that outlived a failed run ends by itself.
@@ -195,46 +202,59 @@ async function skipStep(n, title, reason) {
   log(`    SKIPPED: ${reason}`);
 }
 
-// ---------------------------------------------------------------- server
+// ---------------------------------------------------------------- server and host
 
-let server = null;
+let S = null; // the server: a Scratch of rig.mjs with the real agents (flags: the work folder alone) and the data folder of the run
+let host = null; // the test host: the app's main process, for the pages
+let probe = null, probeEntry = ""; // the script's own client of the server: another app (a host with no page), always connected, which reads what the checks read and holds no board
+let hostPort = 0;
 let serverEnv = process.env;
+let wrapper = null;
 
-function serverArgs() { return ["-home", HOME, "-port", String(PORT), "-client", CLIENT]; }
+const serverPid = () => S?.info?.pid ?? 0;
+const serverUp = async () => !!S?.port && !(await portFree(S.port));
 
-async function hello() {
-  try {
-    const r = await fetch(`${BASE}/api/hello`, { signal: AbortSignal.timeout(1000) });
-    return r.ok ? await r.json() : null;
-  } catch { return null; }
+/** The host of the pages, on the same port as before (a page's stream reconnects to it by itself). */
+async function openHost() {
+  host = await hostFor({ out: OUT, name: "app", local: S, wrapper, extra: { dist: CLIENT, ...(hostPort ? { port: hostPort } : {}) } });
+  hostPort = host.port;
+}
+async function closeHost() { await host?.close().catch(() => {}); host = null; }
+
+/** The script's own reader of the server: a host of its own (another client) with the server in its list, subscribed for as long as the run goes,
+ *  so that a read does not depend on a page being open. It connects again by itself after a restart of the server. */
+async function openProbe() {
+  if (probe) return;
+  probe = await hostFor({ out: OUT, name: "probe", extra: { dist: CLIENT } });
+  const added = await hostApp(probe, "servers.add", { force: true, form: { name: "This server", address: `https://127.0.0.1:${S.port}`, secret: S.secret, selfSigned: true, pin: S.fingerprint } });
+  probeEntry = added.json?.server?.id;
+  if (!probeEntry) throw new Error(`the probe could not add the server: ${JSON.stringify(added)}`);
+  probe.client.subscribe(() => {});
+  await waitFor("the probe is connected to the server", async () => (await hostCall(probe, probeEntry, "GET", "/api/state")).status === 200, { timeout: 60_000 });
 }
 
+/** Starts the server with the program's own command and opens the host of the pages. The set-up (the certificate, the secret, the
+ *  port) is made once, before the first start, as a user does it by hand. env: the environment of the server. */
 async function startServer(env = process.env) {
   serverEnv = env;
-  const fd = fs.openSync(LOG, "a");
-  fs.writeSync(fd, `\n---- start ${new Date().toISOString()}\n`);
-  const p = spawn(BIN, serverArgs(), { cwd: dir("default"), env, stdio: ["ignore", fd, fd] });
-  fs.closeSync(fd);
-  const exited = new Promise((r) => p.once("exit", (code, sig) => r({ code, sig })));
-  server = { p, exited };
-  await waitFor("the server answers /api/hello", async () => {
-    const h = await hello();
-    if (h?.app === "ai-whiteboard" && h.pid === p.pid) return h;
-    if (p.exitCode !== null) throw new Error(`server exited with ${p.exitCode}; log: ${tail(LOG)}`);
-    return null;
-  }, { timeout: 20_000 });
+  fs.appendFileSync(path.join(OUT, "steps.log"), `\n---- start ${new Date().toISOString()}\n`);
+  if (!S) {
+    S = new Scratch({ out: OUT, bin: BIN, tag: "e2e", name: "This computer", realAgents: true, envFn: () => ({ ...serverEnv, AIWB_REMOTE_BIND: "127.0.0.1" }) });
+    S.home = HOME; S.work = dir("default"); // (the data folder and the working folder of the run, not the scratch ones)
+    wrapper = S.wrapper();
+    await S.setUp(PORT || undefined);
+  }
+  try { await S.launch(); } catch (e) { throw new Error(`${e.message}; log: ${tail(LOG)}`); }
+  await openHost();
+  await openProbe();
 }
 
+/** Stops the server: the host is closed first (the app would start it again), then the program's `stop`; the port is free after. */
 async function stopServer() {
-  if (!server) return;
-  const s = server;
-  server = null;
-  if (s.p.exitCode === null && s.p.signalCode === null) {
-    s.p.kill("SIGTERM");
-    const r = await Promise.race([s.exited, sleep(10_000).then(() => null)]);
-    if (!r) { s.p.kill("SIGKILL"); await s.exited; }
-  }
-  await waitFor("the port is free after the server stops", async () => !(await hello()), { timeout: 10_000 });
+  if (!S) return;
+  await closeHost();
+  await S.stop();
+  await waitFor("the port is free after the server stops", async () => !(await serverUp()), { timeout: 10_000 });
 }
 
 function tail(file, n = 30) {
@@ -269,13 +289,12 @@ function firstCursorPrompt(logText) {
   return "";
 }
 
-// ---------------------------------------------------------------- HTTP API (functional checks only)
+// ---------------------------------------------------------------- client API (functional checks only), through the host
 
 async function get(p) {
-  const r = await fetch(BASE + p);
-  const body = await r.text();
-  if (!r.ok) throw new Error(`GET ${p}: ${r.status} ${body}`);
-  return JSON.parse(body);
+  const r = await hostCall(probe, probeEntry, "GET", p);
+  if (r.status < 200 || r.status > 299) throw new Error(`GET ${p}: ${r.status} ${r.text}`);
+  return r.json;
 }
 const state = () => get("/api/state");
 const chatView = (id) => get(`/api/chats/${id}`);
@@ -583,7 +602,7 @@ async function agentProcs() {
   let stay = null;
   for (let i = 0; i < 3; i++) {
     if (i) await sleep(300);
-    const now = new Set(procChildren().get(server.p.pid) ?? []);
+    const now = new Set(procChildren().get(serverPid()) ?? []);
     stay = stay ? stay.filter((pid) => now.has(pid)) : [...now];
   }
   return stay.filter((pid) => { const a = argsOf(String(pid)); return a && !/--no-session-persistence|sqlite3|cursor-cost/.test(a); });
@@ -604,17 +623,32 @@ function pathWithoutSqlite() {
 // ---------------------------------------------------------------- browser
 
 let browser, context;
-const clientIds = new WeakMap(); // page → the X-AIWB-Client its requests carry
 
+/** A page of the app (the host's), with this computer's server connected: its section of the sidebar says so. */
 async function openTab() {
   const page = await context.newPage();
-  page.on("request", (r) => { const id = r.headers()["x-aiwb-client"]; if (id) clientIds.set(page, id); });
   page.on("pageerror", (e) => log(`    [page error] ${e.message}`));
   page.on("console", (m) => { if (m.type() === "error") log(`    [console error] ${m.text()}`); });
-  await page.goto(BASE + "/");
+  await page.goto(host.url);
+  await connectedLocal(page);
   shotPage = page;
   return page;
 }
+/** Waits until this computer's section says that its server is connected (the host found or started it and read its snapshot). */
+const connectedLocal = (page, timeout = 90_000) => page.locator('.side-section[data-server="local"] .side-section-state', { hasText: /^Connected$/ }).waitFor({ timeout });
+/** Whether a response answers the page's call `method path` (the path before its query): a call is a POST to the host naming the server's own method and path. */
+const isCall = (r, method, pathname) => { const c = callOf(r.url()); return !!c && c.method === method && c.path.split("?")[0] === pathname; };
+/** The call a request of the page carries, as the server's own request: { server, method, pathname, search }; null for any other request (an operation of the app, a file, the stream). */
+const callIn = (r) => {
+  const c = callOf(r.url());
+  if (!c || c.method === "APP") return null;
+  const u = new URL(c.path, "http://x");
+  return { server: c.server, method: c.method, pathname: u.pathname, search: u.search };
+};
+/** The query of the call a response answers. */
+const queryOf = (res) => new URL(callOf(res.url()).path, "http://x").searchParams;
+/** A response to a call whose path matches `re`. */
+const isCallLike = (r, method, re) => { const c = callOf(r.url()); return !!c && c.method === method && re.test(c.path.split("?")[0]); };
 
 async function screenshot() {
   const p = shotPage && !shotPage.isClosed() ? shotPage : context?.pages().find((x) => !x.isClosed());
@@ -637,7 +671,8 @@ async function chatRow(page, id) {
 }
 async function openChat(page, id) {
   await (await chatRow(page, id)).click();
-  await waitFor(`chat ${id} is selected`, async () => (await sel(page)).chat === id || saw(`selection: ${show(await sel(page))}`));
+  // (a chat's key on this computer is its own id; in another app's section it is "<entry>~<id>")
+  await waitFor(`chat ${id} is selected`, async () => String((await sel(page)).chat ?? "").split("~").pop() === id || saw(`selection: ${show(await sel(page))}`));
 }
 
 async function hoverClick(page, row, button) {
@@ -719,7 +754,7 @@ async function branchChat(page, folder) {
 
 /** Types into the composer and presses Enter; answers the status and body of the POST …/messages it makes (the body names the branch the message was put on). */
 async function typeSend(page, id, text, { typed = false } = {}) {
-  const posted = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/chats/${id}/messages`, { timeout: 15_000 });
+  const posted = page.waitForResponse((r) => isCall(r, "POST", `/api/chats/${id}/messages`), { timeout: 15_000 });
   const ta = page.locator(".composer .composer-input");
   if (!typed) await ta.fill(text);
   await ta.press("Enter");
@@ -837,7 +872,7 @@ async function run() {
   } else {
     log(`    AIWB_E2E_SKIP_CURSOR_MCP=1: the real-Cursor MCP steps will be reported as skipped; the app uses the hidden test-only MCP port override`);
   }
-  if (await hello()) throw new Fail(`nothing is listening on port ${PORT}`, `a server answers at ${BASE}`);
+  if (PORT && await serverUp()) throw new Fail(`nothing is listening on port ${PORT}`, `a server answers at port ${PORT}`);
   folders.p1 = dir("p1");
   folders.A = dir("ungrouped-a");
   folders.B = dir("research-b");
@@ -853,7 +888,7 @@ async function run() {
 
   await step(1, "Start the server; a second start prints \"already running\" and exits 0", async () => {
     await startServer();
-    const r = spawnSync(BIN, serverArgs(), { encoding: "utf8", timeout: 15_000, cwd: dir("default") });
+    const r = spawnSync(BIN, ["serve", "-home", HOME, ...S.flags], { encoding: "utf8", timeout: 15_000, cwd: dir("default"), env: S.env });
     check(r.status === 0, "the second start exits 0", { status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr });
     check(/already running/.test(r.stdout + r.stderr), 'the second start prints "already running"', { stdout: r.stdout, stderr: r.stderr });
   });
@@ -862,7 +897,8 @@ async function run() {
   await page.locator(".side").waitFor();
 
   await step(2, "Group Research, a plain Claude chat: pickers change, the first message starts and locks it", async () => {
-    await page.locator(".side-addgroup").click();
+    await page.locator("button.icon-btn.new").click();
+    await menuItem(page, "New group").click();
     const input = page.locator(".side-group-head .name-input");
     await input.waitFor({ timeout: 5000 }).catch(() => {});
     check(await input.isVisible(), "the new group opens in rename mode", "no name input in the group header");
@@ -1071,7 +1107,8 @@ async function run() {
     const which = spawnSync("/bin/sh", ["-c", "command -v sqlite3; command -v claude; command -v agent"], { env, encoding: "utf8" }).stdout.trim().split("\n");
     check(which.length === 2 && !which.some((w) => /sqlite3/.test(w)), "the new PATH has claude and agent but no sqlite3", which);
     await startServer(env);
-    await waitFor("the page reconnects", async () => (await page.locator(".offline").count()) === 0 && (await page.locator(".composer .composer-input").count()) > 0, { timeout: 30_000 });
+    await connectedLocal(page, 90_000); // (the page's stream reconnects to the host, which is back; its section says that the server is)
+    await waitFor("the page shows the chat's composer again", async () => (await page.locator(".composer .composer-input").count()) > 0, { timeout: 30_000 });
     const b2 = await send(page, ids.cursorBoard, "Reply with just OK.");
     await waitTurn(ids.cursorBoard, b2);
     const err = await waitFor("the chat reports the context error", async () => (await chatView(ids.cursorBoard)).usage.ctxError || null, { timeout: 30_000 });
@@ -1101,398 +1138,33 @@ async function run() {
     log(`    ${fileTools.length ? fileTools.map((i) => `${i.name} ${i.denied ? "denied" : "failed"} (${String(i.result ?? "").replace(/\s+/g, " ").slice(0, 120)})`).join(", ") : "no file tool was tried"}; reply: ${lastReply(items).slice(0, 160)}`);
   });
 
-  // ---- Steps 9a to 9f: two pages on one server (plans/multiple-remote-servers.md, phase 7). Each
-  // board is held by one page at a time and only its holder writes it; a stored drawing and a
-  // draft have a revision, which a write names; every page uses every chat. The second page has a
-  // browser context of its own: another localStorage, so another client id, and a network that is
-  // cut by itself. No agent runs before step 9f, which has one short turn.
-  let context2 = null, page2 = null;
+  // ---- Steps 9a to 9f: two apps with one server (plans/multiple-remote-servers.md, phase 7). Each board is held by one
+  // client at a time and only its holder writes it; a stored drawing and a draft have a revision, which a write names;
+  // every client uses every chat. A second client is a second app: its own host, with its own list (the server is an
+  // entry of it) and its own client id, and a page of its own. Steps 9a to 9e (two boards at once, a take, an older
+  // drawing never written over a newer one, a draft changed elsewhere, a page of another origin) run no agent: web/e2e/
+  // twopages.e2e.mjs runs them, with two hosts and the server, for no money, so this paid script does not repeat them.
+  // Step 9f has one short turn.
+  let host2 = null, context2 = null, page2 = null, entry2 = "";
   const second = async () => {
     if (page2 && !page2.isClosed()) return page2;
+    if (!host2) {
+      host2 = await hostFor({ out: OUT, name: "second", extra: { dist: CLIENT } });
+      const added = await hostApp(host2, "servers.add", { force: true, form: { name: "This server", address: `https://127.0.0.1:${S.port}`, secret: S.secret, selfSigned: true, pin: S.fingerprint } });
+      entry2 = added.json?.server?.id;
+      if (!entry2) throw new Error(`the second app could not add the server: ${JSON.stringify(added)}`);
+    }
     context2 ??= await browser.newContext({ viewport: { width: 1600, height: 1000 } });
     const p = await context2.newPage();
-    p.on("request", (r) => { const id = r.headers()["x-aiwb-client"]; if (id) clientIds.set(p, id); });
     p.on("pageerror", (e) => log(`    [page 2 error] ${e.message}`));
     p.on("console", (m) => { if (m.type() === "error") log(`    [page 2 console error] ${m.text()}`); });
-    await p.goto(BASE + "/");
-    await p.locator(".side").waitFor();
+    await p.goto(host2.url);
+    await p.locator(`.side-section[data-server="${entry2}"] .side-section-state`, { hasText: /^Connected$/ }).waitFor({ timeout: 90_000 });
     return (page2 = p);
   };
-  // The shapes toolbar is drawn only for the page that holds the board: any other page has the canvas in view mode, or the panel in its place.
-  const TOOLBAR = '[data-testid="toolbar-rectangle"]';
-  const DROPPED = "A change made here was not saved in time and was dropped.";
-  const panel = (p) => p.locator(".board-canvas .takeover-panel");
-  const panelHead = (p) => panel(p).locator("h2", { hasText: "Open in another window" });
-  const useHere = (p) => panel(p).locator("button", { hasText: "Use here" });
-  const canvasText = (p) => p.locator(".board-canvas").innerText().catch(() => "(no board on screen)");
-  const showsPanel = async (p, what) => {
-    await panelHead(p).waitFor({ timeout: 15_000 }).catch(() => {});
-    check(await panelHead(p).isVisible(), what, await canvasText(p));
-  };
-  /** Waits until the board is on screen in the page and the page's to draw on. */
-  const drawable = (p, id, what) => waitFor(what, async () => ((await sel(p)).board === id && await p.locator(TOOLBAR).isVisible()) || saw(await canvasText(p)), { timeout: 20_000 });
-  /** Makes the page the holder of a board, with the board on screen: a click on its row asks for it, and "Use here" where the panel shows. */
-  const holdOn = async (p, name, id) => {
-    if ((await sel(p)).board !== id) await boardRow(p, name).click();
-    await waitFor(`${name} is on screen and the page's to draw on`, async () => {
-      if ((await sel(p)).board === id && await p.locator(TOOLBAR).isVisible()) return true;
-      if (await useHere(p).isVisible()) await useHere(p).click();
-      return saw(await canvasText(p));
-    }, { timeout: 20_000 });
-  };
-  /** The start of a hand-off of arch: `holder` draws on it, and `other` has it on screen behind the panel. */
-  const stage = async (holder, other) => {
-    const staged = async () => (await sel(other)).board === ids.arch && await panelHead(other).isVisible() && (await sel(holder)).board === ids.arch && await holder.locator(TOOLBAR).isVisible();
-    if (await staged()) return;
-    await holdOn(other, "arch", ids.arch);
-    await holdOn(holder, "arch", ids.arch);
-    await panelHead(other).waitFor({ timeout: 15_000 });
-  };
-  /** Draws a rectangle and returns it once it is in the board's file. */
-  const drawOn = async (p, board, fx, fy, what) => {
-    const before = idSet(board);
-    await p.keyboard.press("Escape");
-    await drawRect(p, fx, fy);
-    return newElement(board, before, "rectangle", what);
-  };
-  const has = (board, id) => liveElements(board).some((e) => e.id === id);
-  /** What a stored drawing holds: its live elements, each with its version. */
-  const drawn = (board) => liveElements(board).map((e) => [e.id, e.version]);
-  /** Whether a stored drawing is still what `was` (from drawn) held: no element is gone or back at an older version, and none
-   *  was added. A page that wrote an older drawing over a newer one, or an edit that was to be dropped, shows as one of these. */
-  const unchanged = (board, was) => { const now = new Map(drawn(board)); return now.size === was.length && was.every(([id, v]) => (now.get(id) ?? -1) >= v); };
-  /** The revision the server stores a board's drawing at. */
-  const sceneRev = async (board) => Number((await fetch(`${BASE}/api/boards/${board}/scene`)).headers.get("x-aiwb-scene-rev"));
-  /** Holds back the page's requests that `match` picks (they wait in `held`) until off(), which lets them go and ends the hold. */
-  const holdRequests = async (p, url, match) => {
-    const held = [];
-    let open = false;
-    const handler = async (route) => {
-      if (!open && match(route.request())) await new Promise((go) => held.push(go));
-      await route.continue().catch(() => {});
-    };
-    await p.route(url, handler);
-    return { held, off: async () => { open = true; for (const go of held.splice(0)) go(); await p.unroute(url, handler).catch(() => {}); } };
-  };
-  /** Cuts the second page off, as when its connection dies: its context goes offline, and its event stream is ended at the
-   *  server (a stream opened with a connected id ends the older one; a browser may keep a stream that was open before it
-   *  went offline). The page then shows "Reconnecting…" and tries again until the context is back online. */
-  const cutOff = async (p) => {
-    await context2.setOffline(true);
-    await new Promise((done) => {
-      const req = http.get(`${BASE}/api/events?client=${clientIds.get(p)}`, (res) => res.once("data", () => { req.destroy(); done(); }));
-      req.on("error", done);
-      setTimeout(() => { req.destroy(); done(); }, 5000);
-    });
-    await p.locator(".side .offline").waitFor({ timeout: 30_000 }).catch(() => {});
-    check(await p.locator(".side .offline").isVisible(), 'the page that is cut off says "Reconnecting…"', await p.locator(".side").innerText());
-  };
-  const SAVE_WAIT = 1200; // longer than the page's save delay: a page that had something to write has sent it by then
-
-  await step("9a", "Two pages work on two boards at once: each saves its own, and neither shows the take-over panel", async () => {
-    const p2 = await second();
-    const idsOf = await waitFor("each page has a client id of its own", () => { const a = clientIds.get(page), b = clientIds.get(p2); return a && b && a !== b ? [a, b] : saw({ first: a, second: b }); }, { timeout: 10_000 });
-    log(`    clients ${idsOf.join(" and ")}`);
-    await holdOn(page, "arch", ids.arch);
-    await holdOn(p2, "scratch", ids.scratch); // taken from the first page, which made scratch and does not show it
-    check((await panel(page).count()) === 0, "the first page shows no panel: the board it lost is not the one on its screen", await canvasText(page));
-    const rev0 = { arch: await sceneRev(ids.arch), scratch: await sceneRev(ids.scratch) };
-    const beforeA = idSet(ids.arch), beforeS = idSet(ids.scratch);
-    await page.keyboard.press("Escape");
-    await p2.keyboard.press("Escape");
-    await Promise.all([drawRect(page, 0.4, 0.75), drawRect(p2, 0.4, 0.4)]);
-    const ra = await newElement(ids.arch, beforeA, "rectangle", "the first page's rectangle is saved on arch");
-    const rs = await newElement(ids.scratch, beforeS, "rectangle", "the second page's rectangle is saved on scratch");
-    check(!has(ids.scratch, ra.id) && !has(ids.arch, rs.id), "each rectangle is in its own board's file only", { arch: liveElements(ids.arch).map(brief), scratch: liveElements(ids.scratch).map(brief) });
-    const rev1 = { arch: await sceneRev(ids.arch), scratch: await sceneRev(ids.scratch) };
-    check(rev1.arch > rev0.arch && rev1.scratch > rev0.scratch, "the stored revision of each board rose", { before: rev0, after: rev1 });
-    await sleep(500);
-    check((await panel(page).count()) === 0 && (await panel(p2).count()) === 0, "neither page shows the take-over panel", { first: await canvasText(page), second: await canvasText(p2) });
-    check(await page.locator(TOOLBAR).isVisible() && await p2.locator(TOOLBAR).isVisible(), "both pages can go on drawing", { first: await canvasText(page), second: await canvasText(p2) });
-  });
-
-  await step("9b", "A page takes a board another page holds: the pending edit is written first; the panel replaces that board's canvas only; Use here shows the stored drawing", async () => {
-    const p2 = await second();
-    await holdOn(page, "arch", ids.arch);
-    await holdOn(p2, "scratch", ids.scratch);
-    // What the first page sends about arch, in order: the board is let go only after the edit is written.
-    const sent = [];
-    const onResponse = (r) => { if (r.request().method() === "PUT" && new URL(r.url()).pathname === `/api/boards/${ids.arch}/scene`) sent.push(`saved ${r.status()}`); };
-    const onRequest = (q) => { if (q.method() === "POST" && new URL(q.url()).pathname === `/api/boards/${ids.arch}/release`) sent.push("release"); };
-    page.on("response", onResponse);
-    page.on("request", onRequest);
-    try {
-      const before = idSet(ids.arch);
-      await page.keyboard.press("Escape");
-      await drawRect(page, 0.5, 0.75);
-      const savedAlready = liveElements(ids.arch).some((e) => !before.has(e.id));
-      await boardRow(p2, "arch").click(); // a click on a board asks for it
-      await showsPanel(page, 'the page that held arch shows "Open in another window" in place of its canvas');
-      const r1 = liveElements(ids.arch).find((e) => e.type === "rectangle" && !before.has(e.id));
-      check(!!r1, `its pending edit is in the file${savedAlready ? " (it was already saved before the take)" : ""}`, liveElements(ids.arch).map(brief));
-      const saves = sent.filter((x) => x.startsWith("saved"));
-      check(saves.length > 0 && saves.every((x) => x === "saved 200") && sent.includes("release") && sent.lastIndexOf("saved 200") < sent.indexOf("release"),
-        "the edit was written and accepted before the board was let go", sent);
-      check((await panel(page).locator(".takeover-dropped").count()) === 0, "the panel tells of no dropped change", await canvasText(page));
-
-      // The page that got the board draws on the stored drawing: what it saves next holds the other page's edit too.
-      await drawable(p2, ids.arch, "the second page has arch and can draw on it");
-      const r2 = await drawOn(p2, ids.arch, 0.6, 0.4, "the second page's rectangle is saved on arch");
-      check(has(ids.arch, r1.id) && has(ids.arch, r2.id), "the file has the rectangles of both pages", liveElements(ids.arch).map(brief));
-
-      // Beside the panel the rest of the first page is in use. A chat of the board that shows the panel is opened without taking the board.
-      await openChat(page, ids.claudeBoard);
-      await sleep(500);
-      check(await panelHead(page).isVisible() && await page.locator(".side").isVisible() && await page.locator(".composer .composer-input").isVisible(),
-        "beside the panel the sidebar and the board's chat are in use", await page.locator("body").innerText());
-      check(await p2.locator(TOOLBAR).isVisible() && (await panel(p2).count()) === 0, "opening the board's chat took nothing from the second page", await canvasText(p2));
-
-      // "Use here" takes the board back: the canvas shows the stored drawing, not the one this page kept.
-      const stored = drawn(ids.arch);
-      await useHere(page).click();
-      await drawable(page, ids.arch, 'after "Use here" the first page draws on arch');
-      await showsPanel(p2, "the second page shows the panel in its turn");
-      await sleep(SAVE_WAIT);
-      check(unchanged(ids.arch, stored), "taking the board back wrote no older drawing over the stored one", { before: stored, after: drawn(ids.arch) });
-      const r3 = await drawOn(page, ids.arch, 0.45, 0.5, "the first page's next rectangle is saved on arch");
-      check([r1, r2, r3].every((r) => has(ids.arch, r.id)), '"Use here" showed the stored drawing: the file has every rectangle of both pages', liveElements(ids.arch).map(brief));
-
-      // The page that lost arch uses another board and a chat.
-      await boardRow(p2, "scratch").click();
-      await drawable(p2, ids.scratch, "the second page draws on scratch, which it still holds");
-      check((await panel(p2).count()) === 0, "the panel was for arch only: scratch shows none", await canvasText(p2));
-      await drawOn(p2, ids.scratch, 0.6, 0.6, "the second page's rectangle is saved on scratch");
-      await openChat(p2, ids.chat1);
-      await p2.locator(".thread").waitFor({ timeout: 10_000 });
-      check(await p2.locator(".composer .composer-input").isVisible(), "the second page has a chat open with its thread and its composer", await p2.locator("body").innerText());
-      check(await page.locator(TOOLBAR).isVisible() && (await panel(page).count()) === 0, "the first page still draws on arch", await canvasText(page));
-    } finally { page.off("response", onResponse); page.off("request", onRequest); }
-  });
-
-  await step("9c", "No older drawing is written over a newer one: a page that takes a board back, a write held up past the hand-over delay, a page cut off and back", async () => {
-    const p2 = await second();
-    const sceneURL = new RegExp(`/api/boards/${ids.arch}/scene`);
-    const isScenePut = (r) => r.request().method() === "PUT" && new URL(r.url()).pathname === `/api/boards/${ids.arch}/scene`;
-
-    // T11 X1. The second page had arch and lost it; the first page changes it; the second page comes back.
-    log("    -- a page that lost a board takes it back");
-    await stage(p2, page);
-    await holdOn(page, "arch", ids.arch); // the second page keeps the drawing as it was, behind the panel
-    await showsPanel(p2, "the second page lost arch and shows the panel");
-    const x = await drawOn(page, ids.arch, 0.55, 0.35, "the first page's change is saved: the stored drawing is newer than the one the second page keeps");
-    let stored = drawn(ids.arch), rev = await sceneRev(ids.arch);
-    await useHere(p2).click();
-    await drawable(p2, ids.arch, "the second page has arch back");
-    await sleep(SAVE_WAIT);
-    check(unchanged(ids.arch, stored) && has(ids.arch, x.id), "the drawing it kept was not written: the file is the newer one", { before: stored, after: drawn(ids.arch) });
-    check((await p2.locator(".canvas-note").count()) === 0, "nothing was dropped: the canvas shows no note", await canvasText(p2));
-    const y = await drawOn(p2, ids.arch, 0.65, 0.55, "the second page's next rectangle is saved");
-    check(has(ids.arch, x.id) && has(ids.arch, y.id) && (await sceneRev(ids.arch)) > rev, "it was drawn on the newer drawing: the file has both changes", liveElements(ids.arch).map(brief));
-
-    // T11 X3 (b). The holder's write is held up for longer than the hand-over delay (3 s).
-    log("    -- a holder that cannot write its pending edit in time");
-    await stage(p2, page);
-    stored = drawn(ids.arch);
-    const hold = await holdRequests(p2, sceneURL, (q) => q.method() === "PUT");
-    try {
-      await p2.keyboard.press("Escape");
-      await drawRect(p2, 0.4, 0.6); // pending: its write will wait in the hold
-      const t0 = Date.now();
-      await useHere(page).click();
-      await panel(page).locator("p", { hasText: "Taking over from the other window…" }).waitFor({ timeout: 2500 }).catch(() => {});
-      check(await panel(page).locator("p", { hasText: "Taking over from the other window…" }).isVisible(), "while the holder is asked, the taking page says it is taking over", await canvasText(page));
-      await drawable(page, ids.arch, "the first page gets arch without the holder's answer");
-      const took = Date.now() - t0;
-      check(took >= 2500 && hold.held.length > 0, "it got the board at the end of the hand-over delay, with the holder's write still on its way", { ms: took, held: hold.held.length });
-      await showsPanel(p2, "the page that lost arch shows the panel");
-      const line = panel(p2).locator(".takeover-dropped");
-      check((await line.count()) === 1 && (await line.innerText()).trim() === DROPPED, "its panel says the change was dropped", await canvasText(p2));
-      check(unchanged(ids.arch, stored), "the file is as before: the edit was not written", { before: stored, after: drawn(ids.arch) });
-      const q = await drawOn(page, ids.arch, 0.7, 0.4, "the new holder's rectangle is saved");
-      stored = drawn(ids.arch);
-      rev = await sceneRev(ids.arch);
-      // The write arrives late.
-      const late = p2.waitForResponse(isScenePut, { timeout: 15_000 });
-      await hold.off();
-      const res = await late;
-      const body = await res.json().catch(() => ({}));
-      check(res.status() === 409 && body.code === "not_holder", "the write that arrives late is refused: another window holds the board", { status: res.status(), body });
-      await sleep(300);
-      check(unchanged(ids.arch, stored) && (await sceneRev(ids.arch)) === rev && has(ids.arch, q.id), "the file is still the new holder's", { before: stored, after: drawn(ids.arch) });
-      // The page takes the board back, and nothing else is done.
-      await useHere(p2).click();
-      await drawable(p2, ids.arch, 'after "Use here" the page that lost its edit draws on arch again');
-      await sleep(SAVE_WAIT);
-      check(unchanged(ids.arch, stored), "taking the board back put nothing of the dropped edit into the file", { before: stored, after: drawn(ids.arch) });
-    } finally { await hold.off(); }
-
-    // T11 X5. The holder's connection is cut, another page works on the board, the connection returns.
-    log("    -- a page whose connection is cut, with another page at work when it returns");
-    await stage(p2, page);
-    try {
-      await cutOff(p2);
-      await p2.keyboard.press("Escape");
-      await drawRect(p2, 0.5, 0.45); // an edit made while cut off: its write fails
-      await sleep(SAVE_WAIT);
-      await useHere(page).click();
-      await drawable(page, ids.arch, "the first page takes arch, which the server freed when the stream ended");
-      const w = await drawOn(page, ids.arch, 0.75, 0.65, "the first page's rectangle is saved");
-      stored = drawn(ids.arch);
-      rev = await sceneRev(ids.arch);
-      await context2.setOffline(false);
-      await waitFor("back on the server, the page shows the panel for arch and says its change was dropped", async () =>
-        (await panelHead(p2).isVisible() && (await panel(p2).locator(".takeover-dropped").count()) === 1 && (await p2.locator(".side .offline").count()) === 0) || saw(await canvasText(p2)), { timeout: 45_000 });
-      await sleep(SAVE_WAIT);
-      check(await page.locator(TOOLBAR).isVisible() && (await panel(page).count()) === 0, "it took nothing back: the first page still draws on arch", await canvasText(page));
-      check(unchanged(ids.arch, stored) && (await sceneRev(ids.arch)) === rev && has(ids.arch, w.id), "its older drawing was not written: the file is the first page's", { before: stored, after: drawn(ids.arch) });
-
-      // The same cut with nobody else on the board: the edit is saved once the page is back.
-      log("    -- a page whose connection is cut, with nobody else on the board");
-      await useHere(p2).click();
-      await drawable(p2, ids.arch, 'after "Use here" the second page draws on arch');
-      await showsPanel(page, "the first page shows the panel");
-      rev = await sceneRev(ids.arch);
-      const before = idSet(ids.arch);
-      await cutOff(p2);
-      await p2.keyboard.press("Escape");
-      await drawRect(p2, 0.35, 0.35);
-      await sleep(SAVE_WAIT);
-      check(!liveElements(ids.arch).some((e) => !before.has(e.id)) && await panelHead(page).isVisible(), "the edit is not in the file, and the first page asked for nothing", liveElements(ids.arch).map(brief));
-      await context2.setOffline(false);
-      const f = await waitFor("back on the server, the page saves the edit it made while cut off", () => liveElements(ids.arch).find((e) => e.type === "rectangle" && !before.has(e.id)) ?? null, { timeout: 45_000, every: 200 });
-      check((await sceneRev(ids.arch)) > rev && has(ids.arch, f.id), "it was written on the revision the page had, which nobody had changed", { before: rev, after: await sceneRev(ids.arch) });
-      check(await p2.locator(TOOLBAR).isVisible() && (await panel(p2).count()) === 0 && (await p2.locator(".canvas-note").count()) === 0, "the page draws on arch again, with no panel and no note", await canvasText(p2));
-    } finally { await context2.setOffline(false).catch(() => {}); }
-  });
-
-  await step("9d", "A draft changed in another page is not overwritten: it is shown where nothing was typed, and a save on an older draft is refused", async () => {
-    const p2 = await second();
-    const chatJSON = path.join(HOME, "chats", ids.chat1, "chat.json");
-    const stored = () => { const m = readJSON(chatJSON); return { text: m.drafts?.main?.text ?? "", rev: m.draftRevs?.main ?? 0 }; };
-    const saved = (text, what) => waitFor(what, () => { const s = stored(); return s.text === text ? s : saw(s); }, { timeout: 10_000 });
-    const ta = page.locator(".composer .composer-input"), tb = p2.locator(".composer .composer-input");
-    const shows = (t, text, what) => waitFor(what, async () => (await t.innerText()).trim() === text || saw(await t.innerText()), { timeout: 10_000 });
-    const draftURL = new RegExp(`/api/chats/${ids.chat1}/draft`);
-    const isDraftPut = (r) => r.request().method() === "PUT" && new URL(r.url()).pathname === `/api/chats/${ids.chat1}/draft`;
-    await openChat(page, ids.chat1);
-    await openChat(p2, ids.chat1);
-    await ta.waitFor();
-    await tb.waitFor();
-
-    // T11 X4, steps 1 to 4: the other page replaces a draft this page has on screen.
-    await ta.fill("draft typed in the first page");
-    const d1 = await saved("draft typed in the first page", "the first page's draft is saved");
-    await shows(tb, d1.text, "the second page, where nothing was typed, shows the first page's draft");
-    await tb.fill("draft typed in the second page");
-    const d2 = await saved("draft typed in the second page", "the second page's draft replaces it");
-    check(d2.rev > d1.rev, "the draft's counter rose", { before: d1, after: d2 });
-    await shows(ta, d2.text, "the first page, where nothing was typed since its save, shows the second page's draft");
-    await ta.pressSequentially("!");
-    const d3 = await waitFor("a character typed in the first page is saved onto the second page's draft, not onto its own older one", () => {
-      const s = stored();
-      return s.text.includes("typed in the second page") && s.text.includes("!") && !s.text.includes("first page") ? s : saw(s);
-    }, { timeout: 10_000 });
-    await shows(tb, d3.text, "the second page shows that draft");
-
-    // Steps 6 to 8: a save that reaches the server after the other page's.
-    let hold = await holdRequests(page, draftURL, (q) => q.method() === "PUT");
-    const puts = []; // the first page's saves, as answered: the counter each named and the status
-    const onResponse = (r) => { if (isDraftPut(r)) puts.push({ base: Number(new URL(r.url()).searchParams.get("rev")), status: r.status() }); };
-    try {
-      await ta.fill("late text of the first page");
-      await waitFor("the first page's save is on its way", () => hold.held.length === 1 || saw(`${hold.held.length} held`), { timeout: 5000, every: 50 });
-      await tb.fill("newer text of the second page");
-      const d4 = await saved("newer text of the second page", "the second page's draft is saved meanwhile");
-      check((await ta.innerText()).trim() === "late text of the first page", "the first page keeps its text while its save is on its way", await ta.innerText());
-      const late = page.waitForResponse(isDraftPut, { timeout: 15_000 });
-      await hold.off();
-      const res = await late;
-      const body = await res.json().catch(() => ({}));
-      check(res.status() === 409 && body.code === "stale" && body.rev === d4.rev && body.draft?.text === d4.text, "the late save is refused as stale and answered with the stored draft and its counter", { status: res.status(), body });
-      check(stored().text === d4.text && stored().rev === d4.rev, "the stored draft is still the second page's", stored());
-      await shows(ta, d4.text, "the first page, where nothing was typed since, shows the stored draft");
-
-      // The same, with the user typing on while the save is on its way: what was typed stays, and is saved on the new counter.
-      hold = await holdRequests(page, draftURL, (q) => q.method() === "PUT");
-      page.on("response", onResponse);
-      await ta.fill("the first page types on");
-      await waitFor("the first page's save is on its way", () => hold.held.length === 1 || saw(`${hold.held.length} held`), { timeout: 5000, every: 50 });
-      await tb.fill("the second page again");
-      const d5 = await saved("the second page again", "the second page's draft is saved meanwhile");
-      await ta.fill("the first page types on and on");
-      await sleep(600); // longer than the composer's save delay: the next save waits for the one on its way
-      await hold.off();
-      const d6 = await saved("the first page types on and on", "what was typed since is saved");
-      check((await ta.innerText()).trim() === "the first page types on and on", "the first page kept what was typed", await ta.innerText());
-      await waitFor("both saves of the first page are answered", () => puts.length >= 2 || saw(puts), { timeout: 5000 });
-      check(puts.length === 2 && puts[0].status === 409 && puts[1].status === 200 && puts[1].base === d5.rev && d6.rev === d5.rev + 1,
-        "the save on the older draft was refused, and the next one named the stored draft's counter", { puts, stored: [d5, d6] });
-      await shows(tb, d6.text, "the second page, where nothing was typed since, shows it");
-    } finally { page.off("response", onResponse); await hold.off(); }
-
-    await ta.fill("");
-    await saved("", "the draft is cleared");
-    await shows(tb, "", "and the second page's composer is empty");
-  });
-
-  await step("9e", "A page of another origin gets nothing: its calls carry no client header and are refused, and the holder keeps its board", async () => {
-    await holdOn(page, "arch", ids.arch);
-    const victim = clientIds.get(page);
-    const rev = await sceneRev(ids.arch);
-    const other = http.createServer((q, s) => { s.writeHead(200, { "Content-Type": "text/html" }); s.end("<!doctype html><title>another origin</title>"); });
-    await new Promise((ok, no) => { other.once("error", no); other.listen(0, "127.0.0.1", ok); });
-    const origin = `http://127.0.0.1:${other.address().port}`;
-    const context3 = await browser.newContext();
-    // A stream needs no header. This one stays open while the other page calls: a client that only opened a stream.
-    const lurker = randomUUID();
-    const stream = await new Promise((resolve, reject) => {
-      const req = http.get(`${BASE}/api/events?client=${lurker}`, (res) => {
-        let buf = "";
-        res.on("data", (d) => { buf += d; const m = /data: (.*)\n\n/.exec(buf); if (m) resolve({ req, hello: JSON.parse(m[1]) }); });
-      });
-      req.on("error", reject);
-      setTimeout(() => reject(new Error("no hello on the event stream")), 5000);
-    });
-    try {
-      check(stream.hello.type === "hello" && stream.hello.client === lurker && !("active" in stream.hello) && !("waiting" in stream.hello), "a stream opened without a header gets its hello, which tells of no role", stream.hello);
-      const foreign = await context3.newPage();
-      const answers = [];
-      foreign.on("response", (r) => { const u = new URL(r.url()); if (u.origin === BASE && u.pathname.startsWith("/api/")) answers.push(`${r.request().method()} ${u.pathname} ${r.status()}`); });
-      await foreign.goto(origin + "/");
-      const paths = ["/api/rpc-reply", `/api/boards/${ids.arch}/release`, `/api/boards/${ids.arch}/take`, "/api/client/flushed"];
-      const did = await foreign.evaluate(async ({ base, victim, paths }) => {
-        // An EventSource sends no header of the page's choosing: the server opens the stream, and the browser lets this page read nothing of it.
-        const stream = await new Promise((done) => {
-          const es = new EventSource(`${base}/api/events?client=${crypto.randomUUID()}`);
-          es.onmessage = () => { es.close(); done("read an event"); };
-          es.onerror = () => { es.close(); done("error"); };
-          setTimeout(() => { es.close(); done("nothing"); }, 5000);
-        });
-        // Without the client header a POST needs no preflight. Its body names the holder as the client.
-        const plain = [];
-        for (const p of paths) {
-          plain.push(await fetch(base + p, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ client: victim, id: "rpc_1", result: "forged" }) })
-            .then((r) => r.type, (e) => `failed: ${e.message}`));
-        }
-        // With the header the browser asks the server first, and the server allows no other origin.
-        const withHeader = await fetch(base + paths[2], { method: "POST", headers: { "Content-Type": "application/json", "X-AIWB-Client": victim }, body: "{}" })
-          .then((r) => `answered ${r.status}`, () => "blocked");
-        return { stream, plain, withHeader };
-      }, { base: BASE, victim, paths });
-      log(`    the other origin's page: stream ${did.stream}; plain posts ${did.plain.join(", ")}; with the header ${did.withHeader}`);
-      check(did.stream !== "read an event", "the other origin's page reads nothing of the event stream", did);
-      await waitFor("every post without the header is answered 409", () => paths.every((p) => answers.includes(`POST ${p} 409`)) || saw(answers), { timeout: 5000 });
-      check(did.withHeader === "blocked", "a call with the client header is blocked by the browser: the server allows no other origin", did);
-      await sleep(500);
-      check(await page.locator(TOOLBAR).isVisible() && (await panel(page).count()) === 0, "the holder shows no panel and still draws on its board", await canvasText(page));
-      const r = await drawOn(page, ids.arch, 0.5, 0.65, "the holder's next rectangle is saved");
-      check((await sceneRev(ids.arch)) > rev && has(ids.arch, r.id), "its write is accepted: nothing was taken, released or written meanwhile", { before: rev, after: await sceneRev(ids.arch) });
-    } finally {
-      stream.req.destroy();
-      await context3.close().catch(() => {});
-      other.close();
-    }
-  });
+  for (const [n, title] of [["9a", "Two pages work on two boards at once"], ["9b", "A page takes a board another page holds"], ["9c", "No older drawing is written over a newer one"], ["9d", "A draft changed in another page is not overwritten"], ["9e", "A page of another origin gets nothing"]]) {
+    await skipStep(n, title, "run without agents by web/e2e/twopages.e2e.mjs, through two test hosts");
+  }
 
   await step("9f", "Two pages with one chat open show the same thread after a turn", async () => {
     const p2 = await second();
@@ -1514,35 +1186,26 @@ async function run() {
 
   // The second page goes: step 10 needs every page closed.
   if (context2) await context2.close().catch(() => {});
+  if (host2) await host2.close().catch(() => {});
   shotPage = page;
 
-  await step(10, "With all tabs closed, a board chat asked through the API says the board isn't open", async () => {
+  await step(10, "With no window open, a board chat asked by another client says the board isn't open", async () => {
     await page.close();
     await sleep(1000);
-    const cid = randomUUID();
-    const sse = await new Promise((resolve, reject) => {
-      const req = http.get(`${BASE}/api/events?client=${cid}`, (res) => {
-        let buf = "";
-        res.on("data", (d) => { buf += d; const m = /data: (.*)\n\n/.exec(buf); if (m) resolve({ req, hello: JSON.parse(m[1]) }); });
-      });
-      req.on("error", reject);
-      setTimeout(() => reject(new Error("no hello on the event stream")), 5000);
-    });
-    check(sse.hello.type === "hello" && sse.hello.client === cid, "the fresh client is connected (no tab is open)", sse.hello);
-    const before = await turnsOf(ids.claudeBoard);
-    const r = await fetch(`${BASE}/api/chats/${ids.claudeBoard}/messages`, {
-      method: "POST", headers: { "Content-Type": "application/json", "X-AIWB-Client": cid },
-      body: JSON.stringify({ text: "Read the board again now with read_board (don't rely on earlier reads) and tell me in one sentence what is on it.", context: "" }),
-    });
-    const body = await r.text();
-    sse.req.destroy(); // no client from here on
-    check(r.status === 200, "the message is accepted", { status: r.status, body });
-    const { items } = await waitTurn(ids.claudeBoard, before);
-    const sinceUser = items.slice(items.map((i) => i.kind).lastIndexOf("user"));
-    const reads = sinceUser.filter((i) => i.kind === "tool" && /^mcp__board__/.test(i.name ?? ""));
-    check(reads.length > 0 && reads.every((i) => i.isError), "the board call fails (no window is open)", reads);
-    const reply = lastReply(items);
-    check(/isn't open|is not open|not open|must be open|window is closed|closed/i.test(reply), "the reply says the board isn't open", reply);
+    // A client that holds no board and has no window: the probe (another app, with no page).
+    try {
+      check((await hostCall(probe, probeEntry, "GET", "/api/state")).status === 200, "the fresh client is connected (no window is open)", "");
+      const before = await turnsOf(ids.claudeBoard);
+      const r = await hostCall(probe, probeEntry, "POST", `/api/chats/${ids.claudeBoard}/messages`, { text: "Read the board again now with read_board (don't rely on earlier reads) and tell me in one sentence what is on it.", context: "" });
+      const body = r.text;
+      check(r.status === 200, "the message is accepted", { status: r.status, body });
+      const { items } = await waitTurn(ids.claudeBoard, before);
+      const sinceUser = items.slice(items.map((i) => i.kind).lastIndexOf("user"));
+      const reads = sinceUser.filter((i) => i.kind === "tool" && /^mcp__board__/.test(i.name ?? ""));
+      check(reads.length > 0 && reads.every((i) => i.isError), "the board call fails (no window is open)", reads);
+      const reply = lastReply(items);
+      check(/isn't open|is not open|not open|must be open|window is closed|closed/i.test(reply), "the reply says the board isn't open", reply);
+    } finally { /* (the probe stays: the other steps read through it) */ }
   });
 
   await step(11, "Stop the server mid-turn; after a restart the chat shows Stopped and continues its session", async () => {
@@ -1558,7 +1221,8 @@ async function run() {
     check(BUSY.has(mid.status), "the turn is still running when the server stops", mid.status);
     await stopServer();
     await startServer();
-    await waitFor("the page reconnects", async () => (await page.locator(".offline").count()) === 0 && (await groupHead(page, "Research").count()) > 0, { timeout: 30_000 });
+    await connectedLocal(page, 90_000); // (the page's stream reconnects to the host, which is back; its section says that the server is)
+    await waitFor("the page shows the group again", async () => (await groupHead(page, "Research").count()) > 0, { timeout: 30_000 });
     const v = await chatView(ids.chat3);
     check(v.group === ids.research && v.status === "stopped", "the chat is in Research and Stopped", v);
     const row = await chatRow(page, ids.chat3);
@@ -1659,8 +1323,6 @@ async function run() {
 
   await step(17, "While the agent works, send is greyed out and Enter does nothing; the text sends after; the API gets 409", async () => {
     await openChat(page, ids.chat3);
-    const cid = clientIds.get(page);
-    check(!!cid, "the tab's client id is known", cid);
     const b = await send(page, ids.chat3, "Write the numbers from 1 to 400, each on its own line, with no other text.");
     await waitFor("the agent is working", async () => BUSY.has((await chatView(ids.chat3)).status), { every: 100 });
     const sendBtn = page.locator(".composer button.send:not(.stop)");
@@ -1675,10 +1337,8 @@ async function run() {
     check(await ta.innerText() === later, "the box still holds the text after Enter", await ta.innerText());
     check(!(await chatItems(ids.chat3)).some((i) => i.kind === "user" && i.text === later), "Enter did not send", "the text was sent");
     check(await sendBtn.isDisabled(), "send stays greyed out with text in the box", "enabled");
-    const r = await fetch(`${BASE}/api/chats/${ids.chat3}/messages`, {
-      method: "POST", headers: { "Content-Type": "application/json", "X-AIWB-Client": cid }, body: JSON.stringify({ text: "hi", context: "" }),
-    });
-    const body = await r.text();
+    const r = await hostCall(host, "local", "POST", `/api/chats/${ids.chat3}/messages`, { text: "hi", context: "" });
+    const body = r.text;
     check(r.status === 409 && /still working/.test(body), "a POST to /messages mid-turn gets 409 (busy)", { status: r.status, body });
     await waitTurn(ids.chat3, b);
     await waitFor("send is enabled once the turn ends", async () => !(await sendBtn.isDisabled()));
@@ -1759,10 +1419,10 @@ async function run() {
       return now.length === 2 && now.every((m) => m === "✓") ? now : saw(now);
     }, { timeout: 15_000 });
     check(after.length === 2, "the rows show as completed after the reload", after);
-    const fetched = page.waitForResponse((r) => new RegExp(`/api/chats/${ids.claudeSubs}/subagents/[^/]+/items$`).test(new URL(r.url()).pathname), { timeout: 15_000 });
+    const fetched = page.waitForResponse((r) => isCallLike(r, "GET", new RegExp(`/api/chats/${ids.claudeSubs}/subagents/[^/]+/items$`)), { timeout: 15_000 });
     await rows.first().click();
     const res = await fetched;
-    const sid = new URL(res.url()).pathname.split("/").at(-2);
+    const sid = callOf(res.url()).path.split("?")[0].split("/").at(-2);
     const body = await res.json();
     const folder = path.join(HOME, "chats", ids.claudeSubs, "subagents", sid);
     check(res.ok() && fs.existsSync(path.join(folder, "subagent.json")) && fs.existsSync(path.join(folder, "items.jsonl")), "opening a row fetches its thread; it is kept in its own folder", { status: res.status(), folder, files: fs.existsSync(folder) ? fs.readdirSync(folder) : [] });
@@ -1918,6 +1578,7 @@ async function run() {
     await startServer();
     await page.reload();
     await page.locator(".side").waitFor();
+    await connectedLocal(page);
     await waitFor("the chat is selected after the restart", async () => (await sel(page)).chat === ids.drafty || saw(await sel(page)));
     await waitFor("the composer shows the draft after the restart", async () => (await ta.innerText()).trim() === text || saw(await ta.innerText()), { timeout: 10_000 });
 
@@ -1936,12 +1597,10 @@ async function run() {
   const alertText = async () => ((await page.locator(".fk-alert").count()) ? (await page.locator(".fk-alert").first().innerText()).trim() : "");
   /** The selected chat's sidebar row: its state class and second line. */
   const sideRow = () => page.locator(".side-row.is-chat.on").evaluate((e) => ({ st: [...e.classList].find((c) => c.startsWith("st-")) ?? "", sub: e.querySelector(".side-sub")?.textContent ?? "" }));
-  /** A request of the API that changes something, made as the page's client (not by the page). */
+  /** A request of the API that changes something, made as the page's client (not by the page): through the host the page is served by, which is that client. */
   const call = async (method, p, body) => {
-    const r = await fetch(BASE + p, {
-      method, headers: { "Content-Type": "application/json", "X-AIWB-Client": clientIds.get(page) ?? "" }, body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    return { status: r.status, body: await r.json().catch(() => ({})) };
+    const r = await hostCall(host, "local", method, p, body);
+    return { status: r.status, body: r.json ?? {} };
   };
   const postMessage = (id, branch, text) => call("POST", `/api/chats/${id}/messages?branch=${encodeURIComponent(branch)}`, { text, context: "" });
 
@@ -1983,7 +1642,7 @@ async function run() {
 
       // The tree marks both; a double click on main's end views main and sends nothing.
       const sent = [];
-      const onRequest = (r) => { if (r.method() !== "GET") sent.push(`${r.method()} ${new URL(r.url()).pathname}${new URL(r.url()).search}`); };
+      const onRequest = (r) => { const c = callIn(r); if (c && c.method !== "GET") sent.push(`${c.method} ${c.pathname}${c.search}`); };
       page.on("request", onRequest);
       const rows = await viewBranchVia(page, "main", async () => {
         await alert.click(); // the alert opens the tree
@@ -2304,9 +1963,10 @@ async function run() {
     let id = "";
     const treeGets = [], posts = [];
     const onRequest = (r) => {
-      const u = new URL(r.url());
-      if (r.method() === "GET" && u.pathname === `/api/chats/${id}/tree`) treeGets.push(new Date().toISOString());
-      if (r.method() === "POST" && u.pathname === `/api/chats/${id}/messages`) posts.push(u.pathname + u.search);
+      const u = callIn(r);
+      if (!u) return;
+      if (u.method === "GET" && u.pathname === `/api/chats/${id}/tree`) treeGets.push(new Date().toISOString());
+      if (u.method === "POST" && u.pathname === `/api/chats/${id}/messages`) posts.push(u.pathname + u.search);
     };
     const noFetch = (when) => check(treeGets.length === 0, `${when}: the page has made no GET …/tree for the chat since the popup first opened`, treeGets);
     try {
@@ -2489,8 +2149,8 @@ async function run() {
     /** The requests about this chat's permissions and messages the page makes, with the branch each names. */
     const posts = [];
     const onRequest = (r) => {
-      const u = new URL(r.url());
-      if (r.method() === "POST" && /^\/api\/chats\/[^/]+\/(messages|permission)$/.test(u.pathname) && u.pathname.includes(id)) posts.push(`${u.pathname.split("/").pop()}${u.search}`);
+      const u = callIn(r);
+      if (u && u.method === "POST" && /^\/api\/chats\/[^/]+\/(messages|permission)$/.test(u.pathname) && u.pathname.includes(id)) posts.push(`${u.pathname.split("/").pop()}${u.search}`);
     };
     /** Waits until a branch's turn (the one after `before` turns) has asked for approval and waits; answers the request's item. */
     const waitAsks = async (branch, before) => {
@@ -2610,10 +2270,10 @@ async function run() {
       await closePopup();
 
       // B's request is approved with its card: B goes on and ends, A still waits.
-      const decidedB = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/chats/${id}/permission`, { timeout: 15_000 });
+      const decidedB = page.waitForResponse((r) => isCall(r, "POST", `/api/chats/${id}/permission`), { timeout: 15_000 });
       await pending.locator(".perm-actions button", { hasText: /^Allow$/ }).click();
       const dB = await decidedB;
-      check(dB.status() === 200 && new URL(dB.url()).searchParams.get("branch") === B && dB.request().postDataJSON().requestId === askB.requestId && dB.request().postDataJSON().allow === true,
+      check(dB.status() === 200 && queryOf(dB).get("branch") === B && dB.request().postDataJSON().requestId === askB.requestId && dB.request().postDataJSON().allow === true,
         "Allow on the card sends B's request id for branch B", { status: dB.status(), url: dB.url(), body: dB.request().postDataJSON() });
       const doneB = await waitBranchTurn(id, B, b1);
       const itemsB = await itemsOf(id, B);
@@ -2632,10 +2292,10 @@ async function run() {
       log(`    tree rows: ${rowBrief(rows)}`);
       await waitCrumb(page, /^ALPHA/, "main is shown again");
       await waitFor("main's thread still shows its card as pending, and no header alert: no other branch asks or works", async () => (await pending.count()) === 1 && (await page.locator(".fk-alert").count()) === 0 || saw({ cards: await page.locator(".thread .perm").allInnerTexts(), alert: await alertText() }), { timeout: 10_000 });
-      const decidedA = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/chats/${id}/permission`, { timeout: 15_000 });
+      const decidedA = page.waitForResponse((r) => isCall(r, "POST", `/api/chats/${id}/permission`), { timeout: 15_000 });
       await pending.locator(".perm-actions button", { hasText: /^Don't$/ }).click();
       const dA = await decidedA;
-      check(dA.status() === 200 && new URL(dA.url()).searchParams.get("branch") === "main" && dA.request().postDataJSON().requestId === askA.requestId && dA.request().postDataJSON().allow === false,
+      check(dA.status() === 200 && queryOf(dA).get("branch") === "main" && dA.request().postDataJSON().requestId === askA.requestId && dA.request().postDataJSON().allow === false,
         "Don't on the card sends A's request id for main", { status: dA.status(), url: dA.url(), body: dA.request().postDataJSON() });
       const doneA = await waitBranchTurn(id, "main", a1);
       const itemsA = await itemsOf(id, "main");
@@ -2686,7 +2346,7 @@ async function run() {
     // Everything the page sends that is not a GET, with the body of a message or a PATCH.
     const sent = [];
     const bodyOf = (r) => { try { return r.postDataJSON(); } catch { return null; } };
-    const onRequest = (r) => { if (r.method() !== "GET") sent.push({ req: `${r.method()} ${new URL(r.url()).pathname}${new URL(r.url()).search}`, body: bodyOf(r) }); };
+    const onRequest = (r) => { const c = callIn(r); if (c && c.method !== "GET") sent.push({ req: `${c.method} ${c.pathname}${c.search}`, body: bodyOf(r) }); };
     page.on("request", onRequest);
     try {
       // 1. A plain Claude chat on Haiku with one finished turn.
@@ -2788,7 +2448,7 @@ async function run() {
       const watch = watchChat(fork);
       const ui = watchPage(async () => ({ picker: await modelBtn.count() ? ((await modelBtn.getAttribute("aria-disabled")) === "true" ? "disabled" : "open") : "none", restart: await restartChip.count(),
         stop: await page.locator(".composer button.send.stop").count(), typing: await one(page.locator(".thread .typing")) }));
-      const patched = page.waitForResponse((r) => r.request().method() === "PATCH" && new URL(r.url()).pathname === `/api/chats/${fork}`, { timeout: 120_000 });
+      const patched = page.waitForResponse((r) => isCall(r, "PATCH", `/api/chats/${fork}`), { timeout: 120_000 });
       sent.length = 0;
       await pickModelId(page, SONNET);
       const pr = await patched;
@@ -2809,7 +2469,7 @@ async function run() {
       log(`    toolbar of the fork after the change: model "${b.model}", effort "${b.effort}", record ${JSON.stringify({ model: fv2.model, effort: fv2.effort ?? "" })}`);
       if (low) {
         // Its effort too, by a second PATCH and a second restart.
-        const patchedEffort = page.waitForResponse((r) => r.request().method() === "PATCH" && new URL(r.url()).pathname === `/api/chats/${fork}`, { timeout: 120_000 });
+        const patchedEffort = page.waitForResponse((r) => isCall(r, "PATCH", `/api/chats/${fork}`), { timeout: 120_000 });
         await pickEffort(page, "Low");
         const pe = await patchedEffort;
         const peBody = await pe.json().catch(() => ({}));
@@ -2882,6 +2542,7 @@ try {
   log(`  server log (${LOG}):\n${tail(LOG).split("\n").map((l) => "    " + l).join("\n")}`);
 } finally {
   await browser?.close().catch(() => {});
+  await probe?.close().catch(() => {});
   await stopServer().catch(() => {});
   openStopGate();
   openGates(...GATES);

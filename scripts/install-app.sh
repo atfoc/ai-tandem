@@ -22,6 +22,6 @@ echo "Installed $dest"
 # server runs.
 if [ -f "$HOME/.ai-whiteboard/server.json" ]; then
   echo "A server is running from the previous build. AI Whiteboard will offer to restart it on"
-  echo "this one (Restart server, at the bottom of the sidebar), or restart it now with:"
+  echo "this one (Restart server, in the section "This computer" of the sidebar), or restart it now with:"
   echo "  \"$dest/Contents/MacOS/ai-whiteboard\" relaunch"
 fi

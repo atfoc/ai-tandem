@@ -1,6 +1,6 @@
 // Proves how things of a section are changed (plans/remote-server-sections-goal.md, 3.5): a rename, an archive, an
-// unarchive and a delete of a chat, a board and a group of a section go to that server (the call is under
-// /api/on/<entry id>/ with that server's own ids), and the question before a delete names the server; a row and a
+// unarchive and a delete of a chat, a board and a group of a section go to that server (the call's server is the
+// entry id, and its path has that server's own ids), and the question before a delete names the server; a row and a
 // group are moved between the groups of their own section by a drag; a drag from one section into another, from a
 // section into the local part and from the local part into a section lights nothing and makes no call, for a row and
 // for a group; and a board's "Move to…" lists the groups of its own section and nothing else.
@@ -9,7 +9,7 @@
 import { callsOf, check, dragger, mockEval, openPage, seed, sideMenu, sideSeen, until } from "../shot.mjs";
 
 const J = JSON.stringify;
-const STUDIO = "s_studio", ON = `/api/on/${STUDIO}`;
+const STUDIO = "s_studio";
 
 await check("SEC.5 changes in a section go to its server; nothing is dropped across servers", async ({ url, browser, fail, note }) => {
   await seed(url, "SEC");
@@ -33,7 +33,7 @@ await check("SEC.5 changes in a section go to its server; nothing is dropped acr
     await act();
     if (!await until(() => writes().length > n && writes().slice(n).every((c) => c.status !== undefined), 10000)) return fail(`${name}: no call was made`);
     const got = writes().slice(n);
-    if (got.length !== 1 || got[0].method !== method || got[0].path !== path) return fail(`${name}: the calls were ${J(got.map((c) => `${c.method} ${c.path}`))}, not ${method} ${path}`);
+    if (got.length !== 1 || got[0].server !== STUDIO || got[0].method !== method || got[0].path !== path) return fail(`${name}: the calls were ${J(got.map((c) => `${c.server} ${c.method} ${c.path}`))}, not ${STUDIO} ${method} ${path}`);
     for (const [k, v] of Object.entries(body)) if (J(got[0].body?.[k]) !== J(v)) fail(`${name}: the body has ${k} ${J(got[0].body?.[k])}, not ${J(v)}: ${J(got[0].body)}`);
     if (got[0].body && typeof got[0].body === "object" && ("collapsed" in got[0].body || "server" in got[0].body)) fail(`${name}: the body carries ${J(got[0].body)}`);
     if (got[0].status !== 200) fail(`${name}: answered ${got[0].status}`);
@@ -94,11 +94,11 @@ await check("SEC.5 changes in a section go to its server; nothing is dropped acr
     }, method, path, body);
     if (!await until(after, 10000)) fail(`${name}: the row is not where it was dropped: ${J(await outline())}`);
   };
-  await within("a chat into another group of its section", () => d.row("Take 14"), () => d.head("Renders", 0.3, 0.8), "group(Renders).drop [VISIBLE]", "PATCH", `${ON}/chats/c_take`, { group: "g_shop" }, async () => await d.groupOf("Take 14") === "Renders");
-  await within("a chat out of its group, to the section's ungrouped rows", () => d.row("Take 14"), () => d.row("Scratch"), "loose.drop [VISIBLE]", "PATCH", `${ON}/chats/c_take`, { group: "__ungrouped__" }, async () => await d.groupOf("Take 14") === "");
-  await within("a board into another group of its section", () => d.row("Storyboard"), () => d.head("Old takes", 0.3, 0.8), "group(Old takes).drop [VISIBLE]", "PATCH", `${ON}/boards/b_arch`, { group: "g_old" }, async () => await d.groupOf("Storyboard") === "Old takes");
-  await within("a group into another group of its section", () => d.head("Old takes"), () => d.head("Renders", 0.3, 0.8), "group(Renders).drop [VISIBLE]", "POST", `${ON}/groups/g_old/move`, { parent: "g_shop" }, async () => await d.parentOf("Old takes") === "Renders");
-  await within("a group back to the top level of its section", () => d.head("Old takes"), () => d.row("Scratch"), "loose.drop [VISIBLE]", "POST", `${ON}/groups/g_old/move`, { parent: "" }, async () => await d.parentOf("Old takes") === "");
+  await within("a chat into another group of its section", () => d.row("Take 14"), () => d.head("Renders", 0.3, 0.8), "group(Renders).drop [VISIBLE]", "PATCH", `/api/chats/c_take`, { group: "g_shop" }, async () => await d.groupOf("Take 14") === "Renders");
+  await within("a chat out of its group, to the section's ungrouped rows", () => d.row("Take 14"), () => d.row("Scratch"), "loose.drop [VISIBLE]", "PATCH", `/api/chats/c_take`, { group: "__ungrouped__" }, async () => await d.groupOf("Take 14") === "");
+  await within("a board into another group of its section", () => d.row("Storyboard"), () => d.head("Old takes", 0.3, 0.8), "group(Old takes).drop [VISIBLE]", "PATCH", `/api/boards/b_arch`, { group: "g_old" }, async () => await d.groupOf("Storyboard") === "Old takes");
+  await within("a group into another group of its section", () => d.head("Old takes"), () => d.head("Renders", 0.3, 0.8), "group(Renders).drop [VISIBLE]", "POST", `/api/groups/g_old/move`, { parent: "g_shop" }, async () => await d.parentOf("Old takes") === "Renders");
+  await within("a group back to the top level of its section", () => d.head("Old takes"), () => d.row("Scratch"), "loose.drop [VISIBLE]", "POST", `/api/groups/g_old/move`, { parent: "" }, async () => await d.parentOf("Old takes") === "");
   if (J(await there("return [chats.c_take.group, boards.b_arch.group, groups.find((g) => g.id === 'g_old').parent ?? ''];")) !== J(["__ungrouped__", "g_old", ""])) fail(`Studio Mac does not have the moves: ${J(await there("return [chats.c_take.group, boards.b_arch.group, groups.find((g) => g.id === 'g_old').parent ?? ''];"))}`);
 
   // ---- a board's "Move to…": the groups of its own section, and nothing else
@@ -111,13 +111,12 @@ await check("SEC.5 changes in a section go to its server; nothing is dropped acr
   };
   const offered = await targets(row("Floor plan"));
   if (J(offered) !== J(["Renders", "Renders / Nightly", "Old takes"])) fail(`"Move to…" of a board of the section offers ${J(offered)}, not that section's groups`);
-  await change("a board moved by its menu", pick(row("Floor plan"), "Move to…", "Old takes"), "PATCH", `${ON}/boards/b_loose`, { group: "g_old" });
+  await change("a board moved by its menu", pick(row("Floor plan"), "Move to…", "Old takes"), "PATCH", `/api/boards/b_loose`, { group: "g_old" });
   await has("a board moved by its menu", "  board Floor plan");
   const offeredNow = await targets(row("Floor plan"));
   if (J(offeredNow) !== J(["Ungrouped", "Renders", "Renders / Nightly"])) fail(`"Move to…" of a board in a group of the section offers ${J(offeredNow)}`);
   // (a local board has no "Move to…": its menu is the one it had)
-  await page.locator(".side-tree > .side-group > .side-group-head:has(.side-group-name:text-is('Shop'))").click();
-  const localBoard = page.locator('.side-tree > .side-group .side-row.is-board:has(.side-name:text-is("arch"))');
+  const localBoard = page.locator('.side-section[data-server="local"] > .side-section-body > .side-group .side-row.is-board:has(.side-name:text-is("arch"))');
   await localBoard.hover(); await localBoard.locator('button[title="More"]').click();
   const localMenu = await page.locator(".menu .menu-item").allTextContents();
   await page.keyboard.press("Escape"); if (await page.locator(".menu").count()) await page.mouse.click(900, 700);
@@ -125,35 +124,35 @@ await check("SEC.5 changes in a section go to its server; nothing is dropped acr
 
   // ---- rename, archive, unarchive, delete: a chat, a board, a group
   await page.locator(".side input.switch").click(); // (Show archived: an archived row stays, with its menu)
-  await change("a chat renamed", rename(row("Take 14"), "Take 15"), "PATCH", `${ON}/chats/c_take`, { name: "Take 15" });
+  await change("a chat renamed", rename(row("Take 14"), "Take 15"), "PATCH", `/api/chats/c_take`, { name: "Take 15" });
   await has("a chat renamed", "chat Take 15");
-  await change("a chat archived", pick(row("Take 15"), "Archive"), "POST", `${ON}/chats/c_take/archive`);
+  await change("a chat archived", pick(row("Take 15"), "Archive"), "POST", `/api/chats/c_take/archive`);
   await has("a chat archived", "chat Take 15 [archived]");
-  await change("a chat unarchived", pick(row("Take 15"), "Unarchive"), "POST", `${ON}/chats/c_take/unarchive`);
+  await change("a chat unarchived", pick(row("Take 15"), "Unarchive"), "POST", `/api/chats/c_take/unarchive`);
   await has("a chat unarchived", "chat Take 15");
-  await change("a chat deleted", del(row("Take 15")), "DELETE", `${ON}/chats/c_take`);
+  await change("a chat deleted", del(row("Take 15")), "DELETE", `/api/chats/c_take`);
   await has("a chat deleted", "chat Take 15", false);
 
-  await change("a board renamed", rename(row("Storyboard"), "Storyboard v2"), "POST", `${ON}/boards/b_arch/rename`, { name: "Storyboard v2" });
+  await change("a board renamed", rename(row("Storyboard"), "Storyboard v2"), "POST", `/api/boards/b_arch/rename`, { name: "Storyboard v2" });
   await has("a board renamed", "  board Storyboard v2");
-  await change("a board archived", pick(row("Storyboard v2"), "Archive"), "POST", `${ON}/boards/b_arch/archive`);
+  await change("a board archived", pick(row("Storyboard v2"), "Archive"), "POST", `/api/boards/b_arch/archive`);
   await has("a board archived", "  board Storyboard v2 [archived]");
-  await change("a board unarchived", pick(row("Storyboard v2"), "Unarchive"), "POST", `${ON}/boards/b_arch/unarchive`);
+  await change("a board unarchived", pick(row("Storyboard v2"), "Unarchive"), "POST", `/api/boards/b_arch/unarchive`);
   await has("a board unarchived", "  board Storyboard v2");
-  await change("a board deleted", del(row("Storyboard v2")), "DELETE", `${ON}/boards/b_arch`);
+  await change("a board deleted", del(row("Storyboard v2")), "DELETE", `/api/boards/b_arch`);
   await has("a board deleted", "  board Storyboard v2", false);
   await has("a board deleted, its chat", "    chat Tighten act two", false);
 
-  await change("a group renamed", rename(groupHead("Renders"), "Renders 2"), "PATCH", `${ON}/groups/g_shop`, { name: "Renders 2" });
+  await change("a group renamed", rename(groupHead("Renders"), "Renders 2"), "PATCH", `/api/groups/g_shop`, { name: "Renders 2" });
   await has("a group renamed", "group Renders 2");
-  await change("a group archived", pick(groupHead("Old takes"), "Archive"), "POST", `${ON}/groups/g_old/archive`);
+  await change("a group archived", pick(groupHead("Old takes"), "Archive"), "POST", `/api/groups/g_old/archive`);
   await has("a group archived", "group Old takes [archived]");
-  await change("a group unarchived", pick(groupHead("Old takes"), "Unarchive"), "POST", `${ON}/groups/g_old/unarchive`);
+  await change("a group unarchived", pick(groupHead("Old takes"), "Unarchive"), "POST", `/api/groups/g_old/unarchive`);
   await has("a group unarchived", "group Old takes");
-  await change("a group deleted, its contents kept", del(groupHead("Nightly"), "Move contents to Renders 2"), "DELETE", `${ON}/groups/g_sub?contents=keep`);
+  await change("a group deleted, its contents kept", del(groupHead("Nightly"), "Move contents to Renders 2"), "DELETE", `/api/groups/g_sub?contents=keep`);
   await has("a group deleted, its contents kept", "  group Nightly", false);
   await has("a group deleted, its contents kept: its chat", "  chat Last night's failures");
-  await change("a group deleted with everything in it", del(groupHead("Old takes"), "Delete everything in it"), "DELETE", `${ON}/groups/g_old?contents=delete`);
+  await change("a group deleted with everything in it", del(groupHead("Old takes"), "Delete everything in it"), "DELETE", `/api/groups/g_old?contents=delete`);
   await has("a group deleted with everything in it", "group Old takes", false);
   await has("a group deleted with everything in it: its board", "  board Floor plan", false);
   if (J(await there("return [Object.keys(chats).sort(), Object.keys(boards), groups.map((g) => [g.id, g.name])];")) !== J([["c_arch", "c_night", "c_note", "c_plain", "c_queue"], [], [["g_shop", "Renders 2"]]])) fail(`Studio Mac is left with ${J(await there("return [Object.keys(chats).sort(), Object.keys(boards), groups.map((g) => [g.id, g.name])];"))}`);
@@ -161,10 +160,10 @@ await check("SEC.5 changes in a section go to its server; nothing is dropped acr
   // ---- nothing of all this reached this computer's own things, and no call was a local one
   const local1 = await mockEval("return JSON.stringify([groups.map((g) => ({ ...g, collapsed: g.id === 'g_shop' ? true : g.collapsed })), Object.values(boards), Object.values(chats).map((c) => [c.id, c.name, c.group, c.archived])]);", url);
   if (local1 !== local0) fail("this computer's own groups, boards or chats changed");
-  const local = writes().filter((c) => !c.path.startsWith(ON + "/") && !(c.method === "PATCH" && c.path === "/api/groups/g_shop")); // (the one local call: the local group Shop, opened for its board's menu)
-  if (local.length) fail(`calls went elsewhere than ${ON}/: ${J(local.map((c) => `${c.method} ${c.path}`))}`);
+  const local = writes().filter((c) => c.server !== STUDIO && !(c.method === "PATCH" && c.path === "/api/groups/g_shop")); // (the one local call: the local group Shop, opened for its board's menu)
+  if (local.length) fail(`calls went elsewhere than /api/: ${J(local.map((c) => `${c.method} ${c.path}`))}`);
 
   for (const e of errors) fail(`page error: ${e}`);
   await ctx.close();
-  note(`${made} changes of a chat, a board and a group, each one call under ${ON}/; ${crossed} drags across servers lit nothing and made no call; "Move to…" offers the section's own groups`);
+  note(`${made} changes of a chat, a board and a group, each one call under /api/; ${crossed} drags across servers lit nothing and made no call; "Move to…" offers the section's own groups`);
 });

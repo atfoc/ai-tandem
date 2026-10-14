@@ -72,7 +72,7 @@ func TestNewSecret(t *testing.T) {
 	if s2, err := NewSecret(root); err != nil || s2 == s {
 		t.Errorf("over an empty file: %q, %v", s2, err)
 	}
-	if rep := Check(root, 1, 2); !rep.OK() {
+	if rep := Check(root, 2); !rep.OK() {
 		t.Errorf("after NewSecret: %+v", rep.Fatal)
 	}
 }

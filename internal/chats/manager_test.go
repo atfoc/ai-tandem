@@ -475,7 +475,9 @@ func followAll(br *editorbridge.Bridge) {
 // listen connects a client that follows every chat (see followAll).
 func listen(t *testing.T, br *editorbridge.Bridge) *events {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(br.ServeSSE))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		br.Serve(w, r, r.URL.Query().Get("client"), nil)
+	}))
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -540,12 +542,12 @@ func (e *events) drain(t *testing.T, br *editorbridge.Bridge) []map[string]any {
 	t.Helper()
 	followAll(br)
 	n := float64(markSeq.Add(1))
-	br.Broadcast(map[string]any{"type": "mark", "n": n})
-	e.wait(t, func(ev map[string]any) bool { return ev["type"] == "mark" && ev["n"] == n })
+	br.Broadcast(map[string]any{"type": "catalog", "mark": n}) // a type of the table that goes to every client
+	e.wait(t, func(ev map[string]any) bool { return ev["type"] == "catalog" && ev["mark"] == n })
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for i, ev := range e.evs {
-		if ev["type"] == "mark" && ev["n"] == n {
+		if ev["type"] == "catalog" && ev["mark"] == n {
 			got := e.evs[:i]
 			e.evs = append([]map[string]any(nil), e.evs[i+1:]...)
 			return got
@@ -630,7 +632,7 @@ func (e *env) boot() {
 		e.t.Fatal(err)
 	}
 	e.st = st
-	e.br = editorbridge.New(nil)
+	e.br = editorbridge.New()
 	e.bds = boards.New(st, e.br)
 	if err := e.bds.Load(); err != nil {
 		e.t.Fatal(err)

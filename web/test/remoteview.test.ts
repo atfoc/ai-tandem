@@ -10,10 +10,9 @@ import { stateLabel, type ServerState } from "../src/logic/servers.ts";
 
 const src = (f: string) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
-/** A chat of a section: its server holds its tree (UP), or not (DOWN). */
-const UP: Remote = { remote: true, connected: true };
-const DOWN: Remote = { remote: true, connected: false };
-const HERE: Remote = { remote: false, connected: true };
+/** A chat: its server holds its tree (UP), or not (DOWN). This computer's server is a server like the others. */
+const UP: Remote = { connected: true };
+const DOWN: Remote = { connected: false };
 
 test("the sentences name the server", () => {
   assert.equal(notConnected("Studio"), "Studio is not connected");
@@ -24,10 +23,11 @@ test("the sentences name the server", () => {
   assert.equal(TRY_AGAIN, "Try again");
 });
 
-test("remoteView: a chat of this computer shows the thread, whatever else is said of it", () => {
-  assert.deepEqual(remoteView(HERE, "This computer", "connected", false, { message: "x" }), { kind: "none" });
-  assert.deepEqual(remoteView(HERE, "This computer", "connected", true), { kind: "none" });
-  assert.deepEqual(remoteView({ remote: false, connected: false, gone: true }, "This computer", undefined, false, { code: NOT_FOUND, message: "x" }), { kind: "none" }, "it is never away and never gone");
+test("remoteView: a chat of this computer is judged as any other: away, or gone from this computer", () => {
+  assert.deepEqual(remoteView(UP, "This computer", "connected", true), { kind: "none" });
+  assert.deepEqual(remoteView(DOWN, "This computer", "not_started", false), { kind: "unreachable", text: "This computer is not connected. This chat shows again when it is back.", state: "Not started" });
+  assert.deepEqual(remoteView(DOWN, "This computer", "unreachable", true), { kind: "bar", text: awayText("This computer"), gone: false, state: "Unreachable" });
+  assert.deepEqual(remoteView({ connected: true, gone: true }, "This computer", "connected", true), { kind: "bar", text: goneText("This computer"), gone: true });
 });
 
 test("remoteView: a section's chat whose server is connected shows the thread, loaded or loading", () => {
@@ -97,7 +97,7 @@ test("remoteView: a load that failed while the server is connected shows the ser
 
 test("the chat view reads the three from the chat's key, the section's tree and the page's mark", () => {
   const view = src("ChatView.tsx");
-  assert.ok(view.includes("const remote = remoteView({ remote: inSection(chatId), connected, gone }, serverIs, state, !!loaded || !!wait.kept, loadErr);"));
+  assert.ok(view.includes("const remote = remoteView({ connected, gone }, serverIs, state, !!loaded || !!wait.kept, loadErr);"));
   assert.ok(view.includes("const connected = useStore((s) => serverConnected(s, server));"));
   assert.ok(view.includes("const gone = useStore((s) => !!s.gone[chatId]);"));
   assert.ok(view.includes("{!remote.gone && <button type=\"button\" className=\"link remote-servers\" onClick={() => openServers()}>{SERVERS}</button>}"));

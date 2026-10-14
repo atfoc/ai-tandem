@@ -1,13 +1,12 @@
 # AI Whiteboard server
 
-This folder is the AI Whiteboard server for one machine: the program `ai-whiteboard`, the web
-client it serves (`web/`) and two scripts. Use it to run AI Whiteboard on a machine that the app
-on another machine connects to, a remote server. There is no installer and no service file: the
-folder runs from wherever it is.
+This folder is the AI Whiteboard server for one machine: the program `ai-whiteboard` and two
+scripts. The server serves no page; the app is its client, and the app on another machine connects
+to it. There is no installer and no service file: the folder runs from wherever it is.
 
-A remote server is meant for a private network or a VPN. Its remote port listens on every IPv4
-address of the machine, over HTTPS and behind a secret; keeping the port off the internet is up
-to the machine's network and firewall.
+A server is meant for a private network or a VPN. Its client port listens on every IPv4 address of
+the machine, over HTTPS and behind a secret; keeping the port off the internet is up to the
+machine's network and firewall. A server that was never set up does not start.
 
 ## What the machine needs
 
@@ -34,8 +33,9 @@ to the machine's network and firewall.
    sh ~/ai-whiteboard-server/start-server.sh
    ```
 
-   It starts the server in the background and prints its local URL. The server keeps running
-   after you log out; it does not start by itself after a reboot.
+   It starts the server in the background and prints its address and the fingerprint of its
+   certificate. The server keeps running after you log out; it does not start by itself after a
+   reboot. Run before the set-up, it says so and starts nothing.
 4. In the app on your own machine open **Servers**, choose **Add server** and enter one of the
    addresses, the secret, and tick **Self-signed certificate**. Compare the fingerprint the app
    shows with the one set-up printed, and accept it only when they are the same.
@@ -45,37 +45,37 @@ On macOS with the firewall on, incoming connections to the server can be blocked
 
 ## The scripts
 
-`setup-remote.sh [--name NAME]... [--port N] [--new-cert] [--new-secret] [--home DIR] [--server-port N]`
+`setup-remote.sh [--name NAME]... [--port N] [--new-cert] [--new-secret] [--home DIR]`
 
 | Option            | What it does                                                                        |
 | ----------------- | ----------------------------------------------------------------------------------- |
 | `--name NAME`     | adds a DNS name or IPv4 address that clients reach this machine by; may be repeated |
-| `--port N`        | the remote port (default: keep it, or 4748 at the first set-up)                     |
+| `--port N`        | the client port (default: keep it, or 4748 at the first set-up)                     |
 | `--new-cert`      | replaces the key and the certificate: every client must accept the new fingerprint  |
 | `--new-secret`    | replaces the secret: every client needs the new one; a running server takes it at once |
 | `--home DIR`      | the data folder (default `~/.ai-whiteboard`)                                        |
-| `--server-port N` | the server's own port, when it is not the running server's or 4747                  |
 
 `start-server.sh [--restart] [server flags]`
 
 `--restart`, as the first argument, stops the running server first. Everything else is passed on
-to the server as it is: `-home DIR` for the data folder, `-port N` for the server's own port
-(default 4747, on 127.0.0.1 only), `-cwd DIR` for the default working folder of new chats.
+to the server as it is: `-home DIR` for the data folder and `-cwd DIR` for the default working
+folder of new chats.
 
 ## Commands
 
 ```sh
-./ai-whiteboard remote status   # off or listening, port, names, fingerprint; whether the next start will work
-./ai-whiteboard remote off      # removes the remote configuration; takes effect at the next start
+./ai-whiteboard status          # what the running server serves (address, port, names, fingerprint, the MCP listener) and what the next start will do
+./ai-whiteboard status -json    # the same as one JSON object
 ./ai-whiteboard secret          # prints the secret
+./ai-whiteboard secret -new     # replaces the secret and prints the new one
 ./ai-whiteboard stop            # stops the server
 ```
 
-`remote status` never shows the secret. `remote off` keeps the secret, the key and the
-certificate, so a later set-up gives the same secret and fingerprint. A changed set-up (a new
-port, a new certificate, `remote off`) takes effect when the server starts again:
-`sh start-server.sh --restart`. A new secret is taken by a running server at once, and its
-clients are disconnected until they have it.
+`status` never shows the secret. A changed set-up (a new port, a new certificate) takes effect
+when the server starts again: `sh start-server.sh --restart`; until then `status` shows both what
+the running server serves and what the next start will do. A new secret is taken by a running
+server at once, and its clients are disconnected until they have it. There is no command that
+turns client access off: a server always serves its clients over HTTPS with the secret.
 
 When the server does not start, the command says why and how to repair it; the server's log is
 `server.log` in the data folder.

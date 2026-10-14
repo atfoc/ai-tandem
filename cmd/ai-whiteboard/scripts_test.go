@@ -6,9 +6,6 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"errors"
-	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,15 +17,10 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/remote"
-	"ai-whiteboard/internal/servers"
 )
 
 // The scripts of scripts/remote, run through sh as docs/remote-servers.md calls them, on a scratch
 // data folder with its own ports.
-
-// webMark is in the index.html of the stand-in web client: a server that serves it was given the
-// folder.
-const webMark = "<title>scripts test</title>"
 
 // scriptsDir is scripts/remote of this repository.
 func scriptsDir(t *testing.T) string {
@@ -54,31 +46,18 @@ func copyFile(t *testing.T, from, to string, mode os.FileMode) {
 	}
 }
 
-func writeWeb(t *testing.T, dir string) {
-	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html>"+webMark+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// newScriptInstance is newInstance for the scripts: no remote set-up yet, a free remote port, and
-// the remote listener bound on 127.0.0.1 as newRemoteInstance binds it. It skips where sh is
-// missing.
-func newScriptInstance(t *testing.T) (in *instance, remotePort int) {
+// newScriptInstance is newBareInstance for the scripts: no set-up yet, which the scripts make.
+// It skips where sh is missing.
+func newScriptInstance(t *testing.T) *instance {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}
-	in = newInstance(t)
-	in.setenv(loopbackBind)
-	return in, freePort(t)
+	return newBareInstance(t)
 }
 
-// serverFolder is the folder scripts/build-server.sh makes, with a stand-in web client: the
-// binary, web/ and the two scripts side by side. The scripts are copied without their executable
+// serverFolder is the folder scripts/build-server.sh makes: the binary and the two scripts side
+// by side. The scripts are copied without their executable
 // bit, as a copy may lose it. in.bin becomes the folder's binary. The path has no symlink in it.
 func (in *instance) serverFolder(t *testing.T) string {
 	t.Helper()
@@ -87,7 +66,6 @@ func (in *instance) serverFolder(t *testing.T) string {
 	for _, name := range []string{"setup-remote.sh", "start-server.sh"} {
 		copyFile(t, filepath.Join(scriptsDir(t), name), filepath.Join(dir, name), 0o644)
 	}
-	writeWeb(t, filepath.Join(dir, "web"))
 	// The scripts name their folder with symlinks resolved.
 	dir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -124,37 +102,17 @@ func (in *instance) sh(t *testing.T, cwd, script string, args ...string) (stdout
 	return out.String(), errOut.String(), code
 }
 
-// own runs one of the commands with their own flags (`remote status`, `remote off`) for this data
-// folder and server port.
-func (in *instance) own(t *testing.T, words ...string) (stdout, stderr string, code int) {
-	t.Helper()
-	args := append(words, "-home", in.dir)
-	if words[len(words)-1] != "off" {
-		args = append(args, "-server-port", strconv.Itoa(in.port))
-	}
-	var out, errOut bytes.Buffer
-	cmd := exec.Command(in.bin, args...)
-	cmd.Env = in.environ()
-	cmd.Stdout, cmd.Stderr = &out, &errOut
-	err := cmd.Run()
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		code = ee.ExitCode()
-	} else if err != nil {
-		t.Fatalf("%v: %v", words, err)
-	}
-	return out.String(), errOut.String(), code
-}
-
-// setupArgs are the options every run of setup-remote.sh gets here: the scratch data folder and
-// the scratch server's port.
+// setupArgs are the options every run of setup-remote.sh gets here: the scratch data folder.
 func (in *instance) setupArgs(more ...string) []string {
-	return append([]string{"--home", in.dir, "--server-port", strconv.Itoa(in.port)}, more...)
+	return append([]string{"--home", in.dir}, more...)
 }
 
 // startArgs are the server flags start-server.sh passes on.
-func (in *instance) startArgs() []string {
-	return []string{"-home", in.dir, "-port", strconv.Itoa(in.port), "-claude", in.claude}
+func (in *instance) startArgs() []string { return in.flags() }
+
+// address is what `launch` writes for the instance's server, for a person.
+func (in *instance) address() string {
+	return "AI Whiteboard is running.\nAddress: " + in.base() + "\nFingerprint: " + in.fpr + "\n"
 }
 
 func wantAll(t *testing.T, what, text string, parts ...string) {
@@ -177,34 +135,16 @@ func changed(before, after map[string]string) string {
 	return strings.Join(names, " ")
 }
 
-// testConnection is the test of the Servers dialog against the remote listener on 127.0.0.1. Its
-// callers run it in a subtest of its own: it is the client half of the program against a real
-// server, and what a test says of the scripts does not wait for it. The server is one of this
-// level, which answers nothing but its hello to a client that does not state the level: a test
-// that connected found a server of the level the app asks for, and stated its own in every
-// request.
-func testConnection(t *testing.T, port int, fingerprint, secret string) servers.Result {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	target := servers.Target{Address: fmt.Sprintf("https://127.0.0.1:%d", port), Secret: secret, SelfSigned: true, Pin: fingerprint}
-	r := servers.TestConnection(ctx, target, servers.Identity{}, servers.Options{Root: t.TempDir(), LocalID: testClient, Version: "test"})
-	if r.OK && (r.FeatureLevel != servers.ClientLevel || r.InstanceID == "") {
-		t.Fatalf("the test connected to a server of level %d (instance %q), want the level %d of this app", r.FeatureLevel, r.InstanceID, servers.ClientLevel)
-	}
-	return r
-}
-
 // AC36: setup-remote.sh asks nothing and prints the names with the port, the fingerprint and the
 // secret; a second run changes nothing and prints the same; after the secret was deleted it makes
 // a new one and keeps the rest; --new-cert and --new-secret each replace that one thing.
 func TestSetupRemoteScript(t *testing.T) {
 	serverTest(t, "TestRemoteSetupCommand, TestRemoteSetupFlags, TestRemoteSetupNewCertNeedsConfig, TestSecretCommand (the commands the script runs), TestSetupRemoteScriptRefusesEmptyValues (the script itself) (this package)")
-	in, remotePort := newScriptInstance(t)
+	in := newScriptInstance(t)
 	folder := in.serverFolder(t)
 	script := filepath.Join(folder, "setup-remote.sh")
 	elsewhere := t.TempDir()
-	port := strconv.Itoa(remotePort)
+	port := strconv.Itoa(in.port)
 
 	first, stderr, code := in.sh(t, elsewhere, script, in.setupArgs("--port", port, "--name", "127.0.0.1")...)
 	if code != 0 {
@@ -214,7 +154,7 @@ func TestSetupRemoteScript(t *testing.T) {
 	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	wantAll(t, "the first set-up", first,
 		"Port: "+port+"\n", "127.0.0.1", "  https://127.0.0.1:"+port+"\n", "Fingerprint: "+fp+"\n", "Secret: "+secret+"\n",
-		"Next start: will listen\n", `"`+filepath.Join(folder, "start-server.sh")+`" --restart -home "`+in.dir+`" -port `+strconv.Itoa(in.port))
+		"Next start: will listen\n", `"`+filepath.Join(folder, "start-server.sh")+`" --restart -home "`+in.dir+`"`)
 	if on := strings.Contains(first, "firewall"); on != (runtime.GOOS == "darwin") {
 		t.Fatalf("the firewall line on %s: %v\n%s", runtime.GOOS, on, first)
 	}
@@ -325,12 +265,12 @@ func restartLine(t *testing.T, out string) string {
 	return line
 }
 
-// The restart line set-up prints is the running server's own: its port when that is not 4747 and
-// --server-port was not given, and the full path of a data folder that was given as a relative
-// one. Pasted in another folder, it restarts the server where it was.
+// The restart line set-up prints names the full path of a data folder that was given as a
+// relative one, and nothing else of the server: it has no port of its own to name. Pasted in
+// another folder, it restarts the server where it was.
 func TestSetupRemoteScriptRestartLine(t *testing.T) {
-	serverTest(t, "TestRemoteSetupCommand, TestRemoteStatusAgainstServer, TestSetupRemoteScriptRefusesEmptyValues (this package)")
-	in, remotePort := newScriptInstance(t)
+	serverTest(t, "TestRemoteSetupCommand, TestStatusOfARunningServer, TestSetupRemoteScriptRefusesEmptyValues (this package)")
+	in := newScriptInstance(t)
 	folder := in.serverFolder(t)
 	setup, start := filepath.Join(folder, "setup-remote.sh"), filepath.Join(folder, "start-server.sh")
 	cwd, err := filepath.EvalSymlinks(t.TempDir())
@@ -341,47 +281,47 @@ func TestSetupRemoteScriptRestartLine(t *testing.T) {
 	elsewhere := t.TempDir()
 	base := `sh "` + start + `" --restart -home "` + in.dir + `"`
 
-	// No server has run: the folder's full path, and no port, which no file names.
-	out, stderr, code := in.sh(t, cwd, setup, "--home", "data four", "--port", strconv.Itoa(remotePort), "--name", "127.0.0.1")
+	out, stderr, code := in.sh(t, cwd, setup, "--home", "data four", "--port", strconv.Itoa(in.port), "--name", "127.0.0.1")
 	if code != 0 {
 		t.Fatalf("set-up: exit %d\n%s%s", code, out, stderr)
 	}
-	wantAll(t, "set-up", out, "Remote access is set up in "+in.dir+".\n", "Server port: 4747\n",
-		"at its next start, and a new secret at once. To start it, or to restart it:\n")
-	if line := restartLine(t, out); line != base {
-		t.Fatalf("the restart line with no server\n%s\nwant\n%s", line, base)
+	wantAll(t, "set-up", out, "Remote access is set up in "+in.dir+".\n", "at its next start, and a new secret at once. To start it, or to restart it:\n")
+	if strings.Contains(out, "Server port") {
+		t.Fatalf("set-up names a server port:\n%s", out)
 	}
+	if line := restartLine(t, out); line != base {
+		t.Fatalf("the restart line\n%s\nwant\n%s", line, base)
+	}
+	in.secret, in.fpr = secretOf(t, in.dir), fingerprintOf(t, in.dir)
 
-	if out, stderr, code := in.sh(t, elsewhere, start, in.startArgs()...); code != 0 || strings.TrimSpace(out) != in.url {
+	if out, stderr, code := in.sh(t, elsewhere, start, in.startArgs()...); code != 0 || out != in.address() {
 		t.Fatalf("start-server.sh: exit %d, printed %q\n%s", code, out, stderr)
 	}
 	pid := in.hello(t).Pid
-	in.waitListening(t)
+	in.waitServing(t)
 
-	// The server runs on its own port, and set-up is given the data folder only.
+	// Beside the running server the line is the same.
 	out, stderr, code = in.sh(t, cwd, setup, "--home=data four")
 	if code != 0 {
 		t.Fatalf("set-up beside the running server: exit %d\n%s%s", code, out, stderr)
 	}
-	wantAll(t, "set-up beside the running server", out, fmt.Sprintf("Server port: %d\n", in.port))
-	line := restartLine(t, out)
-	if want := base + " -port " + strconv.Itoa(in.port); line != want {
-		t.Fatalf("the restart line\n%s\nwant\n%s", line, want)
+	if line := restartLine(t, out); line != base {
+		t.Fatalf("the restart line\n%s\nwant\n%s", line, base)
 	}
 
-	// Pasted in another folder. The test adds its stand-in for claude, as every server here gets.
-	out, stderr, code = in.sh(t, elsewhere, "-c", line+` -claude "`+in.claude+`"`)
-	if code != 0 || strings.TrimSpace(out) != in.url {
-		t.Fatalf("the pasted line: exit %d, printed %q, want %q\n%s", code, out, in.url, stderr)
+	// Pasted in another folder. The test adds its stand-ins for the agents, as every server here gets.
+	out, stderr, code = in.sh(t, elsewhere, "-c", base+` -claude "`+in.claude+`" -pi "`+in.pi+`" -cursor "`+in.cursor+`"`)
+	if code != 0 || out != in.address() {
+		t.Fatalf("the pasted line: exit %d, printed %q, want %q\n%s", code, out, in.address(), stderr)
 	}
 	waitGone(t, pid)
 	if next := in.hello(t).Pid; next == pid {
 		t.Fatalf("the pasted line kept the server with pid %d", pid)
 	}
-	in.waitListening(t)
-	// The server on that port is this data folder's.
-	if out, stderr, code := in.own(t, "remote", "status"); code != 0 || !strings.HasPrefix(out, "Running: listening\n") {
-		t.Fatalf("remote status after the pasted line: exit %d\n%s%s", code, out, stderr)
+	in.waitServing(t)
+	// The server is this data folder's.
+	if out, stderr, code := in.ends(t, "status"); code != 0 || !strings.HasPrefix(out, "Running: this build ") {
+		t.Fatalf("status after the pasted line: exit %d\n%s%s", code, out, stderr)
 	}
 }
 
@@ -389,7 +329,7 @@ func TestSetupRemoteScriptRestartLine(t *testing.T) {
 // default data folder.
 func TestSetupRemoteScriptRefusesEmptyValues(t *testing.T) {
 	smokeTest(t)
-	in, _ := newScriptInstance(t)
+	in := newScriptInstance(t)
 	folder := in.serverFolder(t)
 	script := filepath.Join(folder, "setup-remote.sh")
 	cwd := t.TempDir()
@@ -399,7 +339,6 @@ func TestSetupRemoteScriptRefusesEmptyValues(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"--home", ""}, {"--home="},
-		{"--home", in.dir, "--server-port", ""}, {"--home", in.dir, "--server-port="},
 		{"--home", in.dir, "--port", ""}, {"--home", in.dir, "--port="},
 		{"--home", in.dir, "--name", ""}, {"--home", in.dir, "--name="},
 	} {
@@ -419,64 +358,65 @@ func TestSetupRemoteScriptRefusesEmptyValues(t *testing.T) {
 	}
 }
 
-// AC36: start-server.sh works when called from another folder; `remote status` shows off or
-// listening, the port, the names and the fingerprint, says whether the next start will work and
-// why not, and never the secret; `remote off` removes the configuration only and takes effect at
-// the next start. AC35's last clause: a test connection to the server the script set up ends
-// connected.
+// start-server.sh works when called from another folder and prints the server's address and
+// fingerprint; before the set-up it starts nothing and names the command that sets it up; `status`
+// shows the port, the names and the fingerprint of the running server and of the files, says
+// whether the next start will work and why not, and never the secret. A client that has the
+// printed address, the fingerprint and the secret connects.
 func TestStartServerScriptAndStatus(t *testing.T) {
-	serverTest(t, "TestRemoteStatusFromFiles, TestRemoteStatusAgainstServer, TestRemoteOffCommand (this package)", "TestTestConnectionRows (internal/servers)")
-	in, remotePort := newScriptInstance(t)
+	serverTest(t, "TestStatusFromFiles, TestStatusOfARunningServer, TestStatusJSON (this package)", "TestNotSetUpRefusesThenStarts (this package)")
+	in := newScriptInstance(t)
 	folder := in.serverFolder(t)
 	setup, start := filepath.Join(folder, "setup-remote.sh"), filepath.Join(folder, "start-server.sh")
 	elsewhere := t.TempDir()
-	port := strconv.Itoa(remotePort)
+	port := strconv.Itoa(in.port)
+
+	// Before the set-up the start says what to do and starts nothing.
+	out, stderr, code := in.sh(t, elsewhere, start, in.startArgs()...)
+	if code != 1 || out != "" || !strings.Contains(stderr, "AI Whiteboard is not set up on this machine. Set it up once with: ") ||
+		!strings.Contains(stderr, `"`+in.bin+`" remote setup -home "`+in.dir+`"`) {
+		t.Fatalf("start-server.sh before the set-up: exit %d\n%s%s", code, out, stderr)
+	}
+	in.noServer(t)
 
 	if out, stderr, code := in.sh(t, elsewhere, setup, in.setupArgs("--port", port, "--name", "127.0.0.1")...); code != 0 {
 		t.Fatalf("set-up: exit %d\n%s%s", code, out, stderr)
 	}
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
+	in.secret, in.fpr = secretOf(t, in.dir), fingerprintOf(t, in.dir)
 
-	// The start, from a folder that has no web/dist.
-	out, stderr, code := in.sh(t, elsewhere, start, in.startArgs()...)
-	if code != 0 || strings.TrimSpace(out) != in.url {
-		t.Fatalf("start-server.sh: exit %d, printed %q, want %q\n%s", code, out, in.url, stderr)
+	out, stderr, code = in.sh(t, elsewhere, start, in.startArgs()...)
+	if code != 0 || out != in.address() {
+		t.Fatalf("start-server.sh: exit %d, printed %q, want %q\n%s", code, out, in.address(), stderr)
 	}
 	pid := in.hello(t).Pid
-	resp, err := httpClient().Get(in.url)
-	if err != nil {
-		t.Fatal(err)
+	in.waitServing(t)
+	// The server serves no page, from this folder or any other.
+	if status, _ := in.getWith(t, "/", in.secret, "", testLevel); status != 404 {
+		t.Fatalf("GET / with the secret: status %d, want 404", status)
 	}
-	page, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(page), webMark) {
-		t.Fatalf("the web client: status %d, body %q", resp.StatusCode, page)
-	}
-	in.waitListening(t)
 	// A second call finds the running server and starts none.
-	if out, _, code := in.sh(t, elsewhere, start, in.startArgs()...); code != 0 || strings.TrimSpace(out) != in.url || in.hello(t).Pid != pid {
+	if out, _, code := in.sh(t, elsewhere, start, in.startArgs()...); code != 0 || out != in.address() || in.hello(t).Pid != pid {
 		t.Fatalf("start-server.sh again: exit %d, printed %q", code, out)
 	}
-
-	t.Run("the test connection", func(t *testing.T) {
-		if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
-			t.Fatalf("the test connection: %+v", r)
-		}
-	})
+	// What a client needs is what the script printed: the address, the fingerprint and the secret.
+	in.helloOK(t, in.secret)
+	if status, _ := in.getWith(t, "/api/state", in.secret, "", testLevel); status != 200 {
+		t.Fatalf("the state with the secret the set-up printed: status %d", status)
+	}
 
 	// Status, with a good set-up and with the key removed, against the running server and from
 	// the files alone. It never shows the secret.
-	listeningLines := []string{"Running: listening\n", "Running port: " + port + "\n", "Running names: ", "127.0.0.1", "Running fingerprint: " + fp + "\n"}
-	goodFiles := []string{"Files: the next start will listen\n", "Port: " + port + "\n", "Names: ", "Fingerprint: " + fp + "\n"}
+	listeningLines := []string{"Running: this build ", "Address: " + in.base() + "\n", "Port: " + port + "\n", "Names: ", "127.0.0.1", "Fingerprint: " + in.fpr + "\n", "MCP listener: "}
+	goodFiles := []string{"Files: the next start will listen\n", "Port: " + port + "\n", "Names: ", "Fingerprint: " + in.fpr + "\n"}
 	status := func(what string, wantCode int, parts ...string) string {
 		t.Helper()
-		out, stderr, code := in.own(t, "remote", "status")
+		out, stderr, code := in.ends(t, "status")
 		if code != wantCode {
-			t.Fatalf("remote status, %s: exit %d, want %d\n%s%s", what, code, wantCode, out, stderr)
+			t.Fatalf("status, %s: exit %d, want %d\n%s%s", what, code, wantCode, out, stderr)
 		}
-		wantAll(t, "remote status, "+what, out+stderr, parts...)
-		if strings.Contains(out+stderr, secret) {
-			t.Fatalf("remote status, %s, shows the secret:\n%s%s", what, out, stderr)
+		wantAll(t, "status, "+what, out+stderr, parts...)
+		if strings.Contains(out+stderr, in.secret) {
+			t.Fatalf("status, %s, shows the secret:\n%s%s", what, out, stderr)
 		}
 		return out + stderr
 	}
@@ -497,48 +437,36 @@ func TestStartServerScriptAndStatus(t *testing.T) {
 	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if text := status("stopped, good", 0, append(goodFiles, "Running: no server\n")...); strings.Contains(text, "Running port") {
-		t.Fatalf("remote status with no server reports a running port:\n%s", text)
+	if text := status("stopped, good", 0, append(goodFiles, "Running: no server\n")...); strings.Contains(text, "Address:") {
+		t.Fatalf("status with no server reports an address:\n%s", text)
 	}
 
-	// Off: the configuration only, and the running server keeps listening until its next start.
+	// --restart replaces the server.
 	if _, stderr, code := in.sh(t, elsewhere, start, in.startArgs()...); code != 0 {
 		t.Fatalf("the second start: exit %d\n%s", code, stderr)
 	}
 	pid = in.hello(t).Pid
-	in.waitListening(t)
-	files := remoteFiles(t, in.dir)
-	out, stderr, code = in.own(t, "remote", "off")
-	if after := remoteFiles(t, in.dir); code != 0 || changed(files, after) != "remote.json" || after["remote.json"] != "" || after["instance-id"] != files["instance-id"] {
-		t.Fatalf("remote off: exit %d, changed %q\n%s%s", code, changed(files, after), out, stderr)
-	}
-	remoteOK(t, remotePort, fp, secret)
-	status("running, after off", 0, append(listeningLines, "Files: not set up\n")...)
-
-	if out, stderr, code := in.sh(t, elsewhere, start, append([]string{"--restart"}, in.startArgs()...)...); code != 0 || strings.TrimSpace(out) != in.url {
+	in.waitServing(t)
+	if out, stderr, code := in.sh(t, elsewhere, start, append([]string{"--restart"}, in.startArgs()...)...); code != 0 || out != in.address() {
 		t.Fatalf("start-server.sh --restart: exit %d, printed %q\n%s", code, out, stderr)
 	}
 	waitGone(t, pid)
 	if next := in.hello(t).Pid; next == pid {
 		t.Fatalf("--restart kept the server with pid %d", pid)
 	}
-	if listening(remotePort) {
-		t.Fatalf("the remote port %d is open after remote off and a restart", remotePort)
-	}
-	status("running, off", 0, "Running: off\n", "Files: not set up\n")
+	in.waitServing(t)
+	in.helloOK(t, in.secret)
 }
 
-// start-server.sh says what is missing: the folder's web client, the folder's binary.
+// start-server.sh says what is missing: the folder's binary. setup-remote.sh the same.
 func TestStartServerScriptNeedsItsFolder(t *testing.T) {
 	serverTest(t, "TestSetupRemoteScriptRefusesEmptyValues (a script of the server folder run through sh) (this package)")
-	in, _ := newScriptInstance(t)
+	in := newScriptInstance(t)
 	folder := in.serverFolder(t)
 	start := filepath.Join(folder, "start-server.sh")
-	if err := os.Remove(filepath.Join(folder, "web", "index.html")); err != nil {
-		t.Fatal(err)
-	}
-	if out, stderr, code := in.sh(t, t.TempDir(), start, in.startArgs()...); code != 1 || out != "" || !strings.Contains(stderr, "no web client at "+filepath.Join(folder, "web")) {
-		t.Fatalf("without web/index.html: exit %d\n%s%s", code, out, stderr)
+	// The folder has no page and the script asks for none.
+	if entries, _ := os.ReadDir(folder); len(entries) != 3 {
+		t.Fatalf("the folder holds %d entries, want the binary and the two scripts", len(entries))
 	}
 	if err := os.Remove(in.bin); err != nil {
 		t.Fatal(err)
@@ -563,12 +491,12 @@ func TestStartServerScriptNeedsItsFolder(t *testing.T) {
 	}
 }
 
-// AC35: run through sh from the bundle (Contents/Resources/remote/setup-remote.sh, the binary in
-// Contents/MacOS), the script sets the app's own server up as a remote server: started as the app
-// starts it, a test connection to it ends connected.
+// Run through sh from the bundle (Contents/Resources/remote/setup-remote.sh, the binary in
+// Contents/MacOS), the script sets the app's own server up: started as the app starts it, a client
+// with the address, the fingerprint and the secret it printed connects.
 func TestSetupRemoteScriptInTheBundle(t *testing.T) {
-	serverTest(t, "TestBundleCarriesSetupScript, TestRemoteSetupCommand (this package)", "TestPinnedConnects (internal/servers)")
-	in, remotePort := newScriptInstance(t)
+	serverTest(t, "TestBundleCarriesSetupScript, TestRemoteSetupCommand (this package)")
+	in := newScriptInstance(t)
 	contents := filepath.Join(t.TempDir(), "AI Whiteboard.app", "Contents")
 	built := os.Getenv("AIWB_TEST_BUNDLE") // a built AI Whiteboard.app, in place of the hand-made folder
 	if built != "" {
@@ -589,32 +517,27 @@ func TestSetupRemoteScriptInTheBundle(t *testing.T) {
 	} else {
 		copyFile(t, in.bin, bin, 0o755)
 		copyFile(t, filepath.Join(scriptsDir(t), "setup-remote.sh"), script, 0o644)
-		writeWeb(t, filepath.Join(contents, "Resources", "web"))
 	}
 	in.bin = bin
-	port := strconv.Itoa(remotePort)
+	port := strconv.Itoa(in.port)
 
 	out, stderr, code := in.sh(t, t.TempDir(), script, in.setupArgs("--port", port, "--name", "127.0.0.1")...)
 	if code != 0 {
 		t.Fatalf("set-up from the bundle: exit %d\n%s%s", code, out, stderr)
 	}
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
-	wantAll(t, "set-up from the bundle", out, "  https://127.0.0.1:"+port+"\n", "Fingerprint: "+fp+"\n", "Secret: "+secret+"\n",
-		`"`+in.exe(t)+`" relaunch -home "`+in.dir+`" -port `+strconv.Itoa(in.port))
+	in.secret, in.fpr = secretOf(t, in.dir), fingerprintOf(t, in.dir)
+	wantAll(t, "set-up from the bundle", out, "  https://127.0.0.1:"+port+"\n", "Fingerprint: "+in.fpr+"\n", "Secret: "+in.secret+"\n",
+		`"`+in.exe(t)+`" relaunch -home "`+in.dir+`"`)
 
-	// The app's start: `launch`, which in a bundle serves Contents/Resources/web.
+	// The app's start: `launch`.
 	launch := exec.Command(bin, append([]string{"launch"}, in.startArgs()...)...)
 	launch.Env = in.environ()
 	launched, err := launch.Output()
-	if err != nil || strings.TrimSpace(string(launched)) != in.url {
+	if err != nil || string(launched) != in.address() {
 		t.Fatalf("launch from the bundle: %v, printed %q", err, launched)
 	}
-	in.waitListening(t)
-	t.Run("the test connection", func(t *testing.T) {
-		if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
-			t.Fatalf("the test connection: %+v", r)
-		}
-	})
+	in.waitServing(t)
+	in.helloOK(t, in.secret)
 }
 
 // AC35: the packaging puts the set-up script into the bundle, where
@@ -653,14 +576,14 @@ func TestBundleCarriesSetupScript(t *testing.T) {
 	}
 }
 
-// AC20: scripts/build-server.sh makes the server folder for each of its four targets, with the
-// same files in each and a binary for the target's system and CPU, and refuses another target;
-// this machine's folder works as docs/remote-servers.md says: set-up, start, a test connection. It
-// runs only on request: it needs node and npm, builds the web client and writes bin/ of the repository
-// (its four folders are removed again).
+// scripts/build-server.sh makes the server folder for each of its four targets, with the same files
+// in each (the program and the scripts, and no page) and a binary for the target's system and CPU,
+// and refuses another target; this machine's folder works as its README says: set-up, start, a
+// client that connects. It runs only on request: it builds four binaries and writes bin/ of the
+// repository (its four folders are removed again). It needs no node and no build of the page.
 func TestBuildServerFolders(t *testing.T) {
 	if os.Getenv("AIWB_TEST_BUILD") != "1" {
-		t.Skip("builds the web client and four server folders into bin/: set AIWB_TEST_BUILD=1 to run it")
+		t.Skip("builds four server folders into bin/: set AIWB_TEST_BUILD=1 to run it")
 	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -721,13 +644,8 @@ func TestBuildServerFolders(t *testing.T) {
 				}
 			}
 		}
-		if want := []string{"README.md", "ai-whiteboard", "setup-remote.sh", "start-server.sh", "web"}; !slices.Equal(names, want) {
-			t.Fatalf("%s: the folder holds %v, want %v", target, names, want)
-		}
-		for _, name := range []string{"index.html", "version.json"} {
-			if info, err := os.Stat(filepath.Join(dir, "web", name)); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-				t.Fatalf("%s: web/%s: %v", target, name, err)
-			}
+		if want := []string{"README.md", "ai-whiteboard", "setup-remote.sh", "start-server.sh"}; !slices.Equal(names, want) {
+			t.Fatalf("%s: the folder holds %v, want %v: no page beside the program", target, names, want)
 		}
 		for _, name := range []string{"README.md", "setup-remote.sh", "start-server.sh"} {
 			got, err := os.ReadFile(filepath.Join(dir, name))
@@ -775,39 +693,21 @@ func TestBuildServerFolders(t *testing.T) {
 	if !slices.Contains(targets, host) {
 		t.Skipf("no server folder is built for %s: its use is not tried", host)
 	}
-	in, remotePort := newScriptInstance(t)
+	in := newScriptInstance(t)
 	dir := folderOf(host)
 	in.bin = filepath.Join(dir, "ai-whiteboard")
 	setup, start := filepath.Join(dir, "setup-remote.sh"), filepath.Join(dir, "start-server.sh")
 	elsewhere := t.TempDir()
-	port := strconv.Itoa(remotePort)
+	port := strconv.Itoa(in.port)
 
 	if out, stderr, code := in.sh(t, elsewhere, setup, in.setupArgs("--port", port, "--name", "127.0.0.1")...); code != 0 {
 		t.Fatalf("set-up: exit %d\n%s%s", code, out, stderr)
 	}
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
+	in.secret, in.fpr = secretOf(t, in.dir), fingerprintOf(t, in.dir)
 	out, stderr, code := in.sh(t, elsewhere, start, in.startArgs()...)
-	if code != 0 || strings.TrimSpace(out) != in.url {
-		t.Fatalf("start-server.sh: exit %d, printed %q, want %q\n%s", code, out, in.url, stderr)
+	if code != 0 || out != in.address() {
+		t.Fatalf("start-server.sh: exit %d, printed %q, want %q\n%s", code, out, in.address(), stderr)
 	}
-	// The folder's own web client is served.
-	resp, err := httpClient().Get(in.url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	page, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	index, err := os.ReadFile(filepath.Join(dir, "web", "index.html"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK || !bytes.Equal(page, index) {
-		t.Fatalf("the web client: status %d, body %q", resp.StatusCode, page)
-	}
-	in.waitListening(t)
-	t.Run("the test connection", func(t *testing.T) {
-		if r := testConnection(t, remotePort, fp, secret); !r.OK || r.Outcome != servers.OutcomeConnected {
-			t.Fatalf("the test connection: %+v", r)
-		}
-	})
+	in.waitServing(t)
+	in.helloOK(t, in.secret)
 }

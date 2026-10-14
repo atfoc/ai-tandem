@@ -4,306 +4,85 @@
 const path = require('node:path');
 const fsPromises = require('node:fs/promises');
 
-const LAUNCH_TIMEOUT_MS = 40_000;
-
-// serverBin is the Go program to run `launch` with: AIWB_SERVER_BIN when set; in a packaged app the
-// ai-whiteboard next to the Electron executable (X.app/Contents/MacOS); with `npm start`, the one
-// that `go build -o bin/ai-whiteboard` makes in the repository.
+// serverBin is the Go program the app runs for this computer's server: AIWB_SERVER_BIN when set; in a
+// packaged app the ai-whiteboard next to the Electron executable (X.app/Contents/MacOS); with
+// `npm start`, the one that `go build -o bin/ai-whiteboard` makes in the repository.
 function serverBin({ env, execPath, isPackaged, dirname }) {
   if (env.AIWB_SERVER_BIN) return env.AIWB_SERVER_BIN;
   if (isPackaged) return path.join(path.dirname(execPath), 'ai-whiteboard');
   return path.resolve(dirname, '../bin/ai-whiteboard');
 }
 
-// launchArgs are the arguments for serverBin. An unbundled binary serves web/dist relative to its
-// working folder, which for the detached server is the home folder, so in development the built
-// web client is passed as an absolute path.
-function launchArgs({ isPackaged, dirname }) {
-  if (isPackaged) return ['launch'];
-  return ['launch', '-client', path.resolve(dirname, '../web/dist')];
+// pagePath is the page's file: AIWB_PAGE when set (tests); in a packaged app web/index.html in the
+// app's resources; with `npm start`, the web/dist/index.html that `npm run build` makes in web/.
+function pagePath({ env, resourcesPath, isPackaged, dirname }) {
+  if (env.AIWB_PAGE) return path.resolve(env.AIWB_PAGE);
+  if (isPackaged) return path.join(resourcesPath, 'web', 'index.html');
+  return path.resolve(dirname, '../web/dist/index.html');
 }
 
-// parseLaunchOutput returns the server URL that `launch` printed as its only line, or throws when
-// the output is anything else.
-function parseLaunchOutput(stdout) {
-  const text = String(stdout ?? '').trim();
-  let url;
+// serverLogPath is where the detached server writes its output, in the data folder home.
+function serverLogPath(home) {
+  return path.join(home, 'server.log');
+}
+
+// withoutHash is url as a string without its fragment; null when it is not a URL.
+function withoutHash(url) {
   try {
-    url = new URL(text);
+    const u = new URL(url);
+    u.hash = '';
+    return u.href;
   } catch {
-    url = null;
+    return null;
   }
-  if (!url || !/^https?:$/.test(url.protocol) || /\s/.test(text)) {
-    throw new Error(`ai-whiteboard launch printed no server URL: ${JSON.stringify(text)}`);
-  }
-  return text;
 }
 
-// serverLogPath is where the detached server writes its output.
-function serverLogPath(homedir) {
-  return path.join(homedir, '.ai-whiteboard', 'server.log');
+// atPage says whether url is the page's own URL, whatever its hash. The page is a file, so no origin
+// tells it from another file.
+function atPage(url, pageURL) {
+  const page = withoutHash(pageURL);
+  return page !== null && withoutHash(url) === page;
 }
 
-// errorDetail is the text for the start error dialog: launch's stderr, or the error's message when
-// stderr is empty.
-function errorDetail(err, stderr) {
-  const text = String(stderr ?? '').trim();
-  if (text) return text;
-  return (err && err.message) || String(err);
-}
-
-// createStartUp returns start(), which finds or starts the server and loads it in the app window:
+// linkAction decides what happens to a link the app window would follow or open, given the page's
+// URL:
 //
-//   - AIWB_URL set: loads that URL, no launch.
-//   - otherwise: shows Starting, runs `bin args` through execFile, loads the URL it printed, and
-//     hides Starting once the page has loaded.
-//   - on failure: hides Starting and awaits showError(detail), which resolves to 'retry' (run it
-//     all again) or 'quit' (call quit).
-//   - on failure while isQuitting() is true (the app is quitting, which aborts the load or kills
-//     launch): hides Starting and resolves null, with no dialog, no retry and no second quit.
-//
-// Calls made while a start-up is running share it instead of starting a second one.
-function createStartUp({
-  env, bin, args, execFile, showStarting, hideStarting, loadURL, showError, quit,
-  isQuitting = () => false,
-}) {
-  let running = null;
-
-  async function attempt() {
-    for (;;) {
-      showStarting();
-      try {
-        const url = await findServer({ env, bin, args, execFile });
-        await loadURL(url);
-        hideStarting();
-        return url;
-      } catch (e) {
-        hideStarting();
-        if (isQuitting()) return null;
-        const detail = e instanceof StartError ? e.message : errorDetail(e, '');
-        const action = await showError(detail);
-        if (action !== 'retry') {
-          quit();
-          return null;
-        }
-      }
-    }
-  }
-
-  return function start() {
-    if (!running) {
-      running = attempt().finally(() => {
-        running = null;
-      });
-    }
-    return running;
-  };
-}
-
-class StartError extends Error {}
-
-// runLaunch runs `bin args` through execFile and resolves to the URL it printed, or rejects with a
-// StartError whose message is launch's stderr (or the error's message).
-function runLaunch({ bin, args, execFile }) {
-  return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout: LAUNCH_TIMEOUT_MS }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new StartError(errorDetail(err, stderr)));
-        return;
-      }
-      try {
-        resolve(parseLaunchOutput(stdout));
-      } catch (e) {
-        reject(new StartError(errorDetail(e, stderr)));
-      }
-    });
-  });
-}
-
-// findServer resolves to the server URL the way start-up does: AIWB_URL when set, otherwise what
-// `bin args` prints.
-async function findServer({ env, bin, args, execFile }) {
-  if (env.AIWB_URL) return env.AIWB_URL;
-  return runLaunch({ bin, args, execFile });
-}
-
-const CHECK_INTERVAL_MS = 2_000;
-const CHECK_TIMEOUT_MS = 1_000;
-const CHECK_FAILURES = 3;
-const RELAUNCH_RETRY_MS = 5_000;
-const ERR_ABORTED = -3;
-
-// checkServer resolves to true when GET <origin of url>/api/hello answers, within timeoutMs, with
-// JSON whose app is "ai-whiteboard"; to false on anything else. It never rejects.
-async function checkServer({ fetch, url, timeoutMs = CHECK_TIMEOUT_MS }) {
-  try {
-    const res = await fetch(new URL('/api/hello', url).href, {
-      cache: 'no-store',
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) return false;
-    const body = await res.json();
-    return !!body && body.app === 'ai-whiteboard';
-  } catch {
-    return false;
-  }
-}
-
-// createReconnector brings the main window back when the server goes away. Once start(url) is
-// called (the main window has loaded url), it calls check(url) every intervalMs. After
-// failuresToLaunch failed checks in a row, or at once on failLoad(code) for any code but -3 (an
-// aborted load), it calls launch() and, when that resolves to a URL, load(url); the failure count
-// resets. When launch or load fails it tries again retryMs later. A trigger while a launch runs is
-// ignored, so launch never runs twice at once. stop() (no main window, or quitting) cancels every
-// timer; nothing happens until start is called again.
-//
-// check resolves to a boolean; launch resolves to a URL or rejects; load resolves or rejects.
-function createReconnector({
-  check,
-  launch,
-  load,
-  setTimeout,
-  clearTimeout,
-  intervalMs = CHECK_INTERVAL_MS,
-  failuresToLaunch = CHECK_FAILURES,
-  retryMs = RELAUNCH_RETRY_MS,
-}) {
-  let running = false;
-  let url = null;
-  let failures = 0;
-  let timer = null;
-  let launching = false;
-  // generation changes on every start, stop and launch, so a check or launch that finishes after
-  // one is dropped.
-  let generation = 0;
-
-  function clearTimer() {
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
-  }
-
-  function schedule(fn, ms) {
-    clearTimer();
-    timer = setTimeout(() => {
-      timer = null;
-      fn();
-    }, ms);
-  }
-
-  async function tick() {
-    const gen = generation;
-    let ok;
-    try {
-      ok = await check(url);
-    } catch {
-      ok = false;
-    }
-    if (gen !== generation || !running || launching) return;
-    if (ok) {
-      failures = 0;
-    } else {
-      failures++;
-      if (failures >= failuresToLaunch) {
-        relaunch();
-        return;
-      }
-    }
-    schedule(tick, intervalMs);
-  }
-
-  async function relaunch() {
-    if (!running || launching) return;
-    launching = true;
-    clearTimer();
-    failures = 0;
-    const gen = ++generation; // drops a check still in flight
-    let ok = false;
-    try {
-      const next = await launch();
-      if (gen === generation && running) {
-        url = next;
-        await load(next);
-        ok = true;
-      }
-    } catch {
-      ok = false;
-    }
-    launching = false;
-    if (!running) return;
-    if (gen !== generation) {
-      // Stopped and started again while launch ran: start's check was held back, so begin it now.
-      schedule(tick, intervalMs);
-      return;
-    }
-    failures = 0;
-    schedule(ok ? tick : relaunch, ok ? intervalMs : retryMs);
-  }
-
-  return {
-    // start begins (or keeps) checking url. While a launch runs it only records url.
-    start(nextURL) {
-      url = nextURL;
-      if (running) return;
-      running = true;
-      generation++;
-      failures = 0;
-      if (!launching) schedule(tick, intervalMs);
-    },
-    stop() {
-      if (!running) return;
-      running = false;
-      generation++;
-      failures = 0;
-      clearTimer();
-    },
-    // failLoad reports a did-fail-load of the main frame with its error code.
-    failLoad(code) {
-      if (code === ERR_ABORTED) return;
-      relaunch();
-    },
-  };
-}
-
-// linkAction decides what happens to a link the app window would follow or open, given the origin
-// of the server URL the window loaded:
-//
-//   - 'stay': an http(s) URL on the app's origin; the window may navigate to it.
-//   - 'open': an http, https or mailto URL anywhere else; it goes to the default browser.
-//   - 'drop': anything else (file:, javascript:, data:, …) and unparsable URLs.
-function linkAction(url, appOrigin) {
+//   - 'stay': the page's own URL, with any hash; the window may navigate to it.
+//   - 'open': an http, https or mailto URL; it goes to the default browser.
+//   - 'drop': anything else (file:, javascript:, data:, aiwb-picture:, …) and unparsable URLs.
+function linkAction(url, pageURL) {
   let u;
   try {
     u = new URL(url);
   } catch {
     return 'drop';
   }
-  const web = u.protocol === 'http:' || u.protocol === 'https:';
-  if (web && appOrigin && u.origin === appOrigin) return 'stay';
-  if (web || u.protocol === 'mailto:') return 'open';
+  if (atPage(url, pageURL)) return 'stay';
+  if (u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:') return 'open';
   return 'drop';
 }
 
-// attachLinkHandlers keeps a main window on the server's origin. window.open (chat links,
-// links on whiteboard elements) never opens an app window: allowed URLs go to shell.openExternal,
-// the user's default browser. A navigation to another origin is prevented and, when allowed, opened
-// there too. Call setAppURL with every server URL before the window loads it.
+// attachLinkHandlers keeps a main window on the page. window.open (chat links, links on whiteboard
+// elements) never opens an app window: allowed URLs go to shell.openExternal, the user's default
+// browser. A navigation to anything but the page is prevented and, when allowed, opened there too.
+// Call setPageURL with the page's URL before the window loads it.
 function attachLinkHandlers(webContents, shell) {
-  let appOrigin = null;
+  let pageURL = null;
   const openOutside = (url) => {
-    if (linkAction(url, appOrigin) !== 'drop') shell.openExternal(url);
+    if (linkAction(url, pageURL) !== 'drop') shell.openExternal(url);
   };
   webContents.setWindowOpenHandler(({ url }) => {
     openOutside(url);
     return { action: 'deny' };
   });
   webContents.on('will-navigate', (event, url) => {
-    if (linkAction(url, appOrigin) === 'stay') return;
+    if (linkAction(url, pageURL) === 'stay') return;
     event.preventDefault();
     openOutside(url);
   });
   return {
-    setAppURL(url) {
-      appOrigin = new URL(url).origin;
+    setPageURL(url) {
+      pageURL = url;
     },
   };
 }
@@ -350,10 +129,9 @@ function flushed(win, timeoutMs) {
 // while window.aiwbFlush() runs; once it resolves true the same action is done again (win.close(),
 // app.quit() or reload), and this time nothing is pending. When the flush does not finish within
 // flushTimeoutMs (server down), a dialog asks whether to close anyway; "Close anyway" lets the next
-// will-prevent-unload through. When "Cancel" is picked for a quit (and no new quit has begun
-// meanwhile), onQuitCancelled is called: the quit did not go through and win stays open. With no
-// pending saves none of this runs. Nothing here touches the server.
-function attachCloseFlush({ app, win, dialog, flushTimeoutMs = FLUSH_TIMEOUT_MS, onQuitCancelled }) {
+// will-prevent-unload through. When "Cancel" is picked the action is dropped and win stays open.
+// With no pending saves none of this runs. Nothing here touches the server.
+function attachCloseFlush({ app, win, dialog, flushTimeoutMs = FLUSH_TIMEOUT_MS }) {
   const quit = quitState(app);
   let closing = false;
   let force = false;
@@ -379,25 +157,13 @@ function attachCloseFlush({ app, win, dialog, flushTimeoutMs = FLUSH_TIMEOUT_MS,
         defaultId: 0,
         cancelId: 0,
       });
-      if (response !== 1) {
-        if (wasQuitting && !quit.quitting && onQuitCancelled) onQuitCancelled();
-        return;
-      }
+      if (response !== 1) return;
       force = true;
     }
     if (wasQuitting) app.quit();
     else if (wasClosing) win.close();
     else win.webContents.reload();
   });
-}
-
-// resumeAfterCancelledQuit restarts the reconnector after a cancelled quit (before-quit stopped
-// it): when win is still open and has loaded url, it calls reconnector.start(url) and returns true;
-// otherwise it does nothing and returns false.
-function resumeAfterCancelledQuit({ win, url, reconnector }) {
-  if (!win || win.isDestroyed() || !url) return false;
-  reconnector.start(url);
-  return true;
 }
 
 // The limits on the images of a chat message, as the server has them (model.ImageMaxBytes and
@@ -420,20 +186,76 @@ function imageType(name) {
 }
 
 // fromAppWindow says whether an IPC call (event is what ipcMain hands its handler) comes from the
-// main frame of win, the app's main window, while that frame is on the origin of appURL, the
-// server URL the window loaded. False for another window, a frame inside the page, a frame that is
-// gone or has navigated since the call, another origin, and when there is no window or no URL.
-function fromAppWindow({ event, win, appURL }) {
-  if (!win || win.isDestroyed() || !appURL) return false;
+// main frame of win, the app's main window, while that frame is on the page, pageURL (a hash does
+// not matter). False for another window, a frame inside the page, a frame that is gone or has
+// navigated since the call, another page, and when there is no window or no URL.
+function fromAppWindow({ event, win, pageURL }) {
+  if (!win || win.isDestroyed() || !pageURL) return false;
   const frame = event.senderFrame;
   if (!frame || event.sender !== win.webContents || frame !== win.webContents.mainFrame) return false;
-  let appOrigin;
+  return atPage(frame.url, pageURL);
+}
+
+// pictureAllowed says whether a request for an address of the picture scheme (details is what
+// session.webRequest.onBeforeRequest hands its listener) comes from the main frame of win while
+// that frame is on the page. protocol.handle gets no frame, so this is where an iframe, another
+// window or a page that has gone elsewhere is turned away.
+function pictureAllowed({ details, win, pageURL }) {
+  if (!win || win.isDestroyed() || !pageURL) return false;
+  const frame = details.frame;
+  if (!frame || details.webContentsId !== win.webContents.id || frame !== win.webContents.mainFrame) return false;
+  return atPage(frame.url, pageURL);
+}
+
+const PICTURE_SCHEME = 'aiwb-picture';
+const PICTURE_ENTRY = /^(local|s_[0-9a-f]{12})$/;
+const PICTURE_CHAT = /^[A-Za-z0-9_-]{1,100}$/;
+const PICTURE_IMAGE = /^[0-9a-f]{64}$/;
+
+// parsePictureURL reads aiwb-picture://p/<entry>/<chat>/<image> into { server, chat, image }, or
+// null when the address is anything else: another host, a missing or an extra segment, a query, a
+// segment that is no entry id, chat id or image id.
+function parsePictureURL(url) {
+  let u;
   try {
-    appOrigin = new URL(appURL).origin;
+    u = new URL(url);
   } catch {
-    return false;
+    return null;
   }
-  return appOrigin !== 'null' && frame.origin === appOrigin;
+  if (u.protocol !== `${PICTURE_SCHEME}:` || u.host !== 'p' || u.search !== '' || u.username || u.password) return null;
+  const parts = u.pathname.split('/');
+  if (parts.length !== 4 || parts[0] !== '') return null;
+  let server, chat, image;
+  try {
+    [server, chat, image] = parts.slice(1).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  if (!PICTURE_ENTRY.test(server) || !PICTURE_CHAT.test(chat) || !PICTURE_IMAGE.test(image)) return null;
+  return { server, chat, image };
+}
+
+// makePictureResponse makes what the scheme answers a picture's address: the bytes the connection
+// module has looked at, or the status it could not give them with and no body. client is the
+// connection module's client; main.js hands the result to protocol.handle.
+function makePictureResponse(client) {
+  return async function pictureResponse(request) {
+    const want = parsePictureURL(request.url);
+    if (request.method !== 'GET' || !want) return new Response(null, { status: 400 });
+    const a = await client.picture({ ...want, signal: request.signal });
+    if (!a.ok) {
+      const status = Number.isInteger(a.status) && a.status >= 400 && a.status <= 599 ? a.status : 502;
+      return new Response(null, { status });
+    }
+    return new Response(a.data, {
+      headers: {
+        'Content-Type': a.type,
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'private, max-age=31536000, immutable',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+      },
+    });
+  };
 }
 
 // readUpTo reads the file open as handle to its end and resolves to its bytes, or to null once it
@@ -478,7 +300,7 @@ async function readImage({ fs, filePath, maxBytes }) {
   }
 }
 
-// pickImages answers the page's window.aiwbDesktop.pickImages(): it opens the app's own open
+// pickImages answers the page's window.aiwbApp.pickImages(): it opens the app's own open
 // dialog on win for several image files and resolves to
 //
 //   { files: [{ name, type, data }], skipped: [{ name, reason }] }
@@ -499,7 +321,7 @@ async function readImage({ fs, filePath, maxBytes }) {
 //   - 'read': it is not a file, or cannot be opened or read.
 //   - 'size': it is over maxBytes. Its bytes are not read.
 async function pickImages({
-  event, win, appURL, dialog,
+  event, win, pageURL, dialog,
   fs = fsPromises,
   maxBytes = IMAGE_MAX_BYTES,
   maxFiles = IMAGES_PER_MESSAGE,
@@ -507,7 +329,7 @@ async function pickImages({
   const refuse = () => {
     throw new Error('pickImages: the call is not from the app window');
   };
-  if (!fromAppWindow({ event, win, appURL })) refuse();
+  if (!fromAppWindow({ event, win, pageURL })) refuse();
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: 'Add images',
     buttonLabel: 'Add',
@@ -517,7 +339,7 @@ async function pickImages({
   const files = [];
   const skipped = [];
   if (canceled || !filePaths || filePaths.length === 0) return { files, skipped };
-  if (!fromAppWindow({ event, win, appURL })) refuse();
+  if (!fromAppWindow({ event, win, pageURL })) refuse();
   for (const filePath of filePaths) {
     const name = path.basename(filePath);
     const type = imageType(name);
@@ -537,30 +359,23 @@ async function pickImages({
 }
 
 module.exports = {
-  LAUNCH_TIMEOUT_MS,
   serverBin,
-  launchArgs,
-  parseLaunchOutput,
+  pagePath,
   serverLogPath,
-  errorDetail,
-  createStartUp,
-  runLaunch,
-  findServer,
-  CHECK_INTERVAL_MS,
-  CHECK_TIMEOUT_MS,
-  CHECK_FAILURES,
-  RELAUNCH_RETRY_MS,
-  checkServer,
-  createReconnector,
+  withoutHash,
+  atPage,
   linkAction,
   attachLinkHandlers,
   FLUSH_TIMEOUT_MS,
   attachCloseFlush,
-  resumeAfterCancelledQuit,
   IMAGE_MAX_BYTES,
   IMAGES_PER_MESSAGE,
   IMAGE_TYPES,
   imageType,
   fromAppWindow,
+  pictureAllowed,
+  PICTURE_SCHEME,
+  parsePictureURL,
+  makePictureResponse,
   pickImages,
 };

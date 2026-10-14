@@ -5,7 +5,7 @@
 // chat's image store on the server, and never in a draft or in the unsaved copy of one.
 //
 // A page that reloads or closes is no longer a client the server knows once its event stream
-// drops, so a save sent while the page goes away can be refused (`unknown_client`). Each change
+// drops, so a save sent while the page goes away can be refused (a 409). Each change
 // is therefore also kept in an Unsaved copy (localStorage) until the server has it; the composer
 // opens with that copy over the server's draft and saves it again.
 
@@ -336,7 +336,7 @@ export class DraftSaver {
     );
   }
 
-  /** The chat's server is connected again, or the page's own connection to the local server opened
+  /** The chat's server is connected again, or this computer's stream opened
    *  again (logic/draftsback.ts): a draft whose save failed while it was away is pending with no
    *  timer, and is saved now, without waiting for the next change. A save in flight can still
    *  fail for the time the server was away: what it then leaves pending is saved after it. */

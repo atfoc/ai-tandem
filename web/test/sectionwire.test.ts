@@ -12,19 +12,18 @@ const chat = (o: Partial<ChatView> & { id: string }): ChatView => ({ agent: "cla
 
 test("for this computer everything is given back as it came", () => {
   const c = chat({ id: "c1", group: "g_1", board: "b_1" }), b: Board = { id: "b_1", name: "B", group: "g_1", created: "" };
-  const g: Group = { id: "g_1", name: "G", collapsed: true };
+  const g: Group = { id: "g_1", name: "G" };
   for (const local of [undefined, null, "", "local"]) {
     assert.equal(chatIn(local, c), c);
     assert.equal(boardIn(local, b), b);
-    assert.equal(groupIn(local, g), g, "a local group keeps its collapsed");
+    assert.equal(groupIn(local, g), g);
     assert.equal(toolCallIn(local, { chat: "c1" }).chat, "c1");
   }
 });
 
-test("a section's group gets its key and its parent's, and loses `collapsed`: that is the server's own matter", () => {
-  assert.deepEqual(groupIn(S, { id: "g_1", name: "G", collapsed: true }), { id: k("g_1"), name: "G" });
-  assert.deepEqual(groupIn(S, { id: "g_2", name: "Sub", parent: "g_1", collapsed: false, archived: true }), { id: k("g_2"), name: "Sub", parent: k("g_1"), archived: true });
-  assert.equal("collapsed" in groupIn(S, { id: "g_3", name: "X", collapsed: true }), false);
+test("a section's group gets its key and its parent's", () => {
+  assert.deepEqual(groupIn(S, { id: "g_1", name: "G" }), { id: k("g_1"), name: "G" });
+  assert.deepEqual(groupIn(S, { id: "g_2", name: "Sub", parent: "g_1", archived: true }), { id: k("g_2"), name: "Sub", parent: k("g_1"), archived: true });
 });
 
 test("a section's board, chat and branch record name every other thing of that server by its key", () => {
@@ -50,7 +49,7 @@ test("a branch id is not a thing of a server: it stays as it is", () => {
 
 test("a section's tree: every list keyed, a list the server left out is empty", () => {
   const t = treeIn(S, {
-    groups: [{ id: "g_1", name: "G", collapsed: true }],
+    groups: [{ id: "g_1", name: "G" }],
     boards: [{ id: "b_1", name: "B", group: "g_1", created: "" }],
     chats: [chat({ id: "c1", group: "g_1" })],
     states: [{ chat: "c1", branch: "main", cwd: "", model: "", locked: false, usage, status: "ready" }, { branch: "main" } as BranchState],

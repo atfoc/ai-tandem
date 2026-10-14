@@ -2,7 +2,7 @@
 // and its id there, since an id is unique on one server only; and a key becomes a path in one place.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { apiRoot, inSection, isUngrouped, keyOn, ownId, pathOf, sameServer, serverOfKey, splitKey, ungroupedOn } from "../src/logic/keys.ts";
+import { inSection, isUngrouped, keyOn, ownId, pathOf, sameServer, serverOfKey, splitKey, ungroupedOn } from "../src/logic/keys.ts";
 import { LOCAL_SERVER, UNGROUPED } from "../src/types.ts";
 
 const A = "s_0123456789ab", B = "s_ba9876543210";
@@ -61,17 +61,14 @@ test("the ungrouped area has the same id on every server, and a key of its own i
   assert.equal(ownId(ungroupedOn(A)), UNGROUPED);
 });
 
-test("a local thing's call is under /api, a section's under /api/on/<entry id>, with the server's own id", () => {
-  assert.equal(apiRoot(undefined), "/api");
-  assert.equal(apiRoot(LOCAL_SERVER), "/api");
-  assert.equal(apiRoot(A), `/api/on/${A}`);
-  assert.equal(pathOf("chats", "c1"), "/api/chats/c1");
-  assert.equal(pathOf("chats", keyOn(A, "c1")), `/api/on/${A}/chats/c1`);
-  assert.equal(pathOf("boards", keyOn(A, "b_1")), `/api/on/${A}/boards/b_1`);
-  assert.equal(pathOf("groups", keyOn(B, "g_1")), `/api/on/${B}/groups/g_1`);
+test("a call about a thing is the entry id of its server and a path of that server's own, with the server's own id", () => {
+  assert.deepEqual(pathOf("chats", "c1"), { server: LOCAL_SERVER, path: "/api/chats/c1" });
+  assert.deepEqual(pathOf("chats", keyOn(A, "c1")), { server: A, path: "/api/chats/c1" });
+  assert.deepEqual(pathOf("boards", keyOn(A, "b_1")), { server: A, path: "/api/boards/b_1" });
+  assert.deepEqual(pathOf("groups", keyOn(B, "g_1")), { server: B, path: "/api/groups/g_1" });
 });
 
-test("`local` is never a section: its key is the plain id and its path the local one", () => {
+test("`local` is never a section: its key is the plain id and its call goes to the server `local`", () => {
   assert.equal(keyOn("local", "c1"), "c1");
-  assert.equal(pathOf("chats", keyOn("local", "c1")), "/api/chats/c1");
+  assert.deepEqual(pathOf("chats", keyOn("local", "c1")), { server: "local", path: "/api/chats/c1" });
 });

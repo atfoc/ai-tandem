@@ -17,7 +17,8 @@ import (
 type ProblemKind int
 
 const (
-	BadConfig ProblemKind = iota + 1
+	NotSetUp ProblemKind = iota + 1
+	BadConfig
 	SecretMissing
 	SecretBad
 	PairMissing
@@ -33,7 +34,7 @@ type Problem struct {
 
 // Report is what the start's check found.
 type Report struct {
-	Configured  bool // remote.json exists
+	Configured  bool // remote.json exists; false: the server was never set up, and Fatal says so
 	Config      Config
 	Fatal       []Problem        // BadConfig alone, or secret, pair, port in this order
 	Notes       []string         // certificate expired; its names differ from the list
@@ -42,13 +43,14 @@ type Report struct {
 	Pair        *tls.Certificate // loaded once; the listener serves this
 }
 
-// Check is the start's check: the files of root and the configured port against the server's own
-// port and the MCP port. Without remote.json it opens no other file. It never writes and never binds.
-func Check(root string, serverPort, mcpPort int) Report {
+// Check is the start's check: the files of root and the configured port against the MCP port. A
+// server that was never set up (no remote.json) does not start: the report has one fatal problem
+// of kind NotSetUp and opens no other file. It never writes and never binds.
+func Check(root string, mcpPort int) Report {
 	f := FilesIn(root)
 	c, found, err := LoadConfig(root)
 	if !found {
-		return Report{}
+		return Report{Fatal: []Problem{{Kind: NotSetUp, Line: "AI Whiteboard is not set up on this machine."}}}
 	}
 	r := Report{Configured: true, Config: c}
 	if err != nil {
@@ -68,10 +70,7 @@ func Check(root string, serverPort, mcpPort int) Report {
 
 	r.checkPair(f)
 
-	switch c.Port {
-	case serverPort:
-		r.fatal(PortEqual, "the remote port %d is the server's own port", c.Port)
-	case mcpPort:
+	if c.Port == mcpPort {
 		r.fatal(PortEqual, "the remote port %d is the MCP port", c.Port)
 	}
 	return r
@@ -158,15 +157,19 @@ func (r *Report) notes(f Files, leaf *x509.Certificate) {
 	}
 }
 
-// OK reports whether the start may go on: not configured, or nothing fatal.
+// OK reports whether the start may go on: nothing fatal.
 func (r Report) OK() bool { return len(r.Fatal) == 0 }
 
-// Message is what a start that ends says, "" when OK. At most six lines: one per problem, "The
-// start creates nothing.", the first problem's repair and the way to start without remote access.
-// exe is the binary's full path; home is the -home folder, "" for the default one.
+// Message is what a start that ends says, "" when OK. For a server never set up it is one line
+// that names the set-up command; otherwise at most five lines: one per problem, "The start
+// creates nothing." and the first problem's repair. exe is the binary's full path; home is the
+// -home folder, "" for the default one.
 func (r Report) Message(exe, home string) string {
 	if r.OK() {
 		return ""
+	}
+	if r.Fatal[0].Kind == NotSetUp {
+		return r.Fatal[0].Line + " Set it up once with: " + command(exe, home, "remote setup")
 	}
 	var lines []string
 	for _, p := range r.Fatal {
@@ -186,7 +189,7 @@ func (r Report) Message(exe, home string) string {
 	return strings.Join(append(lines, messageTail(exe, home, repair)...), "\n")
 }
 
-// BindMessage is the message of the row the check cannot see: the remote port cannot be bound.
+// BindMessage is the message of the row the check cannot see: the client port cannot be bound.
 func BindMessage(exe, home string, port int, err error) string {
 	lines := []string{fmt.Sprintf("Remote access: the remote port %d cannot be bound: %v", port, err)}
 	repair := fmt.Sprintf("free port %d, or %s", port, command(exe, home, "remote setup -port N"))
@@ -197,7 +200,6 @@ func messageTail(exe, home, repair string) []string {
 	return []string{
 		"The start creates nothing.",
 		"To repair: " + repair,
-		"To start without remote access: " + command(exe, home, "remote off"),
 	}
 }
 

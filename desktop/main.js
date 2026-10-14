@@ -1,34 +1,35 @@
-// Electron main process. The server is the Go program: `ai-whiteboard launch` finds the running
-// server or starts one detached (its own session), prints its URL and exits. So the server is never
-// a child of this app, and quitting the app never stops it.
+// Electron main process. The app is the client of every server, this computer's included: it holds
+// the server list and the secrets, keeps one pinned HTTPS connection per server (desktop/conn) and
+// answers the page over IPC (ipcface.js) and, for pictures, over the aiwb-picture scheme. The page
+// is a file of the app, loaded at once; it waits for no server. This computer's server is the Go
+// program: `ai-whiteboard launch` finds the running one or starts one detached (its own session),
+// so the server is never a child of this app, and quitting the app never stops it.
 
 const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { pathToFileURL } = require('node:url');
+const { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } = require('electron');
 const windowStateKeeper = require('electron-window-state');
+const { createClient, parseAppWaits } = require('./conn');
+const { createIpcFace } = require('./ipcface');
 const {
   serverBin,
-  launchArgs,
-  serverLogPath,
-  createStartUp,
-  findServer,
-  checkServer,
-  createReconnector,
+  pagePath,
   attachLinkHandlers,
   attachCloseFlush,
-  resumeAfterCancelledQuit,
-  pickImages,
+  pictureAllowed,
+  makePictureResponse,
+  PICTURE_SCHEME,
 } = require('./lib');
 
-const logPath = serverLogPath(os.homedir());
+// Tests run the app with its own user data folder, so that it takes no part in the single-instance
+// lock of the user's own app and touches none of its files.
+if (process.env.AIWB_USER_DATA) app.setPath('userData', process.env.AIWB_USER_DATA);
 
-let mainWindow = null;
-let mainLinks = null; // attachLinkHandlers for mainWindow
-let mainURL = null; // the server URL mainWindow last loaded
-let startingWindow = null;
-let windowState = null;
-let quitting = false;
+// The scheme must be registered before the app is ready. It answers pictures and nothing else.
+protocol.registerSchemesAsPrivileged([
+  { scheme: PICTURE_SCHEME, privileges: { standard: true, secure: true } },
+]);
 
 const bin = serverBin({
   env: process.env,
@@ -36,179 +37,120 @@ const bin = serverBin({
   isPackaged: app.isPackaged,
   dirname: __dirname,
 });
-const args = launchArgs({ isPackaged: app.isPackaged, dirname: __dirname });
-
-function showStarting() {
-  if (startingWindow) return;
-  startingWindow = new BrowserWindow({
-    width: 320,
-    height: 120,
-    resizable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    title: 'AI Whiteboard',
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
-  });
-  const win = startingWindow;
-  win.on('closed', () => {
-    if (startingWindow === win) startingWindow = null;
-  });
-  const html = `<!doctype html><meta charset="utf-8"><title>AI Whiteboard</title>
-<style>
-  :root { color-scheme: light dark; }
-  html, body { height: 100%; margin: 0; }
-  body { display: flex; align-items: center; justify-content: center;
-         font: 15px -apple-system, BlinkMacSystemFont, sans-serif; user-select: none; }
-</style>
-<body>Starting…</body>`;
-  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-}
-
-function hideStarting() {
-  const win = startingWindow;
-  startingWindow = null;
-  if (win && !win.isDestroyed()) win.close();
-}
-
-// loadURL loads url in the main window, created hidden if there is none, and shows the window once
-// the page has loaded.
-async function loadURL(url) {
-  if (!mainWindow) {
-    if (!windowState) windowState = windowStateKeeper({ defaultWidth: 1280, defaultHeight: 800 });
-    mainWindow = new BrowserWindow({
-      x: windowState.x,
-      y: windowState.y,
-      width: windowState.width,
-      height: windowState.height,
-      show: false,
-      title: 'AI Whiteboard',
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        preload: path.join(__dirname, 'preload.js'),
-      },
-    });
-    windowState.manage(mainWindow);
-    mainLinks = attachLinkHandlers(mainWindow.webContents, shell);
-    attachCloseFlush({ app, win: mainWindow, dialog, onQuitCancelled });
-    mainWindow.webContents.on('did-fail-load', (_event, code, _desc, _url, isMainFrame) => {
-      if (isMainFrame) reconnector.failLoad(code);
-    });
-    mainWindow.on('closed', () => {
-      mainWindow = null;
-      mainLinks = null;
-      mainURL = null;
-      reconnector.stop();
-    });
-  }
-  const win = mainWindow;
-  mainLinks.setAppURL(url);
-  mainURL = url;
-  await win.loadURL(url);
-  if (!win.isDestroyed()) win.show();
-}
-
-// reloadURL loads url in the open main window without showing or focusing it; the reconnector uses
-// it after running launch again.
-async function reloadURL(url) {
-  const win = mainWindow;
-  if (!win || win.isDestroyed()) throw new Error('no main window');
-  mainLinks.setAppURL(url);
-  mainURL = url;
-  await win.loadURL(url);
-}
-
-// The reconnector checks the server while the main window is open and, when it stays down or the
-// page fails to load, runs launch again (restarting a crashed server) and reloads. No dialog: the
-// page already shows that it is disconnected.
-const reconnector = createReconnector({
-  check: (url) => checkServer({ fetch, url }),
-  launch: () => findServer({ env: process.env, bin, args, execFile }),
-  load: reloadURL,
-  setTimeout,
-  clearTimeout,
-});
-
-// onQuitCancelled runs when the user cancels a quit in the unsaved-changes dialog: the app stays
-// open, so it is no longer quitting and the reconnector (stopped by before-quit) checks the main
-// window's server again.
-function onQuitCancelled() {
-  quitting = false;
-  resumeAfterCancelledQuit({ win: mainWindow, url: mainURL, reconnector });
-}
-
-// showError shows the start error until the user picks Retry or Quit. Open server log opens
-// ~/.ai-whiteboard/server.log and asks again.
-async function showError(detail) {
-  for (;;) {
-    const { response } = await dialog.showMessageBox({
-      type: 'error',
-      message: 'AI Whiteboard could not start its server',
-      detail,
-      buttons: ['Retry', 'Open server log', 'Quit'],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true,
-    });
-    if (response === 0) return 'retry';
-    if (response === 1) {
-      await shell.openPath(logPath);
-      continue;
-    }
-    return 'quit';
-  }
-}
-
-const startUp = createStartUp({
+const page = pagePath({
   env: process.env,
-  bin,
-  args,
-  execFile,
-  showStarting,
-  hideStarting,
-  loadURL: async (url) => {
-    await loadURL(url);
-    if (!quitting && mainWindow) reconnector.start(url);
-  },
-  showError,
-  quit: () => app.quit(),
-  isQuitting: () => quitting,
+  resourcesPath: process.resourcesPath,
+  isPackaged: app.isPackaged,
+  dirname: __dirname,
 });
+const pageURL = pathToFileURL(page).href;
+const dataFolder = process.env.AIWB_HOME || path.join(os.homedir(), '.ai-whiteboard');
+
+let mainWindow = null;
+let windowState = null;
+let client = null;
+let face = null;
+
+// createWindow makes the main window and loads the page. The window shows once the page can be
+// drawn; no server is waited for.
+function createWindow() {
+  if (!windowState) windowState = windowStateKeeper({ defaultWidth: 1280, defaultHeight: 800 });
+  const win = new BrowserWindow({
+    x: windowState.x,
+    y: windowState.y,
+    width: windowState.width,
+    height: windowState.height,
+    show: false,
+    title: 'AI Whiteboard',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  mainWindow = win;
+  windowState.manage(win);
+  attachLinkHandlers(win.webContents, shell).setPageURL(pageURL);
+  attachCloseFlush({ app, win, dialog });
+  face.watchWindow(win);
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) win.show();
+  });
+  win.webContents.on('did-fail-load', (_event, code, desc, url, isMainFrame) => {
+    // -3 is a load that was cancelled by another one.
+    if (isMainFrame && code !== -3) dialog.showErrorBox('AI Whiteboard', `The page could not be loaded: ${desc}\n${url}`);
+  });
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+  win.loadFile(page);
+}
+
+// showWindow brings the open window forward, or makes one (macOS keeps the app running with none).
+function showWindow() {
+  if (!mainWindow) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function start() {
+  let timing;
+  try {
+    timing = parseAppWaits(process.env.AIWB_APP_WAITS);
+  } catch (err) {
+    dialog.showErrorBox('AI Whiteboard', `AIWB_APP_WAITS: ${err.message}`);
+    app.exit(1);
+    return;
+  }
+  client = createClient({
+    stateDir: path.join(app.getPath('userData'), 'client'),
+    local: { bin, home: process.env.AIWB_HOME || null, env: process.env },
+    timing,
+    log: (line) => console.log(`[conn] ${line}`),
+  });
+  face = createIpcFace({
+    ipcMain,
+    client,
+    getWindow: () => mainWindow,
+    pageURL,
+    shell,
+    dialog,
+    home: dataFolder,
+  });
+
+  const ses = session.defaultSession;
+  // protocol.handle is given no frame, so the check of who asks is made here, before the request
+  // reaches the handler.
+  ses.webRequest.onBeforeRequest({ urls: [`${PICTURE_SCHEME}://*/*`] }, (details, callback) => {
+    callback({ cancel: !pictureAllowed({ details, win: mainWindow, pageURL }) });
+  });
+  ses.protocol.handle(PICTURE_SCHEME, makePictureResponse(client));
+
+  createWindow();
+  // macOS: clicking the Dock icon with no window open makes one.
+  app.on('activate', () => {
+    if (!mainWindow) createWindow();
+  });
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) {
-      startUp();
-      return;
-    }
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  });
-
-  ipcMain.handle('aiwb:open-server-log', () => shell.openPath(logPath));
-  // The composer's attach button: the app's own open dialog. Only the main window's page, on the
-  // server's origin, gets an answer, and only files the dialog returned are read.
-  ipcMain.handle('aiwb:pick-images', (event) =>
-    pickImages({ event, win: mainWindow, appURL: mainURL, dialog }));
-
-  app.whenReady().then(() => {
-    startUp();
-    // macOS: clicking the Dock icon with no window open runs the start-up again.
-    app.on('activate', () => {
-      if (!mainWindow) startUp();
-    });
-  });
+  app.on('second-instance', showWindow);
+  app.whenReady().then(start);
 
   // macOS convention: closing the last window keeps the app running; Cmd+Q quits it. The server
   // keeps running either way.
   app.on('window-all-closed', () => {});
 
-  app.on('before-quit', () => {
-    quitting = true;
-    reconnector.stop();
+  // will-quit comes only when the quit goes through (the unsaved-changes dialog can still cancel it
+  // before). The connections end; no server is stopped.
+  app.on('will-quit', () => {
+    if (face) face.close();
+    if (client) client.close();
   });
 }

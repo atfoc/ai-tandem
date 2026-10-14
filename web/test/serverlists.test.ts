@@ -3,7 +3,7 @@
 // thread's load error. The events through the real event layer are in conn.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BOARD_SERVER, SERVER_FINAL, listsFrom, listsOf, offered, RECENT_KEY, sectionBack, sectionName, serverConnected, serverFixed,
+import { BOARD_SERVER, SERVER_FINAL, listsOf, offered, RECENT_KEY, sectionBack, sectionName, serverConnected, serverFixed,
   serverName, serverOf, serverState, threadError, withLists, withThreadError, withoutThread } from "../src/logic/serverlists.ts";
 import { readFileSync } from "node:fs";
 import { LOCAL_ENTRY, type ServerState, type ServerView } from "../src/logic/servers.ts";
@@ -15,11 +15,11 @@ const CAT: Catalog = { models: [], default: { model: "m" } };
 const THERE: ServerLists = { agents: ["pi"], catalogs: { pi: CAT, claude: null }, home: "/home/u", defaultCwd: "/home/u/work" };
 const entry = (id: string, state: ServerState, name = "Studio"): ServerView => ({ id, name, state });
 const ALL: ServerState[] = ["connecting", "connected", "unreachable", "secret_not_accepted", "fingerprint_not_accepted", "certificate_changed",
-  "certificate_not_accepted", "name_not_known", "not_aiwb", "too_old", "another_server"];
+  "certificate_not_accepted", "name_not_known", "not_aiwb", "too_old", "another_server", "not_started"];
 /** tree: the local server holds the tree of s_1 (a `section` event with a tree came, and none with null since). */
 const store = (state: ServerState = "connected", tree = state === "connected") => ({
   usable: ["claude"] as AgentKind[], catalogs: { claude: CAT }, home: "/Users/me", defaultCwd: "/Users/me/code",
-  lists: { s_1: THERE }, servers: [LOCAL_ENTRY, entry("s_1", state)], sections: tree ? { s_1: {} } : {},
+  lists: { s_1: THERE }, servers: [{ ...LOCAL_ENTRY, state: "connected" as const }, entry("s_1", state)], sections: tree ? { s_1: {} } : {},
 });
 const chat = (o: Partial<ChatView> = {}) => ({ id: "c_1", agent: "claude", locked: false, ...o }) as ChatView;
 /** A chat of a section: the same id on another server. */
@@ -50,20 +50,27 @@ test("listsOf: the local server's from the store's own fields, another's as rece
   assert.equal(listsOf({}, "s_1"), undefined);
 });
 
-test("listsOf keeps another server's lists while it is not connected; offered gives them only while the local server holds its tree", () => {
+test("listsOf keeps another server's lists while it is not connected; offered gives them only while the page holds that server's tree", () => {
   for (const state of ALL) for (const tree of [true, false]) {
     const s = store(state, tree);
     assert.equal(listsOf(s, "s_1"), THERE, state);
     assert.equal(offered(s, "s_1"), tree ? THERE : undefined, state);
     assert.equal(serverConnected(s, "s_1"), tree, `${state}: the tree decides, not the entry's state`);
     assert.equal(serverState(s, "s_1"), state, "the state says the words");
-    assert.equal(offered(s, LOCAL_SERVER), listsOf(s, LOCAL_SERVER), "the local server always offers");
+    assert.equal(offered(s, LOCAL_SERVER), listsOf(s, LOCAL_SERVER), "this computer's server offers while the page holds its tree");
     assert.equal(serverConnected(s, LOCAL_SERVER), true);
   }
+  // this computer's tree is the page's `connected`: its server is a server like the others
+  const away = { ...store(), connected: false };
+  assert.equal(serverConnected(away, LOCAL_SERVER), false);
+  assert.equal(offered(away, LOCAL_SERVER), undefined);
+  assert.deepEqual(listsOf(away, LOCAL_SERVER)?.agents, ["claude"], "what it offered is kept");
+  assert.equal(serverConnected({ ...store(), connected: true }, LOCAL_SERVER), true);
   assert.equal(offered({ ...store(), lists: {} }, "s_1"), undefined); // connected, its lists not here yet
   assert.equal(offered(store(), "s_2"), undefined);                   // no such entry
   assert.equal(serverState(store(), "s_2"), undefined);
-  assert.equal(serverState(store(), LOCAL_SERVER), "connected");
+  assert.equal(serverState(store(), LOCAL_SERVER), "connected", "this computer's entry says its state like any");
+  assert.equal(serverState({ servers: [LOCAL_ENTRY] }, LOCAL_SERVER), "connecting");
   assert.equal(serverConnected(store(), "s_2"), false);
   assert.equal(serverConnected({}, LOCAL_SERVER), true);
   assert.equal(serverConnected({}, "s_1"), false, "a store with no sections");
@@ -121,12 +128,6 @@ test("server_lists: an entry's lists are set, and removed for null", () => {
   assert.deepEqual(withLists(b, "s_1", null), { s_2: other });
   assert.equal(withLists(a, "s_2", null), a, "nothing to remove: the same map");
   assert.deepEqual(a, { s_1: THERE }, "the map given is not changed");
-});
-
-test("a snapshot's lists; a server that sends none has none", () => {
-  assert.deepEqual(listsFrom({ lists: { s_1: THERE } }), { s_1: THERE });
-  assert.deepEqual(listsFrom({}), {});
-  assert.deepEqual(listsFrom({ lists: null }), {});
 });
 
 test("a thread's load error keeps the server's code and sentence; it is set and cleared by chat", () => {

@@ -35,7 +35,7 @@ A *prompt* is a name and a text; *groups* hold prompts and other groups.
   plain text with its line breaks; references and mentions in the box stay as they are. What
   was inserted is from then on text you typed: it is saved with the draft, and a later change
   to the prompt does not change it. In a text box ⌘P does not print the page; anywhere else it
-  is the browser's, as before. The composer's toolbar has an **Insert a prompt** button that
+  is the system's, as before. The composer's toolbar has an **Insert a prompt** button that
   does the same, where its row has room left, or as an entry of its **…** popup when the row
   has that chip.
 - **Search.** Both popups search the same way, by path and name (`git/commit message`); the
@@ -57,25 +57,25 @@ A *prompt* is a name and a text; *groups* hold prompts and other groups.
 - **Several servers.** Every server has its own library, and the app shows this computer's
   together with those of the servers in the [server list](remote-servers.md#use-a-server-on-another-machine).
   With a remote server's library there, the tree has one top entry per server, this computer
-  first, and a path starts with the server's name, which a search finds too. A remote library
+  first (it is the first section of the sidebar), and a path starts with the server's name, which a search finds too. A remote library
   is the one its owner sees in their own app, and whoever can connect to the server can change
   it: a new prompt belongs to the library it is made in, and nothing is moved or copied between
   servers. Changes arrive by themselves in every open window, here and there. When a server
   drops, its prompts stay in both popups from the copy last received, marked **not connected**:
-  they can be inserted, and changed once it is back. That copy is kept in memory only, never in
-  a file and never in this computer's library: after a restart of your own server, a server
-  that is still unreachable shows no prompts until it connects. A server removed from the list
+  they can be inserted, and changed once it is back. That copy is kept in the page's memory only,
+  never in a file and never in this computer's library: after the window is closed and the app
+  opened again, a server that is still unreachable shows no prompts until it connects. A server removed from the list
   takes its prompts with it, and a server that is [too old](remote-servers.md#a-server-that-is-too-old) shows
   none, and no error.
 - **Agents get nothing of it.** No tool reads the library, and no prompt reaches an agent
   unless you inserted it into a message. The instructions the app gives its agents are another
   thing and are not in the library.
 
-The routes, on the server's own port (the popups use them):
+The routes of the client API, on every server's client port (the popups use them):
 
 | Route | Body | Answer |
 | --- | --- | --- |
-| `GET /api/library` | | `{"libraries": [...]}`, this computer's first |
+| `GET /api/library` | | `{"libraries": [...]}`, this server's library alone |
 | `POST /api/library/{server}/groups` | `name`, `parent` | `{"group": {id, name, parent}}` |
 | `PATCH /api/library/{server}/groups/{id}` | `name`, `parent` | `{"group": ...}` |
 | `DELETE /api/library/{server}/groups/{id}` | | `{"ok": true}` |
@@ -83,23 +83,19 @@ The routes, on the server's own port (the popups use them):
 | `PATCH /api/library/{server}/prompts/{id}` | `name`, `parent`, `text` | `{"prompt": ...}` |
 | `DELETE /api/library/{server}/prompts/{id}` | | `{"ok": true}` |
 
-`{server}` is `local` for this computer or the id of a server in the list; a call for another
-server is passed on to it over the connection the app's server already holds, and that server
-checks the rules. `parent` is the id of a group, `""` for the top of the library; in a `PATCH`
+`{server}` is `local`, a server's own library: the page calls the library of every server as
+`local`, naming the server it means as the argument of the call, which the app's main process
+makes on the connection it holds to that server. That server checks the rules. `parent` is the id of a group, `""` for the top of the library; in a `PATCH`
 a field that is left out keeps its value. Each library of the list has `server`, `name`,
 `connected`, `groups` and `prompts` (flat lists: the tree is in the `parent` fields). A call
 that breaks a rule is refused with `{"error": <a sentence>, "code": <code>}`: `bad_name` and
 `bad_text` (400), `not_found` and `no_group` (404), `name_taken`, `bad_move`, `library_full` and
-`too_deep` (409), `text_too_long` (413), and `no_server` (404) for a server that has no library
-here. A call for another server can also end with `server_unreachable` (503: not connected,
-nothing was sent), `no_answer` (504) or `bad_answer` (502). The calls that change a library
-need a known client, as every write on this port. The windows get the libraries in the
-snapshot (`libraries`), one `library` event with the whole library after every change of it,
-and `library_removed` when its server leaves the list; no window polls.
-
-**On the remote port** the same seven routes are what a client may do with the server's own
-library, and with no other: `{server}` must be `local`. The client's snapshot has the library
-as `library` (`groups` and `prompts`), and after every change, whoever made it, the client
-gets it whole in an `own_library` event. The library is level 3 of the
-[feature levels](remote-servers.md#a-server-that-is-too-old) a server reports, so every server the app connects
-to has one. The app holds what it gets to the rules above before it keeps or shows it.
+`too_deep` (409), `text_too_long` (413), and `no_server` (404) for a `{server}` other than
+`local`. A call for a server that is not connected can also end with `server_unreachable` (503:
+nothing was sent), `no_answer` (504) or `bad_answer` (502); these are the app's answers (see
+[The answer of a call](remote-servers.md#chats-on-a-remote-server)). Every server
+gives its library to a client as `library` (`groups` and `prompts`) in its snapshot, with
+`libraryNotice` when its file was set aside, and after every change, whoever made it, the client
+gets it whole in an `own_library` event; no window polls. The library is level 3 of the
+[feature levels](remote-servers.md#a-server-that-is-too-old) a server reports, so every server the
+app connects to has one. The app holds what it gets to the rules above before it keeps or shows it.

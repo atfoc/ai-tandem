@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { branchCount, currentBranch, shownBranchOf } from "../src/logic/branches.ts";
 import { api, ApiError } from "../src/api.ts";
 import { refreshAfterRefusal } from "../src/logic/status.ts";
+import { installFake, ok, refuse } from "./fixtures/faketransport.ts";
 import { MAIN, type ChatView, type PendingMove, type TreeView } from "../src/types.ts";
 
 const view = (p: Partial<ChatView> = {}): ChatView => ({
@@ -83,18 +84,17 @@ test("the worked example reads as a TreeView", () => {
   assert.deepEqual(t.labels, [{ branch: "main", item: 1, text: "options" }, { branch: "a1b2c3d4", item: 3, text: "mem" }]);
 });
 
-// ---- the API calls, against a fetch that records what it is asked
+// ---- the API calls, against a transport that records what it is asked
 
-type Req = { method: string; path: string; body: unknown };
+/** The call as made: the server only when it is not this computer's. */
+type Req = { method: string; path: string; body: unknown; server?: string };
+const fake = installFake();
 async function asked(run: () => Promise<unknown>, answer: unknown = { ok: true }): Promise<Req> {
-  const real = globalThis.fetch;
-  let req: Req | undefined;
-  globalThis.fetch = (async (path: string, init: RequestInit) => {
-    req = { method: init.method ?? "GET", path, body: init.body === undefined ? undefined : JSON.parse(String(init.body)) };
-    return new Response(JSON.stringify(answer), { status: 200 });
-  }) as typeof fetch;
-  try { await run(); } finally { globalThis.fetch = real; }
-  return req!;
+  fake.reset();
+  fake.handler = () => ok(answer);
+  await run();
+  const c = fake.calls[0];
+  return { method: c.method, path: c.path, body: c.body, ...(c.server !== "local" ? { server: c.server } : {}) };
 }
 
 test("send without a target sends today's body", async () => {
@@ -114,29 +114,29 @@ test("send with a target adds only the target's branch, at and new", async () =>
     { method: "POST", path: "/api/chats/c_1/messages", body: { text: "hi", context: "", target: { branch: "a1b2c3d4", at: 6, new: false } } });
 });
 
-test("the two calls that are about no thing name a server by its entry id in the query, and not at all for this computer; every other call names it by its thing's key", async () => {
+test("the two calls that are about no thing go to the server asked, this computer's by default; every other call goes to the server its thing's key names", async () => {
   const dirs = { path: "/w", parent: "/", dirs: [] };
-  const calls: [string, () => Promise<unknown>, string, string][] = [
+  const calls: [string, () => Promise<unknown>, string, string, string?][] = [
     ["dirs", () => api.dirs("/w x"), "GET", "/api/dirs?path=%2Fw%20x"],
     ["dirs local", () => api.dirs("/w", "local"), "GET", "/api/dirs?path=%2Fw"],
-    ["dirs there", () => api.dirs("/w", "s_1"), "GET", "/api/dirs?path=%2Fw&server=s_1"],
+    ["dirs there", () => api.dirs("/w", "s_1"), "GET", "/api/dirs?path=%2Fw", "s_1"],
     ["usage", () => api.usage("claude"), "GET", "/api/usage/claude"],
     ["usage fresh", () => api.usage("claude", true), "GET", "/api/usage/claude?fresh=1"],
     ["usage local", () => api.usage("claude", false, "local"), "GET", "/api/usage/claude"],
-    ["usage there", () => api.usage("claude", false, "s_1"), "GET", "/api/usage/claude?server=s_1"],
-    ["usage fresh there", () => api.usage("claude", true, "s_1"), "GET", "/api/usage/claude?fresh=1&server=s_1"],
+    ["usage there", () => api.usage("claude", false, "s_1"), "GET", "/api/usage/claude", "s_1"],
+    ["usage fresh there", () => api.usage("claude", true, "s_1"), "GET", "/api/usage/claude?fresh=1", "s_1"],
     ["deleteChat", () => api.deleteChat("c_1"), "DELETE", "/api/chats/c_1"],
-    ["deleteChat there", () => api.deleteChat("s_1~c_1"), "DELETE", "/api/on/s_1/chats/c_1"], // deleted on its server: there is no "here only"
+    ["deleteChat there", () => api.deleteChat("s_1~c_1"), "DELETE", "/api/chats/c_1", "s_1"], // deleted on its server: there is no "here only"
   ];
-  for (const [name, run, method, path] of calls) {
+  for (const [name, run, method, path, server] of calls) {
     const r = await asked(run, dirs);
-    assert.deepEqual([r.method, r.path], [method, path], name);
+    assert.deepEqual([r.method, r.path, r.server], [method, path, server], name);
   }
   // (a chat's server is no change a configure names: it is where the chat was made)
   assert.deepEqual(await asked(() => api.configure("c_1", "main", { agent: "pi" })), { method: "PATCH", path: "/api/chats/c_1?branch=main", body: { agent: "pi" } });
-  assert.deepEqual(await asked(() => api.configure("s_1~c_1", "main", { agent: "pi" })), { method: "PATCH", path: "/api/on/s_1/chats/c_1?branch=main", body: { agent: "pi" } });
+  assert.deepEqual(await asked(() => api.configure("s_1~c_1", "main", { agent: "pi" })), { method: "PATCH", path: "/api/chats/c_1?branch=main", body: { agent: "pi" }, server: "s_1" });
   // nor does a new chat's body name one: the place it is made in says it
-  assert.deepEqual(await asked(() => api.newChat({ group: "s_1~g_1" })), { method: "POST", path: "/api/on/s_1/chats", body: { group: "g_1" } });
+  assert.deepEqual(await asked(() => api.newChat({ group: "s_1~g_1" })), { method: "POST", path: "/api/chats", body: { group: "g_1" }, server: "s_1" });
   assert.deepEqual(await asked(() => api.newChat({ group: "g_1" })), { method: "POST", path: "/api/chats", body: { group: "g_1" } });
 });
 
@@ -176,9 +176,8 @@ test("every session call names its branch in the query; a send with a target nam
 
 test("saveDraft names its base and answers the new counter; a stale refusal is an ApiError with the server's counter and draft", async () => {
   const answer = (status: number, body: unknown) => async (run: () => Promise<unknown>) => {
-    const real = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
-    try { return await run(); } finally { globalThis.fetch = real; }
+    fake.handler = () => (status < 300 ? ok(body, status) : refuse(status, body as Record<string, unknown>));
+    return await run();
   };
   assert.deepEqual(await answer(200, { ok: true, rev: 5 })(() => api.saveDraft("c_1", "main", { text: "d" }, 4)), { rev: 5 });
   // a draft that named images the chat does not hold was saved without them, and the answer names them
@@ -217,27 +216,19 @@ test("a draft is saved with its images, by id, name, type and size", async () =>
 });
 
 test("an upload posts the file's bytes as they are, with its type, to the chat, and answers the image", async () => {
-  const real = globalThis.fetch;
-  let req: { method?: string; path: string; type: string | null; client: string | null; body: unknown } | undefined;
-  globalThis.fetch = (async (path: string, init: RequestInit) => {
-    const h = new Headers(init.headers);
-    req = { method: init.method, path, type: h.get("Content-Type"), client: h.get("X-AIWB-Client"), body: init.body };
-    return new Response(JSON.stringify(IMG), { status: 200 });
-  }) as typeof fetch;
+  fake.reset();
+  fake.handler = () => ok(IMG);
   const file = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
-  try {
-    assert.deepEqual(await api.uploadImage("c_1", file, "a b&c.png", "image/png"), IMG);
-  } finally { globalThis.fetch = real; }
-  assert.deepEqual([req!.method, req!.path, req!.type], ["POST", "/api/chats/c_1/images?name=a%20b%26c.png", "image/png"]);
-  assert.equal(req!.body, file); // the bytes, not JSON
-  assert.ok(req!.client); // the caller is this page, as for a draft's save
+  assert.deepEqual(await api.uploadImage("c_1", file, "a b&c.png", "image/png"), IMG);
+  const [c] = fake.calls;
+  assert.deepEqual([c.server, c.method, c.path, c.type], ["local", "POST", "/api/chats/c_1/images?name=a%20b%26c.png", "image/png"]);
+  assert.equal(c.body, "<4 bytes>"); // the bytes, not JSON
 });
 
 test("a refused upload and a refused Send are ApiErrors with the server's sentence and code; image_missing names the images", async () => {
   const answer = (status: number, body: unknown) => async (run: () => Promise<unknown>) => {
-    const real = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
-    try { return await run().catch((x) => x); } finally { globalThis.fetch = real; }
+    fake.handler = () => refuse(status, body as Record<string, unknown>);
+    return await run().catch((x) => x);
   };
   const file = new Blob(["x"], { type: "image/png" });
   for (const [status, code] of [[413, "image_too_large"], [415, "image_type"], [409, "image_cap"]] as const) {

@@ -44,7 +44,7 @@ type Relay struct {
 	Bridge *editorbridge.Bridge
 	Chats  *chats.Manager
 	Boards *boards.Service
-	// Contacts is the last MCP contact per chat, read by GET /api/mcp/status. Its zero value is
+	// Contacts is the last MCP contact per chat, read by the control socket's /status. Its zero value is
 	// ready to use.
 	Contacts ContactLog
 	// ImageDir is where a picture is written for a Cursor agent (see imagefile.go). Empty means
@@ -222,7 +222,7 @@ type Contact struct {
 }
 
 // ContactLog is the MCP observation point's in-memory last-contact tracker. The MCP listener is
-// concurrent with GET /api/mcp/status reads on 4747, so every access is guarded. It keeps one
+// concurrent with the status reads of the control socket, so every access is guarded. It keeps one
 // entry per chat, so it stays bounded and cheap.
 type ContactLog struct {
 	mu sync.Mutex

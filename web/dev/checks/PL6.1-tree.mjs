@@ -27,7 +27,7 @@
 //   cannot be dragged and its menu makes nothing, and says why.
 // The menu key itself is not pressed (a headless Chromium on macOS has none): the event a browser makes of it, a
 // contextmenu with no pointer, is sent to the focused row.
-import { check, mockEval, openPage, pointerDrag, seed, until } from "../shot.mjs";
+import { callOfRequest, check, mockEval, openPage, pointerDrag, seed, until } from "../shot.mjs";
 
 const g = (id, name, parent = "") => ({ id, name, parent }), p = (id, name, parent, text = name + "!") => ({ id, name, parent, text });
 const LIB = { groups: [g("g_git", "git"), g("g_hooks", "hooks", "g_git"), g("g_misc", "misc")],
@@ -101,12 +101,12 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const lib = (server = "local") => mockEval(`return libraries[${JSON.stringify(server)}] ?? null;`, url);
   const item = async (name, server = "local") => { const l = await lib(server); return [...l.prompts, ...l.groups].find((x) => x.name === name); };
-  const servers = (list) => mockEval(`extra.servers = ${JSON.stringify([{ id: "local", local: true, name: "This computer", state: "connected" }, ...list])}; send({ type: "servers", servers: extra.servers, notice: "" });`, url);
+  const servers = (list) => mockEval(`setServers(${JSON.stringify(list)});`, url);
   await servers([]);
   await mockEval(`setLibrary("local", ${JSON.stringify(LIB)});`, url);
   const errors = [], w = await openPage({ url, browser, sel, errors, wait: ".side-foot .library-btn" }), { page } = w;
   const calls = []; // the calls that change a library
-  page.on("request", (r) => { if (r.method() !== "GET" && r.url().includes("/api/library/")) calls.push(r.method()); });
+  page.on("request", (r) => { const c = callOfRequest(r); if (c && c.method !== "GET" && c.path.includes("/api/library/")) calls.push(c.method); });
   const read = () => page.evaluate(seen);
   /** Waits for the page to show what `want` says; fails with what it shows. */
   const shows = async (what, want) => {
@@ -450,7 +450,7 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     await menuOn("", "In This computer");
     await page.keyboard.press("Escape");
     // the server drops: its rows cannot be dragged, and its menu makes nothing and says why
-    await mockEval(`libraries.s_studio.connected = false; sendLibrary("s_studio"); extra.servers[1].state = "unreachable"; send({ type: "server_state", server: extra.servers[1] });`, url);
+    await mockEval(`setServerState("s_studio", "unreachable");`, url);
     s = await shows("a server that dropped", (x) => same(x.fixed, ["This computer", "Studio", "plans", "team", "retro", "standup"]));
     await row("team").click({ button: "right" });
     s = await shows("the menu on a row of a server that dropped", (x) => !!x.menu);

@@ -20,15 +20,15 @@ const (
 	testHome = "/tmp/a home"
 )
 
-// checkMessage holds a fatal report's message to its layout: at most six lines, the problems'
-// lines first, then the three fixed ones.
+// checkMessage holds a fatal report's message to its layout: at most five lines, the problems'
+// lines first, then the two fixed ones.
 func checkMessage(t *testing.T, rep Report, repair string) {
 	t.Helper()
 	for _, home := range []string{"", testHome} {
 		msg := rep.Message(testExe, home)
 		lines := strings.Split(msg, "\n")
 		n := len(rep.Fatal)
-		if len(lines) != n+3 || len(lines) > 6 {
+		if len(lines) != n+2 || len(lines) > 5 {
 			t.Fatalf("message has %d lines for %d problems:\n%s", len(lines), n, msg)
 		}
 		for i, p := range rep.Fatal {
@@ -43,7 +43,6 @@ func checkMessage(t *testing.T, rep Report, repair string) {
 		want := []string{
 			"The start creates nothing.",
 			"To repair: " + strings.ReplaceAll(strings.ReplaceAll(repair, "EXE", `"`+testExe+`"`), " HOME", suffix),
-			`To start without remote access: "` + testExe + `" remote off` + suffix,
 		}
 		for i, w := range want {
 			if lines[n+i] != w {
@@ -53,14 +52,26 @@ func checkMessage(t *testing.T, rep Report, repair string) {
 	}
 }
 
-func TestCheckNotConfigured(t *testing.T) {
+// A folder with no remote.json, whatever else is in it, is a server that was never set up: one
+// fatal problem, and the message names the set-up command. No other file is opened.
+func TestCheckNotSetUp(t *testing.T) {
 	t.Parallel()
-	if rep := Check(t.TempDir(), 4747, 6006); !reflect0(rep) {
-		t.Errorf("empty folder: %+v", rep)
+	notSetUp := func(t *testing.T, rep Report) {
+		t.Helper()
+		if rep.Configured || rep.OK() || len(rep.Fatal) != 1 || rep.Fatal[0].Kind != NotSetUp || rep.Config.Port != 0 ||
+			rep.Fingerprint != "" || rep.Secret != "" || rep.Pair != nil {
+			t.Fatalf("report: %+v", rep)
+		}
+		want := `AI Whiteboard is not set up on this machine. Set it up once with: "` + testExe + `" remote setup`
+		if got := rep.Message(testExe, ""); got != want {
+			t.Errorf("message %q, want %q", got, want)
+		}
+		if got := rep.Message(testExe, testHome); got != want+` -home "`+testHome+`"` {
+			t.Errorf("message with a data folder %q", got)
+		}
 	}
-	if rep := Check("/nonexistent/aiwb-test-home", 4747, 6006); !reflect0(rep) {
-		t.Errorf("no folder: %+v", rep)
-	}
+	notSetUp(t, Check(t.TempDir(), 6006))
+	notSetUp(t, Check("/nonexistent/aiwb-test-home", 6006))
 	for _, perm := range []os.FileMode{0o600, 0} {
 		root := t.TempDir()
 		f := FilesIn(root)
@@ -68,18 +79,9 @@ func TestCheckNotConfigured(t *testing.T) {
 			write(t, path, "garbage \x00\xff", perm)
 		}
 		before := snapshot(t, root)
-		rep := Check(root, DefaultPort, DefaultPort) // even the port rows are not looked at
-		if !reflect0(rep) || !rep.OK() || rep.Message(testExe, "") != "" {
-			t.Errorf("mode %v: %+v", perm, rep)
-		}
+		notSetUp(t, Check(root, DefaultPort)) // even the port rows are not looked at
 		sameFolder(t, root, before)
 	}
-}
-
-// reflect0 reports whether rep is the Report of "not configured".
-func reflect0(rep Report) bool {
-	return !rep.Configured && rep.Config.Port == 0 && rep.Config.Names == nil && rep.Fatal == nil && rep.Notes == nil &&
-		rep.Fingerprint == "" && rep.Secret == "" && rep.Pair == nil
 }
 
 func TestCheckFatalRows(t *testing.T) {
@@ -93,7 +95,7 @@ func TestCheckFatalRows(t *testing.T) {
 	cases := []struct {
 		name    string
 		break_  func(t *testing.T, f Files)
-		ports   [2]int // the server's and the MCP port; zero: 4747 and 6006
+		mcp     int // the MCP port; zero: 6006
 		kind    ProblemKind
 		in      func(f Files) []string // what the line names
 		notIn   func(f Files) []string
@@ -162,10 +164,7 @@ func TestCheckFatalRows(t *testing.T) {
 			kind: PairBad, in: func(f Files) []string { return []string{f.Cert, "permission denied"} },
 			notIn: func(f Files) []string { return []string{f.Key} }, repair: newCert},
 
-		{name: "port equal to the server's", ports: [2]int{DefaultPort, 6006},
-			kind: PortEqual, in: func(f Files) []string { return []string{"4748", "server's own port"} },
-			repair: "EXE remote setup -port N HOME", needsFP: true},
-		{name: "port equal to the MCP port", ports: [2]int{4747, DefaultPort},
+		{name: "port equal to the MCP port", mcp: DefaultPort,
 			kind: PortEqual, in: func(f Files) []string { return []string{"4748", "MCP port"} },
 			repair: "EXE remote setup -port N HOME", needsFP: true},
 	}
@@ -176,11 +175,11 @@ func TestCheckFatalRows(t *testing.T) {
 			if tc.break_ != nil {
 				tc.break_(t, f)
 			}
-			if tc.ports == [2]int{} {
-				tc.ports = [2]int{4747, 6006}
+			if tc.mcp == 0 {
+				tc.mcp = 6006
 			}
 			before := snapshot(t, root)
-			rep := Check(root, tc.ports[0], tc.ports[1])
+			rep := Check(root, tc.mcp)
 			sameFolder(t, root, before)
 			if !rep.Configured || rep.OK() || len(rep.Fatal) != 1 || rep.Fatal[0].Kind != tc.kind {
 				t.Fatalf("report: configured %v, fatal %+v", rep.Configured, rep.Fatal)
@@ -229,11 +228,11 @@ func TestMessageWorstCase(t *testing.T) {
 	root, f := setUp(t)
 	write(t, f.Secret, "", 0o600)
 	os.Remove(f.Key)
-	rep := Check(root, DefaultPort, 6006)
+	rep := Check(root, DefaultPort)
 	if len(rep.Fatal) != 3 || rep.Fatal[0].Kind != SecretBad || rep.Fatal[1].Kind != PairBad || rep.Fatal[2].Kind != PortEqual {
 		t.Fatalf("fatal %+v", rep.Fatal)
 	}
-	if n := strings.Count(rep.Message(testExe, testHome), "\n") + 1; n != 6 {
+	if n := strings.Count(rep.Message(testExe, testHome), "\n") + 1; n != 5 {
 		t.Errorf("%d lines", n)
 	}
 	checkMessage(t, rep, "EXE secret -new HOME") // the first problem's repair
@@ -241,7 +240,7 @@ func TestMessageWorstCase(t *testing.T) {
 	// The other worst case: secret and pair missing, the port the MCP port's.
 	os.Remove(f.Secret)
 	os.Remove(f.Cert)
-	rep = Check(root, 4747, DefaultPort)
+	rep = Check(root, DefaultPort)
 	if len(rep.Fatal) != 3 || rep.Fatal[0].Kind != SecretMissing || rep.Fatal[1].Kind != PairMissing || rep.Fatal[2].Kind != PortEqual {
 		t.Fatalf("fatal %+v", rep.Fatal)
 	}
@@ -249,7 +248,7 @@ func TestMessageWorstCase(t *testing.T) {
 
 	// A bad configuration ends the check: one problem, whatever else is wrong.
 	write(t, f.Config, `{"port": 4748}`, 0o600)
-	rep = Check(root, 4747, DefaultPort)
+	rep = Check(root, DefaultPort)
 	if len(rep.Fatal) != 1 || rep.Fatal[0].Kind != BadConfig {
 		t.Fatalf("fatal %+v", rep.Fatal)
 	}
@@ -265,7 +264,6 @@ func TestBindMessage(t *testing.T) {
 			"Remote access: the remote port 4748 cannot be bound: " + err.Error(),
 			"The start creates nothing.",
 			`To repair: free port 4748, or "` + testExe + `" remote setup -port N` + suffix,
-			`To start without remote access: "` + testExe + `" remote off` + suffix,
 		}
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Errorf("home %q:\n%s\nwant\n%s", home, strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -277,7 +275,7 @@ func TestCheckNotes(t *testing.T) {
 	t.Parallel()
 	root, f := setUp(t)
 	c, _, _ := LoadConfig(root)
-	rep := Check(root, 4747, 6006)
+	rep := Check(root, 6006)
 	if !rep.OK() || len(rep.Notes) != 0 || rep.Pair == nil || len(rep.Fingerprint) != 95 ||
 		rep.Secret+"\n" != read(t, f.Secret) || rep.Config.Port != DefaultPort || rep.Fingerprint != Fingerprint(rep.Pair.Certificate[0]) {
 		t.Fatalf("a good set-up: %+v %v", rep.Fatal, rep.Notes)
@@ -295,21 +293,21 @@ func TestCheckNotes(t *testing.T) {
 
 	putPair(c.Names, now.AddDate(-2, 0, 0), now.AddDate(-1, 0, 0))
 	before := snapshot(t, root)
-	rep = Check(root, 4747, 6006)
+	rep = Check(root, 6006)
 	sameFolder(t, root, before)
 	if !rep.OK() || rep.Pair == nil || len(rep.Notes) != 1 || !strings.Contains(rep.Notes[0], "expired") || !strings.Contains(rep.Notes[0], f.Cert) {
 		t.Errorf("expired: fatal %+v, notes %q", rep.Fatal, rep.Notes)
 	}
 
 	putPair([]string{"elsewhere.example", "10.0.0.9"}, now.Add(-time.Hour), now.AddDate(10, 0, 0))
-	rep = Check(root, 4747, 6006)
+	rep = Check(root, 6006)
 	if !rep.OK() || rep.Pair == nil || len(rep.Notes) != 1 || !strings.Contains(rep.Notes[0], "elsewhere.example") ||
 		!strings.Contains(rep.Notes[0], "10.0.0.9") || !strings.Contains(rep.Notes[0], "wb.example") {
 		t.Errorf("other names: fatal %+v, notes %q", rep.Fatal, rep.Notes)
 	}
 
 	putPair([]string{"elsewhere.example"}, now.AddDate(-2, 0, 0), now.AddDate(-1, 0, 0))
-	if rep = Check(root, 4747, 6006); !rep.OK() || len(rep.Notes) != 2 || rep.Message(testExe, "") != "" {
+	if rep = Check(root, 6006); !rep.OK() || len(rep.Notes) != 2 || rep.Message(testExe, "") != "" {
 		t.Errorf("both: fatal %+v, notes %q", rep.Fatal, rep.Notes)
 	}
 
@@ -319,7 +317,7 @@ func TestCheckNotes(t *testing.T) {
 		rev[len(rev)-1-i] = n
 	}
 	putPair(rev, now.Add(-time.Hour), now.AddDate(10, 0, 0))
-	if rep = Check(root, 4747, 6006); !rep.OK() || len(rep.Notes) != 0 {
+	if rep = Check(root, 6006); !rep.OK() || len(rep.Notes) != 0 {
 		t.Errorf("the list in another order: notes %q", rep.Notes)
 	}
 }
@@ -367,7 +365,7 @@ func TestCheckOwnersPair(t *testing.T) {
 			write(t, f.Cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), 0o644)
 			write(t, f.Key, string(tc.keyPEM), 0o600)
 			before := snapshot(t, root)
-			rep := Check(root, 4747, 6006)
+			rep := Check(root, 6006)
 			sameFolder(t, root, before)
 			if !rep.OK() || rep.Pair == nil || rep.Fingerprint != Fingerprint(der) {
 				t.Fatalf("fatal %+v, fingerprint %q", rep.Fatal, rep.Fingerprint)

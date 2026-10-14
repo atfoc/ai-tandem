@@ -85,7 +85,7 @@ func TestSetupMakesWhatIsMissing(t *testing.T) {
 	if d := time.Until(leaf.NotAfter); d < 3649*24*time.Hour || d > 3654*24*time.Hour || time.Since(leaf.NotBefore) < time.Hour {
 		t.Errorf("certificate runs from %v to %v", leaf.NotBefore, leaf.NotAfter)
 	}
-	rep := Check(root, 4747, 6006)
+	rep := Check(root, 6006)
 	if !rep.OK() || len(rep.Notes) != 0 || rep.Pair == nil || rep.Secret == "" {
 		t.Errorf("check after set-up: %+v %v", rep.Fatal, rep.Notes)
 	}
@@ -142,7 +142,7 @@ func TestSetupNewCert(t *testing.T) {
 	if mode(t, f.Key) != 0o600 || mode(t, f.Cert) != 0o644 {
 		t.Errorf("modes %v %v", mode(t, f.Key), mode(t, f.Cert))
 	}
-	if rep := Check(root, 4747, 6006); !rep.OK() || len(rep.Notes) != 0 {
+	if rep := Check(root, 6006); !rep.OK() || len(rep.Notes) != 0 {
 		t.Errorf("check: %+v %v", rep.Fatal, rep.Notes)
 	}
 
@@ -158,7 +158,7 @@ func TestSetupNewCert(t *testing.T) {
 	if _, err := Setup(root, SetupOptions{NewCert: true}); err != nil {
 		t.Fatal(err)
 	}
-	if rep := Check(root, 4747, 6006); !rep.OK() {
+	if rep := Check(root, 6006); !rep.OK() {
 		t.Errorf("check: %+v", rep.Fatal)
 	}
 }
@@ -227,7 +227,7 @@ func TestSetupAddsNameAndPort(t *testing.T) {
 		t.Error("secret, key or certificate changed")
 	}
 	// The certificate is not remade: the check says that its names differ, and starts.
-	if rep := Check(root, 4747, 6006); !rep.OK() || len(rep.Notes) != 1 {
+	if rep := Check(root, 6006); !rep.OK() || len(rep.Notes) != 1 {
 		t.Errorf("check: %+v %v", rep.Fatal, rep.Notes)
 	}
 	// Port 0 keeps the port.
@@ -265,40 +265,5 @@ func TestSetupWritesBadConfigAnew(t *testing.T) {
 	}
 	if read(t, f.Secret) != secret || read(t, f.Cert) != cert {
 		t.Error("secret or certificate changed")
-	}
-}
-
-func TestOffRemovesConfigOnly(t *testing.T) {
-	t.Parallel()
-	root, f := setUp(t)
-	secret := read(t, f.Secret)
-	fp := Check(root, 4747, 6006).Fingerprint
-	conf := read(t, f.Config)
-	before := snapshot(t, root)
-	delete(before, filepath.Base(f.Config))
-
-	was, err := Off(root)
-	if err != nil || !was {
-		t.Fatalf("Off: %v, %v", was, err)
-	}
-	sameFolder(t, root, before)
-	if rep := Check(root, 4747, 6006); rep.Configured || !rep.OK() {
-		t.Errorf("check after off: %+v", rep)
-	}
-	if was, err := Off(root); err != nil || was {
-		t.Errorf("second Off: %v, %v", was, err)
-	}
-	if was, err := Off(filepath.Join(root, "none")); err != nil || was {
-		t.Errorf("Off without a folder: %v, %v", was, err)
-	}
-
-	// Set-up after it gives the same secret and fingerprint.
-	made, err := Setup(root, SetupOptions{Names: []string{"wb.example"}})
-	if err != nil || made != (Made{Config: true}) {
-		t.Fatalf("set-up after off: %+v, %v", made, err)
-	}
-	rep := Check(root, 4747, 6006)
-	if !rep.OK() || len(rep.Notes) != 0 || rep.Fingerprint != fp || rep.Secret+"\n" != secret || read(t, f.Config) != conf {
-		t.Errorf("after off and set-up: %+v %v, fingerprint %s, want %s", rep.Fatal, rep.Notes, rep.Fingerprint, fp)
 	}
 }

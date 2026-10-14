@@ -101,7 +101,7 @@ export type { Picked };
  *  holds; off: why the chat takes no image now (logic/chatimage.ts imagesOff: its server is not connected, or the
  *  model takes none), else ""; skipped: the files the desktop app's dialog left out.
  *  The composer's error line says which files were not added and why, or nothing. The same for a chat on this computer
- *  and on another server: the upload is the chat's own call, which the local server passes on. */
+ *  and on another server: the upload is the chat's own call, to the server the chat is on. */
 export function addImages(chat: string, branch: string, files: readonly Picked[], o: { has: readonly ChatImage[]; off?: string; skipped?: readonly Refused[] }) {
   const slot = slotOf(chat, branch);
   const room = { count: o.has.length + slot.uploads.length, bytes: imagesBytes(o.has) + imagesBytes(slot.uploads) };

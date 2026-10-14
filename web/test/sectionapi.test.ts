@@ -1,27 +1,23 @@
-// A call about a thing of a section (src/api.ts with a stubbed global fetch): the entry id is a path
-// segment after /api/on/, every id in the path and in the body is that server's own, and what the
-// call answers gets the page's keys. A local thing's call is the local one, as before.
+// A call about a thing of a section (src/api.ts through a fake transport): the entry id is the call's server,
+// every id in the path and in the body is that server's own, and what the call answers gets the page's keys.
+// A local thing's call is the same call to the server "local".
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { ApiError, api } from "../src/api.ts";
 import { imageUrl } from "../src/logic/chatimage.ts";
+import { installFake, type Seen } from "./fixtures/faketransport.ts";
 import { UNGROUPED } from "../src/types.ts";
 
 const A = "s_0123456789ab";
 const a = (id: string) => `${A}~${id}`;
-const ON = `/api/on/${A}`;
+const ON = "/api";
 
-type Call = { path: string; method: string; body: unknown; raw?: unknown };
-const calls: Call[] = [];
-let answer: (path: string, method: string) => Response;
-const json = (body: unknown, status = 200, headers?: Record<string, string>) => new Response(JSON.stringify(body), { status, headers });
-globalThis.fetch = (async (path: string, init: RequestInit = {}) => {
-  const method = init.method ?? "GET";
-  const isJson = typeof init.body === "string";
-  calls.push({ path, method, body: isJson ? JSON.parse(init.body as string) : undefined, raw: isJson ? undefined : init.body });
-  return answer(path, method);
-}) as typeof fetch;
-beforeEach(() => { calls.length = 0; answer = () => json({}); });
+const fake = installFake();
+const calls = fake.calls;
+let answer: (path: string, method: string) => ReturnType<typeof json>;
+const json = (body: unknown, status = 200, headers?: Record<string, string>) => ({ status, text: JSON.stringify(body), sceneRev: headers?.["X-AIWB-Scene-Rev"] ? Number(headers["X-AIWB-Scene-Rev"]) : null });
+fake.handler = (c: Seen) => answer(c.path, c.method);
+beforeEach(() => { fake.reset(); answer = () => json({}); });
 const last = () => calls[calls.length - 1];
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
@@ -31,6 +27,7 @@ test("a new chat is made where it was asked for: the place's key names the serve
   answer = () => json(chatView("c_new", { group: "g_1" }));
   const inGroup = await api.newChat({ group: a("g_1") });
   assert.deepEqual([last().method, last().path, last().body], ["POST", `${ON}/chats`, { group: "g_1" }]);
+  assert.equal(last().server, A);
   assert.equal(inGroup.id, a("c_new"));
   assert.equal(inGroup.group, a("g_1"));
   await api.newChat({ group: a(UNGROUPED) });
@@ -39,7 +36,7 @@ test("a new chat is made where it was asked for: the place's key names the serve
   assert.deepEqual([last().path, last().body], [`${ON}/chats`, { board: "b_1" }]);
   answer = () => json(chatView("c_local", { group: "g_1" }));
   const local = await api.newChat({ group: "g_1" });
-  assert.deepEqual([last().path, last().body], ["/api/chats", { group: "g_1" }]);
+  assert.deepEqual([last().server, last().path, last().body], ["local", "/api/chats", { group: "g_1" }]);
   assert.equal(local.id, "c_local");
 });
 
@@ -47,15 +44,16 @@ test("a new board and group are made on the server of the group, or of the secti
   answer = () => json({ id: "b_new", name: "Untitled", group: "g_1", created: "" });
   const b = await api.newBoard(a("g_1"));
   assert.deepEqual([last().method, last().path, last().body], ["POST", `${ON}/boards`, { group: "g_1", new: false }]);
+  assert.equal(last().server, A);
   assert.deepEqual([b.id, b.group], [a("b_new"), a("g_1")]);
-  answer = () => json({ id: "g_new", name: "New group", parent: "g_1", collapsed: true });
+  answer = () => json({ id: "g_new", name: "New group", parent: "g_1" });
   const g = await api.newGroup(A, undefined, a("g_1"));
   assert.deepEqual([last().method, last().path, last().body], ["POST", `${ON}/groups`, { parent: "g_1" }]);
-  assert.deepEqual(g, { id: a("g_new"), name: "New group", parent: a("g_1") }, "keyed, and without that server's collapsed");
+  assert.deepEqual(g, { id: a("g_new"), name: "New group", parent: a("g_1") }, "keyed");
   await api.newGroup(A);
   assert.deepEqual([last().path, last().body], [`${ON}/groups`, {}]);
   await api.newGroup("local", "Mine");
-  assert.deepEqual([last().path, last().body], ["/api/groups", { name: "Mine" }]);
+  assert.deepEqual([last().server, last().path, last().body], ["local", "/api/groups", { name: "Mine" }]);
 });
 
 test("a section's groups are renamed, moved, nested, archived and deleted on their server", async () => {
@@ -75,11 +73,11 @@ test("a section's groups are renamed, moved, nested, archived and deleted on the
   assert.equal(last().path, `${ON}/groups/g_1?contents=keep`);
 });
 
-test("collapse is never sent for a section's group: there is no such call, and a local group's still goes to its server", async () => {
-  await assert.rejects(api.collapseGroup(a("g_1"), true));
-  assert.equal(calls.length, 0);
-  await api.collapseGroup("g_1", true);
-  assert.deepEqual([last().method, last().path, last().body], ["PATCH", "/api/groups/g_1", { collapsed: true }]);
+test("collapse is never sent for any group: there is no such call, and no call of a group carries the word", async () => {
+  assert.equal("collapseGroup" in api, false);
+  await api.renameGroup(a("g_1"), "Work");
+  await api.renameGroup("g_1", "Work");
+  assert.ok(calls.every((c) => !("collapsed" in (c.body as object))));
 });
 
 test("moving a board or a chat names a group of its own server by that group's own id", async () => {
@@ -154,13 +152,13 @@ test("a draft refused as stale brings that server's draft with the page's keys",
   });
 });
 
-test("an image of a section's chat is uploaded to and fetched from its server through the local one", async () => {
+test("an image of a section's chat is uploaded to its server, and shown from the transport's address of the picture", async () => {
   answer = () => json({ id: "f".repeat(64), name: "p.png", type: "image/png", size: 3 });
   await api.uploadImage(a("c_1"), new Blob(["abc"], { type: "image/png" }), "p.png", "image/png");
   assert.deepEqual([last().method, last().path], ["POST", `${ON}/chats/c_1/images?name=p.png`]);
-  assert.ok(last().raw instanceof Blob, "the bytes as they are");
-  assert.equal(imageUrl(a("c_1"), "ab12"), `${ON}/chats/c_1/images/ab12`);
-  assert.equal(imageUrl("c_1", "ab12"), "/api/chats/c_1/images/ab12");
+  assert.deepEqual([last().server, last().type, last().body], [A, "image/png", "<3 bytes>"], "the bytes as they are");
+  assert.equal(imageUrl(a("c_1"), "ab12"), `aiwb-picture://p/${A}/c_1/ab12`);
+  assert.equal(imageUrl("c_1", "ab12"), "aiwb-picture://p/local/c_1/ab12");
 });
 
 test("a section's board: take, release, the drawing with its revision, rename, seen, delete", async () => {
@@ -187,20 +185,20 @@ test("a section's board: take, release, the drawing with its revision, rename, s
   assert.deepEqual([last().method, last().path], ["DELETE", `${ON}/boards/b_1`]);
 });
 
-test("a server's folders and plan usage are asked by its entry id in the query, and the answer of a tool call names no server", async () => {
+test("a server's folders and plan usage are asked of that server, and the answer of a tool call goes to the server whose call it is", async () => {
   answer = () => json({ path: "/", parent: "", dirs: [] });
   await api.dirs("/w", A);
-  assert.equal(last().path, `/api/dirs?path=%2Fw&server=${A}`);
+  assert.deepEqual([last().server, last().path], [A, "/api/dirs?path=%2Fw"]);
   await api.dirs("/w");
-  assert.equal(last().path, "/api/dirs?path=%2Fw");
+  assert.deepEqual([last().server, last().path], ["local", "/api/dirs?path=%2Fw"]);
   answer = () => json({ plan: false, limits: [], fetchedAt: "" });
   await api.usage("claude", false, A);
-  assert.equal(last().path, `/api/usage/claude?server=${A}`);
+  assert.deepEqual([last().server, last().path], [A, "/api/usage/claude"]);
   await api.usage("claude", true, A);
-  assert.equal(last().path, `/api/usage/claude?fresh=1&server=${A}`);
+  assert.deepEqual([last().server, last().path], [A, "/api/usage/claude?fresh=1"]);
   answer = () => json({});
-  await api.rpcReply("far_12", { result: "ok" });
-  assert.deepEqual([last().path, last().body], ["/api/rpc-reply", { id: "far_12", result: "ok" }]);
+  await api.rpcReply("far_12", { result: "ok" }, A);
+  assert.deepEqual([last().server, last().path, last().body], [A, "/api/rpc-reply", { id: "far_12", result: "ok" }]);
 });
 
 test("a refusal of a section's call is that server's own, with its status, its code and its sentence", async () => {
@@ -244,7 +242,7 @@ test("a draft is saved with the boards of its own server alone: a local board pi
 });
 
 // The one rule under all of the above, asked of every method of the api at once: no key of the page reaches the wire.
-test("whatever the call, nothing under /api/on/ carries the page's key, a `server`, a `collapsed`, a `replace` or a `local`", async () => {
+test("whatever the call, it goes to the section's server with nothing of the page's: no key, no `server`, no `collapsed`, no `replace`, no `local`", async () => {
   answer = (path) => (path.endsWith("/scene") ? json({}, 200, { "X-AIWB-Scene-Rev": "1" }) : json({ rev: 1, state: "free", id: "x", name: "n", group: "g_1", created: "", status: "draft", version: 1, items: [] }));
   const draft = { text: "@B", mentions: [{ name: "B", id: a("b_1") }] };
   const all: Promise<unknown>[] = [
@@ -259,7 +257,8 @@ test("whatever the call, nothing under /api/on/ carries the page's key, a `serve
   await Promise.allSettled(all);
   assert.equal(calls.length, all.length);
   for (const c of calls) {
-    assert.ok(c.path.startsWith(`${ON}/`), `${c.method} ${c.path} is not under the section's prefix`);
+    assert.equal(c.server, A, `${c.method} ${c.path} goes to the section's server`);
+    assert.ok(c.path.startsWith(`${ON}/`) && !c.path.includes("/api/on/"), `${c.method} ${c.path} is a path of the client API`);
     const rest = c.path.slice(ON.length), body = JSON.stringify(c.body ?? null);
     assert.equal(rest.includes("~") || rest.includes(A), false, `${c.method} ${c.path} has a key in its path`);
     assert.equal(body.includes("~") || body.includes(A), false, `${c.method} ${c.path} has a key in its body: ${body}`);

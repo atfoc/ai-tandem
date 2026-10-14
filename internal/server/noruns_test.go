@@ -37,8 +37,8 @@ func keysNamed(v any, at string, names ...string) (found []string) {
 }
 
 // No route under /api/runs is registered or in the remote listener's table, and a request for
-// one is answered as any route the listener does not have: by the remote listener's table with
-// 404 {"error":"not found"}, on loopback by the mux with its own plain 404.
+// one is answered as any route the listener does not have: by the client listener's table with
+// 404 {"error":"not found"}.
 func TestNoRunRoutes(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
@@ -47,7 +47,7 @@ func TestNoRunRoutes(t *testing.T) {
 			t.Errorf("the mux has the route %q", p)
 		}
 	}
-	for _, p := range RemoteRoutes {
+	for _, p := range ClientRoutes {
 		if strings.Contains(p, "/api/runs") {
 			t.Errorf("the remote listener's table has the route %q", p)
 		}
@@ -65,11 +65,8 @@ func TestNoRunRoutes(t *testing.T) {
 		{"POST", "/api/runs/x/archive"},
 		{"POST", "/api/runs/x/unarchive"},
 	} {
-		if status, out := e.do(rq[0], rq[1], `{}`); status != 404 || out != "404 page not found\n" {
-			t.Errorf("%s %s on loopback: %d %q", rq[0], rq[1], status, out)
-		}
 		if status, out := l.call(apiX, testSecret, rq[0], rq[1], `{}`); status != 404 || strings.TrimSpace(out) != `{"error":"not found"}` {
-			t.Errorf("%s %s on the remote listener: %d %q", rq[0], rq[1], status, out)
+			t.Errorf("%s %s on the client listener: %d %q", rq[0], rq[1], status, out)
 		}
 	}
 }
@@ -122,7 +119,9 @@ func TestStateNamesNoRun(t *testing.T) {
 	_, state := x.Do("GET", "/api/state", nil)
 	check("the API client's state", string(state), chat1)
 	// The snapshots of two new streams.
-	raw, _ := json.Marshal(bridgetest.Connect(t, e.url, "P").Welcome())
+	pid := idOf("P")
+	pg := bridgetest.ConnectWith(t, e.url, pid, l.options(pid, testSecret))
+	raw, _ := json.Marshal(pg.Welcome())
 	check("the page's snapshot", string(raw), own.ID)
 	_, snap := l.api(apiX)
 	check("the API client's snapshot", snap, chat1)

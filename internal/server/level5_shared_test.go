@@ -106,7 +106,7 @@ func TestLevel5SettingsBeforeTheFirstMessage(t *testing.T) {
 	status, out := l5Call(x, "PATCH", "/api/chats/"+chat2, `{"name":"n","server":""}`)
 	l5Is(t, "a client's change of a chat that is not there with a server", status, out, 400, l5ServerRefused)
 	status, out = l5Call(p, "PATCH", "/api/chats/"+chat, `{"model":"sonnet","server":"local"}`)
-	l5Is(t, "the page's change that names a server", status, out, 409, `{"code":"server_fixed","error":"`+decode[map[string]string](t, out)["error"]+`"}`)
+	l5Is(t, "the owner's change that names a server", status, out, 400, l5ServerRefused)
 	if v := decode[model.ChatView](t, l5Want(t, y, 200, "GET", "/api/chats/"+chat, nil)); v.Model != "opus" {
 		t.Errorf("a refused change took: %+v", v)
 	}
@@ -465,6 +465,9 @@ func TestLevel5OneHolderOfABoard(t *testing.T) {
 	}
 	holder := func(what, want string) {
 		t.Helper()
+		if want != "" {
+			want = idOf(want)
+		}
 		if got, _ := e.s.Bridge.HolderOf(board); got != want {
 			t.Errorf("%s: the board is held by %q, want %q", what, got, want)
 		}

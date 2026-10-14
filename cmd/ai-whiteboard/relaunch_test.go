@@ -1,238 +1,280 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
+	"io/fs"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
-	"time"
-
-	"ai-whiteboard/internal/testset"
 )
 
-// serverTest is the first line of every test that starts server processes. Such a test is in the
-// full set only (it builds the binary and starts servers; the few that are in the default set too
-// call smokeTest), and runs in parallel with the others: each has its own data folder, ports and
-// environment (newInstance, instance.vars), and they mostly wait. cover names the tests of the
-// default set that cover the same behaviour without a server process; without it the reason says
-// where the default set has tests of the real binary at all.
-func serverTest(t *testing.T, cover ...string) {
-	t.Helper()
-	reason := "builds the binary and starts servers; the tests of the default set that build the binary and start it are the six that call smokeTest (relaunch_test.go), TestRemotePairStartsAChat a chat on a pair of servers among them"
-	if len(cover) > 0 {
-		reason = "builds the binary and starts servers; in the default set: " + strings.Join(cover, "; ")
-	}
-	testset.SkipUnlessFull(t, reason)
-	t.Parallel()
-}
-
-// smokeTest is serverTest for the tests of real server processes that the default set runs as
-// well, so that whoever works elsewhere in the repository notices when the server no longer builds,
-// starts or takes a chat's first message. Each is the cheapest test of something that no test
-// without a server process covers:
-//
-//	TestServeOnADataFolderWithRunData        a whole server on a data folder that a build with runs left
-//	TestRemoteListenerServes                 the remote listener of a real server, over HTTPS
-//	TestRemotePairStartsAChat                two real servers, one an entry of the other's list
-//	TestReloadKeepsSecretWhenUnreadable      the signal that makes a real server read its secret again
-//	TestStartCheckComesBeforeTheBinds        a start that the check of remote access ends
-//	TestSetupRemoteScriptRefusesEmptyValues  a script of the server folder, run through sh
-func smokeTest(t *testing.T) {
-	t.Helper()
-	t.Parallel()
-}
-
-// instance is one data folder and port for the process-level tests, and the flags that select them.
-type instance struct {
-	bin, dir string
-	claude   string // the -claude flag: a program that does not exist, unless a test swaps in a fake
-	cursor   string // the -cursor flag, likewise; "" leaves the flag out (`agent` on PATH)
-	pi       string // the -pi flag, likewise
-	port     int
-	mcpPort  int
-	vars     []string // what environ adds to this process's environment: the MCP port, a Cursor config folder and what setenv added
-	url      string   // http://127.0.0.1:<port>/
-	mcpURL   string   // http://localhost:<mcpPort>/mcp
-}
-
-// newInstance builds the program (once for the test binary) and picks a temp data folder, a free
-// app port and a free MCP port (through the hidden test-only override, see environ). Its servers are
-// stopped in cleanup. Its caller has called serverTest (or smokeTest) first.
-func newInstance(t *testing.T) *instance {
-	t.Helper()
-	bin := buildBinary(t)
-	in := &instance{bin: bin, dir: t.TempDir(), claude: noClaude(t), cursor: filepath.Join(t.TempDir(), "no-agent"), pi: filepath.Join(t.TempDir(), "no-pi"), port: freePort(t), mcpPort: freePort(t)}
-	in.vars = []string{"AIWB_MCP_PORT=" + strconv.Itoa(in.mcpPort), "CURSOR_CONFIG_DIR=" + t.TempDir()}
-	in.url = fmt.Sprintf("http://127.0.0.1:%d/", in.port)
-	in.mcpURL = fmt.Sprintf("http://localhost:%d/mcp", in.mcpPort)
-	t.Cleanup(func() {
-		in.command(context.Background(), "stop").Run()
-		exec.Command("pkill", "-KILL", "-f", "--", "-home "+in.dir).Run()
-	})
-	return in
-}
-
-// environ is the environment of every process of the program this test starts (see serverEnv):
-// this process's as it is now, with the instance's MCP port and Cursor config folder and what the
-// test added with setenv. A later value of a name wins.
-func (in *instance) environ() []string {
-	return append(os.Environ(), in.vars...)
-}
-
-// setenv adds NAME=value pairs to the environment of every process the instance starts from now
-// on. It is the tests' t.Setenv: the value is the server's alone, so the test can run in parallel.
-func (in *instance) setenv(pairs ...string) {
-	in.vars = append(in.vars, pairs...)
-}
-
-// loopbackBind is the hidden test-only override that binds a server's remote listener on
-// 127.0.0.1: a wildcard bind by a freshly built binary can raise the macOS firewall dialog.
-const loopbackBind = "AIWB_REMOTE_BIND=127.0.0.1"
-
-// command is `ai-whiteboard <command> <more> <flags>` with the instance's environment.
-func (in *instance) command(ctx context.Context, command string, more ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, in.bin, append(append([]string{command}, more...), in.flags()...)...)
-	cmd.Env = in.environ()
-	return cmd
-}
-
-func (in *instance) flags() []string {
-	flags := []string{"-home", in.dir, "-port", strconv.Itoa(in.port), "-client", "", "-claude", in.claude, "-pi", in.pi}
-	if in.cursor != "" {
-		flags = append(flags, "-cursor", in.cursor)
-	}
-	return flags
-}
-
-// noClaude returns the path of a Claude binary that does not exist, for the -claude flag of every
-// server a test starts: no test may run the owner's installed `claude`. The -cursor and -pi flags
-// get such a path too, so that a server neither starts the installed Cursor agent or pi nor
-// behaves differently on a machine that has them.
-func noClaude(t *testing.T) string {
-	t.Helper()
-	return filepath.Join(t.TempDir(), "no-claude")
-}
-
-// run runs `ai-whiteboard <command> <flags>` and returns its stdout; it must exit 0.
-func (in *instance) run(t *testing.T, command string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	out, err := in.command(ctx, command).Output()
-	if err != nil {
-		var stderr string
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			stderr = string(ee.Stderr)
-		}
-		t.Fatalf("%s: %v\n%s", command, err, stderr)
-	}
-	return string(out)
-}
-
-// hello returns the running server's /api/hello answer; it must answer.
-func (in *instance) hello(t *testing.T) helloReply {
-	t.Helper()
-	h, ok := helloOf(httpClient(), strings.TrimSuffix(in.url, "/"))
-	if !ok {
-		t.Fatalf("no server answers at %s", in.url)
-	}
-	return h
-}
-
-// waitGone waits up to 5 s for process pid to be gone.
-func waitGone(t *testing.T, pid int) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
-			return
-		}
-	}
-	t.Fatalf("old server pid %d still running", pid)
-}
-
 func TestRelaunchWithNoServerIsLaunch(t *testing.T) {
-	serverTest(t)
+	serverTest(t, "TestServeOnADataFolderWithRunData (this package: a whole server); TestLaunchFindsTheRunningServer (this package: launch against a stand-in)")
 	in := newInstance(t)
-	if got := in.run(t, "relaunch"); got != in.url+"\n" {
-		t.Fatalf("relaunch printed %q, want the single line %q", got, in.url)
+	l := in.launchJSON(t, "relaunch")
+	if l.State != "running" || l.Address != in.base() || l.Fingerprint != in.fpr || l.Home != in.dir {
+		t.Fatalf("relaunch -json: %+v", l)
 	}
-	in.hello(t)
+	if in.hello(t).Pid != l.PID {
+		t.Fatalf("the pid %d, hello says %d", l.PID, in.hello(t).Pid)
+	}
 }
 
-func TestRelaunchReplacesRunningServer(t *testing.T) {
-	serverTest(t)
+// launch and relaunch write the address and the fingerprint for a person, and one JSON line for
+// the app; a launch of a running server changes nothing; a relaunch replaces the server.
+func TestLaunchAndRelaunchOutput(t *testing.T) {
+	serverTest(t, "TestLaunchFindsTheRunningServer, TestLaunchKeepsTheOlderBuild (this package: against stand-ins)")
 	in := newInstance(t)
-	if got := in.run(t, "launch"); got != in.url+"\n" {
-		t.Fatalf("launch printed %q", got)
+	want := fmt.Sprintf("AI Whiteboard is running.\nAddress: %s\nFingerprint: %s\n", in.base(), in.fpr)
+	if got := in.run(t, "launch"); got != want {
+		t.Fatalf("launch wrote %q, want %q", got, want)
 	}
-	old := in.hello(t).Pid
+	first := in.hello(t)
+	if first.InstanceID == "" || first.FeatureLevel != 6 {
+		t.Fatalf("hello: %+v", first)
+	}
 
-	if got := in.run(t, "relaunch"); got != in.url+"\n" {
-		t.Fatalf("relaunch printed %q, want the single line %q", got, in.url)
+	l := in.launchJSON(t, "launch")
+	if l.State != "running" || l.Address != in.base() || l.Fingerprint != in.fpr || l.PID != first.Pid || l.InstanceID != first.InstanceID ||
+		l.FeatureLevel != 6 || l.Version != first.Version || l.Home != in.dir {
+		t.Fatalf("launch -json: %+v, hello %+v", l, first)
 	}
-	if pid := in.hello(t).Pid; pid == old {
-		t.Fatalf("/api/hello still reports the old pid %d", old)
+	// The fingerprint it states is the certificate the server presents, and the address is
+	// reached with it.
+	if status, _, err := in.request(context.Background(), testClient, "GET", "/api/hello", nil); err != nil || status != 200 {
+		t.Fatalf("hello at the address launch gave: %d, %v", status, err)
 	}
-	waitGone(t, old)
+
+	if got := in.run(t, "relaunch"); got != want {
+		t.Fatalf("relaunch wrote %q, want %q", got, want)
+	}
+	second := in.hello(t)
+	if second.Pid == first.Pid || second.InstanceID != first.InstanceID {
+		t.Fatalf("after relaunch: pid %d (was %d), instance %q (was %q)", second.Pid, first.Pid, second.InstanceID, first.InstanceID)
+	}
+	waitGone(t, first.Pid)
 }
 
-// POST /api/restart from the active client starts relaunch; a new server takes over.
-func TestRestartEndpoint(t *testing.T) {
-	serverTest(t, "TestRestart, TestRestartBinaryMissing (internal/server)")
-	in := newInstance(t)
-	in.run(t, "launch")
-	old := in.hello(t).Pid
+// A server that was never set up refuses to start, with the message that names the command that
+// sets it up, binds nothing and writes no server.json; once it is set up, the same commands start
+// it. The same through serve, launch and relaunch.
+func TestNotSetUpRefusesThenStarts(t *testing.T) {
+	smokeTest(t)
+	in := newBareInstance(t)
+	want := fmt.Sprintf("AI Whiteboard is not set up on this machine. Set it up once with: %q remote setup -home %q", in.exe(t), in.dir)
 
-	const client = "restart-test"
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", in.url+"api/events?client="+client, nil)
-	resp, err := http.DefaultClient.Do(req)
+	for _, command := range []string{"serve", "launch", "relaunch"} {
+		out, errOut, code := in.ends(t, command)
+		if code != 1 || out != "" || !strings.Contains(errOut, want+"\n") {
+			t.Fatalf("%s: code %d, stdout %q, stderr %q; want it to hold %q", command, code, out, errOut, want)
+		}
+		in.noServer(t)
+		if listening(in.mcpPort) {
+			t.Fatalf("%s: the MCP port %d is bound", command, in.mcpPort)
+		}
+	}
+	// launch and relaunch name why before they start anything; they put nothing in server.log.
+	if _, err := os.Stat(filepath.Join(in.dir, "server.log")); !os.IsNotExist(err) {
+		t.Fatalf("server.log: %v, want none", err)
+	}
+
+	in.setUp(t)
+	l := in.launchJSON(t, "launch")
+	if l.State != "running" || l.Address != in.base() || l.Fingerprint != fingerprintOf(t, in.dir) {
+		t.Fatalf("launch -json after the set-up: %+v", l)
+	}
+	run := in.waitServing(t)
+	st, _ := run.statusOf()
+	if st.Client.Fingerprint != in.fpr || st.Client.Port != in.port {
+		t.Fatalf("the running server's status: %+v", st)
+	}
+}
+
+// A running server of the build before is found: launch says so and starts none, relaunch stops
+// it by its pid and starts one of this build.
+func TestRelaunchReplacesTheBuildBefore(t *testing.T) {
+	serverTest(t, "TestLaunchKeepsTheOlderBuild, TestStopCommand (this package: against stand-ins)")
+	in := newInstance(t)
+	asThisFolders(t, in.dir, standInID)
+	old := (&standIn{version: "0.9.0"}).withPid(t)
+	old.older(t, in.dir, true)
+
+	l := in.launchJSON(t, "launch")
+	if l.State != "old_build" || l.Version != "0.9.0" || l.PID != old.pid || l.FeatureLevel != 5 || l.Address != "" || l.Fingerprint != "" {
+		t.Fatalf("launch -json against the build before: %+v", l)
+	}
+	if !old.alive() {
+		t.Fatal("launch stopped the server of the build before")
+	}
+	if in.listeningAnywhere() {
+		t.Fatal("launch started a second server beside the one of the build before")
+	}
+
+	// relaunch: SIGTERM to the pid, then a server of this build. The stand-in stops answering
+	// when its process is gone, and server.json (which has no control socket) is the old one's;
+	// the new server writes its own.
+	l = in.launchJSON(t, "relaunch")
+	if l.State != "running" || l.PID == old.pid || old.alive() {
+		t.Fatalf("relaunch -json: %+v, the old process alive: %v", l, old.alive())
+	}
+	in.waitServing(t)
+}
+
+// listeningAnywhere reports whether a server of the instance serves: the client port or the MCP
+// port accepts.
+func (in *instance) listeningAnywhere() bool {
+	return listening(in.port) || listening(in.mcpPort)
+}
+
+// A server that stops while it starts is a launch that fails: nothing on stdout, the title and the
+// last lines of the log on stderr, exit 1. Here another program holds the MCP port.
+func TestLaunchShowsWhyTheServerStopped(t *testing.T) {
+	serverTest(t, "TestLaunchOfAFolderNeverSetUp (this package: a launch that fails before it starts a server)")
+	in := newInstance(t)
+	holder, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", in.mcpPort))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(nil, 1<<20)
-	for active := false; !active; {
-		if !sc.Scan() {
-			t.Fatalf("events ended before the client's hello: %v", sc.Err())
-		}
-		var ev map[string]any
-		if line, ok := strings.CutPrefix(sc.Text(), "data: "); ok && json.Unmarshal([]byte(line), &ev) == nil {
-			active = ev["type"] == "hello"
-		}
+	defer holder.Close()
+	out, errOut, code := in.ends(t, "launch", "-json")
+	if code != 1 || out != "" || !strings.HasPrefix(errOut, "AI Whiteboard: the server stopped while starting\n") ||
+		!strings.Contains(errOut, "cannot serve the MCP endpoint on port "+strconv.Itoa(in.mcpPort)) {
+		t.Fatalf("launch: code %d, stdout %q, stderr %q", code, out, errOut)
 	}
-	go flushWhenStopping(in.url, client, sc)
+	in.noServerFiles(t)
+	// relaunch the same, and a later launch with the port free starts the server.
+	if _, errOut, code := in.ends(t, "relaunch"); code != 1 || !strings.HasPrefix(errOut, "AI Whiteboard: the server stopped while starting\n") {
+		t.Fatalf("relaunch: code %d, stderr %q", code, errOut)
+	}
+	holder.Close()
+	if l := in.launchJSON(t, "launch"); l.State != "running" {
+		t.Fatalf("launch after the port was freed: %+v", l)
+	}
+}
 
-	req, _ = http.NewRequest("POST", in.url+"api/restart", nil)
-	req.Header.Set("X-AIWB-Client", client)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
+// serve finds a server running, of this build or the one before, says so, exits 0 and binds
+// nothing.
+func TestServeFindsTheRunningServer(t *testing.T) {
+	serverTest(t, "TestFindRunningThisBuild, TestFindRunningOlderBuild (this package)")
+	in := newInstance(t)
+	l := in.launchJSON(t, "launch")
+	out, errOut, code := in.ends(t, "serve")
+	if code != 0 || errOut != "" || out != fmt.Sprintf("AI Whiteboard is already running (pid %d)\n", l.PID) {
+		t.Fatalf("serve beside a server of this build: code %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	if in.hello(t).Pid != l.PID {
+		t.Fatal("serve replaced the running server")
+	}
+
+	other := newInstance(t)
+	asThisFolders(t, other.dir, standInID)
+	old := (&standIn{version: "0.9.0"}).withPid(t)
+	old.older(t, other.dir, true)
+	out, errOut, code = other.ends(t, "serve")
+	if code != 0 || errOut != "" || out != fmt.Sprintf("AI Whiteboard is already running (pid %d)\n", old.pid) {
+		t.Fatalf("serve beside a server of the build before: code %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	if listening(other.mcpPort) || listening(other.port) {
+		t.Fatal("serve bound a port beside the server of the build before")
+	}
+	if !old.alive() {
+		t.Fatal("serve stopped the server of the build before")
+	}
+}
+
+// stop ends a running server of this build, and says so; a second stop says that none runs.
+func TestStopEndsTheServer(t *testing.T) {
+	serverTest(t, "TestStopCommand (this package: against stand-ins)")
+	in := newInstance(t)
+	in.launchJSON(t, "launch")
+	pid := in.hello(t).Pid
+	if got := in.run(t, "stop"); got != "AI Whiteboard stopped\n" {
+		t.Fatalf("stop wrote %q", got)
+	}
+	waitGone(t, pid)
+	in.noServer(t)
+	if got := in.run(t, "stop"); got != "AI Whiteboard is not running\n" {
+		t.Fatalf("the second stop wrote %q", got)
+	}
+}
+
+// The control socket is the owner's alone, a socket file that nobody answers is replaced at the
+// next start, and nothing answers on the port the build before used.
+func TestControlSocket(t *testing.T) {
+	serverTest(t, "TestFindRunningThisBuild (this package: the control socket of a stand-in); TestControlHandler (internal/server)")
+	in := newInstance(t)
+	in.launchJSON(t, "launch")
+	sock := filepath.Join(in.dir, "control.sock")
+	if info, err := os.Lstat(sock); err != nil || info.Mode().Type() != os.ModeSocket || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the control socket: %v, %v", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(in.dir, "server.json")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("server.json: %v, %v", info, err)
+	}
+	pid := in.hello(t).Pid
+
+	// A server that dies without a clean exit leaves its socket file and server.json.
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("restart: status %d, want 202", res.StatusCode)
+	waitGone(t, pid)
+	if _, err := os.Lstat(sock); err != nil {
+		t.Fatalf("the socket of a server that was killed: %v, want it left", err)
 	}
+	if _, ok := in.running(); ok {
+		t.Fatal("a killed server is found running")
+	}
+	if got := in.run(t, "stop"); got != "AI Whiteboard is not running\n" {
+		t.Fatalf("stop after the kill wrote %q", got)
+	}
+	l := in.launchJSON(t, "launch")
+	if l.State != "running" || l.PID == pid {
+		t.Fatalf("launch after the kill: %+v", l)
+	}
+	if info, err := os.Lstat(sock); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the control socket after the replacement: %v, %v", info, err)
+	}
+}
 
-	for deadline := time.Now().Add(45 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		if h, ok := helloOf(httpClient(), strings.TrimSuffix(in.url, "/")); ok && h.Pid != old {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no new server answered within 45 s")
-		}
+// A data folder whose path is too long for a Unix socket: the control socket is where
+// store.ControlSocketPath puts it, and the commands find the server there.
+func TestControlSocketOfALongPath(t *testing.T) {
+	serverTest(t, "TestFindRunningThisBuild (this package); TestControlSocketPath (internal/store)")
+	in := newInstance(t)
+	long := filepath.Join(in.dir, strings.Repeat("a-long-folder-name-", 6), "data")
+	if err := os.MkdirAll(long, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	waitGone(t, old)
+	// A data folder of its own: set up, with the long path.
+	other := *in
+	other.dir = long
+	other.port, other.mcpPort = freePort(t), freePort(t)
+	other.vars = append([]string{"AIWB_MCP_PORT=" + fmt.Sprint(other.mcpPort)}, in.vars[1:]...)
+	other.setUp(t)
+	t.Cleanup(func() { other.command(context.Background(), "stop").Run() })
+	sock := sockPath(long)
+	l := other.launchJSON(t, "launch")
+	if len(sock) > 104 || strings.HasPrefix(sock, long) {
+		t.Fatalf("the control socket path %q is not the short one", sock)
+	}
+	sf := readServerFile(t, long)
+	if sf.Control != sock || l.State != "running" {
+		t.Fatalf("server.json names %q, want %q; launch: %+v", sf.Control, sock, l)
+	}
+	if _, err := os.Stat(filepath.Dir(sock)); err != nil {
+		t.Fatalf("the short folder of the socket while the server runs: %v", err)
+	}
+	if got := other.run(t, "stop"); got != "AI Whiteboard stopped\n" {
+		t.Fatalf("stop wrote %q", got)
+	}
+	// The server removes what it made: the socket and the short folder, which only it needed.
+	if _, err := os.Stat(filepath.Dir(sock)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the short folder of the socket after stop: %v, want it gone", err)
+	}
 }

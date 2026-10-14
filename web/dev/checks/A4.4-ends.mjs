@@ -6,9 +6,10 @@
 // switched to that fails to load: the notice there was, and nothing stays held. A snapshot during the wait, before and
 // after the answer: the wait survives it, with no frame of an empty thread. The chat deleted or archived meanwhile: the
 // page shows nothing more of the wait.
-import { check, holds, mockEval, openPage, release, sampleFrames, seed, startMove, until, waitsSeen } from "../shot.mjs";
+import { callMatcher, callOfRequest, check, holds, hostCall, mockEval, openPage, release, sampleFrames, seed, startMove, until, waitsSeen } from "../shot.mjs";
 
 const T = "c_A4_turns", TWO = "c_A4_two";
+const MESSAGES = callMatcher(/^POST \/api\/chats\/[^/]+\/messages/); // (the page's call, which the browser cuts)
 const ASK = "Why is the build slow?", ANSWER = "Because of the font copy step. It copies every font file on each build.";
 
 /** A probe for sampleFrames: bad for a frame whose thread has no message. */
@@ -54,7 +55,7 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, browser, fai
     const p = await open(T), { page } = p;
     // (the connection is cut by the browser: the call waits at the page's door, and is then aborted)
     let cut = () => {}, waiting = 0;
-    if (!answer) await page.route("**/api/chats/*/messages", async (route) => { waiting++; await new Promise((ok) => { cut = ok; }); await route.abort("connectionreset"); });
+    if (!answer) await page.route(MESSAGES, async (route) => { waiting++; await new Promise((ok) => { cut = ok; }); await route.abort("connectionreset"); });
     await branchSend(page, said);
     if (answer) await held(name, "send"); else if (!await until(() => waiting === 1)) fail(`${name}: the page sent no message`);
     let seen = await when(page, name, (s) => s.msgs.some((m) => m.sending));
@@ -76,7 +77,7 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, browser, fai
       expect(`${name}: the next Send goes through, and its message is in the new branch's thread once`, seen.msgs.filter((m) => m.text === said).length === 1 && same(texts(seen).slice(0, 2), CUT), texts(seen));
     } else {
       // Back takes the move back
-      await page.unroute("**/api/chats/*/messages");
+      await page.unroute(MESSAGES);
       await page.locator(".fk-banner button").click();
       seen = await when(page, `${name}: Back`, (s) => !s.banner);
       expect(`${name}: Back works again: the whole thread, and the box as before the move`, seen.msgs.length === 4 && seen.msgs.every((m) => m.live), texts(seen));
@@ -208,7 +209,7 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, browser, fai
     await held(name, "send");
     const before = await when(page, name, (s) => s.msgs.some((m) => m.sending) && s.msgs.length === 3);
     const frames = await sampleFrames(page, threadProbe);
-    const lists = []; page.on("requestfinished", (r) => { if (r.method() === "GET" && r.url().includes("/items")) lists.push(r.url()); });
+    const lists = []; page.on("requestfinished", (r) => { const c = callOfRequest(r); if (c?.method === "GET" && c.path.includes("/items")) lists.push(c.path); });
     await snapshot();
     if (!await until(() => lists.length >= 1)) fail(`${name}: the page did not read its list again after the snapshot`);
     await frame(page);
@@ -243,7 +244,7 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, browser, fai
     await branchSend(page, "Try it another way");
     await held(name, "send");
     await when(page, name, (s) => s.msgs.some((m) => m.sending));
-    await fetch(`${url}/api/chats/${T}`, { method: "DELETE" });
+    await hostCall(url, "DELETE", `/api/chats/${T}`);
     if (!await until(() => page.evaluate(() => !document.querySelector(".thread .msg, .wait-line, .fk-banner")))) fail(`${name}: the page still shows the chat's thread, a line or the banner`);
     await release(url, "send");
     await frame(page); await frame(page);
@@ -259,7 +260,7 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, browser, fai
     await branchSend(page, "Try it another way");
     await held(name, "send");
     await when(page, name, (s) => s.msgs.some((m) => m.sending));
-    await fetch(`${url}/api/chats/${T}/archive`, { method: "POST" });
+    await hostCall(url, "POST", `/api/chats/${T}/archive`);
     await page.waitForSelector(".composer .archived-bar");
     let seen = await waitsSeen(page);
     expect(`${name}: the page shows nothing more of the message: no pending message and no line`, !seen.msgs.some((m) => m.sending) && !seen.lines.length, seen);

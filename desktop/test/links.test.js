@@ -3,24 +3,31 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { linkAction, attachLinkHandlers } = require('../lib');
 
-const appOrigin = 'http://127.0.0.1:4747';
+const pageURL = 'file:///Applications/AI%20Whiteboard.app/Contents/Resources/web/index.html';
 
 test('linkAction: other origins with http, https or mailto → open', () => {
-  assert.equal(linkAction('https://example.com/', appOrigin), 'open');
-  assert.equal(linkAction('http://127.0.0.1:9999/', appOrigin), 'open');
-  assert.equal(linkAction('mailto:a@b.c', appOrigin), 'open');
+  assert.equal(linkAction('https://example.com/', pageURL), 'open');
+  assert.equal(linkAction('http://127.0.0.1:9999/', pageURL), 'open');
+  assert.equal(linkAction('mailto:a@b.c', pageURL), 'open');
 });
 
 test('linkAction: other schemes and unparsable URLs → drop', () => {
-  assert.equal(linkAction('file:///etc/hosts', appOrigin), 'drop');
-  assert.equal(linkAction('javascript:alert(1)', appOrigin), 'drop');
-  assert.equal(linkAction('data:text/html,x', appOrigin), 'drop');
-  assert.equal(linkAction('not a url', appOrigin), 'drop');
+  assert.equal(linkAction('file:///etc/hosts', pageURL), 'drop');
+  assert.equal(linkAction('javascript:alert(1)', pageURL), 'drop');
+  assert.equal(linkAction('data:text/html,x', pageURL), 'drop');
+  assert.equal(linkAction('not a url', pageURL), 'drop');
 });
 
-test('linkAction: the app origin → stay', () => {
-  assert.equal(linkAction('http://127.0.0.1:4747/?x=1', appOrigin), 'stay');
-  assert.equal(linkAction('http://127.0.0.1:4747/', appOrigin), 'stay');
+test('linkAction: the page itself, with or without a hash → stay', () => {
+  assert.equal(linkAction(pageURL, pageURL), 'stay');
+  assert.equal(linkAction(`${pageURL}#/chat/c_1`, pageURL), 'stay');
+  assert.equal(linkAction(pageURL, `${pageURL}#x`), 'stay');
+});
+
+test('linkAction: another file, the page with a query, or a picture address → drop', () => {
+  assert.equal(linkAction('file:///Applications/other.html', pageURL), 'drop');
+  assert.equal(linkAction(`${pageURL}?x=1`, pageURL), 'drop');
+  assert.equal(linkAction('aiwb-picture://p/local/c/i', pageURL), 'drop');
 });
 
 function fakeWindow() {
@@ -29,7 +36,7 @@ function fakeWindow() {
   webContents.setWindowOpenHandler = (h) => webContents.openHandlers.push(h);
   const shell = { opened: [], openExternal: (u) => shell.opened.push(u) };
   const links = attachLinkHandlers(webContents, shell);
-  links.setAppURL(`${appOrigin}/`);
+  links.setPageURL(pageURL);
   return { webContents, shell, links };
 }
 
@@ -68,18 +75,24 @@ test('will-navigate to a disallowed scheme → prevented, not opened', () => {
   assert.deepEqual(shell.opened, []);
 });
 
-test('will-navigate on the app origin → neither prevented nor opened', () => {
+test('will-navigate to the page with another hash → neither prevented nor opened', () => {
   const { webContents, shell } = fakeWindow();
-  const event = navigate(webContents, `${appOrigin}/?x=1`);
+  const event = navigate(webContents, `${pageURL}#/board/b_1`);
   assert.equal(event.prevented, 0);
   assert.deepEqual(shell.opened, []);
 });
 
-test('setAppURL moves the origin the window stays on', () => {
+test('will-navigate to a reload of another file or to the picture scheme → prevented, not opened', () => {
+  const { webContents, shell } = fakeWindow();
+  assert.equal(navigate(webContents, 'file:///tmp/other.html').prevented, 1);
+  assert.equal(navigate(webContents, 'aiwb-picture://p/local/c/i').prevented, 1);
+  assert.deepEqual(shell.opened, []);
+});
+
+test('setPageURL moves the page the window stays on', () => {
   const { webContents, shell, links } = fakeWindow();
-  links.setAppURL('http://127.0.0.1:5858/');
-  assert.equal(navigate(webContents, 'http://127.0.0.1:5858/x').prevented, 0);
-  const old = navigate(webContents, `${appOrigin}/`);
-  assert.equal(old.prevented, 1);
-  assert.deepEqual(shell.opened, [`${appOrigin}/`]);
+  links.setPageURL('file:///tmp/dev/index.html');
+  assert.equal(navigate(webContents, 'file:///tmp/dev/index.html#x').prevented, 0);
+  assert.equal(navigate(webContents, pageURL).prevented, 1);
+  assert.deepEqual(shell.opened, []);
 });

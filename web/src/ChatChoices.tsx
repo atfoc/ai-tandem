@@ -22,7 +22,7 @@ type Saves = { c: ChatView; onBusy: (busy: boolean) => void; onError: (msg: stri
 
 /** A thing's server as its views read it (logic/chatserver.ts): of a chat or a board, whose key names the
  *  server it is on, or of a server named by its entry id (`server`: the folder browser's). connected: that server
- *  takes a call now, which for a section is while the local server holds its tree. */
+ *  takes a call now, which for a section is while the page holds its tree. */
 export function useWhere(of?: { id?: string } | { server: string } | null): Where {
   const server = of && "server" in of ? of.server : serverOf(of);
   const name = useStore((s) => serverName(s, server));

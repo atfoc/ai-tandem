@@ -6,7 +6,7 @@
 
 **Excalidraw whiteboards that your coding agents can read and draw on.**
 
-AI Whiteboard is a local app that puts [Excalidraw](https://excalidraw.com) boards and coding-agent
+AI Whiteboard is a desktop app that puts [Excalidraw](https://excalidraw.com) boards and coding-agent
 chats in one window. Claude Code, Cursor and pi work on the board with you: select a few shapes
 and ask "explain this", or ask for "the request flow between these services", and the agent draws
 it on the board while you watch. It runs on your own machine, with the agent logins you already
@@ -85,15 +85,17 @@ search over the library and Enter inserts the prompt at the cursor, as plain tex
 
 ### Run agents on another machine
 
-The app can use an AI Whiteboard server on another computer next to its own: a workstation, a
-build machine, a box with the repositories on it. Each remote server is a section of the sidebar
-with its groups, whiteboards and chats. What you make there runs there, with that machine's
-agents and folders, and you draw on its boards from your own window.
+The app is the client of every AI Whiteboard server, the one on your own computer included. Your
+computer is the first section of the sidebar, and a server on another computer, a workstation, a
+build machine, a box with the repositories on it, is a section below it. Each section has its
+groups, whiteboards and chats, and all of them behave alike. What you make in a section runs on
+that machine, with its agents and folders, and you draw on its boards from your own window. When
+a server is down, its section says so and the others keep working.
 
-![The sidebar with this computer's groups at the top and three remote servers below: two connected ones with their own groups, whiteboards and chats, and one that is unreachable; the open chat runs on one of the remote servers](docs/screenshots/remote-servers.png)
+![The sidebar with three sections: this computer and two remote servers, one connected with its own groups, whiteboards and chats and one that is unreachable; the open chat runs on one of the remote servers](docs/screenshots/remote-servers.png)
 
-Remote servers are meant for a private network or a VPN, not for the open internet: the secret
-that connects an app gives access to everything on that server. Set-up is in
+Servers are meant for a private network or a VPN, not for the open internet: the secret that
+connects an app gives access to everything on that server. Set-up is in
 [docs/remote-servers.md](docs/remote-servers.md).
 
 ### Stay organised, and stay local
@@ -103,8 +105,9 @@ that connects an app gives access to everything on that server. Set-up is in
 - **Your data stays on your disk.** Boards and chats are files in `~/.ai-whiteboard`; a board is
   an ordinary `.excalidraw` file. There is no account and no cloud service of the app's own.
   Agents run through their own CLIs, with the logins and plans you already have.
-- **A desktop app or a browser tab.** On macOS the app is an Electron window. Quitting it does
-  not stop the server or the chats that are working; open it again and they are there.
+- **A desktop app.** On macOS the app is an Electron window. The server runs on its own:
+  quitting the app does not stop it or the chats that are working; open the app again and they
+  are there. There is no page to open in a browser tab.
 - **Themes.** Light, dark, follow the system, or one of the four Catppuccin flavours. The board
   follows the theme.
 
@@ -118,7 +121,7 @@ that connects an app gives access to everything on that server. Set-up is in
 | ⌘⇧B | Open the chat tree |
 | ⌘J | Show or hide the chat beside the board |
 | ⌘B | Show or hide the sidebar |
-| ⌘N | New chat (in the desktop app; a browser keeps the key for its own window) |
+| ⌘N | New chat |
 | Esc | Stop the agent |
 
 Outside macOS the shortcuts use Ctrl in place of ⌘.
@@ -136,47 +139,55 @@ There is no download: you build AI Whiteboard from source.
   [Claude Code](https://claude.com/claude-code) (`claude`), the
   [Cursor CLI](https://cursor.com/cli) (`agent`), or pi (`pi`), on your `PATH`
 
-**In the browser.** From the repo root:
-
-```sh
-# build the web client
-cd web && npm ci && npm run build && cd ..
-
-# build and start the server (run it from the repo root so it finds web/dist)
-go build -o bin/ai-whiteboard ./cmd/ai-whiteboard
-./bin/ai-whiteboard
-```
-
-Then open http://127.0.0.1:4747, create a whiteboard, open a chat next to it and start asking.
-
-**As a macOS app.** From the repo root:
+**Build and install the app.** From the repo root:
 
 ```sh
 scripts/build-app.sh    # makes bin/AI Whiteboard.app
 scripts/install-app.sh  # copies it to ~/Applications, so Spotlight finds it
 ```
 
-Running the desktop app in development, the watch build and the tests are in
+**Set the server up, once.** The app starts the server of your computer itself, but the server
+does not start until it has been set up: set-up makes its certificate and its secret. Run it once
+in a terminal, before the first start or when the first section of the sidebar says that the
+server was not started and names this command:
+
+```sh
+~/Applications/AI\ Whiteboard.app/Contents/MacOS/ai-whiteboard remote setup
+```
+
+Then press **Retry** in the section, or wait a few seconds: the app starts the server and the
+section fills. Create a whiteboard, open a chat next to it and start asking.
+
+Running the app from a checkout in development, the watch build and the tests are in
 [docs/development.md](docs/development.md).
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  UI["Web client<br/>React + Excalidraw<br/>in a browser tab or the Electron window"]
-  S["Go server<br/>127.0.0.1:4747"]
+  subgraph APP["Desktop app (Electron)"]
+    UI["Web client<br/>React + Excalidraw"]
+    M["Main process<br/>server list and secrets"]
+    UI <-->|"IPC"| M
+  end
+  S["Go server of this computer<br/>HTTPS, port 4748"]
+  R["Go server of another machine<br/>HTTPS, port 4748"]
   A["Agent CLIs<br/>claude, agent, pi"]
   D[("~/.ai-whiteboard<br/>boards and chats")]
-  UI <-->|"API and live events"| S
+  M <-->|"HTTPS and the secret"| S
+  M <-->|"HTTPS and the secret"| R
   S -->|"starts and talks to"| A
   A -->|"board tools over MCP<br/>localhost:6006"| S
   S <--> D
 ```
 
-- The **server** is one Go program. It stores boards and chats, starts the agent processes and
-  serves the web client.
-- The **web client** is React with Excalidraw. The **desktop app** is an Electron window that
-  starts the server, or finds the one already running, and opens it.
+- The **server** is one Go program. It stores boards and chats and starts the agent processes. It
+  serves no page: it has one API, over HTTPS behind a secret, for its clients.
+- The **web client** is React with Excalidraw. It ships inside the **desktop app**, an Electron
+  app that is the client of every server. The app's main process holds the list of servers with
+  their secrets and keeps one connection to each; the page talks to the main process only. The
+  app starts the server of your computer, or finds the one already running, and connects to it
+  as to any other.
 - Agents reach the board through **MCP tools** (read the board, get a picture, apply changes,
   delete elements, and more) on a second local port, 6006. The window that has the board open
   carries out the edits, which is how they become undo steps.
@@ -185,12 +196,13 @@ More in [docs/architecture.md](docs/architecture.md).
 
 ## Good to know
 
-- **A board needs an open window to be changed.** Agents edit a board through the app or the
-  browser tab that has it open, so keep one open while an agent draws.
+- **A board needs an open window to be changed.** Agents edit a board through the app window that
+  has it open, so keep one open while an agent draws.
 - **One instance per machine.** The MCP port is fixed at 6006, so a second AI Whiteboard server
   on the same machine does not start.
-- **The remote secret is all or nothing.** Whoever has a server's secret reads and changes every
-  chat, whiteboard and group on it. Keep the remote port inside a network you trust.
+- **A server's secret is all or nothing.** Whoever has a server's secret reads and changes every
+  chat, whiteboard and group on it. Every server that runs listens on its network, so keep its
+  port inside a network you trust.
 - **pi runs its tools without asking.** pi chats show no permission cards; only access to the
   app's own data folder is refused, and that guard is not a sandbox.
 
@@ -199,13 +211,15 @@ The full list, with the caps, is in [docs/limitations.md](docs/limitations.md).
 ## Documentation
 
 - [docs/README.md](docs/README.md): the index of everything below
-- [docs/architecture.md](docs/architecture.md): server, web client, desktop app, the MCP listener
-  and the board tools, subagents, images
+- [docs/architecture.md](docs/architecture.md): server, web client, desktop app, the connection
+  between them, the MCP listener and the board tools, subagents, images
 - [docs/prompt-library.md](docs/prompt-library.md): the prompt library in full
-- [docs/remote-servers.md](docs/remote-servers.md): building a server for another machine and
-  using it from the app
+- [docs/remote-servers.md](docs/remote-servers.md): this computer and other servers as sections of
+  the sidebar, building a server for another machine and using it from the app, and updating from
+  the version before
 - [docs/server-reference.md](docs/server-reference.md): server commands and flags
-- [docs/troubleshooting.md](docs/troubleshooting.md): when an agent does not get its board tools
+- [docs/troubleshooting.md](docs/troubleshooting.md): when an agent does not get its board tools,
+  and when this computer's server does not start
 - [docs/limitations.md](docs/limitations.md): limitations and caps
 - [docs/development.md](docs/development.md): build, run and test while working on the app
 - [AGENTS.md](AGENTS.md): for contributors, which tests to run and how to write them

@@ -1,19 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -22,51 +17,8 @@ import (
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
-	"ai-whiteboard/internal/server"
-	"ai-whiteboard/internal/servers"
 	"ai-whiteboard/internal/store"
 )
-
-// apiOptions is how the API client id reaches a remote listener with this secret: over HTTPS
-// with the certificate pinned, and the secret, its id and its level in their headers.
-func apiOptions(t *testing.T, fingerprint, secret, id string) bridgetest.Options {
-	t.Helper()
-	tr := pinned(fingerprint)
-	t.Cleanup(tr.CloseIdleConnections)
-	return bridgetest.Options{HTTP: &http.Client{Transport: tr},
-		Header: map[string]string{remote.SecretHeader: secret, server.ClientHeader: id, servers.LevelHeader: testLevel}}
-}
-
-// apiClient opens the event stream of the API client id on the remote listener of 127.0.0.1:<port>.
-func apiClient(t *testing.T, port int, fingerprint, secret, id string) *bridgetest.Page {
-	t.Helper()
-	return bridgetest.ConnectWith(t, fmt.Sprintf("https://127.0.0.1:%d", port), id, apiOptions(t, fingerprint, secret, id))
-}
-
-// streamStatus asks the remote listener for the event stream and returns the answer's status and
-// body; it is for a stream that must be refused.
-func streamStatus(t *testing.T, port int, fingerprint, secret, id string) (int, string) {
-	t.Helper()
-	o := apiOptions(t, fingerprint, secret, id)
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://127.0.0.1:%d/api/events", port), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for k, v := range o.Header {
-		req.Header.Set(k, v)
-	}
-	resp, err := o.HTTP.Do(req)
-	if err != nil {
-		t.Fatalf("the stream's request: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		return resp.StatusCode, ""
-	}
-	var body [512]byte
-	n, _ := resp.Body.Read(body[:])
-	return resp.StatusCode, string(body[:n])
-}
 
 // waitLog waits up to 5 s for the server's log to hold line.
 func waitLog(t *testing.T, dir, line string) {
@@ -78,395 +30,6 @@ func waitLog(t *testing.T, dir, line string) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the log lacks %q:\n%s", line, serverLog(t, dir))
 		}
-	}
-}
-
-// child starts a process of the test's own and returns its pid and a function that reports
-// whether it still runs. It is the pid a stand-in hello states: a command that must signal
-// nothing leaves it running, since SIGUSR1 ends a sleep.
-func child(t *testing.T, name string, args ...string) (pid int, alive func() bool) {
-	t.Helper()
-	return childOf(t, exec.Command(name, args...))
-}
-
-// childOf is child for a command the test prepared, to read its output for one.
-func childOf(t *testing.T, cmd *exec.Cmd) (pid int, alive func() bool) {
-	t.Helper()
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() {
-		cmd.Wait()
-		close(done)
-	}()
-	t.Cleanup(func() {
-		cmd.Process.Kill()
-		<-done
-	})
-	return cmd.Process.Pid, func() bool {
-		select {
-		case <-done:
-			return false
-		case <-time.After(300 * time.Millisecond): // a signal that was sent has ended it by now
-			return true
-		}
-	}
-}
-
-// gateServer is a stand-in for a running server as `secret -new` sees it: hello and the remote
-// status route, each with the body given ("" = 404), the state read with dataDir as its data
-// folder ("" = 404; set before the command runs), and a count of the requests it got.
-type gateServer struct {
-	*httptest.Server
-	hello, status string
-	dataDir       string
-	asked         atomic.Int64
-}
-
-func newGateServer(t *testing.T, hello, status string) *gateServer {
-	t.Helper()
-	g := &gateServer{hello: hello, status: status}
-	g.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.asked.Add(1)
-		body := map[string]string{"/api/hello": g.hello, "/api/remote/status": g.status}[r.URL.Path]
-		if r.URL.Path == "/api/state" && g.dataDir != "" {
-			body = fmt.Sprintf(`{"dataDir":%q}`, g.dataDir)
-		}
-		if body == "" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, body)
-	}))
-	t.Cleanup(g.Close)
-	return g
-}
-
-// The gate of `secret -new`: a server is signalled only when it is this data folder's, of a build
-// that has the reload, and listening for remote access. In every other case the command writes
-// the secret, says on stderr what holds, exits 0 and signals nothing.
-func TestSecretNewGate(t *testing.T) {
-	t.Parallel()
-	const (
-		otherID   = "7b1e9d40-2c5a-4f38-a6d7-0e1f2a3b4c5d"
-		next      = "The new secret takes effect at the server's next start.\n"
-		older     = "The running server is of an older build and cannot read a secret while it runs. " + next
-		off       = "The running server has remote access off. " + next
-		listening = `{"listening":true,"port":5123,"names":["mac.local"],"fingerprint":"AB:CD","secretReloads":4}`
-	)
-	hello := func(pid int, more string) string {
-		return fmt.Sprintf(`{"app":"ai-whiteboard","version":"dev","pid":%d%s}`, pid, more)
-	}
-	this := `,"instanceId":"` + standInID + `"`
-	cases := []struct {
-		name          string
-		hello         func(pid int) string
-		status        string
-		noServerFile  bool
-		noInstanceID  bool
-		dataDir       string // the stand-in's data folder when it is not the command's: "none" = no state read
-		want          string
-		wantNoRequest bool
-	}{
-		{name: "no server.json", hello: func(pid int) string { return hello(pid, this+`,"featureLevel":1`) }, status: listening,
-			noServerFile: true, want: next, wantNoRequest: true},
-		{name: "the folder has no instance id", hello: func(pid int) string { return hello(pid, this+`,"featureLevel":1`) }, status: listening,
-			noInstanceID: true, want: next, wantNoRequest: true},
-		{name: "another folder's server", hello: func(pid int) string { return hello(pid, `,"instanceId":"`+otherID+`","featureLevel":1`) },
-			status: listening, want: next},
-		{name: "a copy of the server's folder", hello: func(pid int) string { return hello(pid, this+`,"featureLevel":1`) }, status: listening,
-			dataDir: filepath.Join(os.TempDir(), "aiwb-the-original"), want: next},
-		{name: "no state read", hello: func(pid int) string { return hello(pid, this+`,"featureLevel":1`) }, status: listening,
-			dataDir: "none", want: next},
-		{name: "hello without an instance id", hello: func(pid int) string { return hello(pid, `,"featureLevel":1`) }, status: listening, want: next},
-		{name: "another program", hello: func(pid int) string { return `{"app":"other","pid":1}` }, status: listening, want: next},
-		{name: "no feature level", hello: func(pid int) string { return hello(pid, this) }, status: listening, want: older},
-		{name: "feature level 0", hello: func(pid int) string { return hello(pid, this+`,"featureLevel":0`) }, status: listening, want: older},
-		{name: "no pid", hello: func(int) string { return hello(0, this+`,"featureLevel":1`) }, status: listening, want: older},
-		{name: "remote access off", hello: func(pid int) string { return hello(pid, this+`,"featureLevel":1`) }, status: `{"listening":false}`, want: off},
-		{name: "no status route", hello: func(pid int) string { return hello(pid, this+`,"featureLevel":1`) }, status: "", want: off},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			pid, alive := child(t, "sleep", "600")
-			g := newGateServer(t, tc.hello(pid), tc.status)
-			home := t.TempDir()
-			if _, _, code := own(t, "remote", "setup", "-home", home); code != 0 {
-				t.Fatalf("set-up: code %d", code)
-			}
-			switch tc.dataDir {
-			case "":
-				g.dataDir = home
-			case "none":
-			default:
-				g.dataDir = tc.dataDir
-			}
-			if !tc.noInstanceID {
-				asThisFolders(t, home, standInID)
-			}
-			if !tc.noServerFile {
-				writeServerFile(t, store.NewPaths(home), portOf(t, g.Server))
-			}
-			old := secretOf(t, home)
-
-			out, errOut, code := own(t, "secret", "-new", "-home", home)
-			fresh := secretOf(t, home)
-			if code != 0 || out != fresh+"\n" || fresh == old {
-				t.Fatalf("code %d, stdout %q", code, out)
-			}
-			if errOut != tc.want {
-				t.Fatalf("stderr %q, want %q", errOut, tc.want)
-			}
-			if !alive() {
-				t.Fatal("the process hello names was signalled")
-			}
-			if n := g.asked.Load(); tc.wantNoRequest && n != 0 {
-				t.Fatalf("%d requests to a server the command must not ask", n)
-			}
-			noSecret(t, fresh, errOut)
-			noSecret(t, old, errOut)
-		})
-	}
-}
-
-// With no server.json the command asks no port at all, the default one included: no request
-// leaves it.
-func TestSecretNewAsksNoDefaultPort(t *testing.T) {
-	home := t.TempDir()
-	if _, _, code := own(t, "remote", "setup", "-home", home); code != 0 {
-		t.Fatalf("set-up: code %d", code)
-	}
-	asThisFolders(t, home, standInID)
-	var asked atomic.Int64
-	prev := http.DefaultTransport
-	http.DefaultTransport = roundTrip(func(r *http.Request) (*http.Response, error) {
-		asked.Add(1)
-		return nil, fmt.Errorf("no request may be made, and %s was", r.URL)
-	})
-	defer func() { http.DefaultTransport = prev }()
-	_, errOut, code := own(t, "secret", "-new", "-home", home)
-	if code != 0 || errOut != "The new secret takes effect at the server's next start.\n" || asked.Load() != 0 {
-		t.Fatalf("code %d, stderr %q, %d requests", code, errOut, asked.Load())
-	}
-}
-
-// The gate's last two rows: a server that cannot be signalled, and one that takes the signal and
-// does not confirm.
-func TestSecretNewSignalNotConfirmed(t *testing.T) {
-	t.Parallel()
-	const listening = `{"listening":true,"port":5123,"names":["mac.local"],"fingerprint":"AB:CD","secretReloads":4}`
-	gate := func(t *testing.T, pid int) (errOut string, took time.Duration) {
-		t.Helper()
-		g := newGateServer(t, fmt.Sprintf(`{"app":"ai-whiteboard","version":"dev","pid":%d,"instanceId":%q,"featureLevel":1}`, pid, standInID), listening)
-		home := t.TempDir()
-		g.dataDir = home
-		if _, _, code := own(t, "remote", "setup", "-home", home); code != 0 {
-			t.Fatalf("set-up: code %d", code)
-		}
-		asThisFolders(t, home, standInID)
-		writeServerFile(t, store.NewPaths(home), portOf(t, g.Server))
-		start := time.Now()
-		out, errOut, code := own(t, "secret", "-new", "-home", home)
-		took = time.Since(start)
-		if fresh := secretOf(t, home); code != 0 || out != fresh+"\n" {
-			t.Fatalf("code %d, stdout %q", code, out)
-		}
-		return errOut, took
-	}
-
-	t.Run("the process is gone", func(t *testing.T) {
-		t.Parallel()
-		// A pid that no process has or gets: the pid of one that just ended can be given to the
-		// next process the machine starts, which the signal would then end.
-		const gone = math.MaxInt32
-		if err := syscall.Kill(gone, 0); err != syscall.ESRCH {
-			t.Fatalf("signal 0 to the pid %d: %v, want %v", gone, err, syscall.ESRCH)
-		}
-		want := fmt.Sprintf("The running server could not be told (%v). The new secret takes effect at the server's next start.\n", syscall.ESRCH)
-		if errOut, _ := gate(t, gone); errOut != want {
-			t.Fatalf("stderr %q, want %q", errOut, want)
-		}
-	})
-	t.Run("no confirmation", func(t *testing.T) {
-		t.Parallel()
-		// A process of this test's that ignores the signal, as a server that hangs would.
-		// The shell says when it has set the trap: a signal before that would end it.
-		cmd := exec.Command("sh", "-c", `trap "" USR1; echo trapped; exec sleep 600`)
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		pid, alive := childOf(t, cmd)
-		trapped := make(chan string, 1)
-		go func() {
-			line, _ := bufio.NewReader(stdout).ReadString('\n')
-			trapped <- line
-		}()
-		select {
-		case line := <-trapped:
-			if line != "trapped\n" {
-				t.Fatalf("the shell printed %q before it set the trap, want %q", line, "trapped\n")
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("the shell did not set the trap in 30 s")
-		}
-		errOut, d := gate(t, pid)
-		if errOut != "The running server did not confirm the new secret. Restart it to be sure the old one is refused.\n" {
-			t.Fatalf("stderr %q", errOut)
-		}
-		if d < 2500*time.Millisecond || d > 10*time.Second {
-			t.Fatalf("the command waited %v for the confirmation, want about 3 s", d)
-		}
-		if !alive() {
-			t.Fatal("the process that ignores the signal ended")
-		}
-	})
-}
-
-// SIGUSR1 to a server with remote access off: it keeps running and says so in its log.
-func TestReloadSignalWithRemoteOff(t *testing.T) {
-	serverTest(t, "TestReloadKeepsSecretWhenUnreadable (the signal to a real server), TestSecretNewGate (a server with remote access off is not signalled) (this package)", "TestReloadSecret (internal/server)")
-	in := newInstance(t)
-	in.run(t, "launch")
-	pid := in.hello(t).Pid
-	if h := in.helloMap(t); h["featureLevel"] != float64(server.FeatureLevel) {
-		t.Fatalf("hello: %v, want the feature level %d", h, server.FeatureLevel)
-	}
-	for i := 0; i < 2; i++ {
-		if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
-			t.Fatal(err)
-		}
-	}
-	waitLog(t, in.dir, "Remote listener: asked to read the secret again, but remote access is off in this server\n")
-	if got := in.hello(t).Pid; got != pid {
-		t.Fatalf("the server's pid is %d, was %d", got, pid)
-	}
-	if st, ok := remoteStatusOf(in.url); !ok || st.Listening {
-		t.Fatalf("remote status: %+v, answered %v", st, ok)
-	}
-
-	// `secret -new` on this folder, set up after the start: the running server is not signalled.
-	setUpRemote(t, in.dir, freePort(t))
-	_, errOut, code := own(t, "secret", "-new", "-home", in.dir)
-	if code != 0 || errOut != "The running server has remote access off. The new secret takes effect at the server's next start.\n" {
-		t.Fatalf("code %d, stderr %q", code, errOut)
-	}
-	if n := strings.Count(serverLog(t, in.dir), "asked to read the secret again"); n > 2 {
-		t.Fatalf("the log has %d reload lines, want the test's own 2 at most", n)
-	}
-}
-
-// A secret file that cannot be read at the signal: the server keeps the old secret and says so in
-// its log without the file's content. No reload is counted, and only a reload closes streams.
-func TestReloadKeepsSecretWhenUnreadable(t *testing.T) {
-	smokeTest(t)
-	in, port := newRemoteInstance(t)
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
-	in.run(t, "launch")
-	in.waitListening(t)
-	pid := in.hello(t).Pid
-
-	if err := os.WriteFile(remote.FilesIn(in.dir).Secret, []byte("not a secret\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
-		t.Fatal(err)
-	}
-	waitLog(t, in.dir, "Remote listener: the secret was not read again, the old one stays: ")
-	remoteOK(t, port, fp, secret)
-	if st := in.waitListening(t); st.SecretReloads != 0 {
-		t.Fatalf("secretReloads = %d, want 0", st.SecretReloads)
-	}
-	log := serverLog(t, in.dir)
-	noSecret(t, secret, log)
-	if strings.Contains(log, "not a secret") {
-		t.Fatalf("the log holds the file's content:\n%s", log)
-	}
-}
-
-// `secret -new` for another data folder, whose server.json names this folder's server: that
-// server is not signalled and keeps its secret.
-func TestSecretNewOfAnotherFolderLeavesTheServer(t *testing.T) {
-	serverTest(t, "TestSecretNewGate, TestRemoteStatusOfThisFolderOnly (this package)")
-	in, port := newRemoteInstance(t)
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
-	in.run(t, "launch")
-	in.waitListening(t)
-
-	other := t.TempDir()
-	setUpRemote(t, other, freePort(t))
-	asThisFolders(t, other, standInID)
-	writeServerFile(t, store.NewPaths(other), in.port)
-	_, errOut, code := own(t, "secret", "-new", "-home", other)
-	if code != 0 || errOut != "The new secret takes effect at the server's next start.\n" {
-		t.Fatalf("code %d, stderr %q", code, errOut)
-	}
-	remoteOK(t, port, fp, secret)
-	if st := in.waitListening(t); st.SecretReloads != 0 {
-		t.Fatalf("secretReloads = %d, want 0", st.SecretReloads)
-	}
-	if log := serverLog(t, in.dir); strings.Contains(log, "secret was read again") || strings.Contains(log, "asked to read the secret") {
-		t.Fatalf("the server was signalled:\n%s", log)
-	}
-	// The status of that folder does not report this server either.
-	out, _, _ := own(t, "remote", "status", "-home", other)
-	if !strings.HasPrefix(out, "Running: no server\n") {
-		t.Fatalf("remote status of the other folder:\n%s", out)
-	}
-	out, _, _ = own(t, "remote", "status", "-home", in.dir)
-	if !strings.HasPrefix(out, "Running: listening\n") {
-		t.Fatalf("remote status of the server's folder:\n%s", out)
-	}
-}
-
-// `secret -new` and `remote status` for a copy of the running server's data folder, which carries
-// its instance id and its server.json: the server is the original's, not the copy's. It is not
-// signalled and keeps its secret, and the status of the copy reports no server.
-func TestSecretNewOfACopiedFolderLeavesTheServer(t *testing.T) {
-	serverTest(t, "TestSecretNewGate, TestRemoteStatusOfThisFolderOnly (this package)")
-	in, port := newRemoteInstance(t)
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
-	in.run(t, "launch")
-	in.waitListening(t)
-
-	dup := filepath.Join(t.TempDir(), "copy")
-	if b, err := exec.Command("cp", "-Rp", in.dir, dup).CombinedOutput(); err != nil {
-		t.Fatalf("cp -Rp: %v\n%s", err, b)
-	}
-	// What makes the copy look like the server's folder is there.
-	if _, p, ok := store.ReadServerFile(store.NewPaths(dup)); !ok || p != in.port {
-		t.Fatalf("the copy's server.json: port %d, read %v, want %d", p, ok, in.port)
-	}
-	if a, b := remoteFiles(t, dup)["instance-id"], remoteFiles(t, in.dir)["instance-id"]; a == "" || a != b {
-		t.Fatalf("the copy's instance id %q, the original's %q", a, b)
-	}
-
-	out, errOut, code := own(t, "secret", "-new", "-home", dup)
-	if code != 0 || errOut != "The new secret takes effect at the server's next start.\n" {
-		t.Fatalf("code %d, stderr %q", code, errOut)
-	}
-	if fresh := secretOf(t, dup); out != fresh+"\n" || fresh == secret || secretOf(t, in.dir) != secret {
-		t.Fatalf("the copy's secret was not replaced alone: stdout %q", out)
-	}
-	remoteOK(t, port, fp, secret)
-	if st := in.waitListening(t); st.SecretReloads != 0 {
-		t.Fatalf("secretReloads = %d, want 0", st.SecretReloads)
-	}
-	if log := serverLog(t, in.dir); strings.Contains(log, "secret was read again") || strings.Contains(log, "asked to read the secret") {
-		t.Fatalf("the server was signalled:\n%s", log)
-	}
-	for _, args := range [][]string{{"-home", dup}, {"-home", dup, "-server-port", strconv.Itoa(in.port)}} {
-		out, _, _ = own(t, append([]string{"remote", "status"}, args...)...)
-		if !strings.HasPrefix(out, "Running: no server\n") {
-			t.Fatalf("remote status %v of the copy:\n%s", args, out)
-		}
-	}
-	out, _, _ = own(t, "remote", "status", "-home", in.dir)
-	if !strings.HasPrefix(out, "Running: listening\n") {
-		t.Fatalf("remote status of the server's folder:\n%s", out)
 	}
 }
 
@@ -528,24 +91,146 @@ var (
 	apiFollowEvents = []string{"tree", "chat_items", "sub", "sub_items"}
 )
 
-// Across processes: a real server with the stand-in agent, a stand-in page on loopback that holds
-// a board, and an API client over HTTPS that makes a chat with the page's calls, sends its first
-// message, reads it, answers a permission ask, sends a second message and stops it. The page
-// keeps its board and saves it meanwhile. Each sees what the other made: the client the page's
-// board, the page the client's chat, in the group it was made in and in no group "Remote".
-func TestAPIClientBesideAPage(t *testing.T) {
+// A secret file that cannot be read at the signal: the server keeps the old secret and says so in
+// its log without the file's content. No reload is counted, and only a reload closes streams.
+func TestReloadKeepsSecretWhenUnreadable(t *testing.T) {
+	smokeTest(t)
+	in := newInstance(t)
+	secret := in.secret
+	in.launchJSON(t, "launch")
+	in.waitServing(t)
+	pid := in.hello(t).Pid
+
+	if err := os.WriteFile(remote.FilesIn(in.dir).Secret, []byte("not a secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	waitLog(t, in.dir, "Remote listener: the secret was not read again, the old one stays: ")
+	in.helloOK(t, secret)
+	if status, _ := in.getWith(t, "/api/state", secret, "", testLevel); status != http.StatusOK {
+		t.Fatalf("the old secret after the signal: status %d, want it still accepted", status)
+	}
+	if st, _ := in.waitServing(t).statusOf(); st.Client.SecretReloads != 0 {
+		t.Fatalf("secretReloads = %d, want 0", st.Client.SecretReloads)
+	}
+	log := serverLog(t, in.dir)
+	noSecret(t, secret, log)
+	if strings.Contains(log, "not a secret") {
+		t.Fatalf("the log holds the file's content:\n%s", log)
+	}
+}
+
+// `secret -new` for another data folder, whose server.json names this folder's server: that
+// server is not signalled and keeps its secret. The status of that folder does not report this
+// server either.
+func TestSecretNewOfAnotherFolderLeavesTheServer(t *testing.T) {
+	serverTest(t, "TestSecretNewGate, TestFindRunningIgnoresWhatIsNotThisFolders (this package)")
+	in := newInstance(t)
+	secret := in.secret
+	in.launchJSON(t, "launch")
+	in.waitServing(t)
+
+	other := t.TempDir()
+	if _, _, code := own(t, "remote", "setup", "-home", other); code != 0 {
+		t.Fatalf("set-up: code %d", code)
+	}
+	asThisFolders(t, other, standInID)
+	sf := readServerFile(t, in.dir)
+	if err := store.WriteJSONAtomic(store.NewPaths(other).Server, sf, 0o600); err != nil { // names this folder's control socket
+		t.Fatal(err)
+	}
+	_, errOut, code := own(t, "secret", "-new", "-home", other)
+	if code != 0 || errOut != "The new secret takes effect at the server's next start.\n" {
+		t.Fatalf("code %d, stderr %q", code, errOut)
+	}
+	in.helloOK(t, secret)
+	if st, _ := in.waitServing(t).statusOf(); st.Client.SecretReloads != 0 {
+		t.Fatalf("secretReloads = %d, want 0", st.Client.SecretReloads)
+	}
+	if log := serverLog(t, in.dir); strings.Contains(log, "secret was read again") || strings.Contains(log, "asked to read the secret") {
+		t.Fatalf("the server was signalled:\n%s", log)
+	}
+	out, _, _ := own(t, "status", "-home", other)
+	if !strings.HasPrefix(out, "Running: no server\n") {
+		t.Fatalf("status of the other folder:\n%s", out)
+	}
+	out, _, _ = own(t, "status", "-home", in.dir)
+	if !strings.HasPrefix(out, "Running: this build ") {
+		t.Fatalf("status of the server's folder:\n%s", out)
+	}
+}
+
+// `secret -new` and `status` for a copy of the running server's data folder, which carries its
+// instance id and its server.json (which names the original's control socket): the server is the
+// original's, not the copy's. It is not signalled and keeps its secret, and the status of the copy
+// reports no server.
+func TestSecretNewOfACopiedFolderLeavesTheServer(t *testing.T) {
+	serverTest(t, "TestSecretNewGate, TestFindRunningIgnoresWhatIsNotThisFolders (this package)")
+	in := newInstance(t)
+	secret := in.secret
+	in.launchJSON(t, "launch")
+	in.waitServing(t)
+
+	dup := filepath.Join(t.TempDir(), "copy")
+	if err := os.MkdirAll(dup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Everything a copy of the folder carries but the sockets, which cp does not copy.
+	if b, err := exec.Command("cp", "-Rp", in.dir+"/.", dup).CombinedOutput(); err != nil && !strings.Contains(string(b), "control.sock") && !strings.Contains(string(b), "bridge.sock") {
+		t.Fatalf("cp -Rp: %v\n%s", err, b)
+	}
+	// What makes the copy look like the server's folder is there.
+	if sf, ok := store.ReadServerFile(store.NewPaths(dup)); !ok || sf.Control != sockPath(in.dir) {
+		t.Fatalf("the copy's server.json: %+v, read %v, want the control socket %s", sf, ok, sockPath(in.dir))
+	}
+	if a, b := remoteFiles(t, dup)["instance-id"], remoteFiles(t, in.dir)["instance-id"]; a == "" || a != b {
+		t.Fatalf("the copy's instance id %q, the original's %q", a, b)
+	}
+
+	out, errOut, code := own(t, "secret", "-new", "-home", dup)
+	if code != 0 || errOut != "The new secret takes effect at the server's next start.\n" {
+		t.Fatalf("code %d, stderr %q", code, errOut)
+	}
+	if fresh := secretOf(t, dup); out != fresh+"\n" || fresh == secret || secretOf(t, in.dir) != secret {
+		t.Fatalf("the copy's secret was not replaced alone: stdout %q", out)
+	}
+	in.helloOK(t, secret)
+	if st, _ := in.waitServing(t).statusOf(); st.Client.SecretReloads != 0 {
+		t.Fatalf("secretReloads = %d, want 0", st.Client.SecretReloads)
+	}
+	if log := serverLog(t, in.dir); strings.Contains(log, "secret was read again") || strings.Contains(log, "asked to read the secret") {
+		t.Fatalf("the server was signalled:\n%s", log)
+	}
+	out, _, _ = own(t, "status", "-home", dup)
+	if !strings.HasPrefix(out, "Running: no server\n") {
+		t.Fatalf("status of the copy:\n%s", out)
+	}
+	out, _, _ = own(t, "status", "-home", in.dir)
+	if !strings.HasPrefix(out, "Running: this build ") {
+		t.Fatalf("status of the server's folder:\n%s", out)
+	}
+}
+
+// Across processes: a real server with the stand-in agent, a client that holds a board, and a
+// second client that makes a chat, sends its first message, reads it, answers a permission ask,
+// sends a second message and stops it. The first keeps its board and saves it meanwhile. Each
+// sees what the other made: the second the first's board, the first the second's chat, in the
+// group it was made in. Both are clients of the same kind, over HTTPS with the secret.
+func TestTwoClientsBesideEachOther(t *testing.T) {
 	serverTest(t, "TestAPIClientsTakeNothingFromAPage, TestTableRoutesServeAnAPIClient, TestEventsOfAnAPIClient (internal/server)")
 	if !agenttest.HasNode() {
 		t.Skip("node is not on PATH (the fake claude is a Node script)")
 	}
-	in, port := newRemoteInstance(t)
+	in := newInstance(t)
 	in.claude = agenttest.FakeClaude(t)
-	secret, fp := secretOf(t, in.dir), fingerprintOf(t, in.dir)
-	in.run(t, "launch")
-	in.waitListening(t)
+	secret := in.secret
+	in.launchJSON(t, "launch")
+	in.waitServing(t)
 
 	// The page makes a board, which it then holds, and saves it once.
-	p := bridgetest.Connect(t, strings.TrimSuffix(in.url, "/"), "2a6d4c1e-8f3b-4d7a-b5c9-1e0f2d3c4b5a")
+	p := in.page(t, "2a6d4c1e-8f3b-4d7a-b5c9-1e0f2d3c4b5a")
 	p.Welcome()
 	board, _ := ok200(t, p, "POST", "/api/boards", map[string]any{"name": "b", "group": model.Ungrouped})["id"].(string)
 	if board == "" {
@@ -570,7 +255,7 @@ func TestAPIClientBesideAPage(t *testing.T) {
 
 	// The API client connects: its snapshot is the server's tree, the page's board in it, and
 	// the page is sent nothing.
-	c := apiClient(t, port, fp, secret, testClient)
+	c := in.page(t, testClient)
 	snap := c.Welcome()
 	groups, hasGroups := snap["groups"].([]any)
 	boards, _ := snap["boards"].([]any)
@@ -684,8 +369,8 @@ func TestAPIClientBesideAPage(t *testing.T) {
 	// Both states list the chat, in no group, and no group was made for it; the server's log
 	// holds no secret.
 	state := ok200(t, c, "GET", "/api/state", nil)
-	own := ok200(t, p, "GET", "/api/state", nil)
-	for who, st := range map[string]map[string]any{"the API client": state, "the page": own} {
+	other := ok200(t, p, "GET", "/api/state", nil)
+	for who, st := range map[string]map[string]any{"the second client": state, "the first client": other} {
 		chats, _ := st["chats"].([]any)
 		groups, _ := st["groups"].([]any)
 		if len(chats) != 1 || chats[0].(map[string]any)["id"] != chat || chats[0].(map[string]any)["group"] != model.Ungrouped || len(groups) != 0 {

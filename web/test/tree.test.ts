@@ -281,11 +281,10 @@ test("groupPath: the path of a group among the groups of its own server; none fo
   assert.deepEqual([...subtree(farGroups, "s_1~g_a")].sort(), ["s_1~g_a", "s_1~g_sub"]);
 });
 
-test("the sidebar draws the local part and every section with the one tree: each from the groups of its own server", () => {
+test("the sidebar draws every section, this computer's too, with the one tree: each from the groups of its own server", () => {
   const side = readFileSync(new URL("../src/Sidebar.tsx", import.meta.url), "utf8");
-  assert.ok(side.includes("const tree = buildTree({ groups, boards, chats }, showArchived);"));
-  assert.ok(side.includes("const tree = section ? buildTree({ groups: section.groups, boards, chats }, showArchived, { server: v.id, gone }) : null;"));
+  assert.ok(side.includes("const tree = held && groups ? buildTree({ groups, boards, chats }, showArchived, { server: v.id, gone }) : null;"));
   assert.ok(side.includes("const view = sectionView(v, !!tree, empty, archived);"));
   assert.ok(side.includes("const count = tree ? treeCount(tree) : 0;"));
-  assert.equal(side.split("buildTree(").length, 3, "the local part and a section, and no third tree");
+  assert.equal(side.split("buildTree(").length, 2, "one tree for every section, and no second");
 });

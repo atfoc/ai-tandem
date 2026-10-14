@@ -10,18 +10,18 @@ import { parseSideHidden, parseWidths, type Widths } from "./logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "./logic/theme.ts";
 import { draftKey, draftKeyOf, legacyDraftKey, legacyDraftRenames, type Unsaved } from "./logic/drafts.ts";
 import { keptOf, type Kept } from "./logic/draftsback.ts";
-import type { UpdateBanner } from "./logic/version.ts";
+import { NO_RESTART, type Restart } from "./logic/localsection.ts";
 import { branchCount, branchKey, chatOfKey, currentBranch, keyOfChat, shownBranchOf, stateOf, viewOf, type BranchKey } from "./logic/branches.ts";
 import { subKey, type SubKey } from "./logic/subagents.ts";
 import { drawerStays, statesByKey, type Thread } from "./logic/threads.ts";
-import { NO_SEL, parseSel, validSel, type Sel } from "./logic/sel.ts";
+import { NO_SEL, parseSel, validSelOn, type Sel } from "./logic/sel.ts";
 import type { BoardRole } from "./logic/roles.ts";
-import { RECENT_KEY, listsFrom, withThreadError, type ThreadError } from "./logic/serverlists.ts";
+import { RECENT_KEY, withLists, withThreadError, type ThreadError } from "./logic/serverlists.ts";
 import { inSection, keyOn, serverOfKey } from "./logic/keys.ts";
 import { treeIn } from "./logic/sectionwire.ts";
-import { COLLAPSE_KEY, collapsedSaved, leftBehind, parseCollapsed, prunedCollapsed, thingsOf, thingsOn, withCollapsed, withSection, type Section } from "./logic/sections.ts";
-import { LOCAL_ENTRY, serversOf, type ServerForm, type ServerView } from "./logic/servers.ts";
-import { librariesOf, type LibraryView } from "./logic/library.ts";
+import { COLLAPSE_KEY, collapsedSaved, leftBehind, onScreen, parseCollapsed, prunedCollapsed, prunedLocalGroups, thingsOf, thingsOn, withCollapsed, withSection, type Section } from "./logic/sections.ts";
+import { LOCAL_ENTRY, type ServerForm, type ServerView } from "./logic/servers.ts";
+import { libraryAway, removeLibrary, upsertLibrary, type LibraryView } from "./logic/library.ts";
 import type { InsertTarget } from "./logic/insert.ts";
 import { NO_MARK, type DropMark } from "./logic/dropmark.ts";
 import { afterThread, begun, ended, stepped, withLoad, withUpload, withoutLoads, type ChatWaits, type ComposerAt, type SendWait, type WaitKind, type Waits } from "./logic/waits.ts";
@@ -42,13 +42,13 @@ export type { Thread };
 // chats and branch records of this computer and of every section are in the same maps, each
 // under its key; which server a thing is on is read from its key.
 export type State = {
-  connected: boolean;
-  role: "connecting" | "active";      // the stream: before its first hello, and from then on
-  home: string; defaultCwd: string; dataDir: string;
+  connected: boolean;                 // the page holds this computer's tree: its snapshot is in, and its entry has not left `connected` since (a section's tree is `sections[id]`)
+  role: "connecting" | "active";      // this computer's stream: before its first hello, and from then on
+  home: string; defaultCwd: string;
   groups: Group[];                    // this computer's groups
-  sections: Record<string, Section>;  // by entry id: the tree of each remote server the local server holds one of (its groups and defaults; its things are in the maps below). No key: no tree, and the section draws no row
-  gone: Record<string, true>;         // the things of sections that are on screen and no longer on their server (removed there, or not in the tree that came back): their view says so, and no row is drawn; they go when the user leaves them
-  collapsed: Record<string, true>;    // the sections (by entry id) and the groups of sections (by key) shown collapsed; persisted in localStorage "aiwb.collapsed" and sent nowhere. A local group's collapse is its server's (Group.collapsed)
+  sections: Record<string, Section>;  // by entry id: the tree of each remote server connected (its groups and defaults; its things are in the maps below). No key: no tree, and the section draws no row
+  gone: Record<string, true>;         // the things, of this computer's too, that are on screen and no longer on their server (removed there, or not in the tree that came back): their view says so, and no row is drawn; they go when the user leaves them
+  collapsed: Record<string, true>;    // the sections (by entry id) and the groups (by key) shown collapsed; persisted in localStorage "aiwb.collapsed" and sent nowhere
   boards: Record<string, Board>;
   chats: Record<string, ChatView>;    // the sidebar's chats: plain ones and a board's
   items: Record<ThreadKey, Thread>;   // a branch's list by branchKey(chat, branch), a subagent's thread by subKey(that, sid); absent until loaded
@@ -60,9 +60,9 @@ export type State = {
   shown: Record<string, string>;      // chat id → the branch it is on in this client, once its list loaded; in memory only (see viewedBranch)
   treeNav: { chat: string; focus?: { branch: string; item: number } } | null; // the open tree popup
   defaults: Defaults;
-  usable: AgentKind[];            // the local server's usable agents (the snapshot's and the `agents` event's list); read through logic/agentlist.ts
+  usable: AgentKind[];            // this computer's usable agents (the snapshot's and the `agents` event's list); read through logic/agentlist.ts
   catalogs: Partial<Record<AgentKind, Catalog>>;
-  lists: Record<string, ServerLists>; // by entry id: what each other server offers (the snapshot's and the `server_lists` event's); read through logic/serverlists.ts
+  lists: Record<string, ServerLists>; // by entry id: what each other server offers (its snapshot's, and its `catalog` and `agents` events); read through logic/serverlists.ts
   threadErrors: Record<string, ThreadError>; // by chat id: why the last load of its list failed (conn.ts); absent after one that worked
   waits: Waits;                   // by chat id: what is on its way in the chat's fork flows (logic/waits.ts); in memory only, and not a snapshot's to drop
   sel: Sel;                       // persisted in localStorage "aiwb.sel"
@@ -80,11 +80,11 @@ export type State = {
   servers: ServerView[];          // the server list, the local entry first (logic/servers.ts)
   serversNotice: string;          // why the list file was set aside, or ""; read when the Servers dialog opens
   serversDialog: { form?: ServerForm } | null; // the Servers dialog (Servers.tsx): null = closed; form = the form it opens with
-  libraries: LibraryView[];       // the prompt libraries as they came (logic/library.ts); the popups show them in the order of the server list (logic/libraryview.ts)
+  libraries: LibraryView[];       // the prompt libraries, one per server, from its snapshot and its `own_library` events (logic/library.ts); the popups show them in the order of the server list (logic/libraryview.ts)
   libraryDialog: { back?: InsertTarget } | null; // the library popup (Library.tsx): null = closed; back = the text box whose insert popup it was opened from
   insertPopup: InsertTarget | null; // the insert popup (Library.tsx): the text box it is open for; null = closed
   picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L)
-  update: { banner: UpdateBanner; hidden: boolean }; // the version banner (version.ts); hidden = ×'d until the next reconnect
+  restart: Restart;               // a restart of this computer's server, which its section says (version.ts)
 
   // The role per board: several windows work on one server, and each board is held by one of them (board.ts).
   roles: Record<string, BoardRole>;   // by board id; absent = not asked for
@@ -107,7 +107,7 @@ const savedSel = (): Sel => parseSel(safeGet("aiwb.sel"));
 
 let state: State = {
   connected: false, role: "connecting",
-  home: "", defaultCwd: "", dataDir: "",
+  home: "", defaultCwd: "",
   groups: [], sections: {}, gone: {}, collapsed: parseCollapsed(safeGet(COLLAPSE_KEY)),
   boards: {}, chats: {}, items: {}, subs: {}, states: {}, subDrawer: null,
   trees: {}, moves: {}, shown: {}, treeNav: null,
@@ -119,7 +119,7 @@ let state: State = {
   flashes: [], busyOn: {}, confirm: null, picking: null,
   servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
   libraries: [], libraryDialog: null, insertPopup: null,
-  update: { banner: "none", hidden: false },
+  restart: NO_RESTART,
   roles: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
   dropAt: NO_MARK,
 };
@@ -152,10 +152,12 @@ const localPart = <V,>(had: Record<string, V>, got: Record<string, V>, chat = fa
   return Object.assign(out, got);
 };
 
-/** Replaces everything this computer's server owns; drops selections that no longer exist. sending: the chats
- *  whose pending move is being sent, which keep it while they are still there. What the page has of the sections
- *  is left as it is: each section's tree, or that there is none, follows by applySection (conn.ts, for every entry
- *  the snapshot or the store names). */
+/** Replaces everything this computer's server owns (its own snapshot), and so holds its tree. What is on screen of this computer
+ *  and is not in the snapshot (it was deleted elsewhere while the page was away) stays, marked gone, as a section's does
+ *  (logic/sections.ts withSection); the rest of what the page had of this computer and is not in it goes.
+ *  sending: the chats whose pending move is being sent, which keep it while they are still there. What the page has of
+ *  the sections, the server list and the libraries is left as it is: each section's tree follows by applySection (conn.ts), each
+ *  server's lists and library by setServerLists and setLibrary. */
 export function applySnapshot(s: Snapshot, sending: string[] = []) {
   const ownBoards = byId(s.boards);
   const ownChats = byId((s.chats ?? []).filter((c) => !c.run)); // (a server that still has runs: their chats are not kept)
@@ -164,39 +166,45 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
   if (!legacyDrafts) { legacyDrafts = true; renameLegacyDrafts(ownChats); sweepStorage(ownChats); } // before a composer opens with one
   const before = state.boards;
   setState((st) => {
-    const boards = localPart(st.boards, ownBoards), chats = localPart(st.chats, ownChats);
-    // (the things of the sections this snapshot brings are in the store a moment later (conn.ts onSnapshot): the selection of one
-    // of them, saved before a reload, stays)
-    const coming = Object.entries(s.sections ?? {}).filter(([, tree]) => !!tree).map(([server, tree]) => treeIn(server, tree));
-    const known = <V extends { id: string }>(own: Record<string, V>, of: (t: (typeof coming)[number]) => V[]): Record<string, V> => Object.assign({}, ...coming.map((t) => byId(of(t))), own);
-    const sel = validSel(st.sel, { boards: known(boards, (t) => t.boards), chats: known(chats, (t) => t.chats.filter((c) => !c.run)) });
+    // what is on screen and no longer there stays, gone
+    const onScreenLocal = (had: Record<string, unknown>, own: Record<string, unknown>) => Object.keys(had).filter((k) => !inSection(k) && !(k in own) && onScreen(st, k));
+    const goneBoards = onScreenLocal(st.boards, ownBoards), goneChats = onScreenLocal(st.chats, ownChats);
+    const stay = new Set(goneChats);
+    /** What the page keeps per chat of those that stay (a map by chat id, or by branch key with chat = true). */
+    const stays = <V,>(m: Record<string, V>, chat = false): Record<string, V> => Object.fromEntries(Object.entries(m).filter(([k]) => stay.has(chat ? chatOfKey(k) : k)));
+    const boards = localPart(st.boards, { ...ownBoards, ...Object.fromEntries(goneBoards.map((k) => [k, st.boards[k]])) });
+    const chats = localPart(st.chats, { ...ownChats, ...Object.fromEntries(goneChats.map((k) => [k, st.chats[k]])) });
+    const gone: Record<string, true> = {};
+    for (const k in st.gone) if (inSection(k)) gone[k] = true;
+    for (const k of [...goneBoards, ...goneChats]) gone[k] = true;
+    // (the selection of a section's thing, saved before a reload, stays: that section's tree judges it, conn.ts onSection)
+    const sel = validSelOn(st.sel, LOCAL_SERVER, { boards, chats });
     safeSet("aiwb.sel", JSON.stringify(sel));
     const kept = <V,>(m: Record<string, V>) => Object.fromEntries(Object.entries(m).filter(([k]) => boards[k]));
     const busyOn = kept(st.busyOn);
-    const states = localPart(st.states, statesByKey(s.states), true);
+    const states = localPart(st.states, { ...statesByKey(s.states), ...stays(st.states, true) }, true);
     // A chat stays on the branch it was on (a reconnect does not jump the view) while that branch is still there.
     const shown = Object.fromEntries(Object.entries(st.shown).filter(([id, b]) => chats[id] && states[branchKey(id, b)]));
     const drawer = st.subDrawer; // the moves go: its chat shows the branch it is on
     // But for one being sent: its POST still runs, and its answer ends it with the draft it put aside.
-    const moves = Object.fromEntries(sending.filter((id) => chats[id] && st.moves[id]).map((id) => [id, st.moves[id]]));
-    const servers = serversOf(s).servers;
-    const collapsed = prunedCollapsed(st.collapsed, servers, st.sections);
+    const moves = Object.fromEntries(sending.filter((id) => chats[id] && !stay.has(id) && st.moves[id]).map((id) => [id, st.moves[id]]));
+    const groups = s.groups ?? [];
+    const collapsed = prunedLocalGroups(st.collapsed, groups, st.servers);
     if (collapsed !== st.collapsed) safeSet(COLLAPSE_KEY, collapsedSaved(collapsed));
     return {
-      groups: s.groups ?? [], boards, chats, catalogs,
-      lists: listsFrom(s),
-      threadErrors: localPart(st.threadErrors, {}), // with the threads
+      connected: true, gone,
+      groups, boards, chats, catalogs,
+      threadErrors: localPart(st.threadErrors, stays(st.threadErrors)), // with the threads
       defaults: s.defaults ?? { groups: {} },
       usable: s.agents ?? AGENT_ORDER, // a server before the list sends none
-      home: s.home ?? "", defaultCwd: s.defaultCwd ?? "", dataDir: s.dataDir ?? "",
-      items: localPart(st.items, {}, true), // refetched when a chat is shown; updates missed while away are not replayed
-      subs: localPart(st.subs, {}, true),   // with them
+      home: s.home ?? "", defaultCwd: s.defaultCwd ?? "",
+      items: localPart(st.items, stays(st.items, true), true), // refetched when a chat is shown; updates missed while away are not replayed
+      subs: localPart(st.subs, stays(st.subs, true), true),    // with them
       states, shown,
       subDrawer: drawer && chats[drawer.chat] && drawerStays(drawer, drawer.chat, shown[drawer.chat] ?? currentBranch(chats[drawer.chat])) ? drawer : null,
-      trees: localPart(st.trees, {}), moves,
+      trees: localPart(st.trees, stays(st.trees)), moves,
       waits: Object.fromEntries(Object.entries(st.waits).filter(([id]) => chats[id])), // what is on its way stays, but for a chat that is gone
-      servers, collapsed,
-      libraries: librariesOf(s),
+      collapsed,
       treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
       sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage), saveSaid: kept(st.saveSaid),
     };
@@ -206,8 +214,8 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
 
 // ---- sections: the tree of each remote server (logic/sections.ts has the rules)
 
-/** A section's tree arrives (a `section` event with a tree, or a snapshot that has the section), or the local server
- *  holds none of it any more (null): logic/sections.ts withSection. Answers the keys of the things that went. */
+/** A section's tree arrives (a `section` event with a tree, or a snapshot that has the section), or its server
+ *  is not connected any more (null): logic/sections.ts withSection. Answers the keys of the things that went. */
 export function applySection(server: string, tree: SectionTree | null): string[] {
   const keyed = tree ? treeIn(server, tree) : null;
   let left: string[] = [];
@@ -217,18 +225,23 @@ export function applySection(server: string, tree: SectionTree | null): string[]
     const next = { ...s, ...r.next };
     const collapsed = prunedCollapsed(s.collapsed, s.servers, next.sections);
     if (collapsed !== s.collapsed) safeSet(COLLAPSE_KEY, collapsedSaved(collapsed));
-    return { ...r.next, ...without(next, new Set(left)), collapsed };
+    // (a selection saved before a reload that this tree does not have: it is not there, and nothing of it is kept)
+    const sel = keyed ? validSelOn(s.sel, server, { boards: next.boards, chats: next.chats }) : s.sel;
+    if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
+    return { ...r.next, sel, ...without({ ...next, sel }, new Set(left)), collapsed };
   });
   forgetKeys(left);
   return left;
 }
 
-/** The user left what was on screen: what the page kept of a section's things only because they were on screen goes
+/** The user left what was on screen: what the page kept of a server's things only because they were on screen goes
  *  (logic/sections.ts leftBehind): a thing of a server that is not connected, or one that is no longer on its
- *  server. Until that server is back there is nothing to open it from. */
+ *  server. Until that server is back there is nothing to open it from. The unsaved drafts the browser keeps of this
+ *  computer's chats stay: they are not the page's to drop, and are saved when the server is back. */
 export function dropLeftBehind(): string[] {
-  const left = leftBehind(state, boardUnsaved);
-  if (left.length) dropThings(left);
+  const keeps = new Set(keptDrafts().map((k) => k.chat));
+  const left = leftBehind(state, boardUnsaved, (chat) => keeps.has(chat));
+  if (left.length) dropThings(left, true);
   return left;
 }
 
@@ -238,6 +251,15 @@ export function dropServer(server: string): string[] {
   const kept = applySection(server, null); // the tree, and what was not on screen
   const left = thingsOf(state, server);    // what stayed for being on screen, or for an edit that waited
   if (left.length) dropThings(left);
+  const { board, chat } = state.sel;
+  if ((board && serverOfKey(board) === server) || (chat && serverOfKey(chat) === server)) { // (a selection saved before a reload, of a thing never loaded)
+    setState({ sel: NO_SEL });
+    safeSet("aiwb.sel", JSON.stringify(NO_SEL));
+  }
+  setState((s) => ({
+    lists: server in s.lists ? withLists(s.lists, server, null) : s.lists,   // what it offered, and its library, are gone with its entry
+    libraries: removeLibrary(s.libraries, server),
+  }));
   return [...kept, ...left];
 }
 
@@ -256,7 +278,28 @@ export function setSectionDefaults(server: string, defaults: Defaults) {
   setState((s) => (s.sections[server] ? { sections: { ...s.sections, [server]: { ...s.sections[server], defaults } } } : {}));
 }
 
-/** The server list (the `servers` event): the collapse of a section whose entry left the list goes with it. */
+/** What a server offers (its snapshot's, and its `catalog` and `agents` events): `lists[server]` is the whole set, or with null none.
+ *  For a section's server; this computer's are the store's own fields. */
+export function setServerLists(server: string, lists: ServerLists | null) {
+  setState((s) => ({ lists: withLists(s.lists, server, lists) }));
+}
+
+/** A server's library as it is now (its snapshot's, or an `own_library` event): in the place of the one the page had. */
+export function setLibrary(v: LibraryView) {
+  setState((s) => ({ libraries: upsertLibrary(s.libraries, v) }));
+}
+
+/** A server's library goes: the server has none, or its entry left the server list. */
+export function dropLibrary(server: string) {
+  setState((s) => ({ libraries: removeLibrary(s.libraries, server) }));
+}
+
+/** A server is not connected: its library stays as last received, and cannot be changed until the server is back. */
+export function libraryAwayOf(server: string) {
+  setState((s) => ({ libraries: libraryAway(s.libraries, server) }));
+}
+
+/** The server list (the app's `servers` event): the collapse of a section whose entry left the list goes with it. */
 export function setServers(servers: ServerView[], notice: string) {
   setState((s) => {
     const collapsed = prunedCollapsed(s.collapsed, servers, s.sections);
@@ -265,8 +308,8 @@ export function setServers(servers: ServerView[], notice: string) {
   });
 }
 
-/** Collapses or expands a section (key: its entry id) or a group of a section (its key): kept in the browser's
- *  storage, per browser, and sent nowhere. A local group's collapse is its server's (Sidebar.tsx). */
+/** Collapses or expands a section (key: its entry id) or a group (its key): kept in the browser's storage, per browser,
+ *  and sent nowhere. */
 export function setSectionCollapsed(key: string, on: boolean) {
   setState((s) => {
     const collapsed = withCollapsed(s.collapsed, key, on);
@@ -277,7 +320,7 @@ export function setSectionCollapsed(key: string, on: boolean) {
 
 const NO_GROUPS: Group[] = [];
 
-/** The groups of one server: this computer's, or a section's (none while the local server holds no tree of it). */
+/** The groups of one server: this computer's, or a section's (none while the page holds no tree of it). */
 export const groupsOn = (s: Pick<State, "groups" | "sections">, server: string): Group[] =>
   (server === LOCAL_SERVER ? s.groups : s.sections[server]?.groups ?? NO_GROUPS);
 
@@ -322,20 +365,20 @@ function without(s: State, dead: ReadonlySet<string>): Partial<State> {
 
 /** What is kept outside the store of things that went: a board's scene and its pending save, a chat's unsaved
  *  drafts. */
-function forgetKeys(keys: readonly string[]) {
+function forgetKeys(keys: readonly string[], keepSaved = false) {
   if (!keys.length) return;
-  const local = keys.filter((k) => !inSection(k));
+  const local = keepSaved ? [] : keys.filter((k) => !inSection(k));
   if (local.length) for (const k of safeKeys()) if (local.some((id) => draftKeyOf(k, id))) safeRemove(k);
   for (const k of [...memory.keys()]) if (keys.some((id) => draftKeyOf(k, id))) memory.delete(k);
   for (const id of keys) { forgetBoard(id); ofChat.delete(id); }
 }
 
 /** Takes things out of the store, by key, with everything kept of them. */
-function dropThings(keys: readonly string[]) {
+function dropThings(keys: readonly string[], keepSaved = false) {
   if (!keys.length) return;
   const dead = new Set(keys);
   setState((s) => without(s, dead));
-  forgetKeys(keys);
+  forgetKeys(keys, keepSaved);
 }
 
 export function upsertBoard(b: Board) {

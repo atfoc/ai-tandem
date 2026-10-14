@@ -85,7 +85,7 @@ func TestLevel5NotFoundOnEveryRouteWithAnID(t *testing.T) {
 		path += l5Bodies[route][0]
 		want := `{"code":"not_found","error":"` + sentence + `"}`
 		for _, c := range s.all() {
-			if c != s.p && !slices.Contains(RemoteRoutes, route) {
+			if c != s.p && !slices.Contains(ClientRoutes, route) {
 				continue // outside the table: the owner's alone
 			}
 			status, out := l5Call(c, method, path, body)

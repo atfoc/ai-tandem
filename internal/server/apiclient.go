@@ -9,16 +9,11 @@ import (
 	"strings"
 )
 
-// What the routes of RemoteRoutes do for an API client, a caller on the remote listener, where
-// that differs from what they do for a page: the client's stream and snapshot, and the refusals
-// that exist for a client alone. Everything else is the page's handler. RemoteHandler has checked
-// the secret, the Host, the client id and the client's level before any of this runs: the id in
+// apiEvents is GET /api/events: the stream of the client whose id the header holds. A "client"
+// in the query must be the same id or absent. The stream begins with hello and the snapshot
+// (app.APISnapshot), its fields inline in the snapshot event. ClientHandler has checked the
+// secret, the Host, the client id and the client's level before this runs: the id in
 // X-AIWB-Client is a valid one, and not the server's own.
-
-// apiEvents is GET /api/events on the remote listener: the stream of the API client whose id the
-// header holds. A "client" in the query, which the stream of a page is named by, must be the same
-// id or absent. The stream begins with hello and the API snapshot (app.APISnapshot), its fields
-// inline in the snapshot event.
 func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.Header.Get(ClientHeader)
 	if q := r.URL.Query(); q.Has("client") && q.Get("client") != id {
@@ -29,11 +24,11 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	// been checked before the reload and its stream be recorded after: such a stream gets no
 	// snapshot and ends at once. The snapshot function runs once the stream is recorded, with
 	// the bridge's lock held, which the close of the streams takes too.
-	call, _ := r.Context().Value(remoteKey{}).(remoteCall)
+	call, _ := r.Context().Value(callKey{}).(clientCall)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	s.Bridge.ServeAPI(w, r.WithContext(ctx), id, func() any {
-		if rm := s.Remote; rm == nil || rm.secretGen.Load() != call.secretGen {
+	s.Bridge.Serve(w, r.WithContext(ctx), id, func() any {
+		if rm := s.Clients; rm == nil || rm.secretGen.Load() != call.secretGen {
 			cancel()
 			return nil
 		}
@@ -41,10 +36,9 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiServerRefused answers an API client's call whose body names a server, whatever the value, and
-// reports that it did: the server of what a client makes or changes is the one it called, and
-// this server passes no client's call on to another. Nothing is made or changed. The body is
-// left to be read again.
+// apiServerRefused answers a call whose body names a server, whatever the value, and reports that
+// it did: the server of what a client makes or changes is the one it called, and this server
+// passes no call on to another. Nothing is made or changed. The body is left to be read again.
 func apiServerRefused(w http.ResponseWriter, r *http.Request) bool {
 	if !bodyNames(r, "server") {
 		return false
@@ -53,9 +47,9 @@ func apiServerRefused(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// collapsedRefused answers an API client's change of a group whose body has "collapsed", whatever
-// the value, and reports that it did: whether a group shows collapsed is this server's own matter
-// and each client's. Nothing is changed.
+// collapsedRefused answers a change of a group whose body has "collapsed", whatever the value,
+// and reports that it did: whether a group shows collapsed is no matter of the server's, each
+// client keeps it. Nothing is changed.
 func collapsedRefused(w http.ResponseWriter, r *http.Request) bool {
 	if !bodyNames(r, "collapsed") {
 		return false
@@ -80,4 +74,14 @@ func bodyNames(r *http.Request, key string) bool {
 		}
 	}
 	return false
+}
+
+// noRecord answers a delete with ?local=1, and reports that it did: there is no record of a
+// thing that could be removed alone, and a thing is deleted whole or not at all.
+func noRecord(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Query().Get("local") != "1" {
+		return false
+	}
+	writeErrorCode(w, http.StatusBadRequest, "there is no record to remove: nothing of another server is kept here", "no_record")
+	return true
 }

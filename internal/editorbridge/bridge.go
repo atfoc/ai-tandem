@@ -1,15 +1,14 @@
-// Package editorbridge is the server's line to its connected clients (the browser pages that
-// own an Excalidraw engine, and the API clients on the remote listener): server→client over SSE,
-// client→server over plain POSTs routed here by the HTTP layer.
+// Package editorbridge is the server's line to its connected clients (the apps that own an
+// Excalidraw engine): server→client over SSE, client→server over plain POSTs routed here by the
+// HTTP layer.
 //
 // The bridge keeps one record per open stream: the boards that client holds and waits for, the
 // chats it follows, and the board calls it was asked. One client at a time holds a
 // board. A client that takes a held board waits: the holder is asked to release (so it can save
 // its pending changes) and loses the board after a short handover delay if it does not answer.
-// Events go only to the clients they concern (see Events). An API client is sent the types of
-// APIEvents only: the list events of every item, as a page is, and the content events of what it
-// follows. It holds a board only by its own take: no board call gives it one, and it is never the
-// client a call falls back to.
+// Events go only to the clients they concern (see Events): the list events of every item, and
+// the content events of what a client follows. A client holds a board only by its own take: no
+// board call gives it one.
 //
 // The package imports nothing from this project.
 package editorbridge
@@ -19,38 +18,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 // handoverDelay is how long the holder of a board has to release it after another client took
-// it, before it loses the board anyway.
-const handoverDelay = 3 * time.Second
-
-// apiHandoverDelay is that time for a holder that is an API client: its release crosses a
-// network, after the page behind it wrote its pending changes.
-const apiHandoverDelay = 10 * time.Second
+// it, before it loses the board anyway: its release crosses a network, after the page behind it
+// wrote its pending changes.
+const handoverDelay = 10 * time.Second
 
 // pingEvery is how often an idle SSE stream gets a comment line.
 const pingEvery = 20 * time.Second
-
-// Kind is a kind of client. Each kind has a row in the bridge's kinds table.
-type Kind string
-
-// KindPage is a browser page.
-const KindPage Kind = "page"
-
-// KindAPI is an API client: a caller on the remote listener. It holds the boards it took itself.
-const KindAPI Kind = "api"
-
-// kindRule says what the clients of one kind get.
-type kindRule struct {
-	allow    func(typ string) bool // the event types a client of this kind is sent
-	boards   bool                  // may hold boards and be asked a board call
-	snapshot func(c *client) any   // the full state for a newly connected client
-}
 
 // Bridge holds the connected clients, the holder and the waiter of each board, and the board
 // calls in flight.
@@ -64,35 +43,27 @@ type Bridge struct {
 	// sets it. Set it before the first request.
 	PingEvery time.Duration
 
-	mu         sync.Mutex
-	clients    map[string]*client       // by client id: the open streams
-	holders    map[string]*client       // by board
-	waiters    map[string]*waiter       // by board
-	freeing    map[string]chan struct{} // by board: a FreeBoard waits; closed when the board is let go
-	rpcs       map[string]*call         // by rpc id
-	kinds      map[Kind]kindRule
-	logged     map[string]bool // event types already logged as outside the table
-	clock      uint64          // counts the calls stamped by Acted
-	seq        atomic.Int64
-	snapshot   func() any         // the full state for a newly connected page
-	unfollowed func(items []Item) // OnUnfollowed's hook; nil = none
-	boardFree  func(board string) // OnBoardFree's hook; nil = none
-	flush      chan struct{}      // poked when a client flushed or its stream ended
+	mu      sync.Mutex
+	clients map[string]*client       // by client id: the open streams
+	holders map[string]*client       // by board
+	waiters map[string]*waiter       // by board
+	freeing map[string]chan struct{} // by board: a FreeBoard waits; closed when the board is let go
+	rpcs    map[string]*call         // by rpc id
+	logged  map[string]bool          // event types already logged as outside the table
+	seq     atomic.Int64
+	flush   chan struct{} // poked when a client flushed or its stream ended
 
-	handoverAfter    time.Duration // handoverDelay; shorter in tests
-	apiHandoverAfter time.Duration // apiHandoverDelay; shorter in tests
+	handoverAfter time.Duration // handoverDelay; shorter in tests
 }
 
 type client struct {
 	id     string
-	kind   Kind
 	ch     chan []byte   // buffered 4096
 	done   chan struct{} // closed to end its SSE stream
 	closed bool          // done is closed; guarded by Bridge.mu
 
-	snap func() any // the snapshot of an API client's stream; nil for a page
+	snap func() any // the snapshot of the stream; nil for none
 
-	acted   uint64           // the bridge's clock at its last call with the header; 0 = only opened a stream
 	holds   map[string]bool  // boards held
 	waits   map[string]bool  // boards waited for
 	follows map[Item]bool    // chats followed
@@ -138,69 +109,26 @@ var ErrNoClient = errors.New("the board isn't open: the AI Whiteboard window is 
 // ErrUnknownClient is returned by TakeBoard for an id with no open stream.
 var ErrUnknownClient = errors.New("unknown_client")
 
-// New makes a Bridge. snapshot returns the full state sent to a newly connected page; it must
-// marshal to a JSON object (or be nil). It is called with the bridge's lock held, so it must
-// not call back into the Bridge.
-func New(snapshot func() any) *Bridge {
-	b := &Bridge{
-		clients:          map[string]*client{},
-		holders:          map[string]*client{},
-		waiters:          map[string]*waiter{},
-		freeing:          map[string]chan struct{}{},
-		rpcs:             map[string]*call{},
-		logged:           map[string]bool{},
-		snapshot:         snapshot,
-		flush:            make(chan struct{}, 1),
-		handoverAfter:    handoverDelay,
-		apiHandoverAfter: apiHandoverDelay,
+// New makes a Bridge.
+func New() *Bridge {
+	return &Bridge{
+		clients:       map[string]*client{},
+		holders:       map[string]*client{},
+		waiters:       map[string]*waiter{},
+		freeing:       map[string]chan struct{}{},
+		rpcs:          map[string]*call{},
+		logged:        map[string]bool{},
+		flush:         make(chan struct{}, 1),
+		handoverAfter: handoverDelay,
 	}
-	b.kinds = map[Kind]kindRule{
-		KindPage: {
-			allow:  func(typ string) bool { rule, ok := Events[typ]; return ok && !rule.APIOnly },
-			boards: true,
-			snapshot: func(*client) any {
-				if b.snapshot == nil {
-					return nil
-				}
-				return b.snapshot()
-			},
-		},
-		KindAPI: {
-			allow:  func(typ string) bool { return APIEvents[typ] },
-			boards: true,
-			snapshot: func(c *client) any {
-				if c.snap == nil {
-					return nil
-				}
-				return c.snap()
-			},
-		},
-	}
-	return b
 }
 
-// ServeSSE serves GET /api/events?client=<id>: the stream of a page.
-func (b *Bridge) ServeSSE(w http.ResponseWriter, r *http.Request) {
-	b.serve(w, r, KindPage)
-}
-
-// ServeAPI serves the event stream of the API client id, which the caller has checked: hello,
-// then snapshot() as the snapshot event, then the events its kind's row lets through. snapshot is
-// called once, with the bridge's lock held, so it must not call back into the Bridge.
-func (b *Bridge) ServeAPI(w http.ResponseWriter, r *http.Request, id string, snapshot func() any) {
-	b.serveAs(w, r, id, KindAPI, snapshot)
-}
-
-// serve runs the stream of a client of this kind, whose id is in the query.
-func (b *Bridge) serve(w http.ResponseWriter, r *http.Request, kind Kind) {
-	b.serveAs(w, r, r.URL.Query().Get("client"), kind, nil)
-}
-
-// serveAs runs the stream of the client id of this kind. A stream with a connected id of its
-// own kind replaces the older one, whose record ends: the new one holds and follows nothing. An
-// id that is connected with another kind is refused with 409: a page's id and an API client's
-// have one form, and neither may end or pass as the other's record.
-func (b *Bridge) serveAs(w http.ResponseWriter, r *http.Request, id string, kind Kind, snap func() any) {
+// Serve serves the event stream of the client id, which the caller has checked: hello, then
+// snapshot() as the snapshot event, then the events the client is sent. snapshot is called once,
+// with the bridge's lock held, so it must not call back into the Bridge. A stream with the id of
+// one that is open replaces the older one, whose record ends: the new one holds and follows
+// nothing.
+func (b *Bridge) Serve(w http.ResponseWriter, r *http.Request, id string, snapshot func() any) {
 	if id == "" {
 		http.Error(w, "missing client", http.StatusBadRequest)
 		return
@@ -211,16 +139,9 @@ func (b *Bridge) serveAs(w http.ResponseWriter, r *http.Request, id string, kind
 		return
 	}
 
-	c := newClient(id, kind)
-	c.snap = snap
+	c := newClient(id)
+	c.snap = snapshot
 	b.mu.Lock()
-	if old := b.clients[id]; old != nil && old.kind != kind {
-		b.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		fmt.Fprint(w, `{"error":"client id in use","code":"client_in_use"}`)
-		return
-	}
 	b.startLocked(c)
 	b.welcomeLocked(c)
 	b.mu.Unlock()
@@ -269,9 +190,9 @@ func (b *Bridge) serveAs(w http.ResponseWriter, r *http.Request, id string, kind
 	}
 }
 
-func newClient(id string, kind Kind) *client {
+func newClient(id string) *client {
 	return &client{
-		id: id, kind: kind, ch: make(chan []byte, 4096), done: make(chan struct{}),
+		id: id, ch: make(chan []byte, 4096), done: make(chan struct{}),
 		holds: map[string]bool{}, waits: map[string]bool{}, follows: map[Item]bool{}, calls: map[string]*call{},
 	}
 }
@@ -291,28 +212,6 @@ func (b *Bridge) Known(clientID string) bool {
 	return b.clients[clientID] != nil
 }
 
-// Acted reports whether clientID has the open stream of a page, and notes that the page made a
-// call that only a page of this server can make: an /api request with the client header, which
-// the server's guard reports for every method, GET and HEAD included. Only a page that acted is
-// given a board or a board call that nobody holds the board of. An API client's id is not a
-// known client here and is never the page that acted last: Acted reports false for it and notes
-// nothing.
-func (b *Bridge) Acted(clientID string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	c := b.clients[clientID]
-	if c == nil || c.kind != KindPage {
-		return false
-	}
-	b.stampLocked(c)
-	return true
-}
-
-func (b *Bridge) stampLocked(c *client) {
-	b.clock++
-	c.acted = b.clock
-}
-
 // TakeBoard gives the board to the client, or starts the hand-off. state is "held" when the
 // board was free or already the client's (rev is then its scene revision), "busy" when ifFree
 // is set and another client holds it (nothing is sent), and "waiting" when the hand-off runs:
@@ -324,11 +223,8 @@ func (b *Bridge) TakeBoard(clientID, board string, ifFree bool) (state string, r
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	c := b.clients[clientID]
-	if c == nil || !b.kinds[c.kind].boards {
+	if c == nil {
 		return "", 0, ErrUnknownClient
-	}
-	if c.kind == KindPage { // an API client is never the page that acted last
-		b.stampLocked(c)
 	}
 	h := b.holders[board]
 	switch {
@@ -349,11 +245,7 @@ func (b *Bridge) TakeBoard(clientID, board string, ifFree bool) (state string, r
 		return "waiting", 0, nil
 	}
 	w := &waiter{c: c}
-	delay := b.handoverAfter
-	if h.kind == KindAPI {
-		delay = b.apiHandoverAfter
-	}
-	w.timer = time.AfterFunc(delay, func() { b.handover(board, w) })
+	w.timer = time.AfterFunc(b.handoverAfter, func() { b.handover(board, w) })
 	b.waiters[board] = w
 	c.waits[board] = true
 	if b.freeing[board] == nil { // else FreeBoard has asked
@@ -362,17 +254,15 @@ func (b *Bridge) TakeBoard(clientID, board string, ifFree bool) (state string, r
 	return "waiting", 0, nil
 }
 
-// CloseKind ends the stream and the record of every client of this kind, and returns how many.
-// What was queued for a client is still written before its stream ends.
-func (b *Bridge) CloseKind(kind Kind) int {
+// CloseAll ends the stream and the record of every client, and returns how many. What was
+// queued for a client is still written before its stream ends.
+func (b *Bridge) CloseAll() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := 0
 	for _, c := range b.clients {
-		if c.kind == kind {
-			b.endLocked(c)
-			n++
-		}
+		b.endLocked(c)
+		n++
 	}
 	return n
 }
@@ -475,19 +365,6 @@ func (b *Bridge) LoseBoard(board string) {
 	b.passLocked(board, true)
 }
 
-// OnBoardFree is called, never under the bridge's lock and from a goroutine of its own, with a
-// board each time its hold ended and left it with no holder: a release with nobody waiting, the
-// end of the holder's stream, LoseBoard, or FreeBoard. Not when the board went to a waiting
-// client.
-//
-// The calls of two such ends may run in either order, and the board may be held again by the time
-// f runs: f asks HolderOf for what holds now. Nil sets no hook.
-func (b *Bridge) OnBoardFree(f func(board string)) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.boardFree = f
-}
-
 // SendTo sends ev, a role event, to the one client with this id. It reports false, and sends
 // nothing, when the id has no open stream. It never blocks.
 func (b *Bridge) SendTo(clientID string, ev any) bool {
@@ -504,12 +381,9 @@ func (b *Bridge) SendTo(clientID string, ev any) bool {
 // CallBoard asks one client to run method (a board tool) and waits for its answer.
 //
 // A call about spec.Board goes to the board's holder. When nobody holds it, the holder of
-// spec.ChatBoard is asked, else the page that acted last (see Acted); a page is first given the
-// board and sent held. An API client is given no board: it is asked a call about no board, which
-// no later hand-off fails, and the page behind it takes the board itself. A Screen call goes to
-// the holder of spec.ChatBoard, else to
-// the page that acted last, and is about no board. With no such client the call fails with
-// ErrNoClient at once. An open call fails with ErrNoClient when its client loses the board the
+// spec.ChatBoard is asked, a call about no board, which no later hand-off fails; the client
+// behind it takes the board itself. A Screen call goes to the holder of spec.ChatBoard and is
+// about no board. With no such client the call fails with ErrNoClient at once. An open call fails with ErrNoClient when its client loses the board the
 // call is about, or when its client's stream ends.
 func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessage, error) {
 	id := fmt.Sprintf("rpc_%d", b.seq.Add(1))
@@ -523,13 +397,8 @@ func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessag
 		b.mu.Unlock()
 		return nil, ErrNoClient
 	}
-	switch {
-	case board == "" || b.holders[board] != nil:
-	case c.kind == KindAPI:
+	if b.holders[board] == nil {
 		board = ""
-	default:
-		rev := b.grantLocked(c, board)
-		b.sendLocked(c, heldEvent(board, rev))
 	}
 	k := &call{client: c.id, board: board, reply: make(chan RPCReply, 1)}
 	b.rpcs[id] = k
@@ -558,7 +427,8 @@ func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessag
 }
 
 // chooseLocked returns the client a call is for, and the board the call is about ("" for a
-// call about one screen). Only a page acted, so the client a call falls back to is a page.
+// call about one screen). A call about no holder's board goes to the holder of the calling
+// chat's board; with none the client is nil.
 func (b *Bridge) chooseLocked(spec CallSpec) (c *client, board string) {
 	if !spec.Screen && spec.Board != "" {
 		board = spec.Board
@@ -571,17 +441,7 @@ func (b *Bridge) chooseLocked(spec CallSpec) (c *client, board string) {
 			return h, board
 		}
 	}
-	return b.actedLastLocked(), board
-}
-
-// actedLastLocked returns the page that acted last, nil for none.
-func (b *Bridge) actedLastLocked() (c *client) {
-	for _, o := range b.clients {
-		if b.kinds[o.kind].boards && !o.closed && o.acted > 0 && (c == nil || o.acted > c.acted) {
-			c = o
-		}
-	}
-	return c
+	return nil, board
 }
 
 // ReplyFrom serves POST /api/rpc-reply: it resolves the call with that id, and reports true,
@@ -649,35 +509,14 @@ func (b *Bridge) FlushedBy(clientID string) {
 
 type event map[string]any
 
-// BoardOn is the key of the board id of another server, the entry server of the server list: what
-// names that board in every call of the bridge that names a board, and in SceneRev and
-// OnBoardFree. A board of this server is named by its id alone. An id is unique on one server
-// only, so a board of a section and a local board with the same id are two boards here. An entry
-// id holds no "/", and nor does the id of a local board.
-func BoardOn(server, id string) string { return server + "/" + id }
-
-// SplitBoard is the reverse of BoardOn: server is "" for the key of a board of this server.
-func SplitBoard(key string) (server, id string) {
-	if i := strings.IndexByte(key, '/'); i >= 0 {
-		return key[:i], key[i+1:]
-	}
-	return "", key
+// roleEvent is a role event of the board with this id.
+func roleEvent(typ, board string) event {
+	return event{"type": typ, "board": board}
 }
 
-// roleEvent is a role event of the board with this key: "board" is the board's id on its server,
-// and "server" is there for a board of another server alone.
-func roleEvent(typ, key string) event {
-	server, id := SplitBoard(key)
-	ev := event{"type": typ, "board": id}
-	if server != "" {
-		ev["server"] = server
-	}
-	return ev
-}
-
-// heldEvent is the held event of the board with this key, at the revision rev.
-func heldEvent(key string, rev int64) event {
-	ev := roleEvent("held", key)
+// heldEvent is the held event of the board, at the revision rev.
+func heldEvent(board string, rev int64) event {
+	ev := roleEvent("held", board)
 	ev["rev"] = rev
 	return ev
 }
@@ -710,7 +549,7 @@ func (b *Bridge) revLocked(board string) int64 {
 // it. A waiting client becomes the holder and is sent held. For a waiting FreeBoard the board
 // stays free, and a client that waited too is sent superseded. It reports whether somebody
 // waited. The old holder's calls on the board fail; it is sent superseded when somebody
-// waited, or when tell is set. A board that was held and is left free goes to OnBoardFree's hook.
+// waited, or when tell is set.
 func (b *Bridge) passLocked(board string, tell bool) bool {
 	w := b.waiters[board]
 	if w != nil {
@@ -726,9 +565,6 @@ func (b *Bridge) passLocked(board string, tell bool) bool {
 			b.sendLocked(h, roleEvent("superseded", board))
 		}
 		b.failCallsLocked(h, board, false)
-		if (w == nil || gone != nil) && b.boardFree != nil {
-			go b.boardFree(board)
-		}
 	}
 	switch {
 	case gone != nil:
@@ -747,8 +583,7 @@ func (b *Bridge) passLocked(board string, tell bool) bool {
 }
 
 // endLocked ends the record of c, whose stream ended or was replaced: its boards are freed
-// (their waiters get them), its waits and follows are dropped and all its calls fail. The items
-// it was the last to follow go to OnUnfollowed's hook.
+// (their waiters get them), its waits and follows are dropped and all its calls fail.
 func (b *Bridge) endLocked(c *client) {
 	if b.clients[c.id] != c {
 		return
@@ -766,12 +601,7 @@ func (b *Bridge) endLocked(c *client) {
 		b.passLocked(board, false)
 	}
 	b.failCallsLocked(c, "", true)
-	ended := make([]Item, 0, len(c.follows))
-	for it := range c.follows {
-		ended = append(ended, it)
-	}
 	clear(c.follows)
-	b.unfollowedLocked(ended)
 	b.poke()
 }
 
@@ -779,8 +609,10 @@ func (b *Bridge) endLocked(c *client) {
 func (b *Bridge) welcomeLocked(c *client) {
 	b.sendLocked(c, event{"type": "hello", "client": c.id})
 	snap := map[string]json.RawMessage{}
-	if raw, err := json.Marshal(b.kinds[c.kind].snapshot(c)); err == nil {
-		_ = json.Unmarshal(raw, &snap) // a non-object snapshot is dropped
+	if c.snap != nil {
+		if raw, err := json.Marshal(c.snap()); err == nil {
+			_ = json.Unmarshal(raw, &snap) // a non-object snapshot is dropped
+		}
 	}
 	if snap == nil {
 		snap = map[string]json.RawMessage{}

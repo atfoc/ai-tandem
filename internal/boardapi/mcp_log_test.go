@@ -68,7 +68,7 @@ func TestInitializeLogsChatAndClient(t *testing.T) {
 	}
 }
 
-// The contact log is read by the status endpoint on the concurrent 4747 listener while MCP
+// The contact log is read by the control socket's status while MCP
 // requests record to it; run under -race this proves the guard.
 func TestContactLogConcurrent(t *testing.T) {
 	var l ContactLog

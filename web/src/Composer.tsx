@@ -153,7 +153,7 @@ export function pickPoint(chat: string | null) { setState({ picking: chat }); }
  *  through one check (uploads.ts addImages), and stand as thumbnails above the text. The composer
  *  holds the uploaded ones, as part of its draft; the uploads that run are the branch's, and go on
  *  when the composer goes away. A chat of a section has the same composer and makes the same
- *  calls: its images are uploaded to, kept on and fetched from its server, through the local one.
+ *  calls: its images are uploaded to, kept on and fetched from its server.
  *  While that server is not connected, or once it no longer has the chat, the composer is read-only
  *  and says why: nothing is sent, stopped or changed, and no image can be added (logic/chatimage.ts
  *  imagesOff; the images a draft has stay, with no remove control, and so do its quotes: Quotes.tsx). The box is read-only too (logic/chatserver.ts boxOff):
@@ -428,7 +428,7 @@ export function Composer({ chatId, branch }: { chatId: string; branch: string })
       const code = e instanceof ApiError ? e.code : undefined;
       // A chat of a section that its server no longer has (404 `not_found`): its view says so from here on, and the composer takes no more. The
       // `chat_removed` that tells the same may be on its way still.
-      if (goneBySend(inSection(chatId), code) && getState().chats[chatId]) markGone(chatId);
+      if (goneBySend(code) && getState().chats[chatId]) markGone(chatId);
       // (the server's state is read now: the Send that was refused for a server not connected has woken the connection, and the news can be here already)
       if (refusalShown(e instanceof ApiError ? e.status : undefined, code, serverConnected(getState(), where.server))) setErr(e?.message ?? String(e));
       // The Send is over for the saver, which tells whether the sent draft was removed on the server meanwhile: another window sent it, or this Send was

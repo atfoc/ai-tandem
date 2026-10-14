@@ -1,5 +1,5 @@
 // A draft typed while its server was away is saved by itself when that server is connected again
-// (a section's tree arrives), and when the page's own connection to the local server opens again
+// (a section's tree arrives), and when the page's own stream of this computer's server opens again
 // (`hello`, then the `snapshot` that follows it): conn.ts tells here. Here are the savers of the
 // composers that are open (Composer.tsx adds its own, logic/drafts.ts DraftSaver.back), and what
 // saves the drafts of the composers that are not: the unsaved copies the browser keeps
@@ -30,8 +30,8 @@ export class DraftBacks {
     for (const b of [...this.open]) if ((b.server() || LOCAL_SERVER) === server) b.back();
   }
 
-  /** The page's stream to the local server opened: every chat's calls go through that server, so
-   *  every composer saves what waits. (One whose own server is still away fails again, and waits
+  /** This computer's stream opened: the calls of its chats go through it, so
+   *  every composer of one saves what waits. (One whose own server is still away fails again, and waits
    *  for its section's tree.) */
   opened() {
     for (const b of [...this.open]) b.back();

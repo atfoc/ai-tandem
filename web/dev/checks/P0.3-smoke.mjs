@@ -4,13 +4,14 @@
 import { act, check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";
 
 const SECTIONS = ["A1", "A2", "A3", "A4", "A5", "A6", "SEC"];
-const UNDO = "delete flags.streamDown; delete flags.hello;"; // what a state's `mock` may have set
+const UNDO = "delete flags.streamDown; delete flags.hello; setServerState('local', 'connected');"; // what a state's `mock` may have set
 const MOMENT = 1000; // ms a page stays open after its state showed, so that an error thrown after the load is seen
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
 await check("P0.3 every seeded state renders", async ({ url, browser, mock, fail, note }) => {
-  const version = await fetch(url + "/version.json").then((r) => r.json()).then((v) => v.version, () => "");
-  if (!version || version === "dev") fail(`the build's version is "${version}": the update notice needs one of its own (buildDist of dev/shot.mjs gives it)`);
+  // (the build has a version of its own, not "dev": a server of another build is then told by this computer's section; buildDist of dev/shot.mjs gives it)
+  const bundle = await fetch(url + "/main.js").then((r) => r.text(), () => "");
+  if (!bundle.includes('"uicheck"')) fail("the build's version is not \"uicheck\": this computer's server of another build needs a version of the page to differ from (buildDist of dev/shot.mjs gives it)");
   // The pages whose state showed, the oldest first. Each stays open for its moment while the next ones are opened,
   // so the moment costs no time; done(true) waits for all of them, before the mock changes under them.
   const shown = [];

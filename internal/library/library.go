@@ -47,45 +47,23 @@ type Tree struct {
 	Prompts []Prompt `json:"prompts"`
 }
 
-// View is one server's library as a page gets it: an element of GET /api/library and of the
-// snapshot's "libraries", and the content of the "library" event. This computer's library is the
-// first of every list, under the server id "local".
+// View is one server's library as GET /api/library gives it. The server is always this one:
+// "local" under the name of this server.
 type View struct {
-	Server    string `json:"server"`           // the server's id in the server list; "local" = this computer
-	Name      string `json:"name"`             // the server's name, as the server list has it
-	Connected bool   `json:"connected"`        // false: the copy last received from a server that dropped; it cannot be changed until the server is back
-	Notice    string `json:"notice,omitempty"` // why the library's file was set aside at the start, or ""
+	Server    string `json:"server"`    // "local"
+	Name      string `json:"name"`      // the server's name for itself
+	Connected bool   `json:"connected"` // always true
 	// Groups and Prompts are the Tree's, never null.
 	Groups  []Group  `json:"groups"`
 	Prompts []Prompt `json:"prompts"`
 }
 
-// The events of a library on a page's stream.
-const (
-	EventLibrary = "library"         // Event: the library of one server as it is now, whole
-	EventRemoved = "library_removed" // Removed: a server is no longer in the server list
-)
-
-// Event is the "library" event. It is sent after every change of a library, and when Connected
-// or Name changes. The page puts Library in the place of the one it has for that server, or
-// adds it after the others.
-type Event struct {
-	Type    string `json:"type"` // EventLibrary
-	Library View   `json:"library"`
-}
-
-// Removed is the "library_removed" event: the page drops the library of this server.
-type Removed struct {
-	Type   string `json:"type"`   // EventRemoved
-	Server string `json:"server"` // the server's id
-}
-
-// EventOwn is the type of the Own event, on the stream of an API client.
+// EventOwn is the type of the Own event, on the stream of a client.
 const EventOwn = "own_library"
 
-// Own is the "own_library" event: this server's library, whole, as its API clients get it after
-// every change. It is the snapshot's "library" of an API client with a type. Nothing of the
-// servers this one connects to is in it, and neither is the Notice, which names the data folder.
+// Own is the "own_library" event: this server's library, whole, as its clients get it after
+// every change. It is the snapshot's "library" with a type. The Notice, which names the data
+// folder, is in the snapshot's "libraryNotice" alone.
 type Own struct {
 	Type    string   `json:"type"` // EventOwn
 	Groups  []Group  `json:"groups"`

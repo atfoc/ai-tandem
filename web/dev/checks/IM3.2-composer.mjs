@@ -51,7 +51,7 @@ await check("IM3.2 images in a chat's composer: the attach button, a paste, the 
   if (first && (Object.keys(first).join() !== "id,name,type,size" || first.name !== "diagram.png" || first.type !== "image/png" || first.size !== PNG_A.length)) fail(`the draft names the image as ${JSON.stringify(first)}`);
   if ((await send()).off) fail(`Send is off with an image and no text: ${JSON.stringify(await send())}`);
   // the thumbnail ends on the image's own address, and the image is there
-  if (!await until(async () => (await thumbs())[0]?.src === `/api/chats/${chat}/images/${first?.id}`, 8000)) fail(`the thumbnail does not show the image's address: ${JSON.stringify(await thumbs())}`);
+  if (!await until(async () => (await thumbs())[0]?.src === `/host/picture/local/${chat}/${first?.id}`, 8000)) fail(`the thumbnail does not show the image's address: ${JSON.stringify(await thumbs())}`);
   if ((await thumbs())[0]?.broken) fail("the thumbnail of an uploaded image is the plain tile: its address did not load");
 
   // ---- a paste: files alone are images; with plain text and rich text the text wins

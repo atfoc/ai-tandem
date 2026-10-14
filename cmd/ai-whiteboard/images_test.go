@@ -10,11 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"ai-whiteboard/internal/chats"
+	"ai-whiteboard/internal/server"
 )
 
 // The cleanup of the images of chats, in real server processes: an image that was never sent and
@@ -39,8 +39,10 @@ func (s *imageServer) start(t *testing.T) {
 	s.cmd, s.exited = cmd, make(chan struct{})
 	go func(done chan struct{}) { cmd.Wait(); close(done) }(s.exited)
 	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if h, ok := helloOf(httpClient(), strings.TrimSuffix(s.in.url, "/")); ok && h.Pid == cmd.Process.Pid {
-			return
+		if run, ok := s.in.running(); ok && run.hello.Pid == cmd.Process.Pid {
+			if st, ok := run.statusOf(); ok && st.Client.Listening {
+				return
+			}
 		}
 		select {
 		case <-s.exited:
@@ -67,13 +69,17 @@ func (s *imageServer) kill(t *testing.T) {
 // testPNG is a small file that starts as a PNG does and differs by seed.
 func testPNG(seed string) []byte { return append([]byte("\x89PNG\r\n\x1a\n"), seed...) }
 
-// uploadImage uploads testPNG(seed) to the chat as a page does and returns the image's id.
-func uploadImage(t *testing.T, base, client, chat, seed string) string {
+// uploadImage uploads testPNG(seed) to the chat as a client does and returns the image's id.
+func uploadImage(t *testing.T, in *instance, client, chat, seed string) string {
 	t.Helper()
-	req, _ := http.NewRequest("POST", base+"api/chats/"+chat+"/images?name="+url.QueryEscape(seed+".png"), bytes.NewReader(testPNG(seed)))
+	req, _ := http.NewRequest("POST", in.base()+"/api/chats/"+chat+"/images?name="+url.QueryEscape(seed+".png"), bytes.NewReader(testPNG(seed)))
 	req.Header.Set("Content-Type", "image/png")
-	req.Header.Set("X-AIWB-Client", client)
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	req.Header.Set(server.SecretHeader, in.secret)
+	req.Header.Set(server.ClientHeader, client)
+	req.Header.Set(server.LevelHeader, testLevel)
+	tr := pinned(in.fpr)
+	defer tr.CloseIdleConnections()
+	resp, err := (&http.Client{Transport: tr, Timeout: 60 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,14 +92,13 @@ func uploadImage(t *testing.T, base, client, chat, seed string) string {
 }
 
 // imageStatus is the status of a fetch of the image, which is no use of it.
-func imageStatus(t *testing.T, base, chat, image string) int {
+func imageStatus(t *testing.T, in *instance, chat, image string) int {
 	t.Helper()
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Get(base + "api/chats/" + chat + "/images/" + image)
+	status, _, err := in.request(context.Background(), testClient, "GET", "/api/chats/"+chat+"/images/"+image, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
-	return resp.StatusCode
+	return status
 }
 
 func TestImagesCleanedByThemselves(t *testing.T) {
@@ -112,17 +117,17 @@ func TestImagesCleanedByThemselves(t *testing.T) {
 		}
 	})
 
-	const client = "images-test"
-	activate(t, in.url, client)
+	const client = testClient
+	in.activate(t, client)
 	var chat struct{ ID string }
-	postJSON(t, in.url+"api/chats", client, map[string]any{"group": "__ungrouped__"}, &chat)
+	in.must(t, client, "POST", "/api/chats", map[string]any{"group": "__ungrouped__"}, &chat)
 	file := func(image string) string { return filepath.Join(in.dir, "chats", chat.ID, "images", image) }
 	// goes waits until a fetch of the image is answered 404 and its file is gone, and returns
 	// how long that took. Nothing is uploaded and no draft is saved meanwhile.
 	goes := func(what, image string, from time.Time) time.Duration {
 		t.Helper()
 		for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-			if imageStatus(t, in.url, chat.ID, image) == http.StatusNotFound {
+			if imageStatus(t, in, chat.ID, image) == http.StatusNotFound {
 				if _, err := os.Stat(file(image)); !os.IsNotExist(err) {
 					t.Fatalf("%s: its fetch is answered 404 and its file is there: %v", what, err)
 				}
@@ -136,27 +141,16 @@ func TestImagesCleanedByThemselves(t *testing.T) {
 
 	// An image no draft names, and one a draft names.
 	uploaded := time.Now()
-	orphan := uploadImage(t, in.url, client, chat.ID, "orphan")
-	drafted := uploadImage(t, in.url, client, chat.ID, "drafted")
-	req, _ := http.NewRequest("PUT", in.url+"api/chats/"+chat.ID+"/draft?rev=0",
-		strings.NewReader(fmt.Sprintf(`{"text":"look","images":[{"id":%q,"name":"drafted.png"}]}`, drafted)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-AIWB-Client", client)
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("the draft save: status %d", resp.StatusCode)
-	}
-	if st := imageStatus(t, in.url, chat.ID, orphan); st != http.StatusOK && time.Since(uploaded) < imagesWait {
+	orphan := uploadImage(t, in, client, chat.ID, "orphan")
+	drafted := uploadImage(t, in, client, chat.ID, "drafted")
+	in.must(t, client, "PUT", "/api/chats/"+chat.ID+"/draft?rev=0", map[string]any{"text": "look", "images": []map[string]any{{"id": drafted, "name": "drafted.png"}}}, nil)
+	if st := imageStatus(t, in, chat.ID, orphan); st != http.StatusOK && time.Since(uploaded) < imagesWait {
 		t.Fatalf("the image was gone within the wait: status %d", st)
 	}
 	if took := goes("the image no draft names", orphan, uploaded); took < imagesWait {
 		t.Fatalf("the image went %s after its upload, before the wait of %s was over", took, imagesWait)
 	}
-	if st := imageStatus(t, in.url, chat.ID, drafted); st != http.StatusOK {
+	if st := imageStatus(t, in, chat.ID, drafted); st != http.StatusOK {
 		t.Fatalf("the image the draft names after the cleanup: status %d", st)
 	}
 
@@ -166,7 +160,7 @@ func TestImagesCleanedByThemselves(t *testing.T) {
 	// image before it died, another image is tried.
 	for attempt := 1; ; attempt++ {
 		uploaded = time.Now()
-		left := uploadImage(t, in.url, client, chat.ID, fmt.Sprintf("left behind %d", attempt))
+		left := uploadImage(t, in, client, chat.ID, fmt.Sprintf("left behind %d", attempt))
 		srv.kill(t)
 		_, err := os.Stat(file(left))
 		srv = &imageServer{in: in}
@@ -175,7 +169,7 @@ func TestImagesCleanedByThemselves(t *testing.T) {
 			if attempt == 5 {
 				t.Fatalf("five times the image was gone before the server was killed: %v", err)
 			}
-			activate(t, in.url, client)
+			in.activate(t, client)
 			continue
 		}
 		if took := goes("the image a killed server left", left, uploaded); took < imagesWait {
@@ -185,7 +179,7 @@ func TestImagesCleanedByThemselves(t *testing.T) {
 	}
 	// The draft outlived the restart, and so did its image: the new server knew the draft before
 	// its cleanup looked.
-	if st := imageStatus(t, in.url, chat.ID, drafted); st != http.StatusOK {
+	if st := imageStatus(t, in, chat.ID, drafted); st != http.StatusOK {
 		t.Fatalf("the image the draft names after a restart and its cleanup: status %d", st)
 	}
 	if _, err := os.Stat(file(drafted)); err != nil {

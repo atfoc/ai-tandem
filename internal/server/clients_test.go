@@ -13,22 +13,31 @@ import (
 	"testing"
 	"time"
 
-	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/testset"
 )
 
-// The known-client guard, the hold of a board and the scene revision, with stand-in pages
-// (bridgetest) against the real handler. The env's own client "A" is connected in every test and
-// makes no call unless the test says so.
+// The hold of a board and the scene revision, with stand-in clients (bridgetest) against the
+// real handler. The env's own client "A" is connected in every test and makes no call unless the
+// test says so.
 
-// page connects a stand-in page with this id and reads its hello and snapshot: it is a known
-// client from then on, and Do makes its calls with the client header.
-func (e *env) page(id string) *bridgetest.Page {
+// idOf is the client id of the label a test gives a client: the label itself when it is an id.
+func idOf(label string) string {
+	if remote.ValidID(label) {
+		return label
+	}
+	return cid(label)
+}
+
+// page connects a stand-in client with this label (see idOf) and reads its hello and snapshot:
+// it is a known client from then on, and Do makes its calls with its id, the secret and the level.
+func (e *env) page(label string) *bridgetest.Page {
 	e.t.Helper()
-	p := bridgetest.Connect(e.t, e.url, id)
+	id := idOf(label)
+	p := bridgetest.ConnectWith(e.t, e.url, id, e.l.options(id, testSecret))
 	p.Welcome()
 	return p
 }
@@ -145,6 +154,9 @@ func (e *env) roleEvents(p *bridgetest.Page) (got []string) {
 // holder checks who holds the board; "" for nobody.
 func (e *env) holder(board, want string) {
 	e.t.Helper()
+	if want != "" {
+		want = idOf(want)
+	}
 	if got, _ := e.s.Bridge.HolderOf(board); got != want {
 		e.t.Fatalf("the holder of %s is %q, want %q", board, got, want)
 	}
@@ -162,7 +174,8 @@ func (e *env) onDisk(board, want string) {
 // stored checks what a read of the board's scene answers: the drawing and its revision.
 func (e *env) stored(board, want string, rev int64) {
 	e.t.Helper()
-	resp, err := http.Get(e.url + "/api/boards/" + board + "/scene")
+	req, _ := http.NewRequest("GET", e.url+"/api/boards/"+board+"/scene", nil)
+	resp, err := e.send(req, clientID)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -176,32 +189,12 @@ func (e *env) stored(board, want string, rev int64) {
 // gone waits until the server has noticed the end of the client's stream.
 func (e *env) gone(id string) {
 	e.t.Helper()
+	id = idOf(id)
 	for end := time.Now().Add(5 * time.Second); e.s.Bridge.Known(id); time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(end) {
 			e.t.Fatalf("client %s is still known", id)
 		}
 	}
-}
-
-// foreign makes a call as a page of another origin can without a preflight: no client header,
-// and a body sent as text/plain.
-func (e *env) foreign(method, path, body string, headers ...string) (int, string, http.Header) {
-	e.t.Helper()
-	req, _ := http.NewRequest(method, e.url+path, strings.NewReader(body))
-	req.Header.Set("Origin", "http://evil.example")
-	if body != "" {
-		req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
-	}
-	for i := 0; i+1 < len(headers); i += 2 {
-		req.Header.Set(headers[i], headers[i+1])
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(out), resp.Header
 }
 
 // later sends the request as clientID on a goroutine of its own; its status arrives on the
@@ -210,8 +203,7 @@ func (e *env) later(method, path string) <-chan int {
 	done := make(chan int, 1)
 	go func() {
 		req, _ := http.NewRequest(method, e.url+path, nil)
-		req.Header.Set(ClientHeader, clientID)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := e.send(req, clientID)
 		if err != nil {
 			done <- 0
 			return
@@ -257,77 +249,6 @@ func (e *env) boardChat(p *bridgetest.Page) (model.Board, string) {
 
 // ---- the guard (AC38) -------------------------------------------------------
 
-func TestKnownClientGuard(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	p := e.page("P")
-	bd := newBoard(t, p, "b")
-	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
-	e.holder(bd.ID, "P")
-
-	// No id, the id of no stream, and a known id in the body only: every route refuses, the
-	// ones about the client itself too.
-	body := `{"client":"P","id":"rpc_1","ifFree":true,"name":"x","group":"` + model.Ungrouped + `"}`
-	routes := [][2]string{
-		{"POST", "/api/rpc-reply"},
-		{"POST", "/api/client/flushed"},
-		{"POST", "/api/boards/" + bd.ID + "/take"},
-		{"POST", "/api/boards/" + bd.ID + "/release"},
-		{"POST", "/api/chats/" + c.ID + "/unfollow"},
-		{"PUT", "/api/boards/" + bd.ID + "/scene?rev=0"},
-		{"PUT", "/api/boards/" + bd.ID + "/scene"},
-		{"POST", "/api/boards"},
-		{"DELETE", "/api/boards/" + bd.ID},
-		{"POST", "/api/restart"},
-	}
-	for _, r := range routes {
-		for _, client := range []string{"", "ghost"} {
-			code, out := e.doAs(client, r[0], r[1], body)
-			if code != 409 || strings.TrimSpace(out) != `{"error":"unknown_client"}` {
-				t.Fatalf("%s %s from %q: %d %s", r[0], r[1], client, code, out)
-			}
-		}
-		// The id as a query parameter is not the header either.
-		if code, out := e.doAs("", r[0], r[1]+map[bool]string{true: "&", false: "?"}[strings.Contains(r[1], "?")]+"client=P", body); code != 409 {
-			t.Fatalf("%s %s with the id in the query: %d %s", r[0], r[1], code, out)
-		}
-	}
-	e.holder(bd.ID, "P")
-	if n := len(e.a.Boards.List()); n != 1 {
-		t.Fatalf("%d boards after the refused calls", n)
-	}
-	e.onDisk(bd.ID, string(mustRead(t, e.st.P.BoardFile(bd.ID))))
-	if got := e.roleEvents(p); len(got) != 0 {
-		t.Fatalf("the holder was sent %v", got)
-	}
-
-	// A GET and a HEAD need no id.
-	for _, r := range [][2]string{{"GET", "/api/state"}, {"HEAD", "/api/state"}, {"GET", "/api/boards/" + bd.ID + "/scene"}, {"GET", "/api/chats/" + c.ID + "/items"}} {
-		if code, out := e.doAs("", r[0], r[1], ""); code != 200 {
-			t.Fatalf("%s %s without an id: %d %s", r[0], r[1], code, out)
-		}
-	}
-
-	// A second stream with a connected id replaces the first: the new one holds and follows
-	// nothing.
-	p.Do("GET", "/api/chats/"+c.ID+"/items", nil)
-	if got := e.s.Bridge.Followers(editorbridge.Chat(c.ID)); !slices.Equal(got, []string{"P"}) {
-		t.Fatalf("followers before the second stream: %v", got)
-	}
-	again := e.page("P")
-	p.ExpectEnded()
-	e.holder(bd.ID, "")
-	if got := e.s.Bridge.Followers(editorbridge.Chat(c.ID)); len(got) != 0 {
-		t.Fatalf("followers after the second stream: %v", got)
-	}
-	status, out := write(again, bd.ID, 0, drawing("late"))
-	refused(t, "a write by the new stream, which holds nothing", "not_holder", status, out)
-	if state, _ := take(t, again, bd.ID, true); state != "held" {
-		t.Fatalf("the new stream's take of the free board: %s", state)
-	}
-	written(t, again, bd.ID, 0, drawing("again"))
-}
-
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -335,104 +256,6 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
-}
-
-// What a page of another origin can do (T09 Part A): open a stream, and post without the client
-// header. It takes no board, forges no answer, and is asked nothing.
-func TestForeignPageGetsNothing(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	v := e.page("V")
-	bd, token := e.boardChat(v)
-	written(t, v, bd.ID, 0, drawing("v"))
-
-	// Its stream alone leaves the holder undisturbed.
-	x := e.page("X")
-	e.holder(bd.ID, "V")
-	if got := e.roleEvents(v); len(got) != 0 {
-		t.Fatalf("the holder was sent %v when another stream opened", got)
-	}
-
-	// An agent's call is open at the holder. A reply that names the holder in its body, sent as
-	// text/plain, is refused, and the call stays open.
-	type result struct {
-		text  string
-		isErr bool
-	}
-	called := make(chan result, 1)
-	go func() {
-		text, isErr := e.tool(token, "read_board")
-		called <- result{text, isErr}
-	}()
-	var rpc map[string]any
-	for rpc == nil {
-		if ev := v.Next(); ev["type"] == "rpc" {
-			rpc = ev
-		}
-	}
-	id, _ := rpc["id"].(string)
-	forged, _ := json.Marshal(map[string]any{"id": id, "client": "V", "result": "forged"})
-	if code, out, _ := e.foreign("POST", "/api/rpc-reply", string(forged)); code != 409 || !strings.Contains(out, "unknown_client") {
-		t.Fatalf("a forged reply: %d %s", code, out)
-	}
-	select {
-	case r := <-called:
-		t.Fatalf("the call ended with the forged reply: %+v", r)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	// Neither can it take or release the board, or answer server_stopping for the holder.
-	for _, path := range []string{"/api/boards/" + bd.ID + "/take", "/api/boards/" + bd.ID + "/release", "/api/client/flushed"} {
-		for _, body := range []string{`{"client":"V"}`, ""} {
-			if code, out, _ := e.foreign("POST", path, body); code != 409 || !strings.Contains(out, "unknown_client") {
-				t.Fatalf("POST %s with body %q: %d %s", path, body, code, out)
-			}
-		}
-	}
-	e.holder(bd.ID, "V")
-
-	// The preflight of a call with the client header is not answered, and no answer allows the
-	// other origin to read it.
-	code, _, h := e.foreign("OPTIONS", "/api/boards", "", "Access-Control-Request-Method", "POST", "Access-Control-Request-Headers", "x-aiwb-client,content-type")
-	if code != 409 || h.Get("Access-Control-Allow-Origin") != "" || h.Get("Access-Control-Allow-Headers") != "" {
-		t.Fatalf("OPTIONS /api/boards: %d %v", code, h)
-	}
-	for _, path := range []string{"/api/state", "/api/boards/" + bd.ID + "/scene", "/api/hello"} {
-		if _, _, h := e.foreign("GET", path, ""); h.Get("Access-Control-Allow-Origin") != "" {
-			t.Fatalf("GET %s allows origin %q", path, h.Get("Access-Control-Allow-Origin"))
-		}
-	}
-
-	// The holder's own answer ends the call.
-	if status, out := v.Do("POST", "/api/rpc-reply", map[string]any{"id": id, "result": "the board"}); status != 200 {
-		t.Fatalf("the holder's reply: %d %s", status, out)
-	}
-	select {
-	case r := <-called:
-		if r.isErr || r.text != "the board" {
-			t.Fatalf("the call's answer: %+v", r)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the call did not end with the holder's reply")
-	}
-	if got := e.roleEvents(v); len(got) != 0 {
-		t.Fatalf("the holder was sent %v", got)
-	}
-
-	// With only clients that opened a stream and made no call (X, and the env's A), an agent's
-	// call is refused at once: none of them is given the board or the call.
-	v.Close()
-	e.gone("V")
-	e.holder(bd.ID, "")
-	start := time.Now()
-	if text, isErr := e.tool(token, "read_board"); !isErr || text != boardapi.NoClientText || time.Since(start) > time.Second {
-		t.Fatalf("a call with stream-only clients: %q isErr=%v after %v", text, isErr, time.Since(start))
-	}
-	e.holder(bd.ID, "")
-	if got := e.roleEvents(x); len(got) != 0 {
-		t.Fatalf("the stream-only client was sent %v", got)
-	}
-	e.onDisk(bd.ID, drawing("v"))
 }
 
 // A reply counts only from the client that was asked, another known client's is refused.
@@ -683,7 +506,7 @@ func TestStaleSceneWrite(t *testing.T) {
 	if status, out := p.Do("PUT", "/api/boards/b_nope/scene?rev=0", drawing("x")); status != 404 {
 		t.Fatalf("a write of an unknown board: %d %s", status, out)
 	}
-	if code, _ := e.doAs("", "GET", "/api/boards/b_nope/scene", ""); code != 404 {
+	if code, _ := e.do("GET", "/api/boards/b_nope/scene", ""); code != 404 {
 		t.Fatalf("a read of an unknown board: %d", code)
 	}
 }
@@ -987,12 +810,12 @@ func TestReadsFollow(t *testing.T) {
 		if status, out := p.Do("GET", "/api/chats/"+c.ID+r.path, nil); status != r.code {
 			t.Fatalf("GET %s: %d %s", r.path, status, out)
 		}
-		if got := followers(); !slices.Equal(got, []string{"P"}) {
+		if got := followers(); !slices.Equal(got, []string{idOf("P")}) {
 			t.Fatalf("followers after GET %s: %v", r.path, got)
 		}
 		// Another client's unfollow is its own.
 		e.expect(200, "POST", "/api/chats/"+c.ID+"/unfollow", "")
-		if got := followers(); !slices.Equal(got, []string{"P"}) {
+		if got := followers(); !slices.Equal(got, []string{idOf("P")}) {
 			t.Fatalf("followers after another client's unfollow: %v", got)
 		}
 		for range 2 { // the second has nothing to end, and is answered the same
@@ -1018,27 +841,6 @@ func TestReadsFollow(t *testing.T) {
 	}
 }
 
-// A page that has only read since its stream opened (a reload of a page that shows a chat) is
-// asked a board tool call (AC40).
-func TestPageThatOnlyReadIsAskedACall(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	v := e.page("V")
-	bd, token := e.boardChat(v)
-	c := e.a.Chats.ChatsOfBoard(bd.ID)[0]
-	v2 := e.page("V") // the reconnect: a new record
-	v.ExpectEnded()
-	v2.OnRPC(func(map[string]any) (any, string) { return "the board", "" })
-	for _, path := range []string{"/api/state", "/api/chats/" + c.ID + "/items", "/api/chats/" + c.ID + "/tree", "/api/boards/" + bd.ID + "/scene"} {
-		if status, out := v2.Do("GET", path, nil); status != 200 {
-			t.Fatalf("GET %s: %d %s", path, status, out)
-		}
-	}
-	if text, isErr := e.tool(token, "read_board"); isErr || text != "the board" {
-		t.Fatalf("read_board after reads alone: %q, error %v", text, isErr)
-	}
-}
-
 // A read of a chat that is not there leaves no follow; a missing subagent of a chat that is there
 // keeps the chat's.
 func TestFailedChatReadLeavesNoFollow(t *testing.T) {
@@ -1059,7 +861,7 @@ func TestFailedChatReadLeavesNoFollow(t *testing.T) {
 	if status, out := p.Do("GET", "/api/chats/"+c.ID+"/subagents/no-such/items", nil); status != 404 {
 		t.Fatalf("a missing subagent: %d %s", status, out)
 	}
-	if got := e.s.Bridge.Followers(editorbridge.Chat(c.ID)); !slices.Equal(got, []string{"P"}) {
+	if got := e.s.Bridge.Followers(editorbridge.Chat(c.ID)); !slices.Equal(got, []string{idOf("P")}) {
 		t.Fatalf("followers after a missing subagent's read: %v", got)
 	}
 }

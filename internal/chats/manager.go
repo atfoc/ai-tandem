@@ -203,9 +203,6 @@ var (
 	ErrNoRequest     = errors.New("this permission request is no longer open; reload the page if it still looks open")
 	// ErrShutdown is what a call that would start a process answers once Shutdown has begun.
 	ErrShutdown = errors.New("the server is shutting down")
-	// ErrServerChosen refuses a change of a chat's server: a chat is on the server it was made
-	// on, and nothing moves between servers.
-	ErrServerChosen = errors.New("the server of a chat is chosen when the chat is made and cannot be changed")
 )
 
 type ConfigReq struct {

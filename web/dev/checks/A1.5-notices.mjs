@@ -1,20 +1,21 @@
-// Proves A1.5. The rail's control has its dot while the page is not connected and while the update banner is up
-// (either kind), and at no other time: not for a server that is not connected, not for a banner the user hid.
+// Proves A1.5. The rail's control has its dot while this computer's section has something to say (its server is not
+// connected, is of another build than the app, did not start) and at no other time: not for another server that is not
+// connected.
 // Hiding by the head's control, and by ⌘B with the focus in the sidebar, puts the focus on the rail's control;
 // showing from the rail puts it on the head's; a focus outside the sidebar stays where it is through ⌘B. Hiding
 // either way ends a rename box (a group's, a board's, a chat's) with its text not saved, though a box that
 // loses the focus saves: the check ends with one that does, heard by the same listener. And it closes the head's
 // "+" menu, a chat row's and a board row's menu, a group's "+" menu and a group's menu. With the sidebar shown its
-// head holds its two controls inside the pane, down to the pane's least width and beside "Reconnecting…".
+// head holds its two controls inside the pane, down to the pane's least width.
 // The theme picker's menu, which closes too, is P7.2's: there the sidebar is hidden with it open.
 import { check, mockEval, openPage, seed, until } from "../shot.mjs";
 
-const UNDO = "delete flags.streamDown; delete flags.hello;";
+const UNDO = "delete flags.streamDown; delete flags.hello; setServerState('local', 'connected');";
 
 await check("A1.5 the rail's dot, the focus, and what hiding the sidebar closes", async ({ url, browser, fail, note }) => {
   await seed(url, "A1");
-  const version = await fetch(url + "/version.json").then((r) => r.json()).then((v) => v.version, () => "");
-  if (!version || version === "dev") fail(`the build's version is "${version}": the update notice needs one of its own (buildDist of dev/shot.mjs gives it)`);
+  const bundle = await fetch(url + "/main.js").then((r) => r.text(), () => "");
+  if (!bundle.includes('"uicheck"')) fail('the build\'s version is not "uicheck": a server of another build needs a version of the page to differ from (buildDist of dev/shot.mjs gives it)');
   const frames = (page) => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
   /** Every timer the page had set for the next moments has fired (the composer takes the focus 30 ms after it is
    *  asked to): a timer set now, with a later end, fires after them. */
@@ -39,44 +40,45 @@ await check("A1.5 the rail's dot, the focus, and what hiding the sidebar closes"
 
   // ---- the dot
   await open({ sel: { chat: "c_plain" }, ls: { "aiwb.side": "hidden" }, wait: ".app > .side-rail" }, async (page) => { // (not the tree: it is not drawn)
-    const dot = () => page.evaluate(() => {
+    const HERE = '.side-section[data-server="local"]';
+    const dot = () => page.evaluate((HERE) => {
       const d = document.querySelector(".side-rail .side-show .side-rail-dot"), c = document.querySelector(".side-rail .side-show");
       const r = d?.getBoundingClientRect(), b = c?.getBoundingClientRect();
       return { dot: !!d && r.width >= 5 && r.left >= b.left - 3 && r.right <= b.right + 3 && r.top >= b.top - 3 && r.bottom <= b.bottom + 3 && getComputedStyle(d).backgroundColor !== "rgba(0, 0, 0, 0)",
-        offline: !!document.querySelector(".side .offline"), banner: document.querySelector(".side .side-update-text")?.textContent ?? "", label: c?.getAttribute("aria-label") ?? "" };
-    });
-    /** Waits for the sidebar's own notices to be as told, then holds the dot against them: the dot and the control's
-     *  name as they were read together (a later reading may be of the next moment: the stream being dropped). */
-    const at = async (name, { offline, banner }, want) => {
-      const ok = await until(async () => { const s = await dot(); return s.offline === offline && s.banner.includes(banner) && !!s.banner === !!banner && s.dot === want ? s : null; }, 30000);
+        state: document.querySelector(`${HERE} .side-section-state`)?.textContent ?? "", extra: document.querySelector(`${HERE} .side-section-extra`)?.textContent ?? "", label: c?.getAttribute("aria-label") ?? "" };
+    }, HERE);
+    /** Waits for this computer's section to say what is told, then holds the dot against it: the dot and the control's
+     *  name as they were read together (a later reading may be of the next moment). */
+    const at = async (name, { state, extra }, want) => {
+      const ok = await until(async () => { const s = await dot(); return s.state === state && s.extra.includes(extra) && !!s.extra === !!extra && s.dot === want ? s : null; }, 30000);
       const s = ok || await dot();
-      if (!ok) fail(`the dot, ${name}: the control has ${s.dot ? "a" : "no"} dot while the sidebar says ${s.offline ? '"Reconnecting…"' : "it is connected"} and its banner ${s.banner ? `"${s.banner}"` : "is not up"}`);
+      if (!ok) fail(`the dot, ${name}: the control has ${s.dot ? "a" : "no"} dot while this computer's section says "${s.state}" and ${s.extra ? `"${s.extra}"` : "nothing else"}`);
       else if (s.label.includes("notice") !== want) fail(`the dot, ${name}: the control is named "${s.label}"`);
     };
     if (!await isHidden(page)) return fail("the dot: the page did not open with the sidebar hidden");
     if (!await page.locator('.side-foot .servers-btn[title*="not connected"]').count()) fail("the dot: the seed's server that is not connected is not told by the Servers button");
-    await at("connected, a server of the list not connected", { offline: false, banner: "" }, false);
+    await at("connected, a server of the list not connected", { state: "Connected", extra: "" }, false);
     try {
       await mockEval("flags.streamDown = true; dropStreams();", url);
-      await at("the stream cut", { offline: true, banner: "" }, true);
+      await at("the stream closed for good: every server is connecting", { state: "Connecting…", extra: "" }, true);
       await mockEval("delete flags.streamDown;", url);
-      await at("connected again", { offline: false, banner: "" }, false);
-      await mockEval('flags.hello = { version: "old", webVersion: "uicheck" }; dropStreams();', url);
-      await at("the server is to be restarted", { offline: false, banner: "still running the old one" }, true);
-      await mockEval('flags.hello = { version: "new", webVersion: "new" }; dropStreams();', url);
-      await at("the page is to be reloaded", { offline: false, banner: "out of date" }, true);
-      // hidden by its ×, which needs the sidebar: the banner is not up, and the dot goes with it
-      await show(page, "the dot");
-      await page.locator(".side-update .side-update-x").click();
-      await hide(page, "the dot", "key");
-      await at("the banner hidden by its ×", { offline: false, banner: "" }, false);
-      // (the page is as it will be already: it is read once it has lost the stream and has it again, with the new versions)
-      await page.evaluate(() => { window.__lost = false; new MutationObserver(() => { if (document.querySelector(".side .offline")) window.__lost = true; }).observe(document.querySelector(".side"), { subtree: true, childList: true }); });
+      await at("connected again", { state: "Connected", extra: "" }, false);
+      await mockEval('flags.hello = { version: "old" }; dropStreams();', url);
+      await at("the server is of another build", { state: "Connected", extra: "another build" }, true);
       await mockEval("delete flags.hello; dropStreams();", url);
-      if (!await until(() => page.evaluate(() => window.__lost && !document.querySelector(".side .offline")), 30000)) fail("the dot, the versions the same again: the page did not lose its stream and get it again");
-      await at("the versions the same again", { offline: false, banner: "" }, false);
+      await at("the builds the same again", { state: "Connected", extra: "" }, false);
+      await mockEval('setServerState("local", "not_started", { detail: "AI Whiteboard is not set up on this machine." });', url);
+      await at("the start failed", { state: "Not started", extra: "not set up" }, true);
+      await mockEval("setServerState('local', 'connected');", url);
+      await at("started", { state: "Connected", extra: "" }, false);
+      await mockEval('setServerState("local", "too_old", { version: "0.9.1" });', url);
+      await at("the server is too old", { state: "Too old", extra: "Restart server" }, true);
+      await mockEval("setServerState('local', 'connected');", url);
+      await at("restarted", { state: "Connected", extra: "" }, false);
+      // another server of the list that is not connected is the Servers button's dot, not this one (the seed has one)
+      if (!await page.locator('.side-foot .servers-btn[title*="not connected"]').count()) fail("the dot: the Servers button lost its own dot");
     } finally { await mockEval(UNDO, url); }
-    note("the dot: on while the stream was cut and under each update banner; off when connected with a server of the list down, with the banner hidden, and after each");
+    note("the dot: on while this computer's server was connecting, of another build, not started and too old; off when connected with a server of the list down, and after each");
   });
 
   // ---- the head of a sidebar that shows: the name gives way, the two controls stay inside the pane and can be hit
@@ -84,7 +86,7 @@ await check("A1.5 the rail's dot, the focus, and what hiding the sidebar closes"
     const head = () => page.evaluate(() => {
       const pane = document.querySelector(".side-pane").getBoundingClientRect(), box = document.querySelector(".side-head");
       const ctl = (s) => { const e = box.querySelector(s), r = e.getBoundingClientRect(), at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { w: r.width, past: Math.round((r.right - pane.right) * 10) / 10, hit: at === e || e.contains(at) }; };
-      return { hide: ctl(".side-hide"), plus: ctl(".icon-btn.new"), offline: box.querySelector(".offline")?.getBoundingClientRect().width ?? 0, scroll: box.scrollWidth - box.clientWidth };
+      return { hide: ctl(".side-hide"), plus: ctl(".icon-btn.new"), scroll: box.scrollWidth - box.clientWidth };
     });
     const held = async (name) => {
       const h = await head();
@@ -93,12 +95,6 @@ await check("A1.5 the rail's dot, the focus, and what hiding the sidebar closes"
       return h;
     };
     await held("connected");
-    try {
-      await mockEval("flags.streamDown = true; dropStreams();", url);
-      await page.waitForSelector(".side-head .offline", { timeout: 30000 });
-      const h = await held("reconnecting");
-      if (h.offline < 60) fail(`the head at ${w} px: "Reconnecting…" has ${h.offline} px, not its whole width`);
-    } finally { await mockEval(UNDO, url); }
   });
 
   // ---- the focus
@@ -136,7 +132,15 @@ await check("A1.5 the rail's dot, the focus, and what hiding the sidebar closes"
 
   // ---- what hiding closes
   /** Every call the page makes that is not a read, as the page makes it. */
-  const spy = (page) => page.evaluate(() => { window.__calls = []; const f = window.fetch; window.fetch = (u, o) => { if (o?.method && o.method !== "GET") window.__calls.push(`${o.method} ${u} ${o.body ?? ""}`); return f(u, o); }; });
+  const spy = (page) => page.evaluate(() => {
+    window.__calls = [];
+    const f = window.fetch;
+    window.fetch = (u, o) => { // (a call goes to the host as POST /host/call, with the call's own method in the query)
+      const q = new URL(u, location.href), m = q.searchParams.get("method");
+      if (q.pathname === "/host/call" && m && m !== "GET") window.__calls.push(`${m} ${q.searchParams.get("path")} ${o?.body ?? ""}`);
+      return f(u, o);
+    };
+  });
   const calls = (page) => page.evaluate(() => window.__calls.splice(0));
   /** Puts a row in rename mode by its menu and types a name into its box; answers the name it had. */
   const rename = async (page, name, row, nameSel, text) => {

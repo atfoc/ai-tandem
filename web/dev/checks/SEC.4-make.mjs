@@ -1,6 +1,6 @@
 // Proves where a new thing is made (plans/remote-server-sections-goal.md, 3.1 "The + of the sidebar's head", 3.4):
 // a chat, a whiteboard and a group from the "+" of a section's head are made on that server, outside any group,
-// and from the "+" of a group inside the section in that group: the call goes to /api/on/<entry id>/… with the group's
+// and from the "+" of a group inside the section in that group: the call goes to that server (the call's `server` is the entry id) with the group's
 // own id there, nothing asks where the thing should live, and the thing shows in the section and not in the local
 // part. A chat on a board of a section is made on that server. The "+" of the sidebar's head makes things of this
 // computer, also with servers in the list, and asks nothing. A make that server refuses shows the server's sentence
@@ -9,7 +9,7 @@
 import { callsOf, check, mockEval, openPage, seed, sideMenu, sideSeen, until } from "../shot.mjs";
 
 const J = JSON.stringify;
-const STUDIO = "s_studio", ON = `/api/on/${STUDIO}`, LOOSE = "__ungrouped__";
+const STUDIO = "s_studio", LOOSE = "__ungrouped__";
 
 await check("SEC.4 what is made in a section is made on that server; the sidebar's own + makes local things", async ({ url, browser, fail, note }) => {
   await seed(url, "SEC");
@@ -22,7 +22,7 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
   const held = (id) => mockEval(`return onServer(${J(id)}, () => ({ chats: Object.keys(chats), boards: Object.keys(boards), groups: groups.map((g) => g.id) }));`, url);
   const asked = async () => !!await page.locator("main.board-choice, .board-choice-box, .dialog[role=dialog]").count();
   await page.waitForSelector(`${sec} .side-row`);
-  const local0 = await held("local"), localRows = (await sideSeen(page)).outline;
+  const local0 = await held("local"), localRows = (await sideSeen(page, "local")).outline;
 
   /** One make from a "+": the menu's item, the call it must make, and where the new thing must be. kind: "chats" |
    *  "boards" | "groups"; want: the call's body, in part. Answers the id the server gave the thing. */
@@ -31,7 +31,7 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
     await sideMenu(page, root, button, item);
     if (!await until(() => posts().length === n + 1 && posts()[n].status !== undefined, 10000)) { fail(`${name}: ${posts().length - n} calls made a thing, not one: ${J(posts().slice(n).map((c) => `${c.method} ${c.path}`))}`); return ""; }
     const c = posts()[n];
-    if (c.path !== `${ON}/${kind}`) fail(`${name}: the call went to ${c.path}, not ${ON}/${kind}`);
+    if (c.server !== STUDIO || c.path !== `/api/${kind}`) fail(`${name}: the call went to ${c.server} ${c.path}, not ${STUDIO} /api/${kind}`);
     for (const [k, v] of Object.entries(want)) if (J(c.body?.[k]) !== J(v)) fail(`${name}: the call's body has ${k} ${J(c.body?.[k])}, not ${J(v)}: ${J(c.body)}`);
     if (c.body && "server" in c.body) fail(`${name}: the call's body names a server: ${J(c.body)}`);
     if (c.status !== 200) fail(`${name}: the call was answered ${c.status}`);
@@ -67,7 +67,7 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
   await placed("a group from a group", "  group New group");
   // the section's group with the id of a local group: made there, and the local group has nothing new
   await make("a chat from the group that has a local group's id", groupHead("Renders"), "New in Renders", "Chat", "chats", { group: "g_shop" });
-  if (J((await sideSeen(page)).outline) !== J(localRows)) fail(`a make in Studio Mac's group g_shop changed the local part: ${J((await sideSeen(page)).outline.filter((x) => !localRows.includes(x)))}`);
+  if (J((await sideSeen(page, "local")).outline) !== J(localRows)) fail(`a make in Studio Mac's group g_shop changed the local part: ${J((await sideSeen(page, "local")).outline.filter((x) => !localRows.includes(x)))}`);
   // a chat on a board of the section
   await make("a chat on a board of the section", page.locator(`${sec} .side-row.is-board`, { has: page.locator(".side-name", { hasText: "Storyboard" }) }), "New chat on this board", undefined, "chats", { board: "b_arch" });
 
@@ -80,7 +80,7 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
     const dialog = page.locator(".dialog[role=dialog]");
     if (!await until(async () => (await dialog.textContent().catch(() => "")).includes(SAID), 10000)) fail(`${name}: the page does not show the server's sentence: "${await dialog.textContent().catch(() => "")}"`);
     await until(() => posts()[n]?.status !== undefined, 5000); // (a call is heard of a moment after it was made)
-    if (posts()[n]?.path !== `${ON}/${kind}` || posts()[n]?.status !== 409) fail(`${name}: the call was ${J(posts()[n])}`);
+    if (posts()[n]?.server !== STUDIO || posts()[n]?.path !== `/api/${kind}` || posts()[n]?.status !== 409) fail(`${name}: the call was ${J(posts()[n])}`);
     await dialog.locator("button", { hasText: "Close" }).click();
     if (J(await held(STUDIO)) !== J(before) || J(await held("local")) !== J(local0)) fail(`${name}: something was made all the same`);
     if (J((await sideSeen(page, STUDIO)).outline) !== J(rows)) fail(`${name}: the section changed: ${J((await sideSeen(page, STUDIO)).outline.filter((x) => !rows.includes(x)))}`);
@@ -96,17 +96,17 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
     await page.locator(".side-head .menu .menu-item", { hasText: item }).click();
     if (!await until(() => posts().length === n + 1 && posts()[n].status !== undefined, 10000)) { fail(`${name}: ${posts().length - n} calls made a thing`); continue; }
     const c = posts()[n];
-    if (c.path !== `/api/${kind}` || c.status !== 200) fail(`${name}: the call was ${c.method} ${c.path}, answered ${c.status}`);
+    if (c.server !== "local" || c.path !== `/api/${kind}` || c.status !== 200) fail(`${name}: the call was ${c.method} ${c.path}, answered ${c.status}`);
     for (const [k, v] of Object.entries(want)) if (J(c.body?.[k]) !== J(v)) fail(`${name}: the call's body has ${k} ${J(c.body?.[k])}, not ${J(v)}`);
     if (c.body && "server" in c.body) fail(`${name}: the call's body names a server: ${J(c.body)}`);
     if (await asked()) fail(`${name}: the page asks where the thing should live`);
     const after = await held("local");
     if (after[kind].length !== before[kind].length + 1) fail(`${name}: this computer has ${after[kind].length - before[kind].length} new ${kind}`);
-    if (kind !== "chats") { await page.locator(".side-tree input.name-input").waitFor({ timeout: 10000 }).catch(() => fail(`${name}: the new row is not in rename mode`)); if (await page.locator(".side-section input.name-input").count()) fail(`${name}: the new row is in a section`); await page.keyboard.press("Escape"); }
+    if (kind !== "chats") { await page.locator(".side-section[data-server='local'] input.name-input").waitFor({ timeout: 10000 }).catch(() => fail(`${name}: the new row is not in rename mode in this computer's section`)); if (await page.locator(".side-section:not([data-server='local']) input.name-input").count()) fail(`${name}: the new row is in another section`); await page.keyboard.press("Escape"); }
   }
   if (J(await held(STUDIO)) !== J(studio0)) fail("the sidebar's own + made something on Studio Mac");
 
   for (const e of errors) fail(`page error: ${e}`);
   await ctx.close();
-  note(`${posts().filter((c) => c.path.startsWith(ON) && c.status === 200).length} things made on Studio Mac by calls under ${ON}/, 3 refused with the server's sentence and nothing made, 3 made on this computer by the sidebar's own +; no question, no server in a body`);
+  note(`${posts().filter((c) => c.server === STUDIO && c.status === 200).length} things made on Studio Mac by calls to that server, 3 refused with the server's sentence and nothing made, 3 made on this computer by the sidebar's own +; no question, no server in a body`);
 });

@@ -1,5 +1,7 @@
 // The Servers dialog: the list of servers this app connects to, with add, edit, remove,
 // "Test connection" and the fingerprint of a self-signed certificate to compare and accept.
+// This computer is its first row: nothing of it is typed or edited, and it has the owner's things
+// instead (restart the server, open its log, the state of its MCP listener, a new try after a start that failed).
 // The sidebar's foot holds the button, which renders the dialog itself. Everything another
 // server said (version, detail, message, agents, fingerprints) is shown as plain text.
 import React, { useEffect, useRef, useState } from "react";
@@ -8,8 +10,11 @@ import { useStore, getState, setState } from "./store.ts";
 import { confirm } from "./Dialogs.tsx";
 import { entryRemoved } from "./conn.ts";
 import { serversApi, type ServerPatch } from "./serversapi.ts";
-import { anyNotConnected, formError, formView, heldResult, insertServer, removeText, resultHeading, rowActions, rowResult, serversOf, stateLabel, stepText,
+import { anyNotConnected, formError, formView, heldResult, insertServer, mcpLine, removeText, resultHeading, rowActions, rowResult, serversOf, stateLabel, stepText,
   type HeldResult, type ServerForm as Form, type ServerView, type TestResult } from "./logic/servers.ts";
+import { appCall } from "./api.ts";
+import { localExtra } from "./logic/localsection.ts";
+import { inDesktopApp, openServerLog, pageVersion, restartServer, startAgain } from "./version.ts";
 import "./servers.css";
 
 const EMPTY: Form = { name: "", address: "", secret: "", selfSigned: false, pin: "" };
@@ -55,6 +60,7 @@ export function ServersDialog(): React.JSX.Element | null {
   // n counts the forms opened, so that a second one starts from its own values.
   const [open, setOpen] = useState<{ form: Form; n: number } | null>(() => (dlg?.form ? { form: dlg.form, n: 0 } : null));
   const [err, setErr] = useState("");
+  const [mcp, setMcp] = useState(""); // the state of this computer's MCP listener, read when the dialog opens
   const close = () => { setOpen(null); setState({ serversDialog: null }); };
   // A form the dialog was opened with is taken once: it stays in this component alone.
   useEffect(() => {
@@ -67,6 +73,13 @@ export function ServersDialog(): React.JSX.Element | null {
   useEffect(() => {
     if (!dlg) return;
     serversApi.list().then(listed, (e) => setErr(said(e)));
+  }, [!dlg]);
+  // This computer's MCP listener, which only its owner can read (the app runs the server's status command). Nothing is shown when it cannot be read.
+  useEffect(() => {
+    if (!dlg) return;
+    let live = true;
+    appCall("owner.status").then((r) => { if (live) setMcp(mcpLine(r)); }, () => { if (live) setMcp(""); });
+    return () => { live = false; };
   }, [!dlg]);
   // The focus goes back to what had it when the dialog opened, if that is still there.
   useEffect(() => {
@@ -95,7 +108,7 @@ export function ServersDialog(): React.JSX.Element | null {
             {notice && <div className="servers-notice">{notice}</div>}
             {err && <div className="dialog-err">{err}</div>}
             <div className="servers-list">
-              {servers.map((v) => <ServerRow key={v.id} v={v} onEdit={(x) => setOpen((o) => ({ form: editForm(x), n: (o?.n ?? 0) + 1 }))} />)}
+              {servers.map((v) => <ServerRow key={v.id} v={v} mcp={v.local ? mcp : ""} onEdit={(x) => setOpen((o) => ({ form: editForm(x), n: (o?.n ?? 0) + 1 }))} />)}
             </div>
             <div className="dialog-actions">
               <button className="btn sm" onClick={close}>Close</button>
@@ -130,8 +143,27 @@ function Result({ ok, message, step, detail, version, agents, accept, pinned }: 
   );
 }
 
-/** One entry. result = a test's answer to start with. */
-export function ServerRow({ v, onEdit, result = null }: { v: ServerView; onEdit?: (v: ServerView) => void; result?: TestResult | null }): React.JSX.Element {
+/** The owner's things of this computer's row: what its section says of a start that failed or a restart (logic/localsection.ts),
+ *  the state of its MCP listener, and the buttons. "Restart server" is always offered; "Retry" after a start that failed. */
+function LocalRow({ v, mcp }: { v: ServerView; mcp: string }): React.JSX.Element {
+  const restart = useStore((s) => s.restart);
+  const x = localExtra(v, restart, pageVersion(), inDesktopApp());
+  return (
+    <>
+      {x.line && <div className="servers-line">{x.line}</div>}
+      {x.reason && <pre className="servers-reason">{x.reason}</pre>}
+      {mcp && <div className="servers-line">{mcp}</div>}
+      <div className="servers-row-actions">
+        <button className="btn sm" disabled={restart.phase === "restarting"} onClick={restartServer}>Restart server</button>
+        {x.again === "start" && <button className="btn sm primary" onClick={startAgain}>Retry</button>}
+        {inDesktopApp() && <button className="btn sm" onClick={openServerLog}>Open server log</button>}
+      </div>
+    </>
+  );
+}
+
+/** One entry. result = a test's answer to start with. mcp = the line on this computer's MCP listener (its row only). */
+export function ServerRow({ v, onEdit, result = null, mcp = "" }: { v: ServerView; onEdit?: (v: ServerView) => void; result?: TestResult | null; mcp?: string }): React.JSX.Element {
   // The answer is kept with the state the entry had when it came, and dropped once the entry is in another.
   const [held, setHeld] = useState<HeldResult | null>(() => (result ? { result, state: v.state } : null));
   const state = useRef(v.state);
@@ -145,7 +177,7 @@ export function ServerRow({ v, onEdit, result = null }: { v: ServerView; onEdit?
     setBusy(true); setErr("");
     try { await f(); } catch (e) { setErr(said(e)); } finally { setBusy(false); }
   };
-  // A test of the entry as saved; the local server reads the certificate before it sends anything.
+  // A test of the entry as saved; the app reads the certificate before it sends anything.
   const test = () => attempt(async () => { const res = await serversApi.testSaved(v.id); setHeld(res ? { result: res, state: state.current } : null); });
   const accept = (fingerprint: string) => attempt(async () => {
     const a = await serversApi.accept(v.id, fingerprint);
@@ -170,7 +202,7 @@ export function ServerRow({ v, onEdit, result = null }: { v: ServerView; onEdit?
         <span className={`servers-state ${tone}`}>{stateLabel(v.state)}</span>
       </div>
       {v.address && <div className="servers-line servers-addr">{v.address}</div>}
-      {v.detail && <div className="servers-line">{v.detail}</div>}
+      {v.detail && !v.local && <div className="servers-line">{v.detail}</div>}
       {v.version && <div className="servers-line">Version {v.version}</div>}
       {agents.length > 0 && <div className="servers-line">Agents: {agents.join(", ")}</div>}
       {!shown.ownCert ? null : v.state === "certificate_changed" ? (
@@ -181,6 +213,7 @@ export function ServerRow({ v, onEdit, result = null }: { v: ServerView; onEdit?
       ) : v.pin && <div className="servers-line">Fingerprint <span className="servers-fp">{v.pin}</span></div>}
       {r && <Result ok={r.ok} message={resultHeading(shown, r.ok)} step={shown.step} detail={shown.detail} version={shown.version} agents={shown.agents} accept={fp} pinned={shown.pinned} />}
       {err && <div className="dialog-err">{err}</div>}
+      {v.local && <LocalRow v={v} mcp={mcp} />}
       {(acts.length > 0 || fp) && (
         <div className="servers-row-actions">
           {fp ? <button className="btn sm primary" disabled={busy} onClick={() => accept(fp)}>Accept fingerprint</button>
@@ -238,7 +271,7 @@ export function ServerForm({ initial, onClose, result = null }: { initial: Form;
       const a = sent.id ? await serversApi.edit(sent.id, patchOf(sent, initial), force) : await serversApi.add(sent, force);
       answered(a?.server);
       if (a?.saved) return done();
-      // The local server ran the test itself, and it did not pass.
+      // The app ran the test itself, and it did not pass.
       setTested(sent); setR(a?.result ?? null);
       if (!a?.result) setErr("The server was not saved.");
       setBusy(false);

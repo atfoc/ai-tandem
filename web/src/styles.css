@@ -145,7 +145,6 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line-2);
 .hint { font-size: 11px; color: var(--faint); }
 
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; white-space: nowrap; padding-right: 6px; }
-.offline { color: var(--warn); font-size: 12px; }
 .row-gap { display: flex; gap: 8px; }
 .grow { flex: 1; }
 .mono { font-family: var(--mono); font-size: 11px; }
@@ -541,7 +540,7 @@ button.split-row { cursor: pointer; }
 .side { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); min-height: 0; }
 .side-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 8px 14px; min-height: 46px; }
 .side-head .brand { flex: 1; min-width: 0; overflow: hidden; } /* in a narrow sidebar the name gives way to the notice and the two controls */
-.side-head .brand svg, .side-head .offline { flex: none; }
+.side-head .brand svg { flex: none; }
 .brand-name { overflow: hidden; text-overflow: ellipsis; }
 .side-tree { flex: 1; overflow-y: auto; padding: 2px 6px 16px; }
 .side-loose, .side-group { border-radius: 8px; padding: 1px 0; }
@@ -588,8 +587,6 @@ button.split-row { cursor: pointer; }
 .side-board-icon { width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--accent); }
 .side-board-chats { position: relative; }
 .side-board-chats::before { content: ""; position: absolute; left: 21px; top: 0; bottom: 6px; width: 1px; background: var(--line-2); }
-.side-addgroup { display: flex; align-items: center; gap: 6px; margin-top: 10px; width: 100%; border: 1px dashed var(--line-2); background: none; color: var(--faint); border-radius: 7px; padding: 5px 10px; font-size: 12px; }
-.side-addgroup:hover { color: var(--accent); border-color: var(--accent); }
 
 .board-panel { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); }
 .board-panel .chat-head-sub .board-icon { vertical-align: -2px; color: var(--accent); }
@@ -625,13 +622,6 @@ body.resizing iframe { pointer-events: none; }
 .side-row.st-stopped .side-sub, .side-row.st-error .side-sub { color: var(--danger); }
 .side-group-head.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .side-err { color: var(--danger); font-size: 11.5px; padding: 0 8px 4px 44px; }
-/* the version banner after an update (version.ts) */
-.side-update { display: flex; align-items: flex-start; gap: 4px; padding: 8px 6px 8px 14px; border-top: 1px solid var(--line); background: var(--warn-soft); font-size: 12px; color: var(--text); }
-.side-update-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
-.side-update-text { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; line-height: 1.4; }
-.side-update-text code, .side-update-path { font: 11px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; user-select: text; }
-.side-update-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.side-update-x { flex: none; width: 22px; height: 22px; font-size: 15px; }
 .side-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 7px 10px 7px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); user-select: none; }
 .side-archived { flex: 1 0 auto; display: flex; align-items: center; gap: 8px; white-space: nowrap; cursor: pointer; }
 /* the theme's picker: one button, and its menu, which opens upward. On a line of its own in a narrow sidebar it stays

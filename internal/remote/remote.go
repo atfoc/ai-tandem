@@ -1,6 +1,6 @@
-// Package remote holds what remote access keeps in the data folder (the configuration, the secret,
-// the key and certificate, the instance id), the set-up that makes them and the start's check.
-// It never binds a port: the listener is in internal/server.
+// Package remote holds what a server's client access keeps in the data folder (the
+// configuration, the secret, the key and certificate, the instance id), the set-up that makes
+// them and the start's check. It never binds a port: the listener is in internal/server.
 package remote
 
 import (
@@ -40,7 +40,7 @@ func FilesIn(root string) Files {
 	}
 }
 
-// Config is remote.json. Its existence turns remote access on.
+// Config is remote.json. A server starts only when it exists: it is what the set-up makes.
 type Config struct {
 	Port  int      `json:"port"`
 	Names []string `json:"names"`

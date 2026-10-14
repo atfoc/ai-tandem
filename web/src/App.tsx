@@ -21,6 +21,8 @@ import { branchKey } from "./logic/branches.ts";
 import { isNewChatKey, newChatPlace } from "./logic/newchatwhere.ts";
 import { reachable } from "./logic/sections.ts";
 import { serverOfKey } from "./logic/keys.ts";
+import { localOf } from "./logic/localsection.ts";
+import { pageVersion } from "./version.ts";
 import { MAIN, UNGROUPED } from "./types.ts";
 
 export function App() {
@@ -71,7 +73,7 @@ function Grouped() {
   const viewed = useStore((s) => (sel.chat ? viewedBranch(s, sel.chat) : MAIN));
   const board = useStore((s) => (sel.board ? s.boards[sel.board] : undefined));
   const panel = useStore((s) => s.panel);
-  const connecting = useStore((s) => s.role === "connecting" && !s.connected);
+  const connecting = useStore((s) => !s.connected && localOf(s.servers)?.state === "connecting"); // (this computer's server has not answered yet; the window does not wait for it, and says so when it is not there)
   const sideHidden = useStore((s) => s.sideHidden);
 
   let main: React.ReactNode;
@@ -125,10 +127,10 @@ function Side() {
 
 /** What a hidden sidebar leaves at the window's left edge: a narrow rail with the one control that shows it again.
  *  The views beside it have bars of different heights and three have none, so the control has a column of its own.
- *  It has a dot while the sidebar has a notice that shows nowhere else: the page is not connected, or the update
- *  banner is up. */
+ *  It has a dot while the sidebar has a notice that shows nowhere else: this computer's section has something to say
+ *  (its server is not connected, or runs another build than the app, or a restart runs or failed). */
 function SideRail() {
-  const notice = useStore(sideNotice);
+  const notice = useStore((s) => sideNotice(s, pageVersion()));
   return (
     <div className="side-rail">
       <button className="icon-btn side-show" title={`Show sidebar (${sideKeyName(navigator.platform)})`} aria-label={notice ? "Show sidebar: it has a notice" : "Show sidebar"}
@@ -175,16 +177,20 @@ function BoardBar({ board, chatOpen }: { board: string; chatOpen: boolean }) {
   );
 }
 
+/** The home screen's sentence on agents while this computer's server is not connected: what agents it has is not known now. */
+const HOME_AWAY = "This computer's server is not connected: chats can be started when it is back.";
+
 function Home() {
   const agents = useStore((s) => usableAgents(s));
+  const here = useStore((s) => s.connected); // things are made on this computer: its server has to be connected
   return (
     <main className="home">
       <div className="home-glyphs"><ChatIcon size={26} /><BoardIcon size={26} /></div>
       <h2>Start a chat or a whiteboard</h2>
-      <p>{homeAgentsText(agents)} A whiteboard is an Excalidraw board with its own chats that can see and draw on it.</p>
+      <p>{here ? homeAgentsText(agents) : HOME_AWAY} A whiteboard is an Excalidraw board with its own chats that can see and draw on it.</p>
       <div className="row-gap">
-        <button className="btn primary" onClick={() => void newChat({ group: UNGROUPED })}><ChatIcon /> New chat</button>
-        <button className="btn" onClick={() => addBoard(UNGROUPED)}><BoardIcon /> New whiteboard</button>
+        <button className="btn primary" disabled={!here} onClick={() => void newChat({ group: UNGROUPED })}><ChatIcon /> New chat</button>
+        <button className="btn" disabled={!here} onClick={() => addBoard(UNGROUPED)}><BoardIcon /> New whiteboard</button>
       </div>
     </main>
   );

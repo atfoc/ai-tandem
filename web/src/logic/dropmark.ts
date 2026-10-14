@@ -40,7 +40,7 @@ export function dropMark(m: DropMark, e: DropEvent): DropMark {
 }
 
 /** Whether a zone or a header of a server takes what is dragged: only what is on that same server. Nothing is moved
- *  from one section to another, or between a section and the local part: such a drop is not offered. A drag that did
+ *  from one section to another, or between this computer's section and another: such a drop is not offered. A drag that did
  *  not begin in this window (server null: another window of the app) is judged when it is dropped, by what it carries. */
 export const takesFrom = (m: Pick<DropMark, "server">, server: string): boolean => m.server === null || m.server === server;
 

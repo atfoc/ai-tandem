@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { installFake } from "./fixtures/faketransport.ts";
 import {
   IMAGES_MESSAGE_BYTES, IMAGES_PER_MESSAGE, IMAGE_MAX_BYTES, IMAGE_TYPES, PASTED_NAME, UPLOADING,
   checkFiles, fileType, fromDesktop, goneLine, imageUrl, imagesBytes, imagesHold, imagesOff, noImagesLine, noImagesSend, overLimit, pastedImages, pastedName, plainImage, refusedLine,
@@ -180,19 +181,21 @@ test("a list of images has each once, by its id; an image is named by its four f
   assert.deepEqual(Object.keys(plainImage({ size: 1, type: "image/png", name: "n", id: "i" })), ["id", "name", "type", "size"]);
 });
 
-test("the address of an image is the top-level chat's", () => {
-  assert.equal(imageUrl("c_1", "ab12"), "/api/chats/c_1/images/ab12");
+installFake(); // (the address of an image is the transport's)
+
+test("the address of an image is the transport's address of a picture: this computer's server, the chat's own id, the image", () => {
+  assert.equal(imageUrl("c_1", "ab12"), "aiwb-picture://p/local/c_1/ab12");
 });
 
-test("the address of an image of a section's chat is under that entry, with the chat's own id there", () => {
+test("the address of an image of a section's chat is for that entry, with the chat's own id there", () => {
   const id = "0f".repeat(32);
-  assert.equal(imageUrl("s_1~c_1", "ab12"), "/api/on/s_1/chats/c_1/images/ab12");
-  assert.equal(imageUrl("s_0123456789ab~c_1", id), `/api/on/s_0123456789ab/chats/c_1/images/${id}`);
-  assert.equal(imageUrl("s_2~c_1", "ab12"), "/api/on/s_2/chats/c_1/images/ab12", "the same chat id in another section is another chat");
-  assert.ok(!imageUrl("s_1~c_1", "ab12").includes("~"), "the page's key is not on the wire");
+  assert.equal(imageUrl("s_1~c_1", "ab12"), "aiwb-picture://p/s_1/c_1/ab12");
+  assert.equal(imageUrl("s_0123456789ab~c_1", id), `aiwb-picture://p/s_0123456789ab/c_1/${id}`);
+  assert.equal(imageUrl("s_2~c_1", "ab12"), "aiwb-picture://p/s_2/c_1/ab12", "the same chat id in another section is another chat");
+  assert.ok(!imageUrl("s_1~c_1", "ab12").includes("~"), "the page's key is not in the address");
   // each part is written as one path segment
-  assert.equal(imageUrl("c 1", "a/b"), "/api/chats/c%201/images/a%2Fb");
-  assert.equal(imageUrl("s 1~c 1", "a/b"), "/api/on/s%201/chats/c%201/images/a%2Fb");
+  assert.equal(imageUrl("c 1", "a/b"), "aiwb-picture://p/local/c%201/a%2Fb");
+  assert.equal(imageUrl("s 1~c 1", "a/b"), "aiwb-picture://p/s%201/c%201/a%2Fb");
 });
 
 test("over the limit: a message of more images than one takes, or of more bytes together, cannot be sent, and says what to do", () => {
@@ -258,8 +261,8 @@ test("a chat's composer takes pasted images and has the attach button", () => {
   // the box asks the paste rule only where images are taken, and a paste of images is consumed
   assert.ok(box.includes("if (onImages) {") && box.includes("if (images.length) { e.preventDefault(); onImages(images); return; }"));
   assert.ok(box.includes("rich: types.includes(\"text/html\") || types.includes(\"text/rtf\")"));
-  // the desktop app's own dialog when the app has one, else the browser's picker
-  assert.ok(strip.includes("if (typeof window.aiwbDesktop?.pickImages === \"function\") return fromDesktop(await window.aiwbDesktop.pickImages());"));
+  // the app's own dialog when the transport has one, else the browser's picker
+  assert.ok(strip.includes("if (t.pickImages) return fromDesktop(await t.pickImages());"));
   assert.ok(strip.includes("input.type = \"file\"; input.multiple = true; input.accept = IMAGE_TYPES.join(\",\");"));
 });
 

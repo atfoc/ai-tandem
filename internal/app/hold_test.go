@@ -15,7 +15,9 @@ import (
 func (e *env) page(id string) *bridgetest.Page {
 	e.t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/events", e.a.Bridge.ServeSSE)
+	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
+		e.a.Bridge.Serve(w, r, r.URL.Query().Get("client"), nil)
+	})
 	srv := httptest.NewServer(mux)
 	e.t.Cleanup(srv.Close)
 	p := bridgetest.Connect(e.t, srv.URL, id)

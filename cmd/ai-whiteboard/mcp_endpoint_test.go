@@ -1,28 +1,21 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
-// The app must answer MCP on the hidden test-only port override, and never on the real 6006 in
+// The server must answer MCP on the hidden test-only port override, and never on the real 6006 in
 // tests (there is no user-facing port flag; production is fixed at 6006, plan D10).
 func TestMCPEndpointAnswersOnOverridePort(t *testing.T) {
 	serverTest(t, "TestMCPPortSetting (this package)", "TestMCPHandlerRoutesAndHost (internal/server)")
 	in := newInstance(t)
-	if got := in.run(t, "launch"); got != in.url+"\n" {
-		t.Fatalf("launch printed %q", got)
-	}
-	in.hello(t)
+	in.launchJSON(t, "launch")
 
 	// initialize is permissive with no credential (D8); the URL spelling is the advertised
 	// localhost one.
@@ -58,6 +51,38 @@ func TestMCPEndpointAnswersOnOverridePort(t *testing.T) {
 			t.Fatalf("GET /mcp status %d, want 405", resp.StatusCode)
 		}
 	}
+
+	// `status` reports the listener's identity (its port, its URL, that it is up) and the last
+	// contact per chat; the MCP port is no place to read it: nothing else is served there.
+	var status struct {
+		Running struct {
+			MCP struct {
+				Listener struct {
+					Port int
+					URL  string
+					Up   bool
+				}
+				Chats []any
+			}
+		}
+	}
+	jsonOut := in.run(t, "status", "-json")
+	if err := json.Unmarshal([]byte(jsonOut), &status); err != nil {
+		t.Fatalf("status -json: %v in %s", err, jsonOut)
+	}
+	l := status.Running.MCP.Listener
+	if l.Port != in.mcpPort || l.URL != in.mcpURL || !l.Up || status.Running.MCP.Chats == nil {
+		t.Fatalf("status -json: the MCP listener %+v, chats %v; want port %d, %s, up", l, status.Running.MCP.Chats, in.mcpPort, in.mcpURL)
+	}
+	for _, path := range []string{"/api/mcp/status", "/api/state", "/"} {
+		resp, err := http.Get("http://127.0.0.1:" + strconv.Itoa(in.mcpPort) + path)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				t.Fatalf("GET %s on the MCP port: status 200", path)
+			}
+		}
+	}
 }
 
 // A second instance must fail fast when the MCP port is taken: it names the port, the likely
@@ -65,69 +90,30 @@ func TestMCPEndpointAnswersOnOverridePort(t *testing.T) {
 // (plan D11).
 func TestMCPPortConflictFailsFast(t *testing.T) {
 	serverTest(t)
-	bin := buildBinary(t)
-	mcpPort := freePort(t)
-	portA, portB := freePort(t), freePort(t)
-	dirA, dirB := t.TempDir(), t.TempDir()
-	env := serverEnv(t, mcpPort)
-	claude := noClaude(t)
+	a := newInstance(t)
+	a.launchJSON(t, "launch")
+	aPid := a.hello(t).Pid
 
-	start := func(dir string, port int) (*exec.Cmd, *bytes.Buffer) {
-		t.Helper()
-		cmd := exec.Command(bin, "serve", "-home", dir, "-port", strconv.Itoa(port), "-client", "",
-			"-claude", claude, "-cursor", claude, "-pi", claude)
-		cmd.Env = env
-		var stderr bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &stderr, &stderr
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		return cmd, &stderr
+	// B: a data folder and a client port of its own, the same MCP port.
+	b := newInstance(t)
+	b.mcpPort = a.mcpPort
+	b.vars = append(b.vars, "AIWB_MCP_PORT="+strconv.Itoa(a.mcpPort))
+
+	stdout, stderr, code := b.ends(t, "serve")
+	if code == 0 || stdout != "" {
+		t.Fatalf("the second instance started even though the MCP port was taken: code %d, stdout %q", code, stdout)
 	}
-
-	a, _ := start(dirA, portA)
-	aURL := fmt.Sprintf("http://127.0.0.1:%d", portA)
-	t.Cleanup(func() {
-		stop := exec.Command(bin, "stop", "-home", dirA, "-port", strconv.Itoa(portA))
-		stop.Env = env
-		stop.Run()
-		a.Process.Kill()
-	})
-	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		if _, ok := helloOf(httpClient(), aURL); ok {
-			break
-		} else if time.Now().After(deadline) {
-			t.Fatal("the first instance did not answer within 20 s")
+	for _, want := range []string{strconv.Itoa(a.mcpPort), "another AI Whiteboard instance", "another program", "free port"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("conflict message %q does not contain %q", stderr, want)
 		}
 	}
-	aPid := func() int {
-		h, _ := helloOf(httpClient(), aURL)
-		return h.Pid
-	}()
-
-	b, stderr := start(dirB, portB)
-	done := make(chan error, 1)
-	go func() { done <- b.Wait() }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("the second instance started even though the MCP port was taken")
-		}
-	case <-time.After(30 * time.Second):
-		b.Process.Kill()
-		t.Fatal("the second instance did not exit after the MCP port conflict")
-	}
-	msg := stderr.String()
-	for _, want := range []string{strconv.Itoa(mcpPort), "another AI Whiteboard instance", "another program", "free port"} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("conflict message %q does not contain %q", msg, want)
-		}
-	}
-
-	if _, err := os.Stat(filepath.Join(dirB, "server.json")); !os.IsNotExist(err) {
+	b.noServerFiles(t)
+	if _, err := os.Stat(filepath.Join(b.dir, "server.json")); !os.IsNotExist(err) {
 		t.Fatalf("the failed instance wrote server.json (stat err %v)", err)
 	}
-	if h, ok := helloOf(httpClient(), aURL); !ok || h.Pid != aPid {
-		t.Fatalf("the running instance was disturbed: hello=%+v ok=%v, want pid %d", h, ok, aPid)
+	if got := a.hello(t).Pid; got != aPid {
+		t.Fatalf("the running instance was disturbed: pid %d, want %d", got, aPid)
 	}
+	a.helloOK(t, a.secret)
 }

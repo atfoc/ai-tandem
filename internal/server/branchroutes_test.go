@@ -276,7 +276,7 @@ func TestStateRoute(t *testing.T) {
 		}
 	}
 	// A GET: no client header needed.
-	code, out := e.doAs("", "GET", "/api/state", "")
+	code, out := e.do("GET", "/api/state", "")
 	if code != 200 {
 		t.Fatalf("state: %d %s", code, out)
 	}
@@ -492,7 +492,7 @@ func TestPatchFreshFork(t *testing.T) {
 	go func() {
 		req, _ := http.NewRequest("PATCH", e.url+fork, strings.NewReader(`{"model":"haiku"}`))
 		req.Header.Set(ClientHeader, clientID)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := e.send(req, clientID)
 		if err != nil {
 			done <- answer{body: err.Error()}
 			return

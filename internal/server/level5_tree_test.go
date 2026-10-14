@@ -247,11 +247,8 @@ func TestLevel5PageOnlyEventsReachNoClient(t *testing.T) {
 	// A list event after them: everyone is sent it, and the clients nothing before it.
 	l5Want(t, s.p, 200, "POST", "/api/groups", `{"name":"After"}`)
 	evs := s.reach(s.all()...)
-	if got := l5Types(evs[0]); !slices.Equal(got, append(slices.Clone(l5PageOnly), "groups", "defaults")) {
-		t.Errorf("the owner's page was sent %v", got)
-	}
-	for i, c := range s.all()[1:] {
-		if got := l5Types(evs[i+1]); !slices.Equal(got, []string{"groups", "defaults"}) {
+	for i, c := range s.all() {
+		if got := l5Types(evs[i]); !slices.Equal(got, []string{"groups", "defaults"}) {
 			t.Errorf("%s was sent %v", s.who(c), got)
 		}
 	}
@@ -368,13 +365,8 @@ func TestLevel5SnapshotIsTheWholeTree(t *testing.T) {
 		}
 	}
 
-	// Never in it: the server's own server list, the lists and libraries of the servers it
-	// connects to, its sections, its data folder. The owner's page has them.
-	for _, f := range []string{"servers", "lists", "libraries", "dataDir"} {
-		if l5Field(t, owner, f) == "" {
-			t.Errorf("the owner's state has no %q", f)
-		}
-	}
+	// Never in it: a server list, the lists and libraries of other servers, sections, the data
+	// folder.
 	for _, raw := range []string{snap, state} {
 		for _, f := range []string{"servers", "lists", "libraries", "sections", "dataDir"} {
 			if l5Field(t, raw, f) != "" {

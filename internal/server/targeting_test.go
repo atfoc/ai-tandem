@@ -290,7 +290,7 @@ func TestAConnectLeavesTheFollowsOfOthers(t *testing.T) {
 	id, a := e.working(sp)
 	open(t, p, id)
 	q := e.page("Q")
-	if got := e.s.Bridge.Followers(editorbridge.Chat(id)); !slices.Equal(got, []string{"P"}) {
+	if got := e.s.Bridge.Followers(editorbridge.Chat(id)); !slices.Equal(got, []string{idOf("P")}) {
 		t.Fatalf("followers after another page connected: %v", got)
 	}
 	emit(t, a, agent.Event{Kind: agent.EvText, Text: "more"})

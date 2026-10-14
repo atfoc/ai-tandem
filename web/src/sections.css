@@ -1,7 +1,8 @@
-/* The sections of the sidebar: one per remote server of the server list, under the local part (Sidebar.tsx
-   SectionNode). A section is not a group: its head is set apart by a line above it, names the server and says
-   its state, and has no menu. Its rows are the rows of the local part. */
+/* The sections of the sidebar: one per server of the server list, this computer's first (Sidebar.tsx SectionNode).
+   A section is not a group: its head is set apart by a line above it (the first has none), names the server and says
+   its state, and has no menu. */
 .side-section { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--line); }
+.side-section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .side-section-head { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 2px 0 4px; border-radius: 6px; font-size: 12.5px; font-weight: 650; color: var(--text); cursor: pointer; user-select: none; }
 .side-section-head:hover { background: var(--hover); }
 .side-section-head:hover .side-hover, .side-section-head.hold .side-hover { visibility: visible; }
@@ -16,3 +17,8 @@
 .side-section-state.bad::before { background: var(--danger); }
 .side-section-body { padding-left: 2px; }
 .side-section-line { padding-left: 20px; }
+/* what this computer's section says besides its rows (Sidebar.tsx LocalExtras): the reason a start gave, and the owner's buttons */
+.side-section-extra { display: flex; flex-direction: column; gap: 6px; padding: 2px 4px 6px 20px; font-size: 12px; color: var(--text); }
+.side-section-extra .side-section-line { padding-left: 0; display: flex; align-items: center; gap: 6px; line-height: 1.4; }
+.side-section-reason { margin: 0; max-height: 14em; overflow: auto; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); font: 11px/1.4 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.side-section-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

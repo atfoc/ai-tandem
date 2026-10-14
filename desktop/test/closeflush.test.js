@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { FLUSH_TIMEOUT_MS, attachCloseFlush, resumeAfterCancelledQuit } = require('../lib');
+const { FLUSH_TIMEOUT_MS, attachCloseFlush } = require('../lib');
 
 const DIALOG = {
   type: 'warning',
@@ -201,118 +201,15 @@ test('before-quit is registered once per app, however many windows', async () =>
   assert.equal(f.wins[1].closes, 0);
 });
 
-test('Cmd+Q, flush that never finishes, Cancel: onQuitCancelled fires once, no quit', async () => {
+test('Cmd+Q, flush that never finishes, Cancel: no quit, no close, no reload', async () => {
   const f = fakes({ flush: () => new Promise(() => {}), responses: [0] });
-  let cancelled = 0;
-  attachCloseFlush({
-    app: f.app,
-    win: f.win,
-    dialog: f.dialog,
-    flushTimeoutMs: 20,
-    onQuitCancelled: () => cancelled++,
-  });
+  attachCloseFlush({ app: f.app, win: f.win, dialog: f.dialog, flushTimeoutMs: 20 });
   f.app.emit('before-quit');
   f.win.emit('close');
   assert.equal(await unload(f.win), false);
   assert.equal(f.dialog.shown.length, 1);
   assert.deepEqual(f.dialog.shown[0].opts, DIALOG);
-  assert.equal(cancelled, 1);
   assert.equal(f.app.quits, 0);
   assert.equal(f.win.closes, 0);
   assert.equal(f.win.webContents.reloads, 0);
-});
-
-test('a quit that goes through does not fire onQuitCancelled', async () => {
-  for (const opts of [{}, { flush: () => new Promise(() => {}), responses: [1] }]) {
-    const f = fakes(opts);
-    let cancelled = 0;
-    attachCloseFlush({
-      app: f.app,
-      win: f.win,
-      dialog: f.dialog,
-      flushTimeoutMs: 20,
-      onQuitCancelled: () => cancelled++,
-    });
-    f.app.emit('before-quit');
-    f.win.emit('close');
-    await unload(f.win);
-    assert.equal(f.app.quits, 1);
-    // The repeated quit.
-    f.app.emit('before-quit');
-    f.win.emit('close');
-    await unload(f.win);
-    assert.equal(cancelled, 0);
-  }
-});
-
-test('a cancelled close or reload does not fire onQuitCancelled', async () => {
-  const f = fakes({ flush: () => new Promise(() => {}), responses: [0, 0] });
-  let cancelled = 0;
-  attachCloseFlush({
-    app: f.app,
-    win: f.win,
-    dialog: f.dialog,
-    flushTimeoutMs: 20,
-    onQuitCancelled: () => cancelled++,
-  });
-  f.win.emit('close');
-  await unload(f.win);
-  await unload(f.win);
-  assert.equal(f.dialog.shown.length, 2);
-  assert.equal(cancelled, 0);
-});
-
-test('Cancel after a new quit began during the dialog does not fire onQuitCancelled', async () => {
-  const f = fakes({ flush: () => new Promise(() => {}) });
-  let answer;
-  f.dialog.showMessageBox = () => new Promise((r) => (answer = r));
-  let cancelled = 0;
-  attachCloseFlush({
-    app: f.app,
-    win: f.win,
-    dialog: f.dialog,
-    flushTimeoutMs: 20,
-    onQuitCancelled: () => cancelled++,
-  });
-  f.app.emit('before-quit');
-  f.win.emit('close');
-  const done = unload(f.win);
-  while (!answer) await new Promise((r) => setTimeout(r, 5));
-  f.app.emit('before-quit'); // Cmd+Q again, while the dialog is open
-  answer({ response: 0 });
-  await done;
-  assert.equal(cancelled, 0);
-  assert.equal(f.app.quits, 0);
-});
-
-test('Cancel without onQuitCancelled is fine', async () => {
-  const f = fakes({ flush: () => new Promise(() => {}), responses: [0] });
-  attachCloseFlush({ app: f.app, win: f.win, dialog: f.dialog, flushTimeoutMs: 20 });
-  f.app.emit('before-quit');
-  f.win.emit('close');
-  await unload(f.win);
-  assert.equal(f.app.quits, 0);
-});
-
-// fakeReconnector records the URLs start is called with.
-function fakeReconnector() {
-  const r = { started: [] };
-  r.start = (url) => r.started.push(url);
-  return r;
-}
-
-test('resumeAfterCancelledQuit restarts the reconnector on the open window\'s URL', () => {
-  const reconnector = fakeReconnector();
-  const win = { isDestroyed: () => false };
-  assert.equal(resumeAfterCancelledQuit({ win, url: 'http://127.0.0.1:4747/', reconnector }), true);
-  assert.deepEqual(reconnector.started, ['http://127.0.0.1:4747/']);
-});
-
-test('resumeAfterCancelledQuit does nothing without an open window or a URL', () => {
-  const reconnector = fakeReconnector();
-  const url = 'http://127.0.0.1:4747/';
-  assert.equal(resumeAfterCancelledQuit({ win: null, url, reconnector }), false);
-  assert.equal(resumeAfterCancelledQuit({ win: { isDestroyed: () => true }, url, reconnector }), false);
-  assert.equal(resumeAfterCancelledQuit({ win: { isDestroyed: () => false }, url: null, reconnector }), false);
-  assert.deepEqual(reconnector.started, []);
 });

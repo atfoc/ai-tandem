@@ -1,13 +1,13 @@
-// The sections of the sidebar: one per remote server of the server list, under the local part.
+// The sections of the sidebar: one per server of the server list, this computer's first.
 // A section's head takes its name and its state from the list's entry; its rows are drawn from
-// the server's tree, which the local server holds while that server is connected (the snapshot's
-// `sections` and the `section` event) and from nothing else. Here are the rules, with no DOM:
+// the server's tree, which the page holds while that server is connected (its snapshot and its
+// events) and from nothing else. Here are the rules, with no DOM:
 // what a section says, what the store holds of a section when its tree comes and goes, what stays
 // on screen without a tree, and the collapse the browser keeps.
 import { LOCAL_SERVER, type Board, type BranchState, type ChatView, type Defaults, type Group } from "../types.ts";
-import { inSection, serverOfKey } from "./keys.ts";
+import { serverOfKey } from "./keys.ts";
 import { branchKey, chatOfKey } from "./branches.ts";
-import { stateLabel, type ServerView } from "./servers.ts";
+import { LOCAL_ENTRY, stateLabel, type ServerView } from "./servers.ts";
 import type { Sel } from "./sel.ts";
 
 /** What the store keeps of a section's tree besides its things, which are in the store's own maps under their keys:
@@ -17,8 +17,14 @@ export type Section = { groups: Group[]; defaults: Defaults };
 /** A server's tree with the page's keys (logic/sectionwire.ts treeIn). */
 export type KeyedTree = { groups: Group[]; boards: Board[]; chats: ChatView[]; states: BranchState[]; defaults: Defaults };
 
-/** The entries that get a section, in the order of the server list: every one but this computer's. */
+/** The entries that are no part of this computer: every one but its own, in the order of the server list. Their trees are
+ *  the store's `sections`; this computer's is the store's own fields. */
 export const sectionEntries = (servers: readonly ServerView[]): ServerView[] => servers.filter((v) => !v.local && v.id !== LOCAL_SERVER);
+
+/** The entries that get a section of the sidebar: this computer's first, always there, then the others in the order of the
+ *  server list. */
+export const sidebarEntries = (servers: readonly ServerView[]): ServerView[] =>
+  [servers.find((v) => v.local || v.id === LOCAL_SERVER) ?? LOCAL_ENTRY, ...sectionEntries(servers)];
 
 // ---- what a section says
 
@@ -26,6 +32,8 @@ export const SECTION_CONNECTING = "Connecting…";
 /** The one line of a section whose server is not connected. */
 export const SECTION_AWAY = "Its chats show when the server is back.";
 export const SECTION_EMPTY = "Nothing on this server yet.";
+/** What this computer's section says of a server older than the app, in place of the other sections' "update the server on that machine". */
+export const LOCAL_TOO_OLD = "This computer's server is older than the app.";
 /** The line of a connected server whose things are all archived, while archived things are not shown. */
 export const SECTION_ARCHIVED = "Only archived things on this server.";
 
@@ -41,7 +49,7 @@ function stateWords(state: ServerView["state"]): { head: string; rest: string } 
 /** What a section shows.
  *  state: the words after the name, the server list's own for the entry's state (stateWords).
  *  tone: "ok" connected with its tree, "wait" connecting, "bad" every other state.
- *  rows: the tree is drawn (the local server holds it). Rows are decided by the tree and words by the state: the two
+ *  rows: the tree is drawn (the page holds it). Rows are decided by the tree and words by the state: the two
  *    come in separate events, in no fixed order.
  *  lines: what the body says in the place of rows, or under them: for a server that is too old that it must be
  *    updated on that machine, and the version it reports; else the one line of a server that is not connected; with
@@ -51,14 +59,14 @@ function stateWords(state: ServerView["state"]): { head: string; rest: string } 
  *  add: the head's "+" shows: things can be made on that server. */
 export type SectionView = { state: string; tone: "ok" | "wait" | "bad"; rows: boolean; lines: string[]; add: boolean };
 
-export function sectionView(v: Pick<ServerView, "state" | "version">, hasTree: boolean, empty: boolean, archived = false): SectionView {
+export function sectionView(v: Pick<ServerView, "state" | "version"> & { local?: boolean }, hasTree: boolean, empty: boolean, archived = false): SectionView {
   const waiting = v.state === "connecting" || (v.state === "connected" && !hasTree);
   const words = stateWords(v.state);
   const state = waiting ? SECTION_CONNECTING : words.head;
   const tone = waiting ? "wait" : v.state === "connected" ? "ok" : "bad";
   if (hasTree) return { state, tone, rows: true, lines: empty ? [archived ? SECTION_ARCHIVED : SECTION_EMPTY] : [], add: true };
   if (waiting) return { state, tone, rows: false, lines: [], add: false };
-  if (v.state === "too_old") return { state, tone, rows: false, lines: [words.rest, ...(v.version ? [`Version ${v.version}`] : [])], add: false };
+  if (v.state === "too_old") return { state, tone, rows: false, lines: [v.local ? LOCAL_TOO_OLD : words.rest, ...(v.version ? [`Version ${v.version}`] : [])], add: false };
   return { state, tone, rows: false, lines: [SECTION_AWAY], add: false };
 }
 
@@ -81,14 +89,19 @@ export type Things = {
   states: Record<string, BranchState>; // by branch key
   gone: Record<string, true>;
   sel: Sel;
+  connected?: boolean; // whether the page holds this computer's own tree; absent counts as held
 };
+
+/** Whether the page holds a server's tree: another server's in `sections`, this computer's when it is `connected`. */
+export const treeHeld = (s: Pick<Things, "sections" | "connected">, server: string): boolean =>
+  (server === LOCAL_SERVER ? s.connected !== false : !!s.sections[server]);
 
 /** Whether a thing is on screen: the board or the chat that is selected. */
 export const onScreen = (s: Pick<Things, "sel">, key: string): boolean => key === s.sel.board || key === s.sel.chat;
 
 const byId = <T extends { id: string }>(xs: T[]): Record<string, T> => Object.fromEntries(xs.map((x) => [x.id, x]));
 
-/** A server's tree arrives (tree), or the local server holds none of it any more (null).
+/** A server's tree arrives (tree), or the page holds none of it any more (null).
  *
  *  With a tree: it replaces everything the store had of that server. What is on screen and is not in the new tree
  *  stays, marked gone: the view says that it is no longer on that server, and no row is drawn for it.
@@ -132,14 +145,15 @@ export function withSection<S extends Things>(s: S, server: string, tree: KeyedT
   return { next: { sections, boards: nextBoards, chats: nextChats, states, gone } as Pick<S, "sections" | "boards" | "chats" | "states" | "gone">, left };
 }
 
-/** The things of sections that are no longer kept once the user has left them: what is not on screen of a section
- *  the local server holds no tree of, or that is gone from its server. A board whose edit waits to be saved stays
- *  while its section has no tree. */
-export function leftBehind(s: Things, unsaved: (board: string) => boolean = () => false): string[] {
+/** The things of servers that are no longer kept once the user has left them: what is not on screen of a server
+ *  the page holds no tree of, or that is gone from its server. A board whose edit waits to be saved stays
+ *  while its server has no tree, and so does a chat with a draft the browser keeps (a chat of this computer): the composer
+ *  that was left saves its draft at the end, which a chat the page no longer has would drop as one deleted. */
+export function leftBehind(s: Things, unsaved: (board: string) => boolean = () => false, kept: (chat: string) => boolean = () => false): string[] {
   const out: string[] = [];
-  const stale = (key: string) => inSection(key) && (!s.sections[serverOfKey(key)] || !!s.gone[key]);
-  for (const k in s.boards) if (stale(k) && !onScreen(s, k) && !(unsaved(k) && !s.sections[serverOfKey(k)])) out.push(k);
-  for (const k in s.chats) if (stale(k) && !onScreen(s, k)) out.push(k);
+  const stale = (key: string) => !treeHeld(s, serverOfKey(key)) || !!s.gone[key];
+  for (const k in s.boards) if (stale(k) && !onScreen(s, k) && !(unsaved(k) && !treeHeld(s, serverOfKey(k)))) out.push(k);
+  for (const k in s.chats) if (stale(k) && !onScreen(s, k) && !(kept(k) && !treeHeld(s, serverOfKey(k)))) out.push(k);
   return out;
 }
 
@@ -160,12 +174,9 @@ export function thingsOf(s: Pick<Things, "boards" | "chats">, server: string): s
   return out;
 }
 
-/** Whether a thing of a section can take a call now: the local server holds its server's tree, and the thing is
- *  still on that server. A thing of this computer always can. */
-export const reachable = (s: Pick<Things, "sections" | "gone">, key: string): boolean => {
-  const server = serverOfKey(key);
-  return server === LOCAL_SERVER || (!!s.sections[server] && !s.gone[key]);
-};
+/** Whether a thing can take a call now: the page holds its server's tree, this computer's included, and the thing is
+ *  still on that server. */
+export const reachable = (s: Pick<Things, "sections" | "gone" | "connected">, key: string): boolean => treeHeld(s, serverOfKey(key)) && !s.gone[key];
 
 // ---- a change of a section's groups that is shown before its server answered
 
@@ -211,18 +222,31 @@ export function withCollapsed(c: Record<string, true>, key: string, on: boolean)
   return rest;
 }
 
+/** An entry id of the server list, which as a collapse key (bare) is a section; this computer's groups are bare ids too. */
+const ENTRY_ID = /^s_[0-9a-f]{12}$/;
+
 /** The collapse without what no longer exists: a section whose entry left the server list, with its groups, and,
  *  for each server whose tree is held, a group that tree no longer has. The groups of a server whose tree is not
- *  held stay: they are not known now, and are collapsed again when the server is back. The map itself when nothing
- *  goes. */
+ *  held stay: they are not known now, and are collapsed again when the server is back. This computer's groups are
+ *  judged by its own snapshot alone (prunedLocalGroups, which leaves the entries of the list to prunedCollapsed). The map itself when nothing goes. */
 export function prunedCollapsed(c: Record<string, true>, servers: readonly ServerView[], sections: Record<string, Section>): Record<string, true> {
   const entries = new Set(sectionEntries(servers).map((v) => v.id));
   const keys = Object.keys(c).filter((k) => {
-    if (entries.has(k)) return true;                 // a section
+    if (k === LOCAL_SERVER) return true;             // this computer's section
+    if (ENTRY_ID.test(k)) return entries.has(k);     // a section
     const server = serverOfKey(k);
+    if (server === LOCAL_SERVER) return true;        // a group of this computer
     if (!entries.has(server)) return false;          // a group, or a section, of an entry that is gone
     const tree = sections[server];
     return !tree || tree.groups.some((g) => g.id === k);
   });
+  return keys.length === Object.keys(c).length ? c : Object.fromEntries(keys.map((k) => [k, true as const]));
+}
+
+/** The collapse without the groups of this computer that its server no longer has (after its snapshot); the map itself
+ *  when nothing goes. */
+export function prunedLocalGroups(c: Record<string, true>, groups: readonly Group[], servers: readonly ServerView[] = []): Record<string, true> {
+  const entries = new Set(servers.map((v) => v.id));
+  const keys = Object.keys(c).filter((k) => k === LOCAL_SERVER || ENTRY_ID.test(k) || entries.has(k) || serverOfKey(k) !== LOCAL_SERVER || groups.some((g) => g.id === k));
   return keys.length === Object.keys(c).length ? c : Object.fromEntries(keys.map((k) => [k, true as const]));
 }

@@ -10,15 +10,17 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { fakeStream } from "./fixtures/stream.ts";
 
-let source: { onmessage?: (e: { data: string }) => void } | undefined;
-(globalThis as any).EventSource = class { onmessage?: (e: { data: string }) => void; constructor() { source = this; } close() {} };
+const stream = fakeStream();
 
 const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const src = path.join(web, "src");
 const nothing = `module.exports = new Proxy({}, { get: (_, k) => (k === "__esModule" ? false : k === "clientId" ? "test" : () => {}) });`;
 const stubs: Record<string, string> = {
-  "./board.ts": nothing, "./version.ts": nothing, "./api.ts": nothing, "./fork/actions.ts": nothing,
+  "./board.ts": nothing, "./api.ts": nothing, "./fork/actions.ts": nothing,
+  // the owner's things: the page is not in the app here (its log is the app's to open)
+  "./version.ts": `export const pageVersion = () => "1.4.0"; export const inDesktopApp = () => false; export const restartServer = () => {}; export const startAgain = () => {}; export const openServerLog = () => {};`,
   "./store.ts": `
     export * from ${JSON.stringify(path.join(src, "store.ts"))};
     import { getState } from ${JSON.stringify(path.join(src, "store.ts"))};
@@ -27,7 +29,7 @@ const stubs: Record<string, string> = {
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-servers-")), "servers.mjs");
 await esbuild.build({
   stdin: {
-    contents: `export * as ui from "./Servers.tsx"; export * as store from "./store.ts"; export * as conn from "./conn.ts";
+    contents: `export * as ui from "./Servers.tsx"; export * as store from "./store.ts"; export * as conn from "./conn.ts"; export * as tr from "./transport/index.ts";
       export { createElement } from "react"; export { renderToStaticMarkup } from "react-dom/server";`,
     resolveDir: src, loader: "ts",
   },
@@ -41,12 +43,13 @@ await esbuild.build({
     },
   }],
 });
-const { ui, store, conn, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
+const { ui, store, conn, tr, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
+tr.useTransport(stream.transport);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 const html = (component: unknown, props: Record<string, unknown> = {}): string => renderToStaticMarkup(createElement(component, props));
 const tick = () => new Promise((r) => setTimeout(r, 0));
-async function ev(m: Record<string, unknown>) { source!.onmessage!({ data: JSON.stringify(m) }); await tick(); }
+async function ev(m: Record<string, unknown>) { stream.push(m, { servers: store.getState().servers, sections: Object.keys(store.getState().sections) }); await tick(); }
 
 const EVIL = "<img src=x onerror=1>";
 const ESCAPED = "&lt;img src=x onerror=1&gt;";
@@ -56,7 +59,7 @@ const studio = (o: Record<string, unknown> = {}) =>
 const form = (o: Record<string, unknown> = {}) => ({ name: "Studio", address: "https://mac.local:4748", secret: "", selfSigned: true, pin: "", ...o });
 const buttons = (h: string): string[] => [...h.matchAll(/<button[^>]*>(.*?)<\/button>/g)].map((m) => m[1].replace(/<[^>]*>/g, ""));
 
-beforeEach(() => { store.setState({ servers: [LOCAL], serversNotice: "", serversDialog: null, confirm: null }); });
+beforeEach(() => { store.setState({ servers: [LOCAL], serversNotice: "", serversDialog: null, confirm: null, restart: { phase: "idle", why: "" } }); });
 
 test("the exports of the contract", () => {
   for (const k of ["openServers", "ServersButton", "ServersDialog", "ServerRow", "ServerForm"]) assert.equal(typeof ui[k], "function", k);
@@ -91,6 +94,8 @@ test("the button has a dot only while an entry is not connected", () => {
   assert.match(html(ui.ServersButton), /<button class="servers-btn" title="Servers: one is not connected" aria-label="Servers">/);
 });
 
+const count = (h: string, t: string): number => h.split(t).length - 1;
+
 test("the dialog lists the rows with state, version, fingerprint and agents, on its own backdrop", () => {
   store.setState({ servers: [LOCAL, studio()], serversNotice: "server list: /r/servers.json cannot be read", serversDialog: {} });
   const h = html(ui.ServersDialog);
@@ -103,12 +108,34 @@ test("the dialog lists the rows with state, version, fingerprint and agents, on 
   assert.ok(buttons(h).includes("Close"));
 });
 
-test("the local row has no Edit and no Remove; a remote row has both and the test", () => {
-  assert.deepEqual(buttons(html(ui.ServerRow, { v: LOCAL })), []);
+test("the local row has no Edit and no Remove, and no test: it has the owner's things; a remote row has Edit, Remove and the test", () => {
+  assert.deepEqual(buttons(html(ui.ServerRow, { v: LOCAL })), ["Restart server"], "its log is the app's to open: not here");
+  assert.deepEqual(buttons(html(ui.ServerRow, { v: { ...LOCAL, state: "not_started", detail: "AI Whiteboard is not set up" } })), ["Restart server", "Retry"]);
   assert.deepEqual(buttons(html(ui.ServerRow, { v: studio() })), ["Test connection", "Edit", "Remove"]);
   assert.deepEqual(buttons(html(ui.ServerRow, { v: studio({ state: "too_old" }) })), ["Test connection", "Edit", "Remove"]);
   store.setState({ servers: [LOCAL], serversDialog: {} });
-  assert.deepEqual(buttons(html(ui.ServersDialog)), ["Close", "Add server"]);
+  assert.deepEqual(buttons(html(ui.ServersDialog)), ["Restart server", "Close", "Add server"]);
+});
+
+test("this computer's row: the reason a start gave as plain text, the state of its MCP listener, Restart server while one runs", () => {
+  const reason = `AI Whiteboard is not set up on this machine.\nSet it up once with: "${EVIL}" remote setup`;
+  const h = html(ui.ServerRow, { v: { ...LOCAL, state: "not_started", detail: reason, version: undefined }, mcp: "MCP listener: http://localhost:6006/mcp (up)" });
+  assert.match(h, /Not started/);
+  assert.ok(h.includes(`<pre class="servers-reason">AI Whiteboard is not set up on this machine.\nSet it up once with: &quot;${ESCAPED}&quot; remote setup</pre>`), h);
+  assert.equal(h.includes("<img"), false);
+  assert.equal(count(h, "Set it up once"), 1, "the reason once: the generic detail line is not drawn for this row");
+  assert.ok(h.includes("MCP listener: http://localhost:6006/mcp (up)"));
+  assert.doesNotMatch(html(ui.ServerRow, { v: LOCAL }), /MCP listener/, "none while it is not known");
+  store.setState({ restart: { phase: "restarting", why: "" } });
+  const during = html(ui.ServerRow, { v: LOCAL });
+  assert.match(during, /Restarting…/);
+  assert.match(during, /<button class="btn sm" disabled="">Restart server<\/button>/);
+  store.setState({ restart: { phase: "failed", why: "the server stopped while starting" } });
+  const failed = html(ui.ServerRow, { v: LOCAL });
+  assert.match(failed, /Restart failed/);
+  assert.match(failed, /the server stopped while starting/);
+  assert.deepEqual(buttons(failed), ["Restart server"]);
+  store.setState({ restart: { phase: "idle", why: "" } });
 });
 
 test("each state's row shows its label", () => {
@@ -192,7 +219,7 @@ test("the form after a test: Save after an OK one; Accept fingerprint for a cert
   assert.match(dup, /Already added as Studio/);
 });
 
-test("events: `servers` replaces the list and the notice, `server_state` one entry; a snapshot without the field gives the local entry", async () => {
+test("the app's events: `servers` replaces the list and the notice, `server_state` one entry; a snapshot of this computer leaves the list as it is", async () => {
   conn.connect();
   await ev({ type: "servers", servers: [LOCAL, studio()], notice: "set aside" });
   assert.deepEqual(store.getState().servers, [LOCAL, studio()]);
@@ -202,16 +229,13 @@ test("events: `servers` replaces the list and the notice, `server_state` one ent
   await ev({ type: "server_state", server: studio({ id: "s_2", name: "Two" }) });
   assert.deepEqual(store.getState().servers.map((v: { id: string }) => v.id), ["local", "s_3f9a1c2b77de", "s_2"]);
   await ev({ type: "servers" });
-  assert.deepEqual(store.getState().servers, [{ id: "local", local: true, name: "This computer", state: "connected" }]);
+  assert.deepEqual(store.getState().servers, [{ id: "local", local: true, name: "This computer", state: "connecting" }], "a list without a word is the local entry alone, and nothing has answered");
   assert.equal(store.getState().serversNotice, "");
-  const snapshot = { groups: [], boards: [], chats: [], defaults: { groups: {} }, catalogs: {}, home: "", defaultCwd: "", dataDir: "" };
-  store.applySnapshot({ ...snapshot, servers: [LOCAL, studio()] });
-  assert.deepEqual(store.getState().servers, [LOCAL, studio()]);
+  await ev({ type: "servers", servers: [LOCAL, studio()], notice: "" });
+  const snapshot = { groups: [], boards: [], chats: [], defaults: { groups: {} }, catalogs: {}, home: "", defaultCwd: "" };
   store.applySnapshot(snapshot);
-  assert.deepEqual(store.getState().servers, [{ id: "local", local: true, name: "This computer", state: "connected" }]);
+  assert.deepEqual(store.getState().servers, [LOCAL, studio()], "the list is the app's word, not a snapshot's");
 });
-
-const count = (h: string, t: string): number => h.split(t).length - 1;
 
 test("a row after its test shows each fact once: the version, the detail, the agents and the fingerprints", () => {
   const old = studio({ state: "too_old", version: "dev", detail: "Update the server there" });

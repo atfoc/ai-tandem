@@ -26,7 +26,6 @@ export type Group = Archive & {
   id: string;
   name: string;
   parent?: string; // the group it is nested in; absent at the top level
-  collapsed?: boolean;
 };
 
 /** board.json */
@@ -76,7 +75,7 @@ export type Catalog = {
   default: ModelChoice;
 };
 
-/** What a server offers, as the local server sends it for another one (by entry id): its usable agents in the order
+/** What a server offers, as the server's own snapshot gives it (by entry id): its usable agents in the order
  *  they are offered, their catalogs, its home and the folder a new chat starts in. */
 export type ServerLists = { agents: AgentKind[]; catalogs: Partial<Record<AgentKind, Catalog | null>>; home: string; defaultCwd: string };
 

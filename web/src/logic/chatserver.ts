@@ -8,7 +8,7 @@ import { CHOOSE_AGENT, NO_AGENT, agentChoice, noAgentPlaceholder, type AgentChoi
 import { goneText } from "./remoteview.ts";
 import { sendTitle } from "./status.ts";
 
-/** A thing's server as its views read it: the entry id, its name, and whether it takes a call now (the local server
+/** A thing's server as its views read it: the entry id, its name, and whether it takes a call now (the page
  *  holds its tree: logic/serverlists.ts serverConnected). This computer always does. */
 export type Where = { server: string; name: string; connected: boolean };
 

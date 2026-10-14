@@ -28,7 +28,7 @@ func (e *env) imageCall(token, tool, args string, reply any, errText string) (re
 		seen <- params
 		return reply, errText
 	})
-	e.relay.Bridge.Acted("P1")
+	e.take("P1", e.board.ID)
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, tool, args)
 	req, _ := http.NewRequest("POST", srv.URL+"/mcp", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -198,7 +198,7 @@ func TestCallKeepsTextOnlyAndCallResultHasImage(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	pages, _ := e.pages("P1")
-	e.relay.Bridge.Acted("P1")
+	e.take("P1", e.board.ID)
 	data := pngB64(50)
 	pages[0].OnRPC(func(map[string]any) (any, string) { return imageReply("image/png", data), "" })
 	text, isErr := e.relay.Call(e.token, "get_image", nil)

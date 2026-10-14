@@ -393,9 +393,8 @@ func TestLevel5GroupRulesAreThePagesRules(t *testing.T) {
 	}
 }
 
-// Whether a group shows collapsed is the server's own matter: a client's change of a group
-// that names "collapsed" is refused whole, and what the owner's page sets is what a client is
-// shown.
+// Whether a group shows collapsed is no matter of the server's, each client keeps it: a change of
+// a group that names "collapsed" is refused whole, from every client, and nothing of it is kept.
 func TestLevel5CollapsedIsNotAClients(t *testing.T) {
 	t.Parallel()
 	s := l5NewSite(t)
@@ -404,7 +403,7 @@ func TestLevel5CollapsedIsNotAClients(t *testing.T) {
 	const refusal = `{"code":"collapsed_refused","error":"an API client cannot collapse a group"}`
 	for _, body := range []string{`{"collapsed":true}`, `{"collapsed":false}`, `{"collapsed":null}`, `{"name":"Renamed","collapsed":true}`,
 		`{"collapsed":true,"name":"Renamed"}`, `{"Collapsed":true}`, `{"COLLAPSED":false,"name":"Renamed"}`, `{"collapsed":"yes"}`, `{"collapsed":{}}`} {
-		for _, c := range []*bridgetest.Page{s.x, s.y} {
+		for _, c := range s.all() {
 			status, out := l5Call(c, "PATCH", "/api/groups/"+g, body)
 			l5Is(t, "PATCH of a group with "+body+" by "+s.who(c), status, out, 400, refusal)
 		}
@@ -412,7 +411,7 @@ func TestLevel5CollapsedIsNotAClients(t *testing.T) {
 		status, out := l5Call(s.x, "PATCH", "/api/groups/g_nothere", body)
 		l5Is(t, "PATCH of a missing group with "+body, status, out, 400, refusal)
 	}
-	if got := s.group(g); got.Name != "G" || got.Collapsed {
+	if got := s.group(g); got.Name != "G" {
 		t.Errorf("the group after the refused changes: %+v", got)
 	}
 	for i, evs := range s.reach(s.all()...) {
@@ -420,33 +419,16 @@ func TestLevel5CollapsedIsNotAClients(t *testing.T) {
 			t.Errorf("the refused changes sent %s %v", s.who(s.all()[i]), evs)
 		}
 	}
-
-	// The owner's page collapses the group: every client is shown it as the server has it.
-	l5Want(t, s.p, 200, "PATCH", "/api/groups/"+g, `{"collapsed":true}`)
-	evs := s.told("the owner's collapse", "groups", g)
-	if got := s.groupsOf(evs[0]); len(evs) != 1 || len(got) != 1 || !got[0].Collapsed || !strings.Contains(evs[0], `"collapsed":true`) {
-		t.Errorf("the owner's collapse told %v", evs)
-	}
-	for _, c := range []*bridgetest.Page{s.x, s.y} {
-		if groups := l5Field(t, l5Want(t, c, 200, "GET", "/api/state", nil), "groups"); !strings.Contains(groups, `"collapsed":true`) {
-			t.Errorf("the groups %s is given: %s", s.who(c), groups)
+	// A rename goes through, and nothing collapsed is in what a client is told or reads.
+	l5Want(t, s.x, 200, "PATCH", "/api/groups/"+g, `{"name":"Renamed by a client"}`)
+	for _, evs := range [][]string{s.told("a client's rename", "groups", "Renamed by a client")} {
+		if strings.Contains(evs[0], "collapsed") {
+			t.Errorf("the groups event holds a collapse: %v", evs)
 		}
 	}
-	// A client's rename leaves it collapsed, and still cannot open it.
-	l5Want(t, s.x, 200, "PATCH", "/api/groups/"+g, `{"name":"Renamed by a client"}`)
-	evs = s.told("a client's rename of a collapsed group", "groups", "Renamed by a client")
-	if got := s.groupsOf(evs[0]); !got[0].Collapsed || got[0].Name != "Renamed by a client" {
-		t.Errorf("the group after a client's rename: %+v", got[0])
-	}
-	status, out := l5Call(s.x, "PATCH", "/api/groups/"+g, `{"collapsed":false}`)
-	l5Is(t, "a client that opens a collapsed group", status, out, 400, refusal)
-	if !s.group(g).Collapsed {
-		t.Error("a client opened a group the owner collapsed")
-	}
-	// The owner's page opens it again.
-	l5Want(t, s.p, 200, "PATCH", "/api/groups/"+g, `{"collapsed":false}`)
-	evs = s.told("the owner's expand", "groups", g)
-	if strings.Contains(evs[0], "collapsed") || s.group(g).Collapsed {
-		t.Errorf("the owner's expand told %v", evs)
+	for _, c := range s.all() {
+		if groups := l5Field(t, l5Want(t, c, 200, "GET", "/api/state", nil), "groups"); strings.Contains(groups, "collapsed") {
+			t.Errorf("the groups %s is given: %s", s.who(c), groups)
+		}
 	}
 }

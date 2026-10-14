@@ -4,8 +4,7 @@
 // in their order, a board with its chats), every group open whatever that server's own page
 // shows; not connected, the words the server list has for the state and the one line, and no rows; too old, that with
 // the version it reports; a changed certificate and every other state of the list, its words. The head's "+" is
-// there only while the tree is held. Rows are decided by the tree and words by the state, in either order of the two
-// events. The head's own behaviour is SEC.3's, what follows a change made elsewhere SEC.6's.
+// there only while the tree is held. Rows are decided by the tree and words by the state. The head's own behaviour is SEC.3's, what follows a change made elsewhere SEC.6's.
 import { check, mockEval, openPage, seed, sideSeen, until } from "../shot.mjs";
 
 const J = JSON.stringify;
@@ -67,15 +66,13 @@ await check("SEC.2 a section in each state of its server", async ({ url, browser
     await shows(`the state ${state}`, "s_cert", { state: words, tone: "bad", outline: [], lines: [AWAY], add: false });
   }
 
-  // ---- connected, the tree not here yet: still connecting; then the tree, in either order of the two events
+  // ---- connected, the tree not here yet: still connecting; then the tree (the stream gives the snapshot first, and then the state)
   await set("s_wait", "connected", { tree: false });
   await shows("connected before its tree came", "s_wait", { state: "Connecting…", tone: "wait", outline: [], lines: [], add: false });
   await set("s_wait", "connected");
   await shows("its tree came", "s_wait", { state: "Connected", tone: "ok", outline: [], lines: [EMPTY], add: true });
   await set("s_wait", "connecting");
   await shows("connecting again", "s_wait", { state: "Connecting…", tone: "wait", outline: [], lines: [], add: false });
-  await set("s_wait", "connected", { sectionFirst: true });
-  await shows("the tree before the state", "s_wait", { state: "Connected", tone: "ok", outline: [], lines: [EMPTY], add: true });
 
   // ---- a section with a tree whose server drops, is too old, and is back
   await set("s_studio", "unreachable", { detail: "connection refused" });
@@ -83,7 +80,7 @@ await check("SEC.2 a section in each state of its server", async ({ url, browser
   if (await page.locator('.side-section[data-server="s_studio"] .side-row, .side-section[data-server="s_studio"] .side-group').count()) fail("a section whose server dropped still draws a row or a group");
   await set("s_studio", "too_old", { version: "0.8.0" });
   await shows("Studio Mac too old", "s_studio", { state: "Too old", tone: "bad", outline: [], lines: ["Update the server on that machine.", "Version 0.8.0"], add: false });
-  await set("s_studio", "connected", { version: "dev", sectionFirst: true });
+  await set("s_studio", "connected");
   await shows("Studio Mac back", "s_studio", { state: "Connected", tone: "ok", outline: TREE, lines: [], add: true });
 
   // ---- a reload during an outage: nothing of that server is known

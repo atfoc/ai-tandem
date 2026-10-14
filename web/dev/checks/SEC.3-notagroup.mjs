@@ -2,8 +2,8 @@
 // group", 3.13): a click collapses and expands the section, and that is all the head does: a double click renames
 // nothing, it has no menu, it cannot be dragged, and nothing dragged onto it is taken. Whether a section is collapsed,
 // and each group in it, is kept in the browser (localStorage "aiwb.collapsed"), survives a reload, and is sent nowhere:
-// no call under /api/on/ carries `collapsed`. A local group's collapse still goes to its server (PATCH
-// /api/groups/<id>), and a local group and a section's group with the same id are collapsed apart. A collapsed
+// no call to any server carries `collapsed`, this computer's included (its groups are the page's own to collapse, as a
+// section's are). A local group and a section's group with the same id are collapsed apart. A collapsed
 // section stays collapsed while its server is not connected and when it is back, and so does a group in it; a group
 // that is new to the page shows open.
 // The drops between the parts of the sidebar are SEC.5's.
@@ -18,7 +18,7 @@ await check("SEC.3 a section's head collapses and does nothing else; collapse is
   const calls = callsOf(page), d = await dragger(page);
   const head = (id) => page.locator(`.side-section[data-server="${id}"] > .side-section-head`);
   const groupHead = (id, name) => page.locator(`.side-section[data-server="${id}"] .side-group-head`, { has: page.locator(".side-group-name", { hasText: name }) });
-  const localHead = (name) => page.locator(".side-tree > .side-group > .side-group-head", { has: page.locator(".side-group-name", { hasText: name }) });
+  const localHead = (name) => page.locator(".side-section[data-server='local'] > .side-section-body > .side-group > .side-group-head", { has: page.locator(".side-group-name", { hasText: name }) });
   const stored = () => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "[]"), KEY);
   const collapsedIs = async (name, id, want) => { if (!await until(async () => (await sideSeen(page, id)).collapsed === want, 10000)) fail(`${name}: the section of ${id} is ${want ? "not collapsed" : "collapsed"}`); };
   const headPoint = (id) => page.evaluate((id) => { const e = document.querySelector(`.side-section[data-server="${id}"] > .side-section-head`); e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); return { x: r.left + r.width * 0.3, y: r.top + r.height / 2 }; }, id);
@@ -73,22 +73,26 @@ await check("SEC.3 a section's head collapses and does nothing else; collapse is
   // the section's group with the id of a local group: each is collapsed apart
   await groupHead(STUDIO, "Renders").click();
   if (!await until(async () => (await sideSeen(page, STUDIO)).outline.includes("group Renders [collapsed]"), 10000)) fail("a click on the group Renders did not collapse it");
-  if ((await sideSeen(page)).outline.includes("group Shop [collapsed]")) fail("collapsing Studio Mac's group g_shop collapsed this computer's group g_shop");
+  if ((await sideSeen(page, "local")).outline.includes("group Shop [collapsed]")) fail("collapsing Studio Mac's group g_shop collapsed this computer's group g_shop");
   let want = ["s_away", "s_empty", `${STUDIO}~g_old`, `${STUDIO}~g_shop`];
   if (!await until(async () => J((await stored()).sort()) === J(want), 5000)) fail(`localStorage "${KEY}" is ${J(await stored())}, not ${J(want)}`);
-  const sent = () => writes().filter((c) => c.path.startsWith("/api/on/") && (c.body && typeof c.body === "object" && "collapsed" in c.body || /collapsed/.test(c.path)));
+  const sent = () => writes().filter((c) => c.server !== "local" && (c.body && typeof c.body === "object" && "collapsed" in c.body || /collapsed/.test(c.path)));
   if (sent().length || writes().some((c) => /\/groups\//.test(c.path))) fail(`collapsing a section and its groups made the calls ${J(writes().map((c) => `${c.method} ${c.path} ${J(c.body)}`))}`);
   const there = await mockEval(`return [onCalls.filter((c) => c.body && typeof c.body === "object" && "collapsed" in c.body).length, onServer("${STUDIO}", () => groups.map((g) => [g.id, !!g.collapsed]))];`, url);
-  if (there[0] || J(there[1]) !== J([["g_shop", true], ["g_sub", false], ["g_old", false]])) fail(`the mock was told of a collapse under /api/on/, or Studio Mac's own collapse changed: ${J(there)}`);
+  if (there[0] || J(there[1]) !== J([["g_shop", true], ["g_sub", false], ["g_old", false]])) fail(`the mock was told of a collapse for another server, or Studio Mac's own collapse changed: ${J(there)}`);
 
-  // a local group's collapse goes to its server, and is not in the browser's list
+  // a local group's collapse is the browser's too, under its own key, and is sent nowhere
   await localHead("Shop").click();
-  if (!await until(() => writes().some((c) => c.method === "PATCH" && c.path === "/api/groups/g_shop" && c.body?.collapsed === true), 10000)) fail(`collapsing the local group Shop sent no PATCH /api/groups/g_shop {collapsed: true}: ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
-  if (J((await stored()).sort()) !== J(want)) fail(`collapsing a local group changed localStorage "${KEY}": ${J(await stored())}`);
+  want = [...want, "g_shop"].sort();
+  if (!await until(async () => J((await stored()).sort()) === J(want), 5000)) fail(`collapsing a local group left localStorage "${KEY}" at ${J(await stored())}, not ${J(want)}`);
+  if (!await until(async () => (await sideSeen(page, "local")).outline.includes("group Shop [collapsed]"), 5000)) fail("a click on this computer's group Shop did not collapse it");
+  await page.waitForTimeout(300);
+  if (writes().some((c) => /\/groups\//.test(c.path) || (c.body && typeof c.body === "object" && "collapsed" in c.body))) fail(`collapsing a local group made a call: ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
   await groupHead(STUDIO, "Renders").click(); // open again: the local one stays collapsed
   if (!await until(async () => !(await sideSeen(page, STUDIO)).outline.includes("group Renders [collapsed]"), 10000)) fail("the group Renders did not open again");
-  if (!(await sideSeen(page)).outline.includes("group Shop [collapsed]")) fail("opening Studio Mac's group g_shop opened this computer's group g_shop");
+  if (!(await sideSeen(page, "local")).outline.includes("group Shop [collapsed]")) fail("opening Studio Mac's group g_shop opened this computer's group g_shop");
   want = want.filter((k) => k !== `${STUDIO}~g_shop`);
+  if (!(await sideSeen(page, "local")).outline.includes("group Shop [collapsed]")) fail("this computer's group Shop is not collapsed any more");
 
   // ---- it survives a reload
   await page.reload(); await page.waitForSelector(".side-tree .side-section");
@@ -97,6 +101,7 @@ await check("SEC.3 a section's head collapses and does nothing else; collapse is
   await collapsedIs("after a reload, Studio Mac", STUDIO, false);
   if (!await until(async () => { const o = (await sideSeen(page, STUDIO)).outline; return o.includes("group Old takes [collapsed]") && o.includes("group Renders"); }, 10000)) fail(`after a reload the groups of the section are not as they were left: ${J((await sideSeen(page, STUDIO)).outline)}`);
   if (J((await stored()).sort()) !== J(want)) fail(`after a reload localStorage "${KEY}" is ${J(await stored())}, not ${J(want)}`);
+  if (!await until(async () => (await sideSeen(page, "local")).outline.includes("group Shop [collapsed]"), 10000)) fail("after a reload this computer's group Shop is not collapsed");
 
   // ---- a collapsed section stays collapsed through an outage, and so does a group in it; a new group shows open
   await head(STUDIO).click(); await collapsedIs("Studio Mac, collapsed", STUDIO, true);
@@ -113,10 +118,10 @@ await check("SEC.3 a section's head collapses and does nothing else; collapse is
   const o = (await sideSeen(page, STUDIO)).outline;
   if (!o.includes("group Old takes [collapsed]")) fail(`a group that was collapsed is open after its server was away: ${J(o)}`);
   if (!o.includes("group Made meanwhile") || !o.includes("group Renders")) fail(`a group that is new to the page does not show open: ${J(o)}`);
-  if (sent().length) fail(`a call under /api/on/ carried collapsed: ${J(sent())}`);
-  if (await mockEval(`return onCalls.filter((c) => c.body && typeof c.body === "object" && "collapsed" in c.body).length;`, url)) fail("the mock was told of a collapse under /api/on/");
+  if (sent().length) fail(`a call to another server carried collapsed: ${J(sent())}`);
+  if (await mockEval(`return onCalls.filter((c) => c.body && typeof c.body === "object" && "collapsed" in c.body).length;`, url)) fail("the mock was told of a collapse");
 
   for (const e of errors) fail(`page error: ${e}`);
   await ctx.close();
-  note(`the head collapses and expands, renames nothing, has no menu, starts no drag and takes no drop; ${want.length + 1} collapses kept in localStorage, over a reload and an outage, none sent under /api/on/; the local group's sent to /api/groups/g_shop`);
+  note(`the head collapses and expands, renames nothing, has no menu, starts no drag and takes no drop; ${want.length + 1} collapses kept in localStorage, over a reload and an outage, none sent to any server, this computer's group included`);
 });

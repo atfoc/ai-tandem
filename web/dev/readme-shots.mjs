@@ -107,8 +107,9 @@ const SHOTS = {
   },
   async "remote-servers"() {
     // this computer's groups are folded, so that the servers below them have the room; Office Mac is not connected
-    await ev(`for (const g of groups) g.collapsed = true; addServer({ id: "s_office", name: "Office Mac", address: "https://office-mac.example:4790", state: "unreachable", detail: "connection refused" }); send({ type: "snapshot", ...snapshot() }); return 1;`);
-    const { ctx, page } = await open({ sel: { board: null, chat: "s_build~c_nightly" } });
+    // (a group's fold is the page's own: kept in its storage, by the group's key)
+    const folded = await ev(`addServer({ id: "s_office", name: "Office Mac", address: "https://office-mac.example:4790", state: "unreachable", detail: "connection refused" }); resync(); return groups.map((g) => g.id);`);
+    const { ctx, page } = await open({ sel: { board: null, chat: "s_build~c_nightly" }, ls: { "aiwb.collapsed": JSON.stringify([...folded, "s_build", "s_lab"]) } });
     await page.waitForSelector(".thread .tool");
     await page.locator(".thread .tool-row", { hasText: "Edited integration.sh" }).click();
     await page.mouse.move(W - 5, 5);
@@ -120,7 +121,7 @@ const SHOTS = {
     await settle(page);
     await shot(page, "servers-dialog.png");
     await ctx.close();
-    await ev(`for (const g of groups) delete g.collapsed; removeServer("s_office"); send({ type: "snapshot", ...snapshot() }); return 1;`);
+    await ev(`removeServer("s_office"); return 1;`);
   },
   async "composer-images"() {
     await ev(`chats.c_new = chat("c_new", { group: "g_app", cwd: HOME + "/projects/shop-app", created: iso(Date.now()), ...fresh }); items.c_new = []; send({ type: "chat", chat: chats.c_new }); return 1;`);

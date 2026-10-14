@@ -1,8 +1,8 @@
 # Architecture
 
-How AI Whiteboard fits together: the server, the web client and the desktop app, the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
+How AI Whiteboard fits together: the server, the web client and the desktop app, how the app reaches every server, the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
 
-- **Server** (`cmd/`, `internal/`): a Go program on `127.0.0.1:4747`. It stores boards and chats,
+- **Server** (`cmd/`, `internal/`): a Go program. It stores boards and chats,
   runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
   `get_image`, `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
   MCP: one fixed MCP endpoint, `http://localhost:6006/mcp`, carries the chat's token in
@@ -34,9 +34,86 @@ How AI Whiteboard fits together: the server, the web client and the desktop app,
   stopped. Cursor reaches the same endpoint from its ACP session, keeps one
   first-message instructions block with the same whiteboard prompt as Claude and pi, and its board calls are
   auto-approved too (no permission card). Plain (non-board) chats get no board tools.
-- **Web client** (`web/`): React + Excalidraw, built with esbuild. The server serves it.
-- **Desktop app** (`desktop/`): an Electron window that starts the server, or finds the one already
-  running, and opens it. Quitting the app doesn't stop the server or its running chats.
+- **Web client** (`web/`): React + Excalidraw, built with esbuild. It is the page of the desktop
+  app and ships inside it: no server serves it. The page and the app are one build.
+- **Desktop app** (`desktop/`): an Electron app, the client of every server. Its main process holds
+  the server list and the secrets and keeps one connection to each server, this computer's
+  included; its window shows the page. The app starts this computer's server, or finds the one
+  already running. Quitting the app doesn't stop the server or its running chats.
+
+## The server's listeners
+
+A server has two listeners and one socket.
+
+- **The client listener** is HTTPS on every IPv4 address of the machine, on the port of the set-up
+  (4748 at first). It is the one listener for every client, the app on the same machine
+  included, and it serves the **client API**: one set of routes, each behind the server's secret in
+  the header `X-AIWB-Secret`, with the app's id in `X-AIWB-Client` and its feature level in
+  `X-AIWB-Level`. The one call answered without the secret is `GET /api/hello`, the first question
+  of a client (which server this is and what it offers). The listener accepts the names of the
+  set-up in the `Host` header, and `127.0.0.1` and `localhost`. It serves no page, keeps no server
+  list and connects to no other server: a path that is no route is 404, or 401 without the secret.
+- **The MCP listener** is below.
+- **The control socket** is an owner-only Unix socket in the data folder (`control.sock`). It
+  answers the server program's own commands on the same machine (`status`, `stop`, `launch`, and
+  the others in [Server commands and flags](server-reference.md)) and is no listener on the
+  network and no part of the client API.
+
+A server that was never set up (see [Server commands and flags](server-reference.md)) refuses to
+start. Port 4747, where an earlier build served its own page, is gone.
+
+## How the app reaches the servers
+
+The page talks to the app's main process and to nothing else. The main process keeps one
+connection per entry of the server list, and **this computer's server is one of the entries**:
+the first, with the id `local` and the name "This computer", which is never in the list's file
+and cannot be edited. Each connection is HTTP/2 over TLS with the server's secret, to a
+certificate that is accepted by its fingerprint and by nothing else, this computer's included.
+No secret reaches the page.
+
+- **The transport** (`web/src/transport/`) is the one interface the page has to the network. It
+  has a call (a server by its entry's id, a method, a path of the client API, a body, and a way to
+  cancel it), a stream (a function for each event and one for a change of the stream's state) and
+  the address of a picture. The server is an argument and no part of the path. In the desktop app
+  the transport is made over IPC: the window gives the page a fixed set of functions
+  (`window.aiwbApp`, `desktop/preload.js`) and the main process answers them. One stream carries
+  the events of every server, each with its entry's id. A stream that is closed for good is an
+  event of the transport, and the page opens it again.
+- **The connection module** (`desktop/conn/`) is plain Node, with no Electron in it. It holds the
+  server list and the secrets, makes the pinned connections and keeps a stream per server with its
+  retries. A refused secret ends the trying until the entry changes; a stream that is silent for
+  35 seconds counts as ended. It is also what the test host uses.
+- **What the app keeps.** In `~/Library/Application Support/AI Whiteboard/client/`: `servers.json`,
+  the server list with the secrets (mode 0600, the folder 0700; no keychain), and `client-id`, the
+  app's id. Of a server's content it keeps nothing.
+- **This computer's server.** While the window is open the app finds the server or starts it, by
+  running the server program it carries: `launch -json` prints the address and the certificate's
+  fingerprint, `secret` the secret. The user types and accepts nothing for this computer. The
+  server is not a child of the app and outlives it. Until it answers, the section says that it is
+  connecting; a start that fails (a server never set up refuses to start, and the reason names the
+  set-up command) shows in the section with the reason, **Retry** and **Open server log**, and the
+  app tries again by itself at growing intervals (1, 2, 5, 10 and 30 seconds). A server that stops
+  while the app is open is started again, and its section goes to not connected and back with
+  the page not loaded again. A server of another build than the app carries is found and kept:
+  the section says so and offers **Restart server**. Restarting it, opening its log and reading
+  the state of its MCP listener are the owner's things: the app does them itself with the server
+  program, and they are no part of the client API.
+- **Pictures.** An image of a chat is shown from an address of the app's own URL scheme,
+  `aiwb-picture://p/<entry id>/<chat id>/<image id>`. The main process answers it by fetching the
+  image over the pinned connection with the secret and looking at its bytes: it is one of the
+  image types a message takes (PNG, JPEG, GIF, WebP), at most 5 MB, whatever type the server
+  claimed. Anything else is not shown, so no server can have the app show HTML or SVG of its
+  making. The scheme answers pictures for the app's own page and for nothing else. At most 8
+  pictures are fetched at a time per server.
+- **Only the app's own page is answered.** A request to the main process from another window, a
+  frame inside the page or a page that has gone elsewhere is refused, and a call names a server of
+  the list and a path of the client API and nothing else.
+- **Tests and development.** The same page runs in a headless browser for tests, through a test
+  host (`web/dev/host.mjs`) that does what the main process does: it holds the server list, makes
+  the pinned connections and serves the page's calls, one stream and the pictures over plain HTTP
+  on `127.0.0.1`. The transport is then made over HTTP. The host is never shipped and no server
+  serves it. A mock (`web/dev/mock.mjs`) stands behind the same face for the browser checks. See
+  [Build and develop](development.md).
 
 The **MCP listener** is a second loopback listener on `127.0.0.1:6006` inside the same server
 process. It advertises exactly `http://localhost:6006/mcp` for every agent. That spelling is
@@ -86,12 +163,12 @@ The same folder takes the images a user attaches to a message of a Cursor chat (
 file is written there for a Cursor chat, so with no further one they stay until then or until
 the system cleans its temp folder. Pictures
 are not stored in the board or in the chat. If the app or window that holds the board is older than
-this tool, the call fails with `UNKNOWN_TOOL`; update the app or reload the window.
+this tool, the call fails with `UNKNOWN_TOOL`; update the app.
 
 **Images in a message.** A message of a chat can carry images: PNG, JPEG, GIF and WebP, at most
 5 MB each, 10 in one message and 20 MB in one message together. In the composer an image is
 added by pasting it, or with the attach button of the toolbar, which opens the desktop app's own
-open dialog and in a browser tab the browser's file picker. A paste whose clipboard also holds
+open dialog. A paste whose clipboard also holds
 rich text (a copied spreadsheet cell) is pasted as its text, as before. An image is uploaded when it is added and shows as a thumbnail above the text;
 a message can be images alone, and is then named "Image" wherever a message is named by its
 words, the chat's name among them. A file that is refused is named in the composer's error line
@@ -113,7 +190,7 @@ share the store, and a fork gets its own copies. A draft and a message name an i
 what the upload says. The calls:
 `POST /api/chats/{id}/images?name=` uploads one image (the body is its bytes; refused with the
 codes `image_too_large`, `image_type` and `image_cap`), `GET /api/chats/{id}/images/{image}`
-serves one, to the app's own pages only (403 `image_origin` for another site's), `PUT /api/chats/{id}/draft` and
+serves one, `PUT /api/chats/{id}/draft` and
 `POST /api/chats/{id}/messages` take `images`. An upload is cut at the size limit before it is
 read, and an image id is checked for its form before anything is looked up by it (400
 `image_id`). A draft save that names an image the chat does not
@@ -127,9 +204,10 @@ in every chat; an upload and a draft save with images look in their chat as well
 most 50 such images, counted after that look.
 
 All of this holds for a chat on a remote server, whose image store is on that server: your app
-keeps no image of it. The same four calls, under `/api/on/{server}/chats/{id}`, are passed on to
-the chat's server, which answers them, its refusals with their codes and `missing` of a draft
-save among them (see [Chats on a remote server](remote-servers.md#chats-on-a-remote-server)).
+keeps no image of it. The same four calls are made on the chat's server by the app's main
+process, which passes the answers to the page, a server's refusals with their codes and `missing`
+of a draft save among them; a fetched image is shown only after the main process has looked at
+its bytes (see [Chats on a remote server](remote-servers.md#chats-on-a-remote-server)).
 
 Each agent gets the images of a message for that one message. Claude gets them as image parts of
 the user message, ahead of the text. Cursor gets each as a file in the temp folder `get_image`
@@ -144,7 +222,7 @@ marked) gets none: the composer does not let one be added and says why, and the 
 such a message.
 
 The agents' board edits go through the open window, so boards can only be changed while the app
-(or a browser tab) is open. pi runs as a long-lived `pi --mode rpc` process per chat; the UDS
+is open. pi runs as a long-lived `pi --mode rpc` process per chat; the UDS
 bridge is one listener per server keyed by a per-run, non-secret handle, and the extension presents
 only that handle. The chat token is a separate MCP credential and reaches pi only inside the
 `AIWB_MCP_CONFIG` header.

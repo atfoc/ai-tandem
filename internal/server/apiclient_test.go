@@ -26,10 +26,9 @@ import (
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/remote"
-	"ai-whiteboard/internal/servers"
 )
 
-// API clients on the remote listener: the real ServeRemote over TLS on 127.0.0.1, stand-in API
+// API clients on the remote listener: the real ServeClients over TLS on 127.0.0.1, stand-in API
 // clients (bridgetest.ConnectWith with the secret and a client id) beside stand-in pages on the
 // loopback listener, and stand-in agents. The tests that need no stream ask RemoteHandler.
 
@@ -89,11 +88,10 @@ func newListener(t *testing.T) *listener {
 	return &listener{t: t, ln: ln, port: port, host: host, base: "https://" + host, pair: pair, pin: pin, http: &http.Client{Transport: tr}}
 }
 
-// set makes s the server of the listener, before the listener serves. It sets what no handler of
-// the loopback listener reads unless asked for hello or the remote status.
+// set makes s the server of the listener, before the listener serves.
 func (l *listener) set(s *Server) {
-	s.Remote = NewRemote(l.port, []string{"127.0.0.1"}, l.pin, testSecret)
-	s.Remote.logf = func(format string, args ...any) {
+	s.Clients = NewClientListener(l.port, []string{"127.0.0.1"}, l.pin, testSecret)
+	s.Clients.logf = func(format string, args ...any) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		l.lines = append(l.lines, fmt.Sprintf(format, args...))
@@ -101,16 +99,16 @@ func (l *listener) set(s *Server) {
 	s.InstanceID = ownID
 }
 
-// serve starts ServeRemote, which ends with the test.
+// serve starts ServeClients, which ends with the test.
 func (l *listener) serve(s *Server) {
 	done := make(chan error, 1)
-	go func() { done <- s.ServeRemote(l.ln, l.pair) }()
+	go func() { done <- s.ServeClients(l.ln, l.pair) }()
 	l.t.Cleanup(func() {
 		l.ln.Close()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			l.t.Error("ServeRemote did not return after its listener was closed")
+			l.t.Error("ServeClients did not return after its listener was closed")
 		}
 	})
 }
@@ -122,15 +120,27 @@ func (l *listener) logged() []string {
 	return slices.Clone(l.lines)
 }
 
-// remoteEnv is an env with a remote listener that serves.
+// remoteEnv is an env with its listener and no client connected, for the tests that connect
+// their own clients.
 func remoteEnv(t *testing.T, with ...func(*Server)) (*env, *listener) {
 	t.Helper()
-	l := newListener(t)
-	// The consumer (internal/servers) requires a home that is not empty.
 	home := func(s *Server) { s.App.Home = "/home/owner" }
-	e := newEnv(t, append([]func(*Server){l.set, home}, with...)...)
-	l.serve(e.s)
-	return e, l
+	e := startEnv(t, false, append([]func(*Server){home}, with...)...)
+	return e, e.l
+}
+
+// stamp puts on the request, where it has none, the secret, the client id and the level of the
+// tests' clients.
+func (l *listener) stamp(req *http.Request, id string) {
+	if req.Header.Get(SecretHeader) == "" {
+		req.Header.Set(SecretHeader, testSecret)
+	}
+	if req.Header.Get(ClientHeader) == "" && id != "" {
+		req.Header.Set(ClientHeader, id)
+	}
+	if req.Header.Get(LevelHeader) == "" {
+		req.Header.Set(LevelHeader, testLevel)
+	}
 }
 
 // testLevel is the level the API clients of the tests state: the server's own.
@@ -139,7 +149,7 @@ var testLevel = strconv.Itoa(FeatureLevel)
 // options is how the API client id reaches the listener with this secret, as a client of the
 // server's own level.
 func (l *listener) options(id, secret string) bridgetest.Options {
-	return bridgetest.Options{HTTP: l.http, Header: map[string]string{SecretHeader: secret, ClientHeader: id, servers.LevelHeader: testLevel}}
+	return bridgetest.Options{HTTP: l.http, Header: map[string]string{SecretHeader: secret, ClientHeader: id, LevelHeader: testLevel}}
 }
 
 // api connects the API client id and reads its hello and its snapshot, which it returns as sent.
@@ -180,7 +190,7 @@ func (l *listener) callAt(level, id, secret, method, path, body string) (int, st
 		req.Header.Set(SecretHeader, secret)
 	}
 	if level != "" {
-		req.Header.Set(servers.LevelHeader, level)
+		req.Header.Set(LevelHeader, level)
 	}
 	resp, err := l.http.Do(req)
 	if err != nil {
@@ -357,17 +367,18 @@ func quiet(t *testing.T, what string, c *bridgetest.Page) {
 	}
 }
 
-// pageOnly is the types that tell a page of the servers this one connects to, and of their
-// libraries. No API client is sent one.
-var pageOnly = []string{"servers", "server_state", "server_lists", "library", "library_removed"}
+// wentWithThePage is the types of the events that told a page of the servers its server
+// connected to: they are in no table now.
+var wentWithThePage = []string{"servers", "server_state", "server_lists", "library", "library_removed", "section"}
 
-// apiOnly fails when an API client was sent an event of a type outside its allow-list, which
-// leaves out the types of pageOnly.
+// apiOnly fails when a client was sent an event of a type that is no list or content type of the
+// event table: the role types are sent to one client by the bridge and never by a sender.
 func apiOnly(t *testing.T, c *bridgetest.Page, evs []string) {
 	t.Helper()
 	for _, raw := range evs {
-		if typ := typeOf(raw); !editorbridge.APIEvents[typ] || slices.Contains(pageOnly, typ) {
-			t.Errorf("the API client %s was sent %s: %s", c.ID, typ, raw)
+		typ := typeOf(raw)
+		if rule, ok := editorbridge.Events[typ]; !ok || rule.Class == editorbridge.Role {
+			t.Errorf("the client %s was sent %s: %s", c.ID, typ, raw)
 		}
 	}
 }
@@ -389,9 +400,9 @@ func TestAPIClientID(t *testing.T) {
 	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
-	h := e.s.RemoteHandler()
+	h := e.s.ClientHandler()
 	do := func(client, method, path, body string) *httptest.ResponseRecorder {
-		return remoteDoAs(h, client, method, path, l.host, testSecret, body)
+		return clientDoAs(h, client, method, path, l.host, testSecret, body)
 	}
 	refusedAs := func(w *httptest.ResponseRecorder, what, text, code string) {
 		t.Helper()
@@ -402,11 +413,11 @@ func TestAPIClientID(t *testing.T) {
 	// newChat is the body of a new chat with the id chat1.
 	const newChat = `{"id":"` + chat1 + `","agent":"claude","group":"` + model.Ungrouped + `"}`
 
-	// No id, and an id of another form: refused on every route, hello included, and on a path
-	// outside the table too, before the table is asked.
+	// No id, and an id of another form: refused on every route but hello, and on a path outside
+	// the table too, before the table is asked.
 	v1 := strings.Replace(apiX, "-40de-", "-10de-", 1)
 	for _, id := range []string{"", "client-1", strings.ToUpper(apiX), apiX[:35], apiX + "0", "{" + apiX + "}", " " + apiX, v1, strings.ReplaceAll(apiX, "-", "")} {
-		for _, rq := range [][2]string{{"GET", "/api/hello"}, {"GET", "/api/state"}, {"GET", "/api/events"}, {"GET", "/api/chats/" + chat1},
+		for _, rq := range [][2]string{{"GET", "/api/state"}, {"GET", "/api/events"}, {"GET", "/api/chats/" + chat1},
 			{"POST", "/api/chats"}, {"POST", "/api/chats/" + chat1 + "/messages"}, {"GET", "/api/mcp/status"}, {"GET", "/"}, {"POST", "/api/hello"}} {
 			refusedAs(do(id, rq[0], rq[1], newChat), fmt.Sprintf("%s %s with the id %q", rq[0], rq[1], id), "bad client id", "bad_client")
 		}
@@ -419,8 +430,9 @@ func TestAPIClientID(t *testing.T) {
 	refusedAs(do(apiX, "GET", "/api/events?client="+apiY, ""), "a stream whose query names another id", "bad client id", "bad_client")
 	refusedAs(do(apiX, "GET", "/api/events?client=", ""), "a stream whose query names no id", "bad client id", "bad_client")
 	// The secret and the Host come first.
-	wantReply(t, remoteDoAs(h, "", "GET", "/api/hello", l.host, "", ""), "no secret and no id", 401, "unauthorized")
-	wantReply(t, remoteDoAs(h, "", "GET", "/api/hello", "evil.example:1", testSecret, ""), "another Host and no id", 403, "bad host")
+	wantReply(t, clientDoAs(h, "", "GET", "/api/state", l.host, "", ""), "no secret and no id", 401, "unauthorized")
+	wantReply(t, clientDoAs(h, "", "GET", "/api/hello", l.host, "", ""), "hello with no secret and no id", 200, "")
+	wantReply(t, clientDoAs(h, "", "GET", "/api/state", "evil.example:1", testSecret, ""), "another Host and no id", 403, "bad host")
 	if _, err := os.Stat(e.st.P.ChatDir(chat1)); err == nil {
 		t.Fatal("a refused call made a chat")
 	}
@@ -432,13 +444,13 @@ func TestAPIClientID(t *testing.T) {
 	if got := decode[obj](t, w.Body.String()); got["instanceId"] != ownID || got["featureLevel"] != float64(FeatureLevel) {
 		t.Fatalf("hello: %v", got)
 	}
-	for _, p := range append(slices.Clone(RemoteRoutes[1:]), "GET /api/mcp/status", "GET /", "POST /api/hello", "PUT /api/chats/{id}") {
+	for _, p := range append(slices.Clone(ClientRoutes[1:]), "GET /api/mcp/status", "GET /", "POST /api/hello", "PUT /api/chats/{id}") {
 		method, path, _ := strings.Cut(p, " ")
 		path = pathWildcard.ReplaceAllString(path, chat1)
 		refusedAs(do(ownID, method, path, newChat), p+" with the server's own id", "this is the server's own id", "own_client")
 	}
-	if RemoteRoutes[0] != helloRoute {
-		t.Fatalf("the table's first route is %q", RemoteRoutes[0])
+	if ClientRoutes[0] != helloRoute {
+		t.Fatalf("the table's first route is %q", ClientRoutes[0])
 	}
 	if _, err := os.Stat(e.st.P.ChatDir(chat1)); err == nil {
 		t.Fatal("a call with the server's own id made a chat")
@@ -483,26 +495,14 @@ func TestAPIClientID(t *testing.T) {
 		t.Fatalf("followers after the second stream: %v", got)
 	}
 
-	// One id, two kinds: a page's id opens no API stream, an API client's id no page stream,
-	// and the stream that was there stays.
+	// Another client is connected beside it.
 	const pageID = "9b2d5c1a-3e4f-4a6b-8c7d-0e1f2a3b4c5d"
 	pg := e.page(pageID)
-	const inUse = `{"error":"client id in use","code":"client_in_use"}`
-	if status, out := l.call(pageID, testSecret, "GET", "/api/events", ""); status != 409 || out != inUse {
-		t.Fatalf("an API stream with a connected page's id: %d %s", status, out)
-	}
-	if status, out := e.doAs("", "GET", "/api/events?client="+apiX, ""); status != 409 || out != inUse {
-		t.Fatalf("a page's stream with a connected API client's id: %d %s", status, out)
-	}
-	// A loopback write that names an API client's id is one of no known client.
-	if status, out := e.doAs(apiX, "POST", "/api/chats/"+chat1+"/interrupt", ""); status != 409 || strings.TrimSpace(out) != `{"error":"unknown_client"}` {
-		t.Fatalf("a loopback write with an API client's id: %d %s", status, out)
-	}
 	got := e.reach(pg, x2)
 	if len(got[0]) != 0 || len(got[1]) != 0 {
-		t.Fatalf("the refused streams sent the page %v and the API client %v", got[0], got[1])
+		t.Fatalf("the connect of a client sent the other %v and %v", got[0], got[1])
 	}
-	// The API client's own calls go on: its id is not the page's to act with, nor the reverse.
+	// Each client's own calls go on.
 	if status, out := pg.Do("POST", "/api/chats/"+chat1+"/interrupt", nil); status != 200 {
 		t.Fatalf("the page's write: %d %s", status, out)
 	}
@@ -524,14 +524,8 @@ func TestAPIClientID(t *testing.T) {
 func TestAPIClientSnapshot(t *testing.T) {
 	t.Parallel()
 	sp := &apiSpawner{}
-	list, _ := withServers(t)
-	e, l := remoteEnv(t, withAgents(sp), list)
-	// What the page's snapshot holds and an API client's must not: an entry of this server's own
-	// list of remote servers. And what both hold: a group, a board, the owner's chats.
-	pin := strings.TrimSuffix(strings.Repeat("AB:", 32), ":")
-	if _, saved, _, err := e.s.Servers.Add(t.Context(), servers.Input{Name: "Studio", Address: "https://127.0.0.1:1", Secret: secondSecret, SelfSigned: true, Pin: pin}, true); err != nil || !saved {
-		t.Fatalf("add: %v, saved %v", err, saved)
-	}
+	e, l := remoteEnv(t, withAgents(sp))
+	// What the tree holds: a group, a board, the owner's chats.
 	g, err := e.a.CreateGroup("Mine", "")
 	if err != nil {
 		t.Fatal(err)
@@ -540,16 +534,10 @@ func TestAPIClientSnapshot(t *testing.T) {
 	owner := e.chat(`{"agent":"claude","group":"` + g.ID + `"}`)
 	old := e.chat(`{"agent":"claude","group":"` + model.Ungrouped + `"}`)
 	e.expect(200, "POST", "/api/chats/"+old.ID+"/archive", "")
-	page := e.expect(200, "GET", "/api/state", "")
-	for _, s := range []string{`"servers"`, "Studio", pin, `"dataDir"`, e.a.DataDir, `"lists"`, `"libraries"`} {
-		if !strings.Contains(page, s) {
-			t.Fatalf("the page's state lacks %s: %s", s, page)
-		}
-	}
 
 	want := []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "states"}
-	// tree fails unless an API client's state is the page's in every field the two share: the
-	// lists are what the server's own page gets, as it gets them.
+	// tree fails unless a client's state has the keys of the snapshot and no other, and is the
+	// state every client gets.
 	tree := func(what, api string) {
 		t.Helper()
 		if got := keysOf(t, api); !slices.Equal(got, want) {
@@ -557,8 +545,8 @@ func TestAPIClientSnapshot(t *testing.T) {
 		}
 		a, p := decode[map[string]json.RawMessage](t, api), decode[map[string]json.RawMessage](t, e.expect(200, "GET", "/api/state", ""))
 		for _, k := range want {
-			if k != "library" && string(a[k]) != string(p[k]) { // a page has "libraries"
-				t.Errorf("%s: %q is\n%s\nthe page's is\n%s", what, k, a[k], p[k])
+			if string(a[k]) != string(p[k]) {
+				t.Errorf("%s: %q is\n%s\nthe owner's is\n%s", what, k, a[k], p[k])
 			}
 		}
 	}
@@ -656,16 +644,12 @@ func TestAPIClientSnapshot(t *testing.T) {
 	}
 	// Neither the state nor the stream of a client holds what is no part of the tree.
 	seen := stateX + "\n" + stateY + "\n" + snapX + "\n" + snapY + "\n" + strings.Join(evs[0], "\n") + "\n" + strings.Join(evs[1], "\n")
-	// (The defaults have a key "servers" of their own, per group: what is asked for here is the
-	// server list, which is a top-level field of the page's state and an event of its own type.)
-	for _, s := range []string{`"servers":[`, "Studio", "https://127.0.0.1:1", pin, secondSecret, testSecret, `"dataDir"`, e.a.DataDir,
-		`"lists"`, `"libraries"`, `"sections"`, ownID} {
+	// (The defaults have a key "servers" of their own, per group: what is asked for here is a
+	// list of servers, which is no part of the snapshot.)
+	for _, s := range []string{`"servers":[`, testSecret, `"dataDir"`, e.a.DataDir, `"lists"`, `"libraries"`, `"sections"`, ownID} {
 		if strings.Contains(seen, s) {
 			t.Errorf("a client's state or stream holds %s", s)
 		}
-	}
-	if !strings.Contains(page, `"servers":[`) {
-		t.Fatalf("the page's state has no server list to tell by: %s", page)
 	}
 }
 
@@ -682,7 +666,7 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	called := map[string]bool{"GET /api/events": true}
 	call := func(route string, body any) obj {
 		t.Helper()
-		if !slices.Contains(RemoteRoutes, route) {
+		if !slices.Contains(ClientRoutes, route) {
 			t.Fatalf("%s is no route of the table", route)
 		}
 		called[route] = true
@@ -775,7 +759,7 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	// and the chat is put into one. Whether a group shows collapsed is not a client's to say.
 	group := func(route, id string, body any) obj {
 		t.Helper()
-		if !slices.Contains(RemoteRoutes, route) {
+		if !slices.Contains(ClientRoutes, route) {
 			t.Fatalf("%s is no route of the table", route)
 		}
 		called[route] = true
@@ -834,6 +818,8 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 		t.Fatalf("the client's state does not list the owner's chat beside its own and the fork: %v", st)
 	}
 
+	// The answer to server_stopping: the client's saves are written.
+	call("POST /api/client/flushed", nil)
 	// The delete, last: the client is told its chat is gone.
 	call("DELETE /api/chats/{id}", nil)
 	if got := e.reach(x)[0]; count(got, "chat_removed", chat1) != 1 {
@@ -843,7 +829,7 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	// (TestBoardRoutesOfAnAPIClient), the library routes in libraryremote_test.go
 	// (TestLibraryRoutesOfAnAPIClient) and the two image routes in remoteimages_test.go
 	// (TestImageRoutesOfAnAPIClient).
-	for _, route := range RemoteRoutes {
+	for _, route := range ClientRoutes {
 		if !called[route] && !isBoardRoute(route) && !isLibraryRoute(route) && !slices.Contains(imagePatterns, route) {
 			t.Errorf("the route %s of the table was not called", route)
 		}
@@ -1139,7 +1125,7 @@ func TestAPIClientWithNoPage(t *testing.T) {
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp))
 	// The env's own page goes: a new stream with its id ends the old one, and is then closed.
-	bridgetest.Connect(t, e.url, clientID).Close()
+	e.page(clientID).Close()
 	for deadline := time.Now().Add(5 * time.Second); e.s.Bridge.Known(clientID); time.Sleep(2 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the page's stream did not end")
@@ -1287,14 +1273,14 @@ func TestEventsOfAnAPIClient(t *testing.T) {
 	row("the owner's chat", "chat_items", false, false, false, false)
 	row("the owner's chat", "tree", false, false, false, false)
 
-	// What tells a page of the servers this one connects to, and of their libraries: the pages
-	// alone, whoever sends it.
-	for _, typ := range pageOnly {
+	// What told a page of the servers a server connected to, and of their libraries, went with
+	// the page: no client is sent one, whoever sends it.
+	for _, typ := range wentWithThePage {
 		e.s.Bridge.Broadcast(map[string]any{"type": typ, "servers": []any{}, "id": "s_0123456789ab"})
 	}
 	step()
-	for _, typ := range pageOnly {
-		row("an event about another server", typ, false, false, false, true)
+	for _, typ := range wentWithThePage {
+		row("an event about another server", typ, false, false, false, false)
 	}
 	if len(xs)+len(ys)+len(zs) != 0 {
 		t.Errorf("of the events about other servers the API clients were sent %v, %v and %v", xs, ys, zs)
@@ -1394,13 +1380,12 @@ func TestEventsOfAnAPIClient(t *testing.T) {
 func TestReloadSecret(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
-	p := e.page("P")
 	x, _ := l.api(apiX)
 	y, _ := l.api(apiY)
 	next, third := strings.Repeat("ab", 32), strings.Repeat("cd", 32)
 	reloads := func() float64 {
 		t.Helper()
-		st := decode[obj](t, e.expect(200, "GET", "/api/remote/status", ""))
+		st := decode[obj](t, e.control("GET", "/status"))["client"].(obj)
 		n, ok := st["secretReloads"].(float64)
 		if st["listening"] != true || !ok || strings.Contains(fmt.Sprint(st), testSecret) || strings.Contains(fmt.Sprint(st), next) {
 			t.Fatalf("the status: %v", st)
@@ -1414,31 +1399,30 @@ func TestReloadSecret(t *testing.T) {
 	if n := e.s.ReloadSecret(next); n != 2 {
 		t.Fatalf("ReloadSecret closed %d streams, want 2", n)
 	}
-	// The old secret is refused, on every route, and the streams it opened have ended.
-	for _, rq := range [][2]string{{"GET", "/api/hello"}, {"GET", "/api/state"}, {"GET", "/api/events"}, {"POST", "/api/chats"}} {
+	// The old secret is refused, on every route but hello, and the streams it opened have ended.
+	for _, rq := range [][2]string{{"GET", "/api/state"}, {"GET", "/api/events"}, {"POST", "/api/chats"}} {
 		if status, out := l.call(apiX, testSecret, rq[0], rq[1], ""); status != 401 || strings.TrimSpace(out) != `{"error":"unauthorized"}` {
 			t.Fatalf("%s %s with the old secret: %d %s", rq[0], rq[1], status, out)
 		}
 	}
+	if status, _ := l.call(apiX, "", "GET", "/api/hello", ""); status != 200 {
+		t.Fatalf("hello after a reload, with no secret: %d", status)
+	}
 	x.ExpectEnded()
 	y.ExpectEnded()
 	if e.s.Bridge.Known(apiX) || e.s.Bridge.Known(apiY) {
-		t.Fatal("an API client is still connected")
-	}
-	// The page's stream stays.
-	if !e.s.Bridge.Known("P") || len(e.reach(p)[0]) != 0 {
-		t.Fatal("the page's stream did not stay as it was")
+		t.Fatal("a client is still connected")
 	}
 	if n := reloads(); n != 1 {
 		t.Fatalf("%v reloads after one", n)
 	}
 	// A new stream needs the new secret.
-	if status, out := l.call(apiX, next, "GET", "/api/hello", ""); status != 200 {
-		t.Fatalf("hello with the new secret: %d %s", status, out)
+	if status, out := l.call(apiX, next, "GET", "/api/state", ""); status != 200 {
+		t.Fatalf("state with the new secret: %d %s", status, out)
 	}
 	x2 := bridgetest.ConnectWith(t, l.base, apiX, l.options(apiX, next))
 	x2.Welcome()
-	if got := e.reach(x2, p); len(got[0]) != 0 || len(got[1]) != 0 {
+	if got := e.reach(x2); len(got[0]) != 0 {
 		t.Fatalf("after the reload: %v", got)
 	}
 	// A second reload, with one stream open.
@@ -1446,8 +1430,8 @@ func TestReloadSecret(t *testing.T) {
 		t.Fatalf("the second reload closed %d streams; %v reloads", n, reloads())
 	}
 	x2.ExpectEnded()
-	if status, _ := l.call(apiX, next, "GET", "/api/hello", ""); status != 401 {
-		t.Fatalf("hello with the second secret after the third was set: %d", status)
+	if status, _ := l.call(apiX, next, "GET", "/api/state", ""); status != 401 {
+		t.Fatalf("state with the second secret after the third was set: %d", status)
 	}
 	// With none open it closes none.
 	if n := e.s.ReloadSecret(third); n != 0 || reloads() != 3 {
@@ -1467,13 +1451,10 @@ func TestReloadSecret(t *testing.T) {
 		}
 	}
 
-	// With remote access off there is nothing to do.
-	off := newEnv(t)
-	if n := off.s.ReloadSecret(next); n != 0 || off.s.Remote != nil {
-		t.Fatalf("ReloadSecret with remote access off: %d", n)
-	}
-	if out := strings.TrimSpace(off.expect(200, "GET", "/api/remote/status", "")); out != `{"listening":false}` {
-		t.Fatalf("the status with remote access off: %s", out)
+	// Without a listener's identity there is nothing to do.
+	off := newRawEnv(t)
+	if n := off.s.ReloadSecret(next); n != 0 || off.s.Clients != nil {
+		t.Fatalf("ReloadSecret without a listener: %d", n)
 	}
 }
 
@@ -1481,9 +1462,9 @@ func TestReloadSecret(t *testing.T) {
 // stay open with the old secret: it gets no snapshot and ends at once.
 func TestStreamAcrossAReloadEnds(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t, withRemote)
+	e := newRawEnv(t, withClients)
 	stream := func(gen int64) (*httptest.ResponseRecorder, chan struct{}, context.CancelFunc) {
-		ctx, cancel := context.WithCancel(context.WithValue(context.Background(), remoteKey{}, remoteCall{secretGen: gen}))
+		ctx, cancel := context.WithCancel(context.WithValue(context.Background(), callKey{}, clientCall{secretGen: gen}))
 		req := httptest.NewRequest("GET", "/api/events", nil).WithContext(ctx)
 		req.Header.Set(ClientHeader, apiX)
 		w, done := httptest.NewRecorder(), make(chan struct{})
@@ -1493,7 +1474,7 @@ func TestStreamAcrossAReloadEnds(t *testing.T) {
 		}()
 		return w, done, cancel
 	}
-	before := e.s.Remote.secretGen.Load()
+	before := e.s.Clients.secretGen.Load()
 	e.s.ReloadSecret(strings.Repeat("ab", 32))
 
 	// Checked before the reload.
@@ -1513,7 +1494,7 @@ func TestStreamAcrossAReloadEnds(t *testing.T) {
 		}
 	}
 	// Checked after it: the stream stays open, with its snapshot.
-	_, done, cancel2 := stream(e.s.Remote.secretGen.Load())
+	_, done, cancel2 := stream(e.s.Clients.secretGen.Load())
 	select {
 	case <-done:
 		t.Fatal("the stream of a request checked after the reload ended")
@@ -1524,162 +1505,4 @@ func TestStreamAcrossAReloadEnds(t *testing.T) {
 	}
 	cancel2()
 	<-done
-}
-
-// ---- the consumer: internal/servers against the real listener ---------------------
-
-// hooked keeps what a servers.Manager tells its hooks.
-type hooked struct {
-	mu     sync.Mutex
-	snaps  []string
-	events []string // "<type> <raw>", snapshots as "snapshot <raw>" too, in order
-	states []servers.State
-}
-
-func (h *hooked) hooks() servers.Hooks {
-	add := func(f func()) {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		f()
-	}
-	return servers.Hooks{
-		Snapshot: func(_ string, raw json.RawMessage) {
-			add(func() { h.snaps = append(h.snaps, string(raw)); h.events = append(h.events, "snapshot "+string(raw)) })
-		},
-		Event: func(_, typ string, raw json.RawMessage) {
-			add(func() { h.events = append(h.events, typ+" "+string(raw)) })
-		},
-		State: func(_ string, _, to servers.State) { add(func() { h.states = append(h.states, to) }) },
-	}
-}
-
-// await waits until ok holds for what the hooks were told.
-func (h *hooked) await(t *testing.T, what string, ok func(h *hooked) bool) {
-	t.Helper()
-	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		h.mu.Lock()
-		done := ok(h)
-		events, states := slices.Clone(h.events), slices.Clone(h.states)
-		h.mu.Unlock()
-		if done {
-			return
-		}
-		if time.Now().After(deadline) {
-			for i, ev := range events {
-				events[i] = ev[:min(len(ev), 80)]
-			}
-			t.Fatalf("waiting for %s: states %v, events %v", what, states, events)
-		}
-	}
-}
-
-// The connection another server makes (internal/servers: the test of the Servers dialog and the
-// manager's own connection) against the real listener: the contract of the two packages.
-func TestServersPackageAgainstTheListener(t *testing.T) {
-	t.Parallel()
-	sp := &apiSpawner{}
-	e, l := remoteEnv(t, withAgents(sp))
-	timing := servers.Timing{Backoff: []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, Jitter: -1}
-	opts := servers.Options{Root: t.TempDir(), LocalID: apiX, Version: "test", Timing: timing}
-	target := servers.Target{Address: l.base, Secret: testSecret, SelfSigned: true, Pin: l.pin}
-	ctx := t.Context()
-
-	// The test of the dialog. A server that finds its own id there says so, at hello.
-	if r := servers.TestConnection(ctx, target, servers.Identity{LocalID: ownID}, opts); r.OK || r.Outcome != servers.OutcomeIsLocal || r.Step != 4 {
-		t.Fatalf("the test with the server's own id: %+v", r)
-	}
-	r := servers.TestConnection(ctx, target, servers.Identity{}, opts)
-	if !r.OK || r.Outcome != servers.OutcomeConnected || r.Step != 5 || r.InstanceID != ownID || r.FeatureLevel != FeatureLevel || len(r.Agents) != 3 {
-		t.Fatalf("the test: %+v", r)
-	}
-	wrong := target
-	wrong.Secret = strings.Repeat("ab", 32)
-	if r := servers.TestConnection(ctx, wrong, servers.Identity{}, opts); r.OK || r.Outcome != servers.OutcomeSecretRefused {
-		t.Fatalf("the test with another secret: %+v", r)
-	}
-	// A server with no instance id of its own states no client id: every request is refused,
-	// which reads as "not AI Whiteboard".
-	noID := opts
-	noID.LocalID = ""
-	if r := servers.TestConnection(ctx, target, servers.Identity{}, noID); r.OK || r.Outcome != servers.OutcomeNotAIWB {
-		t.Fatalf("the test of a server without an instance id: %+v", r)
-	}
-	if e.s.Bridge.Known(apiX) {
-		t.Fatal("the test left a stream open")
-	}
-
-	// The manager: add, connect, the lists.
-	m, err := servers.Open(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &hooked{}
-	m.SetHooks(h.hooks())
-	m.Start()
-	t.Cleanup(m.Close)
-	v, saved, res, err := m.Add(ctx, servers.Input{Name: "Studio", Address: l.base, Secret: testSecret, SelfSigned: true, Pin: l.pin}, false)
-	if err != nil || !saved || res == nil || !res.OK || res.Step != 5 || res.FeatureLevel != FeatureLevel || v.InstanceID != ownID {
-		t.Fatalf("add: %+v, saved %v, result %+v, %v", v, saved, res, err)
-	}
-	h.await(t, "the connection", func(h *hooked) bool { return slices.Contains(h.states, servers.StateConnected) && len(h.snaps) == 1 })
-	if got, _ := m.View(v.ID); got.State != servers.StateConnected || got.Version == "" || len(got.Agents) != 3 {
-		t.Fatalf("the entry: %+v", got)
-	}
-	lists, ok := m.Lists(v.ID)
-	if !ok || lists.Home != "/home/owner" || lists.DefaultCwd != e.a.DefaultCwd || len(lists.Catalogs) != 3 || lists.Catalogs[model.Claude] == nil || len(lists.Agents) != 3 {
-		t.Fatalf("the lists: %+v, %v", lists, ok)
-	}
-	if got := keysOf(t, h.snaps[0]); !slices.Equal(got, []string{"agents", "boards", "catalogs", "chats", "defaultCwd", "defaults", "groups", "home", "library", "states", "type"}) {
-		t.Fatalf("the snapshot the hooks got: %v", got)
-	}
-	if !e.s.Bridge.Known(apiX) {
-		t.Fatal("the manager's stream is not the API client's with its instance id")
-	}
-
-	// A new chat and its first message passed on, and their events through the hooks.
-	reply, err := m.Do(ctx, v.ID, "POST", "/api/chats", []byte(`{"id":"`+chat1+`","agent":"claude","group":"`+model.Ungrouped+`"}`), 0)
-	if err != nil || reply.Status != 200 {
-		t.Fatalf("the new chat: %+v, %v", reply, err)
-	}
-	if got := decode[model.ChatView](t, string(reply.Body)); got.ID != chat1 || got.Locked {
-		t.Fatalf("the new chat's answer: %s", reply.Body)
-	}
-	if reply, err := m.Do(ctx, v.ID, "POST", "/api/chats/"+chat1+"/messages", []byte(`{"text":"the first message"}`), 0); err != nil || reply.Status != 200 {
-		t.Fatalf("the first message: %+v, %v", reply, err)
-	}
-	has := func(typ string, parts ...string) func(h *hooked) bool {
-		return func(h *hooked) bool {
-			return slices.ContainsFunc(h.events, func(ev string) bool {
-				return strings.HasPrefix(ev, typ+" ") && !slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(ev, p) })
-			})
-		}
-	}
-	h.await(t, "the chat's list events", func(h *hooked) bool { return has("chat", chat1)(h) && has("branch_state", chat1)(h) })
-	// The read through the manager follows; the content comes through the hooks.
-	if reply, err := m.Do(ctx, v.ID, "GET", "/api/chats/"+chat1+"/items", nil, 0); err != nil || reply.Status != 200 {
-		t.Fatalf("the read: %+v, %v", reply, err)
-	}
-	emit(t, &sp.of(t, chat1).fakeAgent, agent.Event{Kind: agent.EvText, Text: "for the other server"})
-	h.await(t, "the chat's content", has("chat_items", chat1, "for the other server"))
-	h.mu.Lock()
-	if !strings.HasPrefix(h.events[0], "snapshot ") {
-		t.Errorf("the first thing the hooks got: %.60s", h.events[0])
-	}
-	h.mu.Unlock()
-
-	// The secret changes: the entry ends as "secret not accepted", and sends no more.
-	if n := e.s.ReloadSecret(strings.Repeat("cd", 32)); n != 1 {
-		t.Fatalf("ReloadSecret closed %d streams", n)
-	}
-	h.await(t, "the entry to end as secret_not_accepted", func(h *hooked) bool {
-		return len(h.states) > 0 && h.states[len(h.states)-1] == servers.StateSecretNotAccepted
-	})
-	if got, _ := m.View(v.ID); got.State != servers.StateSecretNotAccepted {
-		t.Fatalf("the entry after the reload: %+v", got)
-	}
-	for _, line := range l.logged() {
-		if strings.Contains(line, testSecret) {
-			t.Fatalf("a log line holds the secret: %q", line)
-		}
-	}
 }

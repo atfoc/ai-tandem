@@ -3,6 +3,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { IMAGE_WORD, imageUrl } from "../src/logic/chatimage.ts";
+import { installFake } from "./fixtures/faketransport.ts";
+
+installFake();
 import { largeCaption, showsText, shownImages, stepImage } from "../src/logic/messageimages.ts";
 import { nameText } from "../src/logic/quotes.ts";
 import { chatTitle } from "../src/logic/labels.ts";
@@ -41,7 +44,7 @@ test("a message's thumbnails: each image at the chat's own address, in the messa
     { id: ID, src: imageUrl("c_1", ID), name: "one.png" },
     { id: ID2, src: imageUrl("c_1", ID2), name: "two.jpg" },
   ]);
-  assert.equal(shownImages("c_1", [png()])[0].src, `/api/chats/c_1/images/${ID}`);
+  assert.equal(shownImages("c_1", [png()])[0].src, `aiwb-picture://p/local/c_1/${ID}`);
   assert.deepEqual(shownImages("c_1", undefined), []);
   assert.deepEqual(shownImages("c_1", []), []);
 });

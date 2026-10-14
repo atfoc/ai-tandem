@@ -59,7 +59,7 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
   const selOf = (id) => seeded.find((s) => s.id === id)?.sel ?? fail(`the seed has no state ${id}`);
   const library = () => mockEval("return JSON.stringify(libraries);", url);
   const setLocal = (lib) => mockEval(`setLibrary("local", ${JSON.stringify(lib)});`, url);
-  const servers = (list) => mockEval(`extra.servers = ${JSON.stringify([{ id: "local", local: true, name: "This computer", state: "connected" }, ...list])}; send({ type: "servers", servers: extra.servers, notice: "" });`, url);
+  const servers = (list) => mockEval(`setServers(${JSON.stringify(list)});`, url);
   // (the seed's servers leave the list: this computer's library is the only one until Studio joins)
   await servers([]);
   await setLocal(LIBRARY);
@@ -345,7 +345,7 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
       await page.keyboard.type("studio stand");
       await c.shows("a search for the server's name and a prompt's name", (x) => x.rows.join("|") === "Studio/team/standup");
       // the server drops: its prompt is still listed, marked, and can be inserted
-      await mockEval(`libraries.s_studio.connected = false; sendLibrary("s_studio"); extra.servers[1].state = "unreachable"; send({ type: "server_state", server: extra.servers[1] });`, url);
+      await mockEval(`setServerState("s_studio", "unreachable");`, url);
       s = await c.shows("a server that dropped", (x) => x.rows.join("|") === "Studio/team/standup" && x.off.join("|") === "Studio/team/standup");
       await page.keyboard.press("Enter");
       await c.holds("a prompt of a server that dropped, inserted", "Hello" + THEIRS.prompts[0].text + " world");

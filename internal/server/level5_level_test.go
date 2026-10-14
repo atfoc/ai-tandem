@@ -1,7 +1,6 @@
 package server
 
 import (
-	"ai-whiteboard/internal/servers"
 	"fmt"
 	"os"
 	"slices"
@@ -10,13 +9,13 @@ import (
 	"time"
 )
 
-// The level of a client (contract 2.1): hello is open to every app that has the secret, every
-// other route refuses a client that states no level or one below 5, and the refusal has its
-// place among the listener's checks and its line in the log.
+// The level of a client: hello is open to every app, every other route refuses a client that
+// states no level or one below 6, and the refusal has its place among the listener's checks and
+// its line in the log.
 
-// l5Old is what a client that is refused states as its level: nothing, a level below 5, and
+// l5Old is what a client that is refused states as its level: nothing, a level below 6, and
 // values that are no integer.
-var l5Old = []string{"", "4", "1", "0", "-5", "4.9", "5.0", "five", "v5", "5x"}
+var l5Old = []string{"", "5", "4", "1", "0", "-5", "5.9", "6.0", "six", "v6", "6x"}
 
 // l5Tree makes one group with a board and a chat, as the owner, and returns the three ids. Their
 // names are ones no other answer holds by chance.
@@ -54,20 +53,22 @@ func l5PathOf(route, group, board, chat string) (method, path string) {
 func TestLevel5HelloIsOpenToEveryLevel(t *testing.T) {
 	t.Parallel()
 	_, l := remoteEnv(t)
-	if FeatureLevel != 5 || MinClientLevel != 5 || servers.LevelHeader != "X-AIWB-Level" {
-		t.Fatalf("the level is %d, the lowest client level %d, the header %q", FeatureLevel, MinClientLevel, servers.LevelHeader)
+	if FeatureLevel != 6 || MinClientLevel != 6 || LevelHeader != "X-AIWB-Level" {
+		t.Fatalf("the level is %d, the lowest client level %d, the header %q", FeatureLevel, MinClientLevel, LevelHeader)
 	}
-	for _, level := range append(slices.Clone(l5Old), "5", "6", "40") {
-		for _, id := range []string{apiX, ownID} { // the server's own id may ask hello too
-			status, out := l.callAt(level, id, testSecret, "GET", "/api/hello", "")
-			if status != 200 || !strings.Contains(out, `"featureLevel":5`) {
-				t.Fatalf("hello for a client that states the level %q: %d %s", level, status, out)
-			}
-			if got := keysOf(t, out); !slices.Equal(got, []string{"app", "featureLevel", "instanceId", "version", "webVersion"}) {
-				t.Fatalf("hello for a client that states the level %q has the fields %v", level, got)
-			}
-			if got := decode[map[string]any](t, out); got["app"] != "ai-whiteboard" || got["instanceId"] != ownID {
-				t.Fatalf("hello: %s", out)
+	for _, level := range append(slices.Clone(l5Old), "6", "7", "40") {
+		for _, id := range []string{apiX, ownID, "", "client-1"} { // any id, and none, may ask hello
+			for _, secret := range []string{testSecret, ""} { // and no secret is needed
+				status, out := l.callAt(level, id, secret, "GET", "/api/hello", "")
+				if status != 200 || !strings.Contains(out, `"featureLevel":6`) {
+					t.Fatalf("hello for a client that states the level %q: %d %s", level, status, out)
+				}
+				if got := keysOf(t, out); !slices.Equal(got, []string{"app", "featureLevel", "instanceId", "version"}) {
+					t.Fatalf("hello for a client that states the level %q has the fields %v", level, got)
+				}
+				if got := decode[map[string]any](t, out); got["app"] != "ai-whiteboard" || got["instanceId"] != ownID {
+					t.Fatalf("hello: %s", out)
+				}
 			}
 		}
 	}
@@ -80,16 +81,16 @@ func TestLevel5RefusesAnOlderClient(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
 	group, board, chat := l5Tree(e)
-	h := e.s.RemoteHandler()
+	h := e.s.ClientHandler()
 	before := e.expect(200, "GET", "/api/state", "")
 
 	// Every route of the table but hello, and routes outside it: the same answer, whatever the
 	// method, and whether or not the thing named is there.
-	routes := append(slices.Clone(RemoteRoutes[1:]), "GET /api/mcp/status", "GET /api/remote/status", "POST /api/restart", "PUT /api/groups/order",
-		"GET /api/servers", "POST /api/servers", "GET /api/on/s_0123456789ab/chats/"+chat, "POST /api/client/flushed", "GET /", "GET /index.html",
+	routes := append(slices.Clone(ClientRoutes[1:]), "GET /api/mcp/status", "GET /api/remote/status", "POST /api/restart", "PUT /api/groups/order",
+		"GET /api/servers", "POST /api/servers", "GET "+relayPrefix+"/s_0123456789ab/chats/"+chat, "POST /api/client/flushed", "GET /", "GET /index.html",
 		"PUT /api/chats/{id}", "PUT /api/boards/{id}", "GET /api/nothing", "DELETE /api/state")
-	if RemoteRoutes[0] != "GET /api/hello" {
-		t.Fatalf("the table's first route is %q", RemoteRoutes[0])
+	if ClientRoutes[0] != "GET /api/hello" {
+		t.Fatalf("the table's first route is %q", ClientRoutes[0])
 	}
 	for _, level := range l5Old {
 		for _, route := range routes {
@@ -127,9 +128,9 @@ func TestLevel5RefusesAnOlderClient(t *testing.T) {
 		t.Error("the refused stream made the client a known one")
 	}
 
-	// Level 5 and above are served: the state holds the tree, the stream opens, and a route
+	// Level 6 and above are served: the state holds the tree, the stream opens, and a route
 	// outside the table is the listener's 404.
-	for _, level := range []string{"5", "6", "40"} {
+	for _, level := range []string{"6", "7", "40"} {
 		status, out := l.callAt(level, apiX, testSecret, "GET", "/api/state", "")
 		if status != 200 || !strings.Contains(out, group) || !strings.Contains(out, board) || !strings.Contains(out, chat) {
 			t.Errorf("the state for a client of level %s: %d %s", level, status, out)
@@ -142,14 +143,14 @@ func TestLevel5RefusesAnOlderClient(t *testing.T) {
 	}
 }
 
-// The checks of the remote listener come in one order: the secret, the Host, the client id, the
+// The checks of the client listener come in one order: the secret, the Host, the client id, the
 // server's own id, the level, the table. Each request below fails every check after the one
 // that answers it.
 func TestLevel5OrderOfTheChecks(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
 	_, _, chat := l5Tree(e)
-	h := e.s.RemoteHandler()
+	h := e.s.ClientHandler()
 	const (
 		evil     = "evil.example:4748"
 		noSecret = `{"error":"unauthorized"}`
@@ -200,19 +201,19 @@ func TestLevel5OrderOfTheChecks(t *testing.T) {
 		status, out := l5Ask(h, l, l5Req{method: p[0], path: p[1], secret: testSecret, client: apiX, level: testLevel})
 		l5Is(t, p[0]+" "+p[1]+" with everything right", status, out, 404, l5Gate)
 	}
-	// Hello passes the level and the own id, and nothing before them.
+	// Hello needs the Host and nothing else: no secret, no client id, no level.
 	hello := func(rq l5Req) (int, string) {
 		rq.method, rq.path = "GET", "/api/hello"
 		return l5Ask(h, l, rq)
 	}
 	status, out := hello(l5Req{host: evil, client: "client-1"})
-	l5Is(t, "hello without the secret", status, out, 401, noSecret)
+	l5Is(t, "hello with a bad Host and no secret", status, out, 403, badHost)
 	status, out = hello(l5Req{secret: testSecret, host: evil, client: "client-1"})
 	l5Is(t, "hello with a bad Host", status, out, 403, badHost)
-	status, out = hello(l5Req{secret: testSecret, client: "client-1"})
-	l5Is(t, "hello with a bad client id", status, out, 400, badID)
-	if status, out = hello(l5Req{secret: testSecret, client: ownID}); status != 200 || !strings.Contains(out, `"featureLevel":5`) {
-		t.Errorf("hello with the server's own id and no level: %d %s", status, out)
+	for _, rq := range []l5Req{{client: "client-1"}, {secret: testSecret, client: "client-1"}, {client: ownID}, {}} {
+		if status, out = hello(rq); status != 200 || !strings.Contains(out, `"featureLevel":6`) {
+			t.Errorf("hello with %+v: %d %s", rq, status, out)
+		}
 	}
 	if _, err := os.Stat(e.st.P.ChatDir(chat)); err != nil {
 		t.Errorf("the chat after the refused calls: %v", err)
@@ -228,10 +229,10 @@ func TestLevel5OrderOfTheChecks(t *testing.T) {
 func TestLevel5RefusalIsLoggedOncePerAddressAMinute(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
-	rm := e.s.Remote
+	rm := e.s.Clients
 	now := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
 	rm.now = func() time.Time { return now }
-	h := e.s.RemoteHandler()
+	h := e.s.ClientHandler()
 	ask := func(addr, level, method, path string) int {
 		status, _ := l5Ask(h, l, l5Req{method: method, path: path, secret: testSecret, client: apiX, level: level, addr: addr})
 		return status

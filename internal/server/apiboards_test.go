@@ -13,10 +13,9 @@ import (
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/servers"
 )
 
-// The boards of the server for an API client on the remote listener: the real ServeRemote,
+// The boards of the server for an API client on the remote listener: the real ServeClients,
 // stand-in API clients and stand-in pages, as in apiclient_test.go. A client makes a board with
 // the page's call and reaches every board of the server, whoever made it.
 
@@ -28,6 +27,9 @@ const noSuchBoard = `{"code":"not_found","error":"no such board"}`
 func isBoardRoute(route string) bool {
 	return strings.Contains(route, " /api/boards/") || route == "POST /api/boards" || route == "POST /api/rpc-reply"
 }
+
+// isLibraryRoute is a route of the prompt library.
+func isLibraryRoute(route string) bool { return strings.Contains(route, " /api/library") }
 
 // Every board route of the table, for a client, on a board it made.
 func TestBoardRoutesOfAnAPIClient(t *testing.T) {
@@ -43,7 +45,7 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	var id string // the board the routes are called for
 	call := func(want int, route string, body any) obj {
 		t.Helper()
-		if !slices.Contains(RemoteRoutes, route) {
+		if !slices.Contains(ClientRoutes, route) {
 			t.Fatalf("%s is no route of the table", route)
 		}
 		called[route] = true
@@ -112,7 +114,7 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 		req, _ := http.NewRequest("GET", l.base+"/api/boards/"+id+"/scene", nil)
 		req.Header.Set(SecretHeader, testSecret)
 		req.Header.Set(ClientHeader, apiX)
-		req.Header.Set(servers.LevelHeader, testLevel)
+		req.Header.Set(LevelHeader, testLevel)
 		resp, err := l.http.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -228,13 +230,13 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 		t.Fatal("the board is still there after the delete")
 	}
 	e.holder(id, "")
-	for _, route := range RemoteRoutes {
+	for _, route := range ClientRoutes {
 		if isBoardRoute(route) && !called[route] {
 			t.Errorf("the route %s of the table was not called", route)
 		}
 	}
 	// What the table does not serve to an API client.
-	for _, r := range [][2]string{{"PUT", "/api/boards/" + other.ID}, {"POST", "/api/boards/" + other.ID + "/reveal"}, {"POST", "/api/client/flushed"}} {
+	for _, r := range [][2]string{{"PUT", "/api/boards/" + other.ID}, {"POST", "/api/boards/" + other.ID + "/reveal"}} {
 		if status, out := x.Do(r[0], r[1], obj{"name": "n", "group": model.Ungrouped}); status != 404 || strings.TrimSpace(string(out)) != `{"error":"not found"}` {
 			t.Errorf("%s %s: %d %s, want 404 not found", r[0], r[1], status, out)
 		}
@@ -322,7 +324,7 @@ func TestBoardRoutesServeEveryBoard(t *testing.T) {
 	// A board that is not there: every route that names one says so, with the code, and the
 	// release, which ends a hold whatever the board is, says that there was none.
 	const missing = "b_zzzz9999"
-	for _, route := range RemoteRoutes {
+	for _, route := range ClientRoutes {
 		if !strings.Contains(route, " /api/boards/") {
 			continue
 		}
@@ -579,32 +581,85 @@ func TestChatAndToolCallOnABoardOfAnAPIClient(t *testing.T) {
 	e.holder(own.ID, "P")
 }
 
-// An API client's drawing is cut at SceneMax; a page's is not.
-func TestSceneCapIsTheAPIClientsAlone(t *testing.T) {
+// A client's drawing is cut at SceneMax, 128 MiB, whoever the client is: a drawing of 100 MB is
+// stored, one byte more than the cap is refused with 413 and stores nothing.
+func TestSceneCapIs128MiB(t *testing.T) {
 	t.Parallel()
+	if SceneMax != 128<<20 {
+		t.Fatalf("SceneMax is %d", SceneMax)
+	}
 	e, l := remoteEnv(t)
-	p := e.page("P")
 	x, _ := l.api(apiX)
 	board1 := newBoard(t, x, "X").ID
 	if state, _ := take(t, x, board1, true); state != "held" {
 		t.Fatalf("X's take: %s", state)
 	}
-	// Asked of the handler, without the listener: 32 MiB are not sent over TLS.
-	h := e.s.RemoteHandler()
-	put := func(body string) (int, string) {
-		w := remoteDoAs(h, apiX, "PUT", "/api/boards/"+board1+"/scene?rev=0", "127.0.0.1:"+strconv.Itoa(l.port), testSecret, body)
+	// Asked of the handler, without the listener: 128 MiB are not sent over TLS.
+	h := e.s.ClientHandler()
+	put := func(rev int, body string) (int, string) {
+		w := clientDoAs(h, apiX, "PUT", "/api/boards/"+board1+"/scene?rev="+strconv.Itoa(rev), "127.0.0.1:"+strconv.Itoa(l.port), testSecret, body)
 		return w.Code, strings.TrimSpace(w.Body.String())
 	}
 	const head, tail = `{"type":"excalidraw","elements":[],"pad":"`, `"}`
 	of := func(size int) string { return head + strings.Repeat("a", size-len(head)-len(tail)) + tail }
-	if status, out := put(of(SceneMax + 1)); status != 413 || out != `{"code":"too_large","error":"the drawing is larger than 32 MB"}` {
+	if status, out := put(0, of(SceneMax+1)); status != 413 || out != `{"code":"too_large","error":"the drawing is larger than 128 MB"}` {
 		t.Fatalf("a drawing of one byte more than the cap: %d %s", status, out)
 	}
 	e.stored(board1, boards.EmptyScene, 0)
-	if status, out := put(of(SceneMax)); status != 200 || out != `{"ok":true,"rev":1}` {
+	if status, out := put(0, of(100_000_000)); status != 200 || out != `{"ok":true,"rev":1}` {
+		t.Fatalf("a drawing of 100 MB: %d %.200s", status, out)
+	}
+	if status, out := put(1, of(SceneMax)); status != 200 || out != `{"ok":true,"rev":2}` {
 		t.Fatalf("a drawing of the cap's size: %d %.200s", status, out)
 	}
-	// The page's write of a larger one is stored.
-	own := newBoard(t, p, "own")
-	written(t, p, own.ID, 0, of(SceneMax+1))
+}
+
+// POST /api/client/flushed is the client's answer to server_stopping: it ends the wait of
+// StopAndFlush for that client, which holds a board and is asked to write what it has.
+func TestFlushedEndsTheWaitOfStopAndFlush(t *testing.T) {
+	t.Parallel()
+	e, l := remoteEnv(t)
+	x, _ := l.api(apiX)
+	board := newBoard(t, x, "X")
+	if state, _ := take(t, x, board.ID, true); state != "held" {
+		t.Fatalf("X's take: %s", state)
+	}
+	done := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		e.s.Bridge.StopAndFlush(time.Minute)
+		done <- time.Since(start)
+	}()
+	for x.Next()["type"] != "server_stopping" {
+	}
+	select {
+	case d := <-done:
+		t.Fatalf("StopAndFlush returned after %s, before the client answered", d)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if status, out := x.Do("POST", "/api/client/flushed", nil); status != 200 || strings.TrimSpace(string(out)) != `{"ok":true}` {
+		t.Fatalf("flushed: %d %s", status, out)
+	}
+	select {
+	case <-done:
+	case <-time.After(waitLimit):
+		t.Fatal("StopAndFlush did not end after the client answered")
+	}
+}
+
+// A board call of an agent, when no client holds the board or the chat's board, fails at once
+// with the text for the agent: the window is closed, as it is with no page open.
+func TestBoardToolWithNoHolderFailsAtOnce(t *testing.T) {
+	t.Parallel()
+	e, l := remoteEnv(t)
+	x, _ := l.api(apiX)
+	bd, token := e.boardChat(x)
+	if got := release(t, x, bd.ID); got != "free" { // the client made the board and held it
+		t.Fatalf("release: %s", got)
+	}
+	start := time.Now()
+	text, isErr := e.tool(token, "read_board")
+	if !isErr || !strings.Contains(text, "isn't open") || time.Since(start) > 5*time.Second {
+		t.Fatalf("the tool call with no holder: %q isErr=%v after %s", text, isErr, time.Since(start))
+	}
 }

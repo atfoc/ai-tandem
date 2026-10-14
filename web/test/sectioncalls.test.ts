@@ -13,12 +13,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { fakeStream } from "./fixtures/stream.ts";
 import { putBack, shownAhead } from "../src/logic/sections.ts";
 import { goneBySend } from "../src/logic/sendend.ts";
 import type { Group } from "../src/types.ts";
 
-let source: { onmessage?: (e: { data: string }) => void } | undefined;
-(globalThis as any).EventSource = class { onmessage?: (e: { data: string }) => void; constructor() { source = this; } close() {} };
+const stream = fakeStream();
 (globalThis as any).navigator ??= { platform: "MacIntel" };
 (globalThis as any).document ??= { querySelector: () => null, activeElement: null };
 (globalThis as any).window ??= { devicePixelRatio: 1, innerWidth: 1280, addEventListener() {}, removeEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) };
@@ -41,7 +41,7 @@ const idle = (file: string): string =>
     .map((m) => (m[1] === "scenes" ? "export const scenes = new Map();" : `export const ${m[1]} = () => {};`)).join("\n");
 const stubs: Record<string, string> = {
   "./board.ts": idle("board.ts"), "./version.ts": idle("version.ts"),
-  "./api.ts": `export const clientId = "test";
+  "./api.ts": `export const appCall = async () => ({});
     export class ApiError extends Error { constructor(status, msg, said = true, code) { super(msg); this.status = status; this.said = said; this.code = code; } }
     export const call = (...args) => globalThis.__calls.ask("call", args, ApiError);
     export const api = new Proxy({}, { get: (_, k) => (...args) => globalThis.__calls.ask(String(k), args, ApiError) });`,
@@ -55,7 +55,7 @@ const stubs: Record<string, string> = {
 };
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-calls-")), "calls.mjs");
 await esbuild.build({
-  stdin: { contents: `export * as side from "./Sidebar.tsx"; export * as chat from "./ChatView.tsx"; export * as store from "./store.ts"; export * as conn from "./conn.ts";`, resolveDir: src, loader: "ts" },
+  stdin: { contents: `export * as side from "./Sidebar.tsx"; export * as chat from "./ChatView.tsx"; export * as store from "./store.ts"; export * as conn from "./conn.ts"; export * as tr from "./transport/index.ts";`, resolveDir: src, loader: "ts" },
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent", jsx: "automatic", loader: { ".css": "empty", ".woff2": "empty" },
   banner: { js: `import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);` },
   plugins: [{
@@ -69,10 +69,11 @@ await esbuild.build({
     },
   }],
 });
-const { side, chat: chatUi, store, conn } = await import(pathToFileURL(out).href);
+const { side, chat: chatUi, store, conn, tr } = await import(pathToFileURL(out).href);
+tr.useTransport(stream.transport);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
-async function ev(m: Record<string, unknown>) { source!.onmessage!({ data: JSON.stringify(m) }); await tick(); }
+async function ev(m: Record<string, unknown>) { stream.push(m, { servers: store.getState().servers, sections: Object.keys(store.getState().sections) }); await tick(); }
 const S = () => store.getState();
 const read = (file: string) => fs.readFileSync(path.join(src, file), "utf8");
 
@@ -222,10 +223,9 @@ test("a rename of a section's chat that its server refuses, or does not answer, 
 });
 
 test("a Send to a section's chat that is answered 404 not_found says that the chat is no longer on that server", () => {
-  assert.equal(goneBySend(true, "not_found"), true);
-  assert.equal(goneBySend(false, "not_found"), false, "a chat of this computer is no thing of a section");
-  for (const code of [undefined, "no_branch", "no_server", "server_unreachable", "send_unknown", "no_answer", "bad_answer", "busy"]) assert.equal(goneBySend(true, code), false, String(code));
-  assert.ok(read("Composer.tsx").includes("if (goneBySend(inSection(chatId), code) && getState().chats[chatId]) markGone(chatId);"));
+  assert.equal(goneBySend("not_found"), true);
+  for (const code of [undefined, "no_branch", "no_server", "server_unreachable", "send_unknown", "no_answer", "bad_answer", "busy"]) assert.equal(goneBySend(code), false, String(code));
+  assert.ok(read("Composer.tsx").includes("if (goneBySend(code) && getState().chats[chatId]) markGone(chatId);"));
 });
 
 // ---- an entry removed in the Servers dialog: the answer of the DELETE and the `servers` event come in no fixed order

@@ -1,4 +1,4 @@
-// A chat of a section (a remote server of the server list) where its thread is, and in the delete
+// A chat of any server of the server list, this computer's included, where its thread is, and in the delete
 // dialog: what is shown while that server is not connected, and when the chat is no longer on it.
 // DOM-free.
 import { stateLabel, type ServerState } from "./servers.ts";
@@ -16,20 +16,19 @@ export const unreachableText = (name: string): string => `${notConnected(name)}.
 /** The warning over a chat that is on screen while its server is not connected. */
 export const awayText = (name: string): string => `${notConnected(name)}. This chat is shown as it was when the connection ended.`;
 
-/** What these read of a thing: whether it is of a section, whether its server takes a call now (the local server
- *  holds its tree), and whether the page knows that the thing is no longer on its server (it was removed there, or
- *  was not in the tree that came back). */
-export type Remote = { remote: boolean; connected: boolean; gone?: boolean };
+/** What these read of a thing: whether its server takes a call now (the page holds its tree), and whether the page
+ *  knows that the thing is no longer on its server (it was removed there, or was not in the tree that came back). */
+export type Remote = { connected: boolean; gone?: boolean };
 
 /** The server list's words for the state of an entry that is not connected, as the view of one of its things says
  *  them after its own sentence: why it is not ("Unreachable", "Too old: update the server on that machine",
  *  "Certificate changed", any state that waits for the user), which the sentence alone does not tell. An entry whose
- *  state is connected while the local server holds no tree of it yet is connecting, as its section says. "" for an
+ *  state is connected while the page holds no tree of it yet is connecting, as its section says. "" for an
  *  entry the list lacks. */
 export const stateSaid = (state: ServerState | undefined): string => (state ? stateLabel(state === "connected" ? "connecting" : state) : "");
 
-/** What a section's chat shows where its thread is.
- *  none: the thread as usual (always for a chat of this computer, and while a load runs).
+/** What a chat shows where its thread is.
+ *  none: the thread as usual (while its server is connected, and while a load runs).
  *  unreachable: no thread is kept while the server is not connected: the sentence, the entry's
  *    state (`state`: stateSaid) and "Servers…".
  *  gone: no thread is kept and the chat is no longer there: the sentence.
@@ -47,7 +46,6 @@ type RemoteView =
 const NONE: RemoteView = { kind: "none" };
 
 export function remoteView(at: Remote, name: string, state: ServerState | undefined, hasThread: boolean, err?: ThreadError): RemoteView {
-  if (!at.remote) return NONE;
   const gone = !!at.gone || err?.code === NOT_FOUND;
   if (hasThread) return gone ? { kind: "bar", text: goneText(name), gone: true } : at.connected ? NONE : { kind: "bar", text: awayText(name), gone: false, state: stateSaid(state) };
   if (gone) return { kind: "gone", text: goneText(name) };

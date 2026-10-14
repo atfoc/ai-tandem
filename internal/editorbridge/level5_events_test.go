@@ -8,11 +8,12 @@ import (
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 )
 
-// What an API client is sent at level 5, type by type: the list types of the server's whole tree
-// go to every client, the content types to the clients that follow the chat, and the
-// types of a page alone to none. A client that made nothing and follows nothing gets every list
-// event of a chat and a board, and of the groups and the defaults.
-func TestLevel5EventsOfAnAPIClient(t *testing.T) {
+// What a client is sent, type by type: the list types of the server's whole tree go to every
+// client, the content types to the clients that follow the chat, and the types of nobody's (the
+// role types, the types of other servers that went with the page) to none. A client that made
+// nothing and follows nothing gets every list event of a chat and a board, and of the groups and
+// the defaults.
+func TestEventsOfAClient(t *testing.T) {
 	t.Parallel()
 	list := []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state",
 		"catalog", "agents", "own_library"}
@@ -21,20 +22,20 @@ func TestLevel5EventsOfAnAPIClient(t *testing.T) {
 		"hello", "snapshot", "held", "release_request", "superseded", "rpc", "server_stopping"}
 
 	var allowed []string
-	for typ := range APIEvents {
-		allowed = append(allowed, typ)
+	for typ, rule := range Events {
+		if rule.Class == List || rule.Class == Content {
+			allowed = append(allowed, typ)
+		}
 	}
 	want := slices.Concat(list, content)
 	sort.Strings(allowed)
 	sort.Strings(want)
 	if !slices.Equal(allowed, want) {
-		t.Fatalf("APIEvents is %v, want %v", allowed, want)
+		t.Fatalf("the list and content rows of Events are %v, want %v", allowed, want)
 	}
 
 	b, srv := newTestServer(t, nil)
-	api := newAPIServer(t, b, nil)
-	p := open(t, srv, "P")
-	y, f := openAPI(t, api, "Y"), openAPI(t, api, "F")
+	y, f := open(t, srv, "Y"), open(t, srv, "F")
 	s := &sentinel{b: b}
 	// send sends an event of the type as its sender would: of the chat c1, the board b1, or
 	// of no item.
@@ -56,13 +57,10 @@ func TestLevel5EventsOfAnAPIClient(t *testing.T) {
 		if ys, fs := got(y), got(f); !slices.Equal(ys, []string{typ}) || !slices.Equal(fs, []string{typ}) {
 			t.Errorf("%s: the client that follows nothing got %v, the follower %v, want it for both", typ, ys, fs)
 		}
-		if ps := got(p); (len(ps) == 1) == (typ == "own_library") {
-			t.Errorf("%s: the page got %v", typ, ps)
-		}
 	}
 	// F follows the chat from here on: its removal above would have ended it.
 	if !b.Follow("F", Chat("c1")) {
-		t.Fatal("Follow refused a connected API client")
+		t.Fatal("Follow refused a connected client")
 	}
 	for _, typ := range content {
 		send(typ)
@@ -70,14 +68,12 @@ func TestLevel5EventsOfAnAPIClient(t *testing.T) {
 		if ys, fs := got(y), got(f); len(ys) != 0 || !slices.Equal(fs, []string{typ}) {
 			t.Errorf("%s: the client that follows nothing got %v, the follower %v, want it for the follower alone", typ, ys, fs)
 		}
-		got(p)
 	}
 	for _, typ := range never {
 		send(typ)
 		s.send()
 		if ys, fs := got(y), got(f); len(ys)+len(fs) != 0 {
-			t.Errorf("%s: API clients got %v and %v, want it for none", typ, ys, fs)
+			t.Errorf("%s: clients got %v and %v, want it for none", typ, ys, fs)
 		}
-		got(p)
 	}
 }

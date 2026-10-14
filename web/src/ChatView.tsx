@@ -171,7 +171,7 @@ export function Thread({ chatId }: { chatId: string }) {
   const waiting = waitingText(c); // "" while busy
   const wait = threadWait(waits, { shown: branch, loaded: !!loaded, count: all.length, move: cut !== undefined, busy, server: inSection(chatId) ? serverIs : "", archived: !!c.archived });
   // (the history a wait keeps stands for the list: what is said of a server that is not connected is said beside it)
-  const remote = remoteView({ remote: inSection(chatId), connected, gone }, serverIs, state, !!loaded || !!wait.kept, loadErr);
+  const remote = remoteView({ connected, gone }, serverIs, state, !!loaded || !!wait.kept, loadErr);
   // Under the warning the thread is as the page had it when the connection ended (or when the chat went there): nothing
   // in it is live, and nothing in it takes a click that would ask the server: a message's actions and a permission
   // request's answer are off by the chat's own state (useOffWhy), here and in the subagent pane.

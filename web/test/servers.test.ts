@@ -18,16 +18,17 @@ const LABELS: Record<ServerState, string> = {
   not_aiwb: "Not an AI Whiteboard server",
   too_old: "Too old: update the server on that machine",
   another_server: "Another server",
+  not_started: "Not started",
 };
 const STATES = Object.keys(LABELS) as ServerState[];
 const entry = (o: Partial<ServerView> = {}): ServerView => ({ id: "s_3f9a1c2b77de", name: "Studio", address: "https://mac.local:4748", state: "connected", ...o });
 const form = (o: Partial<ServerForm> = {}): ServerForm => ({ name: "Studio", address: "https://mac.local:4748", secret: "s3cret", selfSigned: false, pin: "", ...o });
 const result = (outcome: string, o: Partial<TestResult> = {}): TestResult => ({ ok: outcome === "connected", step: 3, outcome, message: outcome, ...o });
 
-test("stateLabel: each of the eleven states has its label", () => {
-  assert.equal(STATES.length, 11);
+test("stateLabel: each of the twelve states has its label (the twelfth, `not_started`, is this computer's alone)", () => {
+  assert.equal(STATES.length, 12);
   for (const s of STATES) assert.equal(stateLabel(s), LABELS[s]);
-  assert.equal(new Set(STATES.map(stateLabel)).size, 11);
+  assert.equal(new Set(STATES.map(stateLabel)).size, 12);
 });
 
 test("rowActions: the local entry has none", () => {
@@ -132,7 +133,7 @@ test("the question before a removal asks the server for nothing: the entry is re
 test("serversOf: a snapshot without the field gives the local entry alone", () => {
   assert.deepEqual(serversOf({}), { servers: [LOCAL_ENTRY] });
   assert.deepEqual(serversOf({ servers: [] }), { servers: [LOCAL_ENTRY] });
-  assert.deepEqual(LOCAL_ENTRY, { id: "local", local: true, name: "This computer", state: "connected" });
+  assert.deepEqual(LOCAL_ENTRY, { id: "local", local: true, name: "This computer", state: "connecting" }, "the page starts with this computer connecting: nothing has answered yet");
   const list = [LOCAL_ENTRY, entry()];
   assert.equal(serversOf({ servers: list }).servers, list);
 });
@@ -147,9 +148,12 @@ test("upsertServer: replaces the entry with the id in its place, or adds it at t
 });
 
 test("anyNotConnected: the dot shows for any entry that is not connected", () => {
-  assert.equal(anyNotConnected([LOCAL_ENTRY]), false);
-  assert.equal(anyNotConnected([LOCAL_ENTRY, entry()]), false);
-  for (const state of STATES.filter((s) => s !== "connected")) assert.equal(anyNotConnected([LOCAL_ENTRY, entry({ state })]), true, state);
+  const here = { ...LOCAL_ENTRY, state: "connected" as const };
+  assert.equal(anyNotConnected([here]), false);
+  assert.equal(anyNotConnected([here, entry()]), false);
+  assert.equal(anyNotConnected([LOCAL_ENTRY]), true, "this computer's too");
+  for (const state of STATES.filter((s) => s !== "connected")) assert.equal(anyNotConnected([here, entry({ state })]), true, state);
+  for (const state of STATES.filter((s) => s !== "connected")) assert.equal(anyNotConnected([{ ...here, state }, entry()]), true, `this computer ${state}`);
 });
 
 test("insertServer: adds an entry the list lacks, and leaves one it has as it is", () => {

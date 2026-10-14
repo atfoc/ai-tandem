@@ -27,7 +27,11 @@ func withLibrary(t *testing.T, root string) func(*Server) {
 	}
 }
 
-const localLibrary = "/api/library/local"
+const (
+	localLibrary = "/api/library/local"
+	// noSuchServer is the id of a server that is in no list: a library is its own server's.
+	noSuchServer = "s_000000000000"
+)
 
 // libraries reads GET /api/library.
 func (e *env) libraries() []library.View {
@@ -104,10 +108,11 @@ func TestLibraryRoutes(t *testing.T) {
 	}
 	const made = "git/ | git/commit message=Write a commit message.\n\nKeep it short. | git/hooks/"
 	e.wantLibrary(made)
-	// The page's snapshot has the same list.
-	var snap struct{ Libraries []library.View }
-	if json.Unmarshal([]byte(e.expect(200, "GET", "/api/state", "")), &snap) != nil || len(snap.Libraries) != 1 || libraryPaths(snap.Libraries[0]) != made {
-		t.Fatalf("the snapshot's libraries: %+v", snap.Libraries)
+	// The snapshot has the same library.
+	var snap struct{ Library *library.Tree }
+	if json.Unmarshal([]byte(e.expect(200, "GET", "/api/state", "")), &snap) != nil || snap.Library == nil ||
+		libraryPaths(library.View{Groups: snap.Library.Groups, Prompts: snap.Library.Prompts}) != made {
+		t.Fatalf("the snapshot's library: %+v", snap.Library)
 	}
 
 	// Renamed, and the prompt's text changed; a field that is left out stays.
@@ -139,7 +144,7 @@ func TestLibraryRoutes(t *testing.T) {
 	// After a restart: a second server on the same data folder.
 	again := newEnv(t, withLibrary(t, root))
 	again.wantLibrary(moved)
-	if n := again.local().Notice; n != "" {
+	if n := decode[struct{ LibraryNotice string }](t, again.expect(200, "GET", "/api/state", "")).LibraryNotice; n != "" {
 		t.Fatalf("the notice after a restart: %q", n)
 	}
 
@@ -229,53 +234,21 @@ func TestLibraryRoutesRefuseWhatBreaksARule(t *testing.T) {
 	e.wantLibrary("Review=four | " + before + " | misc/" + long[:80] + "/ | misc/review=three")
 }
 
-// The calls that change a library need a known client, as every write on this port; the read
-// does not.
-func TestLibraryChangesNeedAKnownClient(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t, withLibrary(t, t.TempDir()))
-	g := e.newGroup("g", "")
-	p := e.newPrompt("p", g.ID, "text")
-	for _, client := range []string{"", "B"} {
-		for _, c := range [][3]string{
-			{"POST", "/groups", `{"name":"x"}`},
-			{"POST", "/prompts", `{"name":"x"}`},
-			{"PATCH", "/groups/" + g.ID, `{"name":"x"}`},
-			{"PATCH", "/prompts/" + p.ID, `{"text":"x"}`},
-			{"DELETE", "/groups/" + g.ID, ""},
-			{"DELETE", "/prompts/" + p.ID, ""},
-		} {
-			code, out := e.doAs(client, c[0], localLibrary+c[1], c[2])
-			if code != 409 || decode[map[string]string](t, out)["error"] != "unknown_client" {
-				t.Fatalf("%s %s from the client %q: %d %s", c[0], c[1], client, code, out)
-			}
-		}
-	}
-	if code, out := e.doAs("", "GET", "/api/library", ""); code != 200 || libraryPaths(decode[libraryList](t, out).Libraries[0]) != "g/ | g/p=text" {
-		t.Fatalf("the read without a client: %d %s", code, out)
-	}
-}
-
-// Every change reaches every open window on its stream, as the whole library of the server that
-// changed; a call that changes nothing sends nothing.
+// Every change reaches every open window on its stream, as the whole library of the server; a
+// call that changes nothing sends nothing.
 func TestLibraryChangesReachEveryPage(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, withLibrary(t, t.TempDir()))
 	e.newGroup("before", "")
-	b, c := bridgetest.Connect(t, e.url, "B"), bridgetest.Connect(t, e.url, "C")
-	for _, p := range []*bridgetest.Page{b, c} {
-		raw, _ := json.Marshal(p.Welcome()["libraries"])
-		if l := decode[[]library.View](t, string(raw)); len(l) != 1 || libraryPaths(l[0]) != "before/" {
-			t.Fatalf("page %s: the libraries of the stream's snapshot: %s", p.ID, raw)
-		}
-	}
+	b, c := e.page("B"), e.page("C")
+
 	// event reads the next event of both pages: the library after the change.
 	event := func(want string) {
 		t.Helper()
 		for _, p := range []*bridgetest.Page{b, c} {
 			raw := p.NextRaw()
-			ev := decode[library.Event](t, raw)
-			if v := ev.Library; ev.Type != "library" || v.Server != "local" || v.Name != "This computer" || !v.Connected || libraryPaths(v) != want {
+			ev := decode[library.Own](t, raw)
+			if v := (library.View{Groups: ev.Groups, Prompts: ev.Prompts}); ev.Type != "own_library" || libraryPaths(v) != want {
 				t.Fatalf("page %s got %s\nwant the library %s", p.ID, raw, want)
 			}
 		}
@@ -311,8 +284,8 @@ func TestLibraryChangesReachEveryPage(t *testing.T) {
 	c.ExpectNone(0)
 }
 
-// A library is named by its server's id in every changing call. This computer's is the only one
-// here: a call for another server is refused, and a server without a library has an empty list.
+// A library is named by its server's id in every changing call. This server's, "local", is the
+// only one here: a call for another server is refused, and a server without a library has an empty list.
 func TestLibraryOfAnotherServer(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, withLibrary(t, t.TempDir()))
@@ -335,7 +308,7 @@ func TestLibraryOfAnotherServer(t *testing.T) {
 	if l := none.libraries(); l == nil || len(l) != 0 {
 		t.Fatalf("the libraries of a server without one: %+v", l)
 	}
-	if out := none.expect(200, "GET", "/api/state", ""); !strings.Contains(out, `"libraries":[]`) {
+	if out := none.expect(200, "GET", "/api/state", ""); !strings.Contains(out, `"library":null`) {
 		t.Fatalf("the snapshot of a server without a library: %s", cut(out, 300))
 	}
 	none.refusedWith(404, CodeNoServer, "POST", localLibrary+"/groups", `{"name":"x"}`)
@@ -352,8 +325,9 @@ func TestLibraryFileThatCannotBeRead(t *testing.T) {
 	}
 	e := newEnv(t, withLibrary(t, root))
 	v := e.local()
-	if !strings.Contains(v.Notice, path) || !strings.Contains(v.Notice, "set aside as "+library.FileName+".unreadable-") || len(v.Groups)+len(v.Prompts) != 0 {
-		t.Fatalf("the library: %+v", v)
+	notice := decode[struct{ LibraryNotice string }](t, e.expect(200, "GET", "/api/state", "")).LibraryNotice
+	if !strings.Contains(notice, path) || !strings.Contains(notice, "set aside as "+library.FileName+".unreadable-") || len(v.Groups)+len(v.Prompts) != 0 {
+		t.Fatalf("the library: %+v, the notice %q", v, notice)
 	}
 	aside, _ := filepath.Glob(path + ".unreadable-*")
 	if len(aside) != 1 {

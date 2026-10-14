@@ -5,7 +5,7 @@
 // the one drop mark: a chat and a board into a group, into a subgroup and to the ungrouped area; a group into
 // a group and to the top level.
 // On the build before the mark, S2, S2c, S2d, S3, S3c, S5, S5b, S8 and S12b fail here: each leaves a group lit.
-import { check, dragger, mockEval, openPage, seed, until } from "../shot.mjs";
+import { callOfRequest, check, dragger, mockEval, openPage, seed, until } from "../shot.mjs";
 
 // The sidebar as it is drawn: the group each row is in ("" ungrouped; rows nested under a board go with
 // it and are left out) and the group each group is in ("" at the top level).
@@ -36,12 +36,12 @@ await check("A3.2 after every drag nothing is lit, and each move lands", async (
       await page.waitForSelector(".side-name >> text=Chat M");
       const asked = [];
       page.on("request", (r) => {
-        const m = /\/api\/(chats|boards|groups)\/([^/?]+)(\/move)?$/.exec(new URL(r.url()).pathname);
+        const call = callOfRequest(r), m = call && /^\/api\/(chats|boards|groups)\/([^/?]+)(\/move)?$/.exec(call.path);
         let b = null;
         try { b = r.postDataJSON(); } catch {}
         if (!m || !b) return;
-        if (m[1] === "groups" && m[3] && r.method() === "POST") asked.push(`group ${m[2]} into "${b.parent}" before "${b.before}"`);
-        else if (m[1] !== "groups" && !m[3] && r.method() === "PATCH" && b.group !== undefined) asked.push(`${m[1].slice(0, -1)} ${m[2]} into "${b.group}"`);
+        if (m[1] === "groups" && m[3] && call.method === "POST") asked.push(`group ${m[2]} into "${b.parent}" before "${b.before}"`);
+        else if (m[1] !== "groups" && !m[3] && call.method === "PATCH" && b.group !== undefined) asked.push(`${m[1].slice(0, -1)} ${m[2]} into "${b.group}"`);
       });
       const d = await dragger(page), was = await treeOf(page);
       const cdp = await page.context().newCDPSession(page);

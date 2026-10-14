@@ -15,7 +15,6 @@ import (
 
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
-	"ai-whiteboard/internal/servers"
 )
 
 // What the reviews of the remote listener found: a follow by the listener's kind, the data folder
@@ -37,7 +36,7 @@ func (l *listener) try(id, secret, method, path string) (int, string) {
 	}
 	req.Header.Set(ClientHeader, id)
 	req.Header.Set(SecretHeader, secret)
-	req.Header.Set(servers.LevelHeader, testLevel)
+	req.Header.Set(LevelHeader, testLevel)
 	resp, err := l.http.Do(req)
 	if err != nil {
 		return 0, err.Error()
@@ -49,9 +48,9 @@ func (l *listener) try(id, secret, method, path string) (int, string) {
 
 // ---- a follow is of the listener's kind ------------------------------------------
 
-// A read or an unfollow that states the id of a client of the other listener starts and ends
-// nothing: the loopback listener acts on pages, the remote one on API clients.
-func TestFollowIsOfTheListenersKind(t *testing.T) {
+// A read starts the follow of the client that makes it, an unfollow ends its own and no other's,
+// and a failed read ends the follow of its own client only.
+func TestFollowsAreEachClients(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
 	e.page(pageUUID)
@@ -60,75 +59,44 @@ func TestFollowIsOfTheListenersKind(t *testing.T) {
 	path := "/api/chats/" + c.ID
 	followers := func(what string, want ...string) {
 		t.Helper()
+		slices.Sort(want)
 		if got := e.s.Bridge.Followers(editorbridge.Chat(c.ID)); !slices.Equal(got, want) {
 			t.Fatalf("followers after %s: %v, want %v", what, got, want)
 		}
 	}
-	remote := func(client, method, sub string) {
+	call := func(client, method, sub string) {
 		t.Helper()
 		if status, out := l.call(client, testSecret, method, path+sub, ""); status != 200 {
-			t.Fatalf("%s %s on the remote listener as %s: %d %s", method, sub, client, status, out)
+			t.Fatalf("%s %s as %s: %d %s", method, sub, client, status, out)
 		}
 	}
-	reads := []string{"/items", "/tree"}
+	followers("no read")
+	call(pageUUID, "GET", "/items")
+	followers("the first client's read", pageUUID)
+	call(apiX, "GET", "/tree")
+	followers("the second client's read", pageUUID, apiX)
+	call(apiX, "POST", "/unfollow")
+	followers("the second client's unfollow", pageUUID)
+	call(apiX, "POST", "/unfollow") // nothing to end
+	followers("a second unfollow", pageUUID)
 
-	// The API client's id on loopback, the page's id on the remote listener: no follow.
-	for _, sub := range reads {
-		if status, out := e.doAs(apiX, "GET", path+sub, ""); status != 200 {
-			t.Fatalf("GET %s on loopback with the API client's id: %d %s", sub, status, out)
-		}
-		remote(pageUUID, "GET", sub)
-	}
-	e.doAs(apiX, "GET", path+"/subagents/nope/items", "")
-	l.call(pageUUID, testSecret, "GET", path+"/subagents/nope/items", "")
-	followers("the reads that state the other kind's id")
-
-	// The page reads; an API client that states the page's id does not end its follow.
-	if status, out := e.doAs(pageUUID, "GET", path+"/items", ""); status != 200 {
-		t.Fatalf("the page's read: %d %s", status, out)
-	}
-	followers("the page's read", pageUUID)
-	remote(pageUUID, "POST", "/unfollow")
-	followers("a remote unfollow that states the page's id", pageUUID)
-
-	// The API client's own read follows; a loopback unfollow that states its id ends nothing.
-	remote(apiX, "GET", "/items")
-	want := []string{apiX, pageUUID}
-	slices.Sort(want)
-	followers("the API client's own read", want...)
-	// (The guard of the loopback listener refuses it: an API client is no known client there.)
-	if status, out := e.doAs(apiX, "POST", path+"/unfollow", ""); status != 409 {
-		t.Fatalf("the loopback unfollow with the API client's id: %d %s", status, out)
-	}
-	followers("a loopback unfollow that states the API client's id", want...)
-
-	// A failed read ends the follow of its own kind only.
+	// A failed read ends the follow of its own client only.
 	gone := "/api/chats/" + chat3
 	e.s.Bridge.Follow(apiX, editorbridge.Chat(chat3))
 	e.s.Bridge.Follow(pageUUID, editorbridge.Chat(chat3))
-	if status, _ := e.doAs(apiX, "GET", gone+"/items", ""); status != 404 {
+	if status, _ := l.call(apiX, testSecret, "GET", gone+"/items", ""); status != 404 {
 		t.Fatalf("the read of a chat that is not there: %d", status)
 	}
-	if got := e.s.Bridge.Followers(editorbridge.Chat(chat3)); !slices.Equal(got, want) {
-		t.Fatalf("followers after a failed loopback read with the API client's id: %v", got)
-	}
-	if status, _ := l.call(apiX, testSecret, "GET", gone+"/items", ""); status != 404 {
-		t.Fatalf("the remote read of a chat that is not there: %d", status)
-	}
 	if got := e.s.Bridge.Followers(editorbridge.Chat(chat3)); !slices.Equal(got, []string{pageUUID}) {
-		t.Fatalf("followers after the API client's failed read: %v", got)
+		t.Fatalf("followers after the failed read: %v", got)
 	}
-
-	// Each ends its own.
-	remote(apiX, "POST", "/unfollow")
-	followers("the API client's unfollow", pageUUID)
-	e.doAs(pageUUID, "POST", path+"/unfollow", "")
-	followers("the page's unfollow")
+	call(pageUUID, "POST", "/unfollow")
+	followers("the first client's unfollow")
 }
 
 // ---- the folder list ---------------------------------------------------------------
 
-// An API client does not list the data folder or a folder inside it; a page does.
+// A client does not list the data folder or a folder inside it.
 func TestRemoteDirsRefuseTheDataFolder(t *testing.T) {
 	t.Parallel()
 	e, l := remoteEnv(t)
@@ -154,20 +122,13 @@ func TestRemoteDirsRefuseTheDataFolder(t *testing.T) {
 		if strings.Contains(out, c.ID) {
 			t.Errorf("the refusal for %s names a chat: %s", p, out)
 		}
-		if got := decode[obj](t, e.expect(200, "GET", q(p), "")); got["dirs"] == nil {
-			t.Errorf("the page's list of %s: %v", p, got)
-		}
 	}
-	if got := decode[struct{ Dirs []string }](t, e.expect(200, "GET", q(filepath.Join(data, "chats")), "")); !slices.Contains(got.Dirs, c.ID) {
-		t.Errorf("the page's list of the chats folder: %v", got.Dirs)
-	}
-	// A folder outside is listed for both.
+	// A folder outside is listed.
 	for _, p := range []string{outside, filepath.Join(outside, "sub"), filepath.Dir(data)} {
 		status, out := l.call(apiX, testSecret, "GET", q(p), "")
 		if status != 200 || decode[obj](t, out)["dirs"] == nil {
 			t.Errorf("the API client's list of %s: %d %s", p, status, out)
 		}
-		e.expect(200, "GET", q(p), "")
 	}
 	if status, out := l.call(apiX, testSecret, "GET", q(outside), ""); status != 200 || !slices.Contains(decode[struct{ Dirs []string }](t, out).Dirs, "sub") {
 		t.Errorf("the API client's list of a folder outside: %d %s", status, out)
@@ -268,7 +229,7 @@ func TestOldSecretIsRefusedBeforeTheStreamEnds(t *testing.T) {
 			}
 			req.Header.Set(ClientHeader, id)
 			req.Header.Set(SecretHeader, secret)
-			req.Header.Set(servers.LevelHeader, testLevel)
+			req.Header.Set(LevelHeader, testLevel)
 			resp, err := l.http.Do(req)
 			if err != nil || resp.StatusCode != 200 {
 				t.Fatalf("round %d: the stream of %s: %v %v", round, id, resp, err)
@@ -307,53 +268,3 @@ func TestOldSecretIsRefusedBeforeTheStreamEnds(t *testing.T) {
 }
 
 // ---- path forms ---------------------------------------------------------------------
-
-// A path in another form than a route's serves nothing on the remote listener: the two with a
-// doubled slash are redirected with no data, the others are not found.
-func TestRemotePathForms(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t, withRemote)
-	h := e.s.RemoteHandler()
-	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
-	leaks := func(what, body string) {
-		t.Helper()
-		for _, s := range []string{c.ID, `"chats"`, `"agents"`, `"listening"`, `"featureLevel"`} {
-			if strings.Contains(body, s) {
-				t.Errorf("%s: the answer holds data: %s", what, body)
-			}
-		}
-	}
-	for _, path := range []string{"//api/state", "/api//state"} {
-		w := remoteDo(h, "GET", path, testHost, testSecret)
-		if w.Code != 301 || w.Header().Get("Location") != "/api/state" {
-			t.Errorf("GET %s: %d to %q, want 301 to /api/state (%s)", path, w.Code, w.Header().Get("Location"), w.Body)
-		}
-		leaks("GET "+path, w.Body.String())
-		// Without the secret the redirect is not given either.
-		wantReply(t, remoteDo(h, "GET", path, testHost, ""), "GET "+path+" with no secret", 401, "unauthorized")
-	}
-	for _, rq := range [][2]string{
-		{"GET", "/api/state/"}, {"GET", "/API/STATE"}, {"GET", "/api/hello/"}, {"GET", "/api"}, {"GET", "/api/"},
-		{"GET", "//api/remote/status"}, {"GET", "/api/remote%2fstatus"}, {"HEAD", "/api/remote/status"}, {"OPTIONS", "/api/state"},
-	} {
-		w := remoteDo(h, rq[0], rq[1], testHost, testSecret)
-		what := rq[0] + " " + rq[1]
-		if rq[0] == "HEAD" { // an answer to HEAD is read by its status
-			if w.Code != 404 {
-				t.Errorf("%s: status %d, want 404", what, w.Code)
-			}
-		} else {
-			wantReply(t, w, what, 404, "not found")
-		}
-		leaks(what, w.Body.String())
-	}
-	// A chat id that is a path: no chat, and no file outside the chats folder is looked for.
-	if w := remoteDo(h, "GET", "/api/chats/..%2F..%2Fetc/items", testHost, testSecret); w.Code != 404 ||
-		strings.TrimSpace(w.Body.String()) != `{"code":"not_found","error":"`+chats.ErrNotFound.Error()+`"}` {
-		t.Errorf("a chat id that is a path: %d %s, want 404 not_found", w.Code, w.Body)
-	}
-	// The routes themselves are served.
-	if w := remoteDo(h, "GET", "/api/state", testHost, testSecret); w.Code != 200 {
-		t.Errorf("GET /api/state: %d %s", w.Code, w.Body)
-	}
-}

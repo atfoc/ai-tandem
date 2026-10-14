@@ -56,12 +56,13 @@ const chat = (id: string, o: object = {}) => ({ id, agent: "claude", cwd: "/w", 
 const board = (id: string, group = "__ungrouped__", o: object = {}) => ({ id, name: id, group, created: "", ...o });
 const state = (c: string, o: object = {}) => ({ chat: c, branch: "main", cwd: "", model: "", locked: false, usage, status: "ready", ...o });
 const servers = (...ids: string[]) => [{ id: "local", local: true, name: "This computer", state: "connected" }, ...ids.map((id) => ({ id, name: id === A ? "Lab" : "Office", state: "connected" }))];
-const snapshot = (o: object = {}) => ({ groups: [], boards: [], chats: [], states: [], defaults: { groups: {} }, catalogs: {}, home: "/home/me", defaultCwd: "/home/me", dataDir: "/d", servers: servers(A, B), ...o });
+const snapshot = (o: object = {}) => ({ groups: [], boards: [], chats: [], states: [], defaults: { groups: {} }, catalogs: {}, home: "/home/me", defaultCwd: "/home/me", ...o });
 const treeA = (o: object = {}) => ({
-  groups: [{ id: "g_1", name: "Work", collapsed: true }], boards: [board("b_1", "g_1", { name: "Plan" })], chats: [chat("c_1", { group: "g_1", name: "theirs" }), chat("c_2")],
+  groups: [{ id: "g_1", name: "Work" }], boards: [board("b_1", "g_1", { name: "Plan" })], chats: [chat("c_1", { group: "g_1", name: "theirs" }), chat("c_2")],
   states: [state("c_1", { draftRev: 2 }), state("c_2")], defaults: { groups: {} }, ...o,
 });
-// The page's first snapshot, which has the two local things the old drafts are of.
+// The server list (the app's first word), and the page's first snapshot, which has the two local things the old drafts are of.
+store.setServers(servers(A, B), "");
 store.applySnapshot(snapshot({ chats: [chat("c_mine")], states: [state("c_mine")] }));
 const firstSweep = new Map(ls);
 const select = (sel: object) => store.setState({ sel: { board: null, chat: null, ...sel } });
@@ -73,6 +74,7 @@ beforeEach(() => {
   store.setState({ collapsed: {}, gone: {}, moves: {}, shown: {} });
   for (const e of Object.keys(S().sections)) store.applySection(e, null);
   store.dropLeftBehind();
+  store.setServers(servers(A, B), "");
   store.applySnapshot(snapshot());
   for (const k of [...ls.keys()]) ls.delete(k);
   fake.forgotten.length = 0;
@@ -93,7 +95,7 @@ test("a local chat and a section's chat with the same id are two chats, each und
   assert.equal(store.draftRevOf(a("c_1"), "main"), 2);
   assert.equal(S().boards.b_1.name, "Mine");
   assert.equal(S().boards[a("b_1")].name, "Plan");
-  assert.deepEqual(S().sections[A].groups, [{ id: a("g_1"), name: "Work" }], "the section's group is keyed, and that server's `collapsed` is not read");
+  assert.deepEqual(S().sections[A].groups, [{ id: a("g_1"), name: "Work" }], "the section's group is keyed");
   assert.deepEqual(S().groups, [], "no local group holds anything of a section");
 });
 
@@ -218,22 +220,56 @@ test("a board changed and not saved stays in the page's memory while its server 
   assert.deepEqual([S().roles, S().outage], [{}, {}]);
 });
 
-test("the selection is kept in the browser by key; after a reload during an outage nothing of that server is known, and it is dropped", () => {
+test("the selection is kept in the browser by key; a snapshot of this computer leaves a section's, which its own tree judges when it comes", () => {
   store.applySection(A, treeA());
   select({ chat: a("c_1") });
   store.applySnapshot(snapshot()); // writes the selection it found valid
   assert.deepEqual(JSON.parse(ls.get("aiwb.sel")!), { board: null, chat: a("c_1") });
-  // a fresh page: the saved selection, and no chat of that server in the store
+  // a fresh page: the saved selection, and no chat of that server in the store yet
   store.setState({ chats: {}, states: {}, sections: {} });
   store.applySnapshot(snapshot());
+  assert.deepEqual(S().sel, { board: null, chat: a("c_1") }, "this computer's snapshot knows nothing of that server's things");
+  store.applySection(A, treeA());
+  assert.deepEqual(S().sel, { board: null, chat: a("c_1") }, "its tree has the chat");
+  // the tree that comes does not have it
+  store.setState({ chats: {}, states: {}, sections: {} });
+  store.applySection(A, treeA({ chats: [chat("c_2")], states: [state("c_2")] }));
   assert.deepEqual(S().sel, { board: null, chat: null });
+  assert.deepEqual(JSON.parse(ls.get("aiwb.sel")!), { board: null, chat: null });
+});
+
+test("a selection of a thing of this computer is judged by its own snapshot, and one of a section is not touched by it", () => {
+  store.applySnapshot(snapshot({ chats: [chat("c_1")], states: [state("c_1")] }));
+  select({ chat: "c_1" });
+  store.applySnapshot(snapshot({ chats: [chat("c_1")], states: [state("c_1")] }));
+  assert.deepEqual(S().sel, { board: null, chat: "c_1" });
+  store.applySnapshot(snapshot());
+  assert.deepEqual(S().sel, { board: null, chat: "c_1" }, "the chat is on screen and gone from this computer: it stays, and its view says so");
+  assert.deepEqual([S().gone.c_1, !!S().chats.c_1], [true, true]);
+  select({ chat: null });
+  store.dropLeftBehind();
+  assert.equal(S().chats.c_1, undefined, "left, it goes");
+  select({ chat: b("c_9") });
+  store.applySnapshot(snapshot());
+  assert.deepEqual(S().sel, { board: null, chat: b("c_9") });
 });
 
 test("a selection of a chat of a run in a section's tree is dropped: a server that still has runs names it, and the page keeps none", () => {
   select({ chat: a("c_run") });
-  store.applySnapshot(snapshot({ sections: { [A]: treeA({ chats: [chat("c_run", { run: "r_1" })], states: [state("c_run")] }) } }));
+  store.applySection(A, treeA({ chats: [chat("c_run", { run: "r_1" })], states: [state("c_run")] }));
   assert.equal(a("c_run") in S().chats, false);
   assert.deepEqual(S().sel, { board: null, chat: null });
+});
+
+test("an entry removed from the server list, with a selection of it never loaded: the selection goes", () => {
+  select({ board: a("b_1"), chat: a("c_1") });
+  store.setServers(servers(B), "");
+  store.dropServer(A);
+  assert.deepEqual(S().sel, { board: null, chat: null });
+  assert.deepEqual(JSON.parse(ls.get("aiwb.sel")!), { board: null, chat: null });
+  select({ chat: b("c_1") });
+  store.dropServer(A);
+  assert.deepEqual(S().sel, { board: null, chat: b("c_1") }, "another server's stays");
 });
 
 test("what is typed in a section's chat and not saved yet is kept in the page's memory alone; a local chat's is in the browser's storage", () => {
@@ -273,6 +309,19 @@ test("with the first snapshot the browser's storage is cleared of what it kept o
   assert.deepEqual(JSON.parse(firstSweep.get("aiwb.collapsed")!), [A, a("g_1")]);
 });
 
+test("the collapse of this computer's section and groups is kept like a section's, and its own snapshot judges its groups", () => {
+  store.applySnapshot(snapshot({ groups: [{ id: "g_a", name: "A" }, { id: "g_b", name: "B" }] }));
+  store.setSectionCollapsed("local", true); store.setSectionCollapsed("g_a", true); store.setSectionCollapsed("g_b", true);
+  assert.deepEqual(S().collapsed, { local: true, g_a: true, g_b: true });
+  assert.deepEqual(JSON.parse(ls.get("aiwb.collapsed")!), ["g_a", "g_b", "local"]);
+  store.applySection(A, treeA());
+  assert.deepEqual(S().collapsed, { local: true, g_a: true, g_b: true }, "a section's tree leaves them");
+  store.setServers(servers(A), "");
+  assert.deepEqual(S().collapsed, { local: true, g_a: true, g_b: true }, "so does the server list");
+  store.applySnapshot(snapshot({ groups: [{ id: "g_a", name: "A" }] }));
+  assert.deepEqual(S().collapsed, { local: true, g_a: true }, "a group this computer no longer has goes");
+});
+
 test("collapse of a section and of a group in it is kept in the browser under aiwb.collapsed, by key", () => {
   store.applySection(A, treeA());
   store.setSectionCollapsed(A, true);
@@ -292,7 +341,7 @@ test("a collapsed section of a server that is not connected stays collapsed with
   store.applySection(A, null);
   assert.deepEqual(S().collapsed, { [A]: true, [a("g_1")]: true, [a("g_dead")]: true });
   store.applySnapshot(snapshot());
-  assert.deepEqual(S().collapsed, { [A]: true, [a("g_1")]: true, [a("g_dead")]: true }, "a snapshot during the outage keeps them");
+  assert.deepEqual(S().collapsed, { [A]: true, [a("g_1")]: true, [a("g_dead")]: true }, "a snapshot of this computer during the outage keeps them");
   store.applySection(A, treeA());
   assert.deepEqual(S().collapsed, { [A]: true, [a("g_1")]: true });
   assert.deepEqual(JSON.parse(ls.get("aiwb.collapsed")!), [A, a("g_1")]);
@@ -303,7 +352,7 @@ test("an entry removed from the server list takes its collapse with it", () => {
   store.setServers(servers(B), "");
   assert.deepEqual(S().collapsed, { [B]: true });
   assert.deepEqual(S().servers.map((v: any) => v.id), ["local", B]);
-  store.applySnapshot(snapshot({ servers: servers() }));
+  store.setServers(servers(), "");
   assert.deepEqual(S().collapsed, {});
 });
 
@@ -337,4 +386,18 @@ test("the chat a board reopens with is kept by both keys: a board of the same id
   assert.deepEqual([store.lastChat.get("b_1"), store.lastChat.get(a("b_1")), store.lastChat.get(b("b_1"))], ["c_1", a("c_2"), b("c_2")]);
   // what the browser holds for it: keys alone, the entry id and the id of each
   assert.deepEqual(JSON.parse(ls.get("aiwb.lastChat")!), { b_1: "c_1", [a("b_1")]: a("c_2"), [b("b_1")]: b("c_2") });
+});
+
+test("this computer's server away: what is left goes, but a chat with a draft the browser keeps stays, and so does its copy; the snapshot brings the tree back", () => {
+  store.applySnapshot(snapshot({ chats: [chat("c_1"), chat("c_2"), chat("c_3")], states: [state("c_1"), state("c_2"), state("c_3")], boards: [board("b_1")] }));
+  assert.equal(S().connected, true);
+  store.unsavedDraft("c_2", "main").write({ text: "typed while the server was away" }, 0);
+  select({ chat: "c_1" });
+  store.setState({ connected: false });
+  select({ chat: null });
+  assert.deepEqual(store.dropLeftBehind().sort(), ["b_1", "c_1", "c_3"]);
+  assert.deepEqual(Object.keys(S().chats), ["c_2"]);
+  assert.ok([...ls.keys()].some((k) => k.includes("c_2")), "its copy is the browser's still");
+  store.applySnapshot(snapshot({ chats: [chat("c_2")], states: [state("c_2")] }));
+  assert.deepEqual([S().connected, Object.keys(S().chats), S().gone], [true, ["c_2"], {}]);
 });

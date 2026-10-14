@@ -1,5 +1,5 @@
 // A thing's server and what that server offers: its usable agents, their catalogs, its home and
-// its default folder. The local server's are the store's own fields; another server's come by
+// its default folder. This computer's are the store's own fields; another server's come by
 // entry id in the snapshot's `lists` and the `server_lists` event, and stay while it is not
 // connected. Also the rules of the `server_lists` event, of what is read again when a section's
 // tree arrives, and of a thread's load error, kept here so they are tested with no DOM.
@@ -15,7 +15,8 @@ export type ListsState = {
   defaultCwd?: string;
   lists?: Record<string, ServerLists>;
   servers?: ServerView[];
-  sections?: Record<string, unknown>; // by entry id: the trees the local server holds (logic/sections.ts)
+  sections?: Record<string, unknown>; // by entry id: the trees the page holds (logic/sections.ts)
+  connected?: boolean;                // whether the page holds this computer's own tree (its snapshot, until its entry leaves `connected`); absent counts as held
 };
 
 export const THIS_COMPUTER = "This computer";
@@ -28,9 +29,9 @@ export const serverOf = (c?: { id?: string } | null): string => serverOfKey(c?.i
 
 const NO_AGENTS: AgentKind[] = [];
 const NO_CATALOGS: ServerLists["catalogs"] = {};
-let local: ServerLists | undefined; // what listsOf gave last for the local server: the same object while its four parts are the same
+let local: ServerLists | undefined; // what listsOf gave last for this computer: the same object while its four parts are the same
 
-/** A server's lists: the local one's from the store's own fields, another's as last received,
+/** A server's lists: this computer's from the store's own fields, another's as last received,
  *  also while it is not connected. None for a server whose lists never came. The same object
  *  for the same state. */
 export function listsOf(s: ListsState, server: string): ServerLists | undefined {
@@ -40,16 +41,15 @@ export function listsOf(s: ListsState, server: string): ServerLists | undefined 
   return local;
 }
 
-/** The state of a server's entry: the local one is always connected; none for an entry the list lacks. */
-export const serverState = (s: ListsState, server: string): ServerState | undefined =>
-  server === LOCAL_SERVER ? "connected" : s.servers?.find((v) => v.id === server)?.state;
+/** The state of a server's entry; none for an entry the list lacks. */
+export const serverState = (s: ListsState, server: string): ServerState | undefined => s.servers?.find((v) => v.id === server)?.state;
 
-/** Whether a server takes a call now: this computer always, another server while the local server holds its tree (from
- *  the `section` event with a tree until the one with none). The entry's state says the words; it comes in an event of
- *  its own, in no fixed order with the tree's. */
-export const serverConnected = (s: ListsState, server: string): boolean => server === LOCAL_SERVER || !!s.sections?.[server];
+/** Whether the page holds a server's tree, and so the server takes a call now: this computer's from its snapshot until its entry
+ *  leaves `connected`, another server's from its snapshot until then. The entry's state says the words; it comes in an event of
+ *  its own, after the snapshot. */
+export const serverConnected = (s: ListsState, server: string): boolean => (server === LOCAL_SERVER ? s.connected !== false : !!s.sections?.[server]);
 
-/** What a server offers now: its lists only while it is connected (always for the local one). */
+/** What a server offers now: its lists only while it is connected. */
 export function offered(s: ListsState, server: string): ServerLists | undefined {
   return serverConnected(s, server) ? listsOf(s, server) : undefined;
 }
@@ -80,9 +80,6 @@ export function withLists(lists: Record<string, ServerLists>, server: string, go
   const { [server]: _, ...rest } = lists;
   return rest;
 }
-
-/** A snapshot's lists; a server that sends none has none. */
-export const listsFrom = (s: { lists?: Record<string, ServerLists> | null }): Record<string, ServerLists> => s.lists ?? {};
 
 export type ThreadError = { code?: string; message: string };
 
@@ -120,7 +117,7 @@ type BackState = {
 
 /** A section's tree arrived (a `section` event with a tree, or a snapshot that has the section): the server is
  *  connected, for the first time or again. It may have restarted, and its thread versions then start again: a
- *  thread kept from before would drop every event up to its old version. And the local server ended this page's
+ *  thread kept from before would drop every event up to its old version. And the server ended this page's
  *  follows of that server's chats with the connection.
  *  chats: the chats of that server the page keeps, whose threads, tree fetches and queues are forgotten. patch: the
  *  store without their trees and load errors (their branch records are the new tree's). load: the chat on screen

@@ -34,7 +34,7 @@ const store = (state: ServerState, tree = state === "connected") => ({
 
 test("every message names its branch, the first one of a section's chat too", () => {
   assert.ok(src("fork/actions.ts").includes("try { await post(branch); }"));
-  assert.ok(src("api.ts").includes('call("POST", `${pathOf("chats", id)}/messages${target ? "" : onBranch(branch)}`, {'));
+  assert.ok(src("api.ts").includes('thing("chats", id, "POST", `/messages${target ? "" : onBranch(branch)}`, {'));
   for (const [name, text] of [["fork/actions.ts", src("fork/actions.ts")], ["api.ts", src("api.ts")], ["logic/chatserver.ts", src("logic/chatserver.ts")]] as const) assert.ok(!text.includes("firstThere"), name);
 });
 
@@ -47,7 +47,7 @@ test("the composer's Where is the chat's server, its name and whether it is conn
   assert.deepEqual({ server: serverOf({}), name: serverName(s, serverOf({})), connected: serverConnected(s, serverOf({})) }, HERE);
   const up = store("connected");
   assert.deepEqual({ server: serverOf(c), name: serverName(up, serverOf(c)), connected: serverConnected(up, serverOf(c)) }, THERE);
-  // connected is "the local server holds that server's tree", whatever the entry's state says meanwhile
+  // connected is "the page holds that server's tree", whatever the entry's state says meanwhile
   assert.equal(serverConnected(store("connected", false), "s_1"), false, "connected, and its tree has not come yet");
   assert.equal(serverConnected(store("unreachable", true), "s_1"), true, "the state's event came before the tree went");
   assert.ok(choices.includes('const server = of && "server" in of ? of.server : serverOf(of);') && choices.includes("serverName(s, server)") && choices.includes("serverConnected(s, server)"));

@@ -7,10 +7,15 @@
 // five places as source (web/test/newchat.test.ts) and the paid suite (app.e2e.mjs) clicks some of
 // them; this script clicks all five on the page itself in a headless Chrome (Playwright).
 //
-// It spends no money: the server runs the stand-in agent internal/agenttest/fake-claude and has no
-// Cursor and no pi. It never touches the installed app: the script builds its own binary into a
-// temp folder, runs it on a temp data folder and on a free port, and stops it at the end.
-// Not part of `npm test`.
+// The page is served by the test host (web/dev/host.mjs), which does for it what the app's main process does: it
+// holds the server list, finds or starts this computer's server with the server program (--local-bin) and passes the
+// page's calls, events and pictures on, over HTTPS with the secret and the pinned certificate. Nothing is injected into
+// the page.
+//
+// It spends no money: the server runs the stand-in agent internal/agenttest/fake-claude and has
+// no Cursor and no pi. It never touches the installed app: the script builds its own binary into a
+// temp folder, sets a server up there (remote access: the certificate and the secret), starts it on a temp data folder
+// and on free ports (the MCP listener too), and stops it at the end. Not part of `npm test`.
 //
 //   cd web && npm ci && npm run build && npm install --no-save playwright && npx playwright install chromium
 //   node web/e2e/newchat.e2e.mjs
@@ -34,34 +39,15 @@
 //   AIWB_E2E_CLIENT    built web client                 (default web/dist)
 //   AIWB_E2E_KEEP=1    keep the temp folder (server log, screenshots) after a run that passed;
 //                      after a failed run it is always kept, and its path is printed
-import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const CLIENT = path.resolve(process.env.AIWB_E2E_CLIENT || path.join(repo, "web/dist"));
+import { Scratch, finish, holds as holdsFor, hostCall, hostFor, loadChromium, makeOut, onSignal, openPage as openHostPage, serverBinary, sleep, standInAgent, waitFor } from "./lib/rig.mjs";
 
 // Everything the run makes: the binary, the server's folders, the log, screenshots.
-// realpath: on macOS the temp folder is a symlink, and the server reports folders resolved.
-const OUT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-newchat-")));
-const BIN = path.resolve(process.env.AIWB_E2E_BIN || path.join(OUT, "aiwb"));
-const FAKE = path.join(OUT, "bin", "fake-claude");
+const OUT = makeOut("newchat");
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(what, fn, { timeout = 15000, every = 100 } = {}) {
-  const end = Date.now() + timeout;
-  let last;
-  for (;;) {
-    try { last = await fn(); if (last) return last; } catch (e) { last = "threw: " + e.message; }
-    if (Date.now() > end) throw new Error(`timed out waiting for: ${what} (last: ${JSON.stringify(last)?.slice(0, 300)})`);
-    await sleep(every);
-  }
-}
 /** true when fn turned true in time, else the sentence of what was last seen. */
-const holds = (what, fn, o) => waitFor(what, fn, o).then(() => true, (e) => e.message);
+const holds = holdsFor;
 
 // ---- checks: one line each
 
@@ -97,94 +83,44 @@ async function step(name, fn) {
   catch (e) { await check(`${name}: the step ran to its end`, false, e.message); await page?.keyboard.press("Escape").catch(() => {}); }
 }
 
-// ---- the scratch server
+// ---- the scratch server and the host
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const l = net.createServer();
-    l.once("error", reject);
-    l.listen(0, "127.0.0.1", () => { const { port } = l.address(); l.close(() => resolve(port)); });
-  });
-}
-function portFree(port) {
-  return new Promise((resolve) => {
-    const c = net.connect({ port, host: "127.0.0.1" });
-    c.once("connect", () => { c.destroy(); resolve(false); });
-    c.once("error", () => resolve(true));
-  });
-}
-
-const A = {
-  tag: "a", home: path.join(OUT, "a", "home"), work: path.join(OUT, "a", "work"), cursorCfg: path.join(OUT, "a", "cursor-config"),
-  log: path.join(OUT, "server-a.log"), port: 0, base: "", proc: null, pids: [],
-};
-const PICKED = path.join(A.work, "picked"); // the second folder: the one picked in the group's chat
-
-const envOf = (s) => ({ ...process.env, AIWB_MCP_PORT: "0", AIWB_REMOTE_BIND: "127.0.0.1", CURSOR_CONFIG_DIR: s.cursorCfg });
+let A = null;    // this computer's server
+let host = null; // the test host: the app's main process, for the page
+const PICKED_NAME = "picked"; // the second folder: the one picked in the group's chat
+let PICKED = "";
 
 async function prepare() {
-  fs.mkdirSync(path.dirname(FAKE), { recursive: true });
-  if (!process.env.AIWB_E2E_BIN) execFileSync("go", ["build", "-o", BIN, "./cmd/ai-whiteboard"], { cwd: repo, stdio: ["ignore", "inherit", "inherit"] });
-  fs.copyFileSync(path.join(repo, "internal/agenttest/fake-claude"), FAKE);
-  fs.chmodSync(FAKE, 0o755);
-  for (const d of [A.home, A.work, A.cursorCfg, PICKED]) fs.mkdirSync(d, { recursive: true });
-  fs.writeFileSync(path.join(A.work, "README.md"), "scratch a\n");
-  A.port = await freePort();
-  A.base = `http://127.0.0.1:${A.port}`;
+  const bin = serverBinary(OUT);
+  A = new Scratch({ out: OUT, bin, agent: standInAgent(OUT), tag: "a", name: "This computer" });
+  PICKED = path.join(A.work, PICKED_NAME);
+  fs.mkdirSync(PICKED, { recursive: true });
+  await A.setUp();
+  // (the host starts this computer's server itself, as the app does, with the program wrapped to add the stand-in agent's flags)
+  host = await hostFor({ out: OUT, name: "a", local: A });
 }
 
-async function start(s) {
-  const fd = fs.openSync(s.log, "a");
-  const p = spawn(BIN, ["serve", "-home", s.home, "-port", String(s.port), "-client", CLIENT, "-cwd", s.work,
-    "-claude", FAKE, "-cursor", "/nonexistent/agent", "-pi", "/nonexistent/pi", "-cursor-cost", "/nonexistent/cursor-cost"],
-    { cwd: s.work, env: envOf(s), stdio: ["ignore", fd, fd] });
-  fs.closeSync(fd);
-  s.proc = { p, exited: new Promise((r) => p.once("exit", r)) };
-  s.pids.push(p.pid);
-  await waitFor(`server ${s.tag} answers /api/hello`, async () => {
-    if (p.exitCode !== null) throw new Error(`server ${s.tag} exited with ${p.exitCode}`);
-    return (await fetch(`${s.base}/api/hello`, { signal: AbortSignal.timeout(1000) })).ok;
-  }, { timeout: 20000 });
-}
-
-async function stop(s) {
-  if (!s.proc) return;
-  const { p, exited } = s.proc;
-  s.proc = null;
-  if (p.exitCode !== null || p.signalCode !== null) return;
-  p.kill("SIGTERM");
-  if (await Promise.race([exited.then(() => true), sleep(15000).then(() => false)])) return;
-  p.kill("SIGKILL");
-  await exited;
-}
-
-const get = async (s, p) => { const r = await fetch(s.base + p, { signal: AbortSignal.timeout(5000) }); return { status: r.status, json: await r.json().catch(() => null) }; };
-const stateOf = async (s) => (await get(s, "/api/state")).json;
-const chatOn = async (s, id) => (await stateOf(s))?.chats?.find((c) => c.id === id) ?? null;
+const stateOf = async () => (await hostCall(host, "local", "GET", "/api/state")).json;
+const chatOn = async (id) => (await stateOf())?.chats?.find((c) => c.id === id) ?? null;
 
 // ---- the page
 
 let browser = null;
-// openPage opens the app in a context of its own and keeps what its console says. errors: console
+// openPage opens the page of the host in a context of its own and keeps what its console says. errors: console
 // errors and uncaught exceptions; failedRequests: requests that failed or were answered with 400 or more.
 async function openPage() {
-  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
-  const p = await ctx.newPage();
-  p.setDefaultTimeout(8000);
-  p.errors = [];
-  p.failedRequests = [];
-  p.on("console", (m) => { if (m.type() === "error") p.errors.push(m.text()); });
-  p.on("pageerror", (e) => p.errors.push(`uncaught: ${e.message}`));
-  p.on("requestfailed", (r) => p.failedRequests.push(`${r.method()} ${new URL(r.url()).pathname} ${r.failure()?.errorText}`));
-  p.on("response", (r) => { if (r.status() >= 400) p.failedRequests.push(`${r.request().method()} ${new URL(r.url()).pathname} -> ${r.status()}`); });
+  const p = await openHostPage(browser, host, { wait: "#root *", timeout: 8000 });
   // A menu may come and go between two looks, so the page itself remembers every menu item it showed.
   await p.addInitScript(() => {
     window.__menuItems = [];
     const look = () => { for (const el of document.querySelectorAll(".menu .menu-item")) { const t = (el.textContent ?? "").replace(/\s+/g, " ").trim(); if (!window.__menuItems.includes(t)) window.__menuItems.push(t); } };
     new MutationObserver(look).observe(document, { childList: true, subtree: true, characterData: true });
   });
-  await p.goto(A.base);
+  await p.reload(); // (the init script is there from the next load)
   await p.waitForSelector("#root *", { timeout: 15000 });
+  // This computer's section fills when the host has found or started the server and read its snapshot.
+  await p.locator('.side-section[data-server="local"] .side-section-state', { hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
+  await p.locator("button.icon-btn.new:not([disabled])").waitFor({ timeout: 20000 });
   return p;
 }
 const sel = (p) => p.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}"));
@@ -219,7 +155,7 @@ const AGENT_NAME = /^(Claude Code|Cursor|Pi)$/i;
  *  the chat item when the place opens a menu first (its other items are `others`), else null: the
  *  click itself makes the chat. placed says whether the chat's record is where the place puts it. */
 async function place(p, name, { opener, menu = null, others = [], placed }) {
-  const before = new Set((await stateOf(A)).chats.map((c) => c.id));
+  const before = new Set((await stateOf()).chats.map((c) => c.id));
   const made = async () => { const c = (await sel(p)).chat; return c && !before.has(c) ? c : null; };
   await p.evaluate(() => { window.__menuItems = []; });
   await opener();
@@ -234,10 +170,11 @@ async function place(p, name, { opener, menu = null, others = [], placed }) {
   await check(`1 ${name}: no agent menu`,
     agents.length === 0 && open === 0 && items.length === expected.length && expected.every((t) => items.includes(t)),
     `menu items shown: ${items.join(", ") || "none"}; menus open after the click: ${open}`);
-  const st = await stateOf(A);
+  const st = await stateOf();
   const added = st.chats.filter((c) => !before.has(c.id));
   const c = added[0] ?? null;
   const now = await sel(p);
+  // (a chat's key on this computer is its own id, as it has always been)
   const where = c ? await placed(c, st) : false;
   await check(`1 ${name}: exactly one chat is added, where the place says, and it is the one on screen`,
     added.length === 1 && !!id && c.id === id && now.chat === id && where === true && !c.locked && (await chatBox(p).count()) === 1,
@@ -262,9 +199,11 @@ async function step1() {
     opener: () => page.click("button.icon-btn.new"), menu: "New chat", others: ["New whiteboard", "New group"], placed: ungrouped,
   });
 
-  await page.locator(".side-addgroup").click();
+  // A group: the sidebar's "+" offers "New group", and the new group's name opens in a box.
+  await page.click("button.icon-btn.new");
+  await menuItem(page, /^\s*New group\s*$/).click();
   await nameIt(page, ".side-group-head", GROUP);
-  group = (await waitFor("the group exists", async () => (await stateOf(A)).groups?.find((g) => g.name === GROUP) ?? null)).id;
+  group = (await waitFor("the group exists", async () => (await stateOf()).groups?.find((g) => g.name === GROUP) ?? null)).id;
   groupChat = await place(page, `a group's "+"`, {
     opener: () => hoverClick(groupHead(page, GROUP), `button[title="New in ${GROUP}"]`), menu: "Chat", others: ["Whiteboard", "Group"],
     placed: (c) => c.group === group && !c.board,
@@ -280,7 +219,7 @@ async function step1() {
   await place(page, `a board row's "+"`, { opener: () => hoverClick(rowOf(page, "board", BOARD), 'button[title="New chat on this board"]'), placed: onBoard });
   await place(page, 'the board bar\'s "+ Chat on this board"', { opener: () => page.locator(".board-bar button", { hasText: /^\+ Chat on this board$/ }).click(), placed: onBoard });
 
-  const st = await stateOf(A);
+  const st = await stateOf();
   await check("1 the five places made five chats, none with a menu of agents", st.chats.length === 5, `${st.chats.length} chats on the server`);
 }
 
@@ -295,7 +234,7 @@ const shows = async (p) => ({
 });
 
 async function newIn(p, opener, item) {
-  const before = new Set((await stateOf(A)).chats.map((c) => c.id));
+  const before = new Set((await stateOf()).chats.map((c) => c.id));
   await opener();
   await menuItem(p, new RegExp(`^\\s*${item}\\s*$`)).click();
   const id = await waitFor("the page selects its new chat", async () => { const c = (await sel(p)).chat; return c && !before.has(c) ? c : null; });
@@ -306,16 +245,16 @@ const newInGroup = (p) => newIn(p, () => hoverClick(groupHead(p, GROUP), `button
 const newUngrouped = (p) => newIn(p, () => p.click("button.icon-btn.new"), "New chat");
 
 async function step2() {
-  if (!group) { group = (await stateOf(A)).groups?.find((g) => g.name === GROUP)?.id ?? ""; }
+  if (!group) { group = (await stateOf()).groups?.find((g) => g.name === GROUP)?.id ?? ""; }
   if (!group) throw new Error(`step 1 made no group "${GROUP}"`);
-  const cat = (await stateOf(A)).catalogs?.claude;
+  const cat = (await stateOf()).catalogs?.claude;
   const dflt = cat?.default?.model ?? "";
   const other = cat?.models?.find((m) => m.id !== dflt);
   if (!dflt || !other) throw new Error(`the stand-in's catalog has no default model or no second model: ${one(cat).slice(0, 300)}`);
   const label = (id) => cat.models.find((m) => m.id === id)?.label ?? id;
 
   // Before anything is chosen: the chat step 1 made in the group has the server's defaults.
-  const c0 = groupChat ? await chatOn(A, groupChat) : null;
+  const c0 = groupChat ? await chatOn(groupChat) : null;
   if (c0) await check("2 before a first message, the group's chat has the server's default folder and model", c0.cwd === A.work && c0.model === dflt, `folder ${c0.cwd}, model ${c0.model}; defaults: ${A.work}, ${dflt}`);
   else skipped("2 before a first message, the group's chat has the server's default folder and model", "step 1 made no chat in the group");
 
@@ -327,11 +266,11 @@ async function step2() {
   await dirs.locator(".dir-input").press("Enter");
   // The button reads "Use <name>" only once the typed folder's listing has loaded.
   await dirs.locator(".dir-foot button", { hasText: new RegExp(`^Use ${path.basename(PICKED)}$`) }).click();
-  await waitFor("the chat's folder is the picked one", async () => (await chatOn(A, first))?.cwd === PICKED);
+  await waitFor("the chat's folder is the picked one", async () => (await chatOn(first))?.cwd === PICKED);
   await modelChip(page).click();
   await page.locator(`.composer .menu .menu-item[data-model-id="${other.id}"]`).click();
-  await waitFor("the chat's model is the picked one", async () => (await chatOn(A, first))?.model === other.id);
-  const c1 = await chatOn(A, first);
+  await waitFor("the chat's model is the picked one", async () => (await chatOn(first))?.model === other.id);
+  const c1 = await chatOn(first);
   await holds("the composer shows the picked model", async () => (await shows(page)).model === label(other.id), { timeout: 5000 });
   const s1 = await shows(page);
   await check("2 in the group: a folder and a model are picked in the composer", c1.group === group && c1.cwd === PICKED && c1.model === other.id && s1.folder === PICKED && s1.model === label(other.id),
@@ -344,10 +283,10 @@ async function step2() {
   // The stand-in's reply names the model it was started with.
   const reply = await holds("the stand-in's reply", async () => (await assistant(page)).some((t) => t.includes(`FAKE(${other.id}): ${text}`)), { timeout: 20000 });
   await check("2 the first message is sent and the stand-in replies, started on the picked model", reply, `assistant messages: ${one(await assistant(page)).slice(0, 300)}`);
-  await waitFor("the first turn ends", async () => (await chatOn(A, first))?.status === "ready").catch(() => {});
+  await waitFor("the first turn ends", async () => (await chatOn(first))?.status === "ready").catch(() => {});
 
   const next = await newInGroup(page);
-  const c2 = await chatOn(A, next);
+  const c2 = await chatOn(next);
   const s2 = await shows(page);
   await check('2 the next "+" in the group starts with that folder', c2.group === group && next !== first && c2.cwd === PICKED && s2.folder === PICKED,
     `the chat: group ${c2.group}, folder ${c2.cwd}; the composer shows ${s2.folder || "no folder chip"}; picked ${PICKED}`);
@@ -355,7 +294,7 @@ async function step2() {
     `the chat: agent ${c2.agent}, model ${c2.model}; the composer shows "${s2.model}"; picked ${other.id} ("${label(other.id)}")`);
 
   const out = await newUngrouped(page);
-  const c3 = await chatOn(A, out);
+  const c3 = await chatOn(out);
   const s3 = await shows(page);
   await check('2 a "+" outside any group starts with the server\'s default folder, not the group\'s', c3.group === "__ungrouped__" && c3.cwd === A.work && s3.folder === A.work,
     `the chat: group ${c3.group}, folder ${c3.cwd}; the composer shows ${s3.folder || "no folder chip"}; default ${A.work}`);
@@ -366,15 +305,14 @@ async function step2() {
 // ---- main
 
 let code = 0;
+onSignal(async () => { await browser?.close().catch(() => {}); await host?.close().catch(() => {}); if (A) await A.stop(); });
 try {
   await prepare();
-  await start(A);
-  console.log(`# server on ${A.base}; files in ${OUT}`);
-  let chromium;
-  try { ({ chromium } = await import("playwright")); }
-  catch { throw new Error("playwright is not installed: cd web && npm install --no-save playwright && npx playwright install chromium"); }
-  browser = await chromium.launch({ headless: true });
+  console.log(`# server on ${A.info?.address ?? `https://127.0.0.1:${A.port}`}, host on ${host.url}; files in ${OUT}`);
+  browser = await (await loadChromium()).launch({ headless: true });
   page = await openPage();
+  const pid = host.client.localInfo()?.pid;
+  if (pid) A.pids.push(pid); // (the host started the server: finish() looks for its process)
   await step("1 the five places", step1);
   await step("2 the group's defaults", step2);
   await check("the page's console has no error", page.errors.length === 0, [...new Set(page.errors)].slice(0, 5).join(" ; "));
@@ -385,12 +323,12 @@ try {
   code = 2;
 } finally {
   if (browser) await browser.close().catch(() => {});
-  await stop(A);
+  await host?.close().catch(() => {});
 }
-const alive = A.pids.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
-const free = A.port ? await portFree(A.port) : true;
+// (the host started the server; it ends it with the program's own command, so that no process is left)
 page = null;
-if (A.port && !(await check("the server is stopped and its port is free", free && alive.length === 0, `port ${A.port}; processes left: ${alive.join(", ") || "none"}`)) && !code) code = 1;
+const end = A ? await finish([A]) : { alive: [], free: true };
+if (A?.port && !(await check("the server is stopped and its port is free", end.free && end.alive.length === 0, `port ${A.port}; processes left: ${end.alive.join(", ") || "none"}`)) && !code) code = 1;
 if (code === 0 && process.env.AIWB_E2E_KEEP !== "1") fs.rmSync(OUT, { recursive: true, force: true });
 else console.log(`# files kept in ${OUT}`);
 if (known) console.log(`# ${known} known failure${known === 1 ? "" : "s"} (KNOWN-FAIL above): product faults, not counted as failed`);

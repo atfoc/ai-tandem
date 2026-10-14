@@ -10,10 +10,9 @@ export const SERVER_UNREACHABLE = "server_unreachable";
 export const sentNothing = (status: number | undefined, code?: string): boolean =>
   (status !== undefined && status < 500) || code === SERVER_UNREACHABLE;
 
-/** Whether a failed Send's answer tells that the chat is no longer on its server: 404 with the code `not_found`, for a
- *  chat of a section (remote). The page then shows the chat as no longer on that server, as it does when a read of
+/** Whether a failed Send's answer tells that the chat is no longer on its server: 404 with the code `not_found`. The page then shows the chat as no longer on that server, as it does when a read of
  *  it is answered so. Another 404 is of a part of the chat (`no_branch`), and says nothing of the chat. */
-export const goneBySend = (remote: boolean, code?: string): boolean => remote && code === "not_found";
+export const goneBySend = (code?: string): boolean => code === "not_found";
 
 /** Whether a failed Send's sentence is shown under the composer. connected: whether the chat's
  *  server is connected now, as the answer is handled. A Send refused because the server was not

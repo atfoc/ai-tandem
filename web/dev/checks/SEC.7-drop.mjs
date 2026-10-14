@@ -4,18 +4,17 @@
 // why, and so does the composer; what was typed and not yet taken by the server stays in the box, which is read-only
 // and takes no more; the chat's row is gone with the rest of the section. Back: the section shows the tree again, the
 // thread is level with that server, the warning is gone, Send works, the box takes text again, and the typed text is
-// saved by one PUT …/draft under /api/on/, on the counter the page had. Deleted there meanwhile, the view says so. Left during the outage, the chat is closed and cannot be opened
+// saved by one PUT …/draft to that server, on the counter the page had. Deleted there meanwhile, the view says so. Left during the outage, the chat is closed and cannot be opened
 // until the server is back.
 // A board that is open and held: it can still be drawn on, under the banner that it is not saved; back at the
 // revision the page has, the drawing is saved there; back at another one (the board was changed there meanwhile), it
-// is dropped with the notice, and that server's drawing is the one shown. While this computer's server is still
-// taking the board again there, a save is answered 503 not_held_there: the drawing waits under the banner, and the
-// `held` that follows saves it.
+// is dropped with the notice, and that server's drawing is the one shown. (The wait while this computer's server took the
+// board again there, a save answered 503 not_held_there, went with the relay: the page takes its boards again itself.)
 // What the browser keeps of all this is SEC.9's.
 import { callsOf, check, mockEval, openPage, seed, sideSeen, until } from "../shot.mjs";
 
 const J = JSON.stringify;
-const STUDIO = "s_studio", ON = `/api/on/${STUDIO}`, AWAY = "Studio Mac is not connected";
+const STUDIO = "s_studio", AWAY = "Studio Mac is not connected";
 const WHY = `${AWAY}: nothing can be sent or changed until it is back.`;
 
 await check("SEC.7 a chat and a board that are open when their server drops, and when it is back", async ({ url, browser, fail, note }) => {
@@ -28,7 +27,7 @@ await check("SEC.7 a chat and a board that are open when their server drops, and
     await seed(url, "SEC");
     const p = await openPage({ url, browser, sel, size: [1280, 900] });
     p.calls = callsOf(p.page);
-    p.on = (re, method) => p.calls.filter((c) => c.path.startsWith(ON + "/") && re.test(c.path) && (!method || c.method === method));
+    p.on = (re, method) => p.calls.filter((c) => c.server === STUDIO && re.test(c.path) && (!method || c.method === method));
     p.rows = async () => (await sideSeen(p.page, STUDIO)).outline;
     p.end = async () => { for (const e of p.errors) fail(`page error: ${e}`); await p.ctx.close(); };
     return p;
@@ -88,7 +87,7 @@ await check("SEC.7 a chat and a board that are open when their server drops, and
     if (await there("return chats.c_plain.draftRev;") !== rev + 1) fail("the draft's counter on Studio Mac is not one further");
     if (await text(page, ".composer .composer-input") !== typed + more) fail("back, the box lost what was typed");
     if (await box.getAttribute("aria-readonly") === "true") fail("back, the box is still read-only");
-    if (p.calls.some((c) => /^\/api\/chats\/c_plain/.test(c.path))) fail("a call for the section's chat went to this computer's chat with the same id");
+    if (p.calls.some((c) => c.server === "local" && /^\/api\/chats\/c_plain/.test(c.path))) fail("a call for the section's chat went to this computer's chat with the same id");
 
     // deleted there meanwhile: the view says so
     await drop();
@@ -106,7 +105,7 @@ await check("SEC.7 a chat and a board that are open when their server drops, and
     await page.waitForSelector(".thread .msg.user");
     await drop();
     await says("a second chat, its server dropped", page, ".remote-bar.off", AWAY);
-    await page.locator('.side-tree > .side-loose .side-row.is-chat, .side-tree > .side-group .side-row.is-chat').first().click();
+    await page.locator('.side-section[data-server="local"] > .side-section-body > .side-loose .side-row.is-chat, .side-section[data-server="local"] > .side-section-body > .side-group .side-row.is-chat').first().click();
     if (!await until(async () => !await page.locator(".remote-bar").count() && !await page.locator(".chat-head .chat-head-server").count(), 10000)) fail("after another chat was opened, the view of the section's chat stays");
     await noRows("the chat left", p);
     if ((await page.evaluate(() => localStorage.getItem("aiwb.sel"))).includes(STUDIO)) fail("the selection still names the chat that was left");
@@ -156,23 +155,6 @@ await check("SEC.7 a chat and a board that are open when their server drops, and
     if (!await until(async () => !await page.locator(".canvas .save-banner").count(), 10000)) fail("back and saved, the banner stays");
     if (saves().slice(at).some((c) => c.status !== 200 && c.status !== undefined)) fail(`back at the same revision, a save was refused: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
     if (await page.locator(".canvas .canvas-note").count()) fail("back at the same revision, the page says that changes were dropped");
-    // back, and this computer's server is still taking the board again there: a save meanwhile is "not yet" (503
-    // not_held_there). The edit stays under the banner, which says that it waits and no longer that the server is
-    // unreachable; nothing is dropped and no error shows; the `held` that ends the re-take saves it.
-    await drop();
-    await draw();
-    await says("the board drawn on, its server away once more", page, ".canvas .save-banner", "Not saved, Studio Mac unreachable");
-    const at2 = saves().length;
-    await back(`flags.retake = { delay: 4000 }`);
-    await draw();
-    await says("a board that is being taken again on its server", page, ".canvas .save-banner", "Not saved yet, waiting for Studio Mac");
-    if (!await until(() => saves().slice(at2).some((c) => c.status === 503), 3500)) fail(`no save was answered 503 while the board was being taken again: ${J(saves().slice(at2).map((c) => [c.path, c.status]))}`);
-    if (await count() !== 4) fail(`Studio Mac got a drawing while the board was being taken again: ${await count()} shapes`);
-    if (await page.locator(".canvas .canvas-note, .board-off, .takeover-panel").count() || !await page.locator(live).count()) fail("a save answered not_held_there dropped the edit, or took the canvas away");
-    if (!await until(async () => await count() === 6, 15000)) fail(`taken again at the same revision, the drawing was not saved: Studio Mac has ${await count()} shapes, not 6; the saves: ${J(saves().slice(at2).map((c) => [c.path, c.status]))}`);
-    if (!await until(async () => !await page.locator(".canvas .save-banner").count(), 10000)) fail("taken again and saved, the banner stays");
-    if (await page.locator(".canvas .canvas-note").count()) fail("taken again at the same revision, the page says that changes were dropped");
-    await mockEval(`delete flags.retake;`, url);
     // back, at another revision: the drawing is dropped with the notice
     await drop();
     await draw();
@@ -183,7 +165,7 @@ await check("SEC.7 a chat and a board that are open when their server drops, and
     if (!await until(async () => !await page.locator(".canvas .save-banner").count(), 10000)) fail("the edit dropped, the banner stays");
     if (J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);")) !== J(["sec_other"])) fail(`the drawing made during the outage replaced the one made there: ${J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);"))}`);
     if (!await page.locator(live).count()) fail("after the dropped edit the board cannot be drawn on");
-    if (p.calls.some((c) => /^\/api\/boards\//.test(c.path))) fail("a call for the section's board went to this computer's routes");
+    if (p.calls.some((c) => c.server === "local" && /^\/api\/boards\//.test(c.path))) fail("a call for the section's board went to this computer's routes");
     await p.end();
   }
   note("a chat: read-only under the warning, Send off with the reason, the box read-only with the typed text kept and saved by one PUT on its counter when back; a board drawn on under the banner, saved at the same revision and dropped at another; a chat deleted meanwhile, its view said so");

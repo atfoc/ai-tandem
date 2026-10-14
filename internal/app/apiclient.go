@@ -7,10 +7,8 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// APISnapshot is the state an API client gets: the server's whole tree (its groups, boards,
-// chats and defaults, archived ones included) and the server's lists, as the server's own
-// page gets them. No data folder, and nothing of the servers this one connects to: not its server
-// list, not their lists, libraries or trees.
+// APISnapshot is the state a client gets: the server's whole tree (its groups, boards, chats and
+// defaults, archived ones included) and the server's lists. No data folder.
 type APISnapshot struct {
 	Agents     []model.AgentKind                  `json:"agents"`   // the agents this server can start, never nil
 	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"` // claude, cursor, pi; null while not known
@@ -21,15 +19,17 @@ type APISnapshot struct {
 	Boards     []model.Board                      `json:"boards"`   // every board; never nil
 	Chats      []model.ChatView                   `json:"chats"`    // every chat; never nil
 	States     []model.BranchState                `json:"states"`   // one per branch of those chats; never nil
-	// Library is this server's own prompt library, which every API client reads and changes
-	// (the library routes of server.RemoteRoutes); null for a server without one. After every
+	// Library is this server's own prompt library, which every client reads and changes
+	// (the library routes of server.ClientRoutes); null for a server without one. After every
 	// change the client gets it whole in an "own_library" event (library.Own).
 	Library *library.Tree `json:"library"`
+	// LibraryNotice says why the library's file was set aside at the server's start; left out
+	// when it was not.
+	LibraryNotice string `json:"libraryNotice,omitempty"`
 }
 
-// APISnapshot builds the snapshot of an API client: the same for every one of them. It changes
-// nothing and sends nothing. It is built from its own fields, never from Snapshot: what is added
-// to the page's snapshot reaches no API client.
+// APISnapshot builds the snapshot of a client: the same for every one of them. It changes
+// nothing and sends nothing.
 func (a *App) APISnapshot() APISnapshot {
 	agents := a.Agents.List()
 	if agents == nil {
@@ -51,11 +51,12 @@ func (a *App) APISnapshot() APISnapshot {
 	if a.Library != nil {
 		t := a.Library.Tree()
 		snap.Library = &t
+		snap.LibraryNotice = a.Library.Notice()
 	}
 	return snap
 }
 
-// catalogs returns each agent's model list as Snapshot gives it: Claude's built-in list until
+// catalogs returns each agent's model list as the snapshot gives it: Claude's built-in list until
 // it reported one, nil for Cursor and pi until they did.
 func (a *App) catalogs() map[model.AgentKind]*model.Catalog {
 	cl := claude.Catalog

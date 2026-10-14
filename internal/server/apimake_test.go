@@ -488,18 +488,6 @@ func TestTwoClientsInOneDraft(t *testing.T) {
 	}
 }
 
-// A replace is refused for a chat of a section too, and nothing is sent to that server.
-func TestDraftReplaceOfASectionsChatIsRefused(t *testing.T) {
-	t.Parallel()
-	f := newFar(t, farOpt{chats: []model.ChatView{viewThere(farChatA)}})
-	p := f.page("P")
-	f.untouched("a replace of the draft of a section's chat", func() {
-		if text := f.refuses(p, 400, "replace_refused", "PUT", f.on("/chats/"+farChatA+"/draft?replace=4&branch=main"), `{"text":"x"}`); text == "" {
-			t.Fatal("no sentence")
-		}
-	})
-}
-
 // mustStatus is a call of the client that must be answered with this status.
 func mustStatus(t *testing.T, c *bridgetest.Page, want int, method, path string, body any) []byte {
 	t.Helper()

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"ai-whiteboard/internal/editorbridge/bridgetest"
@@ -20,9 +19,10 @@ import (
 // table, as the server's own page does, and no route outside it.
 
 // l5Table is the table of the contract's 2.3, written out here: a route that joins or leaves
-// RemoteRoutes must join or leave the contract too.
+// ClientRoutes must join or leave the contract too.
 var l5Table = []string{
 	"GET /api/hello", "GET /api/events", "GET /api/state",
+	"POST /api/client/flushed",
 	"POST /api/groups", "PATCH /api/groups/{id}", "POST /api/groups/{id}/move", "DELETE /api/groups/{id}",
 	"POST /api/groups/{id}/archive", "POST /api/groups/{id}/unarchive",
 	"POST /api/chats",
@@ -49,12 +49,12 @@ var l5Table = []string{
 var (
 	l5Outside = [][2]string{
 		{"PUT", "/api/groups/order"}, {"POST", "/api/boards/{board}/reveal"}, {"POST", "/api/restart"},
-		{"GET", "/api/remote/status"}, {"GET", "/api/mcp/status"}, {"POST", "/api/client/flushed"},
+		{"GET", "/api/remote/status"}, {"GET", "/api/mcp/status"},
 		{"GET", "/api/servers"}, {"POST", "/api/servers"}, {"PATCH", "/api/servers/s_0123456789ab"}, {"DELETE", "/api/servers/s_0123456789ab"},
 		{"GET", "/api/servers/s_0123456789ab/items"}, {"POST", "/api/servers/test"}, {"POST", "/api/servers/s_0123456789ab/test"},
 		{"POST", "/api/servers/s_0123456789ab/accept"}, {"GET", "/api/servers/anything/else"},
-		{"GET", "/api/on/s_0123456789ab/chats/{chat}"}, {"POST", "/api/on/s_0123456789ab/chats"}, {"GET", "/api/on/local/chats/{chat}"},
-		{"POST", "/api/on/s_0123456789ab/groups"}, {"GET", "/api/on"}, {"DELETE", "/api/on/s_0123456789ab/boards/{board}"},
+		{"GET", "" + relayPrefix + "/s_0123456789ab/chats/{chat}"}, {"POST", "" + relayPrefix + "/s_0123456789ab/chats"}, {"GET", "" + relayPrefix + "/local/chats/{chat}"},
+		{"POST", "" + relayPrefix + "/s_0123456789ab/groups"}, {"GET", relayPrefix}, {"DELETE", "" + relayPrefix + "/s_0123456789ab/boards/{board}"},
 		{"GET", "/"}, {"GET", "/index.html"}, {"GET", "/version.json"}, {"GET", "/assets/app.js"}, {"HEAD", "/"},
 		{"GET", "/api"}, {"GET", "/api/"}, {"GET", "/api/chats"}, {"GET", "/api/groups"}, {"GET", "/api/boards"},
 		{"POST", "/api/state"}, {"POST", "/api/events"}, {"DELETE", "/api/hello"}, {"GET", "/api/boards/{board}"},
@@ -64,33 +64,33 @@ var (
 
 func TestLevel5TableIsTheContracts(t *testing.T) {
 	t.Parallel()
-	got, want := slices.Clone(RemoteRoutes), slices.Clone(l5Table)
+	got, want := slices.Clone(ClientRoutes), slices.Clone(l5Table)
 	slices.Sort(got)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		for _, r := range got {
 			if !slices.Contains(want, r) {
-				t.Errorf("RemoteRoutes has %q, which the contract's table has not", r)
+				t.Errorf("ClientRoutes has %q, which the contract's table has not", r)
 			}
 		}
 		for _, r := range want {
 			if !slices.Contains(got, r) {
-				t.Errorf("RemoteRoutes lacks %q of the contract's table", r)
+				t.Errorf("ClientRoutes lacks %q of the contract's table", r)
 			}
 		}
 		if len(got) != len(want) {
-			t.Errorf("RemoteRoutes has %d routes, the contract's table %d", len(got), len(want))
+			t.Errorf("ClientRoutes has %d routes, the contract's table %d", len(got), len(want))
 		}
 	}
 	for _, r := range l5Gone {
-		if slices.Contains(RemoteRoutes, r) {
+		if slices.Contains(ClientRoutes, r) {
 			t.Errorf("%q is still in the table", r)
 		}
 	}
 	// Every route of the table is one the server registers: none is a name for nothing.
 	e := newEnv(t)
 	registered := e.s.routes().patterns
-	for _, r := range RemoteRoutes {
+	for _, r := range ClientRoutes {
 		if !slices.Contains(registered, r) {
 			t.Errorf("the route %q of the table is not registered", r)
 		}
@@ -119,7 +119,7 @@ type l5Rows struct {
 // the body.
 func (r *l5Rows) ask(route, id, query string, body any, want int, has string) string {
 	r.t.Helper()
-	if !slices.Contains(RemoteRoutes, route) {
+	if !slices.Contains(ClientRoutes, route) {
 		r.t.Fatalf("%s is no route of the table", route)
 	}
 	r.called[route] = true
@@ -161,8 +161,9 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask := rows.ask
 	const done = `{"ok":true}`
 
-	ask("GET /api/hello", "", "", nil, 200, `"featureLevel":5`)
+	ask("GET /api/hello", "", "", nil, 200, `"featureLevel":6`)
 	ask("GET /api/state", "", "", nil, 200, chat)
+	ask("POST /api/client/flushed", "", "", nil, 200, done)
 
 	// Groups.
 	gx := l5ID(t, ask("POST /api/groups", "", "", `{"name":"Made by X"}`, 200, `"name":"Made by X"`))
@@ -248,88 +249,10 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask("DELETE /api/library/{server}/prompts/{id}", lp, "", nil, 200, done)
 	ask("DELETE /api/library/{server}/groups/{id}", lg, "", nil, 200, done)
 
-	for _, route := range RemoteRoutes {
+	for _, route := range ClientRoutes {
 		if !rows.called[route] {
 			t.Errorf("the route %s of the table was not asked", route)
 		}
-	}
-}
-
-// What the bounds keep from a client (goal, section 5): the server list, restart, the order of
-// the groups, the reveal of a file, the status routes, the calls that pass on to another server
-// and the client files are 404 for it, while the owner's page is served them.
-func TestLevel5RoutesOutsideTheTable(t *testing.T) {
-	t.Parallel()
-	files := t.TempDir()
-	for name, content := range map[string]string{"index.html": "<!doctype html><title>the page</title>", "version.json": `{"version":"9.9.9"}`} {
-		if err := os.WriteFile(filepath.Join(files, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var restarts atomic.Int32
-	e, l := remoteEnv(t, func(s *Server) {
-		s.Client = files
-		s.Restart = func() error { restarts.Add(1); return nil }
-	})
-	group, board, chat := l5Tree(e)
-	g2 := l5ID(t, e.expect(200, "POST", "/api/groups", `{"name":"Second"}`))
-	x, _ := l.api(apiX)
-	fill := strings.NewReplacer("{board}", board, "{chat}", chat, "{id}", board)
-	before := e.expect(200, "GET", "/api/state", "")
-
-	// Every request the contract names, and every route the server registers outside the table.
-	asks := slices.Clone(l5Outside)
-	for _, route := range e.s.routes().patterns {
-		if slices.Contains(RemoteRoutes, route) {
-			continue
-		}
-		method, path, found := strings.Cut(route, " ")
-		if !found { // the client files: a pattern with no method
-			method, path = "GET", route
-		}
-		asks = append(asks, [2]string{method, path})
-	}
-	for _, a := range asks {
-		for _, body := range []any{nil, `{"ids":["` + g2 + `","` + group + `"],"name":"n","url":"https://127.0.0.1:1"}`} {
-			status, out := l5Call(x, a[0], fill.Replace(a[1]), body)
-			if a[0] == "HEAD" {
-				if status != 404 {
-					t.Errorf("%s %s for a client: %d", a[0], a[1], status)
-				}
-				continue
-			}
-			l5Is(t, a[0]+" "+a[1]+" for a client", status, out, 404, l5Gate)
-		}
-	}
-	if restarts.Load() != 0 {
-		t.Error("a client restarted the server")
-	}
-	if after := e.expect(200, "GET", "/api/state", ""); after != before {
-		t.Errorf("the calls outside the table changed the server:\nbefore %s\nafter  %s", before, after)
-	}
-
-	// The same calls on the owner's port are served: the bound is the remote listener's.
-	p := e.page(l5Owner)
-	if out := l5Want(t, p, 200, "GET", "/", nil); !strings.Contains(out, "the page") {
-		t.Errorf("the client files on the owner's port: %s", out)
-	}
-	if out := l5Want(t, p, 200, "GET", "/api/remote/status", nil); !strings.Contains(out, `"listening":true`) {
-		t.Errorf("the remote status on the owner's port: %s", out)
-	}
-	l5Want(t, p, 200, "GET", "/api/mcp/status", nil)
-	l5Want(t, p, 200, "POST", "/api/client/flushed", nil)
-	l5Want(t, p, 200, "PUT", "/api/groups/order", `{"ids":["`+g2+`","`+group+`"]}`)
-	if out := l5Want(t, p, 200, "GET", "/api/servers", nil); !strings.Contains(out, `"local"`) {
-		t.Errorf("the server list on the owner's port: %s", out)
-	}
-	l5Want(t, p, 202, "POST", "/api/restart", nil)
-	if restarts.Load() != 1 {
-		t.Errorf("the owner's restart ran %d times", restarts.Load())
-	}
-	// And the order the owner set is the one the client is shown: it reads what it cannot write.
-	snap := decode[struct{ Groups []model.Group }](t, l5Want(t, x, 200, "GET", "/api/state", nil))
-	if len(snap.Groups) != 2 || snap.Groups[0].ID != g2 || snap.Groups[1].ID != group {
-		t.Errorf("the groups a client is shown after the owner's reorder: %+v", snap.Groups)
 	}
 }
 
@@ -402,13 +325,12 @@ func TestLevel5GoneCallsOnTheOwnersPort(t *testing.T) {
 }
 
 // GET /api/dirs lists no folder of the app's own to a client: not the data folder, nothing in
-// it, by whatever path they are named. The owner's page lists them.
+// it, by whatever path they are named.
 func TestLevel5DirsKeepsTheDataFolderFromAClient(t *testing.T) {
 	t.Parallel()
 	e := newL5Env(t)
 	_, _, chat := l5Tree(e.env)
 	x, _ := e.l.api(apiX)
-	p := e.page(l5Owner)
 	const refusal = `{"error":"the app's own folder can't be used as a working folder"}`
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(e.a.DataDir, link); err != nil {
@@ -420,14 +342,6 @@ func TestLevel5DirsKeepsTheDataFolderFromAClient(t *testing.T) {
 		if strings.Contains(out, chat) || strings.Contains(out, `"dirs"`) {
 			t.Errorf("the refusal of %s lists something: %s", dir, out)
 		}
-		if out := l5Want(t, p, 200, "GET", "/api/dirs?path="+url.QueryEscape(dir), nil); !strings.Contains(out, `"dirs":[`) {
-			t.Errorf("the folder %s for the owner's page: %s", dir, out)
-		}
-	}
-	// The chats' folder holds the ids of the chats: that is what the owner is listed and the
-	// client is not.
-	if out := l5Want(t, p, 200, "GET", "/api/dirs?path="+url.QueryEscape(filepath.Dir(e.st.P.ChatDir(chat))), nil); !strings.Contains(out, chat) {
-		t.Errorf("the chats' folder for the owner's page: %s", out)
 	}
 	// Any other folder of the machine is listed to a client, the parent of the data folder too.
 	sub := filepath.Join(e.cwd, "inside")

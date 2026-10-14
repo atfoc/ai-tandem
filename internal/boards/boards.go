@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -456,12 +455,4 @@ func (b *Service) remove(id string) error {
 	delete(b.boards, id)
 	b.revs.Delete(id)
 	return nil
-}
-
-// Reveal shows the board's drawing in Finder.
-func (b *Service) Reveal(id string) error {
-	if _, ok := b.Get(id); !ok {
-		return ErrNotFound
-	}
-	return exec.Command("open", "-R", b.st.P.BoardFile(id)).Run()
 }

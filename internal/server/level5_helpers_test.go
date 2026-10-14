@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"ai-whiteboard/internal/editorbridge/bridgetest"
-	"ai-whiteboard/internal/servers"
 )
 
 // Level 5 (plans/remote-server-sections-contract.md, section 2): what the tests of the files
@@ -79,7 +78,7 @@ func l5Ask(h http.Handler, l *listener, rq l5Req) (int, string) {
 	if rq.addr != "" {
 		req.RemoteAddr = rq.addr
 	}
-	for name, v := range map[string]string{SecretHeader: rq.secret, ClientHeader: rq.client, servers.LevelHeader: rq.level} {
+	for name, v := range map[string]string{SecretHeader: rq.secret, ClientHeader: rq.client, LevelHeader: rq.level} {
 		if v != "" {
 			req.Header.Set(name, v)
 		}
@@ -103,7 +102,7 @@ func l5Raw(l *listener, id, method, path, ctype string, body []byte) (int, strin
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	for name, v := range map[string]string{SecretHeader: testSecret, ClientHeader: id, servers.LevelHeader: testLevel, "Content-Type": ctype} {
+	for name, v := range map[string]string{SecretHeader: testSecret, ClientHeader: id, LevelHeader: testLevel, "Content-Type": ctype} {
 		req.Header.Set(name, v)
 	}
 	resp, err := l.http.Do(req)

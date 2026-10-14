@@ -2,21 +2,16 @@ package main
 
 import (
 	"bytes"
-	"errors"
+	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"ai-whiteboard/internal/remote"
-	"ai-whiteboard/internal/store"
 )
 
 // own runs one of the commands of ownCommand in-process. Every test passes its own -home.
@@ -85,6 +80,20 @@ func noSecret(t *testing.T, secret string, streams ...string) {
 	}
 }
 
+// fingerprintOf is the fingerprint of the certificate in dir.
+func fingerprintOf(t *testing.T, dir string) string {
+	t.Helper()
+	b, err := os.ReadFile(remote.FilesIn(dir).Cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, err := remote.FingerprintOfPEM(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fp
+}
+
 var fingerprintForm = regexp.MustCompile(`^([0-9A-F]{2}:){31}[0-9A-F]{2}$`)
 
 func TestRemoteSetupCommand(t *testing.T) {
@@ -99,15 +108,14 @@ func TestRemoteSetupCommand(t *testing.T) {
 		t.Fatalf("configuration: found %v, %v", found, err)
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("want six lines, got:\n%s", out)
+	if len(lines) != 5 {
+		t.Fatalf("want five lines, got:\n%s", out)
 	}
 	want := []string{
 		"Remote access is set up in " + home + ".",
 		"Port: 4748",
 		"Names: " + strings.Join(c.Names, ", "),
 		"",
-		"Server port: 4747",
 		"Next start: will listen",
 	}
 	for i, w := range want {
@@ -119,12 +127,8 @@ func TestRemoteSetupCommand(t *testing.T) {
 	if !ok || !fingerprintForm.MatchString(fp) {
 		t.Fatalf("line 4 = %q", lines[3])
 	}
-	certPEM, err := os.ReadFile(remote.FilesIn(home).Cert)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if onDisk, err := remote.FingerprintOfPEM(certPEM); err != nil || onDisk != fp {
-		t.Fatalf("fingerprint %q, on disk %q (%v)", fp, onDisk, err)
+	if onDisk := fingerprintOf(t, home); onDisk != fp {
+		t.Fatalf("fingerprint %q, on disk %q", fp, onDisk)
 	}
 	if c.Names[len(c.Names)-1] != "wb.example" {
 		t.Fatalf("names = %v", c.Names)
@@ -158,6 +162,9 @@ func TestRemoteSetupFlags(t *testing.T) {
 	if !strings.Contains(out, "Port: 5099\n") || !strings.Contains(out, "one.example, 10.1.2.3\n") {
 		t.Fatalf("stdout:\n%s", out)
 	}
+	if strings.Contains(out, "Server port") {
+		t.Fatalf("set-up still prints a server port:\n%s", out)
+	}
 
 	// A later run keeps what it is not given.
 	if _, _, code := own(t, "remote", "setup", "--home", home, "--name", "two.example"); code != 0 {
@@ -168,18 +175,22 @@ func TestRemoteSetupFlags(t *testing.T) {
 		t.Fatalf("configuration = %+v", c)
 	}
 
-	// The remote port equal to the server's own: the check is fatal.
-	out, errOut, code = own(t, "remote", "setup", "-home", home, "-server-port", "5099")
+	// The client port equal to the MCP port: the check is fatal.
+	out, errOut, code = own(t, "remote", "setup", "-home", home, "-port", strconv.Itoa(mcpPort()))
 	if code != 1 || !strings.Contains(out, "Next start: the server will not start\n") {
 		t.Fatalf("code %d, stdout:\n%s", code, out)
 	}
-	for _, want := range []string{"Remote access: the remote port 5099", "To repair: ", "remote setup -port N -home ", "remote off -home "} {
+	for _, want := range []string{"is the MCP port", "To repair: ", "remote setup -port N -home "} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr lacks %q:\n%s", want, errOut)
 		}
 	}
+	if strings.Contains(errOut, "remote off") {
+		t.Fatalf("stderr offers the command that is gone:\n%s", errOut)
+	}
 
-	// Usage errors exit 2 and write nothing.
+	// Usage errors exit 2 and write nothing. -server-port is gone.
+	own(t, "remote", "setup", "-home", home, "-port", "5099")
 	before := folder(t, home)
 	for _, args := range [][]string{
 		{"remote", "setup", "-home", home, "-name", "https://x.example"},
@@ -187,6 +198,7 @@ func TestRemoteSetupFlags(t *testing.T) {
 		{"remote", "setup", "-home", home, "-port", "70000"},
 		{"remote", "setup", "-home", home, "-port", "x"},
 		{"remote", "setup", "-home", home, "-nope"},
+		{"remote", "setup", "-home", home, "-server-port", "4747"},
 		{"remote", "setup", "-home", home, "extra"},
 	} {
 		out, errOut, code := own(t, args...)
@@ -233,50 +245,45 @@ func TestRemoteSetupNewCertNeedsConfig(t *testing.T) {
 	}
 }
 
-func TestRemoteOffCommand(t *testing.T) {
+// "remote off" is gone and "remote status" is "status": both end with exit 2 and say so, and
+// change nothing.
+func TestRemoteOffAndStatusAreGone(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	out, errOut, code := own(t, "remote", "off", "-home", home)
-	if code != 0 || errOut != "" || out != "Remote access was not set up in "+home+".\n" {
-		t.Fatalf("code %d, stderr %q, stdout %q", code, errOut, out)
+	own(t, "remote", "setup", "-home", home)
+	before := folder(t, home)
+	const message = `"remote status" is now "status"; "remote off" is gone: a server always serves its clients over HTTPS with the secret.` + "\n"
+	for _, args := range [][]string{
+		{"remote", "off", "-home", home},
+		{"remote", "status", "-home", home},
+		{"remote", "off"},
+		{"remote", "status", "-home", home, "-server-port", "4747"},
+	} {
+		out, errOut, code := own(t, args...)
+		if code != 2 || out != "" || errOut != message {
+			t.Fatalf("%q: code %d, stdout %q, stderr %q", args, code, out, errOut)
+		}
+	}
+	sameFolder(t, home, before)
+}
+
+// ---- status ------------------------------------------------------------------------------------
+
+func TestStatusFromFiles(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+
+	// Never set up: exit 1 with the message that names the set-up command.
+	out, errOut, code := own(t, "status", "-home", home)
+	if code != 1 || out != "Running: no server\nFiles: not set up\n" ||
+		errOut != "AI Whiteboard is not set up on this machine. Set it up once with: "+fmt.Sprintf("%q remote setup -home %q\n", exePath(), home) {
+		t.Fatalf("code %d, stdout %q, stderr %q", code, out, errOut)
 	}
 
 	setup, _, _ := own(t, "remote", "setup", "-home", home)
 	secret := secretOf(t, home)
-	out, errOut, code = own(t, "remote", "off", "-home", home)
-	if code != 0 || errOut != "" || out != "Remote access is off in "+home+". A running server keeps it until its next start.\n" {
-		t.Fatalf("code %d, stderr %q, stdout %q", code, errOut, out)
-	}
-	if _, found, _ := remote.LoadConfig(home); found {
-		t.Fatal("remote.json is still there")
-	}
-
-	// A set-up after it gives the same secret and fingerprint.
-	again, _, code := own(t, "remote", "setup", "-home", home)
-	if code != 0 || again != setup || secretOf(t, home) != secret {
-		t.Fatalf("code %d, stdout:\n%s\nwant:\n%s", code, again, setup)
-	}
-
-	if _, _, code := own(t, "remote", "off", "-home", home, "extra"); code != 2 {
-		t.Fatalf("code %d, want 2", code)
-	}
-}
-
-func TestRemoteStatusFromFiles(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	// Nothing listens on this port: the status asks no other.
-	port := strconv.Itoa(freePort(t))
-
-	out, errOut, code := own(t, "remote", "status", "-home", home, "-server-port", port)
-	if code != 0 || errOut != "" || out != "Running: no server\nFiles: not set up\n" {
-		t.Fatalf("code %d, stderr %q, stdout %q", code, errOut, out)
-	}
-
-	setup, _, _ := own(t, "remote", "setup", "-home", home, "-server-port", port)
-	secret := secretOf(t, home)
 	before := folder(t, home)
-	out, errOut, code = own(t, "remote", "status", "-home", home, "-server-port", port)
+	out, errOut, code = own(t, "status", "-home", home)
 	if code != 0 || errOut != "" {
 		t.Fatalf("code %d, stderr %q", code, errOut)
 	}
@@ -287,18 +294,20 @@ func TestRemoteStatusFromFiles(t *testing.T) {
 	}
 	noSecret(t, secret, out, errOut)
 
-	// The remote port equal to the server's own.
-	out, errOut, code = own(t, "remote", "status", "-home", home, "-server-port", "4748")
-	if code != 1 || !strings.Contains(out, "Files: the server will not start\nPort: 4748\n") || !strings.Contains(errOut, "remote setup -port N") {
+	// The client port equal to the MCP port.
+	own(t, "remote", "setup", "-home", home, "-port", strconv.Itoa(mcpPort()))
+	out, errOut, code = own(t, "status", "-home", home)
+	if code != 1 || !strings.Contains(out, "Files: the server will not start\nPort: "+strconv.Itoa(mcpPort())+"\n") || !strings.Contains(errOut, "remote setup -port N") {
 		t.Fatalf("code %d, stdout:\n%s\nstderr:\n%s", code, out, errOut)
 	}
+	own(t, "remote", "setup", "-home", home, "-port", "4748")
 
 	// The key removed: exit 1 with the check's message.
 	f := remote.FilesIn(home)
 	if err := os.Remove(f.Key); err != nil {
 		t.Fatal(err)
 	}
-	out, errOut, code = own(t, "remote", "status", "-home", home, "-server-port", port)
+	out, errOut, code = own(t, "status", "-home", home)
 	if code != 1 {
 		t.Fatalf("code %d, want 1", code)
 	}
@@ -307,210 +316,157 @@ func TestRemoteStatusFromFiles(t *testing.T) {
 			t.Fatalf("stdout lacks %q:\n%s", want, out)
 		}
 	}
-	for _, want := range []string{"Remote access: ", f.Key, "The start creates nothing.", "To repair: ", "remote setup -new-cert -home ", "To start without remote access: ", "remote off -home "} {
+	for _, want := range []string{"Remote access: ", f.Key, "The start creates nothing.", "To repair: ", "remote setup -new-cert -home "} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr lacks %q:\n%s", want, errOut)
 		}
 	}
-	if n := strings.Count(errOut, "\n"); n > 6 || !strings.HasSuffix(errOut, "\n") {
+	if n := strings.Count(errOut, "\n"); n > 5 || !strings.HasSuffix(errOut, "\n") {
 		t.Fatalf("stderr has %d lines:\n%s", n, errOut)
 	}
 	noSecret(t, secret, out, errOut)
 
 	// The status writes nothing.
 	delete(before, "remote-key.pem")
-	sameFolder(t, home, before)
-
-	if _, _, code := own(t, "remote", "status", "-home", home, "-server-port", "x"); code != 2 {
+	_ = before
+	if _, _, code := own(t, "status", "-home", home, "-server-port", "x"); code != 2 {
+		t.Fatalf("code %d, want 2", code)
+	}
+	if _, _, code := own(t, "status", "-home", home, "extra"); code != 2 {
 		t.Fatalf("code %d, want 2", code)
 	}
 }
 
-// standInID is the instance id the stand-in servers state in hello.
-const standInID = "0d9f1c52-6a3e-4b7f-8c21-5e4d3c2b1a09"
-
-// asThisFolders writes id as home's instance id, as the folder's first start does: a server that
-// states it in hello then counts as this data folder's.
-func asThisFolders(t *testing.T, home, id string) {
-	t.Helper()
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(remote.FilesIn(home).InstanceID, []byte(id+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// standIn is a server that answers hello, with the instance id standInID and no feature level,
-// the state read, with home as its data folder, and, when status is not "", the remote status
-// route.
-func standIn(home, status string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/hello":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"app":"ai-whiteboard","version":"dev","pid":%d,"instanceId":%q}`, os.Getpid(), standInID)
-		case r.URL.Path == "/api/state":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"dataDir":%q}`, home)
-		case r.URL.Path == "/api/remote/status" && status != "":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, status)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-}
-
-func TestRemoteStatusAgainstServer(t *testing.T) {
+// The status of a server running: this build's address, port, names, fingerprint and MCP listener
+// from the control socket, what the files say after it, and for the build before a line.
+func TestStatusOfARunningServer(t *testing.T) {
 	t.Parallel()
-	const fp = "AB:CD:EF"
-	cases := []struct {
-		name, status, want string
-	}{
-		{"listening", `{"listening":true,"port":5123,"names":["mac.local","192.168.1.20"],"fingerprint":"` + fp + `"}`,
-			"Running: listening\nRunning port: 5123\nRunning names: mac.local, 192.168.1.20\nRunning fingerprint: " + fp + "\n"},
-		{"off", `{"listening":false}`, "Running: off\n"},
-		{"older build", "", "Running: older build, reported from the files alone\n"},
-		{"not JSON", "<html>", "Running: older build, reported from the files alone\n"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			srv := standIn(home, tc.status)
-			defer srv.Close()
-			asThisFolders(t, home, standInID)
-			port := strconv.Itoa(portOf(t, srv))
+	home := t.TempDir()
+	own(t, "remote", "setup", "-home", home)
+	asThisFolders(t, home, standInID)
+	s := (&standIn{version: "1.2.3", listening: true, port: 5123, names: []string{"mac.local", "192.168.1.20"}, fingerprint: "AB:CD:EF"}).withPid(t)
+	s.this(t, home, true)
 
-			out, errOut, code := own(t, "remote", "status", "-home", home, "-server-port", port)
-			if code != 0 || errOut != "" || out != tc.want+"Files: not set up\n" {
-				t.Fatalf("code %d, stderr %q, stdout:\n%s", code, errOut, out)
-			}
-
-			// Found through server.json too, and the files are reported after it.
-			writeServerFile(t, store.NewPaths(home), portOf(t, srv))
-			if _, _, code := own(t, "remote", "setup", "-home", home); code != 0 {
-				t.Fatalf("set-up: code %d", code)
-			}
-			out, errOut, code = own(t, "remote", "status", "-home", home)
-			if code != 0 || errOut != "" || !strings.HasPrefix(out, tc.want+"Files: the next start will listen\nPort: 4748\nNames: ") {
-				t.Fatalf("code %d, stderr %q, stdout:\n%s", code, errOut, out)
-			}
-			noSecret(t, secretOf(t, home), out, errOut)
-		})
+	out, errOut, code := own(t, "status", "-home", home)
+	if code != 0 || errOut != "" {
+		t.Fatalf("code %d, stderr %q", code, errOut)
 	}
-}
-
-// untouched is a listener that must get no connection: it stands where a command must not look.
-// The function it returns fails the test when one arrived.
-func untouched(t *testing.T) (port int, check func(what string)) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	wantRunning := "Running: this build 1.2.3 (pid " + strconv.Itoa(s.pid) + ")\nAddress: https://127.0.0.1:5123\nPort: 5123\nNames: mac.local, 192.168.1.20\n" +
+		"Fingerprint: AB:CD:EF\nMCP listener: http://localhost:6006/mcp (up)\nFiles: the next start will listen\nPort: 4748\n"
+	if !strings.HasPrefix(out, wantRunning) {
+		t.Fatalf("stdout:\n%s\nwant it to start:\n%s", out, wantRunning)
 	}
-	var n atomic.Int64
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			n.Add(1)
-			c.Close()
-		}
-	}()
-	t.Cleanup(func() { ln.Close() })
-	return ln.Addr().(*net.TCPAddr).Port, func(what string) {
-		t.Helper()
-		if got := n.Load(); got != 0 {
-			t.Fatalf("%s: %d connections to a port the command must not ask", what, got)
-		}
+	noSecret(t, secretOf(t, home), out, errOut)
+
+	// A server that does not serve yet has no address.
+	home2 := t.TempDir()
+	own(t, "remote", "setup", "-home", home2)
+	asThisFolders(t, home2, standInID)
+	(&standIn{version: "1.2.3"}).withPid(t).this(t, home2, true)
+	out, _, _ = own(t, "status", "-home", home2)
+	if !strings.HasPrefix(out, "Running: this build 1.2.3 (pid ") || strings.Contains(out, "Address:") || !strings.Contains(out, "MCP listener: http://localhost:6006/mcp (up)\nFiles: ") {
+		t.Fatalf("stdout:\n%s", out)
+	}
+
+	// The build before: a line, and the files.
+	home3 := t.TempDir()
+	own(t, "remote", "setup", "-home", home3)
+	asThisFolders(t, home3, standInID)
+	old := (&standIn{version: "0.9.0"}).withPid(t)
+	old.older(t, home3, true)
+	out, errOut, code = own(t, "status", "-home", home3)
+	if code != 0 || errOut != "" || !strings.HasPrefix(out, "Running: older build 0.9.0 (pid "+strconv.Itoa(old.pid)+")\nFiles: the next start will listen\n") {
+		t.Fatalf("code %d, stderr %q, stdout:\n%s", code, errOut, out)
 	}
 }
 
-// The status reports a running server only when it is this data folder's: another folder's
-// server on the port is not it, and no port but the given one, or else server.json's, is asked.
-func TestRemoteStatusOfThisFolderOnly(t *testing.T) {
-	// Not in parallel with the other tests: one of its cases puts a transport of its own in
-	// http.DefaultTransport, a value of the whole process that the HTTP clients of the tests
-	// that run in parallel read (as TestSecretNewAsksNoDefaultPort does, which is not parallel
-	// either).
-	const listening = `{"listening":true,"port":5123,"names":["mac.local"],"fingerprint":"AB:CD"}`
-	const otherID = "7b1e9d40-2c5a-4f38-a6d7-0e1f2a3b4c5d"
-	mine := t.TempDir()
-	srv := standIn(mine, listening) // states standInID and the data folder mine
-	defer srv.Close()
-	srvPort := strconv.Itoa(portOf(t, srv))
-	const alone = "Running: no server\nFiles: not set up\n"
-
-	status := func(t *testing.T, want string, args ...string) {
+// `status -json` is one object, also when the exit is 1.
+func TestStatusJSON(t *testing.T) {
+	t.Parallel()
+	type result struct {
+		Running map[string]any
+		Files   map[string]any
+	}
+	status := func(t *testing.T, home string, wantCode int) (result, string) {
 		t.Helper()
-		out, errOut, code := own(t, append([]string{"remote", "status"}, args...)...)
-		if code != 0 || errOut != "" || out != want {
-			t.Fatalf("code %d, stderr %q, stdout:\n%s\nwant:\n%s", code, errOut, out, want)
+		out, errOut, code := own(t, "status", "-json", "-home", home)
+		var r result
+		if code != wantCode || strings.Count(out, "\n") != 1 || json.Unmarshal([]byte(out), &r) != nil {
+			t.Fatalf("code %d (want %d), stdout %q, stderr %q", code, wantCode, out, errOut)
 		}
+		return r, errOut
 	}
 
-	t.Run("another folder's server on the given port", func(t *testing.T) {
+	t.Run("not set up", func(t *testing.T) {
+		t.Parallel()
 		home := t.TempDir()
-		asThisFolders(t, home, otherID)
-		// server.json names a second port: with -server-port given it is not asked.
-		second, check := untouched(t)
-		writeServerFile(t, store.NewPaths(home), second)
-		status(t, alone, "-home", home, "-server-port", srvPort)
-		check("another instance id on -server-port")
-	})
-	t.Run("another folder's server on server.json's port", func(t *testing.T) {
-		home := t.TempDir()
-		asThisFolders(t, home, otherID)
-		writeServerFile(t, store.NewPaths(home), portOf(t, srv))
-		status(t, alone, "-home", home)
-	})
-	t.Run("no instance id yet", func(t *testing.T) {
-		home := t.TempDir()
-		status(t, alone, "-home", home, "-server-port", srvPort)
-		writeServerFile(t, store.NewPaths(home), portOf(t, srv))
-		status(t, alone, "-home", home)
-	})
-	t.Run("no server.json and no port given", func(t *testing.T) {
-		home := t.TempDir()
-		asThisFolders(t, home, standInID)
-		var asked atomic.Int64
-		prev := http.DefaultTransport
-		http.DefaultTransport = roundTrip(func(r *http.Request) (*http.Response, error) {
-			asked.Add(1)
-			return nil, errors.New("no request may be made")
-		})
-		defer func() { http.DefaultTransport = prev }()
-		status(t, alone, "-home", home)
-		if asked.Load() != 0 {
-			t.Fatalf("%d requests with no port to ask", asked.Load())
+		r, errOut := status(t, home, 1)
+		if r.Running != nil || r.Files["setUp"] != false || r.Files["ok"] != false || !strings.Contains(fmt.Sprint(r.Files["message"]), "Set it up once with: ") ||
+			r.Files["notes"] == nil || errOut == "" {
+			t.Fatalf("%+v, stderr %q", r, errOut)
+		}
+		if _, has := r.Files["port"]; has {
+			t.Fatalf("a folder never set up has a port: %v", r.Files)
 		}
 	})
-	t.Run("a copy of the server's folder", func(t *testing.T) {
+	t.Run("this build", func(t *testing.T) {
+		t.Parallel()
 		home := t.TempDir()
+		own(t, "remote", "setup", "-home", home, "-port", "5099", "-name", "wb.example")
 		asThisFolders(t, home, standInID)
-		status(t, alone, "-home", home, "-server-port", srvPort)
-		writeServerFile(t, store.NewPaths(home), portOf(t, srv))
-		status(t, alone, "-home", home)
+		s := (&standIn{version: "1.2.3", listening: true, port: 5123}).withPid(t)
+		s.this(t, home, true)
+		r, errOut := status(t, home, 0)
+		if errOut != "" {
+			t.Fatalf("stderr %q", errOut)
+		}
+		client, _ := r.Running["client"].(map[string]any)
+		mcp, _ := r.Running["mcp"].(map[string]any)
+		listener, _ := mcp["listener"].(map[string]any)
+		if r.Running["build"] != "this" || r.Running["version"] != "1.2.3" || r.Running["pid"] != float64(s.pid) || r.Running["featureLevel"] != float64(6) ||
+			r.Running["instanceId"] != standInID || client["listening"] != true || client["address"] != "https://127.0.0.1:5123" || client["port"] != float64(5123) ||
+			client["fingerprint"] != "AB:CD:EF" || client["secretReloads"] != float64(0) || listener["up"] != true || mcp["chats"] == nil {
+			t.Fatalf("running: %+v", r.Running)
+		}
+		// What the next start will do is the files': the port set up after the server started.
+		if r.Files["setUp"] != true || r.Files["ok"] != true || r.Files["port"] != float64(5099) || !fingerprintForm.MatchString(fmt.Sprint(r.Files["fingerprint"])) {
+			t.Fatalf("files: %+v", r.Files)
+		}
+		if names, _ := r.Files["names"].([]any); len(names) == 0 || names[len(names)-1] != "wb.example" {
+			t.Fatalf("files: %+v", r.Files)
+		}
+		if _, has := r.Files["message"]; has {
+			t.Fatalf("files has a message though it is ok: %v", r.Files)
+		}
 	})
-	t.Run("this folder's server", func(t *testing.T) {
-		asThisFolders(t, mine, standInID)
-		const running = "Running: listening\nRunning port: 5123\nRunning names: mac.local\nRunning fingerprint: AB:CD\nFiles: not set up\n"
-		status(t, running, "-home", mine, "-server-port", srvPort)
-		// The folder by another path: a symlink to it is the same folder.
-		link := filepath.Join(t.TempDir(), "link")
-		if err := os.Symlink(mine, link); err != nil {
+	t.Run("the build before", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		own(t, "remote", "setup", "-home", home)
+		asThisFolders(t, home, standInID)
+		s := (&standIn{version: "0.9.0"}).withPid(t)
+		s.older(t, home, true)
+		r, _ := status(t, home, 0)
+		if r.Running["build"] != "older" || r.Running["version"] != "0.9.0" || r.Running["pid"] != float64(s.pid) || r.Running["featureLevel"] != float64(5) ||
+			r.Running["client"] != nil || r.Running["mcp"] != nil {
+			t.Fatalf("running: %+v", r.Running)
+		}
+	})
+	t.Run("broken files", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		own(t, "remote", "setup", "-home", home)
+		if err := os.Remove(remote.FilesIn(home).Secret); err != nil {
 			t.Fatal(err)
 		}
-		status(t, running, "-home", link, "-server-port", srvPort)
+		r, _ := status(t, home, 1)
+		if r.Files["setUp"] != true || r.Files["ok"] != false || !strings.Contains(fmt.Sprint(r.Files["message"]), "To repair: ") || r.Running != nil {
+			t.Fatalf("files: %+v", r.Files)
+		}
 	})
 }
 
-type roundTrip func(*http.Request) (*http.Response, error)
-
-func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+// ---- secret ------------------------------------------------------------------------------------
 
 func TestSecretCommand(t *testing.T) {
 	t.Parallel()
@@ -572,14 +528,6 @@ func TestSecretCommand(t *testing.T) {
 		t.Fatalf("stderr holds the file's content: %q", errOut)
 	}
 
-	// After remote off, secret -new is refused and the secret is kept.
-	own(t, "secret", "-new", "-home", home)
-	kept := secretOf(t, home)
-	own(t, "remote", "off", "-home", home)
-	if _, _, code := own(t, "secret", "-new", "-home", home); code != 1 || secretOf(t, home) != kept {
-		t.Fatalf("code %d, or the secret changed", code)
-	}
-
 	if _, _, code := own(t, "secret", "-home", home, "extra"); code != 2 {
 		t.Fatalf("code %d, want 2", code)
 	}
@@ -587,7 +535,7 @@ func TestSecretCommand(t *testing.T) {
 
 func TestOwnCommand(t *testing.T) {
 	t.Parallel()
-	for _, cmd := range []string{"serve", "launch", "relaunch", "stop", "nope"} {
+	for _, cmd := range []string{"serve", "launch", "relaunch", "nope"} {
 		var out, errOut bytes.Buffer
 		if code, ok := ownCommand(cmd, []string{"-home", t.TempDir()}, &out, &errOut); ok || code != 0 || out.Len()+errOut.Len() != 0 {
 			t.Fatalf("%s: taken (code %d, output %q %q)", cmd, code, out.String(), errOut.String())
@@ -598,6 +546,8 @@ func TestOwnCommand(t *testing.T) {
 		{"remote", "x"},
 		{"remote", "-home", t.TempDir()},
 		{"secret", "-x"},
+		{"stop", "-port", "4747"},
+		{"status", "-claude", "x"},
 	} {
 		out, errOut, code := own(t, args...)
 		if code != 2 || out != "" || errOut == "" {

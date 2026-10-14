@@ -27,9 +27,13 @@ const FLAVOURS = {
 const FLOOR = 3, OUT = process.env.OUT;
 const CLAUDE = "#d97757"; // the Claude agent's colour in the light theme, which a flavour keeps
 const BOARD = { board: "b_ui", chat: "c_A6_sketch" }, EDIT = ".excalidraw:not(.excalidraw--view-mode) .App-toolbar";
-// In the mock: this computer's library and the one of the seed's server that is not connected, as it last sent it.
+// In the mock: this computer's library and the one of the seed's server that is not connected, as it last sent it (the
+// server is connected for a moment, so that its stream tells the page its library, and drops again).
 const LIBRARIES = `setLibrary("local", { groups: [{ id: "g_git", name: "git", parent: "" }], prompts: [{ id: "p_review", name: "review", parent: "g_git", text: "Review this change.\\n\\n- say what is wrong" }, { id: "p_todo", name: "todo", parent: "", text: "" }] });
-  setLibrary(extra.servers.find((x) => x.state === "unreachable").id, { connected: false, groups: [], prompts: [{ id: "p_rules", name: "rules", parent: "", text: "Be kind." }] });`;
+  const away = extra.servers.find((x) => x.state === "unreachable"), detail = away.detail;
+  setServerState(away.id, "connected");
+  setLibrary(away.id, { groups: [], prompts: [{ id: "p_rules", name: "rules", parent: "", text: "Be kind." }] });
+  setServerState(away.id, "unreachable", { detail });`;
 const hex = (c) => (c ? "#" + c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("") : "none");
 
 /** The parts: a page each, and its stages, each shown by `do` and on screen when `see` matches. chrome: what of the

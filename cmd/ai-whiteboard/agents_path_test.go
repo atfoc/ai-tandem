@@ -92,7 +92,15 @@ func TestUsableAgentsFollowThePath(t *testing.T) {
 	// The start has no limit that a loaded machine could decide: the wait ends when the server
 	// answers or its process is gone, and the two minutes only keep a hung start from the
 	// timeout of the whole test binary.
-	for deadline := time.Now().Add(2 * time.Minute); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(100 * time.Millisecond) {
+	serving := func() bool {
+		run, ok := in.running()
+		if !ok || run.hello.Pid != serve.Process.Pid {
+			return false
+		}
+		st, ok := run.statusOf()
+		return ok && st.Client.Listening
+	}
+	for deadline := time.Now().Add(2 * time.Minute); !serving(); time.Sleep(100 * time.Millisecond) {
 		select {
 		case <-served:
 			t.Fatal("the server process ended before it answered")
@@ -106,8 +114,7 @@ func TestUsableAgentsFollowThePath(t *testing.T) {
 		t.Fatalf("the server that answers has the pid %d, the one started %d", pid, serve.Process.Pid)
 	}
 
-	base := strings.TrimSuffix(in.url, "/")
-	p, q := bridgetest.Connect(t, base, "6f1e2d3c-4b5a-4c6d-8e7f-0a1b2c3d4e5f"), bridgetest.Connect(t, base, "7a2f3e4d-5c6b-4d7e-9f80-1b2c3d4e5f60")
+	p, q := in.page(t, "6f1e2d3c-4b5a-4c6d-8e7f-0a1b2c3d4e5f"), in.page(t, "7a2f3e4d-5c6b-4d7e-9f80-1b2c3d4e5f60")
 	for _, pg := range []*bridgetest.Page{p, q} {
 		if got, _ := pg.Welcome()["agents"].([]any); got == nil || len(got) != 0 {
 			t.Fatalf("page %s: the snapshot's agents %v, want none", pg.ID, got)

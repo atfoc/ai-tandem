@@ -3,16 +3,18 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +28,6 @@ import (
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/store"
-	"ai-whiteboard/internal/version"
 )
 
 // ---- fakes ----------------------------------------------------------------
@@ -130,7 +131,16 @@ func (s *permSpawner) agent(t *testing.T, i int) *permAgent {
 
 // ---- environment ----------------------------------------------------------
 
-const clientID = "A"
+// cid is the id of the client with this label: a lowercase version 4 UUID, as a client states it.
+// The same label gives the same id.
+func cid(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	h := hex.EncodeToString(sum[:16])
+	return h[:8] + "-" + h[8:12] + "-4" + h[13:16] + "-8" + h[17:20] + "-" + h[20:32]
+}
+
+// clientID is the id of the client every env connects, and the one e.do calls as.
+var clientID = cid("A")
 
 // waitLimit is how long a test waits for something that must happen. It is an upper bound for a
 // machine that runs several test suites at once, not a time any test waits out.
@@ -142,54 +152,62 @@ type env struct {
 	a   *app.App
 	s   *Server
 	url string
+	l   *listener // the client listener of the env; nil for a raw env
 }
 
-// newEnv starts a server; each of with sets up the Server before its handler is built.
-func newEnv(t *testing.T, with ...func(*Server)) *env {
+// newRawEnv builds a server and no listener: for the tests that ask a handler directly. Each of
+// with sets up the Server before it is used.
+func newRawEnv(t *testing.T, with ...func(*Server)) *env {
 	t.Helper()
 	root := t.TempDir()
 	st, err := store.Open(store.NewPaths(root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var a *app.App
-	br := editorbridge.New(func() any { return a.Snapshot() })
+	br := editorbridge.New()
 	bds := boards.New(st, br)
 	br.SceneRev = bds.Rev
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
 	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds,
 		Spawners:   map[model.AgentKind]agent.Spawner{model.Claude: fakeSpawner{}, model.Cursor: fakeSpawner{}},
 		DefaultCwd: t.TempDir()})
-	a = &app.App{St: st, Boards: bds, Chats: cm, Bridge: br, DataDir: root, DefaultCwd: cm.DefaultCwd}
-	s := &Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bds}, Bridge: br, Port: port}
+	a := &app.App{St: st, Boards: bds, Chats: cm, Bridge: br, DataDir: root, DefaultCwd: cm.DefaultCwd}
+	s := &Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bds}, Bridge: br}
 	for _, f := range with {
 		f(s)
 	}
-	srv := httptest.NewUnstartedServer(s.Handler())
-	srv.Listener.Close()
-	srv.Listener = ln
-	srv.Start()
-	t.Cleanup(srv.Close)
-	e := &env{t: t, st: st, a: a, s: s, url: srv.URL}
-	e.connect()
+	return &env{t: t, st: st, a: a, s: s}
+}
+
+// startEnv is newRawEnv with the client listener of the server serving over TLS on 127.0.0.1;
+// with connect it also opens the stream of the client clientID.
+func startEnv(t *testing.T, connect bool, with ...func(*Server)) *env {
+	t.Helper()
+	l := newListener(t)
+	e := newRawEnv(t, append([]func(*Server){l.set}, with...)...)
+	l.serve(e.s)
+	e.l, e.url = l, l.base
+	if connect {
+		e.connect()
+	}
 	return e
 }
 
+// newEnv starts a server whose client clientID is connected; each of with sets up the Server
+// before its handler is built.
+func newEnv(t *testing.T, with ...func(*Server)) *env { return startEnv(t, true, with...) }
+
 func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
-// connect opens /api/events as clientID and waits until it is a known client. As the page does, it
-// releases a board it is asked to release (one it made: it holds no other), so an archive or a
-// delete of that board does not wait three seconds for it.
+// connect opens /api/events as clientID and waits until it is a known client. As the client does,
+// it releases a board it is asked to release (one it made: it holds no other), so an archive or a
+// delete of that board does not wait for it.
 func (e *env) connect() {
 	e.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	e.t.Cleanup(cancel)
 	req, _ := http.NewRequestWithContext(ctx, "GET", e.url+"/api/events?client="+clientID, nil)
-	resp, err := http.DefaultClient.Do(req)
+	e.l.stamp(req, clientID)
+	resp, err := e.l.http.Do(req)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -224,10 +242,16 @@ func (e *env) connect() {
 // release is clientID's answer to a release_request for the board.
 func (e *env) release(board string) {
 	req, _ := http.NewRequest("POST", e.url+"/api/boards/"+board+"/release", nil)
-	req.Header.Set(ClientHeader, clientID)
-	if resp, err := http.DefaultClient.Do(req); err == nil {
+	if resp, err := e.send(req, clientID); err == nil {
 		resp.Body.Close()
 	}
+}
+
+// send makes the request as the client id: with the secret, the client id and the level of the
+// tests' clients, where the request has not set them.
+func (e *env) send(req *http.Request, id string) (*http.Response, error) {
+	e.l.stamp(req, id)
+	return e.l.http.Do(req)
 }
 
 // do sends a request as clientID and returns the status and body.
@@ -244,9 +268,9 @@ func (e *env) doAs(client, method, path, body string) (int, string) {
 	}
 	req, _ := http.NewRequest(method, e.url+path, rd)
 	if client != "" {
-		req.Header.Set(ClientHeader, client)
+		client = idOf(client)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := e.send(req, client)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -291,8 +315,7 @@ func TestBadHostIsForbidden(t *testing.T) {
 	for _, method := range []string{"GET", "POST"} {
 		req, _ := http.NewRequest(method, e.url+"/api/state", nil)
 		req.Host = "evil.example"
-		req.Header.Set(ClientHeader, clientID)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := e.send(req, clientID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,8 +324,8 @@ func TestBadHostIsForbidden(t *testing.T) {
 			t.Fatalf("%s: status %d, want 403", method, resp.StatusCode)
 		}
 	}
-	req, _ := http.NewRequest("GET", strings.Replace(e.url, "127.0.0.1", "localhost", 1)+"/api/hello", nil)
-	resp, err := http.DefaultClient.Do(req)
+	req, _ := http.NewRequest("GET", strings.Replace(e.url, "127.0.0.1", "localhost", 1)+"/api/state", nil)
+	resp, err := e.send(req, clientID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +359,7 @@ func TestMCPHandlerRoutesAndHost(t *testing.T) {
 	if w := post("evil.example", "/mcp", `{}`); w.Code != 403 {
 		t.Fatalf("foreign host: status %d, want 403", w.Code)
 	}
-	if w := post(fmt.Sprintf("localhost:%d", e.s.Port), "/mcp", `{}`); w.Code != 403 {
+	if w := post("localhost:"+strconv.Itoa(e.l.port), "/mcp", `{}`); w.Code != 403 {
 		t.Fatalf("app-port host on the MCP listener: status %d, want 403", w.Code)
 	}
 
@@ -355,192 +378,6 @@ func TestMCPHandlerRoutesAndHost(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("GET /api/hello on the MCP listener: status %d, want 404", w.Code)
 	}
-}
-
-func TestMCPStatusRoute(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t, func(s *Server) {
-		s.MCPPort = 6006
-		s.MCPURL = boardapi.MCPURL
-		s.MCPUp = func() bool { return true }
-	})
-	// Listener shape before any contact; no client header is needed for a GET (guard.go).
-	if code, out := e.doAs("", "GET", "/api/mcp/status", ""); code != 200 {
-		t.Fatalf("GET /api/mcp/status without a client header: status %d (%s), want 200", code, out)
-	}
-	out := decode[mcpStatus](t, e.expect(200, "GET", "/api/mcp/status", ""))
-	if out.Listener.Port != 6006 || out.Listener.URL != boardapi.MCPURL || !out.Listener.Up {
-		t.Fatalf("listener %+v", out.Listener)
-	}
-	if len(out.Chats) != 0 {
-		t.Fatalf("chats before contact %+v", out.Chats)
-	}
-
-	bd := e.board(model.Ungrouped)
-	c := e.chat(`{"agent":"claude","board":"` + bd.ID + `"}`)
-	metas := e.a.Chats.ChatsOfBoard(bd.ID)
-	if len(metas) != 1 || metas[0].Token == "" {
-		t.Fatalf("board chats %+v", metas)
-	}
-	token := metas[0].Token
-
-	// The fixed MCP handler is the observation point; post to it directly, as the 6006 listener
-	// would. Archive the chat first so the tools/call answers without a browser client and the
-	// archived interaction is what gets recorded.
-	post := func(auth, body string) {
-		t.Helper()
-		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
-		if auth != "" {
-			req.Header.Set("Authorization", auth)
-		}
-		w := httptest.NewRecorder()
-		e.s.Relay.ServeFixedMCP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("POST /mcp: status %d (%s)", w.Code, w.Body)
-		}
-	}
-	post("Bearer "+token, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Cursor","version":"1.2.3"}}}`)
-	e.expect(200, "POST", "/api/boards/"+bd.ID+"/archive", "")
-	post("Bearer "+token, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_board","arguments":{}}}`)
-	// An unresolved credential is logged and reported as unknown, and answered normally (D8).
-	post("Bearer not-a-real-token", `{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"clientInfo":{"name":"probe","version":"0"}}}`)
-
-	body := e.expect(200, "GET", "/api/mcp/status", "")
-	if strings.Contains(body, token) {
-		t.Fatalf("status leaks the board token: %s", body)
-	}
-	if strings.Contains(body, "not-a-real-token") {
-		t.Fatalf("status leaks the unknown credential: %s", body)
-	}
-	st := decode[mcpStatus](t, body)
-	if len(st.Chats) != 2 {
-		t.Fatalf("chats %+v", st.Chats)
-	}
-	// The endpoint's most-recent-first order is pinned deterministically by
-	// boardapi.TestContactLogSnapshotOrdersMostRecentFirst. Here each contact is found by its chat
-	// label, so map iteration order cannot decide the result.
-	var unknown, known *boardapi.Contact
-	for i := range st.Chats {
-		if st.Chats[i].Chat == "unknown" {
-			unknown = &st.Chats[i]
-		} else {
-			known = &st.Chats[i]
-		}
-	}
-	if unknown == nil || known == nil {
-		t.Fatalf("chats %+v, want one unknown and one known contact", st.Chats)
-	}
-	if unknown.Client != "probe" || unknown.Method != "initialize" {
-		t.Fatalf("unknown contact %+v", *unknown)
-	}
-	if known.Chat != c.ID[:8] || known.Client != "Cursor" || known.ClientVersion != "1.2.3" ||
-		known.Method != "tools/call" || known.Tool != "read_board" || known.Outcome != "error" || known.At.IsZero() {
-		t.Fatalf("known contact %+v", *known)
-	}
-}
-
-func TestMutationsNeedAKnownClient(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	for _, client := range []string{"", "B"} {
-		code, out := e.doAs(client, "POST", "/api/boards", `{"group":"__ungrouped__"}`)
-		if code != 409 || decode[map[string]string](t, out)["error"] != "unknown_client" {
-			t.Fatalf("client %q: %d %s", client, code, out)
-		}
-	}
-	if n := len(e.a.Boards.List()); n != 0 {
-		t.Fatalf("%d boards made", n)
-	}
-	// GETs need no header.
-	if code, out := e.doAs("", "GET", "/api/state", ""); code != 200 {
-		t.Fatalf("state: %d %s", code, out)
-	}
-	// The client routes are no exception, and a client in the body does not count.
-	for _, path := range []string{"/api/rpc-reply", "/api/client/flushed"} {
-		for _, client := range []string{"", "B"} {
-			code, out := e.doAs(client, "POST", path, `{"id":"rpc_1","client":"A"}`)
-			if code != 409 || decode[map[string]string](t, out)["error"] != "unknown_client" {
-				t.Fatalf("%s from %q: %d %s", path, client, code, out)
-			}
-		}
-	}
-	if code, _ := e.doAs("A", "POST", "/api/client/flushed", ""); code != 200 {
-		t.Fatalf("flushed from A: %d", code)
-	}
-	// A client releases a board, not itself: the route of the one active client is gone.
-	if code, _ := e.doAs("A", "POST", "/api/client/release", `{"client":"A"}`); code != 404 {
-		t.Fatalf("release from A: %d", code)
-	}
-	// A reply counts only from the client that was asked: A was asked nothing.
-	code, out := e.doAs("A", "POST", "/api/rpc-reply", `{"id":"rpc_1","result":"x"}`)
-	if code != 409 || decode[map[string]string](t, out)["error"] != "not_asked" {
-		t.Fatalf("rpc-reply from A, which was not asked: %d %s", code, out)
-	}
-}
-
-func TestHello(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	out := decode[map[string]any](t, e.expect(200, "GET", "/api/hello", ""))
-	if out["app"] != "ai-whiteboard" || out["version"] != version.Version || out["pid"] != float64(os.Getpid()) {
-		t.Fatalf("hello %v", out)
-	}
-}
-
-func TestHelloWebVersion(t *testing.T) {
-	t.Parallel()
-	webVersion := func(e *env) any {
-		return decode[map[string]any](t, e.expect(200, "GET", "/api/hello", ""))["webVersion"]
-	}
-	if got := webVersion(newEnv(t)); got != "dev" {
-		t.Fatalf("no client folder: webVersion %v, want dev", got)
-	}
-	dir := t.TempDir()
-	e := newEnv(t, func(s *Server) { s.Client = dir })
-	if got := webVersion(e); got != "dev" {
-		t.Fatalf("no version.json: webVersion %v, want dev", got)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "version.json"), []byte(`{"version":"v1.2-3-gabc"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := webVersion(e); got != "v1.2-3-gabc" {
-		t.Fatalf("webVersion %v, want v1.2-3-gabc", got)
-	}
-	// Read on each request: a new install changes it without a restart.
-	if err := os.WriteFile(filepath.Join(dir, "version.json"), []byte(`not json`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := webVersion(e); got != "dev" {
-		t.Fatalf("unreadable version.json: webVersion %v, want dev", got)
-	}
-}
-
-func TestRestart(t *testing.T) {
-	t.Parallel()
-	calls := 0
-	e := newEnv(t, func(s *Server) { s.Restart = func() error { calls++; return nil } })
-	if code, out := e.doAs("B", "POST", "/api/restart", ""); code != 409 || calls != 0 {
-		t.Fatalf("restart from another client: %d %s, %d calls", code, out, calls)
-	}
-	e.expect(202, "POST", "/api/restart", "")
-	if calls != 1 {
-		t.Fatalf("hook called %d times, want 1", calls)
-	}
-	// The server keeps running.
-	e.expect(200, "GET", "/api/hello", "")
-}
-
-func TestRestartBinaryMissing(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t, func(s *Server) {
-		s.Restart = func() error { return fmt.Errorf("%w: stat /x: no such file", ErrBinaryMissing) }
-	})
-	out := e.expect(409, "POST", "/api/restart", "")
-	if got := decode[map[string]string](t, out)["error"]; got != "binary_missing" {
-		t.Fatalf("error %q, want binary_missing", got)
-	}
-	e = newEnv(t, func(s *Server) { s.Restart = func() error { return errors.New("fork failed") } })
-	e.expect(500, "POST", "/api/restart", "")
 }
 
 // ---- boards ---------------------------------------------------------------
@@ -572,8 +409,8 @@ func TestCreateBoardAndSceneRoundTrip(t *testing.T) {
 // gone" from a part of it that is missing.
 func TestNotFound(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t, withRemote)
-	h := e.s.RemoteHandler()
+	e := newEnv(t)
+	h := e.s.ClientHandler()
 	for _, r := range [][3]string{
 		{"GET", "/api/boards/b_nope/scene", ""},
 		{"PUT", "/api/boards/b_nope/scene?rev=0", `{}`},
@@ -600,7 +437,7 @@ func TestNotFound(t *testing.T) {
 		if got := decode[refusal](t, out); got.Error == "" || got.Code != "not_found" {
 			t.Fatalf("%s %s: %s, want an error text and the code not_found", r[0], r[1], out)
 		}
-		if w := remoteDoAs(h, testAPIClient, r[0], r[1], testHost, testSecret, r[2]); w.Code != 404 || w.Body.String() != out {
+		if w := clientDoAs(h, testAPIClient, r[0], r[1], e.l.host, testSecret, r[2]); w.Code != 404 || w.Body.String() != out {
 			t.Fatalf("%s %s for an API client: %d %s, want the page's 404 %s", r[0], r[1], w.Code, w.Body, out)
 		}
 	}
@@ -614,7 +451,7 @@ func TestNotFound(t *testing.T) {
 		if got := decode[refusal](t, out); got.Error == "" || got.Code != r[3] {
 			t.Fatalf("%s %s: %s, want the code %q", r[0], r[1], out, r[3])
 		}
-		if w := remoteDoAs(h, testAPIClient, r[0], r[1], testHost, testSecret, r[2]); w.Code != 404 || w.Body.String() != out {
+		if w := clientDoAs(h, testAPIClient, r[0], r[1], e.l.host, testSecret, r[2]); w.Code != 404 || w.Body.String() != out {
 			t.Fatalf("%s %s for an API client: %d %s, want the page's 404 %s", r[0], r[1], w.Code, w.Body, out)
 		}
 	}
@@ -684,7 +521,6 @@ func TestBadRequest(t *testing.T) {
 		{"PATCH", "/api/chats/" + c.ID, `{"cwd":"` + e.st.P.Root + `"}`},
 		{"PATCH", "/api/chats/" + c.ID, `{"model":"no-such-model"}`},
 		{"PUT", "/api/chats/" + c.ID + "/draft?rev=0", `not json`},
-		{"PUT", "/api/groups/order", `{"ids":["g_nope"]}`},
 		{"DELETE", "/api/groups/g_x?contents=maybe", ""},
 		{"POST", "/api/groups/" + g.ID + "/move", `{"parent":"` + g.ID + `"}`},
 		{"GET", "/api/dirs?path=" + notDir, ""},
@@ -743,7 +579,7 @@ func TestGroupRoutesNestAndMove(t *testing.T) {
 	}
 	e.expect(200, "POST", "/api/groups/"+s.ID+"/move", `{"parent":"`+b.ID+`"}`)
 	e.expect(200, "POST", "/api/groups/"+b.ID+"/move", `{"parent":"","before":"`+a.ID+`"}`)
-	snap := decode[app.Snapshot](t, e.expect(200, "GET", "/api/state", ""))
+	snap := decode[app.APISnapshot](t, e.expect(200, "GET", "/api/state", ""))
 	var got []string
 	for _, g := range snap.Groups {
 		got = append(got, g.Name+"<"+g.Parent)
@@ -752,7 +588,7 @@ func TestGroupRoutesNestAndMove(t *testing.T) {
 		t.Fatalf("groups %v, want %v", got, want)
 	}
 	e.expect(200, "DELETE", "/api/groups/"+b.ID+"?contents=keep", "")
-	snap = decode[app.Snapshot](t, e.expect(200, "GET", "/api/state", ""))
+	snap = decode[app.APISnapshot](t, e.expect(200, "GET", "/api/state", ""))
 	if len(snap.Groups) != 2 || snap.Groups[1].ID != s.ID || snap.Groups[1].Parent != "" {
 		t.Fatalf("after deleting B: %+v", snap.Groups)
 	}
@@ -762,9 +598,6 @@ func TestChatDraft(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	c := e.chat(`{"agent":"claude","group":"__ungrouped__"}`)
-	if code, _ := e.doAs("B", "PUT", "/api/chats/"+c.ID+"/draft?rev=0", `{"text":"x"}`); code != 409 {
-		t.Fatalf("draft from B: %d", code)
-	}
 	e.expect(200, "PUT", "/api/chats/"+c.ID+"/draft?rev=0", `{"text":"hi @Plan","mentions":[{"name":"Plan","id":"b_1"}]}`)
 	v := decode[model.ChatView](t, e.expect(200, "GET", "/api/chats/"+c.ID, ""))
 	want := &model.Draft{Text: "hi @Plan", Mentions: []model.Mention{{Name: "Plan", ID: "b_1"}}}
@@ -957,15 +790,6 @@ func TestChatPermission(t *testing.T) {
 	e.a.Chats.Stop(c.ID)
 }
 
-func TestNoStaticClientWhenUnset(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	code, _ := e.do("GET", "/", "")
-	if code != 404 {
-		t.Fatalf("GET / status %d, want 404", code)
-	}
-}
-
 // getClient fetches path with the given extra headers and returns the response and its body.
 func (e *env) getClient(path string, hdr map[string]string) (*http.Response, string) {
 	e.t.Helper()
@@ -973,72 +797,13 @@ func (e *env) getClient(path string, hdr map[string]string) (*http.Response, str
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := e.send(req, clientID)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp, string(b)
-}
-
-func TestClientFilesRevalidateByContent(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	js := filepath.Join(dir, "main.js")
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>v1</html>"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(js, []byte("console.log('v1')"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldTime := time.Now().Add(-time.Hour).Truncate(time.Second)
-	if err := os.Chtimes(js, oldTime, oldTime); err != nil {
-		t.Fatal(err)
-	}
-	e := newEnv(t, func(s *Server) { s.Client = dir })
-
-	for _, p := range []string{"/main.js", "/"} {
-		resp, _ := e.getClient(p, nil)
-		if resp.StatusCode != 200 {
-			t.Fatalf("GET %s: status %d, want 200", p, resp.StatusCode)
-		}
-		if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
-			t.Fatalf("GET %s: Cache-Control %q, want no-cache", p, got)
-		}
-		if tag := resp.Header.Get("ETag"); !strings.HasPrefix(tag, `"`) || len(tag) < 3 {
-			t.Fatalf("GET %s: ETag %q, want a strong ETag", p, tag)
-		}
-	}
-
-	resp, body := e.getClient("/main.js", nil)
-	if body != "console.log('v1')" {
-		t.Fatalf("main.js body %q", body)
-	}
-	tag := resp.Header.Get("ETag")
-	lastMod := resp.Header.Get("Last-Modified")
-	if resp, _ := e.getClient("/main.js", map[string]string{"If-None-Match": tag}); resp.StatusCode != 304 {
-		t.Fatalf("If-None-Match same ETag: status %d, want 304", resp.StatusCode)
-	}
-
-	// A newer build with an older file time: the content decides, not the time.
-	if err := os.WriteFile(js, []byte("console.log('v2 new build')"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	older := oldTime.Add(-time.Hour)
-	if err := os.Chtimes(js, older, older); err != nil {
-		t.Fatal(err)
-	}
-	resp, body = e.getClient("/main.js", map[string]string{"If-None-Match": tag, "If-Modified-Since": lastMod})
-	if resp.StatusCode != 200 {
-		t.Fatalf("changed main.js: status %d, want 200", resp.StatusCode)
-	}
-	if body != "console.log('v2 new build')" {
-		t.Fatalf("changed main.js body %q", body)
-	}
-	if got := resp.Header.Get("ETag"); got == tag || got == "" {
-		t.Fatalf("changed main.js: ETag %q, want a new one (old %q)", got, tag)
-	}
 }
 
 // ---- the tree and labels --------------------------------------------------
@@ -1120,7 +885,7 @@ func TestChatTree(t *testing.T) {
 	e := newEnv(t)
 	id := e.exampleChat(exTree)
 	// A GET: no client header needed.
-	code, out := e.doAs("", "GET", "/api/chats/"+id+"/tree", "")
+	code, out := e.do("GET", "/api/chats/"+id+"/tree", "")
 	if code != 200 {
 		t.Fatalf("tree: %d %s", code, out)
 	}
@@ -1289,7 +1054,7 @@ func TestBranchedChatSendAndMCPStatus(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST /mcp: status %d (%s)", w.Code, w.Body)
 	}
-	st := decode[mcpStatus](t, e.expect(200, "GET", "/api/mcp/status", ""))
+	st := e.mcpStatus()
 	if len(st.Chats) != 1 || st.Chats[0].Chat != id[:8] || st.Chats[0].Client != "claude" {
 		t.Fatalf("contacts %+v", st.Chats)
 	}
@@ -1354,11 +1119,16 @@ func TestChatLabel(t *testing.T) {
 	}
 	e.expect(200, "PUT", path, `{"branch":"main","item":6,"text":"`+strings.Repeat("é", 200)+`"}`)
 	e.expect(200, "PUT", path, `{"branch":"main","item":6,"text":""}`)
-	// A mutation: only a known client may make it.
+	// A client that is no valid client id is refused.
 	for _, client := range []string{"", "B"} {
-		code, out := e.doAs(client, "PUT", path, `{"branch":"main","item":6,"text":"lua"}`)
-		if code != 409 || decode[map[string]string](t, out)["error"] != "unknown_client" {
-			t.Fatalf("client %q: %d %s", client, code, out)
+		req, _ := http.NewRequest("PUT", e.url+path, strings.NewReader(`{"branch":"main","item":6,"text":"lua"}`))
+		resp, err := e.l.http.Do(req) // no secret, no id
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 401 {
+			t.Fatalf("client %q: %d", client, resp.StatusCode)
 		}
 	}
 	if after, err := os.ReadFile(treeFile); err != nil || string(after) != string(before) {
@@ -1460,10 +1230,6 @@ func TestChatFork(t *testing.T) {
 	e.expect(404, "POST", "/api/chats/nope/fork", `{"branch":"main","at":3}`)
 	e.expect(404, "POST", path, `{"branch":"nope","at":3}`)
 	e.expect(404, "POST", path, `{"at":3}`)
-	// A mutation: only the active client may ask.
-	if code, _ := e.doAs("B", "POST", path, `{"branch":"main","at":3}`); code != 409 {
-		t.Fatalf("fork by another client: %d", code)
-	}
 
 	// 500 with the provider's text when the fork start fails; nothing is created.
 	before = len(e.a.Chats.Views())
@@ -1536,10 +1302,6 @@ func TestChatSendWithTarget(t *testing.T) {
 		t.Fatalf("error body %s", out)
 	}
 	e.expect(404, "POST", path, target(`{"at":3}`))
-	// A mutation: only the active client may ask.
-	if code, _ := e.doAs("B", "POST", path, target(`{"branch":"main","at":3}`)); code != 409 {
-		t.Fatalf("a Send with a target by another client: %d", code)
-	}
 	// 500 with the provider's text when the fork start fails.
 	e.a.Chats.Spawners[model.Claude] = fakeSpawner{forkErr: errors.New("No conversation found")}
 	if out := e.expect(500, "POST", path, target(`{"branch":"main","at":3}`)); !strings.Contains(out, "No conversation found") {

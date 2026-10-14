@@ -1,8 +1,8 @@
-// The sidebar. The local part: the groups the user made on this computer, each holding subgroups,
-// whiteboards (each with its own chats) and plain chats, plus the ungrouped area. Under
-// it one section per remote server of the server list, which shows that server's whole tree with
-// the same rows (logic/sections.ts). Also the selection helpers every part of the app opens
-// boards and chats through.
+// The sidebar: one section per server of the server list, this computer's first. A section shows that server's
+// whole tree: the groups the user made there, each holding subgroups, whiteboards (each with its own chats) and
+// plain chats, plus the ungrouped area (logic/sections.ts). This computer's section is the first and always there; the
+// owner's things (a start that failed, a restart) show in it alone (logic/localsection.ts). Also the selection helpers
+// every part of the app opens boards and chats through.
 import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore, getState, setState, safeSet, lastChat, upsertBoard, upsertChat, isBusy, isLegacy, chatTitle, boardNames, shownBranch, statesOfChat, threadOf, viewedBranch,
   groupsOn, setSectionGroups, setSectionCollapsed, type Sel } from "./store.ts";
@@ -26,11 +26,12 @@ import { BOARD_MENU_LABEL, boardDeleteBody, boardMenu, moveTargets, type BoardMe
 import { takeOnSelect } from "./logic/roles.ts";
 import { catalogFor } from "./logic/agentlist.ts";
 import { inSection, isUngrouped, sameServer, serverOfKey, ungroupedOn } from "./logic/keys.ts";
-import { putBack, reachable, sectionEntries, sectionView, shownAhead, type Ahead } from "./logic/sections.ts";
+import { putBack, reachable, sectionView, shownAhead, sidebarEntries, type Ahead } from "./logic/sections.ts";
+import { localExtra } from "./logic/localsection.ts";
 import type { ServerView } from "./logic/servers.ts";
 import { AgentGlyph, BoardIcon, ChatIcon, Chevron, CupIcon, GroupIcon, Logo, MoonIcon, MoreIcon, SideIcon, SunIcon, SystemIcon, agentClass } from "./icons.tsx";
 import { setThemePref } from "./theme.ts";
-import { inDesktopApp, openServerLog, restartServer } from "./version.ts";
+import { inDesktopApp, openServerLog, pageVersion, restartServer, startAgain } from "./version.ts";
 import { themeMenu, themeTitle, type ThemePref } from "./logic/theme.ts";
 import { LOCAL_SERVER, UNGROUPED, type Board, type ChatView, type Group } from "./types.ts";
 import { ServersButton } from "./Servers.tsx";
@@ -154,15 +155,11 @@ export async function newGroup(server: string = LOCAL_SERVER, parent = ""): Prom
   return g.id;
 }
 
-/** Whether a group shows collapsed: a local group's is its server's (Group.collapsed); the collapse of a section's
- *  group is the browser's own, and is neither read from that server's tree nor sent to it. */
-const isCollapsed = (s: { collapsed: Record<string, true> }, g: Group): boolean => (inSection(g.id) ? !!s.collapsed[g.id] : !!g.collapsed);
+/** Whether a group shows collapsed: the collapse of every group is the browser's own (per app), and is neither read from
+ *  its server's tree nor sent to it. */
+const isCollapsed = (s: { collapsed: Record<string, true> }, g: Group): boolean => !!s.collapsed[g.id];
 
-function setCollapsed(id: string, collapsed: boolean) {
-  if (inSection(id)) { setSectionCollapsed(id, collapsed); return; }
-  setState((s) => ({ groups: s.groups.map((x) => (x.id === id ? { ...x, collapsed } : x)) }));
-  attempt("Couldn't update the group", () => api.collapseGroup(id, collapsed));
-}
+const setCollapsed = setSectionCollapsed;
 
 // ---------------------------------------------------------------- actions (menus)
 
@@ -236,7 +233,7 @@ function deleteGroup(g: Group) {
 }
 
 /** Moves a board or a plain chat into a group of its own server. Nothing is moved from one section to
- *  another, or between a section and the local part: for such a pair no call is made. */
+ *  another, or between this computer's section and another: for such a pair no call is made. */
 function moveTo(key: string, group: string) {
   const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
   if (!sameServer(id, group)) return;
@@ -309,15 +306,11 @@ function useSideHidden(end: () => void) {
 type Edit = { editing: string | null; setEditing: (k: string | null) => void };
 
 export function Sidebar() {
-  const groups = useStore((s) => s.groups);
-  const boards = useStore((s) => s.boards);
-  const chats = useStore((s) => s.chats);
   const servers = useStore((s) => s.servers);
   const showArchived = useStore((s) => s.showArchived);
   const connected = useStore((s) => s.connected);
   const [editing, setEditing] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
-  const tree = buildTree({ groups, boards, chats }, showArchived); // the local part: what lives on this computer, and nothing else
   // (what is made while the sidebar is hidden gets no rename box: nobody would see it, and hiding wins)
   const edit = (key: string | null) => { if (!getState().sideHidden) setEditing(key); };
   useEffect(() => { editRow = edit; return () => { editRow = () => {}; }; }, []);
@@ -333,14 +326,13 @@ export function Sidebar() {
     <nav className="side">
       <div className="side-head">
         <div className="brand"><Logo /><span className="brand-name">AI Whiteboard</span></div>
-        {!connected && <span className="offline">Reconnecting…</span>}
         {/* (the press leaves the focus where it is: a rename box that lost it to the button would save its text before the click) */}
         <button className="icon-btn side-hide" title={`Hide sidebar (${sideKeyName(navigator.platform)})`} aria-label="Hide sidebar"
           onMouseDown={(e) => e.preventDefault()} onClick={() => setSideHidden(true, true)}><SideIcon /></button>
         <div className="menu-wrap">
-          {/* (the head's "+" makes things of this computer only: a section's head has its own) */}
-          <button className="icon-btn new" title="New…" onClick={() => setMenu(!menu)}>+</button>
-          {menu && (
+          {/* (the head's "+" makes things of this computer only: a section's head has its own. Nothing is made while this computer's server is not connected) */}
+          <button className="icon-btn new" title={connected ? "New…" : "New… (this computer's server is not connected)"} disabled={!connected} onClick={() => setMenu(!menu)}>+</button>
+          {menu && connected && (
             <Menu onClose={() => setMenu(false)} align="right">
               <button className="menu-item agent" onClick={() => { setMenu(false); void newChat({ group: UNGROUPED }); }}><ChatIcon /> New chat</button>
               <button className="menu-item agent" onClick={() => { setMenu(false); make.board(UNGROUPED); }}><BoardIcon /> New whiteboard</button>
@@ -351,12 +343,8 @@ export function Sidebar() {
         </div>
       </div>
       <div className="side-tree">
-        <TreeRows tree={tree} loose={UNGROUPED} editing={editing} setEditing={setEditing} make={make}
-          empty={<div className="side-empty">No chats yet.</div>} />
-        <button className="side-addgroup" onClick={() => make.group(LOCAL_SERVER)}><GroupIcon /> New group</button>
-        {sectionEntries(servers).map((v) => <SectionNode key={v.id} v={v} editing={editing} setEditing={setEditing} make={make} />)}
+        {sidebarEntries(servers).map((v) => <SectionNode key={v.id} v={v} editing={editing} setEditing={setEditing} make={make} />)}
       </div>
-      <UpdateBanner />
       <div className="side-foot">
         <label className="side-archived">
           <input type="checkbox" className="switch" checked={showArchived}
@@ -375,7 +363,7 @@ export function Sidebar() {
 type Make = { board: (group: string) => void; group: (server: string, parent?: string) => void };
 
 /** The rows of one server's tree: what is in no group first (a drop zone: the server's ungrouped area), then its groups.
- *  The local part and every section draw their tree with this, and so with the same rows. loose: the key of the server's
+ *  Every section, this computer's too, draws its tree with this, and so with the same rows. loose: the key of the server's
  *  ungrouped area. empty: what stands in the ungrouped area of a tree that holds nothing. */
 function TreeRows({ tree, loose, editing, setEditing, make, empty }: Edit & { tree: Tree; loose: string; make: Make; empty?: React.ReactNode }) {
   return (
@@ -390,27 +378,30 @@ function TreeRows({ tree, loose, editing, setEditing, make, empty }: Edit & { tr
   );
 }
 
-/** The section of one remote server (an entry of the server list): its head with the entry's name and state, and under
- *  it that server's tree, drawn with the rows of the local part (TreeRows), or the line that says why there is none.
- *  The rows come from the tree the local server holds of that server and from nothing else: without one the section
- *  shows no row, whatever the page still has on screen of that server.
+/** The section of one server (an entry of the server list): its head with the entry's name and state, and under it that
+ *  server's tree, drawn with the rows every section has (TreeRows), or the line that says why there is none. This computer's is
+ *  the first and always there. The rows come from the tree the page holds of that server and from nothing else: without one
+ *  the section shows no row, whatever the page still has on screen of that server.
  *
  *  A section is not a group. A click on its head collapses or expands it, which is all the head has in common with a
  *  group's: it has no rename, no archive, no delete and no menu; it is not dragged, and nothing is dropped on it. Its
  *  "+", shown while its server is connected, makes a chat, a whiteboard or a group on that server, outside any
- *  group. Whether it is collapsed is kept in the browser (store.ts setSectionCollapsed), and is sent nowhere. */
+ *  group. Whether it is collapsed is kept in the browser (store.ts setSectionCollapsed), and is sent nowhere.
+ *  This computer's section alone says what the app does with its server (LocalExtras). */
 function SectionNode({ v, editing, setEditing, make }: Edit & { v: ServerView; make: Make }) {
-  const section = useStore((s) => s.sections[v.id]);
+  const local = v.id === LOCAL_SERVER;
+  const groups = useStore((s) => (local ? s.groups : s.sections[v.id]?.groups));
+  const held = useStore((s) => (local ? s.connected : !!s.sections[v.id])); // the page holds the server's tree
   const collapsed = useStore((s) => !!s.collapsed[v.id]);
   const boards = useStore((s) => s.boards);
   const chats = useStore((s) => s.chats);
   const gone = useStore((s) => s.gone);
   const showArchived = useStore((s) => s.showArchived);
   const loose = ungroupedOn(v.id);
-  const tree = section ? buildTree({ groups: section.groups, boards, chats }, showArchived, { server: v.id, gone }) : null;
+  const tree = held && groups ? buildTree({ groups, boards, chats }, showArchived, { server: v.id, gone }) : null;
   const empty = !!tree && treeEmpty(tree);
   // (a server whose things are all archived has something on it: the section does not say that it has nothing)
-  const archived = empty && !showArchived && holdsAny({ groups: section!.groups, boards, chats }, { server: v.id, gone });
+  const archived = empty && !showArchived && holdsAny({ groups: groups!, boards, chats }, { server: v.id, gone });
   const view = sectionView(v, !!tree, empty, archived);
   const count = tree ? treeCount(tree) : 0;
   return (
@@ -435,6 +426,7 @@ function SectionNode({ v, editing, setEditing, make }: Edit & { v: ServerView; m
       {/* (no row of a collapsed section is drawn) */}
       {!collapsed && (
         <div className="side-section-body">
+          {local && <LocalExtras v={v} />}
           {view.rows && tree && <TreeRows tree={tree} loose={loose} editing={editing} setEditing={setEditing} make={make} />}
           {view.lines.map((line) => <div key={line} className="side-empty side-section-line">{line}</div>)}
         </div>
@@ -443,50 +435,22 @@ function SectionNode({ v, editing, setEditing, make }: Edit & { v: ServerView; m
   );
 }
 
-/** After an update: the server or this page runs an older version (version.ts). */
-function UpdateBanner() {
-  const { banner, hidden } = useStore((s) => s.update);
-  const dataDir = useStore((s) => s.dataDir);
-  if (banner === "none" || hidden) return null;
-  const hide = () => setState((s) => ({ update: { ...s.update, hidden: true } }));
-  let body: React.ReactNode;
-  switch (banner) {
-    case "restart":
-      body = <>
-        <div className="side-update-text">New version installed. The server is still running the old one.</div>
-        <div className="side-update-actions"><button className="btn sm primary" onClick={restartServer}>Restart server</button></div>
-      </>;
-      break;
-    case "reload":
-      body = <>
-        <div className="side-update-text">This page is out of date.</div>
-        <div className="side-update-actions"><button className="btn sm primary" onClick={() => location.reload()}>Reload</button></div>
-      </>;
-      break;
-    case "restarting":
-      body = <div className="side-update-text"><span className="spin" /> Restarting…</div>;
-      break;
-    case "failed":
-      body = <>
-        <div className="side-update-text">Restart failed</div>
-        <div className="side-update-actions">
-          <button className="btn sm" onClick={restartServer}>Retry</button>
-          {inDesktopApp()
-            ? <button className="btn sm" onClick={openServerLog}>Open log</button>
-            : <code className="side-update-path">{`${dataDir.replace(/\/+$/, "")}/server.log`}</code>}
-        </div>
-      </>;
-      break;
-    case "missing":
-      body = <div className="side-update-text">
-        The server's program is gone (the app was moved or deleted). Quit the app and run <code>ai-whiteboard relaunch</code>.
-      </div>;
-      break;
-  }
+/** What this computer's section says and offers besides its rows (logic/localsection.ts): a start that failed with the
+ *  reason the server gave, "Retry" and "Open server log"; a server older than the app, or of another build, with "Restart
+ *  server"; a restart that runs or failed. The app does these with the server program it carries (version.ts). */
+function LocalExtras({ v }: { v: ServerView }) {
+  const restart = useStore((s) => s.restart);
+  const x = localExtra(v, restart, pageVersion(), inDesktopApp());
+  if (!x.line && !x.reason && !x.again && !x.restart && !x.log) return null;
   return (
-    <div className="side-update" role="status">
-      <div className="side-update-body">{body}</div>
-      {banner !== "restarting" && <button className="icon-btn side-update-x" title="Hide" aria-label="Hide" onClick={hide}>×</button>}
+    <div className="side-section-extra" role="status">
+      {x.line && <div className="side-section-line">{restart.phase === "restarting" && <span className="spin" />} {x.line}</div>}
+      {x.reason && <pre className="side-section-reason">{x.reason}</pre>}
+      <div className="side-section-actions">
+        {x.restart && <button className="btn sm primary" onClick={restartServer}>Restart server</button>}
+        {x.again && <button className="btn sm" onClick={x.again === "start" ? startAgain : restartServer}>Retry</button>}
+        {x.log && <button className="btn sm" onClick={openServerLog}>Open server log</button>}
+      </div>
     </div>
   );
 }
@@ -555,7 +519,7 @@ function useDropEnds() {
 }
 
 /** Takes boards and chats (moved into group) and groups (nested in it; a server's ungrouped area: top level),
- *  of the zone's own server alone: what is dragged from another section, or between a section and the local part, is
+ *  of the zone's own server alone: what is dragged from another section, or between this computer's section and another, is
  *  not taken, the zone does not light, and a drop of it does nothing (moveTo, moveGroup). The zone the pointer is in
  *  is lit, and it alone: the drop mark names one. group: the key of the group, or of the server's ungrouped area. */
 function DropZone({ group, className, children }: { group: string; className?: string; children: React.ReactNode }) {
@@ -649,7 +613,7 @@ const ArchivedTag = () => <span className="archived-tag">Archived</span>;
 const DraftTag = ({ other }: { other?: boolean }) => <span className="draft-tag" title={other ? "Unsent message on another branch" : "Unsent message"}>Draft</span>;
 
 /** A group and, nested inside it, its subgroups (first), boards and plain chats. depth 0 is the top level
- *  of its server's tree: the local part's, or a section's. A group of a section is renamed, moved, nested, archived
+ *  of its server's tree: this computer's section's, or another's. A group of a section is renamed, moved, nested, archived
  *  and deleted as a local one, on its server; only its collapse is the browser's own. */
 function GroupNode({ n, depth, editing, setEditing, make }: Edit & { n: GroupTree; depth: number; make: Make }) {
   const { group: g, boards, chats, children } = n;

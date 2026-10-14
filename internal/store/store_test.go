@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -232,7 +234,7 @@ func TestOpenMigrationWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Read(func(s *model.State) {
-		if len(s.Groups) != 1 || s.Groups[0].Name != "One" || !s.Groups[0].Collapsed {
+		if len(s.Groups) != 1 || s.Groups[0].Name != "One" {
 			t.Errorf("groups after the migration: %+v", s.Groups)
 		}
 		if s.Defaults.Groups["g_one"].Local().Cwd != "/one" || s.Defaults.Groups[model.Ungrouped].Local().Cwd != "/last" {
@@ -240,7 +242,7 @@ func TestOpenMigrationWrite(t *testing.T) {
 		}
 	})
 	b, _ := os.ReadFile(p.State)
-	if strings.Contains(string(b), `"last"`) || !strings.Contains(string(b), `"name": "One"`) {
+	if strings.Contains(string(b), `"last"`) || strings.Contains(string(b), "collapsed") || !strings.Contains(string(b), `"name": "One"`) {
 		t.Errorf("state.json after the migration: %s", b)
 	}
 }
@@ -289,19 +291,130 @@ func TestWriteFileAtomic(t *testing.T) {
 
 func TestServerFile(t *testing.T) {
 	p := NewPaths(t.TempDir())
-	if _, _, ok := ReadServerFile(p); ok {
+	if _, ok := ReadServerFile(p); ok {
 		t.Fatal("ok with no file")
 	}
-	if err := WriteServerFile(p, 4747); err != nil {
+	if err := WriteServerFile(p, 4748, "/data/control.sock"); err != nil {
 		t.Fatal(err)
 	}
-	pid, port, ok := ReadServerFile(p)
-	if !ok || pid != os.Getpid() || port != 4747 {
-		t.Errorf("got %d %d %v", pid, port, ok)
+	sf, ok := ReadServerFile(p)
+	if !ok || sf.PID != os.Getpid() || sf.Port != 4748 || sf.Control != "/data/control.sock" || sf.Started.IsZero() {
+		t.Errorf("got %+v %v", sf, ok)
+	}
+	// A server.json of the build before has no control field.
+	if err := os.WriteFile(p.Server, []byte(`{"pid":12,"port":4747,"started":"2026-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if sf, ok := ReadServerFile(p); !ok || sf.PID != 12 || sf.Port != 4747 || sf.Control != "" {
+		t.Errorf("file of the build before: %+v %v", sf, ok)
 	}
 	RemoveServerFile(p)
 	if _, err := os.Stat(p.Server); !os.IsNotExist(err) {
 		t.Errorf("server.json not removed: %v", err)
+	}
+}
+
+// The server list of an earlier version goes with its set-aside copies, and nothing else does.
+func TestRemoveServerList(t *testing.T) {
+	p := NewPaths(t.TempDir())
+	if removed, err := RemoveServerList(p); removed || err != nil {
+		t.Fatalf("a data folder with no list: removed %v, %v", removed, err)
+	}
+	gone := []string{"servers.json", "servers.json.unreadable-20260101T000000Z", "servers.json.unreadable-20260202T000000Z"}
+	kept := []string{"state.json", "servers.json.bak", "remote.json", "remote-secret", "xservers.json"}
+	for _, f := range append(append([]string{}, gone...), kept...) {
+		if err := os.WriteFile(filepath.Join(p.Root, f), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if removed, err := RemoveServerList(p); !removed || err != nil {
+		t.Fatalf("removed %v, %v", removed, err)
+	}
+	for _, f := range gone {
+		if _, err := os.Lstat(filepath.Join(p.Root, f)); !os.IsNotExist(err) {
+			t.Errorf("%s is still there: %v", f, err)
+		}
+	}
+	for _, f := range kept {
+		if _, err := os.Stat(filepath.Join(p.Root, f)); err != nil {
+			t.Errorf("%s was removed: %v", f, err)
+		}
+	}
+	if removed, err := RemoveServerList(p); removed || err != nil {
+		t.Errorf("a second call: removed %v, %v", removed, err)
+	}
+}
+
+func TestControlSocketPath(t *testing.T) {
+	root := t.TempDir()
+	if got, want := ControlSocketPath(root), filepath.Join(root, "control.sock"); got != want {
+		t.Errorf("short root: %s, want %s", got, want)
+	}
+	long := filepath.Join(root, strings.Repeat("d", 120))
+	got := ControlSocketPath(long)
+	if len(got) > 100 || filepath.Base(got) != "control.sock" || filepath.Dir(filepath.Dir(got)) != filepath.Clean(os.TempDir()) ||
+		!strings.HasPrefix(filepath.Base(filepath.Dir(got)), "aiwb-") {
+		t.Errorf("long root: %s", got)
+	}
+	if again := ControlSocketPath(long); again != got {
+		t.Errorf("not stable: %s then %s", got, again)
+	}
+	if other := ControlSocketPath(long + "x"); other == got {
+		t.Error("two roots share a path")
+	}
+}
+
+// RemoveControlSocket removes the socket and the short folder made for a long data folder, keeps a
+// folder that holds another file, and never touches the data folder.
+func TestRemoveControlSocket(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	long := filepath.Join(tmp, strings.Repeat("d", 120))
+	sock := ControlSocketPath(long)
+	dir := filepath.Dir(sock)
+	if filepath.Dir(dir) != filepath.Clean(tmp) {
+		t.Fatalf("the fallback folder %s is not under %s", dir, tmp)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	RemoveControlSocket(sock)
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the fallback folder after the removal: %v", err)
+	}
+	// another file in the folder (the extension bridge's socket) keeps it
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "bridge.sock")
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	RemoveControlSocket(sock)
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("the other file: %v", err)
+	}
+	if _, err := os.Stat(sock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the socket after the removal: %v", err)
+	}
+	// a socket in the data folder: the file goes, the folder stays
+	root := t.TempDir()
+	short := ControlSocketPath(root)
+	if err := os.WriteFile(short, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	RemoveControlSocket(short)
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("the data folder: %v", err)
+	}
+	if _, err := os.Stat(short); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the socket in the data folder after the removal: %v", err)
 	}
 }
 

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { clampWidth, parseWidths, DEFAULT_WIDTHS, PANES, isSideKey, parseSideHidden, sideKeyName, sideNotice, sideSaved } from "../src/logic/layout.ts";
 import { isNewChatKey } from "../src/logic/newchatwhere.ts";
 import { isTreeKey } from "../src/logic/treepopup.ts";
+import type { ServerView } from "../src/logic/servers.ts";
+import type { Restart } from "../src/logic/localsection.ts";
 
 test("widths are clamped to the pane's min and max", () => {
   assert.equal(clampWidth("side", 300), 300);
@@ -32,16 +34,20 @@ test("the saved choice of the sidebar: hidden only by what a hiding saved", () =
   assert.notEqual(sideSaved(true), sideSaved(false));
 });
 
-test("the mark of the control that shows the sidebar: not connected, or an update banner that is up", () => {
-  const none = { banner: "none", hidden: false };
-  assert.equal(sideNotice({ connected: true, update: none }), false);
-  assert.equal(sideNotice({ connected: false, update: none }), true, "Reconnecting…");
-  for (const banner of ["restart", "reload", "restarting", "failed", "missing"]) {
-    assert.equal(sideNotice({ connected: true, update: { banner, hidden: false } }), true, banner);
-    assert.equal(sideNotice({ connected: true, update: { banner, hidden: true } }), false, `${banner}, hidden by its ×`);
-    assert.equal(sideNotice({ connected: false, update: { banner, hidden: true } }), true, `${banner} hidden, and not connected`);
-  }
-  assert.equal(sideNotice({ connected: true, update: { banner: "none", hidden: true } }), false);
+test("the mark of the control that shows the sidebar: this computer's section has something to say", () => {
+  const entry = (o: Partial<ServerView>): ServerView => ({ id: "local", local: true, name: "This computer", state: "connected", version: "v1", ...o });
+  const idle: Restart = { phase: "idle", why: "" };
+  const notice = (v: Partial<ServerView>, restart = idle, page = "v1", others: ServerView[] = []) => sideNotice({ servers: [entry(v), ...others], restart }, page);
+  assert.equal(notice({}), false, "connected, of the app's build");
+  for (const state of ["connecting", "unreachable", "not_started", "too_old", "secret_not_accepted"] as const) assert.equal(notice({ state }), true, state);
+  assert.equal(notice({ version: "v0" }), true, "another build");
+  assert.equal(notice({ version: "dev" }, idle, "v1"), false, "a development server is of no build");
+  assert.equal(notice({}, idle, "dev"), false, "nor a development page");
+  assert.equal(notice({}, { phase: "restarting", why: "" }), true);
+  assert.equal(notice({}, { phase: "failed", why: "x" }), true);
+  const far: ServerView = { id: "s_aaaaaaaaaaaa", name: "Studio", state: "unreachable" };
+  assert.equal(notice({}, idle, "v1", [far]), false, "another server that is not connected is the Servers button's dot");
+  assert.equal(sideNotice({ servers: [], restart: idle }, "v1"), true, "no entry of this computer: its server has not answered");
 });
 
 const key = (code: string, held: Partial<Record<"metaKey" | "ctrlKey" | "shiftKey" | "altKey", boolean>> = {}) =>

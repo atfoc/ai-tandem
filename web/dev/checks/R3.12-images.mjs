@@ -1,7 +1,7 @@
 // Proves, in the page, the images of a chat of a section (plans/composer-images-goal.md, 3.11 "Images" and 3.12, as
 // they are with remote servers as sections: plans/remote-server-sections-contract.md 3.4 and 3.10): such a chat takes
-// an image as a local one does, by the same composer and the same calls under its server's prefix
-// (/api/on/<entry id>/chats/<id>/images), and nothing of it is kept for it on this computer; while its server is
+// an image as a local one does, by the same composer and the same calls to its server
+// (/api/chats/<id>/images, with the entry id as the call's server), and nothing of it is kept for it on this computer; while its server is
 // not connected, the chat being open, the draft keeps its images (one the browser fetched before is drawn, one it
 // never fetched is a plain tile with its name), paste and the attach button are off with the reason, Send is off as
 // for anything of that chat, and no image can be removed (the chat is read-only: plans/remote-server-sections-goal.md
@@ -11,7 +11,7 @@
 // against the mock (dev/mock.mjs), which answers the calls of a chat of a server that is not connected as the
 // local server does (503). The composer of a local chat is IM3.2's.
 import crypto from "node:crypto";
-import { check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";
+import { callOfRequest, check, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";
 
 // Three pictures: two 1×1 PNGs that differ in their pixel, and a 1×1 GIF.
 const png = (last) => Buffer.from(`iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk${last}AAAABJRU5ErkJggg==`, "base64");
@@ -53,15 +53,15 @@ await check("R3.12 images of a chat of a section: taken as a local chat's, by th
   const serverIs = (state) => mockEval(`return setServerState(${J(LAB)}, ${J(state)});`, url);
 
   // ---- 3.11: a chat of a connected server takes an image as a local chat does, by that server's calls
-  const s = states.find((x) => x.id === "plain-remote-started"), chat = own(s.sel.chat), ON = `/api/on/${LAB}/chats/${chat}`;
+  const s = states.find((x) => x.id === "plain-remote-started"), chat = own(s.sel.chat), ON = `${LAB} /api/chats/${chat}`, PIC = `/host/picture/${LAB}/${chat}`;
   let { ctx, page } = await openPage({ url, browser, sel: s.sel, ...paneSize("page", 900), wait: ".composer-box .send" });
   let p = probes(page);
   const uploads = [];
-  page.on("request", (r) => { if (r.method() === "POST" && /\/images\?/.test(r.url())) uploads.push(new URL(r.url()).pathname); });
+  page.on("request", (r) => { const c = callOfRequest(r); if (c?.method === "POST" && /\/images\?/.test(c.path)) uploads.push(`${c.server} ${c.path.split("?")[0]}`); });
   const A = image(PNG_A, "Pasted image", "image/png");
   if ((await p.attach())?.off !== false || (await p.attach())?.title !== "Add images") fail(`the attach button of a chat of a connected server is ${J(await p.attach())}`);
   if (!await p.paste([{ name: "image.png", type: "image/png", bytes: PNG_A }])) fail("a paste of an image into a section's chat was not consumed");
-  if (!await until(async () => { const t = await p.thumbs(); return t.length === 1 && !t[0].busy && t[0].src === `${ON}/images/${A.id}` && t[0].drawn; }, 10000)) fail(`a section's chat's pasted image is not a thumbnail on the chat's own address, under its server's prefix: ${J(await p.thumbs())}`);
+  if (!await until(async () => { const t = await p.thumbs(); return t.length === 1 && !t[0].busy && t[0].src === `${PIC}/${A.id}` && t[0].drawn; }, 10000)) fail(`a section's chat's pasted image is not a thumbnail on the chat's own address, under its server's prefix: ${J(await p.thumbs())}`);
   if (!await until(async () => J((await draft(chat))?.images) === J([A]), 10000)) fail(`the draft of the section's chat is not saved with the image: ${J(await draft(chat))}`);
   if (J(uploads) !== J([`${ON}/images`])) fail(`the upload went to ${J(uploads)}, not ${ON}/images`);
   if (await mockEval(`return Object.keys(worlds.local.images[${J(chat)}] ?? {}).length;`, url)) fail("this computer holds an image of the section's chat");
@@ -74,7 +74,7 @@ await check("R3.12 images of a chat of a section: taken as a local chat's, by th
   await hold(chat, B, PNG_B); await hold(chat, C, GIF_C);
   let let_go = () => {};
   const gate = new Promise((ok) => { let_go = ok; });
-  await page.route((u) => u.pathname === `${ON}/images/${B.id}` || u.pathname === `${ON}/images/${C.id}`, async (route) => { await gate; await route.continue(); });
+  await page.route((u) => u.pathname === `${PIC}/${B.id}` || u.pathname === `${PIC}/${C.id}`, async (route) => { await gate; await route.continue(); });
   await lab(`setSession(${J(chat)}, curOf(chats[${J(chat)}]), { draft: { text: "", images: ${J([A, B, C])} }, draftRev: (chats[${J(chat)}].draftRev ?? 0) + 1 });`);
   if (!await until(async () => (await p.thumbs()).length === 3, 15000)) fail(`the draft changed on its server, the strip has ${J(await p.thumbs())}`);
   if (!await serverIs("unreachable")) fail("the mock has no entry for the lab box");
@@ -120,7 +120,7 @@ await check("R3.12 images of a chat of a section: taken as a local chat's, by th
   await page.locator(".composer .composer-input").click();
   await page.keyboard.type("with a picture");
   await p.paste([{ name: "image.png", type: "image/png", bytes: PNG_A }]);
-  if (!await until(async () => { const x = await p.thumbs(); return x.length === 1 && !x[0].busy && x[0].src === `/api/on/${LAB}/chats/${fresh}/images/${A.id}`; }, 10000)) fail(`the unstarted chat did not take a pasted image by its server's calls: ${J(await p.thumbs())}`);
+  if (!await until(async () => { const x = await p.thumbs(); return x.length === 1 && !x[0].busy && x[0].src === `/host/picture/${LAB}/${fresh}/${A.id}`; }, 10000)) fail(`the unstarted chat did not take a pasted image by its server's calls: ${J(await p.thumbs())}`);
   if (!await until(async () => { const d = await draft(fresh); return d?.text === "with a picture" && d.images?.length === 1; }, 10000)) fail(`the unstarted chat's draft is ${J(await draft(fresh))}`);
   if (await p.err()) fail(`the error line of the unstarted chat says ${J(await p.err())}`);
   await ctx.close();

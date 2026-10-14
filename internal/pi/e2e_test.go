@@ -991,7 +991,7 @@ func newE2EBoardEnv(t *testing.T) *e2eBoardEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	editor := editorbridge.New(nil)
+	editor := editorbridge.New()
 	bds := boards.New(st, editor)
 	if err := bds.Load(); err != nil {
 		t.Fatal(err)
@@ -1022,7 +1022,9 @@ func newE2EBoardEnv(t *testing.T) *e2eBoardEnv {
 	relay := &boardapi.Relay{Bridge: editor, Chats: m, Boards: bds}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mcp", relay.ServeFixedMCP)
-	mux.HandleFunc("GET /api/events", editor.ServeSSE)
+	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
+		editor.Serve(w, r, r.URL.Query().Get("client"), nil)
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	m.MCPURL = srv.URL + "/mcp"
@@ -1079,7 +1081,6 @@ func (e *e2eBoardEnv) startBrowser(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("board browser client did not become active")
 	}
-	e.editor.Acted("A") // a page that only opened its stream is asked no tool call
 }
 
 // answerRPC records one board call and replies with the configured text or the
@@ -1302,7 +1303,7 @@ func newE2EPiManager(t *testing.T, s *Spawner, cwd string) *chats.Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	editor := editorbridge.New(nil)
+	editor := editorbridge.New()
 	bds := boards.New(st, editor)
 	if err := bds.Load(); err != nil {
 		t.Fatal(err)

@@ -83,7 +83,7 @@ func TestChatCreateAndConfigureRoutes(t *testing.T) {
 	// The server of a chat cannot be changed: naming one is refused, the chat's own too, and
 	// nothing else of the request is done.
 	for _, body := range []string{`{"server":"local"}`, `{"server":"elsewhere"}`, `{"server":"local","agent":"claude","name":"not taken"}`} {
-		if msg := e.refusedWith(409, "server_fixed", "PATCH", chat, body); !strings.Contains(msg, "chosen when the chat is made") {
+		if msg := e.refusedWith(400, "server_refused", "PATCH", chat, body); !strings.Contains(msg, "cannot name a server") {
 			t.Fatalf("PATCH %s: %q", body, msg)
 		}
 	}
@@ -115,7 +115,7 @@ func TestChatCreateAndConfigureRoutes(t *testing.T) {
 	if msg := e.refusedWith(409, "", "PATCH", chat, `{"agent":"claude"}`); !strings.Contains(msg, "has not started") {
 		t.Fatalf("PATCH of the agent after a message: %q", msg)
 	}
-	e.refusedWith(409, "server_fixed", "PATCH", chat, `{"server":"local"}`)
+	e.refusedWith(400, "server_refused", "PATCH", chat, `{"server":"local"}`)
 	if got := decode[model.ChatView](t, e.expect(200, "GET", chat, "")); got.Agent != model.Cursor {
 		t.Fatalf("agent after the refused PATCH = %q", got.Agent)
 	}

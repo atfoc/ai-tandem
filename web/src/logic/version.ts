@@ -1,31 +1,14 @@
-// Versions after an update: which banner the page shows, and what a server restart ends.
-// The page's own version, the running server's and the one on disk (the served client folder's
-// version.json) are `git describe` strings, which can't be ordered; the files on disk always come
-// from the newest install, so they tell which side is stale.
+// Restarting this computer's server (version.ts): how many chats a restart ends, and what it asks first.
+// The page's own version (the app's) and the one this computer's server reports are `git describe` strings
+// that can't be ordered; the section compares them (logic/localsection.ts otherBuild).
 import type { Status } from "../types.ts";
 import { isWorking, type StatesOf } from "./status.ts";
 import { inSection } from "./keys.ts";
 
-export type Banner = "none" | "restart" | "reload";
-
-/** What the sidebar's version banner shows: a Banner, or a restart in progress or failed
- *  (missing = the server's program is gone, so it can't start `relaunch`). */
-export type UpdateBanner = Banner | "restarting" | "failed" | "missing";
-
-/** The banner for the page's, the running server's and the on-disk version: none when any is
- *  "dev" or all are equal; reload when the page isn't the one on disk (loaded before the server
- *  was replaced); otherwise restart (a new app is installed, the old server still runs). */
-export function bannerFor(page: string, server: string, disk: string): Banner {
-  if (page === "dev" || server === "dev" || disk === "dev") return "none";
-  if (page === server && server === disk) return "none";
-  if (page !== disk) return "reload";
-  return "restart";
-}
-
 /** How many chats have an agent running on some branch, or subagents running while their agent
  *  waits for them: a restart ends them. A chat that only holds results not sent yet is not counted.
  *  `statesOf` gives a chat's records, to count the branches that are not the current one. A chat of
- *  a section (its key says so) is not counted: its turns are not this server's to end. */
+ *  another server is not counted: its turns are not this computer's server's to end. */
 export const runningChats = (chats: Iterable<{ id?: string; status: Status; subsRunning?: number; subsOwed?: number; working?: number }>, statesOf?: StatesOf): number => {
   let n = 0;
   for (const c of chats) if (!inSection(c.id) && isWorking(c, c.id !== undefined ? statesOf?.(c.id) : undefined)) n++;

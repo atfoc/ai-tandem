@@ -91,16 +91,6 @@ func Setup(root string, o SetupOptions) (Made, error) {
 	return made, nil
 }
 
-// Off removes the configuration only: a set-up after it gives the same secret and fingerprint.
-// was says whether there was one.
-func Off(root string) (was bool, err error) {
-	err = os.Remove(FilesIn(root).Config)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
 // exists reports whether there is anything at path, readable or not.
 func exists(path string) bool {
 	_, err := os.Lstat(path)

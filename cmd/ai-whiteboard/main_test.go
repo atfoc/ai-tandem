@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,29 +22,40 @@ import (
 // adds deny rules for its data folder to the Cursor CLI config, and must not add them to the user's.
 // (A server started with serverEnv gets a folder of its own; this one is for whatever is not.)
 //
+// It also points TMPDIR at a temp folder of its own and removes it at the end: a server whose data
+// folder path is long keeps its control socket in a folder aiwb-<16 hex> of the temp folder, and a
+// server that a test kills leaves that folder. Here they go with the run, not into the machine's.
+// The folder is made directly under /tmp so that its path is short: the macOS temp folder's is not,
+// and the fallback path under a long one would be too long for a socket.
+//
 // The tests that start servers run in parallel, at most agenttest.SpawnBound at once on macOS: they
 // mostly wait, and each starts servers and Node processes.
 func TestMain(m *testing.M) {
 	agenttest.LimitParallel()
+	// No test of this package looks for the build before's server on its port, where the owner's
+	// own may run: the tests that look for one name the port of a stand-in.
+	legacyPort = anyFreePort(nil)
 	dir, err := os.MkdirTemp("", "aiwb-cmd-cursor-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	os.Setenv("CURSOR_CONFIG_DIR", dir)
+	tmp, err := os.MkdirTemp("/tmp", "aiwb-t-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Setenv("TMPDIR", tmp)
 	code := m.Run()
 	os.RemoveAll(dir)
+	os.RemoveAll(tmp)
 	for _, b := range []*builtBinary{&plainBinary, &raceBinary} {
 		if b.dir != "" {
 			os.RemoveAll(b.dir)
 		}
 	}
 	os.Exit(code)
-}
-
-func portOf(t *testing.T, srv *httptest.Server) int {
-	t.Helper()
-	return srv.Listener.Addr().(*net.TCPAddr).Port
 }
 
 // freePorts are the ports freePort has given out: tests run in parallel, and two of them must not
@@ -59,9 +68,17 @@ var freePorts = struct {
 // freePort returns a port nothing listens on, and that no other test of this binary was given.
 func freePort(t *testing.T) int {
 	t.Helper()
+	return anyFreePort(t)
+}
+
+// anyFreePort is freePort for TestMain, which has no test: t is nil.
+func anyFreePort(t *testing.T) int {
 	for {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
+			if t == nil {
+				panic(err)
+			}
 			t.Fatal(err)
 		}
 		port := ln.Addr().(*net.TCPAddr).Port
@@ -170,77 +187,7 @@ func TestTurnCapsSetting(t *testing.T) {
 
 func paths(t *testing.T) store.Paths {
 	t.Helper()
-	p := store.NewPaths(t.TempDir())
-	return p
-}
-
-func writeServerFile(t *testing.T, p store.Paths, port int) {
-	t.Helper()
-	if err := store.WriteServerFile(p, port); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func hello(app string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/hello" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"app":%q,"version":"dev","pid":%d}`, app, os.Getpid())
-	}))
-}
-
-func TestFindRunningOurServerViaServerFile(t *testing.T) {
-	srv := hello("ai-whiteboard")
-	defer srv.Close()
-	p := paths(t)
-	port := portOf(t, srv)
-	writeServerFile(t, p, port)
-
-	url, ok := findRunning(p, freePort(t))
-	if !ok {
-		t.Fatal("findRunning = false, want true")
-	}
-	if want := fmt.Sprintf("http://127.0.0.1:%d/", port); url != want {
-		t.Fatalf("url = %q, want %q", url, want)
-	}
-}
-
-func TestFindRunningOurServerViaPortFlag(t *testing.T) {
-	srv := hello("ai-whiteboard")
-	defer srv.Close()
-	p := paths(t) // no server.json
-	if _, ok := findRunning(p, portOf(t, srv)); !ok {
-		t.Fatal("findRunning = false, want true")
-	}
-}
-
-func TestFindRunningStaleServerFile(t *testing.T) {
-	p := paths(t)
-	writeServerFile(t, p, freePort(t))
-	if url, ok := findRunning(p, freePort(t)); ok {
-		t.Fatalf("findRunning = %q, true; want false for a stale server.json", url)
-	}
-}
-
-func TestFindRunningOtherProgram(t *testing.T) {
-	other := hello("something-else")
-	defer other.Close()
-	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "<html>hi</html>")
-	}))
-	defer plain.Close()
-
-	p := paths(t)
-	writeServerFile(t, p, portOf(t, other))
-	if _, ok := findRunning(p, portOf(t, plain)); ok {
-		t.Fatal("findRunning = true, want false for another program on the port")
-	}
-	if _, ok := findRunning(paths(t), portOf(t, other)); ok {
-		t.Fatal("findRunning = true, want false for another program answering /api/hello")
-	}
+	return store.NewPaths(t.TempDir())
 }
 
 func TestExpand(t *testing.T) {
@@ -251,7 +198,7 @@ func TestExpand(t *testing.T) {
 	}
 }
 
-// No command means serve, inside an app bundle too: the Electron app always passes launch.
+// No command means serve, inside an app bundle too.
 func TestCommand(t *testing.T) {
 	for _, c := range []struct {
 		args []string
@@ -260,11 +207,13 @@ func TestCommand(t *testing.T) {
 	}{
 		{nil, "serve", 0},
 		{[]string{}, "serve", 0},
-		{[]string{"-port", "1"}, "serve", 2},
-		{[]string{"serve", "-port", "1"}, "serve", 2},
+		{[]string{"-home", "/x"}, "serve", 2},
+		{[]string{"serve", "-home", "/x"}, "serve", 2},
 		{[]string{"launch"}, "launch", 0},
-		{[]string{"relaunch", "-port", "1"}, "relaunch", 2},
+		{[]string{"launch", "-json"}, "launch", 1},
+		{[]string{"relaunch", "-home", "/x"}, "relaunch", 2},
 		{[]string{"stop", "-home", "/x"}, "stop", 2},
+		{[]string{"status", "-json"}, "status", 1},
 	} {
 		cmd, rest := command(c.args)
 		if cmd != c.cmd || len(rest) != c.rest {
@@ -273,45 +222,19 @@ func TestCommand(t *testing.T) {
 	}
 }
 
-func TestLaunchPrintsRunningServerURL(t *testing.T) {
-	srv := hello("ai-whiteboard")
-	defer srv.Close()
-	port := portOf(t, srv)
-	var out bytes.Buffer
-	launch(options{port: port, paths: paths(t)}, nil, &out)
-	if got, want := out.String(), fmt.Sprintf("http://127.0.0.1:%d/\n", port); got != want {
-		t.Fatalf("launch wrote %q, want %q", got, want)
+// launch passes the server it starts the data folder, and the flags it was given as they were
+// given and no others: the server's own defaults stay its own (its working folder is the home
+// folder, where launch starts it), and -json is for launch alone.
+func TestServeArgs(t *testing.T) {
+	t.Parallel()
+	o := parseFlags("launch", []string{"-home", "/data/x", "-json", "-claude", "/bin/fake", "-cwd=/work"})
+	want := []string{"-home", "/data/x", "-claude=/bin/fake", "-cwd=/work"}
+	if !slices.Equal(o.serveArgs, want) || !o.json || o.paths.Root != "/data/x" {
+		t.Fatalf("serveArgs %q, json %v, root %q; want %q", o.serveArgs, o.json, o.paths.Root, want)
 	}
-}
-
-// launch never stops a server, whatever its version: the page offers the restart.
-func TestLaunchKeepsServerOfAnotherVersion(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"app":"ai-whiteboard","version":"v0.0.1-old","webVersion":"v9.9.9-new","pid":%d}`, os.Getpid())
-	}))
-	defer srv.Close()
-	port := portOf(t, srv)
-	var out bytes.Buffer
-	launch(options{port: port, paths: paths(t)}, nil, &out)
-	if got, want := out.String(), fmt.Sprintf("http://127.0.0.1:%d/\n", port); got != want {
-		t.Fatalf("launch wrote %q, want %q", got, want)
-	}
-	if h, ok := helloOf(httpClient(), srv.URL); !ok || h.Version != "v0.0.1-old" {
-		t.Fatalf("server no longer answers: %+v %v", h, ok)
-	}
-}
-
-func TestResourcesFor(t *testing.T) {
-	for exe, want := range map[string]string{
-		"/Applications/AI Whiteboard.app/Contents/MacOS/ai-whiteboard": "/Applications/AI Whiteboard.app/Contents/Resources",
-		"/repo/bin/ai-whiteboard":                                      "",
-		"/x/Contents/MacOS/ai-whiteboard":                              "", // not inside a .app
-		"/x/A.app/Contents/bin/ai-whiteboard":                          "",
-	} {
-		if got := resourcesFor(exe); got != want {
-			t.Errorf("resourcesFor(%q) = %q, want %q", exe, got, want)
-		}
+	o = parseFlags("serve", []string{"-home", "/data/x"})
+	if o.json || !slices.Equal(o.serveArgs, []string{"-home", "/data/x"}) {
+		t.Fatalf("serve: serveArgs %q, json %v", o.serveArgs, o.json)
 	}
 }
 

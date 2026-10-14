@@ -1,12 +1,8 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,22 +54,16 @@ func TestStopEndsAgentProcesses(t *testing.T) {
 	}
 	served := make(chan struct{})
 	go func() { serve.Wait(); close(served) }()
-	for deadline := time.Now().Add(60 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the server did not answer within 60 s")
-		}
-	}
+	waitServes(t, in, serve.Process.Pid, 60*time.Second)
 
-	const client = "stop-agents-test"
-	activate(t, in.url, client)
+	const client = testClient
+	in.activate(t, client)
 	for _, kind := range []string{"claude", "cursor"} {
 		var chat struct{ ID string }
-		postJSON(t, in.url+"api/chats", client, map[string]any{"agent": kind, "group": "__ungrouped__"}, &chat)
+		in.must(t, client, "POST", "/api/chats", map[string]any{"agent": kind, "group": "__ungrouped__"}, &chat)
 		// A Cursor chat's send waits for a handshake the fake never answers: do not wait for it.
 		go func() {
-			if resp, err := post(in.url+"api/chats/"+chat.ID+"/messages", client, map[string]any{"text": "hello"}); err == nil {
-				resp.Body.Close()
-			}
+			in.request(context.Background(), client, "POST", "/api/chats/"+chat.ID+"/messages", map[string]any{"text": "hello"})
 		}()
 	}
 	var pids []int
@@ -163,17 +153,13 @@ func TestStopEndsPiProcesses(t *testing.T) {
 	}
 	served := make(chan struct{})
 	go func() { serve.Wait(); close(served) }()
-	for deadline := time.Now().Add(20 * time.Second); !isOurs(httpClient(), strings.TrimSuffix(in.url, "/")); time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the server did not answer within 20 s")
-		}
-	}
+	waitServes(t, in, serve.Process.Pid, 20*time.Second)
 
-	const client = "stop-pi-test"
-	activate(t, in.url, client)
+	const client = testClient
+	in.activate(t, client)
 	var chat struct{ ID string }
-	postJSON(t, in.url+"api/chats", client, map[string]any{"agent": "pi", "group": "__ungrouped__"}, &chat)
-	postJSON(t, in.url+"api/chats/"+chat.ID+"/messages", client, map[string]any{"text": "hello"}, nil)
+	in.must(t, client, "POST", "/api/chats", map[string]any{"agent": "pi", "group": "__ungrouped__"}, &chat)
+	in.must(t, client, "POST", "/api/chats/"+chat.ID+"/messages", map[string]any{"text": "hello"}, nil)
 
 	// The fake records its own pid and its child's when the chat run starts.
 	var pids []int
@@ -216,79 +202,6 @@ func pidAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// activate connects to the server's events as client and waits for its hello: the client is
-// known from then on.
-// The connection stays open until the test ends.
-func activate(t *testing.T, base, client string) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	req, _ := http.NewRequestWithContext(ctx, "GET", base+"api/events?client="+client, nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(nil, 1<<20)
-	for active := false; !active; {
-		if !sc.Scan() {
-			t.Fatalf("events ended before the client's hello: %v", sc.Err())
-		}
-		var ev map[string]any
-		if line, ok := strings.CutPrefix(sc.Text(), "data: "); ok && json.Unmarshal([]byte(line), &ev) == nil {
-			active = ev["type"] == "hello"
-		}
-	}
-	go flushWhenStopping(base, client, sc) // keeps reading, so the server never blocks on this client
-}
-
-// flushWhenStopping reads the rest of client's event stream and, like the app's client, answers
-// the server's `server_stopping` with POST /api/client/flushed: it has no board changes left to
-// write. A server that gets no answer waits two seconds for it before it goes down.
-func flushWhenStopping(base, client string, events *bufio.Scanner) {
-	for events.Scan() {
-		var ev struct{ Type string }
-		line, ok := strings.CutPrefix(events.Text(), "data: ")
-		if !ok || json.Unmarshal([]byte(line), &ev) != nil || ev.Type != "server_stopping" {
-			continue
-		}
-		go func() {
-			if resp, err := post(base+"api/client/flushed", client, nil); err == nil {
-				resp.Body.Close()
-			}
-		}()
-	}
-}
-
-// post posts body as JSON to url as client.
-func post(url, client string, body any) (*http.Response, error) {
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-AIWB-Client", client)
-	return (&http.Client{Timeout: 60 * time.Second}).Do(req)
-}
-
-// postJSON posts body as JSON to url as client; the answer must be 200. It decodes the answer
-// into out when out is not nil.
-func postJSON(t *testing.T, url, client string, body, out any) {
-	t.Helper()
-	resp, err := post(url, client, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST %s: status %d", url, resp.StatusCode)
-	}
-	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 // readPids returns the pids the fake agents recorded.
 func readPids(path string) []int {
 	b, _ := os.ReadFile(path)
@@ -318,6 +231,21 @@ func killOurs(t *testing.T, dir string, pids []int) {
 		if runningOurs(dir, pid) {
 			t.Logf("killing leftover fake agent process %d", pid)
 			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+}
+
+// waitServes waits up to limit for the server process pid to serve its clients.
+func waitServes(t *testing.T, in *instance, pid int, limit time.Duration) {
+	t.Helper()
+	for deadline := time.Now().Add(limit); ; time.Sleep(20 * time.Millisecond) {
+		if run, ok := in.running(); ok && run.hello.Pid == pid {
+			if st, ok := run.statusOf(); ok && st.Client.Listening {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server did not answer within %s", limit)
 		}
 	}
 }

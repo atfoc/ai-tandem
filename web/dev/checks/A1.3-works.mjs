@@ -8,7 +8,7 @@
 // with the sidebar shown the same click puts the row in rename mode, so the check would see one. The same for a
 // group made from the sidebar's own "+" and answered only after the sidebar was hidden: no rename box that nobody
 // sees waits in it.
-import { check, dragResizer, mockEval, openPage, seed, until } from "../shot.mjs";
+import { callMatcher, callOfRequest, check, dragResizer, mockEval, openPage, seed, until } from "../shot.mjs";
 
 const SIDE = 264, PANEL = 400, HIDDEN = { "aiwb.side": "hidden" };
 
@@ -70,8 +70,8 @@ await check("A1.3 with the sidebar hidden the page works as before", async ({ ur
     const name = `${what} answered ${hidden ? "after the sidebar was hidden" : "with the sidebar shown"}`;
     let release;
     const gate = new Promise((ok) => { release = ok; });
-    const mine = (r) => r.method() === "POST" && new URL(r.url()).pathname === path;
-    await page.route((u) => u.pathname === path, async (route) => { if (mine(route.request())) await gate; await route.continue(); });
+    const mine = (r) => { const c = callOfRequest(r); return c?.method === "POST" && c.path === path; };
+    await page.route(callMatcher(new RegExp(`^POST ${path}$`)), async (route) => { await gate; await route.continue(); });
     const before = await page.locator(made).count(), asked = page.waitForRequest(mine, { timeout: 15000 }), answered = page.waitForResponse((r) => mine(r.request()), { timeout: 30000 });
     await page.locator(".side-head .icon-btn.new").click();
     await page.locator(".side-head .menu .menu-item", { hasText: item }).click();

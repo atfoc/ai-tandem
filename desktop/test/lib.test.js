@@ -1,13 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
 const {
-  LAUNCH_TIMEOUT_MS,
   serverBin,
-  launchArgs,
-  parseLaunchOutput,
+  pagePath,
   serverLogPath,
-  createStartUp,
+  pictureAllowed,
+  parsePictureURL,
+  fromAppWindow,
 } = require('../lib');
 
 const dirname = '/repo/desktop';
@@ -30,176 +29,108 @@ test('serverBin: dev → ../bin/ai-whiteboard', () => {
   assert.equal(serverBin({ env: {}, execPath, isPackaged: false, dirname }), '/repo/bin/ai-whiteboard');
 });
 
-test('launchArgs: packaged → launch only', () => {
-  assert.deepEqual(launchArgs({ isPackaged: true, dirname }), ['launch']);
-});
-
-test('launchArgs: dev → launch -client <absolute ../web/dist>', () => {
-  const args = launchArgs({ isPackaged: false, dirname: 'desktop' });
-  assert.deepEqual(args, ['launch', '-client', path.resolve('web/dist')]);
-  assert.ok(path.isAbsolute(args[2]));
-});
-
-test('parseLaunchOutput: one URL line', () => {
-  assert.equal(parseLaunchOutput('http://127.0.0.1:4747/\n'), 'http://127.0.0.1:4747/');
-  assert.equal(parseLaunchOutput('https://localhost:8443/\n'), 'https://localhost:8443/');
-});
-
-test('parseLaunchOutput: empty or non-URL output is an error', () => {
-  for (const out of ['', '\n', 'AI Whiteboard is already running', 'file:///etc/passwd',
-    'http://127.0.0.1:4747/\nhttp://127.0.0.1:4748/', undefined]) {
-    assert.throws(() => parseLaunchOutput(out), /no server URL/, JSON.stringify(out));
+test('pagePath: AIWB_PAGE wins, packaged or not', () => {
+  const env = { AIWB_PAGE: '/tmp/dist/index.html' };
+  for (const isPackaged of [true, false]) {
+    assert.equal(pagePath({ env, resourcesPath: '/res', isPackaged, dirname }), '/tmp/dist/index.html');
   }
 });
 
-test('serverLogPath', () => {
-  assert.equal(serverLogPath('/Users/me'), '/Users/me/.ai-whiteboard/server.log');
+test('pagePath: packaged → web/index.html in the resources', () => {
+  assert.equal(pagePath({ env: {}, resourcesPath: '/res', isPackaged: true, dirname }), '/res/web/index.html');
 });
 
-// fakes records every call made by the start-up runner. results are what execFile answers, in
-// order; errorActions are what the error dialog answers, in order. app.quitting is what
-// isQuitting() answers; onExec and onLoad run inside execFile and loadURL (e.g. to start a quit).
-function fakes({ env = {}, results = [], errorActions = [], loadFails = [], onExec, onLoad } = {}) {
-  const calls = [];
-  const app = { quitting: false };
-  const deps = {
-    env,
-    bin: '/bin/aiwb',
-    args: ['launch', '-client', '/repo/web/dist'],
-    execFile(bin, args, opts, cb) {
-      calls.push(['execFile', bin, args, opts]);
-      if (onExec) onExec(app);
-      const r = results.shift() ?? { stdout: 'http://127.0.0.1:4747/\n' };
-      setImmediate(() => cb(r.err ?? null, r.stdout ?? '', r.stderr ?? ''));
-    },
-    showStarting: () => calls.push(['showStarting']),
-    hideStarting: () => calls.push(['hideStarting']),
-    loadURL: async (url) => {
-      calls.push(['loadURL', url]);
-      if (onLoad) onLoad(app);
-      const fail = loadFails.shift();
-      if (fail) throw new Error(fail);
-    },
-    showError: async (detail) => {
-      calls.push(['showError', detail]);
-      return errorActions.shift() ?? 'quit';
-    },
-    quit: () => calls.push(['quit']),
-    isQuitting: () => app.quitting,
-  };
-  return { deps, calls, app };
+test('pagePath: dev → ../web/dist/index.html', () => {
+  assert.equal(pagePath({ env: {}, resourcesPath: '/res', isPackaged: false, dirname }), '/repo/web/dist/index.html');
+});
+
+test('serverLogPath: server.log in the data folder', () => {
+  assert.equal(serverLogPath('/Users/me/.ai-whiteboard'), '/Users/me/.ai-whiteboard/server.log');
+});
+
+const pageURL = 'file:///Applications/AI%20Whiteboard.app/Contents/Resources/web/index.html';
+const image = 'ab'.repeat(32);
+
+test('parsePictureURL: the good form', () => {
+  assert.deepEqual(parsePictureURL(`aiwb-picture://p/local/c_1-x/${image}`), { server: 'local', chat: 'c_1-x', image });
+  assert.deepEqual(
+    parsePictureURL(`aiwb-picture://p/s_0123456789ab/chat/${image}`),
+    { server: 's_0123456789ab', chat: 'chat', image },
+  );
+});
+
+test('parsePictureURL: anything else is refused', () => {
+  const bad = [
+    `aiwb-picture://q/local/c/${image}`, // another host
+    `aiwb-picture://p/local/c`, // a segment short
+    `aiwb-picture://p/local/c/${image}/x`, // a segment over
+    `aiwb-picture://p/local/c/${image}/`,
+    `aiwb-picture://p//c/${image}`,
+    `aiwb-picture://p/local/c/${image}?x=1`,
+    `aiwb-picture://u:p@p/local/c/${image}`,
+    `aiwb-picture://p/other/c/${image}`, // no such kind of entry
+    `aiwb-picture://p/s_0123456789AB/c/${image}`,
+    `aiwb-picture://p/s_0123456789a/c/${image}`,
+    `aiwb-picture://p/local/c%2F..%2Fx/${image}`, // a chat id with a slash
+    `aiwb-picture://p/local/c/${image.toUpperCase()}`,
+    `aiwb-picture://p/local/c/${image.slice(2)}`,
+    `aiwb-picture://p/local/${'c'.repeat(101)}/${image}`,
+    `aiwb-picture://p/local/c/%zz`,
+    `https://p/local/c/${image}`,
+    `file:///local/c/${image}`,
+    'not a url',
+    '',
+  ];
+  for (const url of bad) assert.equal(parsePictureURL(url), null, url);
+});
+
+// win is the main window; frames are its main frame, an iframe of it, and a frame of another window.
+function pictureFakes() {
+  const mainFrame = { url: pageURL };
+  const win = { webContents: { id: 7, mainFrame }, isDestroyed: () => win.destroyed, destroyed: false };
+  return { win, mainFrame, details: { webContentsId: 7, frame: mainFrame } };
 }
 
-test('start-up: success shows Starting, loads the URL, hides Starting', async () => {
-  const { deps, calls } = fakes();
-  const url = await createStartUp(deps)();
-  assert.equal(url, 'http://127.0.0.1:4747/');
-  assert.deepEqual(calls, [
-    ['showStarting'],
-    ['execFile', '/bin/aiwb', ['launch', '-client', '/repo/web/dist'], { timeout: LAUNCH_TIMEOUT_MS }],
-    ['loadURL', 'http://127.0.0.1:4747/'],
-    ['hideStarting'],
-  ]);
+test('pictureAllowed: the main frame of the main window on the page: yes, with any hash', () => {
+  const f = pictureFakes();
+  assert.equal(pictureAllowed({ details: f.details, win: f.win, pageURL }), true);
+  f.mainFrame.url = `${pageURL}#/board/b_1`;
+  assert.equal(pictureAllowed({ details: f.details, win: f.win, pageURL }), true);
 });
 
-test('start-up: failure hides Starting and shows the error with the stderr text', async () => {
-  const { deps, calls } = fakes({
-    results: [{ err: new Error('Command failed'), stderr: 'the server did not answer within 30 seconds\n' }],
-  });
-  assert.equal(await createStartUp(deps)(), null);
-  assert.deepEqual(calls.slice(2), [
-    ['hideStarting'],
-    ['showError', 'the server did not answer within 30 seconds'],
-    ['quit'],
-  ]);
-  assert.ok(!calls.some((c) => c[0] === 'loadURL'));
+test('pictureAllowed: an iframe, another webContents, another URL, no frame: no', () => {
+  const cases = {
+    'an iframe of the page': (f) => { f.details.frame = { url: 'about:srcdoc', parent: f.mainFrame }; },
+    'an iframe with the page\'s own URL': (f) => { f.details.frame = { url: pageURL, parent: f.mainFrame }; },
+    'another webContents': (f) => { f.details.webContentsId = 8; },
+    'a main frame on another file': (f) => { f.mainFrame.url = 'file:///tmp/x.html'; },
+    'a main frame on a site': (f) => { f.mainFrame.url = 'https://example.com/'; },
+    'a main frame on a query of the page': (f) => { f.mainFrame.url = `${pageURL}?x=1`; },
+    'no frame': (f) => { f.details.frame = null; },
+    'a closed window': (f) => { f.win.destroyed = true; },
+  };
+  for (const [name, change] of Object.entries(cases)) {
+    const f = pictureFakes();
+    assert.equal(pictureAllowed({ details: f.details, win: f.win, pageURL }), true, name);
+    change(f);
+    assert.equal(pictureAllowed({ details: f.details, win: f.win, pageURL }), false, name);
+  }
+  const f = pictureFakes();
+  assert.equal(pictureAllowed({ details: f.details, win: null, pageURL }), false);
+  assert.equal(pictureAllowed({ details: f.details, win: f.win, pageURL: null }), false);
 });
 
-test('start-up: failure with empty stderr shows the error message', async () => {
-  const { deps, calls } = fakes({ results: [{ err: new Error('spawn /bin/aiwb ENOENT') }] });
-  await createStartUp(deps)();
-  assert.deepEqual(calls.find((c) => c[0] === 'showError'), ['showError', 'spawn /bin/aiwb ENOENT']);
-});
-
-test('start-up: output that is not a URL is an error', async () => {
-  const { deps, calls } = fakes({ results: [{ stdout: 'hello\n' }] });
-  await createStartUp(deps)();
-  const shown = calls.find((c) => c[0] === 'showError');
-  assert.match(shown[1], /no server URL/);
-  assert.ok(!calls.some((c) => c[0] === 'loadURL'));
-});
-
-test('start-up: a page that fails to load is an error', async () => {
-  const { deps, calls } = fakes({ loadFails: ['ERR_CONNECTION_REFUSED'] });
-  await createStartUp(deps)();
-  assert.deepEqual(calls.slice(3), [['hideStarting'], ['showError', 'ERR_CONNECTION_REFUSED'], ['quit']]);
-});
-
-test('start-up: Retry runs execFile again with the same binary and arguments', async () => {
-  const { deps, calls } = fakes({
-    results: [{ err: new Error('exit 1'), stderr: 'boom' }, { stdout: 'http://127.0.0.1:4748/\n' }],
-    errorActions: ['retry'],
-  });
-  const url = await createStartUp(deps)();
-  assert.equal(url, 'http://127.0.0.1:4748/');
-  const execs = calls.filter((c) => c[0] === 'execFile');
-  assert.equal(execs.length, 2);
-  assert.deepEqual(execs[1], execs[0]);
-  assert.deepEqual(calls.slice(-4), [
-    ['showStarting'],
-    execs[1],
-    ['loadURL', 'http://127.0.0.1:4748/'],
-    ['hideStarting'],
-  ]);
-  assert.ok(!calls.some((c) => c[0] === 'quit'));
-});
-
-test('start-up: AIWB_URL loads that URL without execFile', async () => {
-  const { deps, calls } = fakes({ env: { AIWB_URL: 'http://127.0.0.1:5000/' } });
-  const url = await createStartUp(deps)();
-  assert.equal(url, 'http://127.0.0.1:5000/');
-  assert.ok(!calls.some((c) => c[0] === 'execFile'));
-  assert.deepEqual(calls.find((c) => c[0] === 'loadURL'), ['loadURL', 'http://127.0.0.1:5000/']);
-});
-
-test('start-up: a second call while one runs shares it', async () => {
-  const { deps, calls } = fakes();
-  const start = createStartUp(deps);
-  const [a, b] = await Promise.all([start(), start()]);
-  assert.equal(a, b);
-  assert.equal(calls.filter((c) => c[0] === 'execFile').length, 1);
-  await start();
-  assert.equal(calls.filter((c) => c[0] === 'execFile').length, 2);
-});
-
-test('start-up: a load aborted by quitting shows no error and does not quit again', async () => {
-  const { deps, calls } = fakes({
-    loadFails: ["ERR_FAILED (-2) loading 'http://127.0.0.1:4747/'"],
-    onLoad: (app) => { app.quitting = true; },
-  });
-  assert.equal(await createStartUp(deps)(), null);
-  assert.deepEqual(calls.slice(3), [['hideStarting']]);
-  assert.ok(!calls.some((c) => c[0] === 'showError'));
-  assert.ok(!calls.some((c) => c[0] === 'quit'));
-});
-
-test('start-up: a launch killed by quitting shows no error, does not retry or quit again', async () => {
-  const { deps, calls } = fakes({
-    results: [{ err: new Error('Command failed: killed'), stderr: '' }],
-    errorActions: ['retry'],
-    onExec: (app) => { app.quitting = true; },
-  });
-  assert.equal(await createStartUp(deps)(), null);
-  assert.deepEqual(calls.slice(2), [['hideStarting']]);
-  assert.equal(calls.filter((c) => c[0] === 'execFile').length, 1);
-  assert.ok(!calls.some((c) => c[0] === 'showError'));
-  assert.ok(!calls.some((c) => c[0] === 'quit'));
-  assert.ok(!calls.some((c) => c[0] === 'loadURL'));
-});
-
-test('start-up: a load failure when not quitting still shows the error', async () => {
-  const { deps, calls, app } = fakes({ loadFails: ['ERR_FAILED (-2)'] });
-  assert.equal(app.quitting, false);
-  assert.equal(await createStartUp(deps)(), null);
-  assert.deepEqual(calls.slice(3), [['hideStarting'], ['showError', 'ERR_FAILED (-2)'], ['quit']]);
+test('fromAppWindow: file URL page, hash allowed, others refused', () => {
+  const mainFrame = { url: pageURL };
+  const webContents = { mainFrame };
+  const win = { webContents, isDestroyed: () => false };
+  const event = { sender: webContents, senderFrame: mainFrame };
+  assert.equal(fromAppWindow({ event, win, pageURL }), true);
+  mainFrame.url = `${pageURL}#/x`;
+  assert.equal(fromAppWindow({ event, win, pageURL }), true);
+  mainFrame.url = 'file:///elsewhere/index.html';
+  assert.equal(fromAppWindow({ event, win, pageURL }), false);
+  mainFrame.url = pageURL;
+  assert.equal(fromAppWindow({ event: { sender: {}, senderFrame: mainFrame }, win, pageURL }), false);
+  assert.equal(fromAppWindow({ event: { sender: webContents, senderFrame: { url: pageURL } }, win, pageURL }), false);
 });

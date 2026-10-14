@@ -1,9 +1,9 @@
-// The line to the server: SSE in (state, chat items, rpc calls), POSTs out
-// through api.ts. Several tabs work on one server at once; each board is held
-// by one of them, which hands it over after it has written its pending save
-// (board.ts keeps the roles).
-import { api, clientId } from "./api.ts";
-import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
+// The line to the servers: one stream through the transport, which carries the events of every server of the server
+// list (this computer's included), each with its entry's id, and the app's own events about that list and the state of
+// each entry; calls go out through api.ts. Several windows work on one server at once; each board is held by one of
+// them, which hands it over after it has written its pending save (board.ts keeps the roles).
+import { api } from "./api.ts";
+import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, setServerLists, setLibrary, dropLibrary, libraryAwayOf, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
   upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   type ThreadKey } from "./store.ts";
 import { runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot, sectionBack as boardSectionBack } from "./board.ts";
@@ -12,67 +12,104 @@ import { branchKey, keyOfChat, type BranchKey } from "./logic/branches.ts";
 import { Loads } from "./logic/branchview.ts";
 import { afterAnswer, answerStateTaken, applyUpdates, drawerStays, withoutChat, type Queued, type Update } from "./logic/threads.ts";
 import { checkMove, dropMoves, goBack, moveSent } from "./fork/actions.ts";
-import { checkVersion } from "./version.ts";
 import { patchTree, type TreePatch } from "./logic/treepatch.ts";
-import { LOCAL_SERVER, type BranchState, type ChatView, type Item, type SectionTree, type Subagent, type TreeView } from "./types.ts";
+import { LOCAL_SERVER, type BranchState, type ChatView, type Item, type SectionTree, type ServerLists, type Subagent, type TreeView } from "./types.ts";
 import { LOCAL_ENTRY, upsertServer, type ServerView } from "./logic/servers.ts";
-import { removeLibrary, upsertLibrary } from "./logic/library.ts";
-import { onUnknownClient, streamGone } from "./logic/unknownclient.ts";
-import { sectionBack, threadError, withLists, withoutThread } from "./logic/serverlists.ts";
+import { libraryOf } from "./logic/library.ts";
+import { sectionBack, threadError, withoutThread } from "./logic/serverlists.ts";
 import { draftBacks } from "./logic/draftsback.ts";
 import { inSection, keyOn, serverOfKey } from "./logic/keys.ts";
 import { boardIn, chatIn, groupIn, stateIn, toolCallIn } from "./logic/sectionwire.ts";
-import { entriesGone, onScreen } from "./logic/sections.ts";
+import { entriesGone, onScreen, reachable } from "./logic/sections.ts";
 import { NOT_FOUND } from "./logic/remoteview.ts";
+import { transport, type Envelope, type StreamState } from "./transport/index.ts";
 
-let es: EventSource | null = null;
+let stream: { close(): void } | null = null;
+let opened = 0;                                            // the streams opened: what an older one says is dropped
+let reopen: ReturnType<typeof setTimeout> | null = null;   // the wait before a stream closed for good is opened again
 
+/** The wait before a stream that the transport closed for good is opened again (a test lowers it). */
+export const waits = { reopenMs: 1000 };
+
+/** Opens the stream (and ends the one open): from here on every server's events come as the transport brings them. */
 export function connect() {
-  es?.close();
+  stream?.close();
+  if (reopen !== null) { clearTimeout(reopen); reopen = null; }
   setState({ role: "connecting" });
-  const src = new EventSource(`/api/events?client=${encodeURIComponent(clientId)}`);
-  es = src;
-  src.onerror = () => { if (es === src) setState({ connected: false }); }; // EventSource reconnects by itself, unless the browser gave it up: see onUnknownClient below
-  src.onmessage = (e) => {
-    let m: any;
-    try { m = JSON.parse(e.data); } catch { return; }
-    void handle(m, src);
-  };
+  const mine = ++opened;
+  stream = transport().stream((e) => { if (mine === opened) void handle(e); }, (st) => { if (mine === opened) onStreamState(st); });
 }
 
-// A write was refused as `unknown_client`: the server has no stream of this page. One the browser
-// closed for good is opened again; one that is open or reconnecting is left to the browser.
-onUnknownClient(() => { if (streamGone(es)) connect(); });
+/** The transport's word on the stream. "closed": it ended for good (the HTTP way when its connection to the test host
+ *  was refused, never the IPC way before the app quits). Every entry is shown as not connected, as the sidebar says it,
+ *  and the stream is opened again a moment later: the host brings every server's hello and snapshot anew. */
+function onStreamState(st: StreamState) {
+  if (st !== "closed") return;
+  stream?.close();
+  stream = null;
+  const before = getState().servers;
+  setState((s) => ({ servers: s.servers.map((v) => (v.state === "connecting" ? v : { ...v, state: "connecting" as const, detail: undefined })) }));
+  for (const v of before) { leaves(v.id); }
+  if (reopen === null) reopen = setTimeout(() => { reopen = null; connect(); }, waits.reopenMs);
+}
 
-/** The events that are about a thing: with a top-level `server` (an entry id of the server list) the thing is of that
- *  section, and every id in the event is that server's own; without it the thing is this computer's. In `server_state`,
- *  `server_lists`, `library_removed` and `section` the field is the event's own subject. */
+/** The events that are about a thing of a server: every id in them is that server's own, and the page's key of the thing
+ *  has the server in it (logic/keys.ts). The others are about the server itself. */
 const OF_A_THING = new Set(["groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "tree", "chat_items", "sub",
   "sub_items", "held", "release_request", "superseded", "rpc"]);
 
-async function handle(m: any, src: EventSource) {
-  if (es !== src) return;
-  // on: the section the event's thing is of ("": this computer). The local server sends an event with `server` only
-  // while it holds that entry's tree: one that names an entry this page has no tree of is dropped.
-  const on: string = OF_A_THING.has(m.type) && typeof m.server === "string" ? m.server : "";
-  if (on && !getState().sections[on]) return;
+async function handle(m: Envelope) {
+  if ("app" in m) return onApp(m.app);
+  if (m?.server && m.event) return onEvent(m.server, m.event);
+}
+
+/** The app's own events: the server list, and the state of one of its entries. */
+function onApp(e: any) {
+  switch (e?.type) {
+    case "servers": { const before = getState().servers; setServers(e.servers ?? [LOCAL_ENTRY], e.notice ?? ""); dropRemoved(before); return; } // an entry that left the list takes what is open of its server with it
+    case "server_state": {
+      const v: ServerView = e.server;
+      if (!v?.id) return;
+      setState((s) => ({ servers: upsertServer(s.servers, v) }));
+      if (v.state !== "connected") leaves(v.id);
+      return;
+    }
+  }
+}
+
+/** A server is not connected (any state but `connected`): its section shows no rows (its things on screen stay), its library
+ *  stays as last received and cannot be changed. This computer's is a section like the others: the page holds its tree from
+ *  its snapshot until here. */
+function leaves(server: string) {
+  libraryAwayOf(server);
+  if (server === LOCAL_SERVER) {
+    if (!getState().connected) return;
+    setState({ connected: false });
+    givenUp(LOCAL_SERVER);
+    return;
+  }
+  if (getState().sections[server]) onSection(server, null);
+}
+
+/** An event of one server's stream. */
+async function onEvent(server: string, m: any) {
+  // on: the section the event's thing is of ("": this computer). The page holds an entry's tree from its snapshot until the entry
+  // leaves `connected`: an event of a thing of an entry it has no tree of is dropped.
+  const on: string = server === LOCAL_SERVER ? "" : server;
+  if (on && OF_A_THING.has(m.type) && !getState().sections[on]) return;
   const key = (id: string) => keyOn(on, id);
   switch (m.type) {
-    case "hello": streamOpened(); setState({ connected: true, role: "active" }); void checkVersion(); draftBacks.opened(); return; // a new stream holds no board; a draft that could not be saved without one is saved
-    case "snapshot": onSnapshot(m); return;
-    case "section": if (typeof m.server === "string" && m.server) onSection(m.server, m.tree ?? null); return; // a server's whole tree as it is now, or none: it takes the place of what the page had for the entry
+    case "hello": streamOpened(server); if (!on) { setState({ role: "active" }); draftBacks.opened(); } return; // a new stream holds no board of that server; a draft that could not be saved without one is saved
+    case "snapshot": if (on) onSectionSnapshot(on, m); else onSnapshot(m); return;
     case "release_request": if (m.board) await handOver(key(m.board)); return; // another window asks for one board
     case "superseded": if (m.board) boardLost(key(m.board)); return; // that board's canvas gives way to the panel (TakeoverPanel); the stream stays
     case "held": if (m.board) granted(key(m.board), m.rev ?? 0); return; // a board handed over to this window, or given to it for a tool call; for a board of a section also after its server is back
-    case "server_stopping": await flushAll(); await api.flushed().catch(() => {}); return;
-    case "rpc": return answer(on ? { ...m, params: toolCallIn(on, m.params) } : m);
+    case "server_stopping": await flushAll(server); await api.flushed(server).catch(() => {}); return;
+    case "rpc": return answer(server, on ? { ...m, params: toolCallIn(on, m.params) } : m);
     case "groups": if (on) setSectionGroups(on, (m.groups ?? []).map((g: any) => groupIn(on, g))); else setState({ groups: m.groups ?? [] }); return;
     case "board": if (m.board?.id) upsertBoard(boardIn(on, m.board)); return;
     case "board_removed": if (m.id) onBoardRemoved(key(m.id)); return;
-    case "servers": { const before = getState().servers; setServers(m.servers ?? [LOCAL_ENTRY], m.notice ?? ""); dropRemoved(before); return; } // an entry that left the list takes what is open of its server with it
-    case "server_state": setState((s) => ({ servers: upsertServer(s.servers, m.server) })); return;
-    case "library": if (m.library?.server) setState((s) => ({ libraries: upsertLibrary(s.libraries, m.library) })); return; // one library, whole, after every change of it
-    case "library_removed": if (m.server) setState((s) => ({ libraries: removeLibrary(s.libraries, m.server) })); return; // its server left the server list
+    case "own_library": setLibrary(libraryOf(server, serverName(server), m, libraryNoticeOf(server))); return; // that server's library, whole, after every change of it
     case "chat": if (m.chat?.id) { const c = chatIn(on, m.chat); if (!c.run) onChat(c); } return; // (a server that still has runs: their chats are not kept)
     case "chat_removed": if (m.id) onChatRemoved(key(m.id)); return;
     case "branch_state": if (m.state?.chat) applyState(stateIn(on, m.state)); return; // before the `chat` event of the same change, and for any branch
@@ -81,22 +118,59 @@ async function handle(m: any, src: EventSource) {
     case "sub": if (m.chat) return applySub(branchKey(key(m.chat), m.branch), m.subagent); return; // queued while its branch's list loads
     case "sub_items": if (m.chat) { const chat = key(m.chat); applyItems(chat, subKey(branchKey(chat, m.branch), m.sub), m.version, m.updates ?? []); } return;
     case "defaults": if (on) setSectionDefaults(on, m.defaults ?? { groups: {} }); else setState({ defaults: m.defaults }); return;
-    case "catalog": setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
-    case "agents": setState({ usable: m.agents ?? [] }); return; // the local server's usable agents changed
-    case "server_lists": if (m.server) setState((s) => ({ lists: withLists(s.lists, m.server, m.lists) })); return; // what another server offers; null: its entry is gone
+    case "catalog": if (on) offers(on, (l) => ({ ...l, catalogs: { ...l.catalogs, [m.agent]: m.catalog } })); else setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
+    case "agents": if (on) offers(on, (l) => ({ ...l, agents: m.agents ?? [] })); else setState({ usable: m.agents ?? [] }); return; // that server's usable agents changed
   }
 }
 
-/** A snapshot: this computer's own part first (the open composers end up as after Back; a move being sent stays), then
- *  each section the snapshot or the page names, with its tree or with none; then the drafts kept of the composers that
- *  are not open are saved. */
+/** The name of a server as the server list has it. */
+const serverName = (server: string): string => getState().servers.find((v) => v.id === server)?.name ?? (server === LOCAL_SERVER ? LOCAL_ENTRY.name : server);
+
+/** Why a server's library file was set aside when it started, from its snapshot: kept with the library, which its events replace whole. */
+const libraryNotices = new Map<string, string>();
+const libraryNoticeOf = (server: string): string => libraryNotices.get(server) ?? "";
+
+/** Changes what a section's server offers, when the page has it. */
+function offers(server: string, f: (l: ServerLists) => ServerLists) {
+  const had = getState().lists[server];
+  if (had) setServerLists(server, f(had));
+}
+
+/** A server's own snapshot gives its library: the page's copy is this one, and connected. A server without one has none shown. */
+function libraryFrom(server: string, m: any) {
+  libraryNotices.set(server, typeof m.libraryNotice === "string" ? m.libraryNotice : "");
+  if (m.library) setLibrary(libraryOf(server, serverName(server), m.library, libraryNoticeOf(server)));
+  else dropLibrary(server);
+}
+
+/** The snapshot of a section's server (its own, with its own ids): its whole tree as it is now takes the place of what the page had
+ *  of it, and what it offers is kept beside. */
+function onSectionSnapshot(server: string, m: any) {
+  setServerLists(server, { agents: m.agents ?? [], catalogs: m.catalogs ?? {}, home: m.home ?? "", defaultCwd: m.defaultCwd ?? "" });
+  libraryFrom(server, m);
+  onSection(server, { groups: m.groups, boards: m.boards, chats: m.chats, states: m.states, defaults: m.defaults });
+}
+
+/** The answer of a board tool call (an `rpc` event of that server): the window that holds the board runs the tool and replies to the server that asked. */
+async function answer(server: string, m: any) {
+  let reply: { result?: unknown; error?: string };
+  try {
+    if (m.method !== "tool") throw new Error(`unknown method ${m.method}`);
+    reply = { result: await runTool(m.params) };
+  } catch (err: any) {
+    reply = { error: `${err?.code ? err.code + ": " : ""}${err?.message ?? String(err)}` };
+  }
+  // (409: the call is no longer this window's to answer, its board went to another one or it timed out)
+  await api.rpcReply(m.id, reply, server).catch((e) => { if (e?.status !== 409) console.error("rpc reply:", e); });
+}
+
+/** This computer's own snapshot, which is its tree: its part of the store first (the open composers end up as after Back; a move
+ *  being sent stays; what is on screen and no longer there says so), then the drafts kept of the composers that are not open
+ *  are saved. */
 function onSnapshot(m: any) {
-  const had = Object.keys(getState().sections), listed = getState().servers;
   applySnapshot(m, dropMoves());
   afterSnapshot();
-  const trees: Record<string, SectionTree> = m.sections && typeof m.sections === "object" ? m.sections : {};
-  for (const server of new Set([...had, ...Object.keys(trees)])) onSection(server, trees[server] ?? null);
-  dropRemoved(listed); // (an entry that left the list while the stream was down)
+  libraryFrom(LOCAL_SERVER, m);
   draftBacks.snapshot();
 }
 
@@ -113,7 +187,7 @@ function afterSnapshot() {
   stale.clear(); // the snapshot dropped every thread of this computer's; a section's are judged anew when its tree follows
   const { chat } = getState().sel;
   takeAfterSnapshot(); // the board on screen and those with an unsaved edit, if no other window holds them
-  if (!chat || inSection(chat)) return;
+  if (!chat || inSection(chat) || !reachable(getState(), chat)) return; // (a section's is read when its own tree arrives; one that is no longer on this computer shows so)
   void api.openChat(chat, shownBranch(getState(), chat)).catch(() => {});
   void loadList(chat).catch(() => {}); // a new fetch, and not one that runs: a read made while the stream was down started no follow
   void loadTree(chat, true).catch(() => {
@@ -127,12 +201,12 @@ function afterSnapshot() {
 
 // ---- sections: a remote server's tree comes and goes (`section`, and a snapshot's `sections`)
 
-/** A section's tree arrived (tree), or the local server holds none of it any more (null).
+/** A section's tree arrived (tree), or its server is not connected any more (null).
  *
  *  With a tree the server is connected, for the first time or again, and this is its whole tree as it is now: it takes
  *  the place of what the page had for the entry, and from here on the entry's calls work. What is on screen of it is
  *  brought level with its server: the thread and the tree of the chat are read again (which follows
- *  them again: the local server ended this page's follows with the connection), the open board is taken if this window
+ *  them again: the server ended this page's follows with the connection), the open board is taken if this window
  *  does not hold it, and the draft that waited in the open composer is saved. What is on screen and not in the new
  *  tree says that it is no longer on that server.
  *
@@ -162,7 +236,7 @@ function dropRemoved(before: ServerView[]) {
   }
 }
 
-/** This page removed an entry from the server list (the Servers dialog), and the local server answered that it is
+/** This page removed an entry from the server list (the Servers dialog), and the app answered that it is
  *  removed. The list is without the entry from here on, and what the page has of its server goes, as at the `servers`
  *  event of the same removal: the answer and the event come in no fixed order, the first of the two does it, and the
  *  other finds the entry gone already. */
@@ -203,18 +277,6 @@ function onBoardRemoved(id: string) {
 function onChatRemoved(id: string) {
   removed.add(id); treeQueue.delete(id); treeLoads.delete(id);
   if (inSection(id) && onScreen(getState(), id)) { forgetThreadLoads(id); markGone(id); } else removeChat(id);
-}
-
-async function answer(m: any) {
-  let reply: { result?: unknown; error?: string };
-  try {
-    if (m.method !== "tool") throw new Error(`unknown method ${m.method}`);
-    reply = { result: await runTool(m.params) };
-  } catch (err: any) {
-    reply = { error: `${err?.code ? err.code + ": " : ""}${err?.message ?? String(err)}` };
-  }
-  // (409: the call is no longer this window's to answer, its board went to another one or it timed out)
-  await api.rpcReply(m.id, reply).catch((e) => { if (e?.status !== 409) console.error("rpc reply:", e); });
 }
 
 // ---- threads: a branch's list under branchKey(chat, branch), a subagent's under subKey(that,
@@ -308,7 +370,7 @@ async function loadThread(chat: string, branch: string, sid?: string, o: { repla
     flush(key, sid ? null : list);
     console.error(`loading thread ${key}:`, failed);
     if (!sid) setThreadError(chat, threadError(failed)); // the chat's view says so in place of the thread
-    if (!sid && inSection(chat) && threadError(failed).code === NOT_FOUND && getState().chats[chat]) markGone(chat); // the chat is no longer on its server: its view says so, and its row goes
+    if (!sid && threadError(failed).code === NOT_FOUND && getState().chats[chat]) markGone(chat); // the chat is no longer on its server: its view says so, and its row goes
     throw failed ?? new Error("not loaded");
   }
   if (!sid) setThreadError(chat, null);

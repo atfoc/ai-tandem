@@ -1,7 +1,7 @@
 // A chat of a section (a remote server of the server list), as the page sees it from the moment it
 // is made: its first message (an ordinary Send), a server that is not connected, and a Send or a
 // draft save that did not get through. The chat is named by its key on the page, "<entry id>~<id>"
-// (src/logic/keys.ts), and by the entry and its own id on the wire: /api/on/<entry id>/chats/<id>.
+// (src/logic/keys.ts), and by the entry and its own id in a call: the entry is the call's server, the path is /api/chats/<id>.
 // The rules are the logic's (src/logic/chatserver.ts, sendend.ts, status.ts, drafts.ts); the
 // composer's steps around its saver are taken here as Composer.tsx's submit takes them, over a
 // real DraftSaver, and the components are read as source (the unit tests have no DOM). The events
@@ -16,6 +16,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { installFake } from "./fixtures/faketransport.ts";
 import { api, ApiError } from "../src/api.ts";
 import { agentOpen, pickAgent } from "../src/logic/agentlist.ts";
 import { agentChoiceOn, boxOff, emptyReason, offPlaceholder, sendOff, sendTitleOn, showsServer, toolbarLine, notConnectedLine, type Where } from "../src/logic/chatserver.ts";
@@ -35,8 +36,8 @@ const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 const HERE: Where = { server: LOCAL_SERVER, name: "This computer", connected: true };
 /** An entry of the server list, and the page's key of the chat c_1 of its section. */
 const S1 = "s_aaaaaaaaaaaa", K = `${S1}~c_1`;
-/** Where the local server answers for that chat: the call of a local chat, under the entry. */
-const ON = `/api/on/${S1}/chats/c_1`;
+/** The path of a call about that chat: the call of a local chat, to the entry's server. */
+const ON = "/api/chats/c_1";
 const THERE: Where = { server: S1, name: "Studio", connected: true };
 const DOWN: Where = { ...THERE, connected: false };
 const chat = (o: Partial<ChatView> = {}) => ({ id: "c_1", agent: "claude", status: "ready", locked: false, cwd: "/w", model: "m", ...o }) as ChatView;
@@ -48,13 +49,11 @@ const STARTED = chat({ id: K, locked: true });
 /** An image as a draft and a message name it. */
 const img = (n: number, name = `i${n}.png`): ChatImage => ({ id: String(n).padStart(64, "0"), name, type: "image/png", size: 1000 + n });
 
-const calls: { path: string; method?: string; body: unknown }[] = [];
+const fake = installFake();
+const calls = fake.calls;
 let answer: { status: number; body: unknown } = { status: 200, body: { ok: true } };
-globalThis.fetch = (async (path: string, init: RequestInit = {}) => {
-  calls.push({ path, method: init.method, body: typeof init.body === "string" ? JSON.parse(init.body) : init.body ?? undefined }); // (an upload's body is the file)
-  return new Response(JSON.stringify(answer.body), { status: answer.status });
-}) as typeof fetch;
-beforeEach(() => { calls.length = 0; answer = { status: 200, body: { ok: true } }; });
+fake.handler = () => ({ status: answer.status, text: JSON.stringify(answer.body), sceneRev: null });
+beforeEach(() => { fake.reset(); answer = { status: 200, body: { ok: true } }; });
 
 /** A composer's saver over a server the test plays: the saves it got (puts: their texts; drafts: each whole), the unsaved copy, what was put into
  *  the box (shown: the texts; put: each draft whole). The server takes a draft of quotes or of images alone as a draft. */
@@ -137,12 +136,12 @@ test("a change of an unstarted section chat's settings is the call of a local ch
   await api.configure(K, "main", { effort: "high" });
   await api.configure(K, "main", { cwd: "/home/u/work" });
   await api.configure("c_1", "main", { model: "m2" }); // this computer's chat of the same id
-  assert.deepEqual(calls.map((c) => [c.method, c.path, c.body]), [
-    ["PATCH", `${ON}?branch=main`, { agent: "pi" }],
-    ["PATCH", `${ON}?branch=main`, { model: "m2" }],
-    ["PATCH", `${ON}?branch=main`, { effort: "high" }],
-    ["PATCH", `${ON}?branch=main`, { cwd: "/home/u/work" }],
-    ["PATCH", "/api/chats/c_1?branch=main", { model: "m2" }],
+  assert.deepEqual(calls.map((c) => [c.server, c.method, c.path, c.body]), [
+    [S1, "PATCH", `${ON}?branch=main`, { agent: "pi" }],
+    [S1, "PATCH", `${ON}?branch=main`, { model: "m2" }],
+    [S1, "PATCH", `${ON}?branch=main`, { effort: "high" }],
+    [S1, "PATCH", `${ON}?branch=main`, { cwd: "/home/u/work" }],
+    ["local", "PATCH", "/api/chats/c_1?branch=main", { model: "m2" }],
   ]);
   assert.deepEqual(taken, [{ ...there, id: K }]); // the model and effort that server chose for the agent
 });
@@ -150,9 +149,9 @@ test("a change of an unstarted section chat's settings is the call of a local ch
 test("the first message of a section's chat is an ordinary Send: the same call as any message, on its branch", async () => {
   await api.send(K, "main", "hello", "", []);
   await api.send("c_1", "main", "hello", "", []);
-  assert.deepEqual(calls, [
-    { path: `${ON}/messages?branch=main`, method: "POST", body: { text: "hello", context: "" } },
-    { path: "/api/chats/c_1/messages?branch=main", method: "POST", body: { text: "hello", context: "" } },
+  assert.deepEqual(calls.map((c) => ({ server: c.server, path: c.path, method: c.method, body: c.body })), [
+    { server: S1, path: `${ON}/messages?branch=main`, method: "POST", body: { text: "hello", context: "" } },
+    { server: "local", path: "/api/chats/c_1/messages?branch=main", method: "POST", body: { text: "hello", context: "" } },
   ]);
   // the composer sends every message so, whatever the chat's server and whether it has started: no call of its own for a first message
   assert.ok(composer.includes("return sendAt(chat, (branch, target) => api.send(chat, branch, text, context, references, target, images),\n    { text, references, ...(images.length ? { images } : {}) });"));
@@ -270,25 +269,25 @@ test("a save that fails as the server drops: the page keeps the text that was ty
 
 // ---- the images of a section's chat
 
-test("the images of a section's chat go by the calls of a local chat: the upload, the fetch, the draft save and the Send, each to the chat's own address under its entry", async () => {
+test("the images of a section's chat go by the calls of a local chat: the upload, the fetch, the draft save and the Send, each to the chat's own address on its entry's server", async () => {
   const A = img(1, "shot.png");
   // the upload: the file's bytes to the chat, answered with the image as that server holds it
   answer = { status: 200, body: A };
   const file = new Blob(["png bytes"], { type: "image/png" });
   assert.deepEqual(await api.uploadImage(K, file, "shot.png", "image/png"), A);
-  // the fetch: the chat's own address, which the local server fetches from that server and serves under its own headers
-  assert.equal(imageUrl(K, A.id), `${ON}/images/${A.id}`);
-  assert.equal(imageUrl("c_1", A.id), `/api/chats/c_1/images/${A.id}`);
+  // the fetch: the transport's address of the picture, which the app fetches from that server and looks at
+  assert.equal(imageUrl(K, A.id), `aiwb-picture://p/${S1}/c_1/${A.id}`);
+  assert.equal(imageUrl("c_1", A.id), `aiwb-picture://p/local/c_1/${A.id}`);
   // the draft save: the images in the draft, that server's counter, and what it left out in the answer
   answer = { status: 200, body: { ok: true, rev: 4, missing: [img(2).id] } };
   assert.deepEqual(await api.saveDraft(K, "main", { text: "", images: [A, img(2)] }, 3), { rev: 4, missing: [img(2).id] });
   // the Send: the images in the message, on its branch from the first message on
   answer = { status: 200, body: { ok: true } };
   await api.send(K, "main", "see", "", [], undefined, [A]);
-  assert.deepEqual(calls.map((c) => [c.method, c.path, c.body]), [
-    ["POST", `${ON}/images?name=shot.png`, file],
-    ["PUT", `${ON}/draft?branch=main&rev=3`, { text: "", images: [A, img(2)] }],
-    ["POST", `${ON}/messages?branch=main`, { text: "see", context: "", images: [A] }],
+  assert.deepEqual(calls.map((c) => [c.server, c.method, c.path, c.body]), [
+    [S1, "POST", `${ON}/images?name=shot.png`, "<9 bytes>"],
+    [S1, "PUT", `${ON}/draft?branch=main&rev=3`, { text: "", images: [A, img(2)] }],
+    [S1, "POST", `${ON}/messages?branch=main`, { text: "see", context: "", images: [A] }],
   ]);
   // no second path: one place uploads, one sends, and nothing that handles a draft's images asks which server the chat is on
   assert.equal(src("uploads.ts").split("api.uploadImage(").length, 2);
@@ -495,7 +494,7 @@ test("every answer of the servers to a Send with images that was not taken: the 
     assert.equal(refusalShown(e.status, e.code, false), true, what);
     assert.equal(refusalShown(e.status, e.code, true), e.code !== "server_unreachable", what);
   }
-  assert.ok(calls.every((c) => c.method === "POST" && c.path === `${ON}/messages?branch=main`));
+  assert.ok(calls.every((c) => c.server === S1 && c.method === "POST" && c.path === `${ON}/messages?branch=main`));
   // what tells the composer that nothing was sent: any refusal below 500, and the 503 of a server that is not connected
   assert.ok(composer.includes("refused = e instanceof ApiError && sentNothing(e.status, e.code);"));
   assert.deepEqual([sentNothing(503, "server_unreachable"), sentNothing(503), sentNothing(504, "send_unknown"), sentNothing(502), sentNothing(undefined), sentNothing(409, "busy")],

@@ -169,7 +169,7 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   try {
-    await page.goto(url + "/api/hello"); // (a page of the mock's origin: nothing of the app runs in it)
+    await page.goto(url + "/mock/state"); // (a page of the mock's origin: nothing of the app runs in it)
     await page.setContent('<!doctype html><html><body><div id="root"></div></body></html>');
     await page.addStyleTag({ content: fs.readFileSync(path.join(SRC, "styles.css"), "utf8") });
     await page.addScriptTag({ content: built.outputFiles[0].text });

@@ -2,19 +2,22 @@ package app
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"ai-whiteboard/internal/servers"
+	"ai-whiteboard/internal/library"
+	"ai-whiteboard/internal/model"
 )
 
-// Without a library the list of libraries is empty; with this computer's it is that library,
-// under the local entry's id and name and connected, as the snapshot's "libraries".
-func TestLibraries(t *testing.T) {
+// With this server's library the snapshot holds it whole, and GET /api/library's view of it is
+// under the id "local" and the name of this computer, connected and with no notice.
+func TestLibrary(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	if got := e.a.Libraries(); got == nil || len(got) != 0 {
-		t.Fatalf("without a library: %+v", got)
+	if _, ok := e.a.OwnLibrary(); ok {
+		t.Fatal("an own library without one")
 	}
 	if e.a.OpenLibrary("") == nil || e.a.Library != nil {
 		t.Fatal("a library without a data folder was opened")
@@ -25,36 +28,54 @@ func TestLibraries(t *testing.T) {
 	_, err = e.a.Library.CreatePrompt("review", g.ID, "Look at it.")
 	e.must(err)
 
-	got := e.a.Snapshot().Libraries
-	if len(got) != 1 || got[0].Server != servers.LocalID || got[0].Name != servers.LocalName || !got[0].Connected || got[0].Notice != "" ||
-		len(got[0].Groups) != 1 || got[0].Groups[0] != g || len(got[0].Prompts) != 1 || got[0].Prompts[0].Text != "Look at it." {
-		t.Fatalf("libraries: %+v", got)
-	}
-	raw, err := json.Marshal(e.a.Snapshot())
-	want := `"libraries":[{"server":"local","name":"This computer","connected":true,"groups":[{"id":"` + g.ID + `","name":"git","parent":""}],"prompts":[{"id":"`
-	if err != nil || !strings.Contains(string(raw), want) {
-		t.Fatalf("the snapshot: %s, %v", raw, err)
-	}
-
-	// An API client gets this computer's library alone, without the notice.
 	api, err := json.Marshal(e.a.APISnapshot())
-	if err != nil || !strings.Contains(string(api), `"library":{"groups":[{"id":"`+g.ID+`","name":"git","parent":""}],"prompts":[{"id":"`) || strings.Contains(string(api), "notice") {
-		t.Fatalf("the API snapshot: %s, %v", api, err)
+	if err != nil || !strings.Contains(string(api), `"library":{"groups":[{"id":"`+g.ID+`","name":"git","parent":""}],"prompts":[{"id":"`) ||
+		strings.Contains(string(api), "otice") {
+		t.Fatalf("the snapshot: %s, %v", api, err)
 	}
-	if own, ok := e.a.OwnLibrary(); !ok || own.Server != servers.LocalID || len(own.Prompts) != 1 {
+	own, ok := e.a.OwnLibrary()
+	if !ok || own.Server != model.LocalServer || own.Name != "This computer" || !own.Connected || len(own.Groups) != 1 || own.Groups[0] != g ||
+		len(own.Prompts) != 1 || own.Prompts[0].Text != "Look at it." {
 		t.Fatalf("the own library: %+v, %v", own, ok)
 	}
 }
 
-// Without a library an API client is told so, and the list of the libraries is empty.
+// Without a library the snapshot says so.
 func TestNoLibrary(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	api, err := json.Marshal(e.a.APISnapshot())
-	if err != nil || !strings.Contains(string(api), `"library":null`) {
-		t.Fatalf("the API snapshot: %s, %v", api, err)
+	if err != nil || !strings.Contains(string(api), `"library":null`) || strings.Contains(string(api), "libraryNotice") {
+		t.Fatalf("the snapshot: %s, %v", api, err)
 	}
 	if _, ok := e.a.OwnLibrary(); ok {
 		t.Fatal("an own library")
+	}
+}
+
+// A library file that was set aside at the start is told in the snapshot's "libraryNotice", which
+// names the file; a library that opened is not.
+func TestLibraryNotice(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	root := t.TempDir()
+	path := filepath.Join(root, library.FileName)
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.must(e.a.OpenLibrary(root))
+	notice := e.a.APISnapshot().LibraryNotice
+	if !strings.Contains(notice, path) || !strings.Contains(notice, "set aside") {
+		t.Fatalf("the notice: %q", notice)
+	}
+	raw, err := json.Marshal(e.a.APISnapshot())
+	if err != nil || !strings.Contains(string(raw), `"libraryNotice":"`) {
+		t.Fatalf("the snapshot: %s, %v", raw, err)
+	}
+
+	f := newEnv(t)
+	f.must(f.a.OpenLibrary(t.TempDir()))
+	if n := f.a.APISnapshot().LibraryNotice; n != "" {
+		t.Fatalf("the notice of a library that opened: %q", n)
 	}
 }

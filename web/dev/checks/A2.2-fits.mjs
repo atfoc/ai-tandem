@@ -174,6 +174,7 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
         await mockEval(`setSession(${chat}, ${JSON.stringify(branch)}, { status: "approval" });`, url);
         await p.page.locator(".chat-head .fk-alert.asks").click({ timeout: 10000 });
         if (!await until(() => p.page.locator(".thread .msg.user", { hasText: text }).count(), 10000)) fail(`${name}: the page did not show the branch with "${text}"`);
+        await p.page.waitForTimeout(150); // (frames are sampled while the branch is shown: the change is quick since calls go to the mock over one connection)
         await mockEval(`setSession(${chat}, ${JSON.stringify(branch)}, { status: "ready" });`, url);
       };
       const model = () => p.page.locator(".composer .tchip.static[title^='Model and effort'], .composer .more-chip").first().evaluate((e) => e.closest(".composer").querySelector(".tchip.static[title^='Model and effort']")?.textContent ?? "in more");
@@ -192,7 +193,7 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
 
   // a chip's arrival: the server's Cursor catalog comes, and "Loading models…" becomes the model and effort choices
   // (the chat is the lab box's: its change is made on that machine, and reaches the page as that server's event)
-  const arrival = `extra.lists.s_lab.catalogs.cursor = cursor; onServer("s_lab", () => { Object.assign(chats.c_A2_loading, cursor.default); send({ type: "chat", chat: chats.c_A2_loading }); }); send({ type: "server_lists", server: "s_lab", lists: extra.lists.s_lab });`;
+  const arrival = `extra.lists.s_lab.catalogs.cursor = cursor; onServer("s_lab", () => { Object.assign(chats.c_A2_loading, cursor.default); send({ type: "chat", chat: chats.c_A2_loading }); send({ type: "catalog", agent: "cursor", catalog: cursor }); });`;
   for (const [width, more] of [[300, false], [400, false], [560, false], [300, true], [400, true], [480, true]]) {
     await seed(url, "A2");
     const s = state("plain-loading"), p = await open(s, width), name = `a chip's arrival at ${width} px${more ? ', "more" open' : ""}`;

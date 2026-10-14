@@ -1,10 +1,10 @@
-// Package bridgetest is a stand-in for the page in Go tests: a client that holds an event
-// stream of a server open and makes calls with its client id, as a browser page does. With
-// Options it stands in for an API client on the remote listener as well.
+// Package bridgetest is a stand-in for the app in Go tests: a client that holds an event stream
+// of a server open and makes calls with its client id. With Options it reaches a server over
+// HTTPS with a secret and the headers of the client listener.
 //
 // It speaks HTTP only and imports nothing from this project, so the tests of the bridge, of the
 // server and of the board relay can all use it. The server under test must serve
-// GET /api/events (editorbridge.Bridge.ServeSSE); OnRPC also needs POST /api/rpc-reply.
+// GET /api/events (editorbridge.Bridge.Serve); OnRPC also needs POST /api/rpc-reply.
 package bridgetest
 
 import (
@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-// ClientHeader carries the page's id on each of its calls.
+// ClientHeader carries the client's id on each of its calls.
 const ClientHeader = "X-AIWB-Client"
 
 // Wait is how long Next, Expect and ExpectEnded wait before they fail the test.
@@ -54,14 +54,15 @@ func Connect(t testing.TB, baseURL, id string) *Page {
 	return ConnectWith(t, baseURL, id, Options{})
 }
 
-// Options says how a stand-in client reaches its server. The zero value is a page on loopback.
+// Options says how a stand-in client reaches its server. The zero value is a plain HTTP client
+// with no header.
 type Options struct {
 	HTTP   *http.Client      // nil = the package's plain client
 	Header map[string]string // sent with the stream's request and with every call, the client id too
 }
 
-// ConnectWith is Connect for a client that reaches its server as o says. An API client gives the
-// HTTP client that trusts the listener's certificate, and the secret and its id as headers.
+// ConnectWith is Connect for a client that reaches its server as o says: the HTTP client that
+// trusts the listener's certificate, and the secret, its id and its level as headers.
 func ConnectWith(t testing.TB, baseURL, id string, o Options) *Page {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())

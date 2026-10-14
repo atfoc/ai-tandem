@@ -129,7 +129,7 @@ await check("SEC.6 a section follows what is made, changed and deleted on its se
   if (!await until(async () => (await off.textContent().catch(() => "")).includes("No longer on Studio Mac"), 10000)) fail(`the open board deleted elsewhere does not say so: "${await off.textContent().catch(() => "")}"`);
   await gone("the open board deleted elsewhere", ["Floor plan", "Label the rooms"]);
   // left, it is gone for good: the local part's first row is opened, and nothing of the board is on screen
-  await page.locator(".side-tree > .side-group .side-row").first().click();
+  await page.locator(".side-section[data-server='local'] > .side-section-body > .side-group .side-row").first().click();
   if (!await until(async () => !await off.count(), 10000)) fail("the view of the deleted board stays after another thing was opened");
 
   for (const e of errors) fail(`page error: ${e}`);

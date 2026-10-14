@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
-const Module = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
 const {
@@ -13,8 +12,7 @@ const {
   pickImages,
 } = require('../lib');
 
-const appURL = 'http://127.0.0.1:4747/';
-const appOrigin = 'http://127.0.0.1:4747';
+const pageURL = 'file:///Applications/AI%20Whiteboard.app/Contents/Resources/web/index.html';
 
 // tmpDir makes a folder for the test's files, removed when the test ends.
 async function tmpDir(t) {
@@ -35,7 +33,7 @@ async function write(dir, name, bytes) {
 // `answer` and records how it was opened, and an fs that is the real one but records every path
 // opened and every byte count read. onDialog runs while the dialog is open.
 function fakes({ answer = { canceled: true, filePaths: [] }, onDialog } = {}) {
-  const mainFrame = { origin: appOrigin };
+  const mainFrame = { url: pageURL };
   const webContents = { mainFrame };
   const win = { webContents, destroyed: false, isDestroyed: () => win.destroyed };
   const event = { sender: webContents, senderFrame: mainFrame };
@@ -69,7 +67,7 @@ function fakes({ answer = { canceled: true, filePaths: [] }, onDialog } = {}) {
 }
 
 const pick = (f, more = {}) =>
-  pickImages({ event: f.event, win: f.win, appURL, dialog: f.dialog, fs: f.fs, ...more });
+  pickImages({ event: f.event, win: f.win, pageURL, dialog: f.dialog, fs: f.fs, ...more });
 
 test('the limits and types are the server\'s', () => {
   assert.equal(IMAGE_MAX_BYTES, 5 * 1024 * 1024);
@@ -259,23 +257,22 @@ test('a file that cannot be read, or is no file, is left out as "read"', async (
   ]);
 });
 
-// Each entry changes the fakes so that the caller is not the app window's main frame on the app's
-// origin.
+// Each entry changes the fakes so that the caller is not the app window's main frame on the page.
 const notTheAppWindow = {
   'another window': (f) => {
     f.event.sender = { mainFrame: f.event.senderFrame };
   },
-  'a frame inside the page, on the app\'s origin': (f) => {
-    f.event.senderFrame = { origin: appOrigin, parent: f.mainFrame };
+  'a frame inside the page': (f) => {
+    f.event.senderFrame = { url: pageURL, parent: f.mainFrame };
   },
-  'the main frame on another origin': (f) => {
-    f.mainFrame.origin = 'https://example.com';
+  'the main frame on another page': (f) => {
+    f.mainFrame.url = 'file:///tmp/other.html';
   },
-  'the app\'s host on another port': (f) => {
-    f.mainFrame.origin = 'http://127.0.0.1:4748';
+  'the main frame on a site': (f) => {
+    f.mainFrame.url = 'https://example.com/';
   },
-  'a page with no origin (data:, file:)': (f) => {
-    f.mainFrame.origin = 'null';
+  'a page with no URL (about:blank)': (f) => {
+    f.mainFrame.url = 'about:blank';
   },
   'a frame that is gone': (f) => {
     f.event.senderFrame = null;
@@ -289,9 +286,9 @@ for (const [name, change] of Object.entries(notTheAppWindow)) {
   test(`a caller that is not the app's own window (${name}): refused, no dialog, nothing read`, async (t) => {
     const dir = await tmpDir(t);
     const f = fakes({ answer: { canceled: false, filePaths: [await write(dir, 'a.png', 3)] } });
-    assert.equal(fromAppWindow({ event: f.event, win: f.win, appURL }), true);
+    assert.equal(fromAppWindow({ event: f.event, win: f.win, pageURL }), true);
     change(f);
-    assert.equal(fromAppWindow({ event: f.event, win: f.win, appURL }), false);
+    assert.equal(fromAppWindow({ event: f.event, win: f.win, pageURL }), false);
     await assert.rejects(pick(f), /not from the app window/);
     assert.deepEqual(f.dialog.shown, []);
     assert.deepEqual(f.fs.opened, []);
@@ -309,58 +306,27 @@ for (const [name, change] of Object.entries(notTheAppWindow)) {
   });
 }
 
-test('no main window, or no server URL loaded yet: refused, no dialog', async () => {
-  for (const over of [{ win: null }, { appURL: null }, { appURL: 'not a url' }, { appURL: 'file:///x/index.html' }]) {
+test('the page with a hash is still the page', () => {
+  const f = fakes();
+  f.mainFrame.url = `${pageURL}#/chat/c_1`;
+  assert.equal(fromAppWindow({ event: f.event, win: f.win, pageURL }), true);
+});
+
+test('no main window, or no page URL: refused, no dialog', async () => {
+  for (const over of [{ win: null }, { pageURL: null }, { pageURL: 'not a url' }]) {
     const f = fakes();
-    if (over.appURL && over.appURL.startsWith('file:')) f.mainFrame.origin = 'null';
     await assert.rejects(pick(f, over), /not from the app window/, JSON.stringify(over));
     assert.deepEqual(f.dialog.shown, []);
   }
 });
 
-// loadPreload runs preload.js with a fake electron module and returns what it exposes to the page
-// and the IPC calls it made.
-function loadPreload() {
-  const exposed = {};
-  const invoked = [];
-  const electron = {
-    contextBridge: { exposeInMainWorld: (key, api) => { exposed[key] = api; } },
-    ipcRenderer: { invoke: async (...args) => { invoked.push(args); return 'answer'; } },
-  };
-  const file = require.resolve('../preload.js');
-  const load = Module._load;
-  Module._load = function (request, ...rest) {
-    return request === 'electron' ? electron : load.call(this, request, ...rest);
-  };
-  try {
-    delete require.cache[file];
-    require(file);
-  } finally {
-    Module._load = load;
-    delete require.cache[file];
-  }
-  return { exposed, invoked };
-}
-
-test('preload: the page gets openServerLog and pickImages, and can name no path', async () => {
-  const { exposed, invoked } = loadPreload();
-  assert.deepEqual(Object.keys(exposed), ['aiwbDesktop']);
-  assert.deepEqual(Object.keys(exposed.aiwbDesktop), ['openServerLog', 'pickImages']);
-  assert.equal(await exposed.aiwbDesktop.pickImages('/etc/passwd', { filePaths: ['/etc/passwd'] }), 'answer');
-  await exposed.aiwbDesktop.openServerLog();
-  assert.deepEqual(invoked, [['aiwb:pick-images'], ['aiwb:open-server-log']]);
-});
-
-// main.js needs Electron and starts the app when it is loaded, so its one line for the dialog is
-// read as text: the handler hands pickImages the caller's event, the app's main window and the
-// server URL that window loaded, and nothing a page sent with its call.
-test('main: the dialog is answered through pickImages, with the main window, its URL and no argument of the page', async () => {
-  const main = await fsp.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
-  const handlers = main.split("ipcMain.handle('aiwb:pick-images',");
+// main.js needs Electron and starts the app when it is loaded, so its one use of the dialog is read
+// as text: the face hands pickImages the caller's event, the app's main window and the page's URL,
+// and nothing a page sent with its call.
+test('ipcface: the dialog is answered through pickImages, with the main window, the page URL and no argument of the page', async () => {
+  const src = await fsp.readFile(path.join(__dirname, '..', 'ipcface.js'), 'utf8');
+  const handlers = src.split("ipcMain.handle('aiwb:pick-images',");
   assert.equal(handlers.length, 2);
-  assert.ok(handlers[1].trimStart().startsWith('(event) =>\n    pickImages({ event, win: mainWindow, appURL: mainURL, dialog }));'));
-  // The URL is the one the main window loaded, set where it loads and gone with the window.
-  assert.match(main, /\n {2}mainURL = url;\n/);
-  assert.match(main, /mainWindow = null;\n[^\n]*\n {6}mainURL = null;/);
-  assert.equal(main.split('dialog.showOpenDialog').length, 1); // no other open dialog than pickImages' own
+  assert.match(handlers[1].split(');')[0], /pickImages\(\{ event, win: getWindow\(\), pageURL, dialog \}\)/);
+  assert.equal(src.split('dialog.showOpenDialog').length, 1); // no other open dialog than pickImages' own
 });

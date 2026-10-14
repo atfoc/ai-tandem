@@ -35,7 +35,7 @@ import (
 func TestServeOnADataFolderWithRunData(t *testing.T) {
 	smokeTest(t)
 	in := newInstance(t)
-	srv := &scriptedServer{in: in, home: in.dir}
+	srv := &scriptedServer{in: in}
 	t.Cleanup(func() { srv.stop(t) })
 
 	const (
@@ -106,7 +106,7 @@ func TestServeOnADataFolderWithRunData(t *testing.T) {
 		t.Fatalf("the files before the start: %v, want %v", before, want)
 	}
 
-	srv.start(t) // GET /api/hello answered 200 with the server's pid
+	srv.start(t) // the control socket answers with the server's pid, and it serves its clients
 	// The change-over of the start is over when the server answers: the folder remote/ is gone
 	// with the records in it, and everything else is there.
 	if _, err := os.Lstat(remoteDir); !errors.Is(err, fs.ErrNotExist) {
@@ -119,7 +119,7 @@ func TestServeOnADataFolderWithRunData(t *testing.T) {
 	if after := under(); !slices.Equal(after, left) {
 		t.Fatalf("the files after the start: %v, want %v", after, left)
 	}
-	const page = "old-data-page"
+	const page = testClient
 	status, raw := srv.call(t, page, "GET", "api/state", nil, nil)
 	if status != http.StatusOK {
 		t.Fatalf("GET /api/state: status %d: %s", status, raw)

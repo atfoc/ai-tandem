@@ -220,11 +220,9 @@ func TestLevel5ClientMakesAChatInItsPlace(t *testing.T) {
 	if evs := l5AllSame(t, e, "the refused calls", three...); len(evs) != 0 {
 		t.Errorf("the refused calls told %v", evs)
 	}
-	// The refusal is a client's alone: the server's own page may say "local".
-	if v := decode[model.ChatView](t, l5Want(t, p, 200, "POST", "/api/chats", `{"agent":"claude","group":"`+g+`","server":"local"}`)); v.Group != g {
-		t.Errorf("the owner's chat that names this computer: %+v", v)
-	}
-	l5AllSame(t, e, "the owner's chat", three...)
+	// The refusal is every client's: the owner's app names no server either.
+	status, out = l5Call(p, "POST", "/api/chats", `{"agent":"claude","group":"`+g+`","server":"local"}`)
+	l5Is(t, "the owner's call that names this computer", status, out, 400, l5ServerRefused)
 
 	// The first message is the message call, from whoever sends it: the agent starts on the
 	// chat's folder and model, and all three see the chat at work.

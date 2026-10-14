@@ -1,6 +1,7 @@
 // Images the user attaches to a chat message: the limits, the types taken and the address of an image. The server has the
 // same numbers (model.ImageMaxBytes and the constants after it) and decides; the page checks to say so early. DOM-free.
-import { apiRoot, splitKey } from "./keys.ts";
+import { splitKey } from "./keys.ts";
+import { transport } from "../transport/index.ts";
 
 /** The types a chat takes. */
 export const IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -17,12 +18,12 @@ export const IMAGE_WORD = "Image";
 /** The name of a pasted picture, which has no file name of its own. */
 export const PASTED_NAME = "Pasted image";
 
-/** Where the page fetches an image of a chat from: GET /api/chats/{chat}/images/{id} for a chat of this computer, GET
- *  /api/on/{entry id}/chats/{chat}/images/{id} for a chat of a section, which the local server fetches and serves under its
- *  own headers. chat: the page's key of the top-level chat (logic/keys.ts). */
+/** Where the page shows an image of a chat from: the transport's address of a picture, from the chat's server, the chat's own id
+ *  and the image's id, which the app (or the host) fetches from that server and checks. chat: the page's key of the top-level
+ *  chat (logic/keys.ts). */
 export function imageUrl(chat: string, id: string): string {
   const at = splitKey(chat);
-  return `${apiRoot(at.server)}/chats/${encodeURIComponent(at.id)}/images/${encodeURIComponent(id)}`;
+  return transport().pictureURL(at.server, at.id, id);
 }
 
 // ---- the images of one message: a list with each image once, by its id
@@ -181,7 +182,7 @@ export const pastedName = (name: string): string => (!name || /^image\.[a-z0-9]+
 /** A file on its way into a message, under the name its image gets. */
 export type Picked = { file: Blob; name: string };
 
-/** What the desktop app's own open dialog answers (window.aiwbDesktop.pickImages): the files it read, and the ones it
+/** What the desktop app's own open dialog answers (the transport's pickImages): the files it read, and the ones it
  *  left out, each with why. A cancelled dialog answers both lists empty. */
 export type DesktopPick = { files: { name: string; type: string; data: Uint8Array }[]; skipped: { name: string; reason: "size" | "count" | "type" | "read" }[] };
 

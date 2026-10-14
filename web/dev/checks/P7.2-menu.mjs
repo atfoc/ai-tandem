@@ -60,7 +60,15 @@ await check("P7.2 the sidebar hidden while the theme's menu is open, beside the 
   // (a menu hears a press outside from the task after it was drawn: the check waits for that task, as a hand does)
   const openMenu = async (page) => { await page.locator(BTN).click(); await page.waitForSelector(MENU, { timeout: 10000 }); await page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(ok))))); };
   /** Every call the page makes that is not a read, as the page makes it. */
-  const spy = (page) => page.evaluate(() => { window.__calls = []; const f = window.fetch; window.fetch = (u, o) => { if (o?.method && o.method !== "GET") window.__calls.push(`${o.method} ${u} ${o.body ?? ""}`); return f(u, o); }; });
+  const spy = (page) => page.evaluate(() => {
+    window.__calls = [];
+    const f = window.fetch;
+    window.fetch = (u, o) => { // (a call goes to the host as POST /host/call, with the call's own method in the query)
+      const q = new URL(u, location.href), m = q.searchParams.get("method");
+      if (q.pathname === "/host/call" && m && m !== "GET") window.__calls.push(`${m} ${q.searchParams.get("path")} ${o?.body ?? ""}`);
+      return f(u, o);
+    };
+  });
   const calls = (page) => page.evaluate(() => window.__calls.splice(0));
   const open = async (o, body) => {
     const errors = [];

@@ -96,7 +96,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	br := editorbridge.New(func() any { return nil })
+	br := editorbridge.New()
 	bds := boards.New(st, br)
 	sp := &fakeSpawner{agents: map[string]*fakeAgent{}}
 	cm := chats.New(chats.Deps{Store: st, Bridge: br, Boards: bds,
@@ -398,7 +398,7 @@ func TestDeleteGroupUngroupsContents(t *testing.T) {
 			t.Errorf("chat %s in %q, want ungrouped", c, got)
 		}
 	}
-	snap := e.a.Snapshot()
+	snap := e.a.APISnapshot()
 	for _, gr := range snap.Groups {
 		if gr.ID == g {
 			t.Error("group still listed")
@@ -518,7 +518,7 @@ func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
 	if g.Name != "New group" {
 		t.Errorf("name %q", g.Name)
 	}
-	snap := e.a.Snapshot()
+	snap := e.a.APISnapshot()
 	if gd := snap.Defaults.Groups[g.ID]; !reflect.DeepEqual(gd, ungrouped()) {
 		t.Errorf("seeded %+v, want %+v", gd, ungrouped())
 	}
@@ -529,7 +529,7 @@ func TestCreateGroupSeedsDefaultsFromUngrouped(t *testing.T) {
 		s.Defaults.Groups[model.Ungrouped] = u
 		return nil
 	}))
-	if gd := e.a.Snapshot().Defaults.Groups[g.ID]; !reflect.DeepEqual(gd, ungrouped()) {
+	if gd := e.a.APISnapshot().Defaults.Groups[g.ID]; !reflect.DeepEqual(gd, ungrouped()) {
 		t.Errorf("after a change in the ungrouped group %+v, want %+v", gd, ungrouped())
 	}
 }
@@ -551,28 +551,22 @@ func TestMoveBoardMovesItsChats(t *testing.T) {
 	}
 }
 
-func TestGroupsUpdateAndReorder(t *testing.T) {
+func TestGroupsUpdate(t *testing.T) {
 	e := newEnv(t)
-	g1, g2, g3 := e.group("A"), e.group("B"), e.group("C")
-	name, col := "  Renamed ", true
-	e.must(e.a.UpdateGroup(g2, &name, &col))
+	e.group("A")
+	g2 := e.group("B")
+	name := "  Renamed "
+	e.must(e.a.UpdateGroup(g2, &name))
 	empty := " "
-	if err := e.a.UpdateGroup(g2, &empty, nil); err == nil {
+	if err := e.a.UpdateGroup(g2, &empty); err == nil {
 		t.Error("empty name accepted")
 	}
-	if err := e.a.ReorderGroups([]string{g1, g2}); err == nil {
-		t.Error("partial order accepted")
+	if err := e.a.UpdateGroup("g_none", &name); !errors.Is(err, ErrGroupNotFound) {
+		t.Errorf("a group that is not there: %v", err)
 	}
-	if err := e.a.ReorderGroups([]string{g1, g1, g2}); err == nil {
-		t.Error("duplicate order accepted")
-	}
-	e.must(e.a.ReorderGroups([]string{g3, g1, g2}))
-	gs := e.a.Snapshot().Groups
-	if len(gs) != 3 || gs[0].ID != g3 || gs[1].ID != g1 || gs[2].ID != g2 {
-		t.Fatalf("order %+v", gs)
-	}
-	if gs[2].Name != "Renamed" || !gs[2].Collapsed {
-		t.Errorf("group %+v", gs[2])
+	gs := e.a.APISnapshot().Groups
+	if len(gs) != 2 || gs[1].ID != g2 || gs[1].Name != "Renamed" {
+		t.Errorf("groups %+v", gs)
 	}
 }
 
@@ -591,7 +585,7 @@ func TestCreateSubgroup(t *testing.T) {
 	if err != nil || sg.Parent != g {
 		t.Fatalf("subgroup %+v, %v", sg, err)
 	}
-	snap := e.a.Snapshot()
+	snap := e.a.APISnapshot()
 	if gd := snap.Defaults.Groups[s]; !reflect.DeepEqual(gd, snap.Defaults.Groups[g]) || gd.Local().Cwd != cwd || gd.Local().ByAgent[model.Claude].Model != "opus" {
 		t.Errorf("subgroup defaults %+v, want the parent's %+v", gd, snap.Defaults.Groups[g])
 	}
@@ -625,7 +619,7 @@ func TestMoveGroup(t *testing.T) {
 
 	// S (with SS) goes to the top level, before A
 	e.must(e.a.MoveGroup(s, "", a))
-	gs := e.a.Snapshot().Groups
+	gs := e.a.APISnapshot().Groups
 	if gs[0].ID != s || gs[0].Parent != "" || gs[1].ID != a {
 		t.Fatalf("order %+v", gs)
 	}
@@ -635,7 +629,7 @@ func TestMoveGroup(t *testing.T) {
 
 	// B into S, last
 	e.must(e.a.MoveGroup(b, s, ""))
-	gs = e.a.Snapshot().Groups
+	gs = e.a.APISnapshot().Groups
 	if last := gs[len(gs)-1]; last.ID != b || last.Parent != s {
 		t.Errorf("B %+v", last)
 	}
@@ -765,7 +759,7 @@ func TestDeleteGroupWithContentsDeletesSubgroups(t *testing.T) {
 	if _, err := e.a.Chats.View(pc); !errors.Is(err, chats.ErrNotFound) {
 		t.Error("chat in a subgroup still there")
 	}
-	snap := e.a.Snapshot()
+	snap := e.a.APISnapshot()
 	if len(snap.Groups) != 1 || snap.Groups[0].ID != other {
 		t.Errorf("groups %+v, want only Other", snap.Groups)
 	}
@@ -776,7 +770,7 @@ func TestDeleteGroupWithContentsDeletesSubgroups(t *testing.T) {
 
 func TestSnapshotCatalogs(t *testing.T) {
 	e := newEnv(t)
-	snap := e.a.Snapshot()
+	snap := e.a.APISnapshot()
 	if snap.Catalogs[model.Claude] == nil || snap.Catalogs[model.Claude].Default.Model != "sonnet" {
 		t.Error("Claude catalog missing")
 	}
@@ -791,7 +785,7 @@ func TestSnapshotCatalogs(t *testing.T) {
 	}
 	cat := &model.Catalog{Models: []model.CatalogModel{{ID: "composer-2"}}, Default: model.ModelChoice{Model: "composer-2"}}
 	e.must(e.st.Update(func(s *model.State) error { s.Cursor = cat; return nil }))
-	if c := e.a.Snapshot().Catalogs[model.Cursor]; c == nil || c.Default.Model != "composer-2" || c.Models[0].Provider != "" {
+	if c := e.a.APISnapshot().Catalogs[model.Cursor]; c == nil || c.Default.Model != "composer-2" || c.Models[0].Provider != "" {
 		t.Error("stored Cursor catalog not reported")
 	}
 	piCat := &model.Catalog{
@@ -799,13 +793,13 @@ func TestSnapshotCatalogs(t *testing.T) {
 		Default: model.ModelChoice{Model: "deepseek-flash"},
 	}
 	e.must(e.st.Update(func(s *model.State) error { s.SetCatalog(model.Pi, piCat); return nil }))
-	if c := e.a.Snapshot().Catalogs[model.Pi]; c == nil || c.Default.Model != "deepseek-flash" || c.Models[0].Provider != "deepseek" {
+	if c := e.a.APISnapshot().Catalogs[model.Pi]; c == nil || c.Default.Model != "deepseek-flash" || c.Models[0].Provider != "deepseek" {
 		t.Error("stored pi catalog not reported with its provider")
 	}
 
 	// Reading the catalog through the snapshot twice must not change what is stored.
-	first := e.a.Snapshot().Catalogs[model.Pi]
-	second := e.a.Snapshot().Catalogs[model.Pi]
+	first := e.a.APISnapshot().Catalogs[model.Pi]
+	second := e.a.APISnapshot().Catalogs[model.Pi]
 	if first == nil || second == nil || first.Models[0].Provider != "deepseek" || second.Models[0].Provider != "deepseek" {
 		t.Fatalf("snapshot reads lost the provider: first %+v, second %+v", first, second)
 	}
@@ -818,7 +812,7 @@ func TestSnapshotCatalogs(t *testing.T) {
 	// The snapshot's Claude list is the list validation uses, with nothing stored and with a list stored.
 	sameAsManager := func(state string) {
 		t.Helper()
-		cat := e.a.Snapshot().Catalogs[model.Claude]
+		cat := e.a.APISnapshot().Catalogs[model.Claude]
 		if cat == nil || len(cat.Models) == 0 {
 			t.Fatalf("%s: no Claude catalog in the snapshot", state)
 		}
@@ -844,7 +838,7 @@ func TestSnapshotCatalogs(t *testing.T) {
 		Default: model.ModelChoice{Model: "fetched-a", Effort: "low"},
 	}
 	e.must(e.st.Update(func(s *model.State) error { s.SetCatalog(model.Claude, claudeCat); return nil }))
-	if c := e.a.Snapshot().Catalogs[model.Claude]; c == nil || !reflect.DeepEqual(*c, *claudeCat) {
+	if c := e.a.APISnapshot().Catalogs[model.Claude]; c == nil || !reflect.DeepEqual(*c, *claudeCat) {
 		t.Errorf("stored Claude catalog not reported: %+v", c)
 	}
 	sameAsManager("a Claude list stored")
@@ -856,7 +850,7 @@ func TestSnapshotCatalogs(t *testing.T) {
 // The snapshot lists the state record of every chat's branch next to the chats, under "states".
 func TestSnapshotStates(t *testing.T) {
 	e := newEnv(t)
-	raw, err := json.Marshal(e.a.Snapshot())
+	raw, err := json.Marshal(e.a.APISnapshot())
 	e.must(err)
 	var js map[string]json.RawMessage
 	e.must(json.Unmarshal(raw, &js))
@@ -866,7 +860,7 @@ func TestSnapshotStates(t *testing.T) {
 
 	g := e.group("g")
 	idle, busy := e.chat(g, ""), e.running(g, "")
-	snap := e.a.Snapshot()
+	snap := e.a.APISnapshot()
 	if len(snap.Chats) != 2 || len(snap.States) != 2 || !reflect.DeepEqual(snap.States, e.a.Chats.States()) {
 		t.Fatalf("snapshot: %d chats, states %+v", len(snap.Chats), snap.States)
 	}
@@ -899,7 +893,7 @@ func TestSnapshotStates(t *testing.T) {
 	}
 
 	e.must(e.a.Chats.Delete(idle))
-	if snap := e.a.Snapshot(); len(snap.States) != 1 || snap.States[0].Chat != busy {
+	if snap := e.a.APISnapshot(); len(snap.States) != 1 || snap.States[0].Chat != busy {
 		t.Fatalf("states after a delete %+v", snap.States)
 	}
 }

@@ -124,16 +124,21 @@ await check("A6.4 the contrast floors hold in each flavour, on computed colours"
       note(`${flavour}: ${told.join(", ")}; on the page: ${drawn.join(", ")}, ${words.length} words of code`);
     } finally { await ctx.close(); }
 
-    // the warning, on the notice of a stream that is down
+    // the state of this computer's section when its server did not start, and the reason it gave
     const { ctx: ctx2, page: page2 } = await openPage({ url, browser, sel: {}, ls: { "aiwb.theme": flavour }, still: true });
     try {
-      await mockEval("flags.streamDown = true; dropStreams();", url);
-      await page2.waitForSelector(".side .offline", { timeout: 15000 });
-      const fg = await colourOf(page2, ".side .offline", "color"), bg = await colourOf(page2, ".side-pane .side", "backgroundColor"), q = contrastOf(fg, bg);
-      if (hex(bg) !== P.mantle) fail(`${flavour}: the sidebar behind "Reconnecting…" is ${hex(bg)}, not Mantle`);
-      if (q < 3) fail(`${flavour}: "Reconnecting…" is ${hex(fg)} on the sidebar ${hex(bg)}, ${two(q)}:1, under 3:1`);
+      await mockEval('setServerState("local", "not_started", { detail: "AI Whiteboard is not set up on this machine." });', url);
+      const HERE = '.side-section[data-server="local"]';
+      await page2.waitForSelector(`${HERE} .side-section-state.bad`, { timeout: 15000 });
+      await page2.waitForSelector(`${HERE} .side-section-reason`, { timeout: 15000 });
+      const bg = await colourOf(page2, ".side-pane .side", "backgroundColor");
+      if (hex(bg) !== P.mantle) fail(`${flavour}: the sidebar behind "Not started" is ${hex(bg)}, not Mantle`);
+      for (const [what, sel] of [['"Not started"', `${HERE} .side-section-state.bad`], ["the reason a start gave", `${HERE} .side-section-reason`]]) {
+        const fg = await colourOf(page2, sel, "color"), back = what === '"Not started"' ? bg : await colourOf(page2, sel, "backgroundColor"), q = contrastOf(fg, back);
+        if (q < 3) fail(`${flavour}: ${what} is ${hex(fg)} on ${hex(back)}, ${two(q)}:1, under 3:1`);
+      }
     } finally {
-      await mockEval("delete flags.streamDown;", url);
+      await mockEval("setServerState('local', 'connected');", url);
       await ctx2.close();
     }
   }

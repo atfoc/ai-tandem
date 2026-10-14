@@ -1,7 +1,6 @@
-// A board of a section (a remote server of the server list): what a failed save does to the edit,
+// A board of any server of the server list, this computer's included: what a failed save does to the edit,
 // what shows in place of its canvas while that server is not connected or the board is gone there,
-// and the texts of the banner, the notice and the take-over panel. A local board keeps the texts
-// it had. DOM-free.
+// and the texts of the banner, the notice and the take-over panel. DOM-free.
 import { serverOfKey } from "./keys.ts";
 
 /** What a failed save does to the edit. drop: the server refused it for good (the scene was changed elsewhere, or
@@ -14,20 +13,18 @@ export function saveFailure(_status: number | undefined, code: string | undefine
   return code === "stale" || code === "not_holder" ? "drop" : "keep";
 }
 
-/** Whether a failed save of a board says its server is away, which raises the banner: this computer's server could not
- *  pass the write on (503), or passed it on and got no answer because the link broke meanwhile (504). Only for a board
- *  on another server. */
-export const saveOutage = (status: number | undefined, remote: boolean): boolean =>
-  remote && (status === 503 || status === 504);
+/** Whether a failed save of a board says its server is away, which raises the banner: the app could not reach the server
+ *  (503), or reached it and got no answer because the link broke meanwhile (504). */
+export const saveOutage = (status: number | undefined): boolean => status === 503 || status === 504;
 
-/** What a failed save of a board of a section says in the banner when neither waiting for its server mends it (that
+/** What a failed save of a board says in the banner when neither waiting for its server mends it (that
  *  is the outage's banner) nor the edit is dropped (that is the notice): the server's own sentence. A drawing the
- *  server will not take as it is (413 `too_large`: at most 32 MB), an answer that cannot be read (502 `bad_answer`),
- *  any other refusal with a sentence. "" for every other failure, for a board of this computer, and for an answer
- *  with no sentence of the server's. The edit stays in the window as after any failed save, and is written again at
- *  the next change: without the sentence nothing would tell that it does not arrive. */
-export const saveRefusal = (remote: boolean, status: number | undefined, code: string | undefined, sentence: string, said = true): string =>
-  (remote && said && status !== undefined && !saveOutage(status, remote) && saveFailure(status, code) === "keep" && code !== "unknown_client" ? `Not saved: ${sentence}` : "");
+ *  server will not take as it is (413 `too_large`: at most 128 MB), an answer that cannot be read (502 `bad_answer`),
+ *  any other refusal with a sentence. "" for every other failure and for an answer with no sentence of the server's.
+ *  The edit stays in the window as after any failed save, and is written again at the next change: without the
+ *  sentence nothing would tell that it does not arrive. */
+export const saveRefusal = (status: number | undefined, code: string | undefined, sentence: string, said = true): string =>
+  (said && status !== undefined && !saveOutage(status) && saveFailure(status, code) === "keep" ? `Not saved: ${sentence}` : "");
 
 /** The banner over a canvas whose edit waits for the board's server. */
 export const notSaved = (name: string): string => `Not saved, ${name} unreachable`;
@@ -35,7 +32,7 @@ export const notSaved = (name: string): string => `Not saved, ${name} unreachabl
  *  taken again there after the server came back) or got no answer. The edit is kept as under an outage, and the
  *  `held` that follows saves it at the revision it was made on, or drops it with the notice at another. */
 export const notSavedYet = (name: string): string => `Not saved yet, waiting for ${name}`;
-/** The banner's words. connected: the local server holds the tree of the board's server. */
+/** The banner's words. connected: the page holds the tree of the board's server. */
 export const bannerText = (name: string, connected: boolean): string => (connected ? notSavedYet(name) : notSaved(name));
 
 /** Said in the take-over panel, and in the note on the canvas of a board that is held. */
@@ -45,12 +42,10 @@ export const droppedText = (outage: boolean, name: string): string =>
   outage ? `This board was changed while ${name} was unreachable. Your unsaved changes were dropped.` : DROPPED_TEXT;
 
 /** What shows for a board. gone: it is no longer on its server. unreachable: its server is not connected and this
- *  window keeps no scene of it (scenes are kept in memory only). canvas: everything else, and every local board.
- *  remote: the board is of a section; connected: the local server holds that server's tree; gone: the page knows
- *  that the board was removed there. */
+ *  window keeps no scene of it (scenes are kept in memory only). canvas: everything else.
+ *  connected: the page holds that server's tree; gone: the page knows that the board was removed there. */
 export type BoardView = "canvas" | "unreachable" | "gone";
-export function boardView(at: { remote: boolean; connected: boolean; gone?: boolean }, hasScene: boolean): BoardView {
-  if (!at.remote) return "canvas";
+export function boardView(at: { connected: boolean; gone?: boolean }, hasScene: boolean): BoardView {
   if (at.gone) return "gone";
   return at.connected || hasScene ? "canvas" : "unreachable";
 }

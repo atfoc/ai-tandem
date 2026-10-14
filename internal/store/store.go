@@ -114,28 +114,30 @@ func (st *Store) Update(f func(s *model.State) error) error {
 	return WriteJSONAtomic(st.P.State, st.s, 0o600)
 }
 
-type serverFile struct {
+// ServerFile is server.json: the running server's process, its client port and its control socket.
+type ServerFile struct {
 	PID     int       `json:"pid"`
-	Port    int       `json:"port"`
+	Port    int       `json:"port"`              // the client listener's port
+	Control string    `json:"control,omitempty"` // the control socket's path; none in a server of the build before
 	Started time.Time `json:"started"`
 }
 
-// WriteServerFile records this process and its port. Written after listen succeeds.
-func WriteServerFile(p Paths, port int) error {
-	return WriteJSONAtomic(p.Server, serverFile{PID: os.Getpid(), Port: port, Started: time.Now()}, 0o600)
+// WriteServerFile records this process, its client port and its control socket. Written after
+// every listener is bound.
+func WriteServerFile(p Paths, port int, control string) error {
+	return WriteJSONAtomic(p.Server, ServerFile{PID: os.Getpid(), Port: port, Control: control, Started: time.Now()}, 0o600)
 }
 
-// ReadServerFile returns the pid and port of server.json; ok is false when it is missing or unreadable.
-func ReadServerFile(p Paths) (pid, port int, ok bool) {
+// ReadServerFile returns server.json; ok is false when it is missing or unreadable.
+func ReadServerFile(p Paths) (sf ServerFile, ok bool) {
 	b, err := os.ReadFile(p.Server)
 	if err != nil {
-		return 0, 0, false
+		return ServerFile{}, false
 	}
-	var sf serverFile
 	if err := json.Unmarshal(b, &sf); err != nil || sf.PID == 0 || sf.Port == 0 {
-		return 0, 0, false
+		return ServerFile{}, false
 	}
-	return sf.PID, sf.Port, true
+	return sf, true
 }
 
 // RemoveServerFile deletes server.json. Called on shutdown.

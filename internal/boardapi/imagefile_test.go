@@ -232,7 +232,7 @@ func (e *env) onePage(reply func(params map[string]any) any) {
 	page := bridgetest.Connect(e.t, srv.URL, "P1")
 	page.Welcome()
 	page.OnRPC(func(params map[string]any) (any, string) { return reply(params), "" })
-	e.relay.Bridge.Acted("P1")
+	e.take("P1", e.board.ID)
 }
 
 // resultKind tells what a Cursor-style and an image-part-style result look like: file is the path

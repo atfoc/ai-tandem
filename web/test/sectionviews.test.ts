@@ -11,9 +11,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { fakeStream } from "./fixtures/stream.ts";
 
-let source: { onmessage?: (e: { data: string }) => void } | undefined;
-(globalThis as any).EventSource = class { onmessage?: (e: { data: string }) => void; constructor() { source = this; } close() {} };
+const stream = fakeStream();
 (globalThis as any).navigator ??= { platform: "MacIntel" };
 (globalThis as any).document ??= { querySelector: () => null, activeElement: null }; // a selection asks for the composer's box a moment later: there is none here
 (globalThis as any).window ??= { devicePixelRatio: 1, innerWidth: 1280, addEventListener() {}, removeEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) }; // the toolbar asks the page's zoom as it is drawn
@@ -27,7 +27,7 @@ const idle = (file: string): string =>
     .map((m) => (m[1] === "scenes" ? "export const scenes = new Map();" : `export const ${m[1]} = () => {};`)).join("\n");
 const stubs: Record<string, string> = {
   "./board.ts": idle("board.ts"), "./version.ts": idle("version.ts"),
-  "./api.ts": `export const clientId = "test"; export class ApiError extends Error {} export const call = async () => ({});
+  "./api.ts": `export const appCall = async () => ({}); export class ApiError extends Error {} export const call = async () => ({});
     export const api = new Proxy({}, { get: (_, k) => (...args) => { globalThis.__views.asked.push(String(k) + " " + String(args[0])); return new Promise(() => {}); } });`,
   "@excalidraw/excalidraw": `export const Excalidraw = () => null; export const FONT_FAMILY = {}; export const ROUNDNESS = {}; export const CaptureUpdateAction = {};
     export const restoreElements = (x) => x; export const getSceneVersion = () => 0; export const newElementWith = (x) => x; export const exportToBlob = async () => null;
@@ -41,7 +41,7 @@ const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-views-")), "vi
 await esbuild.build({
   stdin: {
     contents: `export * as chat from "./ChatView.tsx"; export * as composer from "./Composer.tsx"; export * as canvas from "./Canvas.tsx"; export * as side from "./Sidebar.tsx";
-      export * as store from "./store.ts"; export * as conn from "./conn.ts";
+      export * as store from "./store.ts"; export * as conn from "./conn.ts"; export * as tr from "./transport/index.ts";
       export { TreePopup } from "./fork/TreePopup.tsx"; export * as chrome from "./fork/Chrome.tsx"; export * as forks from "./fork/actions.ts"; export * as subs from "./Subagents.tsx";
       export { createElement } from "react"; export { renderToStaticMarkup } from "react-dom/server";`,
     resolveDir: src, loader: "ts",
@@ -61,11 +61,12 @@ await esbuild.build({
     },
   }],
 });
-const { chat: chatUi, composer, canvas, side, TreePopup, chrome, forks, subs, store, conn, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
+const { chat: chatUi, composer, canvas, side, TreePopup, chrome, forks, subs, store, conn, tr, createElement, renderToStaticMarkup } = await import(pathToFileURL(out).href);
+tr.useTransport(stream.transport);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
-async function ev(m: Record<string, unknown>) { source!.onmessage!({ data: JSON.stringify(m) }); await tick(); }
+async function ev(m: Record<string, unknown>) { stream.push(m, { servers: store.getState().servers, sections: Object.keys(store.getState().sections) }); await tick(); }
 const html = (component: unknown, props: Record<string, unknown>): string => renderToStaticMarkup(createElement(component, props));
 const S = () => store.getState();
 
@@ -504,7 +505,7 @@ test("what another client or the owner does in a section's chat shows in the ope
   store.setThread(`${k("c_new")}:main`, { version: 0, items: [] });
   const was = html(composer.Composer, { chatId: k("c_new"), branch: "main" });
   assert.ok(was.includes("Model M") && was.includes(">w<"));
-  await ev({ type: "server_lists", server: LAB, lists: { ...lists[LAB], catalogs: { claude: { models: [{ id: "m", label: "Model M" }, { id: "n", label: "Model N", efforts: ["low", "high"] }], default: { model: "m" } } } } });
+  await ev({ type: "catalog", server: LAB, agent: "claude", catalog: { models: [{ id: "m", label: "Model M" }, { id: "n", label: "Model N", efforts: ["low", "high"] }], default: { model: "m" } } });
   await ev({ type: "branch_state", server: LAB, state: state("c_new", { locked: false, model: "n", effort: "high", cwd: "/srv/other" }) });
   await ev({ type: "chat", server: LAB, chat: chat("c_new", { name: "Unstarted", locked: false, model: "n", effort: "high", cwd: "/srv/other" }) });
   const now = html(composer.Composer, { chatId: k("c_new"), branch: "main" });

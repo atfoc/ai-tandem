@@ -1,45 +1,31 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // TestLaunchRace starts two `launch` at the same moment for one data folder: both must print the
-// same URL and exactly one server must run.
+// same address and fingerprint and exactly one server must run.
 func TestLaunchRace(t *testing.T) {
-	serverTest(t)
-	bin := buildBinary(t)
+	serverTest(t, "TestLaunchFindsTheRunningServer (this package: launch against a stand-in server)")
 	for round := 1; round <= 3; round++ {
-		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) { launchRace(t, bin) })
+		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) { launchRace(t) })
 	}
 }
 
-func launchRace(t *testing.T, bin string) {
-	env := serverEnv(t, freePort(t)) // every launched serve binds this free port, never the machine-global 6006
-	dir := t.TempDir()
-	port := freePort(t)
-	portArg := strconv.Itoa(port)
-	claude := noClaude(t)
-	t.Cleanup(func() {
-		stop := exec.Command(bin, "stop", "-home", dir, "-port", portArg)
-		stop.Env = env
-		stop.Run()
-		exec.Command("pkill", "-KILL", "-f", "--", "-home "+dir).Run()
-	})
-
+func launchRace(t *testing.T) {
+	in := newInstance(t)
 	type result struct {
 		out    string
 		stderr string
-		err    error
+		code   int
 	}
 	results := make([]result, 2)
 	start := make(chan struct{})
@@ -48,55 +34,42 @@ func launchRace(t *testing.T, bin string) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, bin, "launch", "-home", dir, "-port", portArg, "-client", "",
-				"-claude", claude, "-cursor", claude, "-pi", claude)
-			cmd.Env = env
 			<-start
-			out, err := cmd.Output()
-			r := result{out: string(out), err: err}
+			cmd := in.command(context.Background(), "launch", "-json")
+			var out, errOut bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &errOut
+			err := cmd.Run()
+			code := 0
 			if ee, ok := err.(*exec.ExitError); ok {
-				r.stderr = string(ee.Stderr)
+				code = ee.ExitCode()
+			} else if err != nil {
+				code = -1
 			}
-			results[i] = r
+			results[i] = result{out.String(), errOut.String(), code}
 		}()
 	}
 	close(start)
 	wg.Wait()
 
-	want := fmt.Sprintf("http://127.0.0.1:%d/", port)
 	for i, r := range results {
-		if r.err != nil {
-			t.Fatalf("launcher %d: %v\n%s", i, r.err, r.stderr)
+		if r.code != 0 {
+			t.Fatalf("launcher %d: exit %d\n%s", i, r.code, r.stderr)
 		}
-		if r.out != want+"\n" {
-			t.Fatalf("launcher %d printed %q, want the single line %q", i, r.out, want)
+		if r.out != results[0].out {
+			t.Fatalf("launcher %d printed %q, launcher 0 %q", i, r.out, results[0].out)
 		}
+	}
+	run := in.waitServing(t)
+	if !strings.Contains(results[0].out, `"pid":`+strconv.Itoa(run.hello.Pid)+",") || !strings.Contains(results[0].out, `"address":"`+in.base()+`"`) {
+		t.Fatalf("launch printed %q, the server runs as pid %d at %s", results[0].out, run.hello.Pid, in.base())
 	}
 
-	resp, err := http.Get(want + "api/hello")
-	if err != nil {
-		t.Fatalf("hello: %v", err)
-	}
-	defer resp.Body.Close()
-	var hello struct {
-		App string `json:"app"`
-		Pid int    `json:"pid"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&hello); err != nil {
-		t.Fatalf("hello: %v", err)
-	}
-	if hello.App != "ai-whiteboard" {
-		t.Fatalf("hello app = %q", hello.App)
-	}
-
-	out, err := exec.Command("pgrep", "-f", "--", "serve -home "+dir).Output()
+	out, err := exec.Command("pgrep", "-f", "--", "serve -home "+in.dir).Output()
 	if err != nil {
 		t.Fatalf("pgrep: %v", err)
 	}
 	pids := strings.Fields(string(out))
-	if len(pids) != 1 || pids[0] != strconv.Itoa(hello.Pid) {
-		t.Fatalf("servers for %s: pids %v, want only %d (the one /api/hello reports)", dir, pids, hello.Pid)
+	if len(pids) != 1 || pids[0] != strconv.Itoa(run.hello.Pid) {
+		t.Fatalf("servers for %s: pids %v, want only %d (the one hello reports)", in.dir, pids, run.hello.Pid)
 	}
 }

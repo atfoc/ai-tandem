@@ -97,7 +97,7 @@ func (e *env) listen() *events {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.t.Cleanup(cancel)
 	req, _ := http.NewRequestWithContext(ctx, "GET", e.url+"/api/events?client="+clientID, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := e.send(req, clientID)
 	if err != nil {
 		e.t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { fakeStream } from "./fixtures/stream.ts";
 import { FORKING_LINE, FORK_HELD, LOADING_LINE, OPENING_LINE, SEND_HELD, STARTING_LINE, heldReason, pickOn, sendWait, threadWait, type ChatWaits } from "../src/logic/waits.ts";
 import type { Target } from "../src/types.ts";
 
@@ -32,8 +33,7 @@ Object.defineProperty(globalThis, "localStorage", {
   }),
 });
 
-let source: { onmessage?: (e: { data: string }) => void; close(): void } | undefined;
-(globalThis as any).EventSource = class { constructor() { source = this; } close() {} };
+const stream = fakeStream();
 
 const stubs: Record<string, string> = {
   "board.ts": `export const runTool = async () => ({}); export const flushAll = async () => {}; export const forgetBoard = () => {};
@@ -63,7 +63,7 @@ const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const src = path.join(web, "src");
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-waitflows-")), "flows.mjs");
 await esbuild.build({
-  stdin: { contents: `export * as actions from "./fork/actions.ts"; export * as conn from "./conn.ts"; export * as store from "./store.ts";`, resolveDir: src, loader: "ts" },
+  stdin: { contents: `export * as actions from "./fork/actions.ts"; export * as conn from "./conn.ts"; export * as tr from "./transport/index.ts"; export * as store from "./store.ts";`, resolveDir: src, loader: "ts" },
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
   plugins: [{
     name: "stubs",
@@ -76,11 +76,12 @@ await esbuild.build({
     },
   }],
 });
-const { actions, conn, store } = await import(pathToFileURL(out).href);
+const { actions, conn, tr, store } = await import(pathToFileURL(out).href);
+tr.useTransport(stream.transport);
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 
 /** An event from the server. */
-async function ev(m: Record<string, unknown>) { source!.onmessage!({ data: JSON.stringify(m) }); await settle(); }
+async function ev(m: Record<string, unknown>) { stream.push(m, { servers: store.getState().servers, sections: Object.keys(store.getState().sections) }); await settle(); }
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 0 };
 const view = (id: string, o: Record<string, unknown> = {}) =>

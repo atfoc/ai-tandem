@@ -31,7 +31,7 @@ function chain(groups: Group[], id: string): Group[] {
 }
 
 /**
- * The tree of one server: this computer's (the local part of the sidebar), or a section's.
+ * The tree of one server: this computer's (the first section of the sidebar), or another's.
  * groups: that server's groups. boards, chats: the store's, of every server; only that
  * server's are in the tree (o.server: its entry id, this computer without one), and of those none
  * that is no longer on its server (o.gone: it is on screen, and has no row).

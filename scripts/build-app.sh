@@ -2,13 +2,14 @@
 # Builds bin/AI Whiteboard.app with electron-builder (desktop/electron-builder.yml):
 #   Contents/MacOS/AI Whiteboard     Electron, the app window (the bundle's executable)
 #   Contents/MacOS/ai-whiteboard     the Go server binary, which the app runs to start or find
-#                                    the server
-#   Contents/Resources/app.asar      Electron main process and preload only
-#   Contents/Resources/web/          the built web client, served by the Go server
+#                                    this computer's server
+#   Contents/Resources/app.asar      Electron main process, preload and the connection module
+#   Contents/Resources/web/          the built web client: the app's page, loaded from this folder
 #   Contents/Resources/remote/setup-remote.sh
 #                                    sets the app's server up as a remote server (run through sh)
 #   Contents/Resources/AppIcon.icns
-# One version (git describe) is stamped into the Go binary, the web client and CFBundleVersion.
+# One version (git describe) is stamped into the Go binary, the web client and CFBundleVersion;
+# the page and the app are one build.
 # Install it into ~/Applications with scripts/install-app.sh.
 set -euo pipefail
 

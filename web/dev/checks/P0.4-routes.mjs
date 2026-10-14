@@ -1,23 +1,34 @@
 // Proves the mock's routes and knobs for the waits of the fork flows (plans/composer-ui-improvements.md, section 3):
-// by requests against the mock with its event stream read beside them, and by what the page does with them today.
-// And the mock's routes of a section (plans/remote-server-sections-contract.md, 3.2 to 3.5 and 3.8): the snapshot's
-// `sections`, a thing made under /api/on/<entry id>/ and its event with `server`, the answer of a call by the state
-// of its server, what the local server answers itself, and what the local routes refuse.
-import { check, mockEval, openPage, seed, startMove, until } from "../shot.mjs";
+// by calls made on the mock as the page's transport makes them (POST /host/call) with its stream (GET /host/events) read
+// beside them, and by what the page does with them today.
+// And the mock's servers (plans/app-as-client-plan.md, C3.4, C3.7 and C5.3): a call names its server and is answered by that
+// machine, a thing made on a server is told as that server's event, the answer of a call by the state of its server, what
+// is no call of the client API, what the routes refuse, and the order of the stream when a server drops and is back.
+import { check, hostCall, mockEval, openPage, seed, startMove, until } from "../shot.mjs";
 
 await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, note }) => {
   await seed(url, "A2", "A4");
-  const call = async (method, path, body) => {
-    const t = Date.now(), r = await fetch(url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-    return { status: r.status, body: await r.json().catch(() => null), ms: Date.now() - t };
+  const call = async (method, path, body, server = "local") => {
+    const t = Date.now(), r = await hostCall(url, method, path, body, server);
+    return { status: r.status, body: typeof r.body === "string" ? null : r.body, ms: Date.now() - t };
   };
   const knob = (code) => mockEval(code, url);
-  // The event stream, read as a page reads it: every event with the moment it came.
+  // The event stream, read as a page reads it: every envelope of the stream, flattened (the event, with the top-level
+  // `server` of an event of another server, or the app's event), with the moment it came.
   const ctl = new AbortController(), events = [];
-  const stream = await fetch(url + "/api/events?client=check", { signal: ctl.signal });
+  const stream = await fetch(url + "/host/events", { signal: ctl.signal });
   (async () => {
     let buf = "";
-    try { for await (const chunk of stream.body) { buf += Buffer.from(chunk).toString("utf8"); for (let i; (i = buf.indexOf("\n\n")) >= 0; buf = buf.slice(i + 2)) events.push({ at: Date.now(), ...JSON.parse(buf.slice(5, i)) }); } } catch {}
+    try {
+      for await (const chunk of stream.body) {
+        buf += Buffer.from(chunk).toString("utf8");
+        for (let i; (i = buf.indexOf("\n\n")) >= 0; buf = buf.slice(i + 2)) {
+          if (!buf.startsWith("data:")) continue; // (a comment: the open mark, a ping)
+          const env = JSON.parse(buf.slice(5, i));
+          events.push({ at: Date.now(), ...(env.event ?? env.app), ...(env.server && env.server !== "local" ? { server: env.server } : {}) });
+        }
+      }
+    } catch {}
   })();
   const of = (chat) => (e) => (e.chat?.id ?? e.chat ?? e.state?.chat) === chat;
   const since = (n, chat) => events.slice(n).filter(of(chat));
@@ -110,13 +121,13 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
     { n: list?.items?.length, last: list?.items?.at(-1), state: list?.state?.status });
   expect("flags.send.eventsAfter: the events come after it", await until(() => since(n, T).some((e) => e.type === "tree")) && words(since(n, T)) === `branch_state:${r.body?.branch},chat,tree` && since(n, T).every((e) => held(e.at - t, 2000)), since(n, T).map((e) => [word(e), e.at - t]));
   // A chat archived while its message is held is refused, as a deleted one is. (The chat is the lab box's: the same
-  // calls under that server's prefix, answered by that machine.)
-  const GONE = "/api/on/s_lab/chats/c_A4_remote";
+  // calls to that server, answered by that machine.)
+  const GONE = "/api/chats/c_A4_remote", LABBOX = "s_lab";
   await knob(`flags.send = { delay: 1500 };`);
-  const late = call("POST", `${GONE}/messages`, target);
-  await call("POST", `${GONE}/archive`);
+  const late = call("POST", `${GONE}/messages`, target, LABBOX);
+  await call("POST", `${GONE}/archive`, undefined, LABBOX);
   r = await late;
-  expect("a message to a chat archived during the delay is refused", r.status === 409 && r.body?.error === "the chat is archived" && (await call("GET", `${GONE}/tree`)).body.branches.length === 1, r);
+  expect("a message to a chat archived during the delay is refused", r.status === 409 && r.body?.error === "the chat is archived" && (await call("GET", `${GONE}/tree`, undefined, LABBOX)).body.branches.length === 1, r);
   await knob(`delete flags.send;`);
 
   // ---- a branch's list: its own, delayed, failed
@@ -191,93 +202,95 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
   expect("flags.spawn: the first message to a fresh fork finds it thinking and still fresh, then puts the message", held(r.ms, 500) && cold[0]?.chat.status === "thinking" && cold[0].chat.fresh === true && cold.at(-1).chat.fresh === undefined, cold.map((e) => [e.chat.status, e.chat.fresh]));
   await knob(`delete flags.spawn;`);
 
-  // ---- a section's routes: a thing is made on a server by the call under its prefix, and is fixed there
-  const LAB = "/api/on/s_lab", counts = () => knob('return Object.fromEntries(Object.entries(worlds).map(([id, w]) => [id, Object.keys(w.chats).length + Object.keys(w.boards).length]));');
+  // ---- the servers: a call names its server, a thing is made on a server by the call to it, and is fixed there
+  const LAB = "s_lab", counts = () => knob('return Object.fromEntries(Object.entries(worlds).map(([id, w]) => [id, Object.keys(w.chats).length + Object.keys(w.boards).length]));');
   const heldBefore = await counts();
-  r = await call("POST", `/api/chats`, { group: "g_A2", server: "s_lab" });
-  expect("POST /api/chats with another server in its body is refused, and nothing is made", r.status === 400 && r.body?.code === "server_refused" && JSON.stringify(await counts()) === JSON.stringify(heldBefore), r);
-  r = await call("POST", `/api/boards`, { group: "g_A2", server: "s_lab" });
-  expect("POST /api/boards with another server in its body is refused, and nothing is made", r.status === 400 && r.body?.code === "server_refused" && JSON.stringify(await counts()) === JSON.stringify(heldBefore), r);
-  r = await call("POST", `/api/chats`, { group: "g_A2", server: "local" });
-  expect("POST /api/chats {server: local} makes the chat on this computer", r.status === 200 && r.body && !("server" in r.body) && r.body.cwd === "/Users/demo/projects/shop", r);
+  for (const server of ["s_lab", "local"]) {
+    r = await call("POST", `/api/chats`, { group: "g_A2", server: "s_lab" }, server);
+    expect(`POST /api/chats to ${server} with a server in its body is refused, and nothing is made`, r.status === 400 && r.body?.code === "server_refused" && r.body.error === "an API client cannot name a server" && JSON.stringify(await counts()) === JSON.stringify(heldBefore), r);
+    r = await call("POST", `/api/boards`, { group: "g_A2", server: "local" }, server);
+    expect(`POST /api/boards to ${server} with a server in its body, "local" too, is refused, and nothing is made`, r.status === 400 && r.body?.code === "server_refused" && JSON.stringify(await counts()) === JSON.stringify(heldBefore), r);
+  }
   n = events.length;
-  r = await call("POST", `${LAB}/chats`, { group: "g_A2" });
+  r = await call("POST", `/api/chats`, { group: "g_A2" }, LAB);
   const there = r.body?.id;
-  expect("POST /api/on/<entry id>/chats makes the chat on that server, unstarted, with its folder and model, and names no server in it", r.status === 200 && !("server" in r.body) && r.body.locked === false && r.body.cwd === "/home/dev/projects" && r.body.agent === "claude" && r.body.model === "opus"
+  expect("POST /api/chats to a server makes the chat on that server, unstarted, with its folder and model, and names no server in it", r.status === 200 && !("server" in r.body) && r.body.locked === false && r.body.cwd === "/home/dev/projects" && r.body.agent === "claude" && r.body.model === "opus"
     && await knob(`return !!worlds.s_lab.chats[${JSON.stringify(there)}] && !worlds.local.chats[${JSON.stringify(there)}];`), r);
   told = await toldOf(n, there);
-  expect("the chat made there is told as that server's: the `chat` event has the top-level server and that server's own ids", told.length === 1 && told[0].type === "chat" && told[0].server === "s_lab" && told[0].chat.id === there && told[0].chat.group === "g_A2", told);
-  r = await call("POST", `/api/on/s_off/chats`, { group: "g_A2" });
+  expect("the chat made there is told as that server's: the envelope names s_lab and the `chat` event has that server's own ids", told.length === 1 && told[0].type === "chat" && told[0].server === "s_lab" && told[0].chat.id === there && told[0].chat.group === "g_A2", told);
+  r = await call("POST", `/api/chats`, { group: "g_A2" }, "s_off");
   expect("a call for a server that is not connected is answered 503 server_unreachable with its name, and nothing is made", r.status === 503 && r.body?.code === "server_unreachable" && r.body.error === "Office Mac is not connected." && !r.body.id, r);
-  r = await call("POST", `/api/on/s_bare/chats`, { group: "g_A2" });
+  r = await call("POST", `/api/chats`, { group: "g_A2" }, "s_bare");
   expect("a chat made on a server with no agent has none", r.status === 200 && !r.body.agent && r.body.cwd === "/home/bare", r);
-  for (const id of ["s_nope", "local"]) { r = await call("POST", `/api/on/${id}/chats`, { group: "g_A2" }); expect(`/api/on/${id}/… is 404 no_server`, r.status === 404 && r.body?.code === "no_server", r); }
-  r = await call("GET", `${LAB}/chats/c_nope`);
+  r = await call("POST", `/api/chats`, { group: "g_A2" }, "s_nope");
+  expect("a server that is not in the list is 404 no_server", r.status === 404 && r.body?.code === "no_server", r);
+  r = await call("GET", `/api/chats/c_nope`, undefined, LAB);
   expect("a call for a thing that server has not is that server's 404, with the code not_found", r.status === 404 && r.body?.code === "not_found", r);
   r = await call("GET", `/api/chats/${there}`);
-  expect("the local route knows no chat of another server: 404 not_found", r.status === 404 && r.body?.code === "not_found", r);
-  r = await call("GET", `${LAB}/servers`);
-  expect("a path that is no call of a section is 404", r.status === 404 && r.body?.error === "not found", r);
-  r = await call("PATCH", `${LAB}/chats/${there}?branch=main`, { agent: "pi" });
+  expect("this computer knows no chat of another server: 404 not_found", r.status === 404 && r.body?.code === "not_found", r);
+  for (const path of ["/api/servers", "/api/on/s_lab/chats", "/api/restart", "/api/mcp/status", "/api/remote/status", "/api/groups/order", "/api/boards/b_x/reveal", "/api/chats/c_x/../items", "/index.html", "/api/events", "/api/chats#x"]) {
+    r = await call("GET", path, undefined, LAB);
+    expect(`${path} is no call of the client API: 400 not_client_api`, r.status === 400 && r.body?.code === "not_client_api", r);
+  }
+  r = await call("PUT", `/api/groups/g_A2`, { name: "x" }, LAB);
+  expect("a method that is no row of the table for a path is 400 not_client_api too", r.status === 400 && r.body?.code === "not_client_api", r);
+  r = await call("PATCH", `/api/chats/${there}?branch=main`, { agent: "pi" }, LAB);
   expect("PATCH {agent} answers the chat with that agent's default model there", r.body?.chat?.agent === "pi" && r.body.chat.model === "claude-sonnet-5-5" && r.body.chat.effort === "medium", r);
-  r = await call("PATCH", `${LAB}/chats/${there}?branch=main`, { server: "local" });
+  r = await call("PATCH", `/api/chats/${there}?branch=main`, { server: "local" }, LAB);
   expect("PATCH {server} is refused: a chat is on the server it was made on", r.status === 409 && r.body?.code === "server_fixed", r);
   r = await call("PATCH", `/api/chats/c_A2_new?branch=main`, { server: "s_lab" });
   expect("PATCH {server} is refused for a chat on this computer too", r.status === 409 && r.body?.code === "server_fixed", r);
-  r = await call("PATCH", `${LAB}/groups/g_A2`, { collapsed: true });
-  expect("a PATCH of a section's group with `collapsed` is refused by the local server, and that server is told nothing", r.status === 400 && r.body?.code === "collapsed_refused" && await knob("return worlds.s_lab.groups.find((g) => g.id === 'g_A2').collapsed === undefined;"), r);
-  r = await call("PUT", `${LAB}/chats/${there}/draft?branch=main&replace=1`, { text: "x" });
-  expect("a draft's ?replace is refused under the prefix", r.status === 400 && r.body?.code === "replace_refused", r);
-  r = await call("DELETE", `/api/chats/c_A2_new?local=1`);
-  expect("a delete of the local record alone is refused, and the chat stays", r.status === 400 && r.body?.code === "no_record" && await knob("return !!chats.c_A2_new;"), r);
-  r = await call("GET", `/api/servers/s_lab/items`);
-  expect("GET /api/servers/<id>/items is gone", r.status === 404, r);
-  // what the local server answers itself, whatever the server's state
-  r = await call("POST", `${LAB}/boards/b_nope/reveal`);
-  expect("a board of a section has no file to reveal here: 400 not_here", r.status === 400 && r.body?.code === "not_here", r);
-  r = await call("POST", `/api/on/s_off/chats/c_x/unfollow`);
-  expect("an unfollow is answered here, also for a server that is not connected", r.status === 200 && r.body?.ok === true, r);
-  r = await call("POST", `/api/on/s_off/boards/b_x/release`);
-  expect("a release for a server that is not connected is answered here", r.status === 200 && r.body?.state === "none", r);
-  // the order of the server's own answers (internal/server/section.go): the path first, then the entry, in every call
-  r = await call("GET", `/api/on/s_nope/servers`);
-  expect("a path that is no call of a section is 404 not found for an id that is no entry too, not no_server", r.status === 404 && r.body?.error === "not found" && !r.body.code, r);
-  r = await call("POST", `/api/on/s_nope/boards/b_x/reveal`);
-  expect("reveal is 404 no_server for an id that is no entry", r.status === 404 && r.body?.code === "no_server", r);
-  r = await call("POST", `/api/on/s_nope/chats/c_x/unfollow`);
+  for (const server of [LAB, "local"]) {
+    const group = () => knob(`return JSON.stringify(onServer(${JSON.stringify(server)}, () => groups.find((g) => g.id === 'g_A2')));`), was = await group();
+    r = await call("PATCH", `/api/groups/g_A2`, { collapsed: !JSON.parse(was).collapsed }, server);
+    expect(`a PATCH of a group of ${server} with \`collapsed\` is refused, and nothing changes there`, r.status === 400 && r.body?.code === "collapsed_refused" && r.body.error === "an API client cannot collapse a group" && await group() === was, r);
+  }
+  const doomed = (await call("POST", `/api/chats`, { group: "g_A2" })).body?.id;
+  r = await call("DELETE", `/api/chats/${doomed}?local=1`);
+  expect("a delete takes the chat: the query `local` is nothing to a client API", r.status === 200 && !await knob(`return !!chats[${JSON.stringify(doomed)}];`), r);
+  r = await call("POST", `/api/chats/c_x/unfollow`, undefined, "s_off");
+  expect("an unfollow is answered 200, also for a server that is not connected", r.status === 200 && r.body?.ok === true, r);
+  r = await call("POST", `/api/boards/b_x/release`, undefined, "s_off");
+  expect("a release for a server that is not connected is answered {state: none}", r.status === 200 && r.body?.state === "none", r);
+  r = await call("POST", `/api/chats/c_x/unfollow`, undefined, "s_nope");
   expect("an unfollow is 404 no_server for an id that is no entry", r.status === 404 && r.body?.code === "no_server", r);
-  r = await call("POST", `/api/on/s_nope/boards/b_x/release`);
+  r = await call("POST", `/api/boards/b_x/release`, undefined, "s_nope");
   expect("a release for an id that is no entry is 404 no_server", r.status === 404 && r.body?.code === "no_server", r);
-  r = await call("POST", `${LAB}/chats/c_nope/messages?branch=main&replace=1`, { text: "x" });
-  expect("?replace is refused on a draft's save alone: a message with it is passed on, and is that server's answer", r.status === 404 && r.body?.code === "not_found", r);
-  r = await call("PATCH", `${LAB}/groups/g_A2`, { Collapsed: false });
-  expect("`collapsed` is refused in whatever case its letters are, as the server that decodes the body would take any", r.status === 400 && r.body?.code === "collapsed_refused" && r.body.error === "whether a group of another server shows collapsed is kept by the page alone", r);
+  r = await call("PATCH", `/api/groups/g_A2`, { Collapsed: false }, LAB);
+  expect("`collapsed` is refused in whatever case its letters are, as the server that decodes the body would take any", r.status === 400 && r.body?.code === "collapsed_refused", r);
+  // the bodies the module limits
+  r = await call("POST", `/api/chats/${there}/messages`, { text: "x".repeat(2 * 1024 * 1024 + 1) }, LAB);
+  expect("a JSON body over 2 MiB is 413 too_large, and nothing is sent", r.status === 413 && r.body?.code === "too_large", r);
   // the draft's counter
-  r = await call("PUT", `${LAB}/chats/${there}/draft?branch=main&rev=0`, { text: "first" });
+  r = await call("PUT", `/api/chats/${there}/draft?branch=main&rev=0`, { text: "first" }, LAB);
   expect("a draft saved on its counter answers the next one", r.status === 200 && r.body?.rev === 1, r);
-  r = await call("PUT", `${LAB}/chats/${there}/draft?branch=main&rev=0`, { text: "second" });
+  r = await call("PUT", `/api/chats/${there}/draft?branch=main&rev=0`, { text: "second" }, LAB);
   expect("a draft saved on an older counter is refused as stale, with the counter and the draft there are", r.status === 409 && r.body?.code === "stale" && r.body.rev === 1 && r.body.draft?.text === "first", r);
-  // the snapshot, and a server that drops and is back
-  const snap = (await call("GET", "/api/state")).body;
-  expect("the snapshot has the tree of each server that is connected under `sections`, and no key for one that is not", JSON.stringify(Object.keys(snap.sections).sort()) === JSON.stringify(["s_bare", "s_lab"])
-    && snap.sections.s_lab.chats.some((c) => c.id === there) && ["groups", "boards", "chats", "states", "defaults"].every((k) => k in snap.sections.s_lab), Object.keys(snap.sections ?? {}));
-  const fields = (list) => [...new Set(list.flatMap((x) => Object.keys(x)))].filter((k) => ["server", "gone", "unmoved", "moveError", "start", "was"].includes(k));
-  expect("no thing of the snapshot, of this computer or of a section, has a field of what went away", !fields([...snap.chats, ...snap.boards, ...snap.groups, ...Object.values(snap.sections).flatMap((t) => [...t.chats, ...t.boards, ...t.groups])]).length
-    && !snap.chats.some((c) => c.id === there) && !Object.values(snap.sections).some((t) => t.groups.some((g) => "collapsed" in g)), fields([...snap.chats, ...snap.boards]));
+  // the snapshot: each server's own (app.APISnapshot), and a server that drops and is back
+  const snap = (await call("GET", "/api/state", undefined, LAB)).body, mine = (await call("GET", "/api/state")).body;
+  const KEYS = ["agents", "catalogs", "home", "defaultCwd", "groups", "boards", "chats", "defaults", "states", "library"];
+  expect("a snapshot is the API snapshot: its fields, this server's tree under its own ids, the library null for a server that has none", KEYS.every((k) => k in snap && k in mine) && snap.home === "/home/dev" && mine.home === "/Users/demo" && snap.chats.some((c) => c.id === there) && !mine.chats.some((c) => c.id === there)
+    && snap.library === null && Array.isArray(mine.library?.groups) && !("sections" in mine) && !("servers" in mine) && !("libraries" in mine) && !("dataDir" in mine), Object.keys(snap));
+  const fields = (list) => [...new Set(list.flatMap((x) => Object.keys(x)))].filter((k) => ["server", "gone", "unmoved", "moveError", "start", "was", "collapsed"].includes(k));
+  expect("no thing of a snapshot has a field of what went away, and no group says whether it is collapsed", !fields([...snap.chats, ...snap.boards, ...snap.groups, ...mine.chats, ...mine.boards, ...mine.groups]).length, fields([...mine.chats, ...mine.boards, ...mine.groups]));
   n = events.length;
   await knob('setServerState("s_lab", "unreachable", { detail: "connection refused" });');
-  r = await call("GET", `${LAB}/chats/${there}`);
-  expect("with the server dropped its calls are 503, and the pages were told `server_state` and `section` with no tree", r.status === 503 && r.body?.error === "lab-gpu-box.tailnet-1234.ts.net is not connected."
-    && events.slice(n).some((e) => e.type === "server_state" && e.server?.id === "s_lab" && e.server.state === "unreachable") && events.slice(n).some((e) => e.type === "section" && e.server === "s_lab" && e.tree === null), [r, events.slice(n).map((e) => e.type)]);
+  r = await call("GET", `/api/chats/${there}`, undefined, LAB);
+  expect("with the server dropped its calls are 503, and the page was told `server_state` and nothing else of it", r.status === 503 && r.body?.error === "lab-gpu-box.tailnet-1234.ts.net is not connected."
+    && events.slice(n).length === 1 && events.slice(n)[0].type === "server_state" && events.slice(n)[0].server?.id === "s_lab" && events.slice(n)[0].server.state === "unreachable", [r, events.slice(n).map((e) => e.type)]);
   await knob('setServerState("s_lab", "too_old", { version: "0.9" });');
-  r = await call("GET", `${LAB}/chats/${there}`);
+  r = await call("GET", `/api/chats/${there}`, undefined, LAB);
   expect("of a server that is too old its calls say so", r.status === 503 && r.body?.code === "server_unreachable" && /is too old: update the server on that machine\.$/.test(r.body.error), r);
   n = events.length;
   await knob(`await elsewhere("s_lab", "PATCH", "/chats/${there}", { name: "Named while away" }); send({ type: "mock_mark", id: "away" });`);
   await until(() => events.some((e) => e.id === "away"));
   expect("what changes on a server that is not connected is told to nobody here", !events.slice(n).some((e) => e.type === "chat"), events.slice(n).map((e) => e.type));
-  await knob('setServerState("s_lab", "connected", { version: "dev" });');
-  expect("back, the pages are told its whole tree as it is now", await until(() => events.slice(n).some((e) => e.type === "section" && e.server === "s_lab" && e.tree?.chats.some((c) => c.id === there && c.name === "Named while away"))), events.slice(n).map((e) => e.type));
+  n = events.length;
+  await knob('setServerState("s_lab", "connected");');
+  await until(() => events.slice(n).length >= 3);
+  const back = events.slice(n);
+  expect("back, its stream opens: hello, the snapshot as it is now (its own tree), then the entry as connected, in that order", back.map((e) => `${e.type}:${e.server?.id ?? e.server}`).join() === "hello:s_lab,snapshot:s_lab,server_state:s_lab" && back[1].chats.some((c) => c.id === there && c.name === "Named while away")
+    && back[2].server.state === "connected" && !("detail" in back[2].server), back.map((e) => e.type));
   r = await call("PATCH", `/api/chats/c_A2_new`, { name: "Renamed" });
   expect("a rename answers the chat too", r.body?.ok === true && r.body.chat?.name === "Renamed" && r.body.chat.userNamed === true, r);
 

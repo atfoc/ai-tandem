@@ -19,9 +19,11 @@ import (
 // is the one the header names.
 func newTestServer(t *testing.T, snapshot func() any) (*Bridge, *httptest.Server) {
 	t.Helper()
-	b := New(snapshot)
+	b := New()
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/events", b.ServeSSE)
+	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
+		b.Serve(w, r, r.URL.Query().Get("client"), snapshot)
+	})
 	mux.HandleFunc("POST /api/rpc-reply", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ID string `json:"id"`
@@ -57,6 +59,18 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitGone waits until the client's record ended.
+func waitGone(t *testing.T, b *Bridge, id string) {
+	t.Helper()
+	deadline := time.Now().Add(bridgetest.Wait)
+	for b.Known(id) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the record of %s did not end", id)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -152,16 +166,13 @@ func TestMissingClientID(t *testing.T) {
 
 func TestDefaultHandoverDelay(t *testing.T) {
 	t.Parallel()
-	b := New(nil)
-	if b.handoverAfter != 3*time.Second {
-		t.Fatal("handover delay is not 3s")
-	}
-	if apiHandoverDelay != 10*time.Second || b.apiHandoverAfter != apiHandoverDelay {
-		t.Fatal("handover delay of an API holder is not 10s")
+	b := New()
+	if b.handoverAfter != 10*time.Second || handoverDelay != 10*time.Second {
+		t.Fatal("handover delay is not 10s")
 	}
 	b.SetHandoverDelay(time.Millisecond)
-	if b.handoverAfter != time.Millisecond || b.apiHandoverAfter != time.Millisecond {
-		t.Fatal("SetHandoverDelay did not set both delays")
+	if b.handoverAfter != time.Millisecond {
+		t.Fatal("SetHandoverDelay did not set the delay")
 	}
 }
 
@@ -210,8 +221,8 @@ func TestSecondStreamWithConnectedIDReplacesFirst(t *testing.T) {
 	take(t, b, "A", "b1", true, "held")
 }
 
-// A page that has only opened a stream is given no board and no tool call (AC38).
-func TestStreamOnlyPageGetsNoBoardAndNoCall(t *testing.T) {
+// A client that has only opened a stream is given no board and no tool call (AC38).
+func TestStreamOnlyClientGetsNoBoardAndNoCall(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a := open(t, srv, "A")
@@ -232,28 +243,8 @@ func TestStreamOnlyPageGetsNoBoardAndNoCall(t *testing.T) {
 	if id, ok := b.HolderOf("b1"); ok {
 		t.Fatalf("b1 was given to %s", id)
 	}
-
-	// A page that acted is chosen, also when the stream-only page is the newer one.
-	c := open(t, srv, "C")
-	if !b.Acted("C") {
-		t.Fatal("Acted refused a connected client")
-	}
-	a2 := open(t, srv, "A2")
-	done := goCall(b, CallSpec{Method: "tool", Board: "b1"}, 5*time.Second)
-	expectBoard(t, c, "held", "b1")
-	ev := c.Expect("rpc")
-	if !b.ReplyFrom("C", ev["id"].(string), RPCReply{Result: json.RawMessage(`"ok"`)}) {
-		t.Fatal("ReplyFrom refused the client that was asked")
-	}
-	if r := expectResult(t, done); r.err != nil {
-		t.Fatal(r.err)
-	}
 	b.Broadcast(map[string]any{"type": "catalog"})
-	a.Expect("catalog")
-	a2.Expect("catalog")
-	if b.Acted("nobody") {
-		t.Fatal("Acted accepted an id with no stream")
-	}
+	a.Expect("catalog") // and no rpc before it
 }
 
 // ---- holding a board (AC39) ----
@@ -603,7 +594,7 @@ func TestFreeBoard(t *testing.T) {
 // board before the one before it let go.
 func TestOneHolderAtATime(t *testing.T) {
 	t.Parallel()
-	b := New(nil)
+	b := New()
 	b.handoverAfter = time.Minute
 	const clients, grants = 6, 150
 	var mu sync.Mutex
@@ -623,7 +614,7 @@ func TestOneHolderAtATime(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := range clients {
-		c := newClient(fmt.Sprintf("c%d", i), KindPage)
+		c := newClient(fmt.Sprintf("c%d", i))
 		b.mu.Lock()
 		b.startLocked(c)
 		b.mu.Unlock()
@@ -687,7 +678,7 @@ func TestOneHolderAtATime(t *testing.T) {
 // consistent: a board has one holder, and a waiter only while it is held.
 func TestRecordsStayConsistent(t *testing.T) {
 	t.Parallel()
-	b := New(nil)
+	b := New()
 	b.handoverAfter = time.Millisecond
 	ids := []string{"c0", "c1", "c2", "c3", "c4"}
 	boards := []string{"b0", "b1", "b2"}
@@ -754,7 +745,7 @@ func TestRecordsStayConsistent(t *testing.T) {
 					b.FreeBoard(board, time.Millisecond)
 				case 7:
 					b.mu.Lock()
-					b.startLocked(newClient(id, KindPage)) // a reconnect
+					b.startLocked(newClient(id)) // a reconnect
 					b.mu.Unlock()
 				case 8:
 					b.mu.Lock()
@@ -780,7 +771,7 @@ func TestCallGoesToHolderOfTarget(t *testing.T) {
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	take(t, b, "A", "b1", false, "held")
-	take(t, b, "B", "b2", false, "held") // B is the chat's holder and acted last
+	take(t, b, "B", "b2", false, "held") // B is the chat's holder
 	done := goCall(b, CallSpec{Method: "tool", Params: map[string]any{"name": "read_board"}, Board: "b1", ChatBoard: "b2"}, 5*time.Second)
 	ev := a.Expect("rpc")
 	if ev["method"] != "tool" || ev["params"].(map[string]any)["name"] != "read_board" {
@@ -806,20 +797,17 @@ func TestCallGoesToHolderOfTarget(t *testing.T) {
 	}
 }
 
+// A call about a target nobody holds goes to the holder of the chat's board, a call about no
+// board: the holder is given no board, and no hand-off of the target fails the call.
 func TestCallOnFreeTargetGoesToHolderOfChatBoard(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
-	b.SceneRev = func(board string) int64 { return int64(len(board)) }
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	take(t, b, "A", "chat", false, "held")
-	b.Acted("B") // B acted last, and is not chosen
 	done := goCall(b, CallSpec{Method: "tool", Board: "target", ChatBoard: "chat"}, 5*time.Second)
-	if h := expectBoard(t, a, "held", "target"); h["rev"] != float64(6) {
-		t.Fatalf("held = %v", h)
-	}
-	ev := a.Expect("rpc") // after held
-	if !b.Holds("A", "target") || !b.Holds("A", "chat") {
-		t.Fatal("A should hold the target and the chat's board")
+	ev := a.Expect("rpc") // and no held before it
+	if _, ok := b.HolderOf("target"); ok || !b.Holds("A", "chat") {
+		t.Fatal("the call gave the target to a client, or took the chat's board")
 	}
 	c.ExpectNone(50 * time.Millisecond)
 	b.ReplyFrom("A", ev["id"].(string), RPCReply{})
@@ -827,30 +815,15 @@ func TestCallOnFreeTargetGoesToHolderOfChatBoard(t *testing.T) {
 		t.Fatal(r.err)
 	}
 
-	// The next call on the target finds its holder: no second grant.
-	done = goCall(b, CallSpec{Method: "tool", Board: "target", ChatBoard: "other"}, 5*time.Second)
-	ev = a.Expect("rpc")
-	b.ReplyFrom("A", ev["id"].(string), RPCReply{})
-	expectResult(t, done)
-}
-
-func TestCallFallsBackToLastPageThatActed(t *testing.T) {
-	t.Parallel()
-	b, srv := newTestServer(t, nil)
-	a, c := open(t, srv, "A"), open(t, srv, "B")
-	b.Acted("B")
-	b.Acted("A")
-	b.Acted("B")
-	n := open(t, srv, "N") // the newest stream, which only opened it
-
-	done := goCall(b, CallSpec{Method: "tool", Board: "b1", ChatBoard: "free"}, 5*time.Second)
-	expectBoard(t, c, "held", "b1")
-	ev := c.Expect("rpc")
+	// A call on the target once its holder is a client: it goes to the holder.
+	take(t, b, "B", "target", false, "held")
+	done = goCall(b, CallSpec{Method: "tool", Board: "target", ChatBoard: "chat"}, 5*time.Second)
+	ev = c.Expect("rpc")
 	b.ReplyFrom("B", ev["id"].(string), RPCReply{})
 	expectResult(t, done)
+	a.ExpectNone(50 * time.Millisecond)
 
-	// A call about one screen: the holder of the chat's board, and it is given no board.
-	take(t, b, "A", "chat", false, "held")
+	// A call about one screen: the holder of the chat's board, which is given no board.
 	done = goCall(b, CallSpec{Method: "tool", Screen: true, Board: "b9", ChatBoard: "chat"}, 5*time.Second)
 	ev = a.Expect("rpc")
 	b.ReplyFrom("A", ev["id"].(string), RPCReply{})
@@ -858,19 +831,23 @@ func TestCallFallsBackToLastPageThatActed(t *testing.T) {
 	if _, ok := b.HolderOf("b9"); ok {
 		t.Fatal("a screen call gave a board")
 	}
-	// With no holder of the chat's board: the page that acted last, here A by its take.
-	done = goCall(b, CallSpec{Method: "tool", Screen: true, ChatBoard: "free"}, 5*time.Second)
-	ev = a.Expect("rpc")
-	b.ReplyFrom("A", ev["id"].(string), RPCReply{})
-	expectResult(t, done)
-
-	c.ExpectNone(50 * time.Millisecond)
-	n.ExpectNone(10 * time.Millisecond)
+	// With nobody holding the chat's board there is no client to ask, at once.
+	b.ReleaseBoard("A", "chat")
+	for _, spec := range []CallSpec{
+		{Method: "tool", Screen: true, ChatBoard: "chat"},
+		{Method: "tool", Board: "free", ChatBoard: "chat"},
+	} {
+		if _, err := b.CallBoard(spec, 5*time.Second); !errors.Is(err, ErrNoClient) {
+			t.Fatalf("%+v: err = %v", spec, err)
+		}
+	}
+	a.ExpectNone(10 * time.Millisecond)
+	c.ExpectNone(10 * time.Millisecond)
 }
 
 func TestCallBoardNoClient(t *testing.T) {
 	t.Parallel()
-	b := New(nil)
+	b := New()
 	start := time.Now()
 	for _, spec := range []CallSpec{{Method: "tool", Board: "b1", ChatBoard: "b2"}, {Method: "tool", Screen: true}} {
 		if _, err := b.CallBoard(spec, 5*time.Second); !errors.Is(err, ErrNoClient) {
@@ -983,7 +960,7 @@ func TestStreamEndFailsAllCalls(t *testing.T) {
 	calls := []chan callResult{
 		goCall(b, CallSpec{Method: "tool", Board: "b1"}, 10*time.Second),
 		goCall(b, CallSpec{Method: "tool", Board: "b2"}, 10*time.Second),
-		goCall(b, CallSpec{Method: "tool", Screen: true}, 10*time.Second),
+		goCall(b, CallSpec{Method: "tool", Screen: true, ChatBoard: "b1"}, 10*time.Second),
 	}
 	for range calls {
 		a.Expect("rpc")
@@ -1003,149 +980,21 @@ func TestStreamEndFailsAllCalls(t *testing.T) {
 
 // ---- events (AC41) ----
 
-// One row of the table at a time, with a page that follows the chat and the board and one that
-// does not.
-func TestEventsTable(t *testing.T) {
-	t.Parallel()
-	b, srv := newTestServer(t, nil)
-	f, n := open(t, srv, "F"), open(t, srv, "N")
-	if !b.Follow("F", Chat("c1")) || !b.Follow("F", Board("b1")) {
-		t.Fatal("Follow refused a connected client")
-	}
-	seq := 0
-	// sent checks who got the event just sent: the follower always, the other page if both.
-	// It follows again first: a removal ends the follows.
-	sent := func(t *testing.T, typ string, both bool) {
-		t.Helper()
-		b.Follow("F", Chat("c1"))
-		b.Follow("F", Board("b1"))
-		seq++
-		b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
-		for _, p := range []*bridgetest.Page{f, n} {
-			if p == f || both {
-				p.Expect(typ)
-			}
-			if ev := p.Expect("catalog"); ev["mark"] != float64(seq) {
-				t.Fatalf("page %s: catalog = %v, want mark %d", p.ID, ev, seq)
-			}
-		}
-	}
-	for typ, rule := range Events {
-		t.Run(typ, func(t *testing.T) {
-			ev := map[string]any{"type": typ}
-			switch {
-			case rule.Class == Role:
-				// Only the bridge sends these, to one client. Through Broadcast it is a
-				// mistake, which goes to every page.
-				b.Broadcast(ev)
-				sent(t, typ, true)
-			case rule.APIOnly:
-				// No page is sent one: each gets the mark that follows it and nothing before.
-				b.Broadcast(ev)
-				b.SendChat("c1", ev)
-				seq++
-				b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
-				for _, p := range []*bridgetest.Page{f, n} {
-					if got := p.Next(); got["type"] != "catalog" || got["mark"] != float64(seq) {
-						t.Fatalf("page %s was sent %v", p.ID, got)
-					}
-				}
-			case rule.Per == PerNone:
-				if rule.Class != List {
-					t.Fatalf("a %v type of no item", rule.Class)
-				}
-				b.Broadcast(ev)
-				sent(t, typ, true)
-				// Through the item senders it goes by its class too.
-				b.SendBoard("b2", ev)
-				sent(t, typ, true)
-				b.SendChat("c2", ev)
-				sent(t, typ, true)
-			case rule.Per == PerChat:
-				b.SendChat("c1", ev)
-				if typ == "chat_removed" && b.Followed(Chat("c1")) {
-					t.Fatal("the removed chat is still followed")
-				}
-				sent(t, typ, rule.Class == List)
-				// A chat that nobody follows.
-				b.SendChat("c2", ev)
-				if rule.Class == List {
-					sent(t, typ, true)
-				} else {
-					seq++
-					b.Broadcast(map[string]any{"type": "catalog", "mark": seq})
-					f.Expect("catalog")
-					n.Expect("catalog")
-				}
-				// Sent as an event of a board, or of no item, it goes to every page, and no
-				// follow ends.
-				b.SendBoard("b1", ev)
-				b.Broadcast(ev)
-				if !b.Followed(Chat("c1")) || !b.Followed(Board("b1")) {
-					t.Fatal("a misdirected removal ended a follow")
-				}
-				for _, p := range []*bridgetest.Page{f, n} {
-					p.Expect(typ)
-				}
-				sent(t, typ, true)
-			case rule.Per == PerBoard:
-				if rule.Class != List {
-					t.Fatalf("a %v type of a board", rule.Class)
-				}
-				b.SendBoard("b1", ev) // every page has every board
-				if typ == "board_removed" && b.Followed(Board("b1")) {
-					t.Fatal("the removed board is still followed")
-				}
-				sent(t, typ, true)
-				// A board that nobody follows.
-				b.SendBoard("b2", ev)
-				sent(t, typ, true)
-				// Sent as an event of no item, or of a chat, it goes to every page too.
-				b.Broadcast(ev)
-				sent(t, typ, true)
-				b.SendChat("c1", ev)
-				sent(t, typ, true)
-			}
-		})
-	}
-	t.Run("a type outside the table", func(t *testing.T) {
-		for _, send := range []func(any){b.Broadcast, func(ev any) { b.SendChat("c2", ev) }, func(ev any) { b.SendBoard("b2", ev) }} {
-			send(map[string]any{"type": "brand_new"})
-			sent(t, "brand_new", true)
-		}
-		b.Broadcast(struct{ N int }{1}) // no type at all
-		for _, p := range []*bridgetest.Page{f, n} {
-			if ev := p.Next(); ev["N"] != float64(1) {
-				t.Fatalf("page %s got %v", p.ID, ev)
-			}
-		}
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if !b.logged["brand_new"] || !b.logged["chat_items"] || !b.logged["board"] || b.logged["groups"] || b.logged["catalog"] {
-			t.Fatalf("logged = %v", b.logged)
-		}
-	})
-	f.ExpectNone(50 * time.Millisecond)
-	n.ExpectNone(10 * time.Millisecond)
-}
-
-// The rows the plan names are all in the table, with their class.
+// The rows the plan names are all in the table, with their class: the types of the page and of
+// the servers it showed went with the page.
 func TestEventsRows(t *testing.T) {
 	t.Parallel()
 	want := map[string]Rule{
-		"hello": {Role, PerNone, false, false}, "snapshot": {Role, PerNone, false, false},
-		"release_request": {Role, PerNone, false, false}, "superseded": {Role, PerNone, false, false}, "held": {Role, PerNone, false, false},
-		"rpc": {Role, PerNone, false, false}, "server_stopping": {Role, PerNone, false, false},
-		"groups": {List, PerNone, false, false}, "defaults": {List, PerNone, false, false},
-		"board": {List, PerBoard, false, false}, "board_removed": {List, PerBoard, false, false},
-		"catalog": {List, PerNone, false, false}, "agents": {List, PerNone, false, false},
-		"servers": {List, PerNone, true, false}, "server_state": {List, PerNone, true, false},
-		"server_lists": {List, PerNone, true, false}, "section": {List, PerNone, true, false},
-		"library": {List, PerNone, true, false}, "library_removed": {List, PerNone, true, false},
-		"own_library": {List, PerNone, false, true},
-		"chat":        {List, PerChat, false, false}, "chat_removed": {List, PerChat, false, false}, "branch_state": {List, PerChat, false, false},
-		"tree": {Content, PerChat, false, false}, "chat_items": {Content, PerChat, false, false},
-		"sub": {Content, PerChat, false, false}, "sub_items": {Content, PerChat, false, false},
+		"hello": {Role, PerNone}, "snapshot": {Role, PerNone},
+		"release_request": {Role, PerNone}, "superseded": {Role, PerNone}, "held": {Role, PerNone},
+		"rpc": {Role, PerNone}, "server_stopping": {Role, PerNone},
+		"groups": {List, PerNone}, "defaults": {List, PerNone},
+		"board": {List, PerBoard}, "board_removed": {List, PerBoard},
+		"catalog": {List, PerNone}, "agents": {List, PerNone},
+		"own_library": {List, PerNone},
+		"chat":        {List, PerChat}, "chat_removed": {List, PerChat}, "branch_state": {List, PerChat},
+		"tree": {Content, PerChat}, "chat_items": {Content, PerChat},
+		"sub": {Content, PerChat}, "sub_items": {Content, PerChat},
 	}
 	if len(Events) != len(want) {
 		t.Fatalf("%d rows, want %d", len(Events), len(want))

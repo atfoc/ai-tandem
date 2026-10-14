@@ -149,7 +149,7 @@ beforeEach(() => {
   board.setLive(null, null);
   for (const b of Object.keys(st().boards)) board.forgetBoard(b); // what a failed test left
   board.streamOpened();
-  store.setState({ boards: {}, sections: {}, gone: {}, roles: {}, dropped: {}, sceneGen: {}, outage: {}, sel: { board: null, chat: null } });
+  store.setState({ connected: true, boards: {}, sections: {}, gone: {}, roles: {}, dropped: {}, sceneGen: {}, outage: {}, sel: { board: null, chat: null } });
 });
 test.after(() => { console.error = quiet; });
 
@@ -715,17 +715,17 @@ test("a save answered 504 (the link broke while it was on its way) keeps the edi
   assert.deepEqual([st().outage[b], st().roles[b], st().dropped[b], board.scenes.has(b)], [true, "held", undefined, true]);
   assert.equal(board.hasPendingSaves(), true);
   board.forgetBoard(b);
-  const l = await edited(3); // a board of this computer: no banner
+  const l = await edited(3); // a board of this computer: its server is a server like the others, and may be away
   await board.flush(l);
-  assert.deepEqual([st().outage[l], board.hasPendingSaves()], [undefined, true]);
+  assert.deepEqual([st().outage[l], board.hasPendingSaves()], [true, true]);
   board.forgetBoard(l);
 });
 
-test("a 503 for a board of this computer, and a save that got no answer, raise no banner", async () => {
+test("a 503 for a board of this computer raises the banner, as for a section's; a save that got no answer raises none", async () => {
   const b = await edited(3);
   away();
   await board.flush(b);
-  assert.deepEqual([st().outage[b], board.hasPendingSaves()], [undefined, true]);
+  assert.deepEqual([st().outage[b], board.hasPendingSaves()], [true, true]);
   board.forgetBoard(b);
   const r = remote(3);
   store.setRole(r, "held");
@@ -811,7 +811,7 @@ test("a board that is not reachable is not asked for: its section has no tree, o
   board.forgetBoard(b); board.forgetBoard(l);
 });
 
-test("a board whose read is answered 404 not_found is no longer on its server: a section's is marked gone, and the local board of the same id is not", async () => {
+test("a board whose read is answered 404 not_found is no longer on its server: marked gone, this computer's too, and the board of the same id on the other server is not", async () => {
   const b = `${S1}~b_same`, l = "b_same"; // the same id on this computer and in the section
   store.setState((s: any) => ({ sections: { ...s.sections, [S1]: s.sections[S1] ?? { groups: [], defaults: { groups: {} } } } }));
   setBoard(b); setBoard(l);
@@ -824,9 +824,9 @@ test("a board whose read is answered 404 not_found is no longer on its server: a
   asked();
   await board.takeBoard(b);
   assert.deepEqual(asked(), [], "a board that is gone there is not asked for");
-  // this computer's board with that id is untouched by it; its own failed read marks nothing (it is no thing of a section)
+  // this computer's board with that id was untouched by it; its own failed read marks it, as a section's
   await assert.rejects(board.loadScene(l), { code: "NO_BOARD" });
-  assert.deepEqual([st().gone[l], !!st().boards[l]], [undefined, true]);
+  assert.deepEqual([st().gone[l], !!st().boards[l]], [true, true]);
   // a 404 that does not say the board is gone (no code, or another), and a read that fails otherwise, mark nothing
   const other = remote(3);
   for (const e of [new ApiError(404, "not found"), new ApiError(404, "no such branch", true, "no_branch"), new ApiError(502, "Studio gave an answer that cannot be read.", true, "bad_answer"),
@@ -1012,7 +1012,7 @@ test("an edit kept at the loss stays kept when a take if free finds the board bu
   board.forgetBoard(b);
 });
 
-test("superseded with no outage drops the unsaved edit as before: a board of a section, and one of this computer that got a 503", async () => {
+test("superseded with no outage drops the unsaved edit as before: a board of a section, and one of this computer, with no answer at all", async () => {
   const r = remote(3);
   store.setRole(r, "held");
   await board.loadScene(r);
@@ -1024,7 +1024,7 @@ test("superseded with no outage drops the unsaved edit as before: a board of a s
   assert.equal(board.droppedInOutage(r), false);
   board.forgetBoard(r);
   const l = await edited(3);
-  away();
+  down();
   await board.flush(l);
   board.boardLost(l);
   assert.deepEqual([st().roles[l], st().dropped[l], board.scenes.has(l)], ["lost", true, false]);
@@ -1086,7 +1086,7 @@ test("a `section` with a tree: a kept scene is not read again, a board this wind
 test("after a restart of this computer's server during the outage the board with the edit is asked for when the tree arrives, on screen or not, and the revision decides", async () => {
   const same = await outage(3), other = await outage(3);
   section(S1, null);
-  board.streamOpened(); // the new stream holds no board: the window still has both drawings and their revisions
+  board.streamOpened(S1); // the new stream of that server holds no board: the window still has both drawings and their revisions
   board.takeAfterSnapshot();
   await tick();
   assert.deepEqual(asked(), [], "the section has no tree yet: nothing is asked");
