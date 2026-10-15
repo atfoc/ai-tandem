@@ -28,7 +28,7 @@ go build -C "$root" -ldflags "-X ai-whiteboard/internal/version.Version=$version
 
 echo "==> app"
 cd "$root/desktop"
-[ -d node_modules ] || npm ci
+[ -e node_modules/@aiwb/conn ] || npm ci # also when node_modules is older than the dependency on @aiwb/conn
 rm -rf dist
 npx electron-builder --mac --dir -c.buildVersion="$version"
 
