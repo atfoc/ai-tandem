@@ -28,6 +28,8 @@ export type SheetProps = {
 };
 
 const RISE_MS = 180;
+/** The rise's duration; the device self-test (`dev/SheetsSelfTest.tsx`) lengthens it, to make a sheet that opens while the keyboard moves meet the keyboard's animation. */
+export const sheetTiming = { riseMs: RISE_MS };
 /** A swipe down this far (points), or this fast (points per second), closes the sheet. */
 const CLOSE_DISTANCE = 80;
 const CLOSE_VELOCITY = 800;
@@ -47,7 +49,7 @@ export function Sheet({ open, onClose, label, testID = TID.sheet, closeOnBackdro
     if (!open) return;
     drag.setValue(0);
     rise.setValue(0);
-    Animated.timing(rise, { toValue: 1, duration: RISE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: Platform.OS !== "web" }).start();
+    Animated.timing(rise, { toValue: 1, duration: sheetTiming.riseMs, easing: Easing.out(Easing.cubic), useNativeDriver: Platform.OS !== "web" }).start();
   }, [open, rise, drag]);
 
   const close = useRef(onClose);

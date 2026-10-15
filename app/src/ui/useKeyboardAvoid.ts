@@ -3,9 +3,11 @@
 // overlay leaves free (its surface sits above the keyboard and takes the height that is left). Measured against the layer itself, not taken
 // from the keyboard's height alone: an Android window that the system already resizes for the keyboard is not covered twice. The overlay's
 // scroll view gets `scrollProps` and `scrollRef`: when the keyboard comes or goes, and when another box takes the focus, the box that has
-// it is scrolled into view (iOS does not do that for a scroll view; Android does, and this agrees with it).
+// it is scrolled into view (iOS does not do that for a scroll view; Android does, and this agrees with it). The inset is set at once, with no LayoutAnimation:
+// a LayoutAnimation is applied to every view the next commit changes, and on iOS it puts back the starting transform of a view moved by a native-driven
+// animation (the Sheet's rise), so a sheet whose box takes the focus as it opens was not drawn until the next render (`sheets` flow, section 6).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Dimensions, Keyboard, LayoutAnimation, Platform, TextInput, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent, type ScrollView, type View } from "react-native";
+import { Dimensions, Keyboard, Platform, TextInput, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent, type ScrollView, type View } from "react-native";
 
 import type { KeyboardAvoid } from "./keyboardavoid.types.ts";
 
@@ -35,12 +37,11 @@ export function useKeyboardAvoid(): KeyboardAvoid {
   useEffect(() => {
     const ios = Platform.OS === "ios";
     const settle = () => { setTimeout(reveal, 50); setTimeout(reveal, 300); };
-    const covered = (screenY: number, duration?: number) => {
+    const covered = (screenY: number) => {
       const node = rootRef.current;
       if (!node) return;
       node.measureInWindow((_x, y, _w, h) => {
         const next = Math.max(0, Math.round(y + h - screenY));
-        if (ios && duration) LayoutAnimation.configureNext(LayoutAnimation.create(duration, "keyboard", "opacity"));
         setInset(next);
         settle();
       });
@@ -50,10 +51,9 @@ export function useKeyboardAvoid(): KeyboardAvoid {
         const c = e.endCoordinates;
         // iOS: an undocked or floating keyboard (iPad) is not at the bottom edge and covers none of it.
         const docked = !ios || c.screenY + c.height >= Dimensions.get("screen").height - 1;
-        covered(docked ? c.screenY : Number.MAX_SAFE_INTEGER, e.duration);
+        covered(docked ? c.screenY : Number.MAX_SAFE_INTEGER);
       }),
-      Keyboard.addListener(ios ? "keyboardWillHide" : "keyboardDidHide", (e) => {
-        if (ios && e.duration) LayoutAnimation.configureNext(LayoutAnimation.create(e.duration, "keyboard", "opacity"));
+      Keyboard.addListener(ios ? "keyboardWillHide" : "keyboardDidHide", () => {
         setInset(0);
         settle();
       }),

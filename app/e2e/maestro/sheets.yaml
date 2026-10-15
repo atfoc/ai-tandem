@@ -10,6 +10,14 @@
 #  5. (package rn-sw-nativekb) a popover hung from the bottom of the screen with an autofocused text box (the composer's model picker on the tablet layout) rises
 #     with the keyboard: the box and its last row are above the keyboard's top (the app measures them against the keyboard's frame; its answer is the popover's first line, `geometry ok` or `geometry FAILED`) and
 #     the last row is pressed with the keyboard up; a popover with more rows than the room that is left takes that room and its box is above the keyboard.
+#  6. the composer's model picker and the library's insert popup as the app opens them: a real Overlay at the top of the screen (a sheet on the phone, a popover or a
+#     dialog on the tablet) with an autofocused text box, opened with no keyboard (`toppop`, `topdlg`) and from a button over a text box that has the keyboard (`topkb`).
+#     Nothing typed: the box is above the keyboard (`geometry ok`) and the screenshot shows the overlay; then one letter is typed and the screenshot is taken again
+#     (what was seen was an overlay that showed only after the first key). Without the fix of `useKeyboardAvoid` (no LayoutAnimation) the failing step is the wait for
+#     `sheets-<name>-input` (4 s, before the overlay's measure at 6 s, whose render would bring a lost sheet back): Maestro reads the native views and the sheet drawn
+#     off-screen is not there, while `geometry ok` (the layout) was true even then. The sheet rises over 300 ms in these three, not 180 (`sheetTiming`): the sheet was lost
+#     when the keyboard's LayoutAnimation was still running as its rise ended; the old code lost it at 180 and 300 ms every time and at 450 ms one time in nine
+#     (iPhone simulator), so 300 ms puts the end of the rise in the middle of that window (toppop, topdlg and topkb: 5 of 5 each).
 #     Run on a phone and on a tablet.
 appId: ${APP_ID}
 ---
@@ -178,3 +186,79 @@ appId: ${APP_ID}
 - assertVisible: "log:.*tall row 1 picked.*"
 - assertNotVisible:
     id: "sheets-tall-input"
+
+# ---- 6: toppop, a top-level Overlay of kind popover with an autofocused text box, opened with no keyboard up
+- tapOn:
+    id: "sheets-toppop-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-toppop-input"
+    timeout: 4000
+- takeScreenshot: p1-09-toppop-before-typing
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- takeScreenshot: p1-09-toppop-geometry
+- assertVisible: "geometry ok.*"
+- inputText: "a"
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- takeScreenshot: p1-09-toppop-after-typing
+- tapOn:
+    id: "sheets-toppop-row-1"
+- assertVisible: "log:.*toppop row 1 picked.*"
+- assertNotVisible:
+    id: "sheets-toppop-input"
+
+# ---- 6: topdlg, a top-level Overlay of kind dialog with an autofocused text box, opened with no keyboard up
+- tapOn:
+    id: "sheets-topdlg-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-topdlg-input"
+    timeout: 4000
+- takeScreenshot: p1-09-topdlg-before-typing
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- takeScreenshot: p1-09-topdlg-geometry
+- assertVisible: "geometry ok.*"
+- inputText: "a"
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- takeScreenshot: p1-09-topdlg-after-typing
+- tapOn:
+    id: "sheets-topdlg-row-1"
+- assertVisible: "log:.*topdlg row 1 picked.*"
+- assertNotVisible:
+    id: "sheets-topdlg-input"
+
+# ---- 6: topkb, the same Overlay (kind dialog) opened from a button over a text box that has the keyboard (the insert popup opened while the composer's box has the focus)
+- tapOn:
+    id: "sheets-topkb-box"
+- inputText: "x"
+- takeScreenshot: p1-09-topkb-keyboard-up
+- tapOn:
+    id: "sheets-topkb-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-topkb-input"
+    timeout: 4000
+- takeScreenshot: p1-09-topkb-before-typing
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- takeScreenshot: p1-09-topkb-geometry
+- assertVisible: "geometry ok.*"
+- inputText: "a"
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- takeScreenshot: p1-09-topkb-after-typing
+- tapOn:
+    id: "sheets-topkb-row-1"
+- assertVisible: "log:.*topkb row 1 picked.*"
+- assertNotVisible:
+    id: "sheets-topkb-input"
