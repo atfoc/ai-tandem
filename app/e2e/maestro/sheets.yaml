@@ -1,0 +1,180 @@
+# aiwb-e2e: needs=
+# Package P1: sheets and overlays with the on-screen keyboard, on the real primitives of ui/ (src/dev/SheetsSelfTest.tsx), no server.
+#  1. a sheet keeps the box that has the focus and its buttons above the keyboard: each button below is pressed while the keyboard is up
+#     (under the keyboard, the press would land on a key and change nothing);
+#  2. a menu, a dialog with a text box and a second sheet open from the sheet, declared beside it (-out) and inside it (-in): each shows
+#     (on iOS a second Modal beside an open one does not) and is pressed;
+#  3. the secret box does not make the system offer to save a password when the form closes;
+#  4. (package rn-sw-nativekb) typing in the middle of the secret keeps the caret where the edit left it (iOS draws the secret as bullets and sets the box's
+#     text from outside, which put the caret at the end): the text the form holds is read from `sheets-secret-value`;
+#  5. (package rn-sw-nativekb) a popover hung from the bottom of the screen with an autofocused text box (the composer's model picker on the tablet layout) rises
+#     with the keyboard: the box and its last row are above the keyboard's top (the app measures them against the keyboard's frame; its answer is the popover's first line, `geometry ok` or `geometry FAILED`) and
+#     the last row is pressed with the keyboard up; a popover with more rows than the room that is left takes that room and its box is above the keyboard.
+#     Run on a phone and on a tablet.
+appId: ${APP_ID}
+---
+- runFlow: _open.yaml
+- tapOn:
+    id: "selftest-sheets"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-root"
+    timeout: 30000
+- tapOn:
+    id: "sheets-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-title"
+    timeout: 30000
+- takeScreenshot: p1-00-sheet
+
+# ---- 1: the keyboard is up for the last box and for the first, and the buttons below them are pressed with it up
+- tapOn:
+    id: "servers-input-name"
+- inputText: "Studio"
+- tapOn:
+    id: "servers-input-address"
+- inputText: "https://example.test:1"
+- tapOn:
+    id: "servers-input-secret"
+- inputText: "abc"
+- takeScreenshot: p1-01-keyboard-secret
+- tapOn:
+    id: "sheets-save"
+- assertVisible: "log:.*saved Studio\\|https://example.test:1\\|abc.*"
+- tapOn:
+    id: "sheets-title"
+
+# ---- 4: typing in the middle of the secret ("abc" is in it): the caret goes to the start, "XY" is typed there, so the caret must stay after the X
+- assertVisible:
+    id: "sheets-secret-value"
+    text: "secret: abc"
+- tapOn:
+    id: "servers-input-secret"
+    point: "1%,50%"
+- inputText: "XY"
+- assertVisible:
+    id: "sheets-secret-value"
+    text: "secret: XYabc"
+- pressKey: Backspace
+- inputText: "Z"
+- assertVisible:
+    id: "sheets-secret-value"
+    text: "secret: XZabc"
+- takeScreenshot: p1-02-secret-middle
+- tapOn:
+    id: "sheets-title"
+
+# ---- 2: a popup opened from the sheet shows and works, whether it is declared beside the sheet or inside it
+- tapOn:
+    id: "sheets-menu-out"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-menu-pick-out"
+    timeout: 10000
+- takeScreenshot: p1-03-menu-out
+- tapOn:
+    id: "sheets-menu-pick-out"
+- assertVisible: "log:.*menu-out picked.*"
+- tapOn:
+    id: "sheets-menu-in"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-menu-pick-in"
+    timeout: 10000
+- tapOn:
+    id: "sheets-menu-pick-in"
+- assertVisible: "log:.*menu-in picked.*"
+
+- tapOn:
+    id: "sheets-dialog-out"
+- extendedWaitUntil:
+    visible:
+      id: "servers-input-dialog-out"
+    timeout: 10000
+- tapOn:
+    id: "servers-input-dialog-out"
+- inputText: "n1"
+- takeScreenshot: p1-04-dialog-out
+- tapOn:
+    id: "sheets-dialog-save-out"
+- assertVisible: "log:.*dialog-out saved n1.*"
+- tapOn:
+    id: "sheets-dialog-in"
+- extendedWaitUntil:
+    visible:
+      id: "servers-input-dialog-in"
+    timeout: 10000
+- tapOn:
+    id: "servers-input-dialog-in"
+- inputText: "n2"
+- tapOn:
+    id: "sheets-dialog-save-in"
+- assertVisible: "log:.*dialog-in saved n2.*"
+
+- tapOn:
+    id: "sheets-sheet-out"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-second-close-out"
+    timeout: 10000
+- takeScreenshot: p1-05-sheet-out
+- tapOn:
+    id: "sheets-second-close-out"
+- assertVisible: "log:.*sheet-out closed.*"
+- tapOn:
+    id: "sheets-sheet-in"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-second-close-in"
+    timeout: 10000
+- tapOn:
+    id: "sheets-second-close-in"
+- assertVisible: "log:.*sheet-in closed.*"
+
+# ---- 3: the form closes with a typed secret in it, and the system does not offer to save a password
+- tapOn:
+    id: "sheets-done"
+- extendedWaitUntil:
+    visible: "sheet: closed"
+    timeout: 10000
+- extendedWaitUntil:
+    notVisible: "Not Now"
+    timeout: 8000
+- assertNotVisible: "Save Password.*"
+- assertNotVisible: "Not Now"
+- assertVisible:
+    id: "sheets-root"
+- takeScreenshot: p1-06-closed
+
+# ---- 5: a popover hung from the bottom of the screen, with a text box that has the focus
+- tapOn:
+    id: "sheets-bottom-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-bottom-input"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- assertVisible: "geometry ok.*"
+- takeScreenshot: p1-07-bottom-popover
+- tapOn:
+    id: "sheets-bottom-last"
+- assertVisible: "log:.*bottom last picked.*"
+- tapOn:
+    id: "sheets-tall-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-tall-input"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "geometry (ok|FAILED).*"
+    timeout: 15000
+- assertVisible: "geometry ok.*"
+- takeScreenshot: p1-08-tall-popover
+- tapOn:
+    id: "sheets-tall-row-1"
+- assertVisible: "log:.*tall row 1 picked.*"
+- assertNotVisible:
+    id: "sheets-tall-input"

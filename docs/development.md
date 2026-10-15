@@ -1,6 +1,6 @@
 # Build and develop
 
-What you need to build and run AI Whiteboard from source, how to run the desktop app in development, how to build the macOS app, how to run the page in a headless browser, and how to run the tests.
+What you need to build and run AI Whiteboard from source, how to run the desktop app in development, how to build the macOS app, how to put the app on a phone or tablet, how to run the app's web build in a headless browser, and how to run the tests, the browser checks and the device tests.
 
 ## Prerequisites
 
@@ -15,17 +15,17 @@ What you need to build and run AI Whiteboard from source, how to run the desktop
 
 ## Run the desktop app in development
 
-The app is the only way to use AI Whiteboard: the page ships inside it, and no server serves a
-page. From the repo root, build the server program and the page, then start the app from the
-checkout:
+The desktop app shows the app's web build (`app/`, AD-40); it ships inside the app and no server
+serves it. From the repo root, build the server program and the web build, then start the desktop
+app from the checkout:
 
 ```sh
 go build -o bin/ai-whiteboard ./cmd/ai-whiteboard
-cd web && npm ci && npm run build && cd ..
+npm ci && (cd app && npm run build:web)
 cd desktop && npm ci && npm start
 ```
 
-The app loads `web/dist/index.html` with no packaging and runs `bin/ai-whiteboard` for this
+The app loads `app/dist-web/index.html` with no packaging and runs `bin/ai-whiteboard` for this
 computer's server. The server does not start until it has been set up, so run this once (the
 app's first section shows the same command when you forget):
 
@@ -35,7 +35,7 @@ bin/ai-whiteboard remote setup
 
 then press **Retry** in the section. `AIWB_HOME` makes the app use another data folder for its
 server (set the server up there too, with `-home`), `AIWB_SERVER_BIN` another server program,
-`AIWB_PAGE` another page file and `AIWB_USER_DATA` another folder for the app's own files (its
+`AIWB_PAGE` another page file (the `index.html` of another web build) and `AIWB_USER_DATA` another folder for the app's own files (its
 server list and window state). The MCP port 6006 is fixed, so a second server on the same machine
 does not start while another runs.
 
@@ -46,61 +46,194 @@ scripts/build-app.sh    # makes bin/AI Whiteboard.app
 scripts/install-app.sh  # copies it to ~/Applications, so Spotlight finds it
 ```
 
-The page is built into the bundle, so the app is one build of the app, the page and the server
-program.
+The web build is built into the bundle (`Contents/Resources/web`), so the macOS app is one build of
+the app, its web build and the server program.
 
-## The page in a headless browser
+## Install the app on a phone or tablet
 
-The app is not used in a browser tab, but the page can still be opened in a headless browser, for
-tests and for checking a change to the page without the app. The page then reaches the network
-through a plain HTTP face on `127.0.0.1` instead of the app's main process. Two programs serve it
-(Playwright is not a dependency: see [`AGENTS.md`](../AGENTS.md) for how it is installed):
+One script builds the phone and tablet app from the current code and installs it on a device that is connected or named. There
+is no store: no TestFlight, no Play Store, no store signing, and no credential in the repository.
 
 ```sh
-cd web && npm run build
-node web/dev/host.mjs --state-dir /tmp/aiwb-host              # the test host: a real server list, real servers
-cd web && npm run mock                                        # the mock: a fake client, no server (port 4791, PORT=… to change)
+node app/scripts/install.mjs --platform android              # the only Android device that adb sees
+node app/scripts/install.mjs --platform ios --device "Ana's iPhone"
+scripts/install-app-device.sh --platform ios                 # the same script, from anywhere
+node app/scripts/install.mjs --help                          # the options and the environment
+```
+
+`--device` takes an adb serial, a UDID or CoreDevice id, or the device's name; without it exactly one device must be connected, and
+with several the script lists them and stops. `--list` lists the devices, `--check` checks the tools, the signing and the device
+and builds nothing, `--no-open` installs without opening the app. The script is repeatable: run again, it builds and installs the
+current code. It says the step it is on (`step 4/8: dependencies`), prints the folder of its logs, and if it stops it says the
+step, the reason, what to do when the reason is a known one, and the last lines of the tool's log. Nothing is left in `git
+status` but ignored files: the generated `app/ios/` and `app/android/` (never committed), and the build.
+
+What it does: (1) checks the tools; (2) checks the signing; (3) finds the device; (4) `npm ci` at the root when `node_modules`
+is older than `package-lock.json`; (5) `npm run prebuild:board` in `app/` (the board's page, which the build takes as an asset)
+and reads the app's config; (6) `npx expo prebuild --clean` (the native project is generated, never committed; `--clean`
+because a key that the config no longer sets would stay in an old `Info.plist`); (7) the Release build, with the JavaScript and
+the board's page inside the app (no Metro); (8) installs and opens the app.
+
+The app's identity comes from the environment, never from a file: `AIWB_IOS_BUNDLE_ID` and `AIWB_ANDROID_PACKAGE` (both
+default to `local.aiwhiteboard.app`) and `AIWB_IOS_TEAM_ID` (no default).
+
+### Android: no account
+
+You need:
+
+- On the Mac: the Android SDK (Android Studio, or the command-line tools) with `platform-tools` (`adb`), platform 36, build-tools
+  36.0.0, the NDK and CMake that Gradle asks for (Gradle fetches the missing ones if the SDK's licences are accepted:
+  `$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses`), and a **JDK 17** (`brew install openjdk@17`; the script finds
+  Homebrew's, Android Studio's and the system's, or `JAVA_HOME`). `ANDROID_HOME` defaults to `~/Library/Android/sdk`.
+- On the phone or tablet: **Settings > About phone > tap "Build number" seven times**, then **Developer options > USB debugging**
+  on; connect the cable; on the device answer **"Allow USB debugging"** for this Mac (tick "Always allow"). Some makers
+  (Xiaomi/Redmi/Poco, Oppo, Vivo) have one more switch, **"Install via USB"**, and may ask you to sign in to the maker's account to
+  turn it on; Samsung, Pixel and most others do not. `adb devices` must show the device as `device`, not `unauthorized`.
+- Nothing from Google: no Google account, no Play Console. The Release APK is signed with the **debug key** that `expo prebuild`
+  puts in the generated project (a public key with a well-known password, the same on every prebuild; it protects nothing and is
+  no credential of yours). Because the key is always the same, an install over an earlier one of this script keeps the app's data;
+  an app of the same package that came from another key must be uninstalled first (`adb uninstall local.aiwhiteboard.app`), which
+  deletes its data, the list of servers included. The script says so and does not do it for you.
+- The app reaches a server by its address on the network the phone is on; a server on the Mac itself is reached over USB with
+  `adb reverse tcp:<port> tcp:<port>` (then add the server as `127.0.0.1`).
+
+### iPhone and iPad: what the Apple account must provide
+
+An iPhone or iPad accepts only an app that is signed, and the signing has to be yours. **A free Apple Account is enough**; a
+paid membership is not needed for this script. What the install needs:
+
+1. **A Mac with Xcode** (the `xcodebuild` and `xcrun devicectl` that come with it) **and CocoaPods** (`brew install cocoapods`).
+2. **An Apple Account signed in to Xcode**: Xcode > Settings > Accounts > "+" > Apple ID. The script cannot sign in for you and
+   reads no password; it uses the account Xcode is signed in to. Signing in creates the account's **Personal Team** (free) or
+   shows the team of your **Apple Developer Program** membership (paid, 99 USD a year). You do not enrol in anything for the
+   free team; nothing is sent to App Store Connect.
+3. **The team's id in the environment**: ten letters and digits, like `ABCDE12345`. It is in Xcode > Settings > Accounts > the team,
+   on developer.apple.com > Account > Membership details (paid), or, on a Mac that has signed anything for a device once, as `OU=`
+   in `security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject`.
+
+   ```sh
+   export AIWB_IOS_TEAM_ID=ABCDE12345
+   ```
+
+   It is never read from a file of the repository. Without it the script stops at step 2 (the signing) and prints this list.
+4. **A bundle id that no other team has taken.** Apple keeps bundle ids unique across all teams: if `local.aiwhiteboard.app`
+   (the default) is already registered to another team, Xcode says it cannot register it, and you choose your own:
+   `export AIWB_IOS_BUNDLE_ID=com.yourname.aiwhiteboard`. Keep using the same one afterwards (a free team may create only 10 App
+   IDs in 7 days, and the same id is reused).
+5. **The device**: connected by cable (or paired for wireless debugging in Xcode > Window > Devices and Simulators), **unlocked**,
+   with **"Trust This Computer"** answered, and with **Developer Mode on**: Settings > Privacy & Security > Developer Mode > on,
+   then restart the device and confirm. The switch appears only after the device has been connected to Xcode (or has had a
+   development-signed app) once, so if you do not see it, run the script once and it will stop with this instruction. Developer
+   Mode needs iOS 16 or newer.
+6. **The device registered with the team.** You do not do this by hand: the script builds with automatic signing and Xcode's
+   `-allowProvisioningUpdates`, so Xcode registers the connected device (its UDID) with the team, makes the development
+   certificate (**Apple Development: your name**, in your keychain) and the provisioning profile. The first build may take a minute
+   longer for that, and macOS may ask once for your login password to let Xcode use the certificate's key ("Always Allow").
+7. **Trust the developer on the device**, the first time: if the app does not open and iOS says "Untrusted Developer", go to
+   Settings > General > **VPN & Device Management** > Developer App > your *Apple Development: ...* entry > **Trust**. Then open the
+   app (or run the script again).
+
+**Free team or paid membership.** Both install the same app this way; they differ in how long it lasts and how much it can hold:
+
+| | Free Apple Account (Personal Team) | Paid Apple Developer Program |
+|---|---|---|
+| Cost, enrolment | none, signing in to Xcode is all | 99 USD a year, enrolment at developer.apple.com |
+| The installed app works for | **7 days**: the profile then expires and the app no longer opens; run the script again (the data stays) | a year (the development profile's life) |
+| Apps on one device | up to 3 at a time from the free team | no such limit |
+| Devices | up to 3 | up to 100 iPhones and 100 iPads a year |
+| App IDs | 10 new ones in 7 days (so keep one bundle id) | no such limit |
+| Store, TestFlight | no | yes, but this goal uses none |
+
+The app uses no capability that a free team lacks (no push, iCloud or similar; the secure store is the keychain, the local
+network and camera are Info.plist texts and runtime prompts). The iOS app asks "allow AI Whiteboard to find and connect to
+devices on your local network?" when it first connects to a server on the local network, and for the camera when you scan a server's code: both are asked
+when needed and may be answered later in Settings.
+
+**Why the iOS app turns App Transport Security off.** The app sets `NSAppTransportSecurity = { NSAllowsArbitraryLoads: true }`
+(and nothing else in that dict). A server is the user's own and is reached by whatever name or address they give, with a pinned,
+self-signed certificate; ATS would refuse a dotted DNS name without a trusted certificate, and its narrower exceptions cannot name
+hosts nobody has typed yet. There is no store review that would ask for a reason. "No plain HTTP" is kept by the app's own code
+instead (architecture AD-36): its only networking, `aiwb-net`, builds every URL with the literal scheme `https`, and a test
+(`app/test/noplainhttp.test.ts`) fails on any other way out. Android keeps cleartext traffic off.
+
+When it stops, the script names the known reasons and what to do: no Apple Account in Xcode; a bundle id that is taken; a device
+that is locked, not trusted or has Developer Mode off; an install that the phone refused (Android: "Install via USB"); an app of
+another signature already on the device. The logs of every step are in the folder it prints at the start.
+
+An iOS simulator also works as a target (`--device <udid or name of the simulator>`; `xcrun simctl list devices`): it needs no
+signing and no team, and tries the build part of the script.
+
+## The web build in a headless browser
+
+The app is not used in a browser tab, but its web build can still be opened in a headless browser,
+for the browser checks and for checking a change to a screen without the desktop app. The page then
+reaches the network through a plain HTTP face on `127.0.0.1` instead of the app's main process. Two
+programs serve it (Playwright is not a dependency: see [`AGENTS.md`](../AGENTS.md) for how it is
+installed). The page's policy lets it reach only the files it came from, so the build for them is
+made with `--connect-self`:
+
+```sh
+(cd app && npm run build:web -- --output-dir /tmp/aiwb-dist --connect-self)
+node web/dev/host.mjs --dist /tmp/aiwb-dist --state-dir /tmp/aiwb-host   # the test host: a real server list, real servers
+DIST=/tmp/aiwb-dist node web/dev/mock.mjs                              # the mock: a fake client, no server (port 4791, PORT=… to change)
 ```
 
 The **test host** (`web/dev/host.mjs`) does for the page what the app's main process does: it holds
 the server list and the secrets in the state folder, makes the pinned HTTPS connections with the
-same module (`desktop/conn`), and serves the page's files, calls, one event stream and pictures. With
+same module (`packages/conn`), and serves the page's files, calls, one event stream and pictures. With
 `--local-bin PATH` (and `--local-home DIR`) it finds or starts this computer's server with that
 server program as the app does. It prints `Host: http://127.0.0.1:<port>/` and listens on the
 loopback address only. It is never shipped and no server serves it. The **mock** (`web/dev/mock.mjs`)
-stands behind the same face with a made-up world, for working on the page without a Go server;
+stands behind the same face with a made-up world, for working on a screen without a Go server;
 it is not the contract, the server is. Nothing is injected into the page by either.
+
+To work on the app with a live reload, `cd app && npm run web` (Expo's web server) or `npm start` (a development build on a
+simulator, an emulator or a device; the native folders are generated, never committed).
 
 ## Development
 
 ```sh
-cd web && npm run watch   # rebuild the web client on change; reload the app's window to see it
-
 go test ./...                                  # server tests, default set: fast, for while you work (about 15 seconds)
 AIWB_TEST_FULL=1 go test -timeout 20m ./...    # server tests, full set: every test in full (about 40 seconds)
-cd web && npm test        # web client tests
-cd web && npm run check   # type check of the web client
-cd web && npm run uicheck # the browser checks of the page on the mock
-cd desktop && npm test    # desktop app tests: the main process, the connection module
-cd desktop && npm run e2e # the app itself, with a stand-in server (opens a window for a few seconds)
-node --test web/dev/host.test.mjs   # the test host
+npm test && npm run check                      # at the root: the unit tests and the type checks of app/ and packages/* (core, conn, board-bridge, board-view)
+cd web && npm test                             # the test host, the mock's face, the browser checks' own helpers
+cd web && npm run uicheck                      # the browser checks of the app's web build on the mock (dev/checks; builds its own export; long)
+cd web && npm run uicheck:electron             # the same checks drawn by the desktop app's own Chromium (dev/electron); with no check named: L8
+cd desktop && npm test                         # desktop app tests: the main process, the IPC face
+cd desktop && npm run e2e                      # the app itself, with a stand-in server (opens a window for a few seconds; after `cd app && npm run build:web`)
+node --test web/dev/host.test.mjs              # the test host
 ```
 
 Which set to run when, what each costs and how to write a test for either set is in
 [`AGENTS.md`](../AGENTS.md).
 
 `web/e2e/newchat.e2e.mjs`, `twopages.e2e.mjs`, `remotechat.e2e.mjs` and `localserver.e2e.mjs`
-drive the real page in headless Chrome, through a test host, against real servers they build and
+drive the app's web build in headless Chrome, through a test host, against real servers they build and
 start themselves, with the stand-in agent, and spend no money; `remotechat.e2e.mjs` runs this
 computer's server and a remote server and shows the sections of the sidebar, an outage and the
-return, and `localserver.e2e.mjs` runs this computer's server in every state it can be in. They
-serve `web/dist` (run `cd web && npm run build` first), except `localserver.e2e.mjs`, which builds
-what it needs. Each header says how to run it.
+return (also with `VIEWPORT=phone`), and `localserver.e2e.mjs` runs this computer's server in every state it can be
+in. They serve the web build (`DIST=app/dist-web` after `cd app && npm run build:web`; without `DIST` a script builds its own),
+except `localserver.e2e.mjs`, which builds what it needs. Each header says how to run it.
 
 `web/e2e/app.e2e.mjs` runs an end-to-end pass in headless Chrome, through a test host, against
 real agents. It uses cheap models but still spends a little money; its header explains how to run
-it. Stop the running AI Whiteboard app before a default run: the real-Cursor step needs exclusive
+it, and says that its page steps still read the page the app replaced and need moving onto `web/e2e/lib/ui.mjs` before they run
+again. Stop the running AI Whiteboard app before a default run: the real-Cursor step needs exclusive
 port 6006 (Cursor's org allowlist approves only `http://localhost:6006/mcp`). If 6006 is taken the
 suite fails fast with an explicit message; set `AIWB_E2E_SKIP_CURSOR_MCP=1` to report the
 real-Cursor MCP steps as skipped and run the rest on the hidden test-only MCP port override, so a
 normal app instance may keep 6006.
+
+### The device tests
+
+What a browser cannot show (the native network and its certificate rule, the board in a web view, the hardware keyboard, the
+sheets and the keyboard on a phone, the image picker and its permission) is tested on the iOS simulator and the Android emulator
+by flows that Maestro runs, started by one command; they use a scratch server of their own and never the one you use:
+
+```sh
+node app/e2e/run.mjs conn-on-hermes --platform ios --device <simulator udid>
+node app/e2e/run.mjs --list
+```
+
+`app/e2e/README.md` has the flows, what a run does, and how to name your own simulator or emulator. Maestro is fetched on first use
+into a git-ignored folder, checked against a checksum written in the script; nothing is installed system-wide.

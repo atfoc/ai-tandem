@@ -1,0 +1,472 @@
+=== start 2026-10-14T16:23:42.417Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 420984 Realtime: 420984
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    14960    14932       16       37    15932    26712    20907     1920
+  Dalvik Heap     3849     3720      112      113     4648     9748     4874     4874
+ Dalvik Other     2611     2564        4        3     3028                           
+        Stack     1880     1880        0        0     1884                           
+       Ashmem       11        0        0        0      596                           
+    Other dev       11        0        8        0      232                           
+     .so mmap     6664      296     3708       13    37428                           
+    .jar mmap     2254        0      676        0    37156                           
+    .apk mmap    12962      368    12164        0    14784                           
+    .ttf mmap      663        0      408        0     1024                           
+    .dex mmap    15278        0    15248        0    16152                           
+    .oat mmap     1121        0      440        0    11624                           
+    .art mmap     1391      824      200      229    19000                           
+   Other mmap       95        4       60        0     1124                           
+      Unknown     4149     3952      192        7     4664                           
+        TOTAL    68301    28540    33236      402   169276    36460    25781     6794
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:     4744                          23648
+         Native Heap:    14932                          15932
+                Code:    33308                         118248
+               Stack:     1880                           1884
+            Graphics:        0                              0
+       Private Other:     6912
+              System:     6525
+             Unknown:                                    9564
+ 
+           TOTAL PSS:    68301            TOTAL RSS:   169276       TOTAL SWAP PSS:      402
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      352                             32
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+
+=== interval 2026-10-14T16:26:42.877Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 601708 Realtime: 601708
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    13262    13236       12       37    14236    26968    20940     2034
+  Dalvik Heap    11340     6184     5008       26    12292     9852     4926     4926
+ Dalvik Other     2707     2516       32        3     3240                           
+        Stack     1024     1024        0        0     1028                           
+       Ashmem       11        0        0        0      596                           
+    Other dev        7        0        4        0      228                           
+     .so mmap     6370      300     3596       13    37560                           
+    .jar mmap     1995        0      364        0    37428                           
+    .apk mmap    12945      368    12164        0    14784                           
+    .ttf mmap      663        0      408        0     1024                           
+    .dex mmap    15273        0    15248        0    16152                           
+    .oat mmap      873        0      216        0    11464                           
+    .art mmap     4588      828     3228      173    22436                           
+   Other mmap       76        4       16        0     1132                           
+      Unknown     5121     4956      160        7     5636                           
+        TOTAL    76514    29416    40456      259   179236    36820    25866     6960
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:    10240                          34728
+         Native Heap:    13236                          14236
+                Code:    32664                         118700
+               Stack:     1024                           1028
+            Graphics:        0                              0
+       Private Other:    12708
+              System:     6642
+             Unknown:                                   10544
+ 
+           TOTAL PSS:    76514            TOTAL RSS:   179236       TOTAL SWAP PSS:      259
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      351                             32
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+
+=== interval 2026-10-14T16:29:43.353Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 782170 Realtime: 782170
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    13294    13268       12       37    14268    26968    21038     1943
+  Dalvik Heap    11221     6092     4992       26    12184     9852     4926     4926
+ Dalvik Other     2767     2536       32        3     3340                           
+        Stack     1024     1024        0        0     1028                           
+       Ashmem       11        0        0        0      596                           
+    Other dev        7        0        4        0      228                           
+     .so mmap     6258      300     3540       13    37560                           
+    .jar mmap     1945        0      304        0    37528                           
+    .apk mmap    12945      368    12164        0    14784                           
+    .ttf mmap      663        0      408        0     1024                           
+    .dex mmap    15273        0    15248        0    16152                           
+    .oat mmap      859        0      208        0    11464                           
+    .art mmap     4584      828     3212      173    22428                           
+   Other mmap      100        4       16        0     1180                           
+      Unknown     5773     5600      168        7     6288                           
+        TOTAL    76983    30020    40308      259   180052    36820    25964     6869
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:    10132                          34612
+         Native Heap:    13268                          14268
+                Code:    32552                         118892
+               Stack:     1024                           1028
+            Graphics:        0                              0
+       Private Other:    13352
+              System:     6655
+             Unknown:                                   11252
+ 
+           TOTAL PSS:    76983            TOTAL RSS:   180052       TOTAL SWAP PSS:      259
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      353                             32
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+
+=== interval 2026-10-14T16:32:43.890Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 962637 Realtime: 962637
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    13277    13252       12       37    14252    26968    20945     2036
+  Dalvik Heap    11221     6076     5008       26    12184     9652     4826     4826
+ Dalvik Other     2817     2528       32        3     3448                           
+        Stack     1024     1024        0        0     1028                           
+       Ashmem       11        0        0        0      596                           
+    Other dev        7        0        4        0      228                           
+     .so mmap     6272      300     3540       13    37560                           
+    .jar mmap     1965        0      304        0    37528                           
+    .apk mmap    12945      368    12164        0    14784                           
+    .ttf mmap      663        0      408        0     1024                           
+    .dex mmap    15273        0    15248        0    16152                           
+    .oat mmap      859        0      208        0    11464                           
+    .art mmap     4582      828     3208      173    22428                           
+   Other mmap      114        4       16        0     1208                           
+      Unknown     6297     6132      160        7     6812                           
+        TOTAL    77586    30512    40312      259   180696    36620    25771     6862
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:    10112                          34612
+         Native Heap:    13252                          14252
+                Code:    32540                         118996
+               Stack:     1024                           1028
+            Graphics:        0                              0
+       Private Other:    13896
+              System:     6762
+             Unknown:                                   11808
+ 
+           TOTAL PSS:    77586            TOTAL RSS:   180696       TOTAL SWAP PSS:      259
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      351                             32
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+
+=== interval 2026-10-14T16:35:44.361Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 1143166 Realtime: 1143166
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    13338    13312       12       37    14312    27224    20995     2255
+  Dalvik Heap    11329     6184     5008       26    12292     9660     4830     4830
+ Dalvik Other     2861     2552       32        3     3508                           
+        Stack     1024     1024        0        0     1028                           
+       Ashmem       11        0        0        0      596                           
+    Other dev        7        0        4        0      228                           
+     .so mmap     6445      300     3540       14    37560                           
+    .jar mmap     1996        0      304        0    37528                           
+    .apk mmap    13011      368    12244        0    14784                           
+    .ttf mmap      663        0      408        0     1024                           
+    .dex mmap    15278        0    15248        0    16152                           
+    .oat mmap      912        0      208        0    11464                           
+    .art mmap     4583      828     3188      175    22428                           
+   Other mmap      126        4       16        0     1232                           
+      Unknown     6341     6176      160        7     6856                           
+        TOTAL    78187    30748    40372      262   180992    36884    25825     7085
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:    10200                          34720
+         Native Heap:    13312                          14312
+                Code:    32636                         119052
+               Stack:     1024                           1028
+            Graphics:        0                              0
+       Private Other:    13948
+              System:     7067
+             Unknown:                                   11880
+ 
+           TOTAL PSS:    78187            TOTAL RSS:   180992       TOTAL SWAP PSS:      262
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      351                             32
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+
+=== interval 2026-10-14T16:38:44.712Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 1323615 Realtime: 1323615
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    13286    13260       12       37    14260    27224    21032     2218
+  Dalvik Heap    11121     5976     5008       26    12084     9652     4890     4762
+ Dalvik Other     2865     2548       32        3     3520                           
+        Stack     1024     1024        0        0     1028                           
+       Ashmem       11        0        0        0      596                           
+    Other dev        7        0        4        0      228                           
+     .so mmap     6445      300     3540       14    37560                           
+    .jar mmap     1990        0      304        0    37528                           
+    .apk mmap    13011      368    12244        0    14784                           
+    .ttf mmap      663        0      408        0     1024                           
+    .dex mmap    15278        0    15248        0    16152                           
+    .oat mmap      910        0      208        0    11464                           
+    .art mmap     4579      828     3184      175    22428                           
+   Other mmap      134        4       16        0     1248                           
+      Unknown     6369     6204      160        7     6884                           
+        TOTAL    77955    30512    40368      262   180788    36876    25922     6980
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:     9988                          34512
+         Native Heap:    13260                          14260
+                Code:    32636                         119068
+               Stack:     1024                           1028
+            Graphics:        0                              0
+       Private Other:    13972
+              System:     7075
+             Unknown:                                   11920
+ 
+           TOTAL PSS:    77955            TOTAL RSS:   180788       TOTAL SWAP PSS:      262
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      351                             32
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+
+=== interval 2026-10-14T16:41:45.278Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 1504010 Realtime: 1504010
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    13254    13228       12       37    14228    27224    20842     2411
+  Dalvik Heap     9029     3948     4884       26    10056     9604     4802     4802
+ Dalvik Other     2893     2552       32        3     3572                           
+        Stack     1016     1016        0        0     1020                           
+       Ashmem       11        0        0        0      596                           
+    Other dev        7        0        4        0      228                           
+     .so mmap     5842      300     3160       14    36576                           
+    .jar mmap     1936        0      304        0    37440                           
+    .apk mmap    13011      368    12244        0    14784                           
+    .ttf mmap      649        0      408        0      984                           
+    .dex mmap    15242        0    15212        0    16116                           
+    .oat mmap      900        0      208        0    11456                           
+    .art mmap     4549      828     3128      175    22428                           
+   Other mmap      138        4       16        0     1256                           
+      Unknown     6409     6244      160        7     6924                           
+        TOTAL    75148    28488    39772      262   177664    36828    25644     7213
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:     7904                          32484
+         Native Heap:    13228                          14228
+                Code:    32224                         117964
+               Stack:     1016                           1020
+            Graphics:        0                              0
+       Private Other:    13888
+              System:     6888
+             Unknown:                                   11968
+ 
+           TOTAL PSS:    75148            TOTAL RSS:   177664       TOTAL SWAP PSS:      262
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      351                             32
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+
+=== end 2026-10-14T16:44:31.742Z
+Applications Memory Usage (in Kilobytes):
+Uptime: 1670635 Realtime: 1670635
+
+** MEMINFO in pid 5101 [dev.aiwb.netspike] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    13226    13200       12       37    14200    27224    20811     2442
+  Dalvik Heap     8833     3752     4884       26     9860     9060     4530     4530
+ Dalvik Other     2829     2484       32        3     3512                           
+        Stack      952      952        0        0      956                           
+       Ashmem       11        0        0        0      596                           
+    Other dev        7        0        4        0      228                           
+     .so mmap     5348      300     2684       14    36064                           
+    .jar mmap     1913        0      292        0    37420                           
+    .apk mmap    13011      368    12244        0    14784                           
+    .ttf mmap      689        0      448        0     1024                           
+    .dex mmap    15242        0    15212        0    16116                           
+    .oat mmap      874        0      208        0    11408                           
+    .art mmap     4547      828     3124      175    22428                           
+   Other mmap      126        4        0        0     1248                           
+      Unknown     6333     6256       72        7     6848                           
+        TOTAL    74203    28144    39216      262   176692    36284    25341     6972
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:     7704                          32288
+         Native Heap:    13200                          14200
+                Code:    31776                         117432
+               Stack:      952                            956
+            Graphics:        0                              0
+       Private Other:    13728
+              System:     6843
+             Unknown:                                   11816
+ 
+           TOTAL PSS:    74203            TOTAL RSS:   176692       TOTAL SWAP PSS:      262
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       22        AssetManagers:        0
+       Local Binders:       15        Proxy Binders:       48
+       Parcel memory:        7         Parcel count:       30
+    Death Recipients:        0             WebViews:        0
+ 
+ Native Allocations
+                         Count                       Total(kB)
+                        ------                         ------
+    Other (malloced):      350                             31
+ Other (nonmalloced):       72                             54
+ 
+ SQL
+         MEMORY_USED:        0
+  PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
+ 
+ 
+

@@ -1,23 +1,26 @@
-// Proves A2.6: a long name of a composer's chip is cut with an ellipsis, and is whole in the tooltip and in the menu.
-// The seed's 47-character folder and model, as a choice and as a fixed chip, and its 31-character server, whose chip is always a fixed one, in a wide
-// chat toolbar and in the "more" popup of a 300 px page: the name's element is narrower than its text, ends in an ellipsis and stays
-// on one line, inside its chip, and the chip's icon and caret are whole. The whole name is in the chip's tooltip, or
-// in the name's own where the chip's says why it is fixed. Where the chip opens a list, the name is an option of it
-// that is not cut and lies inside its menu; the folder's browser names the folder whole on its button. A short name
-// is not cut.
-import { act, check, openPage, paneSize, seed, until } from "../shot.mjs";
+// A2.6 ported (AD-80; package K3): a long name of a composer's chip is cut with an ellipsis, and is whole in the tooltip and in the menu. The
+// seed's 47-character folder and model, as a choice and as a fixed chip, and its 31-character server, whose chip is always a fixed one, in a wide
+// chat toolbar and in the "more" popup of a 300 px page: the name's element is narrower than its text, ends in an ellipsis and stays on one line,
+// inside its chip, and the chip's icon and caret are whole. The whole name is in the chip's tooltip, or in the name's own where the chip's says why
+// it is fixed. Where the chip opens a list, the name is an option of it that is not cut and lies inside its menu; the folder's browser names the
+// folder whole on its button. A short name is not cut.
+// Ports dev/checks/A2.6-names.mjs with its states, widths and assertions (the wide toolbar is the desktop's 1100 px; the touch viewports run the
+// cases at 300 px, where "more" is a sheet). The folder's browser closes with Esc too (every popup of ui/Overlay does).
+import { check, seed, until } from "../shot.mjs";
+import { MORE, POP, frame, openAt, openState, playable } from "./composer.mjs";
+import { byTid, press, tidSel } from "./sel.mjs";
 
-const HEIGHT = 640;
-const MORE = ".composer .more-chip", POP = ".composer .more-pop";
+export const viewports = ["desktop", "tablet", "phone"];
+
 const FOLDER = "storefront-monorepo-with-a-very-long-folder-name", MODEL = "Claude Opus 5.5 (1M context, extended thinking)", SERVER = "lab-gpu-box.tailnet-1234.ts.net";
-// What a chip with a long name is known by, under the composer, and what its list is: [the chip, the menu it opens,
+// What a chip with a long name is known by, under the composer, and what its list is: [the chip's kind and whether it is fixed, the menu it opens,
 // the element of the menu that names it]
 const CHIPS = {
-  folder: ['button.tchip[title^="Working directory"], button.tchip[title^="Folder on"]', ".menu.up.dirs", ".dir-foot .btn"],
-  model: ['button.tchip[title^="Model"]', ".model-pick > .menu.up", '[role="option"] .menu-label'],
-  "folder, fixed": ['.tchip.static[title^="Working directory"], .tchip.static[title^="Folder on"]', null, null],
-  "model, fixed": ['.tchip.static[title^="Model and effort"]', null, null],
-  "server, fixed": [".tchip.static.server-chip", null, null],
+  folder: [{ kind: "folder", fixed: false }, "dirs", tidSel("dir-use")],
+  model: [{ kind: "model", fixed: false }, "picker", tidSel("pick-row")],
+  "folder, fixed": [{ kind: "folder", fixed: true }, null, null],
+  "model, fixed": [{ kind: "model", fixed: true }, null, null],
+  "server, fixed": [{ kind: "server", fixed: true }, null, null],
 };
 // [state, the pane's width, the chips with a long name: kind and name]
 const CASES = [
@@ -30,17 +33,18 @@ const CASES = [
   ["board-long", 300, [["folder, fixed", FOLDER], ["model, fixed", MODEL]]],
 ];
 
-/** In the page: the chip that `sel` matches under `root`, its name's element and what is drawn beside the name. */
-function chipInPage([root, sel]) {
-  const chip = document.querySelector(sel.split(", ").map((s) => `${root} ${s}`).join(", "));
+/** In the page: the chip that [kind, fixed] names under `root`, its name's element and what is drawn beside the name. */
+function chipInPage([root, kind, fixed]) {
+  const scope = document.querySelector(root) ?? document;
+  const chip = [...scope.querySelectorAll('[data-testid="tchip"]')].find((c) => c.dataset.kind === kind && (c.dataset.fixed === "true") === fixed && c.dataset.kind !== "more");
   if (!chip) return null;
-  const name = chip.querySelector(".tchip-name");
+  const name = chip.querySelector('[data-testid="chip-name"]');
   if (!name) return { none: true, text: chip.textContent };
   const cs = getComputedStyle(name), c = chip.getBoundingClientRect(), n = name.getBoundingClientRect();
-  const beside = [...chip.children].filter((e) => e !== name).map((e) => { const r = e.getBoundingClientRect(); return { el: e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className : ""), whole: r.width > 0 && r.left >= c.left - 0.5 && r.right <= c.right + 0.5 }; });
+  const beside = [...chip.children].filter((e) => e !== name).map((e) => { const r = e.getBoundingClientRect(); return { el: e.tagName.toLowerCase() + (e.dataset.testid ? "." + e.dataset.testid : ""), whole: r.width > 0 && r.left >= c.left - 0.5 && r.right <= c.right + 0.5 }; });
   return { text: name.textContent, cut: name.scrollWidth > name.clientWidth, ellipsis: cs.textOverflow === "ellipsis" && cs.overflowX === "hidden" && cs.whiteSpace === "nowrap",
     lines: Math.round(n.height / parseFloat(cs.lineHeight) || 1), inChip: n.left >= c.left - 0.5 && n.right <= c.right + 0.5, beside,
-    titles: [chip.getAttribute("title") ?? "", name.getAttribute("title") ?? ""], where: chip.closest(".more-pop") ? "popup" : "row" };
+    titles: [chip.getAttribute("title") ?? "", name.getAttribute("title") ?? ""], where: chip.closest('[data-testid="more-pop"]') ? "popup" : "row" };
 }
 
 /** In the page: the elements of an open menu that say `name`, each against its menu and the window. */
@@ -51,23 +55,22 @@ function namedInMenu([menu, item, name]) {
   return [...m.querySelectorAll(item)].filter((e) => e.textContent.includes(name)).map((e) => { const r = e.getBoundingClientRect(); return { text: e.textContent, cut: e.scrollWidth > e.clientWidth + 0.5, inside: r.width > 0 && r.left >= box.left - 0.5 && r.right <= Math.min(box.right, innerWidth) + 0.5 }; });
 }
 
-await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip and in the menu", async ({ url, browser, fail, note }) => {
-  const states = await seed(url, "A2");
-  const frame = (page) => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
+await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip and in the menu", async ({ url, layout, open, fail, note }) => {
+  const wide = layout === "desktop";
+  const states = (await seed(url, "A2")).filter((s) => playable(s, layout));
   let chips = 0, menus = 0;
-  for (const [id, width, named] of CASES) {
+  for (const [id, wanted, named] of CASES) {
+    const width = wide ? wanted : 300;
+    if (!wide && wanted !== 300) continue; // (a touch viewport has no wide toolbar: the wide cases are the desktop's)
     const s = states.find((x) => x.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
-    const root = ".composer", errors = [];
-    const { ctx, page } = await openPage({ url, browser, errors, sel: s.sel, ...paneSize(s.pane[0], width, HEIGHT), wait: ".composer-box .send" });
+    const { page, ctx } = await openAt(open, s, layout, width);
     try {
-      await act(page, s.act);
-      await page.evaluate(() => document.fonts.ready);
-      await frame(page);
       for (const [kind, name] of named) {
-        const at = `${id} at ${width} px, the ${kind} chip`, [sel, menu, item] = CHIPS[kind];
+        const at = `${id} at ${width} px, the ${kind} chip`, [match, menu, item] = CHIPS[kind], fixed = match.fixed;
         // (a chip the row has no room for is in the "more" popup, which stays open while its chips are looked at)
-        if (!await page.locator(sel.split(", ").map((x) => `${root} ${x}`).join(", ")).count() && await page.locator(MORE).count() && !await page.locator(POP).count()) await page.locator(MORE).click();
-        const c = await until(() => page.evaluate(chipInPage, [root, sel]), 5000);
+        const inRow = () => page.evaluate(chipInPage, ['[data-testid="composer-tools"]', match.kind, fixed]);
+        if (!await inRow() && await page.locator(MORE).count() && !await page.locator(POP).count()) await press(page, page.locator(MORE));
+        const c = await until(async () => (await inRow()) ?? (await page.evaluate(chipInPage, ['[data-testid="more-pop"]', match.kind, fixed])), 5000);
         if (!c) { fail(`${at}: is not on the page, in the toolbar or in "more"`); continue; }
         if (c.none) { fail(`${at}: its name has no element of its own ("${c.text}"): an ellipsis does not act on a chip's own text`); continue; }
         chips++;
@@ -79,33 +82,30 @@ await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip 
         if (!c.titles.some((t) => t.includes(name))) fail(`${at}: neither its tooltip ("${c.titles[0]}") nor its name's ("${c.titles[1]}") has the name whole`);
         if (!menu) continue;
         // the menu: opened from the chip where it is
-        const from = c.where === "popup" ? POP : root, list = `${from} ${menu}`;
-        await page.locator(sel.split(", ").map((x) => `${from} ${x}`).join(", ")).first().click();
-        if (kind === "folder") await page.waitForSelector(`${list} .dir-foot`, { timeout: 8000 }).catch(() => {});
-        const rows = await until(async () => { const r = await page.evaluate(namedInMenu, [list, item, name]); return r?.length ? r : null; }, 8000);
+        const from = c.where === "popup" ? byTid(page, "more-pop") : byTid(page, "composer-tools");
+        await press(page, from.locator(`${tidSel("tchip")}[data-kind="${match.kind}"]:not([data-fixed="true"])`).first());
+        if (kind === "folder") await byTid(page, "dir-use").first().waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+        const rows = await until(async () => { const r = await page.evaluate(namedInMenu, [tidSel(menu), item, name]); return r?.length ? r : null; }, 8000);
         if (!rows) fail(`${at}: its menu has no ${item} that says "${name}"`);
         else {
           menus++;
           for (const r of rows) if (r.cut || !r.inside) fail(`${at}: in its menu "${r.text}" is ${r.cut ? "cut" : "not inside the menu"}`);
         }
-        // (the folder's browser has no Esc of its own: a press outside closes it; in "more" Esc closes what was opened from it)
-        if (c.where === "row" && kind === "folder") await page.mouse.click(5, 5); else await page.keyboard.press("Escape");
-        if (!await until(async () => !await page.locator(list).count(), 5000)) fail(`${at}: its menu did not close`);
+        await page.keyboard.press("Escape");
+        if (!await until(async () => !await byTid(page, menu).count(), 5000)) fail(`${at}: its menu did not close`);
       }
     } catch (e) { fail(`${id} at ${width} px: ${e.message.split("\n")[0]}`); }
-    for (const e of errors) fail(`${id} at ${width} px: page error: ${e}`);
     await ctx.close();
   }
 
   { // a short name is not cut: the measure tells a cut name from a whole one
-    const s = states.find((x) => x.id === "plain-new"), { ctx, page } = await openPage({ url, browser, sel: s.sel, ...paneSize("page", 1100, HEIGHT), wait: ".composer-box .send" });
-    await page.evaluate(() => document.fonts.ready);
+    const s = states.find((x) => x.id === "plain-new"), { page, ctx } = wide ? await openState(open, s, layout, 1100) : await openAt(open, s, layout, 560);
     await frame(page);
     for (const kind of ["folder", "model"]) {
-      const c = await page.evaluate(chipInPage, [".composer", CHIPS[kind][0]]);
-      if (!c || c.none || c.cut) fail(`plain-new at 1100 px, the ${kind} chip: ${!c ? "is not on the page" : c.none ? "has no name element" : `its short name "${c.text}" is cut`}`);
+      const c = await page.evaluate(chipInPage, ['[data-testid="composer-tools"]', kind, false]);
+      if (!c || c.none || c.cut) fail(`plain-new at ${wide ? "1100" : "560"} px, the ${kind} chip: ${!c ? "is not on the page" : c.none ? "has no name element" : `its short name "${c.text}" is cut`}`);
     }
     await ctx.close();
   }
   note(`${chips} chips with a long name: each cut with an ellipsis, its icon and caret whole, the name whole in a tooltip; ${menus} menus name it whole`);
-});
+}, { viewports, page: false });

@@ -510,9 +510,9 @@ describe("the mock's fake client", () => {
     assert.ok(!everything.includes(secret), "the secret came back");
   });
 
-  test("the table of calls is the client API's: it equals desktop/conn/routes.json when that is there", () => {
+  test("the table of calls is the client API's: it equals packages/conn/core/routes.json when that is there", () => {
     assert.equal(new Set(CLIENT_ROUTES).size, CLIENT_ROUTES.length);
-    const file = path.resolve(HERE, "../../desktop/conn/routes.json");
+    const file = path.resolve(HERE, "../../packages/conn/core/routes.json");
     if (!fs.existsSync(file)) return;
     assert.deepEqual(CLIENT_ROUTES, JSON.parse(fs.readFileSync(file, "utf8")));
   });

@@ -1,0 +1,13 @@
+# Opens the development build's own screens out of the way: the system's "Open in …?" question after a link, the
+# development menu's first-run sheet and the menu itself. Each is there only some of the times.
+appId: dev.aiwhiteboard.spike.composer
+---
+- tapOn:
+    text: "Open"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+- tapOn:
+    text: "Close"
+    optional: true

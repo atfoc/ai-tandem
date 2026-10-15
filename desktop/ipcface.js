@@ -2,7 +2,7 @@
 
 // The IPC face of the app: what the main process answers the page (plan C4.2, C4.3). Each channel
 // first checks who is asking: only the main frame of the app's main window, while it is on the page,
-// is answered. The face holds no connection of its own; the client (desktop/conn) does. Nothing here
+// is answered. The face holds no connection of its own; the client (@aiwb/conn) does. Nothing here
 // imports electron, so `node --test` can load this file with fakes.
 
 const fs = require('node:fs');

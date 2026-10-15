@@ -1,0 +1,91 @@
+# The composer on the iOS simulator: the checks that the browser cannot show (the platform's own text input and
+# keyboard). Each `mark` posts what the screen holds to the collector (checks/ios.mjs), which asserts on it.
+# Positions are percentages of the screen of the iPhone 16e, where the first line of the box is at about 14%.
+appId: dev.aiwhiteboard.spike.composer
+---
+# -- 0..2: insert at the caret, type around it
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer" }
+- inputText: "move"
+- tapOn: { id: "insert-selection" }
+- inputText: "to"
+- tapOn: { id: "mark" }                       # 0: move <chip> to
+- tapOn: { point: "${CHIP_LEFT}" }
+- tapOn: { id: "mark" }                       # 1: a tap on the left half of the chip: the caret is at its start
+- inputText: "X"
+- tapOn: { id: "mark" }                       # 2: typed at the chip's start
+- eraseText: 1
+- tapOn: { id: "mark" }                       # 3: the X is gone
+- tapOn: { point: "${CHIP_RIGHT}" }
+- tapOn: { id: "mark" }                       # 4: a tap on the right half of the chip: the caret is at its end
+- inputText: "Y"
+- tapOn: { id: "mark" }                       # 5: typed at the chip's end
+# -- 6..8: backspace takes a chip whole
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer" }
+- inputText: "a"
+- tapOn: { id: "insert-selection" }
+- tapOn: { id: "mark" }                       # 6: a <chip> and the caret after the space
+- eraseText: 1
+- tapOn: { id: "mark" }                       # 7: the space is gone, the chip stays
+- eraseText: 1
+- tapOn: { id: "mark" }                       # 8: one backspace more: the whole chip is gone
+# -- 9..10: a double tap in a chip takes it whole; typing over it
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer" }
+- inputText: "ab"
+- tapOn: { id: "insert-selection" }
+- inputText: "cd"
+- doubleTapOn: { point: "${CHIP_MID}" }
+- tapOn: { id: "mark" }                       # 9: the chip selected
+- inputText: "Z"
+- tapOn: { id: "mark" }                       # 10: replaced by Z
+# -- 11..13: lines
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer" }
+- tapOn: { id: "mark" }                       # 11: empty box height
+- inputText: "one"
+- pressKey: Enter
+- inputText: "two"
+- pressKey: Enter
+- inputText: "three"
+- tapOn: { id: "mark" }                       # 12: three lines
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- inputText: "end"
+- tapOn: { id: "mark" }                       # 13: more lines than the box shows
+# -- 14..15: the message of a whole content, and the send
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer" }
+- inputText: "move"
+- tapOn: { id: "insert-selection" }
+- inputText: "to"
+- tapOn: { id: "insert-selection" }
+- inputText: "and keep"
+- tapOn: { id: "insert-point" }
+- pressKey: Enter
+- inputText: "thanks"
+- tapOn: { id: "mark" }                       # 14: the message
+- tapOn: { id: "send" }
+- tapOn: { id: "mark" }                       # 15: the box is empty
+# -- 16..17: copy a chip and paste it (the edit menu of the platform; a tap on a selection shows it)
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer" }
+- inputText: "ab"
+- tapOn: { id: "insert-selection" }
+- inputText: "cd"
+- doubleTapOn: { point: "${CHIP_MID}" }
+- tapOn: { point: "${CHIP_MID}" }
+- tapOn: "Copy"
+- tapOn: { id: "mark" }                       # 16
+- tapOn: { point: "62%,14%" }
+- waitForAnimationToEnd
+- longPressOn: { point: "62%,14%" }
+- tapOn: "Paste"
+- tapOn: { id: "mark" }                       # 17

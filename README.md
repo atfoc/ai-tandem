@@ -6,11 +6,13 @@
 
 **Excalidraw whiteboards that your coding agents can read and draw on.**
 
-AI Whiteboard is a desktop app that puts [Excalidraw](https://excalidraw.com) boards and coding-agent
+AI Whiteboard is an app that puts [Excalidraw](https://excalidraw.com) boards and coding-agent
 chats in one window. Claude Code, Cursor and pi work on the board with you: select a few shapes
 and ask "explain this", or ask for "the request flow between these services", and the agent draws
-it on the board while you watch. It runs on your own machine, with the agent logins you already
-have, and keeps all three agents in one place.
+it on the board while you watch. The agents run on your own machine, or on another one you
+own, with the agent logins you already have, and all three are kept in one place. The app is one
+codebase (React Native) that runs on a Mac as a desktop app, and on an iPhone, an iPad and an
+Android phone or tablet.
 
 ![The AI Whiteboard window: the sidebar with groups, whiteboards and chats, an architecture diagram on the board, and beside it the chat in which the agent was asked to draw and explain it](docs/screenshots/hero.png)
 
@@ -105,9 +107,14 @@ connects an app gives access to everything on that server. Set-up is in
 - **Your data stays on your disk.** Boards and chats are files in `~/.ai-whiteboard`; a board is
   an ordinary `.excalidraw` file. There is no account and no cloud service of the app's own.
   Agents run through their own CLIs, with the logins and plans you already have.
-- **A desktop app.** On macOS the app is an Electron window. The server runs on its own:
-  quitting the app does not stop it or the chats that are working; open the app again and they
-  are there. There is no page to open in a browser tab.
+- **A desktop app, and a phone and tablet app.** On macOS the app is an Electron window. The server
+  runs on its own: quitting the app does not stop it or the chats that are working; open the app
+  again and they are there. There is no page to open in a browser tab. On an iPhone, an iPad or
+  an Android device it is the same app with the layout of its screen: the sidebar and the chat are
+  screens one after the other on a phone, side by side on a tablet and a desktop. A phone or
+  tablet has no server of its own: it connects to the servers you add, each one on
+  [another machine](docs/remote-servers.md) (the form takes the output of the server's set-up
+  script, or the code the script draws, which the camera scans).
 - **Themes.** Light, dark, follow the system, or one of the four Catppuccin flavours. The board's
   canvas follows the theme too, and the board file does not change.
 
@@ -158,17 +165,33 @@ server was not started and names this command:
 Then press **Retry** in the section, or wait a few seconds: the app starts the server and the
 section fills. Create a whiteboard, open a chat next to it and start asking.
 
-Running the app from a checkout in development, the watch build and the tests are in
+**Put the app on a phone or tablet.** One script builds the app from the current code and installs
+it on an iPhone, an iPad or an Android device that is connected (no store, no account of the
+app's own; an iOS install needs an Apple Account signed in to Xcode, a free one is enough):
+
+```sh
+node app/scripts/install.mjs --platform android
+node app/scripts/install.mjs --platform ios --device "Ana's iPhone"
+```
+
+What the tools and the accounts must provide is in [docs/development.md](docs/development.md#install-the-app-on-a-phone-or-tablet).
+
+Running the app from a checkout in development, the tests and the device tests are in
 [docs/development.md](docs/development.md).
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  subgraph APP["Desktop app (Electron)"]
-    UI["Web client<br/>React + Excalidraw"]
+  subgraph DESK["Desktop app (Electron)"]
+    UI["The app, web build<br/>React Native + Excalidraw"]
     M["Main process<br/>server list and secrets"]
     UI <-->|"IPC"| M
+  end
+  subgraph MOB["iPhone, iPad, Android"]
+    UN["The app, native<br/>React Native, Excalidraw in a web view"]
+    NM["Native module<br/>server list in secure storage"]
+    UN <--> NM
   end
   S["Go server of this computer<br/>HTTPS, port 4748"]
   R["Go server of another machine<br/>HTTPS, port 4748"]
@@ -176,6 +199,7 @@ flowchart LR
   D[("~/.ai-whiteboard<br/>boards and chats")]
   M <-->|"HTTPS and the secret"| S
   M <-->|"HTTPS and the secret"| R
+  NM <-->|"HTTPS and the secret"| R
   S -->|"starts and talks to"| A
   A -->|"board tools over MCP<br/>localhost:6006"| S
   S <--> D
@@ -183,11 +207,15 @@ flowchart LR
 
 - The **server** is one Go program. It stores boards and chats and starts the agent processes. It
   serves no page: it has one API, over HTTPS behind a secret, for its clients.
-- The **web client** is React with Excalidraw. It ships inside the **desktop app**, an Electron
-  app that is the client of every server. The app's main process holds the list of servers with
-  their secrets and keeps one connection to each; the page talks to the main process only. The
-  app starts the server of your computer, or finds the one already running, and connects to it
-  as to any other.
+- The **app** is one React Native codebase (Expo), with Excalidraw for the board. On the desktop
+  it is built for the web and ships inside an **Electron** app that is the client of every server:
+  the app's main process holds the list of servers with their secrets and keeps one connection to
+  each, and the screens talk to the main process only. The desktop app starts the server of your
+  computer, or finds the one already running, and connects to it as to any other. On an iPhone,
+  an iPad or an Android device the screens are native, the board runs in a web view, and a small
+  native module makes the connections: it trusts a server's certificate by its fingerprint, the
+  same rule as the desktop's, and the list of servers and their secrets stay in the device's
+  secure storage.
 - Agents reach the board through **MCP tools** (read the board, get a picture, apply changes,
   delete elements, and more) on a second local port, 6006. The window that has the board open
   carries out the edits, which is how they become undo steps.
@@ -211,7 +239,7 @@ The full list, with the caps, is in [docs/limitations.md](docs/limitations.md).
 ## Documentation
 
 - [docs/README.md](docs/README.md): the index of everything below
-- [docs/architecture.md](docs/architecture.md): server, web client, desktop app, the connection
+- [docs/architecture.md](docs/architecture.md): server, the app on its four targets, the connection
   between them, the MCP listener and the board tools, subagents, images
 - [docs/prompt-library.md](docs/prompt-library.md): the prompt library in full
 - [docs/remote-servers.md](docs/remote-servers.md): this computer and other servers as sections of
@@ -221,5 +249,6 @@ The full list, with the caps, is in [docs/limitations.md](docs/limitations.md).
 - [docs/troubleshooting.md](docs/troubleshooting.md): when an agent does not get its board tools,
   and when this computer's server does not start
 - [docs/limitations.md](docs/limitations.md): limitations and caps
-- [docs/development.md](docs/development.md): build, run and test while working on the app
+- [docs/development.md](docs/development.md): build, run and test while working on the app; the
+  install script for a phone or tablet; the browser checks and the device tests
 - [AGENTS.md](AGENTS.md): for contributors, which tests to run and how to write them

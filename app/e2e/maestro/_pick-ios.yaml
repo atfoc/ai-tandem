@@ -1,0 +1,27 @@
+# Shared by `storage-picker-permission`: in the system's photo picker on iOS (it is another process: Maestro does not see inside it, so it is touched at the places of
+# its grid), picks the COUNT newest pictures of the library (1 to 3, newest first, left to right: the grid is date-sorted, the flow put them in
+# one after the other) and presses its "Add" (the check mark at the top right). The picker is open when this starts.
+appId: ${APP_ID}
+---
+# the picker is up when the app's own screen is covered (the system's picker is a layer over it: the app's controls leave the accessibility tree)
+- extendedWaitUntil:
+    notVisible:
+      id: "attach-btn"
+    timeout: 20000
+- waitForAnimationToEnd
+- tapOn:
+    point: "16%,43%"
+- runFlow:
+    when:
+      true: ${COUNT >= 2}
+    commands:
+      - tapOn:
+          point: "50%,43%"
+- runFlow:
+    when:
+      true: ${COUNT >= 3}
+    commands:
+      - tapOn:
+          point: "83%,43%"
+- tapOn:
+    point: "90%,13%"

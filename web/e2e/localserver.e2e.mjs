@@ -40,19 +40,23 @@
 // failed check, and exits with 1 when a check failed (2 when it could not run).
 //
 // Environment (all optional):
+//   DIST               is not used: the script builds its two builds of the app's web export itself (the version is stamped into each),
+//                      with the CSP the host needs (`--connect-self`, see lib/rig.mjs)
 //   AIWB_E2E_KEEP=1    keep the temp folder (server logs, screenshots) after a run that passed;
 //                      after a failed run it is always kept, and its path is printed
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { buildDist } from "../dev/shot.mjs";
 import {
-  Scratch, all, finish, holds, hostApp, hostCall, hostFor, loadChromium, makeOut, onSignal, openPage as openHostPage, parseAppWaits, portFree, serverBinary, sleep, standInAgent, waitFor,
+  Scratch, all, buildPage, finish, holds, hostApp, hostCall, hostFor, loadChromium, makeOut, onSignal, openPage as openHostPage, parseAppWaits, portFree, serverBinary, sleep, standInAgent, waitFor,
 } from "./lib/rig.mjs";
+import * as ui from "./lib/ui.mjs";
+
+const { q } = ui;
 
 const require = createRequire(import.meta.url);
-const { standin } = require("../../desktop/test/conn/standin");
+const { standin } = require("../../packages/conn/test/standin");
 
 const OUT = makeOut("localserver");
 
@@ -118,14 +122,14 @@ async function restartApp(dist, timing) {
   await stopApp();
   await startApp(dist, timing);
   await page.reload();
-  await page.waitForSelector("#root .side-tree", { timeout: 20000 });
+  await page.waitForSelector(ui.treeWait, { timeout: 20000 });
 }
 
 async function prepare() {
   bin1 = serverBinary(OUT, { version: "e2e-1", name: "aiwb-1" });
   bin2 = serverBinary(OUT, { version: "e2e-2", name: "aiwb-2" });
-  dist1 = buildDist(path.join(OUT, "dist-1"), { version: "e2e-1" });
-  dist2 = buildDist(path.join(OUT, "dist-2"), { version: "e2e-2" });
+  dist1 = buildPage(path.join(OUT, "dist-1"), { version: "e2e-1" });
+  dist2 = buildPage(path.join(OUT, "dist-2"), { version: "e2e-2" });
   const agent = standInAgent(OUT);
   S = new Scratch({ out: OUT, bin: bin1, agent, tag: "s", name: A_NAME }); // never set up
   B = new Scratch({ out: OUT, bin: bin1, agent, tag: "b", name: B_NAME });
@@ -137,54 +141,34 @@ async function prepare() {
 
 // ---- the page
 
-const sel = (p) => p.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}"));
-const exact = (s) => new RegExp(`^\\s*${String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
-const menuItem = (p, text) => p.locator(".menu .menu-item", { hasText: exact(text) });
-const here = (p = page) => p.locator('.side-section[data-server="local"]');
+const sel = ui.selection;
+const exact = ui.exact;
+const menuItem = ui.menuItem;
+const here = (p = page) => ui.here(p);
 /** What a section shows: its state, its tone, the lines and the reason in it, its rows, its "+", its buttons. */
-const look = (p, selector) => p.evaluate((selector) => {
-  const s = document.querySelector(selector);
-  if (!s) return null;
-  return {
-    state: s.querySelector(".side-section-state")?.textContent ?? "", tone: ["ok", "wait", "bad"].find((t) => s.classList.contains(t)) ?? "",
-    // (lines: what the section says of its tree; extra: what this computer's section says of its server)
-    lines: [...s.querySelectorAll(".side-section-body > .side-section-line")].map((e) => e.textContent?.trim() ?? ""),
-    extra: [...s.querySelectorAll(".side-section-extra .side-section-line")].map((e) => e.textContent?.trim() ?? ""), reason: s.querySelector(".side-section-reason")?.textContent ?? "",
-    buttons: [...s.querySelectorAll(".side-section-actions button")].map((b) => b.textContent?.trim() ?? ""), rows: s.querySelectorAll(".side-row, .side-group-head").length,
-    add: !!s.querySelector(".side-section-head button[title^='New on']"),
-  };
-}, selector);
-const mine = (p = page) => look(p, '.side-section[data-server="local"]');
-const theirs = (p = page) => look(p, `.side-section[aria-label="${B_NAME}"]`);
+const look = (p, name) => ui.lookOf(p, name);
+const mine = (p = page) => look(p, A_NAME);
+const theirs = (p = page) => look(p, B_NAME);
 const isState = (words) => async () => (await mine())?.state === words;
 const startOf = (words, timeout = 60000) => holds(`this computer's section says "${words}"`, isState(words), { timeout, every: 50 });
 const pid = () => host?.client.localInfo()?.pid ?? 0;
 const connectedAgain = (what, timeout = 120000) => holds(what, async () => { const l = await mine(); return l?.state === "Connected" && l.extra.length === 0 && l.reason === "" && l.buttons.length === 0; }, { timeout, every: 100 });
-const click = async (label) => { await here().locator(".side-section-actions button", { hasText: exact(label) }).click(); };
+const click = async (label) => { await ui.click(page, ui.sectionAction(here(), label)); };
 
 /** The remote server B is added in the Servers dialog, as a user adds one. */
 async function addB() {
-  await page.locator("button.servers-btn").click();
-  const dlg = page.locator(".servers-dialog");
-  await dlg.waitFor();
-  await dlg.locator("button", { hasText: /^Add server$/ }).click();
-  const form = dlg.locator(".servers-form");
-  const fields = form.locator(".servers-field input");
-  await fields.nth(0).fill(B_NAME);
-  await fields.nth(1).fill(`https://127.0.0.1:${B.port}`);
-  await fields.nth(2).fill(B.secret);
-  await form.locator(".servers-check input").check();
-  await form.locator("button", { hasText: /^Test connection$/ }).click();
-  const accept = form.locator("button", { hasText: /^Accept fingerprint$/ });
+  const dlg = await ui.openServers(page);
+  const form = await ui.fillForm(page, { name: B_NAME, address: `https://127.0.0.1:${B.port}`, secret: B.secret, selfSigned: true });
+  await ui.click(page, ui.button(form, "Test connection"));
+  const accept = ui.button(form, "Accept fingerprint");
   await accept.waitFor({ timeout: 30000 });
-  await accept.click();
-  const save = form.locator("button.primary", { hasText: /^Save$/ });
+  await ui.click(page, accept);
+  const save = ui.button(form, "Save");
   await waitFor("Save is enabled after the accepted test", async () => !(await save.isDisabled()));
-  await save.click();
-  const row = dlg.locator(".servers-row").filter({ has: page.locator(".servers-name", { hasText: exact(B_NAME) }) });
-  const ok = await holds("B's row reads Connected", async () => (await row.locator(".servers-state").innerText()) === "Connected", { timeout: 60000 });
-  await dlg.locator("button", { hasText: /^Close$/ }).click();
-  await dlg.waitFor({ state: "detached" });
+  await ui.click(page, save);
+  const row = ui.serverRow(page, B_NAME);
+  const ok = await holds("B's row reads Connected", async () => (await row.locator(q.serversState).innerText()) === "Connected", { timeout: 60000 });
+  await ui.closeServers(page);
   ENTRY = ((await hostApp(host, "servers.list")).json?.servers ?? []).find((v) => v.name === B_NAME)?.id ?? "";
   return ok === true && !!ENTRY;
 }
@@ -194,7 +178,7 @@ async function addB() {
 async function step1() {
   const t0 = Date.now();
   await startApp(dist1, LONG);
-  page = await openHostPage(browser, host, { timeout: 10000, wait: "#root .side-tree" });
+  page = await openHostPage(browser, host, { timeout: 10000, wait: ui.treeWait });
   const opened = Date.now() - t0;
   const said = await startOf("Not started");
   const l = await mine();
@@ -203,17 +187,14 @@ async function step1() {
     said === true && l.tone === "bad" && l.reason.includes("remote setup") && l.reason.includes(bin1) && l.buttons.includes("Retry") && l.rows === 0 && !l.add, one(l));
   await check("1 in a browser there is no server log to open (the app opens it)", !l.buttons.includes("Open server log"), one(l.buttons));
   await check("1 nothing of the server exists: no control socket, no server file, no listener", !fs.existsSync(path.join(S.home, "server.json")) && !fs.existsSync(path.join(S.home, "control.sock")) && (await S.status().then((s) => s.running === null && s.files?.setUp === false, () => false)), "");
-  await check("1 the head's \"+\" is off while this computer's server is not connected", (await page.locator("button.icon-btn.new").isDisabled()) === true);
-  const home = page.locator("main.home");
-  await check("1 the first screen does not offer a chat to make", (await home.locator("button.btn.primary:not([disabled])", { hasText: /New chat/ }).count()) === 0, await home.innerText().catch(() => ""));
+  await check("1 the head's \"+\" is off while this computer's server is not connected", (await page.locator(q.newBtn).isDisabled()) === true);
+  const home = page.locator(q.home);
+  await check("1 the first screen does not offer a chat to make", (await page.locator(`${q.homeNewChat}:not([disabled])`, { hasText: /New chat/ }).count()) === 0, await home.innerText().catch(() => ""));
 
   // another server meanwhile: added in the Servers dialog, it connects and works
   const ok = await addB();
   await check("1 a remote server added in the Servers dialog connects while this computer's does not", ok === true && (await theirs())?.state === "Connected", one(await theirs()));
-  const head = page.locator(`.side-section[aria-label="${B_NAME}"] .side-section-head`);
-  await head.hover();
-  await head.locator("button[title^='New on']").click();
-  await menuItem(page, "Chat").click();
+  await ui.plus(page, ui.sectionOf(page, B_NAME).locator(q.sectionHead), "Chat");
   const key = await waitFor("the page selects a new chat on B", async () => { const c = (await sel(page)).chat; return c && c.startsWith(`${ENTRY}~`) ? c : null; });
   const made = (await hostCall(host, ENTRY, "GET", `/api/chats/${key.split("~")[1]}`)).status;
   await check("1 B works all the while: a chat is made on it and this computer's section still says \"Not started\"", made === 200 && (await mine())?.state === "Not started", `chat ${key}; B answers ${made}; ${one(await mine())}`);
@@ -240,7 +221,7 @@ async function step2() {
   const l = await mine();
   await check("2 Retry starts the server: this computer's section fills", up === true && l.rows === 0 && l.add === true, one(l)); // (a server with nothing on it: no row)
   S.pids.push(pid());
-  await waitFor("the head's + is on", async () => !(await page.locator("button.icon-btn.new").isDisabled()));
+  await waitFor("the head's + is on", async () => !(await page.locator(q.newBtn).isDisabled()));
   const gone = !fs.existsSync(path.join(S.home, "servers.json")) && fs.readdirSync(S.home).every((f) => !f.startsWith("servers.json"));
   const apps = (await hostApp(host, "servers.list")).json?.servers ?? [];
   const stateFile = fs.readFileSync(path.join(host.stateDir, "servers.json"), "utf8");
@@ -251,18 +232,15 @@ async function step2() {
   await check("2 the server answers the client API over HTTPS with the secret and serves no list of servers", !!snap && !("servers" in snap) && !("sections" in snap), one(Object.keys(snap ?? {})));
   await check("2 a call without the secret is refused on this computer as from another machine", await refusedWithoutSecret(), "");
 
-  await page.locator("button.servers-btn").click();
-  const dlg = page.locator(".servers-dialog");
-  await dlg.waitFor();
-  const names = await dlg.locator(".servers-name").allInnerTexts();
-  const first = dlg.locator(".servers-row").first();
-  const mcp = await holds("the dialog shows this computer's MCP listener", async () => /^MCP listener: http:\/\/localhost:\d+\/mcp \(up\)$/.test(((await first.locator(".servers-line", { hasText: /^MCP listener/ }).first().innerText().catch(() => "")) ?? "").trim()), { timeout: 20000 });
-  const buttons = await first.locator("button").allInnerTexts();
+  const dlg = await ui.openServers(page);
+  const names = await dlg.locator(q.serversName).allInnerTexts();
+  const first = dlg.locator(q.serversRow).first();
+  const mcp = await holds("the dialog shows this computer's MCP listener", async () => /^MCP listener: http:\/\/localhost:\d+\/mcp \(up\)$/.test(((await first.locator(q.serversMcp, { hasText: /^MCP listener/ }).first().innerText().catch(() => "")) ?? "").trim()), { timeout: 20000 });
+  const buttons = await first.getByRole("button").allInnerTexts();
   await check("2 the Servers dialog lists this computer first, with its state, address, version and the MCP listener's state, and Restart server; it cannot be edited, tested or removed",
-    names[0] === A_NAME && names[1] === B_NAME && (await first.locator(".servers-state").innerText()) === "Connected" && mcp === true && buttons.includes("Restart server") && !buttons.some((b) => /Edit|Remove|Test connection/.test(b)),
+    names[0] === A_NAME && names[1] === B_NAME && (await first.locator(q.serversState).innerText()) === "Connected" && mcp === true && buttons.includes("Restart server") && !buttons.some((b) => /Edit|Remove|Test connection/.test(b)),
     `names ${one(names)}; buttons ${one(buttons)}; ${await first.innerText()}`);
-  await dlg.locator("button", { hasText: /^Close$/ }).click();
-  await dlg.waitFor({ state: "detached" });
+  await ui.closeServers(page);
 }
 
 /** The server's client port, asked without the secret and then with a wrong one: both are refused, only hello is answered. */
@@ -285,10 +263,9 @@ async function step3() {
   await connectedAgain("this computer's section is connected after the app started anew");
   // a chat of this computer, open
   const had = (await sel(page)).chat ?? null;
-  await page.click("button.icon-btn.new");
-  await menuItem(page, "New chat").click();
+  await ui.headPlus(page, "New chat");
   const chat = await waitFor("the page selects its new chat", async () => { const c = (await sel(page)).chat; return c && c !== had ? c : null; });
-  await page.locator(".composer .composer-input").waitFor();
+  await ui.box(page).waitFor();
   await page.evaluate(() => { window.__notReloaded = true; });
   const bStates = new Set();
   const watch = setInterval(async () => { const l = await theirs().catch(() => null); if (l) bStates.add(l.state); }, 40);
@@ -298,13 +275,13 @@ async function step3() {
       await stop();
       const dipped = await holds("this computer's section leaves Connected", async () => (await mine())?.state !== "Connected", { timeout: 30000, every: 20 });
       const dip = await mine();
-      const read = await page.locator(".composer .composer-input").getAttribute("aria-readonly").catch(() => null);
+      const read = await ui.readOnly(page);
       const back = await connectedAgain(`this computer's server, ${how}, is started again by the app and its section is connected`);
       const now = pid();
       S.pids.push(now);
       await check(`3 the server ${how} while the page is open: its section says that it is not connected, and the app starts it again by itself`,
         all(dipped, back) === true && now !== was && now > 0, `during: ${one(dip)}; pid ${was} -> ${now}`);
-      const level = await holds("the composer takes text again", async () => (await page.locator(".composer .composer-input").getAttribute("aria-readonly")) !== "true", { timeout: 30000 });
+      const level = await holds("the composer takes text again", async () => (await ui.readOnly(page)) !== "true", { timeout: 30000 });
       await check(`3 the page was not loaded again, the chat is still on screen and level with its server (the composer takes text again)`,
         (await page.evaluate(() => window.__notReloaded === true)) && (await sel(page)).chat === chat && level === true, `read-only during: ${read}; ${level}`);
     }
@@ -333,7 +310,7 @@ async function step4() {
   const said = await startOf("Not started", 60000);
   const l = await mine();
   await check("4 a start that fails: the section says \"Not started\" with the reason the start gave and Retry, and this computer's section has no row", said === true && l.reason.includes("the disk of this computer is full") && l.reason.includes("second line") && l.buttons.includes("Retry") && l.rows === 0, one(l));
-  await check("4 no dialog stands in front of the other section, which goes on", (await page.locator(".dialog, [role=dialog]").count()) === 0 && (await theirs())?.state === "Connected", one(await theirs()));
+  await check("4 no dialog stands in front of the other section, which goes on", (await page.locator(`${q.dialog}, [role=dialog]`).count()) === 0 && (await theirs())?.state === "Connected", one(await theirs()));
   await click("Retry");
   await sleep(1500);
   await check("4 Retry while the start still fails shows the reason again", (await mine()).state === "Not started" && (await mine()).reason.includes("disk of this computer"), one(await mine()));
@@ -399,13 +376,10 @@ async function step5() {
 }
 
 async function versionInDialog() {
-  await page.locator("button.servers-btn").click();
-  const dlg = page.locator(".servers-dialog");
-  await dlg.waitFor();
-  const text = await holds("the dialog's first row shows a version", async () => /Version \S+/.test(await dlg.locator(".servers-row").first().innerText()), { timeout: 15000 });
-  const v = /Version (\S+)/.exec(await dlg.locator(".servers-row").first().innerText())?.[1] ?? "";
-  await dlg.locator("button", { hasText: /^Close$/ }).click();
-  await dlg.waitFor({ state: "detached" });
+  const dlg = await ui.openServers(page);
+  const text = await holds("the dialog's first row shows a version", async () => /Version \S+/.test(await dlg.locator(q.serversRow).first().innerText()), { timeout: 15000 });
+  const v = /Version (\S+)/.exec(await dlg.locator(q.serversRow).first().innerText())?.[1] ?? "";
+  await ui.closeServers(page);
   return text === true ? v : "";
 }
 

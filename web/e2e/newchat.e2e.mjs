@@ -17,7 +17,7 @@
 // temp folder, sets a server up there (remote access: the certificate and the secret), starts it on a temp data folder
 // and on free ports (the MCP listener too), and stops it at the end. Not part of `npm test`.
 //
-//   cd web && npm ci && npm run build && npm install --no-save playwright && npx playwright install chromium
+//   cd web && npm install --no-save playwright && npx playwright install chromium
 //   node web/e2e/newchat.e2e.mjs
 //
 // Steps:
@@ -36,12 +36,19 @@
 //
 // Environment (all optional):
 //   AIWB_E2E_BIN       server binary                    (default: built into the temp folder)
-//   AIWB_E2E_CLIENT    built web client                 (default web/dist)
+//   DIST               the app's web build to serve (AIWB_E2E_CLIENT too): `cd app && npm run build:web`, then `DIST=app/dist-web`;
+//                      without DIST the script builds its own into the temp folder. The host serves the page over plain HTTP and
+//                      the page calls it from its own address, so the page's CSP needs `connect-src 'self'`
+//                      (app/scripts/export-web.mjs `--connect-self`): an export that has it is used as it is, the shipped one
+//                      (`connect-src 'none'`) is copied into the temp folder with that one change, and DIST itself is not touched
 //   AIWB_E2E_KEEP=1    keep the temp folder (server log, screenshots) after a run that passed;
 //                      after a failed run it is always kept, and its path is printed
 import fs from "node:fs";
 import path from "node:path";
 import { Scratch, finish, holds as holdsFor, hostCall, hostFor, loadChromium, makeOut, onSignal, openPage as openHostPage, serverBinary, sleep, standInAgent, waitFor } from "./lib/rig.mjs";
+import * as ui from "./lib/ui.mjs";
+
+const { q } = ui;
 
 // Everything the run makes: the binary, the server's folders, the log, screenshots.
 const OUT = makeOut("newchat");
@@ -109,42 +116,34 @@ let browser = null;
 // openPage opens the page of the host in a context of its own and keeps what its console says. errors: console
 // errors and uncaught exceptions; failedRequests: requests that failed or were answered with 400 or more.
 async function openPage() {
-  const p = await openHostPage(browser, host, { wait: "#root *", timeout: 8000 });
+  const p = await openHostPage(browser, host, { wait: q.rootVisible, timeout: 8000 });
   // A menu may come and go between two looks, so the page itself remembers every menu item it showed.
-  await p.addInitScript(() => {
+  await p.addInitScript((item) => {
     window.__menuItems = [];
-    const look = () => { for (const el of document.querySelectorAll(".menu .menu-item")) { const t = (el.textContent ?? "").replace(/\s+/g, " ").trim(); if (!window.__menuItems.includes(t)) window.__menuItems.push(t); } };
+    const look = () => { for (const el of document.querySelectorAll(item)) { const t = (el.textContent ?? "").replace(/\s+/g, " ").trim(); if (!window.__menuItems.includes(t)) window.__menuItems.push(t); } };
     new MutationObserver(look).observe(document, { childList: true, subtree: true, characterData: true });
-  });
+  }, q.menuItem);
   await p.reload(); // (the init script is there from the next load)
-  await p.waitForSelector("#root *", { timeout: 15000 });
+  await p.waitForSelector(q.rootVisible, { timeout: 15000 });
   // This computer's section fills when the host has found or started the server and read its snapshot.
-  await p.locator('.side-section[data-server="local"] .side-section-state', { hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
-  await p.locator("button.icon-btn.new:not([disabled])").waitFor({ timeout: 20000 });
+  await ui.stateOfSection(p, "local").filter({ hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
+  await p.locator(`${q.newBtn}:not([disabled])`).waitFor({ timeout: 20000 });
   return p;
 }
-const sel = (p) => p.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}"));
-const menuItem = (p, text) => p.locator(".menu .menu-item", { hasText: text });
+const sel = ui.selection;
+const menuItem = (p, text) => p.locator(q.menuItem, { hasText: text });
 const one = (o) => JSON.stringify(o);
-const box = (p) => p.locator(".composer .composer-input");
-const groupHead = (p, name) => p.locator(".side-group-head").filter({ has: p.locator(".side-group-name", { hasText: new RegExp(`^${name}$`) }) });
-const rowOf = (p, kind, name) => p.locator(`.side-row.is-${kind}`).filter({ has: p.locator(".side-name", { hasText: new RegExp(`^${name}$`) }) });
+const box = ui.box;
+const groupHead = (p, name) => ui.groupHead(p, name);
+const rowOf = (p, kind, name) => ui.rowOf(p, kind, name);
 /** The composer of the chat on screen: in the panel beside a board, or on the chat's own page. */
-const chatBox = (p) => p.locator(".board-panel .composer-input, .chat-col .composer-input");
-const assistant = (p) => p.locator(".thread .msg.assistant").allInnerTexts();
+const chatBox = (p) => p.locator(q.chatComposerInput);
+const assistant = (p) => p.locator(q.msgAssistant).allInnerTexts();
 
-async function hoverClick(row, button) {
-  await row.hover();
-  await row.locator(button).first().click();
-}
+/** The pointer over a row or a head, then its button whose title starts with `title`. */
+const hoverClick = (p, row, title) => ui.headButton(p, row, title);
 /** The row or group head that opened in rename mode gets its name. */
-async function nameIt(p, where, name) {
-  const input = p.locator(`${where} .name-input`);
-  await input.waitFor();
-  await input.fill(name);
-  await input.press("Enter");
-  await input.waitFor({ state: "detached" });
-}
+const nameIt = (p, where, name) => ui.nameIt(p.locator(where), name);
 
 // ---- step 1: the five places
 
@@ -159,12 +158,12 @@ async function place(p, name, { opener, menu = null, others = [], placed }) {
   const made = async () => { const c = (await sel(p)).chat; return c && !before.has(c) ? c : null; };
   await p.evaluate(() => { window.__menuItems = []; });
   await opener();
-  if (menu) await menuItem(p, new RegExp(`^\\s*${menu}\\s*$`)).click();
+  if (menu) await ui.click(p, menuItem(p, new RegExp(`^\\s*${menu}\\s*$`)));
   const id = await waitFor("a new chat is selected", made).catch(() => null);
   await chatBox(p).waitFor().catch(() => {});
   await sleep(400); // a menu or a second chat that came late would be here by now
   const items = await p.evaluate(() => window.__menuItems);
-  const open = await p.locator(".menu").count();
+  const open = await p.locator(q.menu).count();
   const agents = items.filter((t) => AGENT_NAME.test(t));
   const expected = menu ? [menu, ...others] : [];
   await check(`1 ${name}: no agent menu`,
@@ -190,34 +189,34 @@ async function step1() {
   const ungrouped = (c) => c.group === "__ungrouped__" && !c.board;
 
   // The empty state shows only while nothing is selected: a fresh page on a fresh server.
-  const home = page.locator("main.home");
-  if (await home.locator("button.btn.primary", { hasText: /^\s*New chat\s*$/ }).waitFor({ timeout: 8000 }).then(() => true, () => false)) {
-    await place(page, 'the empty state\'s "New chat"', { opener: () => home.locator("button.btn.primary", { hasText: /^\s*New chat\s*$/ }).click(), placed: ungrouped });
+  const homeNew = page.locator(q.homeNewChat, { hasText: /^\s*New chat\s*$/ });
+  if (await homeNew.waitFor({ timeout: 8000 }).then(() => true, () => false)) {
+    await place(page, 'the empty state\'s "New chat"', { opener: () => ui.click(page, homeNew), placed: ungrouped });
   } else skipped('1 the empty state\'s "New chat"', "the fresh page did not show the empty state");
 
   await place(page, 'the sidebar\'s "+"', {
-    opener: () => page.click("button.icon-btn.new"), menu: "New chat", others: ["New whiteboard", "New group"], placed: ungrouped,
+    opener: () => ui.click(page, page.locator(q.newBtn)), menu: "New chat", others: ["New whiteboard", "New group"], placed: ungrouped,
   });
 
   // A group: the sidebar's "+" offers "New group", and the new group's name opens in a box.
-  await page.click("button.icon-btn.new");
-  await menuItem(page, /^\s*New group\s*$/).click();
-  await nameIt(page, ".side-group-head", GROUP);
+  await ui.click(page, page.locator(q.newBtn));
+  await ui.click(page, menuItem(page, /^\s*New group\s*$/));
+  await nameIt(page, q.groupHead, GROUP);
   group = (await waitFor("the group exists", async () => (await stateOf()).groups?.find((g) => g.name === GROUP) ?? null)).id;
   groupChat = await place(page, `a group's "+"`, {
-    opener: () => hoverClick(groupHead(page, GROUP), `button[title="New in ${GROUP}"]`), menu: "Chat", others: ["Whiteboard", "Group"],
+    opener: () => hoverClick(page, groupHead(page, GROUP), `New in ${GROUP}`), menu: "Chat", others: ["Whiteboard", "Group"],
     placed: (c) => c.group === group && !c.board,
   });
 
   // A board: made through the sidebar's "+", its row opens in rename mode.
-  await page.click("button.icon-btn.new");
-  await menuItem(page, /^\s*New whiteboard\s*$/).click();
+  await ui.click(page, page.locator(q.newBtn));
+  await ui.click(page, menuItem(page, /^\s*New whiteboard\s*$/));
   const board = await waitFor("the page selects its new board", async () => (await sel(page)).board ?? null);
-  await nameIt(page, ".side-row.is-board", BOARD);
-  await page.locator(".board-bar").waitFor();
+  await nameIt(page, q.boardRow, BOARD);
+  await page.locator(q.boardBar).waitFor();
   const onBoard = (c) => c.board === board;
-  await place(page, `a board row's "+"`, { opener: () => hoverClick(rowOf(page, "board", BOARD), 'button[title="New chat on this board"]'), placed: onBoard });
-  await place(page, 'the board bar\'s "+ Chat on this board"', { opener: () => page.locator(".board-bar button", { hasText: /^\+ Chat on this board$/ }).click(), placed: onBoard });
+  await place(page, `a board row's "+"`, { opener: () => hoverClick(page, rowOf(page, "board", BOARD), "New chat on this board"), placed: onBoard });
+  await place(page, 'the board bar\'s "+ Chat on this board"', { opener: () => ui.click(page, page.locator(q.boardNewChat, { hasText: /^\+ Chat on this board$/ })), placed: onBoard });
 
   const st = await stateOf();
   await check("1 the five places made five chats, none with a menu of agents", st.chats.length === 5, `${st.chats.length} chats on the server`);
@@ -225,24 +224,21 @@ async function step1() {
 
 // ---- step 2: the group's defaults
 
-const folderChip = (p) => p.locator('.composer button.tchip[title^="Working directory"]');
-const modelChip = (p) => p.locator('.composer button.tchip[title^="Model"]');
+const folderChip = (p) => ui.chip(p, "folder");
+const modelChip = (p) => ui.chip(p, "model");
 /** What the composer on screen shows as the chat's folder and model. */
-const shows = async (p) => ({
-  folder: ((await folderChip(p).getAttribute("title").catch(() => "")) ?? "").replace(/ — .*$/, "").replace(/^Working directory: /, ""),
-  model: (await modelChip(p).innerText().catch(() => "")).replace(/[▾\s]+$/, "").trim(),
-});
+const shows = ui.shows;
 
 async function newIn(p, opener, item) {
   const before = new Set((await stateOf()).chats.map((c) => c.id));
   await opener();
-  await menuItem(p, new RegExp(`^\\s*${item}\\s*$`)).click();
+  await ui.click(p, menuItem(p, new RegExp(`^\\s*${item}\\s*$`)));
   const id = await waitFor("the page selects its new chat", async () => { const c = (await sel(p)).chat; return c && !before.has(c) ? c : null; });
   await box(p).waitFor();
   return id;
 }
-const newInGroup = (p) => newIn(p, () => hoverClick(groupHead(p, GROUP), `button[title="New in ${GROUP}"]`), "Chat");
-const newUngrouped = (p) => newIn(p, () => p.click("button.icon-btn.new"), "New chat");
+const newInGroup = (p) => newIn(p, () => hoverClick(p, groupHead(p, GROUP), `New in ${GROUP}`), "Chat");
+const newUngrouped = (p) => newIn(p, () => ui.click(p, p.locator(q.newBtn)), "New chat");
 
 async function step2() {
   if (!group) { group = (await stateOf()).groups?.find((g) => g.name === GROUP)?.id ?? ""; }
@@ -259,16 +255,16 @@ async function step2() {
   else skipped("2 before a first message, the group's chat has the server's default folder and model", "step 1 made no chat in the group");
 
   const first = await newInGroup(page);
-  await folderChip(page).click();
-  const dirs = page.locator(".composer .menu.dirs");
-  await dirs.locator(".dir-list").waitFor(); // the browser has loaded its first listing
-  await dirs.locator(".dir-input").fill(PICKED);
-  await dirs.locator(".dir-input").press("Enter");
+  await ui.click(page, folderChip(page));
+  const dirs = ui.dirs(page);
+  await dirs.locator(q.dirsLoaded).first().waitFor(); // the browser has loaded its first listing
+  await dirs.locator(q.dirInput).fill(PICKED);
+  await dirs.locator(q.dirInput).press("Enter");
   // The button reads "Use <name>" only once the typed folder's listing has loaded.
-  await dirs.locator(".dir-foot button", { hasText: new RegExp(`^Use ${path.basename(PICKED)}$`) }).click();
+  await ui.click(page, dirs.locator(q.dirUse, { hasText: new RegExp(`^Use ${path.basename(PICKED)}$`) }));
   await waitFor("the chat's folder is the picked one", async () => (await chatOn(first))?.cwd === PICKED);
-  await modelChip(page).click();
-  await page.locator(`.composer .menu .menu-item[data-model-id="${other.id}"]`).click();
+  await ui.click(page, modelChip(page));
+  await ui.click(page, ui.modelOption(page, other.id));
   await waitFor("the chat's model is the picked one", async () => (await chatOn(first))?.model === other.id);
   const c1 = await chatOn(first);
   await holds("the composer shows the picked model", async () => (await shows(page)).model === label(other.id), { timeout: 5000 });
@@ -277,9 +273,7 @@ async function step2() {
     `the chat: folder ${c1.cwd}, model ${c1.model}; the composer: ${one(s1)}`);
 
   const text = "hello from the group";
-  await box(page).click();
-  await box(page).fill(text);
-  await box(page).press("Enter");
+  await ui.send(page, text);
   // The stand-in's reply names the model it was started with.
   const reply = await holds("the stand-in's reply", async () => (await assistant(page)).some((t) => t.includes(`FAKE(${other.id}): ${text}`)), { timeout: 20000 });
   await check("2 the first message is sent and the stand-in replies, started on the picked model", reply, `assistant messages: ${one(await assistant(page)).slice(0, 300)}`);

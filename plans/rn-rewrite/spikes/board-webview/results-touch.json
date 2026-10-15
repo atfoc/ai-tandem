@@ -1,0 +1,127 @@
+{
+ "scenario": "touch",
+ "phase": "done",
+ "done": true,
+ "at": {
+  "appModule": 1791992935469,
+  "loadStart": 1791992935944,
+  "loadEnd": 1791992936034,
+  "pageReady": 1791992936038,
+  "touch-ready": 1791992936104,
+  "done": 1791992950872
+ },
+ "steps": [
+  {
+   "name": "loadScene empty",
+   "ok": true,
+   "ms": 61
+  },
+  {
+   "name": "setTool freedraw",
+   "ok": true,
+   "ms": 1
+  },
+  {
+   "name": "a freedraw element arrived through the bridge (sceneChanged, debounced)",
+   "ok": true,
+   "ms": 0
+  },
+  {
+   "name": "flush",
+   "ok": true,
+   "ms": 4,
+   "info": {
+    "pending": false,
+    "version": 152
+   }
+  },
+  {
+   "name": "getScene",
+   "ok": true,
+   "ms": 1,
+   "info": {
+    "elements": 3
+   }
+  },
+  {
+   "name": "at least 3 strokes drawn (3 swipes)",
+   "ok": true,
+   "ms": 0,
+   "info": [
+    {
+     "type": "freedraw",
+     "points": 61
+    },
+    {
+     "type": "freedraw",
+     "points": 42
+    },
+    {
+     "type": "freedraw",
+     "points": 46
+    }
+   ]
+  },
+  {
+   "name": "exportPng of the drawing",
+   "ok": true,
+   "ms": 33,
+   "info": {
+    "width": 520,
+    "height": 625,
+    "bytes": 29429
+   }
+  }
+ ],
+ "extra": {
+  "bridgeStats": {
+   "taken": 10,
+   "refused": 0,
+   "refusals": [],
+   "bytesIn": 51487,
+   "bytesOut": 447,
+   "lastRoundTripMs": 33
+  },
+  "page": {
+   "loadStartAt": 1791992935944,
+   "loadEndAt": 1791992936034,
+   "blockedNavigations": [],
+   "processTerminated": 0,
+   "errors": [],
+   "assetUri": "file:///Users/pedjat/Library/Developer/CoreSimulator/Devices/821472EB-107A-4CC5-B203-B85924A35CE2/data/Containers/Bundle/Application/B8D6EC60-5C1A-4B90-9D8E-02853FD44C73/BoardSpike.app/assets/assets/board.html"
+  },
+  "ready": {
+   "v": 1,
+   "kind": "event",
+   "type": "ready",
+   "protocol": 1,
+   "excalidraw": "0.18.1",
+   "loadMs": 76
+  },
+  "strokes": [
+   {
+    "id": "GubhE5UioXj3-apUMd1TX",
+    "points": 61,
+    "width": 417,
+    "height": 145
+   }
+  ],
+  "finalElements": [
+   {
+    "type": "freedraw",
+    "points": 61
+   },
+   {
+    "type": "freedraw",
+    "points": 42
+   },
+   {
+    "type": "freedraw",
+    "points": 46
+   }
+  ],
+  "pointerLogs": [
+   "first pointerdown: touch pressure=0 at 291,331"
+  ]
+ }
+}

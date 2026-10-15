@@ -1,0 +1,20 @@
+# Shared by the flows of package V4: opens the app (the development client's link, as the runner does) and ends on the sidebar. The app comes back on the
+# screen it was left on (a chat, after a relaunch), so a chat that is open is left by its back button.
+appId: ${APP_ID}
+---
+- runFlow: _dismiss.yaml
+- extendedWaitUntil:
+    visible:
+      id: "side-tree|chat-head"
+    timeout: 300000
+- runFlow:
+    when:
+      visible:
+        id: "chat-head"
+    commands:
+      - tapOn:
+          id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "side-tree"
+    timeout: 60000

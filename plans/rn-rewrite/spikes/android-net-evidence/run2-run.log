@@ -1,0 +1,68 @@
+15:47:09 scratch folder /var/folders/v8/t9kbrt2j7nl0pggwxyhdvvxxd3969g/T/aiwb-android-net-pRxwgZ
+15:47:09 go build
+15:47:11 scratch server on 127.0.0.1:58364, pin 9A:CB:48:C4:1E:2C:99:55:05:38:2C:DF:FA:A6:26:AB:B0:EC:69:75:E0:6B:EA:8E:D7:63:14:DE:0F:78:DD:49
+15:47:11 device sdk_gphone64_arm64 API 36 arm64-v8a
+15:47:12 gradle assembleRelease
+15:47:26 install Performing Streamed Install
+15:47:27 app started; waiting
+15:47:41 {"start":true,"cfg":{"host":"127.0.0.1","port":58364,"pin":"9A:CB:48:C4:1E:2C:99:55:05:38:2C:DF:FA:A6:26:AB:B0:EC:69:75:E0:6B:EA:8E:D7:63:14:DE:0F:78:DD:49","secret":"<secret>","closedPort":58376,"plainPort":58375,"probeWrongPort":58373,"probeControlPort":58374,"probePin":"24:D5:1B:18:11:19:21:04:15:E5:AA:DB:07:96:D4:83:31:D7:56:4A:20:74:D8:CC:34:FD:F1:34:D6:1A:49:3A","minutes":21,"idleMinutes":3,…
+15:47:41 {"check":"cert_read_without_trust","ok":true,"fingerprint":"9A:CB:48:C4:1E:2C:99:55:05:38:2C:DF:FA:A6:26:AB:B0:EC:69:75:E0:6B:EA:8E:D7:63:14:DE:0F:78:DD:49"}
+15:47:41 {"check":"cert_read_refused_port","ok":true,"outcome":"refused","state":"unreachable","detail":"failed to connect to /127.0.0.1 (port 58376) from /127.0.0.1 (port 40650) after 3000ms: isConnected failed: ECONNREFUSED (Connection refused)"}
+15:47:41 {"check":"cert_read_plain_http_port","ok":true,"outcome":"not_https","detail":"Unable to parse TLS packet header"}
+15:47:41 {"check":"session_open_right_pin","ok":true,"alpn":"h2","fingerprint":"9A:CB:48:C4:1E:2C:99:55:05:38:2C:DF:FA:A6:26:AB:B0:EC:69:75:E0:6B:EA:8E:D7:63:14:DE:0F:78:DD:49"}
+15:47:41 {"check":"session_open_lowercase_pin_no_colons","ok":true}
+15:47:41 {"check":"session_open_wrong_pin_real_server","ok":true,"outcome":"cert_changed","state":"certificate_changed","presented":"9A:CB:48:C4:1E:2C:99:55:05:38:2C:DF:FA:A6:26:AB:B0:EC:69:75:E0:6B:EA:8E:D7:63:14:DE:0F:78:DD:49","pinned":"AA:CB:48:C4:1E:2C:99:55:05:38:2C:DF:FA:A6:26:AB:B0:EC:69:75:E0:6B:EA:8E:D7:63:14:DE:0F:78:DD:49"}
+15:47:41 {"check":"session_open_no_pin","ok":true,"outcome":"fingerprint","state":"fingerprint_not_accepted"}
+15:47:41 {"check":"session_open_garbage_pin","ok":true,"outcome":"cert_changed","pinned":"not a fingerprint"}
+15:47:41 {"check":"wrong_pin_probe_server_sends_nothing","ok":true,"outcome":"cert_changed","presented":"24:D5:1B:18:11:19:21:04:15:E5:AA:DB:07:96:D4:83:31:D7:56:4A:20:74:D8:CC:34:FD:F1:34:D6:1A:49:3A"}
+15:47:41 {"check":"wrong_pin_on_the_requests_own_connection_probe_gets_nothing","ok":true,"outcome":"cert_changed","presented":"24:D5:1B:18:11:19:21:04:15:E5:AA:DB:07:96:D4:83:31:D7:56:4A:20:74:D8:CC:34:FD:F1:34:D6:1A:49:3A","pinned":"9A:CB:48:C4:1E:2C:99:55:05:38:2C:DF:FA:A6:26:AB:B0:EC:69:75:E0:6B:EA:8E:D7:63:14:DE:0F:78:DD:49"}
+15:47:44 {"check":"right_pin_probe_server_gets_request_and_times_out","ok":true,"outcome":"timeout"}
+15:47:44 {"check":"hello_h2","ok":true,"status":200,"protocol":"h2","hello":{"app":"ai-whiteboard","featureLevel":6,"instanceId":"223866f5-7d1d-4774-ad05-8c73302575d5","version":"dev"},"headers":{"content-length":"109","content-type":"application/json","date":"Wed, 14 Oct 2026 15:47:44 GMT"}}
+15:47:44 {"check":"state_authenticated","ok":true,"status":200,"protocol":"h2","bytes":938,"keys":["agents","catalogs","home","defaultCwd","groups","defaults","boards","chats","states","library"],"chats":0}
+15:47:44 {"check":"state_wrong_secret_is_401","ok":true,"status":401,"body":"{\"error\":\"unauthorized\"}\n"}
+15:47:44 {"check":"response_size_limit","ok":true,"outcome":"too_long"}
+15:47:44 {"check":"post_with_json_body","ok":true,"status":200,"body":"{\"id\":\"g_fsrezlr8\",\"name\":\"spike ünïcödé ✓\"}\n"}
+15:47:45 {"check":"abort_a_request","ok":true,"outcome":"aborted"}
+15:47:45 {"check":"stream_snapshot_first_then_events_and_cancel","ok":true,"types":["hello","snapshot","groups"],"chunks":2,"cancelMs":2,"head":{"status":200,"headers":{"cache-control":"no-cache","content-type":"text/event-stream","date":"Wed, 14 Oct 2026 15:47:45 GMT"},"protocol":"h2"}}
+15:47:50 {"check":"stream_open_cancel_x10_then_session_still_works","ok":true}
+15:47:56 {"check":"stream_ends_when_session_closes","ok":true,"error":"aborted"}
+15:47:56 {"summary":"short checks","pass":20,"fail":[]}
+15:48:00 {"long":"seeded","groups":40}
+15:48:00 {"long":"start","head":{"status":200,"headers":{"cache-control":"no-cache","content-type":"text/event-stream","date":"Wed, 14 Oct 2026 15:48:00 GMT"},"protocol":"h2"},"minutes":21,"idleMinutes":3}
+15:48:02 {"long":"tick","elapsedSec":1,"chunks":4,"chars":12823,"events":3,"pings":0,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":1},"mutations":1,"maxGapMs":1012,"mem":{"totalPssKb":72554,"javaHeapKb":6190,"nativeHeapKb":20944}}
+15:48:12 MEM {"label":"start","atSec":12,"totalPssKb":73473,"totalRssKb":164340,"javaHeapKb":5580,"nativeHeapKb":12856,"graphicsKb":0}
+15:49:02 {"long":"tick","elapsedSec":62,"chunks":82,"chars":333008,"events":60,"pings":3,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":58},"mutations":58,"maxGapMs":1942,"mem":{"totalPssKb":84300,"javaHeapKb":7110,"nativeHeapKb":20952}}
+15:50:03 {"long":"tick","elapsedSec":122,"chunks":158,"chars":666074,"events":119,"pings":6,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":117},"mutations":117,"maxGapMs":1942,"mem":{"totalPssKb":86904,"javaHeapKb":9594,"nativeHeapKb":21106}}
+15:51:04 {"long":"tick","elapsedSec":183,"chunks":236,"chars":970253,"events":173,"pings":9,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":171},"mutations":171,"maxGapMs":2597,"mem":{"totalPssKb":84872,"javaHeapKb":7090,"nativeHeapKb":20999}}
+15:51:13 MEM {"label":"interval","atSec":193,"totalPssKb":85014,"totalRssKb":177184,"javaHeapKb":9564,"nativeHeapKb":13196,"graphicsKb":0}
+15:52:04 {"long":"tick","elapsedSec":244,"chunks":318,"chars":1297209,"events":231,"pings":12,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":229},"mutations":229,"maxGapMs":2597,"mem":{"totalPssKb":84666,"javaHeapKb":7210,"nativeHeapKb":20876}}
+15:53:05 {"long":"tick","elapsedSec":304,"chunks":397,"chars":1623106,"events":288,"pings":15,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":286},"mutations":287,"maxGapMs":2597,"mem":{"totalPssKb":87110,"javaHeapKb":9622,"nativeHeapKb":21197}}
+15:54:05 {"long":"tick","elapsedSec":365,"chunks":476,"chars":1956648,"events":348,"pings":18,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":346},"mutations":346,"maxGapMs":2597,"mem":{"totalPssKb":84812,"javaHeapKb":7070,"nativeHeapKb":20997}}
+15:54:13 MEM {"label":"interval","atSec":373,"totalPssKb":85100,"totalRssKb":177516,"javaHeapKb":9508,"nativeHeapKb":13236,"graphicsKb":0}
+15:55:05 {"long":"tick","elapsedSec":425,"chunks":560,"chars":2290247,"events":407,"pings":21,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":405},"mutations":405,"maxGapMs":2597,"mem":{"totalPssKb":84953,"javaHeapKb":7430,"nativeHeapKb":21022}}
+15:56:06 {"long":"tick","elapsedSec":485,"chunks":645,"chars":2622028,"events":466,"pings":24,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":464},"mutations":464,"maxGapMs":2597,"mem":{"totalPssKb":83066,"javaHeapKb":5158,"nativeHeapKb":20857}}
+15:57:06 {"long":"tick","elapsedSec":545,"chunks":724,"chars":2949278,"events":524,"pings":27,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":522},"mutations":523,"maxGapMs":2597,"mem":{"totalPssKb":85747,"javaHeapKb":7602,"nativeHeapKb":20968}}
+15:57:14 MEM {"label":"interval","atSec":554,"totalPssKb":85738,"totalRssKb":178280,"javaHeapKb":10004,"nativeHeapKb":13296,"graphicsKb":0}
+15:58:06 {"long":"tick","elapsedSec":606,"chunks":799,"chars":3287732,"events":584,"pings":30,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":582},"mutations":582,"maxGapMs":2597,"mem":{"totalPssKb":84971,"javaHeapKb":7302,"nativeHeapKb":20912}}
+15:59:07 {"long":"tick","elapsedSec":666,"chunks":870,"chars":3608598,"events":641,"pings":33,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":639},"mutations":639,"maxGapMs":2897,"mem":{"totalPssKb":87587,"javaHeapKb":9666,"nativeHeapKb":21169}}
+16:00:07 {"long":"tick","elapsedSec":727,"chunks":948,"chars":3942385,"events":700,"pings":36,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":698},"mutations":698,"maxGapMs":2897,"mem":{"totalPssKb":85415,"javaHeapKb":7458,"nativeHeapKb":21002}}
+16:00:14 MEM {"label":"interval","atSec":734,"totalPssKb":85642,"totalRssKb":178268,"javaHeapKb":9864,"nativeHeapKb":13300,"graphicsKb":0}
+16:01:08 {"long":"tick","elapsedSec":787,"chunks":1028,"chars":4272258,"events":758,"pings":39,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":756},"mutations":757,"maxGapMs":2897,"mem":{"totalPssKb":84458,"javaHeapKb":7358,"nativeHeapKb":20969}}
+16:02:08 {"long":"tick","elapsedSec":847,"chunks":1108,"chars":4607000,"events":818,"pings":42,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":816},"mutations":816,"maxGapMs":2897,"mem":{"totalPssKb":82606,"javaHeapKb":5266,"nativeHeapKb":20808}}
+16:03:08 {"long":"tick","elapsedSec":908,"chunks":1188,"chars":4939430,"events":877,"pings":45,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":875},"mutations":875,"maxGapMs":2897,"mem":{"totalPssKb":85150,"javaHeapKb":7814,"nativeHeapKb":20946}}
+16:03:15 MEM {"label":"interval","atSec":915,"totalPssKb":85378,"totalRssKb":178668,"javaHeapKb":10108,"nativeHeapKb":13280,"graphicsKb":0}
+16:04:08 {"long":"tick","elapsedSec":968,"chunks":1261,"chars":5266218,"events":935,"pings":48,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":933},"mutations":934,"maxGapMs":2897,"mem":{"totalPssKb":84594,"javaHeapKb":7282,"nativeHeapKb":21004}}
+16:05:09 {"long":"tick","elapsedSec":1029,"chunks":1342,"chars":5605332,"events":995,"pings":51,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":993},"mutations":993,"maxGapMs":2897,"mem":{"totalPssKb":82577,"javaHeapKb":5178,"nativeHeapKb":20860}}
+16:06:01 {"long":"idle_begins","elapsedSec":1081}
+16:06:09 {"long":"tick","elapsedSec":1089,"chunks":1419,"chars":5886324,"events":1045,"pings":54,"idle":true,"counts":{"hello":1,"snapshot":1,"groups":1043},"mutations":1043,"maxGapMs":2897,"mem":{"totalPssKb":84648,"javaHeapKb":7282,"nativeHeapKb":20970}}
+16:06:15 MEM {"label":"interval","atSec":1095,"totalPssKb":84635,"totalRssKb":178000,"javaHeapKb":9440,"nativeHeapKb":13272,"graphicsKb":0}
+16:07:09 {"long":"tick","elapsedSec":1149,"chunks":1422,"chars":5886348,"events":1045,"pings":57,"idle":true,"counts":{"hello":1,"snapshot":1,"groups":1043},"mutations":1043,"maxGapMs":20033,"mem":{"totalPssKb":82506,"javaHeapKb":5166,"nativeHeapKb":20809}}
+16:08:10 {"long":"tick","elapsedSec":1210,"chunks":1425,"chars":5886372,"events":1045,"pings":60,"idle":true,"counts":{"hello":1,"snapshot":1,"groups":1043},"mutations":1043,"maxGapMs":20033,"mem":{"totalPssKb":82540,"javaHeapKb":5294,"nativeHeapKb":20817}}
+16:09:01 {"long":"end","endedWith":null,"chunks":1428,"chars":5886396,"events":1045,"pings":63,"counts":{"hello":1,"snapshot":1,"groups":1043},"mutations":1043,"maxGapMs":20041,"idleSec":180,"idlePings":9,"idleMaxGapMs":20041,"mem":{"totalPssKb":82644,"javaHeapKb":5422,"nativeHeapKb":20829}}
+16:09:01 {"check":"long_stream_held","ok":true,"endedWith":null,"seconds":1261}
+16:09:01 {"check":"idle_stream_gets_pings","ok":true,"idleSec":180,"idlePings":9,"wantAtLeast":7,"idleMaxGapMs":20041}
+16:09:01 {"done":true,"pass":22,"fail":[],"seconds":1280}
+16:09:02 MEM {"label":"end","atSec":1261,"totalPssKb":82536,"totalRssKb":175912,"javaHeapKb":7672,"nativeHeapKb":13124,"graphicsKb":0}
+16:09:02 probe {"wrongPinBytes":0,"wrongPinConnections":2,"controlBytes":448} [{"label":"wrong-pin","secure":false,"bytes":0,"tlsClientError":true},{"label":"wrong-pin","secure":false,"bytes":0,"tlsClientError":true},{"label":"right-pin","secure":true,"bytes":0,"alpn":"h2"},{"label":"right-pin","secure":true,"bytes":224,"alpn":"h2"},{"label":"right-pin","secure":true,"bytes":0,"alpn":"h2"},{"label":"right-pin","secure":true,"bytes":224,"alpn":"h2"}]
+16:09:02 ALL CHECKS PASSED
+16:09:19 stop scratch server

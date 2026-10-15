@@ -22,7 +22,14 @@
 //   it can be changed and nothing new goes there; back, it can be changed again. A call refused on the way to it
 //   shows the reason and keeps what was typed. Removed from the list, it takes its entry and its prompts with it,
 //   and the tree has no level of servers again.
-import { check, mockEval, openPage, pointerDrag, seed, until } from "../shot.mjs";
+// Ports dev/checks/PL4.1-library.mjs (S11) to the new build, at the three viewports (C-PL-01, 03 to 11, 15 to 18, 23; the popup is a dialog at the desktop and the tablet, a sheet on the phone, with the
+// same words). What changed: the selectors (testIDs, `library.mjs` reads the popup), the presses (a click with a mouse, a tap with a finger), the drag (a pointer gesture: the mouse
+// drags at once, a finger is held first), the question that asks before a drop (`confirm-dialog`), and "a click beside the popup" is a press at the window's corner, on the dimmed page.
+import { check, mockEval, seed, until } from "../shot.mjs";
+import { byTid, pointerDragger, press, showList, tidSel } from "./sel.mjs";
+import { seen } from "./library.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
 
 const g = (id, name, parent = "") => ({ id, name, parent }), p = (id, name, parent, text) => ({ id, name, parent, text });
 // The example of the goal file, section 6.
@@ -33,32 +40,10 @@ const SEARCHES = [["git commit", ["git/commit message", "misc/git commit style",
   ["GIT", ["misc/git commit style", "git/commit message", "git/review", "git commit/squash"]]];
 const STUDIO = { id: "s_studio", name: "Studio", address: "https://studio.example:4790", state: "connected", version: "dev" };
 const THEIRS = { groups: [g("g_team", "team")], prompts: [p("p_stand", "standup", "g_team", "What did you do yesterday?")] };
-const TOP = "At the top level", DLG = ".lib-dialog";
+const TOP = "At the top level";
 const NONE = "Choose a prompt to edit it, or make a new one. Right-click in the list to make one there; drag a prompt or a group to move it.";
 
-/** In the page: what the library popup shows, the question above it, and where the focus is. rows: the rows of the
- *  list, each set in by its level; fresh: the row of an item that is being made, "" with none; form.where: where the
- *  editor says its item is; form.fields: the editor's controls that take a value. */
-function seen() {
-  const dlg = document.querySelector(".lib-dialog"), at = document.activeElement, text = (e) => e?.textContent ?? "";
-  const rows = [...(dlg?.querySelectorAll(".lib-list .lib-row:not(.new)") ?? [])], fresh = dlg?.querySelector(".lib-list .lib-row.new");
-  const line = (r) => (r.matches(".hit") ? text(r.querySelector(".lib-path")) + text(r.querySelector(".lib-pname")) : "  ".repeat(Number(r.getAttribute("aria-level")) - 1) + text(r.querySelector(".lib-name")));
-  const form = dlg?.querySelector(".lib-form"), ask = document.querySelector(".dialog-backdrop .dialog");
-  return {
-    open: document.querySelectorAll(".lib-dialog").length, list: dlg?.querySelector(".lib-list")?.getAttribute("role") ?? "", rows: rows.map(line), fresh: fresh ? line(fresh) : "",
-    on: rows.filter((r) => r.getAttribute("aria-selected") === "true").map(line), off: rows.filter((r) => r.querySelector(".lib-off")).map(line), closed: rows.filter((r) => r.getAttribute("aria-expanded") === "false").map(line),
-    says: text(dlg?.querySelector(".lib-list .menu-empty")), none: text(dlg?.querySelector(".lib-none")), about: text(dlg?.querySelector(".lib-about")),
-    form: form ? { head: text(form.querySelector(".lib-form-head > span")), name: form.querySelector("input").value, text: form.querySelector("textarea")?.value ?? null, fixed: form.querySelector("input").readOnly,
-      where: text(form.querySelector(".lib-where")), fields: [...form.querySelectorAll("input, textarea, select")].map((e) => e.tagName.toLowerCase()).join(),
-      err: text(form.querySelector(".dialog-err")), notice: text(form.querySelector(".lib-notice")), problem: text(form.querySelector(".lib-problem")),
-      off: [...form.querySelectorAll("button")].filter((b) => b.disabled).map((b) => b.textContent), buttons: [...form.querySelectorAll("button")].map((b) => b.textContent) } : null,
-    ask: ask ? { title: text(ask.querySelector(".dialog-title")), body: text(ask.querySelector(".dialog-body")), err: text(ask.querySelector(".dialog-err")), buttons: [...ask.querySelectorAll("button")].map((b) => b.textContent) } : null,
-    focus: !at || at === document.body ? "nothing" : at.matches(".library-btn") ? "button" : at.matches(".lib-search input") ? "search" : at.matches(".lib-row") ? "row " + line(at).trim() : at.matches(".lib-form input") ? "name"
-      : at.matches(".lib-dialog *") ? "popup " + at.tagName.toLowerCase() : at.matches(".dialog *") ? "question" : at.tagName.toLowerCase() + "." + at.className,
-  };
-}
-
-await check("PL4.1 the library popup: the tree, the search, the editor, a second window and another server", async ({ url, browser, fail, note }) => {
+await check("PL4.1 the library popup: the tree, the search, the editor, a second window and another server", async ({ url, open, fail, note, touch }) => {
   const seeded = await seed(url, "A2");
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const lib = (server = "local") => mockEval(`return libraries[${JSON.stringify(server)}] ?? null;`, url);
@@ -68,10 +53,10 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
   await mockEval(`setLibrary("local", ${JSON.stringify(EXAMPLE)});`, url);
 
   /** A window of the app with what the check does in its library popup. */
-  const windowOf = async (name) => {
-    const errors = [];
-    const w = await openPage({ url, browser, sel, errors, wait: ".side-foot .library-btn" });
+  const windowOf = async (name, first) => {
+    const w = first ?? await open({ sel, beside: true }); // (the first window stays: open() of shot.mjs says how the two share the mock's stream)
     const { page } = w;
+    await showList(page);
     const read = () => page.evaluate(seen);
     /** Waits for the page to show what `want` says; fails with what it shows. */
     const shows = async (what, want) => {
@@ -79,38 +64,39 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
       if (!await until(async () => want((s = await read())), 10000)) fail(`${name}, ${what}: the page shows ${JSON.stringify(s)}`);
       return s;
     };
-    const row = (label) => page.locator(`${DLG} .lib-row:not(.new):has(.lib-name:text-is("${label}"))`);
-    const hit = (label) => page.locator(`${DLG} .lib-row.hit:has(.lib-pname:text-is("${label}"))`);
-    const button = (label) => page.locator(`${DLG} button:text-is("${label}")`);
-    const field = { name: page.locator(`${DLG} .lib-form input`), text: page.locator(`${DLG} .lib-form textarea`), search: page.locator(`${DLG} .lib-search input`) };
+    const D = byTid(page, "library-dialog");
+    const row = (label) => D.locator(`${tidSel("lib-row")}:not([data-new="true"])`).filter({ has: page.locator(`${tidSel("lib-name")}`, { hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
+    const hit = (label) => D.locator(tidSel("lib-row", { hit: true })).filter({ has: page.locator(tidSel("lib-pname"), { hasText: new RegExp(`^${label}$`) }) });
+    const button = (label) => D.locator('[role="button"]').filter({ hasText: new RegExp(`^${label}$`) });
+    const field = { name: byTid(D, "lib-name-input"), text: byTid(D, "lib-text-input"), search: byTid(D, "lib-search") };
     /** Chooses a row of the tree and waits for the editor to be on it. */
-    const choose = async (label) => { await row(label).click(); return shows(`"${label}" chosen`, (s) => s.form?.name === label && s.on.join().trim() === label); };
-    const save = () => button("Save").click();
-    const answer = (label) => page.locator(`.dialog-backdrop .dialog button:text-is("${label}")`).click();
-    const close = async () => { for (const e of errors) fail(`${name}: page error: ${e}`); await w.ctx.close(); };
-    return { page, read, shows, row, hit, button, field, choose, save, answer, close };
+    const choose = async (label) => { await press(page, row(label)); return shows(`"${label}" chosen`, (s) => s.form?.name === label && s.on.join().trim() === label); };
+    const save = () => press(page, button("Save"));
+    const answer = (label) => press(page, byTid(page, "confirm-dialog").locator('[role="button"]').filter({ hasText: new RegExp(`^${label}$`) }));
+    const libBtn = byTid(page, "library-btn");
+    return { page, read, shows, row, hit, button, field, choose, save, answer, libBtn, w };
   };
   const a = await windowOf("the first window"), { page } = a;
   try {
     // ---- the button, and the ways the popup opens and closes
-    const foot = await page.evaluate(() => [".servers-btn", ".library-btn", ".theme-btn"].map((s) => { const r = document.querySelector(".side-foot " + s)?.getBoundingClientRect(); return r ? [Math.round(r.left), Math.round(r.right), Math.round(r.top + r.height / 2)] : null; }));
+    const foot = await page.evaluate(() => ["servers-btn", "library-btn", "theme-btn"].map((s) => { const r = document.querySelector(`[data-testid="side-foot"] [data-testid="${s}"]`)?.getBoundingClientRect(); return r ? [Math.round(r.left), Math.round(r.right), Math.round(r.top + r.height / 2)] : null; }));
     if (foot.some((r) => !r)) fail(`the sidebar's foot has not all of Servers, the library's button and the theme picker: ${JSON.stringify(foot)}`);
     else if (!(foot[0][1] <= foot[1][0] && foot[1][1] <= foot[2][0]) || Math.abs(foot[0][2] - foot[1][2]) > 1 || Math.abs(foot[1][2] - foot[2][2]) > 1) fail(`the library's button is not between Servers and the theme picker on their line: ${JSON.stringify(foot)}`);
-    const title = await page.locator(".side-foot .library-btn").getAttribute("title");
+    const title = await a.libBtn.getAttribute("title");
     if (title !== "Prompt library") fail(`the button's title is ${JSON.stringify(title)}`);
-    await page.locator(".side-foot .library-btn").focus();
+    await a.libBtn.focus();
     await page.keyboard.press("Enter");
     let s = await a.shows("Enter on the button", (x) => x.open === 1 && x.focus === "search");
-    if (await page.locator(`${DLG}[role="dialog"][aria-modal="true"][aria-label="Prompt library"]`).count() !== 1) fail("the popup is no dialog named Prompt library");
+    if (await page.locator(`[role="dialog"][aria-modal="true"][aria-label="Prompt library"]`).count() < 1) fail("the popup is no dialog named Prompt library");
     await page.keyboard.press("Escape");
     await a.shows("Esc", (x) => x.open === 0 && x.focus === "button");
-    await page.locator(".side-foot .library-btn").click();
-    await a.shows("a click on the button", (x) => x.open === 1 && x.focus === "search");
-    await page.mouse.click(6, 6);
-    await a.shows("a click beside the popup", (x) => x.open === 0 && x.focus === "button");
+    await press(page, a.libBtn);
+    await a.shows("a press on the button", (x) => x.open === 1 && x.focus === "search");
+    if (touch) await page.touchscreen.tap(6, 6); else await page.mouse.click(6, 6);
+    await a.shows("a press beside the popup", (x) => x.open === 0 && x.focus === "button");
     await page.keyboard.press("Enter");
     await a.shows("Enter on the button again", (x) => x.open === 1);
-    await a.button("Close").click();
+    await press(page, a.button("Close"));
     await a.shows("Close", (x) => x.open === 0 && x.focus === "button");
     await page.keyboard.press("Enter");
 
@@ -118,9 +104,9 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     s = await a.shows("the tree", (x) => x.open === 1 && x.rows.join("|") === TREE.join("|"));
     if (s.list !== "tree" || s.none !== NONE || s.form) fail(`the popup opens with ${JSON.stringify({ list: s.list, none: s.none, form: s.form })}`);
     // a group closes and opens by its twist
-    await a.row("git").locator(".lib-twist").click();
+    await press(page, byTid(a.row("git"), "lib-twist"));
     await a.shows("the twist of an open group", (x) => x.rows.join("|") === TREE.filter((r) => r !== "  commit message" && r !== "  review").join("|") && x.closed.join() === "git");
-    await a.row("git").locator(".lib-twist").click();
+    await press(page, byTid(a.row("git"), "lib-twist"));
     await a.shows("the twist of a closed group", (x) => x.rows.join("|") === TREE.join("|") && !x.closed.length);
     // and by the keys: from the search down into the rows, left closes, right opens and goes in, Enter chooses
     await a.field.search.focus();
@@ -141,7 +127,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     if (s.form.off.join() !== "Save" || s.form.buttons.join() !== "Delete,Save") fail(`with nothing typed the editor's buttons are ${JSON.stringify(s.form.buttons)}, disabled ${JSON.stringify(s.form.off)}`);
     await page.keyboard.press("ArrowUp"); await page.keyboard.press("ArrowUp");
     await a.shows("ArrowUp on the first row", (x) => x.focus === "search");
-    note("the button opens the popup, Esc, Close and a click beside it close it with the focus back; the tree has no level of servers and is walked with the keys");
+    note("the button opens the popup, Esc, Close and a press beside it close it with the focus back; the tree has no level of servers and is walked with the keys");
 
     // ---- the search: the flat list, in the order of the goal file's example
     for (const [query, want] of SEARCHES) {
@@ -152,15 +138,15 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.field.search.fill("com mes");
     await a.shows("a search whose one prompt is the chosen one", (x) => x.rows.join("|") === "git/commit message" && x.on.join("|") === "git/commit message");
     await a.field.search.fill("squ");
-    await a.hit("squash").click();
-    await a.shows("a click on a prompt found", (x) => x.form?.name === "squash" && x.form.where === "In git commit");
+    await press(page, a.hit("squash"));
+    await a.shows("a press on a prompt found", (x) => x.form?.name === "squash" && x.form.where === "In git commit");
     await a.field.search.fill("");
     await a.shows("the search emptied", (x) => x.list === "tree" && x.rows.join("|") === TREE.join("|") && x.on.join("|") === "  squash");
     // (Enter in the search chooses the first prompt found; the clearing button empties it)
     await a.field.search.fill("review");
     await page.keyboard.press("Enter");
     await a.shows("Enter in the search", (x) => x.form?.name === "review");
-    await page.locator(`${DLG} .menu-search-clear`).click();
+    await press(page, byTid(page, "lib-search-clear"));
     await a.shows("the search's clearing button", (x) => x.list === "tree" && x.focus === "search");
     note("the four searches of the example give its results in its order, and an emptied search shows the tree");
 
@@ -186,7 +172,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.save();
     s = await a.shows("the save of a prompt that is gone", (x) => !!x.form?.err);
     if (s.form.err !== "This prompt no longer exists." || s.form.text !== "Typed over a prompt that is gone.") fail(`the save of a prompt that is gone left ${JSON.stringify(s.form)}`);
-    await a.button("Revert").click();
+    await press(page, a.button("Revert"));
     await a.shows("Revert on a prompt that is gone", (x) => !x.form && !!x.none);
     await mockEval(`libraries.local.prompts.push(${JSON.stringify(EXAMPLE.prompts[3])}); sendLibrary("local");`, url); // (as the example again)
     await a.shows("the example again", (x) => x.rows.join("|") === TREE.join("|"));
@@ -195,7 +181,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     // ---- unsaved changes: leaving asks first
     await a.choose("review");
     await a.field.text.fill("Not saved yet.");
-    await a.row("squash").click();
+    await press(page, a.row("squash"));
     s = await a.shows("leaving a prompt with unsaved changes", (x) => !!x.ask);
     if (s.ask.title !== "Discard changes?" || s.ask.body !== "The changes to the prompt “review” are not saved." || s.ask.buttons.join() !== "Cancel,Discard") fail(`the question is ${JSON.stringify(s.ask)}`);
     await a.answer("Cancel");
@@ -204,19 +190,19 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.shows("Esc with unsaved changes", (x) => !!x.ask && x.open === 1);
     await page.keyboard.press("Escape"); // (the question's own Esc: it goes, the popup stays)
     await a.shows("Esc on the question", (x) => !x.ask && x.open === 1 && x.form?.text === "Not saved yet.");
-    await a.button("Close").click();
+    await press(page, a.button("Close"));
     await a.shows("Close with unsaved changes", (x) => !!x.ask);
     await a.answer("Cancel");
-    await a.button("New prompt").click();
+    await press(page, a.button("New prompt"));
     await a.shows("New prompt with unsaved changes", (x) => !!x.ask);
     await a.answer("Cancel");
-    await a.row("squash").click();
+    await press(page, a.row("squash"));
     await a.shows("leaving again", (x) => !!x.ask);
     await a.answer("Discard");
     await a.shows("Discard", (x) => !x.ask && x.form?.name === "squash" && x.form.text === "Squash them.");
     if ((await lib()).prompts.find((x) => x.id === "p_review").text !== "Review this change.") fail("what was discarded was saved");
     // (with nothing typed nothing is asked)
-    await a.row("review").click();
+    await press(page, a.row("review"));
     await a.shows("leaving a prompt with nothing typed", (x) => !x.ask && x.form?.name === "review" && x.form.text === "Review this change.");
     // closed through the question, the popup gives the focus back too, and what was typed is gone when it opens again
     await a.field.text.fill("Dropped with the popup.");
@@ -226,14 +212,14 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.shows("Discard on the question of a closing popup", (x) => !x.ask && x.open === 0 && x.focus === "button");
     await page.keyboard.press("Enter");
     await a.shows("the popup opened again", (x) => x.open === 1 && !x.form && x.rows.join("|") === TREE.join("|"));
-    await a.row("review").click();
+    await press(page, a.row("review"));
     await a.shows("the prompt as it is saved", (x) => x.form?.text === "Review this change.");
 
     // ---- new items, a move, and the names the popup checks itself
-    await a.row("misc").click();
+    await press(page, a.row("misc"));
     s = await a.shows("a group chosen", (x) => x.form?.head === "Group" && x.form.name === "misc");
     if (s.form.text !== null || s.form.where !== TOP || s.form.fields !== "input") fail(`the editor of the group "misc" shows ${JSON.stringify(s.form)}`);
-    await a.button("New prompt").click();
+    await press(page, a.button("New prompt"));
     s = await a.shows("New prompt in the chosen group", (x) => x.form?.head === "New prompt" && x.focus === "name");
     if (s.form.where !== "In misc" || s.form.name !== "" || s.form.text !== "" || !s.form.off.includes("Save") || s.form.fields !== "input,textarea") fail(`a new prompt starts as ${JSON.stringify(s.form)}`);
     // (the tree shows its row where it goes, before the prompt of that group, and no other row is the chosen one)
@@ -247,7 +233,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     s = await a.shows("a new prompt saved", (x) => x.form?.head === "Prompt" && x.form.name === "todo" && x.rows.join("|") === [...TREE, "  todo"].join("|") && x.on.join("|") === "  todo" && !x.fresh);
     const todo = (await lib()).prompts.find((x) => x.name === "todo");
     if (!todo || todo.parent !== "g_misc" || todo.text !== "TODO: ") fail(`the new prompt is ${JSON.stringify(todo)}`);
-    await a.button("New group").click();
+    await press(page, a.button("New group"));
     s = await a.shows("New group beside the chosen prompt", (x) => x.form?.head === "New group" && x.form.where === "In misc" && x.form.text === null && x.fresh === "  New group");
     await page.keyboard.type("inner");
     await page.keyboard.press("Enter"); // (Enter in the name saves)
@@ -256,22 +242,22 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     if (!inner || inner.parent !== "g_misc") fail(`the new group is ${JSON.stringify(inner)}`);
     // a prompt is moved by dragging it onto another group, and the editor that is on it says where it is now
     await a.choose("todo");
-    const drag = pointerDrag(page);
-    await drag.start(await drag.at(a.row("todo")));
-    await drag.over(await drag.at(a.row("inner")));
-    await drag.drop();
+    const drag = await pointerDragger(page);
+    await drag.start(a.row("todo"));
+    await drag.move(a.row("inner"));
+    await drag.end();
     await a.shows("a prompt moved", (x) => x.rows.join("|") === [...TREE.slice(0, 6), "  inner", "    todo", "  git commit style"].join("|") && x.form?.where === "In misc/inner" && x.form.off.includes("Save"));
     if ((await lib()).prompts.find((x) => x.name === "todo").parent !== inner?.id) fail("the moved prompt is not in its new group");
-    await a.row("misc").click();
+    await press(page, a.row("misc"));
     await a.shows("the group above", (x) => x.form?.head === "Group" && x.form.name === "misc" && x.form.where === TOP);
 
     // ---- deleting asks first; a group's question says how many prompts go with it
-    await a.button("Delete").click();
+    await press(page, a.button("Delete"));
     s = await a.shows("Delete on a group", (x) => !!x.ask);
     if (s.ask.title !== "Delete group" || s.ask.body !== "“misc” is deleted with everything in it: 2 prompts and 1 group." || s.ask.buttons.join() !== "Cancel,Delete") fail(`a group's question is ${JSON.stringify(s.ask)}`);
     await a.answer("Cancel");
     await a.shows("Cancel on the question", (x) => !x.ask && x.rows.includes("misc"));
-    await a.button("Delete").click();
+    await press(page, a.button("Delete"));
     await a.shows("Delete on a group again", (x) => !!x.ask);
     await a.answer("Delete");
     s = await a.shows("a group deleted", (x) => !x.ask && x.rows.join("|") === TREE.slice(0, 5).join("|") && !x.form);
@@ -279,7 +265,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     const left = await lib();
     if (left.groups.some((x) => ["misc", "inner"].includes(x.name)) || left.prompts.some((x) => ["todo", "git commit style"].includes(x.name))) fail(`after the group was deleted the library holds ${JSON.stringify(left)}`);
     await a.choose("squash");
-    await a.button("Delete").click();
+    await press(page, a.button("Delete"));
     s = await a.shows("Delete on a prompt", (x) => !!x.ask);
     if (s.ask.title !== "Delete prompt" || s.ask.body !== "“squash” is deleted from the library.") fail(`a prompt's question is ${JSON.stringify(s.ask)}`);
     await a.answer("Delete");
@@ -290,9 +276,9 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     const b = await windowOf("the second window");
     try {
       await a.choose("review");
-      await b.page.locator(".side-foot .library-btn").click();
+      await press(b.page, b.libBtn);
       await b.shows("its tree", (x) => x.rows.join("|") === TREE.slice(0, 4).join("|"));
-      await b.button("New prompt").click();
+      await press(b.page, b.button("New prompt"));
       await b.shows("its new prompt", (x) => x.form?.head === "New prompt" && x.form.where === TOP);
       await b.field.name.fill("from window two");
       await b.save();
@@ -317,7 +303,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
       await a.shows("the first window's save done", (x) => x.form?.text === "Typed in window one." && x.form.off.includes("Save"));
       note("a prompt made and a prompt changed in a second window show in the first with no reload; the later of two saves wins");
     } catch (e) { fail(`the second window: ${e.message.split("\n")[0]}`); }
-    await b.close();
+    await b.w.ctx.close();
     await mockEval(`setLibrary("local", ${JSON.stringify(EXAMPLE)});`, url);
     await a.shows("the example again", (x) => x.rows.join("|") === TREE.join("|"));
 
@@ -333,9 +319,9 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.shows("the example's search with two libraries", (x) => x.rows.join("|") === SEARCHES[0][1].map((l) => "This computer/" + l).join("|"));
     await a.field.search.fill("");
     // a prompt made at the top of the server's entry is that server's
-    await a.row("Studio").click();
+    await press(page, a.row("Studio"));
     s = await a.shows("a server's entry chosen", (x) => /^Studio1 prompt in 1 group\.$/.test(x.about) && !x.form);
-    await a.button("New prompt").click();
+    await press(page, a.button("New prompt"));
     s = await a.shows("New prompt at a server's entry", (x) => x.form?.head === "New prompt");
     if (s.form.where !== "In Studio" || s.fresh !== "  New prompt" || s.form.fields !== "input,textarea") fail(`a new prompt at Studio's entry goes to ${JSON.stringify(s.form.where)}, and its row is ${JSON.stringify(s.fresh)}`);
     await a.field.name.fill("retro");
@@ -353,15 +339,15 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     s = await a.shows("a server that dropped", (x) => x.off.join("|") === "Studio" && x.form?.fixed === true);
     if (s.rows.join("|") !== [...BOTH, "  retro"].join("|")) fail(`with the server dropped the tree is ${JSON.stringify(s.rows)}`);
     if (!["Save", "Delete"].every((l) => s.form.off.includes(l)) || !/^Studio is not connected/.test(s.form.notice) || s.form.text !== "Typed before the server dropped.") fail(`a prompt of a server that dropped shows ${JSON.stringify(s.form)}`);
-    if (await a.row("standup").getAttribute("draggable") !== "false" || !await a.field.text.evaluate((e) => e.readOnly)) fail("a prompt of a server that dropped can be dragged or its text typed over");
-    await a.button("Revert").click();
+    if (await a.row("standup").getAttribute("data-fixed") !== "true" || !await a.field.text.evaluate((e) => e.readOnly)) fail("a prompt of a server that dropped can be dragged or its text typed over");
+    await press(page, a.button("Revert"));
     await a.field.search.fill("stand");
     await a.shows("its prompt in a search", (x) => x.rows.join("|") === "Studio/team/standup" && x.off.join("|") === "Studio/team/standup");
     await a.field.search.fill("");
-    await a.button("New prompt").click();
+    await press(page, a.button("New prompt"));
     s = await a.shows("New prompt beside a prompt of a server that dropped", (x) => x.form?.head === "New prompt");
     if (s.form.where !== "In This computer") fail(`with the server dropped a new prompt goes to ${JSON.stringify(s.form.where)}`);
-    await a.button("Cancel").click();
+    await press(page, a.button("Cancel"));
     // back, it can be changed again
     await mockEval(`setServerState("s_studio", "connected");`, url);
     s = await a.shows("the server back", (x) => !x.off.length && x.form?.name === "standup" && x.form.fixed === false && !x.form.notice);
@@ -376,7 +362,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     s = await a.shows("a call refused on the way", (x) => !!x.form?.err);
     if (s.form.err !== "Studio is not connected: its prompts cannot be changed until it is back." || s.form.text !== "Typed while the way was cut.") fail(`a call refused on the way left ${JSON.stringify(s.form)}`);
     await mockEval("delete flags.library;", url);
-    await a.button("Revert").click();
+    await press(page, a.button("Revert"));
     // removed from the list, it takes its entry and its prompts with it
     await a.shows("before the server is removed", (x) => x.form?.name === "standup" && !x.form.err);
     await servers([]);
@@ -386,5 +372,4 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.shows("a search for its prompt", (x) => x.rows.length === 0 && x.says === "No matching prompts");
     note("another server's library is under its name and found by it, is changed from here, stays marked and unchangeable while the server is away, and goes with the server");
   } catch (e) { fail(e.message.split("\n")[0]); }
-  await a.close();
-});
+}, { viewports, page: false });

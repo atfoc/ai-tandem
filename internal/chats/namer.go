@@ -92,7 +92,7 @@ func CleanTitle(out string) string {
 	return strings.Trim(strings.TrimSpace(strings.TrimPrefix(title, "Title:")), `"'.*#`)
 }
 
-// refTag is a reference the page puts inside a board chat's message (web/src/logic/refs.ts):
+// refTag is a reference the page puts inside a board chat's message (packages/core/src/logic/refs.ts):
 // a selection (its label attribute) or a point (its x and y attributes).
 var refTag = regexp.MustCompile(`<selection\s[^<>]*?label="([^"]*)"[^<>]*>[^<]*</selection>|<point\s[^<>]*?x="([^"]*)"\s+y="([^"]*)"[^<>]*?(?:/>|>[^<]*</point>)`)
 

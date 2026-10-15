@@ -7,7 +7,17 @@
 // around it; a write the path and the content; a delete the path and the deleted text as removed lines; any other
 // tool its name, input and result. A Cursor edit and delete of a thread from before their texts were kept say that
 // the change was not recorded. The colours of a change follow the theme. No page error.
-import { act, check, openCards, openPage, paneSize, seed, toolCards, until } from "../shot.mjs";
+// Ports dev/checks/A5.2-cards.mjs (package S6) at desktop, tablet and phone: the same seed (A5), the same threads, assertions and words; the
+// cards are read over testIDs (`cards.mjs`) and a card's row is pressed with `press` (a tap on a touch viewport). The window of 700 px of the
+// old check is the desktop's; the tablet and the phone are the devices' own. The subagent's drawer is S7's, the real one, read as the cards of the thread are (`sub-drawer-body`).
+// Besides the old check (B-TC-15): a change selected from end to end gives its lines and no sign (the platform's selection, read with getSelection()).
+import { check, paneSize, seed, until } from "../shot.mjs";
+import { openCards, rowOfCard, toolCards } from "./cards.mjs";
+import { act, press } from "./sel.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
+
+const DRAWER_ROOT = "sub-drawer-body";
 
 const SUM = "internal/calc/sum.go", FULL = "/Users/demo/projects/shop/";
 const FUNC = [" func Sum(xs []int) int {", " \ttotal := 0", " \tfor _, x := range xs {", "-\t\ttotal += x", "+\t\ttotal += x * 2", " \t}", " \treturn total", " }"];
@@ -51,18 +61,15 @@ const THREADS = {
 const brief = (card) => card.parts.map((p) => (p.part === "path" ? ["path", p.path, p.counts, p.lines].filter(Boolean).join(" ") : p.part === "text" || p.part === "change" ? `${p.part} ${p.title}` : `${p.part} ${p.text}`));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-await check("A5.2 a tool card by its kind, for the three agents, in the thread and the drawer", async ({ url, browser, fail, note }) => {
+
+await check("A5.2 a tool card by its kind, for the three agents, in the thread and the drawer", async ({ url, viewport, open, fail, note }) => {
   const states = await seed(url, "A5");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
-  const open = async (sel, { size = paneSize("page", 700, 900), theme } = {}) => {
-    const errors = [];
-    const { ctx, page } = await openPage({ url, browser, errors, sel, size: size.size, ls: { ...size.ls, ...(theme ? { "aiwb.theme": theme } : {}) } });
-    return { ctx, page, errors };
-  };
-  const close = async ({ ctx, errors }, name) => { for (const e of errors) fail(`${name}: page error: ${e}`); await ctx.close(); };
+  const win = viewport === "desktop" ? paneSize("page", 700, 900) : {};
+  const show = async (sel, { theme } = {}) => open({ sel, wait: '[data-testid="chat-head"]', ...win, ls: { ...win.ls, ...(theme ? { "aiwb.theme": theme } : {}) } });
   /** Holds the cards of a thread against their list, closed and then open. Answers the open cards. */
   const holds = async (page, root, name, want) => {
-    if (!await until(async () => (await toolCards(page, root))?.length === want.length)) { fail(`${name}: ${(await toolCards(page, root))?.length} cards, not ${want.length}`); return null; }
+    if (!await until(async () => (await toolCards(page, root))?.length === want.length, 15000)) { fail(`${name}: ${(await toolCards(page, root))?.length} cards, not ${want.length}`); return null; }
     const closed = await toolCards(page, root);
     for (const [i, c] of closed.entries()) {
       const [label, hint] = want[i], at = `${name}, card ${i + 1}`;
@@ -85,10 +92,10 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
   // ---- the three agents' threads
   let seen = 0;
   for (const [id, want] of Object.entries(THREADS)) {
-    const s = state(id), p = await open(s.sel), name = `the thread of ${id}`;
+    const s = state(id), p = await show(s.sel), name = `the thread of ${id}`;
     try {
-      const cards = await holds(p.page, ".thread", name, want);
-      if (!cards) continue;
+      const cards = await holds(p.page, "thread", name, want);
+      if (!cards) { await p.ctx.close(); continue; }
       seen += cards.length;
       const expect = (what, got, wanted) => { if (!same(got, wanted)) fail(`${name}: ${what} is ${JSON.stringify(got)}, not ${JSON.stringify(wanted)}`); };
       if (id === "claude") {
@@ -101,13 +108,27 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
         if (ok.coloured || out.coloured) fail(`${name}: an output is coloured as code`);
         expect("the output of the second card", out.text, ["--- FAIL: TestSum (0.00s)\n    calc_test.go:12: Sum([1 2 3]) = 12, want 6\nFAIL\nFAIL\tai-whiteboard/internal/calc\t0.288s\nExit code 1"]);
         if (!out.failed || ok.failed) fail(`${name}: the failed command's output is ${out.failed ? "" : "not "}marked, the other's is ${ok.failed ? "" : "not "}`);
-        const edge = (n) => p.page.evaluate((n) => getComputedStyle(document.querySelectorAll(".thread .tool")[n].querySelectorAll(".tool-text")[1]).borderTopColor, n);
+        // (the box of an output: the second of a shell card's text boxes; cards by their place on screen)
+        const edge = (n) => p.page.evaluate((n) => {
+          const cards = [...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-card"]')].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+          return getComputedStyle(cards[n].querySelectorAll('[data-testid="tool-text"]')[1]).borderTopColor;
+        }, n);
         if (await edge(0) === await edge(1)) fail(`${name}: the failed output's box has the border of one that did not fail (${await edge(1)})`);
         // an edit: the path in full in its title, the change with the lines around it
         expect("the path's title of the fourth card", c4.parts[0].title, FULL + SUM);
         expect("the change of the fourth card", part(c4, "Change").rows, FUNC);
         expect("the change of the fifth card", c5.parts[1].rows, ["-total", "+sum"]);
         expect("the edits of the sixth card", [c6.parts[1].rows, c6.parts[2].rows], [["-Sum adds", "+Sum doubles and adds"], ["-x * 2", "+2 * x"]]);
+        // B-TC-15: the sign of a line, and what is not the change's own, is not selected or copied: a copied change is its lines
+        const picked = await p.page.evaluate(() => {
+          const cards = [...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-card"]')].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+          const box = cards[3].querySelector('[data-testid="diff-row"]').parentElement;
+          const sel = getSelection(); sel.removeAllRanges(); const r = document.createRange(); r.selectNodeContents(box); sel.addRange(r);
+          return { text: sel.toString(), rows: [...box.querySelectorAll('[data-testid="diff-row"]')].map((e) => [e.dataset.kind, e.querySelector('[data-testid="diff-sign"]')?.textContent, e.querySelector('[data-testid="diff-text"]')?.textContent]) };
+        });
+        const own = picked.rows.map((r) => r[2]).join("\n");
+        if (picked.text !== own) fail(`${name}: a change selected from end to end gives ${JSON.stringify(picked.text)}, not its lines ${JSON.stringify(own)}: the signs (or something else of the card) are selected`);
+        if (!picked.rows.some((r) => r[1] === "+") || !picked.rows.some((r) => r[1] === "-")) fail(`${name}: the change selected has no sign on its added and removed lines, so the selection proves nothing: ${JSON.stringify(picked.rows)}`);
         // a write: the content as it is
         expect("the content of the seventh card", part(c7, "Content").text, ["package calc\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif got := Sum([]int{1, 2, 3}); got != 12 {\n\t\tt.Fatalf(\"Sum = %d\", got)\n\t}\n}"]);
         // any other tool: its input as JSON
@@ -129,43 +150,46 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
         expect("the content of the fifth card", part(p5, "Content").text, ["// Package calc adds numbers.\npackage calc"]);
       }
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    await p.ctx.close();
   }
   note(`${seen} cards of the three agents: each closed with its label and its line, and open with the parts of its kind`);
 
   // ---- a card closes again, and the colours of a change follow the theme
   const tones = {};
   for (const theme of ["light", "dark"]) {
-    const p = await open(state("claude").sel, { theme }), name = `the thread of claude, ${theme}`;
+    const p = await show(state("claude").sel, { theme }), name = `the thread of claude, ${theme}`;
     try {
-      await p.page.locator(".thread .tool-row").nth(3).click();
-      await p.page.waitForSelector(".thread .tool-diff", { timeout: 5000 });
+      await toolCards(p.page); // (the thread is drawn)
+      if (!await until(async () => (await toolCards(p.page))?.length === 9, 15000)) fail(`${name}: ${(await toolCards(p.page))?.length} cards, not 9`);
+      await press(p.page, await rowOfCard(p.page, 3));
+      await p.page.waitForSelector('[data-testid="tool-diff"]', { timeout: 5000 });
       tones[theme] = await p.page.evaluate(() => {
-        const bg = (sel) => getComputedStyle(document.querySelector(sel)).backgroundColor;
-        return { add: bg(".diff-row.add"), del: bg(".diff-row.del"), same: bg(".diff-row.same"), sign: getComputedStyle(document.querySelector(".diff-row.add .diff-sign")).color, text: getComputedStyle(document.querySelector(".diff-row.add .diff-text")).color };
+        const one = (kind) => document.querySelector(`[data-testid="diff-row"][data-kind="${kind}"]`);
+        const bg = (kind) => getComputedStyle(one(kind)).backgroundColor;
+        return { add: bg("add"), del: bg("del"), same: bg("same"), sign: getComputedStyle(one("add").querySelector('[data-testid="diff-sign"]')).color, text: getComputedStyle(one("add").querySelector('[data-testid="diff-text"]')).color };
       });
       const t = tones[theme];
       if (t.add === t.del || t.add === t.same || t.del === t.same) fail(`${name}: an added line (${t.add}), a removed one (${t.del}) and one that stays (${t.same}) are not told apart by their ground`);
-      await p.page.locator(".thread .tool-row").nth(3).click();
-      if (!await until(async () => !await p.page.locator(".thread .tool-detail").count(), 5000)) fail(`${name}: a click on an open card's row did not close it`);
+      await press(p.page, await rowOfCard(p.page, 3));
+      if (!await until(async () => !await p.page.locator('[data-testid="tool-detail"]').count(), 5000)) fail(`${name}: a press on an open card's row did not close it`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    await p.ctx.close();
   }
   if (tones.light && tones.dark && (tones.light.add === tones.dark.add || tones.light.del === tones.dark.del || tones.light.text === tones.dark.text)) fail(`a change has the same colours in the light theme and the dark one: ${JSON.stringify(tones)}`);
   note(`a change's grounds: added ${tones.light?.add} and removed ${tones.light?.del} in light, ${tones.dark?.add} and ${tones.dark?.del} in dark`);
 
-  // ---- a subagent's drawer
+  // ---- a subagent's drawer (S7)
   {
-    const s = state("sub"), p = await open(s.sel), name = "the subagent's drawer";
+    const s = state("sub"), p = await show(s.sel), name = "the subagent's drawer";
     try {
       await act(p.page, s.act);
-      const cards = await holds(p.page, ".sub-drawer-body", name, [
+      const cards = await holds(p.page, DRAWER_ROOT, name, [
         ["Recent changes", "git log -3 -- internal/calc/sum.go", SHELL],
         ["Edited sum.go", SUM, [`path ${SUM} +1 −1`, "change Change"]],
       ]);
       if (cards && !same(cards[1].parts[1].rows, ["-// Sum adds the numbers.", "+// Sum doubles the numbers and adds them."])) fail(`${name}: the change is ${JSON.stringify(cards[1].parts[1].rows)}`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    await p.ctx.close();
+    note("the same cards in a subagent's drawer");
   }
-  note("the same cards in a subagent's drawer");
-});
+}, { viewports, page: false });

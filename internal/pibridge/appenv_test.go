@@ -41,7 +41,7 @@ import { appendFileSync } from "node:fs";
 import boardExtension from "./index.ts";
 
 const NAMES = ["AIWB_BRIDGE_SOCKET", "AIWB_BRIDGE_RUN", "AIWB_MCP_CONFIG", "AIWB_MCP_CONFIG_FILE", "AIWB_CHAT_DIR", "AIWB_APPEND_PROMPT"];
-const counts = ((globalThis as any).__aiwbAppEnvProbe ??= { module: 0, factory: 0 });
+const counts = ((globalThis as any).__aiwbEnvProbe ??= { module: 0, factory: 0 });
 counts.module += 1;
 
 export default function appEnvProbe(pi: ExtensionAPI): void {

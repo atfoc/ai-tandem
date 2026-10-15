@@ -1,7 +1,10 @@
 # Building and testing
 
 For agents and people who change this repository. What the app is is in `README.md` and how it fits together is in
-`docs/architecture.md`; this file is only about which tests to run, when, and how to write them.
+`docs/architecture.md`; this file is only about which tests to run, when, and how to write them. The code is the Go server
+(`cmd/`, `internal/`), the React Native app (`app/`, on iOS, iPadOS, Android and, as a web build, in the Electron window of
+`desktop/`) with its packages (`packages/core`, `conn`, `board-bridge`, `board-view`), and the tools that test them (`web/dev`: the test
+host, the mock and the browser checks; `web/e2e`: the end-to-end scripts; `app/e2e`: the device tests).
 
 ## Two sets of Go tests
 
@@ -39,36 +42,55 @@ under "The JavaScript tests" below.
 | Before you finish a task | `go test ./...` once, and `AIWB_TEST_FULL=1 go test ./<pkg>` for each package whose code or tests you changed. |
 | Final check of a whole piece of work (before a merge, before a release) | `AIWB_TEST_FULL=1 go test -timeout 20m ./...` once, while nothing else is testing on the machine. |
 | You changed code where goroutines share state | Also `go test -race ./<pkg>` for that package. |
-| You changed only `web/` or `desktop/` | `cd web && npm test && npm run check`, `cd desktop && npm test` (a few seconds). No Go tests. If the change is to what the page shows or does: also `cd web && npm run uicheck`. |
-| You changed `web/dev/host.mjs`, `web/dev/hostface.mjs` or `desktop/conn` | Also `node --test web/dev/host.test.mjs`, and the free scripts of `web/e2e` that touch what you changed. |
+| You changed only `app/`, `packages/*`, `web/` or `desktop/` | From the repository root `npm test && npm run check` (every workspace: `app`, `packages/*`), `cd web && npm test`, `cd desktop && npm test` (a few seconds each). No Go tests. If the change is to what a screen shows or does: also the browser checks that touch it, `cd web && npm run uicheck -- <ids>` (the whole run is long). |
+| You changed `web/dev/host.mjs`, `web/dev/hostface.mjs` or `packages/conn` | Also `cd packages/conn && npm test`, `node --test web/dev/host.test.mjs`, and the free scripts of `web/e2e` that touch what you changed. |
+| You changed `app/modules`, the native network, the board in a web view or anything else only a device shows | Also the device flow that covers it (`node app/e2e/run.mjs <flow> --platform ios --device <your own simulator>`, `app/e2e/README.md`). They start simulators and builds: never "to be sure", and not while other agents build. |
 | You changed only documentation | No tests. |
 
 ## The JavaScript tests
 
 ```sh
-cd web && npm test && npm run check      # the page's unit tests and its type check
-cd desktop && npm test                   # the main process, the connection module, the IPC face
+npm test && npm run check                # at the root: the unit tests and the type checks of app/ and packages/* (core, conn, board-bridge, board-view)
+cd web && npm test                       # the test host, the mock's face, the helpers of the browser checks
+cd desktop && npm test                   # the main process, the IPC face, the preload
+cd packages/conn && npm test             # the connection module (@aiwb/conn) against its stand-in server
 node --test web/dev/host.test.mjs        # the test host alone; `cd web && npm test` runs it too
 ```
 
 These run in a few seconds and need no built page. The ones below need Playwright, which is no
 dependency of the repository (`npm install --no-save playwright && npx playwright install chromium`
-in `web/`). `newchat`, `twopages`, `remotechat` and the desktop one serve or load `web/dist`, so run
-`cd web && npm run build` first; the others build the page they need. None of them calls a paid
-model, and each says in its header how it runs.
+in `web/`; a later `npm install` there removes it). They serve or load the app's web build, `app/dist-web`
+(`cd app && npm run build:web`), or build their own; none of them calls a paid model, and each says in its header how it runs.
 
 | Command | What it does | Alone |
 |---|---|---|
-| `cd web && npm run uicheck` | the browser checks of `web/dev/checks` on the mock (`web/dev/mock.mjs`); builds its own page, so no `npm run build` first | minutes |
-| `node web/e2e/newchat.e2e.mjs` | the page against a real server through the test host | about 7 s |
-| `node web/e2e/localserver.e2e.mjs` | this computer's server in every state it can be in; builds two binaries and two builds of the page itself | about 20 s |
+| `cd web && npm run uicheck [-- L1 P0.7]` | the browser checks of `web/dev/checks` (`README.md` there) on the mock (`web/dev/mock.mjs`), each at the viewports it names (desktop, tablet, phone); builds its own export, so no `npm run build:web` first | about 50 minutes for all |
+| `cd web && npm run uicheck:electron [-- L8 A2.2]` | the same checks drawn by the desktop app's own Chromium (Electron, `web/dev/electron`); no check named: L8; `--all`: every check | seconds per check |
+| `node web/e2e/newchat.e2e.mjs` | the app against a real server through the test host | about 7 s |
+| `node web/e2e/localserver.e2e.mjs` | this computer's server in every state it can be in; builds two binaries and two builds of the app itself | about 20 s |
 | `node web/e2e/twopages.e2e.mjs` | two apps on one server | about 45 s |
-| `node web/e2e/remotechat.e2e.mjs` | this computer's server and a remote one, an outage and the return | about 60 s |
-| `cd desktop && npm run e2e` | the app itself (Electron, a window is opened for a few seconds): the page over IPC, a stream that is cut, a picture from the app's own scheme | a few seconds |
-| `node web/dev/reallibrary.mjs` | the prompt library's popups on real servers; builds what it needs | |
+| `node web/e2e/remotechat.e2e.mjs` | this computer's server and a remote one, an outage and the return; also `VIEWPORT=phone` | about 60 s |
+| `cd desktop && npm run e2e` | the app itself (Electron, a window is opened for a few seconds) on the web build (`cd app && npm run build:web` first): the page over IPC, a stream that is cut, a picture from the app's own scheme | a few seconds |
+| `node web/dev/reallibrary.mjs` | the prompt library's popups on real servers; builds what it needs | about 20 s |
+
+The browser checks need a build with the version `uicheck` and a policy that lets the page reach the mock (`--connect-self`): the
+runner makes it itself (`buildAppDist` in `web/dev/shot.mjs`; `DIST=` names one made before). The four free scripts (`newchat`, `twopages`,
+`remotechat`, `localserver`) use the selectors and the navigation of `web/e2e/lib/ui.mjs` (testIDs; the phone's stack). Run them from the
+repository root, `DIST=app/dist-web node web/e2e/<script>.mjs` after `cd app && npm run build:web` (`remotechat` also with `VIEWPORT=phone`;
+`localserver` builds its two builds itself and ignores `DIST`). The host serves the page over HTTP, so the page needs `connect-src 'self'` in
+its CSP: the shipped export has `'none'`, and the script copies it into its temp folder with that one change (an export made with
+`--connect-self` is used as it is). Without `DIST` the script builds its own.
+
+The summary of `uicheck` names the Playwright and the Chromium that drew the pages; the folder passes on Chromium 156 (Playwright 1.64.1,
+`npm install --no-save playwright@1.64.1`); `web/dev/checks/README.md` says which two checks fail on older ones.
+
+**The device tests** (`app/e2e`, Maestro on the iOS simulator and the Android emulator; `app/e2e/README.md`) spend no money either, but they
+build the app and start simulators: name your own simulator (`--device`), take the lock for the Android emulator, and see the rules of
+`plans/rn-rewrite/ORCHESTRATION.md` when several agents work. They run only when the change is one that a browser cannot show.
 
 `web/e2e/app.e2e.mjs` is the paid one: real Claude and Cursor. It is never run unless the person
-asks.
+asks. (Its page steps still read the page the app replaced, by CSS classes, and have to be moved onto `web/e2e/lib/ui.mjs` before it
+runs against the app: its header says so.)
 
 ## What it costs
 
@@ -138,10 +160,10 @@ failure line, and go on; do not investigate it at length.
   its servers and divides its own times with `fast.of(60 * time.Second)`, so it crosses the same
   waits in the same order. `AIWB_TEST_REAL_WAITS=1` runs these tests with the production waits, as
   a check against the real values.
-  The waits of the app's connection to a server (`desktop/conn`: the silence after which a stream
+  The waits of the app's connection to a server (`packages/conn`: the silence after which a stream
   counts as ended, the intervals of the retries, the time a too-old server waits before it is
   asked again, the time limits of a call) are lowered the same way, through the hidden variable
-  `AIWB_APP_WAITS` (`desktop/conn/timing.js`): a list such as `silence=3.5s,backoff=3s`, with the
+  `AIWB_APP_WAITS` (`packages/conn/core/timing.js`): a list such as `silence=3.5s,backoff=3s`, with the
   names `silence`, `backoff`, `tooold`, `call`, `start`, `scene`, `imagecall`, `delete`,
   `firstevent` and `hello`. The test host (`web/dev/host.mjs`) and the app read it; a script that
   starts a host in its own process gives the same values as the `timing` option

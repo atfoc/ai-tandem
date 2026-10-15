@@ -1,0 +1,6 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": { "strict": true, "allowImportingTsExtensions": true, "noEmit": true },
+  "include": ["App.tsx", "index.ts", "app", "bridge", "declarations.d.ts"],
+  "exclude": ["bridge/*.test.ts"]
+}

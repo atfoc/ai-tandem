@@ -1,0 +1,16 @@
+# Three finger strokes (none starts on the style panel at the top left) on the board (the freedraw tool is already chosen by the app's `touch` scenario).
+# Maestro drives the simulator with XCUITest, so these are real touches: the page sees pointerType "touch".
+appId: dev.aiwb.spike.boardwebview
+---
+- swipe:
+    start: 35%, 30%
+    end: 85%, 42%
+    duration: 900
+- swipe:
+    start: 25%, 55%
+    end: 70%, 70%
+    duration: 900
+- swipe:
+    start: 80%, 40%
+    end: 30%, 80%
+    duration: 900

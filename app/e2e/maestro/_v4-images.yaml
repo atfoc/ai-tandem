@@ -1,0 +1,173 @@
+# Part 2 of `storage-picker-permission`: the images. Starts on the sidebar with no server added; leaves the server added and a chat opened.
+appId: ${APP_ID}
+---
+- runFlow: _add-server.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Pic-chat
+- evalScript: ${output.chat = output.ctl.id}
+
+# ---- the permission has not been asked: the picker does not need it (iOS: the system's picker shows only what the person picks, and gives the app
+#      those pictures; Android's photo picker the same). Nothing is asked in either case.
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/privacy?service=photos&action=reset
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/relaunch
+- runFlow: _open-sidebar.yaml
+- runFlow: _open-chat.yaml
+# the library: a PNG, a JPEG and (iOS) a HEIC, the newest last
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/library?names=v4-red.png,v4-green.jpg,v4-blue.heic
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/library?names=v4-red.png,v4-green.jpg
+- tapOn:
+    id: "attach-btn"
+- waitForAnimationToEnd
+- takeScreenshot: v4-10-picker
+- assertNotVisible: ".*(Would Like to Access|Allow Access).*"
+- runFlow:
+    when:
+      platform: iOS
+    file: _pick-ios.yaml
+    env:
+      COUNT: 3
+- runFlow:
+    when:
+      platform: Android
+    file: _pick-android.yaml
+    env:
+      COUNT: 2
+- extendedWaitUntil:
+    visible:
+      id: "composer-images"
+    timeout: 30000
+# (the names: iOS hands the library's own, v4-red.png; Android's photo picker gives no name, the app names the file by its number in the library, 23.png)
+- assertVisible: ".*\\.png"
+- assertVisible: ".*\\.jpe?g"
+- assertNotVisible:
+    id: "composer-err"
+- takeScreenshot: v4-11-thumbnails
+
+# ---- sent: the message carries the three, and the server holds a PNG and two JPEGs (the HEIC came as a JPEG)
+- tapOn:
+    id: "send"
+- extendedWaitUntil:
+    visible:
+      id: "msg-images"
+    timeout: 60000
+- takeScreenshot: v4-12-sent
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: GET
+      ROUTE: /chat-images?chat=${output.chat}
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - runScript:
+          file: _expect-images.js
+          env:
+            EXPECT: "image/png 64x48;image/jpeg 80x60;image/jpeg 96x72"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - runScript:
+          file: _expect-images.js
+          env:
+            EXPECT: "image/png 64x48;image/jpeg 80x60"
+
+# ---- the permission refused: the picker works as before
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/privacy?service=photos&action=revoke
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/relaunch
+- runFlow: _open-sidebar.yaml
+- runFlow: _open-chat.yaml
+# ---- a BMP, and then a picture over 5 MB: each refused in the words of the desktop; nothing is added
+#      (one at a time: the system's picker, with a picture of 8 MB among two that are picked together, hands over the others and drops that one without a word)
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/library?names=v4-notpng.bmp
+- tapOn:
+    id: "attach-btn"
+- waitForAnimationToEnd
+- runFlow:
+    when:
+      platform: iOS
+    file: _pick-ios.yaml
+    env:
+      COUNT: 1
+- runFlow:
+    when:
+      platform: Android
+    file: _pick-android.yaml
+    env:
+      COUNT: 1
+- extendedWaitUntil:
+    visible:
+      id: "composer-err"
+      text: "Not a PNG, JPEG, GIF or WebP image: .*\\.bmp\\."
+    timeout: 60000
+- assertNotVisible:
+    id: "composer-images"
+- takeScreenshot: v4-13-refused-type
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/library?names=v4-huge.png
+- tapOn:
+    id: "attach-btn"
+- waitForAnimationToEnd
+- runFlow:
+    when:
+      platform: iOS
+    file: _pick-ios.yaml
+    env:
+      COUNT: 1
+- runFlow:
+    when:
+      platform: Android
+    file: _pick-android.yaml
+    env:
+      COUNT: 1
+- extendedWaitUntil:
+    visible:
+      id: "composer-err"
+      text: "Over 5 MB: .*\\.png\\."
+    timeout: 60000
+- assertNotVisible:
+    id: "composer-images"
+- takeScreenshot: v4-14-refused-size

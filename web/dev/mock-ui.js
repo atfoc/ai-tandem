@@ -277,7 +277,7 @@
     const column = (tag) => Array.from({ length: 300 }, (_, i) => `\t${tag}Row${i}: ${i},`).join("\n");
     add("c_A5_big", { name: "Tool items, large", ...g }, [ask("Run everything and write the table."),
       tool("b1", "Bash", { command: "go test ./...", description: "Run every test" }, lines),
-      tool("b2", "Write", { file_path: "/Users/demo/projects/shop/web/src/rows.ts", content: big }, "File created successfully at: /Users/demo/projects/shop/web/src/rows.ts"),
+      tool("b2", "Write", { file_path: "/Users/demo/projects/shop/site/rows.ts", content: big }, "File created successfully at: /Users/demo/projects/shop/site/rows.ts"),
       tool("b3", "Edit", { file_path: "/Users/demo/projects/shop/internal/calc/table.go", old_string: column("old"), new_string: column("new") }, "The file /Users/demo/projects/shop/internal/calc/table.go has been updated successfully."),
       tool("b4", "MultiEdit", { file_path: "/Users/demo/projects/shop/internal/calc/table.go", edits: Array.from({ length: 30 }, (_, i) => ({ old_string: `v${i} := 0`, new_string: `v${i} := 1` })) }, "The file /Users/demo/projects/shop/internal/calc/table.go has been updated successfully."), ...done]);
     state("A5", "big", { chat: "c_A5_big" }, ".thread .tool .tool-label", { count: 4 });

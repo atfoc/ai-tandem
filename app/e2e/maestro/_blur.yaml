@@ -1,0 +1,11 @@
+# Shared: takes the keyboard away without the Back key (Maestro's hideKeyboard is the Back key on Android, which closes the form of the sheet):
+# a press on a title of the sheet is no handler's, so the sheet's scroll view lets go of the focus. Needs a form of the Servers dialog open.
+# (An emulator that is busy may put Android's "isn't responding" question over the app: the answer is to wait.)
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible: ".*isn't responding"
+    commands:
+      - tapOn: "Wait"
+- tapOn: "Add server"

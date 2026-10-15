@@ -1,0 +1,20 @@
+{
+  "name": "@aiwb/core",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types 'test/*.test.ts' 'test/board/*.test.ts'",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aiwb/board-bridge": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

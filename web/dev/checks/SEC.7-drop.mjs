@@ -1,172 +1,152 @@
-// Proves what is open when its server drops, and when it is back (plans/remote-server-sections-goal.md, 3.8 and 3.9;
-// the contract's 3.6 and 3.10).
-// A chat: the view stays as the page had it, read-only, under the warning that names the server; Send is off and says
-// why, and so does the composer; what was typed and not yet taken by the server stays in the box, which is read-only
-// and takes no more; the chat's row is gone with the rest of the section. Back: the section shows the tree again, the
-// thread is level with that server, the warning is gone, Send works, the box takes text again, and the typed text is
-// saved by one PUT …/draft to that server, on the counter the page had. Deleted there meanwhile, the view says so. Left during the outage, the chat is closed and cannot be opened
-// until the server is back.
-// A board that is open and held: it can still be drawn on, under the banner that it is not saved; back at the
-// revision the page has, the drawing is saved there; back at another one (the board was changed there meanwhile), it
-// is dropped with the notice, and that server's drawing is the one shown. (The wait while this computer's server took the
-// board again there, a save answered 503 not_held_there, went with the relay: the page takes its boards again itself.)
-// What the browser keeps of all this is SEC.9's.
-import { callsOf, check, mockEval, openPage, seed, sideSeen, until } from "../shot.mjs";
+// Proves, on the new build, what is open when its server drops, and when it is back, for the chat (SEC.7; plans/remote-server-sections-goal.md,
+// 3.8 and 3.9; B-RO-01, B-RO-02, B-RO-03, B-RO-06, B-RO-08, B-HD-09, B-SM-13).
+// A chat: the thread stays as the app had it, under the warning that names the server, with its state's word and "Servers…"; the header
+// has no status and offers no rename; what was open is level with that server when it is back (a message made there meanwhile appears
+// once), the warning gone; deleted there meanwhile, the view says so, with no "Servers…". Left during the outage, the chat is closed and
+// the selection names nothing of it; after a reload during the outage nothing of the chat is on screen; and back, it opens as usual.
+// Ports the chat's part of dev/checks/SEC.7-drop.mjs at desktop, tablet and phone. Same seeds, same words; the sidebar's rows go while the
+// server is away and are the same when it is back (a chat deleted meanwhile has no row again). The box keeps what was typed, is read-only
+// and takes no more; Send is off with the reason as its title and the composer's line says it; no choice of the toolbar is a choice; the
+// draft is saved by one PUT …/draft on its counter when back.
+// Added in the sweep (rn-sw-webtest), from web/test/sectionviews.test.ts "a snapshot while a section has no tree (the page's own stream came back) closes nothing that is on
+// screen" (A-ST-20): the mock's resync() gives the snapshot again while the server is away, and the chat stays as it was, with no call to that server.
+// The board open and drawn on while its server is away (the banner, the saves at the same revision, the drop at another one) is B4's, in
+// SEC.7-board.mjs: the same ID, run with this one.
+// Deviation: the messages are read in the order they are on screen (messages of chat.mjs), the list being virtual.
+import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
+import { IDS, byTid, openChat, press } from "./sel.mjs";
+import { sideSeen } from "./side.mjs";
+import { WAIT, messages, says, textOf, threadShown } from "./chat.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
-const STUDIO = "s_studio", AWAY = "Studio Mac is not connected";
-const WHY = `${AWAY}: nothing can be sent or changed until it is back.`;
+const STUDIO = "s_studio", AWAY = "Studio Mac is not connected", WHY = `${AWAY}: nothing can be sent or changed until it is back.`;
 
-await check("SEC.7 a chat and a board that are open when their server drops, and when it is back", async ({ url, browser, fail, note }) => {
+await check("SEC.7 a chat that is open when its server drops, and when it is back", async ({ url, viewport, open, fail }) => {
   const drop = () => mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
   const back = (first = "") => mockEval(`${first}; setServerState("${STUDIO}", "connected");`, url);
-  const there = (code) => mockEval(`return onServer("${STUDIO}", () => { ${code} });`, url);
-  const sec = `.side-section[data-server="${STUDIO}"]`;
-  /** A page on a seed made anew, with the selection given. */
-  const open = async (sel) => {
-    await seed(url, "SEC");
-    const p = await openPage({ url, browser, sel, size: [1280, 900] });
-    p.calls = callsOf(p.page);
-    p.on = (re, method) => p.calls.filter((c) => c.server === STUDIO && re.test(c.path) && (!method || c.method === method));
-    p.rows = async () => (await sideSeen(p.page, STUDIO)).outline;
-    p.end = async () => { for (const e of p.errors) fail(`page error: ${e}`); await p.ctx.close(); };
-    return p;
-  };
-  const text = (page, sel) => page.locator(sel).first().textContent({ timeout: 2000 }).catch(() => "");
-  const says = async (name, page, sel, want) => { if (!await until(async () => (await text(page, sel)).includes(want), 10000)) fail(`${name}: ${sel} says "${await text(page, sel)}", not "${want}"`); };
-  const noRows = async (name, p) => { if (!await until(async () => !(await p.rows()).length, 10000)) fail(`${name}: the section still has rows: ${J(await p.rows())}`); };
+  const bar = (page) => byTid(page, "remote-bar");
+  /** The section's rows as the sidebar draws them (on the phone the list is behind the chat, still drawn). */
+  const rowsOf = async (page) => (await sideSeen(page, STUDIO)).outline;
+  const noRows = async (name, page) => { if (!await until(async () => !(await rowsOf(page)).length, WAIT)) fail(`${viewport}: ${name}: the section still has rows: ${J(await rowsOf(page))}`); };
+  const sentence = (on) => `${on}. This chat is shown as it was when the connection ended.`;
 
   // ---- a chat
   {
-    const p = await open({ chat: `${STUDIO}~c_plain` }), { page } = p, box = page.locator(".composer .composer-input"), send = page.locator(".composer .send:not(.stop)");
-    await page.waitForSelector(".thread .msg.user");
-    const typed = "half a thought";
-    await box.click(); await page.keyboard.type(typed);
-    if (!await until(() => p.on(/\/chats\/c_plain\/draft\?/, "PUT").some((c) => c.status === 200), 10000)) fail("what was typed in the chat of a section was not saved there");
-    const rows = await p.rows(), thread = await page.locator(".thread .msg").allTextContents();
-    // typed just before the drop, and not yet taken by the server: its save is on its way when the connection ends
-    const more = " and more just before";
+    await seed(url, "SEC");
+    const { page, ctx } = await open({ sel: { chat: `${STUDIO}~c_plain` }, wait: '[data-testid="chat-head"]' });
+    const calls = callsOf(page), writes = (from) => calls.slice(from).filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`);
+    await threadShown(page);
+    const thread = await messages(page), rows = await rowsOf(page);
+    if (!rows.length) fail(`${viewport}: the section has no row before its server drops`);
+    if (!thread.length) fail(`${viewport}: the chat has no message on screen`);
+    if (!await says(page, "chat-head-server", "Studio Mac")) fail(`${viewport}: the header of a chat of a section does not name its server: "${await textOf(page, "chat-head-server")}"`);
+    // (the composer: what is typed is saved on the chat's own server, and what is typed just before the drop is on its way when the connection ends)
+    const box = byTid(page, "composer-input").first(), send = byTid(page, "send").first(), typed = "half a thought", more = " and more just before";
+    const there = (code) => mockEval(`return onServer("${STUDIO}", () => { ${code} });`, url);
+    const on = (re, method) => calls.filter((c) => c.server === STUDIO && re.test(c.path) && (!method || c.method === method));
+    const DRAFT = /\/chats\/c_plain\/draft\?/;
+    let rev, sent = 0;
+    await press(page, box); await page.keyboard.type(typed);
+    if (!await until(() => on(DRAFT, "PUT").some((c) => c.status === 200), 10000)) fail(`${viewport}: what was typed in the chat of a section was not saved there`);
     await mockEval(`flags.draft = { hold: true };`, url);
-    const sent = p.on(/\/chats\/c_plain\/draft\?/, "PUT").length;
-    await box.click(); await page.keyboard.press("End"); await page.keyboard.type(more);
-    if (!await until(() => p.on(/\/chats\/c_plain\/draft\?/, "PUT").length > sent, 10000)) fail("the save of what was typed was not made");
-    const rev = await there("return chats.c_plain.draftRev;");
+    sent = on(DRAFT, "PUT").length;
+    await press(page, box); await page.keyboard.press("End"); await page.keyboard.type(more);
+    if (!await until(() => on(DRAFT, "PUT").length > sent, 10000)) fail(`${viewport}: the save of what was typed was not made`);
+    rev = await there("return chats.c_plain.draftRev;");
     await drop();
     await mockEval(`release("draft"); delete flags.draft;`, url);
-    await says("a chat, its server dropped", page, ".remote-bar.off .remote-bar-text", `${AWAY}. This chat is shown as it was when the connection ended.`);
-    if (J(await page.locator(".thread .msg").allTextContents()) !== J(thread)) fail("the thread of the open chat changed when its server dropped");
-    if (!await send.isDisabled() || await send.getAttribute("title") !== WHY) fail(`Send of a chat whose server dropped is ${await send.isDisabled() ? "off" : "on"} and says "${await send.getAttribute("title")}"`);
-    await says("the composer of a chat whose server dropped", page, ".composer .agent-reason", WHY);
-    if (await text(page, ".composer .composer-input") !== typed + more) fail(`the box of a chat whose server dropped has "${await text(page, ".composer .composer-input")}", not what was typed`);
-    await noRows("a chat, its server dropped", p);
-    if (await page.locator(".composer button.tchip:not(.static):not([disabled])").count()) fail("a choice of the composer is still a choice while the chat's server is not connected");
-    if (!await until(() => p.on(/\/chats\/c_plain\/draft\?/, "PUT").slice(sent).every((c) => c.status === 504), 10000)) fail(`the save that was on its way at the drop was answered ${J(p.on(/\/chats\/c_plain\/draft\?/, "PUT").slice(sent).map((c) => c.status))}, not 504`);
-    if (await there("return chats.c_plain.draft?.text;") !== typed) fail("Studio Mac got the draft whose save never arrived");
+    if (!await says(page, "remote-bar-text", sentence(AWAY))) fail(`${viewport}: a chat, its server dropped: the warning says "${await textOf(page, "remote-bar-text")}", not "${sentence(AWAY)}"`);
+    if (await bar(page).first().getAttribute("data-kind") !== "off") fail(`${viewport}: the warning of a server that dropped is not of the kind "off"`);
+    if (J(await messages(page)) !== J(thread)) fail(`${viewport}: the thread of the open chat changed when its server dropped`);
+    // the snapshot of the app's own stream comes again during the outage, with no tree of that server: nothing on screen closes, and nothing is asked of that server
+    // (web/test/sectionviews.test.ts "a snapshot while a section has no tree ... closes nothing that is on screen", A-ST-20)
+    const asked = calls.length;
+    await mockEval("resync();", url);
+    await page.waitForTimeout(600);
+    if (J(await messages(page)) !== J(thread) || !await bar(page).count()) fail(`${viewport}: a snapshot with no tree of the server that is away closed or changed the chat on screen`);
+    if (calls.slice(asked).some((c) => c.server === STUDIO)) fail(`${viewport}: a snapshot with no tree of the server that is away made the page ask that server: ${J(calls.slice(asked).filter((c) => c.server === STUDIO).map((c) => `${c.method} ${c.path}`))}`);
+    if (!await says(page, "remote-bar-state", "Unreachable")) fail(`${viewport}: the warning does not say the server's state ("Unreachable"): "${await textOf(page, "remote-bar-state")}"`);
+    if (!await byTid(page, "remote-servers").count()) fail(`${viewport}: the warning of a server that is not connected has no "Servers…"`);
+    await noRows("a chat, its server dropped", page);
+    if (await byTid(page, "chat-head").first().getAttribute("data-status")) fail(`${viewport}: the header of a chat shown as it was has a status: "${await byTid(page, "chat-head").first().getAttribute("data-status")}"`);
+    if (await byTid(page, "chat-head").first().getAttribute("data-frozen") !== "true") fail(`${viewport}: the header does not know that the chat is shown as it was`);
+    if (!await send.isDisabled() || await send.getAttribute("title") !== WHY) fail(`${viewport}: Send of a chat whose server dropped is ${await send.isDisabled() ? "off" : "on"} and says "${await send.getAttribute("title")}"`);
+    if (!await says(page, "agent-reason", WHY)) fail(`${viewport}: the composer of a chat whose server dropped says "${await textOf(page, "agent-reason")}", not "${WHY}"`);
+    if ((await box.textContent()) !== typed + more) fail(`${viewport}: the box of a chat whose server dropped has "${await box.textContent()}", not what was typed`);
+    if (await byTid(page, "tchip").evaluateAll((els) => els.filter((e) => e.dataset.fixed !== "true" && e.dataset.kind !== "more" && e.getAttribute("aria-disabled") !== "true" && !e.disabled).length)) fail(`${viewport}: a choice of the composer is still a choice while the chat's server is not connected`);
+    if (!await until(() => on(DRAFT, "PUT").slice(sent).every((c) => c.status === 504), 10000)) fail(`${viewport}: the save that was on its way at the drop was answered ${J(on(DRAFT, "PUT").slice(sent).map((c) => c.status))}, not 504`);
+    if (await there("return chats.c_plain.draft?.text;") !== typed) fail(`${viewport}: Studio Mac got the draft whose save never arrived`);
     // read-only: the box keeps what it holds and takes no more, by a key, a paste or Enter, and no call is made for it
-    if (await box.getAttribute("aria-readonly") !== "true") fail("the box of a chat whose server dropped is not marked read-only");
-    const quiet = p.calls.length;
+    if (await box.getAttribute("aria-readonly") !== "true") fail(`${viewport}: the box of a chat whose server dropped is not marked read-only`);
+    const was = calls.length;
     await box.click({ force: true }).catch(() => {}); await page.keyboard.press("End"); await page.keyboard.type(" never");
     await page.keyboard.press("Backspace");
     await page.evaluate(() => document.execCommand("insertText", false, " pasted"));
     await page.keyboard.press("Enter"); // (Send by the key: nothing is sent)
     await page.waitForTimeout(700); // (longer than a draft's save waits)
-    if (await text(page, ".composer .composer-input") !== typed + more) fail(`the read-only box took what was typed during the outage: "${await text(page, ".composer .composer-input")}"`);
-    if (p.calls.slice(quiet).some((c) => c.method !== "GET")) fail(`a call was made for a chat whose server is not connected: ${J(p.calls.slice(quiet).filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`))}`);
-    if (p.on(/\/messages/).length) fail("a message was sent to a chat whose server is not connected");
-    const puts = p.on(/\/chats\/c_plain\/draft\?/, "PUT").length;
+    if ((await box.textContent()) !== typed + more) fail(`${viewport}: the read-only box took what was typed during the outage: "${await box.textContent()}"`);
+    if (calls.slice(was).some((c) => c.method !== "GET")) fail(`${viewport}: a call was made for a chat whose server is not connected: ${J(calls.slice(was).filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`))}`);
+    if (on(/\/messages/).length) fail(`${viewport}: a message was sent to a chat whose server is not connected`);
+    const puts = on(DRAFT, "PUT").length;
+    const quiet = calls.length;
+    await byTid(page, "chat-head-name").first().click({ force: true }).catch(() => {});
+    await page.waitForTimeout(300);
+    if (await byTid(page, "chat-name-input").count()) fail(`${viewport}: a chat shown as it was can be renamed`);
+    if (writes(quiet).length) fail(`${viewport}: a call was made for a chat whose server is not connected: ${J(writes(quiet))}`);
     // back: the thread there has grown meanwhile
     await back(`onServer("${STUDIO}", () => { items.c_plain.push({ kind: "user", text: "from the owner" }, say("fine"), { kind: "end" }); versions.c_plain = (versions.c_plain ?? 1) + 1; })`);
-    if (!await until(async () => J(await p.rows()) === J(rows), 10000)) fail(`back, the section does not show the tree again: ${J(await p.rows())}`);
-    if (!await until(async () => (await page.locator(".thread .msg").allTextContents()).some((t) => t.includes("from the owner")), 10000)) fail("back, the open chat is not level with its server: the message made there meanwhile is missing");
-    if (!await until(async () => !await page.locator(".remote-bar").count(), 10000)) fail("back, the warning stays");
-    if (!await until(async () => !await send.isDisabled(), 10000)) fail("back, Send stays off");
-    if (!await until(async () => await there("return chats.c_plain.draft?.text;") === typed + more, 10000)) fail(`back, what was typed is not saved there: ${J(await there("return chats.c_plain.draft;"))}`);
-    await until(() => p.on(/\/chats\/c_plain\/draft\?/, "PUT").slice(puts).some((c) => c.status === 200), 5000); // (a call is heard of a moment after it was made)
-    const saved = p.on(/\/chats\/c_plain\/draft\?/, "PUT").slice(puts);
-    if (saved.length !== 1 || saved[0].status !== 200 || !saved[0].path.includes(`rev=${rev}`) || saved[0].body?.text !== typed + more) fail(`back, the saves were ${J(saved.map((c) => [c.path, c.status, c.body]))}, not one PUT …/draft on the counter ${rev}`);
-    if (await there("return chats.c_plain.draftRev;") !== rev + 1) fail("the draft's counter on Studio Mac is not one further");
-    if (await text(page, ".composer .composer-input") !== typed + more) fail("back, the box lost what was typed");
-    if (await box.getAttribute("aria-readonly") === "true") fail("back, the box is still read-only");
-    if (p.calls.some((c) => c.server === "local" && /^\/api\/chats\/c_plain/.test(c.path))) fail("a call for the section's chat went to this computer's chat with the same id");
+    if (!await until(async () => J(await rowsOf(page)) === J(rows), WAIT)) fail(`${viewport}: back, the section does not show the tree again: ${J(await rowsOf(page))}`);
+    if (!await until(async () => (await messages(page)).some((m) => m.text.includes("from the owner")), WAIT)) fail(`${viewport}: back, the open chat is not level with its server: the message made there meanwhile is missing`);
+    if (!await until(async () => !await bar(page).count(), WAIT)) fail(`${viewport}: back, the warning stays`);
+    if (!await until(async () => !await send.isDisabled(), WAIT)) fail(`${viewport}: back, Send stays off`);
+    if (!await until(async () => await there("return chats.c_plain.draft?.text;") === typed + more, WAIT)) fail(`${viewport}: back, what was typed is not saved there: ${J(await there("return chats.c_plain.draft;"))}`);
+    await until(() => on(DRAFT, "PUT").slice(puts).some((c) => c.status === 200), 5000); // (a call is heard of a moment after it was made)
+    const saved = on(DRAFT, "PUT").slice(puts);
+    if (saved.length !== 1 || saved[0].status !== 200 || !saved[0].path.includes(`rev=${rev}`) || saved[0].body?.text !== typed + more) fail(`${viewport}: back, the saves were ${J(saved.map((c) => [c.path, c.status, c.body]))}, not one PUT …/draft on the counter ${rev}`);
+    if (await there("return chats.c_plain.draftRev;") !== rev + 1) fail(`${viewport}: the draft's counter on Studio Mac is not one further`);
+    if ((await box.textContent()) !== typed + more) fail(`${viewport}: back, the box lost what was typed`);
+    if (await box.getAttribute("aria-readonly") === "true") fail(`${viewport}: back, the box is still read-only`);
+    const owner = (await messages(page)).filter((m) => m.text.includes("from the owner")).length;
+    if (owner !== 1) fail(`${viewport}: back, the message made meanwhile is on screen ${owner} times, not once`);
+    if (await byTid(page, "chat-head").first().getAttribute("data-frozen") === "true") fail(`${viewport}: back, the header still shows the chat as it was`);
+    if (!await until(async () => { await byTid(page, "chat-head-name").first().click().catch(() => {}); return await byTid(page, "chat-name-input").count(); }, 5000)) fail(`${viewport}: back, the chat cannot be renamed`);
+    await page.keyboard.press("Escape");
+    if (calls.some((c) => c.server === "local" && /^\/api\/chats\/c_plain/.test(c.path))) fail(`${viewport}: a call for the section's chat went to this computer's chat with the same id`);
 
     // deleted there meanwhile: the view says so
     await drop();
-    await says("the chat, dropped again", page, ".remote-bar.off", AWAY);
+    if (!await says(page, "remote-bar-text", AWAY)) fail(`${viewport}: the chat, dropped again: the warning does not show`);
     await back(`await elsewhere("${STUDIO}", "DELETE", "/chats/c_plain")`);
-    await says("a chat deleted while its server was away", page, ".remote-bar.gone .remote-bar-text", "This chat is no longer on Studio Mac.");
-    if (!await send.isDisabled()) fail("Send is on for a chat that was deleted while its server was away");
-    if ((await p.rows()).some((l) => l.includes("Render queue is stuck"))) fail("the chat deleted meanwhile has a row again");
-    await p.end();
+    if (!await says(page, "remote-bar-text", "This chat is no longer on Studio Mac.")) fail(`${viewport}: a chat deleted while its server was away: the warning says "${await textOf(page, "remote-bar-text")}"`);
+    if (await bar(page).first().getAttribute("data-kind") !== "gone") fail(`${viewport}: the warning of a chat that is no longer there is not of the kind "gone"`);
+    if (await byTid(page, "remote-servers").count()) fail(`${viewport}: the view of a chat that is no longer on its server offers "Servers…"`);
+    if (!await send.isDisabled()) fail(`${viewport}: Send is on for a chat that was deleted while its server was away`);
+    if ((await rowsOf(page)).some((l) => l.includes("Render queue is stuck"))) fail(`${viewport}: the chat deleted meanwhile has a row again`);
+    const left = J((await messages(page)).map((m) => m.text));
+    if (!thread.every((m) => left.includes(J(m.text).slice(1, -1)))) fail(`${viewport}: the thread of the chat deleted meanwhile is not on screen`);
+    await ctx.close();
   }
 
   // ---- a chat that is left during the outage is closed, and cannot be opened until the server is back
   {
-    const p = await open({ chat: `${STUDIO}~c_night` }), { page } = p;
-    await page.waitForSelector(".thread .msg.user");
+    await seed(url, "SEC");
+    const { page, ctx } = await open({ sel: { chat: `${STUDIO}~c_night` }, wait: '[data-testid="chat-head"]' });
+    await threadShown(page);
     await drop();
-    await says("a second chat, its server dropped", page, ".remote-bar.off", AWAY);
-    await page.locator('.side-section[data-server="local"] > .side-section-body > .side-loose .side-row.is-chat, .side-section[data-server="local"] > .side-section-body > .side-group .side-row.is-chat').first().click();
-    if (!await until(async () => !await page.locator(".remote-bar").count() && !await page.locator(".chat-head .chat-head-server").count(), 10000)) fail("after another chat was opened, the view of the section's chat stays");
-    await noRows("the chat left", p);
-    if ((await page.evaluate(() => localStorage.getItem("aiwb.sel"))).includes(STUDIO)) fail("the selection still names the chat that was left");
-    await page.reload(); await page.waitForSelector(".side-tree .side-section");
-    if (await page.locator(".remote-bar, .chat-head .chat-head-server").count()) fail("after a reload during the outage a chat of the section is on screen");
+    if (!await says(page, "remote-bar-text", AWAY)) fail(`${viewport}: a second chat, its server dropped: the warning does not show`);
+    await openChat(page, "c_plain");
+    if (!await until(async () => !await bar(page).count() && !await byTid(page, "chat-head-server").count(), WAIT)) fail(`${viewport}: after another chat was opened, the view of the section's chat stays`);
+    await noRows("the chat left", page);
+    const sel = await page.evaluate(() => localStorage.getItem("aiwb.sel"));
+    if (sel.includes(STUDIO)) fail(`${viewport}: the selection still names the chat that was left: ${sel}`);
+    await page.reload(); await byTid(page, IDS.chatHead).last().waitFor({ state: "visible", timeout: WAIT }); // (the chat of this computer that was opened instead)
+    if (await bar(page).count() || await byTid(page, "chat-head-server").count()) fail(`${viewport}: after a reload during the outage a chat of the section is on screen`);
     await back();
-    const row = page.locator(`${sec} .side-row:has(.side-name:text-is("Last night's failures"))`);
-    await row.click({ timeout: 10000 });
-    await says("the chat opened again once the server is back", page, ".chat-head .chat-head-server", "Studio Mac");
-    if (!await until(() => page.locator(".thread .msg.user").count(), 10000) || await page.locator(".remote-bar").count()) fail("back, the chat does not open as usual");
-    await p.end();
+    await openChat(page, `${STUDIO}~c_night`);
+    if (!await says(page, "chat-head-server", "Studio Mac")) fail(`${viewport}: the chat opened again once the server is back: its header says "${await textOf(page, "chat-head-server")}"`);
+    if (!await until(async () => (await byTid(page, "msg", { role: "user" }).count()) > 0, WAIT) || await bar(page).count()) fail(`${viewport}: back, the chat does not open as usual`);
+    await ctx.close();
   }
-
-  // ---- a board, open and drawn on
-  {
-    const p = await open({ board: `${STUDIO}~b_loose`, chat: null }), { page } = p;
-    const live = ".excalidraw:not(.excalidraw--view-mode) canvas.interactive";
-    await page.waitForSelector(live, { timeout: 15000 });
-    const saves = () => p.on(/\/boards\/b_loose\/scene\?/, "PUT");
-    const count = () => there("return scenes.b_loose.scene.elements.filter((e) => !e.isDeleted).length;");
-    let drawn = 0;
-    /** Draws one more rectangle on the canvas, by the tool's key and a drag. */
-    const draw = async () => {
-      const b = await page.locator(live).boundingBox(), x = b.x + 420 + (drawn % 3) * 110, y = b.y + 300 + Math.floor(drawn / 3) * 110;
-      drawn++;
-      await page.mouse.click(b.x + 200, b.y + b.height - 150); // (an empty place of the canvas, which takes the keys)
-      await page.keyboard.press("r");
-      await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + 40, y + 30, { steps: 4 }); await page.mouse.move(x + 80, y + 60, { steps: 4 }); await page.mouse.up();
-    };
-    const rev0 = await there("return scenes.b_loose.rev;");
-    await draw();
-    if (!await until(() => saves().some((c) => c.status === 200 && c.path.endsWith(`rev=${rev0}`)), 15000)) fail(`a drawing on the section's board was not saved there on the revision ${rev0}: ${J(saves().map((c) => [c.path, c.status]))}`);
-    if (await count() !== 2) fail(`Studio Mac has ${await count()} shapes after one was drawn, not 2`);
-    await drop();
-    await noRows("a board, its server dropped", p);
-    await draw();
-    await says("a board drawn on while its server is away", page, ".canvas .save-banner", "Not saved, Studio Mac unreachable");
-    if (!await page.locator(live).count() || await page.locator(".board-off, .takeover").count()) fail("the open board cannot be drawn on while its server is away");
-    await draw();
-    if (!await until(() => saves().filter((c) => c.status === 503).length >= 1, 10000)) fail("no save of the board was answered 503 during the outage");
-    if (await count() !== 2) fail("Studio Mac got a drawing while it was not connected");
-    if (!await page.locator(".canvas .save-banner").count()) fail("the banner went while the server is still away");
-    // back, at the revision the page has: the drawing is saved there
-    const at = saves().length;
-    await back();
-    if (!await until(async () => await count() === 4, 15000)) fail(`back at the same revision, the board's drawing was not saved: Studio Mac has ${await count()} shapes, not 4; the saves: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
-    if (!await until(async () => !await page.locator(".canvas .save-banner").count(), 10000)) fail("back and saved, the banner stays");
-    if (saves().slice(at).some((c) => c.status !== 200 && c.status !== undefined)) fail(`back at the same revision, a save was refused: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
-    if (await page.locator(".canvas .canvas-note").count()) fail("back at the same revision, the page says that changes were dropped");
-    // back, at another revision: the drawing is dropped with the notice
-    await drop();
-    await draw();
-    await says("the board drawn on, its server away again", page, ".canvas .save-banner", "Not saved, Studio Mac unreachable");
-    const other = { type: "excalidraw", version: 2, elements: [{ id: "sec_other", type: "ellipse", x: 200, y: 160, width: 140, height: 90 }], appState: {}, files: {} };
-    await back(`onServer("${STUDIO}", () => { scenes.b_loose.scene = ${J(other)}; scenes.b_loose.rev += 5; })`);
-    await says("a board changed there while its server was away", page, ".canvas .canvas-note", "This board was changed while Studio Mac was unreachable. Your unsaved changes were dropped.");
-    if (!await until(async () => !await page.locator(".canvas .save-banner").count(), 10000)) fail("the edit dropped, the banner stays");
-    if (J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);")) !== J(["sec_other"])) fail(`the drawing made during the outage replaced the one made there: ${J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);"))}`);
-    if (!await page.locator(live).count()) fail("after the dropped edit the board cannot be drawn on");
-    if (p.calls.some((c) => c.server === "local" && /^\/api\/boards\//.test(c.path))) fail("a call for the section's board went to this computer's routes");
-    await p.end();
-  }
-  note("a chat: read-only under the warning, Send off with the reason, the box read-only with the typed text kept and saved by one PUT on its counter when back; a board drawn on under the banner, saved at the same revision and dropped at another; a chat deleted meanwhile, its view said so");
-});
+}, { viewports, page: false });

@@ -76,6 +76,32 @@ test('close with pending saves: flush, then close again without a dialog', async
   assert.equal(f.dialog.shown.length, 0);
 });
 
+test('nothing pending: the page does not prevent the unload, so no flush is asked, no dialog is shown and the close, the quit and the reload are the window\'s own (D-DW-07)', async () => {
+  const f = fakes();
+  attachCloseFlush({ app: f.app, win: f.win, dialog: f.dialog });
+  // (the page\'s beforeunload only prevents while a board waits: with none, will-prevent-unload is never emitted)
+  f.win.emit('close');
+  f.app.emit('before-quit');
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(f.win.webContents.scripts, []);
+  assert.equal(f.win.closes, 0, 'nothing is done again: the first close was not cancelled');
+  assert.equal(f.app.quits, 0);
+  assert.equal(f.win.webContents.reloads, 0);
+  assert.equal(f.dialog.shown.length, 0);
+});
+
+test('a flush that answers true at once is one question and one close: no dialog, no wait for the timeout (D-DW-07)', async () => {
+  const f = fakes({ flush: () => Promise.resolve(true) });
+  attachCloseFlush({ app: f.app, win: f.win, dialog: f.dialog, flushTimeoutMs: 600_000 });
+  const t0 = Date.now();
+  f.win.emit('close');
+  assert.equal(await unload(f.win), false);
+  assert.ok(Date.now() - t0 < 5000, 'it did not wait for the timeout');
+  assert.equal(f.win.webContents.scripts.length, 1, 'the page was asked once');
+  assert.equal(f.win.closes, 1);
+  assert.equal(f.dialog.shown.length, 0);
+});
+
 test('Cmd+Q with pending saves: flush, then app.quit()', async () => {
   const f = fakes();
   attachCloseFlush({ app: f.app, win: f.win, dialog: f.dialog });

@@ -17,7 +17,7 @@ import (
 )
 
 // The fork and branch flow through the HTTP API, read as the web client reads it: every answer
-// and event is checked by its JSON keys (web/src/types.ts, web/src/api.ts, web/src/conn.ts), not
+// and event is checked by its JSON keys (packages/core/src/types.ts, packages/core/src/api.ts, the old page's conn.ts), not
 // through the Go structs that wrote it.
 
 // ---- fakes ----------------------------------------------------------------

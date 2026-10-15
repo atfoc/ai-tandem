@@ -1,0 +1,8 @@
+# A part of the chip input's checks (adbkeys/chips.mjs, the Android keys of composer-chips-gallery): the box holds "ab <chip> cd", the caret at its end.
+appId: ${APP_ID}
+---
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "ab"
+- tapOn: { id: "insert-selection" }
+- inputText: "cd"

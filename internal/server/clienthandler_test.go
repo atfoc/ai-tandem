@@ -227,7 +227,7 @@ const relayPrefix = "/api/" + "on"
 var pathWildcard = regexp.MustCompile(`\{[^}]*\}`)
 
 // wantRoutes is the client API as the plan spells it (C1.4), in its order. ClientRoutes and the
-// routes the server registers must equal it; desktop/conn/routes.json holds the same list.
+// routes the server registers must equal it; packages/conn/core/routes.json holds the same list.
 var wantRoutes = []string{
 	"GET /api/hello", "GET /api/events", "GET /api/state", "POST /api/client/flushed",
 	"POST /api/groups", "PATCH /api/groups/{id}", "POST /api/groups/{id}/move", "DELETE /api/groups/{id}",

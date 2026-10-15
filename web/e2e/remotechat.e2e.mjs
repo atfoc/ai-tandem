@@ -21,7 +21,7 @@
 // runs them on temp data folders and on free ports (the MCP listeners too), and stops them at the end. Not part of
 // `npm test`.
 //
-//   cd web && npm ci && npm run build && npm install --no-save playwright && npx playwright install chromium
+//   cd web && npm install --no-save playwright && npx playwright install chromium
 //   node web/e2e/remotechat.e2e.mjs
 //
 // Steps (goal section in brackets):
@@ -68,7 +68,13 @@
 //
 // Environment (all optional):
 //   AIWB_E2E_BIN       server binary                    (default: built into the temp folder)
-//   AIWB_E2E_CLIENT    built web client                 (default web/dist)
+//   DIST               the app's web build to serve (AIWB_E2E_CLIENT too): `cd app && npm run build:web`, then `DIST=app/dist-web`;
+//                      without DIST the script builds its own into the temp folder. The host serves the page over plain HTTP and
+//                      the page calls it from its own address, so the page's CSP needs `connect-src 'self'`
+//                      (app/scripts/export-web.mjs `--connect-self`): an export that has it is used as it is, the shipped one
+//                      (`connect-src 'none'`) is copied into the temp folder with that one change, and DIST itself is not touched
+//   VIEWPORT=phone     the page is the phone layout of the app (an iPhone 15: a finger, the sidebar and the chat as screens of a
+//                      stack, the toolbar's folder and effort behind its "more" chip); the owner's page stays at a desk. Default: desktop
 //   AIWB_E2E_KEEP=1    keep the temp folder (server logs, screenshots) after a run that passed;
 //                      after a failed run it is always kept, and its path is printed
 //   AIWB_E2E_SHOTS     a folder that gets a picture of the sidebar in each state the script brings a section to (no
@@ -80,8 +86,11 @@ import http2 from "node:http2";
 import net from "node:net";
 import path from "node:path";
 import {
-  Link, Scratch, all, callsFrom, finish, freePort, holds, hostApp, hostCall, hostFor, loadChromium, makeOut, onSignal, openPage as openHostPage, parseAppWaits, serverBinary, sleep, standInAgent, waitFor, writesFrom,
+  Link, Scratch, all, callsFrom, finish, freePort, holds, hostApp, hostCall, hostFor, loadChromium, makeOut, onSignal, openPage as openHostPage, parseAppWaits, serverBinary, sleep, standInAgent, viewportContext, waitFor, writesFrom,
 } from "./lib/rig.mjs";
+import * as ui from "./lib/ui.mjs";
+
+const { q } = ui;
 
 // Everything the run makes: the binary, both servers' folders, the logs, screenshots.
 const OUT = makeOut("remotechat");
@@ -94,7 +103,7 @@ async function shot(name, p, whole = false) {
   if (!SHOTS || !p) return;
   fs.mkdirSync(SHOTS, { recursive: true });
   const file = path.join(SHOTS, `${String(++shots).padStart(2, "0")}-${name}.png`);
-  await (whole ? p.screenshot({ path: file }) : p.locator("nav.side").screenshot({ path: file })).catch(() => {});
+  await (whole ? p.screenshot({ path: file }) : p.locator(q.side).screenshot({ path: file })).catch(() => {});
 }
 
 // ---- checks: one line each
@@ -186,72 +195,39 @@ const inB = (key) => String(key ?? "").startsWith(`${ENTRY}~`);
 
 // ---- the pages
 
+const VIEWPORT = process.env.VIEWPORT || "desktop"; // "phone": the page is the app's phone layout
+
 let browser = null;
 /** Opens the page of a scratch server's app (A: the page; B: the owner's) and waits for its this-computer section to be connected. */
 async function openPage(s = A) {
-  const p = await openHostPage(browser, hostOf(s), { timeout: 10000 });
-  await p.locator('.side-section[data-server="local"] .side-section-state', { hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
+  // (the page is the client at the viewport asked for; the owner's page is the owner at a desk)
+  const context = s === A && VIEWPORT !== "desktop" ? await viewportContext(VIEWPORT) : undefined;
+  const p = await openHostPage(browser, hostOf(s), { timeout: 10000, wait: ui.treeWait, context });
+  await ui.stateOfSection(p, "local").filter({ hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
   return p;
 }
-const sel = (p) => p.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}"));
+const sel = ui.selection;
 const stored = (p, key) => p.evaluate((k) => localStorage.getItem(k), key);
 const one = (o) => JSON.stringify(o);
-const exact = (s) => new RegExp(`^\\s*${String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
-const menuItem = (p, text) => p.locator(".menu .menu-item", { hasText: exact(text) });
-const box = (p) => p.locator(".composer .composer-input");
-const boxText = (p) => box(p).evaluate((el) => el.innerText);
-const msgs = async (p) => ({ user: await p.locator(".thread .msg.user").allInnerTexts(), assistant: await p.locator(".thread .msg.assistant").allInnerTexts() });
+const exact = ui.exact;
+const menuItem = ui.menuItem;
+const box = ui.box;
+const boxText = ui.boxText;
+const msgs = ui.msgs;
 const counts = (m) => `${m.user.length} user, ${m.assistant.length} assistant`;
 const noneTwice = (m) => new Set(m.user).size === m.user.length && new Set(m.assistant).size === m.assistant.length;
 const replied = (p, text, timeout = 40000) => holds(`the reply to "${text}"`, async () => (await msgs(p)).assistant.some((t) => t.includes(text)), { timeout });
-/** The question about where a new chat or a new board should live: it is gone, and must never show. */
-const asksWhere = (p) => p.locator("main.board-choice, .board-choice").count();
 
 /** B's section on the page. */
-const section = (p = page) => p.locator(`.side-section[aria-label="${B.name}"]`);
+const section = (p = page) => ui.sectionOf(p, B.name);
 const sectionLook = (p = page) => lookOf(B.name, p);
 /** What a section of a page shows, by the entry's name. */
-const lookOf = (name, p = page) => p.evaluate((name) => {
-  const s = document.querySelector(`.side-section[aria-label="${name}"]`);
-  if (!s) return null;
-  return {
-    name: s.querySelector(".side-section-name")?.textContent ?? "", state: s.querySelector(".side-section-state")?.textContent ?? "",
-    tone: ["ok", "wait", "bad"].find((t) => s.classList.contains(t)) ?? "", collapsed: s.classList.contains("collapsed"),
-    lines: [...s.querySelectorAll(".side-section-line")].map((e) => e.textContent ?? ""), rows: s.querySelectorAll(".side-row, .side-group-head").length,
-    add: !!s.querySelector(".side-section-head button[title^='New on']"),
-  };
-}, name);
+const lookOf = (name, p = page) => ui.lookOf(p, name);
 
 /** The tree a page shows, as lines: of a section (of: its name; "" for this computer's). A group and a
  *  board are followed by what is in them, two spaces further in. The same code reads the page's section of B and the
  *  owner's own section of B, so "the same tree" is the same lines. */
-const outline = (p, of = "") => p.evaluate((of) => {
-  const tops = [...(document.querySelector(`.side-section[aria-label="${of}"] .side-section-body`)?.children ?? [])];
-  const out = [];
-  const named = (row) => (row.querySelector(".side-name, .side-group-name")?.textContent ?? row.querySelector(".name-input")?.value ?? "?").trim();
-  const tags = (row) => (row.querySelector(".archived-tag") ? " [archived]" : "") + (row.querySelector(".draft-tag") ? " [draft]" : "");
-  const walk = (el, depth) => {
-    const pad = "  ".repeat(depth);
-    if (el.matches(".side-loose, .side-group-body, .side-board-chats")) { for (const c of el.children) walk(c, depth); return; }
-    if (el.matches(".side-group")) {
-      const head = el.querySelector(":scope > .side-group-head");
-      out.push(`${pad}group ${named(head)}${tags(head)}`);
-      const body = el.querySelector(":scope > .side-group-body");
-      if (body) walk(body, depth + 1);
-      return;
-    }
-    if (el.matches(".side-board")) {
-      const row = el.querySelector(":scope > .side-row");
-      out.push(`${pad}board ${named(row)}${tags(row)}`);
-      const chats = el.querySelector(":scope > .side-board-chats");
-      if (chats) walk(chats, depth + 1);
-      return;
-    }
-    if (el.matches(".side-row.is-chat")) out.push(`${pad}chat ${named(el)}${tags(el)}`);
-  };
-  for (const t of tops) walk(t, 0);
-  return out;
-}, of || A.name);
+const outline = (p, of = "") => ui.outline(p, of || A.name);
 const lines = (o) => (o ?? ["(none)"]).map((l) => l.trim()).join(" / ");
 /** Whether the page's section of B and the owner's own section of B show the same tree, each without a reload. A draft mark is
  *  each page's own word about the chat it has open, so it is left out. */
@@ -263,40 +239,22 @@ const sameTree = (timeout = 20000) => holds("the page's section shows the tree o
 const bothTrees = async () => `the page's section: ${lines(await outline(page, B.name))} || the owner's page: ${lines(await outline(owner))}`;
 
 /** A row by its name, within a scope (a page's sidebar, or B's section). */
-const rowOf = (scope, kind, name) => scope.locator(`.side-row.is-${kind}`).filter({ has: scope.page().locator(".side-name", { hasText: exact(name) }) });
-const groupHead = (scope, name) => scope.locator(".side-group-head").filter({ has: scope.page().locator(".side-group-name", { hasText: exact(name) }) });
-const side = (p) => p.locator(".side-tree");
+const rowOf = ui.rowOf;
+const groupHead = ui.groupHead;
+const side = (p) => p.locator(q.tree);
 /** This computer's section of a page: what the page keeps of its own server, as the owner sees all of B. */
-const here = (p) => p.locator('.side-section[data-server="local"]');
+const here = ui.here;
 
 /** Opens the "+" of a head (the sidebar's, a section's, a group's) and picks an item of its menu. */
-async function plus(p, head, item) {
-  await head.hover();
-  await head.locator("button[title^='New']").first().click();
-  await menuItem(p, item).click();
-}
+const plus = ui.plus;
 /** Opens a row's or a group head's "More" menu and picks an item; with `then`, an item of the list that item opens. */
-async function more(p, row, item, then) {
-  await row.hover();
-  await row.locator("button[title='More']").first().click();
-  await menuItem(p, item).click();
-  if (then) await menuItem(p, then).click();
-}
+const more = ui.more;
 /** Types a name into the rename box that is open in a scope (a new board or group opens with one). */
-async function nameIt(scope, name) {
-  const input = scope.locator(".name-input").first();
-  await input.waitFor();
-  await input.fill(name);
-  await input.press("Enter");
-  await input.waitFor({ state: "detached" });
-}
+const nameIt = ui.nameIt;
 /** Names the chat on screen through its header, so that its row can be found by name. */
 async function renameChat(p, name) {
-  await p.locator("button.chat-head-name").click();
-  const input = p.locator(".chat-head .name-input");
-  await input.fill(name);
-  await input.press("Enter");
-  await rowOf(side(p), "chat", name).first().waitFor({ timeout: 15000 });
+  await ui.renameChat(p, name);
+  await rowOf(side(p), "chat", name).first().waitFor({ state: "attached", timeout: 15000 }); // (attached: the phone shows the chat, not the list)
 }
 /** The key of the thing a page selects after `act`, which it did not select before. */
 async function selected(p, kind, act) {
@@ -304,23 +262,15 @@ async function selected(p, kind, act) {
   await act();
   return waitFor(`the page selects its new ${kind}`, async () => { const k = (await sel(p))[kind]; return k && k !== before ? k : null; }, { timeout: 45000 });
 }
-async function send(p, text) {
-  await box(p).click();
-  await box(p).fill(text);
-  await box(p).press("Enter");
-}
-async function showArchived(p, on) {
-  const sw = p.locator(".side-archived input");
-  if ((await sw.isChecked()) !== on) await sw.click();
-}
-const dialogDo = async (p, label) => { await p.locator(".dialog button", { hasText: exact(label) }).click(); };
+const send = ui.send;
+const showArchived = ui.showArchived;
+const dialogDo = async (p, label) => { await ui.click(p, ui.dialogButton(p, label)); };
 
 // ---- the steps
 
 /** A group made from the "+" of the sidebar's head: on the page's own server, its name box open. */
 async function headGroup(p) {
-  await p.click("button.icon-btn.new");
-  await menuItem(p, "New group").click();
+  await ui.headPlus(p, "New group");
 }
 /** Whether the page made this call of the client API (the server, the method, the path before its query). */
 const called = (p, server, method, path) => p.calls.some((c) => c.server === server && c.method === method && c.path.split("?")[0] === path);
@@ -337,56 +287,47 @@ let chat0 = "", chatLoose = "", chatGroup = "", boardKey = "";
 async function step1() {
   // No server but this computer: no section, and the "+" of the head asks nothing and offers no server.
   const none = await page.locator('.side-section:not([data-server="local"])').count();
-  await page.click("button.icon-btn.new");
-  const offered = (await page.locator(".menu .menu-item").allInnerTexts()).map((t) => t.trim());
+  await ui.click(page, page.locator(q.newBtn));
+  const offered = (await page.locator(q.menuItem).allInnerTexts()).map((t) => t.trim());
   await page.keyboard.press("Escape");
   await check("1 with no server in the list the sidebar has this computer's section alone, and its \"+\" offers a chat, a whiteboard and a group", none === 0 && one(offered) === one(["New chat", "New whiteboard", "New group"]),
     `sections ${none}; "+" offers ${one(offered)}`);
   await shot("no-server-in-the-list", page);
-  chat0 = await selected(page, "chat", async () => { await page.click("button.icon-btn.new"); await menuItem(page, "New chat").click(); });
+  chat0 = await selected(page, "chat", async () => { await ui.headPlus(page, "New chat"); });
   await box(page).waitFor();
-  await check("1 a new chat is made here at once and nothing asks where it should live", !!(await chatOn(A, chat0)) && (await asksWhere(page)) === 0, `A has the chat: ${!!(await chatOn(A, chat0))}; choices shown ${await asksWhere(page)}`);
+  await check("1 a new chat is made here at once and nothing asks where it should live", !!(await chatOn(A, chat0)), `A has the chat: ${!!(await chatOn(A, chat0))}`);
   await renameChat(page, HERE);
   await headGroup(page);
   await nameIt(side(page), LOCAL_GROUP);
 
-  await page.locator("button.servers-btn").click();
-  const dlg = page.locator(".servers-dialog");
-  await dlg.waitFor();
-  await dlg.locator("button", { hasText: /^Add server$/ }).click();
-  const form = dlg.locator(".servers-form");
-  const fields = form.locator(".servers-field input");
-  await fields.nth(0).fill(B.name);
-  await fields.nth(1).fill(`https://127.0.0.1:${B.port}`);
-  await fields.nth(2).fill(B.secret);
-  await form.locator(".servers-check input").check();
-  await form.locator("button", { hasText: /^Test connection$/ }).click();
-  const accept = form.locator("button", { hasText: /^Accept fingerprint$/ });
+  const dlg = await ui.openServers(page);
+  const form = await ui.fillForm(page, { name: B.name, address: `https://127.0.0.1:${B.port}`, secret: B.secret, selfSigned: true });
+  await ui.click(page, ui.button(form, "Test connection"));
+  const accept = ui.button(form, "Accept fingerprint");
   await accept.waitFor({ timeout: 30000 });
-  const shown = (await form.locator(".servers-result .servers-fp").last().innerText()).trim();
+  const shown = (await form.locator(q.serversFp).last().innerText()).trim();
   await check("1 the form shows the fingerprint that `remote setup` printed", shown === B.fingerprint, `shown ${shown}, printed ${B.fingerprint}`);
-  await accept.click();
-  const save = form.locator("button.primary", { hasText: /^Save$/ });
+  await ui.click(page, accept);
+  const save = ui.button(form, "Save");
   await waitFor("Save is enabled after the accepted test", async () => !(await save.isDisabled()));
   // The line is slow from here on: every answer of B takes a second and a half, so the entry's first connection takes seconds.
   setLink("slow");
-  await save.click();
+  await ui.click(page, save);
   const connecting = await holds('the section says "Connecting…" and shows no row, no line and no "+"', async () => { const l = await sectionLook(); return !!l && l.state === "Connecting…" && l.tone === "wait" && l.rows === 0 && l.lines.length === 0 && !l.add; }, { timeout: 60000, every: 30 });
   await check('1 B is added, and while its first connection is being made its section says "Connecting…" and shows nothing else', connecting, one(await sectionLook()));
   await shot("connecting", page);
   setLink("pass");
-  const row = dlg.locator(".servers-row").filter({ has: page.locator(".servers-name", { hasText: exact(B.name) }) });
-  const ok = await holds("the row reads Connected", async () => (await row.locator(".servers-state").innerText()) === "Connected", { timeout: 60000 });
+  const row = ui.serverRow(page, B.name);
+  const ok = await holds("the row reads Connected", async () => (await row.locator(q.serversState).innerText()) === "Connected", { timeout: 60000 });
   await check('1 the link passes again: the entry connects by itself, and its row in the Servers dialog reads "Connected"', ok, `row: ${(await row.innerText().catch(() => "no row")).replace(/\n/g, " / ")}`);
-  await dlg.locator("button", { hasText: /^Close$/ }).click();
-  await dlg.waitFor({ state: "detached" });
+  await ui.closeServers(page);
   ENTRY = (await entry())?.id ?? "";
   B.instance = B.info.instanceId; // (a stand-in that takes B's place reports it: a server without one is no AI Whiteboard server)
 
   // The section: under the local part, with the name and the state, and the line of a server with nothing on it.
   const empty = await holds("the section says that B has nothing on it", async () => (await sectionLook())?.lines.join("|") === "Nothing on this server yet.", { timeout: 20000 });
   const look = await sectionLook();
-  const order = await page.evaluate(() => [...document.querySelector(".side-tree").children].map((e) => e.getAttribute("aria-label") ?? e.className).join(","));
+  const order = (await page.locator(q.section).evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).join(",");
   await check("1 B has a section under this computer's, with its name, the state \"Connected\", the line that nothing is on it, and a \"+\"",
     empty === true && look?.name === B.name && look.state === "Connected" && look.tone === "ok" && look.rows === 0 && look.add && order === `${A.name},${B.name}`, `${one(look)}; order ${order}`);
   await shot("connected-nothing-on-it", page);
@@ -409,10 +350,10 @@ async function step2() {
   await selected(owner, "chat", () => plus(owner, groupHead(side(owner), FILMS), "Chat"));
   await box(owner).waitFor();
   await renameChat(owner, OWNER_CHAT);
-  await selected(owner, "chat", async () => { await owner.click("button.icon-btn.new"); await menuItem(owner, "New chat").click(); });
+  await selected(owner, "chat", async () => { await ui.headPlus(owner, "New chat"); });
   await box(owner).waitFor();
   await renameChat(owner, OWNER_LOOSE);
-  await selected(owner, "board", async () => { await owner.click("button.icon-btn.new"); await menuItem(owner, "New whiteboard").click(); });
+  await selected(owner, "board", async () => { await ui.headPlus(owner, "New whiteboard"); });
   await nameIt(side(owner), OWNER_BOARD);
   const same = await sameTree();
   const a = await outline(page, B.name);
@@ -420,38 +361,35 @@ async function step2() {
     same === true && one(plain(a)) === one([`board ${OWNER_BOARD}`, `chat ${OWNER_LOOSE}`, `group ${FILMS}`, `  chat ${OWNER_CHAT}`]), await bothTrees());
   await shot("connected-the-owners-tree", page);
   await shot("the-owners-own-page", owner);
-  const rows = await section().locator(".side-row, .side-group-head").evaluateAll((els) => els.map((e) => `${e.textContent} ${e.getAttribute("title") ?? ""}`));
+  const rows = await section().locator(`${q.row}, ${q.groupHead}`).evaluateAll((els) => els.map((e) => `${e.textContent} ${e.getAttribute("title") ?? ""}`));
   await check("2 no row of the section names the server, and no row says who made it", rows.length === 4 && rows.every((t) => !t.includes(B.name) && !/owner\b.*made|made by/i.test(t.replace(OWNER_CHAT, "").replace(OWNER_LOOSE, ""))), one(rows));
   const local = await outline(page);
   await check("2 the local part holds what lives on this computer alone", one(local) === one([`chat ${HERE}`, `group ${LOCAL_GROUP}`]), lines(local));
-  const none = await owner.locator(".side-section").count(), remote = await groupOn(B, "Remote");
+  const none = await owner.locator(q.section).count(), remote = await groupOn(B, "Remote");
   await check('2 the owner\'s page has no group "Remote" and one section only: its own, B', none === 1 && !remote, `sections on the owner's page ${none}; a group "Remote" on B: ${!!remote}`);
 }
 
 async function step3() {
   const made = callsFrom(page);
   // The section's "+": a chat, a whiteboard and a group, each on B, outside any group.
-  await section().locator(".side-section-head").hover();
-  await section().locator(".side-section-head button[title^='New on']").click();
-  const offered = (await page.locator(".menu .menu-item").allInnerTexts()).map((t) => t.trim());
+  await ui.headButton(page, section().locator(q.sectionHead), "New on");
+  const offered = (await page.locator(q.menuItem).allInnerTexts()).map((t) => t.trim());
   await shot("the-plus-of-a-sections-head", page, true);
   await page.keyboard.press("Escape");
-  chatLoose = await selected(page, "chat", () => plus(page, section().locator(".side-section-head"), "Chat"));
+  chatLoose = await selected(page, "chat", () => plus(page, section().locator(q.sectionHead), "Chat"));
   await box(page).waitFor();
-  const asked1 = await asksWhere(page);
   const c1 = await chatOn(B, own(chatLoose));
   await check("3 the section's \"+\" offers a chat, a whiteboard and a group; \"Chat\" makes one on B at once, in no group, unstarted, and A has none of it",
-    one(offered) === one(["Chat", "Whiteboard", "Group"]) && inB(chatLoose) && !!c1 && c1.locked === false && (c1.group ?? "__ungrouped__") === "__ungrouped__" && !(await chatOn(A, own(chatLoose))) && asked1 === 0,
-    `offered ${one(offered)}; key ${chatLoose}; B's chat ${one(c1 && { group: c1.group, locked: c1.locked })}; asked where: ${asked1}`);
+    one(offered) === one(["Chat", "Whiteboard", "Group"]) && inB(chatLoose) && !!c1 && c1.locked === false && (c1.group ?? "__ungrouped__") === "__ungrouped__" && !(await chatOn(A, own(chatLoose))),
+    `offered ${one(offered)}; key ${chatLoose}; B's chat ${one(c1 && { group: c1.group, locked: c1.locked })}`);
   await renameChat(page, MY_CHAT);
 
-  boardKey = await selected(page, "board", () => plus(page, section().locator(".side-section-head"), "Whiteboard"));
-  const asked2 = await asksWhere(page);
-  await nameIt(section(), MY_BOARD);
+  boardKey = await selected(page, "board", () => plus(page, section().locator(q.sectionHead), "Whiteboard"));
+  await ui.nameNewBoard(page, section(), MY_BOARD);
   const b1 = await holds("B has the board under its name", async () => (await stateOf(B)).boards.some((b) => b.id === own(boardKey) && b.name === MY_BOARD && (b.group ?? "__ungrouped__") === "__ungrouped__"));
-  await check("3 \"Whiteboard\" makes a board on B at once and asks nothing", inB(boardKey) && b1 === true && asked2 === 0 && (await stateOf(A)).boards.length === 0, `key ${boardKey}; on B: ${b1}; asked where: ${asked2}; boards of A: ${(await stateOf(A)).boards.length}`);
+  await check("3 \"Whiteboard\" makes a board on B at once and asks nothing", inB(boardKey) && b1 === true && (await stateOf(A)).boards.length === 0, `key ${boardKey}; on B: ${b1}; boards of A: ${(await stateOf(A)).boards.length}`);
 
-  await plus(page, section().locator(".side-section-head"), "Group");
+  await plus(page, section().locator(q.sectionHead), "Group");
   await nameIt(section(), MY_GROUP);
   const g1 = await holds("B has the group", async () => { const g = await groupOn(B, MY_GROUP); return !!g && !g.parent; });
   await check("3 \"Group\" makes a group on B, at the top level, and A has none of it", g1 === true && !(await groupOn(A, MY_GROUP)), `on B: ${g1}; on A: ${!!(await groupOn(A, MY_GROUP))}`);
@@ -460,14 +398,13 @@ async function step3() {
   const gid = (await groupOn(B, MY_GROUP))?.id;
   chatGroup = await selected(page, "chat", () => plus(page, groupHead(section(), MY_GROUP), "Chat"));
   await box(page).waitFor();
-  const asked3 = await asksWhere(page);
   const c2 = await chatOn(B, own(chatGroup));
   await renameChat(page, IN_GROUP);
   await plus(page, groupHead(section(), MY_GROUP), "Group");
   await nameIt(section(), INNER);
   const g2 = await holds("B has the nested group", async () => (await groupOn(B, INNER))?.parent === gid);
-  await check("3 a group's \"+\" in the section makes a chat and a group in that group, on B, and asks nothing", inB(chatGroup) && c2?.group === gid && g2 === true && asked3 === 0,
-    `B's chat ${one(c2 && { group: c2.group })}, the group ${gid}; nested on B: ${g2}; asked where: ${asked3}`);
+  await check("3 a group's \"+\" in the section makes a chat and a group in that group, on B, and asks nothing", inB(chatGroup) && c2?.group === gid && g2 === true,
+    `B's chat ${one(c2 && { group: c2.group })}, the group ${gid}; nested on B: ${g2}`);
 
   // Every make was one call to B's server (the call names the entry, the path is B's own) with B's own ids, and none named a server or a collapse.
   const posts = made().filter((c) => c.method === "POST" && /^\/api\/(chats|boards|groups)$/.test(c.path));
@@ -491,12 +428,12 @@ async function step4() {
 
   // The nested group is dragged to the section's ungrouped area: it is at the top level on B.
   const drag = writesFrom(page);
-  await groupHead(section(), INNER).dragTo(section().locator(".side-loose"));
+  await ui.drag(page, groupHead(section(), INNER), section().locator(q.loose));
   const top = await holds("the group is at B's top level", async () => { const g = await groupOn(B, INNER); return !!g && !g.parent; }, { timeout: 15000 });
   await check("4 a nested group is dragged to the top level of the section: moved on B, by one call, and the owner's page follows", top === true && (await sameTree()) === true && drag().length === 1 && /\/groups\/[^/]+\/move$/.test(drag()[0]),
     `on B: ${top}; calls ${one(drag())}; ${await bothTrees()}`);
   // And back into the group, by a drag onto it.
-  await groupHead(section(), INNER).dragTo(groupHead(section(), MY_GROUP), { targetPosition: { x: 60, y: 22 } });
+  await ui.drag(page, groupHead(section(), INNER), groupHead(section(), MY_GROUP), { targetPosition: { x: 60, y: 22 } });
   const gid = (await groupOn(B, MY_GROUP))?.id;
   const nested = await holds("the group is nested on B again", async () => (await groupOn(B, INNER))?.parent === gid, { timeout: 15000 });
   await check("4 and dragged into a group of the section: nested on B, and the owner's page follows", nested === true && (await sameTree()) === true, `on B: ${nested}; ${await bothTrees()}`);
@@ -521,7 +458,7 @@ async function step4() {
   await rowOf(section(), "chat", "Doomed").waitFor({ timeout: 15000 });
   const doomed = (await stateOf(B)).chats.find((c) => c.name === "Doomed")?.id;
   await more(page, groupHead(section(), INNER), "Delete");
-  const body = await page.locator(".dialog .dialog-body").innerText().catch(() => "");
+  const body = await page.locator(q.dialogBody).innerText().catch(() => "");
   await dialogDo(page, "Delete everything in it");
   const gone = await holds("B has neither the group nor the chat in it", async () => !(await groupOn(B, INNER)) && !(await chatOn(B, doomed)));
   await check("4 a group of the section is deleted from the page with everything in it: the question says that it is deleted on B for everyone, B has neither, and the owner's page follows",
@@ -545,12 +482,11 @@ async function step4() {
 async function step5() {
   // A board by its menu: "Move to…" lists the groups of its own section, and nothing of this computer or of a server.
   const row = rowOf(section(), "board", MY_BOARD);
-  await row.hover();
-  await row.locator("button[title='More']").first().click();
-  await menuItem(page, "Move to…").click();
-  const targets = (await page.locator(".menu .menu-item").allInnerTexts()).map((t) => t.trim());
+  await ui.headButton(page, row, "More");
+  await ui.click(page, menuItem(page, "Move to…"));
+  const targets = (await page.locator(q.menuItem).allInnerTexts()).map((t) => t.trim());
   const moved = writesFrom(page);
-  await menuItem(page, MY_GROUP).click();
+  await ui.click(page, menuItem(page, MY_GROUP));
   const gid = (await groupOn(B, MY_GROUP))?.id;
   const there = await holds("B has the board in the group", async () => (await stateOf(B)).boards.find((b) => b.id === own(boardKey))?.group === gid);
   await check("5 a board of the section is moved by its menu: the list has the section's groups alone, and the board is in the group on B",
@@ -558,35 +494,34 @@ async function step5() {
 
   // A chat by a drag onto a group of its own section.
   const dragged = writesFrom(page);
-  await rowOf(section(), "chat", MY_CHAT).dragTo(groupHead(section(), FILMS), { targetPosition: { x: 60, y: 22 } });
+  await ui.drag(page, rowOf(section(), "chat", MY_CHAT), groupHead(section(), FILMS), { targetPosition: { x: 60, y: 22 } });
   const films = (await groupOn(B, FILMS))?.id;
   const inFilms = await holds("B has the chat in the group", async () => (await chatOn(B, own(chatLoose)))?.group === films, { timeout: 15000 });
+  await holds("the page's call is recorded", async () => dragged().length > 0, { timeout: 5000 }); // (the browser's events of a request come a little after its effect)
   await check("5 a chat of the section is moved by a drag onto another group of the section: one call, and B has it there", inFilms === true && dragged().length === 1 && dragged()[0] === `PATCH /api/chats/${own(chatLoose)}` && called(page, ENTRY, "PATCH", `/api/chats/${own(chatLoose)}`) && (await sameTree()) === true,
     `calls ${one(dragged())}; on B: ${inFilms}; ${await bothTrees()}`);
 
   // Across: from the section to the local part, and from the local part into the section. Neither is taken, and no request is made.
   const before = { a: await outline(page), b: await outline(page, B.name) };
   const across = callsFrom(page);
-  const lit = async () => page.locator(".side-tree .drop, .side-tree .drop-before").count();
+  const lit = async () => page.locator(q.dropMark).count();
   const drops = [
     ["a chat of the section onto a local group", rowOf(section(), "chat", MY_CHAT), groupHead(side(page), LOCAL_GROUP)],
-    ["a chat of the section onto the local ungrouped area", rowOf(section(), "chat", OWNER_LOOSE), here(page).locator(".side-loose")],
+    ["a chat of the section onto the local ungrouped area", rowOf(section(), "chat", OWNER_LOOSE), here(page).locator(q.loose)],
     ["a group of the section onto a local group", groupHead(section(), FILMS), groupHead(side(page), LOCAL_GROUP)],
     ["a local chat onto a group of the section", rowOf(side(page), "chat", HERE), groupHead(section(), MY_GROUP)],
-    ["a local group onto the section's ungrouped area", groupHead(side(page), LOCAL_GROUP), section().locator(".side-loose")],
-    ["a local chat onto the section's head", rowOf(side(page), "chat", HERE), section().locator(".side-section-head")],
+    ["a local group onto the section's ungrouped area", groupHead(side(page), LOCAL_GROUP), section().locator(q.loose)],
+    ["a local chat onto the section's head", rowOf(side(page), "chat", HERE), section().locator(q.sectionHead)],
   ];
   const litDuring = [];
   for (const [what, from, to] of drops) {
     // (by hand, to look at the drop mark while the pointer is over the target)
-    const f = await from.boundingBox(), t = await to.boundingBox();
-    await page.mouse.move(f.x + 40, f.y + f.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(f.x + 50, f.y + f.height / 2 + 4, { steps: 3 });
-    await page.mouse.move(t.x + 60, t.y + Math.min(t.height - 4, 22), { steps: 6 });
+    const d = await ui.dragger(page);
+    await d.start(from);
+    await d.over(to);
     await sleep(150);
     if (await lit()) litDuring.push(what);
-    await page.mouse.up();
+    await d.end();
     await sleep(150);
   }
   await sleep(800);
@@ -596,29 +531,31 @@ async function step5() {
     litDuring.length === 0 && reqs.length === 0 && one(before) === one(after), `lit for: ${one(litDuring)}; requests ${one(reqs.map((c) => `${c.method} ${c.path}`))}; before ${one(before)}; after ${one(after)}`);
 
   // The head of a section is not a group's: no menu, no rename, not dragged, and "+" alone beside its name.
-  const head = section().locator(".side-section-head");
-  await head.dblclick();
-  const rename = await section().locator(".side-section-head .name-input").count();
-  if ((await sectionLook()).collapsed) await head.click(); // (two clicks collapse and expand; one more if a click was lost)
-  const looks = { draggable: await head.getAttribute("draggable"), buttons: await head.locator("button").evaluateAll((els) => els.map((e) => e.getAttribute("title"))), rename };
+  const head = section().locator(q.sectionHead);
+  await ui.dblclick(page, head);
+  const rename = await section().locator(`${q.sectionHead} ${q.nameInput}`).count();
+  if ((await sectionLook()).collapsed) await fold(); // (two clicks collapse and expand; one more if a click was lost)
+  const looks = { draggable: await ui.draggable(head), buttons: await ui.headButtons(head), rename };
   await check("5 a section's head is no group's: it is not dragged, has no menu and no rename, and its one button is the \"+\"", looks.draggable !== "true" && one(looks.buttons) === one([`New on ${B.name}`]) && rename === 0, one(looks));
 }
 
+/** A press on a section's head: it folds. */
+const fold = (sec = section()) => ui.fold(page, sec);
+
 async function step6() {
-  const head = section().locator(".side-section-head");
   const ownerSees = await outline(owner);
   const quiet = callsFrom(page);
-  await head.click();
+  await fold();
   const closed = await holds("the section is collapsed", async () => { const l = await sectionLook(); return l.collapsed && l.rows === 0; });
   const kept1 = await stored(page, "aiwb.collapsed");
   await check("6 a click on the section's head collapses it: no row is drawn, and the entry's id is in localStorage \"aiwb.collapsed\"", closed === true && JSON.parse(kept1 ?? "[]").includes(ENTRY), `stored ${kept1}; ${one(await sectionLook())}`);
   await shot("collapsed", page);
-  await head.click();
+  await fold();
   await waitFor("the section is expanded", async () => !(await sectionLook()).collapsed);
-  await groupHead(section(), FILMS).click();
+  await ui.inList(page, groupHead(section(), FILMS));
   const gid = (await groupOn(B, FILMS))?.id;
   const folded = await holds("the group of the section is collapsed", async () => !(await outline(page, B.name)).some((l) => l === `  chat ${OWNER_CHAT}`) && JSON.parse((await stored(page, "aiwb.collapsed")) ?? "[]").includes(`${ENTRY}~${gid}`));
-  await head.click();
+  await fold();
   await waitFor("the section is collapsed again", async () => (await sectionLook()).collapsed);
   await sleep(1000);
   const sent = quiet().filter((c) => c.method !== "GET");
@@ -627,13 +564,13 @@ async function step6() {
     folded === true && sent.length === 0 && !there?.collapsed && one(await outline(owner)) === one(ownerSees), `requests ${one(sent.map((c) => `${c.method} ${c.path} ${c.body}`))}; B's group ${one(there)}; stored ${await stored(page, "aiwb.collapsed")}`);
 
   await page.reload();
-  await page.waitForSelector("#root .side-tree");
+  await page.waitForSelector(ui.treeWait, { state: "attached" });
   const still = await holds("after a reload the section is collapsed", async () => (await sectionLook())?.collapsed === true && (await sectionLook()).state === "Connected", { timeout: 20000 });
-  await section().locator(".side-section-head").click();
+  await fold();
   const group = await holds("and the group in it too", async () => { const o = await outline(page, B.name); return o.includes(`group ${FILMS}`) && !o.includes(`  chat ${OWNER_CHAT}`) && o.includes(`group ${MY_GROUP}`); }, { timeout: 15000 });
   await check("6 the collapse of the section and of the group in it survives a reload of the page", all(still, group), `${one(await sectionLook())}; ${lines(await outline(page, B.name))}`);
   await shot("a-group-of-the-section-collapsed", page);
-  await groupHead(section(), FILMS).click();
+  await ui.inList(page, groupHead(section(), FILMS));
   const open = await holds("the group is open again", async () => (await outline(page, B.name)).includes(`  chat ${OWNER_CHAT}`));
   await check("6 expanded again, the section shows B's tree as the owner's page does, and the storage holds no collapse", all(open, await sameTree()) === true && (await stored(page, "aiwb.collapsed")) === "[]", `stored ${await stored(page, "aiwb.collapsed")}; ${await bothTrees()}`);
 
@@ -641,7 +578,7 @@ async function step6() {
   await more(page, rowOf(section(), "chat", OWNER_LOOSE), "Archive");
   await more(page, rowOf(side(page), "chat", HERE), "Archive");
   const off = await holds("both archived chats are hidden", async () => !(await outline(page, B.name)).some((l) => l.includes(OWNER_LOOSE)) && !(await outline(page)).some((l) => l.includes(HERE)));
-  const switches = await page.locator(".side-archived input").count();
+  const switches = await page.locator(q.archivedSwitch).count();
   await showArchived(page, true);
   const on = await holds("both show as archived", async () => (await outline(page, B.name)).includes(`chat ${OWNER_LOOSE} [archived]`) && (await outline(page)).includes(`chat ${HERE} [archived]`));
   const onB = (await stateOf(B)).chats.find((c) => c.name === OWNER_LOOSE)?.archived === true;
@@ -659,22 +596,14 @@ async function step6() {
  *  an entry takes its section and its collapse away. */
 async function step6b() {
   const ATTIC = "Attic", CELLAR = "Cellar";
-  const dlg = page.locator(".servers-dialog");
-  const rowIn = (name) => dlg.locator(".servers-row").filter({ has: page.locator(".servers-name", { hasText: exact(name) }) });
+  const dlg = ui.serversDialog(page);
+  const rowIn = (name) => ui.serverRow(page, name);
   const add = async (name, selfSigned) => {
-    await page.locator("button.servers-btn").click();
-    await dlg.waitFor();
-    await dlg.locator("button", { hasText: /^Add server$/ }).click();
-    const form = dlg.locator(".servers-form");
-    const fields = form.locator(".servers-field input");
-    await fields.nth(0).fill(name);
-    await fields.nth(1).fill(`https://127.0.0.1:${await freePort()}`); // never dialed: A dials the link, whatever the address
-    await fields.nth(2).fill("a-secret-of-no-server");
-    if (selfSigned) await form.locator(".servers-check input").check();
-    await form.locator("button", { hasText: /^Save anyway$/ }).click();
+    await ui.openServers(page);
+    const form = await ui.fillForm(page, { name, address: `https://127.0.0.1:${await freePort()}`, secret: "a-secret-of-no-server", selfSigned }); // never dialed: A dials the link, whatever the address
+    await ui.click(page, ui.button(form, "Save anyway"));
     await rowIn(name).waitFor({ timeout: 15000 });
-    await dlg.locator("button", { hasText: /^Close$/ }).click();
-    await dlg.waitFor({ state: "detached" });
+    await ui.closeServers(page);
   };
   await add(ATTIC, false);
   await add(CELLAR, true);
@@ -683,7 +612,7 @@ async function step6b() {
     return !!l && l.state === words && l.tone === "bad" && l.rows === 0 && !l.add && one(l.lines) === one([ONE_LINE]);
   }, { timeout: 60000 });
   const attic = await said(ATTIC, "Certificate not accepted"), cellar = await said(CELLAR, "Fingerprint not accepted");
-  const order = await page.locator(".side-section").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+  const order = await page.locator(q.section).evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
   const listed = ((await hostApp(host1, "servers.list")).json?.servers ?? []).filter((v) => !v.local).map((v) => v.name);
   await check("6 two more entries that never connect: each has its section, in the order of the list after this computer's, with the words of its state and the one line; B's section keeps its rows",
     all(attic, cellar) === true && one(order) === one([A.name, B.name, ATTIC, CELLAR]) && one(order.slice(1)) === one(listed) && (await sectionLook()).rows > 0,
@@ -692,30 +621,29 @@ async function step6b() {
 
   // A section of a server that is not connected collapses, and stays collapsed across a reload.
   const atticId = ((await hostApp(host1, "servers.list")).json?.servers ?? []).find((v) => v.name === ATTIC)?.id ?? "";
-  await page.locator(`.side-section[aria-label="${ATTIC}"] .side-section-head`).click();
-  await section().locator(".side-section-head").click();
+  await fold(ui.sectionOf(page, ATTIC));
+  await fold();
   const folded = await holds("both are collapsed", async () => (await lookOf(ATTIC)).collapsed && (await sectionLook()).collapsed && (await lookOf(ATTIC)).lines.length === 0);
   await shot("a-connected-section-and-one-that-is-not-collapsed", page);
   await page.reload();
-  await page.waitForSelector("#root .side-tree");
+  await page.waitForSelector(ui.treeWait, { state: "attached" });
   const kept = await holds("after a reload both are collapsed, and the third is not", async () => (await lookOf(ATTIC))?.collapsed === true && (await sectionLook())?.collapsed === true && (await lookOf(CELLAR))?.collapsed === false, { timeout: 20000 });
   const storedNow = JSON.parse((await stored(page, "aiwb.collapsed")) ?? "[]");
   await check("6 a section of a server that is not connected collapses as a connected one does, says its state in its head alone, and both stay collapsed across a reload",
     all(folded, kept) === true && storedNow.includes(atticId) && storedNow.includes(ENTRY) && (await lookOf(ATTIC)).state === "Certificate not accepted", `stored ${one(storedNow)}; ${ATTIC} ${one(await lookOf(ATTIC))}`);
-  await section().locator(".side-section-head").click();
+  await fold();
   await waitFor("B's section is expanded again", async () => !(await sectionLook()).collapsed && (await sectionLook()).rows > 0);
 
   // Removing the two entries takes their sections away, and the collapse of the one that was collapsed.
   const before = await census();
   for (const name of [ATTIC, CELLAR]) {
-    await page.locator("button.servers-btn").click();
-    await rowIn(name).locator("button", { hasText: /^Remove$/ }).click();
-    await page.locator(".dialog").filter({ has: page.locator(".dialog-title", { hasText: /^Remove server$/ }) }).locator("button", { hasText: /^Remove$/ }).click();
+    await ui.openServers(page);
+    await ui.click(page, ui.button(rowIn(name), "Remove"));
+    await ui.click(page, ui.button(page.locator(q.dialog).filter({ has: page.locator(q.dialogTitle, { hasText: /^Remove server$/ }) }), "Remove"));
     await rowIn(name).waitFor({ state: "detached", timeout: 15000 });
-    await dlg.locator("button", { hasText: /^Close$/ }).click();
-    await dlg.waitFor({ state: "detached" });
+    await ui.closeServers(page);
   }
-  const gone = await holds("B's section alone is left", async () => one(await page.locator(".side-section").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))) === one([A.name, B.name]), { timeout: 15000 });
+  const gone = await holds("B's section alone is left", async () => one(await page.locator(q.section).evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))) === one([A.name, B.name]), { timeout: 15000 });
   const left = await stored(page, "aiwb.collapsed");
   await check("6 the two entries are removed in the Servers dialog: their sections go, the collapse of the removed one goes with it, and B's section and B are as they were",
     gone === true && left === "[]" && one(await census()) === one(before) && (await sameTree()) === true, `stored collapse ${left}; ${await bothTrees()}`);
@@ -723,29 +651,34 @@ async function step6b() {
 
 async function step7() {
   // The chat made in the group: a first message whose agent asks for a permission, answered on the page.
-  await rowOf(section(), "chat", IN_GROUP).click();
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
   await box(page).waitFor();
   const id = own(chatGroup);
   // A folder of B's machine is picked for the chat before its first message: the group on B remembers it from that message on.
   const dir = path.join(B.work, B_ONLY);
-  await page.locator('.composer button.tchip[title^="Folder on"]').click();
-  const dirs = page.locator(".composer .menu.dirs");
-  const head = ((await dirs.locator(".menu-head").textContent()) ?? "").trim(); // not innerText: the head is drawn in capitals
-  await dirs.locator(".dir-input").fill(B.work);
-  await dirs.locator(".dir-input").press("Enter");
-  await waitFor("the picker lists the folder of B's machine", async () => (await dirs.locator(".dir-list .menu-item.dir").allInnerTexts()).some((t) => t.includes(B_ONLY)));
-  await dirs.locator(".dir-input").fill(dir);
-  await dirs.locator(".dir-input").press("Enter");
-  await sleep(300);
-  await dirs.locator(".dir-foot button").click();
+  await ui.openChip(page, "folder", B.name);
+  const dirs = ui.dirs(page);
+  const head = ((await dirs.locator(q.dirHead).first().textContent()) ?? "").trim(); // not innerText: the head is drawn in capitals
+  try {
+    await dirs.locator(q.dirInput).fill(B.work);
+    await dirs.locator(q.dirInput).press("Enter");
+    await waitFor("the picker lists the folder of B's machine", async () => (await dirs.locator(q.dirItem).allInnerTexts()).some((t) => t.includes(B_ONLY)));
+    await dirs.locator(q.dirInput).fill(dir);
+    await dirs.locator(q.dirInput).press("Enter");
+    await sleep(300);
+    await ui.click(page, dirs.locator(q.dirUse, { hasText: new RegExp(`^Use ${path.basename(dir)}$`) })); // (the button names the folder once its listing has loaded)
+  } finally {
+    await ui.closeDirs(page); // (a step that failed above leaves no browser open over the later ones)
+  }
+  await ui.closeMore(page);
   const picked = await holds("B's chat has the folder", async () => (await chatOn(B, id))?.cwd === dir);
   await check(`7 the folder picker of a chat of the section is titled "Folder on ${B.name}", lists folders of B's machine, and the pick is the chat's folder on B`, head === `Folder on ${B.name}` && picked === true, `head "${head}"; B's chat: ${(await chatOn(B, id))?.cwd}`);
   await send(page, '[[ask Bash {"command":"ls"}]] hello');
-  const card = page.locator(".thread .perm-title");
+  const card = page.locator(q.permTitle);
   const asked = await card.waitFor({ timeout: 40000 }).then(() => true, (e) => e.message.split("\n")[0]);
-  const cls = (await rowOf(section(), "chat", IN_GROUP).getAttribute("class")) ?? "";
-  await check("7 a first message in a chat of the section: the permission card shows, and the row shows that the chat waits or works", asked === true && /\bst-(approval|working|busy|thinking)\b/.test(cls), `card: ${asked}; row class "${cls}"`);
-  if (asked === true) await page.locator(".thread .perm-actions button", { hasText: /^Allow$/ }).click();
+  const cls = await ui.rowState(rowOf(section(), "chat", IN_GROUP));
+  await check("7 a first message in a chat of the section: the permission card shows, and the row shows that the chat waits or works", asked === true && ui.waitsOrWorks(cls), `card: ${asked}; row state "${cls}"`);
+  if (asked === true) await ui.click(page, page.locator(q.permAllow, { hasText: /^Allow$/ }));
   const reply = await replied(page, "ask Bash -> allow");
   const onB = await holds("B has the user message once", async () => (await userTexts(B, id)).length === 1);
   await check("7 Allow is clicked on the page: the reply arrives, and B has the message once", all(reply, onB), `thread ${one(await msgs(page)).slice(0, 300)}`);
@@ -758,23 +691,23 @@ async function step7() {
   await box(page).waitFor();
   const byOwner = await selected(owner, "chat", () => plus(owner, groupHead(side(owner), MY_GROUP), "Chat"));
   await box(owner).waitFor();
-  const loose = await selected(page, "chat", () => plus(page, section().locator(".side-section-head"), "Chat"));
+  const loose = await selected(page, "chat", () => plus(page, section().locator(q.sectionHead), "Chat"));
   await box(page).waitFor();
   const cw = [(await chatOn(B, own(next)))?.cwd, (await chatOn(B, byOwner))?.cwd, (await chatOn(B, own(loose)))?.cwd];
   const mineKept = one((await stateOf(A)).defaults ?? {});
   await check("7 the group on B remembers the folder of that first message: the next chat in the group starts in it, made from the page or by the owner; one outside the group starts in B's own folder; A remembers nothing of it",
     cw[0] === dir && cw[1] === dir && cw[2] === B.work && !mineKept.includes(gid) && !mineKept.includes(B_ONLY) && !mineKept.includes(ENTRY),
     `in the group, from the page: ${cw[0]}; by the owner: ${cw[1]}; outside: ${cw[2]}; A's defaults: ${mineKept.slice(0, 200)}`);
-  await rowOf(section(), "chat", IN_GROUP).click();
-  await page.locator(".thread .msg.assistant").first().waitFor();
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
+  await page.locator(q.msgAssistant).first().waitFor();
 
   // An image in the chat: uploaded to B through A, shown from A's own address for it, and kept by B alone.
   const ups = callsFrom(page);
-  const chooser = page.waitForEvent("filechooser");
-  await page.locator(".composer button.attach-btn").click();
-  await (await chooser).setFiles({ name: "dot.png", mimeType: "image/png", buffer: PNG });
-  const thumb = page.locator(".composer .composer-images .img-thumb:not(.busy) img");
-  const up = await holds("the thumbnail of the uploaded image shows", async () => (await thumb.count()) === 1 && (await thumb.evaluate((el) => el.complete && el.naturalWidth > 0)), { timeout: 30000 });
+  const chooser = page.waitForEvent("filechooser", { timeout: 20000 });
+  chooser.catch(() => {}); // (a press that opens no chooser is the failed check below, not an exception that ends the script)
+  const attached = await ui.click(page, page.locator(q.attach), { timeout: 15000 }).then(() => chooser).then((c) => c.setFiles({ name: "dot.png", mimeType: "image/png", buffer: PNG })).then(() => true, (e) => `the attach button gave no file chooser: ${e.message.split("\n")[0]}`);
+  const thumb = page.locator(q.thumb);
+  const up = attached === true ? await holds("the thumbnail of the uploaded image shows", async () => (await thumb.count()) === 1 && (await thumb.evaluate((el) => el.complete && el.naturalWidth > 0)), { timeout: 30000 }) : attached;
   const post = ups().find((c) => c.method === "POST" && c.server === ENTRY && c.path.startsWith(`/api/chats/${id}/images`));
   const hash = await waitFor("B's draft names the image", async () => (await get(B, `/api/chats/${id}/items`)).json?.state?.draft?.images?.[0]?.id ?? null, { timeout: 15000 }).catch(() => "");
   const got = hash ? await fetch(`${host1.url}host/picture/${ENTRY}/${id}/${hash}`) : null;
@@ -782,17 +715,17 @@ async function step7() {
   const local = fs.readdirSync(A.home, { recursive: true }).map(String).filter((f) => hash && f.includes(hash));
   await check("7 an image added to the chat is uploaded to B in one call naming B's entry, is named by B's draft, is served by the host (the app's main process) from B's bytes under its own headers as an image, and A keeps no file of it",
     up === true && post?.status === 200 && /^[0-9a-f]{64}$/.test(hash) && got?.status === 200 && got.headers.get("content-type") === "image/png" && got.headers.get("x-content-type-options") === "nosniff" && bytes?.equals(PNG) && local.length === 0,
-    `upload ${one(post && { server: post.server, path: post.path.slice(0, 80), status: post.status })}; B's draft names ${hash.slice(0, 12)}…; GET -> ${got?.status} ${got?.headers.get("content-type")} nosniff: ${got?.headers.get("x-content-type-options")}; files of A: ${one(local)}`);
-  await page.locator(".composer .composer-images .img-thumb-remove").click();
+    `${attached === true ? "" : attached + "; "}upload ${one(post && { server: post.server, path: post.path.slice(0, 80), status: post.status })}; B's draft names ${hash.slice(0, 12)}…; GET -> ${got?.status} ${got?.headers.get("content-type")} nosniff: ${got?.headers.get("x-content-type-options")}; files of A: ${one(local)}`);
+  if (up === true) await ui.click(page, page.locator(q.thumbRemove));
   await holds("the draft has no image again", async () => !((await get(B, `/api/chats/${id}/items`)).json?.state?.draft?.images?.length), { timeout: 15000 });
 
   // The owner opens the same chat on B's own page. A second message from A: both pages follow it while the agent works.
-  await rowOf(side(owner), "chat", IN_GROUP).click();
-  await owner.locator(".thread .msg.assistant").first().waitFor({ timeout: 20000 });
+  await ui.openRow(owner, rowOf(side(owner), "chat", IN_GROUP));
+  await owner.locator(q.msgAssistant).first().waitFor({ timeout: 20000 });
   await send(page, "[[sleep 4]] again");
   const working = await holds("both pages show the chat at work", async () => {
-    const a = (await rowOf(section(), "chat", IN_GROUP).getAttribute("class")) ?? "", b = (await rowOf(side(owner), "chat", IN_GROUP).getAttribute("class")) ?? "";
-    return /\bst-(working|busy|thinking)\b/.test(a) && /\bst-(working|busy|thinking)\b/.test(b) && (await msgs(owner)).user.some((t) => t.includes("again"));
+    const a = await ui.rowState(rowOf(section(), "chat", IN_GROUP)), b = await ui.rowState(rowOf(side(owner), "chat", IN_GROUP));
+    return ui.working(a) && ui.working(b) && (await msgs(owner)).user.some((t) => t.includes("again"));
   }, { timeout: 20000, every: 50 });
   const both = all(await replied(page, "again"), await replied(owner, "again"));
   const ma = await msgs(page), mo = await msgs(owner);
@@ -802,11 +735,11 @@ async function step7() {
 
   // Anyone who has the chat open can answer and send: an ask of A's message is answered by the owner, then the owner sends.
   await send(page, '[[ask Bash {"command":"pwd"}]] third');
-  const ownerCard = owner.locator(".thread .perm-actions button", { hasText: /^Allow$/ });
+  const ownerCard = owner.locator(q.permAllow, { hasText: /^Allow$/ });
   const shown = await ownerCard.waitFor({ timeout: 40000 }).then(() => true, (e) => e.message.split("\n")[0]);
-  if (shown === true) await ownerCard.click();
-  const answered = all(await replied(page, "third"), await holds("the card on A's page is decided", async () => (await page.locator(".thread .perm-actions").count()) === 0 && (await page.locator(".thread .perm-done").allInnerTexts()).filter((t) => t === "Approved").length === 2));
-  await check("7 a permission asked by the page's message is answered on the owner's page: the page's card is decided and its reply arrives", all(shown, answered), `the owner's card: ${shown}; ${one(await page.locator(".thread .perm-done").allInnerTexts())}`);
+  if (shown === true) await ui.click(owner, ownerCard);
+  const answered = all(await replied(page, "third"), await holds("the card on A's page is decided", async () => (await page.locator(q.permActions).count()) === 0 && (await page.locator(q.permDone).allInnerTexts()).filter((t) => t === "Approved").length === 2));
+  await check("7 a permission asked by the page's message is answered on the owner's page: the page's card is decided and its reply arrives", all(shown, answered), `the owner's card: ${shown}; ${one(await page.locator(q.permDone).allInnerTexts())}`);
   await waitFor("the third turn ends", async () => (await chatOn(B, id))?.status === "ready", { timeout: 30000 }).catch(() => {});
   await send(owner, "from the owner");
   const fromOwner = all(await replied(page, "from the owner"), await replied(owner, "from the owner"));
@@ -819,8 +752,8 @@ async function step7() {
   await box(page).fill("a thought from A");
   const drafted = await holds("B has the text as the chat's draft", async () => (await draftOn(id)).text === "a thought from A");
   const mirrored = await holds("the owner's composer shows it", async () => (await boxText(owner)).trim() === "a thought from A");
-  await rowOf(side(page), "chat", HERE).click();
-  await rowOf(side(owner), "chat", OWNER_CHAT).click();
+  await ui.openRow(page, rowOf(side(page), "chat", HERE));
+  await ui.openRow(owner, rowOf(side(owner), "chat", OWNER_CHAT));
   const marked = await holds("both rows carry the draft mark", async () => (await outline(page, B.name)).includes(`  chat ${IN_GROUP} [draft]`) && (await outline(owner)).includes(`  chat ${IN_GROUP} [draft]`));
   await check("7 what the page types is the chat's draft on B, the owner's composer shows it, and the chat's row carries the draft mark on both pages", all(drafted, mirrored, marked), `${await bothTrees()}; B's draft ${one(await draftOn(id))}`);
   const kept = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("aiwb.draft.")).map((k) => `${k}=${localStorage.getItem(k)}`));
@@ -828,8 +761,8 @@ async function step7() {
 
   // Two writers in one draft: B's answers to A are held back while A saves, the owner saves meanwhile, and A's save,
   // which names the counter A typed on, is refused as stale when it arrives. A is told, and its text is not replaced silently.
-  await rowOf(section(), "chat", IN_GROUP).click();
-  await rowOf(side(owner), "chat", IN_GROUP).click();
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
+  await ui.openRow(owner, rowOf(side(owner), "chat", IN_GROUP));
   await waitFor("both composers hold the draft", async () => (await boxText(page)).trim() === "a thought from A" && (await boxText(owner)).trim() === "a thought from A");
   const base = (await draftOn(id)).rev;
   const saves = callsFrom(page);
@@ -866,16 +799,16 @@ async function step7b() {
   await box(page).waitFor();
   await renameChat(page, TWO);
   const id = own(key);
-  await rowOf(side(owner), "chat", TWO).click();
+  await ui.openRow(owner, rowOf(side(owner), "chat", TWO));
   await box(owner).waitFor();
-  const chip = (p, title) => p.locator(`.composer button.tchip[title^="${title}"]`);
-  const label = async (p, title) => ((await chip(p, title).locator(".tchip-name").textContent().catch(() => "")) ?? "").trim();
+  const label = (p, title) => ui.chipLabel(p, title.toLowerCase());
   /** Picks, in a picker of a page's composer, the first option that is not the chat's, and answers its id. */
   const pickOther = async (p, title) => {
-    await chip(p, title).click();
-    const opt = p.locator(".composer .menu.up .menu-item.pick:not(.on):not([aria-disabled])").first();
-    const picked = await opt.getAttribute("data-option-id");
-    await opt.click();
+    await ui.openChip(p, title.toLowerCase());
+    const opt = ui.otherOption(p);
+    const picked = await ui.optionId(opt);
+    await ui.click(p, opt);
+    await ui.closeMore(p);
     return picked;
   };
   await waitFor("both composers offer the effort", async () => !!(await label(page, "Effort")) && !!(await label(owner, "Effort")), { timeout: 20000 });
@@ -895,27 +828,26 @@ async function step7b() {
     `model ${model}; the owner's chip "${m0}" -> "${await label(owner, "Model")}"; the page's "${await label(page, "Model")}"; calls ${one(patch.map((c) => `${c.method} ${c.path} ${c.status}`))}`);
 
   // A Stop made on the other page: the agent sleeps far longer than the check waits, so only the Stop ends the turn.
-  const stopOf = (p) => p.locator(".composer button.send.stop");
-  const atWork = (cls) => /\bst-(working|busy|thinking)\b/.test(cls ?? "");
-  const works = (p, scope) => holds("the page shows the chat at work, with Stop", async () => (await stopOf(p).count()) === 1 && atWork(await rowOf(scope, "chat", TWO).getAttribute("class")), { timeout: 30000 });
-  const rests = (p, scope) => holds("the page shows the chat stopped: no Stop, the row at rest", async () => (await stopOf(p).count()) === 0 && !atWork(await rowOf(scope, "chat", TWO).getAttribute("class")), { timeout: 20000 });
+  const stopOf = (p) => p.locator(q.stop);
+  const works = (p, scope) => holds("the page shows the chat at work, with Stop", async () => (await stopOf(p).count()) === 1 && ui.working(await ui.rowState(rowOf(scope, "chat", TWO))), { timeout: 30000 });
+  const rests = (p, scope) => holds("the page shows the chat stopped: no Stop, the row at rest", async () => (await stopOf(p).count()) === 0 && !ui.working(await ui.rowState(rowOf(scope, "chat", TWO))), { timeout: 20000 });
   await send(page, "[[sleep 120]] a long one");
   const w1 = all(await works(page, section()), await works(owner, side(owner)));
   let t = Date.now();
-  if (w1 === true) await stopOf(owner).click();
+  if (w1 === true) await ui.click(owner, stopOf(owner));
   const s1 = all(await rests(page, section()), await holds("B's chat is at rest", async () => (await chatOn(B, id))?.status === "ready", { timeout: 20000 }));
   await check("7 the owner presses Stop while the page's message is being answered: the page's chat stops with no reload", all(w1, s1) === true && Date.now() - t < 60000, `at work on both: ${w1}; stopped: ${s1}; after ${Date.now() - t} ms`);
   await send(owner, "[[sleep 120]] the owner's long one");
   const w2 = all(await works(owner, side(owner)), await works(page, section()));
   const stops = callsFrom(page);
   t = Date.now();
-  if (w2 === true) await stopOf(page).click();
+  if (w2 === true) await ui.click(page, stopOf(page));
   const s2 = all(await rests(owner, side(owner)), await holds("B's chat is at rest", async () => (await chatOn(B, id))?.status === "ready", { timeout: 20000 }));
   const call = stops().filter((c) => c.method !== "GET" && !/\/draft\b/.test(c.path)).map((c) => `${c.method} ${c.path.split("?")[0]} ${c.status}`);
   await check("7 the page presses Stop while the owner's message is being answered: one call under the section's address, and the owner's page stops with no reload",
     all(w2, s2) === true && Date.now() - t < 60000 && one(call) === one([`POST /api/chats/${id}/interrupt 200`]) && stops().some((c) => c.server === ENTRY && c.path.startsWith(`/api/chats/${id}/interrupt`)), `at work on both: ${w2}; stopped: ${s2}; after ${Date.now() - t} ms; calls ${one(call)}`);
-  await rowOf(side(page), "chat", HERE).click();
-  await rowOf(side(owner), "chat", OWNER_CHAT).click();
+  await ui.openRow(page, rowOf(side(page), "chat", HERE));
+  await ui.openRow(owner, rowOf(side(owner), "chat", OWNER_CHAT));
 }
 
 /** The section while B is not connected: the state's words, the one line, no row and no "+". */
@@ -926,9 +858,9 @@ const awayLook = (state = "Unreachable") => holds(`the section says "${state}" a
 
 async function step8() {
   const id = own(chatGroup);
-  await rowOf(section(), "chat", IN_GROUP).click();
-  await page.locator(".thread .msg.assistant").first().waitFor();
-  await rowOf(side(owner), "chat", OWNER_CHAT).click(); // the owner is elsewhere: its composer saves nothing into this chat
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
+  await page.locator(q.msgAssistant).first().waitFor();
+  await ui.openRow(owner, rowOf(side(owner), "chat", OWNER_CHAT)); // the owner is elsewhere: its composer saves nothing into this chat
   const thread = await msgs(page);
   // Text that is typed and not yet taken by B: nothing passes the link while it is typed, then the link is pulled.
   const typed = "typed just before the drop";
@@ -938,16 +870,16 @@ async function step8() {
   await box(page).fill(typed);
   await waitFor("the save of the typed text is on its way", async () => saves().some((c) => c.method === "PUT" && c.path.includes("/draft")), { timeout: 10000 });
   setLink("cut");
-  const bar = page.locator(".thread .remote-bar.off .remote-bar-text");
+  const bar = page.locator(q.remoteBarOffText);
   const warned = await holds("the warning names B", async () => (await bar.innerText().catch(() => "")) === `${AWAY}. This chat is shown as it was when the connection ended.`, { timeout: 30000 });
   const m = await msgs(page);
   await check("8 the link is pulled with the chat open: the thread stays on screen as it was, under a warning that names the server", warned === true && one(m) === one(thread), `bar "${await bar.innerText().catch(() => "none")}"; ${counts(m)} (was ${counts(thread)})`);
   await check("8 the section says that B is not connected and the one line; no row is left, the open chat's neither", await awayLook(), one(await sectionLook()));
   await shot("not-connected-with-a-chat-open", page, true);
   const mine = await lookOf(A.name);
-  await check("8 all the while this computer's section is connected, with its rows and its \"+\": the outage of B holds nothing of it up", mine?.state === "Connected" && mine.rows > 0 && (await page.locator("button.icon-btn.new:not([disabled])").count()) === 1, one(mine));
-  const sendBtn = page.locator(".composer button.send:not(.stop)");
-  const why = { disabled: await sendBtn.isDisabled(), title: await sendBtn.getAttribute("title"), line: (await page.locator(".composer .agent-reason").allInnerTexts()).join(" / "), choices: await page.locator(".composer button.tchip:not(.static):not([disabled])").count() };
+  await check("8 all the while this computer's section is connected, with its rows and its \"+\": the outage of B holds nothing of it up", mine?.state === "Connected" && mine.rows > 0 && (await page.locator(`${q.newBtn}:not([disabled])`).count()) === 1, one(mine));
+  const sendBtn = page.locator(q.send);
+  const why = { disabled: await sendBtn.isDisabled(), title: await sendBtn.getAttribute("title"), line: (await page.locator(q.agentReason).allInnerTexts()).join(" / "), choices: await page.locator(q.choices).count() };
   await check("8 nothing can be sent or changed, and the composer says why: Send is off with the reason, the line under the toolbar says it, and no choice is a choice",
     why.disabled === true && why.title === WHY && why.line === WHY && why.choices === 0, one(why));
   // Read-only: the box keeps what was typed and takes no more.
@@ -965,23 +897,23 @@ async function step8() {
   await check("8 B has none of the typed text yet", (await draftOn(id)).text === "", `B's draft ${one(await draftOn(id))}`);
 
   // Meanwhile on B: the owner sends in that chat, and makes another one.
-  await rowOf(side(owner), "chat", IN_GROUP).click();
+  await ui.openRow(owner, rowOf(side(owner), "chat", IN_GROUP));
   await send(owner, "while A was away");
   await replied(owner, "while A was away");
   await waitFor("its turn ends", async () => (await chatOn(B, id))?.status === "ready", { timeout: 30000 }).catch(() => {});
-  await rowOf(side(owner), "chat", OWNER_CHAT).click();
-  await selected(owner, "chat", async () => { await owner.click("button.icon-btn.new"); await menuItem(owner, "New chat").click(); });
+  await ui.openRow(owner, rowOf(side(owner), "chat", OWNER_CHAT));
+  await selected(owner, "chat", async () => { await ui.headPlus(owner, "New chat"); });
   await box(owner).waitFor();
   await renameChat(owner, "Made meanwhile");
-  await rowOf(side(owner), "chat", OWNER_CHAT).click();
+  await ui.openRow(owner, rowOf(side(owner), "chat", OWNER_CHAT));
 
   // Back: the section's tree as it is now, the open chat level with B, the warning gone, the composer at work, the typed text saved.
   setLink("pass");
   const tree = await holds("the section shows B's tree as it is now", async () => (await sectionLook())?.state === "Connected" && (await outline(page, B.name)).includes("chat Made meanwhile"), { timeout: 60000 });
   await check("8 B is back: the section shows the tree as it is now, with what was made there meanwhile", all(tree, await sameTree()), await bothTrees());
-  const level = await holds("the open chat has what was sent there meanwhile, and no warning", async () => (await msgs(page)).user.some((t) => t.includes("while A was away")) && (await page.locator(".thread .remote-bar").count()) === 0, { timeout: 30000 });
+  const level = await holds("the open chat has what was sent there meanwhile, and no warning", async () => (await msgs(page)).user.some((t) => t.includes("while A was away")) && (await page.locator(q.remoteBar).count()) === 0, { timeout: 30000 });
   const m2 = await msgs(page);
-  await check("8 the open chat is brought level with B and the warning goes", level === true && m2.user.length === thread.user.length + 1 && noneTwice(m2), `${counts(m2)}; bar ${await page.locator(".thread .remote-bar").count()}`);
+  await check("8 the open chat is brought level with B and the warning goes", level === true && m2.user.length === thread.user.length + 1 && noneTwice(m2), `${counts(m2)}; bar ${await page.locator(q.remoteBar).count()}`);
   const saved = await holds("B has the typed text as the chat's draft", async () => (await draftOn(id)).text === typed, { timeout: 30000 });
   const editable = await holds("the box takes text again", async () => (await box(page).getAttribute("aria-readonly")) !== "true");
   await check("8 the text that was typed is saved on B once it is back, is still in the box, and the box takes text again", all(saved, editable) === true && (await boxText(page)).trim() === typed, `B's draft ${one(await draftOn(id))}; box "${(await boxText(page)).trim()}"`);
@@ -993,40 +925,40 @@ async function step8() {
   // Left during an outage, the chat cannot be opened again; a reload during the outage knows nothing of B.
   setLink("cut");
   await bar.waitFor({ timeout: 30000 });
-  await rowOf(side(page), "chat", HERE).click();
-  const left = await holds("the chat of this computer is on screen and nothing of B", async () => (await sel(page)).chat === chat0 && (await page.locator(".thread .remote-bar, .chat-head-server").count()) === 0);
+  await ui.openRow(page, rowOf(side(page), "chat", HERE));
+  const left = await holds("the chat of this computer is on screen and nothing of B", async () => (await sel(page)).chat === chat0 && (await page.locator(`${q.remoteBar}, ${q.chatHeadServer}`).count()) === 0);
   const look = await sectionLook();
   await shot("not-connected", page);
   await check("8 the chat is left during an outage: it is closed, the section has no row to open it from, and the selection names nothing of B", left === true && look.rows === 0 && !one(await sel(page)).includes(ENTRY), `${one(look)}; selection ${one(await sel(page))}`);
   await page.reload();
-  await page.waitForSelector("#root .side-tree");
+  await page.waitForSelector(ui.treeWait, { state: "attached" });
   const blank = await awayLook();
   await holds("this computer's section is connected", async () => (await lookOf(A.name))?.state === "Connected" && (await lookOf(A.name)).rows > 0, { timeout: 60000 });
   const mineAgain = await lookOf(A.name);
-  await check("8 a reload of the page during the outage: nothing of B is known, the section says so, and this computer's section is full", blank === true && (await page.locator(".thread .remote-bar, .chat-head-server").count()) === 0 && mineAgain?.state === "Connected" && mineAgain.rows > 0,
+  await check("8 a reload of the page during the outage: nothing of B is known, the section says so, and this computer's section is full", blank === true && (await page.locator(`${q.remoteBar}, ${q.chatHeadServer}`).count()) === 0 && mineAgain?.state === "Connected" && mineAgain.rows > 0,
     `${one(await sectionLook())}; this computer's ${one(mineAgain)}`);
   setLink("pass");
   const again = await holds("the section has its rows again", async () => (await sectionLook())?.state === "Connected" && (await outline(page, B.name)).includes(`  chat ${IN_GROUP}`), { timeout: 60000 });
-  await rowOf(section(), "chat", IN_GROUP).click();
-  const opens = await holds("the chat opens with its thread", async () => (await msgs(page)).user.length === thread.user.length + 2 && (await page.locator(".thread .remote-bar").count()) === 0, { timeout: 30000 });
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
+  const opens = await holds("the chat opens with its thread", async () => (await msgs(page)).user.length === thread.user.length + 2 && (await page.locator(q.remoteBar).count()) === 0, { timeout: 30000 });
   await check("8 B is back: the chat is in the section again and opens as usual", all(again, opens), counts(await msgs(page)));
 
   // A reload during an outage with a chat of B selected: the chat that was open is closed.
   setLink("cut");
   await bar.waitFor({ timeout: 30000 });
   await page.reload();
-  await page.waitForSelector("#root .side-tree");
+  await page.waitForSelector(ui.treeWait, { state: "attached" });
   await awayLook();
-  const closed = (await page.locator(".thread .msg, .thread .remote-bar, .chat-head-server").count()) === 0;
+  const closed = (await page.locator(`${q.msg}, ${q.remoteBar}, ${q.chatHeadServer}`).count()) === 0;
   await check("8 a reload during an outage with a chat of B open: the chat is closed, and nothing of it is on screen", closed, `selection ${one(await sel(page))}; main: ${(await page.locator("main").first().innerText().catch(() => "")).slice(0, 120)}`);
   setLink("pass");
   await waitFor("the section has its rows again", async () => (await sectionLook())?.state === "Connected" && (await outline(page, B.name)).includes(`  chat ${IN_GROUP}`), { timeout: 60000 });
 
   // Deleted on B during an outage: back, the view says that the chat is no longer on that server.
   const reads = callsFrom(page);
-  await rowOf(section(), "chat", "Made meanwhile").click();
+  await ui.openRow(page, rowOf(section(), "chat", "Made meanwhile"));
   await box(page).waitFor();
-  await page.locator(".chat-head-server").waitFor();
+  await page.locator(q.chatHeadServer).waitFor();
   await waitFor("the chat's thread is read", async () => reads().some((c) => c.method === "GET" && /\/items\?/.test(c.path) && c.status === 200));
   setLink("cut");
   await bar.waitFor({ timeout: 30000 });
@@ -1034,27 +966,25 @@ async function step8() {
   await dialogDo(owner, "Delete");
   await waitFor("B no longer has the chat", async () => !(await stateOf(B)).chats.some((c) => c.name === "Made meanwhile"));
   setLink("pass");
-  const gone = page.locator(".remote-bar.gone .remote-bar-text, .remote-off.gone .remote-off-text");
+  const gone = page.locator(q.remoteGone);
   const says = await holds("the view says that the chat is no longer on B", async () => (await gone.first().innerText().catch(() => "")) === `This chat is no longer on ${B.name}.`, { timeout: 60000 });
   const row = await rowOf(section(), "chat", "Made meanwhile").count();
   await check("8 a chat deleted on B during the outage: back, its view says that it is no longer on that server, Send stays off, and no row is left for it",
-    says === true && row === 0 && (await page.locator(".composer button.send:not(.stop)").isDisabled().catch(() => true)), `"${await gone.first().innerText().catch(() => "none")}"; rows ${row}`);
+    says === true && row === 0 && (await page.locator(q.send).isDisabled().catch(() => true)), `"${await gone.first().innerText().catch(() => "none")}"; rows ${row}`);
   await shot("a-chat-that-is-no-longer-on-its-server", page, true);
-  await rowOf(side(page), "chat", HERE).click();
+  await ui.openRow(page, rowOf(side(page), "chat", HERE));
 }
 
 /** "Test connection" of B's row in the Servers dialog, which makes an entry that waits for the user look again.
  *  true when the row then says `words` of the entry, else what it says. */
 async function testEntry(words) {
-  await page.locator("button.servers-btn").click();
-  const dlg = page.locator(".servers-dialog");
-  const row = dlg.locator(".servers-row").filter({ has: page.locator(".servers-name", { hasText: exact(B.name) }) });
-  const said = () => row.locator(".servers-state").innerText().catch(() => "");
-  await row.locator("button", { hasText: /^Test connection$/ }).click();
+  await ui.openServers(page);
+  const row = ui.serverRow(page, B.name);
+  const said = () => row.locator(q.serversState).innerText().catch(() => "");
+  await ui.click(page, ui.button(row, "Test connection"));
   const ok = await holds(`the row says "${words}"`, async () => (await said()).split(": ")[0] === words, { timeout: 60000 });
   const seen = await said();
-  await dlg.locator("button", { hasText: /^Close$/ }).click();
-  await dlg.waitFor({ state: "detached" });
+  await ui.closeServers(page);
   return ok === true ? true : `the row says "${seen}"`;
 }
 
@@ -1078,8 +1008,8 @@ async function ownerHost() {
 async function step9() {
   // This computer's server stops while the page is open, with a chat of B on screen: its section says so and the app starts it again by
   // itself, with no reload of the page; B's section does not move.
-  await rowOf(section(), "chat", IN_GROUP).click();
-  await page.locator(".thread .msg.assistant").first().waitFor();
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
+  await page.locator(q.msgAssistant).first().waitFor();
   await page.evaluate(() => { window.__notReloaded = true; });
   const aBefore = A.info?.pid ?? host1.client.localInfo()?.pid;
   await A.stop();
@@ -1099,18 +1029,18 @@ async function step9() {
   await host2.close();
   await B.stop();
   await check("9 B's process stops: the section says that B is not connected and the one line, with no row", await awayLook(), one(await sectionLook()));
-  const kept = (await page.locator(".thread .msg").count()) > 0 && (await page.locator(".thread .remote-bar.off").count()) === 1;
-  await check("9 the open chat stays on screen under the warning", kept, `messages ${await page.locator(".thread .msg").count()}; bars ${await page.locator(".thread .remote-bar.off").count()}`);
+  const kept = (await page.locator(q.msg).count()) > 0 && (await page.locator(q.remoteBarOff).count()) === 1;
+  await check("9 the open chat stays on screen under the warning", kept, `messages ${await page.locator(q.msg).count()}; bars ${await page.locator(q.remoteBarOff).count()}`);
 
   // This computer's server stops during B's outage: it kept nothing of B, and the page that reloads knows nothing of B.
   await A.stop();
   await holds("this computer's section is connected again", async () => (await lookOf(A.name))?.state === "Connected", { timeout: 120000 });
   const named = fs.readdirSync(A.home, { recursive: true }).map(String).filter((f) => f.includes(own(chatGroup)) || f.includes(own(boardKey)));
   await page.reload();
-  await page.waitForSelector("#root .side-tree");
+  await page.waitForSelector(ui.treeWait, { state: "attached" });
   const blank = await awayLook();
   await check("9 A's server restarts during the outage: its data folder has no file of a chat or a board of B, and the page shows B's section with no row",
-    blank === true && named.length === 0 && (await page.locator(".thread .msg, .chat-head-server").count()) === 0,
+    blank === true && named.length === 0 && (await page.locator(`${q.msg}, ${q.chatHeadServer}`).count()) === 0,
     `${one(await sectionLook())}; files that name a thing of B ${one(named)}`);
 
   // A server that is too old: a stand-in with B's certificate that reports level 5 and a version.
@@ -1169,15 +1099,15 @@ async function step9() {
   await host1.close();
   host1 = await hostFor({ out: OUT, name: "page", local: A, extra: { dial: (o) => net.connect(o.port === A.port ? o : { host: "127.0.0.1", port: link.port }), timing: parseAppWaits("backoff=3s,tooold=4s"), port: hostPort } });
   await page.reload().catch((e) => { throw new Error(`${e.message.split("\n")[0]}; requests not over: ${[...page.pending].map((r) => r.url().slice(0, 100)).join(" ; ")}`); });
-  await page.waitForSelector("#root .side-tree");
+  await page.waitForSelector(ui.treeWait, { state: "attached" });
   const back = await holds("the section shows B's tree again", async () => (await sectionLook())?.state === "Connected" && (await outline(page, B.name)).includes(`  chat ${IN_GROUP}`), { timeout: 90000 });
   await ownerHost();
   owner = await openPage(B); // (B's app again: its host connects, and B's own page shows B)
   const after = await census();
   await check("9 the updated server is behind the address again: the entry connects by itself, and the section shows B's tree as it is", back === true && one(before) === one(after), `${one(await sectionLook())}; B had ${one(before)}, has ${one(after)}`);
-  await rowOf(section(), "chat", IN_GROUP).click();
-  const opens = await holds("the chat opens with its thread and no warning", async () => (await page.locator(".thread .msg.assistant").count()) > 0 && (await page.locator(".thread .remote-bar").count()) === 0 && !(await page.locator(".composer button.send:not(.stop)").getAttribute("title"))?.includes("not connected"), { timeout: 30000 });
-  await check("9 a chat of the section opens as usual again", opens, `messages ${await page.locator(".thread .msg").count()}; bars ${await page.locator(".thread .remote-bar").count()}`);
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
+  const opens = await holds("the chat opens with its thread and no warning", async () => (await page.locator(q.msgAssistant).count()) > 0 && (await page.locator(q.remoteBar).count()) === 0 && !(await page.locator(q.send).getAttribute("title"))?.includes("not connected"), { timeout: 30000 });
+  await check("9 a chat of the section opens as usual again", opens, `messages ${await page.locator(q.msg).count()}; bars ${await page.locator(q.remoteBar).count()}`);
 }
 
 /** Calls whose answers do not arrive: B takes them, and what it answers is held back by the link. */
@@ -1188,8 +1118,8 @@ async function stepLost() {
   const had = new Set((await stateOf(B)).chats.map((c) => c.id));
   setLink("mute");
   const t0 = Date.now();
-  await plus(page, section().locator(".side-section-head"), "Chat");
-  const dlg = page.locator(".dialog");
+  await plus(page, section().locator(q.sectionHead), "Chat");
+  const dlg = page.locator(q.dialog);
   const said = await holds("the page says that the chat could not be started", async () => (await dlg.innerText().catch(() => "")).includes("Couldn't start the chat"), { timeout: 60000, every: 250 });
   const text = (await dlg.innerText().catch(() => "")).replace(/\n/g, " / ");
   const made = (await stateOf(B)).chats.filter((c) => !had.has(c.id));
@@ -1197,7 +1127,7 @@ async function stepLost() {
   await page.keyboard.press("Escape");
   await dlg.waitFor({ state: "detached" }).catch(() => {});
   setLink("pass");
-  const shows = await holds("the chat that was made shows in the section", async () => (await connected(1000)) === true && (await section().locator(".side-row.is-chat").count()) === (await stateOf(B)).chats.filter((c) => !c.board && !c.run && !c.archived).length, { timeout: 60000 });
+  const shows = await holds("the chat that was made shows in the section", async () => (await connected(1000)) === true && (await section().locator(q.chatRow).count()) === (await stateOf(B)).chats.filter((c) => !c.board && !c.run && !c.archived).length, { timeout: 60000 });
   await sleep(3000);
   const still = (await stateOf(B)).chats.some((c) => c.id === made[0]?.id);
   await check("M the answers flow again: the chat that was made shows in the section like any other, and nothing deletes it", all(shows, still || "B no longer has the chat"), `on B: ${still}`);
@@ -1206,25 +1136,23 @@ async function stepLost() {
 async function step10() {
   // A chat of B is on screen when its entry is removed.
   await waitFor("the section has its rows", async () => (await sectionLook())?.state === "Connected" && (await rowOf(section(), "chat", IN_GROUP).count()) === 1, { timeout: 60000 });
-  await rowOf(section(), "chat", IN_GROUP).click();
-  await page.locator(".thread .msg.assistant").first().waitFor({ timeout: 20000 });
+  await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
+  await page.locator(q.msgAssistant).first().waitFor({ timeout: 20000 });
   const before = await census();
-  await page.locator("button.servers-btn").click();
-  const dlg = page.locator(".servers-dialog");
-  const row = dlg.locator(".servers-row").filter({ has: page.locator(".servers-name", { hasText: exact(B.name) }) });
-  await row.locator("button", { hasText: /^Remove$/ }).click();
-  const ask = page.locator(".dialog").filter({ has: page.locator(".dialog-title", { hasText: /^Remove server$/ }) });
-  const body = await ask.locator(".dialog-body").innerText();
+  const dlg = await ui.openServers(page);
+  const row = ui.serverRow(page, B.name);
+  await ui.click(page, ui.button(row, "Remove"));
+  const ask = page.locator(q.dialog).filter({ has: page.locator(q.dialogTitle, { hasText: /^Remove server$/ }) });
+  const body = await ask.locator(q.dialogBody).innerText();
   await check("10 the question before the removal says that everything stays on that server, and counts nothing",
     body.includes(`"${B.name}"`) && /stay there/.test(body) && /Nothing is deleted or stopped on that server/.test(body) && !/\d/.test(body.replace(B.name, "")), body);
-  await ask.locator("button", { hasText: /^Remove$/ }).click();
+  await ui.click(page, ui.button(ask, "Remove"));
   const removed = await holds("the entry is gone", async () => (await entry()) === null && (await row.count()) === 0, { timeout: 15000 });
-  await dlg.locator("button", { hasText: /^Close$/ }).click();
-  await dlg.waitFor({ state: "detached" });
-  const gone = await holds("the section is gone", async () => (await page.locator(".side-section").count()) === 1, { timeout: 15000 });
+  await ui.closeServers(page);
+  const gone = await holds("the section is gone", async () => (await page.locator(q.section).count()) === 1, { timeout: 15000 });
   const listAfter = JSON.parse(fs.readFileSync(path.join(host1.stateDir, "servers.json"), "utf8"));
-  await check("10 the entry is removed: its section leaves the sidebar, this computer's stays, and the app's list holds no entry", all(removed, gone) === true && listAfter.servers.length === 0, `sections on the page ${await page.locator(".side-section").count()}; the app's list ${one(listAfter.servers.map((v) => v.name))}`);
-  const shut = await holds("the chat of B that was open is closed", async () => (await page.locator(".thread, .chat-head-server, .composer").count()) === 0 && !one(await sel(page)).includes(ENTRY), { timeout: 10000 });
+  await check("10 the entry is removed: its section leaves the sidebar, this computer's stays, and the app's list holds no entry", all(removed, gone) === true && listAfter.servers.length === 0, `sections on the page ${await page.locator(q.section).count()}; the app's list ${one(listAfter.servers.map((v) => v.name))}`);
+  const shut = await holds("the chat of B that was open is closed", async () => (await page.locator(`${q.thread}, ${q.chatHeadServer}, ${q.composer}`).count()) === 0 && !one(await sel(page)).includes(ENTRY), { timeout: 10000 });
   await check("10 the chat of that server that was open is closed with it: a removed entry is no outage, and nothing of it stays on screen", shut, `selection ${one(await sel(page))}; main: ${(await page.locator("main").first().innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 100)}`);
   await sleep(1500);
   const after = await census();

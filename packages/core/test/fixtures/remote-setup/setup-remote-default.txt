@@ -1,0 +1,17 @@
+Remote access is set up in /home/user/.ai-whiteboard.
+Port: 4790
+Names: mac.example.net, 192.168.0.20, 10.0.0.5
+Fingerprint: E6:45:B0:35:48:5E:F3:4B:96:8E:6E:F4:40:67:7F:5E:E4:E7:43:3E:71:0D:21:3E:4A:F8:04:DE:DD:3F:A2:E2
+Next start: will listen
+Addresses, one for each name (a client uses the one it can reach):
+  https://mac.example.net:4790
+  https://192.168.0.20:4790
+  https://10.0.0.5:4790
+Secret: 22dcf1e1145f1b42759c6bb2abfc05817eca02cdfa5df5d727e546f2214752cc
+
+In the app on the other machine: Servers, Add server, with one of the addresses, the secret and
+"Self-signed certificate" ticked. Accept the fingerprint only when it is the one above.
+A running server takes a new port, new names or a new certificate at its next start, and a new secret at once. To start it, or to restart it:
+  "/home/user/ai-whiteboard-server/ai-whiteboard" relaunch -home "/home/user/.ai-whiteboard"
+macOS: with the firewall on (System Settings, Network, Firewall) incoming connections to the
+server can be blocked. Allow "ai-whiteboard" when macOS asks, or add it there.

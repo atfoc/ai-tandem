@@ -1,5 +1,5 @@
 // Package transcript turns agent events into a chat's items (the Go port of the prototype's
-// web/src/chat.ts reducer) and keeps them in items.jsonl.
+// the old page's chat.ts reducer) and keeps them in items.jsonl.
 //
 // A Transcript is not safe for concurrent use; the chat manager serializes calls to it.
 package transcript

@@ -1,0 +1,23 @@
+# aiwb-e2e: needs= xcuitest=keys adbkeys=keys
+# Package N3 (AD-73): the hardware keyboard's shortcuts. Maestro cannot send ⌘ combinations on iOS, so this flow takes the app to the
+# keys self-test screen (src/dev/KeysSelfTest.tsx) and shows that typing reaches its text box; the runner then runs the XCUITest
+# bundle app/e2e/xcuitest/keys against the open screen, which sends ⌘B, ⌘N, ⌘J, ⌘⇧B, ⌘L, ⌘⇧L, ⌘P, ⌘Enter and Escape and reads what the
+# page's handlers received. On Android app/e2e/adbkeys/keys.mjs sends them (Ctrl for ⌘) with `adb shell input keycombination`. The screen says
+# "keys self-test ok" once every shortcut came, and FAILED at the first other key.
+appId: ${APP_ID}
+---
+- runFlow: _open.yaml
+- tapOn:
+    id: "selftest-keys"
+- extendedWaitUntil:
+    visible:
+      id: "keys-root"
+    timeout: 30000
+- assertVisible: "keys self-test waiting.*"
+- assertVisible: "sidebar: shown"
+- tapOn:
+    id: "keys-input"
+- inputText: "ab"
+- assertVisible: "typed: \"ab\""
+- assertVisible: "chats made: 0"
+- takeScreenshot: keys-ready

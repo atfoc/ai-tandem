@@ -1,5 +1,10 @@
 // End-to-end verification of the app (implementation spec, section 7.3).
 //
+// NOTE (package R1, the retirement of the old page): the steps below were written against the old page and read it by its
+// CSS classes (.composer-input, .side-name, .fk-banner, …); that page is gone, and the selectors and the ways to navigate of
+// the app are those of lib/ui.mjs (testIDs, the phone's stack). Until the steps are moved onto lib/ui.mjs, as the four free
+// scripts were, the steps that read the page fail on the app; the server-side steps and the agents' flows are what they were.
+//
 // Simulates the user with no human: a headless Chrome (Playwright) does everything the user does
 // in the app; the HTTP API and shell commands are used only for what is functional; files on disk
 // are checked directly. Real Claude runs on Haiku and real Cursor on its cheapest model, using the
@@ -21,7 +26,8 @@
 //
 // Environment (all optional):
 //   AIWB_E2E_BIN     server binary        (default bin/ai-whiteboard)
-//   AIWB_E2E_CLIENT  built web client     (default web/dist)
+//   AIWB_E2E_CLIENT  the app's web build (app/dist-web: cd app && npm run build:web; the script serves a copy that lets the page reach the host)
+//                    (default: one built into the run's folder)
 //   AIWB_E2E_HOME    data folder          (default a new temp folder)
 //   AIWB_E2E_PORT    the server's client port (default a free one)
 //   AIWB_E2E_SKIP_CURSOR_MCP=1  skip the real-Cursor-over-MCP steps (reported as skipped, never
@@ -95,17 +101,17 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { Scratch, callOf, hostApp, hostCall, hostFor, portFree } from "./lib/rig.mjs";
+import { Scratch, callOf, hostApp, hostCall, hostFor, pageDist, portFree } from "./lib/rig.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const BIN = path.resolve(process.env.AIWB_E2E_BIN || path.join(repo, "bin/ai-whiteboard"));
-const CLIENT = path.resolve(process.env.AIWB_E2E_CLIENT || path.join(repo, "web/dist"));
 const HOME = path.resolve(process.env.AIWB_E2E_HOME || fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-home-")));
 const PORT = Number(process.env.AIWB_E2E_PORT || 0); // the server's client port; 0: a free one, found at the set-up
 
 // Everything the run makes besides the data folder: work folders, screenshots, the server log.
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-e2e-run-"));
 const WORK = path.join(OUT, "work");
+const CLIENT = pageDist(OUT); // (AIWB_E2E_CLIENT or DIST name a build of app/; else one is built now)
 const LOG = path.join(HOME, "server.log"); // the server's own log (`launch` writes it)
 const dir = (...p) => { const d = path.join(WORK, ...p); fs.mkdirSync(d, { recursive: true }); return d; };
 // Step 18's long-running subagent loops in a shell until this file exists; the run makes it once

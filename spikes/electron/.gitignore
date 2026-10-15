@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.expo/
+app/node_modules/
+app/dist/
+app/.expo/
+.out/
+dist-abs/
+app/dist-abs/

@@ -1,0 +1,209 @@
+# Part 4 of `storage-picker-permission`: the code to scan. scripts/server-code.sh makes the code of the scratch server (the runner's `POST /device/qr`: the real script, a
+# `qrencode` that keeps what it is fed, the picture read back with CoreImage). Neither the iOS simulator nor the Android emulator can be shown the picture on its screen as a
+# camera sees it (the simulator has no camera; the emulator's camera is a room it shows, and the stock walk to its poster does not move it here), so the scan itself is by hand
+# (goal 7.5). What is shown here: the scanner's screen and the camera's permission, answered both ways, on both; then the text that the picture holds, which is the text a
+# camera hands the app, is typed into the paste box (the scanner and the paste go through the same parser): the form is filled, and the server it names answers with the
+# fingerprint that text printed. Starts on the sidebar; the app has the server of the run added by then only if an earlier part left it so: nothing here depends on it.
+appId: ${APP_ID}
+---
+- runFlow: _to-sidebar.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/qr
+- evalScript: ${output.code = output.ctl}
+
+# ---- iOS: the camera's permission was never asked (the picker's was no permission): the scanner asks, with the app's own words in the system's prompt; refused, the scanner says so
+#      and gives the way to the settings; the answer is forgotten (the system's own reset), asked again and given: the scanner is on the screen (a simulator has nothing to see)
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/privacy?service=all&action=reset
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/relaunch
+      - runFlow: _open-sidebar.yaml
+      - tapOn:
+          id: "servers-btn"
+      - tapOn:
+          id: "servers-add"
+      - waitForAnimationToEnd
+      - tapOn:
+          id: "addserver-scan"
+      - extendedWaitUntil:
+          visible:
+            id: "addserver-camera-allow"
+          timeout: 30000
+      - assertVisible: "The camera reads the code your server shows. Nothing is recorded or kept."
+      - takeScreenshot: v4-40-scanner-asks
+      - tapOn:
+          id: "addserver-camera-allow"
+      - extendedWaitUntil:
+          visible: ".*would like to access the Camera.*"
+          timeout: 30000
+      - assertVisible: ".*uses the camera only to scan the code that your server shows.*"
+      - takeScreenshot: v4-41-camera-prompt
+      - tapOn: "Don.t Allow"
+      - extendedWaitUntil:
+          visible: "The camera is off for AI Whiteboard. Allow it in the settings to scan a code, or paste the text instead."
+          timeout: 30000
+      - assertVisible:
+          id: "addserver-open-settings"
+      - takeScreenshot: v4-42-camera-refused
+      - tapOn:
+          id: "addserver-scan-cancel"
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/privacy?service=all&action=reset
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/relaunch
+      - runFlow: _open-sidebar.yaml
+      - tapOn:
+          id: "servers-btn"
+      - tapOn:
+          id: "servers-add"
+      - waitForAnimationToEnd
+      - tapOn:
+          id: "addserver-scan"
+      - extendedWaitUntil:
+          visible:
+            id: "addserver-camera-allow"
+          timeout: 30000
+      - tapOn:
+          id: "addserver-camera-allow"
+      - extendedWaitUntil:
+          visible: ".*would like to access the Camera.*"
+          timeout: 30000
+      - tapOn: "Allow"
+      - extendedWaitUntil:
+          notVisible:
+            id: "addserver-camera-allow"
+          timeout: 30000
+      - assertVisible: "Point the camera at the code that scripts/server-code.sh shows on the server's screen."
+      - takeScreenshot: v4-43-camera-allowed
+
+# ---- Android: the same. A first refusal can be asked again; a second one is for good, and the scanner then says the camera is off and gives the settings; the permission given
+#      (as the settings give it: `pm grant`) the scanner is on the screen with the emulator's camera running
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/privacy?service=camera&action=revoke
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/relaunch
+      - runFlow: _open-sidebar.yaml
+      - tapOn:
+          id: "servers-btn"
+      - tapOn:
+          id: "servers-add"
+      - waitForAnimationToEnd
+      - tapOn:
+          id: "addserver-scan"
+      - extendedWaitUntil:
+          visible:
+            id: "addserver-camera-allow"
+          timeout: 30000
+      - assertVisible: "The camera reads the code your server shows. Nothing is recorded or kept."
+      - takeScreenshot: v4-40-scanner-asks
+      - tapOn:
+          id: "addserver-camera-allow"
+      - extendedWaitUntil:
+          visible: "Allow AI Whiteboard to take pictures and record video\\?"
+          timeout: 30000
+      - takeScreenshot: v4-41-camera-prompt
+      - tapOn: "Don.t allow"
+      - extendedWaitUntil:
+          visible:
+            id: "addserver-camera-allow"
+          timeout: 30000
+      - tapOn:
+          id: "addserver-camera-allow"
+      - extendedWaitUntil:
+          visible: "Allow AI Whiteboard to take pictures and record video\\?"
+          timeout: 30000
+      - tapOn: "Don.t allow"
+      - extendedWaitUntil:
+          visible: "The camera is off for AI Whiteboard. Allow it in the settings to scan a code, or paste the text instead."
+          timeout: 30000
+      - assertVisible:
+          id: "addserver-open-settings"
+      - takeScreenshot: v4-42-camera-refused
+      - tapOn:
+          id: "addserver-scan-cancel"
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/privacy?service=camera&action=grant
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /device/relaunch
+      - runFlow: _open-sidebar.yaml
+      - tapOn:
+          id: "servers-btn"
+      - tapOn:
+          id: "servers-add"
+      - waitForAnimationToEnd
+      - tapOn:
+          id: "addserver-scan"
+      - extendedWaitUntil:
+          visible:
+            id: "addserver-scan-words"
+          timeout: 30000
+      - assertNotVisible:
+          id: "addserver-camera-allow"
+      - assertVisible: "Point the camera at the code that scripts/server-code.sh shows on the server's screen."
+      - takeScreenshot: v4-43-camera-allowed
+- tapOn:
+    id: "addserver-scan-cancel"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "servers-input-code"
+- takeScreenshot: v4-45-form-after-the-scanner
+
+# ---- the text of the code (what the scanner hands to the form)
+- tapOn:
+    id: "servers-input-code"
+- inputText: ${output.code.lines[0]}
+- pressKey: Enter
+- inputText: ${output.code.lines[1]}
+- pressKey: Enter
+- inputText: ${output.code.lines[2]}
+- pressKey: Enter
+- inputText: ${output.code.lines[3]}
+# (a line typed in one go is a paste to the box, and the form is filled at once, as Android's keyboard types a line: the button is for the text that was not)
+- tapOn:
+    id: "addserver-read"
+    optional: true
+- assertVisible:
+    id: "addserver-note"
+    text: "Filled in the address and the secret from the text. Now test the connection."
+- tapOn:
+    id: "servers-form-test"
+- extendedWaitUntil:
+    visible: "It is the fingerprint the pasted text printed."
+    timeout: 60000
+- takeScreenshot: v4-44-code-text-filled-the-form
+- tapOn: "Cancel"

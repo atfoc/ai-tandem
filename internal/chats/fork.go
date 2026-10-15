@@ -236,7 +236,7 @@ func (m *Manager) forkEntry(src *Chat, top string, req ForkReq, out *outbox) (*C
 	return c, forkSourceOf(src.meta, items, req.At, running), nil
 }
 
-// titleOf is the chat's title as the client shows it (chatTitle in web/src/store.ts): its name,
+// titleOf is the chat's title as the client shows it (chatTitle in the old page's store.ts): its name,
 // else its first message cut to 40 characters, model.ImageWord for one that is images alone, else
 // "New chat".
 func titleOf(meta model.ChatMeta, items []model.Item) string {

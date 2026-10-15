@@ -1,6 +1,6 @@
 // The test host (dev/host.mjs) checked once for what it must not do (goal 7.2): listen on an address other than the
 // loopback one, hand a secret to the page, answer a server outside its list, or pass on a path outside the client API.
-// It runs against the stand-in server of desktop/test/conn, which speaks the client API over HTTP/2 with a fixture
+// It runs against the stand-in server of packages/conn/test, which speaks the client API over HTTP/2 with a fixture
 // certificate; no Go build and no browser. Run with: node --test web/dev/host.test.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -16,7 +16,7 @@ import { startHost } from "./host.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { standin } = require("../../desktop/test/conn/standin");
+const { standin } = require("../../packages/conn/test/standin");
 
 const SECRET = "s3cret-for-the-host-test-0123456789";
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));

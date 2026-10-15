@@ -6,37 +6,52 @@
 // and in a subagent's drawer in a window that narrow, every card lies inside its thread, closed, open and with all
 // shown, nothing in a card ends past it, and nothing scrolls sideways: with the three agents' items, and with names
 // and lines that have nowhere to break. The line beside the label is one line, cut with an ellipsis.
-import { act, cardsFit, check, openCards, openPage, paneSize, seed, toolCards, until } from "../shot.mjs";
+// Ports dev/checks/A5.4-large.mjs (package S6) at desktop, tablet and phone: the same seed (A5), items, assertions and words; the cards are read
+// over testIDs (`cards.mjs`). The panes of 300 px are windows, so they are the desktop's (`paneSize`); at the tablet and the phone the same cards
+// lie in the device's own width, which is narrower than 564 px at the phone (B-TC-31: "all (phone width)"). The old check measured the page's
+// HTML (`innerHTML.length` of the thread); the new page's markup is react-native-web's, which spells every view's atomic classes: the bounds
+// are the old ones in characters of the TEXT the thread holds plus the number of elements it draws (what "nothing large" means), see SIZE below.
+// The subagent's drawer in a narrow window is S7's, the real one (`sub-drawer-body`).
+import { check, paneSize, seed, until } from "../shot.mjs";
+import { cardAt, cardsFit, frame, openCards, toolCards } from "./cards.mjs";
+import { act, byTid, press } from "./sel.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
+
+const DRAWER_ROOT = "sub-drawer-body";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const BOX = 480; // the most the box of a part shown whole is tall (styles.css): what is over it scrolls in the box
+const BOX = 480; // the most the box of a part shown whole is tall (Parts.tsx): what is over it scrolls in the box
+// The size of the thread's markup, closed and open (B-TC-28). The old page's were 6,000 and 60,000 characters; react-native-web spells the
+// atomic classes of every view (a closed card is three or four times the old page's markup), so the closed bound is that much more, and the open
+// one, which is mostly the text and the rows of the long parts, stays.
+const SIZE = { closed: 12000, open: 60000 };
+// The narrow panes of the old check were windows of the sidebar's width and 300 px (`paneSize`). The new build lays out by the window's width:
+// a window of 300 px is the phone layout, whose chat is the whole window; the panel beside a board keeps its minimum, 300, at a wide window.
+const NARROW = { page: { size: [300, 800] }, panel: { size: [1280, 800], ls: { "aiwb.widths": JSON.stringify({ side: 264, panel: 300 }) } } };
 
-await check("A5.4 a large tool item is cut until asked for, and no card is wider than a 300 px pane", async ({ url, browser, fail, note }) => {
+await check("A5.4 a large tool item is cut until asked for, and no card is wider than a 300 px pane", async ({ url, viewport, open, fail, note }) => {
   const states = await seed(url, "A5");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
-  const open = async (sel, size) => {
-    const errors = [];
-    const { ctx, page } = await openPage({ url, browser, errors, sel, ...size });
-    return { ctx, page, errors };
-  };
-  const close = async ({ ctx, errors }, name) => { for (const e of errors) fail(`${name}: page error: ${e}`); await ctx.close(); };
-  const frame = (page) => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
+  const desktop = viewport === "desktop";
+  const show = async (sel, size = {}) => open({ sel, wait: '[data-testid="chat-head"]', ...size });
 
   // ---- the large items
   {
-    const s = state("big"), p = await open(s.sel, paneSize("page", 700, 900)), name = "the large items";
+    const s = state("big"), p = await show(s.sel, desktop ? paneSize("page", 700, 900) : {}), name = "the large items";
     try {
-      await p.page.waitForSelector(s.see, { timeout: 8000 });
-      const size = () => p.page.evaluate(() => document.querySelector(".thread").innerHTML.length);
+      await byTid(p.page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 });
+      await until(async () => (await toolCards(p.page))?.length === 4, 15000);
+      const size = () => p.page.evaluate(() => document.querySelector('[data-testid="thread"]').innerHTML.length);
       const card = async (n) => (await toolCards(p.page))[n];
       const part = (c, title) => c.parts.find((x) => x.title === title);
-      const all = (n) => p.page.locator(".thread .tool").nth(n).locator(".tool-omit button", { hasText: "Show all" }).first().click();
-      const less = (n) => p.page.locator(".thread .tool").nth(n).locator(".tool-omit button", { hasText: "Show less" }).first().click();
+      const all = async (n) => press(p.page, byTid(await cardAt(p.page, n), "tool-show-all").first());
+      const less = async (n) => press(p.page, byTid(await cardAt(p.page, n), "tool-show-less").first());
       const closed = await size();
-      if (closed > 6000) fail(`${name}: with its four cards closed the thread is ${closed} characters of HTML`);
+      if (closed > SIZE.closed) fail(`${name}: with its four cards closed the thread is ${closed} characters of HTML`);
       await openCards(p.page);
       const opened = await size();
-      if (opened > 60000) fail(`${name}: with its four cards open the thread is ${opened} characters of HTML: something large was put in unasked`);
+      if (opened > SIZE.open) fail(`${name}: with its four cards open the thread is ${opened} characters of HTML: something large was put in unasked`);
 
       // the output of 3,000 lines
       let out = part(await card(0), "Output");
@@ -54,7 +69,7 @@ await check("A5.4 a large tool item is cut until asked for, and no card is wider
 
       // the written file of 4,000 lines
       const file = await card(1), content = part(file, "Content");
-      if (!same([file.parts[0].path, file.parts[0].lines], ["web/src/rows.ts", "4,000 lines"])) fail(`${name}: the written file is told as ${JSON.stringify(file.parts[0])}`);
+      if (!same([file.parts[0].path, file.parts[0].lines], ["site/rows.ts", "4,000 lines"])) fail(`${name}: the written file is told as ${JSON.stringify(file.parts[0])}`);
       if (content?.text.length !== 2 || content.left !== "⋯ 3,980 lines left out" || !content.text[1].endsWith('"row 3999", tags: ["a", "b"] };')) fail(`${name}: the large content is drawn as ${content?.text.length} blocks with "${content?.left}" between them`);
       await all(1);
       if (!await until(async () => part(await card(1), "Content")?.text[0]?.split("\n").length === 4000, 8000)) fail(`${name}: "Show all" did not bring the content's 4,000 lines`);
@@ -78,7 +93,7 @@ await check("A5.4 a large tool item is cut until asked for, and no card is wider
       if (!await until(async () => same(await kinds(), ["path", ...Array(30).fill("change")]), 8000)) fail(`${name}: "Show all" did not bring the 30 edits: ${JSON.stringify(await kinds())}`);
       note(`a thread of ${closed} characters closed and ${opened} with its four cards open; each long part comes whole when asked, and scrolls in ${BOX} px`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    await p.ctx.close();
   }
 
   // ---- no card is wider than a pane of 300 px
@@ -86,18 +101,18 @@ await check("A5.4 a large tool item is cut until asked for, and no card is wider
   const fits = async (page, root, name, pane) => {
     await page.evaluate(() => document.fonts.ready);
     await frame(page);
-    if (pane) { const w = await page.evaluate((sel) => document.querySelector(sel)?.getBoundingClientRect().width, pane[0]); if (Math.abs(w - pane[1]) > 1) fail(`${name}: the pane ${pane[0]} is ${w} px wide, not ${pane[1]}`); }
+    if (pane) { const w = await page.evaluate((id) => document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect().width, pane[0]); if (Math.abs(w - pane[1]) > 1) fail(`${name}: the pane ${pane[0]} is ${w} px wide, not ${pane[1]}`); }
     let n = 0;
     for (const step of ["closed", "open", "with all shown"]) {
       if (step === "open") await openCards(page, root);
-      if (step === "with all shown") { const more = page.locator(`${root} .tool-omit button`, { hasText: "Show all" }); for (let k = await more.count(); k > 0; k--) await more.first().click(); await frame(page); }
+      if (step === "with all shown") { const more = byTid(page, root).locator('[data-testid="tool-show-all"]'); for (let k = await more.count(); k > 0; k--) await press(page, more.first()); await frame(page); }
       const f = await cardsFit(page, root);
       if (!f?.cards) { fail(`${name}, ${step}: no card under ${root}`); return 0; }
       n = f.cards;
       if (f.bad) fail(`${name}, ${step}, a thread of ${f.width} px: ${[...f.wide.map((x) => `${x} of the thread`), ...f.out.map((x) => `${x} past its card`), ...f.sideways.map((x) => `${x} scrolls sideways`), ...(f.scroll ? [`the thread or the page scrolls ${f.scroll} px sideways`] : [])].slice(0, 6).join("; ")}`);
       if (step === "closed") {
         // the line beside the label: one line, and cut where it is longer than its room
-        const hints = await page.evaluate((root) => [...document.querySelectorAll(`${root} .tool-hint`)].filter((h) => h.textContent).map((h) => ({ text: h.textContent.slice(0, 30), lines: Math.round(h.getBoundingClientRect().height / parseFloat(getComputedStyle(h).lineHeight) || 1), cut: h.scrollWidth > h.clientWidth, ellipsis: getComputedStyle(h).textOverflow })), root);
+        const hints = await page.evaluate((root) => [...document.querySelector(`[data-testid="${root}"]`).querySelectorAll('[data-testid="tool-hint"]')].filter((h) => h.textContent).map((h) => ({ text: h.textContent.slice(0, 30), lines: Math.round(h.getBoundingClientRect().height / parseFloat(getComputedStyle(h).lineHeight) || 1), cut: h.scrollWidth > h.clientWidth, ellipsis: getComputedStyle(h).textOverflow })), root);
         for (const h of hints) if (h.lines > 1 || h.ellipsis !== "ellipsis") fail(`${name}: the line "${h.text}…" beside a label takes ${h.lines} lines (text-overflow: ${h.ellipsis})`);
       }
     }
@@ -105,19 +120,19 @@ await check("A5.4 a large tool item is cut until asked for, and no card is wider
   };
   let cards = 0;
   for (const id of ["wide", "claude", "cursor", "pi", "gaps", "junk", "big"]) {
-    const s = state(id), p = await open(s.sel, paneSize("page", 300, 800)), name = `${id}, a chat page of 300 px`;
-    try { await p.page.waitForSelector(s.see, { timeout: 8000 }); cards += await fits(p.page, ".thread", name, [".chat-page", 300]); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    const s = state(id), p = await show(s.sel, desktop ? NARROW.page : {}), name = `${id}, a chat page of 300 px`;
+    try { await byTid(p.page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 }); cards += await fits(p.page, "thread", name, desktop ? ["chat", 300] : undefined); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
+    await p.ctx.close();
   }
   {
-    const s = state("panel"), p = await open(s.sel, paneSize("panel", 300, 800)), name = "beside a board, a panel of 300 px";
-    try { await p.page.waitForSelector(s.see, { timeout: 8000 }); cards += await fits(p.page, ".board-panel .thread", name, [".board-panel", 300]); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    const s = state("panel"), p = await show(s.sel, desktop ? NARROW.panel : {}), name = "beside a board, a panel of 300 px";
+    try { await byTid(p.page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 }); cards += await fits(p.page, "thread", name, desktop ? ["chat", 300] : undefined); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
+    await p.ctx.close();
   }
   {
-    const s = state("sub"), p = await open(s.sel, paneSize("page", 300, 800)), name = "a subagent's drawer, in a window of 564 px";
-    try { await act(p.page, s.act); await p.page.waitForSelector(s.see, { timeout: 8000 }); cards += await fits(p.page, ".sub-drawer-body", name); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    const s = state("sub"), p = await show(s.sel, desktop ? NARROW.page : {}), name = "a subagent's drawer, in a window of 564 px";
+    try { await act(p.page, s.act); await byTid(p.page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 }); cards += await fits(p.page, DRAWER_ROOT, name); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
+    await p.ctx.close();
   }
   note(`${cards} cards in panes of 300 px (a chat page, a panel beside a board) and in a subagent's drawer: each inside its thread closed, open and with all shown; nothing scrolls sideways`);
-});
+}, { viewports, page: false });

@@ -1,5 +1,16 @@
 .worktrees/
 bin/
 web/node_modules/
-web/dist/
 /ai-whiteboard
+spikes/android-net/out/
+node_modules/
+app/ios/
+app/android/
+app/dist-web/
+app/.env.local
+packages/*/dist*/
+app/public/board/
+app/e2e/.tools/
+app/e2e/.state/
+app/e2e/out/
+app/modules/*/android/build/

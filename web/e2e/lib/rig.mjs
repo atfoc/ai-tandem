@@ -1,6 +1,6 @@
 // What the end-to-end scripts of web/e2e share: scratch servers (real processes of the server program, each with a data
 // folder, a port and a stand-in agent of its own), the test host that stands for the app's main process (web/dev/host.mjs,
-// which holds the server list and the secrets and connects to every server through desktop/conn), and the page opened in a
+// which holds the server list and the secrets and connects to every server through packages/conn), and the page opened in a
 // headless Chromium (Playwright, installed with --no-save by whoever runs a script).
 //
 // Nothing here touches the user's own AI Whiteboard: every server runs on a data folder under the system's temporary folder,
@@ -12,6 +12,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startHost, parseAppWaits } from "../../dev/host.mjs";
+import { buildAppDist } from "../../dev/shot.mjs";
+import { contextOptions } from "../../dev/viewports.mjs";
+import { cspFor } from "../../../app/scripts/export-web.mjs";
 
 export { startHost, parseAppWaits };
 export const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -51,12 +54,45 @@ export function portFree(port) {
 /** The folder everything of a run is made in. realpath: on macOS the temp folder is a symlink, and the server reports folders resolved. */
 export const makeOut = (name) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `aiwb-e2e-${name}-`)));
 
-/** The built page: AIWB_E2E_CLIENT, else web/dist. */
-export function pageDist() {
-  const dist = path.resolve(process.env.AIWB_E2E_CLIENT || path.join(repo, "web/dist"));
-  if (!fs.existsSync(path.join(dist, "index.html"))) throw new Error(`${dist} holds no built page: cd web && npm run build`);
-  return dist;
+/** The CSP of an index.html: its `<meta http-equiv="Content-Security-Policy">`. */
+const cspOf = (html) => /<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(html)?.[1] ?? "";
+
+let appCopy = null; // the shipped build, copied once with the CSP the test host needs: [source, copy]
+/** The app's web build the test host serves. The host is HTTP: the page reaches it (its calls, its stream, its pictures) from its own
+ *  address, so the page's CSP needs `connect-src 'self'` (app/scripts/export-web.mjs `--connect-self`, as buildAppDist of
+ *  dev/shot.mjs makes it). A build named by DIST that has it (a build made with `--connect-self`) is used as it is; the shipped build
+ *  (`npm run build:web`: `connect-src 'none'`, so `DIST=app/dist-web` is that one) is copied into `out` and only the CSP of the copy is
+ *  rewritten, by `cspFor` of that script: the folder named is not touched. Without DIST the script builds its own into `out`
+ *  (version "dev", as the server program built without a version says it is). */
+function appDist(out, dist) {
+  if (!dist) {
+    if (!appCopy) appCopy = ["", buildAppDist(path.join(out, "app-dist"), { version: "dev" })];
+    return appCopy[1];
+  }
+  const index = path.join(dist, "index.html");
+  const html = fs.readFileSync(index, "utf8");
+  const csp = cspOf(html);
+  if (!csp) throw new Error(`${index} has no Content-Security-Policy <meta>: it is no build of app/ (cd app && npm run build:web)`);
+  if (csp.includes("connect-src 'self'")) return dist;
+  if (appCopy?.[0] === dist) return appCopy[1];
+  const copy = path.join(out, "app-dist");
+  fs.cpSync(dist, copy, { recursive: true });
+  fs.writeFileSync(path.join(copy, "index.html"), html.replace(csp, cspFor({ connectSelf: true })));
+  appCopy = [dist, copy];
+  return copy;
 }
+
+/** The built page: DIST (or AIWB_E2E_CLIENT: a build of app/, see appDist), else one built now into `out`. `out`: where a copy or a build
+ *  of it is made. */
+export function pageDist(out) {
+  const given = process.env.DIST || process.env.AIWB_E2E_CLIENT;
+  const dist = given ? path.resolve(given) : "";
+  if (dist && !fs.existsSync(path.join(dist, "index.html"))) throw new Error(`${dist} holds no built page: cd app && npm run build:web`);
+  return appDist(out, dist);
+}
+
+/** A build of the page of `version` into `dir` (a script that needs two builds), with the CSP the host needs. */
+export const buildPage = (dir, { version }) => buildAppDist(dir, { version });
 
 /** The server program: AIWB_E2E_BIN, else built into `out`. version: stamped into the build (the build the program says it is), for
  *  a script that needs two builds; AIWB_E2E_BIN is one build, and a script that needs two builds builds them itself. */
@@ -74,6 +110,13 @@ export function standInAgent(out) {
   fs.copyFileSync(path.join(repo, "internal/agenttest/fake-claude"), fake);
   fs.chmodSync(fake, 0o755);
   return fake;
+}
+
+/** The options of a browser context for a viewport of the checks (dev/viewports.mjs: "desktop", "tablet", "phone": a device with a
+ *  finger and no mouse). */
+export async function viewportContext(name) {
+  const playwright = await import("playwright");
+  return contextOptions(playwright.default ?? playwright, name);
 }
 
 export async function loadChromium() {
@@ -192,7 +235,7 @@ process.exit(r.status === null ? 1 : r.status);
 export async function hostFor({ out, name, local = null, wrapper, extra = {} }) {
   const stateDir = path.join(out, `state-${name}`);
   const host = await startHost({
-    stateDir, dist: pageDist(), log: (line) => console.log(`# host ${name}: ${line}`),
+    stateDir, dist: pageDist(out), log: (line) => console.log(`# host ${name}: ${line}`),
     ...(local ? { localBin: (wrapper ?? local.wrapper()).file ?? wrapper, localHome: local.home, env: local.env } : {}),
     ...extra,
   });
@@ -228,11 +271,12 @@ export function callOf(url) {
   return null;
 }
 
-/** Opens the page of a host in a context of its own (another localStorage) and keeps what it does. errors: console errors and
+/** Opens the page of a host in a context of its own (another localStorage) and keeps what it does. context: the options of the browser context
+ *  instead of `viewport` (a device: `viewportContext("phone")`). errors: console errors and
  *  uncaught exceptions; failedRequests: requests that failed or were answered with 400 or more; calls: every call and every
  *  operation of the page with its body and, once answered, its status and code, in the order they were made. */
-export async function openPage(browser, host, { viewport = { width: 1400, height: 900 }, timeout = 10000, wait = "#root .side-tree" } = {}) {
-  const ctx = await browser.newContext({ viewport });
+export async function openPage(browser, host, { viewport = { width: 1400, height: 900 }, context, timeout = 10000, wait = '[data-testid="side-tree"]' } = {}) {
+  const ctx = await browser.newContext(context ?? { viewport });
   const p = await ctx.newPage();
   p.setDefaultTimeout(timeout);
   p.ctx = ctx;

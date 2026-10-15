@@ -1,0 +1,5 @@
+Remote access is set up in /home/user/.ai-whiteboard.
+Port: 4790
+Names: mac.example.net, 192.168.0.20, 10.0.0.5
+Fingerprint: E6:45:B0:35:48:5E:F3:4B:96:8E:6E:F4:40:67:7F:5E:E4:E7:43:3E:71:0D:21:3E:4A:F8:04:DE:DD:3F:A2:E2
+Next start: will listen

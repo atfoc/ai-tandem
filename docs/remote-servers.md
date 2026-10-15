@@ -76,6 +76,8 @@ fails. This computer's own server is not added: it is the first row of **Servers
 of it is typed, edited or accepted. The address of this computer's server entered as a remote one
 is refused as "This is this computer's server".
 
+**On a phone,** the new app has no this-computer row, and **Add server** has two ways to fill the form beside typing it: paste the whole output of `setup-remote.sh` (or an address and the secret) into the box at the top, or choose **Scan code** and point the camera at the code that `scripts/server-code.sh` draws on the server's machine (`sh scripts/server-code.sh`, or `sh setup-remote.sh | sh scripts/server-code.sh -`; it draws with `qrencode` and says how to get it when it is missing, and writes the secret to no file). Either fills the address, the secret and **Self-signed certificate**; nothing is accepted for you: **Test connection** shows the fingerprint the server presents, the form says whether it is the one the text printed, and you accept it as above. Only https addresses are taken. On iOS the form says, before the first connection, why the system will ask to reach the local network; if it was refused, **Servers** says so in its words and **Open settings** goes to the phone's settings. The code holds the secret: clear the screen after the phone has scanned it.
+
 **In the sidebar,** the first section is this computer. It is always there, with or without remote
 servers, and it is no entry that can be removed or edited in **Servers**. Below it comes one
 section per entry of the server list, in the order of the list. The sidebar is sections only. The

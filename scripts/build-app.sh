@@ -4,11 +4,11 @@
 #   Contents/MacOS/ai-whiteboard     the Go server binary, which the app runs to start or find
 #                                    this computer's server
 #   Contents/Resources/app.asar      Electron main process, preload and the connection module
-#   Contents/Resources/web/          the built web client: the app's page, loaded from this folder
+#   Contents/Resources/web/          the app's web build (app/dist-web, AD-40): the app's page, loaded from this folder
 #   Contents/Resources/remote/setup-remote.sh
 #                                    sets the app's server up as a remote server (run through sh)
 #   Contents/Resources/AppIcon.icns
-# One version (git describe) is stamped into the Go binary, the web client and CFBundleVersion;
+# One version (git describe) is stamped into the Go binary, the web build and CFBundleVersion;
 # the page and the app are one build.
 # Install it into ~/Applications with scripts/install-app.sh.
 set -euo pipefail
@@ -17,10 +17,10 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 app="$root/bin/AI Whiteboard.app"
 version="$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)"
 
-echo "==> web client ($version)"
-cd "$root/web"
-[ -d node_modules ] || npm ci
-AIWB_VERSION="$version" node build.mjs
+echo "==> web build ($version)"
+[ -d "$root/node_modules" ] || (cd "$root" && npm ci)
+cd "$root/app"
+EXPO_PUBLIC_AIWB_VERSION="$version" npm run build:web
 
 echo "==> server ($version)"
 go build -C "$root" -ldflags "-X ai-whiteboard/internal/version.Version=$version" \

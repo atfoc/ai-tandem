@@ -1,0 +1,129 @@
+{
+  "ok": true,
+  "done": {
+    "done": true,
+    "pass": 28,
+    "fail": [],
+    "seconds": 1274
+  },
+  "failed": [],
+  "probe": {
+    "wrongPinBytes": 0,
+    "wrongPinConnections": 2,
+    "controlBytes": 448
+  },
+  "probeLog": [
+    {
+      "label": "wrong-pin",
+      "secure": false,
+      "bytes": 0,
+      "tlsClientError": true
+    },
+    {
+      "label": "wrong-pin",
+      "secure": false,
+      "bytes": 0,
+      "tlsClientError": true
+    },
+    {
+      "label": "right-pin",
+      "secure": true,
+      "bytes": 0,
+      "alpn": "h2"
+    },
+    {
+      "label": "right-pin",
+      "secure": true,
+      "bytes": 224,
+      "alpn": "h2"
+    },
+    {
+      "label": "right-pin",
+      "secure": true,
+      "bytes": 0,
+      "alpn": "h2"
+    },
+    {
+      "label": "right-pin",
+      "secure": true,
+      "bytes": 224,
+      "alpn": "h2"
+    }
+  ],
+  "samples": [
+    {
+      "label": "start",
+      "atSec": 12,
+      "totalPssKb": 68301,
+      "totalRssKb": 169276,
+      "javaHeapKb": 4744,
+      "nativeHeapKb": 14932,
+      "graphicsKb": 0
+    },
+    {
+      "label": "interval",
+      "atSec": 192,
+      "totalPssKb": 76514,
+      "totalRssKb": 179236,
+      "javaHeapKb": 10240,
+      "nativeHeapKb": 13236,
+      "graphicsKb": 0
+    },
+    {
+      "label": "interval",
+      "atSec": 373,
+      "totalPssKb": 76983,
+      "totalRssKb": 180052,
+      "javaHeapKb": 10132,
+      "nativeHeapKb": 13268,
+      "graphicsKb": 0
+    },
+    {
+      "label": "interval",
+      "atSec": 553,
+      "totalPssKb": 77586,
+      "totalRssKb": 180696,
+      "javaHeapKb": 10112,
+      "nativeHeapKb": 13252,
+      "graphicsKb": 0
+    },
+    {
+      "label": "interval",
+      "atSec": 734,
+      "totalPssKb": 78187,
+      "totalRssKb": 180992,
+      "javaHeapKb": 10200,
+      "nativeHeapKb": 13312,
+      "graphicsKb": 0
+    },
+    {
+      "label": "interval",
+      "atSec": 914,
+      "totalPssKb": 77955,
+      "totalRssKb": 180788,
+      "javaHeapKb": 9988,
+      "nativeHeapKb": 13260,
+      "graphicsKb": 0
+    },
+    {
+      "label": "interval",
+      "atSec": 1095,
+      "totalPssKb": 75148,
+      "totalRssKb": 177664,
+      "javaHeapKb": 7904,
+      "nativeHeapKb": 13228,
+      "graphicsKb": 0
+    },
+    {
+      "label": "end",
+      "atSec": 1261,
+      "totalPssKb": 74203,
+      "totalRssKb": 176692,
+      "javaHeapKb": 7704,
+      "nativeHeapKb": 13200,
+      "graphicsKb": 0
+    }
+  ],
+  "minutes": 21,
+  "pin": "C8:DB:90:CD:4F:0C:8C:57:7D:6A:70:89:76:8C:28:BE:F9:04:B3:1C:5A:34:03:5D:95:B3:5C:1C:B2:32:37:4C"
+}

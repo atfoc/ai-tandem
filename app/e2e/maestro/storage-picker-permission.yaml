@@ -1,0 +1,97 @@
+# aiwb-e2e: needs=server,agent,control app=1 devhooks=1
+# Package V4 (AD-83 flow 4, goal 7.4): the secure storage, the image picker and the permissions, through the real app against a real Go server.
+#
+#  1. The secure storage. A server is added; the app is stopped and opened again, and the server is there and connected; the secret is in the secure store (the
+#     dev hook of the build says so on the screen, `probe-storage`: it was set against the secret of this run) and in none of the files of the app's data,
+#     MMKV's among them (the runner reads them from the device, GET /device/storage); the server is removed and its secret is gone from the secure store.
+#  2. The images. Pictures are put into the device's photo library; the picker is opened from the composer's attach button, the pictures are picked, their
+#     thumbnails show, the message is sent and the server holds a PNG and two JPEGs (a HEIC of the library comes as a JPEG), checked through the control API; a
+#     BMP and a picture over 5 MB are refused with the words of the desktop. On iOS the picker is the system's: it asks for no permission, before an answer
+#     (reset) and after a refusal (revoke) alike, and the flow shows it.
+#  3. The local network. The words that say why the system will ask are on the add form before the first connection (iOS); a connection that the system
+#     refused (a forced outcome of the build: the simulator never asks) shows its words and "Open settings".
+#  4. The code to scan. scripts/server-code.sh makes the code, the picture is read back, and the text it holds fills the form (the camera is the one part that
+#     a simulator cannot do on iOS; see the plan).
+appId: ${APP_ID}
+---
+- runFlow: _open-sidebar.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=Seed-board
+- takeScreenshot: v4-00-start
+
+# ======================================================== 3a. the local network: why the system will ask (before the first connection)
+- runFlow: _v4-localnet-why.yaml
+
+# ======================================================== 1. the secure storage
+- runFlow: _add-server.yaml
+- assertVisible:
+    id: "probe-storage"
+    text: "probe: list=1 secure=1 match=1 leak=no .*"
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: GET
+      ROUTE: /device/storage?find=${SERVER_HOST}:${SERVER_PORT}
+- runScript:
+    file: _storage-check.js
+    env:
+      FIND: ${SERVER_HOST}:${SERVER_PORT}
+- takeScreenshot: v4-01-added
+
+# the app is stopped and opened again: the server and its secret are still there, and it connects
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/relaunch
+- runFlow: _open-sidebar.yaml
+- extendedWaitUntil:
+    visible: "${SERVER_HOST} — Connected"
+    timeout: 60000
+- extendedWaitUntil:
+    visible: "Seed-board"
+    timeout: 60000
+- assertVisible:
+    id: "probe-storage"
+    text: "probe: list=1 secure=1 match=1 leak=no .*"
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: GET
+      ROUTE: /device/storage?find=${SERVER_HOST}:${SERVER_PORT}
+- runScript:
+    file: _storage-check.js
+    env:
+      FIND: ${SERVER_HOST}:${SERVER_PORT}
+- takeScreenshot: v4-02-after-relaunch
+
+# the server is removed: its secret is gone from the secure store (and from the list)
+- runFlow: _forget-servers.yaml
+- extendedWaitUntil:
+    visible:
+      id: "probe-storage"
+      text: "probe: list=0 secure=0 match=0 leak=no gone=1 gone-left=0 pending=0"
+    timeout: 30000
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: GET
+      ROUTE: /device/storage
+- runScript:
+    file: _storage-check.js
+    env:
+      FIND: ""
+- takeScreenshot: v4-03-removed
+
+# ======================================================== 2. the images
+- runFlow: _v4-images.yaml
+
+# ======================================================== 3b. the local network: refused
+- runFlow: _v4-localnet.yaml
+
+# ======================================================== 4. the code to scan
+- runFlow: _v4-scan.yaml

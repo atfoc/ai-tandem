@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["AiwbNetModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.aiwbnet.AiwbNetModule"]
+  }
+}

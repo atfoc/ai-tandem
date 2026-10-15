@@ -1,0 +1,35 @@
+======================================================================
+AiwbNetSpike [7043]: 64-bit    Footprint: 31 MB (16384 bytes per page)
+======================================================================
+
+  Dirty      Clean  Reclaimable    Regions    Category
+    ---        ---          ---        ---    ---
+6866 KB        0 B          0 B        643    __DATA_CONST
+5152 KB        0 B        48 KB          1    MALLOC_NANO
+4480 KB      16 KB          0 B        623    __DATA
+3216 KB        0 B          0 B          5    MALLOC_MEDIUM
+2672 KB        0 B          0 B         15    MALLOC_SMALL
+2223 KB        0 B          0 B       1005    unused dyld shared cache area
+1971 KB        0 B          0 B          1    page table
+1840 KB        0 B          0 B          7    untagged (VM_ALLOCATE)
+1440 KB        0 B          0 B         17    MALLOC_TINY
+1152 KB        0 B          0 B          9    dyld private memory
+ 400 KB        0 B          0 B         25    MALLOC metadata
+ 240 KB        0 B        16 KB         10    stack
+ 107 KB        0 B          0 B         14    __DATA_DIRTY
+  84 KB        0 B          0 B          3    __TPRO_CONST
+  48 KB        0 B          0 B          2    CoreAnimation
+  32 KB        0 B          0 B          1    Activity Tracing
+  16 KB        0 B          0 B          1    Foundation
+  16 KB        0 B          0 B          1    os_alloc_once
+    0 B    8480 KB          0 B        657    __TEXT
+    0 B    4224 KB          0 B          9    mapped file
+    0 B     848 KB          0 B         17    __LINKEDIT
+    0 B        0 B          0 B          1    __FONT_DATA
+    0 B        0 B          0 B          1    .note.gnu.proper
+    ---        ---          ---        ---    ---
+  31 MB      13 MB        64 KB       3070    TOTAL
+
+Auxiliary data:
+    phys_footprint: 31 MB
+    phys_footprint_peak: 33 MB

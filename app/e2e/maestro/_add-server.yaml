@@ -1,0 +1,41 @@
+# Shared by the flows of the app that need the scratch server in it (composer-chips, storage-picker-permission): adds the scratch server in the Servers sheet by pasting what a server prints (address, fingerprint, secret), tests the
+# connection, accepts the fingerprint (it is the printed one), saves and closes the sheet. Needs the sidebar on the screen and the server not added yet.
+appId: ${APP_ID}
+---
+- tapOn:
+    id: "servers-btn"
+- tapOn:
+    id: "servers-add"
+- waitForAnimationToEnd
+- tapOn:
+    id: "servers-input-code"
+- inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
+- pressKey: Enter
+- inputText: "Fingerprint: ${SERVER_FINGERPRINT}"
+- pressKey: Enter
+- inputText: "Secret: ${SERVER_SECRET}"
+# (a line typed in one go is a paste to the box, and the form is filled at once, as Android's keyboard types a line: the button is for the text that was not)
+- tapOn:
+    id: "addserver-read"
+    optional: true
+- tapOn:
+    id: "servers-form-test"
+- extendedWaitUntil:
+    visible: "It is the fingerprint the pasted text printed."
+    timeout: 60000
+- tapOn:
+    id: "servers-form-accept"
+- extendedWaitUntil:
+    visible: "Connected"
+    timeout: 60000
+- tapOn:
+    id: "servers-save"
+- assertNotVisible: "Not Now"
+- extendedWaitUntil:
+    visible: "Connected"
+    timeout: 60000
+- tapOn:
+    id: "servers-close"
+- extendedWaitUntil:
+    visible: "${SERVER_HOST} — Connected"
+    timeout: 60000

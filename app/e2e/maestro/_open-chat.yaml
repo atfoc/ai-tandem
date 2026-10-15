@@ -1,0 +1,11 @@
+# Shared by `storage-picker-permission`: opens the chat "Pic-chat" from the sidebar and waits for its composer's attach button.
+appId: ${APP_ID}
+---
+- extendedWaitUntil:
+    visible: "Pic-chat"
+    timeout: 90000
+- tapOn: "Pic-chat"
+- extendedWaitUntil:
+    visible:
+      id: "attach-btn"
+    timeout: 60000

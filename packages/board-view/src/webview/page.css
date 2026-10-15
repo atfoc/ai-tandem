@@ -1,0 +1,3 @@
+/* The page of the web view: the board fills it, nothing scrolls or selects (Excalidraw pans and zooms by itself). */
+html, body, #root { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; background: #fff; }

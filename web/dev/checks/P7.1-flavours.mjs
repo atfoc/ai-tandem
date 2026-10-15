@@ -1,30 +1,37 @@
-// Proves, on the build that has all six goals, what needs two of them together: the composer (goal 2, and a wait of
-// goal 4 in it), the tool cards (goal 5) and the sidebar's rail (goal 1) in each Catppuccin flavour (goal 6).
-//   The composer: every state of seed A2 at its least width, "more" open where the toolbar has one; each popup a
-//   control opens (a picker's list, the folder's browser, the usage popover), from the toolbar or from "more"; and a
-//   branch send on its way: the message in its pending look, the line under it, the banner, the spinner in Send.
-//   The tool cards: the threads of seed A5 with every card open, in a chat page and in the panel beside a board of
-//   300 px, and in a subagent's drawer.
-//   The rail: beside a chat, a board with its panel and Home; with the pointer on its control, with the
-//   keyboard's focus on it, and with its dot while the page is not connected.
-// Readable is measured as A6.3 measures it, on computed colours: every text and every icon of the part has 3:1
-// against what is behind it. One that has less passes only if it has no less than the same element has in the theme
-// the flavour is laid over, or if the goal accepts it (in Latte, the Claude agent's glyph). A mark that is no text
-// (the spinner, the focus ring, the dot) is held to the same.
-// A flavour changes colours and nothing else: in each one the composer fits its box, no card passes its thread, and
-// the toolbar's controls, the cards' parts and the rail are of the same sizes as in the theme under it, so what the
-// other goals measured in Light holds in a flavour. And the part is in the flavour: the lines of a change are told
-// apart by their ground, their signs are the flavour's ok and danger and have 3:1 on their own line's ground, a
-// command's words are in the flavour's code colours, and the rail is on Mantle from the first frame of a reload, with
-// no frame of the sidebar or of another theme.
-// A state's page is opened once and put in one theme after the other by the picker in the sidebar's foot, as a user
-// does it, so the same pending move, the same message on its way and the same open cards are read in all six; the
-// rail's pages, whose picker is hidden with the sidebar, are opened in each theme.
-// OUT=/tmp/x keeps a screenshot of every stage in every flavour there, for a person's look. PART=composer (or cards,
-// rail) runs one of the three.
+// P7.1 ported (AD-80; packages K3, S6, S8, S9 and the shell): what needs two goals together (the composer, the tool cards, the sidebar's rail, and the
+// flavours of goal 6), on the new build.
+//   The composer: every state of seed A2 at its least width, "more" open where the toolbar has one; each popup a control opens (a picker's list,
+//   the folder's browser, the usage popover), from the toolbar or from "more"; and a branch send on its way: the message in its pending look,
+//   the line under it, the banner, the spinner in Send.
+//   The tool cards: the threads of seed A5 with every card open, in a chat page and in the panel beside a board of 300 px, and in a subagent's drawer.
+//   The rail (the desktop and the tablet: the phone has no sidebar to hide, AD-71): beside a chat, a board with its panel and Home; with the pointer
+//   on its control, with the keyboard's focus on it, and with its dot while the page is not connected.
+// Readable is measured as A6.3 measures it, on computed colours: every text and every icon of the part has 3:1 against what is behind it. One that
+// has less passes only if it has no less than the same element has in the theme the flavour is laid over, or if the goal accepts it (in Latte, the
+// Claude agent's glyph). A mark that is no text (the spinner, the focus ring, the dot) is held to the same.
+// A flavour changes colours and nothing else: in each one the composer fits its box, no card passes its thread, and the toolbar's controls, the
+// cards' parts and the rail are of the same sizes as in the theme under it, so what the other checks measured in Light holds in a flavour. And the
+// part is in the flavour: the lines of a change are told apart by their ground, their signs are the flavour's ok and danger and have 3:1 on their own
+// line's ground, a command's words are in the flavour's code colours (the tokens of app/src/ui/tokens.ts, which the page draws from), and the rail
+// is on Mantle from the first frame of a reload, with no frame of the sidebar or of another theme.
+// A state's page is opened once in each theme (the choice saved, `aiwb.theme`), where the old check put one page in the six by the picker in the
+// sidebar's foot (a page of 300 px has no sidebar on the new build: a window under 700 px is the phone layout). So the cards are opened in each page,
+// and the branch send is made in each (the mock is seeded and the call held anew). The clock is not pinned as the old check pinned it (a pinned
+// clock stops the sheets' animation; neither the composer nor the cards tell a time).
+// OUT=/tmp/x keeps a screenshot of every stage in every flavour there, for a person's look. PART=composer (or cards, rail) runs one of the three.
+// Ports dev/checks/P7.1-flavours.mjs. Deviations: the pages as said above; the windows are the desktop's (a pane of 300 px is a window of 300, a
+// panel beside a board is the panel at its minimum of 300 in a wide window) and the tablet's and the phone's own; at those two the stages of the
+// composer are the states that have a popup and a few more (the popups are sheets there), the desktop reads every state.
 import fs from "node:fs";
 import path from "node:path";
-import { act, atRest, cardsFit, check, colourOf, contrastAudit, contrastOf, holds, measureComposer, mockEval, openCards, openPage, paneSize, release, sampleFrames, seed, startMove, toolbarWidths, toolCards, until, waitsSeen } from "../shot.mjs";
+import { atRest, check, colourOf, contrastAudit, contrastOf, holds, mockEval, paneSize, release, sampleFrames, seed, until } from "../shot.mjs";
+import { cardsFit, openCards, toolCards } from "./cards.mjs";
+import { MORE, POP, SEES, chip, countOf, frame, measureComposer, openAt, openState, playable, toolbarWidths } from "./composer.mjs";
+import { startMove, typeAndSend, waitsSeen } from "./fork.mjs";
+import { act, byTid, hover, press, tidSel } from "./sel.mjs";
+import { tokensFor } from "../../../app/src/ui/tokens.ts";
+
+export const viewports = ["desktop", "tablet", "phone"];
 
 // Base and Mantle of @catppuccin/palette 1.8.0, and the theme each flavour is laid over
 const FLAVOURS = {
@@ -36,77 +43,64 @@ const FLAVOURS = {
 const THEMES = ["light", "dark", ...Object.keys(FLAVOURS)];
 const FLOOR = 3, OUT = process.env.OUT, PART = process.env.PART;
 const CLAUDE = "#d97757"; // the Claude agent's colour in the light theme, which a flavour keeps
-const BTN = ".side-foot .theme-btn", MENU = '.side-foot [role="menu"][aria-label="Theme"]';
-const MORE = ".composer .more-chip", POP = ".composer .more-pop", ROW = ".composer .composer-tools";
-// What opens a popup of the composer: [name, the chip's selector under the row or under "more", the popup's under the composer]
+// What opens a popup of the composer: [name, the chip's kind ("meter": the context ring), the popup's testID]
 const OPENERS = [
-  ["the agent's list", 'button.tchip[title^="Agent"]', '.menu-wrap:has(> button.tchip[title^="Agent"]) > .menu.up'],
-  ["the folder's browser", 'button.tchip[title^="Working directory"], button.tchip[title^="Folder on"]', ".menu.up.dirs"],
-  ["the model's list", 'button.tchip[title^="Model"]', ".model-pick > .menu.up"],
-  ["the effort's list", 'button.tchip[title^="Effort"]', '.menu-wrap:has(> button.tchip[title^="Effort"]) > .menu.up'],
-  ["the usage popover", "button.ctx-meter", ".menu.up.usage-pop"],
+  ["the agent's list", "agent", "picker"],
+  ["the folder's browser", "folder", "dirs"],
+  ["the model's list", "model", "picker"],
+  ["the effort's list", "effort", "picker"],
+  ["the usage popover", "meter", "usage-pop"],
 ];
+/** The control of a kind under a row or a popup: a chip, or the context ring. */
+const opener = (from, kind) => (kind === "meter" ? byTid(from, "ctx-meter") : chip(from, kind, { fixed: false }));
 const POPUPS = ["plain-new", "plain-started"]; // the states whose popups are opened: an unstarted chat has every picker, a started one the meter's popover
+const FEW = ["plain-new", "plain-started", "plain-new-long", "plain-ctxerr", "plain-noagent", "plain-off-new", "plain-remote-new", "board-new", "board-started", "board-longname"]; // (the tablet and the phone)
+
 const SEND = "c_A4_turns"; // the chat whose branch send is held
-// The threads of seed A5: [the state, the thread's root]
-const CARDS = [["claude"], ["cursor"], ["pi"], ["gaps"], ["big"], ["wide"], ["panel", ".board-panel .thread"], ["junk"], ["sub", ".sub-drawer-body"]];
+// The threads of seed A5: [the state, the thread's root]. A pane of 300 px at the desktop is a window of 300 px (a page) or the panel at its minimum
+// in a wide window (the panel); a drawer is read in a wide window, where it lies beside the page. The tablet and the phone have the device's own.
+const CARDS = [["claude"], ["cursor"], ["pi"], ["gaps"], ["big"], ["wide"], ["panel"], ["junk"], ["sub", "sub-drawer-body"]];
+const CARD_WINDOWS = { page: { size: [300, 900] }, panel: { size: [1280, 900], ls: { "aiwb.widths": JSON.stringify({ side: 264, panel: 300 }) } }, sub: { size: [1200, 900] } };
 const VIEWS = [
-  ["a chat", { chat: "c_plain" }, ".chat-page .chat-head"],
-  ["a board with its panel", { board: "b_arch", chat: "c_board" }, ".board-panel .chat-head"],
-  ["Home", {}, "main.home h2"],
+  ["a chat", { chat: "c_plain" }, "chat-head"],
+  ["a board with its panel", { board: "b_arch", chat: "c_board" }, "chat-head"],
+  ["Home", {}, "home"],
 ];
-const SYNTAX = ["--syn-keyword", "--syn-string", "--syn-number", "--syn-title", "--syn-type", "--syn-attr"];
-const TOKENS = ["--bg", "--panel", "--line", "--muted", "--faint", "--accent", "--ok", "--warn", "--danger", ...SYNTAX];
+const SYNTAX = ["synKeyword", "synString", "synNumber", "synTitle", "synType", "synAttr"];
 
 const hex = (c) => (c ? "#" + c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("") : "none");
 const two = (n) => Math.floor(n * 100) / 100;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-/** In the page: the computed colour of each token, read on an element that is drawn in it. */
-function tokensInPage(names) {
-  const probe = document.createElement("span");
-  document.body.append(probe);
-  const out = {};
-  for (const n of names) { probe.style.color = `var(${n})`; out[n] = getComputedStyle(probe).color.match(/[\d.]+/g).slice(0, 3).map(Number); }
-  probe.remove();
-  return out;
-}
-
 /** In the page: the rail and its control. hit: the control is the element at its own centre. */
 function railInPage() {
+  const q = (id) => document.querySelector(`[data-testid="${id}"]`);
   const R = (e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map((n) => Math.round(n * 10) / 10); };
-  const rail = document.querySelector(".app > .side-rail"), ctl = rail?.querySelector(".side-show"), pane = document.querySelector(".app > .side-pane");
+  const rail = q("side-rail"), ctl = q("side-show"), pane = q("side-pane");
   if (!rail || !ctl) return null;
   const c = ctl.getBoundingClientRect(), at = document.elementFromPoint(c.left + c.width / 2, c.top + c.height / 2), cs = getComputedStyle(ctl);
   return { rail: R(rail), ctl: R(ctl), hit: at === ctl || ctl.contains(at), pane: !!pane && pane.getClientRects().length > 0, h: innerHeight,
-    focused: document.activeElement === ctl && ctl.matches(":focus-visible"), ring: `${cs.outlineStyle} ${cs.outlineWidth}`, dot: !!ctl.querySelector(".side-rail-dot") };
+    focused: document.activeElement === ctl && ctl.matches(":focus-visible"), ring: `${cs.outlineStyle} ${cs.outlineWidth}`, dot: !!q("side-rail-dot") };
 }
 
-/** For sampleFrames: null until React has drawn the window; then the frame's theme, whether the rail is the window's
- *  first pane, whether the sidebar's pane is drawn, and the rail's ground. */
+/** For sampleFrames: null until React has drawn the window; then the frame's theme, whether the rail is there, whether the sidebar's pane is
+ *  drawn, and the rail's ground. */
 function railProbe() {
-  const d = document.documentElement, app = document.querySelector(".app");
+  const app = document.querySelector('[data-testid="app"]');
   if (!app) return null;
-  const first = app.firstElementChild, rail = first?.matches(".side-rail") && first.getClientRects().length ? first : null, pane = app.querySelector(":scope > .side-pane");
-  return { theme: d.dataset.theme ?? null, flavour: d.dataset.flavour ?? null, rail: !!rail, pane: !!pane && pane.getClientRects().length > 0, bg: rail ? getComputedStyle(rail).backgroundColor : "" };
+  const d = document.documentElement.dataset, rail = app.querySelector(':scope > [data-testid="side-rail"]'), pane = app.querySelector('[data-testid="side-pane"]');
+  return { theme: d.theme ?? null, flavour: d.flavour ?? null, rail: !!rail, pane: !!pane && pane.getClientRects().length > 0, bg: rail ? getComputedStyle(rail).backgroundColor : "" };
 }
 
-await check("P7.1 the composer, the tool cards and the sidebar's rail in each flavour", async ({ url, browser, fail, note }) => {
-  // (the pages' clock stands a second after the mock's start: a label that tells a time is the same in every theme,
-  // so an element of a flavour is found again in the theme under it)
-  const clock = await mockEval("return T0;", url) + 1000;
+await check("P7.1 the composer, the tool cards and the sidebar's rail in each flavour", async ({ url, viewport, layout, open, fail, note }) => {
   if (OUT) fs.mkdirSync(OUT, { recursive: true });
-  const states = await seed(url), errors = [];
-  const state = (section, id) => states.find((s) => s.section === section && s.id === id) ?? (() => { throw new Error(`the seed has no state ${section}.${id}`); })();
-  const gone = (page, sel) => until(async () => !await page.locator(sel).count(), 5000);
-  const open = (o) => openPage({ url, browser, errors, clock, still: true, ...o });
+  const states = (await seed(url, "A2")).filter((s) => playable(s, layout) && (layout === "desktop" || FEW.includes(s.id)));
+  const gone = (page, id) => until(async () => !await byTid(page, id).count(), 5000);
   const part = async (name, body) => { if (!PART || PART === name) await body(); };
 
-  /** What was read: { [theme]: { [stage]: { rows: Map(element → its least ratio), facts } } }. facts: the sizes a
-   *  flavour must leave as they are. */
+  /** What was read: { [theme]: { [stage]: { rows: Map(element → its least ratio), facts } } }. facts: the sizes a flavour must leave as they are. */
   const found = Object.fromEntries(THEMES.map((t) => [t, {}]));
-  /** Reads a stage in the theme the page is in: the texts and icons inside `only`, and `marks`, each { what, fg, bg }
-   *  of [r, g, b]. */
+  /** Reads a stage in the theme the page is in: the texts and icons inside `only`, and `marks`, each { what, fg, bg } of [r, g, b]. */
   const stage = async (theme, name, page, only, facts = {}, marks = []) => {
     const P = FLAVOURS[theme], dark = (P?.under ?? theme) === "dark";
     // (still for three frames: no animation runs in these pages, and what a press opened is drawn in the next one)
@@ -117,16 +111,7 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
     for (const r of rows) { const key = `${r.kind} "${r.what}"${r.where ? ` (${r.where})` : ""}`, was = least.get(key); if (!was || r.ratio < was.ratio) least.set(key, r); }
     if (found[theme][name]) fail(`${theme}, ${name}: the check names two stages alike`);
     found[theme][name] = { rows: least, facts };
-    if (OUT && P) await page.screenshot({ path: path.join(OUT, `${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${theme}.png`) });
-  };
-  /** Puts the page in a theme as a user does, by the picker in the sidebar's foot: what is on the page stays as it
-   *  is (a pending move, a message on its way, the open cards) and is read in one theme after the other. */
-  const pick = async (page, theme) => {
-    const P = FLAVOURS[theme];
-    await page.locator(BTN).click();
-    await page.locator(`${MENU} [data-theme-pref="${theme}"]`).click();
-    const took = await until(() => page.evaluate(([t, f]) => { const d = document.documentElement.dataset; return d.theme === t && (d.flavour ?? null) === f && !document.querySelector('[role="menu"][aria-label="Theme"]'); }, [P?.under ?? theme, P ? theme : null]), 10000);
-    if (!took) throw new Error(`a pick of ${theme} in the theme's menu did not put the page in it`);
+    if (OUT && P) await page.screenshot({ path: path.join(OUT, `${viewport}-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${theme}.png`) });
   };
   /** The composer on the page fits its box. Answers its measure. */
   const fits = async (page, name) => {
@@ -140,162 +125,167 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
 
   // ---- the composer
   await part("composer", async () => {
-    for (const s of states.filter((x) => x.section === "A2")) {
+    for (const s of states) {
       const name = `the composer, ${s.id}`;
-      const { ctx, page } = await open({ sel: s.sel, ...paneSize(s.pane[0], s.pane[1]), wait: ".composer-box .send" });
-      try {
-        await act(page, s.act);
-        await page.evaluate(() => document.fonts.ready);
-        for (const theme of THEMES) {
-          const at = `${theme}, ${name}`;
-          await pick(page, theme);
+      for (const theme of THEMES) {
+        const at = `${theme}, ${name}`;
+        const { page, ctx } = await openAt(open, s, layout, 300, { ls: { "aiwb.theme": theme }, still: true });
+        try {
+          await frame(page);
           const m = await fits(page, at), bar = await toolbarWidths(page);
           const facts = { box: m?.boxW, row: bar.controls.map((c) => `${c.kind} "${c.label}" ${c.w}`) };
           const more = await page.locator(MORE).count() > 0;
           if (more) {
-            await page.locator(MORE).click();
+            await press(page, page.locator(MORE));
             await page.waitForSelector(POP, { timeout: 5000 });
-            facts.held = await page.locator(`${POP} > .more-row`).count();
+            facts.held = await byTid(page, "more-row").count();
           }
-          await stage(theme, name, page, [".composer"], facts);
-          if (more) { await page.keyboard.press("Escape"); if (!await gone(page, POP)) fail(`${at}: Esc did not close the "more" popup`); }
+          await stage(theme, name, page, [tidSel("composer"), tidSel("more-pop")], facts);
+          if (more) { await page.keyboard.press("Escape"); if (!await gone(page, "more-pop")) fail(`${at}: Esc did not close the "more" popup`); }
           if (!POPUPS.includes(s.id)) continue;
-          for (const [what, chip, popup] of OPENERS) {
-            const under = (from) => chip.split(", ").map((c) => `${from} ${c}`).join(", ");
-            const inRow = await page.locator(under(`${ROW} >`) + ", " + under(`${ROW} > .menu-wrap >`)).count() > 0;
+          for (const [what, kind, popup] of OPENERS) {
+            const inRow = await opener(byTid(page, "composer-tools"), kind).count() > 0;
             if (!inRow && !more) continue; // (the state has no such choice)
-            if (!inRow) { await page.locator(MORE).click(); await page.waitForSelector(POP, { timeout: 5000 }); }
-            const target = page.locator(under(inRow ? ROW : POP)), sel = `.composer ${popup}`;
+            if (!inRow) { await press(page, page.locator(MORE)); await page.waitForSelector(POP, { timeout: 5000 }); }
+            const target = opener(inRow ? byTid(page, "composer-tools") : byTid(page, "more-pop"), kind);
             if (await target.count()) {
-              await target.first().click();
-              await page.waitForSelector(sel, { timeout: 5000 });
-              if (what === "the folder's browser") await page.waitForSelector(`${sel} .dir-foot`, { timeout: 8000 });
-              await stage(theme, `${name}: ${what}`, page, [sel]);
-              // (the folder's browser in the toolbar has no Esc of its own: a press outside closes it)
-              if (inRow && what === "the folder's browser") await page.mouse.click(5, 5); else await page.keyboard.press("Escape");
-              if (!await gone(page, sel)) fail(`${at}: ${what} did not close`);
+              await press(page, target.first());
+              await page.waitForSelector(tidSel(popup), { timeout: 5000 });
+              if (what === "the folder's browser") await byTid(page, "dir-use").first().waitFor({ state: "visible", timeout: 8000 });
+              await stage(theme, `${name}: ${what}`, page, [tidSel(popup)]);
+              await page.keyboard.press("Escape");
+              if (!await gone(page, popup)) fail(`${at}: ${what} did not close`);
             }
-            if (!inRow) { await page.keyboard.press("Escape"); if (!await gone(page, POP)) fail(`${at}: Esc did not close the "more" popup after ${what}`); }
+            if (!inRow) { await page.keyboard.press("Escape"); if (!await gone(page, "more-pop")) fail(`${at}: Esc did not close the "more" popup after ${what}`); }
           }
-        }
-      } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-      finally { await ctx.close(); }
+        } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
+        finally { await ctx.close(); }
+      }
     }
 
-    // a branch send on its way, at 300 px: the call is held in the mock, so the wait is read for as long as it takes
-    const name = "the composer and the thread, a branch send on its way";
-    await mockEval(`flags.send = { chat: "${SEND}", hold: true, noReply: true };`, url);
-    const { ctx, page } = await open({ sel: { chat: SEND }, ...paneSize("page", 300), wait: ".thread .msg.assistant" });
-    try {
-      await startMove(page);
-      await page.locator(".composer .composer-input").click();
-      await page.keyboard.type("Try it another way");
-      await page.keyboard.press("Enter");
-      if (!await until(() => holds(url, "send"))) fail(`${name}: the page's call did not reach the mock`);
+    // a branch send on its way, at 300 px: the call is held in the mock, so the wait is read for as long as it takes. A page is made in each theme, with
+    // the mock seeded and the call held anew.
+    {
+      const name = "the composer and the thread, a branch send on its way", said = "Try it another way", win = layout === "desktop" ? paneSize("page", 300) : {};
       for (const theme of THEMES) {
-        await pick(page, theme);
-        const seen = await waitsSeen(page);
-        if (!seen.msgs.some((x) => x.sending) || !seen.send?.spin || seen.lines.length !== 1 || !seen.banner) fail(`${theme}, ${name}: the page does not show the wait: ${JSON.stringify(seen)}`);
-        const m = await fits(page, `${theme}, ${name}`);
-        const spin = { what: "the spinner in Send", fg: await colourOf(page, ".composer .send .spin", "borderTopColor"), bg: await colourOf(page, ".composer .send", "backgroundColor") };
-        await stage(theme, name, page, [".thread", ".composer"], { box: m?.boxW, lines: seen.lines, banner: seen.banner, send: seen.send?.title }, [spin]);
+        const at = `${theme}, ${name}`;
+        await seed(url, "A4");
+        await mockEval(`flags.send = { chat: "${SEND}", hold: true, noReply: true };`, url);
+        const { ctx, page } = await open({ sel: { chat: SEND }, wait: tidSel("msg"), ...win, ls: { ...win.ls, "aiwb.theme": theme }, still: true });
+        try {
+          await startMove(page);
+          await typeAndSend(page, said);
+          if (!await until(() => holds(url, "send"))) fail(`${at}: the page's call did not reach the mock`);
+          let seen;
+          if (!await until(async () => { seen = await waitsSeen(page, { composer: true }); return seen.msgs.some((x) => x.sending) && seen.send?.spin && seen.lines.length === 1 && seen.banner; })) fail(`${at}: the page does not show the wait: ${JSON.stringify(seen)}`);
+          const m = await fits(page, at);
+          const spin = { what: "the spinner in Send", fg: await colourOf(page, `${tidSel("send")} svg circle`, "stroke"), bg: await colourOf(page, tidSel("send"), "backgroundColor") };
+          await stage(theme, name, page, [tidSel("thread"), tidSel("composer")], { box: m?.boxW, lines: seen.lines, banner: seen.banner, send: seen.send?.title }, [spin]);
+          await release(url, "send");
+          if (!await until(async () => !(await waitsSeen(page)).banner)) fail(`${at}: let go, the send did not end`);
+        } catch (e) { fail(`${at}: ${e.message.split("\n")[0]}`); }
+        finally { await mockEval("delete flags.send;", url); await ctx.close(); }
       }
-      await release(url, "send");
-      if (!await until(async () => !(await waitsSeen(page)).banner)) fail(`${name}: let go, the send did not end`);
-    } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    finally { await mockEval("delete flags.send;", url); await ctx.close(); }
+    }
   });
 
   // ---- the tool cards
   await part("cards", async () => {
+    const a5 = await seed(url, "A5");
     /** Reads the open cards under root: what passes the thread, and the cards' parts as facts. */
     const cardsOf = async (theme, name, page, root) => {
       const fit = await cardsFit(page, root), cards = await toolCards(page, root);
       if (!fit || !cards?.length) return fail(`${theme}, ${name}: no card under ${root}`);
       if (fit.bad) fail(`${theme}, ${name}: ${[...fit.wide, ...fit.out, ...fit.sideways].join("; ") || `the thread scrolls ${fit.scroll} px sideways`}`);
       if (cards.some((c) => !c.open)) fail(`${theme}, ${name}: ${cards.filter((c) => !c.open).length} of ${cards.length} cards are not open`);
-      await stage(theme, name, page, [`${root} .tool`], { width: fit.width, cards: cards.map((c) => `${c.label} | ${c.hint} | ${c.parts.map((p) => [p.part, p.title ?? p.text ?? p.path, p.box?.join("x")].filter(Boolean).join(" ")).join(", ")}`) });
+      await stage(theme, name, page, [`${tidSel(root)} ${tidSel("tool-card")}`], { width: fit.width, cards: cards.map((c) => `${c.label} | ${c.hint} | ${c.parts.map((p) => [p.part, p.title ?? p.text ?? p.path, p.box?.join("x")].filter(Boolean).join(" ")).join(", ")}`) });
     };
-    /** The thread of Claude's items is in the theme: a change's lines by their ground and their signs, a command's
-     *  words, a failed output's box. */
+    /** The thread of Claude's items is in the theme: a change's lines by their ground and their signs, a command's words, a failed output's box. The
+     *  theme's colours are the page's own tokens (app/src/ui/tokens.ts). */
     const inTheme = async (theme, name, page) => {
-      const P = FLAVOURS[theme], say = (line) => fail(`${theme}, ${name}: ${line}`);
-      const t = await page.evaluate(tokensInPage, TOKENS), tone = (sel, prop) => colourOf(page, `.thread ${sel}`, prop).then(hex);
-      const ground = { add: await tone(".diff-row.add", "backgroundColor"), del: await tone(".diff-row.del", "backgroundColor"), same: await tone(".diff-row:not(.add, .del, .skip)", "backgroundColor") };
+      const P = FLAVOURS[theme], say = (line) => fail(`${theme}, ${name}: ${line}`), t = tokensFor(P?.under ?? theme, P ? theme : null);
+      const tone = (sel, prop) => colourOf(page, sel, prop).then(hex);
+      const thread = tidSel("thread"), line = (kind) => `${thread} ${tidSel("diff-row", { kind })}`;
+      const ground = { add: await tone(line("add"), "backgroundColor"), del: await tone(line("del"), "backgroundColor"), same: await tone(`${thread} ${tidSel("tool-diff")}`, "backgroundColor") };
       if (new Set(Object.values(ground)).size !== 3) say(`an added line (${ground.add}), a removed one (${ground.del}) and one that stays (${ground.same}) are not told apart by their ground`);
-      if (ground.same !== hex(t["--bg"])) say(`a change is on ${ground.same}, not on the background ${hex(t["--bg"])}`);
-      for (const [what, sel, token] of [["an added line's sign", ".diff-row.add .diff-sign", "--ok"], ["a removed line's sign", ".diff-row.del .diff-sign", "--danger"], ["the count of added lines", ".tool-add", "--ok"], ["the count of removed lines", ".tool-del", "--danger"], ["a failed output's flag", ".tool-flag", "--danger"]])
-        if (await tone(sel, "color") !== hex(t[token])) say(`${what} is drawn in ${await tone(sel, "color")}, not in ${token} ${hex(t[token])}`);
+      if (ground.same !== t.bg) say(`a change is on ${ground.same}, not on the background ${t.bg}`);
+      for (const [what, sel, token] of [["an added line's sign", `${line("add")} ${tidSel("diff-sign")}`, "ok"], ["a removed line's sign", `${line("del")} ${tidSel("diff-sign")}`, "danger"],
+        ["the count of added lines", `${thread} ${tidSel("tool-counts")} > span:nth-of-type(1)`, "ok"], ["the count of removed lines", `${thread} ${tidSel("tool-counts")} > span:nth-of-type(2)`, "danger"],
+        ["a failed output's flag", `${thread} ${tidSel("tool-part", { failed: "true" })} ${tidSel("tool-sub")} > span`, "danger"]])
+        if (await tone(sel, "color") !== t[token]) say(`${what} is drawn in ${await tone(sel, "color")}, not in ${token} ${t[token]}`);
       // (in a flavour a sign has its floor on its own line's ground, with no leave for what Light has: ok and danger are the flavour's)
-      if (P) for (const [what, row] of [['the "+" of an added line', ".diff-row.add"], ['the "−" of a removed line', ".diff-row.del"]]) {
-        const q = contrastOf(await colourOf(page, `.thread ${row} .diff-sign`, "color"), await colourOf(page, `.thread ${row}`, "backgroundColor"));
+      if (P) for (const [what, kind] of [['the "+" of an added line', "add"], ['the "−" of a removed line', "del"]]) {
+        const q = contrastOf(await colourOf(page, `${line(kind)} ${tidSel("diff-sign")}`, "color"), await colourOf(page, line(kind), "backgroundColor"));
         if (q < FLOOR) say(`${what} is ${two(q)}:1 on its line's ground, under ${FLOOR}:1`);
       }
-      const edges = await page.evaluate(() => [...document.querySelectorAll(".thread .tool-part")].filter((p) => /^Output/.test(p.querySelector(".tool-sub")?.textContent ?? "")).map((p) => [p.matches(".failed"), getComputedStyle(p.querySelector(".tool-text")).borderTopColor]));
+      const edges = await page.evaluate(() => [...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-part"]')].filter((p) => /^Output/.test(p.querySelector('[data-testid="tool-sub"]')?.textContent ?? "") && p.querySelector('[data-testid="tool-text"]'))
+        .map((p) => [p.dataset.failed === "true", getComputedStyle(p.querySelector('[data-testid="tool-text"]')).borderTopColor]));
       if (!edges.some(([failed]) => failed) || edges.filter(([failed]) => failed).some(([, c]) => edges.some(([failed, d]) => !failed && d === c))) say(`a failed output's box has the border of one that did not fail: ${JSON.stringify(edges)}`);
-      const words = await page.evaluate(() => [...new Set([...document.querySelectorAll('.thread .tool-text code.hljs span[class^="hljs-"]')].map((e) => getComputedStyle(e).color))].map((c) => c.match(/[\d.]+/g).slice(0, 3).map(Number)));
-      const code = new Set([...SYNTAX, "--faint", "--muted", "--danger"].map((n) => hex(t[n])));
+      // (a word of a command is a span of its text with a colour of its own)
+      const words = await page.evaluate(() => [...new Set([...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-pre"]')].flatMap((pre) => [...pre.querySelectorAll("span")].map((e) => getComputedStyle(e).color).filter((c) => c !== getComputedStyle(pre).color)))].map((c) => c.match(/[\d.]+/g).slice(0, 3).map(Number)));
+      const code = new Set([...SYNTAX, "faint", "muted", "danger"].map((n) => t[n]));
       if (!words.length) say("no word of a command is coloured as code");
       for (const w of words) if (!code.has(hex(w))) say(`a word of a command is drawn in ${hex(w)}, which is none of the theme's code colours`);
-      if (P && (hex(t["--bg"]) !== P.base || await tone(".tool", "backgroundColor") !== P.mantle)) say(`a card is on ${await tone(".tool", "backgroundColor")} and its parts on ${hex(t["--bg"])}, not on Mantle ${P.mantle} and Base ${P.base}`);
+      if (P && (t.bg !== P.base || await tone(`${thread} ${tidSel("tool-card")}`, "backgroundColor") !== P.mantle)) say(`a card is on ${await tone(`${thread} ${tidSel("tool-card")}`, "backgroundColor")} and its parts on ${t.bg}, not on Mantle ${P.mantle} and Base ${P.base}`);
     };
-    for (const [id, root = ".thread"] of CARDS) {
-      const s = state("A5", id), name = `the tool cards, ${id}`;
-      // (a subagent's drawer lies over the right of the window: in a wide one it leaves the picker free)
-      const { ctx, page } = await open({ sel: s.sel, ...(id === "sub" ? { size: [1200, 900] } : paneSize(s.pane?.[0] ?? "page", 300, 900)), wait: s.act ? ".thread .msg" : s.see });
-      try {
-        await act(page, s.act);
-        await page.waitForSelector(s.see, { timeout: 8000 });
-        await openCards(page, root);
-        for (const theme of THEMES) {
-          await pick(page, theme);
+    for (const [id, root = "thread"] of CARDS) {
+      const s = a5.find((x) => x.id === id) ?? (() => { throw new Error(`the seed has no state A5.${id}`); })(), name = `the tool cards, ${id}`;
+      const win = layout !== "desktop" ? {} : id === "sub" ? CARD_WINDOWS.sub : id === "panel" ? CARD_WINDOWS.panel : CARD_WINDOWS.page;
+      for (const theme of THEMES) {
+        const { ctx, page } = await open({ sel: s.sel, wait: tidSel("chat-head"), ...win, ls: { ...win.ls, "aiwb.theme": theme }, still: true });
+        try {
+          await act(page, s.act);
+          await byTid(page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 });
+          await openCards(page, root);
           await cardsOf(theme, name, page, root);
           if (id === "claude") await inTheme(theme, name, page);
-        }
-      } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-      finally { await ctx.close(); }
+        } catch (e) { fail(`${theme}, ${name}: ${e.message.split("\n")[0]}`); }
+        finally { await ctx.close(); }
+      }
     }
   });
 
-  // ---- the rail: the sidebar is hidden, and its picker with it, so the page is opened in each theme
+  // ---- the rail: the sidebar is hidden, and its picker with it, so the page is opened in each theme. The phone has no sidebar to hide (a stack, AD-71).
   await part("rail", async () => {
+    if (layout === "phone") return;
+    await seed(url);
     for (const theme of THEMES) for (const [view, sel, see] of VIEWS) {
-      const P = FLAVOURS[theme], name = `the rail beside ${view}`, say = (line) => fail(`${theme}, ${name}: ${line}`);
-      const { ctx, page } = await open({ sel, size: [1280, 800], ls: { "aiwb.side": "hidden", "aiwb.theme": theme }, wait: ".app > .side-rail .side-show" });
+      const P = FLAVOURS[theme], name = `the rail beside ${view}`, say = (line) => fail(`${theme}, ${name}: ${line}`), t = tokensFor(P?.under ?? theme, P ? theme : null);
+      const { ctx, page } = await open({ sel, ls: { "aiwb.side": "hidden", "aiwb.theme": theme }, wait: tidSel("side-show"), still: true });
       try {
-        await page.waitForSelector(see, { timeout: 15000 });
-        const r = await page.evaluate(railInPage), t = await page.evaluate(tokensInPage, TOKENS);
-        const ground = await colourOf(page, ".side-rail", "backgroundColor"), line = hex(await colourOf(page, ".side-rail", "borderRightColor"));
+        await byTid(page, see).first().waitFor({ state: "visible", timeout: 15000 });
+        const r = await page.evaluate(railInPage);
+        const ground = await colourOf(page, tidSel("side-rail"), "backgroundColor"), line = hex(await colourOf(page, tidSel("side-rail"), "borderRightColor"));
         if (r.pane) say("the sidebar's pane is drawn");
         if (!r.hit) say("the rail's control is not the element at its own centre");
         if (r.rail[0] !== 0 || r.rail[1] !== 0 || r.rail[3] !== r.h) say(`the rail is at ${r.rail[0]}, ${r.rail[1]} and ${r.rail[3]} px tall in a window of ${r.h}`);
-        if (hex(ground) !== hex(t["--panel"]) || line !== hex(t["--line"])) say(`the rail is on ${hex(ground)} with a line of ${line}, not on --panel ${hex(t["--panel"])} with --line ${hex(t["--line"])}`);
+        if (hex(ground) !== t.panel || line !== t.line) say(`the rail is on ${hex(ground)} with a line of ${line}, not on panel ${t.panel} with line ${t.line}`);
         if (P && hex(ground) !== P.mantle) say(`the rail is on ${hex(ground)}, not on Mantle ${P.mantle}`);
         const facts = { rail: r.rail, ctl: r.ctl };
-        await stage(theme, name, page, [".side-rail"], facts);
+        await stage(theme, name, page, [tidSel("side-rail")], facts);
         if (view === "Home") {
           // the keyboard's focus: the rail's control is the first stop of the page
           await page.keyboard.press("Tab");
           const f = await page.evaluate(railInPage);
           if (!f.focused || !/^solid [1-9]/.test(f.ring)) say(`after Tab the control ${f.focused ? "has" : "has not"} the keyboard's focus, and its ring is "${f.ring}"`);
-          await stage(theme, `${name}, the focus on its control`, page, [".side-rail"], facts, [{ what: "the focus ring of the rail's control", fg: await colourOf(page, ".side-rail .side-show", "outlineColor"), bg: ground }]);
+          await stage(theme, `${name}, the focus on its control`, page, [tidSel("side-rail")], facts, [{ what: "the focus ring of the rail's control", fg: await colourOf(page, tidSel("side-show"), "outlineColor"), bg: ground }]);
           await page.evaluate(() => document.activeElement?.blur());
           // the dot: the page is not connected
           try {
             await mockEval("flags.streamDown = true; dropStreams();", url);
-            await page.waitForSelector(".side-rail .side-show .side-rail-dot", { timeout: 30000 });
-            const dot = await colourOf(page, ".side-rail .side-rail-dot", "backgroundColor");
-            if (hex(dot) !== hex(t["--warn"])) say(`the dot is ${hex(dot)}, not --warn ${hex(t["--warn"])}`);
-            await stage(theme, `${name}, not connected`, page, [".side-rail"], facts, [{ what: "the rail's dot", fg: dot, bg: ground }]);
+            await page.waitForSelector(tidSel("side-rail-dot"), { timeout: 30000 });
+            const dot = await colourOf(page, tidSel("side-rail-dot"), "backgroundColor");
+            if (hex(dot) !== t.warn) say(`the dot is ${hex(dot)}, not warn ${t.warn}`);
+            await stage(theme, `${name}, not connected`, page, [tidSel("side-rail")], facts, [{ what: "the rail's dot", fg: dot, bg: ground }]);
           } finally { await mockEval("delete flags.streamDown;", url); }
         }
-        await page.locator(".side-rail .side-show").hover();
-        await stage(theme, `${name}, the pointer on its control`, page, [".side-rail"], facts);
+        await hover(page, byTid(page, "side-show"));
+        await stage(theme, `${name}, the pointer on its control`, page, [tidSel("side-rail")], facts);
         if (view !== "a chat") continue;
         // a reload: the rail, on its ground, in the theme, from the first frame React draws
         const want = await page.evaluate(railProbe), sampler = await sampleFrames(page, railProbe, { fromLoad: true });
         await page.reload({ waitUntil: "domcontentloaded" });
-        await page.waitForSelector(see, { timeout: 15000 });
+        await byTid(page, see).first().waitFor({ state: "visible", timeout: 15000 });
         await page.waitForFunction(() => window.__frames?.values.length > 2, null, { timeout: 15000 });
         const frames = await sampler.stop(), bad = frames.values.filter((v) => !same(v, want));
         if (!frames.values.length) say("after a reload the sampler saw no frame with the window drawn");
@@ -304,7 +294,6 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
       finally { await ctx.close(); }
     }
   });
-  for (const e of errors) fail(`page error: ${e}`);
 
   for (const [flavour, P] of Object.entries(FLAVOURS)) {
     const mine = found[flavour], base = found[P.under];
@@ -329,4 +318,5 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
     const list = (m) => [...m].map(([k, v]) => `${k} ${v}`).join(", ") || "nothing";
     note(`${flavour}: ${audited} texts, icons and marks in ${Object.keys(mine).length} stages (${Object.entries(parts).map(([k, n]) => `${k} ${n}`).join(", ")}), each stage of the sizes it has in ${P.under}; under ${FLOOR}:1 and no weaker than in ${P.under}: ${list(asToday)}; accepted by the goal (the Claude glyph): ${list(accepted)}`);
   }
-});
+  void SEES; void countOf; void colourOf;
+}, { viewports, page: false });

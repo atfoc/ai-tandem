@@ -1,0 +1,462 @@
+{
+ "about": "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/mock-ui.js), as the web build of the app (app/) draws it in headless Chromium with the system font. Written by `WRITE=1 node web/dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160, the model choice's 76), and each state is measured in a pane wide enough for all of its controls.",
+ "gap": 4,
+ "chrome": 20,
+ "more": 28,
+ "ring": 28,
+ "icon": 25,
+ "legend": "gap: between two controls of the toolbar (its spacer is one of them, at no width); chrome: the box's padding and border, so a row of `sum` px needs a box of sum + chrome; more: the chip that opens the popup of the controls the row has no room for; ring: the context meter cut to its ring; icon: the error meter cut to its icon. A state: g1, the name of G1's case it is, where its names are short; pane, where it is shown; sum, its controls and gaps on one line; reason, it has a line under its controls; controls, left to right: kind, label, fixed (a chip that takes no pick), w, and margin where the control has one of its own (the lock): it needs w + margin.",
+ "states": {
+  "plain-started": {
+   "g1": "plain-started",
+   "pane": "page",
+   "chat": "c_plain",
+   "sum": 513.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-new": {
+   "g1": "plain-new",
+   "pane": "page",
+   "chat": "c_A2_new",
+   "sum": 626.8,
+   "controls": [
+    { "kind": "agent", "label": "Claude Code", "w": 115.6 },
+    { "kind": "folder", "label": "shop", "w": 70.6 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.7 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.8 },
+    { "kind": "subagents", "label": "Subagents1 level", "w": 128.1 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-new-long": {
+   "pane": "page",
+   "chat": "c_A2_new_long",
+   "sum": 781.3,
+   "controls": [
+    { "kind": "agent", "label": "Claude Code", "w": 115.6 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "w": 202.8 },
+    { "kind": "model", "label": "Claude Opus 5.5 (1M context, extended thinking)", "w": 102.8 },
+    { "kind": "effort", "label": "EffortMax", "w": 88 },
+    { "kind": "subagents", "label": "Subagents1 level", "w": 128.1 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-started-long": {
+   "pane": "page",
+   "chat": "c_A2_long",
+   "sum": 715,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-busy": {
+   "g1": "plain-busy",
+   "pane": "page",
+   "chat": "c_A2_busy",
+   "sum": 545.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "stop", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-ctxerr": {
+   "g1": "plain-ctxerr",
+   "pane": "page",
+   "chat": "c_A2_ctxerr",
+   "sum": 524.2,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "Context unavailable", "w": 135.8 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-quotes": {
+   "g1": "plain-quotes",
+   "pane": "page",
+   "chat": "c_A2_quotes",
+   "sum": 513.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-remote-new": {
+   "pane": "page",
+   "chat": "s_lab~c_A2_remote_new",
+   "sum": 800.8,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "agent", "label": "Claude Code", "w": 115.6 },
+    { "kind": "folder", "label": "shop", "w": 70.6 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.7 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.8 },
+    { "kind": "subagents", "label": "Subagents1 level", "w": 128.1 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-remote-started": {
+   "pane": "page",
+   "chat": "s_lab~c_A2_remote",
+   "sum": 687.7,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-remote-started-long": {
+   "pane": "page",
+   "chat": "s_lab~c_A2_remote_long",
+   "sum": 889,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-move": {
+   "g1": "plain-move",
+   "pane": "page",
+   "chat": "c_A2_move",
+   "sum": 588.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.7 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.8 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-move-long": {
+   "pane": "page",
+   "chat": "c_A2_move_long",
+   "sum": 739.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model", "label": "Claude Opus 5.5 (1M context, extended thinking)", "w": 102.8 },
+    { "kind": "effort", "label": "EffortMax", "w": 88 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-loading": {
+   "pane": "page",
+   "chat": "s_lab~c_A2_loading",
+   "sum": 702.5,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "agent", "label": "Cursor", "w": 80.8 },
+    { "kind": "folder", "label": "shop", "w": 70.6 },
+    { "kind": "loading", "label": "Loading models…", "fixed": true, "w": 109 },
+    { "kind": "subagents", "label": "Subagents1 level", "w": 128.1 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-noagent": {
+   "pane": "page",
+   "chat": "c_A2_noagent",
+   "sum": 413.1,
+   "reason": true,
+   "controls": [
+    { "kind": "agent", "label": "No agent", "w": 78.4 },
+    { "kind": "folder", "label": "shop", "w": 70.6 },
+    { "kind": "subagents", "label": "Subagents1 level", "w": 128.1 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-noagent-installed": {
+   "pane": "page",
+   "chat": "s_bare~c_A2_bare",
+   "sum": 457.3,
+   "reason": true,
+   "controls": [
+    { "kind": "server", "label": "Bare box", "fixed": true, "w": 59.6 },
+    { "kind": "agent", "label": "No agent", "fixed": true, "w": 61.5 },
+    { "kind": "folder", "label": "bare", "w": 68.1 },
+    { "kind": "subagents", "label": "Subagents1 level", "w": 128.1 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-off-new": {
+   "pane": "page",
+   "chat": "s_lab~c_A2_off_new",
+   "sum": 590.4,
+   "reason": true,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-off-started": {
+   "pane": "page",
+   "chat": "s_lab~c_A2_off",
+   "sum": 687.7,
+   "reason": true,
+   "controls": [
+    { "kind": "server", "label": "lab-gpu-box.tailnet-1234.ts.net", "fixed": true, "w": 170 },
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-fork-fresh": {
+   "pane": "page",
+   "chat": "c_A2_fork",
+   "sum": 588.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.7 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.8 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-fork-notice": {
+   "pane": "page",
+   "chat": "c_A2_notice",
+   "sum": 617.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Sonnet 5.5", "w": 87.8 },
+    { "kind": "effort", "label": "EffortMedium", "w": 109.7 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "plain-branches": {
+   "pane": "page",
+   "chat": "c_A2_two",
+   "sum": 513.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-started": {
+   "g1": "board-started",
+   "pane": "panel",
+   "chat": "c_board",
+   "sum": 513.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-new": {
+   "g1": "board-new",
+   "pane": "panel",
+   "chat": "c_A2_board_new",
+   "sum": 626.8,
+   "controls": [
+    { "kind": "agent", "label": "Claude Code", "w": 115.6 },
+    { "kind": "folder", "label": "shop", "w": 70.6 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.7 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.8 },
+    { "kind": "subagents", "label": "Subagents1 level", "w": 128.1 },
+    { "kind": "meter", "label": "", "w": 28 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-quotes": {
+   "g1": "board-quotes",
+   "pane": "panel",
+   "chat": "c_A2_board_quotes",
+   "sum": 513.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-long": {
+   "pane": "panel",
+   "chat": "c_A2_board_long",
+   "sum": 715,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "storefront-monorepo-with-a-very-long-folder-name", "fixed": true, "w": 186 },
+    { "kind": "model-effort", "label": "Claude Opus 5.5 (1M context, extended thinking) · Max", "fixed": true, "w": 170 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "189k / 1M19%", "w": 121.8 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-move": {
+   "g1": "board-move",
+   "pane": "panel",
+   "chat": "c_A2_board_move",
+   "sum": 588.8,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model", "label": "Opus 5.5", "w": 77.7 },
+    { "kind": "effort", "label": "EffortHigh", "w": 90.8 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-longname": {
+   "g1": "board-longname",
+   "pane": "panel",
+   "chat": "c_A2_longname",
+   "sum": 513.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-selected": {
+   "pane": "panel",
+   "chat": "c_A2_sketch",
+   "sum": 513.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  },
+  "board-busy": {
+   "pane": "panel",
+   "chat": "c_A2_board_busy",
+   "sum": 545.7,
+   "controls": [
+    { "kind": "lock", "label": "", "w": 10, "margin": 4 },
+    { "kind": "folder", "label": "shop", "fixed": true, "w": 53.8 },
+    { "kind": "model-effort", "label": "Opus 5.5 · High", "fixed": true, "w": 97.4 },
+    { "kind": "subagents", "label": "Subagents1 level", "fixed": true, "w": 111.2 },
+    { "kind": "meter", "label": "43k / 200k21%", "w": 125.3 },
+    { "kind": "insert", "label": "", "w": 26 },
+    { "kind": "attach", "label": "", "w": 26 },
+    { "kind": "stop", "label": "", "w": 28 },
+    { "kind": "send", "label": "↑", "w": 28 }
+   ]
+  }
+ }
+}

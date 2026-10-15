@@ -1,53 +1,48 @@
-// The driver of the browser checks: a page of the built client on the mock (dev/mock.mjs), in a
+// The driver of the browser checks: a page of the app's web build (app/, its export) on the mock (dev/mock.mjs), in a
 // headless Chromium. Playwright is no dependency of the repository: it is taken from PLAYWRIGHT,
 // node_modules or the npx cache (if it is gone: npx -y playwright install chromium).
 //
-// By hand, against a mock that runs (DIST=/tmp/x/dist PORT=4801 node dev/mock.mjs):
-//   node dev/shot.mjs --sel '{"board":"b_arch","chat":"c_board"}' --size 1064x640 \
-//     --ls 'aiwb.widths={"side":264,"panel":300}' --ls aiwb.theme=dark --mock 'seedUI("A2")' \
-//     --eval 'return document.querySelector(".send").getBoundingClientRect().right' --out /tmp/x/board-300.png
-//   --url U (default http://127.0.0.1:4801)   --wait SEL (default .side-tree)   --click SEL and --key KEY (repeatable, in
-//   that order)   --clip SEL (a screenshot of one element)   --scale N   --settle MS   --mock CODE (repeatable; run in
-//   the mock once the page is open, so that what it sends reaches the page)
+// By hand, against a mock that runs (DIST=/tmp/x/dist PORT=4801 node dev/mock.mjs, the dist a build for the checks, see buildAppDist):
+//   node dev/shot.mjs --viewport phone --sel '{"board":"b_arch","chat":"c_board"}' --ls aiwb.theme=dark \
+//     --mock 'seedUI("A2")' --eval 'return document.title' --out /tmp/x/board.png
+//   --url U (default http://127.0.0.1:4801)   --viewport desktop|tablet|phone   --query Q (the page's query: gallery)
+//   --wait SEL (default the app's root, APP_READY)   --size WxH (another window on the viewport's device)
+//   --click SEL and --key KEY (repeatable, in that order)   --clip SEL (a screenshot of one element)   --scale N
+//   --settle MS   --mock CODE (repeatable; run in the mock once the page is open, so that what it sends reaches the page)
 //
-// What a check (dev/checks/*.mjs, run by dev/uicheck.mjs) imports:
-//   check(title, body)            the frame of a check: its mock, its browser, its failures and its exit code
-//   buildDist(out?)               the client built into a folder outside the checkout
+// What a check (dev/checks/*.mjs, run by dev/uicheck.mjs, see dev/checks/README.md) imports:
+//   check(title, body, { viewports, page })   the frame of a check: its mock, its browser, its failures and its exit code; the body
+//                                 runs once at each viewport, with a page of the app on the mock and
+//                                 { viewport, layout, touch, open } (see check below)
+//   buildAppDist(out?)            the app's web export (app/) built into a folder outside the checkout (AD-42)
+//   openApp({ url, viewport, … }) a page of the app at a viewport, with the selection and localStorage given
+//   freePort()                    a port nothing listens on
 //   startMock({ dist, port })     a mock of its own; mockEval(code, url) runs code in it; seed(url, ...sections) the UI seed
-//   openPage({ url, sel, … })     a page with the selection and localStorage given; paneSize(kind, width) its window
-//   measureComposer(page)         which control passes the composer's box, whether Send can be hit, sideways scroll
-//   toolbarWidths(page)           the width each control of the composer's toolbar asks for
-//   startMove(page)               "Branch from here" on the first reply: a pending move; act(page, what): a seeded state's `act`
-//   dragger(page)                 real drags in the sidebar, with every ending
-//   pointerDrag(page)             real drags by the pointer anywhere else (the library's tree): start, over, drop, release
-//   toolCards(page, root)         the tool cards of a thread: each one's row and, open, its parts; openCards(page, root)
-//                                 opens them all; cardsFit(page, root) what of them passes its pane
-//   sampleFrames(page, probe)     a value per painted frame; composerProbe is the probe of the composer's fit;
+//   paneSize(kind, width)         the window and the saved widths that give a pane its width
+//   sampleFrames(page, probe)     a value per painted frame;
 //                                 dragResizer(page, selector, dx) a drag of a pane's resizer, a frame a step
 //   compareShots({ a, b, … })     screenshots of still pages of two builds, compared less a region
-//   waitsSeen(page)               what the chat on screen shows of a wait of the fork flows: the thread's messages and
-//                                 lines, Send, the banner, the held controls; holds(url, knob) and release(url, knob):
-//                                 the calls a knob of the mock holds, and their end
+//   holds(url, knob) and release(url, knob): the calls a knob of the mock holds, and their end
 //   atRest(page, frames)          the page drew that many frames in a row with nothing changed in it
 //   contrastAudit(page)           the contrast of every text and icon the page shows (or a part of it: `only`), the weakest first;
 //                                 colourOf(page, selector, prop) the colour one element is drawn in, contrastOf(a, b)
-//   sideSeen(page, id)            what a section of the sidebar shows (its head's name and state, its rows as an outline),
-//                                 or with no id this computer's ("local"); sectionsSeen(page): the sections drawn, in order;
-//                                 callsOf(page): the calls the page makes; callMatcher(re, server) and callOfRequest(r): a page.route
+//   callsOf(page): the calls the page makes; callMatcher(re, server) and callOfRequest(r): a page.route
 //                                 predicate for them, and the call a request carries; hostCall(url, method, path, body, server): a call made on the mock as the page's
-//                                 transport makes it; sideMenu(page, root, button, …items): a pick
-//                                 in the menu of a row or a header
+//                                 transport makes it
 //   until(fn)                     waits for a sign, in place of a fixed time; onEnd(fn): what to undo when the process
 //                                 is ended early, ending(): whether it is being; versions(): the Playwright and the
 //                                 Chromium that draw the pages
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkViewports, contextOptions, isTouch, layoutOfViewport } from "./viewports.mjs";
 
-export const URL0 = "http://127.0.0.1:4801";
+export const URL0 = `http://127.0.0.1:${Number(process.env.PORT || 4801)}`;
 const WEB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const APP = path.resolve(WEB, "../app");
 const TMP = fs.existsSync("/tmp") ? "/tmp" : os.tmpdir();
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
@@ -98,23 +93,24 @@ export async function versions() {
 
 // ---- the build and the mock
 
-/** Builds the client of `web` (this checkout's, or another worktree's web folder) into `out`, a folder outside the
- *  checkout, and answers `out`. web/dist is not touched: build.mjs runs in a folder of links to the sources. The version
- *  is not "dev", so that the page can show the update notice (the mock's flags.hello or the local entry's version). nodeModules: where a worktree
- *  that has none takes its packages from. */
-export function buildDist(out = fs.mkdtempSync(path.join(TMP, "aiwb-dist-")), { web = WEB, version = "uicheck", nodeModules = path.join(web, "node_modules") } = {}) {
-  const work = fs.mkdtempSync(path.join(TMP, "aiwb-build-"));
-  try {
-    fs.symlinkSync(path.join(web, "src"), path.join(work, "src"));
-    fs.symlinkSync(nodeModules, path.join(work, "node_modules"));
-    fs.copyFileSync(path.join(web, "index.html"), path.join(work, "index.html"));
-    fs.cpSync(path.join(web, "public"), path.join(work, "public"), { recursive: true });
-    try { execFileSync(process.execPath, [path.join(web, "build.mjs")], { cwd: work, env: { ...process.env, AIWB_VERSION: version }, stdio: "pipe" }); }
-    catch (e) { throw new Error("the build failed:\n" + (e.stderr?.toString() || e.message)); }
-    fs.rmSync(out, { recursive: true, force: true });
-    fs.cpSync(path.join(work, "dist"), out, { recursive: true });
-  } finally { fs.rmSync(work, { recursive: true, force: true }); }
+/** Builds the app's web export (app/: `npm run build:web`, AD-40) into `out`, a folder outside the checkout, and answers
+ *  `out`. app/dist-web is not touched. The version is "uicheck" (the page shows no update notice on version
+ *  "dev"). A run of uicheck builds once and gives the folder to every check (DIST). */
+export function buildAppDist(out = fs.mkdtempSync(path.join(TMP, "aiwb-app-dist-")), { app = APP, version = "uicheck", connectSelf = true } = {}) {
+  // (connectSelf: the page's CSP also has connect-src 'self', which the page needs to reach the mock it is served from; the
+  // shipped build, the one the window loads, keeps 'none': app/scripts/export-web.mjs)
+  try { execFileSync("npm", ["run", "build:web", "--", "--output-dir", out, ...(connectSelf ? ["--connect-self"] : [])], { cwd: app, env: { ...process.env, EXPO_PUBLIC_AIWB_VERSION: version, CI: "1" }, stdio: "pipe", maxBuffer: 64 << 20 }); }
+  catch (e) { throw new Error("the build of the app failed:\n" + (e.stdout?.toString() ?? "").split("\n").slice(-25).join("\n") + (e.stderr?.toString() || e.message)); }
   return out;
+}
+
+/** A port nothing listens on at this moment. */
+export function freePort() {
+  return new Promise((ok, no) => {
+    const server = net.createServer();
+    server.once("error", no);
+    server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => ok(port)); });
+  });
 }
 
 /** Starts a mock that serves `dist` on `port`, and answers once it listens. script: another build's mock.
@@ -165,15 +161,9 @@ export const seed = (url, ...sections) => mockEval(`return seedUI(${sections.map
 
 // ---- pages
 
-/** A page on the mock with the selection and localStorage given (set once, before the page's scripts; with no saved
- *  theme the page follows the system's, which is light here). errors collects the page's errors. clock: the page's
- *  time stands at that moment (ms). still: no animation or transition runs in the page, each is over as it starts,
- *  from the page's first frame (for a picture: see STILL). scheme: the system's theme, "light" or "dark". The caller
- *  closes the context, or the browser when it gave none. */
-export async function openPage({ url = URL0, sel, size = [1280, 800], ls = {}, wait = ".side-tree", scale = 1, browser, errors = [], clock, still = false, scheme } = {}) {
-  if (dropped.has(url)) { const id = dropped.get(url); dropped.delete(url); await mockEval(`setServerState(${JSON.stringify(id)}, "connected");`, url).catch(() => {}); } // (the server a state of the page before dropped is back)
-  browser ??= await (await loadPlaywright()).chromium.launch();
-  const ctx = await browser.newContext({ viewport: { width: size[0], height: size[1] }, deviceScaleFactor: scale, ...(scheme ? { colorScheme: scheme } : {}) });
+/** What a context gets before any page script runs: the selection (`aiwb.sel`) and localStorage given, set once (not again when
+ *  the page reloads), and, for `still`, the style that stops every animation (see STILL). */
+async function seedContext(ctx, sel, ls, still) {
   const store = { ...ls };
   if (sel) store["aiwb.sel"] = JSON.stringify({ board: null, chat: null, ...sel });
   await ctx.addInitScript((kv) => { if (sessionStorage.getItem("__seeded")) return; for (const [k, v] of Object.entries(kv)) localStorage.setItem(k, v); sessionStorage.setItem("__seeded", "1"); }, store);
@@ -181,11 +171,28 @@ export async function openPage({ url = URL0, sel, size = [1280, 800], ls = {}, w
     const add = () => { const st = document.createElement("style"); st.textContent = css; document.documentElement.append(st); };
     if (document.documentElement) add(); else new MutationObserver((_, o) => { if (document.documentElement) { o.disconnect(); add(); } }).observe(document, { childList: true });
   }, STILL);
+}
+
+/** What shows that the app has drawn: its root view (the testID `app-root`, kept by the shell). A page that opens a
+ *  screen of its own (the gallery) says its own `wait`. */
+export const APP_READY = '[data-testid="app-root"]';
+
+/** A page of the app at a viewport (dev/viewports.mjs), on the mock at `url` (its folder served is the web export), the
+ *  page of a check. viewport: "desktop" | "tablet" | "phone" (the device's window and touch);
+ *  query: the page's query without the "?" ("gallery"); sel, ls, scheme, clock, still, errors, browser: as below; size:
+ *  another window [w, h] on the viewport's device; scale: another device scale factor; wait: a selector to wait for
+ *  (APP_READY by default, "" for none). The caller closes the context, or the browser when it gave none. */
+export async function openApp({ url = URL0, viewport = "desktop", query = "", sel, ls = {}, wait = APP_READY, size, scale, browser, errors = [], clock, still = false, scheme } = {}) {
+  if (dropped.has(url)) { const id = dropped.get(url); dropped.delete(url); await mockEval(`setServerState(${JSON.stringify(id)}, "connected");`, url).catch(() => {}); }
+  const playwright = await loadPlaywright();
+  browser ??= await playwright.chromium.launch();
+  const ctx = await browser.newContext(contextOptions(playwright, viewport, { size, scale, scheme }));
+  await seedContext(ctx, sel, ls, still);
   const page = await ctx.newPage();
   if (clock !== undefined) await page.clock.setFixedTime(clock);
   page.on("pageerror", (e) => { errors.push(e.message); console.error("pageerror:", e.message); });
-  await page.goto(url, { waitUntil: "domcontentloaded" });
-  if (wait) await page.waitForSelector(wait, { timeout: 15000 });
+  await page.goto(`${url}/${query ? "?" + query : ""}`, { waitUntil: "domcontentloaded" });
+  if (wait) await page.waitForSelector(wait, { timeout: 30000 });
   return { browser, ctx, page, errors };
 }
 
@@ -204,336 +211,8 @@ export function paneSize(kind, width, height = 640) {
   return { size: [SIDE + width + (panel ? 500 : 0), height], ls: { "aiwb.widths": JSON.stringify({ side: SIDE, panel: panel ? width : 400 }) } };
 }
 
-// ---- the composer's fit (G1 §Q2 "Method")
-
-/** In the page: every composer shown, with each child of .composer-tools, .context-row and .fk-banner against the
- *  .composer-box. past: how many of them end right of the box's border edge; furthest: by how many px at most; send:
- *  "ok" when Send is the element at its own centre; docScroll: how far the document scrolls sideways. */
-function composersInPage() {
-  const R = (e) => e.getBoundingClientRect(), r1 = (n) => Math.round(n * 10) / 10;
-  const label = (e) => (typeof e.className === "string" && e.className.trim() ? "." + e.className.trim().split(/\s+/).join(".") : e.tagName.toLowerCase()) +
-    (e.textContent.trim() ? ` "${e.textContent.trim().replace(/\s+/g, " ").slice(0, 28)}"` : "");
-  return [...document.querySelectorAll(".composer")].map((comp) => {
-    const box = comp.querySelector(".composer-box");
-    if (!box) return { cls: comp.className, none: true };
-    const pane = comp.closest(".board-panel, .chat-page, .board-stage"), b = R(box);
-    const kids = (sel) => [...(comp.querySelector(sel)?.children ?? [])].filter((e) => !e.matches(".grow, .menu-backdrop"));
-    const one = (e, row) => ({ row, el: label(e), w: r1(R(e).width), overBox: r1(R(e).right - b.right) });
-    const rows = [...kids(".composer-tools").map((e) => one(e, "tools")), ...kids(".context-row").map((e) => one(e, "context")), ...kids(".fk-banner").map((e) => one(e, "banner"))];
-    const over = rows.filter((x) => x.overBox > 0.5), sd = box.querySelector(".send:not(.stop)");
-    let send = "none";
-    if (sd) { const q = R(sd), h = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); send = h === sd || sd.contains(h) ? "ok" : h ? "covered by " + label(h) : "outside the window"; }
-    return { cls: comp.className, pane: pane?.className.split(" ")[0] ?? "", paneW: pane ? r1(R(pane).width) : 0, boxW: r1(b.width), boxOverPane: pane ? r1(b.right - R(pane).right) : 0,
-      past: over.length, furthest: over.reduce((m, x) => Math.max(m, x.overBox), 0), over, send, docScroll: document.documentElement.scrollWidth - innerWidth, rows };
-  });
-}
-
-/** The fit of every composer on the page (see composersInPage). */
-export const measureComposer = (page) => page.evaluate(composersInPage);
-
-/** In the page: the controls of the first composer's toolbar, left to right, each with its kind (server, agent, lock,
- *  folder, model, effort, model-effort: the fixed chip of both, loading, subagents, more: the chip of the popup that holds what
- *  the row has no room for, meter, insert: the button of the insert popup, attach: the button that adds images, stop, send), its label, whether it is a fixed chip, its width and its own margin (the lock has one);
- *  gap: the row's; chrome: what the box takes besides the row (padding and border); sum: the controls with
- *  their margins and the gaps between them on one line, the row's spacer among them at no width; reason: the line
- *  under the controls, when the toolbar has one.
- *  Each control has the width it asks for: none is squeezed, as the lock is in a row that overflows. */
-function toolbarInPage() {
-  const tools = document.querySelector(".composer .composer-tools");
-  if (!tools) return null;
-  const r1 = (n) => Math.round(n * 10) / 10, box = tools.closest(".composer-box"), cs = getComputedStyle(box);
-  const whole = document.createElement("style");
-  whole.textContent = ".composer-tools { flex-wrap: nowrap !important } .composer-tools > * { flex-shrink: 0 !important; max-width: none !important }";
-  document.head.append(whole);
-  const all = [...tools.children].filter((e) => !e.matches(".agent-reason, .menu-backdrop"));
-  const kindOf = (e) => {
-    if (e.matches(".send.stop")) return "stop";
-    if (e.matches(".send")) return "send";
-    if (e.matches(".insert-btn")) return "insert";
-    if (e.matches(".attach-btn")) return "attach";
-    if (e.tagName.toLowerCase() === "svg") return "lock";
-    const chip = e.matches(".tchip, .ctx-meter") ? e : e.querySelector(".tchip, .ctx-meter");
-    if (!chip) return "other";
-    if (chip.matches(".ctx-meter")) return "meter";
-    if (chip.matches(".more-chip")) return "more";
-    const t = chip.getAttribute("title") ?? "";
-    if (t.startsWith("Server")) return "server";
-    if (t.startsWith("Agent")) return "agent";
-    if (t.startsWith("Model and effort") || t.startsWith("Starting the agent")) return "model-effort";
-    // (the fixed chip of a chat whose server is not connected, or no longer has it, says that in its title)
-    if (chip.matches(".static:not(.server-chip):not(.sub-chip)") && /is not connected|is no longer on/.test(t)) return "model-effort";
-    if (t.startsWith("Model")) return "model";
-    if (t.startsWith("Effort")) return "effort";
-    if (t.startsWith("Subagents")) return "subagents";
-    if (/^(Working directory|Folder)/.test(t)) return "folder";
-    return chip.textContent.includes("Loading models") ? "loading" : "other";
-  };
-  const controls = all.filter((e) => !e.matches(".grow")).map((e) => {
-    const chip = e.matches(".tchip, .ctx-meter") ? e : e.querySelector(".tchip, .ctx-meter");
-    const m = getComputedStyle(e), margin = r1((parseFloat(m.marginLeft) || 0) + (parseFloat(m.marginRight) || 0));
-    return { kind: kindOf(e), label: (chip ?? e).textContent.replace(/▾/g, "").replace(/\s+/g, " ").trim(), fixed: !!chip?.matches(".static"), w: r1(e.getBoundingClientRect().width), margin };
-  });
-  const gap = parseFloat(getComputedStyle(tools).columnGap) || 0;
-  const chrome = ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"].reduce((n, k) => n + parseFloat(cs[k]), 0);
-  whole.remove();
-  return { controls, gap, chrome: r1(chrome), sum: r1(controls.reduce((n, c) => n + c.w + c.margin, 0) + gap * (all.length - 1)), reason: tools.querySelector(".agent-reason")?.textContent ?? "" };
-}
-
-/** The widths the controls of the page's composer toolbar ask for (see toolbarInPage); null with no composer. */
-export const toolbarWidths = (page) => page.evaluate(toolbarInPage);
-
-/** "Branch from here" on the first reply of the thread: the chat has a pending move, with its banner. */
-export async function startMove(page) {
-  await page.locator(".thread .msg.assistant").first().hover();
-  await page.locator(".thread .msg.assistant .fk-act.k-branch").first().click({ timeout: 5000 });
-  await page.waitForSelector(".fk-banner", { timeout: 5000 });
-}
-
-/** The server a state has dropped, by the mock's address: put back when the next page opens on that mock (openPage). */
-const dropped = new Map();
-
-/** What a seeded state asks the page to do before it shows (its `act`, dev/mock-ui.js). "drop:<entry id>": that
- *  server of the mock's list drops while the page has its chat open; it is connected again before the next page
- *  opens. */
-export async function act(page, what) {
-  if (what?.startsWith("drop:")) {
-    const id = what.slice(5), url = new URL(page.url()).origin;
-    await page.waitForSelector(".composer-box", { timeout: 10000 }); // (what is to stay on screen is on screen)
-    dropped.set(url, id);
-    await mockEval(`setServerState(${JSON.stringify(id)}, "unreachable", { detail: "connection refused" });`, url);
-    return page.waitForSelector(`.side-section[data-server="${id}"] .side-section-state.bad`, { state: "attached", timeout: 10000 }).catch(() => {}); // (attached: the sidebar may be hidden)
-  }
-  switch (what) {
-    case undefined: return;
-    case "move": return startMove(page);
-    case "hover": return page.locator(".thread .msg.assistant").first().hover();
-    case "tree": return page.locator(".chat-head .fk-tree-btn").click();
-    case "drawer": return page.locator(".thread .subagent").first().click();
-    case "select": { // every shape of the board: a click gives the canvas the keys
-      await page.waitForSelector(".excalidraw:not(.excalidraw--view-mode) canvas.interactive", { timeout: 10000 });
-      const box = await page.locator(".excalidraw canvas.interactive").boundingBox();
-      await page.mouse.click(box.x + box.width - 40, box.y + box.height - 40);
-      return page.keyboard.press("ControlOrMeta+a");
-    }
-  }
-  throw new Error(`no act "${what}"`);
-}
-
-// ---- tool cards
-
-/** In the page: the tool cards under `root`, in order. Each: cls (its classes), label, hint (the line beside the
- *  label), open, and the open card's parts as they are drawn:
- *    { part: "path", path, title, counts, lines }          the file, "+1 −1", "9 lines"
- *    { part: "text", title, failed, lead, text, left, coloured, box }   title: "Command", "Output · failed", …; text: the
- *                                                           texts of its blocks (two when it is cut); left: "⋯ 2,980
- *                                                           lines left out"; coloured: how many coloured spans
- *    { part: "change", title, rows, left, box }            rows: " same", "-removed", "+added", "@⋯ 60 unchanged lines"
- *    { part: "note", text }      { part: "more", text }    "⋯ 18 more edits"
- *  box: [clientHeight, scrollHeight, clientWidth, scrollWidth] of the part's own box. */
-function cardsInPage(rootSel) {
-  const root = document.querySelector(rootSel);
-  if (!root) return null;
-  const text = (e) => e?.textContent ?? "", box = (e) => (e ? [e.clientHeight, e.scrollHeight, e.clientWidth, e.scrollWidth] : null);
-  return [...root.querySelectorAll(".tool")].map((t) => {
-    const detail = t.querySelector(":scope > .tool-detail");
-    return { cls: t.className.trim().split(/\s+/), label: text(t.querySelector(".tool-label")), hint: text(t.querySelector(".tool-hint")), open: !!detail,
-      parts: [...(detail?.children ?? [])].map((p) => {
-        if (p.matches(".tool-path")) return { part: "path", path: text(p.querySelector(".tool-path-name")), title: p.title, counts: text(p.querySelector(".tool-counts")), lines: text(p.querySelector(".tool-lines")) };
-        if (p.matches(".tool-note")) return { part: "note", text: text(p) };
-        if (p.matches(".tool-omit")) return { part: "more", text: text(p.querySelector("span")) };
-        const title = text(p.querySelector(".tool-sub")), diff = p.querySelector(".tool-diff"), body = p.querySelector(".tool-text");
-        if (diff) return { part: "change", title, left: text(diff.querySelector(".tool-omit span")), box: box(diff),
-          rows: [...diff.querySelectorAll(".diff-row")].map((r) => (r.matches(".skip") ? "@" + text(r) : (r.matches(".add") ? "+" : r.matches(".del") ? "-" : " ") + text(r.querySelector(".diff-text")))) };
-        return { part: "text", title, failed: p.matches(".failed"), lead: text(p.querySelector(".tool-lead")), text: [...(body?.querySelectorAll("pre") ?? [])].map(text),
-          left: text(body?.querySelector(".tool-omit span")), coloured: body?.querySelectorAll('code.hljs span[class^="hljs-"]').length ?? 0, box: box(body) };
-      }) };
-  });
-}
-
-/** The tool cards of a thread (see cardsInPage): root is ".thread", ".sub-drawer-body", … null with no such element. */
-export const toolCards = (page, root = ".thread") => page.evaluate(cardsInPage, root);
-
-/** Opens every closed tool card under root, the first one first. */
-export async function openCards(page, root = ".thread") {
-  const closed = page.locator(`${root} .tool:not(:has(> .tool-detail)) > .tool-row`);
-  for (let n = await closed.count(); n > 0; n--) await closed.first().click();
-  await page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
-}
-
-/** In the page: what of the tool cards under `root` (a thread) passes its pane. cards: how many; width: the thread's
- *  own; wide: the cards that begin or end outside the thread's content box; out: the elements of a card that end past
- *  the card (each as its class and by how many px); sideways: the boxes of a card that scroll sideways; scroll: by how
- *  much the thread and the document scroll sideways. bad: any of them. */
-function cardsFitInPage(rootSel) {
-  const root = document.querySelector(rootSel);
-  if (!root) return null;
-  const R = (e) => e.getBoundingClientRect(), cs = getComputedStyle(root), r = R(root), r1 = (n) => Math.round(n * 10) / 10;
-  const left = r.left + root.clientLeft + parseFloat(cs.paddingLeft), right = r.left + root.clientLeft + root.clientWidth - parseFloat(cs.paddingRight);
-  const name = (e) => e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\s+/).join(".") : "");
-  const cards = [...root.querySelectorAll(".tool")], wide = [], out = [], sideways = [];
-  for (const [i, t] of cards.entries()) {
-    const q = R(t);
-    if (q.left < left - 0.5 || q.right > right + 0.5) wide.push(`card ${i + 1}: ${r1(q.left - left)} to +${r1(q.right - right)}`);
-    for (const e of t.querySelectorAll("*")) { const over = R(e).right - q.right; if (over > 0.5) out.push(`card ${i + 1} ${name(e)} +${r1(over)}`); }
-    for (const e of t.querySelectorAll(".tool-text, .tool-diff, .tool-detail, .tool-row")) if (e.scrollWidth > e.clientWidth) sideways.push(`card ${i + 1} ${name(e)} +${e.scrollWidth - e.clientWidth}`);
-  }
-  const scroll = Math.max(0, root.scrollWidth - root.clientWidth) + Math.max(0, document.documentElement.scrollWidth - innerWidth);
-  return { cards: cards.length, width: r1(r.width), wide, out, sideways, scroll, bad: wide.length + out.length + sideways.length + scroll > 0 };
-}
-
-/** Whether the tool cards of a thread lie inside it (see cardsFitInPage). */
-export const cardsFit = (page, root = ".thread") => page.evaluate(cardsFitInPage, root);
-
-// ---- real drags in the sidebar (G2 §4): a press and a move start the page's own dragstart, which
-// Input.setInterceptDrags hands over; Input.dispatchDragEvent then feeds Blink's drag-target code, which fires
-// dragenter, dragleave (with relatedTarget), dragover and drop, and after a drop dragend. There is no OS drag
-// session: Esc and leaving the window are stood in for by dragCancel, which gives the page dragend alone.
-
-/** A dragger for the page's sidebar.
- *    row(name), head(name, fx, fy)   the centre of a row, a point of a group's header (fy 0.2: its upper half)
- *    start(p)                        presses on p and moves: false when the page started no drag
- *    over(p)                         the pointer lingers on p (three dragovers)
- *    drop(), cancel()                the endings: a drop where the pointer is; Esc or leaving the window
- *    drawn()                         the page has drawn what it made of the last event
- *    click(p)                        a plain click
- *    lit()                           what is lit now: ["group(Shop).drop [VISIBLE]", "head(Mid).drop-before [hidden by :has]", …]
- *    groupOf(name)                   the group a row is in ("" when ungrouped, null with no such row)
- *    parentOf(name)                  the group a group is in ("" at the top level)
- *  The endings G2 lists are these calls in a row: a drop (over, drop), a drop on a header's upper half
- *  (over(head(n, 0.3, 0.2)), drop), Esc (cancel), a release outside every zone (over(dragger.OUTSIDE), drop), the
- *  dragged node removed in mid-drag (mockEval that removes it, then over and drop).
- *  No call waits a fixed time. Each answers when the page has drawn what it made of the event (two frames: React
- *  commits what a handler set a task later), an ending also when the calls it made of the server were answered. What
- *  must come after that (a row in another group, a row gone) is waited for by the check, with until(). */
-export async function dragger(page) {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Input.setInterceptDrags", { enabled: true });
-  await page.evaluate(() => {
-    const nameOf = (g) => g?.querySelector(":scope > .side-group-head .side-group-name")?.textContent;
-    window.__row = (name) => [...document.querySelectorAll(".side-row")].find((r) => r.querySelector(".side-name")?.textContent === name);
-    window.__head = (name) => [...document.querySelectorAll(".side-group-head")].find((h) => h.querySelector(".side-group-name")?.textContent === name);
-    window.__lit = () => [...document.querySelectorAll(".drop, .drop-before")].map((e) =>
-      (e.classList.contains("side-loose") ? "loose" : e.classList.contains("side-group") ? "group(" + nameOf(e) + ")" : "head(" + nameOf(e.parentElement) + ")")
-      + (e.classList.contains("drop-before") ? ".drop-before" : ".drop") + (getComputedStyle(e).boxShadow === "none" ? " [hidden by :has]" : " [VISIBLE]"));
-    window.__groupOf = (el) => (el ? nameOf(el.parentElement?.closest(".side-group")) ?? "" : null);
-  });
-  const point = async (what, name, fx, fy) => {
-    const p = await page.evaluate(([what, name, fx, fy]) => {
-      const e = (what === "row" ? window.__row : window.__head)(name);
-      if (!e) return null;
-      e.scrollIntoView({ block: "nearest" });
-      const r = e.getBoundingClientRect();
-      return { x: r.left + r.width * fx, y: r.top + r.height * fy };
-    }, [what, name, fx, fy]);
-    if (!p) throw new Error(`the sidebar has no ${what === "row" ? "row" : "group"} "${name}"`);
-    return p;
-  };
-  const mouse = (type, p, buttons = 1) => cdp.send("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, button: type === "mouseMoved" && !buttons ? "none" : "left", buttons, clickCount: 1 });
-  const dragEvent = (type, p) => cdp.send("Input.dispatchDragEvent", { type, x: p.x, y: p.y, data });
-  let data = null, last = null, calls = 0;
-  page.on("request", (r) => { if (r.method() !== "GET") calls++; });
-  for (const over of ["requestfinished", "requestfailed"]) page.on(over, (r) => { if (r.method() !== "GET") calls--; });
-  const drawn = () => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
-  const end = async (type) => { await dragEvent(type, last); await mouse("mouseReleased", last, 0); await drawn(); await until(() => calls <= 0); await drawn(); };
-  return {
-    drawn,
-    OUTSIDE: { x: page.viewportSize().width - 200, y: page.viewportSize().height / 2 },
-    row: (name) => point("row", name, 0.5, 0.5),
-    head: (name, fx = 0.3, fy = 0.5) => point("head", name, fx, fy),
-    async start(p) {
-      await mouse("mouseMoved", p, 0); await mouse("mousePressed", p);
-      // (a drag that starts is told within milliseconds; the bound is for a page that starts none)
-      const got = new Promise((ok) => { const t = setTimeout(() => ok(null), 10000); cdp.once("Input.dragIntercepted", (e) => { clearTimeout(t); ok(e.data); }); });
-      await mouse("mouseMoved", { x: p.x + 6, y: p.y + 3 }); await mouse("mouseMoved", { x: p.x + 14, y: p.y + 6 });
-      data = await got; last = p;
-      if (data) await dragEvent("dragEnter", { x: p.x + 14, y: p.y + 6 });
-      else await mouse("mouseReleased", p, 0);
-      return !!data;
-    },
-    // (a real drag sends dragover over and over, and React commits what one set a moment later)
-    async over(p) { last = p; for (let i = 0; i < 3; i++) { await dragEvent("dragOver", { x: p.x + i, y: p.y }); await drawn(); } },
-    drop: () => end("drop"),
-    cancel: () => end("dragCancel"),
-    async click(p) { await mouse("mouseMoved", p, 0); await mouse("mousePressed", p); await mouse("mouseReleased", p, 0); await drawn(); },
-    lit: () => page.evaluate(() => window.__lit()),
-    groupOf: (name) => page.evaluate((n) => window.__groupOf(window.__row(n)), name),
-    parentOf: (name) => page.evaluate((n) => window.__groupOf(window.__head(n)?.parentElement), name),
-  };
-}
-
-/** Real drags by the pointer, in a page whose draggable rows are not the sidebar's (those are dragger's): the browser
- *  starts the drag from the pointer's press and moves, and sends the page what a hand's drag sends it.
- *    at(locator, fx, fy)   a point of an element, scrolled to first; the fractions are of its box, its middle by default
- *    start(point)          press there and move until the drag has begun
- *    over(point)           the pointer is there, and the page has drawn what it made of it
- *    drop()                the release where the pointer is: a drop where the page takes one, the drag's end where not
- *  No call waits a fixed time: each answers when the page has drawn two frames. What must come of it (a row lit, a row
- *  in another group) is waited for by the check, with until(). */
-export function pointerDrag(page) {
-  const drawn = () => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
-  return {
-    drawn,
-    async at(locator, fx = 0.5, fy = 0.5) {
-      await locator.scrollIntoViewIfNeeded();
-      const b = await locator.boundingBox();
-      if (!b) throw new Error("the page does not show what the drag is to go to");
-      return { x: b.x + b.width * fx, y: b.y + b.height * fy };
-    },
-    // (a drag that the browser ends as it begins leaves the driver waiting for it: the bound is for that)
-    async start(p) {
-      const begin = async () => { await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x + 6, p.y + 3); await page.mouse.move(p.x + 14, p.y + 6); await drawn(); };
-      let late;
-      try { await Promise.race([begin(), new Promise((_, no) => { late = setTimeout(() => no(new Error("the drag did not begin: the browser ended it at once, or took none up")), 15000); })]); } finally { clearTimeout(late); }
-    },
-    // (a real drag sends dragover over and over, and React commits what one set a moment later)
-    async over(p) { for (let i = 0; i < 3; i++) { await page.mouse.move(p.x + i, p.y); await drawn(); } },
-    async drop() { await page.mouse.up(); await drawn(); },
-  };
-}
-
-// ---- the waits of the fork flows
-
-/** In the page: what the chat on screen shows of a wait.
- *    msgs      the thread's messages, top to bottom: { who: "user" | "agent", text, sending: the pending look of a
- *              message on its way, live: it is an item of the list (it can be quoted, branched from, forked) }
- *    lines     the wait lines at the thread's foot: [kind, text], kind "send" | "load" | "open" | "pick" | "fork"
- *    typing    the thread's own status lines ("Thinking…", "Starting the agent…")
- *    empty     the empty thread's state is drawn
- *    send      Send: { disabled, title, spin: a spinner in the place of its arrow }; stop: Stop is drawn
- *    banner    the banner's text, "" with none; back: its Back, as a control
- *    alerts    the header's alerts about other branches, as controls
- *    model, effort   the toolbar's model chip (a picker, or the fixed chip) and its effort picker, as controls; fixed:
- *              the model chip is the fixed one
- *    acts      the fork actions of the thread's messages, as controls with their kind ("branch", "branchEdit", "fork",
- *              "forkEdit", "label")
- *    box, err  the composer's text, and the error under it
- *  A control is { disabled (the attribute, or aria-disabled), title, text }, null when it is not drawn. */
-function waitsInPage() {
-  const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim();
-  const ctl = (e) => (e ? { disabled: e.disabled === true || e.getAttribute("aria-disabled") === "true", title: e.getAttribute("title") ?? "", text: text(e) || (e.getAttribute("data-text") ?? "") } : null);
-  const thread = document.querySelector(".thread:not(.read-only)"), all = (sel) => [...(thread?.querySelectorAll(sel) ?? [])];
-  const send = document.querySelector(".composer .send:not(.stop)");
-  const model = document.querySelector('.composer .model-pick > button.tchip, .composer .tchip.static[title^="Starting the agent"], .composer .tchip.static[title^="Model and effort"]');
-  return {
-    msgs: all(":scope > .msg").map((m) => ({ who: m.classList.contains("user") ? "user" : "agent", text: text(m.querySelector(":scope > .md") ?? m), sending: m.classList.contains("sending"), live: m.hasAttribute("data-item") })),
-    lines: all(":scope > .wait-line").map((l) => [l.dataset.wait, text(l)]),
-    typing: all(":scope > .typing").map(text),
-    empty: !!thread?.querySelector(".empty-thread"),
-    send: send ? { ...ctl(send), spin: !!send.querySelector(".spin") } : null,
-    stop: !!document.querySelector(".composer .send.stop"),
-    banner: text(document.querySelector(".fk-banner .fk-banner-text")),
-    back: ctl(document.querySelector(".fk-banner button")),
-    alerts: [...document.querySelectorAll(".chat-head .fk-alert")].map(ctl),
-    model: ctl(model), fixed: !!model?.classList.contains("static"),
-    effort: ctl(document.querySelector('.composer button.tchip[title^="Effort"]')),
-    acts: all(".fk-act").map((b) => ({ kind: [...b.classList].find((c) => c.startsWith("k-"))?.slice(2) ?? "", ...ctl(b) })),
-    box: text(document.querySelector(".composer .composer-input")),
-    err: text(document.querySelector(".composer .composer-err")),
-  };
-}
-
-/** What the chat on screen shows of a wait of the fork flows (see waitsInPage). */
-export const waitsSeen = (page) => page.evaluate(waitsInPage);
+/** The server a state has dropped, by the mock's address: put back when the next page opens on that mock (openApp). */
+export const dropped = new Map();
 
 /** How many calls a knob of the mock holds (flags[knob] with `hold`): a check waits for it with until(), as the sign
  *  that the page's call has reached the mock. */
@@ -544,25 +223,6 @@ export const holds = (url, knob) => mockEval(`return flags.${knob}?.held?.length
 export const release = (url, knob, first = "") => mockEval(`${first}; return release(${JSON.stringify(knob)});`, url);
 
 // ---- frames
-
-/** A probe for sampleFrames: the composer's fit in one frame. null while no composer is drawn; else how many
- *  controls of the toolbar end past the box, by how much, whether Send is the element at its own centre, and whether
- *  the document scrolls sideways. bad: any of them. */
-export function composerProbe() {
-  const box = document.querySelector(".composer .composer-box"), tools = box?.querySelector(".composer-tools");
-  if (!tools) return null;
-  const right = box.getBoundingClientRect().right;
-  let past = 0, by = 0;
-  for (const e of tools.children) {
-    if (e.matches(".grow, .menu-backdrop")) continue;
-    const over = e.getBoundingClientRect().right - right;
-    if (over > 0.5) { past++; by = Math.max(by, Math.round(over)); }
-  }
-  const sd = tools.querySelector(".send:not(.stop)"), q = sd?.getBoundingClientRect();
-  const hit = q ? document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2) : null;
-  const send = !sd || hit === sd || sd.contains(hit), scroll = document.documentElement.scrollWidth - innerWidth;
-  return { bad: past > 0 || !send || scroll > 0, past, by, send, scroll, box: Math.round(box.getBoundingClientRect().width) };
-}
 
 /** Samples the page once per frame, after the frame is painted, until stop() is called: probe is a function run in
  *  the page (no closure: it is sent as text) that answers a value for the frame, or null for a frame that does not
@@ -595,7 +255,7 @@ export async function sampleFrames(page, probe = composerProbe, { fromLoad = fal
   };
 }
 
-/** Drags a pane's resizer (".board-panel .resizer", ".side-pane .resizer") by dx px, one pointer move a frame, as a
+/** Drags a pane's resizer (`selector` names it: a testID's) by dx px, one pointer move a frame, as a
  *  hand does it: the pane is drawn at every width on the way. */
 export async function dragResizer(page, selector, dx, step = 6) {
   const b = await page.locator(selector).boundingBox(), x = b.x + b.width / 2, y = b.y + b.height / 2;
@@ -734,14 +394,17 @@ export const atRest = (page, frames = 24) => page.evaluate((frames) => new Promi
  *    a, b    a build each: a DIST folder (a mock is started for it on `port`, one after the other), a
  *            URL of a server that runs, or { dist, script } for a build served by another build's mock
  *    pages   [{ name, sel, size, ls, wait, scheme, seed: [sections], mock: code run in the mock once the page is open, omit,
- *            style: CSS added to the page in both builds before it is shot }]
+ *            style: CSS added to the page in both builds before it is shot, act: async (page) => … run before the shot (a
+ *            popup opened), viewport and query: the page's viewport and query (openApp's) }]
+ *    tolerance  a pixel differs when a channel of it is more than this many levels (of 255) from the other's; 0: every
+ *            difference counts. The build's rounded borders are drawn one level apart by two rasters of one page
  *    omit    selectors of regions left out of every page's comparison (a page's own `omit` adds to them): what they
  *            cover in either build is not compared
- *  Still pages: the caret is hidden and no animation runs (openPage's `still`); the pages' clock stands at `clock`, and
+ *  Still pages: the caret is hidden and no animation runs (openApp's `still`); the pages' clock stands at `clock`, and
  *  the mocks tell their times from it (T0), so that a label that tells a time is the same in both. clock: null leaves
  *  both on the real time, for a mock from before T0. A page is shot once, when it has come to rest (atRest);
  *  one that does not fails the comparison. */
-export async function compareShots({ a, b, pages, omit = [], port, out, clock = Date.UTC(2026, 0, 15, 12), browser }) {
+export async function compareShots({ a, b, pages, omit = [], port, out, clock = Date.UTC(2026, 0, 15, 12), browser, tolerance = 0 }) {
   const own = !browser;
   browser ??= await (await loadPlaywright()).chromium.launch();
   const dir = out ?? fs.mkdtempSync(path.join(TMP, "aiwb-shots-"));
@@ -755,15 +418,17 @@ export async function compareShots({ a, b, pages, omit = [], port, out, clock = 
     try {
       for (const p of pages) {
         if (p.seed) await seed(url, ...p.seed);
-        const { ctx, page } = await openPage({ url, sel: p.sel, size: p.size, ls: p.ls, wait: p.wait, scheme: p.scheme, browser, clock: clock ?? undefined, still: true });
+        const { ctx, page } = await openApp({ url, viewport: p.viewport, query: p.query, sel: p.sel, size: p.size, ls: p.ls, wait: p.wait, scheme: p.scheme, browser, clock: clock ?? undefined, still: true });
         try {
           if (p.mock) await mockEval(p.mock, url);
+          if (p.act) await p.act(page);
           if (p.style) await page.addStyleTag({ content: p.style });
           await page.evaluate(() => document.fonts.ready);
           if (!await atRest(page)) throw new Error(`the page "${p.name}" did not come to rest: its document kept changing, or it kept loading`);
           const file = path.join(dir, `${p.name}-${tag}.png`);
           const png = await page.screenshot({ path: file, animations: "disabled", caret: "hide" });
-          const rects = await page.evaluate((sels) => sels.flatMap((s) => [...document.querySelectorAll(s)]).map((e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }), [...omit, ...(p.omit ?? [])]);
+          // (the shot is in device pixels, the page's boxes in CSS ones: a touch viewport has a scale of 2 or 3)
+          const rects = await page.evaluate((sels) => sels.flatMap((s) => [...document.querySelectorAll(s)]).map((e) => { const r = e.getBoundingClientRect(), k = devicePixelRatio; return [r.left * k, r.top * k, r.width * k, r.height * k]; }), [...omit, ...(p.omit ?? [])]);
           shots.push({ file, png: png.toString("base64"), rects });
         } finally { await ctx.close(); }
       }
@@ -775,72 +440,23 @@ export async function compareShots({ a, b, pages, omit = [], port, out, clock = 
     const page = await browser.newPage();
     const result = [];
     for (const [i, p] of pages.entries()) {
-      const r = await page.evaluate(async ([pa, pb, rects]) => {
+      const r = await page.evaluate(async ([pa, pb, rects, tol]) => {
         const load = async (b64) => { const img = new Image(); img.src = "data:image/png;base64," + b64; await img.decode(); return img; };
         const [ia, ib] = [await load(pa), await load(pb)];
         if (ia.width !== ib.width || ia.height !== ib.height) return { pixels: ia.width * ia.height, differing: ia.width * ia.height, sizes: [[ia.width, ia.height], [ib.width, ib.height]] };
-        const data = (img) => { const c = new OffscreenCanvas(img.width, img.height), g = c.getContext("2d"); g.drawImage(img, 0, 0); for (const [x, y, w, h] of rects) g.clearRect(Math.floor(x), Math.floor(y), Math.ceil(w) + 1, Math.ceil(h) + 1); return g.getImageData(0, 0, img.width, img.height).data; };
+        // (a canvas on the CPU: one on the GPU read the same pixels of one picture differently from run to run)
+        const data = (img) => { const c = new OffscreenCanvas(img.width, img.height), g = c.getContext("2d", { willReadFrequently: true }); g.drawImage(img, 0, 0); for (const [x, y, w, h] of rects) g.clearRect(Math.floor(x), Math.floor(y), Math.ceil(w) + 1, Math.ceil(h) + 1); return g.getImageData(0, 0, img.width, img.height).data; };
         const da = data(ia), db = data(ib);
         let differing = 0;
-        for (let k = 0; k < da.length; k += 4) if (da[k] !== db[k] || da[k + 1] !== db[k + 1] || da[k + 2] !== db[k + 2] || da[k + 3] !== db[k + 3]) differing++;
+        for (let k = 0; k < da.length; k += 4) if (Math.abs(da[k] - db[k]) > tol || Math.abs(da[k + 1] - db[k + 1]) > tol || Math.abs(da[k + 2] - db[k + 2]) > tol || Math.abs(da[k + 3] - db[k + 3]) > tol) differing++;
         return { pixels: da.length / 4, differing };
-      }, [sa[i].png, sb[i].png, [...sa[i].rects, ...sb[i].rects]]);
+      }, [sa[i].png, sb[i].png, [...sa[i].rects, ...sb[i].rects], tolerance]);
       result.push({ name: p.name, ...r, a: sa[i].file, b: sb[i].file });
     }
     await page.close();
     return result;
   } finally { off(); await tidy(); }
 }
-
-// ---- the sections of the sidebar (plans/remote-server-sections-goal.md)
-
-/** In the page: one section of the sidebar as it is drawn. id: the entry id of the section's server, "local" for this computer's.
- *    there      the part is drawn
- *    name, state, tone   a section's head: the server's name, the words of its state, "ok" | "wait" | "bad"
- *    collapsed  the section is collapsed; count: the number its head shows then, "" for none
- *    add        its head has the "+"; menu: its head has a menu button (a group's has, a section's must not)
- *    draggable  its head can be dragged
- *    lines      what its body says in the place of rows, or under them
- *    outline    its rows, top to bottom, each "<kind> <name>" indented by two spaces a level: "group Renders",
- *               "  board Storyboard", "    chat Tighten act two"; a group that is collapsed ends with " [collapsed]", a
- *               row that is archived with " [archived]"
- *    rows       the names of its board and chat rows, in that order; subs: the line under each chat row
- *    titles     the tooltip of each row and header */
-function sidePartInPage(id) {
-  const root = document.querySelector(`.side-section[data-server="${CSS.escape(id)}"]`);
-  if (!root) return { there: false };
-  const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim();
-  const body = root.querySelector(":scope > .side-section-body");
-  const outline = [], titles = [];
-  const row = (r, kind, depth) => { outline.push(`${"  ".repeat(depth)}${kind} ${text(r.querySelector(".side-name"))}${r.closest(".archived") && (kind !== "chat" || r.classList.contains("archived")) ? " [archived]" : ""}`); titles.push(r.getAttribute("title") ?? ""); };
-  const walk = (el, depth) => {
-    for (const e of el?.children ?? []) {
-      if (e.matches(".side-group")) {
-        const head = e.querySelector(":scope > .side-group-head"), inner = e.querySelector(":scope > .side-group-body");
-        outline.push(`${"  ".repeat(depth)}group ${text(head.querySelector(".side-group-name"))}${e.classList.contains("archived") ? " [archived]" : ""}${inner ? "" : " [collapsed]"}`);
-        titles.push(head.getAttribute("title") ?? "");
-        walk(inner, depth + 1);
-      } else if (e.matches(".side-board")) {
-        row(e.querySelector(":scope > .side-row"), "board", depth);
-        for (const c of e.querySelectorAll(":scope > .side-board-chats > .side-row")) row(c, "chat", depth + 1);
-      } else if (e.matches(".side-row.is-chat")) row(e, "chat", depth);
-      else if (e.matches(".side-loose")) walk(e, depth);
-    }
-  };
-  walk(body, 0);
-  const mine = (sel) => [...(body?.querySelectorAll(sel) ?? [])];
-  const head = root.querySelector(":scope > .side-section-head"), st = head.querySelector(".side-section-state");
-  return { there: true, outline, titles, rows: mine(".side-row .side-name").map(text), subs: mine(".side-row .side-sub").map(text), lines: mine(".side-section-line, .side-loose > .side-empty").map(text),
-    name: text(head.querySelector(".side-section-name")), state: text(st), tone: ["ok", "wait", "bad"].find((t) => st?.classList.contains(t)) ?? "", collapsed: head.getAttribute("aria-expanded") === "false",
-    count: text(head.querySelector(".side-count")), add: !![...head.querySelectorAll("button")].find((b) => b.textContent.trim() === "+"), menu: !!head.querySelector('button[title="More"]'),
-    draggable: head.draggable === true || !!head.closest("[draggable=true]") };
-}
-
-/** What one section of the sidebar shows (see sidePartInPage): by its server's entry id, this computer's ("local") by default. */
-export const sideSeen = (page, id = "local") => page.evaluate(sidePartInPage, id);
-
-/** The entry ids of the sections the sidebar draws, top to bottom. */
-export const sectionsSeen = (page) => page.evaluate(() => [...document.querySelectorAll(".side-tree .side-section")].map((s) => s.dataset.server));
 
 /** Records the calls a page makes from now on, but its event stream, its pictures and the files of the page itself:
  *  [{ server, method, path (with its query), body (parsed, when it is JSON), status (once answered) }], in the order they
@@ -878,15 +494,6 @@ export async function hostCall(url, method, path, body, server = "local") {
   return { status: r.status, body: parsed, text, sceneRev: r.headers.get("x-aiwb-scene-rev") === null ? null : Number(r.headers.get("x-aiwb-scene-rev")) };
 }
 
-/** Opens the menu of a row or a header of the sidebar (its "More" button, or its "+": `button` is the button's title
- *  or its text) and clicks the item that says `item`; with more items named, each next one in the list the one before
- *  opened ("Move to…", then a group). root: a locator of the row or the header. */
-export async function sideMenu(page, root, button, ...items) {
-  await root.hover();
-  await root.locator(`button[title="${button}"], button:text-is("${button}")`).first().click();
-  for (const item of items.filter(Boolean)) await page.locator(".menu .menu-item", { hasText: item }).first().click(); // (a "+" that makes a chat at once has no list)
-}
-
 // ---- the frame of a check
 
 /** Runs one check (a file of dev/checks). body gets { url, browser, mock, dist, fail, note }: the mock is the check's
@@ -896,8 +503,26 @@ export async function sideMenu(page, root, button, ...items) {
  *  by itself is a failure, told with the end of what it printed: the calls after its end say only "fetch failed". A
  *  promise that fails with nobody waiting for it (a call the check left open when its mock ended) fails the check the
  *  same way, where it would end the process with nothing tidied up. Ended early (onEnd), it closes its browser, stops
- *  its mock and removes the build it made, as at its own end. */
-export async function check(title, body) {
+ *  its mock and removes the build it made, as at its own end.
+ *
+ *  `viewports` (["desktop", "tablet", "phone"], the ones the check's behaviour applies to; AD-80) is required. DIST is a web
+ *  export of app/ (built now, with buildAppDist, when not set; dev/checks/README.md), and the body runs once per viewport, in order, each on a mock started anew (nothing seeded) and in a fresh context, with these
+ *  besides the above:
+ *    viewport, layout, touch   "phone" | "tablet" | "desktop"; the layout the app picks there (the same name); whether it has a
+ *                              finger and no mouse
+ *    page, context             the page opened for the body (openApp with the options of `page`: query, wait, sel, ls, …) and its
+ *                              context; none when the option `page` is false (a check that opens its own)
+ *    open(opts)                another page on the same mock at this viewport (a new context; openApp's options, `wait` and
+ *                              the others of `page` as defaults); closed when the body ends. One page at a time: the mock has one
+ *                              stream, so `open` while a page is open fails the check (close the first one's context before),
+ *                              unless the check asks for a second window on purpose with `beside: true`: the two then take the
+ *                              stream in turn (each takes it back when its browser retries, about 3 s later, and is told the
+ *                              snapshot), so what a page reads of the other's doing comes by that snapshot, not by the event
+ *    fail(line), note(line)    with the viewport named in the line
+ *    errors                    the messages of the console errors of every page opened here
+ *  A page error (an uncaught exception) or a console error in any of those pages fails the check; `allowConsole: [/re/]` names the
+ *  console errors a check causes on purpose (a server that is cut). VIEWPORT=phone runs one viewport only (by hand). */
+export async function check(title, body, { viewports, page: pageOpts = {}, allowConsole = [] } = {}) {
   const failures = [];
   let mock, browser, built, done = false;
   const tidy = async () => { await browser?.close().catch(() => {}); await mock?.stop(); if (built) fs.rmSync(built, { recursive: true, force: true }); };
@@ -913,10 +538,45 @@ export async function check(title, body) {
   onEnd(tidy);
   process.on("unhandledRejection", (e) => { failures.push(String(e?.stack ?? e)); end(); });
   try {
-    const dist = process.env.DIST || (process.env.MOCK ? "" : (built = buildDist()));
+    if (!viewports) throw new Error(`"${title}" names no viewports`);
+    let names = checkViewports(viewports, `the viewports of "${title}"`);
+    if (process.env.VIEWPORT) {
+      if (!names.includes(process.env.VIEWPORT)) throw new Error(`VIEWPORT=${process.env.VIEWPORT}: this check runs at ${names.join(", ")}`);
+      names = [process.env.VIEWPORT];
+    }
+    const dist = process.env.DIST || (process.env.MOCK ? "" : (built = buildAppDist()));
     mock = process.env.MOCK ? null : await startMock({ dist, port: Number(process.env.PORT || 4801) });
-    browser = await (await loadPlaywright()).chromium.launch();
-    await body({ url: mock?.url ?? process.env.MOCK, browser, mock, dist, fail: (line) => { failures.push(line); }, note: (line) => console.log(`     ${line}`) });
+    const playwright = await loadPlaywright();
+    browser = await playwright.chromium.launch();
+    const url = mock?.url ?? process.env.MOCK;
+    for (const [i, viewport] of names.entries()) {
+      if (i > 0 && mock) await mock.restart();
+      const say = (line) => `${viewport}: ${line}`, errors = [], contexts = [];
+      const watch = (page) => {
+        page.on("pageerror", (e) => { failures.push(say(`page error: ${e.message}`)); });
+        // ("Failed to load resource" is the browser's line for any answer of 400 or more: a call the check makes fail on purpose is one)
+        page.on("console", (m) => {
+          if (m.type() !== "error" || /^Failed to load resource/.test(m.text())) return;
+          errors.push(m.text());
+          if (!allowConsole.some((re) => re.test(m.text()))) failures.push(say(`console error: ${m.text()}`));
+        });
+      };
+      // (the mock, like the host of the app, has one stream for one page: a second page open at the same time takes it from the first, which
+      // takes it back when the browser retries, about 3 s later, and the snapshot that follows each time remounts what the page shows)
+      const open = async ({ beside = false, ...opts } = {}) => {
+        if (!beside && contexts.some((c) => c.pages().length)) failures.push(say(`a page was opened while another is still open (${new Error().stack.split("\n")[2].trim()}): the mock has one stream for one page, so the two take it from each other every 3 s; close the first one (its context) before the next`));
+        const o = await openApp({ url, viewport, browser, ...pageOpts, ...opts });
+        contexts.push(o.ctx);
+        watch(o.page);
+        return o;
+      };
+      try {
+        const first = pageOpts === false ? null : await open();
+        await body({ url, browser, mock, dist, fail: (line) => { failures.push(say(line)); }, note: (line) => console.log(`     ${say(line)}`),
+          viewport, layout: layoutOfViewport(viewport), touch: isTouch(viewport), page: first?.page, context: first?.ctx, open, errors, playwright });
+      } catch (e) { failures.push(say(String(e?.stack ?? e))); } // (a throw ends this viewport; the others still run)
+      for (const c of contexts) await c.close().catch(() => {});
+    }
   } catch (e) { failures.push(String(e?.stack ?? e)); }
   await end();
 }
@@ -930,7 +590,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     else o[k] = v;
   }
   const url = o.url ?? URL0;
-  const { browser, page } = await openPage({ url, sel: o.sel ? JSON.parse(o.sel) : undefined, size: (o.size ?? "1280x800").split("x").map(Number), ls: o.ls, wait: o.wait ?? ".side-tree", scale: Number(o.scale ?? 1) });
+  const { browser, page } = await openApp({ url, viewport: o.viewport, query: o.query, sel: o.sel ? JSON.parse(o.sel) : undefined, size: o.size ? o.size.split("x").map(Number) : undefined, ls: o.ls, wait: o.wait, scale: o.scale ? Number(o.scale) : undefined });
   try {
     for (const code of o.mock) console.error("mock:", JSON.stringify(await mockEval(code, url))); // after the page is open, so that `send` reaches it
     for (const s of o.click) { await page.click(s); await page.waitForTimeout(200); }

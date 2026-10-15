@@ -1,0 +1,9 @@
+# Asks the runner to check what the app's chip input holds (the runner's control API, verify/<flow's verify=>.mjs `checks`): waits until the
+# check NAME holds for the box's latest state (TIMEOUT ms, default 20 s) and fails the flow with what it saw when it does not.
+appId: ${APP_ID}
+---
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /check?name=${NAME}&timeout=${TIMEOUT || 20000}

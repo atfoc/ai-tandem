@@ -1,5 +1,5 @@
 // Electron main process. The app is the client of every server, this computer's included: it holds
-// the server list and the secrets, keeps one pinned HTTPS connection per server (desktop/conn) and
+// the server list and the secrets, keeps one pinned HTTPS connection per server (@aiwb/conn) and
 // answers the page over IPC (ipcface.js) and, for pictures, over the aiwb-picture scheme. The page
 // is a file of the app, loaded at once; it waits for no server. This computer's server is the Go
 // program: `ai-whiteboard launch` finds the running one or starts one detached (its own session),
@@ -10,13 +10,14 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } = require('electron');
 const windowStateKeeper = require('electron-window-state');
-const { createClient, parseAppWaits } = require('./conn');
+const { createNodeClient: createClient, parseAppWaits } = require('@aiwb/conn/node');
 const { createIpcFace } = require('./ipcface');
 const {
   serverBin,
   pagePath,
   attachLinkHandlers,
   attachCloseFlush,
+  watchBlankPage,
   pictureAllowed,
   makePictureResponse,
   PICTURE_SCHEME,
@@ -72,6 +73,7 @@ function createWindow() {
   windowState.manage(win);
   attachLinkHandlers(win.webContents, shell).setPageURL(pageURL);
   attachCloseFlush({ app, win, dialog });
+  watchBlankPage({ webContents: win.webContents, dialog });
   face.watchWindow(win);
   win.once('ready-to-show', () => {
     if (!win.isDestroyed()) win.show();

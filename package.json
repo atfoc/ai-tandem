@@ -1,0 +1,9 @@
+{
+  "name": "ai-whiteboard-workspaces",
+  "private": true,
+  "workspaces": ["app", "packages/*"],
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present"
+  }
+}

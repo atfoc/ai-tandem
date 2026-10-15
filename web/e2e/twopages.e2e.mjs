@@ -17,7 +17,7 @@
 // the installed app: the script builds its own binary into a temp folder, sets a server up there, runs it on a temp
 // data folder and on free ports (the MCP listener too), and stops it at the end. Not part of `npm test`.
 //
-//   cd web && npm ci && npm run build && npm install --no-save playwright && npx playwright install chromium
+//   cd web && npm install --no-save playwright && npx playwright install chromium
 //   node web/e2e/twopages.e2e.mjs
 //
 //   (a) P1 makes board A, P2 makes board B, each draws: both drawings are saved, no take-over.
@@ -37,7 +37,11 @@
 //
 // Environment (all optional):
 //   AIWB_E2E_BIN       server binary                    (default: built into the temp folder)
-//   AIWB_E2E_CLIENT    built web client                 (default web/dist)
+//   DIST               the app's web build to serve (AIWB_E2E_CLIENT too): `cd app && npm run build:web`, then `DIST=app/dist-web`;
+//                      without DIST the script builds its own into the temp folder. The host serves the page over plain HTTP and
+//                      the page calls it from its own address, so the page's CSP needs `connect-src 'self'`
+//                      (app/scripts/export-web.mjs `--connect-self`): an export that has it is used as it is, the shipped one
+//                      (`connect-src 'none'`) is copied into the temp folder with that one change, and DIST itself is not touched
 //   AIWB_E2E_KEEP=1    keep the temp folder (server log, screenshots) after a run that passed;
 //                      after a failed run it is always kept, and its path is printed
 import fs from "node:fs";
@@ -46,6 +50,9 @@ import path from "node:path";
 import {
   Link, Scratch, callOf, finish, hostApp, hostCall, hostFor, loadChromium, makeOut, onSignal, openPage as openHostPage, parseAppWaits, serverBinary, sleep, waitFor, holds,
 } from "./lib/rig.mjs";
+import * as ui from "./lib/ui.mjs";
+
+const { q } = ui;
 
 // Everything the run makes: the binary, the data folder, the work folder, the log, screenshots.
 const OUT = makeOut("twopages");
@@ -105,37 +112,37 @@ let browser = null;
 const pages = [];
 // openPage opens the page of a host in a browser context of its own and keeps the page's uncaught exceptions.
 async function openPage(host, local) {
-  const page = await openHostPage(browser, host, { viewport: { width: 1400, height: 900 }, timeout: 8000, wait: "#root *" });
+  const page = await openHostPage(browser, host, { viewport: { width: 1400, height: 900 }, timeout: 8000, wait: q.rootVisible });
   page.local = local;
   // The take-over panel may come and go between two looks, so the page itself remembers it.
-  await page.addInitScript(() => {
+  await page.addInitScript((panel) => {
     window.__takeoverSeen = 0;
-    const look = () => { if (document.querySelector(".board-canvas .takeover-panel")) window.__takeoverSeen++; };
+    const look = () => { if (document.querySelector(panel)) window.__takeoverSeen++; };
     new MutationObserver(look).observe(document, { childList: true, subtree: true });
-  });
+  }, q.takeover);
   await page.reload();
-  await page.waitForSelector("#root .side-tree", { timeout: 20000 });
+  await page.waitForSelector(ui.treeWait, { timeout: 20000 });
   // S's section fills when the host's connection to S has read its snapshot.
-  await page.locator(`.side-section[data-server="${local ? "local" : ENTRY}"] .side-section-state`, { hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
+  await ui.stateOfSection(page, local ? "local" : ENTRY).filter({ hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
   pages.push(page);
   return page;
 }
 const shot = (page, label) => page.screenshot({ path: path.join(OUT, `${label}.png`) }).catch(() => {});
-const sel = (page) => page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}"));
-const menuItem = (page, text) => page.locator(".menu .menu-item", { hasText: text });
-const takeover = async (page) => ({ now: await page.locator(".board-canvas .takeover-panel").count(), seen: await page.evaluate(() => window.__takeoverSeen) });
+const sel = ui.selection;
+const menuItem = (page, text) => page.locator(q.menuItem, { hasText: text });
+const takeover = async (page) => ({ now: await page.locator(q.takeover).count(), seen: await page.evaluate(() => window.__takeoverSeen) });
 /** What S's section of a page says of the connection. */
-const sectionState = (page) => page.locator(`.side-section[data-server="${page.local ? "local" : ENTRY}"] .side-section-state`).innerText().then((t) => t.trim(), () => "");
+const sectionState = (page) => ui.stateOfSection(page, page.local ? "local" : ENTRY).innerText().then((t) => t.trim(), () => "");
 
 // The shapes toolbar is drawn only for the page that holds the board: any other page has the panel in the canvas's place.
 const TOOLBAR = '[data-testid="toolbar-rectangle"]';
 const DROPPED = "A change made here was not saved in time and was dropped.";
 const SAVE_WAIT = 1200; // longer than the page's save delay: a page that had something to write has sent it by then
-const panel = (p) => p.locator(".board-canvas .takeover-panel");
+const panel = (p) => p.locator(q.takeover);
 // (the heading says "Open in another window" for a board of this computer, and "In use elsewhere" for one of another machine)
-const panelHead = (p) => panel(p).locator("h2", { hasText: /^(Open in another window|In use elsewhere)$/ });
-const useHere = (p) => panel(p).locator("button", { hasText: "Use here" });
-const canvasText = (p) => p.locator(".board-canvas").innerText().then((t) => t.slice(0, 200), () => "(no board on screen)");
+const panelHead = (p) => panel(p).getByRole("heading", { name: /^(Open in another window|In use elsewhere)$/ });
+const useHere = (p) => ui.button(panel(p), "Use here");
+const canvasText = (p) => p.locator(q.boardCanvas).innerText().then((t) => t.slice(0, 200), () => "(no board on screen)");
 const holdsBoard = async (p) => await p.locator(TOOLBAR).isVisible() && (await panel(p).count()) === 0;
 /** Whether the page has the board (by its own id) on screen. */
 const onScreen = async (p, board) => own((await sel(p)).board) === board;
@@ -164,18 +171,15 @@ const names = new Map(); // board id -> its name in the sidebar
 async function newBoard(page, name) {
   const before = new Set((await state()).boards.map((b) => b.id));
   if (page.local) {
-    await page.click("button.icon-btn.new");
-    await menuItem(page, /^\s*New whiteboard\s*$/).click();
+    await ui.click(page, page.locator(q.newBtn));
+    await ui.click(page, menuItem(page, /^\s*New whiteboard\s*$/));
   } else {
-    const head = page.locator(`.side-section[data-server="${ENTRY}"] .side-section-head`);
-    await head.hover();
-    await head.locator("button[title^='New on']").click();
-    await menuItem(page, /^\s*Whiteboard\s*$/).click();
+    await ui.plus(page, ui.sectionById(page, ENTRY).locator(q.sectionHead), "Whiteboard");
   }
   const id = await waitFor("the page selects its new board", async () => { const b = own((await sel(page)).board); return b && !before.has(b) ? b : null; });
-  await page.locator(".board-canvas").waitFor();
+  await page.locator(q.boardCanvas).waitFor();
   await page.locator(TOOLBAR).waitFor({ state: "attached", timeout: 20000 });
-  const box = page.locator(".side-row.is-board input");
+  const box = page.locator(`${q.boardRow} ${q.nameInput}`);
   await box.waitFor();
   await box.fill(name);
   await box.press("Enter");
@@ -183,11 +187,11 @@ async function newBoard(page, name) {
   await waitFor(`every page's sidebar shows "${name}"`, async () => (await Promise.all(pages.map((p) => boardRow(p, id).count()))).every((n) => n === 1));
   return id;
 }
-const boardRow = (page, board) => page.locator(".side-row.is-board").filter({ has: page.locator(".side-name", { hasText: new RegExp(`^${names.get(board).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
+const boardRow = (page, board) => ui.rowOf(page, "board", names.get(board));
 // scribble draws a rectangle on the canvas at a fraction of its size and waits for nothing.
 // Not near the left edge or the top: the editor's own panels are there.
 async function scribble(page, fx, fy) {
-  const b = await page.locator(".board-canvas").boundingBox();
+  const b = await page.locator(q.boardCanvas).boundingBox();
   await page.keyboard.press("Escape");
   await page.locator("label", { has: page.locator(TOOLBAR) }).click();
   const x = b.x + b.width * fx, y = b.y + b.height * fy;
@@ -208,7 +212,7 @@ const drawable = (p, board, what, timeout = 20000) => waitFor(what, async () => 
 // holdOn makes the page the holder of a board, with the board on screen: a click on its row asks
 // for it, and "Use here" where the panel shows.
 async function holdOn(p, board) {
-  if (!(await onScreen(p, board))) await boardRow(p, board).click();
+  if (!(await onScreen(p, board))) await ui.openRow(p, boardRow(p, board));
   await waitFor(`board ${board} is on screen and the page's to draw on`, async () => {
     if ((await onScreen(p, board)) && await holdsBoard(p)) return true;
     if (await useHere(p).isVisible()) await useHere(p).click().catch(() => {});
@@ -283,7 +287,7 @@ async function stepB(p1, p2, B) {
     const before = new Set(elements(B.a).map((e) => e.id));
     await scribble(p1, 0.5, 0.6);
     const savedAlready = elements(B.a).some((e) => !before.has(e.id));
-    await boardRow(p2, B.a).click(); // a click on a board asks for it
+    await ui.openRow(p2, boardRow(p2, B.a)); // a click on a board asks for it
     await panelHead(p1).waitFor({ timeout: 15000 }).catch(() => {});
     const r1 = rectangles(B.a).find((e) => !before.has(e.id));
     check("P1, which held A, shows the take-over panel, and its rectangle is in the file by then",
@@ -293,7 +297,7 @@ async function stepB(p1, p2, B) {
     const saves = sent.filter((x) => x.startsWith("saved"));
     check("P1's edit was written and accepted before P1 let the board go",
       saves.length > 0 && saves.every((x) => x === "saved 200") && sent.includes("release") && sent.lastIndexOf("saved 200") < sent.indexOf("release"), sent);
-    check("P1's panel tells of no dropped change", (await panel(p1).locator(".takeover-dropped").count()) === 0, await canvasText(p1));
+    check("P1's panel tells of no dropped change", (await panel(p1).locator(q.takeoverDropped).count()) === 0, await canvasText(p1));
 
     // P2 draws on the stored drawing: what it saves next holds P1's edit too.
     const r2 = await drawRect(p2, B.a, 0.65, 0.3);
@@ -301,7 +305,7 @@ async function stepB(p1, p2, B) {
 
     // "Use here" takes the board back: the canvas shows the stored drawing, not the one P1 kept.
     const stored = drawn(B.a);
-    await useHere(p1).click();
+    await ui.click(p1, useHere(p1));
     await drawable(p1, B.a, 'after "Use here" P1 draws on A');
     await panelHead(p2).waitFor({ timeout: 15000 }).catch(() => {});
     check("P2 shows the panel in its turn", await panelHead(p2).isVisible(), await canvasText(p2));
@@ -315,7 +319,7 @@ async function stepB(p1, p2, B) {
 
     // The panel is for A only. P2 takes A again; P1, with the panel on A, makes a third board and
     // draws on it. (A click on A's row would ask for A, as "Use here" does: P1 does not go back.)
-    await useHere(p2).click();
+    await ui.click(p2, useHere(p2));
     await drawable(p2, B.a, "P2 has A again");
     await panelHead(p1).waitFor({ timeout: 15000 }).catch(() => {});
     check("P1 shows the panel on A again", await panelHead(p1).isVisible(), await canvasText(p1));
@@ -336,11 +340,11 @@ async function stepC(p1, p2, B) {
   check("P2 lost A and shows the panel", await panelHead(p2).isVisible(), await canvasText(p2));
   const x = await drawRect(p1, B.a, 0.5, 0.15);
   const stored = drawn(B.a), rev = await sceneRev(B.a);
-  await useHere(p2).click();
+  await ui.click(p2, useHere(p2));
   await drawable(p2, B.a, "P2 has A back");
   await sleep(SAVE_WAIT);
   check("the drawing P2 kept was not written: the file is the newer one, with x", unchanged(B.a, stored) && has(B.a, x) && (await sceneRev(B.a)) === rev, { before: stored.length, after: drawn(B.a).length });
-  check("nothing was dropped: P2's canvas shows no note", (await p2.locator(".canvas-note").count()) === 0, await canvasText(p2));
+  check("nothing was dropped: P2's canvas shows no note", (await p2.locator(q.canvasNote).count()) === 0, await canvasText(p2));
   const y = await drawRect(p2, B.a, 0.8, 0.6);
   check("P2 drew y on the newer drawing: the file has x and y", has(B.a, x) && has(B.a, y) && rectangles(B.a).length === stored.length + 1 && (await sceneRev(B.a)) > rev, `${rectangles(B.a).length} rectangles, revision ${rev} -> ${await sceneRev(B.a)}`);
 }
@@ -355,18 +359,18 @@ async function stepD(p1, p2, B) {
   try {
     await scribble(p2, 0.35, 0.5); // pending: its write will wait in the hold
     const t0 = Date.now();
-    await useHere(p1).click();
-    const taking = panel(p1).locator("p", { hasText: "Taking over from the other window…" });
+    await ui.click(p1, useHere(p1));
+    const taking = panel(p1).getByText("Taking over from the other window…");
     await taking.waitFor({ timeout: 2500 }).catch(() => {});
     check("while the holder is asked, P1 says it is taking over", await taking.isVisible(), await canvasText(p1));
     await drawable(p1, B.a, "P1 gets A without the holder's answer", 30000);
     const took = Date.now() - t0;
     check("P1 can draw only after the silent holder's wait (2500 ms at least), with P2's write still on its way", took >= 2500 && hold.held.length > 0, { ms: took, held: hold.held.length });
     await panelHead(p2).waitFor({ timeout: 15000 }).catch(() => {});
-    const line = panel(p2).locator(".takeover-dropped");
+    const line = panel(p2).locator(q.takeoverDropped);
     check("P2 shows the panel, which says its change was dropped", await panelHead(p2).isVisible() && (await line.count()) === 1 && (await line.innerText()).trim() === DROPPED, await canvasText(p2));
     check("the file is as before: P2's rectangle was not written", unchanged(B.a, stored), { before: stored.length, after: drawn(B.a).length });
-    const q = await drawRect(p1, B.a, 0.45, 0.4);
+    const qd = await drawRect(p1, B.a, 0.45, 0.4);
     stored = drawn(B.a);
     const rev = await sceneRev(B.a);
     // The write arrives late.
@@ -376,9 +380,9 @@ async function stepD(p1, p2, B) {
     const body = await res.json().catch(() => ({}));
     check("the held write, released, is refused: another window holds the board", res.status() === 409 && body.code === "not_holder", { status: res.status(), body });
     await sleep(300);
-    check("the file lacks P2's rectangle and the revision is unchanged by the late write", unchanged(B.a, stored) && (await sceneRev(B.a)) === rev && has(B.a, q), { revision: [rev, await sceneRev(B.a)], elements: [stored.length, drawn(B.a).length] });
+    check("the file lacks P2's rectangle and the revision is unchanged by the late write", unchanged(B.a, stored) && (await sceneRev(B.a)) === rev && has(B.a, qd), { revision: [rev, await sceneRev(B.a)], elements: [stored.length, drawn(B.a).length] });
     // P2 takes the board back, and nothing else is done.
-    await useHere(p2).click();
+    await ui.click(p2, useHere(p2));
     await drawable(p2, B.a, 'after "Use here" P2 draws on A again');
     await sleep(SAVE_WAIT);
     check("taking the board back put nothing of the dropped edit into the file", unchanged(B.a, stored) && (await sceneRev(B.a)) === rev, { revision: [rev, await sceneRev(B.a)] });
@@ -395,7 +399,7 @@ async function stepE(p1, p2, B) {
     await scribble(p2, 0.45, 0.8); // an edit made while cut off: its write fails
     await sleep(SAVE_WAIT);
     check("P2's edit made while cut off is not in the file", unchanged(B.a, before), { before: before.length, after: drawn(B.a).length });
-    await useHere(p1).click();
+    await ui.click(p1, useHere(p1));
     await drawable(p1, B.a, "P1 takes A, which the server freed when P2's stream ended");
     const w = await drawRect(p1, B.a, 0.8, 0.15);
     const stored = drawn(B.a), rev = await sceneRev(B.a);
@@ -403,7 +407,7 @@ async function stepE(p1, p2, B) {
     const back = await waitFor("back on the server, P2 shows the panel for A", async () =>
       await panelHead(p2).isVisible() && (await sectionState(p2)) === "Connected", { timeout: 45000 }).catch(() => false);
     check("P2 comes back and shows the panel", back === true, await canvasText(p2));
-    check("P2's panel says its change was dropped", (await panel(p2).locator(".takeover-dropped").count()) === 1, await canvasText(p2));
+    check("P2's panel says its change was dropped", (await panel(p2).locator(q.takeoverDropped).count()) === 1, await canvasText(p2));
     await sleep(SAVE_WAIT);
     check("P2 took nothing back: P1 still draws on A", await holdsBoard(p1) && (await onScreen(p1, B.a)), await canvasText(p1));
     check("the file has w and not P2's edit, at the revision P1 wrote", unchanged(B.a, stored) && (await sceneRev(B.a)) === rev && has(B.a, w), { revision: [rev, await sceneRev(B.a)], elements: [stored.length, drawn(B.a).length] });
@@ -417,7 +421,7 @@ async function stepF(p1, p2, B) {
   const stored = drawn(B.a), rev = await sceneRev(B.a);
   const id = host2.client.clientId;
   await p2.reload();
-  await p2.waitForSelector("#root *", { timeout: 15000 });
+  await p2.waitForSelector("#root *:visible", { timeout: 15000 });
   await panelHead(p2).waitFor({ timeout: 15000 }).catch(() => {});
   check("after its reload P2 has A on screen behind the panel", (await onScreen(p2, B.a)) && await panelHead(p2).isVisible(), await canvasText(p2));
   await sleep(SAVE_WAIT);
@@ -433,14 +437,14 @@ async function stepF(p1, p2, B) {
 async function stepG(p1, p2) {
   // A chat with no agent's turn: P1 makes it, P2 opens it from the sidebar.
   const beforeChats = new Set((await state()).chats.map((c) => c.id));
-  await p1.click("button.icon-btn.new");
-  await menuItem(p1, /^\s*New chat\s*$/).click();
+  await ui.click(p1, p1.locator(q.newBtn));
+  await ui.click(p1, menuItem(p1, /^\s*New chat\s*$/));
   const chat = await waitFor("P1 selects its new chat", async () => { const c = own((await sel(p1)).chat); return c && !beforeChats.has(c) ? c : null; });
-  const row = p2.locator(".side-row.is-chat");
+  const row = p2.locator(q.chatRow);
   await waitFor("P2's sidebar has one chat", async () => (await row.count()) === 1);
-  await row.click();
+  await ui.openRow(p2, row);
   await waitFor("P2 selects the chat", async () => own((await sel(p2)).chat) === chat);
-  const ta = p1.locator(".composer .composer-input"), tb = p2.locator(".composer .composer-input");
+  const ta = ui.box(p1), tb = ui.box(p2);
   await ta.waitFor();
   await tb.waitFor();
 
@@ -478,7 +482,7 @@ async function stepG(p1, p2) {
     check("P1's held save, released, is refused as stale and answered with the stored draft and its counter", res.status() === 409 && body.code === "stale" && body.rev === d4.rev && body.draft?.text === d4.text, { status: res.status(), body });
     await sleep(600); // longer than the composer's save delay
     check("the stored draft is P2's and P1's composer keeps P1's own text", stored().text === d4.text && stored().rev === d4.rev && (await text(ta)) === "late text of P1", { stored: stored(), p1: await text(ta) });
-    // The page's rule (web/src/logic/drafts.ts, DraftSaver): a refused save keeps its text, which was
+    // The page's rule (packages/core/src/logic/drafts.ts, DraftSaver): a refused save keeps its text, which was
     // typed after the draft it was based on, and saves it again on the counter the refusal gave.
     await waitFor("P1 saves its kept text again", () => hold.held.length === 1, { timeout: 5000, every: 50 }).catch(() => {});
     const again = p1.waitForResponse(isDraftPut, { timeout: 15000 });

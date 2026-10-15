@@ -1,0 +1,47 @@
+START mode=long host=127.0.0.1 port=57985 longMs=1290000
+STREAM-OPEN status=200 after 0s
+BEAT t=30s opens=1 ends=0 events=42 boardEvents=40 pings=1 chars=7187 maxSilenceMs=10318 lastName=driver-39-é日😀é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=60s opens=1 ends=0 events=102 boardEvents=100 pings=2 chars=16455 maxSilenceMs=10318 lastName=driver-99-é日😀é日😀é日😀
+BEAT t=90s opens=1 ends=0 events=161 boardEvents=159 pings=4 chars=25686 maxSilenceMs=10318 lastName=driver-158-é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=120s opens=1 ends=0 events=220 boardEvents=218 pings=5 chars=34880 maxSilenceMs=10318 lastName=driver-217-é日😀
+BEAT t=150s opens=1 ends=0 events=280 boardEvents=278 pings=7 chars=44249 maxSilenceMs=10318 lastName=driver-277-é日😀é日😀é日😀é日😀é日😀
+BEAT t=180s opens=1 ends=0 events=340 boardEvents=338 pings=8 chars=53609 maxSilenceMs=10318 lastName=driver-337-é日😀
+BEAT t=210s opens=1 ends=0 events=399 boardEvents=397 pings=10 chars=62816 maxSilenceMs=10318 lastName=driver-396-é日😀é日😀é日😀é日😀
+BEAT t=240s opens=1 ends=0 events=459 boardEvents=457 pings=11 chars=72192 maxSilenceMs=10318 lastName=driver-456
+BEAT t=270s opens=1 ends=0 events=518 boardEvents=516 pings=13 chars=81387 maxSilenceMs=10318 lastName=driver-515-é日😀é日😀é日😀
+BEAT t=300s opens=1 ends=0 events=578 boardEvents=576 pings=14 chars=90780 maxSilenceMs=10318 lastName=driver-575-é日😀é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=330s opens=1 ends=0 events=638 boardEvents=636 pings=16 chars=100116 maxSilenceMs=10318 lastName=driver-635-é日😀é日😀é日😀
+BEAT t=360s opens=1 ends=0 events=697 boardEvents=695 pings=17 chars=109339 maxSilenceMs=10318 lastName=driver-694-é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=390s opens=1 ends=0 events=757 boardEvents=755 pings=19 chars=118691 maxSilenceMs=10318 lastName=driver-754-é日😀é日😀
+BEAT t=420s opens=1 ends=0 events=817 boardEvents=815 pings=21 chars=128076 maxSilenceMs=10318 lastName=driver-814-é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=450s opens=1 ends=0 events=876 boardEvents=874 pings=22 chars=137270 maxSilenceMs=10318 lastName=driver-873-é日😀
+BEAT t=480s opens=1 ends=0 events=936 boardEvents=934 pings=24 chars=146639 maxSilenceMs=10318 lastName=driver-933-é日😀é日😀é日😀é日😀é日😀
+BEAT t=510s opens=1 ends=0 events=995 boardEvents=993 pings=25 chars=155853 maxSilenceMs=10318 lastName=driver-992
+BEAT t=540s opens=1 ends=0 events=1055 boardEvents=1053 pings=27 chars=165259 maxSilenceMs=10318 lastName=driver-1052-é日😀é日😀é日😀é日😀
+BEAT t=570s opens=1 ends=0 events=1115 boardEvents=1113 pings=28 chars=174695 maxSilenceMs=10318 lastName=driver-1112
+BEAT t=600s opens=1 ends=0 events=1174 boardEvents=1172 pings=30 chars=183949 maxSilenceMs=10318 lastName=driver-1171-é日😀é日😀é日😀
+BEAT t=630s opens=1 ends=0 events=1234 boardEvents=1232 pings=31 chars=193402 maxSilenceMs=10318 lastName=driver-1231-é日😀é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=660s opens=1 ends=0 events=1294 boardEvents=1292 pings=33 chars=202798 maxSilenceMs=10318 lastName=driver-1291-é日😀é日😀é日😀
+BEAT t=690s opens=1 ends=0 events=1353 boardEvents=1351 pings=34 chars=212080 maxSilenceMs=10318 lastName=driver-1350-é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=720s opens=1 ends=0 events=1413 boardEvents=1411 pings=36 chars=221492 maxSilenceMs=10318 lastName=driver-1410-é日😀é日😀
+BEAT t=750s opens=1 ends=0 events=1472 boardEvents=1470 pings=37 chars=230762 maxSilenceMs=10318 lastName=driver-1469-é日😀é日😀é日😀é日😀é日😀
+BEAT t=780s opens=1 ends=0 events=1532 boardEvents=1530 pings=39 chars=240190 maxSilenceMs=10318 lastName=driver-1529-é日😀
+BEAT t=810s opens=1 ends=0 events=1592 boardEvents=1590 pings=40 chars=249611 maxSilenceMs=10318 lastName=driver-1589-é日😀é日😀é日😀é日😀é日😀
+BEAT t=840s opens=1 ends=0 events=1651 boardEvents=1649 pings=42 chars=258892 maxSilenceMs=10318 lastName=driver-1648
+BEAT t=870s opens=1 ends=0 events=1711 boardEvents=1709 pings=43 chars=268297 maxSilenceMs=10318 lastName=driver-1708-é日😀é日😀é日😀é日😀
+BEAT t=900s opens=1 ends=0 events=1771 boardEvents=1769 pings=45 chars=277741 maxSilenceMs=10318 lastName=driver-1768
+BEAT t=930s opens=1 ends=0 events=1830 boardEvents=1828 pings=46 chars=286987 maxSilenceMs=10318 lastName=driver-1827-é日😀é日😀é日😀
+BEAT t=960s opens=1 ends=0 events=1890 boardEvents=1888 pings=48 chars=296448 maxSilenceMs=10318 lastName=driver-1887-é日😀é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=990s opens=1 ends=0 events=1949 boardEvents=1947 pings=49 chars=305681 maxSilenceMs=10318 lastName=driver-1946-é日😀é日😀
+BEAT t=1020s opens=1 ends=0 events=2009 boardEvents=2007 pings=51 chars=315126 maxSilenceMs=10318 lastName=driver-2006-é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=1050s opens=1 ends=0 events=2069 boardEvents=2067 pings=52 chars=324530 maxSilenceMs=10318 lastName=driver-2066-é日😀é日😀
+BEAT t=1080s opens=1 ends=0 events=2128 boardEvents=2126 pings=54 chars=333808 maxSilenceMs=10318 lastName=driver-2125-é日😀é日😀é日😀é日😀é日😀
+BEAT t=1110s opens=1 ends=0 events=2188 boardEvents=2186 pings=55 chars=343228 maxSilenceMs=10318 lastName=driver-2185-é日😀
+BEAT t=1140s opens=1 ends=0 events=2247 boardEvents=2245 pings=57 chars=352494 maxSilenceMs=10318 lastName=driver-2244-é日😀é日😀é日😀é日😀
+BEAT t=1170s opens=1 ends=0 events=2307 boardEvents=2305 pings=58 chars=361930 maxSilenceMs=10318 lastName=driver-2304
+BEAT t=1200s opens=1 ends=0 events=2366 boardEvents=2364 pings=60 chars=371184 maxSilenceMs=10318 lastName=driver-2363-é日😀é日😀é日😀
+BEAT t=1230s opens=1 ends=0 events=2426 boardEvents=2424 pings=61 chars=380637 maxSilenceMs=10318 lastName=driver-2423-é日😀é日😀é日😀é日😀é日😀é日😀é日😀
+BEAT t=1260s opens=1 ends=0 events=2486 boardEvents=2484 pings=63 chars=390033 maxSilenceMs=10318 lastName=driver-2483-é日😀é日😀é日😀
+STREAM-ENDED after 1290s error=AbortError:This operation was aborted protocol=h2 reused=false bytes=443800
+BEAT t=1290s opens=1 ends=1 events=2545 boardEvents=2543 pings=64 chars=399315 maxSilenceMs=10318 lastName=driver-2542-é日😀é日😀é日😀é日😀é日😀é日😀
+DONE {"events":2545,"boards":2543,"pings":64,"chars":399315,"opens":1,"ends":1,"maxSilence":10318}

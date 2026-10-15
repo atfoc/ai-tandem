@@ -1,0 +1,86 @@
+# aiwb-e2e: needs=
+# AD-83 flow 2 (package B5): the board's page, shipped in the app, runs in the web view. The self-test screen `dev/BoardSelfTest` mounts the real
+# board host and runs its cases over the bridge: the page loads and says ready, a board draws, a change goes in (`req apply`) and
+# comes back as a delta, a picture comes out (`req export`, a real PNG), the app's mirror equals the page's scene, an empty board and
+# a board of 2,000 elements load (the runner reads the memory of the processes at those two moments). Then the screen leaves an
+# empty board that takes fingers, and the flow draws on it by touch: the strokes the page tells are counted on the screen.
+# Passes when the screen says "board self-test ok" and, after three swipes, "touch strokes: 3".
+appId: ${APP_ID}
+---
+- runFlow: _open.yaml
+- tapOn:
+    id: "selftest-board"
+- extendedWaitUntil:
+    visible: "board self-test (ok|FAILED)"
+    timeout: 300000
+- takeScreenshot: board-verdict
+- assertVisible: "board self-test ok"
+- extendedWaitUntil:
+    visible: "touch strokes: 0.*"
+    timeout: 60000
+- takeScreenshot: board-touch-start
+# The page is Excalidraw's tablet layout on an iPad: the toolbar is at the top (the pencil is "Draw", the "A" is "Text"). Real touches
+# (Maestro drives XCUITest / adb input): the page sees pointerType "touch".
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          point: "60%, 16%"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      # the phone layout: the toolbar is a floating bar at about 21% of the height (the pencil at 57%, the "A" at 65%, the selection arrow at 9%)
+      - tapOn:
+          point: "57%, 21%"
+- swipe:
+    start: 30%, 35%
+    end: 80%, 45%
+    duration: 900
+- swipe:
+    start: 25%, 55%
+    end: 70%, 70%
+    duration: 900
+- swipe:
+    start: 80%, 50%
+    end: 30%, 80%
+    duration: 900
+- extendedWaitUntil:
+    visible: "touch strokes: 3.*"
+    timeout: 20000
+- takeScreenshot: board-touch-strokes
+# The text tool, with the keyboard: tap the "A", tap the canvas (Excalidraw opens its text editor and focuses it), type, tap elsewhere
+# (the on-screen keyboard is up and covers the lower part: the "selection" tool at the top commits the text), and the page tells it.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          point: "64%, 16%"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - tapOn:
+          point: "65%, 21%"
+- tapOn:
+    point: "30%, 60%"
+- inputText: "hello"
+- takeScreenshot: board-text-typing
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          point: "31%, 16%"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - tapOn:
+          point: "9%, 21%"
+- extendedWaitUntil:
+    visible: ".*texts: \\[\"hello\"\\].*"
+    timeout: 20000
+- takeScreenshot: board-text-done

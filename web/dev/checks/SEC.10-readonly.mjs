@@ -1,21 +1,31 @@
-// Proves that a chat which is shown as it was is read-only in every control of its view, not in its composer alone
-// (plans/remote-server-sections-goal.md, 3.8: "nothing can be sent, stopped or changed"; 3.5 for a chat that was
-// deleted on its server). SEC.7 proves the composer, the warning and what happens when the server is back; this
-// goes on from it with what stands around the composer.
-// With the server connected, the chat offers them all: the actions of a message, the answer to a permission request,
-// the tree's rows. Its server dropped: no message has an action, the request has no buttons and says why, the tree
-// opens to be read and no row of it opens, has a menu or a Stop, a pending move's Back is off, Esc stops nothing, the
-// insert popup does not open, a quote is not taken, and the quote the draft has is listed with no way to remove it or
-// to comment on it; and through all of it the page makes no call that changes anything. Back: they are all there again, and Back works. Deleted on its server while it is open: the same as
-// under the outage, with the sentence that it is no longer there.
-import { callsOf, check, mockEval, openPage, seed, startMove, until } from "../shot.mjs";
+// Proves, on the new build, that a chat which is shown as it was is read-only in every control of its view that the chat view draws
+// (SEC.10; plans/remote-server-sections-goal.md, 3.8: "nothing can be sent, stopped or changed"; 3.5 for a chat that was deleted on its
+// server; B-RO-01, B-RO-03, B-RO-04, B-RO-06). SEC.7 proves the warning and what happens when the server is back; this goes on from it
+// with what stands around the thread.
+// With the server connected the chat can be renamed by its header. Its server dropped: the warning names the server, the header has no
+// status and no rename, and the page makes no call that changes anything however the header is pressed. Back: it can be renamed again. Deleted
+// on its server while it is open: the same as under the outage, with the sentence that it is no longer there and no "Servers…".
+// Ports dev/checks/SEC.10-readonly.mjs (S4) at desktop, tablet and phone, every part of it: the messages' Branch, Fork and Label (checks/fork.mjs), the
+// permission request's Allow and Don't, the tree opened to be read, the composer's keys (Esc stops nothing, ⌘P opens no insert popup, the Insert button is off),
+// the quotes. Same seed (the chat has two turns and a permission request that waits), same words.
+// Added in the sweep (rn-sw-webtest), from web/test/sectionviews.test.ts "an archived chat shown as it was is not unarchived from its composer: the bar says why" (C-RO-07):
+// an archived chat of the section (the seed's c_arch) has Unarchive when connected; its server dropped, its bar has none and says why; back, the button is there.
+import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
+import { byTid, hover, press, touchNow } from "./sel.mjs";
+import { actsSeen, openRow, openTree, startMove } from "./fork.mjs";
+import { WAIT, says, textOf } from "./chat.mjs";
+import { hold } from "./quote.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
 const STUDIO = "s_studio", KEY = `${STUDIO}~c_plain`;
-const WHY = "Studio Mac is not connected: nothing can be sent or changed until it is back.";
+const WHY = "Studio Mac is not connected";
+const WHY_FULL = "Studio Mac is not connected: nothing can be sent or changed until it is back."; // what the tree's foot and Back's title say
 const GONE = "This chat is no longer on Studio Mac.";
+const WHY_ALL = "Studio Mac is not connected: nothing can be sent or changed until it is back."; // (the words in the place of the permission request's buttons)
 
-await check("SEC.10 every control of a chat that is shown as it was is off, and none makes a call", async ({ url, browser, fail, note }) => {
+await check("SEC.10 every control of a chat that is shown as it was is off, and none makes a call", async ({ url, viewport, touch, open, fail, note }) => {
   const drop = () => mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
   const back = () => mockEval(`setServerState("${STUDIO}", "connected");`, url);
   await seed(url, "SEC");
@@ -25,126 +35,219 @@ await check("SEC.10 every control of a chat that is shown as it was is off, and 
       { kind: "user", text: "Free it." }, { kind: "perm", requestId: "q_1", toolName: "Bash", input: { command: "kill -9 4242" } });
     Object.assign(chats.c_plain, { status: "approval", working: 1 });
   });`, url);
-  const { page, ctx, errors } = await openPage({ url, browser, sel: { chat: KEY }, size: [1280, 900] });
+  const { page, ctx } = await open({ sel: { chat: KEY }, wait: '[data-testid="chat-head"]' });
   const calls = callsOf(page);
   const writes = (from) => calls.slice(from).filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`);
-  const count = (sel) => page.locator(sel).count();
-  const text = (sel) => page.locator(sel).first().textContent({ timeout: 2000 }).catch(() => "");
-  const reply = page.locator(".thread .msg.assistant").first();
-  await page.waitForSelector(".thread .perm");
+  const bar = byTid(page, "remote-bar");
+  await byTid(page, "perm").first().waitFor({ state: "visible", timeout: WAIT });
+  const name = byTid(page, "chat-head-name").first(), input = byTid(page, "chat-name-input");
 
-  /** What the chat offers while it takes calls. */
-  const live = async (when) => {
-    await reply.hover();
-    if (!await until(async () => await count(".thread .msg.assistant .fk-act.k-branch") > 0, 5000)) fail(`${when}: a reply offers no Branch`);
-    if (!await count(".thread .msg .fk-act.k-label")) fail(`${when}: a message offers no Label`);
-    if (await count(".thread .perm .perm-actions button") !== 2) fail(`${when}: the permission request has no Allow and Don't`);
-  };
-  /** What it offers while it takes none, saying `why`; the tree is opened, read and closed. */
-  const off = async (when, why) => {
-    await reply.hover();
-    await page.waitForTimeout(150);
-    if (await count(".thread .fk-act")) fail(`${when}: a message still offers ${J(await page.locator(".thread .fk-act").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label"))))}`);
-    if (await count(".thread .perm .perm-actions")) fail(`${when}: the permission request can still be answered`);
-    if (await text(".thread .perm .perm-done") !== why) fail(`${when}: the permission request says "${await text(".thread .perm .perm-done")}", not why it cannot be answered`);
-    // the tree: it opens, and is to be read only
-    await page.locator(".chat-head .fk-tree-btn").click();
-    await page.waitForSelector(".fk-nav .fk-row", { timeout: 5000 });
-    const rows = await count(".fk-nav .fk-row"), held = await count(".fk-nav .fk-row.held");
-    if (!rows || rows !== held) fail(`${when}: ${held} of the tree's ${rows} rows are held`);
-    if (await count(".fk-nav .fk-stop")) fail(`${when}: a branch of the tree has a Stop`);
-    if (await text(".fk-nav-foot .fk-held") !== why) fail(`${when}: the tree's foot says "${await text(".fk-nav-foot")}"`);
-    await page.locator(".fk-nav .fk-row").first().dblclick();
-    await page.locator(".fk-nav .fk-row").first().click({ button: "right" });
-    await page.waitForTimeout(150);
-    if (!await count(".fk-nav")) fail(`${when}: a double click on a row of the tree closed it and opened the chat there`);
-    if (await count(".fk-ctx")) fail(`${when}: a row of the tree has a menu`);
-    await page.keyboard.press("Escape");
-    if (!await until(async () => !await count(".fk-nav"), 5000)) fail(`${when}: the tree does not close`);
-    if (await count(".fk-banner") && !await page.locator(".fk-banner button").isDisabled()) fail(`${when}: a pending move's Back is on`);
+  /** The permission request Allow and Don't while the chat takes calls; while it takes none, no buttons and `why` in their place. */
+  const asks = async (when, why) => {
+    const perm = byTid(page, "perm").first(), buttons = byTid(perm, "perm-actions");
+    if (why === undefined) {
+      if (!await until(async () => await buttons.locator('[role="button"]').count() === 2, WAIT)) fail(`${viewport}: ${when}: the permission request has no Allow and Don't`);
+    } else {
+      if (!await until(async () => await buttons.count() === 0, WAIT)) fail(`${viewport}: ${when}: the permission request can still be answered`);
+      const said = await textOf(page, "perm-done");
+      if (said !== why) fail(`${viewport}: ${when}: the permission request says "${said}", not why it cannot be answered`);
+    }
   };
 
-  /** Selects the first reply's text, as the mouse would. */
-  const selectReply = () => page.evaluate(() => {
-    const md = document.querySelector(".thread .msg.assistant .md") ?? document.querySelector(".thread .msg.assistant");
-    const r = document.createRange(); r.selectNodeContents(md); getSelection().removeAllRanges(); getSelection().addRange(r);
-  });
-  /** The list of the draft's quotes: opened, read (how many can be removed, and whether a click on one opens its comment), closed. */
+  /** The header's name: a press opens the field to rename the chat (Esc leaves it) when the chat takes calls, and does nothing else. */
+  const renames = async () => {
+    await name.click({ force: true }).catch(() => {});
+    const opened = !!await until(() => input.count(), 1500);
+    if (opened) { await page.keyboard.press("Escape"); await until(async () => !await input.count(), 3000); }
+    return opened;
+  };
+
+  /** Quotes the first reply: the browser's selection and ⌘L (a finger holds it and takes the Quote sheet's "Quote whole message" on the phone). `connected`: the
+   *  comment field opens and Enter adds it; else what is said in the place of the field comes back. */
+  const reply = byTid(page, "msg", { role: "assistant" }).first();
+  const tapWord = viewport === "phone" || touch ? "tap" : "click";
+  const quoteReply = async (connected, want = "Studio Mac is not connected", typing = "") => {
+    if (viewport === "phone") {
+      await hold(page, reply, (line) => fail(`${viewport}: ${line}`));
+      await byTid(page, "quote-sheet").waitFor({ state: "visible", timeout: 10000 });
+      if (!connected) {
+        const why = await textOf(page, "quote-why");
+        const has = await byTid(page, "quote-selection").count() + await byTid(page, "quote-whole").count();
+        await page.waitForTimeout(700); // (a press on the dimmed page closes nothing for a moment after the sheet opens)
+        await press(page, byTid(page, "overlay-backdrop").last());
+        await until(async () => !await byTid(page, "quote-sheet").count(), 5000);
+        return { said: why, buttons: has, float: await byTid(page, "qfloat").count() };
+      }
+      await press(page, byTid(page, "quote-whole").first());
+      await byTid(page, "qfloat-comment").waitFor({ state: "visible", timeout: 5000 });
+      if (typing) { await byTid(page, "qfloat-comment").first().fill(typing); return null; } // (the comment is left being typed)
+      await press(page, byTid(page, "qfloat-save").first());
+      return null;
+    }
+    await page.evaluate(() => {
+      const md = document.querySelector('[data-testid="msg"][data-role="assistant"] [data-testid="md"]');
+      const r = document.createRange(); r.selectNodeContents(md); getSelection().removeAllRanges(); getSelection().addRange(r);
+    });
+    await page.keyboard.press("ControlOrMeta+l");
+    if (connected) {
+      await byTid(page, "qfloat-comment").waitFor({ state: "visible", timeout: 5000 });
+      if (typing) { await byTid(page, "qfloat-comment").first().fill(typing); return null; } // (the comment is left being typed)
+      await page.keyboard.press("Enter");
+      return null;
+    }
+    const said = await until(async () => { const t = await textOf(page, "ctx-note"); return t.includes(want) ? t : null; }, 5000);
+    return { said: said || await textOf(page, "ctx-note"), float: await byTid(page, "qfloat").count() };
+  };
+  /** The list of the draft's quotes: opened, read (how many can be removed, the hint, and whether a press on one opens its comment), closed. */
   const quotes = async () => {
-    await page.locator(".composer .qcount").click();
-    await page.waitForSelector(".qlist .qlist-item", { timeout: 5000 });
-    const removable = await count(".qlist .qlist-x"), hint = await text(".qlist-head .hint");
-    await page.locator(".qlist .qlist-item").first().click();
+    await press(page, byTid(page, "qcount").first());
+    await byTid(page, "qlist-item").first().waitFor({ state: "visible", timeout: 5000 });
+    const removable = await byTid(page, "qlist-x").count(), hint = await textOf(page, "qlist-hint");
+    await press(page, byTid(page, "qlist-item").first());
     await page.waitForTimeout(150);
-    const float = await count(".qfloat");
+    const float = await byTid(page, "qfloat").count();
     await page.keyboard.press("Escape");
-    await until(async () => !await count(".qfloat") && !await count(".qlist"), 3000);
+    await until(async () => !await byTid(page, "qfloat").count() && !await byTid(page, "qlist").count(), 3000);
     return { removable, hint, float };
   };
 
-  // ---- connected: everything is offered
-  await live("connected");
-  if (!await count(".composer .send.stop")) fail("connected, an agent that waits for a permission has no Stop");
-  // a quote is taken into the draft, and saved with it
-  await selectReply();
-  await page.keyboard.press("ControlOrMeta+l");
-  await page.waitForSelector(".qfloat", { timeout: 5000 });
-  await page.keyboard.press("Enter");
-  if (!await until(() => calls.some((c) => c.method === "PUT" && /\/chats\/c_plain\/draft\?/.test(c.path) && c.status === 200 && c.body?.references?.length === 1), 10000)) fail("connected, the quote was not saved with the draft");
-  if (J(await quotes()) !== J({ removable: 1, hint: "click one to edit it", float: 1 })) fail(`connected, the draft's quote can be removed and commented on: ${J(await quotes())}`);
+  /** What the chat offers while it takes calls: a reply offers Branch, a message Label (B-FK-01), the tree opens with rows that open. */
+  const live = async (when) => {
+    let acts = [];
+    await until(async () => (acts = await actsSeen(page)).some((a) => a.kind === "branch"), 5000);
+    if (!acts.some((a) => a.kind === "branch")) fail(`${viewport}: ${when}: a reply offers no Branch`);
+    if (!acts.some((a) => a.kind === "label")) fail(`${viewport}: ${when}: a message offers no Label`);
+  };
+  /** What it offers while it takes none, saying `why`: no action on a message; the tree is opened, read and closed (B-FK-04, B-TR-21). */
+  const off = async (when, why) => {
+    const first = byTid(page, "msg").first();
+    await hover(page, first);
+    await page.waitForTimeout(150);
+    if (await page.locator('[data-testid="fk-act"], [data-testid="fk-more"]').count()) fail(`${viewport}: ${when}: a message still offers ${J(await page.locator('[data-testid="fk-act"]').evaluateAll((els) => els.map((e) => e.getAttribute("aria-label"))))}`);
+    // the tree: it opens, and is to be read only
+    await openTree(page);
+    const rows = await byTid(page, "fk-row").filter({ hasNot: page.locator('[data-kind="fork"]') }).count(), held = await page.locator('[data-testid="fk-row"][data-held="true"]').count();
+    if (!rows || rows !== held) fail(`${viewport}: ${when}: ${held} of the tree's ${rows} rows are held`);
+    if (await byTid(page, "fk-stop").count()) fail(`${viewport}: ${when}: a branch of the tree has a Stop`);
+    if (await textOf(page, "fk-held") !== why) fail(`${viewport}: ${when}: the tree's foot says "${await textOf(page, "fk-nav-foot")}"`);
+    await openRow(page, byTid(page, "fk-row").first());
+    if (await touchNow(page)) { if (await byTid(page, "fk-row-more").count()) fail(`${viewport}: ${when}: a row of the tree has a button for its menu`); }
+    else await byTid(page, "fk-row").first().click({ button: "right" });
+    await page.waitForTimeout(150);
+    if (!await byTid(page, "fk-nav").count()) fail(`${viewport}: ${when}: opening a row of the tree closed it and opened the chat there`);
+    if (await byTid(page, "menu").count()) fail(`${viewport}: ${when}: a row of the tree has a menu`);
+    await page.keyboard.press("Escape");
+    if (!await until(async () => !await byTid(page, "fk-nav").count(), 5000)) fail(`${viewport}: ${when}: the tree does not close`);
+    if (await byTid(page, "fk-back").count() && !await byTid(page, "fk-back").first().isDisabled()) fail(`${viewport}: ${when}: a pending move's Back is on`);
+  };
 
+  // ---- connected: the header offers the rename
+  if (!await renames()) fail(`${viewport}: connected, the header of the chat does not offer to rename it`);
+  if (await bar.count()) fail(`${viewport}: connected, the chat has a warning`);
+  await live("connected");
+  await asks("connected");
+  if (!await until(() => byTid(page, "stop").count(), WAIT)) fail(`${viewport}: connected, an agent that waits for a permission has no Stop`);
+  // a quote is taken into the draft, and saved with it
+  await quoteReply(true);
+  if (!await until(() => calls.some((c) => c.method === "PUT" && /\/chats\/c_plain\/draft\?/.test(c.path) && c.status === 200 && c.body?.references?.length === 1), 10000)) fail(`${viewport}: connected, the quote was not saved with the draft`);
+  const q = await quotes();
+  if (J(q) !== J({ removable: 1, hint: `${tapWord} one to edit it`, float: 1 })) fail(`${viewport}: connected, the draft's quote can be removed and commented on: ${J(q)}`);
+
+  // a comment being typed as the server drops is kept in the draft's quote, and the field goes (C-QT-24)
+  await quoteReply(true, undefined, "typed as it drops"); // (the passage is in the draft: its field opens to edit it)
+  if (!await byTid(page, "qfloat-comment").count()) fail(`${viewport}: connected, the quote's field did not stay open for the comment`);
   // ---- its server drops
   await drop();
-  if (!await until(async () => await count(".remote-bar.off") > 0, 10000)) fail("the warning does not show");
+  if (!await until(async () => !await byTid(page, "qfloat").count(), WAIT)) fail(`${viewport}: its server dropped, the quote's field stays open`);
+  await press(page, byTid(page, "qcount").first());
+  await byTid(page, "qlist-item").first().waitFor({ state: "visible", timeout: 5000 });
+  const typed = await byTid(page, "qlist-comment").allTextContents();
+  if (!typed.some((x) => x.includes("typed as it drops"))) fail(`${viewport}: its server dropped, the comment being typed was not kept: the draft's quotes say ${J(typed)}`);
+  await page.keyboard.press("Escape");
+  await until(async () => !await byTid(page, "qlist").count(), 3000);
+  await page.waitForTimeout(900); // (the comment kept is a draft typed before the drop: the save of it is made once, after the draft's own delay; SEC.7 proves the draft's saves)
+  if (!await until(async () => await bar.count() > 0, WAIT)) fail(`${viewport}: the warning does not show`);
   let quiet = calls.length;
-  await off("its server dropped", WHY);
-  // the keys: Esc stops nothing, the insert popup does not open, a quote is not taken
-  await page.locator(".composer .composer-input").click({ force: true });
+  await asks("its server dropped", WHY_ALL);
+  if (await renames()) fail(`${viewport}: its server dropped: the header offers to rename the chat`);
+  if (!await says(page, "remote-bar-text", WHY)) fail(`${viewport}: its server dropped: the warning says "${await textOf(page, "remote-bar-text")}"`);
+  if (!await byTid(page, "perm").count()) fail(`${viewport}: its server dropped: the permission request is gone from the thread`);
+  // the keys: Esc stops nothing, ⌘P opens nothing, the Insert button is off, and the composer has no Stop
+  await byTid(page, "composer-input").first().click({ force: true }).catch(() => {});
   await page.keyboard.press("Escape");
   await page.keyboard.press("ControlOrMeta+p");
+  // (a read-only box takes no focus, so a key never reaches it: ⌘P is handed to its element, as the box would hear it)
+  await byTid(page, "composer-input").first().evaluate((el) => { const mac = /Mac|iPhone|iPad/.test(navigator.platform); el.dispatchEvent(new KeyboardEvent("keydown", { key: "p", code: "KeyP", metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true })); });
   await page.waitForTimeout(150);
-  if (await count(".ins-list")) fail("its server dropped: the insert popup opened for a box that takes nothing");
-  if (await count(".composer .insert-btn") && !await page.locator(".composer .insert-btn").isDisabled()) fail("its server dropped: the composer's Insert button is on");
-  await selectReply();
-  await page.keyboard.press("ControlOrMeta+l");
-  if (!await until(async () => (await text(".composer .ctx-note")).includes("Studio Mac is not connected"), 5000)) fail(`its server dropped: a quote taken with the key says "${await text(".composer .ctx-note")}"`);
-  if (await count(".qfloat")) fail("its server dropped: a quote was taken into a draft that cannot be saved");
+  if (await byTid(page, "insert-popup").count()) fail(`${viewport}: its server dropped: the insert popup opened for a box that takes nothing`);
+  const insert = byTid(page, "insert-btn");
+  if (await insert.count() && !await insert.first().isDisabled()) fail(`${viewport}: its server dropped: the composer's Insert button is on`);
+  if (await byTid(page, "stop").count()) fail(`${viewport}: its server dropped: the composer has a Stop`);
+  // a quote is not taken, the one the draft has stays, to be read: no remove, no comment
+  const r = await quoteReply(false);
+  if (viewport === "phone" ? !r.said.includes("Studio Mac is not connected") || r.buttons : !r.said.includes("Studio Mac is not connected")) fail(`${viewport}: its server dropped: a quote asked for says ${J(r)}`);
+  if (r.float) fail(`${viewport}: its server dropped: a quote was taken into a draft that cannot be saved`);
   await page.evaluate(() => getSelection().removeAllRanges());
-  // the quote the draft has stays, to be read: no remove, no comment
   const kept = await quotes();
-  if (J(kept) !== J({ removable: 0, hint: "click one to show it", float: 0 })) fail(`its server dropped: the draft's quote is ${J(kept)}`);
-  if (await text(".composer .qcount") === "") fail("its server dropped: the draft lost its quote");
-  await page.waitForTimeout(600); // (longer than a draft's save waits)
-  if (writes(quiet).length) fail(`its server dropped: the page made ${J(writes(quiet))}`);
+  if (J(kept) !== J({ removable: 0, hint: `${tapWord} one to show it`, float: 0 })) fail(`${viewport}: its server dropped: the draft's quote is ${J(kept)}`);
+  if (await textOf(page, "qcount") === "") fail(`${viewport}: its server dropped: the draft lost its quote`);
+  await off("its server dropped", WHY_FULL);
+  await page.waitForTimeout(600);
+  if (writes(quiet).length) fail(`${viewport}: its server dropped: the page made ${J(writes(quiet))}`);
 
-  // ---- back: everything is offered again
+  // ---- back: it can be renamed again
   await back();
-  if (!await until(async () => !await count(".remote-bar"), 10000)) fail("back, the warning stays");
+  if (!await until(async () => !await bar.count(), WAIT)) fail(`${viewport}: back, the warning stays`);
+  if (!await until(renames, WAIT)) fail(`${viewport}: back, the header does not offer to rename the chat again`);
   await live("back");
 
   // ---- a pending move, then the drop: Back is off; back, it works
   await startMove(page);
   await drop();
-  if (!await until(async () => await count(".remote-bar.off") > 0, 10000)) fail("the warning does not show the second time");
+  if (!await until(async () => await bar.count() > 0, WAIT)) fail(`${viewport}: the warning does not show the second time`);
   quiet = calls.length;
-  const banner = page.locator(".fk-banner button");
-  if (!await banner.isDisabled() || await banner.getAttribute("title") !== WHY) fail(`a pending move's Back is ${await banner.isDisabled() ? "off" : "on"} and says "${await banner.getAttribute("title")}" while the chat's server is not connected`);
-  await banner.click({ force: true }).catch(() => {});
-  if (!await count(".fk-banner")) fail("Back undid the move of a chat that is shown as it was");
-  if (writes(quiet).length) fail(`with a move pending, the page made ${J(writes(quiet))}`);
+  const banner = byTid(page, "fk-back").first();
+  if (!await banner.isDisabled() || await banner.getAttribute("title") !== WHY_FULL) fail(`${viewport}: a pending move's Back is ${await banner.isDisabled() ? "off" : "on"} and says "${await banner.getAttribute("title")}" while the chat's server is not connected`);
+  await press(page, banner, { force: true }).catch(() => {});
+  if (!await byTid(page, "fk-banner").count()) fail(`${viewport}: Back undid the move of a chat that is shown as it was`);
+  if (writes(quiet).length) fail(`${viewport}: with a move pending, the page made ${J(writes(quiet))}`);
   await back();
-  if (!await until(async () => !await count(".remote-bar") && !await banner.isDisabled().catch(() => true), 10000)) fail("back, a pending move's Back stays off");
-  await banner.click();
-  if (!await until(async () => !await count(".fk-banner"), 5000)) fail("back, Back does not undo the move");
+  if (!await until(async () => !await bar.count() && !await banner.isDisabled().catch(() => true), WAIT)) fail(`${viewport}: back, a pending move's Back stays off`);
+  await press(page, banner);
+  if (!await until(async () => !await byTid(page, "fk-banner").count(), 5000)) fail(`${viewport}: back, Back does not undo the move`);
+  await asks("back");
 
   // ---- deleted on its server while it is open
   await mockEval(`await elsewhere("${STUDIO}", "DELETE", "/chats/c_plain")`, url);
-  if (!await until(async () => await count(".remote-bar.gone") > 0, 10000)) fail("the view of a chat deleted on its server does not say so");
+  if (!await until(async () => await bar.count() > 0 && (await bar.first().getAttribute("data-kind")) === "gone", WAIT)) fail(`${viewport}: the view of a chat deleted on its server does not say so`);
   quiet = calls.length;
+  await asks("deleted on its server", GONE);
+  if (!await says(page, "remote-bar-text", GONE)) fail(`${viewport}: deleted on its server: the warning says "${await textOf(page, "remote-bar-text")}", not "${GONE}"`);
+  if (await renames()) fail(`${viewport}: deleted on its server: the header offers to rename the chat`);
+  // a quote asked for says that the chat is gone, not that the server is away; the draft's quote is kept, to be read (C-QT-24)
+  await page.evaluate(() => getSelection().removeAllRanges());
+  const gone = await quoteReply(false, GONE);
+  if (!gone.said.includes(GONE) || gone.float || (viewport === "phone" && gone.buttons)) fail(`${viewport}: deleted on its server: a quote asked for says ${J(gone)}, not ${J(GONE)} with no field and no button`);
+  await page.evaluate(() => getSelection().removeAllRanges());
   await off("deleted on its server", GONE);
-  if (writes(quiet).length) fail(`deleted on its server: the page made ${J(writes(quiet))}`);
+  if (await byTid(page, "remote-servers").count()) fail(`${viewport}: deleted on its server: the warning offers "Servers…"`);
+  await page.waitForTimeout(600);
+  if (writes(quiet).length) fail(`${viewport}: deleted on its server: the page made ${J(writes(quiet))}`);
 
-  for (const e of errors) fail(`page error: ${e}`);
-  await ctx.close();
-  note("connected, back and after Back: Branch, Label, Allow and Don't, the tree's rows, a quote that is removed or commented on; dropped and deleted: none of them, the reason in the card, the tree's foot and Back's title, no popup and no quote by a key, and no call that changes anything");
-});
+  // ---- an archived chat that is shown as it was (web/test/sectionviews.test.ts, C-RO-07): its bar offers no Unarchive and says why; back, the button is there
+  {
+    await ctx.close(); // (the mock has one stream for one page: the window above is closed before the next one opens)
+    const archived = await open({ sel: { chat: `${STUDIO}~c_arch` }, ls: { "aiwb.archived": "1" }, wait: '[data-testid="chat-head"]' });
+    const barOf = byTid(archived.page, "archived-bar").first();
+    await barOf.waitFor({ state: "visible", timeout: WAIT });
+    if (!await byTid(archived.page, "unarchive").count()) fail(`${viewport}: connected, the bar of an archived chat has no Unarchive`);
+    await drop();
+    if (!await until(async () => !await byTid(archived.page, "unarchive").count(), WAIT)) fail(`${viewport}: its server dropped: the bar of an archived chat still offers Unarchive`);
+    if (!(await barOf.textContent()).includes(WHY)) fail(`${viewport}: its server dropped: the bar of an archived chat says "${await barOf.textContent()}", not why`);
+    await back();
+    if (!await until(async () => await byTid(archived.page, "unarchive").count() > 0, WAIT)) fail(`${viewport}: back, the bar of an archived chat has no Unarchive`);
+    await archived.ctx.close();
+  }
+
+  note(`connected and back, the header renames the chat; dropped and deleted: the warning names the server (or says the chat is gone), no rename, and no call that changes anything; an archived chat's bar has no Unarchive while its server is away`);
+}, { viewports, page: false });

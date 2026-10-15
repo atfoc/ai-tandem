@@ -1,0 +1,10 @@
+# Shared by every flow: gets past what the system and the development client put in front of the self-test root. The runner has
+# opened the development build with a link (`xcrun simctl openurl` / `adb ... am start`); `_dismiss.yaml` takes away what is in front.
+appId: ${APP_ID}
+---
+- runFlow: _dismiss.yaml
+# The first run of the bundle is built by Metro on demand: minutes on a loaded machine.
+- extendedWaitUntil:
+    visible:
+      id: "selftest-root"
+    timeout: 300000

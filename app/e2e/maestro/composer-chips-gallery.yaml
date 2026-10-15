@@ -1,0 +1,194 @@
+# aiwb-e2e: needs= app=1 report=1 gallery=chipdoc verify=composer-chips-gallery adbkeys=chips
+# composer-chips, second part (AD-83, package K2's cases, run by V3's runner after composer-chips on the same device): the native chip input on
+# its dev gallery (app/src/dev/ChipDocGallery.tsx), the box alone with buttons that act through its handle, for what the composer does not
+# offer: a second chip and a point, a read-only box, the @ mention completed through the handle, Gboard's own typing next to a chip.
+# From the composer spike's checks/ios/composer.yaml (marks 0..17), then the rest of the contract (18..22), on Android 23..24. Each `mark`
+# makes the app post what the box holds to the runner, which asserts on the posts at the end (verify/composer-chips-gallery.mjs). Positions
+# are percentages of the screen (CHIP_LEFT, CHIP_RIGHT, CHIP_MID: the first line's chip; AFTER: past the end of the first line), set below
+# per platform. On Android the hardware keys follow (adbkeys/chips.mjs), on iOS composer-chips' XCUITest bundle has sent them to the same box.
+appId: ${APP_ID}
+---
+# iPhone 16e: "move <chip>" draws the chip from 16% to 43% of the width on the line at 14%, its "“API”" from 32%; "ab <chip>" 5%
+# further left. A tap on a word puts UIKit's caret at the word's end, so the left tap is at the label's leading edge, and the
+# double tap (CHIP_MID, on "ab <chip> cd") on the word "“API”". Medium Phone API 36.1 (1080x2400): the chip from 15% to 39% on
+# the line at 13%, "“API”" from 32%.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - evalScript: ${output.CHIP_LEFT = "17%,14%"}
+      - evalScript: ${output.CHIP_RIGHT = "37%,14%"}
+      - evalScript: ${output.CHIP_MID = "31%,14%"}
+      - evalScript: ${output.AFTER = "70%,14%"}
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - evalScript: ${output.CHIP_LEFT = "16%,13%"}
+      - evalScript: ${output.CHIP_RIGHT = "35%,13%"}
+      - evalScript: ${output.CHIP_MID = "30%,13%"}
+      - evalScript: ${output.AFTER = "70%,13%"}
+- runFlow: _dismiss.yaml
+- extendedWaitUntil:
+    visible:
+      id: "clear"
+    timeout: 300000
+# -- 0..2: insert at the caret, type around it
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "move"
+- tapOn: { id: "insert-selection" }
+- inputText: "to"
+- tapOn: { id: "mark" }                       # 0: move <chip> to
+- tapOn: { point: "${output.CHIP_LEFT}" }
+- tapOn: { id: "mark" }                       # 1: a tap on the left half of the chip: the caret is at its start
+- inputText: "X"
+- tapOn: { id: "mark" }                       # 2: typed at the chip's start
+- eraseText: 1
+- tapOn: { id: "mark" }                       # 3: the X is gone
+- tapOn: { point: "${output.CHIP_RIGHT}" }
+- tapOn: { id: "mark" }                       # 4: a tap on the right half of the chip: the caret is at its end
+- inputText: "Y"
+- tapOn: { id: "mark" }                       # 5: typed at the chip's end
+# -- 6..8: backspace takes a chip whole
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "a"
+- tapOn: { id: "insert-selection" }
+- tapOn: { id: "mark" }                       # 6: a <chip> and the caret after the space
+- eraseText: 1
+- tapOn: { id: "mark" }                       # 7: the space is gone, the chip stays
+- eraseText: 1
+- tapOn: { id: "mark" }                       # 8: one backspace more: the whole chip is gone
+# -- 9..10: a double tap in a chip takes it whole; typing over it
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "ab"
+- tapOn: { id: "insert-selection" }
+- inputText: "cd"
+- doubleTapOn: { point: "${output.CHIP_MID}" }
+- tapOn: { id: "mark" }                       # 9: the chip selected
+- inputText: "Z"
+- tapOn: { id: "mark" }                       # 10: replaced by Z
+# -- 11..13: lines
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- tapOn: { id: "mark" }                       # 11: empty box height
+- inputText: "one"
+- pressKey: Enter
+- inputText: "two"
+- pressKey: Enter
+- inputText: "three"
+- pressKey: Enter
+- inputText: "four"
+- tapOn: { id: "mark" }                       # 12: four lines (the box's least height is three)
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- pressKey: Enter
+- inputText: "end"
+- tapOn: { id: "mark" }                       # 13: more lines than the box shows
+# -- 14..15: the message of a whole content, and the send
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "move"
+- tapOn: { id: "insert-selection" }
+- inputText: "to"
+- tapOn: { id: "insert-selection" }
+- inputText: "and keep"
+- tapOn: { id: "insert-point" }
+- pressKey: Enter
+- inputText: "thanks"
+- tapOn: { id: "mark" }                       # 14: the message
+- tapOn: { id: "send" }
+- tapOn: { id: "mark" }                       # 15: the box is empty
+# -- 16..17: copy a chip and paste it (the edit menu of the platform; a tap on a selection shows it)
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "ab"
+- tapOn: { id: "insert-selection" }
+- inputText: "cd"
+- doubleTapOn: { point: "${output.CHIP_MID}" }
+- runFlow:                                    # iOS shows the edit menu on a tap on the selection; Android shows it at once
+    when: { platform: iOS }
+    commands:
+      - tapOn: { point: "${output.CHIP_MID}" }
+- tapOn: "Copy"
+- tapOn: { id: "mark" }                       # 16
+- tapOn: { point: "${output.AFTER}" }
+- waitForAnimationToEnd
+- longPressOn: { point: "${output.AFTER}" }
+- tapOn: "Paste"
+- tapOn: { id: "mark" }                       # 17
+# -- 18: Enter handled by the owner (the gallery's "Enter sends"): sent, and the new line the field took is taken back
+- tapOn: { id: "clear" }
+- tapOn: { id: "enter-sends" }
+- tapOn: { id: "composer-input" }
+- inputText: "hi"
+- pressKey: Enter
+- tapOn: { id: "enter-sends" }
+- inputText: "x"
+- tapOn: { id: "mark" }                       # 18: sent "hi"; the field kept no line break: typing gives "x" alone
+# -- 19: read-only: nothing typed goes in
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "ab"
+- tapOn: { id: "insert-selection" }
+- tapOn: { id: "readonly" }
+- tapOn: { id: "composer-input" }
+- inputText: "zz"
+- tapOn: { id: "mark" }                       # 19: as it was
+- tapOn: { id: "readonly" }
+# -- 20..21: the @ mention completed through the handle; the text before the caret after a chip
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "ask @bo"
+- tapOn: { id: "mention" }
+- tapOn: { id: "mark" }                       # 20: ask @board_
+- tapOn: { id: "insert-selection" }
+- eraseText: 1
+- tapOn: { id: "mark" }                       # 21: the caret right after the chip
+# -- 22: read-only keeps its chips selectable and copyable (C-RF-25): copied there, pasted once the box is editable again
+- tapOn: { id: "clear" }
+- tapOn: { id: "composer-input" }
+- inputText: "ab"
+- tapOn: { id: "insert-selection" }
+- inputText: "cd"
+- tapOn: { id: "readonly" }
+- doubleTapOn: { point: "${output.CHIP_MID}" }
+- runFlow:                                    # iOS shows the edit menu on a tap on the selection; Android shows it at once
+    when: { platform: iOS }
+    commands:
+      - tapOn: { point: "${output.CHIP_MID}" }
+- tapOn: "Copy"
+- tapOn: { id: "readonly" }
+- tapOn: { point: "${output.AFTER}" }
+- waitForAnimationToEnd
+- longPressOn: { point: "${output.AFTER}" }
+- tapOn: "Paste"
+- tapOn: { id: "mark" }                       # 22: the chip copied out of the read-only box came back
+# -- 23..24 (Android): the keyboard's own typing next to a chip, with its suggestions on: Gboard's keys tapped one by one (its
+#    composing word is re-set by the box after every key), a suggestion picked for the word right after the chip, then a
+#    misspelling and the space bar (Gboard may correct it). The space bar is a point: Medium Phone API 36.1's Gboard.
+- runFlow:
+    when: { platform: Android }
+    commands:
+      - tapOn: { id: "clear" }
+      - tapOn: { id: "assist" }
+      - tapOn: { id: "composer-input" }
+      - tapOn: { id: "insert-selection" }
+      - tapOn: "w"
+      - tapOn: "o"
+      - tapOn: "r"
+      - tapOn: "work"
+      - tapOn: { id: "mark" }                 # 23: the suggestion took the composing word's place
+      - tapOn: "t"
+      - tapOn: "e"
+      - tapOn: "h"
+      - tapOn: { point: "55%,91%" }
+      - tapOn: { id: "mark" }                 # 24: "teh" or "the", and the chip as it was
+      - tapOn: { id: "assist" }

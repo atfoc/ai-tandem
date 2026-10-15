@@ -27,7 +27,15 @@
 //   cannot be dragged and its menu makes nothing, and says why.
 // The menu key itself is not pressed (a headless Chromium on macOS has none): the event a browser makes of it, a
 // contextmenu with no pointer, is sent to the focused row.
-import { callOfRequest, check, mockEval, openPage, pointerDrag, seed, until } from "../shot.mjs";
+// Ports dev/checks/PL6.1-tree.mjs (S11) to the new build, at the three viewports (C-PL-10, 12 to 15, 17). What changed: the selectors (testIDs; `library.mjs` reads the popup and how the tree is set in),
+// the presses, the right click (a long press with a finger: the row's menu), the drag (a pointer gesture: a mouse drags at once, a finger is held first, then moves; the pointer's route is `pointerDragger`),
+// and the list's height and scroll, which are the scroll view's.
+
+import { callOfRequest, check, mockEval, seed, until } from "../shot.mjs";
+import { byTid, longPress, pointerDragger, press, showList, tidSel } from "./sel.mjs";
+import { misshapen, seen, shape } from "./library.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
 
 const g = (id, name, parent = "") => ({ id, name, parent }), p = (id, name, parent, text = name + "!") => ({ id, name, parent, text });
 const LIB = { groups: [g("g_git", "git"), g("g_hooks", "hooks", "g_git"), g("g_misc", "misc")],
@@ -35,68 +43,9 @@ const LIB = { groups: [g("g_git", "git"), g("g_hooks", "hooks", "g_git"), g("g_m
 const TREE = ["git", "  hooks", "    pre-commit", "  commit message", "  review", "misc", "  git commit style", "scratch", "todo"];
 const STUDIO = { id: "s_studio", name: "Studio", address: "https://studio.example:4790", state: "connected", version: "dev" };
 const THEIRS = { groups: [g("g_team", "team")], prompts: [p("p_stand", "standup", "g_team"), p("p_retro", "retro", "")] };
-const DLG = ".lib-dialog", TOP = "At the top level", TO_TOP = "Move to the top level", ITEMS = ["New prompt", "New group"];
+const TOP = "At the top level", TO_TOP = "Move to the top level", ITEMS = ["New prompt", "New group"];
 
-/** In the page: what the library popup shows. rows: the rows of the tree, each set in by its level; drawn: the same
- *  with the row of an item that is being made, marked "+"; lit: what is lit as a place (head: the rows framed,
- *  inside: the rows tinted, all: the whole list, top: the bar of the top level); moved: the rows dimmed as on their
- *  way; top: the bar; menu: the menu of a right click. */
-function seen() {
-  const dlg = document.querySelector(".lib-dialog"), at = document.activeElement, text = (e) => e?.textContent ?? "";
-  const all = [...(dlg?.querySelectorAll(".lib-list .lib-row") ?? [])], rows = all.filter((r) => !r.matches(".new"));
-  const name = (r) => text(r.querySelector(".lib-name")), line = (r) => "  ".repeat(Number(r.getAttribute("aria-level")) - 1) + name(r);
-  const form = dlg?.querySelector(".lib-form"), menu = dlg?.querySelector(".lib-ctx .menu"), top = dlg?.querySelector(".lib-top"), ask = document.querySelector(".dialog-backdrop .dialog");
-  return {
-    open: document.querySelectorAll(".lib-dialog").length, rows: rows.map(line), drawn: all.map((r) => (r.matches(".new") ? "+" : "") + line(r)), on: rows.filter((r) => r.getAttribute("aria-selected") === "true").map(name),
-    closed: rows.filter((r) => r.getAttribute("aria-expanded") === "false").map(name), fixed: rows.filter((r) => r.getAttribute("draggable") !== "true").map(name),
-    lit: { head: all.filter((r) => r.matches(".drop")).map(name), inside: all.filter((r) => r.matches(".drop-in")).map(name), all: !!dlg?.querySelector(".lib-list.drop"), top: !!top?.matches(".drop") },
-    moved: rows.filter((r) => r.matches(".moved")).map(name), top: top ? { text: text(top), off: top.getAttribute("aria-disabled") === "true" } : null,
-    hint: text(dlg?.querySelector(".lib-side > .lib-hint")), buttons: [...(dlg?.querySelectorAll(".lib-new button") ?? [])].map(text), treeErr: [...(dlg?.querySelectorAll('.lib-side > .dialog-err[role="alert"]') ?? [])].map(text).join("|"),
-    menu: menu ? { note: text(menu.querySelector(".menu-note")), items: [...menu.querySelectorAll(".menu-item")].map((b) => b.textContent + (b.disabled ? " (off)" : "")), role: menu.getAttribute("role") } : null,
-    form: form ? { head: text(form.querySelector(".lib-form-head > span")), where: text(form.querySelector(".lib-where")), name: form.querySelector("input").value, text: form.querySelector("textarea")?.value ?? null,
-      selects: form.querySelectorAll("select").length, err: text(form.querySelector(".dialog-err")) } : null,
-    ask: ask ? text(ask.querySelector(".dialog-title")) : "",
-    focus: !at || at === document.body ? "nothing" : at.matches(".lib-search input") ? "search" : at.matches(".lib-row") ? "row " + name(at) : at.matches(".lib-form input") ? "name" : at.matches(".lib-ctx .menu-item") ? "menu " + at.textContent
-      : at.matches(".lib-top") ? "top" : at.matches(".lib-dialog *") ? "popup " + at.tagName.toLowerCase() : at.tagName.toLowerCase() + "." + at.className,
-  };
-}
-
-/** In the page: how the rows of the tree are set in, in pixels from the left edge of the list's own space. start:
- *  where the first thing of the row is (its twist, or a prompt's icon); twist: the column of its twist; guides: the
- *  lines beside it; over, under: how far a line ends from the row's upper and lower edge; gap: the space between the
- *  row and the one above; room: the width its name has. */
-function shape() {
-  const list = document.querySelector(".lib-dialog .lib-list"), box = list.getBoundingClientRect(), edge = box.left + list.clientLeft + parseFloat(getComputedStyle(list).paddingLeft);
-  const x = (v) => Math.round((v - edge) * 10) / 10, rows = [...list.querySelectorAll(".lib-row")];
-  return rows.map((r, i) => {
-    const b = r.getBoundingClientRect(), first = [...r.children].find((c) => !c.matches(".lib-guide")).getBoundingClientRect(), twist = r.querySelector(".lib-twist")?.getBoundingClientRect(), lines = [...r.querySelectorAll(".lib-guide")].map((l) => l.getBoundingClientRect());
-    return { name: r.querySelector(".lib-name").textContent, level: Number(r.getAttribute("aria-level")), kind: ["server", "group", "prompt"].find((k) => r.matches("." + k)), start: x(first.left), twist: twist ? [x(twist.left), x(twist.right)] : null,
-      guides: lines.map((l) => x(l.left)), over: Math.max(0, ...lines.map((l) => Math.abs(l.top - b.top))), under: Math.max(0, ...lines.map((l) => Math.abs(l.bottom - b.bottom))),
-      gap: i ? Math.round((b.top - rows[i - 1].getBoundingClientRect().bottom) * 10) / 10 : 0, room: Math.round(r.querySelector(".lib-name").getBoundingClientRect().width) };
-  });
-}
-
-/** What is wrong with how a tree is set in: nothing, for one that reads as it is built. step: how far a level is set
- *  in at least; a tree that is not deep also has every row of a group right of that group's twist. */
-function misshapen(rows, { step, deep = false }) {
-  const bad = [], up = []; // up[level - 1]: the row of that level the current row is under
-  for (const r of rows) {
-    up.length = r.level - 1;
-    const parent = up[r.level - 2];
-    if (r.guides.length !== r.level - 1) bad.push(`"${r.name}" (level ${r.level}) has ${r.guides.length} lines beside it`);
-    r.guides.forEach((at, i) => { const t = up[i]?.twist; if (!t || at < t[0] || at > t[1]) bad.push(`line ${i + 1} beside "${r.name}" is at ${at}, not in the twist's column of "${up[i]?.name}" (${JSON.stringify(t)})`); });
-    if (r.over > 0.5 || r.under > 0.5 || r.gap !== 0) bad.push(`the lines beside "${r.name}" have a gap: ${JSON.stringify({ over: r.over, under: r.under, gap: r.gap })}`);
-    if (!parent && (r.start !== rows[0].start || r.start > 8)) bad.push(`"${r.name}" is at the top and starts at ${r.start}, the first row at ${rows[0].start}`);
-    if (parent && r.start - parent.start < step) bad.push(`"${r.name}" starts ${r.start - parent.start} px right of "${parent.name}", which it is in`);
-    if (parent && !deep && r.start < parent.twist[1]) bad.push(`"${r.name}" starts at ${r.start}, under the twist of "${parent.name}" (${JSON.stringify(parent.twist)})`);
-    if ((r.kind === "prompt") !== !r.twist) bad.push(`"${r.name}" is a ${r.kind} and has ${r.twist ? "a" : "no"} twist`);
-    if (r.room < 60) bad.push(`the name of "${r.name}" has ${r.room} px`);
-    up[r.level - 1] = r;
-  }
-  return bad;
-}
-
-await check("PL6.1 the library's tree: how it is set in, the menu of a right click, the buttons, and moves by a drag and by the keys", async ({ url, browser, fail, note }) => {
+await check("PL6.1 the library's tree: how it is set in, the menu of a right click, the buttons, and moves by a drag and by the keys", async ({ url, open, fail, note, touch, layout }) => {
   const seeded = await seed(url, "A2");
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const lib = (server = "local") => mockEval(`return libraries[${JSON.stringify(server)}] ?? null;`, url);
@@ -104,7 +53,8 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
   const servers = (list) => mockEval(`setServers(${JSON.stringify(list)});`, url);
   await servers([]);
   await mockEval(`setLibrary("local", ${JSON.stringify(LIB)});`, url);
-  const errors = [], w = await openPage({ url, browser, sel, errors, wait: ".side-foot .library-btn" }), { page } = w;
+  const w = await open({ sel }), { page } = w;
+  await showList(page);
   const calls = []; // the calls that change a library
   page.on("request", (r) => { const c = callOfRequest(r); if (c && c.method !== "GET" && c.path.includes("/api/library/")) calls.push(c.method); });
   const read = () => page.evaluate(seen);
@@ -114,26 +64,38 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     if (!await until(async () => want((s = await read())), 10000)) fail(`${what}: the page shows ${JSON.stringify(s)}`);
     return s;
   };
-  const row = (label) => page.locator(`${DLG} .lib-row:not(.new):has(.lib-name:text-is("${label}"))`);
-  const button = (label) => page.locator(`${DLG} button:text-is("${label}")`), entry = (label) => page.locator(`${DLG} .lib-ctx .menu-item:text-is("${label}")`);
-  const name = page.locator(`${DLG} .lib-form input`), words = page.locator(`${DLG} .lib-form textarea`), bar = page.locator(`${DLG} .lib-top`);
-  const answer = (label) => page.locator(`.dialog-backdrop .dialog button:text-is("${label}")`).click();
+  const esc = (l) => new RegExp(`^${l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  const D = byTid(page, "library-dialog"), libBtn = byTid(page, "library-btn");
+  const row = (label) => D.locator(`${tidSel("lib-row")}:not([data-new="true"])`).filter({ has: page.locator(tidSel("lib-name"), { hasText: esc(label) }) });
+  const button = (label) => D.locator('[role="button"]').filter({ hasText: esc(label) }), entry = (label) => byTid(page, "lib-menu").locator(tidSel("lib-menu-item")).filter({ hasText: esc(label) });
+  const name = byTid(D, "lib-name-input"), words = byTid(D, "lib-text-input"), bar = byTid(D, "lib-top");
+  const answer = (label) => press(page, byTid(page, "confirm-dialog").locator('[role="button"]').filter({ hasText: esc(label) }));
   const same = (a, b) => a.join("|") === b.join("|"), unlit = (x) => !x.lit.head.length && !x.lit.inside.length && !x.lit.all && !x.lit.top;
-  /** A point of the space under the rows of the list. */
-  const under = async () => { const b = await page.locator(`${DLG} .lib-list`).boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height - 10 }; };
+  /** A point of the space under the rows of the list (the list scrolled to its end). */
+  const under = async () => {
+    await page.evaluate(() => { const l = document.querySelector('[data-testid="lib-scroll"]'); l.scrollTop = l.scrollHeight; }); // (a list taller than its box shows the space after its last row at its end)
+    const b = await byTid(D, "lib-list-frame").boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height - 10 }; };
+  /** A right click with a mouse, a long press with a finger. */
+  const rightClick = (target) => (touch ? longPress(page, target) : "x" in target ? page.mouse.click(target.x, target.y, { button: "right" }) : target.click({ button: "right" }));
   /** Opens the menu as a right click does, on a row or on the space under the rows, and waits for it. */
   const menuOn = async (label, want) => {
-    if (label) await row(label).click({ button: "right" }); else { const at = await under(); await page.mouse.click(at.x, at.y, { button: "right" }); }
+    await rightClick(label ? row(label) : await under());
     return shows(`the menu on ${label ? `"${label}"` : "the space under the rows"}`, (x) => x.menu?.note === want && x.focus === "menu New prompt");
   };
-  const drag = pointerDrag(page);
+  const d = await pointerDragger(page, { steps: 6 });
+  /** A point of an element's box (scrolled to first), or the point given. */
+  const centre = async (t) => { if ("x" in t) return t; await t.scrollIntoViewIfNeeded(); const b = await t.boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+  const drag = { at: centre, async start(p) { await d.start(p); await d.move({ x: p.x + 9, y: p.y + 5 }); }, over: (p) => d.move(p), drop: () => d.end() };
   /** The list's own height and where it is scrolled to, and where a row is in the window. */
-  const held = (label) => page.evaluate((label) => { const l = document.querySelector(".lib-dialog .lib-list"), r = [...l.querySelectorAll(".lib-row")].find((x) => x.querySelector(".lib-name").textContent === label);
-    return [l.clientHeight, l.scrollTop, Math.round(r.getBoundingClientRect().top)].join(); }, label);
+  const held = async (label) => { await row(label).scrollIntoViewIfNeeded(); return page.evaluate((label) => {
+    const l = document.querySelector('[data-testid="lib-list"]'), r = [...l.querySelectorAll('[data-testid="lib-row"]')].find((x) => x.querySelector('[data-testid="lib-name"]').textContent === label);
+    const s = document.querySelector('[data-testid="lib-scroll"]');
+    return [s.clientHeight, s.scrollTop, Math.round(r.getBoundingClientRect().top)].join();
+  }, label); };
   const pick = async (label) => drag.start(await drag.at(row(label)));
   const over = async (label) => drag.over(await drag.at(row(label)));
   try {
-    await page.locator(".side-foot .library-btn").click();
+    await press(page, libBtn);
     let s = await shows("the tree", (x) => same(x.rows, TREE));
 
     // ---- how the tree is set in
@@ -147,26 +109,26 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
 
     // ---- the menu of a right click: a new item where it was opened
     s = await menuOn("hooks", "In git/hooks");
-    if (!same(s.menu.items, [...ITEMS, "Move…"]) || s.menu.role !== "menu" || !same(s.lit.head, ["hooks"]) || !same(s.lit.inside, ["pre-commit"]) || s.lit.all || s.on.length || s.form) fail(`the menu on the group "hooks" shows ${JSON.stringify(s)}`);
-    await entry("New prompt").click();
+    if (!same(s.menu.items, [...ITEMS, "Move…"]) || s.menu.role !== "menu" || !same(s.lit.head, ["hooks"]) || !same(s.lit.inside, ["pre-commit"]) || s.lit.all || s.onName.length || s.form) fail(`the menu on the group "hooks" shows ${JSON.stringify(s)}`);
+    await press(page, entry("New prompt"));
     s = await shows("New prompt of the menu on a group", (x) => x.form?.head === "New prompt" && x.focus === "name" && !x.menu);
-    if (s.form.where !== "In git/hooks" || s.form.selects || !same(s.drawn, [...TREE.slice(0, 2), "+    New prompt", ...TREE.slice(2)]) || !unlit(s)) fail(`a new prompt begun in "hooks" shows ${JSON.stringify(s)}`);
+    if (s.form.where !== "In git/hooks" || /select/.test(s.form.fields) || !same(s.drawn, [...TREE.slice(0, 2), "+    New prompt", ...TREE.slice(2)]) || !unlit(s)) fail(`a new prompt begun in "hooks" shows ${JSON.stringify(s)}`);
     await page.keyboard.type("lint");
     await shows("the new prompt's row as its name is typed", (x) => x.drawn[2] === "+    lint");
     await page.keyboard.press("Enter");
     let tree = [...TREE.slice(0, 2), "    lint", ...TREE.slice(2)];
-    await shows("the new prompt saved", (x) => same(x.drawn, tree) && same(x.on, ["lint"]) && x.form?.where === "In git/hooks");
+    await shows("the new prompt saved", (x) => same(x.drawn, tree) && same(x.onName, ["lint"]) && x.form?.where === "In git/hooks");
     if ((await item("lint"))?.parent !== "g_hooks") fail(`the prompt made by the menu on "hooks" is ${JSON.stringify(await item("lint"))}`);
     // on a prompt: beside it
     s = await menuOn("review", "In git");
     if (!same(s.menu.items, [...ITEMS, "Move…"]) || !same(s.lit.head, ["git"]) || !same(s.lit.inside, tree.slice(1, 6).map((l) => l.trim()))) fail(`the menu on the prompt "review" shows ${JSON.stringify(s)}`);
-    await entry("New group").click();
+    await press(page, entry("New group"));
     s = await shows("New group of the menu on a prompt", (x) => x.form?.head === "New group" && x.focus === "name");
-    if (s.form.where !== "In git" || s.form.selects || s.form.text !== null || !same(s.drawn, [tree[0], "+  New group", ...tree.slice(1)])) fail(`a new group begun beside "review" shows ${JSON.stringify(s)}`);
+    if (s.form.where !== "In git" || /select/.test(s.form.fields) || s.form.text !== null || !same(s.drawn, [tree[0], "+  New group", ...tree.slice(1)])) fail(`a new group begun beside "review" shows ${JSON.stringify(s)}`);
     await page.keyboard.type("ci");
     await page.keyboard.press("Enter");
     tree = [tree[0], "  ci", ...tree.slice(1)];
-    await shows("the new group saved", (x) => same(x.drawn, tree) && same(x.on, ["ci"]));
+    await shows("the new group saved", (x) => same(x.drawn, tree) && same(x.onName, ["ci"]));
     if ((await item("ci"))?.parent !== "g_git") fail(`the group made by the menu on "review" is ${JSON.stringify(await item("ci"))}`);
     // on the space under the rows: at the top level. Esc closes the menu alone
     s = await menuOn("", TOP);
@@ -174,13 +136,13 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     await page.keyboard.press("Escape");
     await shows("Esc on the menu", (x) => !x.menu && x.open === 1 && unlit(x) && x.focus.startsWith("row "));
     await menuOn("", TOP);
-    await entry("New prompt").click();
+    await press(page, entry("New prompt"));
     s = await shows("New prompt of the menu on the space under the rows", (x) => x.form?.head === "New prompt" && x.form.where === TOP);
     if (!same(s.drawn, [...tree.slice(0, 9), "+New prompt", ...tree.slice(9)])) fail(`a new prompt begun at the top has its row at ${JSON.stringify(s.drawn)}`);
     await page.keyboard.type("zeta");
     await page.keyboard.press("Enter");
     tree = [...tree, "zeta"];
-    await shows("the new prompt at the top saved", (x) => same(x.drawn, tree) && same(x.on, ["zeta"]) && x.form?.where === TOP);
+    await shows("the new prompt at the top saved", (x) => same(x.drawn, tree) && same(x.onName, ["zeta"]) && x.form?.where === TOP);
     if ((await item("zeta"))?.parent !== "") fail(`the prompt made on the space under the rows is ${JSON.stringify(await item("zeta"))}`);
     // on a prompt at the top: the top level
     await menuOn("scratch", TOP);
@@ -188,26 +150,26 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     // with unsaved changes it asks first
     await words.fill("Typed and not saved.");
     await menuOn("misc", "In misc");
-    await entry("New prompt").click();
-    await shows("New prompt of the menu with unsaved changes", (x) => x.ask === "Discard changes?");
+    await press(page, entry("New prompt"));
+    await shows("New prompt of the menu with unsaved changes", (x) => x.ask?.title === "Discard changes?");
     await answer("Cancel");
     s = await shows("Cancel on its question", (x) => !x.ask && x.form?.name === "zeta" && x.form.text === "Typed and not saved." && !x.drawn.some((l) => l.startsWith("+")));
-    await button("Revert").click();
+    await press(page, button("Revert"));
     // a closed group opens for the item made in it
-    await row("git").locator(".lib-twist").click();
+    await press(page, byTid(row("git"), "lib-twist"));
     await shows("the group closed", (x) => same(x.closed, ["git"]) && same(x.rows, ["git", ...tree.slice(7)]));
     await menuOn("git", "In git");
-    await entry("New prompt").click();
+    await press(page, entry("New prompt"));
     s = await shows("New prompt of the menu on a closed group", (x) => x.form?.where === "In git" && !x.closed.length);
     if (!same(s.drawn, [...tree.slice(0, 5), "+  New prompt", ...tree.slice(5)])) fail(`a new prompt begun in a closed group has its row at ${JSON.stringify(s.drawn)}`);
-    await button("Cancel").click();
-    await shows("Cancel on a new prompt", (x) => same(x.drawn, tree) && same(x.on, ["zeta"]));
+    await press(page, button("Cancel"));
+    await shows("Cancel on a new prompt", (x) => same(x.drawn, tree) && same(x.onName, ["zeta"]));
     // the menu key: the menu is at its row, its entries are walked with the arrows, and Esc gives the row the focus back
     await row("misc").focus();
     await row("misc").dispatchEvent("contextmenu", { bubbles: true, cancelable: true, button: 0, clientX: 0, clientY: 0 });
     s = await shows("the menu key on a row", (x) => x.menu?.note === "In misc" && x.focus === "menu New prompt");
-    const near = await page.evaluate(() => { const m = document.querySelector(".lib-ctx .menu").getBoundingClientRect(), r = document.activeElement.closest(".lib-dialog").querySelector('.lib-row[tabindex="0"]').getBoundingClientRect(); return { dx: Math.round(m.left - r.left), dy: Math.round(m.top - r.top) }; });
-    if (near.dx < 0 || near.dx > 80 || near.dy < 0 || near.dy > 40) fail(`opened by the menu key, the menu is ${JSON.stringify(near)} px from its row`);
+    const near = await page.evaluate(() => { const m = document.querySelector('[data-testid="lib-menu"]').getBoundingClientRect(), r = document.querySelector('[data-testid="library-dialog"] [data-testid="lib-row"][tabindex="0"]').getBoundingClientRect(); return { dx: Math.round(m.left - r.left), dy: Math.round(m.top - r.top) }; });
+    if (layout !== "phone" && (near.dx < 0 || near.dx > 80 || near.dy < 0 || near.dy > 40)) fail(`opened by the menu key, the menu is ${JSON.stringify(near)} px from its row`);
     for (const [key, want] of [["ArrowDown", "New group"], ["ArrowDown", "Move…"], ["ArrowDown", "New prompt"], ["ArrowUp", "Move…"], ["Home", "New prompt"], ["End", "Move…"]]) {
       await page.keyboard.press(key);
       await shows(`${key} in the menu`, (x) => x.focus === "menu " + want);
@@ -217,31 +179,31 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     note("the menu of a right click makes a prompt in the clicked group, a group beside the clicked prompt and a prompt at the top level on the space under the rows; the place is lit and the new row is where it goes");
 
     // ---- the buttons under the tree
-    await button("New group").click(); // ("zeta", a prompt at the top, is chosen)
-    await shows("New group beside a chosen prompt at the top", (x) => x.form?.head === "New group" && x.form.where === TOP && x.drawn[0] === "+New group" && !x.form.selects);
-    await button("New prompt").click();
+    await press(page, button("New group")); // ("zeta", a prompt at the top, is chosen)
+    await shows("New group beside a chosen prompt at the top", (x) => x.form?.head === "New group" && x.form.where === TOP && x.drawn[0] === "+New group" && !x.form.fields.includes("select"));
+    await press(page, button("New prompt"));
     await shows("New prompt beside the group that is being made", (x) => x.form?.head === "New prompt" && x.form.where === TOP && x.drawn[9] === "+New prompt");
-    await button("Cancel").click();
-    await row("hooks").click();
+    await press(page, button("Cancel"));
+    await press(page, row("hooks"));
     s = await shows("a group chosen", (x) => x.form?.head === "Group" && x.form.name === "hooks" && x.form.where === "In git");
-    if (s.form.selects) fail("the editor of a group has a choice of a group");
-    await button("New prompt").click();
+    if (/select/.test(s.form.fields)) fail("the editor of a group has a choice of a group");
+    await press(page, button("New prompt"));
     await shows("New prompt in the chosen group", (x) => x.form?.where === "In git/hooks" && x.drawn[3] === "+    New prompt");
-    await button("New group").click();
+    await press(page, button("New group"));
     await shows("New group beside the prompt that is being made", (x) => x.form?.head === "New group" && x.form.where === "In git/hooks" && x.drawn[3] === "+    New group");
-    await button("Cancel").click();
-    await row("review").click();
+    await press(page, button("Cancel"));
+    await press(page, row("review"));
     s = await shows("a prompt chosen", (x) => x.form?.name === "review" && x.form.where === "In git");
-    if (s.form.selects) fail("the editor of a prompt has a choice of a group");
-    await button("New group").click();
+    if (/select/.test(s.form.fields)) fail("the editor of a prompt has a choice of a group");
+    await press(page, button("New group"));
     await shows("New group beside the chosen prompt", (x) => x.form?.where === "In git" && x.drawn[1] === "+  New group");
-    await button("Cancel").click();
-    await button("Close").click();
-    await page.locator(".side-foot .library-btn").click();
-    await shows("the popup opened again", (x) => x.open === 1 && !x.on.length && !x.form);
-    await button("New prompt").click();
+    await press(page, button("Cancel"));
+    await press(page, button("Close"));
+    await press(page, libBtn);
+    await shows("the popup opened again", (x) => x.open === 1 && !x.onName.length && !x.form);
+    await press(page, button("New prompt"));
     await shows("New prompt with nothing chosen", (x) => x.form?.where === TOP && x.drawn[9] === "+New prompt");
-    await button("Cancel").click();
+    await press(page, button("Cancel"));
     note("the buttons make the new item in the chosen group, beside the chosen prompt, beside the one that is being made, and at the top level with nothing chosen; the editor has no choice of a group");
 
     // ---- a drag moves a prompt
@@ -294,7 +256,7 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     await pick("todo");
     await over("misc");
     await shows("the drag over a group, before it leaves the tree", (x) => same(x.lit.head, ["misc"]));
-    await drag.over(await drag.at(page.locator(`${DLG} .lib-edit`)));
+    await drag.over(await drag.at(byTid(D, "lib-edit")));
     await shows("the drag beside the tree", unlit);
     await drag.drop();
     await shows("the release beside the tree", (x) => same(x.rows, tree) && !x.top && !x.moved.length);
@@ -319,7 +281,7 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     await drag.drop();
     s = await shows("a move the server refuses for the name", (x) => !!x.treeErr);
     if (s.treeErr !== 'There is already a prompt called "todo" at the top of the library.' || !same(s.rows, tree) || (await item("TODO")).parent !== "g_misc" || s.top) fail(`a refused move left ${JSON.stringify(s)}`);
-    await row("zeta").click();
+    await press(page, row("zeta"));
     await shows("the refusal after the next click", (x) => !x.treeErr && x.form?.name === "zeta");
     // too deep: a tree 16 groups deep takes a prompt and no group
     const chain = Array.from({ length: 16 }, (_, i) => g(`g_d${i + 1}`, `d${i + 1}`, i ? `g_d${i}` : ""));
@@ -334,7 +296,7 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     s = await shows("a move the server refuses for the depth", (x) => !!x.treeErr);
     if (s.treeErr !== "Groups can be at most 16 deep." || (await item("ci")).parent !== "g_git") fail(`a move too deep left ${JSON.stringify({ err: s.treeErr, ci: await item("ci") })}`);
     // the refusal is still said, and the list is scrolled to its end: the last row can be dragged, and nothing shifts
-    await page.evaluate(() => { const l = document.querySelector(".lib-dialog .lib-list"); l.scrollTop = l.scrollHeight; });
+    await page.evaluate(() => { const s = document.querySelector('[data-testid="lib-scroll"]'); s.scrollTop = s.scrollHeight; });
     before = await held("zeta");
     await pick("zeta");
     s = await shows("the drag of the last row of a list scrolled to its end, under a refusal", (x) => same(x.moved, ["zeta"]) && !!x.top);
@@ -348,23 +310,23 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     // ---- what is typed in the editor stays through a move, and is saved after it
     await mockEval(`setLibrary("local", ${JSON.stringify(LIB)});`, url);
     await shows("the first library again", (x) => same(x.rows, TREE));
-    await row("review").click();
+    await press(page, row("review"));
     await shows("a prompt chosen before its move", (x) => x.form?.name === "review");
     await words.fill("Typed, then moved.");
     await pick("review");
     await over("misc");
     await drag.drop();
     s = await shows("a prompt moved under what was typed", (x) => x.form?.where === "In misc" && x.rows.includes("  review") && x.rows.indexOf("  review") > x.rows.indexOf("misc"));
-    if (s.form.text !== "Typed, then moved." || s.ask || s.form.name !== "review" || !same(s.on, ["review"])) fail(`after the move the editor shows ${JSON.stringify(s.form)}`);
+    if (s.form.text !== "Typed, then moved." || s.ask || s.form.name !== "review" || !same(s.onName, ["review"])) fail(`after the move the editor shows ${JSON.stringify(s.form)}`);
     if ((await item("review")).text !== "review!") fail("the move saved what was typed");
-    await button("Save").click();
+    await press(page, button("Save"));
     if (!await until(async () => { const r = await item("review"); return r.text === "Typed, then moved." && r.parent === "g_misc"; }, 10000)) fail(`after the save the moved prompt is ${JSON.stringify(await item("review"))}`);
 
     // ---- "Move…" of the menu: the same with the keys
     await mockEval(`setLibrary("local", ${JSON.stringify(LIB)});`, url);
     await shows("the first library once more", (x) => same(x.rows, TREE) && x.form?.where === "In git");
     await menuOn("scratch", TOP);
-    await entry("Move…").click();
+    await press(page, entry("Move…"));
     s = await shows("Move… of the menu", (x) => !x.menu && !!x.hint && x.focus === "row scratch");
     if (s.hint !== "Moving “scratch”: choose a group, or the top. Enter moves it there, Esc cancels." || !same(s.moved, ["scratch"]) || !s.top?.off || !unlit(s)) fail(`a move by the keys begins with ${JSON.stringify(s)}`);
     await page.keyboard.press("ArrowUp");
@@ -388,8 +350,8 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     s = await shows("Esc in a move", (x) => !x.hint && !x.top && x.open === 1 && !x.moved.length);
     if (s.focus !== "row scratch" || (await item("scratch")).parent !== "g_misc") fail(`after Esc in a move the page shows ${JSON.stringify(s)}`);
     // Tab reaches the bar of the top level
-    await row("scratch").click({ button: "right" });
-    await entry("Move…").click();
+    await rightClick(row("scratch"));
+    await press(page, entry("Move…"));
     await shows("Move… again", (x) => !!x.hint && x.focus === "row scratch");
     await page.keyboard.press("Tab");
     await shows("Tab in a move", (x) => x.focus === "top" && x.lit.top && x.lit.all);
@@ -398,15 +360,15 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     if ((await item("scratch")).parent !== "" || s.focus !== "row scratch") fail(`after Enter on the bar the page shows ${JSON.stringify(s)}`);
     // a group's own rows take nothing, and a click on another group's row lands it
     calls.length = 0;
-    await row("git").click({ button: "right" });
-    await entry("Move…").click();
+    await rightClick(row("git"));
+    await press(page, entry("Move…"));
     await shows("Move… on a group", (x) => !!x.hint && x.focus === "row git" && x.top?.off === true);
     await page.keyboard.press("ArrowDown");
     await shows("the focus on a group below the moved one", (x) => x.focus === "row hooks" && unlit(x));
     await page.keyboard.press("Enter");
     await shows("Enter on a group below the moved one", (x) => !!x.hint && same(x.rows, TREE));
     if (calls.length) fail(`Enter on a row that takes nothing made the calls ${JSON.stringify(calls)}`);
-    await row("git commit style").click();
+    await press(page, row("git commit style"));
     s = await shows("a click on a row in a move", (x) => same(x.rows, ["misc", "  git", "    hooks", "      pre-commit", "    commit message", "    review", "  git commit style", "scratch", "todo"]) && !x.hint);
     if ((await item("git")).parent !== "g_misc" || s.form?.name !== "review") fail(`after a click in a move the page shows ${JSON.stringify(s)}`);
     note("Move… of the menu moves with the keys: the focused row is lit as the place, Enter and a click land the item, Tab reaches the top level's bar, Esc ends the move alone");
@@ -441,7 +403,7 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     if ((await item("standup", "s_studio")).parent !== "" || (await lib()).prompts.some((x) => x.name === "standup")) fail(`after the drop on Studio's entry "standup" is ${JSON.stringify(await item("standup", "s_studio"))} there`);
     s = await menuOn("Studio", "In Studio");
     if (!same(s.menu.items, ITEMS) || !same(s.lit.head, ["Studio"])) fail(`the menu on a server's entry shows ${JSON.stringify(s)}`);
-    await entry("New group").click();
+    await press(page, entry("New group"));
     await shows("New group of the menu on a server's entry", (x) => x.form?.head === "New group" && x.form.where === "In Studio" && x.drawn[11] === "+  New group");
     await page.keyboard.type("plans");
     await page.keyboard.press("Enter");
@@ -452,13 +414,11 @@ await check("PL6.1 the library's tree: how it is set in, the menu of a right cli
     // the server drops: its rows cannot be dragged, and its menu makes nothing and says why
     await mockEval(`setServerState("s_studio", "unreachable");`, url);
     s = await shows("a server that dropped", (x) => same(x.fixed, ["This computer", "Studio", "plans", "team", "retro", "standup"]));
-    await row("team").click({ button: "right" });
+    await rightClick(row("team"));
     s = await shows("the menu on a row of a server that dropped", (x) => !!x.menu);
     if (s.menu.note !== "Studio is not connected: nothing can be changed there until it is back." || !same(s.menu.items, [...ITEMS, "Move…"].map((l) => l + " (off)")) || !unlit(s)) fail(`the menu on a row of a server that dropped shows ${JSON.stringify(s.menu)}`);
     await page.keyboard.press("Escape");
     await shows("Esc on that menu", (x) => !x.menu && x.open === 1);
     note("nothing is lit on another server's rows; a server's entry is the top of its library; while the server is away its rows cannot be dragged and its menu makes nothing");
   } catch (e) { fail(e.message.split("\n")[0]); }
-  for (const e of errors) fail(`page error: ${e}`);
-  await w.ctx.close();
-});
+}, { viewports, page: false });

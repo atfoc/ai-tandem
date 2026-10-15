@@ -8,7 +8,7 @@ import (
 
 // The point rules: where in a branch's items a new branch or a fork may start. A point is an item
 // count: the items before it are kept. The web client has the same rules in
-// web/src/logic/forkpoints.ts. items is one branch's final item list; an item of kind "" is a hole
+// packages/core/src/logic/forkpoints.ts. items is one branch's final item list; an item of kind "" is a hole
 // (an index no line of items.jsonl gave).
 
 var ErrBadPoint = errors.New("a branch or a fork can't start at that point")
@@ -82,7 +82,7 @@ func markFrom(items []model.Item, count int) int {
 
 // liveFork: may a new branch or a fork start at a finished boundary of a source whose turn is running?
 // One line per agent kind; the web client has the same table (LIVE_FORK in
-// web/src/logic/forkpoints.ts).
+// packages/core/src/logic/forkpoints.ts).
 var liveFork = map[model.AgentKind]bool{model.Claude: true, model.Cursor: true, model.Pi: true}
 
 // pointOK reports whether a new branch or a fork may start at count by the id rules alone; busy,

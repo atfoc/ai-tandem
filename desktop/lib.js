@@ -13,12 +13,13 @@ function serverBin({ env, execPath, isPackaged, dirname }) {
   return path.resolve(dirname, '../bin/ai-whiteboard');
 }
 
-// pagePath is the page's file: AIWB_PAGE when set (tests); in a packaged app web/index.html in the
-// app's resources; with `npm start`, the web/dist/index.html that `npm run build` makes in web/.
+// pagePath is the page's file: AIWB_PAGE when set (tests: another build's index.html);
+// in a packaged app web/index.html in the app's resources (the app's web build, app/dist-web); with `npm start`, the
+// app/dist-web/index.html that `npm run build:web` makes in app/ (AD-41).
 function pagePath({ env, resourcesPath, isPackaged, dirname }) {
   if (env.AIWB_PAGE) return path.resolve(env.AIWB_PAGE);
   if (isPackaged) return path.join(resourcesPath, 'web', 'index.html');
-  return path.resolve(dirname, '../web/dist/index.html');
+  return path.resolve(dirname, '../app/dist-web/index.html');
 }
 
 // serverLogPath is where the detached server writes its output, in the data folder home.
@@ -166,6 +167,44 @@ function attachCloseFlush({ app, win, dialog, flushTimeoutMs = FLUSH_TIMEOUT_MS 
   });
 }
 
+const BLANK_PAGE_WAIT_MS = 10_000;
+
+// watchBlankPage reports a page that loaded and did not start (AD-41). A page whose script is
+// missing or fails fires did-finish-load all the same, and did-fail-load never: the window would stay
+// empty and say nothing. The page sets window.aiwbReady = true once it has drawn; waitMs after
+// did-finish-load, if that is not so, the error dialog says which page it was. A new load starts the
+// wait again, and a window that is gone ends it. It returns { stop }.
+function watchBlankPage({ webContents, dialog, waitMs = BLANK_PAGE_WAIT_MS }) {
+  let timer = null;
+  const stop = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  const check = async () => {
+    timer = null;
+    if (webContents.isDestroyed()) return;
+    let ready = false;
+    try {
+      ready = (await webContents.executeJavaScript('window.aiwbReady === true', true)) === true;
+    } catch {
+      // The page went away between the timer and the question: another load will start the wait again.
+      return;
+    }
+    if (ready || webContents.isDestroyed()) return;
+    dialog.showErrorBox(
+      'AI Whiteboard',
+      `The page loaded but did not start (it was not ready ${waitMs / 1000} seconds after loading).\n${webContents.getURL()}`,
+    );
+  };
+  webContents.on('did-start-loading', stop);
+  webContents.on('did-finish-load', () => {
+    stop();
+    timer = setTimeout(check, waitMs);
+  });
+  webContents.on('destroyed', stop);
+  return { stop };
+}
+
 // The limits on the images of a chat message, as the server has them (model.ImageMaxBytes and
 // model.ImagesPerMessage), and the types taken, by file extension.
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
@@ -300,7 +339,7 @@ async function readImage({ fs, filePath, maxBytes }) {
   }
 }
 
-// pickImages answers the page's window.aiwbApp.pickImages(): it opens the app's own open
+// pickImages answers the page's pickImages() (the bridge's, preload.js): it opens the app's own open
 // dialog on win for several image files and resolves to
 //
 //   { files: [{ name, type, data }], skipped: [{ name, reason }] }
@@ -368,6 +407,8 @@ module.exports = {
   attachLinkHandlers,
   FLUSH_TIMEOUT_MS,
   attachCloseFlush,
+  BLANK_PAGE_WAIT_MS,
+  watchBlankPage,
   IMAGE_MAX_BYTES,
   IMAGES_PER_MESSAGE,
   IMAGE_TYPES,

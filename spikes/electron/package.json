@@ -1,0 +1,13 @@
+{
+  "name": "aiwb-spike-electron",
+  "private": true,
+  "version": "0.0.0",
+  "description": "rn-spike-electron: contextBridge cancel-by-id and an Expo web export in the Electron window. See plans/rn-rewrite/spikes/electron.md",
+  "scripts": {
+    "spike": "node run.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.4.5"
+  }
+}

@@ -1,0 +1,33 @@
+# Part 3a of `storage-picker-permission`: why the system will ask to reach the local network, said by the add form before the first connection (AD-34; iOS only: Android has no
+# such permission, and the form says nothing there). Starts on the sidebar with no server added (so the app has made no connection yet since it was opened: it is
+# opened again here, as the module's answer, `granted`, is kept for as long as the process lives).
+appId: ${APP_ID}
+---
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/relaunch
+- runFlow: _open-sidebar.yaml
+- tapOn:
+    id: "servers-btn"
+- tapOn:
+    id: "servers-add"
+- waitForAnimationToEnd
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - assertVisible:
+          id: "addserver-localnet"
+          text: "The first time, your phone may ask to let AI Whiteboard reach devices on your local network. Allow it: a server on your home or office network is one of them."
+      - takeScreenshot: v4-30-localnet-why
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertNotVisible:
+          id: "addserver-localnet"
+- tapOn: "Cancel"
+- tapOn:
+    id: "servers-close"

@@ -1,0 +1,33 @@
+{
+  "name": "@aiwb/conn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The shared connection code of AI Whiteboard: the client of every server, with its ports",
+  "type": "commonjs",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./node": {
+      "types": "./node/index.d.ts",
+      "default": "./node/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "ports.d.ts",
+    "core/",
+    "node/"
+  ],
+  "scripts": {
+    "test": "node --test 'test/*.test.js' 'test/contract/*.test.js'"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}

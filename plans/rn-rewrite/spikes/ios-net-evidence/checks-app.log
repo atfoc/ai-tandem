@@ -1,0 +1,37 @@
+START mode=checks host=127.0.0.1 port=54432 pin=C7:16:2D:B2...
+CHECK fingerprint-normal-form PASS C7:16:2D:B2:87:23:B2:A3:FC:71:2F:6A:8E:0A:95:01:1E:09:C7:B4:3B:00:B2:6A:B5:14:3B:28:E1:B9:4B:E3 (1 ms)
+CHECK 4-utf8-chunker-every-cut PASS ok 1890 cases over 59 bytes (4 ms)
+CHECK 1-read-certificate PASS fingerprint C7:16:2D:B2:87:23:B2:A3:FC:71:2F:6A:8E:0A:95:01:1E:09:C7:B4:3B:00:B2:6A:B5:14:3B:28:E1:B9:4B:E3 equals the one the server printed (12 ms)
+HELLO {"app":"ai-whiteboard","featureLevel":6,"instanceId":"0d6cced0-2d6c-4840-abf6-75839a3687f4","version":"dev"}
+ protocol=h2 reused=false
+CHECK 1-pin-accepted-hello PASS 200 {"app":"ai-whiteboard","featureLevel":6,"instanceId":"0d6cced0-2d6c-4840-abf6-75839a3687f4","version":"dev"}
+ (9 ms)
+CHECK 2-http2-negotiated PASS networkProtocolName=h2 reusedConnection=true (1 ms)
+CHECK 1-pin-accepted-in-lower-case-without-colons PASS a pin in any normal form is accepted (5 ms)
+CHECK 1-pin-accepted-by-name-localhost PASS 200 over h2 via the name localhost (protocol h2); the IP and localhost are covered by ATS's local networking rule (7 ms)
+CHECK 1-pin-accepted-by-dotted-host-name PASS 200 {"app":"ai-whiteboard","featureLevel":6,"instanceId":"0d6cced0-2d6c-4840-abf6-75839a3687f4","version":"dev"} via localtest.me (protocol h2): the pin is the only rule, the name of the certificate does not matter, with NSAllowsArbitraryLoads (see the report) (5 ms)
+CHECK 1-pin-accepted-by-dotted-name-cert-valid-365-days PASS 200 {"app":"cert-test"} via localtest.me (h2) (8 ms)
+CHECK 1-pin-accepted-by-dotted-name-cert-valid-3650-days PASS 200 {"app":"cert-test"} via localtest.me (h2) (6 ms)
+CHECK 1-no-pin-is-outcome-fingerprint PASS Problem fingerprint (2 ms)
+CHECK 1-wrong-pin-is-cert_changed PASS Problem cert_changed presented=C7:16:2D:B2:87:23:B2:A3:FC:71:2F:6A:8E:0A:95:01:1E:09:C7:B4:3B:00:B2:6A:B5:14:3B:28:E1:B9:4B:E3 pinned=00:16:2D:B2:87:23:B2:A3:FC:71:2F:6A:8E:0A:95:01:1E:09:C7:B4:3B:00:B2:6A:B5:14:3B:28:E1:B9:4B:E3 (3 ms)
+CHECK 1-wrong-pin-on-the-stream-too PASS Problem cert_changed (3 ms)
+CHECK 1-tripwire-wrong-pin-refused-before-any-byte PASS Problem cert_changed presented=95:9C:C8:08:16:A0:5F:A5:17:6E:4D:48:50:BC:CF:23:FF:F2:D6:98:FF:62:8F:83:7D:BD:08:41:0A:9F:9F:45; the runner reads the tripwire's byte count (3 ms)
+CHECK 1-tripwire-control-pin-accepted-bytes-arrive PASS request fails as the tripwire hangs up (NetError reset: The network connection was lost.); the runner must see bytes at the tripwire (2843 ms)
+CHECK 1-read-certificate-sends-nothing (tripwire) PASS read 95:9C:C8:08:16:A0:5F:A5:17:6E:4D:48:50:BC:CF:23:FF:F2:D6:98:FF:62:8F:83:7D:BD:08:41:0A:9F:9F:45 from the tripwire; the runner must see no byte (6 ms)
+CHECK 3-authenticated-chats-list PASS 200 state with chats=0 boards=1 (1021 bytes, protocol h2) (1 ms)
+CHECK 3-secret-refused-401 PASS 401 {"error":"unauthorized"}
+ (4 ms)
+CHECK 3-size-limit PASS NetError too_long for a 100 byte limit on /api/state; the session is usable after it (1 ms)
+CHECK 3-post-with-headers-and-body PASS 200 board b_v9o0ti12 named spike-ünïcode-✓-日本語 (1 ms)
+CHECK 3-timeout PASS NetError timeout after 1.5 s on a never-ending body (1504 ms)
+CHECK 3-cancel-a-request PASS AbortError 716 ms after the call, the signal fired at 700 ms (716 ms)
+RENAME status=200 {"id":"b_v9o0ti12","name":"renamed-during-the-stream","group":"__ungrouped__","created":"2026-10-14T18:09:11.879921+02:0
+STREAM-END protocol=h2 reused=true bytes=1410
+CHECK 4-event-stream PASS order=hello,snapshot firstAt={"hello":2,"snapshot":3,"board":68} events=3 pings=1 chars=1400; cancel ended in 1 ms as AbortError; stream protocol=h2 reusedConnection=true (20032 ms)
+CHECK 4-stream-multibyte-boundaries PASS snapshot boards ["renamed-during-the-stream","renamed-during-the-stream"] (1505 ms)
+CHECK 4-silent-stream-ended-by-a-js-watchdog PASS 1 chunk(s), silent; the watchdog fired 3012 ms after the open and the stream ended 4 ms after cancel(); the h2 connection was reused afterwards (reused=true) (3016 ms)
+CHECK 5-error-outcomes PASS refused, not_https, name_not_found (17 ms)
+AWAIT-SERVER-STOP
+CHECK 4-server-stops-ends-the-stream PASS the stream ended 55 ms after the server was stopped, cleanly (the server closed the stream) (565 ms)
+CHECK session-closed PASS NetError closed: no such session (0 ms)
+DONE {"passed":28,"failed":0}

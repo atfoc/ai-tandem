@@ -1,19 +1,19 @@
-# Packages AI Whiteboard.app (run by scripts/build-app.sh, which builds the web client and the Go
+# Packages AI Whiteboard.app (run by scripts/build-app.sh, which builds the web build and the Go
 # binary first). The app is Electron; the Go server binary sits next to it in Contents/MacOS, and
-# the web client it shows is in Contents/Resources/web.
+# the web build it shows (app/dist-web) is in Contents/Resources/web.
 appId: local.ai-whiteboard
 productName: AI Whiteboard
 directories:
   output: dist
-# Only the main process, the preload and the connection module go into app.asar;
-# electron-builder adds the runtime dependencies (electron-window-state) from package.json. The
-# test host (web/dev) is not here: the app carries no code of it.
+# Only the main process and the preload go into app.asar; electron-builder adds the runtime
+# dependencies from package.json: electron-window-state, and the connection module @aiwb/conn
+# (a file: dependency on ../packages/conn, packed as any other). The test host (web/dev) is not
+# here: the app carries no code of it.
 files:
   - main.js
   - preload.js
   - lib.js
   - ipcface.js
-  - conn/**
   - package.json
 asar: true
 # Outside app.asar: a binary can't be run from inside an asar.
@@ -21,7 +21,7 @@ extraFiles:
   - from: build/ai-whiteboard
     to: MacOS/ai-whiteboard
 extraResources:
-  - from: ../web/dist
+  - from: ../app/dist-web
     to: web
   # Sets the app's own server up as a remote server; run through sh (scripts/remote).
   - from: ../scripts/remote/setup-remote.sh

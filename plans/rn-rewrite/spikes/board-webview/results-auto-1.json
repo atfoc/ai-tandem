@@ -1,0 +1,591 @@
+{
+ "scenario": "auto",
+ "phase": "done",
+ "done": true,
+ "at": {
+  "appModule": 1791992902191,
+  "loadStart": 1791992902685,
+  "loadEnd": 1791992902861,
+  "pageReady": 1791992902875,
+  "mem-blank": 1791992902875,
+  "mem-empty": 1791992906986,
+  "shot-light": 1791992911154,
+  "shot-mocha": 1791992913827,
+  "shot-latte": 1791992916432,
+  "mem-large": 1791992920243,
+  "mem-large-after": 1791992925583,
+  "mem-empty-again": 1791992929603,
+  "final": 1791992933639,
+  "done": 1791992934152
+ },
+ "steps": [
+  {
+   "name": "loadScene empty",
+   "ok": true,
+   "ms": 98,
+   "info": {
+    "elements": 0,
+    "ms": 71
+   }
+  },
+  {
+   "name": "loadScene small",
+   "ok": true,
+   "ms": 35,
+   "info": {
+    "elements": 4,
+    "ms": 33
+   }
+  },
+  {
+   "name": "applyChange create+update+delete",
+   "ok": true,
+   "ms": 4,
+   "info": {
+    "created": {
+     "c": "9dzarsunbpb8gl",
+     "#1": "qr89ic5z4oq8n7"
+    },
+    "updated": [
+     "rect-b"
+    ],
+    "deleted": [
+     "rect-a"
+    ],
+    "conflicts": [],
+    "rev": 1
+   }
+  },
+  {
+   "name": "apply: created 2, updated 1, deleted 1",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "created": {
+     "c": "9dzarsunbpb8gl",
+     "#1": "qr89ic5z4oq8n7"
+    },
+    "updated": [
+     "rect-b"
+    ],
+    "deleted": [
+     "rect-a"
+    ],
+    "conflicts": [],
+    "rev": 1
+   }
+  },
+  {
+   "name": "sceneChanged arrives after the change",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "latencyMs": 45,
+    "elements": 7
+   }
+  },
+  {
+   "name": "the scene it carries has the change",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "live": 5
+   }
+  },
+  {
+   "name": "selection event names the selected element and its label",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "v": 1,
+    "kind": "event",
+    "type": "selection",
+    "ids": [
+     "9dzarsunbpb8gl"
+    ],
+    "elements": [
+     {
+      "id": "9dzarsunbpb8gl",
+      "type": "rectangle",
+      "x": 100,
+      "y": 300,
+      "width": 160,
+      "height": 80,
+      "label": "Added"
+     }
+    ]
+   }
+  },
+  {
+   "name": "select ids + scroll",
+   "ok": true,
+   "ms": 1,
+   "info": {
+    "selected": 1
+   }
+  },
+  {
+   "name": "select request raises a selection event",
+   "ok": true,
+   "ms": 0,
+   "info": [
+    "rect-b"
+   ]
+  },
+  {
+   "name": "exportPng small",
+   "ok": true,
+   "ms": 16,
+   "info": {
+    "width": 1240,
+    "height": 600,
+    "bytes": 24270,
+    "pageMs": 15,
+    "base64Chars": 32360
+   }
+  },
+  {
+   "name": "png has the PNG signature",
+   "ok": true,
+   "ms": 0,
+   "info": "iVBORw0KGgoA"
+  },
+  {
+   "name": "flush (nothing pending)",
+   "ok": true,
+   "ms": 1,
+   "info": {
+    "pending": false,
+    "version": 26
+   }
+  },
+  {
+   "name": "a bad request is refused by the page",
+   "ok": true,
+   "ms": 0,
+   "info": "BAD_REQUEST: theme is not one of light, dark, latte, frappe, macchiato, mocha"
+  },
+  {
+   "name": "getScene",
+   "ok": true,
+   "ms": 1,
+   "info": {
+    "elements": 7,
+    "version": 26
+   }
+  },
+  {
+   "name": "getScene agrees with the event",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "scene": 26,
+    "event": 26
+   }
+  },
+  {
+   "name": "setTheme light",
+   "ok": true,
+   "ms": 25
+  },
+  {
+   "name": "setTheme mocha",
+   "ok": true,
+   "ms": 171
+  },
+  {
+   "name": "setTheme latte",
+   "ok": true,
+   "ms": 103
+  },
+  {
+   "name": "setTheme light",
+   "ok": true,
+   "ms": 18
+  },
+  {
+   "name": "exportPng after themes",
+   "ok": true,
+   "ms": 25,
+   "info": {
+    "width": 620,
+    "height": 300,
+    "bytes": 8536
+   }
+  },
+  {
+   "name": "export ignores the theme (same size as before at scale 1)",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "a": 620,
+    "b": 1240
+   }
+  },
+  {
+   "name": "probeNetwork",
+   "ok": true,
+   "ms": 1117,
+   "info": {
+    "attempts": [
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "websocket",
+      "outcome": "refused: SecurityError"
+     },
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "beacon",
+      "outcome": "queued (see violations)"
+     },
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "iframe",
+      "outcome": "load event (a blocked frame fires one too)"
+     },
+     {
+      "url": "https://example.com/probe",
+      "how": "websocket",
+      "outcome": "refused: SecurityError"
+     },
+     {
+      "url": "https://example.com/probe",
+      "how": "beacon",
+      "outcome": "queued (see violations)"
+     },
+     {
+      "url": "https://example.com/probe",
+      "how": "iframe",
+      "outcome": "load event (a blocked frame fires one too)"
+     },
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "window.open",
+      "outcome": "no window"
+     },
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "fetch",
+      "outcome": "refused: TypeError"
+     },
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "xhr",
+      "outcome": "refused"
+     },
+     {
+      "url": "https://example.com/probe",
+      "how": "fetch",
+      "outcome": "refused: TypeError"
+     },
+     {
+      "url": "https://example.com/probe",
+      "how": "xhr",
+      "outcome": "refused"
+     },
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "img",
+      "outcome": "refused"
+     },
+     {
+      "url": "https://example.com/probe",
+      "how": "img",
+      "outcome": "refused"
+     },
+     {
+      "url": "http://127.0.0.1:47931/probe",
+      "how": "location.assign",
+      "outcome": "still here after 800 ms"
+     }
+    ],
+    "violations": 12
+   }
+  },
+  {
+   "name": "the page reached nothing: no attempt succeeded, and the policy blocked every one",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "attempts": 12,
+    "violations": 12
+   }
+  },
+  {
+   "name": "a navigation away from the page was refused by the app, and no window opened",
+   "ok": true,
+   "ms": 0,
+   "info": {
+    "blocked": [
+     "http://127.0.0.1:47931/probe",
+     "http://127.0.0.1:47931/probe"
+    ]
+   }
+  },
+  {
+   "name": "loadScene 2000",
+   "ok": true,
+   "ms": 111,
+   "info": {
+    "elements": 2000,
+    "ms": 82
+   }
+  },
+  {
+   "name": "applyChange on 2000",
+   "ok": true,
+   "ms": 12,
+   "info": {
+    "created": {
+     "n": "tldda808pfbmse"
+    },
+    "updated": [
+     "r0"
+    ],
+    "deleted": [],
+    "conflicts": [],
+    "rev": 2,
+    "ms": 12
+   }
+  },
+  {
+   "name": "sceneChanged carries the 2000 element board",
+   "ok": true,
+   "ms": 0,
+   "info": 2001
+  },
+  {
+   "name": "exportPng 2000 (scale 0.5)",
+   "ok": true,
+   "ms": 269,
+   "info": {
+    "width": 6510,
+    "height": 2720,
+    "bytes": 858747,
+    "pageMs": 265
+   }
+  },
+  {
+   "name": "flush on 2000",
+   "ok": true,
+   "ms": 1,
+   "info": {
+    "pending": false,
+    "version": 4005
+   }
+  },
+  {
+   "name": "loadScene empty again",
+   "ok": true,
+   "ms": 17
+  },
+  {
+   "name": "loadScene small",
+   "ok": true,
+   "ms": 33
+  }
+ ],
+ "extra": {
+  "bridgeStats": {
+   "taken": 38,
+   "refused": 0,
+   "refusals": [],
+   "bytesIn": 2524559,
+   "bytesOut": 1269923,
+   "lastRoundTripMs": 33
+  },
+  "page": {
+   "loadStartAt": 1791992902685,
+   "loadEndAt": 1791992902861,
+   "blockedNavigations": [
+    "http://127.0.0.1:47931/probe",
+    "http://127.0.0.1:47931/probe"
+   ],
+   "processTerminated": 0,
+   "errors": [],
+   "assetUri": "file:///Users/pedjat/Library/Developer/CoreSimulator/Devices/821472EB-107A-4CC5-B203-B85924A35CE2/data/Containers/Bundle/Application/B8D6EC60-5C1A-4B90-9D8E-02853FD44C73/BoardSpike.app/assets/assets/board.html"
+  },
+  "ready": {
+   "v": 1,
+   "kind": "event",
+   "type": "ready",
+   "protocol": 1,
+   "excalidraw": "0.18.1",
+   "loadMs": 163
+  },
+  "largeSceneBytes": 1263519,
+  "loadLarge": {
+   "roundTripMs": 112,
+   "pageMs": 82,
+   "bytes": 1263519
+  },
+  "sceneChangedLarge": {
+   "latencyMs": 40,
+   "elements": 2001,
+   "jsonChars": 1322189
+  }
+ },
+ "mem": {
+  "mem-blank": {
+   "at": 1791992906591,
+   "launchd": [
+    22846
+   ],
+   "rows": [
+    {
+     "kind": "app",
+     "pid": 24254,
+     "rssMB": 204.4,
+     "footprintMB": 34
+    },
+    {
+     "kind": "WebContent",
+     "pid": 24271,
+     "rssMB": 209.6,
+     "footprintMB": 39
+    },
+    {
+     "kind": "GPU",
+     "pid": 24273,
+     "rssMB": 101.8,
+     "footprintMB": 15
+    },
+    {
+     "kind": "Networking",
+     "pid": 24285,
+     "rssMB": 135.8,
+     "footprintMB": 25
+    }
+   ]
+  },
+  "mem-empty": {
+   "at": 1791992910407,
+   "launchd": [
+    22846
+   ],
+   "rows": [
+    {
+     "kind": "app",
+     "pid": 24254,
+     "rssMB": 204.1,
+     "footprintMB": 35
+    },
+    {
+     "kind": "WebContent",
+     "pid": 24271,
+     "rssMB": 236.3,
+     "footprintMB": 50
+    },
+    {
+     "kind": "GPU",
+     "pid": 24273,
+     "rssMB": 114.3,
+     "footprintMB": 20
+    },
+    {
+     "kind": "Networking",
+     "pid": 24285,
+     "rssMB": 134.4,
+     "footprintMB": 25
+    }
+   ]
+  },
+  "mem-large": {
+   "at": 1791992923810,
+   "launchd": [
+    22846
+   ],
+   "rows": [
+    {
+     "kind": "app",
+     "pid": 24254,
+     "rssMB": 234.8,
+     "footprintMB": 47
+    },
+    {
+     "kind": "WebContent",
+     "pid": 24271,
+     "rssMB": 353.2,
+     "footprintMB": 125
+    },
+    {
+     "kind": "GPU",
+     "pid": 24273,
+     "rssMB": 187.2,
+     "footprintMB": 44
+    },
+    {
+     "kind": "Networking",
+     "pid": 24285,
+     "rssMB": 142.2,
+     "footprintMB": 26
+    }
+   ]
+  },
+  "mem-large-after": {
+   "at": 1791992929096,
+   "launchd": [
+    22846
+   ],
+   "rows": [
+    {
+     "kind": "app",
+     "pid": 24254,
+     "rssMB": 207.7,
+     "footprintMB": 63
+    },
+    {
+     "kind": "WebContent",
+     "pid": 24271,
+     "rssMB": 298,
+     "footprintMB": 149
+    },
+    {
+     "kind": "GPU",
+     "pid": 24273,
+     "rssMB": 201.6,
+     "footprintMB": 51
+    },
+    {
+     "kind": "Networking",
+     "pid": 24285,
+     "rssMB": 133.1,
+     "footprintMB": 26
+    }
+   ]
+  },
+  "mem-empty-again": {
+   "at": 1791992932975,
+   "launchd": [
+    22846
+   ],
+   "rows": [
+    {
+     "kind": "app",
+     "pid": 24254,
+     "rssMB": 207.8,
+     "footprintMB": 63
+    },
+    {
+     "kind": "WebContent",
+     "pid": 24271,
+     "rssMB": 298.9,
+     "footprintMB": 149
+    },
+    {
+     "kind": "GPU",
+     "pid": 24273,
+     "rssMB": 134,
+     "footprintMB": 51
+    },
+    {
+     "kind": "Networking",
+     "pid": 24285,
+     "rssMB": 133.2,
+     "footprintMB": 26
+    }
+   ]
+  }
+ },
+ "tLaunch": 1791992901639
+}

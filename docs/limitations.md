@@ -2,9 +2,16 @@
 
 What the app does not do, or does not do fully, and the limits it enforces.
 
-- The app is the only client. AI Whiteboard is not used in a browser tab, a machine without the app
-  cannot show it whatever server runs on it, and the app is built for macOS only, so a server on
-  Linux is used from a Mac.
+- The app is the only client. AI Whiteboard is not used in a browser tab, and a machine without the
+  app cannot show it whatever server runs on it. The app runs on macOS (the desktop app), on an iPhone
+  and an iPad, and on Android; the server alone also builds for Linux, and is used from the app on
+  any of those. There is no Windows or Linux app.
+- A phone or tablet has no server of its own, so its first section is not "this computer": it shows the
+  servers you add. It is put on a device with a script, not from a store (see
+  [Build and develop](development.md#install-the-app-on-a-phone-or-tablet)). What the device tests
+  cannot do is checked by hand: drawing on the board with a finger or a Pencil, the code scan with a real
+  camera, HEIC pictures from the iOS library, the local network permission prompt, an app suspended and
+  resumed.
 - With the app closed nothing is connected, to any server. Servers and their agents run on; each
   section fills again when the app opens.
 - Every server that runs listens on its network, behind its secret alone. A server never starts
@@ -13,7 +20,8 @@ What the app does not do, or does not do fully, and the limits it enforces.
   it is set up. Keeping the port off the internet is up to the machine's network and firewall.
 - The secret of this computer's server can be read by any program of the same user, since the
   command that prints it can be run by one.
-- The server list and the secrets are a file in the app's folder, not in the system's keychain.
+- On the desktop the server list and the secrets are a file in the app's folder, not in the system's
+  keychain. On a phone or tablet they are in the device's secure storage.
 - The old local port 4747 is gone: a script or a bookmark that called it stops working, and so do
   `remote off` and `remote status` (which is `status`).
 - Your own pi extensions are not loaded: pi runs with `--no-extensions` plus the app's extension,

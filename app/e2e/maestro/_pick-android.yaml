@@ -1,0 +1,25 @@
+# Shared by `storage-picker-permission`: in the photo picker of Android (a sheet of the system; its cells are in the accessibility tree, each named only by its date), picks the
+# COUNT newest pictures of the library (1 to 3; the newest comes first) and presses "Done". The picker is open when this starts.
+appId: ${APP_ID}
+---
+- extendedWaitUntil:
+    visible: "Photo taken on.*"
+    timeout: 30000
+- tapOn:
+    text: "Photo taken on.*"
+    index: 0
+- runFlow:
+    when:
+      true: ${COUNT >= 2}
+    commands:
+      - tapOn:
+          text: "Photo taken on.*"
+          index: 1
+- runFlow:
+    when:
+      true: ${COUNT >= 3}
+    commands:
+      - tapOn:
+          text: "Photo taken on.*"
+          index: 2
+- tapOn: "Done"

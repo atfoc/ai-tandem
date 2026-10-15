@@ -1,0 +1,57 @@
+{"start":true,"cfg":{"host":"127.0.0.1","dottedHost":"localtest.me","port":62007,"pin":"C8:DB:90:CD:4F:0C:8C:57:7D:6A:70:89:76:8C:28:BE:F9:04:B3:1C:5A:34:03:5D:95:B3:5C:1C:B2:32:37:4C","secret":"<secret>","closedPort":62018,"plainPort":62017,"probeWrongPort":62014,"probeControlPort":62015,"probePin":"6C:FE:39:01:EF:C1:2C:56:72:A5:92:52:B3:18:92:CF:F5:83:10:19:83:A0:BA:0D:07:9F:8D:53:75:2C:03:0A","h2Port":62016,"minutes":21,"idleMinutes":3,"mutateEverySec":1},"clientId":"e12516c9-bf36-42cf-9bd3-5115c4da1272"}
+{"check":"cert_read_without_trust","ok":true,"fingerprint":"C8:DB:90:CD:4F:0C:8C:57:7D:6A:70:89:76:8C:28:BE:F9:04:B3:1C:5A:34:03:5D:95:B3:5C:1C:B2:32:37:4C"}
+{"check":"cert_read_refused_port","ok":true,"outcome":"refused","state":"unreachable","detail":"failed to connect to /127.0.0.1 (port 62018) from /127.0.0.1 (port 50526) after 3000ms: isConnected failed: ECONNREFUSED (Connection refused)"}
+{"check":"cert_read_plain_http_port","ok":true,"outcome":"not_https","detail":"Unable to parse TLS packet header"}
+{"check":"session_open_right_pin","ok":true,"alpn":"h2","fingerprint":"C8:DB:90:CD:4F:0C:8C:57:7D:6A:70:89:76:8C:28:BE:F9:04:B3:1C:5A:34:03:5D:95:B3:5C:1C:B2:32:37:4C"}
+{"check":"session_open_lowercase_pin_no_colons","ok":true}
+{"check":"session_open_wrong_pin_real_server","ok":true,"outcome":"cert_changed","state":"certificate_changed","presented":"C8:DB:90:CD:4F:0C:8C:57:7D:6A:70:89:76:8C:28:BE:F9:04:B3:1C:5A:34:03:5D:95:B3:5C:1C:B2:32:37:4C","pinned":"A8:DB:90:CD:4F:0C:8C:57:7D:6A:70:89:76:8C:28:BE:F9:04:B3:1C:5A:34:03:5D:95:B3:5C:1C:B2:32:37:4C"}
+{"check":"session_open_no_pin","ok":true,"outcome":"fingerprint","state":"fingerprint_not_accepted"}
+{"check":"session_open_garbage_pin","ok":true,"outcome":"cert_changed","pinned":"not a fingerprint"}
+{"check":"wrong_pin_probe_server_sends_nothing","ok":true,"outcome":"cert_changed","presented":"6C:FE:39:01:EF:C1:2C:56:72:A5:92:52:B3:18:92:CF:F5:83:10:19:83:A0:BA:0D:07:9F:8D:53:75:2C:03:0A"}
+{"check":"wrong_pin_on_the_requests_own_connection_probe_gets_nothing","ok":true,"outcome":"cert_changed","presented":"6C:FE:39:01:EF:C1:2C:56:72:A5:92:52:B3:18:92:CF:F5:83:10:19:83:A0:BA:0D:07:9F:8D:53:75:2C:03:0A","pinned":"C8:DB:90:CD:4F:0C:8C:57:7D:6A:70:89:76:8C:28:BE:F9:04:B3:1C:5A:34:03:5D:95:B3:5C:1C:B2:32:37:4C"}
+{"check":"right_pin_probe_server_gets_request_and_times_out","ok":true,"outcome":"timeout"}
+{"check":"hello_h2","ok":true,"status":200,"protocol":"h2","hello":{"app":"ai-whiteboard","featureLevel":6,"instanceId":"6042973a-28a3-45ad-8a01-3b90f085f817","version":"dev"},"headers":{"content-length":"109","content-type":"application/json","date":"Wed, 14 Oct 2026 16:23:23 GMT"}}
+{"check":"state_authenticated","ok":true,"status":200,"protocol":"h2","bytes":938,"keys":["agents","catalogs","home","defaultCwd","groups","defaults","boards","chats","states","library"],"chats":0}
+{"check":"state_wrong_secret_is_401","ok":true,"status":401,"body":"{\"error\":\"unauthorized\"}\n"}
+{"check":"response_size_limit","ok":true,"outcome":"too_long"}
+{"check":"post_with_json_body","ok":true,"status":200,"body":"{\"id\":\"g_ofijnqmz\",\"name\":\"spike ünïcödé ✓\"}\n"}
+{"check":"abort_a_request","ok":true,"outcome":"aborted"}
+{"check":"hello_by_dotted_dns_name","ok":true,"host":"localtest.me","status":200,"protocol":"h2"}
+{"check":"one_h2_connection_for_a_stream_and_8_concurrent_requests","ok":true,"connects":1,"open":1}
+{"check":"uint8array_round_trip_through_the_bridge","ok":true,"bytes":1048576,"ms":48}
+{"check":"stream_ended_by_the_server_is_end_with_no_error","ok":true,"head":"h2","text":"data: {\"type\":\"hello\",\"text\":\"héllo ✓\"}\n\ndata: {\"type\":\"snapshot\",\"text\":\"héllo "}
+{"check":"stream_cut_by_a_dropped_connection_is_end_with_reset","ok":true,"error":"reset","nextRequestStatus":404,"connects":2}
+{"check":"silent_stream_is_cut_by_a_js_watchdog_with_cancel","ok":true,"silentMs":3034,"cancelMs":3}
+{"check":"stream_snapshot_first_then_events_and_cancel","ok":true,"types":["hello","snapshot","groups"],"chunks":2,"cancelMs":4,"head":{"status":200,"headers":{"cache-control":"no-cache","content-type":"text/event-stream","date":"Wed, 14 Oct 2026 16:23:28 GMT"},"protocol":"h2"}}
+{"check":"stream_open_cancel_x10_then_session_still_works","ok":true}
+{"check":"stream_ends_when_session_closes","ok":true,"error":"aborted"}
+{"summary":"short checks","pass":26,"fail":[]}
+{"long":"seeded","groups":40}
+{"long":"start","head":{"status":200,"headers":{"cache-control":"no-cache","content-type":"text/event-stream","date":"Wed, 14 Oct 2026 16:23:30 GMT"},"protocol":"h2"},"minutes":21,"idleMinutes":3}
+{"long":"tick","elapsedSec":1,"chunks":3,"chars":11287,"events":2,"pings":0,"idle":false,"counts":{"hello":1,"snapshot":1},"mutations":1,"maxGapMs":969,"mem":{"totalPssKb":69240,"javaHeapKb":9938,"nativeHeapKb":21029}}
+{"long":"tick","elapsedSec":61,"chunks":85,"chars":344301,"events":62,"pings":3,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":60},"mutations":60,"maxGapMs":1175,"mem":{"totalPssKb":75375,"javaHeapKb":7266,"nativeHeapKb":20970}}
+{"long":"tick","elapsedSec":122,"chunks":166,"chars":677287,"events":121,"pings":6,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":119},"mutations":119,"maxGapMs":1175,"mem":{"totalPssKb":74048,"javaHeapKb":5230,"nativeHeapKb":20803}}
+{"long":"tick","elapsedSec":182,"chunks":249,"chars":1004228,"events":179,"pings":9,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":177},"mutations":178,"maxGapMs":1249,"mem":{"totalPssKb":75955,"javaHeapKb":7682,"nativeHeapKb":21037}}
+{"long":"tick","elapsedSec":242,"chunks":326,"chars":1336556,"events":238,"pings":12,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":236},"mutations":237,"maxGapMs":1249,"mem":{"totalPssKb":75453,"javaHeapKb":7298,"nativeHeapKb":20969}}
+{"long":"tick","elapsedSec":302,"chunks":407,"chars":1674217,"events":297,"pings":15,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":295},"mutations":296,"maxGapMs":1249,"mem":{"totalPssKb":78624,"javaHeapKb":9834,"nativeHeapKb":21159}}
+{"long":"tick","elapsedSec":362,"chunks":484,"chars":2001756,"events":356,"pings":18,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":354},"mutations":355,"maxGapMs":1249,"mem":{"totalPssKb":76587,"javaHeapKb":7618,"nativeHeapKb":20973}}
+{"long":"tick","elapsedSec":423,"chunks":568,"chars":2335027,"events":415,"pings":21,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":413},"mutations":414,"maxGapMs":1249,"mem":{"totalPssKb":76566,"javaHeapKb":7342,"nativeHeapKb":20942}}
+{"long":"tick","elapsedSec":483,"chunks":648,"chars":2672941,"events":475,"pings":24,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":473},"mutations":473,"maxGapMs":1249,"mem":{"totalPssKb":79160,"javaHeapKb":9790,"nativeHeapKb":21086}}
+{"long":"tick","elapsedSec":543,"chunks":722,"chars":2999813,"events":533,"pings":27,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":531},"mutations":532,"maxGapMs":1249,"mem":{"totalPssKb":77188,"javaHeapKb":7546,"nativeHeapKb":21035}}
+{"long":"tick","elapsedSec":603,"chunks":799,"chars":3338807,"events":593,"pings":30,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":591},"mutations":591,"maxGapMs":1249,"mem":{"totalPssKb":77174,"javaHeapKb":7214,"nativeHeapKb":20978}}
+{"long":"tick","elapsedSec":663,"chunks":886,"chars":3668974,"events":651,"pings":33,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":649},"mutations":650,"maxGapMs":1249,"mem":{"totalPssKb":75490,"javaHeapKb":5118,"nativeHeapKb":20844}}
+{"long":"tick","elapsedSec":724,"chunks":964,"chars":3998399,"events":710,"pings":36,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":708},"mutations":709,"maxGapMs":1249,"mem":{"totalPssKb":77838,"javaHeapKb":7606,"nativeHeapKb":20960}}
+{"long":"tick","elapsedSec":784,"chunks":1046,"chars":4336013,"events":770,"pings":39,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":768},"mutations":768,"maxGapMs":1249,"mem":{"totalPssKb":77322,"javaHeapKb":7254,"nativeHeapKb":20919}}
+{"long":"tick","elapsedSec":845,"chunks":1121,"chars":4663095,"events":828,"pings":42,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":826},"mutations":827,"maxGapMs":1249,"mem":{"totalPssKb":79978,"javaHeapKb":4922,"nativeHeapKb":20874}}
+{"long":"tick","elapsedSec":905,"chunks":1195,"chars":4996115,"events":887,"pings":45,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":885},"mutations":885,"maxGapMs":1449,"mem":{"totalPssKb":77630,"javaHeapKb":7446,"nativeHeapKb":20986}}
+{"long":"tick","elapsedSec":965,"chunks":1271,"chars":5322483,"events":945,"pings":48,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":943},"mutations":944,"maxGapMs":1449,"mem":{"totalPssKb":77372,"javaHeapKb":7206,"nativeHeapKb":20959}}
+{"long":"mutation_failed","error":"timeout"}
+{"long":"tick","elapsedSec":1026,"chunks":1304,"chars":5446642,"events":967,"pings":51,"idle":false,"counts":{"hello":1,"snapshot":1,"groups":965},"mutations":964,"maxGapMs":23103,"mem":{"totalPssKb":77594,"javaHeapKb":8074,"nativeHeapKb":21094}}
+{"long":"idle_begins","elapsedSec":1080}
+{"long":"tick","elapsedSec":1086,"chunks":1371,"chars":5740217,"events":1019,"pings":54,"idle":true,"counts":{"hello":1,"snapshot":1,"groups":1017},"mutations":1016,"maxGapMs":23103,"mem":{"totalPssKb":75143,"javaHeapKb":5634,"nativeHeapKb":20840}}
+{"long":"tick","elapsedSec":1147,"chunks":1374,"chars":5740241,"events":1019,"pings":57,"idle":true,"counts":{"hello":1,"snapshot":1,"groups":1017},"mutations":1016,"maxGapMs":23103,"mem":{"totalPssKb":73862,"javaHeapKb":5154,"nativeHeapKb":20800}}
+{"long":"tick","elapsedSec":1207,"chunks":1377,"chars":5740265,"events":1019,"pings":60,"idle":true,"counts":{"hello":1,"snapshot":1,"groups":1017},"mutations":1016,"maxGapMs":23103,"mem":{"totalPssKb":74046,"javaHeapKb":5282,"nativeHeapKb":20808}}
+{"long":"end","endedWith":null,"chunks":1380,"chars":5740289,"events":1019,"pings":63,"counts":{"hello":1,"snapshot":1,"groups":1017},"mutations":1016,"maxGapMs":23103,"idleSec":181,"idlePings":9,"idleMaxGapMs":20002,"mem":{"totalPssKb":74170,"javaHeapKb":5410,"nativeHeapKb":20822}}
+{"check":"long_stream_held","ok":true,"endedWith":null,"seconds":1261}
+{"check":"idle_stream_gets_pings","ok":true,"idleSec":181,"idlePings":9,"wantAtLeast":7,"idleMaxGapMs":20002}
+{"done":true,"pass":28,"fail":[],"seconds":1274}

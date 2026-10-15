@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "AIWB Net Spike",
+    "slug": "aiwb-net-spike",
+    "version": "1.0.0",
+    "scheme": "aiwbspike",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "dev.aiwb.netspike",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    }
+  }
+}

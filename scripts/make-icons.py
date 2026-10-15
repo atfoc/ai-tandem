@@ -3,9 +3,9 @@
 Outputs:
   assets/icon/AppIcon.png        1024 master on Apple's macOS grid (824 squircle, 100 margin, shadow)
   assets/icon/AppIcon.icns       for the .app bundle (Contents/Resources, CFBundleIconFile=AppIcon)
-  web/public/favicon.ico         16 + 32, squircle filling the canvas
-  web/public/favicon.png         32
-  web/public/apple-touch-icon.png 180, full-bleed (iOS/Safari round it themselves)
+  app/public/favicon.ico         16 + 32, squircle filling the canvas
+  app/public/favicon.png         32
+  app/public/apple-touch-icon.png 180, full-bleed (iOS/Safari round it themselves)
 
 Run from anywhere: python3 scripts/make-icons.py  (needs Pillow and macOS iconutil)
 """
@@ -19,7 +19,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON = os.path.join(ROOT, "assets", "icon")
-PUBLIC = os.path.join(ROOT, "web", "public")
+PUBLIC = os.path.join(ROOT, "app", "public")
 
 CANVAS, BODY = 1024, 824   # Apple macOS icon grid
 CROP = 0.78                # keep the centre of the artwork so the glyph stays big at 16 px

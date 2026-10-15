@@ -1,0 +1,14 @@
+# Shared by `storage-picker-permission`: from a chat back to the sidebar (nothing to do when the sidebar is there).
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible:
+        id: "chat-head"
+    commands:
+      - tapOn:
+          id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "side-tree"
+    timeout: 30000

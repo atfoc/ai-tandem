@@ -1,0 +1,28 @@
+# Shared by the flows of the app: removes every server the app already has (an earlier run's scratch server stays in its storage), through the
+# Servers dialog, and leaves the dialog closed. Opens from the sidebar's foot, so the sidebar must be on the screen.
+appId: ${APP_ID}
+---
+- tapOn:
+    id: "servers-btn"
+- extendedWaitUntil:
+    visible:
+      id: "servers-add"
+    timeout: 30000
+- repeat:
+    while:
+      visible:
+        id: "servers-row"
+    commands:
+      - tapOn:
+          id: "servers-remove"
+      - tapOn:
+          text: "Remove"
+      - extendedWaitUntil:
+          notVisible: "Remove server"
+          timeout: 30000
+- tapOn:
+    id: "servers-close"
+- extendedWaitUntil:
+    notVisible:
+      id: "servers-add"
+    timeout: 30000

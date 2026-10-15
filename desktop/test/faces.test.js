@@ -2,8 +2,8 @@
 
 // The two faces of a client of servers, side by side (plan H1; goal 6 "every way means the same", 7.1): the IPC face of the
 // app (desktop/ipcface.js, reached through the real preload.js) and the HTTP face of the test host and the mock
-// (web/dev/hostface.mjs). One fake client stands behind both. The page's own transports (web/src/transport/ipc.ts and
-// http.ts) drive them, so the page's side is run too: the same sequence must give the same statuses, texts, scene
+// (web/dev/hostface.mjs). One fake client stands behind both. The page's own transports (packages/core/src/transport/desktop.ts over
+// the preload's window.aiwbTransport, and http.ts) drive them, so the page's side is run too: the same sequence must give the same statuses, texts, scene
 // revisions, envelopes in the same order and the same notices of the stream's state, and the fake client must be asked
 // the same things. No Electron, no browser, no server. The handler of the app's picture scheme is
 // made by lib.js (makePictureResponse), which main.js hands to Electron's protocol.handle, and is run here.
@@ -21,6 +21,7 @@ const { createIpcFace } = require('../ipcface');
 const { makePictureResponse } = require('../lib');
 
 const WEB = path.resolve(__dirname, '../../web');
+const CORE = path.resolve(__dirname, '../../packages/core');
 const pageURL = 'file:///Applications/AI%20Whiteboard.app/Contents/Resources/web/index.html';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (pred, what, ms = 15000) => {
@@ -163,7 +164,7 @@ function makeIpc(client) {
   const load = Module._load;
   Module._load = function (request, ...rest) { return request === 'electron' ? electron : load.call(this, request, ...rest); };
   try { delete require.cache[file]; require(file); } finally { Module._load = load; delete require.cache[file]; }
-  return { aiwbApp: exposed.aiwbApp, face, dispose: () => face.dispose() };
+  return { aiwbTransport: exposed.aiwbTransport, face, dispose: () => face.dispose() };
 }
 
 // ---- the HTTP way: the real face on a loopback server, and an EventSource that behaves as a browser's
@@ -232,7 +233,7 @@ async function makeHttp(client) {
   });
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const { httpTransport } = await import(pathToFileURL(path.join(WEB, 'src/transport/http.ts')).href);
+  const { httpTransport } = await import(pathToFileURL(path.join(CORE, 'src/transport/http.ts')).href);
   return {
     base, face, gate, httpTransport,
     async close() { face.close(); server.closeAllConnections(); await new Promise((ok) => server.close(ok)); fs.rmSync(dist, { recursive: true, force: true }); },
@@ -252,8 +253,8 @@ async function rig() {
   pageBase = h.base;
   EventSourceFake = makeEventSource(h.base);
   globalThis.EventSource = EventSourceFake;
-  const { ipcTransport } = await import(pathToFileURL(path.join(WEB, 'src/transport/ipc.ts')).href);
-  const ways = { ipc: ipcTransport(ipc.aiwbApp), http: h.httpTransport() };
+  const { desktopTransport } = await import(pathToFileURL(path.join(CORE, 'src/transport/desktop.ts')).href);
+  const ways = { ipc: desktopTransport(ipc.aiwbTransport), http: h.httpTransport() };
   return { client, ipc, http: h, ways, async close() { ipc.dispose(); await h.close(); } };
 }
 
@@ -440,7 +441,7 @@ test('a picture gives the same status, type, headers and bytes through the app\'
   const r = await rig();
   try {
     const respond = makePictureResponse(r.client);
-    const addr = (t, server, chat, image) => t.pictureURL(server, chat, image);
+    const addr = (t, server, chat, image) => t.picture(server, chat, image);
     const ask = {
       ipc: async (url) => respond({ url, method: 'GET', signal: new AbortController().signal }),
       http: async (url) => fetch(url),
@@ -452,7 +453,7 @@ test('a picture gives the same status, type, headers and bytes through the app\'
     const o = await both(r, async (t, way) => {
       const out = [];
       for (const [s, c, i] of cases) {
-        const res = await ask[way](addr(t, s, c, i));
+        const res = await ask[way](await addr(t, s, c, i));
         const buf = Buffer.from(await res.arrayBuffer());
         out.push({ status: res.status, ...(res.status === 200 ? { type: res.headers.get('content-type'), nosniff: res.headers.get('x-content-type-options'), cache: res.headers.get('cache-control'), csp: res.headers.get('content-security-policy'), bytes: buf.toString('base64') } : {}) });
       }
@@ -471,7 +472,7 @@ test('a picture gives the same status, type, headers and bytes through the app\'
     const bad = [['../x', 'c1', 'a'.repeat(64)], [ENTRY, 'c1', 'zz'], [ENTRY, 'c 1', 'a'.repeat(64)], [ENTRY, 'c1', 'A'.repeat(64)]];
     for (const way of ['ipc', 'http']) {
       for (const [s, c, i] of bad) {
-        const res = await ask[way](addr(r.ways[way], s, c, i));
+        const res = await ask[way](await addr(r.ways[way], s, c, i));
         assert.ok(res.status >= 400 && res.status < 500, `${way}: ${s}/${c}/${i} gave ${res.status}`);
         assert.equal((await res.arrayBuffer()).byteLength === 0 || res.headers.get('content-type')?.startsWith('application/json'), true, `${way}: no bytes of an image`);
       }

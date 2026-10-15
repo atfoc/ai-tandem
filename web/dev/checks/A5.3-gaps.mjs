@@ -5,7 +5,16 @@
 // grows, then the input and the result come, and it stays open. A subagent's call that was cut with its subagent says
 // that it was stopped. Items with fields of other types than the page reads are cards all the same: each opens, none
 // is the line of a part that could not be drawn. No page error.
-import { act, check, mockEval, openCards, openPage, paneSize, seed, toolCards, until } from "../shot.mjs";
+// Ports dev/checks/A5.3-gaps.mjs (package S6) at desktop, tablet and phone: the same seed (A5), items, assertions and words; the cards are read
+// over testIDs (`cards.mjs`; a card's classes `running` and `err` are its dataSet, a part that could not be drawn is `guard-fail`). The call cut with
+// its subagent, which the old check read in the drawer, is read in S7's drawer (`sub-drawer-body`).
+import { check, mockEval, paneSize, seed, until } from "../shot.mjs";
+import { openCards, toolCards } from "./cards.mjs";
+import { act, byTid } from "./sel.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
+
+const DRAWER_ROOT = "sub-drawer-body";
 
 const brief = (card) => card.parts.map((p) => (p.part === "path" ? ["path", p.path, p.counts, p.lines].filter(Boolean).join(" ") : p.part === "text" || p.part === "change" ? `${p.part} ${p.title}` : `${p.part} ${p.text}`));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -19,23 +28,23 @@ const GAPS = [
   ["Writing a file…", "internal/calc/doc.go", ["running"], ["path internal/calc/doc.go 1 line", "text Content", "note The input is still arriving.", "note Still running: no result yet."]],
 ];
 
-await check("A5.3 an incomplete tool item says what is missing, and no item breaks the page", async ({ url, browser, fail, note }) => {
+await check("A5.3 an incomplete tool item says what is missing, and no item breaks the page", async ({ url, viewport, open, fail, note }) => {
   const states = await seed(url, "A5");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
-  const open = async (id) => {
-    const errors = [], s = state(id), size = paneSize("page", 700, 900);
-    const { ctx, page } = await openPage({ url, browser, errors, sel: s.sel, ...size });
-    await act(page, s.act);
-    await page.waitForSelector(s.see, { timeout: 8000 });
-    return { ctx, page, errors };
+  const win = viewport === "desktop" ? paneSize("page", 700, 900) : {};
+  const show = async (id) => {
+    const s = state(id), p = await open({ sel: s.sel, wait: '[data-testid="chat-head"]', ...win });
+    await act(p.page, s.act);
+    await byTid(p.page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 });
+    return p;
   };
-  const close = async ({ ctx, errors }, name) => { for (const e of errors) fail(`${name}: page error: ${e}`); await ctx.close(); };
-  const guards = (page) => page.locator(".guard-fail").allTextContents();
+  const guards = (page) => byTid(page, "guard-fail").evaluateAll((els) => els.map((e) => e.textContent));
 
   // ---- the incomplete items
   {
-    const p = await open("gaps"), name = "the incomplete items";
+    const p = await show("gaps"), name = "the incomplete items";
     try {
+      await until(async () => (await toolCards(p.page))?.length === GAPS.length, 15000);
       const closed = await toolCards(p.page);
       if (closed.length !== GAPS.length) fail(`${name}: ${closed.length} cards, not ${GAPS.length}: the item that was never written draws nothing`);
       await openCards(p.page);
@@ -64,27 +73,28 @@ await check("A5.3 an incomplete tool item says what is missing, and no item brea
       }
       for (const g of await guards(p.page)) fail(`${name}: a part could not be drawn: ${g}`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    await p.ctx.close();
   }
   note(`${GAPS.length} incomplete items: each says what is missing, and the one whose input arrives follows it`);
 
-  // ---- a call cut with its subagent: the subagent ended, and one of its calls has no result
+  // ---- a call cut with its subagent: the subagent ended, and one of its calls has no result (S7: the drawer)
   {
     await mockEval(`subItems["c_A5_sub/s1"].splice(2, 0, tool("s1x", "Bash", { command: "go test ./internal/calc/", description: "Run the tests" })); versions["c_A5_sub/s1"] = (versions["c_A5_sub/s1"] ?? 1) + 1;`, url);
-    const p = await open("sub"), name = "the subagent's drawer";
+    const p = await show("sub"), name = "the subagent's drawer";
     try {
-      if (!await until(async () => (await toolCards(p.page, ".sub-drawer-body"))?.length === 3)) fail(`${name}: ${(await toolCards(p.page, ".sub-drawer-body"))?.length} cards, not 3`);
-      await openCards(p.page, ".sub-drawer-body");
-      const c = (await toolCards(p.page, ".sub-drawer-body"))[1];
+      if (!await until(async () => (await toolCards(p.page, DRAWER_ROOT))?.length === 3, 15000)) fail(`${name}: ${(await toolCards(p.page, DRAWER_ROOT))?.length} cards, not 3`);
+      await openCards(p.page, DRAWER_ROOT);
+      const c = (await toolCards(p.page, DRAWER_ROOT))[1];
       if (c?.label !== "Run the tests — stopped" || c.cls.includes("running") || !same(brief(c), ["text Command", "note Stopped before the command gave its output."])) fail(`${name}: the call that was cut is "${c?.label}" (${c?.cls.join(" ")}) and shows ${JSON.stringify(c && brief(c))}`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    await p.ctx.close();
   }
 
   // ---- items with fields of other types than the page reads
   {
-    const p = await open("junk"), name = "the malformed items", want = state("junk").count;
+    const p = await show("junk"), name = "the malformed items", want = state("junk").count;
     try {
+      await until(async () => (await toolCards(p.page))?.length === want, 15000);
       const closed = await toolCards(p.page);
       if (closed.length !== want) fail(`${name}: ${closed.length} cards, not ${want}`);
       await openCards(p.page);
@@ -92,9 +102,9 @@ await check("A5.3 an incomplete tool item says what is missing, and no item brea
       for (const [i, c] of cards.entries()) if (!c.open || !c.parts.length) fail(`${name}, card ${i + 1} ("${c.label}"): ${c.open ? "is open and empty" : "did not open"}`);
       for (const g of await guards(p.page)) fail(`${name}: a part could not be drawn: ${g}`);
       // (the rest of the thread is there: the reply after the cards)
-      if (!await p.page.locator(".thread .msg.assistant").count()) fail(`${name}: the thread's reply is not drawn`);
+      if (!await byTid(p.page, "msg", { role: "assistant" }).count()) fail(`${name}: the thread's reply is not drawn`);
       note(`${cards.length} malformed items: ${cards.filter((c) => c.cls.includes("k-other")).length} drawn as any other tool, ${cards.filter((c) => !c.cls.includes("k-other")).length} as their kind; each opens`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    await close(p, name);
+    await p.ctx.close();
   }
-});
+}, { viewports, page: false });

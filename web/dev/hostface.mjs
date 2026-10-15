@@ -1,6 +1,6 @@
 // The HTTP face of a client of servers, for the page in a headless browser (plans/app-as-client-plan.md, C5.1). It is
 // what the main process's IPC face is to the app: the page sends its calls, takes its stream and shows its pictures
-// through it, and behind it stands a client with the API of desktop/conn (createClient), or the mock's fake one
+// through it, and behind it stands a client with the API of packages/conn (createClient), or the mock's fake one
 // (dev/mock.mjs). The face never listens: the caller gives `handle` to an http.Server.
 //
 //   GET  /host/events                        the stream of every server: one SSE stream, each envelope a `data:` line

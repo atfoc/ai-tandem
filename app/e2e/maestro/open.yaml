@@ -1,0 +1,13 @@
+# Closes the development build's own screens: the system's "Open in …?" question after a link, the development menu's
+# first-run sheet and the menu itself. Each is there only some of the times.
+appId: local.aiwhiteboard.app   # the development build (app.config.ts; AIWB_*_BUNDLE_ID/PACKAGE unset)
+---
+- tapOn:
+    text: "Open"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+- tapOn:
+    text: "Close"
+    optional: true

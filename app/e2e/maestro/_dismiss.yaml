@@ -1,0 +1,14 @@
+# Shared by every flow that opens the development build with a link: what the system and the development client put in front of the
+# app. Each of these is there only some of the times (the system's "Open in ...?" question after a link, the development menu's
+# first-run sheet and the menu itself).
+appId: ${APP_ID}
+---
+- tapOn:
+    text: "Open"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+- tapOn:
+    text: "Close"
+    optional: true

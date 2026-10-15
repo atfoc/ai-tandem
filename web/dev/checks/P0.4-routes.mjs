@@ -4,9 +4,26 @@
 // And the mock's servers (plans/app-as-client-plan.md, C3.4, C3.7 and C5.3): a call names its server and is answered by that
 // machine, a thing made on a server is told as that server's event, the answer of a call by the state of its server, what
 // is no call of the client API, what the routes refuse, and the order of the stream when a server drops and is back.
-import { check, hostCall, mockEval, openPage, seed, startMove, until } from "../shot.mjs";
+// Ports dev/checks/P0.4-routes.mjs to the new build (the mock is the same for both builds, AD-23): the half that calls the mock directly is the old
+// file's, line for line (`mockHalf`), and the half that is read in the page is the old one's four scenarios over testIDs: a branch send against a
+// route delayed by 1.5 s (the thread, the tree button's count, the context meter that follows the branch, back on main through the tree: B-FK-07,
+// B-FK-20, B-FK-24, B-HD-08, B-TR-08, B-US-03, C-TX-03), a branch send whose events come after the answer, a held model pick on a fresh fork (the
+// fixed chip "Starting the agent…": C-CH-17) and Fork on a reply (B-FK-15). Deviations:
+//  - the mock's half has no page, so it runs once, at the desktop (the mock starts anew at each viewport, and the same calls would only be made again);
+//    the page's half runs at the three viewports, since the rows it proves say "all" and a message's actions, the tree's rows and the model's list are
+//    opened by the pointer of the viewport (checks/fork.mjs);
+//  - the old page's errors were collected and failed by the check; `check()` fails a page error or a console error by itself;
+//  - the page's bounds of 8 s are 15 s (the delayed routes are 1.5 s, and a machine four times slower must pass);
+//  - each scenario of the page seeds A4 first (the old file's later scenarios used what the earlier ones had left: the chats they open are not the ones
+//    the earlier ones changed, so the result is the same, and the page's half can run at a viewport that did not run the mock's).
+import { check, hostCall, mockEval, seed, until } from "../shot.mjs";
+import { byTid, press, tidSel } from "./sel.mjs";
+import { firstMsg, msgsSeen, openRow, openTree, pressAct, startMove, treeRow, typeAndSend, waitsSeen } from "./fork.mjs";
 
-await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, note }) => {
+export const viewports = ["desktop", "tablet", "phone"];
+
+/** The half that calls the mock directly (the old file's): the routes, the knobs and the servers. */
+async function mockHalf({ url, fail }) {
   await seed(url, "A2", "A4");
   const call = async (method, path, body, server = "local") => {
     const t = Date.now(), r = await hostCall(url, method, path, body, server);
@@ -330,25 +347,32 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
     await knob(`delete flags.send; delete flags.spawn; delete flags.configure; delete flags.fork; delete globalThis.heldBySeed;`);
   }
   ctl.abort();
+}
 
-  // ---- in the page, on today's code
-  const branchSend = async (page, text) => { await startMove(page); await page.locator(".composer [contenteditable]").click(); await page.keyboard.type(text); await page.keyboard.press("Enter"); };
-  const replied = (page) => page.waitForFunction(() => [...document.querySelectorAll(".thread .msg.assistant")].some((m) => m.textContent.includes("A canned reply of the mock")), null, { timeout: 15000 });
-  const usersOf = (page) => page.evaluate(() => [...document.querySelectorAll(".thread .msg.user")].map((m) => m.textContent.trim().slice(0, 30)));
+// ---- in the page, on the new build
+const WAIT = 15000;
+const T = "c_A4_turns";
+const BRANCH_REPLY = "A canned reply of the mock";
+
+async function pageHalf({ url, open, fail, note }) {
+  const branchSend = async (page, text) => { await startMove(page); await typeAndSend(page, text); };
+  const replied = (page) => page.waitForFunction((r) => [...document.querySelectorAll('[data-testid="msg"][data-role="assistant"]')].some((m) => (m.textContent ?? "").includes(r)), BRANCH_REPLY, { timeout: WAIT });
+  const usersOf = async (page) => (await msgsSeen(page)).filter((m) => m.who === "user").map((m) => m.text.slice(0, 30));
   {
-    const errors = [], said = "Branch from the page";
+    const said = "Branch from the page";
     await seed(url, "A4"); // the chat with main alone again
     await mockEval(`flags.send = { delay: 1500 };`, url);
-    const { ctx, page } = await openPage({ url, browser, sel: { chat: T }, errors, wait: ".thread .msg.assistant" });
-    const meter = () => page.evaluate(() => document.querySelector(".composer .ctx-meter")?.textContent ?? "");
+    const { ctx, page } = await open({ sel: { chat: T }, wait: tidSel("msg", { role: "assistant" }) });
+    // (the composer's meter: its text is the share of the window in use, with the numbers where the toolbar has room for them)
+    const meter = () => byTid(page, "ctx-meter").first().evaluate((e) => (e.innerText ?? "").replace(/\s+/g, " ").trim()).catch(() => "");
     const onMain = await until(meter);
     if (!onMain) fail("main's toolbar has no context meter before the branch send");
     const t = Date.now();
     await branchSend(page, said);
     try {
-      await page.waitForFunction((said) => !document.querySelector(".fk-banner") && [...document.querySelectorAll(".thread .msg.user")].some((m) => m.textContent.includes(said)), said, { timeout: 8000 });
+      await page.waitForFunction((said) => !document.querySelector('[data-testid="fk-banner"]') && [...document.querySelectorAll('[data-testid="msg"][data-role="user"]')].some((m) => (m.textContent ?? "").includes(said)), said, { timeout: WAIT });
       await replied(page);
-      const seen = { users: await usersOf(page), pill: await page.evaluate(() => document.querySelector(".fk-tree-btn .pill")?.textContent) };
+      const seen = { users: await usersOf(page), pill: await byTid(page, "fk-tree-btn").first().getAttribute("data-count") };
       note(`a branch send in the page against a route delayed by 1.5 s: on the new branch after ${Date.now() - t} ms, the thread says ${JSON.stringify(seen.users)}, the tree button counts ${seen.pill}`);
       if (seen.users.length !== 2 || seen.pill !== "2") fail(`after the branch send the thread has ${JSON.stringify(seen.users)} and the tree button counts ${seen.pill}: not the new branch, cut after the first turn`);
       if (Date.now() - t < 1500) fail("the page was on the new branch before the delayed answer");
@@ -357,22 +381,21 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
       await mockEval(`setSession("${T}", chats.${T}.branch, { usage: { ctxIn: 30000, ctxOut: 500, ctxWindow: 200000, turns: 4 } });`, url);
       const onNew = await until(async () => { const m = await meter(); return m && m !== onMain ? m : ""; });
       if (!onNew) fail(`the new branch's meter still says "${await meter()}" after its usage changed`);
-      await page.locator(".chat-head .fk-tree-btn").click();
-      await page.locator(".fk-nav .fk-row", { hasText: "Done: the fonts are copied once." }).first().dblclick({ timeout: 8000 });
-      await page.waitForFunction(() => !document.querySelector(".fk-nav") && [...document.querySelectorAll(".thread .msg.user")].some((m) => m.textContent.includes("Fix it.")), null, { timeout: 8000 });
+      await openTree(page);
+      await openRow(page, treeRow(page, "text", "Done: the fonts are copied once."));
+      await page.waitForFunction(() => !document.querySelector('[data-testid="fk-nav"]') && [...document.querySelectorAll('[data-testid="msg"][data-role="user"]')].some((m) => (m.textContent ?? "").includes("Fix it.")), null, { timeout: WAIT });
       if (await until(async () => await meter() === onMain, 5000)) note(`back on main through the tree: its meter says "${onMain}" as before the send (the new branch's: "${onNew}")`);
       else fail(`back on main after the branch send its meter says "${await meter()}", before the send "${onMain}": the page has no state record of main`);
     } catch (e) { fail(`a branch send in the page did not end on the new branch, or main could not be gone back to: ${e.message.split("\n")[0]}`); }
-    for (const e of errors) fail(`page error during the branch send: ${e}`);
     await mockEval(`delete flags.send;`, url);
     await ctx.close();
   }
   {
     // The branch's events come after the answer: the page has the message from the branch's list, where it is at the answer.
-    const errors = [], said = "Branch told late";
+    const said = "Branch told late";
     await seed(url, "A4");
     await mockEval(`flags.send = { eventsAfter: 1500 };`, url);
-    const { ctx, page } = await openPage({ url, browser, sel: { chat: T }, errors, wait: ".thread .msg.assistant" });
+    const { ctx, page } = await open({ sel: { chat: T }, wait: tidSel("msg", { role: "assistant" }) });
     await branchSend(page, said);
     try {
       await replied(page);
@@ -380,37 +403,41 @@ await check("P0.4 the mock's routes and knobs", async ({ url, browser, fail, not
       if (users.join("|") === `Why is the build slow?|${said}`) note(`a branch send in the page whose events come 1.5 s after the answer: once the reply ended the thread says ${JSON.stringify(users)}`);
       else fail(`after a branch send whose events came after the answer the thread has ${JSON.stringify(users)}: the message sent is not shown`);
     } catch (e) { fail(`a branch send whose events come after the answer got no reply in the page: ${e.message.split("\n")[0]}`); }
-    for (const e of errors) fail(`page error during the branch send with late events: ${e}`);
     await mockEval(`delete flags.send;`, url);
     await ctx.close();
   }
   {
     // A model pick on a fresh fork, held: the chip names the model picked while the agent starts on it.
-    const errors = [], STARTING = '.composer .tchip.static[title^="Starting the agent"]';
+    await seed(url, "A4");
     await mockEval(`flags.configure = { delay: 1500 };`, url);
-    const { ctx, page } = await openPage({ url, browser, sel: { chat: "c_A4_fork_claude" }, errors, wait: '.composer button.tchip[title^="Model"]' });
-    await page.locator('.composer button.tchip[title^="Model"]').click();
-    await page.locator(".composer .menu-item", { hasText: "Sonnet 5.5" }).first().click();
+    const { ctx, page } = await open({ sel: { chat: "c_A4_fork_claude" }, wait: tidSel("tchip", { kind: "model" }) });
+    // (the model's chip is in the toolbar's row, or, where the row has no room for it, in the "more" popup, opened for it and left open)
+    if (!await byTid(page, "tchip", { kind: "model" }).count() && await byTid(page, "more-chip").count()) { await press(page, byTid(page, "more-chip").first()); await byTid(page, "more-pop").first().waitFor({ state: "visible", timeout: WAIT }); }
+    await press(page, byTid(page, "tchip", { kind: "model" }).first());
+    await press(page, byTid(page, "pick-row").filter({ hasText: "Sonnet 5.5" }).first());
+    const model = () => waitsSeen(page, { composer: true }).then((s) => s.model);
     try {
-      const during = await (await page.waitForFunction((sel) => document.querySelector(sel)?.textContent, STARTING, { timeout: 8000 })).jsonValue();
+      const during = await (await page.waitForFunction((sel) => { const e = document.querySelector(sel); return e?.dataset.fixed === "true" && (e.getAttribute("title") ?? "").startsWith("Starting the agent") ? e.textContent : false; }, tidSel("tchip", { kind: "model" }), { timeout: WAIT })).jsonValue();
       if (during.includes("Sonnet 5.5")) note(`a model pick on a fresh fork, held for 1.5 s: meanwhile the chip says "${during.trim()}"`);
       else fail(`while a pick of Sonnet 5.5 on a fresh fork is held the chip says "${during.trim()}": not the model picked`);
-      await page.waitForFunction(() => document.querySelector('.composer button.tchip[title^="Model"]')?.textContent.includes("Sonnet 5.5"), null, { timeout: 8000 });
-    } catch (e) { fail(`a held model pick on a fresh fork did not show its start, or did not end on the model picked: ${e.message.split("\n")[0]}`); }
-    for (const e of errors) fail(`page error during the held model pick: ${e}`);
+      await page.waitForFunction((sel) => { const e = document.querySelector(sel); return e?.dataset.fixed !== "true" && (e?.textContent ?? "").includes("Sonnet 5.5"); }, tidSel("tchip", { kind: "model" }), { timeout: WAIT });
+    } catch (e) { fail(`a held model pick on a fresh fork did not show its start, or did not end on the model picked: ${e.message.split("\n")[0]} (the chip: ${JSON.stringify(await model())})`); }
     await mockEval(`delete flags.configure;`, url);
     await ctx.close();
   }
   {
-    const errors = [];
-    const { ctx, page } = await openPage({ url, browser, sel: { chat: "c_A4_two" }, errors, wait: ".thread .msg.assistant" });
-    await page.locator(".thread .msg.assistant").first().hover();
-    await page.locator(".thread .msg.assistant .fk-act.k-fork").first().click();
+    await seed(url, "A4");
+    const { ctx, page } = await open({ sel: { chat: "c_A4_two" }, wait: tidSel("msg", { role: "assistant" }) });
+    await pressAct(page, await firstMsg(page), "fork");
     try {
-      await page.waitForFunction(() => document.querySelector(".chat-head-name")?.textContent.includes("Two branches (fork)"), null, { timeout: 5000 });
+      await page.waitForFunction((sel) => (document.querySelector(sel)?.textContent ?? "").includes("Two branches (fork)"), tidSel("chat-head-name"), { timeout: WAIT });
       note("Fork on a reply: the page opens the new chat");
-    } catch { fail(`Fork on a reply did not open the new chat: the header says "${await page.locator(".chat-head-name").textContent()}"`); }
-    for (const e of errors) fail(`page error during the fork: ${e}`);
+    } catch { fail(`Fork on a reply did not open the new chat: the header says "${await byTid(page, "chat-head-name").first().textContent()}"`); }
     await ctx.close();
   }
-});
+}
+
+await check("P0.4 the mock's routes and knobs", async (ctx) => {
+  if (ctx.viewport === "desktop") await mockHalf(ctx);
+  await pageHalf(ctx);
+}, { viewports, page: false });

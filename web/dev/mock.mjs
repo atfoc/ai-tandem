@@ -1,7 +1,7 @@
 // A mock of the servers for the browser checks (dev/checks, run by dev/uicheck.mjs) and for working on the client
-// without a Go server and without an agent. Plain Node, no dependency; it serves web/dist.
+// without a Go server and without an agent. Plain Node, no dependency; it serves the app's web build.
 //
-// What it is: a fake client with the API of the connection module of the app (desktop/conn: subscribe, call, picture,
+// What it is: a fake client with the API of the connection module of the app (packages/conn: subscribe, call, picture,
 // app, localInfo, close; createMockClient below), behind the same HTTP face as the test host (dev/hostface.mjs). The page
 // in a headless browser reaches it through its transport over HTTP (/host/call, /host/events, /host/picture, /host/app),
 // as it reaches a real server through the host. A server of the list is a "world" of the mock (this computer's is
@@ -43,7 +43,8 @@
 //     flags.streamDown, dropStreams(), addServer(), setServerState(), removeServer(), resync(), onServer(), elsewhere(),
 //     onCalls, seedUI() and what it adds to the snapshot
 //
-//   cd web && npm run build && node dev/mock.mjs           then open http://127.0.0.1:4791
+//   node dev/mock.mjs                                      then open http://127.0.0.1:4791 (serves app/dist-web; the page can reach the mock
+//                                                          only if built with --connect-self: DIST=/some/folder as below)
 //   PORT=4899 node dev/mock.mjs                            another port
 //   DIST=/some/folder node dev/mock.mjs                    serves another build of the client
 //   T0=1768478400000 node dev/mock.mjs                     the times of what it starts with are told from that moment, not from now
@@ -100,7 +101,10 @@
 //     (an added server is connecting, and 30 ms later connected, with a tree of its own that is empty; a secret is never
 //     kept or told), owner.restart (this computer connecting meanwhile, flags.restart = { delay, fail, version }),
 //     owner.retry (flags.start = { delay, fail: "reason" }: this computer's start fails, "Not started"), owner.status
-//     (flags.mcp = { up: false }), owner.openLog and owner.reveal (501 `not_here`, as the module's)
+//     (flags.mcp = { up: false }), owner.openLog and owner.reveal (501 `not_here`, as the module's). flags.app[op] =
+//     { answer: body } | { refuse: [status, sentence, code] } | { delay: ms } answers an operation as it says (the test of
+//     a form that fails at its fifth step, a fingerprint to accept, a list that cannot be read), and flags.app[op] = { queue:
+//     [that, …] } one call each; `appCalls` is every operation asked, { op, args } (a secret told by its length)
 // Through /mock/eval:
 //   addServer(entry, { tree, lists })       puts { id, name, address, state, … } into the list, with a machine of its
 //                                           own (this computer's entry too); lists: what it offers a new chat. Nothing is
@@ -122,8 +126,15 @@
 //                                           Answers { status, body }
 //   onCalls                                 every call the client was asked for: { server, method, path, body? }
 //   worlds[id]                              a machine as the mock holds it ("local": this computer)
+//   await rpc(call, { server, timeout })    a board tool call of an agent, as the server relays one: the page gets an `rpc` event
+//                                           whose params are `call` ({ chat, branch?, board, target, name, args }: `name` is
+//                                           read_board, get_view, get_image, apply, delete_elements or show_board; `target` the
+//                                           board key on that server), runs the tool and replies with POST /api/rpc-reply; it
+//                                           answers that reply, { result } (a text, or { text, image: { mimeType, data } } for
+//                                           get_image) or { error }, and ends with an error when the page does not answer in
+//                                           `timeout` ms (20000). The replies are also in `rpcReplies`: { server, id, result | error }
 // Not as on the server: a chat's content events (`chat_items`, `tree`) go to the page for every chat, followed or not; a
-// board is held by whoever asks, and no `superseded`, `release_request` or `rpc` is sent; no call is ever answered 401 or
+// board is held by whoever asks, and no `superseded` or `release_request` is sent, and no `rpc` but by the knob above; no call is ever answered 401 or
 // 502 `bad_answer` or 504 (but a make that waited on flags.make while its server dropped: 504 `no_answer`); an entry
 // that waits for its next try is not made to try by a call; `defaults` are always empty, and a new chat on another machine
 // starts with that server's first agent, its default model and its default folder; a save of a board is taken from a
@@ -155,7 +166,7 @@
 //              = { eventsAfter: ms }                the new branch's events go out that long after the answer. The
 //                                                   branch is there with its message at the answer, as on the server
 //              = { noReply: true }                  no canned reply: the branch stays "thinking"
-//   flags.items = { delay: ms } | { fail: status }  GET …/items of a chat's branch waits, or fails
+//   flags.items = { delay: ms } | { fail: status }  GET …/items of a chat's branch waits, or fails (404 with the code not_found: the chat is not there)
 //   flags.fork = { delay: ms } | { refuse: { … } }  POST …/fork
 //   flags.draft = { delay: ms } | { hold: true }    a save of a draft on another server (PUT …/chats/<id>/draft; `server`: of that
 //                                                   entry alone) waits; one that waited while its server dropped is 504
@@ -198,7 +209,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHostFace, ownRequest } from "./hostface.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DIST = path.resolve(process.env.DIST || path.resolve(HERE, "../dist"));
+const DIST = path.resolve(process.env.DIST || path.resolve(HERE, "../../app/dist-web"));
 const PORT = Number(process.env.PORT || 4791);
 
 const T0 = Number(process.env.T0) || Date.now();
@@ -415,6 +426,20 @@ const send = (m) => {
   const id = world().id;
   if (sub?.opened.has(id)) emit({ server: id, event: m.type === "groups" ? { ...m, groups: m.groups.map(({ collapsed: _, ...g }) => g) } : m }); // (no group says whether it is collapsed)
 };
+// A board tool call of an agent (the `rpc` knob, see the header): sent to the page as an `rpc` event of that server, and answered by
+// the page's POST /api/rpc-reply, which `call` below hands to the knob's promise.
+const rpcWaiting = new Map(); // by the call's id
+const rpcReplies = []; // every reply the page made: { server, id, result | error }
+let rpcSeq = 0;
+function rpc(call, { server = "local", timeout = 20000 } = {}) {
+  if (!sub?.opened.has(server)) return Promise.reject(new Error(`the page has no stream open for ${server}: it cannot be asked to run a tool`));
+  const id = `rpc_${++rpcSeq}`;
+  return new Promise((ok, no) => {
+    const timer = setTimeout(() => { rpcWaiting.delete(id); no(new Error(`the page did not answer the tool call ${call.name} in ${timeout} ms`)); }, timeout);
+    rpcWaiting.set(id, (reply) => { clearTimeout(timer); ok(reply); });
+    emit({ server, event: { type: "rpc", id, method: "tool", params: call } });
+  });
+}
 /** What a page names a thing of the machine a call works on by, in the mock's own lists of what a client holds. */
 const pageKey = (id) => (world().id === "local" ? id : `${world().id}~${id}`);
 /** The branch records of the machine a call works on: one per branch of every chat that has more than main. */
@@ -755,7 +780,7 @@ async function chatRoute(req, res, id, rest) {
     const branch = named || curOf(own), k = knob("items", id, branch), key = threadKey(id, branch);
     const list = listOf(id, branch);
     await pause(k);
-    if (k.fail) return answer(res, fail(k.fail === true ? 500 : k.fail, "the mock failed this read"));
+    if (k.fail) return answer(res, fail(k.fail === true ? 500 : k.fail, "the mock failed this read", k.fail === 404 ? "not_found" : undefined));
     if (!list) return answer(res, fail(404, `no branch ${branch}`));
     // (a chat with main alone sends no record: its view tells its state, and only `chat` events change it)
     return answer(res, { version: (versions[key] ??= 1), branch, items: list, subagents: (branch === "main" && subs[id]) || [], ...(sessions[id] ? { state: branchState(id, branch) } : {}) });
@@ -988,7 +1013,7 @@ async function treeRoute(req, res, p, u) {
   return false;
 }
 
-// ---- the client API: the fake client behind the face (the API of desktop/conn, C3.2)
+// ---- the client API: the fake client behind the face (the API of packages/conn, C3.2)
 
 /** The calls of the client API (plans/app-as-client-plan.md, C1.4), as the module checks them before it sends one. */
 export const CLIENT_ROUTES = [
@@ -1077,6 +1102,13 @@ async function call({ server, method, path: p, body: b, signal }) {
   let parsed;
   if (b?.json !== undefined) try { parsed = JSON.parse(b.json); } catch { parsed = b.json; }
   onCalls.push({ server, method, path: p, ...(parsed !== undefined ? { body: parsed } : {}) });
+  if (method === "POST" && u.pathname === "/api/rpc-reply" && parsed && rpcWaiting.has(parsed.id)) { // the page's answer to a tool call of the `rpc` knob
+    const reply = parsed.error !== undefined ? { error: parsed.error } : { result: parsed.result };
+    rpcReplies.push({ server, id: parsed.id, ...reply });
+    rpcWaiting.get(parsed.id)(reply);
+    rpcWaiting.delete(parsed.id);
+    return { status: 200, text: '{"ok":true}', sceneRev: null };
+  }
   if (!up.has(server)) { // not connected: two calls are answered whatever the state, every other is refused (C3.7 step 4)
     if (method === "POST" && /^\/api\/chats\/[^/]+\/unfollow$/.test(u.pathname)) return { status: 200, text: '{"ok":true}', sceneRev: null };
     if (method === "POST" && /^\/api\/boards\/[^/]+\/release$/.test(u.pathname)) return { status: 200, text: '{"state":"none"}', sceneRev: null };
@@ -1137,11 +1169,24 @@ function badForm(f, whole) {
 }
 const wait2 = (k, ms) => wait(k?.delay ?? ms);
 const refusedBody = (status, error, code) => ({ status, body: { error, ...(code ? { code } : {}) } });
+/** Every app operation the client was asked for: { op, args }, a form's or a patch's secret told by its length ("<12 characters>"). */
+const appCalls = [];
+const seen = (a) => JSON.parse(JSON.stringify(a ?? {}, (k, v) => (k === "secret" && typeof v === "string" ? `<${v.length} characters>` : v)));
+
 const NOT_HERE = refusedBody(501, "This is done by the app, which is not here.", "not_here");
 
 /** client.app (C3.10): the answers of the servers.* and owner.* operations. A secret of a form is never kept or told. */
 async function app(op, args) {
   const a = args ?? {}, ok = (body) => ({ status: 200, body });
+  appCalls.push({ op, args: seen(a) });
+  // flags.app[op] answers the operation as it says, instead of the mock's own: { answer: body, refuse: [status, sentence, code], delay: ms },
+  // or { queue: [one of those, …] } for the next calls, one each (the mock's own once it is empty)
+  const k = flags.app?.[op], one = Array.isArray(k?.queue) ? k.queue.shift() : k;
+  if (one && (one.answer !== undefined || one.refuse || one.delay)) {
+    await wait2(one, 0);
+    if (one.refuse) return refusedBody(one.refuse[0], one.refuse[1], one.refuse[2]);
+    if (one.answer !== undefined) return ok(one.answer);
+  }
   const local = (e, verb) => (e?.local ? refusedBody(409, `this computer cannot be ${verb}`, "local_entry") : null);
   const find = (id) => entryById(id) ?? null;
   switch (op) {
@@ -1212,7 +1257,7 @@ async function app(op, args) {
   }
 }
 
-/** The fake client behind the face: the API of desktop/conn (C3.2) over the mock's worlds. One subscription at a time; a new
+/** The fake client behind the face: the API of packages/conn (C3.2) over the mock's worlds. One subscription at a time; a new
  *  one ends the old. The mock keeps its state in this module, so every client made here is the same one. */
 export function createMockClient() {
   return {

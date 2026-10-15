@@ -1,0 +1,243 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# Package V1 (AD-83 flow 1, goal 7.4 and 4.6): the pinned certificate and the stream, against a real Go server, through the real app on the
+# phone layout. Maestro adds the scratch server in the Servers dialog by pasting what a server prints, the fingerprint it presents is set
+# against the printed one, the person accepts it and the section goes to Connected; a change made on the server through the client API
+# (the runner's control API, lib/serverctl.mjs) appears without a reload; the server is stopped and the app says it is not connected, and
+# says Connected again when it returns; a server that comes back with another certificate is refused ("Certificate changed"); then the same
+# server is added again by the dotted name localtest.me (typed, not pasted), which resolves to 127.0.0.1 and is on the certificate.
+# A server cannot be added twice (the same instance answers: "Already added"), so the second name takes the first's place.
+appId: ${APP_ID}
+---
+- runFlow: _open-app.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=Seed-board
+- takeScreenshot: v1-00-start
+
+# ---- a pasted text whose fingerprint is not the server's: the app says so and does not accept it for the person
+- tapOn:
+    id: "servers-btn"
+- tapOn:
+    id: "servers-add"
+- waitForAnimationToEnd
+- tapOn:
+    id: "servers-input-code"
+- inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
+- pressKey: Enter
+- inputText: "Fingerprint: ${SERVER_FINGERPRINT.replace(/^../, SERVER_FINGERPRINT.slice(0, 2) == '00' ? '01' : '00')}"
+- pressKey: Enter
+- inputText: "Secret: ${SERVER_SECRET}"
+- runFlow: _blur.yaml
+- tapOn:
+    id: "addserver-read"
+- assertVisible:
+    id: "addserver-note"
+    text: "Filled in the address and the secret from the text. Now test the connection."
+- tapOn:
+    id: "servers-form-test"
+- extendedWaitUntil:
+    visible: "It is NOT the fingerprint the pasted text printed. Do not accept it: this may not be your server."
+    timeout: 60000
+- takeScreenshot: v1-01-fingerprint-differs
+- tapOn: "Cancel"
+
+# ---- the real text: the fingerprint matches, the person accepts it, the section appears and is Connected
+- tapOn:
+    id: "servers-add"
+- waitForAnimationToEnd
+- tapOn:
+    id: "servers-input-code"
+- inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
+- pressKey: Enter
+- inputText: "Fingerprint: ${SERVER_FINGERPRINT}"
+- pressKey: Enter
+- inputText: "Secret: ${SERVER_SECRET}"
+- tapOn:
+    id: "addserver-read"
+- tapOn:
+    id: "servers-form-test"
+- extendedWaitUntil:
+    visible: "It is the fingerprint the pasted text printed."
+    timeout: 60000
+- assertVisible: ".*${SERVER_FINGERPRINT}.*"
+- takeScreenshot: v1-02-fingerprint-matches
+- tapOn:
+    id: "servers-form-accept"
+- extendedWaitUntil:
+    visible: "Connected"
+    timeout: 60000
+- tapOn:
+    id: "servers-save"
+# (a form with a secret box that closes must not make the system offer to save it as a password: P1)
+- assertNotVisible: "Not Now"
+- extendedWaitUntil:
+    visible: "Connected"
+    timeout: 60000
+- takeScreenshot: v1-03-connected
+- tapOn:
+    id: "servers-close"
+- extendedWaitUntil:
+    visible: "Seed-board"
+    timeout: 60000
+- assertVisible: "${SERVER_HOST} — Connected"
+- takeScreenshot: v1-04-section-filled
+
+# ---- the stream: a change made on the server appears without a reload
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=Streamed-board
+- extendedWaitUntil:
+    visible: "Streamed-board"
+    timeout: 60000
+- takeScreenshot: v1-05-streamed
+
+# ---- a chat of the server is opened, and the answer to a message sent on the server streams into it while it is open
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Phone-chat
+- extendedWaitUntil:
+    visible: "Phone-chat"
+    timeout: 60000
+- tapOn: "Phone-chat"
+- extendedWaitUntil:
+    visible:
+      id: "chat-head"
+    timeout: 60000
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /say?chat=${output.ctl.id}&text=hello%20from%20the%20phone
+- extendedWaitUntil:
+    visible: "FAKE.*hello from the phone.*"
+    timeout: 60000
+- takeScreenshot: v1-05b-answer-streamed
+- tapOn:
+    id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "side-tree"
+    timeout: 60000
+
+# ---- the server stops: the app says it is not connected; it returns: the app says Connected and the stream goes on
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /stop
+- extendedWaitUntil:
+    visible: "Servers: one is not connected"
+    timeout: 120000
+- assertVisible: "${SERVER_HOST} — Unreachable"
+- assertVisible: "Its chats show when the server is back."
+- tapOn:
+    id: "servers-btn"
+- extendedWaitUntil:
+    visible: "Unreachable"
+    timeout: 60000
+- takeScreenshot: v1-06-not-connected
+- tapOn:
+    id: "servers-close"
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /start
+- extendedWaitUntil:
+    notVisible: "Servers: one is not connected"
+    timeout: 180000
+- extendedWaitUntil:
+    visible: "${SERVER_HOST} — Connected"
+    timeout: 60000
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=After-the-outage
+- extendedWaitUntil:
+    visible: "After-the-outage"
+    timeout: 60000
+- takeScreenshot: v1-07-back-and-streaming
+
+# ---- the server comes back with another certificate: refused, with the words of the desktop; the old fingerprint is shown beside the new
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /new-cert
+- tapOn:
+    id: "servers-btn"
+- extendedWaitUntil:
+    visible: "Certificate changed"
+    timeout: 180000
+- assertVisible: ".*${output.ctl.fingerprint}.*"
+- assertVisible: ".*${SERVER_FINGERPRINT}.*"
+- takeScreenshot: v1-08-certificate-changed
+- tapOn:
+    id: "servers-remove"
+- tapOn:
+    text: "Remove"
+- extendedWaitUntil:
+    notVisible:
+      id: "servers-row"
+    timeout: 30000
+
+# ---- the dotted name, typed: the same server by localtest.me, on the new certificate
+- tapOn:
+    id: "servers-add"
+- waitForAnimationToEnd
+# (the form opens with its Name box focused and the keyboard up: the sheet rises over it, so every box and button below is pressed with the keyboard still up: P1)
+- tapOn:
+    id: "servers-input-name"
+- inputText: "dotted"
+- tapOn:
+    id: "servers-input-address"
+- inputText: "https://${SERVER_DOTTED}:${SERVER_PORT}"
+- tapOn:
+    id: "servers-input-secret"
+- inputText: "${SERVER_SECRET}"
+- tapOn:
+    id: "servers-selfsigned"
+- tapOn:
+    id: "servers-form-test"
+- extendedWaitUntil:
+    visible: "Compare this fingerprint with the one shown on the other machine, then accept it"
+    timeout: 60000
+- assertVisible: ".*${output.ctl.fingerprint}.*"
+- takeScreenshot: v1-09-dotted-fingerprint
+- tapOn:
+    id: "servers-form-accept"
+- extendedWaitUntil:
+    visible: "Connected"
+    timeout: 60000
+- tapOn:
+    id: "servers-save"
+# (a form with a secret box that closes must not make the system offer to save it as a password: P1)
+- assertNotVisible: "Not Now"
+- extendedWaitUntil:
+    visible: "Connected"
+    timeout: 60000
+- assertVisible: ".*${SERVER_DOTTED}.*"
+- takeScreenshot: v1-10-dotted-connected
+- tapOn:
+    id: "servers-close"
+- extendedWaitUntil:
+    visible: "Seed-board"
+    timeout: 60000
+- assertVisible: "dotted — Connected"
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=By-the-dotted-name
+- extendedWaitUntil:
+    visible: "By-the-dotted-name"
+    timeout: 60000
+- takeScreenshot: v1-11-dotted-streaming

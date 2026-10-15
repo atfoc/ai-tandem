@@ -6,27 +6,37 @@
 // computer, also with servers in the list, and asks nothing. A make that server refuses shows the server's sentence
 // and makes nothing, here or there.
 // A group of the section has the id of a local group (g_shop): what is made in each stays in its own.
-import { callsOf, check, mockEval, openPage, seed, sideMenu, sideSeen, until } from "../shot.mjs";
+// Ports dev/checks/SEC.4-make.mjs (S1) to the new build, at the three viewports (A-SB-03, A-SB-31 to A-SB-34, A-SB-38, A-SC-13, A-SC-14, A-DL-01's
+// make half). Deviations: the chat made is open "as a chat of Studio Mac" by the saved selection (its key names the entry), the header's own
+// server name being S4's; on the phone a board made opens its screen over the list, so its row is in rename mode only where the list stays (a
+// group's is, on every layout); the list is shown again before each make (`showList`).
+import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
+import { byTid, layoutNow, press, showList } from "./sel.mjs";
+import { groupHead, rowNamed, section, sectionHead, sideMenu, sideSeen } from "./side.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
 const STUDIO = "s_studio", LOOSE = "__ungrouped__";
 
-await check("SEC.4 what is made in a section is made on that server; the sidebar's own + makes local things", async ({ url, browser, fail, note }) => {
+await check("SEC.4 what is made in a section is made on that server; the sidebar's own + makes local things", async ({ url, open, fail, note }) => {
   await seed(url, "SEC");
-  const { ctx, page, errors } = await openPage({ url, browser, size: [1280, 1500] });
+  const { page } = await open({ wait: '[data-testid="side-tree"]' });
   const calls = callsOf(page);
-  const sec = `.side-section[data-server="${STUDIO}"]`, head = page.locator(`${sec} > .side-section-head`);
-  const groupHead = (name) => page.locator(`${sec} .side-group-head`, { has: page.locator(".side-group-name", { hasText: name }) });
+  const sec = section(page, STUDIO), head = sectionHead(page, STUDIO);
+  const gHead = (name) => groupHead(page, name, sec);
   const posts = () => calls.filter((c) => c.method === "POST" && /\/(chats|boards|groups)$/.test(c.path));
   /** What the mock holds on a machine: the ids of its chats, boards and groups. */
   const held = (id) => mockEval(`return onServer(${J(id)}, () => ({ chats: Object.keys(chats), boards: Object.keys(boards), groups: groups.map((g) => g.id) }));`, url);
-  const asked = async () => !!await page.locator("main.board-choice, .board-choice-box, .dialog[role=dialog]").count();
-  await page.waitForSelector(`${sec} .side-row`);
+  const asked = async () => !!await byTid(page, "confirm-dialog").count();
+  const nameBox = (root) => byTid(root, "name-input");
+  await byTid(sec, "side-row").first().waitFor({ state: "attached", timeout: 15000 });
   const local0 = await held("local"), localRows = (await sideSeen(page, "local")).outline;
 
   /** One make from a "+": the menu's item, the call it must make, and where the new thing must be. kind: "chats" |
    *  "boards" | "groups"; want: the call's body, in part. Answers the id the server gave the thing. */
   const make = async (name, root, button, item, kind, want) => {
+    await showList(page);
     const n = posts().length, before = await held(STUDIO);
     await sideMenu(page, root, button, item);
     if (!await until(() => posts().length === n + 1 && posts()[n].status !== undefined, 10000)) { fail(`${name}: ${posts().length - n} calls made a thing, not one: ${J(posts().slice(n).map((c) => `${c.method} ${c.path}`))}`); return ""; }
@@ -39,17 +49,18 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
     const after = await held(STUDIO), made = after[kind].filter((x) => !before[kind].includes(x));
     if (made.length !== 1) fail(`${name}: Studio Mac has ${made.length} new ${kind} after it`);
     if (J(await held("local")) !== J(local0)) fail(`${name}: something was made on this computer`);
-    // (a new board or group has its row in rename mode: Esc ends it, and the row says the name the server gave)
-    if (kind !== "chats") { await page.locator(`${sec} input.name-input`).waitFor({ timeout: 10000 }).catch(() => fail(`${name}: the new row is not in rename mode in the section`)); await page.keyboard.press("Escape"); }
+    // (a new group has its row in rename mode, a new board too where the list stays on screen: Esc ends it, and the row says the name the server gave)
+    if (kind === "groups" || (kind === "boards" && layoutNow(page) !== "phone")) { await nameBox(sec).waitFor({ timeout: 10000 }).catch(() => fail(`${name}: the new row is not in rename mode in the section`)); await page.keyboard.press("Escape"); }
     return made[0] ?? "";
   };
   const placed = async (name, line) => { if (!await until(async () => (await sideSeen(page, STUDIO)).outline.includes(line), 10000)) fail(`${name}: the section has no row "${line}": ${J((await sideSeen(page, STUDIO)).outline)}`); };
+  const savedChat = () => page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}").chat ?? "");
 
   // ---- from the section's head: on that server, outside any group
   const NEW_HEAD = "New on Studio Mac";
   const chat = await make("a chat from the section's head", head, NEW_HEAD, "Chat", "chats", { group: LOOSE });
   await placed("a chat from the section's head", "chat New chat");
-  if (!await until(async () => (await page.locator(".chat-head .chat-head-server").textContent().catch(() => "")) === "Studio Mac", 10000)) fail("the chat made from the section's head is not open as a chat of Studio Mac");
+  if (!await until(async () => (await savedChat()) === `${STUDIO}~${chat}`, 10000)) fail(`the chat made from the section's head is not open as a chat of Studio Mac: the selection is "${await savedChat()}"`);
   if (await mockEval(`return onServer("${STUDIO}", () => chats[${J(chat)}]?.cwd);`, url) !== "/Users/studio/work") fail("the chat made on Studio Mac does not start in that server's default folder");
   await make("a whiteboard from the section's head", head, NEW_HEAD, "Whiteboard", "boards", { group: LOOSE });
   await placed("a whiteboard from the section's head", "board untitled");
@@ -59,41 +70,44 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
 
   // ---- from a group of the section: in that group, by its own id there
   const OLD = "New in Old takes";
-  await make("a chat from a group", groupHead("Old takes"), OLD, "Chat", "chats", { group: "g_old" });
+  await make("a chat from a group", gHead("Old takes"), OLD, "Chat", "chats", { group: "g_old" });
   await placed("a chat from a group", "  chat New chat");
-  await make("a whiteboard from a group", groupHead("Old takes"), OLD, "Whiteboard", "boards", { group: "g_old" });
+  await make("a whiteboard from a group", gHead("Old takes"), OLD, "Whiteboard", "boards", { group: "g_old" });
   await placed("a whiteboard from a group", "  board untitled");
-  await make("a group from a group", groupHead("Old takes"), OLD, "Group", "groups", { parent: "g_old" });
+  await make("a group from a group", gHead("Old takes"), OLD, "Group", "groups", { parent: "g_old" });
   await placed("a group from a group", "  group New group");
   // the section's group with the id of a local group: made there, and the local group has nothing new
-  await make("a chat from the group that has a local group's id", groupHead("Renders"), "New in Renders", "Chat", "chats", { group: "g_shop" });
+  await make("a chat from the group that has a local group's id", gHead("Renders"), "New in Renders", "Chat", "chats", { group: "g_shop" });
   if (J((await sideSeen(page, "local")).outline) !== J(localRows)) fail(`a make in Studio Mac's group g_shop changed the local part: ${J((await sideSeen(page, "local")).outline.filter((x) => !localRows.includes(x)))}`);
   // a chat on a board of the section
-  await make("a chat on a board of the section", page.locator(`${sec} .side-row.is-board`, { has: page.locator(".side-name", { hasText: "Storyboard" }) }), "New chat on this board", undefined, "chats", { board: "b_arch" });
+  await make("a chat on a board of the section", rowNamed(page, "Storyboard", sec), "New chat on this board", undefined, "chats", { board: "b_arch" });
 
   // ---- a make that server refuses: its sentence, and nothing made
+  await showList(page);
   const SAID = "Studio Mac has no agent this chat could use.";
   await mockEval(`flags.make = { server: "${STUDIO}", refuse: { status: 409, code: "no_agent", error: ${J(SAID)} } };`, url);
   for (const [item, kind] of [["Chat", "chats"], ["Whiteboard", "boards"], ["Group", "groups"]]) {
+    await showList(page);
     const name = `a refused ${item.toLowerCase()}`, n = posts().length, before = await held(STUDIO), rows = (await sideSeen(page, STUDIO)).outline;
     await sideMenu(page, head, NEW_HEAD, item);
-    const dialog = page.locator(".dialog[role=dialog]");
+    const dialog = byTid(page, "confirm-dialog");
     if (!await until(async () => (await dialog.textContent().catch(() => "")).includes(SAID), 10000)) fail(`${name}: the page does not show the server's sentence: "${await dialog.textContent().catch(() => "")}"`);
     await until(() => posts()[n]?.status !== undefined, 5000); // (a call is heard of a moment after it was made)
     if (posts()[n]?.server !== STUDIO || posts()[n]?.path !== `/api/${kind}` || posts()[n]?.status !== 409) fail(`${name}: the call was ${J(posts()[n])}`);
-    await dialog.locator("button", { hasText: "Close" }).click();
+    await press(page, dialog.getByText("Close", { exact: true }).first());
+    if (!await until(async () => !await dialog.count(), 10000)) fail(`${name}: Close did not close the dialog`);
     if (J(await held(STUDIO)) !== J(before) || J(await held("local")) !== J(local0)) fail(`${name}: something was made all the same`);
     if (J((await sideSeen(page, STUDIO)).outline) !== J(rows)) fail(`${name}: the section changed: ${J((await sideSeen(page, STUDIO)).outline.filter((x) => !rows.includes(x)))}`);
-    if (await page.locator(`${sec} input.name-input`).count()) fail(`${name}: a row is in rename mode`);
+    if (await nameBox(sec).count()) fail(`${name}: a row is in rename mode`);
   }
   await mockEval("delete flags.make;", url);
 
   // ---- the "+" of the sidebar's head: things of this computer, with servers in the list, and no question
   const studio0 = await held(STUDIO);
   for (const [item, kind, want] of [["New chat", "chats", { group: LOOSE }], ["New whiteboard", "boards", { group: LOOSE }], ["New group", "groups", {}]]) {
+    await showList(page);
     const name = `the sidebar's + → ${item}`, n = posts().length, before = await held("local");
-    await page.locator(".side-head button.new").click();
-    await page.locator(".side-head .menu .menu-item", { hasText: item }).click();
+    await sideMenu(page, byTid(page, "side-head").first(), "New…", item);
     if (!await until(() => posts().length === n + 1 && posts()[n].status !== undefined, 10000)) { fail(`${name}: ${posts().length - n} calls made a thing`); continue; }
     const c = posts()[n];
     if (c.server !== "local" || c.path !== `/api/${kind}` || c.status !== 200) fail(`${name}: the call was ${c.method} ${c.path}, answered ${c.status}`);
@@ -102,11 +116,13 @@ await check("SEC.4 what is made in a section is made on that server; the sidebar
     if (await asked()) fail(`${name}: the page asks where the thing should live`);
     const after = await held("local");
     if (after[kind].length !== before[kind].length + 1) fail(`${name}: this computer has ${after[kind].length - before[kind].length} new ${kind}`);
-    if (kind !== "chats") { await page.locator(".side-section[data-server='local'] input.name-input").waitFor({ timeout: 10000 }).catch(() => fail(`${name}: the new row is not in rename mode in this computer's section`)); if (await page.locator(".side-section:not([data-server='local']) input.name-input").count()) fail(`${name}: the new row is in another section`); await page.keyboard.press("Escape"); }
+    if (kind === "groups" || (kind === "boards" && layoutNow(page) !== "phone")) {
+      await nameBox(section(page, "local")).waitFor({ timeout: 10000 }).catch(() => fail(`${name}: the new row is not in rename mode in this computer's section`));
+      if (await page.locator('[data-testid="side-section"]:not([data-server="local"]) [data-testid="name-input"]').count()) fail(`${name}: the new row is in another section`);
+      await page.keyboard.press("Escape");
+    }
   }
   if (J(await held(STUDIO)) !== J(studio0)) fail("the sidebar's own + made something on Studio Mac");
 
-  for (const e of errors) fail(`page error: ${e}`);
-  await ctx.close();
   note(`${posts().filter((c) => c.server === STUDIO && c.status === 200).length} things made on Studio Mac by calls to that server, 3 refused with the server's sentence and nothing made, 3 made on this computer by the sidebar's own +; no question, no server in a body`);
-});
+}, { viewports, page: false });

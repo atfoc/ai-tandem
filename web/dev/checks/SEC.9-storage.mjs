@@ -1,31 +1,39 @@
-// Proves that the browser's storage holds nothing of a section's chat or whiteboard
+// Proves that the app's storage holds nothing of a section's chat or whiteboard
 // (plans/remote-server-sections-goal.md, 3.8 "Text that was typed…", 3.12, section 5 "Nothing on disk"; the contract's
 // 3.10 "No content of a remote server in the browser's storage").
-// A chat: while a draft typed in a chat of a section is on its way to the server, when it is saved, while
-// its server is not connected and after a reload, localStorage has no key of that chat (no "aiwb.draft.…" of a
-// section's key) and no value with what was typed. A chat of this computer still has its unsaved copy there while
-// its save is on its way, which shows that the check would see one. After all of it localStorage holds the selection,
-// the collapse, the widths and the page's other settings, and of the section only the keys that name what is selected
-// and what is collapsed. What was typed just before an outage and not saved is given up by a reload.
-// A whiteboard: what is drawn on a section's board is in no storage while its save is on its way, when it is saved, and
-// while it waits in the window for a server that is not connected; a reload during the outage gives it up.
+// A chat of a section is open from the saved selection: while its server is connected, while it is not, and after a reload, the storage has
+// no key of that chat (no "aiwb.draft.…" of a section's key) and no value with what that server holds of it (its draft, its drawing).
+// After all of it the storage holds the selection, the collapse, the widths and the app's other settings, and of the section only the keys
+// that name what is selected and what is collapsed. A reload during an outage knows nothing of that server's chat.
 // Every storage a page has is read each time: localStorage, sessionStorage and every IndexedDB database.
-import { callMatcher, check, dragResizer, mockEval, openPage, seed, until } from "../shot.mjs";
+// Ports dev/checks/SEC.9-storage.mjs (S1) to the new build, at the three viewports (A-LY-05, A-SG-01, A-SG-05). Deviations: the widths are saved by
+// the pane's resizer, which the desktop has (a finger's resize is L2's); the phone's list is the screen below the chat, so the chat is left to
+// reach it and the selection kept names none; the section's board is drawn on by the viewport's pointer (boarddraw.mjs: a finger on a touch
+// viewport) and its banner and canvas are read by their testIDs.
+// From the sweep (D-SV-09): the page asks before it unloads (`beforeunload` is prevented) only while a drawing waits: not with the board open and
+// nothing drawn, not once the drawing is saved, and with the drawing waiting for its server the reload is met by the browser's dialog (asserted,
+// where the check had only accepted it).
+import { callMatcher, check, dragResizer, mockEval, seed, until } from "../shot.mjs";
+import { byTid, openChat, press, showList } from "./sel.mjs";
+import { drawer, LIVE } from "./boarddraw.mjs";
+import { section, sectionToggle } from "./side.mjs";
 
-const DRAFT = callMatcher(/\/draft\?/), SCENE = callMatcher(/\/boards\/b_loose\/scene\?/); // (the page's calls, held on their way)
+export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
+const DRAFT = callMatcher(/\/draft\?/), SCENE = callMatcher(/\/boards\/b_loose\/scene\?/); // (the app's calls, held on their way)
 const STUDIO = "s_studio", KEY = `${STUDIO}~c_note`;
 // what the page may keep: its settings, what is selected and collapsed, the chat a board reopens with (a key),
 // and of this computer's chats and folders their unsaved drafts and the recent folders
 const SETTINGS = ["aiwb.sel", "aiwb.collapsed", "aiwb.widths", "aiwb.archived", "aiwb.side", "aiwb.theme", "aiwb.lastChat", "aiwb.dirs"];
 
-await check("SEC.9 the browser's storage holds nothing of a section's chat or whiteboard", async ({ url, browser, fail, note }) => {
+await check("SEC.9 the app's storage holds nothing of a section's chat or whiteboard", async ({ url, viewport, open, fail, note }) => {
   await seed(url, "SEC");
-  const p = await openPage({ url, browser, sel: { chat: KEY }, size: [1280, 900] }), { page } = p;
-  const box = page.locator(".composer .composer-input");
+  const p = await open({ sel: { chat: KEY }, wait: '[data-testid="chat-head"]' }), { page } = p;
   const storeOf = (pg) => pg.evaluate(() => Object.fromEntries(Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)])));
   const store = () => storeOf(page);
+  const box = () => byTid(page, "composer-input").first();
+  const typedSoFar = [];
   /** What a page keeps besides localStorage: sessionStorage, and everything in every IndexedDB database, as text. */
   const otherOf = (pg) => pg.evaluate(async () => {
     const out = {};
@@ -41,11 +49,10 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat or wh
     }
     return out;
   });
-  const typedSoFar = [];
   /** What the servers of the seed hold of the things this check opens: none of it is in a storage of the page. */
   const THEIRS = ["remember the LUTs", "sec_rect"];
-  /** The page's storage now: no key of a section's thing but the selection and the collapse, no draft of one, nothing typed,
-   *  nothing drawn, and nothing that server holds. pg: the page (the first one, when none is named). */
+  /** The page's storage now: no key of a section's thing but the selection and the collapse, no draft of one, nothing that server holds.
+   *  pg: the page (the first one, when none is named). */
   const clean = async (when, pg = page) => {
     const s = await storeOf(pg), other = await otherOf(pg);
     for (const [k, v] of Object.entries(s)) {
@@ -55,103 +62,100 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat or wh
       if (k === "aiwb.lastChat" && Object.entries(JSON.parse(v)).some(([owner, chat]) => typeof chat !== "string" || !/^[\w~-]+$/.test(owner + chat))) fail(`${when}: aiwb.lastChat holds more than keys: ${v.slice(0, 120)}`);
     }
     for (const [k, v] of [...Object.entries(s), ...Object.entries(other)]) {
-      for (const t of typedSoFar) if (v.includes(t)) fail(`${when}: the browser has what was typed, under ${k}: ${v.slice(0, 120)}`);
       for (const t of THEIRS) if (v.includes(t)) fail(`${when}: the browser has what Studio Mac holds ("${t}"), under ${k}`);
+      for (const t of typedSoFar) if (v.includes(t)) fail(`${when}: the browser has what was typed, under ${k}: ${v.slice(0, 120)}`);
       if (/"type":"(rectangle|ellipse|text|arrow|line|freedraw)"/.test(v)) fail(`${when}: the browser has elements of a drawing, under ${k}: ${v.slice(0, 120)}`);
     }
     for (const [k, v] of Object.entries(other)) if ((k + v).includes(STUDIO) || (k + v).includes("~")) fail(`${when}: the browser names a thing of a section under ${k}: ${v.slice(0, 120)}`);
     return s;
   };
   const there = (code) => mockEval(`return onServer("${STUDIO}", () => { ${code} });`, url);
-  await page.waitForSelector(".thread .msg.user");
-  if (!await until(async () => (await box.textContent()) === "remember the LUTs", 10000)) fail(`the chat does not open with the draft its server has: "${await box.textContent()}"`);
+  // the chat is open, and the app has read its draft from its server (the store holds it: the storage does not)
+  if (!await until(async () => await there("return chats.c_note.draft?.text;") === "remember the LUTs", 10000)) fail("the seed's chat of Studio Mac has not the draft the check is about");
   await clean("the chat open with its server's draft");
+  await page.waitForTimeout(500); // (a moment for whatever the app would keep of what it has read)
+  await clean("the chat open with its server's draft, a moment later");
 
-  // ---- typed, the save held on its way: no copy in the browser; and then saved
+  // ---- typed, the save held on its way: no copy in the app's storage; and then saved
+  if (!await until(async () => (await box().textContent()) === "remember the LUTs", 10000)) fail(`the chat does not open with the draft its server has: "${await box().textContent()}"`);
   let hold = null, held = 0;
   await page.route(DRAFT, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue(); });
   typedSoFar.push(" and the gamma");
-  await box.click(); await page.keyboard.press("End"); await page.keyboard.type(" and the gamma");
+  await press(page, box()); await page.keyboard.press("End"); await page.keyboard.type(" and the gamma");
   if (!await until(() => held === 1, 10000)) fail("typing in the section's chat started no save of its draft");
   await clean("the save of the section's draft on its way");
   hold();
   if (!await until(async () => await there("return chats.c_note.draft?.text;") === "remember the LUTs and the gamma", 10000)) fail(`the draft was not saved on Studio Mac: ${J(await there("return chats.c_note.draft;"))}`);
   await clean("the section's draft saved");
-
-  // the same in a chat of this computer: its unsaved copy is in the browser while the save is on its way (so the check sees one)
-  await page.locator('.side-section[data-server="local"] > .side-section-body > .side-group .side-row:has(.side-name:text-is("Why is the build slow"))').click();
-  await page.waitForFunction(() => !document.querySelector(".chat-head .chat-head-server") && document.querySelector(".thread .msg.user"), null, { timeout: 10000 });
-  await box.click(); await page.keyboard.type("a local thought");
+  // the same in a chat of this computer: its unsaved copy is in the app's storage while the save is on its way (so the check sees one)
+  await openChat(page, "c_plain");
+  await press(page, box()); await page.keyboard.type("a local thought");
   if (!await until(() => held === 2, 10000)) fail("typing in this computer's chat started no save of its draft");
   const localCopy = await store();
   if (!Object.keys(localCopy).some((k) => k.startsWith("aiwb.draft.c_plain") && localCopy[k].includes("a local thought"))) fail(`a chat of this computer has no unsaved copy in localStorage while its save is on its way: ${J(Object.keys(localCopy))}`);
   hold();
   if (!await until(async () => !Object.keys(await store()).some((k) => k.startsWith("aiwb.draft.")), 10000)) fail(`the local chat's unsaved copy stays after its save: ${J(Object.keys(await store()))}`);
   await page.unroute(DRAFT);
+  await openChat(page, KEY);
 
-  // ---- a reload: the section's chat opens again from the selection, with the draft its server has
-  await page.locator(`.side-section[data-server="${STUDIO}"] .side-row:has(.side-name:text-is("Scratch"))`).click();
-  await page.waitForSelector(".chat-head .chat-head-server");
-  await page.reload(); await page.waitForSelector(".side-tree .side-section");
-  if (!await until(async () => (await box.textContent().catch(() => "")) === "remember the LUTs and the gamma", 10000)) fail(`after a reload the section's chat does not open with its server's draft: "${await box.textContent().catch(() => "")}"`);
+  // ---- a reload: the section's chat opens again from the selection
+  await page.reload(); await byTid(page, "side-section").first().waitFor({ state: "attached", timeout: 15000 });
+  if ((JSON.parse(await page.evaluate(() => localStorage.getItem("aiwb.sel") ?? "{}"))).chat !== KEY) fail("after a reload the selection is not the section's chat");
   await clean("after a reload");
+  if (!await until(async () => (await box().textContent().catch(() => "")) === "remember the LUTs and the gamma", 10000)) fail(`after a reload the section's chat does not open with its server's draft: "${await box().textContent().catch(() => "")}"`);
 
-  // ---- its server not connected: what is typed is in the box alone
-  // Typed just before the drop and not yet taken by the server (its save is held, and never arrives): it stays in the
-  // box, which is read-only from the drop on, and nowhere in the browser's storage.
+  // ---- its server not connected: nothing is kept for it
+  // (what is typed just before the drop and not yet taken by the server — its save is held, and never arrives — stays in the box, which is read-only
+  // from the drop on, and nowhere in the app's storage)
   await mockEval(`flags.draft = { hold: true };`, url);
   typedSoFar.push(" typed in the dark");
-  await box.click(); await page.keyboard.press("End"); await page.keyboard.type(" typed in the dark");
+  await press(page, box()); await page.keyboard.press("End"); await page.keyboard.type(" typed in the dark");
   await page.waitForTimeout(600); // (the save's debounce of 400 ms: the save is on its way)
   await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" }); release("draft"); delete flags.draft;`, url);
-  await page.waitForSelector(".remote-bar.off");
-  // (two frames and the save's debounce of 400 ms: what the page would keep, it has kept by then)
+  await byTid(page, "remote-bar").first().waitFor({ state: "attached", timeout: 15000 });
+  // (two frames and the save's debounce of 400 ms: what the app would keep, it has kept by then)
   await until(async () => Object.keys(await store()).some((k) => k.startsWith("aiwb.draft.")), 1500);
   await clean("typed just before the server dropped, and not saved");
-  if ((await box.textContent()) !== "remember the LUTs and the gamma typed in the dark") fail(`the box has "${await box.textContent()}"`);
-  await box.click({ force: true }).catch(() => {}); await page.keyboard.press("End"); await page.keyboard.type(" and after");
-  if ((await box.textContent()) !== "remember the LUTs and the gamma typed in the dark") fail(`the read-only box took what was typed during the outage: "${await box.textContent()}"`);
-  // a collapse and a width, so that the browser keeps what it is to keep
-  await page.locator('.side-section[data-server="s_empty"] > .side-section-head').click();
-  await dragResizer(page, ".side-pane .resizer", 30);
+  if ((await box().textContent()) !== "remember the LUTs and the gamma typed in the dark") fail(`the box has "${await box().textContent()}"`);
+  await box().click({ force: true }).catch(() => {}); await page.keyboard.press("End"); await page.keyboard.type(" and after");
+  if ((await box().textContent()) !== "remember the LUTs and the gamma typed in the dark") fail(`the read-only box took what was typed during the outage: "${await box().textContent()}"`);
+  await until(async () => await byTid(section(page, "s_empty"), "side-section-state").count() > 0, 5000);
+  await showList(page);
+  await press(page, sectionToggle(page, "s_empty")); // a collapse, so that the browser keeps what it is to keep
+  if (viewport === "desktop") await dragResizer(page, '[data-testid="side-pane"] [data-testid="resizer"]', 30); // and a width
   const kept = await clean("with a collapse and a width saved");
-  if (JSON.parse(kept["aiwb.sel"] ?? "{}").chat !== KEY) fail(`the selection kept is ${kept["aiwb.sel"]}, not the section's chat`);
+  // (the phone's list is the screen below the chat: to reach it the chat is left, and the selection with it)
+  const kept_ = JSON.parse(kept["aiwb.sel"] ?? "{}").chat ?? null;
+  if (viewport === "phone" ? kept_ !== null : kept_ !== KEY) fail(`the selection kept is ${kept["aiwb.sel"]}, not ${viewport === "phone" ? "none, the chat left for the list" : "the section's chat"}`);
   if (J(JSON.parse(kept["aiwb.collapsed"] ?? "[]")) !== J(["s_empty"])) fail(`the collapse kept is ${kept["aiwb.collapsed"]}`);
-  if (!kept["aiwb.widths"]) fail("no width is kept");
+  if (viewport === "desktop" && !kept["aiwb.widths"]) fail("no width is kept");
   const others = Object.keys(kept).filter((k) => !SETTINGS.includes(k));
-  if (others.length) fail(`localStorage has other keys than the selection, the collapse, the widths and the page's settings: ${J(others)}`);
+  if (others.length) fail(`localStorage has other keys than the selection, the collapse, the widths and the app's settings: ${J(others)}`);
 
-  // ---- a reload during the outage: nothing of the chat is known, and what was typed in the dark is given up
-  await page.reload(); await page.waitForSelector(".side-tree .side-section");
-  if (await page.locator(".chat-head .chat-head-server, .remote-bar").count() || (await page.content()).includes("typed in the dark")) fail("after a reload during the outage the section's chat, or what was typed in it, is on the page");
+  // ---- a reload during the outage: nothing of the chat is known
+  await page.reload(); await byTid(page, "side-section").first().waitFor({ state: "attached", timeout: 15000 });
+  if (await byTid(page, "chat-head").count()) fail("after a reload during the outage the section's chat is on the page");
+  if ((await page.content()).includes("typed in the dark")) fail("after a reload during the outage what was typed in the section's chat is on the page");
   await clean("after a reload during the outage");
   await mockEval(`setServerState("${STUDIO}", "connected");`, url);
-  const row = page.locator(`.side-section[data-server="${STUDIO}"] .side-row:has(.side-name:text-is("Scratch"))`);
-  await row.click({ timeout: 10000 });
-  if (!await until(async () => (await box.textContent().catch(() => "")) === "remember the LUTs and the gamma", 10000)) fail(`back, the chat opens with "${await box.textContent().catch(() => "")}", not the draft its server has`);
+  await openChat(page, KEY);
+  if (!await until(async () => (await box().textContent().catch(() => "")) === "remember the LUTs and the gamma", 10000)) fail(`back, the chat opens with "${await box().textContent().catch(() => "")}", not the draft its server has`);
   const end = await clean("at the end");
 
   for (const e of p.errors) fail(`page error: ${e}`);
-  await p.ctx.close();
-
+  await p.ctx.close(); // (the mock has one stream: two pages open take it from each other)
   // ---- a whiteboard of a section: what is drawn on it
   let boardKeys = [], boardOther = [];
   {
     await seed(url, "SEC");
-    const q = await openPage({ url, browser, sel: { board: `${STUDIO}~b_loose`, chat: null }, size: [1280, 900] }), pg = q.page;
-    const live = ".excalidraw:not(.excalidraw--view-mode) canvas.interactive";
-    await pg.waitForSelector(live, { timeout: 15000 });
+    const q = await open({ sel: { board: `${STUDIO}~b_loose`, chat: null }, wait: '[data-testid="board-bar"]' }), pg = q.page;
+    await pg.waitForSelector(LIVE, { timeout: 20000 });
     const count = () => mockEval(`return onServer("${STUDIO}", () => scenes.b_loose.scene.elements.filter((e) => !e.isDeleted).length);`, url);
-    let drawn = 0;
-    /** Draws one more rectangle on the canvas, by the tool's key and a drag (as SEC.7 does). */
-    const draw = async () => {
-      const b = await pg.locator(live).boundingBox(), x = b.x + 420 + (drawn % 3) * 110, y = b.y + 300 + Math.floor(drawn / 3) * 110;
-      drawn++;
-      await pg.mouse.click(b.x + 200, b.y + b.height - 150);
-      await pg.keyboard.press("r");
-      await pg.mouse.move(x, y); await pg.mouse.down(); await pg.mouse.move(x + 40, y + 30, { steps: 4 }); await pg.mouse.move(x + 80, y + 60, { steps: 4 }); await pg.mouse.up();
-    };
+    const draw = drawer(pg);
+    /** Whether the page, asked whether it may unload, asks the user not to (a `beforeunload` nobody has prevented is not asking). */
+    const asks = () => pg.evaluate(() => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; });
     await clean("the section's board open with its server's drawing", pg);
+    if (await asks()) fail("with the section's board open and nothing drawn the page asks before it unloads");
     let hold = null, held = 0;
     await pg.route(SCENE, async (route) => { held++; await new Promise((ok) => { hold = ok; }); await route.continue(); });
     await draw();
@@ -161,25 +165,27 @@ await check("SEC.9 the browser's storage holds nothing of a section's chat or wh
     if (!await until(async () => await count() === 2, 15000)) fail(`the drawing was not saved on Studio Mac: it has ${await count()} shapes, not 2`);
     await pg.unroute(SCENE);
     await clean("the section's drawing saved", pg);
+    if (!await until(async () => !await asks(), 10000)) fail("the section's drawing is saved and the page still asks before it unloads");
     // its server not connected: the drawing waits in the window, under the banner, and in no storage
     await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
     await draw();
-    if (!await until(async () => (await pg.locator(".canvas .save-banner").textContent().catch(() => "")).includes("Not saved"), 15000)) fail("a drawing made while the board's server is away shows no banner that it is not saved");
+    if (!await until(async () => (await byTid(pg, "save-banner").first().textContent().catch(() => "")).includes("Not saved"), 15000)) fail("a drawing made while the board's server is away shows no banner that it is not saved");
     await draw();
     const waits = await clean("a drawing that waits for a server that is not connected", pg);
     if (await count() !== 2) fail("Studio Mac got a drawing while it was not connected");
     boardKeys = Object.keys(waits).sort(); boardOther = Object.keys(await otherOf(pg)).sort();
     const others = boardKeys.filter((k) => !SETTINGS.includes(k) && !k.startsWith("excalidraw"));
-    if (others.length) fail(`with a section's board open localStorage has other keys than the page's settings and the canvas library's own: ${J(others)}`);
+    if (others.length) fail(`with a section's board open localStorage has other keys than the app's settings and the canvas library's own: ${J(others)}`);
     // (the page asks before it unloads with a drawing that is not saved: the reload is the user's answer)
-    pg.on("dialog", (d) => void d.accept().catch(() => {}));
-    await pg.reload(); await pg.waitForSelector(".side-tree .side-section");
-    if (await pg.locator(".excalidraw, .board-off, .takeover-panel").count()) fail("after a reload during the outage the section's board is on the page");
+    if (!await asks()) fail("a drawing waits for its server and the page does not ask before it unloads");
+    const dialogs = [];
+    pg.on("dialog", (d) => { dialogs.push(d.type()); void d.accept().catch(() => {}); });
+    await pg.reload(); await byTid(pg, "side-section").first().waitFor({ state: "attached", timeout: 15000 });
+    if (!dialogs.includes("beforeunload")) fail(`a drawing waits for its server and the reload was not met by the browser's dialog (dialogs: ${J(dialogs)})`);
+    if (await pg.locator(".excalidraw").count() || await byTid(pg, "board-off").count() || await byTid(pg, "takeover-panel").count() || await byTid(pg, "board-canvas").count()) fail("after a reload during the outage the section's board is on the page");
     await clean("after a reload during the board's outage", pg);
     await mockEval(`setServerState("${STUDIO}", "connected");`, url);
-    for (const e of q.errors) fail(`page error: ${e}`);
-    await q.ctx.close();
   }
   note(`localStorage at the end: ${Object.keys(end).sort().join(", ")}; no draft of the section's chat at any moment, a local chat's while its save was on its way. `
     + `A section's board, drawn on and not saved: localStorage ${boardKeys.join(", ")}; sessionStorage and IndexedDB: ${boardOther.join(", ") || "nothing"}`);
-});
+}, { viewports, page: false, allowConsole: [/^saving board /] }); // (a failed save is logged by the board side: the outage is what the check makes)

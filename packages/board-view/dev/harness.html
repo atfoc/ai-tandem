@@ -1,0 +1,47 @@
+<!doctype html>
+<!-- The board by hand (open it from file:// in a browser after `npm run build:web`, which writes ../../../app/public/board/): the
+     web target mounted as the web build mounts it. The board fills the page and the box at the bottom shows every message the
+     view posts. Paste a message of the app (JSON) into the box and press Send, or press a button for a sample: it is
+     `receive(m)` of the handle `window.aiwbBoardView.mount` gave. (The phone's page, dist-webview/board.html, is one file with
+     no room for a box: dev/harness.mjs drives it, as a web view does.) -->
+<html lang="en">
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">
+<title>Board harness</title>
+<link rel="stylesheet" href="../../../app/public/board/board.css">
+<style>
+  html, body { height: 100%; margin: 0; display: flex; flex-direction: column; font: 12px/1.4 system-ui, sans-serif; }
+  #root { flex: 1; min-height: 0; overflow: hidden; }
+  #tools { display: flex; gap: 6px; padding: 6px; border-top: 1px solid #ccc; }
+  #tools textarea { flex: 1; height: 54px; font: 11px monospace; }
+  #log { height: 120px; overflow: auto; margin: 0; padding: 6px; background: #f4f4f4; border-top: 1px solid #ccc; font: 11px monospace; white-space: pre-wrap; }
+</style>
+<div id="root"></div>
+<div id="tools">
+  <textarea id="msg" placeholder='{"t":"viewMode","on":false}'></textarea>
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <button id="send">Send</button>
+    <button id="sample">Load a sample</button>
+  </div>
+</div>
+<pre id="log"></pre>
+<script src="../../../app/public/board/board.js"></script>
+<script>
+  var log = document.getElementById("log");
+  var board = window.aiwbBoardView.mount(document.getElementById("root"), function (m) {
+    var text = JSON.stringify(m);
+    log.textContent += (text.length > 300 ? text.slice(0, 300) + "… (" + text.length + " chars)" : text) + "\n";
+    log.scrollTop = log.scrollHeight;
+  });
+  var filter = { id: "aiwb-canvas-demo", matrix: [1,0,0,0,0, 0,1,0,0,0, 0,0,1,0,0, 0,0,0,1,0],
+    tables: { r: [], g: [], b: [] } };
+  for (var i = 0; i < 256; i++) { var v = i / 255; filter.tables.r.push(v); filter.tables.g.push(v * 0.9); filter.tables.b.push(v * 0.8); }
+  var n = 0;
+  function rect(id, x, y) { return { id: id, type: "rectangle", version: 1, versionNonce: 1, x: x, y: y, width: 160, height: 80, isDeleted: false, strokeColor: "#1e1e1e", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 2, strokeStyle: "solid", roughness: 0, opacity: 100, angle: 0, groupIds: [], frameId: null, roundness: null, boundElements: null, updated: 1, link: null, locked: false, seed: 1, index: "a" + n++ }; }
+  document.getElementById("send").onclick = function () { board.receive(JSON.parse(document.getElementById("msg").value)); };
+  document.getElementById("sample").onclick = function () {
+    board.receive({ t: "load", board: "demo", viewMode: false, theme: { mode: "dark", filter: filter }, style: {},
+      scene: { elements: [rect("r1", 40, 40), rect("r2", 300, 160)], files: {}, appState: {} } });
+  };
+</script>
+</html>

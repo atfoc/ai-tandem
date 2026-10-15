@@ -1,147 +1,101 @@
-// Proves, on the build that has all six goals, that ⌘L and ⌘⇧L are as they were: the two shortcuts of the goals'
-// "Must stay as it is" that live in the composer, which goals 2 and 4 changed, and that no other check presses (⌘N
-// and ⌘J are A1.3's, ⌘⇧B is A1.4's). Beside the sidebar and beside the rail of a hidden one, in a pane of 300 px.
-//   A plain chat. ⌘L with nothing selected says to select text; with text of one reply selected it quotes that text
-//   (its box opens inside the window with the focus in its comment field, and Enter adds it: the count in the
-//   composer, the quote and its comment in the chat's saved draft); with text of two messages selected it says to
-//   stay within one. ⌘⇧L does nothing there. The composer fits its box with the count and with the notice.
-//   A chat beside a board whose canvas can be edited. ⌘L with shapes selected puts them into the message as one
-//   reference; with none selected it says to select something first. ⌘⇧L waits for a point on the board (the
-//   crosshair's layer over the canvas, the composer's control lit), ⌘⇧L again or Esc ends that, and a click on the
-//   board puts the point into the message. The key does not reach the canvas, whose own ⌘⇧L locks the selected
-//   shapes: after it no shape of the stored drawing is locked. The check's own proof: with the chat panel away (⌘J)
-//   the canvas hears the key, and the stored drawing has its shapes locked.
-import { act, check, measureComposer, mockEval, openPage, paneSize, seed, until } from "../shot.mjs";
+// P7.4 ported (AD-80; package K1): ⌘L and ⌘⇧L as they were, the board-reference half of web/dev/checks/P7.4-keys.mjs, at desktop (mouse)
+// and tablet (touch, with a hardware keyboard). Its assertions are the old check's for "a chat beside a board whose canvas can be
+// edited", on the gallery's stand-in for the board (`/?gallery`, app/src/dev/ChipGallery.tsx: three rectangles to select, a layer to
+// pick a point on, the context row's "+ Selection" and "+ Point" buttons, the chip input), since the app has no chat screen yet:
+//   ⌘L with nothing selected says "Select something on the board first" (for 2.5 s) and puts nothing in, and "+ Selection" is off;
+//   with three shapes selected the button reads "+ 3 selected" and ⌘L puts them into the message as one chip reading 3;
+//   ⌘⇧L waits for a point on the board (the layer over it, "+ Point" lit), ⌘⇧L again or Esc ends the wait, a press on the board puts
+//   the point's chip into the message (a second chip, another than the first) and ends the wait;
+//   the keys take the key (they are prevented: the page's own ⌘L does not run); a box that takes nothing (read-only) takes no chip by
+//   key or button.
+// What is not here, because its part of the app is not built: the plain chat half (⌘L quoting the selected text, the notice
+// "Select text in a message to quote it", the quote's box and its count) is K5's with the quotes; the composer's fit with a
+// chip and the notice is K3's (P0.6); that the key does not reach Excalidraw (no shape of the stored drawing is locked, and
+// its proof with the panel away) is the board's (B4), whose canvas the gallery does not have; "beside the sidebar and beside the
+// rail" is the app shell's (U3). Where the chip input itself is proved is L4-chips.mjs.
+//
+// Alone, from the repository root (the runner of `npm run uicheck` runs this file the same way):
+//   node web/dev/checks/P7.4-keys.mjs        (see web/dev/standalone.mjs for DIST, PORT and VIEWPORT)
+import { until } from "../shot.mjs";
+import { standalone } from "../standalone.mjs";
 
-const RAIL = 40, SIDE = 264, HEIGHT = 640, CHAT = "c_A2_move", BOARD = "b_ui", ON_BOARD = "c_A2_sketch";
-const QUOTE = "font copy step", COMMENT = "which step?";
+export const viewports = ["desktop", "tablet"];
 
-/** In the page: what the composer shows of a quote, a notice and a reference; whether a point is waited for. */
-function seen() {
-  const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim(), c = document.querySelector(".composer");
-  return { count: text(c?.querySelector(".qcount")), note: text(c?.querySelector(".ctx-note")), chips: [...(c?.querySelectorAll(".composer-input .ref-chip") ?? [])].map((r) => `${[...r.classList].filter((k) => k !== "ref-chip").join(" ")}: ${text(r)}`),
-    picking: !!document.querySelector(".pick-layer"), lit: !!c?.querySelector(".ctx-act.on"), hidden: !!document.querySelector(".app > .side-rail"),
-    float: (() => { const f = document.querySelector(".qfloat"), r = f?.getBoundingClientRect(); return f ? { quote: text(f.querySelector(".qfloat-quote")), focused: document.activeElement === f.querySelector(".qfloat-comment"), inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.width > 0 } : null; })() };
-}
+const tid = (id) => `[data-testid="${id}"]`;
+const BOX = tid("composer-input"), CHIP = `${BOX} ${tid("ref-chip")}`;
 
-/** In the page: selects `quote` in the first reply that has it, or with `across` from there into the next message. */
-function select([quote, across]) {
-  const msgs = [...document.querySelectorAll(".thread > .msg")], msg = msgs.find((m) => m.matches(".assistant") && m.textContent.includes(quote));
-  const node = (root) => { const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.nodeValue.trim()) return n; return null; };
-  const w = document.createTreeWalker(msg, NodeFilter.SHOW_TEXT);
-  let from = null;
-  for (let n = w.nextNode(); n; n = w.nextNode()) if (n.nodeValue.includes(quote)) { from = n; break; }
-  const r = document.createRange(), at = from.nodeValue.indexOf(quote);
-  r.setStart(from, at);
-  if (across) { const next = node(msgs[msgs.indexOf(msg) + 1]); r.setEnd(next, Math.min(3, next.nodeValue.length)); } else r.setEnd(from, at + quote.length);
-  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
-  return String(sel);
-}
-
-await check("P7.4 ⌘L and ⌘⇧L as they were, beside the sidebar and beside the rail", async ({ url, browser, fail, note }) => {
-  const key = (page, shift) => page.keyboard.press(shift ? "ControlOrMeta+Shift+l" : "ControlOrMeta+l");
-  const read = (page) => page.evaluate(seen);
-  const frame = (page) => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
-  /** Waits for the page to show what `want` says of it; fails with what it shows. */
-  const shows = async (page, name, want) => {
+export async function body({ page, viewport, fail }) {
+  const touch = viewport !== "desktop";
+  const T = (id) => page.locator(tid(id));
+  const press = (loc) => (touch ? loc.tap() : loc.click());
+  const key = (shift) => page.keyboard.press(shift ? "ControlOrMeta+Shift+l" : "ControlOrMeta+l");
+  /** In the page: the chips of the box, whether a point is waited for, the point button's state, the note. */
+  const seen = () => page.evaluate(([chip, layer, point, note, selection]) => {
+    const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim(), p = document.querySelector(point), s = document.querySelector(selection);
+    return { chips: [...document.querySelectorAll(chip)].map((c) => `${c.dataset.kind}: ${text(c)}`), picking: !!document.querySelector(layer), lit: p?.dataset.on === "true", note: text(document.querySelector(note)), selection: text(s), selectionOff: s?.getAttribute("aria-disabled") === "true" };
+  }, [CHIP, tid("pick-layer"), tid("ctx-point"), tid("gallery-chip-note"), tid("ctx-selection")]);
+  const shows = async (name, want) => {
     let s;
-    if (!await until(async () => want((s = await read(page))), 10000)) fail(`${name}: the page shows ${JSON.stringify(s)}`);
+    if (!await until(async () => want((s = await seen())), 10000)) fail(`${viewport}: ${name}: the page shows ${JSON.stringify(s)}`);
     return s;
   };
-  const fits = async (page, name) => {
-    await frame(page);
-    const m = (await measureComposer(page)).find((c) => !c.none);
-    if (!m || m.past || m.send !== "ok" || m.docScroll > 0) fail(`${name}: the composer does not fit: ${JSON.stringify(m && { past: m.past, over: m.over, send: m.send, docScroll: m.docScroll })}`);
-  };
-  const locked = () => mockEval(`return scenes.${BOARD}.scene.elements.filter((e) => e.locked && !e.isDeleted).length;`, url);
-  const saves = () => mockEval(`return scenes.${BOARD}.rev;`, url);
+  // a Locator's tap/click on the box focuses it, as a user does before the keys
+  await T("composer-input").scrollIntoViewIfNeeded();
+  await press(T("composer-input"));
 
-  for (const hidden of [false, true]) {
-    const beside = hidden ? "beside the rail" : "beside the sidebar";
-    await seed(url, "A2"); // (anew: the chats' drafts and the board's drawing are as seeded)
-    const open = async (kind, sel, wait) => {
-      const errors = [], size = paneSize(kind, 300, HEIGHT);
-      const p = await openPage({ url, browser, errors, sel, size: [size.size[0] - (hidden ? SIDE - RAIL : 0), HEIGHT], ls: { ...size.ls, ...(hidden ? { "aiwb.side": "hidden" } : {}) }, wait });
-      if ((await read(p.page)).hidden !== hidden) fail(`${beside}: the page opened with the sidebar ${hidden ? "shown" : "hidden"}`);
-      return { ...p, errors };
-    };
-    const close = async ({ ctx, errors }, name) => { for (const e of errors) fail(`${name}: page error: ${e}`); await ctx.close(); };
+  // ⌘L with nothing selected
+  const at = await seen();
+  if (at.chips.length || !at.selectionOff || at.selection !== "+ Selection") fail(`${viewport}: the board starts with ${JSON.stringify(at)}: no chip, and "+ Selection" off`);
+  await key(false);
+  await shows("⌘L with nothing selected", (s) => s.note === "Select something on the board first" && !s.chips.length);
+  if (!await until(async () => !(await seen()).note, 6000)) fail(`${viewport}: the notice "Select something on the board first" stays (it goes after 2.5 s)`);
 
-    // ---- a plain chat
-    {
-      const name = `a plain chat ${beside}`, p = await open("page", { chat: CHAT }, ".thread .msg.assistant"), { page } = p;
-      try {
-        await key(page, false);
-        await shows(page, `${name}, ⌘L with nothing selected`, (s) => s.note === "Select text in a message to quote it" && !s.count);
-        await fits(page, `${name}, the notice up`);
-        await key(page, true);
-        await frame(page);
-        const idle = await read(page);
-        if (idle.picking || idle.lit || idle.count || idle.chips.length) fail(`${name}, ⌘⇧L: a chat with no board shows ${JSON.stringify(idle)}`);
+  // three shapes selected: the button, then ⌘L
+  for (const shape of await T("gallery-shape").all()) await press(shape);
+  await shows("three shapes selected", (s) => s.selection === "+ 3 selected" && !s.selectionOff);
+  await key(false);
+  const one = await shows("⌘L with three shapes selected", (s) => s.chips.length === 1);
+  if (!/3/.test(one.chips[0] ?? "") || !one.chips[0].startsWith("selection")) fail(`${viewport}: the reference of three selected shapes reads "${one.chips[0]}"`);
 
-        if (await page.evaluate(select, [QUOTE, true]) === QUOTE) fail(`${name}: the check's selection across two messages is of one`);
-        await key(page, false);
-        await shows(page, `${name}, ⌘L with text of two messages selected`, (s) => s.note === "Select text within one message" && !s.count);
-
-        if (await page.evaluate(select, [QUOTE, false]) !== QUOTE) fail(`${name}: the check did not select "${QUOTE}" in the reply`);
-        await key(page, false);
-        // the quote's box: over the thread, inside the window, its comment field with the focus; Enter adds the quote
-        const f = (await shows(page, `${name}, ⌘L with "${QUOTE}" selected`, (x) => !!x.float && !x.note)).float;
-        if (f && (!f.quote.includes(QUOTE) || !f.focused || !f.inside)) fail(`${name}: the quote's box says "${f.quote}", its comment field ${f.focused ? "has" : "has not"} the focus, and it ${f.inside ? "lies" : "does not lie"} inside the window`);
-        await page.keyboard.type(COMMENT);
-        await page.keyboard.press("Enter");
-        await shows(page, `${name}, Enter in the quote's box`, (x) => !x.float && /^❝ 1 comment/.test(x.count));
-        const draft = await until(async () => { const d = await mockEval(`return chats.${CHAT}.draft?.references ?? null;`, url); return d?.length ? d : null; }, 10000);
-        if (!draft || draft.length !== 1 || draft[0].quote !== QUOTE || draft[0].comment !== COMMENT) fail(`${name}: the chat's saved draft has the quotes ${JSON.stringify(draft)}, not "${QUOTE}" alone with "${COMMENT}"`);
-        await fits(page, `${name}, one quote`);
-      } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-      await close(p, name);
-    }
-
-    // ---- a chat beside a board that can be edited
-    {
-      const name = `a chat on a board ${beside}`, p = await open("panel", { board: BOARD, chat: ON_BOARD }, ".board-panel .composer-box .send"), { page } = p;
-      try {
-        await page.waitForSelector(".excalidraw:not(.excalidraw--view-mode) canvas.interactive", { timeout: 15000 });
-        await key(page, false);
-        await shows(page, `${name}, ⌘L with nothing selected`, (s) => s.note === "Select something on the board first" && !s.chips.length);
-        await act(page, "select");
-        await page.waitForSelector(".composer .ctx-act:not([disabled])", { timeout: 10000 });
-        await key(page, false);
-        const one = await shows(page, `${name}, ⌘L with three shapes selected`, (s) => s.chips.length === 1);
-        if (!/3/.test(one.chips[0] ?? "")) fail(`${name}: the reference of three selected shapes reads "${one.chips[0]}"`);
-
-        // ⌘⇧L: on, off by the key, on, off by Esc, on, and a click on the board
-        const rev = await saves();
-        for (const [what, press, on] of [["⌘⇧L", () => key(page, true), true], ["⌘⇧L again", () => key(page, true), false], ["⌘⇧L", () => key(page, true), true], ["Esc", () => page.keyboard.press("Escape"), false], ["⌘⇧L", () => key(page, true), true]]) {
-          await press();
-          await shows(page, `${name}, ${what}: ${on ? "a point is waited for" : "no point is waited for"}`, (s) => s.picking === on && s.lit === on);
-        }
-        const box = await page.locator(".pick-layer").boundingBox();
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 3);
-        const two = await shows(page, `${name}, a click on the board`, (s) => s.chips.length === 2 && !s.picking && !s.lit);
-        if (two.chips[0] !== one.chips[0] || two.chips[1] === one.chips[0]) fail(`${name}: after the click the message has ${JSON.stringify(two.chips)}`);
-        await fits(page, `${name}, two references`);
-
-        // the canvas did not hear ⌘⇧L: a shape is moved, so that the drawing is stored, and none of it is locked
-        await act(page, "select");
-        await page.keyboard.press("ArrowRight");
-        if (!await until(async () => await saves() > rev, 15000)) fail(`${name}: the drawing was not stored after a shape was moved: the check cannot tell whether the canvas heard the key`);
-        if (await locked()) fail(`${name}: ${await locked()} shapes of the stored drawing are locked: the canvas heard ⌘⇧L`);
-
-        if (hidden) {
-          // the proof: with the panel away the composer is not there, the canvas hears the key and locks what is selected
-          await page.keyboard.press("ControlOrMeta+j");
-          if (!await until(async () => !await page.locator(".app > .board-panel").count(), 10000)) fail(`${name}: ⌘J did not hide the panel`);
-          await act(page, "select");
-          await key(page, true);
-          const n = await until(locked, 15000);
-          if (!n) fail("the check's proof: with the chat panel away ⌘⇧L locked no shape of the stored drawing: the check would not see a canvas that hears the key");
-          else note(`the proof: with the chat panel away the canvas heard ⌘⇧L and ${n} shapes of the stored drawing are locked`);
-        }
-      } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-      await close(p, name);
-    }
-    note(`${beside}: ⌘L quoted the selected text, said what to select, and put the board's selection into the message; ⌘⇧L waited for a point, ended by the key and by Esc, took a click, and locked nothing`);
+  // ⌘⇧L: on, off by the key, on, off by Esc, on, and a press on the board
+  for (const [what, act, on] of [["⌘⇧L", () => key(true), true], ["⌘⇧L again", () => key(true), false], ["⌘⇧L", () => key(true), true], ["Esc", () => page.keyboard.press("Escape"), false], ["⌘⇧L", () => key(true), true]]) {
+    await act();
+    await shows(`${what}: ${on ? "a point is waited for" : "no point is waited for"}`, (s) => s.picking === on && s.lit === on);
   }
-});
+  const box = await page.locator(tid("pick-layer")).boundingBox();
+  const at2 = { x: box.x + box.width / 2, y: box.y + box.height / 3 };
+  if (touch) await page.touchscreen.tap(at2.x, at2.y); else await page.mouse.click(at2.x, at2.y);
+  const two = await shows("a press on the board", (s) => s.chips.length === 2 && !s.picking && !s.lit);
+  if (two.chips[0] !== one.chips[0] || two.chips[1] === one.chips[0] || !/^point: \(-?\d+, -?\d+\)$/.test(two.chips[1])) fail(`${viewport}: after the press the message has ${JSON.stringify(two.chips)}`);
+
+  // the buttons do what the keys do
+  await press(T("ctx-point"));
+  await shows("+ Point", (s) => s.picking && s.lit);
+  await press(T("ctx-point"));
+  await shows("+ Point again", (s) => !s.picking && !s.lit);
+  await press(T("ctx-selection"));
+  await shows("+ 3 selected", (s) => s.chips.length === 3);
+
+  // the key is taken: the page's own ⌘L does not run
+  const prevented = await page.evaluate(() => new Promise((ok) => {
+    const seen = [];
+    const h = (e) => seen.push(e.defaultPrevented);
+    window.addEventListener("keydown", h);
+    document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "l", code: "KeyL", metaKey: true, ctrlKey: true, bubbles: true, cancelable: true }));
+    window.removeEventListener("keydown", h);
+    ok(seen);
+  }));
+  if (prevented.some((p) => !p)) fail(`${viewport}: ⌘L was left to the page (its default was not prevented)`);
+
+  // a box that takes nothing takes no chip, by key or button
+  const held = (await seen()).chips.length;
+  await press(T("gallery-chip-readonly"));
+  await until(async () => (await T("gallery-chip-mode").textContent()) === "read-only");
+  await key(false);
+  await press(T("ctx-selection"));
+  await new Promise((ok) => setTimeout(ok, 300));
+  if ((await seen()).chips.length !== held) fail(`${viewport}: a read-only box took a chip: ${JSON.stringify((await seen()).chips)}`);
+  await press(T("gallery-chip-readonly"));
+}
+
+await standalone(import.meta.url, "P7.4", viewports, body);

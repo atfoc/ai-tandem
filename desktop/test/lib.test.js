@@ -40,8 +40,8 @@ test('pagePath: packaged → web/index.html in the resources', () => {
   assert.equal(pagePath({ env: {}, resourcesPath: '/res', isPackaged: true, dirname }), '/res/web/index.html');
 });
 
-test('pagePath: dev → ../web/dist/index.html', () => {
-  assert.equal(pagePath({ env: {}, resourcesPath: '/res', isPackaged: false, dirname }), '/repo/web/dist/index.html');
+test('pagePath: dev → ../app/dist-web/index.html, the web build', () => {
+  assert.equal(pagePath({ env: {}, resourcesPath: '/res', isPackaged: false, dirname }), '/repo/app/dist-web/index.html');
 });
 
 test('serverLogPath: server.log in the data folder', () => {

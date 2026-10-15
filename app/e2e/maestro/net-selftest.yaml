@@ -1,0 +1,22 @@
+# aiwb-e2e: needs=server,standins node=net
+# The native module `aiwb-net` against a scratch Go server and four stand-ins (src/dev/netSelfTest.ts): the connector contract on
+# the real module, and checks against the real server, once with the server reached as 127.0.0.1 and once by a dotted name
+# (localtest.me, which resolves to 127.0.0.1, on the server's certificate). Passes when the screen says "net self-test ok: <name>"
+# for both names.
+appId: ${APP_ID}
+---
+- runFlow: _open.yaml
+- tapOn:
+    id: "selftest-net-ip"
+- extendedWaitUntil:
+    visible: "net self-test (ok|FAILED): ${SERVER_HOST}"
+    timeout: 180000
+- takeScreenshot: net-verdict-ip
+- assertVisible: "net self-test ok: ${SERVER_HOST}"
+- tapOn:
+    id: "selftest-net-dotted"
+- extendedWaitUntil:
+    visible: "net self-test (ok|FAILED): ${SERVER_DOTTED}"
+    timeout: 180000
+- takeScreenshot: net-verdict-dotted
+- assertVisible: "net self-test ok: ${SERVER_DOTTED}"

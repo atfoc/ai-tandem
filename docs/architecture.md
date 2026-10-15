@@ -1,6 +1,6 @@
 # Architecture
 
-How AI Whiteboard fits together: the server, the web client and the desktop app, how the app reaches every server, the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
+How AI Whiteboard fits together: the server, the app on its four targets (the desktop window, iPhone, iPad and Android), how the app reaches every server, the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
 
 - **Server** (`cmd/`, `internal/`): a Go program. It stores boards and chats,
   runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
@@ -34,12 +34,22 @@ How AI Whiteboard fits together: the server, the web client and the desktop app,
   stopped. Cursor reaches the same endpoint from its ACP session, keeps one
   first-message instructions block with the same whiteboard prompt as Claude and pi, and its board calls are
   auto-approved too (no permission card). Plain (non-board) chats get no board tools.
-- **Web client** (`web/`): React + Excalidraw, built with esbuild. It is the page of the desktop
-  app and ships inside it: no server serves it. The page and the app are one build.
+- **The app** (`app/`, with the packages in `packages/`): one React Native codebase (Expo) for four
+  targets: iOS, iPadOS, Android and the desktop. A screen is written once; what differs by platform
+  is a port with a file per platform (`app/src/platform/*.web.ts`, `*.native.ts`) or a layout (the
+  window's width picks a phone, a tablet or a desktop layout: under 700 points the sidebar and the
+  chat are screens one after the other, from 700 they are side by side). The shared code is in
+  packages: `@aiwb/core` (the app's logic, store and transport interface, with no screen in it),
+  `@aiwb/conn` (the connection to the servers, [below](#how-the-app-reaches-the-servers)),
+  `@aiwb/board-bridge` (the typed messages between the app and the board) and `@aiwb/board-view`
+  (Excalidraw behind that bridge). The **web build** (`cd app && npm run build:web` →
+  `app/dist-web`) is what the desktop app shows; no server serves it. The board is Excalidraw in
+  the page itself on the web build, and in a web view on a phone or tablet, so Excalidraw is
+  the one place the board is drawn in.
 - **The canvas follows the theme as a view of the board, never as a change of it.** The board file
   holds the colours Excalidraw draws by default (a white ground, a `#1e1e1e` stroke) whatever the
   theme, because agents read it, the image export draws it and other windows show it. A theme is
-  an SVG filter (`web/src/CanvasFilters.tsx`, made by `web/src/logic/canvastheme.ts`) that replaces
+  an SVG filter (`packages/board-view/src/CanvasFilters.tsx`, made by `packages/core/src/logic/canvastheme.ts`) that replaces
   Excalidraw's own dark-mode `--theme-filter`: it puts the theme's ground where the stored white
   lands and the theme's ink where the stored default stroke lands. Excalidraw has no prop for the
   colour quick picks of its properties panel and its code is not patched, so they stay Excalidraw's
@@ -47,8 +57,20 @@ How AI Whiteboard fits together: the server, the web client and the desktop app,
   versions of its colours.
 - **Desktop app** (`desktop/`): an Electron app, the client of every server. Its main process holds
   the server list and the secrets and keeps one connection to each server, this computer's
-  included; its window shows the page. The app starts this computer's server, or finds the one
+  included; its window shows the web build. The app starts this computer's server, or finds the one
   already running. Quitting the app doesn't stop the server or its running chats.
+- **The phone and tablet app** (iOS, iPadOS, Android): the same app with native screens. It has no
+  main process and no this-computer server: the app itself holds the list of servers (the secrets
+  in the device's secure storage, the Keychain or the Keystore) and keeps the connections, through
+  a small native module (`app/modules/aiwb-net`) that does what only the platform can: it trusts a
+  server's certificate by its fingerprint and by nothing else, and speaks HTTP/2 through the
+  system's stack. Everything the app decides is in `@aiwb/conn` and `@aiwb/core`, the same code as
+  the desktop's.
+- **Install and tests of the phone and tablet app.** One script builds the app from the current
+  code and installs it on a device ([Build and develop](development.md#install-the-app-on-a-phone-or-tablet)).
+  What a browser cannot show is tested on the iOS simulator and the Android emulator, with flows
+  run by Maestro (`app/e2e/`); the rest is tested in the browser on the web build, at three
+  viewports (a desktop, a tablet and a phone).
 
 ## The server's listeners
 
@@ -73,28 +95,39 @@ start. Port 4747, where an earlier build served its own page, is gone.
 
 ## How the app reaches the servers
 
-The page talks to the app's main process and to nothing else. The main process keeps one
+On the desktop the page talks to the app's main process and to nothing else; on a phone or tablet
+the app's native module takes the main process's place (see the list above), and everything else
+in this section holds for both. The connection code keeps one
 connection per entry of the server list, and **this computer's server is one of the entries**:
 the first, with the id `local` and the name "This computer", which is never in the list's file
 and cannot be edited. Each connection is HTTP/2 over TLS with the server's secret, to a
 certificate that is accepted by its fingerprint and by nothing else, this computer's included.
 No secret reaches the page.
 
-- **The transport** (`web/src/transport/`) is the one interface the page has to the network. It
+- **The transport** (`packages/core/src/transport/`) is the one interface the page has to the network. It
   has a call (a server by its entry's id, a method, a path of the client API, a body, and a way to
   cancel it), a stream (a function for each event and one for a change of the stream's state) and
   the address of a picture. The server is an argument and no part of the path. In the desktop app
   the transport is made over IPC: the window gives the page a fixed set of functions
-  (`window.aiwbApp`, `desktop/preload.js`) and the main process answers them. One stream carries
+  (`window.aiwbTransport`, `desktop/preload.js`; the page makes its `Transport` of them with
+  `packages/core/src/transport/desktop.ts`) and the main process answers them. On a phone or tablet
+  the transport is native and in-process (`app/src/platform/nativetransport.ts`). One stream carries
   the events of every server, each with its entry's id. A stream that is closed for good is an
   event of the transport, and the page opens it again.
-- **The connection module** (`desktop/conn/`) is plain Node, with no Electron in it. It holds the
+- **The connection module** (`packages/conn/`, `@aiwb/conn`) has no Electron and no native code in it. It holds the
   server list and the secrets, makes the pinned connections and keeps a stream per server with its
   retries. A refused secret ends the trying until the entry changes; a stream that is silent for
-  35 seconds counts as ended. It is also what the test host uses.
-- **What the app keeps.** In `~/Library/Application Support/AI Whiteboard/client/`: `servers.json`,
-  the server list with the secrets (mode 0600, the folder 0700; no keychain), and `client-id`, the
-  app's id. Of a server's content it keeps nothing.
+  35 seconds counts as ended. Its `core/` is platform-free and takes three ports from the platform:
+  the Connector and the Session (a pinned TLS connection and HTTP/2 on it), the Store (the server
+  list and the client id) and, on the desktop only, this computer's server. `node/` holds the Node
+  ports (`createNodeClient`, from `@aiwb/conn/node`), which the desktop app's main process and the
+  test host use; the phone and tablet app gives the same core the ports of its native module and
+  of the device's secure storage, and runs it inside Hermes.
+- **What the app keeps.** On the desktop, in `~/Library/Application Support/AI Whiteboard/client/`:
+  `servers.json`, the server list with the secrets (mode 0600, the folder 0700; no keychain), and
+  `client-id`, the app's id. On a phone or tablet the list and the secrets are in the device's
+  secure storage (they never leave it except to be sent to their server). Of a server's content
+  the app keeps nothing.
 - **This computer's server.** While the window is open the app finds the server or starts it, by
   running the server program it carries: `launch -json` prints the address and the certificate's
   fingerprint, `secret` the secret. The user types and accepts nothing for this computer. The
@@ -117,7 +150,7 @@ No secret reaches the page.
 - **Only the app's own page is answered.** A request to the main process from another window, a
   frame inside the page or a page that has gone elsewhere is refused, and a call names a server of
   the list and a path of the client API and nothing else.
-- **Tests and development.** The same page runs in a headless browser for tests, through a test
+- **Tests and development.** The web build runs in a headless browser for tests, through a test
   host (`web/dev/host.mjs`) that does what the main process does: it holds the server list, makes
   the pinned connections and serves the page's calls, one stream and the pictures over plain HTTP
   on `127.0.0.1`. The transport is then made over HTTP. The host is never shipped and no server

@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- The web build's page, copied by Expo as it is. scripts/export-web.mjs adds, after the export, the CSP meta and the
+     tag of the bundle (whose name carries a hash). The head is today's web/index.html (AD-40); the CSP (AD-41) allows no
+     inline script, so the theme script that runs before the first paint is the file theme-init.js. -->
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Whiteboard</title>
+<meta name="color-scheme" content="light dark">
+<script src="./theme-init.js"></script>
+<link rel="icon" href="./favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="./favicon.png">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<style id="expo-reset">
+  /* react-native-web's recommended reset: the body is full height and does not scroll, #root fills it. */
+  html, body { height: 100%; }
+  /* Excalidraw's chrome is sized in rem: the old page's 13px root (styles.css) is what the board's toolbar, panels and buttons were drawn at. */
+  html { font-size: 13px; }
+  body { overflow: hidden; }
+  #root { display: flex; height: 100%; flex: 1; }
+</style>
+<style id="theme-ground">
+  /* The ground of the window in the saved theme, from the first frame: theme-init.js sets data-theme (and data-flavour) before the
+     first paint, and the app's own ground (its `bg` token) takes over when it draws. These are the `bg` of light, dark and the
+     four flavours (test/export-web.test.ts holds them to ui/tokens.ts). */
+  html, body { background: #ffffff; }
+  html[data-theme="dark"], html[data-theme="dark"] body { background: #1c1c21; }
+  html[data-flavour="latte"], html[data-flavour="latte"] body { background: #eff1f5; }
+  html[data-flavour="frappe"], html[data-flavour="frappe"] body { background: #303446; }
+  html[data-flavour="macchiato"], html[data-flavour="macchiato"] body { background: #24273a; }
+  html[data-flavour="mocha"], html[data-flavour="mocha"] body { background: #1e1e2e; }
+</style>
+<!-- The board (AD-40): @aiwb/board-view's web target, built into public/board/ by `npm run build:web` (it defines
+     window.aiwbBoardView). It is loaded before the app's bundle, which scripts/export-web.mjs adds after the root. -->
+<link rel="stylesheet" href="./board/board.css">
+<script src="./board/board.js" defer></script>
+<noscript>You need to enable JavaScript to run this app.</noscript>
+<div id="root"></div>
+</html>

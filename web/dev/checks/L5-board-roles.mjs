@@ -1,0 +1,142 @@
+// New (B4; the rows D-SL and D-TK had no browser check): the board screen's two ways out of a canvas, at all three viewports.
+//   Leaving a board writes it. A shape is drawn and the board is left at once (the sidebar's row of a chat on the wide layouts, the
+//   stack's back on the phone), before the autosave's wait and before the view's own: the board side asks the view for its scene as the board
+//   goes, and the server has the shape, with no console error from the view that went (the host lets its answer come before it ends).
+//   Another window takes the board. The server says `superseded`: the canvas gives way to the take-over panel (`takeover-panel`, role "lost"),
+//   the rest of the window stays, and "Use here" takes the board back: the canvas is there again, editable, with the stored drawing.
+// And, from the sweep (rows of area D that were true and not shown): the stage is covered, with no canvas of any board, while the scene is read,
+// and a read that fails says why (D-BD-03); an archived board opens read-only, with its note, and is not asked for (D-BD-10), and when it is
+// unarchived under the open screen it is asked for and the canvas is editable (D-BD-11); a drawing is undone and redone by Excalidraw's own
+// buttons at every viewport and by ⌘Z / ⌘⇧Z where there is a keyboard (D-BD-13).
+import { callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
+import { back, byTid, openBoard, openChat, press, tidSel } from "./sel.mjs";
+import { drawer, LIVE } from "./boarddraw.mjs";
+
+export const viewports = ["desktop", "tablet", "phone"];
+
+await check("L5 leaving a board writes it; a board taken by another window gives way to the panel and is taken back", async ({ url, open, fail, note, touch }) => {
+  await seed(url, "A2");
+  const stored = () => mockEval("return scenes.b_ui.scene.elements.filter((e) => !e.isDeleted).length;", url);
+  const ready = tidSel("board-canvas", { board: "b_ui", state: "ready" });
+
+  // ---- leaving a board writes it
+  {
+    const { page, ctx } = await open({ sel: { board: "b_ui", chat: null }, wait: ready });
+    await page.waitForSelector(LIVE, { timeout: 20000 });
+    const before = await stored();
+    await drawer(page)();
+    // (left at once: the view tells its change after 250 ms and the board is written 500 ms later; neither has passed)
+    // (a DOM click, so that no wait of the driver lets the autosave win: the control is pressed within a few milliseconds of the shape)
+    const row = byTid(page, "side-row", { kind: "chat", key: "c_plain" }).first(), backButton = byTid(page, "nav-back").last();
+    const pre = await stored();
+    if (await backButton.isVisible()) await backButton.evaluate((el) => el.click()); else await row.evaluate((el) => el.click());
+    if (pre !== before) note("(the board was written before it was left: the leave's own write is not what this run shows)");
+    if (!await until(async () => (await stored()) === before + 1, 15000)) fail(`the board was left right after a shape was drawn, and the server has ${await stored()} shapes, not ${before + 1}`);
+    if (await byTid(page, "board-canvas", { board: "b_ui" }).count() && (await page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}"))).board === "b_ui") fail("the board is still the selection after it was left");
+    await ctx.close(); // (the mock has one stream: two pages open take it from each other)
+  }
+
+  // ---- taken by another window, and taken back
+  {
+    await seed(url, "A2");
+    const { page, ctx } = await open({ sel: { board: "b_ui", chat: null }, wait: ready });
+    await page.waitForSelector(LIVE, { timeout: 20000 });
+    const calls = callsOf(page);
+    await mockEval('send({ type: "superseded", board: "b_ui" });', url);
+    const panel = byTid(page, "takeover-panel");
+    if (!await until(() => panel.count(), 10000)) return fail("the canvas did not give way to the take-over panel when the board went to another window");
+    if (await panel.first().getAttribute("data-role") !== "lost") fail(`the panel's role is ${await panel.first().getAttribute("data-role")}, not lost`);
+    if (!await until(async () => !(await page.locator(LIVE).count()), 10000)) fail("the canvas is still on screen under the take-over panel");
+    if (!(await byTid(page, "takeover-panel").first().textContent())?.includes("Open in another window")) fail(`the panel says "${await panel.first().textContent()}"`);
+    if (!await byTid(page, "board-bar").count()) fail("the board's bar went with its canvas");
+    const takes = calls.filter((c) => c.method === "POST" && /\/boards\/b_ui\/take/.test(c.path)).length;
+    await press(page, byTid(page, "takeover-use-here").first());
+    if (!await until(() => page.locator(`${ready} ${LIVE}`).count(), 15000)) fail('"Use here" did not bring the canvas back, editable');
+    if (calls.filter((c) => c.method === "POST" && /\/boards\/b_ui\/take/.test(c.path)).length <= takes) fail('"Use here" did not ask the server for the board');
+    if (await byTid(page, "takeover-panel").count()) fail("the panel stays after the board was taken back");
+    await ctx.close();
+  }
+
+  // ---- while the scene is read the stage is covered and shows no canvas of any board; a read that fails says why (D-BD-03)
+  {
+    const SCENE = callMatcher(/^GET .*\/boards\/b_ui\/scene/);
+    await seed(url, "A2");
+    const { page, ctx } = await open({ sel: { chat: "c_plain" }, wait: tidSel("chat-head") });
+    let release = null, held = 0;
+    await page.route(SCENE, async (route) => { held++; await new Promise((ok) => { release = ok; }); await route.continue(); });
+    await openBoard(page, "b_ui");
+    if (!await until(() => held === 1, 10000)) return fail("opening the board did not read its scene");
+    const stage = byTid(page, "board-canvas", { board: "b_ui" });
+    if (await stage.getAttribute("data-state") !== "loading") fail(`while the scene is read the board's state is ${await stage.getAttribute("data-state")}, not loading`);
+    if (!await byTid(page, "canvas-empty").count()) fail("while the scene is read nothing covers the stage (canvas-empty)");
+    if (await page.locator(".excalidraw").count()) fail("while the scene is read the stage shows a canvas");
+    release();
+    if (!await until(() => page.locator(`${ready} ${LIVE}`).count(), 15000)) fail("the board did not draw once its scene was read");
+    if (await byTid(page, "canvas-empty").count()) fail("the cover stays over the board once it has drawn");
+    await page.unroute(SCENE);
+    await ctx.close(); // (the mock has one stream: two pages open take it from each other)
+
+    // the read is refused: the cover says why, and no canvas is drawn
+    await seed(url, "A2");
+    const q = await open({ sel: { chat: "c_plain" }, wait: tidSel("chat-head") });
+    await q.page.route(SCENE, (route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "the drawing cannot be read", code: "broken" }) }));
+    await openBoard(q.page, "b_ui");
+    if (!await until(() => byTid(q.page, "canvas-error").count(), 15000)) return fail("a scene that cannot be read shows no reason (canvas-error)");
+    const said = (await byTid(q.page, "canvas-error").first().textContent())?.trim();
+    if (said !== "Couldn't open this board: the drawing cannot be read") fail(`a scene that cannot be read says "${said}"`);
+    if (await byTid(q.page, "board-canvas", { board: "b_ui" }).getAttribute("data-state") !== "error") fail("a scene that cannot be read leaves the board's state other than error");
+    if (await q.page.locator(".excalidraw").count()) fail("a scene that cannot be read shows a canvas");
+    await q.ctx.close();
+  }
+
+  // ---- an archived board opens read-only and is not asked for; unarchived under the open screen it is asked for and drawn on (D-BD-10, D-BD-11)
+  {
+    await seed(url, "A2");
+    await mockEval('boards.b_ui.archived = true; boards.b_ui.archiveOp = "op_l5"; return 1;', url);
+    const { page, ctx } = await open({ sel: { board: "b_ui", chat: null }, wait: ready });
+    const held = () => mockEval('return heldBoards.has("b_ui");', url); // (the server's word: a take made while the page loaded is in it too)
+    if (!await until(() => byTid(page, "archived-note").count(), 10000)) return fail("an archived board's bar has no note that it is read-only");
+    const note = (await byTid(page, "archived-note").first().textContent())?.trim();
+    if (note !== "Archived — read-only") fail(`the archived board's note says "${note}"`);
+    if (!await until(() => page.locator(".excalidraw.excalidraw--view-mode canvas.interactive").count(), 15000)) fail("an archived board's canvas is not in view mode");
+    if (await page.locator(LIVE).count()) fail("an archived board's canvas is editable");
+    if (await byTid(page, "takeover-panel").count()) fail("an archived board shows the take-over panel");
+    await page.waitForTimeout(800); // (a take, if one were to be made, is made as the screen settles)
+    if (await held()) fail("an archived board was asked for: the server holds it for this window");
+    // unarchived by another window: this one asks for the board, and it is drawn on
+    await mockEval('delete boards.b_ui.archived; delete boards.b_ui.archiveOp; send({ type: "board", board: boards.b_ui }); return 1;', url);
+    if (!await until(held, 10000)) fail("the board was unarchived under the open screen and nothing asked for it");
+    if (!await until(() => page.locator(`${ready} ${LIVE}`).count(), 15000)) fail("the board was unarchived under the open screen and its canvas is not editable");
+    if (await byTid(page, "archived-note").count()) fail("the archived note stays after the board was unarchived");
+    await ctx.close();
+  }
+
+  // ---- a drawing is undone and redone (D-BD-13): by Excalidraw's own buttons everywhere, by the keys where there is a keyboard
+  {
+    await seed(url, "A2");
+    const { page, ctx } = await open({ sel: { board: "b_ui", chat: null }, wait: ready });
+    await page.waitForSelector(LIVE, { timeout: 20000 });
+    const draw = drawer(page);
+    const shapes = stored;
+    const base = await shapes();
+    await draw();
+    if (!await until(async () => await shapes() === base + 1, 15000)) return fail(`a drawn shape was not stored (${await shapes()} shapes, not ${base + 1})`);
+    // (the keys first, straight after the drawing: a click on the canvas is a step of Excalidraw's history of its own, the selection it clears)
+    if (!touch) {
+      await page.keyboard.press("ControlOrMeta+z");
+      if (!await until(async () => await shapes() === base, 15000)) fail(`⌘Z did not take the drawn shape away (${await shapes()} shapes, not ${base})`);
+      await page.keyboard.press("ControlOrMeta+Shift+z");
+      if (!await until(async () => await shapes() === base + 1, 15000)) fail(`⌘⇧Z did not bring the shape back (${await shapes()} shapes, not ${base + 1})`);
+    }
+    const undo = page.locator('.excalidraw button[aria-label="Undo"]').first(), redo = page.locator('.excalidraw button[aria-label="Redo"]').first();
+    if (!await undo.count()) return fail("the canvas has no Undo button");
+    await press(page, undo);
+    if (!await until(async () => await shapes() === base, 15000)) fail(`Undo did not take the drawn shape away (${await shapes()} shapes, not ${base})`);
+    await press(page, redo);
+    if (!await until(async () => await shapes() === base + 1, 15000)) fail(`Redo did not bring the shape back (${await shapes()} shapes, not ${base + 1})`);
+    if (!await byTid(page, "board-canvas").count()) fail("the board went away with the undo");
+    await ctx.close();
+  }
+  note("a shape drawn and the board left at once was written; the board that went to another window gave way to the panel, and \"Use here\" brought its canvas back; "
+    + "the stage was covered while the scene was read and said why it could not be; an archived board opened read-only and was drawn on once unarchived; undo and redo");
+}, { viewports, page: false });

@@ -1,0 +1,11 @@
+html, body, #root { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; background: #fff; }
+/* The canvas themes, as the page has them (web/src/flavours-canvas.css, the rules that set the filter): the canvas is
+   a view of the board, drawn through an SVG filter. Excalidraw puts --theme-filter on its canvases in its dark theme;
+   Latte is a light theme, so its canvases get the filter here. */
+:root[data-theme="dark"]:not([data-flavour]) .excalidraw { --theme-filter: url(#aiwb-canvas-dark); }
+:root[data-flavour="latte"] .excalidraw { --theme-filter: url(#aiwb-canvas-latte); }
+:root[data-flavour="frappe"] .excalidraw { --theme-filter: url(#aiwb-canvas-frappe); }
+:root[data-flavour="macchiato"] .excalidraw { --theme-filter: url(#aiwb-canvas-macchiato); }
+:root[data-flavour="mocha"] .excalidraw { --theme-filter: url(#aiwb-canvas-mocha); }
+:root[data-flavour="latte"] .excalidraw canvas { filter: var(--theme-filter); }

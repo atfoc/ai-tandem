@@ -1,17 +1,20 @@
-// Regenerates the README's screenshots, docs/screenshots/*.png, on the mock with made-up data (dev/readme-demo.mjs):
+// Regenerates the README's screenshots, docs/screenshots/*.png, of the app's web build (app/) on the mock with made-up data (dev/readme-demo.mjs):
 //   cd web && node dev/readme-shots.mjs            every shot      (node dev/readme-shots.mjs hero chat: the ones named)
-// Needs Playwright with Chromium (see dev/shot.mjs). Own mock on port 4853 (PORT=…), nothing of the real app is used.
+// Needs Playwright with Chromium (see dev/shot.mjs). Own mock on port 4853 (PORT=…), nothing of the real app is used. The build is made now
+// (buildAppDist; DIST=… names one made before), OUT=… writes the pictures to another folder than docs/screenshots.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { buildDist, loadPlaywright, mockEval, onEnd, openPage, startMock, until } from "./shot.mjs";
+import { buildAppDist, loadPlaywright, mockEval, onEnd, openApp, startMock, until } from "./shot.mjs";
+import { byTid, press } from "./checks/sel.mjs";
+import { openTree } from "./checks/fork.mjs";
 import { CREATE } from "./readme-diagram.mjs";
 import { CO, installCode, LIBRARY } from "./readme-demo.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const OUT = path.resolve(HERE, "../../docs/screenshots");
+const OUT = path.resolve(process.env.OUT || path.join(HERE, "../../docs/screenshots"));
 const PORT = Number(process.env.PORT || 4853);
 const only = process.argv.slice(2);
 const W = 1440, H = 900;
@@ -19,14 +22,14 @@ const W = 1440, H = 900;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-readme-"));
 onEnd(() => fs.rmSync(tmp, { recursive: true, force: true }));
 fs.mkdirSync(OUT, { recursive: true });
-const dist = process.env.DIST || buildDist(path.join(tmp, "dist"));
+const dist = process.env.DIST || buildAppDist(path.join(tmp, "dist"));
 const mock = await startMock({ dist, port: PORT });
 const ev = (code) => mockEval(code, mock.url);
 let browser = await (await loadPlaywright()).chromium.launch();
 
 /** A page of the demo at 1440x900, device scale 2, with nothing moving. */
 async function open({ sel, widths = { side: 264, panel: 420 }, theme = "light", ls = {}, size = [W, H] }) {
-  const o = await openPage({ url: mock.url, sel, size, scale: 2, still: true, browser, ls: { "aiwb.theme": theme, "aiwb.widths": JSON.stringify(widths), ...ls } });
+  const o = await openApp({ url: mock.url, viewport: "desktop", sel, size, scale: 2, still: true, browser, ls: { "aiwb.theme": theme, "aiwb.widths": JSON.stringify(widths), ...ls } });
   browser = o.browser;
   await o.page.evaluate(() => document.fonts.ready);
   return o;
@@ -92,15 +95,15 @@ const SHOTS = {
   async "hero-dark"() { await SHOTS.hero({ theme: "dark", name: "hero-dark.png" }); },
   async chat() {
     const { ctx, page } = await open({ sel: { board: null, chat: "c_tests" }, ls: REMOTES_FOLDED });
-    await page.waitForSelector(".thread .tool");
-    for (const hint of ["Edited coupon.go"]) await page.locator(".thread .tool-row", { hasText: hint }).click();
+    await byTid(page, "tool-card").first().waitFor();
+    for (const hint of ["Edited coupon.go"]) await press(page, byTid(page, "tool-row").filter({ hasText: hint }).first());
     await settle(page);
     await shot(page, "chat.png");
     await ctx.close();
   },
   async subagents() {
     const { ctx, page } = await open({ sel: { board: null, chat: "c_audit" }, ls: REMOTES_FOLDED });
-    await page.waitForSelector(".thread .subagent");
+    await byTid(page, "sub-row").first().waitFor();
     await settle(page);
     await shot(page, "subagents.png");
     await ctx.close();
@@ -110,13 +113,13 @@ const SHOTS = {
     // (a group's fold is the page's own: kept in its storage, by the group's key)
     const folded = await ev(`addServer({ id: "s_office", name: "Office Mac", address: "https://office-mac.example:4790", state: "unreachable", detail: "connection refused" }); resync(); return groups.map((g) => g.id);`);
     const { ctx, page } = await open({ sel: { board: null, chat: "s_build~c_nightly" }, ls: { "aiwb.collapsed": JSON.stringify([...folded, "s_build", "s_lab"]) } });
-    await page.waitForSelector(".thread .tool");
-    await page.locator(".thread .tool-row", { hasText: "Edited integration.sh" }).click();
+    await byTid(page, "tool-card").first().waitFor();
+    await press(page, byTid(page, "tool-row").filter({ hasText: "Edited integration.sh" }).first());
     await page.mouse.move(W - 5, 5);
     await settle(page);
     await shot(page, "remote-servers.png");
-    await page.locator(".servers-btn").click();
-    await page.waitForSelector("[role=dialog]");
+    await press(page, byTid(page, "servers-btn"));
+    await byTid(page, "servers-dialog").waitFor();
     await page.mouse.move(W - 5, 5);
     await settle(page);
     await shot(page, "servers-dialog.png");
@@ -127,12 +130,12 @@ const SHOTS = {
     await ev(`chats.c_new = chat("c_new", { group: "g_app", cwd: HOME + "/projects/shop-app", created: iso(Date.now()), ...fresh }); items.c_new = []; send({ type: "chat", chat: chats.c_new }); return 1;`);
     const files = await pictures();
     const { ctx, page } = await open({ sel: { board: null, chat: "c_new" }, ls: REMOTES_FOLDED });
-    await page.waitForSelector(".composer .attach-btn");
+    await byTid(page, "attach-btn").waitFor();
     const chooser = page.waitForEvent("filechooser");
-    await page.locator(".composer .attach-btn").click();
+    await press(page, byTid(page, "attach-btn"));
     await (await chooser).setFiles(files);
-    await page.waitForSelector(".composer img", { timeout: 15000 });
-    await page.locator(".composer-input").click();
+    await byTid(page, "image-thumb").first().waitFor({ timeout: 15000 });
+    await press(page, byTid(page, "composer-input").first());
     await page.keyboard.type("The card step shows \"Invalid date\" for 04/29 on iOS. Screenshots of both screens attached: where is the date parsed?");
     await page.mouse.move(W - 5, 5);
     await settle(page, 1500);
@@ -143,9 +146,9 @@ const SHOTS = {
   async "model-picker"() {
     await ev(`chats.c_new = chat("c_new", { group: "g_co", cwd: CO_DIR, created: iso(Date.now()), ...fresh }); items.c_new = []; send({ type: "chat", chat: chats.c_new }); return 1;`.replace("CO_DIR", JSON.stringify(CO)));
     const { ctx, page } = await open({ sel: { board: null, chat: "c_new" }, ls: REMOTES_FOLDED });
-    await page.waitForSelector(".composer .tchip");
-    await page.locator(".composer .tchip", { hasText: "Opus 5.5" }).click();
-    await page.waitForSelector(".composer .menu, .composer [role=menu], .composer [role=listbox]");
+    await byTid(page, "tchip").first().waitFor();
+    await press(page, byTid(page, "tchip").filter({ hasText: "Opus 5.5" }).first());
+    await byTid(page, "pick-row").first().waitFor();
     await page.mouse.move(W - 5, 5);
     await settle(page);
     await shot(page, "model-picker.png");
@@ -159,7 +162,7 @@ const SHOTS = {
         { kind: "perm", requestId: "q1", toolName: "Bash", input: { command: "git push origin fix/coupon-rounding", description: "Push the fix branch" }, decided: "" }];
       send({ type: "chat", chat: chats.c_perm }); return 1;`);
     const { ctx, page } = await open({ sel: { board: null, chat: "c_perm" }, ls: REMOTES_FOLDED });
-    await page.waitForSelector(".thread .perm, .thread [class*=perm]");
+    await byTid(page, "perm").first().waitFor();
     await page.mouse.move(W - 5, 5);
     await settle(page);
     await shot(page, "permission-card.png");
@@ -176,9 +179,8 @@ const SHOTS = {
       b.items.push(...turn("Draw the refund flow on the board.", "Drew it next to the checkout flow: client, checkout service, Stripe, and the refunds table.", "r3"));
       send({ type: "chat", chat: chats.c_tree }); send({ type: "snapshot", ...snapshot() }); return 1;`);
     const { ctx, page } = await open({ sel: { board: null, chat: "c_tree" }, ls: REMOTES_FOLDED });
-    await page.waitForSelector(".thread .msg");
-    await page.locator(".fk-tree-btn").click();
-    await page.waitForSelector("[role=dialog], .tree-pop, .fk-tree");
+    await byTid(page, "msg").first().waitFor();
+    await openTree(page);
     await page.mouse.move(W - 5, 5);
     await settle(page);
     await shot(page, "chat-tree.png");
@@ -188,11 +190,11 @@ const SHOTS = {
   async "theme-mocha"() { await SHOTS.hero({ theme: "mocha", name: "hero-mocha.png" }); },
   async "prompt-library"() {
     const { ctx, page } = await open({ sel: { board: null, chat: "c_tests" }, ls: REMOTES_FOLDED });
-    await page.waitForSelector(".thread .tool");
-    await page.locator(".library-btn").click();
-    await page.waitForSelector("[role=dialog]");
-    await page.getByText("Pull request description", { exact: true }).click();
-    await page.waitForSelector("[role=dialog] textarea");
+    await byTid(page, "tool-card").first().waitFor();
+    await press(page, byTid(page, "library-btn"));
+    await byTid(page, "library-dialog").waitFor();
+    await press(page, byTid(page, "library-dialog").getByText("Pull request description", { exact: true }).first());
+    await byTid(page, "lib-text-input").waitFor();
     await page.mouse.move(W - 5, 5);
     await settle(page);
     await shot(page, "prompt-library.png");

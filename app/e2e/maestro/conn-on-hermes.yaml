@@ -1,0 +1,14 @@
+# aiwb-e2e: needs= node=conn
+# AD-83 flow 5: the shared connection code (@aiwb/conn) runs its cases inside Hermes, over the adapter and the native module's JS
+# fake (src/dev/connSelfTest.ts): the connector contract and the core-on-fakes cases. Needs no server and no native module.
+# Passes when the screen says "conn self-test ok".
+appId: ${APP_ID}
+---
+- runFlow: _open.yaml
+- tapOn:
+    id: "selftest-conn"
+- extendedWaitUntil:
+    visible: "conn self-test (ok|FAILED)"
+    timeout: 180000
+- takeScreenshot: conn-verdict
+- assertVisible: "conn self-test ok"

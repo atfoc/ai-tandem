@@ -1,0 +1,18 @@
+# Double taps the word of the chip at AT (a point), and once more when the box says the chip is not selected: on iOS a double tap on a chip is
+# now and then taken as two taps (ChipInput.native.tsx's header), which is the platform's, not the box's.
+appId: ${APP_ID}
+---
+- doubleTapOn:
+    point: ${AT}
+- waitForAnimationToEnd:
+    timeout: 1500
+- runScript:
+    file: _box.js
+- runFlow:
+    when:
+      true: ${!output.chipSelected}
+    commands:
+      - doubleTapOn:
+          point: ${AT}
+      - waitForAnimationToEnd:
+          timeout: 1500

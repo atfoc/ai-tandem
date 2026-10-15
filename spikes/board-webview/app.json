@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Board Spike",
+    "slug": "board-webview",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.aiwb.spike.boardwebview",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "plugins": [
+      "expo-asset"
+    ],
+    "scheme": "boardspike"
+  }
+}

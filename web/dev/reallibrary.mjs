@@ -1,8 +1,8 @@
-// The prompt library's popups on real server processes, in a headless Chromium: what the browser checks PL4.1 and
+// The prompt library's popups of the app (app/, its web export) on real server processes, in a headless Chromium (S11): what the browser checks PL4.1 and
 // PL5.2 prove on the mock, tried once more where the mock is only this repository's reading of the server
 // (plans/prompt-library.md, section 10, lines 7 to 10 and 19 to 23 and 25, as far as the page goes). It is no check
 // of dev/checks and `npm run uicheck` does not run it: it needs Go, to build the server.
-//   node dev/reallibrary.mjs            builds the server and the page, runs, and removes what it made
+//   node web/dev/reallibrary.mjs        builds the server and the app's web export (with `connect-src 'self'`, as the test host needs), runs, and removes what it made
 // Two servers are started, each with a data folder of its own under the system's temporary folder and a free port: A,
 // "this computer", which the test host (dev/host.mjs, which does for the page what the app's main process does) finds or
 // starts with the server program, and B, another server, an entry of the host's list. Neither has an agent program (the
@@ -22,11 +22,13 @@
 //   composer lists both libraries and Enter puts B's prompt at the cursor.
 //   B stops: its prompts stay in both popups, marked, can be inserted and cannot be changed; B is back: they can.
 //   B is removed from the list: its prompts are gone, and the tree has no level of servers again.
+// The popups are read by `checks/library.mjs`; the pointer's drag is `pointerDragger` of `checks/sel.mjs`.
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildDist, loadPlaywright, onEnd, pointerDrag, until } from "./shot.mjs";
-import { Scratch, hostApp, hostCall, hostFor, loadChromium, makeOut, serverBinary, sleep } from "../e2e/lib/rig.mjs";
+import { until, loadPlaywright, onEnd } from "./shot.mjs";
+import { Scratch, hostApp, hostCall, hostFor, makeOut, pageDist, serverBinary } from "../e2e/lib/rig.mjs";
+import { byTid, pointerDragger, tidSel } from "./checks/sel.mjs";
+import { seen as libSeen, insertSeen } from "./checks/library.mjs";
 
 const ROOT = makeOut("reallibrary");
 const failures = [], fail = (line) => { failures.push(line); console.log(`FAIL ${line}`); }, pass = (line) => console.log(`ok   ${line}`), note = (line) => console.log(`     ${line}`);
@@ -50,24 +52,17 @@ async function client(h, server = "local") {
 /** A server's own library, as it answers a read. */
 const libraryOf = async (h, server = "local") => (await hostCall(h, server, "GET", "/api/library")).json.libraries[0];
 
-/** In the page: what the two popups show. */
-function seen() {
-  const dlg = document.querySelector(".lib-dialog"), ins = document.querySelector(".ins-dialog"), text = (e) => e?.textContent ?? "";
-  const rows = [...(dlg?.querySelectorAll(".lib-list .lib-row:not(.new)") ?? [])], options = [...(ins?.querySelectorAll('[role="option"]') ?? [])], form = dlg?.querySelector(".lib-form");
-  const line = (r) => (r.matches(".hit, [role=option]") ? text(r.querySelector(".lib-path")) + text(r.querySelector(".lib-pname")) : "  ".repeat(Number(r.getAttribute("aria-level")) - 1) + text(r.querySelector(".lib-name")));
-  return {
-    open: !!dlg, rows: rows.map(line), off: rows.filter((r) => r.querySelector(".lib-off")).map(line), says: text(dlg?.querySelector(".lib-list .menu-empty")),
-    treeErr: text(dlg?.querySelector(".lib-side > .dialog-err")),
-    form: form ? { head: text(form.querySelector(".lib-form-head > span")), name: form.querySelector("input").value, text: form.querySelector("textarea")?.value ?? null, fixed: form.querySelector("input").readOnly,
-      err: text(form.querySelector(".dialog-err")), notice: text(form.querySelector(".lib-notice")), off: [...form.querySelectorAll("button")].filter((b) => b.disabled).map((b) => b.textContent),
-      where: text(form.querySelector(".lib-where")) } : null,
-    insert: ins ? { rows: options.map(line), off: options.filter((r) => r.querySelector(".lib-off")).map(line) } : null,
-  };
-}
+/** In the page: what the two popups show (the readers of checks/library.mjs, put together; the page evaluates this text). */
+const READ = `(() => {
+  const l = (${libSeen})(), i = (${insertSeen})();
+  return { open: !!l.open, rows: l.rows, off: l.off, says: l.says, treeErr: l.treeErr, ask: l.ask,
+    form: l.form && { head: l.form.head, name: l.form.name, text: l.form.text, fixed: l.form.fixed, err: l.form.err, notice: l.form.notice, off: l.form.off, where: l.form.where },
+    insert: i.open ? { rows: i.rows, off: i.off } : null };
+})()`;
 
 try {
   const bin = serverBinary(ROOT);
-  const dist = buildDist(path.join(ROOT, "dist"));
+  const dist = pageDist(ROOT);
   A = new Scratch({ out: ROOT, bin, agent: null, tag: "a", name: "This computer" });
   B = new Scratch({ out: ROOT, bin, agent: null, tag: "b", name: "Studio" });
   await A.setUp();
@@ -81,20 +76,26 @@ try {
   browser = await (await loadPlaywright()).chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } }), page = await ctx.newPage(), errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => { if (m.type() === "error" && !/^Failed to load resource/.test(m.text())) errors.push("console: " + m.text()); });
   await page.goto(host.url);
-  await page.waitForSelector(".side-foot .library-btn", { timeout: 30000 });
-  await page.waitForSelector('.side-section[data-server="local"] .side-section-state.ok', { timeout: 90000 }); // (this computer's server is found or started and connected)
+  await page.waitForSelector(tidSel("library-btn"), { timeout: 30000 });
+  await page.waitForSelector(tidSel("side-section-state", { server: "local", tone: "ok" }), { timeout: 90000 }); // (this computer's server is found or started and connected)
+  const read = () => page.evaluate(READ);
   /** Waits for the page to show what `want` says, and says so; fails with what it shows. */
   const shows = async (what, want) => {
     let s;
-    if (await until(async () => want((s = await page.evaluate(seen))), 30000)) pass(what); else fail(`${what}: the page shows ${JSON.stringify(s)}`);
+    if (await until(async () => want((s = await read())), 30000)) pass(what); else fail(`${what}: the page shows ${JSON.stringify(s)}`);
     return s;
   };
-  const DLG = ".lib-dialog", row = (label) => page.locator(`${DLG} .lib-row:not(.new):has(.lib-name:text-is("${label}"))`), button = (label) => page.locator(`${DLG} button:text-is("${label}")`);
-  const name = page.locator(`${DLG} .lib-form input`), text = page.locator(`${DLG} .lib-form textarea`), LONG = "a".repeat(80);
+  const esc = (l) => new RegExp(`^${l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  const D = byTid(page, "library-dialog"), libBtn = byTid(page, "library-btn");
+  const row = (label) => D.locator(`${tidSel("lib-row")}:not([data-new="true"])`).filter({ has: page.locator(tidSel("lib-name"), { hasText: esc(label) }) });
+  const button = (label) => D.locator('[role="button"]').filter({ hasText: esc(label) });
+  const name = byTid(D, "lib-name-input"), text = byTid(D, "lib-text-input"), LONG = "a".repeat(80), search = byTid(D, "lib-search");
+  const answer = (label) => byTid(page, "confirm-dialog").locator('[role="button"]').filter({ hasText: esc(label) }).click();
 
   // ---- this computer's library alone
-  await page.locator(".side-foot .library-btn").click();
+  await libBtn.click();
   await shows("a new server: the popup opens on an empty library", (s) => s.open && !s.rows.length && s.says === "The library has no prompts yet.");
   await button("New group").click(); await name.fill("git"); await button("Save").click();
   await shows("a group is made", (s) => s.rows.join("|") === "git" && s.form?.head === "Group");
@@ -116,15 +117,17 @@ try {
   if (renamed.status !== 200) fail(`the other client's rename was answered ${JSON.stringify(renamed)}`);
   await shows("a change made by another client shows in the window with no reload", (x) => x.rows.includes("  review twice") && !x.rows.includes("  review"));
   await row("git").click(); await button("Delete").click();
-  const asked = await page.locator(".dialog-backdrop .dialog .dialog-body").textContent({ timeout: 10000 });
+  const asked = await until(async () => (await read()).ask?.body, 10000);
   if (asked === "“git” is deleted with everything in it: 2 prompts.") pass("deleting the group asks with the number of its prompts"); else fail(`the question before the group is deleted: ${JSON.stringify(asked)}`);
-  await page.locator('.dialog-backdrop .dialog button:text-is("Cancel")').click();
+  await answer("Cancel");
 
   // ---- where an item is, is the tree's: the menu of a right click, and a drag
-  const drag = pointerDrag(page), entryOf = (label) => page.locator(`${DLG} .lib-ctx .menu-item:text-is("${label}")`), bar = page.locator(`${DLG} .lib-top`);
-  const dragTo = async (label, to) => { await drag.start(await drag.at(row(label))); await drag.over(await drag.at(to)); await drag.drop(); };
+  const d = await pointerDragger(page, { steps: 6 });
+  const centre = async (t) => { if ("x" in t) return t; await t.scrollIntoViewIfNeeded(); const b = await t.boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+  const entryOf = (label) => byTid(page, "lib-menu").locator(tidSel("lib-menu-item")).filter({ hasText: esc(label) }), bar = byTid(D, "lib-top");
+  const dragTo = async (label, to) => { const p = await centre(row(label)); await d.start(p); await d.move({ x: p.x + 9, y: p.y + 5 }); await d.move(await centre(to)); await d.end(); };
   const parentOf = async (label) => { const l = await libraryOf(host), x = [...l.prompts, ...l.groups].find((i) => i.name === label); return l.groups.find((q) => q.id === x?.parent)?.name ?? (x ? "" : null); };
-  const list = await page.locator(`${DLG} .lib-list`).boundingBox();
+  const list = await byTid(D, "lib-list-frame").boundingBox();
   await page.mouse.click(list.x + list.width / 2, list.y + list.height - 10, { button: "right" });
   await entryOf("New group").click(); await name.fill("misc"); await button("Save").click();
   await shows("a right click on the space under the rows makes a group at the top level", (x) => x.rows.join("|") === ["git", "  " + LONG, "  review twice", "misc"].join("|") && x.form?.head === "Group" && x.form.where === "At the top level");
@@ -169,9 +172,9 @@ try {
   if (!added.json?.saved) throw new Error(`B was not added to the page's list: ${JSON.stringify(added.json)} (its test: ${JSON.stringify(tested.json)})`);
   const entry = added.json.server.id;
   await shows("the other server's library is in the open popup under its name, after this computer's", (x) => x.rows.join("|") === ["This computer", "  git", "    " + LONG, "    review twice", "Studio", "  standup"].join("|") && !x.off.length);
-  await page.locator(`${DLG} .lib-search input`).fill("studio stand");
+  await search.fill("studio stand");
   await shows("a search for the server's name and a prompt's name finds the prompt", (x) => x.rows.join("|") === "Studio/standup");
-  await page.locator(`${DLG} .lib-search input`).fill("");
+  await search.fill("");
   await row("Studio").click(); await button("New prompt").click();
   await shows("a new prompt at the server's entry is to go to that server", (x) => x.form?.head === "New prompt" && x.form.where === "In Studio");
   await name.fill("retro"); await text.fill("What went well?"); await button("Save").click();
@@ -190,9 +193,9 @@ try {
 
   // ---- the insert popup, in a chat's composer
   await page.keyboard.press("Escape");
-  await page.locator(".icon-btn.new").first().click();
-  await page.locator('.menu .menu-item:has-text("New chat")').first().click();
-  const box = page.locator(".composer .composer-input").first(), held = async () => (await box.evaluate((e) => e.innerText)).replace(/\n+$/, "");
+  await byTid(page, "side-new").first().click();
+  await byTid(page, "menu-item").filter({ hasText: /^\s*New chat\s*$/ }).first().click();
+  const box = byTid(page, "composer-input").first(), held = async () => (await box.evaluate((e) => e.innerText)).replace(/\n+$/, "");
   await box.click({ timeout: 15000 });
   await page.keyboard.type("Hello world");
   for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowLeft");
@@ -203,7 +206,7 @@ try {
   if (await until(async () => await held() === "HelloChanged by the owner. world", 10000)) pass("Enter puts the other server's prompt at the cursor"); else fail(`after the insertion the box holds ${JSON.stringify(await held())}`);
 
   // ---- the other server stops, and is back
-  await page.locator(".side-foot .library-btn").click();
+  await libBtn.click();
   await row("retro").click();
   ofB.close();
   await hostB.close(); // (B's own app would start it again)
@@ -220,7 +223,7 @@ try {
   await page.keyboard.type("standup");
   await page.keyboard.press("Enter");
   if (await until(async () => (await held()).includes("What did you do?"), 10000)) pass("a prompt of the server that stopped is inserted"); else fail(`after the insertion the box holds ${JSON.stringify(await held())}`);
-  await page.locator(".side-foot .library-btn").click();
+  await libBtn.click();
   await row("retro").click();
   await B.launch();
   await shows("the server is back: its prompt can be changed again", (x) => !x.off.length && x.form?.name === "retro" && x.form.fixed === false);
@@ -234,5 +237,5 @@ try {
   ofA.close();
 } catch (e) { fail(String(e?.stack ?? e)); }
 await tidy();
-console.log(failures.length ? `\n${failures.length} failed` : "\nthe prompt library's popups work on real servers");
+console.log(failures.length ? `\n${failures.length} failed` : "\nthe prompt library's popups work on real servers, in the new build");
 process.exit(failures.length ? 1 : 0);

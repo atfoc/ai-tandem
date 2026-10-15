@@ -1,4 +1,0 @@
-/* The composer of a chat of a section: the chip and the lines that name the server. */
-.tchip.server-chip.off { color: var(--muted); }
-.menu-item.pick[aria-disabled="true"] { color: var(--muted); cursor: default; }
-.menu-item.pick[aria-disabled="true"]:hover { background: none; }
