@@ -14,6 +14,13 @@
 //   --check      checks the tools, the signing and the device, says what it would do, builds nothing.
 //   --no-open    installs without opening the app.
 //   --list       lists the devices of the platform and stops.
+//   --ipa        ios only: builds a signed .ipa file instead of installing, for a device you do not have connected: put the file anywhere
+//                and install it later (Finder / Apple Configurator, or a download page). No device is needed, but the device's UDID must
+//                be registered with the team. The file is written to bin/ios/ (or --out <folder>).
+//   --serve      with --ipa implied: after the build, serves the .ipa over https on the local network (or VPN) so that the device installs
+//                it by opening a link in Safari; the device trusts this computer's certificate once (scripts/serve-ipa.mjs). Runs until Ctrl-C.
+//   --method     with --ipa: development (default; any team, free included; devices of the team's development profile) or ad-hoc (paid
+//                Apple Developer Program: an Apple Distribution certificate; devices of the team's ad hoc profile).
 //
 // Environment (never a file of the repository, goal 4.9):
 //   AIWB_IOS_TEAM_ID     the Apple developer team's 10-character id; iOS on a real device needs it. Without it the script stops at the
@@ -38,7 +45,6 @@ import { describeDevice, explainFailure, parseAdbDevices, parseArgs, parseDevice
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(here, "..");
 const repoDir = path.resolve(appDir, "..");
-const TOTAL = 8;
 const DEFAULT_ID = "local.aiwhiteboard.app";
 
 const args = parseArgs(process.argv.slice(2));
@@ -48,6 +54,7 @@ if (args.help) {
 }
 if (args.errors.length) { console.error(`${args.errors.join("\n")}\nusage: node app/scripts/install.mjs --platform android|ios [--device <id|name>] [--check] [--no-open] [--list]   (--help says more)`); process.exit(2); }
 
+const TOTAL = args.serve ? 7 : args.ipa ? 6 : 8;
 const platform = args.platform;
 const t0 = Date.now();
 const say = (m) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0).padStart(4)}s] ${m}`);
@@ -136,7 +143,7 @@ function chooseSigning() {
     return;
   }
   const { real, sims } = listIos();
-  const named = args.device && pickDevice([], args.device, sims);
+  const named = !args.ipa && args.device && pickDevice([], args.device, sims);
   if (named?.device?.kind === "simulator") { say("  a simulator: no signing"); return; }
   if (!teamId) throw new Stop("AIWB_IOS_TEAM_ID is not set, and a real iPhone or iPad cannot be installed to without a team to sign with", { hint: signingNeeds });
   if (!validTeamId(teamId)) throw new Stop("AIWB_IOS_TEAM_ID is not a team id (ten capital letters and digits, like ABCDE12345)", { hint: signingNeeds });
@@ -230,6 +237,44 @@ async function build() {
   say(`  built ${artifact}`);
 }
 
+/** --ipa: archives the app for any iPhone or iPad and exports a signed .ipa, which is not installed anywhere. */
+async function buildIpa() {
+  const ios = path.join(appDir, "ios");
+  const workspace = fs.readdirSync(ios).find((f) => f.endsWith(".xcworkspace"));
+  if (!workspace) throw new Stop(`prebuild left no .xcworkspace in ${ios}`);
+  const scheme = workspace.replace(/\.xcworkspace$/, "");
+  const archive = path.join(ios, "build", `${scheme}.xcarchive`);
+  const out = path.resolve(args.out || path.join(repoDir, "bin/ios"));
+  const exportDir = path.join(ios, "build", "export");
+  fs.rmSync(archive, { recursive: true, force: true });
+  fs.rmSync(exportDir, { recursive: true, force: true });
+  const env = buildEnv();
+  await run(`xcodebuild archive ${scheme} Release (signing automatically)`, "xcodebuild", [
+    "-workspace", path.join(ios, workspace), "-scheme", scheme, "-configuration", "Release", "-destination", "generic/platform=iOS",
+    "-archivePath", archive, "-allowProvisioningUpdates", `DEVELOPMENT_TEAM=${teamId}`, "CODE_SIGN_STYLE=Automatic", "archive",
+  ], { cwd: ios, env });
+  const options = path.join(logDir, "ExportOptions.plist");
+  fs.writeFileSync(options, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>method</key><string>${args.method}</string>
+  <key>teamID</key><string>${teamId}</string>
+  <key>signingStyle</key><string>automatic</string>
+  <key>stripSwiftSymbols</key><true/>
+  <key>compileBitcode</key><false/>
+  <key>thinning</key><string>&lt;none&gt;</string>
+</dict></plist>
+`);
+  await run(`xcodebuild -exportArchive (${args.method})`, "xcodebuild", ["-exportArchive", "-archivePath", archive, "-exportPath", exportDir, "-exportOptionsPlist", options, "-allowProvisioningUpdates"], { cwd: ios, env });
+  const ipa = fs.readdirSync(exportDir).find((f) => f.endsWith(".ipa"));
+  if (!ipa) throw new Stop(`the export left no .ipa in ${exportDir}`);
+  fs.mkdirSync(out, { recursive: true });
+  const name = `${appConfig?.name ?? scheme}-${appConfig?.version ?? "0"}-${args.method}.ipa`.replace(/\s+/g, "");
+  artifact = path.join(out, name);
+  fs.copyFileSync(path.join(exportDir, ipa), artifact);
+  say(`  built ${artifact} (${(fs.statSync(artifact).size / 1e6).toFixed(1)} MB)`);
+}
+
 async function installAndOpen() {
   const id = platform === "android" ? androidPackage : bundleId;
   if (platform === "android") {
@@ -287,9 +332,26 @@ let status = 0;
 try {
   await step("tools", checkTools);
   await step("signing", chooseSigning);
-  await step("device", chooseDevice);
-  if (args.check) {
+  if (!args.ipa) await step("device", chooseDevice);
+  if (args.check && args.ipa) {
+    say(`CHECK OK: it would build a signed ${args.method} .ipa for team ${teamId} into ${path.resolve(args.out || path.join(repoDir, "bin/ios"))}. Nothing was built.`);
+  } else if (args.check) {
     say(`CHECK OK: it would build a Release build for ${target.name} (${platform}) and install${args.noOpen ? "" : " and open"} it. Nothing was built.`);
+  } else if (args.ipa) {
+    await step("dependencies", installDependencies);
+    await step("the board's page and the config", boardPageAndConfig);
+    await step("native project", nativeProject);
+    await step("archive and export the .ipa", buildIpa);
+    say(`DONE: ${path.basename(artifact)} (${bundleId}, ${args.method}) is in ${path.dirname(artifact)}, in ${((Date.now() - t0) / 60000).toFixed(1)} min.`);
+    say("  Install it on a device whose UDID is registered with the team: drag it onto the device in Finder (or Apple Configurator), or serve it from an https page with an itms-services manifest.plist.");
+    say(`  Logs: ${logDir}`);
+    if (args.serve) {
+      await step("serve the .ipa", async () => {
+        restoreTracked();
+        const { serveIpa } = await import("./serve-ipa.mjs");
+        try { await serveIpa({ ipa: artifact, say }); } catch (e) { throw new Stop(e.message, { hint: `The .ipa is built (${artifact}); serve it later with: node app/scripts/serve-ipa.mjs` }); }
+      });
+    }
   } else {
     await step("dependencies", installDependencies);
     await step("the board's page and the config", boardPageAndConfig);

@@ -3,21 +3,25 @@
 
 /** The arguments of the script. `errors` lists what was wrong with them (the script prints it and stops with status 2). */
 export function parseArgs(argv) {
-  const r = { help: false, list: false, check: false, noOpen: false, platform: "", device: "", errors: [] };
+  const r = { help: false, list: false, check: false, noOpen: false, ipa: false, serve: false, platform: "", device: "", out: "", method: "development", errors: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") r.help = true;
     else if (a === "--list") r.list = true;
     else if (a === "--check") r.check = true;
     else if (a === "--no-open") r.noOpen = true;
+    else if (a === "--ipa") r.ipa = true;
+    else if (a === "--serve") r.ipa = r.serve = true;
     else if (a === "--release") { /* the only kind of build there is; accepted so that the command of goal 4.9 reads the same */ }
-    else if (a === "--platform" || a === "--device") {
+    else if (a === "--platform" || a === "--device" || a === "--out" || a === "--method") {
       const v = argv[i + 1];
       if (v === undefined || v.startsWith("--")) r.errors.push(`${a} needs a value`);
       else { r[a.slice(2)] = v; i++; }
     } else r.errors.push(`unknown argument ${a}`);
   }
   if (r.platform && !["android", "ios"].includes(r.platform)) r.errors.push(`--platform is android or ios, not ${r.platform}`);
+  if (!["development", "ad-hoc"].includes(r.method)) r.errors.push(`--method is development or ad-hoc, not ${r.method}`);
+  if (r.ipa && r.platform && r.platform !== "ios") r.errors.push("--ipa is for --platform ios");
   if (!r.help && !r.platform && !r.errors.length) r.errors.push("--platform android|ios is required");
   return r;
 }

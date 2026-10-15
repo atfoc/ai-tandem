@@ -22,6 +22,10 @@ test("the arguments: a platform is required, a value is needed after --device, u
   assert.match(parseArgs(["--platform", "windows"]).errors.join(), /android or ios/);
   assert.match(parseArgs(["--platform", "ios", "--device"]).errors.join(), /--device needs a value/);
   assert.match(parseArgs(["--platform", "ios", "--frobnicate"]).errors.join(), /unknown argument --frobnicate/);
+  assert.equal(parseArgs(["--platform", "ios", "--ipa"]).method, "development", "an .ipa is development-signed unless --method says ad-hoc");
+  assert.deepEqual(parseArgs(["--platform", "ios", "--ipa", "--method", "ad-hoc", "--out", "/tmp/x"]).errors, []);
+  assert.match(parseArgs(["--platform", "ios", "--ipa", "--method", "store"]).errors.join(), /development or ad-hoc/);
+  assert.match(parseArgs(["--platform", "android", "--ipa"]).errors.join(), /--ipa is for --platform ios/);
   assert.equal(parseArgs(["--help"]).help, true);
   assert.deepEqual(parseArgs(["--help"]).errors, []);
 });

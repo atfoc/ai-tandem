@@ -163,6 +163,47 @@ another signature already on the device. The logs of every step are in the folde
 An iOS simulator also works as a target (`--device <udid or name of the simulator>`; `xcrun simctl list devices`): it needs no
 signing and no team, and tries the build part of the script.
 
+### An .ipa file instead of an install
+
+For a device that is not connected (or to keep a build to install later), `--ipa` archives the app and exports a signed file
+instead of installing it:
+
+```sh
+AIWB_IOS_TEAM_ID=ABCDE12345 scripts/install-app-device.sh --platform ios --ipa                    # bin/ios/AIWhiteboard-<version>-development.ipa
+AIWB_IOS_TEAM_ID=ABCDE12345 scripts/install-app-device.sh --platform ios --ipa --method ad-hoc   # with the Apple Distribution certificate
+scripts/install-app-device.sh --platform ios --ipa --out ~/Downloads                               # another folder
+```
+
+No device is needed, but the device's UDID must be registered with the team: the profile that Xcode makes (automatic signing)
+lists the registered devices, and the file installs only on those. `development` works with any team, the free one included, and
+the file stops working when the profile expires (7 days for a free team, a year for a paid one). `ad-hoc` needs the paid Apple
+Developer Program and an Apple Distribution certificate in the keychain. Install the file by dragging it onto the device in
+Finder (or Apple Configurator), or open a link in Safari on the device (below).
+
+#### Install by opening a link
+
+```sh
+AIWB_IOS_TEAM_ID=ABCDE12345 scripts/install-app-device.sh --platform ios --serve  # builds the .ipa, then serves it
+node app/scripts/serve-ipa.mjs [--ipa <file>] [--port <n>]                        # serves a .ipa that is already built
+```
+
+iOS installs over the air only from **https with a certificate the device trusts**, so the script serves https on every address of
+this computer, port 8443 (`--port`), for a device on the same network or VPN, and prints the addresses and two links:
+
+1. Once per device: open `http://<address>:8444/` in Safari, download the certificate, install it (Settings > General > VPN &
+   Device Management) and switch it on (Settings > General > About > Certificate Trust Settings).
+2. Open `https://<address>:8443/<token>/` in Safari and tap **Install**; the app appears on the home screen. The first time, iOS
+   may say "Untrusted Developer": Settings > General > VPN & Device Management > your Apple Development entry > Trust.
+
+The authority is made on the first run in `~/.aiwb-install/ca` (mode 700; the key never leaves the computer) and is limited by name
+constraints to private network addresses (10/8, 172.16/12, 192.168/16, 100.64/10) and `localhost`, so a leaked key could not sign
+for a public site. A device that trusts it once needs no step 1 on later runs. The server certificate is made again at each run for
+the addresses of that moment, so run again when the address changes. Delete the profile on the device, and `~/.aiwb-install`, to
+undo it.
+
+Every path carries a random 128-bit token and only the page, the manifest and this one `.ipa` are served, and the file installs only
+on the devices of its profile. Ctrl-C stops the server, and the link stops working.
+
 ## The web build in a headless browser
 
 The app is not used in a browser tab, but its web build can still be opened in a headless browser,
