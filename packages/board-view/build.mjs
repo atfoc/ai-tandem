@@ -7,6 +7,10 @@
 //                                          board.html, ONE file with the script, the style and the fonts inside it (the fonts as
 //                                          data: URLs, a font shim swaps each FontFace address for them), and a Content-Security-
 //                                          Policy that lets the page load and reach nothing: each inline script by its hash.
+// The bench (dev/bench/README.md; never shipped): AIWB_BOARD_BENCH=1 bundles dev/bench/entry.tsx in place of the webview's entry
+// (the shipped page, then the bench on top); AIWB_BOARD_BENCH_REPORT=<http url> lets the page POST its progress there (its origin
+// becomes the CSP's connect-src); AIWB_BOARD_BENCH_AUTO=1 makes the page start the bench by itself;
+// AIWB_BOARD_BENCH_MODES=<set or list> is what a run measures when it names no modes (default "all"; dev/bench/modeset.mjs). With none set, the output is the shipped one.
 // Both: Excalidraw is the installed one (`conditions: production`), without the locales other than English and without Mermaid
 // (KEEP_MERMAID=1 keeps it), and without Xiaolai (12 MB of Chinese fonts).
 import * as esbuild from "esbuild";
@@ -24,6 +28,12 @@ if (target !== "web" && target !== "webview") {
 }
 const at = process.argv.indexOf("--out");
 const out = path.resolve(here, at >= 0 ? process.argv[at + 1] : target === "web" ? "../../app/public/board" : "dist-webview");
+
+const bench = process.env.AIWB_BOARD_BENCH === "1" && target === "webview";
+const benchReport = bench ? process.env.AIWB_BOARD_BENCH_REPORT ?? "" : "";
+const benchModes = bench ? process.env.AIWB_BOARD_BENCH_MODES ?? "all" : "";
+const benchOrigin = benchReport ? new URL(benchReport).origin : "";
+if (benchReport && !/^https?:$/.test(new URL(benchReport).protocol)) throw new Error("AIWB_BOARD_BENCH_REPORT must be an http(s) url");
 
 /** The root of an installed package (its exports hide package.json): up from where its entry resolves. */
 function packageRoot(name) {
@@ -59,13 +69,14 @@ const slim = {
 };
 
 /** One configuration for both targets: only the entry and the output differ. */
-function bundleOf(entry) {
+function bundleOf(entry, more = {}) {
   return esbuild.build({
     entryPoints: [path.join(here, entry)], bundle: true, format: "iife", write: false, outdir: path.join(here, ".out"), entryNames: "board",
     conditions: ["production"], target: "safari16", minify: true, jsx: "automatic", logLevel: "warning", legalComments: "none",
     define: {
       "process.env.NODE_ENV": '"production"', "process.env.IS_PREACT": '"false"',
       __EXCALIDRAW_VERSION__: JSON.stringify(version), "import.meta.url": '"https://aiwb-assets.invalid/"',
+      ...more,
     },
     loader: { ".woff2": "dataurl", ".woff": "dataurl", ".ttf": "dataurl" },
     plugins: [slim],
@@ -107,7 +118,9 @@ if (target === "web") {
   const fontBytes = fs.readdirSync(path.join(out, "fonts"), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).reduce((n, e) => n + fs.statSync(path.join(e.parentPath, e.name)).size, 0);
   console.log(`board (web): excalidraw ${version}, ${Date.now() - t0} ms; board.js ${kb(Buffer.byteLength(js))}, board.css ${kb(Buffer.byteLength(css))}, fonts ${kb(fontBytes)} -> ${out}`);
 } else {
-  const bundle = await bundleOf("src/webview/entry.tsx");
+  const bundle = bench
+    ? await bundleOf("dev/bench/entry.tsx", { __AIWB_BENCH_REPORT__: JSON.stringify(benchReport), __AIWB_BENCH_AUTO__: process.env.AIWB_BOARD_BENCH_AUTO === "1" ? "true" : "false", __AIWB_BENCH_MODES__: JSON.stringify(benchModes) })
+    : await bundleOf("src/webview/entry.tsx");
   const css = bundle.css;
   // Excalidraw's fonts (the canvas draws text with them) go into the page as data: URLs, by the name the font shim looks up.
   const fonts = {};
@@ -120,7 +133,7 @@ if (target === "web") {
   const hash = (s) => "'sha256-" + crypto.createHash("sha256").update(s).digest("base64") + "'";
   const csp = [
     "default-src 'none'", `script-src ${hash(shimText)} ${hash(js)}`, "style-src 'unsafe-inline'", "img-src data: blob:", "font-src data:",
-    "connect-src 'none'", "worker-src blob:", "frame-src 'none'", "object-src 'none'", "form-action 'none'", "base-uri 'none'",
+    `connect-src ${benchOrigin || "'none'"}`, "worker-src blob:", "frame-src 'none'", "object-src 'none'", "form-action 'none'", "base-uri 'none'",
   ].join("; ");
   const html = `<!doctype html>
 <html lang="en" data-theme="light">
@@ -136,5 +149,6 @@ if (target === "web") {
 `;
   clean(out);
   fs.writeFileSync(path.join(out, "board.html"), html);
+  if (bench) console.log("BENCH BUILD (not for shipping)");
   console.log(`board (webview): excalidraw ${version}, ${Date.now() - t0} ms; board.html ${kb(Buffer.byteLength(html))} (js ${kb(Buffer.byteLength(js))}, css ${kb(Buffer.byteLength(css))}, fonts ${kb(Buffer.byteLength(shimText))}) -> ${path.join(out, "board.html")}`);
 }

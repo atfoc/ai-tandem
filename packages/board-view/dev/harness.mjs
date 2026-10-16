@@ -6,6 +6,8 @@
 //   2. the web build's board: the web target (`node build.mjs web --out <tmp>/board`: board.js, board.css, fonts/) in a page
 //      of its own that loads it as app/public/index.html does, under the Content-Security-Policy of the web build
 //      (app/scripts/export-web.mjs): `window.aiwbBoardView.mount(element, post)`, objects in and out.
+// The theme step differs by page on purpose: the phone's page draws the canvas filter as CSS functions and blend layers (src/phonetheme.ts),
+// the web page as the SVG filter on the canvases (src/theme.ts); the pixel read back through the filter is the same on both.
 // What the view tells (`changed`) is a delta: the checks keep a mirror of the board as the app does (load, then each `changed`
 // through the bridge's `applyDelta`) and hold it equal to the view's own scene.
 // Both pages also run `behaviours`: what an agent's change does (apply.ts: the clean look, upsert, ifVersion, atomic refusals, labels, arrows,
@@ -176,26 +178,40 @@ async function checks(p, ctx) {
   // theme: the filter is in the document, --theme-filter points at it, and plain light has none of ours
   const themed = () => p.page.evaluate(() => {
     const ex = document.querySelector(".excalidraw");
-    return { filter: !!document.getElementById("aiwb-canvas-test"), tf: ex && getComputedStyle(ex).getPropertyValue("--theme-filter").trim(), canvas: ex && getComputedStyle(ex.querySelector("canvas")).filter };
+    const layers = [...document.querySelectorAll(".aiwb-board > .aiwb-canvas-layer")].map((d) => ({ blend: getComputedStyle(d).mixBlendMode, ariaHidden: d.getAttribute("aria-hidden"), after: !!(ex.compareDocumentPosition(d) & Node.DOCUMENT_POSITION_FOLLOWING) }));
+    return { filter: !!document.getElementById("aiwb-canvas-test"), tf: ex && getComputedStyle(ex).getPropertyValue("--theme-filter").trim(), canvas: ex && getComputedStyle(ex.querySelector("canvas")).filter, layers };
   });
+  // (the phone's page draws the filter as CSS functions and blend layers, the web page as the SVG filter: phonetheme.ts)
+  const phone = p.name === "webview";
   await p.page.waitForTimeout(150);
   if (process.env.SHOT) await p.page.screenshot({ path: process.env.SHOT });
   near(await pixel(p.page, 700, 500), [255, 230, 204], "the empty canvas seen through the filter (white: 1, 0.9, 0.8)");
   let th = await themed();
   assert.equal(th.filter, true, "the filter is in the document");
   assert.equal(th.tf, "url(#aiwb-canvas-test)", "--theme-filter is the filter");
-  assert.match(th.canvas, /url\(.*aiwb-canvas-test/, "the canvas wears it");
+  if (phone) {
+    // the harness filter is the identity matrix and tables 1, 0.9, 0.8: no CSS stage, one multiply layer (1, 0.9, 0.8)
+    assert.equal(th.canvas, "none", "the canvas wears the stage (none for the identity), not the SVG filter");
+    assert.deepEqual(th.layers.map((l) => [l.blend, l.ariaHidden, l.after]), [["multiply", "true", true]], "one multiply layer after Excalidraw");
+  } else {
+    assert.match(th.canvas, /url\(.*aiwb-canvas-test/, "the canvas wears it");
+    assert.deepEqual(th.layers, [], "no layers on the web page");
+  }
   await p.send({ t: "theme", theme: { mode: "light", filter: null } });
   await p.page.waitForTimeout(150);
   th = await themed();
   assert.equal(th.filter, false, "no filter, no <filter>");
   assert.equal(th.tf, "none", "plain light: no --theme-filter");
   assert.equal(th.canvas, "none");
+  assert.deepEqual(th.layers, [], "plain light: no layers");
   near(await pixel(p.page, 700, 500), [255, 255, 255], "plain light shows the stored white");
   await p.send({ t: "theme", theme: { mode: "dark", filter } });
   await p.page.waitForTimeout(150);
-  assert.equal((await themed()).tf, "url(#aiwb-canvas-test)");
-  t("theme: filter, none, filter");
+  th = await themed();
+  assert.equal(th.tf, "url(#aiwb-canvas-test)");
+  assert.equal(th.layers.length, phone ? 1 : 0, "the layers are back with the filter");
+  near(await pixel(p.page, 700, 500), [255, 230, 204], "and the empty canvas seen through the filter again");
+  t(`theme: filter${phone ? " (stage and layers)" : ""}, none, filter`);
 
   // chrome: a flavour's colours reach Excalidraw's own toolbar, panels and shortcuts, and are gone with the map
   const chrome = Object.fromEntries(CHROME_VARS.map((n) => [n, "#336699"]));

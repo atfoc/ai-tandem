@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import vm from "node:vm";
 
 import { FLAVOURS, THEME_PREFS, flavourOf, parseThemePref, resolveTheme } from "@aiwb/core/logic/theme.ts";
 
+import { cacheVersion } from "../metro-cache-key.js";
 import { absolutePaths, absolutePathsInBundle, checkRelative, csp, cspFor, noticeText, transformIndex } from "../scripts/export-web.mjs";
 import { resolveTokens } from "../src/ui/tokens.ts";
 
@@ -130,13 +131,19 @@ test("the built export names nothing by an absolute path", { skip: !fs.existsSyn
   checkRelative(new URL("../dist-web", import.meta.url).pathname);
 });
 
-test("Metro's cache is keyed by the build's version (a build of another version must not reuse the code of an earlier one)", () => {
-  const read = (version?: string) => {
-    const env = { ...process.env };
-    if (version === undefined) delete env.EXPO_PUBLIC_AIWB_VERSION; else env.EXPO_PUBLIC_AIWB_VERSION = version;
-    return execFileSync(process.execPath, ["-e", "console.log(require('./metro.config.js').cacheVersion)"], { cwd: new URL("..", import.meta.url), env, encoding: "utf8" }).trim();
-  };
-  assert.equal(read("e2e-7"), "e2e-7");
-  assert.equal(read("uicheck"), "uicheck");
-  assert.equal(read(undefined), "dev");
+test("Metro's cache is keyed by every EXPO_PUBLIC_* value (a build with other values must not reuse the code of an earlier one)", () => {
+  const key = cacheVersion;
+  const base = { EXPO_PUBLIC_AIWB_VERSION: "e2e-7", EXPO_PUBLIC_AIWB_SELFTEST: "1", PATH: "/bin" };
+  assert.match(key(base), /^e2e-7-[0-9a-f]{12}$/);
+  assert.match(key({}), /^dev-[0-9a-f]{12}$/);
+  assert.equal(key({ ...base }), key(base), "the same environment, the same key");
+  assert.notEqual(key({ ...base, EXPO_PUBLIC_AIWB_VERSION: "uicheck" }), key(base), "the version");
+  assert.notEqual(key({ ...base, EXPO_PUBLIC_AIWB_SELFTEST: "0" }), key(base), "another value of any variable");
+  assert.notEqual(key({ ...base, EXPO_PUBLIC_AIWB_GALLERY: "chipdoc" }), key(base), "one more variable");
+  assert.notEqual(key({ ...base, EXPO_PUBLIC_AIWB_GALLERY: "" }), key(base), "a variable set to nothing is not one that is unset");
+  assert.notEqual(key({ EXPO_PUBLIC_A: "b=c" }), key({ EXPO_PUBLIC_A: "b", EXPO_PUBLIC_C: "" }), "name and value are not run together");
+  assert.equal(key({ ...base, PATH: "/usr/bin", AIWB_IOS_TEAM_ID: "x" }), key(base), "a variable that is not EXPO_PUBLIC_* does not count");
+  assert.equal(key({ PATH: "/bin", EXPO_PUBLIC_AIWB_SELFTEST: "1", EXPO_PUBLIC_AIWB_VERSION: "e2e-7" }), key(base), "the order of the entries does not matter");
+  const config = createRequire(import.meta.url)("../metro.config.js");
+  assert.equal(config.cacheVersion, key(process.env), "the config uses it");
 });

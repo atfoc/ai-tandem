@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "types": ["node"]
   },
-  "include": ["src", "test", "dev/*.d.ts"]
+  "include": ["src", "test", "dev/*.d.ts", "dev/bench"]
 }

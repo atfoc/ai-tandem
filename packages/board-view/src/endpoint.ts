@@ -13,8 +13,9 @@ import type {
 } from "@aiwb/board-bridge/messages.ts";
 import { createBaseline, filesAdded } from "@aiwb/board-bridge/delta.ts";
 import { applyChanges, RpcError } from "./apply.ts";
-import { Board, type BoardHooks, type BoardState, type BoardStore } from "./Board.tsx";
+import { Board, type BoardCanvas, type BoardHooks, type BoardState, type BoardStore } from "./Board.tsx";
 import { exportPicture } from "./export.ts";
+import { themeCss } from "./theme.ts";
 
 /** The drawing style of a new board until the app says otherwise (section 6): the clean, technical look. */
 const CLEAN: CurrentItemStyle = {
@@ -43,7 +44,13 @@ export type EndpointOptions = {
   version?: string;
   /** Where the log of a refused message goes. */
   warn?: (text: string) => void;
+  /** How the target draws the canvas filter of a `theme` message: the CSS for it, and the constant-colour layers the board
+   *  renders over Excalidraw's canvases while a board is shown. The default is the SVG filter alone (theme.ts), no layers: the
+   *  web target's. The phone's (webview/entry.tsx) uses CSS filter functions and blend layers (phonetheme.ts). */
+  canvas?: BoardCanvas;
 };
+
+const SVG_CANVAS: BoardCanvas = (filter) => ({ css: themeCss(filter), layers: [] });
 
 type Api = any; // Excalidraw's imperative API, as the page's board.ts holds it
 
@@ -289,7 +296,8 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
     }
   }
 
-  const Mount = () => createElement(Board, { store, hooks });
+  const canvas = options.canvas ?? SVG_CANVAS;
+  const Mount = () => createElement(Board, { store, hooks, canvas });
 
   return {
     receive(m) {

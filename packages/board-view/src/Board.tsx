@@ -1,11 +1,12 @@
 // The React side of the endpoint: Excalidraw for the board that is shown, with the options the page's Canvas.tsx gives it,
 // the theme (Excalidraw's light or dark, the canvas filter laid over it, the colours of its chrome) and nothing else. It holds no state of its own:
 // it renders the endpoint's store and tells the endpoint what Excalidraw does (hooks).
-import React, { Component, useEffect, useSyncExternalStore, type ReactNode } from "react";
+import React, { Component, useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { Excalidraw } from "@excalidraw/excalidraw";
-import type { ThemeMsg } from "@aiwb/board-bridge/messages.ts";
+import type { CanvasFilterMsg, ThemeMsg } from "@aiwb/board-bridge/messages.ts";
 import { CanvasFilters } from "./CanvasFilters.tsx";
-import { chromeCss, themeCss } from "./theme.ts";
+import type { Layer } from "./phonetheme.ts";
+import { chromeCss } from "./theme.ts";
 
 /** A board that is shown: `gen` is raised for each (the Excalidraw is keyed by it), `initialData` is what it starts from. */
 export type Shown = { gen: number; board: string; initialData: object };
@@ -19,6 +20,9 @@ export type BoardHooks = {
   change(gen: number, elements: readonly unknown[], appState: Record<string, unknown>, files: Record<string, unknown>): void;
   failed(message: string): void;
 };
+
+/** How a target draws the canvas filter: the CSS of it, and the layers rendered over the canvases (none for the SVG filter). */
+export type BoardCanvas = (filter: CanvasFilterMsg | null) => { css: string; layers: Layer[] };
 
 const UI_OPTIONS = {
   canvasActions: {
@@ -43,10 +47,11 @@ class Guard extends Component<{ failed(message: string): void; children: ReactNo
   render() { return this.state.broken ? null : this.props.children; }
 }
 
-export function Board({ store, hooks }: { store: BoardStore; hooks: BoardHooks }) {
+export function Board({ store, hooks, canvas }: { store: BoardStore; hooks: BoardHooks; canvas: BoardCanvas }) {
   const s = useSyncExternalStore(store.subscribe, store.get);
   useEffect(() => { hooks.mounted(); return () => hooks.unmounted(); }, [hooks]);
-  const css = [themeCss(s.theme.filter), chromeCss(s.theme.chrome)].filter(Boolean).join("\n");
+  const drawn = useMemo(() => canvas(s.theme.filter), [canvas, s.theme.filter]);
+  const css = [drawn.css, chromeCss(s.theme.chrome)].filter(Boolean).join("\n");
   const shown = s.shown;
   return (
     <div className="aiwb-board" style={{ position: "relative", width: "100%", height: "100%" }} onDropCapture={blockSceneDrop}>
@@ -65,6 +70,13 @@ export function Board({ store, hooks }: { store: BoardStore; hooks: BoardHooks }
           />
         )}
       </Guard>
+      {/* (after Excalidraw, so painted over both of its canvases and under the rest of it: the colours of the canvas filter, phonetheme.ts) */}
+      {shown && drawn.layers.map((l) => (
+        <div
+          key={l.mode} className="aiwb-canvas-layer" aria-hidden="true"
+          style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none", background: l.colour, mixBlendMode: l.mode }}
+        />
+      ))}
     </div>
   );
 }

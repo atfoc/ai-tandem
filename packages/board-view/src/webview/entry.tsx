@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import type { FromBoard } from "@aiwb/board-bridge/messages.ts";
 import { parseToBoard } from "@aiwb/board-bridge/validate.ts";
 import { createEndpoint } from "../endpoint.ts";
+import { phoneCanvas, phoneThemeCss } from "../phonetheme.ts";
 import "@excalidraw/excalidraw/index.css";
 import "./page.css";
 
@@ -26,7 +27,15 @@ declare global {
 }
 
 const post = (m: FromBoard) => window.ReactNativeWebView?.postMessage(JSON.stringify(m));
-const endpoint = createEndpoint(post, { version: __EXCALIDRAW_VERSION__ });
+// The canvas filter of the phone: CSS filter functions and blend layers, which the render server draws, in place of the SVG
+// filter (phonetheme.ts). A theme it cannot make that way keeps the SVG filter, and says so once.
+let warned = false;
+const canvas = (filter: Parameters<typeof phoneThemeCss>[0]) => {
+  const p = phoneCanvas(filter);
+  if (p.kind === "fallback" && !warned) { warned = true; console.warn(`board view: the SVG canvas filter stays: ${p.why}`); }
+  return { css: phoneThemeCss(filter), layers: p.kind === "layers" ? p.layers : [] };
+};
+const endpoint = createEndpoint(post, { version: __EXCALIDRAW_VERSION__, canvas });
 
 function receive(json: unknown) {
   const r = parseToBoard(json);
